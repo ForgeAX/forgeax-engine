@@ -174,13 +174,7 @@ function createDriver(
     candidate?.accept();
     try {
       const result = renderer.draw(
-        packet === undefined
-          ? {
-              leases: [required(lease)],
-              camera: { lease: required(lease) },
-              environment: { lease: required(lease) },
-            }
-          : { publication: packet },
+        packet === undefined ? { source: required(lease) } : { publication: packet },
       );
       if (!result.ok) throw new Error(JSON.stringify({ failure: result.error, errors }));
       renderValue(await result.value.completed);

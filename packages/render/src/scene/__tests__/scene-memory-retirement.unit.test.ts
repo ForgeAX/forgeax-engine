@@ -68,7 +68,6 @@ it('drains Scene bounds, instance hierarchies and staging after repeated bulk di
   const snapshots = Array.from(
     { length: 1024 },
     (_, entityKey): RenderableSnapshot => ({
-      worldId: 0,
       entityKey,
       assetHandle: 1,
       transform: { world: pose },
@@ -83,7 +82,6 @@ it('drains Scene bounds, instance hierarchies and staging after repeated bulk di
   );
   const operations = snapshots.map((snapshot) => ({
     kind: 'update' as const,
-    worldId: snapshot.worldId,
     entityKey: snapshot.entityKey,
     snapshot,
   }));
@@ -100,7 +98,7 @@ it('drains Scene bounds, instance hierarchies and staging after repeated bulk di
     >;
     expect(cache.size).toBe(1);
     // Hydrate the live-slot staging ledger before disposal too.
-    rows.apply([{ kind: 'update', worldId: 0, entityKey: 1023, world: pose }], [], true);
+    rows.apply([{ kind: 'update', entityKey: 1023, world: pose }], [], true);
     rows.dispose();
     expect(numericBytes(Reflect.get(rows, 'bounds'))).toBe(coldBounds);
     expect(cache.size).toBe(0);

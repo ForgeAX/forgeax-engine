@@ -1,5 +1,6 @@
 export {
   type CookedMaterialRecord,
+  checkMaterialProgramSetDigest,
   collectMaterialCookRefs,
   createMaterialArtifactDigest,
   createMaterialCookIdentity,

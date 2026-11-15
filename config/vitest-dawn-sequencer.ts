@@ -1,12 +1,13 @@
 import { relative } from 'node:path';
 import { BaseSequencer, type TestSpecification } from 'vitest/node';
-import timings from '../scripts/ci/dawn-file-seconds.json' with { type: 'json' };
 import { DAWN_GATE_GROUPS, DAWN_GATE_SHARDS } from '../scripts/ci/dawn-gate-roster.mjs';
 import coverageTimings from '../scripts/ci/modeling-coverage-file-seconds.json' with {
   type: 'json',
 };
+import { type DawnTimingSnapshot, readDawnTimings } from './dawn-timings.ts';
 
-const fileSeconds = new Map(Object.entries(timings.files));
+const timings = readDawnTimings();
+const fileSeconds = new Map(Object.entries(timings.planningFiles));
 const tailSeconds = new Map(Object.entries(timings.owners));
 const unmeasuredFileSeconds = Math.max(...fileSeconds.values());
 // New complete owners use the existing conservative file forecast until a
@@ -85,12 +86,7 @@ export function planDawnShards(
 type DawnBin = { files: TestSpecification[]; seconds: number };
 type DawnCost = (file: TestSpecification) => number;
 type DawnCostVectors = ReadonlyMap<TestSpecification, readonly number[]>;
-type DawnTimingSnapshot = {
-  readonly files: Readonly<Record<string, number | undefined>>;
-  readonly owners: Readonly<Record<string, number | undefined>>;
-  readonly reservedFiles?: Readonly<Record<string, number | undefined>>;
-  readonly reservedOwners?: Readonly<Record<string, number | undefined>>;
-};
+
 type DawnRelocation = { kind: 'move'; from: number; to: number; index: number; score: number[] };
 type DawnRefinement =
   | DawnRelocation

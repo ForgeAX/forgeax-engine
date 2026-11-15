@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { defineSystem } from "@forgeax/engine-ecs";
 import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
 import { Update } from '@forgeax/engine-ecs';
 // apps/learn-render/2.lighting/3.materials/scripts/smoke-dawn.mjs
@@ -257,7 +258,7 @@ let elapsed = 0;
 const DT = 0.016;
 const FREQ_R = 2.0, FREQ_G = 0.7, FREQ_B = 1.3;
 if (!FALSIFY_NO_LIGHT) {
-  world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'animated-light-color',
     queries: [],
     fn: () => {
@@ -272,6 +273,7 @@ if (!FALSIFY_NO_LIGHT) {
       });
     },
   });
+world.addSystem(Update, systemToken1);
 }
 
 // Spawn static camera (LO: Camera(0,0,3) Zoom=45 deg).
@@ -300,11 +302,7 @@ let device;
 let probeReadbackBuffer;
 for (let i = 0; i < TARGET_FRAMES; i++) {
   world.update(1 / 60).unwrap();
-  await drawReadyFrame(renderer, {
-    leases: [lease],
-    camera: { lease },
-    environment: { lease },
-  });
+  await drawReadyFrame(renderer, { source: lease });
   framesObserved++;
   if (!device && sharedDevice) device = sharedDevice;
   if (i + 1 === PROBE_FRAME) {

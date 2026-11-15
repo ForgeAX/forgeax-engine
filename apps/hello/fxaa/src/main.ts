@@ -1,5 +1,7 @@
+import { InputFrameStartScan } from "@forgeax/engine-input";
+import { defineSystem } from "@forgeax/engine-ecs";
 import { Update } from '@forgeax/engine-ecs';
-import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine-input';
+import { INPUT_SNAPSHOT_RESOURCE_KEY } from '@forgeax/engine-input';
 // apps/hello/fxaa -- FXAA real-time comparison demo
 // (feat-20260529-fxaa-demo-real-antialiasing-comparison-runtime-tog / M2).
 //
@@ -490,12 +492,12 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   // the Camera.antialias value so AI users can read state from DOM.
   const hudEl = document.getElementById('fxaa-hud');
 
-  world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'fxaa-space-toggle',
-    after: ['input-frame-start-scan'],
+    after: [InputFrameStartScan],
     queries: [],
     fn: () => {
-      const snap = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+      const snap = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
       if (snap === undefined) return;
 
       // InputSnapshot.keyboard matches KeyboardEvent.key (browser backend
@@ -522,11 +524,12 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       prevSpace = cur;
     },
   });
+world.addSystem(Update, systemToken1);
 
   if (darkGradientLane !== undefined) {
-    world.addSystem(Update, {
+    const systemToken2 = defineSystem({
       name: 'dark-gradient-observation-publish',
-      after: ['fxaa-space-toggle'],
+      after: [systemToken1],
       queries: [],
       fn: () => {
         const phase: DarkGradientPhase = currentAntialias === ANTIALIAS_FXAA ? 'fxaa' : 'none';
@@ -542,6 +545,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
         }
       },
     });
+world.addSystem(Update, systemToken2);
   }
 
   // Step 8: arm the rAF loop.

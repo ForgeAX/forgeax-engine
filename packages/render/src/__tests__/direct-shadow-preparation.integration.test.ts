@@ -158,12 +158,7 @@ it('keeps direct Surface submission live without preparing unused GPU shadows ac
       renderer.setSurfaceDynamicInput({ page, ranges: [range], projectionRevision: 1, frameTime });
     };
     const draw = (geometryLane: 'automatic' | 'direct') =>
-      renderer.draw({
-        leases: [lease],
-        camera: { lease },
-        environment: { lease },
-        geometryLane,
-      });
+      renderer.draw({ source: lease, geometryLane });
     const preparedFrame = (): PreparedGpuDrivenFrame => {
       const result = prepare.mock.results.at(-1)?.value;
       if (!result?.ok || result.value === undefined)

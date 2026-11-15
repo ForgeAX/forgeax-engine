@@ -1,3 +1,5 @@
+import { defineResource } from '@forgeax/engine-ecs';
+import { Update, defineSystem } from "@forgeax/engine-ecs";
 import type {
   ExecutionBootstrapEntry,
   ExecutionBootstrapHost,
@@ -22,6 +24,8 @@ import { M37_LIMITS, M37_PROVIDER_A_ID, M37_PROVIDER_B_ID, M37_PROVIDER_C_ID } f
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+const resource1 = defineResource<M37Proof>("m37IntelligenceProof");
+
 
 
 interface M37HostCloseDetail {
@@ -498,7 +502,7 @@ const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).u
         postFaultProbe: false,
       };
       state = localState;
-      world.insertResource('m37IntelligenceProof', currentProof);
+      world.insertResource(resource1, currentProof);
 
       const fail = (reason: string): void => {
         if (localState.phase === 'finished' || localState.failure !== undefined) return;
@@ -919,7 +923,7 @@ const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).u
         }
       };
 
-      const system = {
+      const system = defineSystem({
         name: 'm37-intelligence-worker-consumer',
         queries: [],
         fn(): void {
@@ -939,11 +943,11 @@ const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).u
           }
           drive();
         },
-      };
-      const update = world.scheduleToken('Update');
+      });
+      const update = Update;
       world.addSystem(update, system).unwrap();
       ctx.effect(
-        () => () => world.removeSystem(update, system.name),
+        () => () => world.removeSystem(update, system),
         'm37/intelligence-system',
       );
 

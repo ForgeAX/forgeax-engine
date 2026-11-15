@@ -112,7 +112,7 @@ describe('SSAO RenderPipeline PSO descriptor assertions (w24 — RED)', () => {
       ),
       'utf8',
     );
-    const ssaoBgl = factory.slice(factory.indexOf("label: 'ssao-bgl'"));
+    const ssaoBgl = factory.slice(factory.indexOf('const SSAO_BGL_ENTRIES'));
     expect(ssaoBgl).toMatch(/binding: 1,[\s\S]{0,160}buffer: \{ type: 'uniform' \}/);
   });
 

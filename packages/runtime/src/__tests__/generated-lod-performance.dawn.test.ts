@@ -105,9 +105,7 @@ it.skipIf(process.env.MESH_LOD_PERF !== '1')(
           const receipt = renderValue(
             renderer.draw({
               geometryLane: 'direct',
-              leases: [lease],
-              camera: { lease },
-              environment: { lease },
+              source: lease,
             }),
           );
           const cpuMs = performance.now() - started;

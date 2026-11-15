@@ -163,6 +163,10 @@ function specializeConditionalDefines(
   source: string,
   defines: Readonly<Record<string, boolean>>,
 ): string {
+  // Without a conditional or group import, projection only normalizes lines.
+  // Search conservatively anywhere so comments before directives cannot hide work.
+  if (!source.includes('/*') && !/#(?:if|else|endif)|#[ \t]*import[^\r\n]*::\{/.test(source))
+    return source.replace(/\r\n/g, '\n');
   const output = projectShaderConditionals(source, defines, 'all').split('\n');
   const directiveOutput = stripWgslComments(output.join('\n')).split('\n');
   // An inlined Surface and its template may import different symbols from
@@ -195,6 +199,16 @@ export function reachableShaderImportIds(
   imports: Readonly<Record<string, string>>,
   defines: Readonly<Record<string, boolean>> = {},
 ): Set<string> {
+  return collectReachableImports(source, imports, (moduleSource) =>
+    specializeConditionalDefines(moduleSource, defines),
+  );
+}
+
+function collectReachableImports(
+  source: string,
+  imports: Readonly<Record<string, string>>,
+  projectModule: (source: string) => string,
+): Set<string> {
   const known = new Set(Object.keys(imports));
   const reachable = new Set<string>();
   const pending = extractImports(source, known);
@@ -204,7 +218,7 @@ export function reachableShaderImportIds(
     reachable.add(moduleId);
     const moduleSource = imports[moduleId];
     if (moduleSource === undefined) continue;
-    const specialized = specializeConditionalDefines(moduleSource, defines);
+    const specialized = projectModule(moduleSource);
     pending.push(...extractImports(specialized, known));
   }
   return reachable;
@@ -380,12 +394,18 @@ export async function compileShaderWithComposition(
   const imports = entryImports;
   delete defines.VERTEX_COLOR_AVAILABLE;
   if (requestedVertexColor) defines.VERTEX_COLOR_AVAILABLE = true;
-  const reachable = reachableShaderImportIds(source, imports, effectiveDefines);
   const specializedImports = Object.fromEntries(
     Object.entries(imports).map(([moduleId, moduleSource]) => [
       moduleId,
       stripPragmas(specializeConditionalDefines(moduleSource, effectiveDefines)),
     ]),
+  );
+  // Admission and composition share this invocation's projected module bytes.
+  // Reachability must not project the same sources a second time.
+  const reachable = collectReachableImports(
+    source,
+    specializedImports,
+    (moduleSource) => moduleSource,
   );
   const compositionImports = Object.fromEntries(
     [...reachable].flatMap((moduleId) => {

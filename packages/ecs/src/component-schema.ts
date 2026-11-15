@@ -32,8 +32,6 @@ export type FieldKind =
 
 export interface FieldPlan {
   readonly kind: FieldKind;
-  /** NaN is rejected for numeric scalars and numeric array elements. */
-  readonly numeric: boolean;
   /** Overwrite/removal releases an owned slot or reference. */
   readonly releases: boolean;
 }

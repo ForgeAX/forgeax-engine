@@ -734,12 +734,7 @@ export class WebGPURenderer {
   private submit(entity: ReturnType<SceneProjection['sync']>): FrameReceipt {
     const { native, lease } = this.ready();
     const receipt = value(
-      native.draw({
-        leases: [lease],
-        camera: { lease, entityKey: entity },
-        environment: { lease },
-        geometryLane: 'direct',
-      }),
+      native.draw({ source: lease, camera: { entityKey: entity }, geometryLane: 'direct' }),
     );
     this.receipt = receipt;
     if (receipt.presentation === 'ready') this.ready().projection.submitted();

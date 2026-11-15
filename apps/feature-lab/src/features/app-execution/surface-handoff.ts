@@ -1,5 +1,5 @@
 import { AssetRegistry } from '@forgeax/engine/assets-runtime';
-import { Update } from '@forgeax/engine/ecs';
+import { defineSystem, Update } from '@forgeax/engine/ecs';
 import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { CheckList, defineFeature, type FeatureCheck } from '../../lab/feature';
 import { spawnMesh, spawnStage, standard } from '../../lab/stage';
@@ -40,13 +40,14 @@ export default defineFeature({
             if (e.kind === 'frame-submitted') submitted += 1;
           });
           let updates = 0;
-          world.addSystem(Update, {
+          const systemToken1 = defineSystem({
             name: 'fl-surface-count',
             queries: [],
             fn: () => {
               updates += 1;
             },
           });
+          world.addSystem(Update, systemToken1);
           const renderer = app.renderer;
           const identity = world.identity;
           await until(() => submitted > 2);

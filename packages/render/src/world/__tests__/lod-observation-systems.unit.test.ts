@@ -1,9 +1,9 @@
 import { type EntityHandle, World } from '@forgeax/engine-ecs';
 import { describe, expect, it } from 'vitest';
+import { viewSourceFixture } from '../../__tests__/view-source.fixture';
 import type { CameraSnapshot } from '../../render-contract';
 import {
   LodObservationKey,
-  type LodObservationState,
   RENDER_LOD_OBSERVATION_SYSTEM,
   registerLodObservationSystem,
 } from '../lod-observation-systems';
@@ -103,16 +103,16 @@ function fixture() {
   registerViewRecorderSystem(world, views, { internals: host as never, createRecorder });
   registerLodObservationSystem(world, views, { internals: host as never });
   const source = new RenderViewFrameSource(host as never);
-  world.insertResource(RenderViewInput, source);
+  world.insertResource(RenderViewInput, viewSourceFixture(source));
   const plan = viewComposition(world);
   let frame = 0;
   const begin = () => {
     source.stage(
       [camera(1), camera(2)],
       [],
-      [new World()],
-      { cameraOwner: 0, resourceOwner: 0 },
-      [{ worldIdentity: 'world-a', generation: 2 } as never],
+      new World(),
+      {},
+      { worldIdentity: 'world-a', generation: 2 } as never,
       undefined,
     );
     beginRenderFrame(world, ++frame);
@@ -134,7 +134,7 @@ function fixture() {
       generation: 3,
     });
   };
-  const state = () => world.getResource<LodObservationState>(LodObservationKey);
+  const state = () => world.getResource(LodObservationKey);
   return { world, recorders, begin, submit, end: () => endRenderFrame(world), state };
 }
 
@@ -162,7 +162,7 @@ describe('LOD observation commit system', () => {
       state: 'rendered',
       primary: false,
     });
-    expect(capture?.leases.map((lease) => lease.worldIdentity)).toEqual(['world-a']);
+    expect(capture?.source?.worldIdentity).toBe('world-a');
     expect(state().failure).toBeUndefined();
   });
 

@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.forgeax/
+.forgeax-debug/
+.DS_Store
+pnpm-workspace.yaml
+pnpm-lock.yaml
+artifacts/

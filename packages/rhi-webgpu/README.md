@@ -199,7 +199,7 @@ exists to keep the real browser WebGPU path while removing GPU work.
 
 - **`'x' in src` guard transit**: spec `?: T` vs forgeax `?: T | undefined` differ under `exactOptionalPropertyTypes:true`; the shim guards each field per F-3 anti-pattern 2.
 - **`device.lost` single source**: this package only forwards the spec Promise; fan-out is the engine's job (`LostListenerRegistry`).
-- **Error message keyword classification**: `requestDevice` failure routes via `feature` / `limit` keyword detection; mock and real-GPU formats may differ.
+- **Native request failures**: `requestDevice` rejection returns `webgpu-runtime-error` with the original name and message in `detail.error`. Message keywords do not establish feature or limit failures; implemented descriptor and capability gates own those codes.
 - **Real-path implementation (M4-M5 + query closure)**: command recording + queue submit + queue.writeBuffer landed; query-set creation/destruction, occlusion begin/end, resolve, and timestamp pass writes are forwarded or capability-gated. Render bundle creation, finish and execution are implemented with native WebGPU validation.
 - **Escape hatch tear-down**: `getRawDevice` (no prefix) removed in `feat-20260508-rhi-surface-completion` M4 (AC-RSC-05); the single sanctioned hatch is `_internal_getRawDevice` confined to the AC-08 (h) allow-list.
 - **destroyBuffer / destroyTexture (feat-20260612)**: per-handle destroyed-state bookkeeping in shim layer (`WeakMap<Handle, { destroyed: boolean }>`) on top of the spec's idempotent-void `GPUBuffer.destroy()` / `GPUTexture.destroy()`. Dual-backend behavior is symmetric: both shims track destroyed boolean per handle, fail-fast on second destroy with `'destroy-after-destroy'` error code, and never depend on wasm panic interception (plan-strategy D-6). Implementation at `packages/rhi-webgpu/src/device.ts`.
@@ -282,6 +282,12 @@ requests concurrently). Concurrent requests share completion. A synchronous crea
 usable but never counted as evidence that native compilation finished. Known asynchronous
 validation failure evicts an earlier unverified handle and remains retryable.
 
+Published runtime shader identities and portable archives' content identities can
+name identical WGSL. On a cross-domain miss, the library compares same-length
+text and aliases the existing weak record, so both identities reach the same
+native module and prepared program. Distinct published identities remain distinct;
+no device-lifetime strong shader cache is added.
+
 Raw `prepare()` remains strict. Renderer-owned portable startup/background archives
 use `renderTargetPolicy: 'device-compatible'`: after validating the complete manifest,
 omit only render recipes exceeding the receiving device's color attachment count or
@@ -296,6 +302,11 @@ and sampled-texture limit.
 before renderer readiness, including a replacement device. `renderer.inspect()` exposes
 counts; `renderer.inspect({pipelineLibrary:true})` additionally exports the manifest.
 Worker execution uses `await execution.inspectRenderer({pipelineLibrary:true})`.
+`pipelineLibrary.export(limits, { requestedOnly: true })` lists only recipes that a
+pipeline creation or library selection asked for on this device. `prepare()` never
+sets that mark, so re-exporting on top of an installed library does not carry forward
+recipes the running build no longer requests. A recipe that preparation compiled and
+a renderer later asked for is listed.
 `inspect().pending` lists every currently recorded scheduled or native pipeline
 compilation, plus `unidentified` requests whose dependencies could not be recorded. Each row carries the runtime/startup/background origin, queued/compiling
 stage, elapsed milliseconds, complete recipe, bind-group layouts and shader-source
@@ -339,7 +350,9 @@ This is bounded diagnostic evidence, not a permanent trace or driver compiler ti
 `prepare(manifest, {concurrency, background})` bounds outstanding native requests
 (default `pipelineWarmupConcurrency`, half the logical processors in 4..16; background
 default 1..4, capped independently of core count). Explicit background concurrency
-must be in 1..4; blocking concurrency must be in 1..16. Shader validation uses the same
+must be in 1..4; blocking concurrency must be in 1..16. Applications that want more
+background requests in flight set `backgroundPipelineLibraryConcurrency` (App and
+DevKit option, integer 1..4); the hardware default is unchanged. Shader validation uses the same
 bound and preserves manifest dependency order. Background workers yield
 8 ms before each request, including cache hits, and stop scheduling after disposal.
 Native compilations already submitted cannot be cancelled or reprioritized; bounded

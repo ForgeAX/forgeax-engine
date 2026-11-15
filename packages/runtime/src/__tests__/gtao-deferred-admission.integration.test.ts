@@ -96,7 +96,7 @@ it('admits the published Standard Deferred surface when GTAO turns on', async ()
       for (let frame = 0; frame < 120; frame += 1) {
         world.update(1 / 60).unwrap();
         propagateTransforms(world).unwrap();
-        const drawn = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
+        const drawn = renderer.draw({ source: lease });
         if (!drawn.ok) throw drawn.error;
         const completion = await drawn.value.completed;
         frames.push({

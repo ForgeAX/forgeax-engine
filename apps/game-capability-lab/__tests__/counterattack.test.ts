@@ -1,3 +1,5 @@
+import { GameRewardChoiceOrder, GameCounterattackOrder } from '../src/system-order';
+import { defineSystem } from "@forgeax/engine-ecs";
 import { describe, expect, it } from 'vitest';
 import { Disabled, FixedUpdate, World } from '@forgeax/engine-ecs';
 import { Context } from '@forgeax/engine-plugin';
@@ -135,13 +137,11 @@ describe('game-default counterattack damage', () => {
     const world = new World();
     registerStatesPlugin(world);
     installGameplayState({ context: new Context(), world, reset: () => {} });
-    for (const [name, after] of [
-      ['physicsCollisionSync', []],
-      ['game-player-movement', ['physicsCollisionSync']],
-      ['game-energy-core-extraction', ['game-player-movement']],
-    ] as const) {
-      world.addSystem(FixedUpdate, { name, after: [...after], queries: [], fn: () => {} }).unwrap();
-    }
+    const collision = defineSystem({ name: 'physicsCollisionSync', queries: [], fn: () => {} });
+    const movement = defineSystem({ name: 'game-player-movement', queries: [], after: [collision], fn: () => {} });
+    const extraction = defineSystem({ name: 'game-energy-core-extraction', queries: [], after: [movement], fn: () => {} });
+    for (const system of [collision, movement, extraction]) world.addSystem(FixedUpdate, system).unwrap();
+
     const player = world.spawn(
       { component: Transform, data: { pos: [0, 0.75, 0] } },
       { component: CollidingEntities, data: { entities: [] } },
@@ -206,8 +206,8 @@ describe('game-default counterattack damage', () => {
         sentinelShielded = source === sentinel && outcome === 'player' && shielded;
       },
       onTargetResolved: () => {},
-      after: ['physicsCollisionSync', 'game-reward-choice'],
-      before: ['game-counterattack'],
+      after: [collision, GameRewardChoiceOrder],
+      before: [GameCounterattackOrder],
     });
     world.set(player, CollidingEntities, { entities: [shield, bouncyBall] });
 

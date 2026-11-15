@@ -1,12 +1,16 @@
 import { gzipSync } from 'node:zlib';
 import {
+  createMaterialProgramArtifactReceipt,
+  expandShaderManifestPublication,
   LIGHT_TEXTURE_RESAMPLE_COMPUTE_IDENTIFIER,
   LIGHT_TEXTURE_RESAMPLE_FRAGMENT_IDENTIFIER,
 } from '@forgeax/engine-shader';
-import { MATERIAL_WGSL_PROFILE } from '@forgeax/engine-shader-compiler';
-import { beforeEach, expect, it, vi } from 'vitest';
+import { compileShader, MATERIAL_WGSL_PROFILE } from '@forgeax/engine-shader-compiler';
+import { assert, beforeEach, expect, it, vi } from 'vitest';
+import { loadEngineShaderEntries } from '../engine-inputs/load-engine-shader-entries.js';
 import { encodePackagedProfiles } from '../engine-inputs/packaged-profiles.js';
 import { publishShaderManifest } from '../manifest-publication.js';
+import { hasCompleteEngineShaderProfile } from '../shared-engine-inputs.js';
 
 const files = vi.hoisted(() => ({
   manifest: '',
@@ -46,12 +50,44 @@ const resampling = [
 ] as const;
 
 function createManifest(
-  options: { readonly includeResampling?: boolean; readonly incompleteVariant?: boolean } = {},
+  options: {
+    readonly includeResampling?: boolean;
+    readonly includeWaterInfo?: boolean;
+    readonly waterInfoReceipt?: boolean;
+    readonly incompleteVariant?: boolean;
+  } = {},
 ) {
   const source = 'fn main() {}';
+  const waterInfoReceipt = {
+    ...createMaterialProgramArtifactReceipt({
+      schema: [],
+      directEntry: 'vs_main',
+      vertexInputs: [],
+    }),
+    bindings: 'group-0' as const,
+  };
   const materials = [
     { identifier: 'forgeax::default-standard-pbr', entryPoints: [] },
     { identifier: 'forgeax::default-unlit', entryPoints: [] },
+    ...(options.includeWaterInfo === false
+      ? []
+      : [
+          'forgeax::water-info-raster-water',
+          'forgeax::water-info-raster-ground',
+          'forgeax::water-info-raster-dilation',
+          'forgeax::water-mesh-raster',
+        ].map((identifier) => ({
+          identifier,
+          entryPoints: [],
+          ...(options.waterInfoReceipt === false ? {} : { receipt: waterInfoReceipt }),
+        }))),
+    ...['forgeax::water-mesh-precise', 'forgeax::water-mesh-precise-msaa'].map((identifier) => ({
+      identifier,
+      entryPoints: [
+        { name: 'vs_main', stage: 'vertex' as const, bindings: [] },
+        { name: 'fs_shadow', stage: 'fragment' as const, bindings: [] },
+      ],
+    })),
     ...(options.includeResampling === false ? [] : resampling),
   ];
   const entries = materials.map((material, index) => ({
@@ -76,6 +112,7 @@ function createManifest(
       entryPoints: material.entryPoints,
       composedWgsl: source,
       paramSchema: '[]',
+      ...('receipt' in material ? { receipt: material.receipt } : {}),
       variants:
         options.incompleteVariant === true && index === 0
           ? [
@@ -143,15 +180,120 @@ it('replaces changed publication and import bytes instead of trusting the path',
   expect(first?.entries[0]?.hash).toBe('00000001');
 });
 
-it('rejects packaged engine profiles missing resampling rows or a variant reflection', async () => {
+it('rejects packaged engine profiles missing required rows, WaterInfo receipts, or a variant reflection', async () => {
   const { loadPackagedEngineShaderInputs } = await import('../shared-engine-inputs.js');
   for (const manifest of [
     createManifest({ includeResampling: false }),
+    createManifest({ includeWaterInfo: false }),
+    createManifest({ waterInfoReceipt: false }),
     createManifest({ incompleteVariant: true }),
   ]) {
     files.manifest = JSON.stringify(manifest);
     files.container = undefined;
     expect(loadPackagedEngineShaderInputs(false, true)).toBeNull();
+  }
+});
+
+it('admits actual resource-bound precise WaterMesh programs and rejects incomplete artifacts', async () => {
+  const engine = await loadEngineShaderEntries();
+  const precise = [];
+  for (const entry of [engine.waterMeshPrecise, engine.waterMeshPreciseMsaa]) {
+    const identifier = entry.reservedIdentifier;
+    assert(identifier !== undefined);
+    const compiled = (
+      await compileShader(entry.source, {
+        id: entry.id,
+        defines: { WATER_PRECISE_MSAA: false, ...entry.defines },
+      })
+    ).unwrap();
+    expect(compiled.bindings[0]?.entries.map((binding) => binding.binding)).toEqual([
+      0, 1, 2, 3, 4, 5, 6,
+    ]);
+    expect(compiled.bindings[0]?.entries[6]?.texture?.multisampled).toBe(
+      entry.defines?.WATER_PRECISE_MSAA === true,
+    );
+    precise.push({ entry, identifier, compiled });
+  }
+  type Profile = Parameters<typeof hasCompleteEngineShaderProfile>[0];
+  const base = expandShaderManifestPublication(createManifest()).manifest as Profile;
+  const actual = expandShaderManifestPublication(
+    publishShaderManifest(
+      precise.map(({ identifier, compiled }) => ({
+        ...compiled.manifestEntry,
+        identifier,
+        compilerProfile: MATERIAL_WGSL_PROFILE,
+      })),
+      precise.map(({ entry, identifier, compiled }) => ({
+        identifier,
+        sourcePath: entry.id,
+        hash: compiled.manifestEntry.hash,
+        compilerProfile: MATERIAL_WGSL_PROFILE,
+        reflection: compiled.reflection,
+        entryPoints: compiled.manifestEntry.entryPoints,
+        composedWgsl: compiled.wgsl,
+        paramSchema: '[]',
+        variants: [],
+      })),
+    ),
+  ).manifest as Profile;
+  const identifiers = new Set(precise.map(({ identifier }) => identifier));
+  const profile = {
+    entries: [
+      ...base.entries.filter(
+        (entry) => entry.identifier === undefined || !identifiers.has(entry.identifier),
+      ),
+      ...actual.entries,
+    ],
+    materialShaders: [
+      ...base.materialShaders.filter((entry) => !identifiers.has(entry.identifier)),
+      ...actual.materialShaders,
+    ],
+  };
+  expect(hasCompleteEngineShaderProfile(profile)).toBe(true);
+  for (const identifier of identifiers) {
+    expect(
+      hasCompleteEngineShaderProfile({
+        ...profile,
+        entries: profile.entries.filter((entry) => entry.identifier !== identifier),
+      }),
+    ).toBe(false);
+    expect(
+      hasCompleteEngineShaderProfile({
+        ...profile,
+        materialShaders: profile.materialShaders.filter((entry) => entry.identifier !== identifier),
+      }),
+    ).toBe(false);
+    for (const rows of ['entries', 'materialShaders'] as const) {
+      const corruptions: readonly (readonly [string, unknown])[] = [
+        ['hash', 'invalid'],
+        ['sourceDigest', 'invalid'],
+        ['reflection', {}],
+        ...(rows === 'materialShaders' ? [['compilerProfile', {}] as const] : []),
+      ];
+      for (const [field, value] of corruptions) {
+        const invalid = structuredClone(profile);
+        const row = invalid[rows].find((entry) => entry.identifier === identifier);
+        assert(row !== undefined);
+        Reflect.set(row, field, value);
+        expect(hasCompleteEngineShaderProfile(invalid), `${rows}:${identifier}:${field}`).toBe(
+          false,
+        );
+      }
+    }
+    const invalidVariant = structuredClone(profile);
+    const material = invalidVariant.materialShaders.find(
+      (entry) => entry.identifier === identifier,
+    );
+    assert(material !== undefined);
+    Reflect.set(material, 'variants', [
+      {
+        ...material,
+        definesKey: 'WATER_PRECISE_MSAA=true',
+        defines: { WATER_PRECISE_MSAA: true },
+        reflection: {},
+      },
+    ]);
+    expect(hasCompleteEngineShaderProfile(invalidVariant)).toBe(false);
   }
 });
 

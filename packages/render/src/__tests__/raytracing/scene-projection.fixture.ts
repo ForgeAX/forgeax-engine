@@ -51,7 +51,6 @@ export function retainedTransportPlane(
         .unwrap(),
   });
   const source: RenderableSnapshot = preparedPbrSnapshot({
-    worldId: 0,
     entityKey: 31,
     assetHandle: assets
       .create({
@@ -84,7 +83,6 @@ export function retainedTransportPlane(
     retained.apply([
       {
         kind: 'update',
-        worldId: 0,
         entityKey,
         snapshot: {
           ...source,
@@ -102,7 +100,7 @@ export function retainedTransportPlane(
     project: () =>
       projectRayScene(
         retained.slotsSnapshot(),
-        [world].map(worldRenderResources),
+        worldRenderResources(world),
         projectVisibleSurfaces(retained.slotsSnapshot(), 16).unwrap(),
       ),
   };

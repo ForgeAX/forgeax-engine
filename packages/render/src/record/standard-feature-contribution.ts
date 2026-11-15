@@ -194,13 +194,15 @@ function resolveFeatureTargets(
     (typeof target === 'object'
       ? context.sceneInputs?.get(target as import('../features/targets').RenderFeatureTargetHandle)
       : undefined) ?? resolveDisplayTarget(target);
-  const viewAccesses =
+  const viewAccesses: GraphAccess[] =
     request.atmosphere === undefined
       ? []
       : atmosphereTextures(request.atmosphere).map((resource) => ({
           resource,
           usage: 'sampled-read' as const,
         }));
+  for (const target of request.waterInfoTargets?.values() ?? [])
+    viewAccesses.push({ resource: target.view, usage: 'sampled-read' });
   return { ok: true, resolveTarget, viewAccesses };
 }
 
@@ -247,7 +249,13 @@ function projectSelectedExecutions(
       standardSurfaceAccesses,
       viewAccesses: targets.viewAccesses,
       resolveBindings: (input) =>
-        resolveTargetBindings(input, context.featurePostProcessEntries, request.atmosphere),
+        resolveTargetBindings(
+          input,
+          context.featurePostProcessEntries,
+          request.atmosphere,
+          request.waterInfoTargets,
+          request.postProcessView,
+        ),
       resolveStandardLighting: resolveLightingBinding,
       reportError: context.reportError,
     },

@@ -150,6 +150,7 @@ describe('Engine built-in plugin profiles', () => {
       'assets-world',
       'input-backend',
       'scene',
+      'water-scene',
       'animation',
       'state',
       'input',

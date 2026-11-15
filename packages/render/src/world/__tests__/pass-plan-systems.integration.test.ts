@@ -4,10 +4,12 @@ import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect, it, vi } from 'vitest';
+import { registeredSystem } from '../../__tests__/registered-system.fixture';
 import { renderLifecycleManifestUrl } from '../../__tests__/shader-manifest-fixture';
 import { createRenderer } from '../../assembly/factory';
 import { Camera, MeshFilter, MeshRenderer } from '../../components';
 import { Materials } from '../../materials';
+
 import { RENDER_OPAQUE_PLAN_SYSTEM, RENDER_TRANSMISSION_PLAN_SYSTEM } from '../pass-plan-systems';
 import * as renderWorldModule from '../render-world';
 import { RenderQueue } from '../render-world';
@@ -74,7 +76,7 @@ async function plannedScene(options: {
   renderer.onError((error) => errors.push(error));
   const draw = async () => {
     world.update().unwrap();
-    const drawn = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
+    const drawn = renderer.draw({ source: lease });
     if (!drawn.ok) throw drawn.error;
     if (drawn.value !== undefined) {
       const completed = await drawn.value.completed;
@@ -106,7 +108,12 @@ it('compiles the transmission backdrop only from the render-transmission-plan Re
     expect(renderer.inspect().transmission).toMatchObject({ activeCount: 1, needsRoughMips: true });
     expect(renderer.inspect().perFramePassNames).toContain('transmission-backdrop-copy');
     const world = renderWorld(RENDER_TRANSMISSION_PLAN_SYSTEM);
-    expect(world.removeSystem(RenderQueue, RENDER_TRANSMISSION_PLAN_SYSTEM).ok).toBe(true);
+    expect(
+      world.removeSystem(
+        RenderQueue,
+        registeredSystem(world, RenderQueue, 'render-transmission-plan'),
+      ).ok,
+    ).toBe(true);
     // Compile has no other transmission authority: the frame fails naming the system.
     await expect(draw()).rejects.toThrow('did not submit');
     expect(JSON.stringify(errors)).toContain(RENDER_TRANSMISSION_PLAN_SYSTEM);
@@ -131,7 +138,10 @@ it('compiles the opaque G-buffer lane only from the render-opaque-plan RenderQue
     expect(passes).toContain('g-buffer');
     expect(passes).not.toContain('main');
     const world = renderWorld(RENDER_OPAQUE_PLAN_SYSTEM);
-    expect(world.removeSystem(RenderQueue, RENDER_OPAQUE_PLAN_SYSTEM).ok).toBe(true);
+    expect(
+      world.removeSystem(RenderQueue, registeredSystem(world, RenderQueue, 'render-opaque-plan'))
+        .ok,
+    ).toBe(true);
     // Compile has no other lane authority: the frame fails naming the system.
     await expect(draw()).rejects.toThrow('did not submit');
     expect(JSON.stringify(errors)).toContain(RENDER_OPAQUE_PLAN_SYSTEM);
@@ -152,7 +162,10 @@ it('admits the deferred SSR lane only from the render-ssr-admission RenderQueue 
     await draw();
     expect(errors).toEqual([]);
     const world = renderWorld(RENDER_SSR_ADMISSION_SYSTEM);
-    expect(world.removeSystem(RenderQueue, RENDER_SSR_ADMISSION_SYSTEM).ok).toBe(true);
+    expect(
+      world.removeSystem(RenderQueue, registeredSystem(world, RenderQueue, 'render-ssr-admission'))
+        .ok,
+    ).toBe(true);
     // Compile has no other SSR authority: the frame fails naming the system.
     await expect(draw()).rejects.toThrow('did not submit');
     expect(JSON.stringify(errors)).toContain(`${RENDER_SSR_ADMISSION_SYSTEM} did not admit`);

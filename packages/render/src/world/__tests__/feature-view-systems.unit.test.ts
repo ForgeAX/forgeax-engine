@@ -1,6 +1,10 @@
 import type { EntityHandle } from '@forgeax/engine-ecs';
+import { World } from '@forgeax/engine-ecs';
 import { describe, expect, it } from 'vitest';
+import { registeredSystem } from '../../__tests__/registered-system.fixture';
+import { viewSourceFixture } from '../../__tests__/view-source.fixture';
 import { createRenderFeatureHost } from '../../features/host';
+
 import {
   RENDER_FEATURE_VIEWS_SYSTEM,
   RENDER_MOTION_BLUR_PLAN_SYSTEM,
@@ -33,12 +37,15 @@ function setup(options: { readonly resolved: boolean; readonly source?: boolean 
   const host = createRenderFeatureHost([]).unwrap();
   const world = host.world;
   if (options.source !== false)
-    world.insertResource(RenderViewInput, { worlds: [], leases: undefined });
+    world.insertResource(
+      RenderViewInput,
+      viewSourceFixture({ world: new World(), lease: undefined }),
+    );
   registerFeatureViewsSystem(world);
   const frame = {
     frame: 0,
     mode: true,
-    opts: { cameraOwner: 0, resourceOwner: 0 },
+    opts: {},
     publication: undefined,
     result: options.resolved
       ? { ok: true, value: { cameras: [], cubeCameras: [], auxiliaryCameras: [] } }
@@ -96,7 +103,9 @@ describe('render-feature-views', () => {
 describe('render-motion-blur-plan', () => {
   it('plans a prepared view from its owner and keeps the Feature input', () => {
     const f = setup({ resolved: true });
-    f.world.removeSystem(RenderPrepare, RENDER_FEATURE_VIEWS_SYSTEM).unwrap();
+    f.world
+      .removeSystem(RenderPrepare, registeredSystem(f.world, RenderPrepare, 'render-feature-views'))
+      .unwrap();
     const state: ViewFeatureInputState = {
       frame: 1,
       outcome: {
@@ -105,8 +114,7 @@ describe('render-motion-blur-plan', () => {
           input: {
             identity: 'v',
             render: true,
-            worlds: [],
-            owner: 0,
+            world: new World(),
             frameNumber: 0,
             caps: {} as never,
           },

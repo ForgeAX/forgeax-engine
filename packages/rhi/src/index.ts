@@ -1072,19 +1072,18 @@ export interface RhiCaps {
   /** Depth textureLoad in supported shader stages; Compatibility Mode may reject it. */
   readonly depthTextureLoad: boolean;
   /**
-   * Whether the device can create `rgba16float` textures with `RENDER_ATTACHMENT`
-   * usage, enabling the HDR cubemap path for IBL irradiance / specular prefilter
-   * and downstream HDR render-target chains.
+   * Whether the device can create `rgba16float` textures with sampled and
+   * `RENDER_ATTACHMENT` usage, enabling HDR cubemap irradiance, specular
+   * prefiltering, and downstream HDR render-target chains.
    *
-   * @spec-anchor W3C WebGPU $25.1 GPUTextureFormat — `rgba16float` is an
-   *   optional texture format whose `RENDER_ATTACHMENT` capability is probed by
-   *   attempting `createTexture({ format: 'rgba16float', usage:
-   *   GPUTextureUsage.RENDER_ATTACHMENT, size: [1, 1, 1] })` on the live
-   *   device; failure maps the cap to `false`.
-   * @note Probed at device-creation time via a synchronous `createTexture`
-   *   call, not via `GPUAdapter.features`. The `rgba16float` format is widely
-   *   supported but `RENDER_ATTACHMENT` with float formats is optional per spec
-   *   so the cap reflects the concrete device, not the adapter feature list.
+   * @spec-anchor W3C WebGPU $25.1 GPUTextureFormat — support is for the exact
+   *   `rgba16float` plus `TEXTURE_BINDING | RENDER_ATTACHMENT` usage, not
+   *   format presence alone.
+   * @note Native GPUDevice paths verify this usage in a validation error scope
+   *   before publishing the device; a synchronous `createTexture` return alone
+   *   is not evidence. The wgpu WASM path retains its synchronous throw-based
+   *   probe because it has no error-scope API, so deferred validation there
+   *   cannot be reflected reliably by this cap.
    * @hint AI users gate IBL / HDR post-processing paths on
    *   `caps.rgba16floatRenderable`; when `false` the internal equirect-to-cubemap
    *   IBL projection (driven by declaring `Skylight{equirect}`) degrades to the
@@ -1093,6 +1092,18 @@ export interface RhiCaps {
    *   failure).
    */
   readonly rgba16floatRenderable: boolean;
+  /** Verified rgba32float render-attachment plus sampled usage support. */
+  readonly rgba32floatRenderable?: boolean;
+  /** Verified two-layer array render-attachment plus sampled usage, not inferred from 2D support. */
+  readonly rgba16floatArrayRenderable?: boolean;
+  readonly rgba32floatArrayRenderable?: boolean;
+  /** Verified depth32float render-attachment plus sampled usage. */
+  readonly depth32floatSampled?: boolean;
+  /** Verified rg16float render-attachment plus sampled usage (for velocity attachments). */
+  readonly rg16floatRenderable?: boolean;
+  /** Verified float storage-texture plus sampled usage support. */
+  readonly rgba16floatStorage?: boolean;
+  readonly rgba32floatStorage?: boolean;
   /**
    * Whether the device can create `rg11b10ufloat` textures with
    * `RENDER_ATTACHMENT` usage, enabling the HDR swapchain / render-target path
@@ -1559,6 +1570,7 @@ export interface RhiCanvasContext {
 export type {
   PipelineLibrary,
   PipelineLibraryCompute,
+  PipelineLibraryExportOptions,
   PipelineLibraryInspection,
   PipelineLibraryLimits,
   PipelineLibraryManifest,
@@ -2387,7 +2399,6 @@ export {
   validateR32FloatReceipt,
 } from './capability/texture-format';
 export type {
-  DrawOwnerSplit,
   LimitExceededDetail,
   Result,
   ResultErr,
@@ -2395,7 +2406,6 @@ export type {
   RhiAssetNotRegisteredDetail,
   RhiErrorCode,
   RhiErrorDetail,
-  RhiOwnerOutOfRangeDetail,
   RhiShaderCompileDetail,
   RhiWebgpuRuntimeCause,
   RhiWebgpuRuntimeDetail,
@@ -2410,7 +2420,6 @@ export {
   RhiError,
   renderPassNotEnded,
   shaderCompileFailed,
-  validateDrawArgs,
 } from './errors.js';
 export {
   type AccelerationStructureBindingLayout,
@@ -2544,6 +2553,11 @@ export {
   probeMultisampleRenderCapability,
 } from './capability/multisample-render-probe';
 export { probeR32FloatRenderCapability } from './capability/r32float-render-probe';
+export {
+  inspectRhiDeviceFacts,
+  type RhiCapabilityStatus,
+  type RhiDeviceFacts,
+} from './device-facts.js';
 export { PIPELINE_LIBRARY_LIMITS } from './pipeline-library';
 export {
   checkPipelineLibraryAllocation,

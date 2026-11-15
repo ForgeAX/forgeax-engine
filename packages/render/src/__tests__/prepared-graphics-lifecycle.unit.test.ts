@@ -1,3 +1,4 @@
+import { World } from '@forgeax/engine-ecs';
 import type { RhiCaps } from '@forgeax/engine-rhi';
 import { err, ok } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
@@ -38,8 +39,7 @@ describe('prepared graphics lifecycle ownership', () => {
   it('re-prepares after recovery and makes repeated recovery idempotent', () => {
     const host = createRenderFeatureHost([preparedFeature()]).unwrap();
     const first = runSingleViewFeatureFrame(host, {
-      worlds: [],
-      owner: 0,
+      world: new World(),
       frameNumber: 1,
       generation: 1,
       caps,
@@ -49,8 +49,7 @@ describe('prepared graphics lifecycle ownership', () => {
     expect(host.recover({ frameNumber: 2, caps })).toEqual(ok(undefined));
     expect(host.recover({ frameNumber: 2, caps })).toEqual(ok(undefined));
     const recovered = runSingleViewFeatureFrame(host, {
-      worlds: [],
-      owner: 0,
+      world: new World(),
       frameNumber: 3,
       generation: 2,
       caps,
@@ -191,8 +190,7 @@ for (const readyFirst of [true, false]) {
     };
     const host = createRenderFeatureHost([feature]).unwrap();
     const result = runSingleViewFeatureFrame(host, {
-      worlds: [],
-      owner: 0,
+      world: new World(),
       frameNumber: 1,
       caps,
       createPreparedGraphicsResolver: (input) => ({

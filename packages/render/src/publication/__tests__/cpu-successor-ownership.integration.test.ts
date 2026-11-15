@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
-import { FixedTime, FixedUpdate, World } from '@forgeax/engine-ecs';
+import { defineSystem, FixedTime, FixedUpdate, World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { Transform } from '@forgeax/engine-scene';
 import { ShaderRegistry } from '@forgeax/engine-shader';
@@ -51,19 +51,18 @@ it.each(
       { component: MeshRenderer, data: {} },
     )
     .unwrap();
-  world
-    .addSystem(FixedUpdate, {
-      name: 'author-dynamic-mesh',
-      queries: [],
-      fn: () => {
-        const tick = world.getResource(FixedTime).tick;
-        const vertices = new Float32Array(mesh.vertices);
-        vertices[0] = tick;
-        assets.update(handle, { vertices }).unwrap();
-        world.set(entity, Transform, { pos: [tick, 0, 0] }).unwrap();
-      },
-    })
-    .unwrap();
+  const systemToken1 = defineSystem({
+    name: 'author-dynamic-mesh',
+    queries: [],
+    fn: () => {
+      const tick = world.getResource(FixedTime).tick;
+      const vertices = new Float32Array(mesh.vertices);
+      vertices[0] = tick;
+      assets.update(handle, { vertices }).unwrap();
+      world.set(entity, Transform, { pos: [tick, 0, 0] }).unwrap();
+    },
+  });
+  world.addSystem(FixedUpdate, systemToken1).unwrap();
   const extracted: number[] = [];
   const submitted: number[] = [];
   const feature: RenderFeature<{ tick: number }> = {

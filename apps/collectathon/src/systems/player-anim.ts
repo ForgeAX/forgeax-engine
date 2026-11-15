@@ -18,8 +18,9 @@
 // input -- D-5 one-way signal).
 
 import { AnimationPlayer } from '@forgeax/engine-animation';
-import type { EntityHandle, SystemHandle, World } from '@forgeax/engine-ecs';
+import type { EntityHandle, System, World } from '@forgeax/engine-ecs';
 import { defineSystem } from '@forgeax/engine-ecs';
+import { PlayerMoveOrder } from '../system-order';
 
 import { readDt } from './frame-time';
 import type { PlayerMoveSignal } from './player-move';
@@ -63,13 +64,13 @@ export function createAnimSystem(
   _app: AnimSystemApp,
   skin: EntityHandle,
   signal: PlayerMoveSignal,
-): SystemHandle<readonly []> {
+): System<readonly []> {
   // Spawn pose is idle (phase 0); spawn-player primed weights=[0,1].
   let phase = 0;
 
   return defineSystem({
     name: 'player-anim',
-    after: ['player-move'],
+    after: [PlayerMoveOrder],
     queries: [],
     fn: (world: World) => {
       const dt = readDt(world);

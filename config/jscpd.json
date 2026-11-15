@@ -8,8 +8,8 @@
   "reporters": ["json", "console"],
   "path": ["../packages", "../apps", "../scripts", "../templates"],
   "ignore": [
-    "../packages/wgpu-wasm/pkg/**",
-    "../packages/wgpu-wasm/target/**",
+    "**/packages/wgpu-wasm/pkg/**",
+    "**/packages/wgpu-wasm/target/**",
     "**/dist/**",
     "**/node_modules/**",
     "**/*.test.ts",

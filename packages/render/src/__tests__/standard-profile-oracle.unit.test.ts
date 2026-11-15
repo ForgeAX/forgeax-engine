@@ -3,10 +3,12 @@ import { freezeRenderProfile, validateRenderProfile } from '../assembly/renderer
 import { AUTO_EXPOSURE_PRESET_V1 } from '../pipeline/standard-output/auto-exposure/preset';
 import {
   DEFAULT_STANDARD_PROFILE,
-  STANDARD_LIGHT_COUNTS,
+  isStandardLightCount,
+  STANDARD_MAX_LIGHT_COUNT,
   STANDARD_PIPELINE_ID,
   type StandardProfile,
 } from '../pipeline/standard-profile';
+import { SCREEN_PROBE_DEFAULTS } from '../raytracing/screen-probe-plan';
 
 describe('Standard profile oracle', () => {
   it('rejects the unused shadow policy; lights own casting and filtering', () => {
@@ -42,8 +44,11 @@ describe('Standard profile oracle', () => {
   });
 
   it('keeps one identity across the supported light budgets', () => {
-    expect(STANDARD_LIGHT_COUNTS).toEqual([1, 32, 256]);
-    for (const lightCount of STANDARD_LIGHT_COUNTS) {
+    expect(STANDARD_MAX_LIGHT_COUNT).toBe(1024);
+    expect(DEFAULT_STANDARD_PROFILE.lightCount).toBe(STANDARD_MAX_LIGHT_COUNT);
+    expect([0, 1025, 1.5, -1, Number.NaN, '32'].some(isStandardLightCount)).toBe(false);
+    for (const lightCount of [1, 32, 256, 257, 1024]) {
+      expect(isStandardLightCount(lightCount)).toBe(true);
       const profile: StandardProfile = {
         ...DEFAULT_STANDARD_PROFILE,
         lightCount,
@@ -219,5 +224,56 @@ describe('reference diffuse GI profile', () => {
       expect(
         validateRenderProfile({ ...profile, diffuseGi: invalid } as unknown as StandardProfile),
       ).toBeTypeOf('string');
+  });
+});
+
+describe('field diffuse GI profile', () => {
+  const field = {
+    region: {
+      grid: {
+        origin: [-4, -4, -4] as [number, number, number],
+        dimensions: [33, 33, 33] as [number, number, number],
+        spacing: 0.25,
+        maxDistance: 2,
+        coverageDistance: 1,
+      },
+      maxInstances: 64,
+      maxFieldBytes: 16 * 1024 * 1024,
+    },
+    probeSpacing: 1,
+    raysPerProbe: 64,
+    probeBudget: 32,
+    hysteresis: 0.9,
+    cards: { resolution: 32, maxCaptureBytes: 8 * 1024 * 1024, budget: 64 },
+    resolution: 'half' as const,
+    radiosity: true,
+  };
+  const profile: StandardProfile = {
+    ...DEFAULT_STANDARD_PROFILE,
+    renderPath: 'deferred',
+    ibl: false,
+    visibleSurface: false,
+    diffuseGi: {
+      gather: 'irradiance-field',
+      maxDistance: 100,
+      environment: [0.1, 0.2, 0.3],
+      field,
+    },
+  };
+
+  it.each([
+    'irradiance-field',
+    'screen-probe',
+  ] as const)('keeps the caller visibleSurface choice for the %s gather (no primitive-index demand)', (gather) => {
+    const candidate = {
+      ...profile,
+      diffuseGi:
+        gather === 'screen-probe'
+          ? { ...profile.diffuseGi, gather, probes: SCREEN_PROBE_DEFAULTS }
+          : profile.diffuseGi,
+    } as StandardProfile;
+    expect(validateRenderProfile(candidate)).toBeUndefined();
+    expect(freezeRenderProfile(candidate).visibleSurface).toBe(false);
+    expect(freezeRenderProfile({ ...candidate, visibleSurface: true }).visibleSurface).toBe(true);
   });
 });

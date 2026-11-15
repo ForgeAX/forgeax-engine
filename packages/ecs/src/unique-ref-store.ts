@@ -1,10 +1,10 @@
 // @forgeax/engine-ecs - UniqueRefStore.
 //
 // Per-slot singleton store for ECS-managed asset handles. Schema vocab
-// `ref<T>` fields derive `Handle<T, 'unique'>` whose lifecycle is owned by
+// `unique<T>` fields derive `Handle<T, 'unique'>` whose lifecycle is owned by
 // the ECS - World hooks `despawn` / `removeComponent` / `set` into
 // `UniqueRefStore.release` so dropping a holder entity reliably releases the
-// referenced asset slot. AssetRegistry handles (`handle<T>` schema vocab) take
+// referenced asset slot. Asset handles (`asset<kind>` schema vocabulary) take
 // the orthogonal `'shared'` mode and never enter this store.
 //
 // §contract — handles carry a generation; stale-by-reuse is detected
@@ -75,7 +75,7 @@ interface UniqueRefEntry {
  * Per-slot singleton store for ECS-managed `Handle<T, 'unique'>` lifecycles.
  * World hooks the three release paths (despawn, removeComponent, set) into
  * `release(handle)`; `resolve(handle)` is the read path AI users reach
- * indirectly through `world.get(e, C)` for `ref<T>` schema fields.
+ * indirectly through `world.get(e, C)` for `unique<T>` schema fields.
  *
  * §contract — handles carry a generation; stale-by-reuse is detected: the
  * handle u32 packs `(gen << 24) | slot` via the shared codec; `resolve` /
@@ -118,7 +118,7 @@ export class UniqueRefStore {
   /**
    * Allocate a fresh managed handle for `payload`, branded against `target`.
    *
-   * Slot 0 is reserved as the "null/unset" sentinel - schema-vocab `ref<T>`
+   * Slot 0 is reserved as the "null/unset" sentinel - schema-vocab `unique<T>`
    * fields default to this sentinel before the first write, and World's
    * release loop uses it to short-circuit (`shouldRelease(0) === false`).
    *

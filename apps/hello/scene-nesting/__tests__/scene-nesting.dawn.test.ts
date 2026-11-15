@@ -256,11 +256,7 @@ describe('hello-scene-nesting w34 - dawn draw scene with mount (AC-33)', () => {
       if (event.kind === 'error') renderErrors.push(event.error);
     });
 
-    const frameRequest = {
-      leases: [worldAttachment1.value],
-      camera: { lease: worldAttachment1.value },
-      environment: { lease: worldAttachment1.value },
-    };
+    const frameRequest = { source: worldAttachment1.value };
 
     // ── 6. Render 60 frames ────────────────────────────────────────────
 

@@ -7,6 +7,7 @@ import type {
 } from '../../../render/src/features/prepared-gpu-work';
 import type { VfxComputeBatchProgram } from './batched-compute-program';
 import type { createVfxInstanceArena, VfxArenaInstance, VfxArenaRange } from './instance-arena';
+import { COUNTERS_BYTES, particleScratchBytes } from './plan-declarations.js';
 
 type Resource = RenderFeatureResourceDeclaration;
 type Binding = Extract<Resource, { readonly kind: 'compute-bindings' }>;
@@ -173,12 +174,10 @@ export function retainEmitterResources(
       input.customStride,
     );
   buffer(`${prefix}.alive-indices`, emitter.capacity * 4, ['storage', 'copy-src']);
-  buffer(`${prefix}.counters`, 24, ['storage', 'copy-src'], 24);
+  buffer(`${prefix}.counters`, COUNTERS_BYTES, ['storage', 'copy-src'], COUNTERS_BYTES);
   buffer(`${prefix}.indirect`, input.indirectBytes, ['storage', 'indirect', 'copy-src'], 20);
   buffer(`${prefix}.indirect-initial`, input.indirectBytes, ['copy-src']);
-  buffer(`${prefix}.scratch`, (emitter.capacity * 2 + Math.ceil(emitter.capacity / 256)) * 4, [
-    'storage',
-  ]);
+  buffer(`${prefix}.scratch`, particleScratchBytes(emitter), ['storage']);
   buffer(`${prefix}.shared-instances`, input.sharedInstanceBytes, ['storage', 'vertex']);
   for (const [index, renderer] of emitter.renderers.entries())
     if (renderer.enabled !== false && renderer.kind === 'trail')
@@ -302,7 +301,7 @@ export function retainProjectionResources(input: {
   buffer('instances', input.instanceBytes, ['storage', 'vertex']);
   buffer('history', input.historyBytes, ['storage']);
   buffer('alive-indices', input.frame.emitter.capacity * 4, ['storage']);
-  buffer('counters', 24, ['storage'], 24);
+  buffer('counters', COUNTERS_BYTES, ['storage'], COUNTERS_BYTES);
   buffer('indirect', input.indirectBytes, ['storage', 'indirect'], 20);
   // Job-table projection has no binding for an emitter-local runtime uniform.
   const runtime = input.batch === undefined ? buffer('runtime', 320, ['uniform']) : undefined;

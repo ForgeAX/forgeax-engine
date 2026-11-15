@@ -1,9 +1,9 @@
 // @ts-nocheck — remaining legacy assertions are migrated separately.
 // biome-ignore-all lint/complexity/noUselessLoneBlockStatements: source test block isolation
 import { World } from '@forgeax/engine-ecs';
-import { SpriteAnimationInvalidError } from '@forgeax/engine-ecs/projection';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SPRITE_PLAYBACK_MODE_LOOP, SpriteAnimation } from '../../../render/src/components';
+import { SpriteAnimationInvalidError } from '../errors/sprite-animation';
 import { spriteAnimationTickSystem } from '../systems/sprite-animation-tick';
 
 afterEach(() => vi.restoreAllMocks());

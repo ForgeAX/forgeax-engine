@@ -60,13 +60,22 @@ it('deforms two Worlds and Skeletons in one dispatch and rejects incomplete pose
   const resources: Buffer[] = [];
   try {
     const frame = device
-      .createBuffer({ size: 16, usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST })
+      .createBuffer({
+        size: 16,
+        usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
+      })
       .unwrap();
     const output = device
-      .createBuffer({ size: 160, usage: GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_SRC })
+      .createBuffer({
+        size: 160,
+        usage: GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_SRC,
+      })
       .unwrap();
     const readback = device
-      .createBuffer({ size: 160, usage: GPU_BUFFER_USAGE_MAP_READ | GPU_BUFFER_USAGE_COPY_DST })
+      .createBuffer({
+        size: 160,
+        usage: GPU_BUFFER_USAGE_MAP_READ | GPU_BUFFER_USAGE_COPY_DST,
+      })
       .unwrap();
     resources.push(frame, output, readback);
     device.queue
@@ -75,7 +84,11 @@ it('deforms two Worlds and Skeletons in one dispatch and rejects incomplete pose
     const outputLayout = device
       .createBindGroupLayout({
         entries: [
-          { binding: 0, visibility: GPU_SHADER_STAGE_COMPUTE, buffer: { type: 'storage' } },
+          {
+            binding: 0,
+            visibility: GPU_SHADER_STAGE_COMPUTE,
+            buffer: { type: 'storage' },
+          },
         ],
       })
       .unwrap();
@@ -88,21 +101,37 @@ it('deforms two Worlds and Skeletons in one dispatch and rejects incomplete pose
             visibility: GPU_SHADER_STAGE_COMPUTE,
             buffer: { type: 'read-only-storage' },
           },
-          { binding: 2, visibility: GPU_SHADER_STAGE_COMPUTE, buffer: { type: 'uniform' } },
+          {
+            binding: 2,
+            visibility: GPU_SHADER_STAGE_COMPUTE,
+            buffer: { type: 'uniform' },
+          },
         ],
       })
       .unwrap();
     const layout = device
-      .createPipelineLayout({ bindGroupLayouts: [outputLayout, empty, skinLayout] })
+      .createPipelineLayout({
+        bindGroupLayouts: [outputLayout, empty, skinLayout],
+      })
       .unwrap();
-    const module = createShaderModuleImmediate(device, { code: skinDeformation }).unwrap();
+    const module = createShaderModuleImmediate(device, {
+      code: skinDeformation,
+    }).unwrap();
     const pipeline = device
-      .createComputePipeline({ layout, compute: { module, entryPoint: 'probe' } })
+      .createComputePipeline({
+        layout,
+        compute: { module, entryPoint: 'probe' },
+      })
       .unwrap();
     const outputGroup = device
       .createBindGroup({
         layout: outputLayout,
-        entries: [{ binding: 0, resource: { kind: 'buffer', value: { buffer: output } } }],
+        entries: [
+          {
+            binding: 0,
+            resource: { kind: 'buffer', value: { buffer: output } },
+          },
+        ],
       })
       .unwrap();
     const emptyGroup = device.createBindGroup({ layout: empty, entries: [] }).unwrap();
@@ -110,8 +139,14 @@ it('deforms two Worlds and Skeletons in one dispatch and rejects incomplete pose
       .createBindGroup({
         layout: skinLayout,
         entries: [
-          { binding: 1, resource: { kind: 'buffer', value: { buffer: arena.buffer } } },
-          { binding: 2, resource: { kind: 'buffer', value: { buffer: frame } } },
+          {
+            binding: 1,
+            resource: { kind: 'buffer', value: { buffer: arena.buffer } },
+          },
+          {
+            binding: 2,
+            resource: { kind: 'buffer', value: { buffer: frame } },
+          },
         ],
       })
       .unwrap();
@@ -182,8 +217,17 @@ it('deforms two Worlds and Skeletons in one dispatch and rejects incomplete pose
         .createBindGroup({
           layout: skinLayout,
           entries: [
-            { binding: 1, resource: { kind: 'buffer', value: { buffer: missingArena.buffer } } },
-            { binding: 2, resource: { kind: 'buffer', value: { buffer: frame } } },
+            {
+              binding: 1,
+              resource: {
+                kind: 'buffer',
+                value: { buffer: missingArena.buffer },
+              },
+            },
+            {
+              binding: 2,
+              resource: { kind: 'buffer', value: { buffer: frame } },
+            },
           ],
         })
         .unwrap();
@@ -247,7 +291,10 @@ it('deforms two Worlds and Skeletons in one dispatch and rejects incomplete pose
 
 async function readBuffer(device: RhiDevice, buffer: Buffer, bytes: number): Promise<Uint32Array> {
   const target = device
-    .createBuffer({ size: bytes, usage: GPU_BUFFER_USAGE_COPY_DST | GPU_BUFFER_USAGE_MAP_READ })
+    .createBuffer({
+      size: bytes,
+      usage: GPU_BUFFER_USAGE_COPY_DST | GPU_BUFFER_USAGE_MAP_READ,
+    })
     .unwrap();
   try {
     const encoder = device.createCommandEncoder().unwrap();
@@ -278,16 +325,18 @@ function rowAddress(
     }
   return address === 0xffffffff ? undefined : address;
 }
+/** Translation x of one joint in a Binding's pose row [count, count × 16 f32]. */
 function translation(
   words: Uint32Array,
   root: number,
-  namespace: number,
-  entity: number,
+  binding: number,
+  index: number,
+  count = 1,
 ): number | undefined {
-  const address = rowAddress(words, root, namespace, entity);
+  const address = rowAddress(words, root, 2, binding);
   if (address === undefined) return undefined;
-  expect(words[address]).toBe(entity);
-  return new Float32Array(words.buffer)[address + 13];
+  expect(words[address]).toBe(count);
+  return new Float32Array(words.buffer)[address + 1 + index * 16 + 12];
 }
 
 it('owns unqueried Binding/Skeleton bytes through rebind, source retirement, growth and aborted B', async () => {
@@ -335,8 +384,7 @@ it('owns unqueried Binding/Skeleton bytes through rebind, source retirement, gro
     const old = await readBuffer(device, aInput.buffer, aInput.byteLength);
     const grown = await readBuffer(device, bInput.buffer, bInput.byteLength);
     for (const bytes of [old, grown]) {
-      expect(translation(bytes, a.root, source.id, 7)).toBe(3);
-      expect(translation(bytes, a.root, source.id, 8)).toBe(4);
+      expect(translation(bytes, a.root, 11, 0)).toBe(3);
       const binding = rowAddress(bytes, a.root, 1, 11);
       if (binding === undefined) throw new Error('Missing held Skin binding');
       expect(Array.from(bytes.slice(binding, binding + 4))).toEqual([1, source.id, skeleton.id, 7]);
@@ -362,8 +410,7 @@ it('owns unqueried Binding/Skeleton bytes through rebind, source retirement, gro
     expect(Array.from(new Float32Array(grown.buffer).slice(nextIbm + 19, nextIbm + 26))).toEqual([
       7, 8, 9, 10, 11, 12, 4,
     ]);
-    expect(translation(grown, b.root, nextSource.id, 7)).toBe(20);
-    expect(translation(grown, b.root, source.id, 7)).toBeUndefined();
+    expect(translation(grown, b.root, 11, 0)).toBe(20);
     // A detached device incarnation cold-uploads the same owning numbers.
     // Retiring it cannot dispose the CPU arena or its still-held GPU buffer.
     const candidateDevice = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
@@ -374,8 +421,8 @@ it('owns unqueried Binding/Skeleton bytes through rebind, source retirement, gro
       candidateRead.seal().unwrap();
       candidate.dispose();
       const bytes = await readBuffer(candidateDevice, physical.buffer, physical.byteLength);
-      expect(translation(bytes, a.root, source.id, 7)).toBe(3);
-      expect(translation(bytes, b.root, nextSource.id, 7)).toBe(20);
+      expect(translation(bytes, a.root, 11, 0)).toBe(3);
+      expect(translation(bytes, b.root, 11, 0)).toBe(20);
       expect(inputs.arena.readWord(nextBinding)).toBe(1);
     } finally {
       candidateRead.release();
@@ -392,9 +439,9 @@ it('owns unqueried Binding/Skeleton bytes through rebind, source retirement, gro
       const cInput = cGpu.buffer().unwrap();
       cGpu.seal().unwrap();
       const bytes = await readBuffer(device, cInput.buffer, cInput.byteLength);
-      expect(translation(bytes, a.root, source.id, 7)).toBe(3);
-      expect(translation(bytes, c.root, nextSource.id, 7)).toBeUndefined();
-      expect(translation(bytes, c.root, nextSource.id, 0x01000007)).toBe(17);
+      expect(translation(bytes, a.root, 11, 0)).toBe(3);
+      // The bound joint is gone: an incomplete pose publishes no row.
+      expect(translation(bytes, c.root, 11, 0)).toBeUndefined();
     } finally {
       cGpu.release();
       c.release();

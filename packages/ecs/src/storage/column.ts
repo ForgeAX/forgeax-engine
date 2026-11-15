@@ -26,7 +26,7 @@ import { type ScalarFieldType, TYPE_METADATA, type TypedArrayFor } from '../comp
 
 /**
  * Read-only access shape for the 4 managed-vocab column keywords --
- * `'string'` / `` `ref<T>` `` / variable `'buffer'` / variable `` `array<T>` ``.
+ * `'string'` / `` `unique<T>` `` / variable `'buffer'` / variable `` `array<T>` ``.
  *
  * The column carries u32 slot ids (`UniqueRefStore` / `BufferPool`); direct
  * index assignment would corrupt the slot table. The reader exposes

@@ -1,3 +1,7 @@
+export const INITIAL_CAMERA_PITCH = (12 * Math.PI) / 180;
+export const CAMERA_DISTANCE = 6.5;
+export const CAMERA_TARGET_HEIGHT = 0.7;
+
 export const LOOK_SENSITIVITY = 0.0022;
 export const MIN_CAMERA_PITCH = (-10 * Math.PI) / 180;
 export const MAX_CAMERA_PITCH = (65 * Math.PI) / 180;

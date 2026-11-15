@@ -8,12 +8,11 @@ import {
   replayDeviceRequest,
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
-import { CLOUD_RESOLVE_FULLSCREEN_WGSL } from '@forgeax/engine-shader';
 import { expect } from 'vitest';
 import { equalBytes } from '../../../../../scripts/test/byte-equality.mjs';
+import { cloudKernelVertex, loadCloudKernel } from './cloud-mode0-kernels.fixture';
 
-// Exact binary16 values keep the independent transport oracle free of
-// encoder rounding: cloud positions are kilometres, View positions metres.
+// Exact binary16 inputs and an independent meter-space wind displacement oracle.
 export async function verifyCloudWindHistory(
   save: (name: string, bytes: Uint8Array) => void | Promise<void> = () => {},
 ) {
@@ -39,32 +38,38 @@ export async function verifyCloudWindHistory(
   };
   const source = texture('rgba16float', 6);
   const current = texture('rgba16float', 6);
-  const transmission = texture('rgba16float', 6);
-  const position = texture('rgba16float', 6);
   const previous = texture('rgba16float', 6);
   const previousPosition = texture('rgba16float', 6);
-  const depth = texture('depth32float', 20);
   const output = texture('rgba16float', 17);
-  const view = buffer(1296, 72);
   const params = buffer(176, 72);
   fill(source, [0, 0, 0, 0x3800]);
   fill(current, [0x3800, 0x3800, 0x3800, 0x3c00], [0x3400, 0x3400, 0x3400, 0x3c00]);
   fill(previous, [0x3800, 0x3800, 0x3800, 0x3c00]);
-  fill(transmission, [0x3800, 0x3800, 0x3800, 0x3c00]);
-  fill(position, [0, 0, 0x3c00, 0x3c00]); // z = 1000 m
-  const uniforms = new Float32Array(324);
-  for (const offset of [0, 44, 252]) for (let i = 0; i < 4; i++) uniforms[offset + i * 5] = 1;
-  device.queue.writeBuffer(view, 0, uniforms);
   const cloud = new Float32Array(44);
   cloud[5] = 0.5; // current time
-  cloud[10] = 500; // +250 m previous world position, beyond the 20 m tolerance
   cloud[40] = 1;
-  cloud[42] = 0.5;
   device.queue.writeBuffer(params, 0, cloud);
   try {
-    const module = (
-      await recorder.backend.createShaderModule(device, { code: CLOUD_RESOLVE_FULLSCREEN_WGSL })
-    ).unwrap();
+    const code = `${await loadCloudKernel('reconstruct')}\n${await loadCloudKernel('coordinates')}
+${await cloudKernelVertex()}
+struct CloudHistoryProbeParams { lanes:array<vec4f,11> }
+@group(0) @binding(0) var source:texture_2d<f32>;
+@group(0) @binding(2) var<uniform> params:CloudHistoryProbeParams;
+@group(0) @binding(5) var current:texture_2d<f32>;
+@group(0) @binding(8) var previous:texture_2d<f32>;
+@group(0) @binding(10) var previousDepth:texture_2d<f32>;
+@fragment fn fs_main(input:FullscreenOutput)->@location(0) vec4f {
+  let pixel=vec2i(input.position.xy);
+  let wind=cloud_advected_model_position(vec3f(0.0,0.0,1000.0),vec3f(0.0,500.0,0.0),params.lanes[1].y);
+  if (all(pixel==vec2i(0))) { return vec4f(wind/1000.0,1.0); }
+  let depth=vec4f(5000.0,10000.0,10000.0,10000.0);
+  let currentSample=CloudReconstructionSample(textureLoad(current,pixel,0),vec4f(0.0,0.0,0.0,1.0),depth);
+  let oldDepth=textureLoad(previousDepth,pixel,0).z;
+  let old=CloudReconstructionSample(textureLoad(previous,pixel,0),currentSample.near,vec4f(5000.0,oldDepth*8000.0,10000.0,10000.0));
+  let reconstructed=cloud_reconstruct_sample(currentSample,old,vec2u(1u,0u),vec2u(0u),vec2f(0.5),params.lanes[10].x>0.5 && params.lanes[10].y<0.5,1.0,1.0,1000.0,100000.0);
+  return vec4f(reconstructed.far.rgb,textureLoad(source,pixel,0).a);
+}`;
+    const module = (await recorder.backend.createShaderModule(device, { code })).unwrap();
     const pipeline = device
       .createRenderPipeline({
         layout: 'auto',
@@ -72,47 +77,39 @@ export async function verifyCloudWindHistory(
         fragment: { module, entryPoint: 'fs_main', targets: [{ format: 'rgba16float' }] },
       })
       .unwrap() as import('@forgeax/engine-rhi').RenderPipeline & RhiRenderPipelineOps;
-    const sampler = device.createSampler({ minFilter: 'linear', magFilter: 'linear' }).unwrap();
-    const group0 = device
-      .createBindGroup({
-        layout: pipeline.getBindGroupLayout(0),
-        entries: [{ binding: 0, resource: { kind: 'buffer', value: { buffer: view } } }],
-      })
-      .unwrap();
     const group1 = device
       .createBindGroup({
-        layout: pipeline.getBindGroupLayout(1),
+        layout: pipeline.getBindGroupLayout(0),
         entries: [
           {
             binding: 0,
             resource: { kind: 'textureView', value: device.createTextureView(source, {}).unwrap() },
           },
-          { binding: 1, resource: { kind: 'sampler', value: sampler } },
           { binding: 2, resource: { kind: 'buffer', value: { buffer: params } } },
-          {
-            binding: 3,
-            resource: { kind: 'textureView', value: device.createTextureView(depth, {}).unwrap() },
-          },
-          ...[current, transmission, position, previous, transmission, previousPosition].map(
-            (t, i) => ({
-              binding: i + 5,
-              resource: {
-                kind: 'textureView' as const,
-                value: device.createTextureView(t, {}).unwrap(),
-              },
-            }),
-          ),
+          ...[current, previous, previousPosition].map((t, i) => ({
+            binding: [5, 8, 10][i] ?? 5,
+            resource: {
+              kind: 'textureView' as const,
+              value: device.createTextureView(t, {}).unwrap(),
+            },
+          })),
         ],
       })
       .unwrap();
     const cases = [
-      { name: 'advected', z: 0x3d00, reset: 0, valid: 1, expected: 0x3600 }, // .375
-      { name: 'unadvected', z: 0x3c00, reset: 0, valid: 1, expected: 0x3400 }, // .25
+      { name: 'continuous-wind', z: 0x3d00, reset: 0, valid: 1, expected: 0x3800 }, // .5
+      { name: 'bounded-depth-change', z: 0x3c00, reset: 0, valid: 1, expected: 0x3800 }, // 2000 m is inclusive
       { name: 'disoccluded', z: 0x4000, reset: 0, valid: 1, expected: 0x3400 },
       { name: 'cut', z: 0x3d00, reset: 1, valid: 1, expected: 0x3400 },
       { name: 'missing', z: 0x3d00, reset: 0, valid: 0, expected: 0x3400 },
     ];
-    const results: Array<{ name: string; actual: number; expected: number }> = [];
+    const results: Array<{
+      name: string;
+      actual: number;
+      expected: number;
+      advectedYHalfBits: number;
+      advectedYNegativeZero: boolean;
+    }> = [];
     for (const entry of cases) {
       fill(previousPosition, [0, 0, entry.z, 0x3c00]);
       cloud[40] = entry.valid;
@@ -121,17 +118,6 @@ export async function verifyCloudWindHistory(
       const pending = recorder.captureFrame();
       (await recorder.frameBoundary()).unwrap();
       const encoder = device.createCommandEncoder({}).unwrap();
-      encoder
-        .beginRenderPass({
-          colorAttachments: [],
-          depthStencilAttachment: {
-            view: device.createTextureView(depth, {}).unwrap(),
-            depthClearValue: 0,
-            depthLoadOp: 'clear',
-            depthStoreOp: 'store',
-          },
-        })
-        .end();
       const pass = encoder.beginRenderPass({
         colorAttachments: [
           {
@@ -142,8 +128,7 @@ export async function verifyCloudWindHistory(
         ],
       });
       pass.setPipeline(pipeline);
-      pass.setBindGroup(0, group0);
-      pass.setBindGroup(1, group1);
+      pass.setBindGroup(0, group1);
       pass.draw(3);
       pass.end();
       device.queue.submit([encoder.finish().unwrap()]).unwrap();
@@ -153,7 +138,18 @@ export async function verifyCloudWindHistory(
       const bytes = await readbackTexturePixels(device, output, 3, 3, { bytesPerTexel: 8 });
       await save(`${entry.name}.rgba16`, bytes);
       const raw = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-      results.push({ name: entry.name, actual: raw.getUint16(32, true), expected: entry.expected });
+      expect(raw.getUint16(0, true), 'advected model X = -1000 m').toBe(0xbc00);
+      const advectedYHalfBits = raw.getUint16(2, true);
+      // Both binary16 signed zeros represent the same physical zero displacement.
+      expect(advectedYHalfBits & 0x7fff, 'advected model Y = 0 m (+0 or -0)').toBe(0);
+      expect(raw.getUint16(4, true), 'advected model Z = -250 m').toBe(0xb400);
+      results.push({
+        name: entry.name,
+        actual: raw.getUint16(32, true),
+        expected: entry.expected,
+        advectedYHalfBits,
+        advectedYNegativeZero: advectedYHalfBits === 0x8000,
+      });
       expect(
         raw.getUint16(38, true),
         'scene alpha remains independent of cloud transmittance',
@@ -161,10 +157,12 @@ export async function verifyCloudWindHistory(
       const tape = decodeTape(captured.bytes).unwrap();
       const model = buildFrameModel(tape);
       const work = model.works.find((w) =>
-        w.pipeline.shaders.some((shader) => shader.source?.includes('struct CloudResolveParams')),
+        w.pipeline.shaders.some((shader) =>
+          shader.source?.includes('struct CloudHistoryProbeParams'),
+        ),
       );
       expect(work).toBeDefined();
-      if (!work) throw new Error('Missing production cloud resolve');
+      if (!work) throw new Error('Missing production cloud history kernel probe');
       const replayAdapter = (await webgpu.rhi.requestAdapter()).unwrap();
       const replayDevice = (
         await replayAdapter.requestDevice(

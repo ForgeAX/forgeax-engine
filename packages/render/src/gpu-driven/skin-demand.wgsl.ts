@@ -104,6 +104,8 @@ var<workgroup> skinDemandRow: vec4<u32>;
 var<workgroup> skinDemandHashSlot: u32;
 var<workgroup> skinDemandBinding: u32;
 var<workgroup> skinDemandSkeleton: u32;
+var<workgroup> skinDemandPose: u32;
+var<workgroup> skinDemandPreviousPose: u32;
 var<workgroup> skinDemandAvailable: bool;
 var<workgroup> skinDemandHistory: bool;
 var<workgroup> skinDemandMissing: atomic<u32>;
@@ -136,9 +138,9 @@ fn skinDemandWriteMatrix(base: u32, matrix: mat4x4<f32>) {
   skinOutput[base + 3u] = bitcast<vec4<u32>>(matrix[3]);
 }
 
-// Lane 0 resolves only the shared Binding/Skeleton rows. Every joint's
-// presence, composition and finiteness are checked by the lanes that write it,
-// so a complete pose costs no serial walk over all joints.
+// Lane 0 resolves the shared Binding/Skeleton rows and the Binding's whole
+// pose rows. Composition and finiteness are checked by the lanes that write
+// each joint, so a complete pose costs no serial walk over all joints.
 @compute @workgroup_size(64)
 fn resolveSkinDemand(@builtin(workgroup_id) id: vec3<u32>, @builtin(num_workgroups) groups: vec3<u32>, @builtin(local_invocation_index) lane: u32) {
   let demandIndex = id.x + id.y * groups.x;
@@ -159,47 +161,45 @@ fn resolveSkinDemand(@builtin(workgroup_id) id: vec3<u32>, @builtin(num_workgrou
         let count = skinInputs[binding];
         let skeletonKey = skinInputs[binding + 2u];
         let skeleton = skinRowAddress(skinDemand.currentRoot, 0u, skeletonKey);
+        let pose = skinRowAddress(skinDemand.currentRoot, 2u, slot);
         if (skeleton != 0xffffffffu && skinInputs[skeleton] == count && count > 0u) {
           skinDemandBinding = binding;
           skinDemandSkeleton = skeleton;
           skinDemandAvailable = true;
+          // A missing or stale-extent pose is not a complete pose.
+          if (pose == 0xffffffffu || skinInputs[pose] != count) { atomicStore(&skinDemandMissing, 1u); }
+          skinDemandPose = pose;
           // Both roots are retained by one arena: equal row addresses denote the
           // exact immutable Binding/Skeleton versions in the previous frame.
           skinDemandHistory =
             skinRowAddress(skinDemand.previousRoot, 1u, slot) == binding &&
             skinRowAddress(skinDemand.previousRoot, 0u, skeletonKey) == skeleton;
+          if (skinDemandHistory) {
+            let before = skinRowAddress(skinDemand.previousRoot, 2u, slot);
+            if (before == 0xffffffffu || skinInputs[before] != count) { atomicStore(&skinDemandMissingHistory, 1u); }
+            skinDemandPreviousPose = before;
+          }
         }
       }
     }
   }
   workgroupBarrier();
-  let available = workgroupUniformLoad(&skinDemandAvailable);
+  // Pose presence is uniform per Binding: skip all reads when current is missing.
+  let available = workgroupUniformLoad(&skinDemandAvailable) && atomicLoad(&skinDemandMissing) == 0u;
   if (available) {
     let zero = mat4x4<f32>(vec4<f32>(0.0), vec4<f32>(0.0), vec4<f32>(0.0), vec4<f32>(0.0));
-    let binding = skinDemandBinding;
-    let count = skinInputs[binding];
-    let jointSpace = skinInputs[binding + 1u];
+    let count = skinInputs[skinDemandBinding];
+    let pose = skinDemandPose;
+    let before = skinDemandPreviousPose;
+    let history = skinDemandHistory && atomicLoad(&skinDemandMissingHistory) == 0u;
     for (var index = lane; index < skinDemandRow.y; index += 64u) {
       var current = zero;
       var previous = zero;
       if (index < count) {
-        let entity = skinInputs[binding + 3u + index];
         let inverse = skinInputMatrix(skinDemandSkeleton + 1u + index * 16u);
-        let joint = skinRowAddress(skinDemand.currentRoot, jointSpace, entity);
-        if (joint == 0xffffffffu || skinInputs[joint] != entity) {
-          atomicStore(&skinDemandMissing, 1u);
-        } else {
-          current = skinInputMatrix(joint + 1u) * inverse;
-        }
+        current = skinInputMatrix(pose + 1u + index * 16u) * inverse;
         previous = current;
-        if (skinDemandHistory) {
-          let before = skinRowAddress(skinDemand.previousRoot, jointSpace, entity);
-          if (before == 0xffffffffu || skinInputs[before] != entity) {
-            atomicStore(&skinDemandMissingHistory, 1u);
-          } else {
-            previous = skinInputMatrix(before + 1u) * inverse;
-          }
-        }
+        if (history) { previous = skinInputMatrix(before + 1u + index * 16u) * inverse; }
       }
       if (!skinDemandFinite(current)) { atomicStore(&skinDemandInvalid, 1u); }
       if (!skinDemandFinite(previous)) { atomicStore(&skinDemandInvalidHistory, 1u); }

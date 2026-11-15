@@ -38,3 +38,23 @@ test('reviews changed descriptors, new bypasses, WGSL and deleted owner inputs',
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('a partial reviewed snapshot retains every unreviewed change and deletion', () => {
+  const previous = {
+    'packages/rhi/src/index.ts': 'old-rhi',
+    'packages/shader/src/water.wgsl': 'old-water',
+    'packages/render/src/unreviewed.ts': 'old-render',
+  };
+  const current = {
+    'packages/rhi/src/index.ts': 'reviewed-rhi',
+    'packages/shader/src/water.wgsl': 'new-water',
+  };
+  const partial = {
+    ...previous,
+    'packages/rhi/src/index.ts': current['packages/rhi/src/index.ts'],
+  };
+  assert.deepEqual(surfaceChanges(partial, current), [
+    { file: 'packages/render/src/unreviewed.ts', change: 'removed' },
+    { file: 'packages/shader/src/water.wgsl', change: 'changed' },
+  ]);
+});

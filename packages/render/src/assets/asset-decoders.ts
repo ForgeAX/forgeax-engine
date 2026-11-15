@@ -1,7 +1,4 @@
-import {
-  createMaterialLoader,
-  shareVerifiedArtifactBytes,
-} from '@forgeax/engine-assets-runtime/internal';
+import { createMaterialLoader } from '@forgeax/engine-assets-runtime/internal';
 import {
   type AddressMode,
   type AssetDecoderContribution,
@@ -191,6 +188,11 @@ function resolveMaterialWireRefs(
   return ok({ ...value, values } as MaterialRootAsset);
 }
 
+function digestOf(descriptor: { readonly integrity?: { readonly digest: string } } | undefined) {
+  const digest = descriptor?.integrity?.digest;
+  return digest === undefined ? {} : { digest };
+}
+
 export const materialContribution: AssetDecoderContribution<MaterialAsset, 'material'> = {
   kind: { kind: 'material' } as AssetKind<MaterialAsset, 'material'>,
   consumer: 'Render MaterialScene',
@@ -200,7 +202,7 @@ export const materialContribution: AssetDecoderContribution<MaterialAsset, 'mate
       if (
         record(payload) &&
         record(payload.cooked) &&
-        payload.cooked.schemaVersion === 'material-cook/4' &&
+        payload.cooked.schemaVersion === 'material-cook/5' &&
         Array.isArray(payload.cooked.programs)
       ) {
         const programs = [...payload.cooked.programs];
@@ -238,7 +240,9 @@ export const materialContribution: AssetDecoderContribution<MaterialAsset, 'mate
             while (cursor < distinct.length) {
               const index = cursor++;
               const request = distinct[index];
-              if (request !== undefined) results[index] = await artifacts.read(request.descriptor);
+              if (request === undefined) continue;
+              // Materials share program modules; the session keeps one resident copy.
+              results[index] = await (artifacts.program ?? artifacts.read)(request.descriptor);
             }
           }),
         );
@@ -293,7 +297,9 @@ export const materialContribution: AssetDecoderContribution<MaterialAsset, 'mate
                         program.artifact.path,
                         {
                           bytes: program.artifact.bytes as Uint8Array,
-                          digest: program.artifact.digest as string,
+                          // The package descriptor is the verified identity of these bytes;
+                          // the cooked record must name the same digest or the loader rejects it.
+                          ...digestOf(envelope.artifacts[program.artifact.path]),
                         },
                       ],
                     ]
@@ -315,28 +321,7 @@ export const materialContribution: AssetDecoderContribution<MaterialAsset, 'mate
             hint: ready.error.hint,
             detail: { guid: envelope.guid, kind: 'material', cause: ready.error },
           });
-        // The loader verified each program digest. Materials that select the same
-        // program then retain one realm-shared view instead of one copy each.
-        payload = {
-          ...payload,
-          cooked: {
-            ...ready.record,
-            programs: Object.freeze(
-              ready.record.programs.map((program) =>
-                Object.freeze({
-                  ...program,
-                  artifact: Object.freeze({
-                    ...program.artifact,
-                    bytes: shareVerifiedArtifactBytes(
-                      program.artifact.digest,
-                      program.artifact.bytes,
-                    ),
-                  }),
-                }),
-              ),
-            ),
-          },
-        };
+        payload = { ...payload, cooked: ready.record };
       }
       return resolveMaterialWireRefs(payload as MaterialAsset, envelope.refs, envelope.guid);
     },

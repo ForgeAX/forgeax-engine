@@ -78,7 +78,6 @@ it('keeps actual native texture/sampler residency and mip output through validat
     expect(status.textures).toEqual([]);
     expect(status.samplers).toEqual([]);
     const observation = projectMeshMaterialBindingObservation({
-      worldId: 0,
       entityKey: 1,
       bindings: [{ handle: 0, source: 'engine-default' }],
       diagnostics: [],

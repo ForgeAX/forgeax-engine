@@ -71,11 +71,7 @@ export async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     const worldContext = await createWorldContext(world, [renderComponentsPlugin(), scenePlugin()]);
     const worldAttachment1 = renderer.attach(world);
     if (!worldAttachment1.ok) throw worldAttachment1.error;
-    const frameRequest = {
-      leases: [worldAttachment1.value],
-      camera: { lease: worldAttachment1.value },
-      environment: { lease: worldAttachment1.value },
-    };
+    const frameRequest = { source: worldAttachment1.value };
 
     const sceneRes = await assets.load(assets.parseGuid(ROOM_SCENE_GUID), 'scene');
     if (!sceneRes.ok) throw sceneRes.error;

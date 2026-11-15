@@ -1,5 +1,6 @@
 import { type EntityHandle, World } from '@forgeax/engine-ecs';
 import { describe, expect, it, vi } from 'vitest';
+import { viewSourceFixture } from '../../__tests__/view-source.fixture';
 import type { CameraSnapshot } from '../../render-contract';
 import type { RenderTarget } from '../../targets/contracts';
 import {
@@ -137,7 +138,7 @@ function fixture(options: FixtureOptions = {}) {
       createRecorder,
     });
   const source = new RenderViewFrameSource(host as never);
-  world.insertResource(RenderViewInput, source);
+  world.insertResource(RenderViewInput, viewSourceFixture(source));
   let frame = 0;
   let sourceWorld = new World();
   const begin = (width = 64, opts: { temporalReset?: boolean } = {}) => {
@@ -145,14 +146,7 @@ function fixture(options: FixtureOptions = {}) {
     const cameras = Array.from({ length: options.cameraCount ?? 1 }, (_, index) =>
       camera(index + 1, options.target, options.updateInterval),
     );
-    source.stage(
-      cameras,
-      [],
-      [sourceWorld],
-      { cameraOwner: 0, resourceOwner: 0, ...opts },
-      undefined,
-      undefined,
-    );
+    source.stage(cameras, [], sourceWorld, { ...opts }, undefined, undefined);
     beginRenderFrame(world, ++frame);
   };
   /** The next frame's cameras come from another source World. */

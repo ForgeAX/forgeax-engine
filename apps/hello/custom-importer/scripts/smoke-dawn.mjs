@@ -48,6 +48,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 
 
 const SMOKE_DURATION_MS = Number.parseInt(process.env.SMOKE_DURATION_MS ?? '5000', 10);
@@ -266,7 +267,7 @@ if (!existsSync(MANIFEST_PATH)) {
   console.error(`[smoke] FAIL - dist/shaders/manifest.json missing (${MANIFEST_PATH})`);
   process.exit(1);
 }
-const MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MANIFEST_PATH, 'utf8'))}`;
+const MANIFEST_URL = `data:application/json,${encodeURIComponent(readShaderManifestText(MANIFEST_PATH))}`;
 
 let renderer;
 let assets;
@@ -345,7 +346,7 @@ if (recoveryOk) {
   console.error(
     `[smoke] fault/recovery failed: malformed=${
       malformedGuid.ok ? 'accepted' : malformedGuid.error.code
-    }, catalogMiss=${catalogMissLoad?.ok ? 'accepted' : catalogMissLoad?.error.code ?? 'parse-failed'}, recoveryLoad=${loadOk ? 'succeeded' : 'failed'}`,
+    }, catalogMiss=${catalogMissLoad?.ok ? 'accepted' : ( catalogMissLoad?.error.code ?? 'parse-failed')}, recoveryLoad=${loadOk ? 'succeeded' : 'failed'}`,
   );
 }
 
@@ -388,11 +389,7 @@ const frameStart = Date.now();
 let framesObserved = 0;
 for (let i = 0; i < TARGET_FRAMES; i++) {
   world.update().unwrap();
-  await drawReadyFrame(renderer, {
-    leases: [worldAttachment1.value],
-    camera: { lease: worldAttachment1.value },
-    environment: { lease: worldAttachment1.value },
-  });
+  await drawReadyFrame(renderer, { source: worldAttachment1.value });
   framesObserved++;
 }
 const device = sharedDevice;

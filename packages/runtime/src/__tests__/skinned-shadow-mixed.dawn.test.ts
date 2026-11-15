@@ -387,11 +387,7 @@ async function renderMixedPair(maskedSkin = false): Promise<{
         if (frame === 20 || frame === 40)
           world.set(joint, Transform, identityTransform([frame === 20 ? 1.5 : 0, 7, 5])).unwrap();
         world.update(1 / 60).unwrap();
-        const receipt = await drawReadyFrame(activeRenderer, {
-          leases: [attached.value],
-          camera: { lease: attached.value },
-          environment: { lease: attached.value },
-        });
+        const receipt = await drawReadyFrame(activeRenderer, { source: attached.value });
         expect(receipt.presentation).toBe('ready');
         const completed = await receipt.completed;
         expect(completed.ok, 'Queue::submit completion').toBe(true);

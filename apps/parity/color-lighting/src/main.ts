@@ -268,7 +268,7 @@ async function drawSubmittedFrames(
   let lastReceipt: FrameReceipt | undefined;
   for (let frame = 0; frame < target; frame += 1) {
     world.update().unwrap();
-    lastReceipt = await drawReadyFrame(renderer, { leases: [lease], camera: { lease }, environment: { lease } });
+    lastReceipt = await drawReadyFrame(renderer, { source: lease });
   }
   if (lastReceipt === undefined) throw new Error(`${label} submitted no frames`);
   return lastReceipt;
@@ -708,8 +708,9 @@ function isIblCaptureCase(sceneCase: SceneCase): boolean {
 }
 
 function isSingleDirectLightReceiver(sceneCase: SceneCase): boolean {
-  return m4DirectLightCasesById.has(sceneCase.caseId)
-    && spotShadowSceneFor(sceneCase.caseId) === undefined;
+  return ( m4DirectLightCasesById.has(sceneCase.caseId)
+    && spotShadowSceneFor(sceneCase.caseId) === undefined
+  );
 }
 
 function ensureCaptureProfile(
@@ -802,11 +803,12 @@ async function spawnCaptureScene(
   }
 }
 
-async function drawFirstCaptureFrame(context: ForgeaxCaptureContext, world: World, lease: RenderWorldLease) {
+async function drawFirstCaptureFrame(context: ForgeaxCaptureContext, world: World, lease: RenderWorldLease,
+) {
   world.update().unwrap();
   return context.rendererKind === 'webgpu'
-    ? ok(await drawReadyFrame(context.renderer, { leases: [lease], camera: { lease }, environment: { lease } }))
-    : context.renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
+    ? ok(await drawReadyFrame(context.renderer, { source: lease }))
+    : context.renderer.draw({ source: lease });
 }
 
 function recordDrawDiagnostics(
@@ -877,7 +879,7 @@ async function settleCaptureFrames(
     // headed Xvfb; compositor frames are its completion boundary.
     await waitForAnimationFrameOrTimeout();
     world.update().unwrap();
-    const warmedDraw = context.renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
+    const warmedDraw = context.renderer.draw({ source: lease });
     if (!warmedDraw.ok) throw new Error(`ForgeAX warmed draw failed: ${warmedDraw.error.code}`);
     await waitForAnimationFrameOrTimeout();
   }
@@ -1043,7 +1045,7 @@ export async function createForgeaxCaptureSession(initialSceneCase: SceneCase) {
       // detachScene cleanup removes every World-owned projection before the
       // next case. A renderer fault still tears down the session so callers
       // never continue on a poisoned device.
-      const current = context ?? await createForgeaxCaptureContext('webgpu', sceneCase);
+      const current = context ?? ( await createForgeaxCaptureContext('webgpu', sceneCase));
       if (context === undefined) context = current;
       try {
         return await captureForgeaxInContext(
@@ -1168,12 +1170,12 @@ const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).u
       roughness: 0.6,
     })).unwrap();
     const occluderPosition = falsifier === 'reverse-occlusion'
-      ? [
+      ? ( [
         scene.occluder.position[0],
         scene.floor.position[1] - scene.occluder.size[1],
         scene.occluder.position[2],
-      ] as const
-      : scene.occluder.position;
+      ] as const)
+        : scene.occluder.position;
     world.spawn(
       { component: Transform, data: { pos: occluderPosition } },
       { component: MeshFilter, data: { assetHandle: primitiveCube } },
@@ -1363,7 +1365,8 @@ async function spawnTonePrimitive(
   await spawnM1Primitive(world, { kind: 'linear-input', color: [color[0], color[1], color[2], 1] });
 }
 
-export async function captureThree(sceneCase: SceneCase, rendererKind: 'webgpu' | 'webgl' = 'webgpu') {
+export async function captureThree(sceneCase: SceneCase, rendererKind: 'webgpu' | 'webgl' = 'webgpu',
+) {
   const canvas = document.querySelector<HTMLCanvasElement>('#three');
   if (canvas === null) throw new Error('missing Three canvas');
   canvas.width = sceneCase.scene.width;
@@ -1408,9 +1411,9 @@ export async function captureThree(sceneCase: SceneCase, rendererKind: 'webgpu' 
         });
     const color = toneCase === undefined
       ? input === undefined
-        ? [0, 0, 0, 1] as const
-        : input.kind === 'factor-texture' ? (input.factor ?? [1, 1, 1, 1]) : input.color
-      : [...toneCase.tone.color, 1] as const;
+        ? ([0, 0, 0, 1] as const)
+          : input.kind === 'factor-texture' ? (input.factor ?? [1, 1, 1, 1]) : input.color
+      : ( [...toneCase.tone.color, 1] as const);
     const colorSpace = toneCase !== undefined || input?.kind === 'linear-input' || input?.kind === 'factor-texture'
       ? LinearSRGBColorSpace
       : SRGBColorSpace;
@@ -1480,7 +1483,7 @@ export async function captureThree(sceneCase: SceneCase, rendererKind: 'webgpu' 
         opacity: fixture.alpha.baseAlpha,
         transparent: fixture.alpha.mode === 'BLEND',
         depthWrite: fixture.alpha.mode !== 'BLEND',
-        alphaTest: fixture.alpha.mode === 'MASK' ? fixture.alpha.cutoff ?? 0.5 : 0,
+        alphaTest: fixture.alpha.mode === 'MASK' ? (fixture.alpha.cutoff ?? 0.5) : 0,
         toneMapped: false,
         side: DoubleSide,
       });
@@ -1678,7 +1681,7 @@ window.__colorLightingParity = async (
     requiredPipelineIds: ['standard'],
     capturedPipelineIds,
     missingPipelineIds,
-    status: missingPipelineIds.length === 0 ? 'complete' as const : 'partial' as const,
+    status: missingPipelineIds.length === 0 ? ('complete' as const) : ('partial' as const),
     complete: missingPipelineIds.length === 0,
     ...(missingPipelineIds.length === 0
       ? {}
@@ -1696,11 +1699,11 @@ window.__colorLightingParity = async (
   const injectedStatusProjection = mergeInjectedVisualEvidenceStatuses(
     baseCaseStatuses,
     baseCaseBackendStatuses,
-    injectedVisualEvidenceInputs.flatMap((input) => (
+    injectedVisualEvidenceInputs.flatMap((input) =>
       typeof input.caseId === 'string'
         ? [{ caseId: input.caseId, status: input.status, verdict: input.verdict }]
-        : []
-    )),
+        : [],
+      ),
   );
   const caseStatuses = injectedStatusProjection.caseStatuses;
   const caseBackendStatuses = injectedStatusProjection.caseBackendStatuses;
@@ -1709,7 +1712,8 @@ window.__colorLightingParity = async (
     .filter((caseId) => caseStatuses[caseId] !== 'pass');
   const missingRequiredPipelineIds = PARITY_REQUIRED_PIPELINE_IDS.filter((pipelineId) => {
     const normalizedPipelineId = `forgeax::${pipelineId}`;
-    return !capturedPipelineIds.includes(pipelineId) && !capturedPipelineIds.includes(normalizedPipelineId);
+    return ( !capturedPipelineIds.includes(pipelineId) && !capturedPipelineIds.includes(normalizedPipelineId)
+      );
   });
   const browserStageOk = result.ok
     && alphaCoverage.complete
@@ -1717,8 +1721,9 @@ window.__colorLightingParity = async (
     && auxiliaryOk
     && missingCaseIds.length === 0;
   const browserStageStatus = result.cases.some((entry) => !entry.passed) || !auxiliaryOk
-    ? 'failed' as const
-    : browserStageOk ? 'complete' as const : 'partial' as const;
+    ? ('failed' as const)
+        : browserStageOk ? ('complete' as const)
+          : ('partial' as const);
   const status = browserStageStatus === 'failed'
     ? 'failed'
     : browserStageOk && missingRequiredPipelineIds.length === 0 ? 'complete' : 'partial';
@@ -1927,10 +1932,10 @@ const runColorLightingFallbackParity = async (
     caseId: entry.caseId,
     passed: entry.passed,
     ...(entry.surfaceEvidence === undefined ? {} : { surfaceEvidence: entry.surfaceEvidence }),
-    expectedWidth: ([...requestedSentinels, transparentLdrCase]
-      .find((sceneCase) => sceneCase.caseId === entry.caseId)?.scene.width ?? 0),
-    expectedHeight: ([...requestedSentinels, transparentLdrCase]
-      .find((sceneCase) => sceneCase.caseId === entry.caseId)?.scene.height ?? 0),
+    expectedWidth:[...requestedSentinels, transparentLdrCase]
+      .find((sceneCase) => sceneCase.caseId === entry.caseId)?.scene.width ?? 0,
+    expectedHeight:[...requestedSentinels, transparentLdrCase]
+      .find((sceneCase) => sceneCase.caseId === entry.caseId)?.scene.height ?? 0,
   }));
   const surfaceContract = buildFallbackSurfaceContract(backendId, surfaceContracts);
   const lifecycle = backendId === 'webkit-webgl2'
@@ -1941,7 +1946,7 @@ const runColorLightingFallbackParity = async (
     invocationId,
     backendId,
     executionStatus: 'complete',
-    status: allCasesPassed && surfaceContract.status === 'pass' ? 'pass' as const : 'failed' as const,
+    status: allCasesPassed && surfaceContract.status === 'pass' ? ('pass' as const) : ('failed' as const),
     surfaceContract,
     ...(lifecycle === undefined ? {} : { lifecycle }),
     caseStatuses: Object.fromEntries(allCases.map((entry) => [entry.caseId, entry.passed ? 'pass' : 'failed'])),

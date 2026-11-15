@@ -30,6 +30,8 @@ function run(command, extra = {}) {
 }
 
 if (suite === 'browser') {
+  run([...pnpm, '--filter', '@forgeax/engine-water', 'build']);
+  run(lease(300000, [...node, 'scripts/ci/check-water-browser-distribution.mjs']));
   run(
     lease(300000, [
       ...node,

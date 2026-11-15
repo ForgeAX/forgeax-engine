@@ -11,11 +11,11 @@ import { build } from 'esbuild';
 import { chromium } from 'playwright';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { collectViewBackendDiagnostics } from '../../../scripts/ci/view-backend-diagnostics.mjs';
+import { collectViewBackendDiagnostics, streamViewBackendTimings } from '../../../scripts/ci/view-backend-diagnostics.mjs';
 import { installTestCanvasBudget } from '../../../scripts/test/browser-canvas-budget.mjs';
 import { reduceTestProject } from '../../../scripts/test/reduce-test-project.mjs';
 import testQuality from '../../../scripts/test/render-quality.json' with { type: 'json' };
-import { assertNoRuntimeFailure, assertRenderBudget, assertScenePixels, waitForViewProjectReady } from './app/acceptance.mjs';
+import { assertNoRuntimeFailure, assertRenderBudget, assertScenePixels, readReadyCompletedFrame, waitForViewProjectReady } from './app/acceptance.mjs';
 import { probeRuntimeVase } from '../../../scripts/template-probes/game-3d/runtime-vase-probe.mjs';
 import { installRuntimeVase } from '../../../scripts/template-probes/game-3d/runtime-vase/install.mjs';
 const sourceProject = resolve(process.argv[2]);
@@ -54,6 +54,22 @@ let hostAdmissions = 0;
 let documentRequests = 0;
 let replacingBackend = false;
 const backendStarts = [];
+const backendTimingLines = new Map();
+let replacementStartedAt;
+function recordBackendReplacement(stage) {
+  const record = { stage, at: new Date().toISOString(), elapsedMs: Math.round(performance.now() - replacementStartedAt) };
+  records.push({ backendReplacement: record });
+  console.error('[forgeax.view-backend-replacement]', JSON.stringify(record));
+}
+function emitBackendTimings() {
+  for (const owner of backendStarts) {
+    try {
+      const files = collectViewBackendDiagnostics({ ...owner, outputDirectory: join(evidence, 'backend') });
+      for (const file of files)
+        backendTimingLines.set(file, streamViewBackendTimings(file, backendTimingLines.get(file)));
+    } catch (error) { console.error('Workspace timing diagnostics:', String(error)); }
+  }
+}
 async function cli(command, args = {}) {
   const startedAt = Date.now();
   const execution = execute(
@@ -121,8 +137,11 @@ try {
     try {
       if (request.url === '/restart' && request.method === 'POST') {
         await cli('backend stop');
+        recordBackendReplacement('backend-stopped');
         await cli('backend start', { hostPack: resolve(import.meta.dirname, '../host.app.pack.json') });
+        recordBackendReplacement('backend-started');
         const opened = await client.callTool({ name: 'forgeax_view_start', arguments: {} });
+        recordBackendReplacement('view-open-result');
         response.setHeader('content-type', 'application/json');
         response.end(JSON.stringify(opened));
         return;
@@ -142,13 +161,28 @@ try {
           if (!response.writableEnded) controller.abort();
         });
         const started = performance.now();
-        const value = await client.callTool(params, undefined, {
-          signal: controller.signal,
-          timeout: 30000,
-        });
+        let value;
+        try {
+          value = await client.callTool(params, undefined, {
+            signal: controller.signal,
+            timeout: 30000,
+          });
+        } catch (error) {
+          records.push({ action: params.arguments.action, at: new Date().toISOString(),
+            connectionId: params.arguments.connectionId, generation: params.arguments.generation,
+            service: params.arguments.service, operation: params.arguments.payload?.operation,
+            failed: true, code: error?.code, causeCode: error?.cause?.code,
+            message: String(error?.message ?? error).replace(/([?&](?:token|frontendTicket|forgeaxWorkspaceToken)=)[^&\s"'<>]+/g, '$1[redacted]'),
+            ms: Math.round(performance.now() - started) });
+          throw error;
+        }
         if (params.arguments.action !== 'host-read')
           records.push({
             action: params.arguments.action,
+            at: new Date().toISOString(),
+            connectionId: params.arguments.connectionId ?? value.structuredContent?.connectionId,
+            generation: params.arguments.generation ?? value.structuredContent?.generation,
+            targetId: params.arguments.payload?.targetId,
             wireBytes: value.structuredContent?.bytes,
             decodedBytes: value.structuredContent?.decodedBytes,
             requestCount: params.arguments.requests?.length,
@@ -285,8 +319,7 @@ try {
     // makes Playwright preview its multi-megabyte srcdoc on the browser thread.
     const playFrame = playDocument;
     const playCanvas = playFrame.locator('canvas#app');
-    const readCompletedFrame = () => playCanvas.evaluate(canvas =>
-      canvas.forgeaxFrameProgress?.completed?.frameId ?? 0);
+    const readCompletedFrame = () => playCanvas.evaluate(readReadyCompletedFrame);
     const deadline = performance.now() + 180000;
     while (Number(await readCompletedFrame()) < 60) {
       await assertNoRuntimeFailure(playFrame, `Play ${cycle}`, errors, consoleErrors);
@@ -345,7 +378,7 @@ try {
   if (!(await sceneCard.isVisible()))
     await view.getByText(/^(内容浏览器|Content Browser)$/).click();
   await sceneCard.dblclick();
-  await view.getByRole('treeitem', { name: /Lacquer Collision Cube (网格|Mesh)/ }).waitFor();
+  await view.getByRole('treeitem', { name: /Rusted Iron Sphere (网格|Mesh)/ }).waitFor();
   targetId = await view
     .locator('iframe[data-forgeax-mcp-preview]')
     .getAttribute('data-forgeax-mcp-preview');
@@ -360,7 +393,7 @@ try {
     const previewCanvas = preview.locator('canvas#app');
     // Match the maintained game-3d gate: observe completed frames without adding
     // GPU readbacks and multi-megabyte transport to every progress sample.
-    while (Number(await previewCanvas.evaluate(canvas => canvas.forgeaxFrameProgress?.completed?.frameId ?? 0)) < 60) {
+    while (Number(await previewCanvas.evaluate(readReadyCompletedFrame)) < 60) {
       await assertNoRuntimeFailure(preview, 'Preview', errors, consoleErrors);
       assert.ok(performance.now() < frameDeadline, 'The real Renderer must complete at least 60 frames');
       await page.waitForTimeout(50);
@@ -398,10 +431,10 @@ try {
   assert.equal(await view.getByTestId('html-ui-inspector').locator('[role="alert"]').count(), 0);
   await page.screenshot({ path: join(evidence, 'html.png') });
   await view.locator('[role="tab"][data-page-id="page-scene"]').click();
-  await view.getByRole('treeitem', { name: /Lacquer Collision Cube (网格|Mesh)/ }).waitFor();
+  await view.getByRole('treeitem', { name: /Rusted Iron Sphere (网格|Mesh)/ }).waitFor();
   await page.screenshot({ path: join(evidence, 'view.png') });
   await playCycle(1);
-  await view.getByRole('treeitem', { name: /Lacquer Collision Cube (网格|Mesh)/ }).waitFor();
+  await view.getByRole('treeitem', { name: /Rusted Iron Sphere (网格|Mesh)/ }).waitFor();
   await view.getByRole('button', { name: 'Play', exact: true }).click();
   const preparingPlay = view.locator('iframe[data-forgeax-scene-play]');
   await preparingPlay.waitFor({ state: 'attached', ...playSessionTimeout });
@@ -427,11 +460,16 @@ try {
   // Backend retirement deliberately produces connection failures. Observe the
   // replacement independently once its native Host has connected.
   replacingBackend = true;
+  replacementStartedAt = performance.now();
+  recordBackendReplacement('restart-request');
   const restartResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/restart', { timeout: 60000 });
   await page.getByRole('button', { name: 'Restart backend', exact: true }).click();
   assert.equal((await restartResponse).status(), 200, 'Backend restart request must succeed; inspect failed CLI records');
+  recordBackendReplacement('restart-response');
   await page.waitForFunction(url => document.querySelector('#opened').textContent !== url, previousUrl, { timeout: 60000 });
+  recordBackendReplacement('view-url-changed');
   await view.locator(`iframe[data-forgeax-mcp-preview]:not([data-forgeax-mcp-preview="${previousTargetId}"])`).waitFor({ state: 'attached', timeout: 60000 });
+  recordBackendReplacement('preview-iframe-attached');
   await view.getByRole('status', { name: /Host (\u5df2\u8fde\u63a5|connected)/ }).waitFor({ timeout: 60000 });
   targetId = await view.locator('iframe[data-forgeax-mcp-preview]').getAttribute('data-forgeax-mcp-preview');
   assert.notEqual(targetId, previousTargetId, 'a backend replacement must admit a fresh Engine target');
@@ -440,7 +478,7 @@ try {
     await view.getByText(/^(内容浏览器|Content Browser)$/).click();
   await view.getByRole('button', { name: 'assets', exact: true }).first().click();
   await view.getByRole('button', { name: /^scene\/showcase (场景|Scene)$/ }).dblclick();
-  await view.getByRole('treeitem', { name: /Lacquer Collision Cube (网格|Mesh)/ }).waitFor();
+  await view.getByRole('treeitem', { name: /Rusted Iron Sphere (网格|Mesh)/ }).waitFor();
   console.error('MCP App stage: recovered scene ready');
   await completeFrames();
   const recoveredCapture = await cli('view workspace preview capture', { targetId, targetGeneration: 1 });
@@ -449,6 +487,7 @@ try {
   records.push({ scenePixels: await assertScenePixels(page, recoveredCapture.png, 'Recovered Preview scene', renderBudget) });
   await view.locator('html[data-theme="dark"]').waitFor();
   records.push({ backendRestart: { previousTargetId, targetId, frameId: recoveredCapture.frameId } });
+  replacementStartedAt = undefined;
   await page.getByRole('button', { name: 'Close App', exact: true }).click();
   await page.getByText('closed', { exact: true }).waitFor();
   assert.equal(await page.locator('#app').count(), 0);
@@ -465,6 +504,7 @@ try {
     }),
   );
 } catch (error) {
+  if (replacementStartedAt !== undefined) recordBackendReplacement('failed');
   records.push({ failure: { name: error?.name, message: String(error?.message ?? error) } });
   await browser?.contexts()[0]?.pages()[0]?.screenshot({ path: join(evidence, 'failure.png') }).catch(() => {});
   for (const frame of browser?.contexts()[0]?.pages()[0]?.frames() ?? [])
@@ -498,17 +538,7 @@ try {
   throw error;
 } finally {
   await stopStartupProfile().catch(error => records.push({ profileError: String(error) }));
-  for (const owner of backendStarts) {
-    try {
-      const files = collectViewBackendDiagnostics({ ...owner, outputDirectory: join(evidence, 'backend') });
-      for (const file of files) {
-        const text = await readFile(file, 'utf8');
-        for (const line of text.split('\n'))
-          if (['[forgeax.workspace.timing]', '[forgeax.vite-config.timing]', '[forgeax.pack-startup.timing]', '[forgeax.authored-pack.timing]'].some(prefix => line.includes(prefix)))
-            console.error(line);
-      }
-    } catch (error) { console.error('Workspace timing diagnostics:', String(error)); }
-  }
+  emitBackendTimings();
   if (targetId)
     await cli('view workspace project close', {
       projectId: 'template-game-3d',
@@ -519,10 +549,7 @@ try {
   await client.close();
   await cli('backend stop').catch((error) => records.push({ backendCleanup: String(error) }));
   // backend start runs in a CLI child, which owns the daemon spawn record.
-  for (const owner of backendStarts) {
-    try { collectViewBackendDiagnostics({ ...owner, outputDirectory: join(evidence, 'backend') }); }
-    catch (cause) { records.push({ backendDiagnostics: String(cause) }); }
-  }
+  emitBackendTimings();
   if (server) await new Promise((resolve) => server.close(resolve));
   await writeFile(
     join(evidence, 'result.json'),

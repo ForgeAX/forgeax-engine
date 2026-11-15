@@ -2,8 +2,14 @@ import type { RenderPipeline, RhiRenderPipelineOps } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { err } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
+import { viewAndSceneDepthLayoutEntries } from '../../assembly/material-shader-policy';
 import { DeviceScope } from '../../device/device-scope';
+import { createPreparedGraphicsStore } from '../../features/prepared-graphics-store';
+import { createPreparedResolver } from '../../features/prepared-resolver';
+import { createPreparedResolverCaches } from '../prepared-material-bindings';
+import type { RenderSystemInternals } from '../render-context';
 import { resolveTargetBindings } from '../typed-frame-graph-bindings';
+import { translucentViewOffset } from '../view-ubo';
 
 async function fixture() {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
@@ -42,7 +48,7 @@ async function fixture() {
   const descriptor = { values: { sceneDepth: 'depth', sceneDepthBinding: 1 } };
   const input = {
     frame,
-    binding: { kind: 'bindings', pipeline, descriptor },
+    binding: { kind: 'bindings', pipeline, descriptor, bindingContract: 'view-and-scene-depth' },
     resources: { texture: () => ({ ok: true, value: depth }) },
     resolveTarget: () => ({ texture: {} }),
   } as unknown as Parameters<typeof resolveTargetBindings>[0];
@@ -61,6 +67,132 @@ async function fixture() {
     resolve: () => resolveTargetBindings(input),
   };
 }
+
+it('binds only the declared narrow View and depth resources on a storage-capable device', async () => {
+  const f = await fixture();
+  const layout = f.device
+    .createBindGroupLayout({ entries: viewAndSceneDepthLayoutEntries(false) })
+    .unwrap();
+  Object.assign(f.pipeline, { getBindGroupLayout: () => layout });
+  const sampler = f.device.createSampler({ compare: 'greater-equal' }).unwrap();
+  Object.assign(f.state, {
+    perPassResources: { shadowSampler: sampler },
+    shadowArrayFallbackTextureView: f.state.shadowFallbackTextureView,
+    shadowAtlasFallbackTextureView: f.state.shadowFallbackTextureView,
+    shadowParamsBuffer: f.buffer,
+    shadowCasterCascadeBuffer: f.buffer,
+    defaultWhiteTextureView: f.state.shadowFallbackTextureView,
+    defaultSampler: sampler,
+    extendedLightingAvailable: false,
+    projectorAvailable: false,
+  });
+  expect(f.device.caps.storageBuffer).toBe(true);
+  const create = f.device.createBindGroup.bind(f.device);
+  const groups = vi.spyOn(f.device, 'createBindGroup').mockImplementation((descriptor) => {
+    expect(descriptor.layout).toBe(layout);
+    expect(descriptor.entries.map((entry) => entry.binding).sort((a, b) => a - b)).toEqual([0, 1]);
+    return create(descriptor);
+  });
+  const resolved = f.resolve();
+  expect(resolved).toBeDefined();
+  const descriptor = groups.mock.calls.at(-1)?.[0];
+  expect(descriptor?.layout).toBe(layout);
+  expect(descriptor?.entries.map((entry) => entry.binding).sort((a, b) => a - b)).toEqual([0, 1]);
+  expect(resolved).not.toHaveProperty('dynamicOffsets');
+});
+
+it.each([
+  'view-and-scene-depth',
+  'render-material-and-scene-depth',
+  'render-standard-material-and-scene-depth',
+] as const)('carries the selected material binding contract through preparation: %s', async (bindings) => {
+  const f = await fixture();
+  const store = createPreparedGraphicsStore();
+  const transaction = store.beginFrame('feature.depth', 1);
+  const pipeline = transaction
+    .prepare('pipeline', 'depth', {
+      shader: 'feature::depth',
+      vertexLayout: 'position',
+      colorFormats: ['rgba8unorm'],
+      depthFormat: 'depth32float',
+    })
+    .unwrap();
+  const group = transaction
+    .prepare('bindings', 'view-depth', {
+      pipeline,
+      values: { group: 0, sceneDepth: 'depth', sceneDepthBinding: 1 },
+    })
+    .unwrap();
+  transaction.commit().unwrap();
+  const items = new Map(
+    store.snapshot('feature.depth').items.map((item) => [item.reference, item]),
+  );
+  const resolver = createPreparedResolver(
+    {
+      runtime: {
+        device: f.device,
+        getMaterialShaderPipelineEntry: () => ({ pipeline: f.pipeline }),
+        getMaterialShaderBindingContract: () => ({ bindings }),
+      } as unknown as RenderSystemInternals,
+      caches: createPreparedResolverCaches(),
+      gpuWork: {} as never,
+      builtinPostProcessEntries: new Map(),
+      skylightResources: () => undefined,
+    },
+    {
+      featureIdentity: 'feature.depth',
+      order: 0,
+      generation: 1,
+      transaction,
+      fullscreenEffects: new Map(),
+      graphicsBindings: new Map([['view-depth', group]]),
+      lookup: (reference) => items.get(reference),
+    },
+    [],
+  );
+  expect(resolver.resolve(pipeline).unwrap()).toMatchObject({
+    kind: 'pipeline',
+    bindingContract: bindings,
+  });
+  expect(resolver.resolve(group).unwrap()).toMatchObject({
+    kind: 'bindings',
+    bindingContract: bindings,
+    handle: undefined,
+  });
+  resolver.release().unwrap();
+});
+
+it.each([
+  'render-material-and-scene-depth',
+  'render-standard-material-and-scene-depth',
+] as const)('retains the full material depth contract and its dynamic View offsets: %s', async (bindingContract) => {
+  const f = await fixture();
+  const sampler = f.device.createSampler({ compare: 'greater-equal' }).unwrap();
+  Object.assign(f.state, {
+    perPassResources: { shadowSampler: sampler },
+    shadowArrayFallbackTextureView: f.state.shadowFallbackTextureView,
+    shadowAtlasFallbackTextureView: f.state.shadowFallbackTextureView,
+    shadowParamsBuffer: f.buffer,
+    shadowCasterCascadeBuffer: f.buffer,
+    defaultWhiteTextureView: f.state.shadowFallbackTextureView,
+    defaultSampler: sampler,
+    extendedLightingAvailable: false,
+    projectorAvailable: false,
+  });
+  Object.assign(f.input.binding, {
+    bindingContract,
+    fogComposition: 'additive',
+  });
+  const groups = vi.spyOn(f.device, 'createBindGroup');
+  const resolved = f.resolve();
+  expect(
+    groups.mock.calls[0]?.[0].entries.map((entry) => entry.binding).sort((a, b) => a - b),
+  ).toEqual([0, 1, 3, 4, 5, 6, 7, 8, 10, 17]);
+  expect(resolved).toMatchObject({
+    handle: expect.anything(),
+    dynamicOffsets: [translucentViewOffset('additive'), 0],
+  });
+});
 
 it('reuses current physical depth bindings across draws, uploads and a replaced public descriptor', async () => {
   const f = await fixture();

@@ -297,11 +297,7 @@ describe('feat-20260608 M2 m2-t5: sprite pipeline cullMode "none" lets H/V flipp
     expect(attachment.ok).toBe(true);
     if (!attachment.ok) throw attachment.error;
     worldFlip.update(1 / 60).unwrap();
-    const receipt = await drawReadyFrame(renderer, {
-      leases: [attachment.value],
-      camera: { lease: attachment.value },
-      environment: { lease: attachment.value },
-    });
+    const receipt = await drawReadyFrame(renderer, { source: attachment.value });
     await device.queue.onSubmittedWorkDone();
     expect(receipt.presentation, 'H-flipped sprite draw').toBe('ready');
 
@@ -453,11 +449,7 @@ describe('feat-20260608 M2 m2-t5: sprite pipeline cullMode "none" lets H/V flipp
     expect(attachmentBoth.ok).toBe(true);
     if (!attachmentBoth.ok) throw attachmentBoth.error;
     worldFlipBoth.update(1 / 60).unwrap();
-    const receipt = await drawReadyFrame(renderer, {
-      leases: [attachmentBoth.value],
-      camera: { lease: attachmentBoth.value },
-      environment: { lease: attachmentBoth.value },
-    });
+    const receipt = await drawReadyFrame(renderer, { source: attachmentBoth.value });
     await device.queue.onSubmittedWorkDone();
     expect(receipt.presentation).toBe('ready');
 

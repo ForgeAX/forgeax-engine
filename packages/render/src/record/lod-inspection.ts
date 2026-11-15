@@ -6,11 +6,11 @@ import type { RenderResourceScope } from '../publication/resource-scope';
 import type { CameraSnapshot } from '../render-contract';
 import { type LodOcclusionInspectionCell, resolveInspectionBuild } from '../render-system';
 import type { ExtractedFrame, RenderableSnapshot } from '../render-system-extract';
-import {
-  createLodWorldInspections,
-  type LodSampleSlotLookup,
-  lodWorldAttachments,
-} from '../render-system-projections';
+
+type LodSampleSlotLookup = (
+  entity: number,
+) => { readonly slot: number; readonly generation: number } | undefined;
+
 import { type FrameList, lodCandidateCountOf, RetainedFrameProjection } from '../scene/frame-list';
 import type { PersistentRenderScene } from '../scene/render-scene';
 import { SceneSlotFrame } from '../scene/scene-slots';
@@ -18,16 +18,14 @@ import { inspectLodOcclusion } from '../scene/visibility/inspection';
 import type { SurfaceSubmissionObservationOwner } from '../surface/submission-observation';
 import { recordContext } from '../world/view-record-context';
 import { cpuLodLevel, lodLevelHistogram } from './cpu-lod';
-import { worldEntityKey } from './frame-snapshot';
 import type { RenderSystemInternals } from './render-context';
 
 type LodSelection = Pick<
   GpuDrivenLodSelectionInspection,
-  'candidateCount' | 'visible' | 'occluded' | 'lodHistogram' | 'worldSelections'
+  'candidateCount' | 'visible' | 'occluded' | 'lodHistogram'
 > & { readonly submit?: { readonly frameId: number; readonly deviceGeneration: number } };
 
 interface LodVisibility {
-  readonly worldKeys: readonly number[];
   readonly projection: { readonly renderables: FrameList<RenderableSnapshot> };
 }
 
@@ -38,14 +36,10 @@ const resolvedCell = (inspection: LodOcclusionInspection): LodOcclusionInspectio
 });
 
 const ZERO_LOD_LEVEL = (_renderable: RenderableSnapshot): number => 0;
-const NO_WORLD_ATTACHMENTS: ReadonlyMap<number, string> = new Map();
-
 function sampledSlotLookup(
   slots: ReadonlyMap<number, { readonly slot: number; readonly generation: number }>,
-  worldKeys: readonly number[],
 ): LodSampleSlotLookup {
-  return (worldId, entityKey) =>
-    slots.get(worldEntityKey(worldKeys[worldId] ?? worldId, entityKey));
+  return (entityKey) => slots.get(entityKey);
 }
 
 /** Only this admitted row projection proves a fixed identity lookup. */
@@ -64,51 +58,43 @@ function hasLod(renderable: RenderableSnapshot): boolean {
 function captureSampleSlot(
   slots: Map<number, { readonly slot: number; readonly generation: number }>,
   scene: PersistentRenderScene,
-  worldKeys: readonly number[],
   renderable: RenderableSnapshot,
 ): void {
-  const key = worldEntityKey(
-    worldKeys[renderable.worldId] ?? renderable.worldId,
-    renderable.entityKey,
-  );
-  const slot = scene.compositionSlot(renderable.worldId, renderable.entityKey);
+  const key = renderable.entityKey;
+  const slot = scene.compositionSlot(renderable.entityKey);
   if (slot !== undefined) slots.set(key, slot);
 }
 
 /** Observe borrowed rows once for their current count and detached diagnostic samples. */
 function captureSampleSlots(
   renderables: FrameList<RenderableSnapshot>,
-  scopes: readonly RenderResourceScope[],
-  worldKeys: readonly number[],
   knownCount: number | undefined,
   scene: PersistentRenderScene,
 ): { readonly candidateCount: number; readonly lookup: LodSampleSlotLookup } {
   const sampleSlots = new Map<number, { readonly slot: number; readonly generation: number }>();
-  const sampledRows: number[] = scopes.map(() => 0);
-  const sampledLods: number[] = scopes.map(() => (knownCount === 0 ? 64 : 0));
-  let open = scopes.length * (knownCount === 0 ? 1 : 2);
+  let sampledRows = 0;
+  let sampledLods = knownCount === 0 ? 64 : 0;
+  let open = knownCount === 0 ? 1 : 2;
   let candidateCount = knownCount ?? 0;
   for (const renderable of renderables) {
     if (knownCount !== undefined && open === 0) break;
-    const rows = sampledRows[renderable.worldId];
-    const lods = sampledLods[renderable.worldId];
-    const lodCandidate =
-      (knownCount === undefined || (lods !== undefined && lods < 64)) && hasLod(renderable);
+    const rows = sampledRows;
+    const lods = sampledLods;
+    const lodCandidate = (knownCount === undefined || lods < 64) && hasLod(renderable);
     if (knownCount === undefined && lodCandidate) candidateCount++;
-    if (rows === undefined || lods === undefined) continue;
     const lod = lods < 64 && lodCandidate;
     if (rows >= 64 && !lod) continue;
     if (rows < 64) {
-      sampledRows[renderable.worldId] = rows + 1;
+      sampledRows = rows + 1;
       if (rows + 1 === 64) open--;
     }
     if (lod) {
-      sampledLods[renderable.worldId] = lods + 1;
+      sampledLods = lods + 1;
       if (lods + 1 === 64) open--;
     }
-    captureSampleSlot(sampleSlots, scene, worldKeys, renderable);
+    captureSampleSlot(sampleSlots, scene, renderable);
   }
-  return { candidateCount, lookup: sampledSlotLookup(sampleSlots, worldKeys) };
+  return { candidateCount, lookup: sampledSlotLookup(sampleSlots) };
 }
 
 /**
@@ -118,10 +104,6 @@ function captureSampleSlots(
  */
 export class LodInspectionOwner {
   cell: LodOcclusionInspectionCell | undefined;
-  // The GPU selector returns stable numeric World keys with its same-submit
-  // counters. Keep the attachment join from that submit, rather than using
-  // the current worlds[] position when the asynchronous readback completes.
-  private worldAttachments: ReadonlyMap<number, string> = NO_WORLD_ATTACHMENTS;
   private filtered:
     | {
         readonly submissionRenderables: FrameList<RenderableSnapshot>;
@@ -164,13 +146,11 @@ export class LodInspectionOwner {
     camera: CameraSnapshot | undefined,
     frame: ExtractedFrame,
     visibility: LodVisibility,
-    scopes: readonly RenderResourceScope[],
-    cameraOwner: number,
+    sourceScope: RenderResourceScope,
     frameId: number,
   ): number {
     if (camera === undefined) {
       this.cell = undefined;
-      this.worldAttachments = NO_WORLD_ATTACHMENTS;
       return 0;
     }
     const internals = this.internals;
@@ -185,8 +165,6 @@ export class LodInspectionOwner {
     } else {
       const sampled = captureSampleSlots(
         renderables,
-        scopes,
-        visibility.worldKeys,
         renderables instanceof RetainedFrameProjection
           ? renderables.facts?.lodCandidateCount
           : undefined,
@@ -209,7 +187,7 @@ export class LodInspectionOwner {
             renderable,
             internals.gpuStore.getMeshGpuHandles(
               renderable.assetHandle as AssetHandle<'mesh'>,
-              scopes[renderable.worldId] ?? renderable.worldId,
+              sourceScope,
             ),
             camera,
           ),
@@ -217,9 +195,8 @@ export class LodInspectionOwner {
       }
       levelOf = (renderable: RenderableSnapshot): number => cpuLevels.get(renderable) ?? 0;
     }
-    this.worldAttachments = lodWorldAttachments(scopes, visibility.worldKeys);
     const view = {
-      attachmentId: scopes[camera.worldId ?? cameraOwner]?.identity ?? 'none',
+      attachmentId: sourceScope?.identity ?? 'none',
       cameraEntity: camera.entityKey ?? 0,
       viewRole: 'main' as const,
       viewGeneration: camera.historyVersion ?? 0,
@@ -240,6 +217,9 @@ export class LodInspectionOwner {
       );
       const inspectionLevels = inspectionRenderables.map(levelOf);
       const firstRenderable = renderables.at(0);
+      const firstSample = inspectionRenderables.at(0);
+      const sampledSlot =
+        firstSample === undefined ? undefined : sampleSlots(firstSample.entityKey);
       return inspectLodOcclusion({
         root: {
           guid:
@@ -247,7 +227,10 @@ export class LodInspectionOwner {
           sourceKey: `render-frame:${frameId}`,
         },
         view,
-        slot: { primitiveSlot: 0, slotGeneration },
+        slot:
+          sampledSlot === undefined
+            ? { primitiveSlot: 0, slotGeneration }
+            : { primitiveSlot: sampledSlot.slot, slotGeneration: sampledSlot.generation },
         generation: frameId,
         count: {
           candidates:
@@ -258,21 +241,19 @@ export class LodInspectionOwner {
           occluded: 0,
         },
         lodHistogram: lodLevelHistogram(inspectionLevels),
-        samples: inspectionRenderables.slice(0, 64).map((_, index) => ({
-          primitiveSlot: index,
-          level: inspectionLevels[index] ?? 0,
-          visible: true,
-        })),
+        samples: inspectionRenderables.slice(0, 64).flatMap((renderable, index) => {
+          const slot = sampleSlots(renderable.entityKey);
+          return slot === undefined
+            ? []
+            : [
+                {
+                  primitiveSlot: slot.slot,
+                  level: inspectionLevels[index] ?? 0,
+                  visible: true,
+                },
+              ];
+        }),
         submit,
-        worlds: createLodWorldInspections(
-          scopes,
-          renderables,
-          submissionRenderables,
-          camera,
-          frameId,
-          sampleSlots,
-          levelOf,
-        ),
       });
     };
     this.cell = { view, submit, value: () => (body ??= build()) };
@@ -287,51 +268,7 @@ export class LodInspectionOwner {
   private applySelection(
     selection: LodSelection,
     inspection: LodOcclusionInspection,
-    targetWorldAttachments: ReadonlyMap<number, string>,
   ): LodOcclusionInspection | undefined {
-    let worlds = inspection.worlds;
-    const worldSelections = selection.worldSelections;
-    if (worldSelections !== undefined && worldSelections.length > 0) {
-      if (worldSelections.some((selected) => !targetWorldAttachments.has(selected.worldKey)))
-        return undefined;
-      const selectionsByAttachment = new Map<string, (typeof worldSelections)[number][]>();
-      for (const selected of worldSelections) {
-        const attachmentId = targetWorldAttachments.get(selected.worldKey);
-        if (attachmentId === undefined) return undefined;
-        const rows = selectionsByAttachment.get(attachmentId);
-        if (rows === undefined) selectionsByAttachment.set(attachmentId, [selected]);
-        else rows.push(selected);
-      }
-      worlds = Object.freeze(
-        worlds.map((world) => {
-          const selected = selectionsByAttachment.get(world.attachmentId);
-          const baseRow = world.rows[0];
-          // A World with only plain meshes has no LOD selection row; it keeps
-          // its projection-only receipt. The same-submit GPU row owns the
-          // denominator, which may include selector-only candidates.
-          if (selected === undefined || baseRow === undefined) return world;
-          return Object.freeze({
-            ...world,
-            attribution: Object.freeze({
-              status: 'same-submit' as const,
-              submit: inspection.submit,
-            }),
-            rows: Object.freeze(
-              selected.map((row) => ({
-                ...baseRow,
-                slot: { primitiveSlot: row.primitiveSlot, slotGeneration: row.slotGeneration },
-                count: {
-                  candidates: row.candidateCount,
-                  visible: row.visible,
-                  occluded: row.occluded,
-                },
-                lodHistogram: row.lodHistogram,
-              })),
-            ),
-          });
-        }),
-      );
-    }
     const observed = inspectLodOcclusion({
       ...inspection,
       count: {
@@ -344,7 +281,13 @@ export class LodInspectionOwner {
       // Per-primitive samples are omitted until the GPU readback carries
       // stable primitive identities; the histogram is the producer fact.
       samples: [],
-      worlds,
+      attribution:
+        selection.submit === undefined
+          ? {
+              status: 'unavailable',
+              reason: 'projection-only',
+            }
+          : { status: 'same-submit', submit: inspection.submit },
     });
     this.cell = resolvedCell(observed);
     return observed;
@@ -357,7 +300,6 @@ export class LodInspectionOwner {
   ): Promise<LodOcclusionInspection | undefined> {
     const capturedCell = this.cell;
     const capturedInspection = capturedCell?.value();
-    const capturedWorldAttachments = this.worldAttachments;
     if (capturedInspection === undefined) return undefined;
     const sameSubmit = (submit: { readonly frameId: number; readonly deviceGeneration: number }) =>
       submit.frameId === capturedInspection.submit.frameId &&
@@ -370,19 +312,14 @@ export class LodInspectionOwner {
       (submit.frameId === receipt.frameId && submit.deviceGeneration === receipt.deviceGeneration);
     if (!matchesReceipt(capturedInspection.submit)) return undefined;
     const selection = await production.readLodSelection();
-    if (
-      this.cell !== capturedCell ||
-      this.worldAttachments !== capturedWorldAttachments ||
-      selection === undefined
-    )
-      return undefined;
+    if (this.cell !== capturedCell || selection === undefined) return undefined;
     if (selection.submit !== undefined && !sameSubmit(selection.submit)) return undefined;
     if (
       receipt !== undefined &&
       (selection.submit === undefined || !matchesReceipt(selection.submit))
     )
       return undefined;
-    const inspection = this.applySelection(selection, capturedInspection, capturedWorldAttachments);
+    const inspection = this.applySelection(selection, capturedInspection);
     if (
       inspection === undefined ||
       this.cell?.value() !== inspection ||

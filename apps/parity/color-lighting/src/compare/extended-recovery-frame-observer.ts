@@ -68,7 +68,7 @@ export interface RecoveryFrameObservation {
     readonly deviceGeneration: number;
     readonly presentation: FrameReceipt['presentation'];
     readonly pendingReason?: Pick<NonNullable<FrameReceipt['presentationPendingReason']>,
-      'code' | 'worldId' | 'entity' | 'submesh' | 'section' | 'preparationStage'>;
+      'code' | 'entity' | 'submesh' | 'section' | 'preparationStage'>;
     readonly hasPreparation: boolean;
   };
   readonly outcome?: 'ok' | 'error' | 'rejected';
@@ -178,7 +178,6 @@ function facts(receipt: FrameReceipt): NonNullable<RecoveryFrameObservation['rec
     presentation: receipt.presentation,
     ...(reason === undefined ? {} : { pendingReason: {
       code: reason.code,
-      ...(reason.worldId === undefined ? {} : { worldId: reason.worldId }),
       ...(reason.entity === undefined ? {} : { entity: reason.entity }),
       ...(reason.submesh === undefined ? {} : { submesh: reason.submesh }),
       ...(reason.section === undefined ? {} : { section: reason.section }),

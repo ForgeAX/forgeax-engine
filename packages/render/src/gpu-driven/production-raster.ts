@@ -114,6 +114,7 @@ import {
   type RasterPipelineFor,
   type RasterPipelineShape,
   rasterClassFor,
+  rasterClassProjectionKey,
   rasterPipelineShapeKey,
   selectRasterPipeline,
 } from './production-raster-classes';
@@ -234,8 +235,6 @@ export interface GpuDrivenShadowBatchProjection {
   readonly shadowRenderState?: MaterialRenderState;
   /** Material snapshot used to assemble the receipt-owned alpha-mask BG. */
   readonly material: MaterialSnapshot;
-  /** Accepted resource namespace. GPU execution has no entity-local video binding. */
-  readonly worldId: number;
   /** Geometry-owned COLOR_0 fact shared by main and shadow ABI variants. */
   readonly vertexColorAvailable: boolean;
 }
@@ -260,24 +259,12 @@ export type ShadowViewRequest = Omit<
 type ShadowViewUpdateStorage = {
   -readonly [Key in keyof ShadowViewUpdateInput]: ShadowViewUpdateInput[Key];
 };
-
-export interface GpuDrivenWorldLodSelectionInspection {
-  readonly worldKey: number;
-  readonly primitiveSlot: number;
-  readonly slotGeneration: number;
-  readonly candidateCount: number;
-  readonly visible: number;
-  readonly occluded: number;
-  readonly lodHistogram: readonly { readonly level: number; readonly count: number }[];
-}
-
 type MaterialPipelineFactory = NonNullable<RenderSystemInternals['getMaterialShaderPipelineEntry']>;
 
 /** The GPU-driven bridge to the existing four-group Standard PBR pipeline. */
 
 export interface GpuDrivenMaterialBinding {
   readonly material: import('../material-resource').MaterialResource;
-  readonly worldId: number;
   readonly resourceClass: string;
 }
 
@@ -291,8 +278,6 @@ export interface PreparedGpuDrivenFrame {
   readonly topologySignature: () => string;
   /** @internal Private stock-recorder identity; borrowed graph projections keep topologySignature. */
   readonly _recordingTopologySignature?: () => string;
-  /** Composition-local world indices mapped to the stable identities used by draw keys. */
-  readonly worldKeys: readonly number[];
   /** Shared execution queried by each actual draw consumer. */
   readonly selection: GpuDrawSelection;
   /** Actual GPU Shadow executions; direct residual casters do not erase this coverage. */
@@ -409,7 +394,6 @@ interface SubmissionAdmission {
   readonly suppressed?: Uint32Array;
   /** The scene rows `suppressed` was derived from, for patching the next admission. */
   readonly slots: PersistentGpuDrivenState['slots'];
-  readonly worldKeys: readonly number[] | undefined;
 }
 
 /** The main and shadow filtered plans of one prepared plan, with their admission. */
@@ -516,12 +500,10 @@ function createSubmissionAdmission(
       : patchSuppressedPrimitiveWords(
           {
             slots: previous.slots,
-            worldKeys: previous.worldKeys,
             activeEntityKeys: previous.activeEntityKeys,
             words: previous.suppressed,
           },
           scene.slots,
-          scene.worldKeys,
           activeEntityKeys,
           sceneCapacity,
         );
@@ -529,15 +511,13 @@ function createSubmissionAdmission(
     source: scene.plan,
     sceneCapacity,
     slots: scene.slots,
-    worldKeys: scene.worldKeys,
     ...(activeEntityRevision === undefined ? {} : { activeEntityRevision }),
     ...(activeEntityKeys === undefined
       ? {}
       : {
           activeEntityKeys,
           suppressed:
-            patched ??
-            suppressedPrimitiveWords(scene.slots, scene.worldKeys, activeEntityKeys, sceneCapacity),
+            patched ?? suppressedPrimitiveWords(scene.slots, activeEntityKeys, sceneCapacity),
         }),
   };
 }
@@ -1140,7 +1120,6 @@ export class GpuDrivenProduction {
     return ok({
       materialBindings: [],
       topologySignature: DIRECT_TOPOLOGY_SIGNATURE,
-      worldKeys: scene.worldKeys ?? [],
       selection: EMPTY_GPU_DRAW_SELECTION,
       shadowDirectRequired: true,
       standardPbrFrameResources: {
@@ -1687,7 +1666,6 @@ export class GpuDrivenProduction {
         const shadow = this.shadowTopologySignature();
         return shadow.length === 0 ? recordingSignature : `${recordingSignature}|shadow=${shadow}`;
       },
-      worldKeys: scene.worldKeys ?? [],
       selection: filtered.selection,
       shadowSelection: frame.shadowFiltered?.selection,
       shadowDirectRequired: shadowDirectRequired(scene, input.batchExecutions),
@@ -1898,7 +1876,8 @@ export class GpuDrivenProduction {
     for (const prepared of frame.filtered.batches) {
       const liveIndex = nextLiveIndex++;
       const live = frame.liveRasterBatches[liveIndex];
-      const classKey = target.rendererRecording ? live?.recordingClassKey : live?.classKey;
+      const classKey =
+        live === undefined ? undefined : rasterClassProjectionKey(live, target.rendererRecording);
       if (classKey === undefined || rasterClasses.has(classKey)) continue;
       const projectedClass = this.projectRasterClass(
         projected,
@@ -1910,6 +1889,8 @@ export class GpuDrivenProduction {
       );
       if (!projectedClass.ok) return projectedClass;
       rasterClasses.set(classKey, projectedClass.value);
+      if (!target.rendererRecording && live !== undefined && !rasterClasses.has(live.classKey))
+        rasterClasses.set(live.classKey, projectedClass.value);
     }
     if (target.rendererRecording) this.rasterGraphIdentity.built(rasterClasses.keys());
     if (rasterClasses.size === 0 && frame.filtered.batches.length > 0) {
@@ -1936,6 +1917,7 @@ export class GpuDrivenProduction {
     live: LiveRasterBatch,
     filter?: RenderPipelineGpuDrivenFilter,
     fragmentEntryPoint?: string,
+    coverageOnly = false,
   ): ProjectedRasterClass | undefined {
     if (
       projected.target.rendererRecording &&
@@ -1950,6 +1932,7 @@ export class GpuDrivenProduction {
       live,
       filter,
       fragmentEntryPoint,
+      coverageOnly,
     );
   }
 
@@ -2032,7 +2015,7 @@ export class GpuDrivenProduction {
     }
     const { artifact } = prepared;
     const rasterClass: ProjectedRasterClass = {
-      orderDiagnosticState: prepared.renderState,
+      renderState: prepared.renderState,
       artifact,
       mesh: prepared.mesh,
       ...buffers,
@@ -2109,6 +2092,7 @@ export class GpuDrivenProduction {
               coverageOnly = false,
               sampleCount = projected.target.sampleCount,
               seededDepth = false,
+              opaqueDepthPrimed = false,
             ) =>
               this.registerPipelinePreparation(projected, preparationJobs, preparationFactory, {
                 formats,
@@ -2117,6 +2101,7 @@ export class GpuDrivenProduction {
                 coverageOnly,
                 sampleCount,
                 seededDepth,
+                opaqueDepthPrimed,
               }),
             preparePipelines: (entries = [], artifacts, onPending, materials) =>
               runPipelinePreparations(preparationJobs, entries, artifacts, onPending, materials),
@@ -2154,6 +2139,7 @@ export class GpuDrivenProduction {
         coverageOnly = false,
         phase = 'all',
         seededDepth = false,
+        viewOffset = 0,
       ) =>
         this.encodeProjected(
           projected,
@@ -2166,6 +2152,7 @@ export class GpuDrivenProduction {
           coverageOnly,
           phase,
           seededDepth,
+          viewOffset,
         ),
     };
   }
@@ -2182,9 +2169,18 @@ export class GpuDrivenProduction {
       readonly coverageOnly: boolean;
       readonly sampleCount: 1 | 4;
       readonly seededDepth: boolean;
+      readonly opaqueDepthPrimed?: boolean;
     },
   ): void {
-    const { formats, filter, fragmentEntryPoint, coverageOnly, sampleCount, seededDepth } = pass;
+    const {
+      formats,
+      filter,
+      fragmentEntryPoint,
+      coverageOnly,
+      sampleCount,
+      seededDepth,
+      opaqueDepthPrimed = false,
+    } = pass;
     const key = JSON.stringify([
       formats,
       filter,
@@ -2192,6 +2188,7 @@ export class GpuDrivenProduction {
       coverageOnly,
       sampleCount,
       seededDepth,
+      opaqueDepthPrimed,
     ]);
     if (jobs.has(key)) return;
     // Classes may join a compiled stock graph; select pipelines from the
@@ -2203,7 +2200,7 @@ export class GpuDrivenProduction {
       selectedFor = this.liveRasterBatches;
       selected.clear();
       for (const live of this.liveRasterBatches) {
-        const batch = this.classFor(projected, live, filter, fragmentEntryPoint);
+        const batch = this.classFor(projected, live, filter, fragmentEntryPoint, coverageOnly);
         if (batch !== undefined)
           selected.set(
             selectRasterPipeline(batch, fragmentEntryPoint, coverageOnly, seededDepth),
@@ -2225,6 +2222,7 @@ export class GpuDrivenProduction {
             formatKey,
             gpuLanePreparesAsynchronously(artifact),
             sampleCount,
+            opaqueDepthPrimed,
           ).ok
         ) {
           ready = false;
@@ -2248,6 +2246,7 @@ export class GpuDrivenProduction {
           fragmentEntry: fragmentEntryPoint,
           coverageOnly,
           seededDepth,
+          opaqueDepthPrimed,
           visibleSurface: frame.input.visibleSurface !== undefined,
           viewClipping: frame.viewClippingLive,
           ...(onPending === undefined ? {} : { onPending }),
@@ -2275,6 +2274,7 @@ export class GpuDrivenProduction {
     coverageOnly: boolean,
     phase: GpuDrivenDrawPhase,
     seededDepth: boolean,
+    viewOffset: number,
   ): void {
     const { target } = projected;
     const region = phase === 'late' ? requireLateRegion(projected) : undefined;
@@ -2288,31 +2288,41 @@ export class GpuDrivenProduction {
       descriptor === undefined
         ? undefined
         : this.rasterPasses.prepare(
-            `${filter ?? ''}/${fragmentEntryPoint ?? ''}/${coverageOnly ? 1 : 0}/${phase}${seededDepth ? '/seeded' : ''}`,
+            `${filter ?? ''}/${fragmentEntryPoint ?? ''}/${coverageOnly ? 1 : 0}/${phase}/${viewOffset}/${frameResources.opaqueDepthPrimed ? 1 : 0}${seededDepth ? '/seeded' : ''}`,
             descriptor,
           );
-    const bindings = new IndirectPassBindings(pass, viewBindGroup, descriptor, bundlePass);
-    if (descriptor === undefined) pass.setBindGroup(0, viewBindGroup, [0, 0]);
+    const bindings = new IndirectPassBindings(
+      pass,
+      viewBindGroup,
+      descriptor,
+      bundlePass,
+      viewOffset,
+    );
+    if (descriptor === undefined) pass.setBindGroup(0, viewBindGroup, [viewOffset, 0]);
     const colorFormats = frameResources.colorFormats ?? target.colorFormats;
     const sampleCount = rasterSampleCount(
       frameResources.bundleDescriptor?.sampleCount ?? target.sampleCount,
     );
-    const call: RasterEncodeCall = {
-      resources,
-      frameResources,
-      filter,
-      fragmentEntryPoint,
-      coverageOnly,
-      seededDepth,
-      phase,
-      colorFormats,
-      sampleCount,
-      // Stock recording owns the attachments for this encode. Raw callers
-      // retain per-selected-batch format observations.
-      formatKey: target.rendererRecording ? colorFormats.join(',') : undefined,
-      regionOffset: region === undefined ? 0 : region.indirectByteOffset,
-      visibleRegionBase: region === undefined ? 0 : region.visibleBase,
+    const createRasterEncodeCall = () => {
+      const call: RasterEncodeCall = {
+        resources,
+        frameResources,
+        filter,
+        fragmentEntryPoint,
+        coverageOnly,
+        seededDepth,
+        phase,
+        colorFormats,
+        sampleCount,
+        // Stock recording owns the attachments for this encode. Raw callers
+        // retain per-selected-batch format observations.
+        formatKey: target.rendererRecording ? colorFormats.join(',') : undefined,
+        regionOffset: region === undefined ? 0 : region.indirectByteOffset,
+        visibleRegionBase: region === undefined ? 0 : region.visibleBase,
+      };
+      return call;
     };
+    const call = createRasterEncodeCall();
     const ordered = this.orderGBufferEncode(projected, call);
     const lives = ordered ?? this.liveRasterBatches;
     const retained =
@@ -2392,15 +2402,26 @@ export class GpuDrivenProduction {
           coverageOnly,
           seededDepth,
         );
-        const pipeline = pipelineFor(colorFormats, formatKey, false, call.sampleCount);
+        const pipeline = pipelineFor(
+          colorFormats,
+          formatKey,
+          false,
+          call.sampleCount,
+          frameResources.opaqueDepthPrimed,
+        );
         const mesh = this.resolveMeshGroup(projected, call, bindings, batch);
         return classOwner(pipeline, mesh);
       },
     );
     const facts = runFacts(
       (live) =>
-        this.classFor(projected, live as LiveRasterBatch, call.filter, fragmentEntryPoint) !==
-        undefined,
+        this.classFor(
+          projected,
+          live as LiveRasterBatch,
+          call.filter,
+          fragmentEntryPoint,
+          coverageOnly,
+        ) !== undefined,
       slotsByBinding,
       frameResources.selectedMaterialSlots,
     );
@@ -2428,7 +2449,7 @@ export class GpuDrivenProduction {
         bindings.replayRun(reused, this.preparedBundleCounters);
         this.encodedIndirectDraws += reused.draws;
         if (reused.bundle !== undefined && reused.draws > 0)
-          this.observeRetainedMaterialPipelineBindings(projected, call, reused);
+          this.observeRetainedMaterialPipelineBindings(projected, call, reused, lives, start, end);
       } else {
         bindings.recordRun(retained.runs.record(lives, start, end, retained.facts));
         for (let index = start; index < end; index++)
@@ -2484,8 +2505,8 @@ export class GpuDrivenProduction {
         mode,
         sources,
         live,
-        this.classFor(projected, live, filter, fragmentEntryPoint),
-        rasterClasses.get(rendererRecording ? live.recordingClassKey : live.classKey),
+        this.classFor(projected, live, filter, fragmentEntryPoint, coverageOnly),
+        rasterClasses.get(rasterClassProjectionKey(live, rendererRecording)),
       ),
     );
     this.gbufferOrderInspection = {
@@ -2513,7 +2534,13 @@ export class GpuDrivenProduction {
   ): void {
     const { frame, target } = projected;
     const { frameResources } = call;
-    const batch = this.classFor(projected, live, call.filter, call.fragmentEntryPoint);
+    const batch = this.classFor(
+      projected,
+      live,
+      call.filter,
+      call.fragmentEntryPoint,
+      call.coverageOnly,
+    );
     if (batch === undefined) return;
     const globalMaterialSlot = selectedMaterialSlot(live, frameResources);
     if (globalMaterialSlot === undefined) return;
@@ -2522,7 +2549,7 @@ export class GpuDrivenProduction {
       call.fragmentEntryPoint,
       call.coverageOnly,
       call.seededDepth,
-    )(call.colorFormats, call.formatKey, false, call.sampleCount);
+    )(call.colorFormats, call.formatKey, false, call.sampleCount, frameResources.opaqueDepthPrimed);
     if (!selectedPipeline.ok) throw selectedPipeline.error;
     bindings.bindPipeline(selectedPipeline.value);
     const material = bindMaterialSlot(bindings, batch, frameResources, globalMaterialSlot);
@@ -2559,10 +2586,19 @@ export class GpuDrivenProduction {
     projected: ProjectedRasterGraph,
     call: RasterEncodeCall,
     reused: RetainedRasterBlock,
+    lives: readonly LiveRasterBatch[],
+    start: number,
+    end: number,
   ): void {
-    for (const owner of reused.lives) {
-      const live = owner as LiveRasterBatch;
-      const batch = this.classFor(projected, live, call.filter, call.fragmentEntryPoint);
+    for (let index = start; index < end; index++) {
+      const live = lives[index] as LiveRasterBatch;
+      const batch = this.classFor(
+        projected,
+        live,
+        call.filter,
+        call.fragmentEntryPoint,
+        call.coverageOnly,
+      );
       const slot = selectedMaterialSlot(live, call.frameResources);
       if (batch === undefined || slot === undefined) continue;
       const material = reused.materials.get(slot);
@@ -2715,10 +2751,7 @@ export class GpuDrivenProduction {
   ): Result<PreparedProductionPlan, GpuDrivenPreparationError> {
     const preparation = this.preparations[pass];
     const previous = preparation.cached;
-    const sameInputs =
-      previous !== undefined &&
-      previous.worldKeys === scene.worldKeys &&
-      previous.scene === scene.scene;
+    const sameInputs = previous !== undefined && previous.scene === scene.scene;
     if (
       sameInputs &&
       previous.plan === scene.plan &&
@@ -2787,14 +2820,13 @@ export class GpuDrivenProduction {
     this.gpuOwnedSnapshotsMaterialized = 0;
     const value =
       profilePhase === undefined
-        ? assemblePreparedPlan(scene.plan, batchRows, scene.worldKeys)
+        ? assemblePreparedPlan(scene.plan, batchRows)
         : runRecordProfilePhase(profilePhase, 'record/gpu-driven-prepare/plan/admission', () =>
-            assemblePreparedPlan(scene.plan, batchRows, scene.worldKeys),
+            assemblePreparedPlan(scene.plan, batchRows),
           );
     preparation.cached = {
       plan: scene.plan,
       slotAt: scene.slotAt,
-      worldKeys: scene.worldKeys,
       scene: scene.scene,
       batchRows,
       value,
@@ -3126,6 +3158,7 @@ export class GpuDrivenProduction {
               sourcePlan: pass.sourcePlan,
               scene: pass.shadowScene,
               inputReads: pass.inputReads,
+              materialSource: pass.scene,
               skin: pass.scene.skin,
               capsuleDirectional:
                 pass.capsuleShadowDirectional && input.identity.kind === 'directional',
@@ -3152,6 +3185,7 @@ export class GpuDrivenProduction {
     update.sourcePlan = pass.sourcePlan;
     update.scene = pass.shadowScene;
     update.inputReads = pass.inputReads;
+    update.materialSource = pass.scene;
     update.skin = pass.scene.skin;
     update.capsuleDirectional =
       pass.capsuleShadowDirectional && input.identity.kind === 'directional';
@@ -3353,7 +3387,6 @@ export class GpuDrivenProduction {
       ),
       shadowEntry: execution.pass,
       material: execution.material,
-      worldId: binding.worldId,
     });
   }
 
@@ -3704,7 +3737,6 @@ export class GpuDrivenProduction {
     const view = this.view;
     const filtered = this.filteredCache?.value;
     const sourceFrame = this.preparations.forward.cached;
-    const filteredWorldKeys = this.filteredCache?.prepared.worldKeys;
     const telemetryCandidateCount = this.telemetryCandidateCount;
     if (view === undefined) return Promise.resolve(undefined);
     return view.readLodSelection().then((selection) => {
@@ -3737,7 +3769,6 @@ export class GpuDrivenProduction {
       if (filtered === undefined) return selection;
       type LodBatchAttribution = {
         readonly batch: GpuDrivenBatch;
-        readonly worldKey: number;
         readonly primitiveSlot: number;
         readonly slotGeneration: number;
         readonly artifact?: MaterialShaderArtifact;
@@ -3747,7 +3778,6 @@ export class GpuDrivenProduction {
           prepared.batch.batchId,
           {
             batch: prepared.batch,
-            worldKey: prepared.worldKey,
             primitiveSlot: prepared.batch.members?.at(0)?.primitiveIndex ?? -1,
             slotGeneration: prepared.batch.members?.at(0)?.generation ?? -1,
             artifact: prepared.artifact,
@@ -3771,24 +3801,11 @@ export class GpuDrivenProduction {
           if (slot === undefined || slot.generation !== candidate?.generation) continue;
           preparedByBatchId.set(batch.batchId, {
             batch,
-            worldKey: filteredWorldKeys?.[slot.snapshot.worldId] ?? slot.snapshot.worldId,
             primitiveSlot: slot.slot,
             slotGeneration: slot.generation,
           });
         }
       }
-      const worldSelections = new Map<
-        number,
-        {
-          readonly worldKey: number;
-          readonly primitiveSlot: number;
-          readonly slotGeneration: number;
-          candidateCount: number;
-          visible: number;
-          occluded: number;
-          readonly lodHistogram: Map<number, number>;
-        }
-      >();
       const lodHistogram = new Map<number, number>();
       // The selector visits the full captured plan, including candidates that
       // the CPU visibility projection suppressed. Use that same plan for the
@@ -3817,28 +3834,6 @@ export class GpuDrivenProduction {
         lodVisible += batchSelection.visible;
         for (const row of batchSelection.lodHistogram) {
           lodHistogram.set(row.level, (lodHistogram.get(row.level) ?? 0) + row.count);
-        }
-        let aggregate = worldSelections.get(prepared.worldKey);
-        if (aggregate === undefined) {
-          aggregate = {
-            worldKey: prepared.worldKey,
-            primitiveSlot: prepared.batch.members?.at(0)?.primitiveIndex ?? -1,
-            slotGeneration: prepared.batch.members?.at(0)?.generation ?? -1,
-            candidateCount: 0,
-            visible: 0,
-            occluded: 0,
-            lodHistogram: new Map(),
-          };
-          worldSelections.set(prepared.worldKey, aggregate);
-        }
-        aggregate.candidateCount += batchSelection.candidateCount;
-        aggregate.visible += batchSelection.visible;
-        aggregate.occluded += batchSelection.occluded;
-        for (const row of batchSelection.lodHistogram) {
-          aggregate.lodHistogram.set(
-            row.level,
-            (aggregate.lodHistogram.get(row.level) ?? 0) + row.count,
-          );
         }
       }
       return {
@@ -3869,30 +3864,12 @@ export class GpuDrivenProduction {
             // A slot reused after the copy was encoded is another row.
             if (slot === undefined || slot.generation !== member.generation) return [];
             const memberId = this.surfaceFrames.memberId(
-              slot.worldId,
               slot.entityKey,
               member.drawItemIndex,
               member.instanceOrdinal,
             );
             return memberId === undefined ? [] : [memberId];
           }),
-        ),
-        worldSelections: Object.freeze(
-          [...worldSelections.values()].map((aggregate) =>
-            Object.freeze({
-              worldKey: aggregate.worldKey,
-              primitiveSlot: aggregate.primitiveSlot,
-              slotGeneration: aggregate.slotGeneration,
-              candidateCount: aggregate.candidateCount,
-              visible: aggregate.visible,
-              occluded: aggregate.occluded,
-              lodHistogram: Object.freeze(
-                [...aggregate.lodHistogram.entries()]
-                  .sort(([left], [right]) => left - right)
-                  .map(([level, count]) => Object.freeze({ level, count })),
-              ),
-            } satisfies GpuDrivenWorldLodSelectionInspection),
-          ),
         ),
       };
     });

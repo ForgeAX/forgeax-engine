@@ -414,9 +414,7 @@ if (debugInst !== undefined) {
       process.exit(1);
     }
     world.update().unwrap();
-    await drawReadyFrame(renderer, {
-      leases: [lease], camera: { lease }, environment: { lease },
-    });
+    await drawReadyFrame(renderer, { source: lease });
     framesObserved++;
     const queueWaitStart = performance.now();
     await sharedDevice.queue.onSubmittedWorkDone();
@@ -482,11 +480,7 @@ if (debugInst !== undefined) {
 }
 for (let i = framesObserved; i < TARGET_FRAMES; i++) {
   world.update().unwrap();
-  await drawReadyFrame(renderer, {
-    leases: [lease],
-    camera: { lease },
-    environment: { lease },
-  });
+  await drawReadyFrame(renderer, { source: lease });
   framesObserved++;
 }
 const device = sharedDevice;

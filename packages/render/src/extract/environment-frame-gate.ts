@@ -1,33 +1,42 @@
 import type { World } from '@forgeax/engine-ecs';
-import type { mergeEnvironment, WorldEnvironmentPart } from '../render-system-extract-tail';
+import type { CameraSnapshot } from '../render-contract';
+import type { sourceEnvironment, WorldEnvironmentPart } from '../render-system-extract-tail';
 import { EnvironmentGate } from './environment-gate';
 import type { WorldLightingPart } from './world-environment';
 
-export interface EnvironmentLightingReader {
+export interface EnvironmentCameraReader {
+  readCameras(world: World, extract: () => CameraSnapshot[]): CameraSnapshot[];
+}
+
+export interface EnvironmentLightingReader extends EnvironmentCameraReader {
   readLighting(
     world: World,
-    worldId: number,
     extract: Parameters<EnvironmentGate<WorldLightingPart>['read']>[2],
   ): WorldLightingPart;
 }
 
 /** One source owns its complete publication and its independent light projection. */
 export class EnvironmentFrameGate
-  extends EnvironmentGate<WorldEnvironmentPart, ReturnType<typeof mergeEnvironment>>
+  extends EnvironmentGate<WorldEnvironmentPart, ReturnType<typeof sourceEnvironment>>
   implements EnvironmentLightingReader
 {
+  private readonly cameras = new EnvironmentGate<CameraSnapshot[]>(true);
   private readonly lighting = new EnvironmentGate<WorldLightingPart>(true);
 
   constructor() {
     super(true);
   }
 
+  readCameras(world: World, extract: () => CameraSnapshot[]): CameraSnapshot[] {
+    this.cameras.assetsChanged = this.assetsChanged;
+    return this.cameras.read(world, 'cameras', () => ({ value: extract(), timeDependent: false }));
+  }
+
   readLighting(
     world: World,
-    worldId: number,
     extract: Parameters<EnvironmentGate<WorldLightingPart>['read']>[2],
   ): WorldLightingPart {
     this.lighting.assetsChanged = this.assetsChanged;
-    return this.lighting.read(world, String(worldId), extract);
+    return this.lighting.read(world, 'lighting', extract);
   }
 }

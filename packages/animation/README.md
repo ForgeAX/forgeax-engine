@@ -211,7 +211,7 @@ mask definitions and mask-column lengths. Compile/sample failures return a
 Mask validation precedes clock and pose writes for the affected player.
 
 See the visual `animation-blending` Feature Lab case, the playback integration
-regression, and `packages/animation/bench/blending.mjs` for effect and scaling checks.
+regression for effect checks.
 
 ## Playback and diagnostics
 
@@ -324,8 +324,8 @@ flowchart LR
   M --> G["Update Scene propagation / ordinary Skin extraction"]
 ```
 
-Game IK/retarget systems declare `after: [ADVANCE_ANIMATION_PLAYER_SYSTEM]` and
-`before: [CAPTURE_SKELETAL_MOTION_BASE]` in FixedUpdate. Target masks remain ordinary
+Game IK/retarget systems declare `after: [AnimationPlayback]` and
+`before: [SkeletalMotionCapture]` in FixedUpdate. Target masks remain ordinary
 AnimationPlayer masks. Root-motion extraction retains its existing accumulator;
 the game consumes it once for actor movement. Motion does not consume root deltas
 or move the actor. During ragdoll the game must stop its actor motor when desired.
@@ -490,14 +490,7 @@ Feature Lab has ON/OFF scenes for **Object property animation**, **Inverse
 kinematics** and **Skeleton retargeting**. Reproduce deeper capture/readback with
 `FEATURE_LAB_RHI_DEBUG=1 pnpm --filter @forgeax/feature-lab dev -- --port 5196`,
 then `node apps/feature-lab/scripts/verify-animation.mjs`. It compares live/replay
-pixels and inspects the actual bound GPU skin palettes. CPU scaling samples use
-`node packages/animation/bench/animation.mjs` or
-`node --expose-gc packages/animation/bench/maturity.mjs`; they include current-pose reads and
-World writes, report raw distributions, and exclude rendering. They are not an
-FPS or cross-engine performance claim.
-`node packages/animation/bench/bake.mjs` compares live and baked playback at
-601 independent times for each of 15/30/60/120 FPS, retaining the error curves
-and ordinary clip JSON size.
+pixels and inspects the actual bound GPU skin palettes.
 
 ## Imported animation bounds
 
@@ -612,8 +605,7 @@ loop-safe actor travel, a method, actual Host WAV decode/playback, child animati
 and a disabled control. Reproduce with `FEATURE_LAB_RHI_DEBUG=1`, then
 `ANIMATION_FEATURES=timeline-root-motion node apps/feature-lab/scripts/verify-animation.mjs`.
 It compares bound GPU skin palettes to analytic CPU matrices, checks zero-palette
-falsification, and compares live pixels with fresh-device replay. CPU scaling is
-measured with `node packages/animation/bench/timeline-root-motion.mjs`.
+falsification, and compares live pixels with fresh-device replay.
 
 ## Spline IK
 

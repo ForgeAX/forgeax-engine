@@ -1,0 +1,67 @@
+// Provenance of the converted runtime texels; original float sources remain archived.
+export const textureSources = [
+  {
+    "role": "pattern",
+    "name": "T_CloudPattern",
+    "parameter": "layoutPattern",
+    "key": "texture/layout-pattern",
+    "format": "rgba16float",
+    "colorSpace": "linear",
+    "dimension": "2d",
+    "width": 1024,
+    "height": 1024,
+    "depth": 1,
+    "bytes": 8388608,
+    "sha256": "3bb6abd7ce3a8cb4b265bfda104656c8292c6ac3a71849bd9dbacd2c5fc5a48a",
+    "ueObject": "/Engine/EngineSky/VolumetricClouds/T_CloudPattern.T_CloudPattern",
+    "uassetSha256": "0a8225097ad44c42ea9f5d5d7cba61ff0576ec43fbb328458dd357c1b3d70225"
+  },
+  {
+    "role": "mask",
+    "name": "T_CloudMask",
+    "parameter": "layoutMask",
+    "key": "texture/layout-mask",
+    "format": "rgba8unorm",
+    "colorSpace": "linear",
+    "dimension": "2d",
+    "width": 1024,
+    "height": 1024,
+    "depth": 1,
+    "bytes": 4194304,
+    "sha256": "88e77ae972d702c4a77b3f4b11e0e2f4de1161f8beccd4e845fe3ca7a3d21928",
+    "ueObject": "/Engine/EngineSky/VolumetricClouds/T_CloudMask.T_CloudMask",
+    "uassetSha256": "12a258cd0f3bdb22f7370352580389ba266a213fa45408cad7d7f3494d75e51c"
+  },
+  {
+    "role": "profile",
+    "name": "T_Profile_08",
+    "parameter": "heightProfile",
+    "key": "texture/height-profile",
+    "format": "rgba16float",
+    "colorSpace": "linear",
+    "dimension": "2d",
+    "width": 256,
+    "height": 256,
+    "depth": 1,
+    "bytes": 524288,
+    "sha256": "f9b1085bb9c309f422a6642d5e28c098e3b37aa1a4bd8397b9a407864e475e5f",
+    "ueObject": "/Engine/EngineSky/VolumetricClouds/T_Profile_08.T_Profile_08",
+    "uassetSha256": "25334827f0073977519a189bbb3dc784baf1aaa99f97b4cafc20f321b837ef15"
+  },
+  {
+    "role": "body",
+    "name": "VT_PerlinWorley_Balanced",
+    "parameter": "bodyNoise",
+    "key": "texture/body-noise",
+    "format": "rgba16float",
+    "colorSpace": "linear",
+    "dimension": "3d",
+    "width": 128,
+    "height": 128,
+    "depth": 128,
+    "bytes": 16777216,
+    "sha256": "ab0cb1097f624b34f98f2ebbe7de7cc06cb3f7c7ed05918156600415632d7260",
+    "ueObject": "/Engine/EngineSky/VolumetricClouds/VT_PerlinWorley_Balanced.VT_PerlinWorley_Balanced",
+    "uassetSha256": "89542fbe266d8f0d6d01ed3861cf72311c756d3a30d19c7c555041d44893c007"
+  }
+] as const;

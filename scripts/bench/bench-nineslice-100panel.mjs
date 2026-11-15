@@ -463,9 +463,7 @@ async function main() {
   for (let i = 0; i < WARM_UP; i++) {
     world.update().unwrap();
     const r = renderer.draw({
-      leases: [lease],
-      camera: { lease },
-      environment: { lease },
+      source: lease,
     });
     if (!r.ok) drawErrors++;
   }
@@ -473,9 +471,7 @@ async function main() {
   for (let i = 0; i < measureFrames; i++) {
     world.update().unwrap();
     const r = renderer.draw({
-      leases: [lease],
-      camera: { lease },
-      environment: { lease },
+      source: lease,
     });
     if (!r.ok) drawErrors++;
   }

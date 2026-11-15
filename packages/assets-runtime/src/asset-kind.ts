@@ -11,6 +11,8 @@ const BUILTIN_KINDS = {
   plugin: true,
   mesh: true,
   texture: true,
+  'gpu-texture': true,
+  'texture-generator': true,
   equirect: true,
   sampler: true,
   material: true,
@@ -28,6 +30,11 @@ const BUILTIN_KINDS = {
   'particle-effect': true,
   terrain: true,
   'navigation-mesh': true,
+  'water-body': true,
+  'water-zone': true,
+  'water-wave-set': true,
+  'water-brush-recipe': true,
+  'water-simulation-recipe': true,
 } satisfies Record<BuiltinAssetKind, true>;
 
 export function isBuiltinAssetKind(kind: string): kind is BuiltinAssetKind {

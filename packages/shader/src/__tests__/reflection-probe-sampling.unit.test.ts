@@ -31,7 +31,11 @@ describe('Standard reflection probe sampling contract', () => {
     expect(standardSource).toContain(
       'var reflectionFallback = environment.specular * (vec3<f32>(1.0) - coatF) * specularAo;',
     );
-    expect(lightingSource).toContain('kD * irradiance * albedo * diffuseScale');
+    expect(lightingSource).toContain('kD * irradiance * albedo');
+    expect(lightingSource).toContain(
+      'let irradiance = sampleSkylightDiffuse(sky, normal, irradianceMap, irradianceSampler);',
+    );
+    expect(lightingSource).toContain('* skylightHemisphereScale(sky, scale, normal);');
     // The lit tail carries the fallback; every forward entry copies it out.
     expect(standardSource).toContain(
       'lit.reflectionFallback = vec4<f32>(reflectionFallback, standardSsrCoverage());',
@@ -57,9 +61,18 @@ describe('Standard reflection probe sampling contract', () => {
     // and use the Skylight color lanes for box metadata. Never multiply that
     // metadata by the specular lobe. The same decoded scale must drive the
     // PROBE_BLEND specular ambient term and detached SSR fallback.
-    expect(lightingSource).toContain(
-      'specular * single * decodeSpecularEnvironmentScale(tint, sky.intensity)',
+    expect(lightingSource).toContain('return StandardEnvironment(diffuse, specular * single,');
+    const radianceOwner = lightingSource.slice(
+      lightingSource.indexOf('fn sampleSkylightRadiance('),
+      lightingSource.indexOf('fn evaluateStandardEnvironment('),
     );
+    expect(radianceOwner).toContain('if (sky.intensity < 0.0)');
+    expect(radianceOwner).toContain('return sampleReflectionProbeRadiance(');
+    expect(radianceOwner).toContain('max(-sky.intensity - 1.0, 0.0)');
+    expect(radianceOwner).toContain(
+      'return sampleIblRadiance(reflectionDirection, roughness, sky.rotation, prefilterMap, prefilterSampler)',
+    );
+    expect(radianceOwner).toContain('* decodeSpecularEnvironmentScale(tint, sky.intensity);');
     for (const root of [standardSource, skinSource]) {
       expect(root).toContain('evaluateStandardEnvironment(');
       expect(root).toContain(

@@ -528,7 +528,11 @@ it('accepts a proved empty partial update before composing the retained static l
       },
     );
     expect(recorded.draws).toHaveLength(0);
-    expect(() => encodeDirectionalShadowPass(context, recorded.pass, 0)).not.toThrow();
+    expect(() => encodeDirectionalShadowPass({ ...context }, recorded.pass, 0)).not.toThrow();
+    context.frameState.shadowRaster.begin();
+    expect(() => encodeDirectionalShadowPass({ ...context }, recorded.pass, 0)).toThrow(
+      'submitted static shadow depth',
+    );
   } finally {
     submission.mockRestore();
     fixture.dispose();

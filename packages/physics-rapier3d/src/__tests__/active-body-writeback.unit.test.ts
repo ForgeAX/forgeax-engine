@@ -1,7 +1,8 @@
-import { Disabled, defineComponent, FixedUpdate, World } from '@forgeax/engine-ecs';
+import { Disabled, defineComponent, defineSystem, FixedUpdate, World } from '@forgeax/engine-ecs';
 import {
   Collider,
   ColliderShapeValue,
+  PhysicsWorldResource,
   RigidBody,
   RigidBodyTypeValue,
   registerPhysicsComponents,
@@ -61,19 +62,18 @@ function countTransformWrites(world: World) {
     /* consume earlier publications */
   }
   let count = 0;
-  world
-    .addSystem(FixedUpdate, {
-      name: 'observe-writeback-publications',
-      queries: [],
-      after: [PhysicsWriteback.name],
-      fn: () => {
-        for (const _row of query) count++;
-      },
-    })
-    .unwrap();
+  const systemToken1 = defineSystem({
+    name: 'observe-writeback-publications',
+    queries: [],
+    after: [PhysicsWriteback],
+    fn: () => {
+      for (const _row of query) count++;
+    },
+  });
+  world.addSystem(FixedUpdate, systemToken1).unwrap();
   return {
     stop: () => {
-      world.removeSystem(FixedUpdate, 'observe-writeback-publications').unwrap();
+      world.removeSystem(FixedUpdate, systemToken1).unwrap();
       return count;
     },
   };
@@ -85,7 +85,7 @@ describe('active-body physics writeback', () => {
     if (!RAPIER) throw new Error('Real Rapier is required for the writeback regression');
     const world = prepareWorld();
     const physics = createRapier3DPhysicsWorld(RAPIER);
-    world.insertResource('PhysicsWorld', physics);
+    world.insertResource(PhysicsWorldResource, physics);
     registerPhysicsSystems(world);
     const body = world
       .spawn({ component: Transform, data: { scale: [2, 3, 4], shear: [0.1, 0.2, 0.3] } })
@@ -150,7 +150,7 @@ describe('active-body physics writeback', () => {
     if (!RAPIER) throw new Error('Real Rapier is required for the writeback regression');
     const world = prepareWorld();
     const physics = createRapier3DPhysicsWorld(RAPIER);
-    world.insertResource('PhysicsWorld', physics);
+    world.insertResource(PhysicsWorldResource, physics);
     registerPhysicsSystems(world);
     const body = spawnDynamic(world, [0, 50, 0], 1);
     try {
@@ -175,15 +175,14 @@ describe('active-body physics writeback', () => {
     if (!RAPIER) throw new Error('Real Rapier is required for the writeback regression');
     const world = prepareWorld();
     const pw = createRapier3DPhysicsWorld(RAPIER);
-    world.insertResource('PhysicsWorld', pw);
+    world.insertResource(PhysicsWorldResource, pw);
     registerPhysicsSystems(world);
     const entity = spawnDynamic(world, [0, 50, 0], 1);
     try {
       tick(world);
       let decodedTransforms = 0;
-      world.removeSystem(FixedUpdate, PhysicsWriteback.name).unwrap();
       world
-        .addSystem(FixedUpdate, {
+        .replaceSystem(FixedUpdate, PhysicsWriteback, {
           ...PhysicsWriteback,
           fn: (world, ...args) => {
             const get = vi.spyOn(world, 'get');
@@ -213,7 +212,7 @@ describe('active-body physics writeback', () => {
     if (!RAPIER) return;
     const world = prepareWorld();
     const pw = createRapier3DPhysicsWorld(RAPIER);
-    world.insertResource('PhysicsWorld', pw);
+    world.insertResource(PhysicsWorldResource, pw);
     registerPhysicsSystems(world);
     for (let index = 0; index < 64; index += 1) spawnDynamic(world, [index * 4, 0, 0], 0);
     tick(world, SETTLE_TICKS);
@@ -234,7 +233,7 @@ describe('active-body physics writeback', () => {
     if (!RAPIER) return;
     const world = prepareWorld();
     const pw = createRapier3DPhysicsWorld(RAPIER);
-    world.insertResource('PhysicsWorld', pw);
+    world.insertResource(PhysicsWorldResource, pw);
     registerPhysicsSystems(world);
     const resting = spawnDynamic(world, [0, 0, 0], 0);
     tick(world, 2);
@@ -250,7 +249,7 @@ describe('active-body physics writeback', () => {
     if (!RAPIER) return;
     const world = prepareWorld();
     const pw = createRapier3DPhysicsWorld(RAPIER);
-    world.insertResource('PhysicsWorld', pw);
+    world.insertResource(PhysicsWorldResource, pw);
     registerPhysicsSystems(world);
     const faller = spawnDynamic(world, [0, 10, 0], 1);
     tick(world, 2);
@@ -267,7 +266,7 @@ describe('active-body physics writeback', () => {
     if (!RAPIER) return;
     const world = prepareWorld();
     const pw = createRapier3DPhysicsWorld(RAPIER);
-    world.insertResource('PhysicsWorld', pw);
+    world.insertResource(PhysicsWorldResource, pw);
     registerPhysicsSystems(world);
     const sleeper = spawnDynamic(world, [3, 0, 0], 0);
     tick(world, SETTLE_TICKS);

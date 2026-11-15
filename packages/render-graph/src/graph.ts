@@ -85,7 +85,11 @@ export interface ColorTargetDescriptor {
 export interface ResolvedColorTargetDescriptor {
   readonly texture: Texture;
   readonly format: TextureFormat;
-  readonly size: { readonly width: number; readonly height: number };
+  readonly size: {
+    readonly width: number;
+    readonly height: number;
+    readonly depthOrArrayLayers?: number;
+  };
   readonly usage: number;
   readonly sample: number;
 }

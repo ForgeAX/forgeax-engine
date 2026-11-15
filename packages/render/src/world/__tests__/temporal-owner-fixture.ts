@@ -1,8 +1,10 @@
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
+import { defineSystem } from '@forgeax/engine-ecs';
+import { RenderScenePublishOrder, RenderViewFrameOrder } from '../../system-order';
 import { TemporalViewHistory } from '../../temporal/frame';
 import { ViewRecorder } from '../render-views';
 import { RenderPrepare, renderSubmission } from '../render-world';
-import { RENDER_SCENE_PUBLISH_SYSTEM } from '../scene-systems';
+
 import {
   RENDER_VIEW_FRAME_SYSTEM,
   ViewFrame,
@@ -58,18 +60,18 @@ export function registerViewFrameStub(
   world: World,
   prepare: (entity: EntityHandle) => ViewFrameResult,
 ): void {
-  world
-    .addSystem(RenderPrepare, {
-      name: RENDER_VIEW_FRAME_SYSTEM,
-      after: [RENDER_SCENE_PUBLISH_SYSTEM],
-      queries: [{ read: [ViewRecorder, ViewFrame] }],
-      fn: (world, [rows]) => {
-        const frame = renderSubmission(world).frame;
-        for (const row of rows) {
-          const state = world.resolveUniqueRef<ViewFrameState>(row.get(ViewFrame).state).unwrap();
-          if (state.frame === frame) state.result = prepare(row.entity);
-        }
-      },
-    })
-    .unwrap();
+  const systemToken1 = defineSystem({
+    sets: [RenderViewFrameOrder],
+    name: RENDER_VIEW_FRAME_SYSTEM,
+    after: [RenderScenePublishOrder],
+    queries: [{ read: [ViewRecorder, ViewFrame] }],
+    fn: (world, [rows]) => {
+      const frame = renderSubmission(world).frame;
+      for (const row of rows) {
+        const state = world.resolveUniqueRef<ViewFrameState>(row.get(ViewFrame).state).unwrap();
+        if (state.frame === frame) state.result = prepare(row.entity);
+      }
+    },
+  });
+  world.addSystem(RenderPrepare, systemToken1).unwrap();
 }

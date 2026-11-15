@@ -1,6 +1,9 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { describe, expect, it } from 'vitest';
+import { MaterialResource } from '../../material-resource';
+import { defaultMaterialSnapshot, type RenderableSnapshot } from '../../render-system-extract';
 import { PublishedAssetClosure } from '../asset-closure';
+import { publicationDependencies, renderableAssetRoots } from '../dependencies';
 
 const texture = () =>
   ({
@@ -13,6 +16,45 @@ const texture = () =>
   }) as const;
 
 describe('published asset closure', () => {
+  it('keeps inline owners assetless while retaining their material dependency closure', () => {
+    const assets = new AssetRegistry();
+    const textureHandle = assets.create(texture()).unwrap();
+    const materialHandle = assets
+      .create({
+        kind: 'material',
+        passes: [{ name: 'main', program: { module: 'forgeax::standard' } }],
+        values: { albedo: { texture: textureHandle } },
+      } as const)
+      .unwrap();
+    const material = MaterialResource.from({
+      ...defaultMaterialSnapshot(materialHandle),
+      baseColorTexture: textureHandle,
+      textureHandles: new Map([['baseColorTexture', textureHandle]]),
+    });
+    const owner = {
+      assetHandle: undefined,
+      materials: [material],
+      materialOverrides: [],
+    } as unknown as RenderableSnapshot;
+
+    expect(publicationDependencies(owner)).toEqual(
+      expect.arrayContaining([materialHandle, textureHandle]),
+    );
+    expect(publicationDependencies(owner)).not.toContain(undefined);
+    const roots = renderableAssetRoots(owner);
+    expect(roots).toEqual([materialHandle]);
+
+    const closure = new PublishedAssetClosure();
+    const transaction = closure.begin(assets);
+    for (const handle of roots) transaction.acquire(handle);
+    expect(
+      transaction
+        .rows()
+        .map(([handle]) => handle)
+        .sort(),
+    ).toEqual([materialHandle, textureHandle].sort());
+  });
+
   it('replaces a shared dependency once, with atomic discard and retirement', () => {
     const assets = new AssetRegistry();
     const oldTexture = assets.create(texture()).unwrap();

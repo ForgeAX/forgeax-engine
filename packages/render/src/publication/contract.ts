@@ -6,6 +6,7 @@ import type {
 } from '@forgeax/engine-shader';
 import type { Asset, AssetHandle, MeshAsset, Result } from '@forgeax/engine-types';
 import type { DynamicGeometryRecordStageLane } from '../dynamic-geometry';
+import type { RenderFeatureCompletion, RenderFeatureSubmission } from '../features/types';
 import type { FrameReceipt, RenderFrameInput } from '../render-contract';
 import type { DispatchEntry, ExtractedFrame, RenderableSnapshot } from '../render-system-extract';
 import type { TransparentSortConfig } from '../systems/transparent-sort-config';
@@ -58,16 +59,17 @@ export interface PreparedPublishedMeshResidency {
 export type RenderPublicationMetadata = Omit<
   ExtractedFrame,
   | 'renderables'
-  | 'dispatch'
-  | 'visibilitySnapshots'
+  | 'waterMeshOwnerRefreshes'
   | 'featureVisibilitySnapshots'
+  | 'dispatch'
+  | 'visibilitySnapshot'
   | 'hiddenEntityReports'
 >;
 
 export interface RenderPublicationTemplate {
   readonly snapshot: Omit<
     RenderableSnapshot,
-    'worldId' | 'entityKey' | 'transform' | 'material' | 'materials' | 'materialOverrides'
+    'entityKey' | 'transform' | 'material' | 'materials' | 'materialOverrides'
   > & {
     readonly material: number;
     readonly materials: readonly number[];
@@ -107,6 +109,8 @@ export interface RenderPublication extends RenderPublicationIdentity {
   readonly features: readonly {
     readonly identity: string;
     readonly data: unknown;
+    readonly failure?: import('../features/source').RenderFeatureSourceFailure;
+    readonly hiddenEntities?: readonly import('../features/types').RenderFeatureHiddenEntityReport[];
     /** Sent once per accepted declaration; enable state remains per frame. */
     readonly fullscreen?: import('../features/fullscreen').FullscreenRenderFeatureDeclaration;
   }[];
@@ -177,7 +181,22 @@ export interface PublishedRenderFrameInput {
   readonly geometryObservationSourceWorldIdentity?: string;
   readonly geometryLane?: RenderFrameInput['geometryLane'];
   /** Realm-local adapter invoked only after the feature's graph is submitted. */
-  readonly onFeatureSourceSubmitted?: (identity: string, feedback: unknown) => void;
+  readonly onFeatureSourceSubmitted?: (
+    identity: string,
+    feedback: unknown,
+    submission?: RenderFeatureSubmission,
+  ) => void;
+  /** Receipt identity for feature pixels; the returned draw receipt owns completion and retirement. */
+  readonly onFeatureSourceCompleted?: (
+    completion: RenderFeatureCompletion,
+    observations: Promise<
+      import('../render-contract').RenderResult<
+        readonly import('../render-contract').FrameDomainObservation[],
+        import('../errors/render').RenderError
+      >
+    >,
+    settleReadbackFlight: () => void,
+  ) => void;
 }
 
 export type RenderPublicationFailure =

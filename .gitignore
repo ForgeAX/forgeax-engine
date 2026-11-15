@@ -57,11 +57,12 @@ apps/**/*.tsbuildinfo
 *.cr2
 *.nef
 
-# Zero-binary invariant: the engine repo tracks NO image binaries. All
+# Source images are owned by the external assets library except the explicitly
+# admitted Water Content producer inputs above. All other
 # rendered baselines, demo source assets, and vendor textures live in the
 # forgeax-engine-assets submodule (smoke-baselines/<demo>/, demo-assets/<demo>/,
 # learn-opengl/, ...). The global *.png / *.jpg blocks above have no
-# whitelist exceptions on purpose — a stray committed image is a regression,
+# general whitelist exceptions; a stray committed image is a regression,
 # not a fixture. Regenerate IBL baselines via `pnpm bake:ibl-reference`
 # (writes into the submodule); charter P5 baseline-as-SSOT.
 

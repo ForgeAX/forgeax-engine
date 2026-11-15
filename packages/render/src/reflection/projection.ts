@@ -19,7 +19,6 @@ export interface ReflectionProbeInput {
 }
 
 export interface ReflectionProbeFact extends ReflectionProbeInput {
-  readonly worldId: number;
   readonly entityKey: number;
   readonly center: readonly [number, number, number];
   readonly revision: number;
@@ -156,7 +155,6 @@ export function admitReflectionProbe(
 
 export interface ReflectionProbeSelection {
   readonly kind: 'probe';
-  readonly worldId: number;
   readonly entityKey: number;
   readonly normalizedDistance: number;
 }
@@ -227,7 +225,7 @@ export function reflectionFallbackSourceKey(
   skylight?: { readonly entityHandle: number; readonly equirectHandle: number },
 ): string {
   if (source === 'probe' && selection.kind === 'probe') {
-    return `probe:${selection.worldId}:${selection.entityKey}`;
+    return `probe:${selection.entityKey}`;
   }
   if (source === 'skylight' && skylight !== undefined) {
     return `skylight:${skylight.entityHandle}:${skylight.equirectHandle}`;
@@ -336,22 +334,15 @@ function isBetter(
   current: ReflectionProbeSelection,
   facts: readonly ReflectionProbeFact[],
 ): boolean {
-  const candidateFact = facts.find(
-    (fact) => fact.worldId === candidate.worldId && fact.entityKey === candidate.entityKey,
-  );
-  const currentFact = facts.find(
-    (fact) => fact.worldId === current.worldId && fact.entityKey === current.entityKey,
-  );
+  const candidateFact = facts.find((fact) => fact.entityKey === candidate.entityKey);
+  const currentFact = facts.find((fact) => fact.entityKey === current.entityKey);
   if (candidateFact === undefined || currentFact === undefined) return false;
   if (candidateFact.priority !== currentFact.priority)
     return candidateFact.priority > currentFact.priority;
   if (candidate.normalizedDistance !== current.normalizedDistance) {
     return candidate.normalizedDistance < current.normalizedDistance;
   }
-  return (
-    candidate.worldId < current.worldId ||
-    (candidate.worldId === current.worldId && candidate.entityKey < current.entityKey)
-  );
+  return candidate.entityKey < current.entityKey;
 }
 
 export function selectReflectionProbe(
@@ -363,7 +354,6 @@ export function selectReflectionProbe(
     if (!contains(fact, primitiveCenter)) continue;
     const candidate: ReflectionProbeSelection = {
       kind: 'probe',
-      worldId: fact.worldId,
       entityKey: fact.entityKey,
       normalizedDistance: normalizedDistance(fact, primitiveCenter),
     };
@@ -383,8 +373,8 @@ export interface ReflectionProbeProjectionSnapshot {
   readonly scannedPrimitives: number;
 }
 
-function primitiveKey(worldId: number, entityKey: number): string {
-  return `${worldId}:${entityKey}`;
+function primitiveKey(entityKey: number): string {
+  return `${entityKey}`;
 }
 
 interface SelectionPrimitive {
@@ -409,9 +399,7 @@ export class ReflectionProbeProjection {
     undefined;
   private readonly primitives = new RowProjection<SelectionPrimitive>((slot) => {
     const center = this.centerOf(slot);
-    return center === undefined
-      ? undefined
-      : { key: primitiveKey(slot.worldId, slot.entityKey), center };
+    return center === undefined ? undefined : { key: primitiveKey(slot.entityKey), center };
   });
 
   update(
@@ -475,8 +463,8 @@ export class ReflectionProbeProjection {
     };
   }
 
-  selection(worldId: number, entityKey: number): ReflectionProbeSelectionResult {
-    return this.selected.get(primitiveKey(worldId, entityKey)) ?? { kind: 'skylight' };
+  selection(entityKey: number): ReflectionProbeSelectionResult {
+    return this.selected.get(primitiveKey(entityKey)) ?? { kind: 'skylight' };
   }
 }
 
@@ -487,7 +475,6 @@ function sameSelection(
   return a.kind === 'skylight'
     ? b.kind === 'skylight'
     : b.kind === 'probe' &&
-        a.worldId === b.worldId &&
         a.entityKey === b.entityKey &&
         a.normalizedDistance === b.normalizedDistance;
 }

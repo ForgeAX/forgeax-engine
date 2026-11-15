@@ -14,9 +14,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
-import { forgeaxShader } from '@forgeax/engine-vite-plugin-shader';
-import { build } from 'vite';
-import { runnerResources, shaderCompileWorkers } from './lib/runner-resources.mjs';
+import { admitShaderSourceBudget } from './lib/shader-source-budget.mjs';
 import {
   reusableSharedShader,
   sharedShaderInputFingerprint,
@@ -95,11 +93,6 @@ const engineEntries = {
 // This is the source producer: packaged release profiles must never hide a
 // source edit. Verified receipts are its only shortcut around compilation.
 process.env.FORGEAX_ENGINE_SHADER_SOURCE_BUILD = '1';
-// Engine variants compile on worker threads. Size that pool from the cgroup
-// quota because Node reports host CPUs inside a CPU-limited runner container.
-process.env.FORGEAX_SHADER_COMPILE_WORKERS = String(
-  shaderCompileWorkers(runnerResources(), process.env.FORGEAX_SHADER_COMPILE_WORKERS),
-);
 const inputFingerprint = sharedShaderInputFingerprint(root, engineEntries);
 if (process.argv.includes('--fingerprint')) {
   process.stdout.write(`${inputFingerprint}\n`);
@@ -120,6 +113,9 @@ if (process.env.FORGEAX_BUILD_NO_TASK_CACHE === '1')
     `[shared-build] shader reuse disabled by FORGEAX_BUILD_NO_TASK_CACHE; expected=${inputFingerprint}`,
   );
 
+admitShaderSourceBudget();
+const { forgeaxShader } = await import('@forgeax/engine-vite-plugin-shader');
+const { build } = await import('vite');
 rmSync(output, { recursive: true, force: true });
 mkdirSync(output, { recursive: true });
 const startedAt = performance.now();

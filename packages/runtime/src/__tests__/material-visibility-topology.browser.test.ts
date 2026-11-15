@@ -19,6 +19,7 @@ import type { AssetHandle } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import { commands } from 'vitest/browser';
 import { constructRuntimeRendererHost } from '../renderer-host';
+import { completedReadyFrame } from './helpers/completed-ready-frame';
 import { testAssets } from './helpers/runtime-assets';
 
 function value<T>(result: { ok: true; value: T } | { ok: false; error: unknown }): T {
@@ -29,6 +30,7 @@ function value<T>(result: { ok: true; value: T } | { ok: false; error: unknown }
 it('retains the graph and static shadow targets across camera material visibility changes', {
   timeout: 120_000,
 }, async () => {
+  const deadline = Date.now() + 120_000;
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = 128;
   document.body.append(canvas);
@@ -87,6 +89,8 @@ it('retains the graph and static shadow targets across camera material visibilit
         cascadeCount: 3,
         shadowDistance: 30,
         mapSize: 128,
+        // This test retains static shadow targets across visibility changes, which is opt-in.
+        staticShadowCache: true,
       },
     })
     .unwrap();
@@ -105,15 +109,10 @@ it('retains the graph and static shadow targets across camera material visibilit
   const draw = async () => {
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
-    const receipt = value(
-      renderer.draw({
-        leases: [lease],
-        camera: { lease },
-        environment: { lease },
-        fixedStep: world.getResource(FixedTime).tick,
-      }),
+    await completedReadyFrame(
+      () => value(renderer.draw({ source: lease, fixedStep: world.getResource(FixedTime).tick })),
+      deadline,
     );
-    value(await receipt.completed);
     completedFrames++;
     return renderer.inspect();
   };

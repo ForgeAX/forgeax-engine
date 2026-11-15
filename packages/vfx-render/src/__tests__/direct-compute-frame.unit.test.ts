@@ -2,10 +2,11 @@ import type { RenderFeatureWork } from '@forgeax/engine-render';
 import { expect, it } from 'vitest';
 import { createVfxDirectComputeFrame } from '../feature/direct-compute-frame';
 import type { VfxArenaRange } from '../feature/instance-arena';
+import { COUNTERS_BYTES } from '../feature/plan-declarations';
 
 type Resource = RenderFeatureWork['resources'][number];
 type Pass = RenderFeatureWork['passes'][number];
-const strides = [112, 4, 24, 20, 4, 4, 24];
+const strides = [112, 4, COUNTERS_BYTES, 20, 4, 4, 24];
 const ranges = (slot: number) =>
   strides.map((stride, index) => ({
     name: `physical-${index}`,

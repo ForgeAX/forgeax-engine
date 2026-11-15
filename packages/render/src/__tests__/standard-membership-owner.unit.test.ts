@@ -117,19 +117,11 @@ describe('stock view Cluster membership owner', () => {
     expect(independent.clusterGrid).toEqual(previous.clusterGrid);
   });
 
-  it('validates budget before a hit and preserves its last successful fact through overflow', () => {
+  it('re-derives a capped overflow frame and recovers the uncapped fact', () => {
     const owner = new StandardClusterMembershipOwner();
     const scratch = createClusterBinScratch();
     const input = frame();
     const first = prepareStandardLighting(input, undefined, scratch, owner).unwrap();
-    expect(prepareStandardLighting(input, 0, scratch, owner).ok).toBe(false);
-    const tooMany = {
-      ...input,
-      local: Array.from({ length: 33 }, () => input.local[0]).filter(
-        (value) => value !== undefined,
-      ),
-    };
-    expect(prepareStandardLighting(tooMany, undefined, scratch, owner).ok).toBe(false);
     const overflowing = {
       ...input,
       grid: { x: 32, y: 32, z: 33 },
@@ -140,11 +132,11 @@ describe('stock view Cluster membership owner', () => {
         shadowed: false,
       })),
     };
-    const rejected = prepareStandardLighting(overflowing, undefined, scratch, owner);
-    expect(rejected.ok).toBe(false);
-    if (!rejected.ok) expect(rejected.error.code).toBe('standard-cluster-index-overflow');
+    const capped = prepareStandardLighting(overflowing, undefined, scratch, owner).unwrap();
+    expect(capped.clusterEntryCapK).toBe(31);
     const recovered = prepareStandardLighting(input, undefined, scratch, owner).unwrap();
-    expect(recovered.clusterGrid).toBe(first.clusterGrid);
+    expect(recovered.clusterEntryCapK).toBeUndefined();
+    expect(recovered.clusterGrid).toEqual(first.clusterGrid);
     expect(recovered.lightBounds).toEqual(first.lightBounds);
     owner.clear();
     const restarted = prepareStandardLighting(input, undefined, scratch, owner).unwrap();

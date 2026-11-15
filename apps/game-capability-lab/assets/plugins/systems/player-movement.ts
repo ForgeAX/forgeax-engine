@@ -1,3 +1,5 @@
+import { GamePlayerMovementOrder } from "../../../src/system-order";
+import { defineSystem } from "@forgeax/engine-ecs";
 import { CharacterController, type PhysicsWorld } from '@forgeax/engine-physics';
 import { FixedTime, FixedUpdate, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import { Transform } from '@forgeax/engine-scene';
@@ -8,7 +10,7 @@ import { inState } from '@forgeax/engine-state';
 import { resetFreeCamera, stepFreeCamera, type FreeCameraState } from '../free-camera';
 import { GameState } from '../gameplay-state';
 import { FreeCameraMotion, GameplayInput, PlayerMotion } from '../components/gameplay';
-import { GAME_DEFAULT_GAMEPLAY_CONFIG, type GameplayConfig } from '../resources/gameplay';
+import { GAME_DEFAULT_GAMEPLAY_CONFIG } from '../resources/gameplay';
 
 export type PlayerMovementSystemContext = {
   readonly world: World;
@@ -20,13 +22,13 @@ export type PlayerMovementSystemContext = {
 
 /** Owns player intent, CharacterController integration, and ECS pose writes. */
 export function installPlayerMovementSystem(ctx: PlayerMovementSystemContext): void {
-  ctx.world.addSystem(FixedUpdate, {
+  const systemToken1 = defineSystem({ sets: [GamePlayerMovementOrder],
     name: 'game-player-movement',
     runIf: inState(GameState, 'Play'),
     queries: [],
     fn: () => {
       const dt = ctx.world.getResource(FixedTime).delta;
-      const config = ctx.world.getResource<GameplayConfig>(GAME_DEFAULT_GAMEPLAY_CONFIG);
+      const config = ctx.world.getResource(GAME_DEFAULT_GAMEPLAY_CONFIG);
       const snap = ctx.readInput();
       const motionResult = ctx.world.get(ctx.root, PlayerMotion);
       const transformResult = ctx.world.get(ctx.root, Transform);
@@ -121,5 +123,6 @@ export function installPlayerMovementSystem(ctx: PlayerMovementSystemContext): v
       ctx.world.set(ctx.root, PlayerMotion, { faceX, faceZ, jumpY, freeY, velocityY: vy, grounded: grounded ? 1 : 0 });
       ctx.world.set(ctx.root, FreeCameraMotion, freeCamera);
     },
-  }).unwrap();
+  });
+ctx.world.addSystem(FixedUpdate, systemToken1).unwrap();
 }

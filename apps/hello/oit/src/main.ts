@@ -60,7 +60,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   const frame = (): void => {
     world.update().unwrap();
     propagateTransforms(world).unwrap();
-    const drawn = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
+    const drawn = renderer.draw({ source: lease });
     if (!drawn.ok) console.error('[oit] draw error:', drawn.error);
     requestAnimationFrame(frame);
   };

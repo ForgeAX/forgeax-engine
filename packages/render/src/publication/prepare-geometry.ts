@@ -7,12 +7,12 @@ import type {
   MaterialSnapshot,
   RenderableSnapshot,
 } from '../render-system-extract';
-import type { extractFrames } from '../render-system-extract-tail';
+import type { extractSource } from '../render-system-extract-tail';
 import { RenderPublicationError } from './contract';
 import type { PreparedRenderPublication } from './receiver';
 import { renderAsset } from './resource-scope';
 
-type DrawArtifacts = NonNullable<Parameters<typeof extractFrames>[4]>['getMaterialShaderArtifact'];
+type DrawArtifacts = NonNullable<Parameters<typeof extractSource>[3]>['getMaterialShaderArtifact'];
 
 const NO_LODS: readonly (MeshAsset | undefined)[] = Object.freeze([]);
 interface DrawMemo {
@@ -104,7 +104,7 @@ export function preparePublicationGeometry(
   _assets: AssetRegistry,
   instances: InstanceProjectionStore,
   getMaterialShaderArtifact?: NonNullable<
-    Parameters<typeof extractFrames>[4]
+    Parameters<typeof extractSource>[3]
   >['getMaterialShaderArtifact'],
 ): PreparedRenderPublication {
   if (input.resources.revision !== input.packet.revision)

@@ -242,7 +242,7 @@ const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).u
 
 function cameraData() {
   return perspective({
-    fov: AUTO_EXPOSURE_THREE_R184_FIXTURE.camera.fovDeg * Math.PI / 180,
+    fov: ( AUTO_EXPOSURE_THREE_R184_FIXTURE.camera.fovDeg * Math.PI) / 180,
     aspect: AUTO_EXPOSURE_THREE_R184_FIXTURE.camera.aspect,
     near: AUTO_EXPOSURE_THREE_R184_FIXTURE.camera.near,
     far: AUTO_EXPOSURE_THREE_R184_FIXTURE.camera.far,
@@ -390,13 +390,14 @@ export function validateAutoExposureForgeaxArtifact(input: unknown): { ok: true 
 }
 
 /** Capture all common AC-27 domains from the real ForgeAX renderer receipt. */
-export async function captureAutoExposureForgeax(options: AutoExposureForgeaxCaptureOptions): Promise<AutoExposureForgeaxArtifact> {
+export async function captureAutoExposureForgeax(options: AutoExposureForgeaxCaptureOptions,
+): Promise<AutoExposureForgeaxArtifact> {
   validateOptions(options);
   const surface = createCanvas(options.width, options.height);
   const referenceLane = options.referenceLane ?? 'direct';
   const standardProfile = {
     ...DEFAULT_STANDARD_PROFILE,
-    renderPath: referenceLane === 'clustered' ? 'deferred' as const : 'forward' as const,
+    renderPath: referenceLane === 'clustered' ? ('deferred' as const) : ('forward' as const),
   };
   const constructed = await constructRuntimeRendererHost(
     surface.canvas,
@@ -427,7 +428,7 @@ export async function captureAutoExposureForgeax(options: AutoExposureForgeaxCap
         const requested = renderer.requestObservation?.(['linear-hdr', 'linear-ldr', 'final-display']);
         if (requested === undefined || !requested.ok) throw new Error(`ForgeAX AC-27 observation request failed: ${requested === undefined ? 'unavailable' : requested.error.code}`);
       }
-      const drawn = renderer.draw({ leases: [attached.value], camera: { lease: attached.value }, environment: { lease: attached.value } });
+      const drawn = renderer.draw({ source: attached.value });
       if (!drawn.ok) throw new Error(`ForgeAX AC-27 draw failed: ${drawn.error.code}`);
       receipt = drawn.value;
     }

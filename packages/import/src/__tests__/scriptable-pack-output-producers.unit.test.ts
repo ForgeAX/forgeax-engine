@@ -24,6 +24,7 @@ describe('ScriptablePack standard output producers', () => {
     'target',
     'canvas',
     'external',
+    'feature',
   ] as const)('rejects a runtime %s source at the Pack output boundary', async (source) => {
     const result = await materialAssetOutputProducer.produce({
       guid: AssetGuid.format(MATERIAL_GUID),

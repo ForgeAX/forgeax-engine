@@ -1,5 +1,41 @@
-import { distanceFieldTexel, type MeshDistanceField } from '@forgeax/engine-geometry';
-import { fnv1a32 } from '@forgeax/engine-types';
+import {
+  distanceFieldTexel,
+  type MeshDistanceField,
+  validateMeshDistanceField,
+} from '@forgeax/engine-geometry';
+import { fnv1a32, ok, type Result } from '@forgeax/engine-types';
+import { type RayReferenceError, rayReferenceFailure } from './scene';
+
+/** Private packed storage captured by an exact asset-version owner. */
+export class SdfFieldUpload {
+  readonly #words: Uint32Array;
+  private constructor(
+    readonly field: MeshDistanceField,
+    words: Uint32Array,
+  ) {
+    this.#words = words;
+  }
+
+  static capture(field: MeshDistanceField): Result<SdfFieldUpload, RayReferenceError> {
+    if (!validateMeshDistanceField(field).ok)
+      return rayReferenceFailure('invalid or incomplete SDF payload');
+    const words =
+      field.policy.kind === 'sampled-visibility'
+        ? packSampledField(field.values, field.bricks, field.policy.distanceBand, 4_194_304)
+        : packGeometricField(field, 4_194_304);
+    return words === null
+      ? rayReferenceFailure('SDF sample memory exceeds 16 MiB', true)
+      : ok(new SdfFieldUpload(field, words));
+  }
+
+  get length(): number {
+    return this.#words.length;
+  }
+
+  copyInto(target: Uint32Array, offset: number): void {
+    target.set(this.#words, offset);
+  }
+}
 /** GPU SNORM16 payloads retain the canonical four-cubed field lattice. */
 export const SDF_BRICK_EDGE = 4;
 /** Every table entry addresses a payload; hashes only select exact-comparison buckets. */

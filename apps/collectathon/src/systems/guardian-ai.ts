@@ -1,3 +1,5 @@
+import { PhysicsWorldResource } from '@forgeax/engine-physics';
+
 // apps/collectathon -- guardian-ai: per-entity patrol / chase / attack sub-state
 // machine (plan-strategy D-1 / F-08 sub-machine, OOS-3 waypoint patrol + straight
 // chase, no nav-mesh / A*).
@@ -24,14 +26,14 @@
 // math is reviewable; the system fn wires them to the live PhysicsWorld + the
 // captured Guardian/player handles (mirrors player-move's factory closure form).
 
-import type { EntityHandle, SystemHandle, World } from '@forgeax/engine-ecs';
+import type { EntityHandle, System, World } from '@forgeax/engine-ecs';
 import { defineSystem } from '@forgeax/engine-ecs';
 import { vec3 } from '@forgeax/engine-math';
 import type { PhysicsWorld } from '@forgeax/engine-physics';
 import { Transform } from '@forgeax/engine-scene';
-
 import { Guardian, GuardianAttack, GuardianModeValue } from '../components';
 import type { GuardianHandles } from '../spawn/spawn-guardian';
+import { GuardianAiOrder, PlayerMoveOrder } from '../system-order';
 import { readDt } from './frame-time';
 
 /**
@@ -210,15 +212,16 @@ export function createGuardianAISystem(
   _app: AISystemApp,
   guardians: ReadonlyArray<GuardianRuntime>,
   player: EntityHandle,
-): SystemHandle<readonly []> {
+): System<readonly []> {
   return defineSystem({
+    sets: [GuardianAiOrder],
     name: 'guardian-ai',
-    after: ['player-move'],
+    after: [PlayerMoveOrder],
     queries: [],
     fn: (world: World) => {
       let pw: PhysicsWorld;
       try {
-        pw = world.getResource<PhysicsWorld>('PhysicsWorld');
+        pw = world.getResource(PhysicsWorldResource);
       } catch {
         return;
       }

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { registeredSystem } from '../../__tests__/registered-system.fixture';
 import {
   postSubmissionsOf,
   RENDER_POST_CLEANUP_SYSTEM,
@@ -31,6 +32,7 @@ function scenario(accepted: boolean) {
   const owner = {
     candidate,
     submitFrame: vi.fn(() => ({ ok: true })),
+    retireReplacedAfterFence: vi.fn(),
     abortFrame: vi.fn(),
   };
   const frameState = {
@@ -87,6 +89,13 @@ describe('Render World post receipts', () => {
       expect.objectContaining({ onSubmittedWorkDone: expect.any(Function) }),
     );
     expect(owner.abortFrame).not.toHaveBeenCalled();
+    expect(owner.retireReplacedAfterFence).toHaveBeenCalledWith(
+      expect.objectContaining({ onSubmittedWorkDone: expect.any(Function) }),
+      expect.any(Function),
+    );
+    expect(owner.submitFrame.mock.invocationCallOrder[0]).toBeLessThan(
+      owner.retireReplacedAfterFence.mock.invocationCallOrder[0] as number,
+    );
   });
 
   it('never publishes or advances history for a rejected view', () => {
@@ -97,14 +106,18 @@ describe('Render World post receipts', () => {
     expect(frameState.bloomFrameReceipts).toBeUndefined();
     expect(commitBloomFrameReceipts).not.toHaveBeenCalled();
     expect(owner.submitFrame).not.toHaveBeenCalled();
+    expect(owner.retireReplacedAfterFence).not.toHaveBeenCalled();
     expect(owner.abortFrame).toHaveBeenCalledWith(candidate, 'submit');
   });
 
   it('publishes nothing without the post commit system', () => {
     const { world, frameState, owner } = scenario(true);
-    world.removeSystem(RenderCommit, RENDER_POST_COMMIT_SYSTEM).unwrap();
+    world
+      .removeSystem(RenderCommit, registeredSystem(world, RenderCommit, 'render-post-commit'))
+      .unwrap();
     endRenderFrame(world);
     expect(frameState.motionBlurExecution).toBeUndefined();
     expect(owner.submitFrame).not.toHaveBeenCalled();
+    expect(owner.retireReplacedAfterFence).not.toHaveBeenCalled();
   });
 });

@@ -16,6 +16,7 @@ import type {
   GraphResourceKind,
   GraphResourceOrigin,
   GraphTexture,
+  GraphTextureContentRange,
   GraphTextureDescriptor,
   GraphTextureView,
   GraphTextureViewDescriptor,
@@ -182,6 +183,8 @@ export interface GraphTextureAllocation {
   readonly texture: Texture;
   readonly signature: string;
   references: number;
+  /** Shared by every graph lease of this physical allocation. */
+  readonly committedContentRanges: GraphTextureContentRange[];
 }
 
 export function releaseGraphTexture(device: RhiDevice, allocation: GraphTextureAllocation) {
@@ -215,6 +218,11 @@ export interface CompiledPass<FrameCtx extends RenderGraphFrame> extends PassRec
   readonly dependencies: readonly number[];
   readonly resourceIds: ReadonlySet<number>;
   readonly viewIds: ReadonlySet<number>;
+  readonly textureWrites: readonly {
+    readonly resourceId: number;
+    readonly range: GraphTextureContentRange;
+    readonly stored: boolean;
+  }[];
 }
 
 export function accessResourceId(access: GraphAccess): number | undefined {

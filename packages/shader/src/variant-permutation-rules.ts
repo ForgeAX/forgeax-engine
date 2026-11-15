@@ -26,6 +26,19 @@ const STORAGE_REQUIRED = 'needs storage buffers';
 
 export const VARIANT_PERMUTATION_RULES: readonly VariantPermutationRule[] = [
   {
+    axis: 'WATER_WAVES_AVAILABLE',
+    value: false,
+    when: { STORAGE_BUFFER_AVAILABLE: false },
+    reason: 'Water frame descriptors and mesh tile records need storage buffers',
+  },
+  {
+    axis: 'WATER_INFO_RGBA16',
+    value: false,
+    when: { WATER_WAVES_AVAILABLE: false, STANDARD_LEAN_INPUTS: false },
+    reason:
+      'ordinary non-lean rows do not sample the WaterInfo format; lean keeps its four maintained compile lanes',
+  },
+  {
     axis: 'ATMOSPHERE_AVAILABLE',
     value: false,
     when: { STORAGE_BUFFER_AVAILABLE: false },
@@ -54,6 +67,33 @@ export const VARIANT_PERMUTATION_RULES: readonly VariantPermutationRule[] = [
     value: false,
     when: { STORAGE_BUFFER_AVAILABLE: false },
     reason: STORAGE_REQUIRED,
+  },
+  // Direct draws of a GPU Scene slot read the scene tables (storage buffers, or
+  // textures without them), never with the scene-index stream, a skin palette
+  // or the coverage producer.
+  {
+    axis: 'GPU_SCENE_DIRECT',
+    value: false,
+    when: { GPU_DRIVEN_SCENE_INDEX_AVAILABLE: true },
+    reason: 'scene-index draws already address the scene tables through visibleItems',
+  },
+  {
+    axis: 'GPU_SCENE_DIRECT',
+    value: false,
+    when: { SKINNING_DISABLED: false },
+    reason: 'skinned draws take their world from the skin palette',
+  },
+  {
+    axis: 'GPU_SCENE_DIRECT',
+    value: false,
+    when: { COVERAGE_ONLY: true },
+    reason: 'the temporal coverage entry runs on the scene-index lane',
+  },
+  {
+    axis: 'GPU_SCENE_DIRECT',
+    value: false,
+    when: { CLUSTER_FORWARD_AVAILABLE: true, STORAGE_BUFFER_AVAILABLE: true },
+    reason: 'clustered group(2) carries the light tables, not the scene transforms',
   },
   {
     axis: 'EXTENDED_LIGHTING_AVAILABLE',
@@ -227,6 +267,34 @@ export const VARIANT_PERMUTATION_RULES: readonly VariantPermutationRule[] = [
     when: { DIRECTIONAL_SHADOW_SIMPLE: false },
     reason: 'lean lighting is published only on the simple-receiver row',
   },
+  // STANDARD_LEAN_INPUTS drops the vertex inputs a material never reads (UV1-7,
+  // tangent, object basis, object position), as UE compiles only the
+  // interpolators the material translator counts (HLSLMaterialTranslator.cpp
+  // :15709-15716 NUM_TEX_COORD_INTERPOLATORS, LocalVertexFactoryCommon.ush
+  // :19-33). Only GPU-driven row batches request it; every flip that leaves
+  // these rows falls back through isSupportedVariantKey. None of these rules
+  // reads LEAN_LIGHTING or DIRECTIONAL_SHADOW_SIMPLE, so the full-lighting
+  // simple-receiver rows (published since the LEAN_LIGHTING=true rule above
+  // was removed) carry lean-input rows exactly like the lean-lighting ones.
+  ...(
+    [
+      [
+        { GPU_DRIVEN_SCENE_INDEX_AVAILABLE: false },
+        'lean inputs are selected per GPU-driven batch',
+      ],
+      [{ STORAGE_BUFFER_AVAILABLE: false }, STORAGE_REQUIRED],
+      [{ TRANSMISSION_AVAILABLE: true }, 'transmission reads the object basis'],
+      [{ COVERAGE_ONLY: true }, 'coverage programs keep the general inputs'],
+      [{ LOD_DITHER: true }, 'LOD cross-fade draws keep the general inputs (publication budget)'],
+    ] as const
+  ).map(
+    ([when, reason]): VariantPermutationRule => ({
+      axis: 'STANDARD_LEAN_INPUTS',
+      value: false,
+      when,
+      reason,
+    }),
+  ),
 ];
 
 function ruleApplies(
@@ -256,6 +324,18 @@ export function isSupportedVariantDefines(
 }
 
 const supportedKeyCache = new Map<string, boolean>();
+
+/**
+ * A pass-level flip (coverage, LOD cross-fade) can move a lean-input key off
+ * the published rows; it then selects the general inputs of the same row.
+ */
+export function withSupportedLeanInputs(key: string): string;
+export function withSupportedLeanInputs(key: string | undefined): string | undefined;
+export function withSupportedLeanInputs(key: string | undefined): string | undefined {
+  if (key === undefined || !key.includes('STANDARD_LEAN_INPUTS=true') || isSupportedVariantKey(key))
+    return key;
+  return key.replace('STANDARD_LEAN_INPUTS=true', 'STANDARD_LEAN_INPUTS=false');
+}
 
 /** `isSupportedVariantDefines` for a `A=true+B=false` definesKey, cached per key. */
 export function isSupportedVariantKey(key: string | undefined): boolean {

@@ -1,4 +1,4 @@
-import { FixedTime, FixedUpdate, World } from '@forgeax/engine-ecs';
+import { defineSystem, FixedTime, FixedUpdate, World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import {
   Camera,
@@ -87,22 +87,21 @@ it('carries real Renderer mesh readiness and exact receipts beyond the transient
     expect(world.get(entity, MeshFilter).unwrap().assetHandle).toBe(previous);
     expect(mesh.vertices.byteLength).toBeGreaterThan(0);
     let accepted = false;
-    world
-      .addSystem(FixedUpdate, {
-        name: 'source-admission',
-        queries: [],
-        fn: () => {
-          if (accepted) return;
-          candidate = host
-            .acceptDynamicGeometry(candidate, {
-              world,
-              fixedStep: world.getResource(FixedTime).tick,
-            })
-            .unwrap();
-          accepted = true;
-        },
-      })
-      .unwrap();
+    const systemToken1 = defineSystem({
+      name: 'source-admission',
+      queries: [],
+      fn: () => {
+        if (accepted) return;
+        candidate = host
+          .acceptDynamicGeometry(candidate, {
+            world,
+            fixedStep: world.getResource(FixedTime).tick,
+          })
+          .unwrap();
+        accepted = true;
+      },
+    });
+    world.addSystem(FixedUpdate, systemToken1).unwrap();
     world.update(1 / 60).unwrap();
     expect(world.get(entity, MeshFilter).unwrap().assetHandle).toBe(meshHandle);
     const sourceFixedStep = world.getResource(FixedTime).tick;
@@ -124,7 +123,7 @@ it('carries real Renderer mesh readiness and exact receipts beyond the transient
     if (!completion.ok) throw completion.error;
     publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
     source.complete(structuredClone(proof));
-    host.publishDynamicGeometry(receipt, [world], sourceFixedStep);
+    host.publishDynamicGeometry(receipt, world, sourceFixedStep);
     expect(host.dynamicGeometryReceipt(candidate)).toMatchObject({
       frameId: receipt.frameId,
       publicationFixedStep: sourceFixedStep,
@@ -165,7 +164,7 @@ it('carries real Renderer mesh readiness and exact receipts beyond the transient
       if (!completed.ok) throw completed.error;
       publisher.recycle(nextPacket.revision, renderPublicationTransfers(nextPacket)).unwrap();
       source.complete(structuredClone(consumed));
-      host.publishDynamicGeometry(nextReceipt, [world], tick);
+      host.publishDynamicGeometry(nextReceipt, world, tick);
       expect(host.dynamicGeometryReceipt(candidate)).toMatchObject({
         frameId: nextReceipt.frameId,
         publicationFixedStep: tick,
@@ -287,23 +286,22 @@ it.each([
         (input) => world.get(input.entity, MeshFilter).unwrap().assetHandle === previous,
       ),
     ).toBe(true);
-    world
-      .addSystem(FixedUpdate, {
-        name: 'admit-declared-mesh-batch',
-        queries: [],
-        fn() {
-          if (candidates[0]?.state === 'accepted') return;
-          const ordering = { world, fixedStep: world.getResource(FixedTime).tick };
-          expect(host.acceptDynamicGeometryCandidates(candidates.slice(0, 32), ordering).ok).toBe(
-            false,
-          );
-          groups = groups.map((group) =>
-            host.acceptDynamicGeometryCandidates(group, ordering).unwrap(),
-          );
-          candidates = groups.flat();
-        },
-      })
-      .unwrap();
+    const systemToken2 = defineSystem({
+      name: 'admit-declared-mesh-batch',
+      queries: [],
+      fn() {
+        if (candidates[0]?.state === 'accepted') return;
+        const ordering = { world, fixedStep: world.getResource(FixedTime).tick };
+        expect(host.acceptDynamicGeometryCandidates(candidates.slice(0, 32), ordering).ok).toBe(
+          false,
+        );
+        groups = groups.map((group) =>
+          host.acceptDynamicGeometryCandidates(group, ordering).unwrap(),
+        );
+        candidates = groups.flat();
+      },
+    });
+    world.addSystem(FixedUpdate, systemToken2).unwrap();
     world.update(1 / 60).unwrap();
     expect(
       inputs.every(
@@ -323,7 +321,7 @@ it.each([
     if (!completed.ok) throw completed.error;
     publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
     source.complete(structuredClone(proof));
-    host.publishDynamicGeometry(receipt, [world], sourceFixedStep);
+    host.publishDynamicGeometry(receipt, world, sourceFixedStep);
     expect(
       candidates.every((candidate) => host.dynamicGeometryReceipt(candidate)?.recordStageConsumed),
     ).toBe(true);

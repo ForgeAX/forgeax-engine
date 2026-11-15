@@ -131,7 +131,8 @@ export function addSsrFragmentStages<Frame extends RenderGraphFrame>(
   );
   if (!trace.ok) return trace;
   const temporal = input.temporal;
-  if (temporal === undefined || resolved === undefined) return ok(Object.freeze(names));
+  if (temporal === undefined || temporal.profile !== 'opaque' || resolved === undefined)
+    return ok(Object.freeze(names));
   // MRT writes separate history, surface metadata and presented radiance together.
   const scratchTexture = graph.createTexture('ssr-resolved-fragment.scratch', {
     format: 'rgba16float',

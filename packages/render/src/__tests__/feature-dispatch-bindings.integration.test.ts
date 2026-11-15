@@ -1,3 +1,4 @@
+import { World } from '@forgeax/engine-ecs';
 import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { ok } from '@forgeax/engine-types';
@@ -124,8 +125,7 @@ it('uses each actual binding and current count through one retained compute grap
     ].entries()) {
       current = plan(counts[0], counts[1]);
       const frame = runSingleViewFeatureFrame(host, {
-        worlds: [],
-        owner: 0,
+        world: new World(),
         frameNumber: index + 1,
         caps: device.caps,
         gpuWork: gpu,

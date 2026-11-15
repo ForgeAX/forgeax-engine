@@ -24,7 +24,7 @@
 //       - from '@forgeax/engine-runtime'
 //       - BUILTIN_TRIANGLE
 //       - await host initialization
-//       - renderer.draw({ leases: [attachment.value], ... })
+//       - renderer.draw({ source: attachment.value, ... })
 //     AND must contain ZERO occurrences of inline parallel implementation
 //     tokens that would re-introduce the deleted hand-rolled WGSL path:
 //       - TRIANGLE_WGSL
@@ -102,7 +102,7 @@ const REQUIRED_TOKENS = [
     ],
   },
   { name: 'BUILTIN_TRIANGLE', patterns: ['BUILTIN_TRIANGLE'] },
-  { name: 'lease-bound renderer.draw request', patterns: ['renderer.draw({', 'leases: [attachment.value]'] },
+  { name: 'lease-bound renderer.draw request', patterns: ['renderer.draw({', 'source: attachment.value'] },
 ];
 
 // delta layer: forbidden tokens (each must appear 0 times).

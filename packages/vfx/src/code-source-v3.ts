@@ -29,6 +29,43 @@ export type ParticleAttributeRef =
   | { readonly source: 'core'; readonly name: VfxParticleCoreAttribute }
   | { readonly source: 'custom'; readonly name: string };
 
+export interface ParticleWaterGridCriterionSource {
+  readonly range: readonly [number, number];
+  readonly multiplier: number;
+}
+
+/** Bounded GPU cell scan appended to the ordinary particle spawn lifecycle. */
+export interface ParticleWaterGridEmissionSource {
+  /** Maximum cells examined in one dispatch; accepted Water domains may be smaller, never larger. */
+  readonly scanCellCapacity: number;
+  /** Independent authored cap for GPU-appended cell emissions per frame. */
+  readonly maxParticlesPerFrame: number;
+  readonly minimumWaterDepthM: number;
+  readonly minimumEmissionAmount: number;
+  readonly globalEmissionMultiplier: number;
+  readonly maximumEmissionPerCell: number;
+  readonly criteria: Readonly<{
+    readonly curvature: ParticleWaterGridCriterionSource;
+    readonly vorticity: ParticleWaterGridCriterionSource;
+    readonly flowSpeed: ParticleWaterGridCriterionSource;
+    readonly velocityOffsetDepthDifference: ParticleWaterGridCriterionSource;
+  }>;
+  readonly depthRestrictionRangeM: readonly [number, number];
+  readonly speedRestrictionRangeMPerSec: readonly [number, number];
+  /** Engine-authored particle motion and sampled lifetime curves for this route. */
+  readonly particle: Readonly<{
+    readonly normalSpeedMPerSec: number;
+    readonly randomSpeedMPerSec: number;
+    readonly accelerationMPerSec2: readonly [number, number, number];
+    readonly lifetimeSeconds: number;
+    readonly initialSizeRangeM: readonly [number, number];
+    /** Retained independently from the initial-size range; 1 is UE's serialized 100%. */
+    readonly uniformSizeMultiplier: number;
+    readonly alphaCurveSamples: readonly number[];
+    readonly sizeCurveSamples: readonly number[];
+  }>;
+}
+
 /**
  * Renderer fields with a concrete Program v3 projection. Keep this union
  * execution-backed; renderer.materialInputs is the separate material bridge.
@@ -61,6 +98,8 @@ export interface ParticleRendererSourceV3Base {
   readonly attributes?: ParticleRendererSemanticMap;
   /** Names must match the cooked MaterialShaderArtifact particleInputs declaration. */
   readonly materialInputs?: readonly string[];
+  /** Opt-in R8 Niagara translucent-water sphere material contract. */
+  readonly shading?: { readonly kind: 'translucent-water-sphere' };
 }
 
 export type ParticleRendererSourceV3 =
@@ -117,6 +156,7 @@ export function isParticleTopologyRenderer(
 /** The structural emitter with its renderers refined to the v3 renderer vocabulary. */
 export interface ParticleEmitterSourceV3 extends ParticleEmitterSourceBase {
   readonly renderers: readonly ParticleRendererSourceV3[];
+  readonly waterGridEmission?: ParticleWaterGridEmissionSource;
   readonly forceFields?: readonly VfxForceField[];
 }
 
@@ -323,8 +363,23 @@ function text(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
 }
 
+function vector(value: unknown, size: 2): value is readonly [number, number];
+function vector(value: unknown, size: 3): value is readonly [number, number, number];
+function vector(value: unknown, size: number): value is readonly number[];
 function vector(value: unknown, size: number): value is readonly number[] {
   return Array.isArray(value) && value.length === size && value.every(finite);
+}
+
+function numericPair(value: unknown): readonly [number, number] | undefined {
+  return vector(value, 2) ? [value[0], value[1]] : undefined;
+}
+
+function numericTriple(value: unknown): readonly [number, number, number] | undefined {
+  return vector(value, 3) ? [value[0], value[1], value[2]] : undefined;
+}
+
+function numericSamples(value: unknown, size: number): readonly number[] | undefined {
+  return vector(value, size) ? value : undefined;
 }
 
 function validateAttributes(
@@ -382,7 +437,7 @@ function rendererAllowed(kind: string): readonly string[] {
   ];
   switch (kind) {
     case 'billboard':
-      return [...common, 'blend', 'textureSheet', 'pivot', 'softParticle', 'sorting'];
+      return [...common, 'blend', 'textureSheet', 'pivot', 'softParticle', 'sorting', 'shading'];
     case 'mesh':
       return [
         'kind',
@@ -682,13 +737,23 @@ function validateRenderer(
   if (semantic !== undefined) return semantic;
   const inputs = validateMaterialInputs(value.materialInputs, `${path}.materialInputs`);
   if (!inputs.ok) return inputs;
-  if (
-    (!text(value.material) && !(runtimeReferences && typeof value.material === 'number')) ||
-    !text(value.kind)
-  )
-    return invalid(path, 'a supported renderer object', id, 'vfx-source-renderer-invalid');
-  const topology = rendererTopologyFailure(value, path, id, runtimeReferences);
-  if (topology !== undefined) return topology;
+  const validateRendererShadingAndTopology = (value: Record<string, unknown>) => {
+    if (
+      value.shading !== undefined &&
+      (!record(value.shading) || value.shading.kind !== 'translucent-water-sphere')
+    )
+      return fail(`${path}.shading`, "{ kind: 'translucent-water-sphere' }");
+    if (
+      (!text(value.material) && !(runtimeReferences && typeof value.material === 'number')) ||
+      !text(value.kind)
+    )
+      return invalid(path, 'a supported renderer object', id, 'vfx-source-renderer-invalid');
+    const topology = rendererTopologyFailure(value, path, id, runtimeReferences);
+    if (topology !== undefined) return topology;
+    return undefined;
+  };
+  const rendererFailure = validateRendererShadingAndTopology(value);
+  if (rendererFailure !== undefined) return rendererFailure;
   return ok({
     ...(value as unknown as ParticleRendererSourceV3),
     ...(attrs.value === undefined ? {} : { attributes: attrs.value }),
@@ -764,6 +829,154 @@ function emitterScheduleFailure(
   ) {
     return invalid(`${path}.schedule.loopDuration`, 'a positive finite duration', id);
   }
+  return undefined;
+}
+
+function waterGridEmissionFailure(
+  emission: unknown,
+  path: string,
+  id: string,
+  capacity: number,
+): Result<never, ParticleCodeSourceError> | undefined {
+  if (emission === undefined) return undefined;
+  if (!record(emission))
+    return invalid(`${path}.waterGridEmission`, 'a bounded Water grid-emission contract', id);
+  const extra = unknownField(emission, [
+    'scanCellCapacity',
+    'maxParticlesPerFrame',
+    'minimumWaterDepthM',
+    'minimumEmissionAmount',
+    'globalEmissionMultiplier',
+    'maximumEmissionPerCell',
+    'criteria',
+    'depthRestrictionRangeM',
+    'speedRestrictionRangeMPerSec',
+    'particle',
+  ]);
+  if (extra !== undefined)
+    return invalid(`${path}.waterGridEmission.${extra}`, 'a supported Water emission field', id);
+  const scanCellCapacity = emission.scanCellCapacity;
+  const maxParticlesPerFrame = emission.maxParticlesPerFrame;
+  const minimumWaterDepthM = emission.minimumWaterDepthM;
+  const minimumEmissionAmount = emission.minimumEmissionAmount;
+  const globalEmissionMultiplier = emission.globalEmissionMultiplier;
+  const maximumEmissionPerCell = emission.maximumEmissionPerCell;
+  const depthRange = numericPair(emission.depthRestrictionRangeM);
+  const speedRange = numericPair(emission.speedRestrictionRangeMPerSec);
+  const criteria = emission.criteria;
+  const particle = emission.particle;
+  const invalidEmissionAmounts = () =>
+    !positiveInteger(scanCellCapacity) ||
+    scanCellCapacity > 1_048_576 ||
+    typeof maxParticlesPerFrame !== 'number' ||
+    !Number.isSafeInteger(maxParticlesPerFrame) ||
+    maxParticlesPerFrame < 0 ||
+    maxParticlesPerFrame > capacity ||
+    !finite(minimumWaterDepthM) ||
+    minimumWaterDepthM < 0 ||
+    !finite(minimumEmissionAmount) ||
+    minimumEmissionAmount < 0 ||
+    minimumEmissionAmount > 1 ||
+    !finite(globalEmissionMultiplier) ||
+    globalEmissionMultiplier < 0 ||
+    !finite(maximumEmissionPerCell) ||
+    maximumEmissionPerCell <= 0 ||
+    maximumEmissionPerCell > 16;
+  if (
+    invalidEmissionAmounts() ||
+    depthRange === undefined ||
+    depthRange[0] > depthRange[1] ||
+    depthRange[0] < 0 ||
+    speedRange === undefined ||
+    speedRange[0] > speedRange[1] ||
+    speedRange[0] < 0 ||
+    !record(criteria) ||
+    !record(particle)
+  )
+    return invalid(`${path}.waterGridEmission`, 'finite bounded Water emission settings', id);
+  const validateWaterEmissionCriteria = (criteria: Record<string, unknown>) => {
+    const criteriaExtra = unknownField(criteria, [
+      'curvature',
+      'vorticity',
+      'flowSpeed',
+      'velocityOffsetDepthDifference',
+    ]);
+    if (criteriaExtra !== undefined)
+      return invalid(
+        `${path}.waterGridEmission.criteria.${criteriaExtra}`,
+        'a supported criterion',
+        id,
+      );
+    for (const name of [
+      'curvature',
+      'vorticity',
+      'flowSpeed',
+      'velocityOffsetDepthDifference',
+    ] as const) {
+      const criterion = criteria[name];
+      const range = record(criterion) ? numericPair(criterion.range) : undefined;
+      if (
+        !record(criterion) ||
+        unknownField(criterion, ['range', 'multiplier']) !== undefined ||
+        range === undefined ||
+        range[0] > range[1] ||
+        range[0] < 0 ||
+        !finite(criterion.multiplier) ||
+        criterion.multiplier < 0
+      )
+        return invalid(
+          `${path}.waterGridEmission.criteria.${name}`,
+          'a finite non-negative [minimum, maximum] range and multiplier',
+          id,
+        );
+    }
+    return undefined;
+  };
+  const criteriaFailure = validateWaterEmissionCriteria(criteria);
+  if (criteriaFailure !== undefined) return criteriaFailure;
+  const validateWaterEmissionParticle = (particle: Record<string, unknown>) => {
+    const particleExtra = unknownField(particle, [
+      'normalSpeedMPerSec',
+      'randomSpeedMPerSec',
+      'accelerationMPerSec2',
+      'lifetimeSeconds',
+      'initialSizeRangeM',
+      'uniformSizeMultiplier',
+      'alphaCurveSamples',
+      'sizeCurveSamples',
+    ]);
+    const acceleration = numericTriple(particle.accelerationMPerSec2);
+    const initialSizeRange = numericPair(particle.initialSizeRangeM);
+    const alphaCurveSamples = numericSamples(particle.alphaCurveSamples, 108);
+    const sizeCurveSamples = numericSamples(particle.sizeCurveSamples, 98);
+    if (
+      particleExtra !== undefined ||
+      !finite(particle.normalSpeedMPerSec) ||
+      particle.normalSpeedMPerSec < 0 ||
+      !finite(particle.randomSpeedMPerSec) ||
+      particle.randomSpeedMPerSec < 0 ||
+      acceleration === undefined ||
+      !finite(particle.lifetimeSeconds) ||
+      particle.lifetimeSeconds <= 0 ||
+      initialSizeRange === undefined ||
+      initialSizeRange[0] < 0 ||
+      initialSizeRange[0] > initialSizeRange[1] ||
+      !finite(particle.uniformSizeMultiplier) ||
+      particle.uniformSizeMultiplier < 0 ||
+      alphaCurveSamples === undefined ||
+      !alphaCurveSamples.every((sample) => sample >= 0) ||
+      sizeCurveSamples === undefined ||
+      !sizeCurveSamples.every((sample) => sample >= 0)
+    )
+      return invalid(
+        `${path}.waterGridEmission.particle`,
+        'finite particle motion, a positive lifetime, ordered size range, and exact 108/98-sample LUTs',
+        id,
+      );
+    return undefined;
+  };
+  const particleFailure = validateWaterEmissionParticle(particle);
+  if (particleFailure !== undefined) return particleFailure;
   return undefined;
 }
 
@@ -947,6 +1160,7 @@ function parseEmitter(
     'renderers',
     'channels',
     'events',
+    'waterGridEmission',
     'simulationWhenCulled',
     'forceFields',
   ]);
@@ -966,6 +1180,13 @@ function parseEmitter(
     return invalid(`${path}.capacity`, 'a positive integer', id);
   const execution = emitterExecutionFailure(value, path, id);
   if (execution !== undefined) return execution;
+  const waterGridEmission = waterGridEmissionFailure(
+    value.waterGridEmission,
+    path,
+    id,
+    value.capacity,
+  );
+  if (waterGridEmission !== undefined) return waterGridEmission;
   const renderers = parseEmitterRenderers(value.renderers, index, path, id, runtimeReferences);
   if (!renderers.ok) return renderers;
   const channels = emitterChannelsFailure(value.channels, path, id);

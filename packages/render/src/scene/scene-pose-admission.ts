@@ -43,7 +43,7 @@ export function stageScenePoses(
         const row = span.rows?.[cursor] ?? cursor;
         const entity = span.entities[row];
         if (entity === undefined) continue;
-        const slot = slots.slotOf(span.worldId, entity);
+        const slot = slots.slotOf(entity);
         if (slot === undefined) {
           ignored++;
           continue;

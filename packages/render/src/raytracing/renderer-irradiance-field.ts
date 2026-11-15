@@ -90,8 +90,8 @@ type ViewKernels = Extract<
 interface IrradianceFieldFrameInput {
   readonly runtime: RenderSystemInternals;
   readonly scene: PersistentGpuDrivenState;
-  readonly worlds: readonly RenderResourceScope[];
-  readonly leases: readonly RenderReadLease[] | undefined;
+  readonly sourceScope: RenderResourceScope;
+  readonly lease: RenderReadLease | undefined;
   readonly lights: readonly LightSnapshot[];
   readonly profile: StandardIrradianceFieldGi;
   /** View extent for the per-pixel gather and Lite reflections. */
@@ -152,6 +152,11 @@ export interface IrradianceFieldInspection {
   readonly acceleration?: WorldAccelerationInspection;
   /** In-place scene edits applied to this generation (moves/removals of field sources). */
   readonly edits?: IrradianceFieldEditStats;
+  /**
+   * Analytic RectAreaLights the field leaves out of its probe and Card lighting.
+   * They still light surfaces directly; only their bounced diffuse is absent.
+   */
+  readonly excludedAreaLights?: number;
   readonly error?: Pick<RhiError, 'code' | 'expected' | 'hint' | 'detail'>;
 }
 
@@ -326,6 +331,7 @@ export class RendererIrradianceField {
   readonly #fieldRows = new SceneFieldRows();
   #lights: Uint8Array = new Uint8Array(IRRADIANCE_FIELD_LIGHTS_BYTES);
   #lightCount = 0;
+  #excludedAreaLights = 0;
 
   get ready(): PreparedIrradianceField | undefined {
     const ready = this.#ready;
@@ -385,6 +391,7 @@ export class RendererIrradianceField {
             ...(ready.residency === undefined ? {} : { residency: ready.residency.inspect() }),
             share: { views: this.#input?.runtime.giBudget?.views ?? 1, ...ready.share() },
           }),
+      ...(this.#excludedAreaLights === 0 ? {} : { excludedAreaLights: this.#excludedAreaLights }),
       ...(this.#error === undefined
         ? {}
         : {
@@ -404,7 +411,7 @@ export class RendererIrradianceField {
     return JSON.stringify([
       recordContext(input.runtime).deviceScope.generation,
       // Scene content edits are diffed against the field rows (`#sync`), not keyed.
-      input.worlds.map((world) => world.identity),
+      input.sourceScope.identity,
       // Field identity only: the gather lane consuming the field never resets it.
       input.profile.maxDistance,
       input.profile.environment,
@@ -412,18 +419,14 @@ export class RendererIrradianceField {
     ]);
   }
 
-  readonly #pendingAssets = new Map<RenderResourceScope, Map<number, AssetChange>>();
+  readonly #pendingAssets = new Map<number, AssetChange>();
+  #pendingScope: RenderResourceScope | undefined;
 
   adoptAsset(scope: RenderResourceScope, change: AssetChange): void {
     if (this.#disposed) return;
     this.#ready?.adoptAsset(scope, change);
-    if (!this.#pending) return;
-    let changes = this.#pendingAssets.get(scope);
-    if (changes === undefined) {
-      changes = new Map();
-      this.#pendingAssets.set(scope, changes);
-    }
-    changes.set(change.handle, change);
+    if (!this.#pending || scope !== this.#pendingScope) return;
+    this.#pendingAssets.set(change.handle, change);
   }
 
   prepare(input: IrradianceFieldFrameInput): void {
@@ -433,10 +436,14 @@ export class RendererIrradianceField {
     let key: string;
     try {
       key = this.#signature();
-      const lights = packLights(input.lights).unwrap();
+      // The probe/Card ray reference has no area-light sampling; area lights stay
+      // direct-only instead of failing the whole field.
+      const admitted = input.lights.filter((light) => light.kind !== 'rect-area');
+      const lights = packLights(admitted).unwrap();
       this.#lights = new Uint8Array(IRRADIANCE_FIELD_LIGHTS_BYTES);
       this.#lights.set(lights.subarray(0, Math.min(lights.byteLength, this.#lights.byteLength)));
-      this.#lightCount = input.lights.length;
+      this.#lightCount = admitted.length;
+      this.#excludedAreaLights = input.lights.length - admitted.length;
     } catch (cause) {
       this.#fail(input, cause);
       return;
@@ -485,6 +492,7 @@ export class RendererIrradianceField {
     }
     if (this.#pending || this.#ready || this.#error) return;
     this.#pending = true;
+    this.#pendingScope = input.sourceScope;
     const generation = this.#generation;
     let cards: ProbeCardCapture | undefined;
     const fence: RendererGenerationFence = {
@@ -504,8 +512,8 @@ export class RendererIrradianceField {
       .then(
         (candidate) => {
           try {
-            for (const [scope, changes] of this.#pendingAssets)
-              for (const change of changes.values()) candidate.adoptAsset(scope, change);
+            for (const change of this.#pendingAssets.values())
+              candidate.adoptAsset(input.sourceScope, change);
             this.#pendingAssets.clear();
             const current = this.#input;
             if (
@@ -531,6 +539,7 @@ export class RendererIrradianceField {
       )
       .finally(() => {
         this.#pending = false;
+        this.#pendingScope = undefined;
         this.#pendingAssets.clear();
       });
   }
@@ -552,7 +561,7 @@ export class RendererIrradianceField {
     const visits = this.#fieldRows.visits;
     const projected = this.#fieldRows.changes(
       retained,
-      input.worlds,
+      input.sourceScope,
       input.profile.field.region,
       input.runtime.assets,
     );
@@ -628,7 +637,7 @@ export class RendererIrradianceField {
     const field = profile.field;
     const region = await prepareProbeGlobalRegion(
       runtime,
-      { scene: input.scene, worlds: input.worlds, leases: input.leases },
+      { scene: input.scene, sourceScope: input.sourceScope, lease: input.lease },
       {
         ...field.region,
         rayResolution: 1,

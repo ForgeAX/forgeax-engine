@@ -3,7 +3,11 @@ import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { runInNewContext } from 'node:vm';
-import { assembleAssetRuntime, assembleRuntimePacks } from '@forgeax/engine-app';
+import {
+  assembleAssetRuntime,
+  assembleRuntimePacks,
+  createRendererInspectionError,
+} from '@forgeax/engine-app';
 import { AssetRegistry, createCatalogSource } from '@forgeax/engine-assets-runtime';
 import { FixedTime, Time, World } from '@forgeax/engine-ecs';
 import { decodeCatalogWire, type RuntimeCatalogWire } from '@forgeax/engine-pack';
@@ -46,6 +50,27 @@ type EngineWorkspaceResolverPlugin = {
   ) => Promise<unknown>;
 };
 
+/** Both placements receive the backend selected by ?forgeax-render-backend=. */
+function assertRenderBackendOverrides(source: string, call: string): void {
+  expect(call.split('...(renderBackend === undefined ? {} : { renderBackend }),')).toHaveLength(3);
+  const backendLines = source.match(
+    /^const renderBackendValue = .*;\nconst renderBackend = .*;$/m,
+  )?.[0];
+  expect(backendLines).toBeDefined();
+  for (const [queryString, expected] of [
+    ['', undefined],
+    ['forgeax-render-backend=webgl2', 'webgl2'],
+    ['forgeax-render-backend=webgpu', 'webgpu'],
+    ['forgeax-render-backend=auto', 'auto'],
+    ['forgeax-render-backend=gl', undefined],
+  ] as const)
+    expect(
+      runInNewContext(`${backendLines}\nrenderBackend`, {
+        query: new URLSearchParams(queryString),
+      }),
+    ).toBe(expected);
+}
+
 function assertDynamicGeometryMeshBudgetOverrides(source: string, budget: number): void {
   const expression = source.slice(
     source.indexOf('const dynamicGeometryMeshBudgetBytes ='),
@@ -60,6 +85,21 @@ function assertDynamicGeometryMeshBudgetOverrides(source: string, budget: number
       runInNewContext(`${expression}\ndynamicGeometryMeshBudgetBytes`, {
         query: new URLSearchParams(queryString),
       }),
+    ).toBe(expected);
+}
+
+function assertTextureMipSkipOverrides(source: string, buildValue: number | undefined): void {
+  const expression = source.slice(
+    source.indexOf('const textureMipSkip ='),
+    source.indexOf('const cpuProfileRequested ='),
+  );
+  for (const [queryString, expected] of [
+    ['', buildValue],
+    ['forgeax-texture-mip-skip=2', 2],
+    ['forgeax-texture-mip-skip=0', 0],
+  ] as const)
+    expect(
+      runInNewContext(`${expression}\ntextureMipSkip`, { query: new URLSearchParams(queryString) }),
     ).toBe(expected);
 }
 
@@ -98,6 +138,40 @@ async function assertGeneratedStartupUi(
 
 describe('standalone host', () => {
   afterEach(() => vi.unstubAllEnvs());
+
+  it('publishes immutable browser carriers through the existing native program module graph', async () => {
+    const root = await realpath(
+      await mkdtemp(resolve(tmpdir(), 'forgeax-native-browser-carrier-')),
+    );
+    try {
+      await mkdir(resolve(root, 'assets'));
+      await writeFile(resolve(root, 'package.json'), '{"name":"native-browser-carrier"}');
+      await writeFile(
+        resolve(root, 'forge.json'),
+        JSON.stringify({
+          id: 'native-browser-carrier',
+          name: 'Native browser carrier',
+          schemaVersion: '3.0.0',
+          roots: {},
+        }),
+      );
+      const facts = await readProjectFacts(root);
+      if (!facts.ok) throw facts.error;
+      const config = await createViteConfig(facts.value, 'build', './', {
+        programDelivery: 'native',
+      });
+      const source = await readFile(resolve(config.root ?? '', 'runtime-packs.ts'), 'utf8');
+      const main = await readFile(resolve(config.root ?? '', 'main.ts'), 'utf8');
+      const worker = await readFile(resolve(config.root ?? '', 'execution-bootstrap.ts'), 'utf8');
+      expect(source).toContain('createStaticPackProgramHost');
+      expect(source).not.toContain('createBrowserPackProgramHost');
+      expect(main).not.toContain('serveRuntimePackDelivery');
+      expect(worker).not.toContain('createRuntimePackDeliveryClient');
+      expect(main).toContain('createRuntimePackOptions(runtimeScopeBinding.scopeId)');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 
   it('binds ordinary project animation cadence to both generated App placements and the build identity', async () => {
     const root = await realpath(await mkdtemp(resolve(tmpdir(), 'forgeax-animation-assembly-')));
@@ -149,6 +223,10 @@ describe('standalone host', () => {
               }),
             ).toBe(expected);
           }
+          expect(
+            call.match(/\.\.\.\(textureMipSkip === undefined \? \{\} : \{ textureMipSkip \}\),/g),
+          ).toHaveLength(2);
+          assertTextureMipSkipOverrides(source, undefined);
           const identity = /ssrIdentity: (\{[^\n]+\}),/.exec(bootstrap)?.[1];
           expect(identity).toBeDefined();
           if (command === 'build') identities.push(JSON.parse(identity ?? '{}').buildSha256);
@@ -202,7 +280,7 @@ describe('standalone host', () => {
         maxStepsPerUpdate: 2,
         maxDeltaSeconds: 3 * (1 / 20),
       };
-      for (const budget of [256 * 1024 * 1024, 128 * 1024 * 1024]) {
+      for (const budget of [256 * 1024 * 1024, 128 * 1024 * 1024, 64 * 1024 * 1024]) {
         const startupUi = projectStartupUi(budget);
         const standardProfile = {
           ...DEFAULT_STANDARD_PROFILE,
@@ -220,10 +298,18 @@ describe('standalone host', () => {
                   module: { specifier: './build.ts' },
                   config: {
                     dynamicGeometryMeshBudgetBytes: budget,
+                    canvasPixelRatio:
+                      budget === 256 * 1024 * 1024
+                        ? 2
+                        : budget === 128 * 1024 * 1024
+                          ? 'device'
+                          : { mode: 'device', max: 2 },
+                    textureMipSkip: 2,
                     assetBudgetBytes: budget * 16,
                     standardProfile,
                     pipelineLibrary,
                     backgroundPipelineLibrary,
+                    backgroundPipelineLibraryConcurrency: 3,
                     time,
                     renderTaskYield: 'features',
                     wechat: { maxRenderShortSide: 480 },
@@ -245,6 +331,7 @@ describe('standalone host', () => {
             // The page realm reads the catalog through its one installed source.
             expect(source).not.toContain('configurePackIndex(');
             assertDynamicGeometryMeshBudgetOverrides(source, budget);
+            assertTextureMipSkipOverrides(source, 2);
             // The project default selects cooperative draws; the query still overrides it.
             const taskYield = source.match(/^const renderTaskYield = .*;$/m)?.[0];
             expect(taskYield).toBeDefined();
@@ -263,6 +350,9 @@ describe('standalone host', () => {
               source.indexOf('if (!result.ok) throw result.error;'),
             );
             expect(call.match(/\bdynamicGeometryMeshBudgetBytes,/g)).toHaveLength(2);
+            expect(
+              call.match(/\.\.\.\(textureMipSkip === undefined \? \{\} : \{ textureMipSkip \}\),/g),
+            ).toHaveLength(2);
             expect(call.match(/\bpipelineLibrary,/g)).toHaveLength(2);
             expect(
               call.split(
@@ -271,9 +361,12 @@ describe('standalone host', () => {
             ).toHaveLength(3);
             // Both placements receive the stub selected by ?forgeax-gpu-stub=1.
             expect(call.split('...(gpuStub === undefined ? {} : { gpuStub }),')).toHaveLength(3);
+            assertRenderBackendOverrides(source, call);
             // Both execution placements receive the admitted AssetRegistry content budget.
             expect(call.split(`assetBudgetBytes: ${budget * 16},`)).toHaveLength(3);
             expect(call.split(`time: ${JSON.stringify(time)},`)).toHaveLength(3);
+            // Both placements forward the configured background request count; omission emits nothing.
+            expect(call.split('backgroundPipelineLibraryConcurrency: 3,')).toHaveLength(3);
             const appCall = (
               await transformWithOxc(
                 call
@@ -288,14 +381,17 @@ describe('standalone host', () => {
                 `(async () => { ${appCall} return result; })()`,
                 {
                   canvas: {},
+                  window: { devicePixelRatio: 3.5 },
                   document: { querySelector: () => null, baseURI: 'https://game.test/' },
                   URL,
                   workerExecution,
                   animation: {},
                   dynamicGeometryMeshBudgetBytes: budget,
+                  textureMipSkip: 2,
                   pipelineLibrary,
                   backgroundPipelineLibrary,
                   gpuStub: undefined,
+                  renderBackend: undefined,
                   executionWorkers: {},
                   programDeliveryChannel: 'test',
                   isolateVfxViewGraph: false,
@@ -328,8 +424,13 @@ describe('standalone host', () => {
                   webAudioPlugin: () => ({}),
                   audioPlugin: () => ({}),
                   skinningPlugin: () => ({}),
-                  createApp: (_canvas: unknown, options: ConstructorParameters<typeof World>[0]) =>
-                    new World(options),
+                  createApp: (
+                    _canvas: unknown,
+                    options: ConstructorParameters<typeof World>[0] & { canvasPixelRatio?: number },
+                  ) => {
+                    expect(options.canvasPixelRatio).toBe(budget === 128 * 1024 * 1024 ? 3.5 : 2);
+                    return new World(options);
+                  },
                 },
               )) as World;
               world.update(1 / 60).unwrap();
@@ -407,6 +508,10 @@ describe('standalone host', () => {
               }),
             ).toThrow(failure);
             expect(call).toContain(`standardProfile: ${JSON.stringify(standardProfile)}`);
+            expect(call.match(/canvasPixelRatio:/g)).toHaveLength(2);
+            expect(call).toContain(
+              `canvasPixelRatio: ${budget === 256 * 1024 * 1024 ? '2' : budget === 128 * 1024 * 1024 ? 'window.devicePixelRatio' : 'Math.min(window.devicePixelRatio || 1, 2)'},`,
+            );
             if (command === 'build') {
               const bootstrap = await readFile(
                 resolve(config.root ?? '', 'execution-bootstrap.ts'),
@@ -417,15 +522,7 @@ describe('standalone host', () => {
               );
             }
           } finally {
-            for (const plugin of config.plugins ?? []) {
-              if (
-                plugin &&
-                typeof plugin === 'object' &&
-                'closeBundle' in plugin &&
-                typeof plugin.closeBundle === 'function'
-              )
-                await plugin.closeBundle.call({} as never);
-            }
+            await closeBuildPlugins(config.plugins);
           }
         }
       }
@@ -1113,9 +1210,12 @@ describe('standalone host', () => {
     expect(generatedHtml).toContain('formatStartupFailure');
     expect(generatedHtml).toContain('appendStructuredFailure');
     for (const prefix of ['ForgeAX game failed to start.', 'ForgeAX game stopped.']) {
-      expect(generatedHtml).toContain(`${prefix}\\n`);
+      expect(generatedHtml).toContain(JSON.stringify(prefix));
       expect(generatedHtml).not.toContain(`${prefix}\n`);
     }
+    expect(generatedHtml).toContain(
+      "labels.host.startupFailureTitle) + '\\n' + message + '\\n' + details",
+    );
   });
 
   it('keeps structured startup causes instead of collapsing objects to [object Object]', async () => {
@@ -1613,20 +1713,27 @@ describe('standalone host', () => {
     expect(errorBindingStart).toBeGreaterThanOrEqual(0);
     expect(errorBindingEnd).toBeGreaterThan(errorBindingStart);
     const runtimeErrorBinding = generatedMain.slice(errorBindingStart, errorBindingEnd);
+    const rendererErrorSource = generatedMain.match(
+      /function rendererErrorSource\(error\) \{[\s\S]*?\n\}/,
+    )?.[0];
+    expect(rendererErrorSource).toBeDefined();
     let runtimeErrorListener: ((error: unknown) => void) | undefined;
     let execution: { fault: unknown } = { fault: null };
     const pointerLockWarning = vi.fn();
-    runInNewContext(`let removeStartupErrorListener;\n${runtimeErrorBinding}`, {
-      startup: page.startup,
-      console: { warn: pointerLockWarning },
-      app: {
-        execution: { report: () => execution },
-        onError: (listener: (error: unknown) => void) => {
-          runtimeErrorListener = listener;
-          return () => {};
+    runInNewContext(
+      `${rendererErrorSource}\nlet removeStartupErrorListener;\n${runtimeErrorBinding}`,
+      {
+        startup: page.startup,
+        console: { warn: pointerLockWarning },
+        app: {
+          execution: { report: () => execution },
+          onError: (listener: (error: unknown) => void) => {
+            runtimeErrorListener = listener;
+            return () => {};
+          },
         },
       },
-    });
+    );
     const runtimeFailure = {
       name: 'AppError',
       code: 'app-system-update-failed',
@@ -1774,6 +1881,206 @@ describe('standalone host', () => {
     expect(destroyed.fatal.style.display).not.toBe('grid');
   });
 
+  it('offers current-owner asynchronous Renderer inspection to public Play pages', async () => {
+    const root = await realpath(await mkdtemp(resolve(tmpdir(), 'forgeax-renderer-inspection-')));
+    try {
+      await mkdir(resolve(root, 'assets'));
+      await writeFile(resolve(root, 'package.json'), '{"name":"inspection","type":"module"}');
+      await writeFile(
+        resolve(root, 'forge.json'),
+        JSON.stringify({
+          id: 'inspection',
+          name: 'Inspection',
+          schemaVersion: '3.0.0',
+          roots: {},
+        }),
+      );
+      const facts = await readProjectFacts(root);
+      if (!facts.ok) throw facts.error;
+      const config = await createViteConfig(facts.value, 'build');
+      const generated = await readFile(resolve(config.root ?? '', 'main.ts'), 'utf8');
+      const expose = generated.indexOf('function exposeGameInspection(app');
+      const helper = generated.indexOf('async function inspectGameRenderer(');
+      const end = generated.indexOf('async function prepareProject(app)', expose);
+      const shared = generated
+        .slice(helper < 0 ? expose : helper, end)
+        .replaceAll('import.meta.env.DEV', 'true');
+      const workerStart = generated.indexOf(
+        'const localInspection = globalThis.__forgeaxGameInspection;',
+      );
+      const workerTail = "}, 'devkit/host-inspection');";
+      const workerEnd = generated.indexOf(workerTail, workerStart) + workerTail.length;
+      expect(Math.min(expose, end, workerStart)).toBeGreaterThanOrEqual(0);
+      const install = generated
+        .split('\n')
+        .find((line) => line.includes('exposeGameInspection(app as App'));
+      if (!install) throw new Error('Missing real local inspection installation');
+      const sharedCode = (await transformWithOxc(shared, 'inspection.ts')).code;
+      const workerCode = (
+        await transformWithOxc(
+          generated.slice(workerStart, workerEnd).replaceAll('import.meta.env.DEV', 'true'),
+          'inspection.ts',
+        )
+      ).code;
+      const installCode = (
+        await transformWithOxc(install.replaceAll('import.meta.env.DEV', 'true'), 'inspection.ts')
+      ).code;
+      const fields = ['state', 'frame', 'capabilities', 'deviceInfo'];
+      const payload = (fallback: boolean | null, available = true) => ({
+        state: 'alive',
+        frame: { frameId: 12, deviceGeneration: 0 },
+        capabilities: { backendKind: 'webgpu' },
+        deviceInfo: {
+          deviceGeneration: 0,
+          adapterInfo: available
+            ? {
+                vendor: 'actual',
+                architecture: '',
+                device: '',
+                description: '',
+                isFallbackAdapter: fallback,
+              }
+            : null,
+        },
+      });
+      const make = (app: object, worker: boolean) => {
+        const appState: { current: object | undefined } = { current: app };
+        const effects: Array<() => unknown> = [];
+        const context: Record<string, unknown> = {
+          app,
+          appState,
+          pageHidden: false,
+          workerExecution: worker,
+          cpuProfileRequested: false,
+          gameProjectionDefinitions: new Map(),
+          structuredClone,
+          createRendererInspectionError,
+          console: { warn: vi.fn() },
+          ctx: {
+            effect: (callback: () => unknown) => {
+              const cleanup = callback();
+              if (typeof cleanup === 'function') effects.push(cleanup as () => unknown);
+            },
+          },
+        };
+        runInNewContext(sharedCode, context);
+        runInNewContext(worker ? workerCode : installCode, context);
+        return {
+          inspection: runInNewContext('globalThis.__forgeaxGameInspection', context),
+          appState,
+          context,
+          effects,
+        };
+      };
+      const appBase = () => ({
+        execution: { report: () => ({ frame: { completed: 12 } }) },
+        onError: vi.fn(() => () => {}),
+      });
+      const localRead = vi.fn(() => payload(false));
+      const local = make(
+        { ...appBase(), renderer: { state: () => 'alive', inspect: localRead } },
+        false,
+      );
+      const workerRead = vi.fn(async () => ({ ok: true, value: payload(false) }));
+      const remoteEval = vi.fn((code: string) =>
+        runInNewContext(`(async () => { ${code} })()`, {
+          execution: { inspectRenderer: workerRead },
+        }),
+      );
+      const worker = make({ ...appBase(), remoteEval }, true);
+      expect.soft(local.inspection.inspectRenderer).toBeTypeOf('function');
+      expect.soft(worker.inspection.inspectRenderer).toBeTypeOf('function');
+      if (!local.inspection.inspectRenderer || !worker.inspection.inspectRenderer) return;
+      expect(await local.inspection.inspectRenderer()).toEqual({ ok: true, value: payload(false) });
+      expect(localRead).toHaveBeenCalledWith({ fields });
+      expect(
+        await worker.inspection.inspectRenderer({ code: 'private-code', fields: ['world'] }),
+      ).toEqual({ ok: true, value: payload(false) });
+      expect(workerRead).toHaveBeenCalledWith({ fields });
+      expect(remoteEval).toHaveBeenCalledOnce();
+      expect(remoteEval.mock.calls[0]?.[0]).not.toContain('private-code');
+      for (const key of ['app', 'world', 'remoteEval'])
+        expect(worker.inspection).not.toHaveProperty(key);
+
+      for (const fallback of [false, true, null] as const) {
+        const original = payload(fallback);
+        localRead.mockReturnValue(original);
+        const result = await local.inspection.inspectRenderer();
+        expect(result.value.deviceInfo.adapterInfo.isFallbackAdapter).toBe(fallback);
+        if (original.deviceInfo.adapterInfo === null) throw new Error('Missing fixture adapter');
+        original.deviceInfo.adapterInfo.vendor = 'later';
+        expect(result.value.deviceInfo.adapterInfo.vendor).toBe('actual');
+      }
+      localRead.mockReturnValue(payload(null, false));
+      expect((await local.inspection.inspectRenderer()).value.deviceInfo.adapterInfo).toBeNull();
+      localRead.mockClear();
+      local.appState.current = {};
+      expect(await local.inspection.inspectRenderer()).toMatchObject({
+        ok: false,
+        error: { code: 'app-renderer-inspection-unavailable', detail: { reason: 'stale-session' } },
+      });
+      expect(localRead).not.toHaveBeenCalled();
+
+      let release!: (value: unknown) => void;
+      const pending = new Promise((resolve) => {
+        release = resolve;
+      });
+      const late = make({ ...appBase(), remoteEval: () => pending }, true);
+      const result = late.inspection.inspectRenderer();
+      for (const effect of late.effects) effect();
+      release({ ok: true, value: payload(false) });
+      expect(await result).toMatchObject({
+        ok: false,
+        error: { detail: { reason: 'stale-session' } },
+      });
+      for (const retired of ['pageHidden', 'global'] as const) {
+        const read = vi.fn(() => payload(false));
+        const owner = make(
+          { ...appBase(), renderer: { state: () => 'alive', inspect: read } },
+          false,
+        );
+        if (retired === 'pageHidden') owner.context.pageHidden = true;
+        else runInNewContext('globalThis.__forgeaxGameInspection = {};', owner.context);
+        expect(await owner.inspection.inspectRenderer()).toMatchObject({
+          ok: false,
+          error: { detail: { reason: 'stale-session' } },
+        });
+        expect(read).not.toHaveBeenCalled();
+      }
+      const missing = make(appBase(), true);
+      expect(await missing.inspection.inspectRenderer()).toMatchObject({
+        ok: false,
+        error: { detail: { reason: 'not-ready' } },
+      });
+      const clone = make(
+        {
+          ...appBase(),
+          renderer: { state: () => 'alive', inspect: () => ({ deviceInfo: () => {} }) },
+        },
+        false,
+      );
+      expect(await clone.inspection.inspectRenderer()).toMatchObject({
+        ok: false,
+        error: { detail: { reason: 'inspection' } },
+      });
+      const rejected = make(
+        {
+          ...appBase(),
+          remoteEval: async () => {
+            throw new Error('worker read');
+          },
+        },
+        true,
+      );
+      expect(await rejected.inspection.inspectRenderer()).toMatchObject({
+        ok: false,
+        error: { detail: { reason: 'inspection' } },
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('resource host wires the package-owned equirect kit into the canonical scene', async () => {
     const root = await mkdtemp(resolve(tmpdir(), 'forgeax-devkit-resource-host-'));
     try {
@@ -1800,7 +2107,7 @@ describe('standalone host', () => {
       });
       const generated = await readFile(resolve(root, '.forgeax/generated/main.ts'), 'utf8');
       expect(generated).toContain("await loadOwned(canonicalEnvironmentGuid, 'equirect')");
-      const inspectionStart = generated.indexOf('function exposeGameInspection(app)');
+      const inspectionStart = generated.indexOf('function exposeGameInspection(app');
       const inspectionEnd = generated.indexOf(
         'async function prepareProject(app)',
         inspectionStart,
@@ -1916,29 +2223,10 @@ describe('standalone host', () => {
       ]);
       const installLine = generated
         .split('\n')
-        .find((line) => line.includes('exposeGameInspection(app as App)'));
+        .find((line) => line.includes('exposeGameInspection(app as App'));
       expect(installLine).toBeDefined();
       if (installLine === undefined) throw new Error('generated inspection install line missing');
-      for (const dev of [false, true]) {
-        for (const cpuProfileRequested of [false, true]) {
-          for (const workerExecution of [false, true]) {
-            let installs = 0;
-            runInNewContext(
-              installLine.replace('import.meta.env.DEV', String(dev)).replace('app as App', 'app'),
-              {
-                app: {},
-                cpuProfileRequested,
-                workerExecution,
-                executionWorkers: {},
-                exposeGameInspection: () => {
-                  installs++;
-                },
-              },
-            );
-            expect(installs).toBe(!workerExecution && (dev || cpuProfileRequested) ? 1 : 0);
-          }
-        }
-      }
+      assertInspectionInstall(installLine);
 
       // Execute the generated query and actual createApp call, not a duplicate
       // parser. The App owner remains responsible for Worker capability admission.
@@ -2352,7 +2640,15 @@ export default definePack({
     }
   });
 
-  it('lets frontend plugins register read projections on the Worker execution page host', async () => {
+  it.each([
+    { development: true, remote: true },
+    { development: true, remote: false },
+    { development: false, remote: true },
+    { development: false, remote: false },
+  ])('merges page and source read projections (development=$development, remote=$remote)', async ({
+    development,
+    remote,
+  }) => {
     const template = resolve(import.meta.dirname, '../../../../templates/empty');
     const facts = await readProjectFacts(template);
     if (!facts.ok) throw facts.error;
@@ -2364,7 +2660,7 @@ export default definePack({
     expect(Math.min(start, end)).toBeGreaterThanOrEqual(0);
     const pageHost = (
       await transformWithOxc(
-        `(async () => { ${gameProjectionSource}\n${generated.slice(start, end).replaceAll('import.meta.env.DEV', 'true')} })()`,
+        `(async () => { ${gameProjectionSource}\n${generated.slice(start, end).replaceAll('import.meta.env.DEV', String(development))} })()`,
         'page-host.ts',
         { lang: 'ts' },
       )
@@ -2388,10 +2684,19 @@ export default definePack({
       HTMLElement: class {},
       assembleAssetRuntime: () => ({ ok: true, value: { dispose() {} } }),
       trackRendererErrors: () => ({ unsubscribe() {}, read: () => null }),
-      // The Engine Worker answers for its own registrations through remoteEval.
-      app: {
-        remoteEval: async (source: string) =>
-          source.endsWith('.list()') ? { reads: ['worker.state'] } : { from: 'worker' },
+      app: remote
+        ? {
+            remoteEval: async (source: string) =>
+              source.endsWith('.list()') ? { reads: ['worker.state'] } : { from: 'worker' },
+          }
+        : {},
+      __forgeaxGameInspection: {
+        list: () => ({ reads: ['worker.state'] }),
+        read: (id: string) => {
+          if (id === 'worker.state') return { from: 'worker' };
+          if (id === 'worker.empty') return undefined;
+          throw new Error(`Missing source projection ${id}`);
+        },
       },
       ctx: {
         provide: (name: string, value: unknown) => provided.set(name, value),
@@ -2418,6 +2723,10 @@ export default definePack({
     expect((await inspection.list()).reads).toEqual(['frontend.turret', 'worker.state']);
     expect(await inspection.read('frontend.turret')).toEqual({ aim: 1 });
     expect(await inspection.read('worker.state')).toEqual({ from: 'worker' });
+    if (!remote) {
+      expect(await inspection.read('worker.empty')).toBeUndefined();
+      expect(() => inspection.read('missing')).toThrow('Missing source projection missing');
+    }
     for (const dispose of disposers) dispose();
     expect(sandbox.__forgeaxGameInspection).toBeUndefined();
   });
@@ -2446,3 +2755,38 @@ export default definePack({
     expect(html).toContain('<title>Game &lt;One&gt; &amp; &quot;Two&quot;</title>');
   });
 });
+
+async function closeBuildPlugins(plugins: readonly unknown[] | undefined): Promise<void> {
+  for (const plugin of plugins ?? []) {
+    if (
+      plugin &&
+      typeof plugin === 'object' &&
+      'closeBundle' in plugin &&
+      typeof plugin.closeBundle === 'function'
+    )
+      await plugin.closeBundle.call({} as never);
+  }
+}
+
+function assertInspectionInstall(installLine: string): void {
+  for (const dev of [false, true]) {
+    for (const cpuProfileRequested of [false, true]) {
+      for (const workerExecution of [false, true]) {
+        let installs = 0;
+        runInNewContext(
+          installLine.replace('import.meta.env.DEV', String(dev)).replace('app as App', 'app'),
+          {
+            app: {},
+            cpuProfileRequested,
+            workerExecution,
+            executionWorkers: {},
+            exposeGameInspection: () => {
+              installs++;
+            },
+          },
+        );
+        expect(installs).toBe(!workerExecution && (dev || cpuProfileRequested) ? 1 : 0);
+      }
+    }
+  }
+}

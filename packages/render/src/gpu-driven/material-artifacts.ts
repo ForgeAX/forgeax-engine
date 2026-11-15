@@ -289,7 +289,8 @@ function artifactRequestKey(request: Parameters<BatchArtifactResolver>[1]): numb
     REQUEST_PASS_BITS[request.pass] |
     (request.deformation === 'skin' ? 4 : 0) |
     (request.vertexColorAvailable ? 8 : 0) |
-    (request.alphaMask ? 16 : 0)
+    (request.alphaMask ? 16 : 0) |
+    (request.leanInputs ? 32 : 0)
   );
 }
 
@@ -610,15 +611,24 @@ export function* prepareHiddenMaterialExecutions(
 function hiddenRenderState(
   state: MaterialRenderState | undefined,
   selected: MaterialShaderArtifact,
-  pass: { readonly coverageOnly: boolean; readonly seededDepth?: boolean },
+  pass: {
+    readonly coverageOnly: boolean;
+    readonly seededDepth?: boolean;
+    readonly opaqueDepthPrimed?: boolean;
+  },
   world: Float32Array,
 ): MaterialRenderState | undefined {
   const passState =
     pass.seededDepth === true
       ? seededDepthRenderState(state, artifactAlphaMask(selected.variantSet))
-      : selected.fragmentEntry === 'fs_temporal'
-        ? geometryRenderStateForPass(state, 'temporal', pass.coverageOnly)
-        : state;
+      : geometryRenderStateForPass(
+          state,
+          selected.fragmentEntry === 'fs_temporal' ? 'temporal' : 'forward',
+          pass.coverageOnly,
+          undefined,
+          selected.fragmentEntry,
+          pass.opaqueDepthPrimed ?? false,
+        );
   return transformRenderState(passState, world);
 }
 
@@ -655,6 +665,7 @@ export function prepareHiddenGpuDrivenPipelines(input: {
   readonly coverageOnly: boolean;
   /** Forward opaque over the exact prepass depth (see seededDepthRenderState). */
   readonly seededDepth?: boolean;
+  readonly opaqueDepthPrimed?: boolean;
   readonly visibleSurface: boolean;
   /** The recording view carries camera clipping planes; absent keeps them off. */
   readonly viewClipping?: boolean;
@@ -743,7 +754,6 @@ export function prepareHiddenGpuDrivenPipelines(input: {
         ready = false;
         input.onPending?.({
           code: 'scene-pipeline-preparation',
-          worldId: entry.source.worldId,
           entity: entry.source.entityKey,
           pass: (fragment ?? input.filter ?? 'forward').slice(0, 256),
           shader: selectedArtifact.material.slice(0, 256),

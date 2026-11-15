@@ -10,6 +10,7 @@ import type {
 import type { RhiCaps } from '@forgeax/engine-rhi';
 import type { Result, RuntimeAssetBinding } from '@forgeax/engine-types';
 import type { AppError } from '../errors';
+import type { ExecutionBootstrapEntry } from './bootstrap-entry';
 
 export const EXECUTION_WORKERS = ['engine', 'render', 'kernels'] as const;
 export type ExecutionWorker = (typeof EXECUTION_WORKERS)[number];
@@ -172,6 +173,8 @@ export interface ExecutionOptions {
   readonly workers?: ExecutionWorkersOptions;
   /** Absolute or import.meta.url-relative URL of an ExecutionBootstrapEntry module. */
   readonly bootstrap: string | URL;
+  /** Host-only entry from the same native module graph; used only when the Engine Worker is disabled. Never transferred. */
+  readonly localBootstrap?: ExecutionBootstrapEntry;
   /** Structured-cloneable input supplied identically to main and Worker realms. */
   readonly bootstrapData?: ExecutionBootstrapValue;
   /**
@@ -188,6 +191,8 @@ export interface ExecutionOptions {
   readonly assetCatalog?: ExecutionAssetCatalog;
   /** Opt-in diagnostics created inside the selected execution realm. */
   readonly diagnostics?: ExecutionDiagnosticsOptions;
+  /** Explicit aggregate in-flight cap for Worker feature-texture readbacks. */
+  readonly featureTextureReadbackBudgetBytes?: number;
   /** Bounds initialization and the first source frame; null waits until completion or cancellation. */
   readonly startupTimeoutMs?: number | null;
   /** Bounds source frame admission after the first source completion. */

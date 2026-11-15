@@ -15,7 +15,6 @@ function spot(entity: number): SpotLightSnapshot {
   return {
     kind: 'spot',
     entity,
-    worldId: 0,
     position: new Float32Array([entity, 4, 0]),
     direction: new Float32Array([0, -1, 0]),
     color: new Float32Array([1, 1, 1]),

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { defineSystem } from "@forgeax/engine-ecs";
 import { encodePng } from '@forgeax/engine-image/png';
 import { createSmokePlatform } from '../../../../scripts/smoke-platform.mjs';
 import { runSmokeAppFrames, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
@@ -98,7 +99,7 @@ const manifestUrl = URL.createObjectURL(new Blob([JSON.stringify(await buildEngi
 process.once('exit', () => URL.revokeObjectURL(manifestUrl));
 const { createApp } = await import('@forgeax/engine-app/browser');
 const { Update } = await import('@forgeax/engine-ecs');
-const { INPUT_SNAPSHOT_RESOURCE_KEY, FRAME_START_SCAN_SYSTEM_NAME } = await import('@forgeax/engine-input');
+const { INPUT_SNAPSHOT_RESOURCE_KEY, InputFrameStartScan } = await import('@forgeax/engine-input');
 const { buildTouchInputWorld, readTouchInputState, stepTouchInput } = await import(resolve(appRoot, 'src', 'touch-input.ts'));
 const mockCanvas = {
   tagName: 'CANVAS',
@@ -124,12 +125,13 @@ const errors = [];
 subscribeSmokeErrors(app.renderer, (error) => errors.push(error));
 app.onError((error) => errors.push(error));
 buildTouchInputWorld(app.world);
-app.world.addSystem(Update, {
+const systemToken1 = defineSystem({
   name: 'bevy-touch-input-read',
-  after: [FRAME_START_SCAN_SYSTEM_NAME],
+  after: [InputFrameStartScan],
   queries: [],
   fn: (world) => stepTouchInput(world, world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY)),
 });
+app.world.addSystem(Update, systemToken1);
 const frames = await runSmokeAppFrames(app, () => {
   const callback = rafQueue.shift();
   if (!callback) return false;

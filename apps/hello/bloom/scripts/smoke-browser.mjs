@@ -14,11 +14,13 @@ import browserLaunch from '../../../../scripts/ci/browser-launch.json' with { ty
 import { PNG } from 'pngjs';
 import { createOwnedProcessGroupStopper } from '../../../shared/scripts/rhi-debug-process.mjs';
 import { resolveBrowserWebGpuLaunch } from '../../../shared/scripts/rhi-debug-verify.mjs';
+import { browserGpuLaunchOptions } from '../../../../scripts/ci/browser-executable.mjs';
+import { requireNativeBrowserAdapter } from '../../../../scripts/ci/browser-native-admission.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const appRoot = resolve(here, '..');
 const repoRoot = resolve(appRoot, '..', '..', '..');
-const evidenceDir = resolve(appRoot, 'evidence');
+const evidenceDir = resolve(process.env.SMOKE_EVIDENCE_DIR ?? resolve(appRoot, 'evidence'));
 const frames = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const serverStartTimeoutMs = Number.parseInt(
   process.env.FORGEAX_BLOOM_SERVER_START_TIMEOUT_MS ?? '120000',
@@ -193,14 +195,18 @@ try {
   server.stderr.on('data', observeServer);
   await waitForServer();
 
-  browser = await chromium.launch({
+  const launch = {
     channel: process.env.FORGEAX_CHROME_CHANNEL ?? browserLaunch.channel,
     headless: process.env.FORGEAX_BROWSER_HEADLESS !== '0',
     args: process.platform === 'win32' ? resolveBrowserWebGpuLaunch().args : process.env.CI && process.platform === 'linux'
       ? [...browserLaunch.args, '--use-angle=swiftshader']
       : ['--enable-unsafe-webgpu', '--ignore-gpu-blocklist'],
     chromiumSandbox: true,
-  });
+  };
+  const selectedLaunch = process.env.FORGEAX_BROWSER_GPU === 'native'
+    ? browserGpuLaunchOptions(launch) : launch;
+  evidence.runner.launch = selectedLaunch;
+  browser = await chromium.launch({ ...selectedLaunch, chromiumSandbox: true });
   const page = await browser.newPage({ viewport: { width: 400, height: 225 } });
   const pageErrors = [];
   const consoleErrors = [];
@@ -211,6 +217,16 @@ try {
   // HTTP readiness precedes Vite's shader-heavy entry transform. Keep the
   // existing 30-second runtime assertions below after navigation completes.
   await page.goto(`${serverUrl}/`, { waitUntil: 'domcontentloaded', timeout: serverStartTimeoutMs });
+  if (process.env.FORGEAX_BROWSER_GPU === 'native') {
+    evidence.runner.adapter = requireNativeBrowserAdapter(await page.evaluate(async () => {
+      const adapter = await navigator.gpu.requestAdapter();
+      if (adapter === null) return null;
+      const info = adapter.info;
+      return { info: { vendor: info.vendor, architecture: info.architecture, device: info.device,
+        description: info.description, isFallbackAdapter: info.isFallbackAdapter } };
+    }));
+    console.log(`[bloom-browser] native-adapter=${JSON.stringify(evidence.runner.adapter)}`);
+  }
   await page.waitForFunction(
     () => typeof globalThis.__bloomCarrierProbe?.ready === 'function' && globalThis.__bloomCarrierProbe.ready(),
     undefined,
@@ -253,9 +269,9 @@ try {
       label,
       action: actionResult === undefined ? undefined : resultShape(actionResult),
       inspection: observation,
-      readback: { path: `apps/hello/bloom/evidence/browser-${label}.png`, sha256: sha256File(pngPath), ...imageStats(pngPath) },
-      sceneReadback: { path: `apps/hello/bloom/evidence/browser-${label}-scene.png`, ...imageStats(scenePath) },
-      compositorReadback: { path: `apps/hello/bloom/evidence/browser-${label}-compositor.png`, ...imageStats(compositorPath) },
+      readback: { path: pngPath, sha256: sha256File(pngPath), ...imageStats(pngPath) },
+      sceneReadback: { path: scenePath, ...imageStats(scenePath) },
+      compositorReadback: { path: compositorPath, ...imageStats(compositorPath) },
     };
     if (record) evidence.stages.push(stage);
     evidence.successfulSubmittedFrames = observation.submittedFrames;

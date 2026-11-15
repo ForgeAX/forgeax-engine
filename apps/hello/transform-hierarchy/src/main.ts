@@ -1,3 +1,4 @@
+import { defineSystem } from "@forgeax/engine-ecs";
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { Update, type EntityHandle } from '@forgeax/engine-ecs';
 // apps/hello/transform-hierarchy -- ChildOf hierarchy "parent moves, child
@@ -101,11 +102,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   const sphereHandle = assets.create(BUILTIN_SPHERE).unwrap();
   const worldAttachment1 = renderer.attach(world);
   if (!worldAttachment1.ok) throw worldAttachment1.error;
-  const frameRequest = {
-    leases: [worldAttachment1.value],
-    camera: { lease: worldAttachment1.value },
-    environment: { lease: worldAttachment1.value },
-  };
+  const frameRequest = { source: worldAttachment1.value };
 
   registerPropagateTransforms(world);
 
@@ -211,7 +208,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   let phase = 0;
   let paused = false;
 
-  world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'transform-hierarchy-parent-slide',
     queries: [],
     fn: () => {
@@ -227,6 +224,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       }
     },
   });
+world.addSystem(Update, systemToken1);
 
   const projectionIds = new WeakMap<object, number>();
   let nextProjectionId = 1;

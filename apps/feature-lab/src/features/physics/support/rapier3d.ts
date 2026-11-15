@@ -1,6 +1,6 @@
 import { type EntityHandle, World } from '@forgeax/engine/ecs';
 import { type Vec3, vec3 as v3 } from '@forgeax/engine/math';
-import { registerPhysicsComponents } from '@forgeax/engine/physics';
+import { PhysicsWorldResource, registerPhysicsComponents } from '@forgeax/engine/physics';
 import {
   createRapier3DPhysicsWorld,
   loadRapier3D,
@@ -32,7 +32,7 @@ export async function createPhysicsHarness3D(): Promise<PhysicsHarness3D | strin
   world.components.register(GlobalTransform).unwrap();
   registerPhysicsComponents(world);
   const physics = createRapier3DPhysicsWorld(rapier);
-  world.insertResource('PhysicsWorld', physics);
+  world.insertResource(PhysicsWorldResource, physics);
   const unregister = registerPhysicsSystems(world);
   return {
     world,
@@ -51,7 +51,7 @@ export async function createPhysicsHarness3D(): Promise<PhysicsHarness3D | strin
     },
     dispose() {
       unregister();
-      world.removeResource('PhysicsWorld');
+      world.removeResource(PhysicsWorldResource);
       physics.dispose();
     },
   };

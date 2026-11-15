@@ -217,9 +217,15 @@ export class BatchRowAssembly {
     // An absent Pass contributes no work to this view. Direct execution
     // remains in the plan so its real fallback still owns those rows.
     if (execution.route === 'none') return undefined;
-    const geometry = this.sceneGeometry(binding, execution);
     const mesh = this.meshByBinding.get(binding);
     const retained = this.preparation.batches.get(sourceBatch.batchId);
+    const geometry = this.geometryForRow(
+      sourceBatch,
+      binding,
+      execution,
+      nativeMembership,
+      retained,
+    );
     const renderState = this.serializedRenderState(execution);
     const sameRetained =
       nativeMembership &&
@@ -258,13 +264,35 @@ export class BatchRowAssembly {
     );
   }
 
+  private geometryForRow(
+    sourceBatch: GpuDrivenBatch,
+    binding: GpuDrivenBatchBinding,
+    execution: ActiveExecution,
+    nativeMembership: boolean,
+    retained: RetainedRow | undefined,
+  ): MeshGeometry | undefined {
+    // An unchanged immutable Mesh frame and captured binding still name the
+    // exact geometry already joined by this row. Instance/member changes do
+    // not require another tree lookup; borrowed rows retain their live read.
+    return this.sameInputs &&
+      nativeMembership &&
+      execution.route === 'gpu' &&
+      retained?.execution?.route === 'gpu' &&
+      retained.source.binding === binding &&
+      capturedGpuDrivenBatchKey(sourceBatch) !== undefined &&
+      capturedGpuDrivenBatchKey(retained.source) !== undefined &&
+      this.previous?.inputs?.meshes[1] === this.scene.meshes
+      ? retained.geometry
+      : this.sceneGeometry(binding, execution);
+  }
+
   /** Scene geometry whose pinned version proves a GPU row's geometry address. */
   private sceneGeometry(
     binding: GpuDrivenBatchBinding,
     execution: ActiveExecution,
   ): MeshGeometry | undefined {
     if (execution.route !== 'gpu') return undefined;
-    return this.scene.meshes?.get(binding.worldId, binding.assetHandle);
+    return this.scene.meshes?.get(binding.assetHandle);
   }
 
   /** Shared Pass state is serialized once per assembly, still observing in-place edits. */
@@ -301,7 +329,7 @@ export class BatchRowAssembly {
   ): number | undefined {
     const geometryAddress =
       execution.route === 'gpu'
-        ? this.materials?.logicalForGeometry(binding.worldId, binding.assetHandle, geometry)
+        ? this.materials?.logicalForGeometry(binding.assetHandle, geometry)
         : undefined;
     // Morphed rows carry their own bounds; they hold no shared geometry row.
     if (
@@ -363,7 +391,7 @@ export class BatchRowAssembly {
     }
     this.sameRows = false;
     batch ??= materializeBatch(sourceBatch, facts, executionKey);
-    const value = prepareBatchRows(batch, { mesh, worldKeys: this.scene.worldKeys, execution });
+    const value = prepareBatchRows(batch, { mesh, execution });
     this.preparation.batches.set(currentBatch.batchId, {
       source: sourceBatch,
       signature,

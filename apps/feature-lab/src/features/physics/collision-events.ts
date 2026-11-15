@@ -2,11 +2,11 @@ import {
   Collider,
   ColliderShapeValue,
   CollidingEntities,
+  PhysicsWorldResource,
   RigidBody,
   RigidBodyTypeValue,
 } from '@forgeax/engine/physics';
-import type { RapierPhysicsWorld3D } from '@forgeax/engine/physics-rapier3d';
-import physics3d from '@forgeax/engine/physics-rapier3d';
+import physics3d, { RapierPhysicsWorld3D } from '@forgeax/engine/physics-rapier3d';
 import { Transform } from '@forgeax/engine/scene';
 import { CheckList, defineFeature } from '../../lab/feature';
 import { spawnCamera } from '../../lab/stage';
@@ -24,9 +24,9 @@ export default defineFeature({
   async setup({ world, frames }) {
     const checks = new CheckList();
     spawnCamera(world);
-    const { physics } = await waitForPhysicsWorld<RapierPhysicsWorld3D>(world, frames);
+    const { physics } = await waitForPhysicsWorld(world, frames, PhysicsWorldResource);
     checks.ok('PhysicsWorld resource inserted', physics !== undefined);
-    if (physics === undefined) return { checks: () => checks.items };
+    if (!(physics instanceof RapierPhysicsWorld3D)) return { checks: () => checks.items };
     const collidingWith = (entity: number): readonly number[] => {
       const read = world.get(entity as never, CollidingEntities);
       return read.ok

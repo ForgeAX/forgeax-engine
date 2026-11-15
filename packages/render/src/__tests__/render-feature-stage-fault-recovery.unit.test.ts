@@ -1,3 +1,4 @@
+import { World } from '@forgeax/engine-ecs';
 import type { RhiCaps } from '@forgeax/engine-rhi';
 import { err, ok } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
@@ -78,8 +79,7 @@ function faultyFeature(
 
 function frame(host: RenderFeatureHost, frameNumber: number) {
   return runSingleViewFeatureFrame(host, {
-    worlds: [],
-    owner: 0,
+    world: new World(),
     frameNumber,
     caps,
   });

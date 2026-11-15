@@ -122,10 +122,12 @@
     "@forgeax/engine-types": "workspace:*",
     "@forgeax/engine-ui": "workspace:*",
     "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-terrain": "workspace:*",
     "@forgeax/engine-rhi-debug": "workspace:*",
     "@forgeax/engine-scene": "workspace:*",
     "@forgeax/engine-vfx": "workspace:*",
     "@forgeax/engine-vfx-render": "workspace:*",
+    "@forgeax/engine-water": "workspace:*",
     "@forgeax/engine-geometry": "workspace:*"
   },
   "devDependencies": {

@@ -1,6 +1,6 @@
 import { Worker as NodeWorker } from 'node:worker_threads';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
-import { FixedTime, Time, Update, type World } from '@forgeax/engine-ecs';
+import { defineResource, type World } from '@forgeax/engine-ecs';
 import type { Context } from '@forgeax/engine-plugin';
 import { ShaderRegistry } from '@forgeax/engine-shader';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -13,6 +13,10 @@ import type {
 import type { RenderWorkerInput, RenderWorkerOutput } from '../execution/render-worker-protocol';
 import type { ExecutionDiagnosticsOptions } from '../execution/types';
 import { workerSelection } from './execution-fixtures';
+
+let ecs: typeof import('@forgeax/engine-ecs');
+
+const resource1 = defineResource<boolean>('fixture-root-complete');
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -63,7 +67,7 @@ vi.mock('../execution/bootstrap-entry', async (original) => {
           state.rootEntered?.resolve();
           await state.rootGate?.promise;
           if (state.rootFailure !== undefined) throw state.rootFailure;
-          ctx.world.insertResource('fixture-root-complete', true);
+          ctx.world.insertResource(resource1, true);
           ctx.effect(
             () => () => {
               state.order.push('root-cleanup');
@@ -71,7 +75,7 @@ vi.mock('../execution/bootstrap-entry', async (original) => {
             'fixture/root',
           );
           if (state.kernelFailure !== undefined) {
-            const executor = ctx.world.getResource('SharedKernelExecutor') as {
+            const executor = ctx.world.getResource(ecs.SHARED_KERNEL_EXECUTOR_RESOURCE_KEY) as {
               warmup(kernel: unknown): void;
             };
             executor.warmup({});
@@ -84,9 +88,11 @@ vi.mock('../execution/bootstrap-entry', async (original) => {
     },
   };
 });
-vi.mock('../execution/kernel-pool', () => ({
-  createKernelPool: () => ({
+vi.mock('../execution/shared-kernel-slices', () => ({
+  createSharedKernelSliceExecutor: () => ({
     warmup() {},
+    execute: () => ({ mode: 'forced-inline', dispatched: 0, completed: 0, waitMs: 0 }),
+    takeLastDispatch: () => null,
     async ready() {
       state.order.push('kernel-ready');
       throw state.kernelFailure;
@@ -168,7 +174,7 @@ class CpuModuleWorker {
     this.posts.push(message.kind === 'draw' ? structuredClone(message) : message);
     if (message.kind === 'init') {
       state.order.push('child-init');
-      expect(state.world?.getResource('fixture-root-complete')).toBe(true);
+      expect(state.world?.getResource(resource1)).toBe(true);
     }
     // The fixture canvas is CPU-only; publication buffers cross the actual
     // Node transport with ownership transfer, as they do in the browser.
@@ -204,8 +210,9 @@ class CpuModuleWorker {
 }
 let receive: ((event: MessageEvent<HostToEngineMessage>) => void) | null;
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.resetModules();
+  ecs = await import('@forgeax/engine-ecs');
   state.rootGate = deferred<void>();
   state.rootEntered = deferred<void>();
   state.terminal = deferred<EngineToHostMessage>();
@@ -280,9 +287,12 @@ it('bounds World updates by sealed publications, including pictures not yet subm
   const world = state.world;
   if (world === undefined || receive === null) throw new Error('Missing live Engine World');
   let updates = 0;
-  world
-    .addSystem(Update, { name: 'count-source-updates', queries: [], fn: () => void updates++ })
-    .unwrap();
+  const systemToken1 = ecs.defineSystem({
+    name: 'count-source-updates',
+    queries: [],
+    fn: () => void updates++,
+  });
+  world.addSystem(ecs.Update, systemToken1).unwrap();
   const send = (frameId: number): void => {
     const message: ExecutionFrameMessage = {
       kind: 'frame',
@@ -327,8 +337,8 @@ it('bounds World updates by sealed publications, including pictures not yet subm
   await vi.waitFor(() => expect(completions()).toHaveLength(2));
   expect(pictures()).toEqual([1, 2]);
   expect(notices).toEqual([]);
-  const elapsed = world.getResource(Time).elapsed;
-  const fixedTick = world.getResource(FixedTime).tick;
+  const elapsed = world.getResource(ecs.Time).elapsed;
+  const fixedTick = world.getResource(ecs.FixedTime).tick;
 
   // Host credit can return before this Engine processes the completion it
   // carries. A third request with two sealed publications waits for that
@@ -336,8 +346,8 @@ it('bounds World updates by sealed publications, including pictures not yet subm
   send(3);
   await drain();
   expect(updates).toBe(2);
-  expect(world.getResource(Time).elapsed).toBe(elapsed);
-  expect(world.getResource(FixedTime).tick).toBe(fixedTick);
+  expect(world.getResource(ecs.Time).elapsed).toBe(elapsed);
+  expect(world.getResource(ecs.FixedTime).tick).toBe(fixedTick);
   expect(completions()).toHaveLength(2);
   expect(faults()).toEqual([]);
 
@@ -354,7 +364,7 @@ it('bounds World updates by sealed publications, including pictures not yet subm
   await vi.waitFor(() => expect(completions()).toHaveLength(3));
   await drain();
   expect(updates).toBe(3);
-  expect(world.getResource(FixedTime).tick).toBe(fixedTick + 1);
+  expect(world.getResource(ecs.FixedTime).tick).toBe(fixedTick + 1);
   expect(pictures()).toEqual([1, 2, 3]);
   expect(completions().at(-1)).toMatchObject({
     frameId: 3,
@@ -370,7 +380,7 @@ it('loads the actual child module during a deferred Native root, without init or
   const world = state.world;
   if (world === undefined)
     throw new Error('Fixture expected the World installed before Native root entry');
-  const count = world.inspect().scheduleSystemCount(world.scheduleToken('Update'));
+  const count = world.inspect().scheduleSystemCount(ecs.Update);
   expect(child.url.href).toBe(
     new URL('../execution/render-worker-runtime.mjs', import.meta.url).href,
   );
@@ -383,7 +393,7 @@ it('loads the actual child module during a deferred Native root, without init or
   child.openModuleGate();
   expect(await child.loaded.promise).toMatchObject({ gpuCalls: 0 });
   expect(child.posts).toEqual([]);
-  expect(world.inspect().scheduleSystemCount(world.scheduleToken('Update'))).toBe(count);
+  expect(world.inspect().scheduleSystemCount(ecs.Update)).toBe(count);
   state.rootGate?.resolve();
   expect(await state.terminal?.promise).toMatchObject({ kind: 'ready' });
   expect(CpuModuleWorker.instances).toHaveLength(1);

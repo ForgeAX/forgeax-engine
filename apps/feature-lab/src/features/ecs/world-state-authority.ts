@@ -1,5 +1,16 @@
-import { defineComponent, FixedTime, FixedUpdate, Time, Update, World } from '@forgeax/engine/ecs';
+import {
+  defineComponent,
+  defineResource,
+  defineSystem,
+  FixedTime,
+  FixedUpdate,
+  Time,
+  Update,
+  World,
+} from '@forgeax/engine/ecs';
 import { defineFeature } from '../../lab/feature';
+
+const resource1 = defineResource<{ total: number }>('FLAuthorityScore');
 
 export default defineFeature({
   title: 'World state authority',
@@ -15,29 +26,27 @@ export default defineFeature({
     const a = world.spawn({ component: Hp, data: { value: 10 } });
     const b = world.spawn({ component: Hp, data: { value: 20 } });
     checks.ok('spawn returns Result ok', a.ok && b.ok);
-    world.insertResource('FLAuthorityScore', { total: 0 });
-    const system = world.addSystem(Update, {
+    world.insertResource(resource1, { total: 0 });
+    const systemToken1 = defineSystem({
       name: 'fl-authority-sum',
       queries: [{ read: [Hp] }],
       fn: (world, [rows]) => {
         let sum = 0;
         for (const row of rows) sum += row.get(Hp).value;
-        world.getResource<{ total: number }>('FLAuthorityScore').total = sum;
+        world.getResource(resource1).total = sum;
       },
     });
+    const system = world.addSystem(Update, systemToken1);
     checks.ok('addSystem(Update) ok', system.ok);
-    const fixed = world.addSystem(FixedUpdate, {
+    const systemToken2 = defineSystem({
       name: 'fl-authority-fixed',
       queries: [],
       fn: () => undefined,
     });
+    const fixed = world.addSystem(FixedUpdate, systemToken2);
     checks.ok('addSystem(FixedUpdate) ok', fixed.ok);
     checks.ok('update ok', world.update(1 / 30).ok);
-    checks.equal(
-      'resource written by system',
-      world.getResource<{ total: number }>('FLAuthorityScore').total,
-      30,
-    );
+    checks.equal('resource written by system', world.getResource(resource1).total, 30);
     checks.near('Time.delta owned by World', world.getResource(Time).delta, 1 / 30);
     checks.near('Time.elapsed owned by World', world.getResource(Time).elapsed, 1 / 30);
     checks.equal('FixedTime.tick advanced by World', world.getResource(FixedTime).tick, 2);

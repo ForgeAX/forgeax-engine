@@ -1,5 +1,8 @@
+import { readFile } from 'node:fs/promises';
+import { prepareRuntimeTexture } from '@forgeax/engine-image';
+import { parseImage } from '@forgeax/engine-image/parse-image';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import type { MeshAsset, TextureAsset } from '@forgeax/engine-types';
+import { type MeshAsset, ok, type TextureAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import checkerPack, {
   CHECKER_LINEAR,
@@ -11,6 +14,7 @@ import checkerPack, {
 } from '../../assets/checker.pack.ts';
 import materialsPack from '../../assets/materials.pack.ts';
 import meshesPack from '../../assets/meshes.pack.ts';
+import impulseNoisePack from '../../assets/water/impulse-noise.pack.ts';
 import { CONTENT_MESH_NAMES, EngineContent } from '../index';
 
 async function outputs(pack: {
@@ -36,6 +40,29 @@ function floats(value: unknown): Float32Array {
 }
 
 describe('Engine Content', () => {
+  it('publishes the verified impulse-noise source as an Image-admissible 2D mip chain', async () => {
+    const png = await readFile(new URL('../../assets/water/T_Noise01.png', import.meta.url));
+    const decoded = parseImage(png, 'image/png', { colorSpace: 'linear', mipmap: false });
+    expect(decoded.ok).toBe(true);
+    if (!decoded.ok) return;
+    const source: TextureAsset = {
+      kind: 'texture',
+      shape: { viewDimension: '2d', extent: { width: 256, height: 256 } },
+      format: 'rgba8unorm',
+      colorSpace: 'linear',
+      mips: { kind: 'none' },
+      data: decoded.value.bytes,
+    };
+    const built = await impulseNoisePack.build({ readByGuid: async () => ok(source) } as never);
+    expect(built.ok).toBe(true);
+    if (!built.ok) return;
+    const texture = built.value['texture/water/impulse-noise'] as TextureAsset;
+    expect(prepareRuntimeTexture(texture).ok).toBe(true);
+    expect(texture.shape).toEqual({ viewDimension: '2d', extent: { width: 256, height: 256 } });
+    expect(texture.mips).toEqual({ kind: 'packed', levelCount: 9 });
+    expect(texture.data.byteLength).toBe(349524);
+  });
+
   it('publishes exactly the EngineContent GUID set from its Pack sources', async () => {
     const built = new Set<string>();
     for (const pack of [meshesPack, checkerPack, materialsPack])

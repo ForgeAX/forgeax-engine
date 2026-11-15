@@ -1,12 +1,17 @@
+import { TerrainGameplayGateResource } from './ecs-resources.ts';
+import { PhysicsWorldResource } from '@forgeax/engine-physics';
+
+import { Update, defineSystem } from "@forgeax/engine-ecs";
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import { AssetGuid } from '@forgeax/engine-pack/source';
-import type { PhysicsWorld } from '@forgeax/engine-physics';
+
 import type { SubmittedTerrainHeightRequest } from '@forgeax/engine-render';
 import { GlobalTransform } from '@forgeax/engine-scene';
 import { Terrain, terrainHeight } from '@forgeax/engine-terrain';
 import type { Result, TerrainAsset, TerrainError } from '@forgeax/engine-types';
 import { terrainGuid } from './identity.ts';
+
 
 /** Gameplay waits for the same asset version in collision and a completed rendered frame. */
 export function terrainReloadPolicy(
@@ -59,12 +64,12 @@ export function terrainReloadPolicy(
     if (delta.added.some(row => row.guid === rootGuid) || delta.changed.some(row => row.guid === rootGuid) || delta.removed.includes(rootGuid)) reload();
   });
   const collisionReady = (expectedVersion: number) => {
-    const adopted = world.getResource<PhysicsWorld>('PhysicsWorld').getTerrainAssetVersion?.(entity);
+    const adopted = world.getResource(PhysicsWorldResource).getTerrainAssetVersion?.(entity);
     return adopted?.asset === Number(handle) && adopted.version === expectedVersion;
   };
-  const token = world.scheduleToken('Update');
+  const token = Update;
   const name = `terrain-readiness:${Number(entity)}`;
-  world.addSystem(token, {
+  const registeredSystem1 = defineSystem({
     name,
     queries: [],
     fn() {
@@ -76,7 +81,6 @@ export function terrainReloadPolicy(
       const position = world.get(entity, GlobalTransform).unwrap().world;
       checking = true;
       void query({
-        worldId: 0,
         entity,
         x: (position[12] ?? 0) + (desired.columns - 1) * desired.spacing * 0.5,
         z: (position[14] ?? 0) + (desired.rows - 1) * desired.spacing * 0.5,
@@ -88,8 +92,9 @@ export function terrainReloadPolicy(
         if (active && expectedVersion === version) gate.error = error;
       }).finally(() => { checking = false; });
     },
-  }).unwrap();
-  world.insertResource('TerrainGameplayGate', gate);
+  });
+world.addSystem(token, registeredSystem1).unwrap();
+  world.insertResource(TerrainGameplayGateResource, gate);
   return {
     gate,
     sample: (x: number, z: number) => ({ asset: Number(handle), version, height: terrainHeight(desired, x, z) }),
@@ -100,7 +105,7 @@ export function terrainReloadPolicy(
       unsubscribe();
       observer.dispose();
       target.dispose();
-      world.removeSystem(token, name).unwrap();
+      world.removeSystem(token, registeredSystem1).unwrap();
     },
   };
 }

@@ -42,6 +42,7 @@ import {
 } from '@forgeax/engine-rhi';
 import { makeRhiDevice, type RawDeviceLike } from './device';
 import { adapterUnavailable, webgpuRuntimeError } from './errors';
+import { probeFloatTextureCapabilities } from './internal/float-texture-capabilities';
 
 /**
  * Minimal shape of a wgpu-wasm or navigator.gpu adapter that the TS shim
@@ -80,16 +81,27 @@ export function makeRhiAdapter(rawAdapter: RawAdapterLike): RhiAdapter {
     async requestDevice(
       opts?: ForgeAXRequestDeviceOptions | undefined,
     ): Promise<Result<RhiDevice, RhiError>> {
+      let rawDevice: RawDeviceLike;
       try {
-        const rawDevice = await rawAdapter.requestDevice(opts);
-        const { device } = makeRhiDevice(rawDevice);
-        return ok(device);
+        rawDevice = await rawAdapter.requestDevice(opts);
       } catch (e) {
         // Spec / wgpu both signal feature / limit problems as a thrown
         // OperationError; we route them through webgpuRuntimeError as a
         // safe baseline at M2. The M4 dawn-node integration (w24) narrows
         // the dispatch into feature-not-enabled / limit-exceeded by
         // keyword (mirrors rhi-webgpu's classifyRequestDeviceError).
+        return webgpuRuntimeError(e);
+      }
+      try {
+        const hasValidationScopes =
+          typeof rawDevice.pushErrorScope === 'function' &&
+          typeof rawDevice.popErrorScope === 'function';
+        const floatTextureCapabilities = hasValidationScopes
+          ? await probeFloatTextureCapabilities(rawDevice as unknown as GPUDevice)
+          : undefined;
+        const { device } = makeRhiDevice(rawDevice, floatTextureCapabilities);
+        return ok(device);
+      } catch (e) {
         return webgpuRuntimeError(e);
       }
     },

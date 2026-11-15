@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { createRequire, isBuiltin } from 'node:module';
+import { isBuiltin } from 'node:module';
 import { isAbsolute, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { type PackProgramImport, preparePackProgram } from '@forgeax/engine-pack/runtime';
@@ -11,7 +11,7 @@ import { projectToolProjection } from '../tools/project-tools.js';
 import type { ProjectFacts } from '../types.js';
 import { rewriteModuleSpecifiers } from './module-specifiers.js';
 import { nativeModuleIdentity, nativeModuleKey } from './native-module-identity.js';
-import { resolveNodePackProgramImport, runtimeProgramIdentity } from './pack-program-imports.js';
+import { createNodePackProgramResolver } from './pack-program-imports.js';
 import {
   assertPluginSourceInputs,
   capturePluginProgramInputs,
@@ -48,7 +48,7 @@ export async function compileNodePluginPrograms(
   const projection = projectPluginPrograms(records, target, tools, facts.root);
   const entries = [...projection.programs];
   const watchFiles = new Set<string>();
-  let engineIdentity: Promise<string> | undefined;
+  const resolveProgramImport = createNodePackProgramResolver(facts.root, trace);
   const bindings = new Map<string, { key: string; binding: PackProgramImport }>();
   const identities = new Map<string, Promise<string>>();
   const project = pathToFileURL(resolve(facts.root, 'package.json')).href;
@@ -74,51 +74,44 @@ export async function compileNodePluginPrograms(
             {
               name: 'forgeax:build-native-identity',
               enforce: 'pre',
-              async resolveId(id, importer) {
-                if (
-                  id.startsWith('virtual:') ||
-                  id.startsWith('\0') ||
-                  id.startsWith('.') ||
-                  isAbsolute(id)
-                )
-                  return undefined;
-                if (
-                  isBuiltin(id) ||
-                  id === '@deepseek-ai/cordis' ||
-                  id === '@forgeax/engine' ||
-                  id.startsWith('@forgeax/engine/') ||
-                  id.startsWith('@forgeax/engine-')
-                ) {
-                  const key =
-                    isBuiltin(id) && !id.startsWith('node:')
-                      ? `node:${id}`
-                      : id === '@forgeax/engine-plugin'
-                        ? '@forgeax/engine/plugin'
-                        : id === '@forgeax/engine-tool-runtime'
-                          ? '@forgeax/engine/tool-runtime'
-                          : id;
-                  let identity: string | undefined;
-                  if (!isBuiltin(id) && id !== '@deepseek-ai/cordis') {
-                    engineIdentity ??= trace('host-compile-engine-identity', () =>
-                      runtimeProgramIdentity(
-                        createRequire(resolve(facts.root, 'package.json')).resolve(
-                          '@forgeax/engine/package.json',
-                        ),
-                      ),
-                    );
-                    identity = await engineIdentity;
+              resolveId: {
+                // Preserve native identities before Vite's own alias hook rewrites their IDs.
+                order: 'pre',
+                async handler(id, importer) {
+                  if (
+                    id.startsWith('virtual:') ||
+                    id.startsWith('\0') ||
+                    id.startsWith('.') ||
+                    isAbsolute(id)
+                  )
+                    return undefined;
+                  if (
+                    isBuiltin(id) ||
+                    id === '@deepseek-ai/cordis' ||
+                    id === '@forgeax/engine' ||
+                    id.startsWith('@forgeax/engine/') ||
+                    id.startsWith('@forgeax/engine-')
+                  ) {
+                    const key =
+                      isBuiltin(id) && !id.startsWith('node:')
+                        ? `node:${id}`
+                        : id === '@forgeax/engine-plugin'
+                          ? '@forgeax/engine/plugin'
+                          : id === '@forgeax/engine-tool-runtime'
+                            ? '@forgeax/engine/tool-runtime'
+                            : id;
+                    const binding = await resolveProgramImport(key);
+                    return recordExternal(binding.url, key, binding);
                   }
-                  const binding = await resolveNodePackProgramImport(facts.root, key, identity);
-                  return recordExternal(binding.url, key, binding);
-                }
-                const resolved = await this.resolve(id, importer, { skipSelf: true });
-                if (!resolved?.external) return resolved;
-                const parent =
-                  importer && isAbsolute(importer)
-                    ? pathToFileURL(importer.split('?')[0] ?? importer).href
-                    : project;
-                const url = resolveImport(resolved.id, parent);
-                return recordExternal(url, await nativeModuleKey(facts.root, url, importer));
+                  const resolved = await this.resolve(id, importer, { skipSelf: true });
+                  if (!resolved?.external) return resolved;
+                  const parent =
+                    importer && isAbsolute(importer)
+                      ? pathToFileURL(importer.split('?')[0] ?? importer).href
+                      : project;
+                  const url = resolveImport(resolved.id, parent);
+                  return recordExternal(url, await nativeModuleKey(facts.root, url, importer));
+                },
               },
             },
             ...(resolution.plugins ?? []),

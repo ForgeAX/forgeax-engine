@@ -4,6 +4,7 @@ import {
   MaterialPipelineRequestCache,
   materialPipelineRequestFacts,
 } from '../assembly/material/pipeline-request-cache';
+import { materialPipelineAttachments } from '../assembly/material-shader-policy';
 import type { RendererPipelineCacheState } from '../assembly/recovery/renderer-recover';
 
 describe('material pipeline requests', () => {
@@ -99,6 +100,42 @@ describe('material pipeline requests', () => {
     args[8] = undefined;
     args[11] = null;
     expect(cache.get(materialPipelineRequestFacts(args))).toBeUndefined();
+  });
+  it('distinguishes default color, explicit no color and explicit no depth requests', () => {
+    const cache = new MaterialPipelineRequestCache<object>();
+    const args = ['shader', false] as Parameters<typeof materialPipelineRequestFacts>[0];
+    const ordinary = {},
+      colorless = {},
+      depthless = {};
+    cache.set(materialPipelineRequestFacts(args), ordinary);
+    args[9] = null;
+    expect(cache.get(materialPipelineRequestFacts(args))).toBeUndefined();
+    cache.set(materialPipelineRequestFacts(args), colorless);
+    args[9] = undefined;
+    args[11] = null;
+    expect(cache.get(materialPipelineRequestFacts(args))).toBeUndefined();
+    cache.set(materialPipelineRequestFacts(args), depthless);
+    args[11] = undefined;
+    expect(cache.get(materialPipelineRequestFacts(args))).toBe(ordinary);
+    args[9] = null;
+    expect(cache.get(materialPipelineRequestFacts(args))).toBe(colorless);
+    args[9] = undefined;
+    args[11] = null;
+    expect(cache.get(materialPipelineRequestFacts(args))).toBe(depthless);
+    expect(
+      materialPipelineAttachments('forward', 'bgra8unorm-srgb', undefined, undefined, 1),
+    ).toMatchObject({ colorFormats: ['bgra8unorm-srgb'], depthFormat: 'depth32float-stencil8' });
+    expect(
+      materialPipelineAttachments('shadow-caster', null, [], 'depth32float-stencil8', 1),
+    ).toMatchObject({ colorFormats: [], depthFormat: 'depth32float-stencil8' });
+    expect(materialPipelineAttachments('forward', 'rgba16float', [], null, 1)).toMatchObject({
+      colorFormats: ['rgba16float'],
+      depthFormat: undefined,
+    });
+    expect(materialPipelineAttachments('shadow-caster', null, [], null, 1)).toMatchObject({
+      colorFormats: [],
+      depthFormat: undefined,
+    });
   });
   it('compares generation and artifact owners even when they are omitted from bucket hashing', () => {
     const cache = new MaterialPipelineRequestCache<object>(512, 2);

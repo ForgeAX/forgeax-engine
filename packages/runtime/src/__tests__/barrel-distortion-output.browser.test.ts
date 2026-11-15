@@ -379,15 +379,7 @@ async function drawFrame(world: World, domains?: readonly ObservationDomain[]) {
   releaseLease = () => attached.value.dispose();
   const updated = world.update(1 / 60);
   if (!updated.ok) throw updated.error;
-  return drawReadyFrame(
-    renderer,
-    {
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    },
-    domains,
-  );
+  return drawReadyFrame(renderer, { source: attached.value }, domains);
 }
 
 // Reusing a renderer can retain its accepted graph while a new fullscreen
@@ -955,11 +947,7 @@ describe('barrel distortion real output in Browser WebGPU', () => {
     const drawVolumeFrame = async () => {
       const updated = world.update(1 / 60);
       if (!updated.ok) throw updated.error;
-      return drawReadyFrame(volumeRenderer, {
-        leases: [attached.value],
-        camera: { lease: attached.value },
-        environment: { lease: attached.value },
-      });
+      return drawReadyFrame(volumeRenderer, { source: attached.value });
     };
     try {
       const baseline = await drawVolumeFrame();

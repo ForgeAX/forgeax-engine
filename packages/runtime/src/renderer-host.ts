@@ -83,7 +83,12 @@ export async function constructRuntimeRendererHost(
 ): Promise<RenderResult<RendererHostAssembly, RenderError | EngineEnvironmentError>> {
   const first = await loadBackendPack(options);
   let result = await attemptRendererHost(first, canvas, options, bundler);
-  if (first.kind === 'webgpu' && !result.ok && canFallbackToWgpu(result.error)) {
+  if (
+    first.kind === 'webgpu' &&
+    (options?.renderBackend ?? 'auto') === 'auto' &&
+    !result.ok &&
+    canFallbackToWgpu(result.error)
+  ) {
     const primary = result.error.detail.webgpuError;
     const fallback = await loadBackendPack(options, 'wgpu-webgl2');
     result = await attemptRendererHost(fallback, canvas, options, bundler);

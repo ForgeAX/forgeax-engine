@@ -27,6 +27,7 @@ it('reconstructs distant positions through the production SSR shader', async () 
       imports: {
         'forgeax_view::common': shader('common'),
         'forgeax_pbr::gbuffer': shader('standard-gbuffer'),
+        forgeax_scene_temporal: shader('scene-temporal'),
         'forgeax_depth_pyramid::sample': shader('depth-pyramid-sample'),
       },
     },

@@ -1,6 +1,13 @@
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
+import { defineSystem } from '@forgeax/engine-ecs';
 import { DirectionalLight } from '../components/directional-light';
-import type { LightRoster } from '../render-system-extract';
+
+import {
+  RenderCascadeFitOrder,
+  RenderRecordCommitOrder,
+  RenderSceneOrder,
+  RenderShadowCommitOrder,
+} from '../system-order';
 import {
   type CascadeFit,
   type CascadeHistory,
@@ -27,12 +34,11 @@ import {
   RenderPrepare,
   renderSubmission,
 } from './render-world';
-import { RENDER_SCENE_SYSTEM, RenderLightInput } from './scene-systems';
-import { RENDER_RECORD_COMMIT_SYSTEM } from './submission-systems';
+import { RenderLightInput } from './scene-systems';
+
 import { readViewField, requireViewField } from './view-field';
 import {
   ownerOf,
-  RENDER_SHADOW_COMMIT_SYSTEM,
   RENDER_SHADOW_DISCARD_SYSTEM,
   registerViewCommit,
   type ViewSettlementOwner,
@@ -98,167 +104,162 @@ function discardShadow({ frameState }: ViewSettlementOwner): void {
  */
 export function registerLightSystems(world: World): void {
   const owner = renderLightsOf(world);
-  world
-    .addSystem(RenderExtract, {
-      commands: 'none',
-      name: RENDER_LIGHTS_SYSTEM,
-      queries: [],
-      after: [RENDER_SCENE_SYSTEM],
-      fn: (world) => {
-        const roster = world.getResource<{ roster: LightRoster | undefined }>(
-          RenderLightInput,
-        ).roster;
-        if (roster !== undefined) owner.adopt(roster);
+  const systemToken1 = defineSystem({
+    commands: 'none',
+    name: RENDER_LIGHTS_SYSTEM,
+    queries: [],
+    after: [RenderSceneOrder],
+    fn: (world) => {
+      const roster = world.getResource(RenderLightInput).roster;
+      if (roster !== undefined) owner.adopt(roster);
+    },
+  });
+  world.addSystem(RenderExtract, systemToken1).unwrap();
+  const systemToken2 = defineSystem({
+    commands: 'none',
+    name: RENDER_SHADOW_VIEWS_SYSTEM,
+    queries: [
+      { read: [RenderLight], changed: [RenderLight] },
+      { read: [RenderPointShadow], changed: [RenderPointShadow] },
+    ],
+    // RenderPrepare follows RenderExtract, so `render-lights` adopted this frame's roster.
+    fn: (_world, [lights, shadows]) => owner.fitShadowViews(lights, shadows),
+  });
+  world.addSystem(RenderPrepare, systemToken2).unwrap();
+  const systemToken3 = defineSystem({
+    sets: [RenderCascadeFitOrder],
+    commands: 'none',
+    name: RENDER_CASCADE_FIT_SYSTEM,
+    queries: [
+      {
+        read: [RenderView, ViewCamera],
+        optional: [ViewCascadeFit, ViewCascadeHistory],
       },
-    })
-    .unwrap();
-  world
-    .addSystem(RenderPrepare, {
-      commands: 'none',
-      name: RENDER_SHADOW_VIEWS_SYSTEM,
-      queries: [
-        { read: [RenderLight], changed: [RenderLight] },
-        { read: [RenderPointShadow], changed: [RenderPointShadow] },
-      ],
-      // RenderPrepare follows RenderExtract, so `render-lights` adopted this frame's roster.
-      fn: (_world, [lights, shadows]) => owner.fitShadowViews(lights, shadows),
-    })
-    .unwrap();
-  world
-    .addSystem(RenderPrepare, {
-      commands: 'none',
-      name: RENDER_CASCADE_FIT_SYSTEM,
-      queries: [
-        {
-          read: [RenderView, ViewCamera],
-          optional: [ViewCascadeFit, ViewCascadeHistory],
-        },
-      ],
-      // Each fit's lights carry the point face and spot views refitted first.
-      after: [RENDER_SHADOW_VIEWS_SYSTEM],
-      fn: (world, [views]) => {
-        const roster = owner.roster;
-        const normalBias =
-          roster.normalBias ?? (DirectionalLight.fields.normalBias.default as number);
-        // Fitting and retiring spawn or despawn cascade view entities, which
-        // invalidates the view query: the iteration only reads, the
-        // structural work follows it.
-        const retired: ViewRecord[] = [];
-        const fits: { record: ViewRecord; fit: CascadeFit }[] = [];
-        const unfitted: EntityHandle[] = [];
+    ],
+    // Each fit's lights carry the point face and spot views refitted first.
+    after: [systemToken2],
+    fn: (world, [views]) => {
+      const roster = owner.roster;
+      const normalBias =
+        roster.normalBias ?? (DirectionalLight.fields.normalBias.default as number);
+      // Fitting and retiring spawn or despawn cascade view entities, which
+      // invalidates the view query: the iteration only reads, the
+      // structural work follows it.
+      const retired: ViewRecord[] = [];
+      const fits: { record: ViewRecord; fit: CascadeFit }[] = [];
+      const unfitted: EntityHandle[] = [];
 
-        views.forEach((row) => {
-          const entity = row.entity;
+      views.forEach((row) => {
+        const entity = row.entity;
 
-          const fit = readViewField(world, entity, ViewCascadeFit, 'fit');
-          const record =
-            fit === undefined ? undefined : world.resolveUniqueRef<ViewRecord>(fit).unwrap();
-          const history = readViewField(world, entity, ViewCascadeHistory, 'history');
-          if (!requireViewField(world, entity, RenderView, 'enabled')) {
-            if (record !== undefined) retired.push(record);
-            if (history !== undefined)
-              world.resolveUniqueRef<CascadeHistory>(history).unwrap().lightViewProj = undefined;
-            return;
-          }
-          // The shared capture view records only captures, against fresh cascades.
-          const fresh =
-            requireViewField(world, entity, RenderView, 'primary') &&
-            requireViewField(world, entity, RenderView, 'capture');
-          if (fresh && history !== undefined)
+        const fit = readViewField(world, entity, ViewCascadeFit, 'fit');
+        const record =
+          fit === undefined ? undefined : world.resolveUniqueRef<ViewRecord>(fit).unwrap();
+        const history = readViewField(world, entity, ViewCascadeHistory, 'history');
+        if (!requireViewField(world, entity, RenderView, 'enabled')) {
+          if (record !== undefined) retired.push(record);
+          if (history !== undefined)
             world.resolveUniqueRef<CascadeHistory>(history).unwrap().lightViewProj = undefined;
-          if (record === undefined || history === undefined) {
-            unfitted.push(entity);
-            return;
-          }
-          const camera = world
-            .resolveUniqueRef<ViewCameraState>(requireViewField(world, entity, ViewCamera, 'state'))
-            .unwrap().camera;
-          fits.push({
-            record,
-            fit: {
-              camera,
-              retained: fresh
-                ? undefined
-                : world.resolveUniqueRef<CascadeHistory>(history).unwrap().lightViewProj,
-              normalBias,
-            },
-          });
-        });
-        for (const record of retired) owner.retireFit(record);
-        for (const { record, fit } of fits) owner.fitView(record, roster, fit);
-        // A view's first fit attaches its components after the iteration.
-        for (const entity of unfitted) {
-          const record = createViewRecord(entity);
-          world
-            .addComponent(entity, {
-              component: ViewCascadeFit,
-              data: { fit: world.allocUniqueRef('ViewCascadeFit', record) },
-            })
-            .unwrap();
-          const history: CascadeHistory = { lightViewProj: undefined };
-          world
-            .addComponent(entity, {
-              component: ViewCascadeHistory,
-              data: { history: world.allocUniqueRef('CascadeHistory', history) },
-            })
-            .unwrap();
-          const state = world
-            .resolveUniqueRef<ViewCameraState>(requireViewField(world, entity, ViewCamera, 'state'))
-            .unwrap();
-          owner.fitView(record, roster, { camera: state.camera, normalBias });
+          return;
         }
-      },
-    })
-    .unwrap();
-  world
-    .addSystem(RenderCommit, {
-      commands: 'none',
-      name: RENDER_CASCADE_HISTORY_SYSTEM,
-      queries: [
-        {
-          read: [RenderView, ViewSubmission, ViewCascadeFit, ViewCascadeHistory],
-          optional: [ViewRecorder],
-        },
-      ],
-      // Only an accepted scene submission of this frame rasterized the fitted
-      // cascades; a rejected, held or stale view keeps its history.
-      fn: (world, [views]) => {
-        const frame = renderSubmission(world).frame;
-
-        views.forEach((row) => {
-          const entity = row.entity;
-
-          if (
-            requireViewField(world, entity, RenderView, 'primary') &&
-            requireViewField(world, entity, RenderView, 'capture')
-          )
-            return;
-
-          if (
-            !requireViewField(world, entity, ViewSubmission, 'accepted') ||
-            requireViewField(world, entity, ViewSubmission, 'attempt') !== frame ||
-            !requireViewField(world, entity, ViewSubmission, 'scene')
-          )
-            return;
-          const recorder = readViewField(world, entity, ViewRecorder, 'state');
-          if (
-            !requireViewField(world, entity, RenderView, 'primary') &&
-            recorder !== undefined &&
-            !world.resolveUniqueRef<ViewHistory>(recorder).unwrap().rendered
-          )
-            return;
-          const record = world
-            .resolveUniqueRef<ViewRecord>(requireViewField(world, entity, ViewCascadeFit, 'fit'))
-            .unwrap();
-          world
-            .resolveUniqueRef<CascadeHistory>(
-              requireViewField(world, entity, ViewCascadeHistory, 'history'),
-            )
-            .unwrap().lightViewProj = record.cascades?.lightViewProj;
+        // The shared capture view records only captures, against fresh cascades.
+        const fresh =
+          requireViewField(world, entity, RenderView, 'primary') &&
+          requireViewField(world, entity, RenderView, 'capture');
+        if (fresh && history !== undefined)
+          world.resolveUniqueRef<CascadeHistory>(history).unwrap().lightViewProj = undefined;
+        if (record === undefined || history === undefined) {
+          unfitted.push(entity);
+          return;
+        }
+        const camera = world
+          .resolveUniqueRef<ViewCameraState>(requireViewField(world, entity, ViewCamera, 'state'))
+          .unwrap().camera;
+        fits.push({
+          record,
+          fit: {
+            camera,
+            retained: fresh
+              ? undefined
+              : world.resolveUniqueRef<CascadeHistory>(history).unwrap().lightViewProj,
+            normalBias,
+          },
         });
+      });
+      for (const record of retired) owner.retireFit(record);
+      for (const { record, fit } of fits) owner.fitView(record, roster, fit);
+      // A view's first fit attaches its components after the iteration.
+      for (const entity of unfitted) {
+        const record = createViewRecord(entity);
+        world
+          .addComponent(entity, {
+            component: ViewCascadeFit,
+            data: { fit: world.allocUniqueRef('ViewCascadeFit', record) },
+          })
+          .unwrap();
+        const history: CascadeHistory = { lightViewProj: undefined };
+        world
+          .addComponent(entity, {
+            component: ViewCascadeHistory,
+            data: { history: world.allocUniqueRef('CascadeHistory', history) },
+          })
+          .unwrap();
+        const state = world
+          .resolveUniqueRef<ViewCameraState>(requireViewField(world, entity, ViewCamera, 'state'))
+          .unwrap();
+        owner.fitView(record, roster, { camera: state.camera, normalBias });
+      }
+    },
+  });
+  world.addSystem(RenderPrepare, systemToken3).unwrap();
+  const systemToken4 = defineSystem({
+    commands: 'none',
+    name: RENDER_CASCADE_HISTORY_SYSTEM,
+    queries: [
+      {
+        read: [RenderView, ViewSubmission, ViewCascadeFit, ViewCascadeHistory],
+        optional: [ViewRecorder],
       },
-    })
-    .unwrap();
+    ],
+    // Only an accepted scene submission of this frame rasterized the fitted
+    // cascades; a rejected, held or stale view keeps its history.
+    fn: (world, [views]) => {
+      const frame = renderSubmission(world).frame;
+
+      views.forEach((row) => {
+        const entity = row.entity;
+
+        if (
+          requireViewField(world, entity, RenderView, 'primary') &&
+          requireViewField(world, entity, RenderView, 'capture')
+        )
+          return;
+
+        if (
+          !requireViewField(world, entity, ViewSubmission, 'accepted') ||
+          requireViewField(world, entity, ViewSubmission, 'attempt') !== frame ||
+          !requireViewField(world, entity, ViewSubmission, 'scene')
+        )
+          return;
+        const recorder = readViewField(world, entity, ViewRecorder, 'state');
+        if (
+          !requireViewField(world, entity, RenderView, 'primary') &&
+          recorder !== undefined &&
+          !world.resolveUniqueRef<ViewHistory>(recorder).unwrap().rendered
+        )
+          return;
+        const record = world
+          .resolveUniqueRef<ViewRecord>(requireViewField(world, entity, ViewCascadeFit, 'fit'))
+          .unwrap();
+        world
+          .resolveUniqueRef<CascadeHistory>(
+            requireViewField(world, entity, ViewCascadeHistory, 'history'),
+          )
+          .unwrap().lightViewProj = record.cascades?.lightViewProj;
+      });
+    },
+  });
+  world.addSystem(RenderCommit, systemToken4).unwrap();
 }
 
 /**
@@ -268,22 +269,21 @@ export function registerLightSystems(world: World): void {
 export function registerShadowSettlement(world: World): void {
   registerViewCommit(
     world,
-    RENDER_SHADOW_COMMIT_SYSTEM,
+    RenderShadowCommitOrder,
     commitShadow,
-    RENDER_RECORD_COMMIT_SYSTEM,
+    RenderRecordCommitOrder,
     'scene',
   );
-  world
-    .addSystem(RenderCleanup, {
-      commands: 'none',
-      name: RENDER_SHADOW_DISCARD_SYSTEM,
-      queries: [{ read: [ViewRecorder] }],
-      fn: (world, [views]) => {
-        views.forEach((row) => {
-          const entity = row.entity;
-          discardShadow(ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state')));
-        });
-      },
-    })
-    .unwrap();
+  const systemToken5 = defineSystem({
+    commands: 'none',
+    name: RENDER_SHADOW_DISCARD_SYSTEM,
+    queries: [{ read: [ViewRecorder] }],
+    fn: (world, [views]) => {
+      views.forEach((row) => {
+        const entity = row.entity;
+        discardShadow(ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state')));
+      });
+    },
+  });
+  world.addSystem(RenderCleanup, systemToken5).unwrap();
 }

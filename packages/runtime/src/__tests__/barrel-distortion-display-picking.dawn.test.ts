@@ -195,11 +195,7 @@ describe('barrel distortion display picking on Dawn', () => {
       expect(attached.ok).toBe(true);
       if (!attached.ok) throw attached.error;
       expect(world.update(1 / 60).ok).toBe(true);
-      const receipt = await drawReady(fixture.renderer, {
-        leases: [attached.value],
-        camera: { lease: attached.value },
-        environment: { lease: attached.value },
-      });
+      const receipt = await drawReady(fixture.renderer, { source: attached.value });
       expect(receipt.ok).toBe(true);
       if (!receipt.ok) throw receipt.error;
       await fixture.device.queue.onSubmittedWorkDone();
@@ -238,11 +234,7 @@ describe('barrel distortion display picking on Dawn', () => {
       expect(attached.ok).toBe(true);
       if (!attached.ok) throw attached.error;
       expect(world.update(1 / 60).ok).toBe(true);
-      const receipt = await drawReady(fixture.renderer, {
-        leases: [attached.value],
-        camera: { lease: attached.value },
-        environment: { lease: attached.value },
-      });
+      const receipt = await drawReady(fixture.renderer, { source: attached.value });
       expect(receipt.ok).toBe(true);
       if (!receipt.ok) throw receipt.error;
       await fixture.device.queue.onSubmittedWorkDone();

@@ -1,7 +1,6 @@
 import { applyTestCanvasBudget } from '../../../scripts/test/browser-canvas-budget.mjs';
 import testQuality from '../../../scripts/test/render-quality.json' with { type: 'json' };
-import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import type { ExecutionReport } from '@forgeax/engine-app';
 import { forgeaxShader } from '@forgeax/engine-vite-plugin-shader';
@@ -12,6 +11,7 @@ import { executionWorkerEntries } from '../src/build/execution-workers.js';
 import { createViteConfig } from '../src/host.js';
 import { readProjectFacts } from '../src/project.js';
 import { runtimeBrowserLaunchOptions } from './browser-launch.js';
+import { createLiveSyncProjectDirectory, prepareLiveSyncSharedInputs } from '../scripts/live-sync-inputs.mjs';
 
 type Snapshot = { owner: string; execution: ExecutionReport; errors: string[] };
 const snapshot = (page: Page) =>
@@ -21,14 +21,16 @@ const snapshot = (page: Page) =>
 
 // Real App owner and generated DOM; no Game/private application RPC surface.
 it('shows an entered terminal App fault while pointer-lock rejection stays recoverable', async () => {
-  const root = await realpath(await mkdtemp(resolve(tmpdir(), 'forgeax-host-runtime-fault-')));
   const repository = resolve(import.meta.dirname, '../../..');
+  const manifestPath = process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST;
+  const { root, temporaryRoot } = await createLiveSyncProjectDirectory('forgeax-host-runtime-fault-', repository, manifestPath);
   let server: ViteDevServer | undefined;
   let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
   let primaryFailure: unknown;
   let failed = false;
   let cleanupFailures: unknown[] = [];
   try {
+    if (manifestPath) await prepareLiveSyncSharedInputs({sourceRoot: repository, projectRoot: root, temporaryRoot, manifestPath});
     await mkdir(resolve(root, 'assets'));
     await mkdir(resolve(root, 'node_modules/@forgeax'), { recursive: true });
     await symlink(
@@ -58,6 +60,10 @@ it('shows an entered terminal App fault while pointer-lock rejection stays recov
     expect(start).toBeGreaterThanOrEqual(0);
     expect(end).toBeGreaterThan(start);
     const errorBinding = generatedMain.slice(start, end);
+    const rendererErrorSource = generatedMain.match(
+      /function rendererErrorSource\(error\) \{[\s\S]*?\n\}/,
+    )?.[0];
+    expect(rendererErrorSource).toBeDefined();
     await writeFile(
       resolve(root, 'index.html'),
       generatedHtml.replace(/<script type="module"[^>]*>[\s\S]*?<\/script>/g, '') +
@@ -86,6 +92,7 @@ it('shows an entered terminal App fault while pointer-lock rejection stays recov
       }, { shaderManifestUrl: new URL('/shaders/manifest.json', location.href).href })).unwrap();
       app.onError(error => errors.push(error.code));
       let removeStartupErrorListener;
+      ${rendererErrorSource}
       ${errorBinding}
       startup.bindSession(app.execution.report().world.identity);
       startup.bindInput(enabled => { app.input?.setInputAllowed?.(enabled); if(!enabled) app.input?.clear?.(); });
@@ -210,7 +217,7 @@ it('shows an entered terminal App fault while pointer-lock rejection stays recov
     failed = true;
   } finally {
     const closed = await Promise.allSettled([browser?.close(), server?.close()]);
-    const removed = await Promise.allSettled([rm(root, { recursive: true, force: true })]);
+    const removed = await Promise.allSettled([rm(temporaryRoot, { recursive: true, force: true })]);
     cleanupFailures = [...closed, ...removed]
       .filter((result) => result.status === 'rejected')
       .map((result) => result.reason);

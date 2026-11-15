@@ -15,7 +15,7 @@ import {
   volumeCompositeState,
   volumeComputeState,
 } from '../volume/programs';
-import { standardPbrManifestRow } from './shader-manifest-fixture';
+import { standardPbrManifestRow, waterInfoShaderFixture } from './shader-manifest-fixture';
 
 const sources = {
   inject: 'fn volume_inject() {}',
@@ -201,8 +201,12 @@ it('holds the actual public Renderer initialization barrier until every volume a
         { hash: 'unlit', wgsl: 'unlit', glsl: '', bindings: '' },
         { hash: 'tonemap', wgsl: 'struct TonemapParams {}', glsl: '', bindings: '' },
         ...Object.entries(sources).map(([hash, wgsl]) => ({ hash, wgsl, glsl: '', bindings: '' })),
+        ...waterInfoShaderFixture.entries,
       ],
-      materialShaders: [standardPbrManifestRow('f_schlick')],
+      materialShaders: [
+        standardPbrManifestRow('f_schlick'),
+        ...waterInfoShaderFixture.materialShaders,
+      ],
     }),
   )}`;
   let settled = false;

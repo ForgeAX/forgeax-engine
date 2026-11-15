@@ -187,9 +187,7 @@ export async function verifyNormalBump(
             renderer,
             {
               geometryLane: 'direct',
-              leases: [lease],
-              camera: { lease },
-              environment: { lease },
+              source: lease,
             },
             observation,
           );

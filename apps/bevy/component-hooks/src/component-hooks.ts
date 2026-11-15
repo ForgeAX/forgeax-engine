@@ -1,4 +1,5 @@
 
+import { defineSystem } from "@forgeax/engine-ecs";
 import { Time, Update, World, defineComponent, type EntityHandle } from '@forgeax/engine-ecs';
 import { Camera, Materials, MeshFilter, MeshRenderer, orthographic } from '@forgeax/engine-render';
 
@@ -107,7 +108,7 @@ export function buildComponentHooksWorld(world: World): ComponentHooksState {
     removed: false,
   };
 
-  world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'component-hooks-transitions',
     queries: [],
     fn: (world) => {
@@ -133,7 +134,8 @@ export function buildComponentHooksWorld(world: World): ComponentHooksState {
         state.removed = true;
       }
     },
-  }).unwrap();
+  });
+world.addSystem(Update, systemToken1).unwrap();
 
   return state;
 }

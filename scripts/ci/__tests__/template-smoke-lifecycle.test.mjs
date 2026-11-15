@@ -17,6 +17,29 @@ function functionSource(start, end) {
   return source.slice(source.indexOf(start), source.indexOf(end));
 }
 
+test('runtime vase fixture references a material published by the game-3d template', () => {
+  const root = resolve(import.meta.dirname, '../../..');
+  const materials = readFileSync(
+    resolve(root, 'templates/game-3d/assets/materials.pack.ts'),
+    'utf8',
+  );
+  const vase = readFileSync(
+    resolve(root, 'scripts/template-probes/game-3d/runtime-vase/assets/runtime-vase/vase.pack.ts'),
+    'utf8',
+  );
+  const published = new Set(
+    [...materials.matchAll(/['"](material\/[a-z0-9._-]+)['"]\s*:/g)].map((match) => match[1]),
+  );
+  const referenced = [
+    ...vase.matchAll(/assetGuid\(PACKAGE_IDS\.materials,\s*['"]([^'"]+)['"]\)/g),
+  ].map((match) => match[1]);
+  assert.ok(referenced.length > 0, 'the fixture must declare a material dependency');
+  assert.ok(
+    referenced.every((key) => published.has(key)),
+    `the fixture material dependencies must be published: ${referenced.join(', ')}`,
+  );
+});
+
 test('template console admission rejects camera-free errors and admits only explicit fault injections', () => {
   const evidence = {
     consoleErrors: ['render-system-no-camera', 'unexpected device failure', 'injected failure'],
@@ -297,6 +320,7 @@ test('Preview installs the runtime vase in the selected full-quality smoke proje
       rm,
       symlink,
       writeFile,
+      process,
       resolve,
       sep,
       reduceTestProject,
@@ -358,6 +382,7 @@ test('Preview CI shares reduced workloads in disposable complete projects', () =
     const { reduceTestProject } = await import('./scripts/test/reduce-test-project.mjs');
     const { installRuntimeVase } = await import('./scripts/template-probes/game-3d/runtime-vase/install.mjs');
     const ROOT = process.cwd();
+    const quality = JSON.parse(await readFile(resolve(ROOT, 'scripts/test/render-quality.json'), 'utf8'));
     const CI_LIGHTWEIGHT = true;
     const ARTIFACT_DIR = await mkdtemp(resolve(tmpdir(), 'preview-ci-project-test-'));
     const PROJECTS = [
@@ -370,7 +395,13 @@ test('Preview CI shares reduced workloads in disposable complete projects', () =
     ${functionSource('async function prepareTemplateSmokeProject(slug)', 'const appendServerOutput =')}
     try {
       const root = await prepareTemplateSmokeProject('game-3d');
-      assert.equal(await readFile(resolve(root, 'assets/scene.pack.ts'), 'utf8'), original.replaceAll('DirectionalLight: {', 'DirectionalLight: {cascadeCount: 1,mapSize: 256,'));
+      const expectedScene = original
+        .replaceAll('DirectionalLight: {', 'DirectionalLight: {cascadeCount: 1,mapSize: 256,')
+        .replace(
+          'resolution: 128,',
+          'resolution: ' + Math.min(128, quality.reflectionResolution) + ',',
+        );
+      assert.equal(await readFile(resolve(root, 'assets/scene.pack.ts'), 'utf8'), expectedScene);
       assert.equal(await readFile(resolve(ROOT, 'templates/game-3d/assets/scene.pack.ts'), 'utf8'), original);
       const descriptor = JSON.parse(await readFile(resolve(root, 'forge.json'), 'utf8'));
       assert.equal(descriptor.id, 'template-game-3d');
@@ -404,7 +435,23 @@ test('Preview CI shares reduced workloads in disposable complete projects', () =
       };
       assert.deepEqual(normalize(effect), normalize(originalEffect), 'all emitters, programs, materials, bounds and timing remain');
       const geometry = await readFile(resolve(root, 'assets/geometry.pack.ts'), 'utf8');
-      assert.equal(geometry, await readFile(resolve(ROOT, 'templates/game-3d/assets/geometry.pack.ts'), 'utf8'), 'the smoke copy keeps the template meshes');
+      const sourceGeometry = await readFile(resolve(ROOT, 'templates/game-3d/assets/geometry.pack.ts'), 'utf8');
+      const sphereCall = 'createSphereGeometry(';
+      const sphereStart = sourceGeometry.indexOf(sphereCall);
+      const sphereEnd = sourceGeometry.indexOf(')', sphereStart);
+      const [radius, width, height] = sourceGeometry
+        .slice(sphereStart + sphereCall.length, sphereEnd)
+        .split(', ');
+      const expectedSphere = sphereCall + [
+        radius,
+        Math.min(+width, quality.geometry.sphereWidth),
+        Math.min(+height, quality.geometry.sphereHeight),
+      ].join(', ') + ')';
+      const expectedGeometry =
+        sourceGeometry.slice(0, sphereStart) +
+        expectedSphere +
+        sourceGeometry.slice(sphereEnd + 1);
+      assert.equal(geometry, expectedGeometry, 'the smoke copy preserves meshes and applies the lightweight sphere budget');
       await reduceTestProject(root, { shadowMapSize: 128, cascadeCount: 1 });
       const override = await readFile(resolve(root, 'assets/scene.pack.ts'), 'utf8');
       assert.ok(override.includes('mapSize: 128,'));
@@ -876,6 +923,7 @@ test('each template retains its complete catalog without foreign resource produc
           resolve,
           externalAssetRoots: ['sky', 'foreign-font', 'foreign-model'],
           surfaceEvidencePackRoot: 'surface',
+          waterRecipePackRoots: ['water-recipes', 'water-terrain'],
           previewUiAuthoringMetaPath: 'ui-authoring',
           process: {
             env: { FORGEAX_TEMPLATE_SMOKE: selectedTemplateSlugs.length > 0 ? '1' : undefined },
@@ -910,6 +958,8 @@ test('each template retains its complete catalog without foreign resource produc
   assert.deepEqual(rootsFor([]), [
     ...new Set([...capability, ...empty, ...game3d, ...brotato]),
     'surface',
+    'water-recipes',
+    'water-terrain',
     'ui-authoring',
   ]);
 });

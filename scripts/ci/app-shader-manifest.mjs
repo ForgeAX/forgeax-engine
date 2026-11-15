@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import { isShaderEntryPointReads } from '@forgeax/engine-types';
 import { SHADER_MANIFEST_PUBLICATION_VERSION } from '../../packages/shader/src/manifest-publication.ts';
+import { readShaderManifestText } from '../lib/shader-manifest.mjs';
 
 export const APP_SHADER_MANIFEST_DELTA = 'forgeax-app-shader-manifest-delta-v1';
 
@@ -13,7 +14,7 @@ function fail(message) {
 
 function readJson(path, description) {
   try {
-    return JSON.parse(readFileSync(path, 'utf8'));
+    return JSON.parse(readShaderManifestText(path));
   } catch (error) {
     fail(
       `${description} is not valid JSON: ${path}; ${error instanceof Error ? error.message : String(error)}`,

@@ -1,3 +1,4 @@
+import { defineSystem, World } from '@forgeax/engine-ecs';
 import { mat4 } from '@forgeax/engine-math';
 import { RhiError } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
@@ -11,16 +12,13 @@ import {
 } from '../features/plan';
 import { createRenderFeatureGpuWorkOwner } from '../features/prepared-gpu-work';
 import type { RenderFeature } from '../features/types';
+import { worldRenderResources } from '../publication/resource-scope';
 import { computeProjectionMatrix, computeViewMatrix } from '../record/helpers';
 import type { RenderSystemInternals } from '../record/render-context';
 import type { CubeCaptureGraphWork } from '../record/target-capture-graph';
+import { RenderCaptureGraphEncodeOrder, RenderFeatureGraphEncodeOrder } from '../system-order';
 import { ViewCaptureWork } from '../world/capture-systems';
-import {
-  RENDER_CAPTURE_GRAPH_ENCODE_SYSTEM,
-  RENDER_FEATURE_GRAPH_ENCODE_SYSTEM,
-  ViewGraphSeal,
-  type ViewGraphSealState,
-} from '../world/graph-seal-systems';
+import { ViewGraphSeal, type ViewGraphSealState } from '../world/graph-seal-systems';
 import { awaitsRenderRecord } from '../world/graph-systems';
 import { RenderRecord } from '../world/render-world';
 import { abortFeatureFrame, prepareFeatureFrame, stageFeatureFrame } from './feature-frame-driver';
@@ -51,6 +49,7 @@ async function fixture() {
 function simulationFeature(): RenderFeature<undefined> {
   return {
     identity: 'simulation',
+    placement: 'scene',
     extract: () => ok(undefined),
     plan: () =>
       ok({
@@ -250,8 +249,7 @@ describe('Renderer scene inputs', () => {
       {
         identity: 'left',
         render: true,
-        worlds: [],
-        owner: 0,
+        world: new World(),
         frameNumber: 1,
         caps: f.device.caps,
         gpuWork: gpu,
@@ -349,8 +347,7 @@ describe('Renderer scene inputs', () => {
       ['left', 'right'].map((identity) => ({
         identity,
         render,
-        worlds: [],
-        owner: 0,
+        world: new World(),
         frameNumber: 1,
         caps: f.device.caps,
         gpuWork: gpu,
@@ -379,25 +376,29 @@ describe('Renderer scene inputs', () => {
         },
       )
       .unwrap();
-    host.world
-      .addSystem(RenderRecord, {
-        name: 'test-scene-input-encode',
-        after: [RENDER_CAPTURE_GRAPH_ENCODE_SYSTEM],
-        before: [RENDER_FEATURE_GRAPH_ENCODE_SYSTEM],
-        queries: [{ write: [ViewGraphSeal] }],
-        fn: () => {
-          expect(compute).not.toHaveBeenCalled();
-          events.push('depth');
-          f.runtime.framePassNames?.push('feature-scene-depth-face.0');
-          captureState.captures = { kind: 'ready' };
-        },
-      })
-      .unwrap();
+    const systemToken1 = defineSystem({
+      name: 'test-scene-input-encode',
+      after: [RenderCaptureGraphEncodeOrder],
+      before: [RenderFeatureGraphEncodeOrder],
+      queries: [{ write: [ViewGraphSeal] }],
+      fn: () => {
+        expect(compute).not.toHaveBeenCalled();
+        events.push('depth');
+        f.runtime.framePassNames?.push('feature-scene-depth-face.0');
+        captureState.captures = { kind: 'ready' };
+      },
+    });
+    host.world.addSystem(RenderRecord, systemToken1).unwrap();
     function* record(identity: string): FrameRecording {
       // `render-capture-schedule` routes the scene inputs to the first shared view.
       const captures: readonly CubeCaptureGraphWork[] = identity === 'left' ? f.owner.work : [];
       if (outcome.kind === 'sealed') expect(outcome.batch.views.get(identity)?.errors).toEqual([]);
-      yield { kind: 'shared-work', internals: f.runtime, sceneInputs: captures.length > 0 };
+      yield {
+        kind: 'shared-work',
+        internals: f.runtime,
+        sourceScope: worldRenderResources(host.world),
+        sceneInputs: captures.length > 0,
+      };
       // The view's graph compiles in RenderRecord, before any view encodes.
       if (awaitsRenderRecord(host.world)) yield { kind: 'compile', world: host.world };
       expect(compute).toHaveBeenCalledTimes(1);

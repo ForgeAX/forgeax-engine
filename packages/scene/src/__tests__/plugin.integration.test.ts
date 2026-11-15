@@ -1,6 +1,13 @@
 import { createWorldContext, World } from '@forgeax/engine-ecs';
 import { describe, expect, it } from 'vitest';
-import { ChildOf, GlobalTransform, scenePlugin, Transform } from '../index';
+import {
+  ChildOf,
+  GlobalTransform,
+  scenePlugin,
+  Transform,
+  WaterBodyInstance,
+  WaterZoneInstance,
+} from '../index';
 
 describe('scenePlugin', () => {
   it('installs propagation without render or animation capabilities', async () => {
@@ -19,5 +26,18 @@ describe('scenePlugin', () => {
     expect(world.inspect().systems.some((system) => system.name === 'propagateTransforms')).toBe(
       false,
     );
+  });
+
+  it('registers water instance schemas for Scene-authored body and Zone bindings', async () => {
+    const world = new World();
+    const ctx = await createWorldContext(world, [scenePlugin()]);
+    try {
+      expect(world.components.resolve(WaterBodyInstance.name)).toBe(WaterBodyInstance);
+      expect(world.components.resolve(WaterZoneInstance.name)).toBe(WaterZoneInstance);
+      expect(WaterBodyInstance.fields.body.type).toBe('asset<water-body>');
+      expect(WaterZoneInstance.fields.zone.type).toBe('asset<water-zone>');
+    } finally {
+      await ctx.fiber.dispose();
+    }
   });
 });

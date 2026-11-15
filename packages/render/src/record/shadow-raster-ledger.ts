@@ -238,12 +238,23 @@ export class ShadowRasterLedger {
     }
   >();
   private readonly activeKeys = new Set<string>();
+  private readonly recordedStaticViews = new Map<string, number>();
   private readonly counter = new DrawCountingRenderPass();
 
   /** Start staging a frame; the previous committed frame stays readable. */
   begin(captureWorkload = false, frameId?: number): void {
     this.workloadFrame = captureWorkload ? frameId : undefined;
     this.stagedLength = 0;
+    this.recordedStaticViews.clear();
+  }
+
+  /** Static rasters belong to this frame, including derived material contexts. */
+  recordStaticView(identity: ShadowViewIdentity, generation: number): void {
+    this.recordedStaticViews.set(shadowViewIdentityKey(identity), generation);
+  }
+
+  hasStaticView(identity: ShadowViewIdentity, generation: number): boolean {
+    return this.recordedStaticViews.get(shadowViewIdentityKey(identity)) === generation;
   }
 
   hasRevision(identity: ShadowViewIdentity, revision: ShadowUpdateRevision): boolean {

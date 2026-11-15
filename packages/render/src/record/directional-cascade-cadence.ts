@@ -38,7 +38,7 @@ function sameMatrix(a: Float32Array | undefined, b: Float32Array | undefined): b
 
 /** Only a current receiver/scene witness can replace local ECS read leases. */
 export function currentDirectionalShadowPublication(
-  worlds: readonly RenderResourceScope[],
+  sourceScope: RenderResourceScope,
   casters: PersistentShadowCasterProjection | undefined,
   previous: DirectionalShadowCache | null,
 ): ShadowPublicationSource | undefined {
@@ -46,8 +46,7 @@ export function currentDirectionalShadowPublication(
   const oldSource = previous?.casterContent?.publicationSource;
   if (
     source === undefined ||
-    worlds.length !== 1 ||
-    worlds[0] !== source.resources ||
+    sourceScope !== source.resources ||
     !Number.isSafeInteger(source.revision) ||
     source.revision <= 0 ||
     source.resources.revision !== source.revision ||
@@ -66,8 +65,8 @@ export function currentDirectionalShadowPublication(
 export function directionalShadowSourceChanged(
   previous: Pick<
     DirectionalShadowCache,
-    | 'worlds'
-    | 'worldStateTokens'
+    | 'sourceScope'
+    | 'worldStateToken'
     | 'shadowMaterials'
     | 'meshReads'
     | 'lodSelection'
@@ -75,8 +74,8 @@ export function directionalShadowSourceChanged(
   >,
   next: Pick<
     DirectionalShadowCache,
-    | 'worlds'
-    | 'worldStateTokens'
+    | 'sourceScope'
+    | 'worldStateToken'
     | 'shadowMaterials'
     | 'meshReads'
     | 'lodSelection'
@@ -97,17 +96,10 @@ export function directionalShadowSourceChanged(
     previous.casterContent?.dispatchRevision !== next.casterContent?.dispatchRevision ||
     previous.casterContent?.publicationSource?.resources !==
       next.casterContent?.publicationSource?.resources ||
-    previous.worlds.length !== next.worlds.length ||
-    previous.worldStateTokens.length !== next.worldStateTokens.length ||
-    previous.worlds.some((world, index) => world !== next.worlds[index]) ||
-    previous.worldStateTokens.some((token, index) => {
-      const current = next.worldStateTokens[index];
-      return (
-        current === undefined ||
-        token.worldIdentity !== current.worldIdentity ||
-        token.version.structureEpoch !== current.version.structureEpoch
-      );
-    })
+    previous.sourceScope !== next.sourceScope ||
+    previous.worldStateToken?.worldIdentity !== next.worldStateToken?.worldIdentity ||
+    previous.worldStateToken?.version.structureEpoch !==
+      next.worldStateToken?.version.structureEpoch
   );
 }
 

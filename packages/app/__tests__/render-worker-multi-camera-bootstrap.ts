@@ -34,7 +34,7 @@ const entry: ExecutionBootstrapEntry = (data) => {
   const crash = rendererCrashProbe();
   const createWitness = (): RenderFeature<{ time: number }> => ({
     identity: 'multi-camera.source-receipt',
-    extract: ({ worlds }) => ok({ time: required(worlds[0]).getResource(Time).elapsed }),
+    extract: ({ world }) => ok({ time: world.getResource(Time).elapsed }),
     plan: (frame) => ok({ work: [{ scope: 'frame', resources: [], passes: [] }], sourceFeedback: frame }),
     onSourceFrameSubmitted(frame, feedback) {
       if (frame.time !== (feedback as { time: number }).time)

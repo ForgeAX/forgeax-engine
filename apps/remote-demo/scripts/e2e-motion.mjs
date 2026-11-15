@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { defineSystem } from "@forgeax/engine-ecs";
 import { Update } from '@forgeax/engine-ecs';
 // apps/remote-demo/scripts/e2e-motion.mjs
 //
@@ -74,7 +75,7 @@ async function main() {
   logCase('spawn-entity', true, {});
 
   // Add a system that increments pos x each frame.
-  world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'move-x',
     queries: [],
     fn: () => {
@@ -85,6 +86,7 @@ async function main() {
         });
     },
   });
+world.addSystem(Update, systemToken1);
 
   // Advance 1 frame, verify pos x changed.
   world.update(1 / 60).unwrap();

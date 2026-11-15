@@ -1,26 +1,31 @@
-import type { World } from '@forgeax/engine-ecs';
+import type { ProfileFrameToken } from '@forgeax/engine-profiler';
 import { RendererContractFailureError, RendererOperationError } from '../errors/render';
 import { motionBlurDrawOptions } from '../features/motion-blur/motion-blur-runtime';
 import type { PublishedRenderFrameInput } from '../publication/contract';
 import type { PreparedRenderPublication } from '../publication/receiver';
 import { renderPublicationTiming } from '../publication/record';
-import type { DrawOwnerOptions, RenderFrameInput } from '../render-contract';
+import type { DrawOptions, RenderFrameInput } from '../render-contract';
 
-/** The three draw entry shapes: a legacy World list, a lease frame, or a publication. */
-export type DrawRequest = readonly World[] | RenderFrameInput | PublishedRenderFrameInput;
+type MutableFrameDrawOptions = Omit<
+  DrawOptions,
+  'profileFrame' | 'geometryObservation' | 'geometryLane'
+> & {
+  profileFrame?: ProfileFrameToken;
+  geometryObservation?: true;
+  geometryLane?: NonNullable<DrawOptions['geometryLane']>;
+};
+
+/** A source lease frame or an accepted publication. */
+export type DrawRequest = RenderFrameInput | PublishedRenderFrameInput;
 
 export function publicationDrawRequest(
   request: DrawRequest,
 ): PublishedRenderFrameInput | undefined {
-  return !Array.isArray(request) && 'publication' in request
-    ? (request as PublishedRenderFrameInput)
-    : undefined;
+  return 'publication' in request ? (request as PublishedRenderFrameInput) : undefined;
 }
 
 export function frameDrawRequest(request: DrawRequest): RenderFrameInput | undefined {
-  return !Array.isArray(request) && !('publication' in request)
-    ? (request as RenderFrameInput)
-    : undefined;
+  return !('publication' in request) ? (request as RenderFrameInput) : undefined;
 }
 
 export function sceneFreeFrameInputError(): RendererOperationError<'frame-input-invalid'> {
@@ -28,7 +33,7 @@ export function sceneFreeFrameInputError(): RendererOperationError<'frame-input-
     operation: 'draw',
     cause: new RendererContractFailureError(
       'draw',
-      'a scene-free frame requires empty leases, null camera/environment and configured screen UI',
+      'a UI-only frame requires a null source, no camera selection and configured screen UI',
     ),
   });
 }
@@ -38,53 +43,45 @@ export function unattachedFrameLeaseError(): RendererOperationError<'world-lease
     operation: 'draw',
     cause: new RendererContractFailureError(
       'draw',
-      'every RenderFrameInput lease must be attached to this Renderer',
+      'the source lease must be attached to this Renderer',
     ),
   });
 }
 
-export function missingFrameLeaseOwnerError(
-  cameraMissing: boolean,
-): RendererOperationError<'frame-input-invalid'> {
-  return new RendererOperationError('frame-input-invalid', {
-    operation: 'draw',
-    cause: new RendererContractFailureError(
-      'draw',
-      cameraMissing
-        ? 'camera lease must be present in RenderFrameInput.leases'
-        : 'environment lease must be present in RenderFrameInput.leases',
-    ),
-  });
-}
-
-/** Index of a camera/environment binding's lease; -1 when absent or unlisted. */
-function leaseOwnerIndex<Lease>(
-  leases: readonly Lease[],
-  binding: { readonly lease: Lease } | null | undefined,
-): number {
-  return binding == null ? -1 : leases.indexOf(binding.lease);
-}
-
-/** Owner indices and per-frame options a lease frame selects. */
-export function frameDrawOwnerOptions(frameRequest: RenderFrameInput): DrawOwnerOptions {
-  return {
-    cameraOwner: leaseOwnerIndex(frameRequest.leases, frameRequest.camera),
-    resourceOwner: leaseOwnerIndex(frameRequest.leases, frameRequest.environment),
+/** Per-frame options selected by a source lease. */
+export function frameDrawOptions(frameRequest: RenderFrameInput): DrawOptions {
+  const options: MutableFrameDrawOptions = {
     ...(frameRequest.camera?.entityKey === undefined
       ? {}
       : { cameraEntityKey: frameRequest.camera.entityKey }),
     ...motionBlurDrawOptions(frameRequest),
-    ...(frameRequest.profileFrame === undefined ? {} : { profileFrame: frameRequest.profileFrame }),
-    ...(frameRequest.geometryObservation === true ? { geometryObservation: true as const } : {}),
-    ...(frameRequest.geometryLane === undefined ? {} : { geometryLane: frameRequest.geometryLane }),
   };
+  // Read and detach the borrowed token at its original spread position. Keeping
+  // this in the same result object avoids probing the request a second time or
+  // allocating an intermediate options wrapper around it.
+  const token = frameRequest.profileFrame;
+  if (token !== undefined) options.profileFrame = detachProfileFrameToken(token);
+  if (frameRequest.geometryObservation === true) options.geometryObservation = true;
+  if (frameRequest.geometryLane !== undefined) options.geometryLane = frameRequest.geometryLane;
+  return options;
+}
+
+/** Copy a borrowed profiler token without copying or probing its containing options object. */
+export function detachProfileFrameToken(token: ProfileFrameToken): ProfileFrameToken {
+  const captureId = token.captureId;
+  const frameId = token.frameId;
+  return Object.freeze({ captureId, frameId });
+}
+
+/** Read and detach only the token; preserve the borrowed options object and its receiver. */
+export function captureDrawOwnerProfileFrame(options: DrawOptions): ProfileFrameToken | undefined {
+  const token = options.profileFrame;
+  return token === undefined ? undefined : detachProfileFrameToken(token);
 }
 
 /** A publication always draws its single receiver World with transported timing. */
-export function publicationDrawOwnerOptions(request: PublishedRenderFrameInput): DrawOwnerOptions {
+export function publicationDrawOptions(request: PublishedRenderFrameInput): DrawOptions {
   return {
-    cameraOwner: 0,
-    resourceOwner: 0,
     ...renderPublicationTiming(request.publication),
     ...(request.geometryObservation === true
       ? {

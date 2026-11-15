@@ -8,7 +8,6 @@ import { buildSsaoUniformPayload } from '../ssao-uniform';
 function camera(): CameraSnapshot {
   return {
     entityKey: 1,
-    worldId: 0,
     historyVersion: 0,
     position: vec3.create(0, 0, 5),
     world: mat4.identity(mat4.create()),

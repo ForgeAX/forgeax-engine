@@ -33,7 +33,6 @@ const materials = new MaterialFrame(undefined).with(material);
 const binding = {
   material,
   materials: [material],
-  worldId: 0,
   entityKey: 1,
   transform: { world: IDENTITY },
   materialBindingSources: [],

@@ -108,9 +108,8 @@ export async function verifyVertexColorPublication(options: {
           for (let frame = 0; frame < (options.warmupFrames ?? 60); frame++) {
             world.update(1 / 60).unwrap();
             await drawReadyFrame(renderer, {
-              leases: [lease],
-              camera: { lease, entityKey: camera },
-              environment: { lease },
+              source: lease,
+              camera: { entityKey: camera },
               ...(lane === 'direct' ? { geometryLane: 'direct' as const } : {}),
             });
           }

@@ -5,7 +5,7 @@ export const FOG_CASES = Object.freeze([
   'uniform',
   'change',
   'height',
-  'owner-switch',
+  'environment-replace',
   'camera-switch',
   'detach-reattach',
   'resize',
@@ -17,7 +17,7 @@ export const FOG_PHASES = Object.freeze([
   'uniform',
   'change',
   'height',
-  'owner-switch',
+  'environment-replace',
   'camera-switch',
   'detach-reattach',
   'resize',
@@ -29,7 +29,7 @@ const CHANNEL_TOLERANCE = 0.02;
 const WEAK_ACTIVE_SIGNAL = 0.01;
 
 function finiteVector(value, length) {
-  return Array.isArray(value) && value.length === length && value.every((entry) => Number.isFinite(entry));
+  return ( Array.isArray(value) && value.length === length && value.every((entry) => Number.isFinite(entry)));
 }
 
 function vectorDelta(expected, observed) {

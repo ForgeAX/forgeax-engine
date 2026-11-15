@@ -13,6 +13,11 @@ import {
   validRenderFeatureWorkgroups,
 } from './prepared-gpu-work';
 import type { RenderFeaturePipelineDescriptor } from './prepared-graphics';
+import {
+  isRenderFeatureTextureReference,
+  type RenderFeatureTextureReference,
+} from './texture-source';
+import type { RenderFeatureGpuBufferInitialization } from './types';
 
 export type RenderFeatureResourceUsage = GraphBufferAccess | GraphTextureAccess;
 export type FullscreenRenderFeatureStage = 'before-temporal' | 'after-output';
@@ -30,18 +35,27 @@ export type RenderFeatureMaterialShaderBindingContract =
 export interface RenderFeatureMaterialShaderContract {
   readonly bindings: RenderFeatureMaterialShaderBindingContract;
   readonly sceneDepth?: import('@forgeax/engine-types').MaterialSceneDepth;
+  readonly systemInputs?: import('@forgeax/engine-types').MaterialProgramSystemInputs;
+  readonly entryPoints?: readonly import('@forgeax/engine-types').ShaderEntryPointReads[];
 }
 
 export type RenderFeatureFullscreenRead =
   | string
-  | { readonly key: string; readonly sampleType?: 'depth' };
+  | {
+      readonly key: string;
+      readonly sampleType?: 'depth' | 'float-3d-repeat' | 'unfilterable-float';
+    };
 
 /** A named graph target or an authorized semantic sampled-read target. */
-export type RenderFeatureSampledTarget = string | SceneDataTarget;
+export type RenderFeatureSampledTarget = string | SceneDataTarget | RenderFeatureTextureReference;
 
 /** A cooked fullscreen shader declaration owned by a RenderFeature plan. */
 export interface RenderFeatureFullscreenProgramDeclaration {
   readonly kind: 'fullscreen-program';
+  /** Inline graphics may consume this canonical clip-space stream instead of vertex_index. */
+  readonly vertexLayout?: 'clip-position-color';
+  /** Sample count of the declared depth read, independently of the color output. */
+  readonly depthSampleCount?: 1 | 4;
   readonly name: string;
   readonly source: string;
   readonly stage?: FullscreenRenderFeatureStage;
@@ -71,6 +85,22 @@ export type RenderFeatureBindingValue =
 export type RenderFeatureResourceDeclaration =
   | RenderFeatureFullscreenProgramDeclaration
   | {
+      /** A graph-owned texture whose storage lifetime is this compiled frame graph. */
+      readonly kind: 'graph-texture';
+      readonly name: string;
+      readonly allocationKey: string;
+      /** Expose this view as a same-frame ordinary material texture source. */
+      readonly materialSource?: boolean;
+      readonly descriptor: import('@forgeax/engine-render-graph').GraphTextureDescriptor & {
+        readonly size: {
+          readonly width: number;
+          readonly height: number;
+          readonly depthOrArrayLayers: number;
+        };
+      };
+      readonly view?: import('@forgeax/engine-render-graph').GraphTextureViewDescriptor;
+    }
+  | {
       /** Once-per-frame scene capture from an explicit simulation camera. */
       readonly kind: 'scene-depth';
       readonly name: string;
@@ -81,7 +111,6 @@ export type RenderFeatureResourceDeclaration =
       /** Renderer-owned geometric field from this exact composition World. */
       readonly kind: 'scene-sdf';
       readonly name: string;
-      readonly world: number;
       readonly descriptor: import('./scene-sdf').RenderFeatureSceneSdfDescriptor;
     }
   | {
@@ -99,11 +128,17 @@ export type RenderFeatureResourceDeclaration =
   | {
       readonly kind: 'buffer';
       readonly name: string;
+      /** Replace storage transactionally when its committed content identity changes. */
+      readonly allocationKey?: string;
       readonly size: number;
       readonly usage: readonly RenderFeatureGpuBufferUsage[];
       readonly data?: ArrayBufferView;
+      readonly initialization?: RenderFeatureGpuBufferInitialization;
       /** Ordered writes to disjoint or deliberately overlapping buffer ranges. */
-      readonly uploads?: readonly { readonly offset: number; readonly data: ArrayBufferView }[];
+      readonly uploads?: readonly {
+        readonly offset: number;
+        readonly data: ArrayBufferView;
+      }[];
     }
   | {
       /** A resident generation-owned resource supplied by a render-owned provider. */
@@ -116,8 +151,16 @@ export type RenderFeatureResourceDeclaration =
             readonly size: number;
             readonly usage?: readonly RenderFeatureGpuBufferUsage[];
           }
-        | { readonly kind: 'texture-view'; readonly value: unknown }
-        | { readonly kind: 'sampler'; readonly value: unknown };
+        | {
+            readonly kind: 'texture-view';
+            readonly value: unknown;
+          }
+        | {
+            readonly kind: 'sampler';
+            readonly value: unknown;
+          };
+      /** Acquired only when this resource enters a graph candidate. */
+      readonly acquireResidencyLease?: () => import('./prepared-gpu-work').PreparedGraphicsResourceLease;
       /** Optional graph target or semantic scene-data target backing the resource. */
       readonly logicalTarget?: RenderFeatureSampledTarget;
     }
@@ -245,6 +288,8 @@ export type RenderFeaturePassDeclaration = (
   | {
       readonly kind: 'copy';
       readonly name: string;
+      /** Explicit same-submit, completed-receipt texture observations. */
+      readonly textureReadbacks?: readonly { readonly name: string; readonly target: string }[];
       readonly copies: readonly {
         /** Frame data: retain copy resources/order while skipping this command. */
         readonly enabled?: boolean | undefined;
@@ -277,6 +322,7 @@ export type RenderFeaturePassDeclaration = (
       }[];
       readonly depthStencilAttachment?: {
         readonly target: string;
+        readonly depthClearValue?: number;
         readonly depthLoadOp: 'load' | 'clear';
         readonly depthStoreOp: 'store' | 'discard';
       };
@@ -295,6 +341,12 @@ export type RenderFeaturePassDeclaration = (
  * access is derived from these roles rather than duplicated as reads/writes.
  */
 export interface RenderFeatureWorkPlan {
+  /** Every declared pass must encode in the same physical submission. */
+  readonly submission?: 'atomic';
+  /** Override the feature placement for this resource scope. */
+  readonly placement?: import('./types').RenderFeaturePlacement;
+  /** @internal Source-selected water state; dynamic content is outside plan identity. */
+  readonly waterView?: import('../water/view-projection').WaterRenderView;
   readonly resources: readonly RenderFeatureResourceDeclaration[];
   readonly passes: readonly RenderFeaturePassDeclaration[];
 }
@@ -307,12 +359,17 @@ export interface RenderFeatureLogicalTarget {
 }
 
 export interface RenderFeaturePlanView {
+  /** Accepted-submit timing belongs to the receiving view, independently of source extraction. */
+  readonly motionBlur?: import('./motion-blur/motion-blur-feature').MotionBlurFeatureInput;
   readonly identity: string;
   readonly render: boolean;
+  readonly graphResources?: import('./types').RenderFeatureGraphResourceState;
   readonly frame: {
     readonly frameNumber: number;
     readonly width?: number;
     readonly height?: number;
+    readonly extent?: import('../pipeline/render-extent').RenderExtent;
+    readonly waterFoamMaterials?: readonly import('../water/fluid-foam').WaterFluidFoamMaterial[];
   };
   readonly selectedView?: import('./types').RenderFeatureExtractView['selectedView'];
   readonly targets: readonly RenderFeatureLogicalTarget[];
@@ -320,14 +377,20 @@ export interface RenderFeaturePlanView {
 }
 
 export interface RenderFeaturePlanContext {
+  /** @internal Open producer-declared nested CPU work on the active Render World. */
+  readonly beginProfileWork?: (
+    work: string,
+  ) => import('@forgeax/engine-ecs').ScheduleWorkScope | undefined;
   /** @internal Host-bound constructor for Engine-owned, non-borrowed primary work. */
   readonly createNativePlan?: () => RenderFeatureNativePlanBuilder;
   /** Resolve an exact asset in the corresponding source World or accepted publication. */
-  readonly resolveAsset?: (
+  readonly resolveAsset?: (handle: number, revision?: number) => Result<Asset, unknown>;
+  /** Resolve an exact resident texture view through the Renderer asset/residency owner. */
+  readonly resolveResidentTextureView?: (
     sourceWorldIndex: number,
-    handle: number,
-    revision?: number,
-  ) => Result<Asset, unknown>;
+    guid: string,
+    revision: number,
+  ) => Result<Readonly<{ view: unknown; retain(): (evict?: boolean) => void }>, unknown>;
 
   /** Read a build-time cooked utility selected for the receiving device. */
   readonly getFeatureShaderSource?: ((identifier: string) => string | undefined) | undefined;
@@ -336,6 +399,8 @@ export interface RenderFeaturePlanContext {
   readonly caps: Readonly<RhiCaps>;
   readonly limits?: Readonly<Partial<GPUSupportedLimits>>;
   readonly frame: { readonly frameNumber: number };
+  /** Device generation for resources whose identity is tied to the active receiver. */
+  readonly deviceGeneration?: number;
   readonly generation: number;
   readonly views: readonly RenderFeaturePlanView[];
   readonly materialShaderBindingContract?: (
@@ -351,12 +416,21 @@ export interface RenderFeatureWork extends RenderFeatureWorkPlan {
 }
 
 /** The producer declares one frame containing shared simulation and view projections. */
-export interface RenderFeaturePlan {
-  /** @internal Opaque primary work; ordinary authors continue to declare work. */
-  readonly native?: RenderFeatureNativePlanToken;
-  readonly work: readonly RenderFeatureWork[];
-  readonly sourceFeedback?: unknown;
-}
+export type RenderFeaturePlan =
+  | {
+      /** An in-flight source dependency blocks preparation without declaring executed work. */
+      readonly pendingSource: { readonly resource: string; readonly reason: string };
+      readonly work: readonly [];
+      readonly native?: never;
+      readonly sourceFeedback?: never;
+    }
+  | {
+      readonly pendingSource?: never;
+      /** @internal Opaque primary work; ordinary authors continue to declare work. */
+      readonly native?: RenderFeatureNativePlanToken;
+      readonly work: readonly RenderFeatureWork[];
+      readonly sourceFeedback?: unknown;
+    };
 
 /** Frozen declaration produced for one feature in one frame. */
 export interface RenderFeaturePlannedFrame {
@@ -371,7 +445,7 @@ export interface RenderFeaturePlannedFrame {
 }
 
 export interface RenderFeatureDerivedAccess {
-  readonly resource: string | SceneDataTarget;
+  readonly resource: string | SceneDataTarget | RenderFeatureTextureReference;
   readonly usage: RenderFeatureResourceUsage;
 }
 
@@ -454,9 +528,17 @@ export type RenderFeaturePlanSignatureNode =
       readonly keys: readonly string[];
       readonly values: readonly RenderFeaturePlanSignatureNode[];
     }
-  | { readonly kind: 'primitive'; readonly token: string; readonly stringValue?: string };
+  | {
+      readonly kind: 'primitive';
+      readonly token: string;
+      readonly stringValue?: string;
+      /** Token provenance captured only through the native JSON formatter. */
+      readonly numberValue?: number;
+    };
 
 export interface RenderFeaturePlanSignatureSnapshot {
+  readonly submission?: 'atomic';
+  readonly placement?: import('./types').RenderFeaturePlacement;
   readonly resources: readonly RenderFeaturePlanSignatureNode[];
   readonly passes: RenderFeaturePlanSignatureNode;
 }
@@ -505,10 +587,11 @@ const signatureStringify =
     'function stringify() { [native code] }'
     ? (signatureStringifyDescriptor.value as typeof JSON.stringify)
     : undefined;
+const signatureReflectApply = Reflect.apply;
 
 interface OwnedStringTokens {
   lookup(value: string): string | undefined;
-  remember(value: string, token: string): void;
+  remember(value: string, token: string, receiver: unknown, stringify: unknown): void;
 }
 
 export interface RenderFeatureSignatureTokenReuseMetrics {
@@ -549,8 +632,14 @@ function ownedStringTokenReuse(
       if (token !== undefined && metrics !== undefined) metrics.hits++;
       return token;
     },
-    remember(value, token) {
-      if (value.length < 256 || !canonical()) return;
+    remember(value, token, receiver, stringify) {
+      if (
+        value.length < 256 ||
+        receiver !== signatureJson ||
+        signatureStringify === undefined ||
+        stringify !== signatureStringify
+      )
+        return;
       if (metrics !== undefined) metrics.serializedCharacters += value.length;
       if (first?.[0] === value || tokens?.has(value)) return;
       // These are existing immutable string references, not extra string copies.
@@ -577,7 +666,7 @@ function stablePrimitiveToken(
   value: unknown,
   previous?: Extract<RenderFeaturePlanSignatureNode, { readonly kind: 'primitive' }>,
   ownedStringTokens?: OwnedStringTokens,
-): string {
+): string | { readonly token: string; readonly numberValue: number } {
   // WGSL strings are immutable even when their enclosing descriptor is rebuilt.
   // Keep the canonical token while still checking every mutable container.
   if (typeof value === 'string' && previous?.stringValue === value) return previous.token;
@@ -585,9 +674,32 @@ function stablePrimitiveToken(
     const token = ownedStringTokens?.lookup(value);
     if (token !== undefined) return token;
   }
-  const token = JSON.stringify(value) ?? 'undefined';
-  if (typeof value === 'string') ownedStringTokens?.remember(value, token);
+  // Match the original method-call observation exactly: read the receiver and
+  // stringify property once, then call that captured function with that receiver.
+  // This also lets a native primitive hint use the function actually selected
+  // after any borrowed getter changed the environment, without a second probe.
+  const receiver = JSON;
+  const stringify = receiver.stringify;
+  const native =
+    receiver === signatureJson &&
+    signatureStringify !== undefined &&
+    stringify === signatureStringify;
+  if (native) {
+    const previousToken = retainedPrimitiveToken(value, previous);
+    if (previousToken !== undefined) return previousToken;
+  }
+
+  const token =
+    (signatureReflectApply(stringify, receiver, [value]) as string | undefined) ?? 'undefined';
+  if (typeof value === 'string') ownedStringTokens?.remember(value, token, receiver, stringify);
+  if (native && typeof value === 'number') return { token, numberValue: value };
   return token;
+}
+
+function primitiveTokenText(
+  result: string | { readonly token: string; readonly numberValue: number },
+): string {
+  return typeof result === 'string' ? result : result.token;
 }
 
 type SignatureFrameData = false | 'passes' | 'dispatches' | 'draws' | 'copies';
@@ -796,15 +908,21 @@ function cloneSignaturePrimitive(
   previous: RenderFeaturePlanSignatureNode | undefined,
   ownedStringTokens: OwnedStringTokens | undefined,
 ): RenderFeaturePlanSignatureNode {
-  const token = stablePrimitiveToken(
+  const result = stablePrimitiveToken(
     value,
     previous?.kind === 'primitive' ? previous : undefined,
     ownedStringTokens,
   );
-  if (previous?.kind === 'primitive' && previous.token === token) return previous;
-  return typeof value === 'string'
-    ? { kind: 'primitive', token, stringValue: value }
-    : { kind: 'primitive', token };
+  const token = typeof result === 'string' ? result : result.token;
+  if (previous?.kind === 'primitive' && previous.token === token) {
+    if (typeof result !== 'string' && previous.numberValue === undefined)
+      return { kind: 'primitive', token, numberValue: result.numberValue };
+    return previous;
+  }
+  if (typeof value === 'string') return { kind: 'primitive', token, stringValue: value };
+  return typeof result === 'string'
+    ? { kind: 'primitive', token }
+    : { kind: 'primitive', token, numberValue: result.numberValue };
 }
 
 function signatureResourceValue(resource: RenderFeatureResourceDeclaration): unknown {
@@ -812,8 +930,22 @@ function signatureResourceValue(resource: RenderFeatureResourceDeclaration): unk
   if (resource.kind !== 'buffer') return resource;
   // Match resourceTopology exactly: buffer payloads are upload evidence, not
   // topology identity, while usage order is canonicalized before comparison.
-  const { uploads: _uploads, ...descriptor } = resource;
-  return { ...descriptor, usage: [...resource.usage].sort(compareStableKeys), data: undefined };
+  const { uploads: _uploads, initialization, ...descriptor } = resource;
+  return {
+    ...descriptor,
+    ...(initialization === undefined
+      ? {}
+      : { initialization: bufferInitializationTopology(initialization) }),
+    usage: [...resource.usage].sort(compareStableKeys),
+    data: undefined,
+  };
+}
+
+/** Initialization bytes are upload evidence; only their owner version affects topology. */
+function bufferInitializationTopology(
+  initialization: RenderFeatureGpuBufferInitialization,
+): Readonly<{ version: string; byteLength: number }> {
+  return { version: initialization.version, byteLength: initialization.byteLength };
 }
 
 function signaturePassValue(pass: RenderFeaturePassDeclaration): unknown {
@@ -871,6 +1003,19 @@ export function cloneOwnedRenderFeaturePlanSignatureSnapshot(
   return cloneSignatureSnapshot(plan, previous, true, metrics);
 }
 
+function cloneResourceSignature(
+  resource: RenderFeatureResourceDeclaration,
+  prior: RenderFeaturePlanSignatureNode | undefined,
+  ownedStringTokens: OwnedStringTokens | undefined,
+): RenderFeaturePlanSignatureNode {
+  const ownedStatic = isOwnedStaticBuffer(resource);
+  const cached = ownedStatic ? ownedBufferSignatureNodes.get(resource) : undefined;
+  const next =
+    cached ?? cloneSignatureNode(signatureResourceValue(resource), prior, false, ownedStringTokens);
+  if (ownedStatic && cached === undefined) ownedBufferSignatureNodes.set(resource, next);
+  return next;
+}
+
 function cloneSignatureSnapshot(
   plan: RenderFeatureWorkPlan,
   previous?: RenderFeaturePlanSignatureSnapshot,
@@ -878,42 +1023,41 @@ function cloneSignatureSnapshot(
   metrics?: RenderFeatureSignatureTokenReuseMetrics,
 ): RenderFeaturePlanSignatureSnapshot {
   let ownedStringTokens: OwnedStringTokens | undefined;
-  const initialLength = plan.resources.length;
-  let resources: RenderFeaturePlanSignatureNode[] | undefined =
-    previous === undefined || previous.resources.length !== initialLength
-      ? new Array(initialLength)
-      : undefined;
-  for (let index = 0; index < plan.resources.length; index += 1) {
-    const resource = plan.resources[index] as RenderFeatureResourceDeclaration;
-    // The public resource can have getters or be a Proxy. Choosing evidence
-    // by a speculative name read changes its original observation/error order.
-    const prior = previous?.resources[index];
-    let next: RenderFeaturePlanSignatureNode;
-    if (prior !== undefined && equalResourceNode(resource, prior)) {
-      next = prior;
-    } else {
-      // Buffer `data` is deliberately outside topology identity, so avoid
-      // materialising its normalized spread object on the common upload-only
-      // update path.  Changed declarations still share equal descendants.
-      if (reuseStringTokens) ownedStringTokens ??= ownedStringTokenReuse(metrics);
-      const ownedStatic = isOwnedStaticBuffer(resource);
-      const cached = ownedStatic ? ownedBufferSignatureNodes.get(resource) : undefined;
-      next =
-        cached ??
-        cloneSignatureNode(signatureResourceValue(resource), prior, false, ownedStringTokens);
-      if (ownedStatic && cached === undefined) ownedBufferSignatureNodes.set(resource, next);
+  function captureResourceSignatures(): readonly RenderFeaturePlanSignatureNode[] {
+    const initialLength = plan.resources.length;
+    let resources: RenderFeaturePlanSignatureNode[] | undefined =
+      previous === undefined || previous.resources.length !== initialLength
+        ? new Array(initialLength)
+        : undefined;
+    for (let index = 0; index < plan.resources.length; index += 1) {
+      const resource = plan.resources[index] as RenderFeatureResourceDeclaration;
+      // The public resource can have getters or be a Proxy. Choosing evidence
+      // by a speculative name read changes its original observation/error order.
+      const prior = previous?.resources[index];
+      let next: RenderFeaturePlanSignatureNode;
+      if (prior !== undefined && equalResourceNode(resource, prior)) {
+        next = prior;
+      } else {
+        // Buffer `data` is deliberately outside topology identity, so avoid
+        // materialising its normalized spread object on the common upload-only
+        // update path.  Changed declarations still share equal descendants.
+        if (reuseStringTokens) ownedStringTokens ??= ownedStringTokenReuse(metrics);
+        next = cloneResourceSignature(resource, prior, ownedStringTokens);
+      }
+      if (resources === undefined && next !== prior) {
+        resources = new Array(initialLength);
+        for (let prefix = 0; prefix < index; prefix += 1)
+          resources[prefix] = previous?.resources[prefix] as RenderFeaturePlanSignatureNode;
+      }
+      if (resources !== undefined) resources[index] = next;
     }
-    if (resources === undefined && next !== prior) {
-      resources = new Array(initialLength);
-      for (let prefix = 0; prefix < index; prefix += 1)
-        resources[prefix] = previous?.resources[prefix] as RenderFeaturePlanSignatureNode;
-    }
-    if (resources !== undefined) resources[index] = next;
+    const nextResources =
+      resources === undefined && previous !== undefined
+        ? previous.resources
+        : Object.freeze(resources ?? []);
+    return nextResources;
   }
-  const nextResources =
-    resources === undefined && previous !== undefined
-      ? previous.resources
-      : Object.freeze(resources ?? []);
+  const nextResources = captureResourceSignatures();
   let nextPasses = previous?.passes;
   // Host hits only compare existing evidence. Defer its token table and pass
   // projection until there is changed work; generic capture retains its reads.
@@ -927,12 +1071,19 @@ function cloneSignatureSnapshot(
   }
   if (
     previous !== undefined &&
+    previous.placement === plan.placement &&
     nextResources === previous.resources &&
-    nextPasses === previous.passes
+    nextPasses === previous.passes &&
+    plan.submission === previous.submission
   ) {
     return previous;
   }
-  return Object.freeze({ resources: nextResources, passes: nextPasses });
+  return Object.freeze({
+    ...(plan.placement === undefined ? {} : { placement: plan.placement }),
+    resources: nextResources,
+    passes: nextPasses,
+    ...(plan.submission === undefined ? {} : { submission: plan.submission }),
+  });
 }
 
 function equalSignatureNode(
@@ -955,7 +1106,7 @@ function equalSignatureNode(
     return true;
   }
   if (snapshot.kind === 'primitive')
-    return stablePrimitiveToken(value, snapshot) === snapshot.token;
+    return primitiveTokenText(stablePrimitiveToken(value, snapshot)) === snapshot.token;
   if (snapshot.kind === 'array') {
     if (!Array.isArray(value) || value.length !== snapshot.values.length) return false;
     for (let index = 0; index < snapshot.values.length; index += 1) {
@@ -1029,7 +1180,8 @@ function equalSortedUsage(usage: unknown, snapshot: RenderFeaturePlanSignatureNo
       ) {
         expectedCount += 1;
       }
-      if (stablePrimitiveToken(usage[candidate], expected) === expected.token) currentCount += 1;
+      if (primitiveTokenText(stablePrimitiveToken(usage[candidate], expected)) === expected.token)
+        currentCount += 1;
     }
     if (expectedCount !== currentCount) return false;
   }
@@ -1068,20 +1220,16 @@ function equalResourceNode(resource: unknown, snapshot: RenderFeaturePlanSignatu
   // Camera motion and buffer uploads change frame data, not graph topology.
   // Compare the same normalized structure used by resourceTopology without
   // allocating a spread object on every signature admission.
+  const snapshotValues = snapshot.values;
   let comparableKeys = 0;
   // Keep this branch allocation-free as well. Buffer declarations are among
   // the most frequently validated resources in a frame.
-  for (const key in source) {
-    if (!Object.hasOwn(source, key)) continue;
-    if (key === payloadKey || (source.kind === 'buffer' && key === 'uploads')) continue;
-    const snapshotIndex = snapshot.keys.indexOf(key);
-    if (snapshotIndex < 0) return false;
-    comparableKeys += 1;
+  function equalResourceField(key: string, snapshotIndex: number): boolean {
     if (source.kind === 'buffer' && key === 'usage') {
       if (
         !equalSortedUsage(
           source[key],
-          snapshot.values[snapshotIndex] as RenderFeaturePlanSignatureNode,
+          snapshotValues[snapshotIndex] as RenderFeaturePlanSignatureNode,
         )
       ) {
         return false;
@@ -1089,10 +1237,14 @@ function equalResourceNode(resource: unknown, snapshot: RenderFeaturePlanSignatu
     } else {
       const child = source[key];
       const kind = source.kind;
+      const comparableChild =
+        kind === 'buffer' && key === 'initialization' && child !== undefined
+          ? bufferInitializationTopology(child as RenderFeatureGpuBufferInitialization)
+          : child;
       if (
         !equalSignatureNode(
-          child,
-          snapshot.values[snapshotIndex] as RenderFeaturePlanSignatureNode,
+          comparableChild,
+          snapshotValues[snapshotIndex] as RenderFeaturePlanSignatureNode,
           kind === 'copy' && key === 'copies'
             ? 'copies'
             : kind === 'compute' && key === 'dispatches'
@@ -1105,6 +1257,15 @@ function equalResourceNode(resource: unknown, snapshot: RenderFeaturePlanSignatu
         return false;
       }
     }
+    return true;
+  }
+  for (const key in source) {
+    if (!Object.hasOwn(source, key)) continue;
+    if (key === payloadKey || (source.kind === 'buffer' && key === 'uploads')) continue;
+    const snapshotIndex = snapshot.keys.indexOf(key);
+    if (snapshotIndex < 0) return false;
+    comparableKeys += 1;
+    if (!equalResourceField(key, snapshotIndex)) return false;
   }
   let expectedComparableKeys = 0;
   for (const key of snapshot.keys) {
@@ -1121,6 +1282,8 @@ export function renderFeaturePlanSignatureSnapshotEquals(
   plan: RenderFeatureWorkPlan,
   snapshot: RenderFeaturePlanSignatureSnapshot,
 ): boolean {
+  if (plan.placement !== snapshot.placement || plan.submission !== snapshot.submission)
+    return false;
   if (plan.resources.length !== snapshot.resources.length) return false;
   for (let index = 0; index < plan.resources.length; index += 1) {
     if (
@@ -1238,12 +1401,20 @@ function resourceTopology(
     if (metrics !== undefined && resource.data !== undefined) {
       metrics.typedArrayBytes += resource.data.byteLength;
     }
-    const { uploads: _uploads, ...descriptor } = resource;
-    return { ...descriptor, usage: [...resource.usage].sort(), data: undefined };
+    const { uploads: _uploads, initialization, ...descriptor } = resource;
+    return {
+      ...descriptor,
+      ...(initialization === undefined
+        ? {}
+        : { initialization: bufferInitializationTopology(initialization) }),
+      usage: [...resource.usage].sort(),
+      data: undefined,
+    };
   }
   if (resource.kind === 'prepared-gpu-resource') {
+    const { acquireResidencyLease: _acquireResidencyLease, ...descriptor } = resource;
     return {
-      ...resource,
+      ...descriptor,
       resource:
         resource.resource.kind === 'buffer'
           ? {
@@ -1265,7 +1436,9 @@ export function renderFeaturePlanSignature(
   if (metrics !== undefined) metrics.calls += 1;
   const signature = stable(
     {
+      ...(plan.placement === undefined ? {} : { placement: plan.placement }),
       resources: plan.resources.map((resource) => resourceTopology(resource, metrics)),
+      ...(plan.submission === undefined ? {} : { submission: plan.submission }),
       passes: plan.passes.map(signaturePassValue),
     },
     metrics,
@@ -1287,13 +1460,36 @@ function bindingAccess(type: GPUBufferBindingType | undefined): GraphBufferAcces
   }
 }
 
-/** Derive graph access from descriptor roles; producers never author a parallel ledger. */
+/** Declarations of one plan by name, for deriving the access of several of its passes. */
+export function renderFeaturePlanDeclarations(
+  plan: RenderFeatureWorkPlan,
+): ReadonlyMap<string, RenderFeatureResourceDeclaration> {
+  return new Map(plan.resources.map((resource) => [resource.name, resource]));
+}
+
+/** Aggregate the owning per-pass derivation for one complete plan. */
+export function deriveRenderFeaturePlanAccess(
+  plan: RenderFeatureWorkPlan,
+): readonly RenderFeatureDerivedAccess[] {
+  const declarations = renderFeaturePlanDeclarations(plan);
+  return Object.freeze(
+    plan.passes.flatMap((pass) => [...deriveRenderFeaturePassAccess(plan, pass, declarations)]),
+  );
+}
+
+/**
+ * Derive graph access from descriptor roles; producers never author a parallel ledger.
+ * A caller deriving every pass of one plan passes its declarations once.
+ */
 export function deriveRenderFeaturePassAccess(
   plan: RenderFeatureWorkPlan,
   pass: RenderFeaturePassDeclaration,
+  declarations?: ReadonlyMap<string, RenderFeatureResourceDeclaration>,
 ): readonly RenderFeatureDerivedAccess[] {
   if (pass.kind === 'copy') {
     const accesses: RenderFeatureDerivedAccess[] = [];
+    for (const readback of pass.textureReadbacks ?? [])
+      accesses.push({ resource: readback.target, usage: 'copy-src' });
     for (const copy of pass.copies) {
       accesses.push(
         { resource: copy.source, usage: 'copy-src' },
@@ -1305,7 +1501,7 @@ export function deriveRenderFeaturePassAccess(
   // Copy and draw-less raster passes never consult declarations.
   const resources: ReadonlyMap<string, RenderFeatureResourceDeclaration> =
     pass.kind === 'compute' || pass.draws.length > 0
-      ? new Map(plan.resources.map((resource) => [resource.name, resource]))
+      ? (declarations ?? renderFeaturePlanDeclarations(plan))
       : new Map();
   if (pass.kind === 'compute') {
     return deriveComputePassAccess(resources, pass);
@@ -1329,31 +1525,7 @@ export function deriveRenderFeaturePassAccess(
     if (typeof target !== 'string') continue;
     accesses.push({ resource: target, usage: 'sampled-read' });
   }
-  for (const draw of pass.draws) {
-    for (const vertex of draw.vertexData) {
-      const declaration = resources.get(vertex.resource);
-      accesses.push({
-        resource:
-          declaration?.kind === 'vertex-data' && declaration.buffer !== undefined
-            ? declaration.buffer
-            : vertex.resource,
-        usage: 'vertex-read',
-      });
-    }
-    if (draw.indexData !== undefined) {
-      const declaration = resources.get(draw.indexData.resource);
-      accesses.push({
-        resource:
-          declaration?.kind === 'index-data' && declaration.buffer !== undefined
-            ? declaration.buffer
-            : draw.indexData.resource,
-        usage: 'index-read',
-      });
-    }
-    if (draw.draw.kind === 'draw-indirect' || draw.draw.kind === 'draw-indexed-indirect') {
-      accesses.push({ resource: draw.draw.resource, usage: 'indirect-read' });
-    }
-  }
+  appendGraphicsDrawAccesses(pass, resources, accesses);
   return Object.freeze(accesses);
 }
 
@@ -1409,6 +1581,12 @@ export function validateRenderFeaturePlan(
   plan: RenderFeatureWorkPlan,
   logicalTargets: readonly RenderFeatureLogicalTarget[] = [],
 ): Result<void, RenderError> {
+  if (
+    (plan.submission !== undefined && plan.submission !== 'atomic') ||
+    (plan.placement !== undefined &&
+      !['scene', 'after-depth', 'after-tonemap', 'post'].includes(plan.placement))
+  )
+    return err(stageFailure(identity));
   if (plan.resources.length === 0 && plan.passes.length === 0) return ok(undefined);
   const resources = new Map<string, RenderFeatureResourceDeclaration>();
   const targets = new Set(['swapchain', ...logicalTargets.map((target) => target.name)]);
@@ -1437,13 +1615,17 @@ function validPlanResource(
   targets: ReadonlySet<string>,
 ): boolean {
   if (!validName(resource.name) || resources.has(resource.name)) return false;
+  if (resource.kind === 'graphics-bindings' && !validGraphicsBufferSlots(resource, resources))
+    return false;
   if (resource.kind === 'scene-depth' && !validSceneDepthCamera(resource.camera)) return false;
+  if (resource.kind === 'graph-texture' && !validGraphTextureResource(resource)) return false;
   return (
     resource.kind !== 'prepared-gpu-resource' ||
     resource.logicalTarget === undefined ||
     (typeof resource.logicalTarget === 'string'
       ? targets.has(resource.logicalTarget)
-      : isSceneDataTarget(resource.logicalTarget))
+      : isSceneDataTarget(resource.logicalTarget) ||
+        isRenderFeatureTextureReference(resource.logicalTarget))
   );
 }
 
@@ -1475,23 +1657,14 @@ function validCopyPass(
   pass: Extract<RenderFeaturePassDeclaration, { readonly kind: 'copy' }>,
   resources: ReadonlyMap<string, RenderFeatureResourceDeclaration>,
 ): boolean {
-  if (pass.copies.length === 0) return false;
+  if (pass.copies.length === 0 && (pass.textureReadbacks?.length ?? 0) === 0) return false;
+  const readbackNames = new Set<string>();
+  for (const readback of pass.textureReadbacks ?? []) {
+    if (!validTextureReadbackDeclaration(readback, resources, readbackNames)) return false;
+    readbackNames.add(readback.name);
+  }
   for (const copy of pass.copies) {
-    const source = declaredCopyBuffer(resources.get(copy.source)),
-      destination = declaredCopyBuffer(resources.get(copy.destination));
-    if (
-      source === undefined ||
-      destination === undefined ||
-      (copy.enabled !== undefined && typeof copy.enabled !== 'boolean') ||
-      copy.source === copy.destination ||
-      !source.usage?.includes('copy-src') ||
-      !Number.isSafeInteger(copy.size) ||
-      copy.size <= 0 ||
-      copy.size % 4 !== 0 ||
-      !validCopyRange(copy.size, copy.sourceOffset ?? 0, source.size) ||
-      !validCopyRange(copy.size, copy.destinationOffset ?? 0, destination.size)
-    )
-      return false;
+    if (!validBufferCopyDeclaration(copy, resources)) return false;
   }
   return true;
 }
@@ -1600,7 +1773,16 @@ function validDrawPass(
   resources: ReadonlyMap<string, RenderFeatureResourceDeclaration>,
   targets: ReadonlySet<string>,
 ): boolean {
-  if (pass.draws.length === 0) return false;
+  if (
+    pass.draws.length === 0 &&
+    (pass.kind !== 'raster' ||
+      pass.sampledTargets?.some((sampled) =>
+        pass.colorAttachments.some((attachment) => attachment.target === sampled),
+      ) === true ||
+      (!pass.colorAttachments.some((attachment) => attachment.loadOp === 'clear') &&
+        pass.depthStencilAttachment?.depthLoadOp !== 'clear'))
+  )
+    return false;
   if (pass.kind === 'raster' && !rasterTargetsDeclared(pass, targets)) return false;
   for (const draw of pass.draws) {
     if (!validDrawDeclaration(draw, pass.kind, resources)) return false;
@@ -1651,4 +1833,173 @@ function validIndirectDrawSource(
   if (draw.kind !== 'draw-indirect' && draw.kind !== 'draw-indexed-indirect') return true;
   const buffer = resources.get(draw.resource);
   return buffer?.kind === 'buffer' && buffer.usage.includes('indirect');
+}
+
+function validGraphicsBufferSlots(
+  resource: Extract<RenderFeatureResourceDeclaration, { kind: 'graphics-bindings' }>,
+  resources: ReadonlyMap<string, RenderFeatureResourceDeclaration>,
+): boolean {
+  if (resource.values.bufferBindings === undefined) return true;
+  const bindings = resource.values.bufferBindings;
+  if (!Array.isArray(bindings)) return false;
+  const slots = new Set<number>();
+  for (const value of bindings) {
+    if (
+      value === null ||
+      typeof value !== 'object' ||
+      Array.isArray(value) ||
+      ArrayBuffer.isView(value) ||
+      typeof value.binding !== 'number' ||
+      !Number.isInteger(value.binding) ||
+      value.binding < 0 ||
+      slots.has(value.binding) ||
+      typeof value.resource !== 'string' ||
+      resources.get(value.resource)?.kind !== 'buffer' ||
+      (value.access !== 'read' && value.access !== 'read-write')
+    )
+      return false;
+    slots.add(value.binding);
+  }
+  return true;
+}
+function validGraphTextureResource(
+  resource: Extract<RenderFeatureResourceDeclaration, { kind: 'graph-texture' }>,
+): boolean {
+  const { descriptor } = resource;
+  if (
+    !validName(resource.allocationKey) ||
+    !Number.isInteger(descriptor.size.width) ||
+    descriptor.size.width <= 0 ||
+    !Number.isInteger(descriptor.size.height) ||
+    descriptor.size.height <= 0 ||
+    !Number.isInteger(descriptor.size.depthOrArrayLayers) ||
+    descriptor.size.depthOrArrayLayers <= 0 ||
+    (descriptor.sampleCount !== undefined &&
+      descriptor.sampleCount !== 1 &&
+      descriptor.sampleCount !== 4) ||
+    !validGraphTextureArrayView(resource)
+  )
+    return false;
+  return true;
+}
+
+function validGraphTextureArrayView(
+  resource: Extract<RenderFeatureResourceDeclaration, { kind: 'graph-texture' }>,
+): boolean {
+  const { descriptor } = resource;
+  return !(
+    (resource.view?.baseArrayLayer !== undefined &&
+      (!Number.isInteger(resource.view.baseArrayLayer) ||
+        resource.view.baseArrayLayer < 0 ||
+        resource.view.baseArrayLayer >= descriptor.size.depthOrArrayLayers)) ||
+    (resource.view?.arrayLayerCount !== undefined &&
+      (!Number.isInteger(resource.view.arrayLayerCount) ||
+        resource.view.arrayLayerCount < 1 ||
+        (resource.view.baseArrayLayer ?? 0) + resource.view.arrayLayerCount >
+          descriptor.size.depthOrArrayLayers)) ||
+    (resource.view?.arrayLayerCount !== undefined &&
+      resource.view.arrayLayerCount > 1 &&
+      resource.view.dimension !== '2d-array') ||
+    (resource.view?.dimension === '2d-array' && descriptor.size.depthOrArrayLayers < 1)
+  );
+}
+
+function validTextureReadbackDeclaration(
+  readback: NonNullable<
+    Extract<RenderFeaturePassDeclaration, { kind: 'copy' }>['textureReadbacks']
+  >[number],
+  resources: ReadonlyMap<string, RenderFeatureResourceDeclaration>,
+  readbackNames: ReadonlySet<string>,
+): boolean {
+  const target = resources.get(readback.target);
+  if (
+    !validName(readback.name) ||
+    readbackNames.has(readback.name) ||
+    target?.kind !== 'graph-texture' ||
+    target.descriptor.sampleCount !== 1 ||
+    target.descriptor.size.depthOrArrayLayers !== 1 ||
+    !['r32float', 'rgba16float', 'rgba32float', 'rgba8unorm'].includes(target.descriptor.format)
+  )
+    return false;
+  return true;
+}
+
+function retainedPrimitiveToken(
+  value: unknown,
+  previous: Extract<RenderFeaturePlanSignatureNode, { kind: 'primitive' }> | undefined,
+): string | undefined {
+  if (typeof value === 'number' && previous?.numberValue !== undefined) {
+    const previousNumber = previous.numberValue;
+    if (value === previousNumber || (Number.isNaN(value) && Number.isNaN(previousNumber)))
+      return previous.token;
+  }
+  if (typeof value === 'boolean' && previous?.token === (value ? 'true' : 'false'))
+    return previous.token;
+  if (value === null && previous?.token === 'null') return previous.token;
+  if (value === undefined && previous?.token === 'undefined') return previous.token;
+  return undefined;
+}
+
+function validBufferCopyDeclaration(
+  copy: Extract<RenderFeaturePassDeclaration, { kind: 'copy' }>['copies'][number],
+  resources: ReadonlyMap<string, RenderFeatureResourceDeclaration>,
+): boolean {
+  const source = declaredCopyBuffer(resources.get(copy.source)),
+    destination = declaredCopyBuffer(resources.get(copy.destination));
+  if (
+    source === undefined ||
+    destination === undefined ||
+    (copy.enabled !== undefined && typeof copy.enabled !== 'boolean') ||
+    copy.source === copy.destination ||
+    !source.usage?.includes('copy-src') ||
+    !Number.isSafeInteger(copy.size) ||
+    copy.size <= 0 ||
+    copy.size % 4 !== 0 ||
+    !validCopyRange(copy.size, copy.sourceOffset ?? 0, source.size) ||
+    !validCopyRange(copy.size, copy.destinationOffset ?? 0, destination.size)
+  )
+    return false;
+  return true;
+}
+
+function appendGraphicsDrawAccesses(
+  pass: Extract<RenderFeaturePassDeclaration, { kind: 'raster' | 'shadow-caster' }>,
+  resources: ReadonlyMap<string, RenderFeatureResourceDeclaration>,
+  accesses: RenderFeatureDerivedAccess[],
+): void {
+  for (const draw of pass.draws) {
+    for (const bindingName of draw.bindings) {
+      const binding = resources.get(bindingName);
+      if (binding?.kind !== 'graphics-bindings') continue;
+      for (const buffer of (binding.values.bufferBindings ??
+        []) as unknown as readonly import('./prepared-graphics').RenderFeatureGraphicsStorageBinding[])
+        accesses.push({
+          resource: buffer.resource,
+          usage: buffer.access === 'read' ? 'storage-read' : 'storage-read-write',
+        });
+    }
+    for (const vertex of draw.vertexData) {
+      const declaration = resources.get(vertex.resource);
+      accesses.push({
+        resource:
+          declaration?.kind === 'vertex-data' && declaration.buffer !== undefined
+            ? declaration.buffer
+            : vertex.resource,
+        usage: 'vertex-read',
+      });
+    }
+    if (draw.indexData !== undefined) {
+      const declaration = resources.get(draw.indexData.resource);
+      accesses.push({
+        resource:
+          declaration?.kind === 'index-data' && declaration.buffer !== undefined
+            ? declaration.buffer
+            : draw.indexData.resource,
+        usage: 'index-read',
+      });
+    }
+    if (draw.draw.kind === 'draw-indirect' || draw.draw.kind === 'draw-indexed-indirect') {
+      accesses.push({ resource: draw.draw.resource, usage: 'indirect-read' });
+    }
+  }
 }

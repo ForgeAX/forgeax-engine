@@ -17,6 +17,8 @@ import {
   buildGpuDrivenPbrPipelineLayout,
   buildGpuDrivenPbrSkinPipelineLayout,
   buildPbrSkinLayouts,
+  buildSceneDirectInstancesBindGroupLayout,
+  buildSceneDirectPipelineLayout,
   buildSurfaceDirectInstancesBindGroupLayout,
   createHdrpSkinBindGroupLayoutDescriptor,
   type PbrPipelineLayoutBundle,
@@ -58,6 +60,8 @@ interface GpuDrivenPbrReadyLayouts {
   readonly gpuDrivenPbrPipelineLayout: PipelineLayout | null;
   readonly gpuDrivenPbrSkinPipelineLayout: PipelineLayout | null;
   readonly surfaceDirectInstancesBindGroupLayout: BindGroupLayout | null;
+  readonly sceneDirectInstancesBindGroupLayout: BindGroupLayout | null;
+  readonly sceneDirectPipelineLayout: PipelineLayout | null;
 }
 
 interface GpuDrivenPbrModuleInput {
@@ -232,6 +236,8 @@ export function buildGpuDrivenPbrReadyLayouts(
   let gpuDrivenPbrPipelineLayout: PipelineLayout | null = null;
   let gpuDrivenPbrSkinPipelineLayout: PipelineLayout | null = null;
   let surfaceDirectInstancesBindGroupLayout: BindGroupLayout | null = null;
+  let sceneDirectInstancesBindGroupLayout: BindGroupLayout | null = null;
+  let sceneDirectPipelineLayout: PipelineLayout | null = null;
   const skinResult = runShimSyncStep(
     () => ok(buildPbrSkinLayouts(device, { storageBuffer: storageBufferCapable }, pbrLayouts)),
     'webgpu-runtime-error',
@@ -273,6 +279,26 @@ export function buildGpuDrivenPbrReadyLayouts(
       gpuDrivenPbrSkinPipelineLayout = layoutResult.value.skin;
       surfaceDirectInstancesBindGroupLayout = layoutResult.value.surfaceDirect;
     }
+  }
+  // Scene-direct draws read GPU Scene tables from storage buffers, or from
+  // rgba32uint textures on devices without vertex storage.
+  const sceneDirectResult = runShimSyncStep(
+    () => {
+      const sceneDirect = buildSceneDirectInstancesBindGroupLayout(device, {
+        storageBuffer: storageBufferCapable,
+      });
+      return ok({
+        sceneDirect,
+        sceneDirectLayout: buildSceneDirectPipelineLayout(device, pbrLayouts, sceneDirect),
+      });
+    },
+    'webgpu-runtime-error',
+    'build scene-direct pipeline layouts succeeded',
+    'check the scene-direct slot-3 table layout',
+  );
+  if (sceneDirectResult.ok) {
+    sceneDirectInstancesBindGroupLayout = sceneDirectResult.value.sceneDirect;
+    sceneDirectPipelineLayout = sceneDirectResult.value.sceneDirectLayout;
   }
   let hdrpSkinPipelineLayout: PipelineLayout | null = null;
   let hdrpSkinProbePipelineLayout: PipelineLayout | null = null;
@@ -321,5 +347,7 @@ export function buildGpuDrivenPbrReadyLayouts(
     gpuDrivenPbrPipelineLayout,
     gpuDrivenPbrSkinPipelineLayout,
     surfaceDirectInstancesBindGroupLayout,
+    sceneDirectInstancesBindGroupLayout,
+    sceneDirectPipelineLayout,
   };
 }

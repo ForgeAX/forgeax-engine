@@ -7,14 +7,13 @@ export function reflectionProbeMaterial(
   probes: Pick<ReflectionProbeRecordState, 'table' | 'selections'>,
   skylight: SkylightBindGroupResources,
   resourceClass: string | undefined,
-  worldId?: number,
   entityKey?: number,
 ): { readonly resources: SkylightBindGroupResources; readonly probeIndex: number } | undefined {
   let index: number | undefined;
   if (resourceClass?.startsWith('probe:')) {
     index = Number(resourceClass.slice(6));
-  } else if (entityKey !== undefined && worldId !== undefined) {
-    const selection = probes.selections.get(`${worldId}:${entityKey}`);
+  } else if (entityKey !== undefined) {
+    const selection = probes.selections.get(`${entityKey}`);
     if (selection === undefined) return undefined;
     const binding = resolveReflectionProbeBinding(selection, probes.table);
     if (binding.useSkylight) return undefined;

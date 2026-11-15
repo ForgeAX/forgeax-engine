@@ -101,7 +101,6 @@ function snapshot(entityKey: number, translationX: number): RenderableSnapshot {
     material,
     materials: [material],
     materialBindingSources: ['engine-default'],
-    worldId: 0,
     entityKey,
   };
 }
@@ -109,7 +108,6 @@ function snapshot(entityKey: number, translationX: number): RenderableSnapshot {
 function updateSnapshot(value: RenderableSnapshot) {
   return {
     kind: 'update' as const,
-    worldId: value.worldId,
     entityKey: value.entityKey,
     snapshot: value,
   };
@@ -130,9 +128,7 @@ export async function runGpuSceneGraph(): Promise<GpuSceneGraphEvidence> {
   if (!device.caps.compute || !device.caps.storageBuffer || !device.caps.indirectDrawing) {
     throw new Error(`required GPU Scene capabilities unavailable: ${JSON.stringify(device.caps)}`);
   }
-  const availability = GpuScene.create(device, 4).unwrap();
-  if (availability.status !== 'available') throw new Error(availability.reason);
-  const scene = availability.scene;
+  const scene = GpuScene.create(device, 4).unwrap().scene;
   const projection = new RenderScene();
   scene
     .sync(

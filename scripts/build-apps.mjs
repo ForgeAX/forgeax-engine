@@ -25,12 +25,16 @@ import {
   writeReceipt,
 } from './build-task-cache.mjs';
 import {
+  createAppBuildInvocation,
   createPrebuildInvocation,
-  createViteBuildInvocation,
   resolveViteCli,
   validateCanonicalAppBuilds,
 } from './lib/app-build-launcher.mjs';
-import { appBuildConcurrency, runnerResources } from './lib/runner-resources.mjs';
+import {
+  appBuildConcurrency,
+  runnerResources,
+  shaderProducerHeapSize,
+} from './lib/runner-resources.mjs';
 
 const root = resolve(process.env.FORGEAX_REPO_ROOT ?? '.');
 const sharedManifestArg = process.argv.indexOf('--shared-input-manifest');
@@ -63,7 +67,12 @@ if (sharedInputManifest === undefined) {
     });
     if (packages.status !== 0) process.exit(packages.status ?? 1);
   }
-  const producer = runSync(process.execPath, ['scripts/build-shared-inputs.mjs', '--root', root]);
+  const producer = runSync(process.execPath, [
+    `--max-old-space-size=${shaderProducerHeapSize(runnerResources())}`,
+    'scripts/build-shared-inputs.mjs',
+    '--root',
+    root,
+  ]);
   if (producer.status !== 0) process.exit(producer.status ?? 1);
   sharedInputManifest = resolve(root, 'shared-build-inputs/manifest.json');
 } else {
@@ -239,7 +248,7 @@ function runApp(app, className, appFactsDir, viteCliPath, sampler, baseEnv = pro
         return;
       }
     }
-    const invocation = createViteBuildInvocation({
+    const invocation = createAppBuildInvocation({
       app,
       viteCliPath,
       appFactsDir,
@@ -342,7 +351,7 @@ async function main() {
     );
   const viteCliPath = pending.length === 0 ? undefined : resolveViteCli(root);
   // The producer has already compiled the engine shader manifest. Forward its
-  // absolute manifest path to every child Vite process so app builds project
+  // absolute manifest path to every app build process so app builds project
   // the trusted shared payload instead of silently recompiling engine shaders
   // from source (or relying on an undeclared packaged-input residue).
   const appBuildEnv = {

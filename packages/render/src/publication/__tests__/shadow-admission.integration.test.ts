@@ -120,6 +120,7 @@ function fixture(materialAsset: MaterialAsset = Materials.standard({ baseColor: 
           address: request.address,
           vertexColorAvailable: request.vertexColorAvailable ?? false,
           alphaMask: request.alphaMask,
+          leanInputs: request.leanInputs ?? false,
         });
       },
       clustered: false,
@@ -152,7 +153,7 @@ function fixture(materialAsset: MaterialAsset = Materials.standard({ baseColor: 
     actualSource(snapshot: RenderableSnapshot) {
       const retained = scene.compositionRetainedScene();
       assert(retained && snapshot.assetHandle !== undefined);
-      const mesh = retained.meshes?.get(snapshot.worldId, snapshot.assetHandle);
+      const mesh = retained.meshes?.get(snapshot.assetHandle);
       assert(mesh);
       const materials = effectiveMeshMaterials(snapshot, mesh);
       return {

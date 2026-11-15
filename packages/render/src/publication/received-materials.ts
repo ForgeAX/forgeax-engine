@@ -1,9 +1,9 @@
-import { internJson } from '@forgeax/engine-types';
+import { freezeJson } from '@forgeax/engine-types';
 import { captureMaterialSnapshot } from '../material-resource';
 import type { RenderPublicationMessage } from './record';
 
 function fixedJson<T>(value: T): T {
-  return value !== null && typeof value === 'object' ? (internJson(value) ?? value) : value;
+  return value !== null && typeof value === 'object' ? freezeJson(value) : value;
 }
 
 /** Detach admitted material values and program facts at native receive; templates carry IDs. */
@@ -23,9 +23,9 @@ export function ownReceivedPublicationMaterials(
       materialParamSchema: value.materialParamSchema,
       passes: value.passes,
       materialProgramKeys: value.materialProgramKeys,
-      ...(value.materialEntryPoints === undefined
+      ...(value.materialProgramInputs === undefined
         ? {}
-        : { materialEntryPoints: value.materialEntryPoints }),
+        : { materialProgramInputs: value.materialProgramInputs }),
       materialPublication: value.materialPublication,
       ...(value.materialContext === undefined ? {} : { materialContext: value.materialContext }),
     })),
@@ -43,9 +43,9 @@ export function ownReceivedPublicationMaterials(
             ...copied,
             passes: fixedJson(copied?.passes ?? []),
             materialProgramKeys: fixedJson(copied?.materialProgramKeys),
-            ...(copied?.materialEntryPoints === undefined
+            ...(copied?.materialProgramInputs === undefined
               ? {}
-              : { materialEntryPoints: fixedJson(copied.materialEntryPoints) }),
+              : { materialProgramInputs: fixedJson(copied.materialProgramInputs) }),
             materialPublication: fixedJson(copied?.materialPublication),
             ...(copied?.materialContext === undefined
               ? {}

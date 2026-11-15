@@ -22,6 +22,20 @@ import {
   parseArgs,
 } from '../run-split-vitest-browser.mjs';
 
+test('local failure collection is explicit and retains four balanced complete shards', () => {
+  assert.equal(parseArgs([]).continueOnFailure, false);
+  const options = parseArgs([
+    '--continue-on-failure',
+    '--shard-strategy=balanced',
+    '--shard-count=4',
+    '--shard-index=3',
+  ]);
+  assert.equal(options.continueOnFailure, true);
+  assert.equal(options.shardCount, 4);
+  assert.equal(options.shardIndex, 3);
+  assert.deepEqual(options.files, []);
+});
+
 test('browser host contracts never share a GPU owner group', () => {
   assert.equal(new Set(hostFiles).size, hostFiles.length);
   assert.ok(
@@ -498,7 +512,7 @@ test('short renderer deadlines own an exclusive runner without serializing ordin
     'packages/render/src/__tests__/managed-material-runtime.browser.test.ts',
     'packages/runtime/src/__tests__/barrel-distortion-zero-size.browser.test.ts',
     'packages/runtime/src/__tests__/clamp-to-last.e2e.browser.test.ts',
-    'packages/runtime/src/__tests__/composite-skybox-cross-world.browser.test.ts',
+    'packages/runtime/src/__tests__/single-source-skybox.browser.test.ts',
     'apps/learn-render/1.getting-started/4.textures/src/__tests__/onerror-gate.browser.test.ts',
   ]) {
     assert.equal(browserGroupRequiresExclusiveRunner([file]), true);
@@ -813,7 +827,7 @@ for (const target of [
   'packages/runtime/src/__tests__/barrel-distortion-output.browser.test.ts',
   'packages/runtime/src/__tests__/barrel-distortion-zero-size.browser.test.ts',
   'packages/runtime/src/__tests__/clamp-to-last.e2e.browser.test.ts',
-  'packages/runtime/src/__tests__/composite-skybox-cross-world.browser.test.ts',
+  'packages/runtime/src/__tests__/single-source-skybox.browser.test.ts',
   'packages/runtime/src/__tests__/external-texture-perf.browser.test.ts',
   'packages/runtime/src/__tests__/multi-camera.browser.test.ts',
   'packages/render/src/__tests__/ssr-gpu-dispatch.browser.test.ts',

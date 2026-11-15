@@ -1,12 +1,5 @@
-import {
-  type EntityHandle,
-  FixedTime,
-  type SchemaOf,
-  type ShapeOf,
-  Time,
-  type World,
-} from '@forgeax/engine-ecs';
-import { readMutationEpoch, readRenderArrayView } from '@forgeax/engine-ecs/projection';
+import type { EntityHandle, SchemaOf, ShapeOf, World } from '@forgeax/engine-ecs';
+import { readRenderArrayView } from '@forgeax/engine-ecs/projection';
 import { worldRead } from '@forgeax/engine-ecs/world-read';
 import { mat4, vec3 } from '@forgeax/engine-math';
 import { GlobalTransform, Transform } from '@forgeax/engine-scene';
@@ -48,6 +41,7 @@ import { resolveMotionBlurParams } from '../features/motion-blur/motion-blur-par
 import type { CameraSnapshot } from '../render-contract';
 import { collectCubeCameraSnapshots, resolveCameraTarget } from '../render-system-extract';
 import type { RenderTarget } from '../targets/contracts';
+import type { EnvironmentCameraReader } from './environment-frame-gate';
 
 const collectCameraSnapshotsQuery = createEnvironmentQuery({
   read: [Camera],
@@ -122,47 +116,14 @@ function taaFlickeringField(value: number): { taaFlickering?: false } {
   return value === 0 ? { taaFlickering: false } : {};
 }
 
-interface CameraMemo {
-  readonly epoch: number;
-  readonly structure: number;
-  readonly elapsed: number;
-  readonly tick: number;
-  readonly overstep: number;
-  readonly cameras: CameraSnapshot[];
-}
-const cameraMemos = new WeakMap<World, CameraMemo>();
-
-/**
- * Camera snapshots are a pure function of World state, Time and the fixed-step
- * phase (interpolated poses). Several roles select cameras within one frame
- * with no World write between them, so the same inputs reuse the same result.
- * Callers treat the returned list as read-only.
- */
-export function collectCameraSnapshots(world: World): CameraSnapshot[] {
-  const epoch = readMutationEpoch(world);
-  const structure = world.getStructureEpoch();
-  const elapsed = world.getResource(Time).elapsed;
-  const fixed = world.getResource(FixedTime);
-  const memo = cameraMemos.get(world);
-  if (
-    memo !== undefined &&
-    memo.epoch === epoch &&
-    memo.structure === structure &&
-    memo.elapsed === elapsed &&
-    memo.tick === fixed.tick &&
-    memo.overstep === fixed.overstep
-  )
-    return memo.cameras;
-  const cameras = buildCameraSnapshots(world);
-  cameraMemos.set(world, {
-    epoch: readMutationEpoch(world),
-    structure,
-    elapsed,
-    tick: fixed.tick,
-    overstep: fixed.overstep,
-    cameras,
-  });
-  return cameras;
+/** Camera projections belong to the source reader; nested hits retain their ECS dependencies. */
+export function collectCameraSnapshots(
+  world: World,
+  reader?: EnvironmentCameraReader,
+): CameraSnapshot[] {
+  return reader === undefined
+    ? buildCameraSnapshots(world)
+    : reader.readCameras(world, () => buildCameraSnapshots(world));
 }
 
 /** Diagnostic ablation: `fxaa: false` turns authored FXAA off. */
@@ -185,6 +146,7 @@ function buildCameraSnapshots(world: World): CameraSnapshot[] {
     const cameraFovColumn = batch.read(Camera, 'fov');
     const cameraNearColumn = batch.read(Camera, 'near');
     const cameraFarColumn = batch.read(Camera, 'far');
+    const cameraPostProcessingColumn = batch.read(Camera, 'postProcessing');
     const cameraExposureModeColumn = batch.read(Camera, 'exposureMode');
     const cameraExposureColumn = batch.read(Camera, 'exposure');
     const cameraTemperatureColumn = batch.read(Camera, 'temperature');
@@ -217,6 +179,7 @@ function buildCameraSnapshots(world: World): CameraSnapshot[] {
       const physicalRow =
         selection === undefined ? first + ordinal : (selection[ordinal] as number);
       const entity = entities[physicalRow] as EntityHandle;
+      const postProcessing = cameraPostProcessingColumn[physicalRow] === 1;
       const effectInputs = readCameraEffectInputs(world, batch, effectColumns, entity, physicalRow);
       const camTarget = world[worldRead].getFieldValue(entity, Camera, 'target') as ShapeOf<
         SchemaOf<typeof Camera>
@@ -259,31 +222,37 @@ function buildCameraSnapshots(world: World): CameraSnapshot[] {
       if (view === undefined) continue;
       const worldMat = new Float32Array(view);
       const target = resolveCameraTarget(world, camTarget);
-      const hasNonDefaultOutput =
-        (cameraExposureModeColumn[physicalRow] as number) !== CAMERA_EXPOSURE_MODE_MANUAL ||
-        (cameraExposureColumn[physicalRow] as number) !== 1 ||
-        (cameraTemperatureColumn[physicalRow] as number) !== 6504 ||
-        (cameraTintColumn[physicalRow] as number) !== 0 ||
-        camColorLut !== 0 ||
-        (cameraColorLutStrengthColumn[physicalRow] as number) !==
-          Camera.fields.colorLutStrength.default;
-      const output = hasNonDefaultOutput
-        ? {
-            exposure: cameraExposureFromColumns({
-              exposureMode: cameraExposureModeColumn[physicalRow] as number,
-              exposure: cameraExposureColumn[physicalRow] as number,
-              compensationEv: cameraCompensationEvColumn[physicalRow] as number,
-              rangeEv: readRenderArrayView(world, entity, Camera, 'rangeEv') as Float32Array,
-              rates: readRenderArrayView(world, entity, Camera, 'rates') as Float32Array,
-            }),
-            temperature: cameraTemperatureColumn[physicalRow] as number,
-            tint: cameraTintColumn[physicalRow] as number,
-            colorLut: camColorLut,
-            colorLutStrength: cameraColorLutStrengthColumn[physicalRow] as number,
-          }
-        : undefined;
+      const captureCameraOutput = () => {
+        const hasNonDefaultOutput =
+          (cameraExposureModeColumn[physicalRow] as number) !== CAMERA_EXPOSURE_MODE_MANUAL ||
+          (cameraExposureColumn[physicalRow] as number) !== 1 ||
+          (cameraTemperatureColumn[physicalRow] as number) !== 6504 ||
+          (cameraTintColumn[physicalRow] as number) !== 0 ||
+          camColorLut !== 0 ||
+          (cameraColorLutStrengthColumn[physicalRow] as number) !==
+            Camera.fields.colorLutStrength.default;
+        const output =
+          postProcessing && hasNonDefaultOutput
+            ? {
+                exposure: cameraExposureFromColumns({
+                  exposureMode: cameraExposureModeColumn[physicalRow] as number,
+                  exposure: cameraExposureColumn[physicalRow] as number,
+                  compensationEv: cameraCompensationEvColumn[physicalRow] as number,
+                  rangeEv: readRenderArrayView(world, entity, Camera, 'rangeEv') as Float32Array,
+                  rates: readRenderArrayView(world, entity, Camera, 'rates') as Float32Array,
+                }),
+                temperature: cameraTemperatureColumn[physicalRow] as number,
+                tint: cameraTintColumn[physicalRow] as number,
+                colorLut: camColorLut,
+                colorLutStrength: cameraColorLutStrengthColumn[physicalRow] as number,
+              }
+            : undefined;
+        return output;
+      };
+      const output = captureCameraOutput();
+      const requestedAntialias = antialiasFromF32(cameraAntialiasColumn[physicalRow] as number);
       const antialias = ablatedAntialias(
-        antialiasFromF32(cameraAntialiasColumn[physicalRow] as number),
+        postProcessing || requestedAntialias === 'msaa' ? requestedAntialias : 'none',
       );
       const dynamicResolutionResult =
         dynamicResolution === undefined
@@ -340,6 +309,7 @@ function buildCameraSnapshots(world: World): CameraSnapshot[] {
         orthoRight: cameraRightColumn[physicalRow] as number,
         orthoBottom: cameraBottomColumn[physicalRow] as number,
         orthoTop: cameraTopColumn[physicalRow] as number,
+        postProcessing,
         tonemap: tonemapFromF32(cameraTonemapColumn[physicalRow] as number),
         exposure: cameraExposureColumn[physicalRow] as number,
         whitePoint: cameraWhitePointColumn[physicalRow] as number,
@@ -347,18 +317,20 @@ function buildCameraSnapshots(world: World): CameraSnapshot[] {
         antialias,
         ...taaFlickeringField(cameraTaaFlickeringColumn[physicalRow] as number),
         transparency: transparencyFromF32(cameraTransparencyColumn[physicalRow] as number),
-        ...(dynamicResolutionResult.value === undefined
+        ...(!postProcessing || dynamicResolutionResult.value === undefined
           ? {}
           : { dynamicResolution: dynamicResolutionResult.value }),
-        bloom: ablatedBloom(() =>
-          validateCameraBloom(
-            cameraBloomColumn[physicalRow] as number,
-            cameraBloomThresholdColumn[physicalRow] as number,
-            cameraBloomIntensityColumn[physicalRow] as number,
-            cameraBloomSmoothWidthColumn[physicalRow] as number,
-            cameraBloomRadiusColumn[physicalRow] as number,
-          ),
-        ),
+        bloom: !postProcessing
+          ? 'off'
+          : ablatedBloom(() =>
+              validateCameraBloom(
+                cameraBloomColumn[physicalRow] as number,
+                cameraBloomThresholdColumn[physicalRow] as number,
+                cameraBloomIntensityColumn[physicalRow] as number,
+                cameraBloomSmoothWidthColumn[physicalRow] as number,
+                cameraBloomRadiusColumn[physicalRow] as number,
+              ),
+            ),
         bloomThreshold: cameraBloomThresholdColumn[physicalRow] as number,
         bloomIntensity: cameraBloomIntensityColumn[physicalRow] as number,
         bloomSmoothWidth: cameraBloomSmoothWidthColumn[physicalRow] as number,
@@ -369,20 +341,20 @@ function buildCameraSnapshots(world: World): CameraSnapshot[] {
           world[worldRead].getArrayElement(entity, Camera, 'clearColor', 2) as number,
           world[worldRead].getArrayElement(entity, Camera, 'clearColor', 3) as number,
         ],
-        ...(depthOfFieldResult.ok && depthOfFieldResult.value !== undefined
+        ...(postProcessing && depthOfFieldResult.ok && depthOfFieldResult.value !== undefined
           ? { depthOfField: depthOfFieldResult.value }
           : {}),
-        ...(depthOfFieldError === undefined ? {} : { depthOfFieldError }),
-        ...(motionBlurParams === undefined
+        ...(!postProcessing || depthOfFieldError === undefined ? {} : { depthOfFieldError }),
+        ...(!postProcessing || motionBlurParams === undefined
           ? {}
           : {
               motionBlur: motionBlurParams,
             }),
         ...(clipping === undefined ? {} : { clipping }),
-        ...(outline === undefined ? {} : { outline: outline }),
-        ...(lensEffects === undefined ? {} : { lensEffects: lensEffects }),
-        ...(lensFlare === undefined ? {} : { lensFlare: lensFlare }),
-        ...(barrelDistortionResult.value === undefined
+        ...(outline === undefined || !postProcessing ? {} : { outline: outline }),
+        ...(lensEffects === undefined || !postProcessing ? {} : { lensEffects: lensEffects }),
+        ...(lensFlare === undefined || !postProcessing ? {} : { lensFlare: lensFlare }),
+        ...(!postProcessing || barrelDistortionResult.value === undefined
           ? {}
           : { barrelDistortion: barrelDistortionResult.value }),
         ...(ambientOcclusion === undefined
@@ -396,23 +368,27 @@ function buildCameraSnapshots(world: World): CameraSnapshot[] {
               screenSpaceReflection: screenSpaceReflection,
             }),
       };
+
       cameras.push(snapshot);
       if (planar !== undefined) cameras.push(planarCaptureSnapshot(world, snapshot, planar));
     }
   }
-  const planarTargets = new Set<RenderTarget>();
-  const otherTargets = new Set(
-    cameras
-      .filter((camera) => camera.planarReflection === undefined)
-      .map((camera) => camera.target),
-  );
-  for (const camera of collectCubeCameraSnapshots(world)) otherTargets.add(camera.target);
-  for (const camera of cameras) {
-    if (camera.planarReflection === undefined || camera.target === undefined) continue;
-    if (planarTargets.has(camera.target) || otherTargets.has(camera.target))
-      throw new PlanarReflectionInvalidError('target-writer');
-    planarTargets.add(camera.target);
-  }
+  const validatePlanarTargetWriters = () => {
+    const planarTargets = new Set<RenderTarget>();
+    const otherTargets = new Set(
+      cameras
+        .filter((camera) => camera.planarReflection === undefined)
+        .map((camera) => camera.target),
+    );
+    for (const camera of collectCubeCameraSnapshots(world)) otherTargets.add(camera.target);
+    for (const camera of cameras) {
+      if (camera.planarReflection === undefined || camera.target === undefined) continue;
+      if (planarTargets.has(camera.target) || otherTargets.has(camera.target))
+        throw new PlanarReflectionInvalidError('target-writer');
+      planarTargets.add(camera.target);
+    }
+  };
+  validatePlanarTargetWriters();
   return cameras;
 }
 
@@ -691,12 +667,14 @@ function fillCameraLightingInputs(
       maxDistance: batch.read(ScreenSpaceReflection, 'maxDistance'),
       thickness: batch.read(ScreenSpaceReflection, 'thickness'),
       maxRoughness: batch.read(ScreenSpaceReflection, 'maxRoughness'),
+      waterTemporal: batch.read(ScreenSpaceReflection, 'waterTemporal'),
     };
     const numeric = columns.ScreenSpaceReflection;
     inputs.ScreenSpaceReflection = {
       maxDistance: numeric.maxDistance?.[physicalRow] as number,
       thickness: numeric.thickness?.[physicalRow] as number,
       maxRoughness: numeric.maxRoughness?.[physicalRow] as number,
+      waterTemporal: numeric.waterTemporal?.[physicalRow] as number,
     };
   }
   if (world.hasComponent(entity, AmbientOcclusion)) {

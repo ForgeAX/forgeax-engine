@@ -244,8 +244,15 @@ pnpm --filter @forgeax/engine-ui-blitz build
 ```
 
 Set `CARGO`, `WASM_BINDGEN` or `CARGO_TARGET_DIR` to explicit installed tools/cache
-paths when needed. `CARGO_TARGET_DIR` is a cache root, resolved from this package;
-each source digest gets its own compiler output directory. Cargo and bindgen use
+paths when needed.
+Windows source builds use the pinned `1.99.0-x86_64-pc-windows-msvc` host
+toolchain with Visual Studio C++ Build Tools and a Windows SDK. Install it with
+`rustup toolchain install 1.99.0-x86_64-pc-windows-msvc --profile minimal --target wasm32-unknown-unknown`.
+This selects the compiler for host build scripts and proc-macro DLLs without
+changing the user's Rust default; the delivered target remains
+`wasm32-unknown-unknown`, and provenance records the selected toolchain.
+`CARGO_TARGET_DIR` is a cache root, resolved from this package; each source digest
+gets its own compiler output directory. Cargo and bindgen use
 that same directory, so concurrent source variants cannot replace the WASM between
 compilation and binding generation. The release recipe belongs to the hashed
 source: external Rust flags, compiler wrappers and Cargo profile overrides are

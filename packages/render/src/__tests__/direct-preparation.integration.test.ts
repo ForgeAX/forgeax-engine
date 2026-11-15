@@ -87,14 +87,7 @@ it('prepares only consumed direct resources and retires prior GPU shadows after 
       })
       .unwrap();
     world.update(1 / 60).unwrap();
-    expect(
-      renderer.draw({
-        leases: [lease],
-        camera: { lease },
-        environment: { lease },
-        geometryLane: 'direct',
-      }).ok,
-    ).toBe(true);
+    expect(renderer.draw({ source: lease, geometryLane: 'direct' }).ok).toBe(true);
     expect(prepare.mock.results.at(-1)?.value).toMatchObject({ ok: true, value: undefined });
     world
       .spawn(
@@ -108,7 +101,7 @@ it('prepares only consumed direct resources and retires prior GPU shadows after 
       .unwrap();
     world.update(1 / 60).unwrap();
     const draw = (geometryLane: 'automatic' | 'direct') =>
-      renderer.draw({ leases: [lease], camera: { lease }, environment: { lease }, geometryLane });
+      renderer.draw({ source: lease, geometryLane });
     const preparedFrame = () => {
       const result = prepare.mock.results.at(-1)?.value;
       if (!result?.ok || result.value === undefined)

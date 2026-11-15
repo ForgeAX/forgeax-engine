@@ -305,7 +305,7 @@ export async function verifyCapsuleShadow(
       if (pending !== undefined) (await options.recorder?.frameBoundary())?.unwrap();
       const frame = await drawReadyFrame(
         renderer,
-        { leases: [lease], camera: { lease }, environment: { lease } },
+        { source: lease },
         last ? ['linear-hdr'] : undefined,
       );
       if (pending !== undefined) {

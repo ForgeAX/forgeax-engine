@@ -1,6 +1,6 @@
 // Simulator contract fixture; its callbacks and 2D pixels are not Renderer receipts.
 import { Update, World } from '@forgeax/engine-ecs';
-import { INPUT_BACKEND_KEY, INPUT_SNAPSHOT_RESOURCE_KEY, InputFrameStartScan, type InputSnapshot } from '@forgeax/engine-input';
+import { INPUT_BACKEND_KEY, INPUT_SNAPSHOT_RESOURCE_KEY, InputFrameStartScan } from '@forgeax/engine-input';
 import { createWechatInputBackend, createWechatPlatform, type WechatHost, type WechatTouchSource } from '../src/index.js';
 
 declare const wx: WechatHost['wx'] & WechatTouchSource;
@@ -63,7 +63,7 @@ if (!cancelResult.ok) console.error('FORGEAX_REQUEST_ERROR', cancelResult.error.
 cancelResult.unwrap()();
 function frame() {
   world.update(1 / 60).unwrap();
-  const snapshot = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+  const snapshot = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
   if (snapshot.pointerEvents.length > 0) {
     state.inputEvents += snapshot.pointerEvents.length;
     state.touches.push(...snapshot.pointerEvents.filter(event => event.phase === 'down'));

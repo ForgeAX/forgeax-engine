@@ -289,12 +289,16 @@ async function buildPackSources(context: BuildProductionOptions): Promise<PackBu
     const availableGuids = new Set(
       requiredGuids.map((guid) => AssetGuid.format(guid).toLowerCase()),
     );
+    const availableKinds = new Map(
+      context.inventory.entries.map((entry) => [entry.guid.toLowerCase(), entry.kind] as const),
+    );
     const built = await produceScriptablePackProducts({
       sources: inputs,
       assetSource,
       cookers: context.cookers,
       maxConcurrency,
       availableGuids,
+      availableKinds,
       ...(process.env.FORGEAX_BUILD_PROGRESS === '1'
         ? {
             onProgress: (
@@ -380,7 +384,7 @@ function updateImportedEntries(
 interface BuildEmissionWork {
   readonly importedEntries: PackIndexEntry[];
   readonly context: BuildProductionOptions;
-  readonly sharedMaterialPrograms: Set<string>;
+  readonly sharedMaterialPrograms: Map<string, Buffer>;
   readonly sourcePackageDdc?: SourcePackageBuildDdc;
 }
 
@@ -420,6 +424,10 @@ async function emitPackDocument(
   for (const artifact of options.artifacts) {
     const shared = /^shared\/materials\/programs\/([a-f0-9]{64})\.wgsl$/.exec(artifact.path);
     if (shared !== null) {
+      // Packages share programs; bytes equal to an already verified copy need
+      // no second digest.
+      const verified = work.sharedMaterialPrograms.get(artifact.path);
+      if (verified?.equals(artifact.bytes) === true) continue;
       const actual = createHash('sha256').update(artifact.bytes).digest('hex');
       if (actual !== shared[1]) {
         throw work.context.fail({
@@ -429,8 +437,8 @@ async function emitPackDocument(
           detail: { path: artifact.path, actual },
         });
       }
-      if (work.sharedMaterialPrograms.has(artifact.path)) continue;
-      work.sharedMaterialPrograms.add(artifact.path);
+      if (verified !== undefined) continue;
+      work.sharedMaterialPrograms.set(artifact.path, Buffer.from(artifact.bytes));
     }
     work.context.sink.emitFile({
       type: 'asset',
@@ -832,7 +840,7 @@ export async function produceBuildAssets(
   const work: BuildEmissionWork = {
     importedEntries,
     context,
-    sharedMaterialPrograms: new Set(),
+    sharedMaterialPrograms: new Map(),
     ...(sourcePackageDdc === undefined ? {} : { sourcePackageDdc }),
   };
   // Emission owns the remaining queue. Published payloads no longer need to

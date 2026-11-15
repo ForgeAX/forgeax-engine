@@ -1,6 +1,11 @@
 import type { World } from '@forgeax/engine-ecs';
+import { defineSystem } from '@forgeax/engine-ecs';
 import { describe, expect, it } from 'vitest';
+import { registeredSystem } from '../../__tests__/registered-system.fixture';
+import { dependencyNames } from '../../__tests__/schedule-graph.fixture';
+import { viewSourceFixture } from '../../__tests__/view-source.fixture';
 import type { CameraSnapshot } from '../../render-contract';
+import { RenderViewsOrder } from '../../system-order';
 import { RENDER_DISPLAY_COMMIT_SYSTEM } from '../display-submission-systems';
 import { RENDER_GRAPH_SUBMISSION_COMMIT_SYSTEM } from '../graph-submission-systems';
 import { RENDER_GRAPH_SETTLE_SYSTEM } from '../graph-systems';
@@ -11,7 +16,6 @@ import {
   RENDER_VIEWS_SYSTEM,
   RenderView,
   RenderViewInput,
-  type RenderViewSource,
   RenderViews,
   recordViewSubmission,
   type ViewHistory,
@@ -56,16 +60,16 @@ function camera(entityKey: number, composed = true): CameraSnapshot {
   } as unknown as CameraSnapshot;
 }
 
-function source(cameras: readonly CameraSnapshot[], primary?: CameraSnapshot): RenderViewSource {
-  return {
+function source(cameras: readonly CameraSnapshot[], primary?: CameraSnapshot) {
+  return viewSourceFixture({
     cameras,
     captures: [],
     primary: primary !== undefined,
     primaryCamera: primary,
     canvas: { width: 64, height: 64 },
-    attachment: () => 'world-a',
+    attachment: 'world-a',
     targetExtent: () => undefined,
-  };
+  });
 }
 
 function frame(world: World, number: number): void {
@@ -82,7 +86,10 @@ function trace(world: World) {
     [RenderCommit, 'commit'],
     [RenderCleanup, 'cleanup'],
   ] as const)
-    world.addSystem(schedule, { name: `trace-${name}`, queries: [], fn: () => ran.push(name) });
+    world.addSystem(
+      schedule,
+      defineSystem({ name: `trace-${name}`, queries: [], fn: () => ran.push(name) }),
+    );
   return ran;
 }
 
@@ -103,20 +110,22 @@ describe('Render World frame', () => {
       accepted: false,
       completion: undefined,
       creditCompletion: undefined,
+      profileSession: undefined,
+      profileSessionPinned: false,
+      profileSessionPinScopeDepth: 0,
     });
   });
 
   it('schedules render-views in RenderExtract and the view history in RenderCommit', () => {
     const world = createRenderWorld();
     new RenderViews(world);
-    world
-      .addSystem(RenderExtract, {
-        name: 'after-views',
-        queries: [],
-        after: [RENDER_VIEWS_SYSTEM],
-        fn: () => undefined,
-      })
-      .unwrap();
+    const systemToken1 = defineSystem({
+      name: 'after-views',
+      queries: [],
+      after: [RenderViewsOrder],
+      fn: () => undefined,
+    });
+    world.addSystem(RenderExtract, systemToken1).unwrap();
     const data = world.scheduleData();
     const extract = data.find((schedule) => schedule.name === 'RenderExtract');
     expect(extract?.systems.map((system) => system.name)).toEqual([
@@ -124,8 +133,11 @@ describe('Render World frame', () => {
       RENDER_VIEW_CAMERAS_SYSTEM,
       'after-views',
     ]);
-    expect(extract?.dependencies).toContainEqual([RENDER_VIEWS_SYSTEM, 'after-views']);
-    expect(extract?.dependencies).toContainEqual([RENDER_VIEWS_SYSTEM, RENDER_VIEW_CAMERAS_SYSTEM]);
+    expect(dependencyNames(extract)).toContainEqual([RENDER_VIEWS_SYSTEM, 'after-views']);
+    expect(dependencyNames(extract)).toContainEqual([
+      RENDER_VIEWS_SYSTEM,
+      RENDER_VIEW_CAMERAS_SYSTEM,
+    ]);
     expect(extract?.systems[1]?.queries[0]?.read).toEqual(
       expect.arrayContaining(['RenderView', 'ViewCamera']),
     );
@@ -149,7 +161,10 @@ describe('Render World frame', () => {
     const declare = (removed: boolean) => {
       const world = createRenderWorld();
       const views = new RenderViews(world);
-      if (removed) world.removeSystem(RenderExtract, RENDER_VIEWS_SYSTEM).unwrap();
+      if (removed)
+        world
+          .removeSystem(RenderExtract, registeredSystem(world, RenderExtract, 'render-views'))
+          .unwrap();
       world.insertResource(RenderViewInput, source([camera(1), camera(2)]));
       frame(world, 1);
       return [views.size, [...world.query({ read: [RenderView] }).unwrap()].length];
@@ -163,29 +178,34 @@ describe('Render World frame', () => {
     const resolve = (removed: boolean) => {
       const world = createRenderWorld();
       const views = new RenderViews(world);
-      if (removed) world.removeSystem(RenderExtract, RENDER_VIEW_CAMERAS_SYSTEM).unwrap();
+      if (removed)
+        world
+          .removeSystem(
+            RenderExtract,
+            registeredSystem(world, RenderExtract, 'render-view-cameras'),
+          )
+          .unwrap();
       const split = camera(1);
       Object.assign(split.view as object, { viewport: new Float32Array([0, 0, 0.5, 1]) });
       world.insertResource(RenderViewInput, source([split]));
       const seen: unknown[] = [];
-      world
-        .addSystem(RenderPrepare, {
-          name: 'reads-view-camera',
-          queries: [],
-          fn: (world) => {
-            const entity = views.ordered[0];
-            const view = viewCameraOf(world, entity);
-            const shared = viewCameraOf(world, views.primary);
-            seen.push(
-              view?.extent,
-              view?.camera?.aspect,
-              view?.viewport.width,
-              shared?.extent,
-              shared?.camera?.entityKey,
-            );
-          },
-        })
-        .unwrap();
+      const systemToken2 = defineSystem({
+        name: 'reads-view-camera',
+        queries: [],
+        fn: (world) => {
+          const entity = views.ordered[0];
+          const view = viewCameraOf(world, entity);
+          const shared = viewCameraOf(world, views.primary);
+          seen.push(
+            view?.extent,
+            view?.camera?.aspect,
+            view?.viewport.width,
+            shared?.extent,
+            shared?.camera?.entityKey,
+          );
+        },
+      });
+      world.addSystem(RenderPrepare, systemToken2).unwrap();
       frame(world, 1);
       return seen;
     };
@@ -243,7 +263,10 @@ describe('Render World frame', () => {
     const run = (removed: boolean) => {
       const world = createRenderWorld();
       const views = new RenderViews(world);
-      if (removed) world.removeSystem(RenderCommit, RENDER_VIEW_HISTORY_SYSTEM).unwrap();
+      if (removed)
+        world
+          .removeSystem(RenderCommit, registeredSystem(world, RenderCommit, 'render-view-history'))
+          .unwrap();
       world.insertResource(RenderViewInput, source([camera(1)]));
       beginRenderFrame(world, 1);
       const entity = views.ordered[0] as NonNullable<(typeof views.ordered)[0]>;

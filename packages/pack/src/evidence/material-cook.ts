@@ -115,7 +115,7 @@ export interface MaterialCookIdentity {
 export type MaterialCookIdentityInput = Omit<MaterialCookIdentity, 'cookIdentity'>;
 
 export interface MaterialCookReceipt {
-  readonly schemaVersion: 'material-cook/4';
+  readonly schemaVersion: 'material-cook/5';
   readonly sourceClosure: readonly string[];
   readonly profile: string;
   readonly compilerVersion: string;
@@ -133,7 +133,7 @@ export interface MaterialParameterContract {
 }
 
 export interface CookedMaterialRecord {
-  readonly schemaVersion: 'material-cook/4';
+  readonly schemaVersion: 'material-cook/5';
   readonly guid: string;
   readonly authored?: MaterialAsset;
   readonly materialGuid?: string;
@@ -256,6 +256,7 @@ export function collectMaterialCookRefs(material: Partial<MaterialAsset>): Mater
     modules: unique([
       ...(material.passes ?? []).map((pass) => pass.program.module),
       ...(material.surface === undefined ? [] : [material.surface.module]),
+      ...(material.surface?.deformation === undefined ? [] : [material.surface.deformation.module]),
     ]),
   };
 }
@@ -281,73 +282,6 @@ function jsonValue(value: unknown): unknown {
     );
   }
   return value;
-}
-
-// Deep-frozen data objects cannot change, so their canonical text is computed once.
-const canonicalTexts = new WeakMap<object, string>();
-// Set by canonicalText: whether its last result may be cached by identity.
-let canonicalStable = true;
-// Set when an input would make the legacy serializer call toJSON; it then stays authoritative.
-let canonicalLegacy = false;
-const ARRAY_INDEX = /^\d+$/;
-
-function frozenData(value: object): boolean {
-  if (!Object.isFrozen(value)) return false;
-  for (const key of Object.getOwnPropertyNames(value))
-    if (!('value' in (Object.getOwnPropertyDescriptor(value, key) as PropertyDescriptor)))
-      return false;
-  return true;
-}
-
-/** `JSON.stringify(jsonValue(value))` with identity reuse for deep-frozen data. */
-function canonicalText(value: unknown): string | undefined {
-  if (value === null || typeof value !== 'object') {
-    canonicalStable = true;
-    return JSON.stringify(value);
-  }
-  const cached = canonicalTexts.get(value);
-  if (cached !== undefined) {
-    canonicalStable = true;
-    return cached;
-  }
-  let text: string;
-  let stable: boolean;
-  if (value instanceof Uint8Array) {
-    stable = false;
-    text = `[${value.join(',')}]`;
-  } else if (Array.isArray(value)) {
-    stable = frozenData(value);
-    const parts: string[] = [];
-    for (let index = 0; index < value.length; index += 1) {
-      parts.push(canonicalText(value[index]) ?? 'null');
-      stable &&= canonicalStable;
-    }
-    text = `[${parts.join(',')}]`;
-  } else {
-    stable = frozenData(value);
-    let entries = Object.entries(value)
-      .filter(([, entry]) => entry !== undefined)
-      .sort(([a], [b]) => compareCanonicalStrings(a, b));
-    // Object.fromEntries orders array-index keys numerically before the sorted names.
-    if (entries.some(([key]) => ARRAY_INDEX.test(key))) {
-      const values = new Map(entries);
-      entries = Object.keys(Object.fromEntries(entries)).map((key) => [key, values.get(key)]);
-    }
-    const parts: string[] = [];
-    for (const [key, entry] of entries) {
-      if (key === 'toJSON' && typeof entry === 'function') {
-        canonicalLegacy = true;
-        stable = false;
-      }
-      const child = canonicalText(entry);
-      stable &&= canonicalStable;
-      if (child !== undefined) parts.push(`${JSON.stringify(key)}:${child}`);
-    }
-    text = `{${parts.join(',')}}`;
-  }
-  if (stable) canonicalTexts.set(value, text);
-  canonicalStable = stable;
-  return text;
 }
 
 export function createMaterialCookIdentity(input: MaterialCookIdentityInput): MaterialCookIdentity {
@@ -382,7 +316,7 @@ export function serializeMaterialCookReceipt(receipt: MaterialCookReceipt): stri
 function invalid(field: string, actual?: unknown): Result<never, MaterialCookRecordError> {
   return err({
     code: 'material-cook-record-invalid',
-    expected: 'a complete material-cook/4 record with layered identity and provenance',
+    expected: 'a complete material-cook/5 record with layered identity and provenance',
     hint: 're-cook the material and publish its record, artifact, references, and receipt together',
     detail: {
       field,
@@ -400,7 +334,10 @@ function normalizeArtifactBytes(value: unknown): Uint8Array | undefined {
   }
   if (!ArrayBuffer.isView(value)) return undefined;
   const view = value as ArrayBufferView;
-  return new Uint8Array(view.buffer, view.byteOffset, view.byteLength).slice();
+  // Program bytes are immutable once published; the record keeps the owner's view.
+  return view instanceof Uint8Array
+    ? view
+    : new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
 }
 
 const IDENTITY_FIELDS = [
@@ -453,7 +390,7 @@ export function validateMaterialCookReceipt(
 ): Result<MaterialCookReceipt, MaterialCookRecordError> {
   if (value === null || typeof value !== 'object') return invalid('receipt');
   const candidate = value as Record<string, unknown>;
-  if (candidate.schemaVersion !== 'material-cook/4')
+  if (candidate.schemaVersion !== 'material-cook/5')
     return invalid('receipt.schemaVersion', candidate.schemaVersion);
   const identityResult = validateIdentity(candidate.identity);
   if (!identityResult.ok) return identityResult;
@@ -504,7 +441,7 @@ export function validateMaterialCookReceipt(
     return invalid('receipt.identity.cookIdentity', identity.cookIdentity);
   }
   return ok({
-    schemaVersion: 'material-cook/4',
+    schemaVersion: 'material-cook/5',
     sourceClosure: candidate.sourceClosure as string[],
     profile: candidate.profile as string,
     compilerVersion: candidate.compilerVersion as string,
@@ -521,7 +458,7 @@ export function validateMaterialCookReceipt(
 function validateRecordHeader(
   candidate: Record<string, unknown>,
 ): Result<void, MaterialCookRecordError> {
-  if (candidate.schemaVersion !== 'material-cook/4')
+  if (candidate.schemaVersion !== 'material-cook/5')
     return invalid('schemaVersion', candidate.schemaVersion);
   if (typeof candidate.guid !== 'string' || !candidate.guid) return invalid('guid');
   if (candidate.materialGuid !== undefined && typeof candidate.materialGuid !== 'string')
@@ -812,22 +749,7 @@ function validateRasterSelection(
   });
 }
 
-// A deep-frozen ABI cannot change, so one admission covers every selection that shares it.
-const admittedFrozenAbis = new WeakSet<object>();
-function isAdmittedMaterialProgramAbi(value: unknown): value is MaterialProgramAbi {
-  if (value !== null && typeof value === 'object' && admittedFrozenAbis.has(value)) return true;
-  if (!isMaterialProgramAbi(value)) return false;
-  try {
-    // Canonical text is cached only for deep-frozen data; the digest reuses it.
-    canonicalText(value);
-    if (canonicalTexts.has(value)) admittedFrozenAbis.add(value);
-  } catch {
-    // Serialization failures stay with the digest that reports them today.
-  }
-  return true;
-}
-
-/** Validate a modern selection's address/entry/ABI facts and record its submission address. */
+/** Validate a selection's address/entry/ABI facts and record its submission address. */
 function validateAddressedSelection(
   selection: Record<string, unknown>,
   pass: string,
@@ -838,15 +760,9 @@ function validateAddressedSelection(
 ): Result<MaterialProgramAbi, MaterialCookRecordError> {
   const rawEntry = selection.entry;
   const entry = typeof rawEntry === 'string' ? rawEntry : undefined;
-  if (selection.address === undefined)
-    return invalid(
-      `${selectionField}.address`,
-      'modern ABI selections require an explicit address',
-    );
   if (entry === undefined || entry.length === 0)
     return invalid(`${selectionField}.entry`, rawEntry);
-  if (!isAdmittedMaterialProgramAbi(selection.abi))
-    return invalid(`${selectionField}.abi`, selection.abi);
+  if (!isMaterialProgramAbi(selection.abi)) return invalid(`${selectionField}.abi`, selection.abi);
   const abi = selection.abi;
   const expectedEntry = address === 'direct' ? abi.directEntry : abi.sceneIndexEntry;
   if (entry !== expectedEntry)
@@ -869,11 +785,8 @@ function validateAddressedSelection(
 function validateRecordReceipt(
   candidate: Record<string, unknown>,
   resolved: Record<string, unknown>,
-  manifestDigest: string,
 ): Result<MaterialCookReceipt, MaterialCookRecordError> {
-  const receiptResult = validateMaterialCookReceipt(candidate.receipt, {
-    artifactDigest: manifestDigest,
-  });
+  const receiptResult = validateMaterialCookReceipt(candidate.receipt);
   if (!receiptResult.ok) return receiptResult;
   let expectedLayerPlanIdentity: string | undefined;
   try {
@@ -892,7 +805,10 @@ function validateRecordReceipt(
       receiptResult.value.derivedInterface.layerPlanIdentity,
     );
   }
-  if (candidate.artifactDigest !== undefined && candidate.artifactDigest !== manifestDigest)
+  if (
+    candidate.artifactDigest !== undefined &&
+    candidate.artifactDigest !== receiptResult.value.identity.artifactDigest
+  )
     return invalid('artifactDigest', candidate.artifactDigest);
   if (
     candidate.publicationGeneration !== undefined &&
@@ -919,17 +835,27 @@ export function validateCookedMaterialRecord(
   if (!passNames.ok) return passNames;
   const programs = validateProgramSet(candidate.programs, passNames.value);
   if (!programs.ok) return programs;
-  const manifestDigest = createMaterialProgramSetDigest(
-    programs.value,
-    resolved.passes as MaterialPass[],
-  );
-  const receipt = validateRecordReceipt(candidate, resolved, manifestDigest);
+  // The program-set digest is computed once by the producer and carried by the receipt.
+  const receipt = validateRecordReceipt(candidate, resolved);
   if (!receipt.ok) return receipt;
   return ok({
     ...candidate,
     programs: programs.value,
     receipt: receipt.value,
   } as unknown as CookedMaterialRecord);
+}
+
+/**
+ * Recompute a record's program-set digest against its resolved passes. Build-time
+ * readers of an existing cook use it; runtime admission trusts the verified Pack.
+ */
+export function checkMaterialProgramSetDigest(
+  record: CookedMaterialRecord,
+): Result<CookedMaterialRecord, MaterialCookRecordError> {
+  const digest = createMaterialProgramSetDigest(record.programs, record.resolved.passes);
+  return digest === record.receipt.identity.artifactDigest
+    ? ok(record)
+    : invalid('receipt.identity.artifactDigest', 'stale program-set manifest');
 }
 
 /** Bind an immutable cooked record to an accepted publication without recooking programs. */
@@ -1051,37 +977,7 @@ export function validateMaterialCookProgramContext(
   return ok({ ...context } as unknown as MaterialCookProgramContext);
 }
 
-// Materials sharing one program set produce one large manifest; hash each distinct text once.
-const MANIFEST_DIGEST_ENTRIES = 64;
-const MANIFEST_DIGEST_CHARACTERS = 32 * 1024 * 1024;
-const manifestDigests = new Map<string, string>();
-let manifestDigestCharacters = 0;
-
-function manifestDigest(text: string): string {
-  const cached = manifestDigests.get(text);
-  if (cached !== undefined) {
-    manifestDigests.delete(text);
-    manifestDigests.set(text, cached);
-    return cached;
-  }
-  const digest = createMaterialArtifactDigest(new TextEncoder().encode(text));
-  if (text.length > MANIFEST_DIGEST_CHARACTERS) return digest;
-  manifestDigests.set(text, digest);
-  manifestDigestCharacters += text.length;
-  for (const oldest of manifestDigests.keys()) {
-    if (
-      manifestDigests.size <= MANIFEST_DIGEST_ENTRIES &&
-      manifestDigestCharacters <= MANIFEST_DIGEST_CHARACTERS
-    )
-      break;
-    manifestDigests.delete(oldest);
-    manifestDigestCharacters -= oldest.length;
-  }
-  return digest;
-}
-
-/** The exact legacy manifest text, for inputs outside the canonical fast path. */
-function legacyMaterialProgramSetManifest(
+function materialProgramSetManifest(
   programs: readonly MaterialCookProgram[],
   passes: readonly MaterialPass[],
 ): string {
@@ -1106,44 +1002,12 @@ function legacyMaterialProgramSetManifest(
   return JSON.stringify(manifest);
 }
 
-function materialProgramSetManifest(
-  programs: readonly MaterialCookProgram[],
-  passes: readonly MaterialPass[],
-): string {
-  canonicalLegacy = false;
-  const passText = canonicalText(passes);
-  const entries: { readonly key: string; readonly text: string }[] = [];
-  for (const program of programs) {
-    if (typeof program.specializationKey !== 'string') canonicalLegacy = true;
-    const selections: string[] = [];
-    for (const selection of program.selections) {
-      const text = canonicalText(selection);
-      if (text === undefined) canonicalLegacy = true;
-      else selections.push(text);
-    }
-    if (canonicalLegacy) break;
-    selections.sort(compareCanonicalStrings);
-    const artifact = JSON.stringify({
-      digest: program.artifact.digest,
-      mediaType: program.artifact.mediaType,
-      path: program.artifact.path,
-    });
-    entries.push({
-      key: program.specializationKey,
-      text: `{"artifact":${artifact},"selections":[${selections.join(',')}],"specializationKey":${JSON.stringify(program.specializationKey)}}`,
-    });
-  }
-  if (canonicalLegacy) return legacyMaterialProgramSetManifest(programs, passes);
-  entries.sort((a, b) => compareCanonicalStrings(a.key, b.key));
-  return `{${passText === undefined ? '' : `"passes":${passText},`}"programs":[${entries
-    .map((entry) => entry.text)
-    .join(',')}]}`;
-}
-
 /** Covers every selection and artifact while excluding transport copies of the bytes. */
 export function createMaterialProgramSetDigest(
   programs: readonly MaterialCookProgram[],
   passes: readonly MaterialPass[],
 ): string {
-  return manifestDigest(materialProgramSetManifest(programs, passes));
+  return createMaterialArtifactDigest(
+    new TextEncoder().encode(materialProgramSetManifest(programs, passes)),
+  );
 }

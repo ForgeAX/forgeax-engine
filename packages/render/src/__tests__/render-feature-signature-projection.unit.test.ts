@@ -2,12 +2,202 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   cloneOwnedRenderFeaturePlanSignatureSnapshot,
   cloneRenderFeaturePlanSignatureSnapshot,
+  type RenderFeatureBindingValue,
   type RenderFeatureWorkPlan,
   renderFeaturePlanSignature,
   renderFeaturePlanSignatureSnapshotEquals,
   validateRenderFeaturePlan,
 } from '../features/plan';
 import { ownRenderFeatureProgramData } from '../features/prepared-gpu-work';
+
+function bindingValuePlan(value: RenderFeatureBindingValue): RenderFeatureWorkPlan {
+  return {
+    resources: [
+      { kind: 'graphics-bindings', name: 'state', program: 'program', values: { probe: value } },
+    ],
+    passes: [],
+  };
+}
+
+function bindingValueNode(
+  snapshot: ReturnType<typeof cloneRenderFeaturePlanSignatureSnapshot>,
+): Extract<NonNullable<(typeof snapshot.resources)[number]>, { kind: 'primitive' }> {
+  const resource = snapshot.resources[0];
+  if (resource?.kind !== 'object') throw new Error('Missing binding resource snapshot');
+  const values = resource.values[resource.keys.indexOf('values')];
+  if (values?.kind !== 'object') throw new Error('Missing binding values object');
+  const value = values.values[values.keys.indexOf('probe')];
+  if (value?.kind !== 'primitive') throw new Error('Missing primitive binding value');
+  return value;
+}
+
+it('keeps native numeric hints canonical across signed zero and non-finite numbers', () => {
+  const plan = (size: number): RenderFeatureWorkPlan => ({
+    resources: [{ kind: 'buffer', name: 'range', size, usage: ['storage'] }],
+    passes: [],
+  });
+  const negativeZero = cloneOwnedRenderFeaturePlanSignatureSnapshot(plan(-0));
+  const negativeZeroNode = negativeZero.resources[0];
+  if (negativeZeroNode?.kind !== 'object') throw new Error('Missing buffer snapshot');
+  const zero = negativeZeroNode.values[negativeZeroNode.keys.indexOf('size')];
+  expect(zero).toMatchObject({ kind: 'primitive', token: '0', numberValue: -0 });
+  expect(renderFeaturePlanSignatureSnapshotEquals(plan(+0), negativeZero)).toBe(true);
+
+  const notANumber = cloneOwnedRenderFeaturePlanSignatureSnapshot(plan(Number.NaN));
+  const nanNode = notANumber.resources[0];
+  if (nanNode?.kind !== 'object') throw new Error('Missing non-finite buffer snapshot');
+  const special = nanNode.values[nanNode.keys.indexOf('size')];
+  expect(special).toMatchObject({ kind: 'primitive', token: 'null', numberValue: Number.NaN });
+  expect(renderFeaturePlanSignatureSnapshotEquals(plan(Number.POSITIVE_INFINITY), notANumber)).toBe(
+    true,
+  );
+  expect(renderFeaturePlanSignatureSnapshotEquals(plan(Number.NEGATIVE_INFINITY), notANumber)).toBe(
+    true,
+  );
+});
+
+it.each([
+  true,
+  false,
+  null,
+  undefined,
+])('uses native primitive literals after one formatter property read for %s', (value) => {
+  const snapshot = cloneOwnedRenderFeaturePlanSignatureSnapshot(bindingValuePlan(value));
+  const node = bindingValueNode(snapshot);
+  expect(node.token).toBe(JSON.stringify(value) ?? 'undefined');
+
+  const original = Object.getOwnPropertyDescriptor(JSON, 'stringify');
+  if (typeof original?.value !== 'function') throw new Error('Missing native stringify');
+  let reads = 0;
+  Object.defineProperty(JSON, 'stringify', {
+    configurable: true,
+    enumerable: original.enumerable ?? false,
+    get() {
+      reads += 1;
+      return original.value;
+    },
+  });
+  try {
+    expect(renderFeaturePlanSignatureSnapshotEquals(bindingValuePlan(value), snapshot)).toBe(true);
+    expect(reads).toBe(1);
+  } finally {
+    Object.defineProperty(JSON, 'stringify', original);
+  }
+});
+
+it('uses the formatter selected after a borrowed getter changes it mid-comparison', () => {
+  const original = Object.getOwnPropertyDescriptor(JSON, 'stringify');
+  if (typeof original?.value !== 'function') throw new Error('Missing native stringify');
+  const failure = new Error('borrowed formatter failure');
+  let receiver: unknown;
+  const plan = (size: number): RenderFeatureWorkPlan => ({
+    resources: [
+      {
+        kind: 'buffer',
+        get name() {
+          Object.defineProperty(JSON, 'stringify', {
+            ...original,
+            value: function (this: unknown) {
+              receiver = this;
+              throw failure;
+            },
+          });
+          return 'range';
+        },
+        size,
+        usage: ['storage'],
+      } as RenderFeatureWorkPlan['resources'][number],
+    ],
+    passes: [],
+  });
+  const snapshot = cloneRenderFeaturePlanSignatureSnapshot({
+    resources: [{ kind: 'buffer', name: 'range', size: 4, usage: ['storage'] }],
+    passes: [],
+  });
+  try {
+    expect(() => renderFeaturePlanSignatureSnapshotEquals(plan(4), snapshot)).toThrow(failure);
+    expect(receiver).toBe(JSON);
+  } finally {
+    Object.defineProperty(JSON, 'stringify', original);
+  }
+});
+
+it('does not reuse a boolean literal when the selected formatter is custom', () => {
+  const original = Object.getOwnPropertyDescriptor(JSON, 'stringify');
+  if (typeof original?.value !== 'function') throw new Error('Missing native stringify');
+  const failure = new Error('custom boolean formatter failure');
+  const snapshot = cloneOwnedRenderFeaturePlanSignatureSnapshot(bindingValuePlan(true));
+  let receiver: unknown;
+  Object.defineProperty(JSON, 'stringify', {
+    ...original,
+    value: function (this: unknown, value: unknown) {
+      receiver = this;
+      if (typeof value === 'boolean') throw failure;
+      return original.value.call(this, value);
+    },
+  });
+  try {
+    expect(() =>
+      renderFeaturePlanSignatureSnapshotEquals(bindingValuePlan(true), snapshot),
+    ).toThrow(failure);
+    expect(receiver).toBe(JSON);
+  } finally {
+    Object.defineProperty(JSON, 'stringify', original);
+  }
+});
+
+it('creates number hints only from native tokens while the formatter switches custom and back', () => {
+  const original = Object.getOwnPropertyDescriptor(JSON, 'stringify');
+  if (typeof original?.value !== 'function') throw new Error('Missing native stringify');
+  const plan = (size: number): RenderFeatureWorkPlan => ({
+    resources: [{ kind: 'buffer', name: 'range', size, usage: ['storage'] }],
+    passes: [],
+  });
+  let customCalls = 0;
+  Object.defineProperty(JSON, 'stringify', {
+    ...original,
+    value: function (this: unknown, value: unknown) {
+      customCalls += 1;
+      if (this !== JSON) throw new Error('Custom formatter receiver changed');
+      return typeof value === 'number' ? `custom:${value}` : original.value.call(this, value);
+    },
+  });
+  try {
+    const custom = cloneOwnedRenderFeaturePlanSignatureSnapshot(plan(8));
+    const customResource = custom.resources[0];
+    if (customResource?.kind !== 'object') throw new Error('Missing custom buffer snapshot');
+    expect(customResource.values[customResource.keys.indexOf('size')]).toMatchObject({
+      kind: 'primitive',
+      token: 'custom:8',
+    });
+    expect(customResource.values[customResource.keys.indexOf('size')]).not.toHaveProperty(
+      'numberValue',
+    );
+    expect(customCalls).toBeGreaterThan(0);
+
+    Object.defineProperty(JSON, 'stringify', original);
+    expect(renderFeaturePlanSignatureSnapshotEquals(plan(8), custom)).toBe(false);
+    const renewedNative = cloneOwnedRenderFeaturePlanSignatureSnapshot(plan(8), custom);
+    const renewedResource = renewedNative.resources[0];
+    if (renewedResource?.kind !== 'object') throw new Error('Missing renewed native snapshot');
+    expect(renewedResource.values[renewedResource.keys.indexOf('size')]).toMatchObject({
+      kind: 'primitive',
+      token: '8',
+      numberValue: 8,
+    });
+
+    const failure = new Error('formatter switched back to custom');
+    Object.defineProperty(JSON, 'stringify', {
+      ...original,
+      value: (_value: unknown) => {
+        throw failure;
+      },
+    });
+    expect(() => renderFeaturePlanSignatureSnapshotEquals(plan(8), renewedNative)).toThrow(failure);
+  } finally {
+    Object.defineProperty(JSON, 'stringify', original);
+  }
+});
 
 it('retains owned static buffer evidence without confusing normalized and nested JSON snapshots', () => {
   const buffer = ownRenderFeatureProgramData({
@@ -51,6 +241,59 @@ it('retains owned static buffer evidence without confusing normalized and nested
   bytes[0] = 2;
   expect(renderFeaturePlanSignatureSnapshotEquals(uploadPlan, uploadSnapshot)).toBe(true);
   expect(validateRenderFeaturePlan('upload', uploadPlan).ok).toBe(true);
+});
+
+it('uses initialization version and byte length as buffer topology while ignoring its copy closure', () => {
+  const copyInto = vi.fn((target: Uint8Array) => {
+    target.fill(1);
+    return true;
+  });
+  const initialization = { version: 'sdf-fields-v1', byteLength: 16, copyInto };
+  const buffer = {
+    kind: 'buffer' as const,
+    name: 'sdf-fields',
+    allocationKey: initialization.version,
+    size: 16,
+    usage: ['storage'] as const,
+    initialization,
+  };
+  const plan: RenderFeatureWorkPlan = { resources: [buffer], passes: [] };
+  const snapshot = cloneOwnedRenderFeaturePlanSignatureSnapshot(plan);
+  const signature = renderFeaturePlanSignature(plan);
+
+  const replacementCopy = vi.fn((target: Uint8Array) => {
+    target.fill(2);
+    return true;
+  });
+  const sameMetadata: RenderFeatureWorkPlan = {
+    resources: [{ ...buffer, initialization: { ...initialization, copyInto: replacementCopy } }],
+    passes: [],
+  };
+  expect(renderFeaturePlanSignatureSnapshotEquals(sameMetadata, snapshot)).toBe(true);
+  expect(cloneOwnedRenderFeaturePlanSignatureSnapshot(sameMetadata, snapshot)).toBe(snapshot);
+  expect(renderFeaturePlanSignature(sameMetadata)).toBe(signature);
+  expect(copyInto).not.toHaveBeenCalled();
+  expect(replacementCopy).not.toHaveBeenCalled();
+
+  const changedVersion: RenderFeatureWorkPlan = {
+    resources: [
+      {
+        ...buffer,
+        allocationKey: 'sdf-fields-v2',
+        initialization: { ...initialization, version: 'sdf-fields-v2' },
+      },
+    ],
+    passes: [],
+  };
+  expect(renderFeaturePlanSignatureSnapshotEquals(changedVersion, snapshot)).toBe(false);
+  expect(renderFeaturePlanSignature(changedVersion)).not.toBe(signature);
+
+  const changedByteLength: RenderFeatureWorkPlan = {
+    resources: [{ ...buffer, initialization: { ...initialization, byteLength: 12 } }],
+    passes: [],
+  };
+  expect(renderFeaturePlanSignatureSnapshotEquals(changedByteLength, snapshot)).toBe(false);
+  expect(renderFeaturePlanSignature(changedByteLength)).not.toBe(signature);
 });
 
 it.each([

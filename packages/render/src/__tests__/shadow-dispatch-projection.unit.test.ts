@@ -40,7 +40,6 @@ function frontDoors(paged = false, orderedSlots?: readonly number[]) {
         renderableIndex: 4,
         meshSlot: paged ? 25 : 0,
         source: {
-          worldId: 0,
           entityKey: 1,
           transform: { world: mat4.identity(mat4.create()) },
           material,

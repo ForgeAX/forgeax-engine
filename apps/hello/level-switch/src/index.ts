@@ -1,3 +1,4 @@
+import { stateResource } from '@forgeax/engine-state';
 // apps/hello/level-switch/src/index.ts -- state-machine demo (feat-20260616 M7 / m7w1).
 //
 // Demonstrates the engine-state API end-to-end:
@@ -9,6 +10,7 @@
 //   6. Keyboard handler (1 -> tutorial, 2 -> street-a, 3 -> main-menu)
 //   7. HUD div shows the current state variant name
 
+import { defineSystem } from "@forgeax/engine-ecs";
 import { createApp } from '@forgeax/engine-app/browser';
 import { Entity, Update, type EntityHandle } from '@forgeax/engine-ecs';
 
@@ -236,12 +238,13 @@ if (!(sceneAssetsW instanceof AssetRegistry)) throw new Error('Scene requires it
     __forgeax_level_switch_hud__: () => hud.textContent ?? '',
   });
 
-  world
-    .addSystem(Update, {
+  const systemToken1 = defineSystem({
       name: 'level-switch-refresh-hud',
       queries: [],
       fn: refreshHud,
-    })
+    });
+world
+    .addSystem(Update, systemToken1)
     .unwrap();
 
   // Keyboard handler: 1 -> tutorial, 2 -> street-a, 3 -> main-menu.
@@ -273,7 +276,7 @@ if (!(sceneAssetsW instanceof AssetRegistry)) throw new Error('Scene requires it
   let m29FaultUnsubscribe: (() => void) | undefined;
   let m29MainMenuExit: EntityHandle | undefined;
   let m29TutorialEnter: EntityHandle | undefined;
-  const m41StateKey = `__state__${LevelId.name}`;
+  const m41StateKey = stateResource(LevelId);
   const m41InvalidVariant = String('m41-runtime-invalid');
   let m41MainMenuExit: EntityHandle | undefined;
   let m41TutorialEnter: EntityHandle | undefined;
@@ -379,7 +382,7 @@ if (!(sceneAssetsW instanceof AssetRegistry)) throw new Error('Scene requires it
   }
 
   function m41PendingNextState(): Record<string, unknown> | null {
-    const pending = world.getResource<{ next: { value: number; force: boolean } | undefined }>(m41StateKey).next;
+    const pending = world.getResource(m41StateKey).next;
     return pending === undefined ? null : { value: pending.value, force: pending.force };
   }
 

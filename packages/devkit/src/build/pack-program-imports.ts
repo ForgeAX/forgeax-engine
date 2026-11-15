@@ -1,10 +1,11 @@
 import { createHash } from 'node:crypto';
-import { readdir, readFile } from 'node:fs/promises';
+import { readdir, readFile, realpath, stat } from 'node:fs/promises';
 import { createRequire, isBuiltin } from 'node:module';
 import { dirname, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { PackProgramImport } from '@forgeax/engine-pack/runtime';
 import { resolve as resolveImport } from 'import-meta-resolve';
+import { readEngineBinding } from '../engine-binding.js';
 import { nativeModuleIdentity, resolveNativeModuleKey } from './native-module-identity.js';
 
 export const PACK_PROGRAM_ENGINE_IMPORTS = [
@@ -54,33 +55,61 @@ export async function runtimeProgramIdentity(manifestPath: string): Promise<stri
   return `sha256:${hash.digest('hex')}`;
 }
 
-/** Native Node imports resolve to the same installed modules as the owning Host. */
+/** Native Node imports resolve to the same Engine selection as native compilation. */
 export async function createNodePackProgramImports(
   root: string,
   specifiers: readonly string[] = PACK_PROGRAM_ENGINE_IMPORTS,
 ): Promise<Readonly<Record<string, PackProgramImport>>> {
-  const engineIdentity = specifiers.some((key) => key.startsWith('@forgeax/engine'))
-    ? await runtimeProgramIdentity(
-        createRequire(resolve(root, 'package.json')).resolve('@forgeax/engine/package.json'),
-      )
-    : '';
+  const resolveProgramImport = createNodePackProgramResolver(root);
   return Object.fromEntries(
     await Promise.all(
-      specifiers.map(async (specifier) => [
-        specifier,
-        await resolveNodePackProgramImport(root, specifier, engineIdentity),
-      ]),
+      specifiers.map(async (specifier) => [specifier, await resolveProgramImport(specifier)]),
     ),
   );
 }
 
-/** Shared by native compilation and standalone restore; preserves the owning Host's module selection. */
-export async function resolveNodePackProgramImport(
+async function selectProgramEngine(root: string, projectManifest: string) {
+  const binding = await readEngineBinding(root);
+  if (!binding.ok) {
+    throw Object.assign(new Error(`${binding.error.code}: ${binding.error.hint}`), binding.error);
+  }
+  const manifest = binding.value
+    ? await realpath(resolve(binding.value.path, 'packages/engine/package.json'))
+    : createRequire(projectManifest).resolve('@forgeax/engine/package.json');
+  const parent = pathToFileURL(manifest).href;
+  if (binding.value && resolveImport('@forgeax/engine/package.json', parent) !== parent) {
+    throw new TypeError(`engine-local-package-invalid: ${manifest}`);
+  }
+  return {
+    parent,
+    local: binding.value !== null,
+    identity: await runtimeProgramIdentity(manifest),
+  };
+}
+
+/** One Engine selection and code identity per native compile or archive restore. */
+export function createNodePackProgramResolver(
   root: string,
+  trace: <T>(stage: string, operation: () => Promise<T>) => Promise<T> = (_stage, operation) =>
+    operation(),
+): (specifier: string) => Promise<PackProgramImport> {
+  const projectManifest = resolve(root, 'package.json');
+  let engine: ReturnType<typeof selectProgramEngine> | undefined;
+  return (specifier) =>
+    resolveProgramImport(root, projectManifest, specifier, () => {
+      engine ??= trace('host-compile-engine-identity', () =>
+        selectProgramEngine(root, projectManifest),
+      );
+      return engine;
+    });
+}
+
+async function resolveProgramImport(
+  root: string,
+  projectManifest: string,
   specifier: string,
-  engineIdentity?: string,
+  selectEngine: () => ReturnType<typeof selectProgramEngine>,
 ): Promise<PackProgramImport> {
-  const parent = pathToFileURL(resolve(root, 'package.json')).href;
   if (isBuiltin(specifier)) {
     const url = specifier.startsWith('node:') ? specifier : `node:${specifier}`;
     return { url, identity: await nativeModuleIdentity(url) };
@@ -95,34 +124,31 @@ export async function resolveNodePackProgramImport(
     ).href;
     return { url, identity: await nativeModuleIdentity(url) };
   }
-  let url: string;
-  if (specifier === '@forgeax/engine/plugin' || specifier === '@forgeax/engine-plugin')
-    url = import.meta.resolve('@forgeax/engine-plugin');
-  else if (
-    specifier === '@forgeax/engine/tool-runtime' ||
-    specifier === '@forgeax/engine-tool-runtime'
-  )
-    url = import.meta.resolve('@forgeax/engine-tool-runtime');
-  else if (specifier.startsWith('@forgeax/engine-host/')) url = import.meta.resolve(specifier);
-  else if (
+  if (
     specifier === '@forgeax/engine' ||
     specifier.startsWith('@forgeax/engine/') ||
     specifier.startsWith('@forgeax/engine-')
   ) {
-    url = resolveImport(
+    const { identity, local, parent } = await selectEngine();
+    // These services belong to the executing Host and must keep its live tokens.
+    if (specifier === '@forgeax/engine/plugin' || specifier === '@forgeax/engine-plugin')
+      return { url: import.meta.resolve('@forgeax/engine-plugin'), identity };
+    if (
+      specifier === '@forgeax/engine/tool-runtime' ||
+      specifier === '@forgeax/engine-tool-runtime'
+    )
+      return { url: import.meta.resolve('@forgeax/engine-tool-runtime'), identity };
+    if (specifier.startsWith('@forgeax/engine-host/'))
+      return { url: import.meta.resolve(specifier), identity };
+    const url = resolveImport(
       specifier,
-      specifier.startsWith('@forgeax/engine-')
-        ? resolveImport('@forgeax/engine/package.json', parent)
-        : parent,
+      local || specifier.startsWith('@forgeax/engine-')
+        ? parent
+        : pathToFileURL(projectManifest).href,
     );
-  } else
-    throw new TypeError(`native program import requires a recorded package locator: ${specifier}`);
-  return {
-    url,
-    identity:
-      engineIdentity ??
-      (await runtimeProgramIdentity(
-        createRequire(resolve(root, 'package.json')).resolve('@forgeax/engine/package.json'),
-      )),
-  };
+    if (local && !(await stat(fileURLToPath(url))).isFile())
+      throw new TypeError(`engine-local-module-invalid: ${url}`);
+    return { url, identity };
+  }
+  throw new TypeError(`native program import requires a recorded package locator: ${specifier}`);
 }

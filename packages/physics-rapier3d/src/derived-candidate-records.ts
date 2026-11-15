@@ -3,6 +3,7 @@ import type {
   DerivedPhysicsCandidate,
   DerivedPhysicsCandidateInput,
   DerivedPhysicsCandidateState,
+  DerivedPhysicsSourceTransform,
   NormalizedDerivedShapeInput,
   PhysicsConstraintInput,
   PhysicsMassProperties,
@@ -25,8 +26,10 @@ export interface DerivedBodyRecord {
   readonly bodyType: RigidBodyType | undefined;
   readonly velocityPolicy: 'preserve' | 'reset' | undefined;
   readonly candidateId: string;
+  readonly inputDigest: string;
   readonly shapes: readonly DerivedShapeRecord[];
   readonly massProperties: PhysicsMassProperties | undefined;
+  readonly sourceTransform: DerivedPhysicsSourceTransform | undefined;
   readonly constraints: readonly PhysicsConstraintInput[];
 }
 

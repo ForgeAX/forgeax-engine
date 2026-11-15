@@ -65,7 +65,7 @@ world.spawn({
 const ticketResult = renderer.requestTargetReadback(target, { mipLevel: 0, layer: 0 });
 if (!ticketResult.ok) throw ticketResult.error;
 const ticket = ticketResult.value;
-const receiptResult = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
+const receiptResult = renderer.draw({ source: lease });
 if (!receiptResult.ok) throw receiptResult.error;
 const receipt = receiptResult.value;
 const completed = await receipt.completed;
@@ -103,7 +103,7 @@ The Engine exposes the ReflectionProbe component, renderer-owned raw cube captur
 incremental PMREM filtering, last-known-good promotion, scene selection, local box
 projection, roughness LOD, and Skylight fallback through the public render surface.
 `renderer.inspect().reflectionProbes.selection` reports the selected probe identity
-(`worldId` and `entityKey`) or the `{ kind: 'skylight' }` fallback.
+(`entityKey`) or the `{ kind: 'skylight' }` fallback.
 The paired contract tests are `src/__tests__/reflection-probe.browser.test.ts` and
 `src/__tests__/reflection-probe.browser.test.ts`.
 

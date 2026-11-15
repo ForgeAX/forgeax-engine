@@ -34,7 +34,7 @@ export function inputPlugin(): Plugin {
       }, 'input/resource');
       ctx.effect(() => {
         world.addSystems(Update, InputSet, [InputFrameStartScan]).unwrap();
-        return () => world.removeSystem(Update, InputFrameStartScan.name);
+        return () => world.removeSystem(Update, InputFrameStartScan);
       }, 'input/frame-start-scan');
     },
   };

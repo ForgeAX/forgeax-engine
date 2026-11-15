@@ -1,6 +1,6 @@
 import type { Component, ComponentId } from '../component';
 import { componentId } from '../component';
-import { foldEssentials } from '../entity';
+import { Entity } from '../entity';
 import type { TableId } from './table';
 
 const INITIAL_CAPACITY = 64;
@@ -22,7 +22,7 @@ export interface Archetype {
 }
 
 export function archetypeKey(componentIds: ReadonlyArray<ComponentId>): string {
-  return [...foldEssentials(componentIds)].sort((a, b) => a - b).join('+');
+  return [...new Set([componentId(Entity), ...componentIds])].sort((a, b) => a - b).join('+');
 }
 
 export function createArchetype(

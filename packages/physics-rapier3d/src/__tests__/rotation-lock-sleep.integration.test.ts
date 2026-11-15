@@ -2,6 +2,7 @@ import { createWorldContext, defineComponent, World } from '@forgeax/engine-ecs'
 import {
   Collider,
   ColliderShapeValue,
+  PhysicsWorldResource,
   RigidBody,
   RigidBodyTypeValue,
 } from '@forgeax/engine-physics';
@@ -17,7 +18,7 @@ test('locked contact bodies stay asleep through normal sync and unrelated ECS wr
   const world = new World();
   const scene = await createWorldContext(world, [scenePlugin()]);
   const physics = createRapier3DPhysicsWorld(rapier);
-  world.insertResource('PhysicsWorld', physics);
+  world.insertResource(PhysicsWorldResource, physics);
   const release = registerPhysicsSystems(world);
   const Annotation = defineComponent('RotationLockSleepAnnotation', {
     revision: { type: 'u32', default: 0 },

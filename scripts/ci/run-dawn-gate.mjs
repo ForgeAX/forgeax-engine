@@ -95,19 +95,23 @@ export function selectDawnShard(value) {
   );
 }
 
-export async function runDawnGate({ group: selectedGroup, shard } = {}) {
+export async function runDawnGate({ group: selectedGroup, shard, continueOnFailure = false } = {}) {
   validateDawnGateRoster();
   const environmentDiagnostics = shard === '3/4';
   if (environmentDiagnostics) reportDawnEnvironment(ROOT, 'start', true);
   // A full gate must not inherit a selector from a preceding single-owner probe.
-  const environment = { ...process.env };
-  for (const name of [
-    'FORGEAX_DAWN_ISOLATED',
-    'FORGEAX_DAWN_COMPACT',
-    'FORGEAX_DAWN_PARTITION',
-    'FORGEAX_DAWN_PARTITION_SCOPE',
-  ])
-    delete environment[name];
+  const prepareDawnGateEnvironment = () => {
+    const environment = { ...process.env };
+    for (const name of [
+      'FORGEAX_DAWN_ISOLATED',
+      'FORGEAX_DAWN_COMPACT',
+      'FORGEAX_DAWN_PARTITION',
+      'FORGEAX_DAWN_PARTITION_SCOPE',
+    ])
+      delete environment[name];
+    return environment;
+  };
+  const environment = prepareDawnGateEnvironment();
   const groups = selectDawnGroups(selectedGroup, shard);
   const ordinaryWorkers = groups.some((group) => group.vitestShard !== undefined)
     ? dawnOrdinaryWorkers(environment)
@@ -131,13 +135,17 @@ export async function runDawnGate({ group: selectedGroup, shard } = {}) {
     if (prepared.status !== 0)
       throw new Error(`Dawn shader preparation failed; ${prepared.failure}`);
   }
+  const failures = [];
   for (const group of groups) {
     console.log(`::group::Dawn ${group.id}`);
     try {
       const env = dawnGroupEnvironment(group, environment, ordinaryWorkers);
       if (Object.hasOwn(DAWN_TEST_PARTITIONS, group.id)) {
         const status = await runDawnPartitions(group.id, { env });
-        if (status !== 0) return status;
+        if (status !== 0) {
+          if (!continueOnFailure) return status;
+          throw new Error(`Dawn ${group.id} exited ${status}`);
+        }
       } else if (group.id === 'direct-light') {
         await runDirectLightDawn({ env });
       } else {
@@ -161,25 +169,38 @@ export async function runDawnGate({ group: selectedGroup, shard } = {}) {
           );
           result = await run();
         }
-        if (result.status !== 0) return result.status;
+        if (result.status !== 0) {
+          if (!continueOnFailure) return result.status;
+          throw new Error(`Dawn ${group.id} exited ${result.status}; ${result.failure}`);
+        }
       }
+    } catch (error) {
+      if (!continueOnFailure) throw error;
+      failures.push({ group: group.id, error: String(error) });
+      console.error(`[dawn-failure-batch] ${JSON.stringify(failures.at(-1))}`);
     } finally {
       if (environmentDiagnostics) reportDawnEnvironment(ROOT, `after:${group.id}`);
       console.log('::endgroup::');
     }
   }
-  console.log(
-    `[dawn-gate] ${selectedGroup ? 'DIAGNOSTIC PASS' : 'PASS'} groups=${groups.length}${shard ? ` shard=${shard}` : ''}`,
-  );
-  return 0;
+  const completeDawnGateResult = () => {
+    if (failures.length) return 1;
+    console.log(
+      `[dawn-gate] ${selectedGroup ? 'DIAGNOSTIC PASS' : 'PASS'} groups=${groups.length}${shard ? ` shard=${shard}` : ''}`,
+    );
+    return 0;
+  };
+  return completeDawnGateResult();
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   let group;
   let shard;
   let dryRun = false;
+  let continueOnFailure = false;
   for (let i = 2; i < process.argv.length; i++) {
     if (process.argv[i] === '--dry-run') dryRun = true;
+    else if (process.argv[i] === '--continue-on-failure') continueOnFailure = true;
     else if (process.argv[i] === '--group' && process.argv[i + 1]) group = process.argv[++i];
     else if (process.argv[i] === '--shard' && process.argv[i + 1]) shard = process.argv[++i];
     else throw new Error('usage: run-dawn-gate.mjs [--dry-run] [--group ID | --shard INDEX/TOTAL]');
@@ -188,5 +209,5 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   if (dryRun) {
     validateDawnGateRoster();
     console.log(JSON.stringify(groups));
-  } else process.exitCode = await runDawnGate({ group, shard });
+  } else process.exitCode = await runDawnGate({ group, shard, continueOnFailure });
 }

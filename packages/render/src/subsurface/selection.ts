@@ -1,6 +1,8 @@
 import type { MaterialResource } from '../material-resource';
 import type { MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
 import { MaterialFrame } from '../scene/material-dispatch';
+import type { MeshFrame } from '../scene/mesh-frame';
+import { effectiveMeshMaterials, meshMaterialGeometry } from '../scene/mesh-materials';
 
 export type SubsurfaceDemand = number | 'invalid-values' | 'invalid-surface' | 'missing-material';
 
@@ -37,20 +39,61 @@ const EMPTY_MATERIALS = new MaterialFrame(undefined);
 export class SubsurfaceSelection {
   private readonly members = new Map<MaterialResource, SubsurfaceDemand>();
   private readonly profiles = new Map<SubsurfaceDemand, number>();
+  /** Members only hidden, unprepared rows selected; the dispatch has not admitted them. */
+  private readonly unadmitted = new Set<MaterialResource>();
   private frame: MaterialFrame | undefined;
   private distinct = 0;
 
-  add(source: Pick<RenderableSnapshot, 'material' | 'materials'>, materials: MaterialFrame): void {
+  /**
+   * A row with authored overrides draws the effective Mesh bindings the
+   * material dispatch admitted, not its direct placeholder resources; pass the
+   * frame's Mesh versions so membership reads the same resources.
+   */
+  add(
+    row: Parameters<typeof effectiveMeshMaterials>[0] &
+      Partial<
+        Pick<
+          RenderableSnapshot,
+          | 'assetHandle'
+          | 'skinBinding'
+          | 'spriteInstances'
+          | 'authorVisible'
+          | 'pipelinePreparation'
+        >
+      >,
+    materials: MaterialFrame,
+    meshes?: MeshFrame,
+  ): void {
+    const geometry =
+      row.materialOverrides === undefined || meshes === undefined
+        ? undefined
+        : meshes.get(row.assetHandle);
+    const source =
+      geometry === undefined
+        ? row
+        : effectiveMeshMaterials(row, geometry, meshMaterialGeometry(row));
+    // The dispatch admits a row's materials only for a visible or prepared row;
+    // a hidden row's binding has no accepted version until it gains that demand.
+    const admitted = row.authorVisible !== false || row.pipelinePreparation !== undefined;
     // Runs per renderable each frame: no one-element array for the default slot.
     const slots = source.materials;
-    if (slots.length === 0) this.addMember(source.material, materials);
+    if (slots.length === 0) this.addMember(source.material, materials, admitted);
     for (let index = 0; index < slots.length; index++)
-      this.addMember(slots[index] as MaterialResource, materials);
+      this.addMember(slots[index] as MaterialResource, materials, admitted);
   }
 
-  private addMember(resource: MaterialResource, materials: MaterialFrame): void {
-    if (this.members.has(resource)) return;
-    const value = profile(materials.get(resource)?.snapshot);
+  private addMember(resource: MaterialResource, materials: MaterialFrame, admitted: boolean): void {
+    const old = this.members.get(resource);
+    if (old !== undefined) {
+      // A visible row sharing a hidden row's resource makes its absence an error again.
+      if (admitted && this.unadmitted.delete(resource) && materials.get(resource) === undefined)
+        this.replace(resource, old, 'missing-material');
+      return;
+    }
+    const accepted = materials.get(resource);
+    if (!admitted) this.unadmitted.add(resource);
+    const value =
+      accepted !== undefined ? profile(accepted.snapshot) : admitted ? 'missing-material' : 0;
     this.members.set(resource, value);
     this.adjust(value, 1);
   }
@@ -63,13 +106,18 @@ export class SubsurfaceSelection {
         if (resource === undefined) return;
         const old = this.members.get(resource);
         if (old === undefined) return;
-        const value = profile(after?.snapshot);
-        if (old === value) return;
-        this.adjust(old, -1);
-        this.adjust(value, 1);
-        this.members.set(resource, value);
+        const value =
+          after === undefined && this.unadmitted.has(resource) ? 0 : profile(after?.snapshot);
+        this.replace(resource, old, value);
       });
     this.frame = materials;
+  }
+
+  private replace(resource: MaterialResource, old: SubsurfaceDemand, value: SubsurfaceDemand) {
+    if (old === value) return;
+    this.adjust(old, -1);
+    this.adjust(value, 1);
+    this.members.set(resource, value);
   }
 
   /**

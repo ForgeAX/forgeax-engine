@@ -25,7 +25,7 @@
       },
       "bench": {
         "enabled": false,
-        "reason": "OIT CPU record cost lives in packages/render/bench"
+        "reason": "OIT has no registered benchmark metric"
       },
       "gate": {
         "enabled": true,

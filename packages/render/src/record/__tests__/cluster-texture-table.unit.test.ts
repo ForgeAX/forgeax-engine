@@ -28,6 +28,11 @@ function point(x: number): DirectLightSnapshot {
   } as unknown as DirectLightSnapshot;
 }
 
+/** Rows holding the light records and the grid, uploaded whole on the first write. */
+function hostRows(layout: { readonly indexOffset: number; readonly width: number }): number {
+  return Math.ceil(layout.indexOffset / (layout.width * 4));
+}
+
 async function fixture() {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const layout = standardClusterTextureLayout(
@@ -80,14 +85,14 @@ describe('ClusterTextureTable', () => {
     expect(Object.isFrozen(coldInspection)).toBe(true);
     expect(coldInspection).toEqual({
       packedLightSlots: 2,
-      uploadedBytes: 2 * layout.width * 16,
+      uploadedBytes: hostRows(layout) * layout.width * 16,
       usedRows: expectedUsedRows,
       rowBytes: expectedRowBytes,
     });
     expect(writeTexture).toHaveBeenCalledTimes(1);
     expect(writeTexture.mock.calls[0]?.[3]).toEqual({
       width: layout.width,
-      height: 2,
+      height: hostRows(layout),
       depthOrArrayLayers: 1,
     });
     expect(writeTexture.mock.calls[0]?.[0]).toMatchObject({ origin: { x: 0, y: 0, z: 0 } });
@@ -167,7 +172,7 @@ describe('ClusterTextureTable', () => {
     expect(write().ok).toBe(true);
     expect(table.inspect()).toEqual({
       packedLightSlots: 0,
-      uploadedBytes: 2 * layout.width * 16,
+      uploadedBytes: hostRows(layout) * layout.width * 16,
       usedRows: expectedUsedRows,
       rowBytes: expectedRowBytes,
     });

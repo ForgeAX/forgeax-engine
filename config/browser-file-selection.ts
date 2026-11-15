@@ -4,11 +4,15 @@ import { parseCLI } from 'vitest/node';
 
 /** Browser optimizer globbing omits CLI filters. Admit only exact existing files. */
 export function explicitBrowserFiles(rootDir: string): string[] | undefined {
-  const files = /(?:^|[/\\])vitest(?:\.mjs)?$/.test(process.argv[1] ?? '')
-    ? parseCLI(['vitest', ...process.argv.slice(2)]).filter.map((file) =>
-        relative(rootDir, resolve(rootDir, file)).replaceAll('\\', '/'),
-      )
-    : [];
+  const entry = process.argv[1] ?? '';
+  const maintainedRunner =
+    resolve(entry) === resolve(rootDir, 'scripts/ci/run-vitest-projects.mjs');
+  const files =
+    /(?:^|[/\\])vitest(?:\.mjs)?$/.test(entry) || maintainedRunner
+      ? parseCLI(['vitest', ...process.argv.slice(2)]).filter.map((file) =>
+          relative(rootDir, resolve(rootDir, file)).replaceAll('\\', '/'),
+        )
+      : [];
   return files.length > 0 &&
     files.every(
       (file) =>

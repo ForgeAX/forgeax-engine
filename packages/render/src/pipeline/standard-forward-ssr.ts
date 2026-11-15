@@ -65,6 +65,7 @@ export function addForwardSsr(
       ? {}
       : {
           temporal: {
+            profile: 'opaque' as const,
             previousHistory: history.previous.view,
             outputHistory: history.output.view,
             previousSurface: history.previousSurface.view,

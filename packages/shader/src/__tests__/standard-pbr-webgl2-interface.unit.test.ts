@@ -12,9 +12,12 @@ const standardPbrSkinSource = readFileSync(
 );
 
 describe('standard PBR WebGL2 interface', () => {
-  it('packs the non-transmission position and view depth into one varying', () => {
+  it('reads view depth from the fragment position and carries only the object position', () => {
     for (const source of [standardPbrSource, standardPbrSkinSource]) {
-      expect(source).toContain('@location(7) positionOSAndViewZ : vec4<f32>');
+      expect(source).toContain('@location(7) positionOS : vec3<f32>');
+      expect(source).not.toContain('positionOSAndViewZ');
+      expect(source).not.toMatch(/@location\(\d+\)\s+ndc\s*:/u);
+      expect(source).toContain('sceneFragmentViewZ(in.clip, view.temporalProjection)');
       expect(source).not.toContain('@location(4) positionOS : vec3<f32>');
       expect(source).not.toContain('@location(15) positionOS : vec3<f32>');
       expect(source).not.toContain('@location(4) @interpolate(flat) instanceIdx : u32');
@@ -25,6 +28,7 @@ describe('standard PBR WebGL2 interface', () => {
     for (const source of [standardPbrSource, standardPbrSkinSource]) {
       expect(source).toContain('@location(4) @interpolate(flat) objectBasis0 : vec4<f32>');
       expect(source).toContain('@location(13) @interpolate(flat) objectBasis1 : vec4<f32>');
+      expect(source).toContain('@location(6) @interpolate(flat) objectBasis2 : f32');
       expect(source).not.toContain('@location(15) @interpolate(flat) objectBasis1 : vec4<f32>');
     }
   });

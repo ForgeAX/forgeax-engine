@@ -1,3 +1,5 @@
+import { PhysicsCollisionSync } from '@forgeax/engine-physics-rapier3d';
+import { GameProjectileSimulationOrder, GameHealthPickupCollectionOrder, GameEnergyCoreExtractionOrder, GameRewardChoiceOrder, GameBarrierRouteOrder, GameTargetFeedbackOrder, GameCounterattackOrder } from '../../../src/system-order';
 import type { AssetHandle } from '@forgeax/engine-types';
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import type { InputSnapshot } from '@forgeax/engine-input';
@@ -358,14 +360,14 @@ export function installGameplaySystems(ctx: GameplaySystemsContext): void {
     },
     onTargetResolved: (target) => ctx.sentinel?.onTargetResolved(target),
     after: [
-      'physicsCollisionSync',
-      'game-projectile-simulation',
-      ...(ctx.healthPickup === undefined ? [] : ['game-health-pickup-collection']),
-      ...(ctx.extraction === undefined ? [] : ['game-energy-core-extraction']),
-      ...(ctx.rewardChoice === undefined ? [] : ['game-reward-choice']),
-      ...(ctx.barrierRoute === undefined ? [] : ['game-barrier-route']),
+      PhysicsCollisionSync,
+      GameProjectileSimulationOrder,
+      ...(ctx.healthPickup === undefined ? [] : [GameHealthPickupCollectionOrder]),
+      ...(ctx.extraction === undefined ? [] : [GameEnergyCoreExtractionOrder]),
+      ...(ctx.rewardChoice === undefined ? [] : [GameRewardChoiceOrder]),
+      ...(ctx.barrierRoute === undefined ? [] : [GameBarrierRouteOrder]),
     ],
-    before: ['game-target-feedback', 'game-counterattack'],
+    before: [GameTargetFeedbackOrder, GameCounterattackOrder],
   });
   installCameraFollowSystem({
     world: ctx.world,

@@ -8,19 +8,14 @@ export interface IblKernelCache {
   readonly brdfLutIdentity: object;
 }
 
-const kernelCaches = new Map<number, IblKernelCache>();
-
+/** Fresh kernel identities; the renderer DeviceScope owns reuse and retirement. */
 export function createIblKernelCache(generation: number): IblKernelCache {
-  const existing = kernelCaches.get(generation);
-  if (existing !== undefined) return existing;
-  const created: IblKernelCache = {
+  return {
     generation,
     pipelineIdentity: {},
     samplerIdentity: {},
     brdfLutIdentity: {},
   };
-  kernelCaches.set(generation, created);
-  return created;
 }
 
 export interface ProbeIblOutput {
@@ -81,8 +76,4 @@ export function publishProbeIblOutput(
     filteredGeneration: update.candidateGeneration,
     lkg: true,
   };
-}
-
-export function resetIblKernelCaches(): void {
-  kernelCaches.clear();
 }

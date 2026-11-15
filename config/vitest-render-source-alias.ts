@@ -17,6 +17,10 @@ const renderSourceAliases = [
     replacement: fileURLToPath(new URL('../packages/render/src/internal.ts', import.meta.url)),
   },
   {
+    find: /^@forgeax\/engine-render\/tasks$/,
+    replacement: fileURLToPath(new URL('../packages/render/src/tasks.ts', import.meta.url)),
+  },
+  {
     find: '@forgeax/engine-render/internal/construct-renderer',
     replacement: fileURLToPath(
       new URL('../packages/render/src/construct-renderer.ts', import.meta.url),

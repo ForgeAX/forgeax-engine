@@ -32,7 +32,6 @@ export interface GamepadFeedbackResult {
   /** POD native rejection name/message, never the native exception. */
   readonly detail?: string;
 }
-export const GAMEPAD_FEEDBACK_KEY = 'GamepadFeedback' as const;
 export const GAMEPAD_FEEDBACK_CAPACITY = 32;
 export const GAMEPAD_FEEDBACK_MAX_DURATION_MS = 10_000;
 export function validGamepadRumble(effect: GamepadRumble): boolean {

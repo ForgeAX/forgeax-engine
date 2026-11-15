@@ -70,7 +70,7 @@ it('light shadow settings: PCF1 collapses the PCSS penumbra and castShadow false
       const last = index === 5;
       const frame = await drawReadyFrame(
         renderer,
-        { leases: [lease], camera: { lease }, environment: { lease } },
+        { source: lease },
         last ? ['linear-hdr'] : undefined,
       );
       if (!last) continue;

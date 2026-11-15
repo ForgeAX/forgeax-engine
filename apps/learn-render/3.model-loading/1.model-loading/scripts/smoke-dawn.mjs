@@ -30,6 +30,7 @@ import { readCatalogRows } from '@forgeax/engine-types';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
+import { readShaderManifestText } from '../../../../../scripts/lib/shader-manifest.mjs';
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const SMOKE_PIXEL_THRESHOLD = Number.parseFloat(process.env.SMOKE_PIXEL_THRESHOLD ?? '0.05');
@@ -147,7 +148,10 @@ for (const entry of packIndexRows) {
 console.log(`[smoke] pack-index: ${packIndexRows.length} entries, ${urlToPath.size} URLs`);
 
 const MANIFEST_PATH = resolve(DIST_DIR, 'shaders', 'manifest.json');
-const MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MANIFEST_PATH, 'utf8'))}`;
+const MANIFEST_URL = URL.createObjectURL(
+  new Blob([readShaderManifestText(MANIFEST_PATH)], { type: 'application/json' }),
+);
+process.once('exit', () => URL.revokeObjectURL(MANIFEST_URL));
 
 const { createWorldContext, World } = await import('@forgeax/engine-ecs');
 const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/internal/renderer-host');
@@ -373,11 +377,7 @@ const frameStart = Date.now();
 let framesObserved = 0;
 for (let i = 0; i < SMOKE_MIN_FRAMES; i++) {
   world.update().unwrap();
-  await drawReadyFrame(renderer, {
-    leases: [lease],
-    camera: { lease },
-    environment: { lease },
-  });
+  await drawReadyFrame(renderer, { source: lease });
   framesObserved++;
 }
 const device = sharedDevice;

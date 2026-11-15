@@ -141,10 +141,10 @@ export function recordImportExternalTexture(
       (event.resourceHandleIds as HandleId[])[index] = viewId;
       const entry = event.entries[index];
       if (entry !== undefined) (entry as { resourceKind: string }).resourceKind = 'textureView';
-      // The patched bind group now depends on a resource created inside this
-      // capture, so it leaves the bootstrap prefix and replays after the view.
+      // Replace dependency ownership before emitting this in-frame create.
+      // getTape excludes its handle from the bootstrap prefix automatically.
       if (s.bootstrapCreates.get(event.handleId) === event)
-        s.bootstrapCreates.delete(event.handleId);
+        s.bootstrapCreates.set(event.handleId, event);
       if (!s.events.includes(event)) pushEvent(s, event);
     }
   }

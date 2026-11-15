@@ -9,6 +9,7 @@
 //   - "// 3. bootstrap"       entry point wiring (1)+(2)
 
 // 1. engine usage
+import { defineSystem } from "@forgeax/engine-ecs";
 import { Time, Update } from '@forgeax/engine-ecs';
 import {
   configureRuntimeAssetCatalog,
@@ -267,7 +268,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   pauseButton?.addEventListener('click', togglePause);
   document.querySelector('#reset')?.addEventListener('click', () => { elapsed = 0; });
   updatePauseLabel();
-  world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'point-light-orbit',
     queries: [],
     fn: () => {
@@ -278,6 +279,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       });
     },
   });
+world.addSystem(Update, systemToken1);
 
   // Match the source demo's SPACE shadow toggle. Removing the component makes
   // the renderer take the ordinary point-light path; adding it back restores

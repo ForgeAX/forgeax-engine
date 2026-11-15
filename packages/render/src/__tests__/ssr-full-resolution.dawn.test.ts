@@ -17,7 +17,7 @@ it('traces and resolves both halves of the full-resolution reflection target', a
   const source = (name: string) =>
     readFileSync(resolve('packages/shader/src', `${name}.wgsl`), 'utf8');
   const imports = Object.fromEntries(
-    ['common', 'standard-gbuffer', 'depth-pyramid-sample'].map((name) => {
+    ['common', 'standard-gbuffer', 'depth-pyramid-sample', 'scene-temporal'].map((name) => {
       const text = source(name);
       return [text.match(/#define_import_path (\S+)/)?.[1] ?? '', text];
     }),

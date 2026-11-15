@@ -3,6 +3,7 @@ import { defineComponent } from '../component';
 import { type EntityHandle, entityIndex } from '../entity-handle';
 import { getDerivedWriter } from '../internal';
 import { createStateProjection } from '../projection/state-projection';
+import { defineResource } from '../resource';
 import { World } from '../world';
 
 const Input = defineComponent('ProjectionDerivedInput', { x: 'f32' });
@@ -52,6 +53,8 @@ test.each([
 });
 
 test('a completed derived writer can publish an output range before accepting its input', () => {
+  const resource1 = defineResource<unknown>('unobserved-operation-result');
+
   const world = new World();
   const entity = world
     .spawn({ component: Input, data: { x: 1 } }, { component: Output, data: {} })
@@ -75,7 +78,7 @@ test('a completed derived writer can publish an output range before accepting it
     .unwrap();
   batch.accept();
   expect(projection.isCurrent()).toBe(true);
-  world.insertResource('unobserved-operation-result', { status: 'prepared' });
+  world.insertResource(resource1, { status: 'prepared' });
   expect(projection.isCurrent()).toBe(true);
   expect(world.get(entity, Output).unwrap().x).toBe(4);
 });

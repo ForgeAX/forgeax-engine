@@ -54,11 +54,14 @@ test('binary-MIME shader reads retain exact bytes without per-artifact chunk rou
       method: 'GET', url: `${base}/shader-${index}`, headers: {},
     })) });
     const replies = JSON.parse(new TextDecoder().decode(await readResourceBytes(ref, invoke)));
+    const batchChunks = chunks;
+    assert.ok(batchChunks <= Math.ceil(ref.bytes / (192 * 1024)), 'the aggregate retains its bounded bridge window');
     for (const reply of replies) {
       assert.equal(reply.ok, true);
+      assert.ok(reply.value.base64, 'each shader artifact retains its inline representation');
       assert.deepEqual(Buffer.from(await readResourceBytes(reply.value, invoke)), shader);
     }
-    assert.equal(chunks, 0, 'compressible binary artifacts should fit inline instead of multiplying bridge calls');
+    assert.equal(chunks - batchChunks, 0, 'compressible binary artifacts should fit inline instead of multiplying bridge calls');
     assert.equal(replies[0].value.encoding, 'gzip');
     assert.equal(replies[0].value.headers['content-type'], 'application/octet-stream');
   } finally {

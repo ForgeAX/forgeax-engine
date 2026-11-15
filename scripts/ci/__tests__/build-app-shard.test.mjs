@@ -1059,7 +1059,7 @@ test('shared material transport retains the declared artifact closure and reject
     const path = join(root, 'apps/pbr/dist/assets', `${guid}.pack-fixture.json`);
     const pack = JSON.parse(readFileSync(path, 'utf8'));
     pack.assets[0].kind = 'material';
-    pack.assets[0].payload = { schemaVersion: 'material-cook/4', programs: [0, 0] };
+    pack.assets[0].payload = { schemaVersion: 'material-cook/5', programs: [0, 0] };
     if (scenario === 'invalid-reference') pack.assets[0].payload.programs[0] = 1;
     if (scenario === 'escaping-body') pack.assets[0].artifacts.body.path = '../escape.bin';
     if (scenario === 'missing-guid') pack.assets[0].guid = 'not-the-roster-guid';

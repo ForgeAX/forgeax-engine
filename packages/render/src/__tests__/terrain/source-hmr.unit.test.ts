@@ -97,7 +97,7 @@ async function fixture(grid = { columns: 2, rows: 2, spacing: 1, subsectionVerti
   const extract = () => {
     const sources: RenderableSnapshot[] = [],
       dispatch: DispatchEntry[] = [];
-    extractTerrainSources(world, assets, undefined, 0, sources, dispatch);
+    extractTerrainSources(world, assets, undefined, sources, dispatch);
     return { sources, dispatch };
   };
   const bind = (root: TerrainAsset) => {
@@ -168,7 +168,7 @@ it.each([
       (frame, material) => frame.with(material),
       new MaterialFrame(undefined),
     ),
-    [f.world].map(worldRenderResources),
+    worldRenderResources(f.world),
     ...terrainViewPreparation(f.assets),
   ).frame;
   const section = f.initial.sections[2];

@@ -39,6 +39,7 @@ parentPort.on('message', async (message) => {
       fixture: 'product',
       data: {
         kind: 'ready',
+        deviceGeneration: 1,
         capabilities: { backendKind: 'webgpu', storageBuffer: true },
       },
     });
@@ -60,7 +61,13 @@ parentPort.on('message', async (message) => {
         data: {
           kind: submitted ? 'submitted' : 'completed',
           revision: p.revision,
-          ...(submitted ? { features: [] } : { buffers }),
+          identity: { source: p.source, epoch: p.epoch },
+          ...(submitted
+            ? { features: [] }
+            : {
+                buffers,
+                completion: { frameId: picture.frameId, deviceGeneration: 1 },
+              }),
           frame: {
             kind: submitted ? 'frame-submitted' : 'frame-complete',
             worldIdentity: picture.worldIdentity,

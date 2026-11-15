@@ -5,7 +5,7 @@
 // a PassSelector. Plan-strategy D-4: Tags free Record + PassSelector
 // Record<string, string[]>. Requirements AC-05.
 
-import type { MaterialPass, PassSelector } from '@forgeax/engine-types';
+import { type MaterialPass, materialPassTags, type PassSelector } from '@forgeax/engine-types';
 
 // Internal Standard graph requests, including their value arrays, have no
 // mutable aliases. Only these exact identities bypass raw selector observation.
@@ -75,7 +75,5 @@ export function selectPasses(
   selector: PassSelector,
 ): readonly MaterialPass[] {
   if (Object.keys(selector).length === 0) return passes;
-  return passes.filter((p) =>
-    matchPass((p.renderState?.tags as Record<string, string> | undefined) ?? {}, selector),
-  );
+  return passes.filter((p) => matchPass(materialPassTags(p) as Record<string, string>, selector));
 }

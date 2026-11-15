@@ -452,76 +452,90 @@ export async function prepareMaterialShaders(
     // the same axes here prevents a physical-material variant from being
     // registered under a key that cannot be selected by the renderer.
     const variantDefines: Record<string, boolean> = {};
-    if (msEntry.variants.some((v) => 'STORAGE_BUFFER_AVAILABLE' in v.defines)) {
-      variantDefines.STORAGE_BUFFER_AVAILABLE = storageBufferCapable;
-    }
-    if (msEntry.variants.some((v) => 'WEBGL2_COMPAT' in v.defines)) {
-      variantDefines.WEBGL2_COMPAT = webgl2Downlevel;
-    }
-    if (msEntry.variants.some((v) => 'CLUSTER_FORWARD_AVAILABLE' in v.defines)) {
-      variantDefines.CLUSTER_FORWARD_AVAILABLE = false;
-    }
-    if (msEntry.variants.some((v) => 'GPU_DRIVEN_SCENE_INDEX_AVAILABLE' in v.defines)) {
-      variantDefines.GPU_DRIVEN_SCENE_INDEX_AVAILABLE = false;
-    }
-    bootRecordTimeAxesOff(msEntry, variantDefines);
-    if (msEntry.variants.some((v) => 'VERTEX_COLOR_AVAILABLE' in v.defines)) {
-      variantDefines.VERTEX_COLOR_AVAILABLE = false;
-    }
-    if (msEntry.variants.some((v) => 'COVERAGE_ONLY' in v.defines)) {
-      // Coverage-only is a producer-owned opt-in for sprite/temporal paths.
-      // Keep the ordinary boot material on the opaque variant; record-time
-      // coverage batches request the true variant explicitly.
-      variantDefines.COVERAGE_ONLY = false;
-    }
-    if (msEntry.variants.some((v) => 'VISIBLE_SURFACE_AVAILABLE' in v.defines)) {
-      variantDefines.VISIBLE_SURFACE_AVAILABLE = false;
-    }
-    if (msEntry.variants.some((v) => 'PROBE_BLEND_AVAILABLE' in v.defines)) {
-      variantDefines.PROBE_BLEND_AVAILABLE = false;
-    }
-    if (msEntry.variants.some((v) => 'ATMOSPHERE_AVAILABLE' in v.defines)) {
-      variantDefines.ATMOSPHERE_AVAILABLE = atmosphereAvailable(
-        storageBufferCapable,
-        rhiDevice.limits.maxSampledTexturesPerShaderStage,
-      );
-    }
-    if (msEntry.variants.some((v) => 'EXTENDED_LIGHTING_AVAILABLE' in v.defines)) {
-      variantDefines.EXTENDED_LIGHTING_AVAILABLE = extendedLightingShaderAvailable;
-    }
-    // A material shader that declares the projector axis owns the same
-    // capability-selected resource pair, regardless of whether it is the
-    // engine Standard entry or a VFX particle entry. Omitting this value for
-    // particle variants asks the manifest for a partial key and fails before
-    // the first frame when the shader does not use the Standard root.
-    if (msEntry.variants.some((v) => 'PROJECTOR_AVAILABLE' in v.defines)) {
-      variantDefines.PROJECTOR_AVAILABLE = projectorAvailable;
-    }
-    if (msEntry.variants.some((v) => 'TRANSMISSION_AVAILABLE' in v.defines)) {
-      variantDefines.TRANSMISSION_AVAILABLE = false;
-    }
-    // Record-time fallback MRT is opt-in; boot the ordinary single-target
-    // Standard artifact even when the manifest declares this axis.
-    if (msEntry.variants.some((v) => 'REFLECTION_FALLBACK_AVAILABLE' in v.defines)) {
-      variantDefines.REFLECTION_FALLBACK_AVAILABLE = false;
-    }
-    // bug-20260708 M2 (a): PER_INSTANCE_REGION axis default = false at boot.
-    // Per-entity spritePH path (`main-pass-sprite-draws.ts:511-513`) expects
-    // `variantSet=undefined` to resolve to the PIR=false shader source (64B
-    // InstanceData) via `lookup.value.source` fallback in
-    // `getMaterialShaderPipeline`. The PIR=true canonical variant (80B) is
-    // reserved for SpriteInstances batches which explicitly request it via
-    // `SPRITE_PASS_PER_INSTANCE_REGION_VARIANT_SET === ''` (canonical all-
-    // true) — resolved through `findVariantByKey(msEntry, '')` in the same
-    // `getMaterialShaderPipeline` substitution branch. Mirrors the
-    // CLUSTER_FORWARD_AVAILABLE pattern above: axis default false unless
-    // explicitly requested by a caller variantSet.
-    if (msEntry.variants.some((v) => 'PER_INSTANCE_REGION' in v.defines)) {
-      variantDefines.PER_INSTANCE_REGION = false;
-    }
-    if (msEntry.variants.some((v) => 'SKINNING_DISABLED' in v.defines)) {
-      variantDefines.SKINNING_DISABLED = true;
-    }
+    const setBootSurfaceAxes = () => {
+      if (msEntry.variants.some((v) => 'STORAGE_BUFFER_AVAILABLE' in v.defines)) {
+        variantDefines.STORAGE_BUFFER_AVAILABLE = storageBufferCapable;
+      }
+      if (msEntry.variants.some((v) => 'WEBGL2_COMPAT' in v.defines)) {
+        variantDefines.WEBGL2_COMPAT = webgl2Downlevel;
+      }
+      if (msEntry.variants.some((v) => 'CLUSTER_FORWARD_AVAILABLE' in v.defines)) {
+        variantDefines.CLUSTER_FORWARD_AVAILABLE = false;
+      }
+      if (msEntry.variants.some((v) => 'GPU_DRIVEN_SCENE_INDEX_AVAILABLE' in v.defines)) {
+        variantDefines.GPU_DRIVEN_SCENE_INDEX_AVAILABLE = false;
+      }
+      bootRecordTimeAxesOff(msEntry, variantDefines);
+      if (msEntry.variants.some((v) => 'VERTEX_COLOR_AVAILABLE' in v.defines)) {
+        variantDefines.VERTEX_COLOR_AVAILABLE = false;
+      }
+      if (msEntry.variants.some((v) => 'COVERAGE_ONLY' in v.defines)) {
+        // Coverage-only is a producer-owned opt-in for sprite/temporal paths.
+        // Keep the ordinary boot material on the opaque variant; record-time
+        // coverage batches request the true variant explicitly.
+        variantDefines.COVERAGE_ONLY = false;
+      }
+      if (msEntry.variants.some((v) => 'VISIBLE_SURFACE_AVAILABLE' in v.defines)) {
+        variantDefines.VISIBLE_SURFACE_AVAILABLE = false;
+      }
+      if (msEntry.variants.some((v) => 'WATER_WAVES_AVAILABLE' in v.defines)) {
+        variantDefines.WATER_WAVES_AVAILABLE = false;
+      }
+      if (msEntry.variants.some((v) => 'WATER_INFO_RGBA16' in v.defines)) {
+        variantDefines.WATER_INFO_RGBA16 = false;
+      }
+      if (msEntry.variants.some((v) => 'PROBE_BLEND_AVAILABLE' in v.defines)) {
+        variantDefines.PROBE_BLEND_AVAILABLE = false;
+      }
+    };
+    setBootSurfaceAxes();
+
+    const setBootLightingAxes = () => {
+      if (msEntry.variants.some((v) => 'ATMOSPHERE_AVAILABLE' in v.defines)) {
+        variantDefines.ATMOSPHERE_AVAILABLE = atmosphereAvailable(
+          storageBufferCapable,
+          rhiDevice.limits.maxSampledTexturesPerShaderStage,
+        );
+      }
+      if (msEntry.variants.some((v) => 'EXTENDED_LIGHTING_AVAILABLE' in v.defines)) {
+        variantDefines.EXTENDED_LIGHTING_AVAILABLE = extendedLightingShaderAvailable;
+      }
+      // A material shader that declares the projector axis owns the same
+      // capability-selected resource pair, regardless of whether it is the
+      // engine Standard entry or a VFX particle entry. Omitting this value for
+      // particle variants asks the manifest for a partial key and fails before
+      // the first frame when the shader does not use the Standard root.
+      if (msEntry.variants.some((v) => 'PROJECTOR_AVAILABLE' in v.defines)) {
+        variantDefines.PROJECTOR_AVAILABLE = projectorAvailable;
+      }
+      if (msEntry.variants.some((v) => 'TRANSMISSION_AVAILABLE' in v.defines)) {
+        variantDefines.TRANSMISSION_AVAILABLE = false;
+      }
+      // Record-time fallback MRT is opt-in; boot the ordinary single-target
+      // Standard artifact even when the manifest declares this axis.
+      if (msEntry.variants.some((v) => 'REFLECTION_FALLBACK_AVAILABLE' in v.defines)) {
+        variantDefines.REFLECTION_FALLBACK_AVAILABLE = false;
+      }
+      // bug-20260708 M2 (a): PER_INSTANCE_REGION axis default = false at boot.
+      // Per-entity spritePH path (`main-pass-sprite-draws.ts:511-513`) expects
+      // `variantSet=undefined` to resolve to the PIR=false shader source (64B
+      // InstanceData) via `lookup.value.source` fallback in
+      // `getMaterialShaderPipeline`. The PIR=true canonical variant (80B) is
+      // reserved for SpriteInstances batches which explicitly request it via
+      // `SPRITE_PASS_PER_INSTANCE_REGION_VARIANT_SET === ''` (canonical all-
+      // true) — resolved through `findVariantByKey(msEntry, '')` in the same
+      // `getMaterialShaderPipeline` substitution branch. Mirrors the
+      // CLUSTER_FORWARD_AVAILABLE pattern above: axis default false unless
+      // explicitly requested by a caller variantSet.
+      if (msEntry.variants.some((v) => 'PER_INSTANCE_REGION' in v.defines)) {
+        variantDefines.PER_INSTANCE_REGION = false;
+      }
+      if (msEntry.variants.some((v) => 'SKINNING_DISABLED' in v.defines)) {
+        variantDefines.SKINNING_DISABLED = true;
+      }
+    };
+    setBootLightingAxes();
+
     // Authored axes keep the manifest's all-true default, as in
     // resolveMaterialShaderVariantSet; only Engine admission axes are listed above.
     for (const variant of msEntry.variants) {
@@ -665,7 +679,9 @@ export type LayoutKind =
   | 'hdrp-pbr'
   | 'hdrp-skin'
   | 'sprite-urp'
-  | 'unlit-urp';
+  | 'unlit-urp'
+  | 'scene-direct-unlit'
+  | 'scene-direct-cluster-unlit';
 
 // Prepared material and view-only depth programs share this View ABI.
 export function viewAndSceneDepthLayoutEntries(hasAtmosphere: boolean): GPUBindGroupLayoutEntry[] {
@@ -747,18 +763,23 @@ export function isSharedMaterialUserRegionCompatible(
  * - DIRECTIONAL_SHADOW_SIMPLE: a per-frame shadow-config fact; the boot
  *   artifact keeps the general receiver and record time requests the simple
  *   one when the frame qualifies.
+ * - GPU_SCENE_DIRECT: a direct draw selects it when its rows are already in
+ *   the GPU Scene; the boot artifact keeps the packed instance path.
  * - LOD_DITHER / CLIPPING_PLANES: discard sources boot absent, so the
  *   discard-free program is the ordinary one; a draw whose surface discards
  *   are reachable selects them.
  */
 const BOOT_OFF_RECORD_TIME_AXES = [
   'GPU_DRIVEN_SCENE_INDEX_EXPLICIT',
+  'GPU_SCENE_DIRECT',
   'ALPHA_MASK',
   'DIRECTIONAL_SHADOW_SIMPLE',
   // Bound 1:1 to DIRECTIONAL_SHADOW_SIMPLE by the permutation rules.
   'LEAN_LIGHTING',
   'LOD_DITHER',
   'CLIPPING_PLANES',
+  // A GPU-driven batch whose authored values read only UV0 selects it.
+  'STANDARD_LEAN_INPUTS',
 ] as const;
 
 function bootRecordTimeAxesOff(
@@ -787,11 +808,14 @@ export function selectNoColorPbrVariant(
   const probeBlendRequested = requestsProbeBlendVariant(variantSet);
   const coverageOnlyRequested = variantSet?.includes('COVERAGE_ONLY=true') === true;
   const visibleSurfaceRequested = variantSet?.includes('VISIBLE_SURFACE_AVAILABLE=true') === true;
+  const waterWavesRequested = variantSet?.includes('WATER_WAVES_AVAILABLE=true') === true;
+  const waterInfoRgba16Requested = variantSet?.includes('WATER_INFO_RGBA16=true') === true;
   const alphaMaskRequested = variantSet?.includes('ALPHA_MASK=true') === true;
   const atmosphereRequested = variantSet?.includes('ATMOSPHERE_AVAILABLE=true') === true;
   const directionalSimpleRequested =
     variantSet?.includes('DIRECTIONAL_SHADOW_SIMPLE=true') === true;
   const leanLightingRequested = variantSet?.includes('LEAN_LIGHTING=true') === true;
+  const leanInputsRequested = variantSet?.includes('STANDARD_LEAN_INPUTS=true') === true;
   return manifestEntry?.variants.find(
     ({ defines }) =>
       defines.STORAGE_BUFFER_AVAILABLE === storageBufferCapable &&
@@ -799,9 +823,12 @@ export function selectNoColorPbrVariant(
       declaredAxisIs(defines, 'ALPHA_MASK', alphaMaskRequested) &&
       declaredAxisIs(defines, 'ATMOSPHERE_AVAILABLE', atmosphereRequested) &&
       declaredAxisIs(defines, 'VISIBLE_SURFACE_AVAILABLE', visibleSurfaceRequested) &&
+      declaredAxisIs(defines, 'WATER_WAVES_AVAILABLE', waterWavesRequested) &&
+      declaredAxisIs(defines, 'WATER_INFO_RGBA16', waterInfoRgba16Requested) &&
       declaredAxisIs(defines, 'COVERAGE_ONLY', coverageOnlyRequested) &&
       declaredAxisIs(defines, 'DIRECTIONAL_SHADOW_SIMPLE', directionalSimpleRequested) &&
       declaredAxisIs(defines, 'LEAN_LIGHTING', leanLightingRequested) &&
+      declaredAxisIs(defines, 'STANDARD_LEAN_INPUTS', leanInputsRequested) &&
       declaredAxisIs(defines, 'EXTENDED_LIGHTING_AVAILABLE', extendedLightingShaderAvailable) &&
       declaredAxisIs(defines, 'DIRECTIONAL_PCSS_AVAILABLE', directionalPcssAvailable) &&
       declaredAxisIs(defines, 'PROJECTOR_AVAILABLE', projectorAvailable) &&
@@ -833,12 +860,17 @@ export type MaterialShaderVertexInputContract = 'none' | 'render-material';
 
 export function resolveMaterialShaderBindingContract(
   receipt:
-    | Pick<import('@forgeax/engine-types').MaterialProgramAbi, 'bindings' | 'sceneDepth'>
+    | Pick<
+        import('@forgeax/engine-types').MaterialProgramAbi,
+        'bindings' | 'sceneDepth' | 'systemInputs' | 'entryPoints'
+      >
     | undefined,
 ): MaterialShaderBindingContract {
   return {
     bindings: receipt?.bindings ?? 'render-material',
     ...(receipt?.sceneDepth === undefined ? {} : { sceneDepth: receipt.sceneDepth }),
+    ...(receipt?.systemInputs === undefined ? {} : { systemInputs: receipt.systemInputs }),
+    ...(receipt?.entryPoints === undefined ? {} : { entryPoints: receipt.entryPoints }),
   };
 }
 
@@ -968,8 +1000,41 @@ export function requiresPreparedMaterialShader(vertexLayout: string | undefined)
     vertexLayout === RENDER_FEATURE_VERTEX_LAYOUTS.topologySegmentInstance ||
     vertexLayout === RENDER_FEATURE_VERTEX_LAYOUTS.topologySegmentMaterialInputInstance ||
     vertexLayout === RENDER_FEATURE_VERTEX_LAYOUTS.meshGeometryMaterialInstance ||
-    vertexLayout === RENDER_FEATURE_VERTEX_LAYOUTS.meshGeometryMaterialInputInstance
+    vertexLayout === RENDER_FEATURE_VERTEX_LAYOUTS.meshGeometryMaterialInputInstance ||
+    vertexLayout === RENDER_FEATURE_VERTEX_LAYOUTS.waterInfoPositionFlow
   );
+}
+
+/** Layouts whose slot 3 binds GPU Scene tables; undefined for every other kind. */
+function sceneTablePipelineLayout(
+  state: SceneTablePipelineLayouts,
+  layoutKind: LayoutKind | undefined,
+): PipelineLayout | null | undefined {
+  switch (layoutKind) {
+    case 'gpu-driven-pbr':
+      return state.gpuDrivenPbrPipelineLayout ?? null;
+    case 'gpu-driven-skin':
+      return state.gpuDrivenPbrSkinPipelineLayout ?? null;
+    case 'gpu-driven-cluster-pbr':
+      return state.gpuDrivenClusterPbrPipelineLayout ?? null;
+    case 'gpu-driven-cluster-skin':
+      return state.gpuDrivenClusterPbrSkinPipelineLayout ?? null;
+    case 'scene-direct-unlit':
+      return state.sceneDirectPipelineLayout ?? null;
+    case 'scene-direct-cluster-unlit':
+      return state.sceneDirectClusterPipelineLayout ?? null;
+    default:
+      return undefined;
+  }
+}
+
+interface SceneTablePipelineLayouts {
+  readonly gpuDrivenPbrPipelineLayout?: PipelineLayout | null;
+  readonly sceneDirectPipelineLayout?: PipelineLayout | null;
+  readonly sceneDirectClusterPipelineLayout?: PipelineLayout | null;
+  readonly gpuDrivenPbrSkinPipelineLayout?: PipelineLayout | null;
+  readonly gpuDrivenClusterPbrPipelineLayout?: PipelineLayout | null;
+  readonly gpuDrivenClusterPbrSkinPipelineLayout?: PipelineLayout | null;
 }
 
 export function selectPipelineLayoutForVariant(
@@ -981,6 +1046,8 @@ export function selectPipelineLayoutForVariant(
     readonly pbrSkinPipelineLayout: PipelineLayout | null;
     readonly pbrSkinProbePipelineLayout?: PipelineLayout | null;
     readonly gpuDrivenPbrPipelineLayout?: PipelineLayout | null;
+    readonly sceneDirectPipelineLayout?: PipelineLayout | null;
+    readonly sceneDirectClusterPipelineLayout?: PipelineLayout | null;
     readonly gpuDrivenPbrSkinPipelineLayout?: PipelineLayout | null;
     readonly gpuDrivenClusterPbrPipelineLayout?: PipelineLayout | null;
     readonly gpuDrivenClusterPbrSkinPipelineLayout?: PipelineLayout | null;
@@ -992,18 +1059,8 @@ export function selectPipelineLayoutForVariant(
 ): PipelineLayout | null {
   if (state === null) return null;
   const probeBlendVariant = variantSet?.includes('PROBE_BLEND_AVAILABLE=true') === true;
-  if (layoutKind === 'gpu-driven-pbr') {
-    return state.gpuDrivenPbrPipelineLayout ?? null;
-  }
-  if (layoutKind === 'gpu-driven-skin') {
-    return state.gpuDrivenPbrSkinPipelineLayout ?? null;
-  }
-  if (layoutKind === 'gpu-driven-cluster-pbr') {
-    return state.gpuDrivenClusterPbrPipelineLayout ?? null;
-  }
-  if (layoutKind === 'gpu-driven-cluster-skin') {
-    return state.gpuDrivenClusterPbrSkinPipelineLayout ?? null;
-  }
+  const sceneLayout = sceneTablePipelineLayout(state, layoutKind);
+  if (sceneLayout !== undefined) return sceneLayout;
   // Deformation and probe bindings are independent layout dimensions.
   if (layoutKind === 'pbr-skin') {
     return probeBlendVariant
@@ -1108,8 +1165,12 @@ function isProducerOptInAxis(axis: string): boolean {
     axis === 'CLIPPING_PLANES' ||
     axis === 'GPU_DRIVEN_SCENE_INDEX_AVAILABLE' ||
     axis === 'GPU_DRIVEN_SCENE_INDEX_EXPLICIT' ||
+    axis === 'GPU_SCENE_DIRECT' ||
     axis === 'COVERAGE_ONLY' ||
-    axis === 'VISIBLE_SURFACE_AVAILABLE'
+    axis === 'VISIBLE_SURFACE_AVAILABLE' ||
+    axis === 'WATER_WAVES_AVAILABLE' ||
+    axis === 'WATER_INFO_RGBA16' ||
+    axis === 'STANDARD_LEAN_INPUTS'
   );
 }
 
@@ -1291,11 +1352,18 @@ function withoutVertexColorAxis(
   if (variantSet !== '') {
     return variantSet?.replace('VERTEX_COLOR_AVAILABLE=true', 'VERTEX_COLOR_AVAILABLE=false');
   }
+  // Lean inputs narrow the vertex stage only for a material that admits them;
+  // the general-input row stays the default (UE emits extra interpolants unless
+  // the material proves it does not read them, HLSLMaterialTranslator.cpp:15709-15716).
   const noColorVariant = manifestEntry.variants.find(
     (variant) =>
       variant.defines.VERTEX_COLOR_AVAILABLE === false &&
-      Object.entries(variant.defines).every(
-        ([axis, value]) => axis === 'VERTEX_COLOR_AVAILABLE' || value === true,
+      Object.entries(variant.defines).every(([axis, value]) =>
+        axis === 'VERTEX_COLOR_AVAILABLE'
+          ? true
+          : axis === 'STANDARD_LEAN_INPUTS'
+            ? value === false
+            : value === true,
       ),
   );
   return noColorVariant?.definesKey ?? 'VERTEX_COLOR_AVAILABLE=false';
@@ -1385,7 +1453,7 @@ export function materialPipelineCacheKey(
 /** Attachment axis: declared extra outputs follow the primary color format. */
 export function materialPipelineAttachments(
   passKind: PassKind,
-  colorFormat: GPUTextureFormat,
+  colorFormat: GPUTextureFormat | null,
   additionalColorFormats: readonly GPUTextureFormat[] | undefined,
   depthFormatOverride: GPUTextureFormat | null | undefined,
   sampleCount: number,
@@ -1393,11 +1461,12 @@ export function materialPipelineAttachments(
   colorless = false,
 ): PipelineSpec['attachments'] {
   return {
-    colorFormats: colorless
-      ? []
-      : additionalColorFormats === undefined
-        ? colorFormatsForPassKind(passKind, colorFormat)
-        : [colorFormat, ...additionalColorFormats],
+    colorFormats:
+      colorless || colorFormat === null
+        ? []
+        : additionalColorFormats === undefined
+          ? colorFormatsForPassKind(passKind, colorFormat)
+          : [colorFormat, ...additionalColorFormats],
     depthFormat: materialPipelineDepthFormat(passKind, depthFormatOverride),
     sampleCount: (sampleCount === 4 ? 4 : 1) as 1 | 4,
   };
@@ -1418,11 +1487,10 @@ function materialPipelineDepthFormat(
   passKind: PassKind,
   depthFormatOverride: GPUTextureFormat | null | undefined,
 ): GPUTextureFormat | undefined {
+  if (depthFormatOverride === null) return undefined;
   if (passKindPolicyTable[passKind]?.shape === 'depth-only')
     return depthFormatOverride ?? 'depth32float';
-  return depthFormatOverride === null
-    ? undefined
-    : (depthFormatOverride ?? 'depth32float-stencil8');
+  return depthFormatOverride ?? 'depth32float-stencil8';
 }
 
 /**

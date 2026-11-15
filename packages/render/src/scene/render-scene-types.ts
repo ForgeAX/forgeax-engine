@@ -7,7 +7,6 @@ import type { MeshFrame } from './mesh-frame';
 export type { RenderSceneResyncReason } from '../inspection-types';
 
 export interface RenderSceneIdentity {
-  readonly worldId: number;
   readonly entityKey: number;
 }
 

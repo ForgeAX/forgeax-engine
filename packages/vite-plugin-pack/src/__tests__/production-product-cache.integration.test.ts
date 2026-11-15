@@ -102,6 +102,7 @@ it('revalidates current references after a cached material product and retains t
   const dependency = join(root, 'dependency.pack.json');
   const guid = '019ffa97-0000-7000-8000-000000000093';
   const cache = join(root, 'cache');
+  let cooks = 0;
   const run = async (cached: boolean) => {
     const plugin = createPluginPackInternal({
       roots: [root],
@@ -110,6 +111,7 @@ it('revalidates current references after a cached material product and retains t
           key: 'material',
           cacheIdentity: () => 'reference-fixture/1',
           cook(input) {
+            cooks++;
             const draft = input as { guid: string; source: unknown };
             return {
               guid: draft.guid,
@@ -157,9 +159,17 @@ it('revalidates current references after a cached material product and retains t
       `export default {
       schemaVersion: '2.0.0',
       packageId: new Uint8Array([1,159,250,151,0,0,112,0,128,0,0,0,0,0,0,94]),
-      build: () => ({ ok: true, value: { material: {
+      build: async ({ readByGuid }) => {
+        // Content evidence admits the product cache. A missing read still
+        // leaves the cooker's declared reference for the publication owner to reject.
+        const dependency = await readByGuid(new Uint8Array([1,159,250,151,0,0,112,0,128,0,0,0,0,0,0,147]));
+        if (!dependency.ok && dependency.error?.code !== 'asset-not-found') {
+          throw new Error(JSON.stringify(dependency.error));
+        }
+        return { ok: true, value: { material: {
         kind: 'material', passes: [{ name: 'forward', program: { module: 'fixture::surface' } }], parameters: [],
-      } } }),
+        } } };
+      },
     };`,
     );
     const cold = await run(true);
@@ -167,6 +177,10 @@ it('revalidates current references after a cached material product and retains t
     expect(
       await new DdcEntryStore(join(cache, 'scriptable-pack-products')).listKeys(),
     ).toHaveLength(1);
+    const warm = await run(true);
+    expect(warm.error).toBeUndefined();
+    expect(warm.emitted).toEqual(cold.emitted);
+    expect(cooks).toBe(1);
     await rm(dependency);
     const cachedFailure = await run(true);
     const uncachedFailure = await run(false);

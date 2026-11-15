@@ -1,5 +1,5 @@
 import { World } from '@forgeax/engine-ecs';
-import { PhysicsError } from '@forgeax/engine-physics';
+import { PhysicsError, PhysicsWorldResource } from '@forgeax/engine-physics';
 import physics2d from '@forgeax/engine-physics-rapier2d';
 import physics3d from '@forgeax/engine-physics-rapier3d';
 import type { Renderer } from '@forgeax/engine-render';
@@ -106,7 +106,7 @@ describe('createApp Rapier 3D activation failure', () => {
     });
     expect(rapier3d.createWorld).not.toHaveBeenCalled();
     expect(rapier3d.registerSystems).not.toHaveBeenCalled();
-    expect(world.hasResource('PhysicsWorld')).toBe(false);
+    expect(world.hasResource(PhysicsWorldResource)).toBe(false);
     expect(world.update(0)).toMatchObject({ ok: true });
   });
 });
@@ -153,7 +153,7 @@ describe('createApp Rapier 2D activation failure', () => {
     });
     expect(rapier2d.createWorld).not.toHaveBeenCalled();
     expect(rapier2d.registerSystems).not.toHaveBeenCalled();
-    expect(world.hasResource('PhysicsWorld')).toBe(false);
+    expect(world.hasResource(PhysicsWorldResource)).toBe(false);
     expect(world.update(0)).toMatchObject({ ok: true });
   });
 });

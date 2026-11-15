@@ -32,7 +32,7 @@ describe('Resonance Forge ScriptablePack dogfood', () => {
       programFingerprint: 'resonance-test',
       emitters: [{ id: 'charge', capacity: 8 }],
       program: {
-        format: 'forgeax-vfx-program-4',
+        format: 'forgeax-vfx-program-5',
         fingerprint: 'resonance-test',
         emitters: [],
       },

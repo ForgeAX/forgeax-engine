@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const appRoot = resolve(here, '..');
+const evidenceDir = resolve(process.env.SMOKE_EVIDENCE_DIR ?? resolve(appRoot, 'evidence'));
 const repoRoot = resolve(appRoot, '..', '..', '..');
 const sourceRevision = execFileSync('git', ['rev-parse', 'HEAD'], {
   cwd: repoRoot,
@@ -24,8 +25,8 @@ const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
 const expectedFailure =
   output.includes('Bloom contribution oracle: enabled output is all black') ||
   output.includes('Bloom contribution oracle: on/off numeric RGB readback is identical');
-const evidencePath = resolve(appRoot, 'evidence', 'falsify-result.json');
-mkdirSync(resolve(appRoot, 'evidence'), { recursive: true });
+const evidencePath = resolve(evidenceDir, 'falsify-result.json');
+mkdirSync(evidenceDir, { recursive: true });
 writeFileSync(
   evidencePath,
   `${JSON.stringify(
@@ -35,7 +36,7 @@ writeFileSync(
       command: 'pnpm --filter @forgeax/hello-bloom smoke:falsify',
       injectedFactor:
         'all scene radiance sources removed while camera, graph, and frame schedule remain unchanged',
-      childEvidencePath: 'apps/hello/bloom/evidence/falsify-dawn-result.json',
+      childEvidencePath: resolve(evidenceDir, 'falsify-dawn-result.json'),
       childExitCode: result.status ?? 1,
       expectedFailure,
       verdict: expectedFailure && result.status !== 0 ? 'pass' : 'fail',

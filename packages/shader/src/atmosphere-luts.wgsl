@@ -50,7 +50,7 @@ fn atmosphere_aerial_perspective(@builtin(global_invocation_id) id: vec3<u32>) {
 // finite under high lux. Consumers apply the sun's luminance exactly once
 // (atmosphere_sun_luminance), so an authored sun tint never greys the sky.
 // UE distant skylight: uniform spherical average with isotropic phases, fixed
-// ground-reference altitude; independent of the display and capture cameras.
+// 6 km ground-reference altitude; independent of the display and capture cameras.
 var<workgroup> distantSamples: array<vec3<f32>,64>;
 @compute @workgroup_size(64)
 fn atmosphere_distant_sky_light(@builtin(local_invocation_index) i:u32) {

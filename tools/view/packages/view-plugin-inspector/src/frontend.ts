@@ -1,5 +1,5 @@
 import type { Context } from '@forgeax/engine-plugin';
-import type { FrontendConfig } from '@forgeax/view-workspace-core/frontend-contract';
+import type { AssetBrowserReveal, FrontendConfig } from '@forgeax/view-workspace-core/frontend-contract';
 import { FRONTEND_PLUGIN_ID, FRONTEND_MODULE } from './identity.ts';
 import { PAGE_TYPE, PANEL_LAYOUT, SLOT, TITLE_I18N_KEY } from './identity.ts';
 
@@ -21,10 +21,8 @@ const viewObjectInspectorFrontendPlugin = {
       layout: PANEL_LAYOUT,
       panel: 'Inspector',
       props: { client: workspaceClient, assetReferences: ctx.get('viewAssetReferences', false),
-        browseAsset: (guid: string) => {
-          const scope = ctx.get('viewAssetReferences', false)?.getState().scope;
-          return scope ? ctx.get('viewAssetBrowser', false)?.revealAsset({ ...scope, guid }) ?? Promise.resolve(false) : Promise.resolve(false);
-        } },
+        browseAsset: (guid: string, scope: Omit<AssetBrowserReveal, 'guid'>) =>
+          ctx.get('viewAssetBrowser', false)?.revealAsset({ ...scope, guid }) ?? Promise.resolve(false) },
     });
     ctx.effect(() => async () => {
       await disposePanel?.();

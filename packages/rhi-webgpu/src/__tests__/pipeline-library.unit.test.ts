@@ -23,10 +23,11 @@ const { Hash } = (
   globalThis as unknown as { process: { getBuiltinModule(id: string): unknown } }
 ).process.getBuiltinModule('node:crypto') as { Hash: { prototype: NativeHash } };
 
-async function fixture(colorAttachmentBytes?: number) {
+async function fixture(colorAttachmentBytes?: number, lost?: Promise<GPUDeviceLostInfo>) {
   const gpu = createMockGpu(),
     adapter = await gpu.requestAdapter();
   const raw = (await adapter?.requestDevice()) as unknown as GPUDevice;
+  if (lost !== undefined) Object.defineProperty(raw, 'lost', { value: lost, configurable: true });
   const render = vi.fn(async (_d: GPURenderPipelineDescriptor) => ({}) as GPURenderPipeline);
   const compute = vi.fn(async (_d: GPUComputePipelineDescriptor) => ({}) as GPUComputePipeline);
   Object.assign(raw, {
@@ -65,6 +66,94 @@ async function fixture(colorAttachmentBytes?: number) {
     descriptor,
   };
 }
+
+it.each([
+  [1, 'vertex'],
+  [2, 'fragment'],
+  [4, 'compute'],
+] as const)('admits the complete storage budget across all groups for stage %s', async (visibility, name) => {
+  const f = await fixture();
+  const native = vi.spyOn(f.raw, 'createPipelineLayout');
+  const group = (count: number, stage = visibility) =>
+    f.device
+      .createBindGroupLayout({
+        entries: Array.from({ length: count }, (_, binding) => ({
+          binding,
+          visibility: stage,
+          buffer: { type: 'read-only-storage' as const },
+        })),
+      })
+      .unwrap();
+  const first = group(4);
+  const boundary = group(4);
+  expect(f.device.createPipelineLayout({ bindGroupLayouts: [first, boundary] }).ok).toBe(true);
+  native.mockClear();
+  const rejected = f.device.createPipelineLayout({ bindGroupLayouts: [first, group(5)] });
+  expect(rejected).toMatchObject({ ok: false, error: { code: 'limit-exceeded' } });
+  if (rejected.ok) throw new Error('Expected storage-stage limit rejection');
+  expect(rejected.error.hint).toBe(
+    `${name} stage requires 9 storage buffers across all bind groups; device limit is 8`,
+  );
+  expect(native).not.toHaveBeenCalled();
+  expect(
+    f.device.createPipelineLayout({
+      bindGroupLayouts: [first, group(8, visibility === 1 ? 2 : 1)],
+    }).ok,
+  ).toBe(true);
+});
+
+it('counts combined visibility and writable storage without charging uniforms or invisible resources', async () => {
+  const f = await fixture();
+  const native = vi.spyOn(f.raw, 'createPipelineLayout');
+  const shared = f.device
+    .createBindGroupLayout({
+      entries: [
+        ...Array.from({ length: 8 }, (_, binding) => ({
+          binding,
+          visibility: 3,
+          buffer: {
+            type: binding % 2 === 0 ? ('storage' as const) : ('read-only-storage' as const),
+          },
+        })),
+        ...Array.from({ length: 8 }, (_, index) => ({
+          binding: index + 8,
+          visibility: 0,
+          buffer: { type: 'storage' as const },
+        })),
+        { binding: 16, visibility: 7, buffer: { type: 'uniform' } },
+        { binding: 17, visibility: 7, texture: { sampleType: 'float' } },
+        { binding: 18, visibility: 7, sampler: { type: 'filtering' } },
+      ],
+    })
+    .unwrap();
+  const compute = f.device
+    .createBindGroupLayout({
+      entries: Array.from({ length: 8 }, (_, binding) => ({
+        binding,
+        visibility: 4,
+        buffer: { type: 'storage' as const },
+      })),
+    })
+    .unwrap();
+  expect(f.device.createPipelineLayout({ bindGroupLayouts: [shared, compute] }).ok).toBe(true);
+  native.mockClear();
+  const extraFragment = f.device
+    .createBindGroupLayout({
+      entries: [{ binding: 0, visibility: 2, buffer: { type: 'storage' } }],
+    })
+    .unwrap();
+  const rejected = f.device.createPipelineLayout({
+    bindGroupLayouts: [shared, compute, extraFragment],
+  });
+  expect(rejected).toMatchObject({
+    ok: false,
+    error: {
+      code: 'limit-exceeded',
+      hint: 'fragment stage requires 9 storage buffers across all bind groups; device limit is 8',
+    },
+  });
+  expect(native).not.toHaveBeenCalled();
+});
 
 it('does not hash an uncached Shader through the pending list during lightweight history inspection', async () => {
   const f = await fixture();
@@ -272,6 +361,41 @@ it('exports recipes and prepares native completion on a new device before synchr
   expect(b.sync).not.toHaveBeenCalled();
   expect(b.render).toHaveBeenCalledTimes(1);
   expect(b.device.pipelineLibrary.export().unwrap()).toEqual(archive);
+});
+
+it('serves prepared library recipes to runtime sources carrying a published digest of the same text', async () => {
+  const a = await fixture();
+  a.device.createRenderPipeline(a.descriptor()).unwrap();
+  // A portable library carries plain WGSL, so the receiving device indexes it
+  // by content hash; the runtime engine source names the same text by digest.
+  const archive = JSON.parse(
+    JSON.stringify(a.device.pipelineLibrary.export().unwrap()),
+  ) as PipelineLibraryManifest;
+  const b = await fixture();
+  expect((await b.device.pipelineLibrary.prepare(archive)).ok).toBe(true);
+  const nativeModules = vi.spyOn(b.raw, 'createShaderModule');
+  const published = new ShaderSource(['shader source'], 'a'.repeat(64));
+  const module = createShaderModuleImmediate(b.device, published.descriptor('module')).unwrap();
+  const runtime = b.descriptor();
+  const expected = await b.render.mock.results[0]?.value;
+  const pipeline = b.device
+    .createRenderPipeline({
+      ...runtime,
+      vertex: { ...runtime.vertex, module },
+      fragment: { ...(runtime.fragment as NonNullable<typeof runtime.fragment>), module },
+    })
+    .unwrap();
+  expect(b.sync).not.toHaveBeenCalled();
+  expect(pipeline).toBe(expected);
+  expect(b.render).toHaveBeenCalledTimes(1);
+  expect(nativeModules).not.toHaveBeenCalled();
+  // The reverse order (published runtime module first) reaches the same module.
+  const c = await fixture();
+  const first = createShaderModuleImmediate(c.device, published.descriptor('module')).unwrap();
+  expect((await c.device.pipelineLibrary.prepare(archive)).ok).toBe(true);
+  expect(c.module()).toBe(first);
+  // Equal length alone never joins the two key domains.
+  expect(c.module('shader sourcf')).not.toBe(first);
 });
 
 it('awaits shared native work and does not treat a synchronous handle as compiled', async () => {
@@ -549,8 +673,116 @@ async function backgroundArchive(count: number) {
   ) as PipelineLibraryManifest;
 }
 
+/**
+ * A GPU process termination settles in-flight native requests and `device.lost`
+ * from the same disconnect, in no specified order. `nativeFirst` rejects the
+ * native requests before resolving `device.lost`.
+ */
+function controllableLoss(reason: GPUDeviceLostReason = 'unknown') {
+  let lose!: (info: GPUDeviceLostInfo) => void;
+  const lost = new Promise<GPUDeviceLostInfo>((resolve) => {
+    lose = resolve;
+  });
+  const natives: ((cause: unknown) => void)[] = [];
+  const info = { reason, message: 'GPU process terminated' } as GPUDeviceLostInfo;
+  return {
+    lost,
+    native: () =>
+      new Promise<GPURenderPipeline>((_resolve, reject) => {
+        natives.push(reject);
+      }),
+    lose: (nativeFirst: boolean) => {
+      const rejectNatives = () => {
+        for (const reject of natives.splice(0))
+          reject(new DOMException('Device is lost', 'OperationError'));
+      };
+      if (nativeFirst) rejectNatives();
+      lose(info);
+      if (!nativeFirst) rejectNatives();
+    },
+  };
+}
+
+for (const nativeFirst of [false, true])
+  it(`reports a device lost during startup preparation as device-lost (native settles ${nativeFirst ? 'before' : 'after'} device.lost)`, async () => {
+    const archive = await backgroundArchive(2);
+    const loss = controllableLoss();
+    const b = await fixture(undefined, loss.lost);
+    b.render.mockImplementation(loss.native);
+    const prepared = b.device.pipelineLibrary.prepare(archive);
+    await vi.waitFor(() => expect(b.render).toHaveBeenCalled());
+    loss.lose(nativeFirst);
+    const result = await prepared;
+    expect(result.ok).toBe(false);
+    if (result.ok) throw Error('unreachable');
+    expect(result.error.code).toBe('device-lost');
+    expect(result.error.hint).toContain('GPU process terminated');
+  });
+
+for (const nativeFirst of [false, true])
+  it(`reports a device lost under a pending runtime pipeline request as device-lost (native settles ${nativeFirst ? 'before' : 'after'} device.lost)`, async () => {
+    const loss = controllableLoss();
+    const f = await fixture(undefined, loss.lost);
+    f.render.mockImplementation(loss.native);
+    const pending = f.device.createRenderPipelineAsync(f.descriptor());
+    await vi.waitFor(() => expect(f.render).toHaveBeenCalled());
+    loss.lose(nativeFirst);
+    const result = await pending;
+    expect(result.ok).toBe(false);
+    if (result.ok) throw Error('unreachable');
+    expect(result.error.code).toBe('device-lost');
+  });
+
+it('keeps an owner disposal distinct from a device loss', async () => {
+  const archive = await backgroundArchive(2);
+  const loss = controllableLoss();
+  const b = await fixture(undefined, loss.lost);
+  b.render.mockImplementation(loss.native);
+  const prepared = b.device.pipelineLibrary.prepare(archive);
+  await vi.waitFor(() => expect(b.render).toHaveBeenCalled());
+  disposeDevice(b.device);
+  loss.lose(true);
+  const result = await prepared;
+  expect(result.ok).toBe(false);
+  if (result.ok) throw Error('unreachable');
+  expect(result.error.code).not.toBe('device-lost');
+});
+
+it('keeps a native rejection its own failure when the device is not lost', async () => {
+  const archive = await backgroundArchive(2);
+  const b = await fixture(undefined, new Promise<GPUDeviceLostInfo>(() => {}));
+  b.render.mockRejectedValue(new DOMException('invalid vertex state', 'OperationError'));
+  const prepared = await b.device.pipelineLibrary.prepare(archive);
+  expect(prepared.ok).toBe(false);
+  if (prepared.ok) throw Error('unreachable');
+  expect(prepared.error.code).toBe('rhi-descriptor-invalid');
+  expect(prepared.error.hint).toContain('invalid vertex state');
+  const f = await fixture(undefined, new Promise<GPUDeviceLostInfo>(() => {}));
+  f.render.mockRejectedValueOnce(new DOMException('invalid vertex state', 'OperationError'));
+  const request = await f.device.createRenderPipelineAsync(f.descriptor());
+  expect(request.ok).toBe(false);
+  if (request.ok) throw Error('unreachable');
+  expect(request.error.code).not.toBe('device-lost');
+  expect(request.error.hint).toContain('invalid vertex state');
+});
+
+for (const nativeFirst of [false, true])
+  it(`does not report a device its owner destroyed as device-lost (native settles ${nativeFirst ? 'before' : 'after'} device.lost)`, async () => {
+    const archive = await backgroundArchive(2);
+    const loss = controllableLoss('destroyed');
+    const b = await fixture(undefined, loss.lost);
+    b.render.mockImplementation(loss.native);
+    const prepared = b.device.pipelineLibrary.prepare(archive);
+    await vi.waitFor(() => expect(b.render).toHaveBeenCalled());
+    loss.lose(nativeFirst);
+    const result = await prepared;
+    expect(result.ok).toBe(false);
+    if (result.ok) throw Error('unreachable');
+    expect(result.error.code).not.toBe('device-lost');
+  });
+
 /** Four startup pipelines whose sources are each a third of the shader batch budget. */
-async function batchedStartup() {
+async function batchedStartup(lost?: Promise<GPUDeviceLostInfo>) {
   const pad = ' '.repeat(Math.ceil(FOREGROUND_SHADER_BATCH_BYTES / 3));
   const a = await fixture();
   for (let i = 0; i < 4; i++) a.device.createRenderPipeline(a.descriptor(`${pad}${i}`)).unwrap();
@@ -558,7 +790,7 @@ async function batchedStartup() {
     JSON.stringify(a.device.pipelineLibrary.export().unwrap()),
   ) as PipelineLibraryManifest;
   expect(archive.shaders).toHaveLength(4);
-  const b = await fixture();
+  const b = await fixture(undefined, lost);
   const pending: {
     code: string;
     resolve(info: GPUCompilationInfo): void;
@@ -656,6 +888,27 @@ it('fails blocking startup without issuing pipelines when a batched compilation 
   expect(modules).toHaveBeenCalledTimes(3);
   expect(b.render).not.toHaveBeenCalled();
 });
+
+for (const nativeFirst of [false, true])
+  it(`reports a device lost during batched startup shader compilation as device-lost (native settles ${nativeFirst ? 'before' : 'after'} device.lost)`, async () => {
+    const loss = controllableLoss();
+    const { archive, b, pending, modules, firstBatch } = await batchedStartup(loss.lost);
+    const prepared = b.device.pipelineLibrary.prepare(archive);
+    await firstBatch();
+    const rejectDiagnostics = () => {
+      for (const row of pending.splice(0))
+        row.reject(new DOMException('Device is lost', 'OperationError'));
+    };
+    if (nativeFirst) rejectDiagnostics();
+    loss.lose(nativeFirst);
+    if (!nativeFirst) rejectDiagnostics();
+    const result = await prepared;
+    expect(result.ok).toBe(false);
+    if (result.ok) throw Error('unreachable');
+    expect(result.error.code).toBe('device-lost');
+    expect(modules).toHaveBeenCalledTimes(3);
+    expect(b.render).not.toHaveBeenCalled();
+  });
 
 it('stops blocking startup between shader batches after disposal', async () => {
   const { archive, b, modules, firstBatch, compiled } = await batchedStartup();

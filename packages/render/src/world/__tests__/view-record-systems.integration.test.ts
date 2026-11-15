@@ -5,6 +5,7 @@ import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import { ok } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
+import { registeredSystem } from '../../__tests__/registered-system.fixture';
 import { renderLifecycleManifestUrl } from '../../__tests__/shader-manifest-fixture';
 import { createRenderer } from '../../assembly/factory';
 import { exposeRenderer } from '../../assembly/renderer-facade';
@@ -12,13 +13,14 @@ import { ANTIALIAS_NONE, Camera } from '../../components/camera';
 import { PlanarReflection } from '../../components/planar-reflection';
 import { Skylight } from '../../components/skylight';
 import { GpuResidencyCache } from '../../device/gpu-residency';
+import type { RenderFeature } from '../../features/types';
 import { createRenderPublisher } from '../../publication/publisher';
 import { encodeRenderPublication, renderPublicationTransfers } from '../../publication/record';
 import { RenderViewInput } from '../render-views';
 import { RenderPrepare, RenderQueue, RenderRecord, renderSubmission } from '../render-world';
 import { ViewRecordAttempt, type ViewRecordAttemptState } from '../view-record-systems';
 
-async function fixture(published = false, withUi = false) {
+async function fixture(published = false, withUi = false, features: readonly RenderFeature[] = []) {
   const identity = { source: 'view-record-systems', epoch: 1 };
   const adapter = (await rhi.requestAdapter()).unwrap();
   const device = (await adapter.requestDevice()).unwrap();
@@ -41,6 +43,7 @@ async function fixture(published = false, withUi = false) {
     { width: 32, height: 32, getContext: () => null },
     {
       rhi: { ...rhi, requestAdapter: async () => ok(adapter) },
+      features,
       ...(published ? { publicationSource: identity } : {}),
       ...(withUi
         ? {
@@ -86,7 +89,7 @@ async function fixture(published = false, withUi = false) {
       return { publication: encodeRenderPublication(packet) };
     }
     if (attached === undefined) throw new Error('Missing frame source');
-    return { leases: [attached], camera: { lease: attached }, environment: { lease: attached } };
+    return { source: attached };
   };
   return {
     renderer,
@@ -106,6 +109,51 @@ async function fixture(published = false, withUi = false) {
   };
 }
 
+it('submits a pending receipt for Feature preparation and resumes without acknowledging source work early', async () => {
+  let pending = true;
+  const submitted = vi.fn();
+  const aborted = vi.fn();
+  const f = await fixture(false, false, [
+    {
+      identity: 'pending-source',
+      extract: () => ok({}),
+      plan: () =>
+        ok(
+          pending
+            ? {
+                pendingSource: { resource: 'fluid-field', reason: 'asset-dependency-pending' },
+                work: [],
+              }
+            : { work: [{ scope: 'frame', resources: [], passes: [] }] },
+        ),
+      onFrameSubmitted: submitted,
+      onFrameAborted: aborted,
+    },
+  ]);
+  try {
+    const result = f.renderer.draw(f.input);
+    if (!result.ok) throw result.error;
+    expect(result.value.presentation).toBe('pending');
+    expect(result.value.presentationPendingReason).toMatchObject({
+      code: 'feature-preparation',
+      featureIdentity: 'pending-source',
+      resource: 'fluid-field',
+      reason: 'asset-dependency-pending',
+    });
+    expect((await result.value.completed).ok).toBe(true);
+    expect(f.device.framePassNames).not.toContain('main');
+    expect(submitted).not.toHaveBeenCalled();
+    expect(aborted).toHaveBeenCalledTimes(1);
+    pending = false;
+    const ready = await drawReadyFrame(f.renderer, f.nextInput());
+    expect(ready.presentation).toBe('ready');
+    expect(submitted).toHaveBeenCalled();
+    expect(f.device.framePassNames).toContain('main');
+  } finally {
+    await f.dispose();
+  }
+});
+
 it.each([
   [RenderQueue, 'render-view-record-start'],
   [RenderQueue, 'render-view-graph-prepare'],
@@ -115,7 +163,7 @@ it.each([
 ] as const)('does not run a manual fallback after removing %s/%s', async (schedule, name) => {
   const f = await fixture();
   try {
-    f.renderWorld.removeSystem(schedule, name).unwrap();
+    f.renderWorld.removeSystem(schedule, registeredSystem(f.renderWorld, schedule, name)).unwrap();
     expect(f.renderer.draw(f.input).ok).toBe(false);
     expect(f.submit).not.toHaveBeenCalled();
     expect(renderSubmission(f.renderWorld).accepted).toBe(false);
@@ -163,7 +211,12 @@ it('cancels at the one frame checkpoint, releases attempts and records the next 
 it('does not present or submit UI through an assembly fallback when its Record owner is removed', async () => {
   const f = await fixture(false, true);
   try {
-    f.renderWorld.removeSystem(RenderRecord, 'render-surface-ui-encode').unwrap();
+    f.renderWorld
+      .removeSystem(
+        RenderRecord,
+        registeredSystem(f.renderWorld, RenderRecord, 'render-surface-ui-encode'),
+      )
+      .unwrap();
     expect(f.renderer.draw(f.input).ok).toBe(false);
     expect(f.submit).not.toHaveBeenCalled();
     expect(renderSubmission(f.renderWorld).accepted).toBe(false);
@@ -179,7 +232,7 @@ it('submits a UI-only frame after retiring a submitted scene without reusing its
     const scene = f.renderer.draw(f.input);
     if (!scene.ok) throw scene.error;
     expect((await scene.value.completed).ok).toBe(true);
-    const presented = f.renderer.draw({ leases: [], camera: null, environment: null });
+    const presented = f.renderer.draw({ source: null });
     if (!presented.ok) throw presented.error;
     expect(presented.value.presentation).toBe('pending');
     expect((await presented.value.completed).ok).toBe(true);
@@ -196,10 +249,10 @@ it.each([
 ] as const)('owns actual UI paint in %s/%s without a frame-entry fallback', async (schedule, system, presentationOnly) => {
   const f = await fixture(false, true);
   try {
-    f.renderWorld.removeSystem(schedule, system).unwrap();
-    const input = presentationOnly
-      ? { leases: [] as const, camera: null, environment: null }
-      : f.input;
+    f.renderWorld
+      .removeSystem(schedule, registeredSystem(f.renderWorld, schedule, system))
+      .unwrap();
+    const input = presentationOnly ? { source: null } : f.input;
     expect(f.renderer.draw(input).ok).toBe(false);
     expect(f.paint).not.toHaveBeenCalled();
     expect(f.submit).not.toHaveBeenCalled();
@@ -269,7 +322,8 @@ it.each([
     if (withUi) expect(f.paint).toHaveBeenCalled();
     pending.mockRestore();
     const input = f.nextInput();
-    if (input.leases === undefined) throw new Error('Expected attached scene input');
+    if (!('source' in input) || input.source === null)
+      throw new Error('Expected attached scene input');
     const ready = await drawReadyFrame(f.renderer, input);
     expect(ready.presentation).toBe('ready');
     expect(f.device.framePassNames.slice(before)).toContain('main');

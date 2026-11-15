@@ -51,14 +51,14 @@ it('does not borrow same-numbered draws across stable Worlds or confuse numeric 
   expect(draws.hasTerrain(first, 0)).toBe(false);
   expect(draws.hasTerrain(second, 0)).toBe(true);
 });
-
+const missingAssetSource = new World();
 function projectSubmittedWorkset(input: {
   hasCamera: boolean;
   hasEnvironment: boolean;
   environmentReady: boolean;
   submissionRenderables: readonly RenderableSnapshot[];
   submissionDispatch: readonly DispatchEntry[];
-  preparedWorlds: readonly World[];
+  preparedSource: World | undefined;
   internals: RenderSystemInternals;
 }) {
   const renderables = input.hasCamera
@@ -69,7 +69,7 @@ function projectSubmittedWorkset(input: {
       ? 'pending'
       : projectFramePresentation({
           renderables,
-          preparedWorlds: input.preparedWorlds.map(worldRenderResources),
+          preparedSourceScope: worldRenderResources(input.preparedSource ?? missingAssetSource),
           internals: input.internals,
         })
     : 'ready';
@@ -87,13 +87,20 @@ it.each([
       environmentReady: true,
       submissionRenderables: [
         {
-          worldId: 0,
           authorVisible: true,
           assetHandle: 0,
           entityKey: 1,
           transform: { world: new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]) },
-          material: MaterialResource.from(defaultMaterialSnapshot()),
-          materials: [MaterialResource.from(defaultMaterialSnapshot())],
+          material: MaterialResource.from({
+            ...defaultMaterialSnapshot(),
+            videoTextureFields: new Map([['baseColor', 'missing-clip' as never]]),
+          }),
+          materials: [
+            MaterialResource.from({
+              ...defaultMaterialSnapshot(),
+              videoTextureFields: new Map([['baseColor', 'missing-clip' as never]]),
+            }),
+          ],
           materialBindingSources: [],
           ...(count === undefined
             ? {}
@@ -124,8 +131,8 @@ it.each([
           materialShaderId: undefined,
         } satisfies DispatchEntry,
       ],
-      // An absent material world makes residency pending; no GPU mock is needed.
-      preparedWorlds: [],
+      // Missing producer data gates populated work; an empty collection draws nothing.
+      preparedSource: undefined,
       internals: {} as RenderSystemInternals,
     });
   expect(project(0)).toEqual({ renderables: [], presentation: 'ready' });
@@ -147,7 +154,6 @@ it('checks a shared visible material once and observes video readiness again nex
     { length: 2048 },
     (_, entityKey) =>
       ({
-        worldId: 0,
         entityKey,
         assetHandle: 0,
         authorVisible: true,
@@ -181,7 +187,7 @@ it('checks a shared visible material once and observes video readiness again nex
       environmentReady: true,
       submissionRenderables: renderables,
       submissionDispatch: dispatch,
-      preparedWorlds: [world],
+      preparedSource: world,
       internals: { dynamicTextureStore: { getView } } as unknown as RenderSystemInternals,
     });
   expect(project().presentation).toBe('ready');
@@ -195,8 +201,8 @@ it('observes a shared material once per scope and refreshes the next presentatio
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const gpuStore = new GpuResidencyCache();
   gpuStore.configureGpuDevice(device, undefined, device.caps);
-  const owners = [new AssetRegistry(), new AssetRegistry()] as const;
-  const worlds = [new World({ assets: owners[0] }), new World({ assets: owners[1] })] as const;
+  const assets = new AssetRegistry();
+  const world = new World({ assets });
   const texture: TextureAsset = {
     kind: 'texture',
     shape: { viewDimension: '2d', extent: { width: 4, height: 4 } },
@@ -205,7 +211,7 @@ it('observes a shared material once per scope and refreshes the next presentatio
     mips: { kind: 'packed', levelCount: 1 },
     data: new Uint8Array(64),
   };
-  const handles = [owners[0].create(texture).unwrap(), owners[1].create(texture).unwrap()] as const;
+  const handles = [assets.create(texture).unwrap(), assets.create(texture).unwrap()] as const;
   expect(handles[0]).not.toBe(handles[1]);
   const materials = handles.map((handle) =>
     MaterialResource.from({
@@ -217,7 +223,6 @@ it('observes a shared material once per scope and refreshes the next presentatio
     const material = materials[index % 2];
     if (material === undefined) throw new Error('expected a World material');
     return {
-      worldId: index % 2,
       authorVisible: true,
       assetHandle: 0,
       entityKey: index + 1,
@@ -252,22 +257,20 @@ it('observes a shared material once per scope and refreshes the next presentatio
       environmentReady: true,
       submissionRenderables: rows,
       submissionDispatch: dispatch,
-      preparedWorlds: worlds,
+      preparedSource: world,
       internals: { gpuStore } as RenderSystemInternals,
     });
   try {
     expect(project().presentation).toBe('ready');
     expect(createTexture).toHaveBeenCalledTimes(2);
     expect(ensureResident).toHaveBeenCalledTimes(2);
-    gpuStore.invalidateTexture(handles[0], worldRenderResources(worlds[0]));
+    gpuStore.invalidateTexture(handles[0], worldRenderResources(world));
     expect(project().presentation).toBe('ready');
     expect(createTexture).toHaveBeenCalledTimes(3);
     expect(ensureResident).toHaveBeenCalledTimes(4);
   } finally {
     gpuStore.destroyAll();
-    owners.forEach((owner) => {
-      owner.dispose();
-    });
+    assets.dispose();
   }
 });
 
@@ -321,7 +324,6 @@ it('keeps failed material bindings pending after submission', () => {
     baseColorTexture: handle,
   });
   const row: RenderableSnapshot = {
-    worldId: 0,
     assetHandle: 0,
     entityKey: 1,
     transform: { world: new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]) },
@@ -332,7 +334,7 @@ it('keeps failed material bindings pending after submission', () => {
   expect(
     projectFramePresentation({
       renderables: [row],
-      preparedWorlds: [world].map(worldRenderResources),
+      preparedSourceScope: worldRenderResources(world),
       internals: {} as RenderSystemInternals,
     }),
   ).toBe('pending');

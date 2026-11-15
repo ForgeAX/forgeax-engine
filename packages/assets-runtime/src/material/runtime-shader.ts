@@ -330,11 +330,15 @@ export function installMaterialReadyShaders(
     const { default: _default, ...parameter } = entry;
     return parameter;
   });
-  // Preflight against the held set plus earlier entries of this record before
-  // mutating either registry. A published digest identifies content, so a key
-  // already held compares metadata only and reuses the private bytes held for it.
+  // A program key names its content: a key this admission already registered
+  // (its metadata names the owning module) is the same program and needs no
+  // further admission. Keys registered elsewhere and new keys are preflighted
+  // before either registry is mutated.
   const pending = new Map<string, MaterialRuntimeArtifact>();
-  const admissions = readiness.record.programs.map((program) => {
+  const programs = readiness.record.programs.filter(
+    (program) => artifactRegistry.get(program.specializationKey)?.metadata?.module === undefined,
+  );
+  const admissions = programs.map((program) => {
     if (program.artifact.bytes.byteLength === 0)
       throw new Error(`MaterialReady ${readiness.record.guid} contains an empty shader program`);
     const pass = readiness.record.resolved.passes.find((pass) =>
@@ -354,10 +358,10 @@ export function installMaterialReadyShaders(
       const conflict = materialArtifactConflict(previous, candidate);
       if (conflict !== undefined) throw conflictError(conflict);
     }
-    // The registry owns a private copy of new content; callers keep theirs.
+    // Resident program bytes are immutable; the registry shares them.
     const artifact: MaterialRuntimeArtifact =
       previous === undefined
-        ? { ...candidate, bytes: new Uint8Array(program.artifact.bytes) }
+        ? { ...candidate, bytes: program.artifact.bytes }
         : { ...candidate, bytes: previous.bytes };
     if (previous === undefined) pending.set(key, artifact);
     const input = {

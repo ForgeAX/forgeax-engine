@@ -12,7 +12,7 @@ import { MeshFilter } from '../components/mesh-filter';
 import { MeshRenderer } from '../components/mesh-renderer';
 import { worldRenderResources } from '../publication/resource-scope';
 import { resolveMaterialSnapshot } from '../render-system-extract';
-import { extractFrames } from '../render-system-extract-tail';
+import { extractSource } from '../render-system-extract-tail';
 
 function guid(text: string) {
   const parsed = AssetGuid.parse(text);
@@ -131,7 +131,7 @@ describe('material resource references across submeshes', () => {
       )
       .unwrap();
 
-    const extracted = extractFrames([world], 0, assets).renderables.at(0);
+    const extracted = extractSource(world, assets).renderables.at(0);
     expect(extracted?.materials).toHaveLength(2);
     const primary = extracted?.materials[0]?.snapshot;
     const secondary = extracted?.materials[1]?.snapshot;
@@ -154,7 +154,7 @@ describe('material resource references across submeshes', () => {
         expect(assets.read(samplerHandle).unwrap()).toEqual(sampler);
       }
     }
-    const next = extractFrames([world], 0, assets).renderables.at(0);
+    const next = extractSource(world, assets).renderables.at(0);
     expect(next?.materials[1]?.snapshot.textureHandles).toEqual(secondary?.textureHandles);
     expect(next?.materials[1]?.snapshot.samplerHandles).toEqual(secondary?.samplerHandles);
   });

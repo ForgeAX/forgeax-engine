@@ -631,9 +631,11 @@ async function boot(identity, reload) {
     ${rhiDebug ? 'rhi: recorder.backend.rhi, rhiInstrumentation: createRhiInstrumentation(recorder),' : 'rhi,'}
     features: [gameVfx.feature],
     dynamicGeometryMeshBudgetBytes: ${JSON.stringify(appOptions.dynamicGeometryMeshBudgetBytes)},
+    textureMipSkip: ${JSON.stringify(appOptions.textureMipSkip)},
     assetBudgetBytes: ${JSON.stringify(appOptions.assetBudgetBytes)},
     pipelineLibrary: ${JSON.stringify(appOptions.pipelineLibrary)},
     backgroundPipelineLibrary: ${JSON.stringify(appOptions.backgroundPipelineLibrary)},
+    backgroundPipelineLibraryConcurrency: ${JSON.stringify(appOptions.backgroundPipelineLibraryConcurrency)},
     standardProfile: ${JSON.stringify(appOptions.standardProfile)},
     maxRenderShortSide: ${JSON.stringify(appOptions.wechat?.maxRenderShortSide ?? 720)},
     ${cpuProfile ? 'profiler,' : ''}
@@ -648,7 +650,7 @@ async function boot(identity, reload) {
   app = (await createApp({ platform, renderer: graphics.renderer, world, assets: graphics.assets, assetCatalog: catalog,
     ${rhiDebug ? 'rhiCapture,' : ''}
     ${cpuProfile ? 'profiler,' : ''}
-    drawSource: () => game !== undefined && startupError === undefined ? undefined : null,
+    sceneAdmission: () => game !== undefined && startupError === undefined ? 'scene' : 'ui-only',
     pluginPrograms: enginePrograms('wechat-' + identity, 'engine', identity),
     runtimePacks: { scopeId: runtimeBinding.scopeId, imports, programHost },
     plugins: [inputBackendPlugin(input), inputPlugin(), audioBackendPlugin(audio), audioPlugin(), canvasAspectPlugin(() => canvas), gameVfx.plugin],

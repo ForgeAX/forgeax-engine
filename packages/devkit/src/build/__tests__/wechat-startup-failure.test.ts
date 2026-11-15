@@ -7,9 +7,9 @@ import type { Context, Plugin } from '@forgeax/engine-plugin';
 import { inspectPluginFiber } from '@forgeax/engine-plugin';
 import { Camera, orthographic, perspective, type RendererOptions } from '@forgeax/engine-render';
 import { ShaderRegistry } from '@forgeax/engine-shader';
+import { VFX_GPU_RUNTIME_RESOURCE_KEY } from '@forgeax/engine-vfx';
+import { createVfxRuntimeHost } from '@forgeax/engine-vfx-render';
 import { describe, expect, it, vi } from 'vitest';
-import { VFX_GPU_RUNTIME_RESOURCE_KEY } from '../../../../vfx/src/index.js';
-import { createVfxRuntimeHost } from '../../../../vfx-render/src/index.js';
 import { gameVfxSource } from '../../game-vfx-source.js';
 import type { StartupUiOptions } from '../../host/startup-ui.js';
 import type { ProjectFacts } from '../../types.js';
@@ -31,7 +31,7 @@ async function host(
   rhiDebug = false,
   startupUi: StartupUiOptions = {},
 ) {
-  let drawSource: (() => unknown) | undefined;
+  let sceneAdmission: (() => unknown) | undefined;
   let inputAllowed = true;
   const audioOwners: { destroy: ReturnType<typeof vi.fn> }[] = [];
   const releases: string[] = [];
@@ -198,7 +198,7 @@ async function host(
         world: World;
         assets: AssetRegistry;
         plugins: Plugin[];
-        drawSource?: () => unknown;
+        sceneAdmission?: () => unknown;
         rhiCapture?: unknown;
         onFrameSubmitted(detail: object): void;
         onFrameCompleted(detail: object): void;
@@ -221,7 +221,7 @@ async function host(
         ]);
         app.pluginContext = pluginContext;
         app.world = world;
-        drawSource = args.drawSource;
+        sceneAdmission = args.sceneAdmission;
         app.rhiCapture = args.rhiCapture;
         return unwrap(app);
       },
@@ -259,7 +259,7 @@ async function host(
       emitError(error);
     },
     completeFrame: () => completeFrame?.(),
-    drawSource: () => drawSource?.(),
+    sceneAdmission: () => sceneAdmission?.(),
     inputAllowed: () => inputAllowed,
     audioOwners,
     releases,
@@ -360,13 +360,12 @@ describe('native Host startup failure ownership', () => {
       };
       const extracted = first.feature
         .extract({
-          worlds: [firstWorld],
-          owner: 0,
+          world: firstWorld,
           frameNumber: 1,
           views: [{ identity: 'main', selectedView }],
         })
         .unwrap();
-      expect(extracted.worlds[0].camera).toBe(selectedView);
+      expect(extracted.source.camera).toBe(selectedView);
       await running.start();
       expect(firstWorld.hasResource(VFX_GPU_RUNTIME_RESOURCE_KEY)).toBe(false);
       expect(running.world().hasResource(VFX_GPU_RUNTIME_RESOURCE_KEY)).toBe(true);
@@ -468,13 +467,13 @@ describe('native Host startup failure ownership', () => {
     );
     try {
       await vi.waitFor(() => expect(running.inspect().phase).toBe('scene'));
-      expect(running.drawSource()).toBeNull();
+      expect(running.sceneAdmission()).toBe('ui-only');
       expect(running.inputAllowed()).toBe(false);
       commit({ dispose: async () => {} });
       await vi.waitFor(() => expect(running.inspect().phase).toBe('ready'));
-      expect(running.drawSource()).toBeUndefined();
+      expect(running.sceneAdmission()).toBe('scene');
       running.failExecution(cleanupError);
-      expect(running.drawSource()).toBeNull();
+      expect(running.sceneAdmission()).toBe('ui-only');
     } finally {
       commit({ dispose: async () => {} });
       await running.stop();
@@ -547,11 +546,11 @@ describe('native Host startup failure ownership', () => {
       running.emitError(cleanupError);
       expect(running.inspect()).toMatchObject({ phase: 'ready' });
       expect(running.inspect().startupError).toBeUndefined();
-      expect(running.drawSource()).toBeUndefined();
+      expect(running.sceneAdmission()).toBe('scene');
       expect(running.inputAllowed()).toBe(true);
       running.failExecution(cleanupError);
       expect(running.inspect()).toMatchObject({ phase: 'failed', startupError: cleanupError });
-      expect(running.drawSource()).toBeNull();
+      expect(running.sceneAdmission()).toBe('ui-only');
       expect(running.inputAllowed()).toBe(false);
       expect(document.querySelector('#forgeax-fatal-message')?.textContent).toBe(
         'The game stopped because execution failed.',

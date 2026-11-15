@@ -3,8 +3,9 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const repoRoot = resolve(new URL('../..', import.meta.url).pathname);
+const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
 const args = process.argv.slice(2);
 const allowBlocked = args.includes('--allow-blocked');
 const separator = args.indexOf('--');

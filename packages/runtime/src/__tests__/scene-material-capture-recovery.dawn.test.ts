@@ -172,9 +172,7 @@ it.each([
   const draw = async () => {
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
-    const receipt = renderValue(
-      renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
-    );
+    const receipt = renderValue(renderer.draw({ source: lease }));
     const returned = renderer.inspect();
     peakRetiringHistoryBytes = Math.max(
       peakRetiringHistoryBytes,
@@ -446,11 +444,7 @@ it('reads the accepted cube face during a different continuous capture face on a
   const draw = async () => {
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
-    return drawReadyFrame(renderer, {
-      leases: [lease],
-      camera: { lease },
-      environment: { lease },
-    });
+    return drawReadyFrame(renderer, { source: lease });
   };
   const directory = 'artifacts/scene-material-scaling/continuous-readback';
   mkdirSync(directory, { recursive: true });

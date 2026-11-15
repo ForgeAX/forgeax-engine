@@ -10,8 +10,11 @@ const SMALL = 32;
 
 /** Physical iteration order for changed identities, without comparison-sort growth. */
 export class ChangedEntityOrder {
-  // Allocated only for a large changed batch. No entity-sized retained scratch.
+  // Allocated only for a large changed batch; key buffers track the largest batch, like candidates.
   private scratch: Uint32Array | undefined;
+  // Batch-local (storage, row) keys, permuted with the identities they describe.
+  private storageKeys = new Uint32Array(0);
+  private rowKeys = new Uint32Array(0);
 
   constructor(
     private readonly owner: WorldInternal,
@@ -28,6 +31,10 @@ export class ChangedEntityOrder {
   sort(entities: ChangedEntities): void {
     this.records = this.owner.getRecords();
     this.archetypes = this.owner.getGraph().archetypes;
+    if (this.storageKeys.length < entities.length) {
+      this.storageKeys = new Uint32Array(entities.length * 2);
+      this.rowKeys = new Uint32Array(entities.length * 2);
+    }
     try {
       // Producers commonly write in physical order; one linear pass proves it.
       if (this.ordered(entities)) return;
@@ -53,6 +60,8 @@ export class ChangedEntityOrder {
       const entity = entities[at] as EntityHandle;
       const nextStorage = this.key(entity, false);
       const nextRow = this.key(entity, true);
+      this.storageKeys[at] = nextStorage;
+      this.rowKeys[at] = nextRow;
       if (nextStorage < storage || (nextStorage === storage && nextRow < row)) ordered = false;
       storage = nextStorage;
       row = nextRow;
@@ -79,25 +88,44 @@ export class ChangedEntityOrder {
     return this.sparse ? (archetype?.id ?? 0) : (archetype?.tableId ?? 0);
   }
 
-  private compare(a: EntityHandle, b: EntityHandle): number {
-    return this.key(a, false) - this.key(b, false) || this.key(a, true) - this.key(b, true);
-  }
-
   private insertion(entities: ChangedEntities, start: number, end: number): void {
+    const storageKeys = this.storageKeys,
+      rowKeys = this.rowKeys;
     for (let at = start + 1; at < end; at++) {
       const entity = entities[at] as EntityHandle;
+      const storage = storageKeys[at] as number,
+        row = rowKeys[at] as number;
       let into = at;
-      while (into > start && this.compare(entities[into - 1] as EntityHandle, entity) > 0) {
+      while (into > start) {
+        const before = storageKeys[into - 1] as number;
+        if (before < storage || (before === storage && (rowKeys[into - 1] as number) <= row)) break;
         entities[into] = entities[into - 1] as EntityHandle;
+        storageKeys[into] = before;
+        rowKeys[into] = rowKeys[into - 1] as number;
         into--;
       }
       entities[into] = entity;
+      storageKeys[into] = storage;
+      rowKeys[into] = row;
     }
   }
 
-  private bucket(entity: EntityHandle, level: number): number {
+  private bucket(at: number, level: number): number {
     // Both keys are native array indices, so four unsigned bytes each suffice.
-    return (this.key(entity, level >= 4) >>> (24 - (level & 3) * 8)) & 255;
+    const key = (level >= 4 ? this.rowKeys[at] : this.storageKeys[at]) as number;
+    return (key >>> (24 - (level & 3) * 8)) & 255;
+  }
+
+  private swap(entities: ChangedEntities, a: number, b: number): void {
+    const entity = entities[a] as EntityHandle;
+    entities[a] = entities[b] as EntityHandle;
+    entities[b] = entity;
+    const storage = this.storageKeys[a] as number;
+    this.storageKeys[a] = this.storageKeys[b] as number;
+    this.storageKeys[b] = storage;
+    const row = this.rowKeys[a] as number;
+    this.rowKeys[a] = this.rowKeys[b] as number;
+    this.rowKeys[b] = row;
   }
 
   private partition(
@@ -119,7 +147,7 @@ export class ChangedEntityOrder {
     const ends = next + BUCKETS;
     scratch.fill(0, counts, next);
     for (let at = start; at < end; at++) {
-      const bucket = this.bucket(entities[at] as EntityHandle, level);
+      const bucket = this.bucket(at, level);
       scratch[counts + bucket] = (scratch[counts + bucket] ?? 0) + 1;
     }
     let offset = start;
@@ -131,13 +159,11 @@ export class ChangedEntityOrder {
     for (let bucket = 0; bucket < BUCKETS; bucket++) {
       while ((scratch[next + bucket] ?? 0) < (scratch[ends + bucket] ?? 0)) {
         const at = scratch[next + bucket] ?? 0;
-        const entity = entities[at] as EntityHandle;
-        const destination = this.bucket(entity, level);
+        const destination = this.bucket(at, level);
         if (destination === bucket) scratch[next + bucket] = at + 1;
         else {
           const into = scratch[next + destination] ?? 0;
-          entities[at] = entities[into] as EntityHandle;
-          entities[into] = entity;
+          this.swap(entities, at, into);
           scratch[next + destination] = into + 1;
         }
       }

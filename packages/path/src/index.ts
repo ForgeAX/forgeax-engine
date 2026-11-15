@@ -8,7 +8,7 @@ export {
   PathParameterization,
 } from './components';
 export type { PathError, PathErrorCode } from './errors';
-export { PATH_FOLLOW_SYSTEM, pathPlugin } from './follow';
+export { pathPlugin } from './follow';
 export { createPathSample, type PathSample } from './frame';
 export {
   advancePathDistance,
@@ -17,3 +17,5 @@ export {
   PreparedPath,
   preparePath,
 } from './prepared';
+
+export { PathFollowOrder } from './system-order';

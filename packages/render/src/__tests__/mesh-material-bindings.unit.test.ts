@@ -105,7 +105,6 @@ it('captures the binding producer table before its arrays change', () => {
   const binding = resolved.bindings[0];
   const diagnostic = resolved.diagnostics[0];
   const observation = projectMeshMaterialBindingObservation({
-    worldId: 0,
     entityKey: 1,
     bindings: resolved.bindings,
     diagnostics: resolved.diagnostics,
@@ -123,7 +122,6 @@ it('captures the binding producer table before its arrays change', () => {
 
 function observation(residency: MeshMaterialBindingResidency) {
   return projectMeshMaterialBindingObservation({
-    worldId: 0,
     entityKey: 1,
     bindings: [{ handle: 0, source: 'engine-default' }],
     diagnostics: [],
@@ -235,7 +233,6 @@ it.each([
   });
   Object.freeze(rows);
   const projected = projectMeshMaterialBindingObservation({
-    worldId: 0,
     entityKey: 1,
     bindings: [],
     diagnostics: [],
@@ -258,7 +255,6 @@ it('preserves borrowed binding iteration failures', () => {
   Object.freeze(bindings);
   expect(() =>
     projectMeshMaterialBindingObservation({
-      worldId: 0,
       entityKey: 1,
       bindings,
       diagnostics: [],

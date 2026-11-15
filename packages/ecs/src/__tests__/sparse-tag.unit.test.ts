@@ -4,6 +4,8 @@ import { componentId, defineComponent } from '../component';
 import { Disabled, Entity } from '../entity';
 import type { EntityHandle } from '../entity-handle';
 import { SparseStorageRequiresTagError } from '../errors';
+import type { SystemOrderReference } from '../schedule';
+import { defineSystem } from '../schedule';
 import { Update } from '../schedule-token';
 import { sparseTagHas } from '../storage/change-detection';
 import { World } from '../world';
@@ -157,16 +159,18 @@ describe('sparse tag storage', () => {
     const existing = world.spawn().unwrap();
     let observed: EntityHandle[] = [];
 
-    world.addSystem(Update, {
+    const forwardOrder1: SystemOrderReference[] = [];
+    const systemToken1 = defineSystem({
       name: 'deferred-sparse-producer',
       queries: [],
-      before: ['deferred-sparse-consumer'],
+      before: forwardOrder1,
       fn: (_world, _queries, commands) => {
         commands.spawn({ component: Selected, data: {} });
         commands.addComponent(existing, { component: Selected, data: {} });
       },
     });
-    world.addSystem(Update, {
+    world.addSystem(Update, systemToken1);
+    const systemToken2 = defineSystem({
       name: 'deferred-sparse-consumer',
       queries: [{ with: [Selected] }],
       fn: (_world, [selected], commands) => {
@@ -174,6 +178,8 @@ describe('sparse tag storage', () => {
         commands.removeComponent(existing, Selected);
       },
     });
+    forwardOrder1.push(systemToken2);
+    world.addSystem(Update, systemToken2);
 
     expect(world.update(0).ok).toBe(true);
     expect(observed).toHaveLength(2);

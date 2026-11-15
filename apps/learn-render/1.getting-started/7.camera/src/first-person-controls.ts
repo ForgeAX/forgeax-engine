@@ -25,9 +25,7 @@
 //
 // forgeax mapping (plan-strategy D-1 + D-4 + D-5):
 //   - dt SSOT      = engine-app `Time` resource (frame-loop SSOT); the
-//                    demo reads `world.getResource<TimeResource>('Time
-//                    ').dt` per tick (no fn-callback signature change;
-//                    OOS-6 honoured).
+//                    demo reads `world.getResource(Time).delta` per tick.
 //   - cameraSpeed  = LO numeric SSOT 2.5 (world units per second).
 //   - wheelDelta   = sign-discrete per-frame notch (engine-input D-5
 //                    deltaMode normalisation; +1 = scroll up = fov

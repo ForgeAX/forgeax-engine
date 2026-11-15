@@ -1,3 +1,4 @@
+import { defineSystem } from "@forgeax/engine-ecs";
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { FixedTime, FixedUpdate, type ComponentData, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import { mat4, quat, vec3 } from '@forgeax/engine-math';
@@ -5,13 +6,7 @@ import { renderFeaturePlugin } from '@forgeax/engine-app';
 import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
 import { Camera } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
-import {
-  loadVfxGpuEffect,
-  ParticleEffectPlayer,
-  VFX_GPU_RUNTIME_RESOURCE_KEY,
-  type VfxGpuEffectAsset,
-  type VfxGpuRuntime,
-} from '@forgeax/engine-vfx';
+import { loadVfxGpuEffect, ParticleEffectPlayer, VFX_GPU_RUNTIME_RESOURCE_KEY, type VfxGpuEffectAsset } from '@forgeax/engine-vfx';
 import { createVfxRuntimeHost } from '@forgeax/engine-vfx-render';
 
 const HIT_VFX_PACKAGE_NAMESPACE = (() => {
@@ -138,8 +133,9 @@ export async function createGameplayVfx(options: {
   const featureReady = (): boolean => true;
   const writePlayer = (): void => { if (!disposed) world.set(target, ParticleEffectPlayer, { effect: mode === 'hit' ? hitEffect : chargeEffect, playing, seed, timeScale: 1 }); };
   const setEffect = (entity: EntityHandle, effect: typeof telegraphEffect, active: boolean, nextSeed: number): void => { if (!world.get(entity, Transform).ok && entity !== target) return; const existing = world.get(entity, ParticleEffectPlayer); if (existing.ok) world.set(entity, ParticleEffectPlayer, { effect, playing: active, seed: nextSeed, timeScale: 1 }); else world.addComponent(entity, { component: ParticleEffectPlayer, data: { effect, playing: active, seed: nextSeed, timeScale: 1 } }); };
-  world.addSystem(FixedUpdate, { name: 'gameplay-vfx-carrier-cleanup', queries: [], fn: (_world, _queries) => { const dt = world.getResource(FixedTime).delta; for (const [entity, ttl] of impactCarriers) { const next = ttl - dt; if (next > 0) impactCarriers.set(entity, next); else { world.despawn(entity); impactCarriers.delete(entity); } } for (const [entity, ttl] of attackImpactCarriers) { const next = ttl - dt; if (next > 0) attackImpactCarriers.set(entity, next); else { world.despawn(entity); attackImpactCarriers.delete(entity); } } if (phase === 'contact' && impactCarriers.size === 0 && attackImpactCarriers.size === 0 && flightEntities.size === 0) { phase = 'dormant'; lastPosition = null; } } }).unwrap();
-  const snapshot = (): VfxHitLoopSnapshot => { const runtime = world.hasResource(VFX_GPU_RUNTIME_RESOURCE_KEY) ? world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY) : undefined; const effect = mode === 'hit' ? hit : charge; const kinds = effect.program.emitters.flatMap((entry) => entry.renderers.map((rendererEntry) => rendererEntry.kind)); return { available: true, mode, playing, seed, triggers, guid: mode === 'hit' ? GAME_DEFAULT_HIT_VFX_GUID : GAME_DEFAULT_CHARGE_VFX_GUID, emitterCount: effect.program.emitters.length, emitterStatuses: effect.program.emitters.map(() => 'gpu'), batchKinds: kinds, alive: 0, bucketCount: new Set(kinds).size, readiness: runtime?.hasPlayer(target) === true ? 'ready' : 'warming', errorCode: null, errorHint: null }; };
+  const systemToken1 = defineSystem({ name: 'gameplay-vfx-carrier-cleanup', queries: [], fn: (_world, _queries) => { const dt = world.getResource(FixedTime).delta; for (const [entity, ttl] of impactCarriers) { const next = ttl - dt; if (next > 0) impactCarriers.set(entity, next); else { world.despawn(entity); impactCarriers.delete(entity); } } for (const [entity, ttl] of attackImpactCarriers) { const next = ttl - dt; if (next > 0) attackImpactCarriers.set(entity, next); else { world.despawn(entity); attackImpactCarriers.delete(entity); } } if (phase === 'contact' && impactCarriers.size === 0 && attackImpactCarriers.size === 0 && flightEntities.size === 0) { phase = 'dormant'; lastPosition = null; } } });
+world.addSystem(FixedUpdate, systemToken1).unwrap();
+  const snapshot = (): VfxHitLoopSnapshot => { const runtime = world.hasResource(VFX_GPU_RUNTIME_RESOURCE_KEY) ? world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY) : undefined; const effect = mode === 'hit' ? hit : charge; const kinds = effect.program.emitters.flatMap((entry) => entry.renderers.map((rendererEntry) => rendererEntry.kind)); return { available: true, mode, playing, seed, triggers, guid: mode === 'hit' ? GAME_DEFAULT_HIT_VFX_GUID : GAME_DEFAULT_CHARGE_VFX_GUID, emitterCount: effect.program.emitters.length, emitterStatuses: effect.program.emitters.map(() => 'gpu'), batchKinds: kinds, alive: 0, bucketCount: new Set(kinds).size, readiness: runtime?.hasPlayer(target) === true ? 'ready' : 'warming', errorCode: null, errorHint: null }; };
   const bossSnapshot = (): GameplayVfxSnapshot => { const base = snapshot(); const suite = [telegraph, flight, contact]; const kinds = suite.flatMap((effect) => effect.program.emitters.flatMap((entry) => entry.renderers.map((rendererEntry) => rendererEntry.kind))); const activeSentinelPlayer = phase === 'telegraph' ? 1 : 0; return { ...base, hostCount: 1, attachedWorlds: 1, installedFeatures: 1, suiteGuid: phase === 'telegraph' ? GAME_DEFAULT_BOSS_TELEGRAPH_VFX_GUID : phase === 'flight' ? GAME_DEFAULT_BOSS_FLIGHT_VFX_GUID : phase === 'contact' ? GAME_DEFAULT_BOSS_CONTACT_VFX_GUID : null, suiteEmitterCount: suite.reduce((sum, effect) => sum + effect.program.emitters.length, 0), rendererKinds: [...new Set(kinds)], phase, eventSequence, telegraphEvents, flightEvents, contactEvents, activePlayers: activeSentinelPlayer + flightEntities.size, activeCarriers: impactCarriers.size, lastPosition }; };
   const api: GameplayVfx = {
     trigger: () => { if (disposed) return; seed = (seed + 1) >>> 0; triggers += 1; mode = 'hit'; playing = true; writePlayer(); },

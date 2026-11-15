@@ -10,6 +10,7 @@ import {
   prepareFeatureFrame,
   submitFeatureFrame,
 } from '../../__tests__/feature-frame-driver';
+import { registeredSystem } from '../../__tests__/registered-system.fixture';
 import { renderLifecycleManifestUrl } from '../../__tests__/shader-manifest-fixture';
 import { createRenderer as constructRenderer } from '../../assembly/factory';
 import { MeshFilter, MeshRenderer, MotionBlur } from '../../components';
@@ -24,13 +25,8 @@ import type { RenderFeaturePlanContext, RenderFeatureWork } from '../../features
 import * as preparedResolverModule from '../../features/prepared-resolver';
 import type { RenderFeature } from '../../features/types';
 import { worldRenderResources } from '../../publication/resource-scope';
-import {
-  RENDER_FEATURE_ABORT_SYSTEM,
-  RENDER_FEATURE_COMMIT_SYSTEM,
-  RENDER_FEATURE_VIEWS_SYSTEM,
-  RENDER_MOTION_BLUR_PLAN_SYSTEM,
-  renderFeatureSystemName,
-} from '../feature-systems';
+
+import { RENDER_FEATURE_VIEWS_SYSTEM, renderFeatureSystemName } from '../feature-systems';
 import * as renderWorldModule from '../render-world';
 import { RenderCleanup, RenderCommit, RenderPrepare } from '../render-world';
 
@@ -158,23 +154,31 @@ it("prepares each installed Feature in RenderPrepare of the Renderer's Render Wo
       )
       .unwrap();
     expect(world.update().ok).toBe(true);
-    const frame = { leases: [lease], camera: { lease }, environment: { lease } };
+    const frame = { source: lease };
 
     expect(renderer.draw(frame).ok).toBe(true);
     expect(extracted).toHaveLength(1);
     // Feature materials resolve in Prepare, before Queue establishes a recording attempt.
     const prepared = preparedResolver.mock.calls.at(0);
-    expect(Array.from(prepared ?? []).at(2)).toEqual([worldRenderResources(world)]);
+    expect(Array.from(prepared ?? []).at(2)).toBe(worldRenderResources(world));
     expect(renderer.perFramePassNames.some((name) => name.includes(PASS))).toBe(true);
 
     // An installed Feature whose system no longer runs leaves the batch
     // incomplete: recording reports it and submits no frame.
     renderWorld
-      .removeSystem(RenderPrepare, renderFeatureSystemName('synthetic.feature-system'))
+      .removeSystem(
+        RenderPrepare,
+        registeredSystem(
+          renderWorld,
+          RenderPrepare,
+          renderFeatureSystemName('synthetic.feature-system'),
+        ),
+      )
       .unwrap();
     const submitted = vi.spyOn(renderer.device.queue, 'submit');
     renderer.draw(frame);
-    expect(extracted).toHaveLength(1);
+    // Each source frame captures once even if a later receiver system is absent.
+    expect(extracted).toEqual([1, 2]);
     expect(submitted).not.toHaveBeenCalled();
     expect(errors).toContainEqual(
       expect.objectContaining({
@@ -218,7 +222,7 @@ it('records Features only from the input render-feature-views prepared', async (
     expect(world.update().ok).toBe(true);
     const errors: { code?: string; detail?: unknown }[] = [];
     renderer.onError((error) => errors.push(error as { code?: string; detail?: unknown }));
-    const frame = { leases: [lease], camera: { lease }, environment: { lease } };
+    const frame = { source: lease };
     expect(renderer.draw(frame).ok).toBe(true);
     expect(extracted).toHaveLength(1);
     const renderWorld = created.find((candidate) =>
@@ -229,10 +233,16 @@ it('records Features only from the input render-feature-views prepared', async (
         ),
     );
     if (renderWorld === undefined) throw new Error('Missing Feature Render World');
-    expect(renderWorld.removeSystem(RenderPrepare, RENDER_FEATURE_VIEWS_SYSTEM).ok).toBe(true);
+    expect(
+      renderWorld.removeSystem(
+        RenderPrepare,
+        registeredSystem(renderWorld, RenderPrepare, 'render-feature-views'),
+      ).ok,
+    ).toBe(true);
     // Recording never re-derives the input: the view reports it and records no Features.
     renderer.draw(frame);
-    expect(extracted).toHaveLength(1);
+    // Each source frame captures once even if a later receiver system is absent.
+    expect(extracted).toEqual([1, 2]);
     expect(errors).toContainEqual(
       expect.objectContaining({
         code: 'render-feature-input-unavailable',
@@ -293,7 +303,7 @@ it('installs motion blur at construction and plans it only in render-motion-blur
       )
       .unwrap();
     expect(world.update().ok).toBe(true);
-    const frame = { leases: [lease], camera: { lease }, environment: { lease } };
+    const frame = { source: lease };
     expect(renderer.draw(frame).ok).toBe(true);
     expect(renderer.perFramePassNames).not.toContain('motion-blur');
     const before = schedule();
@@ -311,7 +321,12 @@ it('installs motion blur at construction and plans it only in render-motion-blur
     expect(schedule()).toEqual(before);
 
     // Recording never re-plans motion blur: without the system the Feature sees no input.
-    expect(renderWorld.removeSystem(RenderPrepare, RENDER_MOTION_BLUR_PLAN_SYSTEM).ok).toBe(true);
+    expect(
+      renderWorld.removeSystem(
+        RenderPrepare,
+        registeredSystem(renderWorld, RenderPrepare, 'render-motion-blur-plan'),
+      ).ok,
+    ).toBe(true);
     expect(renderer.draw(frame).ok).toBe(true);
     expect(renderer.inspect().motionBlur?.execution).toBeUndefined();
     expect(renderer.inspect().motionBlur?.passCount).toBe(0);
@@ -341,7 +356,7 @@ function settlementFeature(events: string[]): RenderFeature<number> {
 }
 
 function settlementInput(identity: string, frameNumber: number): RenderFeatureFrameInput {
-  return { identity, render: true, worlds: [], owner: 0, frameNumber, caps: {} as never };
+  return { identity, render: true, world: new World(), frameNumber, caps: {} as never };
 }
 
 it('settles a Feature frame only in render-feature-commit and render-feature-abort', () => {
@@ -365,14 +380,24 @@ it('settles a Feature frame only in render-feature-commit and render-feature-abo
 
     // Without render-feature-commit an accepted frame is never acknowledged:
     // render-feature-abort discards it.
-    expect(host.world.removeSystem(RenderCommit, RENDER_FEATURE_COMMIT_SYSTEM).ok).toBe(true);
+    expect(
+      host.world.removeSystem(
+        RenderCommit,
+        registeredSystem(host.world, RenderCommit, 'render-feature-commit'),
+      ).ok,
+    ).toBe(true);
     prepareFeatureFrame(host, [settlementInput('left', 3)]);
     submitFeatureFrame(host);
     expect(events.at(-1)).toBe('aborted:3');
 
     // Without render-feature-abort a rejected frame stays open until the next
     // frame aborts it as stale: the abort is that system's product.
-    expect(host.world.removeSystem(RenderCleanup, RENDER_FEATURE_ABORT_SYSTEM).ok).toBe(true);
+    expect(
+      host.world.removeSystem(
+        RenderCleanup,
+        registeredSystem(host.world, RenderCleanup, 'render-feature-abort'),
+      ).ok,
+    ).toBe(true);
     prepareFeatureFrame(host, [settlementInput('left', 4)]);
     abortFeatureFrame(host);
     expect(events.at(-1)).toBe('aborted:3');

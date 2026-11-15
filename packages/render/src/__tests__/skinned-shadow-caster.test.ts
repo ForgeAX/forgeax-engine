@@ -187,8 +187,8 @@ describe('skinned shadow caster', () => {
     expect(bindingSource).toContain(
       'else if (projector) keys.push(state.defaultWhiteTextureView, state.defaultSampler);',
     );
-    expect(recordSource).toContain(
-      '...(!extendedLighting && projectorAvailable\n              ? [\n                  {\n                    binding: 11,',
+    expect(recordSource).toMatch(
+      /\.\.\.\(!extendedLighting && projectorAvailable\s*\? \[\s*\{\s*binding: 11,/,
     );
     expect(recordSource).toContain('binding: 12');
   });

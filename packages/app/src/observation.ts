@@ -1,10 +1,6 @@
-import { type EntityHandle, Update, type World } from '@forgeax/engine-ecs';
+import { defineSystem, type EntityHandle, Update, type World } from '@forgeax/engine-ecs';
 import { worldRead } from '@forgeax/engine-ecs/world-read';
-import {
-  FRAME_START_SCAN_SYSTEM_NAME,
-  INPUT_SNAPSHOT_RESOURCE_KEY,
-  type InputSnapshot,
-} from '@forgeax/engine-input';
+import { INPUT_SNAPSHOT_RESOURCE_KEY, InputFrameStartScan } from '@forgeax/engine-input';
 import { quat } from '@forgeax/engine-math';
 import type { CameraExposure } from '@forgeax/engine-render';
 import {
@@ -92,7 +88,7 @@ export function createAppObservation(
   },
   assets?: PixelAssetNames,
 ): AppObservation {
-  const observationSystem = 'app-observation-camera-ownership';
+  let observationSystem: import('@forgeax/engine-ecs').System<readonly []> | undefined;
   const firstCameraEntity = (): EntityHandle | undefined => {
     const cameras = world.query({ with: [Camera, Transform] }).unwrap();
     for (const span of cameras.spans().unwrap()) {
@@ -185,7 +181,7 @@ export function createAppObservation(
     if (next !== undefined) setActiveCamera(world, next);
     gameCameraEntity = undefined;
     if (ownershipInstalled) {
-      world.removeSystem(Update, observationSystem);
+      if (observationSystem !== undefined) world.removeSystem(Update, observationSystem);
       ownershipInstalled = false;
     }
   };
@@ -195,30 +191,29 @@ export function createAppObservation(
   // and remove this lease-owned system when control returns to the game.
   function installOwnershipSystem(): void {
     if (ownershipInstalled) return;
-    world
-      .addSystem(Update, {
-        name: observationSystem,
-        queries: [],
-        after: [FRAME_START_SCAN_SYSTEM_NAME],
-        fn: () => {
-          const active = observationEntity;
-          if (active === undefined) return;
-          rememberGameCamera();
-          const snapshot = world.hasResource(INPUT_SNAPSHOT_RESOURCE_KEY)
-            ? world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY)
-            : undefined;
-          if (snapshot?.mouse.pointerLocked) {
-            const transform = world.get(active, Transform);
-            if (transform.ok) {
-              const { x, y } = snapshot.mouse.movementDelta;
-              const orientation = rotateObservationCamera(transform.value.quat, x, y);
-              world.set(active, Transform, { quat: orientation }).unwrap();
-            }
+    observationSystem = defineSystem({
+      name: 'app-observation-camera-ownership',
+      queries: [],
+      after: [InputFrameStartScan],
+      fn: () => {
+        const active = observationEntity;
+        if (active === undefined) return;
+        rememberGameCamera();
+        const snapshot = world.hasResource(INPUT_SNAPSHOT_RESOURCE_KEY)
+          ? world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY)
+          : undefined;
+        if (snapshot?.mouse.pointerLocked) {
+          const transform = world.get(active, Transform);
+          if (transform.ok) {
+            const { x, y } = snapshot.mouse.movementDelta;
+            const orientation = rotateObservationCamera(transform.value.quat, x, y);
+            world.set(active, Transform, { quat: orientation }).unwrap();
           }
-          setActiveCamera(world, active);
-        },
-      })
-      .unwrap();
+        }
+        setActiveCamera(world, active);
+      },
+    });
+    world.addSystem(Update, observationSystem).unwrap();
     ownershipInstalled = true;
   }
 

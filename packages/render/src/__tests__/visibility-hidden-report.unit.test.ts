@@ -6,27 +6,24 @@ import type { RenderFeature, RenderFeatureHiddenEntityReport } from '../features
 import { runSingleViewFeatureFrame } from './single-view-feature-fixture';
 
 describe('render feature hidden entity report contract', () => {
-  it('keeps World and entity identity as the only merge keys', () => {
-    const world = new World();
-    const report = { world, entity: 9 as never } satisfies RenderFeatureHiddenEntityReport;
-    expect(Object.keys(report).sort()).toEqual(['entity', 'world']);
+  it('keeps the full source entity handle as the only merge key', () => {
+    const report = { entity: 9 as never } satisfies RenderFeatureHiddenEntityReport;
+    expect(Object.keys(report).sort()).toEqual(['entity']);
   });
-
   it('deduplicates reports without changing frustum statistics', () => {
     const world = new World();
     const feature: RenderFeature<{ readonly count: number }> = {
       identity: 'synthetic.hidden-report',
       extract: (context) => {
-        context.reportHiddenEntity?.({ world, entity: 9 as never });
-        context.reportHiddenEntity?.({ world, entity: 9 as never });
-        return ok({ count: context.worlds.length });
+        context.reportHiddenEntity?.({ entity: 9 as never });
+        context.reportHiddenEntity?.({ entity: 9 as never });
+        return ok({ count: context.world.inspect().entityCount });
       },
       plan: () => ok({ work: [{ scope: { view: 'main' }, resources: [], passes: [] }] }),
     };
     const host = createRenderFeatureHost([feature]).unwrap();
     const result = runSingleViewFeatureFrame(host, {
-      worlds: [world],
-      owner: 0,
+      world: world,
       frameNumber: 1,
       caps: {} as never,
     });

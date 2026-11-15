@@ -30,9 +30,9 @@ import { commands } from 'vitest/browser';
 import {
   composeLinearLightingReference,
   computeGtaoRawReference,
-  filterGtaoReference,
+  depthReconstructedNormalField,
+  filterGtaoDepthPlaneReference,
   GTAO_COMPARISON_BUDGET,
-  materialNormalFieldMetrics,
   sampleGtaoBilinearLinearClamp,
 } from '../../../render/src/__tests__/gtao-reference';
 import { deriveStandardClusterReflectedAbi } from '../../../render/src/light-buffer-layout';
@@ -197,14 +197,9 @@ function expectNoClusterWritesDuringCaptures(rows: readonly ClusterWorkObservati
 }
 
 async function captureStableWebgl2AoInputs(input: {
-  readonly captureTarget: (
-    name: 'ssao-raw' | 'ssao-blurred' | 'standard-scene-surface-normal',
-  ) => Promise<ForwardGtaoTargetCapture>;
+  readonly captureTarget: (name: 'ssao-raw' | 'ssao-blurred') => Promise<ForwardGtaoTargetCapture>;
   readonly observations: readonly ClusterWorkObservationRow[];
 }) {
-  const normalStart = input.observations.length;
-  const normalTarget = await input.captureTarget('standard-scene-surface-normal');
-  expectNoClusterWritesDuringCaptures(input.observations.slice(normalStart));
   const rawStart = input.observations.length;
   const rawTarget = await input.captureTarget('ssao-raw');
   expectNoClusterWritesDuringCaptures(input.observations.slice(rawStart));
@@ -212,7 +207,6 @@ async function captureStableWebgl2AoInputs(input: {
   const blurredTarget = await input.captureTarget('ssao-blurred');
   expectNoClusterWritesDuringCaptures(input.observations.slice(blurredStart));
   return {
-    normalTarget,
     rawTarget,
     rawReceipt: { frameId: rawTarget.publicReceiptFrameId, presentation: 'ready' as const },
     blurredTarget,
@@ -732,11 +726,7 @@ it.each([
       const startedAt = performance.now();
       propagateTransforms(world).unwrap();
       world.update(1 / 60).unwrap();
-      const drawResult = renderer.draw({
-        leases: [lease],
-        camera: { lease },
-        environment: { lease },
-      });
+      const drawResult = renderer.draw({ source: lease });
       if (!drawResult.ok) {
         throw new Error(
           `renderer.draw failed: ${JSON.stringify(describeFailure(drawResult.error))}; renderer events: ${JSON.stringify(errors.map(describeFailure))}`,
@@ -833,9 +823,7 @@ it.each([
       }
       return receipt;
     };
-    const captureTarget = async (
-      name: 'ssao-raw' | 'ssao-blurred' | 'standard-scene-surface-normal',
-    ) => {
+    const captureTarget = async (name: 'ssao-raw' | 'ssao-blurred') => {
       failureOperation = `capture-target:${name}`;
       for (let attempt = 0; attempt < 120; attempt += 1) {
         try {
@@ -1081,7 +1069,7 @@ it.each([
         captureTarget,
         observations: clusterWorkObservations,
       });
-      const { normalTarget, rawTarget, rawReceipt, blurredTarget, blurredReceipt } = stableAoInputs;
+      const { rawTarget, rawReceipt, blurredTarget, blurredReceipt } = stableAoInputs;
       const evidenceRoot = 'packages/runtime/reports/portable-gpu-data-kernels-and-ao';
       const clusterCapture = prepareClusterCapture(debugHost);
       const tapeTransaction = await captureWebgl2PackedAoTapeFrame({
@@ -1336,7 +1324,6 @@ it.each([
       };
       let rawReferenceMetrics: ReturnType<typeof byteErrorMetrics> | undefined;
       let filteredReferenceMetrics: ReturnType<typeof byteErrorMetrics> | undefined;
-      let normalMetrics: ReturnType<typeof materialNormalFieldMetrics> | undefined;
       let rawNormalMetrics: ReturnType<typeof byteErrorMetrics>[] = [];
       if (algorithm === AMBIENT_OCCLUSION_GTAO) {
         expect(aoInspection.execution).toBe('fragment');
@@ -1345,7 +1332,8 @@ it.each([
           width: Math.round(width * FORWARD_GTAO_FIXTURE.resolutionScale),
           height: Math.round(height * FORWARD_GTAO_FIXTURE.resolutionScale),
         });
-        const field = createForwardGtaoReferenceField(width, height);
+        // The depth-only prepass leaves AO with normals reconstructed from depth.
+        const field = depthReconstructedNormalField(createForwardGtaoReferenceField(width, height));
         const rawReference = computeGtaoRawReference(field, {
           outputWidth: rawTarget.width,
           outputHeight: rawTarget.height,
@@ -1357,11 +1345,7 @@ it.each([
           distanceFallOff: aoInspection.numerical.distanceFallOff,
           sampleBudget: aoInspection.numerical.sampleBudget,
         });
-        const filteredReference = filterGtaoReference(
-          field,
-          rawReference,
-          aoInspection.numerical.radius,
-        );
+        const filteredReference = filterGtaoDepthPlaneReference(field, rawReference);
         rawReferenceMetrics = byteErrorMetrics(
           byteChannel(rawTarget.bytes, rawTarget.bytesPerTexel, 0),
           byteChannel(rawReference.rgba, 4, 0),
@@ -1392,12 +1376,6 @@ it.each([
         expect(filteredReferenceMetrics.rms).toBeLessThanOrEqual(
           GTAO_COMPARISON_BUDGET.filteredVisibilityRmsByteError,
         );
-        normalMetrics = materialNormalFieldMetrics(field, normalTarget.bytes);
-        expect(normalMetrics.count).toBeGreaterThan(1_000);
-        expect(normalMetrics.maxAngularRadians).toBeLessThanOrEqual(
-          GTAO_COMPARISON_BUDGET.materialNormalX12Y12AngularRadians,
-        );
-        expect(normalMetrics.firstMismatch).toBeUndefined();
       }
       world.set(camera, AmbientOcclusion, { directLightingStrength: 1 }).unwrap();
       await capture();
@@ -1429,7 +1407,8 @@ it.each([
         ) {
           throw new Error('GTAO controlled lighting captures are incomplete');
         }
-        const field = createForwardGtaoReferenceField(width, height);
+        // The depth-only prepass leaves AO with normals reconstructed from depth.
+        const field = depthReconstructedNormalField(createForwardGtaoReferenceField(width, height));
         const rawReference = computeGtaoRawReference(field, {
           outputWidth: rawTarget.width,
           outputHeight: rawTarget.height,
@@ -1441,11 +1420,7 @@ it.each([
           distanceFallOff: aoInspection.numerical.distanceFallOff,
           sampleBudget: aoInspection.numerical.sampleBudget,
         });
-        const filteredReference = filterGtaoReference(
-          field,
-          rawReference,
-          aoInspection.numerical.radius,
-        );
+        const filteredReference = filterGtaoDepthPlaneReference(field, rawReference);
         const index = field.positions.findIndex((position, pixelIndex) => {
           if (position === undefined || Math.abs(position[2] + 4) > 0.02) return false;
           const x = pixelIndex % width;
@@ -1730,7 +1705,6 @@ it.each([
             rawReferenceMetrics,
             rawNormalMetrics,
             filteredReferenceMetrics,
-            normalMetrics,
             packedComparison,
             directAoDelta,
             maximumDelta: displayDelta.maximum,
@@ -1764,7 +1738,6 @@ it.each([
             ...(directOnlyLinear === undefined
               ? {}
               : { directOnly: await outputArtifact(directOnlyLinear) }),
-            normal: await outputArtifact(normalTarget),
             raw: await outputArtifact(rawTarget),
             filtered: await outputArtifact(blurredTarget),
             ao1Linear: await outputArtifact(directAoLinear),

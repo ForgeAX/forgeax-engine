@@ -1,3 +1,4 @@
+import { defineSystem } from "@forgeax/engine-ecs";
 import { halfFloat } from '@forgeax/engine/math';
 import { FORGEAX_FRAME_SUBMITTED_EVENT, type BrowserFrameSubmitted } from '@forgeax/engine-app';
 import { createApp } from '@forgeax/engine-app/browser';
@@ -916,8 +917,7 @@ async function observeSubmittedReceipt(
   }
 }
 
-app.world
-  .addSystem(Update, {
+const systemToken1 = defineSystem({
     name: 'taa-carrier-horizontal-motion',
     queries: [],
     fn: (world) => {
@@ -943,7 +943,9 @@ app.world
         }
       }
     },
-  })
+  });
+app.world
+  .addSystem(Update, systemToken1)
   .unwrap();
 
 const updateInspection = () => {

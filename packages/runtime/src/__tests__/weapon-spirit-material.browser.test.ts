@@ -370,9 +370,7 @@ it.each([
         const pending = recorder.captureFrame();
         (await recorder.frameBoundary()).unwrap();
         const lease = renderer.attach(world).unwrap();
-        const receipt = renderer
-          .draw({ leases: [lease], camera: { lease }, environment: { lease } })
-          .unwrap();
+        const receipt = renderer.draw({ source: lease }).unwrap();
         const completed = await receipt.completed;
         (await recorder.frameBoundary()).unwrap();
         const captured = (await pending).unwrap();

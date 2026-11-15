@@ -636,6 +636,7 @@ describe('RenderFeature persistent GPU work', () => {
     const owner = createRenderFeatureGpuWorkOwner({
       getDevice: () => device,
       getShaderModuleFactory: () => ({
+        isPending: () => true,
         createShaderModule: () =>
           err(
             new RhiError({
@@ -661,6 +662,42 @@ describe('RenderFeature persistent GPU work', () => {
           operation: 'prepare-gpu-program',
           reason: 'rhi-not-available:retry on the next frame',
           recovery: 'next-frame',
+        },
+      });
+    }
+  });
+
+  it('keeps non-registry rhi-not-available shader errors visible for renderer recovery', async () => {
+    const adapter = (await rhi.requestAdapter()).unwrap();
+    const device = (await adapter.requestDevice()).unwrap();
+    const owner = createRenderFeatureGpuWorkOwner({
+      getDevice: () => device,
+      getShaderModuleFactory: () => ({
+        createShaderModule: () =>
+          err(
+            new RhiError({
+              code: 'rhi-not-available',
+              expected: 'a live device-owned shader module factory',
+              hint: 'the shader module factory has been retired',
+            }),
+          ),
+      }),
+    });
+    const resolver = owner.beginFeature('synthetic.gpu-retired', 0);
+
+    const prepared = resolver.prepareProgram('program', {
+      wgsl: 'synthetic',
+      entryPoints: ['simulate'],
+    });
+
+    expect(prepared.ok).toBe(false);
+    if (!prepared.ok) {
+      expect(prepared.error).toMatchObject({
+        code: 'render-feature-preparation-failed',
+        detail: {
+          operation: 'prepare-gpu-program',
+          reason: 'rhi-not-available:the shader module factory has been retired',
+          recovery: 'renderer-recover',
         },
       });
     }

@@ -1,8 +1,6 @@
-import {
-  type ArrayRangesChange,
-  InstanceTransformsStrideMismatchError,
-} from '@forgeax/engine-ecs/projection';
+import type { ArrayRangesChange } from '@forgeax/engine-ecs/projection';
 import type { RhiErrorCode } from '@forgeax/engine-rhi';
+import { InstanceTransformsStrideMismatchError } from './errors/component-validation';
 
 const MATRIX_STRIDE = 16;
 
@@ -57,6 +55,8 @@ export type InstanceSubmissionLane =
   | 'chunked-storage'
   | 'direct-uniform'
   | 'chunked-uniform'
+  /** Drawn from the slot's GPU Scene rows; bytes are its instance transform rows. */
+  | 'gpu-scene'
   | 'unavailable';
 export type InstanceBackendKind = 'webgpu' | 'wgpu-native' | 'wgpu-webgl2' | 'null' | 'unknown';
 export type InstanceCollectionFailureCode = RhiErrorCode | 'queue-write-buffer-failed';

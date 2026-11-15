@@ -1,6 +1,6 @@
-import { err, ok, type Result } from '@forgeax/engine-types';
+import { ok, type Result } from '@forgeax/engine-types';
 import type { ClusterBinScratch } from '../../cluster-binner';
-import { type RenderError, StandardLightBudgetExceededError } from '../../errors/render';
+import type { RenderError } from '../../errors/render';
 import { createStandardClusterLayout, type StandardClusterLayout } from './layout';
 import type { StandardLightFrame } from './light-frame';
 import { deriveStandardMembership, type StandardClusterMembership } from './membership';
@@ -12,9 +12,10 @@ export interface PreparedStandardLighting extends StandardClusterMembership {
   readonly directional: StandardLightFrame['directional'];
   readonly local: StandardLightFrame['local'];
   readonly layout: StandardClusterLayout;
-  readonly membershipLightCount: number;
   readonly renderPath: NonNullable<StandardLightFrame['renderPath']>;
   readonly maxLights: number;
+  /** Point/spot/rect lights dropped over the limit; `local` holds the rest. */
+  readonly droppedLocalLights: number;
   /** Camera terms the membership was derived with; read by on-demand inspection. */
   readonly camera?: Pick<StandardLightFrame, 'view' | 'projection' | 'near' | 'far'>;
 }
@@ -25,10 +26,6 @@ export function prepareStandardLighting(
   scratch?: ClusterBinScratch,
   owner?: StandardClusterMembershipOwner,
 ): Result<PreparedStandardLighting, RenderError> {
-  const admittedBudget = Math.min(frame.lightCount, directLightSlotCapacity);
-  if (frame.local.length > admittedBudget) {
-    return err(new StandardLightBudgetExceededError(frame.local.length, admittedBudget));
-  }
   const layout = createStandardClusterLayout(directLightSlotCapacity, frame.grid);
   const membership =
     owner === undefined
@@ -43,14 +40,17 @@ export function prepareStandardLighting(
       return derived.lightIndexList;
     },
     lightBounds: derived.lightBounds,
+    membershipLightCount: derived.membershipLightCount,
     membershipEntryCount: derived.membershipEntryCount,
+    clusterEntryCapK: derived.clusterEntryCapK,
+    droppedClusterEntries: derived.droppedClusterEntries,
     scratch: derived.scratch,
     directional: frame.directional,
     local: frame.local,
     layout,
-    membershipLightCount: frame.local.length,
     renderPath: frame.renderPath,
     maxLights: frame.lightCount,
+    droppedLocalLights: frame.droppedLocalLights ?? 0,
     camera: { view: frame.view, projection: frame.projection, near: frame.near, far: frame.far },
   });
 }

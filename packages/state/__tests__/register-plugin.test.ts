@@ -16,7 +16,7 @@
 import { describe, expect, it } from 'vitest';
 import { World } from '@forgeax/engine-ecs';
 import { defineState } from '../src/define-state';
-import { type StatePayload, stateResourceKey } from '../src/resources';
+import { stateResource } from '../src/resources';
 import { registerStatesPlugin } from '../src/register-plugin';
 
 const TestState = defineState('TestState', ['alpha', 'beta', 'gamma'] as const);
@@ -26,18 +26,18 @@ describe('registerStatesPlugin', () => {
     const world = new World();
     registerStatesPlugin(world);
 
-    const sKey = stateResourceKey(TestState);
+    const sKey = stateResource(TestState);
 
     expect(world.hasResource(sKey)).toBe(true);
 
     // Current state = variant index (defaultValue = variants[0] = 'alpha' -> 0)
-    expect(world.getResource<StatePayload>(sKey).current).toBe(0);
+    expect(world.getResource(sKey).current).toBe(0);
 
     // Next request = undefined (no pending transition)
-    expect(world.getResource<StatePayload>(sKey).next).toBeUndefined();
+    expect(world.getResource(sKey).next).toBeUndefined();
 
     // PreviousCurrent state = variant index (defaultValue = variants[0] = 'alpha' -> 0)
-    expect(world.getResource<StatePayload>(sKey).previous).toBe(0);
+    expect(world.getResource(sKey).previous).toBe(0);
   });
 
   it('is idempotent — second call is a silent no-op', () => {
@@ -45,13 +45,13 @@ describe('registerStatesPlugin', () => {
     registerStatesPlugin(world);
 
     // Capture state after first call
-    const sKey = stateResourceKey(TestState);
-    const firstStateValue = world.getResource<StatePayload>(sKey).current;
+    const sKey = stateResource(TestState);
+    const firstStateValue = world.getResource(sKey).current;
 
     // Second call must not throw, not overwrite incorrectly, not double-register
     registerStatesPlugin(world);
 
-    expect(world.getResource<StatePayload>(sKey).current).toBe(firstStateValue);
+    expect(world.getResource(sKey).current).toBe(firstStateValue);
 
     // System count should remain the same (no duplicate system registration)
     const systems = world.inspect().systems;
@@ -74,15 +74,15 @@ describe('registerStatesPlugin', () => {
     const world = new World();
     registerStatesPlugin(world);
 
-    const sKey = stateResourceKey(TestState);
+    const sKey = stateResource(TestState);
 
     expect(world.hasResource(sKey)).toBe(true);
 
     // State Resource has valid default value
-    expect(world.getResource<StatePayload>(sKey).current).toBe(0);
+    expect(world.getResource(sKey).current).toBe(0);
 
     // Next request is undefined (no pending transition)
-    expect(world.getResource<StatePayload>(sKey).next).toBeUndefined();
+    expect(world.getResource(sKey).next).toBeUndefined();
   });
 
   it('AC-10: manual removeResource — ResourceNotPresent after removal, throw on getResource', () => {
@@ -90,7 +90,7 @@ describe('registerStatesPlugin', () => {
     registerStatesPlugin(world);
 
     // Manually remove the State Resource to simulate external tampering
-    const sKey = stateResourceKey(TestState);
+    const sKey = stateResource(TestState);
     world.removeResource(sKey);
 
     // Resource is no longer present
@@ -108,13 +108,13 @@ describe('registerStatesPlugin', () => {
     registerStatesPlugin(world);
 
     // A complete resource exists for each token
-    expect(world.hasResource(stateResourceKey(TokenA))).toBe(true);
-    expect(world.hasResource(stateResourceKey(TokenB))).toBe(true);
+    expect(world.hasResource(stateResource(TokenA))).toBe(true);
+    expect(world.hasResource(stateResource(TokenB))).toBe(true);
 
     // Second call — no errors, resource unchanged
     registerStatesPlugin(world);
-    expect(world.hasResource(stateResourceKey(TokenA))).toBe(true);
-    expect(world.hasResource(stateResourceKey(TokenB))).toBe(true);
+    expect(world.hasResource(stateResource(TokenA))).toBe(true);
+    expect(world.hasResource(stateResource(TokenB))).toBe(true);
   });
 
   it('owns late token registration and reverses the complete runtime', () => {
@@ -122,11 +122,11 @@ describe('registerStatesPlugin', () => {
     const dispose = registerStatesPlugin(world);
     const LateToken = defineState('RegisterPluginLateToken', ['cold', 'hot'] as const);
 
-    expect(world.hasResource(stateResourceKey(LateToken))).toBe(true);
+    expect(world.hasResource(stateResource(LateToken))).toBe(true);
     expect(world.inspect().systems.some((system) => system.name === 'transitionStates')).toBe(true);
 
     dispose();
-    expect(world.hasResource(stateResourceKey(LateToken))).toBe(false);
+    expect(world.hasResource(stateResource(LateToken))).toBe(false);
     expect(world.inspect().systems.some((system) => system.name === 'transitionStates')).toBe(false);
   });
 });

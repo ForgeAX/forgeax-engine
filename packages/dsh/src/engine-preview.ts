@@ -1,4 +1,4 @@
-import { Update } from '@forgeax/engine-ecs';
+import { defineSystem, Update } from '@forgeax/engine-ecs';
 import type { Plugin } from '@forgeax/engine-plugin';
 
 import {
@@ -28,15 +28,14 @@ export function enginePreviewPlugin(options: EnginePreviewPluginOptions = {}): P
       const systemName = 'dsh-engine-preview-tick';
 
       ctx.effect(() => {
-        ctx.world
-          .addSystem(Update, {
-            name: systemName,
-            queries: [],
-            fn: () => {
-              tick += 1;
-            },
-          })
-          .unwrap();
+        const systemToken1 = defineSystem({
+          name: systemName,
+          queries: [],
+          fn: () => {
+            tick += 1;
+          },
+        });
+        ctx.world.addSystem(Update, systemToken1).unwrap();
 
         const respond = (event: MessageEvent, value: EnginePreviewStatus): void => {
           if (event.source === null) return;
@@ -69,7 +68,7 @@ export function enginePreviewPlugin(options: EnginePreviewPluginOptions = {}): P
 
         return () => {
           targetWindow.removeEventListener('message', onMessage);
-          ctx.world.removeSystem(Update, systemName).unwrap();
+          ctx.world.removeSystem(Update, systemToken1).unwrap();
         };
       }, 'dsh-engine-preview: tick and message bridge');
     },

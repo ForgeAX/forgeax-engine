@@ -29,14 +29,19 @@ function sameClass(actual: ClassOwner | undefined, expected: ClassOwner): boolea
 
 /** Recorded inputs and output of one contiguous bundled run of live batches. */
 export interface RetainedRasterBlock {
-  /** The live batch owners of the run, in encode order. */
-  readonly lives: readonly object[];
+  /** The command identities of the run's live batches, in encode order. */
+  readonly commands: readonly object[];
   /** Ordered physical-buffer and material-selection facts of this run. */
   readonly physical: readonly unknown[];
   readonly materials: Map<number, MaterialOwner>;
   readonly classes: Map<object, ClassOwner>;
   bundle: RenderBundle | undefined;
   draws: number;
+}
+
+/** A live batch's command identity; owners without one are their own identity. */
+function commandOf(live: object): object {
+  return (live as { readonly command?: object }).command ?? live;
 }
 
 function sameList(left: readonly unknown[], right: readonly unknown[]): boolean {
@@ -94,14 +99,14 @@ export class RetainedPassEncode {
     physicalOf: ReadFacts,
   ): RetainedRasterBlock | undefined {
     const first = lives[start];
-    const block = first === undefined ? undefined : this.previous?.get(first);
-    if (block === undefined || block.lives.length !== end - start) return undefined;
+    const block = first === undefined ? undefined : this.previous?.get(commandOf(first));
+    if (block === undefined || block.commands.length !== end - start) return undefined;
     for (let index = start; index < end; index++)
-      if (block.lives[index - start] !== lives[index]) return undefined;
+      if (block.commands[index - start] !== commandOf(lives[index] as object)) return undefined;
     if (!sameFacts(lives, start, end, physicalOf, block.physical)) return undefined;
     if (!this.#materials.matches(block.materials) || !this.#classes.matches(block.classes))
       return undefined;
-    this.#next.set(first as object, block);
+    this.#next.set(commandOf(first as object), block);
     return block;
   }
 
@@ -116,16 +121,20 @@ export class RetainedPassEncode {
     const append = (value: unknown): void => {
       physical.push(value);
     };
-    for (let index = start; index < end; index++) physicalOf(lives[index] as object, append);
+    const commands: object[] = [];
+    for (let index = start; index < end; index++) {
+      physicalOf(lives[index] as object, append);
+      commands.push(commandOf(lives[index] as object));
+    }
     const block: RetainedRasterBlock = {
-      lives: lives.slice(start, end),
+      commands,
       physical,
       materials: new Map(),
       classes: new Map(),
       bundle: undefined,
       draws: 0,
     };
-    this.#next.set(lives[start] as object, block);
+    this.#next.set(commandOf(lives[start] as object), block);
     return block;
   }
 

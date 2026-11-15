@@ -10,6 +10,7 @@ it('records the encoded material version after the live shared resource advances
   const entry = receiptRow();
   const material: MaterialSnapshot = {
     ...entry.source.material.snapshot,
+    sourceAssets: { root: 7, revision: 13, assets: [] },
     materialPublication: {
       identity: {
         materialGuid: 'material',
@@ -57,6 +58,8 @@ it('records the encoded material version after the live shared resource advances
       draws: [
         {
           submeshIndex: 2,
+          materialHandle: material.materialHandle,
+          sourceRevision: 13,
           publication: material.materialPublication?.identity,
           pipeline: reference,
         },

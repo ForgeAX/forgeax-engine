@@ -1,10 +1,14 @@
 import { createHash } from 'node:crypto';
 import { encodeAssetBundle } from '@forgeax/engine-pack/bundle';
-import { err, ok } from '@forgeax/engine-types';
+import { type AssetArtifactError, err, ok } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { BundleStore } from '../internal/bundle-store';
-import { shareVerifiedArtifactBytes } from '../internal/shared-immutable';
-import { ArtifactReadCache, type ArtifactReadRequest, readArtifact } from '../registry/artifact-io';
+import {
+  type ArtifactReadRequest,
+  artifactUrl,
+  readArtifact,
+  readBundledArtifact,
+} from '../registry/artifact-io';
 import { defined } from './assert-defined';
 
 const hash = (bytes: Uint8Array) => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
@@ -29,6 +33,44 @@ function request(guid: string, entry = 0, bytes: Uint8Array = stored): ArtifactR
   };
 }
 const fetcher = () => vi.fn(async () => new Response(stored.slice()));
+const store = () => new BundleStore<AssetArtifactError>();
+
+async function bundled(
+  bundles: BundleStore<AssetArtifactError>,
+  request: ArtifactReadRequest,
+  fetch: (url: string, init?: RequestInit) => Promise<Response>,
+) {
+  const detail = { guid: request.guid, artifactKey: request.artifactKey };
+  const read = await readBundledArtifact(bundles, request, {
+    fetcher: fetch,
+    url: artifactUrl(request.packageUrl, request.descriptor.path),
+    unreadable: (error) =>
+      'code' in error
+        ? error
+        : {
+            code: 'asset-artifact-missing',
+            expected: 'a readable Bundle',
+            hint: error.observed,
+            detail: {
+              ...detail,
+              path: request.descriptor.path,
+              observed: error.observed,
+              expected: 'a readable Bundle',
+            },
+          },
+    rejected: (error) => error,
+    invalid: (reason) => ({
+      code: 'asset-artifact-integrity-mismatch',
+      expected: 'one complete Bundle entry',
+      hint: 'rebuild the player package',
+      detail: { ...detail, observed: reason, expected: 'one complete Bundle entry' },
+    }),
+  });
+  // One Bundle read can fail several owners; each reports its own request.
+  return read.ok
+    ? read
+    : err({ ...read.error, detail: { ...read.error.detail, ...detail } } as AssetArtifactError);
+}
 
 describe('resident Asset Bundles', () => {
   it('decodes a shared compressed group and verifies each selected program independently', async () => {
@@ -56,8 +98,8 @@ describe('resident Asset Bundles', () => {
         decodedRange: { offset: index === 0 ? 0 : 2048, length: bytes.length },
       },
     }));
-    const cache = new ArtifactReadCache();
-    const results = await Promise.all(requests.map((r) => cache.readArtifact(r, fetch)));
+    const cache = store();
+    const results = await Promise.all(requests.map((r) => bundled(cache, r, fetch)));
     expect(results.map((r) => r.unwrap())).toEqual(programs);
     expect(fetch).toHaveBeenCalledTimes(1);
     const bad = defined(requests[1]);
@@ -92,27 +134,25 @@ describe('resident Asset Bundles', () => {
   });
 
   it('fetches one Bundle for concurrent entries and reuses an extracted entry without refetching', async () => {
-    const cache = new ArtifactReadCache(),
+    const cache = store(),
       fetch = fetcher();
     const [left, right] = await Promise.all([
-      cache.readArtifact(request('left'), fetch),
-      cache.readArtifact(request('right', 1), fetch),
+      bundled(cache, request('left'), fetch),
+      bundled(cache, request('right', 1), fetch),
     ]);
     expect(left.unwrap()).toEqual(Uint8Array.of(10, 11, 12));
     expect(right.unwrap()).toEqual(Uint8Array.of(20, 21));
     // Another owner of the same window receives a verified private copy, not a refetch.
-    const third = (await cache.readArtifact(request('third'), fetch)).unwrap();
+    const third = (await bundled(cache, request('third'), fetch)).unwrap();
     expect(third).toEqual(Uint8Array.of(10, 11, 12));
     expect(third).not.toBe(left.unwrap());
     // A mutated extracted value is never copied into a new owner.
     left.unwrap().fill(0);
-    expect((await cache.readArtifact(request('fifth'), fetch)).unwrap()).toEqual(
+    expect((await bundled(cache, request('fifth'), fetch)).unwrap()).toEqual(
       Uint8Array.of(10, 11, 12),
     );
     expect(fetch).toHaveBeenCalledTimes(2);
-    expect((await cache.readArtifact(request('fourth', 2), fetch)).unwrap()).toEqual(
-      Uint8Array.of(30),
-    );
+    expect((await bundled(cache, request('fourth', 2), fetch)).unwrap()).toEqual(Uint8Array.of(30));
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
@@ -133,11 +173,12 @@ describe('resident Asset Bundles', () => {
       byteRange: { ...defined(packed.windows[0]), bundleDigest: hash(packed.bytes) },
     };
     const base = { packageUrl: 'https://game.test/z.pack.json', artifactKey: 'body' };
-    const cache = new ArtifactReadCache();
-    expect((await cache.readArtifact({ ...base, guid: 'z', descriptor }, fetch)).unwrap()).toEqual(
+    const cache = store();
+    expect((await bundled(cache, { ...base, guid: 'z', descriptor }, fetch)).unwrap()).toEqual(
       body,
     );
-    const wrong = await new ArtifactReadCache().readArtifact(
+    const wrong = await bundled(
+      store(),
       {
         ...base,
         guid: 'bad',
@@ -152,13 +193,14 @@ describe('resident Asset Bundles', () => {
   });
 
   it('matches the standalone path and rejects an entry whose digest differs', async () => {
-    const cache = new ArtifactReadCache(),
+    const cache = store(),
       fetch = fetcher();
     expect((await readArtifact(request('standalone'), fetch)).unwrap()).toEqual(
-      (await cache.readArtifact(request('first'), fetch)).unwrap(),
+      (await bundled(cache, request('first'), fetch)).unwrap(),
     );
     const invalid = request('bad', 1);
-    const result = await new ArtifactReadCache().readArtifact(
+    const result = await bundled(
+      store(),
       {
         ...invalid,
         descriptor: {
@@ -178,13 +220,13 @@ describe('resident Asset Bundles', () => {
   });
 
   it('rejects a corrupt Bundle for every pending owner from one fetch', async () => {
-    const cache = new ArtifactReadCache();
+    const cache = store();
     const corrupt = stored.slice();
     corrupt[corrupt.length - 1] = 0;
     const fetch = vi.fn(async () => new Response(corrupt));
     const results = await Promise.all([
-      cache.readArtifact(request('left'), fetch),
-      cache.readArtifact(request('right', 1), fetch),
+      bundled(cache, request('left'), fetch),
+      bundled(cache, request('right', 1), fetch),
     ]);
     for (const [index, result] of results.entries())
       expect(result).toMatchObject({
@@ -199,7 +241,8 @@ describe('resident Asset Bundles', () => {
 
   it('rejects a window that is not one complete Bundle entry', async () => {
     const good = request('bad');
-    const result = await new ArtifactReadCache().readArtifact(
+    const result = await bundled(
+      store(),
       {
         ...good,
         descriptor: {
@@ -215,22 +258,17 @@ describe('resident Asset Bundles', () => {
     });
   });
 
-  it.each([
-    'clear',
-    'clearPrefix',
-    'releaseCompleted',
-  ] as const)('drops Bundle residency on %s', async (operation) => {
-    const cache = new ArtifactReadCache(),
+  it.each(['clear', 'trim'] as const)('drops Bundle residency on %s', async (operation) => {
+    const cache = store(),
       fetch = fetcher();
-    await cache.readArtifact(request('first'), fetch);
-    if (operation === 'clearPrefix') cache.clearPrefix('first\0');
-    else cache[operation]();
-    expect((await cache.readArtifact(request('second', 1), fetch)).ok).toBe(true);
+    await bundled(cache, request('first'), fetch);
+    cache[operation]();
+    expect((await bundled(cache, request('second', 1), fetch)).ok).toBe(true);
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
   it('asks for only a released entry once its Bundle was fetched whole', async () => {
-    const cache = new ArtifactReadCache();
+    const cache = store();
     const ranges: (string | undefined)[] = [];
     const fetch = vi.fn(async (_url: string, init?: { headers?: Record<string, string> }) => {
       const range = init?.headers?.range;
@@ -241,16 +279,16 @@ describe('resident Asset Bundles', () => {
         { status: match === null ? 200 : 206 },
       );
     });
-    await cache.readArtifact(request('first'), fetch);
-    cache.releaseCompleted();
-    expect((await cache.readArtifact(request('second', 1), fetch)).unwrap()).toEqual(
+    await bundled(cache, request('first'), fetch);
+    cache.trim();
+    expect((await bundled(cache, request('second', 1), fetch)).unwrap()).toEqual(
       Uint8Array.of(20, 21),
     );
     const window = defined(bundle.windows[1]);
     expect(ranges).toEqual([undefined, `bytes=${window.offset}-${window.offset + 1}`]);
     // A ranged entry still answers to its own digest.
     const tampered = vi.fn(async () => new Response(Uint8Array.of(0), { status: 206 }));
-    expect(await cache.readArtifact(request('tampered', 2), tampered)).toMatchObject({
+    expect(await bundled(cache, request('tampered', 2), tampered)).toMatchObject({
       ok: false,
       error: { code: 'asset-artifact-integrity-mismatch', detail: { guid: 'tampered' } },
     });
@@ -264,7 +302,8 @@ describe('resident Asset Bundles', () => {
     Number.MAX_SAFE_INTEGER,
   ])('rejects invalid lengths: %s', async (length) => {
     const good = request('bad');
-    const result = await new ArtifactReadCache().readArtifact(
+    const result = await bundled(
+      store(),
       {
         ...good,
         descriptor: {
@@ -322,55 +361,5 @@ describe('BundleStore residency', () => {
       invalid: (reason) => reason,
     });
     expect(store.snapshot()).toEqual({ bundles: 0, bytes: 0 });
-  });
-});
-
-describe('released Bundle entries with a live shared view', () => {
-  it('copies the realm view of the same content instead of refetching it', async () => {
-    const own = [Uint8Array.of(71, 72, 73, 74), Uint8Array.of(81, 82)];
-    const ownBundle = encodeAssetBundle(own);
-    const ranged = (entry: number): ArtifactReadRequest => {
-      const body = defined(own[entry]);
-      return {
-        guid: `shared-${entry}`,
-        packageUrl: 'https://game.test/shared.pack.json',
-        artifactKey: 'program',
-        descriptor: {
-          path: 'bundles/shared.bin',
-          mediaType: 'text/wgsl',
-          contentEncoding: 'identity',
-          byteLength: body.byteLength,
-          integrity: { algorithm: 'sha256', digest: hash(body) },
-          byteRange: { ...defined(ownBundle.windows[entry]), bundleDigest: hash(ownBundle.bytes) },
-        },
-      };
-    };
-    const ranges: (string | undefined)[] = [];
-    const fetch = vi.fn(async (_url: string, init?: { headers?: Record<string, string> }) => {
-      const range = init?.headers?.range;
-      ranges.push(range);
-      const match = range === undefined ? null : /^bytes=(\d+)-(\d+)$/.exec(range);
-      return new Response(
-        match === null
-          ? ownBundle.bytes.slice()
-          : ownBundle.bytes.slice(Number(match[1]), Number(match[2]) + 1),
-        { status: match === null ? 200 : 206 },
-      );
-    });
-    // A consumer such as the Material decoder keeps only the realm view of the content.
-    const held = await (async () => {
-      const first = (await new ArtifactReadCache().readArtifact(ranged(0), fetch)).unwrap();
-      return shareVerifiedArtifactBytes(hash(first), first);
-    })();
-    expect(fetch).toHaveBeenCalledTimes(1);
-    // Another reader without the extracted value receives a verified private copy, no request.
-    const cache = new ArtifactReadCache();
-    const again = (await cache.readArtifact(ranged(0), fetch)).unwrap();
-    expect(again).toEqual(Uint8Array.of(71, 72, 73, 74));
-    expect(again).not.toBe(held);
-    expect(fetch).toHaveBeenCalledTimes(1);
-    // Content nobody holds still answers through its Bundle.
-    expect((await cache.readArtifact(ranged(1), fetch)).unwrap()).toEqual(Uint8Array.of(81, 82));
-    expect(ranges).toEqual([undefined, undefined]);
   });
 });

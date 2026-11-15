@@ -4,11 +4,13 @@ import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect, it, vi } from 'vitest';
+import { registeredSystem } from '../../__tests__/registered-system.fixture';
 import { renderLifecycleManifestUrl } from '../../__tests__/shader-manifest-fixture';
 import { createRenderer } from '../../assembly/factory';
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '../../components';
 import { Materials } from '../../materials';
 import * as lightingPreparation from '../../pipeline/standard-lighting/prepare';
+
 import * as renderWorldModule from '../render-world';
 import { RenderPrepare } from '../render-world';
 import { RENDER_STANDARD_LIGHTING_SYSTEM } from '../standard-lighting-systems';
@@ -63,7 +65,7 @@ it('records Standard lighting only from the render-standard-lighting RenderPrepa
   renderer.onError((error) => errors.push(error));
   const draw = async () => {
     world.update().unwrap();
-    const drawn = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
+    const drawn = renderer.draw({ source: lease });
     if (!drawn.ok) throw drawn.error;
     if (drawn.value !== undefined) {
       const completed = await drawn.value.completed;
@@ -87,7 +89,12 @@ it('records Standard lighting only from the render-standard-lighting RenderPrepa
         ),
     );
     if (renderWorld === undefined) throw new Error('Missing lit Render World');
-    expect(renderWorld.removeSystem(RenderPrepare, RENDER_STANDARD_LIGHTING_SYSTEM).ok).toBe(true);
+    expect(
+      renderWorld.removeSystem(
+        RenderPrepare,
+        registeredSystem(renderWorld, RenderPrepare, 'render-standard-lighting'),
+      ).ok,
+    ).toBe(true);
     // Recording has no other lighting authority: the frame fails naming the system.
     await expect(draw()).rejects.toThrow('did not submit');
     expect(JSON.stringify(errors)).toContain(`${RENDER_STANDARD_LIGHTING_SYSTEM} did not prepare`);

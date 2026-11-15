@@ -13,7 +13,7 @@
 // entityIndex/entityGeneration are now thin wrappers over the shared gen-slot
 // codec in @forgeax/engine-types (pack / unpackSlot / unpackGen). The
 // `EntityIndexOverflowError` throw and `ENTITY_NULL_RAW` sentinel stay in ecs
-// (D-1). Constants re-export codec values for backward-compatible names.
+// (D-1). Constants expose the codec sentinel values.
 
 import { MAX_GEN, MAX_SLOT, pack, unpackGen, unpackSlot } from '@forgeax/engine-types';
 import { EntityIndexOverflowError } from './errors';

@@ -6,12 +6,13 @@ import type {
   RhiDevice,
   RhiRenderPassEncoder,
 } from '@forgeax/engine-rhi';
+import { rhi as nullRhi } from '@forgeax/engine-rhi-null';
 import { createShaderModuleImmediate } from '@forgeax/engine-rhi-webgpu';
 import {
   createMaterialShaderProgram,
   createStandardPbrArtifactReceipt,
 } from '@forgeax/engine-shader';
-import type { ParamSchemaEntry, TextureAsset } from '@forgeax/engine-types';
+import { ok, type ParamSchemaEntry, type TextureAsset } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import { transmissionBackdropAvailable } from '../assembly/device-feature-admission';
 import { meshSsboBufferBinding } from '../assembly/mesh-ssbo-grow';
@@ -119,7 +120,9 @@ function customMaterialFixture(device: RhiDevice) {
     variantSet: 'GPU_SCENE_AVAILABLE=true',
   };
   const queries = {
-    artifact: vi.fn(() => artifact),
+    artifact: vi.fn(() => {
+      throw new Error('recording must consume the accepted shadowArtifact projection');
+    }),
     schema: vi.fn(() => schema),
     layout: vi.fn(() => layout),
   };
@@ -240,7 +243,11 @@ function createWitnessPipeline(
  * Only its material is a depth witness; encodeStaticShadowPass, its clear,
  * binding preparation and every indirect draw are the production functions.
  */
-function createShadowRig(device: RhiDevice, custom: CustomMaterial | undefined) {
+function createShadowRig(
+  device: RhiDevice,
+  custom: CustomMaterial | undefined,
+  moduleFactory?: ShaderModuleFactory,
+) {
   const buffer = device.createBuffer({ size: 4096, usage: 8 | 32 | 64 | 256 }).unwrap();
   const dynamicLayout = (count: number) =>
     device
@@ -266,7 +273,7 @@ function createShadowRig(device: RhiDevice, custom: CustomMaterial | undefined) 
   const materialLayout = custom?.layout ?? dynamicLayout(1);
   const meshLayout = dynamicLayout(1);
   const visibleLayout = dynamicLayout(0);
-  const shaderModuleFactory = {
+  const shaderModuleFactory = moduleFactory ?? {
     createShaderModule: (desc: Parameters<typeof createShaderModuleImmediate>[1]) =>
       createShaderModuleImmediate(device, desc),
   };
@@ -350,7 +357,7 @@ function advanceShadowSource(
   if (frame === 1) source.update(shadowSourceSnapshot(1, -14, 4));
   else if (frame > 1 && frame % 2 === 0)
     source.update({ ...shadowSourceSnapshot(3, 20, 5), mobility: 'static' });
-  else if (frame > 1) source.apply([{ kind: 'remove', worldId: 0, entityKey: 3 }]);
+  else if (frame > 1) source.apply([{ kind: 'remove', entityKey: 3 }]);
   const input = source.input();
   const update = updateShadowView(source.pool, input).unwrap();
   expect(update.cache).toBe('invalidated');
@@ -408,13 +415,93 @@ function expectCustomMaterialBinding(
   bound: unknown,
   previousMaterial: BindGroup | undefined,
 ): BindGroup {
-  for (const [name, query] of Object.entries(custom.queries))
-    expect(query, name).toHaveBeenCalledTimes(observations);
+  expect(custom.queries.artifact).not.toHaveBeenCalled();
+  expect(custom.queries.schema).toHaveBeenCalledTimes(observations);
+  expect(custom.queries.layout).toHaveBeenCalledTimes(observations);
   expect(bound).toBeDefined();
   if (frame === 30) expect(Object.is(bound, previousMaterial)).toBe(false);
   else expect(bound).toBe(previousMaterial ?? custom.group);
   return bound as BindGroup;
 }
+
+/** The selected pipeline consumes the accepted projection, not a second artifact lookup. */
+function expectAcceptedShadowProgram(
+  fixture: ShadowFixture,
+  artifact: CustomMaterial['artifact'],
+  observations: number,
+): void {
+  expect(fixture.pipelineLookup).toHaveBeenCalledTimes(observations);
+  for (const call of fixture.pipelineLookup.mock.calls as unknown as unknown[][]) {
+    expect(call[0]).toBe(artifact.material);
+    expect(call[5]).toBe(artifact.variantSet);
+    expect(call[6]).toBe('shadow-caster');
+    expect(call[16]).toBe('vs_scene_index');
+  }
+}
+
+it.each([
+  false,
+  true,
+])('checks the accepted shadow program and rejects stale/no-op controls on CPU (owned reuse: %s)', async (reuseAdjacentShadow) => {
+  const device = (await (await nullRhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const module = (await nullRhi.createShaderModule(device, { code: TEXTURED_WITNESS })).unwrap();
+  const custom = customMaterialFixture(device);
+  const { buffer, fixture } = createShadowRig(device, custom, {
+    createShaderModule: () => ok(module),
+  });
+  const pass = {
+    setPipeline() {},
+    setVertexBuffer() {},
+    setIndexBuffer() {},
+    setBindGroup() {},
+    drawIndirect() {},
+    drawIndexedIndirect() {},
+    executeBundles: () => ok(undefined),
+  } as unknown as RhiRenderPassEncoder;
+  const binding = spyMaterialBinding(pass);
+  try {
+    for (const query of Object.values(custom.queries)) query.mockClear();
+    fixture.pipelineLookup.mockClear();
+    encodeStaticShadowPass(
+      fixture.context,
+      pass,
+      { kind: 'directional', index: 0 },
+      undefined,
+      reuseAdjacentShadow ? true : undefined,
+    );
+    const observations = reuseAdjacentShadow ? 1 : fixture.batches.length;
+    expectAcceptedShadowProgram(fixture, custom.artifact, observations);
+    const bound = expectCustomMaterialBinding(custom, 0, observations, binding.bound(), undefined);
+    expect(() =>
+      expectAcceptedShadowProgram(
+        fixture,
+        { ...custom.artifact, material: 'test::stale-shadow-program' },
+        observations,
+      ),
+    ).toThrow();
+    expect(() => expectCustomMaterialBinding(custom, 30, observations, bound, bound)).toThrow();
+    const projections = fixture.projections as unknown as Map<
+      number,
+      GpuDrivenShadowBatchProjection
+    >;
+    for (const [id, projection] of projections)
+      projections.set(id, {
+        ...projection,
+        shadowArtifact: { ...custom.artifact, material: 'test::stale-shadow-program' },
+      });
+    fixture.pipelineLookup.mockClear();
+    encodeStaticShadowPass(fixture.context, pass, { kind: 'directional', index: 0 });
+    expect(() =>
+      expectAcceptedShadowProgram(fixture, custom.artifact, fixture.batches.length),
+    ).toThrow();
+    expect(custom.queries.artifact).not.toHaveBeenCalled();
+  } finally {
+    binding.restore();
+    fixture.bundleRecording.mockRestore();
+    custom.dispose();
+    device.destroyBuffer(buffer).unwrap();
+  }
+});
 
 /**
  * These pixel footprints are independent of the rectangles returned by the
@@ -548,6 +635,7 @@ it.each([
       const observations = reuseAdjacentShadow ? 1 : fixture.batches.length;
       expect(fixture.pipelineLookup).toHaveBeenCalledTimes(observations);
       if (custom !== undefined && binding !== undefined) {
+        expectAcceptedShadowProgram(fixture, custom.artifact, observations);
         previousMaterial = expectCustomMaterialBinding(
           custom,
           frame,

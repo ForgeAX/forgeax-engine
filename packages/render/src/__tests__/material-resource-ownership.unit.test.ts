@@ -73,8 +73,8 @@ it('consumes the resource-owned value fact in actual frame presentation', () => 
     expect(
       projectFramePresentation({
         renderables: [],
-        coveredBindings: [{ worldId: 0, material }],
-        preparedWorlds: [scope],
+        coveredBindings: [{ material }],
+        preparedSourceScope: scope,
         internals: {} as RenderSystemInternals,
       }),
     ).toBe('ready');

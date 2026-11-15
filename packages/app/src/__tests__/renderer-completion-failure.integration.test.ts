@@ -122,7 +122,7 @@ async function fixture() {
       },
     }),
   });
-  const input = { leases: [lease], camera: { lease }, environment: { lease } };
+  const input = { source: lease };
   return {
     host,
     renderer,

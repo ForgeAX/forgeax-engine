@@ -101,6 +101,11 @@ export function lowerEngineSurfaceEntry(
     'forgeax_material::terrain_vertex',
     'forgeax_material::terrain_layer_sampling',
     ...(file.surfaceModule === undefined ? [] : [file.surfaceModule]),
+    'forgeax_material::single_layer_water_surface_v1',
+    'forgeax_material::default_single_layer_water_surface',
+    'forgeax_material::water_deformation_input',
+    'forgeax_material::water_deformation_default',
+    'forgeax_material::water_waves',
     // standard-cluster keeps the projector import behind PROJECTOR_AVAILABLE;
     // the source-closure preparer still needs the catalog record before the
     // selected variant can prune that guarded edge.
@@ -118,6 +123,8 @@ export function lowerEngineSurfaceEntry(
     templatePath: file.id,
     templateSource: file.source,
     surfaceModule: file.surfaceModule ?? 'forgeax_material::default_standard_surface',
+    ...(file.surfaceModel === undefined ? {} : { surfaceModel: file.surfaceModel }),
+    ...(file.deformation === undefined ? {} : { deformation: file.deformation }),
     sourceRecords: Object.entries(surfaceImports).map(([path, source]) => ({ path, source })),
     generatedParameters: generateParameterModule(
       engineMaterialParamSchema(file.reservedIdentifier ?? templateModule),

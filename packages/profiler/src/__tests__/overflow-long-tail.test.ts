@@ -62,7 +62,7 @@ describe('profiler overflow long-tail bounded evidence', () => {
     );
     expect(child).toMatchObject({ parentSource: 'app', parentPhase: 'frame-total' });
 
-    const model = buildProfileModel(finished.value);
+    const model = buildProfileModel(finished.value, { orderEvidence: 'recorder-closure' });
     expect(model.ok).toBe(true);
     if (!model.ok) return;
     expect(model.value.frames[0]?.durationMicros).toBe(30);

@@ -15,7 +15,6 @@ export type SkinWork<Entry> =
   | {
       readonly kind: 'joints';
       readonly entry: Entry;
-      readonly worldId: number;
       readonly entities: ArrayLike<number>;
     }
   | { readonly kind: 'initialize'; readonly entry: Entry }

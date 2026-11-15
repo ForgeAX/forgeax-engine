@@ -16,23 +16,7 @@ export default defineProject({
     // occasionally jitters to 8-12s. Bump to 15s buffer, aligned with R-P4
     // (PBT single-case duration cap).
     testTimeout: 15000,
-    // T-035: bench files live under packages/math/bench/, physically isolated
-    // from src/__tests__/ (D-P11 / wiki/vitest-bench section 5). The explicit
-    // include lets `vitest bench` discover them via the monorepo root config;
-    // exclude drops residual dist artefacts.
-    benchmark: {
-      include: ['bench/*.bench.ts'],
-      exclude: ['**/dist/**', '**/node_modules/**'],
-      reporters: ['default'],
-    },
-    // Bench wall-time tuning (CI math bench runs in metrics-validate and only
-    // consumes median ns/op via scripts/metrics/run-all.mjs#collectBenchMedians).
-    // Each *.bench.ts file otherwise spawns its own fork worker (~15s of
-    // vitest+vite startup per file observed locally), so 4 bench files hit ~60s
-    // before measurement even starts. singleFork collapses them onto one
-    // worker; combined with FORGEAX_BENCH=fast tinybench knobs (bench/_opts.ts)
-    // the full bench step lands around ~18-20s. Local `pnpm bench` keeps the
-    // statistical defaults via the env-var gate.
+    // One fork worker: each file otherwise pays ~15s of vitest+vite startup.
     pool: 'forks',
     poolOptions: {
       forks: {
@@ -40,13 +24,11 @@ export default defineProject({
       },
     },
     coverage: {
-      // T-035: bench/ and *.property.test.ts are excluded from coverage denom
-      // - bench/ is performance-measurement code; coverage is meaningless here
+      // T-035: *.property.test.ts is excluded from coverage denom
       // - *.property.test.ts is test code (vitest auto-excludes it); listed
       //   explicitly here as belt-and-suspenders so the _arbs.ts helper is
       //   never miscounted as source (already covered by the __tests__/ glob).
       exclude: [
-        'bench/**',
         '**/*.bench.ts',
         '**/*.property.test.ts',
         'src/__tests__/**',

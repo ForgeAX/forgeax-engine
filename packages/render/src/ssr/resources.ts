@@ -164,17 +164,18 @@ function texture<FrameCtx extends RenderGraphFrame>(
 export function createSsrSpatialResources<FrameCtx extends RenderGraphFrame>(
   graph: RenderGraphBuilder<FrameCtx>,
   extent: DepthPyramidExtent,
+  label = 'ssr',
 ): Result<SsrSpatialResources, RenderGraphError> {
   const traceExtent = traceExtentForView(extent);
-  const trace = texture(graph, 'ssr-trace', SSR_TRACE_FORMAT, traceExtent);
+  const trace = texture(graph, `${label}-trace`, SSR_TRACE_FORMAT, traceExtent);
   if (!trace.ok) return trace;
-  const hitTexture = graph.createTexture('ssr-hit-reactivity', {
+  const hitTexture = graph.createTexture(`${label}-hit-reactivity`, {
     format: 'r32float',
     size: traceExtent,
   });
   if (!hitTexture.ok) return hitTexture;
   const hitReactivity = graph.view(hitTexture.value, {
-    label: 'ssr-hit-reactivity.view',
+    label: `${label}-hit-reactivity.view`,
     dimension: '2d',
   });
   if (!hitReactivity.ok) return hitReactivity;

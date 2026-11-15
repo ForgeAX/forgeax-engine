@@ -20,7 +20,6 @@ import type { WorldFrameArena } from './frame-arena';
 import type { ResourceStore } from './resource';
 import type { Schedule } from './schedule';
 import type { ScheduleToken } from './schedule-token';
-import type { SharedRefStore } from './shared-ref-store';
 import type { Archetype } from './storage/archetype';
 import type { ArchetypeGraph } from './storage/archetype-graph';
 import type { ArrayRangesChange } from './storage/array-range-log';
@@ -81,15 +80,9 @@ export interface WorldInternal {
     component: Component,
   ) => Result<Record<string, unknown>, EcsError>;
   readonly getRecords: () => EntityRecords;
-  readonly getRelationshipEpoch: (component: Component) => number;
-  readonly getRelationshipTargetEntities: (
-    component: Component,
-    target: EntityHandle,
-  ) => readonly EntityHandle[];
   readonly getResources: () => ResourceStore;
   readonly getSchedule: (token: ScheduleToken) => Schedule | undefined;
   readonly getSchedules: () => ReadonlyMap<ScheduleToken, Schedule>;
-  readonly getSharedRefs: () => SharedRefStore;
   readonly getStructureEpoch: () => number;
   readonly lookupAlive: (
     entity: EntityHandle,

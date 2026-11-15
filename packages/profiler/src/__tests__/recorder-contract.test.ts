@@ -85,19 +85,173 @@ describe('bounded profiler recorder contract', () => {
     expect(allocationReport.profilerEventObjectAllocations).toBe(1);
   });
 
-  it('accepts a phase catalog registered after capture starts', () => {
+  it('freezes the admitted phase catalog for a capture', () => {
     const profiler = createProfiler({ clock: createClock() });
     const session = expectOk(profiler.startCapture({ frameLimit: 1, eventLimit: 2 }));
 
     expectOk(profiler.registerPhaseCatalog('app', TEST_PHASE_CATALOG.app));
     expectOk(session.beginFrame(1));
-    expectOk(session.beginPhase('app', 'frame-total'));
-    expectOk(session.endPhase());
+    expect(session.beginPhase('app', 'frame-total').ok).toBe(false);
     expectOk(session.endFrame());
     const artifact = expectOk(session.finish());
 
-    expect(artifact.records).toHaveLength(1);
-    expect(artifact.records[0]?.kind).toBe('phase');
+    expect(artifact.phaseCatalog.app).toEqual([]);
+    expect(artifact.records).toHaveLength(0);
+    expect(artifact.completeness.status).toBe('partial');
+    expect(artifact.completeness.incompleteReason).toBe('phase-not-declared');
+
+    const next = expectOk(profiler.startCapture({ frameLimit: 1, eventLimit: 2 }));
+    expectOk(next.beginFrame(1));
+    expectOk(next.beginPhase('app', 'frame-total'));
+    expectOk(next.endPhase());
+    expectOk(next.endFrame());
+    expect(expectOk(next.finish()).records).toHaveLength(1);
+  });
+
+  it('retains a detached first source failure through finish and isolates captures', () => {
+    const profiler = createProfiler({ clock: createClock(), phaseCatalog: TEST_PHASE_CATALOG });
+    const first = expectOk(profiler.startCapture({ frameLimit: 1, eventLimit: 4 }));
+    expect(first.firstSourceFailure()).toBeUndefined();
+    expectOk(first.beginFrame(1));
+
+    const firstFailureResult = first.beginPhase('render', 'missing-first-phase');
+    expect(firstFailureResult.ok).toBe(false);
+    if (firstFailureResult.ok) throw new Error('expected undeclared phase failure');
+    expect(firstFailureResult.error.code).toBe('profile-source-failed');
+    if (firstFailureResult.error.code !== 'profile-source-failed')
+      throw new Error('unexpected profiler error');
+    expect(firstFailureResult.error.detail).toEqual({
+      source: 'render',
+      phase: 'missing-first-phase',
+      frameId: 1,
+    });
+    expect(Reflect.set(firstFailureResult.error.detail, 'phase', 'mutated-operation-result')).toBe(
+      true,
+    );
+
+    const firstObservedFailure = first.firstSourceFailure();
+    expect(firstObservedFailure?.code).toBe('profile-source-failed');
+    if (firstObservedFailure?.code !== 'profile-source-failed')
+      throw new Error('missing retained failure');
+    expect(firstObservedFailure.detail.phase).toBe('missing-first-phase');
+    expect(Reflect.set(firstObservedFailure.detail, 'source', 'mutated-query-result')).toBe(true);
+
+    const laterFailure = first.recordSkip({
+      source: 'app',
+      phase: 'missing-later-phase',
+      reason: 'regression-control',
+    });
+    expect(laterFailure.ok).toBe(false);
+    const repeatedQuery = first.firstSourceFailure();
+    expect(repeatedQuery).not.toBe(firstObservedFailure);
+    expect(repeatedQuery).toMatchObject({
+      code: 'profile-source-failed',
+      detail: { source: 'render', phase: 'missing-first-phase', frameId: 1 },
+    });
+
+    expectOk(first.endFrame());
+    expectOk(first.finish());
+    const postFinish = first.firstSourceFailure();
+    expect(postFinish).toMatchObject({
+      code: 'profile-source-failed',
+      detail: { source: 'render', phase: 'missing-first-phase', frameId: 1 },
+    });
+    if (postFinish?.code !== 'profile-source-failed')
+      throw new Error('missing post-finish failure');
+    expect(Reflect.set(postFinish.detail, 'frameId', 99)).toBe(true);
+    expect(first.firstSourceFailure()).toMatchObject({
+      code: 'profile-source-failed',
+      detail: { source: 'render', phase: 'missing-first-phase', frameId: 1 },
+    });
+
+    const second = expectOk(profiler.startCapture({ frameLimit: 1, eventLimit: 2 }));
+    expect(second.firstSourceFailure()).toBeUndefined();
+    expectOk(second.beginFrame(1));
+    expect(
+      second.recordSkip({
+        source: 'render',
+        phase: 'missing-first-skip',
+        reason: 'first-failure-in-next-capture',
+      }).ok,
+    ).toBe(false);
+    expect(second.firstSourceFailure()).toMatchObject({
+      code: 'profile-source-failed',
+      detail: { source: 'render', phase: 'missing-first-skip', frameId: 1 },
+    });
+    expect(first.firstSourceFailure()).toMatchObject({
+      code: 'profile-source-failed',
+      detail: { source: 'render', phase: 'missing-first-phase', frameId: 1 },
+    });
+    expectOk(second.endFrame());
+  });
+
+  it('retains the exact source and phase read when a skip input has changing getters', () => {
+    const profiler = createProfiler({ clock: createClock(), phaseCatalog: TEST_PHASE_CATALOG });
+    const session = expectOk(profiler.startCapture({ frameLimit: 1, eventLimit: 2 }));
+    let sourceReads = 0;
+    let phaseReads = 0;
+    let reasonReads = 0;
+    const input = {
+      get source(): 'app' | 'render' {
+        sourceReads += 1;
+        return sourceReads === 1 ? 'render' : 'app';
+      },
+      get phase() {
+        phaseReads += 1;
+        return phaseReads === 1 ? 'missing-on-first-read' : 'record';
+      },
+      get reason() {
+        reasonReads += 1;
+        return 'not-reached';
+      },
+    };
+
+    expectOk(session.beginFrame(1));
+    const result = session.recordSkip(input);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected undeclared skip phase failure');
+    expect(result.error).toMatchObject({
+      code: 'profile-source-failed',
+      detail: { source: 'render', phase: 'missing-on-first-read', frameId: 1 },
+    });
+    expect(session.firstSourceFailure()).toMatchObject({
+      code: 'profile-source-failed',
+      detail: { source: 'render', phase: 'missing-on-first-read', frameId: 1 },
+    });
+    expect(sourceReads).toBe(1);
+    expect(phaseReads).toBe(1);
+    expect(reasonReads).toBe(0);
+    expectOk(session.endFrame());
+  });
+
+  it('snapshots and validates limits before running dynamic catalog providers', () => {
+    const profiler = createProfiler({ clock: createClock() });
+    let providerCalls = 0;
+    let frameLimitReads = 0;
+    let eventLimitReads = 0;
+    expect(
+      profiler.registerPhaseCatalog('render', [], () => {
+        providerCalls += 1;
+        return ['render/phase'];
+      }).ok,
+    ).toBe(true);
+    const invalidLimits = {
+      get frameLimit() {
+        frameLimitReads += 1;
+        return 0;
+      },
+      get eventLimit() {
+        eventLimitReads += 1;
+        return 8;
+      },
+    };
+
+    const result = profiler.startCapture(invalidLimits);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe('capture-boundary-invalid');
+    expect(frameLimitReads).toBe(1);
+    expect(eventLimitReads).toBe(1);
+    expect(providerCalls).toBe(0);
   });
 
   it('releases a phase catalog lease without mutating a finished capture', () => {

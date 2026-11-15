@@ -1,4 +1,6 @@
-import { defineSchedule, type ScheduleToken, World } from '@forgeax/engine-ecs';
+import { defineResource, defineSchedule, type ScheduleToken, World } from '@forgeax/engine-ecs';
+import type { RecorderSession } from '@forgeax/engine-profiler';
+import { runProfiledRenderPhase } from '../record/render-context';
 import type { SurfaceDynamicInputFrame } from '../surface/dynamic-input';
 import { registerCaptureGraphSystems } from './capture-graph-systems';
 import { registerDisplaySubmissionSystems } from './display-submission-systems';
@@ -10,6 +12,7 @@ import { registerGraphSubmissionSystems } from './graph-submission-systems';
 import { registerGraphSystems } from './graph-systems';
 import { registerShadowSettlement } from './light-systems';
 import { registerPostSystems } from './post-systems';
+import { runProfiledRenderSchedule } from './profiled-schedule-runs';
 import {
   RenderRecordInput,
   type RenderRecordInputState,
@@ -17,7 +20,7 @@ import {
 } from './record-systems';
 import { registerGpuDrivenSettlement } from './scene-row-systems';
 import { registerSkinSettlement } from './skin-systems';
-import { registerSubmissionSystems } from './submission-systems';
+import { finishOwnedRecordProfileFrames, registerSubmissionSystems } from './submission-systems';
 import { registerSurfaceUiSystems } from './surface-ui-systems';
 import { registerTemporalSystems } from './temporal-systems';
 import { registerViewRecordSystems } from './view-record-systems';
@@ -126,6 +129,12 @@ export interface RenderSubmissionState {
   completion: Promise<void> | undefined;
   /** The same completion ignoring completion holds: the frame credit returns on it. */
   creditCompletion: Promise<void> | undefined;
+  /** Profile session pinned to this synchronous frame's schedule boundaries. */
+  profileSession?: RecorderSession | undefined;
+  /** Distinguishes a deliberately pinned absent session from a legacy frame. */
+  profileSessionPinned: boolean;
+  /** Admission scope held by the outer Renderer draw through receipt issuance. */
+  profileSessionPinScopeDepth: number;
 }
 
 /** What a shared submission publishes. */
@@ -135,7 +144,7 @@ export type RenderSubmissionOutcome = Pick<
 >;
 
 /** World resource key of the frame's {@link RenderSubmissionState}. */
-export const RenderSubmission = Object.freeze({ name: 'RenderSubmission' });
+export const RenderSubmission = defineResource<RenderSubmissionState>('RenderSubmission');
 
 /** The Render World's retained submission outcome. */
 export function renderSubmission(world: World): RenderSubmissionState {
@@ -147,12 +156,39 @@ export function renderSubmission(world: World): RenderSubmissionState {
       accepted: false,
       completion: undefined,
       creditCompletion: undefined,
+      profileSession: undefined,
+      profileSessionPinned: false,
+      profileSessionPinScopeDepth: 0,
     });
-  return world.getResource<RenderSubmissionState>(RenderSubmission);
+  return world.getResource(RenderSubmission);
+}
+
+/** Pin one draw admission to the session selected at its synchronous entry. */
+export function pinRenderProfileSession(
+  world: World,
+  session: RecorderSession | undefined,
+): () => void {
+  const submission = renderSubmission(world);
+  const previousSession = submission.profileSession;
+  const previousPinned = submission.profileSessionPinned;
+  const previousDepth = submission.profileSessionPinScopeDepth;
+  submission.profileSession = session;
+  submission.profileSessionPinned = true;
+  submission.profileSessionPinScopeDepth = previousDepth + 1;
+  let restored = false;
+  return () => {
+    if (restored) return;
+    restored = true;
+    submission.profileSession = previousSession;
+    submission.profileSessionPinned = previousPinned;
+    submission.profileSessionPinScopeDepth = previousDepth;
+  };
 }
 
 /** World resource key of the published {@link SurfaceDynamicInputFrame}; absent when none is published. */
-export const RenderSurfaceDynamicInput = Object.freeze({ name: 'RenderSurfaceDynamicInput' });
+export const RenderSurfaceDynamicInput = defineResource<SurfaceDynamicInputFrame>(
+  'RenderSurfaceDynamicInput',
+);
 
 /** Publish (or, with `undefined`, withdraw) the Surface dynamic page every view records with. */
 export function publishSurfaceDynamicInput(
@@ -166,7 +202,7 @@ export function publishSurfaceDynamicInput(
 /** The Surface dynamic page published for the Render World's views, if any. */
 export function surfaceDynamicInputOf(world: World): SurfaceDynamicInputFrame | undefined {
   return world.hasResource(RenderSurfaceDynamicInput)
-    ? world.getResource<SurfaceDynamicInputFrame>(RenderSurfaceDynamicInput)
+    ? world.getResource(RenderSurfaceDynamicInput)
     : undefined;
 }
 
@@ -190,20 +226,58 @@ function run(world: World, schedule: ScheduleToken): void {
   if (!ran.ok) throw ran.error;
 }
 
+function runProfiledFrameSchedule<T>(
+  world: World,
+  session: RecorderSession,
+  phase:
+    | 'extract-schedule'
+    | 'prepare'
+    | 'queue'
+    | 'queue-resume'
+    | 'record-schedule'
+    | 'commit-schedule'
+    | 'cleanup-schedule',
+  action: () => T,
+): T {
+  if (session.detail !== 'nested') return runProfiledRenderPhase(session, phase, action);
+  return runProfiledRenderPhase(session, phase, () =>
+    runProfiledRenderSchedule(world, session, action),
+  );
+}
+
 /** Open renderer frame `frame`, then run the phases before view recording: Extract, Prepare. */
-export function beginRenderFrame(world: World, frame: number): void {
+export function beginRenderFrame(
+  world: World,
+  frame: number,
+  profileSession?: RecorderSession,
+  profileSessionPinned = profileSession !== undefined,
+): void {
   const submission = renderSubmission(world);
   submission.frame = frame;
   submission.open = true;
   submission.accepted = false;
   submission.completion = undefined;
   submission.creditCompletion = undefined;
-  for (const schedule of BEFORE_RECORD) run(world, schedule);
+  submission.profileSession = profileSession;
+  submission.profileSessionPinned = profileSessionPinned;
+  for (const schedule of BEFORE_RECORD) {
+    if (profileSession === undefined) {
+      run(world, schedule);
+      continue;
+    }
+    const phase = schedule === RenderExtract ? 'extract-schedule' : 'prepare';
+    runProfiledFrameSchedule(world, profileSession, phase, () => run(world, schedule));
+  }
 }
 
 /** Run the frame's Queue phase at the shared submission's queue barrier. */
 export function runRenderQueue(world: World): void {
-  run(world, RenderQueue);
+  const session = renderSubmission(world).profileSession;
+  if (session === undefined) {
+    run(world, RenderQueue);
+    return;
+  }
+  runProfiledFrameSchedule(world, session, 'queue', () => run(world, RenderQueue));
 }
 
 /**
@@ -213,10 +287,17 @@ export function runRenderQueue(world: World): void {
 export function runRenderRecord(
   world: World,
   input: RenderRecordInputState,
+  profileSessionOverride?: RecorderSession,
 ): ReturnType<World['run']> {
   world.insertResource<RenderRecordInputState>(RenderRecordInput, input);
   frameSubmitOutcome(world).recordStarted = true;
-  return world.run(RenderRecord);
+  // biome-ignore lint/complexity/noArguments: distinguish omitted override from explicit undefined without allocating a rest array.
+  const hasProfileSessionOverride = arguments.length >= 3;
+  const session = hasProfileSessionOverride
+    ? profileSessionOverride
+    : renderSubmission(world).profileSession;
+  if (session === undefined) return world.run(RenderRecord);
+  return runProfiledFrameSchedule(world, session, 'record-schedule', () => world.run(RenderRecord));
 }
 
 /**
@@ -226,14 +307,30 @@ export function runRenderRecord(
  * entry calls it unconditionally, including when the frame never opened.
  */
 export function endRenderFrame(world: World): void {
-  if (!renderSubmission(world).open) return;
+  const submission = renderSubmission(world);
+  if (!submission.open) return;
+  const session = submission.profileSession;
   try {
-    run(world, RenderCommit);
+    if (session === undefined) run(world, RenderCommit);
+    else
+      runProfiledFrameSchedule(world, session, 'commit-schedule', () => run(world, RenderCommit));
   } finally {
     try {
-      run(world, RenderCleanup);
+      if (session === undefined) run(world, RenderCleanup);
+      else
+        runProfiledFrameSchedule(world, session, 'cleanup-schedule', () =>
+          run(world, RenderCleanup),
+        );
     } finally {
-      renderSubmission(world).open = false;
+      try {
+        finishOwnedRecordProfileFrames(world);
+      } finally {
+        submission.open = false;
+        if (submission.profileSessionPinScopeDepth === 0) {
+          submission.profileSession = undefined;
+          submission.profileSessionPinned = false;
+        }
+      }
     }
   }
 }

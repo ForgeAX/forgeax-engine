@@ -5,6 +5,7 @@ import {
 } from '@forgeax/engine-geometry';
 import { assert, expect, it } from 'vitest';
 import { brickDistanceFieldValues } from '../../../../geometry/src/distance-field-bricks';
+import { SdfFieldUpload } from '../../raytracing/sdf-field-storage';
 import { packSdfScene } from '../../raytracing/sdf-query';
 import { sdfCubeIndices, sdfCubePositions } from './sdf-cards.geometry';
 
@@ -190,7 +191,39 @@ it('counts tables and payloads against the shared 16 MiB pool before publication
       1024,
     ).unwrap().fields,
   ).toEqual(one.fields);
+  const uploads = admitted.map((item) => ({
+    ...item,
+    fieldUpload: SdfFieldUpload.capture(item.field).unwrap(),
+  }));
+  expect(
+    Buffer.from(packSdfScene(uploads, 1024).unwrap().fields).equals(
+      Buffer.from(packSdfScene(admitted, 1024).unwrap().fields),
+    ),
+  ).toBe(true);
+  const extra = { ...source, instanceId: limit, field: { ...field } };
+  expect(
+    packSdfScene(
+      [...uploads, { ...extra, fieldUpload: SdfFieldUpload.capture(extra.field).unwrap() }],
+      1024,
+    ),
+  ).toMatchObject({ ok: false, error: { code: 'ray-reference-limit' } });
 }, 15_000);
+
+it('keeps captured words private while borrowed values remain live and independently validated', async () => {
+  const field = (
+    await buildMeshDistanceField(sdfCubePositions, sdfCubeIndices, { resolution: 8 })
+  ).unwrap();
+  const upload = SdfFieldUpload.capture(field).unwrap();
+  const source = { instanceId: 0, geometryId: 1, mask: 255, transform, field };
+  const expected = packSdfScene([source]).unwrap().fields;
+  const first = packSdfScene([{ ...source, fieldUpload: upload }]).unwrap();
+  expect(first.fields).toEqual(expected);
+  first.fields.fill(0);
+  expect(packSdfScene([{ ...source, fieldUpload: upload }]).unwrap().fields).toEqual(expected);
+  field.values[0] = NaN;
+  expect(packSdfScene([source])).toMatchObject({ ok: false });
+  expect(SdfFieldUpload.capture(field)).toMatchObject({ ok: false });
+});
 
 it('shares nonconstant bricks and preserves distinct payloads when their hashes collide', async () => {
   const { packSampledField } = await import('../../raytracing/sdf-field-storage');

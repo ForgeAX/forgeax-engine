@@ -1,6 +1,12 @@
+import type { GraphTextureView } from '@forgeax/engine-render-graph';
 import { RenderGraphError } from '@forgeax/engine-render-graph';
+import type { TextureFormat } from '@forgeax/engine-rhi';
 import { err, ok, type Result } from '@forgeax/engine-types';
-import type { RenderPipelineBuildContext, RenderPipelineFrame } from '../render-pipeline';
+import type {
+  RenderPipelineBuildContext,
+  RenderPipelineFrame,
+  RenderPipelineTarget,
+} from '../render-pipeline';
 import type { TargetCoverageAttachment } from '../temporal/target-coverage-attachment';
 
 /** Standard-only graph input; custom pipeline consumers never see coverage. */
@@ -10,6 +16,41 @@ export type StandardPipelineBuildContext = RenderPipelineBuildContext<RenderPipe
   /** Internal conformance override; never populated from game-authored pipeline assets. */
   readonly gtaoExecutionOverride?: 'fragment' | 'compute';
 };
+
+export type WaterInfoGraphTargets = ReadonlyMap<
+  string,
+  Readonly<{ view: GraphTextureView; format: TextureFormat }>
+>;
+
+export function standardWaterInfoGraphTargets(
+  context: StandardPipelineBuildContext,
+  viewIdentity: string,
+): WaterInfoGraphTargets {
+  const dynamic = context.getFeatureGraphTextureBindings?.('water-info-array-', viewIdentity);
+  const materialSources = context.getFeatureGraphTextureBindings?.('', viewIdentity, true);
+  if (dynamic !== undefined) return new Map([...dynamic, ...(materialSources ?? [])]);
+  const targets = new Map<string, Readonly<{ view: GraphTextureView; format: TextureFormat }>>();
+  for (const targetName of ['water-info-array-rgba16float', 'water-info-array-rgba32float']) {
+    const target = context.getFeatureGraphTextureBinding?.(targetName, viewIdentity);
+    if (target !== undefined) targets.set(targetName, target);
+  }
+  return targets;
+}
+
+/** The actual main opaque surface, before any Water depth/color consumer. */
+export function contributeStandardAfterDepthFeatures(
+  context: StandardPipelineBuildContext,
+  color: RenderPipelineTarget,
+  depth: RenderPipelineTarget,
+) {
+  return context.contributeFeatures({
+    placement: 'after-depth',
+    targets: [
+      { ...color, kind: 'scene-color' },
+      { ...depth, name: 'opaque-depth', kind: 'scene-depth' },
+    ],
+  });
+}
 
 /** Internal acceptance selection; only GTAO on a compute-capable lane may select this entry. */
 export function resolveStandardGtaoExecution(

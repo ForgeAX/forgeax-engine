@@ -1,3 +1,4 @@
+import { PhysicsWorldResource } from '@forgeax/engine-physics';
 import { Transform } from '@forgeax/engine-scene';
 import { PointLight } from '@forgeax/engine-render';
 import { type EntityHandle, type World } from '@forgeax/engine-ecs';
@@ -12,7 +13,6 @@ import { installGameplayState, type GameplayStateHandle } from './gameplay-state
 import { installDebugAxes, type DebugAxesHandle } from './debug-axes';
 import { createWorldScoreText, type WorldScoreTextHandle } from './world-score-text';
 import { createGameplayVfx, type GameplayVfx } from './gameplay-vfx';
-import { installMultiWorldOverlay, type MultiWorldOverlay } from './multi-world-overlay';
 import { targetProfilePoints } from './target-profile-loop';
 import { scoringPoints } from './scoring-target';
 import { createScorePopup } from './score-popup';
@@ -54,7 +54,6 @@ export type GameplaySession = {
   readonly vfxHitLoop: GameplayVfx;
   readonly gameplayVfx: GameplayVfx;
   readonly attackPresentation: AttackPresentationHandle | undefined;
-  readonly multiWorldOverlay: MultiWorldOverlay | undefined;
   readonly worldScoreText: WorldScoreTextHandle | undefined;
   readonly changeDetection: GameplayChangeDetectionHandle;
   readonly triggerScore: () => { readonly points: number | null };
@@ -111,7 +110,6 @@ export async function createGameplaySession(
   const vfxHitLoop = gameplayVfx;
   context.effect(() => () => gameplayVfx.dispose(), 'game-default/vfx');
   const localApp = host !== undefined && 'renderer' in host.app ? host.app : undefined;
-  const multiWorldOverlay = localApp === undefined ? undefined : installMultiWorldOverlay(context, localApp);
   const worldScoreText = await createWorldScoreText(world, host?.assets);
   context.effect(() => () => worldScoreText?.dispose(), 'game-default/world-score-text');
   const changeDetection = installGameplayChangeDetection({ world, targetQuery: targets.targetQuery, hud });
@@ -231,7 +229,7 @@ export async function createGameplaySession(
       },
     });
   }
-  const physics = world.hasResource('PhysicsWorld') ? world.getResource<PhysicsWorld>('PhysicsWorld') : undefined;
+  const physics = world.hasResource(PhysicsWorldResource) ? world.getResource(PhysicsWorldResource) : undefined;
   const sentinelReadiness = (): SentinelEncounterReadiness => readSentinelEncounterReadiness(
     targets.sentinel,
     physics,
@@ -300,7 +298,6 @@ export async function createGameplaySession(
     settingsState,
     setMode,
     lightingMode,
-    multiWorldOverlay,
     gameplayAudio,
     materialElapsedOriginKey: GAME_DEFAULT_MATERIAL_ELAPSED_ORIGIN,
     animatedMaterial: targets.animatedMaterial,
@@ -335,7 +332,6 @@ export async function createGameplaySession(
     vfxHitLoop,
     gameplayVfx,
     attackPresentation,
-    multiWorldOverlay,
     worldScoreText,
     changeDetection,
     triggerScore,

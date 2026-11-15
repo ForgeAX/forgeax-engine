@@ -1,4 +1,4 @@
-import { defineComponent, Update, World } from '@forgeax/engine/ecs';
+import { defineComponent, defineSystem, Update, World } from '@forgeax/engine/ecs';
 import { defineFeature } from '../../lab/feature';
 
 export default defineFeature({
@@ -31,18 +31,19 @@ export default defineFeature({
     const busy = leaseA.value.dispose();
     checks.equal('entity keeps lease', busy.ok ? 'ok' : busy.error.code, 'component-in-use');
     a.despawn(e);
-    a.addSystem(Update, {
+    const systemToken1 = defineSystem({
       name: 'fl-lease-reader',
       queries: [{ read: [Pos] }],
       fn: () => undefined,
     });
+    a.addSystem(Update, systemToken1);
     const busySystem = leaseA.value.dispose();
     checks.equal(
       'system keeps lease',
       busySystem.ok ? 'ok' : busySystem.error.code,
       'component-in-use',
     );
-    a.removeSystem(Update, 'fl-lease-reader');
+    a.removeSystem(Update, systemToken1);
     checks.ok('dispose after release', leaseA.value.dispose().ok);
     checks.ok('A no longer resolves', a.components.resolve('FLLeasePos') === undefined);
     checks.ok('B still resolves', b.components.resolve('FLLeasePos') === Pos);

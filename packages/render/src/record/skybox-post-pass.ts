@@ -3,6 +3,7 @@ import { RhiError, type RhiRenderPassEncoder, type TextureView } from '@forgeax/
 import type { AssetHandle } from '@forgeax/engine-types';
 import { BLOOM_UNIFORM_PARAMS_STRIDE_BYTES } from '../assembly/webgpu-ready-contract';
 import { standardBloomAdmitted } from '../bloom-admission';
+import { isFxaaAntialias } from '../components/camera';
 import { buildBeginRenderPassDescriptor } from '../pipeline-spec';
 import { FXAA_POST_PROCESS_ID } from '../render-contract';
 import { resolveOutputDither } from '../render-pipeline';
@@ -374,7 +375,7 @@ export function recordFxaaPass(
   // FXAA samples the graph-owned LDR target and writes the current surface.
   // The surface is an output attachment only: no COPY_SRC usage, no
   // copyTextureToTexture, and no backend-specific surface sampling path.
-  const fxaaActive = camera.antialias === 'fxaa';
+  const fxaaActive = isFxaaAntialias(camera.antialias);
   if (
     fxaaActive &&
     pipelineState.perPassResources.fxaaPipeline !== null &&

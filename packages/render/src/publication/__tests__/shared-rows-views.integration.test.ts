@@ -69,7 +69,7 @@ it('shares one row store across two camera views without per-view row storage', 
   const roster = first.compositionSlots();
   expect(roster.length).toBe(COUNT);
   expect(second.compositionSlots()).toBe(roster);
-  for (const record of roster) expect(second.compositionSlot(0, record.entityKey)).toBe(record);
+  for (const record of roster) expect(second.compositionSlot(record.entityKey)).toBe(record);
 
   // Pose edits commit once; both views observe the same delta.
   const moved = [f.entities[5], f.entities[30]] as EntityHandle[];

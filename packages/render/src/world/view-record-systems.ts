@@ -1,4 +1,4 @@
-import { defineComponent, type EntityHandle, type World } from '@forgeax/engine-ecs';
+import { defineComponent, defineSystem, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import { setDerivedComponent } from '@forgeax/engine-ecs/projection';
 import { AssetError } from '@forgeax/engine-types';
 import { MotionBlurValidationError } from '../features/motion-blur/motion-blur-params';
@@ -13,6 +13,7 @@ import {
   stageFrameCaptureCompletion,
   stageFrameRecordingResources,
 } from '../record/frame';
+import { activeRenderProfileSession } from '../record/profile-session';
 import { disposeTargetCaptureLighting } from '../record/target-capture-lighting';
 import type { ExtractedFrame } from '../render-system-extract';
 import {
@@ -28,23 +29,31 @@ import {
   stageRecordQueue,
 } from '../render-system-record';
 import type { RecordAttempt } from '../render-system-record-attempt';
+import {
+  RenderFeaturePlanOrder,
+  RenderFrameSubmitOrder,
+  RenderGpuDrivenRasterOrder,
+  RenderOpaquePlanOrder,
+  RenderPhaseSortOrder,
+  RenderRecordRetireOrder,
+  RenderTransmissionPlanOrder,
+  RenderTransparentPlanOrder,
+  RenderViewGraphPrepareOrder,
+  RenderViewRecordSettleOrder,
+} from '../system-order';
 import { sharedFeatureGraphStaged, stageSharedFeatureGraph } from './feature-graph-systems';
-import { RENDER_FEATURE_PLAN_SYSTEM } from './feature-plan-systems';
-import { frameSubmitOutcome, RENDER_FRAME_SUBMIT_SYSTEM } from './frame-submit-systems';
-import { RENDER_GPU_DRIVEN_RASTER_SYSTEM } from './gpu-driven-raster-systems';
+
+import { frameSubmitOutcome } from './frame-submit-systems';
+
 import {
   stagePreparedViewGraph,
   ViewGraphSeal,
   type ViewGraphSealState,
 } from './graph-seal-systems';
-import {
-  RENDER_OPAQUE_PLAN_SYSTEM,
-  RENDER_TRANSMISSION_PLAN_SYSTEM,
-  RENDER_TRANSPARENT_PLAN_SYSTEM,
-} from './pass-plan-systems';
-import { RENDER_PHASE_SORT_SYSTEM, viewPhaseQueue } from './queue-systems';
+
+import { viewPhaseQueue } from './queue-systems';
 import { ViewRecordHistory, viewRecordHistory } from './record-history';
-import { RenderRecordInput, type RenderRecordInputState } from './record-systems';
+import { RenderRecordInput } from './record-systems';
 import { recordViewSubmission, ViewRecorder, ViewSubmission } from './render-views';
 import {
   RenderCleanup,
@@ -165,12 +174,15 @@ function startAttempt(world: World, entry: Entry): void {
     state.generation = recordContext(owner.internals).deviceScope.generation;
     if (staged.result === undefined)
       throw new Error('render-view-frame did not prepare the recording view');
-    const { composition, scopes } = viewFrameScopes(world, staged);
-    owner.recording.preparedWorlds = scopes;
-    const input = world.getResource<RenderRecordInputState>(RenderRecordInput);
+    const inputs = viewFrameScopes(world, staged);
+    if (inputs.source === undefined)
+      throw new Error('A recording requires its accepted source scope');
+    owner.recording.preparedSourceScope = inputs.source;
+    const input = world.getResource(RenderRecordInput);
     const attempt: RecordAttempt = {
-      composition,
-      scopes,
+      sourceWorld: inputs.world,
+      readLease: inputs.lease,
+      sourceScope: inputs.source,
       opts: staged.opts,
       publication: staged.publication,
       frame: staged.result,
@@ -179,7 +191,7 @@ function startAttempt(world: World, entry: Entry): void {
         !viewComposition(world).active && input.rendererInternals === owner.internals
           ? input.timingCapture
           : undefined,
-      profileSession: owner.internals.profiler?.activeSession(),
+      profileSession: activeRenderProfileSession(owner.internals),
       submitted: false,
       sceneSubmitted: false,
       outcome: undefined,
@@ -247,14 +259,16 @@ function prepareGraph(world: World, entry: Entry): void {
     const { frame, view, scene } = queued.facts;
     const features = prepareRecordFeatures(owner, attempt, frame, view);
     if (features === undefined) {
-      state.preparation = { kind: 'rejected' };
+      state.preparation = {
+        kind: owner.frameState.pipelinePreparationPending ? 'pending' : 'rejected',
+      };
       return;
     }
     if (
       recordContext(owner.internals).featureHost !== undefined &&
       !sharedFeatureGraphStaged(world)
     )
-      stageSharedFeatureGraph(world, owner.internals);
+      stageSharedFeatureGraph(world, owner.internals, [attempt.sourceScope]);
     if (!queued.queue.records) {
       if (attempt.mode === 'capture') disposeTargetCaptureLighting(owner.captures);
       state.preparation = { kind: 'held' };
@@ -324,7 +338,6 @@ function settleViewRecording(
       cameraCount: view.cameras.length,
       presentation: scene.presentation,
       presentationRenderables: scene.visibility.presentationRenderables,
-      worldKeys: scene.visibility.worldKeys,
       draws: {
         presentedDraws: ready.draws.presentedDraws,
         drawObservation: ready.draws.drawObservation,
@@ -384,200 +397,197 @@ function settleAttempt(world: World, entry: Entry, seal: ViewGraphSealState | un
 }
 
 export function registerViewRecordSystems(world: World): void {
-  world
-    .addSystem(RenderQueue, {
-      commands: 'none',
-      name: RENDER_VIEW_RECORD_START_SYSTEM,
-      before: [RENDER_PHASE_SORT_SYSTEM, RENDER_FEATURE_PLAN_SYSTEM],
-      queries: [{ read: [ViewRecorder, ViewFrame], write: [ViewRecordAttempt] }],
-      fn: (world, [rows]) => {
-        if (!world.hasResource(RenderRecordInput)) return;
-        const entries: Entry[] = [];
+  const systemToken1 = defineSystem({
+    commands: 'none',
+    name: RENDER_VIEW_RECORD_START_SYSTEM,
+    before: [RenderPhaseSortOrder, RenderFeaturePlanOrder],
+    queries: [{ read: [ViewRecorder, ViewFrame], write: [ViewRecordAttempt] }],
+    fn: (world, [rows]) => {
+      if (!world.hasResource(RenderRecordInput)) return;
+      const entries: Entry[] = [];
 
-        rows.forEach((row) => {
-          const entity = row.entity;
+      rows.forEach((row) => {
+        const entity = row.entity;
 
-          setDerivedComponent(world, entity, ViewRecordAttempt, EMPTY_VIEW_STATE_UPDATE).unwrap();
-          entries.push({
-            entity: entity,
-            owner: ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state')),
-            staged: world
-              .resolveUniqueRef<ViewFrameState>(requireViewField(world, entity, ViewFrame, 'state'))
-              .unwrap(),
-            state: world
-              .resolveUniqueRef<ViewRecordAttemptState>(
-                requireViewField(world, entity, ViewRecordAttempt, 'state'),
-              )
-              .unwrap(),
-          });
-        });
-        // Staging Queue components happens after every query cursor has released its lock.
-        for (const entry of orderEntries(world, entries)) startAttempt(world, entry);
-      },
-    })
-    .unwrap();
-  world
-    .addSystem(RenderQueue, {
-      commands: 'none',
-      name: RENDER_VIEW_GRAPH_PREPARE_SYSTEM,
-      after: [
-        RENDER_PHASE_SORT_SYSTEM,
-        RENDER_FEATURE_PLAN_SYSTEM,
-        RENDER_GPU_DRIVEN_RASTER_SYSTEM,
-        RENDER_OPAQUE_PLAN_SYSTEM,
-        RENDER_TRANSPARENT_PLAN_SYSTEM,
-        RENDER_TRANSMISSION_PLAN_SYSTEM,
-      ],
-      queries: [{ read: [ViewRecorder, ViewFrame], write: [ViewRecordAttempt] }],
-      fn: (world, [rows]) => {
-        if (!world.hasResource(RenderRecordInput)) return;
-        const entries: Entry[] = [];
-
-        rows.forEach((row) => {
-          const entity = row.entity;
-
-          setDerivedComponent(world, entity, ViewRecordAttempt, EMPTY_VIEW_STATE_UPDATE).unwrap();
-          entries.push({
-            entity: entity,
-            owner: ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state')),
-            staged: world
-              .resolveUniqueRef<ViewFrameState>(requireViewField(world, entity, ViewFrame, 'state'))
-              .unwrap(),
-            state: world
-              .resolveUniqueRef<ViewRecordAttemptState>(
-                requireViewField(world, entity, ViewRecordAttempt, 'state'),
-              )
-              .unwrap(),
-          });
-        });
-        for (const entry of orderEntries(world, entries)) prepareGraph(world, entry);
-      },
-    })
-    .unwrap();
-  world
-    .addSystem(RenderRecord, {
-      commands: 'none',
-      name: RENDER_VIEW_RECORD_SETTLE_SYSTEM,
-      after: [RENDER_FRAME_SUBMIT_SYSTEM],
-      queries: [
-        {
-          read: [ViewRecorder, ViewFrame],
-          write: [ViewRecordAttempt, ViewSubmission],
-          optional: [ViewGraphSeal, ViewRecordHistory],
-        },
-      ],
-      fn: (world, [rows]) => {
-        const entries: { entry: Entry; seal: ViewGraphSealState | undefined }[] = [];
-
-        rows.forEach((row) => {
-          const entity = row.entity;
-
-          setDerivedComponent(world, entity, ViewRecordAttempt, EMPTY_VIEW_STATE_UPDATE).unwrap();
-          const entry: Entry = {
-            entity: entity,
-            owner: ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state')),
-            staged: world
-              .resolveUniqueRef<ViewFrameState>(requireViewField(world, entity, ViewFrame, 'state'))
-              .unwrap(),
-            state: world
-              .resolveUniqueRef<ViewRecordAttemptState>(
-                requireViewField(world, entity, ViewRecordAttempt, 'state'),
-              )
-              .unwrap(),
-          };
-          const seal = readViewField(world, entity, ViewGraphSeal, 'state');
-          entries.push({
-            entry,
-            seal:
-              seal === undefined
-                ? undefined
-                : world.resolveUniqueRef<ViewGraphSealState>(seal).unwrap(),
-          });
-        });
-        for (const { entry, seal } of entries) settleAttempt(world, entry, seal);
-      },
-    })
-    .unwrap();
-  world
-    .addSystem(RenderCleanup, {
-      commands: 'none',
-      name: 'render-view-record-abandon',
-      before: [RenderCleanup],
-      queries: [
-        {
-          read: [ViewRecorder, ViewFrame],
-          write: [ViewRecordAttempt, ViewSubmission],
-          optional: [ViewGraphSeal, ViewRecordHistory],
-        },
-      ],
-      fn: (world, [rows]) => {
-        if (frameSubmitOutcome(world).recordStarted) return;
-        const entries: { entry: Entry; seal: ViewGraphSealState | undefined }[] = [];
-
-        rows.forEach((row) => {
-          const entity = row.entity;
-
-          setDerivedComponent(world, entity, ViewRecordAttempt, EMPTY_VIEW_STATE_UPDATE).unwrap();
-          const entry: Entry = {
-            entity: entity,
-            owner: ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state')),
-            staged: world
-              .resolveUniqueRef<ViewFrameState>(requireViewField(world, entity, ViewFrame, 'state'))
-              .unwrap(),
-            state: world
-              .resolveUniqueRef<ViewRecordAttemptState>(
-                requireViewField(world, entity, ViewRecordAttempt, 'state'),
-              )
-              .unwrap(),
-          };
-          const seal = readViewField(world, entity, ViewGraphSeal, 'state');
-          entries.push({
-            entry,
-            seal:
-              seal === undefined
-                ? undefined
-                : world.resolveUniqueRef<ViewGraphSealState>(seal).unwrap(),
-          });
-        });
-        for (const { entry, seal } of entries) settleAttempt(world, entry, seal);
-      },
-    })
-    .unwrap();
-  world
-    .addSystem(RenderCleanup, {
-      commands: 'none',
-      name: RENDER_VIEW_RECORD_RELEASE_SYSTEM,
-      after: ['render-record-retire'],
-      queries: [{ read: [ViewRecorder], write: [ViewRecordAttempt] }],
-      fn: (world, [rows]) => {
-        rows.forEach((row) => {
-          const entity = row.entity;
-
-          setDerivedComponent(world, entity, ViewRecordAttempt, EMPTY_VIEW_STATE_UPDATE).unwrap();
-          const state = world
+        setDerivedComponent(world, entity, ViewRecordAttempt, EMPTY_VIEW_STATE_UPDATE).unwrap();
+        entries.push({
+          entity: entity,
+          owner: ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state')),
+          staged: world
+            .resolveUniqueRef<ViewFrameState>(requireViewField(world, entity, ViewFrame, 'state'))
+            .unwrap(),
+          state: world
             .resolveUniqueRef<ViewRecordAttemptState>(
               requireViewField(world, entity, ViewRecordAttempt, 'state'),
             )
-            .unwrap();
-          const owner = ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state'));
-          try {
-            if (state.recording !== undefined)
-              releaseFrameRecordingAttempt(
-                owner.internals,
-                owner.frameState,
-                state.recording.attempt,
-                state.recording.input.lights,
-                state.recording.input.cubeCapture,
-              );
-          } catch (cause) {
-            prepareFailure(owner, state, cause);
-          } finally {
-            state.attempt = undefined;
-            state.preparation = undefined;
-            state.recording = undefined;
-          }
+            .unwrap(),
         });
+      });
+      // Staging Queue components happens after every query cursor has released its lock.
+      for (const entry of orderEntries(world, entries)) startAttempt(world, entry);
+    },
+  });
+  world.addSystem(RenderQueue, systemToken1).unwrap();
+  const systemToken2 = defineSystem({
+    sets: [RenderViewGraphPrepareOrder],
+    commands: 'none',
+    name: RENDER_VIEW_GRAPH_PREPARE_SYSTEM,
+    after: [
+      RenderPhaseSortOrder,
+      RenderFeaturePlanOrder,
+      RenderGpuDrivenRasterOrder,
+      RenderOpaquePlanOrder,
+      RenderTransparentPlanOrder,
+      RenderTransmissionPlanOrder,
+    ],
+    queries: [{ read: [ViewRecorder, ViewFrame], write: [ViewRecordAttempt] }],
+    fn: (world, [rows]) => {
+      if (!world.hasResource(RenderRecordInput)) return;
+      const entries: Entry[] = [];
+
+      rows.forEach((row) => {
+        const entity = row.entity;
+
+        setDerivedComponent(world, entity, ViewRecordAttempt, EMPTY_VIEW_STATE_UPDATE).unwrap();
+        entries.push({
+          entity: entity,
+          owner: ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state')),
+          staged: world
+            .resolveUniqueRef<ViewFrameState>(requireViewField(world, entity, ViewFrame, 'state'))
+            .unwrap(),
+          state: world
+            .resolveUniqueRef<ViewRecordAttemptState>(
+              requireViewField(world, entity, ViewRecordAttempt, 'state'),
+            )
+            .unwrap(),
+        });
+      });
+      for (const entry of orderEntries(world, entries)) prepareGraph(world, entry);
+    },
+  });
+  world.addSystem(RenderQueue, systemToken2).unwrap();
+  const systemToken3 = defineSystem({
+    sets: [RenderViewRecordSettleOrder],
+    commands: 'none',
+    name: RENDER_VIEW_RECORD_SETTLE_SYSTEM,
+    after: [RenderFrameSubmitOrder],
+    queries: [
+      {
+        read: [ViewRecorder, ViewFrame],
+        write: [ViewRecordAttempt, ViewSubmission],
+        optional: [ViewGraphSeal, ViewRecordHistory],
       },
-    })
-    .unwrap();
+    ],
+    fn: (world, [rows]) => {
+      const entries: { entry: Entry; seal: ViewGraphSealState | undefined }[] = [];
+
+      rows.forEach((row) => {
+        const entity = row.entity;
+
+        setDerivedComponent(world, entity, ViewRecordAttempt, EMPTY_VIEW_STATE_UPDATE).unwrap();
+        const entry: Entry = {
+          entity: entity,
+          owner: ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state')),
+          staged: world
+            .resolveUniqueRef<ViewFrameState>(requireViewField(world, entity, ViewFrame, 'state'))
+            .unwrap(),
+          state: world
+            .resolveUniqueRef<ViewRecordAttemptState>(
+              requireViewField(world, entity, ViewRecordAttempt, 'state'),
+            )
+            .unwrap(),
+        };
+        const seal = readViewField(world, entity, ViewGraphSeal, 'state');
+        entries.push({
+          entry,
+          seal:
+            seal === undefined
+              ? undefined
+              : world.resolveUniqueRef<ViewGraphSealState>(seal).unwrap(),
+        });
+      });
+      for (const { entry, seal } of entries) settleAttempt(world, entry, seal);
+    },
+  });
+  world.addSystem(RenderRecord, systemToken3).unwrap();
+  const systemToken4 = defineSystem({
+    commands: 'none',
+    name: 'render-view-record-abandon',
+    before: [RenderCleanup],
+    queries: [
+      {
+        read: [ViewRecorder, ViewFrame],
+        write: [ViewRecordAttempt, ViewSubmission],
+        optional: [ViewGraphSeal, ViewRecordHistory],
+      },
+    ],
+    fn: (world, [rows]) => {
+      if (frameSubmitOutcome(world).recordStarted) return;
+      const entries: { entry: Entry; seal: ViewGraphSealState | undefined }[] = [];
+
+      rows.forEach((row) => {
+        const entity = row.entity;
+
+        setDerivedComponent(world, entity, ViewRecordAttempt, EMPTY_VIEW_STATE_UPDATE).unwrap();
+        const entry: Entry = {
+          entity: entity,
+          owner: ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state')),
+          staged: world
+            .resolveUniqueRef<ViewFrameState>(requireViewField(world, entity, ViewFrame, 'state'))
+            .unwrap(),
+          state: world
+            .resolveUniqueRef<ViewRecordAttemptState>(
+              requireViewField(world, entity, ViewRecordAttempt, 'state'),
+            )
+            .unwrap(),
+        };
+        const seal = readViewField(world, entity, ViewGraphSeal, 'state');
+        entries.push({
+          entry,
+          seal:
+            seal === undefined
+              ? undefined
+              : world.resolveUniqueRef<ViewGraphSealState>(seal).unwrap(),
+        });
+      });
+      for (const { entry, seal } of entries) settleAttempt(world, entry, seal);
+    },
+  });
+  world.addSystem(RenderCleanup, systemToken4).unwrap();
+  const systemToken5 = defineSystem({
+    commands: 'none',
+    name: RENDER_VIEW_RECORD_RELEASE_SYSTEM,
+    after: [RenderRecordRetireOrder],
+    queries: [{ read: [ViewRecorder], write: [ViewRecordAttempt] }],
+    fn: (world, [rows]) => {
+      rows.forEach((row) => {
+        const entity = row.entity;
+
+        setDerivedComponent(world, entity, ViewRecordAttempt, EMPTY_VIEW_STATE_UPDATE).unwrap();
+        const state = world
+          .resolveUniqueRef<ViewRecordAttemptState>(
+            requireViewField(world, entity, ViewRecordAttempt, 'state'),
+          )
+          .unwrap();
+        const owner = ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state'));
+        try {
+          if (state.recording !== undefined)
+            releaseFrameRecordingAttempt(
+              owner.internals,
+              owner.frameState,
+              state.recording.attempt,
+              state.recording.input.lights,
+              state.recording.input.cubeCapture,
+            );
+        } catch (cause) {
+          prepareFailure(owner, state, cause);
+        } finally {
+          state.attempt = undefined;
+          state.preparation = undefined;
+          state.recording = undefined;
+        }
+      });
+    },
+  });
+  world.addSystem(RenderCleanup, systemToken5).unwrap();
 }

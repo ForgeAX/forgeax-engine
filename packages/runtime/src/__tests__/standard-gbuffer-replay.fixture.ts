@@ -343,12 +343,7 @@ export async function verifyStandardGBufferReplay(
         propagateTransforms(world).unwrap();
         return drawReadyFrame(
           renderer,
-          {
-            leases: [lease],
-            camera: { lease },
-            environment: { lease },
-            ...(mode === 'direct' ? { geometryLane: 'direct' as const } : {}),
-          },
+          { source: lease, ...(mode === 'direct' ? { geometryLane: 'direct' as const } : {}) },
           observe ? ['linear-hdr'] : undefined,
         );
       };

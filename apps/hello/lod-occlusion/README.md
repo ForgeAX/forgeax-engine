@@ -102,6 +102,8 @@ The producer output directory must not already exist. Both regular smokes select
 that directory explicitly and verify its manifest against the checkout's source,
 Meta and resolved public producer entry bytes. They bind the browser's fetched
 manifest to the selected SHA256 and require the loaded shader publication to match.
+Per-view GPU LOD histograms count level admissions; a visible candidate in a
+crossfade can contribute to both adjacent level bins.
 The producer HEAD defaults to the current checkout HEAD. When only the sample has
 changed since production, set `FORGEAX_E03_PRODUCER_HEAD` to that exact producer
 commit; source, module, shader and payload verification still applies. Reports
@@ -114,18 +116,16 @@ The existing LOD inspection's `root.guid` is a diagnostic string:
 This single-mesh fixture compares it with the actual `MeshFilter.assetHandle`
 read from its World after each completed receipt, including revision replacement.
 Pack GUID/source/build/shader identity is verified independently before admission.
-The two CameraViews must still belong to the same submitted World and receipt;
-these single-mesh checks do not attribute a multi-asset World's aggregate counts
-to its first mesh.
+Both CameraViews must still match the same completed receipt and source asset.
 
 The hidden phase checks the actual World `Visibility` and a `draws` observation
 from the same completed receipt. It requires `status: 'complete'` with no draws,
 plus both rendered CameraViews attached to that World. An unavailable draw
 observation, including a visible GPU lane, is rejected. The hidden report retains
-the original LOD observation (which can be unavailable when its World rows are
-empty); it publishes no invented LOD histogram or candidate counts. Visible
-phases still require the complete per-view LOD evidence above. Both paths retain
-the same 60-frame completion, receipt, generation and phase-order checks.
+the original LOD observation, including zero-candidate views; it publishes no
+invented LOD histogram or candidate counts. Visible phases still require the
+complete per-view LOD evidence above. Both paths retain the same 60-frame
+completion, receipt, generation and phase-order checks.
 
 The revision race prepares both real candidates before accepting revision 4.
 Acceptance owns cleanup of the superseded revision 3 credential; its later reuse

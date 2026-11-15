@@ -1,5 +1,6 @@
 // Realm-neutral App assembly and frame/lifecycle ownership.
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { stepRetainedBytes } from '@forgeax/engine-assets-runtime/internal';
 import type { AudioBackend } from '@forgeax/engine-audio';
 import type { DebugDrawSource } from '@forgeax/engine-debug-draw';
 import { createWorldContext, type World } from '@forgeax/engine-ecs';
@@ -207,8 +208,8 @@ export async function createAppFromAssemble(
     Object.assign(buildArgs, { silenceUnhandledErrors: args.silenceUnhandledErrors });
   }
   // M2 / D-3: assemble form forwards the host-supplied draw-source pull.
-  if (args.drawSource !== undefined) {
-    Object.assign(buildArgs, { drawSource: args.drawSource });
+  if (args.sceneAdmission !== undefined) {
+    Object.assign(buildArgs, { sceneAdmission: args.sceneAdmission });
   }
   if (args.profiler !== undefined) {
     Object.assign(buildArgs, { profiler: args.profiler });
@@ -252,16 +253,18 @@ export interface BuildAppArgs {
    * the allocation-free primary-World path. Both createApp forms (canvas + assemble) forward
    * it from their respective options object.
    */
-  readonly drawSource?: import('./types').DrawSource | undefined;
+  readonly sceneAdmission?: (() => import('./types').SceneAdmission) | undefined;
   readonly profiler?: import('@forgeax/engine-profiler').Profiler | undefined;
   readonly executionControl?: import('./execution/control').LocalExecutionControl;
   /** Mutable indirection lets the pre-loop execution control observe its owner. */
   readonly frameInspection?: FrameInspectionRef;
   /** Canvas-form projection of the Renderer frame-submitted event. */
   readonly onFrameSubmitted?: (event: {
+    readonly editorAssistance?: import('@forgeax/engine-render').SubmittedEditorAssistanceFrame;
     readonly frameId: number;
     readonly deviceGeneration: number;
     readonly graphGeneration?: number;
+    readonly renderDrawCpuMs?: number;
     readonly receipt: FrameReceipt;
     readonly barrelDistortion?: import('@forgeax/engine-render').BarrelDistortionMapping;
     readonly worldIdentity?: string;
@@ -270,6 +273,7 @@ export interface BuildAppArgs {
   readonly onFrameCompleted?: (event: {
     readonly frameId: number;
     readonly deviceGeneration: number;
+    readonly profileFrame?: FrameReceipt['profileFrame'];
     readonly presentation: import('@forgeax/engine-render').FramePresentation;
     readonly presentationPendingReason?: import('@forgeax/engine-render').FramePresentationPendingReason;
     readonly worldIdentity?: string;
@@ -366,6 +370,7 @@ export async function buildApp(args: BuildAppArgs): Promise<Result<App, AppError
     onStateChange: (state) =>
       execution.setEngineHealth(state === 'running' || state === 'stopped' ? state : 'idle'),
     beforeDraw: () => {
+      stepRetainedBytes();
       observation.prepareFrame();
       localHdr.beforeDraw(renderer);
     },
@@ -374,17 +379,21 @@ export async function buildApp(args: BuildAppArgs): Promise<Result<App, AppError
     ...(args.geometryLane === undefined ? {} : { geometryLane: args.geometryLane }),
   };
   Object.assign(loopOpts, {
-    onSubmitted: (receipt: FrameReceipt) => {
+    onSubmitted: (receipt: FrameReceipt, renderDrawCpuMs: number | undefined) => {
       localHdr.submitted(renderer, receipt);
       for (const listener of captureSubmittedListeners) listener(receipt);
       args.onFrameSubmitted?.({
         frameId: receipt.frameId,
+        ...(receipt.editorAssistance === undefined
+          ? {}
+          : { editorAssistance: receipt.editorAssistance }),
         deviceGeneration: receipt.deviceGeneration,
         ...(receipt.shadowWorkload === undefined ? {} : { shadowWorkload: receipt.shadowWorkload }),
         ...(receipt.graphGeneration === undefined
           ? {}
           : { graphGeneration: receipt.graphGeneration }),
         receipt,
+        ...(renderDrawCpuMs === undefined ? {} : { renderDrawCpuMs }),
         ...(receipt.barrelDistortion === undefined
           ? {}
           : { barrelDistortion: receipt.barrelDistortion }),
@@ -398,6 +407,7 @@ export async function buildApp(args: BuildAppArgs): Promise<Result<App, AppError
         args.onFrameCompleted?.({
           frameId: receipt.frameId,
           deviceGeneration: receipt.deviceGeneration,
+          ...(receipt.profileFrame === undefined ? {} : { profileFrame: receipt.profileFrame }),
           ...(receipt.shadowWorkload === undefined
             ? {}
             : { shadowWorkload: receipt.shadowWorkload }),
@@ -417,8 +427,8 @@ export async function buildApp(args: BuildAppArgs): Promise<Result<App, AppError
   }
   // M2 / D-3: forward the optional draw-source pull into the frame-loop. Absent
   // => the loop keeps the allocation-free primary-World draw path.
-  if (args.drawSource !== undefined) {
-    Object.assign(loopOpts, { drawSource: args.drawSource });
+  if (args.sceneAdmission !== undefined) {
+    Object.assign(loopOpts, { sceneAdmission: args.sceneAdmission });
   }
   if (profiler !== undefined) {
     Object.assign(loopOpts, { profiler });
@@ -433,16 +443,7 @@ export async function buildApp(args: BuildAppArgs): Promise<Result<App, AppError
         return () => captureSubmittedListeners.delete(listener);
       },
       getState: () => loop.getState(),
-      pause: () => {
-        const result = loop.pause();
-        if (result.ok) execution.setEngineHealth('idle');
-        return result;
-      },
-      resume: () => {
-        const result = loop.resume();
-        if (result.ok) execution.setEngineHealth('running');
-        return result;
-      },
+      suspendScheduling: () => loop.suspendScheduling(),
       stepFrame: (deltaSeconds) => loop.stepFrame(deltaSeconds),
     });
   }
@@ -629,9 +630,6 @@ export async function buildApp(args: BuildAppArgs): Promise<Result<App, AppError
     },
     onError(cb: (e: AppDispatchError) => void): () => void {
       return fanout.add(cb);
-    },
-    setDrawSource(drawSource): void {
-      loop.setDrawSource(drawSource);
     },
     /**
      * Most recent dispatched error retained for host self-inspection.

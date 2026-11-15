@@ -177,6 +177,7 @@ export async function prepareBackgroundPipelineLibrary(
   active: () => boolean,
   report: (cause: unknown) => void,
   owner: object,
+  concurrency?: number,
 ): Promise<void> {
   const library = device.pipelineLibrary;
   if (library === undefined) return;
@@ -213,6 +214,7 @@ export async function prepareBackgroundPipelineLibrary(
         renderTargetPolicy: 'device-compatible',
         background: true,
         owner,
+        ...(concurrency === undefined ? {} : { concurrency }),
         sources: manifest.shaders.map(
           (descriptor) =>
             shaderSourceForDescriptor(descriptor) ?? new ShaderSource([descriptor.code]),
@@ -255,6 +257,9 @@ type BootModuleLayouts = Pick<
   | 'gpuDrivenPbrPipelineLayout'
   | 'gpuDrivenPbrSkinPipelineLayout'
   | 'surfaceDirectInstancesBindGroupLayout'
+  | 'sceneDirectInstancesBindGroupLayout'
+  | 'sceneDirectPipelineLayout'
+  | 'sceneDirectClusterPipelineLayout'
   | 'gpuDrivenClusterPbrPipelineLayout'
   | 'gpuDrivenClusterPbrSkinPipelineLayout'
   | 'gpuDrivenClusterMeshBindGroupLayout'
@@ -277,10 +282,7 @@ function selectBootModuleLayouts(
   pbrLayouts: PbrPipelineLayoutBundle,
   hdrp: HdrpPipelineLayouts,
   gpuDriven: GpuDrivenReadyLayouts,
-  gpuDrivenCluster: {
-    readonly rigid: PipelineLayout | null;
-    readonly skin: PipelineLayout | null;
-  },
+  gpuDrivenCluster: GpuDrivenClusterLayouts,
 ): BootModuleLayouts {
   if (!bootModulesReady) {
     return {
@@ -289,6 +291,9 @@ function selectBootModuleLayouts(
       gpuDrivenPbrPipelineLayout: null,
       gpuDrivenPbrSkinPipelineLayout: null,
       surfaceDirectInstancesBindGroupLayout: null,
+      sceneDirectInstancesBindGroupLayout: null,
+      sceneDirectPipelineLayout: null,
+      sceneDirectClusterPipelineLayout: null,
       gpuDrivenClusterPbrPipelineLayout: null,
       gpuDrivenClusterPbrSkinPipelineLayout: null,
       gpuDrivenClusterMeshBindGroupLayout: null,
@@ -307,6 +312,9 @@ function selectBootModuleLayouts(
     gpuDrivenPbrPipelineLayout: gpuDriven.gpuDrivenPbrPipelineLayout,
     gpuDrivenPbrSkinPipelineLayout: gpuDriven.gpuDrivenPbrSkinPipelineLayout,
     surfaceDirectInstancesBindGroupLayout: gpuDriven.surfaceDirectInstancesBindGroupLayout,
+    sceneDirectInstancesBindGroupLayout: gpuDriven.sceneDirectInstancesBindGroupLayout,
+    sceneDirectPipelineLayout: gpuDriven.sceneDirectPipelineLayout,
+    sceneDirectClusterPipelineLayout: gpuDrivenCluster.sceneDirect,
     gpuDrivenClusterPbrPipelineLayout: gpuDrivenCluster.rigid,
     gpuDrivenClusterPbrSkinPipelineLayout: gpuDrivenCluster.skin,
     gpuDrivenClusterMeshBindGroupLayout: hdrp.unifiedBgl,
@@ -320,16 +328,34 @@ function selectBootModuleLayouts(
   };
 }
 
-/** GPU-driven cluster layouts exist only on storage-capable devices. */
+interface GpuDrivenClusterLayouts {
+  readonly rigid: PipelineLayout | null;
+  readonly skin: PipelineLayout | null;
+  readonly sceneDirect: PipelineLayout | null;
+}
+
+/** Scene-index cluster layouts need storage; scene-direct cluster is the texture-table form. */
 function buildGpuDrivenClusterLayouts(
   device: RhiDevice,
   storageBuffer: boolean,
   pbrLayouts: PbrPipelineLayoutBundle,
   hdrpUnifiedBgl: BindGroupLayout | null,
   gpuDriven: GpuDrivenReadyLayouts,
-): { readonly rigid: PipelineLayout | null; readonly skin: PipelineLayout | null } {
-  if (!storageBuffer) return { rigid: null, skin: null };
+): GpuDrivenClusterLayouts {
+  if (!storageBuffer) {
+    // Clustered scene-direct unlit keeps the cluster group(2) and reads the
+    // texture tables at slot 3.
+    const sceneDirect = createGpuDrivenClusterPipelineLayout(
+      device,
+      'pbr-scene-direct-cluster-pl',
+      pbrLayouts,
+      hdrpUnifiedBgl,
+      gpuDriven.sceneDirectInstancesBindGroupLayout,
+    );
+    return { rigid: null, skin: null, sceneDirect };
+  }
   return {
+    sceneDirect: null,
     rigid: createGpuDrivenClusterPipelineLayout(
       device,
       'pbr-gpu-driven-cluster-pl',

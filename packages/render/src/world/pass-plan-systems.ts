@@ -1,4 +1,10 @@
-import { defineComponent, type EntityHandle, type World } from '@forgeax/engine-ecs';
+import {
+  defineComponent,
+  defineResource,
+  defineSystem,
+  type EntityHandle,
+  type World,
+} from '@forgeax/engine-ecs';
 import { err, ok, type Result } from '@forgeax/engine-rhi';
 import type { Transparency } from '../components/camera';
 import { resolveTransparencyView, type TransparencyViewResolution } from '../oit/view';
@@ -8,13 +14,14 @@ import type { DispatchList, RenderableSnapshot } from '../render-system-extract'
 import type { FrameList } from '../scene/frame-list';
 import type { MaterialFrame } from '../scene/material-dispatch';
 import type { PersistentGpuDrivenState } from '../scene/render-scene';
-import type { TransmissionDemand } from '../transmission/projection';
 import {
-  RENDER_PHASE_SORT_SYSTEM,
-  registerQueueSystems,
-  type ViewPhaseQueue,
-  ViewPhases,
-} from './queue-systems';
+  RenderOpaquePlanOrder,
+  RenderPhaseSortOrder,
+  RenderTransmissionPlanOrder,
+  RenderTransparentPlanOrder,
+} from '../system-order';
+import type { TransmissionDemand } from '../transmission/projection';
+import { registerQueueSystems, type ViewPhaseQueue, ViewPhases } from './queue-systems';
 import { RenderCleanup, RenderQueue, renderWorldFor } from './render-world';
 import type { SsrAdmissionInput } from './ssr-admission-systems';
 import type { SubsurfaceAdmissionInput } from './subsurface-admission-systems';
@@ -74,6 +81,7 @@ export interface PassPlanInput {
 
 /** Transmission backdrop and single-layer medium lanes of one view. */
 export interface TransmissionPassPlan {
+  readonly water?: true;
   readonly demand: TransmissionDemand;
   readonly singleLayerMedium: boolean;
 }
@@ -271,6 +279,7 @@ function planTransmission(input: PassPlanInput): TransmissionPassPlan {
             needsBackPass: scene.needsBackPass === true || prepared.needsBackPass === true,
           },
     singleLayerMedium: input.materials.hasMedium || preparation?.hasMedium === true,
+    ...(input.materials.hasWater || preparation?.hasWater === true ? { water: true as const } : {}),
   };
 }
 
@@ -280,106 +289,105 @@ function planTransmission(input: PassPlanInput): TransmissionPassPlan {
  * first) so a sorted view plans over the dispatch order it records.
  */
 export function registerPassPlanSystems(world: World): void {
-  world
-    .addSystem(RenderCleanup, {
-      commands: 'none',
-      name: 'render-pass-plan-release',
-      queries: [{ read: [ViewPassPlans] }],
-      fn: (world, [rows]) => {
-        rows.forEach((row) => {
-          const entity = row.entity;
-          world
-            .resolveUniqueRef<ViewPassPlanQueue>(
-              requireViewField(world, entity, ViewPassPlans, 'state'),
-            )
-            .unwrap()
-            .clear();
-        });
-      },
-    })
-    .unwrap();
   if (world.hasResource(PassPlanSystems)) return;
+  const systemToken1 = defineSystem({
+    commands: 'none',
+    name: 'render-pass-plan-release',
+    queries: [{ read: [ViewPassPlans] }],
+    fn: (world, [rows]) => {
+      rows.forEach((row) => {
+        const entity = row.entity;
+        world
+          .resolveUniqueRef<ViewPassPlanQueue>(
+            requireViewField(world, entity, ViewPassPlans, 'state'),
+          )
+          .unwrap()
+          .clear();
+      });
+    },
+  });
+  world.addSystem(RenderCleanup, systemToken1).unwrap();
   world.insertResource(PassPlanSystems, true);
   registerQueueSystems(world);
-  world
-    .addSystem(RenderQueue, {
-      commands: 'none',
-      name: RENDER_TRANSPARENT_PLAN_SYSTEM,
-      queries: [{ read: [ViewPassPlans], optional: [ViewPhases] }],
-      after: [RENDER_PHASE_SORT_SYSTEM],
-      fn: (world, [views]) => {
-        views.forEach((row) => {
-          const entity = row.entity;
+  const systemToken2 = defineSystem({
+    sets: [RenderTransparentPlanOrder],
+    commands: 'none',
+    name: RENDER_TRANSPARENT_PLAN_SYSTEM,
+    queries: [{ read: [ViewPassPlans], optional: [ViewPhases] }],
+    after: [RenderPhaseSortOrder],
+    fn: (world, [views]) => {
+      views.forEach((row) => {
+        const entity = row.entity;
 
-          const queue = world
-            .resolveUniqueRef<ViewPassPlanQueue>(
-              requireViewField(world, entity, ViewPassPlans, 'state'),
-            )
-            .unwrap();
-          const input = queue.staged;
-          if (input === undefined || queue.transparent !== undefined) return;
-          const phases = input.phaseSorted
-            ? readViewField(world, entity, ViewPhases, 'state')
-            : undefined;
-          const ordered =
-            phases === undefined
-              ? undefined
-              : world.resolveUniqueRef<ViewPhaseQueue>(phases).unwrap().ordered;
-          queue.transparent = resolveTransparencyView({
-            requested: input.requested,
-            rgba16floatRenderable: input.rgba16floatRenderable,
-            renderables: input.renderables,
-            materialFrame: input.materials,
-            dispatch: ordered ?? input.dispatch,
-          });
+        const queue = world
+          .resolveUniqueRef<ViewPassPlanQueue>(
+            requireViewField(world, entity, ViewPassPlans, 'state'),
+          )
+          .unwrap();
+        const input = queue.staged;
+        if (input === undefined || queue.transparent !== undefined) return;
+        const phases = input.phaseSorted
+          ? readViewField(world, entity, ViewPhases, 'state')
+          : undefined;
+        const ordered =
+          phases === undefined
+            ? undefined
+            : world.resolveUniqueRef<ViewPhaseQueue>(phases).unwrap().ordered;
+        queue.transparent = resolveTransparencyView({
+          requested: input.requested,
+          rgba16floatRenderable: input.rgba16floatRenderable,
+          renderables: input.renderables,
+          materialFrame: input.materials,
+          dispatch: ordered ?? input.dispatch,
         });
-      },
-    })
-    .unwrap();
-  world
-    .addSystem(RenderQueue, {
-      commands: 'none',
-      name: RENDER_TRANSMISSION_PLAN_SYSTEM,
-      queries: [{ read: [ViewPassPlans] }],
-      after: [RENDER_PHASE_SORT_SYSTEM],
-      fn: (world, [views]) => {
-        views.forEach((row) => {
-          const entity = row.entity;
+      });
+    },
+  });
+  world.addSystem(RenderQueue, systemToken2).unwrap();
+  const systemToken3 = defineSystem({
+    sets: [RenderTransmissionPlanOrder],
+    commands: 'none',
+    name: RENDER_TRANSMISSION_PLAN_SYSTEM,
+    queries: [{ read: [ViewPassPlans] }],
+    after: [RenderPhaseSortOrder],
+    fn: (world, [views]) => {
+      views.forEach((row) => {
+        const entity = row.entity;
 
-          const queue = world
-            .resolveUniqueRef<ViewPassPlanQueue>(
-              requireViewField(world, entity, ViewPassPlans, 'state'),
-            )
-            .unwrap();
-          const input = queue.staged;
-          if (input === undefined || queue.transmission !== undefined) return;
-          queue.transmission = planTransmission(input);
-        });
-      },
-    })
-    .unwrap();
-  world
-    .addSystem(RenderQueue, {
-      commands: 'none',
-      name: RENDER_OPAQUE_PLAN_SYSTEM,
-      queries: [{ read: [ViewPassPlans] }],
-      after: [RENDER_PHASE_SORT_SYSTEM],
-      fn: (world, [views]) => {
-        views.forEach((row) => {
-          const entity = row.entity;
+        const queue = world
+          .resolveUniqueRef<ViewPassPlanQueue>(
+            requireViewField(world, entity, ViewPassPlans, 'state'),
+          )
+          .unwrap();
+        const input = queue.staged;
+        if (input === undefined || queue.transmission !== undefined) return;
+        queue.transmission = planTransmission(input);
+      });
+    },
+  });
+  world.addSystem(RenderQueue, systemToken3).unwrap();
+  const systemToken4 = defineSystem({
+    sets: [RenderOpaquePlanOrder],
+    commands: 'none',
+    name: RENDER_OPAQUE_PLAN_SYSTEM,
+    queries: [{ read: [ViewPassPlans] }],
+    after: [RenderPhaseSortOrder],
+    fn: (world, [views]) => {
+      views.forEach((row) => {
+        const entity = row.entity;
 
-          const queue = world
-            .resolveUniqueRef<ViewPassPlanQueue>(
-              requireViewField(world, entity, ViewPassPlans, 'state'),
-            )
-            .unwrap();
-          const input = queue.staged;
-          if (input === undefined || queue.opaque !== undefined) return;
-          queue.opaque = planOpaque(input);
-        });
-      },
-    })
-    .unwrap();
+        const queue = world
+          .resolveUniqueRef<ViewPassPlanQueue>(
+            requireViewField(world, entity, ViewPassPlans, 'state'),
+          )
+          .unwrap();
+        const input = queue.staged;
+        if (input === undefined || queue.opaque !== undefined) return;
+        queue.opaque = planOpaque(input);
+      });
+    },
+  });
+  world.addSystem(RenderQueue, systemToken4).unwrap();
 }
 
-const PassPlanSystems = Object.freeze({ name: 'PassPlanSystems' });
+const PassPlanSystems = defineResource<boolean>('PassPlanSystems');

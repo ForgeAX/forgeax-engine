@@ -44,6 +44,8 @@ import {
 
 export interface EngineWorkspaceBrowserOptions {
   readonly input?: CanvasInputBoundary;
+  /** Registered game reads from this native Play generation. */
+  readonly gameReads?: () => Iterable<import('./game-context').GameReadDef>;
   readonly app: App;
   readonly surface?: HTMLElement;
   readonly initialAsset?: EngineWorkspaceAsset;
@@ -69,6 +71,10 @@ export interface EngineWorkspaceBrowserOptions {
 }
 
 type CommandInput = EngineWorkspaceCameraInput & {
+  readonly intent?: import('./workspace-editor-assistance').EngineWorkspaceAssistanceIntent;
+  readonly frameId?: number;
+  readonly deviceGeneration?: number;
+  readonly viewIdentity?: string;
   readonly preparation?: number;
   readonly fields?: readonly WorkspaceAssetFieldWrite[];
   readonly fieldWrite?: WorkspaceAssetFieldWrite;
@@ -418,8 +424,7 @@ const workspaceBrowserCommandsPlugin: Plugin.Object<EngineWorkspaceBrowserOption
               iblBinding,
               featureGraph,
               meshMaterialBindings: meshMaterialBindings?.map(
-                ({ worldId, worldIdentity, entityKey, bindings, diagnostics, residency }) => ({
-                  worldId,
+                ({ worldIdentity, entityKey, bindings, diagnostics, residency }) => ({
                   worldIdentity,
                   entityKey,
                   bindings,
@@ -800,6 +805,11 @@ const workspaceBrowserCommandsPlugin: Plugin.Object<EngineWorkspaceBrowserOption
       return pick({
         x: input.x,
         y: input.y,
+        ...(input.frameId === undefined ? {} : { frameId: input.frameId }),
+        ...(input.deviceGeneration === undefined
+          ? {}
+          : { deviceGeneration: input.deviceGeneration }),
+        ...(input.viewIdentity === undefined ? {} : { viewIdentity: input.viewIdentity }),
         ...(input.granularity === undefined ? {} : { granularity: input.granularity }),
       });
     };
@@ -813,6 +823,23 @@ const workspaceBrowserCommandsPlugin: Plugin.Object<EngineWorkspaceBrowserOption
       switch (operation) {
         case 'target.pick':
           return pickTarget(input);
+        case 'target.assistance': {
+          if (input.intent === undefined) throw new TypeError('An editor assistance intent');
+          const assistance = requireTools(input).assistance;
+          if (!assistance)
+            throw new EngineWorkspaceError(
+              'engine-workspace-capability-unavailable',
+              'Editor assistance tools',
+            );
+          return assistance({
+            intent: input.intent,
+            ...(input.connectionId === undefined
+              ? {}
+              : {
+                  connectionId: input.connectionId,
+                }),
+          });
+        }
         case 'entity.highlight':
           return (
             requireTools(input).highlight?.(input.entityId ? { entityId: input.entityId } : {}) ?? {
@@ -823,7 +850,7 @@ const workspaceBrowserCommandsPlugin: Plugin.Object<EngineWorkspaceBrowserOption
           return requireTools(input).tree(input);
         case 'entity.inspect': {
           const entityId = requireEntityId(input);
-          return requireTools(input).inspect({ entityId });
+          return requireTools(input).inspect({ entityId, signal: input.signal });
         }
         case 'entity.focus': {
           const entityId = requireEntityId(input);
@@ -997,6 +1024,7 @@ const workspaceBrowserCommandsPlugin: Plugin.Object<EngineWorkspaceBrowserOption
           });
           if (controller.signal.aborted && previewOwner === command.id) await closePreview();
           controller.signal.throwIfAborted();
+          if (command.operation === 'entity.inspect') active(command.input);
           await send({
             kind: 'result',
             id: command.id,
@@ -1035,7 +1063,7 @@ const workspaceBrowserCommandsPlugin: Plugin.Object<EngineWorkspaceBrowserOption
           pending.delete(command.id);
         }
       };
-      // Existing synchronous reads observe their live target while an independent
+      // Reads observe their live target while an independent
       // preview starts. Lifecycle and writes retain their original ordering.
       const readOnly = isReadOnlyWorkspaceOperation(command.operation);
       const completion = (readOnly ? Promise.resolve() : queue).then(run, run);
@@ -1083,6 +1111,7 @@ export const engineWorkspaceBrowserPlugin: Plugin.Object<EngineWorkspaceBrowserO
         ? { display: { canvas: options.canvas, app: options.app } }
         : {}),
       ...(options.input ? { input: options.input } : {}),
+      ...(options.input && options.gameReads ? { gameReads: options.gameReads } : {}),
       ...(options.app.observation === undefined ? {} : { observation: options.app.observation }),
     });
     await ctx.plugin(workspaceBrowserCommandsPlugin, options);

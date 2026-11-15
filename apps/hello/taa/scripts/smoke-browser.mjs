@@ -13,6 +13,8 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { chromium } from 'playwright';
+import { pnpmCommand } from '../../../../scripts/lib/pnpm-command.mjs';
+import { createBrowserErrorEvidence } from '../../../../scripts/ci/browser-error-evidence.mjs';
 import {
   AUTO_EXPOSURE_TAA_FIXTURE,
   AUTO_EXPOSURE_TAA_FIXTURE_IDENTITY,
@@ -142,7 +144,8 @@ const waitForScopedPackCatalog = async (baseUrl) => {
   );
 };
 
-const vite = spawn('pnpm', ['--filter', '@forgeax/hello-taa', 'exec', 'vite', '--host', '127.0.0.1', '--port', serverPort], {
+const [pnpm, ...pnpmArgs] = pnpmCommand();
+const vite = spawn(pnpm, [...pnpmArgs, '--filter', '@forgeax/hello-taa', 'exec', 'vite', '--host', '127.0.0.1', '--port', serverPort], {
   cwd: REPO_ROOT,
   env: { ...process.env, FORGEAX_ENGINE_RHI_DEBUG: '0' },
   // pnpm owns the Vite child. On POSIX, isolate the complete dev-server
@@ -183,6 +186,7 @@ let page;
 let browserProvenance;
 const pageErrors = [];
 const consoleErrors = [];
+const errorEvidence = createBrowserErrorEvidence();
 const requestFailures = [];
 const screenshots = [];
 
@@ -651,9 +655,15 @@ try {
         : { viewport, deviceScaleFactor: 1 },
     );
     page = await context.newPage();
-    page.on('pageerror', (error) => pageErrors.push(error.message));
+    page.on('pageerror', (error) => {
+      pageErrors.push(error.message);
+      errorEvidence.pageError(error);
+    });
     page.on('console', (message) => {
-      if (message.type() === 'error' && !message.text().includes('favicon.ico')) consoleErrors.push(message.text());
+      if (message.type() === 'error' && !message.text().includes('favicon.ico')) {
+        consoleErrors.push(message.text());
+        errorEvidence.consoleError(message);
+      }
     });
     page.on('requestfailed', (request) => {
       if (!request.url().includes('/@vite/client')) requestFailures.push(`${request.method()} ${request.url()}: ${request.failure()?.errorText ?? 'unknown'}`);
@@ -1100,6 +1110,8 @@ try {
         pageErrors,
         consoleErrors,
         requestFailures,
+        errorEvidence: await errorEvidence.snapshot(),
+        browserProvenance,
       })}`,
     );
   } else {

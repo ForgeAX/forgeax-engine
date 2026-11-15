@@ -9,18 +9,16 @@ type Frame = {
 const feature = {
   identity: 'synthetic.context-boundary',
   extract(context) {
-    const worlds: readonly World[] = context.worlds;
-    const owner: number = context.owner;
+    const world: World = context.world;
     const frameNumber: number = context.frameNumber;
-    void worlds;
-    void owner;
+    void world;
     void frameNumber;
 
     // @ts-expect-error extract must not receive a prepare-stage runtime surface
     context.runtime;
     // @ts-expect-error extract must not receive a GPU command encoder
     context.encoder;
-    return ok({ count: worlds.length });
+    return ok({ count: world.inspect().entityCount });
   },
   plan(data, context) {
     const count: number = data.count;

@@ -460,10 +460,6 @@ type RuntimeLayerError = RenderError | AssetRuntimeError | SkinError;
               return 'reflection probe budget exceeded';
             case 'render-intent-invalid':
               return 'render intent invalid';
-            case 'standard-light-budget-exceeded':
-              return 'standard light budget exceeded';
-            case 'standard-cluster-index-overflow':
-              return 'standard cluster index overflow';
             case 'standard-cluster-transport-unavailable':
               return 'standard cluster transport unavailable';
             // feat-20260611-fox-skinning-vertex-attribute-chain M4 / w17 (D-5):
@@ -686,10 +682,6 @@ type RuntimeLayerError = RenderError | AssetRuntimeError | SkinError;
             case 'equirect-projection-failed':
               return 'ok';
             case 'mesh-ssbo-ceiling-reached':
-              return 'ok';
-            case 'standard-light-budget-exceeded':
-              return 'ok';
-            case 'standard-cluster-index-overflow':
               return 'ok';
             case 'skin-material-mismatch':
               return 'ok';

@@ -49,11 +49,7 @@ it('reports unsupported DRS, allocates no queries, and restores native TAA on re
     .unwrap();
   const draw = () => {
     world.update(1 / 60).unwrap();
-    return renderer.draw({
-      leases: [attached],
-      camera: { lease: attached },
-      environment: { lease: attached },
-    });
+    return renderer.draw({ source: attached });
   };
   try {
     for (let frame = 0; frame < 60; frame++) expect(draw().ok).toBe(true);

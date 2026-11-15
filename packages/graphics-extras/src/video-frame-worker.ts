@@ -6,6 +6,7 @@
 // slot imports it zero-copy and every other slot copies it.
 
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
+import { defineSystem, Update } from '@forgeax/engine-ecs';
 import { type AssetHandle, err, ok, type Result, type VideoAsset } from '@forgeax/engine-types';
 import {
   closeFrameSource,
@@ -98,9 +99,6 @@ export interface WorkerVideoSourceOptions {
   /** Defaults to the realm `VideoFrame`. Injected by tests. */
   readonly videoFrame?: typeof VideoFrame;
 }
-
-/** Name of the Update system that runs `provider.sync()` once per frame. */
-export const VIDEO_FRAME_SYNC_SYSTEM = 'forgeax:video-frame-sync';
 
 interface PlayState {
   readonly playing: boolean;
@@ -202,16 +200,17 @@ export function installWorkerVideoSourceProvider(
       }),
     );
   installed.get(world)?.dispose();
-  const provider = createProvider(world, endpoint, Frame);
-  const update = world.scheduleToken('Update');
-  world
-    .addSystem(update, {
-      name: VIDEO_FRAME_SYNC_SYSTEM,
-      queries: [],
-      commands: 'none',
-      fn: () => provider.sync(),
-    })
-    .unwrap();
+  const provider = createProvider(world, endpoint, Frame, () =>
+    world.removeSystem(Update, syncSystem),
+  );
+  const update = Update;
+  const syncSystem = defineSystem({
+    name: 'forgeax:video-frame-sync',
+    queries: [],
+    commands: 'none',
+    fn: () => provider.sync(),
+  });
+  world.addSystem(update, syncSystem).unwrap();
   world.insertResource(VIDEO_SOURCE_PROVIDER_KEY, provider);
   installed.set(world, provider);
   return ok(provider);
@@ -221,6 +220,7 @@ function createProvider(
   world: World,
   endpoint: VideoFrameEndpoint,
   Frame: typeof VideoFrame,
+  removeSyncSystem: () => unknown,
 ): WorkerVideoSourceProvider {
   const consumers = new Map<EntityHandle, Map<AssetHandle<'video'>, FrameConsumer>>();
   const receive = (consumer: FrameConsumer, notice: VideoFrameNotice): void => {
@@ -293,7 +293,7 @@ function createProvider(
       for (const entity of [...consumers.keys()]) provider.release(entity);
       if (installed.get(world) !== provider) return;
       installed.delete(world);
-      world.removeSystem(world.scheduleToken('Update'), VIDEO_FRAME_SYNC_SYSTEM);
+      removeSyncSystem();
       if (
         world.hasResource(VIDEO_SOURCE_PROVIDER_KEY) &&
         world.getResource(VIDEO_SOURCE_PROVIDER_KEY) === provider

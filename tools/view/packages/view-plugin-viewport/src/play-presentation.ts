@@ -62,7 +62,7 @@ export const viewPlayPresentationPlugin = {
         width: `${width}px`,
         height: `${height}px`,
         transformOrigin: 'top left',
-        transform: `scale(${scale})`,
+        transform: scale === 1 ? 'none' : `scale(${scale})`,
       };
       const style = frame.style;
       if (

@@ -47,7 +47,7 @@ export function observeMaterialDraws(
     if (materialDrawsOf(view.owner) !== draws) return unavailableDrawObservation('superseded');
     if (draws.status !== 'complete') return draws;
     for (const row of draws.draws) {
-      if (!capture.leases.some((lease) => lease.worldIdentity === row.worldIdentity))
+      if (capture.source?.worldIdentity !== row.worldIdentity)
         return unavailableDrawObservation('source-unavailable');
       if (!isCaptureCurrent?.(row.pipeline.captureGeneration))
         return unavailableDrawObservation('capture-unavailable');

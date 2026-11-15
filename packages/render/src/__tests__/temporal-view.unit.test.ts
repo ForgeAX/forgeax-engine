@@ -105,10 +105,12 @@ describe('TemporalView v1', () => {
   it('writes a zero first-frame previous matrix and only the last successful matrix thereafter', () => {
     const uploads: Float32Array[] = [];
     const queue = {
-      writeBuffer: (_buffer: unknown, _offset: number, data: ArrayBufferView) => {
-        uploads.push(
-          new Float32Array(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength)),
-        );
+      writeBuffer: (_buffer: unknown, offset: number, data: ArrayBufferView) => {
+        // This history contract observes the display slot; auxiliary views own their offsets.
+        if (offset === 0)
+          uploads.push(
+            new Float32Array(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength)),
+          );
         return { ok: true, value: undefined };
       },
     } as unknown as RhiQueue;
@@ -152,8 +154,7 @@ describe('TemporalView v1', () => {
     const buffer = {} as Parameters<typeof writeViewUbo>[1];
     const first = createTemporalView({ antialias: 'taa', width: 4, height: 4, frameIndex: 0 });
     writeViewUbo(queue, buffer, camera, light, lights, [], first);
-    // Each display write uploads the main slot and three translucent-fog copies.
-    expect(uploads).toHaveLength(4);
+    expect(uploads).toHaveLength(1);
     expect(Array.from(uploads[0]?.slice(212, 228) ?? [])).toEqual(new Array(16).fill(0));
 
     const previous = Float32Array.from({ length: 16 }, (_value, index) => index + 1);
@@ -165,9 +166,9 @@ describe('TemporalView v1', () => {
       previousUnjitteredViewProjection: previous,
     });
     writeViewUbo(queue, buffer, camera, light, lights, [], second);
-    expect(Array.from(uploads[4]?.slice(212, 228) ?? [])).toEqual(Array.from(previous));
+    expect(Array.from(uploads[1]?.slice(212, 228) ?? [])).toEqual(Array.from(previous));
 
     writeViewUbo(queue, buffer, camera, light, lights, [], second);
-    expect(Array.from(uploads[8]?.slice(212, 228) ?? [])).toEqual(Array.from(previous));
+    expect(Array.from(uploads[2]?.slice(212, 228) ?? [])).toEqual(Array.from(previous));
   });
 });

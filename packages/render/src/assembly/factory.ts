@@ -1,5 +1,6 @@
 import type { RhiCanvasTarget } from '@forgeax/engine-rhi';
 import { assertRenderShortSide } from '../components/camera-view';
+import { assertTextureMipSkip } from '../device/texture-mip-skip';
 // Public renderer assembly boundary.
 // Backend selection and construction happen here; generation-scoped lifetime
 // and frame work live in webgpu-renderer.ts.
@@ -117,6 +118,7 @@ export async function createRenderer(
   backend?: RhiBackendPack,
 ): Promise<RendererAssemblyImplementation> {
   assertRenderShortSide(options?.maxRenderShortSide ?? 0);
+  assertTextureMipSkip(options?.textureMipSkip ?? 0);
   if (canvas === undefined || canvas === null) {
     throw new EngineEnvironmentError('renderer construction requires a canvas');
   }

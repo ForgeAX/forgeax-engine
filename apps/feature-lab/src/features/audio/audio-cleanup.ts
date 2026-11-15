@@ -1,5 +1,5 @@
 import { AssetRegistry } from '@forgeax/engine/assets-runtime';
-import type { AudioBackend } from '@forgeax/engine/audio';
+
 import {
   AUDIO_ENGINE_RESOURCE_KEY,
   AudioSource,
@@ -31,7 +31,7 @@ export default defineFeature({
 
     const ctx = await createWorldContext(world, [scenePlugin(), webAudioPlugin(), audioPlugin()]);
     try {
-      const backend = world.getResource<AudioBackend>(AUDIO_ENGINE_RESOURCE_KEY);
+      const backend = world.getResource(AUDIO_ENGINE_RESOURCE_KEY);
       if (backend === undefined) {
         checks.ok('AudioEngine resource present', false);
         return { checks: () => checks.items };

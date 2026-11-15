@@ -1,3 +1,5 @@
+import { AUDIO_ENGINE_RESOURCE_KEY } from '@forgeax/engine-audio';
+import { defineSystem } from "@forgeax/engine-ecs";
 import type { AssetHandle } from '@forgeax/engine-types';
 // apps/hello/audio -- spacebar one-shot SFX + movable 3D listener + collision
 // cleanup demo
@@ -41,7 +43,7 @@ import type { App } from '@forgeax/engine-app';
 import { createApp } from '@forgeax/engine-app/browser';
 import { Time, Update } from '@forgeax/engine-ecs';
 import type { EntityHandle } from '@forgeax/engine-ecs';
-import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine-input';
+import { INPUT_SNAPSHOT_RESOURCE_KEY } from '@forgeax/engine-input';
 import {
   AudioListener,
   AudioSource,
@@ -218,7 +220,7 @@ const sfxClipHandleLoaded = () => sfxClipHandle;
 const overlayEl = document.querySelector<HTMLDivElement>('#overlay');
 const listenerEntity = cameraEntity;
 const emitterEntityId = emitterEntity;
-const audioEngine = world.getResource<AudioBackend>('AudioEngine');
+const audioEngine = world.getResource(AUDIO_ENGINE_RESOURCE_KEY);
 let audioStarts = 0;
 let collisionDetected = false;
 let collisionAudioStarted = false;
@@ -360,8 +362,7 @@ browserGlobals.__forgeaxAudioM20 = m20AudioController;
 // Camera movement speed (units/second).
 const MOVE_SPEED = 5;
 
-world
-  .addSystem(Update, {
+const systemToken1 = defineSystem({
     name: 'hello-audio-frame',
     queries: [],
     fn: () => {
@@ -371,7 +372,7 @@ world
   const currentClip = sfxClipHandleLoaded();
 
   // --- Input ---
-  const snap = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+  const snap = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
 
   // Camera movement (WASD).
   if (snap) {
@@ -512,7 +513,9 @@ world
     }
   }
     },
-  })
+  });
+world
+  .addSystem(Update, systemToken1)
   .unwrap();
 
 if (sfxClipHandle !== HANDLE_NONE) installAudioControls(app, hostAudio, sfxClipHandle);

@@ -30,7 +30,7 @@ describe('material cook parity characterization', () => {
   } as const;
 
   const receipt = {
-    schemaVersion: 'material-cook/4' as const,
+    schemaVersion: 'material-cook/5' as const,
     sourceClosure: ['materials/child.wgsl', 'materials/root.material.json'],
     profile: 'webgpu/v1',
     compilerVersion: 'compiler/1',

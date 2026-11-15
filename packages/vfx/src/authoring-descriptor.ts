@@ -101,7 +101,7 @@ export function isVfxGpuEffectAsset(value: unknown): value is VfxGpuEffectAsset 
     candidate.guid.length > 0 &&
     typeof program === 'object' &&
     program !== null &&
-    program.format === 'forgeax-vfx-program-4' &&
+    program.format === 'forgeax-vfx-program-5' &&
     typeof program.fingerprint === 'string' &&
     Array.isArray(program.emitters)
   );

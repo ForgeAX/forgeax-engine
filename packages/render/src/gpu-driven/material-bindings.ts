@@ -20,7 +20,7 @@ export class ReflectionProbeBindingProjection {
     if (table.rows.length > 0) {
       for (const [key, selection] of selections) {
         if (selection.kind !== 'probe') continue;
-        const index = table.cpuIndexByPrimitive(`${selection.worldId}:${selection.entityKey}`);
+        const index = table.cpuIndexByPrimitive(`${selection.entityKey}`);
         if (index !== undefined) classes.set(key, `probe:${index}`);
       }
     }

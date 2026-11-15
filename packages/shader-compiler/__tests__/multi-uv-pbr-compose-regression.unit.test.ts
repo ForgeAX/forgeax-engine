@@ -19,7 +19,7 @@
 //        Missing mesh sets remain byte-stable through clamp-to-last aliases. A
 //        custom 2-UV-set fixture below still pins the opt-in reflection path.
 
-import { compileShader, generateParameterModule } from '../src/index.js';
+import { compileShader, generateParameterModule, projectShaderConditionals } from '../src/index.js';
 import { DEFAULT_STANDARD_PBR_PARAM_SCHEMA } from '../../shader/src/material-schemas.js';
 import { derive } from '@forgeax/engine-types';
 import { readFileSync } from 'node:fs';
@@ -57,6 +57,8 @@ function loadEngineImports(): Record<string, string> {
     'forgeax_atmosphere::coordinates': read('atmosphere-coordinates.wgsl'),
     'forgeax_atmosphere::sampling': read('atmosphere-sampling.wgsl'),
     'forgeax_cloud::layer': read('cloud.wgsl'),
+    'forgeax_cloud::geometry': read('cloud/geometry.wgsl'),
+    'forgeax_cloud::shadow': read('cloud/shadow.wgsl'),
     'forgeax_pbr::brdf': read('brdf.wgsl'),
     'forgeax_pbr::specular_aa': read('specular-aa.wgsl'),
     'forgeax_material::fragment_output': read('material/fragment-output.wgsl'),
@@ -100,19 +102,22 @@ async function composePbr(file: string, defines: Record<string, boolean> = {}) {
   // are still omitted because this regression covers the canonical base
   // composition only.
   const source = readFileSync(srcPath, 'utf8').replace(/^\s*#pragma\s+(?!material_slot\b).*$/gm, '');
-  return compileShader(source, {
+  const effectiveDefines = {
+    STORAGE_BUFFER_AVAILABLE: true,
+    POINT_SHADOW_AVAILABLE: true,
+    PER_INSTANCE_REGION: false,
+    CLUSTER_FORWARD_AVAILABLE: false,
+    TRANSMISSION_AVAILABLE: false,
+    GPU_DRIVEN_SCENE_INDEX_AVAILABLE: false,
+    TERRAIN_GEOMETRY_AVAILABLE: false,
+    WATER_WAVES_AVAILABLE: false,
+    WATER_INFO_RGBA16: false,
+    ...defines,
+  };
+  return compileShader(projectShaderConditionals(source, effectiveDefines), {
     id: srcPath,
     imports: engineImports,
-    defines: {
-      STORAGE_BUFFER_AVAILABLE: true,
-      POINT_SHADOW_AVAILABLE: true,
-      PER_INSTANCE_REGION: false,
-      CLUSTER_FORWARD_AVAILABLE: false,
-      TRANSMISSION_AVAILABLE: false,
-      GPU_DRIVEN_SCENE_INDEX_AVAILABLE: false,
-      TERRAIN_GEOMETRY_AVAILABLE: false,
-      ...defines,
-    },
+    defines: effectiveDefines,
     ...(defines.VISIBLE_SURFACE_AVAILABLE ? { renderEntries: {
       vertex: defines.GPU_DRIVEN_SCENE_INDEX_AVAILABLE ? 'vs_scene_index' : 'vs_main',
       fragment: 'fs_gbuffer',
@@ -240,8 +245,12 @@ describe('built-in standard-PBR single-UV + multi-UV pathway regression (F-3 + F
       'default-standard-pbr.wgsl',
     );
     const source = readFileSync(srcPath, 'utf8');
-    // fs_main and the OIT accumulation entries share the forward body.
-    expect(source).toMatch(/fn fs_main\([^)]*\)[^{]*\{\s*return standardForward\(in, frontFacing\);/);
+    // The fragment entry evaluates the shared forward body before rejecting
+    // Water coverage, keeping derivative-sensitive material sampling uniform.
+    // Its builtin annotation has nested parentheses; match that actual ABI.
+    expect(source).toMatch(
+      /fn fs_main\(in\s*:\s*VsOut,\s*@builtin\(front_facing\)\s*frontFacing\s*:\s*bool\)\s*->\s*StandardPbrOutput\s*\{\s*standardPositionWS = standardFragmentPosition\(in\);\s*let (\w+) = standardForward\(in, frontFacing\);\s*#if WATER_WAVES_AVAILABLE == true\s*if \(!standardWaterCovered\) \{ discard; \}\s*#endif\s*return \1;\s*\}/,
+    );
     const fragmentStart = source.indexOf('fn standardForward');
     const fragmentEnd = source.indexOf('fn fs_gbuffer');
     expect(fragmentStart).toBeGreaterThan(0);

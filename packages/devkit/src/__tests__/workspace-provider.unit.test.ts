@@ -1,3 +1,9 @@
+declare module '@forgeax/engine-plugin' {
+  interface EngineContextServices {
+    workspaceTestResource?: import('@forgeax/engine-ecs').Resource<Set<number>>;
+  }
+}
+
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
@@ -14,7 +20,7 @@ import {
   engineWorkspaceResultService,
 } from '@forgeax/engine-app';
 import { AssetRegistry, createCatalogSource } from '@forgeax/engine-assets-runtime';
-import { World } from '@forgeax/engine-ecs';
+import { defineResource, World } from '@forgeax/engine-ecs';
 import { createBackendHost } from '@forgeax/engine-host/backend';
 import { createHostAssembly } from '@forgeax/engine-host/protocol';
 import type { HostTransportClient } from '@forgeax/engine-host/transport';
@@ -360,6 +366,8 @@ describe('DevKit workspace provider', () => {
     'failed',
     'lost',
   ] as const)('closes pre-preview Workspace installations in a %s borrowed page while retaining the game App across project reopen', async (health) => {
+    const resource1 = defineResource<Set<number>>('project-plugin-fibers');
+
     const root = await projectRoot();
     const backend = await createBackendHost({});
     const provider = createDevKitWorkspaceProvider({
@@ -368,7 +376,7 @@ describe('DevKit workspace provider', () => {
     });
     const world = new World();
     const runtime = createEngineWorkspaceRuntime(provider);
-    world.insertResource('project-plugin-fibers', new Set<number>());
+    world.insertResource(resource1, new Set<number>());
     const app = (
       await createApp({
         platform: {
@@ -409,6 +417,7 @@ describe('DevKit workspace provider', () => {
         runtimePacks: { scopeId: 'workspace-close-test' },
       })
     ).unwrap();
+    app.pluginContext.provide('workspaceTestResource', resource1);
     let page: HostTransportClient | undefined;
     try {
       const opened = await runtime.openProject({ root });
@@ -451,8 +460,8 @@ describe('DevKit workspace provider', () => {
                   entry: 'behavior.js',
                   export: 'default',
                   modules: {
-                    'behavior.js': `export default { inject: ['world'], apply(ctx) {
-            const entries = ctx.world.getResource('project-plugin-fibers'); const id = ctx.fiber.uid;
+                    'behavior.js': `export default { inject: ['world', 'workspaceTestResource'], apply(ctx) {
+            const entries = ctx.world.getResource(ctx.workspaceTestResource); const id = ctx.fiber.uid;
             ctx.effect(() => { entries.add(id); return () => entries.delete(id); });
           } };`,
                   },
@@ -466,7 +475,7 @@ describe('DevKit workspace provider', () => {
       expect(
         await provider.runtimePack({ ...input, request: { operation: 'plugin-install', guid } }),
       ).toMatchObject({ state: 'active' });
-      const entries = world.getResource<Set<number>>('project-plugin-fibers');
+      const entries = world.getResource(resource1);
       expect(entries?.size).toBe(2);
       if (health === 'failed')
         await page.request(engineWorkspaceResultService(target.targetId), {
@@ -687,28 +696,41 @@ describe('DevKit workspace provider', () => {
         expect(call[3].host.workspace.execution).toBe('game');
         const page = frontendPage(backend, game.target);
         const commands: WorkspaceCommandFixture[] = [];
+        const cancelled: string[] = [];
+        let replyToDeferredRead: (() => Promise<unknown>) | undefined;
         const respond = (connection: typeof page) => (payload: unknown) => {
           const command = payload as WorkspaceCommandFixture;
-          if (command.operation === 'closeWorkspace') return;
-          if (command.sessionId !== game.target.sessionId || command.kind !== 'command') return;
+          if (command.sessionId !== game.target.sessionId) return;
+          if (command.kind === 'cancel') {
+            cancelled.push(command.id);
+            return;
+          }
+          if (command.operation === 'closeWorkspace' || command.kind !== 'command') return;
           commands.push(command);
-          void connection.request(engineWorkspaceResultService(game.target.targetId), {
-            kind: 'result',
-            id: command.id,
-            sessionId: game.target.sessionId,
-            targetId: game.target.targetId,
-            ok: true,
-            value:
-              command.operation === 'resize'
-                ? {
-                    target: {
-                      ...game.target,
-                      width: (command.input as { width: number }).width,
-                      height: (command.input as { height: number }).height,
-                    },
-                  }
-                : { marker: 'actual-game' },
-          });
+          const reply = () =>
+            connection.request(engineWorkspaceResultService(game.target.targetId), {
+              kind: 'result',
+              id: command.id,
+              sessionId: game.target.sessionId,
+              targetId: game.target.targetId,
+              ok: true,
+              value:
+                command.operation === 'resize'
+                  ? {
+                      target: {
+                        ...game.target,
+                        width: (command.input as { width: number }).width,
+                        height: (command.input as { height: number }).height,
+                      },
+                    }
+                  : { marker: 'actual-game' },
+            });
+          if (
+            command.operation === 'entity.inspect' &&
+            (command.input as { entityId?: string }).entityId === 'deferred'
+          ) {
+            replyToDeferredRead = reply;
+          } else void reply();
         };
         const unsubscribe = page.subscribe(ENGINE_WORKSPACE_COMMAND_TOPIC, respond(page));
         let earlyTreeSettled = false;
@@ -739,6 +761,17 @@ describe('DevKit workspace provider', () => {
         expect(resized).toMatchObject({ width: 777, height: 444 });
         expect(game.target).toMatchObject({ width: 777, height: 444 });
         if (cycle === 0) {
+          const controller = new AbortController();
+          const pending = gameTools.inspect({ entityId: 'deferred', signal: controller.signal });
+          const rejected = expect(pending).rejects.toThrow('Selection retired');
+          await vi.waitFor(() => expect(replyToDeferredRead).toBeDefined());
+          const inspect = commands.at(-1);
+          assert(inspect);
+          expect(inspect.input).not.toHaveProperty('signal');
+          controller.abort(new Error('Selection retired'));
+          await rejected;
+          await vi.waitFor(() => expect(cancelled).toContain(inspect.id));
+          await replyToDeferredRead?.();
           page.close();
           await vi.waitFor(() => expect(game.phase).toBe('starting'));
           await expect(Promise.resolve().then(() => gameTools.tree())).rejects.toMatchObject({

@@ -27,7 +27,7 @@ describe('LOD occlusion inspection projection', () => {
   it('publishes bounded identity, histogram and stable samples', () => {
     const inspection = inspectLodOcclusion(baseInput);
 
-    expect(inspection.schema).toBe('forgeax::lod-occlusion-inspection::v3');
+    expect(inspection.schema).toBe('forgeax::lod-occlusion-inspection::v4');
     expect(inspection.root).toEqual(baseInput.root);
     expect(inspection.view).toEqual(baseInput.view);
     expect(inspection.slot).toEqual(baseInput.slot);

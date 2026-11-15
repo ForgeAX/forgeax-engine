@@ -112,7 +112,6 @@ async function fixture(
       materialHandle: index + 100,
     });
     return preparedPbrSnapshot({
-      worldId: 0,
       entityKey: index + 1,
       assetHandle: Number(defined(handles[index] ?? handles[0])),
       transform: { world: matrix },
@@ -151,7 +150,6 @@ async function fixture(
   const delta = projection.apply(
     snapshots.map((snapshot) => ({
       kind: 'update' as const,
-      worldId: 0,
       entityKey: snapshot.entityKey,
       snapshot,
     })),
@@ -202,7 +200,7 @@ async function fixture(
       plan: topology.query(topology.sourcePlan(), undefined),
       slots: projection.slotsSnapshot(),
       slotAt: projection.slotAt,
-      worldIdentities: ['main-window-world'],
+      sourceIdentity: 'main-window-world',
     },
     camera: makeZeroCameraFallbackSnapshot(),
     meshBySlot: new Map(
@@ -233,7 +231,6 @@ async function fixture(
       const delta = projection.apply(
         rows.map((snapshot) => ({
           kind: 'update' as const,
-          worldId: snapshot.worldId,
           entityKey: snapshot.entityKey,
           snapshot,
         })),
@@ -615,7 +612,6 @@ describe('Main GPU-driven prepared visible windows', () => {
       const delta = f.projection.apply([
         {
           kind: 'update',
-          worldId: 0,
           entityKey: source.entityKey,
           snapshot: {
             ...source,
@@ -820,7 +816,7 @@ describe('Main GPU-driven prepared visible windows', () => {
 
   it('uses current windows through material split/rejoin while reusing the compiled graph', async () => {
     const f = await fixture();
-    const key = '0:1';
+    const key = '1';
     const bindings = new Map([[key, 'separate-probe-binding']]);
     f.prepare({ materialBindingClasses: bindings });
     const merged = f.prepare();
@@ -862,7 +858,7 @@ describe('Main GPU-driven prepared visible windows', () => {
       const firstBuffer = defined(lookup.mock.calls[0])[0];
       direct.record();
       const instanceBuffer = defined(f.input.scene).scene.instanceBuffer;
-      const bindings = new Map([['0:1', 'split']]);
+      const bindings = new Map([['1', 'split']]);
       const grown = f.prepare({ materialBindingClasses: bindings });
       // View storage is resolved when the graph executes: growth keeps the graph.
       expect(grown.topologySignature()).toBe(initial.topologySignature());

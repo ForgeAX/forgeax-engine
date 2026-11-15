@@ -1,3 +1,4 @@
+import { defineSystem } from "@forgeax/engine-ecs";
 import { Update } from '@forgeax/engine-ecs';
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { Camera, Materials, MeshFilter, MeshRenderer, perspective } from '@forgeax/engine-render';
@@ -58,7 +59,7 @@ const entry: ExecutionBootstrapEntry = () => ({
         };
         port.start();
         evidence('initial');
-        const system = {
+        const system = defineSystem({
           name: 'commit-before-owner-loss',
           queries: [],
           fn() {
@@ -71,10 +72,10 @@ const entry: ExecutionBootstrapEntry = () => ({
             const gate = new Int32Array(new SharedArrayBuffer(4));
             while (Atomics.load(gate, 0) === 0) Atomics.wait(gate, 0, 0);
           },
-        };
+        });
         ctx.world.addSystem(Update, system).unwrap();
         return () => {
-          ctx.world.removeSystem(Update, system.name).unwrap();
+          ctx.world.removeSystem(Update, system).unwrap();
           port.close();
         };
       },

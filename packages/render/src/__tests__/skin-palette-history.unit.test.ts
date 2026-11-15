@@ -26,7 +26,7 @@ it('takes the previous pose from the palette composed for the same held inputs',
     await f.frames.submitFrame(f.frame, Promise.resolve(), true);
 
     f.matrix[12] = 9;
-    for (const joint of [19, 20]) f.skin.joint(0, joint, f.matrix);
+    for (const joint of [19, 20]) f.skin.joint(joint, f.matrix);
     const frame = f.frames.prepareFrame(f.scene.slotsSnapshot());
     if (frame === undefined) throw new Error('Missing next Skin frame');
     upload.mockClear();

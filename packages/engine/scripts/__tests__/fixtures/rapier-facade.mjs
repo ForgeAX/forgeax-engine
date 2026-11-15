@@ -14,11 +14,11 @@ try {
   const activated = await startNativePlugin(context, preset);
   assert.equal(activated.ok, true, JSON.stringify(activated.ok ? null : activated.error));
   assert.equal(world.components.resolve('CharacterController'), physics.CharacterController);
-  assert.equal(world.hasResource('PhysicsWorld'), true);
+  assert.equal(world.hasResource(physics.PhysicsWorldResource), true);
 } finally {
   await context.fiber.dispose();
 }
 assert.equal(world.components.resolve('CharacterController'), undefined);
-assert.equal(world.hasResource('PhysicsWorld'), false);
+assert.equal(world.hasResource(physics.PhysicsWorldResource), false);
 console.log(JSON.stringify({ sameToken: true, installed: true, released: true, elapsedMs: performance.now() - started }));
 }

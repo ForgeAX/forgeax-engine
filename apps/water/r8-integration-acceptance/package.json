@@ -1,0 +1,52 @@
+{
+  "name": "@forgeax/water-r8-integration-acceptance",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "scripts": {
+    "dev": "node ../../../scripts/vite-app.mjs dev --host 127.0.0.1",
+    "build": "node ../../../scripts/vite-app.mjs build",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@forgeax/apps-shared": "workspace:*",
+    "@forgeax/engine": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/engine-devkit": "workspace:*",
+    "@forgeax/engine-image": "workspace:*",
+    "@forgeax/engine-shader-compiler": "workspace:*",
+    "@forgeax/engine-vite-plugin-pack": "workspace:*",
+    "@forgeax/engine-vite-plugin-rhi-debug": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "typescript": "6.0.3",
+    "vite": "8.3.5"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": true,
+        "path": "dist",
+        "compression": "gzip"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "The generic FPS reporter samples requestAnimationFrame rather than completed Engine frames; no dedicated completed-frame FPS metric is declared for this app."
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "Owner profile capture requires a running app and external output; it is not a registered benchmark report protocol."
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "Owner profile capture is diagnostic; the README leaves reference, recovery and performance acceptance unqualified, with no standalone acceptance gate."
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "This maintained Water demo has no spike report."
+      }
+    }
+  }
+}

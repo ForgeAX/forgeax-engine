@@ -1,9 +1,10 @@
 import { reduceTestProject } from '../../../scripts/test/reduce-test-project.mjs';
 import { applyTestCanvasBudget } from '../../../scripts/test/browser-canvas-budget.mjs';
 import testQuality from '../../../scripts/test/render-quality.json' with { type: 'json' };
-import { cp, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
+import { createLiveSyncProjectDirectory, prepareLiveSyncSharedInputs } from '../scripts/live-sync-inputs.mjs';
 import type { ExecutionReport } from '@forgeax/engine-app';
 import { afterAll, beforeAll, expect, it } from 'vitest';
 import { devCommand } from '../src/commands.js';
@@ -44,7 +45,8 @@ afterAll(async () => {
 
 it.for([false, true])('game-3d vase and mobile controls with Engine Worker=%s', { timeout: 420000 }, async (worker, { signal, onTestFinished }) => {
   const repository = resolve(import.meta.dirname, '../../..');
-  const root = await realpath(await mkdtemp(resolve(tmpdir(), 'forgeax-game3d-vase-')));
+  const manifestPath = process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST;
+  const { root, temporaryRoot } = await createLiveSyncProjectDirectory('forgeax-game3d-vase-', repository, manifestPath);
   const evidence = resolve(repository, 'artifacts/runtime-pack-worker', `game-3d-${worker ? 'worker' : 'main'}`);
   const previousWorkers = process.env.FORGEAX_EXECUTION_WORKERS;
   let browser: BrowserCaptureSession | undefined;
@@ -65,6 +67,7 @@ it.for([false, true])('game-3d vase and mobile controls with Engine Worker=%s', 
     }
   };
   try {
+    if (manifestPath) await prepareLiveSyncSharedInputs({sourceRoot: repository, projectRoot: root, temporaryRoot, manifestPath});
     await rm(evidence, { recursive: true, force: true });
     await mkdir(evidence, { recursive: true });
     await cp(resolve(repository, 'templates/game-3d/assets'), resolve(root, 'assets'), { recursive: true });
@@ -212,6 +215,6 @@ it.for([false, true])('game-3d vase and mobile controls with Engine Worker=%s', 
     await disposeDevKitHosts();
     if (previousWorkers === undefined) delete process.env.FORGEAX_EXECUTION_WORKERS;
     else process.env.FORGEAX_EXECUTION_WORKERS = previousWorkers;
-    await rm(root, { recursive: true, force: true });
+    await rm(temporaryRoot, { recursive: true, force: true });
   }
 });

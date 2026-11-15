@@ -1,3 +1,4 @@
+import { World } from '@forgeax/engine-ecs';
 import { type GraphAccess, RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import type { Buffer, RhiCommandEncoder } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
@@ -193,8 +194,7 @@ async function fixture(placement: 'scene' | 'post' = 'post') {
       {
         identity: 'main',
         render: true,
-        worlds: [],
-        owner: 0,
+        world: new World(),
         frameNumber: epoch + 1,
         generation: 0,
         caps: device.caps,

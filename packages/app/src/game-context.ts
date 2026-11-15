@@ -6,6 +6,7 @@
 
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import type { WebAudioEngine } from '@forgeax/engine-audio-webaudio';
+import type { EntityHandle } from '@forgeax/engine-ecs';
 import type { Plugin } from '@forgeax/engine-plugin';
 import type { Renderer } from '@forgeax/engine-render';
 import type { ExecutionOptions } from './execution/types';
@@ -52,6 +53,12 @@ export interface GameReadDef {
   readonly title: string;
   readonly description?: string;
   readonly read: () => GameProjectionValue | Promise<GameProjectionValue>;
+  /** Optional read-only snapshot for this Play World entity in the workspace Inspector. */
+  readonly workspace?: {
+    readonly entity: () => EntityHandle | undefined;
+    /** Bounded JSON data captured synchronously from the current Play run. */
+    readonly read: () => GameProjectionValue;
+  };
 }
 
 /**

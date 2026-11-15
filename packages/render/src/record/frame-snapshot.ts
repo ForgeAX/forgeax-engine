@@ -1,13 +1,5 @@
-import type { ShadowMeshReads } from '../device/mesh-changes';
-import type { StandardProfile } from '../pipeline/standard-profile';
-import type { RenderResourceScope } from '../publication/resource-scope';
-import type { FramePresentationPendingReason } from '../render-contract';
-import type { RenderSceneSlot } from '../scene/render-scene-types';
-import type { CpuLodSelection } from './cpu-lod';
-import type { MaterialBgAssemblyCache } from './material-bg-assembly-cache';
 // @forgeax/engine-runtime - RendererState record stage: frame-snapshot.
 // Extracted from render-system-record.ts (feat-20260704 M3/w17, pure move).
-
 import type { RenderReadVersion } from '@forgeax/engine-ecs/projection';
 import { vec3 } from '@forgeax/engine-math';
 import type {
@@ -25,11 +17,13 @@ import type {
 import type { BarrelDistortionMapping } from '../barrel-distortion';
 import type { ClusterBinScratch } from '../cluster-binner';
 import type { DirectionalShadowQuality } from '../components/directional-shadow-filter';
+import type { ShadowMeshReads } from '../device/mesh-changes';
 import type { EnvironmentGeneration } from '../environment/generation';
 import type { EnvironmentLifecycle } from '../environment/lifecycle';
 import type { DepthOfFieldParams } from '../features/depth-of-field/depth-of-field-params';
 import type { GpuBuffer } from '../gpu-resource';
 import type { MotionBlurExecutionReceipt } from '../inspection-types';
+import type { InstanceBufferCacheKey } from '../instance-buffer-cache';
 import type { InstanceProjectionStore } from '../instances';
 import type { IblBindingInspection } from '../mesh-material-bindings';
 import type { StandardLightingInspection } from '../pipeline/standard-lighting/inspection';
@@ -38,10 +32,16 @@ import type { AutoExposureGpuResources } from '../pipeline/standard-output/auto-
 import type { AutoExposureState } from '../pipeline/standard-output/auto-exposure/state';
 import type { StandardLutGpuResources } from '../pipeline/standard-output/lut-gpu';
 import type { StandardLutCandidate, StandardLutState } from '../pipeline/standard-output/lut-state';
+import type { StandardProfile } from '../pipeline/standard-profile';
 import type { PointShadowInspection } from '../point-shadow-inspection';
+import type { RenderResourceScope } from '../publication/resource-scope';
+import type { FramePresentationPendingReason } from '../render-contract';
+import type { RenderSceneSlot } from '../scene/render-scene-types';
 import type { SsrSpatialAdmission } from '../ssr/admission';
 import type { SsrHistoryOwner } from '../ssr/history';
 import type { TemporalGpuState } from '../temporal/gpu';
+import type { CpuLodSelection } from './cpu-lod';
+import type { MaterialBgAssemblyCache } from './material-bg-assembly-cache';
 
 /** CPU transaction metadata staged beside the renderer-owned GPU candidate. */
 export interface PendingAutoExposureState {
@@ -59,30 +59,6 @@ export interface PendingStandardLutState {
   readonly targetGeneration: number;
   readonly deviceEpoch: number;
 }
-
-/**
- * feat-20260708-composited-multi-world-rendering M1 / D-1 / D-9:
- * worldId-entityKey composite key helper. Formula: `worldId * 2^32 + entityKey`.
- *
- * worldId is the index into `worlds[]` (the `draw` call argument). entityKey
- * is the packed Entity u32 (encodeEntity(indexSlot, generation)) surfaced
- * through `RenderableSnapshot.entityKey`.
- *
- * Key properties:
- *   - worldId=0 identity: `worldEntityKey(0, k) === k` — single-world path
- *     cache behavior is bit-for-bit unchanged (AC-03 regression guarantee).
- *   - JS safe integer: worldId < 2^21 keeps the composite key below
- *     Number.MAX_SAFE_INTEGER (2^53).
- *   - SSOT: all cache-key compositing consumers import this single helper;
- *     no inline `worldId * 2^32 + k` duplication (D-9).
- *
- * @internal — exported for unit test + glyph/tilemap/record consumers;
- * not part of the public @forgeax/engine-runtime API surface.
- */
-export function worldEntityKey(worldId: number, entityKey: number): number {
-  return worldId * 4294967296 + entityKey; // 2^32 = 4294967296
-}
-
 /**
  * Cache identity for a renderer-owned instance collection.
  *
@@ -91,14 +67,14 @@ export function worldEntityKey(worldId: number, entityKey: number): number {
  * owner identity in that case; the entity cache key is only the compatibility
  * fallback for legacy snapshots that predate the collection field.
  */
-export function instanceCollectionCacheKey(
-  worldId: number,
-  instance: { readonly cacheKey: number; readonly collectionId?: number },
-): number {
-  // Keep collection entries in a disjoint numeric namespace from the shared
-  // legacy sprite/fold cache. Fold keys occupy -1..-(2^32), while ordinary
-  // world/entity keys are non-negative; this range starts below both.
-  return -(0x1_0000_0000 + worldEntityKey(worldId, instance.collectionId ?? instance.cacheKey));
+export function instanceCollectionCacheKey(instance: {
+  readonly cacheKey: number;
+  readonly collectionId?: number;
+  readonly cacheIdentity?: string;
+}): InstanceBufferCacheKey {
+  if (instance.cacheIdentity !== undefined) return `water:${instance.cacheIdentity}`;
+  if (instance.collectionId !== undefined) return `collection:${instance.collectionId}`;
+  return `legacy-instance:${instance.cacheKey}`;
 }
 
 /**
@@ -311,6 +287,8 @@ export type GraphTargetCaptureRequest =
       readonly bytesPerRow: number;
       readonly width: number;
       readonly height: number;
+      /** Array layer copied from a 2d-array target; defaults to layer zero. */
+      readonly layer?: number;
       /** Descriptor contract checked against the resolved target at copy time. */
       readonly expected: {
         readonly format: ResolvedColorTargetDescriptor['format'];
@@ -472,6 +450,7 @@ export interface FrameGraphTargets {
 
 /** A compiled graph together with the topology key and target lookup installed with it. */
 export interface InstalledFrameGraph {
+  readonly waterFluidBodyDescriptor?: import('../water/fluid-graph').WaterFluidBodyDescriptorReader;
   readonly scenePipelinePreparations?: readonly import('./scene-pipeline-preparation').ScenePipelinePreparation[];
   /** Pure demand from the same graph's retained shadow target/raster owner. */
   readonly requiresShadowPipelinePreparation?: (
@@ -514,6 +493,8 @@ export interface InstalledFrameGraph {
  * lifetime).
  */
 export interface RenderFrameState {
+  /** Opaque identity of this recorder's graph allocation domain. */
+  readonly graphResourceOwner: object;
   /** Graph-owned light-texture preparation queued by this view for its shared frame encoder. */
   pendingLightTextureResamples?: import('../prepare/extended-lighting/light-texture-resample').ScheduledLightTextureResample[];
   /** A required non-drawing pipeline request has not completed this record. */
@@ -563,6 +544,7 @@ export interface RenderFrameState {
   standardSceneSurfaceAdmission?:
     | import('../temporal/scene-data').StandardSceneSurfaceAdmission
     | undefined;
+  standardSceneSurfaceAdmissionOwner?: import('../temporal/standard-scene-data-admission').ProducedStandardSceneDataAdmissionInput;
   /** One-shot internal candidate-preparation fault, scoped to the arming device generation. */
   gtaoCandidatePreparationFailureGeneration?: number | undefined;
   /** Default-off scalar Cluster write receipt for AO conformance measurements. */
@@ -579,6 +561,7 @@ export interface RenderFrameState {
   ssrSpatialAdmission?: SsrSpatialAdmission | undefined;
   /** Persistent SSR history owner; its `candidate` is promoted only after submit. */
   ssrHistoryOwner?: SsrHistoryOwner | undefined;
+  waterSsrHistoryOwner?: SsrHistoryOwner | undefined;
   /** Reused CPU parameter payload for the SSR temporal resolve. */
   ssrTemporalParamsPayload?: Uint8Array | undefined;
   /** Last camera identity used by the SSR history reset seam. */
@@ -697,6 +680,8 @@ export interface RenderFrameState {
   cloudHistoryActive?: boolean;
   /** Candidate CloudLayer history ownership, promoted only after submit. */
   pendingCloudHistoryActive?: boolean;
+  cloudHistoryFormat?: import('../cloud/reconstruction/history').CloudTransportFormat;
+  pendingCloudHistoryFormat?: import('../cloud/reconstruction/history').CloudTransportFormat;
   /** The display camera's submit-gated TemporalView history. */
   readonly temporalView: TemporalViewHistory;
   /** Staged environment generation is promoted only after queue.submit succeeds. */
@@ -713,7 +698,7 @@ export interface RenderFrameState {
   environmentFrame?: import('../environment/frame').SelectedEnvironmentFrame | undefined;
   pendingAtmospherePublish?: (() => void) | undefined;
   readonly environmentLifecycle: EnvironmentLifecycle;
-  readonly instanceBuffers: Map<number, InstanceBufferCacheEntry>;
+  readonly instanceBuffers: Map<InstanceBufferCacheKey, InstanceBufferCacheEntry>;
   /** Renderer-private World projection receiving record-stage residency facts. */
   readonly instanceCollections?: InstanceProjectionStore;
   /** Stable buffers for renderer-owned collections split by device cap. */
@@ -764,6 +749,10 @@ export interface RenderFrameState {
   warnedMultiSkybox: boolean;
   /** Once-warn latch for castShadow DirectionalLights beyond the CSM owner. */
   warnedIgnoredDirectionalShadow: boolean;
+  /** Once-warn latch for local lights the Standard Cluster dropped over its limit. */
+  warnedStandardLocalLightCap: boolean;
+  /** Once-warn latch for Cluster entries dropped under the per-cluster cap K. */
+  warnedStandardClusterEntryCap: boolean;
   /** feat-20260531-skybox-env-background M3 / w20: once-warn when camera
    * tonemap is 'none' but a SkyboxBackground entity exists. Skybox needs
    * the HDR render target allocated by the tonemap path; without it the
@@ -838,15 +827,9 @@ export interface RenderFrameState {
    * only the final handle maps to the variant->BindGroup leaf Map. Direct
    * readers (HDRP shadow-instances read end) assert the leaf shape locally.
    */
-  /**
-   * feat-20260708-composited-multi-world-rendering M1 / D-1a #2: outer Map
-   * keyed by `worldEntityKey(worldId, entityKey)`. Inner WeakMap unchanged.
-   */
+  /** Source entity handle to identity-keyed bindings, owned by this Renderer. */
   readonly materialBgPerEntity: Map<number, WeakMap<object, unknown>>;
-  /**
-   * feat-20260708-composited-multi-world-rendering M1 / D-1a #3: outer Map
-   * keyed by `worldEntityKey(worldId, entityKey)`. Inner WeakMap unchanged.
-   */
+  /** Source entity handle to identity-keyed bindings, owned by this Renderer. */
   readonly instancesBgPerEntity: Map<number, WeakMap<object, unknown>>;
   /** Identity-keyed instances BGs shared across entities using the same buffer. */
   readonly instancesBgShared: WeakMap<object, unknown>;
@@ -909,8 +892,7 @@ export interface RenderFrameState {
   };
   /**
    * feat-20260608-cluster-lighting M5 / w20 + M6 / w23 + M5 / w22:
-   * once-per-frame fire dedup set for Standard per-frame fail-soft errors
-   * (`standard-light-budget-exceeded`, `standard-cluster-index-overflow`). Cleared
+   * once-per-frame fire dedup set for Standard per-frame fail-soft errors. Cleared
    * at the end of each frame so the next frame re-fires if the condition
    * persists. Set<string> keyed by RenderErrorCode literal.
    */
@@ -981,8 +963,6 @@ export interface RenderFrameState {
  */
 export interface DispatchCounts {
   unlit: number;
-  /** feat-20260523 M4-T07: 'standard' counter removed; schema-driven
-   *  materials are tracked via materialShaderId in the pipeline cache. */
 }
 
 /**
@@ -1068,8 +1048,8 @@ export interface ValidatedRenderable {
  * @internal
  */
 export interface DirectionalShadowCache {
-  readonly worlds: readonly RenderResourceScope[];
-  readonly worldStateTokens: readonly DirectionalShadowWorldState[];
+  readonly sourceScope: RenderResourceScope;
+  readonly worldStateToken: DirectionalShadowWorldState | undefined;
   readonly shadowMaterials?:
     | readonly import('../scene/material-shadow-content').ShadowMaterialContent[]
     | undefined;

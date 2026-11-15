@@ -15,6 +15,23 @@ import {
 } from '@forgeax/engine-types';
 import type { MaterialPublication, MaterialReady } from '../../material/loader.js';
 
+const FIXTURE_ABI = {
+  directEntry: 'vs_main',
+  sceneIndexEntry: 'vs_scene_index',
+  materialRow: { addressUnitBytes: 16, byteLength: 16, fields: [] },
+  resourceSlots: [],
+  uvSets: [],
+  vertexInputs: [{ semantic: 'position', location: 0, format: 'float32x3' }],
+  alphaMask: { cutoff: 'alphaCutoff', source: 'baseColor.a' },
+  reflection: {
+    layoutIdentity: 'layout',
+    resourceSlots: [],
+    vertexInputs: [{ semantic: 'position', location: 0, format: 'float32x3' }],
+  },
+  receiptIdentity: 'layout',
+  generation: 1,
+} as const;
+
 export const MATERIAL_CONTEXT: MaterialCookRasterContext = {
   backend: 'webgpu',
   capability: 'storage-buffer',
@@ -25,6 +42,16 @@ export const MATERIAL_CONTEXT: MaterialCookRasterContext = {
   toolchain: 'naga-oil',
   instrumentation: 'none',
 };
+/** The direct and scene-index selections every raster program of a cooked record carries. */
+export function fixtureSelections(pass: string, context: MaterialCookRasterContext) {
+  return (['direct', 'scene-index'] as const).map((address) => ({
+    pass,
+    context,
+    address,
+    entry: address === 'direct' ? 'vs_main' : 'vs_scene_index',
+    abi: FIXTURE_ABI,
+  }));
+}
 /** Loader fixture: deterministic bytes, not a GPU shader compilation fixture. */
 export function materialRecordFixture(
   options: {
@@ -61,13 +88,18 @@ export function materialRecordFixture(
           },
           selections: passes
             .filter((pass) => pass.program.module === module)
-            .map((pass) => ({
-              pass: pass.name,
-              context: {
-                ...context,
-                pass: /shadow/i.test(pass.name) ? ('shadow' as const) : context.pass,
-              },
-            })),
+            .flatMap((pass) =>
+              (['direct', 'scene-index'] as const).map((address) => ({
+                pass: pass.name,
+                context: {
+                  ...context,
+                  pass: /shadow/i.test(pass.name) ? ('shadow' as const) : context.pass,
+                },
+                address,
+                entry: address === 'direct' ? 'vs_main' : 'vs_scene_index',
+                abi: FIXTURE_ABI,
+              })),
+            ),
         };
       }),
   );
@@ -75,7 +107,7 @@ export function materialRecordFixture(
   const sourceClosure = ['material.json', 'shader.wgsl'];
   const standard = passes.some((pass) => isStandardRootModule(pass.program.module));
   return {
-    schemaVersion: 'material-cook/4',
+    schemaVersion: 'material-cook/5',
     guid,
     materialGuid: guid,
     publicationGeneration: generation,
@@ -92,7 +124,7 @@ export function materialRecordFixture(
     refs: { parent: [], textures: [], samplers: [], modules: [] },
     programs,
     receipt: {
-      schemaVersion: 'material-cook/4',
+      schemaVersion: 'material-cook/5',
       sourceClosure,
       profile: 'webgpu/v1',
       compilerVersion: 'fixture/1',

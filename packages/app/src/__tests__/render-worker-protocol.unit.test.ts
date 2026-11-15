@@ -1,12 +1,16 @@
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import {
   type PreparedPublishedMeshResidency,
+  type PublishedRenderFrameInput,
   type RenderError,
   type RendererEvent,
   RendererOperationError,
+  type RenderFeatureCompletion,
+  type RenderFeatureSubmission,
   type RenderFrameInput,
 } from '@forgeax/engine-render';
 import { tapeArtifact } from '@forgeax/engine-rhi-debug';
+import { ok } from '@forgeax/engine-types';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { RenderWorkerInput } from '../execution/render-worker-protocol';
 
@@ -114,8 +118,11 @@ async function start(
     };
     readonly geometryLane?: RenderFrameInput['geometryLane'];
     readonly dynamicGeometryMeshBudgetBytes?: number;
+    readonly textureMipSkip?: number;
+    readonly backgroundPipelineLibraryConcurrency?: number;
     readonly renderTaskYield?: 'none' | 'completion' | 'features';
     readonly renderPipelineCapacity?: 2 | 3 | 4;
+    readonly renderBackend?: 'auto' | 'webgpu' | 'webgl2';
   } = {},
   ready = true,
 ) {
@@ -248,6 +255,218 @@ function timingFor(frameId: number) {
     },
   };
 }
+
+it('posts a clone-safe source receipt with the publication identity after accepted view work', async () => {
+  const submission: RenderFeatureSubmission = {
+    works: [{ scope: { view: 'camera:left' }, passes: [{ name: 'water-info-raster' }] }],
+  };
+  const readbackBytes = new Uint8Array(256);
+  const readback = {
+    domain: 'feature-texture' as const,
+    featureIdentity: 'water-info-producer',
+    viewIdentity: 'camera:left',
+    name: 'water-info-normal',
+    targetName: 'water-info-normal-target',
+    bytes: readbackBytes,
+    metadata: {
+      frameId: 312,
+      deviceGeneration: 7,
+      graphGeneration: 19,
+      format: 'rgba8unorm' as const,
+      textureIdentity: 1,
+      readbackIdentity: 2,
+      width: 1,
+      height: 1,
+      bytesPerRow: 256,
+      footprint: { resourceCount: 0, bindGroupCount: 0 },
+    },
+  };
+  const settleReadbackFlight = vi.fn();
+  mocks.draw.mockImplementation((input: PublishedRenderFrameInput) => {
+    input.onFeatureSourceSubmitted?.('water-info-producer', { frameGeneration: 12 }, submission);
+    const receipt = {
+      frameId: 312,
+      deviceGeneration: 7,
+      graphGeneration: 19,
+      completed: Promise.resolve({ ok: true as const, value: undefined }),
+    };
+    input.onFeatureSourceCompleted?.(
+      receipt,
+      Promise.resolve({ ok: true as const, value: [readback] }),
+      settleReadbackFlight,
+    );
+    return {
+      ok: true as const,
+      value: receipt,
+    };
+  });
+  const { post, receive, initMessage } = await start();
+
+  receive({ data: drawMessage(12) });
+  await vi.waitFor(() =>
+    expect(post.mock.calls.some(([message]) => message.kind === 'submitted')).toBe(true),
+  );
+  const message = post.mock.calls
+    .map(([posted]) => posted)
+    .find((posted) => posted.kind === 'submitted');
+  if (message === undefined || message.kind !== 'submitted')
+    throw new Error('accepted source receipt was not posted');
+  expect(message).toMatchObject({
+    identity: initMessage.identity,
+    revision: 12,
+    features: [
+      {
+        identity: 'water-info-producer',
+        feedback: { frameGeneration: 12 },
+        submission: {
+          works: [{ scope: { view: 'camera:left' }, passes: [{ name: 'water-info-raster' }] }],
+        },
+      },
+    ],
+  });
+  expect(structuredClone(message)).toEqual(message);
+  await vi.waitFor(() =>
+    expect(post.mock.calls.some(([posted]) => posted.kind === 'completed')).toBe(true),
+  );
+  const completed = post.mock.calls
+    .map(([posted]) => posted)
+    .find((posted) => posted.kind === 'completed');
+  expect(completed).toMatchObject({
+    identity: initMessage.identity,
+    revision: 12,
+    frame: { frameId: 12, deviceGeneration: 7 },
+    completion: { frameId: 312, deviceGeneration: 7, graphGeneration: 19 },
+    featureTextureReadbacks: [
+      {
+        domain: 'feature-texture',
+        featureIdentity: 'water-info-producer',
+        viewIdentity: 'camera:left',
+        name: 'water-info-normal',
+        targetName: 'water-info-normal-target',
+        metadata: { frameId: 312, deviceGeneration: 7, graphGeneration: 19, bytesPerRow: 256 },
+      },
+    ],
+  });
+  const completedCall = post.mock.calls.find(([posted]) => posted.kind === 'completed');
+  expect(completedCall?.[1]).toContain(readbackBytes.buffer);
+  expect(settleReadbackFlight).toHaveBeenCalledOnce();
+  expect(mocks.observe).not.toHaveBeenCalled();
+  receive({ data: { kind: 'dispose' } });
+  await vi.waitFor(() => expect(post).toHaveBeenCalledWith({ kind: 'disposed' }));
+});
+
+it('uses returned receipt credit and retirement while feature observations retain logical identity', async () => {
+  const credit = deferred<{ ok: true; value: undefined }>();
+  const retirement = deferred<{ ok: true; value: undefined }>();
+  const firstClose = vi.fn();
+  const secondClose = vi.fn();
+  const firstReadbackFlight = vi.fn();
+  const secondReadbackFlight = vi.fn();
+  let drawIndex = 0;
+  mocks.draw.mockImplementation((input: PublishedRenderFrameInput) => {
+    const index = drawIndex++;
+    const receipt = {
+      frameId: index + 1,
+      deviceGeneration: 7,
+      graphGeneration: 19,
+      completed: Promise.resolve({ ok: true as const, value: undefined }),
+    };
+    input.onFeatureSourceCompleted?.(
+      { frameId: receipt.frameId, deviceGeneration: 7, graphGeneration: 19 },
+      Promise.resolve({ ok: true as const, value: [] }),
+      index === 0 ? firstReadbackFlight : secondReadbackFlight,
+    );
+    return {
+      ok: true as const,
+      value:
+        index === 0
+          ? { ...receipt, creditCompleted: credit.promise, completed: retirement.promise }
+          : receipt,
+    };
+  });
+  const { post, receive } = await start({ renderPipelineCapacity: 2 });
+  try {
+    receive({ data: drawMessage(1, firstClose) });
+    receive({ data: drawMessage(2, secondClose) });
+    await vi.waitFor(() =>
+      expect(post.mock.calls.filter(([message]) => message.kind === 'submitted')).toHaveLength(2),
+    );
+    expect(post.mock.calls.some(([message]) => message.kind === 'completed')).toBe(false);
+    credit.resolve({ ok: true, value: undefined });
+    await vi.waitFor(() =>
+      expect(
+        post.mock.calls
+          .filter(([message]) => message.kind === 'completed')
+          .map(([message]) => message.revision),
+      ).toEqual([1, 2]),
+    );
+    expect(post.mock.calls.some(([message]) => message.kind === 'failed')).toBe(false);
+    expect(firstClose).not.toHaveBeenCalled();
+    expect(secondClose).not.toHaveBeenCalled();
+    expect(firstReadbackFlight).toHaveBeenCalledOnce();
+    expect(secondReadbackFlight).toHaveBeenCalledOnce();
+    receive({ data: { kind: 'dispose' } });
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(post.mock.calls.some(([message]) => message.kind === 'disposed')).toBe(false);
+  } finally {
+    credit.resolve({ ok: true, value: undefined });
+    retirement.resolve({ ok: true, value: undefined });
+    receive({ data: { kind: 'dispose' } });
+    await vi.waitFor(() => expect(post).toHaveBeenCalledWith({ kind: 'disposed' }));
+  }
+  expect(firstClose).toHaveBeenCalledOnce();
+  expect(secondClose).toHaveBeenCalledOnce();
+});
+
+it.each([
+  { frameId: 2, deviceGeneration: 7, graphGeneration: 19 },
+  { frameId: 1, deviceGeneration: 8, graphGeneration: 19 },
+  { frameId: 1, deviceGeneration: 7, graphGeneration: 20 },
+  { frameId: 1, deviceGeneration: 7 },
+] satisfies RenderFeatureCompletion[])('rejects mismatched feature receipt identity %j and drains cleanup', async (completion) => {
+  const close = vi.fn();
+  const settleReadbackFlight = vi.fn();
+  mocks.draw.mockImplementation((input: PublishedRenderFrameInput) => {
+    input.onFeatureSourceCompleted?.(
+      completion,
+      Promise.resolve({ ok: true as const, value: [] }),
+      settleReadbackFlight,
+    );
+    return {
+      ok: true as const,
+      value: {
+        frameId: 1,
+        deviceGeneration: 7,
+        graphGeneration: 19,
+        completed: Promise.resolve({ ok: true as const, value: undefined }),
+      },
+    };
+  });
+  const { post, receive } = await start();
+  try {
+    receive({ data: drawMessage(1, close) });
+    await vi.waitFor(() =>
+      expect(post).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: 'failed',
+          error: expect.objectContaining({
+            code: 'render-publication-invalid',
+            detail: {
+              reason: 'identity',
+              subject: 'feature texture observations differ from the returned draw receipt',
+            },
+          }),
+        }),
+      ),
+    );
+    expect(post.mock.calls.some(([message]) => message.kind === 'completed')).toBe(false);
+  } finally {
+    receive({ data: { kind: 'dispose' } });
+    await vi.waitFor(() => expect(post).toHaveBeenCalledWith({ kind: 'disposed' }));
+  }
+  expect(settleReadbackFlight).toHaveBeenCalledOnce();
+  expect(close).toHaveBeenCalledOnce();
+});
 
 it('binds a Worker RHI capture only to its recording draw receipt and that receipt timing', async () => {
   const { attachment, bytes } = workerCaptureRecorder();
@@ -1021,7 +1240,7 @@ it('starts a queued mesh control before later draw traffic without blocking cand
     value: {
       deviceGeneration: 7,
       isCurrent: () => true,
-      recordStageLane: () => ({ ok: true as const, value: undefined }),
+      recordStageLane: () => ok(undefined),
       consumeRecordStage: () => undefined,
       release: () => Promise.resolve(),
     },
@@ -1205,6 +1424,95 @@ it('freezes mesh consumption on each real draw and delivers it only after ordere
   }
 });
 
+it.each([
+  'draw',
+  'retirement',
+  'renderer-destroy',
+] as const)('identifies the held %s cleanup stage without bypassing its owner', async (stage) => {
+  const held = deferred<void>();
+  const retirement = deferred<{ ok: true; value: undefined }>();
+  const close = vi.fn();
+  const info = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  const stages = () =>
+    info.mock.calls
+      .filter(([row]) => typeof row === 'string' && row.includes('"kind":"render-worker-disposal"'))
+      .map(
+        ([row]) =>
+          JSON.parse(row as string) as {
+            stage: string;
+            preparing: boolean;
+            unretiredReceipts: number;
+          },
+      );
+  mocks.dispose.mockImplementation(async () => {
+    if (stage === 'renderer-destroy') await held.promise;
+    return { ok: true, value: undefined };
+  });
+  mocks.draw.mockReturnValue({
+    ok: true,
+    value: {
+      deviceGeneration: 7,
+      creditCompleted: Promise.resolve({ ok: true, value: undefined }),
+      completed: retirement.promise,
+    },
+  });
+  if (stage === 'draw')
+    mocks.scheduled.mockImplementation(async (_input, schedule) => {
+      await held.promise;
+      expect(schedule.signal.aborted).toBe(true);
+      return { ok: false, error: rendererLossError() };
+    });
+  const { post, receive } = await start({
+    renderTaskYield: stage === 'draw' ? 'features' : 'none',
+  });
+  try {
+    if (stage !== 'renderer-destroy') {
+      receive({ data: drawMessage(1, close) });
+      if (stage === 'draw') await vi.waitFor(() => expect(mocks.scheduled).toHaveBeenCalledOnce());
+      else
+        await vi.waitFor(() =>
+          expect(post).toHaveBeenCalledWith(
+            expect.objectContaining({ kind: 'completed' }),
+            expect.any(Array),
+          ),
+        );
+    }
+    receive({ data: { kind: 'dispose' } });
+    await vi.waitFor(() => expect(stages().at(-1)?.stage).toBe(stage));
+    expect(post.mock.calls.some(([message]) => message.kind === 'disposed')).toBe(false);
+    if (stage === 'draw') {
+      expect(stages().at(-1)?.preparing).toBe(true);
+      expect(mocks.draw).not.toHaveBeenCalled();
+    }
+    if (stage === 'retirement') {
+      expect(stages().at(-1)?.unretiredReceipts).toBe(1);
+      expect(close).not.toHaveBeenCalled();
+    }
+    if (stage !== 'renderer-destroy') expect(mocks.dispose).not.toHaveBeenCalled();
+    held.resolve(undefined);
+    retirement.resolve({ ok: true, value: undefined });
+    await vi.waitFor(() => expect(post).toHaveBeenCalledWith({ kind: 'disposed' }));
+    expect(stages().map((facts) => facts.stage)).toEqual([
+      'initialization',
+      'draw',
+      'retirement',
+      'mesh-release',
+      'renderer-destroy',
+      'recorder-destroy',
+      'ack',
+    ]);
+    expect(mocks.dispose).toHaveBeenCalledOnce();
+    if (stage !== 'renderer-destroy') expect(close).toHaveBeenCalledOnce();
+  } finally {
+    held.resolve(undefined);
+    retirement.resolve({ ok: true, value: undefined });
+    receive({ data: { kind: 'dispose' } });
+    await vi.waitFor(() => expect(post).toHaveBeenCalledWith({ kind: 'disposed' }));
+    mocks.dispose.mockReset();
+    info.mockRestore();
+  }
+});
+
 it('still disposes the Renderer when a mesh release fence rejects', async () => {
   mocks.prepareMesh.mockResolvedValue({
     ok: true,
@@ -1362,6 +1670,24 @@ it.each([
   }
 });
 
+it('applies the serializable renderer backend preference in the Render Worker', async () => {
+  await start({ renderBackend: 'webgl2' });
+  expect(mocks.construct.mock.calls[0]?.[1]).toMatchObject({ renderBackend: 'webgl2' });
+});
+
+it('constructs the Renderer with the backend preference and texture mip skip together', async () => {
+  await start({
+    renderBackend: 'webgl2',
+    textureMipSkip: 1,
+    backgroundPipelineLibraryConcurrency: 4,
+  });
+  expect(mocks.construct.mock.calls[0]?.[1]).toMatchObject({
+    renderBackend: 'webgl2',
+    textureMipSkip: 1,
+    backgroundPipelineLibraryConcurrency: 4,
+  });
+});
+
 it('constructs timing in the Render Worker and returns the receipt-bound observation', async () => {
   const timing = {
     status: 'complete',
@@ -1393,10 +1719,12 @@ it('constructs timing in the Render Worker and returns the receipt-bound observa
   const { post, receive } = await start({
     gpuPassTiming: { retentionFrames: 4 },
     dynamicGeometryMeshBudgetBytes,
+    textureMipSkip: 1,
   });
   expect(mocks.construct.mock.calls[0]?.[1]).toMatchObject({
     gpuPassTiming: { retentionFrames: 4 },
     dynamicGeometryMeshBudgetBytes,
+    textureMipSkip: 1,
   });
   receive({
     data: {
@@ -2012,8 +2340,55 @@ it('returns the full actual Renderer snapshot with no draw, capture or field pro
   expect(result.result.value.extraOwnerFacts.value).toBe(19);
   expect(mocks.draw).not.toHaveBeenCalled();
 });
+it.each([
+  false,
+  true,
+  null,
+  'unavailable',
+] as const)('forwards selected actual device facts %s through the existing Renderer read', async (fallback) => {
+  const { post, receive } = await start();
+  const deviceInfo = {
+    deviceGeneration: 3,
+    adapterInfo:
+      fallback === 'unavailable'
+        ? null
+        : {
+            vendor: 'actual',
+            architecture: '',
+            device: '',
+            description: '',
+            isFallbackAdapter: fallback,
+          },
+  };
+  const frame = { frameId: 8, deviceGeneration: 3 };
+  mocks.inspect.mockReturnValue({ deviceInfo, frame, unrelated: () => {} });
+  receive({
+    data: {
+      kind: 'inspect',
+      requestId: 42,
+      identity: { source: 'test', epoch: 1 },
+      worldIdentity: 'test-world',
+      fields: ['deviceInfo', 'frame'],
+    },
+  });
+  const result = post.mock.calls.map(([row]) => row).find((row) => row.kind === 'inspect-result');
+  expect(result).toEqual({
+    kind: 'inspect-result',
+    requestId: 42,
+    identity: { source: 'test', epoch: 1 },
+    worldIdentity: 'test-world',
+    result: { ok: true, value: { deviceInfo, frame } },
+  });
+  expect(result.result.value.deviceInfo).not.toBe(deviceInfo);
+  if (deviceInfo.adapterInfo) deviceInfo.adapterInfo.vendor = 'later';
+  expect(result.result.value.deviceInfo.adapterInfo?.vendor ?? null).toBe(
+    fallback === 'unavailable' ? null : 'actual',
+  );
+  expect(mocks.draw).not.toHaveBeenCalled();
+});
 it('rejects a wrong World/source/epoch rather than labeling a current inspection as old', async () => {
   const { post, receive } = await start();
+  const previousReads = mocks.inspect.mock.calls.length;
   for (const [requestId, identity, worldIdentity] of [
     [10, { source: 'old', epoch: 1 }, 'test-world'],
     [11, { source: 'test', epoch: 2 }, 'test-world'],
@@ -2025,6 +2400,7 @@ it('rejects a wrong World/source/epoch rather than labeling a current inspection
     .filter((row) => row.kind === 'inspect-result');
   expect(results).toHaveLength(3);
   expect(results.every((row) => row.result.ok === false)).toBe(true);
+  expect(mocks.inspect).toHaveBeenCalledTimes(previousReads);
   expect(mocks.draw).not.toHaveBeenCalled();
 });
 it('returns inspection and clone failures without stopping normal draw admission', async () => {

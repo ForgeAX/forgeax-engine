@@ -1,4 +1,5 @@
 import {
+  AdvanceAnimationPlayer,
   AnimationPlayer,
   AnimationRootMotion,
   AnimationSet,
@@ -8,15 +9,10 @@ import {
   drainAnimationEvents,
 } from '@forgeax/engine/animation';
 import { AssetRegistry } from '@forgeax/engine/assets-runtime';
-import {
-  AUDIO_ENGINE_RESOURCE_KEY,
-  type AudioBackend,
-  AudioSource,
-  audioPlugin,
-} from '@forgeax/engine/audio';
+import { AUDIO_ENGINE_RESOURCE_KEY, AudioSource, audioPlugin } from '@forgeax/engine/audio';
 import { webAudioPlugin } from '@forgeax/engine/audio-webaudio';
 import { defineSystem, Time, Update } from '@forgeax/engine/ecs';
-import { ChildOf, Transform } from '@forgeax/engine/scene';
+import { ChildOf, PropagateTransforms, Transform } from '@forgeax/engine/scene';
 import type { AnimationClip } from '@forgeax/engine/types';
 import { CheckList, defineFeature } from '../../lab/feature';
 import { spawnStage } from '../../lab/stage';
@@ -127,7 +123,7 @@ export default defineFeature({
         data: { clip: audio, playing: false, loop: true, volume: 0 },
       })
       .unwrap();
-    const backend = world.getResource<AudioBackend>(AUDIO_ENGINE_RESOURCE_KEY);
+    const backend = world.getResource(AUDIO_ENGINE_RESOURCE_KEY);
     let enabled = true,
       remaining = 0.5,
       cpuMs = 0;
@@ -164,7 +160,7 @@ export default defineFeature({
         defineSystem({
           name: 'timelineDemoControl',
           queries: [],
-          before: ['advanceAnimationPlayer'],
+          before: [AdvanceAnimationPlayer],
           fn() {
             const dt = world.getResource(Time).delta;
             const step = Math.min(dt, remaining);
@@ -175,8 +171,8 @@ export default defineFeature({
         defineSystem({
           name: 'timelineDemoConsume',
           queries: [],
-          after: ['advanceAnimationPlayer'],
-          before: ['propagateTransforms'],
+          after: [AdvanceAnimationPlayer],
+          before: [PropagateTransforms],
           fn() {
             const start = performance.now();
             const motion = world.get(rig[0], AnimationRootMotion).unwrap();

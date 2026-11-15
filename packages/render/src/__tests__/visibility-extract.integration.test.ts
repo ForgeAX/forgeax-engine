@@ -9,7 +9,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { Fog } from '../components/fog';
 import { Visibility, VisibilityStateValue } from '../components/visibility';
 import { prepareExtractContext } from '../render-system-extract';
-import { extractFrame, extractFrames } from '../render-system-extract-tail';
+import { extractFrame, extractSource } from '../render-system-extract-tail';
 
 function transform(pos: [number, number, number]) {
   return {
@@ -39,7 +39,7 @@ function makeWorld() {
 }
 
 describe('visibility extract orchestration', () => {
-  it('selects Fog once at the resource-owner frame boundary', () => {
+  it('selects Fog once from the source and never queries an unrelated World', () => {
     const cameraWorld = new World();
     const resourceWorld = new World();
     resourceWorld
@@ -51,7 +51,7 @@ describe('visibility extract orchestration', () => {
 
     const cameraQuery = vi.spyOn(cameraWorld, 'query');
     const resourceQuery = vi.spyOn(resourceWorld, 'query');
-    extractFrames([cameraWorld, resourceWorld], { cameraOwner: 0, resourceOwner: 1 });
+    extractSource(resourceWorld);
 
     const readsFog = (calls: readonly unknown[][]) =>
       calls.filter(([spec]) => {
@@ -69,8 +69,8 @@ describe('visibility extract orchestration', () => {
     world.set(parent, Visibility, { state: VisibilityStateValue.visible }).unwrap();
     world.update(0).unwrap();
 
-    const frame = extractFrames([world], 0);
-    const snapshot = frame.visibilitySnapshots[0];
+    const frame = extractSource(world);
+    const snapshot = frame.visibilitySnapshot;
     expect(snapshot?.get(parent)?.effective).toBe('visible');
     expect(snapshot?.get(child)?.effective).toBe('visible');
     expect(world.get(child, GlobalTransform).unwrap().world[12]).toBeCloseTo(3);
@@ -91,7 +91,7 @@ describe('visibility extract orchestration', () => {
     };
 
     world.set(parent, Transform, { pos: [9, 0, 0] }).unwrap();
-    extractFrames([world], 0);
+    extractSource(world);
 
     expect([...world.get(child, GlobalTransform).unwrap().world]).toEqual(before);
     const afterInspection = world.inspect();
@@ -107,9 +107,9 @@ describe('visibility extract orchestration', () => {
     expect(world.get(child, GlobalTransform).unwrap().world[12]).toBeCloseTo(11);
   });
 
-  it('keeps direct prepared-kernel output aligned with extractFrames output', () => {
+  it('keeps direct prepared-kernel output aligned with extractSource output', () => {
     const { world, child } = makeWorld();
-    const merged = extractFrames([world], 0);
+    const merged = extractSource(world);
     const prepared = prepareExtractContext(world);
     const direct = extractFrame(world, prepared);
 
@@ -120,11 +120,11 @@ describe('visibility extract orchestration', () => {
 
   it('does not reuse a prior visibility result across repeated extracts', () => {
     const { world, parent } = makeWorld();
-    const first = extractFrames([world], 0);
-    expect(first.visibilitySnapshots[0]?.get(parent)?.effective).toBe('hidden');
+    const first = extractSource(world);
+    expect(first.visibilitySnapshot?.get(parent)?.effective).toBe('hidden');
 
     world.set(parent, Visibility, { state: VisibilityStateValue.visible }).unwrap();
-    const second = extractFrames([world], 0);
-    expect(second.visibilitySnapshots[0]?.get(parent)?.effective).toBe('visible');
+    const second = extractSource(world);
+    expect(second.visibilitySnapshot?.get(parent)?.effective).toBe('visible');
   });
 });

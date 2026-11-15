@@ -83,7 +83,7 @@ export interface AppDetailCanvasDetached {
  * `cause instanceof EcsError` / `cause instanceof RhiError` narrow without
  * losing structure. `systemName` is populated when the call site can name
  * the offending system (input-attach cleanup path forwards
- * `FRAME_START_SCAN_SYSTEM_NAME`).
+ * `InputFrameStartScan.name`).
  */
 export interface AppDetailSystemUpdateFailed {
   readonly cause: unknown;

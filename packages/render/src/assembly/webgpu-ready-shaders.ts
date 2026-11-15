@@ -325,9 +325,14 @@ function isBootBaselineVariant(defines: VariantDefines): boolean {
     defines.ALPHA_MASK !== true &&
     defines.DIRECTIONAL_SHADOW_SIMPLE !== true &&
     defines.LEAN_LIGHTING !== true &&
+    defines.STANDARD_LEAN_INPUTS !== true &&
     // Scene-index variants bind only GPU Scene tables in slot 3.
     defines.GPU_DRIVEN_SCENE_INDEX_AVAILABLE !== true &&
+    // Direct GPU Scene variants bind the scene row tables in slot 3.
+    defines.GPU_SCENE_DIRECT !== true &&
     defines.PROBE_BLEND_AVAILABLE !== true &&
+    axisAbsentOr(defines, 'WATER_WAVES_AVAILABLE', false) &&
+    axisAbsentOr(defines, 'WATER_INFO_RGBA16', false) &&
     axisAbsentOr(defines, 'CLUSTER_FORWARD_AVAILABLE', false) &&
     axisAbsentOr(defines, 'VERTEX_COLOR_AVAILABLE', false) &&
     axisAbsentOr(defines, 'REFLECTION_FALLBACK_AVAILABLE', false) &&
@@ -745,6 +750,7 @@ export async function compileUnlitModules(
       COVERAGE_ONLY: false,
       SKINNING_DISABLED: true,
       GPU_DRIVEN_SCENE_INDEX_AVAILABLE: sceneIndex,
+      GPU_SCENE_DIRECT: false,
     });
   const colored = variantOf(true, false);
   if (colored !== undefined && colored.composedWgsl !== unlitEntry.wgsl) {

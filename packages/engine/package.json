@@ -105,6 +105,7 @@
     "@forgeax/engine-vite-plugin-pack": "workspace:*",
     "@forgeax/engine-vite-plugin-rhi-debug": "workspace:*",
     "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@forgeax/engine-water": "workspace:*",
     "@forgeax/engine-wgpu-wasm": "workspace:*"
   },
   "forgeax": {

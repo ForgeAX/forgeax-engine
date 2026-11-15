@@ -23,12 +23,12 @@
 // (guardian-hit.test.ts, m4-1); the system fn wires them to the live
 // CollidingEntities + GameProgress + the elapsed clock.
 
-import type { EntityHandle, SystemHandle, World } from '@forgeax/engine-ecs';
+import type { EntityHandle, System, World } from '@forgeax/engine-ecs';
 import { defineSystem } from '@forgeax/engine-ecs';
 import { CollidingEntities } from '@forgeax/engine-physics';
-
 import { GuardianAttack } from '../components';
 import { GAME_PROGRESS_KEY, type GameProgress } from '../resources';
+import { GuardianAiOrder, GuardianHitOrder } from '../system-order';
 
 /** Per-attacker invulnerability window (seconds) after a Guardian lands a hit. */
 export const GUARDIAN_INVUL_SECONDS = 1.0;
@@ -102,12 +102,13 @@ export function admitHits(
  * (before OnEnter inserts it) and a missing CollidingEntities component (before
  * the first physics tick writes it) both no-op rather than throw.
  */
-export function createGuardianHitSystem(player: EntityHandle): SystemHandle<readonly []> {
+export function createGuardianHitSystem(player: EntityHandle): System<readonly []> {
   // attack-sensor entity -> GameProgress.elapsed at last admitted hit.
   const invul = new Map<number, number>();
   return defineSystem({
+    sets: [GuardianHitOrder],
     name: 'guardian-hit',
-    after: ['guardian-ai'],
+    after: [GuardianAiOrder],
     queries: [],
     fn: (world: World) => {
       if (!world.hasResource(GAME_PROGRESS_KEY)) return;
@@ -120,7 +121,7 @@ export function createGuardianHitSystem(player: EntityHandle): SystemHandle<read
       });
       if (armedHits.length === 0) return;
 
-      const progress = world.getResource<GameProgress>(GAME_PROGRESS_KEY);
+      const progress = world.getResource(GAME_PROGRESS_KEY);
       const admitted = admitHits(armedHits, invul, progress.elapsed);
       if (admitted.length > 0) applyDamage(progress, admitted.length);
     },

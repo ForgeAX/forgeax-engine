@@ -13,6 +13,8 @@
     "channel": "{{channel}} channel",
     "mip": "Mip",
     "slice": "Slice",
+    "atlas": "Unwrapped slices",
+    "volume": "3D volume",
     "projection": "View",
     "environment": "Environment",
     "flat": "2D panorama",
@@ -43,7 +45,18 @@
       "colorSpace": "Color space",
       "mipPolicy": "Mip policy",
       "packedMips": "Packed mip levels",
-      "dataBytes": "Pixel data (bytes)"
+      "dataBytes": "Pixel data (bytes)",
+      "outputs": "Outputs",
+      "passes": "Raster passes"
+    },
+    "output": "Output",
+    "gpuGenerated": "GPU generated · no CPU pixels",
+    "status": {
+      "preparing": "Preparing programs",
+      "queued": "Queued",
+      "generating": "Generating",
+      "ready": "Ready",
+      "failed": "Generation failed"
     }
   }
 }

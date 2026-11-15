@@ -5,7 +5,7 @@ import {
 } from '@forgeax/engine/app';
 import { createApp } from '@forgeax/engine/app/browser';
 import { AssetRegistry } from '@forgeax/engine/assets-runtime';
-import { Update } from '@forgeax/engine/ecs';
+import { defineSystem, Update } from '@forgeax/engine/ecs';
 import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { CheckList, defineFeature, type FeatureCheck } from '../../lab/feature';
 import { spawnMesh, spawnStage, standard } from '../../lab/stage';
@@ -110,13 +110,14 @@ async function faultOnPrivateApp(c: CheckList): Promise<void> {
   c.ok('private start() ok', app.start().ok);
   const seen: string[] = [];
   const off = app.onError((error) => seen.push(error.code));
-  world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'fl-report-boom',
     queries: [],
     fn: () => {
       throw new Error('fl deliberate failure');
     },
   });
+  world.addSystem(Update, systemToken1);
   await until(() => seen.includes('app-system-update-failed'));
   off();
   c.ok(

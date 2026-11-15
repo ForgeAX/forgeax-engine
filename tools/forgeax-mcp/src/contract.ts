@@ -1,5 +1,5 @@
 import { operationMcpName } from '@forgeax/engine-tool-runtime';
-export const APP_VERSION = '0.4.8';
+export const APP_VERSION = '0.4.13';
 export const HTTP_BATCH_SIZE = 16;
 export const MCP_SERVERS = { tools: 'forgeax-tools', view: 'forgeax-view' } as const;
 export const VIEW_TITLE = 'ForgeAX View';

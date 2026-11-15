@@ -23,7 +23,7 @@ export function materialTextureReferences(state: WorkspaceState | null, inspecti
   for (const guid of new Set(outputs[0]!.refs.map(guid => guid.toLowerCase()))) {
     const asset = catalog.get(guid);
     if (!asset) unresolved.push(guid);
-    else if (asset.kind === 'texture' || asset.kind === 'equirect') textures.push(asset);
+    else if (asset.kind === 'texture' || asset.kind === 'gpu-texture' || asset.kind === 'equirect') textures.push(asset);
   }
   return { status: 'ready', textures, unresolved };
 }

@@ -40,8 +40,7 @@
   ],
   "scripts": {
     "build": "tsup",
-    "test": "vitest run",
-    "bench": "node bench/animation.mjs"
+    "test": "vitest run"
   },
   "dependencies": {
     "@forgeax/engine-assets-runtime": "workspace:*",
@@ -69,7 +68,7 @@
       },
       "bench": {
         "enabled": false,
-        "reason": "CPU scaling evidence uses bench/animation.mjs; no registered throughput metric"
+        "reason": "no registered throughput metric"
       },
       "gate": {
         "enabled": false,

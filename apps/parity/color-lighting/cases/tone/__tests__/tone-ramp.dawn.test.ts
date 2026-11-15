@@ -141,11 +141,7 @@ async function captureMode(mode: (typeof TONE_REQUIRED_MODES)[number]): Promise<
   const world = new World({ assets });
   const worldAttachment1 = renderer.attach(world);
   if (!worldAttachment1.ok) throw worldAttachment1.error;
-  const frameRequest = {
-    leases: [worldAttachment1.value],
-    camera: { lease: worldAttachment1.value },
-    environment: { lease: worldAttachment1.value },
-  };
+  const frameRequest = { source: worldAttachment1.value };
   const meshHandle = world.assets.create(plane.value).unwrap();
   const cases = TONE_REQUIRED_CASES.filter((entry) => entry.tone.mode === mode);
   expect(cases).toHaveLength(TONE_REQUIRED_SAMPLE_COUNT);
@@ -181,7 +177,8 @@ async function captureMode(mode: (typeof TONE_REQUIRED_MODES)[number]): Promise<
   if (target === undefined) throw new Error('tone ramp target was not created');
   const bytes = await readPixels(device, target);
   for (const [index, sceneCase] of cases.entries()) {
-    const actual = pixelAt(bytes, Math.round(((xPositions[index] ?? 0) + 2) * WIDTH / 4), HEIGHT / 2);
+    const actual = pixelAt(bytes, Math.round((((xPositions[index] ?? 0) + 2) * WIDTH) / 4), HEIGHT / 2,
+    );
     const divergence = inspectToneFinalCapture(sceneCase, actual);
     expect(actual[3], `${sceneCase.caseId} alpha`).toBe(255);
     // Keep the one-byte budget while allowing the exact 1/255 endpoint to survive float round-trip.

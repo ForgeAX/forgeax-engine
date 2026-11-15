@@ -12,7 +12,7 @@ import { MaterialResource } from '../material-resource';
 import { worldRenderResources } from '../publication/resource-scope';
 import { shadowViewContains } from '../record/shadow-culling';
 import { defaultMaterialSnapshot, type RenderableSnapshot } from '../render-system-extract';
-import { extractFrames } from '../render-system-extract-tail';
+import { extractSource } from '../render-system-extract-tail';
 import {
   type PersistentRenderCandidateRequest,
   PersistentRenderScene,
@@ -36,7 +36,7 @@ function fixture() {
   const world = new World();
   testAssets(world);
   const arena = new GpuInputArena(),
-    scene = new RenderScene([worldRenderResources(world)]);
+    scene = new RenderScene(worldRenderResources(world));
   const attributes = {
     position: new Float32Array([0, 0, 0.3, 0.2, 0, 0.3, 0, 0.2, 0.3]),
     skinIndex: new Uint16Array(12),
@@ -56,7 +56,6 @@ function fixture() {
   const handle = testAssets(world).create(mesh).unwrap();
   const material = MaterialResource.from(defaultMaterialSnapshot());
   const source: RenderableSnapshot = {
-    worldId: 0,
     entityKey: 17,
     assetHandle: handle,
     transform: { world: matrix(100) },
@@ -71,19 +70,19 @@ function fixture() {
     jointCount: 1,
     inverseBindMatrices: matrix(),
   }));
-  skin.apply(scene.apply([{ kind: 'update', worldId: 0, entityKey: 17, snapshot: source }]));
-  skin.joint(0, 19, matrix());
+  skin.apply(scene.apply([{ kind: 'update', entityKey: 17, snapshot: source }]));
+  skin.joint(19, matrix());
   return { arena, scene, skin, frames: new SkinFrames(skin), source, mesh };
 }
 
 it('uses the fixed pose and shared Mesh for actual light culling without a per-Skin AABB', () => {
   const { arena, scene, skin, frames, source } = fixture();
   const frame = required(frames.prepareFrame(scene.slotsSnapshot())),
-    slot = required(frame.slots.lookup(0, 17));
+    slot = required(frame.slots.lookup(17));
   const out = box3.create(),
     matrixRead = vi.spyOn(SkinInputs.prototype, 'bind');
   const bounds = (row: RenderableSnapshot, destination: box3.Box3) => {
-    const selected = frame.slots.lookup(row.worldId, row.entityKey);
+    const selected = frame.slots.lookup(row.entityKey);
     return (
       selected !== undefined &&
       scene.writeCullingWorldBoundsAt(selected, destination, scene.meshFrame(), undefined, frame)
@@ -98,14 +97,14 @@ it('uses the fixed pose and shared Mesh for actual light culling without a per-S
     expect(out[0]).toBeLessThanOrEqual(0);
     expect(out[3]).toBeGreaterThanOrEqual(0.2);
     expect(out[3]).toBeLessThan(1); // Renderable world x=100 is not applied twice.
-    skin.joint(0, 19, matrix(8));
+    skin.joint(19, matrix(8));
     for (let view = 0; view < 4; view++)
       expect(shadowViewContains(source, planes, bounds)).toBe(true);
     expect(matrixRead).not.toHaveBeenCalled();
     frames.discardFrame();
     const next = required(frames.prepareFrame(scene.slotsSnapshot()));
     const nextBounds = (row: RenderableSnapshot, destination: box3.Box3) => {
-      const selected = next.slots.lookup(row.worldId, row.entityKey);
+      const selected = next.slots.lookup(row.entityKey);
       return (
         selected !== undefined &&
         scene.writeCullingWorldBoundsAt(selected, destination, scene.meshFrame(), undefined, next)
@@ -122,7 +121,7 @@ it('uses the fixed pose and shared Mesh for actual light culling without a per-S
 it('never substitutes bind pose for missing current input, a foreign Scene slot, or unknown geometry', () => {
   const { arena, scene, skin, frames, source, mesh } = fixture();
   const frame = required(frames.prepareFrame(scene.slotsSnapshot())),
-    slot = required(frame.slots.lookup(0, 17)),
+    slot = required(frame.slots.lookup(17)),
     out = box3.create();
   try {
     out.fill(123);
@@ -130,17 +129,17 @@ it('never substitutes bind pose for missing current input, a foreign Scene slot,
     expect(Array.from(out)).toEqual([123, 123, 123, 123, 123, 123]);
     skin.apply(
       scene.apply([
-        { kind: 'remove', worldId: 0, entityKey: 17 },
-        { kind: 'update', worldId: 0, entityKey: 17, snapshot: source },
+        { kind: 'remove', entityKey: 17 },
+        { kind: 'update', entityKey: 17, snapshot: source },
       ]),
     );
-    const replacement = required(scene.slot(0, 17));
+    const replacement = required(scene.slot(17));
     expect(replacement.generation).not.toBe(slot.generation);
     expect(
       scene.writeCullingWorldBoundsAt(replacement, out, scene.meshFrame(), undefined, frame),
     ).toBe(false);
     expect(Array.from(out)).toEqual([123, 123, 123, 123, 123, 123]);
-    const unsupported = scene.meshFrame().with(0, source.assetHandle as number, {
+    const unsupported = scene.meshFrame().with(source.assetHandle as number, {
       ...mesh,
       morphTargets: [],
       attributes: { ...mesh.attributes, skinWeight: new Float32Array(12) },
@@ -168,14 +167,13 @@ it('never grants a custom vertex program the stock Skin position enclosure from 
     scene.apply([
       {
         kind: 'update',
-        worldId: 0,
         entityKey: 17,
         snapshot: { ...source, material: custom, materials: [custom] },
       },
     ]),
   );
   const fixed = required(frames.prepareFrame(scene.slotsSnapshot())),
-    slot = required(fixed.slots.lookup(0, 17)),
+    slot = required(fixed.slots.lookup(17)),
     out = box3.create();
   try {
     out.fill(123);
@@ -227,19 +225,18 @@ function persistentFixture() {
   const requests: PersistentRenderCandidateRequest[] = [];
   const build = (request: PersistentRenderCandidateRequest) => {
     requests.push(request);
-    const metadata = extractFrames([world], 0, assets, undefined, {
+    const metadata = extractSource(world, assets, undefined, {
       renderables: 'none',
       cull: 'none',
     });
     const selected =
-      request === 'none' ? false : request === 'full' || request.entitiesByWorld[0]?.has(entity);
+      request === 'none' ? false : request === 'full' || request.entities?.has(entity);
     return { ...metadata, renderables: selected ? [source] : [], dispatch: [] };
   };
-  const extract = () =>
-    scene.extractComposition([world], { cameraOwner: 0, resourceOwner: 0 }, assets, build, [lease]);
+  const extract = () => scene.extractComposition(world, assets, build, lease);
   const x = (frame: ReturnType<PersistentRenderScene['skinRecordingFrame']>) => {
     const fixed = required(frame),
-      slot = required(fixed.slots.lookup(0, entity)),
+      slot = required(fixed.slots.lookup(entity)),
       out = mat4.create();
     expect(fixed.current.matrix(slot.slot, 0, out, mat4.create())).toBe(true);
     return out[12];
@@ -255,7 +252,7 @@ it('admits local static Scene edits once and reads changed joints before actual 
       fixed = required(f.scene.skinRecordingFrame());
     expect(first.renderables.length).toBe(1);
     expect(f.x(fixed)).toBe(0);
-    const slot = f.scene.compositionSlot(0, f.entity);
+    const slot = f.scene.compositionSlot(f.entity);
     binds.mockClear();
     f.requests.length = 0;
     f.world.set(f.joint, Transform, { pos: [8, 0, 0] }).unwrap();
@@ -263,7 +260,7 @@ it('admits local static Scene edits once and reads changed joints before actual 
     const changed = f.extract(),
       next = required(f.scene.skinRecordingFrame());
     expect(f.x(next)).toBe(8);
-    expect(f.scene.compositionSlot(0, f.entity)).toBe(slot);
+    expect(f.scene.compositionSlot(f.entity)).toBe(slot);
     expect(binds).not.toHaveBeenCalled();
     expect(f.requests).toEqual(['none']); // No Skin consumer extraction for a changed joint.
     expect(changed.renderables.length).toBe(0);
@@ -324,7 +321,7 @@ it('keeps submitted roots through physical completion, advances only accepted Sc
     f.world.update(0).unwrap();
     f.extract();
     const c = required(f.scene.skinRecordingFrame()),
-      currentSlot = required(c.slots.lookup(0, f.entity)),
+      currentSlot = required(c.slots.lookup(f.entity)),
       previous = required(c.previous),
       out = mat4.create();
     expect(previous.matrix(currentSlot.slot, 0, out, mat4.create())).toBe(true);
@@ -354,7 +351,7 @@ it('retires a deleted referenced joint without republishing its Skin consumer', 
     f.world.update(0).unwrap();
     f.extract();
     const fixed = required(f.scene.skinRecordingFrame()),
-      slot = required(fixed.slots.lookup(0, f.entity));
+      slot = required(fixed.slots.lookup(f.entity));
     expect(fixed.current.available(slot.slot)).toBe(false);
     expect(f.requests).toEqual(['none']);
   } finally {
@@ -371,7 +368,7 @@ it('rebuilds the accepted Scene after partial Skin adoption fails instead of ret
   });
   try {
     expect(f.extract).toThrow(failure);
-    expect(f.scene.compositionSlot(0, f.entity)).toBeUndefined();
+    expect(f.scene.compositionSlot(f.entity)).toBeUndefined();
     expect(f.scene.skinRecordingFrame()).toBeUndefined();
     expect(f.extract().renderables.length).toBe(1);
     expect(f.x(f.scene.skinRecordingFrame())).toBe(0);
@@ -489,28 +486,34 @@ it.each([
             ? () => f.scene.dispose()
             : edge === 'recover'
               ? () => f.scene.resetGpuForRecover()
-              : () =>
-                  f.scene.extractComposition(
-                    [f.world],
-                    { cameraOwner: 0, resourceOwner: 0 },
-                    testAssets(f.world),
-                    (request) => {
-                      // Force the same cold roster boundary by omitting read leases.
-                      const metadata = extractFrames([f.world], 0, testAssets(f.world), undefined, {
-                        renderables: 'none',
-                        cull: 'none',
-                      });
-                      const slot = required(f.scene.compositionSlot(0, f.entity));
-                      return {
-                        ...metadata,
-                        renderables: request === 'none' ? [] : [slot.snapshot],
-                        dispatch: [],
-                      };
-                    },
-                  );
+              : () => {
+                  const freshLease = createRenderReadLease(f.world);
+                  try {
+                    return f.scene.extractComposition(
+                      f.world,
+                      testAssets(f.world),
+                      (request) => {
+                        // A fresh source lease forces full reconciliation.
+                        const metadata = extractSource(f.world, testAssets(f.world), undefined, {
+                          renderables: 'none',
+                          cull: 'none',
+                        });
+                        const slot = required(f.scene.compositionSlot(f.entity));
+                        return {
+                          ...metadata,
+                          renderables: request === 'none' ? [] : [slot.snapshot],
+                          dispatch: [],
+                        };
+                      },
+                      freshLease,
+                    );
+                  } finally {
+                    freshLease.dispose();
+                  }
+                };
     expect(action).toThrow();
     expect(injected).toBe(true);
-    expect(f.scene.compositionSlot(0, f.entity)).toBeUndefined();
+    expect(f.scene.compositionSlot(f.entity)).toBeUndefined();
     expect(f.scene.skinRecordingFrame()).toBeUndefined();
     if (edge === 'dispose') expect(arenaDispose).toHaveBeenCalled();
     else {

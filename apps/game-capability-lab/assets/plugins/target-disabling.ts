@@ -1,3 +1,4 @@
+import { defineResource } from '@forgeax/engine-ecs';
 import {
   Disabled,
   type Query,
@@ -8,7 +9,7 @@ import {
 import { ScoringTarget, scoringTargetEntities, type ScoringTargetQuery } from './scoring-target';
 
 export const TargetDisabling = defineComponent('GameDefaultTargetDisabling', {});
-export const GAME_DEFAULT_TARGET_DISABLING_WITNESS = '__forgeaxGameDefaultTargetDisablingWitness';
+export const GAME_DEFAULT_TARGET_DISABLING_WITNESS = defineResource<{ disableEvents: number }>("__forgeaxGameDefaultTargetDisablingWitness");
 
 export type TargetDisablingWitness = {
   readonly activeCount: number;
@@ -33,7 +34,7 @@ export function installTargetDisabling(world: World, targetQuery: ScoringTargetQ
   const disabledQuery = world.query({ with: [TargetDisabling, Disabled] }).unwrap();
   for (const entity of scoringTargetEntities(targetQuery)) world.addComponent(entity, { component: TargetDisabling, data: {} }).unwrap();
   world.insertResource(GAME_DEFAULT_TARGET_DISABLING_WITNESS, { disableEvents: 0 });
-  const state = world.getResource<{ disableEvents: number }>(GAME_DEFAULT_TARGET_DISABLING_WITNESS);
+  const state = world.getResource(GAME_DEFAULT_TARGET_DISABLING_WITNESS);
 
   const disable = (entity: EntityHandle): void => {
     if (!world.get(entity, ScoringTarget).ok || world.get(entity, Disabled).ok) return;

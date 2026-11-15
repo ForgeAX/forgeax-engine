@@ -3,32 +3,13 @@ import { writeFileSync } from 'node:fs';
 import { mat4 } from '@forgeax/engine-math';
 import { expect, it } from 'vitest';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
-import { nativeAtmosphereSource as source } from './atmosphere-shader.fixture';
+import {
+  nativeAtmosphereKernel,
+  nativeAtmosphereSource as source,
+} from './atmosphere-shader.fixture';
 
 it('bounds production sky and RGB AP against 512-step transport across altitude, sun and the AP boundary', async () => {
-  const common = source('common');
-  const structs = ['AtmosphereMedium', 'View']
-    .map((name) => new RegExp(`struct ${name} \\{[\\s\\S]*?\\};`).exec(common)?.[0])
-    .join('\n');
-  const outputTransform = ['acesInput', 'acesOutput', 'tonemapAcesFilmic']
-    .map((name) => {
-      const body = new RegExp(`fn ${name}\\([\\s\\S]*?\n}`).exec(source('tone-mapping'))?.[0];
-      if (body === undefined) throw new Error(`Missing production output function ${name}`);
-      return body;
-    })
-    .join('\n');
-  const kernel =
-    outputTransform +
-    '\n' +
-    structs +
-    '\n' +
-    'fn atmosphere_scene_visibility(m:AtmosphereMedium,p:vec3<f32>)->f32{return 1.0;}' +
-    source('atmosphere-table-access') +
-    source('atmosphere-optics') +
-    '\n' +
-    source('atmosphere-coordinates') +
-    '\n' +
-    source('atmosphere-sampling');
+  const kernel = nativeAtmosphereKernel();
   const adapter = await navigator.gpu.requestAdapter();
   if (!adapter) throw new Error('GPU unavailable');
   const device = await adapter.requestDevice();
@@ -52,9 +33,12 @@ it('bounds production sky and RGB AP against 512-step transport across altitude,
   const cases = [1, 1000, 65000].flatMap((height) =>
     [60, 10, 1, -4].map((elevation) => ({ height, elevation })),
   );
-  const samples = 1024;
+  const samples = 1792;
+  const uniformStride =
+    Math.ceil(VIEW_UNIFORM_BYTES / device.limits.minUniformBufferOffsetAlignment) *
+    device.limits.minUniformBufferOffsetAlignment;
   const uniform = device.createBuffer({
-    size: VIEW_UNIFORM_BYTES * cases.length,
+    size: uniformStride * cases.length,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
   owned.push(uniform);
@@ -68,11 +52,11 @@ it('bounds production sky and RGB AP against 512-step transport across altitude,
     usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
   });
   owned.push(readback);
-  const data = new Float32Array((VIEW_UNIFORM_BYTES / 4) * cases.length);
+  const data = new Float32Array((uniformStride / 4) * cases.length);
   cases.forEach(({ height, elevation }, index) => {
     const v = data.subarray(
-      index * (VIEW_UNIFORM_BYTES / 4),
-      (index + 1) * (VIEW_UNIFORM_BYTES / 4),
+      index * (uniformStride / 4),
+      index * (uniformStride / 4) + VIEW_UNIFORM_BYTES / 4,
     );
     const projection = mat4.perspectiveReverseZ(mat4.create(), Math.PI / 3, 1, 1, 120000);
     const view = mat4.lookAt(
@@ -118,9 +102,11 @@ it('bounds production sky and RGB AP against 512-step transport across altitude,
 @group(0) @binding(7) var<storage,read_write> output:array<vec4<f32>>;
 fn display(c:vec3<f32>)->vec3<f32>{let linear=tonemapAcesFilmic(c/5000.0);return select(1.055*pow(linear,vec3<f32>(1.0/2.4))-0.055,linear*12.92,linear<=vec3<f32>(0.0031308));}
 @compute @workgroup_size(64) fn evaluate(@builtin(global_invocation_id) id:vec3<u32>){
- let i=id.x;if i>=1024u{return;}
- let uv=vec2<f32>((f32(i%32u)+0.37)/32.0,(f32((i/32u)%8u)+0.41)/16.0);
- let distance=array<f32,4>(3.0,48.0,94.5,120.0)[i/256u];
+ let i=id.x;if i>=1792u{return;}
+ let farY=select(0.482+f32((i/32u)%8u)*0.0025,0.60,i>=1728u);
+ let y=select((f32((i/32u)%8u)+0.41)/16.0,farY,i>=1024u);
+ let uv=vec2<f32>((f32(i%32u)+0.37)/32.0,y);
+ let distance=array<f32,7>(3.0,48.0,94.5,120.0,92.0,94.0,300.0)[i/256u];
  let ray=atmosphere_view_ray(v,uv);let origin=atmosphere_observer(v.atmosphere,ray.origin);
  let sun=normalize(-v.lightDir);let point=ray.origin+ray.direction*distance*1000.0;
  let reference=atmosphere_aerial_integrate(v,origin,ray.direction,distance,trans,multi,filtering,512u);
@@ -159,7 +145,7 @@ fn display(c:vec3<f32>)->vec3<f32>{let linear=tonemapAcesFilmic(c/5000.0);return
         const entries: GPUBindGroupEntry[] = [
           {
             binding: 0,
-            resource: { buffer: uniform, offset: c * VIEW_UNIFORM_BYTES, size: VIEW_UNIFORM_BYTES },
+            resource: { buffer: uniform, offset: c * uniformStride, size: VIEW_UNIFORM_BYTES },
           },
         ];
         if (name !== 'transmittance')
@@ -201,7 +187,7 @@ fn display(c:vec3<f32>)->vec3<f32>{let linear=tonemapAcesFilmic(c/5000.0);return
               binding: 0,
               resource: {
                 buffer: uniform,
-                offset: c * VIEW_UNIFORM_BYTES,
+                offset: c * uniformStride,
                 size: VIEW_UNIFORM_BYTES,
               },
             },
@@ -218,7 +204,7 @@ fn display(c:vec3<f32>)->vec3<f32>{let linear=tonemapAcesFilmic(c/5000.0);return
           ],
         }),
       );
-      pass.dispatchWorkgroups(16);
+      pass.dispatchWorkgroups(samples / 64);
       pass.end();
     }
     encoder.copyBufferToBuffer(output, 0, readback, 0, output.size);
@@ -239,7 +225,8 @@ fn display(c:vec3<f32>)->vec3<f32>{let linear=tonemapAcesFilmic(c/5000.0);return
       return {
         ...c,
         ap: summary(valuesForCase.filter((_, i) => i % 4 !== 3)),
-        sky: summary(valuesForCase.filter((_, i) => i % 4 === 3)),
+        farAp: summary(valuesForCase.filter((_, i) => i >= 1024 * 4 && i % 4 !== 3)),
+        sky: summary(valuesForCase.filter((_, i) => i < 1024 * 4 && i % 4 === 3)),
       };
     });
     if (process.env.FORGEAX_ATMOSPHERE_QUALITY_REPORT)
@@ -249,7 +236,7 @@ fn display(c:vec3<f32>)->vec3<f32>{let linear=tonemapAcesFilmic(c/5000.0);return
       );
     readback.unmap();
     for (const c of report)
-      for (const roi of ['ap', 'sky'] as const) {
+      for (const roi of ['ap', 'farAp', 'sky'] as const) {
         expect(c[roi].p95, JSON.stringify(c)).toBeLessThanOrEqual(0.02);
         expect(c[roi].p99, JSON.stringify(c)).toBeLessThanOrEqual(0.05);
       }

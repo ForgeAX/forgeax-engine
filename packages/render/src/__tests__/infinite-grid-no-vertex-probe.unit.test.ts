@@ -1,3 +1,4 @@
+import { World } from '@forgeax/engine-ecs';
 import { ok } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { createRenderFeatureHost } from '../features/host';
@@ -75,8 +76,7 @@ describe('public no-vertex RenderFeature seam probe', () => {
   it('accepts the explicit public no-vertex producer contract', () => {
     const host = createRenderFeatureHost([noVertexFeature()]).unwrap();
     const result = runSingleViewFeatureFrame(host, {
-      worlds: [],
-      owner: 0,
+      world: new World(),
       frameNumber: 1,
       caps,
     });

@@ -1,6 +1,7 @@
 import type { AssetRegistry, MaterialRenderProjection } from '@forgeax/engine-assets-runtime';
 import type { AssetChange, AssetReader } from '@forgeax/engine-assets-runtime/internal';
 import type { World } from '@forgeax/engine-ecs';
+import { deriveVertexCount, deriveVertexLayoutProjection } from '@forgeax/engine-geometry';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import {
   type Asset,
@@ -9,14 +10,19 @@ import {
   type MeshAsset,
   ok,
   type Result,
+  type VertexAttributeMap,
 } from '@forgeax/engine-types';
+import { isWaterMeshLayoutReceiptValid } from '@forgeax/engine-water/internal';
 import { LIGHTING_CHANNELS_DEFAULT, validateChannelMask } from '../components/lighting-channels';
 import { validatePointLightDecay } from '../components/point-light';
 import {
   isOwnedRenderFeatureProgramData,
   ownRenderFeatureProgramData,
 } from '../features/prepared-gpu-work';
+import { isRenderFeatureSourceFailure } from '../features/source';
+import type { RenderFeatureSubmission } from '../features/types';
 import { MaterialResource } from '../material-resource';
+import { isMaterialSourceSnapshot } from '../material-source';
 import type { DispatchEntry, ExtractedFrame, RenderableSnapshot } from '../render-system-extract';
 import { dispatchEntry } from '../scene/dispatch-entry';
 import { FrameListBase } from '../scene/frame-list';
@@ -28,6 +34,7 @@ import { isCanvasTextureSource } from '../textures/canvas-texture';
 import { isExternalTextureSource } from '../textures/external-texture';
 import { isRenderTextureSourceToken, renderTextureSourceKey } from '../textures/source-token';
 import { validTilemapSource } from '../tilemap-geometry';
+import { ownWaterMeshAdmissionDraw } from '../water/mesh-source-admission';
 import {
   type PreparedAssetPatch,
   type PublishedAssetPatch,
@@ -42,7 +49,11 @@ import {
   type RenderPublicationMetadata,
   type RenderPublicationTemplate,
 } from './contract';
-import { publicationDependencies, publicationFrameDependencies } from './dependencies';
+import {
+  materialSnapshotDependencies,
+  publicationDependencies,
+  publicationFrameDependencies,
+} from './dependencies';
 import { copyPublishedMesh, ownReceivedPublishedMesh, samePublishedMesh } from './mesh';
 import { isPackedRowsMesh, packedRowsMeshError } from './packed-rows-mesh';
 import {
@@ -70,7 +81,11 @@ export interface PreparedRenderPublication {
    * Views observe the delta; none of them copies or re-applies the rows.
    */
   readonly scene: PublicationScene;
-  readonly onFeatureSourceSubmitted?: (identity: string, feedback: unknown) => void;
+  readonly onFeatureSourceSubmitted?: (
+    identity: string,
+    feedback: unknown,
+    submission?: RenderFeatureSubmission,
+  ) => void;
 }
 
 export interface PublicationScene {
@@ -93,6 +108,68 @@ function finiteFloats(values: Float32Array): boolean {
 
 type AcceptedAssetRow = RenderPublication['assets'][number];
 type TemplateSnapshot = RenderPublicationTemplate['snapshot'];
+type WaterMeshSource = NonNullable<TemplateSnapshot['waterMeshSource']>;
+type WaterMeshLayoutReceipt = WaterMeshSource['views'][number]['draws'][number]['layout'];
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isUnknownArray(value: unknown): value is readonly unknown[] {
+  return Array.isArray(value);
+}
+
+const vertexAttributeNames = new Set<string>([
+  'position',
+  'normal',
+  'uv',
+  'tangent',
+  'skinIndex',
+  'skinWeight',
+  'uv1',
+  'uv2',
+  'uv3',
+  'uv4',
+  'uv5',
+  'uv6',
+  'uv7',
+  'color',
+]);
+
+function isVertexAttributeMap(value: unknown): value is VertexAttributeMap {
+  if (!isRecord(value)) return false;
+  for (const [name, attribute] of Object.entries(value)) {
+    if (
+      !vertexAttributeNames.has(name) ||
+      (attribute !== undefined &&
+        !(attribute instanceof ArrayBuffer) &&
+        !(attribute instanceof Float32Array) &&
+        !(attribute instanceof Uint16Array))
+    )
+      return false;
+  }
+  return true;
+}
+
+function isWaterMeshLayoutReceipt(value: unknown): value is WaterMeshLayoutReceipt {
+  if (!isRecord(value) || !isRecord(value.offsets)) return false;
+  return (
+    typeof value.schemaVersion === 'number' &&
+    Number.isSafeInteger(value.schemaVersion) &&
+    typeof value.strideBytes === 'number' &&
+    Number.isSafeInteger(value.strideBytes) &&
+    typeof value.byteLength === 'number' &&
+    Number.isSafeInteger(value.byteLength) &&
+    typeof value.coverageByteLength === 'number' &&
+    Number.isSafeInteger(value.coverageByteLength) &&
+    Object.values(value.offsets).every(
+      (offset) => typeof offset === 'number' && Number.isSafeInteger(offset),
+    ) &&
+    typeof value.layoutHash === 'string' &&
+    typeof value.dataHash === 'string' &&
+    typeof value.coverageDataHash === 'string'
+  );
+}
 type FrameLights = RenderPublicationMetadata['lights'];
 type SkinReferenceCandidate = ReturnType<SkinJointReferences['prepare']>;
 type PatchedAssetRow = { readonly row: AcceptedAssetRow; commit(): void };
@@ -419,15 +496,43 @@ function validFixedAssetVersion(
     typeof row.value.kind === 'string'
   );
 }
-
+/** Program declarations own immutable JSON; numeric assets keep their exact view types. */
+function ownAdmittedAssetValue(value: Asset): Asset {
+  if (value.kind !== 'particle-effect' && value.kind !== 'material') return value;
+  const owned = ownRenderFeatureProgramData(value);
+  return isOwnedRenderFeatureProgramData(owned) ? owned : value;
+}
 function featureIdentitiesError(
   rows: RenderPublication['features'],
 ): RenderPublicationError | undefined {
   if (rows.length === 0) return undefined;
   const featureIdentities = new Set<string>();
   for (const row of rows) {
-    if (typeof row.identity !== 'string' || featureIdentities.has(row.identity))
+    if (
+      row === null ||
+      typeof row !== 'object' ||
+      typeof row.identity !== 'string' ||
+      featureIdentities.has(row.identity)
+    )
       return shapeError('feature identity');
+    if (
+      row.hiddenEntities !== undefined &&
+      (!Array.isArray(row.hiddenEntities) ||
+        row.hiddenEntities.some(
+          (report) =>
+            report === null ||
+            typeof report !== 'object' ||
+            !Number.isInteger(report.entity) ||
+            report.entity < 0 ||
+            report.entity > 0xffff_ffff,
+        ))
+    )
+      return shapeError('feature hidden entity');
+    if (
+      row.failure !== undefined &&
+      (row.data !== undefined || !isRenderFeatureSourceFailure(row.failure))
+    )
+      return shapeError('feature source failure');
     featureIdentities.add(row.identity);
   }
   return undefined;
@@ -477,7 +582,8 @@ function validSharedMaterialRow(row: RenderPublication['materials'][number]): bo
     ArrayBuffer.isView(row.value.baseColor) &&
     Number.isFinite(row.value.roughness) &&
     Number.isFinite(row.value.metallic) &&
-    validMaterialContext(row.value.materialContext)
+    validMaterialContext(row.value.materialContext) &&
+    (row.value.sourceAssets === undefined || isMaterialSourceSnapshot(row.value.sourceAssets))
   );
 }
 
@@ -503,7 +609,7 @@ function validGlyphSource(glyph: NonNullable<TemplateSnapshot['glyph']>): boolea
     typeof glyph === 'object' &&
     Number.isInteger(glyph.font) &&
     glyph.font > 0 &&
-    glyph.font <= 0xffff_ffff &&
+    glyph.font <= 4294967295 &&
     typeof glyph.text === 'string' &&
     Number.isFinite(glyph.size) &&
     glyph.size > 0 &&
@@ -513,11 +619,282 @@ function validGlyphSource(glyph: NonNullable<TemplateSnapshot['glyph']>): boolea
   );
 }
 
-/** Tilemap, GlyphText and sprite-region sources a template may draw. */
+function validWaterGpuMeshDraw(value: unknown): boolean {
+  if (
+    !isRecord(value) ||
+    typeof value.zoneKey !== 'string' ||
+    value.zoneKey.length === 0 ||
+    value.viewIndex !== 0 ||
+    value.viewCount !== 1 ||
+    typeof value.materialCount !== 'number' ||
+    !Number.isSafeInteger(value.materialCount) ||
+    value.materialCount < 1 ||
+    typeof value.materialBucket !== 'number' ||
+    !Number.isSafeInteger(value.materialBucket) ||
+    value.materialBucket < 0 ||
+    value.materialBucket >= value.materialCount ||
+    typeof value.tileCapacity !== 'number' ||
+    !Number.isSafeInteger(value.tileCapacity) ||
+    value.tileCapacity < 1 ||
+    !isUnknownArray(value.sourceBodies) ||
+    value.sourceBodies.length < 1 ||
+    value.sourceBodies.length > 127
+  )
+    return false;
+  const bodies = new Set<string>();
+  return value.sourceBodies.every((body) => {
+    if (
+      !isRecord(body) ||
+      typeof body.guid !== 'string' ||
+      body.guid.length === 0 ||
+      bodies.has(body.guid) ||
+      typeof body.generation !== 'number' ||
+      !Number.isSafeInteger(body.generation) ||
+      body.generation < 0
+    )
+      return false;
+    bodies.add(body.guid);
+    return true;
+  });
+}
+
+function validWaterMeshSource(sourceValue: unknown, materialCount: number): boolean {
+  const materialStartIndex = isRecord(sourceValue) ? sourceValue.materialStartIndex : undefined;
+  if (
+    !isRecord(sourceValue) ||
+    typeof sourceValue.guid !== 'string' ||
+    typeof sourceValue.generation !== 'number' ||
+    !Number.isSafeInteger(sourceValue.generation) ||
+    sourceValue.generation < 0 ||
+    typeof sourceValue.worldIdentity !== 'string' ||
+    typeof sourceValue.zoneGuid !== 'string' ||
+    typeof sourceValue.zoneGeneration !== 'number' ||
+    !Number.isSafeInteger(sourceValue.zoneGeneration) ||
+    sourceValue.zoneGeneration < 0 ||
+    (sourceValue.targetFormat !== 'rgba16float' && sourceValue.targetFormat !== 'rgba32float') ||
+    typeof materialStartIndex !== 'number' ||
+    !Number.isSafeInteger(materialStartIndex) ||
+    materialStartIndex < 0 ||
+    materialStartIndex > materialCount ||
+    !isUnknownArray(sourceValue.views)
+  )
+    return false;
+  const viewIdentities = new Set<string>();
+  const drawKeys = new Set<string>();
+  return sourceValue.views.every((viewValue: unknown) => {
+    if (
+      !isRecord(viewValue) ||
+      typeof viewValue.viewIdentity !== 'string' ||
+      viewValue.viewIdentity.length === 0 ||
+      viewIdentities.has(viewValue.viewIdentity) ||
+      !isUnknownArray(viewValue.draws)
+    )
+      return false;
+    viewIdentities.add(viewValue.viewIdentity);
+    return viewValue.draws.every((drawValue: unknown) => {
+      if (!isRecord(drawValue)) return false;
+      const readCheckedWaterMesh = () => {
+        const mesh = drawValue.mesh;
+        if (
+          !isRecord(mesh) ||
+          mesh.kind !== 'mesh' ||
+          !(mesh.vertices instanceof Float32Array) ||
+          !isVertexAttributeMap(mesh.attributes)
+        )
+          return undefined;
+        const position = mesh.attributes.position;
+        if (
+          !(position instanceof Float32Array) ||
+          position.length === 0 ||
+          position.length % 3 !== 0
+        )
+          return undefined;
+
+        return {
+          mesh: mesh as Record<string, unknown> & {
+            vertices: Float32Array;
+            attributes: import('@forgeax/engine-types').VertexAttributeMap;
+          },
+          position,
+        };
+      };
+      const checkedWaterMesh = readCheckedWaterMesh();
+      if (checkedWaterMesh === undefined) return false;
+      const { mesh, position } = checkedWaterMesh;
+      const vertexCount = deriveVertexCount(
+        mesh.vertices,
+        deriveVertexLayoutProjection(mesh.attributes),
+      );
+      const indices = mesh.indices;
+      const submeshes = mesh.submeshes;
+      const drawKey = drawValue.drawKey;
+      const materialIndex = drawValue.materialIndex;
+      const localAabb = drawValue.localAabb;
+      const instanceCount = drawValue.instanceCount;
+      const bytes = drawValue.bytes;
+      const coverageBytes = drawValue.coverageBytes;
+      const layout = drawValue.layout;
+      const transitionTargets = drawValue.transitionTargets;
+
+      const invalidWaterMeshVertices = (
+        mesh: Record<string, unknown> & { vertices: Float32Array },
+      ) =>
+        mesh.vertices.length === 0 ||
+        vertexCount === undefined ||
+        vertexCount < 1 ||
+        vertexCount !== position.length / 3 ||
+        !finiteFloats(mesh.vertices);
+      const invalidWaterMeshLocalBounds = (localAabb: Float32Array) =>
+        localAabb.length !== 6 ||
+        !finiteFloats(localAabb) ||
+        (localAabb[0] as number) > (localAabb[3] as number) ||
+        (localAabb[1] as number) > (localAabb[4] as number) ||
+        (localAabb[2] as number) > (localAabb[5] as number);
+      const invalidWaterMeshInstanceStorage = (
+        bytes: Uint8Array,
+        coverageBytes: Uint8Array,
+        layout: WaterMeshLayoutReceipt,
+        instanceCount: number,
+      ) =>
+        drawValue.gpu === undefined
+          ? bytes.byteLength !== instanceCount * layout.strideBytes
+          : !validWaterGpuMeshDraw(drawValue.gpu) ||
+            instanceCount !== 1 ||
+            bytes.byteLength !== 0 ||
+            coverageBytes.byteLength !== 0;
+      const validateWaterMeshDrawInput = (
+        mesh: Record<string, unknown> & {
+          vertices: Float32Array;
+          attributes: import('@forgeax/engine-types').VertexAttributeMap;
+        },
+      ) => {
+        const invalidWaterMeshDrawKey = (drawKey: string) =>
+          drawKey.length === 0 || drawKeys.has(drawKey);
+        const invalidWaterMeshMaterialIndex = (materialIndex: number) =>
+          !Number.isSafeInteger(materialIndex) ||
+          materialIndex < materialStartIndex ||
+          materialIndex >= materialCount;
+        if (
+          typeof drawKey !== 'string' ||
+          invalidWaterMeshDrawKey(drawKey) ||
+          typeof materialIndex !== 'number' ||
+          invalidWaterMeshMaterialIndex(materialIndex) ||
+          invalidWaterMeshVertices(mesh as Record<string, unknown> & { vertices: Float32Array }) ||
+          !isUnknownArray(submeshes) ||
+          submeshes.length !== 1 ||
+          !(indices instanceof Uint32Array) ||
+          !(localAabb instanceof Float32Array) ||
+          invalidWaterMeshLocalBounds(localAabb) ||
+          typeof instanceCount !== 'number' ||
+          !Number.isSafeInteger(instanceCount) ||
+          instanceCount < 1 ||
+          !(bytes instanceof Uint8Array) ||
+          !(coverageBytes instanceof Uint8Array) ||
+          !isWaterMeshLayoutReceipt(layout) ||
+          !isWaterMeshLayoutReceiptValid(layout, bytes, coverageBytes) ||
+          invalidWaterMeshInstanceStorage(bytes, coverageBytes, layout, instanceCount) ||
+          !isUnknownArray(transitionTargets)
+        )
+          return false;
+        const validateWaterMeshDrawTail = (
+          submeshes: readonly unknown[],
+          indices: Uint32Array,
+          vertexCount: number,
+          transitionTargets: readonly unknown[],
+          instanceCount: number,
+          drawKey: string,
+        ) => {
+          const submesh = submeshes.at(0);
+          if (
+            !isRecord(submesh) ||
+            typeof submesh.indexOffset !== 'number' ||
+            !Number.isSafeInteger(submesh.indexOffset) ||
+            submesh.indexOffset !== 0 ||
+            typeof submesh.indexCount !== 'number' ||
+            !Number.isSafeInteger(submesh.indexCount) ||
+            submesh.indexCount !== indices.length ||
+            typeof submesh.vertexCount !== 'number' ||
+            !Number.isSafeInteger(submesh.vertexCount) ||
+            submesh.vertexCount !== vertexCount ||
+            submesh.topology !== 'triangle-list' ||
+            submesh.materialSlot !== 0
+          )
+            return false;
+          const validTargets = transitionTargets.every((targetValue: unknown) => {
+            if (!isRecord(targetValue)) return false;
+            const instanceIndex = targetValue.instanceIndex;
+            const bodyGeneration = targetValue.bodyGeneration;
+            return (
+              typeof instanceIndex === 'number' &&
+              Number.isSafeInteger(instanceIndex) &&
+              instanceIndex >= 0 &&
+              instanceIndex < instanceCount &&
+              typeof targetValue.bodyGuid === 'string' &&
+              typeof bodyGeneration === 'number' &&
+              Number.isSafeInteger(bodyGeneration) &&
+              bodyGeneration >= 0
+            );
+          });
+          if (!validTargets) return false;
+          drawKeys.add(drawKey);
+          return true;
+        };
+        return validateWaterMeshDrawTail(
+          submeshes,
+          indices,
+          vertexCount as number,
+          transitionTargets,
+          instanceCount,
+          drawKey,
+        );
+      };
+      return validateWaterMeshDrawInput(mesh);
+    });
+  });
+}
+
+function ownWaterMeshSource(
+  source: NonNullable<TemplateSnapshot['waterMeshSource']>,
+): NonNullable<TemplateSnapshot['waterMeshSource']> {
+  return Object.freeze({
+    ...source,
+    views: Object.freeze(
+      source.views.map((view) =>
+        Object.freeze({
+          ...view,
+          draws: Object.freeze(
+            view.draws.map((draw) =>
+              ownWaterMeshAdmissionDraw(source, view.viewIdentity, {
+                ...draw,
+                mesh: copyPublishedMesh(draw.mesh),
+                localAabb: draw.localAabb.slice(),
+                ...(draw.gpu === undefined
+                  ? {}
+                  : {
+                      gpu: Object.freeze({
+                        ...draw.gpu,
+                        sourceBodies: Object.freeze(
+                          draw.gpu.sourceBodies.map((body) => Object.freeze({ ...body })),
+                        ),
+                      }),
+                    }),
+              }),
+            ),
+          ),
+        }),
+      ),
+    ),
+  });
+}
+
+/** Tilemap, WaterMesh, GlyphText and sprite-region sources a template may draw. */
 function templateGeometryError(snapshot: TemplateSnapshot): RenderPublicationError | undefined {
   const tilemap = snapshot.tilemap;
   if (tilemap !== undefined && (snapshot.assetHandle !== undefined || !validTilemapSource(tilemap)))
     return shapeError('Tilemap source');
+  const waterMesh = snapshot.waterMeshSource;
+  if (waterMesh !== undefined && !validWaterMeshSource(waterMesh, snapshot.materials.length))
+    return shapeError('WaterMesh source');
   const glyph = snapshot.glyph;
   if (
     snapshot.generatedMesh !== undefined ||
@@ -880,7 +1257,7 @@ export class RenderPublicationReceiver {
         return handle === undefined ? undefined : (this.assets.get(handle)?.value as T | undefined);
       },
     };
-    this.rows = new SceneRows([this.resources]);
+    this.rows = new SceneRows(this.resources);
   }
 
   /** Reserve a Mesh POD without admitting a scene row or an asset dependency. */
@@ -1008,7 +1385,7 @@ export class RenderPublicationReceiver {
     const hold = (id: number, delta: number) =>
       materialHolds.set(id, this.materialHoldCount(materialHolds, id) + delta);
     const releaseEntityMaterials = (entity: number) => {
-      const snapshot = this.rows.lookup(0, entity)?.snapshot;
+      const snapshot = this.rows.lookup(entity)?.snapshot;
       for (const resource of [
         ...(snapshot?.materials ?? []),
         ...(snapshot?.materialOverrides ?? []),
@@ -1032,7 +1409,7 @@ export class RenderPublicationReceiver {
      * Template validation and material resolution depend only on the packet
      * and the template, so rows sharing a template share one staged content.
      */
-    type StagedTemplate = Omit<RenderableSnapshot, 'worldId' | 'entityKey' | 'transform'>;
+    type StagedTemplate = Omit<RenderableSnapshot, 'entityKey' | 'transform'>;
     const stagedTemplates = new Map<RenderPublicationTemplate, StagedTemplate>();
     const stageTemplate = (
       template: RenderPublicationTemplate,
@@ -1064,8 +1441,13 @@ export class RenderPublicationReceiver {
               joints: Object.freeze([...binding.joints]),
             });
       const { materialOverrides: _overrides, ...templateContent } = template.snapshot;
+      const waterMeshSource =
+        template.snapshot.waterMeshSource === undefined
+          ? undefined
+          : ownWaterMeshSource(template.snapshot.waterMeshSource);
       const staged: StagedTemplate = {
         ...templateContent,
+        ...(waterMeshSource === undefined ? {} : { waterMeshSource }),
         ...(ownedBinding === undefined ? {} : { skinBinding: ownedBinding }),
         ...(overrides === undefined
           ? {}
@@ -1091,13 +1473,12 @@ export class RenderPublicationReceiver {
       holdTemplateMaterials(template.snapshot);
       const snapshot: RenderableSnapshot = {
         ...staged,
-        worldId: 0,
         entityKey,
         transform: { world },
       };
       dispatch.push(entityKey, template.dispatch);
       renderables.push(snapshot);
-      operations.push({ kind: 'update', worldId: 0, entityKey, snapshot });
+      operations.push({ kind: 'update', entityKey, snapshot });
       return undefined;
     };
     const stageSceneEdits = (): RenderPublicationError | undefined => {
@@ -1113,7 +1494,7 @@ export class RenderPublicationReceiver {
           return shapeError('duplicate removal');
         removed.add(entityKey);
         releaseEntityMaterials(entityKey);
-        operations.push({ kind: 'remove', worldId: 0, entityKey });
+        operations.push({ kind: 'remove', entityKey });
       }
       return undefined;
     };
@@ -1148,62 +1529,83 @@ export class RenderPublicationReceiver {
       packet.retiredMaterials.length === 0 ? NO_MATERIALS : new Set(packet.retiredMaterials);
     const holdError = this.materialHoldError(packet, retiredMaterials, materialHolds);
     if (holdError !== undefined) return err(holdError);
-    // Validate the complete packet before changing the accepted asset namespace.
-    const assets = this.stageAssets(packet, renderables, materialAssets);
-    if (!assets.ok) return assets;
-    let prepared = this.admitPublicationPrograms(
-      {
-        ...(jointRows.value.length === 0 && retiredJoints.value.size === 0
-          ? {}
-          : { skinJoints: { rows: jointRows.value, retired: retiredJoints.value } }),
-        assetChanges: assets.value.changes,
-        materialUpdates: [...stagedMaterials.values()],
-        resources: this.resources,
-        packet,
-        operations,
-        scene: { rows: this.rows, before: this.rows.revision, delta: undefined },
-        frame: {
-          ...packet.metadata,
-          renderables,
-          dispatch,
-          visibilitySnapshots: NO_ROWS,
-          featureVisibilitySnapshots: NO_ROWS,
-          hiddenEntityReports: NO_ROWS,
-        },
-      },
-      materialAssets,
+    const fixedAsset = (handle: number, revision: number): Asset | undefined => {
+      const key = versionKey({ handle, revision });
+      return (
+        versions.value.admitted.get(key) ??
+        (versions.value.retired.has(key) ? undefined : this.assetVersions.get(key))
+      );
+    };
+    const sourceError = this.materialSourceError(
+      stagedMaterials,
+      materialHolds,
+      retiredMaterials,
+      fixedAsset,
     );
-    if (this.disposed) return rejectPublication('disposed', 'receiver retired during admission');
-    // Program/target admission can throw. Keep the accepted resource namespace
-    // and revision unchanged until it succeeds so the same packet can retry.
-    try {
-      prepared = this.commitMaterials(
-        prepared,
-        [...stagedMaterials.keys()],
-        materialHolds,
-        retiredMaterials,
+    if (sourceError !== undefined) return err(sourceError);
+    // Validate the complete packet before changing the accepted asset namespace.
+    const assets = this.stageAssets(
+      packet,
+      renderables,
+      materialAssets,
+      (handle, revision) => fixedAsset(handle, revision) !== undefined,
+    );
+    if (!assets.ok) return assets;
+    const commitAdmittedPublication = () => {
+      let prepared = this.admitPublicationPrograms(
+        {
+          ...(jointRows.value.length === 0 && retiredJoints.value.size === 0
+            ? {}
+            : { skinJoints: { rows: jointRows.value, retired: retiredJoints.value } }),
+          assetChanges: assets.value.changes,
+          materialUpdates: [...stagedMaterials.values()],
+          resources: this.resources,
+          packet,
+          operations,
+          scene: { rows: this.rows, before: this.rows.revision, delta: undefined },
+          frame: {
+            ...packet.metadata,
+            renderables,
+            dispatch,
+            visibilitySnapshot: undefined,
+            hiddenEntityReports: NO_ROWS,
+          },
+        },
+        materialAssets,
       );
-      this.commitAssetNamespace(packet, versions.value, assets.value.guidChanges);
-      this.commitAssetRows(packet, assets.value.admitted, assets.value.patched, materialAssets);
-      this.retirePreparedMeshes(assets.value.stalePreparations);
-      this.commitFrameInputs(packet);
-      references?.commit();
-      this.commitJointMatrices(packet, retiredJoints.value, jointRows.value);
-      this.revision = packet.revision;
-      this.acceptedMetadata = packet.metadata;
-      for (const [key, released] of this.releasedPreparedMeshes)
-        if (released.until < this.revision) this.releasedPreparedMeshes.delete(key);
-      prepared = this.commitTransformRows(prepared, worldRows);
-      this.publishPreparedMeshes(packet);
-      return ok(prepared);
-    } catch (cause) {
-      this.failed = true;
-      throw new AggregateError(
-        [cause],
-        'Render publication adoption failed; start a new source epoch',
-        { cause },
-      );
-    }
+      if (this.disposed) return rejectPublication('disposed', 'receiver retired during admission');
+      // Program/target admission can throw. Keep the accepted resource namespace
+      // and revision unchanged until it succeeds so the same packet can retry.
+      try {
+        prepared = this.commitMaterials(
+          prepared,
+          [...stagedMaterials.keys()],
+          materialHolds,
+          retiredMaterials,
+        );
+        this.commitAssetNamespace(packet, versions.value, assets.value.guidChanges);
+        this.commitAssetRows(packet, assets.value.admitted, assets.value.patched, materialAssets);
+        this.retirePreparedMeshes(assets.value.stalePreparations);
+        this.commitFrameInputs(packet);
+        references?.commit();
+        this.commitJointMatrices(packet, retiredJoints.value, jointRows.value);
+        this.revision = packet.revision;
+        this.acceptedMetadata = packet.metadata;
+        for (const [key, released] of this.releasedPreparedMeshes)
+          if (released.until < this.revision) this.releasedPreparedMeshes.delete(key);
+        prepared = this.commitTransformRows(prepared, worldRows);
+        this.publishPreparedMeshes(packet);
+        return ok(prepared);
+      } catch (cause) {
+        this.failed = true;
+        throw new AggregateError(
+          [cause],
+          'Render publication adoption failed; start a new source epoch',
+          { cause },
+        );
+      }
+    };
+    return commitAdmittedPublication();
   }
 
   /**
@@ -1295,7 +1697,7 @@ export class RenderPublicationReceiver {
         retired.has(versionKey(row))
       )
         return rejectPublication('shape', 'fixed asset version');
-      admitted.set(versionKey(row), ownRenderFeatureProgramData(structuredClone(row.value)));
+      admitted.set(versionKey(row), ownAdmittedAssetValue(structuredClone(row.value)));
     }
     if (this.assetVersions.size + admitted.size - retired.size > 65536)
       return rejectPublication('shape', 'fixed asset version capacity');
@@ -1357,6 +1759,36 @@ export class RenderPublicationReceiver {
     return undefined;
   }
 
+  /** Every held captured material keeps its complete exact source, including quiet rows. */
+  private materialSourceError(
+    staged: ReadonlyMap<number, MaterialResource>,
+    holds: ReadonlyMap<number, number>,
+    retired: ReadonlySet<number>,
+    resolveVersion: (handle: number, revision: number) => Asset | undefined,
+  ): RenderPublicationError | undefined {
+    const valid = (id: number, resource: MaterialResource): boolean => {
+      if (retired.has(id) || this.materialHoldCount(holds, id) === 0) return true;
+      const source = resource.snapshot.sourceAssets;
+      if (source === undefined) return true;
+      return (
+        source.root === resource.snapshot.materialHandle &&
+        resolveVersion(source.root, source.revision)?.kind === 'material' &&
+        source.assets.every(
+          (asset) => resolveVersion(asset.handle, asset.revision) !== undefined,
+        ) &&
+        materialSnapshotDependencies(resource.snapshot).every((handle) =>
+          source.assets.some((asset) => asset.handle === handle),
+        )
+      );
+    };
+    for (const [id, resource] of staged)
+      if (!valid(id, resource)) return shapeError('missing material source version');
+    for (const [id, { resource }] of this.materials)
+      if (!staged.has(id) && !valid(id, resource))
+        return shapeError('missing material source version');
+    return undefined;
+  }
+
   private assetRowAdmissible(row: AcceptedAssetRow): boolean {
     return (
       row.value !== null &&
@@ -1408,9 +1840,8 @@ export class RenderPublicationReceiver {
       packetPrograms.has(key) ||
       this.acceptedPrograms.has(key) ||
       materialAssets?.shaderRegistry.materialArtifactDeclaration(key) !== undefined;
-    // Structured clone keeps one shared projection object per packet; content
-    // repeated across packets reuses its validated owned copy by digest+equality.
-    const projectionAliases = new Map<object, MaterialRenderProjection>();
+    // A program row is validated and owned once per id; later projections
+    // reference the receiver program table entry.
     const projections = new Map<AcceptedAssetRow, MaterialRenderProjection>();
     for (const row of packet.assets) {
       if (
@@ -1421,12 +1852,7 @@ export class RenderPublicationReceiver {
         return rejectPublication('shape', 'asset payload');
       if (!validAssetSource(row)) return rejectPublication('shape', 'asset source');
       assetHandles.add(row.handle);
-      const projection = this.receivedMaterialProjection(
-        row,
-        packet.retiredAssets,
-        programKnown,
-        projectionAliases,
-      );
+      const projection = this.receivedMaterialProjection(row, packet.retiredAssets, programKnown);
       if (!projection.ok) return rejectPublication('shape', projection.error);
       if (projection.value !== undefined) projections.set(row, projection.value);
       const preparedError = this.preparedMeshRevisionError(row, stalePreparations);
@@ -1450,7 +1876,6 @@ export class RenderPublicationReceiver {
     row: RenderPublication['assets'][number],
     retired: readonly number[],
     available: (key: string) => boolean,
-    aliases: Map<object, MaterialRenderProjection>,
   ): Result<MaterialRenderProjection | undefined, string> {
     const source = row.materialProjectionSource;
     if (source === undefined && row.materialProjection === undefined)
@@ -1463,7 +1888,7 @@ export class RenderPublicationReceiver {
       if (input === undefined) return err('material projection holder');
     }
     if (input === null) return ok(undefined);
-    const projection = this.projections.admit(input, row.value, available, aliases);
+    const projection = this.projections.admit(input, row.value, available);
     return projection === undefined ? err('material source projection') : ok(projection);
   }
 
@@ -1548,6 +1973,7 @@ export class RenderPublicationReceiver {
     packet: RenderPublication,
     assetHandles: ReadonlySet<number>,
     renderables: readonly RenderableSnapshot[],
+    exactVersionAvailable: (handle: number, revision: number) => boolean,
   ): boolean {
     const missing = (handle: number) =>
       !this.assetResolvable(handle, assetHandles, packet.retiredAssets);
@@ -1557,7 +1983,8 @@ export class RenderPublicationReceiver {
       publicationFrameDependencies(packet.metadata).some(missing)
     )
       return true;
-    for (const row of renderables) if (publicationDependencies(row).some(missing)) return true;
+    for (const row of renderables)
+      if (publicationDependencies(row, exactVersionAvailable).some(missing)) return true;
     return false;
   }
 
@@ -1604,10 +2031,7 @@ export class RenderPublicationReceiver {
     projections: ReadonlyMap<AcceptedAssetRow, MaterialRenderProjection>,
   ): AcceptedAssetRow[] {
     return packet.assets.map((row) => {
-      const program =
-        row.value.kind === 'particle-effect' || row.value.kind === 'material'
-          ? ownRenderFeatureProgramData(row.value)
-          : row.value;
+      const value = ownAdmittedAssetValue(row.value);
       const { materialProjectionSource: _source, ...received } = row;
       return {
         ...received,
@@ -1616,7 +2040,7 @@ export class RenderPublicationReceiver {
         value:
           (this.preparedMeshes.get(row.handle)?.revision === row.revision
             ? this.preparedMeshes.get(row.handle)?.mesh
-            : undefined) ?? (isOwnedRenderFeatureProgramData(program) ? program : row.value),
+            : undefined) ?? value,
       };
     });
   }
@@ -1643,6 +2067,7 @@ export class RenderPublicationReceiver {
     packet: RenderPublication,
     renderables: readonly RenderableSnapshot[],
     materialAssets: AssetRegistry | undefined,
+    exactVersionAvailable: (handle: number, revision: number) => boolean,
   ): Result<
     {
       readonly changes: AssetChange[];
@@ -1658,7 +2083,7 @@ export class RenderPublicationReceiver {
     const { assetHandles, changes, stalePreparations, projections } = rows.value;
     const patched = this.stageAssetPatches(packet, assetHandles, changes, stalePreparations);
     if (!patched.ok) return patched;
-    if (this.missingAssetDependency(packet, assetHandles, renderables))
+    if (this.missingAssetDependency(packet, assetHandles, renderables, exactVersionAvailable))
       return rejectPublication('shape', 'missing asset dependency');
     const guidChanges = this.stageGuidChanges(packet);
     if (this.missingLodDependency(packet, assetHandles, guidChanges, renderables))
@@ -1822,7 +2247,7 @@ export class RenderPublicationReceiver {
   }
 
   private hasRow(entity: number): boolean {
-    return this.rows.lookup(0, entity) !== undefined;
+    return this.rows.lookup(entity) !== undefined;
   }
 
   private commitTransformRows(
@@ -1836,7 +2261,6 @@ export class RenderPublicationReceiver {
         ? []
         : [
             {
-              worldId: 0,
               entities: packet.transformEntities,
               worlds: packet.transforms,
               rows,
@@ -1860,15 +2284,12 @@ export class RenderPublicationReceiver {
         ? undefined
         : this.resources.resolveAsset<MeshAsset>(change.handle);
       if (change.removed || (mesh?.ok && mesh.value.kind === 'mesh'))
-        this.rows.adoptMesh(0, change.handle, mesh?.ok ? mesh.value : undefined);
+        this.rows.adoptMesh(change.handle, mesh?.ok ? mesh.value : undefined);
     }
     const completed = this.prepareRows?.(prepared) ?? prepared;
     // The receiver built every staged snapshot and owns it immutably: rows
     // adopt them as-is instead of copying matrices, bounds and draw tables.
-    const delta =
-      completed.operations.length === 0 && this.memory !== undefined
-        ? this.rows.applyOwnedTransforms(transforms, this.memory)
-        : this.rows.apply(completed.operations, transforms, true);
+    const delta = this.rows.apply(completed.operations, transforms, true, this.memory);
     return { ...completed, scene: { rows: this.rows, before, delta } };
   }
 

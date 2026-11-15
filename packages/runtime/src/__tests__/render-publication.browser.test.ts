@@ -139,9 +139,7 @@ it('renders the same Standard scene through local World and transferred publicat
       for (let frame = 0; frame < 60; frame++) {
         value(local.renderer.requestObservation(['linear-ldr']));
         value(remote.renderer.requestObservation(['linear-ldr']));
-        const direct = value(
-          local.renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
-        );
+        const direct = value(local.renderer.draw({ source: lease }));
         expect((await direct.completed).ok).toBe(true);
         const candidate = publisher.prepare((frame + 1) / 60).unwrap();
         const packet = structuredClone(candidate.message, {
@@ -208,9 +206,7 @@ it('renders the same Standard scene through local World and transferred publicat
           throw new Error('Receipt observation is unavailable');
         value(local.renderer.requestObservation(['linear-ldr']));
         value(remote.renderer.requestObservation(['linear-ldr']));
-        const direct = value(
-          local.renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
-        );
+        const direct = value(local.renderer.draw({ source: lease }));
         const candidate = publisher.prepare((4 + offset) / 60).unwrap();
         const packet = structuredClone(candidate.message, {
           transfer: renderPublicationTransfers(candidate.message),

@@ -148,7 +148,6 @@ async function fixture(textured = false, reuseAdjacentShadow = true) {
       ...projection,
       material,
       shadowArtifact: artifact,
-      worldId: 0,
     });
   let bound: BindGroup | undefined;
   let mesh: BindGroup | undefined;
@@ -242,12 +241,15 @@ it('resolves shared shadow material bindings once per invocation while recording
     expect(
       f.create.mock.calls.filter(([descriptor]) => descriptor.label === 'pbr-material-skylight-bg'),
     ).toHaveLength(1);
+    expect(f.pipelineLookup.mock.calls.map(([shader]) => shader)).toEqual(
+      Array(60).fill(f.artifact.material),
+    );
+    expect(f.queries.artifact).not.toHaveBeenCalled();
     expect([
       vi.mocked(materialBuilder.buildPerSubmeshMaterialBg).mock.calls.length,
-      f.queries.artifact.mock.calls.length,
       f.queries.schema.mock.calls.length,
       f.queries.layout.mock.calls.length,
-    ]).toEqual([60, 60, 61, 60]);
+    ]).toEqual([60, 61, 60]);
   } finally {
     f.dispose();
   }
@@ -656,12 +658,15 @@ it('retains every raw material-owner query for adjacent batches', async () => {
     const dependencies = vi.mocked(materialBuilder.buildPerSubmeshMaterialBg).mock.calls;
     expect(new Set(dependencies.map(([deps]) => deps)).size).toBe(64);
 
+    expect(f.pipelineLookup.mock.calls.map(([shader]) => shader)).toEqual(
+      Array(64).fill(f.artifact.material),
+    );
+    expect(f.queries.artifact).not.toHaveBeenCalled();
     expect([
       vi.mocked(materialBuilder.buildPerSubmeshMaterialBg).mock.calls.length,
-      f.queries.artifact.mock.calls.length,
       f.queries.schema.mock.calls.length,
       f.queries.layout.mock.calls.length,
-    ]).toEqual([64, 64, 65, 64]);
+    ]).toEqual([64, 65, 64]);
   } finally {
     f.dispose();
   }

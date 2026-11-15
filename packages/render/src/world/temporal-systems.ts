@@ -1,6 +1,7 @@
 import {
   type Component,
   defineComponent,
+  defineSystem,
   type EntityHandle,
   type World,
 } from '@forgeax/engine-ecs';
@@ -22,6 +23,16 @@ import { computeViewProjectionMatrix } from '../record/helpers';
 import type { RenderSystemInternals } from '../record/render-context';
 import { hasLiveStandardOutputState } from '../render-system-record-attempt';
 import {
+  RenderCloudHistoryCommitOrder,
+  RenderRecordCommitOrder,
+  RenderStandardLightingOrder,
+  RenderStandardOutputCommitOrder,
+  RenderTemporalFrameCommitOrder,
+  RenderTemporalGpuCommitOrder,
+  RenderTemporalViewCommitOrder,
+  RenderViewGraphPrepareOrder,
+} from '../system-order';
+import {
   abortStagedTemporalGpuState,
   commitStagedTemporalGpuState,
   retireActiveTemporalGpuState,
@@ -36,14 +47,11 @@ import {
   renderSubmission,
   renderWorldFor,
 } from './render-world';
-import {
-  RENDER_STANDARD_LIGHTING_SYSTEM,
-  viewStandardLightingOf,
-} from './standard-lighting-systems';
-import { RENDER_RECORD_COMMIT_SYSTEM } from './submission-systems';
+import { viewStandardLightingOf } from './standard-lighting-systems';
+
 import { EMPTY_VIEW_STATE_UPDATE, readViewField, requireViewField } from './view-field';
 import { stagedViewInputs, ViewFrame, type ViewFrameState } from './view-frame-systems';
-import { RENDER_VIEW_GRAPH_PREPARE_SYSTEM } from './view-record-systems';
+
 import type { ViewSettlementOwner as TemporalOwner } from './view-settlement';
 import { ownerOf, registerViewCommit } from './view-settlement';
 
@@ -117,11 +125,19 @@ function commitCloudHistory({ frameState }: TemporalOwner): void {
   const staged = frameState.pendingCloudHistoryActive;
   if (staged === undefined) return;
   frameState.cloudHistoryActive = staged;
+  if (frameState.pendingCloudHistoryFormat === undefined) delete frameState.cloudHistoryFormat;
+  else frameState.cloudHistoryFormat = frameState.pendingCloudHistoryFormat;
   delete frameState.pendingCloudHistoryActive;
+  delete frameState.pendingCloudHistoryFormat;
 }
 
 function commitTemporalView({ frameState, internals }: TemporalOwner): void {
-  if (frameState.temporalView.commit() !== 'off' || frameState.cloudHistoryActive === true) return;
+  if (
+    frameState.temporalView.commit() !== 'off' ||
+    frameState.cloudHistoryActive === true ||
+    frameState.ssrSpatialAdmission?.status === 'admitted'
+  )
+    return;
   internals.clearPostProcessPipelineCache?.('forgeax.taa-resolve');
   // Retire frame-sized resources, not the device-owned prewarmed shader. The
   // next TAA frame must not start an async cold compile.
@@ -140,6 +156,7 @@ function discardTemporal({ frameState }: TemporalOwner, preparationOnly: boolean
     frameState.temporalFrameTransaction.commit({ accepted: false });
   abortStagedTemporalGpuState(frameState);
   delete frameState.pendingCloudHistoryActive;
+  delete frameState.pendingCloudHistoryFormat;
   frameState.temporalView.discard();
   discardStandardOutputStates(frameState);
   if (!preparationOnly) retirePendingStandardOutputGpu(frameState);
@@ -154,63 +171,62 @@ function discardTemporal({ frameState }: TemporalOwner, preparationOnly: boolean
 export function registerTemporalSystems(world: World): void {
   registerViewCommit(
     world,
-    RENDER_TEMPORAL_FRAME_COMMIT_SYSTEM,
+    RenderTemporalFrameCommitOrder,
     commitTemporalFrame,
-    RENDER_RECORD_COMMIT_SYSTEM,
+    RenderRecordCommitOrder,
     'presented',
   );
   registerViewCommit(
     world,
-    RENDER_STANDARD_OUTPUT_COMMIT_SYSTEM,
+    RenderStandardOutputCommitOrder,
     ({ frameState, internals }) =>
       commitStandardOutputSubmission(frameState, internals.device.queue),
-    RENDER_TEMPORAL_FRAME_COMMIT_SYSTEM,
+    RenderTemporalFrameCommitOrder,
     'presented',
   );
   registerViewCommit(
     world,
-    RENDER_TEMPORAL_GPU_COMMIT_SYSTEM,
+    RenderTemporalGpuCommitOrder,
     commitTemporalGpu,
-    RENDER_STANDARD_OUTPUT_COMMIT_SYSTEM,
+    RenderStandardOutputCommitOrder,
     'presented',
   );
   registerViewCommit(
     world,
-    RENDER_CLOUD_HISTORY_COMMIT_SYSTEM,
+    RenderCloudHistoryCommitOrder,
     commitCloudHistory,
-    RENDER_TEMPORAL_GPU_COMMIT_SYSTEM,
+    RenderTemporalGpuCommitOrder,
     'presented',
   );
   registerViewCommit(
     world,
-    RENDER_TEMPORAL_VIEW_COMMIT_SYSTEM,
+    RenderTemporalViewCommitOrder,
     commitTemporalView,
-    RENDER_CLOUD_HISTORY_COMMIT_SYSTEM,
+    RenderCloudHistoryCommitOrder,
     'presented',
   );
-  world
-    .addSystem(RenderCleanup, {
-      commands: 'none',
-      name: RENDER_TEMPORAL_DISCARD_SYSTEM,
-      queries: [{ read: [ViewRecorder], optional: [ViewSubmission] }],
-      fn: (world, [views]) => {
-        const frame = renderSubmission(world).frame;
+  const systemToken1 = defineSystem({
+    commands: 'none',
+    name: RENDER_TEMPORAL_DISCARD_SYSTEM,
+    queries: [{ read: [ViewRecorder], optional: [ViewSubmission] }],
+    fn: (world, [views]) => {
+      const frame = renderSubmission(world).frame;
 
-        views.forEach((row) => {
-          const entity = row.entity;
+      views.forEach((row) => {
+        const entity = row.entity;
 
-          const preparationOnly =
-            readViewField(world, entity, ViewSubmission, 'accepted') === true &&
-            requireViewField(world, entity, ViewSubmission, 'attempt') === frame &&
-            !requireViewField(world, entity, ViewSubmission, 'scene');
-          discardTemporal(
-            ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state')),
-            preparationOnly,
-          );
-        });
-      },
-    })
-    .unwrap();
+        const preparationOnly =
+          readViewField(world, entity, ViewSubmission, 'accepted') === true &&
+          requireViewField(world, entity, ViewSubmission, 'attempt') === frame &&
+          !requireViewField(world, entity, ViewSubmission, 'scene');
+        discardTemporal(
+          ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state')),
+          preparationOnly,
+        );
+      });
+    },
+  });
+  world.addSystem(RenderCleanup, systemToken1).unwrap();
 }
 
 /** RenderPrepare: a display view stages this frame's TAA/CloudLayer frame transaction candidate. */
@@ -396,7 +412,7 @@ function stageStandardOutput(
     const view = stagedViewInputs(world, staged);
     const camera = view.cameras[0];
     if (!hasLiveStandardOutputState(frameState, camera?.output)) return { kind: 'skipped' };
-    const cameraScope = view.scopes[view.composition.owners.cameraOwner];
+    const cameraScope = view.source;
     if (cameraScope === undefined) return { kind: 'skipped' };
     const prepared = prepareStandardOutputResources(frameState, internals, camera, cameraScope);
     if (!prepared.ok) return { kind: 'rejected', error: prepared.error };
@@ -426,66 +442,63 @@ function stageStandardOutput(
 export const RENDER_TEMPORAL_RESOLVE_SYSTEM = 'render-temporal-resolve';
 
 export function registerTemporalStageSystems(world: World): void {
-  world
-    .addSystem(RenderQueue, {
-      commands: 'none',
-      name: RENDER_TEMPORAL_RESOLVE_SYSTEM,
-      after: [RENDER_VIEW_GRAPH_PREPARE_SYSTEM],
-      queries: [{ write: [ViewGraphSeal] }],
-      fn: (world, [rows]) => {
-        const frame = renderSubmission(world).frame;
+  const systemToken2 = defineSystem({
+    commands: 'none',
+    name: RENDER_TEMPORAL_RESOLVE_SYSTEM,
+    after: [RenderViewGraphPrepareOrder],
+    queries: [{ write: [ViewGraphSeal] }],
+    fn: (world, [rows]) => {
+      const frame = renderSubmission(world).frame;
 
-        rows.forEach((row) => {
-          const entity = row.entity;
+      rows.forEach((row) => {
+        const entity = row.entity;
 
-          setDerivedComponent(world, entity, ViewGraphSeal, EMPTY_VIEW_STATE_UPDATE).unwrap();
-          const state = world
-            .resolveUniqueRef<ViewGraphSealState>(
-              requireViewField(world, entity, ViewGraphSeal, 'state'),
-            )
-            .unwrap();
-          if (state.frame !== frame || state.prepared === undefined || state.temporal !== undefined)
-            return;
-          try {
-            state.temporal = resolveQueuedFrameTemporal(state.prepared);
-          } catch (cause) {
-            state.temporal = { kind: 'failed', cause };
-          }
-        });
-      },
-    })
-    .unwrap();
+        setDerivedComponent(world, entity, ViewGraphSeal, EMPTY_VIEW_STATE_UPDATE).unwrap();
+        const state = world
+          .resolveUniqueRef<ViewGraphSealState>(
+            requireViewField(world, entity, ViewGraphSeal, 'state'),
+          )
+          .unwrap();
+        if (state.frame !== frame || state.prepared === undefined || state.temporal !== undefined)
+          return;
+        try {
+          state.temporal = resolveQueuedFrameTemporal(state.prepared);
+        } catch (cause) {
+          state.temporal = { kind: 'failed', cause };
+        }
+      });
+    },
+  });
+  world.addSystem(RenderQueue, systemToken2).unwrap();
   const query = { read: [ViewRecorder, ViewFrame] as const };
-  world
-    .addSystem(RenderPrepare, {
-      commands: 'none',
-      name: RENDER_TEMPORAL_STAGE_SYSTEM,
-      after: [RENDER_STANDARD_LIGHTING_SYSTEM],
-      queries: [query],
-      fn: (world, [rows]) => {
-        const frame = renderSubmission(world).frame;
-        const stored = stageableViews(world, rows, frame).map(({ entity, owner, staged }) => ({
-          entity,
-          outcome: stageTemporalFrame(owner, staged),
-        }));
-        storeStage(world, ViewTemporalStage, stored, frame);
-      },
-    })
-    .unwrap();
-  world
-    .addSystem(RenderPrepare, {
-      commands: 'none',
-      name: RENDER_STANDARD_OUTPUT_STAGE_SYSTEM,
-      after: [RENDER_STANDARD_LIGHTING_SYSTEM],
-      queries: [query],
-      fn: (world, [rows]) => {
-        const frame = renderSubmission(world).frame;
-        const stored = stageableViews(world, rows, frame).map(({ entity, owner, staged }) => ({
-          entity,
-          outcome: stageStandardOutput(world, owner, staged),
-        }));
-        storeStage(world, ViewStandardOutputStage, stored, frame);
-      },
-    })
-    .unwrap();
+  const systemToken3 = defineSystem({
+    commands: 'none',
+    name: RENDER_TEMPORAL_STAGE_SYSTEM,
+    after: [RenderStandardLightingOrder],
+    queries: [query],
+    fn: (world, [rows]) => {
+      const frame = renderSubmission(world).frame;
+      const stored = stageableViews(world, rows, frame).map(({ entity, owner, staged }) => ({
+        entity,
+        outcome: stageTemporalFrame(owner, staged),
+      }));
+      storeStage(world, ViewTemporalStage, stored, frame);
+    },
+  });
+  world.addSystem(RenderPrepare, systemToken3).unwrap();
+  const systemToken4 = defineSystem({
+    commands: 'none',
+    name: RENDER_STANDARD_OUTPUT_STAGE_SYSTEM,
+    after: [RenderStandardLightingOrder],
+    queries: [query],
+    fn: (world, [rows]) => {
+      const frame = renderSubmission(world).frame;
+      const stored = stageableViews(world, rows, frame).map(({ entity, owner, staged }) => ({
+        entity,
+        outcome: stageStandardOutput(world, owner, staged),
+      }));
+      storeStage(world, ViewStandardOutputStage, stored, frame);
+    },
+  });
+  world.addSystem(RenderPrepare, systemToken4).unwrap();
 }

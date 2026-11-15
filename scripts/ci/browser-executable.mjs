@@ -10,3 +10,28 @@ export function selectBrowserExecutable(defaults, env = process.env) {
   }
   return { ...options, channel: env.FORGEAX_CHROME_CHANNEL || channel };
 }
+
+/** The default is the declared software CI carrier; native Windows is explicit. */
+export function browserGpuLaunchOptions(defaults, env = process.env, platform = process.platform) {
+  const mode = env.FORGEAX_BROWSER_GPU ?? 'software';
+  if (!['software', 'native'].includes(mode))
+    throw new Error('FORGEAX_BROWSER_GPU must be software or native');
+  if (mode === 'native' && platform !== 'win32')
+    throw new Error('explicit native Browser admission is supported on Windows');
+  const selected = selectBrowserExecutable(defaults, env);
+  return {
+    ...selected,
+    args: [
+      ...selected.args.flatMap((argument) => {
+        if (platform !== 'win32') return [argument];
+        if (argument.startsWith('--enable-features=Vulkan')) return [];
+        if (argument === '--use-vulkan=swiftshader')
+          return mode === 'native' ? [] : ['--use-webgpu-adapter=swiftshader'];
+        return [argument];
+      }),
+      ...(env.CI && mode === 'software'
+        ? [...(platform === 'win32' ? [] : ['--use-angle=swiftshader']), '--disable-gpu-watchdog']
+        : []),
+    ],
+  };
+}

@@ -203,11 +203,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
 
   const attachment = renderer.attach(world);
   if (!attachment.ok) throw attachment.error;
-  const frameRequest = {
-    leases: [attachment.value],
-    camera: { lease: attachment.value },
-    environment: { lease: attachment.value },
-  };
+  const frameRequest = { source: attachment.value };
 
   const phaseProgress = createLodPhaseProgress();
   let phaseToken = phaseProgress.beginPhase('interactive', Number.MAX_SAFE_INTEGER);

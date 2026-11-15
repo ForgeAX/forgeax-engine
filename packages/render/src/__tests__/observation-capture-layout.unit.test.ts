@@ -47,7 +47,7 @@ it.each([
       ...(domain === 'visible-surface' ? { surfaceRecords: new Uint32Array(0) } : {}),
     },
   );
-  const captures = owner.observationCaptureOwner.consume(17);
+  const { captures } = owner.observationCaptureOwner.consume(17);
   expect(captures).toHaveLength(1);
   expect(captures[0]).toMatchObject({ format, width: 900, height: 2, bytesPerRow });
   expect(copy).toHaveBeenCalledExactlyOnceWith(
@@ -85,6 +85,8 @@ it('uses the observed view extent rather than presentation dimensions for a redu
       device,
       observationCaptureOwner: owner.observationCaptureOwner,
       observationCaptureDomains: ['linear-hdr'],
+      observationGraphGeneration: 9,
+      observationFrameId: 17,
     },
     frameState: { frameNumber: 17, graphGeneration: 9, frameOutputs: {} },
   };
@@ -100,7 +102,7 @@ it('uses the observed view extent rather than presentation dimensions for a redu
     texture: () => ok(texture),
     textureViewExtent: () => ok({ width: 16, height: 8, depthOrArrayLayers: 1 }),
   });
-  const captures = owner.observationCaptureOwner.consume(17);
+  const { captures } = owner.observationCaptureOwner.consume(17);
   expect(captures[0]).toMatchObject({ width: 16, height: 8, bytesPerRow: 256 });
   expect(copy.mock.calls[0]?.[2]).toEqual({ width: 16, height: 8, depthOrArrayLayers: 1 });
   owner.disposeObservationCaptures(captures);

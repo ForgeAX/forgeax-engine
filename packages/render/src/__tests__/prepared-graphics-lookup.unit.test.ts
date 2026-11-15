@@ -1,3 +1,4 @@
+import { World } from '@forgeax/engine-ecs';
 import type { RenderPipeline, RhiCaps } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { ok } from '@forgeax/engine-types';
@@ -179,8 +180,7 @@ describe('prepared graphics owner lookup', () => {
     try {
       for (revision = 0; revision < 3; revision += 1) {
         const result = runSingleViewFeatureFrame(host, {
-          worlds: [],
-          owner: 0,
+          world: new World(),
           frameNumber: revision + 1,
           generation: 1,
           caps: { backendKind: 'null' } as unknown as RhiCaps,
@@ -308,8 +308,7 @@ describe('prepared graphics owner lookup', () => {
           viewOrder.map((identity) => ({
             identity,
             render: true,
-            worlds: [],
-            owner: 0,
+            world: new World(),
             frameNumber: revision,
             generation: 1,
             caps: { backendKind: 'null' } as unknown as RhiCaps,

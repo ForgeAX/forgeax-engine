@@ -306,7 +306,6 @@ describe('TransparentSortCache retained phase', () => {
     const renderables: TransparentSortSource[] = rows.map((row) => ({
       transform: { world: row.pose },
       material: { paramSnapshot: { pivotAndSize: [0.5, 0.25, 1, 1] } } as never,
-      worldId: 0,
       entityKey: row.entityKey,
     }));
     const dispatch: DispatchEntry[] = [];

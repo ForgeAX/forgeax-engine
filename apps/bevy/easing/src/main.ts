@@ -1,3 +1,4 @@
+import { Time } from '@forgeax/engine-ecs';
 // apps/bevy/easing - reproduction of Bevy's `animation/easing_functions` example.
 //
 // Bevy source (references/repos/bevy/examples/animation/easing_functions.rs): shows the
@@ -12,6 +13,7 @@
 // The World + step math live in the shared src/easing-demo.ts (SSOT for this app AND the dawn
 // smoke), so the two never drift.
 
+import { defineSystem } from "@forgeax/engine-ecs";
 import { createApp } from '@forgeax/engine-app/browser';
 import { Update } from '@forgeax/engine-ecs';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
@@ -47,16 +49,17 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
 
   buildEasingWorld(app.world);
 
-  app.world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'ease-movers',
     queries: [],
     fn: (world) => {
-      const elapsed = world.hasResource('Time')
-        ? world.getResource<{ dt: number; elapsed: number }>('Time').elapsed
+      const elapsed = world.hasResource(Time)
+        ? world.getResource(Time).elapsed
         : 0;
       stepEasing(world, pingpong(elapsed));
     },
   });
+app.world.addSystem(Update, systemToken1);
 
   const started = app.start();
   if (!started.ok) console.error('[bevy-easing] app.start failed:', started.error);

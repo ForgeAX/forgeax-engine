@@ -7,13 +7,42 @@
  * open shadow roots so the stable page startup cover can observe its canvas.
  */
 
-import { freezeBarrelDistortionMapping } from '@forgeax/engine-render';
+import {
+  freezeBarrelDistortionMapping,
+  freezeSubmittedEditorAssistanceFrame,
+} from '@forgeax/engine-render';
 import { loadTimelineNow, recordLoadTimeline } from '@forgeax/engine-types';
 
 export const FORGEAX_FRAME_SUBMITTED_EVENT = 'forgeax:frame-submitted';
 export const FORGEAX_FRAME_COMPLETED_EVENT = 'forgeax:frame-completed';
+/** A synchronous canvas handoff; the callback never crosses Worker or RPC transport. */
+export const FORGEAX_FRAME_RETAIN_EVENT = 'forgeax:frame-retain';
+export interface BrowserFrameRetentionRequest {
+  readonly frameId: number;
+  readonly accept: (release: () => void) => void;
+}
+
+/** Hold the submitted picture at an input edge until its asynchronous query settles. */
+export function retainBrowserFrameSubmitted(
+  canvas: HTMLCanvasElement,
+  frameId: number,
+): (() => void) | undefined {
+  let release: (() => void) | undefined;
+  canvas.dispatchEvent?.(
+    new CustomEvent<BrowserFrameRetentionRequest>(FORGEAX_FRAME_RETAIN_EVENT, {
+      detail: {
+        frameId,
+        accept: (held) => {
+          release = held;
+        },
+      },
+    }),
+  );
+  return release;
+}
 
 export interface BrowserFrameSubmitted {
+  readonly editorAssistance?: import('@forgeax/engine-render').SubmittedEditorAssistanceFrame;
   readonly shadowWorkload?: import('@forgeax/engine-render').ShadowWorkloadObservation;
   readonly frameId: number;
   readonly deviceGeneration: number;
@@ -26,12 +55,9 @@ export interface BrowserFrameSubmitted {
    */
   readonly renderDrawIntervalMs?: number;
   /**
-   * Always-on Render Worker stall accounting (Render Worker clock, 0.01 ms).
-   * The draw interval decomposes as previous turn (previous
-   * `renderDrawCpuMs` plus its post-submit tail) + `renderAwaitMs` +
-   * `renderQueuedMs`. All are absent for in-process execution.
-   *
-   * `renderDrawCpuMs`: draw start to queue submission of this frame.
+   * CPU milliseconds for this frame's draw. The in-process App measures
+   * the synchronous Renderer.draw call; the Render Worker measures draw
+   * start to queue submission on its own clock.
    */
   readonly renderDrawCpuMs?: number;
   /**
@@ -171,6 +197,9 @@ export function publishBrowserFrameSubmitted(
 ): void {
   const published = Object.freeze({
     ...event,
+    ...(event.editorAssistance === undefined
+      ? {}
+      : { editorAssistance: freezeSubmittedEditorAssistanceFrame(event.editorAssistance) }),
     ...(event.graphGeneration === undefined ? {} : { graphGeneration: event.graphGeneration }),
     ...(event.barrelDistortion === undefined
       ? {}

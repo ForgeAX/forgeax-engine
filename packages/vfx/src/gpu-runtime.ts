@@ -1,6 +1,8 @@
 import { type AssetVersion, runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import {
   Disabled,
+  defineResource,
+  defineSystem,
   type EntityHandle,
   FixedUpdate,
   Time,
@@ -38,7 +40,7 @@ import {
 import { ParticleEffectPlayer } from './player.js';
 import { validateVfxPlayerParameters } from './player-parameters.js';
 
-export const VFX_GPU_RUNTIME_RESOURCE_KEY = 'VfxGpuRuntime';
+export const VFX_GPU_RUNTIME_RESOURCE_KEY = defineResource<VfxGpuRuntime>('VfxGpuRuntime');
 
 export interface VfxInspectSnapshotInput {
   readonly layoutFingerprint: string;
@@ -97,6 +99,8 @@ export interface VfxGpuTickIntent {
   readonly seed: number;
   readonly playCycle: number;
   readonly spawnCount: number;
+  /** Immutable authored Water-grid input; independent of the rate/burst count above. */
+  readonly waterGridEmission?: VfxGpuEmitterProgram['waterGridEmission'];
   readonly firstParticleId: number;
   readonly instanceGeneration: number;
   readonly instancePatchCount: number;
@@ -630,6 +634,17 @@ export class VfxGpuRuntime {
 
   getInstance(player: EntityHandle): ParticleEffectInstance | undefined {
     return this.#instances.get(player);
+  }
+
+  /**
+   * Return the typed instance for an admitted player, creating it lazily from
+   * that player's accepted reflected asset when render preparation has not
+   * needed one yet. This does not advance simulation or emit an Update intent.
+   */
+  getOrCreateAcceptedInstance(player: EntityHandle): ParticleEffectInstance | undefined {
+    const state = this.#players.get(player);
+    if (state === undefined) return undefined;
+    return this.#instances.get(player) ?? this.#createInstance(player, state.asset);
   }
 
   setEmitterCameraVisibility(player: EntityHandle, emitterId: string, visible: boolean): void {
@@ -1182,7 +1197,8 @@ export class VfxGpuRuntime {
       );
       state.rateRemainders[index] = scheduled.remainder;
       const firstParticleId = state.nextParticleIds[index] ?? 0;
-      state.nextParticleIds[index] = firstParticleId + scheduled.count;
+      const gridIdReservation = emitter.waterGridEmission?.maxParticlesPerFrame ?? 0;
+      state.nextParticleIds[index] = firstParticleId + scheduled.count + gridIdReservation;
       const eventSources = asset.program.emitters.flatMap((source) =>
         (source.events ?? []).filter((event) => event.subEmitter === emitter.id),
       );
@@ -1207,6 +1223,9 @@ export class VfxGpuRuntime {
         seed: input.seed,
         playCycle: state.playCycles[index] ?? state.playCycle,
         spawnCount: scheduled.count,
+        ...(emitter.waterGridEmission === undefined
+          ? {}
+          : { waterGridEmission: emitter.waterGridEmission }),
         firstParticleId,
         instanceGeneration: committed.generation,
         instancePatchCount: committed.patchCount,
@@ -1371,16 +1390,15 @@ export function vfxGpuRuntimePlugin(options: VfxGpuRuntimeOptions = {}): Plugin 
         };
       }, 'vfx/runtime-resource');
       ctx.effect(() => {
-        world
-          .addSystem(Update, {
-            name: 'vfx-gpu-runtime',
-            queries: [],
-            // Players that this frame's simulation spawns or moves advance in the same frame.
-            after: [FixedUpdate],
-            fn: (world) => runtime.advance(world, world.getResource(Time).delta),
-          })
-          .unwrap();
-        return () => world.removeSystem(Update, 'vfx-gpu-runtime');
+        const systemToken1 = defineSystem({
+          name: 'vfx-gpu-runtime',
+          queries: [],
+          // Players that this frame's simulation spawns or moves advance in the same frame.
+          after: [FixedUpdate],
+          fn: (world) => runtime.advance(world, world.getResource(Time).delta),
+        });
+        world.addSystem(Update, systemToken1).unwrap();
+        return () => world.removeSystem(Update, systemToken1);
       }, 'vfx/tick-system');
     },
   };
@@ -1418,6 +1436,9 @@ export function buildVfxRecoveryIntents<T extends Omit<VfxGpuTickIntent, 'effect
         phaseTick,
         tick: latest.tick - latest.phaseTick + phaseTick,
         spawnCount: scheduled.count,
+        ...(latest.waterGridEmission === undefined
+          ? {}
+          : { waterGridEmission: latest.waterGridEmission }),
         firstParticleId,
         // Recovery restores GPU state from retained authored inputs. It
         // never republishes the World-facing event/channel stream.
@@ -1436,7 +1457,7 @@ export function buildVfxRecoveryIntents<T extends Omit<VfxGpuTickIntent, 'effect
     );
     elapsed = next;
     remainder = scheduled.remainder;
-    firstParticleId += scheduled.count;
+    firstParticleId += scheduled.count + (latest.waterGridEmission?.maxParticlesPerFrame ?? 0);
   }
   return Object.freeze(intents);
 }

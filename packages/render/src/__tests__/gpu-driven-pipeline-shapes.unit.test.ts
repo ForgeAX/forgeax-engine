@@ -15,6 +15,7 @@ import { MaterialResource } from '../material-resource';
 import { makeZeroCameraFallbackSnapshot } from '../record/frame-snapshot';
 import { STANDARD_OPAQUE_FRAGMENT_ENTRY } from '../record/standard-opaque-entry';
 import type { RenderPipelineFrame } from '../render-pipeline';
+import { MeshFrame } from '../scene/mesh-frame';
 import { RenderScene } from '../scene/render-scene';
 import {
   admitGpuFixture,
@@ -91,7 +92,6 @@ async function fixture(
         ...source,
         material,
         materials: [material],
-        worldId: index % 2,
         gpuDrivenDraws: draws.map((draw) => {
           if (draw.prepared === undefined) throw Error('missing prepared draw');
           return {
@@ -156,6 +156,7 @@ async function fixture(
       .unwrap(),
   });
   let pending: PreparedGpuDrivenFrame | undefined;
+  let geometryFrame = new MeshFrame();
   const prepare = (directionalShadowSimple = false, leanLighting = false) => {
     pending?._abortResourceReplacement?.();
     const prepared = production
@@ -171,7 +172,8 @@ async function fixture(
             plan: batches.query(batches.sourcePlan(), undefined),
             slots: scene.slotsSnapshot(),
             slotAt: scene.slotAt,
-            worldIdentities: ['shape-world-a', 'shape-world-b'],
+            sourceIdentity: 'shape-source',
+            meshes: geometryFrame,
           },
           camera: makeZeroCameraFallbackSnapshot(),
           meshBySlot: meshes,
@@ -189,6 +191,9 @@ async function fixture(
     production,
     meshes,
     prepare,
+    replaceGeometryFrame: () => {
+      geometryFrame = new MeshFrame();
+    },
     copies: () => artifactCopies,
     replaceFour: () => {
       for (let index = 0; index < 4; index += 1) meshes.set(index, createMesh(index));
@@ -199,6 +204,24 @@ async function fixture(
     },
   };
 }
+
+it('reuses retained geometry facts across row assembly and rechecks a replaced Mesh frame', async () => {
+  const f = await fixture(32, 'triangle-list');
+  const reads = vi.spyOn(MeshFrame.prototype, 'get');
+  try {
+    f.prepare();
+    expect(reads.mock.calls.length).toBeGreaterThan(0);
+    reads.mockClear();
+    f.prepare();
+    expect(reads).not.toHaveBeenCalled();
+    f.replaceGeometryFrame();
+    f.prepare();
+    expect(reads.mock.calls.length).toBeGreaterThan(0);
+  } finally {
+    reads.mockRestore();
+    f.close();
+  }
+});
 
 it('shares one pipeline preparation for 1025 distinct meshes across stable frames and mesh churn', async () => {
   const f = await fixture(1025, 'triangle-list');

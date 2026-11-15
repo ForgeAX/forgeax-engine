@@ -35,7 +35,7 @@ import { ANTIALIAS_NONE, ANTIALIAS_TAA, BLOOM_DISABLED } from '../components/cam
 import { SceneDataUnavailableError } from '../errors/render';
 import type { RenderFeature } from '../features/types';
 import { Materials } from '../materials';
-import { extractFrames } from '../render-system-extract-tail';
+import { extractSource } from '../render-system-extract-tail';
 import { SceneSlotFrame } from '../scene/scene-slots';
 import {
   SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA,
@@ -331,9 +331,16 @@ function rhiNullWithoutStorageBuffer() {
               Object.defineProperty(device.value, 'caps', {
                 value: { ...device.value.caps, storageBuffer: false },
               });
+              const limits = {
+                ...device.value.limits,
+                maxStorageBuffersPerShaderStage: 0,
+                maxTextureDimension2D: 8192,
+              };
               Object.defineProperty(device.value, 'limits', {
-                value: { ...device.value.limits, maxTextureDimension2D: 8192 },
+                value: limits,
               });
+              expect(device.value.caps.storageBuffer).toBe(false);
+              expect(device.value.limits.maxStorageBuffersPerShaderStage).toBe(0);
             }
             return device;
           };
@@ -496,12 +503,7 @@ async function createSceneDataRuntime(
   update();
   const attached = renderer.attach(world);
   if (!attached.ok) throw attached.error;
-  const drawFrame = () =>
-    renderer.draw({
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
+  const drawFrame = () => renderer.draw({ source: attached.value });
   return {
     host,
     recorder,
@@ -534,7 +536,7 @@ async function completeSceneDataFrame(
 
 type SceneDataRuntimeFixture = Awaited<ReturnType<typeof createSceneDataRuntime>>;
 type SceneDataAoTargetName =
-  | 'standard-scene-surface-normal'
+  | 'standard-scene-surface-depth'
   | 'gbuffer-normal-roughness'
   | 'ssao-raw'
   | 'ssao-blurred';
@@ -568,7 +570,8 @@ function sceneDataAoGraphSnapshot(
   const targets = [
     sceneDataAoTargetSnapshot(
       fixture.host,
-      renderPath === 'deferred' ? 'gbuffer-normal-roughness' : 'standard-scene-surface-normal',
+      // Forward SSAO reads a depth-only prepass (normals reconstructed from depth).
+      renderPath === 'deferred' ? 'gbuffer-normal-roughness' : 'standard-scene-surface-depth',
     ),
     sceneDataAoTargetSnapshot(fixture.host, 'ssao-raw'),
     sceneDataAoTargetSnapshot(fixture.host, 'ssao-blurred'),
@@ -1591,41 +1594,59 @@ it('samples admitted Standard Forward surface data in the same real Renderer gra
   propagateTransforms(world).unwrap();
   const attached = renderer.attach(world);
   if (!attached.ok) throw attached.error;
-  const drawFrame = () =>
-    renderer.draw({
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
+  const drawFrame = () => renderer.draw({ source: attached.value });
   const warming = drawFrame();
   expect(warming.ok, warming.ok ? '' : JSON.stringify(warming.error)).toBe(true);
   if (!warming.ok) return;
   expect((await warming.value.completed).ok).toBe(true);
-  const warmupError = renderer
-    .inspect()
-    .featureDiagnostics.find((diagnostic) => diagnostic.identity === feature.identity)?.latestError;
-  expect(warmupError).toMatchObject({
-    code: 'render-feature-preparation-failed',
-    detail: { reason: expect.stringContaining('rhi-not-available:') },
+  expect(warming.value.presentation).toBe('pending');
+  expect(warming.value.presentationPendingReason).toMatchObject({
+    code: 'feature-preparation',
+    featureIdentity: feature.identity,
+    preparationStage: 'resource-preparation',
+    reason: expect.stringContaining('shader module'),
   });
+  const warmupInspection = renderer.inspect();
+  expect(warmupInspection.capabilities.storageBuffer).toBe(true);
+  expect(warmupInspection.limits).toMatchObject({
+    maxBindingsPerBindGroup: 1000,
+    maxStorageBuffersPerShaderStage: 8,
+    maxUniformBuffersPerShaderStage: 12,
+    maxSampledTexturesPerShaderStage: 16,
+  });
+  expect(
+    warmupInspection.featureDiagnostics.find(
+      (diagnostic) => diagnostic.identity === feature.identity,
+    ),
+  ).toMatchObject({ status: 'active', latestError: undefined });
+  expect(requestedTarget).toBeDefined();
+  expect(plannedView).toMatchObject({ render: true });
+  expect(consumerPlanCount).toBe(1);
+  expect(warmupInspection.output.graphPassNames).toEqual([]);
+  expect(warmupInspection.perFramePassNames).toEqual([]);
 
   const ready = drawFrame();
   expect(ready.ok, ready.ok ? '' : JSON.stringify(ready.error)).toBe(true);
   if (!ready.ok) return;
   expect((await ready.value.completed).ok).toBe(true);
+  expect(ready.value.presentation).toBe('ready');
   expect(requestedTarget).toBeDefined();
+  const readyInspection = renderer.inspect();
   expect(
-    renderer.inspect().output.graphPassNames,
+    readyInspection.output.graphPassNames,
     JSON.stringify({
       errors,
-      features: renderer.inspect().features,
-      featureDiagnostics: renderer.inspect().featureDiagnostics,
-      featureHost: renderer.inspect().featureHost,
-      featureGraph: renderer.inspect().featureGraph,
+      features: readyInspection.features,
+      featureDiagnostics: readyInspection.featureDiagnostics,
+      featureHost: readyInspection.featureHost,
+      featureGraph: readyInspection.featureGraph,
       consumerPlanCount,
       plannedView,
     }),
   ).toEqual(expect.arrayContaining(['standard-scene-surface-data', 'surface-normal-consumer']));
+  expect(readyInspection.perFramePassNames).toEqual(
+    expect.arrayContaining(['standard-scene-surface-data', 'surface-normal-consumer']),
+  );
   expect(errors).toEqual([]);
   await host.dispose();
 });
@@ -1644,7 +1665,7 @@ it('admits a real cooked Standard Registry snapshot through production surface s
   try {
     const cooked = fixture.cookedStandard;
     if (cooked === undefined) throw new Error('Cooked Standard Registry fixture was not created');
-    const frame = extractFrames([fixture.world], 0, fixture.host.assetRegistry, undefined, {
+    const frame = extractSource(fixture.world, fixture.host.assetRegistry, undefined, {
       materialContext: DEFAULT_MATERIAL_VARIANT_CONTEXT,
       cull: 'none',
     });
@@ -1698,10 +1719,10 @@ it('admits a real cooked Standard Registry snapshot through production surface s
       specializationKey: selectedProgramKey,
       artifactHash: cookedProgram.artifact.digest,
     });
-    expect(material.snapshot.materialEntryPoints?.[pass.name]).toEqual(
+    expect(material.snapshot.materialProgramInputs?.[pass.name]?.entryPoints).toEqual(
       selectedArtifact.program.entryPoints,
     );
-    expect(material.snapshot.materialEntryPoints?.[pass.name]).toEqual(
+    expect(material.snapshot.materialProgramInputs?.[pass.name]?.entryPoints).toEqual(
       expect.arrayContaining([expect.objectContaining({ name: 'fs_ao_input', stage: 'fragment' })]),
     );
     expect(contributor.facts?.selectedProgramFacts).toMatchObject({
@@ -1725,7 +1746,7 @@ it('admits a real cooked Standard Registry snapshot through production surface s
   } finally {
     await fixture.host.dispose();
   }
-}, 60_000);
+}, 60000);
 
 it.each([
   ['without Motion Blur', 'taa'],
@@ -2233,9 +2254,9 @@ it('reports the exact visible MorphWeights custom contributor as incomplete cove
     const missingIds = unavailable.detail.missingContributorIds;
     expect(missingIds).toHaveLength(1);
     const contributor = JSON.parse(missingIds[0] ?? 'null') as unknown[];
-    expect(contributor[0]).toBe(0);
-    expect(contributor[1]).toBe(fixture.entity);
-    expect(contributor[2]).toBe(Number(unsupportedMaterial.handle));
+    expect(contributor).toHaveLength(3);
+    expect(contributor[0]).toBe(fixture.entity);
+    expect(contributor[1]).toBe(Number(unsupportedMaterial.handle));
     expect(unavailable.detail.missingContributors).toEqual([
       expect.objectContaining({
         sourceTuple: contributor,
@@ -2246,7 +2267,7 @@ it('reports the exact visible MorphWeights custom contributor as incomplete cove
         authoredModule: 'regression::left',
       }),
     ]);
-    expect(contributor[3]).toEqual(expect.any(Number));
+    expect(contributor[2]).toEqual(expect.any(Number));
     expect(fixture.renderer.inspect().frame.frameId).toBe(frameIdBeforeUnsupported);
   } finally {
     await fixture.host.dispose();
@@ -2309,10 +2330,10 @@ it.each([
     expect(missingContributors).toBeDefined();
     if (missingContributors === undefined) return;
     const missing = missingContributors.find(
-      (contributor) => contributor.sourceTuple?.[1] === forwardOnlyEntity,
+      (contributor) => contributor.sourceTuple?.[0] === forwardOnlyEntity,
     );
     expect(missing).toMatchObject({
-      sourceTuple: [0, forwardOnlyEntity, expect.any(Number), expect.any(Number)],
+      sourceTuple: [forwardOnlyEntity, expect.any(Number), expect.any(Number)],
       reason: 'authored-program-not-standard-pbr',
       rejectedField: 'authored-shader-id',
     });

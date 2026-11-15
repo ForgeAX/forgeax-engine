@@ -1,4 +1,10 @@
-import { defineComponent, type EntityHandle, type World } from '@forgeax/engine-ecs';
+import {
+  defineComponent,
+  defineResource,
+  defineSystem,
+  type EntityHandle,
+  type World,
+} from '@forgeax/engine-ecs';
 import { type VisibleSurfaceProjection, VisibleSurfaceRows } from '../raytracing/visible-surface';
 import {
   commitDiffuseGi,
@@ -7,14 +13,22 @@ import {
   type ViewDiffuseGiOutcome,
 } from '../record/frame-diffuse-gi';
 import type { ProjectedRows } from '../scene/row-projection';
-import { RENDER_CASCADE_FIT_SYSTEM } from './light-systems';
-import { VIEW_REFLECTION_PROBES_SYSTEM } from './reflection-systems';
+import {
+  GiSubmissionCommitOrder,
+  RenderCascadeFitOrder,
+  RenderScenePublishOrder,
+  RenderViewFrameOrder,
+  ViewDiffuseGiOrder,
+  ViewReflectionProbesOrder,
+  VisibleSurfaceRowsOrder,
+} from '../system-order';
+
 import { ViewCascadeFit } from './render-lights';
 import { ViewRecorder } from './render-views';
 import { RenderCleanup, RenderCommit, RenderPrepare, renderSubmission } from './render-world';
-import { RENDER_SCENE_PUBLISH_SYSTEM } from './scene-systems';
+
 import { readViewField, requireViewField } from './view-field';
-import { RENDER_VIEW_FRAME_SYSTEM, ViewFrame, type ViewFrameState } from './view-frame-systems';
+import { ViewFrame, type ViewFrameState } from './view-frame-systems';
 import { ownerOf } from './view-settlement';
 
 export const GI_SUBMISSION_COMMIT_SYSTEM = 'gi-submission-commit';
@@ -34,13 +48,11 @@ export interface GiSubmissionQueue {
   readonly submitted: FrameDiffuseGi[];
 }
 
-export const GiSubmissions = Object.freeze({ name: 'GiSubmissions' });
+export const GiSubmissions = defineResource<GiSubmissionQueue>('GiSubmissions');
 
 /** The Renderer's GI submission queue; absent when no frame entry owns the Render World. */
 export function giSubmissionsOf(world: World | undefined): GiSubmissionQueue | undefined {
-  return world?.hasResource(GiSubmissions) === true
-    ? world.getResource<GiSubmissionQueue>(GiSubmissions)
-    : undefined;
+  return world?.hasResource(GiSubmissions) === true ? world.getResource(GiSubmissions) : undefined;
 }
 
 /** The queue a view's GI preparation enqueues into; GI runs only inside a Renderer frame entry. */
@@ -58,32 +70,31 @@ export function registerGiSystems(world: World): void {
   if (world.hasResource(GiSubmissions)) return;
   const queue: GiSubmissionQueue = { prepared: [], submitted: [] };
   world.insertResource(GiSubmissions, queue);
-  world
-    .addSystem(RenderCommit, {
-      commands: 'none',
-      name: GI_SUBMISSION_COMMIT_SYSTEM,
-      queries: [],
-      fn: (world) => {
-        const queue = world.getResource<GiSubmissionQueue>(GiSubmissions);
-        for (const gi of queue.submitted) commitDiffuseGi(gi);
-      },
-    })
-    .unwrap();
-  world
-    .addSystem(RenderCleanup, {
-      commands: 'none',
-      name: GI_SUBMISSION_CLEANUP_SYSTEM,
-      queries: [],
-      fn: (world) => {
-        const queue = world.getResource<GiSubmissionQueue>(GiSubmissions);
-        // A committed placement is settled, so its abort is a no-op; an
-        // uncommitted candidate retires without becoming the accepted pair.
-        for (const gi of queue.prepared) gi.probePlacement?.abort();
-        queue.prepared.length = 0;
-        queue.submitted.length = 0;
-      },
-    })
-    .unwrap();
+  const systemToken1 = defineSystem({
+    sets: [GiSubmissionCommitOrder],
+    commands: 'none',
+    name: GI_SUBMISSION_COMMIT_SYSTEM,
+    queries: [],
+    fn: (world) => {
+      const queue = world.getResource(GiSubmissions);
+      for (const gi of queue.submitted) commitDiffuseGi(gi);
+    },
+  });
+  world.addSystem(RenderCommit, systemToken1).unwrap();
+  const systemToken2 = defineSystem({
+    commands: 'none',
+    name: GI_SUBMISSION_CLEANUP_SYSTEM,
+    queries: [],
+    fn: (world) => {
+      const queue = world.getResource(GiSubmissions);
+      // A committed placement is settled, so its abort is a no-op; an
+      // uncommitted candidate retires without becoming the accepted pair.
+      for (const gi of queue.prepared) gi.probePlacement?.abort();
+      queue.prepared.length = 0;
+      queue.submitted.length = 0;
+    },
+  });
+  world.addSystem(RenderCleanup, systemToken2).unwrap();
 }
 
 /**
@@ -97,7 +108,7 @@ export interface VisibleSurfaceState {
   failure: unknown;
 }
 
-export const VisibleSurfaceInput = Object.freeze({ name: 'VisibleSurfaceInput' });
+export const VisibleSurfaceInput = defineResource<VisibleSurfaceState>('VisibleSurfaceInput');
 
 /** What the `visible-surface-rows` system reads from its Renderer. */
 export interface VisibleSurfaceSource {
@@ -112,7 +123,7 @@ export interface VisibleSurfaceSource {
 /** The frame's visible-surface state; absent when no composition owner registered it. */
 export function visibleSurfaceOf(world: World): VisibleSurfaceState | undefined {
   return world.hasResource(VisibleSurfaceInput)
-    ? world.getResource<VisibleSurfaceState>(VisibleSurfaceInput)
+    ? world.getResource(VisibleSurfaceInput)
     : undefined;
 }
 
@@ -128,26 +139,26 @@ export function registerVisibleSurfaceSystem(world: World, source: VisibleSurfac
     failure: undefined,
   };
   world.insertResource(VisibleSurfaceInput, state);
-  world
-    .addSystem(RenderPrepare, {
-      commands: 'none',
-      name: VISIBLE_SURFACE_ROWS_SYSTEM,
-      queries: [],
-      // The rows read the composition's published step, staged materials included.
-      after: [RENDER_SCENE_PUBLISH_SYSTEM],
-      runIf: source.enabled,
-      fn: (world) => {
-        const state = world.getResource<VisibleSurfaceState>(VisibleSurfaceInput);
-        state.projection = undefined;
-        state.failure = undefined;
-        const retained = source.retained();
-        if (retained === undefined) return;
-        const updated = state.rows.update(retained, source.maxRecords());
-        if (updated.ok) state.projection = updated.value;
-        else state.failure = updated.error;
-      },
-    })
-    .unwrap();
+  const systemToken3 = defineSystem({
+    sets: [VisibleSurfaceRowsOrder],
+    commands: 'none',
+    name: VISIBLE_SURFACE_ROWS_SYSTEM,
+    queries: [],
+    // The rows read the composition's published step, staged materials included.
+    after: [RenderScenePublishOrder],
+    runIf: source.enabled,
+    fn: (world) => {
+      const state = world.getResource(VisibleSurfaceInput);
+      state.projection = undefined;
+      state.failure = undefined;
+      const retained = source.retained();
+      if (retained === undefined) return;
+      const updated = state.rows.update(retained, source.maxRecords());
+      if (updated.ok) state.projection = updated.value;
+      else state.failure = updated.error;
+    },
+  });
+  world.addSystem(RenderPrepare, systemToken3).unwrap();
 }
 
 interface ViewDiffuseGiState {
@@ -180,54 +191,54 @@ export function viewDiffuseGiOf(
  * its cause.
  */
 export function registerViewDiffuseGiSystem(world: World): void {
-  world
-    .addSystem(RenderPrepare, {
-      commands: 'none',
-      name: VIEW_DIFFUSE_GI_SYSTEM,
-      after: [
-        RENDER_VIEW_FRAME_SYSTEM,
-        RENDER_CASCADE_FIT_SYSTEM,
-        VISIBLE_SURFACE_ROWS_SYSTEM,
-        // Probe capture work rejects probe placement on the same view.
-        VIEW_REFLECTION_PROBES_SYSTEM,
-      ],
-      // The cascade fit is read through `viewLightsOf`; an unfitted view has none.
-      queries: [{ read: [ViewRecorder, ViewFrame], optional: [ViewDiffuseGi, ViewCascadeFit] }],
-      fn: (world, [rows]) => {
-        const frame = renderSubmission(world).frame;
-        const first: { entity: EntityHandle; state: ViewDiffuseGiState }[] = [];
+  const systemToken4 = defineSystem({
+    sets: [ViewDiffuseGiOrder],
+    commands: 'none',
+    name: VIEW_DIFFUSE_GI_SYSTEM,
+    after: [
+      RenderViewFrameOrder,
+      RenderCascadeFitOrder,
+      VisibleSurfaceRowsOrder,
+      // Probe capture work rejects probe placement on the same view.
+      ViewReflectionProbesOrder,
+    ],
+    // The cascade fit is read through `viewLightsOf`; an unfitted view has none.
+    queries: [{ read: [ViewRecorder, ViewFrame], optional: [ViewDiffuseGi, ViewCascadeFit] }],
+    fn: (world, [rows]) => {
+      const frame = renderSubmission(world).frame;
+      const first: { entity: EntityHandle; state: ViewDiffuseGiState }[] = [];
 
-        rows.forEach((row) => {
-          const entity = row.entity;
+      rows.forEach((row) => {
+        const entity = row.entity;
 
-          const staged = world
-            .resolveUniqueRef<ViewFrameState>(requireViewField(world, entity, ViewFrame, 'state'))
-            .unwrap();
-          if (staged.frame !== frame || staged.result?.ok !== true) return;
-          const outcome = prepareViewDiffuseGi(
-            world,
-            entity,
-            ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state')),
-            staged,
-          );
-          const stored = readViewField(world, entity, ViewDiffuseGi, 'state');
-          if (stored === undefined) {
-            first.push({ entity: entity, state: { frame, outcome } });
-            return;
-          }
-          const state = world.resolveUniqueRef<ViewDiffuseGiState>(stored).unwrap();
-          state.frame = frame;
-          state.outcome = outcome;
-        });
-        // A view's first GI attaches its component after the iteration.
-        for (const { entity, state } of first)
-          world
-            .addComponent(entity, {
-              component: ViewDiffuseGi,
-              data: { state: world.allocUniqueRef('ViewDiffuseGi', state) },
-            })
-            .unwrap();
-      },
-    })
-    .unwrap();
+        const staged = world
+          .resolveUniqueRef<ViewFrameState>(requireViewField(world, entity, ViewFrame, 'state'))
+          .unwrap();
+        if (staged.frame !== frame || staged.result?.ok !== true) return;
+        const outcome = prepareViewDiffuseGi(
+          world,
+          entity,
+          ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state')),
+          staged,
+        );
+        const stored = readViewField(world, entity, ViewDiffuseGi, 'state');
+        if (stored === undefined) {
+          first.push({ entity: entity, state: { frame, outcome } });
+          return;
+        }
+        const state = world.resolveUniqueRef<ViewDiffuseGiState>(stored).unwrap();
+        state.frame = frame;
+        state.outcome = outcome;
+      });
+      // A view's first GI attaches its component after the iteration.
+      for (const { entity, state } of first)
+        world
+          .addComponent(entity, {
+            component: ViewDiffuseGi,
+            data: { state: world.allocUniqueRef('ViewDiffuseGi', state) },
+          })
+          .unwrap();
+    },
+  });
+  world.addSystem(RenderPrepare, systemToken4).unwrap();
 }

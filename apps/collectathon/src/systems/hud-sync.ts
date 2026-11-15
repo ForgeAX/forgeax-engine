@@ -14,7 +14,7 @@
 // is unit-testable without a DOM; the system fn wires it to the live resource +
 // the HUD handle spans.
 
-import type { SystemHandle, World } from '@forgeax/engine-ecs';
+import type { System, World } from '@forgeax/engine-ecs';
 import { defineSystem } from '@forgeax/engine-ecs';
 
 import { formatElapsed, type HudHandles } from '../hud';
@@ -47,13 +47,13 @@ export function formatHud(progress: GameProgress): HudView {
  * (AC-18 one-way derive) -- the elapsed timer write is the separate timer-tick
  * system (createTimerSystem).
  */
-export function createHudSyncSystem(hud: HudHandles): SystemHandle<readonly []> {
+export function createHudSyncSystem(hud: HudHandles): System<readonly []> {
   return defineSystem({
     name: 'hud-sync',
     queries: [],
     fn: (world: World) => {
       if (!world.hasResource(GAME_PROGRESS_KEY)) return;
-      const progress = world.getResource<GameProgress>(GAME_PROGRESS_KEY);
+      const progress = world.getResource(GAME_PROGRESS_KEY);
       const view = formatHud(progress);
       hud.scoreEl.textContent = view.score;
       hud.healthEl.textContent = view.health;
@@ -69,13 +69,13 @@ export function createHudSyncSystem(hud: HudHandles): SystemHandle<readonly []> 
  * tickElapsed mutator (the named write call site, mirroring core-collect's
  * applyCollect / guardian-hit's damage writer).
  */
-export function createTimerSystem(): SystemHandle<readonly []> {
+export function createTimerSystem(): System<readonly []> {
   return defineSystem({
     name: 'hud-timer',
     queries: [],
     fn: (world: World) => {
       if (!world.hasResource(GAME_PROGRESS_KEY)) return;
-      const progress = world.getResource<GameProgress>(GAME_PROGRESS_KEY);
+      const progress = world.getResource(GAME_PROGRESS_KEY);
       tickElapsed(progress, readDt(world));
     },
   });

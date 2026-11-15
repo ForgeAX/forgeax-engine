@@ -9,7 +9,6 @@ const EMPTY_MATERIALS: readonly MaterialResource[] = Object.freeze([]);
 
 /** Shared geometry facts. Vertex bytes remain with the asset and GPU residency owners. */
 export interface MeshGeometry {
-  readonly worldId: number;
   readonly handle: number;
   readonly bounds: Float32Array | undefined;
   /** Shared base-position enclosure, derived only on admitted Mesh changes.
@@ -54,21 +53,17 @@ function morphDeltas(mesh: MeshAsset): MeshMorphDeltas | undefined {
 export class MeshFrame {
   constructor(private readonly root: Node<MeshGeometry> | undefined = undefined) {}
 
-  get(worldId: number, handle: number | undefined): MeshGeometry | undefined {
+  get(handle: number | undefined): MeshGeometry | undefined {
     if (handle === undefined) return undefined;
     let node = this.root;
     while (node !== undefined) {
-      if (node.queue === worldId && node.key === handle) return node.value;
-      node =
-        worldId < node.queue || (worldId === node.queue && handle < node.key)
-          ? node.left
-          : node.right;
+      if (node.key === handle) return node.value;
+      node = handle < node.key ? node.left : node.right;
     }
     return undefined;
   }
 
   with(
-    worldId: number,
     handle: number,
     mesh: MeshAsset,
     materials: readonly MaterialResource[] = EMPTY_MATERIALS,
@@ -86,7 +81,6 @@ export class MeshFrame {
         ? source.slice()
         : undefined;
     const geometry: MeshGeometry = {
-      worldId,
       handle,
       bounds,
       skinEnvelopes: skinGeometryEnvelopes(mesh),
@@ -99,13 +93,11 @@ export class MeshFrame {
       lods: mesh.lods,
       lodHysteresis: mesh.lodHysteresis,
     };
-    return new MeshFrame(put(this.root, geometry, worldId, handle, 1));
+    return new MeshFrame(put(this.root, geometry, 0, handle, 1));
   }
 
-  without(worldId: number, handle: number): MeshFrame {
-    return this.get(worldId, handle) === undefined
-      ? this
-      : new MeshFrame(remove(this.root, worldId, handle));
+  without(handle: number): MeshFrame {
+    return this.get(handle) === undefined ? this : new MeshFrame(remove(this.root, 0, handle));
   }
 
   changesSince(

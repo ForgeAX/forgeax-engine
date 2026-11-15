@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { emitSmokeReceipt } from '../../../shared/scripts/smoke-receipt.mjs';
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const artifactDirectory = resolve(packageRoot, '../../../artifacts/ssr-fallback/dawn');
+const artifactDirectory = resolve(process.env.SMOKE_EVIDENCE_DIR ?? resolve(packageRoot, '../../../artifacts/ssr-fallback/dawn'));
 const passPattern = /\[smoke\] PASS - targetId=target-hello-ssr, frames=(\d+)\b/g;
 const lanes = [
   {

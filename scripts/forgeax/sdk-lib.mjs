@@ -77,15 +77,17 @@ const SDK_REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..
 export async function verifySdkViewRuntime({ sdkRoot, evidenceRoot, env, group = 'all' }) {
   if (!['all', 'project', 'view', 'game3d'].includes(group))
     throw new Error(`sdk-view-runtime-unknown-group:${group}`);
-  if (group === 'game3d' && env.FORGEAX_BROWSER_CI_LIGHTWEIGHT === '1') {
-    const destination = resolve(sdkRoot, 'scripts/test');
-    await mkdir(destination, { recursive: true });
-    for (const name of ['reduce-test-project.mjs', 'render-quality.json']) {
-      const from = resolve(SDK_REPOSITORY_ROOT, 'scripts/test', name);
-      const to = resolve(destination, name);
+  if (group === 'game3d') {
+    const helpers = ['scripts/ci/browser-launch.json'];
+    if (env.FORGEAX_BROWSER_CI_LIGHTWEIGHT === '1')
+      helpers.push('scripts/test/reduce-test-project.mjs', 'scripts/test/render-quality.json');
+    for (const name of helpers) {
+      const from = resolve(SDK_REPOSITORY_ROOT, name);
+      const to = resolve(sdkRoot, name);
+      await mkdir(dirname(to), { recursive: true });
       if (existsSync(to)) {
         if (readFileSync(to, 'utf8') !== readFileSync(from, 'utf8'))
-          throw new Error(`sdk-lightweight-helper-collision: ${name}`);
+          throw new Error(`sdk-view-helper-collision: ${name}`);
       } else await cp(from, to);
     }
   }
@@ -248,6 +250,35 @@ export const SDK_RESOURCE_ALLOWLIST = Object.freeze([
     sourceRoot: 'packages/preview/assets/canonical-kit',
     packageRoot: 'assets/canonical-kit',
     files: Object.freeze(['cook-receipt.json', 'sky.hdr', 'sky.hdr.meta.json']),
+  }),
+  Object.freeze({
+    id: 'content-water',
+    package: '@forgeax/engine-content',
+    sourceRoot: 'packages/content/assets/water',
+    packageRoot: 'assets/water',
+    files: Object.freeze([
+      'impulse-noise.pack.ts',
+      'volume-noise.pack.ts',
+      'materials.pack.ts',
+      'LICENSE.water.txt',
+      'provenance.json',
+      'LowResBlurredNoise.png',
+      'LowResBlurredNoise.png.meta.json',
+      'RiverFlowmap_Diffuse.png',
+      'RiverFlowmap_Diffuse.png.meta.json',
+      'RiverFlowmap_Normal.png',
+      'RiverFlowmap_Normal.png.meta.json',
+      'T_Noise01.png',
+      'T_Noise01.png.meta.json',
+      'T_VolumeNoiseShape128.slices.png',
+      'T_VolumeNoiseShape128.slices.png.meta.json',
+      'T_WaterFlow_01_Foam_Tiled.png',
+      'T_WaterFlow_01_Foam_Tiled.png.meta.json',
+      'T_WaterFlow_01_Foam_Tiled_N.png',
+      'T_WaterFlow_01_Foam_Tiled_N.png.meta.json',
+      'T_Water_TilingNormal_With_Height_02_Softened.png',
+      'T_Water_TilingNormal_With_Height_02_Softened.png.meta.json',
+    ]),
   }),
 ]);
 // SDK templates are source-complete. game-3d generates procedural assets from

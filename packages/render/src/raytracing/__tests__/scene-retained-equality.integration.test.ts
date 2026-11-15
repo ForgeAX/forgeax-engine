@@ -263,11 +263,10 @@ function sequenceFixture(seed: number) {
   const material = new MaterialResource({ ...defaultMaterialSnapshot(), materialHandle });
   let meshFrame = new MeshFrame();
   for (const [index, handle] of handles.entries())
-    meshFrame = meshFrame.with(0, handle, meshes[index] as MeshAsset);
+    meshFrame = meshFrame.with(handle, meshes[index] as MeshAsset);
   // One prepared template, so every entity shares the accepted material resource.
   const template = preparedPbrSnapshot({
     entityKey: 0,
-    worldId: 0,
     assetHandle: handleAt(0),
     transform: { world: mat4.identity(mat4.create()) },
     material,
@@ -320,7 +319,7 @@ it.each([
   const add = () => {
     const snapshot = source(nextKey++);
     live.set(snapshot.entityKey, snapshot);
-    retained.apply([{ kind: 'update', worldId: 0, entityKey: snapshot.entityKey, snapshot }]);
+    retained.apply([{ kind: 'update', entityKey: snapshot.entityKey, snapshot }]);
   };
   for (let i = 0; i < 24; i++) add();
   const projection = new RaySceneProjection();
@@ -338,7 +337,7 @@ it.each([
     else if (step > 0 && roll < 0.3 && live.size > 4) {
       const key = keys[Math.floor(next() * keys.length)] as number;
       live.delete(key);
-      retained.apply([{ kind: 'remove', worldId: 0, entityKey: key }]);
+      retained.apply([{ kind: 'remove', entityKey: key }]);
     } else if (step > 0) {
       // Move 1..4 rigid entities (root or instance poses), the stable-shape refit path.
       const moves = 1 + Math.floor(next() * 4);
@@ -353,7 +352,7 @@ it.each([
               }
             : { ...previous, transform: { world: randomPose(next) } };
         live.set(key, snapshot);
-        retained.apply([{ kind: 'update', worldId: 0, entityKey: key, snapshot }]);
+        retained.apply([{ kind: 'update', entityKey: key, snapshot }]);
       }
     }
     const rows = {
@@ -364,7 +363,7 @@ it.each([
       meshes: meshFrame,
     };
     const visible = surfaces.update(rows, RECORD_BUDGET).unwrap();
-    const incremental = projection.sync(rows, [scope], visible);
+    const incremental = projection.sync(rows, scope, visible);
     const edit = projection.edit;
     if (edit === undefined) {
       colds++;
@@ -376,7 +375,7 @@ it.each([
       mirror.edit(incremental, edit);
     }
     accepted = incremental.scene.triangles;
-    const cold = projectRayScene(rows.slots, [scope], visible, rows);
+    const cold = projectRayScene(rows.slots, scope, visible, rows);
     const label = `seed ${seed} step ${step}`;
     expect(incremental.scene.triangleCount, label).toBe(cold.scene.triangleCount);
     expect(incremental.materials, label).toEqual(cold.materials);
@@ -409,15 +408,15 @@ it.each([
   // The sequence exercised both the refit and the cold path.
   expect(refits).toBeGreaterThan(10);
   expect(colds).toBeGreaterThan(1);
-}, 60_000);
+}, 60000);
 
 it('detects a refit that skips a changed row (the oracle is not vacuous)', () => {
   const { world, materials, meshFrame, source } = sequenceFixture(7);
   const scope = worldRenderResources(world);
   const retained = new RenderScene();
   const first = source(1);
-  retained.apply([{ kind: 'update', worldId: 0, entityKey: 1, snapshot: first }]);
-  retained.apply([{ kind: 'update', worldId: 0, entityKey: 2, snapshot: source(2) }]);
+  retained.apply([{ kind: 'update', entityKey: 1, snapshot: first }]);
+  retained.apply([{ kind: 'update', entityKey: 2, snapshot: source(2) }]);
   const projection = new RaySceneProjection();
   const surfaces = new VisibleSurfaceRows();
   const identity = {};
@@ -430,7 +429,7 @@ it('detects a refit that skips a changed row (the oracle is not vacuous)', () =>
       meshes: meshFrame,
     };
     const visible = surfaces.update(rows, RECORD_BUDGET).unwrap();
-    return { rows, visible, projected: projection.sync(rows, [scope], visible) };
+    return { rows, visible, projected: projection.sync(rows, scope, visible) };
   };
   const accepted = sync(1).projected;
   const stale = accepted.scene.triangles.slice();
@@ -439,14 +438,13 @@ it('detects a refit that skips a changed row (the oracle is not vacuous)', () =>
   retained.apply([
     {
       kind: 'update',
-      worldId: 0,
       entityKey: 1,
       snapshot: { ...first, transform: { world: pose } },
     },
   ]);
   const { rows, visible, projected } = sync(2);
   assert(projection.edit !== undefined);
-  const cold = projectRayScene(rows.slots, [scope], visible, rows);
+  const cold = projectRayScene(rows.slots, scope, visible, rows);
   expect(rowsByIdentity(projected.scene)).toEqual(rowsByIdentity(cold.scene));
   expect(rowsByIdentity({ ...projected.scene, triangles: stale })).not.toEqual(
     rowsByIdentity(cold.scene),

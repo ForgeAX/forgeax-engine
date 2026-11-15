@@ -38,11 +38,24 @@
 //   - plan-strategy §K-5 / §K-8 / §K-11 / §7.1 / §7.3 / §3 R-4
 
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
 import { relative, resolve, sep } from 'node:path';
 import process from 'node:process';
 import { pathToFileURL } from 'node:url';
 import { brotliCompressSync, gzipSync } from 'node:zlib';
+import { pnpmCommand } from '../lib/pnpm-command.mjs';
+
+function spawnPnpmSync(_command, args, options) {
+  const [command, ...prefix] = pnpmCommand(options.env);
+  return spawnSync(command, [...prefix, ...args], options);
+}
 
 // MetricErrorCode mirror — string literals match `packages/types/src/index.ts`
 // `export type MetricErrorCode` SSOT (M1 T-001 + T-002). This generic runner
@@ -86,7 +99,16 @@ function statusFromBundle(value, threshold) {
   return value <= threshold ? 'ok' : 'over';
 }
 
-function dispatchBundleSize(_pkgName, pkgRoot, decl) {
+function bundleFiles(path) {
+  const stat = lstatSync(path);
+  if (stat.isFile()) return [path];
+  if (!stat.isDirectory()) throw new Error(`bundle artifact must be a file or directory: ${path}`);
+  return readdirSync(path)
+    .sort()
+    .flatMap((name) => bundleFiles(resolve(path, name)));
+}
+
+export function dispatchBundleSize(_pkgName, pkgRoot, decl) {
   const path = decl.path;
   const compression = decl.compression;
   const threshold = decl.baseline?.threshold ?? null;
@@ -100,15 +122,34 @@ function dispatchBundleSize(_pkgName, pkgRoot, decl) {
       details: { path, compression, message: `artefact missing at ${path}` },
     };
   }
-  const buf = readFileSync(artefact);
-  const compressed = compression === 'brotli' ? brotliCompressSync(buf) : gzipSync(buf);
-  const value = compressed.byteLength;
+  const files = bundleFiles(artefact);
+  if (files.length === 0) {
+    return {
+      kind: 'bundle-size',
+      status: 'missing',
+      value: null,
+      threshold,
+      details: { path, compression, message: `artefact empty at ${path}` },
+    };
+  }
+  let raw = 0;
+  let value = 0;
+  for (const file of files) {
+    const buf = readFileSync(file);
+    raw += buf.byteLength;
+    value += (compression === 'brotli' ? brotliCompressSync(buf) : gzipSync(buf)).byteLength;
+  }
   return {
     kind: 'bundle-size',
     status: statusFromBundle(value, threshold),
     value,
     threshold,
-    details: { path, compression, raw: buf.byteLength },
+    details: {
+      path,
+      compression,
+      raw,
+      ...(lstatSync(artefact).isDirectory() ? { files: files.length } : {}),
+    },
   };
 }
 
@@ -271,7 +312,7 @@ function validateGpuFrameSamplesReport(payload, pkgName, pkgRoot, opts) {
   const packageFilter = packageFilterForBench(pkgName, pkgRoot);
   const validatorEnv = { ...process.env };
   delete validatorEnv.FORGEAX_LOD_GPU_PRODUCER;
-  const result = spawnSync('pnpm', ['-F', packageFilter, 'smoke:performance'], {
+  const result = spawnPnpmSync('pnpm', ['-F', packageFilter, 'smoke:performance'], {
     cwd: pkgRoot,
     encoding: 'utf8',
     env: validatorEnv,
@@ -293,7 +334,7 @@ export function dispatchGpuFrameSamplesBench(pkgName, pkgRoot, decl, opts = {}) 
   const reportPath = decl.reportPath ?? 'artifacts/gpu-frame-samples.json';
   const artefact = resolve(pkgRoot, reportPath);
   const threshold = decl.baseline?.threshold ?? null;
-  const spawnFn = opts.spawnFn ?? spawnSync;
+  const spawnFn = opts.spawnFn ?? spawnPnpmSync;
   const root = opts.root ?? process.cwd();
   const packageRelativePath = relative(resolve(pkgRoot), artefact);
   const currentHead = currentGitHead(root, opts);
@@ -479,7 +520,7 @@ export function dispatchBench(pkgName, pkgRoot, decl, opts = {}) {
   const suite = decl.suite ?? null;
   const threshold = decl.baseline?.threshold ?? null;
   const artefact = resolve(pkgRoot, reportPath);
-  const spawnFn = opts.spawnFn ?? spawnSync;
+  const spawnFn = opts.spawnFn ?? spawnPnpmSync;
   // bench prereq autodetect (feat-20260510-ci-merge-gate-hardening K-6 + AC-09);
   // retry exactly once. Function-local counter (not module state) so concurrent
   // dispatchers never share retry budget. spawn shape mirrors plan-tasks w12

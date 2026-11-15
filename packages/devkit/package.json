@@ -99,7 +99,9 @@
     "@types/node": "^20.14.0",
     "@types/ws": "^8.18.1",
     "@forgeax/engine-math": "workspace:*",
-    "@forgeax/engine-content": "workspace:*"
+    "@forgeax/engine-content": "workspace:*",
+    "@forgeax/engine-vfx": "workspace:*",
+    "@forgeax/engine-vfx-render": "workspace:*"
   },
   "forgeax": {
     "metrics": {

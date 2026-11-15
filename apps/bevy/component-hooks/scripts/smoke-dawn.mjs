@@ -5,9 +5,9 @@ import testQuality from '../../../../scripts/test/render-quality.json' with { ty
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 // Headless Dawn smoke for the component_hooks reproduction.
 
-import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 
 const FRAMES = Math.max(Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10), 60);
 const WIDTH = testQuality.viewport.width;
@@ -58,7 +58,7 @@ globalThis.navigator.gpu.requestAdapter = async (options) => {
 };
 
 const here = dirname(fileURLToPath(import.meta.url));
-const manifestUrl = `data:application/json,${encodeURIComponent(readFileSync(resolve(here, '..', 'dist', 'shaders', 'manifest.json'), 'utf8'))}`;
+const manifestUrl = `data:application/json,${encodeURIComponent(readShaderManifestText(resolve(here, '..', 'dist', 'shaders', 'manifest.json')))}`;
 const { World } = await import('@forgeax/engine-ecs');
 const { createRenderer } = await import('@forgeax/engine-runtime');
 const { buildComponentHooksWorld, readComponentHooksState } = await import(resolve(here, '..', 'src', 'component-hooks.ts'));

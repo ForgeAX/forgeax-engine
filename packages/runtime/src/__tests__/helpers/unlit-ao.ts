@@ -9,7 +9,7 @@ import type { EncodedTape, RecorderAttachment } from '@forgeax/engine-rhi-debug'
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
 import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
-import { decodeMaterialNormalX12Y12 } from '../../../../render/src/__tests__/gtao-reference';
+import { decodeSsaoRawNormal } from '../../../../render/src/__tests__/gtao-reference';
 import { captureForwardGtaoTarget, type ForwardGtaoCaptureHost } from './forward-gtao-capture';
 import { describeForwardGtaoFailure } from './forward-gtao-failure';
 import {
@@ -99,27 +99,27 @@ export async function verifyUnlitAo(
     propagateTransforms(world).unwrap();
     try {
       return await drawReadyFrame(renderer, {
-        leases: [lease],
-        camera: { lease, entityKey: camera },
-        environment: { lease },
+        source: lease,
+        camera: { entityKey: camera },
         geometryLane,
       });
     } catch (cause) {
       throw new Error(JSON.stringify(describeForwardGtaoFailure(cause)), { cause });
     }
   };
+  // Forward AO reconstructs its normal from the depth-only prepass and carries
+  // it beside visibility in ssao-raw (rgba8 octahedral, about 1/127 precision).
   const centerNormal = (capture: Awaited<ReturnType<typeof captureForwardGtaoTarget>>) => {
-    expect(capture.format).toBe('r32uint');
+    expect(capture.format).toBe('rgba8unorm');
     const pixel =
       (Math.floor(capture.height / 2) * capture.width + Math.floor(capture.width / 2)) * 4;
-    const packed = new DataView(capture.bytes.buffer, capture.bytes.byteOffset).getUint32(
-      pixel,
-      true,
+    return decodeSsaoRawNormal(
+      (capture.bytes[pixel + 1] ?? NaN) / 255,
+      (capture.bytes[pixel + 2] ?? NaN) / 255,
     );
-    return decodeMaterialNormalX12Y12(packed);
   };
   const nearNormal = (actual: readonly number[], expected: readonly number[]) => {
-    for (let axis = 0; axis < 3; axis++) expect(actual[axis]).toBeCloseTo(expected[axis] ?? NaN, 2);
+    for (let axis = 0; axis < 3; axis++) expect(actual[axis]).toBeCloseTo(expected[axis] ?? NaN, 1);
   };
   try {
     for (const algorithm of ['ssao', 'gtao'] as const) {
@@ -132,10 +132,7 @@ export async function verifyUnlitAo(
       for (const geometryLane of ['automatic', 'direct'] as const) {
         // No authored normal texture: AO must see the rotated mesh surface.
         for (let frame = 0; frame < 60; frame++) await draw(geometryLane);
-        const capture = () =>
-          captureForwardGtaoTarget(debug, 'standard-scene-surface-normal', () =>
-            draw(geometryLane),
-          );
+        const capture = () => captureForwardGtaoTarget(debug, 'ssao-raw', () => draw(geometryLane));
         nearNormal(centerNormal(await capture()), [Math.sin(angle), 0, Math.cos(angle)]);
         // Alpha Mask holes reveal the actual background normal, not a phantom foreground.
         assets.update(material, { values: { baseColor: [0.8, 0.3, 0.1, 0] } }).unwrap();
@@ -168,9 +165,7 @@ export async function verifyUnlitAo(
       await draw(geometryLane);
       (await recorder.frameBoundary()).unwrap();
       await onTape(geometryLane, (await pendingTape).unwrap());
-      const capture = await captureForwardGtaoTarget(debug, 'standard-scene-surface-normal', () =>
-        draw(geometryLane),
-      );
+      const capture = await captureForwardGtaoTarget(debug, 'ssao-raw', () => draw(geometryLane));
       nearNormal(centerNormal(capture), [Math.sin(angle), 0, Math.cos(angle)]);
       world
         .set(skin.joint, Transform, {
@@ -178,9 +173,7 @@ export async function verifyUnlitAo(
           quat: [0, -Math.sin(angle / 2), 0, Math.cos(angle / 2)],
         })
         .unwrap();
-      const moved = await captureForwardGtaoTarget(debug, 'standard-scene-surface-normal', () =>
-        draw(geometryLane),
-      );
+      const moved = await captureForwardGtaoTarget(debug, 'ssao-raw', () => draw(geometryLane));
       nearNormal(centerNormal(moved), [-Math.sin(angle), 0, Math.cos(angle)]);
       world.set(skin.joint, Transform, pose).unwrap();
     }

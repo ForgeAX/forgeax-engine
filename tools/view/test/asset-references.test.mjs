@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { it } from 'node:test';
 import { assetReferenceCandidates, explicitEntityAssetReferences, primaryEntityAsset } from '../packages/view-workspace-core/src/asset-references.ts';
 import { inspectorEntityFromInspection } from '../packages/view-plugin-inspector/src/inspection.ts';
+import { nativeCloudAssets, nativeCloudInspection } from './support/inspector-native-cloud.fixture.mjs';
 
 const meshGuid = '11111111-1111-4111-8111-111111111111';
 const materialGuid = '22222222-2222-4222-8222-222222222222';
@@ -42,4 +43,30 @@ it('reads explicit GUIDs from managed asset schemas without treating shared game
     { key: 'MeshRenderer.materials[0]', guid: materialGuid },
     { key: 'MeshRenderer.materials[2]', guid: overrideGuid },
   ]);
+});
+
+it('projects native Play material references from the same inspection without a Scene reference session', () => {
+  const source = inspectorEntityFromInspection(nativeCloudInspection, nativeCloudAssets);
+  assert.equal(source.raw, nativeCloudInspection);
+  const fields = source.components[0].fields;
+  for (const [index, key] of ['material', 'materialInstance'].entries()) {
+    const field = fields.find(field => field.key === key);
+    assert.equal(field.rawValue, nativeCloudInspection.components[0].values[key]);
+    assert.equal(field.resource.guid, nativeCloudAssets[index].guid);
+    assert.equal(field.resource.asset, nativeCloudAssets[index]);
+    assert.equal(field.resource.status, 'resolved');
+  }
+  assert.equal(source.assetReferencesTruncated, false);
+});
+
+it('keeps atomic native facts authoritative over stale external bindings and preserves missing Catalog identities', () => {
+  const stale = { entityId: nativeCloudInspection.entityId, targetId: nativeCloudInspection.targetId,
+    references: [{ ...nativeCloudInspection.assetReferences.references[0], guid: materialGuid }], truncated: true };
+  const source = inspectorEntityFromInspection(nativeCloudInspection, nativeCloudAssets, {}, stale);
+  assert.equal(source.components[0].fields[0].resource.guid, nativeCloudAssets[0].guid);
+  assert.equal(source.assetReferencesTruncated, false);
+  const missing = inspectorEntityFromInspection(nativeCloudInspection, []);
+  assert.equal(missing.components[0].fields[0].resource.guid, nativeCloudAssets[0].guid);
+  assert.equal(missing.components[0].fields[0].resource.status, 'missing');
+  assert.equal(missing.components[0].fields[0].resource.asset, undefined);
 });

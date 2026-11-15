@@ -15,6 +15,8 @@ const imports = Object.fromEntries(
     'atmosphere-sampling',
     'atmosphere-visibility',
     'cloud',
+    'cloud/geometry',
+    'cloud/shadow',
     'brdf',
     'ibl-sampling',
     'ibl-pmrem',

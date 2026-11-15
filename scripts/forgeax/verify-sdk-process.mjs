@@ -2,6 +2,7 @@ import { execFile, spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { delimiter, dirname, resolve } from 'node:path';
 import { promisify } from 'node:util';
+import { collectViewBackendDiagnostics } from '../ci/view-backend-diagnostics.mjs';
 
 const execute = promisify(execFile);
 
@@ -45,15 +46,30 @@ export function createSdkVerifierProcess(packageManager, runtime = {}) {
       : ['corepack', actualArgs];
   };
   return {
-    execFileAsync(file, args, { streamOutput = false, ...options } = {}) {
+    execFileAsync(file, args, { streamOutput = false, backendEvidenceDirectory, ...options } = {}) {
       const [command, commandArgs] = resolveCommand(file, args);
+      const startedAt = Date.now();
       const pending = execute(command, commandArgs, options);
       if (streamOutput) {
         // Keep long source-build progress visible while reserving stdout for the final report.
         pending.child.stdout.on('data', (chunk) => process.stderr.write(chunk));
         pending.child.stderr.on('data', (chunk) => process.stderr.write(chunk));
       }
-      return pending;
+      if (backendEvidenceDirectory === undefined) return pending;
+      const observed = pending.catch((error) => {
+        try {
+          collectViewBackendDiagnostics({
+            probePid: pending.child.pid,
+            startedAt,
+            outputDirectory: backendEvidenceDirectory,
+          });
+        } catch (cause) {
+          console.error('[sdk View backend evidence]', String(cause));
+        }
+        throw error;
+      });
+      observed.child = pending.child;
+      return observed;
     },
     spawn(file, args, options) {
       const [command, commandArgs] = resolveCommand(file, args);

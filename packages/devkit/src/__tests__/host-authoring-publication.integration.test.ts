@@ -1,6 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import type { EngineWorkspacePreview } from '@forgeax/engine-app';
 import { createBackendHost } from '@forgeax/engine-host/backend';
@@ -8,13 +7,23 @@ import type { PackDraftReply, PackDraftSnapshot } from '@forgeax/engine-pack/sou
 import type { PluginPack } from '@forgeax/engine-vite-plugin-pack';
 import { createServer, type Plugin, type ViteDevServer } from 'vite';
 import { expect, it } from 'vitest';
+import {
+  createLiveSyncProjectDirectory,
+  prepareLiveSyncSharedInputs,
+} from '../../scripts/live-sync-inputs.mjs';
 import { createViteConfig } from '../host.js';
 import { readProjectFacts } from '../project.js';
 import { allocateLoopbackPort } from '../tools/browser-host.js';
 import { createWorkspacePackAuthoring } from '../workspace-pack-authoring.js';
 
 it('publishes saved authoring sources without replacing the editing document', async () => {
-  const root = await realpath(await mkdtemp(resolve(tmpdir(), 'forgeax-authoring-publication-')));
+  const directory = await createLiveSyncProjectDirectory(
+    'forgeax-authoring-publication-',
+    resolve(import.meta.dirname, '../../../..'),
+    process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST,
+  );
+  const root = await realpath(directory.root);
+  const temporaryRoot = await realpath(directory.temporaryRoot);
   const backend = await createBackendHost();
   let server: ViteDevServer | undefined;
   const source = resolve(root, 'assets/scene.pack.json');
@@ -32,6 +41,13 @@ it('publishes saved authoring sources without replacing the editing document', a
       },
     });
   try {
+    if (process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST)
+      await prepareLiveSyncSharedInputs({
+        sourceRoot: resolve(import.meta.dirname, '../../../..'),
+        projectRoot: root,
+        temporaryRoot,
+        manifestPath: process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST,
+      });
     await mkdir(resolve(root, 'assets'));
     await writeFile(
       resolve(root, 'package.json'),
@@ -228,12 +244,18 @@ it('publishes saved authoring sources without replacing the editing document', a
   } finally {
     await server?.close();
     await backend.dispose();
-    await rm(root, { recursive: true, force: true });
+    await rm(temporaryRoot, { recursive: true, force: true });
   }
 });
 
 it('waits for the Vite read barrier before notifying the Pack authoring owner', async () => {
-  const root = await realpath(await mkdtemp(resolve(tmpdir(), 'forgeax-authoring-read-barrier-')));
+  const directory = await createLiveSyncProjectDirectory(
+    'forgeax-authoring-read-barrier-',
+    resolve(import.meta.dirname, '../../../..'),
+    process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST,
+  );
+  const root = await realpath(directory.root);
+  const temporaryRoot = await realpath(directory.temporaryRoot);
   const backend = await createBackendHost();
   let server: ViteDevServer | undefined;
   let owner: ReturnType<typeof createWorkspacePackAuthoring> | undefined;
@@ -267,6 +289,13 @@ it('waits for the Vite read barrier before notifying the Pack authoring owner', 
     asset: { path: relativeSource },
   } as unknown as EngineWorkspacePreview;
   try {
+    if (process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST)
+      await prepareLiveSyncSharedInputs({
+        sourceRoot: resolve(import.meta.dirname, '../../../..'),
+        projectRoot: root,
+        temporaryRoot,
+        manifestPath: process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST,
+      });
     await mkdir(resolve(root, 'assets'));
     await mkdir(resolve(root, 'node_modules/@forgeax'), { recursive: true });
     await symlink(
@@ -443,6 +472,6 @@ it('waits for the Vite read barrier before notifying the Pack authoring owner', 
     await server?.close();
     owner?.dispose();
     await backend.dispose();
-    await rm(root, { recursive: true, force: true });
+    await rm(temporaryRoot, { recursive: true, force: true });
   }
 });

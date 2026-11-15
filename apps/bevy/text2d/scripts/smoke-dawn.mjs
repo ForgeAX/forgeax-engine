@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { defineSystem } from "@forgeax/engine-ecs";
 import { encodePng } from '@forgeax/engine-image/png';
 import { createSmokePlatform } from '../../../../scripts/smoke-platform.mjs';
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
@@ -13,6 +14,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
+import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 
 
 const framesTarget = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
@@ -90,7 +92,7 @@ const {
 } = await import(resolve(here, '..', 'src', 'text2d.ts'));
 const m34RecoveryMode = process.argv.includes('--m34-recovery');
 const manifestPath = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const manifestUrl = `data:application/json,${encodeURIComponent(readFileSync(manifestPath, 'utf8'))}`;
+const manifestUrl = `data:application/json,${encodeURIComponent(readShaderManifestText(manifestPath))}`;
 
 const result = await createApp(mockCanvas, { platform: createSmokePlatform(mockCanvas) }, { shaderManifestUrl: manifestUrl }).catch((error) => {
   console.error(`[smoke] FAIL - createApp threw: ${error instanceof Error ? error.stack ?? error.message : String(error)}`);
@@ -128,7 +130,7 @@ if (m34RecoveryMode) {
   assets.release(fontHandle).unwrap();
   const recoveryScene = buildText2dFontRecoveryWorld(app.world, fontPayload);
   let m34Phase = 0;
-  app.world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'text2d-m34-frame-keepalive',
     queries: [],
     fn: (world) => {
@@ -136,6 +138,7 @@ if (m34RecoveryMode) {
       m34Phase += 0.001;
     },
   });
+app.world.addSystem(Update, systemToken1);
   await runM34Recovery(app, fontPayload, errors, artifactDir, recoveryScene);
   await app.dispose();
   delete globalThis.navigator.gpu;
@@ -143,11 +146,12 @@ if (m34RecoveryMode) {
 }
 const fontPayload = fontHandle;
 const scene = buildText2dWorld(app.world, fontPayload);
-app.world.addSystem(Update, {
+const systemToken2 = defineSystem({
   name: 'text2d-motion',
   queries: [],
   fn: (world) => stepText2d(world, scene, 1 / 60),
 });
+app.world.addSystem(Update, systemToken2);
 
 const attached = () => [scene.translation, scene.rotation, scene.scale, scene.multiline]
   .filter((entity) => worldGet(entity, GlyphText) && !worldGet(entity, MeshFilter) && !worldGet(entity, MeshRenderer)).length;

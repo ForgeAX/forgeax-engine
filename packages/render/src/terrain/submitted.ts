@@ -7,7 +7,6 @@ import type { FrameList } from '../scene/frame-list';
 import { terrainDrawSection } from './source';
 
 export interface SubmittedTerrainSection {
-  readonly worldId: number;
   readonly entity: number;
   readonly section: number;
   readonly asset: number;
@@ -20,18 +19,16 @@ export interface SubmittedTerrainSection {
 /** Own the actual packed bytes before mutable publication receiver maps can advance. */
 export function captureSubmittedTerrain(
   sources: FrameList<RenderableSnapshot>,
-  worlds: readonly RenderResourceScope[],
+  sourceScope: RenderResourceScope,
 ): readonly SubmittedTerrainSection[] {
   const sections: SubmittedTerrainSection[] = [];
   for (const source of sources) {
     const terrain = source.terrain,
       section = source.terrainSection;
     if (terrain === undefined || section === undefined || source.authorVisible === false) continue;
-    if (worlds[source.worldId] === undefined)
-      throw unavailable('source', 'complete recorded terrain closure');
+    if (sourceScope === undefined) throw unavailable('source', 'complete recorded terrain closure');
     const { data, heights } = terrainDrawSection(section.source, section.index);
     sections.push({
-      worldId: source.worldId,
       entity: source.entityKey,
       section: section.index,
       asset: Number(terrain.handle),
@@ -94,7 +91,6 @@ export function createTerrainReceiptOwner(isCurrent: (receipt: FrameReceipt) => 
 }
 
 export interface SubmittedTerrainHeightRequest {
-  readonly worldId: number;
   readonly entity: number;
   readonly x: number;
   readonly z: number;
@@ -110,12 +106,7 @@ export async function querySubmittedTerrainHeight(
   receipt: FrameReceipt,
   request: SubmittedTerrainHeightRequest,
 ): Promise<Result<number | undefined, TerrainError>> {
-  if (
-    !Number.isInteger(request.worldId) ||
-    request.worldId < 0 ||
-    !Number.isInteger(request.entity) ||
-    ![request.x, request.z].every(Number.isFinite)
-  )
+  if (!Number.isInteger(request.entity) || ![request.x, request.z].every(Number.isFinite))
     return err(unavailable('request', 'finite coordinates and integer source identities'));
   if (
     request.expectedAsset !== undefined &&
@@ -146,9 +137,7 @@ export async function querySubmittedTerrainHeight(
     );
   const view = views[0];
   if (view === undefined) return err(unavailable('view', 'one submitted view'));
-  const sections = view.sections.filter(
-    (section) => section.worldId === request.worldId && section.entity === request.entity,
-  );
+  const sections = view.sections.filter((section) => section.entity === request.entity);
   if (sections.length === 0)
     return err(unavailable('entity', 'a terrain drawn in this receipt and view'));
   if (

@@ -7,10 +7,10 @@ import { AssetRegistry, assetsPlugin } from '@forgeax/engine-assets-runtime';
 import { createWorldContext, World } from '@forgeax/engine-ecs';
 import type { Plugin } from '@forgeax/engine-plugin';
 import { ShaderRegistry } from '@forgeax/engine-shader';
+import { VFX_GPU_RUNTIME_RESOURCE_KEY } from '@forgeax/engine-vfx';
+import { createVfxRuntimeHost } from '@forgeax/engine-vfx-render';
 import { transformWithOxc } from 'vite';
 import { expect, it } from 'vitest';
-import { VFX_GPU_RUNTIME_RESOURCE_KEY } from '../../../vfx/src/index.js';
-import { createVfxRuntimeHost } from '../../../vfx-render/src/index.js';
 import { createViteConfig } from '../host.js';
 import { readProjectFacts } from '../project.js';
 
@@ -341,20 +341,17 @@ it.each([
       };
       const frame = source.features[0]
         .extract({
-          worlds: [world],
-          owner: 0,
+          world,
           frameNumber: 1,
           views: [{ identity: 'main', selectedView }],
         })
         .unwrap();
-      expect(frame.worlds).toHaveLength(1);
-      expect(frame.worlds[0].camera).toBe(selectedView);
-      expect(frame.worlds[0].intents).toEqual([]);
+      expect(frame.source).toBeDefined();
+      expect(frame.source.camera).toBe(selectedView);
+      expect(frame.source.intents).toEqual([]);
       expect(
-        source.features[0]
-          .extract({ worlds: [world], owner: 0, frameNumber: 2, views: [] })
-          .unwrap().worlds,
-      ).toEqual([]);
+        source.features[0].extract({ world, frameNumber: 2, views: [] }).unwrap().source,
+      ).toBeUndefined();
     } finally {
       await context.fiber.dispose();
       expect(world.hasResource(VFX_GPU_RUNTIME_RESOURCE_KEY)).toBe(false);

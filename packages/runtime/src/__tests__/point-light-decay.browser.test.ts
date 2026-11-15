@@ -162,37 +162,43 @@ it.each([
       propagateTransforms(world).unwrap();
       const pending = observe ? recorder.captureFrame() : undefined;
       if (pending) (await recorder.frameBoundary()).unwrap();
-      const receipt = await completeReadyFrame(async () => {
-        if (observe || mode === 'volume') value(renderer.requestObservation?.(['linear-hdr']));
-        const prepared = publisher?.prepare((frames + 1) / 60).unwrap();
-        const packet =
-          prepared === undefined
-            ? undefined
-            : structuredClone(prepared.message, {
-                transfer: renderPublicationTransfers(prepared.message),
-              });
-        prepared?.accept();
-        try {
-          const receipt = value(
-            renderer.draw(
-              packet
-                ? { publication: packet }
-                : {
-                    leases: [required(lease)],
-                    camera: { lease: required(lease) },
-                    environment: { lease: required(lease) },
-                  },
-            ),
-          );
-          value(await receipt.completed);
-          return receipt;
-        } finally {
-          if (packet)
-            required(publisher)
-              .recycle(packet.revision, renderPublicationTransfers(packet))
-              .unwrap();
-        }
-      });
+      let recycling: Promise<void> | undefined;
+      const receipt = await completeReadyFrame(
+        () => {
+          if (observe || mode === 'volume') value(renderer.requestObservation?.(['linear-hdr']));
+          const prepared = publisher?.prepare((frames + 1) / 60).unwrap();
+          const packet =
+            prepared === undefined
+              ? undefined
+              : structuredClone(prepared.message, {
+                  transfer: renderPublicationTransfers(prepared.message),
+                });
+          prepared?.accept();
+          const recycle = (): void => {
+            if (packet)
+              required(publisher)
+                .recycle(packet.revision, renderPublicationTransfers(packet))
+                .unwrap();
+          };
+          try {
+            const receipt = value(
+              renderer.draw(packet ? { publication: packet } : { source: required(lease) }),
+            );
+            // Return the preparation signal before waiting for physical completion.
+            // The publication packet remains owned until that completion settles.
+            recycling = receipt.completed.then(recycle, (error) => {
+              recycle();
+              throw error;
+            });
+            void recycling.catch(() => {});
+            return receipt;
+          } catch (error) {
+            recycle();
+            throw error;
+          }
+        },
+        { onCompleted: () => recycling },
+      );
       frames++;
       if (!pending) {
         if (mode === 'volume') value(await renderer.observe(receipt, { include: ['linear-hdr'] }));

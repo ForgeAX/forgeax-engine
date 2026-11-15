@@ -514,8 +514,8 @@ function fixtureIdentity(witness) {
   }
   const cooked = findCookedFixture(fixture, witness.materialGuid);
   const identity = cooked?.receipt?.identity;
-  if (cooked?.receipt?.schemaVersion !== 'material-cook/4') {
-    return { error: 'fixture does not contain a material-cook/4 receipt' };
+  if (cooked?.receipt?.schemaVersion !== 'material-cook/5') {
+    return { error: 'fixture does not contain a material-cook/5 receipt' };
   }
   if (identity === null || typeof identity !== 'object') {
     return { error: 'fixture does not contain a receipt identity' };

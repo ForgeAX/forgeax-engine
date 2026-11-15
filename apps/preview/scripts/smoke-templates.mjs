@@ -69,9 +69,10 @@ const TEMPLATE_SETTLE_FRAMES = CI_LIGHTWEIGHT
   : 10;
 // The headed lavapipe path can advance a healthy fixed-step simulation at
 // roughly 6 ticks/s when the heavy runner is contended.  Keep this finite, but
-// give the 48-tick witness more than 2x the observed wall-clock budget.
+// give the 60-tick witness more than 2x the observed wall-clock budget.
 const GAME3D_FIXED_TICK_PROGRESS_TIMEOUT_MS = 60_000;
 const GAME3D_FIXED_TICK_STALL_TIMEOUT_MS = 20_000;
+const GAME3D_COLLISION_SPHERE_CENTER_Z = 2.4;
 const GAME3D_MIN_LUMA_RANGE = 8;
 const GAME3D_NON_BLACK_FLOOR = 8;
 const CHROME_ARGS = [
@@ -163,7 +164,11 @@ async function prepareTemplateSmokeProject(slug) {
       recursive: true,
       filter: (path) => !['node_modules', '.forgeax', 'dist', '.git'].includes(path.split(sep).at(-1)),
     });
-    await symlink(resolve(sourceRoot, 'node_modules'), resolve(root, 'node_modules'), 'dir');
+    await symlink(
+      resolve(sourceRoot, 'node_modules'),
+      resolve(root, 'node_modules'),
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
     if (CI_LIGHTWEIGHT) await reduceTestProject(root);
     // The starter template ships without the runtime-pack demo; smoke installs it.
     if (slug === 'game-3d') await installRuntimeVase(root);
@@ -1244,36 +1249,46 @@ async function smokeGame3dCollision(evidence) {
     // enough time to advance the same fixed-step path.
     collisionApproach = await waitForGame3dFixedTicks(
       collisionStart.simulation.fixedTick,
-      48,
+      60,
       'game-3d collision approach',
     );
-    if (movementProjection(collisionStart, collisionApproach, 0).forward <= 3) {
+    const collisionTravel = movementProjection(collisionStart, collisionApproach, 0).forward;
+    if (collisionTravel <= 3) {
       throw new Error(`game-3d collision approach did not advance: ${JSON.stringify({ collisionStart, collisionApproach })}`);
     }
     const approachTick = collisionApproach.simulation?.fixedTick ?? 0;
-    // The collision cube face is ~10.8 m ahead of the spawn: ~118 ticks at walk speed.
+    // Hold forward long enough to prove the sphere prevents direct passage. The
+    // controller can slide tangentially while pressed, so release before measuring
+    // whether the collision response settles.
     collisionLate = await waitForGame3dFixedTicks(
       approachTick,
       96,
       'game-3d collision continued simulation',
     );
-    const lateTick = collisionLate.simulation?.fixedTick ?? approachTick;
-    collisionSettled = await waitForGame3dFixedTicks(
-      lateTick,
-      24,
-      'game-3d collision settling simulation',
-    );
   } finally {
     await page.keyboard.up('KeyW');
   }
+  const lateTick = collisionLate.simulation?.fixedTick ?? collisionApproach.simulation?.fixedTick ?? 0;
+  collisionSettled = await waitForGame3dFixedTicks(
+    lateTick,
+    24,
+    'game-3d collision settling simulation',
+  );
   const collisionTravel = movementProjection(collisionStart, collisionApproach, 0).forward;
   const collisionLateStep = Math.hypot(
     (collisionSettled.position[0] ?? 0) - (collisionLate.position[0] ?? 0),
     (collisionSettled.position[2] ?? 0) - (collisionLate.position[2] ?? 0),
   );
-  if (collisionTravel < 3 || collisionLateStep > 0.45 || collisionSettled.grounded !== true) {
+  const collisionForwardClearance =
+    (collisionSettled.position[2] ?? 0) - GAME3D_COLLISION_SPHERE_CENTER_Z;
+  if (
+    collisionTravel < 3 ||
+    collisionForwardClearance < 0.25 ||
+    collisionLateStep > 0.45 ||
+    collisionSettled.grounded !== true
+  ) {
     throw new Error(
-      `game-3d collision did not settle: ${JSON.stringify({ collisionStart, collisionApproach, collisionLate, collisionSettled, collisionTravel, collisionLateStep })}`,
+      `game-3d collision did not settle: ${JSON.stringify({ collisionStart, collisionApproach, collisionLate, collisionSettled, collisionTravel, collisionForwardClearance, collisionLateStep })}`,
     );
   }
   await page.keyboard.press('Escape');
@@ -1285,6 +1300,7 @@ async function smokeGame3dCollision(evidence) {
     collisionLate,
     collisionSettled,
     collisionTravel,
+    collisionForwardClearance,
     collisionLateStep,
   };
 }

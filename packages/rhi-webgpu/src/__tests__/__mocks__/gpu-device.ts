@@ -37,6 +37,8 @@ export interface MockFailures {
   /** `requestDevice` rejects with `OperationError` (spec behaviour for an
    *  out-of-range limit). */
   requestDeviceLimitExceeded?: boolean;
+  /** `createTexture` returns a handle but reports descriptor validation asynchronously. */
+  textureValidationError?: boolean;
   /** `createShaderModule` returns a module whose `getCompilationInfo()`
    *  yields error-typed messages. */
   shaderCompileMessages?: readonly GPUCompilationMessage[];
@@ -100,6 +102,8 @@ export interface MockDevice {
   readonly queue: MockQueue;
   createBuffer(descriptor: GPUBufferDescriptor): MockBuffer;
   createTexture(descriptor: GPUTextureDescriptor): MockTexture;
+  pushErrorScope(filter: GPUErrorFilter): void;
+  popErrorScope(): Promise<GPUError | null>;
   createSampler(descriptor?: GPUSamplerDescriptor | undefined): {
     readonly [MOCK_BRAND]: 'sampler';
   };
@@ -295,6 +299,7 @@ function makeDevice(captured: MockCapture[], failures: MockFailures): MockDevice
   // M5 / w37: track FIFO order of onSubmittedWorkDone calls so the unit
   // tests can assert ordering constraint #1 (research §5.2).
   let osWdCounter = 0;
+  const validationScopes: boolean[] = [];
   const queue: MockQueue = {
     [MOCK_BRAND]: 'queue' as const,
     submit(_commandBuffers): void {
@@ -368,6 +373,8 @@ function makeDevice(captured: MockCapture[], failures: MockFailures): MockDevice
     },
     createTexture(descriptor) {
       captured.push({ kind: 'createTexture', descriptor });
+      if (failures.textureValidationError === true && validationScopes.length > 0)
+        validationScopes[validationScopes.length - 1] = true;
       const sourceDescriptor = descriptor;
       const tex: MockTexture = {
         [MOCK_BRAND]: 'texture' as const,
@@ -384,6 +391,17 @@ function makeDevice(captured: MockCapture[], failures: MockFailures): MockDevice
         },
       };
       return tex;
+    },
+    pushErrorScope(_filter) {
+      validationScopes.push(false);
+    },
+    popErrorScope() {
+      const hadError = validationScopes.pop() ?? false;
+      const validationError: GPUValidationError = {
+        message: 'mock: texture validation failed',
+        __brand: 'GPUValidationError',
+      };
+      return Promise.resolve(hadError ? validationError : null);
     },
     createSampler(descriptor) {
       captured.push({ kind: 'createSampler', descriptor });

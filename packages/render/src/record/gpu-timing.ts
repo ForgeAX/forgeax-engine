@@ -19,18 +19,22 @@ const PASS_NAMES = [
   'volume-integrate',
   'volume-temporal',
   'volume-composite',
-  'cloud-layer-density-cache',
   'cloud-layer-shadow',
-  'cloud-layer-composite',
-  'cloud-layer-depth',
-  'cloud-layer-history',
+  'cloud-analytic-trace',
+  'cloud-sampled-trace',
+  'cloud-mode0-probe',
+  'cloud-mode0-history-clear',
+  'cloud-layer-transport',
+  'cloud-layer-resolve',
 ] as const;
 const CLOUD_PASS_NAMES = [
-  'cloud-layer-density-cache',
   'cloud-layer-shadow',
-  'cloud-layer-composite',
-  'cloud-layer-depth',
-  'cloud-layer-history',
+  'cloud-analytic-trace',
+  'cloud-sampled-trace',
+  'cloud-mode0-probe',
+  'cloud-mode0-history-clear',
+  'cloud-layer-transport',
+  'cloud-layer-resolve',
 ] as const;
 
 type TimedPassKind = 'raster' | 'compute';

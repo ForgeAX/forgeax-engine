@@ -105,6 +105,48 @@ describe('live Pack generation isolation in the actual Worker', () => {
     );
   });
 
+  it('builds a cooked volumetric cloud binding through the pure schema vocabulary', async () => {
+    const definition = (
+      await loadScriptablePack(
+        await file(
+          source(
+            `return ok({ 'scene/main': { kind: 'scene', entities: {
+        sun: { components: { DirectionalLight: {} } },
+        clouds: { components: { VolumetricCloudLayer: {
+          material: '01900000-0000-7000-8000-000000000078', bottomMeters: 5000, thicknessMeters: 10000
+        } } }
+      } } });`,
+            "import { VolumetricCloudLayer } from '@forgeax/engine/render';",
+          ).replace(
+            '  build(context)',
+            '  sceneComponents: [VolumetricCloudLayer],\n  build(context)',
+          ),
+        ),
+      )
+    ).unwrap();
+    expect(definition.sceneComponents?.map((component) => component.name)).toEqual([
+      'VolumetricCloudLayer',
+    ]);
+    const built = await executePackBuild(definition, {
+      packageId: definition.packageId,
+      values: resolvePackParameterValues(definition, {}).unwrap(),
+      readByGuid: vi.fn(),
+    });
+    expect(built.unwrap()['scene/main']).toMatchObject({
+      entities: {
+        clouds: {
+          components: {
+            VolumetricCloudLayer: {
+              material: '01900000-0000-7000-8000-000000000078',
+              bottomMeters: 5000,
+              thicknessMeters: 10000,
+            },
+          },
+        },
+      },
+    });
+  });
+
   it('accepts Fog and the Camera bloom and exposure constants', async () => {
     const scene = `return ok({ 'scene/main': { kind: 'scene', entities: {
           sun: { components: { DirectionalLight: {} } },
@@ -151,8 +193,11 @@ describe('live Pack generation isolation in the actual Worker', () => {
       entities: {
         sun: {
           components: {
-            DirectionalLight: { color: [1, 0.905, 0.784], intensity: 4.2, castShadow: true },
+            DirectionalLight: { color: [1, 0.95, 0.87], intensity: 12, castShadow: true },
           },
+        },
+        'sphere-reflection': {
+          components: { ReflectionProbe: { resolution: 128, updateIntent: 1 } },
         },
       },
     });

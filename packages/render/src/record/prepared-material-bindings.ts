@@ -15,12 +15,14 @@ import {
   planarReflectionMaterialEntries,
 } from '../capture/planar-material';
 import { getOrCreateDirectDfgLut, materialUsesDirectDfgLut } from '../device/direct-dfg-lut';
+import type { ResidencyLease } from '../device/residency-lifetime';
 import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_UNIFORM } from '../gpu-usage';
 import type { SkylightBindGroupResources } from '../ibl/skylight-bind-group';
 import {
   assembleMaterialWithSkylightEntries,
   skylightBindGroupResources,
 } from '../ibl/skylight-bind-group';
+import { type MaterialSourceSnapshot, materialSourceScope } from '../material-source';
 import {
   isCanonicalStandardPbrMaterialShader,
   isStandardPbrMaterialShader,
@@ -32,6 +34,7 @@ import {
 import type { RenderResourceScope } from '../publication/resource-scope';
 import {
   assetReferenceText,
+  materialParametersToParamSchema,
   materialStandardTextureMask,
   materialTextureRef,
   materialTextureValue,
@@ -74,19 +77,23 @@ interface PreparedMaterialBindingRow {
   readonly device: RenderSystemInternals['device'];
   readonly generation: number;
   readonly world: RenderResourceScope;
+  readonly sourceWorld: RenderResourceScope;
+  readonly sourceAssets: MaterialSourceSnapshot | undefined;
+  readonly scopeLease: ResidencyLease | undefined;
+  readonly textures: readonly ResidencyLease[];
   readonly layout: BindGroupLayout;
   readonly payload: Uint8Array | undefined;
   readonly entries: readonly MaterialBindingEntry[];
   readonly handle: BindGroup;
   readonly buffer: Buffer | undefined;
   references: number;
+  current: boolean;
 }
 
 /**
- * Outstanding material leases. A row lives only while a lease holds it, so a
- * shared scope lets the next frame borrow a prior frame's still-retained
- * bind group and UBO when every resolved value and resource is identical;
- * the buffer is written once at creation and never rewritten.
+ * Current accepted bindings and outstanding material leases share exact rows.
+ * The next frame can reuse the bind group and immutable UBO only after resolving
+ * every current value and physical resource.
  */
 export type PreparedMaterialBindingsScope = PreparedMaterialBindingRow[];
 
@@ -125,12 +132,43 @@ function acquireMaterialBinding(
     release: () => {
       if (released) return ok(undefined);
       released = true;
-      if (--row.references > 0) return ok(undefined);
-      const index = scope.indexOf(row);
-      if (index >= 0) scope.splice(index, 1);
-      return row.buffer === undefined ? ok(undefined) : row.device.destroyBuffer(row.buffer);
+      --row.references;
+      return retireMaterialBinding(scope, row);
     },
   };
+}
+
+function retireMaterialBinding(
+  scope: PreparedMaterialBindingsScope,
+  row: PreparedMaterialBindingRow,
+) {
+  if (row.references > 0 || row.current) return ok(undefined);
+  const index = scope.indexOf(row);
+  if (index < 0) return ok(undefined);
+  scope.splice(index, 1);
+  for (const texture of row.textures) void texture.release(false);
+  void row.scopeLease?.release(true);
+  return row.buffer === undefined ? ok(undefined) : row.device.destroyBuffer(row.buffer);
+}
+
+/** The accepted Feature plan owns one row while submitted resolvers retain their own references. */
+export function adoptPreparedMaterialBindings(
+  scope: PreparedMaterialBindingsScope,
+  handles: ReadonlySet<BindGroup>,
+): void {
+  for (const row of [...scope]) {
+    row.current = handles.has(row.handle);
+    const retired = retireMaterialBinding(scope, row);
+    if (!retired.ok) throw retired.error;
+  }
+}
+
+export function clearPreparedMaterialBindings(scope: PreparedMaterialBindingsScope): void {
+  for (const row of [...scope]) {
+    row.current = false;
+    const retired = retireMaterialBinding(scope, row);
+    if (!retired.ok) throw retired.error;
+  }
 }
 
 function preparedHandle<Brand extends string>(
@@ -145,206 +183,252 @@ function preparedHandle<Brand extends string>(
   return resolveRuntimeAssetReference(world, guid, brand);
 }
 
-function unavailablePreparedMaterial(reason: string, worldIndex: number, materialHandle: number) {
-  return err(
-    new Error(
-      `prepared material ${reason} (world=${worldIndex}, handle=${String(materialHandle)})`,
-    ),
-  );
+function unavailablePreparedMaterial(reason: string, materialHandle: number) {
+  return err(new Error(`prepared material ${reason} (handle=${String(materialHandle)})`));
 }
 
 export function preparedMaterialBindings(
   runtime: RenderSystemInternals,
-  worlds: readonly RenderResourceScope[],
+  sourceScope: RenderResourceScope,
   materialShaderId: string,
-  worldIndex: number,
   handle: number,
   layout: BindGroupLayout,
   skylightResources?: SkylightBindGroupResources,
   scope?: PreparedMaterialBindingsScope,
+  revision?: number,
+  sourceAssets?: MaterialSourceSnapshot,
+  resolveVersion?: (
+    handle: number,
+    revision: number,
+  ) => import('@forgeax/engine-types').Asset | undefined,
 ) {
   const device = runtime.device;
   const generation = recordContext(runtime).deviceScope?.generation ?? 0;
-  const world = worlds[worldIndex];
+  const sourceWorld = sourceScope;
+  const world =
+    sourceWorld === undefined
+      ? undefined
+      : materialSourceScope(sourceWorld, sourceAssets, resolveVersion);
   const pipelineState = recordContext(runtime).getPipelineState();
-  if (world === undefined)
-    return unavailablePreparedMaterial('source-world-unavailable', worldIndex, handle);
+  if (world === undefined) return unavailablePreparedMaterial('source-world-unavailable', handle);
   if (!Number.isSafeInteger(handle) || handle <= 0)
-    return unavailablePreparedMaterial('asset-handle-invalid', worldIndex, handle);
+    return unavailablePreparedMaterial('asset-handle-invalid', handle);
   if (pipelineState === null)
-    return unavailablePreparedMaterial('pipeline-state-unavailable', worldIndex, handle);
-  const resolved = world.resolveAsset<MaterialAsset>(handle);
+    return unavailablePreparedMaterial('pipeline-state-unavailable', handle);
+  const resolved = world.resolveAsset<MaterialAsset>(handle, revision);
   if (!resolved.ok) return resolved;
   const material = resolved.value;
   const kind = material.kind;
   if (kind !== 'material') {
     const label = typeof kind === 'string' ? (kind as string).slice(0, 24) : typeof kind;
-    return unavailablePreparedMaterial(`asset-kind-mismatch:${label}`, worldIndex, handle);
+    return unavailablePreparedMaterial(`asset-kind-mismatch:${label}`, handle);
   }
-  const schema = runtime.getParamSchema?.(materialShaderId) ?? [];
-  // Feature materials share the ordinary linear parameter domain and semantic texture defaults.
-  const values = materialValuesToLinearRuntime(
-    material.values,
-    [...schema, ...(material.parameters ?? [])],
-    material.colorSpace,
-  );
-  const derived = derive(schema);
-  const fields = [...derived.textureFieldNames];
-  let payload: Uint8Array | undefined;
-  if (derived.uboLayout.totalBytes > 0) {
-    payload = new Uint8Array(Math.max(16, derived.uboLayout.totalBytes));
-    writePreparedMaterialUbo(
-      payload,
-      schema,
-      values as Readonly<Record<string, number | readonly number[]>>,
+  const prepareMaterialParameterPayload = () => {
+    const declaredSchema = runtime.getParamSchema?.(materialShaderId);
+    const schema =
+      declaredSchema ??
+      materialParametersToParamSchema(material.parameters ?? [], materialShaderId);
+    // Feature materials share the ordinary linear parameter domain and semantic texture defaults.
+    const values = materialValuesToLinearRuntime(
+      material.values,
+      declaredSchema === undefined ? schema : [...schema, ...(material.parameters ?? [])],
+      material.colorSpace,
     );
-  }
-  const textureResources: Array<{
-    sampler: import('@forgeax/engine-rhi').Sampler;
-    view: import('@forgeax/engine-rhi').TextureView;
-  }> = [];
-  const textureMask = materialStandardTextureMask(material.parameters, materialShaderId, values);
-  for (const slot of fields) {
-    const field = isStandardPbrMaterialShader(materialShaderId)
-      ? standardInputField(slot, textureMask, values.displacementMode)
-      : slot;
-    const value = values[field];
-    const textureValue = materialTextureValue(value);
-    let sampler = pipelineState.defaultSampler;
-    if (textureValue?.sampler !== undefined) {
-      const handle = preparedHandle(world, textureValue.sampler, 'sampler');
-      if (handle !== undefined) {
-        const asset = world.resolveAsset<SamplerAsset>(handle);
-        if (asset.ok) {
-          const resident = runtime.gpuStore.ensureSamplerResident(handle, asset.value, world);
-          if (resident.ok) sampler = resident.value;
+    const derived = derive(schema);
+    const fields = [...derived.textureFieldNames];
+    let payload: Uint8Array | undefined;
+    if (derived.uboLayout.totalBytes > 0) {
+      payload = new Uint8Array(Math.max(16, derived.uboLayout.totalBytes));
+      writePreparedMaterialUbo(
+        payload,
+        schema,
+        values as Readonly<Record<string, number | readonly number[]>>,
+      );
+    }
+    return { schema, values, derived, fields, payload };
+  };
+  const { schema, values, derived, fields, payload } = prepareMaterialParameterPayload();
+  const resolvePreparedMaterialTextureResources = () => {
+    const textureResources: Array<{
+      sampler: import('@forgeax/engine-rhi').Sampler;
+      view: import('@forgeax/engine-rhi').TextureView;
+    }> = [];
+    const textureHandles = new Set<AssetHandle<'texture' | 'gpu-texture'>>();
+    const textureMask = materialStandardTextureMask(material.parameters, materialShaderId, values);
+    for (const slot of fields) {
+      const field = isStandardPbrMaterialShader(materialShaderId)
+        ? standardInputField(slot, textureMask, values.displacementMode)
+        : slot;
+      const value = values[field];
+      const textureValue = materialTextureValue(value);
+      let sampler = pipelineState.defaultSampler;
+      if (textureValue?.sampler !== undefined) {
+        const handle = preparedHandle(world, textureValue.sampler, 'sampler');
+        if (handle !== undefined) {
+          const asset = world.resolveAsset<SamplerAsset>(handle);
+          if (asset.ok) {
+            const resident = runtime.gpuStore.ensureSamplerResident(handle, asset.value, world);
+            if (resident.ok) {
+              sampler = resident.value;
+            }
+          }
         }
       }
+      let view = defaultViewForUserRegionField(field, pipelineState, schema);
+      const texture = preparedTextureHandle(world, materialTextureRef(value));
+      if (texture !== undefined) {
+        view = residentTextureView(world, runtime.gpuStore, runtime, texture) ?? view;
+        textureHandles.add(texture);
+      }
+      textureResources.push({ sampler, view });
     }
-    let view = defaultViewForUserRegionField(field, pipelineState, schema);
-    const texture = preparedHandle(world, materialTextureRef(value), 'texture');
-    if (texture !== undefined)
-      view = residentTextureView(world, runtime.gpuStore, runtime, texture) ?? view;
-    textureResources.push({ sampler, view });
-  }
+    return { textureResources, textureHandles };
+  };
+  const { textureResources, textureHandles } = resolvePreparedMaterialTextureResources();
   const entries: BindGroupEntry[] = [];
   let textureIndex = 0;
-  for (let index = 0; index < derived.bglEntries.length; index += 1) {
-    const expected = derived.bglEntries[index];
-    if (expected?.buffer?.type === 'uniform' && payload !== undefined) {
-      entries.push({
-        binding: expected.binding,
-        resource: {
-          kind: 'buffer',
-          value: { buffer: MATERIAL_UBO_PLACEHOLDER, size: payload.byteLength },
-        },
-      });
-      continue;
+  const assemblePreparedMaterialSchemaEntries = () => {
+    for (let index = 0; index < derived.bglEntries.length; index += 1) {
+      const expected = derived.bglEntries[index];
+      if (expected?.buffer?.type === 'uniform' && payload !== undefined) {
+        entries.push({
+          binding: expected.binding,
+          resource: {
+            kind: 'buffer',
+            value: { buffer: MATERIAL_UBO_PLACEHOLDER, size: payload.byteLength },
+          },
+        });
+        continue;
+      }
+      const textureResource = textureResources[textureIndex];
+      if (
+        expected?.sampler?.type === 'filtering' &&
+        derived.bglEntries[index + 1]?.texture !== undefined &&
+        textureResource !== undefined
+      ) {
+        entries.push({
+          binding: expected.binding,
+          resource: { kind: 'sampler', value: textureResource.sampler },
+        });
+        continue;
+      }
+      if (expected?.texture !== undefined && textureResource !== undefined) {
+        entries.push({
+          binding: expected.binding,
+          resource: { kind: 'textureView', value: textureResource.view },
+        });
+        textureIndex += 1;
+        continue;
+      }
+      return err(new Error('prepared material schema contains unsupported binding kinds'));
     }
-    const textureResource = textureResources[textureIndex];
-    if (
-      expected?.sampler?.type === 'filtering' &&
-      derived.bglEntries[index + 1]?.texture !== undefined &&
-      textureResource !== undefined
-    ) {
-      entries.push({
-        binding: expected.binding,
-        resource: { kind: 'sampler', value: textureResource.sampler },
-      });
-      continue;
-    }
-    if (expected?.texture !== undefined && textureResource !== undefined) {
-      entries.push({
-        binding: expected.binding,
-        resource: { kind: 'textureView', value: textureResource.view },
-      });
-      textureIndex += 1;
-      continue;
-    }
-    return err(new Error('prepared material schema contains unsupported binding kinds'));
-  }
+    return undefined;
+  };
+  const schemaEntryFailure = assemblePreparedMaterialSchemaEntries();
+  if (schemaEntryFailure !== undefined) return schemaEntryFailure;
   const fallback = pipelineState.skylightFallback;
   if (fallback === null) {
     return err(new Error('prepared material skylight fallback is unavailable'));
   }
-  const programBindings = sharedMaterialBindingDeclarations(
-    runtime.shaderRegistry,
-    materialShaderId,
-  );
-  const transmissionAvailable =
-    transmissionBackdropAvailable(device.limits.maxSampledTexturesPerShaderStage) ||
-    programDeclaresTransmissionBackdrop(programBindings, 1 + fields.length * 2);
-  const omitted = omittedStandardMaterialBindings(
-    fields,
-    transmissionAvailable,
-    isStandardPbrMaterialShader(materialShaderId),
-    isCanonicalStandardPbrMaterialShader(materialShaderId),
-    programBindings,
-  );
-  const completeEntries: MaterialBindingEntry[] = assembleMaterialWithSkylightEntries(
-    entries,
-    skylightResources ?? skylightBindGroupResources(fallback),
-    transmissionAvailable ? undefined : null,
-  ).filter((entry) => !omitted.has(entry.binding));
-  for (let index = 0; index < completeEntries.length; index++) {
-    const entry = completeEntries[index];
-    if (
-      entry !== undefined &&
-      typeof entry !== 'number' &&
-      entry.resource.kind === 'buffer' &&
-      entry.resource.value.buffer === MATERIAL_UBO_PLACEHOLDER
-    )
-      completeEntries[index] = entry.binding;
-  }
-  if (materialUsesDirectDfgLut(schema)) {
-    const lut = getOrCreateDirectDfgLut(device, recordContext(runtime).deviceScope);
-    if (!lut.ok) {
-      return lut;
-    }
-    completeEntries.push({
-      binding: STANDARD_DIRECT_DFG_LUT_BINDING,
-      resource: { kind: 'textureView', value: lut.value.view },
-    });
-  }
-  // Prepared bindings serve no current capture: the projection stays disabled.
-  if (materialUsesPlanarReflection(schema)) {
-    completeEntries.push(
-      ...planarReflectionMaterialEntries(
-        pipelineState.viewUniformBuffer,
-        undefined,
-        (skylightResources ?? skylightBindGroupResources(fallback)).brdfLutView,
-      ),
+  const projectPreparedMaterialLayoutEntries = () => {
+    const programBindings = sharedMaterialBindingDeclarations(
+      runtime.shaderRegistry,
+      materialShaderId,
     );
-  }
-  // Per-shader PBR layouts reserve the scene-material SSBO at binding 46 on
-  // storage-capable devices. Prepared feature materials use this same layout,
-  // so they must provide the neutral producer-owned table even when their
-  // authored shader does not read it. Omitting the entry makes Dawn reject the
-  // bind group before submission.
-  if (device.caps.storageBuffer) {
-    completeEntries.push({
-      binding: 46,
-      resource: {
-        kind: 'buffer',
-        value: { buffer: meshSsboBufferBinding(pipelineState.meshStorageBuffer, 0).buffer },
-      },
-    });
-  }
+    const transmissionAvailable =
+      transmissionBackdropAvailable(device.limits.maxSampledTexturesPerShaderStage) ||
+      programDeclaresTransmissionBackdrop(programBindings, 1 + fields.length * 2);
+    const omitted = omittedStandardMaterialBindings(
+      fields,
+      transmissionAvailable,
+      isStandardPbrMaterialShader(materialShaderId),
+      isCanonicalStandardPbrMaterialShader(materialShaderId),
+      programBindings,
+    );
+    const standardEntries = assembleMaterialWithSkylightEntries(
+      entries,
+      skylightResources ?? skylightBindGroupResources(fallback),
+      transmissionAvailable ? undefined : null,
+    );
+    // The shared Standard BGL has a fixed complete resource ABI. Reflection can
+    // project unused fields only when a shader has its own reduced layout; a
+    // prepared Standard Surface pipeline falls back to the shared BGL and must
+    // therefore keep its default texture/sampler entries and Skylight buffer.
+    const completeEntries: MaterialBindingEntry[] =
+      layout === pipelineState.materialBindGroupLayout
+        ? standardEntries
+        : standardEntries.filter((entry) => !omitted.has(entry.binding));
+    return completeEntries;
+  };
+  const completeEntries = projectPreparedMaterialLayoutEntries();
+  const appendPreparedMaterialOwnedEntries = () => {
+    for (let index = 0; index < completeEntries.length; index++) {
+      const entry = completeEntries[index];
+      if (
+        entry !== undefined &&
+        typeof entry !== 'number' &&
+        entry.resource.kind === 'buffer' &&
+        entry.resource.value.buffer === MATERIAL_UBO_PLACEHOLDER
+      )
+        completeEntries[index] = entry.binding;
+    }
+    if (materialUsesDirectDfgLut(schema)) {
+      const lut = getOrCreateDirectDfgLut(device, recordContext(runtime).deviceScope);
+      if (!lut.ok) {
+        return lut;
+      }
+      completeEntries.push({
+        binding: STANDARD_DIRECT_DFG_LUT_BINDING,
+        resource: { kind: 'textureView', value: lut.value.view },
+      });
+    }
+    // Prepared bindings serve no current capture: the projection stays disabled.
+    if (materialUsesPlanarReflection(schema)) {
+      completeEntries.push(
+        ...planarReflectionMaterialEntries(
+          pipelineState.viewUniformBuffer,
+          undefined,
+          (skylightResources ?? skylightBindGroupResources(fallback)).brdfLutView,
+        ),
+      );
+    }
+    // Per-shader PBR layouts reserve the scene-material SSBO at binding 46 on
+    // storage-capable devices. Prepared feature materials use this same layout,
+    // so they must provide the neutral producer-owned table even when their
+    // authored shader does not read it. Omitting the entry makes Dawn reject the
+    // bind group before submission.
+    if (device.caps.storageBuffer) {
+      completeEntries.push({
+        binding: 46,
+        resource: {
+          kind: 'buffer',
+          value: { buffer: meshSsboBufferBinding(pipelineState.meshStorageBuffer, 0).buffer },
+        },
+      });
+    }
+    return undefined;
+  };
+  const ownedEntryFailure = appendPreparedMaterialOwnedEntries();
+  if (ownedEntryFailure !== undefined) return ownedEntryFailure;
   // Resolve all current values and physical resources before sharing. Neither
   // a material GUID nor an immutable-looking source is sufficient authority.
-  const previous = scope?.find(
-    (row) =>
-      row.device === device &&
-      row.generation === generation &&
-      row.world === world &&
-      row.layout === layout &&
-      samePayload(row.payload, payload) &&
-      row.entries.length === completeEntries.length &&
-      row.entries.every((entry, index) => {
-        const other = completeEntries[index];
-        return other !== undefined && sameBindingEntry(entry, other);
-      }),
-  );
+  const findPreparedMaterialBindingReuse = () => {
+    const previous = scope?.find(
+      (row) =>
+        row.device === device &&
+        row.generation === generation &&
+        row.world === world &&
+        row.layout === layout &&
+        samePayload(row.payload, payload) &&
+        row.entries.length === completeEntries.length &&
+        row.entries.every((entry, index) => {
+          const other = completeEntries[index];
+          return other !== undefined && sameBindingEntry(entry, other);
+        }),
+    );
+    return previous;
+  };
+  const previous = findPreparedMaterialBindingReuse();
   if (previous !== undefined && scope !== undefined)
     return ok(acquireMaterialBinding(scope, previous));
   let buffer: Buffer | undefined;
@@ -363,41 +447,75 @@ export function preparedMaterialBindings(
     }
   }
   const actualEntries: BindGroupEntry[] = [];
-  for (const entry of completeEntries) {
-    if (typeof entry !== 'number') actualEntries.push(entry);
-    else if (buffer !== undefined)
-      actualEntries.push({
-        binding: entry,
-        resource: {
-          kind: 'buffer',
-          value: { buffer, ...(payload === undefined ? {} : { size: payload.byteLength }) },
-        },
-      });
-  }
+  const resolvePreparedMaterialActualEntries = () => {
+    for (const entry of completeEntries) {
+      if (typeof entry !== 'number') actualEntries.push(entry);
+      else if (buffer !== undefined)
+        actualEntries.push({
+          binding: entry,
+          resource: {
+            kind: 'buffer',
+            value: { buffer, ...(payload === undefined ? {} : { size: payload.byteLength }) },
+          },
+        });
+    }
+  };
+  resolvePreparedMaterialActualEntries();
   const group = device.createBindGroup({ layout, entries: actualEntries });
-  if (!group.ok) {
-    if (buffer !== undefined) device.destroyBuffer(buffer);
-    return group;
-  }
-  if (scope !== undefined) {
-    const row: PreparedMaterialBindingRow = {
-      device,
-      generation,
-      world,
-      layout,
-      payload,
-      entries: completeEntries,
-      handle: group.value,
-      buffer,
-      references: 0,
+  const completePreparedMaterialBinding = (buffer: Buffer | undefined) => {
+    if (!group.ok) {
+      if (buffer !== undefined) device.destroyBuffer(buffer);
+      return group;
+    }
+    const retainScopedPreparedMaterialBinding = () => {
+      if (scope !== undefined) {
+        const row: PreparedMaterialBindingRow = {
+          device,
+          generation,
+          world,
+          sourceWorld,
+          sourceAssets,
+          scopeLease:
+            sourceAssets === undefined ? undefined : runtime.gpuStore.retainMaterialScope(world),
+          textures:
+            sourceAssets === undefined
+              ? []
+              : [...textureHandles].flatMap((handle) => {
+                  const lease = runtime.gpuStore.retainTextureResidency(handle, world);
+                  return lease === undefined ? [] : [lease];
+                }),
+          layout,
+          payload,
+          entries: completeEntries,
+          handle: group.value,
+          buffer,
+          references: 0,
+          current: false,
+        };
+        scope.push(row);
+        return ok(acquireMaterialBinding(scope, row));
+      }
+      return undefined;
     };
-    scope.push(row);
-    return ok(acquireMaterialBinding(scope, row));
-  }
-  if (buffer === undefined) return group;
-  return ok({
-    handle: group.value,
-    dynamicOffsets: [0],
-    release: () => device.destroyBuffer(buffer),
-  });
+    const scopedBindingResult = retainScopedPreparedMaterialBinding();
+    if (scopedBindingResult !== undefined) return scopedBindingResult;
+    if (buffer === undefined) return group;
+    return ok({
+      handle: group.value,
+      dynamicOffsets: [0],
+      release: () => device.destroyBuffer(buffer),
+    });
+  };
+  return completePreparedMaterialBinding(buffer);
+}
+
+function preparedTextureHandle(
+  world: RenderResourceScope,
+  reference: unknown,
+): AssetHandle<'texture' | 'gpu-texture'> | undefined {
+  if (typeof reference === 'number')
+    return reference === 0 ? undefined : (reference as AssetHandle<'texture' | 'gpu-texture'>);
+  return (
+    preparedHandle(world, reference, 'texture') ?? preparedHandle(world, reference, 'gpu-texture')
+  );
 }

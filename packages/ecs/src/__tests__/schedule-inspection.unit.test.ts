@@ -1,21 +1,24 @@
 import { describe, expect, it } from 'vitest';
 import { defineComponent } from '../component';
+import { defineSystem } from '../schedule';
 import { FixedUpdate, Update } from '../schedule-token';
 import { World } from '../world';
 
 describe('schedule-scoped inspection', () => {
   it('groups systems by their owning schedule', () => {
     const world = new World();
-    world.addSystem(Update, { name: 'update-system', queries: [], fn: () => {} });
-    world.addSystem(FixedUpdate, { name: 'fixed-system', queries: [], fn: () => {} });
+    const systemToken1 = defineSystem({ name: 'update-system', queries: [], fn: () => {} });
+    world.addSystem(Update, systemToken1);
+    const systemToken2 = defineSystem({ name: 'fixed-system', queries: [], fn: () => {} });
+    world.addSystem(FixedUpdate, systemToken2);
 
     const inspection = world.inspect();
 
     expect(inspection.scheduleSystemCount(Update)).toBe(1);
     expect(inspection.scheduleSystemCount(FixedUpdate)).toBe(1);
     expect(inspection.schedules).toEqual([
-      { schedule: Update, systems: [{ name: 'update-system', sets: [] }] },
-      { schedule: FixedUpdate, systems: [{ name: 'fixed-system', sets: [] }] },
+      { schedule: Update, systems: [{ id: 0, name: 'update-system', sets: [] }] },
+      { schedule: FixedUpdate, systems: [{ id: 0, name: 'fixed-system', sets: [] }] },
     ]);
   });
 
@@ -24,14 +27,15 @@ describe('schedule-scoped inspection', () => {
     const Marker = defineComponent('ScheduleDataMarker', { value: 'u32' });
     const Optional = defineComponent('ScheduleDataOptional', { value: 'u32' });
     const world = new World();
-    world.addSystem(Update, {
+    const systemToken3 = defineSystem({
       name: 'producer',
       queries: [{ write: [Position] }],
       fn: () => {},
     });
-    world.addSystem(Update, {
+    world.addSystem(Update, systemToken3);
+    const systemToken4 = defineSystem({
       name: 'consumer',
-      after: ['producer'],
+      after: [systemToken3],
       queries: [
         {
           read: [Optional],
@@ -44,12 +48,14 @@ describe('schedule-scoped inspection', () => {
       ],
       fn: () => {},
     });
+    world.addSystem(Update, systemToken4);
 
     const data = world.scheduleData();
     const update = data.find((schedule) => schedule.name === 'Update');
 
     expect(update?.systems).toEqual([
       {
+        id: 0,
         name: 'producer',
         sets: [],
         before: [],
@@ -68,6 +74,7 @@ describe('schedule-scoped inspection', () => {
         resources: [],
       },
       {
+        id: 1,
         name: 'consumer',
         sets: [],
         before: [],
@@ -86,7 +93,7 @@ describe('schedule-scoped inspection', () => {
         resources: [],
       },
     ]);
-    expect(update?.dependencies).toContainEqual(['producer', 'consumer']);
+    expect(update?.dependencies).toContainEqual([0, 1]);
     expect(JSON.parse(JSON.stringify(data))).toEqual(data);
   });
 });

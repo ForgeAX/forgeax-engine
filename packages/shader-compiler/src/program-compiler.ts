@@ -10,6 +10,7 @@ import {
   compileShaderProgram,
   compileShaderWithComposition,
 } from './compile.js';
+import { freezeSnapshot } from './frozen.js';
 import { canonicalizePortableWgsl } from './wgsl-compat.js';
 
 let nextCompilerInstance = 0;
@@ -124,6 +125,16 @@ function copyResult(result: CompileResult): CompileResult {
     wgsl: result.wgsl,
     manifestEntry: { ...copy.manifestEntry, wgsl: result.manifestEntry.wgsl },
   };
+}
+
+// A cached result is keyed by its inputs and never changes: keep one frozen copy
+// and hand it to every hit. Results that cannot be frozen are copied per hit.
+function freezeResult(result: CompileResult): CompileResult {
+  return freezeSnapshot(result)?.value ?? copyResult(result);
+}
+
+function shareResult(result: CompileResult): CompileResult {
+  return Object.isFrozen(result) ? result : copyResult(result);
 }
 
 /** Scoped reuse, accounting for each immutable WGSL body only once. */
@@ -266,7 +277,7 @@ export function createShaderProgramCompiler(): typeof compileShader {
     if (previous?.kind === 'result') {
       touch(key, previous);
       const shared = await previous.value;
-      if (shared.ok) return ok(copyResult(shared.value));
+      if (shared.ok) return ok(shareResult(shared.value));
       // Failed validation can carry the first caller's source location. Each
       // source retains its own diagnostic path; only successful results share.
       counters.validations++;
@@ -276,7 +287,9 @@ export function createShaderProgramCompiler(): typeof compileShader {
     counters.validations++;
     const entry: CachedProgram = {
       kind: 'result',
-      value: compileShaderProgram(wgsl, selection, locateSyntaxError),
+      value: compileShaderProgram(wgsl, selection, locateSyntaxError).then((compiled) =>
+        compiled.ok ? ok(freezeResult(compiled.value)) : compiled,
+      ),
       bytes: Buffer.byteLength(JSON.stringify(selection)),
       wgsl,
       wgslBytes: Buffer.byteLength(wgsl),
@@ -302,7 +315,7 @@ export function createShaderProgramCompiler(): typeof compileShader {
           wgsl: value.wgsl,
           wgslBytes: Buffer.byteLength(value.wgsl),
         });
-      return ok(copyResult(value));
+      return ok(shareResult(value));
     } catch (error) {
       if (programs.get(key) === entry) remove(key);
       throw error;
@@ -323,7 +336,7 @@ export function createShaderProgramCompiler(): typeof compileShader {
       if (cached.ok) {
         counters.admissionHits++;
         report();
-        return ok(copyResult(cached.value));
+        return ok(shareResult(cached.value));
       }
     }
     let reusable = true;
@@ -348,7 +361,7 @@ export function createShaderProgramCompiler(): typeof compileShader {
       invocationIdentity(source, identity.options)?.key === identity.key &&
       admittedBy === pipeline
     ) {
-      const value = copyResult(result.value);
+      const value = freezeResult(result.value);
       retain(identity.key, {
         kind: 'result',
         value: Promise.resolve(ok(value)),

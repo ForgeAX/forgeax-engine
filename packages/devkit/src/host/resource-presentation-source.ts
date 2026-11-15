@@ -100,19 +100,25 @@ const cleanup = async () => {
 };
 try {
 if (resource !== undefined) {
-  if (resource.kind === 'texture' || resource.kind === 'equirect') {
+  if (resource.kind === 'texture' || resource.kind === 'equirect' || resource.kind === 'gpu-texture' || resource.kind === 'texture-generator') {
     const resourceHandle = await loadOwned(resource.guid, resource.kind);
     const payload = assets.read(resourceHandle).unwrap();
-    if (payload.kind !== 'texture' && payload.kind !== 'equirect') throw new Error('Texture preview requires TextureAsset or EquirectAsset');
-    const source = textureViewSource(payload);
+    if (payload.kind !== 'texture' && payload.kind !== 'equirect' && payload.kind !== 'texture-generator' && payload.kind !== 'gpu-texture') throw new Error('Texture preview requires TextureAsset or EquirectAsset');
+    const firstOutput = payload.kind === 'texture-generator' ? Object.keys(payload.outputs)[0] : undefined;
+    const source = payload.kind === 'texture-generator' ? { kind: 'gpu-texture', ...payload.outputs[firstOutput], source: { kind: 'generated', generator: resource.guid, output: firstOutput } } : textureViewSource(payload);
     const ownerFacts = presentation.evidence === false ? undefined : await previewOwnerFacts(assets, { ...resource, kind: 'texture' }, source);
     const assetBinding = captureEngineWorkspaceAssetBinding(assets, resourceHandle);
     const owner = createTextureWorkspacePreview(app.world, assets, resourceHandle,
-      presentation.background === 'transparent' ? { background: presentation.background, projection: 'flat' } : {});
+      presentation.background === 'transparent' ? {
+        background: presentation.background,
+        ...(presentation.textureChannels === undefined ? {} : { channels: presentation.textureChannels }),
+        projection: source.shape.viewDimension === '3d' ? 'volume' : 'flat',
+      } : {},
+      () => app.renderer.inspect().textureGeneration?.groups.find(group => group.guid === (payload.kind === 'texture-generator' ? resource.guid : payload.source?.generator) && group.world === String(app.world.identity)));
     previewCameraEntities.set(app.world, owner.camera);
     previewCameraTargets.set(app.world, [0, 0, 0]);
     return {
-      app, texture: owner.texture,
+      app, texture: owner.texture, refreshContent: owner.refreshContent,
       get binding() { return owner.binding; },
       assetBinding,
       facts: { kind: resource.kind, guid: resource.guid, asset: payload, ...(ownerFacts === undefined ? {} : { ownerFacts }) },

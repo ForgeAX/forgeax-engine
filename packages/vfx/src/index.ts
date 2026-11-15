@@ -47,6 +47,8 @@ export type {
   ParticleRendererSortingV3,
   ParticleRendererSourceV3,
   ParticleTopologyRendererSourceV3,
+  ParticleWaterGridCriterionSource,
+  ParticleWaterGridEmissionSource,
 } from './code-source-v3.js';
 export {
   defaultParticleRendererAttributes,
@@ -68,7 +70,9 @@ export type {
   VfxDataInterfaceRequirement,
   VfxDataInterfaceResolution,
   VfxDataInterfaceResource,
+  VfxDataInterfaceTextureView,
   VfxDataInterfaceToken,
+  VfxWaterSurfaceIdentity,
 } from './data-interface.js';
 export { resolveVfxDataInterfaces } from './data-interface.js';
 export type {

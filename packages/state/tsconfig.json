@@ -8,10 +8,21 @@
     "rootDir": "./src",
     "tsBuildInfoFile": "./dist/.tsbuildinfo"
   },
-  "include": ["src/**/*"],
+  "include": [
+    "src/**/*"
+  ],
   "references": [
-    { "path": "../ecs" },
-    { "path": "../plugin" },
-    { "path": "../types" }
+    {
+      "path": "../ecs"
+    },
+    {
+      "path": "../plugin"
+    },
+    {
+      "path": "../types"
+    },
+    {
+      "path": "../input"
+    }
   ]
 }

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { dirname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assembleRuntimePacks, createAssetRuntimeAssembly } from '@forgeax/engine-app';
 import { AssetRegistry, createCatalogSource } from '@forgeax/engine-assets-runtime';
@@ -29,7 +29,7 @@ globalThis.fetch = async (request, init) => {
   const url = new URL(input, 'http://127.0.0.1');
   if (url.hostname === '127.0.0.1') {
     const path = resolve(dist, url.pathname.slice(1));
-    assert(path.startsWith(`${dist}/`) && existsSync(path), path);
+    assert(path.startsWith(dist + sep) && existsSync(path), path);
     return new Response(readFileSync(path));
   }
   return originalFetch(request, init);

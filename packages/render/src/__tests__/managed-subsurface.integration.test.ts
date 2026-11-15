@@ -10,7 +10,7 @@ import { Materials } from '../materials';
 import { createRenderPublisher } from '../publication/publisher';
 import { RenderPublicationReceiver } from '../publication/receiver';
 import { encodeRenderPublication, renderPublicationTransfers } from '../publication/record';
-import { extractFrames } from '../render-system-extract-tail';
+import { extractSource } from '../render-system-extract-tail';
 import { PersistentRenderScene } from '../scene/render-scene';
 import { subsurfaceDemand } from '../subsurface/demand';
 import { SubsurfaceSelection } from '../subsurface/selection';
@@ -81,20 +81,18 @@ function fixture(worker: boolean) {
         return frame;
       }
       return scene.extractComposition(
-        [world],
-        { cameraOwner: 0, resourceOwner: 0 },
+        world,
         assets,
         (request) => {
           if (request === 'full') extractions++;
-          else if (typeof request === 'object')
-            for (const entities of request.entitiesByWorld) extractions += entities?.size ?? 0;
-          return extractFrames([world], 0, assets, caches, {
+          else if (typeof request === 'object') extractions += request.entities.size;
+          return extractSource(world, assets, caches, {
             cull: 'none',
             retainHidden: true,
             renderables: request,
           });
         },
-        [lease],
+        lease,
       );
     },
     work() {

@@ -31,7 +31,7 @@ import {
 } from '../component';
 import { Entity } from '../entity';
 import type { EntityHandle } from '../entity-handle';
-import type { Archetype } from '../storage/archetype';
+import { type Archetype, archetypeKey } from '../storage/archetype';
 import {
   createArchetypeGraph,
   getAddEdge,
@@ -596,7 +596,7 @@ function appendEntity(table: Table, entity: number): number {
         expect(col.arity).toBe(1);
       });
 
-      it('all 11 scalar field types default arity to 1', () => {
+      it('all scalar field types default arity to 1', () => {
         const types: ScalarFieldType[] = [
           'f32',
           'f64',
@@ -608,7 +608,6 @@ function appendEntity(table: Table, entity: number): number {
           'u8',
           'bool',
           'enum',
-          'ref',
         ];
         for (const t of types) {
           const col = createColumn(t, 16);
@@ -644,7 +643,7 @@ function appendEntity(table: Table, entity: number): number {
         expect(col.view.length).toBe(16);
       });
 
-      it('creates correct TypedArray view for each of the 11 scalar types', () => {
+      it('creates correct TypedArray view for each scalar type', () => {
         const typeToView: Record<ScalarFieldType, unknown> = {
           f32: Float32Array,
           f64: Float64Array,
@@ -656,7 +655,6 @@ function appendEntity(table: Table, entity: number): number {
           u8: Uint8Array,
           bool: Uint8Array,
           enum: Uint32Array,
-          ref: Uint32Array,
         };
         for (const [fieldType, ViewCtor] of Object.entries(typeToView)) {
           const col = createColumn(fieldType as ScalarFieldType, 8);
@@ -727,7 +725,6 @@ function appendEntity(table: Table, entity: number): number {
           'u8',
           'bool',
           'enum',
-          'ref',
         ];
         for (const t of types) {
           const col = createColumn(t, 4);
@@ -978,9 +975,9 @@ function appendEntity(table: Table, entity: number): number {
         vi.resetModules();
         const { defineComponent: freshDefine } = await import('../component');
         freshDefine('TamperOrderDummy', { x: 'f32' });
-        // feat-20260611 D-9: assertion text switched from `expected id=0` to
-        // `ESSENTIAL_COMPONENT_IDS invariant violated` (SSOT-driven contract).
-        await expect(import('../index')).rejects.toThrow(/ESSENTIAL_COMPONENT_IDS/);
+        await expect(import('../index')).rejects.toThrow(
+          /Entity invariant violated.*expected id=0/,
+        );
       });
 
       it('does not throw at barrel eval under the normal import order', async () => {
@@ -1333,77 +1330,31 @@ function appendEntity(table: Table, entity: number): number {
   });
 }
 
-{
-  // ─── from query-preregister.test.ts ───
-  describe('foldEssentials.test.ts', () => {
-    describe('ESSENTIAL_COMPONENT_IDS SSOT', () => {
-      it('is a frozen readonly array containing componentId(Entity)', async () => {
-        const mod = await import('../entity');
-        const ESSENTIAL_COMPONENT_IDS = (
-          mod as unknown as { ESSENTIAL_COMPONENT_IDS: ReadonlyArray<number> }
-        ).ESSENTIAL_COMPONENT_IDS;
-        expect(Array.isArray(ESSENTIAL_COMPONENT_IDS)).toBe(true);
-        expect(ESSENTIAL_COMPONENT_IDS.length).toBe(1);
-        expect(ESSENTIAL_COMPONENT_IDS[0]).toBe(componentId(Entity));
-        expect(Object.isFrozen(ESSENTIAL_COMPONENT_IDS)).toBe(true);
-      });
-    });
-
-    describe('foldEssentials() helper', () => {
-      it('input containing componentId(Entity) returns deduped copy', async () => {
-        const mod = await import('../entity');
-        const foldEssentials = (
-          mod as unknown as { foldEssentials: (ids: ReadonlyArray<number>) => number[] }
-        ).foldEssentials;
-        const input = [componentId(Entity), 2, 5];
-        const out = foldEssentials(input);
-        // componentId(Entity) appears exactly once
-        expect(out.filter((id) => id === componentId(Entity)).length).toBe(1);
-        // No id is dropped
-        expect(out).toContain(2);
-        expect(out).toContain(5);
-        expect(out).toContain(componentId(Entity));
-      });
-
-      it('input not containing componentId(Entity) returns array prefixed with componentId(Entity)', async () => {
-        const mod = await import('../entity');
-        const foldEssentials = (
-          mod as unknown as { foldEssentials: (ids: ReadonlyArray<number>) => number[] }
-        ).foldEssentials;
-        const input = [2, 5, 7];
-        const out = foldEssentials(input);
-        expect(out.length).toBe(4);
-        expect(out[0]).toBe(componentId(Entity));
-        expect(out).toContain(2);
-        expect(out).toContain(5);
-        expect(out).toContain(7);
-      });
-
-      it('empty input returns [componentId(Entity)]', async () => {
-        const mod = await import('../entity');
-        const foldEssentials = (
-          mod as unknown as { foldEssentials: (ids: ReadonlyArray<number>) => number[] }
-        ).foldEssentials;
-        const out = foldEssentials([]);
-        expect(out).toEqual([componentId(Entity)]);
-      });
-
-      it('does not mutate input array', async () => {
-        const mod = await import('../entity');
-        const foldEssentials = (
-          mod as unknown as { foldEssentials: (ids: ReadonlyArray<number>) => number[] }
-        ).foldEssentials;
-        const input = [2, 5];
-        const inputSnapshot = [...input];
-        const out = foldEssentials(input);
-        expect(input).toEqual(inputSnapshot);
-        // returned array must be a NEW array (different reference) when fold
-        // had to insert componentId(Entity)
-        expect(out).not.toBe(input);
-      });
-    });
+describe('Entity in storage identity', () => {
+  it('uses the same key for implicit and explicit Entity without changing input', () => {
+    const C = defineComponent('EntityKeyComponent', { value: 'f32' });
+    const ids = Object.freeze([componentId(C), componentId(C)]);
+    expect(archetypeKey(ids)).toBe(archetypeKey([componentId(Entity), componentId(C)]));
+    expect(ids).toEqual([componentId(C), componentId(C)]);
+    expect(archetypeKey([])).toBe(String(componentId(Entity)));
   });
-}
+
+  it('shares one archetype and table for implicit and repeated explicit Entity', () => {
+    const graph = createArchetypeGraph();
+    const bare = getOrCreateArchetype(graph, [], []);
+    const explicit = getOrCreateArchetype(
+      graph,
+      [componentId(Entity), componentId(Entity)],
+      [Entity, Entity],
+    );
+    expect(explicit).toBe(bare);
+    expect(bare.components).toEqual([Entity]);
+    const table = graph.tables[bare.tableId];
+    expect(table?.key).toBe(bare.key);
+    expect(table?.components).toEqual([Entity]);
+    expect(table?.storage.size).toBe(1);
+  });
+});
 
 {
   // ─── from entity-handle-rename-grep-gate.test.ts (feat-20260611 M-1 / w2) ───
@@ -1602,7 +1553,7 @@ function appendEntity(table: Table, entity: number): number {
         expect(archAC.components.some((c) => componentId(c) === componentId(B))).toBe(false);
       });
 
-      it('getRemoveEdge of last non-essential component returns archetype with only Entity', () => {
+      it('getRemoveEdge of last user component returns archetype with only Entity', () => {
         const graph = createArchetypeGraph();
         const A = defineComponent('RemoveEdgeLast_A', { a: { type: 'f32' } });
 
@@ -1652,15 +1603,12 @@ function appendEntity(table: Table, entity: number): number {
         }
       });
 
-      it('isManaged === true exactly for the managed-ref vocab + scalar rows ("string" + "ref" + "shared")', () => {
-        // feat-20260614-ecs-shared-component-and-unique-rename M3 (D-3): the
-        // independent `'shared'` TYPE_METADATA row joins the managed-ref tier
-        // alongside `'string'` (UniqueRefStore-backed) and `'ref'` (the
-        // post-M2 `'unique<T>'` family). Each meta key carries its own
-        // release-semantics dispatch (M4 wires the sub-branches).
+      it('isManaged === true exactly for the managed-ref vocab + scalar rows (string, unique, shared and asset)', () => {
+        // Managed metadata selects the matching ownership-specific release path.
         for (const [key, row] of Object.entries(TYPE_METADATA)) {
           const im = (row as unknown as Record<string, unknown>).isManaged as boolean;
-          const expected = key === 'string' || key === 'ref' || key === 'shared' || key === 'asset';
+          const expected =
+            key === 'string' || key === 'unique' || key === 'shared' || key === 'asset';
           expect(im, `TYPE_METADATA['${key}'].isManaged`).toBe(expected);
         }
       });
@@ -1672,9 +1620,9 @@ function appendEntity(table: Table, entity: number): number {
         expect(im).toBe(true);
       });
 
-      it('"ref" row has isManaged === true (shared scalar + vocab row)', () => {
-        const refRow = TYPE_METADATA.ref;
-        if (refRow === undefined) throw new Error('ref row missing');
+      it('"unique" row has isManaged === true (shared scalar + vocab row)', () => {
+        const refRow = TYPE_METADATA.unique;
+        if (refRow === undefined) throw new Error('unique row missing');
         const im = (refRow as unknown as Record<string, unknown>).isManaged;
         expect(im).toBe(true);
       });
@@ -1705,7 +1653,7 @@ function appendEntity(table: Table, entity: number): number {
     });
 
     describe('4 predicate equivalence (old impl vs new TYPE_METADATA column)', () => {
-      // Legal SchemaFieldType samples: all 11 legacy scalars (keywords) +
+      // Legal SchemaFieldType samples: all scalars (keywords) +
       // 6 vocab-family parametric representatives. Every sample is a
       // syntactically valid keyword accepted by `defineComponent`.
       //
@@ -1715,7 +1663,7 @@ function appendEntity(table: Table, entity: number): number {
       // so they never flow through the runtime predicates. The D-4 semantic
       // widening only affects invalid inputs — a dead path.
       const SAMPLE_FIELD_TYPES: string[] = [
-        // 11 legacy scalar keys
+        // scalar keys
         'f32',
         'f64',
         'i32',
@@ -1726,7 +1674,6 @@ function appendEntity(table: Table, entity: number): number {
         'u8',
         'bool',
         'enum',
-        'ref',
         // 6 vocab-family parametric reps
         'entity',
         'string',
@@ -1804,7 +1751,7 @@ function appendEntity(table: Table, entity: number): number {
       });
     });
 
-    describe('isManagedField coverage: string and ref<T>', () => {
+    describe('isManagedField coverage: string and unique<T>', () => {
       it("returns true for 'string' literal", () => {
         expect(isManagedField('string')).toBe(true);
       });

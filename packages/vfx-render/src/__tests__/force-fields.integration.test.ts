@@ -114,8 +114,7 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){vfx_apply_force_
     const data = structuredClone(
       source
         .extract({
-          worlds: [world],
-          owner: 0,
+          world: world,
           views: [
             { identity: 'main', render: true },
             ...(secondView ? [{ identity: 'held', render: frameNumber % 2 === 0 }] : []),
@@ -129,7 +128,7 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){vfx_apply_force_
         data,
         singleViewContext({
           targets,
-          resolveAsset: (_index, handle, revision) =>
+          resolveAsset: (handle, revision) =>
             runtimeAssets(world.assets).resolveAsset(handle, revision),
           caps: {} as never,
           frame: { frameNumber },
@@ -185,14 +184,13 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){vfx_apply_force_
       const invalid = structuredClone(
         source
           .extract({
-            worlds: [world],
-            owner: 0,
+            world: world,
             views: [{ identity: 'main', render: true }],
             frameNumber: frameNumber + 1,
           })
           .unwrap(),
       );
-      for (const entry of invalid.worlds[0]?.emitterState.values() ?? []) {
+      for (const entry of invalid.source?.emitterState.values() ?? []) {
         entry.localToWorld.set([
           diagonal[0] ?? 1,
           0,
@@ -217,7 +215,7 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){vfx_apply_force_
           invalid,
           singleViewContext({
             targets,
-            resolveAsset: (_index, handle, revision) =>
+            resolveAsset: (handle, revision) =>
               runtimeAssets(world.assets).resolveAsset(handle, revision),
             caps: {} as never,
             frame: { frameNumber: frameNumber + 1 },

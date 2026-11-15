@@ -1,5 +1,5 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
-import { Update, World } from '@forgeax/engine-ecs';
+import { defineSystem, Update, World } from '@forgeax/engine-ecs';
 import { createRenderReadLease } from '@forgeax/engine-ecs/projection';
 import { createMeshBuilder, createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { vec3 } from '@forgeax/engine-math';
@@ -40,7 +40,7 @@ import type {
   MaterialSnapshot,
   RenderableSnapshot,
 } from '../render-system-extract';
-import { extractFrames } from '../render-system-extract-tail';
+import { extractSource } from '../render-system-extract-tail';
 import { MeshFrame } from '../scene/mesh-frame';
 import { PersistentRenderScene, RenderScene } from '../scene/render-scene';
 import type { RenderSceneSlot } from '../scene/render-scene-types';
@@ -186,7 +186,6 @@ function snapshot(entityKey: number, translationX = 0): RenderableSnapshot {
     material: fixtureMaterial,
     materials: [fixtureMaterial],
     materialBindingSources: ['engine-default'],
-    worldId: 0,
     entityKey,
   };
 }
@@ -194,7 +193,6 @@ function snapshot(entityKey: number, translationX = 0): RenderableSnapshot {
 function updateSnapshot(value: RenderableSnapshot) {
   return {
     kind: 'update' as const,
-    worldId: value.worldId,
     entityKey: value.entityKey,
     snapshot: value,
   };
@@ -204,7 +202,6 @@ function updateInstances(value: RenderableSnapshot) {
   if (value.instances === undefined) throw new Error('expected Instances payload');
   return {
     kind: 'update' as const,
-    worldId: value.worldId,
     entityKey: value.entityKey,
     instances: value.instances,
   };
@@ -283,8 +280,7 @@ function persistentFrame(
     frustumStats: { culled: 0, total: renderables.length },
     visibilityStats: { explicitlyHidden: 0 },
     postProcessParams: new Map(),
-    visibilitySnapshots: [],
-    featureVisibilitySnapshots: [],
+    visibilitySnapshot: undefined,
     hiddenEntityReports: [],
   } as unknown as ExtractedFrame;
 }
@@ -330,10 +326,10 @@ describe('GpuScene', () => {
       gpu
         .sync(projection.apply([updateSnapshot(snapshot(1)), updateSnapshot(snapshot(2))]))
         .unwrap();
-      const slot = projection.slotsSnapshot().lookup(0, 2)?.slot;
+      const slot = projection.slotsSnapshot().lookup(2)?.slot;
       if (slot === undefined) throw new Error('missing survivor');
       const address = gpu.primitiveIndexForSlot(slot);
-      gpu.sync(projection.apply([{ kind: 'remove', worldId: 0, entityKey: 1 }])).unwrap();
+      gpu.sync(projection.apply([{ kind: 'remove', entityKey: 1 }])).unwrap();
       // Count remains one, but explicit instance transforms need a new range.
       gpu.sync(projection.apply([updateSnapshot(instanceSnapshot(2, 3))])).unwrap();
       expect(gpu.primitiveIndexForSlot(slot)).toBe(address);
@@ -352,11 +348,11 @@ describe('GpuScene', () => {
           ),
         ).toBe(count);
       }
-      gpu.sync(projection.apply([{ kind: 'remove', worldId: 0, entityKey: 2 }])).unwrap();
+      gpu.sync(projection.apply([{ kind: 'remove', entityKey: 2 }])).unwrap();
       expect(gpu.primitiveIndexForSlot(slot)).toBeUndefined();
       gpu.sync(projection.apply([updateSnapshot(snapshot(3))])).unwrap();
       expect(
-        gpu.primitiveIndexForSlot(projection.slotsSnapshot().lookup(0, 3)?.slot ?? -1),
+        gpu.primitiveIndexForSlot(projection.slotsSnapshot().lookup(3)?.slot ?? -1),
       ).toBeDefined();
     } finally {
       gpu.dispose();
@@ -523,16 +519,15 @@ describe('GpuScene', () => {
     const persistent = new PersistentRenderScene({ getDevice: () => device });
     const draw = () =>
       persistent.extractComposition(
-        [world],
-        { cameraOwner: 0, resourceOwner: 0 },
+        world,
         assets,
         (request) =>
-          extractFrames([world], 0, assets, persistent.materialSnapshotCacheStore(), {
+          extractSource(world, assets, persistent.materialSnapshotCacheStore(), {
             cull: 'none',
             retainHidden: true,
             renderables: request,
           }),
-        [lease],
+        lease,
       );
     try {
       const first = draw();
@@ -641,16 +636,15 @@ describe('GpuScene', () => {
     const persistent = new PersistentRenderScene({ getDevice: () => device });
     const draw = () =>
       persistent.extractComposition(
-        [world],
-        { cameraOwner: 0, resourceOwner: 0 },
+        world,
         assets,
         (request) =>
-          extractFrames([world], 0, assets, persistent.materialSnapshotCacheStore(), {
+          extractSource(world, assets, persistent.materialSnapshotCacheStore(), {
             cull: 'none',
             retainHidden: true,
             renderables: request,
           }),
-        [lease],
+        lease,
       );
     try {
       expect(
@@ -658,13 +652,14 @@ describe('GpuScene', () => {
           ?.subsurfaceRadius,
       ).toEqual([9, 6, 3]);
       let radius = [0, 0, 0];
-      world.addSystem(Update, {
+      const systemToken1 = defineSystem({
         name: 'update-material',
         queries: [],
         fn: () => {
           assets.update(handle, { values: { subsurfaceRadius: radius } }).unwrap();
         },
       });
+      world.addSystem(Update, systemToken1);
       world.update(0).unwrap();
       expect(
         draw().renderables.find((row) => row.entityKey === entity)?.material.snapshot.paramSnapshot
@@ -696,17 +691,16 @@ describe('GpuScene', () => {
     const firstLease = createRenderReadLease(firstWorld);
 
     persistent.extractComposition(
-      [firstWorld],
-      { cameraOwner: 0, resourceOwner: 0 },
+      firstWorld,
       assets,
       () => persistentFrame([ownedSnapshot(1), ownedSnapshot(3)]),
-      [firstLease],
+      firstLease,
     );
     const first = persistent.compositionGpuDrivenState();
     expect(first).toBeDefined();
     if (first === undefined) return;
     for (const slot of first.slots) {
-      expect(first.slotForEntity?.(slot.snapshot.worldId, slot.snapshot.entityKey)).toBe(slot);
+      expect(first.slotForEntity?.(slot.snapshot.entityKey)).toBe(slot);
     }
 
     persistent.detach(firstWorld);
@@ -714,17 +708,16 @@ describe('GpuScene', () => {
     const secondWorld = firstWorld;
     const secondLease = createRenderReadLease(secondWorld);
     persistent.extractComposition(
-      [secondWorld],
-      { cameraOwner: 0, resourceOwner: 0 },
+      secondWorld,
       assets,
       () => persistentFrame([ownedSnapshot(2)]),
-      [secondLease],
+      secondLease,
     );
     const second = persistent.compositionGpuDrivenState();
     expect(second).toBeDefined();
     expect(second?.scene).toBe(first.scene);
     for (const slot of second?.slots ?? []) {
-      expect(second?.slotForEntity?.(slot.snapshot.worldId, slot.snapshot.entityKey)).toBe(slot);
+      expect(second?.slotForEntity?.(slot.snapshot.entityKey)).toBe(slot);
     }
     expect(second?.scene.materialIndexForSlot(1, 0)).toBeUndefined();
 
@@ -893,13 +886,7 @@ describe('GpuScene', () => {
       queue.writes.length = 0;
       const first = sources[0];
       if (first === undefined) throw new Error('missing binding');
-      scene
-        .sync(
-          projection.apply([
-            { kind: 'remove', worldId: first.worldId, entityKey: first.entityKey },
-          ]),
-        )
-        .unwrap();
+      scene.sync(projection.apply([{ kind: 'remove', entityKey: first.entityKey }])).unwrap();
       expect(queue.writes.filter((write) => write.buffer === scene.materialBuffer)).toHaveLength(0);
       expect(scene.materialIndexForSlot(1, 0)).toBe(address);
       expect(scene.sync(projection.apply([])).unwrap().bytes).toBe(0);
@@ -1164,8 +1151,8 @@ describe('GpuScene', () => {
     expect(queue.writes).toHaveLength(writesAfterInitial);
 
     const dirty = projection.apply([
-      { kind: 'update', worldId: 0, entityKey: 0, world: snapshot(0, 4).transform.world },
-      { kind: 'update', worldId: 0, entityKey: 2, world: snapshot(2, 8).transform.world },
+      { kind: 'update', entityKey: 0, world: snapshot(0, 4).transform.world },
+      { kind: 'update', entityKey: 2, world: snapshot(2, 8).transform.world },
     ]);
     // Two moved rows plus the two rows holding their submitted poses.
     expect(created.scene.sync(dirty).unwrap()).toMatchObject({
@@ -1201,7 +1188,7 @@ describe('GpuScene', () => {
 
     // The receipt expires the pulse by stamp: no primitive row is rewritten.
     scene.commitFrame().unwrap();
-    projection.commitSubmission(projection.captureSubmission([{ worldId: 0, entityKey: 0 }]));
+    projection.commitSubmission(projection.captureSubmission([{ entityKey: 0 }]));
     const beforeClear = primitiveWrites().length;
     scene.sync(projection.apply([]), resolve).unwrap();
     expect(primitiveWrites()).toHaveLength(beforeClear);
@@ -1209,13 +1196,11 @@ describe('GpuScene', () => {
 
     // The first move restamps the root, so it clears the expired pulse bits once.
     const moveTo = (x: number) =>
-      projection.apply([
-        { kind: 'update', worldId: 0, entityKey: 0, world: snapshot(0, x).transform.world },
-      ]);
+      projection.apply([{ kind: 'update', entityKey: 0, world: snapshot(0, x).transform.world }]);
     scene.sync(moveTo(3), resolve).unwrap();
     expect(lastFlags() & temporalFlags).toBe(0);
     scene.commitFrame().unwrap();
-    projection.commitSubmission(projection.captureSubmission([{ worldId: 0, entityKey: 0 }]));
+    projection.commitSubmission(projection.captureSubmission([{ entityKey: 0 }]));
     // An ordinary motion step keeps valid, non-reactive history: no row upload.
     const beforeMove = primitiveWrites().length;
     scene.sync(moveTo(4), resolve).unwrap();
@@ -1249,7 +1234,7 @@ describe('GpuScene', () => {
     expect(lastFlags() & GPU_SCENE_PRIMITIVE_NO_SHADOW_RECEIVE).not.toBe(0);
 
     scene.commitFrame().unwrap();
-    projection.commitSubmission(projection.captureSubmission([{ worldId: 0, entityKey: 0 }]));
+    projection.commitSubmission(projection.captureSubmission([{ entityKey: 0 }]));
     scene.sync(projection.apply([]), resolve).unwrap();
     // Expired pulses leave the persistent opt-out untouched.
     expect(residentTransforms(queue, scene).stamped(1)).toBe(false);
@@ -1274,7 +1259,7 @@ describe('GpuScene', () => {
     expect(created.scene.inspect().uploadBytes).toBe(bytesBefore + 4);
 
     const dirty = projection.apply([
-      { kind: 'update', worldId: 0, entityKey: 0, world: snapshot(0, 3).transform.world },
+      { kind: 'update', entityKey: 0, world: snapshot(0, 3).transform.world },
     ]);
     expect(created.scene.sync(dirty).unwrap().bytes).toBe(2 * GPU_SCENE_LAYOUTS.transform.stride);
     expect(residentTransforms(queue, created.scene).previous(1)).toBe(2);
@@ -1314,16 +1299,15 @@ describe('GpuScene', () => {
     const persistent = new PersistentRenderScene({ getDevice: () => device });
     const draw = () =>
       persistent.extractComposition(
-        [world],
-        { cameraOwner: 0, resourceOwner: 0 },
+        world,
         assets,
         (request) =>
-          extractFrames([world], 0, assets, persistent.materialSnapshotCacheStore(), {
+          extractSource(world, assets, persistent.materialSnapshotCacheStore(), {
             cull: 'none',
             retainHidden: true,
             renderables: request,
           }),
-        [lease],
+        lease,
       );
     try {
       draw();
@@ -1447,13 +1431,7 @@ describe('GpuScene', () => {
     fixtureMaterial = new MaterialResource({ ...material, materialHandle });
     const source = { ...snapshot(1, 3), assetHandle: meshHandle };
 
-    persistent.extractComposition(
-      [world],
-      { cameraOwner: 0, resourceOwner: 0 },
-      assets,
-      () => persistentFrame([source]),
-      [lease],
-    );
+    persistent.extractComposition(world, assets, () => persistentFrame([source]), lease);
     const state = persistent.compositionGpuDrivenState();
     expect(state).toBeDefined();
     if (state === undefined) return;
@@ -1501,7 +1479,7 @@ describe('GpuScene', () => {
     created.scene.sync(projection.apply([updateSnapshot(snapshot(0, 2))])).unwrap();
 
     const dirty = projection.apply([
-      { kind: 'update', worldId: 0, entityKey: 0, world: snapshot(0, 9).transform.world },
+      { kind: 'update', entityKey: 0, world: snapshot(0, 9).transform.world },
     ]);
     created.scene.sync(dirty).unwrap();
 
@@ -1535,7 +1513,7 @@ describe('GpuScene', () => {
     projection.setTemporalTracking(true);
     const initial = multiInstanceSnapshot(0, [2, 8], [101, 202]);
     created.scene.sync(projection.apply([updateSnapshot(initial)])).unwrap();
-    projection.commitSubmission(projection.captureSubmission([{ worldId: 0, entityKey: 0 }]));
+    projection.commitSubmission(projection.captureSubmission([{ entityKey: 0 }]));
 
     const reordered = multiInstanceSnapshot(0, [9, 3], [202, 101]);
     const delta = projection.apply([updateInstances(reordered)]);
@@ -1561,7 +1539,7 @@ describe('GpuScene', () => {
     expect([mapped.current(local(1)), mapped.previous(local(1))]).toEqual([3, 2]);
 
     created.scene.commitFrame().unwrap();
-    projection.commitSubmission(projection.captureSubmission([{ worldId: 0, entityKey: 0 }]));
+    projection.commitSubmission(projection.captureSubmission([{ entityKey: 0 }]));
     const retired = multiInstanceSnapshot(0, [11], [202]);
     const retiredDelta = projection.apply([updateInstances(retired)]);
     expect(projection.temporalSnapshotBySlot(slot.slot)?.motionValid).toBe(true);
@@ -1585,7 +1563,7 @@ describe('GpuScene', () => {
       scene
         .sync(
           projection.apply([
-            { kind: 'update', worldId: 0, entityKey: 0, world: snapshot(0, x).transform.world },
+            { kind: 'update', entityKey: 0, world: snapshot(0, x).transform.world },
           ]),
         )
         .unwrap();
@@ -1641,13 +1619,7 @@ describe('GpuScene', () => {
             motionBlur: { shutterAngle: 180, maxRadiusPixels: 32, sampleCount: 8 },
           };
 
-    persistent.extractComposition(
-      [world],
-      { cameraOwner: 0, resourceOwner: 0 },
-      assets,
-      () => persistentFrame([source], [camera]),
-      [lease],
-    );
+    persistent.extractComposition(world, assets, () => persistentFrame([source], [camera]), lease);
     const state = persistent.compositionGpuDrivenState();
     expect(state).toBeDefined();
     if (state === undefined) return;
@@ -1655,16 +1627,15 @@ describe('GpuScene', () => {
     world.set(entity, Transform, { pos: [6, 0, 0] }).unwrap();
     world.update(0).unwrap();
     persistent.extractComposition(
-      [world],
-      { cameraOwner: 0, resourceOwner: 0 },
+      world,
       assets,
       () => persistentFrame([{ ...snapshot(entity, 6), assetHandle: mesh }], [camera]),
-      [lease],
+      lease,
     );
     queue.writes.length = 0;
     const beforeCommit = state.scene.inspect();
 
-    persistent.prepareTemporalFrame([{ worldId: 0, entityKey: entity }]);
+    persistent.prepareTemporalFrame([{ entityKey: entity }]);
     expect(commitSubmission(persistent)).toBe(true);
     expect(queue.writes).toHaveLength(1);
     expect(state.scene.inspect().uploadRanges).toBe(beforeCommit.uploadRanges + 1);
@@ -1692,7 +1663,7 @@ describe('GpuScene', () => {
           resolve,
         )
         .unwrap();
-      const all = Array.from({ length: count }, (_, key) => ({ worldId: 0, entityKey: key }));
+      const all = Array.from({ length: count }, (_, key) => ({ entityKey: key }));
       const frames: number[] = [];
       for (let frame = 1; frame <= 3; frame++) {
         const submitted = projection.captureSubmission(all, projection.slotsSnapshot());
@@ -1701,7 +1672,6 @@ describe('GpuScene', () => {
         projection.commitSubmission(submitted);
         const moves = Array.from({ length: 8 }, (_, index) => ({
           kind: 'update' as const,
-          worldId: 0,
           entityKey: (index * 97 + frame) % count,
           world: snapshot(0, frame).transform.world,
         }));
@@ -1729,7 +1699,6 @@ describe('GpuScene', () => {
         projection.apply([
           {
             kind: 'update',
-            worldId: 0,
             entityKey: 0,
             world: snapshot(0, 9).transform.world,
           },
@@ -1749,7 +1718,7 @@ describe('GpuScene', () => {
     const projection = new RenderScene();
     projection.setTemporalTracking(true);
     projection.apply([updateSnapshot(snapshot(0, 2))]);
-    projection.commitSubmission(projection.captureSubmission([{ worldId: 0, entityKey: 0 }]));
+    projection.commitSubmission(projection.captureSubmission([{ entityKey: 0 }]));
     const slot = projection.slotsSnapshot().at(0);
     expect(slot).toBeDefined();
     if (slot === undefined) return;
@@ -1758,12 +1727,11 @@ describe('GpuScene', () => {
     projection.apply([
       {
         kind: 'update',
-        worldId: 0,
         entityKey: 0,
         world: snapshot(0, 9).transform.world,
       },
     ]);
-    const pending = projection.captureSubmission([{ worldId: 0, entityKey: 0 }]);
+    const pending = projection.captureSubmission([{ entityKey: 0 }]);
     // A failed execute/finish/submit does not call commitSubmission. The
     // previous frame therefore remains the last successfully submitted pose.
     expect(projection.temporalSnapshotBySlot(slot.slot)?.previousTransform.world[12]).toBe(2);
@@ -1788,7 +1756,7 @@ describe('GpuScene', () => {
     expect(created.scene.inspect()).toMatchObject({ capacity: 4, capacityGrows: 1 });
 
     const beforeRemove = queue.writes.length;
-    created.scene.sync(projection.apply([{ kind: 'remove', worldId: 0, entityKey: 1 }])).unwrap();
+    created.scene.sync(projection.apply([{ kind: 'remove', entityKey: 1 }])).unwrap();
     const cleared = queue.writes.slice(beforeRemove);
     expect(cleared).toHaveLength(3);
     expect(new Set(cleared.map((write) => write.buffer))).toEqual(
@@ -1843,12 +1811,7 @@ describe('GpuScene', () => {
     created.scene.sync(projection.apply([updateSnapshot(snapshot(1, 2))])).unwrap();
 
     created.scene
-      .sync(
-        projection.apply([
-          { kind: 'remove', worldId: 0, entityKey: 1 },
-          updateSnapshot(snapshot(1, 9)),
-        ]),
-      )
+      .sync(projection.apply([{ kind: 'remove', entityKey: 1 }, updateSnapshot(snapshot(1, 9))]))
       .unwrap();
 
     const root = primitiveView(queue, created.scene, 0).getUint32(
@@ -1876,7 +1839,7 @@ describe('GpuScene', () => {
     expect(residentTransforms(queue, created.scene).previous(0, 0)).toBe(1);
 
     const recycled = projection.apply([
-      { kind: 'remove', worldId: 0, entityKey: 1 },
+      { kind: 'remove', entityKey: 1 },
       updateSnapshot(snapshot(2, 7)),
     ]);
     expect(recycled.removedSlots[0]?.slot).toBe(recycled.createdSlots[0]?.slot);
@@ -2025,7 +1988,7 @@ describe('GpuScene', () => {
     const writesBeforeRecreate = queue.writes.length;
     const replacement = { ...empty, assetHandle: 10 };
     const recreated = projection.apply([
-      { kind: 'remove', worldId: 0, entityKey: 0 },
+      { kind: 'remove', entityKey: 0 },
       updateSnapshot(replacement),
     ]);
     created.scene.sync(recreated).unwrap();
@@ -2184,7 +2147,7 @@ it('uploads one shared geometry descriptor for 2048 mesh users without rewriting
   if (available.status !== 'available') throw new Error('GPU Scene unavailable');
   const scene = available.scene;
   const projection = new RenderScene();
-  const first = new MeshFrame().with(0, 9, BUILTIN_CUBE);
+  const first = new MeshFrame().with(9, BUILTIN_CUBE);
   try {
     scene
       .sync({
@@ -2199,7 +2162,7 @@ it('uploads one shared geometry descriptor for 2048 mesh users without rewriting
     initialReads.release();
     const allocations = scene.allocationRevision;
     queue.writes.length = 0;
-    const next = first.with(0, 9, {
+    const next = first.with(9, {
       ...BUILTIN_CUBE,
       aabb: new Float32Array([-10, -1, -1, 10, 1, 1]),
     });
@@ -2222,7 +2185,7 @@ it('uploads one shared geometry descriptor for 2048 mesh users without rewriting
     reads.release();
     expect(scene.inputs.uploadBytes - beforeUpload).toBe(32);
     expect(queue.writes).toHaveLength(1);
-    const descriptor = scene.geometryIndexForResource(0, 9);
+    const descriptor = scene.geometryIndexForResource(9);
     if (descriptor === undefined) throw new Error('missing shared geometry');
     for (let i = 0; i < 2048; i++)
       expect(
@@ -2244,46 +2207,46 @@ it('retains a pinned geometry descriptor through replacement, deletion and submi
   if (available.status !== 'available') throw new Error('GPU Scene unavailable');
   const scene = available.scene;
   const projection = new RenderScene();
-  const before = new MeshFrame().with(0, 9, BUILTIN_CUBE);
+  const before = new MeshFrame().with(9, BUILTIN_CUBE);
   const source = snapshot(1);
   try {
     scene.sync({ ...projection.apply([updateSnapshot(source)]), meshes: before }).unwrap();
     const held = scene.captureResources().unwrap();
-    const address = held.indexForGeometry(0, 9, before.get(0, 9));
+    const address = held.indexForGeometry(9, before.get(9));
     if (address === undefined) throw new Error('missing pinned geometry');
     const oldInput = held.inputReads().buffer().unwrap().buffer;
     const boundsAt = (index: number, input: Buffer) =>
       residentView(queue, input, index * 4).getFloat32(4, true);
     const oldBounds = boundsAt(address, oldInput);
     held.seal().unwrap();
-    const after = before.with(0, 9, {
+    const after = before.with(9, {
       ...BUILTIN_CUBE,
       aabb: new Float32Array([-9, -1, -1, 1, 1, 1]),
     });
     scene.sync({ ...projection.apply([]), meshes: after }).unwrap();
-    const current = scene.geometryIndexForResource(0, 9);
+    const current = scene.geometryIndexForResource(9);
     expect(current).not.toBe(address);
     const currentReads = scene.inputs.capture();
     const currentInput = currentReads.buffer().unwrap().buffer;
     currentReads.release();
     expect(boundsAt(address, oldInput)).toBe(oldBounds);
     expect(current !== undefined && boundsAt(current, currentInput)).toBe(-9);
-    expect(held.indexForGeometry(0, 9, before.get(0, 9))).toBeUndefined();
-    expect(held.indexForGeometry(0, 9, after.get(0, 9))).toBeUndefined();
+    expect(held.indexForGeometry(9, before.get(9))).toBeUndefined();
+    expect(held.indexForGeometry(9, after.get(9))).toBeUndefined();
     let complete!: () => void;
     held.submit(
       new Promise<void>((resolve) => {
         complete = resolve;
       }),
     );
-    scene.sync(projection.apply([{ kind: 'remove', worldId: 0, entityKey: 1 }])).unwrap();
-    expect(scene.geometryIndexForResource(0, 9)).toBeUndefined();
+    scene.sync(projection.apply([{ kind: 'remove', entityKey: 1 }])).unwrap();
+    expect(scene.geometryIndexForResource(9)).toBeUndefined();
     expect(boundsAt(address, oldInput)).toBe(oldBounds);
     complete();
     await Promise.resolve();
     scene.sync(projection.apply([])).unwrap();
     scene.sync({ ...projection.apply([updateSnapshot(source)]), meshes: after }).unwrap();
-    const reclaimed = scene.geometryIndexForResource(0, 9);
+    const reclaimed = scene.geometryIndexForResource(9);
     expect(reclaimed).toBe(address);
     const reclaimedReads = scene.inputs.capture();
     const reclaimedInput = reclaimedReads.buffer().unwrap().buffer;
@@ -2300,11 +2263,11 @@ it('re-pins a resolved geometry version only while it remains current', () => {
   if (available.status !== 'available') throw new Error('GPU Scene unavailable');
   const scene = available.scene;
   const projection = new RenderScene();
-  const before = new MeshFrame().with(0, 9, BUILTIN_CUBE);
+  const before = new MeshFrame().with(9, BUILTIN_CUBE);
   try {
     scene.sync({ ...projection.apply([updateSnapshot(snapshot(1))]), meshes: before }).unwrap();
     const first = scene.captureResources().unwrap();
-    const address = first.logicalForGeometry(0, 9, before.get(0, 9));
+    const address = first.logicalForGeometry(9, before.get(9));
     expect(address).toBeDefined();
     const pins = first.pins?.();
     if (pins === undefined) throw new Error('missing pins');
@@ -2313,14 +2276,14 @@ it('re-pins a resolved geometry version only while it remains current', () => {
     expect(second.adoptPins?.(pins)).toBe(true);
     // The adopted version keeps the old address readable after replacement.
     second.seal().unwrap();
-    const after = before.with(0, 9, {
+    const after = before.with(9, {
       ...BUILTIN_CUBE,
       aabb: new Float32Array([-9, -1, -1, 1, 1, 1]),
     });
     scene.sync({ ...projection.apply([]), meshes: after }).unwrap();
     const third = scene.captureResources().unwrap();
     expect(third.adoptPins?.(pins)).toBe(false);
-    expect(third.logicalForGeometry(0, 9, after.get(0, 9))).toBeDefined();
+    expect(third.logicalForGeometry(9, after.get(9))).toBeDefined();
     third.release();
     second.release();
   } finally {
@@ -2333,7 +2296,7 @@ it('keeps published pin rosters fixed when their source or a borrowing frame rea
   if (available.status !== 'available') throw new Error('GPU Scene unavailable');
   const scene = available.scene;
   const projection = new RenderScene();
-  const before = new MeshFrame().with(0, 9, BUILTIN_CUBE).with(0, 10, BUILTIN_CUBE);
+  const before = new MeshFrame().with(9, BUILTIN_CUBE).with(10, BUILTIN_CUBE);
   try {
     scene
       .sync({
@@ -2345,18 +2308,18 @@ it('keeps published pin rosters fixed when their source or a borrowing frame rea
       })
       .unwrap();
     const first = scene.captureResources().unwrap();
-    first.logicalForGeometry(0, 9, before.get(0, 9));
+    first.logicalForGeometry(9, before.get(9));
     const original = first.pins?.();
     if (original === undefined) throw new Error('missing original pins');
-    first.logicalForGeometry(0, 10, before.get(0, 10));
+    first.logicalForGeometry(10, before.get(10));
     const expanded = first.pins?.();
     if (expanded === undefined) throw new Error('missing expanded pins');
     first.release();
     const borrowed = scene.captureResources().unwrap();
     expect(borrowed.adoptPins?.(original)).toBe(true);
-    expect(borrowed.logicalForGeometry(0, 10, before.get(0, 10))).toBeDefined();
+    expect(borrowed.logicalForGeometry(10, before.get(10))).toBeDefined();
     borrowed.seal().unwrap();
-    const after = before.with(0, 10, {
+    const after = before.with(10, {
       ...BUILTIN_CUBE,
       aabb: new Float32Array([-9, -1, -1, 1, 1, 1]),
     });
@@ -2387,7 +2350,7 @@ it('keeps entity tables stable while old frames hold distinct shared mesh versio
   if (available.status !== 'available') throw Error('GPU scene unavailable');
   const scene = available.scene;
   const projection = new RenderScene();
-  let meshes = new MeshFrame().with(0, 9, BUILTIN_CUBE);
+  let meshes = new MeshFrame().with(9, BUILTIN_CUBE);
   scene.sync({ ...projection.apply([updateSnapshot(snapshot(1))]), meshes }).unwrap();
   const capacity = scene.rowCapacity;
   const buffers = [scene.primitiveBuffer, scene.instanceBuffer, scene.transformBuffer];
@@ -2396,16 +2359,16 @@ it('keeps entity tables stable while old frames hold distinct shared mesh versio
     for (let i = 0; i < 8; i++) {
       const frame = scene.captureResources().unwrap();
       held.push(frame);
-      const geometry = meshes.get(0, 9);
-      const address = frame.indexForGeometry(0, 9, geometry);
+      const geometry = meshes.get(9);
+      const address = frame.indexForGeometry(9, geometry);
       expect(address).toBeDefined();
       frame.seal().unwrap();
-      meshes = meshes.with(0, 9, {
+      meshes = meshes.with(9, {
         ...BUILTIN_CUBE,
         aabb: new Float32Array([-i - 2, -1, -1, i + 2, 1, 1]),
       });
       scene.sync({ ...projection.apply([]), meshes }).unwrap();
-      expect(scene.geometryIndexForResource(0, 9)).not.toBe(address);
+      expect(scene.geometryIndexForResource(9)).not.toBe(address);
       expect(scene.rowCapacity).toBe(capacity);
       expect(scene.primitiveBuffer).toBe(buffers[0]);
       expect(scene.instanceBuffer).toBe(buffers[1]);
@@ -2432,7 +2395,7 @@ it('retires unheld tables with a disposed scene and held tables at frame release
     scene
       .sync({
         ...projection.apply([updateSnapshot(snapshot(1))]),
-        meshes: new MeshFrame().with(0, 9, BUILTIN_CUBE),
+        meshes: new MeshFrame().with(9, BUILTIN_CUBE),
       })
       .unwrap();
     const held = holdFrame ? scene.captureResources().unwrap() : undefined;
@@ -2510,14 +2473,14 @@ it('drains CPU backing across twenty grow/capture/dispose cycles while held GPU 
     assert(available.status === 'available');
     const scene = available.scene;
     const projection = new RenderScene();
-    const meshes = new MeshFrame().with(0, 9, BUILTIN_CUBE);
+    const meshes = new MeshFrame().with(9, BUILTIN_CUBE);
     scene.sync({ ...projection.apply([updateSnapshot(snapshot(1))]), meshes }).unwrap();
     const oldBuffer = scene.primitiveBuffer;
     const oldBytes = queue.resident.get(oldBuffer)?.slice();
     assert(oldBytes);
     const held = scene.captureResources().unwrap();
     expect(held.indexForResource(fixtureMaterial, material)).toBeDefined();
-    expect(held.indexForGeometry(0, 9)).toBeDefined();
+    expect(held.indexForGeometry(9)).toBeDefined();
     held.inputReads().buffer().unwrap();
     held.seal().unwrap();
     const destroyed = new Set<Buffer>();
@@ -2622,9 +2585,9 @@ it('admits shared Skin Mesh envelopes once and versions their numeric input with
   const scene = available.scene,
     projection = new RenderScene(),
     source = sharedSkinMesh();
-  const first = new MeshFrame().with(0, 9, source);
+  const first = new MeshFrame().with(9, source);
   try {
-    expect(first.get(0, 9)?.skinEnvelopes).toEqual(
+    expect(first.get(9)?.skinEnvelopes).toEqual(
       new Float32Array([1, 1, 1, 1, -2, -1, 0, 0, 3, 1, 2, 0]),
     );
     const operations = Array.from({ length: 64 }, (_, index) =>
@@ -2633,7 +2596,7 @@ it('admits shared Skin Mesh envelopes once and versions their numeric input with
     scene.sync({ ...projection.apply(operations), meshes: first }).unwrap();
     const held = scene.captureResources().unwrap();
     try {
-      const oldAddress = held.indexForGeometry(0, 9, first.get(0, 9));
+      const oldAddress = held.indexForGeometry(9, first.get(9));
       if (oldAddress === undefined) throw new Error('Missing shared Skin geometry');
       const oldReads = held.inputReads(),
         oldInput = oldReads.buffer().unwrap().buffer;
@@ -2647,10 +2610,10 @@ it('admits shared Skin Mesh envelopes once and versions their numeric input with
         transforms = scene.transformBuffer,
         revision = scene.allocationRevision;
       (source.attributes.position as Float32Array)[0] = -99;
-      expect(first.get(0, 9)?.skinEnvelopes?.[4]).toBe(-2);
-      const next = first.with(0, 9, sharedSkinMesh(2));
+      expect(first.get(9)?.skinEnvelopes?.[4]).toBe(-2);
+      const next = first.with(9, sharedSkinMesh(2));
       scene.sync({ ...projection.apply([]), meshes: next }).unwrap();
-      const currentAddress = scene.geometryIndexForResource(0, 9);
+      const currentAddress = scene.geometryIndexForResource(9);
       if (currentAddress === undefined) throw new Error('Missing updated shared Skin geometry');
       expect(currentAddress).not.toBe(oldAddress);
       const reads = scene.inputs.capture();
@@ -2682,19 +2645,19 @@ it('resizes unpinned Skin Mesh descriptors and preserves uncullable geometry exp
   if (available.status !== 'available') throw new Error('GPU Scene unavailable');
   const scene = available.scene,
     projection = new RenderScene();
-  let meshes = new MeshFrame().with(0, 9, sharedSkinMesh());
+  let meshes = new MeshFrame().with(9, sharedSkinMesh());
   try {
     scene.sync({ ...projection.apply([updateSnapshot(snapshot(1))]), meshes }).unwrap();
-    const first = scene.geometryIndexForResource(0, 9);
-    meshes = meshes.with(0, 9, sharedSkinMesh(2));
+    const first = scene.geometryIndexForResource(9);
+    meshes = meshes.with(9, sharedSkinMesh(2));
     scene.sync({ ...projection.apply([]), meshes }).unwrap();
-    const second = scene.geometryIndexForResource(0, 9);
+    const second = scene.geometryIndexForResource(9);
     expect(second).not.toBe(first);
     const mesh = sharedSkinMesh(2);
-    meshes = meshes.with(0, 9, { ...mesh, morphTargets: [{ position: new Float32Array(6) }] });
-    expect(meshes.get(0, 9)?.skinEnvelopes).toBeUndefined();
+    meshes = meshes.with(9, { ...mesh, morphTargets: [{ position: new Float32Array(6) }] });
+    expect(meshes.get(9)?.skinEnvelopes).toBeUndefined();
     scene.sync({ ...projection.apply([]), meshes }).unwrap();
-    const address = scene.geometryIndexForResource(0, 9);
+    const address = scene.geometryIndexForResource(9);
     if (address === undefined) throw new Error('Missing uncullable shared geometry');
     const reads = scene.inputs.capture(),
       buffer = reads.buffer().unwrap().buffer;
@@ -2711,7 +2674,7 @@ it('derives a shared Skin enclosure on Mesh evidence without visiting instance g
     mesh = sharedSkinMesh();
   const handle = assets.create(mesh).unwrap(),
     world = new World({ assets });
-  const projection = new RenderScene([worldRenderResources(world)]);
+  const projection = new RenderScene(worldRenderResources(world));
   const derive = vi.spyOn(skinGeometry, 'skinGeometryEnvelopes');
   try {
     const rows = Array.from({ length: 64 }, (_, index) => ({
@@ -2721,16 +2684,14 @@ it('derives a shared Skin enclosure on Mesh evidence without visiting instance g
     projection.apply(rows.map(updateSnapshot));
     expect(derive).toHaveBeenCalledTimes(1);
     const before = projection.meshFrame(),
-      geometry = before.get(0, handle);
+      geometry = before.get(handle);
     for (const row of rows)
-      projection.apply([
-        { kind: 'update', worldId: 0, entityKey: row.entityKey, world: row.transform.world },
-      ]);
+      projection.apply([{ kind: 'update', entityKey: row.entityKey, world: row.transform.world }]);
     expect(derive).toHaveBeenCalledTimes(1);
-    expect(projection.meshFrame().get(0, handle)).toBe(geometry);
-    projection.adoptMesh(0, handle, sharedSkinMesh(2));
+    expect(projection.meshFrame().get(handle)).toBe(geometry);
+    projection.adoptMesh(handle, sharedSkinMesh(2));
     expect(derive).toHaveBeenCalledTimes(2);
-    expect(projection.meshFrame().get(0, handle)?.skinEnvelopes?.[3]).toBe(2);
+    expect(projection.meshFrame().get(handle)?.skinEnvelopes?.[3]).toBe(2);
     expect(geometry?.skinEnvelopes?.[3]).toBe(1);
   } finally {
     derive.mockRestore();
@@ -2743,16 +2704,16 @@ it('drops unuploaded Skin Mesh tail dirtiness with the retired allocation', () =
   if (available.status !== 'available') throw new Error('GPU Scene unavailable');
   const scene = available.scene,
     projection = new RenderScene();
-  let meshes = new MeshFrame().with(0, 9, sharedSkinMesh());
+  let meshes = new MeshFrame().with(9, sharedSkinMesh());
   try {
     scene.sync({ ...projection.apply([updateSnapshot(snapshot(1))]), meshes }).unwrap();
     const warm = scene.inputs.capture();
     warm.buffer().unwrap();
     warm.release();
     const bytes = scene.inputs.uploadBytes;
-    meshes = meshes.with(0, 9, sharedSkinMesh(2));
+    meshes = meshes.with(9, sharedSkinMesh(2));
     scene.sync({ ...projection.apply([]), meshes }).unwrap();
-    scene.sync(projection.apply([{ kind: 'remove', worldId: 0, entityKey: 1 }])).unwrap();
+    scene.sync(projection.apply([{ kind: 'remove', entityKey: 1 }])).unwrap();
     const empty = scene.inputs.capture();
     empty.buffer().unwrap();
     empty.release();
@@ -2768,18 +2729,18 @@ it('retires the allocated Skin Mesh extent even if an exposed envelope backing i
   if (available.status !== 'available') throw new Error('GPU Scene unavailable');
   const scene = available.scene,
     projection = new RenderScene(),
-    meshes = new MeshFrame().with(0, 9, sharedSkinMesh());
+    meshes = new MeshFrame().with(9, sharedSkinMesh());
   const release = vi.spyOn(scene.inputs.arena, 'releaseDescriptor');
   try {
     scene.sync({ ...projection.apply([updateSnapshot(snapshot(1))]), meshes }).unwrap();
-    const address = scene.geometryIndexForResource(0, 9),
-      envelopes = meshes.get(0, 9)?.skinEnvelopes;
+    const address = scene.geometryIndexForResource(9),
+      envelopes = meshes.get(9)?.skinEnvelopes;
     if (address === undefined || envelopes === undefined) throw new Error('Missing Skin envelope');
     const words = 8 + envelopes.length;
     structuredClone(envelopes, { transfer: [envelopes.buffer] });
     expect(envelopes.length).toBe(0);
     release.mockClear();
-    scene.sync(projection.apply([{ kind: 'remove', worldId: 0, entityKey: 1 }])).unwrap();
+    scene.sync(projection.apply([{ kind: 'remove', entityKey: 1 }])).unwrap();
     expect(release.mock.calls).toContainEqual([address, words]);
   } finally {
     release.mockRestore();
@@ -2805,7 +2766,7 @@ it('publishes morph weights as per-row inputs beside shared Mesh deltas, uploadi
       { position: new Float32Array(positions.length).fill(-0.5) },
     ],
   };
-  const meshes = new MeshFrame().with(0, 9, mesh);
+  const meshes = new MeshFrame().with(9, mesh);
   const morphed = (entityKey: number, weights: readonly number[]): RenderableSnapshot => ({
     ...snapshot(entityKey),
     morph: { weights: new Float32Array(weights), targetCount: 2 },

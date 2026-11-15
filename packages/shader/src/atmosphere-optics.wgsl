@@ -61,8 +61,13 @@ fn atmosphere_interval(m: AtmosphereMedium, p: vec3<f32>, d: vec3<f32>, distance
   return vec2<f32>(start, max(start, end));
 }
 fn atmosphere_planet_visibility(m: AtmosphereMedium, p: vec3<f32>, sun: vec3<f32>) -> f32 {
+  let radius = length(p);
+  if radius <= m.originRadius.w {
+    // A surface inward ray starts at the zero root; a point inside is occluded.
+    return select(0.0, 1.0, radius == m.originRadius.w && dot(p, sun) >= 0.0);
+  }
   let ground = atmosphere_sphere(p, sun, m.originRadius.w);
-  return select(1.0, 0.0, ground.x > 0.00001);
+  return select(1.0, 0.0, ground.x > 0.0 || ground.y > 0.0);
 }
 fn atmosphere_rayleigh_phase(mu: f32) -> f32 {
   return 3.0 * (1.0 + mu * mu) / (16.0 * ATMOSPHERE_PI);
@@ -123,6 +128,10 @@ texture_2d<f32>
   }
   let uv=atmosphere_transmittance_uv(m,position,sun);
   return atmosphere_table_sample(lut,filtering,atmosphere_sub_uv(uv,atmosphere_table_dimensions(lut,0u)),0u);
+}
+// Directional-light ground reference in planet-local Y-up coordinates, independent of the observer.
+fn atmosphere_ground_solar_transmittance(m: AtmosphereMedium, sun: vec3<f32>, lut: texture_2d<f32>, filtering: sampler) -> vec3<f32> {
+  return atmosphere_solar_transmittance(m, vec3<f32>(0.0, m.originRadius.w + 0.5, 0.0), sun, lut, filtering);
 }
 fn atmosphere_multi_source(m: AtmosphereMedium, p: vec3<f32>, sun: vec3<f32>, lut:
 #ifdef STORAGE_BUFFER_AVAILABLE

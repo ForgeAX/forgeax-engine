@@ -6,7 +6,6 @@ import {
 
 const probe: Extract<ReflectionProbeSelectionResult, { kind: 'probe' }> = {
   kind: 'probe',
-  worldId: 2,
   entityKey: 7,
   normalizedDistance: 0.25,
 };

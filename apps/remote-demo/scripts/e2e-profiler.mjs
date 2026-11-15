@@ -2,7 +2,7 @@
 import { createSmokePlatform } from '../../../scripts/smoke-platform.mjs';
 // Real remote profiler journey: introspect -> eval -> artifact -> offline model.
 
-import { resolve, dirname } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
 
@@ -23,7 +23,9 @@ async function main() {
   const appMod = await import(resolve(WORKSPACE_ROOT, 'packages/app/dist/index.mjs'));
   const ecsMod = await import(resolve(WORKSPACE_ROOT, 'packages/ecs/dist/index.mjs'));
   const remoteMod = await import(resolve(WORKSPACE_ROOT, 'packages/remote/dist/server.mjs'));
-  const clientMod = await import(resolve(WORKSPACE_ROOT, 'packages/types/dist/inspector-client.mjs'));
+  const clientMod = await import(
+    resolve(WORKSPACE_ROOT, 'packages/types/dist/inspector-client.mjs')
+  );
   const { buildProfileModel, createProfiler } = profilerMod;
   const { createApp } = appMod;
   const { World } = ecsMod;
@@ -49,9 +51,13 @@ async function main() {
       result: notEnabled,
     });
     const methods = doc.methods?.map((method) => method.name);
-    record('method-roster-disabled', JSON.stringify(methods) === JSON.stringify(['eval', 'introspect']), {
-      methods,
-    });
+    record(
+      'method-roster-disabled',
+      JSON.stringify(methods) === JSON.stringify(['eval', 'introspect']),
+      {
+        methods,
+      },
+    );
   } finally {
     await disabledClient.dispose();
     await disabledServer.value.close();
@@ -77,7 +83,12 @@ async function main() {
     onLost: () => () => {},
     dispose: () => {},
   };
-  const appResult = await createApp({ platform: createSmokePlatform({ width: 1, height: 1 }),  renderer, world, profiler });
+  const appResult = await createApp({
+    platform: createSmokePlatform({ width: 1, height: 1 }),
+    renderer,
+    world,
+    profiler,
+  });
   if (!appResult.ok) throw appResult.error;
   const app = appResult.value;
   const server = await startServer({ port: 0, host: '127.0.0.1', world, renderer, profiler });
@@ -89,7 +100,8 @@ async function main() {
     for (let index = 0; index < count; index += 1) {
       const frame = scheduledFrame;
       scheduledFrame = undefined;
-      if (frame === undefined) throw new Error('createApp did not schedule the requested host frame');
+      if (frame === undefined)
+        throw new Error('createApp did not schedule the requested host frame');
       frame((index + 1) * 16);
     }
   };
@@ -99,9 +111,13 @@ async function main() {
       root: doc.roots?.profiler,
     });
     const methods = doc.methods?.map((method) => method.name);
-    record('method-roster-enabled', JSON.stringify(methods) === JSON.stringify(['eval', 'introspect']), {
-      methods,
-    });
+    record(
+      'method-roster-enabled',
+      JSON.stringify(methods) === JSON.stringify(['eval', 'introspect']),
+      {
+        methods,
+      },
+    );
 
     const started = await client.eval('profiler.startCapture({ frameLimit: 1, eventLimit: 32 })');
     record('eval-start-capture', started?.ok === true, { result: started });
@@ -116,7 +132,7 @@ async function main() {
       status: artifact?.completeness?.status,
       frameCount: hostFrameCount,
     });
-    const model = buildProfileModel(artifact);
+    const model = buildProfileModel(artifact, { orderEvidence: 'recorder-closure' });
     record(
       'artifact-offline-model',
       model.ok === true && model.value.summary.captureId === artifact?.captureId,
@@ -132,11 +148,14 @@ async function main() {
     );
     driveHostFrames(1);
     const overflowArtifact = await client.eval('profiler.latestCapture()');
-    const overflowModel = buildProfileModel(overflowArtifact);
+    const overflowModel = buildProfileModel(overflowArtifact, {
+      orderEvidence: 'recorder-closure',
+    });
     record(
       'overflow-state-preserved',
       overflowStart?.ok === true &&
-        overflowArtifact?.completeness?.status === 'overflow' && overflowModel.ok === true,
+        overflowArtifact?.completeness?.status === 'overflow' &&
+        overflowModel.ok === true,
       { status: overflowArtifact?.completeness?.status, model: overflowModel },
     );
 
@@ -146,11 +165,12 @@ async function main() {
     driveHostFrames(1);
     app.stop();
     const partialArtifact = await client.eval('profiler.latestCapture()');
-    const partialModel = buildProfileModel(partialArtifact);
+    const partialModel = buildProfileModel(partialArtifact, { orderEvidence: 'recorder-closure' });
     record(
       'partial-state-preserved',
       partialStart?.ok === true &&
-        partialArtifact?.completeness?.status === 'partial' && partialModel.ok === true,
+        partialArtifact?.completeness?.status === 'partial' &&
+        partialModel.ok === true,
       { start: partialStart, status: partialArtifact?.completeness?.status, model: partialModel },
     );
   } finally {

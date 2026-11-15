@@ -26,7 +26,13 @@ it.each([
     .addRasterPass('opaque', {
       accesses: [{ resource: depthView, usage: 'depth-stencil-write' }],
       colorAttachments: [],
-      depthStencilAttachment: { view: depthView, depthLoadOp: 'clear', depthStoreOp: 'store' },
+      depthStencilAttachment: {
+        view: depthView,
+        depthLoadOp: 'clear',
+        depthStoreOp: 'store',
+        stencilLoadOp: 'clear',
+        stencilStoreOp: 'store',
+      },
       encode: () => undefined,
     })
     .unwrap();

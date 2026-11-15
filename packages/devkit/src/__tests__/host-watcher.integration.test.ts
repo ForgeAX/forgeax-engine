@@ -1,16 +1,30 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { createServer as createPortServer } from 'node:net';
-import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { createServer, type ViteDevServer } from 'vite';
 import { expect, it, vi } from 'vitest';
+import {
+  createLiveSyncProjectDirectory,
+  prepareLiveSyncSharedInputs,
+} from '../../scripts/live-sync-inputs.mjs';
 import { createViteConfig } from '../host.js';
 import { readProjectFacts } from '../project.js';
 
 it('keeps project file notifications while closing without native FSEvents blocking', async () => {
-  const root = await mkdtemp(resolve(tmpdir(), 'forgeax-host-watcher-'));
+  const { root, temporaryRoot } = await createLiveSyncProjectDirectory(
+    'forgeax-host-watcher-',
+    resolve(import.meta.dirname, '../../../..'),
+    process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST,
+  );
   let server: ViteDevServer | undefined;
   try {
+    if (process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST)
+      await prepareLiveSyncSharedInputs({
+        sourceRoot: resolve(import.meta.dirname, '../../../..'),
+        projectRoot: root,
+        temporaryRoot,
+        manifestPath: process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST,
+      });
     await mkdir(resolve(root, 'assets'));
     await writeFile(resolve(root, 'package.json'), '{"name":"host-watcher"}\n');
     await writeFile(
@@ -59,6 +73,6 @@ it('keeps project file notifications while closing without native FSEvents block
     expect(performance.now() - started).toBeLessThan(5000);
   } finally {
     await server?.close();
-    await rm(root, { recursive: true, force: true });
+    await rm(temporaryRoot, { recursive: true, force: true });
   }
 }, 30000);

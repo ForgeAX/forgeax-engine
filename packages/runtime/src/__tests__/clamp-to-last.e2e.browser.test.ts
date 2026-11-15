@@ -60,8 +60,6 @@ const SUT_ATTRIBUTABLE_RENDER_CODES: ReadonlySet<string> = new Set([
   'asset-not-registered',
   'vertex-storage-buffer-unavailable',
   'mesh-ssbo-ceiling-reached',
-  'standard-light-budget-exceeded',
-  'standard-cluster-index-overflow',
 ]);
 
 // Suppress WebGPU teardown race: chromium fires unhandled OperationError
@@ -190,11 +188,7 @@ describe('clamp-to-last e2e browser (m3-w6)', () => {
       const frameStartedAt = performance.now();
       world.update(1 / 60).unwrap();
       const updatedAt = performance.now();
-      const drawn = renderer.draw({
-        leases: [attachment.value],
-        camera: { lease: attachment.value },
-        environment: { lease: attachment.value },
-      });
+      const drawn = renderer.draw({ source: attachment.value });
       expect(drawn.ok).toBe(true);
       if (!drawn.ok) throw drawn.error;
       const submittedAt = performance.now();

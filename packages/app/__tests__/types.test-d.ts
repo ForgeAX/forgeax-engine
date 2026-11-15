@@ -224,7 +224,7 @@ describe('error detail unions derive from their code resolvers', () => {
 
   it('preserves the complete LoadGameError detail union', () => {
     expectTypeOf<LoadGameErrorDetail>().toEqualTypeOf<
-      | LoadGameDetailModuleNotFound
+  LoadGameDetailModuleNotFound
       | LoadGameDetailInvalidFormat
       | LoadGameDetailImportFailed
     >();
@@ -361,8 +361,6 @@ describe('exhaustive switch over (AppError | RhiError) compiles with no default 
         case 'destroy-after-destroy':
         case 'rhi-descriptor-invalid':
         case 'instancing-exceeds-uniform-cap':
-        case 'render-system-empty-worlds':
-        case 'render-system-owner-out-of-range':
         case 'rhi-texture-format-capability-unavailable':
           return 'rhi';
       }
@@ -385,7 +383,7 @@ describe('dual-layer instanceof EngineEnvironmentError + switch pattern (D-6)', 
     function consume(err: AppError | RhiError | EngineEnvironmentError): string {
       if (err instanceof EngineEnvironmentError) {
         const cause = err.detail.webgpuError;
-        return `env: ${cause && 'code' in cause ? cause.code : cause?.message ?? 'no-webgpu-detail'}`;
+        return `env: ${cause && 'code' in cause ? cause.code : ( cause?.message ?? 'no-webgpu-detail')}`;
       }
       const code = err.code;
       switch (code) {
@@ -424,8 +422,6 @@ describe('dual-layer instanceof EngineEnvironmentError + switch pattern (D-6)', 
         case 'destroy-after-destroy':
         case 'rhi-descriptor-invalid':
         case 'instancing-exceeds-uniform-cap':
-        case 'render-system-empty-worlds':
-        case 'render-system-owner-out-of-range':
         case 'rhi-texture-format-capability-unavailable':
           return 'rhi';
       }

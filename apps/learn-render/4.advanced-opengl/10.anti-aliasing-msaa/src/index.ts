@@ -1,3 +1,5 @@
+import { InputFrameStartScan } from "@forgeax/engine-input";
+import { defineSystem } from "@forgeax/engine-ecs";
 import type { AssetHandle } from '@forgeax/engine-types';
 import { Update } from '@forgeax/engine-ecs';
 // apps/learn-render/4.advanced-opengl/10.anti-aliasing-msaa -- MSAA hardware
@@ -37,7 +39,7 @@ import { createApp } from '@forgeax/engine-app/browser';
 import type { App, CanvasAppError } from '@forgeax/engine-app';
 
 
-import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine-input';
+import { INPUT_SNAPSHOT_RESOURCE_KEY } from '@forgeax/engine-input';
 import { Transform } from '@forgeax/engine-scene';
 
 import { ANTIALIAS_MSAA, ANTIALIAS_NONE, perspective } from '@forgeax/engine-render';
@@ -170,12 +172,12 @@ const primitiveSphere = app.assets.create(createPrimitiveMesh('sphere').unwrap()
   // the Camera.antialias value so AI users can read state from DOM.
   const hudEl = document.getElementById('msaa-hud');
 
-  world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'msaa-space-toggle',
-    after: ['input-frame-start-scan'],
+    after: [InputFrameStartScan],
     queries: [],
     fn: () => {
-      const snap = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+      const snap = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
       if (snap === undefined) return;
 
       // InputSnapshot.keyboard matches KeyboardEvent.key (browser backend
@@ -200,6 +202,7 @@ const primitiveSphere = app.assets.create(createPrimitiveMesh('sphere').unwrap()
       prevSpace = cur;
     },
   });
+world.addSystem(Update, systemToken1);
 
   // Step 7: arm the rAF loop.
   const startRes = app.start();

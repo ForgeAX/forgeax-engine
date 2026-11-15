@@ -1,5 +1,5 @@
 import type { App } from '@forgeax/engine-app';
-import { Update } from '@forgeax/engine-ecs';
+import { defineSystem, Update } from '@forgeax/engine-ecs';
 import type { NetRecoverySnapshot, NetSession } from '@forgeax/engine-net';
 import { isEndpointError } from '@forgeax/engine-net';
 import type { Renderer } from '@forgeax/engine-render';
@@ -65,49 +65,48 @@ async function main(): Promise<void> {
     if (browserProbeEnabled) window.__forgeaxSnake = browserProbe;
     disposeClient = browserProbe.dispose;
 
-    client.world
-      .addSystem(Update, {
-        name: 'snake-client-observability',
-        queries: [],
-        fn: () => {
-          const recovery = client.getRecoverySnapshot();
-          state.dataset.netSessionId = String(recovery.sessionId);
-          state.dataset.netSessionState = recovery.state.kind;
-          state.dataset.netPendingPackets = String(recovery.pendingPackets);
-          state.dataset.netOwnedResources = JSON.stringify(recovery.ownedResources);
-          switch (recovery.state.kind) {
-            case 'connecting':
-              break;
-            case 'resyncing':
-              state.dataset.netEpoch = String(recovery.state.epoch);
-              break;
-            case 'active':
-              state.dataset.netEpoch = String(recovery.state.epoch);
-              state.dataset.netSequence = String(recovery.state.sequence);
-              break;
-            case 'recovering':
-              state.dataset.netRecoveryAttempt = String(recovery.state.attempt);
-              break;
-            case 'failed':
-              state.dataset.netErrorCode = recovery.state.error.code;
-              state.dataset.netErrorHint = recovery.state.error.hint;
-              state.dataset.netErrorDetail = JSON.stringify(recovery.state.error.detail);
-              break;
-            case 'retired':
-              state.dataset.netRetireReason = recovery.state.reason;
-              break;
-          }
-          state.dataset.directionCommandSendCount = String(
-            client.directionCommandEvidence.directionCommandSendCount,
-          );
-          if (recovery.lastError !== undefined)
-            state.dataset.netLastErrorDetail = JSON.stringify(recovery.lastError.detail);
-          const frustumStats = client.renderer.inspect().frustumStats;
-          state.dataset.renderableTotal = String(frustumStats.total);
-          state.dataset.renderableCulled = String(frustumStats.culled);
-        },
-      })
-      .unwrap();
+    const systemToken1 = defineSystem({
+      name: 'snake-client-observability',
+      queries: [],
+      fn: () => {
+        const recovery = client.getRecoverySnapshot();
+        state.dataset.netSessionId = String(recovery.sessionId);
+        state.dataset.netSessionState = recovery.state.kind;
+        state.dataset.netPendingPackets = String(recovery.pendingPackets);
+        state.dataset.netOwnedResources = JSON.stringify(recovery.ownedResources);
+        switch (recovery.state.kind) {
+          case 'connecting':
+            break;
+          case 'resyncing':
+            state.dataset.netEpoch = String(recovery.state.epoch);
+            break;
+          case 'active':
+            state.dataset.netEpoch = String(recovery.state.epoch);
+            state.dataset.netSequence = String(recovery.state.sequence);
+            break;
+          case 'recovering':
+            state.dataset.netRecoveryAttempt = String(recovery.state.attempt);
+            break;
+          case 'failed':
+            state.dataset.netErrorCode = recovery.state.error.code;
+            state.dataset.netErrorHint = recovery.state.error.hint;
+            state.dataset.netErrorDetail = JSON.stringify(recovery.state.error.detail);
+            break;
+          case 'retired':
+            state.dataset.netRetireReason = recovery.state.reason;
+            break;
+        }
+        state.dataset.directionCommandSendCount = String(
+          client.directionCommandEvidence.directionCommandSendCount,
+        );
+        if (recovery.lastError !== undefined)
+          state.dataset.netLastErrorDetail = JSON.stringify(recovery.lastError.detail);
+        const frustumStats = client.renderer.inspect().frustumStats;
+        state.dataset.renderableTotal = String(frustumStats.total);
+        state.dataset.renderableCulled = String(frustumStats.culled);
+      },
+    });
+    client.world.addSystem(Update, systemToken1).unwrap();
 
     const appErrors: string[] = [];
     const status = document.querySelector<HTMLElement>('#round-status') ?? undefined;

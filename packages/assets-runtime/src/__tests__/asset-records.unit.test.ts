@@ -5,6 +5,46 @@ import { AssetRecords } from '../internal/asset-records';
 const material = (roughness = 1): MaterialAsset => ({ kind: 'material', values: { roughness } });
 
 describe('owned runtime asset content', () => {
+  test('checks fixed pin currentness against its full dependency closure', () => {
+    const records = new AssetRecords({ maxSnapshots: 1 });
+    const dependency = records.create('material', material(0.2)).unwrap();
+    const root = records.create('mesh', { kind: 'mesh' }, [dependency]).unwrap();
+    const unrelated = records.create('material', material()).unwrap();
+    const version = records.pin(root).unwrap();
+
+    expect(version.matchesCurrent()).toBe(true);
+    records.update(unrelated, material(0.4)).unwrap();
+    expect(version.matchesCurrent()).toBe(true);
+    records.update(dependency, material(0.8)).unwrap();
+    expect(version.matchesCurrent()).toBe(false);
+    version.dispose();
+    expect(version.matchesCurrent()).toBe(false);
+
+    const current = records.pin(root).unwrap();
+    expect(current.matchesCurrent()).toBe(true);
+    current.dispose();
+    records.dispose();
+  });
+
+  test('drops a stale pin before retrying within a one-snapshot budget', () => {
+    const records = new AssetRecords({ maxSnapshots: 1 });
+    const dependency = records.create('material', material(0.2)).unwrap();
+    const root = records.create('mesh', { kind: 'mesh' }, [dependency]).unwrap();
+    const first = records.pin(root).unwrap();
+    records.update(dependency, material(0.8)).unwrap();
+    expect(first.matchesCurrent()).toBe(false);
+    first.dispose();
+
+    const next = records.pin(root);
+    expect(next.ok).toBe(true);
+    if (next.ok) {
+      expect(next.value.matchesCurrent()).toBe(true);
+      next.value.dispose();
+    }
+    expect(records.inspect()).toMatchObject({ snapshots: 0, snapshotBytes: 0 });
+    records.dispose();
+  });
+
   test('guards an exact dependency closure without retaining fixed content copies', () => {
     const records = new AssetRecords({ maxSnapshots: 1 });
     const dependency = records.create('material', material(0.2)).unwrap();

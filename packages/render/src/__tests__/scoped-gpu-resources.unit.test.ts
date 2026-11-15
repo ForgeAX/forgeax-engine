@@ -35,7 +35,7 @@ it('isolates complete numeric handles and retires empty namespace tables during 
   expect([...resources.entries()]).toEqual([]);
 });
 
-it('keeps overlapping World and numeric texture owners through replacement, completion and sweeping', async () => {
+it('keeps retired source texture epochs through replacement, completion and sweeping', async () => {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const store = new GpuResidencyCache();
   store.configureGpuDevice(device, undefined, device.caps);
@@ -47,14 +47,12 @@ it('keeps overlapping World and numeric texture owners through replacement, comp
     mips: { kind: 'none' },
     data: new Uint8Array([1, 2, 3, 255]),
   };
-  const scopes = [
+  const scopes = Array.from({ length: 5 }, () =>
     worldRenderResources(new World({ assets: new AssetRegistry() })),
-    worldRenderResources(new World({ assets: new AssetRegistry() })),
-    0,
-    1,
-    -1,
-  ];
+  );
   const handle = (2 ** 32 + 1) as AssetHandle<'texture'>;
+  const sourceScope = scopes[0];
+  if (!sourceScope) throw new Error('Expected a source scope');
   const entries = scopes.map((scope) => store.ensureResident(handle, texture, scope).unwrap());
   expect(new Set(entries.map((entry) => entry.view)).size).toBe(scopes.length);
   let finish!: () => void;
@@ -62,11 +60,11 @@ it('keeps overlapping World and numeric texture owners through replacement, comp
     finish = resolve;
   });
   try {
-    const lease = store.retainTextureResidency(handle, scopes[0]);
+    const lease = store.retainTextureResidency(handle, sourceScope);
     expect(lease).toBeDefined();
     lease?.track(completion);
-    store.invalidateTexture(handle, scopes[0]);
-    const replacement = store.ensureResident(handle, texture, scopes[0]).unwrap();
+    store.invalidateTexture(handle, sourceScope);
+    const replacement = store.ensureResident(handle, texture, sourceScope).unwrap();
     expect(replacement.view).not.toBe(entries[0]?.view);
     const released = lease?.release(true);
     expect(entries[0]?.texture.isDestroyed).toBe(false);
@@ -77,11 +75,11 @@ it('keeps overlapping World and numeric texture owners through replacement, comp
     finish();
     await released;
     expect(entries[0]?.texture.isDestroyed).toBe(true);
-    expect(store.getTextureGpuView(handle, scopes[0])).toBe(replacement.view);
+    expect(store.getTextureGpuView(handle, sourceScope)).toBe(replacement.view);
     store.releaseUnreferenced(new Set());
     for (const entry of entries) expect(entry.texture.isDestroyed).toBe(true);
     expect(replacement.texture.isDestroyed).toBe(true);
-    expect(store.ensureResident(handle, texture, scopes[0]).unwrap().view).not.toBe(
+    expect(store.ensureResident(handle, texture, sourceScope).unwrap().view).not.toBe(
       replacement.view,
     );
   } finally {

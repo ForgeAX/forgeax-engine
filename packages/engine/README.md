@@ -54,7 +54,7 @@ shipping one tarball does not eagerly import every capability into a game.
 Install the stable channel with `pnpm add --save-exact @forgeax/engine`.
 Test builds require `pnpm add --save-exact @forgeax/engine@rc`; development builds
 require `pnpm add --save-exact @forgeax/engine@next`.
-Release producers and hotfix maintainers follow RELEASING.md.
+Release producers and hotfix maintainers follow this repository's [release contract](./RELEASING.md), including the local Linux development release route. The broader shared policy is documented in ForgeaX Engine release guidance.
 The single-package release report
 records the 0.4.0 source, publication and consumer evidence.
 

@@ -52,10 +52,13 @@ const STANDARD_AXES = [
   'PROBE_BLEND_AVAILABLE',
   'PROJECTOR_AVAILABLE',
   'REFLECTION_FALLBACK_AVAILABLE',
+  'STANDARD_LEAN_INPUTS',
   'STORAGE_BUFFER_AVAILABLE',
   'TRANSMISSION_AVAILABLE',
   'VERTEX_COLOR_AVAILABLE',
   'VISIBLE_SURFACE_AVAILABLE',
+  'WATER_INFO_RGBA16',
+  'WATER_WAVES_AVAILABLE',
 ] as const;
 
 // Cluster membership also travels through an integer texture. The remaining
@@ -127,6 +130,13 @@ describe('default Standard PBR transmission manifest contract', () => {
       (variant) => 'TRANSMISSION_AVAILABLE' in variant.defines,
     );
     const expected = expectedStandardCombinations();
+    // Keep the original non-Water cardinality/resource oracle intact below.
+    // The full Cartesian/key check also covers both new Water axes.
+    const ordinary = new Map(
+      [...expected].filter(
+        ([, defines]) => !defines.WATER_WAVES_AVAILABLE && !defines.WATER_INFO_RGBA16,
+      ),
+    );
     const actual = new Map(transmissionVariants.map((variant) => [variant.definesKey, variant]));
     expect(transmissionVariants).toHaveLength(expected.size);
     expect(actual.size).toBe(expected.size);
@@ -134,6 +144,8 @@ describe('default Standard PBR transmission manifest contract', () => {
     for (const [key, defines] of expected) {
       const variant = actual.get(key);
       expect(variant?.defines).toEqual(defines);
+      if (variant === undefined) throw new Error(`missing supported program ${key}`);
+      expectLightModifierResources(key, defines, variant.composedWgsl);
       if (defines.CLUSTER_FORWARD_AVAILABLE && !defines.STORAGE_BUFFER_AVAILABLE) {
         expect(variant?.composedWgsl).toMatch(
           /var\s+cluster_data_texture\w*\s*:\s*texture_2d<u32>/,
@@ -146,7 +158,7 @@ describe('default Standard PBR transmission manifest contract', () => {
     // lights or atmosphere. Preserve every public choice and its distinct code.
     const programsByEffectiveChoice = new Map<string, string>();
     const choicesByProgram = new Map<string, string>();
-    for (const [key, defines] of expected) {
+    for (const [key, defines] of ordinary) {
       const choice = STANDARD_AXES.map((axis) => `${axis}=${defines[axis]}`).join('+');
       const code = actual.get(key)?.composedWgsl;
       if (code === undefined) throw new Error(`missing supported program ${key}`);
@@ -154,7 +166,8 @@ describe('default Standard PBR transmission manifest contract', () => {
       const previousCode = programsByEffectiveChoice.get(choice);
       if (previousCode !== undefined) expect(code).toBe(previousCode);
       programsByEffectiveChoice.set(choice, code);
-      // Lean drops projector reads. No-storage omits the cloud map; without
+      // Lean drops projector reads but retains the storage-lane cloud map.
+      // No-storage omits the cloud map; without
       // Cluster or shared transmission, the projector axis has no other read.
       // Every other effective choice must retain its distinct program.
       const inactiveProjector =
@@ -165,14 +178,18 @@ describe('default Standard PBR transmission manifest contract', () => {
       if (inactiveProjector) {
         expect(code).not.toMatch(/textureSampleLevel\(projectorTexture\w*,/);
       }
-      const programKey = inactiveProjector
+      const inactiveProjectorProgram =
+        !defines.STORAGE_BUFFER_AVAILABLE &&
+        !defines.CLUSTER_FORWARD_AVAILABLE &&
+        !defines.TRANSMISSION_AVAILABLE;
+      const programKey = inactiveProjectorProgram
         ? choice.replace(/PROJECTOR_AVAILABLE=(true|false)/, 'PROJECTOR_AVAILABLE=*')
         : choice;
       const previousChoice = choicesByProgram.get(code);
       if (previousChoice !== undefined) expect(programKey).toBe(previousChoice);
       choicesByProgram.set(code, programKey);
     }
-    const directVisibleRows = [...expected.values()].filter(
+    const directVisibleRows = [...ordinary.values()].filter(
       (defines) =>
         defines.VISIBLE_SURFACE_AVAILABLE &&
         !defines.GPU_DRIVEN_SCENE_INDEX_AVAILABLE &&
@@ -187,17 +204,27 @@ describe('default Standard PBR transmission manifest contract', () => {
     // Lean fixes the receiver/discard axes. Four lighting topologies combine
     // with GPU scene-index, cluster, vertex colour and reflection choices.
     const leanRows = 4 * 2 ** 4;
-    // Without extended lighting, each of those 16 choices has two projector
-    // rows but one program; the loop above rejects every other code alias.
-    const leanProjectorPairs = 2 ** 4;
+    // Storage-lane lean lighting still samples the cloud map selected by
+    // PROJECTOR_AVAILABLE, even when the material projector read is absent.
     // Full-lighting receivers also keep both ProbeBlend choices.
     const fullSimpleRows = 4 * 2 ** 5;
-    expect(programsByEffectiveChoice.size).toBe(generalRows + leanRows + fullSimpleRows);
+    // STANDARD_LEAN_INPUTS adds a row for each storage scene-index row without
+    // transmission, coverage-only or LOD dither. Its rules never read
+    // LEAN_LIGHTING or DIRECTIONAL_SHADOW_SIMPLE, so the scene-index half of
+    // the lean (32) and full-lighting simple (64) rows qualify too: 224 + 64.
+    // Sixteen of the lean-lighting rows lack extended lighting and alias in
+    // projector pairs; full-lighting rows keep distinct code.
+    const fullSimpleLeanInputRows = fullSimpleRows / 2;
+    const leanInputRows = 224 + fullSimpleLeanInputRows;
+    const leanInputProjectorPairs = 8;
+    expect(programsByEffectiveChoice.size).toBe(
+      generalRows + leanRows + fullSimpleRows + leanInputRows,
+    );
     // No-storage/non-Cluster/non-transmission has five receiver/discard
     // states, two vertex-colour and two reflection choices; each projector pair
     // shares code because neither the projector nor cloud map is consumed.
     const noStorageProjectorPairs = 5 * 2 * 2;
-    const noStorageInactiveChoices = [...expected.values()].filter(
+    const noStorageInactiveChoices = [...ordinary.values()].filter(
       (defines) =>
         !defines.STORAGE_BUFFER_AVAILABLE &&
         !defines.CLUSTER_FORWARD_AVAILABLE &&
@@ -205,21 +232,43 @@ describe('default Standard PBR transmission manifest contract', () => {
     );
     expect(noStorageInactiveChoices).toHaveLength(2 * noStorageProjectorPairs);
     expect(choicesByProgram.size).toBe(
-      generalRows + leanRows + fullSimpleRows - leanProjectorPairs - noStorageProjectorPairs,
+      generalRows + leanRows + fullSimpleRows + leanInputRows - noStorageProjectorPairs,
     );
-    const leanChoices = [...expected.values()].filter(
+    const leanChoices = [...ordinary.values()].filter(
       (defines) => defines.LEAN_LIGHTING && !defines.EXTENDED_LIGHTING_AVAILABLE,
     );
-    expect(leanChoices).toHaveLength(32);
-    const fullSimple = [...expected.values()].filter(
+    expect(leanChoices).toHaveLength(32 + 2 * leanInputProjectorPairs);
+    const fullSimple = [...ordinary.values()].filter(
       (defines) => defines.DIRECTIONAL_SHADOW_SIMPLE && !defines.LEAN_LIGHTING,
     );
-    expect(fullSimple).toHaveLength(128);
+    expect(fullSimple).toHaveLength(128 + fullSimpleLeanInputRows);
     // The new full-lighting receiver rows preserve all previously published choices.
-    expect(expected.size - fullSimple.length - leanChoices.length).toBe(2000);
+    expect(ordinary.size - fullSimple.length - leanChoices.length).toBe(
+      2000 + leanInputRows - fullSimpleLeanInputRows - 2 * leanInputProjectorPairs,
+    );
     expect(standard.variants.every((variant) => 'TRANSMISSION_AVAILABLE' in variant.defines)).toBe(
       true,
     );
+    // Non-lean no-Water rows omit the unused format. Storage ordinary rows
+    // add both Water formats; lean inputs retain all four waves/format lanes.
+    const storageOrdinary = [...ordinary.values()].filter(
+      (row) => row.STORAGE_BUFFER_AVAILABLE && !row.STANDARD_LEAN_INPUTS,
+    );
+    const leanOrdinary = [...ordinary.values()].filter((row) => row.STANDARD_LEAN_INPUTS);
+    expect(expected.size).toBe(
+      ordinary.size + 2 * storageOrdinary.length + 3 * leanOrdinary.length,
+    );
+    for (const waves of [true, false]) {
+      for (const rgba16 of [true, false]) {
+        const leanLane = [...expected.values()].filter(
+          (row) =>
+            row.STANDARD_LEAN_INPUTS &&
+            row.WATER_WAVES_AVAILABLE === waves &&
+            row.WATER_INFO_RGBA16 === rgba16,
+        );
+        expect(leanLane).toHaveLength(leanInputRows);
+      }
+    }
   });
 
   it('generates reflection response work only for an admitted reflection output', {
@@ -288,7 +337,7 @@ describe('default Standard PBR transmission manifest contract', () => {
     );
     expect(sceneIndex).toBeDefined();
     expect(sceneIndex?.composedWgsl).toMatch(
-      /out(?:_\d+)?\.materialAddress\s*=\s*materialAddress(?:_\d+)?;/,
+      /out(?:_\d+)?\.materialAddress\s*=\s*materialAddress(?:_\d+)?(?:\.[xyz]+)?;/,
     );
     // ShadowParticipation.receive rides bit 31 of the scene material row.
     expect(sceneIndex?.composedWgsl).toMatch(

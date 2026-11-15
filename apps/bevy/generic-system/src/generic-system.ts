@@ -4,6 +4,7 @@
 // The state transition remains explicit, while the query/command body is shared.
 
 
+import { defineSystem } from "@forgeax/engine-ecs";
 import {
   Time,
   Update,
@@ -12,7 +13,7 @@ import {
   type Component,
   type ComponentSchema,
   type EntityHandle,
-  type SystemDescriptor,
+  type System,
 } from '@forgeax/engine-ecs';
 import { Camera, Materials, MeshFilter, MeshRenderer, orthographic } from '@forgeax/engine-render';
 
@@ -88,8 +89,8 @@ function cleanupSystem<T extends Component<string, ComponentSchema>>(
   leaving: StateTokenVariant<typeof AppState>,
   label: string,
   cleanupLog: string[],
-): SystemDescriptor<readonly [{ readonly with: readonly [T] }]> {
-  return {
+): System<readonly [{ readonly with: readonly [T] }]> {
+  return defineSystem({
     name: `generic-cleanup-${label}`,
     queries: [{ with: [marker] as const }],
     runIf: exiting(leaving),
@@ -99,7 +100,7 @@ function cleanupSystem<T extends Component<string, ComponentSchema>>(
           cleanupLog.push(label);
       }
     },
-  };
+  });
 }
 
 export function buildGenericSystemWorld(world: World): GenericSystemState {
@@ -115,11 +116,11 @@ export function buildGenericSystemWorld(world: World): GenericSystemState {
   const state: GenericSystemState = { elapsed: 0, currentState: 'menu', cleanupLog, remaining: 3 };
   let firstTransition = false;
   let secondTransition = false;
-  world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'generic-state-transitions',
     queries: [],
     fn: (world) => {
-      state.elapsed += world.getResource<typeof Time>(Time).delta;
+      state.elapsed += world.getResource(Time).delta;
       if (!firstTransition && state.elapsed >= 0.6) {
         firstTransition = true;
         setNextState(world, AppState, 'in-game');
@@ -128,7 +129,8 @@ export function buildGenericSystemWorld(world: World): GenericSystemState {
         setNextState(world, AppState, 'menu');
       }
     },
-  }).unwrap();
+  });
+world.addSystem(Update, systemToken1).unwrap();
   world.addSystem(Update, cleanupSystem(MenuClose, 'menu', 'menu-close', cleanupLog)).unwrap();
   world.addSystem(Update, cleanupSystem(LevelUnload, 'in-game', 'level-unload', cleanupLog)).unwrap();
   return state;

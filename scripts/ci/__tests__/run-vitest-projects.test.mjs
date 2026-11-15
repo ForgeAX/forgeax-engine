@@ -9,6 +9,124 @@ import { fileURLToPath } from 'node:url';
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const cli = path.join(root, 'scripts/ci/run-vitest-projects.mjs');
 
+test('one-worker CLI admission overrides project fanout and reaches each real fork', () => {
+  const fixture = mkdtempSync(path.join(os.tmpdir(), 'forgeax-vitest-worker-budget-'));
+  const heapProbe = spawnSync(
+    process.execPath,
+    [
+      '--max-old-space-size=256',
+      '--input-type=module',
+      '-e',
+      'import{getHeapStatistics}from"node:v8";console.log(getHeapStatistics().heap_size_limit)',
+    ],
+    { encoding: 'utf8' },
+  );
+  assert.equal(heapProbe.status, 0, heapProbe.stderr);
+  const expectedHeap = Number(heapProbe.stdout.trim());
+  try {
+    symlinkSync(path.join(root, 'node_modules'), path.join(fixture, 'node_modules'), 'dir');
+    writeFileSync(path.join(fixture, 'package.json'), '{"type":"module"}');
+    writeFileSync(
+      path.join(fixture, 'vitest.config.mjs'),
+      `export default {test:{projects:[{test:{name:'budget-probe',maxWorkers:3,include:['*.test.ts']}}]}};`,
+    );
+    for (let index = 0; index < 3; index++) {
+      writeFileSync(
+        path.join(fixture, `${index}.test.ts`),
+        `
+        import {openSync,closeSync,unlinkSync} from 'node:fs';
+        import {getHeapStatistics} from 'node:v8';
+        import {test,expect} from 'vitest';
+        test('original worker budget ${index}',async()=>{
+          const fd=openSync('active-worker.lock','wx');
+          try {
+            expect(getHeapStatistics().heap_size_limit).toBe(${expectedHeap});
+            expect(process.env.FORGEAX_SHADER_COMPILE_WORKERS).toBe('1');
+            await new Promise(resolve=>setTimeout(resolve,100));
+          } finally {closeSync(fd);unlinkSync('active-worker.lock');}
+        });
+      `,
+      );
+    }
+    const result = spawnSync(
+      process.execPath,
+      [cli, 'run', '--maxWorkers=1', '--typecheck.enabled=false'],
+      {
+        cwd: fixture,
+        encoding: 'utf8',
+        timeout: 30_000,
+        env: {
+          ...process.env,
+          NODE_OPTIONS: '--max-old-space-size=128 --max-old-space-size=256',
+          FORGEAX_SHADER_COMPILE_WORKERS: '1',
+        },
+      },
+    );
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, /3 passed/);
+  } finally {
+    rmSync(fixture, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+  }
+});
+
+test('workspace discovery keeps runtime and type tests inside the active checkout', () => {
+  const fixture = mkdtempSync(path.join(os.tmpdir(), 'forgeax-vitest-checkout-'));
+  try {
+    symlinkSync(path.join(root, 'node_modules'), path.join(fixture, 'node_modules'), 'dir');
+    writeFileSync(path.join(fixture, 'package.json'), '{"type":"module"}');
+    writeFileSync(
+      path.join(fixture, 'vitest.config.mjs'),
+      `export default { test: { projects: [{ test: {
+        name: 'probe', include: ['**/*.test.ts'],
+        typecheck: { enabled: true, tsconfig: './tsconfig.json' }
+      } }] } };`,
+    );
+    writeFileSync(
+      path.join(fixture, 'tsconfig.json'),
+      JSON.stringify({
+        compilerOptions: { strict: true, skipLibCheck: true, module: 'NodeNext' },
+        exclude: ['.worktrees', '.claude/worktrees', '**/*.test-d.ts'],
+      }),
+    );
+    writeFileSync(
+      path.join(fixture, 'runtime.test.ts'),
+      "import { expect, test } from 'vitest'; test('active runtime', () => expect(42).toBe(42));",
+    );
+    writeFileSync(
+      path.join(fixture, 'contract.test-d.ts'),
+      "import { expectTypeOf, test } from 'vitest'; test('active types', () => expectTypeOf<string>().toEqualTypeOf<string>());",
+    );
+    for (const checkout of ['.worktrees/other', '.claude/worktrees/other']) {
+      const directory = path.join(fixture, checkout);
+      mkdirSync(directory, { recursive: true });
+      writeFileSync(
+        path.join(directory, 'runtime.test.ts'),
+        "import { test } from 'vitest'; test('other checkout runtime', () => { throw Error('other checkout poison'); });",
+      );
+      writeFileSync(
+        path.join(directory, 'contract.test-d.ts'),
+        "import { expectTypeOf, test } from 'vitest'; test('other checkout types', () => expectTypeOf<string>().toEqualTypeOf<number>());",
+      );
+    }
+    for (const mode of ['--typecheck.enabled=false', '--typecheck.only']) {
+      const result = spawnSync(process.execPath, [cli, 'run', '--maxWorkers=1', mode], {
+        cwd: fixture,
+        encoding: 'utf8',
+        timeout: 30_000,
+        env: { ...process.env, NO_COLOR: '1' },
+      });
+      const detail = `${result.stdout}\n${result.stderr}`;
+      assert.equal(result.error, undefined, detail);
+      assert.equal(result.signal, null, detail);
+      assert.equal(result.status, 0, detail);
+      assert.doesNotMatch(detail, /other checkout poison|other checkout types/);
+      assert.match(detail, mode === '--typecheck.only' ? /passed: files=1, owners=1/ : /1 passed/);
+    }
+  } finally {
+    rmSync(fixture, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+  }
+});
+
 test('Node contract files stay in their explicit runner while Vitest keeps its own suites', {
   timeout: 30_000,
 }, async () => {
@@ -190,7 +308,7 @@ test('workspace typecheck modes preserve real type errors, runtime failures, and
     assert.equal(retainedHandle.status, 0, retainedHandle.output);
     assert.match(retainedHandle.output, /close timed out after 100ms/);
   } finally {
-    rmSync(fixture, { recursive: true, force: true });
+    rmSync(fixture, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   }
 });
 
@@ -223,6 +341,6 @@ test('only the intentional unit marker accepts an empty population through the A
       assert.match(`${result.stdout}${result.stderr}`, /No test files found/, detail);
     }
   } finally {
-    rmSync(fixture, { recursive: true, force: true });
+    rmSync(fixture, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   }
 });

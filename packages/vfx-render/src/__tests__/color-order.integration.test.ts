@@ -129,8 +129,7 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) {}`,
       }));
       const extracted = source
         .extract({
-          worlds: [world],
-          owner: 0,
+          world: world,
           frameNumber,
           views: views.map(({ identity, render, selectedView }) => ({
             identity,
@@ -142,7 +141,7 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) {}`,
       const plan = receiver
         .plan(structuredClone(extracted), {
           views,
-          resolveAsset: (_index, handle, revision) =>
+          resolveAsset: (handle, revision) =>
             runtimeAssets(world.assets).resolveAsset(handle, revision),
           caps: {} as never,
           frame: { frameNumber },

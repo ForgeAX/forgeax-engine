@@ -96,7 +96,7 @@ describe('component schema --- 4-probe quintet (w3, AC-09)', () => {
   it('SchemaVocabKeyword closed union has 7 members covered by 4 probes', () => {
     // Mapping (membership <-> probe):
     //   buffer / buffer<N> => isManagedBufferField
-    //   ref<T>             => isManagedField   (NEW unified arm w/ 'string')
+    //   unique<T>             => isManagedField   (NEW unified arm w/ 'string')
     //   handle<T>          => (no managed probe; ECS treats handles as opaque)
     //   entity             => isEntityField
     //   array<T,N> + array<T> => isManagedArrayField (counts as one)

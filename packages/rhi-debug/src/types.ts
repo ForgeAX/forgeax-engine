@@ -12,7 +12,12 @@
 
 /// <reference types="@webgpu/types" />
 
-import type { BlasDescriptor, TlasDescriptor } from '@forgeax/engine-rhi';
+import type {
+  BlasDescriptor,
+  RenderPassColorAttachment,
+  RenderPassDepthStencilAttachment,
+  TlasDescriptor,
+} from '@forgeax/engine-rhi';
 import type { recordReplayCapabilities } from './capabilities';
 
 /**
@@ -359,22 +364,11 @@ export interface RhiCallEventBeginRenderPass {
   readonly passHandleId: HandleId;
   readonly desc: {
     readonly label?: string | undefined;
-    /** Attachment handles are replaced by the parallel HandleId arrays on replay. */
+    /** Opaque attachments live only in the parallel HandleId fields. */
     readonly colorAttachments: Iterable<
-      | {
-          readonly view: unknown;
-          readonly resolveTarget?: unknown;
-          readonly [key: string]: unknown;
-        }
-      | null
-      | undefined
+      Omit<RenderPassColorAttachment, 'view' | 'resolveTarget'> | null | undefined
     >;
-    readonly depthStencilAttachment?:
-      | {
-          readonly view: unknown;
-          readonly [key: string]: unknown;
-        }
-      | undefined;
+    readonly depthStencilAttachment?: Omit<RenderPassDepthStencilAttachment, 'view'> | undefined;
     /** The opaque query set is represented by the parallel handle id below. */
     readonly timestampWrites?: Omit<GPURenderPassTimestampWrites, 'querySet'> | undefined;
     readonly maxDrawCount?: number | undefined;

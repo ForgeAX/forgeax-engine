@@ -1,6 +1,6 @@
 import { RAY_QUERY_FEATURE } from '@forgeax/engine-rhi';
 import { stripWgslComments } from '@forgeax/engine-types';
-import type { Tape } from '../protocol/types';
+import type { RhiCallEvent, Tape } from '../protocol/types';
 import type { RhiCapsRecorded } from '../types';
 
 export const RECORDED_CAPABILITY_FEATURES = [
@@ -12,6 +12,69 @@ export const RECORDED_CAPABILITY_FEATURES = [
   ['float32Filterable', 'float32-filterable'],
   ['rg11b10ufloatRenderable', 'rg11b10ufloat-renderable'],
 ] as const satisfies readonly (readonly [keyof RhiCapsRecorded, GPUFeatureName])[];
+
+/** True only when a float32 texture view is declared as filterable in a captured bind group. */
+export function usesFilterableFloat32Textures(tape: Tape): boolean {
+  const events = [
+    ...tape.bootstrap.map((resource) => resource.create as unknown as RhiCallEvent),
+    ...tape.events,
+  ];
+  const textureFormats = new Map<string, string>();
+  const textureViewFormats = new Map<string, string>();
+  const layoutTextureSampleTypes = new Map<string, Map<number, string>>();
+  const automaticLayouts = new Set<string>();
+  const automaticPipelineLayouts = new Map<string, boolean>();
+  let required = false;
+  for (const event of events) {
+    switch (event.kind) {
+      case 'createTexture':
+        textureFormats.set(event.handleId, event.desc.format);
+        break;
+      case 'createTextureView': {
+        const sourceFormat = textureFormats.get(event.sourceHandleId);
+        if (sourceFormat !== undefined)
+          textureViewFormats.set(event.resultHandleId, event.desc.format ?? sourceFormat);
+        break;
+      }
+      case 'createBindGroupLayout':
+        {
+          const sampleTypes = new Map<number, string>();
+          for (const entry of event.desc.entries)
+            if (entry.texture !== undefined)
+              sampleTypes.set(entry.binding, entry.texture.sampleType ?? 'float');
+          layoutTextureSampleTypes.set(event.handleId, sampleTypes);
+        }
+        break;
+      case 'createRenderPipeline':
+      case 'createComputePipeline':
+        automaticPipelineLayouts.set(event.handleId, event.layoutHandleId === 'layout:auto');
+        break;
+      case 'getBindGroupLayout':
+        if (automaticPipelineLayouts.get(event.pipelineHandleId) === true)
+          automaticLayouts.add(event.handleId);
+        break;
+      case 'createBindGroup': {
+        const sampleTypes = layoutTextureSampleTypes.get(event.layoutHandleId);
+        event.entries.forEach((entry, index) => {
+          const format = textureViewFormats.get(event.resourceHandleIds[index] ?? '');
+          const float32Format =
+            format === 'r32float' || format === 'rg32float' || format === 'rgba32float';
+          if (
+            entry.resourceKind === 'textureView' &&
+            float32Format &&
+            (sampleTypes?.get(entry.binding) === 'float' ||
+              automaticLayouts.has(event.layoutHandleId))
+          )
+            required = true;
+        });
+        break;
+      }
+      default:
+        break;
+    }
+  }
+  return required;
+}
 
 const WGSL_FEATURES = new Map<string, GPUFeatureName>([
   ['f16', 'shader-f16'],
@@ -35,6 +98,7 @@ export function usesAccelerationStructures(tape: Tape): boolean {
 /** Derive descriptor requirements from the captured resources, including bootstrap shaders. */
 export function requiredReplayDescriptorFeatures(tape: Tape): ReadonlySet<GPUFeatureName> {
   const features = new Set<GPUFeatureName>();
+  if (usesFilterableFloat32Textures(tape)) features.add('float32-filterable');
   for (const event of [...tape.bootstrap.map((resource) => resource.create), ...tape.events]) {
     if (event.kind === 'createRenderPipeline') {
       const targets = (event.desc as GPURenderPipelineDescriptor).fragment?.targets ?? [];
@@ -71,14 +135,19 @@ export function requiredReplayDescriptorFeatures(tape: Tape): ReadonlySet<GPUFea
     ) {
       features.add('depth32float-stencil8');
     }
-    if (event.kind === 'createShaderModule' && typeof event.wgslCode === 'string') {
-      for (const directive of stripWgslComments(event.wgslCode).matchAll(/\benable\s+([^;]+);/g)) {
-        for (const extension of (directive[1] ?? '').split(',')) {
-          const feature = WGSL_FEATURES.get(extension.trim());
-          if (feature !== undefined) features.add(feature);
+    const captureShaderDirectiveFeatures = () => {
+      if (event.kind === 'createShaderModule' && typeof event.wgslCode === 'string') {
+        for (const directive of stripWgslComments(event.wgslCode).matchAll(
+          /\benable\s+([^;]+);/g,
+        )) {
+          for (const extension of (directive[1] ?? '').split(',')) {
+            const feature = WGSL_FEATURES.get(extension.trim());
+            if (feature !== undefined) features.add(feature);
+          }
         }
       }
-    }
+    };
+    captureShaderDirectiveFeatures();
   }
   return features;
 }

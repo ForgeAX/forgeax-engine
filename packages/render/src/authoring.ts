@@ -1,6 +1,21 @@
 // Optional authoring features intentionally live outside the base render vocabulary.
 // Systems, asset resolution, and registry details remain owner-local.
 
+export {
+  type CloudCookOptions,
+  cloudMaterialDecoder,
+  cloudMaterialInstanceDecoder,
+  cloudMaterialInstanceKind,
+  cloudMaterialKind,
+  createCloudCookers,
+} from './cloud/authoring/assets';
+export { resolveCloudParameters } from './cloud/authoring/material';
+export type {
+  CloudMaterialSource,
+  CloudParameter,
+  CloudParameterValue,
+  MediumSample,
+} from './cloud/contracts';
 export { GlyphText } from './components/glyph-text';
 export { SpriteAnimation } from './components/sprite-animation';
 export { SpriteInstances, type SpriteInstancesData } from './components/sprite-instances';

@@ -196,11 +196,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     const tick = (): void => {
       pulse = computePulse(performance.now(), basePulseTime);
       world.update().unwrap();
-      const drawn = renderer.draw({
-        leases: [worldAttachment1.value],
-        camera: { lease: worldAttachment1.value },
-        environment: { lease: worldAttachment1.value },
-      });
+      const drawn = renderer.draw({ source: worldAttachment1.value });
       if (!drawn.ok) {
         console.error('[learn-render 1.3 shaders] draw failed:', drawn.error);
         return;

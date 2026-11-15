@@ -1,3 +1,4 @@
+import { World } from '@forgeax/engine-ecs';
 import type { RenderPipeline } from '@forgeax/engine-rhi';
 import { RhiError } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
@@ -87,8 +88,7 @@ async function fixture(permission = true, diagnostic: boolean | 'absent' = true)
   const input = (frameNumber: number, generation = 0): RenderFeatureFrameInput => ({
     identity: 'main',
     render: true,
-    worlds: [],
-    owner: 1,
+    world: new World(),
     frameNumber,
     generation,
     caps: device.caps,

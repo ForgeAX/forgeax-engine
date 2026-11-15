@@ -112,10 +112,10 @@ test('literal coverage routing reaches the split runner and preserves its defaul
   assert.doesNotMatch(result.stderr, /unknown argument: --coverage/);
 });
 
-test('split coverage rejects multiplicative group and Vitest worker concurrency', () => {
+test('bounded unit rejects multiplicative group and Vitest worker concurrency', () => {
   const result = spawnSync(
     process.execPath,
-    [splitRunnerPath, '--dry-run', '--group-concurrency=2', '--max-workers=2'],
+    [splitRunnerPath, '--non-coverage', '--dry-run', '--group-concurrency=2', '--max-workers=2'],
     {
       cwd: repoRoot,
       encoding: 'utf8',

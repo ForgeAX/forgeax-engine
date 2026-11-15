@@ -1,5 +1,12 @@
 import { componentDefinition, FixedTime, FixedUpdate } from '@forgeax/engine-ecs';
 import { worldRead } from '@forgeax/engine-ecs/world-read';
+import {
+  PhysicsSimulation,
+  PhysicsSync,
+  PhysicsWorld2DResource,
+  PhysicsWritebackPhase,
+} from '@forgeax/engine-physics';
+import { PropagateTransformsFixed } from '@forgeax/engine-scene';
 // @forgeax/engine-physics-rapier2d — RapierPhysicsWorld2D class and three-phase
 // tick systems (syncBackend / stepSimulation / writeback).
 //
@@ -13,7 +20,7 @@ import { worldRead } from '@forgeax/engine-ecs/world-read';
 //   2. stepSimulation: call rapierWorld.step(eventQueue).
 //   3. writeback: read Rapier body positions (dynamic only).
 
-import type { Component, EntityHandle, SystemHandle, World } from '@forgeax/engine-ecs';
+import type { Component, EntityHandle, System, World } from '@forgeax/engine-ecs';
 import { defineSystem } from '@forgeax/engine-ecs';
 import { mat4, quat, type Vec2, type Vec3Like, vec2, vec3 } from '@forgeax/engine-math';
 import type {
@@ -1008,10 +1015,11 @@ function resolveTransform(world: World): typeof Transform | undefined {
  * static level geometry is authored. The 2D suffix keeps the name distinct from
  * the 3D system in the shared schedule (D-5).
  */
-export const PhysicsSyncBackend2D: SystemHandle<readonly []> = defineSystem({
+export const PhysicsSyncBackend2D: System<readonly []> = defineSystem({
+  sets: [PhysicsSync],
   name: PHYSICS_SYNC_BACKEND_2D,
   queries: [],
-  after: ['propagateTransformsFixed'],
+  after: [PropagateTransformsFixed],
   fn: (world) => {
     const transformComponent = resolveTransform(world);
     const globalTransformComponent = world.components.resolve('GlobalTransform') as
@@ -1020,7 +1028,7 @@ export const PhysicsSyncBackend2D: SystemHandle<readonly []> = defineSystem({
     if (transformComponent === undefined || globalTransformComponent === undefined) return;
     let pw: RapierPhysicsWorld2D;
     try {
-      pw = world.getResource<RapierPhysicsWorld2D>('PhysicsWorld');
+      pw = requireRapierPhysicsWorld2D(world);
     } catch {
       return; // C-2: PhysicsWorld resource not yet ready — safe early out
     }
@@ -1169,14 +1177,15 @@ export const PhysicsSyncBackend2D: SystemHandle<readonly []> = defineSystem({
  *
  * After physicsSyncBackend2D — read FixedTime.delta and call pw.step() with dt-gating.
  */
-export const PhysicsStepSimulation2D: SystemHandle<readonly []> = defineSystem({
+export const PhysicsStepSimulation2D: System<readonly []> = defineSystem({
+  sets: [PhysicsSimulation],
   name: PHYSICS_STEP_SIMULATION_2D,
   queries: [],
-  after: [PHYSICS_SYNC_BACKEND_2D],
+  after: [PhysicsSyncBackend2D],
   fn: (world) => {
     let pw: RapierPhysicsWorld2D;
     try {
-      pw = world.getResource<RapierPhysicsWorld2D>('PhysicsWorld');
+      pw = requireRapierPhysicsWorld2D(world);
     } catch {
       return; // C-2: safe early out
     }
@@ -1195,16 +1204,17 @@ export const PhysicsStepSimulation2D: SystemHandle<readonly []> = defineSystem({
  * positions + rotation back to ECS Transform (resolved from the ECS
  * component vocabulary, D-3; 2D scalar angle -> quat via quat.fromAxisAngle z-axis).
  */
-export const PhysicsWriteback2D: SystemHandle<readonly []> = defineSystem({
+export const PhysicsWriteback2D: System<readonly []> = defineSystem({
+  sets: [PhysicsWritebackPhase],
   name: PHYSICS_WRITEBACK_2D,
   queries: [],
-  after: [PHYSICS_STEP_SIMULATION_2D],
+  after: [PhysicsStepSimulation2D],
   fn: (world) => {
     const transformComponent = resolveTransform(world);
     if (transformComponent === undefined) return;
     let pw: RapierPhysicsWorld2D;
     try {
-      pw = world.getResource<RapierPhysicsWorld2D>('PhysicsWorld');
+      pw = requireRapierPhysicsWorld2D(world);
     } catch {
       return; // C-2: safe early out
     }
@@ -1241,14 +1251,14 @@ export const PhysicsWriteback2D: SystemHandle<readonly []> = defineSystem({
   },
 });
 
-export const PhysicsCollisionSync2D: SystemHandle<readonly []> = defineSystem({
+export const PhysicsCollisionSync2D: System<readonly []> = defineSystem({
   name: PHYSICS_COLLISION_SYNC_2D,
   queries: [],
-  after: [PHYSICS_WRITEBACK_2D],
+  after: [PhysicsWriteback2D],
   fn: (world) => {
     let pw: RapierPhysicsWorld2D;
     try {
-      pw = world.getResource<RapierPhysicsWorld2D>('PhysicsWorld');
+      pw = requireRapierPhysicsWorld2D(world);
     } catch {
       return;
     }
@@ -1279,7 +1289,7 @@ export function registerPhysicsSystems2D(world: World): () => void {
   // the backend for the global Collider.onRemove dispatch (despawn cleanup).
   const transformComponent = resolveTransform(world);
   try {
-    const pw = world.getResource<RapierPhysicsWorld2D>('PhysicsWorld');
+    const pw = requireRapierPhysicsWorld2D(world);
     if (transformComponent !== undefined) {
       pw.setMoveContext(world, transformComponent);
     }
@@ -1297,10 +1307,17 @@ export function registerPhysicsSystems2D(world: World): () => void {
     ])
     .unwrap();
   return () => {
-    world.removeSystem(FixedUpdate, PHYSICS_COLLISION_SYNC_2D);
-    world.removeSystem(FixedUpdate, PHYSICS_WRITEBACK_2D);
-    world.removeSystem(FixedUpdate, PHYSICS_STEP_SIMULATION_2D);
-    world.removeSystem(FixedUpdate, PHYSICS_SYNC_BACKEND_2D);
+    world.removeSystem(FixedUpdate, PhysicsCollisionSync2D);
+    world.removeSystem(FixedUpdate, PhysicsWriteback2D);
+    world.removeSystem(FixedUpdate, PhysicsStepSimulation2D);
+    world.removeSystem(FixedUpdate, PhysicsSyncBackend2D);
     releaseComponents();
   };
+}
+
+export function requireRapierPhysicsWorld2D(world: World): RapierPhysicsWorld2D {
+  const physics = world.getResource(PhysicsWorld2DResource);
+  if (!(physics instanceof RapierPhysicsWorld2D))
+    throw new TypeError('The World uses a different physics backend');
+  return physics;
 }

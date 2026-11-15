@@ -1,3 +1,4 @@
+import { INPUT_SNAPSHOT_RESOURCE_KEY } from '@forgeax/engine-input';
 // Browser contract for the capability-lab root asset: real Pack transport,
 // native activation, scene ownership, UI/audio, and rendered frames.
 // Vitest compiles the single known program through its normal module graph;
@@ -13,7 +14,7 @@ import type { PluginProgramEntry, PluginPrograms } from '@forgeax/engine-plugin'
 import { defineToolCommandContract, type ToolCommandContract } from '@forgeax/engine-tool-runtime';
 import type { EntityHandle } from '@forgeax/engine-ecs';
 import type { PluginAssetDefinition } from '@forgeax/engine-types';
-import type { InputBackend, InputSnapshot } from '@forgeax/engine-input';
+import type { InputBackend } from '@forgeax/engine-input';
 import { Camera, MeshRenderer, SceneInstance } from '@forgeax/engine-render';
 import { sceneEntity, Transform, worldResolveSceneEntity } from '@forgeax/engine-scene';
 import { skinningPlugin } from '@forgeax/engine-skinning';
@@ -232,7 +233,7 @@ describe('apps/preview e2e -- apps/game-capability-lab loads + renders error-fre
     for (let i = 0; i < 5; i++) tickWorld();
     heldKeys.add('d');
     tickWorld();
-    const movementSnapshot = app.world.getResource<InputSnapshot>('InputSnapshot');
+    const movementSnapshot = app.world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
     const movementInputSeen = movementSnapshot?.action('moveRight').isPressed() ?? false;
     const movedCameraX = readCameraX();
     heldKeys.delete('d');
@@ -245,7 +246,7 @@ describe('apps/preview e2e -- apps/game-capability-lab loads + renders error-fre
     tickWorld();
     heldKeys.add('r');
     tickWorld();
-    const resetSnapshot = app.world.getResource<InputSnapshot>('InputSnapshot');
+    const resetSnapshot = app.world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
     expect(resetSnapshot?.action('reset').justPressed()).toBe(true);
     heldKeys.delete('r');
     heldKeys.delete('R');

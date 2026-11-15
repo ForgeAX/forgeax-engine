@@ -3,7 +3,8 @@ import { baseTsupConfig } from '../../config/tsup.base';
 
 export default defineConfig({
   ...baseTsupConfig,
-  entry: ['src/index.ts', 'src/geometry/index.ts', 'src/renderer-host.ts'],
+  splitting: true,
+  entry: ['src/index.ts', 'src/geometry/index.ts', 'src/renderer-host.ts', 'src/water-buoyancy-solver.ts'],
   external: [
     '@forgeax/engine-ecs',
     '@forgeax/engine-math',

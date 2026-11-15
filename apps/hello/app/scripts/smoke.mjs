@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { createSmokePlatform } from '../../../../scripts/smoke-platform.mjs';
+import { driveReadyAppFrames } from '../../../../scripts/test/ready-render-frame.mjs';
 // hello-app headless smoke (feat-20260518-app-shell-game-loop M6 / w19 /
 // AC-10 (a) + R-5).
 //
@@ -24,11 +25,11 @@ import { createSmokePlatform } from '../../../../scripts/smoke-platform.mjs';
 //   - `[smoke] frames observed=<N>`
 //   - `[smoke] pixelSamples=<json>`
 //   - `[smoke] PASS`
-
 import { setTimeout as delay } from 'node:timers/promises';
-import { readFileSync } from 'node:fs';
+
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
+import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 
 const SMOKE_DURATION_MS = Number.parseInt(process.env.SMOKE_DURATION_MS ?? '5000', 10);
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
@@ -168,7 +169,10 @@ const { Transform } = await import('@forgeax/engine-scene');
 
 const here = dirname(fileURLToPath(import.meta.url));
 const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MANIFEST_PATH, 'utf8'))}`;
+const MANIFEST_URL = URL.createObjectURL(
+  new Blob([readShaderManifestText(MANIFEST_PATH)], { type: 'application/json' }),
+);
+process.once('exit', () => URL.revokeObjectURL(MANIFEST_URL));
 
 const appResult = await createApp(mockCanvas, { platform: createSmokePlatform(mockCanvas), }, { shaderManifestUrl: MANIFEST_URL }).catch((err) => {
   originalConsoleError(`[smoke] FAIL - createApp threw: ${err instanceof Error ? err.message : String(err)}`);
@@ -227,14 +231,12 @@ if (!startResult.ok) {
 // progressively. fakeTime advances 16.67ms per tick to match a 60Hz target.
 const TARGET_FRAMES = SMOKE_MIN_FRAMES;
 const startTs = Date.now();
-let framesObserved = 0;
-for (let i = 0; i < TARGET_FRAMES; i++) {
+const framesObserved = await driveReadyAppFrames(app.renderer, () => {
   const due = rafQueue.shift();
-  if (!due) break;
+  if (!due) return false;
   fakeNow += 16.67;
   due.cb(fakeNow);
-  framesObserved++;
-}
+}, TARGET_FRAMES);
 globalThis.performance.now = realPerformanceNow;
 
 const stopResult = app.stop();

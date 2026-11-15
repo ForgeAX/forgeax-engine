@@ -380,12 +380,9 @@ function sameDirectional(stored: LightRoster, source: LightRoster): boolean {
 }
 
 /** Source identity of one light; keyless fixtures fall back to their ordinal. */
-function keyOf(
-  light: { readonly entity?: unknown; readonly worldId?: number },
-  ordinal: number,
-): number {
+function keyOf(light: { readonly entity?: unknown }, ordinal: number): number {
   if (light.entity === undefined) return -(ordinal + 1);
-  return (light.worldId ?? 0) * 0x1_0000_0000 + Number(light.entity);
+  return Number(light.entity);
 }
 
 /** Ingest identity translation of one light kind: source key to entity, and its layer pool. */

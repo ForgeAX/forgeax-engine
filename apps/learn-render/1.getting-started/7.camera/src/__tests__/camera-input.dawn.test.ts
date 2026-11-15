@@ -36,14 +36,7 @@ import { Update } from '@forgeax/engine-ecs';
 // The actual camera Transform integration with frame-start scan + GPU
 // path lands in scripts/smoke-dawn.mjs (T-M11-02).
 
-import {
-  INPUT_BACKEND_KEY,
-  INPUT_SNAPSHOT_RESOURCE_KEY,
-  type InputBackend,
-  type InputBackendSample,
-  InputFrameStartScan,
-  type InputSnapshot,
-} from '@forgeax/engine-input';
+import { INPUT_BACKEND_KEY, INPUT_SNAPSHOT_RESOURCE_KEY, type InputBackend, type InputBackendSample, InputFrameStartScan } from '@forgeax/engine-input';
 import { World } from '@forgeax/engine-ecs';
 import { describe, expect, it } from 'vitest';
 
@@ -110,7 +103,7 @@ describe('learn-render section 1.7 camera InputSnapshot frame-start scan (AC-07 
 
     backend.setHeldKeys(['w', 'a']);
     world.update(1 / 60).unwrap();
-    let snap = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+    let snap = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
     expect(snap.keyboard.down('w')).toBe(true);
     expect(snap.keyboard.down('a')).toBe(true);
     expect(snap.keyboard.down('s')).toBe(false);
@@ -118,7 +111,7 @@ describe('learn-render section 1.7 camera InputSnapshot frame-start scan (AC-07 
 
     backend.setHeldKeys(['s', 'd']);
     world.update(1 / 60).unwrap();
-    snap = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+    snap = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
     expect(snap.keyboard.down('w')).toBe(false);
     expect(snap.keyboard.down('s')).toBe(true);
     expect(snap.keyboard.down('d')).toBe(true);
@@ -132,20 +125,20 @@ describe('learn-render section 1.7 camera InputSnapshot frame-start scan (AC-07 
 
     backend.setMouseDelta(7, -3);
     world.update(1 / 60).unwrap();
-    let snap = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+    let snap = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
     expect(snap.mouse.movementDelta).toEqual({ x: 7, y: -3 });
 
     // Without any setMouseDelta call between updates, the next frame
     // delta is { 0, 0 } (the backend drained the accumulator).
     world.update(1 / 60).unwrap();
-    snap = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+    snap = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
     expect(snap.mouse.movementDelta).toEqual({ x: 0, y: 0 });
 
     // Two events in one frame accumulate into a single slice.
     backend.setMouseDelta(1, 1);
     backend.setMouseDelta(2, 4);
     world.update(1 / 60).unwrap();
-    snap = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+    snap = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
     expect(snap.mouse.movementDelta).toEqual({ x: 3, y: 5 });
   });
 
@@ -157,11 +150,11 @@ describe('learn-render section 1.7 camera InputSnapshot frame-start scan (AC-07 
 
     backend.setUpKeys(['Escape']);
     world.update(1 / 60).unwrap();
-    let snap = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+    let snap = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
     expect(snap.keyboard.up('Escape')).toBe(true);
 
     world.update(1 / 60).unwrap();
-    snap = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+    snap = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
     expect(snap.keyboard.up('Escape')).toBe(false);
   });
 });

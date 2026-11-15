@@ -1,16 +1,18 @@
-import { FixedUpdate, World } from '@forgeax/engine-ecs';
+import { defineSystem, FixedUpdate, World } from '@forgeax/engine-ecs';
 import { vec3 } from '@forgeax/engine-math';
 import {
   CharacterController,
   Collider,
   ColliderShapeValue,
   type PhysicsWorld,
+  PhysicsWorldResource,
   RigidBody,
   RigidBodyTypeValue,
   registerPhysicsComponents,
 } from '@forgeax/engine-physics';
 import { GlobalTransform, registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect, it } from 'vitest';
+import { PhysicsStepSimulation, PhysicsSyncBackend } from '../physics-sync';
 import { registerPhysicsSystems } from '../physics-sync.js';
 import { createRapier3DPhysicsWorld } from '../rapier-physics-world-3d.js';
 import { loadRapier3D } from '../wasm-loader.js';
@@ -26,7 +28,7 @@ it.each([
   world.components.register(GlobalTransform).unwrap();
   registerPhysicsComponents(world);
   const physics = createRapier3DPhysicsWorld(rapier);
-  world.insertResource('PhysicsWorld', physics);
+  world.insertResource(PhysicsWorldResource, physics);
   const releaseScene = registerPropagateTransforms(world);
   const releasePhysics = registerPhysicsSystems(world);
   const character = world
@@ -59,17 +61,16 @@ it.each([
       },
     )
     .unwrap();
-  world
-    .addSystem(FixedUpdate, {
-      name: 'test-push',
-      after: ['physicsSyncBackend'],
-      before: ['physicsStepSimulation'],
-      queries: [],
-      fn() {
-        physics.moveAndSlide(character, vec3.create(2 / 60, 0, 0));
-      },
-    })
-    .unwrap();
+  const systemToken1 = defineSystem({
+    name: 'test-push',
+    after: [PhysicsSyncBackend],
+    before: [PhysicsStepSimulation],
+    queries: [],
+    fn() {
+      physics.moveAndSlide(character, vec3.create(2 / 60, 0, 0));
+    },
+  });
+  world.addSystem(FixedUpdate, systemToken1).unwrap();
   try {
     for (let frame = 0; frame < 120; frame++) world.update(1 / 60).unwrap();
     const crateX = world.get(crate, Transform).unwrap().pos[0];
@@ -77,7 +78,7 @@ it.each([
     else expect(crateX).toBeGreaterThan(0.5);
     expect(world.get(character, Transform).unwrap().pos[0]).toBeGreaterThan(0);
   } finally {
-    world.removeSystem(FixedUpdate, 'test-push').unwrap();
+    world.removeSystem(FixedUpdate, systemToken1).unwrap();
     releasePhysics();
     releaseScene();
     physics.dispose();
@@ -93,7 +94,7 @@ it('suppresses only one movement call impulse and restores default pushing on th
   registerPhysicsComponents(world);
   const physics = createRapier3DPhysicsWorld(rapier),
     movement: PhysicsWorld = physics;
-  world.insertResource('PhysicsWorld', physics);
+  world.insertResource(PhysicsWorldResource, physics);
   const releaseScene = registerPropagateTransforms(world);
   const releasePhysics = registerPhysicsSystems(world);
   const character = world

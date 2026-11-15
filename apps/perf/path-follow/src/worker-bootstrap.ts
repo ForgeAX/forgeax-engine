@@ -1,3 +1,4 @@
+import { defineResource } from '@forgeax/engine-ecs';
 import {
   configureRuntimeAssetCatalog,
   runtimeBinding,
@@ -12,6 +13,8 @@ import { Camera, Materials, MeshFilter, MeshRenderer, perspective } from '@forge
 import { GlobalTransform, Name, Transform, worldInstantiateSceneFlat } from '@forgeax/engine-scene';
 
 import { sceneGuid } from './scene-guid';
+export const PathSnapshotResource = defineResource<() => unknown>("PathSnapshot");
+
 
 const entry: ExecutionBootstrapEntry = () => ({
   plugins: [
@@ -66,7 +69,7 @@ const entry: ExecutionBootstrapEntry = () => ({
         const rail = entities.find((row) => row.name === 'rail')?.entity;
         if (rail === undefined) throw new Error('Worker rail absent');
         // Inspector evaluates snapshots in this realm; no mirrored path clock.
-        ctx.world.insertResource('PathSnapshot', () => ({
+        ctx.world.insertResource(PathSnapshotResource, () => ({
           tick: ctx.world.getResource(FixedTime).tick,
           worldIdentity: ctx.world.identity,
           cameraMatrix: Array.from(ctx.world.get(camera, GlobalTransform).unwrap().world),

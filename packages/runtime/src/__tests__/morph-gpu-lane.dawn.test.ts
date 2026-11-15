@@ -200,9 +200,7 @@ async function harness() {
   const lease = renderer.attach(world);
   assert(lease.ok);
   const request = (geometryLane?: 'direct') => ({
-    leases: [lease.value],
-    camera: { lease: lease.value },
-    environment: { lease: lease.value },
+    source: lease.value,
     ...(geometryLane === undefined ? {} : { geometryLane }),
   });
   /** One submitted GPU-lane frame; returns its shared-input upload bytes. */

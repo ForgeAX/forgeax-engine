@@ -1,3 +1,5 @@
+import { defineResource } from '@forgeax/engine-ecs';
+import { Update, defineSystem } from "@forgeax/engine-ecs";
 import type {
   ExecutionBootstrapEntry,
   ExecutionBootstrapHost,
@@ -24,6 +26,8 @@ import {
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+const resource1 = defineResource<M33Proof>("m33IntelligenceProof");
+
 
 
 interface M33HostCloseDetail {
@@ -297,7 +301,7 @@ const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).u
         freshRequested: false,
         hostCloseObserved: false,
       };
-      world.insertResource('m33IntelligenceProof', proof);
+      world.insertResource(resource1, proof);
 
       const post = (event: string, detail: Record<string, unknown> = {}): void => {
         evidencePort?.postMessage({ kind: 'm33-worker-event', event, detail });
@@ -551,7 +555,7 @@ const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).u
         }
       };
 
-      const system = {
+      const system = defineSystem({
         name: 'm33-intelligence-worker-consumer',
         queries: [],
         fn(): void {
@@ -566,11 +570,11 @@ const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).u
           }
           drive();
         },
-      };
-      const update = world.scheduleToken('Update');
+      });
+      const update = Update;
       world.addSystem(update, system).unwrap();
       ctx.effect(
-        () => () => world.removeSystem(update, system.name),
+        () => () => world.removeSystem(update, system),
         'm33/intelligence-system',
       );
 

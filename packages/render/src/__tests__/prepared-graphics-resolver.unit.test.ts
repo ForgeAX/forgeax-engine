@@ -2,16 +2,24 @@ import { type BindGroup, type RenderPipeline, RhiError } from '@forgeax/engine-r
 import { rhi } from '@forgeax/engine-rhi-null';
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
+import { materialPipelineAttachments } from '../assembly/material-shader-policy';
+import type { RenderFeaturePreparedGraphicsResolverInput } from '../features/host';
+import type { RenderFeatureMaterialShaderContract } from '../features/plan';
 import type { RenderFeatureGpuBufferRef } from '../features/prepared-gpu-work';
 import {
   createPreparedGraphicsStore,
   type PreparedGraphicsItem,
 } from '../features/prepared-graphics-store';
+import { createPreparedResolver } from '../features/prepared-resolver';
 import { createRenderFeatureTarget } from '../features/targets';
+import { buildPipelineForMaterialShader } from '../pipeline-builder';
 import {
   createPreparedGraphicsResolver,
   type PreparedGraphicsResolverInput,
 } from '../prepare/prepared-graphics-resolver';
+import { createPreparedResolverCaches } from '../record/prepared-material-bindings';
+import type { RenderSystemInternals } from '../record/render-context';
+import type { WaterInfoFramePublication } from '../water/water-info-feature';
 
 async function device() {
   const adapter = (await rhi.requestAdapter()).unwrap();
@@ -34,6 +42,156 @@ function failure<T>(result: Result<T, unknown>): {
 }
 
 describe('prepared graphics resolver', () => {
+  it('preserves a colorless storage fragment stage through the actual prepared pipeline request', async () => {
+    const currentDevice = await device();
+    const shader = (await rhi.createShaderModule(currentDevice, { code: 'synthetic' })).unwrap();
+    const createPipeline = vi.spyOn(currentDevice, 'createRenderPipeline');
+    const store = createPreparedGraphicsStore();
+    const transaction = store.beginFrame('resolver.storage', 1);
+    const pipeline = transaction
+      .prepare('pipeline', 'raster', {
+        shader: 'synthetic::storage',
+        vertexLayout: 'water-info-position-flow',
+        colorFormats: [],
+        depthFormat: 'depth32float-stencil8',
+        preparePipelines: true,
+        renderState: { depthWriteEnabled: false, depthCompare: 'less-equal' },
+      })
+      .unwrap();
+    const bindings = transaction
+      .prepare('bindings', 'storage', {
+        pipeline,
+        values: { bufferBindings: [{ binding: 2, resource: 'visibility', access: 'read-write' }] },
+      })
+      .unwrap();
+    transaction.commit().unwrap();
+    const items = resultMap(store.snapshot('resolver.storage').items);
+    const prepare = vi.fn(
+      (
+        ...args: Parameters<
+          NonNullable<RenderSystemInternals['prepareMaterialShaderPipelineEntry']>
+        >
+      ) => {
+        const attachments = materialPipelineAttachments(
+          args[6] ?? 'forward',
+          args[9] === undefined ? 'bgra8unorm-srgb' : args[9],
+          args[17],
+          args[11],
+          args[8] ?? 1,
+        );
+        return {
+          pipeline: buildPipelineForMaterialShader(
+            args[0],
+            {
+              source: `@group(0) @binding(2) var<storage, read_write> visibility: array<atomic<u32>>;
+          @vertex fn vs_main() -> @builtin(position) vec4<f32> { return vec4<f32>(0.0); }
+          @fragment fn fs_shadow() { atomicStore(&visibility[0], 1u); }`,
+              paramSchema: [],
+            },
+            {
+              device: currentDevice,
+              shaderModuleFactory: { createShaderModule: () => ok(shader) },
+              pipelineLayout: currentDevice.createPipelineLayout({ bindGroupLayouts: [] }).unwrap(),
+              vertexBuffers: [],
+              colorFormat: 'bgra8unorm-srgb',
+              colorFormats: attachments.colorFormats,
+              depthFormat: attachments.depthFormat,
+            },
+            args[2],
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            args[6],
+            args[8],
+          ).unwrap(),
+        };
+      },
+    );
+    const resolver = createPreparedResolver(
+      {
+        runtime: {
+          device: currentDevice,
+          prepareMaterialShaderPipelineEntry: prepare,
+        } as unknown as RenderSystemInternals,
+        caches: createPreparedResolverCaches(),
+        gpuWork: {} as never,
+        builtinPostProcessEntries: new Map(),
+        skylightResources: () => undefined,
+      },
+      {
+        featureIdentity: 'resolver.storage',
+        order: 0,
+        generation: 1,
+        transaction,
+        fullscreenEffects: new Map(),
+        graphicsBindings: new Map([['storage', bindings]]),
+        lookup: (reference) => items.get(reference),
+      },
+      [],
+    );
+    expect(resolver.resolve(pipeline).ok).toBe(true);
+    expect(prepare.mock.calls[0]?.[23]).toBe(true);
+    expect(createPipeline.mock.calls[0]?.[0]).toMatchObject({
+      fragment: { entryPoint: 'fs_shadow', targets: [] },
+      depthStencil: {
+        format: 'depth32float-stencil8',
+        depthWriteEnabled: false,
+        depthCompare: 'greater-equal',
+      },
+    });
+    expect(prepare.mock.calls[0]?.[9]).toBeNull();
+    resolver.release().unwrap();
+  });
+
+  it.each([
+    false,
+    true,
+  ])('preserves every declared color attachment in material pipeline preparation: entry=%s', async (entry) => {
+    const store = createPreparedGraphicsStore();
+    const transaction = store.beginFrame('resolver.mrt', 1);
+    const pipeline = transaction
+      .prepare('pipeline', 'raster', {
+        shader: 'synthetic::mrt',
+        preparePipelines: true,
+        vertexLayout: 'position',
+        colorFormats: ['rgb10a2unorm', 'rgba16float'],
+        sampleCount: 4,
+      })
+      .unwrap();
+    transaction.commit().unwrap();
+    const items = resultMap(store.snapshot('resolver.mrt').items);
+    const prepare = vi.fn(() =>
+      entry ? { pipeline: {} as RenderPipeline } : ({} as RenderPipeline),
+    );
+    const runtime = {
+      device: await device(),
+      [entry ? 'prepareMaterialShaderPipelineEntry' : 'prepareMaterialShaderPipeline']: prepare,
+    } as unknown as RenderSystemInternals;
+    const resolver = createPreparedResolver(
+      {
+        runtime,
+        caches: createPreparedResolverCaches(),
+        gpuWork: {} as never,
+        builtinPostProcessEntries: new Map(),
+        skylightResources: () => undefined,
+      },
+      {
+        featureIdentity: 'resolver.mrt',
+        order: 0,
+        generation: 1,
+        transaction,
+        fullscreenEffects: new Map(),
+        lookup: (reference) => items.get(reference),
+      },
+      [],
+    );
+    expect(resolver.resolve(pipeline).ok).toBe(true);
+    expect(prepare.mock.calls[0]?.[9]).toBe('rgb10a2unorm');
+    expect(prepare.mock.calls[0]?.[17]).toEqual(['rgba16float']);
+    resolver.release().unwrap();
+  });
+
   it.each([
     undefined,
     true,
@@ -320,5 +478,340 @@ describe('prepared graphics resolver', () => {
       code: 'render-feature-preparation-failed',
       detail: { reason: 'pipeline-pending' },
     });
+  });
+});
+
+async function preparedWaterOwner(format: 'rgba16float' | 'rgba32float' = 'rgba16float') {
+  const store = createPreparedGraphicsStore();
+  const transaction = store.beginFrame('resolver.water-system', 1);
+  const pipeline = transaction
+    .prepare('pipeline', 'underwater', {
+      shader: 'synthetic::underwater',
+      preparePipelines: true,
+      vertexLayout: 'none',
+      colorFormats: ['rgba16float'],
+    })
+    .unwrap();
+  const entryPoints = [
+    { name: 'fs_main', stage: 'fragment' as const, bindings: [{ group: 2, binding: 18 }] },
+  ];
+  const bindings = transaction
+    .prepare('bindings', 'water', {
+      pipeline,
+      values: {
+        group: 2,
+        waterMaterial: {
+          bodyKey: 'body',
+          viewIdentity: 'view',
+          bodyGeneration: 3,
+          zoneGeneration: 4,
+          programInputs: { entryPoints, systemInputs: { water: 'water-frame/3' } },
+        },
+      },
+    })
+    .unwrap();
+  transaction.commit().unwrap();
+  const lookup = resultMap(store.snapshot('resolver.water-system').items);
+  const input: RenderFeaturePreparedGraphicsResolverInput = {
+    featureIdentity: 'resolver.water-system',
+    order: 0,
+    generation: 1,
+    viewIdentity: 'view',
+    frameGeneration: 9,
+    deviceGeneration: 2,
+    transaction,
+    fullscreenEffects: new Map(),
+    graphicsBindings: new Map([['water', bindings]]),
+    lookup: (reference) => lookup.get(reference),
+  };
+  let contract: RenderFeatureMaterialShaderContract = {
+    bindings: 'post-process',
+    systemInputs: { water: 'water-frame/3' },
+    entryPoints,
+  };
+  let publication: WaterInfoFramePublication | undefined = {
+    viewIdentity: 'view',
+    frameGeneration: 9,
+    deviceGeneration: 2,
+    targets: [{ targetName: 'water-info', targetFormat: format }],
+    waterInfoAvailability: new Map(),
+    rows: new Map([
+      [
+        'body',
+        {
+          bodyGeneration: 3,
+          zoneGeneration: 4,
+          frameGeneration: 9,
+          deviceGeneration: 2,
+          targetName: 'water-info',
+          targetFormat: format,
+        },
+      ],
+    ]),
+    waveUploadPlan: {
+      bodyIndices: new Map([['body', 0]]),
+      bodyData: [{ bodyGeneration: 3 }],
+      bodyZoneGenerations: new Map([['body', 4]]),
+    },
+  } as unknown as WaterInfoFramePublication;
+  const prepare = vi.fn<NonNullable<RenderSystemInternals['prepareMaterialShaderPipeline']>>(
+    () => ({}) as RenderPipeline,
+  );
+  const getPublication = vi.fn(() => publication);
+  const runtime = {
+    device: await device(),
+    getMaterialShaderBindingContract: () => contract,
+    prepareMaterialShaderPipeline: prepare,
+    getWaterMaterialFramePublication: getPublication,
+  } as unknown as RenderSystemInternals;
+  const resolver = createPreparedResolver(
+    {
+      runtime,
+      caches: createPreparedResolverCaches(),
+      gpuWork: {} as never,
+      builtinPostProcessEntries: new Map(),
+      skylightResources: () => undefined,
+    },
+    input,
+    [],
+  );
+  return {
+    resolver,
+    pipeline,
+    prepare,
+    getPublication,
+    setContract(next: RenderFeatureMaterialShaderContract) {
+      contract = next;
+    },
+    alterPublication(
+      alter: (current: WaterInfoFramePublication) => WaterInfoFramePublication | undefined,
+    ) {
+      if (publication === undefined) throw new Error('Water publication fixture is absent');
+      publication = alter(publication);
+    },
+  };
+}
+
+describe('prepared Water system input', () => {
+  it.each([
+    'rgba16float',
+    'rgba32float',
+  ] as const)('prepares the actual scoped WaterInfo format %s without a Surface declaration', async (format) => {
+    const owner = await preparedWaterOwner(format);
+    expect(owner.resolver.resolve(owner.pipeline).ok).toBe(true);
+    expect(owner.getPublication).toHaveBeenCalledWith('view', 9, 2);
+    expect(owner.prepare.mock.calls[0]?.[22]).toBe(format);
+    owner.resolver.release().unwrap();
+  });
+
+  it('requires the accepted Water system ABI before interpreting reflected Water slots', async () => {
+    const owner = await preparedWaterOwner();
+    owner.setContract({
+      bindings: 'post-process',
+      entryPoints: [{ name: 'fs_main', stage: 'fragment', bindings: [{ group: 2, binding: 18 }] }],
+    });
+    expect(owner.resolver.resolve(owner.pipeline).ok).toBe(true);
+    expect(owner.getPublication).not.toHaveBeenCalled();
+    expect(owner.prepare.mock.calls[0]?.[22]).toBeUndefined();
+    owner.resolver.release().unwrap();
+  });
+
+  it('allows a declared Body-only Water program with no WaterInfo source', async () => {
+    const owner = await preparedWaterOwner();
+    owner.setContract({
+      bindings: 'post-process',
+      systemInputs: { water: 'water-frame/3' },
+      entryPoints: [{ name: 'fs_main', stage: 'fragment', bindings: [{ group: 2, binding: 16 }] }],
+    });
+    owner.alterPublication((publication) => ({ ...publication, rows: new Map(), targets: [] }));
+    expect(owner.resolver.resolve(owner.pipeline).ok).toBe(true);
+    expect(owner.prepare.mock.calls[0]?.[22]).toBeUndefined();
+    owner.resolver.release().unwrap();
+  });
+
+  it('waits for the exact owner WaterInfo dependency load before preparing its pipeline', async () => {
+    const owner = await preparedWaterOwner();
+    let ready: WaterInfoFramePublication | undefined;
+    owner.alterPublication((publication) => {
+      ready = publication;
+      return {
+        ...publication,
+        rows: new Map(),
+        targets: [],
+        waterInfoAvailability: new Map([
+          [
+            'body',
+            {
+              kind: 'pending',
+              bodyGuid: 'river',
+              bodyGeneration: 3,
+              field: 'waterInfoMeshGuid',
+              guid: 'mesh',
+            },
+          ],
+        ]),
+      };
+    });
+    const pending = owner.resolver.resolve(owner.pipeline);
+    expect(failure(pending)).toMatchObject({
+      code: 'render-feature-preparation-failed',
+      detail: { reason: 'pipeline-pending' },
+    });
+    expect(owner.prepare).not.toHaveBeenCalled();
+    owner.alterPublication(() => ready);
+    expect(owner.resolver.resolve(owner.pipeline).ok).toBe(true);
+    expect(owner.prepare.mock.calls[0]?.[22]).toBe('rgba16float');
+    owner.resolver.release().unwrap();
+  });
+
+  it.each([
+    'failed',
+    'missing',
+    'incompatible',
+  ] as const)('does not wait indefinitely for a %s WaterInfo dependency', async (kind) => {
+    const owner = await preparedWaterOwner();
+    const reference = {
+      bodyGuid: 'river',
+      bodyGeneration: 3,
+      field: 'waterInfoMeshGuid',
+      guid: 'mesh',
+    };
+    const availability: NonNullable<
+      ReturnType<WaterInfoFramePublication['waterInfoAvailability']['get']>
+    > =
+      kind === 'failed'
+        ? {
+            ...reference,
+            kind,
+            failure: { code: 'load-failed', expected: 'mesh loads', hint: 'repair source' },
+          }
+        : { ...reference, kind };
+    owner.alterPublication((publication) => ({
+      ...publication,
+      rows: new Map(),
+      targets: [],
+      waterInfoAvailability: new Map([['body', availability]]),
+    }));
+    expect(failure(owner.resolver.resolve(owner.pipeline))).toMatchObject({
+      code: 'render-feature-preparation-failed',
+      detail: { reason: 'pipeline resolution failed' },
+    });
+    expect(owner.prepare).not.toHaveBeenCalled();
+    owner.resolver.release().unwrap();
+  });
+
+  it('does not use another owner generation to defer a missing WaterInfo row', async () => {
+    const owner = await preparedWaterOwner();
+    owner.alterPublication((publication) => ({
+      ...publication,
+      rows: new Map(),
+      targets: [],
+      waterInfoAvailability: new Map([
+        [
+          'old-body',
+          {
+            kind: 'pending',
+            bodyGuid: 'river',
+            bodyGeneration: 2,
+            field: 'waterInfoMeshGuid',
+            guid: 'mesh',
+          },
+        ],
+      ]),
+    }));
+    expect(failure(owner.resolver.resolve(owner.pipeline))).toMatchObject({
+      detail: { reason: 'pipeline resolution failed' },
+    });
+    expect(owner.prepare).not.toHaveBeenCalled();
+    owner.resolver.release().unwrap();
+  });
+
+  const invalid: readonly (readonly [
+    string,
+    (publication: WaterInfoFramePublication) => WaterInfoFramePublication | undefined,
+  ])[] = [
+    ['missing publication', () => undefined],
+    ['view', (publication) => ({ ...publication, viewIdentity: 'old-view' })],
+    ['frame', (publication) => ({ ...publication, frameGeneration: 8 })],
+    ['device', (publication) => ({ ...publication, deviceGeneration: 1 })],
+    [
+      'Body',
+      (publication) => ({
+        ...publication,
+        waveUploadPlan: {
+          ...publication.waveUploadPlan,
+          bodyData: publication.waveUploadPlan.bodyData.map((body) => ({
+            ...body,
+            bodyGeneration: 2,
+          })),
+        },
+      }),
+    ],
+    [
+      'Zone',
+      (publication) => ({
+        ...publication,
+        waveUploadPlan: {
+          ...publication.waveUploadPlan,
+          bodyZoneGenerations: new Map([['body', 3]]),
+        },
+      }),
+    ],
+    [
+      'WaterInfo Body',
+      (publication) => ({
+        ...publication,
+        rows: new Map(
+          [...publication.rows].map(([key, row]) => [key, { ...row, bodyGeneration: 2 }]),
+        ),
+      }),
+    ],
+    [
+      'WaterInfo Zone',
+      (publication) => ({
+        ...publication,
+        rows: new Map(
+          [...publication.rows].map(([key, row]) => [key, { ...row, zoneGeneration: 3 }]),
+        ),
+      }),
+    ],
+    [
+      'WaterInfo frame',
+      (publication) => ({
+        ...publication,
+        rows: new Map(
+          [...publication.rows].map(([key, row]) => [key, { ...row, frameGeneration: 8 }]),
+        ),
+      }),
+    ],
+    [
+      'WaterInfo device',
+      (publication) => ({
+        ...publication,
+        rows: new Map(
+          [...publication.rows].map(([key, row]) => [key, { ...row, deviceGeneration: 1 }]),
+        ),
+      }),
+    ],
+    [
+      'WaterInfo target',
+      (publication) => ({
+        ...publication,
+        targets: publication.targets.map((target) => ({ ...target, targetFormat: 'rgba32float' })),
+      }),
+    ],
+    ['missing WaterInfo', (publication) => ({ ...publication, rows: new Map() })],
+  ];
+  it.each(invalid)('rejects an invalid %s before pipeline preparation', async (_name, alter) => {
+    const owner = await preparedWaterOwner();
+    owner.alterPublication(alter);
+    const result = owner.resolver.resolve(owner.pipeline);
+    expect(result.ok).toBe(false);
+    expect(failure(result)).toMatchObject({
+      code: 'render-feature-preparation-failed',
+      detail: { reason: 'pipeline resolution failed' },
+    });
+    expect(owner.prepare).not.toHaveBeenCalled();
+    owner.resolver.release().unwrap();
   });
 });

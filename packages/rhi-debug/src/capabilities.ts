@@ -4,6 +4,9 @@ import type { RhiCaps } from '@forgeax/engine-rhi';
 export function recordReplayCapabilities(caps?: RhiCaps) {
   return {
     rgba16floatRenderable: caps?.rgba16floatRenderable ?? false,
+    rgba32floatRenderable: caps?.rgba32floatRenderable ?? false,
+    rgba16floatStorage: caps?.rgba16floatStorage ?? false,
+    rgba32floatStorage: caps?.rgba32floatStorage ?? false,
     rg11b10ufloatRenderable: caps?.rg11b10ufloatRenderable ?? false,
     float32Filterable: caps?.float32Filterable ?? false,
     firstInstanceIndirect: caps?.firstInstanceIndirect ?? false,

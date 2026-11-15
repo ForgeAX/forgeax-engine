@@ -34,7 +34,7 @@ it.each([
   const second = { ...first };
   const projection = new RenderScene();
   const delta = projection.apply(
-    [preparedSnapshot(1, 3), { ...preparedSnapshot(2, 5), worldId: 1 }].map(updateSnapshot),
+    [preparedSnapshot(1, 3), { ...preparedSnapshot(2, 5) }].map(updateSnapshot),
   );
   const topology = new BatchTopology();
   topology.apply(delta);

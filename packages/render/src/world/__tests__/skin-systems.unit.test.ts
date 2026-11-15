@@ -1,5 +1,8 @@
+import { defineSystem } from '@forgeax/engine-ecs';
 import { describe, expect, it } from 'vitest';
+import { viewSourceFixture } from '../../__tests__/view-source.fixture';
 import type { ExtractedFrame, RenderableSnapshot } from '../../render-system-extract';
+import { RenderGpuDrivenPrepareOrder, RenderScenePublishOrder } from '../../system-order';
 import { RENDER_GPU_DRIVEN_PREPARE_SYSTEM } from '../gpu-driven-systems';
 import { RenderViewFrameSource, RenderViewInput, ViewRecorder } from '../render-views';
 import {
@@ -27,9 +30,9 @@ import {
 } from '../view-frame-systems';
 import { registerViewFrameStub, withInertTemporal } from './temporal-owner-fixture';
 
-const opts = { cameraOwner: 0, resourceOwner: 0 } as const;
+const opts = {} as const;
 const skinRow = (entityKey: number, extra: object = {}) =>
-  ({ worldId: 0, entityKey, skinBinding: {}, ...extra }) as unknown as RenderableSnapshot;
+  ({ entityKey, skinBinding: {}, ...extra }) as unknown as RenderableSnapshot;
 // Entity 3 is author-hidden, 5 is rejected by the camera; 1 and 2 are demanded.
 const frame = {
   cameras: [{}],
@@ -40,7 +43,7 @@ const frame = {
     skinRow(2),
     skinRow(3, { authorVisible: false }),
     skinRow(5),
-    { worldId: 0, entityKey: 9 },
+    { entityKey: 9 },
   ],
   cameraVisible: (row: RenderableSnapshot) => row.entityKey !== 5,
 } as unknown as ExtractedFrame;
@@ -57,10 +60,14 @@ function setup(
 ) {
   const world = createRenderWorld();
   const source = new RenderViewFrameSource({ canvas: { width: 8, height: 8 } });
-  world.insertResource(RenderViewInput, source);
-  world
-    .addSystem(RenderPrepare, { name: RENDER_SCENE_PUBLISH_SYSTEM, queries: [], fn: () => {} })
-    .unwrap();
+  world.insertResource(RenderViewInput, viewSourceFixture(source));
+  const systemToken1 = defineSystem({
+    sets: [RenderScenePublishOrder],
+    name: RENDER_SCENE_PUBLISH_SYSTEM,
+    queries: [],
+    fn: () => {},
+  });
+  world.addSystem(RenderPrepare, systemToken1).unwrap();
   if (options.system !== false) registerSkinDemandSystem(world);
   const prepared: number[][] = [];
   const recorder = {
@@ -90,16 +97,15 @@ function setup(
     const state = world.allocUniqueRef('ViewRecorder', withInertTemporal({}, owner));
     world.addComponent(entity, { component: ViewRecorder, data: { state } }).unwrap();
   }
-  world
-    .addSystem(RenderExtract, {
-      name: RENDER_VIEW_RECORDERS_SYSTEM,
-      queries: [],
-      fn: (world) =>
-        stageViewFrame(world, staged, { ...opts, cameraEntityKey: 7 }, options.mode ?? true),
-    })
-    .unwrap();
+  const systemToken2 = defineSystem({
+    name: RENDER_VIEW_RECORDERS_SYSTEM,
+    queries: [],
+    fn: (world) =>
+      stageViewFrame(world, staged, { ...opts, cameraEntityKey: 7 }, options.mode ?? true),
+  });
+  world.addSystem(RenderExtract, systemToken2).unwrap();
   const run = (frameNumber: number) => {
-    source.stage([], [], [], opts, undefined, undefined);
+    source.stage([], [], undefined, opts, undefined, undefined);
     beginRenderFrame(world, frameNumber);
     runRenderQueue(world);
   };
@@ -167,7 +173,7 @@ describe('render-skin-demand', () => {
 });
 
 describe('cpuSkinRows', () => {
-  const row = (entityKey: number) => ({ worldId: 0, entityKey }) as RenderableSnapshot;
+  const row = (entityKey: number) => ({ entityKey }) as RenderableSnapshot;
   // Entities 17 and 29 draw entirely on the GPU lane; 23 is unbatched or a
   // member of an uncovered binding.
   const owner = { ownsAll: (source: RenderableSnapshot) => source.entityKey !== 23 };
@@ -194,7 +200,7 @@ it.each([
       selection,
       residual: () => {
         materialized += count;
-        return Array.from({ length: count }, (_, entityKey) => ({ worldId: 0, entityKey }));
+        return Array.from({ length: count }, (_, entityKey) => ({ entityKey }));
       },
       residualSkin: () => [],
     },
@@ -224,16 +230,16 @@ it('reads GPU ownership after preparation can invalidate the previous resident l
       return lane;
     },
   });
-  f.world
-    .addSystem(RenderQueue, {
-      name: RENDER_GPU_DRIVEN_PREPARE_SYSTEM,
-      queries: [],
-      fn: () => {
-        events.push('gpu-prepare');
-        lane = undefined;
-      },
-    })
-    .unwrap();
+  const systemToken3 = defineSystem({
+    sets: [RenderGpuDrivenPrepareOrder],
+    name: RENDER_GPU_DRIVEN_PREPARE_SYSTEM,
+    queries: [],
+    fn: () => {
+      events.push('gpu-prepare');
+      lane = undefined;
+    },
+  });
+  f.world.addSystem(RenderQueue, systemToken3).unwrap();
   f.run(1);
   expect(events).toEqual(['gpu-prepare', 'skin-owner']);
   expect(f.prepared).toEqual([[1, 2]]);

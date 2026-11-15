@@ -1,3 +1,4 @@
+import { defineResource } from '@forgeax/engine-ecs';
 
 import { World } from '@forgeax/engine-ecs';
 import type { InputSnapshot } from '@forgeax/engine-input';
@@ -8,7 +9,7 @@ import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 
 
-export const TOUCH_INPUT_STATE = 'bevyTouchInputState';
+export const TOUCH_INPUT_STATE = defineResource<TouchInputState>("bevyTouchInputState");
 
 export interface TouchInputState {
   justPressedTouches: number;
@@ -66,7 +67,7 @@ export function buildTouchInputWorld(world: World): TouchInputState {
 }
 
 export function stepTouchInput(world: World, snapshot: InputSnapshot): void {
-  const state = world.getResource<TouchInputState>(TOUCH_INPUT_STATE);
+  const state = world.getResource(TOUCH_INPUT_STATE);
   for (const event of snapshot.pointerEvents) {
     if (event.pointerType !== 'touch') continue;
     state.lastEventId = event.pointerId;
@@ -100,5 +101,5 @@ export function stepTouchInput(world: World, snapshot: InputSnapshot): void {
 }
 
 export function readTouchInputState(world: World): TouchInputState {
-  return { ...world.getResource<TouchInputState>(TOUCH_INPUT_STATE) };
+  return { ...world.getResource(TOUCH_INPUT_STATE) };
 }

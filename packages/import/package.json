@@ -50,6 +50,7 @@
     "@forgeax/engine-shader": "workspace:*",
     "@forgeax/engine-tool-runtime": "workspace:*",
     "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-water": "workspace:*",
     "@noble/hashes": "^2.2.0",
     "@recast-navigation/core": "0.43.1",
     "@recast-navigation/generators": "0.43.1",

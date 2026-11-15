@@ -61,8 +61,11 @@ describe('Standard transmission manifest producer', () => {
         entry.defines.PROBE_BLEND_AVAILABLE === false &&
         entry.defines.PROJECTOR_AVAILABLE === true &&
         entry.defines.REFLECTION_FALLBACK_AVAILABLE === true &&
+        entry.defines.STANDARD_LEAN_INPUTS === false &&
         entry.defines.STORAGE_BUFFER_AVAILABLE === true &&
         entry.defines.TRANSMISSION_AVAILABLE === false &&
+        entry.defines.WATER_WAVES_AVAILABLE === false &&
+        entry.defines.WATER_INFO_RGBA16 === false &&
         entry.defines.VERTEX_COLOR_AVAILABLE === true,
     );
     expect(ordinary).toBeDefined();

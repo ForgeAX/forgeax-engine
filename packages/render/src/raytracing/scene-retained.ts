@@ -16,9 +16,9 @@ export interface RaySceneEdit {
 
 /** Renderer-owned world-space reference BVH. Stable shapes refit only changed source rows. */
 export class RaySceneProjection {
-  #worlds: readonly RenderResourceScope[] = [];
+  #sourceScope: RenderResourceScope | undefined;
   readonly #rows = new RowProjection<RenderSceneSlot>((slot, _rows, read) => {
-    const scope = this.#worlds[slot.worldId];
+    const scope = this.#sourceScope;
     if (scope !== undefined && slot.snapshot.assetHandle !== undefined)
       read(scope, slot.snapshot.assetHandle);
     return slot;
@@ -41,29 +41,25 @@ export class RaySceneProjection {
   /** Live owner buffers remain valid until the next sync; async consumers fence that boundary. */
   sync(
     rows: ProjectedRows,
-    worlds: readonly RenderResourceScope[],
+    sourceScope: RenderResourceScope,
     surfaces: VisibleSurfaceProjection,
   ): Projection {
-    if (
-      worlds.length !== this.#worlds.length ||
-      worlds.some((world, index) => world !== this.#worlds[index])
-    )
-      this.reset();
-    this.#worlds = worlds;
+    if (sourceScope !== this.#sourceScope) this.reset();
+    this.#sourceScope = sourceScope;
     try {
       const sync = this.#rows.sync(rows);
       const projected = this.#projection;
       if (projected === undefined || sync.cold || projected.surfaces.layout !== surfaces.layout)
-        return this.#cold(rows, worlds, surfaces);
+        return this.#cold(rows, sourceScope, surfaces);
       const patches: RayTrianglePatch[] = [];
       for (let i = 0; i < sync.changed.length; i++) {
         const slot = sync.changed[i] as number;
         const record = sync.records[i];
-        if (record === undefined) return this.#cold(rows, worlds, surfaces);
+        if (record === undefined) return this.#cold(rows, sourceScope, surfaces);
         const base = surfaces.slotBases.get(slot);
         const local = projectRayScene(
           [record],
-          worlds,
+          sourceScope,
           {
             records: new Uint32Array(0),
             slotBases: base === undefined ? new Map() : new Map([[slot, base]]),
@@ -75,7 +71,7 @@ export class RaySceneProjection {
         const materials = this.#materialIds(local);
         const patch =
           materials === undefined ? undefined : this.#refit?.patch(slot, local.scene, materials);
-        if (patch === undefined) return this.#cold(rows, worlds, surfaces);
+        if (patch === undefined) return this.#cold(rows, sourceScope, surfaces);
         patches.push(patch);
       }
       const geometry = this.#refit?.apply(patches);
@@ -91,10 +87,10 @@ export class RaySceneProjection {
 
   #cold(
     rows: ProjectedRows,
-    worlds: readonly RenderResourceScope[],
+    sourceScope: RenderResourceScope,
     surfaces: VisibleSurfaceProjection,
   ): Projection {
-    const projected = projectRayScene(rows.slots, worlds, surfaces, rows);
+    const projected = projectRayScene(rows.slots, sourceScope, surfaces, rows);
     this.#projection = projected;
     this.#edit = undefined;
     this.#refit = new RaySceneRefit(projected.scene, projected.surfaces.records);
@@ -107,9 +103,7 @@ export class RaySceneProjection {
     for (const material of local.materials) {
       const id = materials.findIndex(
         (accepted) =>
-          accepted.worldId === material.worldId &&
-          accepted.handle === material.handle &&
-          accepted.snapshot === material.snapshot,
+          accepted.handle === material.handle && accepted.snapshot === material.snapshot,
       );
       if (id < 0) return undefined;
       result.push(id);

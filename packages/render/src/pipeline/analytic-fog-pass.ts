@@ -8,6 +8,7 @@ import type {
   BindGroupLayout,
   Buffer,
   RenderPipeline,
+  ShaderModule,
   TextureView,
 } from '@forgeax/engine-rhi';
 import { err, ok, type Result } from '@forgeax/engine-types';
@@ -15,26 +16,49 @@ import { addAtmosphereComposition } from '../environment/compose';
 import type { GraphAtmosphere } from '../environment/luts';
 import { postProcessShaderModuleLabel } from '../fullscreen-post-process-pass';
 import { GPU_SHADER_STAGE_FRAGMENT } from '../gpu-stage';
+import {
+  GPU_TEXTURE_USAGE_RENDER_ATTACHMENT,
+  GPU_TEXTURE_USAGE_TEXTURE_BINDING,
+} from '../gpu-texture-usage';
 import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_UNIFORM } from '../gpu-usage';
+import { SkyPass } from '../record/gpu-pass-timing/sky-pass-names';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
 import type {
   RenderPipelineFrame,
   RenderPipelineTarget,
   RenderPipelineTopology,
 } from '../render-pipeline';
+import { createRenderPipelineTarget } from '../render-pipeline';
 import { addAuthoredVolumetricFogPasses } from '../volume/passes';
+import { renderInternalCopySize } from './render-extent';
 import type { StandardClusterGraphBuffers } from './standard-lighting/graph';
 
 export const ANALYTIC_FOG_POST_PROCESS_ID = 'forgeax.analytic-fog';
 
-/** Single-sample color and depth are required by the opaque analytic fog pass. */
+/** Full atmosphere composition still requires single-sample scene depth. */
 export function analyticFogSampleCountError(): RenderGraphError {
   return new RenderGraphError({
     code: 'resource-resolution-failed',
-    expected: 'analytic fog receives single-sample scene depth',
-    hint: 'select FXAA, TAA or no AA for analytic fog',
+    expected: 'full atmosphere composition receives single-sample scene depth',
+    hint: 'select single-sample rendering for full Atmosphere; standalone Fog supports native MSAA',
     detail: { resourceLabel: 'scene-depth' },
   });
+}
+
+function analyticFogModule(frame: RenderPipelineFrame): ShaderModule {
+  const source = frame.runtime.lookupPostProcess?.(ANALYTIC_FOG_POST_PROCESS_ID)?.source;
+  const factory = frame.runtime.shaderModuleFactory;
+  if (source === undefined || factory === undefined) {
+    throw new RenderGraphError({
+      code: 'resource-resolution-failed',
+      expected: 'the registered forgeax.analytic-fog shader and a shader module factory',
+      hint: 'include forgeax::analytic-fog in the engine shader manifest',
+      detail: { resourceLabel: 'analytic-fog' },
+    });
+  }
+  return factory
+    .createShaderModule({ code: source, label: postProcessShaderModuleLabel(source) })
+    .unwrap();
 }
 
 /**
@@ -46,9 +70,13 @@ export function analyticFogSampleCountError(): RenderGraphError {
  */
 export function addAnalyticFogPass(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
-  input: { readonly color: RenderPipelineTarget; readonly depth: GraphTextureView },
+  input: {
+    readonly color: RenderPipelineTarget;
+    readonly resolve?: RenderPipelineTarget | undefined;
+    readonly depth: GraphTextureView;
+  },
 ): Result<void, RenderGraphError> {
-  if (input.color.sampleCount !== 1) return err(analyticFogSampleCountError());
+  const multisampled = input.color.sampleCount === 4;
   const view = graph.importBuffer(
     'analytic-fog-view',
     { size: VIEW_UNIFORM_BYTES, usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST },
@@ -60,15 +88,19 @@ export function addAnalyticFogPass(
   let bindings:
     | { readonly depth: TextureView; readonly uniform: Buffer; readonly group: BindGroup }
     | undefined;
-  const pass = graph.addRasterPass('analytic-fog', {
+  const pass = graph.addRasterPass(SkyPass.analyticFog, {
     accesses: [
       { resource: input.depth, usage: 'sampled-read' },
       { resource: view.value, usage: 'uniform-read' },
       { resource: input.color.view, usage: 'color-attachment' },
+      ...(input.resolve === undefined
+        ? []
+        : [{ resource: input.resolve.view, usage: 'color-attachment' as const }]),
     ],
     colorAttachments: [
       {
         view: input.color.view,
+        ...(input.resolve === undefined ? {} : { resolveTarget: input.resolve.view }),
         loadOp: 'load',
         storeOp: 'store',
         clearValue: { r: 0, g: 0, b: 0, a: 1 },
@@ -76,19 +108,7 @@ export function addAnalyticFogPass(
     ],
     encodeDirect: (pass, frame, resources) => {
       if (pipeline === undefined || layout === undefined) {
-        const source = frame.runtime.lookupPostProcess?.(ANALYTIC_FOG_POST_PROCESS_ID)?.source;
-        const factory = frame.runtime.shaderModuleFactory;
-        if (source === undefined || factory === undefined) {
-          throw new RenderGraphError({
-            code: 'resource-resolution-failed',
-            expected: 'the registered forgeax.analytic-fog shader and a shader module factory',
-            hint: 'include forgeax::analytic-fog in the engine shader manifest',
-            detail: { resourceLabel: 'analytic-fog' },
-          });
-        }
-        const module = factory
-          .createShaderModule({ code: source, label: postProcessShaderModuleLabel(source) })
-          .unwrap();
+        const module = analyticFogModule(frame);
         const device = frame.runtime.device;
         layout = device
           .createBindGroupLayout({
@@ -96,9 +116,9 @@ export function addAnalyticFogPass(
             entries: [
               { binding: 0, visibility: GPU_SHADER_STAGE_FRAGMENT, buffer: { type: 'uniform' } },
               {
-                binding: 1,
+                binding: multisampled ? 2 : 1,
                 visibility: GPU_SHADER_STAGE_FRAGMENT,
-                texture: { sampleType: 'depth', viewDimension: '2d' },
+                texture: { sampleType: 'depth', viewDimension: '2d', multisampled },
               },
             ],
           })
@@ -113,7 +133,7 @@ export function addAnalyticFogPass(
             vertex: { module, entryPoint: 'vs_main', buffers: [] },
             fragment: {
               module,
-              entryPoint: 'fs_main',
+              entryPoint: multisampled ? 'fs_msaa' : 'fs_main',
               targets: [
                 {
                   format: input.color.format,
@@ -127,6 +147,7 @@ export function addAnalyticFogPass(
               ],
             },
             primitive: { topology: 'triangle-list' },
+            multisample: { count: input.color.sampleCount },
           })
           .unwrap();
       }
@@ -147,7 +168,10 @@ export function addAnalyticFogPass(
                   value: { buffer: uniform.value, size: VIEW_UNIFORM_BYTES },
                 },
               },
-              { binding: 1, resource: { kind: 'textureView', value: depth.value as never } },
+              {
+                binding: multisampled ? 2 : 1,
+                resource: { kind: 'textureView', value: depth.value as never },
+              },
             ],
           })
           .unwrap();
@@ -166,6 +190,7 @@ interface StandardFogPassInputs {
   readonly topology: RenderPipelineTopology;
   readonly atmosphere?: GraphAtmosphere | undefined;
   readonly color: RenderPipelineTarget;
+  readonly resolve?: RenderPipelineTarget | undefined;
   readonly depth: RenderPipelineTarget;
 }
 
@@ -173,9 +198,95 @@ function sceneDepthSample(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   depth: RenderPipelineTarget,
   label: string,
+  multisampled = false,
 ): Result<GraphTextureView, RenderGraphError> {
-  if (depth.sampleCount !== 1) return err(analyticFogSampleCountError());
+  if (depth.sampleCount !== 1 && !(multisampled && depth.sampleCount === 4))
+    return err(analyticFogSampleCountError());
   return graph.view(depth.texture, { label, dimension: '2d', aspect: 'depth-only' });
+}
+
+/** Resolve Reverse-Z depth only for the local volume's one-ray-per-pixel integral. */
+function addFogDepthResolve(
+  graph: RenderGraphBuilder<RenderPipelineFrame>,
+  depth: RenderPipelineTarget,
+  topology: RenderPipelineTopology,
+): Result<GraphTextureView, RenderGraphError> {
+  const source = graph.view(depth.texture, {
+    label: 'fog-msaa-depth',
+    dimension: '2d',
+    aspect: 'depth-only',
+  });
+  if (!source.ok) return source;
+  const target = createRenderPipelineTarget(graph, 'fog-resolved-depth', {
+    format: 'depth32float',
+    size: renderInternalCopySize(topology),
+    usage: GPU_TEXTURE_USAGE_RENDER_ATTACHMENT | GPU_TEXTURE_USAGE_TEXTURE_BINDING,
+  });
+  if (!target.ok) return target;
+  let state: { pipeline: RenderPipeline; layout: BindGroupLayout } | undefined;
+  let binding: { depth: TextureView; group: BindGroup } | undefined;
+  const resolved = graph.addRasterPass('fog-depth-resolve', {
+    accesses: [
+      { resource: source.value, usage: 'sampled-read' },
+      { resource: target.value.view, usage: 'depth-stencil-write' },
+    ],
+    colorAttachments: [],
+    depthStencilAttachment: {
+      view: target.value.view,
+      depthClearValue: 0,
+      depthLoadOp: 'clear',
+      depthStoreOp: 'store',
+    },
+    encodeDirect(pass, frame, resources) {
+      const device = frame.runtime.device;
+      if (state === undefined) {
+        const module = analyticFogModule(frame);
+        const layout = device
+          .createBindGroupLayout({
+            entries: [
+              {
+                binding: 2,
+                visibility: GPU_SHADER_STAGE_FRAGMENT,
+                texture: { sampleType: 'depth', viewDimension: '2d', multisampled: true },
+              },
+            ],
+          })
+          .unwrap();
+        state = {
+          layout,
+          pipeline: device
+            .createRenderPipeline({
+              label: 'fog-depth-resolve',
+              layout: device.createPipelineLayout({ bindGroupLayouts: [layout] }).unwrap(),
+              vertex: { module, entryPoint: 'vs_main', buffers: [] },
+              fragment: { module, entryPoint: 'fs_resolve_depth', targets: [] },
+              primitive: { topology: 'triangle-list' },
+              depthStencil: {
+                format: 'depth32float',
+                depthWriteEnabled: true,
+                depthCompare: 'always',
+              },
+            })
+            .unwrap(),
+        };
+      }
+      const texture = resources.textureView(source.value).unwrap();
+      if (binding?.depth !== texture)
+        binding = {
+          depth: texture,
+          group: device
+            .createBindGroup({
+              layout: state.layout,
+              entries: [{ binding: 2, resource: { kind: 'textureView', value: texture } }],
+            })
+            .unwrap(),
+        };
+      pass.setPipeline(state.pipeline);
+      pass.setBindGroup(0, binding.group);
+      pass.draw(3);
+    },
+  });
+  return resolved.ok ? ok(target.value.view) : resolved;
 }
 
 /**
@@ -189,7 +300,14 @@ export function addOpaqueFogPasses(
 ): Result<void, RenderGraphError> {
   const analytic = input.topology.analyticFog === true;
   if (!analytic && input.atmosphere === undefined) return ok(undefined);
-  const depthSample = sceneDepthSample(graph, input.depth, 'scene-depth.sample');
+  const depthSample =
+    input.atmosphere === undefined
+      ? graph.view(input.depth.texture, {
+          label: 'scene-depth.sample',
+          dimension: '2d',
+          aspect: 'depth-only',
+        })
+      : sceneDepthSample(graph, input.depth, 'scene-depth.sample');
   if (!depthSample.ok) return depthSample;
   if (input.atmosphere !== undefined) {
     const composed = addAtmosphereComposition(
@@ -201,7 +319,11 @@ export function addOpaqueFogPasses(
     if (!composed.ok) return composed;
   }
   if (analytic && input.atmosphere === undefined) {
-    const fog = addAnalyticFogPass(graph, { color: input.color, depth: depthSample.value });
+    const fog = addAnalyticFogPass(graph, {
+      color: input.color,
+      resolve: input.resolve,
+      depth: depthSample.value,
+    });
     if (!fog.ok) return fog;
   }
   return ok(undefined);
@@ -231,7 +353,10 @@ export function addTranslucencyVolumetricFogPasses(
   },
 ): Result<void, RenderGraphError> {
   if (input.topology.volumetricFog?.enabled !== true) return ok(undefined);
-  const depthSample = sceneDepthSample(graph, input.depth, 'local-volume-scene-depth');
+  const depthSample =
+    input.depth.sampleCount === 4
+      ? addFogDepthResolve(graph, input.depth, input.topology)
+      : sceneDepthSample(graph, input.depth, 'local-volume-scene-depth');
   if (!depthSample.ok) return depthSample;
   return addAuthoredVolumetricFogPasses(
     graph,

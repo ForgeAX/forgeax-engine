@@ -1,3 +1,4 @@
+import { defineSystem } from '../schedule';
 import { Update } from '../schedule-token';
 // AC-4 minimal-example compile-assertion vehicle.
 //
@@ -23,7 +24,7 @@ describe('[w14] AC-4 — 30-second onboarding minimal example', () => {
     const Velocity = defineComponent('Velocity', { dx: { type: 'f32' }, dy: { type: 'f32' } });
 
     const world = new World();
-    world.addSystem(Update, {
+    const systemToken1 = defineSystem({
       name: 'movement',
       queries: [{ read: [Velocity], write: [Position] }],
       fn: (_world, queryResults, _commands) => {
@@ -36,6 +37,7 @@ describe('[w14] AC-4 — 30-second onboarding minimal example', () => {
         }
       },
     });
+    world.addSystem(Update, systemToken1);
 
     expectTypeOf(world).toMatchTypeOf<World>();
   });

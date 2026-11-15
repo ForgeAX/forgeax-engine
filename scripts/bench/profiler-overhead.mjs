@@ -297,6 +297,45 @@ export async function settleFrameCredit(app) {
   }
 }
 
+function startWindowCapture(profiler, frameLimit) {
+  const started = profiler.startCapture({
+    frameLimit,
+    eventLimit: EVENT_LIMIT,
+    detail: PROFILE_DETAIL,
+  });
+  if (!started.ok) throw new Error(`profiler capture failed: ${started.error.code}`);
+  return started.value;
+}
+
+function finishWindowCapture(session) {
+  const capture = session.finish();
+  if (!capture.ok) throw new Error(`profiler capture did not finish: ${capture.error.code}`);
+  if (capture.value.completeness.status !== 'complete') {
+    throw new Error(`profiler capture was ${capture.value.completeness.status}`);
+  }
+  return capture.value;
+}
+
+export async function runProfiledWindow(profiler, scheduler, app, durations) {
+  // Warm recording separately. The owner workload now emits more than the
+  // original twenty events per frame; do not grow its bounded event storage.
+  const warmup = startWindowCapture(profiler, CAPTURE_WARMUP_FRAMES);
+  for (let index = 0; index < CAPTURE_WARMUP_FRAMES; index += 1) {
+    scheduler.pump();
+    await settleFrameCredit(app);
+  }
+  finishWindowCapture(warmup);
+  const measured = startWindowCapture(profiler, FRAMES_PER_GROUP + 1);
+  for (let index = 0; index < FRAMES_PER_GROUP; index += 1) {
+    durations.push(scheduler.pump());
+    await settleFrameCredit(app);
+  }
+  // Keep automatic materialization and sink work outside the measured window.
+  scheduler.pump();
+  await settleFrameCredit(app);
+  return finishWindowCapture(measured);
+}
+
 async function runBenchmark() {
   const scheduler = makeScheduler();
   installScheduler(scheduler);
@@ -326,31 +365,7 @@ async function runBenchmark() {
       }
     };
     const runOn = async () => {
-      const started = profiler.startCapture({
-        frameLimit: CAPTURE_FRAME_LIMIT,
-        eventLimit: EVENT_LIMIT,
-        detail: PROFILE_DETAIL,
-      });
-      if (!started.ok) throw new Error(`profiler capture failed: ${started.error.code}`);
-      for (let index = 0; index < CAPTURE_WARMUP_FRAMES; index += 1) {
-        scheduler.pump();
-        await settleFrameCredit(app);
-      }
-      for (let index = 0; index < FRAMES_PER_GROUP; index += 1) {
-        onGroupDurations.push(scheduler.pump());
-        await settleFrameCredit(app);
-      }
-      // RecorderSession auto-finishes at frameLimit. Keep that finalization
-      // frame outside the measured window so materialization and sink work do
-      // not masquerade as per-frame recording overhead.
-      scheduler.pump();
-      await settleFrameCredit(app);
-      const capture = started.value.finish();
-      if (!capture.ok) throw new Error(`profiler capture did not finish: ${capture.error.code}`);
-      if (capture.value.completeness.status !== 'complete') {
-        throw new Error(`profiler capture was ${capture.value.completeness.status}`);
-      }
-      lastCapture = capture.value;
+      lastCapture = await runProfiledWindow(profiler, scheduler, app, onGroupDurations);
     };
     // Alternate which mode runs first so a warm-cache/JIT or runner-load
     // effect is not permanently assigned to profiler-off or profiler-on.

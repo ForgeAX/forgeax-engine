@@ -7,6 +7,7 @@ import {
   Materials,
   MeshFilter,
   MeshRenderer,
+  type RenderInspection,
   resolveVisibleSurface,
   ShadowParticipation,
 } from '@forgeax/engine-render';
@@ -35,6 +36,29 @@ import { testAssets } from './helpers/runtime-assets';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
 type Save = (name: string, bytes: Uint8Array) => void | Promise<void>;
+
+type ObservationStats = NonNullable<RenderInspection['observation']['resourceStats']>;
+
+function requiredObservationStats(stats: ObservationStats | undefined): ObservationStats {
+  if (stats === undefined) throw new Error('Missing observation resource statistics');
+  return stats;
+}
+
+function verifyUnreadObservationAllocation(
+  before: ObservationStats,
+  unread: ObservationStats,
+): void {
+  // Source completion can map physical copies before public consumption. Four
+  // unread tickets still retain their exact bytes under the same bounded owner.
+  expect(unread.allocationCount - before.allocationCount).toBe(4);
+  const completedReadbacks = unread.readbackCount - before.readbackCount;
+  expect(completedReadbacks).toBeGreaterThanOrEqual(0);
+  expect(completedReadbacks).toBeLessThanOrEqual(4);
+  expect(unread.liveCount - before.liveCount + completedReadbacks).toBe(4);
+  expect(unread.liveByteLength - before.liveByteLength).toBe(
+    (4 - completedReadbacks) * 64 * 64 * 16,
+  );
+}
 
 function visibleSurfaceViewIds(model: FrameModel): ReadonlySet<string> {
   const textures = new Set(
@@ -414,24 +438,13 @@ export async function verifyVisibleSurfaceReplay(
   const results: unknown[] = [];
   let direct: Uint8Array | undefined;
   let activeLane: 'direct' | 'automatic' = 'direct';
-  const submit = () =>
-    renderer.draw({
-      leases: [lease],
-      camera: { lease },
-      environment: { lease },
-      geometryLane: activeLane,
-    });
+  const submit = () => renderer.draw({ source: lease, geometryLane: activeLane });
   const draw = async (observe = false) => {
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
     return drawReadyFrame(
       renderer,
-      {
-        leases: [lease],
-        camera: { lease },
-        environment: { lease },
-        geometryLane: activeLane,
-      },
+      { source: lease, geometryLane: activeLane },
       observe ? ['visible-surface'] : undefined,
     );
   };
@@ -827,16 +840,19 @@ export async function verifyVisibleSurfaceReplay(
     world.set(camera, Transform, { pos: [0.3, 0, 0] }).unwrap();
     await draw();
     // The bounded existing observation owner admits four unread captures.
+    const observationBefore = requiredObservationStats(
+      renderer.inspect().observation.resourceStats,
+    );
     const pending = [];
     for (let i = 0; i < 4; i++) {
       renderValue(requestObservation(['visible-surface']));
       pending.push(await draw());
     }
     expect(requestObservation(['visible-surface']).ok).toBe(false);
-    expect(renderer.inspect().observation.resourceStats).toMatchObject({
-      liveCount: 4,
-      liveByteLength: 4 * 64 * 64 * 16,
-    });
+    verifyUnreadObservationAllocation(
+      observationBefore,
+      requiredObservationStats(renderer.inspect().observation.resourceStats),
+    );
     results.push({
       scenario: 'four-unread',
       allocation: renderer.inspect().observation.resourceStats,
@@ -846,6 +862,8 @@ export async function verifyVisibleSurfaceReplay(
     expect(renderer.inspect().observation.resourceStats).toMatchObject({
       liveCount: 0,
       liveByteLength: 0,
+      readbackCount: observationBefore.readbackCount + 4,
+      mapCount: observationBefore.mapCount + 4,
     });
     // A copy from the old extent remains bound to its receipt after resize.
     renderValue(requestObservation(['visible-surface']));

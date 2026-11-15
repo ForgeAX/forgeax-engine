@@ -1,9 +1,12 @@
+import { World } from '@forgeax/engine-ecs';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { ok } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { createRenderFeatureHost, type RenderFeatureFrameInput } from '../features/host';
 import type { RenderFeature } from '../features/types';
+import { worldRenderResources } from '../publication/resource-scope';
 import type { RenderSystemInternals } from '../record/render-context';
+import * as sharedGraphs from '../world/feature-graph-systems';
 import { stageRecordedFeatureGraph } from '../world/feature-systems';
 import { awaitsRenderRecord } from '../world/graph-systems';
 import { endRenderFrame, renderSubmission } from '../world/render-world';
@@ -54,14 +57,18 @@ async function fixture(failure: 'none' | 'record' | 'finish' | 'submit') {
     finish.mockReturnValue({ ok: false, error: { code: 'test-finish' } } as never);
   if (failure === 'submit')
     submit.mockReturnValue({ ok: false, error: { code: 'test-submit' } } as never);
-  const input = (identity: string): RenderFeatureFrameInput => ({
-    identity,
-    render: true,
-    worlds: [],
-    owner: 0,
-    frameNumber: 1,
-    caps: device.caps,
-  });
+  const sources = new Map<string, World>();
+  const input = (identity: string): RenderFeatureFrameInput => {
+    const world = new World();
+    sources.set(identity, world);
+    return {
+      identity,
+      render: true,
+      world,
+      frameNumber: 1,
+      caps: device.caps,
+    };
+  };
   // RenderPrepare seals the frame's Feature batch before any view records.
   const stage = (identities: readonly string[]) => {
     const outcome = stageFeatureFrame(host, identities.map(input));
@@ -71,7 +78,12 @@ async function fixture(failure: 'none' | 'record' | 'finish' | 'submit') {
   function* view(identity: string, batch: ReturnType<typeof stage>): FrameRecording {
     const prepared = batch.views.get(identity);
     if (prepared?.errors.length) throw prepared.errors[0];
-    yield { kind: 'shared-work', internals, sceneInputs: false };
+    yield {
+      kind: 'shared-work',
+      internals,
+      sourceScope: worldRenderResources(sources.get(identity) as World),
+      sceneInputs: false,
+    };
     // The view's graph compiles in RenderRecord, before any view encodes.
     if (awaitsRenderRecord(host.world)) yield { kind: 'compile', world: host.world };
     events.push(`record:${identity}`);
@@ -104,11 +116,12 @@ async function fixture(failure: 'none' | 'record' | 'finish' | 'submit') {
       endRenderFrame(host.world);
     }
   };
-  return { record, events, finish, submit, host };
+  return { record, events, finish, submit, host, sources };
 }
 
 describe('Renderer feature frame barrier', () => {
   it('extracts the complete roster once and acknowledges the source once after one submit', async () => {
+    const staged = vi.spyOn(sharedGraphs, 'stageSharedFeatureGraph');
     const f = await fixture('none');
     expect(f.record(['a', 'b'])).toBe(true);
     expect(f.events).toEqual([
@@ -122,6 +135,10 @@ describe('Renderer feature frame barrier', () => {
     ]);
     expect(f.finish).toHaveBeenCalledTimes(1);
     expect(f.submit).toHaveBeenCalledTimes(1);
+    expect(staged.mock.calls.at(-1)?.[2]).toEqual(
+      [...f.sources.values()].map(worldRenderResources),
+    );
+    staged.mockRestore();
     f.host.dispose();
   });
   it.each([

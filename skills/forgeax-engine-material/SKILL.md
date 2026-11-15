@@ -7,6 +7,138 @@ description: ForgeAX MaterialAsset authoring and visibility route. Use when crea
 
 ## Contract index
 
+## Water Material Entry
+
+For coast integration, use the [R8 entry](../../apps/water/r8-integration-acceptance/README.md).
+Capability support does not establish an assembled branch or reference parity.
+Keep Q0, appearance replacements and optional R6 simulation independent; missing
+contact foam does not authorize a replacement mesh or enabling another branch.
+Accept a mode only when completed receipts agree with its current Body/Zone,
+WaterInfo, mesh and graph generations. Read current Renderer state separately
+from the last submitted inspection, and preserve failed recovery attempts.
+River spline edits require a complete re-cooked geometry closure; replace the
+accepted payload through Assets rather than patching cooked spline fields.
+For a mounted source-owned River, a saved collision disable or re-enable must
+commit with its matching Native receipt; a failed empty retirement preserves the
+accepted Water source and collision so the same saved change can retry. A
+material/source-version rebind retains the existing Bake and Native receipt
+when collision geometry and the full Scene matrix are unchanged. Replacing the
+River with another Water Body kind requires unmounting it, waiting for Native
+source retirement, then mounting the replacement.
+
+For experimental R7 shallow/FFT work, start with the
+[Water owner entry](../../packages/water/README.md#advanced-simulation-entry).
+The opt-in `mode-projected-gravity/1` World OceanPatch uses its `materialGrid`,
+`materialNormal`, `foam` and `mapping` through the additive shallow material
+slots. Its mapping marks residual-only input: preserve Terrain depth and Body
+flow. Its uniform linear-wave depth is not a Terrain sample. Qualify the actual
+domain/grid/slabs/depth/velocity/time configuration independently of UE FFT.
+Select the saved `WaterShallowCollider.dispersiveMotion` source role explicitly:
+full displacement for entry objects, surface transport for floating hull motion.
+Surface transport exports water from the current submerged union's facing boundary
+using native horizontal velocity. Its conservative flux drives bow and side waves;
+stern retreat and passive buoyancy heave are not entry waves. Prove source location,
+two-sided propagation and stopped decay, not merely nonzero height or foam. Native receiver identity excludes
+only its own source from buoyancy; preserve the complete visual field and external
+entry waves. Read the Scene source contract and prove actual default-scene idle,
+entry and sailing behavior; source-off controls cannot establish that acceptance.
+For an exaggerated entry diagnostic, author the finite nonnegative recipe
+`entryWaveMultiplier` (default 1). It scales the full-displacement source in both
+visible waves and external buoyancy fields, independently of sailing transport.
+Do not replace it with a material-only height or normal gain when testing forces.
+For stronger sailing waves, author the independent finite nonnegative recipe
+`surfaceTransportMultiplier` (default 1). It scales conservative bow/side transport
+in visible and external receiver fields before evolution. Preserve source velocity,
+geometry and stopped decay when comparing gains; foam is a separate emitted history.
+Local free waves dissipate in the owning Engine solver, including receiver fields.
+The optional positive `waveDampingPerSecond` defaults to 0.35/s; scene recipes
+may tune the rate. It attenuates nonzero Fourier modes by elapsed time while
+conserving mean displaced water. Foam has separate coverage decay, and surviving
+slopes may emit fresh foam; diagnose both wave energy and emission before tuning
+lifetimes. Background Gerstner crest foam is independent: inspect the submitted
+compression minimum/range against the actual wave distribution before changing
+material power/boost or local-wave foam.
+Cold GPU preparation must retain the latest visual-probe contact state, not
+accumulate every stationary native step into the pending foam queue. Preserve
+held-frame samples, source acknowledgements and discrete Physics entry events.
+An enabled explicit hull contact-probe source takes precedence over implicit
+pontoon foam for the same native root/generation. Preserve pontoon forces and
+the geometry-driven wave field; roots without probes retain their foam fallback.
+Shared contact and residual-wave foam supply bounded coverage. Their material
+response retains the authored foam texture's gaps and stays bounded by that
+coverage before material amount/depth fade. Legacy height power and boost belong
+only to the legacy response; do not tune a demo to compensate for mixed semantics.
+Use ordinary loaded `water-advanced` recipes: a mounted Body owns shallow
+simulation and one World owns OceanPatch. Bind their output names through
+`renderFeatureTextureSource` in material texture values, with independent
+`waterShallowSimulation`/`waterOceanPatch` static switches. River Bake publishes
+ordinary Pack recipe/texture outputs before the current Body accepts its query
+grid. A texture preview or stage name does not prove completed GPU bytes;
+use the [R7 project](../../apps/water/r7-advanced-shallow-bake-fft/README.md) for
+the source-default/authored-configuration boundary and separate acceptance gates.
+Bind shallow `materialGrid`/`materialNormal` frame atlases and 2x2 Mapping
+(current row 0, previous row 1). Atlas halves contain current then previous;
+canonical RTs and stage captures retain their original dimensions. Deformation
+clamps within each frame before its atlas offset. Render owns GPU history
+copies and reset seeding. WaterBody Fade uses explicit `startFadeSeconds` in
+the depth solver; it is not a material fade or a River stage.
+
+For I05 visual detail, use only the `configurationVersion: 2`
+`mode-projected-gravity/1` recipe with its required closed
+`visualNormalDetailFft` block; include that block's noise GUID in the ordinary
+recipe `textureGuids` closure. Bind the same-World `visualNormal` output to the
+visible River material's `NormalDetailTex`, using world XZ projection with its
+authored `WPOWaveScale` and `BakedWaterSimSize` mapping. RGB is signed +Y-up
+normal data and A is raw visual height. Keep both channels out of CPU queries,
+WaterInfo, foam, collision and buoyancy. Follow the [Water owner contract](../../packages/water/README.md#advanced-simulation-entry), and require a submitted visible-draw receipt and paired pixels for runtime acceptance.
+
+For R4 foam, inspect actual `meshMaterialBindings[].waterFoamInputs` to pair
+accepted static-map GUID/versions and effective material switches with the
+view graph's reflected FoamRT consumer and initializer. Static BeachFoam maps,
+optional fluid RT and Baked refs are independent inputs. Disabling an R6
+producer retains the default no-simulation semantic target and static maps.
+
+Use the mounted Engine Content `EngineContent.water.materials` GUIDs or author
+ordinary root/child assets with `buildWaterMaterialFamily`; Body slots and the
+independent deformation/system-input contracts are in the
+[Water README](../../packages/water/README.md#material-family). Standard,
+single-layer-medium and single-layer-water Forward Surfaces are compatible
+Body routes. Deformation is optional and never inferred from a shader name.
+Keep shared-root and one-Body child edits in the existing Asset publication
+owner; a failed replacement must retain its complete accepted closure.
+Generated River/Lake/Ocean static meshes consume the Body LOD slot through
+ordinary mesh defaults. WaterMesh and Custom overrides consume surface routes;
+Body fixed fallback depth belongs to the Body payload, not material values.
+Water data-source switches are static material choices: Baked data availability
+never enables `waterBakedSimulation`. Fixed velocity, height and depth have
+independent switches; a no-Info surface velocity otherwise consumes its real
+vertex flow. Generated River LOD meshes carry that flow through the ordinary
+color stream and material color variant.
+`waterVertexMapping` independently selects vertex height mapping; it defaults
+to true and does not disable fragment WaterInfo/Baked reads or waves. Stock
+Custom/LODs/far/HLOD disable mapping. `waterDynamicBoundsClip` defaults to false
+for arbitrary roots; the stock root/three native LODs enable it while
+Custom/far/HLOD bypass it. Keep these authored choices independent and re-cook
+with the current producer; never infer them from a family name.
+River flow normals use `riverNormalTilingM`; Ocean BeachFoam uses independent
+`foamTilingM`. Preserve both fields on River-to-Ocean materials.
+Transition masking uses the ordinary inherited
+`waveVelocityMaskThresholdMPerSec` value, default `1 m/s`; the selected default
+deformation requires its `f32` declaration. Vertex-flow fallback additionally
+requires `maximumFlowVelocityMPerSec: f32` unless fixed/Baked velocity wins.
+Repair the named field on a structured cook rejection and re-cook.
+Stock Water recomputes complete Gerstner normals per fragment. The source Body
+owns height/depth/velocity; a transition target owns wave phase/time/range.
+Far Ocean tiles use that Ocean's mean base height; conservative wave bounds
+remain culling inputs and never lower the rendered far plane.
+Phase and depth exclude WPO, while pixel transition velocity uses post-WPO
+position. Custom deformation normals remain authoritative.
+Custom defaults select fixed height/depth and vertex velocity; fullscreen
+underwater's vertex fallback decodes the actual white post-process VertexColor.
+Ocean foam uses the Content 3D volume and a RenderGraph-owned FoamRT, never a
+static replacement texture. See the Water README for the explicit R3
+no-simulation initialization and its separate GPU/appearance acceptance gates.
+
 ## Lighting asset entry points
 
 Use these entry points:

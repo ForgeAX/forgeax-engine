@@ -7,7 +7,7 @@ import { Camera } from '../components/camera';
 import { MeshFilter } from '../components/mesh-filter';
 import { MeshRenderer } from '../components/mesh-renderer';
 import { Visibility, VisibilityStateValue } from '../components/visibility';
-import { extractFrames } from '../render-system-extract-tail';
+import { extractSource } from '../render-system-extract-tail';
 
 function spawnCamera(world: World): void {
   world
@@ -45,27 +45,25 @@ describe('visibility diagnostics', () => {
     const entity = spawnCandidate(world, worldAssets, 'hidden');
     world.update(0).unwrap();
 
-    const hidden = extractFrames([world], 0, worldAssets);
+    const hidden = extractSource(world, worldAssets);
     expect(hidden.renderables).toHaveLength(0);
     expect(hidden.visibilityStats).toEqual({ explicitlyHidden: 1 });
     expect(hidden.frustumStats).toEqual({ culled: 0, total: 0 });
 
     world.set(entity, Visibility, { state: VisibilityStateValue.visible }).unwrap();
-    const visible = extractFrames([world], 0, worldAssets);
+    const visible = extractSource(world, worldAssets);
     expect(visible.renderables).toHaveLength(0);
     expect(visible.visibilityStats).toEqual({ explicitlyHidden: 0 });
     expect(visible.frustumStats).toEqual({ culled: 1, total: 1 });
   });
 
-  it('sums hidden candidate sets per World without counting dispatches or submeshes', () => {
+  it('counts hidden source entities without counting dispatches or submeshes', () => {
     const firstAssets = new AssetRegistry();
     const first = new World({ assets: firstAssets });
-    const secondAssets = new AssetRegistry();
-    const second = new World({ assets: secondAssets });
     spawnCandidate(first, firstAssets, 'hidden');
-    spawnCandidate(second, secondAssets, 'hidden');
+    spawnCandidate(first, firstAssets, 'hidden');
 
-    const frame = extractFrames([first, second], 0);
+    const frame = extractSource(first, firstAssets);
 
     expect(frame.visibilityStats).toEqual({ explicitlyHidden: 2 });
     expect(frame.dispatch).toHaveLength(0);

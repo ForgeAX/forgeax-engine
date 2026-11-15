@@ -1,4 +1,3 @@
-import { recordContext } from '../world/view-record-context';
 // Per-frame preparation of the renderer-owned diffuse GI owners (probe
 // placement, exact ray diffuse, irradiance field, baked field, screen probes)
 // and their shared submission fence/track/commit lifecycle.
@@ -27,6 +26,7 @@ import {
   stagedViewInputs,
   type ViewFrameState,
 } from '../world/view-frame-systems';
+import { recordContext } from '../world/view-record-context';
 import type { ViewSettlementOwner } from '../world/view-settlement';
 import { projectFrameVisibleSurface } from './frame-admission';
 import { makeZeroCameraFallbackSnapshot, type RenderFrameState } from './frame-snapshot';
@@ -82,12 +82,12 @@ function prepareProbePlacement(
   internals: RenderSystemInternals,
   frameState: RenderFrameState,
   world: RenderResourceScope,
-  worlds: readonly RenderResourceScope[],
+  sourceScope: RenderResourceScope,
   camera: CameraSnapshot,
   scene: PersistentGpuDrivenState | undefined,
   visibleSurface: VisibleSurfaceProjection | undefined,
   size: InternalRenderSize,
-  renderReadLeases: readonly RenderReadLease[] | undefined,
+  renderReadLease: RenderReadLease | undefined,
 ): RenderFrameState['probePlacementFrame'] {
   const placement = internals.standardProfile?.probePlacement;
   if (placement === undefined) {
@@ -102,7 +102,7 @@ function prepareProbePlacement(
     });
   frameState.probePlacement ??= new RendererProbePlacement();
   frameState.probePlacement.admitMaterials(
-    { internals, world, worlds, surfaces: visibleSurface.slotBases },
+    { internals, world, sourceScope, surfaces: visibleSurface.slotBases },
     scene,
   );
   return frameState.probePlacement.prepare({
@@ -110,9 +110,9 @@ function prepareProbePlacement(
     seeds: placement.seeds,
     ...(placement.global === undefined
       ? {}
-      : { globalSource: { scene, worlds, leases: renderReadLeases } }),
+      : { globalSource: { scene, sourceScope, lease: renderReadLease } }),
     camera: camera.entityKey ?? 0,
-    world: (worlds[camera.worldId ?? 0] ?? world).identity,
+    world: (sourceScope ?? world).identity,
     records: visibleSurface.records,
     width: size.width,
     height: size.height,
@@ -124,7 +124,7 @@ function prepareRayDiffuse(
   frameState: RenderFrameState,
   scene: PersistentGpuDrivenState | undefined,
   visibleSurface: VisibleSurfaceProjection | undefined,
-  worlds: readonly RenderResourceScope[],
+  sourceScope: RenderResourceScope,
   lights: ViewLights,
   pipelineState: PipelineState,
   size: InternalRenderSize,
@@ -148,7 +148,7 @@ function prepareRayDiffuse(
     runtime: internals,
     scene: retained,
     visibleSurface,
-    worlds,
+    sourceScope,
     lights: frameLightList(lights),
     sampler: pipelineState.defaultSampler,
     profile,
@@ -166,11 +166,11 @@ function prepareIrradianceField(
   internals: RenderSystemInternals,
   frameState: RenderFrameState,
   scene: PersistentGpuDrivenState | undefined,
-  worlds: readonly RenderResourceScope[],
+  sourceScope: RenderResourceScope,
   lights: ViewLights,
   camera: CameraSnapshot,
   size: InternalRenderSize,
-  renderReadLeases: readonly RenderReadLease[] | undefined,
+  renderReadLease: RenderReadLease | undefined,
 ): FrameDiffuseGi['irradianceField'] {
   const fieldGi = internals.standardProfile?.diffuseGi;
   if (fieldGi?.gather !== 'irradiance-field' && fieldGi?.gather !== 'screen-probe') {
@@ -182,8 +182,8 @@ function prepareIrradianceField(
   frameState.irradianceField.prepare({
     runtime: internals,
     scene: retained,
-    worlds,
-    leases: renderReadLeases,
+    sourceScope,
+    lease: renderReadLease,
     lights: frameLightList(lights),
     profile: {
       gather: 'irradiance-field',
@@ -253,14 +253,14 @@ export function prepareFrameDiffuseGi(
   internals: RenderSystemInternals,
   frameState: RenderFrameState,
   world: RenderResourceScope,
-  worlds: readonly RenderResourceScope[],
+  sourceScope: RenderResourceScope,
   camera: CameraSnapshot,
   lights: ViewLights,
   pipelineState: PipelineState,
   scene: PersistentGpuDrivenState | undefined,
   visibleSurface: VisibleSurfaceProjection | undefined,
   renderExtent: RenderExtent | undefined,
-  renderReadLeases: readonly RenderReadLease[] | undefined,
+  renderReadLease: RenderReadLease | undefined,
   captureOnly: boolean,
 ): FrameDiffuseGi {
   const size = internalRenderSize(internals, renderExtent);
@@ -268,12 +268,12 @@ export function prepareFrameDiffuseGi(
     internals,
     frameState,
     world,
-    worlds,
+    sourceScope,
     camera,
     scene,
     visibleSurface,
     size,
-    renderReadLeases,
+    renderReadLease,
   );
   // A capture view writes raw scene output and consumes no GI field.
   if (captureOnly || recordContext(internals).captureView !== undefined) {
@@ -295,7 +295,7 @@ export function prepareFrameDiffuseGi(
       frameState,
       scene,
       visibleSurface,
-      worlds,
+      sourceScope,
       lights,
       pipelineState,
       size,
@@ -304,11 +304,11 @@ export function prepareFrameDiffuseGi(
       internals,
       frameState,
       scene,
-      worlds,
+      sourceScope,
       lights,
       camera,
       size,
-      renderReadLeases,
+      renderReadLease,
     );
     bakedField = prepareBakedField(internals, frameState, size);
     screenProbe = prepareScreenProbe(internals, frameState, size);
@@ -361,14 +361,14 @@ function configureViewResolution(
   internals: RenderSystemInternals,
   frameState: RenderFrameState,
   world: RenderResourceScope,
-  worlds: readonly RenderResourceScope[],
+  sourceScope: RenderResourceScope,
   camera: CameraSnapshot,
 ): Omit<PreparedViewDiffuseGi, 'gi'> {
   frameState.dynamicResolution ??= new DynamicResolutionController();
   const resolution = frameState.dynamicResolution;
   const renderExtent = resolution.configure(
     camera.dynamicResolution,
-    worlds[camera.worldId ?? 0] ?? world,
+    sourceScope ?? world,
     camera.entityKey ?? 0,
     Math.max(1, recordContext(internals).canvas.width),
     Math.max(1, recordContext(internals).canvas.height),
@@ -399,12 +399,19 @@ export function prepareViewDiffuseGi(
   } catch (cause) {
     return { ok: false, code: 'view-inputs-unavailable', cause };
   }
-  const { frame, mode, cameras, scopes, resourceWorld, composition } = inputs;
+  const { frame, mode, cameras, source } = inputs;
+  const resourceWorld = source;
   // No Camera records the internal fallback snapshot, which renders no GI.
   const camera = cameras[0] ?? makeZeroCameraFallbackSnapshot();
   let resolution: Omit<PreparedViewDiffuseGi, 'gi'>;
   try {
-    resolution = configureViewResolution(internals, frameState, resourceWorld, scopes, camera);
+    resolution = configureViewResolution(
+      internals,
+      frameState,
+      resourceWorld,
+      source as RenderResourceScope,
+      camera,
+    );
   } catch (cause) {
     return { ok: false, code: 'resolution-failed', cause };
   }
@@ -426,14 +433,14 @@ export function prepareViewDiffuseGi(
       internals,
       frameState,
       resourceWorld,
-      scopes,
+      source as RenderResourceScope,
       camera,
       lights,
       pipelineState,
       scene,
       visibleSurface,
       resolution.renderExtent,
-      composition.leases,
+      inputs.lease,
       false,
     );
     return { ok: true, value: { ...resolution, gi } };
@@ -451,7 +458,7 @@ export function consumeViewDiffuseGi(
   internals: RenderSystemInternals,
   frameState: RenderFrameState,
   world: RenderResourceScope,
-  worlds: readonly RenderResourceScope[],
+  sourceScope: RenderResourceScope,
   camera: CameraSnapshot,
 ): PreparedViewDiffuseGi {
   const prepared = viewDiffuseGiOf(renderWorldFor(internals), internals.viewEntity);
@@ -476,7 +483,7 @@ export function consumeViewDiffuseGi(
       hint: 'record diffuse GI inside a Render World frame of the composition owner',
     });
   return {
-    ...configureViewResolution(internals, frameState, world, worlds, camera),
+    ...configureViewResolution(internals, frameState, world, sourceScope, camera),
     gi: NO_DIFFUSE_GI,
   };
 }

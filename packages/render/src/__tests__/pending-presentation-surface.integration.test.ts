@@ -126,7 +126,7 @@ it.each(
     const draw = async () => {
       world.update(1 / 60).unwrap();
       propagateTransforms(world).unwrap();
-      const drawn = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
+      const drawn = renderer.draw({ source: lease });
       if (!drawn.ok) throw drawn.error;
       const receipt = drawn.value;
       expect((await receipt.completed).ok).toBe(true);
@@ -146,13 +146,16 @@ it.each(
       hold = true;
       world.addComponent(camera, { component: PlanarReflection, data: {} }).unwrap();
     }
+    // The mirror records inside the display graph, after the display shadows:
+    // its frame still draws the whole display picture, only without the mirror.
+    const drawnWhilePending = domain === 'planar' ? 1 : 0;
     const beforePending = acquisitions;
     const pending = await draw();
     expect(pending.presentation).toBe('pending');
     expect(pending.presentationPendingReason?.code).toMatch(/pipeline-preparation/);
-    expect(acquisitions).toBe(beforePending);
+    expect(acquisitions).toBe(beforePending + drawnWhilePending);
     expect((await draw()).presentation).toBe('pending');
-    expect(acquisitions).toBe(beforePending);
+    expect(acquisitions).toBe(beforePending + 2 * drawnWhilePending);
     const preparation = pending.preparationCompleted;
     expect(preparation).toBeDefined();
     let preparationSettled = false;
@@ -185,7 +188,7 @@ it.each(
       const before = acquisitions;
       const receipt = await draw();
       ready = receipt.presentation === 'ready';
-      expect(acquisitions - before).toBe(ready ? 1 : 0);
+      expect(acquisitions - before).toBe(ready ? 1 : drawnWhilePending);
     }
     expect(ready).toBe(true);
   } finally {

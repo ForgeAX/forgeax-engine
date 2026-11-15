@@ -1,4 +1,9 @@
-import { ADVANCE_ANIMATION_PLAYER_SYSTEM, AnimatedBy, AnimationPlayer, AnimationTargetId, bindAnimationTargets, defineAnimationMask, deriveAnimationTargetId } from '@forgeax/engine/animation';
+import { PhysicsWorldResource } from '@forgeax/engine/physics';
+import { Game3dPlayerInputOrder } from '../shared/system-order.ts';
+import { AdvanceAnimationPlayer } from "@forgeax/engine/animation";
+import { InputFrameStartScan } from "@forgeax/engine/input";
+import { defineSystem } from "@forgeax/engine/ecs";
+import { AnimatedBy, AnimationPlayer, AnimationTargetId, bindAnimationTargets, defineAnimationMask, deriveAnimationTargetId } from '@forgeax/engine/animation';
 import {
   defineComponent,
   FixedTime,
@@ -8,12 +13,12 @@ import {
   type EntityHandle,
   type World,
 } from '@forgeax/engine/ecs';
-import { FRAME_START_SCAN_SYSTEM_NAME, INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine/input';
+import { INPUT_SNAPSHOT_RESOURCE_KEY } from '@forgeax/engine/input';
 import { quat, vec3 } from '@forgeax/engine/math';
-import { CharacterController, type PhysicsWorld } from '@forgeax/engine/physics';
+import { CharacterController } from '@forgeax/engine/physics';
 import type { Plugin } from '@forgeax/engine/plugin';
 import { resetTransformInterpolation, Transform } from '@forgeax/engine/scene';
-import { cameraRelativeMove, facingYaw } from '../shared/third-person.ts';
+import { cameraRelativeMove, facingYaw, INITIAL_CAMERA_PITCH } from '../shared/third-person.ts';
 import { AssetGuid } from '@forgeax/engine/pack/guid';
 import { resolveGameEntity, type GameScene } from '../shared/scene-refs.ts';
 import {
@@ -31,7 +36,7 @@ export const ThirdPersonRig = defineComponent(
     verticalVelocity: { type: 'f32', default: 0 },
     vehicleSpeed: { type: 'f32', default: 0 },
     yaw: { type: 'f32', default: 0 },
-    pitch: { type: 'f32', default: (20 * Math.PI) / 180 },
+    pitch: { type: 'f32', default: INITIAL_CAMERA_PITCH },
     facingX: { type: 'f32', default: 0 },
     facingZ: { type: 'f32', default: -1 },
   },
@@ -86,7 +91,7 @@ const playerPlugin: Plugin.Object<PlayerConfig> = {
           world.set(player, ThirdPersonRig, { yaw: look.yaw, pitch: look.pitch }).unwrap();
         },
         teleport: (position) => {
-          const physics = world.getResource<PhysicsWorld>('PhysicsWorld');
+          const physics = world.getResource(PhysicsWorldResource);
           physics.teleport(player, vec3.create(position[0], position[1], position[2]));
           world.set(player, ThirdPersonRig, { verticalVelocity: 0 }).unwrap();
           resetTransformInterpolation(world, player);
@@ -99,15 +104,15 @@ const playerPlugin: Plugin.Object<PlayerConfig> = {
       };
       let vehicle = false, transformProgress = 0, wheelTime = 0;
       yield* installCharacterAnimation(world, host, ctx.gameScene, player, [config.walk, config.transform, config.wheels]);
-      world.addSystem(Update, {
+      const systemToken1 = defineSystem({ sets: [Game3dPlayerInputOrder],
         name: 'game-3d-player-input',
-        after: [FRAME_START_SCAN_SYSTEM_NAME],
-        before: [FixedUpdate, ADVANCE_ANIMATION_PLAYER_SYSTEM],
+        after: [InputFrameStartScan],
+        before: [FixedUpdate, AdvanceAnimationPlayer],
         queries: [],
         fn: () => {
           const size = readDrawingBufferSize?.();
           frameInput = sampleInput.sample(
-            world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY),
+            world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY),
             size?.width ?? 0, size?.height ?? 0,
           );
           // Visual playback consumes this frame's input even when no fixed
@@ -126,16 +131,17 @@ const playerPlugin: Plugin.Object<PlayerConfig> = {
             times: [((animation.times[0] ?? 0) + dt) % PLAYER_WALK_SECONDS, transformProgress * PLAYER_TRANSFORM_SECONDS, wheelTime],
           }).unwrap();
         },
-      }).unwrap();
-      yield () => world.removeSystem(Update, 'game-3d-player-input').unwrap();
+      });
+world.addSystem(Update, systemToken1).unwrap();
+      yield () => world.removeSystem(Update, systemToken1).unwrap();
       // Engine -> UI: the HUD only receives a small rounded snapshot, and only when it changes.
       // Speed comes from the displacement physics actually applied in the last fixed step,
       // so it is stable regardless of render frame rate and fixed-step count per frame.
       const motion = { planarSpeed: 0 };
       let lastHud = '';
-      world.addSystem(Update, {
+      const systemToken2 = defineSystem({
         name: 'game-3d-player-hud',
-        after: [FixedUpdate, 'game-3d-player-input'],
+        after: [FixedUpdate, systemToken1],
         queries: [],
         fn: () => {
           const pos = world.get(player, Transform).unwrap().pos;
@@ -151,10 +157,10 @@ const playerPlugin: Plugin.Object<PlayerConfig> = {
           lastHud = key;
           host.port?.postMessage({ channel: PLAYER_STATE_CHANNEL, state });
         },
-      }).unwrap();
-      yield () => world.removeSystem(Update, 'game-3d-player-hud').unwrap();
-      installMovement(world, player, config, playerService.readInput, sampleInput.takeJump, () => transformProgress, motion);
-      yield () => world.removeSystem(FixedUpdate, 'game-3d-player-movement').unwrap();
+      });
+world.addSystem(Update, systemToken2).unwrap();
+      yield () => world.removeSystem(Update, systemToken2).unwrap();
+      yield installMovement(world, player, config, playerService.readInput, sampleInput.takeJump, () => transformProgress, motion);
       const unregisterRead = host.gameProjection?.registerRead({
         id: 'game-3d.player',
         title: 'Third-person player state',
@@ -164,7 +170,7 @@ const playerPlugin: Plugin.Object<PlayerConfig> = {
           const rig = world.get(player, ThirdPersonRig).unwrap();
           const controller = world.get(player, CharacterController).unwrap();
           const animation = world.get(player, AnimationPlayer).unwrap();
-          const input = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+          const input = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
           return {
             position: Array.from(transform.pos),
             facing: [rig.facingX, rig.facingZ],
@@ -261,14 +267,13 @@ function installMovement(
   world: World, player: EntityHandle, config: PlayerConfig,
   readInput: () => PlayerInput, takeJump: () => boolean, readTransform: () => number,
   motion: { planarSpeed: number },
-): void {
-  world
-    .addSystem(FixedUpdate, {
+): () => void {
+  const systemToken3 = defineSystem({
       name: 'game-3d-player-movement',
       queries: [],
       fn: () => {
-        if (!world.hasResource('PhysicsWorld')) return;
-        const physics = world.getResource<PhysicsWorld>('PhysicsWorld');
+        if (!world.hasResource(PhysicsWorldResource)) return;
+        const physics = world.getResource(PhysicsWorldResource);
         if (!physics.hasBody(player)) return;
         const dt = world.getResource(FixedTime).delta;
         const rig = world.get(player, ThirdPersonRig).unwrap();
@@ -315,6 +320,9 @@ function installMovement(
           })
           .unwrap();
       },
-    })
+    });
+world
+    .addSystem(FixedUpdate, systemToken3)
     .unwrap();
+  return () => world.removeSystem(FixedUpdate, systemToken3).unwrap();
 }

@@ -18,9 +18,7 @@ it.each([
     lods: [{ mesh: '00000000-0000-7000-8000-000000000001' as never, screenCoverage: 0.5 }],
   };
   const topology = new BatchTopology();
-  topology.apply(
-    scene.apply([{ kind: 'update', worldId: 0, entityKey: source.entityKey, snapshot: source }]),
-  );
+  topology.apply(scene.apply([{ kind: 'update', entityKey: source.entityKey, snapshot: source }]));
   const batches = topology
     .query(topology.sourcePlan(), undefined)
     .batches.map(({ lod: _lod, ...batch }) => ({

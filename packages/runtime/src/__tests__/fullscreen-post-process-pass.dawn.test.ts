@@ -251,7 +251,7 @@ async function readOutputTransformCapture(
   };
 }
 
-function spawnCubeScene(world: World, antialias: number): void {
+function spawnCubeScene(world: World, antialias: number) {
   world.spawn(
     {
       component: Transform,
@@ -269,7 +269,7 @@ function spawnCubeScene(world: World, antialias: number): void {
     },
     { component: MeshRenderer, data: {} },
   );
-  world.spawn(
+  return world.spawn(
     {
       component: Transform,
       data: {
@@ -342,8 +342,8 @@ function spawnTemporalCubeScene(world: World) {
   return cube;
 }
 
-function spawnLinearClearScene(world: World, antialias: number, linear: number): void {
-  world.spawn(
+function spawnLinearClearScene(world: World, antialias: number, linear: number) {
+  return world.spawn(
     {
       component: Transform,
       data: {
@@ -468,11 +468,7 @@ describe('feat-20260604 M2 w10: FullscreenPostProcessPass dawn tests', () => {
     if (!attachment.ok) throw attachment.error;
     world.update(1 / 60).unwrap();
 
-    const receipt = await drawReadyFrame(renderer, {
-      leases: [attachment.value],
-      camera: { lease: attachment.value },
-      environment: { lease: attachment.value },
-    });
+    const receipt = await drawReadyFrame(renderer, { source: attachment.value });
     expect(receipt.presentation).toBe('ready');
     await device.queue.onSubmittedWorkDone();
 
@@ -504,17 +500,13 @@ describe('feat-20260604 M2 w10: FullscreenPostProcessPass dawn tests', () => {
     const removeErrorListener = debugDrawHost.onError((error) => renderErrors.push(error));
 
     // Pass 1: antialias='none' baseline.
-    const worldNone = new World();
-    spawnCubeScene(worldNone, ANTIALIAS_NONE);
-    const attachmentNone = renderer.attach(worldNone);
-    expect(attachmentNone.ok).toBe(true);
-    if (!attachmentNone.ok) throw attachmentNone.error;
-    worldNone.update(1 / 60).unwrap();
-    const drawnNone = await drawReadyFrame(renderer, {
-      leases: [attachmentNone.value],
-      camera: { lease: attachmentNone.value },
-      environment: { lease: attachmentNone.value },
-    });
+    const world = new World();
+    const camera = spawnCubeScene(world, ANTIALIAS_NONE).unwrap();
+    const attachment = renderer.attach(world);
+    expect(attachment.ok).toBe(true);
+    if (!attachment.ok) throw attachment.error;
+    world.update(1 / 60).unwrap();
+    const drawnNone = await drawReadyFrame(renderer, { source: attachment.value });
     expect(drawnNone.presentation).toBe('ready');
     await device.queue.onSubmittedWorkDone();
     const standardOutputNone = {
@@ -523,22 +515,13 @@ describe('feat-20260604 M2 w10: FullscreenPostProcessPass dawn tests', () => {
     } as const;
     const pixelsNone = await doReadPixels(device, renderTarget);
     const inspectionNone = renderer.inspect();
-
-    // Pass 2: antialias='fxaa'.
-    const worldFxaa = new World();
-    spawnCubeScene(worldFxaa, ANTIALIAS_FXAA);
-    const attachmentFxaa = renderer.attach(worldFxaa);
-    expect(attachmentFxaa.ok).toBe(true);
-    if (!attachmentFxaa.ok) throw attachmentFxaa.error;
-    worldFxaa.update(1 / 60).unwrap();
+    // Pass 2: switch the same attached World to antialias='fxaa'.
+    world.set(camera, Camera, { antialias: ANTIALIAS_FXAA }).unwrap();
+    world.update(1 / 60).unwrap();
     const { receipt: drawnFxaa, capture: outputCapture } = await drawOutputTransformFrame(
       renderer,
       debugDrawHost,
-      {
-        leases: [attachmentFxaa.value],
-        camera: { lease: attachmentFxaa.value },
-        environment: { lease: attachmentFxaa.value },
-      },
+      { source: attachment.value },
     );
     expect(drawnFxaa.presentation).toBe('ready');
     await device.queue.onSubmittedWorkDone();
@@ -630,6 +613,7 @@ describe('feat-20260604 M2 w10: FullscreenPostProcessPass dawn tests', () => {
           standardOutputFxaa,
         })}`,
     ).toBeGreaterThan(0);
+    attachment.value.dispose();
     removeErrorListener();
   });
 
@@ -647,11 +631,7 @@ describe('feat-20260604 M2 w10: FullscreenPostProcessPass dawn tests', () => {
     for (let frame = 0; frame < 2; frame += 1) {
       world.set(cube, Transform, { pos: [Math.sin(frame * 0.08) * 0.2, 0, 0] }).unwrap();
       world.update(1 / 60).unwrap();
-      const drawn = renderer.draw({
-        leases: [attachment.value],
-        camera: { lease: attachment.value },
-        environment: { lease: attachment.value },
-      });
+      const drawn = renderer.draw({ source: attachment.value });
       expect(drawn.ok).toBe(true);
       if (!drawn.ok) throw drawn.error;
       lastReceipt = drawn.value;
@@ -662,11 +642,7 @@ describe('feat-20260604 M2 w10: FullscreenPostProcessPass dawn tests', () => {
       expect((await lastReceipt.preparationCompleted)?.ok).toBe(true);
       for (let frame = 0; frame < 2; frame += 1) {
         world.update(1 / 60).unwrap();
-        await drawReadyFrame(renderer, {
-          leases: [attachment.value],
-          camera: { lease: attachment.value },
-          environment: { lease: attachment.value },
-        });
+        await drawReadyFrame(renderer, { source: attachment.value });
       }
     }
     await device.queue.onSubmittedWorkDone();
@@ -724,37 +700,36 @@ describe('feat-20260604 M2 w10: FullscreenPostProcessPass dawn tests', () => {
     const fxaaPixels: Uint8Array[] = [];
     const fxaaCaptures: Array<NonNullable<Awaited<ReturnType<typeof readOutputTransformCapture>>>> =
       [];
+    const world = new World();
+    const camera = spawnLinearClearScene(world, ANTIALIAS_NONE, linearInputs[0]).unwrap();
+    const attachment = renderer.attach(world);
+    expect(attachment.ok).toBe(true);
+    if (!attachment.ok) throw attachment.error;
 
     for (const linear of linearInputs) {
-      const directWorld = new World();
-      spawnLinearClearScene(directWorld, ANTIALIAS_NONE, linear);
-      const directAttachment = renderer.attach(directWorld);
-      expect(directAttachment.ok).toBe(true);
-      if (!directAttachment.ok) throw directAttachment.error;
-      directWorld.update(1 / 60).unwrap();
-      const directDraw = await drawReadyFrame(renderer, {
-        leases: [directAttachment.value],
-        camera: { lease: directAttachment.value },
-        environment: { lease: directAttachment.value },
-      });
+      world
+        .set(camera, Camera, {
+          antialias: ANTIALIAS_NONE,
+          clearColor: [linear, linear, linear, 1],
+        })
+        .unwrap();
+      world.update(1 / 60).unwrap();
+      const directDraw = await drawReadyFrame(renderer, { source: attachment.value });
       expect(directDraw.presentation).toBe('ready');
       await device.queue.onSubmittedWorkDone();
       directPixels.push(await doReadPixels(device, renderTarget));
 
-      const fxaaWorld = new World();
-      spawnLinearClearScene(fxaaWorld, ANTIALIAS_FXAA, linear);
-      const fxaaAttachment = renderer.attach(fxaaWorld);
-      expect(fxaaAttachment.ok).toBe(true);
-      if (!fxaaAttachment.ok) throw fxaaAttachment.error;
-      fxaaWorld.update(1 / 60).unwrap();
+      world
+        .set(camera, Camera, {
+          antialias: ANTIALIAS_FXAA,
+          clearColor: [linear, linear, linear, 1],
+        })
+        .unwrap();
+      world.update(1 / 60).unwrap();
       const { receipt: fxaaDraw, capture } = await drawOutputTransformFrame(
         renderer,
         debugDrawHost,
-        {
-          leases: [fxaaAttachment.value],
-          camera: { lease: fxaaAttachment.value },
-          environment: { lease: fxaaAttachment.value },
-        },
+        { source: attachment.value },
       );
       expect(fxaaDraw.presentation).toBe('ready');
       await device.queue.onSubmittedWorkDone();
@@ -796,18 +771,22 @@ describe('feat-20260604 M2 w10: FullscreenPostProcessPass dawn tests', () => {
     const { renderer, device, debugDrawHost } = await setupRenderer();
     const linearInputs = [0, 2 ** -24, 2 ** -14, 1] as const;
     const outputs: number[] = [];
+    const world = new World();
+    const camera = spawnLinearClearScene(world, ANTIALIAS_FXAA, linearInputs[0]).unwrap();
+    const attachment = renderer.attach(world);
+    expect(attachment.ok).toBe(true);
+    if (!attachment.ok) throw attachment.error;
 
     for (const linear of linearInputs) {
-      const world = new World();
-      spawnLinearClearScene(world, ANTIALIAS_FXAA, linear);
-      const attachment = renderer.attach(world);
-      expect(attachment.ok).toBe(true);
-      if (!attachment.ok) throw attachment.error;
+      world
+        .set(camera, Camera, {
+          antialias: ANTIALIAS_FXAA,
+          clearColor: [linear, linear, linear, 1],
+        })
+        .unwrap();
       world.update(1 / 60).unwrap();
       const { receipt: drawn, capture } = await drawOutputTransformFrame(renderer, debugDrawHost, {
-        leases: [attachment.value],
-        camera: { lease: attachment.value },
-        environment: { lease: attachment.value },
+        source: attachment.value,
       });
       expect(drawn.presentation).toBe('ready');
       await device.queue.onSubmittedWorkDone();

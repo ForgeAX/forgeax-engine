@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { PhysicsWorldResource as ecsPhysicsWorldResource } from '@forgeax/engine-physics';
 import { createSmokePlatform } from '../../../../scripts/smoke-platform.mjs';
 // hello-character headless dawn-node smoke.
 //
@@ -22,11 +23,11 @@ import { createSmokePlatform } from '../../../../scripts/smoke-platform.mjs';
 // populated before the first app frame. If it fails to load within the
 // timeout, the smoke FAILs (non-vacuous PASS).
 
-import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { emitSmokeReceipt } from '../../../shared/scripts/smoke-receipt.mjs';
+import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const WASM_LOAD_TIMEOUT_MS = Number.parseInt(
@@ -146,7 +147,10 @@ const { CharacterController, Collider, ColliderShapeValue, RigidBody, RigidBodyT
 
 const here = dirname(fileURLToPath(import.meta.url));
 const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MANIFEST_PATH, 'utf8'))}`;
+const MANIFEST_URL = URL.createObjectURL(
+  new Blob([readShaderManifestText(MANIFEST_PATH)], { type: 'application/json' }),
+);
+process.once('exit', () => URL.revokeObjectURL(MANIFEST_URL));
 
 const appResult = await createApp(
   mockCanvas,
@@ -230,7 +234,7 @@ function grounded() {
 
 function getPw() {
   try {
-    return app.world.getResource('PhysicsWorld');
+    return app.world.getResource(ecsPhysicsWorldResource);
   } catch {
     return undefined;
   }
@@ -293,7 +297,7 @@ while (totalFrames < SMOKE_MIN_FRAMES) {
 globalThis.performance.now = realPerformanceNow;
 await delay(500);
 
-const hasPhysicsWorld = app.world.hasResource('PhysicsWorld') === true;
+const hasPhysicsWorld = app.world.hasResource(ecsPhysicsWorldResource) === true;
 const finalTransform = app.world.get(character, Transform);
 const finalPosX = finalTransform.ok ? (finalTransform.value.pos[0] ?? 0) : 0;
 const finalPosY = finalTransform.ok ? (finalTransform.value.pos[1] ?? 0) : 0;

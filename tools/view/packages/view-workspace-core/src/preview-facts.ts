@@ -36,6 +36,11 @@ export function meshPreviewFactRows(binding: EngineWorkspaceAssetBinding | undef
 
 export function texturePreviewFactRows(binding: EngineWorkspaceAssetBinding | undefined): PreviewFactRow[] {
   const facts = record(binding?.meta);
+  if (facts.kind === 'texture-generator') return [
+    { key: 'outputs', value: Object.keys(record(facts.outputs)).length },
+    { key: 'passes', value: number(facts.passCount) },
+    { key: 'dataBytes', value: number(facts.dataBytes) },
+  ];
   const shape = record(facts.shape);
   const extent = record(shape.extent);
   const mips = record(facts.mips);

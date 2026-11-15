@@ -1,5 +1,6 @@
+import { defineSystem } from "@forgeax/engine-ecs";
 import { createApp } from '@forgeax/engine-app/browser';
-import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine-input';
+import { INPUT_SNAPSHOT_RESOURCE_KEY } from '@forgeax/engine-input';
 import { Update } from '@forgeax/engine-ecs';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import {
@@ -20,17 +21,18 @@ if (!appResult.ok) {
   const scene = buildViewportToWorldWorld(app.world);
   const cursor = { x: canvas.width * 0.5, y: canvas.height * 0.5 };
 
-  app.world
-    .addSystem(Update, {
+  const systemToken1 = defineSystem({
       name: 'viewport-to-world-marker',
       queries: [],
       fn: (world) => {
-        const snapshot = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+        const snapshot = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
         if (!snapshot) return;
         cursorPositionFromInput(snapshot, cursor);
         stepViewportToWorld(world, scene, cursor.x, cursor.y, canvas.width, canvas.height);
       },
-    })
+    });
+app.world
+    .addSystem(Update, systemToken1)
     .unwrap();
 
   const started = app.start();

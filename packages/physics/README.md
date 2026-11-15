@@ -2,12 +2,82 @@
 
 Physics interface package: ECS component schemas, PhysicsWorld resource shape, error codes, and enum constants. Backend implementations live in `@forgeax/engine-physics-rapier3d` and `@forgeax/engine-physics-rapier2d`.
 
+## Fixed Dynamics and Sensor Rosters
+
+The optional 3D `getCommittedBodyDynamics` returns accepted ordinary-body mass,
+COM, pose, velocities, principal inertia/frame, body generation and the exact
+force-step fence in SI units. `applyBodyForceAtPoint` and `applyBodyTorque` admit
+only that live generation and step. Native forces add together and expire after
+one completed solve; they are forces, never an impulse approximation.
+`PhysicsFixedError` owns the closed failure codes and structured recovery data.
+
+## Solver Participants
+
+The optional `createSolverParticipant` admits one bounded execution mode and
+processor per native World. Choose an inline `preSimulate` callback or an ESM
+`workerUrl` exporting `processPhysicsSolverTask`. Tasks and results carry detached
+bytes, exact entity generation, source/solve steps and snapshot hash. Capacity
+is 1 to 256 and each payload is at most 16 MiB. Queue pressure and expected
+unavailability return `PhysicsFixedError`; cancellation does not release bytes
+while the solver still reads them.
+
+The callback's `PhysicsSolverStepContext` exists only during that callback.
+Retaining it cannot retain native read/write authority. Forces are admitted
+before native integration, and outputs publish only after writeback/contact
+completion. A Worker requires an attached World with fixed substeps. ECS owns
+the suspended fixed-step continuation and the original catch-up budget while
+ordinary host updates may continue.
+
+`getSolverClock` exposes simulation, bounded external and results time. Whole
+suspended debt never enters external time; `asyncResultsInterpolation` defaults
+to true and delays Worker results by two fixed steps. Disabling it selects zero
+delay. It does not change the native integration cadence or interpolate forces.
+The last committed state remains readable while a detached Worker snapshot is
+in flight. Ordinary native writes must run after `physicsSyncBackend` and before
+`physicsStepSimulation`; managed writes return `managed-physics-unavailable`
+while a Worker is pending, and derived writes return `derived-candidate-pending`.
+Scene commands such as reset belong at that fixed-step boundary.
+
+## Accepted Collider Snapshots
+
+`getCommittedColliderPrimitives(entity, packedMask)` returns a detached, frozen
+native-body snapshot with accepted pose/scale, motion, completed step and opaque
+body/collider generations and a raw accepted aggregate count before enabled or
+group filtering. `motionDiscontinuity` changes after explicit `teleport` or
+`setBodyMotion` pose writes without replacing native identity. Consumers pair
+poses only while that revision matches; ordinary native integration and queued
+kinematic motion preserve it. Its packed groups match bilaterally. Sphere, capsule
+and box dimensions come from accepted native geometry; other supported shapes
+carry explicit local-bounds boxes. Authored kinematic poses become visible only
+after their native step. Consumers own submission-qualified pose history and
+must not use pending Scene edits or backend handles as accepted geometry.
+Compound children retain their native collider identity and explicit child
+index. Complex surfaces and unaccepted staged shapes do not enter that count.
+For a live newly authored RigidBody awaiting fixed synchronization,
+`fixed-body-missing` carries `detail.recovery: 'await-native-sync'`. This fact comes
+from the backend's unaccepted ECS projection. Retirement, stale generations,
+missing poses and invalid native geometry do not grant that recovery.
+
+`intersectsCommittedBodyObb` selects a whole accepted body through native OBB
+intersection, fenced by entity, body generation and completed step. Nonnegative
+`fullExtentsM` includes zero-thickness slabs; the native owner halves these side
+lengths exactly once. Optional component-local bounds use
+the accepted body pose/scale and a native Cuboid only when the original simple
+aggregate is empty; filtering a nonempty aggregate to zero never grants fallback.
+
+`getSensorOverlaps(rootEntity, packedMask)` reads the complete previous completed
+step, including an empty roster. Current, entered and exited collider identities
+retain overlap insertion order. Sync and force admission do not invalidate this
+publication. Body replacement or collider retirement invalidates its identity;
+retired historical members are reported in `stale`, never current candidates.
+The first synchronized body has no completed roster until its first solve.
+
 ## Quick Start
 
 Attach three components to an entity and the physics engine drives its position every frame:
 
 ```ts
-import { Collider, ColliderShapeValue, RigidBody, RigidBodyTypeValue } from '@forgeax/engine-physics';
+import { Collider, ColliderShapeValue, RigidBody, RigidBodyTypeValue, PhysicsWorldResource } from '@forgeax/engine-physics';
 import { Transform } from '@forgeax/engine-scene';
 
 // Dynamic body: falls under gravity, responds to forces.
@@ -255,16 +325,7 @@ cache accounting remains query-local. Scale comparison uses four relative Float3
 epsilons against the last admitted native scale, preserving both rotation-noise
 stability and accumulated scale edits.
 
-#### Reproduce the collider behavior
-
-After building the package graph, run the [native effect probe](../physics-rapier3d/bench/mesh-collision-effect.mjs):
-
-```sh
-node packages/physics-rapier3d/bench/mesh-collision-effect.mjs > collision-effect.json
-```
-
-The probe admits ordinary managed components into real Rapier and records every
-position from 240 scheduled World ticks. It exits nonzero on a violated invariant.
+#### Collider behavior
 
 | Scenario | Required result |
 |:--|:--|
@@ -362,7 +423,7 @@ must not duplicate ordinary pushing with an additional contact impulse.
 
 ```ts
 import { vec3 } from '@forgeax/engine-math';
-import { CharacterController, Collider, ColliderShapeValue, RigidBody, RigidBodyTypeValue } from '@forgeax/engine-physics';
+import { CharacterController, Collider, ColliderShapeValue, RigidBody, RigidBodyTypeValue, PhysicsWorldResource } from '@forgeax/engine-physics';
 
 const character = world.spawn(
   { component: Transform, data: { pos: [0, 0.45, 0] } },
@@ -372,7 +433,7 @@ const character = world.spawn(
 ).unwrap();
 
 // Once per FixedUpdate, after physicsSyncBackend and before physicsStepSimulation:
-const pw = world.getResource('PhysicsWorld'); // PhysicsWorld | PhysicsWorld2D
+const pw = world.getResource(PhysicsWorldResource); // Use PhysicsWorld2DResource for a 2D backend.
 // desiredDelta is a Vec3 (branded Float32Array); a plain [dx, dy, dz] array does not typecheck.
 const actual = pw.moveAndSlide(character, vec3.create(dx, dy, dz)); // Vec3; Transform + grounded written back
 ```
@@ -570,6 +631,23 @@ applied together with COM and velocity before step and restored on rollback.
 Omitting it preserves the body's current orientation. Captured derived motion
 includes the current native orientation so restored or newly split bodies do not
 implicitly inherit the orientation of an unrelated placeholder entity.
+
+A static source-owned candidate uses `sourceTransform` as its complete pose and
+cannot also provide `motion`. Its portable snapshot retains the accepted matrix
+and omits redundant Native motion; restore derives pose from that matrix. ECS
+pose edits, `teleport` and `setBodyMotion` cannot take over the body while this
+source is accepted. Retire the source with its exact empty static candidate
+before transferring pose or body-type ownership to ordinary ECS or managed motion.
+
+`sourceTransform.sceneMatrix` is the full Scene affine matrix, including shear
+and mirroring. The Rapier 3D backend derives the native rigid pose from that
+matrix and maps supported `convex-compound` or `trimesh` source points back into
+the native body's local frame, preserving the complete affine geometry. For a
+mirrored trimesh it reverses triangle winding. This is an explicit exception
+for source-owned static derived geometry: ordinary `Collider` projection keeps
+the resolved-TRS rules above, including treating negative scale as magnitude.
+Body-type-only candidates retain the static source authority; direct motion or
+body-type changes do not transfer pose ownership.
 
 | Paired result | Observable state |
 |:--|:--|

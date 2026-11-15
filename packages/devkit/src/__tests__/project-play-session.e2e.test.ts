@@ -1,10 +1,13 @@
 // @perf-budget-skip: real generated game, detached live owner, Vite dev runtime and sandboxed Chromium playthrough.
 import { execFileSync } from 'node:child_process';
-import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { cp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
 import { afterAll, beforeAll, expect, it } from 'vitest';
+import {
+  createLiveSyncProjectDirectory,
+  prepareLiveSyncSharedInputs,
+} from '../../scripts/live-sync-inputs.mjs';
 import type { PlayReport } from '../play.js';
 
 // The detached owner runs the built CLI next to the library it is loaded from.
@@ -36,7 +39,7 @@ export default definePack({
 
 const GAME = `import type {} from '@forgeax/engine/app';
 import type {} from '@forgeax/engine/assets-runtime';
-import { Update } from '@forgeax/engine/ecs';
+import { Update, defineSystem } from '@forgeax/engine/ecs';
 import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine/input';
 import { quat } from '@forgeax/engine/math';
 import type { Plugin } from '@forgeax/engine/plugin';
@@ -71,11 +74,12 @@ export const game: Plugin.Object<{ readonly mesh: string; readonly material: str
       yield () => { for (const entity of entities) world.despawn(entity).unwrap(); };
       const unregister = host.gameProjection?.registerRead({ id: 'fixture.state', title: 'Fixture', read: () => ({ ...state }) });
       yield () => unregister?.();
-      world.addSystem(Update, { name: 'play-session-fixture/input', queries: [], fn() {
-        const input = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+      const inputSystem = defineSystem({ name: 'play-session-fixture/input', queries: [], fn() {
+        const input = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
         if (input.keyboard.justPressedCode('KeyD')) state.presses += 1;
-      } }).unwrap();
-      yield () => world.removeSystem(Update, 'play-session-fixture/input').unwrap();
+      } });
+      world.addSystem(Update, inputSystem).unwrap();
+      yield () => world.removeSystem(Update, inputSystem).unwrap();
     });
   },
 };
@@ -93,6 +97,7 @@ const script = (presses: number) => `export default async function presses(play)
 `;
 
 let root = '';
+let temporaryRoot = '';
 
 /** Browser processes the live owner launched itself (its direct children). */
 function ownerBrowsers(ownerPid: number): readonly string[] {
@@ -122,10 +127,23 @@ const readReport = async () =>
   ) as PlayReport;
 
 beforeAll(async () => {
-  root = await mkdtemp(resolve(tmpdir(), 'forgeax-play-session-'));
+  const directory = await createLiveSyncProjectDirectory(
+    'forgeax-play-session-',
+    resolve(import.meta.dirname, '../../../..'),
+    process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST,
+  );
+  root = directory.root;
+  temporaryRoot = directory.temporaryRoot;
+  if (process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST)
+    await prepareLiveSyncSharedInputs({
+      sourceRoot: resolve(import.meta.dirname, '../../../..'),
+      projectRoot: root,
+      temporaryRoot,
+      manifestPath: process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST,
+    });
   await cp(resolve(import.meta.dirname, '../../../../templates/empty'), root, {
     recursive: true,
-    filter: (source) => !/(^|\/)(node_modules|dist|\.forgeax)(\/|$)/.test(source),
+    filter: (source) => !/(^|[\\/])(node_modules|dist|\.forgeax)([\\/]|$)/.test(source),
   });
   await mkdir(resolve(root, 'assets/play'), { recursive: true });
   await mkdir(resolve(root, 'scripts'), { recursive: true });
@@ -151,7 +169,7 @@ beforeAll(async () => {
 afterAll(async () => {
   if (root === '') return;
   await liveDevControl(root, 'stop').catch(() => undefined);
-  await rm(root, { recursive: true, force: true });
+  await rm(temporaryRoot, { recursive: true, force: true });
 });
 
 const SESSION_E2E_TIMEOUT_MS = Number(process.env.FORGEAX_PLAY_E2E_TIMEOUT_MS ?? 600_000);

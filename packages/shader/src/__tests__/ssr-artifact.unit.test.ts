@@ -60,9 +60,11 @@ const PYRAMID_SAMPLE = readFileSync(
   'utf8',
 );
 const COMMON = readFileSync(resolve(import.meta.dirname, '../common.wgsl'), 'utf8');
+const SCENE_TEMPORAL = readFileSync(resolve(import.meta.dirname, '../scene-temporal.wgsl'), 'utf8');
 
 const IMPORT_SOURCES = {
   'forgeax_view::common': COMMON,
+  forgeax_scene_temporal: SCENE_TEMPORAL,
   'forgeax_pbr::gbuffer': GBUFFER,
   'forgeax_depth_pyramid::sample': PYRAMID_SAMPLE,
 } as const;
@@ -70,8 +72,13 @@ const IMPORT_SOURCES = {
 const STAGE_IMPORTS: Record<keyof typeof SOURCES, readonly (keyof typeof IMPORT_SOURCES)[]> = {
   pyramidSeed: ['forgeax_depth_pyramid::sample', 'forgeax_view::common'],
   pyramidReduce: ['forgeax_depth_pyramid::sample'],
-  trace: ['forgeax_depth_pyramid::sample', 'forgeax_pbr::gbuffer', 'forgeax_view::common'],
-  temporal: ['forgeax_pbr::gbuffer', 'forgeax_view::common'],
+  trace: [
+    'forgeax_depth_pyramid::sample',
+    'forgeax_pbr::gbuffer',
+    'forgeax_scene_temporal',
+    'forgeax_view::common',
+  ],
+  temporal: ['forgeax_pbr::gbuffer', 'forgeax_scene_temporal', 'forgeax_view::common'],
   compose: ['forgeax_pbr::gbuffer', 'forgeax_view::common'],
 };
 

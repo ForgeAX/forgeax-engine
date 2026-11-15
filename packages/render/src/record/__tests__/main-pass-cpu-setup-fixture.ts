@@ -125,7 +125,6 @@ export function cpuSetupFixture(device: RhiDevice, module: ShaderModule) {
       scene.apply(
         entries.map((entry) => ({
           kind: 'update',
-          worldId: 0,
           entityKey: entry.source.entityKey,
           snapshot: entry.source,
         })),
@@ -259,7 +258,6 @@ export function cpuSetupFixture(device: RhiDevice, module: ShaderModule) {
       source: {
         ...source,
         assetHandle: options.entity,
-        worldId: 0,
         entityKey: options.entity,
         transform: { world: matrix() },
         material: materialSnapshot,

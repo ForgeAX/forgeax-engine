@@ -153,9 +153,9 @@ function applySpotShaderFalsifier(manifest: DawnEngineManifest, falsifier: strin
 const manifestPath = process.env.FORGEAX_DAWN_SHADER_MANIFEST;
 const sourceManifest = manifestPath === undefined
   ? await buildEngineShaderManifest()
-  : await readShaderManifestPublication(
+  : (( await readShaderManifestPublication(
       JSON.parse(readFileSync(manifestPath, 'utf8')),
-    ) as DawnEngineManifest;
+    )) as DawnEngineManifest);
 const ENGINE_MANIFEST = process.env.FORGEAX_DAWN_SPOT_SHADOW_FALSIFIER === undefined
   ? sourceManifest
   : applySpotShaderFalsifier(sourceManifest, process.env.FORGEAX_DAWN_SPOT_SHADOW_FALSIFIER);
@@ -311,12 +311,12 @@ function spawnHdrpScene(
       roughness: 0.6,
     })).unwrap();
     const occluderPosition = falsifier === 'reverse-occlusion'
-      ? [
+      ? ( [
         spotScene.occluder.position[0],
         spotScene.floor.position[1] - spotScene.occluder.size[1],
         spotScene.occluder.position[2],
-      ] as const
-      : spotScene.occluder.position;
+      ] as const)
+        : spotScene.occluder.position;
     world.spawn(
       { component: Transform, data: { pos: occluderPosition } },
       { component: MeshFilter, data: { assetHandle: assets.create(createPrimitiveMesh('cube').unwrap()).unwrap() } },
@@ -480,11 +480,7 @@ async function capturePipelineEvidence(
     spawnHdrpScene(world, constructed.value.assets, sceneCase, spotScene, falsifier, receiver, projectorEnabled);
     world.update().unwrap();
     for (let frame = 0; frame < captureFrames; frame += 1) {
-      await drawReadyFrame(renderer, {
-        leases: [lease],
-        camera: { lease },
-        environment: { lease },
-      });
+      await drawReadyFrame(renderer, { source: lease });
       if (frame + 1 < captureFrames) world.update().unwrap();
     }
     return {
@@ -615,7 +611,8 @@ describe('direct-light Dawn evidence contract', () => {
     if (!dawnReady) throw new Error('dawn-node navigator.gpu is required for shader falsifiers');
     const metricPipeline = process.env.FORGEAX_DAWN_SPOT_SHADOW_PIPELINE === 'urp' ? 'urp' : 'hdrp';
     const scene = metricPipeline === 'urp' ? SPOT_SHADOW_SCENES.urp : SPOT_SHADOW_SCENES.hdrp;
-    const sceneFalsifier = process.env.FORGEAX_DAWN_SPOT_SHADOW_SCENE_FALSIFIER as SpotShadowFalsifierId | undefined;
+    const sceneFalsifier = process.env.FORGEAX_DAWN_SPOT_SHADOW_SCENE_FALSIFIER as
+      | SpotShadowFalsifierId | undefined;
     const capture = await capturePipelineEvidence(
       asSceneCase(scene, metricPipeline),
       'forgeax::standard',
@@ -715,21 +712,21 @@ describe('direct-light Dawn evidence contract', () => {
     if (!dawnReady) throw new Error('dawn-node navigator.gpu is required for projector surface falsifier');
     const adapter = await navigator.gpu.requestAdapter();
     const sampledTextureLimit = adapter?.limits.maxSampledTexturesPerShaderStage ?? 0;
-    // The Standard PBR projector variant adds the 17th sampled texture. Keep
-    // the test truthful on WebGPU-minimum adapters: the production capability
-    // gate intentionally selects the white-projector variant there, so there
-    // is no real projector path to falsify. CI heavy adapters with the raised
-    // limit execute the two live on/off captures below.
-    if (sampledTextureLimit < 17) {
+      // The Standard PBR projector variant adds the 17th sampled texture. Keep
+      // the test truthful on WebGPU-minimum adapters: the production capability
+      // gate intentionally selects the white-projector variant there, so there
+      // is no real projector path to falsify. CI heavy adapters with the raised
+      // limit execute the two live on/off captures below.
+      if (sampledTextureLimit < 17) {
       console.info(`PROJECTOR_SURFACE_NOT_RUN maxSampledTexturesPerShaderStage=${sampledTextureLimit} required=17`);
       return;
     }
-    // Use the forward Standard surface for the pixel falsifier. HDRP's
-    // deferred lighting producer intentionally consumes only the G-buffer;
-    // the shared clustered SpotLight evaluator (and its projector binding)
-    // is exercised by the forward lane while URP/HDRP topology parity is
-    // covered by the paired evidence test above.
-    const scene = asSceneCase(SPOT_SHADOW_SCENES.urp, 'urp');
+      // Use the forward Standard surface for the pixel falsifier. HDRP's
+      // deferred lighting producer intentionally consumes only the G-buffer;
+      // the shared clustered SpotLight evaluator (and its projector binding)
+      // is exercised by the forward lane while URP/HDRP topology parity is
+      // covered by the paired evidence test above.
+      const scene = asSceneCase(SPOT_SHADOW_SCENES.urp, 'urp');
     for (const [path, falsifier] of [
       ['shadowed', undefined],
       ['projector-only', 'no-shadow-allocation' as const],
@@ -787,7 +784,8 @@ describe('direct-light Dawn evidence contract', () => {
       expect(changedPixels, `${path} projector must change real surface pixels`).toBeGreaterThan(0);
       expect(totalRgbDelta, `${path} projector RGB delta`).toBeGreaterThan(1e-2);
     }
-  }, SPOT_SHADOW_HEAVY_TEST_TIMEOUT_MS);
+  }, SPOT_SHADOW_HEAVY_TEST_TIMEOUT_MS,
+  );
 
   it('loads the required light, import, pipeline, and finite budget fields', async () => {
     const cases = await Promise.all(casePaths.map(async (path) => {

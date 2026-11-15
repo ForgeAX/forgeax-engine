@@ -27,14 +27,16 @@ it('agrees with actual caller diagnostics, including optional and defaulted argu
   const host = ts.createCompilerHost(options);
   const getSourceFile = host.getSourceFile.bind(host);
   host.getSourceFile = (name, language, onError, shouldCreateNewSourceFile) =>
-    name === file
+    resolve(name) === file
       ? ts.createSourceFile(file, source, options.target ?? ts.ScriptTarget.ESNext, true)
       : getSourceFile(name, language, onError, shouldCreateNewSourceFile);
   const program = ts.createProgram([file], options, host);
   const rejectedLines = new Set(
     ts
       .getPreEmitDiagnostics(program)
-      .filter((diagnostic) => diagnostic.file?.fileName === file)
+      .filter(
+        (diagnostic) => diagnostic.file !== undefined && resolve(diagnostic.file.fileName) === file,
+      )
       .map(
         (diagnostic) => diagnostic.file?.getLineAndCharacterOfPosition(diagnostic.start ?? 0).line,
       ),

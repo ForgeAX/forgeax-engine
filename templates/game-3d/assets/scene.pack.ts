@@ -1,4 +1,4 @@
-import { color, quat } from '@forgeax/engine/math';
+import { quat } from '@forgeax/engine/math';
 import { definePack, definePackageId } from '@forgeax/engine/pack/source';
 import {
   CharacterController,
@@ -10,13 +10,14 @@ import {
 import {
   ANTIALIAS_FXAA,
   Atmosphere,
-  BLOOM_ENABLED,
   Camera,
   DirectionalLight,
+  Fog,
   MeshFilter,
   MeshRenderer,
   perspective,
-  PointLight,
+  ReflectionProbe,
+  REFLECTION_PROBE_UPDATE_ON_CHANGE,
   Skylight,
   TONEMAP_ACES_FILMIC,
 } from '@forgeax/engine/render';
@@ -26,6 +27,7 @@ import type { AssetGuid, SceneAsset, SceneEntity } from '@forgeax/engine/types';
 import { ok } from '@forgeax/engine/types';
 import { assetGuid, guidText, PACKAGE_IDS, SUN_OUTGOING_DIRECTION } from './shared/asset-refs.ts';
 import { PLAYER_COLLIDER, PLAYER_RIG } from './shared/player-rig.ts';
+import { CAMERA_DISTANCE, CAMERA_TARGET_HEIGHT, INITIAL_CAMERA_PITCH, orbitPosition } from './shared/third-person.ts';
 
 function meshEntity(
   key: string,
@@ -80,10 +82,9 @@ function staticCuboid(halfExtents: readonly [number, number, number]) {
 
 function showcaseScene(): SceneAsset {
   const playerPosition = [0, PLAYER_COLLIDER.radius + PLAYER_COLLIDER.halfHeight + 0.02, 7.4] as const;
-  const cameraPosition = [0, 3.35, 13.5] as const;
-  const target = [0, 1.42, 7.4] as const;
+  const target = [playerPosition[0], playerPosition[1] + CAMERA_TARGET_HEIGHT, playerPosition[2]] as const;
+  const cameraPosition = orbitPosition(target, 0, INITIAL_CAMERA_PITCH, CAMERA_DISTANCE);
   const cameraRotation = quat.fromLookAt(quat.create(), cameraPosition, target, [0, 1, 0]);
-  const rampRotation = [Math.sin(-Math.PI / 24), 0, 0, Math.cos(-Math.PI / 24)] as const;
   return {
     kind: 'scene',
     skinGuids: [guidText(assetGuid(PACKAGE_IDS.character, 'rig/player-skin'))],
@@ -95,25 +96,19 @@ function showcaseScene(): SceneAsset {
         [0, -0.2, 0],
         [1, 1, 1],
         [0, 0, 0, 1],
-        staticCuboid([14, 0.2, 14]),
+        staticCuboid([1000, 0.2, 1000]),
       ),
       meshEntity(
-        'collision-cube',
-        'Lacquer Collision Cube',
-        assetGuid(PACKAGE_IDS.geometry, 'mesh/cube'),
-        [0, 0.75, -4.5],
+        'iron-sphere',
+        'Rusted Iron Sphere',
+        assetGuid(PACKAGE_IDS.geometry, 'mesh/iron-sphere'),
+        [0, 1, 2.4],
         [1, 1, 1],
         [0, 0, 0, 1],
-        staticCuboid([0.75, 0.75, 0.75]),
-      ),
-      meshEntity(
-        'ramp',
-        'Rusted Iron Ramp',
-        assetGuid(PACKAGE_IDS.geometry, 'mesh/ramp'),
-        [-2.2, 0.42, 7.4],
-        [1, 1, 1],
-        rampRotation,
-        staticCuboid([1.6, 0.15, 2.2]),
+        {
+          RigidBody: { type: RigidBodyTypeValue.static },
+          Collider: { shape: ColliderShapeValue.sphere, radius: 1, friction: 0.86, restitution: 0 },
+        },
       ),
       keyed('sun', {
         components: {
@@ -122,48 +117,39 @@ function showcaseScene(): SceneAsset {
             direction: SUN_OUTGOING_DIRECTION,
             // Bare lights default off; this game explicitly requests sun shadows.
             castShadow: true,
-            // Keep centimeter-scale shadow texels across the 28 m showcase.
+            // Keep centimeter-scale shadow texels around the nearby props.
             shadowDistance: 56,
           },
-        },
-      }),
-      keyed('cool-light', {
-        components: {
-          Name: { value: 'Cool Directional Light' },
-          // The sun is the first castShadow DirectionalLight; this one has no shadow
-          // request, so it renders as an unshadowed cluster light.
-          DirectionalLight: {
-            direction: [0.62, -0.5, -0.6],
-            color: color.linearRgb(0xa8c8ff),
-            intensity: 1.0,
-          },
-        },
-      }),
-      keyed('point-light', {
-        components: {
-          Name: { value: 'Warm Point Light' },
-          Transform: { pos: [0, 4.6, 0] },
-          PointLight: { color: color.linearRgb(0xff9950), intensity: 52, range: 12 },
         },
       }),
       keyed('skylight', {
         components: {
           Name: { value: 'Skylight' },
-          // Sky radiance, not irradiance (Three.js ambient intensity / pi).
-          // groundColor adds a warm bounce from below, like HemisphereLight.
-          Skylight: {
-            color: color.linearRgb(0xffffff),
-            groundColor: color.linearRgb(0x8a7560),
-            intensity: 1.6,
-          },
+          Skylight: {},
         },
       }),
       keyed('atmosphere', {
         components: {
           Name: { value: 'Analytic Sky' },
-          // Display sky only: it runs on baseline WebGPU and WebGL2 limits, while full
-          // Atmosphere (aerial perspective) needs 32 sampled textures per stage.
-          Atmosphere: { backgroundOnly: true },
+          Atmosphere: { mieScattering: 1.998e-6, mieAbsorption: 0.222e-6 },
+        },
+      }),
+      keyed('height-fog', {
+        components: {
+          Name: { value: 'Height Fog' },
+          Fog: { density: 0.00008 },
+        },
+      }),
+      keyed('sphere-reflection', {
+        components: {
+          Name: { value: 'Iron Sphere Reflection' },
+          Transform: { pos: [0, 1, 2.4] },
+          ReflectionProbe: {
+            halfExtents: [3, 3, 3],
+            resolution: 128,
+            boxProjection: true,
+            updateIntent: REFLECTION_PROBE_UPDATE_ON_CHANGE,
+          },
         },
       }),
       keyed('camera', {
@@ -179,14 +165,15 @@ function showcaseScene(): SceneAsset {
             ],
           },
           Camera: {
-            ...perspective({ fov: Math.PI / 4, aspect: 16 / 9 }),
+            // Auto exposure meters the frame; no compensation bias. The fallback
+            // applies until the first adaptation and on devices without compute.
+            ...perspective({
+              fov: Math.PI / 4,
+              aspect: 16 / 9,
+              exposure: { kind: 'auto', fallback: 0.95, compensationEv: 0, rangeEv: [-12, 4], rates: [3, 1] },
+            }),
             // Explicit presentation style; generic Camera defaults remain neutral.
             tonemap: TONEMAP_ACES_FILMIC,
-            exposure: 0.95,
-            // Bloom glows only above-white HDR highlights; the default -1 blooms the whole frame.
-            bloom: BLOOM_ENABLED,
-            bloomThreshold: 1,
-            bloomIntensity: 0.4,
             antialias: ANTIALIAS_FXAA,
             clearColor: [0.08, 0.12, 0.2, 1],
           },
@@ -237,9 +224,9 @@ export default definePack({
     {
       name: 'sunColor',
       type: 'vec3',
-      // Linear RGB of sRGB 0xfff4e5. Parameter defaults must be literals so the
+      // A slightly warm key light. Parameter defaults must be literals so the
       // editor can rewrite them; entity colors use color.linearRgb(0xRRGGBB).
-      default: [1, 0.905, 0.784],
+      default: [1, 0.95, 0.87],
       apply: {
         asset: 'scene/showcase',
         path: ['entities', 'sun', 'components', 'DirectionalLight', 'color'],
@@ -248,9 +235,9 @@ export default definePack({
     {
       name: 'sunIntensity',
       type: 'f32',
-      default: 4.2,
+      default: 12,
       minimum: 0,
-      maximum: 10,
+      maximum: 100,
       apply: {
         asset: 'scene/showcase',
         path: ['entities', 'sun', 'components', 'DirectionalLight', 'intensity'],
@@ -264,10 +251,11 @@ export default definePack({
     ChildOf,
     Collider,
     DirectionalLight,
+    Fog,
     MeshFilter,
     MeshRenderer,
     Name,
-    PointLight,
+    ReflectionProbe,
     RigidBody,
     Skin,
     Skylight,

@@ -428,7 +428,7 @@ async function drawFrames(world, frames, label) {
   let drawFailures = 0;
   for (let i = 0; i < frames; i++) {
     world.update(1 / 60).unwrap();
-    const r = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
+    const r = renderer.draw({ source: lease });
     if (!r.ok) {
       drawFailures++;
       errors.push({ code: r.error.code, hint: r.error.hint, label, frame: i });

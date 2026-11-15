@@ -1,3 +1,8 @@
+import { drawWorld } from '../../../render/src/__tests__/draw-world';
+import {
+  standardPbrManifestRow,
+  waterInfoShaderFixture,
+} from '../../../render/src/__tests__/shader-manifest-fixture';
 import { testAssets } from './helpers/runtime-assets';
 // @perf-budget-skip: intentional full mock-GPU render regression smoke gate.
 
@@ -31,10 +36,10 @@ import { testAssets } from './helpers/runtime-assets';
 // per-material -- assertion (b) catches that even if (a) passes).
 
 import type { World as WorldType } from '@forgeax/engine-ecs';
-import type { Renderer as RendererType } from '@forgeax/engine-render';
 import type { Handle, MaterialAsset, MeshAsset, TextureAsset } from '@forgeax/engine-types';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { standardMaterialShaderVariants } from './helpers/standard-material-manifest';
+import type { Renderer as RendererType } from '../../../render/src/render-contract';
+import { NULL_LIMITS } from '../../../rhi-null/src/device';
 import { mockRenderBundles } from './mock-render-bundles';
 
 // Load the renderer graph in setup so a cold transform cannot outlive a
@@ -121,7 +126,7 @@ function makeMockGPUDevice(spies: DeviceSpies, maxTextureDimension2D = 8192): { 
     __mockTag: 'gpu-device',
     lost,
     features: new Set(),
-    limits: { maxTextureDimension2D },
+    limits: { ...NULL_LIMITS, maxStorageTexturesPerShaderStage: 4, maxTextureDimension2D },
     queue: {
       submit: () => undefined,
       onSubmittedWorkDone: async () => undefined,
@@ -132,6 +137,7 @@ function makeMockGPUDevice(spies: DeviceSpies, maxTextureDimension2D = 8192): { 
     createBindGroupLayout: () => ({}),
     createPipelineLayout: () => ({}),
     createRenderPipeline: () => ({}),
+    createComputePipeline: () => ({ getBindGroupLayout: () => ({}) }),
     // The bug surface: capture every createBindGroup call's label + entries
     // so tests can assert per-material BGs were built with per-material
     // textureViews. Returns a per-call sentinel so identity comparisons
@@ -153,6 +159,13 @@ function makeMockGPUDevice(spies: DeviceSpies, maxTextureDimension2D = 8192): { 
       unmap: () => undefined,
     }),
     createCommandEncoder: () => ({
+      copyBufferToBuffer: () => undefined,
+      beginComputePass: () => ({
+        setPipeline: () => undefined,
+        setBindGroup: () => undefined,
+        dispatchWorkgroups: () => undefined,
+        end: () => undefined,
+      }),
       beginRenderPass: () => ({
         setPipeline: () => undefined,
         setVertexBuffer: () => undefined,
@@ -163,6 +176,8 @@ function makeMockGPUDevice(spies: DeviceSpies, maxTextureDimension2D = 8192): { 
         setScissorRect: () => undefined,
         draw: () => undefined,
         drawIndexed: () => undefined,
+        drawIndirect: () => undefined,
+        drawIndexedIndirect: () => undefined,
         end: () => undefined,
       }),
       finish: () => ({}),
@@ -205,24 +220,13 @@ function buildManifestDataUrl(): string {
     sourcePath: `${identifier}.wgsl`,
     composedWgsl: '/* stub */',
     paramSchema,
-    variants:
-      identifier === 'forgeax::default-standard-pbr' ? standardMaterialShaderVariants() : [],
+    variants: [],
   });
-  // The standard-PBR shader declares baseColorTexture / metallicRoughnessTexture
-  // / normalTexture as texture2d params. Texture resolution is now schema-driven
-  // (derive(paramSchema).textureFieldNames is the SSOT), so the stub MUST carry
-  // the real schema -- an empty '[]' would yield zero user-region textures and
-  // collapse all 3 distinct-baseColor materials onto one bind group.
-  const pbrParamSchema = JSON.stringify([
-    { name: 'baseColor', type: 'color', default: [1, 1, 1, 1] },
-    { name: 'metallic', type: 'f32', default: 0 },
-    { name: 'roughness', type: 'f32', default: 0.5 },
-    { name: 'baseColorTexture', type: 'texture2d' },
-    { name: 'metallicRoughnessTexture', type: 'texture2d' },
-    { name: 'normalTexture', type: 'texture2d' },
-  ]);
+  // The canonical fixture carries the Standard schema and producer-owned
+  // direct/scene-index receipt for distinct per-material texture bindings.
   const manifest = {
     entries: [
+      ...waterInfoShaderFixture.entries,
       // Stub WGSL must satisfy the runtime's compatibility heuristics; the
       // pbr stub references f_schlick to mark the shader as PBR-shaped, the
       // tonemap stub declares TonemapParams to mark it as tonemap-shaped.
@@ -237,17 +241,15 @@ function buildManifestDataUrl(): string {
       },
     ],
     materialShaders: [
-      materialShaderStub('forgeax::default-standard-pbr', pbrParamSchema),
+      ...waterInfoShaderFixture.materialShaders,
+      standardPbrManifestRow('/* pbr stub - calls f_schlick( */'),
       materialShaderStub('forgeax::default-unlit'),
     ],
   };
   return `data:application/json,${encodeURIComponent(JSON.stringify(manifest))}`;
 }
 
-interface RendererLike {
-  subscribe: RendererType['subscribe'];
-  draw: (worlds: unknown, opts: { cameraOwner: number; resourceOwner: number }) => void;
-}
+type RendererLike = Pick<RendererType, 'subscribe' | 'draw' | 'attach'>;
 
 function unwrapRendererError(value: unknown): { code: string; detail?: unknown } {
   let current = value as { code: string; detail?: unknown };
@@ -469,7 +471,7 @@ async function spawnPbrMultiMaterialScene(): Promise<unknown> {
     { component: C.Transform, data: cameraTransform() },
   );
   world.spawn(
-    { component: C.DirectionalLight, data: {} },
+    { component: C.DirectionalLight, data: { direction: [-0.5, -1, -0.3] } },
     { component: C.Transform, data: cameraTransform() },
   );
   world.spawn(
@@ -505,13 +507,15 @@ describe('record: per-submesh PBR material BG textureView (bug-20260610 D2 regre
       throw new Error('World attachment failed');
     }
     (world as WorldType).update().unwrap();
-    renderer.draw([world], { cameraOwner: 0, resourceOwner: 0 });
+    const firstDraw = drawWorld(renderer, world as WorldType);
+    if (!firstDraw.ok) throw firstDraw.error;
     await new Promise((resolve) => setTimeout(resolve, 0));
     if (!(renderer as unknown as RendererType).attach(world as WorldType).ok) {
       throw new Error('World attachment failed');
     }
     (world as WorldType).update().unwrap();
-    renderer.draw([world], { cameraOwner: 0, resourceOwner: 0 });
+    const secondDraw = drawWorld(renderer, world as WorldType);
+    if (!secondDraw.ok) throw secondDraw.error;
 
     // Filter to the PBR-bucket BG creations only. Sprite / shadow / tonemap
     // BGs use different labels and would falsely inflate the count.
@@ -642,7 +646,7 @@ async function spawnPbrMissingTextureScene(): Promise<unknown> {
     { component: C.Transform, data: cameraTransform() },
   );
   world.spawn(
-    { component: C.DirectionalLight, data: {} },
+    { component: C.DirectionalLight, data: { direction: [-0.5, -1, -0.3] } },
     { component: C.Transform, data: cameraTransform() },
   );
   world.spawn(
@@ -683,12 +687,12 @@ describe('record: PBR missing baseColorTexture telemetry (feat-future-pbr-missin
         throw new Error('World attachment failed');
       }
       (world as WorldType).update().unwrap();
-      renderer.draw([world], { cameraOwner: 0, resourceOwner: 0 });
+      drawWorld(renderer, world as WorldType);
       if (!(renderer as unknown as RendererType).attach(world as WorldType).ok) {
         throw new Error('World attachment failed');
       }
       (world as WorldType).update().unwrap();
-      renderer.draw([world], { cameraOwner: 0, resourceOwner: 0 });
+      drawWorld(renderer, world as WorldType);
 
       const missing = errors.filter((e) => e.code === 'asset-not-registered');
       expect(missing.length).toBeGreaterThanOrEqual(1);

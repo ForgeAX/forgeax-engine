@@ -35,10 +35,8 @@ export async function verifySharedMeshCandidates() {
   const delta = source.apply(
     Array.from({ length: 3 }, (_, entityKey) => ({
       kind: 'update' as const,
-      worldId: 0,
       entityKey,
       snapshot: {
-        worldId: 0,
         entityKey,
         assetHandle: 7,
         material,

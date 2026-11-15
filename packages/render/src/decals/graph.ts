@@ -109,8 +109,7 @@ function current(frame: RenderPipelineFrame, index: number) {
   if (decal === undefined)
     throw new ProjectedDecalInvalidError('frame', 'the decal count used to compile this graph');
   const internal = frame as _InternalRenderPipelineContext;
-  const scope =
-    internal.resourceScopes?.[decal.worldId] ?? (decal.worldId === 0 ? internal.world : undefined);
+  const scope = internal.resourceScopes ?? internal.world;
   if (scope === undefined)
     throw new ProjectedDecalInvalidError('world', 'a live source resource scope');
   return { decal, internal, scope };

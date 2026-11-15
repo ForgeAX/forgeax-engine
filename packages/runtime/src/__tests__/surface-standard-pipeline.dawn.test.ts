@@ -9,9 +9,11 @@ import { decodeMaterialProgramWire } from '@forgeax/engine-pack/runtime';
 import {
   Camera,
   DynamicResolution,
+  type FrameReceipt,
   LightProbe,
   PointLight,
   type Renderer,
+  type RenderFrameInput,
 } from '@forgeax/engine-render';
 import type { RhiDevice } from '@forgeax/engine-rhi';
 import { attachRecorder, type RecorderAttachment } from '@forgeax/engine-rhi-debug';
@@ -547,8 +549,125 @@ interface SurfaceDawnRun {
   readonly captureRoot: string | undefined;
   readonly rendererErrors: unknown[];
   readonly laneParity: boolean;
+  readonly failureCaptureFrameId?: number;
   /** The current device and presented texture; recovery replaces both. */
   readonly presented: () => { readonly device: GPUDevice | undefined; readonly canvas: DawnCanvas };
+}
+
+/** Capture the specifically requested physical submission and preserve it if its receipt stalls. */
+async function drawSurfaceReadyFrame(
+  run: SurfaceDawnRun,
+  request: RenderFrameInput,
+  stage: Readonly<Record<string, unknown>>,
+) {
+  const { renderer, recorder, captureRoot, failureCaptureFrameId } = run;
+  if (recorder === undefined || captureRoot === undefined || failureCaptureFrameId === undefined)
+    return drawReadyFrame(renderer, request);
+
+  let pendingCapture: ReturnType<RecorderAttachment['captureFrame']> | undefined;
+  let capturedFrame:
+    | {
+        readonly frameId: number;
+        readonly deviceGeneration: number;
+        readonly presentation: 'pending' | 'ready';
+        readonly graphGeneration: number | undefined;
+        readonly bytes: Uint8Array;
+        readonly digest: string;
+      }
+    | undefined;
+  try {
+    const options: NonNullable<Parameters<typeof drawReadyFrame>[3]> & {
+      beforeSubmit(): Promise<void>;
+      afterSubmit(receipt: FrameReceipt): Promise<void>;
+    } = {
+      beforeSubmit: async () => {
+        if (
+          pendingCapture === undefined &&
+          renderer.inspect().frame.frameId + 1 === failureCaptureFrameId
+        ) {
+          pendingCapture = recorder.captureFrame();
+          (await recorder.frameBoundary()).unwrap();
+        }
+      },
+      afterSubmit: async (receipt: {
+        readonly frameId: number;
+        readonly deviceGeneration: number;
+        readonly presentation: 'pending' | 'ready';
+        readonly graphGeneration?: number | undefined;
+      }) => {
+        if (pendingCapture === undefined) return;
+        (await recorder.frameBoundary()).unwrap();
+        const encoded = await pendingCapture;
+        pendingCapture = undefined;
+        if (!encoded.ok) throw encoded.error;
+        capturedFrame = {
+          frameId: receipt.frameId,
+          deviceGeneration: receipt.deviceGeneration,
+          presentation: receipt.presentation,
+          graphGeneration: receipt.graphGeneration,
+          bytes: encoded.value.bytes,
+          digest: encoded.value.digest,
+        };
+      },
+    };
+    return await drawReadyFrame(renderer, request, undefined, options);
+  } catch (cause) {
+    if (capturedFrame !== undefined) {
+      mkdirSync(captureRoot, { recursive: true });
+      const tapePath = resolve(captureRoot, `failure-frame-${capturedFrame.frameId}.rhitape`);
+      const reportPath = resolve(captureRoot, `failure-frame-${capturedFrame.frameId}.json`);
+      const inspection = renderer.inspect();
+      const submission = inspection.renderScene.submission;
+      const gpuDriven = inspection.renderScene.gpuDriven;
+      writeFileSync(tapePath, capturedFrame.bytes);
+      writeFileSync(
+        reportPath,
+        JSON.stringify(
+          {
+            stage,
+            error: cause instanceof Error ? cause.message : String(cause),
+            capture: {
+              frameId: capturedFrame.frameId,
+              deviceGeneration: capturedFrame.deviceGeneration,
+              presentation: capturedFrame.presentation,
+              graphGeneration: capturedFrame.graphGeneration,
+              digest: capturedFrame.digest,
+              tapePath,
+            },
+            renderer: {
+              state: inspection.state,
+              profile: inspection.profile,
+              frame: inspection.frame,
+              perFramePassNames: inspection.perFramePassNames,
+              submission:
+                submission === undefined
+                  ? undefined
+                  : {
+                      frameId: submission.frameId,
+                      sequence: submission.sequence,
+                      status: submission.status,
+                      requestedLane: submission.requestedLane,
+                      actualLane: submission.actualLane,
+                      passes: submission.passes.map(({ pass, commandCount }) => ({
+                        pass,
+                        commandCount,
+                      })),
+                    },
+              gpuDriven: {
+                submitted: gpuDriven.submitted,
+                indirectDrawCount: gpuDriven.indirectDrawCount,
+                cpuFallbackDrawItems: gpuDriven.cpuFallbackDrawItems,
+                channels: gpuDriven.channels,
+              },
+            },
+          },
+          null,
+          2,
+        ),
+      );
+    }
+    throw cause;
+  }
 }
 
 async function readSurfaceTarget(run: SurfaceDawnRun, unavailable: string): Promise<Uint8Array> {
@@ -741,12 +860,16 @@ async function runSurfaceTimeline(
     if (finalCapture !== undefined && recorder !== undefined)
       (await recorder.frameBoundary()).unwrap();
     world.update(1 / 60).unwrap();
-    const receipt = await drawReadyFrame(renderer, {
-      leases: [lease],
-      camera: { lease },
-      environment: { lease },
-      ...(usesDirectTimelineLane(run.laneParity, frame) ? { geometryLane: 'direct' as const } : {}),
-    });
+    const receipt = await drawSurfaceReadyFrame(
+      run,
+      {
+        source: lease,
+        ...(usesDirectTimelineLane(run.laneParity, frame)
+          ? { geometryLane: 'direct' as const }
+          : {}),
+      },
+      { phase: 'surface-timeline', frame, frameTime },
+    );
     if (finalCapture !== undefined && recorder !== undefined && captureRoot !== undefined) {
       (await recorder.frameBoundary()).unwrap();
       writeFinalLifecycleCapture(run, captureRoot, (await finalCapture).unwrap());
@@ -1322,7 +1445,7 @@ class SurfaceProfileMatrix {
   }
 
   private async drawProfileFrame(combination: SurfaceProfileCase, frame: number): Promise<void> {
-    const { world, renderer, lease, recorder, captureRoot, observer } = this.run;
+    const { world, lease, recorder, captureRoot, observer } = this.run;
     const capture =
       frame === 5 && combination.antialias === 0 && combination.bloom === 0
         ? recorder?.captureFrame()
@@ -1330,12 +1453,14 @@ class SurfaceProfileMatrix {
     if (capture !== undefined && recorder !== undefined) (await recorder.frameBoundary()).unwrap();
     world.update(1 / 60).unwrap();
     observer.temporalTarget = undefined;
-    const receipt = await drawReadyFrame(renderer, {
-      ...('geometryLane' in combination ? { geometryLane: combination.geometryLane } : {}),
-      leases: [lease],
-      camera: { lease },
-      environment: { lease },
-    });
+    const receipt = await drawSurfaceReadyFrame(
+      this.run,
+      {
+        ...('geometryLane' in combination ? { geometryLane: combination.geometryLane } : {}),
+        source: lease,
+      },
+      { phase: 'surface-profile-matrix', combination, frame },
+    );
     const completed = await receipt.completed;
     if (!completed.ok) this.throwProfileCompletion(combination, frame, completed.error);
     if (capture !== undefined && recorder !== undefined && captureRoot !== undefined) {
@@ -1536,11 +1661,7 @@ async function recoverSurfaceDevice(
   renderer.setSurfaceDynamicInput({ ...recoveredSurfaceDynamicInput, frameTime: 2.5 });
   for (let frame = 0; frame < 10; frame++) {
     world.update(1 / 60).unwrap();
-    await drawReadyFrame(renderer, {
-      leases: [lease],
-      camera: { lease },
-      environment: { lease },
-    });
+    await drawSurfaceReadyFrame(run, { source: lease }, { phase: 'device-recovery', frame });
   }
   expect(renderer.inspect().renderScene.gpuDriven.submitted).toBe(true);
   expect(renderer.inspect().renderScene.gpuDriven.cpuFallbackDrawItems).toBe(0);
@@ -1628,7 +1749,17 @@ describe('Standard Surface runtime Dawn publication', () => {
       observer.instrument(created);
     });
     canvas = dawnCanvas;
-    const captureRoot = process.env.FORGEAX_SURFACE_RHI_CAPTURE_DIR;
+    const captureRoot = process.env.FORGEAX_SURFACE_RHI_CAPTURE_DIR?.trim() || undefined;
+    const captureFrameIdRaw = process.env.FORGEAX_SURFACE_RHI_CAPTURE_FRAME_ID?.trim();
+    const failureCaptureFrameId =
+      captureFrameIdRaw === undefined || captureFrameIdRaw === ''
+        ? undefined
+        : Number(captureFrameIdRaw);
+    if (
+      failureCaptureFrameId !== undefined &&
+      (!Number.isSafeInteger(failureCaptureFrameId) || failureCaptureFrameId <= 0)
+    )
+      throw new Error('FORGEAX_SURFACE_RHI_CAPTURE_FRAME_ID must be a positive safe integer');
     if (captureRoot !== undefined) recorder = attachRecorder(captureWebgpu).unwrap();
     const captureRecorder = recorder;
     const constructed = await constructRuntimeRendererHost(
@@ -1660,7 +1791,40 @@ describe('Standard Surface runtime Dawn publication', () => {
     // Browser owns the complete public App/VFX lifecycle and queued-loss journey.
     await expectOpticalOracle(surfaceRenderer, assets);
     const msaaEdgeEvidence = await expectMsaaEdgeOracle(surfaceRenderer, assets, () => canvas);
-    const managedMedium = await runSurfaceManagedMediumOracle(surfaceRenderer, assets);
+    const managedMedium = await runSurfaceManagedMediumOracle(
+      surfaceRenderer,
+      assets,
+      captureRecorder === undefined || captureRoot === undefined
+        ? undefined
+        : {
+            recorder: captureRecorder,
+            completedFrame: ({ stage, receipt, tape, inspection }) => {
+              mkdirSync(captureRoot, { recursive: true });
+              const stem = `managed-medium-${stage.phase}-frame-${receipt.frameId}`;
+              const tapePath = resolve(captureRoot, `${stem}.rhitape`);
+              writeFileSync(tapePath, tape.bytes);
+              writeFileSync(
+                resolve(captureRoot, `${stem}.json`),
+                JSON.stringify(
+                  {
+                    sourceSha: EVIDENCE_SOURCE_SHA,
+                    stage,
+                    receipt: {
+                      frameId: receipt.frameId,
+                      deviceGeneration: receipt.deviceGeneration,
+                      graphGeneration: receipt.graphGeneration,
+                      completion: 'completed',
+                    },
+                    capture: { tapePath, digest: tape.digest, byteLength: tape.bytes.byteLength },
+                    inspection,
+                  },
+                  null,
+                  2,
+                ),
+              );
+            },
+          },
+    );
     expect(managedMedium).toHaveLength(4);
     // biome-ignore lint/suspicious/noConsole: native pixel falsifiers are gate evidence.
     console.log(
@@ -1689,6 +1853,7 @@ describe('Standard Surface runtime Dawn publication', () => {
       captureRoot,
       rendererErrors,
       laneParity,
+      ...(failureCaptureFrameId === undefined ? {} : { failureCaptureFrameId }),
       presented: () => ({ device, canvas: dawnCanvas }),
     };
     const timeline = await runSurfaceTimeline(run, surfaceDynamicInput);

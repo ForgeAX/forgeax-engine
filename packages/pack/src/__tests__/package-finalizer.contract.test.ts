@@ -69,6 +69,28 @@ function product(overrides: Partial<PackageProduct> = {}): PackageProduct {
 }
 
 describe('engine-pack terminal product and finalizer contract', () => {
+  it.each([
+    '.',
+    './',
+    '..',
+    '../',
+    './nested/',
+    '../shared/',
+  ])('preserves relative publication locators for base %s', async (base) => {
+    const finalized = await finalizePackageProduct(product(), {
+      base,
+      packagePath: 'assets/sample.pack.json',
+      artifactPath: () => 'sample.bin',
+    });
+    expect(finalized.ok).toBe(true);
+    if (!finalized.ok) throw finalized.error;
+    const expected = `${base.replace(/\/+$/, '')}/assets/sample.pack.json`;
+    expect(finalized.value.packageUrl).toBe(expected);
+    expect(new URL(finalized.value.packageUrl, 'file:///games/fps/pack-index.json').href).toBe(
+      new URL(expected, 'file:///games/fps/pack-index.json').href,
+    );
+  });
+
   it('preserves native escaping, scalar omission and custom serializer order', () => {
     const make = (calls: string[]) => {
       const original = {
@@ -335,7 +357,7 @@ describe('engine-pack terminal product and finalizer contract', () => {
       expect(finalized.pack).toEqual(expected.value.pack);
       expect(finalized.digest).toBe(expected.value.digest);
       // One content hash and one package stream; no second identical content hash.
-      expect(update.mock.calls.filter(([data]) => data === body)).toHaveLength(2);
+      expect(update.mock.calls.filter(([data]) => Object.is(data, body))).toHaveLength(2);
     } finally {
       update.mockRestore();
     }
@@ -394,6 +416,24 @@ describe('engine-pack terminal product and finalizer contract', () => {
     expect(result.value.receipts).toHaveLength(1);
     expect(result.value.sourceRevision).toBe('sha256:source');
     expect(result.value.sourceKey).toBe('texture/source');
+  });
+
+  it.each([
+    ['', '/assets/texture.pack.json'],
+    ['/', '/assets/texture.pack.json'],
+    ['/preview', '/preview/assets/texture.pack.json'],
+    ['/preview/', '/preview/assets/texture.pack.json'],
+    ['.', './assets/texture.pack.json'],
+    ['./', './assets/texture.pack.json'],
+    ['https://cdn.example/game/', 'https://cdn.example/game/assets/texture.pack.json'],
+    ['//cdn.example/game/', '//cdn.example/game/assets/texture.pack.json'],
+  ])('retains transport base %j in the finalized package locator', async (base, expected) => {
+    const finalized = await finalizePackageTransportSource(product(), {
+      base,
+      packagePath: 'assets/texture.pack.json',
+      artifactPath: (guid, key) => `${guid}/${key}.bin`,
+    });
+    expect(finalized.packageUrl).toBe(expected);
   });
 
   it('fails closed on duplicate GUIDs and incomplete receipt evidence', async () => {

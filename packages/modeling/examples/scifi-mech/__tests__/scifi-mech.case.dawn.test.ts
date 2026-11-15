@@ -182,7 +182,7 @@ it.skipIf(!CASE)('C-410 case render', async () => {
     world.update(1 / 60).unwrap();
     device?.pushErrorScope('validation');
     const t0 = performance.now();
-    for (let i = 0; i < 3; i++) await drawReadyFrame(renderer, { leases: [lease], camera: { lease }, environment: { lease } });
+    for (let i = 0; i < 3; i++) await drawReadyFrame(renderer, { source: lease });
     timing[job.out] = Math.round((performance.now() - t0) / 3);
     if (!device || !target) throw new Error('device not captured');
     const buffer = device.createBuffer({ size: bytesPerRow * H, usage: 0x0001 | 0x0008 });

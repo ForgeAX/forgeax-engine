@@ -78,16 +78,6 @@ export const DAWN_ISOLATED_GROUPS = [
     id: 'transmission',
     files: ['packages/render/src/transmission/__tests__/standard-transmission.dawn.test.ts'],
   },
-  {
-    id: 'timing-lifecycle',
-    files: [
-      'packages/render/bench/gpu-pass-timing/__tests__/gpu-pass-timing-lifecycle.dawn.test.ts',
-    ],
-  },
-  {
-    id: 'gpu-timing',
-    files: ['packages/render/bench/gpu-pass-timing/__tests__/gpu-pass-timing.dawn.test.ts'],
-  },
   ...DAWN_HEAVY_TEST_PARTITIONS.map((files, index) => ({
     id: `heavy-${index + 1}`,
     // Recovery sequences retain their module state within one test.
@@ -174,39 +164,30 @@ export const DAWN_GATE_SHARDS = Object.freeze([
     'heavy-1',
     'heavy-2',
     'nested-discard',
-    'gpu-timing',
-    'vfx-depth',
+    'surface-pipelines',
+    'gi-4',
   ]),
   Object.freeze([
     'ordinary-2',
-    'modeling-s6',
+    'modeling-show',
     'heavy-3',
     'heavy-4',
     'shadow-quality',
     'specular-aa',
     'compact-3',
-    'timing-lifecycle',
     'gi-6',
     'renderer',
   ]),
   Object.freeze([
     'ordinary-3',
-    'modeling-show',
+    'modeling-s6',
     'compact-2',
     'direct-light',
-    'gi-4',
     'gi-1',
     'transmission',
     'gi-2',
   ]),
-  Object.freeze([
-    'ordinary-4',
-    'surface-pipelines',
-    'gi-5',
-    'gi-3',
-    'screen-probe',
-    'feature-depth',
-  ]),
+  Object.freeze(['ordinary-4', 'vfx-depth', 'gi-5', 'gi-3', 'screen-probe', 'feature-depth']),
 ]);
 
 export const DAWN_GATE_GROUPS = [

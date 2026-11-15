@@ -102,22 +102,14 @@ describe('hello-topology RhiNull structural consumer', () => {
     expect(cameraEntity.ok).toBe(true);
     if (!cameraEntity.ok) return;
     for (let warmup = 0; warmup < 4; warmup += 1) {
-      expect(world.update(1 / 60).ok).toBe(true);
-      const warmupFrame = hostResult.value.renderer.draw({
-        leases: [attached.value],
-        camera: { lease: attached.value },
-        environment: { lease: attached.value },
-      });
+    expect(world.update(1 / 60).ok).toBe(true);
+      const warmupFrame = hostResult.value.renderer.draw({ source: attached.value });
       expect(warmupFrame.ok).toBe(true);
       await Promise.resolve();
     }
     device.totalDrawCount = 0;
     expect(world.update(1 / 60).ok).toBe(true);
-    const frame = hostResult.value.renderer.draw({
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
+    const frame = hostResult.value.renderer.draw({ source: attached.value });
     expect(frame.ok).toBe(true);
     expect(device.totalDrawCount).toBeGreaterThan(0);
     expect(pipelineDescriptors).toEqual(

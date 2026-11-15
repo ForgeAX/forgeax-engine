@@ -10,6 +10,7 @@ import { chromium } from 'playwright';
 import { connectViewWorkspace } from '@forgeax/view/workspace/resident';
 
 const checkout = resolve(process.env.FORGEAX_ENGINE_CHECKOUT ?? '.ci/forgeax-engine');
+const browserLaunch = JSON.parse(await readFile(join(checkout, 'scripts/ci/browser-launch.json'), 'utf8'));
 const localEngine = process.env.FORGEAX_LOCAL_ENGINE === '1';
 const engine = localEngine ? join(checkout, 'packages/engine') : dirname(fileURLToPath(import.meta.resolve('@forgeax/engine/package.json')));
 const { runUnifiedCli } = await import(localEngine ? pathToFileURL(join(engine, 'dist/facades/devkit.mjs')).href : '@forgeax/engine/devkit');
@@ -73,7 +74,7 @@ try {
       ? { channel: process.env.FORGEAX_CHROME_CHANNEL }
       : {}),
     headless: false,
-    args: ['--enable-unsafe-webgpu', '--ignore-gpu-blocklist', '--enable-features=Vulkan,UseSkiaRenderer,SharedArrayBuffer', '--use-vulkan=swiftshader', '--use-angle=swiftshader', '--disable-gpu-driver-bug-workarounds', '--disable-dawn-features=disallow_unsafe_apis,tiered_adapter_limits'],
+    args: [...browserLaunch.args, '--use-angle=swiftshader'],
     chromiumSandbox: true,
   });
   page = await browser.newPage({ viewport: workload.gameViewport });
@@ -182,7 +183,13 @@ try {
   await scene.click();
   await page.screenshot({ path: '/tmp/view-game3d-open-asset.png' });
   await scene.press('Enter');
-  await page.getByTestId('panel-hierarchy').getByText('Ground', { exact: true }).waitFor({ timeout: 60_000 });
+  const sceneReadyDeadline = performance.now() + 60_000;
+  await page.getByTestId('panel-hierarchy').getByText('Ground', { exact: true }).waitFor({ timeout: Math.max(1, sceneReadyDeadline - performance.now()) });
+  // Hierarchy readiness precedes GPU readiness. Establish a presented Scene
+  // within the same startup budget before Play hides its presentation.
+  await page.waitForFunction(() =>
+    document.querySelector('canvas[data-forgeax-view-surface="engine-canvas"], [data-forgeax-view-surface="engine-canvas"] canvas')?.forgeaxFrameProgress?.completed?.presentation === 'ready',
+  undefined, { timeout: Math.max(1, sceneReadyDeadline - performance.now()) });
   const opened = await workspace.getState();
   const target = opened.preview.target;
   const args = { targetId: target.targetId, targetGeneration: target.generation };

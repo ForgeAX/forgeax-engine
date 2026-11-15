@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 import { createRequire } from 'node:module';
 import { build as viteBuild } from 'vite';
 import { build as bundle, transform } from 'esbuild';
+import { preparePackProgram } from '@forgeax/engine/pack/runtime';
 import { APP_VERSION, VIEW_TITLE, MCP_NATIVE_IMPORT_SOURCE } from '../src/contract.ts';
 const root = resolve(import.meta.dirname, '..');
 const out = resolve(root, 'dist');
@@ -68,6 +69,17 @@ async function frontend(entry) {
   return { code: optimized.code, css };
 }
 const preview = await frontend('src/app/preview-runtime.ts');
+const previewModule = {
+  specifier: pathToFileURL(resolve(out, 'preview-runtime.mjs')).href,
+  prepare: 'preparePlatform',
+};
+// DevKit seals this product module before running either frontend export.
+for (const selected of ['default', previewModule.prepare])
+  preparePackProgram({
+    entry: 'program-0.mjs',
+    export: selected,
+    modules: { 'program-0.mjs': preview.code },
+  }).unwrap();
 await writeFile(resolve(out, 'preview-runtime.mjs'), preview.code);
 await writeFile(
   resolve(out, 'preview-manifest.mjs'),
@@ -76,10 +88,7 @@ await writeFile(
       program: 'forgeax.mcp.preview',
       codeRevision: createHash('sha256').update(preview.code).digest('hex'),
     },
-    module: {
-      specifier: pathToFileURL(resolve(out, 'preview-runtime.mjs')).href,
-      prepare: 'preparePlatform',
-    },
+    module: previewModule,
   })};\n`,
 );
 let viewBytes = 0;

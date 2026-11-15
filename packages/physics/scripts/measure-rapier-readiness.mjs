@@ -13,7 +13,7 @@ const backendFacts = {
   'rapier-2d': {
     engineModule: 'packages/physics-rapier2d/dist/index.mjs',
     load: 'loadRapier2D',
-    payload: 'packages/physics-rapier2d/node_modules/@dimforge/rapier2d-compat/dist/rapier.mjs',
+    payload: 'packages/physics-rapier2d/pkg/rapier.mjs',
   },
   'rapier-3d': {
     engineModule: 'packages/physics-rapier3d/dist/index.mjs',
@@ -68,9 +68,10 @@ async function measureReadySample(backend, phase, index) {
     if (rapier instanceof Error || rapier?.code === 'wasm-load-failed') throw rapier;
     stages.wasmInit = { durationMs: duration(stageStart), status: 'ready' };
 
-    const [{ createApp }, { World }] = await Promise.all([
+    const [{ createApp }, { World }, physics] = await Promise.all([
       import(pathToFileURL(resolve(repoRoot, 'packages/app/dist/index.mjs')).href),
       import(pathToFileURL(resolve(repoRoot, 'packages/ecs/dist/index.mjs')).href),
+      import(pathToFileURL(resolve(repoRoot, 'packages/physics/dist/index.mjs')).href),
     ]);
     const world = new World();
     stageStart = now();
@@ -84,8 +85,9 @@ async function measureReadySample(backend, phase, index) {
       status: appResult.ok ? 'ready' : 'failed',
     };
     if (!appResult.ok) throw appResult.error;
-    if (!world.hasResource('PhysicsWorld')) {
-      throw new Error('createApp resolved without PhysicsWorld');
+    const resource = backend === 'rapier-2d' ? physics.PhysicsWorld2DResource : physics.PhysicsWorldResource;
+    if (!world.hasResource(resource)) {
+      throw new Error(`createApp resolved without ${resource.name}`);
     }
     await appResult.value.dispose();
     return {
@@ -229,7 +231,7 @@ if (process.argv[2] === '--child') {
     methodology: {
       cold: '10 independent Node processes per backend; each process cold-imports the Engine backend, initializes its WASM, and activates the selected backend plugin through createApp',
       warm: '10 repeated samples per backend in one process after an uncounted successful prewarm; the loader and ESM modules remain ready',
-      readySampleRule: 'Only samples whose createApp result is ok and whose World contains PhysicsWorld are counted; failures are retained separately',
+      readySampleRule: 'Only samples whose createApp result is ok and whose World contains the selected backend resource are counted; failures are retained separately',
     },
     backends,
     samples,

@@ -43,7 +43,8 @@ interface GpuFrame {
 
 /** Shared material facts follow the asset stream. Terrain instances hold no reverse dependencies. */
 export class TerrainLayers {
-  private scopes = new WeakMap<RenderResourceScope, Map<number, MaterialRow>>();
+  private sourceScope: RenderResourceScope | undefined;
+  private materials = new Map<number, MaterialRow>();
   private current = 0;
   private nextId = 1;
   private declarations = new WeakMap<TerrainDrawSource, Declaration>();
@@ -77,7 +78,8 @@ export class TerrainLayers {
     if (store === this.store) return;
     this.dispose();
     this.store = store;
-    this.scopes = new WeakMap();
+    this.sourceScope = undefined;
+    this.materials.clear();
     this.declarations = new WeakMap();
     this.frames = new WeakMap();
     this.current++;
@@ -85,8 +87,8 @@ export class TerrainLayers {
 
   adopt(scope: RenderResourceScope, changes: readonly AssetChange[]): void {
     this.syncStore();
-    const materials = this.scopes.get(scope);
-    if (materials === undefined) return;
+    if (this.sourceScope !== scope) return;
+    const materials = this.materials;
     for (const change of changes) {
       const before = materials.get(change.handle);
       if (before === undefined) continue;
@@ -103,6 +105,13 @@ export class TerrainLayers {
 
   capture(scope: RenderResourceScope, source: TerrainDrawSource): LayerFrame {
     this.syncStore();
+    if (this.sourceScope !== scope) {
+      this.sourceScope = scope;
+      this.materials.clear();
+      this.declarations = new WeakMap();
+      this.frames = new WeakMap();
+      this.current++;
+    }
     let declaration = this.declarations.get(source);
     if (declaration === undefined) {
       const heights = Array<number>(source.layers.length).fill(0);
@@ -110,11 +119,7 @@ export class TerrainLayers {
         const layer = source.layers[i];
         if (layer === undefined) continue;
         const handle = Number(layer.material);
-        let materials = this.scopes.get(scope);
-        if (materials === undefined) {
-          materials = new Map();
-          this.scopes.set(scope, materials);
-        }
+        const materials = this.materials;
         let row = materials.get(handle);
         if (row === undefined) {
           row = this.material(scope, handle, this.nextId++);
@@ -153,7 +158,7 @@ export class TerrainLayers {
       return image;
     };
     for (const index of source.activeLayers) {
-      const row = this.scopes.get(scope)?.get(Number(source.layers[index]?.material));
+      const row = this.materials.get(Number(source.layers[index]?.material));
       if (row === undefined)
         terrainSourceError(
           'terrain-layer-invalid',
@@ -208,6 +213,10 @@ export class TerrainLayers {
   bind(snapshot: MaterialSnapshot, frame: LayerFrame): void {
     this.snapshots.set(snapshot, frame);
   }
+  /** Whether this exact material snapshot already owns this captured layer frame. */
+  isBound(snapshot: MaterialSnapshot, frame: object): boolean {
+    return this.snapshots.get(snapshot) === frame;
+  }
   texture(snapshot: MaterialSnapshot, parameter: string): Binding | undefined {
     const channel = CHANNELS.indexOf(parameter as (typeof CHANNELS)[number]);
     if (channel < 0) return undefined;
@@ -215,9 +224,13 @@ export class TerrainLayers {
     return frame === undefined ? undefined : this.owner().capture(frame).arrays.bindings[channel];
   }
   detach(scope: RenderResourceScope): void {
-    const materials = this.scopes.get(scope);
-    if (materials !== undefined) this.current++;
-    this.scopes.delete(scope);
+    if (this.sourceScope === scope) {
+      this.sourceScope = undefined;
+      this.materials.clear();
+      this.declarations = new WeakMap();
+      this.frames = new WeakMap();
+      this.current++;
+    }
     this.store.releaseImagePages(scope);
   }
   dispose(): void {

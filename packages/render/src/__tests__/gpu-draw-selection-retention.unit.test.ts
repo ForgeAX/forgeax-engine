@@ -12,7 +12,7 @@ function batch(binding: object): GpuDrivenBatch {
 }
 
 it('does not keep an earlier selection reachable through its change diff', async () => {
-  const binding = { material: {}, worldId: 0, assetHandle: 1, drawItemIndex: 0 };
+  const binding = { material: {}, assetHandle: 1, drawItemIndex: 0 };
   let previous: GpuDrawSelection | undefined = new GpuDrawSelection([batch(binding)]);
   const released = new WeakRef(previous);
   const current = new GpuDrawSelection([batch(binding)]);

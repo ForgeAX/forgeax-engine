@@ -262,9 +262,7 @@ let activeWorldForEffects: import('@forgeax/engine-ecs').World | null = null;
 let effectParamsEntity: EntityHandle | null = null;
 let activeAppForRecovery: App | null = null;
 
-type RecoveryInstallResult =
-  | { ok: true }
-  | { ok: false; error: { code: string; hint: string } };
+type RecoveryInstallResult = { ok: true } | { ok: false; error: { code: string; hint: string } };
 
 function recoveryNotReady(): RecoveryInstallResult {
   return {
@@ -668,7 +666,7 @@ function installCaptureHook(app: App, world: App['world'], canvas: HTMLCanvasEle
   const attached = renderer.attach(world);
   if (!attached.ok) throw attached.error;
   const lease = attached.value;
-  const request = { leases: [lease], camera: { lease }, environment: { lease } };
+  const request = { source: lease };
   win.__prepareFramebuffersCapture = async (): Promise<void> => {
     world.update(1 / 60).unwrap();
     await drawReadyFrame(renderer, request);

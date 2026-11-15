@@ -20,7 +20,7 @@ import { MeshFilter, MeshRenderer } from '../components';
 import { createRenderPublisher } from '../publication/publisher';
 import { RenderPublicationReceiver } from '../publication/receiver';
 import { encodeRenderPublication, renderPublicationTransfers } from '../publication/record';
-import { extractFrames } from '../render-system-extract-tail';
+import { extractSource } from '../render-system-extract-tail';
 import { meshDrawSnapshot } from '../scene/mesh-draw';
 import { PersistentRenderScene } from '../scene/render-scene';
 
@@ -173,20 +173,18 @@ it.each([
       return result;
     }
     return scene.extractComposition(
-      [world],
-      { cameraOwner: 0, resourceOwner: 0 },
+      world,
       assets,
       (request) => {
         if (request === 'full') extracted += 128;
-        else if (typeof request === 'object')
-          for (const entities of request.entitiesByWorld) extracted += entities?.size ?? 0;
-        return extractFrames([world], 0, assets, caches, {
+        else if (typeof request === 'object') extracted += request.entities.size;
+        return extractSource(world, assets, caches, {
           materialContext: MATERIAL_CONTEXT,
           cull: 'none',
           renderables: request,
         });
       },
-      [lease],
+      lease,
     );
   };
   const facts = (frame: ReturnType<typeof draw>) =>
@@ -295,16 +293,15 @@ it.each([
   const draw = () => {
     world.update(0).unwrap();
     return scene.extractComposition(
-      [world],
-      { cameraOwner: 0, resourceOwner: 0 },
+      world,
       assets,
       (request) =>
-        extractFrames([world], 0, assets, caches, {
+        extractSource(world, assets, caches, {
           materialContext: MATERIAL_CONTEXT,
           cull: 'none',
           renderables: request,
         }),
-      [lease],
+      lease,
     );
   };
   const native = scene.shared as unknown as {

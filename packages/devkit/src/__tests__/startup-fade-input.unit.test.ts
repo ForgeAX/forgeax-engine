@@ -1,16 +1,19 @@
 // @vitest-environment jsdom
 import { runInNewContext } from 'node:vm';
+import { type LoadProgressLabelInput, resolveLoadProgressLabels } from '@forgeax/engine-types';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { hostStartupDocument, hostStartupScript } from '../host/startup-source.js';
 
 // Runs the emitted startup owner in a real DOM with the default 150 ms fade.
-function fixture() {
+function fixture(input?: LoadProgressLabelInput) {
+  const labels = resolveLoadProgressLabels(input);
   document.open();
-  document.write(hostStartupDocument('Fade game'));
+  document.write(hostStartupDocument('Fade game', labels, { game: 'game-1', engine: 'engine-1' }));
   document.close();
   const inputStates: boolean[] = [];
   const reload = vi.fn();
-  const startup = runInNewContext(hostStartupScript(true, 'host'), {
+  const clipboard = { writeText: vi.fn(async (_text: string) => {}) };
+  const startup = runInNewContext(hostStartupScript(true, 'host', labels), {
     host: {
       document,
       events: window,
@@ -19,6 +22,7 @@ function fixture() {
       visible: () => true,
       reducedMotion: false,
       reload,
+      clipboard,
     },
     MutationObserver,
     setTimeout,
@@ -55,6 +59,7 @@ function fixture() {
     canvas,
     click,
     reload,
+    clipboard,
     inputSignal,
   };
 }
@@ -62,6 +67,84 @@ function fixture() {
 afterEach(() => vi.useRealTimers());
 
 describe('startup overlay fade', () => {
+  it.each([
+    false,
+    true,
+  ])('uses one Host text configuration through markup and execution failure (overridden: %s)', async (overridden) => {
+    const input = overridden
+      ? {
+          lang: 'en-GB',
+          reload: 'Restart application',
+          host: {
+            game: 'Application <version>',
+            engine: 'Runtime',
+            completedFramesPerSecond: 'Application completed frames',
+            startupFailed: 'Application startup unavailable',
+            runtimeFailed: 'Application execution unavailable </script>',
+            diagnostics: 'Failure details',
+            copyDiagnostics: 'Copy <details>',
+            diagnosticsCopied: 'Details copied',
+            diagnosticsCopyFailed: 'Copy unavailable',
+            javascriptRequired: 'Enable the scripting runtime',
+          },
+        }
+      : undefined;
+    const labels = resolveLoadProgressLabels(input);
+    const page = fixture(input);
+    try {
+      expect(document.documentElement.lang).toBe(labels.lang);
+      expect(document.querySelector('#forgeax-status')?.textContent).toBe(
+        `${labels.host.game} game-1 | ${labels.host.engine} engine-1 | FPS --`,
+      );
+      expect(document.querySelector('#forgeax-status version')).toBeNull();
+      expect(document.querySelector('#forgeax-fps')?.getAttribute('aria-label')).toBe(
+        labels.host.completedFramesPerSecond,
+      );
+      expect(document.querySelector('#forgeax-fatal-message')?.textContent).toBe(
+        labels.host.startupFailed,
+      );
+      expect(document.querySelector('#forgeax-fatal-diagnostics-title')?.textContent).toBe(
+        labels.host.diagnostics,
+      );
+      expect(document.querySelector('#forgeax-fatal-copy')?.textContent).toBe(
+        labels.host.copyDiagnostics,
+      );
+      expect(document.querySelector('#forgeax-fatal-reload')?.textContent).toBe(labels.reload);
+      expect(document.querySelector('noscript')?.textContent).toBe(labels.host.javascriptRequired);
+
+      page.present(1);
+      page.startup.fail(
+        { code: 'fixture-runtime-fault', message: 'original diagnostic cause' },
+        { fault: { phase: 'frame' } },
+      );
+      expect(document.querySelector('#forgeax-fatal-message')?.textContent).toBe(
+        labels.host.runtimeFailed,
+      );
+      expect(document.querySelector('#forgeax-fatal-details')?.textContent).toContain(
+        'fixture-runtime-fault: original diagnostic cause',
+      );
+      const copy = document.querySelector<HTMLButtonElement>('#forgeax-fatal-copy');
+      copy?.click();
+      await vi.waitFor(() =>
+        expect(document.querySelector('#forgeax-fatal-copy-status')?.textContent).toBe(
+          labels.host.diagnosticsCopied,
+        ),
+      );
+      expect(page.clipboard.writeText).toHaveBeenCalledWith(
+        expect.stringContaining('fixture-runtime-fault'),
+      );
+      page.clipboard.writeText.mockRejectedValueOnce(new Error('clipboard denied'));
+      copy?.click();
+      await vi.waitFor(() =>
+        expect(document.querySelector('#forgeax-fatal-copy-status')?.textContent).toBe(
+          labels.host.diagnosticsCopyFailed,
+        ),
+      );
+    } finally {
+      page.startup.destroy();
+    }
+  });
+
   it('admits gameplay input as soon as the first frame is presentable', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
     const page = fixture();

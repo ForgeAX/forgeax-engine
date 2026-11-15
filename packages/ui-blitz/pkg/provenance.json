@@ -4,10 +4,11 @@
   "forkRevision": "45a003ce743e88d225eb0a8fc08ce37f50112317",
   "forkDirty": false,
   "rust": "cargo 1.99.0 (5f94df478 2026-08-27)",
+  "rustToolchain": "1.99.0",
   "wasmBindgen": "0.2.129",
   "paint": "vello_gpu@0.3.0/portable; anyrender_vello_cpu@0.18.0/reference",
   "profile": "release",
-  "sourceDigest": "4c928bb10c5895a0be851ddd8b18035cc26e8bd92b8f9d1e2e032d7dbf03237d",
+  "sourceDigest": "049ed2446cb3fa53596e16bc2fccc81bbe38cfa38a52152c29c53c50936f8c76",
   "inputs": {
     "packages/ui-blitz/Cargo.lock": "6dd8de56b7822694db88cc4cdb8bae4678347e50328bf3f1863e5b6d8daace0f",
     "packages/ui-blitz/Cargo.toml": "e64df485b0d0898a72e7fbe28eceb96cd2f9e53d71848e214f3b9da3a9ce42c4",
@@ -20,7 +21,7 @@
     "packages/ui-blitz/rust/resources.rs": "6b5a99190e2308a6535441139761a5eae9c7d05e22620bc8116af9d65a0f4564",
     "packages/ui-blitz/rust/scroll_tests.rs": "bad72d5586ce760630cac0d33b11e32ad04aecc347d5453c7646ac2e7250459e",
     "packages/ui-blitz/rust/test-assets/aspect-pattern.txt": "c9f46a837298d171e114a9b636266b453315b8e5b4d7527fa360559bc5886d98",
-    "packages/ui-blitz/scripts/build-wasm.mjs": "dbdd78e349c6e5ede08d21270c05bbe291d312d1637f4ab30ef971e55124b79e",
+    "packages/ui-blitz/scripts/build-wasm.mjs": "4f7317c5957e6d7e2601ea8b3d183a7376c18557b17c677f5ded089308d6f1f0",
     "packages/ui-blitz/scripts/content-key.mjs": "9844eb3aa7c41b27e37ae4f329c07f7b589c0ef10875f747fff9a7d831e62811",
     "packages/ui-blitz/scripts/ensure-wasm.mjs": "3086afdc1be6ad5a247b03fee526adb5e8bc08bbdd3c1bc83ad0803ab1a77fc4",
     "packages/ui-blitz/scripts/fetch-wasm.mjs": "52e8e503831130ad8a537e44f5e41f8634037574adcf9676927268667d69c598",
@@ -2217,8 +2218,8 @@
   ],
   "outputs": {
     "ui_blitz_bg.wasm": {
-      "bytes": 17035120,
-      "sha256": "fa276ba25c91786b6db51c765f6f2ee75362530bf4eaa829ed7e84a8988f9851"
+      "bytes": 17032673,
+      "sha256": "7eb949b7f879d162f05af7d4f9fa5418db2323c0036e31d04d03f5c710b06f53"
     },
     "ui_blitz_bg.wasm.d.ts": {
       "bytes": 8798,
@@ -2234,7 +2235,7 @@
     },
     "ui-native.mjs": {
       "bytes": 44084,
-      "sha256": "5f6312192017710acacd9baeaaaf335627813c507f66632c99d29644957ad97e"
+      "sha256": "671ff96f04e384a2aeabedd50cb1c49ac2e7fb05cb745bbc2923aaabbe32ae77"
     },
     "ui-native.d.mts": {
       "bytes": 5281,

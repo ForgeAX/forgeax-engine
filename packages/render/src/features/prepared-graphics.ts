@@ -29,6 +29,7 @@ export type { PreparedKind } from './vocabulary';
 
 /** Canonical vertex layouts owned by the prepared-graphics host. */
 export const RENDER_FEATURE_VERTEX_LAYOUTS = Object.freeze({
+  clipPositionColor: 'clip-position-color',
   positionSizeColorInstance: 'position-size-color-instance',
   billboardMaterialInstance: 'billboard-material-instance',
   billboardMaterialInputInstance: 'billboard-material-input-instance',
@@ -36,6 +37,7 @@ export const RENDER_FEATURE_VERTEX_LAYOUTS = Object.freeze({
   topologySegmentMaterialInputInstance: 'topology-segment-material-input-instance',
   meshGeometryMaterialInstance: 'mesh-geometry-material-instance',
   meshGeometryMaterialInputInstance: 'mesh-geometry-material-input-instance',
+  waterInfoPositionFlow: 'water-info-position-flow',
 } as const);
 
 /**
@@ -75,6 +77,14 @@ export interface RenderFeaturePipelineDescriptor {
 }
 
 /** Declarative request for values bound through a prepared pipeline. */
+export interface RenderFeatureWaterMaterialInput {
+  readonly bodyKey: string;
+  readonly viewIdentity: string;
+  readonly bodyGeneration: number;
+  readonly zoneGeneration: number;
+  readonly programInputs: import('../material-program-inputs').MaterialProgramInputs;
+}
+
 export interface RenderFeatureBindingsDescriptor {
   readonly pipeline: RenderFeaturePreparedRef<'pipeline'>;
   readonly values: Readonly<Record<string, unknown>> & {
@@ -82,7 +92,15 @@ export interface RenderFeatureBindingsDescriptor {
     readonly sceneDepth?: RenderFeatureTargetHandle;
     /** Binding slot for a view-plus-scene-depth group (0 keeps legacy behavior). */
     readonly sceneDepthBinding?: number;
+    readonly waterMaterial?: RenderFeatureWaterMaterialInput;
+    readonly bufferBindings?: readonly RenderFeatureGraphicsStorageBinding[];
   };
+}
+
+export interface RenderFeatureGraphicsStorageBinding {
+  readonly binding: number;
+  readonly resource: string;
+  readonly access: 'read' | 'read-write';
 }
 
 /** CPU-owned vertex data and its canonical layout identity. */
@@ -155,6 +173,7 @@ export interface RenderFeatureColorAttachment {
 export interface RenderFeatureDepthStencilAttachment {
   readonly resource: string | RenderFeatureTargetHandle;
   readonly format: TextureFormat;
+  readonly depthClearValue?: number;
   readonly depthLoadOp: 'load' | 'clear';
   readonly depthStoreOp: 'store' | 'discard';
 }
@@ -250,7 +269,11 @@ export type RenderFeatureDrawRecord = (
 export interface RenderFeatureGraphicsPassDescriptor {
   readonly attachments: RenderFeatureGraphicsPassAttachments;
   /** Sampled targets; a single-sample depth writer receives an independent pre-draw snapshot. */
-  readonly sampledTargets?: readonly (RenderFeatureTargetHandle | SceneDataTarget)[];
+  readonly sampledTargets?: readonly (
+    | RenderFeatureTargetHandle
+    | SceneDataTarget
+    | import('./texture-source').RenderFeatureTextureReference
+  )[];
   readonly sceneDepth?: import('@forgeax/engine-types').MaterialSceneDepth;
   readonly draws: readonly RenderFeatureDrawRecord[];
 }
@@ -427,13 +450,10 @@ function hasValidBindings(
   state: RenderFeaturePreparedGraphicsState,
   projection?: PreparedGraphicsValidationProjection,
 ): boolean {
-  return (
-    draw.bindings.length > 0 &&
-    draw.bindings.every(
-      (reference) =>
-        validRef(reference, 'bindings', state.generation) &&
-        hasPreparedRef(state.bindings, reference, projection),
-    )
+  return draw.bindings.every(
+    (reference) =>
+      validRef(reference, 'bindings', state.generation) &&
+      hasPreparedRef(state.bindings, reference, projection),
   );
 }
 
@@ -465,10 +485,12 @@ function validateGraphicsPass(
   if (!state.capabilityAvailable) return invalid(featureIdentity, 'prepare');
   const pipelines = state.pipelines ?? (state.pipeline === undefined ? [] : [state.pipeline]);
   const hasVertexDraw = descriptor.draws.some((draw) => draw.vertexData.length > 0);
+  const hasBindingDraw = descriptor.draws.some((draw) => draw.bindings.length > 0);
   if (
-    pipelines.length === 0 ||
-    state.bindings.length === 0 ||
-    (hasVertexDraw && state.vertexData.length === 0)
+    descriptor.draws.length > 0 &&
+    (pipelines.length === 0 ||
+      (hasBindingDraw && state.bindings.length === 0) ||
+      (hasVertexDraw && state.vertexData.length === 0))
   ) {
     return invalid(featureIdentity, 'prepare');
   }
@@ -476,18 +498,23 @@ function validateGraphicsPass(
     projection !== undefined && matchesOwnedProjection(state, pipelines, projection)
       ? projection
       : undefined;
-  if (
-    owned !== undefined
-      ? !owned.validReferences
-      : pipelines.some((reference) => !validRef(reference, 'pipeline', state.generation)) ||
-        state.bindings.some((reference) => !validRef(reference, 'bindings', state.generation)) ||
-        state.vertexData.some(
-          (reference) => !validRef(reference, 'vertex-data', state.generation),
-        ) ||
-        state.indexData.some((reference) => !validRef(reference, 'index-data', state.generation))
-  ) {
-    return invalid(featureIdentity, 'contribute');
-  }
+  const validatePreparedGraphicsReferences = () => {
+    if (
+      owned !== undefined
+        ? !owned.validReferences
+        : pipelines.some((reference) => !validRef(reference, 'pipeline', state.generation)) ||
+          state.bindings.some((reference) => !validRef(reference, 'bindings', state.generation)) ||
+          state.vertexData.some(
+            (reference) => !validRef(reference, 'vertex-data', state.generation),
+          ) ||
+          state.indexData.some((reference) => !validRef(reference, 'index-data', state.generation))
+    ) {
+      return invalid(featureIdentity, 'contribute');
+    }
+    return undefined;
+  };
+  const referenceFailure = validatePreparedGraphicsReferences();
+  if (referenceFailure !== undefined) return referenceFailure;
   if (
     descriptor.attachments.colors.some(
       (attachment) => !hasAttachment(state.attachments, attachment),
@@ -514,18 +541,23 @@ function validateGraphicsPass(
     ) {
       return invalid(featureIdentity, 'contribute');
     }
-    if (draw.kind === 'draw-indexed' || draw.kind === 'draw-indexed-indirect') {
-      if (
-        draw.indexData === undefined ||
-        !validRef(draw.indexData.resource, 'index-data', state.generation) ||
-        !hasPreparedRef(state.indexData, draw.indexData.resource, owned) ||
-        state.indexData.length === 0
-      ) {
+    const validatePreparedIndexData = () => {
+      if (draw.kind === 'draw-indexed' || draw.kind === 'draw-indexed-indirect') {
+        if (
+          draw.indexData === undefined ||
+          !validRef(draw.indexData.resource, 'index-data', state.generation) ||
+          !hasPreparedRef(state.indexData, draw.indexData.resource, owned) ||
+          state.indexData.length === 0
+        ) {
+          return invalid(featureIdentity, 'contribute');
+        }
+      } else if (draw.indexData !== undefined) {
         return invalid(featureIdentity, 'contribute');
       }
-    } else if (draw.indexData !== undefined) {
-      return invalid(featureIdentity, 'contribute');
-    }
+      return undefined;
+    };
+    const indexFailure = validatePreparedIndexData();
+    if (indexFailure !== undefined) return indexFailure;
   }
   return ok({ acceptedDrawCount: descriptor.draws.length });
 }

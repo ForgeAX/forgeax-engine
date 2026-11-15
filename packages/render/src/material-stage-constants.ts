@@ -7,6 +7,7 @@ import {
   STANDARD_SURFACE_DISCARD_VIEW_CLIPPING,
   STANDARD_SURFACE_DISCARDS_OVERRIDE,
   STANDARD_TEXTURE_MASK_OVERRIDE,
+  withSupportedLeanInputs,
 } from '@forgeax/engine-shader';
 
 /** Surface discard bits an admitted Standard draw can actually reach. */
@@ -47,7 +48,9 @@ export function colorlessFormat<F extends string>(
  * Fragment entry of a colorless scene prepass (UE DepthPass PositionOnly).
  * `null` drops the fragment stage when no coverage source can discard, so the
  * shared invariant vertex stage alone writes the same depth. Alpha mask, a
- * custom Surface, material clipping, LOD dither and view clipping keep it.
+ * custom Surface, material clipping, LOD dither and view clipping keep a
+ * fragment stage; the stock AO-input entry is swapped for the coverage-only
+ * entry when the program declares it, since nothing reads its color.
  */
 export function colorlessFragmentEntry(
   colorless: boolean,
@@ -55,16 +58,27 @@ export function colorlessFragmentEntry(
   receipt: MaterialShaderArtifact['receipt'],
   surfaceDiscards: number | undefined,
   fragmentEntry: string | undefined,
+  program?: MaterialShaderArtifact['program'],
 ): string | null | undefined {
-  return colorless &&
+  if (!colorless) return fragmentEntry;
+  if (
     variantSet?.includes('ALPHA_MASK=false') === true &&
     receipt !== undefined &&
     receipt.surface === undefined &&
     !receipt.materialRow.fields.includes('clippingControl') &&
     surfaceDiscards === 0
-    ? null
+  )
+    return null;
+  return fragmentEntry === 'fs_ao_input' &&
+    program?.entryPoints?.some(
+      (entry) => entry.stage === 'fragment' && entry.name === COLORLESS_COVERAGE_FRAGMENT_ENTRY,
+    ) === true
+    ? COLORLESS_COVERAGE_FRAGMENT_ENTRY
     : fragmentEntry;
 }
+
+/** Standard fragment entry that only runs the coverage gate and writes no color. */
+export const COLORLESS_COVERAGE_FRAGMENT_ENTRY = 'fs_depth_masked';
 
 /** Only a View with proven shadow demand (or its absence) specializes reception. */
 export function effectiveStandardShadowReception(
@@ -117,6 +131,8 @@ export function applySurfaceDiscardAxis(
       0
     )
       selected = selectAxisOn(selected, STANDARD_SURFACE_DISCARD_CLIPPING_AXIS);
+    // LOD cross-fade programs keep the general vertex inputs (permutation rules).
+    selected = withSupportedLeanInputs(selected);
   }
   return {
     variantSet: selected,

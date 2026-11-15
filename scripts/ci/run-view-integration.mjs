@@ -65,6 +65,21 @@ const steps = [
     ...(process.env.CI === 'true' ? [{ FORGEAX_BROWSER_CI_LIGHTWEIGHT: '1' }] : []),
   ],
   ['diagnostics', 'node', ['tools/view/scripts/verify-texture-preview-integration.mjs']],
+  [
+    'diagnostics',
+    'node',
+    ['tools/view/scripts/verify-gpu-texture-preview.mjs'],
+    { FORGEAX_EVIDENCE_DIR: resolve(root, 'artifacts/view-integration/gpu-texture-2d') },
+  ],
+  [
+    'diagnostics',
+    'node',
+    ['tools/view/scripts/verify-gpu-texture-preview.mjs'],
+    {
+      FORGEAX_GPU_TEXTURE_ARRAY: '1',
+      FORGEAX_EVIDENCE_DIR: resolve(root, 'artifacts/view-integration/gpu-texture-array'),
+    },
+  ],
   ['diagnostics', 'node', ['tools/view/scripts/verify-pack-authoring-integration.mjs']],
   ['diagnostics', 'node', ['tools/view/scripts/verify-pack-save-reopen-integration.mjs']],
   ['engine-only', 'node', ['scripts/ci/verify-engine-without-view.mjs']],

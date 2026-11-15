@@ -1,5 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import type { EngineWorkspaceRuntime } from '@forgeax/engine-app';
 import { AssetGuid, definePackageId } from '@forgeax/engine-pack/source';
@@ -9,6 +8,17 @@ import { createViteConfig } from '../src/host.js';
 import { readProjectFacts } from '../src/project.js';
 import { createWorkspaceThumbnails, readPreviewInputs } from '../src/workspace-thumbnails.js';
 import { createWorkspacePreviewBatch } from '../src/workspace-preview-batch.js';
+import { createLiveSyncProjectDirectory, prepareLiveSyncSharedInputs } from '../scripts/live-sync-inputs.mjs';
+
+async function copySelectedSharedInputs(
+  sourceRoot: string,
+  projectRoot: string,
+  temporaryRoot: string,
+  manifestPath: string | undefined,
+) {
+  if (manifestPath)
+    await prepareLiveSyncSharedInputs({ sourceRoot, projectRoot, temporaryRoot, manifestPath });
+}
 
 it('captures transparent previews progressively and reopens from DDC without a GPU carrier', async () => {
   const started = performance.now();
@@ -16,7 +26,11 @@ it('captures transparent previews progressively and reopens from DDC without a G
   const expectCache = process.env.FORGEAX_THUMBNAIL_EXPECT_CACHE === '1';
   const stages: Record<string, number> = {};
   const repository = resolve(import.meta.dirname, '../../..');
-  const root = process.env.FORGEAX_THUMBNAIL_PROJECT ?? await mkdtemp(resolve(tmpdir(), 'forgeax-thumbnail-browser-'));
+  const manifestPath = process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST;
+  const directory = process.env.FORGEAX_THUMBNAIL_PROJECT
+    ? {root: process.env.FORGEAX_THUMBNAIL_PROJECT, temporaryRoot: process.env.FORGEAX_THUMBNAIL_PROJECT}
+    : await createLiveSyncProjectDirectory('forgeax-thumbnail-browser-', repository, manifestPath);
+  const {root, temporaryRoot} = directory;
   await mkdir(root, { recursive: true });
   const evidence = process.env.FORGEAX_THUMBNAIL_EVIDENCE ?? resolve(repository, 'artifacts/preview-thumbnails');
   let server: ViteDevServer | undefined;
@@ -24,6 +38,7 @@ it('captures transparent previews progressively and reopens from DDC without a G
   const oldBackend = process.env.FORGEAX_THUMBNAIL_BACKEND;
   if (process.platform === 'linux') process.env.FORGEAX_THUMBNAIL_BACKEND = 'software';
   try {
+    await copySelectedSharedInputs(repository, root, temporaryRoot, manifestPath);
     await mkdir(evidence, { recursive: true });
     await mkdir(resolve(root, 'assets'), { recursive: true });
     await mkdir(resolve(root, 'node_modules/@forgeax'), { recursive: true });
@@ -121,8 +136,6 @@ it('captures transparent previews progressively and reopens from DDC without a G
     }
     expect(completed, JSON.stringify((await owner.read(assets.map(row => row.guid))).thumbnails.map(({ dataUrl: _image, ...row }) => row))).toBe(true);
     const coldMs = performance.now() - start;
-    // Cold module discovery must finish without navigating an active capture.
-    expect(reloads).toEqual([]);
     expect(launches).toBe(expectCache ? 0 : 1);
     const cold = await owner.read(assets.map(row => row.guid));
     await writeFile(resolve(evidence, 'cold-measurements.json'), JSON.stringify({ stages, coldMs, changes, assets: cold.thumbnails.map(({ dataUrl: _dataUrl, ...row }) => row) }, null, 2));
@@ -157,11 +170,15 @@ it('captures transparent previews progressively and reopens from DDC without a G
     near(at(environment, 32, 82), [30,60,220,255]);
     near(at(environment, 96, 82), [230,200,40,255]);
     expect(at(environment, 64, 20)[3]).toBe(0);
-    for (const dimension of ['2d-array', '3d']) {
-      const slice = PNG.sync.read(await readFile(resolve(evidence, `${dimension}.png`)));
-      near(at(slice, 78, 78), [220,30,40,255]);
-      expect(at(slice, 0, 0)[3]).toBe(0);
-    }
+    const arraySlice = PNG.sync.read(await readFile(resolve(evidence, '2d-array.png')));
+    near(at(arraySlice, 78, 78), [220,30,40,255]);
+    expect(at(arraySlice, 0, 0)[3]).toBe(0);
+    const volume = PNG.sync.read(await readFile(resolve(evidence, '3d.png')));
+    // The box shows the solid upper depth slice and the lower checker on an adjacent face.
+    near(at(volume, 32, 60), [30,60,220,255]);
+    near(at(volume, 96, 65), [20,200,60,255]);
+    near(at(volume, 90, 82), [220,30,40,255]);
+    expect(at(volume, 0, 0)[3]).toBe(0);
     const scene = PNG.sync.read(await readFile(resolve(evidence, 'scene.png')));
     expect(scene.data[3]).toBe(0);
     expect(scene.data[(64 * 128 + 64) * 4 + 3]).toBe(255);
@@ -173,6 +190,8 @@ it('captures transparent previews progressively and reopens from DDC without a G
     else expect(effectMetrics?.capture?.ready).toBe(30);
     const particles = PNG.sync.read(await readFile(resolve(evidence, 'particles.png')));
     expect(particles.data.filter((value, index) => index % 4 === 3 && value > 0).length).toBeGreaterThan(8);
+    // Cold module discovery must finish without navigating an active capture.
+    expect(reloads).toEqual([]);
     await owner.close();
     launches = 0;
     owner = createWorkspaceThumbnails(runtime, () => {}, dependencies);
@@ -184,6 +203,6 @@ it('captures transparent previews progressively and reopens from DDC without a G
   } finally {
     if (oldBackend === undefined) delete process.env.FORGEAX_THUMBNAIL_BACKEND; else process.env.FORGEAX_THUMBNAIL_BACKEND = oldBackend;
     await owner?.close(); await server?.close();
-    if (!process.env.FORGEAX_THUMBNAIL_PROJECT) await rm(root, { recursive: true, force: true });
+    if (!process.env.FORGEAX_THUMBNAIL_PROJECT) await rm(temporaryRoot, { recursive: true, force: true });
   }
 }, 180_000);

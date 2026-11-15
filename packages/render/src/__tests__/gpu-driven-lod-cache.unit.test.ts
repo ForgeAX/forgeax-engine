@@ -43,7 +43,7 @@ function identityWorld(z = 0): Float32Array {
   return world;
 }
 
-function snapshot(entityKey: number, withLod: boolean, worldId = 0): RenderableSnapshot {
+function snapshot(entityKey: number, withLod: boolean): RenderableSnapshot {
   const material = new MaterialResource({
     baseColor: vec3.create(1, 1, 1),
     metallic: 0,
@@ -59,7 +59,6 @@ function snapshot(entityKey: number, withLod: boolean, worldId = 0): RenderableS
     material,
     materials: [material],
     materialBindingSources: ['engine-default'],
-    worldId,
     entityKey,
     gpuDrivenDraws: [
       {
@@ -88,16 +87,14 @@ function snapshot(entityKey: number, withLod: boolean, worldId = 0): RenderableS
 function updateSnapshot(value: RenderableSnapshot) {
   return {
     kind: 'update' as const,
-    worldId: value.worldId,
     entityKey: value.entityKey,
     snapshot: value,
   };
 }
 
-function updateWorld(entityKey: number, z: number, worldId = 0) {
+function updateWorld(entityKey: number, z: number) {
   return {
     kind: 'update' as const,
-    worldId,
     entityKey,
     world: identityWorld(z),
   };
@@ -148,7 +145,7 @@ function mesh(device: RhiNullDevice, withLod: boolean): MeshGpuHandles {
   };
 }
 
-async function fixture(withLod: boolean, entityCount = 2, worldOf = (_index: number) => 0) {
+async function fixture(withLod: boolean, entityCount = 2, meshClassOf = (_index: number) => 0) {
   const adapter = (await rhi.requestAdapter()).unwrap();
   const device = (await adapter.requestDevice()).unwrap() as RhiNullDevice;
   const shader = (await rhi.createShaderModule(device, { code: 'synthetic' })).unwrap();
@@ -162,10 +159,11 @@ async function fixture(withLod: boolean, entityCount = 2, worldOf = (_index: num
   const shared = new Map<number, MaterialResource>();
   const delta = projection.apply(
     Array.from({ length: entityCount }, (_, index) => {
-      const source = snapshot(index + 1, withLod, worldOf(index));
-      const material = shared.get(source.worldId) ?? source.material;
-      shared.set(source.worldId, material);
-      return updateSnapshot({ ...source, material, materials: [material] });
+      const source = snapshot(index + 1, withLod);
+      const key = meshClassOf(index);
+      const material = shared.get(key) ?? source.material;
+      shared.set(key, material);
+      return updateSnapshot({ ...source, assetHandle: 3 + key, material, materials: [material] });
     }),
   );
   const availability = GpuScene.create(device, entityCount).unwrap();
@@ -319,7 +317,6 @@ describe('GPU-driven filtered-plan cache', () => {
     const captured = prepareBatchRows(rawBatch, {
       mesh: f.gpuMesh,
       execution,
-      worldKeys: undefined,
     });
     const bytes = observeGpuInputBytes(f.device);
     const prepare = () => {
@@ -413,7 +410,7 @@ describe('GPU-driven filtered-plan cache', () => {
         expect(prepare(classes).filteredPlanBuilds).toBe(0);
       }
       expect(filteredCalls).toBe(1);
-      classes = new Map([[`${first.worldId}:${first.entityKey}`, 'probe:7']]);
+      classes = new Map([[`${first.entityKey}`, 'probe:7']]);
       expect(prepare().indirectDrawCount).toBe(2);
       expect(filteredCalls).toBe(2);
       classes = new Map();
@@ -458,16 +455,14 @@ describe('GPU-driven filtered-plan cache', () => {
       drawCount: number;
     }> = [];
     let classes = new Map(
-      projection
-        .slotsSnapshot()
-        .map(({ snapshot }) => [`${snapshot.worldId}:${snapshot.entityKey}`, 'probe:0']),
+      projection.slotsSnapshot().map(({ snapshot }) => [`${snapshot.entityKey}`, 'probe:0']),
     );
     const prepare = (
       phase: string,
       edit?: (classes: Map<string, string>) => Map<string, string>,
     ) => {
       const slots = projection.slotsSnapshot();
-      expect(classes.has(`${cpuSource.worldId}:${cpuSource.entityKey}`)).toBe(true);
+      expect(classes.has(`${cpuSource.entityKey}`)).toBe(true);
       if (edit !== undefined) classes = edit(classes);
       const frame = production
         .prepare(
@@ -512,7 +507,7 @@ describe('GPU-driven filtered-plan cache', () => {
         const classes = new Map(previous);
         const first = projection.slotsSnapshot().at(0)?.snapshot;
         if (first === undefined) throw new Error('expected GPU source');
-        classes.set(`${first.worldId}:${first.entityKey}`, 'probe:7');
+        classes.set(`${first.entityKey}`, 'probe:7');
         return classes;
       };
       prepare('gpu-binding-change', changeGpuBinding);
@@ -578,7 +573,7 @@ describe('GPU-driven filtered-plan cache', () => {
     f.topology.apply(delta);
     const plan = f.topology.query(f.topology.sourcePlan(), undefined);
     const slots = f.projection.slotsSnapshot();
-    const classes = new Map([[`${source.worldId}:${source.entityKey}`, 'probe:7']]);
+    const classes = new Map([[`${source.entityKey}`, 'probe:7']]);
     const prepare = () => {
       const frame = f.production
         .prepare(
@@ -1147,7 +1142,7 @@ describe('GPU-driven dirty scene rows', () => {
           const entityIndex = (step * 97 + (temporal ? 13 : 0)) % (BATCHES * PER_BATCH);
           const z = 100 + step + (temporal ? 50 : 0);
           mirror.drain();
-          const delta = projection.apply([updateWorld(entityIndex + 1, z, entityIndex % BATCHES)]);
+          const delta = projection.apply([updateWorld(entityIndex + 1, z)]);
           gpuScene.sync(delta, undefined, (slot) => projection.cullingWorldBoundsAt(slot)).unwrap();
           const synced = mirror.drain();
           // The moved row and the row holding its submitted pose.
@@ -1168,7 +1163,7 @@ describe('GPU-driven dirty scene rows', () => {
       production.dispose();
       availability.scene.dispose();
     }
-  }, 60_000);
+  }, 60000);
 
   // Falsifier for the retired prev = current quirk: a moving object without
   // LOD must carry its previous pose too, or TAA sees a zero motion vector.

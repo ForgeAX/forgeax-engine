@@ -13,7 +13,7 @@ import { MeshRenderer } from '../components/mesh-renderer';
 import { SpriteInstances } from '../components/sprite-instances';
 import { Tilemap } from '../components/tilemap';
 import { Visibility, VisibilityStateValue } from '../components/visibility';
-import { extractFrames } from '../render-system-extract-tail';
+import { extractSource } from '../render-system-extract-tail';
 import { PersistentRenderScene } from '../scene/render-scene';
 import { classifySceneDataCoverage } from '../temporal/coverage';
 
@@ -160,16 +160,16 @@ describe('visibility built-in producer matrix', () => {
     const entity = setup(world, assets);
     world.update(0).unwrap();
 
-    const hidden = extractFrames([world], { cameraOwner: 0, resourceOwner: 0 }, assets);
+    const hidden = extractSource(world, assets);
     expect(hidden.renderables).toHaveLength(0);
     expect(hidden.dispatch).toHaveLength(0);
 
     world.set(entity, Visibility, { state: VisibilityStateValue.visible }).unwrap();
-    const visible = extractFrames([world], { cameraOwner: 0, resourceOwner: 0 }, assets);
-    expect(visible.visibilitySnapshots[0]?.get(entity)?.effective).toBe('visible');
+    const visible = extractSource(world, assets);
+    expect(visible.visibilitySnapshot?.get(entity)?.effective).toBe('visible');
 
     world.set(entity, Visibility, { state: VisibilityStateValue.hidden }).unwrap();
-    const restored = extractFrames([world], { cameraOwner: 0, resourceOwner: 0 }, assets);
+    const restored = extractSource(world, assets);
     expect(restored.renderables).toHaveLength(0);
     expect(restored.dispatch).toHaveLength(0);
   });
@@ -213,22 +213,15 @@ it.each([
   const lease = createRenderReadLease(world);
   const draw = () =>
     scene.extractComposition(
-      [world],
-      { cameraOwner: 0, resourceOwner: 0 },
+      world,
       assets,
       (renderables) =>
-        extractFrames(
-          [world],
-          { cameraOwner: 0, resourceOwner: 0 },
-          assets,
-          scene.materialSnapshotCacheStore(),
-          {
-            cull: 'none',
-            retainHidden: true,
-            renderables,
-          },
-        ),
-      [lease],
+        extractSource(world, assets, scene.materialSnapshotCacheStore(), {
+          cull: 'none',
+          retainHidden: true,
+          renderables,
+        }),
+      lease,
     );
   const shadowDispatch = () =>
     scene

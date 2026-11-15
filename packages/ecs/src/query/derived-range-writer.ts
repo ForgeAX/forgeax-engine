@@ -18,7 +18,7 @@ import type { MutableColumnShape, ReadonlyColumnShape } from './query';
 export interface DerivedColumnBinding<R extends Component, C extends Component> {
   /** Physical table identity for package-internal projection consumers. */
   readonly tableId: number;
-  /** Whole entity column; every dense table carries the essential Entity row. */
+  /** Whole entity column; every dense table carries the Entity row. */
   readonly entities: Readonly<Uint32Array>;
   readonly read: ReadonlyColumnShape<R>;
   readonly write: MutableColumnShape<C>;

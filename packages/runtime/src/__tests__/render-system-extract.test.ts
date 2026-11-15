@@ -1,3 +1,4 @@
+import { createRenderReadLease } from '@forgeax/engine-ecs/projection';
 import { createMeshBuilder, createPrimitiveMesh } from '@forgeax/engine-geometry';
 import {
   createMaterialArtifactDigest,
@@ -38,7 +39,7 @@ import type { MaterialAsset, MaterialPass, MeshAsset } from '@forgeax/engine-typ
 import { srgbChannelToLinear } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { prepareExtractContext } from '../../../render/src/render-system-extract';
-import { extractFrame, extractFrames } from '../../../render/src/render-system-extract-tail';
+import { extractFrame, extractSource } from '../../../render/src/render-system-extract-tail';
 import { PersistentRenderScene } from '../../../render/src/scene/render-scene';
 import { makeMockShaderRegistry } from './helpers/mock-shader-registry';
 
@@ -618,7 +619,7 @@ import { makeMockShaderRegistry } from './helpers/mock-shader-registry';
       expect(extractFrame(world, prepareExtractContext(world)).renderables).toHaveLength(0);
     });
 
-    it('persistent composition retains shadow-only casters lit from another World', () => {
+    it('persistent composition retains shadow-only casters in the source World', () => {
       const sceneWorld = new World();
       spawnCamera(sceneWorld);
       sceneWorld
@@ -635,36 +636,43 @@ import { makeMockShaderRegistry } from './helpers/mock-shader-registry';
           { component: MeshRenderer, data: {} },
         )
         .unwrap();
-      const lightWorld = new World();
-      lightWorld
+      sceneWorld
         .spawn(
           { component: Transform, data: { ...identity(), pos: [0, 0, 5] } },
           { component: PointLight, data: { intensity: 10, range: 10 } },
           { component: PointLightShadow, data: { nearPlane: 0.1, farPlane: 10 } },
         )
         .unwrap();
-      for (const world of [sceneWorld, lightWorld]) propagateTransforms(world).unwrap();
-      const worlds = [sceneWorld, lightWorld];
-      const owner = { cameraOwner: 0, resourceOwner: 0 };
+      propagateTransforms(sceneWorld).unwrap();
       const scene = new PersistentRenderScene();
-      const frame = scene.extractComposition(worlds, owner, testAssets(sceneWorld), () =>
-        extractFrames(worlds, owner, undefined, undefined, { cull: 'none' }),
+      const assets = testAssets(sceneWorld),
+        lease = createRenderReadLease(sceneWorld);
+      const frame = scene.extractComposition(
+        sceneWorld,
+        assets,
+        (renderables) =>
+          extractSource(sceneWorld, assets, scene.materialSnapshotCacheStore(), {
+            cull: 'none',
+            retainHidden: true,
+            renderables,
+          }),
+        lease,
       );
       expect(frame.frustumStats).toEqual({ culled: 1, total: 1 });
       expect(frame.renderables).toHaveLength(1);
       expect(frame.dispatch.map((entry) => entry.tags.LightMode)).toEqual(['ShadowCaster']);
+      lease.dispose();
+      scene.dispose();
     });
 
-    it('cross-world extract keeps frustum culling against the surfaced camera-owner camera', () => {
-      const cameraWorld = new World();
-      cameraWorld
+    it('extracts frustum culling against the source camera', () => {
+      const sceneWorld = new World();
+      sceneWorld
         .spawn(
           { component: Transform, data: identity() },
           { component: Camera, data: perspectiveCameraData() },
         )
         .unwrap();
-
-      const sceneWorld = new World();
       sceneWorld
         .spawn(
           { component: Transform, data: { ...identity(), pos: [0, 0, 0] } },
@@ -693,11 +701,9 @@ import { makeMockShaderRegistry } from './helpers/mock-shader-registry';
           { component: MeshRenderer, data: {} },
         )
         .unwrap();
-
-      propagateTransforms(cameraWorld).unwrap();
       propagateTransforms(sceneWorld).unwrap();
 
-      const frame = extractFrames([cameraWorld, sceneWorld], { cameraOwner: 0, resourceOwner: 1 });
+      const frame = extractSource(sceneWorld, testAssets(sceneWorld));
 
       expect(frame.renderables).toHaveLength(1);
       expect(frame.frustumStats).toEqual({ culled: 1, total: 2 });

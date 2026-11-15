@@ -1,3 +1,4 @@
+import { World } from '@forgeax/engine-ecs';
 import { err, ok } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { RenderFeatureStageFailedError } from '../errors/render';
@@ -82,8 +83,7 @@ describe('render feature zero-work boundaries', () => {
       ].entries()) {
         mask = current;
         const frame = runSingleViewFeatureFrame(host, {
-          worlds: [],
-          owner: 0,
+          world: new World(),
           frameNumber: index + 1,
           caps: {} as never,
         });
@@ -120,8 +120,7 @@ describe('render feature zero-work boundaries', () => {
     ]).unwrap();
     const frame = (frameNumber: number) =>
       runSingleViewFeatureFrame(host, {
-        worlds: [],
-        owner: 0,
+        world: new World(),
         frameNumber,
         caps: {} as never,
       });
@@ -138,8 +137,7 @@ describe('render feature zero-work boundaries', () => {
   it('keeps an empty registry free of work, errors, and proxy noise', () => {
     const host = createRenderFeatureHost([]).unwrap();
     const result = runSingleViewFeatureFrame(host, {
-      worlds: [],
-      owner: 0,
+      world: new World(),
       frameNumber: 11,
       caps: {} as never,
     });
@@ -152,8 +150,7 @@ describe('render feature zero-work boundaries', () => {
   it('keeps empty data and zero-pass features as an empty plan', () => {
     const host = createRenderFeatureHost([noWorkFeature('synthetic.empty')]).unwrap();
     const result = runSingleViewFeatureFrame(host, {
-      worlds: [],
-      owner: 0,
+      world: new World(),
       frameNumber: 12,
       caps: {} as never,
     });
@@ -175,8 +172,7 @@ describe('render feature zero-work boundaries', () => {
     host.setStatus('synthetic.disabled', 'disabled');
 
     const result = runSingleViewFeatureFrame(host, {
-      worlds: [],
-      owner: 0,
+      world: new World(),
       frameNumber: 13,
       caps: {} as never,
     });

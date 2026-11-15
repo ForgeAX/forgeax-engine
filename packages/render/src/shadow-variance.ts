@@ -93,6 +93,39 @@ export function addVarianceShadowPasses(
     },
   });
   if (!uploaded.ok) return uploaded;
+  const activeLayers = new Set(
+    views.map((item) => (item.kind === 'directional' ? item.index : item.index + 4)),
+  );
+  for (let layer = 0; layer < 8; layer += 1) {
+    if (activeLayers.has(layer)) continue;
+    const output = graph.view(texture.value, {
+      dimension: '2d',
+      baseArrayLayer: layer,
+      arrayLayerCount: 1,
+    });
+    if (!output.ok) return output;
+    let initial = true;
+    const initialized = graph.addRasterPass(`shadow-variance-${layer}-initialize`, {
+      accesses: [{ resource: output.value, usage: 'color-attachment' }],
+      colorAttachments: [
+        {
+          view: output.value,
+          loadOp: 'clear',
+          storeOp: 'store',
+          clearValue: { r: layer < 4 ? 0 : 1, g: 0, b: 0, a: 1 },
+        },
+      ],
+      executeIf: () => {
+        if (retained === undefined) return true;
+        const shouldInitialize = initial || !retained.retained(label, layer);
+        initial = false;
+        if (shouldInitialize) retained._invalidate(label, layer);
+        return shouldInitialize;
+      },
+      encodeDirect: () => retained?.rastered(label, layer),
+    });
+    if (!initialized.ok) return initialized;
+  }
   type Program = {
     layout: BindGroupLayout;
     vertical: RenderPipeline;

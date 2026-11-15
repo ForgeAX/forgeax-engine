@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import { chromium } from 'playwright';
-import { waitForViewProjectReady } from '../../test/app/acceptance.mjs';
+import { readReadyCompletedFrame, waitForViewProjectReady } from '../../test/app/acceptance.mjs';
 
 let browser;
 before(async () => {
@@ -106,4 +106,25 @@ test('repeated starting observations do not extend browser startup deadline', as
       { startupTimeoutMs: 150 }), /Timeout/);
     assert.ok(performance.now() - started < 650, 'A starting target must not renew its startup lease');
   } finally { await f.page.close(); }
+});
+
+
+test('frame readiness rejects preparation and completions retired by a World or device change', () => {
+  const canvas = { forgeaxFrameProgress: {
+    submitted: { frameId: 284, worldIdentity: 'recovered-scene', deviceGeneration: 1 },
+    completed: { frameId: 283, worldIdentity: 'recovered-scene', deviceGeneration: 1, presentation: 'preparing' },
+  } };
+  assert.equal(readReadyCompletedFrame(canvas), 0, 'preparation completions do not admit a ready capture');
+  canvas.forgeaxFrameProgress.completed = {
+    frameId: 280, worldIdentity: 'previous-scene', deviceGeneration: 1, presentation: 'ready',
+  };
+  assert.equal(readReadyCompletedFrame(canvas), 0, 'the old World cannot complete the recovered scene');
+  canvas.forgeaxFrameProgress.completed = {
+    frameId: 280, worldIdentity: 'recovered-scene', deviceGeneration: 0, presentation: 'ready',
+  };
+  assert.equal(readReadyCompletedFrame(canvas), 0, 'the old device cannot complete its replacement');
+  canvas.forgeaxFrameProgress.completed = {
+    frameId: 284, worldIdentity: 'recovered-scene', deviceGeneration: 1, presentation: 'ready',
+  };
+  assert.equal(readReadyCompletedFrame(canvas), 284);
 });

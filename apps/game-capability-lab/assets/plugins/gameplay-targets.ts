@@ -1,6 +1,7 @@
+import { PhysicsWorldResource } from '@forgeax/engine-physics';
 import type { GameHost } from '@forgeax/engine-app';
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
-import type { PhysicsWorld } from '@forgeax/engine-physics';
+
 import type { Context } from '@forgeax/engine-plugin';
 import { installAssetContentEvidence } from './asset-content-evidence';
 import { createFbxMeshSwap, resetFbxMeshSwap, type FbxMeshSwap } from './fbx-mesh-swap';
@@ -80,7 +81,7 @@ export async function createGameplayTargetFeatures(
   // owners. Start their ordinary AssetRegistry reads together so a cold Pack
   // producer does not serialize optional lab assets inside one plugin start.
   const guidedFbxTarget = primaryTarget();
-  const physics = world.hasResource('PhysicsWorld') ? world.getResource<PhysicsWorld>('PhysicsWorld') : undefined;
+  const physics = world.hasResource(PhysicsWorldResource) ? world.getResource(PhysicsWorldResource) : undefined;
   const [resonanceForge, jpegTextureSwap, videoTexturePanel, targetProfile, fbxSkinnedTarget] = await Promise.all([
     createResonanceForge(world, host?.assets),
     createJpegTextureSwap(world, host?.assets, primaryTarget()),

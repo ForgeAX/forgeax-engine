@@ -3,20 +3,16 @@
 // gates pin the page-to-Worker bridge: the wire guards, one frame in flight per
 // consumer, every frame closed exactly once, the provider lifecycle on the
 // World, and structured refusals for unsupported realms and blocked autoplay.
-import { World } from '@forgeax/engine-ecs';
+import { Update, World } from '@forgeax/engine-ecs';
 import { type AssetHandle, err, ok, type VideoAsset } from '@forgeax/engine-types';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createVideoFrameHost } from '../video-frame-host';
 import {
   isVideoFrameNotice,
   isVideoFrameRequest,
   videoFrameBridgeError,
 } from '../video-frame-protocol';
-import {
-  createVideoFrameEndpoint,
-  installWorkerVideoSourceProvider,
-  VIDEO_FRAME_SYNC_SYSTEM,
-} from '../video-frame-worker';
+import { createVideoFrameEndpoint, installWorkerVideoSourceProvider } from '../video-frame-worker';
 import { VideoPlayer } from '../video-player';
 import { VIDEO_SOURCE_PROVIDER_KEY } from '../video-source-provider';
 
@@ -257,6 +253,7 @@ describe('installWorkerVideoSourceProvider', () => {
 
   it('reinstall replaces the previous provider; dispose removes only its own system and resource', () => {
     const world = worldFixture();
+    const added = vi.spyOn(world, 'addSystem');
     const { worker } = channel();
     const endpoint = createVideoFrameEndpoint(worker);
     const first = installWorkerVideoSourceProvider(world, endpoint, { videoFrame: Frame }).unwrap();
@@ -271,11 +268,12 @@ describe('installWorkerVideoSourceProvider', () => {
     expect(world.getResource(VIDEO_SOURCE_PROVIDER_KEY)).toBe(second);
     second.getSource(entity, clip);
     expect(worker.sent.at(-1)).toMatchObject({ kind: 'video-open', id: 2 });
+    const system = added.mock.calls.at(-1)?.[1];
+    if (!system) throw new Error('Missing video provider system');
+    added.mockRestore();
     second.dispose();
     expect(world.hasResource(VIDEO_SOURCE_PROVIDER_KEY)).toBe(false);
-    expect(world.removeSystem(world.scheduleToken('Update'), VIDEO_FRAME_SYNC_SYSTEM).ok).toBe(
-      false,
-    );
+    expect(world.removeSystem(Update, system).ok).toBe(false);
   });
 
   it('endpoint close detaches the port and closes frames for nobody', () => {

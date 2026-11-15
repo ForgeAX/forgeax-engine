@@ -87,21 +87,21 @@ export function projectReceiptColorObservations(
   }[],
   requestedDomains: readonly RenderPipelineObservationCapture['domain'][],
   backendId: FrameReceipt['backendId'],
+  encodedGraphGenerations: readonly number[],
 ): RenderResult<
   NonNullable<FrameReceiptObservation['observations']>,
   RendererContractFailureError
 > {
-  const graphGenerations = new Set(captures.map(({ capture }) => capture.graphGeneration));
+  const graphGenerations = new Set(encodedGraphGenerations);
   if (
     captures.some(
       ({ capture }) =>
         capture.frameNumber !== receipt.frameId ||
         capture.deviceGeneration !== receipt.deviceGeneration ||
         capture.backendId !== backendId ||
-        (receipt.graphGeneration !== undefined &&
-          capture.graphGeneration !== receipt.graphGeneration),
+        !graphGenerations.has(capture.graphGeneration),
     ) ||
-    graphGenerations.size !== 1
+    (receipt.graphGeneration !== undefined && !graphGenerations.has(receipt.graphGeneration))
   ) {
     return err(
       new RendererContractFailureError(
@@ -110,12 +110,14 @@ export function projectReceiptColorObservations(
       ),
     );
   }
-  const byDomain = new Map(
-    captures.map(({ capture, bytes }) => [capture.domain, { capture, bytes }]),
-  );
+  const captureKey = (capture: RenderPipelineObservationCapture) =>
+    capture.domain === 'feature-texture'
+      ? `${capture.domain}:${capture.featureTexture?.featureIdentity}:${capture.featureTexture?.viewIdentity ?? 'frame'}:${capture.featureTexture?.name}`
+      : capture.domain;
+  const byDomain = new Map(captures.map((resolved) => [captureKey(resolved.capture), resolved]));
   if (
     byDomain.size !== captures.length ||
-    requestedDomains.some((domain) => !byDomain.has(domain))
+    requestedDomains.some((domain) => !captures.some(({ capture }) => capture.domain === domain))
   ) {
     return err(
       new RendererContractFailureError(
@@ -125,10 +127,10 @@ export function projectReceiptColorObservations(
     );
   }
   const read: NonNullable<FrameReceiptObservation['observations']>[number][] = [];
-  for (const domain of requestedDomains) {
-    const resolved = byDomain.get(domain);
-    if (resolved === undefined) continue;
+  for (const resolved of captures) {
     const { capture, bytes } = resolved;
+    const domain = capture.domain;
+    if (!requestedDomains.includes(domain)) continue;
     const observation = {
       bytes,
       metadata: {
@@ -159,6 +161,15 @@ export function projectReceiptColorObservations(
       read.push({ ...observation, domain, records: records.slice() });
     } else if (domain === 'final-display') {
       read.push({ ...observation, domain, colorSpace: capture.colorSpace ?? 'srgb' });
+    } else if (domain === 'feature-texture') {
+      if (capture.featureTexture === undefined)
+        return err(
+          new RendererContractFailureError(
+            'observe',
+            'feature texture capture requires its declared feature and target identity',
+          ),
+        );
+      read.push({ ...observation, domain, ...capture.featureTexture });
     } else {
       read.push({ ...observation, domain });
     }
@@ -272,7 +283,6 @@ async function observeReceiptColorDomains(
   const { receiptObservationCaptures, receiptObservationBuffers, destroyedObservationBuffers } =
     context.observationOwner;
   const readCaptures = receiptObservationCaptures.get(receipt);
-  receiptObservationCaptures.delete(receipt);
   if (readCaptures === undefined) {
     return err(
       new RendererContractFailureError(
@@ -291,9 +301,10 @@ async function observeReceiptColorDomains(
   if (staleAfterReadback !== undefined) return err(staleAfterReadback);
   return projectReceiptColorObservations(
     receipt,
-    capturesResult.value,
+    capturesResult.value.captures,
     requestedDomains,
     context.backendKind(),
+    capturesResult.value.graphGenerations,
   );
 }
 

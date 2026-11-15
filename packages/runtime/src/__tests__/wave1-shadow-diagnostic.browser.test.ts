@@ -323,7 +323,7 @@ async function submitFrame(
   lease: RenderWorldLease,
 ): Promise<FrameReceipt> {
   propagateTransforms(world).unwrap();
-  return drawReadyFrame(renderer, { leases: [lease], camera: { lease }, environment: { lease } });
+  return drawReadyFrame(renderer, { source: lease });
 }
 
 async function renderVariant(

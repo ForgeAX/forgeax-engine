@@ -5,7 +5,7 @@
   "required": ["schemaVersion", "guid", "resolved", "refs", "programs", "receipt"],
   "properties": {
     "schemaVersion": {
-      "const": "material-cook/4"
+      "const": "material-cook/5"
     },
     "guid": {
       "type": "string",
@@ -63,11 +63,34 @@
           "required": ["model", "module"],
           "properties": {
             "model": {
-              "enum": ["standard", "single-layer-medium"]
+              "enum": ["standard", "single-layer-medium", "single-layer-water"]
             },
             "module": {
               "type": "string",
               "minLength": 1
+            },
+            "deformation": {
+              "type": "object",
+              "required": ["module", "version", "inputs"],
+              "properties": {
+                "module": { "type": "string", "minLength": 1 },
+                "version": { "const": "water-deformation/1" },
+                "inputs": {
+                  "type": "array",
+                  "minItems": 13,
+                  "maxItems": 13,
+                  "items": {
+                    "type": "object",
+                    "required": ["name", "type"],
+                    "properties": {
+                      "name": { "type": "string" },
+                      "type": { "enum": ["f32", "u32", "vec2<f32>", "vec3<f32>", "vec4<f32>"] }
+                    },
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "additionalProperties": false
             },
             "dynamicInput": {
               "type": "object",
@@ -174,7 +197,7 @@
       ],
       "properties": {
         "schemaVersion": {
-          "const": "material-cook/4"
+          "const": "material-cook/5"
         },
         "sourceClosure": {
           "type": "array",
@@ -372,6 +395,12 @@
                   ],
                   "properties": {
                     "positionBounds": { "const": "standard-input" },
+                    "systemInputs": {
+                      "type": "object",
+                      "required": ["water"],
+                      "additionalProperties": false,
+                      "properties": { "water": { "const": "water-frame/3" } }
+                    },
                     "entryPoints": {
                       "type": "array",
                       "items": {

@@ -200,11 +200,7 @@ export async function verifyLocalIes(
           packet !== undefined
             ? { publication: packet }
             : lease !== undefined
-              ? {
-                  leases: [lease],
-                  camera: { lease },
-                  environment: { lease },
-                }
+              ? { source: lease }
               : undefined;
         if (input === undefined) throw new Error('missing IES scene lease');
         if (name !== undefined) {

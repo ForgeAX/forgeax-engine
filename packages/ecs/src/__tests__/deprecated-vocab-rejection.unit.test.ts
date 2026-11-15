@@ -1,9 +1,9 @@
 // Retired schema vocabulary must fail with current ownership guidance.
 
 import { describe, expect, it } from 'vitest';
-import { defineComponent } from '../component';
+import { defineComponent, fieldTypeToMetaKey, TYPE_METADATA } from '../component';
 
-describe('w25 deprecated schema-vocab rejection', () => {
+describe('unsupported schema vocabulary', () => {
   it("'handle<MeshAsset>' throws SchemaUnsupportedFieldError + hint mentions 'asset<mesh>'", () => {
     // gate-allow:ecs-brand
     let caught: unknown;
@@ -15,7 +15,7 @@ describe('w25 deprecated schema-vocab rejection', () => {
     expect(caught).toBeDefined();
     const e = caught as { code: string; hint: string };
     expect(e.code).toBe('schema-unsupported-field');
-    expect(e.hint).toContain("'asset<mesh>'");
+    expect(e.hint).toContain('asset<kind>');
     expect(e.hint).toContain('AssetRegistry');
   });
 
@@ -30,8 +30,7 @@ describe('w25 deprecated schema-vocab rejection', () => {
     expect(caught).toBeDefined();
     const e = caught as { code: string; hint: string };
     expect(e.code).toBe('schema-unsupported-field');
-    expect(e.hint).toContain("'unique<PhysicsBody>'");
-    expect(e.hint).toContain('feat-20260614 M1');
+    expect(e.hint).toContain('unique<T>');
   });
 
   it("'asset<mesh>' is accepted (the new keyword still works)", () => {
@@ -44,5 +43,22 @@ describe('w25 deprecated schema-vocab rejection', () => {
     expect(() => {
       defineComponent('w25UniqueSample', { f: { type: 'unique<PhysicsBody>' } });
     }).not.toThrow();
+  });
+});
+
+describe('unique reference vocabulary', () => {
+  it.each(['ref', 'array<ref>', 'array<ref, 2>'])('rejects the removed %s schema', (type) => {
+    expect(() => defineComponent(`RemovedReference_${type}`, { value: type } as never)).toThrow();
+  });
+
+  it('classifies unique handles independently of scalar storage', () => {
+    expect(fieldTypeToMetaKey('unique<Resource>')).toBe('unique');
+    expect(fieldTypeToMetaKey('ref')).toBeNull();
+    expect(Object.hasOwn(TYPE_METADATA, 'ref')).toBe(false);
+    expect(TYPE_METADATA.unique).toMatchObject({
+      storage: 'u32',
+      isManaged: true,
+      isScalar: false,
+    });
   });
 });

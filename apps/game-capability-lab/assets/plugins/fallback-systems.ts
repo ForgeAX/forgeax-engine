@@ -1,3 +1,4 @@
+import { defineSystem } from "@forgeax/engine-ecs";
 import { Time, Update, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import { inState } from '@forgeax/engine-state';
 import { Transform } from '@forgeax/engine-scene';
@@ -21,7 +22,7 @@ type FallbackSystemsArgs = {
 /** Keep camera/asset overlays inspectable when a host scene omits the Player node. */
 export function installFallbackSystems(args: FallbackSystemsArgs): void {
   if (args.player !== undefined) return;
-  args.world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'game-camera-fallback',
     runIf: inState(GameState, 'Play'),
     queries: [],
@@ -35,15 +36,17 @@ export function installFallbackSystems(args: FallbackSystemsArgs): void {
       const pose = orbitPose([transform.value.pos[0] ?? args.initX, motion.value.jumpY + 0.8, transform.value.pos[2] ?? args.initZ], ORBIT_INITIAL_YAW + input.value.lookYaw, ORBIT_INITIAL_PITCH + input.value.lookPitch, ORBIT_RADIUS);
       args.world.set(args.camera, Transform, { pos: pose.pos, quat: pose.quat });
     },
-  }).unwrap();
-  args.world.addSystem(Update, {
+  });
+args.world.addSystem(Update, systemToken1).unwrap();
+  const systemToken2 = defineSystem({
     name: 'game-world-score-text-fallback',
     runIf: inState(GameState, 'Play'),
     queries: [],
-    after: ['game-camera-fallback'],
+    after: [systemToken1],
     fn: () => {
       args.worldScoreText?.step(args.world.getResource(Time).delta, args.camera);
       args.videoTexturePanel?.step(args.camera);
     },
-  }).unwrap();
+  });
+args.world.addSystem(Update, systemToken2).unwrap();
 }

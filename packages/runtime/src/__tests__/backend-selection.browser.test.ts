@@ -97,9 +97,7 @@ it.each([
       propagateTransforms(world);
       world.update(1 / 60).unwrap();
       if (completed === 59) renderer.requestObservation?.(['final-display']).unwrap();
-      receipt = renderer
-        .draw({ leases: [lease], camera: { lease }, environment: { lease } })
-        .unwrap();
+      receipt = renderer.draw({ source: lease }).unwrap();
       (await receipt.completed).unwrap();
       if (receipt.presentation === 'ready') completed++;
       await new Promise((resolve) => setTimeout(resolve, 0));

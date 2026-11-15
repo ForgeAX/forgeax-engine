@@ -1,5 +1,3 @@
-import { STANDARD_DIRECT_DFG_LUT_BINDING } from '@forgeax/engine-shader';
-import type { AssetHandle } from '@forgeax/engine-types';
 import {
   standardTransmissionAdmission,
   transmissionBackdropAvailable,
@@ -9,6 +7,7 @@ import { planarReflectionMaterialEntries } from '../capture/planar-material';
 import { getOrCreateDirectDfgLut } from '../device/direct-dfg-lut';
 import type { IblPrecomputeOutput } from '../ibl/IblPipelineCache';
 import { derivedRenderState } from '../material-render-state';
+import { materialSourceScope } from '../material-source';
 import { type RenderResourceScope, renderAssetRevision } from '../publication/resource-scope';
 import { renderTextureSourceKey } from '../textures/source-token';
 import { recordContext } from '../world/view-record-context';
@@ -44,21 +43,25 @@ import {
   DEFAULT_MSDF_TEXT_PARAM_SCHEMA,
   DEFAULT_SPRITE_PARAM_SCHEMA,
   DEFAULT_UNLIT_PARAM_SCHEMA,
+  STANDARD_DIRECT_DFG_LUT_BINDING,
   STANDARD_PHYSICAL_TEXTURE_FIELDS,
   STANDARD_PIPELINE_PARAM_SCHEMA,
   STANDARD_SHARED_TRANSMISSION_SLOTS,
 } from '@forgeax/engine-shader';
 import type {
+  AssetHandle,
   ImageError,
   MaterialRenderState,
   ParamSchemaEntry,
   PrimitiveTopology,
   SamplerAsset,
-  TextureAsset,
+  SampledTextureAsset as TextureAsset,
 } from '@forgeax/engine-types';
 import { derive, getAdmittedParamSchemaInterface } from '@forgeax/engine-types';
+
 import type { GpuResidencyCache } from '../device/gpu-residency';
 import { VideoUploadUnsupportedError } from '../errors/render';
+
 import {
   assembleMaterialWithSkylightEntries,
   type SkylightBindGroupResources,
@@ -67,18 +70,23 @@ import {
   skylightGroundLane,
   type TextureInjectionResource,
   type TransmissionBindGroupResources,
+  type WaterFluidBindGroupResources,
 } from '../ibl/skylight-bind-group';
+
 import { writeMaterialTextureCoordinateRecord } from '../material-texture-coordinates';
 import type { IblBindingEntryInspection } from '../mesh-material-bindings';
 import {
   isCanonicalStandardPbrMaterialShader,
   isStandardPbrMaterialShader,
+  materialUsesSurfaceSceneInputs,
   omittedStandardMaterialBindings,
   physicalTextureFields,
   programDeclaresTransmissionBackdrop,
+  projectSurfaceMaterialBindings,
   sharedMaterialBindingDeclarations,
   standardInputField,
 } from '../pbr-pipeline';
+
 import { deriveTextureUvScale } from '../render-data';
 import type { MaterialSnapshot, SkylightSnapshot } from '../render-system-extract';
 import {
@@ -91,13 +99,16 @@ import {
   type MaterialTextureSource,
 } from '../textures/canvas-texture';
 import { isExternalTextureSource } from '../textures/external-texture';
+
 import type {
   BindGroupCounts,
   MaterialBgAssemblyCacheEntry,
   RenderFrameState,
 } from './frame-snapshot';
 import { getOpaqueResourceIdentity } from './frame-snapshot';
+
 import { extractEntryResourceHandle, getOrCreatePerEntity } from './mesh-ssbo';
+
 import {
   type PipelineState,
   type RenderSystemRuntime,
@@ -164,19 +175,16 @@ function parameterByName(
     ? schema.find((entry) => entry.name === field)
     : admitted.parametersByName.get(field);
 }
-
 // Graph execution consumes RenderPipelineContext from render-contract.ts. Named
 // asset, store, pipeline and runtime surfaces keep pass inputs explicit. Scene,
 // shadow and post-process passes use the one RenderRecord encoder; graph ordering
 // owns write/sample dependencies and render-frame-submit finishes/submits once.
-
 // M1 / w7: ensureLazyTexture DELETED — GPU texture ownership moved to render-graph
 // via addColorTarget + compile(device). The graph allocates transient/persistent
 // render targets during the compile allocation phase; pass execute closures resolve
 // TextureViews through resolve(name). PerPassResources texture slots still hold
 // the last-used views for bindgroup-invalidation self-checks (D-3 physical texture
 // identity), but the graph owns the create/destroy lifecycle.
-
 /**
  * Keep line primitives visible when they share a depth plane with filled
  * geometry. The same topology policy is consumed by the CPU and GPU-driven
@@ -204,7 +212,7 @@ const lineRenderState = (renderState: MaterialRenderState | undefined): Material
  * pipeline handles built in createRenderer (7 base + 7 count=4 variants). A
  * pipeline's `multisample.count` must match the colour-attachment sampleCount,
  * so the count=4 variant is required whenever the camera carries
- * `antialias === 'msaa'`. Returns null when the requested pipeline was not
+ * the Camera's MSAA mode. Returns null when the requested pipeline was not
  * built (empty-manifest path / MSAA variant build failure) -- the caller fires
  * a structured `shader-compile-failed` on the null-narrow.
  */
@@ -253,12 +261,11 @@ export function residentTextureView(
   world: RenderResourceScope,
   store: GpuResidencyCache,
   runtime: RenderSystemRuntime,
-  handle: AssetHandle<'texture'>,
-  worldId: RenderResourceScope | number = world,
+  handle: AssetHandle<'texture' | 'gpu-texture'>,
 ): TextureView | undefined {
   const podRes = world.resolveAsset<TextureAsset>(handle);
   if (!podRes.ok) return undefined;
-  const residentRes = store.ensureResident(handle, podRes.value, worldId);
+  const residentRes = store.ensureResident(handle, podRes.value, world);
   if (!residentRes.ok) {
     // Preserve the concrete asset-capability boundary on the renderer error
     // channel. In particular, WebGL2 texture-dimension refusal must not
@@ -268,7 +275,7 @@ export function residentTextureView(
     }
     return undefined;
   }
-  return store.getTextureGpuView(handle, worldId);
+  return store.getTextureGpuView(handle, world);
 }
 
 function residentSampler(
@@ -276,11 +283,10 @@ function residentSampler(
   store: GpuResidencyCache,
   runtime: RenderSystemRuntime,
   handle: AssetHandle<'sampler'>,
-  worldId: RenderResourceScope | number = world,
 ): Sampler | undefined {
   const podRes = world.resolveAsset<SamplerAsset>(handle);
   if (!podRes.ok) return undefined;
-  const residentRes = store.ensureSamplerResident(handle, podRes.value, worldId);
+  const residentRes = store.ensureSamplerResident(handle, podRes.value, world);
   if (!residentRes.ok) {
     runtime.errorRegistry.fire(residentRes.error);
     return undefined;
@@ -457,7 +463,7 @@ export function materialTextureUvScale(
 function materialTextureForField(
   material: MaterialSnapshot,
   field: string,
-): AssetHandle<'texture'> | undefined {
+): AssetHandle<'texture' | 'gpu-texture'> | undefined {
   if (field === 'emissiveTexture') return material.emissiveTexture;
   if (field === 'occlusionTexture') return material.occlusionTexture;
   return material.textureHandles?.get(field);
@@ -470,7 +476,10 @@ export function materialRenderTargetSourceForField(
   resolveSource?: RenderSystemRuntime['resolveRenderTargetTextureSource'],
 ): RenderTargetMaterialSourceBinding | undefined {
   const source = material.textureSources?.get(field);
-  return source === undefined || isCanvasTextureSource(source) || isExternalTextureSource(source)
+  return source === undefined ||
+    source.source === 'feature' ||
+    isCanvasTextureSource(source) ||
+    isExternalTextureSource(source)
     ? undefined
     : resolveSource === undefined
       ? resolveRenderTargetMaterialSource(source)
@@ -1127,6 +1136,7 @@ export interface PerSubmeshMaterialBgDeps {
   readonly videoHighPerfAvailable: boolean;
   readonly skylightResources: SkylightBindGroupResources;
   readonly resolveRenderTargetTextureSource?: RenderSystemRuntime['resolveRenderTargetTextureSource'];
+  readonly resolveFeatureTextureSource?: (name: string) => TextureView | undefined;
   readonly resolveReflectionProbeResources?: (
     materialWorld: RenderResourceScope,
     entityKey: number | undefined,
@@ -1145,6 +1155,9 @@ export interface PerSubmeshMaterialBgDeps {
   readonly surfaceNearestLayerView?: TextureView | null;
   /** Nearest-layer depth from the preceding medium graph pass. */
   readonly surfaceNearestDepthView?: TextureView | null;
+  /** Graph-owned FoamRT, required only by a reflected connected foam branch. */
+  readonly surfaceFoamSimulationView?: TextureView | null;
+  readonly surfaceFluidSimulation?: { readonly fields: TextureView; readonly descriptors: Buffer };
   readonly bindGroupCounts: BindGroupCounts;
   readonly frameState: RenderFrameState;
 }
@@ -1333,7 +1346,8 @@ export function materialBindingResourcesCurrent(
     if (
       resource.revision !== renderAssetRevision(world, resource.handle) ||
       (resource.kind !== 'sampler' &&
-        resource.view !== store.getTextureGpuView(resource.handle as AssetHandle<'texture'>, world))
+        resource.view !==
+          store.getTextureGpuView(resource.handle as AssetHandle<'texture' | 'gpu-texture'>, world))
     )
       return false;
   return true;
@@ -1468,6 +1482,7 @@ export function buildPerSubmeshMaterialBg(
   _materialSlot = 0,
   resourceClass?: string,
 ): BindGroup {
+  materialWorld = materialSourceScope(materialWorld, submeshMaterial.sourceAssets);
   const { runtime, pipelineState, store, transmissionBackdropView } = deps;
   const materialBuffer = meshSsboBuffer(
     pipelineState.materialUniformBuffer,
@@ -1488,6 +1503,7 @@ export function buildPerSubmeshMaterialBg(
     materialShaderId,
     effectiveSkylightResources,
   );
+  const fluidSimulation = resolveWaterFluidResources(deps, materialShaderId);
   // The cooked shader schema owns the resource ABI. A material snapshot may
   // carry only the authored values (for example a clearcoat-only root omits
   // the standard emissive/occlusion maps), while the Standard template still
@@ -1501,7 +1517,12 @@ export function buildPerSubmeshMaterialBg(
       : undefined;
   const smMaterialBgl = smPerShaderBgl ?? pipelineState.materialBindGroupLayout;
   const sceneMaterialBuffer = directSceneMaterialBuffer(deps);
-  if (smMaterialHandle !== undefined && !smHasVideoFields && transmissionBackdropView == null) {
+  if (
+    smMaterialHandle !== undefined &&
+    !smHasVideoFields &&
+    transmissionBackdropView == null &&
+    fluidSimulation === undefined
+  ) {
     const cached = deps.materialBgAssemblyCache.get(
       materialScopeIdentity,
       smMaterialHandle,
@@ -1566,7 +1587,13 @@ export function buildPerSubmeshMaterialBg(
     resident: true,
     missingBaseColor: false,
   };
-  return assembleMaterialBg(deps, assembly, surfaceMediumResources, materialBuffer);
+  return assembleMaterialBg(
+    deps,
+    assembly,
+    surfaceMediumResources,
+    materialBuffer,
+    fluidSimulation,
+  );
 }
 
 /** Storage-capable devices bind the shared scene Material table (or its neutral placeholder). */
@@ -1582,13 +1609,12 @@ const mediumShaders = new WeakMap<PerSubmeshMaterialBgDeps, Map<string, boolean>
 
 function mediumShaderOf(deps: PerSubmeshMaterialBgDeps, shaderId: string | undefined): boolean {
   if (shaderId === undefined) return false;
-  if (shaderId === 'forgeax::single-layer-medium') return true;
+  if (shaderId === 'forgeax::single-layer-medium' || shaderId === 'forgeax::single-layer-water')
+    return true;
   let shaders = mediumShaders.get(deps);
   const known = shaders?.get(shaderId);
   if (known !== undefined) return known;
-  const medium =
-    deps.runtime.getMaterialShaderArtifact?.(shaderId)?.receipt?.surface?.model ===
-    'single-layer-medium';
+  const medium = materialUsesSurfaceSceneInputs(deps.runtime.shaderRegistry, shaderId);
   if (shaders === undefined) {
     shaders = new Map();
     mediumShaders.set(deps, shaders);
@@ -1622,6 +1648,22 @@ function resolveSurfaceMediumResources(
       hint: 'publish the nearest-layer target and the non-filtering raw-depth sampler before recording the Surface pass',
     });
   }
+  const artifact =
+    shaderId === undefined
+      ? undefined
+      : deps.runtime.shaderRegistry?.findMaterialArtifact(shaderId);
+  const usesFoam =
+    artifact?.ok === true &&
+    artifact.value.program.materialBindings?.includes(
+      derive(artifact.value.paramSchema ?? []).userRegionBindingEnd + 17,
+    ) === true;
+  if (usesFoam && deps.surfaceFoamSimulationView == null) {
+    throw new RhiError({
+      code: 'rhi-descriptor-invalid',
+      expected: 'the connected Water foam branch has its graph-produced FoamRT',
+      hint: 'publish the no-simulation initializer or simulation producer before recording this Water Surface pass',
+    });
+  }
   return {
     planarView: deps.planarReflectionView ?? skylight.brdfLutView,
     planarUniform: pipelineState.viewUniformBuffer,
@@ -1635,7 +1677,41 @@ function resolveSurfaceMediumResources(
     nearestLayerView,
     nearestDepthSampler: depthSampler,
     nearestDepthView,
+    ...(usesFoam && deps.surfaceFoamSimulationView != null
+      ? {
+          foamSimulation: {
+            view: deps.surfaceFoamSimulationView,
+            sampler: skylight.irradianceSampler,
+            heightSampler: pipelineState.defaultSampler,
+          },
+        }
+      : {}),
   };
+}
+
+function resolveWaterFluidResources(
+  deps: PerSubmeshMaterialBgDeps,
+  shaderId: string | undefined,
+): WaterFluidBindGroupResources | undefined {
+  const artifact =
+    shaderId === undefined
+      ? undefined
+      : deps.runtime.shaderRegistry?.findMaterialArtifact(shaderId);
+  if (
+    artifact?.ok !== true ||
+    artifact.value.receipt?.systemInputs?.water !== 'water-frame/3' ||
+    artifact.value.program.materialBindings?.includes(
+      derive(artifact.value.paramSchema ?? []).userRegionBindingEnd + 19,
+    ) !== true
+  )
+    return;
+  if (deps.surfaceFluidSimulation === undefined)
+    throw new RhiError({
+      code: 'rhi-descriptor-invalid',
+      expected: 'the reflected Water fluid branch has graph-owned fields and Body descriptors',
+      hint: 'bind the same-frame simulation publication or its disabled neutral descriptor before every Water pass',
+    });
+  return deps.surfaceFluidSimulation;
 }
 
 /** Diagnostics receipt of the Skylight tail a reused material bind group carries. */
@@ -1669,6 +1745,7 @@ function assembleMaterialBg(
   assembly: MaterialBgAssembly,
   surfaceMediumResources: SurfaceMediumBindGroupResources | undefined,
   materialBuffer: Buffer,
+  fluidSimulation: WaterFluidBindGroupResources | undefined,
 ): BindGroup {
   const { runtime, pipelineState, materialSlice, transmissionBackdropView } = deps;
   const effectiveSkylightResources = assembly.skylight;
@@ -1713,12 +1790,13 @@ function assembleMaterialBg(
   const physicalTextureInjections = physicalFields.map((field) =>
     physicalTextureInjection(deps, assembly, field),
   );
-  const smMergedEntries = assembleMaterialWithSkylightEntries(
+  let smMergedEntries = assembleMaterialWithSkylightEntries(
     smBaseEntries,
     effectiveSkylightResources,
     transmissionAvailable ? transmissionResources(deps, effectiveSkylightResources) : null,
     physicalTextureInjections,
     surfaceMediumResources,
+    fluidSimulation,
   );
   let retainedEntries = 0;
   for (const entry of smMergedEntries) {
@@ -1753,6 +1831,11 @@ function assembleMaterialBg(
     binding: 0,
     resource: { kind: 'buffer', value: { buffer: uniformBuffer, offset: 0, size: materialSlice } },
   };
+  smMergedEntries = projectSurfaceMaterialBindings(
+    smMergedEntries,
+    runtime.shaderRegistry,
+    assembly.shaderId,
+  );
   const materialCacheHandles = smMergedEntries.map((entry) => extractEntryResourceHandle(entry));
   const smBindGroup = materialBindingGroup(
     runtime,
@@ -1979,7 +2062,16 @@ function appendUserRegionPair(
   const preparedTexture = preparedMaterialTexture(assembly, field);
   let resource: RhiBindingResource | undefined;
   let view = fallback;
-  if (preparedTexture !== undefined) view = preparedTexture.textureView;
+  if (runtimeSource?.source === 'feature') {
+    const current = deps.resolveFeatureTextureSource?.(runtimeSource.owner);
+    if (current === undefined)
+      throw new RhiError({
+        code: 'rhi-descriptor-invalid',
+        expected: `current view graph producer for material texture ${runtimeSource.owner}`,
+        hint: 'enable the declared producer and materialSource texture in this frame and device generation',
+      });
+    view = current;
+  } else if (preparedTexture !== undefined) view = preparedTexture.textureView;
   else if (isExternalTextureSource(runtimeSource)) {
     resource = assembly.runtime.externalTextures?.resolve(runtimeSource, slotExternal);
     if (resource === undefined) assembly.resident = false;
@@ -2099,7 +2191,7 @@ function videoFieldResource(
 function userRegionTextureHandle(
   material: MaterialSnapshot,
   field: string | undefined,
-): AssetHandle<'texture'> | undefined {
+): AssetHandle<'texture' | 'gpu-texture'> | undefined {
   if (field === 'emissiveTexture') return material.emissiveTexture;
   if (field === 'occlusionTexture') return material.occlusionTexture;
   return field === undefined ? undefined : material.textureHandles?.get(field);
@@ -2107,7 +2199,7 @@ function userRegionTextureHandle(
 
 function residentAssetView(
   assembly: MaterialBgAssembly,
-  handle: AssetHandle<'texture'>,
+  handle: AssetHandle<'texture' | 'gpu-texture'>,
 ): TextureView | undefined {
   const view = residentTextureView(assembly.world, assembly.store, assembly.runtime, handle);
   if (view === undefined) assembly.resident = false;

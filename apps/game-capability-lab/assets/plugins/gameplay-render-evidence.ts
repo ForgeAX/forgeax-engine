@@ -25,7 +25,6 @@ import { jpegTextureSnapshot } from './jpeg-texture-swap';
 import type { VideoTexturePanel } from './video-texture-panel';
 import type { FbxSkinnedTarget } from './fbx-skinned-target';
 import type { WorldScoreTextHandle } from './world-score-text';
-import type { MultiWorldOverlay } from './multi-world-overlay';
 import type { AnimatedMaterialTarget } from './animated-target-material';
 import type { ScoringTargetQuery } from './scoring-target';
 import type { ProjectileVisual } from './components/gameplay';
@@ -60,7 +59,6 @@ type GameplayRenderEvidenceArgs = {
     readonly topologies: readonly string[];
     readonly slotsAligned: boolean;
   };
-  readonly multiWorldOverlay: MultiWorldOverlay | undefined;
   readonly customProjectile: CustomProjectileMesh | undefined;
   readonly getProjectileVisual: () => ProjectileVisual;
   readonly setProjectileVisual: (visual: ProjectileVisual) => void;
@@ -145,7 +143,6 @@ export function installGameplayRenderEvidence(args: GameplayRenderEvidenceArgs):
     },
     deferredCommands: () => args.world.getResource(GAME_DEFAULT_COMMAND_COUNTERS),
     multiMaterial: args.multiMaterial,
-    ...(args.multiWorldOverlay === undefined ? {} : { multiWorld: args.multiWorldOverlay.snapshot }),
     ...(projectile === undefined ? {} : {
       customProjectileMesh: () => ({
         available: true,

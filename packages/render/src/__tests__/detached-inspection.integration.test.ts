@@ -82,11 +82,7 @@ describe('detached renderer inspection', () => {
       )
       .unwrap();
     expect(world.update().ok).toBe(true);
-    const frameInput = () => ({
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
+    const frameInput = () => ({ source: attached.value });
     let frame = renderer.draw(frameInput());
     if (!frame.ok) {
       await Promise.resolve();
@@ -105,7 +101,7 @@ describe('detached renderer inspection', () => {
     expect(inspection.temporal.resources.active).toBeGreaterThan(0);
     expect(inspection.temporal.resources.candidate).toBe(0);
     expect(inspection.lodOcclusion).toMatchObject({
-      schema: 'forgeax::lod-occlusion-inspection::v3',
+      schema: 'forgeax::lod-occlusion-inspection::v4',
       view: { viewRole: 'main', cameraEntity: camera },
       count: { candidates: 0, visible: 0, occluded: 0 },
     });

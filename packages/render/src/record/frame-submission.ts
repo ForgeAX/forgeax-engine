@@ -1,4 +1,3 @@
-import { recordContext } from '../world/view-record-context';
 // Display-frame submission: the optional parts of the pass context grouped by
 // their owner, the submission hooks that fence/track/commit every prepared
 // owner, capture-only submission, and the post-submission promotions.
@@ -19,6 +18,7 @@ import type {
 } from '../scene/render-scene';
 import { projectVolumeCompositeBounds } from '../volume/composite-scissor';
 import { requireGiSubmissions } from '../world/gi-systems';
+import { recordContext } from '../world/view-record-context';
 import type {
   currentDirectionalShadowPublication,
   prepareDirectionalCascadeCadence,
@@ -120,7 +120,14 @@ export function gpuDrivenPassContext(
       : { gpuDrivenGeometryLane: frameGpuDriven.geometryLane ?? 'automatic' }),
     ...preparedGpuDrivenPassResources(frameState, prepared, raster, selection, shadowArtifacts),
     ...(scene?.slotForEntity === undefined ? {} : { shadowSlotForEntity: scene.slotForEntity }),
-    ...(scene === undefined ? {} : { gpuDrivenSceneMaterialBuffer: scene.scene.materialBuffer }),
+    ...(scene === undefined
+      ? frameGpuDriven?.sceneTextureTables === undefined
+        ? {}
+        : {
+            gpuDrivenScene: frameGpuDriven.sceneTextureTables.scene,
+            gpuDrivenSceneSlotForEntity: frameGpuDriven.sceneTextureTables.slotForEntity,
+          }
+      : { gpuDrivenSceneMaterialBuffer: scene.scene.materialBuffer, gpuDrivenScene: scene.scene }),
   };
 }
 
@@ -191,7 +198,6 @@ export function shadowPassContext(
   publishShadowRows: boolean,
   shadowValidatedOrdered: readonly ValidatedRenderable[],
   shadowMaterialRowBase: number,
-  shadowCasterWorldKeys: readonly number[] | undefined,
 ): Pick<
   Partial<_InternalRenderPipelineContext>,
   | 'shadowCasterBounds'
@@ -200,7 +206,6 @@ export function shadowPassContext(
   | 'shadowValidatedOrdered'
   | 'shadowMaterialRowBase'
   | 'shadowDispatch'
-  | 'shadowCasterWorldKeys'
 > {
   return {
     ...(projection === undefined ? {} : { shadowCasterBounds: projection.worldBoundsOf }),
@@ -210,7 +215,6 @@ export function shadowPassContext(
     ...(capsuleShadowLight === undefined ? {} : { capsuleShadowLight }),
     ...(publishShadowRows ? { shadowValidatedOrdered, shadowMaterialRowBase } : {}),
     ...(projection?.dispatch === undefined ? {} : { shadowDispatch: projection.dispatch }),
-    ...(shadowCasterWorldKeys === undefined ? {} : { shadowCasterWorldKeys }),
   };
 }
 

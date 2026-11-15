@@ -19,7 +19,7 @@ import { engineDoctorCommand, readEngineBinding } from './engine-binding.js';
 import { isFilesystemPathWithin } from './filesystem-path.js';
 import { applyInitPlan, createInitPlan } from './init.js';
 import { commandError, readProjectFacts } from './project.js';
-import { inspectRunDependencyClosure } from './run-snapshot.js';
+import { hasLocalEngineDependencyOverride, inspectRunDependencyClosure } from './run-snapshot.js';
 import { findSdkContext } from './sdk.js';
 import {
   agentOnboarding,
@@ -141,6 +141,25 @@ async function finishDoctor(
   };
 }
 
+function projectLocalDependencies(packageJson: Record<string, unknown>): string[] {
+  const dependencies = new Set<string>();
+  for (const section of [
+    'dependencies',
+    'devDependencies',
+    'optionalDependencies',
+    'peerDependencies',
+  ]) {
+    const entries = packageJson[section];
+    if (entries === null || typeof entries !== 'object') continue;
+    for (const [name, specifier] of Object.entries(entries)) {
+      if (typeof specifier === 'string' && /^(workspace|file|link):/.test(specifier)) {
+        dependencies.add(name);
+      }
+    }
+  }
+  return [...dependencies].sort();
+}
+
 export async function doctorCommand(
   options: ProjectCommandOptions = {},
 ): Promise<CommandResult<DoctorReport>> {
@@ -182,25 +201,7 @@ export async function doctorCommand(
       },
     };
   }
-  const workspaceDependencies = new Set<string>();
-  for (const section of [
-    'dependencies',
-    'devDependencies',
-    'optionalDependencies',
-    'peerDependencies',
-  ]) {
-    const value = facts.value.packageJson[section];
-    if (value === null || typeof value !== 'object') continue;
-    for (const [name, version] of Object.entries(value)) {
-      if (
-        typeof version === 'string' &&
-        (version.startsWith('workspace:') || version.startsWith('file:'))
-      ) {
-        workspaceDependencies.add(name);
-      }
-    }
-  }
-  const localDependencies = [...workspaceDependencies].sort();
+  const localDependencies = projectLocalDependencies(facts.value.packageJson);
   const binding = await readEngineBinding(facts.value.root);
   if (!binding.ok) return binding;
   let engineDigest: string | undefined;
@@ -224,12 +225,15 @@ export async function doctorCommand(
       };
     engineDigest = engine.value.workspace.digest;
   }
-  if (binding.value !== null || localDependencies.length > 0) {
-    try {
+  try {
+    if (
+      binding.value !== null ||
+      localDependencies.length > 0 ||
+      (await hasLocalEngineDependencyOverride(facts.value.root))
+    )
       await inspectRunDependencyClosure(facts.value.root, binding.value, engineDigest, pnpm);
-    } catch (cause) {
-      return { ok: false, error: commandError(cause, 'project-dependency-closure-invalid') };
-    }
+  } catch (cause) {
+    return { ok: false, error: commandError(cause, 'project-dependency-closure-invalid') };
   }
   return finishDoctor(facts.value, pnpm, localDependencies);
 }

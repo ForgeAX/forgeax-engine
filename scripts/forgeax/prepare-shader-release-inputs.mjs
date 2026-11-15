@@ -10,6 +10,12 @@ import {
   packagedProfilePublication,
 } from '../../packages/vite-plugin-shader/dist/packaged-profiles.mjs';
 import { engineShaderSourceDigest } from '../../packages/vite-plugin-shader/dist/source-digest.mjs';
+import {
+  runnerResources,
+  shaderCompileWorkers,
+  shaderProducerHeapSize,
+} from '../lib/runner-resources.mjs';
+import { admitShaderSourceBudget } from '../lib/shader-source-budget.mjs';
 import { reusableSharedShader, sharedShaderInputFingerprint } from '../lib/shared-build-cache.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -41,6 +47,9 @@ const sharedIndex = process.argv.indexOf('--shared-input-manifest');
 if (sharedIndex >= 0 && !process.argv[sharedIndex + 1]) {
   throw new Error('--shared-input-manifest requires a manifest path');
 }
+// Reading and encoding both complete publications also needs the producer heap.
+// A child compiler's explicit budget does not change this parent's V8 limit.
+admitShaderSourceBudget();
 const shaderManifests = new Map();
 if (process.argv.includes('--build')) {
   for (const profile of profiles) {
@@ -80,10 +89,11 @@ if (process.argv.includes('--build')) {
     }
     // Inherit the caller's process group so the browser gate's existing
     // supervisor also owns this compiler and its children on cancellation.
+    const resources = runnerResources();
     const result = spawnSync(
       process.execPath,
       [
-        '--max-old-space-size=4096',
+        `--max-old-space-size=${shaderProducerHeapSize(resources)}`,
         'scripts/build-shared-inputs.mjs',
         '--root',
         root,
@@ -93,7 +103,16 @@ if (process.argv.includes('--build')) {
       ],
       {
         cwd: root,
-        env: { ...process.env, FORGEAX_ENGINE_SHADER_SOURCE_BUILD: '1' },
+        env: {
+          ...process.env,
+          FORGEAX_ENGINE_SHADER_SOURCE_BUILD: '1',
+          FORGEAX_SHADER_COMPILE_WORKERS: String(
+            Math.min(
+              4,
+              shaderCompileWorkers(resources, process.env.FORGEAX_SHADER_COMPILE_WORKERS ?? '2'),
+            ),
+          ),
+        },
         stdio: 'inherit',
       },
     );

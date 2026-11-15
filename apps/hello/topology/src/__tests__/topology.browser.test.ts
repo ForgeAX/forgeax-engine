@@ -5,12 +5,13 @@ import {
   createEdgesGeometry,
   createWireframeGeometry,
 } from '@forgeax/engine-geometry';
-import { Camera, MeshFilter, MeshRenderer, perspective, type Renderer, type RenderWorldLease } from '@forgeax/engine-render';
+import { Camera, MeshFilter, MeshRenderer, perspective, type Renderer, type RenderInspection, type RenderWorldLease } from '@forgeax/engine-render';
 import { createRenderer } from '@forgeax/engine-runtime';
 import { Transform } from '@forgeax/engine-scene';
 import type { MaterialAsset, MeshAsset } from '@forgeax/engine-types';
 import { afterEach, describe, expect, it, onTestFailed } from 'vitest';
 import { commands, page } from 'vitest/browser';
+import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
 
 const WIDTH = 640;
 const HEIGHT = 360;
@@ -118,13 +119,17 @@ describe('hello-topology browser visual consumer', () => {
   });
 
   it('uses the dev-server pack path and records wireframe/threshold PNG evidence', async () => {
+    const deadline = Date.now() + TOPOLOGY_BROWSER_TEST_TIMEOUT_MS;
     let phase = 'catalog-fetch';
+    let lastFrame: Pick<RenderInspection, 'frame'> | undefined;
+    let visualObservation: unknown;
     onTestFailed(async () => {
       const failureRecord = {
         schemaVersion: 1,
         source: import.meta.env.VITE_FORGEAX_EVIDENCE_SOURCE_SHA,
         phase,
-        renderer: renderer?.inspect() ?? null,
+        renderer: lastFrame ?? renderer?.inspect() ?? null,
+        observed: visualObservation ?? null,
         qualification: 'Original120-second gate failed; a missing frame is unavailable RHI evidence.',
       };
       console.log(`[topology-browser] failureRecord=${JSON.stringify(failureRecord)}`);
@@ -212,19 +217,15 @@ describe('hello-topology browser visual consumer', () => {
         ).ok,
       ).toBe(true);
 
-      const frameRequest = {
-        leases: [attached.value],
-        camera: { lease: attached.value },
-        environment: { lease: attached.value },
-      };
+      const frameRequest = { source: attached.value };
       phase = 'frame-completion';
       for (let frame = 0; frame < 4; frame += 1) {
         expect(world.update(1 / 60).ok).toBe(true);
-        const drawn = renderer.draw(frameRequest);
-        expect(drawn.ok).toBe(true);
-        if (!drawn.ok) return;
-        const completed = await drawn.value.completed;
-        expect(completed.ok).toBe(true);
+        const receipt = await drawReadyFrame(renderer, frameRequest, undefined, {
+          timeoutMs: Math.max(1, Math.floor(deadline - Date.now())),
+        });
+        expect(receipt.presentation).toBe('ready');
+        lastFrame = renderer.inspect({ fields: ['frame'] });
         await new Promise<void>((resolve) => setTimeout(resolve, 80));
       }
 
@@ -239,20 +240,18 @@ describe('hello-topology browser visual consumer', () => {
         indexed: false,
         topology: 'line-list',
       };
-      const visualRecord = {
-        observed,
-        verdict: 'pass',
-        confidence: 'high',
-      } as const;
-      console.log(`[topology-browser] visualRecord=${JSON.stringify(visualRecord)}`);
+      visualObservation = observed;
       expect(observed.wireframeForeground).toBeGreaterThan(8);
       expect(observed.thresholdForeground).toBeGreaterThan(8);
       expect(consoleErrors).toEqual([]);
       expect(runtimeErrors).toEqual([]);
+      const visualRecord = { observed, verdict: 'pass', confidence: 'high' } as const;
+      console.log(`[topology-browser] visualRecord=${JSON.stringify(visualRecord)}`);
     } finally {
       console.error = originalConsoleError;
       window.removeEventListener('error', onWindowError);
       window.removeEventListener('unhandledrejection', onUnhandledRejection);
     }
-  }, TOPOLOGY_BROWSER_TEST_TIMEOUT_MS);
+  }, TOPOLOGY_BROWSER_TEST_TIMEOUT_MS,
+  );
 });

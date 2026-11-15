@@ -1269,8 +1269,8 @@ const materialMetallic =
   FALSIFY_MATERIAL_METALLIC === '' && FALSIFY_MATERIAL_METALLIC_CHANNEL === '' ? 0.0 : 1.0;
 const materialRoughness =
   FALSIFY_MATERIAL_ROUGHNESS === ''
-    ? (FALSIFY_MATERIAL_METALLIC_ROUGHNESS_TEXTURE_SAMPLER_MIPMAP_FILTER !== '' ||
-        FALSIFY_MATERIAL_METALLIC_ROUGHNESS_TEXTURE_SAMPLER_MIN_FILTER !== '')
+    ?FALSIFY_MATERIAL_METALLIC_ROUGHNESS_TEXTURE_SAMPLER_MIPMAP_FILTER !== '' ||
+        FALSIFY_MATERIAL_METALLIC_ROUGHNESS_TEXTURE_SAMPLER_MIN_FILTER !== ''
       ? 1.0
       : 0.5
     : Number.parseFloat(FALSIFY_MATERIAL_ROUGHNESS);
@@ -2512,7 +2512,7 @@ let framesObserved = 0;
 const TARGET_FRAMES = SMOKE_MIN_FRAMES;
 for (let i = 0; i < TARGET_FRAMES; i++) {
   world.update(1 / 60).unwrap();
-  await drawReadyFrame(renderer, { leases: [lease], camera: { lease }, environment: { lease } });
+  await drawReadyFrame(renderer, { source: lease });
   framesObserved++;
 }
 const device = sharedDevice;

@@ -44,17 +44,15 @@ export function particleBindingValues(
 /** Frozen material binding values for one source world and material handle. */
 export function materialBindingValues(
   cache: Map<string, BindingValues>,
-  world: number,
   handle: ParticleRendererSourceV3['material'],
 ): BindingValues {
-  const key = `material:${world}`;
+  const key = 'material';
   const prior = cache.get(key);
   const material = prior?.material as
-    | { readonly world: number; readonly handle: ParticleRendererSourceV3['material'] }
+    | { readonly handle: ParticleRendererSourceV3['material'] }
     | undefined;
-  if (material !== undefined && material.world === world && material.handle === handle)
-    return prior as BindingValues;
-  const values = Object.freeze({ group: 1, material: Object.freeze({ world, handle }) });
+  if (material !== undefined && material.handle === handle) return prior as BindingValues;
+  const values = Object.freeze({ group: 1, material: Object.freeze({ handle }) });
   cache.set(key, values);
   return values;
 }

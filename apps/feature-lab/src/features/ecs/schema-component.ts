@@ -57,13 +57,6 @@ export default defineFeature({
       checks.equal('entity ref', v.target, target);
       checks.equal('fixed array', Array.from(v.tint), [1, 0.5, 0.25, 1]);
       checks.equal('variable array', Array.from(v.path), [1, 2, 3]);
-      const nan = world.set(e.value, Rich, { speed: Number.NaN });
-      checks.equal(
-        'NaN rejected',
-        nan.ok ? 'ok' : nan.error.code,
-        'component-numeric-value-invalid',
-      );
-      checks.near('value unchanged after NaN', world.get(e.value, Rich).unwrap().speed, 3);
     }
     let unsupported = 'none';
     try {

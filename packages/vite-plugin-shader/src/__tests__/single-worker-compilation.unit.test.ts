@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const compilation = vi.hoisted(() => ({ active: 0, peak: 0, completed: 0 }));
+const compilation = vi.hoisted(() => ({
+  active: 0,
+  peak: 0,
+  completed: 0,
+  projectedAt: [] as number[],
+}));
 
 // Keep real Naga composition/reflection while bounding the source fixture.
 // Every engine entry gets two variants so both public producer paths reach
@@ -36,6 +41,10 @@ vi.mock('@forgeax/engine-shader-compiler', async (original) => {
   const actual = await original<typeof import('@forgeax/engine-shader-compiler')>();
   return {
     ...actual,
+    projectShaderConditionals: (...args: Parameters<typeof actual.projectShaderConditionals>) => {
+      compilation.projectedAt.push(compilation.completed);
+      return actual.projectShaderConditionals(...args);
+    },
     createShaderProgramCompiler: () => {
       const compile = actual.createShaderProgramCompiler();
       return async (...args: Parameters<typeof compile>) => {
@@ -58,6 +67,7 @@ beforeEach(() => {
   compilation.active = 0;
   compilation.peak = 0;
   compilation.completed = 0;
+  compilation.projectedAt = [];
   vi.stubEnv('FORGEAX_SHADER_COMPILE_WORKERS', '1');
   vi.stubEnv('FORGEAX_ENGINE_SHADER_SOURCE_BUILD', '1');
   vi.stubEnv('FORGEAX_SHARED_APP_INPUTS_MANIFEST', undefined);
@@ -71,6 +81,7 @@ describe('single-worker source compilation budget', () => {
     expect(compilation.completed).toBeGreaterThan(2);
     expect(compilation.active).toBe(0);
     expect(compilation.peak).toBe(1);
+    expect([...new Set(compilation.projectedAt)].slice(0, 2)).toEqual([0, 1]);
     expect(manifest.materialShaders.every((entry) => entry.variants.length === 2)).toBe(true);
   }, 60_000);
 
@@ -84,6 +95,7 @@ describe('single-worker source compilation budget', () => {
     expect(compilation.completed).toBeGreaterThan(2);
     expect(compilation.active).toBe(0);
     expect(compilation.peak).toBe(1);
+    expect([...new Set(compilation.projectedAt)].slice(0, 2)).toEqual([0, 1]);
     const manifestAsset = emitted.find((asset) => asset.fileName === 'shaders/manifest.json');
     expect(manifestAsset).toBeDefined();
     const manifest = JSON.parse(manifestAsset?.source ?? '{}') as {

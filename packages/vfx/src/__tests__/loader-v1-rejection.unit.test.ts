@@ -115,7 +115,7 @@ it('rejects the previous sorting uniform ABI with a re-cook hint', async () => {
   if (!result.ok)
     expect(result.error).toMatchObject({
       code: 'vfx-asset-v3-invalid',
-      expected: 'a forgeax-vfx-program-4 managed GPU program',
+      expected: 'a forgeax-vfx-program-5 managed GPU program',
       hint: 'recook with the current VFX compiler ABI',
     });
 });

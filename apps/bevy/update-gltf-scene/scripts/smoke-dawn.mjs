@@ -5,6 +5,7 @@ import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErr
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..', '..', '..', '..');
@@ -49,7 +50,7 @@ const canvas = {
   removeEventListener() {},
 };
 
-const manifest = readFileSync(resolve(appRoot, 'dist', 'shaders', 'manifest.json'), 'utf8');
+const manifest = readShaderManifestText(resolve(appRoot, 'dist', 'shaders', 'manifest.json'));
 const { createWorldContext, World } = await import('@forgeax/engine-ecs');
 const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/internal/renderer-host');
 const { Camera, DirectionalLight, perspective, renderComponentsPlugin } = await import('@forgeax/engine-render');

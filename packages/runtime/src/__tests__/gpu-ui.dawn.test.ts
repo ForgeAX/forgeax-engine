@@ -164,14 +164,7 @@ it('keeps real GPU UI on one Renderer through UI-only, 3D composition and scene 
       // to the newly created World's elapsed time.
       await completeReadyFrame(async () => {
         const before = submissions;
-        const receipt = value(
-          renderer.draw({
-            leases: [lease],
-            camera: { lease },
-            environment: { lease },
-            sampleTimeSeconds: 1,
-          }),
-        );
+        const receipt = value(renderer.draw({ source: lease, sampleTimeSeconds: 1 }));
         value(await receipt.completed);
         expect(submissions - before, `3D frame ${i}`).toBeLessThanOrEqual(1);
         if (receipt.presentation === 'ready')
@@ -202,6 +195,9 @@ it('keeps real GPU UI on one Renderer through UI-only, 3D composition and scene 
 
     // Camera-free Worlds compose UI normally. Explicit scene retirement still
     // uses this Renderer and its existing surface.
+    lease.dispose();
+    scene.dispose();
+    scene = undefined;
     const cameraFree = await draw(boot);
     expect(cameraFree.receipt.presentation).toBe('ready');
     expect(equalBytes(cameraFree.rgba, loading.rgba)).toBe(true);

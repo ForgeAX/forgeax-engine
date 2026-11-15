@@ -1,3 +1,4 @@
+import { PhysicsWorld2DResource } from '@forgeax/engine-physics';
 // packages/physics-rapier2d/__tests__/free-fall-collision.test.ts
 //
 // feat-20260528-rapier-physics-2d-3d . M3 . t18 (red)
@@ -265,7 +266,7 @@ describe('rapier-authored-transform-pose.test.ts', () => {
 
     const world = prepareWorld();
     const pw = createRapier2DPhysicsWorld(RAPIER);
-    world.insertResource('PhysicsWorld', pw);
+    world.insertResource(PhysicsWorld2DResource, pw);
     const obstacle = spawnPairedEntity(world,
         {
           component: Transform as never,
@@ -305,7 +306,7 @@ describe('bug-20260529 M2 real ECS bridge (regression)', () => {
 
     const world = prepareWorld();
     const pw = createRapier2DPhysicsWorld(RAPIER);
-    world.insertResource('PhysicsWorld', pw);
+    world.insertResource(PhysicsWorld2DResource, pw);
 
     // Spawn dynamic ball at y=5 with (Transform, RigidBody{dynamic}, Collider{sphere}).
     const dynamicEntity = spawnPairedEntity(world,
@@ -398,7 +399,7 @@ describe('feat-20260709 M4 / w18 -- cuboid halfExtents array passes through the 
 
     const world = prepareWorld();
     const pw = createRapier2DPhysicsWorld(RAPIER);
-    world.insertResource('PhysicsWorld', pw);
+    world.insertResource(PhysicsWorld2DResource, pw);
 
     // Dynamic ball (radius 0.5) dropped onto a cuboid ground whose top is at
     // groundPosY + halfExtents[1] = 0 + 2 = 2. If the array collapse dropped
@@ -458,7 +459,7 @@ describe('bug-20260713 solo round-22 Rapier2D raycast entity resolution', () => 
 
     const world = prepareWorld();
     const pw = createRapier2DPhysicsWorld(RAPIER);
-    world.insertResource('PhysicsWorld', pw);
+    world.insertResource(PhysicsWorld2DResource, pw);
 
     // Ground: static cuboid, top at y=0.
     const ground = spawnPairedEntity(world,
@@ -514,7 +515,7 @@ describe('bug-20260713 solo round-26 Rapier2D bare-Collider static floor', () =>
 
     const world = prepareWorld();
     const pw = createRapier2DPhysicsWorld(RAPIER);
-    world.insertResource('PhysicsWorld', pw);
+    world.insertResource(PhysicsWorld2DResource, pw);
 
     // Ball: dynamic body + circle collider dropped from y=5.
     const ball = spawnPairedEntity(world,

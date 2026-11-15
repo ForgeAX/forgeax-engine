@@ -27,13 +27,13 @@ describe('Camera target consumption', () => {
   it('keeps display authority separate and applies stable auxiliary ordering and budget', () => {
     const [first, second] = targets();
     const cameras: CameraTargetCandidate[] = [
-      { worldId: 2, entityKey: 20, target: first, requestVersion: 1, update: 'once' },
-      { worldId: 1, entityKey: 30, target: second, requestVersion: 1, update: 'continuous' },
-      { worldId: 1, entityKey: 10, requestVersion: 0, update: 'continuous' },
+      { entityKey: 20, target: first, requestVersion: 1, update: 'once' },
+      { entityKey: 30, target: second, requestVersion: 1, update: 'continuous' },
+      { entityKey: 10, requestVersion: 0, update: 'continuous' },
     ];
     const selected = selectCameraTargetViews(cameras, { displayEntityKey: 10, budget: 1 });
     expect(selected.display?.entityKey).toBe(10);
-    expect(selected.auxiliary.map((camera) => camera.entityKey)).toEqual([30]);
+    expect(selected.auxiliary.map((camera) => camera.entityKey)).toEqual([20]);
     expect(selected.rejected).toHaveLength(1);
     expect(selected.rejected[0]?.reason).toBe('budget');
   });
@@ -41,8 +41,8 @@ describe('Camera target consumption', () => {
   it('rejects a target camera selected as display and duplicate target producers', () => {
     const [first] = targets();
     const cameras: CameraTargetCandidate[] = [
-      { worldId: 1, entityKey: 3, target: first, requestVersion: 1, update: 'once' },
-      { worldId: 1, entityKey: 4, target: first, requestVersion: 2, update: 'once' },
+      { entityKey: 3, target: first, requestVersion: 1, update: 'once' },
+      { entityKey: 4, target: first, requestVersion: 2, update: 'once' },
     ];
     const selected = selectCameraTargetViews(cameras, { displayEntityKey: 3, budget: 2 });
     expect(selected.display).toBeUndefined();
@@ -55,7 +55,6 @@ describe('Camera target consumption', () => {
     const [first, second] = targets();
     const cameras: CameraTargetCandidate[] = [
       {
-        worldId: 1,
         entityKey: 1,
         target: first,
         targetLayer: 0,
@@ -63,7 +62,6 @@ describe('Camera target consumption', () => {
         update: 'continuous',
       },
       {
-        worldId: 1,
         entityKey: 2,
         target: first,
         targetLayer: 2,
@@ -71,7 +69,6 @@ describe('Camera target consumption', () => {
         update: 'continuous',
       },
       {
-        worldId: 1,
         entityKey: 3,
         target: first,
         targetLayer: 2,
@@ -79,7 +76,6 @@ describe('Camera target consumption', () => {
         update: 'continuous',
       },
       {
-        worldId: 1,
         entityKey: 4,
         target: second,
         targetLayer: 1,

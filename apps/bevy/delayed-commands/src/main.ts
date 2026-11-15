@@ -4,6 +4,7 @@
 // one each second, cycling through colors. The `fn(_world, _queryResults, commands)` third
 // parameter is the CommandBuffer — the forgeax equivalent of Bevy's `Commands`.
 
+import { defineSystem } from "@forgeax/engine-ecs";
 import { createApp } from '@forgeax/engine-app/browser';
 import { Time, Update } from '@forgeax/engine-ecs';
 import type { EntityHandle } from '@forgeax/engine-ecs';
@@ -74,7 +75,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
 
   // System: every second, despawn oldest + spawn new via Commands
   let accumulator = 0;
-  app.world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'delayed-commands',
     queries: [],
     fn: (_world, _queryResults, commands) => {
@@ -95,6 +96,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       colorIndex = (colorIndex + 1) % COLORS.length;
     },
   });
+app.world.addSystem(Update, systemToken1);
 
   const started = app.start();
   if (!started.ok) {

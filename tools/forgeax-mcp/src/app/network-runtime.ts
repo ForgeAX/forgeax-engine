@@ -4,7 +4,10 @@ export function installNetworkRuntime(global: any, invoke: any, baseHref: string
   const fetchNative = global.fetch;
   const WorkerNative = global.Worker;
   const importNative = global.__fxMcpImport;
-  const loadNative = importNative ?? ((url: string) => import(/* @vite-ignore */ url));
+  const loadNative = (url: string) => {
+    if (typeof importNative !== 'function') throw new Error('MCP native module loader is unavailable');
+    return importNative(url);
+  };
   const locationNative = global.__fxMcpLocation;
   const blobs = new Set<string>();
   const workers = new Map<any, { channel: MessageChannel; controller: AbortController }>();
@@ -58,24 +61,39 @@ export function installNetworkRuntime(global: any, invoke: any, baseHref: string
     });
   };
   const resolve = (value: any) => new URL(String(value?.url ?? value), baseHref).href;
+  const loadModule = async (url: string) => {
+    lifetime.signal.throwIfAborted();
+    const namespace = await loadNative(url);
+    lifetime.signal.throwIfAborted();
+    return namespace;
+  };
   const moduleCache = new Map<string, Promise<any>>();
   global.__fxMcpImport = (value: any, from = baseHref) => {
-    const url = new URL(String(value), from).href;
-    if (url.startsWith('blob:') || url.startsWith('data:')) return loadNative(url);
+    lifetime.signal.throwIfAborted();
+    const specifier = String(value);
+    // Package specifiers use the document's native resolver. Only URL references
+    // belong to the admitted source graph; new URL would invent a package path.
+    if (!specifier.startsWith('/') && !/^\.{1,2}\//.test(specifier) &&
+      !/^[a-z][a-z\d+.-]*:/i.test(specifier)) return loadModule(specifier);
+    const url = new URL(specifier, from).href;
+    if (url.startsWith('blob:') || url.startsWith('data:')) return loadModule(url);
     let promise = moduleCache.get(url);
     if (!promise) {
       promise = (async () => {
-        const ref = await invoke({ action: 'bundle', kind: 'module', url });
-        const data = await bytes(ref);
+        const ref = await invoke({ action: 'bundle', kind: 'module', url }, { signal: lifetime.signal });
+        lifetime.signal.throwIfAborted();
+        const data = await bytes(ref, { signal: lifetime.signal });
+        lifetime.signal.throwIfAborted();
         const blob = URL.createObjectURL(new Blob([data], { type: 'text/javascript' }));
         blobs.add(blob);
-        return loadNative(blob);
+        return loadModule(blob);
       })();
       moduleCache.set(url, promise);
     }
     return promise;
   };
   global.fetch = async (input: any, options: any = {}) => {
+    lifetime.signal.throwIfAborted();
     const url = resolve(input);
     if (url.startsWith('blob:') || url.startsWith('data:'))
       return fetchNative.call(global, input, options);
@@ -116,6 +134,7 @@ export function installNetworkRuntime(global: any, invoke: any, baseHref: string
     blobs.add(bootstrap);
     global.Worker = class extends WorkerNative {
       constructor(url: any, options: any = {}) {
+        lifetime.signal.throwIfAborted();
         const href = resolve(url);
         if (href.startsWith('blob:') || href.startsWith('data:')) {
           super(url, options);
@@ -176,9 +195,9 @@ export function installNetworkRuntime(global: any, invoke: any, baseHref: string
       for (const blob of blobs) URL.revokeObjectURL(blob);
       blobs.clear();
       moduleCache.clear();
-      global.fetch = fetchNative;
-      global.Worker = WorkerNative;
-      global.__fxMcpImport = importNative;
+      // Keep network entrypoints fail-closed until this isolated document is
+      // removed. Restoring the native APIs while teardown drains late Engine
+      // work can let requests escape the admitted broker from an opaque origin.
       global.__fxMcpLocation = locationNative;
       if (document) {
         if (baseDescriptor) Object.defineProperty(document, 'baseURI', baseDescriptor);

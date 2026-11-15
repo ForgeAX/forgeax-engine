@@ -9,7 +9,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RigidBody, RigidBodyTypeValue, registerPhysicsComponents } from '../components.js';
 import {
   detectMobilityPhysicsConflict,
-  MOBILITY_PHYSICS_CONFLICT_SYSTEM,
   registerMobilityPhysicsConflict,
 } from '../mobility-conflict.js';
 
@@ -116,8 +115,6 @@ describe('mobility-physics-conflict', () => {
     world.update(1 / 60).unwrap();
     expect(received.map((d) => d.code)).toEqual(['mobility-physics-conflict']);
     release();
-    expect(world.inspect().systems.some((s) => s.name === MOBILITY_PHYSICS_CONFLICT_SYSTEM)).toBe(
-      false,
-    );
+    expect(world.inspect().systems.some((s) => s.name === 'mobilityPhysicsConflict')).toBe(false);
   });
 });

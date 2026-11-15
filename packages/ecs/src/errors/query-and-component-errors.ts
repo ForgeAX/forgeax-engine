@@ -1,37 +1,15 @@
-/**
- * Returned via `Result.err` from `world.removeComponent` when the caller tries
- * to remove an essential (undeletable) component
- * (feat-20260602-archetype-stores-full-packed-entity M1 / w3, plan-strategy
- * D-3). The only essential component today is the id=0 `Entity` component: every
- * archetype carries it unconditionally as the row's own packed handle, so
- * removing it is structurally meaningless. The code name is deliberately
- * generic (`remove-essential-component`, not entity-specific) so a future second
- * essential component reuses it without a rename.
- *
- * `.code = 'remove-essential-component'`
- * `.detail = { componentName }`
- * `.hint` — names the essential component + states it cannot be removed.
- */
-export class RemoveEssentialComponentError extends Error {
-  override readonly name = 'RemoveEssentialComponentError';
+/** Rejects removal of the Entity identity column. */
+export class RemoveEntityComponentError extends Error {
+  override readonly name = 'RemoveEntityComponentError';
+  // Published error-code spelling; changing it requires a version boundary.
   readonly code = 'remove-essential-component' as const;
-  readonly hint: string;
-  readonly expected: string;
-  readonly detail: { readonly componentName: string };
+  readonly hint =
+    'Entity stores the entity identity and cannot be removed. Despawn the entity instead.';
+  readonly expected = 'a component other than Entity';
+  readonly detail = { componentName: 'Entity' } as const;
 
-  constructor(componentName: string) {
-    const hint = `Component "${componentName}" is essential (every entity carries it unconditionally) and cannot be removed. Despawn the entity instead if you want to retire it.`;
-    const expected = 'non-essential component';
-    super(
-      `removeComponent: essential component cannot be removed.\n` +
-        `  code: remove-essential-component\n` +
-        `  component: ${componentName}\n` +
-        `  expected: ${expected}\n` +
-        `  hint: ${hint}`,
-    );
-    this.hint = hint;
-    this.expected = expected;
-    this.detail = { componentName };
+  constructor() {
+    super('removeComponent: Entity cannot be removed.');
   }
 }
 

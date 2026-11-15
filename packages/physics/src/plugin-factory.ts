@@ -24,10 +24,11 @@ export function physicsComponentsPlugin(): Plugin {
 }
 
 /** Backend-owned operations; this contract imports no backend implementation. */
-export interface PhysicsPluginBackend {
+export interface PhysicsPluginBackend<T extends PhysicsWorld | PhysicsWorld2D> {
+  readonly resource: import('@forgeax/engine-ecs').Resource<T>;
   readonly name: string;
   load(): Promise<unknown>;
-  create(native: unknown, options: PhysicsOptions): PhysicsWorld | PhysicsWorld2D;
+  create(native: unknown, options: PhysicsOptions): T;
   registerSystems(world: World): () => void;
 }
 
@@ -38,8 +39,8 @@ declare module '@forgeax/engine-plugin' {
 }
 
 /** Share native lifetime and failure handling after the caller statically selects a backend. */
-export function definePhysicsPlugin(
-  backend: PhysicsPluginBackend,
+export function definePhysicsPlugin<T extends PhysicsWorld | PhysicsWorld2D>(
+  backend: PhysicsPluginBackend<T>,
 ): Plugin.Object<PhysicsOptions | undefined> {
   return {
     name: 'physics',
@@ -65,9 +66,9 @@ export function definePhysicsPlugin(
       const physics = backend.create(native, options);
       ctx.effect(() => registerPhysicsComponents(world), 'physics/components');
       ctx.effect(() => {
-        world.insertResource('PhysicsWorld', physics);
+        world.insertResource(backend.resource, physics);
         return () => {
-          world.removeResource('PhysicsWorld');
+          world.removeResource(backend.resource);
           physics.dispose();
         };
       }, 'physics/resource');

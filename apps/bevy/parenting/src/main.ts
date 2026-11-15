@@ -15,6 +15,7 @@
 // The World + spin math live in the shared src/parenting.ts (SSOT for this
 // app AND the dawn smoke).
 
+import { defineSystem } from "@forgeax/engine-ecs";
 import { createApp } from '@forgeax/engine-app/browser';
 import { Time, Update } from '@forgeax/engine-ecs';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
@@ -45,16 +46,17 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
 
   // The Update system: spin the parent each frame off the auto-provided
   // Time.delta (Bevy's `add_systems(Update, rotator_system)`).
-  app.world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'rotate-parent',
     queries: [],
     fn: (world) => {
-      const dt = world.hasResource('Time')
+      const dt = world.hasResource(Time)
         ? world.getResource(Time).delta
         : 0;
       stepRotate(world, dt);
     },
   });
+app.world.addSystem(Update, systemToken1);
 
   const started = app.start();
   if (!started.ok) console.error('[bevy-parenting] app.start failed:', started.error);

@@ -1,4 +1,5 @@
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
+import { defineResource, defineSystem } from '@forgeax/engine-ecs';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import { materialSamplesTarget } from '../record/target-capture-graph';
 import type { RenderableSnapshot } from '../render-system-extract';
@@ -18,6 +19,11 @@ import {
   recordRetirementError,
 } from '../render-system-record-attempt';
 import type { FrameList } from '../scene/frame-list';
+import {
+  RenderRecordCommitOrder,
+  RenderRecordRetireOrder,
+  RenderSubmissionRetireOrder,
+} from '../system-order';
 import { settleDirectionalShadow } from './directional-shadow-inspection';
 import {
   type RecordHistory,
@@ -72,18 +78,23 @@ export interface SubmissionRetirement {
   /** That device's queue, for work outside a submission of its generation. */
   readonly queue: { onSubmittedWorkDone(): Promise<unknown> };
   readonly release: () => void;
+  readonly onFailure?: (cause: unknown) => void;
 }
 
 interface SubmissionQueue {
   readonly retirements: SubmissionRetirement[];
+  readonly ownedProfileFrames: {
+    readonly owner: ViewSettlementOwner;
+    readonly record: StagedRecord;
+  }[];
 }
 
 /** World resource key of the frame's staged retirements. */
-export const RenderSubmissionQueue = Object.freeze({ name: 'RenderSubmissionQueue' });
+export const RenderSubmissionQueue = defineResource<SubmissionQueue>('RenderSubmissionQueue');
 
 function queueOf(world: World): SubmissionQueue {
   registerSubmissionSystems(world);
-  return world.getResource<SubmissionQueue>(RenderSubmissionQueue);
+  return world.getResource(RenderSubmissionQueue);
 }
 
 /** Release a GPU resource once the work that may still read it completed. */
@@ -96,116 +107,128 @@ function settleRetirement(
   retirement: SubmissionRetirement,
   completion: Promise<unknown> | undefined,
 ): void {
-  void (completion ?? retirement.queue.onSubmittedWorkDone()).then(
-    retirement.release,
-    retirement.release,
-  );
+  const failed = (cause: unknown): void => {
+    try {
+      retirement.onFailure?.(cause);
+    } finally {
+      retirement.release();
+    }
+  };
+  let fence: Promise<unknown>;
+  try {
+    fence = completion ?? retirement.queue.onSubmittedWorkDone();
+  } catch (cause) {
+    failed(cause);
+    return;
+  }
+  void fence.then(retirement.release, failed);
 }
 
 /** Register the submission lifecycle systems and their queue on a Render World once. */
 export function registerSubmissionSystems(world: World): void {
   if (world.hasResource(RenderSubmissionQueue)) return;
-  const queue: SubmissionQueue = { retirements: [] };
+  const queue: SubmissionQueue = { retirements: [], ownedProfileFrames: [] };
   world.insertResource(RenderSubmissionQueue, queue);
-  world
-    .addSystem(RenderCommit, {
-      commands: 'none',
-      name: RENDER_RECORD_COMMIT_SYSTEM,
-      queries: [
-        {
-          read: [ViewRecorder, ViewRecordHistory],
-          write: [ViewSubmission],
-          optional: [ViewDraws],
-        },
-      ],
-      fn: (world, [views]) => {
-        const { frame, accepted } = renderSubmission(world);
+  const systemToken1 = defineSystem({
+    sets: [RenderRecordCommitOrder],
+    commands: 'none',
+    name: RENDER_RECORD_COMMIT_SYSTEM,
+    queries: [
+      {
+        read: [ViewRecorder, ViewRecordHistory],
+        write: [ViewSubmission],
+        optional: [ViewDraws],
+      },
+    ],
+    fn: (world, [views]) => {
+      const { frame, accepted } = renderSubmission(world);
 
-        views.forEach((row) => {
-          const entity = row.entity;
+      views.forEach((row) => {
+        const entity = row.entity;
 
-          const history = recordHistoryOf(
-            world,
-            requireViewField(world, entity, ViewRecordHistory, 'state'),
-          );
-          if (history.staged.length === 0) return;
-          const owner = ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state'));
-          const drawsState = readViewField(world, entity, ViewDraws, 'state');
-          const receipt =
-            drawsState === undefined
-              ? undefined
-              : world.resolveUniqueRef<ViewDrawReceipt>(drawsState).unwrap();
-          for (const staged of history.staged) {
-            if (staged.frame !== frame) continue;
-            try {
-              publishRecordOutcome(world, entity, owner, staged.attempt);
-              settleDirectionalShadow(
-                world,
-                entity,
-                owner,
-                history.directionalShadow,
-                staged,
-                accepted,
-              );
-              // A queue-accepted attempt whose frame was not accepted (a Feature scene input pending) commits nothing.
-              if (!accepted || !staged.accepted) continue;
-              if (commitRecordOutcome(owner, history, staged, receipt))
-                world.set(entity, ViewSubmission, { temporal: true }).unwrap();
-            } catch (cause) {
-              const error = recordFailureError(cause);
-              settleDirectionalShadow(
-                world,
-                entity,
-                owner,
-                history.directionalShadow,
-                { ...staged, failure: error },
-                accepted,
-              );
-              owner.internals.errorRegistry.fire(error);
-            }
+        const history = recordHistoryOf(
+          world,
+          requireViewField(world, entity, ViewRecordHistory, 'state'),
+        );
+        if (history.staged.length === 0) return;
+        const owner = ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state'));
+        const drawsState = readViewField(world, entity, ViewDraws, 'state');
+        const receipt =
+          drawsState === undefined
+            ? undefined
+            : world.resolveUniqueRef<ViewDrawReceipt>(drawsState).unwrap();
+        for (const staged of history.staged) {
+          if (staged.frame !== frame) continue;
+          try {
+            publishRecordOutcome(world, entity, owner, staged.attempt);
+            settleDirectionalShadow(
+              world,
+              entity,
+              owner,
+              history.directionalShadow,
+              staged,
+              accepted,
+            );
+            // A queue-accepted attempt whose frame was not accepted (a Feature scene input pending) commits nothing.
+            if (!accepted || !staged.accepted) continue;
+            if (commitRecordOutcome(owner, history, staged, receipt))
+              world.set(entity, ViewSubmission, { temporal: true }).unwrap();
+          } catch (cause) {
+            const error = recordFailureError(cause);
+            settleDirectionalShadow(
+              world,
+              entity,
+              owner,
+              history.directionalShadow,
+              { ...staged, failure: error },
+              accepted,
+            );
+            owner.internals.errorRegistry.fire(error);
           }
-        });
-      },
-    })
-    .unwrap();
-  world
-    .addSystem(RenderCleanup, {
-      commands: 'none',
-      name: RENDER_RECORD_RETIRE_SYSTEM,
-      queries: [{ read: [ViewRecorder, ViewRecordHistory] }],
-      fn: (world, [views]) => {
-        views.forEach((row) => {
-          const entity = row.entity;
+        }
+      });
+    },
+  });
+  world.addSystem(RenderCommit, systemToken1).unwrap();
+  const systemToken2 = defineSystem({
+    sets: [RenderRecordRetireOrder],
+    commands: 'none',
+    name: RENDER_RECORD_RETIRE_SYSTEM,
+    queries: [{ read: [ViewRecorder, ViewRecordHistory] }],
+    fn: (world, [views]) => {
+      views.forEach((row) => {
+        const entity = row.entity;
 
-          const staged = recordHistoryOf(
-            world,
-            requireViewField(world, entity, ViewRecordHistory, 'state'),
-          ).staged;
-          if (staged.length === 0) return;
-          const owner = ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state'));
-          for (const record of staged.splice(0)) retireRecord(owner, record);
-        });
-      },
-    })
-    .unwrap();
-  world
-    .addSystem(RenderCleanup, {
-      commands: 'none',
-      name: RENDER_SUBMISSION_RETIRE_SYSTEM,
-      queries: [],
-      after: [RENDER_RECORD_RETIRE_SYSTEM],
-      // A completion is a FIFO queue fence: it covers every earlier frame that
-      // may still read a released resource of its generation.
-      fn: (world) => {
-        const { completion, generation } = renderSubmission(world);
-        for (const retirement of queue.retirements.splice(0))
-          settleRetirement(
-            retirement,
-            retirement.generation === generation ? completion : undefined,
-          );
-      },
-    })
-    .unwrap();
+        const staged = recordHistoryOf(
+          world,
+          requireViewField(world, entity, ViewRecordHistory, 'state'),
+        ).staged;
+        if (staged.length === 0) return;
+        const owner = ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state'));
+        for (const record of staged.splice(0)) {
+          retireRecord(owner, record);
+          if (record.ownsProfileFrame && record.attempt.profileSession !== undefined)
+            queue.ownedProfileFrames.push({ owner, record });
+        }
+      });
+    },
+  });
+  world.addSystem(RenderCleanup, systemToken2).unwrap();
+  const systemToken3 = defineSystem({
+    sets: [RenderSubmissionRetireOrder],
+    commands: 'none',
+    name: RENDER_SUBMISSION_RETIRE_SYSTEM,
+    queries: [],
+    after: [systemToken2],
+    // A completion is a FIFO queue fence: it covers every earlier frame that
+    // may still read a released resource of its generation.
+    fn: (world) => {
+      const { completion, generation } = renderSubmission(world);
+      for (const retirement of queue.retirements.splice(0))
+        settleRetirement(retirement, retirement.generation === generation ? completion : undefined);
+    },
+  });
+  world.addSystem(RenderCleanup, systemToken3).unwrap();
 }
 
 /**
@@ -224,8 +247,20 @@ function publishRecordOutcome(
   attempt: RecordAttempt,
 ): void {
   const outcome = attempt.outcome;
-  if (outcome === undefined) return;
   const { frameState, internals } = owner;
+  if (outcome === undefined) {
+    if (attempt.submitted && frameState.pipelinePreparationPending) {
+      const history = recordHistoryOf(
+        world,
+        requireViewField(world, entity, ViewRecordHistory, 'state'),
+      );
+      history.presentation = 'pending';
+      history.pendingReason = frameState.pipelinePreparationPendingReason ?? {
+        code: 'pipeline-preparation',
+      };
+    }
+    return;
+  }
   const presentation = outcome.presentation;
   if (frameState.pipelinePreparationPending) {
     markFramePending(
@@ -246,8 +281,8 @@ function verifySubmittedPresentation(
   directionalShadowReady: boolean,
 ): void {
   const { frame, presentation, draws } = outcome;
-  const scopes = attempt.scopes;
-  const resourceScope = scopes[attempt.composition.owners.resourceOwner] as RenderResourceScope;
+  const sourceScope = attempt.sourceScope;
+  const resourceScope = sourceScope as RenderResourceScope;
   const handles = [frame.skylight?.equirectHandle, frame.skybox?.equirectHandle];
   if (skyCubemapPending(handles, internals, resourceScope))
     markFramePending(presentation, { code: 'sky-cubemap' });
@@ -265,19 +300,13 @@ function verifySubmittedPresentation(
   const missing =
     presentation.presentation === 'pending'
       ? undefined
-      : missingDrawEvidence(
-          renderables,
-          outcome.worldKeys,
-          draws.presentedDraws,
-          scopes,
-          internals,
-        );
+      : missingDrawEvidence(renderables, draws.presentedDraws, sourceScope, internals);
   if (missing !== undefined) markFramePending(presentation, missing);
   if (presentation.presentation === 'ready') {
     presentation.presentation = projectFramePresentation({
       renderables,
       ...(gpuOwned === undefined ? {} : { coveredBindings: draws.gpuSelection.coveredBindings() }),
-      preparedWorlds: scopes,
+      preparedSourceScope: sourceScope,
       internals,
       onPending: (reason) => {
         presentation.reason ??= reason;
@@ -344,7 +373,8 @@ function commitRecordOutcome(
 
 /**
  * Every staged attempt retires once: an unaccepted one drops its temporal
- * capture, and the profiler frame it began ends. Retirement failures are
+ * capture. Its owned profiler frame closes after the Cleanup phases unwind.
+ * Retirement failures are
  * reported together with the recording's own cause.
  */
 function retireRecord({ internals, scene }: ViewSettlementOwner, staged: StagedRecord): void {
@@ -358,10 +388,18 @@ function retireRecord({ internals, scene }: ViewSettlementOwner, staged: StagedR
     if (staged.failure !== undefined) failures.unshift(staged.failure);
     internals.errorRegistry.fire(recordRetirementError(failures));
   }
-  if (!staged.ownsProfileFrame) return;
-  try {
-    staged.attempt.profileSession?.endFrame();
-  } catch {
-    // Profiler failures never alter rendering.
+}
+
+/** Close only frames retired by Cleanup, after its enclosing profiler phases ended. */
+export function finishOwnedRecordProfileFrames(world: World): void {
+  if (!world.hasResource(RenderSubmissionQueue)) return;
+  const queue = world.getResource(RenderSubmissionQueue);
+  for (const { owner, record } of queue.ownedProfileFrames.splice(0)) {
+    try {
+      const result = record.attempt.profileSession?.endFrame();
+      if (result?.ok === false) throw result.error;
+    } catch (cause) {
+      owner.internals.errorRegistry.fire(recordRetirementError([cause]));
+    }
   }
 }

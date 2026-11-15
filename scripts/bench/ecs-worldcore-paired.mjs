@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import os from 'node:os';
 import { pathToFileURL } from 'node:url';
+import { defineSystem } from '@forgeax/engine-ecs';
 
 const WARMUP_ROUNDS = 3;
 const MEASURED_ROUNDS = 10;
@@ -164,16 +165,15 @@ async function collect(entry) {
     }),
     measure('mixed-command-batch', { commands: COMMAND_COUNT }, () => {
       const world = new World();
-      world
-        .addSystem(Update, {
-          name: 'worldcore-paired-command-batch',
-          queries: [],
-          fn: (_world, _queries, commands) => {
-            for (let index = 0; index < COMMAND_COUNT; index += 1)
-              commands.spawn({ component: Marker, data: {} });
-          },
-        })
-        .unwrap();
+      const systemToken1 = defineSystem({
+        name: 'worldcore-paired-command-batch',
+        queries: [],
+        fn: (_world, _queries, commands) => {
+          for (let index = 0; index < COMMAND_COUNT; index += 1)
+            commands.spawn({ component: Marker, data: {} });
+        },
+      });
+      world.addSystem(Update, systemToken1).unwrap();
       return Number(world.update(0).ok);
     }),
     measure('managed-ref-churn', { handles: MANAGED_REF_COUNT }, () => {

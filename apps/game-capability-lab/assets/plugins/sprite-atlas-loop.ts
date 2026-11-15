@@ -1,3 +1,4 @@
+import { defineSystem } from "@forgeax/engine-ecs";
 import type { AssetHandle } from '@forgeax/engine-types';
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { Update, type EntityHandle, type World } from '@forgeax/engine-ecs';
@@ -133,14 +134,15 @@ export async function createSpriteAtlasLoop(
   const hitEntities = new Set<EntityHandle>();
   let animatedShots = 0;
   let animatedHits = 0;
-  world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'game-default-sprite-animation',
     queries: [],
     fn: () => {
       const result = spriteAnimationTickSystem(world);
       if (!result.ok) errorCode = result.error.code;
     },
-  }).unwrap();
+  });
+world.addSystem(Update, systemToken1).unwrap();
 
   const snapshot = (): SpriteAtlasSnapshot => {
     let frame = 0;

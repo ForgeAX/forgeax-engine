@@ -24,4 +24,4 @@ export const STANDARD_ROOT_MATERIAL_GUID = assetGuid(PACKAGE_IDS.materials, 'mat
 export const RUSTED_IRON_MATERIAL_GUID = assetGuid(PACKAGE_IDS.materials, 'material/rusted-iron');
 
 /** Direction stored by DirectionalLight: outgoing from the Sun toward the scene. */
-export const SUN_OUTGOING_DIRECTION = [-0.32, -0.91, -0.24] as const;
+export const SUN_OUTGOING_DIRECTION = [-0.46, -0.78, -0.42] as const;

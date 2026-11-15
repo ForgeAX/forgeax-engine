@@ -31,7 +31,7 @@ function fixture() {
   const renderer = exposeRenderer(host as unknown as RendererHostImplementation);
   return { renderer, host, legacyWorldDraw };
 }
-const worldInput = { leases: [], camera: null, environment: null } as RenderFrameInput;
+const worldInput = { source: null } as RenderFrameInput;
 const publicationInput = { publication: {} } as PublishedRenderFrameInput;
 
 it.each([

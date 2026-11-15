@@ -9,7 +9,7 @@ import { ok } from '@forgeax/engine-types';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
 import type { RenderPipelineFrame } from '../render-pipeline';
 import type { createRayDiffuseComposite } from './diffuse-composite';
-import type { RayDiffuseTargets } from './diffuse-graph';
+import type { ExactRayDiffuseTargets, RayDiffuseTargets } from './diffuse-graph';
 import { DIFFUSE_HISTORY_BYTES } from './diffuse-reconstruction';
 import type { PreparedRayDiffuse } from './renderer-diffuse';
 import type { RendererDiffuseReconstruction } from './renderer-diffuse-reconstruction';
@@ -72,7 +72,7 @@ export function addRayReconstructionPasses(
   reconstruction: RendererDiffuseReconstruction,
   accumulation: GraphBuffer,
   shared: RayGraphShared,
-  target: Pick<RayDiffuseTargets, 'depth' | 'normal' | 'identity' | 'motion'>,
+  target: Pick<ExactRayDiffuseTargets, 'depth' | 'normal' | 'identity' | 'motion'>,
 ) {
   const { records, view, pixelCount } = shared;
   const imported = (name: string, size: number, usage: number, buffer: () => Buffer) =>

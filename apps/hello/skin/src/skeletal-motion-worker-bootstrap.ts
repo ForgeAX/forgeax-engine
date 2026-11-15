@@ -1,3 +1,7 @@
+import { SkeletalMotionCompose } from '@forgeax/engine/animation';
+import { defineResource } from '@forgeax/engine-ecs';
+import { PropagateTransforms } from "@forgeax/engine-scene";
+import { defineSystem } from "@forgeax/engine/ecs";
 import { createPrograms } from 'virtual:forgeax/plugin-programs/engine';
 import { skeletalMotionPlugin } from '@forgeax/engine/animation/skeletal-motion';
 import type { ExecutionBootstrapEntry } from '@forgeax/engine/app';
@@ -5,6 +9,9 @@ import { FixedUpdate, Update } from '@forgeax/engine/ecs';
 import physics3d from '@forgeax/engine/physics-rapier3d';
 import { skinningPlugin } from '@forgeax/engine/skinning';
 import { loadSkeletalMotionScene } from './skeletal-motion-scene';
+export const ProofPortResource = defineResource<MessagePort>('SkeletalMotionProofPort');
+export const ProofCaptureResource = defineResource<Promise<unknown>>('SkeletalMotionProofCapture');
+
 
 const entry: ExecutionBootstrapEntry = (data) => {
   if (
@@ -92,26 +99,37 @@ const entry: ExecutionBootstrapEntry = (data) => {
           const port = ctx.executionBootstrapHost.port;
           if (port === undefined)
             throw new Error('skeletal motion Worker requires its session port');
-          ctx.world.insertResource('SkeletalMotionProofPort', port);
-          ctx.effect(() => () => ctx.world.removeResource('SkeletalMotionProofPort'));
+          ctx.world.insertResource(ProofPortResource, port);
+          ctx.effect(() => () => ctx.world.removeResource(ProofPortResource));
           let pulse: string | undefined;
-          ctx.world
-            .addSystem(Update, {
+          const systemToken1 = defineSystem({
               name: 'skeletal-motion-proof-pulse',
               queries: [],
-              after: ['propagateTransforms'],
+              after: [PropagateTransforms],
               fn() {
                 if (pulse !== undefined) {
                   port.postMessage({ kind: 'skeletal-motion-pulse', id: pulse });
                   pulse = undefined;
                 }
               },
-            })
+            });
+ctx.world
+            .addSystem(Update, systemToken1)
             .unwrap();
           const receive = ({ data: message }: MessageEvent) => {
             if (typeof message?.id !== 'string') return;
             try {
-              if (message.command === 'pulse') pulse = message.id;
+              const systemToken2 = defineSystem({
+                    name: 'skeletal-motion-proof-failure',
+                    queries: [],
+                    after: [SkeletalMotionCompose],
+                    fn() {
+                      throw new Error(
+                        'skeletal motion proof requests the ordinary World rebuild boundary',
+                      );
+                    },
+                  });
+if (message.command === 'pulse') pulse = message.id;
               else if (message.command === 'simulate') {
                 subjects.controls.binding
                   .simulate(subjects.definition.physical?.bones.map((bone) => bone.target) ?? [])
@@ -119,16 +137,7 @@ const entry: ExecutionBootstrapEntry = (data) => {
               } else if (message.command === 'rebind') subjects.restart();
               else if (message.command === 'poison')
                 ctx.world
-                  .addSystem(FixedUpdate, {
-                    name: 'skeletal-motion-proof-failure',
-                    queries: [],
-                    after: ['composeSkeletalMotion'],
-                    fn() {
-                      throw new Error(
-                        'skeletal motion proof requests the ordinary World rebuild boundary',
-                      );
-                    },
-                  })
+                  .addSystem(FixedUpdate, systemToken2)
                   .unwrap();
               // Mutating commands acknowledge their intent. A fresh binding becomes
               // native-ready through the ordinary next FixedUpdate, not this message.
@@ -145,7 +154,7 @@ const entry: ExecutionBootstrapEntry = (data) => {
           port.start();
           ctx.effect(() => () => {
             port.removeEventListener('message', receive);
-            ctx.world.removeSystem(Update, 'skeletal-motion-proof-pulse').unwrap();
+            ctx.world.removeSystem(Update, systemToken1).unwrap();
           });
         },
       },

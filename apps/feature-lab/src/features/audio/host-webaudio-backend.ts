@@ -1,5 +1,5 @@
 import { AssetRegistry } from '@forgeax/engine/assets-runtime';
-import type { AudioBackend } from '@forgeax/engine/audio';
+
 import { AUDIO_ENGINE_RESOURCE_KEY, AudioSource, audioPlugin } from '@forgeax/engine/audio';
 import { webAudioPlugin } from '@forgeax/engine/audio-webaudio';
 import { CheckList, defineFeature } from '../../lab/feature';
@@ -26,7 +26,7 @@ export default defineFeature({
     await frames(1);
     const trace = traceAudioGraph();
     try {
-      const backend = world.getResource<AudioBackend>(AUDIO_ENGINE_RESOURCE_KEY);
+      const backend = world.getResource(AUDIO_ENGINE_RESOURCE_KEY);
       checks.ok('AudioEngine resource comes from webAudioPlugin', backend !== undefined);
       if (backend === undefined) return { checks: () => checks.items };
       checks.equal('no source before the first play', backend.getActiveSourceCount(), 0);

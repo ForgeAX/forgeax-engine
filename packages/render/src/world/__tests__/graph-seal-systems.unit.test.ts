@@ -1,13 +1,11 @@
 import { rhi } from '@forgeax/engine-rhi-null';
 import { expect, it, vi } from 'vitest';
+import { registeredSystem } from '../../__tests__/registered-system.fixture';
 import { ProjectedDecalInvalidError } from '../../decals/component';
 import * as frame from '../../record/frame';
 import type { RenderSystemInternals } from '../../record/render-context';
-import {
-  RENDER_GRAPH_SEAL_SYSTEM,
-  ViewGraphSeal,
-  viewGraphSealOutcome,
-} from '../graph-seal-systems';
+
+import { ViewGraphSeal, viewGraphSealOutcome } from '../graph-seal-systems';
 import {
   createRenderWorld,
   endRenderFrame,
@@ -43,7 +41,9 @@ async function fixture() {
 it('does not run manual seal when the registered system is removed', async () => {
   const f = await fixture();
   const seal = vi.spyOn(frame, 'sealCompiledViewGraph');
-  f.world.removeSystem(RenderRecord, RENDER_GRAPH_SEAL_SYSTEM).unwrap();
+  f.world
+    .removeSystem(RenderRecord, registeredSystem(f.world, RenderRecord, 'render-graph-seal'))
+    .unwrap();
   expect(f.record().ok).toBe(true);
   expect(viewGraphSealOutcome(f.world, f.view)).toMatchObject({
     kind: 'failed',
@@ -92,7 +92,7 @@ it.each([
     .mockReturnValue({ kind: 'ready' });
   const encode = vi.spyOn(frame, 'encodePreparedViewGraph').mockReturnValue({ kind: 'rejected' });
   try {
-    f.world.removeSystem(RenderRecord, removed).unwrap();
+    f.world.removeSystem(RenderRecord, registeredSystem(f.world, RenderRecord, removed)).unwrap();
     expect(f.record().ok).toBe(true);
     const { viewGraphEncodingOutcome } = await import('../graph-seal-systems');
     expect(viewGraphEncodingOutcome(f.world, f.view).kind).not.toBe('encoded');

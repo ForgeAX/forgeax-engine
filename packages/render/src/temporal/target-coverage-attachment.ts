@@ -6,6 +6,7 @@ import type {
 import { ok, type Result } from '@forgeax/engine-types';
 import { GPU_TEXTURE_USAGE_COPY_SRC } from '../gpu-texture-usage';
 import type { RenderExtent } from '../pipeline/render-extent';
+import type { WaterInfoGraphTargets } from '../pipeline/standard-build-context';
 import type {
   RenderPipelineFrame,
   RenderPipelineGpuDrivenProjection,
@@ -63,10 +64,12 @@ export function addTargetCoveragePass(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   target: TargetCoverageAttachment,
   gpuDriven?: RenderPipelineGpuDrivenProjection,
+  waterInfoTargets?: WaterInfoGraphTargets,
 ): Result<void, RenderGraphError> {
   return addTypedScenePass(graph, {
     name: 'standard-scene-coverage',
     ...(gpuDriven === undefined ? {} : { gpuDriven, gpuDrivenFilter: 'opaque' as const }),
+    ...(waterInfoTargets === undefined || waterInfoTargets.size === 0 ? {} : { waterInfoTargets }),
     color: target.coverage,
     colorTargets: [target.coverage],
     depth: target.depth,

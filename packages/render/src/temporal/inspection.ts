@@ -1,4 +1,4 @@
-import { cloudHistoryExtent } from '../cloud/temporal';
+import { cloudHistoryExtent } from '../cloud/reconstruction/history';
 import { type Antialias, isTemporalAntialias } from '../components/camera';
 import { TSR_ANALYSIS_HISTORY_BYTES_PER_PIXEL } from '../tsr/layout';
 import { createTemporalCoverage } from './coverage';
@@ -42,15 +42,18 @@ export interface TemporalInspection {
 function gpuBytes(state: TemporalGpuState | undefined): number {
   if (state === undefined) return 0;
   const taaBytes =
-    state.tsr === undefined
-      ? createTemporalCoverage(state.width, state.height).bytes
-      : 40 * state.width * state.height +
-        TSR_ANALYSIS_HISTORY_BYTES_PER_PIXEL * state.tsr.width * state.tsr.height;
-  // The cloud owner adds six rgba16float surfaces (8 bytes per pixel) only
-  // when the candidate was admitted with cloud history demand. This is derived
-  // from the live state shape rather than reported as a fixed cloud estimate.
-  const cloudExtent = cloudHistoryExtent(state.width, state.height);
-  const cloudBytes = state.cloudHistoryEnabled ? cloudExtent.width * cloudExtent.height * 6 * 8 : 0;
+    state.mode === 'scene-color'
+      ? state.width * state.height * 16
+      : state.tsr === undefined
+        ? createTemporalCoverage(state.width, state.height).bytes
+        : 40 * state.width * state.height +
+          TSR_ANALYSIS_HISTORY_BYTES_PER_PIXEL * state.tsr.width * state.tsr.height;
+  const extent = cloudHistoryExtent(state.width, state.height);
+  // Two half-resolution slots, each with far/near transport and RGBA32F meter depth.
+  const transportBytes = state.cloudHistoryFormat === 'rgba32float' ? 16 : 8;
+  const cloudBytes = state.cloudHistoryEnabled
+    ? extent.width * extent.height * 2 * (2 * transportBytes + 16)
+    : 0;
   return taaBytes + cloudBytes;
 }
 
@@ -106,9 +109,9 @@ export function inspectTemporal(
   const snapshot = history?.snapshot();
   const mode = view?.input.antialias ?? 'none';
   const taa = isTemporalAntialias(mode);
-  const active = taa ? options.active : undefined;
-  const candidate = taa ? options.candidate : undefined;
-  const retiring = taa ? (options.retiring ?? []) : [];
+  const active = options.active;
+  const candidate = options.candidate;
+  const retiring = options.retiring ?? [];
   const historyBytes = active === undefined ? (snapshot?.coverage.bytes ?? 0) : gpuBytes(active);
   const coverage = historyExtent(snapshot?.coverage, active, candidate);
   const retiringCount = retiring.reduce((count, state) => count + gpuResources(state), 0);

@@ -55,6 +55,23 @@ it('replays a run only when owners, buffers and resolved groups all match', () =
   expect(otherView.reuse(lives, 0, 2, livePhysical)).toBeUndefined();
 });
 
+it('replays a run whose rebuilt owners keep their command identities', () => {
+  const encodes = new RetainedRasterEncodes();
+  const key = {};
+  const vertex = {};
+  const commands = [{}, {}];
+  const owner = (command: object) => ({ meshBinding: { vertex, index: undefined }, command });
+  encodes.beginFrame();
+  recordRun(encodes, key, commands.map(owner));
+  const rebuilt = encodes.begin(key, ['view'], material, owners);
+  expect(rebuilt.reuse(commands.map(owner), 0, 2, livePhysical)?.bundle).toBe(bundle);
+  recordRun(encodes, key, commands.map(owner));
+  const changed = encodes.begin(key, ['view'], material, owners);
+  expect(
+    changed.reuse([owner(commands[0] as object), owner({})], 0, 2, livePhysical),
+  ).toBeUndefined();
+});
+
 it('retains Skin commands when their current pass and physical owners match', () => {
   const encodes = new RetainedRasterEncodes();
   const key = {};
@@ -67,6 +84,7 @@ it('retains Skin commands when their current pass and physical owners match', ()
     group as BindGroup,
     undefined,
     undefined,
+    0,
   );
   bindings.recordRun(run);
   bindings.observeRunClass(cls, pipeline as never, mesh as BindGroup);

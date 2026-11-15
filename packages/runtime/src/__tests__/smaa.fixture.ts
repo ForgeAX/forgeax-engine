@@ -111,11 +111,7 @@ export async function verifySmaa(
   const draw = async (observation?: readonly ['linear-ldr', 'final-display']) => {
     propagateTransforms(world);
     world.update(1 / 60).unwrap();
-    return drawReadyFrame(
-      renderer,
-      { leases: [lease], camera: { lease }, environment: { lease } },
-      observation,
-    );
+    return drawReadyFrame(renderer, { source: lease }, observation);
   };
   const observe = async (name: string) => {
     const receipt = await draw(['linear-ldr', 'final-display']);

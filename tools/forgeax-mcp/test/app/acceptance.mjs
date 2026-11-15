@@ -1,5 +1,14 @@
 import assert from 'node:assert/strict';
 
+// Preparation and retired World/device completions cannot admit a current picture.
+export function readReadyCompletedFrame(canvas) {
+  const { submitted, completed } = canvas.forgeaxFrameProgress ?? {};
+  return submitted && completed?.presentation === 'ready'
+    && completed.worldIdentity === submitted.worldIdentity
+    && completed.deviceGeneration === submitted.deviceGeneration
+    ? completed.frameId : 0;
+}
+
 // A pending/navigating iframe is not ready; frame completion remains the caller's gate.
 export async function assertNoRuntimeFailure(frame, label, errors, consoleErrors) {
   assert.deepEqual(consoleErrors, [], `${label} must have no browser console errors`);

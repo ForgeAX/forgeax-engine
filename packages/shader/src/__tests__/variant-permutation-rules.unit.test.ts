@@ -1,12 +1,49 @@
 import { describe, expect, it } from 'vitest';
 import {
+  STANDARD_OBJECT_SPACE_NORMAL_BIT,
+  standardLeanInputDefines,
+  standardLeanInputMaskCompatible,
+  standardTextureMask,
+} from '../material-schemas.js';
+import {
   isSupportedVariantDefines,
   isSupportedVariantKey,
   VARIANT_PERMUTATION_RULES,
   violatedVariantPermutationRules,
+  withSupportedLeanInputs,
 } from '../variant-permutation-rules.js';
 
 describe('variant permutation rules', () => {
+  it('requires storage for Water frames and omits their format axis from ordinary rows', () => {
+    expect(
+      isSupportedVariantDefines({ STORAGE_BUFFER_AVAILABLE: false, WATER_WAVES_AVAILABLE: true }),
+    ).toBe(false);
+    expect(
+      isSupportedVariantDefines({ STORAGE_BUFFER_AVAILABLE: true, WATER_WAVES_AVAILABLE: true }),
+    ).toBe(true);
+    expect(
+      isSupportedVariantDefines({
+        WATER_INFO_RGBA16: true,
+        WATER_WAVES_AVAILABLE: false,
+        STANDARD_LEAN_INPUTS: false,
+      }),
+    ).toBe(false);
+    expect(
+      isSupportedVariantDefines({
+        WATER_INFO_RGBA16: true,
+        WATER_WAVES_AVAILABLE: false,
+        STANDARD_LEAN_INPUTS: true,
+        STORAGE_BUFFER_AVAILABLE: true,
+      }),
+    ).toBe(true);
+    expect(
+      isSupportedVariantDefines({ WATER_INFO_RGBA16: false, WATER_WAVES_AVAILABLE: false }),
+    ).toBe(true);
+    expect(
+      isSupportedVariantDefines({ WATER_INFO_RGBA16: true, WATER_WAVES_AVAILABLE: true }),
+    ).toBe(true);
+    expect(isSupportedVariantDefines({ WATER_INFO_RGBA16: true })).toBe(true);
+  });
   it('keeps one rule per implication with a stated reason', () => {
     for (const rule of VARIANT_PERMUTATION_RULES) {
       expect(rule.reason.length).toBeGreaterThan(0);
@@ -136,5 +173,56 @@ describe('variant permutation rules', () => {
       isSupportedVariantKey('DIRECTIONAL_SHADOW_SIMPLE=true+TRANSMISSION_AVAILABLE=true'),
     ).toBe(false);
     expect(isSupportedVariantKey('ALPHA_MASK=true+COVERAGE_ONLY=true')).toBe(false);
+  });
+
+  it('publishes lean inputs only on GPU-driven storage rows without coverage, transmission or LOD fade', () => {
+    const lean = {
+      STANDARD_LEAN_INPUTS: true,
+      GPU_DRIVEN_SCENE_INDEX_AVAILABLE: true,
+      STORAGE_BUFFER_AVAILABLE: true,
+      TRANSMISSION_AVAILABLE: false,
+      COVERAGE_ONLY: false,
+      LOD_DITHER: false,
+      ALPHA_MASK: true,
+    };
+    expect(isSupportedVariantDefines(lean)).toBe(true);
+    for (const flip of [
+      { GPU_DRIVEN_SCENE_INDEX_AVAILABLE: false },
+      { STORAGE_BUFFER_AVAILABLE: false },
+      { TRANSMISSION_AVAILABLE: true },
+      { COVERAGE_ONLY: true },
+      { LOD_DITHER: true },
+    ])
+      expect(isSupportedVariantDefines({ ...lean, ...flip })).toBe(false);
+    expect(
+      withSupportedLeanInputs(
+        'COVERAGE_ONLY=true+GPU_DRIVEN_SCENE_INDEX_AVAILABLE=true+STANDARD_LEAN_INPUTS=true',
+      ),
+    ).toBe('COVERAGE_ONLY=true+GPU_DRIVEN_SCENE_INDEX_AVAILABLE=true+STANDARD_LEAN_INPUTS=false');
+    expect(
+      withSupportedLeanInputs('GPU_DRIVEN_SCENE_INDEX_AVAILABLE=true+STANDARD_LEAN_INPUTS=true'),
+    ).toBe('GPU_DRIVEN_SCENE_INDEX_AVAILABLE=true+STANDARD_LEAN_INPUTS=true');
+  });
+
+  it('maps the lean row to the unused-input macros and rejects projection masks', () => {
+    expect(standardLeanInputDefines({ STANDARD_LEAN_INPUTS: false })).toEqual({});
+    expect(standardLeanInputDefines({ STANDARD_LEAN_INPUTS: true })).toEqual({
+      STANDARD_SINGLE_UV_SET: true,
+      STANDARD_OBJECT_BASIS_UNUSED: true,
+      STANDARD_OBJECT_POSITION_UNUSED: true,
+    });
+    expect(standardLeanInputDefines({ STANDARD_LEAN_INPUTS: true }, 'shadow-caster')).toEqual({
+      STANDARD_SINGLE_UV_SET: true,
+      STANDARD_TANGENT_INPUT_UNUSED: true,
+      STANDARD_OBJECT_BASIS_UNUSED: true,
+      STANDARD_OBJECT_POSITION_UNUSED: true,
+    });
+    const mask = (name: string) => standardTextureMask([{ name, type: 'texture2d' } as never]);
+    expect(standardLeanInputMaskCompatible(mask('baseColorTexture'))).toBe(true);
+    expect(standardLeanInputMaskCompatible(mask('bumpTexture'))).toBe(true);
+    expect(standardLeanInputMaskCompatible(mask('normalTexture'))).toBe(true);
+    expect(standardLeanInputMaskCompatible(mask('clearcoatNormalTexture'))).toBe(true);
+    expect(standardLeanInputMaskCompatible(mask('anisotropyTexture'))).toBe(true);
+    expect(standardLeanInputMaskCompatible(STANDARD_OBJECT_SPACE_NORMAL_BIT)).toBe(false);
   });
 });

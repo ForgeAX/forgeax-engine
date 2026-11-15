@@ -3,16 +3,15 @@ import {
   Collider,
   ColliderShapeValue,
   type PhysicsOptions,
+  PhysicsWorld2DResource,
   RigidBody,
   RigidBodyTypeValue,
 } from '@forgeax/engine-physics';
 import { Transform } from '@forgeax/engine-scene';
 import { expect, it } from 'vitest';
 import physics from '../plugin.js';
-import {
-  createRapier2DPhysicsWorld,
-  type RapierPhysicsWorld2D,
-} from '../rapier-physics-world-2d.js';
+import { requireRapierPhysicsWorld2D } from '../rapier-physics-world-2d';
+import { createRapier2DPhysicsWorld } from '../rapier-physics-world-2d.js';
 import { loadRapier2D } from '../wasm-loader.js';
 
 it.each([
@@ -47,7 +46,7 @@ it.each([
     },
   ]);
   try {
-    const instance = world.getResource<RapierPhysicsWorld2D>('PhysicsWorld');
+    const instance = requireRapierPhysicsWorld2D(world);
     const entity = world
       .spawn(
         { component: Transform, data: { pos: [0, 10, 0] } },
@@ -74,7 +73,7 @@ it.each([
   } finally {
     await context.fiber.dispose();
   }
-  expect(world.hasResource('PhysicsWorld')).toBe(false);
+  expect(world.hasResource(PhysicsWorld2DResource)).toBe(false);
 });
 
 it('rejects invalid configuration before allocating a native world', async () => {

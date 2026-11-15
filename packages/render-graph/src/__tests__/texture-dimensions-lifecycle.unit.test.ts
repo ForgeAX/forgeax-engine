@@ -48,6 +48,40 @@ function mockDevice(storageTexture: boolean): RhiDevice {
 }
 
 describe('RenderGraph texture dimension lifecycle', () => {
+  it.each([
+    [1919, 1079, 480, 270],
+    [5, 3, 2, 1],
+    [1, 1, 1, 1],
+  ])('ceil-divides quarter surface %ix%i including odd edges', (width, height, expectedWidth, expectedHeight) => {
+    const graph = new RenderGraphBuilder<Frame>();
+    const sizes: unknown[] = [];
+    const device = mockDevice(true);
+    const original = device.createTexture.bind(device);
+    device.createTexture = (descriptor) => {
+      sizes.push(descriptor.size);
+      return original(descriptor);
+    };
+    const texture = graph.createTexture('quarter', {
+      format: 'rgba16float',
+      size: 'quarter-surface',
+    });
+    expect(texture.ok).toBe(true);
+    if (!texture.ok) return;
+    const view = graph.view(texture.value);
+    expect(view.ok).toBe(true);
+    if (!view.ok) return;
+    graph.addCopyPass('write', {
+      accesses: [{ resource: view.value, usage: 'copy-dst' }],
+      encode: () => undefined,
+    });
+    const compiled = graph.compile({ device, surfaceSize: { width, height } });
+    expect(compiled.ok).toBe(true);
+    expect(sizes).toContainEqual({
+      width: expectedWidth,
+      height: expectedHeight,
+      depthOrArrayLayers: 1,
+    });
+  });
   it('returns a structured capability result for unsupported storage texture access', () => {
     const graph = new RenderGraphBuilder<Frame>();
     const texture = graph.createTexture('volume-storage', {

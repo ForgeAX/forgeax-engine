@@ -24,8 +24,7 @@
   ],
   "scripts": {
     "build": "tsup",
-    "test": "vitest run",
-    "bench": "node --expose-gc bench/path.mjs"
+    "test": "vitest run"
   },
   "dependencies": {
     "@forgeax/engine-ecs": "workspace:*",

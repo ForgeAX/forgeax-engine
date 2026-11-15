@@ -20,11 +20,14 @@ import {
   coverageGroupConcurrency,
   runnerResources,
   shaderCompileWorkers,
+  shaderProducerHeapSize,
+  shaderSourceCompileWorkers,
 } from '../lib/runner-resources.mjs';
 import completedCoverage from './coverage-completed-child-seconds.json' with { type: 'json' };
 import { withLocalGpuLease } from './local-gpu-lease.mjs';
 import modelingTimings from './modeling-coverage-file-seconds.json' with { type: 'json' };
 import { createModelingFilePhaseStream } from './modeling-file-phase-reporter.mjs';
+import { sourceCompilationPhasePrefix } from './source-compilation-phase-reporter.mjs';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(scriptDir, '../..');
@@ -175,8 +178,17 @@ const isolatedCoverageFileSets = [
     // The same run's three-build bootstrap cases reached 15.094/15.061 s.
     // Drain instrumented neighbors without changing the four bases or budgets.
     project: '@forgeax/engine-devkit',
-    files: ['packages/devkit/src/__tests__/execution-bootstrap-cache.integration.test.ts'],
+    files: [
+      'packages/devkit/src/__tests__/execution-bootstrap-cache.integration.test.ts',
+      'packages/devkit/src/__tests__/asset-libraries.integration.test.ts',
+    ],
+    // Run 43693841655 crossed the mounted Content oracle's unchanged 120 s
+    // bound beside another instrumented child. Keep the whole file with the
+    // existing cold owner; reserve its full budget without relabeling prior
+    // bootstrap observations as evidence for this expanded child.
+    receiptLabel: 'packages/devkit/src/__tests__/execution-bootstrap-cache.integration.test.ts',
     weight: 75,
+    reservationWeight: 195,
   },
   {
     // Run 41208138238 crossed the unchanged cockpit budget beside another
@@ -234,6 +246,7 @@ const isolatedCoverageFileSets = [
       'packages/shader/src/__tests__/default-standard-pbr-transmission.unit.test.ts',
       'packages/shader/src/__tests__/material-program.test.ts',
     ],
+    sourceCompilation: true,
     weight: 180,
   },
   {
@@ -344,11 +357,23 @@ const isolatedCoverageFileSets = [
       'packages/vite-plugin-shader/src/__tests__/surface-manifest.integration.test.ts',
       'packages/vite-plugin-shader/src/__tests__/direct-dfg-manifest.integration.test.ts',
     ],
+    sourceCompilation: true,
     // Run 41379898912 stranded this source-production owner in a late shared
     // child until the 45-minute job bound. Drain neighboring coverage work and
     // retain all three full source builds with the runner's compiler budget.
-    // The added 900 seconds are a placement estimate, not a completed receipt.
+    // Historical rosters retain this complete child's original forecast.
+    // The larger current Water roster admits three independent cold owners
+    // below, preserving each complete producer and the enclosing job limit.
     weight: 920,
+  },
+  {
+    // Run 43703295156 reached the real Vite child's unchanged 4500 ms bound
+    // inside 225 instrumented files. Keep the complete browser-entry oracle
+    // with the existing serial publication batch, without adding a child.
+    project: '@forgeax/engine-import',
+    files: ['packages/import/src/__tests__/browser-package-build.integration.test.ts'],
+    batch: 'scriptable-publications',
+    weight: 5,
   },
   {
     project: '@forgeax/engine-pack',
@@ -676,6 +701,9 @@ function coalesceCoverageBatches(groups) {
       result.push(combined);
     }
     const combined = entry.group;
+    // An explicit receipt may belong to a project visited later in the batch.
+    // Earlier members add work, but do not replace that historical identity.
+    entry.receiptLabel ??= batchReceiptLabel;
     for (const project of group.projects)
       if (!combined.projects.includes(project)) combined.projects.push(project);
     combined.files.push(...group.files);
@@ -694,10 +722,39 @@ export function coverageGroups(
   size,
   { isolateFiles = true, completed = completedCoverage } = {},
 ) {
-  const unitNativeFileSets = isolateFiles ? [] : devkitNativeUnitFileSets;
-  const fileSets = (isolateFiles ? isolatedCoverageFileSets : unitNativeFileSets).filter(
-    ({ project }) => projects.includes(project),
+  // New project workloads must not rewrite a historical replay's file roster
+  // or cold-source forecast. Their own qualified partial cohort applies only
+  // when that required project is present in discovery.
+  const applicableRuns = completed.replayRuns?.filter((run) =>
+    (run.requiredProjects ?? []).every((project) => projects.includes(project)),
   );
+  // A changed cold-source partition has no completed historical child with
+  // that identity. Use its qualified current roster cohort, keeping older
+  // complete-source identities and replay windows on their original roster.
+  const currentCohort = applicableRuns?.findLast((run) => run.requiredProjects?.length);
+  const replayRuns = currentCohort ? [currentCohort] : applicableRuns;
+  const unitNativeFileSets = isolateFiles ? [] : devkitNativeUnitFileSets;
+  const fileSets = (isolateFiles ? isolatedCoverageFileSets : unitNativeFileSets)
+    .filter(({ project }) => projects.includes(project))
+    .flatMap((group) => {
+      if (
+        !projects.includes('@forgeax/engine-water') ||
+        !group.files.includes(
+          'packages/vite-plugin-shader/src/__tests__/direct-dfg-manifest.integration.test.ts',
+        )
+      )
+        return [group];
+      // Completed cases cost 468.640/472.873 s; the old serial owner paid
+      // another 78 s before them. These three reservations are forecasts,
+      // not completed receipts. Every cold case still compiles the full roster.
+      return [
+        { ...group, files: group.files.slice(0, 3), weight: 650 },
+        { ...group, files: [group.files[3]], weight: 530 },
+        // Run 43703295156 interrupted this full source case after 662 s.
+        // Reserve its existing 900 s case budget without inventing a sample.
+        { ...group, files: [group.files[4]], weight: 530, reservationWeight: 900 },
+      ];
+    });
   const excludes = fileSets.flatMap(({ files }) => files);
   const groups = projectGroups(projects, size).flatMap((group) => [
     {
@@ -720,6 +777,7 @@ export function coverageGroups(
           receiptLabel,
           batch,
           batchReceiptLabel,
+          sourceCompilation = false,
         }) => ({
           label: `${project}:${receiptLabel ?? files.join(',')}`,
           ...(batch === undefined ? {} : { batch }),
@@ -730,6 +788,7 @@ export function coverageGroups(
           weight,
           ...(reservationWeight === undefined ? {} : { reservationWeight }),
           gpuLease,
+          sourceCompilation,
         }),
       ),
   ]);
@@ -754,6 +813,10 @@ export function coverageGroups(
         // Admit the unsplit broad imports before fine-partition backfill. A
         // forecast underrun must not strand this whole half behind four waves.
         startEarly: partition.coverageOnly === true,
+        ...(projects.includes('@forgeax/engine-water') &&
+        group.projects[0] === '@forgeax/engine-render'
+          ? { requiresTwoWorkerJob: true }
+          : {}),
         weight: Math.max(weight, partition.weight ?? 0),
       }));
     })
@@ -764,7 +827,7 @@ export function coverageGroups(
         : group.weight;
       const reservationWeight = Math.max(
         group.reservationWeight ?? weight,
-        ...(completed.replayRuns ?? []).map(
+        ...(replayRuns ?? []).map(
           (run) => Math.ceil((run.completedSeconds[group.label] ?? 0) / 5) * 5,
         ),
       );
@@ -772,7 +835,11 @@ export function coverageGroups(
       // rewriting the historical seed that already charged its case work.
       const hasReplay =
         isolateFiles &&
-        completed.replayRuns?.some((run) => run.completedSeconds[group.label] !== undefined);
+        replayRuns?.some(
+          (run) =>
+            run.completedSeconds[group.label] !== undefined ||
+            run.reservedSeconds?.[group.label] !== undefined,
+        );
       return receipt || hasReplay
         ? {
             ...group,
@@ -784,20 +851,23 @@ export function coverageGroups(
               : {}),
             // A partial refresh must not optimize against older partition
             // observations while its unmeasured peers retain a newer workload.
-            observedSeconds:
-              receipt?.run === completed.latestRun ? receipt.latestSeconds : undefined,
+            observedSeconds: currentCohort
+              ? currentCohort.completedSeconds[group.label]
+              : receipt?.run === completed.latestRun
+                ? receipt.latestSeconds
+                : undefined,
             // Partial later runs are distinct scenarios, never restamped as a
             // complete cohort. Missing work keeps the admitted cohort forecast.
-            replaySeconds: completed.replayRuns?.map(
+            replaySeconds: replayRuns?.map(
               (run) => run.completedSeconds[group.label] ?? run.reservedSeconds?.[group.label],
             ),
-            replayReserved: completed.replayRuns?.map(
+            replayReserved: replayRuns?.map(
               (run) =>
                 run.completedSeconds[group.label] === undefined &&
                 run.reservedSeconds?.[group.label] !== undefined,
             ),
-            replayBudgetSeconds: completed.replayRuns?.map((run) => run.budgetSeconds ?? 2300),
-            replayTypechecks: completed.replayRuns?.map((run) => run.typecheck),
+            replayBudgetSeconds: replayRuns?.map((run) => run.budgetSeconds ?? 2300),
+            replayTypechecks: replayRuns?.map((run) => run.typecheck),
           }
         : group;
     });
@@ -1039,7 +1109,15 @@ function retainsSparseCoverageSpread(groups, assignment, index, shard, shardCoun
 
 // Broad project halves span jobs; fine partitions retain both spread quotas
 // and source headroom while complete-child placement balances measured work.
+function admitsCoverageWorkerPolicy(group, shard, shardCount) {
+  // Run 43693841655 spent 1233.27 s importing/executing 559 Render files
+  // on a one-worker job. Jobs zero/two already admit two ordinary workers;
+  // use that existing budget without increasing concurrency or case bounds.
+  return shardCount !== 4 || group.requiresTwoWorkerJob !== true || shard === 0 || shard === 2;
+}
+
 function canPlaceCoverageGroup(groups, assignment, index, shard, shardCount) {
+  if (!admitsCoverageWorkerPolicy(groups[index], shard, shardCount)) return false;
   if (!retainsExclusiveCoverageHeadroom(groups, assignment, index, shard)) return false;
   if (!retainsSparseCoverageSpread(groups, assignment, index, shard, shardCount)) return false;
   // Timings do not bound startup and serial tails when a few cold children
@@ -1126,7 +1204,11 @@ function* coverageAssignmentCandidates(groups, assignment, shardCount) {
   // Typecheck occupies physical job zero. Move whole admitted rosters as well
   // as individual owners so job zero can receive a lighter existing roster.
   for (let shard = 1; shard < shardCount; shard++) {
-    yield assignment.map((lane) => (lane === 0 ? shard : lane === shard ? 0 : lane));
+    const candidate = assignment.map((lane) => (lane === 0 ? shard : lane === shard ? 0 : lane));
+    if (
+      candidate.every((lane, index) => admitsCoverageWorkerPolicy(groups[index], lane, shardCount))
+    )
+      yield candidate;
   }
   for (let index = 0; index < groups.length; index++) {
     for (let shard = 0; shard < shardCount; shard++) {
@@ -1268,6 +1350,7 @@ function completedCoverageCacheKey(groups, shardCount, typecheck) {
       group.replayTypechecks ?? null,
       group.shard ?? null,
       group.startEarly === true,
+      group.requiresTwoWorkerJob === true,
       group.gpuLease === true,
       group.projects,
       group.files,
@@ -1335,7 +1418,11 @@ function completedCoverageCandidate(
     broadIndexes.forEach((index, offset) => {
       candidate[index] = lanes[offset];
     });
-    return candidate;
+    return broadIndexes.every((index) =>
+      canPlaceCoverageGroup(groups, candidate, index, candidate[index], shardCount),
+    )
+      ? candidate
+      : null;
   }
   // A complete fine wave can cross a placement barrier that individual
   // swaps cannot, while retaining one child on every physical job.
@@ -1645,6 +1732,10 @@ function greedyCoverageAssignment(
       (a, b) =>
         Number(b === critical) - Number(a === critical) ||
         Number(isExclusiveCoverageGroup(groups[b])) - Number(isExclusiveCoverageGroup(groups[a])) ||
+        // Admit constrained broad halves before an unconstrained peer can
+        // consume their two-worker jobs during a measured-cost restart.
+        Number(groups[b].requiresTwoWorkerJob === true) -
+          Number(groups[a].requiresTwoWorkerJob === true) ||
         weights[b] - weights[a] ||
         a - b,
     );
@@ -1683,7 +1774,10 @@ export function coveragePlacementSeed(
   shardCount,
   typecheck,
   seed = completedCoverage.placementSeeds?.find(
-    (seed) => seed.shardCount === shardCount && seed.typecheck === typecheck,
+    (seed) =>
+      seed.shardCount === shardCount &&
+      seed.typecheck === typecheck &&
+      Object.keys(seed.assignment).length === groups.length,
   ),
 ) {
   if (!seed || seed.shardCount !== shardCount || seed.typecheck !== typecheck) return null;
@@ -1786,16 +1880,43 @@ function readReport(reportPath) {
   }
 }
 
-export function runChild(args, { env = process.env, progress, filePhases = false } = {}) {
+function logSourceCompilationCommand(child, args, env, enabled) {
+  if (!enabled) return;
+  process.stderr.write(
+    `${JSON.stringify({
+      kind: 'vitest-source-compilation-command',
+      phase: 'start',
+      command: [process.execPath, ...args],
+      pid: child.pid,
+      nodeOptions: env.NODE_OPTIONS ?? '',
+      shaderWorkers: env.FORGEAX_SHADER_COMPILE_WORKERS,
+    })}\n`,
+  );
+}
+
+export function runChild(
+  args,
+  { env = process.env, progress, filePhases = false, sourcePhases = false } = {},
+) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, args, {
       cwd: rootDir,
       env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+    logSourceCompilationCommand(child, args, env, sourcePhases);
     const stdout = [];
     const stderr = [];
-    const phases = filePhases && progress ? createModelingFilePhaseStream(progress) : null;
+    const phases =
+      progress && sourcePhases
+        ? createModelingFilePhaseStream(
+            progress,
+            sourceCompilationPhasePrefix,
+            '[vitest-source-compilation-phase-live] ',
+          )
+        : filePhases && progress
+          ? createModelingFilePhaseStream(progress)
+          : null;
     let outputBytes = 0;
     let outputError = null;
     const collect = (stream, chunks) => (chunk) => {
@@ -1879,25 +2000,43 @@ async function runSerialCoveragePreflights({ cliPath, projects }) {
   }
 }
 
-// Modeling's ordinary files are CPU-bound and retain file isolation. Admit a
-// second file worker only within the same complete child and measured heavy
-// runner class. Keep parent/native headroom and every explicit source owner.
+// Ordinary files retain isolation and share the same bounded worker budget.
+// Explicit source owners stay serial, including multi-file cold publications.
 export function coverageGroupMaxWorkers(group, options, resources, groupConcurrency) {
-  if (
-    !options.coverage ||
-    !group.shard ||
-    group.projects.length !== 1 ||
-    group.projects[0] !== '@forgeax/engine-modeling'
-  )
-    return options.maxWorkers;
+  if (!options.coverage) return options.maxWorkers;
+  if (isExclusiveCoverageGroup(group)) return 1;
+  const requested =
+    group.shard && group.projects.length === 1 && group.projects[0] === '@forgeax/engine-modeling'
+      ? Math.max(options.maxWorkers, options.modelingMaxWorkers)
+      : options.maxWorkers;
   const cpuBudget = Math.floor(resources.cpus / groupConcurrency) - 2;
   const memoryBudget = Math.floor(
     ((resources.memoryBytes / 1024 ** 3 - 3) / groupConcurrency - 1) / 2,
   );
-  return Math.max(
-    options.maxWorkers,
-    Math.min(options.modelingMaxWorkers, cpuBudget, memoryBudget),
-  );
+  return Math.max(1, Math.min(requested, cpuBudget, memoryBudget));
+}
+
+/** Cold source owners keep one file worker and admit their compiler pool within capacity. */
+export function coverageGroupEnvironment(
+  group,
+  resources,
+  shaderWorkers,
+  environment = process.env,
+) {
+  if (!group.sourceCompilation)
+    return { ...environment, FORGEAX_SHADER_COMPILE_WORKERS: String(shaderWorkers) };
+  if (!isExclusiveCoverageGroup(group))
+    throw new Error('Source compilation requires an exclusive coverage owner');
+  return {
+    ...environment,
+    NODE_OPTIONS: [
+      environment.NODE_OPTIONS,
+      `--max-old-space-size=${shaderProducerHeapSize(resources)}`,
+    ]
+      .filter(Boolean)
+      .join(' '),
+    FORGEAX_SHADER_COMPILE_WORKERS: String(shaderSourceCompileWorkers(resources, shaderWorkers)),
+  };
 }
 
 export function buildGroupArgs({
@@ -1948,6 +2087,9 @@ export function buildGroupArgs({
     '--reporter=json',
     ...(group.projects.length === 1 && group.projects[0] === '@forgeax/engine-modeling'
       ? [`--reporter=${path.join(scriptDir, 'modeling-file-phase-reporter.mjs')}`]
+      : []),
+    ...(group.sourceCompilation
+      ? [`--reporter=${path.join(scriptDir, 'source-compilation-phase-reporter.mjs')}`]
       : []),
     `--outputFile=${reportPath}`,
   ];
@@ -2226,6 +2368,19 @@ async function runVitestTypecheckOnly(options) {
   );
 }
 
+function groupExecutionConcurrency(options, resources) {
+  const concurrency =
+    options.groupConcurrency === 'auto'
+      ? coverageGroupConcurrency(resources)
+      : options.groupConcurrency;
+  if (!options.coverage && concurrency > 1 && options.maxWorkers > 1) {
+    throw new Error(
+      'concurrent groups require --max-workers=1 to preserve the isolated coverage memory bound',
+    );
+  }
+  return concurrency;
+}
+
 async function main(options) {
   const projects = resolveProjects(options);
   const groups = coverageGroups(projects, options.groupSize, { isolateFiles: options.coverage });
@@ -2256,15 +2411,7 @@ async function main(options) {
   const selectedProjects = [...new Set(selectedGroups.flatMap((group) => group.projects))];
   const runsTypecheck = options.coverage && options.typecheck && options.shardIndex === 0;
   const resources = runnerResources();
-  const groupConcurrency =
-    options.groupConcurrency === 'auto'
-      ? coverageGroupConcurrency(resources)
-      : options.groupConcurrency;
-  if (groupConcurrency > 1 && options.maxWorkers > 1) {
-    throw new Error(
-      'concurrent groups require --max-workers=1 to preserve the isolated coverage memory bound',
-    );
-  }
+  const groupConcurrency = groupExecutionConcurrency(options, resources);
   const scheduling = `${options.coverage ? 'weighted-longest-first' : 'stable'}${localGpuLease ? '+native-last' : ''}`;
   const plan = `[vitest] group concurrency=${groupConcurrency}, scheduling=${scheduling}, shard=${options.shardIndex + 1}/${options.shardCount}, groups=${selectedGroups.length}/${groups.length} (requested=${options.groupConcurrency}, typecheck=${runsTypecheck ? 'on' : 'off'}, cpus=${resources.cpus}, memoryBytes=${resources.memoryBytes})\n`;
   if (options.dryRun) {
@@ -2313,11 +2460,13 @@ async function main(options) {
         const startedAt = Date.now();
         const label = `Vitest group ${group.label}`;
         const maxWorkers = coverageGroupMaxWorkers(group, options, resources, groupConcurrency);
-        const shaderWorkers = shaderCompileWorkers(
-          resources,
-          process.env.FORGEAX_SHADER_COMPILE_WORKERS,
-          (isExclusiveCoverageGroup(group) ? 1 : groupConcurrency) * maxWorkers,
-        );
+        const shaderWorkers = group.sourceCompilation
+          ? shaderSourceCompileWorkers(resources, process.env.FORGEAX_SHADER_COMPILE_WORKERS)
+          : shaderCompileWorkers(
+              resources,
+              process.env.FORGEAX_SHADER_COMPILE_WORKERS,
+              (isExclusiveCoverageGroup(group) ? 1 : groupConcurrency) * maxWorkers,
+            );
         const runBrowserCommandImpl =
           group.gpuLease && localGpuLease
             ? (await import('./run-browser-gate-with-retry.mjs')).runBrowserCommand
@@ -2335,14 +2484,12 @@ async function main(options) {
             vitestArgs: options.vitestArgs,
             runChildImpl: (args) => {
               // Copy after local GPU admission so the child inherits its held lease.
-              const env = {
-                ...process.env,
-                FORGEAX_SHADER_COMPILE_WORKERS: String(shaderWorkers),
-              };
+              const env = coverageGroupEnvironment(group, resources, shaderWorkers);
               return runBrowserCommandImpl
                 ? runBrowserCommandImpl([process.execPath, ...args], { label, env })
                 : runChild(args, {
                     env,
+                    sourcePhases: options.coverage && group.sourceCompilation === true,
                     filePhases:
                       options.coverage &&
                       group.projects.length === 1 &&

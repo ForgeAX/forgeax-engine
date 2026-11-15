@@ -7,6 +7,7 @@ import { resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
+import ts from 'typescript';
 import { assertPortableRustArtifact } from '../../lib/rust-build-paths.mjs';
 import { SDK_SOURCE_WASM } from '../sdk-lib.mjs';
 
@@ -15,6 +16,48 @@ const execute = promisify(execFile);
 const require = createRequire(resolve(root, 'package.json'));
 const { build } = createRequire(require.resolve('tsup'))('esbuild');
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
+
+function assertNativeBundle(source) {
+  assert.doesNotMatch(source, /AGFzbQ/);
+  const parsed = ts.createSourceFile(
+    'native.mjs',
+    source,
+    ts.ScriptTarget.Latest,
+    false,
+    ts.ScriptKind.JS,
+  );
+  assert.equal(parsed.parseDiagnostics.length, 0, 'native bundle must parse as JavaScript');
+  const visit = (node) => {
+    if (ts.isIdentifier(node) || ts.isStringLiteralLike(node)) {
+      assert.ok(
+        node.text !== 'WebAssembly' && node.text !== 'atob',
+        `native bundle references browser WASM API ${node.text}`,
+      );
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(parsed);
+}
+
+test('native bundle inspection separates diagnostics from browser WASM references', () => {
+  assertNativeBundle(
+    'throw new Error("WebAssembly.validate returned false for the SIMD test module");',
+  );
+  assertNativeBundle(
+    '// WebAssembly and atob belong to the browser loader\nexport const native = true;',
+  );
+  for (const source of [
+    'WebAssembly.instantiate(bytes);',
+    'globalThis.WebAssembly.validate(bytes);',
+    'atob(encoded);',
+    'globalThis["WebAssembly"].instantiate(bytes);',
+    'globalThis?.["atob"](encoded);',
+    'globalThis[`WebAssembly`].validate(bytes);',
+    'const bytes = "AGFzbQAAAA==";',
+    'export const broken = ;',
+  ])
+    assert.throws(() => assertNativeBundle(source));
+});
 
 for (const dimension of ['2d', '3d']) {
   test(`native Rapier ${dimension}: actual Host retry, singleton and 60-step collision`, async () => {
@@ -110,7 +153,7 @@ for (const dimension of ['2d', '3d']) {
     assert.ok(
       !inputs.some((path) => path.includes('-compat') || path.endsWith('/wasm-browser.mjs')),
     );
-    assert.doesNotMatch(result.outputFiles[0].text, /\bWebAssembly\b|\batob\b|AGFzbQ/);
+    assertNativeBundle(result.outputFiles[0].text);
     const browser = await build({ ...options, conditions: [] });
     assert.ok(
       Object.keys(browser.metafile.inputs).some((path) =>

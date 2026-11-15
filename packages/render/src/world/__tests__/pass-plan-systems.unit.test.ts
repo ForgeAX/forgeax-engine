@@ -1,11 +1,13 @@
 import type { EntityHandle } from '@forgeax/engine-ecs';
+import { defineSystem } from '@forgeax/engine-ecs';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { describe, expect, it } from 'vitest';
 import { type FrameRecording, submitFrameRecordings } from '../../__tests__/frame-recording-driver';
-
+import { registeredSystem } from '../../__tests__/registered-system.fixture';
 import type { RenderResourceScope } from '../../publication/resource-scope';
 import type { DispatchList } from '../../render-system-extract';
 import { MaterialFrame } from '../../scene/material-dispatch';
+import { RenderPhaseSortOrder, RenderTransparentPlanOrder } from '../../system-order';
 import {
   EMPTY_VIEW_PASS_PLAN,
   type PassPlanInput,
@@ -106,7 +108,9 @@ describe('pass-plan systems', () => {
   ])('reads a view missing %s as data and keeps the staged attempt', (name) => {
     const world = createRenderWorld();
     registerPassPlanSystems(world);
-    expect(world.removeSystem(RenderQueue, name).ok).toBe(true);
+    expect(world.removeSystem(RenderQueue, registeredSystem(world, RenderQueue, name)).ok).toBe(
+      true,
+    );
     const view = world.spawn().unwrap();
     stage(world, view);
     expect(world.run(RenderQueue).ok).toBe(true);
@@ -162,7 +166,9 @@ describe('pass-plan systems', () => {
   ])('leaves the staged view unplanned once %s is removed', (name) => {
     const world = createRenderWorld();
     registerPassPlanSystems(world);
-    expect(world.removeSystem(RenderQueue, name).ok).toBe(true);
+    expect(world.removeSystem(RenderQueue, registeredSystem(world, RenderQueue, name)).ok).toBe(
+      true,
+    );
     const view = world.spawn().unwrap();
     stage(world, view);
     expect(world.run(RenderQueue).ok).toBe(true);
@@ -176,19 +182,18 @@ describe('pass-plan systems', () => {
     const culled: DispatchList = [];
     const ordered: DispatchList = [];
     const seen: DispatchList[] = [];
-    world
-      .addSystem(RenderQueue, {
-        name: 'trace-order',
-        queries: [],
-        after: [RENDER_PHASE_SORT_SYSTEM],
-        before: [RENDER_TRANSPARENT_PLAN_SYSTEM],
-        fn: () => {
-          const phases = viewPhaseQueue(world, view);
-          seen.push(phases.ordered ?? culled);
-          phases.ordered = ordered;
-        },
-      })
-      .unwrap();
+    const systemToken1 = defineSystem({
+      name: 'trace-order',
+      queries: [],
+      after: [RenderPhaseSortOrder],
+      before: [RenderTransparentPlanOrder],
+      fn: () => {
+        const phases = viewPhaseQueue(world, view);
+        seen.push(phases.ordered ?? culled);
+        phases.ordered = ordered;
+      },
+    });
+    world.addSystem(RenderQueue, systemToken1).unwrap();
     viewPhaseQueue(world, view).stage({
       dispatch: culled,
       scope: { transparentSort: { mode: 0, yzAlpha: 1 } } as unknown as RenderResourceScope,
@@ -236,4 +241,18 @@ describe('pass-plan systems', () => {
       planOpaque({ renderPath: 'deferred', gpuOcclusion: undefined, clearOnly: false }),
     ).toEqual({ lane: 'deferred', lateOcclusion: true });
   });
+});
+
+it('keeps one pass-plan owner when several view owners register in the same World', () => {
+  const world = createRenderWorld();
+  registerPassPlanSystems(world);
+  const count = world.inspect().systemCount;
+  registerPassPlanSystems(world);
+  expect(world.inspect().systemCount).toBe(count);
+  expect(
+    world
+      .scheduleData()
+      .find((schedule) => schedule.name === 'RenderCleanup')
+      ?.systems.filter((system) => system.name === 'render-pass-plan-release'),
+  ).toHaveLength(1);
 });

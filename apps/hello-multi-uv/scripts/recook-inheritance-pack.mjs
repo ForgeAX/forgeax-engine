@@ -10,6 +10,7 @@ import {
 } from '@forgeax/engine-pack';
 import { derive } from '@forgeax/engine-types';
 import { readShaderManifestPublication } from '@forgeax/engine-shader';
+import { readShaderManifestText } from '../../../scripts/lib/shader-manifest.mjs';
 
 const APP_ROOT = resolve(new URL('..', import.meta.url).pathname);
 const FIXTURE_PATH = resolve(APP_ROOT, 'src/multi-uv-inheritance.pack.json');
@@ -58,7 +59,7 @@ function digest(value) {
 
 const fixture = JSON.parse(readFileSync(FIXTURE_PATH, 'utf8'));
 const manifest = await readShaderManifestPublication(
-  JSON.parse(readFileSync(MANIFEST_PATH, 'utf8')),
+  JSON.parse(readShaderManifestText(MANIFEST_PATH)),
 );
 const shader = (manifest.materialShaders ?? []).find((entry) => entry.identifier === MODULE_ID);
 assert(shader !== undefined, `shader producer did not emit ${MODULE_ID}`);
@@ -138,7 +139,7 @@ function record(guid, authored, resolvedValues, parent) {
     cookGeneration: 1,
   });
   return {
-    schemaVersion: 'material-cook/4',
+    schemaVersion: 'material-cook/5',
     guid,
     materialGuid: guid,
     publicationGeneration: 1,
@@ -156,7 +157,7 @@ function record(guid, authored, resolvedValues, parent) {
     },
     programs,
     receipt: {
-      schemaVersion: 'material-cook/4',
+      schemaVersion: 'material-cook/5',
       sourceClosure: SOURCE_CLOSURE,
       profile: 'webgpu/v1',
       compilerVersion: 'forgeax-material-cooker/1',
@@ -179,7 +180,7 @@ for (const asset of fixture.assets ?? []) {
 if (writeFixture) writeFileSync(FIXTURE_PATH, `${jsonWithBytes(fixture)}\n`);
 console.log(JSON.stringify({
   status: 'pass',
-  producer: 'vite-plugin-shader manifest + material-cook/4 inheritance publication',
+  producer: 'vite-plugin-shader manifest + material-cook/5 inheritance publication',
   shaderIdentifier: MODULE_ID,
   artifactBytes: artifactBytes.byteLength,
   artifactDigest,

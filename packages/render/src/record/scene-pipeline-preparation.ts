@@ -17,10 +17,15 @@ export interface ScenePipelineDemand {
   readonly selection?: ScenePassSelection;
 }
 
+/** Return true only when this preparation matches a candidate material raster lane. */
 export type ScenePipelinePreparation = ((
   context: _InternalRenderPipelineContext,
   artifacts: ReadonlyMap<string, MaterialShaderArtifact>,
-) => boolean) & { readonly demand?: ScenePipelineDemand };
+) => boolean) & {
+  readonly demand?: ScenePipelineDemand;
+  /** Graph-owned utility programs do not participate in candidate material matching. */
+  readonly kind?: 'utility';
+};
 
 // Metadata belongs to this exact graph build, alongside its actual raster declarations.
 const preparations = new WeakMap<
@@ -31,9 +36,10 @@ const preparations = new WeakMap<
 export function registerScenePipelinePreparation(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   prepare: ScenePipelinePreparation,
-  demand?: ScenePipelineDemand,
+  demand?: ScenePipelineDemand | 'utility',
 ): void {
-  if (demand !== undefined)
+  if (demand === 'utility') Object.defineProperty(prepare, 'kind', { value: 'utility' });
+  else if (demand !== undefined)
     Object.defineProperty(prepare, 'demand', {
       value: Object.freeze({ ...demand, formats: Object.freeze(Array.from(demand.formats)) }),
     });

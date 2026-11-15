@@ -16,7 +16,7 @@ import {
 import { type IdentityMap, IdentityMapEditor } from '../scene/identity-map';
 
 const intentOf = (intents: IdentityMap, entity: EntityHandle): VisibilityState | undefined => {
-  const raw = intents.get(0, entity);
+  const raw = intents.get(entity);
   return raw === undefined ? undefined : visibilityStateFromU32(raw);
 };
 
@@ -109,7 +109,7 @@ function captureVisibility(world: World): CapturedVisibility {
       if (before === VisibilityStateValue.hidden) projection.hidden--;
     }
     if (previousHandle !== undefined && (raw === ABSENT || previousHandle !== entity))
-      intents.delete(0, previousHandle);
+      intents.delete(previousHandle);
     if (raw === ABSENT || entity === undefined) {
       states[index] = ABSENT;
       handles[index] = undefined;
@@ -119,8 +119,8 @@ function captureVisibility(world: World): CapturedVisibility {
     if (raw === VisibilityStateValue.hidden) projection.hidden++;
     states[index] = raw;
     handles[index] = entity;
-    if (visibilityStateFromU32(raw) === undefined) intents.delete(0, entity);
-    else intents.set(0, entity, raw);
+    if (visibilityStateFromU32(raw) === undefined) intents.delete(entity);
+    else intents.set(entity, raw);
   }
   batch.accept();
   projection.captured = {
@@ -222,7 +222,7 @@ export function resolveVisibility(
     hasAnyHiddenIntent,
     get(entity: EntityHandle): VisibilityResolution | undefined {
       ensureResolver();
-      return intents.has(0, entity) ? resolveEntity?.(entity) : undefined;
+      return intents.has(entity) ? resolveEntity?.(entity) : undefined;
     },
     effective(entity: EntityHandle): 'hidden' | 'visible' {
       // Inheritance can only hide below an explicitly hidden entity.

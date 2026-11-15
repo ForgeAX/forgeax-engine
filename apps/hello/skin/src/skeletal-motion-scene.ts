@@ -1,3 +1,4 @@
+import { PhysicsWorldResource } from '@forgeax/engine-physics';
 import {
   configureRuntimeAssetCatalog,
   runtimeBinding,
@@ -14,13 +15,7 @@ import {
 import { type EntityHandle, FixedTime } from '@forgeax/engine/ecs';
 import { createBoxGeometry } from '@forgeax/engine/geometry';
 import { quat } from '@forgeax/engine/math';
-import {
-  Collider,
-  ColliderShapeValue,
-  type PhysicsWorld,
-  RigidBody,
-  RigidBodyTypeValue,
-} from '@forgeax/engine/physics';
+import { Collider, ColliderShapeValue, RigidBody, RigidBodyTypeValue } from '@forgeax/engine/physics';
 import { type Context, startPluginAsset } from '@forgeax/engine/plugin';
 import {
   Camera,
@@ -90,7 +85,7 @@ export async function loadSkeletalMotionScene(ctx: Context, aspect: number) {
   });
   if (installed === undefined) throw new Error('authored skeletal motion service did not activate');
   const controls = installed;
-  const physics = world.getResource<PhysicsWorld>('PhysicsWorld');
+  const physics = world.getResource(PhysicsWorldResource);
   const floorEntity = world
     .spawn(
       { component: Transform, data: { pos: [0, -0.25, 0] } },

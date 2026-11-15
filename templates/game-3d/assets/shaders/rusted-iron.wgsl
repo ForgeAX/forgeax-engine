@@ -53,7 +53,7 @@ fn evaluate_surface(input : SurfaceInput) -> SurfaceData {
     albedo,
     input.vertexNormalWS,
     1.0 - rust * 0.9,
-    mix(0.38, 0.88, rust),
+    mix(0.45, 0.94, rust),
     vec3<f32>(0.0),
     1.0,
     1.0,

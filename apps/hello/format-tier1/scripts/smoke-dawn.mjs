@@ -56,19 +56,21 @@ function boundsFor(positions) {
 function publishImported(assets, imported, sourcePath) {
   const packageUrl = `https://morph-source.invalid/${sourcePath}/pack.json`;
   const bodies = new Map();
-  const rows = imported.pack.assets.map(row => ({ ...row, artifacts: Object.fromEntries(Object.entries(row.artifacts).map(([key, body]) => {
+  const rows = imported.pack.assets.map((row) => ({ ...row, artifacts: Object.fromEntries(Object.entries(row.artifacts).map(([key, body]) => {
     const path = `${row.guid}-${key}.bin`;
     bodies.set(new URL(path, packageUrl).href, body.bytes);
     return [key, {path, mediaType: body.mediaType, ...(body.assetCodec === undefined ? {} : {assetCodec: body.assetCodec}), contentEncoding: 'identity', byteLength: body.bytes.byteLength, integrity: {algorithm: 'sha256', digest: `sha256:${sha256(body.bytes)}`}}];
   })) }));
   const publication = createRuntimePackPublication({scopeId: 'asset-runtime', sourcePath, sourceRevision: 'smoke', packageUrl, pack: {assets: rows}});
   const json = JSON.stringify(publication.pack, (_key, value) => ArrayBuffer.isView(value) ? Array.from(value) : value);
-  assets.setCatalogSource(createCatalogSource({entries: rows.map(row => ({guid: row.guid, kind: row.kind, sourcePath, packageUrl, publication: publication.publication})), fetch: async input => {
+  assets.setCatalogSource(createCatalogSource({entries: rows.map((row) => ({guid: row.guid, kind: row.kind, sourcePath, packageUrl, publication: publication.publication})), fetch: async (input) => {
     const url = String(input);
     if (url === packageUrl) return new Response(json);
     const body = bodies.get(url);
     return body === undefined ? new Response(null, {status: 404}) : new Response(body.slice().buffer);
-  }}));
+  },
+    }),
+  );
 }
 
 async function loadImportedMorph(assets) {
@@ -164,7 +166,7 @@ function sampleWeights(animation, baseWeights, frame) {
   const channel = animation.channels.find((candidate) => candidate.property === 'weights');
   if (channel === undefined || channel.sampler.input.length === 0) return Array.from(baseWeights);
   const width = channel.sampler.output.length / channel.sampler.input.length;
-  if (frame < 2 * requiredFrames / 3) return Array.from(baseWeights);
+  if (frame < (2 * requiredFrames) / 3) return Array.from(baseWeights);
   return Array.from(channel.sampler.output.slice(channel.sampler.output.length - width));
 }
 
@@ -252,16 +254,16 @@ const receipts = [];
 for (currentFrame = 0; currentFrame < requiredFrames; currentFrame += 1) {
   const weights = currentFrame < requiredFrames / 3
     ? importedMorph.baseWeights.slice()
-    : currentFrame < 2 * requiredFrames / 3
+    : currentFrame < (2 * requiredFrames) / 3
       ? new Float32Array(importedMorph.baseWeights.length)
       : new Float32Array(sampleWeights(importedMorph.animation, importedMorph.baseWeights, currentFrame));
   world.set(morphEntity, MorphWeights, { weights }).unwrap();
   phases.standardFrames += 1;
   if (currentFrame < requiredFrames / 3) phases.baseWeightFrames += 1;
-  else if (currentFrame < 2 * requiredFrames / 3) phases.zeroWeightFrames += 1;
+  else if (currentFrame < (2 * requiredFrames) / 3) phases.zeroWeightFrames += 1;
   else phases.animatedFrames += 1;
   world.update(1 / 60).unwrap();
-  const drawn = renderer.draw({ leases: [attachment.value], camera: { lease: attachment.value }, environment: { lease: attachment.value } });
+  const drawn = renderer.draw({ source: attachment.value });
   assert.equal(drawn.ok, true, drawn.ok ? undefined : drawn.error.code);
   if (!drawn.ok) continue;
   receipts.push(drawn.value);

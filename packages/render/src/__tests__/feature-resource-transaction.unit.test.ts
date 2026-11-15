@@ -1,3 +1,4 @@
+import { World } from '@forgeax/engine-ecs';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { ok } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
@@ -7,10 +8,12 @@ import {
   type RenderFeatureFrameBatch,
 } from '../features/host';
 import { createMotionBlurFeature } from '../features/motion-blur/motion-blur-feature';
+import { validateMotionBlurParams } from '../features/motion-blur/motion-blur-params';
 import { createRenderFeatureGpuWorkOwner } from '../features/prepared-gpu-work';
 import { resolveStandardRenderFeatureTargets } from '../features/targets';
 import type { RenderFeature } from '../features/types';
 import { createPreparedGraphicsResolver } from '../prepare/prepared-graphics-resolver';
+import { makeZeroCameraFallbackSnapshot } from '../record/frame-snapshot';
 import { abortFeatureFrame, prepareFeatureFrame, submitFeatureFrame } from './feature-frame-driver';
 
 async function fixture(feature: RenderFeature<unknown>) {
@@ -23,8 +26,7 @@ async function fixture(feature: RenderFeature<unknown>) {
   const host = createRenderFeatureHost([feature]).unwrap();
   const destroy = vi.spyOn(device, 'destroyBuffer');
   const common = {
-    worlds: [],
-    owner: 0,
+    world: new World(),
     frameNumber: 1,
     generation: 0,
     caps: device.caps,
@@ -179,7 +181,11 @@ describe('Feature resource frame transaction', () => {
             rgba16floatRenderable: true,
           },
           frameSize: { width: identity === 'a' ? width : 64, height: 64 },
-          motionBlur: { params: { shutterAngle: 180 }, frameDeltaSeconds: 1 / 60 },
+          selectedCamera: {
+            ...makeZeroCameraFallbackSnapshot(),
+            motionBlur: validateMotionBlurParams({ shutterAngle: 180 }).unwrap(),
+          },
+          motionBlur: { params: undefined, frameDeltaSeconds: 1 / 60 },
         })),
       );
     const buffers = (batch: RenderFeatureFrameBatch, view: string) =>

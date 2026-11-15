@@ -1,3 +1,4 @@
+import { defineResource } from '@forgeax/engine-ecs';
 
 import { World } from '@forgeax/engine-ecs';
 import type { InputSnapshot } from '@forgeax/engine-input';
@@ -8,7 +9,7 @@ import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 
 
-export const MOUSE_INPUT_STATE = 'bevyMouseInputState';
+export const MOUSE_INPUT_STATE = defineResource<MouseInputState>("bevyMouseInputState");
 
 export interface MouseInputState {
   heldPrimary: boolean;
@@ -58,7 +59,7 @@ export function buildMouseInputWorld(world: World): MouseInputState {
 }
 
 export function stepMouseInput(world: World, snapshot: InputSnapshot): void {
-  const state = world.getResource<MouseInputState>(MOUSE_INPUT_STATE);
+  const state = world.getResource(MOUSE_INPUT_STATE);
   state.heldPrimary = snapshot.mouse.button(0);
   if (snapshot.mouse.justPressed(0)) state.justPressedPrimary += 1;
   if (snapshot.mouse.justReleased(0)) state.justReleasedPrimary += 1;
@@ -70,5 +71,5 @@ export function stepMouseInput(world: World, snapshot: InputSnapshot): void {
 }
 
 export function readMouseInputState(world: World): MouseInputState {
-  return { ...world.getResource<MouseInputState>(MOUSE_INPUT_STATE) };
+  return { ...world.getResource(MOUSE_INPUT_STATE) };
 }

@@ -256,7 +256,7 @@ it('uses phase relationships in the real dispatch plan and preserves the ordinar
     growMeshSsbo: () => ({ ok: true }),
     meshSsboState: { meshSlotCount: 8, materialSlotCount: 8 },
   } as never;
-  const shared = { bindings: [], worlds: [scope], frame: accepted };
+  const shared = { bindings: [], sourceScope: scope, frame: accepted };
   const ordinary = buildDispatchPlan(internals, rows, dispatch, [], [], undefined, false, shared);
   const retained = buildDispatchPlan(
     internals,
@@ -289,8 +289,8 @@ it('keeps resource-class inputs on their current live path', () => {
     meshSsboState: { meshSlotCount: 8, materialSlotCount: 8 },
   } as never;
   const classes = new Map([
-    ['0:0', 'probe:0'],
-    ['0:1', 'probe:1'],
+    ['0', 'probe:0'],
+    ['1', 'probe:1'],
   ]);
   const plan = buildDispatchPlan(
     internals,
@@ -300,7 +300,7 @@ it('keeps resource-class inputs on their current live path', () => {
     [],
     classes,
     false,
-    { bindings: [], worlds: [scope], frame: accepted },
+    { bindings: [], sourceScope: scope, frame: accepted },
     undefined,
     true,
     retained,
@@ -334,7 +334,7 @@ it('observes borrowed custom material mapping without reading retained relations
     [],
     undefined,
     false,
-    { bindings: [], worlds: [scope], frame: borrowed },
+    { bindings: [], sourceScope: scope, frame: borrowed },
     undefined,
     true,
     retained,

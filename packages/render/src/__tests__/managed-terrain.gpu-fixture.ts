@@ -142,11 +142,7 @@ export async function verifyRuntimeTerrain(
     .unwrap();
   const draw = async () => {
     world.update().unwrap();
-    return drawReadyFrame(publicRenderer, {
-      leases: [lease],
-      camera: { lease },
-      environment: { lease },
-    });
+    return drawReadyFrame(publicRenderer, { source: lease });
   };
   const read = async () => {
     await portable?.captureWork?.(draw);

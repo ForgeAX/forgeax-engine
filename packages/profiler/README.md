@@ -28,10 +28,18 @@ if (!finished.ok) throw finished.error;
 
 const checked = validateProfileCapture(finished.value);
 if (!checked.ok) throw checked.error;
-const model = buildProfileModel(checked.value);
+const model = buildProfileModel(checked.value, { orderEvidence: 'recorder-closure' });
 if (!model.ok) throw model.error;
 console.log(model.value.summary.completeness.status, model.value.summary.recordCount);
 ```
+
+| `orderEvidence` | Use | Parent matching |
+|:--|:--|:--|
+| `unspecified` (default) | Imported or persisted v1 artifacts | Requires a uniquely proven innermost containing interval; repeated or crossing candidates stay unresolved. |
+| `recorder-closure` | In-memory records from this Recorder implementation | Uses its known child-first emission order, including equal-tick nested calls. |
+
+> [!IMPORTANT]
+> Do not claim Recorder closure provenance from a v1 artifact alone; the wire format does not store it.
 
 Pass the same `profiler` to `createApp({ renderer, world, profiler })` or to the canvas-form options. The capability is opt-in; an App without it does not create capture records or artifacts.
 
@@ -42,10 +50,15 @@ Pass the same `profiler` to `createApp({ renderer, world, profiler })` or to the
 | Start a bounded capture | `createProfiler().startCapture(limits)` | `Result<RecorderSession, ProfilerError>` |
 | Finish and retain the artifact | `session.finish()` | `Result<ProfileCapture, ProfilerError>` |
 | Validate persisted JSON | `validateProfileCapture(value)` | schema and semantic validation |
-| Build an offline summary | `buildProfileModel(capture)` | frame and phase projections |
+| Build an offline summary | `buildProfileModel(capture, options?)` | frame and phase projections |
 | Query from a shell | `forgeax profile summary --artifact artifact.json --json` | structured JSON on stdout |
 
 `ProfileCapture` is the portable boundary. It carries the fixed version, time unit, bounded frame and event evidence, owner phase catalog, and `completeness` status. `complete`, `partial`, and `overflow` are explicit outcomes; an overflow artifact remains useful and records its affected frame range.
+
+> [!NOTE]
+> The model reports frames represented by retained phase or skip records. Skip-only frames remain
+> visible with zero phase duration and their skip count. A frame with no record cannot be inferred
+> from v1; `frameLimit` is only a capture upper bound, not evidence that every frame ran.
 
 Compare two imported captures without adding product policy. The projection preserves each side's
 summary and completeness, unions phases by the full `source` / `parentSource` / `parentPhase` /
@@ -120,7 +133,7 @@ consumer can validate and analyze it without a separately maintained phase list.
       "world-update-injected",
       "renderer-draw"
     ],
-    "render": ["extract", "bind-groups", "features", "sort", "record"]
+    "render": ["extract", "prepare", "bind-groups", "features", "sort", "record"]
   },
   "records": [
     {
@@ -171,7 +184,7 @@ GPU timing capability is present.
 | `profiler.registerPhaseCatalog(source, phases)` | Registers one owner catalog and returns its idempotent removal lease. |
 | `ProfileCapture` | Versioned artifact accepted by validation, model building, and the CLI. |
 | `validateProfileCapture(value)` | Validates schema and semantic invariants before offline use. |
-| `buildProfileModel(capture)` | Projects retained records into summaries without changing the artifact. |
+| `buildProfileModel(capture, options?)` | Projects retained records into summaries without changing the artifact; optional order evidence is caller-supplied and is not stored in ProfileCapture v1. |
 | `compareProfileCaptures(left, right)` | Projects two validated captures into side summaries and a deterministic phase union. |
 | `createProfileClock()` | Supplies the default monotonic microsecond clock. |
 

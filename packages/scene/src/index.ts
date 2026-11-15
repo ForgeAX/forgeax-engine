@@ -12,6 +12,18 @@ export { MorphWeights } from './components/morph-weights';
 export { Name } from './components/name';
 export { GlobalTransform, Transform } from './components/transform';
 export {
+  WaterBodyInstance,
+  WaterContactProbeSet,
+  WaterDispersiveMotion,
+  WaterExclusionMode,
+  WaterExclusionVolume,
+  WaterFluidSimulation,
+  WaterPontoonSet,
+  WaterShallowCollider,
+  WaterTerrainProvider,
+  WaterZoneInstance,
+} from './components/water';
+export {
   ComponentNotDefinedError,
   type MobilityDiagnostic,
   type MobilityDiagnosticCode,
@@ -91,6 +103,7 @@ export {
 } from './mobility-diagnostics';
 export { scenePlugin } from './plugin';
 export {
+  copyPresentationWorldMatrix,
   readPresentationWorldMatrix,
   resetTransformInterpolation,
   TransformInterpolation,
@@ -101,9 +114,10 @@ export {
   type SceneHierarchySnapshot,
 } from './systems/hierarchy-projection';
 export {
-  PROPAGATE_TRANSFORMS_FIXED_SYSTEM,
-  PROPAGATE_TRANSFORMS_SYSTEM,
+  PropagateTransforms,
+  PropagateTransformsFixed,
   propagateTransforms,
   registerPropagateTransforms,
+  TransformFixedSet,
   TransformSet,
 } from './systems/propagate-transforms';

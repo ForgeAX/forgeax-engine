@@ -106,7 +106,7 @@ it('rehydrates an encoded texture before publishing a replacement renderer gener
     for (let i = 0; i < 20; i++) {
       world.update(1 / 60).unwrap();
       await completeReadyFrame(async () => {
-        const drawn = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
+        const drawn = renderer.draw({ source: lease });
         assert(drawn.ok);
         const receipt = drawn.value;
         assert((await receipt.completed).ok);

@@ -20,45 +20,51 @@ function makeFrame(local: StandardLightFrame['local']): StandardLightFrame {
   };
 }
 
-describe('additional DirectionalLight as a Cluster member', () => {
-  it('admits an infinite-range directional slot to every cluster after local lights', () => {
-    const point = {
-      kind: 'point' as const,
-      position: vec3.create(0, 0, -4),
-      range: 1,
-      shadowed: false,
-    };
-    const directional = {
-      kind: 'directional' as const,
-      position: vec3.create(0, 0, 0),
-      range: Number.POSITIVE_INFINITY,
-      shadowed: false,
-    };
-    const prepared = prepareStandardLighting(makeFrame([point, directional])).unwrap();
-    const clusterCount = DEFAULT_CLUSTER_GRID.x * DEFAULT_CLUSTER_GRID.y * DEFAULT_CLUSTER_GRID.z;
-    let withDirectional = 0;
+/**
+ * Additional DirectionalLights take the slots after the binned lights and are
+ * kept out of the light grid; the shader loops them separately with their
+ * own count.
+ */
+describe('additional DirectionalLight outside the light grid', () => {
+  const point = {
+    kind: 'point' as const,
+    position: vec3.create(0, 0, -4),
+    range: 1,
+    shadowed: false,
+  };
+  const directional = {
+    kind: 'directional' as const,
+    position: vec3.create(0, 0, 0),
+    range: Number.POSITIVE_INFINITY,
+    shadowed: false,
+  };
+  const clusterCount = DEFAULT_CLUSTER_GRID.x * DEFAULT_CLUSTER_GRID.y * DEFAULT_CLUSTER_GRID.z;
+
+  it('keeps the directional slot after the local lights and out of every cluster', () => {
+    const prepared = prepareStandardLighting(makeFrame([point, directional, directional])).unwrap();
+    expect(prepared.local).toHaveLength(3);
+    expect(prepared.membershipLightCount).toBe(1);
     for (let cluster = 0; cluster < clusterCount; cluster++) {
       const offset = prepared.clusterGrid[cluster * 2] ?? 0;
       const count = prepared.clusterGrid[cluster * 2 + 1] ?? 0;
-      const members = [...prepared.lightIndexList.slice(offset, offset + count)];
-      if (members.includes(1)) withDirectional++;
+      for (const index of prepared.lightIndexList.subarray(offset, offset + count))
+        expect(index).toBe(0);
     }
-    expect(withDirectional).toBe(clusterCount);
-    expect(prepared.membershipLightCount).toBe(2);
   });
 
-  it('counts additional directional lights against the light budget', () => {
-    const directional = {
-      kind: 'directional' as const,
-      position: vec3.create(0, 0, 0),
-      range: Number.POSITIVE_INFINITY,
-      shadowed: false,
-    };
-    const result = prepareStandardLighting({
-      ...makeFrame([directional, directional]),
-      lightCount: 1,
-    });
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.error.code).toBe('standard-light-budget-exceeded');
+  it('bins the same grid with or without the directional tail', () => {
+    const withTail = prepareStandardLighting(makeFrame([point, directional])).unwrap();
+    const without = prepareStandardLighting(makeFrame([point])).unwrap();
+    expect(withTail.clusterGrid).toEqual(without.clusterGrid);
+    expect(withTail.lightIndexList.subarray(0, withTail.membershipEntryCount)).toEqual(
+      without.lightIndexList.subarray(0, without.membershipEntryCount),
+    );
+    expect(withTail.lightBounds).toEqual(without.lightBounds);
+  });
+
+  it('leaves the grid empty for a directional-only frame', () => {
+    const prepared = prepareStandardLighting(makeFrame([directional])).unwrap();
+    expect(prepared.membershipLightCount).toBe(0);
+    expect(prepared.membershipEntryCount).toBe(0);
   });
 });

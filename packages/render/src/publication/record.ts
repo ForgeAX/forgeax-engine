@@ -12,7 +12,7 @@ import {
  * object graph crosses only for low-frequency rows that actually exist this
  * frame, so an unchanged frame structured-clones three scalars and a buffer.
  */
-export const RENDER_PUBLICATION_PROTOCOL = 4;
+export const RENDER_PUBLICATION_PROTOCOL = 6;
 
 /** What crosses the Worker boundary and what a Renderer draws. */
 export interface RenderPublicationMessage extends RenderPublicationIdentity {

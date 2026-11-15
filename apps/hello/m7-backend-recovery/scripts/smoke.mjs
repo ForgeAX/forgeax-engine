@@ -1,11 +1,14 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { pnpmCommand } from '../../../../scripts/lib/pnpm-command.mjs';
 
-const root = new URL('../../../..', import.meta.url).pathname;
+const root = fileURLToPath(new URL('../../../..', import.meta.url));
 const env = { ...process.env, INIT_CWD: root, FORGEAX_DAWN_COMPACT: '1' };
 
 function run(label, args, extraEnv = {}) {
-  const result = spawnSync('pnpm', args, {
+  const [command, ...prefix] = pnpmCommand(env);
+  const result = spawnSync(command, [...prefix, ...args], {
     cwd: root,
     env: { ...env, ...extraEnv },
     encoding: 'utf8',

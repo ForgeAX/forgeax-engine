@@ -62,10 +62,6 @@
       "form": "built-in"
     },
     {
-      "name": "Multi-World composition",
-      "form": "built-in"
-    },
-    {
       "name": "Multi-camera CameraView composition",
       "form": "built-in"
     },
@@ -92,6 +88,46 @@
     {
       "name": "Renderer health and recovery",
       "form": "built-in"
+    },
+    {
+      "name": "Water system",
+      "form": "test-experimental"
+    },
+    {
+      "name": "GPU WaterMesh",
+      "form": "test-experimental"
+    },
+    {
+      "name": "Async water solver buoyancy",
+      "form": "test-experimental"
+    },
+    {
+      "name": "Synchronous water buoyancy",
+      "form": "test-experimental"
+    },
+    {
+      "name": "Water CPU particle queries",
+      "form": "test-experimental"
+    },
+    {
+      "name": "Static water foam",
+      "form": "test-experimental"
+    },
+    {
+      "name": "Local water fluid simulation",
+      "form": "test-experimental"
+    },
+    {
+      "name": "Advanced shallow water simulation",
+      "form": "test-experimental"
+    },
+    {
+      "name": "River water bake",
+      "form": "test-experimental"
+    },
+    {
+      "name": "World Ocean FFT patch",
+      "form": "test-experimental"
     },
     {
       "name": "Perspective camera",
@@ -123,6 +159,10 @@
     },
     {
       "name": "Selection outline",
+      "form": "opt-in"
+    },
+    {
+      "name": "Editor assistance",
       "form": "opt-in"
     },
     {
@@ -950,10 +990,6 @@
       "form": "built-in"
     },
     {
-      "name": "Draw source routing",
-      "form": "built-in"
-    },
-    {
       "name": "Renderer feature passthrough",
       "form": "built-in"
     },
@@ -1728,6 +1764,10 @@
     {
       "name": "Automatic Mesh LOD generation",
       "form": "build-time"
+    },
+    {
+      "name": "Runtime GPU texture assets",
+      "form": "opt-in"
     }
   ]
 }

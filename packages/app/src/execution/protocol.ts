@@ -1,5 +1,4 @@
 import type { AudioIntent } from '@forgeax/engine-audio';
-import type { SharedSpanBinding } from '@forgeax/engine-ecs/shared';
 import type { GamepadFeedbackIntent, InputBackendSample } from '@forgeax/engine-input';
 import type { RenderError, RenderPublicationIdentity } from '@forgeax/engine-render';
 import type { BrowserFrameSubmitted } from '../browser-frame-signal';
@@ -85,6 +84,42 @@ export type FrameCompletionDisposition = 'accepted' | 'duplicate' | 'stale-world
  * and prepared. Host, Source publisher and Render Worker share this bound.
  */
 export const DEFAULT_RENDER_PIPELINE_CAPACITY = 3;
+
+type ResourceBudgets = Pick<
+  ExecutionInitMessage,
+  'dynamicGeometryMeshBudgetBytes' | 'assetBudgetBytes' | 'textureMipSkip'
+>;
+
+/** Forward present Renderer budgets while preserving omitted defaults. */
+export function forwardResourceBudgets(options: ResourceBudgets): ResourceBudgets {
+  return {
+    ...(options.dynamicGeometryMeshBudgetBytes === undefined
+      ? {}
+      : { dynamicGeometryMeshBudgetBytes: options.dynamicGeometryMeshBudgetBytes }),
+    ...(options.assetBudgetBytes === undefined
+      ? {}
+      : { assetBudgetBytes: options.assetBudgetBytes }),
+    ...(options.textureMipSkip === undefined ? {} : { textureMipSkip: options.textureMipSkip }),
+  };
+}
+
+type PipelineLibraries = Pick<
+  ExecutionInitMessage,
+  'pipelineLibrary' | 'backgroundPipelineLibrary' | 'backgroundPipelineLibraryConcurrency'
+>;
+
+/** Host and Worker startup messages carry the same explicit library policy. */
+export function forwardPipelineLibraries(options: PipelineLibraries): PipelineLibraries {
+  return {
+    ...(options.pipelineLibrary === undefined ? {} : { pipelineLibrary: options.pipelineLibrary }),
+    ...(options.backgroundPipelineLibrary === undefined
+      ? {}
+      : { backgroundPipelineLibrary: options.backgroundPipelineLibrary }),
+    ...(options.backgroundPipelineLibraryConcurrency === undefined
+      ? {}
+      : { backgroundPipelineLibraryConcurrency: options.backgroundPipelineLibraryConcurrency }),
+  };
+}
 
 export function renderPipelineCapacityOf(
   capacity: ExecutionDiagnosticsOptions['renderPipelineCapacity'],
@@ -205,6 +240,8 @@ export interface ExecutionInitMessage {
   readonly gpuStub?: import('@forgeax/engine-rhi-webgpu').WebGpuStubProfile;
   /** Renderer-realm display output color space; the Renderer owns negotiation. */
   readonly outputColorSpace?: import('@forgeax/engine-render').OutputColorSpace;
+  /** Renderer backend preference, applied in whichever realm owns the Renderer. */
+  readonly renderBackend?: import('@forgeax/engine-render').RendererOptions['renderBackend'];
   /**
    * Captured exact pipeline recipes, prepared before renderer initialization completes.
    * The Host supplies them with every message that starts a Renderer realm (`init`,
@@ -214,8 +251,12 @@ export interface ExecutionInitMessage {
   readonly pipelineLibrary?: import('@forgeax/engine-rhi').PipelineLibraryManifest;
   /** Captured recipes compiled after renderer readiness without blocking it. */
   readonly backgroundPipelineLibrary?: import('@forgeax/engine-rhi').PipelineLibraryManifest;
+  readonly backgroundPipelineLibraryConcurrency?: number;
   readonly dynamicGeometryMeshBudgetBytes?: number;
   readonly assetBudgetBytes?: number;
+  /** Explicit aggregate in-flight cap for Worker feature-texture readbacks. */
+  readonly featureTextureReadbackBudgetBytes?: number;
+  readonly textureMipSkip?: number;
   /** Page load progress scope; Worker realms report load work to it. */
   readonly loadProgressScope?: string;
   readonly workers: import('./types').ExecutionSelection;
@@ -337,7 +378,11 @@ export type HostToEngineMessage =
   | ExecutionInspectCancelMessage
   | { readonly kind: 'input-clear' }
   | { readonly kind: 'input-lease-open' }
+  /** The host is short of memory; the realm drops completed read caches. */
+  | { readonly kind: 'memory-pressure' }
   | ExecutionProfileFinishMessage
+  /** A page-owned pool Worker failed; the dispatcher replaces it. */
+  | { readonly kind: 'task-worker-error'; readonly workerId: number; readonly message: string }
   | { readonly kind: 'dispose' };
 /** Plain public error data; native Error cloning drops producer guidance. */
 export interface SerializedRenderError {
@@ -370,8 +415,9 @@ export interface ExecutionRenderErrorMessage {
 }
 
 export type EngineToHostMessage =
-  | { readonly kind: 'kernel-worker'; readonly workerId: number; readonly port: MessagePort }
-  | { readonly kind: 'kernel-retire'; readonly workerId: number }
+  /** A pool Worker for the Engine Worker's task dispatcher; the page creates it. */
+  | { readonly kind: 'task-worker'; readonly workerId: number; readonly port: MessagePort }
+  | { readonly kind: 'task-retire'; readonly workerId: number }
   /**
    * The Render Worker session posts its render-submitted / render-complete
    * notices on this port, so Host credit never queues behind an Engine World tick.
@@ -416,32 +462,7 @@ export type EngineToHostMessage =
   | ExecutionInspectResultMessage
   | ExecutionHostControlMessage;
 
-/** Kernel pool to kernel Worker messages; the pool sends, the Worker runtime receives. */
-export interface KernelJobMessage {
-  readonly kind: 'kernel-job';
-  readonly moduleUrl: string;
-  readonly binding: SharedSpanBinding;
-  readonly control: Int32Array;
-  readonly status: Int32Array;
-  readonly jobIndex: number;
-}
-
-export interface KernelInitMessage {
-  readonly kind: 'kernel-init';
-  readonly ready: Int32Array;
-}
-
-export interface KernelPreloadMessage {
-  readonly kind: 'kernel-preload';
-  readonly moduleUrl: string;
-  readonly control: Int32Array;
-  readonly status: Int32Array;
-  readonly jobIndex: number;
-}
-
-export interface KernelWorkerConnectMessage {
-  readonly kind: 'kernel-connect';
+export interface TaskWorkerConnectMessage {
+  readonly kind: 'task-connect';
   readonly port: MessagePort;
 }
-
-export type HostToKernelMessage = KernelJobMessage | KernelInitMessage | KernelPreloadMessage;

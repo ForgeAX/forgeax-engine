@@ -294,6 +294,8 @@ function executeReplayCapture(
   const depthPassNames = new Set(prefixCapture?.depthPassNames ?? ['shadow-cascade-2']);
   const noEncodePassNames = new Set(prefixCapture?.noEncodePassNames ?? []);
   const graph = {
+    commitExecution: vi.fn(),
+    discardExecution: vi.fn(),
     inspect: () => ({
       passes: passNames.map((name, executionIndex) => ({ name, executionIndex })),
     }),
@@ -468,6 +470,48 @@ function executeReplayCapture(
 }
 
 describe('renderer successful-submit transaction', () => {
+  it('rejects another source before mutation and admits it after every current lease is released', async () => {
+    const host = await constructRenderer(
+      { width: 64, height: 64, getContext: () => null },
+      { rhi },
+      {
+        shaderManifestUrl: transactionShaderManifestUrl(),
+      },
+    );
+    if (!(await host.initialization).ok) throw new Error('Renderer initialization failed');
+    const renderer = exposeRenderer(host);
+    const first = new World();
+    const second = new World();
+    const leaseAttachment = renderer.attach(first);
+    if (!leaseAttachment.ok) throw leaseAttachment.error;
+    const lease = leaseAttachment.value;
+    const siblingAttachment = renderer.attach(first);
+    if (!siblingAttachment.ok) throw siblingAttachment.error;
+    const sibling = siblingAttachment.value;
+    const before = JSON.stringify(second.inspect());
+    try {
+      expect(renderer.attach(second)).toMatchObject({
+        ok: false,
+        error: { code: 'world-lease-invalid', detail: { operation: 'attach' } },
+      });
+      expect(JSON.stringify(second.inspect())).toBe(before);
+      lease.dispose();
+      expect(renderer.attach(second).ok).toBe(false);
+      sibling.dispose();
+      const replacementAttachment = renderer.attach(second);
+      if (!replacementAttachment.ok) throw replacementAttachment.error;
+      const replacement = replacementAttachment.value;
+      const stale = renderer.draw({ source: lease });
+      expect(stale).toMatchObject({
+        ok: false,
+        error: { code: 'world-lease-invalid' },
+      });
+      replacement.dispose();
+    } finally {
+      await renderer.dispose();
+    }
+  });
+
   it('detaches disposed World leases while preserving another live attachment', async () => {
     const host = await constructRenderer(
       { width: 64, height: 64, getContext: () => null },
@@ -484,12 +528,7 @@ describe('renderer successful-submit transaction', () => {
     const second = renderer.attach(world);
     if (!first.ok) throw first.error;
     if (!second.ok) throw second.error;
-    const draw = (lease: typeof first.value) =>
-      renderer.draw({
-        leases: [lease],
-        camera: { lease },
-        environment: { lease },
-      });
+    const draw = (lease: typeof first.value) => renderer.draw({ source: lease });
     try {
       first.value.dispose();
       const released = draw(first.value);
@@ -534,11 +573,7 @@ describe('renderer successful-submit transaction', () => {
     const attached = renderer.attach(world);
     expect(attached.ok).toBe(true);
     if (!attached.ok) return;
-    const frame = renderer.draw({
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
+    const frame = renderer.draw({ source: attached.value });
     expect(frame.ok, frame.ok ? '' : JSON.stringify(frame.error)).toBe(true);
     if (!frame.ok) return;
     expect(events).toHaveLength(1);
@@ -586,11 +621,7 @@ describe('renderer successful-submit transaction', () => {
     if (!attachment.ok) throw attachment.error;
     const attached = attachment.value;
     const receipts = Array.from({ length: 10 }, () => {
-      const result = renderer.draw({
-        leases: [attached],
-        camera: { lease: attached },
-        environment: { lease: attached },
-      });
+      const result = renderer.draw({ source: attached });
       expect(result.ok, result.ok ? '' : JSON.stringify(result.error)).toBe(true);
       if (!result.ok) throw result.error;
       return result.value;
@@ -620,11 +651,7 @@ describe('renderer successful-submit transaction', () => {
     const attached = renderer.attach(world);
     expect(attached.ok).toBe(true);
     if (!attached.ok) return;
-    const frame = renderer.draw({
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
+    const frame = renderer.draw({ source: attached.value });
     expect(frame.ok, frame.ok ? '' : JSON.stringify(frame.error)).toBe(true);
     if (!frame.ok || frame.value === undefined) return;
     expect(frame.value.graphGeneration).toBeTypeOf('number');
@@ -683,11 +710,7 @@ describe('renderer successful-submit transaction', () => {
     const attached = firstRenderer.attach(world);
     expect(attached.ok).toBe(true);
     if (!attached.ok) return;
-    const frame = firstRenderer.draw({
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
+    const frame = firstRenderer.draw({ source: attached.value });
     expect(frame.ok, frame.ok ? '' : JSON.stringify(frame.error)).toBe(true);
     if (!frame.ok || frame.value === undefined) return;
     expect(frame.value.backendId).toBe('null');
@@ -784,16 +807,8 @@ describe('renderer successful-submit transaction', () => {
     const attached = renderer.attach(world);
     expect(attached.ok).toBe(true);
     if (!attached.ok) return;
-    const first = renderer.draw({
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
-    const second = renderer.draw({
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
+    const first = renderer.draw({ source: attached.value });
+    const second = renderer.draw({ source: attached.value });
     expect(first.ok, first.ok ? '' : JSON.stringify(first.error)).toBe(true);
     expect(second.ok, second.ok ? '' : JSON.stringify(second.error)).toBe(true);
     if (!first.ok || !second.ok || first.value === undefined || second.value === undefined) return;

@@ -13,7 +13,6 @@ import type { createVfxForceFieldPreparation, PreparedVfxForceFields } from './f
 export function resolveFields(
   emitter: VfxGpuTickIntent['emitter'],
   input: VfxGpuTickIntent['forceFields'],
-  sourceWorldIndex: number,
   context: RenderFeaturePlanContext,
   prepare: ReturnType<typeof createVfxForceFieldPreparation>,
 ): Result<PreparedVfxForceFields, VfxForceFieldError> | undefined {
@@ -28,7 +27,7 @@ export function resolveFields(
     delta?: import('@forgeax/engine-assets-runtime/internal').AssetVersionDelta;
   }[] = [];
   for (const reference of input.value) {
-    const asset = context.resolveAsset?.(sourceWorldIndex, reference.handle, reference.revision);
+    const asset = context.resolveAsset?.(reference.handle, reference.revision);
     if (!asset?.ok || asset.value.kind !== 'texture')
       return vfxForceFieldFailure(
         'vfx-field-asset-missing',
@@ -55,6 +54,7 @@ export function resolveDataInterfaces(
       // Explicit unavailability and invalid provider contracts remain barriers.
       if (
         error?.code === 'vfx-data-interface-missing' &&
+        requirement.kind !== 'water-surface' &&
         (error.detail.providerId === undefined || error.detail.expectedResourceKind !== undefined)
       )
         continue;

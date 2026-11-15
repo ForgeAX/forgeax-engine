@@ -159,9 +159,7 @@ it.each([
     const receipt = renderValue(
       renderer.draw({
         geometryLane: 'direct',
-        leases: [lease],
-        camera: { lease },
-        environment: { lease },
+        source: lease,
       }),
     );
     renderValue(await receipt.completed);

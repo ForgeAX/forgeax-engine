@@ -31,7 +31,6 @@ describe('ReflectionProbe bounded filtering and table projection', () => {
       {
         primitiveKey: '0:9',
         index: 1,
-        worldId: 0,
         entityKey: 8,
         center: [0, 0, 0],
         halfExtents: [2, 2, 2],

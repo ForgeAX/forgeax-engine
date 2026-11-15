@@ -158,6 +158,9 @@ export function createEngineWorkspaceTools(
         'Pick against the actual submitted display mapping using bounds or exact triangle geometry.',
       properties: {
         granularity: { type: 'string', enum: ['bounds', 'triangle'] },
+        frameId: { type: 'integer', minimum: 0 },
+        deviceGeneration: { type: 'integer', minimum: 0 },
+        viewIdentity: { type: 'string' },
       },
       async run(args) {
         const owner = preview(args);
@@ -171,12 +174,43 @@ export function createEngineWorkspaceTools(
         const result = await owner.tools.pick({
           x: args.x,
           y: args.y,
+          ...(typeof args.frameId === 'number' ? { frameId: args.frameId } : {}),
+          ...(typeof args.deviceGeneration === 'number'
+            ? { deviceGeneration: args.deviceGeneration }
+            : {}),
+          ...(typeof args.viewIdentity === 'string' ? { viewIdentity: args.viewIdentity } : {}),
           ...(args.granularity === undefined
             ? {}
             : { granularity: args.granularity as EngineWorkspacePickGranularity }),
         });
         if (owner !== preview(args))
           throw new EngineWorkspaceError('engine-workspace-target-stale', 'The same target');
+        return result;
+      },
+    },
+    'target.assistance': {
+      summary: 'Read or control editor assistance through the exact target owner.',
+      properties: { intent: { type: 'object' } },
+      async run(args, context) {
+        const owner = preview(args);
+        if (!owner.tools?.assistance)
+          throw new EngineWorkspaceError(
+            'engine-workspace-capability-unavailable',
+            'Editor assistance tools',
+          );
+        if (args.intent === null || typeof args.intent !== 'object')
+          throw new TypeError('An editor assistance intent');
+        const result = await owner.tools.assistance({
+          intent:
+            args.intent as import('./workspace-editor-assistance').EngineWorkspaceAssistanceIntent,
+          ...(context.caller === undefined ? {} : { connectionId: context.caller.connectionId }),
+        });
+        context.signal.throwIfAborted();
+        if (!runtime.previews.includes(owner) && runtime.play !== owner)
+          throw new EngineWorkspaceError(
+            'engine-workspace-target-stale',
+            'The same target owner after the presentation request',
+          );
         return result;
       },
     },
@@ -656,7 +690,9 @@ export function createEngineWorkspaceTools(
                 ...(typeof args.limit === 'number' ? { limit: args.limit } : {}),
                 ...(typeof args.revision === 'number' ? { revision: args.revision } : {}),
               })
-            : await tools[method]({ entityId: string(args, 'entityId') });
+            : method === 'inspect'
+              ? await tools.inspect({ entityId: string(args, 'entityId'), signal: context.signal })
+              : await tools.focus({ entityId: string(args, 'entityId') });
         context.signal.throwIfAborted();
         if (!runtime.previews.includes(owner) && runtime.play !== owner)
           throw new EngineWorkspaceError(

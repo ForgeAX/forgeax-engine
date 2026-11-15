@@ -191,7 +191,7 @@ export async function verifyPhysicalSkyIbl(
   const draw = async () => {
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
-    return drawReadyFrame(renderer, { leases: [lease], camera: { lease }, environment: { lease } });
+    return drawReadyFrame(renderer, { source: lease });
   };
   const observations: unknown[] = [];
   const sample = async (name: string, ibl: boolean) => {

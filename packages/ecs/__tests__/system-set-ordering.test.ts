@@ -1,3 +1,4 @@
+import type { SystemOrderReference } from '../src/schedule';
 import { Update } from '../src/schedule-token';
 
 import { describe, expect, it } from 'vitest';
@@ -55,13 +56,15 @@ describe('system-set-ordering.test.ts', () => {
       const chainSet = defineSystemSet({ name: 'chained-conflict', chained: true });
       const world = new World();
 
-      const c1 = defineSystem({
+      const forwardOrder1: SystemOrderReference[] = [];
+const c1 = defineSystem({
         name: 'cc1',
         queries: [],
         fn: () => {},
-        after: ['cc2'], // c1 after c2, but chain makes c1 before c2 → cycle
+        after: forwardOrder1, // c1 after c2, but chain makes c1 before c2 → cycle
       });
       const c2 = defineSystem({ name: 'cc2', queries: [], fn: () => {} });
+forwardOrder1.push(c2);
 
       world.addSystems(Update, chainSet, [c1, c2]);
       const result = world.update();
@@ -75,9 +78,14 @@ describe('system-set-ordering.test.ts', () => {
     it('pure system-level cycle (no sets) → detail.cycle is string[]', () => {
       const world = new World();
 
-      world.addSystem(Update, { name: 'pure-a', queries: [], fn: () => {}, after: ['pure-c'] });
-      world.addSystem(Update, { name: 'pure-b', queries: [], fn: () => {}, after: ['pure-a'] });
-      world.addSystem(Update, { name: 'pure-c', queries: [], fn: () => {}, after: ['pure-b'] });
+      const forwardOrder2: SystemOrderReference[] = [];
+const systemToken1 = defineSystem({ name: 'pure-a', queries: [], fn: () => {}, after: forwardOrder2 });
+world.addSystem(Update, systemToken1);
+      const systemToken2 = defineSystem({ name: 'pure-b', queries: [], fn: () => {}, after: [systemToken1] });
+world.addSystem(Update, systemToken2);
+      const systemToken3 = defineSystem({ name: 'pure-c', queries: [], fn: () => {}, after: [systemToken2] });
+forwardOrder2.push(systemToken3);
+world.addSystem(Update, systemToken3);
 
       const result = world.update();
       expect(result.ok).toBe(false);
@@ -93,8 +101,12 @@ describe('system-set-ordering.test.ts', () => {
     it('detail.cycle is accessible as readonly property without message parsing', () => {
       const world = new World();
 
-      world.addSystem(Update, { name: 'nomsg-a', queries: [], fn: () => {}, after: ['nomsg-b'] });
-      world.addSystem(Update, { name: 'nomsg-b', queries: [], fn: () => {}, after: ['nomsg-a'] });
+      const forwardOrder3: SystemOrderReference[] = [];
+const systemToken4 = defineSystem({ name: 'nomsg-a', queries: [], fn: () => {}, after: forwardOrder3 });
+world.addSystem(Update, systemToken4);
+      const systemToken5 = defineSystem({ name: 'nomsg-b', queries: [], fn: () => {}, after: [systemToken4] });
+forwardOrder3.push(systemToken5);
+world.addSystem(Update, systemToken5);
 
       const result = world.update();
       expect(result.ok).toBe(false);

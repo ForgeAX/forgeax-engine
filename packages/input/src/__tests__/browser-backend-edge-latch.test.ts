@@ -1,8 +1,9 @@
 import { Update, World } from '@forgeax/engine-ecs';
 import { describe, expect, it } from 'vitest';
 import { attachBrowserInputBackend } from '../browser-backend';
-import { INPUT_BACKEND_KEY, InputFrameStartScan } from '../frame-start-scan-system';
-import { INPUT_SNAPSHOT_RESOURCE_KEY, snapshotFromSample } from '../input-snapshot';
+import { InputFrameStartScan } from '../frame-start-scan-system';
+import { snapshotFromSample } from '../input-snapshot';
+import { INPUT_BACKEND_KEY, INPUT_SNAPSHOT_RESOURCE_KEY } from '../resources';
 
 type Listener = (event: Event) => void;
 
@@ -190,7 +191,7 @@ describe('browser input edge latch', () => {
     });
     world.addSystem(Update, InputFrameStartScan).unwrap();
     world.update(0).unwrap();
-    const scanned = world.getResource<typeof direct>(INPUT_SNAPSHOT_RESOURCE_KEY);
+    const scanned = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
     expect(calls).toBe(1);
     expect(scanned.keyboard.justPressed('a')).toBe(true);
     expect(scanned.mouse.justReleased(0)).toBe(true);

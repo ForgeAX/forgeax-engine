@@ -214,6 +214,8 @@ describe('render publication record protocol', () => {
       const wrongProtocol = good.record.slice(0);
       new Float64Array(wrongProtocol)[0] = 3;
       expect(reason({ ...good, record: wrongProtocol })).toBe('publication protocol');
+      new Float64Array(wrongProtocol)[0] = 5;
+      expect(reason({ ...good, record: wrongProtocol })).toBe('publication protocol');
       const truncated = good.record.slice(0, HEADER_BYTES);
       new Float64Array(truncated)[11] = 1000;
       expect(reason({ ...good, record: truncated })).toBe('publication record columns');

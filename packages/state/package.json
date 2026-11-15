@@ -30,7 +30,8 @@
     "@forgeax/engine-ecs": "workspace:*",
     "@forgeax/engine-scene": "workspace:*",
     "@forgeax/engine-plugin": "workspace:*",
-    "@forgeax/engine-types": "workspace:*"
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-input": "workspace:*"
   },
   "devDependencies": {
     "@forgeax/engine-assets-runtime": "workspace:*"

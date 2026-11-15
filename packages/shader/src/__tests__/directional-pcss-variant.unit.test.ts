@@ -30,10 +30,13 @@ const FORWARD_STORAGE_ROW = {
   PROBE_BLEND_AVAILABLE: false,
   PROJECTOR_AVAILABLE: true,
   REFLECTION_FALLBACK_AVAILABLE: false,
+  STANDARD_LEAN_INPUTS: false,
   STORAGE_BUFFER_AVAILABLE: true,
   TRANSMISSION_AVAILABLE: false,
   VERTEX_COLOR_AVAILABLE: false,
   VISIBLE_SURFACE_AVAILABLE: false,
+  WATER_WAVES_AVAILABLE: false,
+  WATER_INFO_RGBA16: false,
 } as const;
 
 function rowKey(defines: Record<string, boolean>): string {

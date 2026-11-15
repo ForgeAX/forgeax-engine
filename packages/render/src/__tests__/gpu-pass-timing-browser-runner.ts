@@ -92,11 +92,7 @@ function drawTimingFrame(fixture: BrowserTimingFixture): {
 } {
   const startedAt = performance.now();
   fixture.world.update(1 / 60).unwrap();
-  const drawn = fixture.renderer.draw({
-    leases: [fixture.lease],
-    camera: { lease: fixture.lease },
-    environment: { lease: fixture.lease },
-  });
+  const drawn = fixture.renderer.draw({ source: fixture.lease });
   if (!drawn.ok) throw new Error(drawn.error.hint);
   return {
     receipt: drawn.value,
@@ -256,11 +252,7 @@ export async function runBrowserGpuPassTiming(
   try {
     for (let index = 0; index < 3; index += 1) {
       world.update(1 / 60).unwrap();
-      const drawn = renderer.draw({
-        leases: [attached.value],
-        camera: { lease: attached.value },
-        environment: { lease: attached.value },
-      });
+      const drawn = renderer.draw({ source: attached.value });
       if (!drawn.ok) continue;
       const observed = await renderer.observe(drawn.value, { include: ['timings'] });
       if (!observed.ok) continue;

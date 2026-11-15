@@ -54,7 +54,6 @@ function snapshot(
     material,
     materials: [material],
     materialBindingSources: ['engine-default'],
-    worldId: 0,
     entityKey,
     ...(instances === undefined ? {} : { instances }),
   };
@@ -63,7 +62,6 @@ function snapshot(
 function updateSnapshot(value: RenderableSnapshot) {
   return {
     kind: 'update' as const,
-    worldId: value.worldId,
     entityKey: value.entityKey,
     snapshot: value,
   };
@@ -73,14 +71,13 @@ function updateInstances(value: RenderableSnapshot) {
   if (value.instances === undefined) throw new Error('expected Instances payload');
   return {
     kind: 'update' as const,
-    worldId: value.worldId,
     entityKey: value.entityKey,
     instances: value.instances,
   };
 }
 
 function submit(scene: RenderScene, entityKey: number): void {
-  const capture = scene.captureSubmission([{ worldId: 0, entityKey }]);
+  const capture = scene.captureSubmission([{ entityKey }]);
   scene.commitSubmission(capture);
 }
 
@@ -90,7 +87,7 @@ describe('RenderScene temporal retry boundary', () => {
     scene.setTemporalTracking(true);
     const initial = snapshot(7, 1);
     scene.apply([updateSnapshot(initial)]);
-    const first = scene.slot(0, 7);
+    const first = scene.slot(7);
     if (first === undefined) throw new Error('missing first slot');
     const visible = scene.captureSubmission([initial, initial]);
     scene.commitSubmission(visible);
@@ -102,8 +99,8 @@ describe('RenderScene temporal retry boundary', () => {
     // Captures retain their original membership when a later submission commits.
     scene.commitSubmission(visible);
     expect(scene.wasLastSubmittedVisible(first.slot, first.generation)).toBe(true);
-    scene.apply([{ kind: 'remove', worldId: 0, entityKey: 7 }, updateSnapshot(snapshot(8, 2))]);
-    const reused = scene.slot(0, 8);
+    scene.apply([{ kind: 'remove', entityKey: 7 }, updateSnapshot(snapshot(8, 2))]);
+    const reused = scene.slot(8);
     if (reused === undefined) throw new Error('missing reused slot');
     expect(reused.slot).toBe(first.slot);
     expect(reused.generation).not.toBe(first.generation);
@@ -122,10 +119,7 @@ describe('RenderScene temporal retry boundary', () => {
     const background = snapshot(7, 1);
     const changing = snapshot(8, 2);
     scene.apply([updateSnapshot(background), updateSnapshot(changing)]);
-    const visible = [
-      { worldId: 0, entityKey: 7 },
-      { worldId: 0, entityKey: 8 },
-    ];
+    const visible = [{ entityKey: 7 }, { entityKey: 8 }];
     scene.commitSubmission(scene.captureSubmission(visible));
     for (let revision = 0; revision < 256; revision++) {
       scene.apply([updateSnapshot({ ...changing, assetHandle: revision + 2 })]);
@@ -175,7 +169,7 @@ describe('RenderScene temporal retry boundary', () => {
     submit(scene, 7);
     // The source/material identities stay stable when callers write texture
     // content. A retained matrix alone proves no prior displaced geometry.
-    scene.apply([{ kind: 'update', worldId: 0, entityKey: 7, world: world(9) }]);
+    scene.apply([{ kind: 'update', entityKey: 7, world: world(9) }]);
     const temporal = scene.temporalSnapshotBySlot(0);
     expect(temporal?.motionValid).toBe(!reactive);
     expect(temporal?.reactiveReasons).toEqual(reactive ? ['displacement-source'] : []);
@@ -187,12 +181,12 @@ describe('RenderScene temporal retry boundary', () => {
     scene.apply([updateSnapshot(snapshot(7, 1))]);
     submit(scene, 7);
 
-    scene.apply([{ kind: 'update', worldId: 0, entityKey: 7, world: world(9) }]);
+    scene.apply([{ kind: 'update', entityKey: 7, world: world(9) }]);
     const duringFailure = scene.temporalSnapshotBySlot(0);
     expect(duringFailure?.previousSource).toBe('last-submitted');
     expect(duringFailure?.previousTransform.world[12]).toBe(1);
 
-    scene.apply([{ kind: 'update', worldId: 0, entityKey: 7, world: world(9) }]);
+    scene.apply([{ kind: 'update', entityKey: 7, world: world(9) }]);
     submit(scene, 7);
     const afterRetry = scene.temporalSnapshotBySlot(0);
     expect(afterRetry?.previousSource).toBe('last-submitted');
@@ -205,7 +199,7 @@ describe('RenderScene temporal retry boundary', () => {
     scene.apply([updateSnapshot(snapshot(7, 1)), updateSnapshot(snapshot(8, 4))]);
     submit(scene, 7);
     for (const x of [2, 3, 5]) {
-      scene.apply([{ kind: 'update', worldId: 0, entityKey: 7, world: world(x) }]);
+      scene.apply([{ kind: 'update', entityKey: 7, world: world(x) }]);
       // Never submitted: the history keeps the first pre-change record only.
       expect(scene.temporalSnapshotBySlot(0)?.previousTransform.world[12]).toBe(1);
       expect(scene.lastSubmittedSlotByIndex(1)).toBe(scene.slotAt(1));
@@ -230,7 +224,7 @@ describe('RenderScene temporal retry boundary', () => {
 
       scene.apply([
         updateInstances(next),
-        { kind: 'update', worldId: 0, entityKey: 7, world: next.transform.world },
+        { kind: 'update', entityKey: 7, world: next.transform.world },
       ]);
       const duringFailure = scene.temporalSnapshotBySlot(0);
       expect(duringFailure?.previousSource).toBe('last-submitted');
@@ -240,7 +234,7 @@ describe('RenderScene temporal retry boundary', () => {
 
       scene.apply([
         updateInstances(next),
-        { kind: 'update', worldId: 0, entityKey: 7, world: next.transform.world },
+        { kind: 'update', entityKey: 7, world: next.transform.world },
       ]);
       submit(scene, 7);
       const afterRetry = scene.temporalSnapshotBySlot(0);
@@ -297,7 +291,7 @@ it('captures a roster-covering submission without visiting its rows, at any scen
       *[Symbol.iterator]() {
         for (let key = 0; key < count; key++) {
           visits++;
-          yield { worldId: 0, entityKey: key };
+          yield { entityKey: key };
         }
       },
     };

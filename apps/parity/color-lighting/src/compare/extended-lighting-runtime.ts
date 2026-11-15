@@ -455,7 +455,7 @@ async function drawFrames(
     });
     const stopObservation = frame === 0 ? observer?.begin() : undefined;
     try {
-      receipt = await drawReadyFrame(renderer, { leases: [lease], camera: { lease }, environment: { lease } });
+      receipt = await drawReadyFrame(renderer, { source: lease });
     } finally {
       stopObservation?.();
     }

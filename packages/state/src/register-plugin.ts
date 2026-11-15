@@ -1,4 +1,6 @@
 import { Update } from '@forgeax/engine-ecs';
+import { InputFrameStartScan } from '@forgeax/engine-input';
+import { PropagateTransforms } from '@forgeax/engine-scene';
 // @forgeax/engine-state -- registerStatesPlugin (M2 / m2w2, M3 / m3w4)
 //
 // Idempotent plugin that inserts one complete resource per token, pre-registers ScopedTo components, and registers the
@@ -12,17 +14,15 @@ import { Update } from '@forgeax/engine-ecs';
 // - plan-strategy D-6: schedule anchors 'input-frame-start-scan' -> 'transitionStates' -> 'propagateTransforms'
 // - plan-strategy D-4: insertResource initial values from token.defaultValue
 
-import { defineSystem, defineSystemSet, type SystemHandle, type World } from '@forgeax/engine-ecs';
+import { defineSystem, defineSystemSet, type System, type World } from '@forgeax/engine-ecs';
 import { getRegisteredTokens, onStateDefined, type StateToken } from './define-state';
-import { type StatePayload, stateResourceKey } from './resources';
+import { type StatePayload, stateResource } from './resources';
 import { getScopedComponent } from './scoped-component';
 import { transitionStatesSystem } from './transition-system';
 
 /** Schedule anchor: system name for the input frame-start scan (registered by {@link @forgeax/engine-input}). */
-const FRAME_START_SCAN_SYSTEM_NAME = 'input-frame-start-scan' as const;
 
 /** Schedule anchor: system name for the transform-propagation system (registered by {@link @forgeax/engine-runtime}). */
-const PROPAGATE_TRANSFORMS_SYSTEM = 'propagateTransforms' as const;
 
 const TRANSITION_STATES_SYSTEM_NAME = 'transitionStates';
 export const StateSet = defineSystemSet({ name: 'state' });
@@ -38,14 +38,14 @@ const STATE_RUNTIMES = new WeakMap<World, StateRuntime>();
  * Module-level `defineSystem` with the real fn body — no closure, no
  * placeholder. The fn reads `world` from its first parameter (the M1
  * world-first signature) and delegates to {@link transitionStatesSystem}.
- * Anchored `after: ['input-frame-start-scan']`, `before: ['propagateTransforms']`
+ * Anchored `after: [InputFrameStartScan]`, `before: [PropagateTransforms]`
  * and labelled `'state'` (spec §6.2 label-anchor map).
  */
-const TransitionStates: SystemHandle<readonly []> = defineSystem({
+const TransitionStates: System<readonly []> = defineSystem({
   name: TRANSITION_STATES_SYSTEM_NAME,
   queries: [],
-  after: [FRAME_START_SCAN_SYSTEM_NAME],
-  before: [PROPAGATE_TRANSFORMS_SYSTEM],
+  after: [InputFrameStartScan],
+  before: [PropagateTransforms],
   fn: transitionStatesSystem,
 });
 
@@ -67,7 +67,7 @@ export function registerStatesPlugin(world: World): () => void {
     previous.dispose();
   }
 
-  const resourceKeys = new Set<string>();
+  const resourceKeys = new Set<import('@forgeax/engine-ecs').Resource<StatePayload>>();
   const componentLeases = new Map<string, () => void>();
   const registerToken = (token: StateToken): void => {
     const scopedComponent = getScopedComponent(token);
@@ -79,7 +79,7 @@ export function registerStatesPlugin(world: World): () => void {
     const defaultValueIdx = token.nameToIdx.get(token.defaultValue);
     if (defaultValueIdx === undefined) return;
 
-    const stateKey = stateResourceKey(token);
+    const stateKey = stateResource(token);
     if (world.hasResource(stateKey)) return;
     resourceKeys.add(stateKey);
     world.insertResource<StatePayload>(stateKey, {
@@ -108,7 +108,7 @@ export function registerStatesPlugin(world: World): () => void {
       if (runtime.lifecycle === 'active') {
         runtime.lifecycle = 'retiring';
         unsubscribe?.();
-        world.removeSystem(Update, TRANSITION_STATES_SYSTEM_NAME);
+        world.removeSystem(Update, TransitionStates);
       }
       releaseContributions();
       runtime.lifecycle = 'disposed';

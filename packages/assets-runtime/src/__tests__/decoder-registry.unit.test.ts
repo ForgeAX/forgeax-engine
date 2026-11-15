@@ -42,18 +42,20 @@ describe('one owner decoder per kind', () => {
     });
   });
 
-  it('captures decoder bytes before a retained result can corrupt the source cache', async () => {
+  it('adopts the decoder output in place and freezes its plain nodes', async () => {
     const registry = new DecoderRegistry();
-    const binary = defineAssetKind<{ bytes: Uint8Array }>('binary');
-    const retained = { bytes: new Uint8Array([1, 2]) };
-    registry.install(binary, { decode: async () => ok(retained) });
+    const binary = defineAssetKind<{ bytes: Uint8Array; meta: { n: number } }>('binary');
+    const handed = { bytes: new Uint8Array([1, 2]), meta: { n: 1 } };
+    registry.install(binary, { decode: async () => ok(handed) });
     const result = (
       await registry.load(binary, {
         ...input,
-        envelope: { ...input.envelope, kind: binary.kind, payload: retained },
+        envelope: { ...input.envelope, kind: binary.kind, payload: handed },
       })
     ).unwrap();
-    retained.bytes[0] = 9;
+    expect(result).toBe(handed);
+    expect(Object.isFrozen(result)).toBe(true);
+    expect(Object.isFrozen(result.meta)).toBe(true);
     expect(result.bytes).toEqual(new Uint8Array([1, 2]));
   });
   it('retains repeated leases of the same owner and releases them independently', async () => {

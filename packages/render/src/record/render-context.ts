@@ -5,7 +5,7 @@ import type {
 } from '@forgeax/engine-assets-runtime';
 import type { VertexLayoutProjection } from '@forgeax/engine-geometry';
 import type { Profiler, RecorderSession } from '@forgeax/engine-profiler';
-import type { CompiledRenderGraphInfo } from '@forgeax/engine-render-graph';
+import type { CompiledRenderGraphInfo, GraphTextureView } from '@forgeax/engine-render-graph';
 import type {
   BindGroup,
   BindGroupLayout,
@@ -128,6 +128,10 @@ export interface ReflectionProbeRecordState {
 export interface MaterialShaderPipelineEntry {
   readonly pipeline: RhiRenderPipeline;
   readonly group2Contract: PipelineGroup2Contract;
+  readonly waterGroup2Layout?: BindGroupLayout;
+  /** The actual compiled program admitted with this pipeline, including reflected reads. */
+  readonly program?: import('@forgeax/engine-shader').MaterialShaderProgram;
+  readonly inputs?: import('../material-program-inputs').MaterialProgramInputs;
   /** Producer receipt for the exact artifact selected with this pipeline. */
   readonly receipt?: {
     readonly identity: string;
@@ -139,7 +143,7 @@ import type {
   AtmosphereShaderSources,
   DepthPyramidShaderSources,
   RenderDebugOverlay,
-  RenderPhase,
+  RendererOptions,
   RenderPipelineContext,
   RenderRecordPhase,
   SsrShaderSources,
@@ -164,6 +168,28 @@ import type {
 import type { FoldDispatchPlan } from './mesh-ssbo';
 
 export interface RenderSystemRuntime {
+  /** Renderer admission options consumed by typed graph validation. */
+  readonly options?: Pick<RendererOptions, 'featureTextureReadbackBudgetBytes'> | undefined;
+  /** Renderer submission identity shared by feature extraction and recording. */
+  rendererFrameNumber?: number | undefined;
+  readonly getWaterMaterialFramePublication?: (
+    viewIdentity: string,
+    frameGeneration: number,
+    deviceGeneration: number,
+  ) => import('../water/water-info-feature').WaterInfoFramePublication | undefined;
+  /** Same-frame per-format WaterInfo arrays and shared wave buffers for this view. */
+  readonly getWaterMaterialFrameBindings?: (input: {
+    readonly waterInfoTextureViews: ReadonlyMap<string, import('@forgeax/engine-rhi').TextureView>;
+    readonly waterInfoPublication?: import('../water/water-info-feature').WaterInfoFramePublication;
+    readonly viewIdentity: string;
+    readonly frameGeneration: number;
+    readonly deviceGeneration: number;
+    readonly viewOriginM: readonly [number, number, number];
+    readonly waterMeshDraws: readonly import('../water/wave-material').WaterMeshInstanceDrawUpload[];
+    readonly waterMeshDrawsOwned?: boolean;
+  }) =>
+    | ReadonlyMap<string, import('../water/wave-material').WaterMaterialFrameBindings>
+    | undefined;
   /** Naga-derived Standard Cluster layouts published with the engine shader fleet. */
   readonly standardClusterAbi?:
     | import('../light-buffer-layout').StandardClusterReflectedAbi
@@ -184,10 +210,7 @@ export interface RenderSystemRuntime {
    */
   readonly skinTask?:
     | ((
-        source: Pick<
-          import('../render-system-extract').RenderableSnapshot,
-          'worldId' | 'entityKey'
-        >,
+        source: Pick<import('../render-system-extract').RenderableSnapshot, 'entityKey'>,
         pass: 'main' | 'shadow',
       ) => import('./skin-tasks').SkinTaskBinding | undefined)
     | undefined;
@@ -240,6 +263,8 @@ export interface RenderSystemRuntime {
           readonly clustered?: boolean;
           /** Material admission for the compile-time ALPHA_MASK axis. */
           readonly alphaMask?: boolean;
+          /** Material admission for the compile-time STANDARD_LEAN_INPUTS axis. */
+          readonly leanInputs?: boolean;
           readonly probeBlend?: boolean;
           readonly reflectionFallback?: boolean;
           readonly pass?: 'forward' | 'shadow' | 'depth';
@@ -269,7 +294,7 @@ export interface RenderSystemRuntime {
     passKind?: PassKind,
     meshAttributes?: VertexAttributeMap,
     sampleCount?: number,
-    /** `null` selects a colorless pipeline (depth-only scene prepass). */
+    /** Omitted uses the pass default; null explicitly requests no color targets. */
     colorFormatOverride?: GPUTextureFormat | null,
     shaderUvSetCount?: number,
     depthFormatOverride?: GPUTextureFormat | null,
@@ -278,13 +303,16 @@ export interface RenderSystemRuntime {
     shaderModuleMode?: RenderFeatureShaderModuleMode,
     layoutKindOverride?:
       | 'pbr'
+      | 'hdrp-pbr'
       | 'pbr-skin'
       | 'gpu-driven-pbr'
       | 'gpu-driven-skin'
       | 'gpu-driven-cluster-pbr'
       | 'gpu-driven-cluster-skin'
       | 'surface-direct-pbr'
-      | 'surface-direct-cluster-pbr',
+      | 'surface-direct-cluster-pbr'
+      | 'scene-direct-unlit'
+      | 'scene-direct-cluster-unlit',
     /** Optional vertex entry override for receipt-owned scene-index passes. */
     vertexEntryPoint?: string,
     additionalColorFormats?: readonly GPUTextureFormat[],
@@ -293,6 +321,8 @@ export interface RenderSystemRuntime {
     fragmentEntry?: string | null,
     particleInputLanes?: number,
     constants?: Readonly<Record<string, number>>,
+    waterInfoFormat?: 'rgba16float' | 'rgba32float',
+    preparedStorageBindings?: boolean,
   ) => RhiRenderPipeline | null;
   readonly getMaterialShaderPipelineEntry?: (
     ...args: Parameters<NonNullable<RenderSystemRuntime['getMaterialShaderPipeline']>>
@@ -392,6 +422,10 @@ export interface PerPassResources {
   ssaoClusterPackBgl: BindGroupLayout | null;
   gtaoComputePipeline?: ComputePipeline | null;
   gtaoComputeBgl?: BindGroupLayout | null;
+  /** Depth-only prepass AO (normals reconstructed from depth; no binding 4). */
+  ssaoDepthCalcPipeline?: RhiRenderPipeline | null;
+  ssaoDepthBlurPipeline?: RhiRenderPipeline | null;
+  ssaoDepthBgl?: BindGroupLayout | null;
   ssaoFilteringSampler: Sampler | null;
   ssaoDepthSampler: Sampler | null;
   ssaoFallbackRawView: TextureView | null;
@@ -418,6 +452,7 @@ export interface BloomPersistentBundle {
 }
 
 export interface PipelineState {
+  /** Water wave group(2) layouts keyed by layout kind and WaterInfo format. */
   /** Physical producer's fixed shadow ABI; borrowed states omit this authority. */
   readonly shadowViewResources?: import('./shadow-view-resources').ShadowViewResources;
   /** Device that owns every opaque handle in this pipeline state. */
@@ -459,6 +494,11 @@ export interface PipelineState {
   readonly gpuDrivenInstancesBindGroupLayout?: BindGroupLayout | null;
   /** Direct Surface slot-3 ABI: instances + retained medium frame resources. */
   readonly surfaceDirectInstancesBindGroupLayout?: BindGroupLayout | null;
+  /** Direct draws of a GPU Scene slot: the scene instance and primitive tables. */
+  readonly sceneDirectInstancesBindGroupLayout?: BindGroupLayout | null;
+  readonly sceneDirectPipelineLayout?: PipelineLayout | null;
+  /** Texture-table scene-direct layout under the cluster group(2). */
+  readonly sceneDirectClusterPipelineLayout?: PipelineLayout | null;
   readonly gpuDrivenPbrPipelineLayout?: PipelineLayout | null;
   /** Device-owned shader modules paired with their exact Standard PBR receipts. */
   readonly gpuDrivenPbrPrograms?: ReadonlyMap<string, GpuDrivenPbrProgram>;
@@ -483,6 +523,8 @@ export interface PipelineState {
   readonly defaultNormalTextureView: TextureView;
   /** White volume for `texture_3d` material params before their source promotes. */
   readonly defaultWhite3dTextureView?: TextureView;
+  /** Texture behind `defaultWhite3dTextureView`: the unit density of uniform volumetric fog. */
+  readonly defaultWhite3dTexture?: Texture;
   /** White array for `texture_2d_array` material params before their source promotes. */
   readonly defaultWhite2dArrayTextureView?: TextureView;
   /** Missing anisotropy maps encode a neutral direction and unit strength. */
@@ -531,6 +573,10 @@ export interface RenderSystemInternals extends RenderSystemRuntime {
   >;
   framePassNames?: string[];
   submittedPassNames?: readonly string[];
+  /** @internal Bounded CPU-to-GPU graph-pass join rows for one profiled receipt. */
+  renderPassCpuIdentityCapture?:
+    | import('../render-contract').RenderPassCpuIdentityCapture
+    | undefined;
   readonly canvas: Pick<HTMLCanvasElement, 'width' | 'height'>;
   readonly viewOutput?:
     | {
@@ -584,7 +630,6 @@ export interface RenderSystemInternals extends RenderSystemRuntime {
         label: string,
       ) => RhiRenderPipeline | null)
     | undefined;
-  rendererFrameNumber?: number | undefined;
   /** The Renderer's one scene composition, shared by every system and CameraView. */
   sceneComposition?: import('../scene/scene-composition').SceneComposition | undefined;
   /** Renderer-owned diffuse GI budget split shared by every CameraView's field. */
@@ -623,6 +668,17 @@ export interface RenderSystemInternals extends RenderSystemRuntime {
 }
 
 export interface _StandardForwardSceneView {
+  readonly surfaceFluidSimulation?: import('../ibl/skylight-bind-group').WaterFluidBindGroupResources;
+  /** This record's admitted Water rows; persistent resources stay with the runtime. */
+  readonly resolveWaterMaterialDrawBinding?:
+    | ((
+        source: import('../render-system-extract').RenderableSnapshot,
+      ) => import('../water/wave-material').WaterMaterialDrawBinding | undefined)
+    | undefined;
+  /** One finalized record frame owns its admitted Water shadow context. */
+  readonly waterMaterialRecordCache?: WaterMaterialRecordCacheOwner;
+  /** The WaterInfo graph target format used to select compatible material bindings. */
+  readonly waterInfoFormat?: 'rgba16float' | 'rgba32float';
   /** This view's `render-ssr-admission` demand for the reflection fallback lane. */
   readonly reflectionFallbackDemand?: boolean;
   readonly capturedAtmosphere?: import('../environment/storage').AtmosphereStorage | undefined;
@@ -632,9 +688,17 @@ export interface _StandardForwardSceneView {
   readonly assets: AssetRegistry;
   readonly store: import('../device/gpu-residency').GpuResidencyCache;
   readonly planarReflectionView?: TextureView;
+  /** Records this frame's planar mirror on the display view's resolved shadow layers. */
+  planarReflectionCapture?:
+    | ((shadows: import('../typed-shadow-passes').ResolvedShadowTargets) => void)
+    | undefined;
   readonly pipelineState: PipelineState;
   readonly bloomResources?: BloomPersistentBundle | null;
   readonly runtime: RenderSystemRuntime;
+  /** Shared producer selected once for this exact graph execution. */
+  readonly sharedFeatureGraph?:
+    | import('../assembly/feature-frame-graph').SharedFeatureGraphPublication
+    | undefined;
   readonly validatedOrdered: readonly ValidatedRenderable[];
   readonly scenePassWork?: ReadonlyMap<
     import('./scene-pass-work').ScenePassRequest,
@@ -681,7 +745,7 @@ export interface _StandardForwardSceneView {
     | readonly (ShadowViewInvalidationReason | undefined)[]
     | undefined;
   readonly world: RenderResourceScope;
-  readonly resourceScopes?: readonly RenderResourceScope[];
+  readonly resourceScopes?: RenderResourceScope;
   readonly tonemapActive: boolean;
   readonly geometryDepthKey: string | null;
   readonly skyboxActive: boolean;
@@ -709,6 +773,12 @@ export interface _StandardForwardSceneView {
   readonly gpuDrivenStandardPbrFrameResources?: GpuDrivenStandardPbrFrameResources;
   /** Scene table retained by the renderer even when no draw is GPU-admitted. */
   readonly gpuDrivenSceneMaterialBuffer?: Buffer;
+  /** Retained scene tables (storage or texture backend) read in place by scene-direct draws. */
+  readonly gpuDrivenScene?: import('../gpu-scene').GpuScene;
+  /** Texture-table slot of a row recorded without a native Scene. */
+  readonly gpuDrivenSceneSlotForEntity?: (
+    entityKey: number,
+  ) => { readonly slot: number } | undefined;
   /** Accepted main-pass ownership shared with the post-submit draw receipts. */
   readonly gpuDrivenSelection?: import('../gpu-driven/draw-selection').GpuDrawSelection | undefined;
   readonly gpuDrivenShadowViews?: ShadowViewStatePool;
@@ -718,8 +788,11 @@ export interface _StandardForwardSceneView {
     ReadonlyMap<number, GpuDrivenShadowBatchProjection>
   >;
   readonly materialFrame?: import('../scene/material-dispatch').MaterialFrame;
+  /** RenderRecord attempt owner for successful adjacent stock ShadowCaster PSOs. */
+  readonly shadowPipelineSelectionOwner?:
+    | import('./shadow-pass').ShadowPipelineSelectionOwner
+    | undefined;
   readonly shadowSlotForEntity?: (
-    worldId: number,
     entityKey: number,
   ) => { readonly slot: number; readonly generation: number } | undefined;
   /** Per-shadow-view frusta shared by GPU compaction and CPU draw routing. */
@@ -745,8 +818,6 @@ export interface _StandardForwardSceneView {
   readonly shadowDispatch?: DispatchList;
   /** Shadow row base in materialSlotIndices; physical mesh addresses live on each draw. */
   readonly shadowMaterialRowBase?: number;
-  /** Renderer-stable world keys used by ShadowCaster ownership identities. */
-  readonly shadowCasterWorldKeys?: readonly number[];
   readonly shadowCasterBounds?: PersistentShadowCasterProjection['worldBoundsOf'];
   readonly pointsLines: PointsLinesPreparedRows | undefined;
   readonly materialBgAssemblyCache: MaterialBgAssemblyCache;
@@ -758,6 +829,38 @@ export interface _StandardForwardSceneView {
   ) => void;
   readonly reflectionProbes?: ReflectionProbeRecordState;
   hdrpSsaoBlurredView?: TextureView;
+}
+
+export interface WaterMaterialRecordCacheCandidate {
+  readonly context: _InternalRenderPipelineContext;
+  readonly inputContext: _InternalRenderPipelineContext;
+  readonly validatedOrdered: readonly ValidatedRenderable[];
+  readonly drawClosure: import('../water/mesh-source-admission').WaterMaterialAdmissionDrawClosure;
+  readonly frameGeneration: number;
+  readonly viewIdentity: string;
+  readonly deviceGeneration: number;
+  readonly pipelineState: PipelineState;
+  readonly viewOrigin: readonly [number, number, number];
+  readonly waterTargets:
+    | ReadonlyMap<string, Readonly<{ view: GraphTextureView; format: TextureFormat }>>
+    | undefined;
+  readonly graphTargets: ReadonlyMap<string, GraphTextureView> | undefined;
+  readonly textureViews: ReadonlyMap<string, TextureView> | undefined;
+  readonly publication: import('../water/water-info-feature').WaterInfoFramePublication | undefined;
+  readonly publicationResolver: RenderSystemRuntime['getWaterMaterialFramePublication'];
+  readonly bindingResolver: RenderSystemRuntime['getWaterMaterialFrameBindings'];
+  readonly bindings:
+    | ReadonlyMap<string, import('../water/wave-material').WaterMaterialFrameBindings>
+    | undefined;
+}
+
+export interface WaterMaterialRecordCacheOwner {
+  readonly validatedOrdered: readonly ValidatedRenderable[];
+  readonly frameGeneration: number;
+  readonly drawClosure:
+    | import('../water/mesh-source-admission').WaterMaterialAdmissionDrawClosure
+    | undefined;
+  candidate: WaterMaterialRecordCacheCandidate | undefined;
 }
 
 export type _InternalRenderPipelineContext = RenderPipelineContext & _StandardForwardSceneView;
@@ -774,27 +877,35 @@ export function runRecordProfilePhase<T>(
 }
 
 /** Run `action` inside a `render` profiler phase; profiler failures never alter rendering. */
-export function runProfiledRenderPhase<T>(
+export function beginProfiledRenderPhase(
   session: RecorderSession | undefined,
-  phase: RenderPhase,
-  action: () => T,
-): T {
-  let opened = false;
+  phase: string,
+): (() => void) | undefined {
   try {
-    opened = session?.beginPhase('render', phase).ok === true;
+    if (session?.beginPhase('render', phase).ok !== true) return undefined;
   } catch {
     // Profiler failures never alter rendering.
+    return undefined;
   }
+  return () => {
+    try {
+      session?.endPhase();
+    } catch {
+      // Profiler failures never alter rendering.
+    }
+  };
+}
+
+export function runProfiledRenderPhase<T>(
+  session: RecorderSession | undefined,
+  phase: string,
+  action: () => T,
+): T {
+  const endPhase = beginProfiledRenderPhase(session, phase);
   try {
     return action();
   } finally {
-    if (opened) {
-      try {
-        session?.endPhase();
-      } catch {
-        // Profiler failures never alter rendering.
-      }
-    }
+    endPhase?.();
   }
 }
 
@@ -819,6 +930,7 @@ export function recordProfileRunner(
 export function isPassProfilePhase(phase: RenderRecordPhase): boolean {
   if (phase.startsWith('record/gpu-driven-prepare') && !phase.endsWith('/groups/key')) return true;
   if (phase === 'record/graph-execute') return true;
+  if (phase.startsWith('record/graph-execute/pass/')) return true;
   if (!phase.startsWith('record/graph-execute/')) return false;
   return (
     !phase.slice('record/graph-execute/'.length).includes('/') || phase.endsWith('/geometry-loop')

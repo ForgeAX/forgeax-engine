@@ -1,3 +1,4 @@
+import { INPUT_BACKEND_KEY, INPUT_SNAPSHOT_RESOURCE_KEY } from '../src/resources';
 import { Update } from '@forgeax/engine-ecs';
 // Consolidated by feat-20260609-test-pool-startup-reduction-merge-tiny-test-files
 // biome-ignore-all lint/complexity/noUselessLoneBlockStatements: scope isolation between merged source files
@@ -33,16 +34,7 @@ import type {
   PointerPhaseEvent,
   VirtualJoystickConfig,
 } from '../src/input-snapshot';
-import {
-  createInputSnapshot,
-  INPUT_BACKEND_KEY,
-  INPUT_SNAPSHOT_RESOURCE_KEY,
-  type InputBackend,
-  InputFrameStartScan,
-  type InputSnapshot,
-  type PointerType,
-  snapshotFromSample,
-} from '../src/index';
+import { createInputSnapshot, type InputBackend, InputFrameStartScan, type InputSnapshot, type PointerType, snapshotFromSample } from '../src/index';
 import { diffGamepadFrame, type RawGamepadStub } from '../src/gamepad-frame';
 import {
   deriveVirtualAxes,
@@ -202,7 +194,7 @@ type __MergedKeep = ActionConfig | ActionState | BindState | Capabilities | Fake
         world.addSystem(Update, InputFrameStartScan);
         backend.setWheelDelta(1);
         world.update(1 / 60).unwrap();
-        const snap = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+        const snap = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
         expect(snap?.mouse.wheelDelta).toBe(1);
       });
 
@@ -213,7 +205,7 @@ type __MergedKeep = ActionConfig | ActionState | BindState | Capabilities | Fake
         world.addSystem(Update, InputFrameStartScan);
         backend.setWheelDelta(-2);
         world.update(1 / 60).unwrap();
-        const snap = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+        const snap = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
         const r1 = snap?.mouse.wheelDelta;
         const r2 = snap?.mouse.wheelDelta;
         expect(r1).toBe(-2);
@@ -227,9 +219,9 @@ type __MergedKeep = ActionConfig | ActionState | BindState | Capabilities | Fake
         world.addSystem(Update, InputFrameStartScan);
         backend.setWheelDelta(3);
         world.update(1 / 60).unwrap();
-        expect(world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY)?.mouse.wheelDelta).toBe(3);
+        expect(world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY)?.mouse.wheelDelta).toBe(3);
         world.update(1 / 60).unwrap();
-        expect(world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY)?.mouse.wheelDelta).toBe(0);
+        expect(world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY)?.mouse.wheelDelta).toBe(0);
       });
 
       it('positive and negative deltas pass through unchanged (sign-preserving)', () => {
@@ -239,10 +231,10 @@ type __MergedKeep = ActionConfig | ActionState | BindState | Capabilities | Fake
         world.addSystem(Update, InputFrameStartScan);
         backend.setWheelDelta(7);
         world.update(1 / 60).unwrap();
-        expect(world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY)?.mouse.wheelDelta).toBe(7);
+        expect(world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY)?.mouse.wheelDelta).toBe(7);
         backend.setWheelDelta(-9);
         world.update(1 / 60).unwrap();
-        expect(world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY)?.mouse.wheelDelta).toBe(
+        expect(world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY)?.mouse.wheelDelta).toBe(
           -9,
         );
       });

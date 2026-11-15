@@ -3,7 +3,7 @@ import { Transform } from '@forgeax/engine-scene';
 import { describe, expect, it, vi } from 'vitest';
 import { AmbientOcclusion, Atmosphere, Camera, DirectionalLight } from '../components';
 import { prepareExtractContext, selectCameraRoles } from '../render-system-extract';
-import { extractFrame, extractFrames } from '../render-system-extract-tail';
+import { extractFrame, extractSource } from '../render-system-extract-tail';
 import { setActiveCamera } from '../systems/active-camera';
 
 function spawnCamera(world: World, fov: number): number {
@@ -49,11 +49,7 @@ describe('FrameCamera entity selection', () => {
     expect(frame.cameras[0]?.entityKey).toBe(second);
     expect(frame.cameras[0]?.fov).toBeCloseTo(2);
 
-    const merged = extractFrames([world], {
-      cameraOwner: 0,
-      resourceOwner: 0,
-      cameraEntityKey: second,
-    });
+    const merged = extractSource(world, undefined, undefined, { ...{}, cameraEntityKey: second });
     expect(merged.cameras[0]?.entityKey).toBe(second);
   });
 

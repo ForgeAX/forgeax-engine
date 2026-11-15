@@ -12,7 +12,7 @@ import { RenderPublicationReceiver } from '../publication/receiver';
 import { encodeRenderPublication, renderPublicationTransfers } from '../publication/record';
 import { worldRenderResources } from '../publication/resource-scope';
 import { buildDispatchPlan } from '../record/fold-buckets';
-import { extractFrames } from '../render-system-extract-tail';
+import { extractSource } from '../render-system-extract-tail';
 import { PersistentRenderScene } from '../scene/render-scene';
 
 const BUILTIN_QUAD = createPrimitiveMesh('quad').unwrap();
@@ -49,7 +49,10 @@ it.each([
     })
     .unwrap();
   world
-    .spawn({ component: Transform, data: { pos: [0, 0, 5] } }, { component: Camera, data: {} })
+    .spawn(
+      { component: Transform, data: { pos: [0, 0, 5] } },
+      { component: Camera, data: { fov: 1, aspect: 1, near: 0.1, far: 100 } },
+    )
     .unwrap();
   for (let index = 0; index < 128; index++)
     world
@@ -70,7 +73,6 @@ it.each([
   );
   const scene = new PersistentRenderScene({ assets, getDevice: () => device });
   const caches = scene.materialSnapshotCacheStore();
-  const owner = { cameraOwner: 0, resourceOwner: 0 };
   const identity = { source: 'sprite-edit', epoch: 1 };
   const publisher = createRenderPublisher(world, assets, identity);
   const receiver = new RenderPublicationReceiver(identity);
@@ -91,20 +93,18 @@ it.each([
       return frame;
     }
     return scene.extractComposition(
-      [world],
-      owner,
+      world,
       assets,
       (request) => {
-        if (typeof request === 'object')
-          for (const entities of request.entitiesByWorld) extractions += entities?.size ?? 0;
+        if (typeof request === 'object') extractions += request.entities.size;
         else if (request === 'full') extractions += 128;
-        return extractFrames([world], owner, assets, caches, {
+        return extractSource(world, assets, caches, {
           cull: 'none',
           retainHidden: true,
           renderables: request,
         });
       },
-      [lease],
+      lease,
     );
   };
   try {
@@ -167,7 +167,7 @@ it.each([
       [],
       undefined,
       false,
-      { bindings: [], worlds: [world].map(worldRenderResources), frame: accepted },
+      { bindings: [], sourceScope: worldRenderResources(world), frame: accepted },
     );
     expect(plan.materialSlots).toHaveLength(1);
     expect(plan.materialSlots[0]).toBe(value);

@@ -1,8 +1,11 @@
+import { defineSystem } from '@forgeax/engine-ecs';
 import { mat4 } from '@forgeax/engine-math';
 import { describe, expect, it } from 'vitest';
+import { viewSourceFixture } from '../../__tests__/view-source.fixture';
 import type { ExtractedFrame, RenderableSnapshot } from '../../render-system-extract';
 import type { FrameList } from '../../scene/frame-list';
 import { shadowPlanes } from '../../shadow-frustum';
+import { RenderCascadeFitOrder, RenderScenePublishOrder } from '../../system-order';
 import { RENDER_CASCADE_FIT_SYSTEM } from '../light-systems';
 import { createViewRecord, ViewCascadeFit, type ViewLights } from '../render-lights';
 import { RenderViewFrameSource, RenderViewInput, ViewRecorder } from '../render-views';
@@ -22,12 +25,12 @@ import {
 import { RENDER_VIEW_RECORDERS_SYSTEM, stageViewFrame } from '../view-frame-systems';
 import { registerViewFrameStub, withInertTemporal } from './temporal-owner-fixture';
 
-const opts = { cameraOwner: 0, resourceOwner: 0 } as const;
+const opts = {} as const;
 const skinBinding = {} as RenderableSnapshot['skinBinding'];
 
 /** A Skin row whose world bounds are a unit box centred at `x` on the X axis. */
 function skinRow(entityKey: number, x: number, extra: Partial<RenderableSnapshot> = {}) {
-  return { entityKey, worldId: 0, skinBinding, x, ...extra } as unknown as RenderableSnapshot & {
+  return { entityKey, skinBinding, x, ...extra } as unknown as RenderableSnapshot & {
     readonly x: number;
   };
 }
@@ -59,10 +62,14 @@ function setup(
 ) {
   const world = createRenderWorld();
   const source = new RenderViewFrameSource({ canvas: { width: 8, height: 8 } });
-  world.insertResource(RenderViewInput, source);
-  world
-    .addSystem(RenderPrepare, { name: RENDER_SCENE_PUBLISH_SYSTEM, queries: [], fn: () => {} })
-    .unwrap();
+  world.insertResource(RenderViewInput, viewSourceFixture(source));
+  const systemToken1 = defineSystem({
+    sets: [RenderScenePublishOrder],
+    name: RENDER_SCENE_PUBLISH_SYSTEM,
+    queries: [],
+    fn: () => {},
+  });
+  world.addSystem(RenderPrepare, systemToken1).unwrap();
   if (options.system !== false) registerShadowCasterSystem(world);
   // The GPU lane's raster coverage of each frame; the caster projection never reads it.
   let gpuOwned: ExtractedFrame['gpuOwned'];
@@ -115,19 +122,22 @@ function setup(
       data: { fit: world.allocUniqueRef('ViewCascadeFit', record) },
     })
     .unwrap();
-  world
-    .addSystem(RenderPrepare, { name: RENDER_CASCADE_FIT_SYSTEM, queries: [], fn: () => {} })
-    .unwrap();
-  world
-    .addSystem(RenderExtract, {
-      name: RENDER_VIEW_RECORDERS_SYSTEM,
-      queries: [],
-      fn: (world) => stageViewFrame(world, view, opts),
-    })
-    .unwrap();
+  const systemToken2 = defineSystem({
+    sets: [RenderCascadeFitOrder],
+    name: RENDER_CASCADE_FIT_SYSTEM,
+    queries: [],
+    fn: () => {},
+  });
+  world.addSystem(RenderPrepare, systemToken2).unwrap();
+  const systemToken3 = defineSystem({
+    name: RENDER_VIEW_RECORDERS_SYSTEM,
+    queries: [],
+    fn: (world) => stageViewFrame(world, view, opts),
+  });
+  world.addSystem(RenderExtract, systemToken3).unwrap();
   const run = (frameNumber: number, owned?: ExtractedFrame['gpuOwned']) => {
     gpuOwned = owned;
-    source.stage([], [], [], opts, undefined, undefined);
+    source.stage([], [], undefined, opts, undefined, undefined);
     beginRenderFrame(world, frameNumber);
   };
   return { world, view, reads, boundsReads, run };

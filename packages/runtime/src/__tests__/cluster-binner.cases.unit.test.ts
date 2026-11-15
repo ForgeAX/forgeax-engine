@@ -281,7 +281,7 @@ vi.mock('@forgeax/engine-rhi-wgpu', () => {
   // ── (e) bin() overflow ──────────────────────────────────────────────────────
 
   describe('bin overflow', () => {
-    it('returns error when writeCount would exceed 65536', () => {
+    it('keeps the first K lights per cluster when writeCount would exceed capacity', () => {
       // Use a small index list capacity to force overflow.
       const near = 0.1;
       const far = 100;
@@ -300,8 +300,9 @@ vi.mock('@forgeax/engine-rhi-wgpu', () => {
       }
 
       const clusterGrid = new Uint32Array(grid.x * grid.y * grid.z * 2);
-      // Small capacity to trigger overflow
-      const capacity = 1000;
+      // Small capacity to trigger overflow: room for 3 lights per cluster
+      // (3456 clusters) plus a remainder that no cluster can use.
+      const capacity = 3 * 3456 + 100;
       const lightIndexList = new Uint32Array(capacity);
 
       const result = bin(
@@ -316,12 +317,20 @@ vi.mock('@forgeax/engine-rhi-wgpu', () => {
         capacity,
       );
 
-      expect(result.ok).toBe(false);
-      if (!result.ok) {
-        const error = result.error;
-        expect(error.code).toBe('index-overflow');
-        expect(error.detail.actual).toBeGreaterThan(capacity);
-        expect(error.detail.capacity).toBe(capacity);
+      // Over capacity every cluster keeps its first K lights instead of
+      // failing the frame (water-filling cap).
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value).toBeLessThanOrEqual(capacity);
+      const clusterCount = grid.x * grid.y * grid.z;
+      const k = Math.floor(capacity / clusterCount);
+      expect(result.value).toBe(k * clusterCount);
+      for (let cluster = 0; cluster < clusterCount; cluster++) {
+        expect(clusterGrid[cluster * 2 + 1]).toBe(k);
+        const offset = clusterGrid[cluster * 2] ?? 0;
+        expect(Array.from(lightIndexList.subarray(offset, offset + k))).toEqual(
+          Array.from({ length: k }, (_, index) => index),
+        );
       }
     });
 

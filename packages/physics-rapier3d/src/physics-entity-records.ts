@@ -1,11 +1,13 @@
 import type { World } from '@forgeax/engine-ecs';
-import type { PairIsolationInput } from '@forgeax/engine-physics';
+import type { PairIsolationInput, PhysicsVector } from '@forgeax/engine-physics';
 
 /**
  * Per-entity physics record — tracks the Rapier body handle for
  * each ECS entity.
  */
 export interface PhysicsEntityRecord {
+  readonly generation: number;
+  motionDiscontinuity: number;
   bodyHandle: number;
   lockRotation: boolean;
   readonly worldIdentity: World | undefined;
@@ -15,6 +17,8 @@ export interface PhysicsEntityRecord {
   automaticAdditionalMass: number;
   /** Base collider density before an explicit derived mass override. */
   authoredDensity: number | undefined;
+  /** Native geometry's accepted Scene scale, unavailable from primitive dimensions alone. */
+  scale: PhysicsVector;
 }
 
 export interface IsolatedPair {

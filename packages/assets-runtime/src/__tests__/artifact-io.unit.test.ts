@@ -1,6 +1,6 @@
-import { type ArtifactDescriptor, ok } from '@forgeax/engine-types';
+import type { ArtifactDescriptor } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
-import { ArtifactReadCache, readArtifact } from '../registry/artifact-io';
+import { readArtifact } from '../registry/artifact-io';
 
 const GUID = '11111111-1111-4111-8111-111111111111';
 
@@ -15,59 +15,6 @@ function response(bytes: Uint8Array, ok = true): Response {
 }
 
 describe('artifact I/O', () => {
-  it('releases completed read copies while pending readers stay shared and borrowed bytes remain valid', async () => {
-    const cache = new ArtifactReadCache();
-    const bytes = Uint8Array.of(1, 2, 3);
-    const read = vi.fn(async () => ok(bytes));
-    const adopted = (await cache.read('ready', read)).unwrap();
-    let complete!: (result: Awaited<ReturnType<typeof readArtifact>>) => void;
-    const pending = cache.read(
-      'pending',
-      () =>
-        new Promise((resolve) => {
-          complete = resolve;
-        }),
-    );
-    expect(cache.releaseCompleted()).toBe(1);
-    expect(cache.peek('ready')).toBeUndefined();
-    expect(cache.read('pending', read)).toBe(pending);
-    expect(cache.releaseCompleted()).toBe(0);
-    expect(adopted).toBe(bytes);
-    expect(adopted).toEqual(Uint8Array.of(1, 2, 3));
-    complete(ok(Uint8Array.of(4)));
-    expect((await pending).unwrap()).toEqual(Uint8Array.of(4));
-    expect(cache.releaseCompleted()).toBe(1);
-    await cache.read('ready', read);
-    expect(read).toHaveBeenCalledTimes(2);
-  });
-
-  it('does not evict a replacement read when a cleared request fails late', async () => {
-    const cache = new ArtifactReadCache();
-    type ReadResult = Awaited<ReturnType<typeof readArtifact>>;
-    let finish!: (value: ReadResult) => void;
-    const old = cache.read(
-      'a\0body',
-      () =>
-        new Promise<ReadResult>((resolve) => {
-          finish = resolve;
-        }),
-    );
-    cache.clearPrefix('a\0');
-    const replacement: ReadResult = ok(Uint8Array.of(2));
-    const reader = vi.fn(async () => replacement);
-    await cache.read('a\0body', reader);
-    const failed = await readArtifact({
-      packageUrl: '/a.pack.json',
-      guid: GUID,
-      artifactKey: 'body',
-      descriptor: descriptor('../invalid'),
-    });
-    expect(failed.ok).toBe(false);
-    finish(failed);
-    await old;
-    expect((await cache.read('a\0body', reader)).unwrap()).toBe(replacement.unwrap());
-    expect(reader).toHaveBeenCalledTimes(1);
-  });
   it('rejects an empty media type before fetching artifact bytes', async () => {
     const fetcher = vi.fn();
     const result = await readArtifact(

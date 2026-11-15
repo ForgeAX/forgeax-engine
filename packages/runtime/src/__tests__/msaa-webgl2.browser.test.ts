@@ -90,11 +90,7 @@ it('resolves real four-sample Standard Camera coverage on WebGL2 for 60 complete
   const draw = async (capture = false) => {
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
-    return drawReadyFrame(
-      renderer,
-      { leases: [lease], camera: { lease }, environment: { lease } },
-      capture ? ['linear-hdr'] : undefined,
-    );
+    return drawReadyFrame(renderer, { source: lease }, capture ? ['linear-hdr'] : undefined);
   };
   const sample = async (antialias: number) => {
     world.set(camera, Camera, { antialias }).unwrap();

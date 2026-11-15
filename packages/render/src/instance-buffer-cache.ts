@@ -44,10 +44,13 @@ export interface InstanceBufferCacheEntry {
   readonly usedFrame?: number;
 }
 
+/** Renderer-local entity, collection, WaterMesh, and fold cache owner key. */
+export type InstanceBufferCacheKey = number | string;
+
 /** Each collection owns its numeric chunk starts and releases them together. */
 export type InstanceBufferChunkKey = number | string;
 export type InstanceBufferChunks = Map<
-  number,
+  InstanceBufferCacheKey,
   Map<InstanceBufferChunkKey, InstanceBufferCacheEntry>
 >;
 
@@ -98,7 +101,7 @@ interface InstanceBufferCacheErrorSink {
  * exit path walks-then-destroys.
  */
 export function disposeInstanceBuffers(
-  map: Map<number, InstanceBufferCacheEntry>,
+  map: Map<InstanceBufferCacheKey, InstanceBufferCacheEntry>,
   errorRegistry?: InstanceBufferCacheErrorSink,
 ): void {
   destroyInstanceBufferEntries(map.values(), errorRegistry);

@@ -3,9 +3,10 @@ import { encodePng } from '@forgeax/engine-image/png';
 import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 
 
 const WIDTH = testQuality.viewport.width;
@@ -58,7 +59,7 @@ const { buildViewportToWorldWorld, stepViewportToWorld } = await import(
 );
 const manifest = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
 const hostResult = await constructRuntimeRendererHost(mockCanvas, {}, {
-  shaderManifestUrl: `data:application/json,${encodeURIComponent(readFileSync(manifest, 'utf8'))}`,
+  shaderManifestUrl: `data:application/json,${encodeURIComponent(readShaderManifestText(manifest))}`,
 });
 if (!hostResult.ok) throw hostResult.error;
 const { renderer, assets: smokeAssets } = hostResult.value;

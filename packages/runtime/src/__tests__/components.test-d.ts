@@ -108,6 +108,7 @@ describe('w7 type-level - 5 component schemas yield exact data shapes via ShapeO
       | 'autoAspect'
       | 'target'
       | 'targetLayer'
+      | 'postProcessing'
     >();
     expectTypeOf<Data['fov']>().toEqualTypeOf<number>();
     expectTypeOf<Data['far']>().toEqualTypeOf<number>();
@@ -137,6 +138,7 @@ describe('w7 type-level - 5 component schemas yield exact data shapes via ShapeO
     expectTypeOf<Data['clearColor']>().toEqualTypeOf<Float32Array>();
     // feat-20260617 / M3: AC-09 -- bool column narrows to boolean, not number.
     expectTypeOf<Data['autoAspect']>().toEqualTypeOf<boolean>();
+    expectTypeOf<Data['postProcessing']>().toEqualTypeOf<boolean>();
     expectTypeOf<Data['target']>().toEqualTypeOf<Handle<'RenderTarget', 'shared'>>();
   });
 

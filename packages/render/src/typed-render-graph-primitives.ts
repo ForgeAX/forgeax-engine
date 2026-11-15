@@ -15,7 +15,15 @@ import {
   type TextureView,
 } from '@forgeax/engine-rhi';
 import { TONEMAP_PARAMS_LAYOUT } from '@forgeax/engine-shader';
-import { err, ok, type PassKind, type PassSelector, type Result } from '@forgeax/engine-types';
+import {
+  err,
+  type MaterialColorOutput,
+  ok,
+  type PassKind,
+  type PassSelector,
+  type Result,
+  SINGLE_LAYER_WATER_PASS_OUTPUTS,
+} from '@forgeax/engine-types';
 import { atmosphereTextures, atmosphereVolumeViews } from './environment/luts';
 import type { PostProcessShaderEntry } from './fullscreen-post-process-pass';
 import {
@@ -46,6 +54,7 @@ import {
 } from './record/skybox-post-pass';
 import { selectForwardFragmentEntry } from './record/standard-opaque-entry';
 import { prepareTypedScenePipelineDemand } from './record/typed-scene-pipeline-demand';
+import { POST_PROCESS_VIEW_UNIFORM_OFFSET } from './record/view-ubo';
 import { STANDARD_OUTPUT_TRANSFORM_FEATURE_ID } from './render-contract';
 import {
   encodeFullscreenPass,
@@ -53,6 +62,7 @@ import {
   recordSsaoBlurPass,
   recordSsaoCalcPass,
   recordSsaoClusterPackPass,
+  recordSsaoDepthPass,
 } from './render-graph-primitives';
 import type {
   GpuDrivenDrawPhase,
@@ -173,7 +183,7 @@ export function addObservationCapturePass(
           : {}),
         ...size,
         frameNumber: internal.frameState.frameNumber,
-        graphGeneration: internal.frameState.graphGeneration,
+        graphGeneration: frame.runtime.observationGraphGeneration,
       });
     },
   });
@@ -214,12 +224,13 @@ export function addTypedSkyboxPass(
 export interface TypedScenePassOptions {
   /** A renderer-owned selection recipe, re-read for normal recording and candidate demand. */
   readonly selection?: ScenePassSelection;
+  /** Raster geometry on the display lattice used by after-tonemap consumers. */
+  readonly rasterProjection?: 'unjittered';
   /** The common borrowed frame and this exact pass's prepared draw-work identity. */
   readonly executeIf?:
     | ((frame: RenderPipelineFrame, request: ScenePassRequest) => boolean)
     | undefined;
   readonly selectEntities?: (frame: RenderPipelineFrame) => {
-    readonly worldId: number;
     readonly entities: readonly number[];
   };
   readonly environment?: import('./environment/ibl').GraphEnvironment | undefined;
@@ -229,6 +240,10 @@ export interface TypedScenePassOptions {
   readonly depth: RenderPipelineTarget;
   readonly resolve?: RenderPipelineTarget | undefined;
   readonly sampled?: readonly RenderPipelineTarget[] | undefined;
+  /** Format-specific Graph-owned WaterInfo arrays sampled by water materials. */
+  readonly waterInfoTargets?:
+    | import('./pipeline/standard-build-context').WaterInfoGraphTargets
+    | undefined;
   readonly directionalShadow?: RenderPipelineTarget | undefined;
   readonly spotShadow?: RenderPipelineTarget | undefined;
   readonly shadowMoments?: RenderPipelineTarget | undefined;
@@ -248,9 +263,12 @@ export interface TypedScenePassOptions {
   readonly seededDepth?: boolean | undefined;
   /** Preserve nearest transparent fragment depth for downstream medium clipping. */
   readonly transparentDepthWrite?: boolean | undefined;
+  /** Main opaque depth has already been written by this view's prepass. */
+  readonly opaqueDepthPrimed?: boolean | undefined;
   readonly coverageOnly?: boolean | undefined;
   readonly recordMode?:
     | 'opaque'
+    | 'opaque-depth'
     | 'opaque-fogged'
     | 'opaque-unfogged'
     | 'transmission'
@@ -261,6 +279,10 @@ export interface TypedScenePassOptions {
     | 'oit-residual'
     | 'single-layer-medium-nearest-layer'
     | 'single-layer-medium-color'
+    | 'water-prepass'
+    | 'water-color'
+    | 'water-shadow'
+    | 'water-velocity'
     | undefined;
   /** Graph-paired Surface inputs. The raw depth status is intentionally typed. */
   readonly surfacePair?: RenderPipelineSurfaceMediumPair | undefined;
@@ -268,6 +290,9 @@ export interface TypedScenePassOptions {
   readonly surfaceNearestLayer?: GraphTextureView | undefined;
   /** Nearest-layer depth produced by the preceding medium pass. */
   readonly surfaceNearestDepth?: GraphTextureView | undefined;
+  /** Water graph-owned FoamRT sampled by the connected Surface foam branch. */
+  readonly surfaceFoamSimulation?: GraphTextureView | undefined;
+  readonly surfaceFluidSimulation?: import('./water/fluid-graph').WaterFluidGraphInputs;
   /** Declares the pass's GPU material lane even before its first live projection. */
   readonly gpuDrivenFilter?: RenderPipelineGpuDrivenFilter | undefined;
   /** Exclude material/pass pairs consumed by an earlier graph lane. */
@@ -321,11 +346,19 @@ function scenePassFragmentEntryPoint(options: TypedScenePassOptions): string | u
       ? 'fs_temporal'
       : options.passKind === 'deferred'
         ? 'fs_gbuffer'
-        : options.recordMode === 'single-layer-medium-nearest-layer'
-          ? 'fs_nearest_layer'
-          : options.recordMode === 'single-layer-medium-color'
-            ? 'fs_color'
-            : undefined)
+        : options.recordMode === 'water-prepass'
+          ? 'fs_water_prepass'
+          : options.recordMode === 'water-color'
+            ? 'fs_water_color'
+            : options.recordMode === 'water-shadow'
+              ? 'fs_water_shadow'
+              : options.recordMode === 'water-velocity'
+                ? 'fs_water_velocity'
+                : options.recordMode === 'single-layer-medium-nearest-layer'
+                  ? 'fs_nearest_layer'
+                  : options.recordMode === 'single-layer-medium-color'
+                    ? 'fs_color'
+                    : undefined)
   );
 }
 
@@ -333,48 +366,70 @@ function typedScenePassAccesses(
   options: TypedScenePassOptions,
   colorTargets: readonly RenderPipelineTarget[],
 ): GraphAccess[] {
-  const accesses: GraphAccess[] = [
-    ...colorTargets.map((target) => ({
-      resource: target.view,
-      usage: 'color-attachment' as const,
-    })),
-    { resource: options.depth.view, usage: 'depth-stencil-write' },
-    ...(options.sampled ?? []).map((target) => ({
-      resource: target.view,
-      usage: 'sampled-read' as const,
-    })),
-    ...(options.cloudShadow === undefined
-      ? []
-      : [{ resource: options.cloudShadow.view, usage: 'sampled-read' as const }]),
-    ...(options.transmissionBackdrop === undefined
-      ? []
-      : [{ resource: options.transmissionBackdrop, usage: 'sampled-read' as const }]),
-    ...(options.surfacePair?.rawDepth.status === 'available'
-      ? [{ resource: options.surfacePair.rawDepth.view, usage: 'sampled-read' as const }]
-      : []),
-    ...(options.recordMode === 'single-layer-medium-color' &&
-    options.surfaceNearestLayer !== undefined
-      ? [{ resource: options.surfaceNearestLayer, usage: 'sampled-read' as const }]
-      : []),
-    ...(options.recordMode === 'single-layer-medium-color' &&
-    options.surfaceNearestDepth !== undefined
-      ? [{ resource: options.surfaceNearestDepth, usage: 'sampled-read' as const }]
-      : []),
-    ...(options.environment === undefined
-      ? []
-      : [
-          options.environment.irradiance,
-          options.environment.prefilter,
-          ...(options.environment.atmosphere === undefined
-            ? []
-            : atmosphereTextures(options.environment.atmosphere)),
-        ].map((resource) => ({
-          resource,
-          usage: 'sampled-read' as const,
-        }))),
-    ...(options.extraAccesses ?? []),
-    ...(options.gpuDriven?.accesses ?? []),
-  ];
+  const collectTypedScenePassAccesses = () => {
+    const accesses: GraphAccess[] = [
+      ...colorTargets.map((target) => ({
+        resource: target.view,
+        usage: 'color-attachment' as const,
+      })),
+      { resource: options.depth.view, usage: 'depth-stencil-write' },
+      ...(options.sampled ?? []).map((target) => ({
+        resource: target.view,
+        usage: 'sampled-read' as const,
+      })),
+      ...[...(options.waterInfoTargets?.values() ?? [])].map(({ view }) => ({
+        resource: view,
+        usage: 'sampled-read' as const,
+      })),
+      ...(options.cloudShadow === undefined
+        ? []
+        : [{ resource: options.cloudShadow.view, usage: 'sampled-read' as const }]),
+      ...(options.transmissionBackdrop === undefined
+        ? []
+        : [{ resource: options.transmissionBackdrop, usage: 'sampled-read' as const }]),
+      ...(options.surfacePair?.rawDepth.status === 'available'
+        ? [{ resource: options.surfacePair.rawDepth.view, usage: 'sampled-read' as const }]
+        : []),
+      ...((options.recordMode === 'single-layer-medium-color' ||
+        options.recordMode === 'water-color') &&
+      options.surfaceNearestLayer !== undefined
+        ? [{ resource: options.surfaceNearestLayer, usage: 'sampled-read' as const }]
+        : []),
+      ...((options.recordMode === 'single-layer-medium-color' ||
+        options.recordMode === 'water-color') &&
+      options.surfaceNearestDepth !== undefined
+        ? [{ resource: options.surfaceNearestDepth, usage: 'sampled-read' as const }]
+        : []),
+      ...(options.surfaceFoamSimulation === undefined
+        ? []
+        : [{ resource: options.surfaceFoamSimulation, usage: 'sampled-read' as const }]),
+      ...(options.surfaceFluidSimulation === undefined
+        ? []
+        : [
+            { resource: options.surfaceFluidSimulation.fields, usage: 'sampled-read' as const },
+            {
+              resource: options.surfaceFluidSimulation.descriptors,
+              usage: 'storage-read' as const,
+            },
+          ]),
+      ...(options.environment === undefined
+        ? []
+        : [
+            options.environment.irradiance,
+            options.environment.prefilter,
+            ...(options.environment.atmosphere === undefined
+              ? []
+              : atmosphereTextures(options.environment.atmosphere)),
+          ].map((resource) => ({
+            resource,
+            usage: 'sampled-read' as const,
+          }))),
+      ...(options.extraAccesses ?? []),
+      ...(options.gpuDriven?.accesses ?? []),
+    ];
+    return accesses;
+  };
+  const accesses = collectTypedScenePassAccesses();
   for (const target of colorTargets) {
     if (target.resolveTarget !== undefined)
       accesses.push({ resource: target.resolveTarget, usage: 'color-attachment' });
@@ -389,6 +444,45 @@ export function addTypedScenePass(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   options: TypedScenePassOptions,
 ): Result<void, RenderGraphError> {
+  const colorTargets = options.colorTargets ?? (options.color === undefined ? [] : [options.color]);
+  const waterOutputs = ((): readonly MaterialColorOutput[] | undefined => {
+    switch (options.recordMode) {
+      case 'water-prepass':
+        return SINGLE_LAYER_WATER_PASS_OUTPUTS.depth;
+      case 'water-color':
+        return SINGLE_LAYER_WATER_PASS_OUTPUTS.color;
+      case 'water-shadow':
+        return SINGLE_LAYER_WATER_PASS_OUTPUTS.shadow;
+      case 'water-velocity':
+        return SINGLE_LAYER_WATER_PASS_OUTPUTS.velocity;
+      default:
+        return undefined;
+    }
+  })();
+  if (waterOutputs !== undefined) {
+    const mismatch = waterOutputs.findIndex(
+      (output, index) => colorTargets[index]?.format !== output.format,
+    );
+    if (colorTargets.length !== waterOutputs.length || mismatch !== -1) {
+      const location =
+        mismatch === -1 ? Math.min(colorTargets.length, waterOutputs.length) : mismatch;
+      const output = waterOutputs[location];
+      return err(
+        new RenderGraphError({
+          code: 'resource-descriptor-invalid',
+          expected: 'Water scene attachments match the selected model/pass output contract',
+          hint: 'declare the complete Water attachment roster in WGSL location order',
+          detail: {
+            passName: options.name,
+            resourceLabel: output?.name ?? `color[${location}]`,
+            field: `colorAttachments[${location}].format`,
+            expected: output?.format ?? 'no attachment',
+            actual: colorTargets[location]?.format ?? 'missing attachment',
+          },
+        }),
+      );
+    }
+  }
   const request = registerScenePass(graph, {
     selector: options.selector,
     excludeSelector: options.excludeSelector,
@@ -399,7 +493,6 @@ export function addTypedScenePass(
     late: options.gpuDrivenPhase === 'late',
     capture: false,
   });
-  const colorTargets = options.colorTargets ?? (options.color === undefined ? [] : [options.color]);
   const fragmentEntryPoint = scenePassFragmentEntryPoint(options);
   const formats = colorTargets.map((target) => target.format as GPUTextureFormat);
   const sampleCount = colorTargets[0]?.sampleCount ?? options.depth.sampleCount;
@@ -412,9 +505,7 @@ export function addTypedScenePass(
           ? context.pipelinePreparationEntries
           : context.pipelinePreparationEntries?.filter(
               (entry) =>
-                selection !== undefined &&
-                selection.worldId === entry.source.worldId &&
-                selection.entities.includes(entry.source.entityKey),
+                selection !== undefined && selection.entities.includes(entry.source.entityKey),
             );
       // A graph can declare this preparation lane while the current frame has
       // no pending material pipelines. Do not copy its whole context in that case.
@@ -478,6 +569,7 @@ export function addTypedScenePass(
     options.coverageOnly,
     sampleCount,
     options.seededDepth,
+    options.opaqueDepthPrimed,
   );
   const bundleDescriptor = {
     colorFormats: formats,
@@ -492,6 +584,7 @@ export function addTypedScenePass(
     surfaceRawDepth: TextureView | null,
     surfaceNearestLayer: TextureView | null,
     surfaceNearestDepth: TextureView | null,
+    surfaceFoamSimulation: TextureView | null,
   ): MainPassOptions => {
     const result: { -readonly [K in keyof MainPassOptions]: MainPassOptions[K] } = {
       bundleDescriptor,
@@ -504,6 +597,8 @@ export function addTypedScenePass(
     if (request.recordMode !== undefined) result.recordMode = request.recordMode;
     if (options.transparentDepthWrite !== undefined)
       result.transparentDepthWrite = options.transparentDepthWrite;
+    if (options.opaqueDepthPrimed !== undefined)
+      result.opaqueDepthPrimed = options.opaqueDepthPrimed;
     if (options.coverageOnly !== undefined) result.coverageOnly = options.coverageOnly;
     result.seededDepth = options.seededDepth === true;
     if (request.excludeSelector !== undefined) result.excludeSelector = request.excludeSelector;
@@ -512,6 +607,14 @@ export function addTypedScenePass(
     if (surfaceRawDepth !== null) result.surfaceRawDepthView = surfaceRawDepth;
     if (surfaceNearestLayer !== null) result.surfaceNearestLayerView = surfaceNearestLayer;
     if (surfaceNearestDepth !== null) result.surfaceNearestDepthView = surfaceNearestDepth;
+    if (surfaceFoamSimulation !== null) result.surfaceFoamSimulationView = surfaceFoamSimulation;
+    if (options.surfaceFluidSimulation !== undefined)
+      result.surfaceFluidSimulation = {
+        fields: resolvedView(resources, options.surfaceFluidSimulation.fields),
+        descriptors: resources.buffer(options.surfaceFluidSimulation.descriptors).unwrap(),
+      };
+    if (options.waterInfoTargets !== undefined && options.waterInfoTargets.size > 0)
+      result.waterFrame = { targets: options.waterInfoTargets, resources };
     if (fragmentEntryPoint !== undefined) result.fragmentEntryPoint = fragmentEntryPoint;
     if (options.gpuDriven !== undefined)
       result.gpuDriven = {
@@ -558,36 +661,64 @@ export function addTypedScenePass(
     },
     encodeDirect: (pass, frame, resources) => {
       const internal = detachedScenePassContext(frame, request);
-      const directionalShadow =
-        options.directionalShadow === undefined
-          ? undefined
-          : resolvedView(resources, options.directionalShadow.view);
-      const spotShadow =
-        options.spotShadow === undefined
-          ? undefined
-          : resolvedView(resources, options.spotShadow.view);
-      const cloudShadow =
-        options.cloudShadow === undefined
-          ? undefined
-          : resolvedView(resources, options.cloudShadow.view);
-      const ssao =
-        options.ssao === undefined ? undefined : resolvedView(resources, options.ssao.view);
-      const transmissionBackdrop =
-        options.transmissionBackdrop === undefined
-          ? null
-          : resolvedView(resources, options.transmissionBackdrop);
-      const surfaceRawDepth =
-        options.surfacePair?.rawDepth.status === 'available'
-          ? resolvedView(resources, options.surfacePair.rawDepth.view)
-          : null;
-      const surfaceNearestLayer =
-        options.surfaceNearestLayer === undefined
-          ? null
-          : resolvedView(resources, options.surfaceNearestLayer);
-      const surfaceNearestDepth =
-        options.surfaceNearestDepth === undefined
-          ? null
-          : resolvedView(resources, options.surfaceNearestDepth);
+      const resolveScenePassViews = () => {
+        const directionalShadow =
+          options.directionalShadow === undefined
+            ? undefined
+            : resolvedView(resources, options.directionalShadow.view);
+        const spotShadow =
+          options.spotShadow === undefined
+            ? undefined
+            : resolvedView(resources, options.spotShadow.view);
+        const cloudShadow =
+          options.cloudShadow === undefined
+            ? undefined
+            : resolvedView(resources, options.cloudShadow.view);
+        const ssao =
+          options.ssao === undefined ? undefined : resolvedView(resources, options.ssao.view);
+        const transmissionBackdrop =
+          options.transmissionBackdrop === undefined
+            ? null
+            : resolvedView(resources, options.transmissionBackdrop);
+        const surfaceRawDepth =
+          options.surfacePair?.rawDepth.status === 'available'
+            ? resolvedView(resources, options.surfacePair.rawDepth.view)
+            : null;
+        const surfaceNearestLayer =
+          options.surfaceNearestLayer === undefined
+            ? null
+            : resolvedView(resources, options.surfaceNearestLayer);
+        const surfaceNearestDepth =
+          options.surfaceNearestDepth === undefined
+            ? null
+            : resolvedView(resources, options.surfaceNearestDepth);
+        const surfaceFoamSimulation =
+          options.surfaceFoamSimulation === undefined
+            ? null
+            : resolvedView(resources, options.surfaceFoamSimulation);
+        return {
+          directionalShadow,
+          spotShadow,
+          cloudShadow,
+          ssao,
+          transmissionBackdrop,
+          surfaceRawDepth,
+          surfaceNearestLayer,
+          surfaceNearestDepth,
+          surfaceFoamSimulation,
+        };
+      };
+      const {
+        directionalShadow,
+        spotShadow,
+        cloudShadow,
+        ssao,
+        transmissionBackdrop,
+        surfaceRawDepth,
+        surfaceNearestLayer,
+        surfaceNearestDepth,
+        surfaceFoamSimulation,
+      } = resolveScenePassViews();
       // Each pass publishes only the shadow inputs it actually binds. A later
       // selection pass has none and must preserve the main receiver's evidence.
       if (directionalShadow !== undefined)
@@ -637,6 +768,8 @@ export function addTypedScenePass(
         passContext.reflectionFallbackColorFormat = 'rgba16float';
       passContext.msaaActive = colorTargets[0]?.sampleCount === 4;
       passContext.viewBindGroup = groups.viewBindGroup;
+      if (options.rasterProjection === 'unjittered')
+        passContext.viewBindGroupDynamicOffset = POST_PROCESS_VIEW_UNIFORM_OFFSET;
       passContext.meshBindGroup = groups.meshBindGroup;
       passContext.hdrpClusterBindGroup = groups.hdrpClusterBindGroup;
       passContext.hdrpClusterMembershipBindGroup = groups.hdrpClusterMembershipBindGroup;
@@ -653,6 +786,7 @@ export function addTypedScenePass(
             surfaceRawDepth,
             surfaceNearestLayer,
             surfaceNearestDepth,
+            surfaceFoamSimulation,
           ),
         );
       recordSceneCommands(internal, options, bundleDescriptor, pass, record);
@@ -827,7 +961,8 @@ export function addTypedBloomPasses(
 }
 
 export interface TypedSsaoTargets {
-  readonly normal: RenderPipelineTarget;
+  /** Absent for a depth-only prepass: AO reconstructs normals from depth. */
+  readonly normal?: RenderPipelineTarget | undefined;
   readonly depth: RenderPipelineTarget;
   readonly raw: RenderPipelineTarget;
   readonly blurred: RenderPipelineTarget;
@@ -841,6 +976,59 @@ export function addTypedSsaoPasses(
 ): Result<void, RenderGraphError> {
   const depth = depthSampleView(graph, targets.depth, 'typed-ssao-depth-only-view');
   if (!depth.ok) return depth;
+  if (targets.normal === undefined) return addTypedSsaoDepthPasses(graph, targets, depth.value);
+  return addTypedSsaoNormalPasses(graph, { ...targets, normal: targets.normal }, depth.value);
+}
+
+/** Depth-only prepass AO: calc and blur read depth alone (UE normal reconstruction). */
+function addTypedSsaoDepthPasses(
+  graph: RenderGraphBuilder<RenderPipelineFrame>,
+  targets: TypedSsaoTargets,
+  depth: GraphTextureView,
+): Result<void, RenderGraphError> {
+  // The forward lane admits this path only for the fragment GTAO entry.
+  const stage = (
+    name: 'ssao-calc' | 'ssao-blur',
+    output: RenderPipelineTarget,
+    raw?: RenderPipelineTarget,
+  ): Result<void, RenderGraphError> =>
+    graph.addRasterPass(name, {
+      accesses: [
+        ...(raw === undefined ? [] : [{ resource: raw.view, usage: 'sampled-read' as const }]),
+        { resource: depth, usage: 'sampled-read' },
+        { resource: output.view, usage: 'color-attachment' },
+      ],
+      colorAttachments: [
+        {
+          view: output.view,
+          loadOp: 'clear',
+          storeOp: 'store',
+          clearValue: { r: 1, g: 1, b: 1, a: 1 },
+        },
+      ],
+      encodeDirect: (pass, frame, resources) =>
+        recordSsaoDepthPass(
+          frame as _InternalRenderPipelineContext,
+          raw === undefined ? 'calc' : 'blur',
+          pass,
+          {
+            output: resolvedView(resources, output.view),
+            depth: resolvedView(resources, depth),
+            raw: raw === undefined ? undefined : resolvedView(resources, raw.view),
+          },
+        ),
+    });
+  const calc = stage('ssao-calc', targets.raw);
+  if (!calc.ok) return calc;
+  return stage('ssao-blur', targets.blurred, targets.raw);
+}
+
+function addTypedSsaoNormalPasses(
+  graph: RenderGraphBuilder<RenderPipelineFrame>,
+  targets: TypedSsaoTargets & { readonly normal: RenderPipelineTarget },
+  depthView: GraphTextureView,
+): Result<void, RenderGraphError> {
+  const depth = { value: depthView };
   const calc =
     targets.execution === 'compute'
       ? graph.addComputePass('gtao-calc-compute', {
@@ -967,15 +1155,14 @@ export function addTypedSsaoClusterPackPass(
   });
 }
 
-export interface TypedFullscreenPassOptions {
+interface TypedFullscreenPassInputs {
   readonly name: string;
   readonly clearColor?: readonly [number, number, number, number];
+  readonly colorLoadOp?: GPULoadOp;
   readonly shader: string;
   /** Optional fragment entry point override for composed fullscreen shaders. */
   readonly fragmentEntryPoint?: string | undefined;
   readonly input: RenderPipelineTarget;
-  /** Color attachments in fragment location order. */
-  readonly outputs: readonly [RenderPipelineTarget, ...RenderPipelineTarget[]];
   readonly outputOnly?: boolean | undefined;
   readonly rawSwapchainOutput?: boolean | undefined;
   readonly depth?: RenderPipelineTarget | undefined;
@@ -992,6 +1179,20 @@ export interface TypedFullscreenPassOptions {
       ) => Uint8Array | undefined)
     | undefined;
 }
+
+export type TypedFullscreenPassOptions = TypedFullscreenPassInputs &
+  (
+    | {
+        /** Color attachments in fragment location order. */
+        readonly outputs: readonly [RenderPipelineTarget, ...RenderPipelineTarget[]];
+        readonly depthOutput?: RenderPipelineTarget | undefined;
+      }
+    | {
+        readonly outputs: readonly [];
+        /** A depth-only producer must declare its hardware-depth destination. */
+        readonly depthOutput: RenderPipelineTarget;
+      }
+  );
 
 /** Producer reactivity lattice; the declared extent sizes TAA's row copy. */
 export interface TemporalSecondaryReactivity {
@@ -1393,7 +1594,7 @@ export function addTypedFullscreenPass(
       ? undefined
       : depthSampleView(graph, options.depth, `${options.name}.depth-only-view`);
   if (depth !== undefined && !depth.ok) return depth;
-  const output = options.outputs[0];
+  const output = options.outputs[0] ?? (options.depthOutput as RenderPipelineTarget);
   const outputFormats = options.outputs.map((target) => target.format as GPUTextureFormat);
   return graph.addRasterPass(options.name, {
     accesses: [
@@ -1402,6 +1603,9 @@ export function addTypedFullscreenPass(
         resource: target.view,
         usage: 'color-attachment' as const,
       })),
+      ...(options.depthOutput === undefined
+        ? []
+        : [{ resource: options.depthOutput.view, usage: 'depth-stencil-write' as const }]),
       ...(depth === undefined ? [] : [{ resource: depth.value, usage: 'sampled-read' as const }]),
       ...(options.additionalReads?.map((read) => ({
         resource: read.target.view,
@@ -1410,7 +1614,7 @@ export function addTypedFullscreenPass(
     ],
     colorAttachments: options.outputs.map((target) => ({
       view: target.view,
-      loadOp: 'clear',
+      loadOp: options.colorLoadOp ?? 'clear',
       storeOp: 'store',
       clearValue: {
         r: options.clearColor?.[0] ?? 0,
@@ -1419,6 +1623,24 @@ export function addTypedFullscreenPass(
         a: options.clearColor?.[3] ?? 1,
       },
     })),
+    ...(options.depthOutput === undefined
+      ? {}
+      : {
+          depthStencilAttachment: {
+            view: options.depthOutput.view,
+            depthLoadOp: 'clear' as const,
+            depthStoreOp: 'store' as const,
+            depthClearValue: 0,
+            ...(options.depthOutput.format === 'depth24plus-stencil8' ||
+            options.depthOutput.format === 'depth32float-stencil8'
+              ? {
+                  stencilLoadOp: 'clear' as const,
+                  stencilStoreOp: 'store' as const,
+                  stencilClearValue: 0,
+                }
+              : {}),
+          },
+        }),
     encodeDirect: (pass, frame, resources) => {
       if (options.outputOnly && frame.runtime.lookupPostProcess?.(options.shader) === undefined) {
         return;

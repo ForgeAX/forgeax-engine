@@ -1,7 +1,6 @@
 import { RhiError } from '@forgeax/engine-rhi';
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { gpuDrivenSourceDrawItemIndex } from '../extract/gpu-driven';
-import { worldEntityKey } from '../record/frame-snapshot';
 import type { FrameList } from '../scene/frame-list';
 import { MaterialFrame } from '../scene/material-dispatch';
 import { MeshFrame } from '../scene/mesh-frame';
@@ -30,7 +29,6 @@ export interface VisibleSurfaceProjection {
 export interface VisibleSurfaceIdentity {
   readonly slot: number;
   readonly generation: number;
-  readonly worldId: number;
   readonly entityKey: number;
   readonly instanceOrdinal: number;
   /** Zero means a non-instanced entity; actual instances require owner generations. */
@@ -193,12 +191,9 @@ class EntityBases extends ColumnBases {
     const slots = columns.slots;
     if (slots === undefined || !Number.isSafeInteger(key) || key < 0) return undefined;
     let slot: number | undefined;
-    if (slots instanceof SceneSlotFrame)
-      slot = slots.identitySlot(Math.floor(key / 0x1_0000_0000), key % 0x1_0000_0000);
+    if (slots instanceof SceneSlotFrame) slot = slots.identitySlot(key);
     // Detached row lists (tests, captures) carry no identity map.
-    else
-      for (const record of slots)
-        if (worldEntityKey(record.worldId, record.entityKey) === key) slot = record.slot;
+    else for (const record of slots) if (record.entityKey === key) slot = record.slot;
     return slot !== undefined && columns.entities[slot] === key
       ? this.base(slot, columns)
       : undefined;
@@ -311,7 +306,7 @@ export class VisibleSurfaceRows {
       if (entry !== undefined && typeof entry !== 'number') this.#failures.add(slot);
       else if (this.#failures.size > 0) this.#failures.delete(slot);
       const count = typeof entry === 'number' && record !== undefined ? entry : 0;
-      const entity = record === undefined ? 0 : worldEntityKey(record.worldId, record.entityKey);
+      const entity = record === undefined ? 0 : record.entityKey;
       let start = this.#starts[slot] as number;
       if (
         start !== NO_RANGE &&
@@ -417,7 +412,7 @@ export class VisibleSurfaceRows {
           (start + drawItemIndex * instanceCount + instanceOrdinal) * VISIBLE_SURFACE_RECORD_WORDS;
         words[at] = slot.slot;
         words[at + 1] = slot.generation;
-        words[at + 2] = slot.worldId;
+        // Word 2 is alignment padding in the fixed 64-byte GPU record.
         words[at + 3] = slot.entityKey;
         words[at + 4] = instanceOrdinal;
         words[at + 5] = generations?.[instanceOrdinal] ?? 0;
@@ -505,7 +500,6 @@ export function resolveVisibleSurface(
   return ok({
     slot: words[offset] ?? 0,
     generation: words[offset + 1] ?? 0,
-    worldId: words[offset + 2] ?? 0,
     entityKey: words[offset + 3] ?? 0,
     instanceOrdinal: words[offset + 4] ?? 0,
     instanceGeneration: words[offset + 5] ?? 0,

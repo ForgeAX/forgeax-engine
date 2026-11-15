@@ -7,6 +7,36 @@ description: >-
 
 # forgeax-engine-assets
 
+## Engine Water Content source preparation
+
+The contributor repository pins the eight original Water PNGs in
+`forgeax-engine-assets/water`. Content's preparation script verifies every
+file against `packages/content/assets/water/provenance.json` before copying the
+unchanged bytes beside their Meta and Pack sources. The existing CI asset
+preparation and Content package build own this step. The public SDK resource
+closure retains these prepared files, Meta, Pack sources and licensing records;
+its editable source build verifies the sealed copies without a private asset
+checkout. This migration does not change GUIDs, pixels or redistribution status.
+
+Native Node GI's fresh full package build prepares the same pinned Assets input
+first. Keep this step under the build's repair-reuse guard; missing or modified
+Water bytes fail their original provenance check rather than skipping Content.
+
+For a shared Assets checkout with unrelated edits, export `water/` from the
+exact Engine gitlink outside the checkout. Pass `--assets-source-root <export>`
+to the maintained build or Focus entry. The Assets preparer fetches the exact
+pin and verifies each exported blob; Content's explicit `--source-root` checks
+all eight provenance digests. Preserve the shared HEAD, index and working files.
+
+## River Bake Publication
+
+Experimental R7 River Bake uses `prepareWaterRiverBake` to derive ordinary Pack
+recipe/texture outputs from a completed current GPU capture. Admit/replace and
+persist the complete Runtime Pack publication before decoding and publishing
+its query grid for the current Body generation. Keep stable source keys/GUIDs,
+content identity, failed-replacement retention and cold-reload recovery in the
+existing asset owner. See the [Water entry](../../packages/water/README.md#advanced-simulation-entry).
+
 ## Procedural content
 
 Choose the owner by when the content is known, not by how it is computed:
@@ -23,6 +53,7 @@ Choose the owner by when the content is known, not by how it is computed:
 - Use `createMeshBuilder` for custom geometry; it derives packed layout and bounds and completes omitted triangle surface channels. Factories and `meshFromInterleaved` also emit the vec4 tangent stock materials need. See the [geometry contract](../../packages/geometry/README.md#meshbuilder).
 - Attribute presence maps such as `DEFAULT_VERTEX_ATTRIBUTE_MAP` describe layout; empty lane placeholders do not supply nonempty runtime geometry. Use builder output or `unpackInterleavedVertexAttributes` with the canonical layout projection for existing packed vertices. Retain channel cardinality and submesh validation, and take strides from the canonical layout.
 - Runtime meshes can use Pack materials. Material `values` edits never move vertices.
+- For runtime GPU textures, declare `texture-generator` and independent `gpu-texture` outputs (`GpuTextureAsset`) with `gpuTextureOutputs(packageId, name, recipe)` from `@forgeax/engine/pack/source`. Build prepares programs; Renderer generates pixels and mips. Reuse prepared `programs` in a Runtime Pack; do not cook raw WGSL or read pixels back implicitly. Open either kind in View's native texture preview. See the [Pack contract](../../packages/pack/README.md#runtime-gpu-texture-declarations).
 - Incremental vertex batches share one global index space; follow the [MeshBuilder append contract](../../packages/geometry/README.md#meshbuilder), without assuming implicit index rebasing.
 - Compiled recipes: procedural props and runtime meshes.
 
@@ -111,6 +142,21 @@ identity, Worker publication and tangent facts are in
 [content created during play](../../packages/assets-runtime/README.md#content-created-during-play).
 
 ## Engine Content library
+
+The same mount also publishes the ordinary Water root/child material family
+and its texture sources through `EngineContent.water`. Body slot GUIDs come
+from `waterMaterialFamilySlots`; a Zone's far material is a Zone dependency,
+not copied Body state. Read the [Water material entry](../../packages/water/README.md#material-family)
+for the source and binding contracts, and retain the source licensing and
+provenance assets when distributing those textures.
+
+Local fluid recipes use the same ordinary closure: `impulseNoiseGuid` is a
+required texture reference, including cold Pack/Catalog loading. Reference
+`EngineContent.water.textures['impulse-noise']` for the audited default producer;
+its Pack owns source-byte admission, gamma/brightness and mip generation.
+Do not sample the raw PNG as its cooked substitute. Content's provenance keeps
+the source EULA and unresolved independent redistribution permission; cooking
+does not resolve that permission. See the [Content contract](../../packages/content/README.md#guids).
 
 Basic meshes (`cube`, `sphere`, `cylinder`, `cone`, `torus`, `capsule`,
 `plane`, `quad`, `nine-slice-quad`, `triangle`), a mipmapped checker

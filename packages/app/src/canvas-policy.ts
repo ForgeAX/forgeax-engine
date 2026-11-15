@@ -1,5 +1,5 @@
 import type { EntityHandle } from '@forgeax/engine-ecs';
-import { Update, type World } from '@forgeax/engine-ecs';
+import { defineSystem, Update, type World } from '@forgeax/engine-ecs';
 import { worldRead } from '@forgeax/engine-ecs/world-read';
 import type { Plugin } from '@forgeax/engine-plugin';
 import { CAMERA_PROJECTION_PERSPECTIVE, Camera } from '@forgeax/engine-render';
@@ -13,16 +13,16 @@ export function canvasAspectPlugin(readSize: () => CanvasDrawingBufferSize): Plu
     apply(ctx) {
       const world = ctx.world;
       ctx.effect(() => {
-        const system = {
+        const system = defineSystem({
           name: 'app-sync-camera-aspect',
           queries: [],
           fn: () => {
             const { width, height } = readSize();
             syncCameraAspect(world, width, height);
           },
-        };
+        });
         world.addSystem(Update, system).unwrap();
-        return () => world.removeSystem(Update, system.name).unwrap();
+        return () => world.removeSystem(Update, system).unwrap();
       }, 'app/canvas-aspect');
     },
   };

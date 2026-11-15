@@ -4,18 +4,18 @@
 // the cooked production shader and a native WebGPU device; the CPU calculation
 // below is only an independent oracle for the readback, never a replacement
 // for the GPU pass.
-
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readShaderManifestPublication } from '@forgeax/engine-shader';
 import { teardownDawnInstance } from '../../../../scripts/lib/dawn-teardown.mjs';
+import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const appRoot = resolve(here, '..');
 const manifest = await readShaderManifestPublication(
-  JSON.parse(readFileSync(resolve(appRoot, 'dist/shaders/manifest.json'), 'utf8')),
+  JSON.parse(readShaderManifestText(resolve(appRoot, 'dist/shaders/manifest.json'))),
 );
 const entry = manifest.entries.find((candidate) => candidate.wgsl.includes('BloomHorizontalParams'));
 if (entry === undefined) throw new Error('cooked bloom-horizontal shader is missing from the manifest');
@@ -432,7 +432,7 @@ const evidence = {
   failed: failures,
   verdict: failures.length === 0 && continuityFailures.length === 0 ? 'pass' : 'fail',
 };
-const evidenceDir = resolve(here, '..', 'evidence');
+const evidenceDir = resolve(process.env.SMOKE_EVIDENCE_DIR ?? resolve(here, '..', 'evidence'));
 mkdirSync(evidenceDir, { recursive: true });
 writeFileSync(resolve(evidenceDir, 'extraction-dawn-result.json'), `${JSON.stringify(evidence, null, 2)}\n`);
 console.log(JSON.stringify(evidence, null, 2));

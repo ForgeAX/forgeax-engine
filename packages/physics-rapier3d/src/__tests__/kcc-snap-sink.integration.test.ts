@@ -1,10 +1,11 @@
-import { createWorldContext, FixedUpdate, World } from '@forgeax/engine-ecs';
+import { createWorldContext, defineSystem, FixedUpdate, World } from '@forgeax/engine-ecs';
 import { vec3 } from '@forgeax/engine-math';
 import type { PhysicsWorld } from '@forgeax/engine-physics';
 import {
   CharacterController,
   Collider,
   ColliderShapeValue,
+  PhysicsWorldResource,
   RigidBody,
   RigidBodyTypeValue,
   registerPhysicsComponents,
@@ -12,6 +13,7 @@ import {
 import { GlobalTransform, Transform } from '@forgeax/engine-scene';
 import type { SceneAsset, SceneEntity } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
+import { PhysicsStepSimulation, PhysicsSyncBackend } from '../physics-sync';
 import { registerPhysicsSystems } from '../physics-sync.js';
 import { createRapier3DPhysicsWorld } from '../rapier-physics-world-3d.js';
 import { loadRapier3D } from '../wasm-loader.js';
@@ -71,7 +73,7 @@ async function slide(
   world.components.register(GlobalTransform).unwrap();
   registerPhysicsComponents(world);
   const physics = createRapier3DPhysicsWorld(await loadRapier3D());
-  world.insertResource('PhysicsWorld', physics);
+  world.insertResource(PhysicsWorldResource, physics);
   registerPhysicsSystems(world);
   const scene: SceneAsset = { kind: 'scene', entities };
   let entity = 0;
@@ -85,13 +87,13 @@ async function slide(
     if (key === 'character') entity = handle;
   }
   let phase = 0;
-  world.addSystem(FixedUpdate, {
+  const systemToken1 = defineSystem({
     name: 'snap-walk',
-    after: ['physicsSyncBackend'],
-    before: ['physicsStepSimulation'],
+    after: [PhysicsSyncBackend],
+    before: [PhysicsStepSimulation],
     queries: [],
     fn: () => {
-      const pw = world.getResource<PhysicsWorld>('PhysicsWorld') as PhysicsWorld & {
+      const pw = world.getResource(PhysicsWorldResource) as PhysicsWorld & {
         entityMap: Map<number, { bodyHandle: number }>;
         raw: {
           bodies: {
@@ -119,6 +121,7 @@ async function slide(
       pw.moveAndSlide(entity, vec3.create(delta[0], delta[1], delta[2]));
     },
   });
+  world.addSystem(FixedUpdate, systemToken1);
   const feet: number[] = [];
   world.update(1 / 60).unwrap();
   for (let i = 0; i < frames; i++) {

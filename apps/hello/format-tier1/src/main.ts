@@ -384,11 +384,7 @@ async function runBrowserMorphStandard(canvas: HTMLCanvasElement): Promise<Brows
       };
       world.set(morphEntity, MorphWeights, { weights: new Float32Array(input.weights) }).unwrap();
       world.update(1 / 60).unwrap();
-      const frameRequest = {
-        leases: [attachment.value],
-        camera: { lease: attachment.value },
-        environment: { lease: attachment.value },
-      };
+      const frameRequest = { source: attachment.value };
       let drawn = renderer.draw(frameRequest);
       let observed = drawn.ok
         ? await renderer.observe(drawn.value, { include: ['draws', 'bindings'] })
@@ -534,11 +530,7 @@ async function runBrowserMeshoptConsumer(
     const attachment = renderer.attach(world);
     if (!attachment.ok)
       throw new Error(`Meshopt World attachment failed: ${attachment.error.code}`);
-    const frameRequest = {
-      leases: [attachment.value],
-      camera: { lease: attachment.value },
-      environment: { lease: attachment.value },
-    };
+    const frameRequest = { source: attachment.value };
     const errors: string[] = [];
     renderer.subscribe((event) => {
       if (event.kind === 'error') errors.push(event.error.code);

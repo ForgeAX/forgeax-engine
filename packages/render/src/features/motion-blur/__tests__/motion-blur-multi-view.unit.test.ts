@@ -1,17 +1,22 @@
+import { World } from '@forgeax/engine-ecs';
 import { describe, expect, it } from 'vitest';
+import { makeZeroCameraFallbackSnapshot } from '../../../record/frame-snapshot';
 import { createSceneDataCatalog } from '../../../temporal/scene-data-catalog';
 import type { RenderFeaturePlanView } from '../../plan';
 import { createMotionBlurFeature } from '../motion-blur-feature';
+import { validateMotionBlurParams } from '../motion-blur-params';
 
 function planView(
   identity: string,
   width: number,
   height: number,
   render = true,
+  motionBlur?: RenderFeaturePlanView['motionBlur'],
 ): RenderFeaturePlanView {
   return {
     identity,
     render,
+    ...(motionBlur === undefined ? {} : { motionBlur }),
     frame: { frameNumber: 1, width, height },
     targets: [
       { name: 'motion-input', kind: 'color', format: 'rgba16float', sampleCount: 1 },
@@ -31,24 +36,38 @@ describe('motion blur frame roster', () => {
     const feature = createMotionBlurFeature();
     const frame = feature
       .extract({
-        worlds: [],
-        owner: 0,
+        world: new World(),
         frameNumber: 1,
         views: [
           {
             identity: 'left',
             render: true,
-            motionBlur: { params: { shutterAngle: 120 }, frameDeltaSeconds: 1 / 60 },
+            selectedCamera: {
+              ...makeZeroCameraFallbackSnapshot(),
+              motionBlur: validateMotionBlurParams({ shutterAngle: 120 }).unwrap(),
+            },
           },
           {
             identity: 'right',
             render: true,
-            motionBlur: { params: { shutterAngle: 240 }, frameDeltaSeconds: 1 / 15, reset: true },
+            selectedCamera: {
+              ...makeZeroCameraFallbackSnapshot(),
+              motionBlur: validateMotionBlurParams({ shutterAngle: 240 }).unwrap(),
+            },
           },
-          { identity: 'held', render: false, motionBlur: { params: { shutterAngle: 180 } } },
+          {
+            identity: 'held',
+            render: false,
+            selectedCamera: {
+              ...makeZeroCameraFallbackSnapshot(),
+              motionBlur: validateMotionBlurParams({ shutterAngle: 180 }).unwrap(),
+            },
+          },
         ],
       })
       .unwrap();
+    expect(frame.right).not.toHaveProperty('frameDeltaSeconds');
+    expect(frame.right).not.toHaveProperty('reset');
     const plan = feature
       .plan(frame, {
         caps: {
@@ -60,8 +79,12 @@ describe('motion blur frame roster', () => {
         frame: { frameNumber: 1 },
         generation: 0,
         views: [
-          planView('right', 160, 80),
-          planView('left', 640, 320),
+          planView('right', 160, 80, true, {
+            params: undefined,
+            frameDeltaSeconds: 1 / 15,
+            reset: true,
+          }),
+          planView('left', 640, 320, true, { params: undefined, frameDeltaSeconds: 1 / 60 }),
           planView('held', 32, 32, false),
         ],
       })

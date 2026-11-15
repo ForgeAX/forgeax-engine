@@ -3,6 +3,7 @@ import {
   createMemoryEndpointPair,
   createReplicaCoordinator,
   type NetSession,
+  NetSessionResource,
   netPlugin,
 } from '@forgeax/engine-net';
 import { MeshFilter, MeshRenderer } from '@forgeax/engine-render';
@@ -95,7 +96,7 @@ describe('Snake replica write contract', () => {
     const context = await createWorldContext(world, [netPlugin({ endpoint: replicaEndpoint })]);
     disposals.push(() => context.fiber.dispose());
     const replica = createReplicaCoordinator(world, snakeProfile);
-    world.getResource<NetSession>('net-session').attachReplica(replica, snakeProfile.limits);
+    world.getResource(NetSessionResource).attachReplica(replica, snakeProfile.limits);
     const stateTarget = { dataset: {}, textContent: '' } as unknown as HTMLElement;
     const previousDocument = globalThis.document;
     let renderEntities: ReturnType<typeof registerReplicaDerivation>;
@@ -155,7 +156,7 @@ describe('Snake replica write contract', () => {
     const context = await createWorldContext(world, [netPlugin({ endpoint: replicaEndpoint })]);
     disposals.push(() => context.fiber.dispose());
     const replica = createReplicaCoordinator(world, snakeProfile);
-    world.getResource<NetSession>('net-session').attachReplica(replica, snakeProfile.limits);
+    world.getResource(NetSessionResource).attachReplica(replica, snakeProfile.limits);
     acceptBaselineAndJoin(authority.world, world);
     authority.world.update(1).unwrap();
     world.update(1).unwrap();
@@ -169,7 +170,7 @@ describe('Snake replica write contract', () => {
 });
 
 function acceptBaselineAndJoin(authority: World, world: World) {
-  const session = world.getResource<NetSession>('net-session');
+  const session = world.getResource(NetSessionResource);
   expect(session.receiveEvents()).toEqual([]);
   authority.update(1 / 60).unwrap();
   world.update(1 / 60).unwrap();

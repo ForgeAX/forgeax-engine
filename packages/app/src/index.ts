@@ -65,10 +65,12 @@ export {
   type BrowserFrameProgress,
   type BrowserFrameSubmitted,
   FORGEAX_FRAME_COMPLETED_EVENT,
+  FORGEAX_FRAME_RETAIN_EVENT,
   FORGEAX_FRAME_SUBMITTED_EVENT,
   publishBrowserFrameCompleted,
   publishBrowserFrameSubmitted,
   resetBrowserFrameProgress,
+  retainBrowserFrameSubmitted,
   subscribeBrowserFrameSubmitted,
 } from './browser-frame-signal';
 export { canvasAspectPlugin } from './canvas-policy';
@@ -228,6 +230,7 @@ export {
 } from './workspace-preview-display';
 export type { EngineWorkspaceRuntimePackRequest } from './workspace-runtime-pack';
 export {
+  type EngineWorkspaceEntityInspection,
   type EngineWorkspaceTargetTools,
   engineWorkspaceTargetToolsPlugin,
 } from './workspace-target-tools';
@@ -303,9 +306,8 @@ export type {
   CanvasAppError,
   CanvasDrawingBufferSize,
   CreateAppOptions,
-  DrawSource,
-  DrawSourceResult,
   ExecutionApp,
+  SceneAdmission,
 } from './types';
 export { APP_PHASE_CATALOG } from './types';
 export {
@@ -313,6 +315,13 @@ export {
   engineWorkspaceBrowserPlugin,
   engineWorkspaceInputPlugin,
 } from './workspace-browser';
+export type { WorkspaceCloudMaterialInspection } from './workspace-cloud-material';
+export type {
+  EngineWorkspaceAssistanceIntent,
+  EngineWorkspaceAssistanceRequest,
+  EngineWorkspaceAssistanceSnapshot,
+  WorkspaceDisplayPick,
+} from './workspace-editor-assistance';
 export type {
   MaterialPreviewControl,
   MaterialPreviewMesh,

@@ -16,7 +16,10 @@ import type {
 import { MorphWeights, propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
 import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
-import { decodeMaterialNormalX12Y12 } from '../../../../render/src/__tests__/gtao-reference';
+import {
+  decodeMaterialNormalX12Y12,
+  decodeSsaoRawNormal,
+} from '../../../../render/src/__tests__/gtao-reference';
 import { captureForwardGtaoTarget, type ForwardGtaoCaptureHost } from './forward-gtao-capture';
 import { describeForwardGtaoFailure } from './forward-gtao-failure';
 import {
@@ -113,9 +116,8 @@ export async function verifyMorphSurface(
     propagateTransforms(world).unwrap();
     try {
       return await drawReadyFrame(renderer, {
-        leases: [lease],
-        camera: { lease, entityKey: camera },
-        environment: { lease },
+        source: lease,
+        camera: { entityKey: camera },
       });
     } catch (cause) {
       throw new Error(
@@ -138,30 +140,45 @@ export async function verifyMorphSurface(
       for (const [state, weight] of [0, 0.5, 1, 0].entries()) {
         world.set(subject, MorphWeights, { weights: [weight] }).unwrap();
         for (let frame = 0; frame < (weight === 1 ? 60 : 2); frame++) await draw();
-        const captured = await captureForwardGtaoTarget(
-          debug,
-          ssr && renderer.inspect().ssr.lane === 'deferred'
-            ? 'gbuffer-normal-roughness'
-            : 'standard-scene-surface-normal',
-          draw,
-        );
-        const at =
-          (Math.floor(captured.height / 2) * captured.width + Math.floor(captured.width / 2)) * 4;
-        const packed = new DataView(captured.bytes.buffer, captured.bytes.byteOffset).getUint32(
-          at,
-          true,
-        );
-        const normal = decodeMaterialNormalX12Y12(packed);
-        const magnitude = Math.hypot(weight * 0.4, 1);
-        expect(normal[0]).toBeCloseTo(
-          (Math.cos(angle) * weight * 0.4 + Math.sin(angle)) / magnitude,
-          2,
-        );
-        expect(normal[1]).toBeCloseTo(0, 2);
-        expect(normal[2]).toBeCloseTo(
-          (Math.cos(angle) - Math.sin(angle) * weight * 0.4) / magnitude,
-          2,
-        );
+        let normal: readonly number[];
+        if (ssr) {
+          const captured = await captureForwardGtaoTarget(
+            debug,
+            renderer.inspect().ssr.lane === 'deferred'
+              ? 'gbuffer-normal-roughness'
+              : 'standard-scene-surface-normal',
+            draw,
+          );
+          const at =
+            (Math.floor(captured.height / 2) * captured.width + Math.floor(captured.width / 2)) * 4;
+          const packed = new DataView(captured.bytes.buffer, captured.bytes.byteOffset).getUint32(
+            at,
+            true,
+          );
+          normal = decodeMaterialNormalX12Y12(packed);
+          const magnitude = Math.hypot(weight * 0.4, 1);
+          expect(normal[0]).toBeCloseTo(
+            (Math.cos(angle) * weight * 0.4 + Math.sin(angle)) / magnitude,
+            2,
+          );
+          expect(normal[1]).toBeCloseTo(0, 2);
+          expect(normal[2]).toBeCloseTo(
+            (Math.cos(angle) - Math.sin(angle) * weight * 0.4) / magnitude,
+            2,
+          );
+        } else {
+          // AO alone leaves a depth-only prepass: AO reconstructs the posed face
+          // normal from depth, which the uniform morph translation keeps unchanged.
+          const raw = await captureForwardGtaoTarget(debug, 'ssao-raw', draw);
+          const at = (Math.floor(raw.height / 2) * raw.width + Math.floor(raw.width / 2)) * 4;
+          normal = decodeSsaoRawNormal(
+            (raw.bytes[at + 1] ?? NaN) / 255,
+            (raw.bytes[at + 2] ?? NaN) / 255,
+          );
+          expect(normal[0]).toBeCloseTo(Math.sin(angle), 1);
+          expect(normal[1]).toBeCloseTo(0, 1);
+          expect(normal[2]).toBeCloseTo(Math.cos(angle), 1);
+        }
         expect(renderer.inspect().standardLighting?.ambientOcclusion?.status).toBe('active');
         await onState(`${skin ? 'skin' : 'mesh'}-${ssr ? 'ao-ssr' : 'ao'}-${state}-${weight}`, {
           normal,

@@ -1,8 +1,9 @@
+import { defineResource } from '@forgeax/engine-ecs';
 import type { World } from '@forgeax/engine-ecs';
 
-export const GAME_DEFAULT_GAMEPLAY_CONFIG = 'gameDefaultGameplayConfig';
-export const GAME_DEFAULT_COMMAND_COUNTERS = 'gameDefaultCommandCounters';
-export const GAME_DEFAULT_MATERIAL_ELAPSED_ORIGIN = 'gameDefaultMaterialElapsedOrigin';
+export const GAME_DEFAULT_GAMEPLAY_CONFIG = defineResource<GameplayConfig>("gameDefaultGameplayConfig");
+export const GAME_DEFAULT_COMMAND_COUNTERS = defineResource<GameplayCommandCounters>("gameDefaultCommandCounters");
+export const GAME_DEFAULT_MATERIAL_ELAPSED_ORIGIN = defineResource<number>("gameDefaultMaterialElapsedOrigin");
 export const GAME_DEFAULT_TARGET_PROFILE_UNLOCK_SCORE = 50;
 
 export type GameplayCommandCounters = {
@@ -88,7 +89,7 @@ export function installGameplayCommandCounters(world: World): void {
 }
 
 export function recordGameplayCommand(world: World, kind: keyof GameplayCommandCounters): void {
-  const counters = world.getResource<GameplayCommandCounters>(GAME_DEFAULT_COMMAND_COUNTERS);
+  const counters = world.getResource(GAME_DEFAULT_COMMAND_COUNTERS);
   world.insertResource(GAME_DEFAULT_COMMAND_COUNTERS, { ...counters, [kind]: counters[kind] + 1 });
 }
 

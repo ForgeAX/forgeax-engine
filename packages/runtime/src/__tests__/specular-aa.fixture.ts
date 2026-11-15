@@ -192,7 +192,7 @@ export async function renderJitteredFrames(renderer: Renderer, size: number) {
         propagateTransforms(world).unwrap();
         const receipt = await drawReadyFrame(
           renderer,
-          { leases: [lease], camera: { lease }, environment: { lease } },
+          { source: lease },
           frame === 2 ? ['linear-hdr'] : undefined,
         );
         if (frame < 2) continue;
@@ -386,11 +386,7 @@ export async function verifySpecularAaGBuffer(
     const draw = async () => {
       world.update(1 / 60).unwrap();
       propagateTransforms(world).unwrap();
-      await drawReadyFrame(renderer, {
-        leases: [lease],
-        camera: { lease },
-        environment: { lease },
-      });
+      await drawReadyFrame(renderer, { source: lease });
     };
     for (let frame = 0; frame < 4; frame++) await draw();
     const capture = recorder.captureFrame();

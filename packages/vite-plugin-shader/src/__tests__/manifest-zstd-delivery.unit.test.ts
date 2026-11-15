@@ -23,13 +23,13 @@ const packagePath = resolve(
 
 async function emitManifest(
   command: 'build' | 'serve',
-  compressManifest = true,
+  compressManifest?: boolean,
 ): Promise<EmittedAsset> {
   const source = await readFile(sourcePath, 'utf8');
   const plugin = forgeaxShader({
     engineEntries: false,
     materialPackages: [packagePath],
-    compressManifest,
+    ...(compressManifest === undefined ? {} : { compressManifest }),
   });
   const emitted: EmittedAsset[] = [];
   const context = {
@@ -50,7 +50,7 @@ async function emitManifest(
 }
 
 describe('shader manifest delivery encoding', () => {
-  it('ships a production manifest as one zstd frame that decodes to the plain document', async () => {
+  it('ships a default production manifest as one zstd frame that decodes to the plain document', async () => {
     const plain = await emitManifest('serve');
     const packed = await emitManifest('build');
     expect(typeof plain.source).toBe('string');
@@ -63,7 +63,7 @@ describe('shader manifest delivery encoding', () => {
     if (decoded.ok) expect(decoded.value).toBe(plain.source);
   });
 
-  it('keeps a default production build manifest as plain JSON for tools that read dist', async () => {
+  it('keeps an opted-out production build manifest as plain JSON for tools that read dist', async () => {
     const plain = await emitManifest('build', false);
     expect(typeof plain.source).toBe('string');
     expect(() => JSON.parse(plain.source as string)).not.toThrow();

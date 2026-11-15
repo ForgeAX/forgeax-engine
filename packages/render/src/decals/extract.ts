@@ -34,7 +34,6 @@ export const DECAL_TEXTURE_FIELDS = [
 
 export interface ProjectedDecalSnapshot {
   readonly entityKey: number;
-  readonly worldId: number;
   readonly transform: Float32Array;
   readonly inverse: Float32Array;
   readonly material: MaterialSnapshot;
@@ -224,7 +223,6 @@ export function extractProjectedDecals(
         normalOpacity: columns.normalOpacity[physicalRow] as number,
         roughnessOpacity: columns.roughnessOpacity[physicalRow] as number,
         entityKey: entity,
-        worldId: context.worldId,
         transform,
         inverse,
         material,

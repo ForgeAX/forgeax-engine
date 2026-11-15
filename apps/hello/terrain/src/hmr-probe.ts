@@ -1,9 +1,15 @@
+import { TerrainWalkerResource } from './ecs-resources.ts';
+import { PhysicsWorldResource } from '@forgeax/engine-physics';
+
+import { Update, defineSystem } from "@forgeax/engine-ecs";
 import type { App } from '@forgeax/engine-app';
 import type { EntityHandle } from '@forgeax/engine-ecs';
-import type { PhysicsWorld } from '@forgeax/engine-physics';
+
 import { querySubmittedTerrainHeight, type FrameReceipt } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
 import type { terrainReloadPolicy } from './reload-policy.ts';
+
+
 
 /** Real dev fixture: observes the normal catalog, World writer and completed Renderer receipts. */
 export function installTerrainHmrProbe(
@@ -22,10 +28,10 @@ if (app.assets === undefined) throw new Error('This scene requires the App asset
     return {
       ...policy.sample(62, 62),
       gate: { ...policy.gate },
-      walker: { ...app.world.getResource<{ speed: number; updates: number }>('TerrainWalker') },
+      walker: { ...app.world.getResource(TerrainWalkerResource) },
       position: Array.from(app.world.get(subjects.walker, Transform).unwrap().pos),
       physics: app.world
-        .getResource<PhysicsWorld>('PhysicsWorld')
+        .getResource(PhysicsWorldResource)
         .getTerrainAssetVersion?.(subjects.terrain),
       frameId: latest?.frameId,
     };
@@ -34,7 +40,6 @@ if (app.assets === undefined) throw new Error('This scene requires the App asset
     latest === undefined
       ? undefined
       : querySubmittedTerrainHeight(latest, {
-          worldId: 0,
           entity: subjects.terrain,
           x: 62,
           z: 62,
@@ -64,7 +69,6 @@ if (app.assets === undefined) throw new Error('This scene requires the App asset
       receipt === undefined
         ? Promise.resolve(undefined)
         : querySubmittedTerrainHeight(receipt, {
-            worldId: 0,
             entity: subjects.terrain,
             x: 62,
             z: 62,
@@ -82,10 +86,9 @@ if (app.assets === undefined) throw new Error('This scene requires the App asset
     }
   });
   let blockedStart: ReturnType<typeof state> | undefined;
-  const token = app.world.scheduleToken('Update'),
+  const token = Update,
     name = 'terrain-hmr-writer-audit';
-  app.world
-    .addSystem(token, {
+  const registeredSystem1 = defineSystem({
       name,
       queries: [],
       fn() {
@@ -107,7 +110,9 @@ if (app.assets === undefined) throw new Error('This scene requires the App asset
           blockedStart = undefined;
         }
       },
-    })
+    });
+app.world
+    .addSystem(token, registeredSystem1)
     .unwrap();
   window.__terrainHmrProbe = {
     state,
@@ -115,7 +120,7 @@ if (app.assets === undefined) throw new Error('This scene requires the App asset
     events,
     failures,
     move() {
-      app.world.getResource<{ speed: number }>('TerrainWalker').speed = 1;
+      app.world.getResource(TerrainWalkerResource).speed = 1;
     },
     retry() {
       policy.retry();
@@ -128,7 +133,7 @@ if (app.assets === undefined) throw new Error('This scene requires the App asset
     stopRender();
     stopError();
     stopCatalog?.();
-    app.world.removeSystem(token, name).unwrap();
+    app.world.removeSystem(token, registeredSystem1).unwrap();
     delete window.__terrainHmrProbe;
   };
 }

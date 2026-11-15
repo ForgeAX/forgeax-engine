@@ -36,7 +36,6 @@ function row(entityKey: number, resource: MaterialResource): RenderableSnapshot 
     material: resource,
     materials: [resource],
     materialBindingSources: ['renderer-override'],
-    worldId: 0,
     entityKey,
     gpuDrivenDraws: [
       {
@@ -57,7 +56,6 @@ function row(entityKey: number, resource: MaterialResource): RenderableSnapshot 
 
 const update = (value: RenderableSnapshot) => ({
   kind: 'update' as const,
-  worldId: value.worldId,
   entityKey: value.entityKey,
   snapshot: value,
 });
@@ -98,7 +96,7 @@ describe('row-material GPU batches', () => {
     const { projection, topology } = scene(resources);
     const before = topology.sourcePlan().batches.at(0);
     expect(before?.binding?.material).toBe(resources[0]);
-    topology.apply(projection.apply([{ kind: 'remove', worldId: 0, entityKey: 1 }]));
+    topology.apply(projection.apply([{ kind: 'remove', entityKey: 1 }]));
     const after = topology.sourcePlan().batches;
     expect(after).toHaveLength(1);
     expect(after.at(0)?.batchId).toBe(before?.batchId);
@@ -180,12 +178,12 @@ describe('row-material GPU batches', () => {
     const first = material(0),
       second = material(1);
     const { projection, topology, frame } = scene([first, second]);
-    const original = projection.slotsSnapshot().lookup(0, 1);
-    topology.apply(projection.apply([{ kind: 'remove', worldId: 0, entityKey: 1 }]));
+    const original = projection.slotsSnapshot().lookup(1);
+    topology.apply(projection.apply([{ kind: 'remove', entityKey: 1 }]));
     first.adopt({ ...first.snapshot, paramSnapshot: { alphaCutoff: 0.5 } });
     topology.adoptMaterials(frame.with(first), projection.slotAt);
     topology.apply(projection.apply([update(row(3, first))]));
-    const replacement = projection.slotsSnapshot().lookup(0, 3);
+    const replacement = projection.slotsSnapshot().lookup(3);
     expect(replacement?.slot).toBe(original?.slot);
     expect(replacement?.generation).not.toBe(original?.generation);
     const batches = [...topology.sourcePlan().batches];

@@ -52,7 +52,6 @@ function snapshot(entityKey: number, assetHandle = 3, x = 0): RenderableSnapshot
     material,
     materials: [material],
     materialBindingSources: ['engine-default'],
-    worldId: 0,
     entityKey,
     gpuDrivenDraws: [
       {
@@ -82,7 +81,6 @@ function snapshot(entityKey: number, assetHandle = 3, x = 0): RenderableSnapshot
 function updateSnapshot(value: RenderableSnapshot) {
   return {
     kind: 'update' as const,
-    worldId: value.worldId,
     entityKey: value.entityKey,
     snapshot: value,
   };
@@ -225,7 +223,7 @@ describe('GPU-driven shadow views Dawn structural evidence', () => {
     try {
       for (let frame = 0; frame < 60; frame++) {
         if (frame === 30) {
-          apply([{ kind: 'remove', worldId: 0, entityKey: 2 }, updateSnapshot(preparedAt(3, 4))]);
+          apply([{ kind: 'remove', entityKey: 2 }, updateSnapshot(preparedAt(3, 4))]);
         }
         if (frame === 45) {
           production.dispose();

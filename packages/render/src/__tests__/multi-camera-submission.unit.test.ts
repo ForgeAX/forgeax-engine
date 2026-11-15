@@ -172,8 +172,7 @@ describe('one feature host for the complete view roster', () => {
     ['left', 'right'].map((identity) => ({
       identity,
       render: true,
-      worlds: [],
-      owner: 0,
+      world: new World(),
       frameNumber: 1,
       caps: {} as never,
     }));
@@ -221,7 +220,17 @@ describe('one feature host for the complete view roster', () => {
       expect(
         f.submitted.mock.calls[0]?.[1].works.map((work: { scope: unknown }) => work.scope),
       ).toEqual(['frame', { view: 'left' }, { view: 'right' }]);
-      expect(f.acknowledged).toHaveBeenCalledExactlyOnceWith(['left', 'right'], { tick: 1 });
+      expect(f.acknowledged).toHaveBeenCalledExactlyOnceWith(
+        ['left', 'right'],
+        { tick: 1 },
+        {
+          works: [
+            { scope: 'frame', passes: [] },
+            { scope: { view: 'left' }, passes: [] },
+            { scope: { view: 'right' }, passes: [] },
+          ],
+        },
+      );
     } finally {
       host.dispose();
     }
@@ -245,7 +254,17 @@ describe('one feature host for the complete view roster', () => {
       prepareFeatureFrame(host, inputs().reverse());
       submitFeatureFrame(host);
       expect(f.submitted).toHaveBeenCalledTimes(1);
-      expect(f.acknowledged).toHaveBeenCalledExactlyOnceWith(['right', 'left'], { tick: 1 });
+      expect(f.acknowledged).toHaveBeenCalledExactlyOnceWith(
+        ['right', 'left'],
+        { tick: 1 },
+        {
+          works: [
+            { scope: 'frame', passes: [] },
+            { scope: { view: 'right' }, passes: [] },
+            { scope: { view: 'left' }, passes: [] },
+          ],
+        },
+      );
     } finally {
       host.dispose();
     }
@@ -255,6 +274,12 @@ describe('one feature host for the complete view roster', () => {
       host = createRenderFeatureHost([f.feature]).unwrap();
     const acknowledge = vi.fn();
     try {
+      f.plan.mockImplementation((identities) =>
+        ok({
+          work: identities.map((view) => ({ scope: { view }, resources: [], passes: [] })),
+          sourceFeedback: { tick: 1 },
+        }),
+      );
       const batch = prepareFeatureFrame(
         host,
         inputs().map((input) => ({
@@ -267,7 +292,16 @@ describe('one feature host for the complete view roster', () => {
       expect(f.plan).toHaveBeenCalledTimes(1);
       expect(batch.frame.errors).toEqual([]);
       submitFeatureFrame(host);
-      expect(acknowledge).toHaveBeenCalledExactlyOnceWith(f.feature.identity, { tick: 1 });
+      expect(acknowledge).toHaveBeenCalledExactlyOnceWith(
+        f.feature.identity,
+        { tick: 1 },
+        {
+          works: [
+            { scope: { view: 'left' }, passes: [] },
+            { scope: { view: 'right' }, passes: [] },
+          ],
+        },
+      );
       expect(f.acknowledged).not.toHaveBeenCalled();
     } finally {
       host.dispose();

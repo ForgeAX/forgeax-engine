@@ -85,11 +85,7 @@ async function fragmentEntriesForOpaqueStandard(marker: string): Promise<string[
     renderer.onError((error) => errors.push(error));
     for (let frame = 0; frame < 3; frame++) {
       world.update().unwrap();
-      const drawn = renderer.draw({
-        leases: [attached],
-        camera: { lease: attached },
-        environment: { lease: attached },
-      });
+      const drawn = renderer.draw({ source: attached });
       if (!drawn.ok) throw new Error(JSON.stringify({ error: drawn.error, errors }));
     }
     expect(errors).toEqual([]);

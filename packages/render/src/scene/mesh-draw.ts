@@ -1,10 +1,12 @@
 import { meshGeometryDraws } from '../gpu-driven/mesh-batches';
 import type { RenderableSnapshot } from '../render-system-extract';
+import { offsetWaterMeshAdmissionDraw } from '../water/mesh-source-admission';
 import type { MeshFrame, MeshGeometry } from './mesh-frame';
 import { createMeshMaterialReader, meshMaterialGeometry } from './mesh-materials';
 
 interface DrawEntry {
   value: RenderableSnapshot;
+  ordinaryMaterials: RenderableSnapshot['materials'];
   read: number;
 }
 interface DrawTable {
@@ -68,13 +70,57 @@ export function meshDrawMaterials(
     | 'spriteInstances'
   >,
   meshes: MeshFrame,
-  worldId: number,
 ): Pick<RenderableSnapshot, 'material' | 'materials'> {
   if (source.terrain !== undefined || source.materialOverrides === undefined) return source;
-  const mesh = meshes.get(worldId, source.assetHandle);
+  const mesh = meshes.get(source.assetHandle);
   return mesh === undefined
     ? source
     : drawTable(mesh).materials(source, meshMaterialGeometry(source));
+}
+
+function offsetWaterMeshSource(
+  source: NonNullable<RenderableSnapshot['waterMeshSource']>,
+  offset: number,
+): NonNullable<RenderableSnapshot['waterMeshSource']> {
+  if (offset === 0) return source;
+  return Object.freeze({
+    ...source,
+    materialStartIndex: source.materialStartIndex + offset,
+    views: Object.freeze(
+      source.views.map((view) =>
+        Object.freeze({
+          ...view,
+          draws: Object.freeze(
+            view.draws.map((draw) => offsetWaterMeshAdmissionDraw(draw, offset)),
+          ),
+        }),
+      ),
+    ),
+  });
+}
+
+function meshDrawMaterialsWithWaterSource(
+  source: RenderableSnapshot,
+  ordinary: ReturnType<ReturnType<typeof createMeshMaterialReader>>,
+): Pick<
+  RenderableSnapshot,
+  'material' | 'materials' | 'materialBindingSources' | 'waterMeshSource'
+> {
+  const waterMeshSource = source.waterMeshSource;
+  if (waterMeshSource === undefined) return ordinary;
+  const materialOffset = ordinary.materials.length - waterMeshSource.materialStartIndex;
+  return {
+    material: ordinary.material,
+    materials: [
+      ...ordinary.materials,
+      ...source.materials.slice(waterMeshSource.materialStartIndex),
+    ],
+    materialBindingSources: [
+      ...ordinary.materialBindingSources,
+      ...source.materialBindingSources.slice(waterMeshSource.materialStartIndex),
+    ],
+    waterMeshSource: offsetWaterMeshSource(waterMeshSource, materialOffset),
+  };
 }
 
 /** Draw consumption combines instance facts with the frame's shared geometry and bindings. */
@@ -82,11 +128,12 @@ export function meshDrawSnapshot(
   source: RenderableSnapshot,
   meshes: MeshFrame,
 ): RenderableSnapshot {
-  const mesh = meshes.get(source.worldId, source.assetHandle);
+  const mesh = meshes.get(source.assetHandle);
   if (mesh === undefined || source.terrain !== undefined || source.materialOverrides === undefined)
     return source;
   const table = drawTable(mesh);
-  const materials = table.materials(source, meshMaterialGeometry(source));
+  const ordinaryMaterials = table.materials(source, meshMaterialGeometry(source));
+  const materials = meshDrawMaterialsWithWaterSource(source, ordinaryMaterials);
   let cached = table.instances.get(source);
   if (cached === undefined) {
     cached = table.previous?.instances.get(source);
@@ -101,7 +148,7 @@ export function meshDrawSnapshot(
   }
   // A Pass query can replace resolved material identities without replacing the
   // Mesh or the instance. Only reuse a draw from the same admitted binding.
-  if (cached?.value.materials === materials.materials) return cached.value;
+  if (cached?.ordinaryMaterials === ordinaryMaterials.materials) return cached.value;
   const { lods: _lods, lodHysteresis: _hysteresis, localAabb: _bounds, ...current } = source;
   // The rest object is fresh and unescaped; publish it after projecting shared geometry.
   // Borrowed getter inputs can select the source itself, preserving their second spread/read.
@@ -110,7 +157,7 @@ export function meshDrawSnapshot(
   if (source.gpuDrivenDraws !== undefined) {
     result.gpuDrivenDraws = meshGeometryDraws(
       mesh,
-      materials.materials,
+      ordinaryMaterials.materials,
       source.skinBinding === undefined ? 'rigid' : 'skin',
     );
   }
@@ -121,9 +168,16 @@ export function meshDrawSnapshot(
   if (mesh.lods !== undefined) result.lods = mesh.lods;
   if (mesh.lodHysteresis !== undefined) result.lodHysteresis = mesh.lodHysteresis;
   if (cached === undefined) {
-    table.instances.set(source, { value: result, read: readGeneration });
+    table.instances.set(source, {
+      value: result,
+      ordinaryMaterials: ordinaryMaterials.materials,
+      read: readGeneration,
+    });
     table.capacity++;
     table.reads++;
-  } else cached.value = result;
+  } else {
+    cached.value = result;
+    cached.ordinaryMaterials = ordinaryMaterials.materials;
+  }
   return result;
 }

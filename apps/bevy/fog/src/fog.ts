@@ -87,7 +87,7 @@ export type FogPhase =
   | 'uniform'
   | 'change'
   | 'height'
-  | 'owner-switch'
+  | 'environment-replace'
   | 'camera-switch'
   | 'detach-reattach'
   | 'resize'
@@ -96,11 +96,11 @@ export type FogPhase =
 export interface FogPhaseResult {
   readonly changedFrom: FogPhase | undefined;
   readonly revision: number;
-  readonly ownerChanged: boolean;
+  readonly environmentChanged: boolean;
 }
 
 export interface FogWorldController {
-  applyPhase(phase: FogPhase, resourceWorld?: World): FogPhaseResult;
+  applyPhase(phase: FogPhase): FogPhaseResult;
   setPhase(phase: FogDemoPhase): FogPhaseResult;
   currentPhase(): FogPhase;
   resize(aspect: number): void;
@@ -112,8 +112,6 @@ const fogParameters = fogScene.fog;
 export function buildFogWorld(world: World, aspect = 16 / 9): FogWorldController {
 const sceneAssets = world.assets;
 if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
-
-  let fogWorld = world;
   let activeFogData: (typeof fogParameters)[keyof typeof fogParameters] | undefined =
     fogParameters.height;
   let fogEntity: EntityHandle | undefined = world.spawn({
@@ -124,7 +122,8 @@ if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its
   let previousPhase: FogPhase = 'height';
 
   const attachFog = (data: (typeof fogParameters)[keyof typeof fogParameters]): void => {
-    fogEntity = fogWorld.spawn({
+    fogEntity = world
+      .spawn({
       component: Fog,
       data,
     }).unwrap();
@@ -136,30 +135,14 @@ if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its
       attachFog(data);
       return;
     }
-    fogWorld.set(fogEntity, Fog, data).unwrap();
+    world.set(fogEntity, Fog, data).unwrap();
     revision += 1;
   };
   const detachFog = (): void => {
     if (fogEntity === undefined) return;
-    fogWorld.despawn(fogEntity).unwrap();
+    world.despawn(fogEntity).unwrap();
     fogEntity = undefined;
     revision += 1;
-  };
-  const switchResourceWorld = (next: World): boolean => {
-    if (next === fogWorld) return false;
-    if (fogEntity !== undefined) {
-      fogWorld.despawn(fogEntity).unwrap();
-      fogEntity = undefined;
-    }
-    fogWorld = next;
-    if (activeFogData !== undefined) {
-      fogEntity = fogWorld.spawn({
-        component: Fog,
-        data: activeFogData,
-      }).unwrap();
-    }
-    revision += 1;
-    return true;
   };
 
   const ground = sceneAssets.create(Materials.standard({ baseColor: fogScene.materials.ground, roughness: 0.92 })).unwrap();
@@ -252,11 +235,11 @@ if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its
   ).unwrap();
 
   return {
-    applyPhase(phase, resourceWorld): FogPhaseResult {
-      if (phase === previousPhase) return { changedFrom: undefined, revision, ownerChanged: false };
+    applyPhase(phase): FogPhaseResult {
+      if (phase === previousPhase) return { changedFrom: undefined, revision, environmentChanged: false };
       const changedFrom = previousPhase;
       previousPhase = phase;
-      let ownerChanged = false;
+      let environmentChanged = false;
       switch (phase) {
         case 'disabled':
           activeFogData = undefined;
@@ -280,16 +263,17 @@ if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its
           world.set(camera, Transform, { pos: [7, 7, 1] }).unwrap();
           revision += 1;
           break;
-        case 'owner-switch':
-          ownerChanged = resourceWorld === undefined ? false : switchResourceWorld(resourceWorld);
-          if (!ownerChanged) revision += 1;
+        case 'environment-replace':
+          detachFog();
+          attachFog(activeFogData ?? fogParameters.height);
+          environmentChanged = true;
           break;
         case 'resize':
         case 'recovery':
           revision += 1;
           break;
       }
-      return { changedFrom, revision, ownerChanged };
+      return { changedFrom, revision, environmentChanged };
     },
     setPhase(phase): FogPhaseResult {
       return this.applyPhase(phase);

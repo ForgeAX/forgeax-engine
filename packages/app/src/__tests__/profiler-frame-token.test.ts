@@ -1,17 +1,17 @@
 import { World } from '@forgeax/engine-ecs';
 import { createRenderReadLease } from '@forgeax/engine-ecs/projection';
 import { createProfiler, type ProfileCapture } from '@forgeax/engine-profiler';
-import type { Renderer, RenderFrameInput } from '@forgeax/engine-render';
+import type { FrameReceipt, Renderer, RenderFrameInput } from '@forgeax/engine-render';
 import { describe, expect, it } from 'vitest';
 import { createFrameLoop } from '../internal/frame-loop';
+import { appSchedulePhaseCatalog } from '../internal/profiled-schedule-runs';
 import { APP_PHASE_CATALOG } from '../types';
 import { testPlatform } from './platform-fixture';
 
 const FRAME_LOOP_PHASES = [
   'frame-total',
-  'draw-source',
+  'scene-admission',
   'world-update-primary',
-  'world-update-injected',
   'renderer-draw',
 ] as const;
 
@@ -73,11 +73,11 @@ function finish(profiler: ReturnType<typeof createProfiler>): ProfileCapture {
 describe('App profiler frame token', () => {
   it('records the local frame phases with one token per logical frame', () => {
     const profiler = createProfiler();
-    expect(startSession(profiler).captureId).toBe('capture-0001');
     const scheduler = makeScheduler();
     const drawOptions: unknown[] = [];
+    const world = new World();
     const loop = createFrameLoop({
-      world: new World(),
+      world,
       renderer: makeRenderer((options) => drawOptions.push(options)),
       profiler,
       platform: testPlatform({
@@ -89,6 +89,7 @@ describe('App profiler frame token', () => {
         caf: scheduler.caf,
       }),
     });
+    expect(startSession(profiler).captureId).toBe('capture-0001');
 
     loop.start().unwrap();
     scheduler.tick(1016);
@@ -96,9 +97,13 @@ describe('App profiler frame token', () => {
     loop.stop().unwrap();
 
     const capture = finish(profiler);
-    expect(capture.phaseCatalog.app).toEqual(APP_PHASE_CATALOG);
+    expect(new Set(capture.phaseCatalog.app)).toEqual(
+      new Set([...APP_PHASE_CATALOG, ...appSchedulePhaseCatalog([world])]),
+    );
     expect(capture.captureId).toBe('capture-0001');
-    expect(capture.records.filter((record) => record.source === 'app')).toHaveLength(10);
+    expect(capture.records.filter((record) => record.source === 'app')).toHaveLength(
+      FRAME_LOOP_PHASES.length * 2,
+    );
     expect(
       capture.records
         .filter((record) => record.source === 'app' && record.kind === 'phase')
@@ -121,10 +126,12 @@ describe('App profiler frame token', () => {
       captureId: 'capture-0001',
       frameId: 1,
     });
+    expect(Object.isFrozen(drawOptions[0])).toBe(true);
     expect(drawOptions[1]).toMatchObject({
       captureId: 'capture-0001',
       frameId: 2,
     });
+    expect(Object.isFrozen(drawOptions[1])).toBe(true);
   });
 
   it('does not reuse capture identity and isolates observer and sink failures', () => {
@@ -190,7 +197,6 @@ describe('App profiler frame token', () => {
 
   it('publishes a partial artifact when the host stops before its frame boundary', () => {
     const profiler = createProfiler();
-    startSession(profiler, 2);
     const scheduler = makeScheduler();
     const loop = createFrameLoop({
       world: new World(),
@@ -198,6 +204,7 @@ describe('App profiler frame token', () => {
       profiler,
       platform: testPlatform({ now: () => 1000, raf: scheduler.raf, caf: scheduler.caf }),
     });
+    startSession(profiler, 2);
 
     loop.start().unwrap();
     scheduler.tick(1000);
@@ -208,6 +215,62 @@ describe('App profiler frame token', () => {
       incompleteReason: 'stopped-before-frame',
     });
     expect(profiler.activeCaptureId()).toBeUndefined();
+  });
+
+  it('measures the receipt-linked completion callback after CPU frame auto-finish', async () => {
+    let nowMicros = 20;
+    const profiler = createProfiler({ clock: { nowMicros: () => nowMicros } });
+    const observations: unknown[] = [];
+    profiler.observeCompletionCpu((observation) => observations.push(observation));
+    const session = startSession(profiler, 1);
+    const scheduler = makeScheduler();
+    let resolveCompletion!: (value: unknown) => void;
+    const completed = new Promise<unknown>((resolve) => {
+      resolveCompletion = resolve;
+    });
+    const receipt = {
+      frameId: 39,
+      deviceGeneration: 5,
+      profileFrame: { captureId: session.captureId, frameId: 1 },
+      completed,
+    } as FrameReceipt;
+    const renderer = {
+      state: () => 'alive' as const,
+      currentDeviceGeneration: () => receipt.deviceGeneration,
+      attach: (owner: World) => ({ ok: true, value: createRenderReadLease(owner) }),
+      draw: () => ({ ok: true, value: receipt }),
+      subscribe: () => () => {},
+      dispose: () => {},
+    } as unknown as Renderer;
+    const loop = createFrameLoop({
+      world: new World(),
+      renderer,
+      profiler,
+      onCompleted: () => {
+        nowMicros = 42;
+      },
+      platform: testPlatform({ now: () => 1000, raf: scheduler.raf, caf: scheduler.caf }),
+    });
+
+    loop.start().unwrap();
+    scheduler.tick(1000);
+    expect(profiler.activeSession()).toBeUndefined();
+    expect(observations).toEqual([]);
+    resolveCompletion({ ok: true, value: undefined });
+    await loop.drainFrameReceipts();
+    expect(observations).toEqual([
+      {
+        captureId: session.captureId,
+        profileFrameId: 1,
+        receiptFrameId: 39,
+        deviceGeneration: 5,
+        callbackStatus: 'returned',
+        startMicros: 20,
+        endMicros: 42,
+        durationMicros: 22,
+      },
+    ]);
+    loop.stop().unwrap();
   });
 
   it('keeps the default-off path free of profiler records', () => {

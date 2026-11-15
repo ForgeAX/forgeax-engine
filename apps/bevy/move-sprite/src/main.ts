@@ -1,5 +1,6 @@
 // Reproduction of Bevy's `move_sprite` example.
 
+import { defineSystem } from "@forgeax/engine-ecs";
 import { createApp } from '@forgeax/engine-app/browser';
 import { Time, Update } from '@forgeax/engine-ecs';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
@@ -35,11 +36,12 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   };
   const handle = assets.create(texture).unwrap();
   buildMoveSpriteWorld(app.world, handle);
-  app.world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'move-sprite',
     queries: [],
-    fn: (world) => stepMoveSprite(world, world.hasResource('Time') ? world.getResource(Time).delta : 0),
+    fn: (world) => stepMoveSprite(world, world.hasResource(Time) ? world.getResource(Time).delta : 0),
   });
+app.world.addSystem(Update, systemToken1);
   const started = app.start();
   if (!started.ok) {
     console.error('[bevy-move-sprite] app.start failed:', started.error.code, started.error.hint);

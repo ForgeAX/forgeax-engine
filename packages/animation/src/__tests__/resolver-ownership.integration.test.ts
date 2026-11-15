@@ -1,5 +1,5 @@
 import { AssetRegistry, createCatalogSource } from '@forgeax/engine-assets-runtime';
-import { createWorldContext, World } from '@forgeax/engine-ecs';
+import { createWorldContext, defineResource, World } from '@forgeax/engine-ecs';
 import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
 import type { AnimationClip } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
@@ -12,9 +12,11 @@ const guid = '019e2cc6-0c86-79da-aa76-b0984c86d45c';
 
 describe('animation resolver ownership', () => {
   it('builds and ticks without a runtime-provided resolver resource', async () => {
+    const resource1 = defineResource<unknown>('AnimationAssetResolver');
+
     const world = new World();
     const context = await createWorldContext(world, [animationPlugin()]);
-    expect(world.hasResource('AnimationAssetResolver')).toBe(false);
+    expect(world.hasResource(resource1)).toBe(false);
     expect(() => world.update(1 / 60).unwrap()).not.toThrow();
     await context.fiber.dispose();
   });

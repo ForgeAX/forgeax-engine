@@ -5,6 +5,7 @@ import type {
 } from '@forgeax/engine-render-graph';
 import {
   type BindGroupLayout,
+  err,
   type RhiDevice,
   RhiError,
   type RenderPipeline as RhiPipeline,
@@ -32,7 +33,9 @@ import type {
   _InternalRenderPipelineContext,
   RenderSystemInternals,
 } from '../record/render-context';
+import { registerScenePipelinePreparation } from '../record/scene-pipeline-preparation';
 import type { RenderPipelineFrame, RenderPipelineTarget } from '../render-pipeline';
+import { markPipelinePreparationPending } from '../render-system-presentation';
 import { recordContext } from '../world/view-record-context';
 import type { StandardClusterGraphBuffers } from './standard-lighting/graph';
 
@@ -56,11 +59,13 @@ export interface StandardSceneShaderSources {
 }
 
 interface DeferredLightingProgram {
+  readonly usesLut: boolean;
   readonly scope: DeviceScope;
   readonly device: RhiDevice;
   readonly viewLayout: BindGroupLayout;
   readonly source: string | import('@forgeax/engine-types').ShaderSource;
-  readonly pipeline: RhiPipeline;
+  pipeline?: RhiPipeline;
+  result?: import('@forgeax/engine-rhi').Result<RhiPipeline, RhiError>;
   readonly material: BindGroupLayout;
   readonly cluster: BindGroupLayout;
   readonly probe: BindGroupLayout;
@@ -287,6 +292,241 @@ export function addStandardDeferredLighting(
         ? 'fs_standard_deferred'
         : 'fs_standard_deferred_reflections';
   const targetKey = JSON.stringify(colors.map((target) => target.format));
+  const prepareProgram = (internal: _InternalRenderPipelineContext) => {
+    const admission = internal.frameState?.standardSceneSurfaceAdmission;
+    // Keep attachment loads/clears, including reflection/SSS auxiliaries.
+    // Only a complete current-device proof can omit the fullscreen light
+    // program; Forward-only geometry is composed by the later opaque pass.
+    if (
+      admission?.deferredGBufferEmpty === true &&
+      admission.deviceGeneration === recordContext(internal.runtime).deviceScope.generation
+    )
+      return;
+    const device = internal.runtime.device;
+    const usesLut = (internal.validatedOrdered ?? []).some((entry) =>
+      entry.source.materials.some((material) =>
+        materialUsesDirectDfgLut(material.snapshot.materialParamSchema),
+      ),
+    );
+    const source = deferredLightingSource(
+      internal.runtime.standardSceneShaders,
+      input.cluster !== null,
+      usesLut,
+    );
+    if (source === undefined)
+      throw new RhiError({
+        code: 'shader-compile-failed',
+        expected: 'cooked Standard deferred lighting program',
+        hint: 'rebuild the Engine shader manifest and reinitialize the Renderer',
+      });
+    const scope = recordContext(internal.runtime).deviceScope;
+    if (!scope.isAlive())
+      throw new RhiError({
+        code: 'rhi-not-available',
+        expected: 'a live device scope for deferred lighting',
+        hint: 'recreate the Renderer after device retirement',
+      });
+
+    const viewLayout = internal.pipelineState.viewBindGroupLayout;
+    let state = states.get(usesLut);
+    if (
+      state === undefined ||
+      state.scope !== scope ||
+      state.device !== device ||
+      state.viewLayout !== viewLayout ||
+      state.source !== source
+    ) {
+      const programs = programsFor(scope, device, viewLayout, source);
+      const key = `${input.cluster !== null}:${usesLut}:${fragmentEntry}:${targetKey}`;
+      let program = programs.get(key);
+      if (program === undefined) {
+        const module = internal.runtime.shaderModuleFactory
+          ?.createShaderModule(
+            shaderSourceDescriptor(
+              source,
+              `standard_deferred_${input.cluster !== null}_${usesLut}`,
+            ),
+          )
+          .unwrap();
+        if (module === undefined)
+          throw new RhiError({
+            code: 'rhi-not-available',
+            expected: 'deferred shader module factory',
+            hint: 'initialize the Renderer backend',
+          });
+        const material = device
+          .createBindGroupLayout({
+            label: 'deferred-surface-environment',
+            entries: [
+              ...Array.from({ length: 6 }, (_, binding) => ({
+                binding,
+                visibility: 2,
+                texture: {
+                  sampleType:
+                    binding < 4
+                      ? ('uint' as const)
+                      : binding === 4
+                        ? ('depth' as const)
+                        : ('float' as const),
+                  viewDimension: '2d' as const,
+                },
+              })),
+              { binding: 6, visibility: 2, sampler: { type: 'filtering' } },
+              {
+                binding: 7,
+                visibility: 2,
+                buffer: { type: 'uniform', minBindingSize: DEFERRED_LIGHTING_PARAMS_BYTES },
+              },
+              ...[8, 9, 10, 11].map((binding) => ({
+                binding,
+                visibility: 2,
+                texture: {
+                  sampleType: 'float' as const,
+                  viewDimension: binding === 8 ? ('cube' as const) : ('2d' as const),
+                },
+              })),
+              {
+                binding: 12,
+                visibility: 2,
+                buffer: { type: 'uniform', minBindingSize: SKYLIGHT_UNIFORM_BYTES },
+              },
+              { binding: 13, visibility: 2, buffer: { type: 'read-only-storage' } },
+              { binding: 14, visibility: 2, buffer: { type: 'read-only-storage' } },
+              {
+                binding: 15,
+                visibility: 2,
+                texture: { sampleType: 'uint', viewDimension: '2d' },
+              },
+              ...(usesLut
+                ? [
+                    {
+                      binding: 16,
+                      visibility: 2,
+                      texture: { sampleType: 'float' as const, viewDimension: '2d' as const },
+                    },
+                  ]
+                : []),
+            ],
+          })
+          .unwrap();
+        const cluster = device
+          .createBindGroupLayout({
+            entries:
+              input.cluster === null
+                ? []
+                : [3, 4, 5, 6].map((binding) => ({
+                    binding,
+                    visibility: 2,
+                    buffer: {
+                      type: binding === 6 ? ('uniform' as const) : ('read-only-storage' as const),
+                    },
+                  })),
+          })
+          .unwrap();
+        const probeLayout = device
+          .createBindGroupLayout({
+            entries: [
+              {
+                binding: 0,
+                visibility: 2,
+                buffer: { type: 'read-only-storage', minBindingSize: 256 },
+              },
+            ],
+          })
+          .unwrap();
+        const layout = device
+          .createPipelineLayout({
+            bindGroupLayouts: [viewLayout, material, cluster, probeLayout],
+          })
+          .unwrap();
+        const descriptor: import('@forgeax/engine-rhi').RenderPipelineDescriptor = {
+          label: 'standard-deferred-lighting',
+          layout,
+          vertex: { module, entryPoint: 'vs_standard_deferred', buffers: [] },
+          fragment: {
+            module,
+            entryPoint: fragmentEntry,
+            targets: colors.map((target, index) => ({
+              format: target.format,
+              ...(index === 0
+                ? {
+                    blend: {
+                      color: {
+                        operation: 'add' as const,
+                        srcFactor: 'one' as const,
+                        dstFactor: 'one' as const,
+                      },
+                      alpha: {
+                        operation: 'add' as const,
+                        srcFactor: 'zero' as const,
+                        dstFactor: 'one' as const,
+                      },
+                    },
+                  }
+                : {}),
+            })),
+          },
+          primitive: { topology: 'triangle-list', cullMode: 'none' },
+        };
+        program = {
+          usesLut,
+          scope,
+          device,
+          viewLayout,
+          source,
+          material,
+          cluster,
+          probe: probeLayout,
+        };
+        programs.set(key, program);
+        const preparing = program;
+        const create = device.createRenderPipelineAsync;
+        const result =
+          create === undefined
+            ? device.createRenderPipeline(descriptor)
+            : create.call(device, descriptor);
+        if (result instanceof Promise) {
+          result.then(
+            (result) => {
+              preparing.result = result;
+            },
+            (cause: unknown) => {
+              preparing.result = err(
+                cause instanceof RhiError
+                  ? cause
+                  : new RhiError({
+                      code: 'webgpu-runtime-error',
+                      expected: 'deferred lighting native compilation completes',
+                      hint: String(cause),
+                    }),
+              );
+            },
+          );
+        } else preparing.result = result;
+      }
+      if (program.result === undefined) {
+        markPipelinePreparationPending(internal.frameState, { code: 'scene-pipeline-preparation' });
+        return undefined;
+      }
+      if (!program.result.ok) {
+        programs.delete(key);
+        throw program.result.error;
+      }
+      program.pipeline = program.result.value;
+      state = { ...program, groups: new WeakMap() };
+      states.set(usesLut, state);
+    }
+
+    return state;
+  };
+  registerScenePipelinePreparation(
+    graph,
+    (context) => {
+      prepareProgram(context);
+      return false;
+    },
+    'utility',
+  );
   return graph.addRasterPass('lighting', {
     accesses: [
       ...sampled.map((resource) => ({ resource, usage: 'sampled-read' as const })),
@@ -305,200 +545,15 @@ export function addStandardDeferredLighting(
     })),
     encodeDirect: (pass, frame, resources) => {
       const internal = frame as _InternalRenderPipelineContext;
-      const admission = internal.frameState?.standardSceneSurfaceAdmission;
-      // Keep attachment loads/clears, including reflection/SSS auxiliaries.
-      // Only a complete current-device proof can omit the fullscreen light
-      // program; Forward-only geometry is composed by the later opaque pass.
-      if (
-        admission?.deferredGBufferEmpty === true &&
-        admission.deviceGeneration === recordContext(internal.runtime).deviceScope.generation
-      )
+      const state = prepareProgram(internal);
+      if (state === undefined || state.pipeline === undefined) {
+        // The shared frame seal rejects pending work; no partial lighting draw
+        // or surface submission may escape this existing preparation barrier.
         return;
-      const device = frame.runtime.device;
-      const usesLut = (internal.validatedOrdered ?? []).some((entry) =>
-        entry.source.materials.some((material) =>
-          materialUsesDirectDfgLut(material.snapshot.materialParamSchema),
-        ),
-      );
-      const source = deferredLightingSource(
-        internal.runtime.standardSceneShaders,
-        input.cluster !== null,
-        usesLut,
-      );
-      if (source === undefined)
-        throw new RhiError({
-          code: 'shader-compile-failed',
-          expected: 'cooked Standard deferred lighting program',
-          hint: 'rebuild the Engine shader manifest and reinitialize the Renderer',
-        });
-      const scope = recordContext(internal.runtime).deviceScope;
-      if (!scope.isAlive())
-        throw new RhiError({
-          code: 'rhi-not-available',
-          expected: 'a live device scope for deferred lighting',
-          hint: 'recreate the Renderer after device retirement',
-        });
-
-      const viewLayout = internal.pipelineState.viewBindGroupLayout;
-      let state = states.get(usesLut);
-      if (
-        state === undefined ||
-        state.scope !== scope ||
-        state.device !== device ||
-        state.viewLayout !== viewLayout ||
-        state.source !== source
-      ) {
-        const programs = programsFor(scope, device, viewLayout, source);
-        const key = `${input.cluster !== null}:${usesLut}:${fragmentEntry}:${targetKey}`;
-        let program = programs.get(key);
-        if (program === undefined) {
-          const module = frame.runtime.shaderModuleFactory
-            ?.createShaderModule(
-              shaderSourceDescriptor(
-                source,
-                `standard_deferred_${input.cluster !== null}_${usesLut}`,
-              ),
-            )
-            .unwrap();
-          if (module === undefined)
-            throw new RhiError({
-              code: 'rhi-not-available',
-              expected: 'deferred shader module factory',
-              hint: 'initialize the Renderer backend',
-            });
-          const material = device
-            .createBindGroupLayout({
-              label: 'deferred-surface-environment',
-              entries: [
-                ...Array.from({ length: 6 }, (_, binding) => ({
-                  binding,
-                  visibility: 2,
-                  texture: {
-                    sampleType:
-                      binding < 4
-                        ? ('uint' as const)
-                        : binding === 4
-                          ? ('depth' as const)
-                          : ('float' as const),
-                    viewDimension: '2d' as const,
-                  },
-                })),
-                { binding: 6, visibility: 2, sampler: { type: 'filtering' } },
-                {
-                  binding: 7,
-                  visibility: 2,
-                  buffer: { type: 'uniform', minBindingSize: DEFERRED_LIGHTING_PARAMS_BYTES },
-                },
-                ...[8, 9, 10, 11].map((binding) => ({
-                  binding,
-                  visibility: 2,
-                  texture: {
-                    sampleType: 'float' as const,
-                    viewDimension: binding === 8 ? ('cube' as const) : ('2d' as const),
-                  },
-                })),
-                {
-                  binding: 12,
-                  visibility: 2,
-                  buffer: { type: 'uniform', minBindingSize: SKYLIGHT_UNIFORM_BYTES },
-                },
-                { binding: 13, visibility: 2, buffer: { type: 'read-only-storage' } },
-                { binding: 14, visibility: 2, buffer: { type: 'read-only-storage' } },
-                {
-                  binding: 15,
-                  visibility: 2,
-                  texture: { sampleType: 'uint', viewDimension: '2d' },
-                },
-                ...(usesLut
-                  ? [
-                      {
-                        binding: 16,
-                        visibility: 2,
-                        texture: { sampleType: 'float' as const, viewDimension: '2d' as const },
-                      },
-                    ]
-                  : []),
-              ],
-            })
-            .unwrap();
-          const cluster = device
-            .createBindGroupLayout({
-              entries:
-                input.cluster === null
-                  ? []
-                  : [3, 4, 5, 6].map((binding) => ({
-                      binding,
-                      visibility: 2,
-                      buffer: {
-                        type: binding === 6 ? ('uniform' as const) : ('read-only-storage' as const),
-                      },
-                    })),
-            })
-            .unwrap();
-          const probeLayout = device
-            .createBindGroupLayout({
-              entries: [
-                {
-                  binding: 0,
-                  visibility: 2,
-                  buffer: { type: 'read-only-storage', minBindingSize: 256 },
-                },
-              ],
-            })
-            .unwrap();
-          const layout = device
-            .createPipelineLayout({
-              bindGroupLayouts: [viewLayout, material, cluster, probeLayout],
-            })
-            .unwrap();
-          const pipeline = device
-            .createRenderPipeline({
-              label: 'standard-deferred-lighting',
-              layout,
-              vertex: { module, entryPoint: 'vs_standard_deferred', buffers: [] },
-              fragment: {
-                module,
-                entryPoint: fragmentEntry,
-                targets: colors.map((target, index) => ({
-                  format: target.format,
-                  ...(index === 0
-                    ? {
-                        blend: {
-                          color: {
-                            operation: 'add' as const,
-                            srcFactor: 'one' as const,
-                            dstFactor: 'one' as const,
-                          },
-                          alpha: {
-                            operation: 'add' as const,
-                            srcFactor: 'zero' as const,
-                            dstFactor: 'one' as const,
-                          },
-                        },
-                      }
-                    : {}),
-                })),
-              },
-              primitive: { topology: 'triangle-list', cullMode: 'none' },
-            })
-            .unwrap();
-          program = {
-            scope,
-            device,
-            viewLayout,
-            source,
-            pipeline,
-            material,
-            cluster,
-            probe: probeLayout,
-          };
-          programs.set(key, program);
-        }
-        state = { ...program, groups: new WeakMap() };
-        states.set(usesLut, state);
       }
       const current = state;
-      const directDfgLut = usesLut
+      const device = state.device;
+      const directDfgLut = state.usesLut
         ? getOrCreateDirectDfgLut(device, recordContext(internal.runtime).deviceScope).unwrap()
         : undefined;
       const view = (target: RenderPipelineTarget | undefined) =>

@@ -1,8 +1,14 @@
 import { createHash } from 'node:crypto';
 import { encodeAssetBundle } from '@forgeax/engine-pack/bundle';
+import type { AssetArtifactError } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { BundleTransferDiagnostics } from '../internal/bundle-diagnostics.js';
-import { ArtifactReadCache, type ArtifactReadRequest } from '../registry/artifact-io.js';
+import { BundleStore } from '../internal/bundle-store.js';
+import {
+  type ArtifactReadRequest,
+  artifactUrl,
+  readBundledArtifact,
+} from '../registry/artifact-io.js';
 
 const digest = (bytes: Uint8Array) => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 
@@ -25,7 +31,7 @@ describe('Bundle transfer evidence', () => {
   ])('distinguishes actual Range bodies from whole-file fallbacks (range=%s)', async (supportsRange) => {
     const bodies = [Uint8Array.of(11, 12), Uint8Array.of(21, 22, 23)];
     const bundle = encodeAssetBundle(bodies);
-    const cache = new ArtifactReadCache();
+    const store = new BundleStore<AssetArtifactError>();
     const request = (entry: number): ArtifactReadRequest => {
       const body = bodies[entry];
       const window = bundle.windows[entry];
@@ -58,13 +64,25 @@ describe('Bundle transfer evidence', () => {
         headers: { 'content-length': String(bytes.length) },
       });
     };
-    const first = (await cache.readArtifact(request(0), fetcher)).unwrap();
+    const read = (request: ArtifactReadRequest) =>
+      readBundledArtifact(store, request, {
+        fetcher,
+        url: artifactUrl(request.packageUrl, request.descriptor.path),
+        unreadable: (error) => {
+          throw new Error(JSON.stringify(error));
+        },
+        rejected: (error) => error,
+        invalid: (reason) => {
+          throw new Error(reason);
+        },
+      });
+    const first = (await read(request(0))).unwrap();
     expect(first).toEqual(bodies[0]);
     // Trimming resident entries forces a later read without relying on GC timing.
-    cache.releaseCompleted();
-    const before = cache.inspectTransfers();
-    expect((await cache.readArtifact(request(1), fetcher)).unwrap()).toEqual(bodies[1]);
-    const after = cache.inspectTransfers();
+    store.trim();
+    const before = store.transfers.snapshot();
+    expect((await read(request(1))).unwrap()).toEqual(bodies[1]);
+    const after = store.transfers.snapshot();
     expect(after.totals.rangeReads - before.totals.rangeReads).toBe(1);
     expect(after.totals.requestedRangeBytes - before.totals.requestedRangeBytes).toBe(3);
     expect(after.totals.responseEntityBytes - before.totals.responseEntityBytes).toBe(
@@ -78,7 +96,7 @@ describe('Bundle transfer evidence', () => {
     expect(after.httpCache).toBe('not-observable');
     expect(after.bundles[0]?.url).toBe('https://game.test/assets/bundles/map.bin');
     after.totals.fullReads = 999;
-    expect(cache.inspectTransfers().totals.fullReads).toBe(1);
+    expect(store.transfers.snapshot().totals.fullReads).toBe(1);
   });
 
   it('bounds per-Bundle detail while keeping exact totals and separate byte meanings', () => {

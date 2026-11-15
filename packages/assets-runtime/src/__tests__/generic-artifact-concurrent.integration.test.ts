@@ -4,7 +4,6 @@ import { type ArtifactDescriptor, type AssetLoadError, err, ok } from '@forgeax/
 import { expect, it, vi } from 'vitest';
 import { defineAssetKind } from '../asset-kind';
 import { AssetRegistry } from '../asset-registry';
-import { ArtifactCache } from '../internal/artifact-cache';
 import { runtimeAssetReference } from '../internal/runtime-assets';
 
 const GUID = '01900000-0000-7000-8000-000000000043';
@@ -270,33 +269,6 @@ it('does not adopt an invalidated in-flight domain result', async () => {
     f.release(0);
     expect(await pending).toMatchObject({ ok: false });
     expect(runtimeAssetReference(f.registry, GUID)).toBeUndefined();
-  } finally {
-    await f.drain();
-  }
-});
-
-it('handles an unexpected later cache rejection without overriding the preceding integrity failure', async () => {
-  const f = deferredPack();
-  const read = ArtifactCache.prototype.read;
-  const probe = vi.spyOn(ArtifactCache.prototype, 'read').mockImplementation(function (
-    this: ArtifactCache,
-    key,
-    reader,
-  ) {
-    return key.includes('second.bin')
-      ? Promise.reject(new Error('later read probe'))
-      : read.call(this, key, reader);
-  });
-  const pending = f.load();
-  try {
-    await vi.waitFor(() => expect(probe).toHaveBeenCalledTimes(2), { timeout: 300, interval: 5 });
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
-    expect(f.consume).not.toHaveBeenCalled();
-    f.release(0, Uint8Array.of(7));
-    expect(await pending).toMatchObject({
-      ok: false,
-      error: { code: 'asset-integrity-failed', detail: { artifactKey: 'first.bin' } },
-    });
   } finally {
     await f.drain();
   }

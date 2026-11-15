@@ -84,7 +84,9 @@ Transport admission failures throw `AudioError` and remain observable in backend
 ## Bus control via AudioEngine Resource
 
 ```ts
-const audio = world.getResource<AudioBackend>('AudioEngine');
+import { AUDIO_ENGINE_RESOURCE_KEY } from '@forgeax/engine/audio';
+
+const audio = world.getResource(AUDIO_ENGINE_RESOURCE_KEY);
 audio.setBusVolume('music', 0.3);
 audio.setBusMute('sfx', true);
 audio.setBusMute('sfx', false); // restores previous volume

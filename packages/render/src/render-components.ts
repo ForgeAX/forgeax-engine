@@ -7,7 +7,6 @@ import { Camera } from './components/camera';
 import { CameraView } from './components/camera-view';
 import { CapsuleShadow } from './components/capsule-shadow';
 import { ClippingPlanes } from './components/clipping-planes';
-import { CloudLayer } from './components/cloud-layer';
 import { CubeCamera } from './components/cube-camera';
 import { DepthOfField } from './components/depth-of-field';
 import { DirectionalLight } from './components/directional-light';
@@ -43,6 +42,7 @@ import { SpriteRegionOverride } from './components/sprite-region-override';
 import { StereoCamera } from './components/stereo-camera';
 import { Tilemap } from './components/tilemap';
 import { Visibility } from './components/visibility';
+import { VolumetricCloudLayer } from './components/volumetric-cloud-layer';
 import { ProjectedDecal } from './decals/component';
 import { VolumetricFog } from './volume/component';
 
@@ -60,7 +60,7 @@ export const RENDER_COMPONENTS: readonly Component[] = [
   CapsuleShadow,
   ShadowParticipation,
   PlanarReflection,
-  CloudLayer,
+  VolumetricCloudLayer,
   CubeCamera,
   DirectionalLight,
   DynamicResolution,

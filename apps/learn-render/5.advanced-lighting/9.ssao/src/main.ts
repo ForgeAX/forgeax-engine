@@ -156,11 +156,7 @@ function installCaptureHook(app: App, world: App['world'], canvas: HTMLCanvasEle
   const lease = attached.value;
   const advance = async (): Promise<void> => {
     world.update(1 / 60).unwrap();
-    const frame = await drawReadyFrame(renderer, {
-      leases: [lease],
-      camera: { lease },
-      environment: { lease },
-    });
+    const frame = await drawReadyFrame(renderer, { source: lease });
     const observed = await renderer.observe(frame, {
       include: [
         'draws',

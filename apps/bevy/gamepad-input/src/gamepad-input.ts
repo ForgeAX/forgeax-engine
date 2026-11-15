@@ -1,3 +1,4 @@
+import { defineResource } from '@forgeax/engine-ecs';
 
 import { World } from '@forgeax/engine-ecs';
 import type { InputSnapshot } from '@forgeax/engine-input';
@@ -8,7 +9,7 @@ import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 
 
-export const GAMEPAD_INPUT_STATE = 'bevyGamepadInputState';
+export const GAMEPAD_INPUT_STATE = defineResource<GamepadInputState>("bevyGamepadInputState");
 
 export interface GamepadInputState {
   connectedFrames: number;
@@ -60,7 +61,7 @@ export function buildGamepadInputWorld(world: World): GamepadInputState {
 }
 
 export function stepGamepadInput(world: World, snapshot: InputSnapshot): void {
-  const state = world.getResource<GamepadInputState>(GAMEPAD_INPUT_STATE);
+  const state = world.getResource(GAMEPAD_INPUT_STATE);
   const pad = snapshot.gamepad(0);
   state.standardMapping = pad.standardMapping;
   if (!pad.connected) {
@@ -81,5 +82,5 @@ export function stepGamepadInput(world: World, snapshot: InputSnapshot): void {
 }
 
 export function readGamepadInputState(world: World): GamepadInputState {
-  return { ...world.getResource<GamepadInputState>(GAMEPAD_INPUT_STATE) };
+  return { ...world.getResource(GAMEPAD_INPUT_STATE) };
 }

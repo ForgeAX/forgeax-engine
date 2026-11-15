@@ -22,7 +22,6 @@ import { World, type EntityHandle } from '@forgeax/engine-ecs';
 import type { RhiDevice, RhiError } from '@forgeax/engine-rhi';
 import type { MaterialAsset } from '@forgeax/engine-types';
 import {
-  createCloudLayerFeature,
   Camera,
   CUBE_CAMERA_FACE_ORDER,
   CubeCamera,
@@ -761,7 +760,6 @@ async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
     canvas,
     {
       ssrIdentity,
-      ...(new URLSearchParams(location.search).get('fixture') === 'atmosphere' ? { features: [createCloudLayerFeature()] } : {}),
       ...(new URLSearchParams(location.search).has('timings') ? { gpuPassTiming: {} } : {}),
       captureReflectionFallbackReadback: reflectionEvidence && import.meta.env.VITE_REFLECTION_PROBE_EVIDENCE === '1',
       ...(reflectionEvidence
@@ -831,11 +829,7 @@ async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
       for (let face = 0; face < CUBE_CAMERA_FACE_ORDER.length; face += 1) {
         const updated = world.update(1 / 60);
         if (!updated.ok) throw updated.error;
-        const next = renderer.draw({
-          leases: [attached.value],
-          camera: { lease: attached.value },
-          environment: { lease: attached.value },
-        });
+        const next = renderer.draw({ source: attached.value });
         if (!next.ok) throw next.error;
         const completed = await next.value.completed;
         if (!completed.ok) throw completed.error;
@@ -854,11 +848,7 @@ async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
       lastTickets = cubeTickets;
       const updated = world.update(1 / 60);
       if (!updated.ok) throw updated.error;
-      const next = renderer.draw({
-        leases: [attached.value],
-        camera: { lease: attached.value },
-        environment: { lease: attached.value },
-      });
+      const next = renderer.draw({ source: attached.value });
       if (!next.ok) throw next.error;
       const finalReceipt = next.value;
       const completed = await finalReceipt.completed;
@@ -1005,11 +995,7 @@ async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
   const drawReflectionEvidenceFrame = async (passNames: Set<string>) => {
     const updated = world.update(1 / 60);
     if (!updated.ok) throw updated.error;
-    const next = renderer.draw({
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
+    const next = renderer.draw({ source: attached.value });
     if (!next.ok) throw next.error;
     const completed = await next.value.completed;
     if (!completed.ok) throw completed.error;
@@ -1128,11 +1114,7 @@ async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
     submitFailureArmed = true;
     const updated = world.update(1 / 60);
     if (!updated.ok) throw updated.error;
-    const failed = renderer.draw({
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
+    const failed = renderer.draw({ source: attached.value });
     if (failed.ok) throw new Error('reflection fallback submit fault was not injected');
     const afterFailure = renderer.inspect().reflectionProbes;
     const afterRow = probeFallbackRow(afterFailure);
@@ -1241,11 +1223,7 @@ async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
   const drawNeutralTransitionFrame = async (): Promise<void> => {
     const updated = world.update(1 / 60);
     if (!updated.ok) throw updated.error;
-    const next = renderer.draw({
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
+    const next = renderer.draw({ source: attached.value });
     if (!next.ok) throw next.error;
     const completed = await next.value.completed;
     if (!completed.ok) throw completed.error;
@@ -1370,7 +1348,7 @@ async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
     return pixels.value;
   };
 
-  const setAtmosphereSettings = atmosphereEvidenceControls(world,assets,sceneEntities);
+  const setAtmosphereSettings = await atmosphereEvidenceControls(world,assets,sceneEntities);
 
   // Preparation owns every producer draw; live comparison reads the captured
   // presentation without advancing the cube or probe to a different frame.
@@ -1398,22 +1376,23 @@ async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
         const report = await verifyProbeAtmosphere(world, renderer, sceneEntities.reflectionProbe, sceneEntities.movingObject, sceneEntities.skylight, sceneEntities.sun,
           async () => {
             world.update(1 / 60).unwrap();
-            const frame = await drawReadyFrame(renderer, { leases: [attached.value], camera: { lease: attached.value }, environment: { lease: attached.value } });
-            await new Promise<void>(resolve => setTimeout(resolve, 0));
+            const frame = await drawReadyFrame(renderer, { source: attached.value });
+            await new Promise<void>((resolve) => setTimeout(resolve, 0));
             if (new URLSearchParams(location.search).has('timings')) {
               const observation = await renderer.observe(frame, { include: ['timings'] });
               if (!observation.ok) throw observation.error;
               return observation.value.timings;
             }
             return undefined;
-          }, readReflectionPixels);
+          }, readReflectionPixels,
+        );
         Object.assign(globalThis, { __probeAtmosphereEvidence: report });
         return report;
       } finally {
         world.addComponent(sceneEntities.camera, { component: ScreenSpaceReflection, data: SSR_PARAMETERS }).unwrap();
         // Restoring SSR can prepare a new graph before it submits visible work.
         // The shared recorder must capture a ready frame after this transition.
-        await drawReadyFrame(renderer, { leases: [attached.value], camera: { lease: attached.value }, environment: { lease: attached.value } });
+        await drawReadyFrame(renderer, { source: attached.value });
         app.resume().unwrap();
       }
     },
@@ -1436,11 +1415,7 @@ async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
           sceneEntities.movingObject,
           async () => {
             world.update(1 / 60).unwrap();
-            const frame = renderer.draw({
-              leases: [attached.value],
-              camera: { lease: attached.value },
-              environment: { lease: attached.value },
-            });
+            const frame = renderer.draw({ source: attached.value });
             if (!frame.ok) throw frame.error;
             const completed = await frame.value.completed;
             if (!completed.ok) throw completed.error;
@@ -1470,7 +1445,7 @@ async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
       for (let i=0;i<(settings.frames ?? 3);i++) {
         const cpuStart=performance.now();
         world.update(1/60).unwrap();
-        const submitted=renderer.draw({leases:[attached.value],camera:{lease:attached.value},environment:{lease:attached.value}});
+        const submitted=renderer.draw({ source: attached.value });
         if (!submitted.ok) throw submitted.error;
         cpuDrawMilliseconds.push(performance.now()-cpuStart);
         const receipt=submitted.value;
@@ -1494,7 +1469,7 @@ async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
       let timeout: ReturnType<typeof setTimeout> | undefined;
       const submitted = timings ? new Promise<import('@forgeax/engine-render').FrameReceipt>((resolve, reject) => {
         timeout = setTimeout(() => reject(new Error('Paused App frame did not submit')), 5000);
-        unsubscribe = renderer.subscribe(event => {
+        unsubscribe = renderer.subscribe((event) => {
           if (event.kind === 'frame-submitted') resolve(event.receipt);
         });
       }) : undefined;

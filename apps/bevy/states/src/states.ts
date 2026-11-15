@@ -1,3 +1,4 @@
+import { defineSystem } from "@forgeax/engine-ecs";
 import { Time, Update, type World } from '@forgeax/engine-ecs';
 import { addOnEnter, addOnExit, defineState, getState, setNextState } from '@forgeax/engine-state';
 
@@ -28,7 +29,7 @@ export function buildStatesWorld(world: World): { getState: () => StatesResult }
 
   let accumulator = 0;
   let toggled = false;
-  world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'state-transition',
     queries: [],
     fn: (_world) => {
@@ -40,6 +41,7 @@ export function buildStatesWorld(world: World): { getState: () => StatesResult }
       }
     },
   });
+world.addSystem(Update, systemToken1);
 
   return {
     getState: () => {

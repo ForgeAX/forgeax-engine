@@ -1,5 +1,3 @@
-import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
-
 import { Disabled, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import { createStateProjection } from '@forgeax/engine-ecs/projection';
 import { GlobalTransform, Transform } from '@forgeax/engine-scene';
@@ -54,7 +52,8 @@ export function createTerrainHeightfieldSync(
       if (row.get(RigidBody).type !== RigidBodyTypeValue.static)
         fail('RigidBody', 'static terrain physics');
       const handle = row.get(Terrain).asset;
-      const asset = runtimeAssets(world.assets).resolveAsset<TerrainAsset>(handle).unwrap();
+      const assets = world.assets ?? fail('asset', 'a loaded TerrainAsset');
+      const asset = assets.read<'terrain', TerrainAsset>(handle).unwrap();
       if (asset.kind !== 'terrain') fail('asset', 'a loaded TerrainAsset');
       if (!terrainTranslationValid(asset, row.get(GlobalTransform).world))
         fail('Transform', 'finite world bounds, identity rotation and unit scale');

@@ -404,25 +404,8 @@ export function summarizeLodObservation(observedValue, receipt, cameraEntityIds,
       view.lodOcclusion,
       `CameraView ${cameraEntity} LOD inspection`,
     );
-    if (lodInspection.schema !== 'forgeax::lod-occlusion-inspection::v3')
+    if (lodInspection.schema !== 'forgeax::lod-occlusion-inspection::v4')
       throw new Error(`CameraView ${cameraEntity} has an unsupported LOD inspection schema`);
-    const submit = requireRecord(
-      lodInspection.submit,
-      `CameraView ${cameraEntity} submit identity`,
-    );
-    if (
-      submit.frameId !== expectedReceipt.frameId ||
-      submit.deviceGeneration !== expectedReceipt.deviceGeneration ||
-      typeof submit.build !== 'string' ||
-      submit.build.length === 0
-    ) {
-      throw new Error(
-        `CameraView ${cameraEntity} LOD inspection does not match the completed FrameReceipt`,
-      );
-    }
-    if (receiptBuild !== undefined && submit.build !== receiptBuild)
-      throw new Error('CameraView LOD inspections have different build identities');
-    receiptBuild = submit.build;
 
     const inspectionRoot = requireRecord(lodInspection.root, `CameraView ${cameraEntity} LOD root`);
     if (inspectionRoot.guid !== expectedRootIdentity)
@@ -443,6 +426,23 @@ export function summarizeLodObservation(observedValue, receipt, cameraEntityIds,
       lodInspection.generation,
       `CameraView ${cameraEntity} LOD generation`,
     );
+    const submit = requireRecord(
+      lodInspection.submit,
+      `CameraView ${cameraEntity} submit identity`,
+    );
+    if (
+      submit.frameId !== expectedReceipt.frameId ||
+      submit.deviceGeneration !== expectedReceipt.deviceGeneration ||
+      typeof submit.build !== 'string' ||
+      submit.build.length === 0
+    ) {
+      throw new Error(
+        `CameraView ${cameraEntity} LOD inspection does not match the completed FrameReceipt`,
+      );
+    }
+    if (receiptBuild !== undefined && submit.build !== receiptBuild)
+      throw new Error('CameraView LOD inspections have different build identities');
+    receiptBuild = submit.build;
 
     const primaryView = requireRecord(
       lodInspection.view,
@@ -458,56 +458,16 @@ export function summarizeLodObservation(observedValue, receipt, cameraEntityIds,
         `CameraView ${cameraEntity} LOD inspection has mixed or invalid source identity`,
       );
     }
-    const worlds = lodInspection.worlds;
-    if (!Array.isArray(worlds) || worlds.length !== 1)
-      throw new Error(`CameraView ${cameraEntity} must report exactly one receipt World`);
-    const world = requireRecord(worlds[0], `CameraView ${cameraEntity} receipt World`);
-    if (world.attachmentId !== viewAttachmentId)
-      throw new Error(`CameraView ${cameraEntity} World has a different attachment identity`);
-    const worldAttribution = requireRecord(
-      world.attribution,
-      `CameraView ${cameraEntity} World attribution`,
+    const inspectionAttribution = requireRecord(
+      lodInspection.attribution,
+      `CameraView ${cameraEntity} LOD attribution`,
     );
-    if (worldAttribution.status !== 'same-submit' || !sameSubmit(worldAttribution.submit, submit))
-      throw new Error(`CameraView ${cameraEntity} World attribution is not same-submit`);
-    if (!Array.isArray(world.rows) || world.rows.length === 0)
-      throw new Error(`CameraView ${cameraEntity} same-submit World rows are unavailable`);
-
-    const rows = [];
-    for (const rowValue of world.rows) {
-      const row = requireRecord(rowValue, `CameraView ${cameraEntity} LOD row`);
-      const rowRoot = requireRecord(row.root, `CameraView ${cameraEntity} row root`);
-      if (rowRoot.guid !== expectedRootIdentity)
-        throw new Error(`CameraView ${cameraEntity} row belongs to a different root MeshAsset`);
-      requireNonEmptyString(rowRoot.sourceKey, `CameraView ${cameraEntity} row sourceKey`);
-      const rowView = requireRecord(row.view, `CameraView ${cameraEntity} row view identity`);
-      if (
-        rowView.cameraEntity !== cameraEntity ||
-        rowView.attachmentId !== viewAttachmentId ||
-        rowView.viewRole !== 'main' ||
-        rowView.viewGeneration !== viewGeneration
-      ) {
-        throw new Error(`CameraView ${cameraEntity} row has mixed or invalid source identity`);
-      }
-      const rowSlot = requireRecord(row.slot, `CameraView ${cameraEntity} row slot`);
-      requireNonNegativeInteger(
-        rowSlot.primitiveSlot,
-        `CameraView ${cameraEntity} row primitiveSlot`,
-      );
-      requireNonNegativeInteger(
-        rowSlot.slotGeneration,
-        `CameraView ${cameraEntity} row slotGeneration`,
-      );
-      requireNonNegativeInteger(row.generation, `CameraView ${cameraEntity} row generation`);
-      requireSamples(row.samples, `CameraView ${cameraEntity} row`);
-      rows.push({
-        count: requireCount(row.count, `CameraView ${cameraEntity} count`),
-        lodHistogram: row.lodHistogram,
-      });
+    if (
+      inspectionAttribution.status !== 'same-submit' ||
+      !sameSubmit(inspectionAttribution.submit, submit)
+    ) {
+      throw new Error(`CameraView ${cameraEntity} LOD inspection attribution is not same-submit`);
     }
-    const rowCount = { candidates: 0, visible: 0, occluded: 0 };
-    for (const row of rows) addCount(rowCount, row.count, `CameraView ${cameraEntity} count`);
-    const rowHistogram = summarizeHistogram(rows, `CameraView ${cameraEntity}`);
     const inspectionCount = requireCount(
       lodInspection.count,
       `CameraView ${cameraEntity} inspection count`,
@@ -516,12 +476,23 @@ export function summarizeLodObservation(observedValue, receipt, cameraEntityIds,
       [{ lodHistogram: lodInspection.lodHistogram }],
       `CameraView ${cameraEntity} inspection`,
     );
+    const histogramCandidates = inspectionHistogram.reduce((sum, entry) => sum + entry.count, 0);
+    // Crossfade candidates contribute to both adjacent level bins. Each
+    // visible candidate must therefore contribute one or two histogram rows.
+    const impossibleHistogram =
+      histogramCandidates < inspectionCount.visible ||
+      histogramCandidates - inspectionCount.visible > inspectionCount.visible ||
+      inspectionHistogram.some((entry) => entry.count > inspectionCount.visible);
     if (
-      ['candidates', 'visible', 'occluded'].some((key) => inspectionCount[key] !== rowCount[key]) ||
-      JSON.stringify(inspectionHistogram) !== JSON.stringify(rowHistogram)
+      impossibleHistogram ||
+      inspectionCount.candidates !== inspectionCount.visible + inspectionCount.occluded
     ) {
       throw new Error(
-        `CameraView ${cameraEntity} inspection totals do not match same-submit World rows`,
+        `CameraView ${cameraEntity} inspection totals do not match its LOD histogram: ${JSON.stringify({
+          count: inspectionCount,
+          histogramCandidates,
+          lodHistogram: inspectionHistogram,
+        })}`,
       );
     }
     requireSamples(lodInspection.samples, `CameraView ${cameraEntity} inspection`);
@@ -532,9 +503,9 @@ export function summarizeLodObservation(observedValue, receipt, cameraEntityIds,
       attachmentId: viewAttachmentId,
       viewGeneration,
       graphGeneration,
-      rows,
-      count: rowCount,
-      lodHistogram: rowHistogram,
+      lodSamples: lodInspection.samples.length,
+      count: inspectionCount,
+      lodHistogram: inspectionHistogram,
     });
   }
   if (cameraEntityIds.some((cameraEntity) => !viewsByCamera.has(cameraEntity)))
@@ -548,7 +519,7 @@ export function summarizeLodObservation(observedValue, receipt, cameraEntityIds,
       viewKey: view.viewKey,
       eye: view.eye,
       attachmentId: view.attachmentId,
-      lodRows: view.rows.length,
+      lodSamples: view.lodSamples,
       viewGeneration: view.viewGeneration,
       graphGeneration: view.graphGeneration,
       count: view.count,

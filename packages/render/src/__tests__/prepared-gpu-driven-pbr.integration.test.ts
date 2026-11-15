@@ -73,7 +73,6 @@ function snapshot(
     material: resource,
     materials: [resource],
     materialBindingSources: [],
-    worldId: 0,
     entityKey: 1,
     gpuDrivenDraws: draws ?? [draw],
   };

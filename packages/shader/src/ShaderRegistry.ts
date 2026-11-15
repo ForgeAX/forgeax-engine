@@ -66,9 +66,8 @@ import {
 } from './material/artifact-registry.js';
 import {
   type MaterialByteSource,
+  ownMaterialByteSource,
   readMaterialByteSource,
-  retainMaterialByteSource,
-  verifyMaterialByteSource,
 } from './material/byte-source.js';
 import type { MaterialShaderManifestEntry } from './types.js';
 
@@ -355,17 +354,12 @@ function markShaderManifestStage(
 function materialEntrySource(entry: MaterialShaderEntry, source: string): ShaderSource {
   if (entry.sourceReference !== undefined && !ShaderSource.is(entry.sourceReference))
     throw new Error('ShaderRegistry: unadmitted source reference');
-  if (entry.sourceReference?.hasPublishedIdentity) {
-    // Published identity already binds the verified bytes; compare text, do not rehash.
-    if (!entry.sourceReference.matches(source))
-      throw new Error('ShaderRegistry: source reference does not match material source');
-    return entry.sourceReference;
-  }
-  const suppliedSource = new ShaderSource([source]);
-  const sourceReference = entry.sourceReference ?? suppliedSource;
-  if (sourceReference.identity !== suppliedSource.identity)
+  if (entry.sourceReference === undefined) return new ShaderSource([source]);
+  // Exact text equality binds the reference in either identity domain without
+  // hashing the supplied copy; equal content identities imply no more than this.
+  if (!entry.sourceReference.matches(source))
     throw new Error('ShaderRegistry: source reference does not match material source');
-  return sourceReference;
+  return entry.sourceReference;
 }
 
 export class ShaderRegistry {
@@ -986,18 +980,6 @@ export class ShaderRegistry {
     }
   }
 
-  /**
-   * Establish byte digest evidence off the calling thread before admission. Hold
-   * the result until the bytes are validated or installed; those steps then compare
-   * the bytes instead of hashing them. An unverified input is hashed there as usual.
-   */
-  static verifyMaterialArtifactBytes(
-    bytes: Uint8Array,
-    digest: string,
-  ): Promise<object | undefined> {
-    return verifyMaterialByteSource(bytes, digest);
-  }
-
   /** Preflight immutable byte/schema/receipt conflicts without preparing WGSL. */
   validateMaterialArtifactBytes(
     identifier: string,
@@ -1009,10 +991,9 @@ export class ShaderRegistry {
 
   /**
    * A program key admitted from bytes is identified by its content digest, as
-   * a shader library resolves code by its hash alone. Only content new to the
-   * key is verified: retention hashes it once, or compares it with live bytes
-   * that already passed that hash. Later admissions of the same key and digest
-   * check metadata only. Returns the verified owner for a new key, or
+   * a shader library resolves code by its hash alone; the digest was verified
+   * with the container the bytes came from. Later admissions of the same key
+   * and digest check metadata only. Returns the owner for a new key, or
    * undefined when the key already holds this program.
    */
   #preflightMaterialArtifactBytes(
@@ -1028,16 +1009,7 @@ export class ShaderRegistry {
           ? registration.owner.digest
           : registration.digest;
     const retained =
-      admittedDigest === undefined
-        ? retainMaterialByteSource(entry.bytes, entry.digest)
-        : undefined;
-    if (admittedDigest === undefined && retained === undefined)
-      return err({
-        code: 'material-artifact-conflict',
-        expected: 'shader bytes matching their published digest',
-        hint: 're-cook the conflicting program',
-        detail: { key: identifier, dimension: 'bytes' },
-      });
+      admittedDigest === undefined ? ownMaterialByteSource(entry.bytes, entry.digest) : undefined;
     if (registration === undefined) return ok(retained);
     const dimension =
       admittedDigest === undefined
@@ -1099,7 +1071,7 @@ export class ShaderRegistry {
     registration: MaterialRegistration,
   ): ResultOk<RegisteredMaterialShaderEntry> {
     if (registration.kind === 'ready') return registration.publication;
-    const source = readMaterialByteSource(registration.owner, identifier);
+    const source = readMaterialByteSource(registration.owner);
     const publication = this.#prepareMaterialArtifact(
       identifier,
       {

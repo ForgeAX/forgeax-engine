@@ -9,11 +9,37 @@ import {
   authoredTransparentDepthWrite,
   geometryRenderStateForPass,
   sameOpaqueTemporalDraw,
+  selectSubmittedMaterialProgram,
   variantSetForCoveragePass,
 } from '../main-pass-geometry';
 import { geometryRenderStateForTopology } from '../main-pass-material';
 
 describe('geometry pass render state', () => {
+  it('reuses opaque sample depth for the integer normal carrier without inherited color blending or alpha coverage', () => {
+    const base = {
+      blend: {
+        color: { srcFactor: 'src-alpha' as const, dstFactor: 'one-minus-src-alpha' as const },
+        alpha: { srcFactor: 'one' as const, dstFactor: 'zero' as const },
+      },
+      outputs: [{ name: 'color', format: 'rgba16float' as const }],
+      alphaToCoverageEnabled: true,
+      colorWriteMask: 0,
+      depthWriteEnabled: true,
+      cullMode: 'back' as const,
+    };
+    const state = geometryRenderStateForPass(base, 'forward', false, undefined, 'fs_ao_input_msaa');
+    expect(state).toEqual({
+      outputs: [{ name: 'normal', format: 'rgba8uint' }],
+      alphaToCoverageEnabled: false,
+      colorWriteMask: 15,
+      depthWriteEnabled: false,
+      depthCompare: 'less-equal',
+      cullMode: 'back',
+    });
+    expect(base.alphaToCoverageEnabled).toBe(true);
+    expect(base.outputs).toEqual([{ name: 'color', format: 'rgba16float' }]);
+    expect(geometryRenderStateForPass(base, 'forward')).toBe(base);
+  });
   it('keeps the main depth authority while admitting equal temporal depth', () => {
     const base = {
       cullMode: 'back' as const,
@@ -26,6 +52,23 @@ describe('geometry pass render state', () => {
       depthCompare: 'less-equal',
       depthWriteEnabled: false,
     });
+  });
+
+  it('writes real Water coverage depth only for an explicit coverage producer', () => {
+    const base = { depthCompare: 'less' as const, depthWriteEnabled: true };
+    expect(geometryRenderStateForPass(base, 'forward', false, 'velocity')).toMatchObject({
+      depthCompare: 'less-equal',
+      depthWriteEnabled: false,
+    });
+    expect(geometryRenderStateForPass(base, 'temporal', true, 'velocity')).toMatchObject({
+      depthCompare: 'less-equal',
+      depthWriteEnabled: true,
+    });
+    expect(geometryRenderStateForPass(base, 'forward', true, 'velocity')).toMatchObject({
+      depthCompare: 'less-equal',
+      depthWriteEnabled: true,
+    });
+    expect(base).toEqual({ depthCompare: 'less', depthWriteEnabled: true });
   });
 
   it('does not force depth writes for alpha smoke while allowing authored water depth', () => {
@@ -92,6 +135,52 @@ describe('geometry pass render state', () => {
 
     expect(state.depthWriteEnabled).toBe(false);
     expect(accepted).toEqual([visibleDepth]);
+  });
+});
+
+describe('selected material publication program', () => {
+  const context = {
+    backend: 'webgpu',
+    capability: 'storage-buffer',
+    pipeline: 'forward',
+    geometry: 'mesh',
+    pass: 'forward',
+    profile: 'forgeax-material-wgsl-v1',
+    toolchain: 'naga-oil',
+    instrumentation: 'none',
+  } as const;
+  const programs = [
+    {
+      pass: 'forward',
+      context,
+      address: 'direct',
+      specializationKey: 'forward-program',
+      artifactHash: 'forward-artifact',
+    },
+    {
+      pass: 'deferred',
+      context: { ...context, pass: 'deferred' },
+      address: 'direct',
+      specializationKey: 'deferred-program',
+      artifactHash: 'deferred-artifact',
+    },
+  ] as const;
+
+  it('uses the explicit pass entry only when it matches the submitted shader', () => {
+    expect(selectSubmittedMaterialProgram(programs, true, 1, 'deferred-program')).toBe(programs[1]);
+    expect(selectSubmittedMaterialProgram(programs, true, 1, 'forward-program')).toBeUndefined();
+  });
+
+  it('requires one unique publication entry when no pass was submitted', () => {
+    expect(selectSubmittedMaterialProgram(programs, false, 0, 'forward-program')).toBe(programs[0]);
+    expect(
+      selectSubmittedMaterialProgram(
+        [...programs, { ...programs[0], pass: 'shadow' }],
+        false,
+        0,
+        'forward-program',
+      ),
+    ).toBeUndefined();
   });
 });
 

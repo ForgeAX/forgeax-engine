@@ -53,15 +53,18 @@ export async function retainAssetPublications(
     const dependencies = new Map<string, RetainedAsset>();
     const references = new Set([
       ...publication.outputs.flatMap((output) => output.refs),
-      ...publication.externalEvidence.map((edge) => edge.guid),
+      ...publication.externalEvidence
+        .filter((edge) => edge.usage !== 'content')
+        .map((edge) => edge.guid),
     ]);
     for (const ref of references) {
       if (own.has(ref)) continue;
       const pin = await retain(ref, new Set([...ancestors, row.packageUrl]));
       const evidence = publication.externalEvidence.find((edge) => edge.guid === ref);
       if (
-        (evidence?.digest !== undefined && evidence.digest !== pin.digest) ||
-        (evidence?.generation !== undefined && evidence.generation !== pin.generation)
+        evidence?.usage !== 'content' &&
+        ((evidence?.digest !== undefined && evidence.digest !== pin.digest) ||
+          (evidence?.generation !== undefined && evidence.generation !== pin.generation))
       )
         throw new TypeError(`dependency version changed ${ref}`);
       dependencies.set(ref, pin);

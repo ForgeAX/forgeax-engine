@@ -10,6 +10,7 @@ import testQuality from '../../../scripts/test/render-quality.json' with { type:
 const entry: ExecutionBootstrapEntry = (mode) => {
   let revision = 0;
   let acknowledgments = 0;
+  let acknowledgedRevision = -1;
   let submittedErrors: readonly string[] = [];
   const errors: string[] = [];
   const feature: RenderFeature<{ revision: number }> = {
@@ -21,6 +22,7 @@ const entry: ExecutionBootstrapEntry = (mode) => {
       const result = feedback as { revision: number; errors: string[] };
       if (result.revision !== frame.revision) throw new Error('SSS publication acknowledgment changed revision');
       submittedErrors = result.errors;
+      acknowledgedRevision = result.revision;
       acknowledgments++;
     },
   };
@@ -96,7 +98,7 @@ const entry: ExecutionBootstrapEntry = (mode) => {
               revision++;
               world.set(joints[1]!, Transform, { pos: [.1, 0, 0] }).unwrap();
             }
-            port.postMessage({ revision, acknowledgments, errors: submittedErrors });
+            port.postMessage({ revision, acknowledgedRevision, acknowledgments, errors: submittedErrors });
           };
           port.start();
         }

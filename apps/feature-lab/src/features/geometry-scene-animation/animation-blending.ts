@@ -1,4 +1,5 @@
 import {
+  AdvanceAnimationPlayer,
   AnimationPlayer,
   AnimationSet,
   AnimationTargetId,
@@ -125,7 +126,7 @@ export default defineFeature({
         defineSystem({
           name: 'featureLabAnimationBlending',
           queries: [],
-          before: ['advanceAnimationPlayer'],
+          before: [AdvanceAnimationPlayer],
           fn() {
             const start = performance.now();
             space1D.sample(weights1D, enabled ? 0.75 : 0).unwrap();

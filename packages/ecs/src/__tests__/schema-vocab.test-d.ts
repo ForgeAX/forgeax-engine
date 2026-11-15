@@ -33,7 +33,7 @@ describe('schema vocab — keyword recognition (w3, AC-01)', () => {
     expectTypeOf<FieldValueType<'buffer<65536>'>>().toEqualTypeOf<Uint8Array>();
   });
 
-  it("ref<T> derives to Handle<T, 'unique'>", () => {
+  it("unique<T> derives to Handle<T, 'unique'>", () => {
     expectTypeOf<FieldValueType<'unique<MaterialAsset>'>>().toEqualTypeOf<
       Handle<'MaterialAsset', 'unique'>
     >();

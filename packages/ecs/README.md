@@ -14,7 +14,7 @@ mutation, schedules, resources, time, and optional shared numeric kernels.
 `World` directly owns its graph, entity records, managed stores, relationship
 indexes, row/block revisions, and execution health. Query, command, and
 lifecycle helpers receive only the typed package-internal capabilities they
-actually consume; there is no `WorldCore`, `WorldData`, or second state bag.
+actually consume.
 
 ```mermaid
 flowchart LR
@@ -109,13 +109,13 @@ borrows retain their transient-view contract.
 | Observation / reclamation | `world.memoryStats()` / `world.trimMemory()` | Cold, on-demand operations |
 
 ```ts
-world.addSystem(Update, {
+world.addSystem(Update, defineSystem({
   name: 'numeric-work', commands: 'none', queries: [],
   fn: (world) => {
     const scratch = world.frameArena.alloc(Float32Array, 256).unwrap();
     scratch.fill(0); // Reused arena bytes have unspecified contents.
   },
-}).unwrap();
+})).unwrap();
 
 const retained = world.buffers.alloc(Uint32Array, 128).unwrap();
 world.buffers.view(retained).unwrap()[0] = 17;
@@ -195,6 +195,17 @@ open-ended metadata do not belong on a component token.
 | `array<T>` | variable array replaced as one value or written in place by range | `{ type: 'array<f32>' }` |
 | `array<T,N>` | fixed-size inline array | `{ type: 'array<f32, 4>' }` |
 | tag | presence-only marker; `{ storage: 'sparse' }` flips without moving the row | `defineComponent('Residual', {}, { storage: 'sparse' })` |
+
+Reference fields share u32 storage while retaining distinct lifetime owners:
+
+| Schema | Owner | When the field is replaced or removed |
+|:--|:--|:--|
+| `unique<T>` | World's `UniqueRefStore` | Releases its slot and invokes optional cleanup |
+| `shared<T>` | World's `SharedRefStore` | Releases one reference; the payload's owner handles disposal |
+| `asset<T>` | Attached asset owner | Releases one asset reference through that owner |
+
+The metadata key `unique` represents `unique<T>` fields. Storage construction
+reads cached field reflection; field release uses the definition-time field plan.
 
 `world.sharedRefs.acquire(target, payload)` returns one caller-owned reference
 while preserving the interned handle for the same target and payload object.
@@ -288,11 +299,8 @@ class, or user-managed target-array mutation API. A replacement is one bounded
 mutation, so an invalid value leaves the previous column and reference counts
 unchanged.
 
-Object-shaped numeric writes reject `NaN` before touching the column. The
-returned `component-numeric-value-invalid` error carries the component, field,
-entity, received value, and optional array index in `detail`; `Infinity` remains
-valid when the schema accepts it. Branch on `error.code` and use `error.hint` to
-choose the correction instead of parsing a message.
+Numeric writes are not scanned for `NaN`; the column stores what the caller
+writes, and systems that need finite values validate at their own boundary.
 
 ## Relationships: one source, one materialized index
 
@@ -407,8 +415,6 @@ The Query retains one reusable validation lease; iteration and batch objects
 still have overhead proportional to traversal and batch count. This is low allocation, not a zero-allocation
 promise. Dense spans or known-entity numeric probes may remain better for their
 workload; benchmark the best eligible API instead of migrating every loop.
-Run [`bench/query-batches.mjs`](bench/query-batches.mjs) after the ECS build to
-compare actual API CPU, sampled allocation and signed retained-heap deltas.
 
 ### Query storage and observation
 
@@ -452,9 +458,6 @@ Span traversal also keeps independent cursors and detached `next`/`return`
 callbacks. Prototype traversal creates its bound callbacks only when requested;
 ordinary completion needs no early-close callback. Escaped span facades and
 nonterminal result records are never pooled or revived by another traversal.
-Run [`bench/query-span-traversal.mjs`](bench/query-span-traversal.mjs) with a built
-entry and private output to compare empty, dense, changed, partial and cold owners;
-its positive allocation control and empty-traversal budget detect closure churn.
 
 ```ts
 const query = world.query({ read: [Position] }).unwrap();
@@ -565,9 +568,7 @@ World; ordinary callback mutations/thenables are invalid numeric producers.
 
 Projection candidates remain independent commit capabilities. Shared prototype
 logic binds public callbacks only when requested; detached callbacks retain their
-identity and original candidate. The complete projection benchmark is
-[`bench/state-projection.mjs`](bench/state-projection.mjs), covering quiet,
-changing, discarded, held and cold candidates with separate CPU/allocation data.
+identity and original candidate.
 
 The optional third argument selects candidate component membership (any listed
 component); it defaults to the observed components. Sparse candidates conservatively
@@ -627,8 +628,7 @@ plane.
 
 ### Steady-state cost at scale
 
-Steady per-frame work allocates in proportion to changes, not entity count
-([steady-state bench](bench/steady-state.mjs)):
+Steady per-frame work allocates in proportion to changes, not entity count:
 
 | Operation | Steady allocation |
 |:--|:--|
@@ -646,21 +646,21 @@ an ArrayBuffer each; a fixed `array<T,N>` stays cheaper still.
 `Update` and `FixedUpdate` are the simulation schedules driven by
 `world.update(dt)`. A domain declares its own phases with `defineSchedule(name)`
 and executes them explicitly with `world.run(token)`; a domain run never
-advances World time and cannot order against another schedule; running a token the World has
-never registered, or ordering across schedules, returns `schedule-scope-mismatch`. Registration is
+advances World time. Running an empty domain succeeds without work; ordering across
+schedules returns `schedule-scope-mismatch`. Registration is
 token-first; there is no frame-end schedule, system-parameter DSL, terminal
 render hook, or severity/error-handler registry.
 
 ```ts
 world.addSystem(Update, Move).unwrap();
-world.addSystem(FixedUpdate, {
+world.addSystem(FixedUpdate, defineSystem({
   name: 'fixed-step',
   queries: [],
   fn: (fixedWorld) => {
     const fixed = fixedWorld.getResource(FixedTime);
     void fixed.tick;
   },
-}).unwrap();
+})).unwrap();
 ```
 
 `world.update(deltaSeconds)` advances the clock, runs zero or more fixed steps,
@@ -687,6 +687,16 @@ execution of that schedule. For example, a FixedUpdate system with
 runs after its ordinary systems and command flushes. Registration order does
 not weaken these boundaries; contradictory ordering uses the ordinary cycle
 failure. Update boundaries also enclose its intrinsic fixed block.
+
+`deferFixedStep(world, completion)` lets a backend suspend the current fixed
+substep after its system. It is valid only in `world.update`-driven
+`FixedUpdate` with `catchUp: 'substeps'`, never in `World.run` or aggregate
+catch-up. The completion must adopt the backend result before resolving.
+The scheduler retains the remaining systems, pending commands and original
+catch-up budget across continuations. Rejection or a poisoned World aborts
+retained commands and prevents partial work from being retried. Systems still
+return synchronously; no borrowed query row, span or frame-arena view may
+survive the completion boundary.
 
 Resources are non-owning values: Cordis/plugin owners dispose external payloads, not `World`.
 Final shared-reference `release()` returns the payload to its caller.
@@ -786,17 +796,6 @@ their owner instead of being forwarded through the root.
 not forward them. There is no ECS remote bin, simulation record/restore
 protocol, scene-instance resolver, or compatibility alias for removed APIs.
 
-<details>
-<summary>Removed concepts</summary>
-
-The one-cut surface deliberately removes `FrameEnd`, `setErrorHandler`,
-`defineSystemParam`, `ParamValidation`, simulation record/restore/trace APIs,
-scene lifecycle methods, raw storage exports, relationship metadata lookup,
-root `Result`/`Handle` forwarding, and array convenience commands. When a
-consumer needs one of those concerns, move the owner to App, Scene, Render,
-Physics, or the explicitly named ECS subpath.
-</details>
-
 ## Contract invariants
 
 The following are package-contract statements, not a claim that every
@@ -827,3 +826,33 @@ Managed buffer slots are typed columns (size class, chunk, offset, logical lengt
 Array element admission shares the scalar/reference vocabulary, including the same tag validation for `shared<Tag>` and `asset<Kind>`. Write types derive from the read value contract; only buffer sources and numeric-array inputs widen.
 
 Package history is maintained in the Harness changelog.
+
+## Identity in schedules and resources
+
+| Value | Create | Use |
+|:--|:--|:--|
+| System | `defineSystem({ name, queries, fn })` | Register, order, replace and remove by the original object |
+| System group | `defineSystemSet({ name })` | `sets: [group]` or `addSystems(schedule, group, systems)` |
+| Schedule | `defineSchedule(name)` | Register and run using that object |
+| Resource | `defineResource<T>(name)` | Insert a `T`; `getResource(token)` infers `T` |
+
+Names are non-empty diagnostic labels. Same-name objects have independent identities.
+Export the original object from its owning module and import it at every consumer.
+For per-World system factories, export an owner-defined group as the ordering contract.
+Replacement changes the implementation while keeping the registered identity and groups.
+Inspection graph IDs are detached numeric IDs, scoped to the schedule snapshot.
+Shared-kernel Worker bindings use numeric query and component slots. The independently
+loadable module exports its `queries` and `run` together; the producer reuses those
+same declarations. Worker access resolves the module's actual component object,
+so equal component labels neither collide nor grant undeclared access.
+
+```ts
+const Score = defineResource<number>('Score');
+const Input = defineSystem({ name: 'input', queries: [], fn: () => {} });
+const Move = defineSystem({ name: 'move', queries: [], after: [Input], fn: () => {} });
+world.insertResource(Score, 0);
+world.addSystem(Update, Input).unwrap();
+world.addSystem(Update, Move).unwrap();
+const score: number = world.getResource(Score);
+world.removeSystem(Update, Move).unwrap();
+```

@@ -1,9 +1,11 @@
 import { APP_PHASE_CATALOG } from '@forgeax/engine-app';
+import { createProfiler } from '@forgeax/engine-profiler';
 import { RENDER_PHASE_CATALOG } from '@forgeax/engine-render';
 import { describe, expect, it } from 'vitest';
 
 import {
   nearestRankP95,
+  runProfiledWindow,
   settleFrameCredit,
   summarizeOverhead,
   validateOverheadReport,
@@ -75,6 +77,57 @@ function validReport() {
 }
 
 describe('profiler overhead D-6 report contract', () => {
+  it('separates recording warmup from measured capture without increasing the event limit', async () => {
+    const phases = Array.from({ length: 25 }, (_, index) => `owner-${index}`);
+    const captures = [];
+    const profiler = createProfiler({
+      clock: { nowMicros: () => 1 },
+      phaseCatalog: { app: phases, render: [] },
+      sink: {
+        write: (capture) => {
+          captures.push(capture);
+        },
+      },
+    });
+    let frame = 0;
+    const scheduler = {
+      pump() {
+        const session = profiler.activeSession();
+        expect(session).toBeDefined();
+        expect(session.beginFrame(++frame).ok).toBe(true);
+        for (const phase of phases) {
+          expect(session.beginPhase('app', phase).ok).toBe(true);
+          expect(session.endPhase().ok).toBe(true);
+        }
+        expect(session.endFrame().ok).toBe(true);
+        return frame;
+      },
+    };
+    const original = profiler.startCapture({ frameLimit: 3001, eventLimit: 60020 });
+    expect(original.ok).toBe(true);
+    for (let index = 0; index < 3001; index += 1) scheduler.pump();
+    expect(original.value.finish().value.completeness.status).toBe('overflow');
+    captures.length = 0;
+    frame = 0;
+    const durations = [];
+    const app = { execution: { report: () => ({ frame: { inFlight: 0 } }) } };
+
+    const measured = await runProfiledWindow(profiler, scheduler, app, durations);
+
+    expect(durations).toEqual(Array.from({ length: 2000 }, (_, index) => index + 1001));
+    expect(frame).toBe(3001);
+    expect(captures.map((capture) => capture.frameLimit)).toEqual([1000, 2001]);
+    expect(captures.map((capture) => capture.eventLimit)).toEqual([60020, 60020]);
+    expect(captures.map((capture) => capture.completeness.status)).toEqual([
+      'complete',
+      'complete',
+    ]);
+    expect(captures.map((capture) => capture.completeness.retainedEventCount)).toEqual([
+      25000, 50025,
+    ]);
+    expect(measured).toBe(captures[1]);
+  });
+
   it('waits for App-owned frame credit to reach zero through event-loop turns', async () => {
     let reads = 0;
     const app = {
@@ -86,6 +139,34 @@ describe('profiler overhead D-6 report contract', () => {
     await settleFrameCredit(app);
 
     expect(reads).toBe(3);
+  });
+
+  it('still rejects a measured owner workload that overflows the original event limit', async () => {
+    const phases = Array.from({ length: 31 }, (_, index) => `owner-${index}`);
+    const profiler = createProfiler({
+      clock: { nowMicros: () => 1 },
+      phaseCatalog: { app: phases, render: [] },
+    });
+    let frame = 0;
+    const scheduler = {
+      pump() {
+        const session = profiler.activeSession();
+        session.beginFrame(++frame);
+        for (const phase of phases) {
+          session.beginPhase('app', phase);
+          session.endPhase();
+        }
+        session.endFrame();
+        return frame;
+      },
+    };
+    const app = { execution: { report: () => ({ frame: { inFlight: 0 } }) } };
+
+    await expect(runProfiledWindow(profiler, scheduler, app, [])).rejects.toThrow(
+      'profiler capture was overflow',
+    );
+    expect(profiler.latestCapture().eventLimit).toBe(60020);
+    expect(profiler.latestCapture().completeness.status).toBe('overflow');
   });
 
   it('fails when App-owned frame credit never settles', async () => {

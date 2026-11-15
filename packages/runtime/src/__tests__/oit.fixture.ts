@@ -235,15 +235,13 @@ export async function createOitScene(renderer: Renderer, options: OitSceneOption
     const pending = capture?.recorder.captureFrame();
     if (pending !== undefined) (await capture?.recorder.frameBoundary())?.unwrap();
     // Asynchronous pipeline preparation may hold early scene pictures pending.
-    const frame = await drawReadyFrame(
-      renderer,
-      { leases: [lease], camera: { lease }, environment: { lease } },
-      ['linear-hdr'],
-    ).catch((cause: unknown) => {
-      throw new Error(
-        `draw failed: ${String(cause)} events=${JSON.stringify(errors, (_k, v) => (v instanceof Error ? { ...v, message: v.message, stack: v.stack } : v))}`,
-      );
-    });
+    const frame = await drawReadyFrame(renderer, { source: lease }, ['linear-hdr']).catch(
+      (cause: unknown) => {
+        throw new Error(
+          `draw failed: ${String(cause)} events=${JSON.stringify(errors, (_k, v) => (v instanceof Error ? { ...v, message: v.message, stack: v.stack } : v))}`,
+        );
+      },
+    );
     completedFrames++;
     if (pending !== undefined) (await capture?.recorder.frameBoundary())?.unwrap();
     const observation = unwrap(

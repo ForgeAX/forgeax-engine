@@ -13,7 +13,6 @@ import { createPreparedPointsLinesSnapshot as createPointsLinesSnapshot } from '
 function baseInput(): Parameters<typeof inspectPointsLines>[0] {
   return {
     snapshot: createPointsLinesSnapshot({
-      worldId: 2,
       entityKey: 15,
       component: 'Lines',
       meshHandle: 5,
@@ -46,7 +45,6 @@ describe('bounded Points/Lines inspection', () => {
 
     expect(inspection).toEqual<PointsLinesInspection>({
       entityKey: 15,
-      worldId: 2,
       component: 'Lines',
       meshHandle: 5,
       meshGeneration: 3,

@@ -1,3 +1,6 @@
+import { SkeletalMotionPrepare } from '@forgeax/engine/animation';
+import { PhysicsStepSimulation } from "@forgeax/engine-physics-rapier3d";
+import { defineSystem } from "@forgeax/engine/ecs";
 import { createBrowserPlatform } from '@forgeax/engine/platform-browser';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { createPrograms } from 'virtual:forgeax/plugin-programs/engine';
@@ -8,11 +11,7 @@ import {
 import { captureCanvasPixels } from '@forgeax/apps-shared/canvas-capture';
 import { replayCapturedFrameInBrowser } from '@forgeax/apps-shared/rhi-debug-browser-replay';
 import { animationPlugin } from '@forgeax/engine/animation';
-import {
-  PREPARE_SKELETAL_MOTION_JOINTS,
-  type SkeletalMotionBinding,
-  skeletalMotionPlugin,
-} from '@forgeax/engine/animation/skeletal-motion';
+import { type SkeletalMotionBinding, skeletalMotionPlugin } from '@forgeax/engine/animation/skeletal-motion';
 import { createApp } from '@forgeax/engine/app';
 import { type EntityHandle, FixedTime, FixedUpdate, World } from '@forgeax/engine/ecs';
 import physics3d from '@forgeax/engine/physics-rapier3d';
@@ -120,12 +119,11 @@ async function start(target: HTMLCanvasElement) {
   };
   let impact = false;
   app.pluginContext.effect(() => {
-    world
-      .addSystem(FixedUpdate, {
+    const systemToken1 = defineSystem({
         name: 'skeletal-motion-example-impact',
         queries: [],
-        after: [PREPARE_SKELETAL_MOTION_JOINTS],
-        before: ['physicsStepSimulation'],
+        after: [SkeletalMotionPrepare],
+        before: [PhysicsStepSimulation],
         fn: () => {
           const body = binding.bodyEntities[3];
           if (impact && body !== undefined && binding.status === 'active') {
@@ -134,10 +132,12 @@ async function start(target: HTMLCanvasElement) {
             impact = false;
           }
         },
-      })
+      });
+world
+      .addSystem(FixedUpdate, systemToken1)
       .unwrap();
     return () => {
-      world.removeSystem(FixedUpdate, 'skeletal-motion-example-impact').unwrap();
+      world.removeSystem(FixedUpdate, systemToken1).unwrap();
     };
   });
   let springWeight = 1;

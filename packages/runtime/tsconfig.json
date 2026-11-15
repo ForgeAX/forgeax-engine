@@ -58,6 +58,9 @@
       "path": "../types"
     },
     {
+      "path": "../terrain"
+    },
+    {
       "path": "../rhi"
     },
     {
@@ -110,6 +113,9 @@
     },
     {
       "path": "../audio"
+    },
+    {
+      "path": "../water"
     }
   ]
 }

@@ -1,6 +1,7 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { encodePng } from '@forgeax/engine/image/png';
+import type { FrameReceipt, Renderer } from '@forgeax/engine/render';
 import type { AssetHandle } from '@forgeax/engine/types';
 import { describe, expect, it } from 'vitest';
 import panelsPack from '../../../packages/modeling/examples/body-panels/panels.pack.ts';
@@ -48,9 +49,124 @@ function difference(a: Uint8Array, b: Uint8Array): number {
   return sum / (a.length / 4) / 3 / 255;
 }
 
+/** Observe the existing submit and settlement signals without admitting another frame. */
+function preparationEvidence(stage: DawnStage) {
+  const renderer = stage.renderTargets as Renderer;
+  const directory =
+    process.env.FORGEAX_SHOW_FAILURE_DIR ?? join('artifacts', 'modeling-show', 'dawn');
+  const submissions: Record<string, unknown>[] = [];
+  let failed = false;
+  const serialize = (value: unknown) =>
+    JSON.stringify(value, (_key, field: unknown) =>
+      field instanceof Error
+        ? {
+            ...field,
+            name: field.name,
+            message: field.message,
+            stack: field.stack,
+            cause: field.cause,
+          }
+        : field,
+    );
+  const inspection = () => {
+    try {
+      return renderer.inspect({
+        runtimeRequests: true,
+        fields: [
+          'state',
+          'profile',
+          'frame',
+          'recovery',
+          'featureGraph',
+          'featureDiagnostics',
+          'renderScene',
+          'pipelineLibrary',
+          'backgroundPipelineLibraryState',
+          'ssrDependencies',
+          'standardLighting',
+          'renderGraphGenerationAllocation',
+        ],
+      });
+    } catch (error) {
+      return { unavailable: error };
+    }
+  };
+  const record = (kind: string, detail: unknown) => {
+    try {
+      const event = { kind, at: new Date().toISOString(), detail, inspection: inspection() };
+      const json = serialize(event);
+      console.log(`[modeling-show-preparation] ${json}`);
+      mkdirSync(directory, { recursive: true });
+      appendFileSync(join(directory, 'preparation-events.jsonl'), `${json}\n`);
+      if (kind === 'original-case-failed') {
+        writeFileSync(join(directory, `failure-frame-${submissions.at(-1)?.frameId ?? 'unavailable'}.json`), json);
+      }
+      writeFileSync(
+        join(directory, 'preparation-latest.json'),
+        serialize({
+          at: event.at,
+          kind,
+          submissions,
+          inspection: event.inspection,
+          rendererErrors: stage.errors(),
+          screenshot: null,
+          tape: null,
+        }),
+      );
+    } catch (error) {
+      console.error('[modeling-show-preparation-evidence-failed]', String(error));
+    }
+  };
+  const watch = (receipt: FrameReceipt) => {
+    const row: Record<string, unknown> = {
+      submittedAt: new Date().toISOString(),
+      frameId: receipt.frameId,
+      deviceGeneration: receipt.deviceGeneration,
+      graphGeneration: receipt.graphGeneration,
+      backendId: receipt.backendId,
+      presentation: receipt.presentation,
+      pendingReason: receipt.presentationPendingReason,
+      renderPassCpuIdentities: receipt.renderPassCpuIdentities,
+      renderPassCpuIdentitiesComplete: receipt.renderPassCpuIdentitiesComplete,
+      preparation: receipt.preparationCompleted === undefined ? 'not-signalled' : 'pending',
+      completion: 'pending',
+    };
+    submissions.push(row);
+    if (submissions.length > 8) submissions.shift();
+    const pending = receipt.presentation !== 'ready';
+    if (pending) record('submitted', row);
+    const settled = (phase: string, result: unknown) => {
+      row[phase] = { settledAt: new Date().toISOString(), result };
+      if (pending || failed) record(`${phase}-settled`, row);
+    };
+    void receipt.preparationCompleted?.then(
+      (result) =>
+        settled('preparation', result.ok ? { ok: true } : { ok: false, error: result.error }),
+      (error: unknown) => settled('preparation', { rejected: error }),
+    );
+    void receipt.completed.then(
+      (result) =>
+        settled('completion', result.ok ? { ok: true } : { ok: false, error: result.error }),
+      (error: unknown) => settled('completion', { rejected: error }),
+    );
+  };
+  const unsubscribe = renderer.subscribe((event) => {
+    if (event.kind === 'frame-submitted') watch(event.receipt);
+    else if (event.kind === 'error') record('renderer-error', event.error);
+  });
+  return {
+    failure(error: unknown, state: unknown) {
+      failed = true;
+      record('original-case-failed', { error, state, submissions });
+    },
+    dispose: unsubscribe,
+  };
+}
+
 describe('modeling Show (C-111) on the real Renderer', () => {
   it('drives turntable, transformation, explode, section, X-ray and history through Engine owners', { timeout: 900_000 }, async () => {
     const stage: DawnStage = await createDawnStage(WIDTH, HEIGHT);
+    const evidence = preparationEvidence(stage);
     let show: Show | undefined;
     try {
       const packs = [limbPack, panelsPack].map((pack) => ({ packageId: pack.packageId, outputs: build(pack) }));
@@ -182,6 +298,9 @@ describe('modeling Show (C-111) on the real Renderer', () => {
       expect(changed).toBeGreaterThan(SEQUENCE * 0.8);
       expect(cueAt(C111_SEGMENTS, frames.at(-1)?.time ?? 0).index).toBe(C111_SEGMENTS.length - 1);
       expect(stage.errors()).toEqual([]);
+    } catch (error) {
+      evidence.failure(error, show?.state());
+      throw error;
     } finally {
       // A failed frame poisons the World; keep the original failure.
       try {
@@ -189,7 +308,11 @@ describe('modeling Show (C-111) on the real Renderer', () => {
       } catch (error) {
         console.error('show dispose:', String(error));
       }
-      await stage.dispose();
+      try {
+        await stage.dispose();
+      } finally {
+        evidence.dispose();
+      }
     }
   });
 });

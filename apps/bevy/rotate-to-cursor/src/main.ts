@@ -1,5 +1,6 @@
+import { defineSystem } from "@forgeax/engine-ecs";
 import { createApp } from '@forgeax/engine-app/browser';
-import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine-input';
+import { INPUT_SNAPSHOT_RESOURCE_KEY } from '@forgeax/engine-input';
 import { Time, Update } from '@forgeax/engine-ecs';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
@@ -37,17 +38,18 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   const textureHandle = assets.create(texture).unwrap();
   const scene = buildRotateToCursorWorld(app.world, textureHandle);
   const cursor = { x: target.width * 0.5, y: target.height * 0.5 };
-  app.world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'rotate-to-cursor',
     queries: [],
     fn: (world) => {
       void world.getResource(Time).delta;
-      const snapshot = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+      const snapshot = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
       if (snapshot === undefined) return;
       cursorPositionFromInput(snapshot, cursor);
       stepRotateToCursor(world, scene, cursor.x, cursor.y, target.width, target.height);
     },
-  }).unwrap();
+  });
+app.world.addSystem(Update, systemToken1).unwrap();
   const started = app.start();
   if (!started.ok) return console.error('[bevy-rotate-to-cursor] app.start failed:', started.error);
   (globalThis as { __bevyRotateToCursorReady?: boolean }).__bevyRotateToCursorReady = true;

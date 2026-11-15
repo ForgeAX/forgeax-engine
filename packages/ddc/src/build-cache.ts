@@ -17,6 +17,17 @@ export interface BuildDdcInput {
   readonly publish?: unknown;
 }
 
+/**
+ * Build-cache root used when the host names none. Entries are content-addressed,
+ * keyed relative to the project root and published atomically, so a copied
+ * project reuses its products and several checkouts may share one root, which
+ * the host passes as `sharedRoot`.
+ */
+export function defaultBuildCacheRoot(projectRoot: string, sharedRoot?: string): string {
+  const shared = sharedRoot?.trim();
+  return shared ? resolve(shared) : resolve(projectRoot, '.forgeax', 'ddc', 'build-cache');
+}
+
 export function resolveDdcRoot(cwd: string): string {
   let current = resolve(cwd);
   while (true) {

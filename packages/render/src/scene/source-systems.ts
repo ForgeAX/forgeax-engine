@@ -1,4 +1,4 @@
-import { Update, type World } from '@forgeax/engine-ecs';
+import { defineSystem, Update, type World } from '@forgeax/engine-ecs';
 import { registerPropagateTransforms } from '@forgeax/engine-scene';
 import { detectMobilityInvalidKind } from './mobility-validation';
 
@@ -7,19 +7,20 @@ let nextId = 0;
 export function registerRenderSourceSystems(world: World): () => void {
   const releaseTransforms = registerPropagateTransforms(world);
   const name = `renderDerived:${++nextId}`;
-  const result = world.addSystem(Update, {
+  const system = defineSystem({
     name,
     queries: [],
     fn: (world) => {
       detectMobilityInvalidKind(world);
     },
   });
+  const result = world.addSystem(Update, system);
   if (!result.ok) {
     releaseTransforms();
     throw result.error;
   }
   return () => {
-    world.removeSystem(Update, name).unwrap();
+    world.removeSystem(Update, system).unwrap();
     releaseTransforms();
   };
 }

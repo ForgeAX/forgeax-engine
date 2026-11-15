@@ -40,7 +40,6 @@ it.each([
     renderableIndex: 0,
     source: {
       entityKey: 1,
-      worldId: 0,
       material: resource,
       materials: [resource],
     },

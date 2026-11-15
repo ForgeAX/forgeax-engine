@@ -99,6 +99,8 @@ export interface PipelineBuilderShaderModuleFactory {
     readonly code: string;
     readonly label?: string | undefined;
   }): Result<ShaderModule, RhiError>;
+  /** True only when this live factory owns the exact pending module request. */
+  isPending?(error: RhiError): boolean;
 }
 
 /**

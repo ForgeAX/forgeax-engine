@@ -39,6 +39,7 @@ adding a new package surface.
 | authored package → cook/catalog → assets.load（glTF .glb/.gltf / FBX .fbx）| `forgeax-engine-assets` |
 | Procedural asset / generator delivery review, Scriptable Pack / Runtime Pack provenance, parameters, cold recovery | `forgeax-scriptable-pack-review` |
 | Code-first GPU VFX source / WGSL hooks and imports / Pack v2 cook and GUID load / `ParticleEffectPlayer` / persistent GPU billboard or mesh output | `forgeax-engine-vfx`; add `forgeax-engine-assets` when changing shared Pack/catalog transport and `forgeax-engine-render-pipeline` when changing the generic RenderFeature graph seam |
+| Advanced shallow water / River Bake / World Ocean FFT patch | `forgeax-engine-material` → `packages/water/README.md#advanced-simulation-entry`; add `forgeax-engine-assets` for Bake publication and `forgeax-engine-render-pipeline` for producer work/resource lifetime |
 | inspector (JSON-RPC WS) / kubectl 式 CLI 子命令 | `forgeax-engine-cli` |
 | Saved Catmull-Rom paths / world-distance motion / camera rails / patrols / physics desired poses | `forgeax-engine-ecs` → `packages/path/README.md`; use `forgeax-engine-assets` for Pack/GUID delivery |
 | Graph/grid routes / static NavMesh baking and projection / local avoidance / physical character following / wall overlap or obstacle avoidance | `forgeax-engine-navigation`; add `forgeax-engine-physics` when a solid body must collide |
@@ -51,6 +52,7 @@ adding a new package surface.
 | 状态机 / defineState / setNextState / 状态 scoped 实体 / OnEnter/OnExit | `forgeax-engine-state` |
 | 底层后端（贡献者）：opaque handle / capability / 双实现 | `forgeax-engine-rhi` |
 | 明确错误 / 测试 / CI 出错 — 症状索引与 owner 路由 | `forgeax-engine-debug`；复杂渲染问题优先上面的 RHI Debug 路径 |
+| Every update after opening a PR / `CI-Repair-From` / passed-check reuse | `forgeax-engine-debug` → PR CI repair workflow; mandatory for all subsequent PR pushes |
 | Slow/flaky CI, instrumented cold producers, native Dawn placement, Browser work budgets, changed-source focused reruns or missing artifacts | `forgeax-engine-debug` → `scripts/ci/README.md`; retain complete owners and original deadlines |
 | RHI 录帧 / replay / 离线 per-draw inspect (capture→inspect→dispose) — 查 bindings+drawCall+RT PNG 定位渲染症状 | `forgeax-engine-rhi-debug` |
 

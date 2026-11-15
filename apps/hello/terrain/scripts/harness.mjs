@@ -9,6 +9,7 @@ import { Terrain, terrainHeight } from '@forgeax/engine-terrain';
 import { querySubmittedTerrainHeight } from '@forgeax/engine-render';
 import { vec3 } from '@forgeax/engine-math';
 import { buildTerrainWorld } from '../src/scene.ts';
+import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 
 export async function terrainHarness({
   width = 320,
@@ -22,8 +23,7 @@ export async function terrainHarness({
     existsSync(resolve(dist, 'pack-index.json')),
     'build hello-terrain before running its Dawn smoke',
   );
-  const shaderManifestBytes = readFileSync(resolve(dist, 'shaders/manifest.json'));
-  const shaderManifest = JSON.parse(shaderManifestBytes.toString());
+  const shaderManifest = JSON.parse(readShaderManifestText(resolve(dist, 'shaders/manifest.json')));
   assert(
     shaderManifest.materialShaders.some(
       (entry) => entry.identifier === 'forgeax::default-shadow-caster',
@@ -88,7 +88,7 @@ export async function terrainHarness({
       const start = performance.now();
       const updateMs = start - frameStart;
       const receipt = app.renderer
-        .draw({ leases: [lease], camera: { lease }, environment: { lease } })
+        .draw({ source: lease })
         .unwrap();
       const cpuMs = performance.now() - start;
       const thread = diagnostic ? process.threadCpuUsage(threadBefore) : undefined;
@@ -180,7 +180,6 @@ export async function terrainHarness({
     );
     const submittedHeight = (
       await querySubmittedTerrainHeight(receipt, {
-        worldId: 0,
         entity: subjects.terrain,
         x: 62,
         z: 62,
@@ -210,7 +209,7 @@ export async function terrainHarness({
     shim,
     errors,
     frame,
-    draw: () => app.renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
+    draw: () => app.renderer.draw({ source: lease }),
     pixels,
     verify,
     get completed() {

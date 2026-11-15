@@ -77,7 +77,7 @@ export class PointsLinesExpansionCache {
  * prepared GPU buffers are reused across generations of the same source.
  */
 export function pointsLinesSourceSlot(snapshot: PointsLinesPreparedSnapshot): string {
-  return `world:${snapshot.worldId}:mesh:${snapshot.meshHandle}:component=${snapshot.component ?? 'none'}`;
+  return `world:mesh:${snapshot.meshHandle}:component=${snapshot.component ?? 'none'}`;
 }
 
 function expansionKey(snapshot: PointsLinesPreparedSnapshot): string {

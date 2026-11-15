@@ -46,6 +46,8 @@ export const PARTICLE_INPUT_SHADER_IDENTIFIERS = Object.freeze({
   trail: 'forgeax::vfx-render.particles.trail-inputs',
   beam: 'forgeax::vfx-render.particles.beam-inputs',
 });
+export const PARTICLE_WATER_SPHERE_SHADER_IDENTIFIER =
+  'forgeax::vfx-render.particles.billboard-water-sphere';
 
 export const PARTICLE_UNLIT_MESH_SHADER_IDENTIFIERS = Object.freeze({
   mesh: 'forgeax::vfx-render.particles.mesh-unlit',
@@ -197,6 +199,7 @@ export function particleMaterialPass(
     readonly context: RenderFeaturePlanContext['materialContext'];
   },
   unlitMesh = false,
+  shading?: ParticleRendererSourceV3['shading'],
 ): ParticleMaterialPass {
   const passName = `particle-${kind}`;
   const cookedPass = publication?.projection.passes.find(
@@ -240,14 +243,16 @@ export function particleMaterialPass(
       : undefined);
   return {
     shader:
-      pass?.program.module ??
-      (kind === 'mesh' && unlitMesh
-        ? hasParticleInputs
-          ? PARTICLE_UNLIT_MESH_SHADER_IDENTIFIERS.inputs
-          : PARTICLE_UNLIT_MESH_SHADER_IDENTIFIERS.mesh
-        : hasParticleInputs
-          ? PARTICLE_INPUT_SHADER_IDENTIFIERS[kind]
-          : PARTICLE_SHADER_IDENTIFIERS[kind]),
+      kind === 'billboard' && shading?.kind === 'translucent-water-sphere'
+        ? PARTICLE_WATER_SPHERE_SHADER_IDENTIFIER
+        : (pass?.program.module ??
+          (kind === 'mesh' && unlitMesh
+            ? hasParticleInputs
+              ? PARTICLE_UNLIT_MESH_SHADER_IDENTIFIERS.inputs
+              : PARTICLE_UNLIT_MESH_SHADER_IDENTIFIERS.mesh
+            : hasParticleInputs
+              ? PARTICLE_INPUT_SHADER_IDENTIFIERS[kind]
+              : PARTICLE_SHADER_IDENTIFIERS[kind])),
     ...(pass?.program.sceneDepth === undefined ? {} : { sceneDepth: pass.program.sceneDepth }),
     ...(renderState === undefined ? {} : { renderState: renderState as MaterialRenderState }),
   };
@@ -476,7 +481,8 @@ export function particleMaterialUsesBindings(
   return (
     contract === 'render-material' ||
     contract === 'render-material-with-scene-depth' ||
-    contract === 'render-material-and-scene-depth'
+    contract === 'render-material-and-scene-depth' ||
+    contract === 'render-standard-material-and-scene-depth'
   );
 }
 
@@ -493,7 +499,11 @@ export function particleMaterialSceneDepthBinding(
   contract: RenderFeatureMaterialShaderBindingContract | undefined,
 ): 0 | 1 | undefined {
   if (contract === 'group-0-resource' || contract === 'render-material-with-scene-depth') return 0;
-  if (contract === 'view-and-scene-depth' || contract === 'render-material-and-scene-depth')
+  if (
+    contract === 'view-and-scene-depth' ||
+    contract === 'render-material-and-scene-depth' ||
+    contract === 'render-standard-material-and-scene-depth'
+  )
     return 1;
   return undefined;
 }

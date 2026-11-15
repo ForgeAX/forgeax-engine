@@ -38,6 +38,7 @@ const TYPES_SOURCES = [
   'media-contracts.ts',
   'material/asset.ts',
   'vfx.ts',
+  'water-contracts.ts',
 ].map((file) => resolve(REPO_ROOT, 'packages', 'types', 'src', file));
 
 // Exhaustive switch over Asset.kind -- when a 14th variant is added,
@@ -47,6 +48,19 @@ function exhaustiveAssetKindSwitch(asset: Asset): string {
   switch (asset.kind) {
     case 'plugin':
       return 'PluginAsset';
+    case 'gpu-texture':
+      return 'GpuTextureAsset';
+    case 'texture-generator':
+      return 'TextureGeneratorAsset';
+    default:
+      return describeOrdinaryAsset(asset);
+  }
+}
+function describeOrdinaryAsset(
+  asset: Exclude<Asset, { kind: 'plugin' | 'gpu-texture' | 'texture-generator' }>,
+): string {
+  const ordinaryAssetKind = asset.kind;
+  switch (ordinaryAssetKind) {
     case 'mesh':
       return 'MeshAsset';
     case 'texture':
@@ -59,34 +73,51 @@ function exhaustiveAssetKindSwitch(asset: Asset): string {
       return 'MaterialAsset';
     case 'scene':
       return 'SceneAsset';
-    case 'skeleton':
-      return 'SkeletonAsset';
-    case 'skin':
-      return 'SkinAsset';
-    case 'animation-clip':
-      return 'AnimationClip';
-    case 'animation-graph':
-      return 'AnimationGraph';
-    case 'audio':
-      return 'AudioClipAsset';
-    case 'ies-profile':
-      return 'IesProfileAsset';
-    case 'font':
-      return 'FontAsset';
-    case 'render-pipeline':
-      return 'RenderPipelineAsset';
-    case 'tileset':
-      return 'TilesetAsset';
-    case 'video':
-      return 'VideoAsset';
-    case 'navigation-mesh':
-    case 'terrain':
-      return 'TerrainAsset';
-    case 'particle-effect':
-      return 'ParticleEffectAsset';
     default: {
-      const _exhaustiveCheck: never = asset;
-      return _exhaustiveCheck;
+      const describeRemainingOrdinaryAsset = () => {
+        switch (ordinaryAssetKind) {
+          case 'skeleton':
+            return 'SkeletonAsset';
+          case 'skin':
+            return 'SkinAsset';
+          case 'animation-clip':
+            return 'AnimationClip';
+          case 'animation-graph':
+            return 'AnimationGraph';
+          case 'audio':
+            return 'AudioClipAsset';
+          case 'ies-profile':
+            return 'IesProfileAsset';
+          case 'font':
+            return 'FontAsset';
+          case 'render-pipeline':
+            return 'RenderPipelineAsset';
+          case 'tileset':
+            return 'TilesetAsset';
+          case 'video':
+            return 'VideoAsset';
+          case 'navigation-mesh':
+          case 'terrain':
+            return 'TerrainAsset';
+          case 'particle-effect':
+            return 'ParticleEffectAsset';
+          case 'water-body':
+            return 'WaterBodyAsset';
+          case 'water-zone':
+            return 'WaterZoneAsset';
+          case 'water-wave-set':
+            return 'WaterWaveSetAsset';
+          case 'water-brush-recipe':
+            return 'WaterBrushRecipeAsset';
+          case 'water-simulation-recipe':
+            return 'WaterSimulationRecipeAsset';
+          default: {
+            const _exhaustiveCheck: never = asset;
+            return _exhaustiveCheck;
+          }
+        }
+      };
+      return describeRemainingOrdinaryAsset();
     }
   }
 }
@@ -109,6 +140,11 @@ const ASSET_MEMBER_NAMES = [
   'TilesetAsset',
   'VideoAsset',
   'ParticleEffectAsset',
+  'WaterBodyAsset',
+  'WaterZoneAsset',
+  'WaterWaveSetAsset',
+  'WaterBrushRecipeAsset',
+  'WaterSimulationRecipeAsset',
 ] as const;
 
 /**

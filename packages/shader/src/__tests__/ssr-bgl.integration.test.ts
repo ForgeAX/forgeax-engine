@@ -43,6 +43,10 @@ async function compile(name: keyof typeof SOURCES): Promise<CompileValue> {
     id: `forgeax_ssr::${name}`,
     imports: {
       'forgeax_view::common': COMMON,
+      forgeax_scene_temporal: readFileSync(
+        resolve(import.meta.dirname, '../scene-temporal.wgsl'),
+        'utf8',
+      ),
       'forgeax_pbr::gbuffer': GBUFFER,
       'forgeax_depth_pyramid::sample': readFileSync(
         resolve(import.meta.dirname, '../depth-pyramid-sample.wgsl'),
@@ -101,7 +105,9 @@ describe('SSR built-in shader binding contract', () => {
   it('reflects trace inputs including lighting-owned coverage and the shared View', async () => {
     const value = await compile('trace');
     const reflected = entries(value);
-    expect(reflected).toHaveLength(9);
+    expect(reflected.map((entry) => entry.binding)).toEqual([
+      0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
+    ]);
     for (let binding = 0; binding < 4; binding += 1) {
       expect(reflected[binding]).toMatchObject({
         binding,
@@ -125,6 +131,21 @@ describe('SSR built-in shader binding contract', () => {
       binding: 8,
       storageTexture: { access: 'write-only', format: 'r32float', viewDimension: '2d' },
     });
+    expect(reflected[9]).toMatchObject({
+      binding: 9,
+      texture: { sampleType: 'depth', viewDimension: '2d' },
+    });
+    expect(reflected[10]).toMatchObject({
+      binding: 10,
+      texture: { sampleType: 'uint', viewDimension: '2d' },
+    });
+    for (const binding of [11, 13]) {
+      expect(reflected[binding]).toMatchObject({
+        binding,
+        texture: { sampleType: 'unfilterable-float', viewDimension: '2d' },
+      });
+    }
+    expect(reflected[12]).toMatchObject({ binding: 12, buffer: { type: 'uniform' } });
   });
 
   it('reflects depth pyramid reduction as an r32float sampled input plus storage output', async () => {
@@ -145,7 +166,14 @@ describe('SSR built-in shader binding contract', () => {
   it('reflects temporal resolve with packed actual normal and confidence history', async () => {
     const value = await compile('temporal');
     const reflected = entries(value);
-    expect(reflected).toHaveLength(12);
+    expect(reflected.map((entry) => entry.binding)).toEqual([
+      0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
+    ]);
+    expect(reflected[12]).toMatchObject({
+      binding: 12,
+      texture: { sampleType: 'unfilterable-float', viewDimension: '2d' },
+    });
+    expect(reflected[13]).toMatchObject({ binding: 13, buffer: { type: 'uniform' } });
     expect(reflected[11]).toMatchObject({
       binding: 11,
       texture: { sampleType: 'unfilterable-float', viewDimension: '2d' },

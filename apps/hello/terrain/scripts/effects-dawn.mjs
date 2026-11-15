@@ -1,3 +1,4 @@
+import { TerrainWalkerResource } from '../src/ecs-resources.ts';
 import { encodePng } from '@forgeax/engine-image/png';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -158,7 +159,7 @@ try {
       );
       const stopWalker = installTerrainWalker(h.app.world, h.subjects, policy.gate);
       try {
-        const walker = h.app.world.getResource('TerrainWalker');
+        const walker = h.app.world.getResource(TerrainWalkerResource);
         walker.speed = 1;
         latestReceipt = (await h.frame()).receipt;
         assert.equal(typeof releaseQuery, 'function');
@@ -280,7 +281,6 @@ try {
         .unwrap();
       const hidden = await h.frame();
       const hiddenQuery = await querySubmittedTerrainHeight(hidden.receipt, {
-        worldId: 0,
         entity: h.subjects.terrain,
         x: 62,
         z: 62,

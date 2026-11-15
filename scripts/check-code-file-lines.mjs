@@ -3,6 +3,7 @@
 import { lstatSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import process from 'node:process';
+import { fileURLToPath } from 'node:url';
 import { listTrackedFiles } from './lib/tracked-files.mjs';
 
 export const CODE_FILE_LINE_LIMIT = 4096;
@@ -231,7 +232,7 @@ export function main(argv = process.argv.slice(2)) {
   return report.status;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     process.exitCode = main();
   } catch (error) {

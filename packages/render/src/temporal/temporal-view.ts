@@ -46,11 +46,11 @@ export interface TemporalViewInput {
   readonly lastSubmitted?: SubmittedTemporalView;
 }
 
-export function temporalViewId(worldId: number, entityKey: number): string {
+export function temporalViewId(entityKey: number): string {
   const raw = entityKey >>> 0;
   const index = raw & 0x00ffffff;
   const generation = (raw >>> 24) & 0xff;
-  return `${worldId}:${index}:${generation}`;
+  return `${index}:${generation}`;
 }
 
 function halton(index: number, base: number): number {
@@ -115,7 +115,7 @@ export function projectTemporalView(input: TemporalViewInput): TemporalView {
   projectingTemporal = true;
   try {
     const { camera } = input;
-    const viewId = temporalViewId(camera.worldId ?? 0, camera.entityKey ?? 0);
+    const viewId = temporalViewId(camera.entityKey ?? 0);
     const currentJitterUv = temporalJitterUv(
       input.temporalFrameIndex,
       input.internalWidth ?? input.surfaceWidth,

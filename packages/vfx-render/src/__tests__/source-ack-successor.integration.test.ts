@@ -4,7 +4,6 @@ import type { ParticleEffectAsset } from '@forgeax/engine-types';
 import {
   ParticleEffectPlayer,
   VFX_GPU_RUNTIME_RESOURCE_KEY,
-  type VfxGpuRuntime,
   vfxGpuRuntimePlugin,
 } from '@forgeax/engine-vfx';
 import { cookParticleCodeProgram } from '@forgeax/engine-vfx-compiler';
@@ -74,7 +73,7 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
     })
     .unwrap();
   const context = await createWorldContext(world, [vfxGpuRuntimePlugin()]);
-  const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+  const runtime = world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY);
   const camera = {
     position: new Float32Array(3),
     right: new Float32Array([1, 0, 0]),
@@ -89,8 +88,7 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
       frames.push(
         feature
           .extract({
-            worlds: [world],
-            owner: 0,
+            world: world,
             views: [{ identity: 'main', render: true }],
             frameNumber,
           })
@@ -99,7 +97,7 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
     }
     const held = frames[2];
     if (held === undefined) throw new Error('Missing held source frame');
-    const source = held.worlds[0];
+    const source = held.source;
     if (source === undefined) throw new Error('Missing held source World');
     const before = structuredClone(held);
     const exactCounters = source.intents.map((intent) => intent.eventCounters);

@@ -27,16 +27,15 @@ import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, isAbsolute, normalize, resolve, sep } from 'node:path';
 import { isStandardRootModule } from '@forgeax/engine-pack';
-
 import { parsePackSourceJson, projectDirectPackJson } from '@forgeax/engine-pack/source';
 import {
   createMaterialProgramArtifactReceipt,
   createStandardPbrArtifactReceipt,
-  isSupportedVariantDefines,
   LIGHT_TEXTURE_RESAMPLE_COMPUTE_IDENTIFIER,
   LIGHT_TEXTURE_RESAMPLE_FRAGMENT_IDENTIFIER,
   type MaterialShaderManifestEntry,
   type MaterialShaderManifestVariant,
+  standardLeanInputDefines,
   standardSharedTransmissionDefines,
 } from '@forgeax/engine-shader';
 import {
@@ -61,6 +60,7 @@ import {
   type MaterialProgramAbi,
   type ParamSchemaEntry,
 } from '@forgeax/engine-types';
+import { searchForWorkspaceRoot } from 'vite';
 import { loadEngineImportsMap } from './engine-imports-map.js';
 import {
   compileMaterialSources,
@@ -79,6 +79,8 @@ import {
   resolveImportModuleId,
   throwAuthoredMaterialError,
 } from './engine-inputs/prepare-engine-shader-source.js';
+import { waterInfoRasterEngineEntries } from './engine-inputs/water-info-raster-roster.js';
+import { supportedVariantDefines } from './supported-variant-defines.js';
 
 export {
   decodePackagedProfiles,
@@ -187,6 +189,8 @@ function engineMaterialArtifactReceipt(
  * Percent-encoded data URLs can exceed the JavaScript string limit for a complete fleet.
  */
 export interface BuildEngineShaderManifestOptions {
+  /** Producer workspace root for repository-relative shared input paths. */
+  readonly workspaceRoot?: string;
   readonly materialPackages?: readonly string[];
   /** Compile Standard engine entries with the point-shadow cube-array lane. */
   readonly pointShadows?: boolean;
@@ -220,8 +224,9 @@ function sharedEngineManifestPathFor(options: BuildEngineShaderManifestOptions):
 
 async function loadSharedEngineManifestForBuilder(
   manifestPath: string,
+  workspaceRoot: string,
 ): Promise<Awaited<ReturnType<typeof buildEngineShaderManifestUncached>>> {
-  const shared = await loadSharedEngineShaderManifest(manifestPath);
+  const shared = await loadSharedEngineShaderManifest(manifestPath, workspaceRoot);
   const missing = SHARED_ENGINE_MANIFEST_REQUIRED_IDS.filter(
     (identifier) => !shared.materialShaders.some((entry) => entry.identifier === identifier),
   );
@@ -273,6 +278,10 @@ export function buildEngineShaderManifest(
   options: BuildEngineShaderManifestOptions = {},
 ): ReturnType<typeof buildEngineShaderManifestUncached> {
   const sharedManifestPath = sharedEngineManifestPathFor(options);
+  const workspaceRoot =
+    options.workspaceRoot === undefined
+      ? searchForWorkspaceRoot(process.cwd())
+      : resolve(options.workspaceRoot);
   const packaged =
     sharedManifestPath === null && (options.materialPackages?.length ?? 0) === 0
       ? loadPackagedEngineShaderInputs(options.pointShadows === true, true)
@@ -298,6 +307,7 @@ export function buildEngineShaderManifest(
     return published;
   }
   const cacheKey = JSON.stringify({
+    workspaceRoot,
     materialPackages: options.materialPackages ?? [],
     pointShadows: options.pointShadows === true,
     sharedManifestPath,
@@ -307,8 +317,10 @@ export function buildEngineShaderManifest(
   if (cached !== undefined) return cached;
   const published =
     sharedManifestPath !== null && (options.materialPackages?.length ?? 0) === 0
-      ? loadSharedEngineManifestForBuilder(sharedManifestPath)
-      : buildEngineShaderManifestUncached(options, sharedManifestPath).then(serializeAsPublication);
+      ? loadSharedEngineManifestForBuilder(sharedManifestPath, workspaceRoot)
+      : buildEngineShaderManifestUncached({ ...options, workspaceRoot }, sharedManifestPath).then(
+          serializeAsPublication,
+        );
   engineShaderManifestCache.set(cacheKey, published);
   return published.finally(() => {
     if (engineShaderManifestCache.get(cacheKey) === published) {
@@ -325,6 +337,11 @@ interface CompiledEngineVariant {
   readonly receipt?: MaterialProgramAbi;
 }
 
+/** The caster's lean row also drops the tangent: coverage never reads it. */
+function leanInputProgram(identifier: string | undefined): 'surface' | 'shadow-caster' {
+  return identifier === 'forgeax::default-shadow-caster' ? 'shadow-caster' : 'surface';
+}
+
 function createEngineVariantJobs(
   file: EngineShaderFile,
   imports: Record<string, string>,
@@ -332,8 +349,7 @@ function createEngineVariantJobs(
 ): { readonly axes: string[]; readonly jobs: MaterialCompileJob[] } {
   const axes = scanVariantAxes(file.source);
   const transitiveImports = extractTransitiveImports(file.source, imports);
-  const variants =
-    axes.length === 0 ? [undefined] : cartesianDefines(axes).filter(isSupportedVariantDefines);
+  const variants = axes.length === 0 ? [undefined] : supportedVariantDefines(axes);
   const jobs = variants.map((defines) => {
     const effectiveDefines = {
       STORAGE_BUFFER_AVAILABLE: true,
@@ -347,6 +363,7 @@ function createEngineVariantJobs(
         ? { CLOUD_SHADOW_LOW_LIMIT: true }
         : {}),
       ...standardSharedTransmissionDefines(defines),
+      ...standardLeanInputDefines(defines, leanInputProgram(file.reservedIdentifier)),
       ...DIRECTIONAL_PCSS_DEFINES,
       ...(pointShadows &&
       defines?.CLUSTER_FORWARD_AVAILABLE === true &&
@@ -356,27 +373,37 @@ function createEngineVariantJobs(
           ? { POINT_SHADOW_AVAILABLE: true }
           : {}),
     };
-    const variantImports =
-      defines === undefined
-        ? transitiveImports
-        : stripFalseImportSources(
-            filterImportsByDefines(transitiveImports, file.source, effectiveDefines, axes),
-            effectiveDefines,
-          );
     const variantKey = defines === undefined ? '' : buildVariantKey(defines);
+    const options = {
+      id: variantKey === '' ? file.id : `${file.id}#${variantKey}`,
+      imports: transitiveImports,
+      defines: effectiveDefines,
+    };
     return {
       defines,
-      file: {
-        ...file,
-        source:
+      file,
+      options,
+      prepare: () => {
+        const variantImports =
           defines === undefined
-            ? file.source
-            : projectShaderConditionals(file.source, effectiveDefines),
-      },
-      options: {
-        id: variantKey === '' ? file.id : `${file.id}#${variantKey}`,
-        imports: variantImports,
-        defines: effectiveDefines,
+            ? transitiveImports
+            : stripFalseImportSources(
+                filterImportsByDefines(transitiveImports, file.source, effectiveDefines, axes),
+                effectiveDefines,
+              );
+        return {
+          file: {
+            ...file,
+            source:
+              defines === undefined
+                ? file.source
+                : projectShaderConditionals(file.source, effectiveDefines),
+          },
+          options: {
+            ...options,
+            imports: variantImports,
+          },
+        };
       },
     } satisfies MaterialCompileJob;
   });
@@ -431,7 +458,12 @@ async function buildEngineShaderManifestUncached(
   const shared =
     sharedManifestPath === null
       ? (loadPackagedEngineShaderInputs(options.pointShadows === true, true) ?? undefined)
-      : await loadSharedEngineManifestForBuilder(sharedManifestPath);
+      : await loadSharedEngineManifestForBuilder(
+          sharedManifestPath,
+          options.workspaceRoot === undefined
+            ? searchForWorkspaceRoot(process.cwd())
+            : resolve(options.workspaceRoot),
+        );
   const pointShadows = options.pointShadows === true;
   const eng = await loadEngineShaderEntries();
   const particle = await loadPackageMaterialShaderEntries('@forgeax/engine-vfx-render');
@@ -537,6 +569,8 @@ async function buildEngineShaderManifestUncached(
  * the future signature is reserved).
  */
 export interface ForgeAXShaderOptions {
+  /** Producer workspace root for repository-relative shared input paths. */
+  readonly workspaceRoot?: string;
   /**
    * Reserved: in the future this will hold compileShader-forwarded options such as dynamic offset annotations.
    * @internal
@@ -567,10 +601,9 @@ export interface ForgeAXShaderOptions {
    */
   readonly engineShaderRoots?: string[];
   /**
-   * When true, a production `vite build` emits `shaders/manifest.json` as one zstd
-   * frame (ShaderRegistry decodes both forms). Default false: the build output stays
-   * plain JSON for tools that read it, and devkit `prepareDist` applies the same zstd
-   * encoding when it packages the delivered game. Producer builds stay plain JSON.
+   * A production `vite build` emits `shaders/manifest.json` as one zstd frame
+   * (ShaderRegistry and devkit `prepareDist` decode both forms). Default true; pass
+   * false to keep plain JSON. Producer and app-shard delta builds always stay plain JSON.
    */
   readonly compressManifest?: boolean;
   /**
@@ -842,8 +875,7 @@ async function compileUserMaterialVariants(
   // cannot silently ship a storage WGSL source against the WebGL2 uniform
   // pipeline layout (the old failure surfaced only at queue submit).
   const axes = scanUserMaterialVariantAxes(source);
-  const combinations =
-    axes.length > 0 ? cartesianDefines(axes).filter(isSupportedVariantDefines) : [undefined];
+  const combinations = axes.length > 0 ? supportedVariantDefines(axes) : [undefined];
   const sourceForRouting = source;
   // Restrict the compiler catalog to the source's reachable import closure.
   // Engine material catalogs contain unrelated guarded imports (notably
@@ -1290,6 +1322,10 @@ export function engineManifestFiles(
     ...eng.terrain,
     eng.unlit,
     eng.pointsLines,
+    ...waterInfoRasterEngineEntries(eng),
+    eng.waterMeshRaster,
+    eng.waterMeshPrecise,
+    eng.waterMeshPreciseMsaa,
     eng.tonemap,
     eng.analyticFog,
     eng.cloudLayer,
@@ -1373,7 +1409,7 @@ export function engineManifestFiles(
  */
 export function publishedVariantDefines(source: string): Record<string, boolean>[] {
   const axes = scanVariantAxes(source);
-  return axes.length > 0 ? cartesianDefines(axes).filter(isSupportedVariantDefines) : [{}];
+  return axes.length > 0 ? supportedVariantDefines(axes) : [{}];
 }
 
 // The rule table lives in @forgeax/engine-shader so request sites share it.
@@ -1392,6 +1428,8 @@ export {
  * per-call exclusion lists.
  */
 export const OPT_IN_VARIANT_AXES: ReadonlySet<string> = new Set([
+  'WATER_WAVES_AVAILABLE',
+  'WATER_INFO_RGBA16',
   'PROBE_BLEND_AVAILABLE',
   'COVERAGE_ONLY',
   'DIRECT_DFG_LUT_AVAILABLE',
@@ -1408,6 +1446,12 @@ export const OPT_IN_VARIANT_AXES: ReadonlySet<string> = new Set([
   // the default opaque program has neither.
   'LOD_DITHER',
   'CLIPPING_PLANES',
+  // UV0-only, basis-free, object-position-free inputs (the caster also drops
+  // the tangent); a GPU-driven batch whose authored values read nothing else
+  // requests it.
+  'STANDARD_LEAN_INPUTS',
+  // Direct unlit draws reading GPU Scene rows exist only for the passes that request them.
+  'GPU_SCENE_DIRECT',
 ]);
 
 /** Axes that are additionally opt-in when the shader declares the cluster axis. */
@@ -1678,6 +1722,7 @@ interface ViteDevServerLike {
 export interface ForgeAXShaderPlugin {
   readonly name: string;
   readonly enforce: 'pre';
+  configResolved(config: { readonly root: string }): void;
   config(
     cfg: unknown,
     env: { command: string },
@@ -1884,28 +1929,43 @@ function createPluginEngineVariantJobs(
         ? { CLOUD_SHADOW_LOW_LIMIT: true }
         : {}),
       ...standardSharedTransmissionDefines(defines),
+      ...standardLeanInputDefines(defines, leanInputProgram(baseIdentifier)),
       ...DIRECTIONAL_PCSS_DEFINES,
       ...pointShadowVariantDefines(defines, pointShadows),
     };
-    const perVariantImports = stripFalseImportSources(
-      filterImportsByDefines(allTransitiveImports, file.source, effectiveDefines, variantAxes),
-      effectiveDefines,
-    );
     const definesKey = buildVariantKey(defines);
     const uniqueId =
       variantAxes.length > 0 && definesKey !== '' ? `${file.id}#${definesKey}` : file.id;
-    const perVariantSource =
-      variantAxes.length > 0
-        ? projectShaderConditionals(file.source, effectiveDefines)
-        : file.source;
     return {
       defines,
       definesKey,
       uniqueId,
       job: {
         defines: effectiveDefines,
-        file: { ...file, source: perVariantSource },
-        options: { id: uniqueId, imports: perVariantImports, defines: effectiveDefines },
+        file,
+        options: { id: uniqueId, imports: allTransitiveImports, defines: effectiveDefines },
+        prepare: () => ({
+          file: {
+            ...file,
+            source:
+              variantAxes.length > 0
+                ? projectShaderConditionals(file.source, effectiveDefines)
+                : file.source,
+          },
+          options: {
+            id: uniqueId,
+            imports: stripFalseImportSources(
+              filterImportsByDefines(
+                allTransitiveImports,
+                file.source,
+                effectiveDefines,
+                variantAxes,
+              ),
+              effectiveDefines,
+            ),
+            defines: effectiveDefines,
+          },
+        }),
       },
     };
   });
@@ -2113,6 +2173,20 @@ async function compileEngineEntry(
   }
 }
 
+async function compileWaterEngineEntries(
+  state: ManifestEntries,
+  eng: Awaited<ReturnType<typeof loadEngineShaderEntries>>,
+): Promise<void> {
+  for (const entry of [
+    ...waterInfoRasterEngineEntries(eng),
+    eng.waterMeshRaster,
+    eng.waterMeshPrecise,
+    eng.waterMeshPreciseMsaa,
+  ]) {
+    await compileEngineEntry(state, entry, eng.imports);
+  }
+}
+
 // === Main factory ===================================================================
 
 /**
@@ -2130,6 +2204,10 @@ async function compileEngineEntry(
  * | `configureServer(server)` | dev-only: middleware serves the shader manifest from the same `state.entries` Map (II-A from plan-strategy §2 D-P2) |
  */
 export function forgeaxShader(options: ForgeAXShaderOptions = {}): ForgeAXShaderPlugin {
+  let workspaceRoot =
+    options.workspaceRoot === undefined
+      ? searchForWorkspaceRoot(process.cwd())
+      : resolve(options.workspaceRoot);
   let compileAuthoredMaterial = createShaderProgramCompiler();
   const state: ManifestEntries = {
     entries: new Map(),
@@ -2211,7 +2289,7 @@ export function forgeaxShader(options: ForgeAXShaderOptions = {}): ForgeAXShader
 
     clearSharedEngineInputs();
 
-    const shared = await loadSharedEngineShaderManifest(manifestPath);
+    const shared = await loadSharedEngineShaderManifest(manifestPath, workspaceRoot);
     for (const entry of projectOptionalEngineEntries(shared.entries, wantHdrpSsao)) {
       state.entries.set(`shared:${entry.hash}`, { ...entry, uvSetCount: entry.uvSetCount ?? 0 });
       sharedEngineEntryKeys.add(`shared:${entry.hash}`);
@@ -2414,6 +2492,10 @@ export function forgeaxShader(options: ForgeAXShaderOptions = {}): ForgeAXShader
     name: 'forgeax:shader',
     enforce: 'pre',
 
+    configResolved(config): void {
+      if (options.workspaceRoot === undefined) workspaceRoot = searchForWorkspaceRoot(config.root);
+    },
+
     async closeBundle(): Promise<void> {
       await Promise.allSettled([materialPackageLoadTail, devManifestPrimeInFlight]);
       clearSharedEngineInputs();
@@ -2433,12 +2515,12 @@ export function forgeaxShader(options: ForgeAXShaderOptions = {}): ForgeAXShader
       _cfg: unknown,
       env: { command: string },
     ): { worker: { format: 'es' }; build?: { reportCompressedSize: false } } {
-      // Dev serves the manifest as plain JSON; an opted-in production build ships it
-      // as a zstd frame, the same encoding devkit prepareDist stores.
+      // Dev serves the manifest as plain JSON; a production build ships it as a zstd
+      // frame unless opted out, the same encoding devkit prepareDist stores.
       // Producer builds (FORGEAX_ENGINE_SHADER_SOURCE_BUILD set to 1 or 0) keep plain JSON: their
       // manifest.json is read, hashed and packaged by release scripts as JSON.
       compressManifest =
-        options.compressManifest === true &&
+        options.compressManifest !== false &&
         env.command === 'build' &&
         process.env.FORGEAX_ENGINE_SHADER_SOURCE_BUILD === undefined;
       if (env.command === 'build' && process.env.FORGEAX_VITE_REPORT_COMPRESSED_SIZE === '0') {
@@ -2514,6 +2596,7 @@ export function forgeaxShader(options: ForgeAXShaderOptions = {}): ForgeAXShader
         await compileEngineEntry(state, terrain, eng.imports, wantPointShadows);
       await compileEngineEntry(state, eng.unlit, eng.imports);
       await compileEngineEntry(state, eng.pointsLines, eng.imports);
+      await compileWaterEngineEntries(state, eng);
       await compileEngineEntry(state, eng.tonemap, eng.imports);
       await compileEngineEntry(state, eng.analyticFog, eng.imports);
       await compileEngineEntry(state, eng.cloudLayer, eng.imports);
@@ -3075,3 +3158,8 @@ function isEngineShaderPath(id: string, roots: readonly string[]): boolean {
     id.includes('/node_modules/@forgeax/engine-shader/src/')
   );
 }
+
+export {
+  loadCloudDensityModules,
+  loadCloudRendererModules,
+} from './engine-inputs/load-engine-shader-entries.js';

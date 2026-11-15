@@ -106,11 +106,7 @@ async function createBloomScenario(
       },
     )
     .unwrap();
-  const frameInput = () => ({
-    leases: [attached.value],
-    camera: { lease: attached.value },
-    environment: { lease: attached.value },
-  });
+  const frameInput = () => ({ source: attached.value });
   const draw = () => renderer.draw(frameInput());
   const setBloom = (bloom: 'on' | 'off') => {
     world
@@ -167,11 +163,7 @@ async function createMotionBlurScenario() {
       data: { shutterAngle: 180, maxRadiusPixels: 8, sampleCount: 4, targetFps: 60 },
     })
     .unwrap();
-  const frameInput = () => ({
-    leases: [attached.value],
-    camera: { lease: attached.value },
-    environment: { lease: attached.value },
-  });
+  const frameInput = () => ({ source: attached.value });
   return {
     renderer,
     draw: () => renderer.draw(frameInput()),
@@ -453,11 +445,12 @@ describe('factory contract', () => {
           );
         },
       );
+      const exportLibrary = vi.fn<PipelineLibrary['export']>(() => ok(empty));
       const library = {
         collect,
         prepare,
         inspect: () => inspection,
-        export: () => ok(empty),
+        export: exportLibrary,
       } satisfies PipelineLibrary;
       const adapter = new RhiNullAdapter();
       const device = Object.assign((await adapter.requestDevice()).unwrap(), {
@@ -475,12 +468,22 @@ describe('factory contract', () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const renderer = await constructRenderer(
         { width: 64, height: 64, getContext: () => null },
-        { rhi: backend, pipelineLibrary: empty, backgroundPipelineLibrary: background },
+        {
+          rhi: backend,
+          pipelineLibrary: empty,
+          backgroundPipelineLibrary: background,
+          backgroundPipelineLibraryConcurrency: 2,
+        },
         { shaderManifestUrl: renderLifecycleManifestUrl() },
       );
       try {
         // Readiness never waits for the still-pending background lane.
         expect((await renderer.initialization).ok).toBe(true);
+        // The export selection reaches the device library only when the inspection asks for it.
+        renderer.inspect({ pipelineLibrary: true });
+        expect(exportLibrary).toHaveBeenLastCalledWith(undefined, undefined);
+        renderer.inspect({ pipelineLibrary: true, pipelineLibraryRequestedOnly: true });
+        expect(exportLibrary).toHaveBeenLastCalledWith(undefined, { requestedOnly: true });
         expect(
           renderer.inspect({ pipelineLibraryCollection: true }).pipelineLibraryCollecting,
         ).toBe(true);
@@ -495,6 +498,7 @@ describe('factory contract', () => {
           background,
           expect.objectContaining({
             background: true,
+            concurrency: 2,
             owner: expect.any(Object),
             sources: expect.any(Array),
           }),
@@ -554,7 +558,10 @@ describe('factory contract', () => {
       shaders: [{ code: '// background' }],
     };
     const library = () => {
-      const prepare = vi.fn(async (_manifest: PipelineLibraryManifest) => ok(inspection));
+      const prepare = vi.fn(
+        async (_manifest: PipelineLibraryManifest, _options?: PipelineLibraryPrepareOptions) =>
+          ok(inspection),
+      );
       return {
         prepare,
         inspect: () => inspection,
@@ -603,6 +610,8 @@ describe('factory contract', () => {
           sources: expect.any(Array),
         }),
       );
+      // Unconfigured: the RHI keeps its hardware-based default.
+      expect(firstLibrary.prepare.mock.lastCall?.[1]).not.toHaveProperty('concurrency');
       await vi.waitFor(() =>
         expect(renderer.inspect().backgroundPipelineLibraryState).toBe('done'),
       );
@@ -796,11 +805,7 @@ describe('factory contract', () => {
     const lease = attached.value;
     expect(world.update().ok).toBe(true);
 
-    const frame = renderer.draw({
-      leases: [lease],
-      camera: { lease },
-      environment: { lease },
-    });
+    const frame = renderer.draw({ source: lease });
     expect(frame.ok, frame.ok ? '' : JSON.stringify(frame.error)).toBe(true);
     if (!frame.ok || frame.value === undefined) return;
 
@@ -837,7 +842,7 @@ describe('factory contract', () => {
       if (!attached.ok) throw attached.error;
       expect(world.update().ok).toBe(true);
       const lease = attached.value;
-      const frame = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
+      const frame = renderer.draw({ source: lease });
       if (!frame.ok) throw frame.error;
       if (frame.value === undefined) throw new Error('Missing frame receipt');
       loss.resolve({ reason, message });
@@ -1039,11 +1044,7 @@ describe('factory contract', () => {
     const attached = renderer.attach(world);
     expect(attached.ok).toBe(true);
     if (!attached.ok) return;
-    const request = {
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    };
+    const request = { source: attached.value };
     const initializationFrame = renderer.draw(request);
     if (!initializationFrame.ok) throw initializationFrame.error;
     if (initializationFrame.value === undefined) throw new Error('Missing initialization receipt');
@@ -1127,11 +1128,7 @@ describe('factory contract', () => {
     expect(attached.ok).toBe(true);
     if (!attached.ok) return;
     expect(world.update().ok).toBe(true);
-    const frame = renderer.draw({
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
+    const frame = renderer.draw({ source: attached.value });
     expect(frame.ok, frame.ok ? '' : JSON.stringify(frame.error)).toBe(true);
     expect(planCalls).toBe(1);
     renderer.dispose();
@@ -1168,11 +1165,7 @@ describe('factory contract', () => {
       )
       .unwrap();
     expect(world.update().ok).toBe(true);
-    const frame = renderer.draw({
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
+    const frame = renderer.draw({ source: attached.value });
     expect(frame.ok, frame.ok ? '' : JSON.stringify(frame.error)).toBe(true);
     if (frame.ok && frame.value !== undefined) {
       expect(frame.value.barrelDistortion).toMatchObject({
@@ -1287,35 +1280,17 @@ describe('factory contract', () => {
       )
       .unwrap();
     expect(world.update().ok).toBe(true);
-    const initialDraw = renderer.draw({
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
+    const initialDraw = renderer.draw({ source: attached.value });
     expect(initialDraw.ok).toBe(true);
     invalid = true;
-    const candidateDraw = renderer.draw({
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
+    const candidateDraw = renderer.draw({ source: attached.value });
     expect(candidateDraw.ok).toBe(true);
     await Promise.resolve();
-    const pendingDraw = renderer.draw({
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
+    const pendingDraw = renderer.draw({ source: attached.value });
     expect(pendingDraw.ok).toBe(true);
     const lastKnownGoodPasses = [...renderer.perFramePassNames];
     expect(lastKnownGoodPasses.length).toBeGreaterThan(0);
-    expect(
-      renderer.draw({
-        leases: [attached.value],
-        camera: { lease: attached.value },
-        environment: { lease: attached.value },
-      }).ok,
-    ).toBe(true);
+    expect(renderer.draw({ source: attached.value }).ok).toBe(true);
     expect(featurePlanCalls).toBeGreaterThan(1);
     expect(featureErrors).toEqual([]);
     expect(renderer.inspect().featureDiagnostics[0]).toMatchObject({ status: 'active' });
@@ -1396,11 +1371,7 @@ describe('factory contract', () => {
       { component: MeshRenderer, data: {} },
     );
     expect(world.update().ok).toBe(true);
-    const frame = renderer.draw({
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
+    const frame = renderer.draw({ source: attached.value });
     expect(frame.ok, JSON.stringify(errorDetails)).toBe(true);
     expect(renderer.inspect().standardLighting).toMatchObject({
       producer: 'none',
@@ -1429,11 +1400,7 @@ describe('factory contract', () => {
     );
     expect(spotLight.ok).toBe(true);
     expect(world.update().ok).toBe(true);
-    const rejected = renderer.draw({
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
+    const rejected = renderer.draw({ source: attached.value });
     expect(rejected.ok).toBe(false);
     expect(errors).toContain('standard-cluster-transport-unavailable');
     expect(renderer.perFramePassNames).toEqual(lastSuccessfulPasses);
@@ -1501,12 +1468,15 @@ describe('factory contract', () => {
       { shaderManifestUrl: manifest },
     );
     expect((await renderer.initialization).ok).toBe(true);
+    const attached = renderer.attach(new World());
+    if (!attached.ok) throw attached.error;
+    const source = attached.value;
     expect(renderer.releaseSurface().ok).toBe(true);
     expect(renderer.releaseSurface().ok).toBe(true);
-    expect(renderer.draw([], { cameraOwner: 0, resourceOwner: 0 }).ok).toBe(false);
+    expect(renderer.draw({ source }).ok).toBe(false);
     expect(renderer.restoreSurface().ok).toBe(true);
     expect(renderer.restoreSurface().ok).toBe(true);
-    expect(renderer.draw([], { cameraOwner: 0, resourceOwner: 0 }).ok).toBe(true);
+    expect(renderer.draw({ source }).ok).toBe(true);
   });
 
   it('does not unconfigure a surface after its ownership was released', async () => {
@@ -1548,11 +1518,7 @@ describe('factory contract', () => {
       expect(attached.ok).toBe(true);
       if (!attached.ok) return;
       expect(world.update().ok).toBe(true);
-      const frame = renderer.draw({
-        leases: [attached.value],
-        camera: { lease: attached.value },
-        environment: { lease: attached.value },
-      });
+      const frame = renderer.draw({ source: attached.value });
       expect(frame.ok, frame.ok ? '' : JSON.stringify(frame.error)).toBe(true);
     };
     const moduleBoundary = vi.fn();
@@ -1648,11 +1614,7 @@ describe('factory contract', () => {
       .unwrap();
     expect(world.update().ok).toBe(true);
     expect([...world.query({ read: [LocalCamera], with: [Transform] }).unwrap()]).toHaveLength(1);
-    const frameInput = () => ({
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
+    const frameInput = () => ({ source: attached.value });
 
     const first = renderer.draw(frameInput());
     expect(first.ok, first.ok ? '' : JSON.stringify(first.error)).toBe(true);
@@ -1682,6 +1644,7 @@ describe('factory contract', () => {
     expect(pending).toHaveLength(1);
 
     expect((await renderer.dispose()).ok).toBe(true);
+
     expect((await renderer.dispose()).ok).toBe(true);
     expect(moduleSources.filter((source) => source.includes('fs_taa_resolve'))).toHaveLength(1);
   });
@@ -1759,11 +1722,7 @@ describe('factory contract', () => {
       )
       .unwrap();
     expect(world.update().ok).toBe(true);
-    const frameInput = () => ({
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
+    const frameInput = () => ({ source: attached.value });
     let first = renderer.draw(frameInput());
     if (!first.ok) {
       await Promise.resolve();
@@ -1831,11 +1790,7 @@ describe('factory contract', () => {
         },
       )
       .unwrap();
-    const frameInput = () => ({
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
+    const frameInput = () => ({ source: attached.value });
     expect(world.update().ok).toBe(true);
     expect(renderer.draw(frameInput()).ok).toBe(true);
     const dynamicInspection = renderer.inspect();
@@ -1878,11 +1833,7 @@ describe('factory contract', () => {
         },
       )
       .unwrap();
-    const frameInput = () => ({
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
+    const frameInput = () => ({ source: attached.value });
     expect(world.update().ok).toBe(true);
     expect(renderer.draw(frameInput()).ok).toBe(true);
     expect(renderer.inspect().perFramePassNames).not.toContain('standard-scene-coverage');
@@ -1931,11 +1882,7 @@ describe('factory contract', () => {
         },
       )
       .unwrap();
-    const frameInput = () => ({
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
+    const frameInput = () => ({ source: attached.value });
     expect(world.update().ok).toBe(true);
     expect(renderer.draw(frameInput()).ok).toBe(true);
     expect(renderer.inspect().perFramePassNames).not.toContain('motion-blur');
@@ -2018,11 +1965,7 @@ describe('factory contract', () => {
             })
             .unwrap();
           expect(world.update().ok).toBe(true);
-          const draw = renderer.draw({
-            leases: [attached.value],
-            camera: { lease: attached.value },
-            environment: { lease: attached.value },
-          });
+          const draw = renderer.draw({ source: attached.value });
           expect(
             draw.ok,
             JSON.stringify({ error: draw.ok ? undefined : draw.error, events: errors }),
@@ -2086,11 +2029,7 @@ describe('factory contract', () => {
         { component: MotionBlur, data: { targetFps: 59.5 } },
       )
       .unwrap();
-    const frameInput = () => ({
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
+    const frameInput = () => ({ source: attached.value });
     expect(world.update().ok).toBe(true);
 
     const draw = renderer.draw(frameInput());
@@ -2206,11 +2145,7 @@ describe('factory contract', () => {
         },
       )
       .unwrap();
-    const frameInput = () => ({
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
+    const frameInput = () => ({ source: attached.value });
     expect(world.update().ok).toBe(true);
     let first = renderer.draw(frameInput());
     if (!first.ok) {
@@ -2270,11 +2205,7 @@ describe('factory contract', () => {
       .unwrap();
     expect(world.update().ok).toBe(true);
     expect(renderer.inspect().bloom.state).toBe('off');
-    const on = renderer.draw({
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
+    const on = renderer.draw({ source: attached.value });
     expect(on.ok).toBe(true);
     const onInspection = renderer.inspect().bloom;
     expect(onInspection.state).toBe('active');
@@ -2291,11 +2222,7 @@ describe('factory contract', () => {
 
     world.set(camera, LocalCamera, { bloom: BLOOM_DISABLED }).unwrap();
     expect(world.update().ok).toBe(true);
-    const off = renderer.draw({
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
+    const off = renderer.draw({ source: attached.value });
     expect(off.ok).toBe(true);
     const offInspection = renderer.inspect().bloom;
     expect(['retiring', 'off']).toContain(offInspection.state);
@@ -2305,13 +2232,7 @@ describe('factory contract', () => {
     expect(retiringGeneration).toBe(firstGeneration);
     world.set(camera, LocalCamera, { bloom: BLOOM_ENABLED }).unwrap();
     expect(world.update().ok).toBe(true);
-    expect(
-      renderer.draw({
-        leases: [attached.value],
-        camera: { lease: attached.value },
-        environment: { lease: attached.value },
-      }).ok,
-    ).toBe(true);
+    expect(renderer.draw({ source: attached.value }).ok).toBe(true);
     const recoveredInspection = renderer.inspect().bloom;
     expect(recoveredInspection.state).toBe('active');
     expect(recoveredInspection.resourceCount).toBeGreaterThan(0);
@@ -3008,11 +2929,7 @@ describe('factory contract', () => {
         },
       },
     );
-    const input = () => ({
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
+    const input = () => ({ source: attached.value });
     try {
       expect((await renderer.initialization).ok).toBe(true);
       expect(world.update().ok).toBe(true);
@@ -3158,7 +3075,7 @@ describe('factory contract', () => {
       expect(acquireCanvasContext).toHaveBeenLastCalledWith(newCanvas);
       expect(world.identity).toBe(identity);
       expect(world.update().ok).toBe(true);
-      const drawn = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
+      const drawn = renderer.draw({ source: lease });
       expect(drawn.ok).toBe(true);
       if (!drawn.ok) throw drawn.error;
       if (drawn.value === undefined) throw new Error('Missing frame receipt');
@@ -3290,11 +3207,7 @@ describe('factory contract', () => {
         },
       },
     );
-    const input = () => ({
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
+    const input = () => ({ source: attached.value });
     const assertZero = (): void => {
       expect(renderer.inspect().bloom).toMatchObject({
         graphStatus: 'empty',
@@ -3450,11 +3363,7 @@ describe('factory contract', () => {
         },
       )
       .unwrap();
-    const input = () => ({
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
+    const input = () => ({ source: attached.value });
     try {
       expect((await renderer.initialization).ok).toBe(true);
       expect(world.update().ok).toBe(true);

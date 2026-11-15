@@ -37,14 +37,14 @@ import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.m
 // composed result is reproduced inline below by resolving the common.wgsl
 // import chain manually. When the engine adds a `composeCustomShader`
 // API this manual resolution should be replaced.
-
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { emitSmokeReceipt } from '../../../../shared/scripts/smoke-receipt.mjs';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { readShaderManifestText } from '../../../../../scripts/lib/shader-manifest.mjs';
 
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
@@ -264,7 +264,7 @@ if (!existsSync(DEMO_MANIFEST_PATH)) {
   console.error(`[smoke] FAIL - dist/shaders/manifest.json missing at ${DEMO_MANIFEST_PATH}`);
   process.exit(1);
 }
-const demoManifest = JSON.parse(readFileSync(DEMO_MANIFEST_PATH, 'utf8'));
+const demoManifest = JSON.parse(readShaderManifestText(DEMO_MANIFEST_PATH));
 const MANIFEST_URL = `data:application/json,${encodeURIComponent(JSON.stringify(demoManifest))}`;
 
 let renderer;
@@ -398,11 +398,11 @@ const outlineMatHandle = world.assets.create({
   kind: 'material',
   passes: [
     {
-      // Outline pass shares URP's main scene pass — see src/index.ts for
-      // the tag rationale (post-#344 pipeline-driven pass selector
-      // requires LightMode=Forward to be selected; pass-name
-      // 'ForwardOutline' documents intent within the multi-pass material).
-      name: 'ForwardOutline',
+        // Outline pass shares URP's main scene pass — see src/index.ts for
+        // the tag rationale (post-#344 pipeline-driven pass selector
+        // requires LightMode=Forward to be selected; pass-name
+        // 'ForwardOutline' documents intent within the multi-pass material).
+        name: 'ForwardOutline',
       program: { module: 'learn_render::outline_solid' },
       renderState: {
         stencilReadMask: 0xFF,
@@ -521,7 +521,7 @@ let framesObserved = 0;
 const TARGET_FRAMES = SMOKE_MIN_FRAMES;
 for (let i = 0; i < TARGET_FRAMES; i++) {
   world.update(1 / 60).unwrap();
-  await drawReadyFrame(renderer, { leases: [lease], camera: { lease }, environment: { lease } });
+  await drawReadyFrame(renderer, { source: lease });
   framesObserved++;
 }
 const device = sharedDevice;

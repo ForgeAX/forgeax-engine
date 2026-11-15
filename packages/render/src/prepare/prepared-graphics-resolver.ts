@@ -6,6 +6,7 @@ import {
   RenderFeaturePreparedStateMismatchError,
   RenderFeatureStageFailedError,
 } from '../errors/render';
+import type { RenderFeatureMaterialShaderBindingContract } from '../features/plan';
 import type {
   PreparedGraphicsResourceLease,
   RenderFeatureResolvedGpuBuffer,
@@ -48,6 +49,7 @@ export type PreparedGraphicsResolvedResource =
       readonly handle: RenderPipeline;
       /** Renderer-selected context; never authored by a RenderFeature. */
       readonly standardLighting?: boolean;
+      readonly bindingContract?: RenderFeatureMaterialShaderBindingContract;
       /** Derived from the same material state used to construct the pipeline. */
       readonly writesDepth?: boolean;
       /** Derived from the pipeline blend; selects the translucent View copy. */
@@ -58,6 +60,7 @@ export type PreparedGraphicsResolvedResource =
       readonly reference: RenderFeaturePreparedRef;
       readonly handle: BindGroup | undefined;
       readonly pipeline?: RenderPipeline;
+      readonly bindingContract?: RenderFeatureMaterialShaderBindingContract;
       readonly descriptor?: RenderFeatureBindingsDescriptor;
       readonly dynamicOffsets?: readonly number[];
       /** The bound pipeline's translucent fog composition, when it blends. */
@@ -82,8 +85,14 @@ export interface PreparedGraphicsResolverInput {
   readonly lookup: (reference: RenderFeaturePreparedRef) => PreparedGraphicsItem | undefined;
   readonly resolvePipeline: (
     descriptor: PreparedGraphicsNormalizedDescriptor & { readonly kind: 'pipeline' },
+    reference: RenderFeaturePreparedRef<'pipeline'>,
   ) => Result<
-    RenderPipeline | { readonly handle: RenderPipeline; readonly standardLighting: boolean },
+    | RenderPipeline
+    | {
+        readonly handle: RenderPipeline;
+        readonly standardLighting: boolean;
+        readonly bindingContract?: RenderFeatureMaterialShaderBindingContract;
+      },
     unknown
   >;
   readonly resolveBindings: (
@@ -309,7 +318,7 @@ export function createPreparedGraphicsResolver(
         ),
       );
     }
-    const created = input.resolvePipeline(descriptor);
+    const created = input.resolvePipeline(descriptor, reference);
     if (!created.ok || created.value === undefined) {
       return err(
         preparationFailure(
@@ -333,7 +342,13 @@ export function createPreparedGraphicsResolver(
         materialDepthStencil(descriptor.depthFormat, descriptor.renderState).depthWriteEnabled ===
           true,
       ...('handle' in created.value
-        ? { handle: created.value.handle, standardLighting: created.value.standardLighting }
+        ? {
+            handle: created.value.handle,
+            standardLighting: created.value.standardLighting,
+            ...(created.value.bindingContract === undefined
+              ? {}
+              : { bindingContract: created.value.bindingContract }),
+          }
         : { handle: created.value }),
       ...(fogComposition === undefined ? {} : { fogComposition }),
     };
@@ -384,6 +399,9 @@ export function createPreparedGraphicsResolver(
       reference,
       handle: binding?.handle ?? (created.value as BindGroup | undefined),
       pipeline: pipeline.value.handle,
+      ...(pipeline.value.bindingContract === undefined
+        ? {}
+        : { bindingContract: pipeline.value.bindingContract }),
       descriptor,
       ...(binding?.dynamicOffsets === undefined ? {} : { dynamicOffsets: binding.dynamicOffsets }),
       ...(pipeline.value.fogComposition === undefined

@@ -52,7 +52,8 @@ export async function startViewLiveIntegration({ page, projectRoot, config = {} 
     const target = state.projectTarget;
     if (!target?.url) throw new Error('Engine did not publish its project target URL');
     targetUrl = target.url;
-    await page.goto(target.url);
+    // Native Shell activation owns readiness, independently of pending page resources.
+    await page.goto(target.url, { waitUntil: 'domcontentloaded' });
     await waitForLiveViewerShell(page, {
       timeout: config.readyTimeout ?? 120_000,
     });

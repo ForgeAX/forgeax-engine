@@ -156,9 +156,9 @@ it.each([
   const actual = PersistentRenderScene.prototype.followPublication;
   const follow = vi
     .spyOn(PersistentRenderScene.prototype, 'followPublication')
-    .mockImplementation(function (this: PersistentRenderScene, adoption, frame) {
+    .mockImplementation(function (this: PersistentRenderScene, adoption, frame, viewIdentity) {
       scenes.add(this);
-      return actual.call(this, adoption, frame);
+      return actual.call(this, adoption, frame, viewIdentity);
     });
   const consume = vi.spyOn(SceneComposition.prototype, 'consume');
   try {

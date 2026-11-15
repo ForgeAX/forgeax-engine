@@ -12,11 +12,7 @@ import {
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { createBuiltinMaterialAsset } from '@forgeax/engine-shader';
-import {
-  ParticleEffectPlayer,
-  VFX_GPU_RUNTIME_RESOURCE_KEY,
-  type VfxGpuRuntime,
-} from '@forgeax/engine-vfx';
+import { ParticleEffectPlayer, VFX_GPU_RUNTIME_RESOURCE_KEY } from '@forgeax/engine-vfx';
 import { cookParticleCodeEffect } from '@forgeax/engine-vfx-compiler';
 import { createVfxRuntimeHost } from '@forgeax/engine-vfx-render';
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
@@ -255,7 +251,7 @@ it.each([
           });
         },
       });
-      const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+      const runtime = world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY);
       expect(
         runtime.snapshot(),
         JSON.stringify(renderer.inspect().featureDiagnostics),

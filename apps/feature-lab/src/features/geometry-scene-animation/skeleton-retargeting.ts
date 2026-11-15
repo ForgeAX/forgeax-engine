@@ -1,4 +1,5 @@
 import {
+  AdvanceAnimationPlayer,
   AnimationPlayer,
   AnimationSet,
   AnimationTargetId,
@@ -9,7 +10,7 @@ import {
 } from '@forgeax/engine/animation';
 import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import { defineSystem, type EntityHandle, Update } from '@forgeax/engine/ecs';
-import { Name, Transform } from '@forgeax/engine/scene';
+import { Name, PropagateTransforms, Transform } from '@forgeax/engine/scene';
 import type { AnimationClip } from '@forgeax/engine/types';
 import { CheckList, defineFeature } from '../../lab/feature';
 import { spawnStage } from '../../lab/stage';
@@ -108,8 +109,8 @@ export default defineFeature({
     const system = defineSystem({
       name: 'featureLabRetarget',
       queries: [],
-      after: ['advanceAnimationPlayer'],
-      before: ['propagateTransforms'],
+      after: [AdvanceAnimationPlayer],
+      before: [PropagateTransforms],
       fn() {
         for (const joint of target) world.set(joint, Transform, { quat: [0, 0, 0, 1] }).unwrap();
         const start = performance.now();

@@ -37,6 +37,13 @@ Material programs declare their resource interface with `program.bindings`.
 Omission selects `render-material`; WGSL identifiers never select an interface.
 The same declaration travels in `MaterialProgramAbi` across Pack and Worker publication.
 
+Water's closed static vocabulary separates `waterVertexMapping` from
+`waterInfo`, Baked/fixed field choices and waves. Mapping defaults to true and
+controls vertex height mapping only; disabling it preserves fragment reads.
+`waterDynamicBoundsClip` is an independent Boolean choice, defaulting to false
+for arbitrary roots. Stock family choices and same-view descriptor requirements
+are owned by the [Water material contract](../water/README.md#material-family).
+
 | `bindings` | Group 0 | Standard material group 1 |
 |:--|:--|:--|
 | `group-0` | No resources | No |
@@ -46,6 +53,11 @@ The same declaration travels in `MaterialProgramAbi` across Pack and Worker publ
 | `render-material` | View | Yes |
 | `render-material-with-scene-depth` | Scene depth at binding 0 | Yes |
 | `render-material-and-scene-depth` | View and scene depth at binding 1 | Yes |
+
+An interface without the Standard material groups ends at group 0 on every
+capability. Its uniform-fallback programs never select the packed cluster and
+atmosphere records of group 2: View fog keeps its height law and omits the
+physical-atmosphere terms, as the packaged particle programs do.
 
 Depth interfaces also require `program.sceneDepth`: `read-only` samples the
 current depth attachment without writing it; `before-pass` requests the logical
@@ -146,6 +158,15 @@ dimension or binding differs. Read `error.code`, `error.detail`, and
 `error.hint`, repair the WGSL or producer shape, and recook the same GUID; do
 not infer a layer or slice from a URL.
 
+## Texture mip skip opt-in
+
+`TextureAsset.skippableMips?: boolean` declares that a packed 2D or 2D-array
+chain still means the same texture when the Renderer's `textureMipSkip`
+starts it below the authored base level. Set it for colour, normal and
+roughness atlases. Leave it unset for lookup tables, height or other
+texel-addressed data and any texture whose texel extent is part of its meaning.
+Omitted means every authored level is uploaded.
+
 ## Material contract index
 
 ## 灯光与资产入口
@@ -239,12 +260,27 @@ read by `assets.read(handle)`. Errors retain `code`,
 
 `AssetEvidence` is the derived, read-only join for one GUID. Its source of truth remains the producer source declaration, the catalog locator (`packageUrl` and optional `cookReceiptUrl`), the producer-owned `CookReceipt`, and Pack v2 artifact verification. This package owns the TypeScript vocabulary and closed error union; it does not infer facts from a catalog row alone.
 
-The ScriptablePack consumer matrix is the complete durable union: `mesh`,
-`material`, `scene`, `texture`, `equirect`, `sampler`, `font`,
-`render-pipeline`, `tileset`, `video`, `skeleton`, `skin`, `animation-clip`,
-`animation-graph`, `audio`, `particle-effect`, `ies-profile`, and `plugin`. The authoritative ordered
-list remains `SCRIPTABLE_PACK_ASSET_KINDS`; this paragraph is an AI-facing
-index, not a second union.
+The ScriptablePack consumer matrix follows `SCRIPTABLE_PACK_ASSET_KINDS`:
+`plugin`, `mesh`, `material`, `scene`, `texture`, `texture-generator`,
+`gpu-texture`, `equirect`, `sampler`, `font`, `render-pipeline`, `tileset`,
+`video`, `skeleton`, `skin`, `animation-clip`, `animation-graph`, `audio`,
+`particle-effect`, `ies-profile`, `terrain`, `navigation-mesh`, `water-body`,
+`water-zone`, `water-wave-set`, `water-brush-recipe`, and
+`water-simulation-recipe`. The source list is authoritative; this paragraph is a discovery index.
+
+The Water payload contracts live in [water-contracts.ts](./src/water-contracts.ts).
+`water-body` retains River/Lake/Ocean/custom source facts and Pack-published mesh
+and geometry references. `water-zone` declares the WaterInfo extent, resolution
+and body membership. `water-wave-set` publishes generated or predefined waves
+with their input digest, bounds and time source. `water-brush-recipe` declares
+the base terrain, source bodies and ordered brush actors. `water-simulation-recipe`
+selects the fluid or versioned advanced simulation configuration. Pack owns
+cooking and publication; the Water subsystem owns runtime execution.
+
+`TextureAsset` retains its existing byte-texture contract. Independent
+`GpuTextureAsset` (`gpu-texture`) references a `texture-generator` and one output;
+its generated pixels, mip chain and GPU objects are renderer-owned. See
+[GPU declarations](../pack/README.md#runtime-gpu-texture-declarations).
 
 `PluginAsset` stores a portable program key and JSON configuration. Reading it
 does not evaluate a module or activate behavior; the Plugin package mounts the
@@ -348,7 +384,7 @@ interface ParticleEffectAsset {
   readonly programFingerprint: string;
   readonly emitters: readonly { readonly id: string; readonly capacity: number }[];
   readonly program: {
-    readonly format: 'forgeax-vfx-program-4';
+    readonly format: 'forgeax-vfx-program-5';
     readonly fingerprint: string;
     readonly emitters: readonly {
       readonly id: string;
@@ -798,3 +834,13 @@ lowercase and identity generation remain Pack policies. Pack derives its
 Import and verified runtime envelopes derive their shared identity and payload
 fields from AssetEnvelope. Each boundary retains its own reference table and
 artifact representation.
+
+## Runtime GPU texture assets
+
+`TextureAsset` is the closed union of `ByteTextureAsset` and `GeneratedTextureAsset`.
+Only byte textures own `data`/`encoding`. A generated texture holds a generator
+GUID/output reference and a derived descriptor; reading it never reads GPU pixels.
+`TextureGeneratorAsset` declares finite raster passes, numeric parameters, explicit
+texture/sampler inputs, output descriptors and transient targets. Prepared program
+artifacts carry WGSL, reflection, compiler provenance and selected target formats.
+`validateTextureGenerator(value, true)` requires that prepared closure.

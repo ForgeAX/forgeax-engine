@@ -1,3 +1,7 @@
+import { GameBarrierRouteOrder } from '../../src/system-order';
+import { GameCounterattackOrder, GameProjectileSimulationOrder } from "../../src/system-order";
+import { PhysicsCollisionSync } from "@forgeax/engine-physics-rapier3d";
+import { defineSystem } from "@forgeax/engine-ecs";
 import type { AssetHandle } from '@forgeax/engine-types';
 import { FixedUpdate, defineComponent, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import {
@@ -198,11 +202,12 @@ export function createBarrierRoute(
     installSystem: (ctx) => {
       physics = ctx.physics;
       reportImpact = ctx.onImpact;
-      world.addSystem(FixedUpdate, {
+      const systemToken1 = defineSystem({
         name: 'game-barrier-route',
+sets: [GameBarrierRouteOrder],
         runIf: inState(GameState, 'Play'),
-        after: ['physicsCollisionSync', 'game-projectile-simulation'],
-        before: ['game-counterattack'],
+        after: [PhysicsCollisionSync, GameProjectileSimulationOrder],
+        before: [GameCounterattackOrder],
         queries: [],
         fn: () => {
           let current = state();
@@ -213,7 +218,8 @@ export function createBarrierRoute(
             current = state();
           }
         },
-      }).unwrap();
+      });
+world.addSystem(FixedUpdate, systemToken1).unwrap();
     },
     admitImpact,
     reset,

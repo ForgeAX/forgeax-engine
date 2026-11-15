@@ -3,16 +3,17 @@ import { runtimeBinding } from '@forgeax/apps-shared/asset-runtime-config';
 import { createApp } from '@forgeax/engine-app/browser';
 
 const canvas = document.querySelector<HTMLCanvasElement>('#app') as HTMLCanvasElement;
+const bootstrapUrl = new URL(
+        import.meta.env.DEV ? '/src/worker-bootstrap.ts' : '/assets/path-bootstrap.js',
+        location.href,
+      );
 const created = await createApp(
   canvas,
   {
     ...(import.meta.env.DEV && runtimeBinding ? { assetRuntimeBinding: runtimeBinding } : {}),
     execution: {
       workers: { engine: true, render: false, kernels: false },
-      bootstrap: new URL(
-        import.meta.env.DEV ? '/src/worker-bootstrap.ts' : '/assets/path-bootstrap.js',
-        location.href,
-      ),
+      bootstrap: bootstrapUrl,
       diagnostics: { rhiCapture: true },
       startupTimeoutMs: 90000,
       frameTimeoutMs: 30000,
@@ -45,22 +46,22 @@ Object.assign(globalThis, {
   __pathWorker: {
     app,
     report: () => app.execution.report(),
-    snapshot: () => inspect("return world.getResource('PathSnapshot')();"),
+    snapshot: () => inspect(`return world.getResource((await _import(${JSON.stringify(bootstrapUrl.href)})).PathSnapshotResource)();`),
     async step(frames: number) {
       app.resume().unwrap();
       await inspect(
         "const f=world.components.resolve('PathFollower');for(const row of world.query({write:[f]}).unwrap())row.mut(f).paused=false;",
       );
-      const first = (await inspect("return world.getResource('PathSnapshot')();")) as {
+      const first = (await inspect(`return world.getResource((await _import(${JSON.stringify(bootstrapUrl.href)})).PathSnapshotResource)();`)) as {
         tick: number;
       };
       while (
-        ((await inspect("return world.getResource('PathSnapshot')();")) as { tick: number }).tick <
+        ((await inspect(`return world.getResource((await _import(${JSON.stringify(bootstrapUrl.href)})).PathSnapshotResource)();`)) as { tick: number }).tick <
         first.tick + frames
       )
         await new Promise((resolve) => setTimeout(resolve, 5));
       const snapshot = await inspect(
-        "const f=world.components.resolve('PathFollower');for(const row of world.query({write:[f]}).unwrap())row.mut(f).paused=true;return world.getResource('PathSnapshot')();",
+        `const f=world.components.resolve('PathFollower');for(const row of world.query({write:[f]}).unwrap())row.mut(f).paused=true;return world.getResource((await _import(${JSON.stringify(bootstrapUrl.href)})).PathSnapshotResource)();`,
       );
       app.pause().unwrap();
       return snapshot;
@@ -72,7 +73,7 @@ Object.assign(globalThis, {
       app.resume().unwrap();
       try {
         return await inspect(
-          "const before=world.getResource('PathSnapshot')();const r=await rhiCapture.captureFrame();return r.ok?{ok:true,value:{bytes:r.value.bytes,digest:r.value.digest},snapshot:world.getResource('PathSnapshot')(),tickRange:[before.tick,world.getResource('PathSnapshot')().tick]}:{ok:false,error:r.error};",
+          `const before=world.getResource((await _import(${JSON.stringify(bootstrapUrl.href)})).PathSnapshotResource)();const r=await rhiCapture.captureFrame();return r.ok?{ok:true,value:{bytes:r.value.bytes,digest:r.value.digest},snapshot:world.getResource((await _import(${JSON.stringify(bootstrapUrl.href)})).PathSnapshotResource)(),tickRange:[before.tick,world.getResource((await _import(${JSON.stringify(bootstrapUrl.href)})).PathSnapshotResource)().tick]}:{ok:false,error:r.error};`,
         );
       } finally {
         app.pause().unwrap();

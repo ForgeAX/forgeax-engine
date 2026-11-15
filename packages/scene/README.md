@@ -1,5 +1,57 @@
 # `@forgeax/engine-scene`
 
+## Saved Water fluid instance
+
+`WaterFluidSimulation` binds a saved `water-simulation-recipe` with
+`system: 'fluid-simulation'` to one live `WaterBodyInstance` entity through the
+normal Scene asset/entity reference remapping. Its entity transform supplies
+the world XZ grid center; the visual grid stays axis-aligned and uses metres.
+`waveFoamCenterM` is a separate explicit world-space center on the same component;
+its capture size and resolution come from the recipe's `waveFoam` configuration.
+Changing that live center does not edit the recipe or reset solver history.
+`enabled` defaults true. Increment `resetRevision` to discard accepted impulses
+and submitted RT history. Only one enabled simulation may own a Body in a World.
+Scene persists these references and controls; CPU simulation state and graph
+handles are not saved fields. See the [Water contract](../water/README.md#local-fluid-simulation).
+
+## Saved Water anchors
+
+`WaterPontoonSet.configurationVersion: 1` persists one exclusive anchor mode.
+Relative mode stores packed XYZ centers in `anchorsM` and no socket references.
+Socket mode stores one descendant `socketEntities` reference and one world
+offset per radius. Scene instantiation remaps `array<entity>` references through
+the normal instance binding; runtime validates the live hierarchy each fixed
+step; the root itself is not a valid socket. Radii are world meters.
+`enabledPontoons` is empty (all enabled) or one 0/1 value per radius.
+Disabled points do not participate in the sprung
+coefficient solve. The [Water README](../water/README.md) owns formula, SI-unit
+and source-quirk details.
+
+## Saved Water displacement source
+
+`WaterContactProbeSet` explicitly owns contact appearance for its native root
+and generation. Render retains its latest pending state per probe; it takes
+precedence over implicit pontoon foam proxies. This does not change pontoon
+forces or the independently evolved wave field.
+
+`WaterShallowCollider` retains its ordinary native collision participation.
+For the opt-in gravity-wave model, `dispersiveMotion` uses the closed
+`WaterDispersiveMotion` enum. `fullDisplacement` is the default: moving and
+entering geometry contributes its complete submerged-volume change.
+`surfaceTransport` uses the current native submerged geometry and horizontal
+velocity to export water from its facing boundary. Compound elements form one
+submerged union. The conservative flux divergence drives depth-resolved waves;
+retreating stern geometry is not a second entry source. Zero horizontal velocity
+injects no wave even during passive heave, pitch or roll. Existing waves continue
+propagating and foam decays after stopping. Primitive and distance-field geometry
+use the current native pose, without freezing an initial immersion envelope.
+Native buoyancy retains its mass, force points and pose authority; it receives
+background and external waves through its receiver-qualified field. Abort and
+partial submission cannot advance wave or source history.
+Use full displacement for falling objects and surface transport for sustained
+floating displacement. This source model remains experimental; it does not
+establish fully coupled fluid-body radiation or UE equivalence.
+
 ## Explicit instance field writes
 
 `worldWriteSceneField(world, root, sceneEntity(sourceKey, address), component,
@@ -32,9 +84,9 @@ await context.fiber.restart();
 `scenePlugin()` is a native Cordis plugin. Its Fiber installs hierarchy
 propagation and removes it when the realm unloads.
 
-`PROPAGATE_TRANSFORMS_FIXED_SYSTEM` is the public FixedUpdate ordering anchor for
+`PropagateTransformsFixed` is the public FixedUpdate ordering anchor for
 local Transform writers, including navigation and distance-based path following. Register a writer with
-`before: [PROPAGATE_TRANSFORMS_FIXED_SYSTEM]` after installing `scenePlugin()`.
+`before: [PropagateTransformsFixed]` after installing `scenePlugin()`.
 
 The direct `propagateTransforms(world)` entry point returns `Result<void, SceneError>`;
 branch on `error.code` and repair a diagnosable stale edge, mirror mismatch, or
@@ -99,15 +151,6 @@ views and detached Children snapshots while resolving the entity's current row.
 Continuously moving fixed histories reuse the previous pose settled by
 before-capture. After-capture reads the final source pose without copying the
 same previous pose again; a stopped writer still receives its final settlement.
-
-```sh
-node packages/scene/bench/presentation.mjs
-```
-
-`bench/presentation-allocation.mjs` accepts a built Scene entry and a private
-output path under `node --expose-gc`. It measures the complete capture/propagation
-owner with sparse, dense, idle and catch-up workloads, keeping ordinary thread
-CPU separate from allocation sampling and checking moving/stopped child poses.
 
 > [!NOTE]
 > This opt-in CPU benchmark requires `process.threadCpuUsage` and verifies four

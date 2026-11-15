@@ -1,3 +1,4 @@
+import { World } from '@forgeax/engine-ecs';
 import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { ok } from '@forgeax/engine-types';
@@ -94,8 +95,7 @@ it('records exactly the live ordered copies through one retained real host/graph
     ].entries()) {
       current = plan(flags[0], flags[1]);
       const frame = runSingleViewFeatureFrame(host, {
-        worlds: [],
-        owner: 0,
+        world: new World(),
         frameNumber: index + 1,
         caps: device.caps,
         gpuWork: gpu,
@@ -185,8 +185,7 @@ it.each([
   ]).unwrap();
   try {
     const frame = runSingleViewFeatureFrame(host, {
-      worlds: [],
-      owner: 0,
+      world: new World(),
       frameNumber: 1,
       caps: device.caps,
       gpuWork: gpu,

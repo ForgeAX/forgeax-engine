@@ -1,3 +1,4 @@
+import { World } from '@forgeax/engine-ecs';
 import type { RhiCaps } from '@forgeax/engine-rhi';
 import { err, ok } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
@@ -60,8 +61,7 @@ describe('render feature stage scheduling', () => {
     ]).unwrap();
 
     const result = runSingleViewFeatureFrame(host, {
-      worlds: [],
-      owner: 0,
+      world: new World(),
       frameNumber: 7,
       caps,
     });
@@ -82,7 +82,7 @@ describe('render feature stage scheduling', () => {
     const second = feature('synthetic.second', events);
     const host = createRenderFeatureHost([first, second]).unwrap();
     const frame = (frameNumber: number) =>
-      runSingleViewFeatureFrame(host, { worlds: [], owner: 0, frameNumber, caps });
+      runSingleViewFeatureFrame(host, { world: new World(), frameNumber, caps });
     try {
       const before = frame(1);
       const next = frame(2);
@@ -118,8 +118,7 @@ describe('render feature stage scheduling', () => {
     ]).unwrap();
 
     const result = runSingleViewFeatureFrame(host, {
-      worlds: [],
-      owner: 0,
+      world: new World(),
       frameNumber: 8,
       caps,
     });

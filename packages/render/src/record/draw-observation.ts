@@ -65,6 +65,9 @@ export function createDrawObservation(
         entityKey: entry.source.entityKey,
         submeshIndex,
         materialHandle: material.materialHandle ?? 0,
+        ...(material.sourceAssets === undefined
+          ? {}
+          : { sourceRevision: material.sourceAssets.revision }),
         publication: publication.identity,
         program,
         pipeline,

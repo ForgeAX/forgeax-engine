@@ -135,14 +135,7 @@ async function measure(width: number, height: number, mode: 'zero-copy' | 'copy'
       if (frame === WARMUP) before = { ...counters };
       world.update(1 / 60).unwrap();
       const start = performance.now();
-      const receipt = renderValue(
-        renderer.draw({
-          leases: [lease],
-          camera: { lease },
-          environment: { lease },
-          geometryLane: 'direct',
-        }),
-      );
+      const receipt = renderValue(renderer.draw({ source: lease, geometryLane: 'direct' }));
       const submitted = performance.now();
       renderValue(await receipt.completed);
       const completed = performance.now();

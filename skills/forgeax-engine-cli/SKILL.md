@@ -37,6 +37,10 @@ game root as `pnpm exec forgeax <path> ... --json`. Exact flags come from
   the owner on demand with the same results.
 - Errors keep `code`, `expected`, `hint`, `detail`; repair the named owner. When a result
   lists `omitted.fields`, add `--detail` only if a decision needs them.
+- For an explicit browser resolution policy, the project's native build root can
+  provide `devkitAppOptions.canvasPixelRatio` (positive finite scale or `'device'`).
+  Omission stays 1x. Canvas width/height limits are ceilings, not requested output
+  dimensions; inspect completed-frame extents on the target device before reporting 720p.
 - `dev status` only reports; `dev start` with other browser options replaces the owner.
   `--backend auto` prefers hardware and reports any software fallback.
 - Playthrough scripts: wait for `html[data-forgeax-input="open"]` before the first input
@@ -498,6 +502,10 @@ forgeax project build ./games/my-game \
 | --html-head | Project-relative HTML head fragment applied before Vite and distribution sealing; use for platform script integration instead of editing dist afterward. |
 | --out-dir | Dedicated derived directory, resolved relative to project and cleared before build. |
 | --json | Complete artifact/digest closure corresponding to forgeax-dist.json. |
+
+For platform integration, locate the emitted `assets/index-*.js` page entry in
+`index.html`; `engine-*` files are internal groups. Keep sealed names and bytes
+intact instead of renaming chunks after the build.
 
 For loading/failure customization, set the build root's
 `ctx.devkitAppOptions.startupUi`; each of `loading` and `failure` accepts

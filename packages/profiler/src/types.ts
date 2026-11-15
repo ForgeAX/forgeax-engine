@@ -44,6 +44,25 @@ export interface ProfileFrameToken {
   readonly frameId: number;
 }
 
+/** Minimal identity from the exact submitted Render receipt. */
+export interface ProfileReceiptCompletionIdentity {
+  readonly profileFrame?: ProfileFrameToken | undefined;
+  readonly frameId: number;
+  readonly deviceGeneration: number;
+}
+
+/** Synchronous App CPU work performed when a profiled receipt completion is notified. */
+export interface ProfileCompletionCpuObservation {
+  readonly captureId: string;
+  readonly profileFrameId: number;
+  readonly receiptFrameId: number;
+  readonly deviceGeneration: number;
+  readonly callbackStatus: 'returned' | 'threw';
+  readonly startMicros: number;
+  readonly endMicros: number;
+  readonly durationMicros: number;
+}
+
 export interface ProfilePhaseStart {
   readonly source: ProfileSource;
   readonly phase: string;

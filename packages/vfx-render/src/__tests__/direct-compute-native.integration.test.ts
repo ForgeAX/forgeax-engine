@@ -7,7 +7,6 @@ import {
   particleEffectContribution,
   prepareVfxGpuEffect,
   VFX_GPU_RUNTIME_RESOURCE_KEY,
-  type VfxGpuRuntime,
   vfxGpuRuntimePlugin,
 } from '@forgeax/engine-vfx';
 import { cookParticleCodeEffect } from '@forgeax/engine-vfx-compiler';
@@ -126,7 +125,7 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>,c:ptr<function,Vf
   assets.release(handle).unwrap();
   assets.release(material).unwrap();
   const context = await createWorldContext(world, [vfxGpuRuntimePlugin()]),
-    runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY),
+    runtime = world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY),
     device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap(),
     shader = (await rhi.createShaderModule(device, { code: 'structural' })).unwrap();
   const codes: string[] = [],
@@ -211,8 +210,7 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>,c:ptr<function,Vf
       ['main', 'side'].map((identity) => ({
         identity,
         render: true,
-        worlds: [world],
-        owner: 0,
+        world: world,
         frameNumber,
         generation,
         caps: device.caps,

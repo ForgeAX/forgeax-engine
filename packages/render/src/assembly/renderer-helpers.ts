@@ -4,6 +4,7 @@ import type { RhiErrorListenerRegistry } from '../lifecycle';
 import type { OutputColorSpaceState } from '../output-color-space';
 import type { PipelineSpecError } from '../pipeline-spec';
 import { configurePipelineSurface, type PipelineState } from '../record/render-context';
+import type { HealthSnapshot } from '../render-contract';
 
 /** Minimum device-bound surface contract needed by lazy context configuration. */
 interface RendererSurfaceInternals {
@@ -51,6 +52,29 @@ export function rendererInitializationError(cause: unknown): RhiError {
     expected: 'Renderer.initialization three-step strict-serial succeeds',
     hint: `pipeline build raised: ${message}`,
   });
+}
+
+/**
+ * The device loss behind a failed renderer initialization, when a caller may
+ * treat it as an environment failure and assemble another backend. A native
+ * loss (`unknown`) is reported as `device-lost`. A disposed renderer or a
+ * device its owner destroyed is not a device loss.
+ */
+export function initializationDeviceLoss(
+  cause: unknown,
+  health: HealthSnapshot,
+  disposed: boolean,
+): RhiError | undefined {
+  if (disposed) return undefined;
+  if (health.reason === 'device-lost')
+    return health.detail.lostReason === 'destroyed'
+      ? undefined
+      : new RhiError({
+          code: 'device-lost',
+          expected: 'device must remain alive during renderer initialization',
+          hint: `the GPU device was lost while the renderer prepared its scene (${health.detail.message || '<empty>'}); interrupted step: ${cause instanceof Error ? cause.message : String(cause)}`,
+        });
+  return cause instanceof RhiError && cause.code === 'device-lost' ? cause : undefined;
 }
 
 export function ensureContextConfigured(

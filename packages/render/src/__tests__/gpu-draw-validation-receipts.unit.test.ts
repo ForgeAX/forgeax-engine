@@ -52,11 +52,11 @@ describe('shared GPU draw selection and submitted receipts', () => {
     expect(selection.has(source, 99)).toBe(false);
   });
 
-  it('keeps World, mesh, source draw index, geometry and resource identities separate', () => {
+  it('keeps mesh, source draw index, geometry and resource identities separate', () => {
     const row = receiptRow();
     const selection = receiptSelection([row], () => true);
     const source = row.source;
-    expect(selection.ownsAll({ ...source, worldId: 1 })).toBe(false);
+    expect(selection.ownsAll({ ...source })).toBe(true);
     expect(selection.ownsAll({ ...source, assetHandle: 10 })).toBe(false);
     const replacement = new MaterialResource(source.material.snapshot);
     expect(selection.ownsAll({ ...source, material: replacement, materials: [replacement] })).toBe(
@@ -113,22 +113,20 @@ describe('shared GPU draw selection and submitted receipts', () => {
   it('answers GPU-owned rows on demand and combines them with CPU receipts', () => {
     const world = worldRenderResources(new World());
     const bindings = new DynamicGeometryReceipt();
-    const owns = vi.fn(
-      (_worldId: number, entity: number, mesh: number) => entity === 42 && mesh === 9,
-    );
-    bindings.onRenderableDraw([world]);
-    bindings.onGpuOwnedDraws([world], owns);
+    const owns = vi.fn((entity: number, mesh: number) => entity === 42 && mesh === 9);
+    bindings.onRenderableDraw(world);
+    bindings.onGpuOwnedDraws(world, owns);
     bindings.commit();
     expect(owns).not.toHaveBeenCalled();
     expect(bindings.recordStageLane(world, 42, 9)).toBe('gpu');
     expect(bindings.isConsumed(world, 42, 10)).toBe(false);
-    const cpu = bindings.onRenderableDraw([world]);
+    const cpu = bindings.onRenderableDraw(world);
     cpu({ source: receiptRow().source }, 'cpu');
-    bindings.onGpuOwnedDraws([world], owns);
+    bindings.onGpuOwnedDraws(world, owns);
     bindings.commit();
     expect(bindings.recordStageLane(world, 42, 9)).toBe('mixed');
-    bindings.onRenderableDraw([world]);
-    bindings.onGpuOwnedDraws([world], owns);
+    bindings.onRenderableDraw(world);
+    bindings.onGpuOwnedDraws(world, owns);
     bindings.clear();
     expect(bindings.isConsumed(world, 42, 9)).toBe(false);
   });
@@ -141,7 +139,7 @@ describe('shared GPU draw selection and submitted receipts', () => {
     bindings.clear();
     expect(bindings.isConsumed(worldRenderResources(world), 42, 9)).toBe(false);
     emitGpuDrivenDrawReceipts([], EMPTY_GPU_DRAW_SELECTION, () => {});
-    const consume = bindings.onRenderableDraw([world].map(worldRenderResources));
+    const consume = bindings.onRenderableDraw(worldRenderResources(world));
     emitGpuDrivenDrawReceipts([row.source], selection, (entry, _index, receipt) =>
       consume(entry, receipt.lane),
     );

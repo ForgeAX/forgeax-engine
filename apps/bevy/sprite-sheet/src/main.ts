@@ -1,5 +1,6 @@
 // Reproduction of Bevy's `sprite_sheet` example.
 
+import { defineSystem } from "@forgeax/engine-ecs";
 import { createApp } from '@forgeax/engine-app/browser';
 import { Update } from '@forgeax/engine-ecs';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
@@ -35,11 +36,12 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   };
   const textureHandle = assets.create(texture).unwrap();
   buildSpriteSheetWorld(app.world, textureHandle);
-  const system = app.world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'sprite-sheet-tick',
     queries: [],
     fn: (world) => tickSpriteSheet(world),
   });
+const system = app.world.addSystem(Update, systemToken1);
   if (!system.ok) {
     console.error('[bevy-sprite-sheet] system registration failed:', system.error);
     return;

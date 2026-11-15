@@ -66,13 +66,6 @@ vi.mock('../execution/attached-world-swap', async (importOriginal) => ({
   commitAttachedWorld: vi.fn(async () => true),
 }));
 vi.mock('../internal/worker-engine-profile', () => ({ workerEngineProfile: vi.fn(() => ({})) }));
-vi.mock('../execution/kernel-pool', () => ({
-  createKernelPool: vi.fn(() => ({
-    ready: async () => {},
-    takeLastDispatch: () => undefined,
-    dispose: () => {},
-  })),
-}));
 vi.mock('@forgeax/engine-ecs', async (importOriginal) => {
   const original = await importOriginal<typeof import('@forgeax/engine-ecs')>();
   return {

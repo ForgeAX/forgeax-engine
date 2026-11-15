@@ -87,9 +87,8 @@ it('presents empty, populated, then empty instance holders across completed fram
         for (let frame = 0; frame < 60; frame++) {
           world.update(1 / 60).unwrap();
           const receipt = await drawReadyFrame(renderer, {
-            leases: [lease],
-            camera: { lease, entityKey: camera },
-            environment: { lease },
+            source: lease,
+            camera: { entityKey: camera },
           });
           presentation = receipt.presentation;
         }

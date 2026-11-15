@@ -1,3 +1,5 @@
+import { defineResource } from '@forgeax/engine-ecs';
+import { defineSystem } from "@forgeax/engine-ecs";
 import {
   Time,
   Update,
@@ -11,7 +13,7 @@ import { scoringTargetEntities, type ScoringTargetQuery } from './scoring-target
 
 const INITIAL_HEALTH = 100;
 const HEALTH_REGEN_PER_SECOND = 2;
-export const GAME_DEFAULT_TARGET_HEALTH_WITNESS = '__forgeaxGameDefaultTargetHealthWitness';
+export const GAME_DEFAULT_TARGET_HEALTH_WITNESS = defineResource<TargetHealthWitnessState>("__forgeaxGameDefaultTargetHealthWitness");
 
 export const TargetHealth = defineComponent('GameDefaultTargetHealth', {
   current: 'f32',
@@ -60,9 +62,9 @@ export function installTargetHealth(world: World, targetQuery: ScoringTargetQuer
     totalMax: scoringTargetEntities(targetQuery).length * INITIAL_HEALTH,
     damageEvents: 0,
   });
-  const state = world.getResource<TargetHealthWitnessState>(GAME_DEFAULT_TARGET_HEALTH_WITNESS);
+  const state = world.getResource(GAME_DEFAULT_TARGET_HEALTH_WITNESS);
 
-  world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'game-target-health-contiguous',
     runIf: inState(GameState, 'Play'),
     queries: [],
@@ -87,7 +89,8 @@ export function installTargetHealth(world: World, targetQuery: ScoringTargetQuer
         }
       }
     },
-  }).unwrap();
+  });
+world.addSystem(Update, systemToken1).unwrap();
 
   const damage = (entity: EntityHandle, points: number): void => {
     const health = world.get(entity, TargetHealth);

@@ -306,6 +306,7 @@ test('actual SDK builder rejects dirty source and identifies the changed paths b
   for (const file of [
     'build-sdk.mjs',
     'engine-bundle.mjs',
+    'sdk-build-environment.mjs',
     'sdk-launcher.mjs',
     'sdk-lib.mjs',
     'sdk-source.mjs',
@@ -319,6 +320,11 @@ test('actual SDK builder rejects dirty source and identifies the changed paths b
   await cp(
     resolve('scripts/ci/local-gpu-lease.mjs'),
     resolve(root, 'scripts/ci/local-gpu-lease.mjs'),
+  );
+  await mkdir(resolve(root, 'scripts/lib'), { recursive: true });
+  await cp(
+    resolve('scripts/lib/runner-resources.mjs'),
+    resolve(root, 'scripts/lib/runner-resources.mjs'),
   );
   await writeFile(
     resolve(root, 'package.json'),

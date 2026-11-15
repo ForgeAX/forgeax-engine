@@ -276,11 +276,7 @@ for (let i = 0; i < TARGET_FRAMES; i++) {
   world.update().unwrap();
   // Asynchronous scene pipeline preparation may hold early pictures pending.
   try {
-    const frame = await drawReadyFrame(renderer, {
-      leases: [lease],
-      camera: { lease },
-      environment: { lease },
-    });
+    const frame = await drawReadyFrame(renderer, { source: lease });
     void renderer.observe(frame, { include: ['draws'] });
   } catch (error) {
     console.error(`[smoke] draw frame ${i} error: ${error?.code ?? String(error)}`);
@@ -438,7 +434,7 @@ if (!correctedResult.ok) {
   const healthyRetained = world.get(rootEntity, SceneInstance).ok;
   for (let i = 0; i < 60; i += 1) {
     world.update().unwrap();
-    const draw = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
+    const draw = renderer.draw({ source: lease });
     if (!draw.ok) m30Failures.push(`corrected draw failed: ${draw.error.code}`);
     else void renderer.observe(draw.value, { include: ['draws'] });
   }

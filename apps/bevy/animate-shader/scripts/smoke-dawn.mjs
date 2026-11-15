@@ -4,11 +4,11 @@ import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/r
 let smokeAssets;
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
-
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 
 
 const WIDTH = testQuality.viewport.width;
@@ -64,7 +64,7 @@ const canvas = {
   removeEventListener() {},
 };
 
-const manifest = JSON.parse(readFileSync(resolve(root, 'dist', 'shaders', 'manifest.json'), 'utf8'));
+const manifest = JSON.parse(readShaderManifestText(resolve(root, 'dist', 'shaders', 'manifest.json')));
 const manifestUrl = `data:application/json,${encodeURIComponent(JSON.stringify(manifest))}`;
 const { World } = await import('@forgeax/engine-ecs');
 const { AssetRegistry } = await import('@forgeax/engine-assets-runtime');

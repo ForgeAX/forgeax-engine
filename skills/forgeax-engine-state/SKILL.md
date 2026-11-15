@@ -140,7 +140,7 @@ const Gameplay = defineSystem({
 - State does not match: predicate returns `false`, system is silently skipped (no query execution, no fn call).
 - State not activated (resource not yet inserted): predicate returns `false` -- safe to use before `registerStatesPlugin`.
 
-**Implementation**: `inState` reuses `stateResourceKey(token)` (from `packages/state/src/resources.ts`) to derive the per-token Resource key, then reads the current state index via `world.getResource<number>(key)` and compares against `token.nameToIdx.get(variant)`. Zero new primitives -- consumes ECS Resource CRUD only.
+**Implementation**: `inState` reuses `stateResourceKey(token)` (from `packages/state/src/resources.ts`) to derive the per-token Resource key, then reads the current state index via `world.getResource(key)` and compares against `token.nameToIdx.get(variant)`. Zero new primitives -- consumes ECS Resource CRUD only.
 
 > [!IMPORTANT]
 > `inState` is the condition factory. Compose additional predicates in the calling system; the state package does not provide boolean combinators.

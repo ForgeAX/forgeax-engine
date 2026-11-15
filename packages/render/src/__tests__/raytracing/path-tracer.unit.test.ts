@@ -128,6 +128,34 @@ describe('ray Surface admission and source ownership', () => {
     expect(buildRaySurfaceScene([{ ...p, uvSets: [[NaN, 0]] }]).ok).toBe(false);
     expect(buildRaySurfaceScene([{ ...p, colors: [1, 1, 1, 2] }]).ok).toBe(false);
   });
+  it('captures a clearcoat material base layer for Cards while ray hits still refuse the coat', async () => {
+    const coated = Materials.standard({
+      staticSwitches: { clearcoat: true },
+      baseColor: [0.9, 0.9, 0.9, 1],
+      roughness: 0.4,
+      clearcoat: 1,
+      clearcoatRoughness: 0.05,
+    });
+    // Cards store base albedo/normal/emission/f0 only: the view-dependent coat
+    // has no Card channel, so omitting it is the capture, not a substitution.
+    expect(admitRayMaterial(coated, 'coat', 'card-capture').ok).toBe(true);
+    expect(admitRayMaterial(coated, 'coat', 'ray-hit')).toMatchObject({
+      ok: false,
+      error: { code: 'ray-material-unsupported' },
+    });
+    const directory = fileURLToPath(new URL('../../../../shader/src/', import.meta.url));
+    const sources = buildMaterialSourceCatalog(
+      await collectMaterialSources([directory], [directory]),
+    ).unwrap();
+    const cooked = await cookRayMaterial({
+      material: 'coat',
+      table: { coat: coated },
+      sources,
+      context: 'card-capture',
+    });
+    expect(cooked.ok, cooked.ok ? '' : JSON.stringify(cooked.error)).toBe(true);
+  });
+
   it('rejects unsupported material coverage, bump derivatives and layers', () => {
     for (const asset of [
       Materials.unlit([1, 1, 1, 1]),

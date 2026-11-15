@@ -23,12 +23,17 @@ import type { StartupUiOptions } from './host/startup-ui.js';
 export type DevKitAppOptions = Pick<
   CreateAppOptions,
   | 'dynamicGeometryMeshBudgetBytes'
+  | 'textureMipSkip'
   | 'assetBudgetBytes'
   | 'standardProfile'
   | 'pipelineLibrary'
   | 'backgroundPipelineLibrary'
+  | 'backgroundPipelineLibraryConcurrency'
   | 'time'
 > & {
+  /** Browser drawing-buffer pixels per CSS pixel. Omission keeps App's 1x default.
+   * 'device' samples the browser DPR; a device policy can cap that scale explicitly. */
+  readonly canvasPixelRatio?: number | 'device' | { readonly mode: 'device'; readonly max: number };
   /** WeChat-target Host defaults, independent of the shared game scene and other targets. */
   readonly wechat?: {
     /** Fixed scene short-axis budget; default 720, 0 selects native resolution. UI stays native. */
@@ -50,8 +55,9 @@ export type DevKitAppOptions = Pick<
    */
   readonly renderTaskYield?: 'none' | 'features';
   /**
-   * Startup cover text over the English defaults, including App phase names
-   * and `lang`; apps reuse the same labels with `describeLoadProgress`.
+   * Startup, Host status and failure text over the English defaults, including
+   * App phase names and `lang`. Partial `host` overrides retain other defaults;
+   * apps reuse the same labels with `describeLoadProgress`.
    */
   readonly loadingLabels?: LoadProgressLabelInput;
   /** Independently replace or disable the loading and failure presentation. */

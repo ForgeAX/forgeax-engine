@@ -25,7 +25,7 @@ describe('RenderViewFrameSource', () => {
     const views = new RenderViews(renderWorld);
     const frameSource = new RenderViewFrameSource({ canvas: { width: 80, height: 40 } });
     renderWorld.insertResource(RenderViewInput, frameSource);
-    frameSource.stage([], [], [source], { cameraOwner: 0, resourceOwner: 0 }, undefined, undefined);
+    frameSource.stage([], [], source, {}, undefined, undefined);
     beginRenderFrame(renderWorld, 1);
     const primary = views.primary;
     expect(views.size).toBe(0);
@@ -41,6 +41,6 @@ describe('RenderViewFrameSource', () => {
     });
     endRenderFrame(renderWorld);
     frameSource.clear();
-    expect(frameSource.attachment({ entityKey: 1 } as never)).toBeUndefined();
+    expect(frameSource.attachment).toBeUndefined();
   });
 });

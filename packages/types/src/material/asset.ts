@@ -1,9 +1,13 @@
 import type { AssetHandle } from '../asset-handle.js';
 import type { AssetGuid } from '../index.js';
 import type { ParamSchemaEntry } from '../material-contracts.js';
-import { isMaterialProgramBindingContract } from '../material-program-abi.js';
+import {
+  isMaterialPostProcessContract,
+  isMaterialProgramBindingContract,
+} from '../material-program-abi.js';
 import { err, ok, type Result } from '../result.js';
 import type { MaterialColorSpace } from './color-space.js';
+import { isMaterialDeformationDeclaration } from './deformation.js';
 import {
   createMaterialError,
   MATERIAL_ERROR_EXPECTED,
@@ -12,6 +16,7 @@ import {
   type MaterialError,
 } from './errors.js';
 import type { MaterialParticleInput } from './particle-input.js';
+import { materialPassTags } from './pass-tags.js';
 import {
   MATERIAL_STATIC_SWITCH_NAMES,
   type MaterialStaticSwitches,
@@ -176,14 +181,17 @@ export function resolveMaterialTextureCoordinates(
   };
 }
 
-export type MaterialTextureReference = AssetGuid | AssetHandle<'texture' | 'video'> | string;
+export type MaterialTextureReference =
+  | AssetGuid
+  | AssetHandle<'texture' | 'gpu-texture' | 'video'>
+  | string;
 
 /** Copyable reference to one native texture producer; its owner retains native lifetime. */
 export interface RenderTextureSourceToken {
   readonly kind: 'render-texture-source';
   readonly owner: string;
   readonly id: number;
-  readonly source: 'target' | 'canvas' | 'external';
+  readonly source: 'target' | 'canvas' | 'external' | 'feature';
 }
 
 export type MaterialTextureValue = {
@@ -201,6 +209,7 @@ export interface MaterialProgram {
   /** Defaults to the ordinary Render material interface. Cook checks reflected resources. */
   readonly bindings?: import('../material-program-abi.js').MaterialProgramBindingContract;
   readonly sceneDepth?: import('../material-program-abi.js').MaterialSceneDepth;
+  readonly postProcess?: import('../material-program-abi.js').MaterialPostProcessContract;
   readonly module: string;
   readonly vertexEntry?: string;
   readonly fragmentEntry?: string;
@@ -403,6 +412,13 @@ function assertMaterialProgram(
   if (program.bindings !== undefined && !isMaterialProgramBindingContract(program.bindings))
     throw new Error(`${context}: pass ${index} has an invalid binding contract`);
   if (
+    (program.bindings === 'post-process') !== (program.postProcess !== undefined) ||
+    (program.postProcess !== undefined && !isMaterialPostProcessContract(program.postProcess))
+  )
+    throw new Error(
+      `${context}: pass ${index} requires a supported explicit post-process stage and color contract`,
+    );
+  if (
     program.sceneDepth !== undefined &&
     program.sceneDepth !== 'read-only' &&
     program.sceneDepth !== 'before-pass'
@@ -436,6 +452,7 @@ function assertMaterialPasses(passes: unknown, context: string): void {
     const outputs = validateMaterialOutputs(pass.outputs, context, pass.name);
     if (!outputs.ok) throw Object.assign(new Error(outputs.error.expected), outputs.error);
     assertMaterialProgram(pass.program, context, index);
+    materialPassTags(pass);
   }
 }
 
@@ -522,6 +539,9 @@ function assertMaterialSurface(surface: unknown, context: string): void {
   }
   if (typeof surface.module !== 'string' || surface.module.length === 0) {
     throw new Error(`${context}: Surface module must be a non-empty string`);
+  }
+  if (surface.deformation !== undefined && !isMaterialDeformationDeclaration(surface.deformation)) {
+    throw new Error(`${context}: invalid root deformation version, module or input layout`);
   }
   if (surface.dynamicInput === undefined) return;
   const dynamic = surface.dynamicInput;

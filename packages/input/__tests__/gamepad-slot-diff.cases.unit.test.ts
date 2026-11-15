@@ -1,3 +1,4 @@
+import { INPUT_BACKEND_KEY, INPUT_SNAPSHOT_RESOURCE_KEY } from '../src/resources';
 import { Update } from '@forgeax/engine-ecs';
 // Consolidated by feat-20260609-test-pool-startup-reduction-merge-tiny-test-files
 // biome-ignore-all lint/complexity/noUselessLoneBlockStatements: scope isolation between merged source files
@@ -33,16 +34,7 @@ import type {
   PointerPhaseEvent,
   VirtualJoystickConfig,
 } from '../src/input-snapshot';
-import {
-  createInputSnapshot,
-  INPUT_BACKEND_KEY,
-  INPUT_SNAPSHOT_RESOURCE_KEY,
-  type InputBackend,
-  InputFrameStartScan,
-  type InputSnapshot,
-  type PointerType,
-  snapshotFromSample,
-} from '../src/index';
+import { createInputSnapshot, type InputBackend, InputFrameStartScan, type InputSnapshot, type PointerType, snapshotFromSample } from '../src/index';
 import { diffGamepadFrame, type RawGamepadStub } from '../src/gamepad-frame';
 import {
   deriveVirtualAxes,
@@ -173,7 +165,7 @@ type __MergedKeep = ActionConfig | ActionState | BindState | Capabilities | Fake
 
       return {
         snap(): InputSnapshot {
-          const s = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+          const s = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
           if (!s) throw new Error('InputSnapshot missing');
           return s;
         },

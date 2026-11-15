@@ -207,13 +207,6 @@ function validateFogLaw(candidate: FogCandidate): FogParameterIssue | undefined 
       expected: 'a known FogModeValue label: exp, exp2 or linear',
     };
   }
-  if (candidate.mode !== 'exp' && candidate.heightFalloff !== 0) {
-    return {
-      field: 'heightFalloff',
-      value: candidate.heightFalloff,
-      expected: '0 outside mode exp (exp2 and linear follow the Three.js laws)',
-    };
-  }
   if (candidate.mode !== 'linear') return undefined;
   if (!Number.isFinite(candidate.near) || candidate.near < 0) {
     return { field: 'near', value: candidate.near, expected: 'a finite number >= 0' };

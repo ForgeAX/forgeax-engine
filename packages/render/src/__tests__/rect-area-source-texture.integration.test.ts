@@ -6,7 +6,7 @@ import { RectAreaLight } from '../components/rect-area-light';
 import { SpotLight } from '../components/spot-light';
 import { DIRECT_LIGHT_SLOT_METADATA_SENTINEL } from '../light-buffer-layout';
 import { COOKIE_SLICE_MIP_CHAIN_BYTES } from '../prepare/extended-lighting/resources';
-import { extractFrames } from '../render-system-extract-tail';
+import { extractSource } from '../render-system-extract-tail';
 import { packTestDirectLightSlot as packDirectLightSlot } from './cluster-test-abi';
 import { testAssets } from './helpers/runtime-assets';
 
@@ -61,7 +61,7 @@ describe('RectAreaLight source texture extraction', () => {
       .unwrap();
     world.update(0);
 
-    const { lights } = extractFrames([world], 0);
+    const { lights } = extractSource(world);
     const spot = lights.spot[0];
     expect(spot?.cookieSlice).toBe(0);
     expect(lights.rect).toHaveLength(3);
@@ -93,7 +93,7 @@ describe('RectAreaLight source texture extraction', () => {
       .unwrap();
     world.update(0);
 
-    const rect = extractFrames([world], 0).lights.rect[0];
+    const rect = extractSource(world).lights.rect[0];
     expect(rect?.cookieSlice).toBe(0);
     expect(rect?.cookieSource).toEqual({ kind: 'gpu-resample', asset });
     expect(metadataCookie(rect)).toBe(0);
@@ -116,7 +116,7 @@ describe('RectAreaLight source texture extraction', () => {
       .unwrap();
     world.update(0);
 
-    const rect = extractFrames([world], 0).lights.rect[0];
+    const rect = extractSource(world).lights.rect[0];
     expect(rect?.cookieSlice).toBeUndefined();
     expect(metadataCookie(rect)).toBe(DIRECT_LIGHT_SLOT_METADATA_SENTINEL);
     expect(errors).toHaveBeenCalledWith(

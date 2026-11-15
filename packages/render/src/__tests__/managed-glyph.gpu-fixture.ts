@@ -141,7 +141,7 @@ export async function verifyRuntimeGlyph(mode: 'local' | 'worker', url: string) 
             ? { publication: encodeRenderPublication(packet) }
             : (() => {
                 assert(lease);
-                return { leases: [lease], camera: { lease }, environment: { lease } };
+                return { source: lease };
               })();
         const result = renderer.draw(request);
         assert(

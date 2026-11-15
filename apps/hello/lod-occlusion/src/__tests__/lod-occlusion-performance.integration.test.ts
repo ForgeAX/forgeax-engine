@@ -100,27 +100,11 @@ describe('hello-lod-occlusion performance evidence contract', () => {
       gpuFrameUs: index % 2 === 0 ? 100 : 70,
     }));
 
-  const worldFact = (
-    view: string,
-    visible: number,
-    occluded: number,
-    lodHistogram: readonly { level: number; count: number }[],
-    primitiveSlot: number,
-  ) => ({
-    view,
-    candidates: 128,
-    visible,
-    occluded,
-    lodHistogram,
-    primitiveSlot,
-    slotGeneration: 1,
-  });
   const falsification = [
     ['forced-lod0', 'lod-selection-policy', ['geometry', 'occlusion', 'view']],
     ['all-visible', 'occluder-absence', ['geometry', 'lod', 'view']],
     ['occlusion-off-on', 'occluder-presence', ['geometry', 'lod', 'view']],
     ['gpu-occlusion-off', 'gpu-occlusion-config', ['geometry', 'lod', 'occluder', 'view']],
-    ['world-reorder', 'world-array-order', ['geometry', 'primitive', 'view']],
   ].map(([caseName, intervention, held]) => ({
     case: caseName,
     verdict: 'pass',
@@ -135,32 +119,6 @@ describe('hello-lod-occlusion performance evidence contract', () => {
               count: { candidates: 128, visible: 16, occluded: 112 },
             },
             settleFrames: 16,
-          }
-        : {}),
-      ...(caseName === 'world-reorder'
-        ? {
-            attribution: {
-              status: 'same-submit',
-              forwardSubmit: { frameId: 100, build: 'build-a', deviceGeneration: 1 },
-              reverseSubmit: { frameId: 101, build: 'build-a', deviceGeneration: 1 },
-            },
-            forward: { frameId: 100, view: 'shared-view' },
-            reverse: { frameId: 101, view: 'shared-view' },
-            sameViewIdentity: true,
-            samePrimitiveIdentity: true,
-            forwardSlot: { primitiveSlot: 0, slotGeneration: 1 },
-            reverseSlot: { primitiveSlot: 0, slotGeneration: 1 },
-            worlds: { treatment: 'treatment-world', baseline: 'baseline-world' },
-            worldAttribution: {
-              treatment: {
-                forward: worldFact('treatment-world', 16, 112, [{ level: 1, count: 128 }], 1),
-                reverse: worldFact('treatment-world', 16, 112, [{ level: 1, count: 128 }], 1),
-              },
-              baseline: {
-                forward: worldFact('baseline-world', 128, 0, [{ level: 0, count: 128 }], 2),
-                reverse: worldFact('baseline-world', 128, 0, [{ level: 0, count: 128 }], 2),
-              },
-            },
           }
         : {}),
     },
@@ -309,6 +267,23 @@ describe('hello-lod-occlusion performance evidence contract', () => {
       index === 0 ? { ...sample, frameId: 9999 } : sample,
     );
     expect(() => validatePerformanceEvidence(mismatched)).toThrow('matching retained CPU receipt');
+  });
+
+  it('scopes receipt identity to the isolated condition Renderer', async () => {
+    const { validatePerformanceEvidence, GPU_FRAME_SAMPLES_SCHEMA } = await import(SCRIPT);
+      const evidence = structuredClone(admittingEvidence(GPU_FRAME_SAMPLES_SCHEMA));
+    const receipts = new Map<string, number>();
+    for (const sample of evidence.cpu.samples) {
+      const id = sample.frame + (sample.order === 'treatment-baseline' ? 64 : 0);
+      receipts.set(`${sample.condition}:${sample.frameId}`, id);
+      sample.frameId = id;
+    }
+    for (const sample of evidence.samples) {
+      const id = receipts.get(`${sample.condition}:${sample.frameId}`);
+      if (id === undefined) throw new Error('missing isolated Renderer receipt');
+      sample.frameId = id;
+    }
+      expect(() => validatePerformanceEvidence(evidence)).not.toThrow();
   });
 
   it('rejects asymmetric observation, incomplete windows, duplicated receipts and CPU summary drift', async () => {
@@ -542,133 +517,6 @@ describe('hello-lod-occlusion performance evidence contract', () => {
     };
     expect(() => validatePerformanceEvidence(invalidEvidence)).toThrow(
       'performance treatment inspection is not linked to its candidate workload',
-    );
-  });
-
-  it('fails closed when World-reorder attribution is not renderer-owned', async () => {
-    const { validatePerformanceEvidence, GPU_FRAME_SAMPLES_SCHEMA } = await import(SCRIPT);
-    const withoutRendererAttribution = falsification.map((entry) => {
-      if (entry.case !== 'world-reorder') return entry;
-      return {
-        ...entry,
-        evidence: {
-          ...entry.evidence,
-          attribution: { ...entry.evidence.attribution, status: 'unavailable' },
-        },
-      };
-    }) as unknown as typeof falsification;
-    expect(() =>
-      validatePerformanceEvidence(
-        admittingEvidence(GPU_FRAME_SAMPLES_SCHEMA, withoutRendererAttribution),
-      ),
-    ).toThrow('world-reorder pass requires renderer-owned same-submit attribution');
-  });
-
-  it('fails closed when World-reorder changes a per-World tuple across array order', async () => {
-    const { validatePerformanceEvidence, GPU_FRAME_SAMPLES_SCHEMA } = await import(SCRIPT);
-    const changedWorldFacts = falsification.map((entry) => {
-      if (entry.case !== 'world-reorder') return entry;
-      const worldAttribution = entry.evidence.worldAttribution;
-      if (worldAttribution === undefined) return entry;
-      return {
-        ...entry,
-        evidence: {
-          ...entry.evidence,
-          worldAttribution: {
-            ...worldAttribution,
-            treatment: {
-              ...worldAttribution.treatment,
-              reverse: {
-                ...worldAttribution.treatment.reverse,
-                visible: 15,
-                occluded: 113,
-              },
-            },
-          },
-        },
-      };
-    }) as unknown as typeof falsification;
-    expect(() =>
-      validatePerformanceEvidence(
-        admittingEvidence(GPU_FRAME_SAMPLES_SCHEMA, changedWorldFacts),
-      ),
-    ).toThrow('world-reorder treatment attribution changed across worlds[] reorder');
-  });
-
-  it('fails closed when World-reorder submits use a different build identity', async () => {
-    const { validatePerformanceEvidence, GPU_FRAME_SAMPLES_SCHEMA } = await import(SCRIPT);
-    const changedBuild = falsification.map((entry) => {
-      if (entry.case !== 'world-reorder') return entry;
-      const attribution = entry.evidence.attribution;
-      if (attribution === undefined) return entry;
-      return {
-        ...entry,
-        evidence: {
-          ...entry.evidence,
-          attribution: {
-            ...attribution,
-            reverseSubmit: { ...attribution.reverseSubmit, build: 'build-b' },
-          },
-        },
-      };
-    }) as unknown as typeof falsification;
-    expect(() =>
-      validatePerformanceEvidence(admittingEvidence(GPU_FRAME_SAMPLES_SCHEMA, changedBuild)),
-    ).toThrow('world-reorder pass requires same-identity attribution evidence');
-  });
-
-  it('fails closed when World-reorder reports a false stable-view summary', async () => {
-    const { validatePerformanceEvidence, GPU_FRAME_SAMPLES_SCHEMA } = await import(SCRIPT);
-    const falseSummary = falsification.map((entry) => {
-      if (entry.case !== 'world-reorder') return entry;
-      return {
-        ...entry,
-        evidence: { ...entry.evidence, sameViewIdentity: false },
-      };
-    }) as unknown as typeof falsification;
-    expect(() =>
-      validatePerformanceEvidence(admittingEvidence(GPU_FRAME_SAMPLES_SCHEMA, falseSummary)),
-    ).toThrow('world-reorder pass requires same-identity attribution evidence');
-  });
-
-  it('requires complete World-reorder identity before declaring the phase pass', async () => {
-    const { worldReorderAttributionIsValid } = await import(SCRIPT);
-    const worldEntry = falsification.find((entry) => entry.case === 'world-reorder');
-    if (
-      worldEntry === undefined ||
-      worldEntry.evidence === undefined ||
-      worldEntry.evidence.attribution === undefined ||
-      worldEntry.evidence.forward === undefined ||
-      worldEntry.evidence.reverse === undefined ||
-      worldEntry.evidence.forwardSlot === undefined ||
-      worldEntry.evidence.reverseSlot === undefined ||
-      worldEntry.evidence.worlds === undefined ||
-      worldEntry.evidence.worldAttribution === undefined
-    ) {
-      throw new Error('world-reorder fixture is incomplete');
-    }
-    const worldEvidence = worldEntry.evidence;
-    const attribution = worldEntry.evidence.attribution;
-    const forward = worldEntry.evidence.forward;
-    const reverse = worldEntry.evidence.reverse;
-    const validInput = {
-      expectedBuild: identity.build,
-      forwardSubmit: attribution.forwardSubmit,
-      reverseSubmit: attribution.reverseSubmit,
-      forwardView: forward.view,
-      reverseView: reverse.view,
-      forwardSlot: worldEvidence.forwardSlot,
-      reverseSlot: worldEvidence.reverseSlot,
-      worldIdentities: worldEvidence.worlds,
-      worldAttribution: worldEvidence.worldAttribution,
-    };
-    expect(worldReorderAttributionIsValid(validInput)).toBe(true);
-    expect(
-      worldReorderAttributionIsValid({ ...validInput, expectedBuild: 'different-build' }),
-    ).toBe(false);
-    expect(worldReorderAttributionIsValid({ ...validInput, reverseSlot: undefined })).toBe(false);
-    expect(worldReorderAttributionIsValid({ ...validInput, reverseView: 'different-view' })).toBe(
-      false,
     );
   });
 

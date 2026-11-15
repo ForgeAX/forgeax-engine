@@ -25,6 +25,7 @@ export function compatibilityLaunch(defaults, phase, env = process.env) {
       '--enable-features=Vulkan',
       '--use-vulkan=swiftshader',
       '--use-angle=swiftshader',
+      ...(phase === 'scene' ? selected.args.filter((arg) => arg === '--disable-gpu-watchdog') : []),
       '--autoplay-policy=no-user-gesture-required',
     ],
   };

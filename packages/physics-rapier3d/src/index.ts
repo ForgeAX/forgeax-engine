@@ -4,11 +4,13 @@
 // systems.
 
 export type { Rapier3DCollisionEvent } from './physics-entity-records.js';
+export { PhysicsCollisionSync, PhysicsStepSimulation, PhysicsSyncBackend } from './physics-sync';
 export { registerPhysicsSystems } from './physics-sync.js';
 export { default } from './plugin.js';
 export {
   createRapier3DPhysicsWorld,
   RapierPhysicsWorld3D,
 } from './rapier-physics-world-3d.js';
+export { runRapierSolverWorker } from './solver-worker.js';
 export type { Rapier3DModule } from './wasm-loader.js';
 export { loadRapier3D } from './wasm-loader.js';

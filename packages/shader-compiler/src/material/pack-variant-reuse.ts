@@ -6,13 +6,14 @@ import {
   selectMaterialStaticContract,
 } from '@forgeax/engine-types';
 import type { compileShader } from '../compile.js';
+import { freezeSnapshot } from '../frozen.js';
 import { cookMaterialAsset, type MaterialCookedAsset, type MaterialCookRequest } from './cook.js';
 import { deriveSurfaceShadowPasses } from './surface-shadow.js';
 
 const MAX_ENTRIES = 128;
-// The complete authored rigid material has twenty raster contexts. A 16 MiB
-// roster evicts its first context before the next value-only material arrives.
-// This fixed budget covers that measured working set without unbounded growth.
+// A complete authored rigid material has twenty raster contexts; the budget must
+// hold that working set or sequential value-only materials evict every variant
+// before it is asked for again. Bytes count each distinct string once.
 const MAX_RETAINED_BYTES = 64 * 1024 * 1024;
 
 /** Unknown live objects keep the original compiler's observations. */
@@ -68,12 +69,6 @@ function contractKey(asset: MaterialAsset): string | undefined {
   return JSON.stringify(contract);
 }
 
-function retainedBytes(asset: Pick<MaterialCookedAsset, 'passes' | 'layerPlan'>): number {
-  // Charge repeated strings and metadata conservatively as UTF-16 payload.
-  // Object/header overhead has the independent entry-count bound.
-  return JSON.stringify(asset).length * 2;
-}
-
 /**
  * Pack owns fresh source bytes; GUIDs and uniform values remain per-publication data.
  * Keys include the complete source identity, so Packs with equal sources share
@@ -90,14 +85,10 @@ export function createMaterialPackVariantCompiler(compile: typeof compileShader)
   const compiling = new Map<string, Promise<void>>();
   let heldBytes = 0;
   const retain = (key: string, cooked: MaterialCookedAsset): void => {
-    let asset: Pick<MaterialCookedAsset, 'passes' | 'layerPlan'>;
-    let bytes: number;
-    try {
-      asset = structuredClone({ passes: cooked.passes, layerPlan: cooked.layerPlan });
-      bytes = retainedBytes(asset);
-    } catch {
-      return;
-    }
+    // Keyed variants never change, so one frozen snapshot serves every hit.
+    const snapshot = freezeSnapshot({ passes: cooked.passes, layerPlan: cooked.layerPlan });
+    if (snapshot === undefined) return;
+    const { value: asset, bytes } = snapshot;
     if (bytes > MAX_RETAINED_BYTES) return;
     while (variants.size >= MAX_ENTRIES || heldBytes + bytes > MAX_RETAINED_BYTES) {
       const oldest = variants.keys().next().value;
@@ -140,7 +131,7 @@ export function createMaterialPackVariantCompiler(compile: typeof compileShader)
         // Compilation has no uniform-value input. Re-resolve and select this
         // material's current values and refs before its independent publication.
         return ok({
-          ...structuredClone(previous.asset),
+          ...previous.asset,
           resolved: {
             ...resolved.value,
             asset: deriveSurfaceShadowPasses(selectMaterialStaticContract(resolved.value.asset)),

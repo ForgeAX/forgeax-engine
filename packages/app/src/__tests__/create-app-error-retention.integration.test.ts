@@ -1,4 +1,4 @@
-import { Update, World } from '@forgeax/engine-ecs';
+import { defineSystem, Update, World } from '@forgeax/engine-ecs';
 import type { Renderer } from '@forgeax/engine-render';
 import { RhiError } from '@forgeax/engine-rhi';
 import { describe, expect, it, vi } from 'vitest';
@@ -34,15 +34,14 @@ function makeRenderer(): {
 }
 
 function installFaultingSystem(world: World, cause: Error): void {
-  world
-    .addSystem(Update, {
-      name: 'retention-faulting-update',
-      queries: [],
-      fn: () => {
-        throw cause;
-      },
-    })
-    .unwrap();
+  const systemToken1 = defineSystem({
+    name: 'retention-faulting-update',
+    queries: [],
+    fn: () => {
+      throw cause;
+    },
+  });
+  world.addSystem(Update, systemToken1).unwrap();
 }
 
 async function createPausedApp(world: World, renderer: Renderer, silenceUnhandledErrors = true) {

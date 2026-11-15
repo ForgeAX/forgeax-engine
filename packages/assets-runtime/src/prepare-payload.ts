@@ -13,6 +13,7 @@ import {
   ok,
   type Result,
 } from '@forgeax/engine-types';
+import { validateWaterRuntimeAsset } from '@forgeax/engine-water';
 import { withMeshAabb } from './aabb.js';
 import { prepareRuntimeIesProfile } from './loaders/ies-profile';
 import {
@@ -21,6 +22,118 @@ import {
   validateTilesetPayload,
 } from './payload-validate.js';
 import { validateMaterialPasses, validateSpriteSlices } from './registry/validate-material.js';
+
+function validateWaterBodyReferences(
+  asset: Extract<Asset, { kind: 'water-body' }>,
+  requireWaterReference: (
+    target: string,
+    expectedKind: string,
+    field: string,
+  ) => AssetError | undefined,
+): AssetError | undefined {
+  const required: readonly (readonly [string, string, string])[] = [
+    [asset.surfaceMaterialGuid, 'material', 'surfaceMaterialGuid'],
+    ...(asset.zoneGuid ? [[asset.zoneGuid, 'water-zone', 'zoneGuid'] as const] : []),
+    ...(asset.waveSetGuid ? [[asset.waveSetGuid, 'water-wave-set', 'waveSetGuid'] as const] : []),
+    ...(asset.customMeshOverrideGuid
+      ? [[asset.customMeshOverrideGuid, 'mesh', 'customMeshOverrideGuid'] as const]
+      : []),
+    ...(asset.collision.meshGuid
+      ? [[asset.collision.meshGuid, 'mesh', 'collision.meshGuid'] as const]
+      : []),
+    ...[
+      asset.riverToLakeTransitionMaterialGuid,
+      asset.riverToOceanTransitionMaterialGuid,
+      asset.waterInfoMaterialGuid,
+      asset.lodMaterialGuid,
+      asset.underwaterPostProcessMaterialGuid,
+    ]
+      .filter((target): target is string => !!target)
+      .map((target) => [target, 'material', 'bodyMaterialSlot'] as const),
+  ];
+  for (const [target, expectedKind, field] of required) {
+    const error = requireWaterReference(target, expectedKind, field);
+    if (error) return error;
+  }
+  return undefined;
+}
+
+function validateWaterSimulationReferences(
+  asset: Extract<Asset, { kind: 'water-simulation-recipe' }>,
+  requireWaterReference: (
+    target: string,
+    expectedKind: string,
+    field: string,
+  ) => AssetError | undefined,
+): AssetError | undefined {
+  for (const [target, expectedKind, field] of [
+    ...asset.materialGuids.map((target) => [target, 'material', 'materialGuids'] as const),
+    ...asset.textureGuids.map((target) => [target, 'texture', 'textureGuids'] as const),
+    ...('impulseNoiseGuid' in asset
+      ? [[asset.impulseNoiseGuid, 'texture', 'impulseNoiseGuid'] as const]
+      : []),
+    ...('shallowStageConfig' in asset && asset.shallowStageConfig
+      ? asset.shallowStageConfig.materialGuids.map(
+          (target) => [target, 'material', 'shallowStageConfig.materialGuids'] as const,
+        )
+      : []),
+    ...('riverBakeConfig' in asset && asset.riverBakeConfig
+      ? [
+          [
+            asset.riverBakeConfig.sourceBodyGuid,
+            'water-body',
+            'riverBakeConfig.sourceBodyGuid',
+          ] as const,
+        ]
+      : []),
+    ...('oceanPatchConfig' in asset && asset.oceanPatchConfig?.algorithm === 'ue-5.8.1-niagara-fft'
+      ? [
+          [
+            asset.oceanPatchConfig.noiseTextureGuid,
+            'texture',
+            'oceanPatchConfig.noiseTextureGuid',
+          ] as const,
+        ]
+      : []),
+  ]) {
+    const error = requireWaterReference(target, expectedKind, field);
+    if (error) return error;
+  }
+  return undefined;
+}
+
+function prepareMaterialParentPayload(asset: Asset): Result<Asset, AssetError> {
+  let prepared = asset;
+  if (asset.kind === 'material' && 'parentGuid' in asset && typeof asset.parentGuid === 'string') {
+    const parentGuid = String(asset.parentGuid);
+    const parent = AssetGuid.parse(parentGuid);
+    if (!parent.ok)
+      return err(
+        new AssetError({
+          code: 'asset-parse-failed',
+          expected: 'a valid material parent GUID',
+          hint: `parent GUID '${parentGuid}' is not a valid UUID format`,
+        }),
+      );
+    const child = { ...asset, parent: parent.value };
+    const forbidden = materialChildForbiddenFields(child as unknown as MaterialAsset);
+    if (forbidden.length)
+      return err(
+        new AssetError({
+          code: 'asset-parse-failed',
+          expected: 'parent-bearing material to contain only parent and values',
+          hint: 'remove root-owned colorSpace, passes, and parameters from the child payload',
+          detail: { field: 'material-child-contract', got: forbidden },
+        }),
+      );
+    prepared = {
+      kind: 'material',
+      parent: parent.value,
+      ...(asset.values === undefined ? {} : { values: asset.values }),
+    };
+  }
+  return ok(prepared);
+}
 
 export function assertPrivateMeshStorage(value: unknown, seen = new Set<object>()): void {
   if (value === null || typeof value !== 'object' || seen.has(value)) return;
@@ -59,7 +172,17 @@ export function copyPreparedAsset(asset: Asset): Asset {
 
 /** Domain preparation has no Catalog, World or GPU side effects. */
 export function prepareAssetPayload(asset: Asset): Result<Asset, AssetError> {
-  let prepared = asset;
+  if (asset.kind.startsWith('water-')) {
+    const valid = validateWaterRuntimeAsset(asset);
+    if (!valid.ok)
+      return err(
+        new AssetError({
+          code: 'asset-parse-failed',
+          expected: valid.error.expected,
+          hint: valid.error.hint,
+        }),
+      );
+  }
   if (asset.kind === 'ies-profile') return prepareRuntimeIesProfile(asset);
   if (asset.kind === 'video' && !isBrowserResolvableVideoUrl(asset.url))
     return err(
@@ -80,34 +203,9 @@ export function prepareAssetPayload(asset: Asset): Result<Asset, AssetError> {
         }),
       );
   }
-  if (asset.kind === 'material' && 'parentGuid' in asset && typeof asset.parentGuid === 'string') {
-    const parentGuid = String(asset.parentGuid);
-    const parent = AssetGuid.parse(parentGuid);
-    if (!parent.ok)
-      return err(
-        new AssetError({
-          code: 'asset-parse-failed',
-          expected: 'a valid material parent GUID',
-          hint: `parent GUID '${parentGuid}' is not a valid UUID format`,
-        }),
-      );
-    const child = { ...asset, parent: parent.value };
-    const forbidden = materialChildForbiddenFields(child as unknown as MaterialAsset);
-    if (forbidden.length)
-      return err(
-        new AssetError({
-          code: 'asset-parse-failed',
-          expected: 'parent-bearing material to contain only parent and values',
-          hint: 'remove root-owned colorSpace, passes, and parameters from the child payload',
-          detail: { field: 'material-child-contract', got: forbidden },
-        }),
-      );
-    prepared = {
-      kind: 'material',
-      parent: parent.value,
-      ...(asset.values === undefined ? {} : { values: asset.values }),
-    };
-  }
+  const parent = prepareMaterialParentPayload(asset);
+  if (!parent.ok) return parent;
+  const prepared = parent.value;
   const meshError = validateMeshPayload(prepared);
   if (meshError) return err(meshError);
   if (prepared.kind === 'tileset') {
@@ -138,7 +236,62 @@ export function validateAssetReferences(
         hint: `loading parent material ${parent} for child ${guid}: repair the material reference`,
       });
   }
+  const requireWaterReference = (
+    target: string,
+    expectedKind: string,
+    field: string,
+  ): AssetError | undefined => {
+    const normalized = target.toLowerCase();
+    const actualKind = direct.has(normalized)
+      ? (kind(normalized) ?? 'missing')
+      : 'missing-ref-edge';
+    if (actualKind === expectedKind) return undefined;
+    return new AssetError({
+      code: 'asset-parse-failed',
+      expected: `${field} ${normalized} to reference a ${expectedKind} asset in the declared closure`,
+      hint: `repair ${field} on ${asset.kind} ${guid}; it currently resolves to ${actualKind}`,
+      detail: { guid, dependencyGuid: normalized, expectedKind, actualKind },
+    });
+  };
+  if (asset.kind === 'water-body') {
+    return validateWaterBodyReferences(asset, requireWaterReference);
+  }
+  if (asset.kind === 'water-brush-recipe') {
+    const required: readonly (readonly [string, string, string])[] = [
+      [asset.baseTerrainGuid, 'terrain', 'baseTerrainGuid'],
+      ...asset.sourceBodyGuids.map((target) => [target, 'water-body', 'sourceBodyGuids'] as const),
+      ...asset.curves.map((target) => [target, 'texture', 'curves'] as const),
+      ...asset.textures.map((target) => [target, 'texture', 'textures'] as const),
+    ];
+    for (const [target, expectedKind, field] of required) {
+      const error = requireWaterReference(target, expectedKind, field);
+      if (error) return error;
+    }
+    return undefined;
+  }
+  if (asset.kind === 'water-simulation-recipe') {
+    return validateWaterSimulationReferences(asset, requireWaterReference);
+  }
+  if (asset.kind === 'water-zone') {
+    for (const [target, expectedKind, field] of [
+      [asset.farMaterialGuid, 'material', 'farMaterialGuid'],
+    ] as const) {
+      if (!target) continue;
+      const error = requireWaterReference(target, expectedKind, field);
+      if (error) return error;
+    }
+    return undefined;
+  }
   if (asset.kind !== 'mesh') return undefined;
+  return validateMeshReferences(asset, guid, direct, kind);
+}
+
+function validateMeshReferences(
+  asset: Extract<Asset, { kind: 'mesh' }>,
+  guid: string,
+  direct: ReadonlySet<string>,
+  kind: (guid: string) => string | undefined,
+): AssetError | undefined {
   for (const [slotIndex, slot] of asset.materialSlots.entries()) {
     if (slot.defaultMaterial === undefined) continue;
     if (typeof slot.defaultMaterial === 'number')

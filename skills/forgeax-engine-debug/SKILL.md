@@ -1,28 +1,122 @@
 ---
 name: forgeax-engine-debug
 description: >-
-  ForgeAX troubleshooting router with RHI Debug first for difficult rendering failures.
-  Use when rendering is wrong, CI is slow or flaky, tests fail, asset hot reload fails,
-  or a clean worktree behaves differently.
+  ForgeAX troubleshooting with RHI Debug first.
+  Use when updating an open PR, reusing CI checks, diagnosing slow or failed checks,
+  wrong rendering, asset hot reload, or clean-checkout differences.
 ---
 
 # forgeax-engine-debug
 
-For CI repairs, qualify the final candidate locally before publication, then
-qualify the final PR checks and obtain protected review. Use same-PR
-successful-check reuse in every explicitly declared CI-repair
-iteration, including engine, performance, dependency and build implementation
-changes made to fix CI. Purpose governs eligibility; runtime changes or file
-categories alone do not invalidate successes. Preserve original run/job/source
-provenance; failed, cancelled, missing and new checks and required artifact
-dependencies still execute. Follow
-[CI-repair success reuse](../../scripts/ci/README.md#explicit-pr-ci-repair-success-reuse).
+For Content Water ENOENT in a clean `ci-core` checkout, prepare its pinned Assets
+inputs with `prepare-assets-checkout.mjs` before package JS builds. The Content
+lifecycle validates each original digest; public SDK source uses its sealed
+resource closure. Do not waive the binary gate or replace missing source bytes.
+
+For a local shared Assets checkout, recover Focus with
+`--assets-source-root <exact-pin-export>`. This supported parameter verifies the
+gitlink's exported Water blobs and forwards Content's explicit source directory;
+it preserves shared dirty files and the normal semantic package cache.
+
+For the no-View verifier's temporary source, retain `SDK_RESOURCE_ALLOWLIST`
+before selecting public source mode. Its tracked-file copy omits prepared binary
+resources. Validate Water provenance in that sealed closure; keep private Assets
+and View absent and retain the original Engine build and API probes.
+
+For no-View source cancellation after POINT production, preserve the temporary
+package/compiler rebuild and POINT source producer. Pass the prepared checkout's
+BASE directory with `--base-shader-input-root` and its real HEAD with
+`--source-revision` to the existing Engine build. The core restore owner compares
+revision, rebuilt compiler/source/profile fingerprint and path-bound payload
+digest before copying only BASE receipt/payload. Retain rejection on any mismatch;
+ordinary SDK source verification still performs its independent cold build.
+
+For source-compiling coverage OOMs, use the split runner's existing exclusive
+source owner and capacity-derived producer heap, with one actual Vitest file
+worker. Admit compiler workers through the existing cold producer budget after
+reserving its heap: default two, at most four, bounded by CPU and remaining memory.
+Coverage Focus uses the same admission. `createVitest()` adapters must forward
+the CLI worker limit into resolved project configs. Keep ordinary child heaps,
+full variants, original timeouts and aggregate coverage thresholds intact; a
+resource-control regression does not replace original Linux compilation.
+
+For direct-DFG cold-source timeouts, compare the complete Engine manifest roster
+and actual compiler throughput before treating the case deadline as a regression.
+The owning tests share `SHADER_MANIFEST_TEST_TIMEOUT_MS` (900 seconds); the former
+300-second direct-DFG budget did not cover the larger maintained source roster.
+Keep all three independent cold builds, assertions and source admission. A case
+budget correction is not a measured speedup. Shard 0 has a 50-minute total job
+bound; shards 1/2/3 retain 45 minutes. The independent conditional budget check
+does not guarantee completion after the worker correction. Keep the approximately
+30-minute execution target; late source admission can still leave insufficient
+time. Record
+that remaining boundary and use original completed child costs for placement.
+The current Water roster splits the serial Vite source child into three cold
+owners through the existing exclusive-group mechanism: unit/public/resampling,
+Surface and direct-DFG. Their 650/530/530-second reservations are forecasts;
+retain all five files exactly once, the full four-shard merge and historical
+roster identities. Changed coverage lanes and aggregate execute fresh. Do not
+substitute a prepared profile or change case deadlines.
+
+When coverage placement moves an ordinary child, compare its measured file-worker
+policy with the destination lane's request. The current Render half-two receipt
+uses two admitted workers; shards 0/2 request two and shards 1/3 retain one.
+The existing CPU/memory caps and exclusive source policy remain authoritative.
+Keep membership stable for a resource-only repair, preserve original passed
+artifacts, and let normal qualification decide reuse. A historical faster child
+does not prove the repaired lane's complete wall time.
+
+## PR CI repair workflow
+
+After a PR is opened, every subsequent update must use this workflow. The initial
+CI run establishes its baseline; each subsequent push declares `CI-Repair-From`
+to reuse qualified successful checks from the same PR. Change type, purpose and
+size never exempt an update. The agent maintains the declaration without special
+user wording or additional approval. A check that cannot reuse evidence executes
+fresh within this workflow; it is not a reason to remove the declaration.
+
+| When | Required action |
+|:--|:--|
+| Diagnose | Read the current PR head, CI run and jobs. Reproduce finished failures while independent jobs finish; keep their results. |
+| Prepare | Pass relevant local `pnpm ci:focus` checks on the final candidate. Wait for the current CI run to complete before the next push; use that completed same-PR run as the baseline, even if its overall conclusion failed. If no CI run exists yet, establish the initial run before pushing another update. |
+| Before each push | Preserve the PR description and replace or add exactly one `CI-Repair-From:` line with the baseline run ID or URL. Update `CI-Repair-Rerun:` for checks that need fresh execution, then read back the body before pushing. Follow the [declaration and artifact contract](../../scripts/ci/README.md#explicit-pr-ci-repair-success-reuse). |
+| Observe | Verify the new run targets the final PR head. Inspect `[ci-repair-reused]` steps and qualification summaries; record original run/job/source SHA for inherited successes and fresh results separately. A green check alone does not prove reuse. |
+| Reuse falls back | Inspect the emitted qualification reason. Correct declaration or baseline errors before the next repair push; report missing history or artifacts. Keep eligible unrelated successes and let unqualified checks execute under the contract. |
+| Qualify | Require complete final-head CI qualification through fresh execution or qualified reuse, plus protected review and normal merge. Advance the baseline to this completed CI run before the next update. |
+
+Final-head qualification accepts inherited evidence; it does not require every
+check to execute again. File categories and runtime changes alone do not justify
+dropping the declaration. Failed, cancelled, missing and new checks and required
+artifact dependencies follow the guide's execution and historical-recovery rules.
+The workflow reads the PR body captured in its trigger event; editing the body
+after launch does not retrofit that run.
+
+A declared completed manual anchor may supply prior successes only after the
+repair owner verifies the repository, branch and independent commit-to-PR
+association. Peer workflows must use the same original commit. Keep the actual
+manual run/job/source provenance; missing evidence executes the check normally.
+The current repair workflow itself still runs as a PR event.
+Its calling jobs need `actions: read`, `contents: read`, and `pull-requests: read`
+for the independent association check in private repositories.
+
+For a View capability introduced alongside an Engine PR, declare the full
+`Engine-Revision` in the View PR before pushing. View's CI context selects that
+paired Engine source; its repair declaration preserves a qualified architecture
+success while failed/missing build and browser consumers execute. Keep the exact
+paired artifacts and actual GPU/View acceptance. See the same CI guide.
 
 For a partial coverage repair, retain passed shard executions and restore their
 original artifacts through the shared repair artifact owner. Covered source and
-compiler inputs must remain unchanged; the existing merge still requires the
+compiler inputs are checked during shard admission against the digest-verified
+original coverage map and original execution SHA. Changed inputs select that
+shard's normal fresh execution before a reuse marker; missing evidence does too.
+Keep the aggregate's strict validation and every original artifact/source hash.
+These inputs must remain unchanged; the existing merge still requires the
 exact complete group partition and all original thresholds. Do not rewrite an
 old artifact's source SHA or treat an interrupted child as completed evidence.
+Historical placement tests replay their original project/file roster and recorded
+costs; current CI discovery still includes newly registered inputs. Keep the
+original budget assertions and distinguish forecasts from completed execution.
 
 For SDK CI repair, retain each qualified successful consumer even if another
 consumer failed. The repair aggregate fetches and checks original artifacts with
@@ -31,12 +125,36 @@ or inconsistent provenance remains a failure. Normal SDK/publication acceptance
 still requires the complete same-source byte cohort; never rewrite an inherited
 receipt to the current SHA or SDK version.
 
+For selected-template startup timeouts, preserve startup inspection and receipt
+metadata from that page. The daemon's private browser cannot supply its tape;
+report the missing attachment. Retain startup and gameplay deadlines.
+For MCP replacement Preview timeouts, use the current target's backend timing
+and original restart milestones. Include Pack commit timings from both cleanup
+snapshots; a late URL publication does not pass the original iframe deadline.
+Failed startup attempts hand the current page/browser and original error back
+before final teardown. Record diagnostics while that page is available, then
+attempt each resource's cleanup independently through the caller's single owner.
+
+For a View restore stalled in authored Pack production, use the existing
+`FORGEAX_WORKSPACE_TIMING=1` backend records. Join source worklist phases and
+native discovery/cook recipes by their process-monotonic `atMs`, source key and
+GUID. Separate phase admission waits from actual recipe durations; retain
+structured failures and starts without ends. These diagnostics do not qualify
+cache reuse, a ready generation or the original View acceptance deadline.
+
 For `directional-shadow-candidate-failed` during IBL preparation, compare the
 settled attempt's queue acceptance with `sceneSubmitted`. Accepted preparation
 work has no current shadow pixel evidence and must not manufacture a candidate
 error. Recording/submit failures and invalid light configuration remain errors.
 Reproduce the complete `image-environment-presentation.browser.test.ts` owner;
 preserve its real completion fence, pixel assertions and deadlines.
+
+For Modeling Show preparation failures, read the original failure frame,
+`preparation-events.jsonl` and final settlement under
+`artifacts/modeling-show/dawn/` in the existing Dawn failure upload. Distinguish
+an admitted pending native PSO from a missing preparation request; teardown
+settlement does not qualify the original frame or pixels. Retain the original
+90-second readiness, 15-second preparation and sixty-frame assertions.
 
 For a live-sync smoke's flat canvas after a ready status, use `dev verify` when
 the assertion requires rendered pixels. `dev capture` intentionally observes
@@ -46,6 +164,8 @@ pixel and recovery assertions and the existing capture deadline.
 When placement changes check membership, list every affected successful check
 in `CI-Repair-Rerun` before pushing. They execute fresh; unrelated passed checks
 retain their original evidence. Keep the execution deadlines and file roster.
+When Dawn discovery or placement changes, use complete Linux receipts and rerun
+all four native lanes.
 After adding reuse, update workflow contract assertions to include its guard
 while preserving lane, prerequisite-order and failure-evidence requirements.
 The cross-repository Modeling candidate workflow shards only its Vitest suite
@@ -56,6 +176,10 @@ check name and the checked-out Modeling head SHA.
 An explicitly fresh coverage or smoke aggregate needs every producer to execute,
 even after a fully green baseline suite. Preserve the exact artifact count; do
 not mix a reused producer without current artifacts into a fresh aggregate.
+For coverage history blocked before execution, include the current artifact
+restoration step in the unrun-step guard. It must be skipped and unique when
+present; retain older captures without it and reject any executed restoration.
+Exercise the complete reuse owner with the current workflow-derived step roster.
 Never bypass merge protection or disable rulesets. A separate Linux host is not
 a publication prerequisite; required Linux execution remains in PR CI. Keep
 cancelled or failed attempts in the evidence.
@@ -63,6 +187,71 @@ For artifact-runtime preflight failures, retain the upload/install admission
 guard and its canonical parenthesized status condition, such as
 `steps.ci-repair.outputs.reused != 'true' && (failure())`. Run the complete
 `artifact-policy-runtime` Node contracts; do not weaken their runtime check.
+
+For a Bun portability rebuild missing pinned Water files, run the existing
+asset-checkout preparer after Node setup and before input recovery and the
+uncached topological build. Retain exact-pin and provenance validation, the
+Bun-owned dependency tree, every runtime probe and the repair reuse guard.
+
+## Other troubleshooting routes
+
+For SDK source Host disconnection, read the retained backend log before changing
+transport. A shared shader inventory failure in an external temporary project
+uses the producer's explicit workspace root, supplied by DevKit to
+`forgeaxShader`. Keep missing-inventory and publication rejection; do not infer
+the producer root from the temporary Vite project or substitute another profile.
+
+For a missing app bundle metric after successful app shards, inspect the metric
+declaration and restored artifact classes. Shader/Pack closures do not contain
+the browser bundle. Runtime metrics use `scripts/metrics/bundle-inputs.mjs` to
+prepare declared app bundles with the selected shared shader inputs and existing
+app receipts, then measure all emitted files for directory declarations. Preserve
+missing/empty-output rejection and thresholds; do not rebuild cold Engine profiles
+or replace the measurement with a fabricated status. On Windows, use the existing
+owning pnpm lifecycle entry for bench dispatch and VFX production; an entry guard
+must compare native file paths rather than construct a file URL by concatenation.
+Preserve producer failures and unavailable prerequisite reports. Follow the CI
+operating guide.
+For pixel-parity startup on Windows, execute the fixture's existing Vite
+JavaScript entry with Node, retaining the owning pnpm fallback and both mandatory
+builds. Preserve native spawn errors and producer exits; CPU transport controls
+do not qualify either Browser capture.
+
+For an SDK PR seed canceled in its cold Engine stage, follow the SDK route and
+inspect live child output. Same-head Main core base and shared point preparation
+must finish before seed execution; the seed rebuilds its compiler before verifying
+and restoring the original publications. Keep producer waiting distinct from the
+unchanged 30-minute seed budget and reject missing or mismatched artifact inputs.
+See [SDK consumers](../../scripts/ci/README.md#sdk-consumers).
+
+For SDK OOM after completed shader profiles, inspect the actual
+`pnpm build:engine` child and profile-container process before blaming source
+compilation. Follow the SDK route and CI memory policy: declaration children
+inherit the runner heap, the profile encoder admits its own budget, and cold SDK
+production keeps the same memory-bound, at-most-four compiler pool with unchanged
+publication verification.
+For a fresh publication checker that fails at JSON.parse under an explicit
+512 MiB Node argument, apply the existing runner-derived SDK child environment.
+Keep its 128 MiB retained-heap assertion after GC and every source/count/digest
+check; validate the real sealed container without rebuilding the cold Engine.
+
+For Stable/WebKit source-publication timeouts, inspect the same-source core
+producer admission and base-SSAO receipt. Compatibility waits for the successful
+existing core artifact before starting carrier execution, then restores only
+the base profile with unchanged paths and complete compiler/source/profile and
+payload verification. The point shared artifact cannot satisfy base admission.
+Missing or invalid core inputs remain failed preparation; do not start another
+cold compiler in the consumer's original ten-minute publication window. Follow
+the [compatibility input contract](../../scripts/ci/README.md#pinned-webgpu-compatibility);
+do not substitute point-SSAO, extend the deadline or treat unrun GPU assertions
+as success.
+
+For a local physical-GPU Browser failure batch, select the maintained native
+launch policy with `FORGEAX_BROWSER_GPU=native` and keep the physical GPU lease.
+Adapter identity admission, sandboxing, original frames and deadlines remain
+required. Browser/Dawn `--continue-on-failure` collects independent complete
+owners while retaining a nonzero aggregate; local native results do not qualify
+the default software CI carrier. See [CI operations](../../scripts/ci/README.md).
 
 For absolute CPU-tier failures, verify the actual heavy-pool capacity and keep
 the canonical runtime-only Vitest route with coverage and typechecking disabled.
@@ -81,6 +270,9 @@ Publication submitters return the receipt before awaiting GPU completion, so
 the readiness driver sees its preparation signal. Recycle the packet only after
 physical completion and await recycling in `onCompleted`. Keep bounded failure
 evidence and the original owner deadlines.
+Lighting-channel recovery follows that same transaction: re-arm observations
+and a single-submission recording on every physical attempt, then retire pending
+observations after completion before retrying the unchanged World snapshot.
 
 For green main pushes with skipped runtime owners, inspect post-merge
 qualification. Reuse requires identical Git trees and the latest matching PR
@@ -111,6 +303,18 @@ changes require all four fresh native lanes. Follow
 For a compact-owner exchange, use Linux Focus to execute both complete compact
 groups and the interrupted native journey. A green placement replay alone does
 not qualify the new native execution.
+For a partial completed cohort, admit only completed process overhead and native
+owners; retain interrupted-owner forecasts and every older replay. Timing archives
+are decoded by `config/dawn-timings.ts`; independent golden receipts remain test
+fixtures. Consolidating a native texture case into its existing mipmap owner keeps
+all assertions and budgets, and changes membership in all four fresh Dawn lanes.
+When a merge introduces ordinary Dawn files, replace their largest-file
+fallbacks using complete successful child receipts with shared process overhead.
+Replay the original file roster for each historical receipt and verify current
+discovery independently.
+For Import's browser-entry coverage timeout, keep the real Vite build in its child
+fixture and all module/export oracles in the instrumented parent. Preserve both
+deadlines and qualify the entire owning coverage group.
 For partial ordinary cohorts, record explicit inherited file forecasts separately
 from complete process observations. Freeze missing-file forecasts in older
 snapshots before admitting later measurements; retain global maxima for capacity.
@@ -124,6 +328,9 @@ must retain the same largest-file spread, retained capacity and replay windows.
 Freeze missing native-owner forecasts as well as ordinary-file forecasts. If
 pairwise refinement stalls, compare the bounded deterministic first-wave seeds
 against every retained cohort; preserve capacity and the largest-file spread.
+If cold-owner reserves concentrate real work on other lanes, exchange complete
+native owners before changing ordinary-file search. Preserve every reserve and
+deadline, then qualify all historical replay windows and four fresh lanes.
 For a Browser job cancelled after its complete test roster, inspect the remaining
 smoke tail. Move the complete server/pixel/cleanup owner to measured peer headroom
 within the existing four jobs; preserve both lighting paths and all deadlines.
@@ -138,6 +345,37 @@ exclusive Pack publication owner. Keep single/reusable execution, artifact
 cleanup, V8 instrumentation and the original 5-second and 15-second bounds.
 Expanded batches retain historical timing identity and add an explicit current
 reservation; qualify the complete child and every retained replay window.
+
+For an instrumented asset-library catalog timeout during native Water cooking,
+route the whole library integration file with the existing exclusive DevKit
+bootstrap owner. Preserve its receipt identity and original observation; use
+`reservationWeight` for combined capacity. Keep every case and deadline, replay
+all retained scheduling windows, and rerun all four coverage producers plus the
+aggregate when membership changes. Follow the CI guide's coverage routing.
+For an ordinary Render coverage half stranding a one-worker job, preserve its
+complete import/test/cleanup receipt and place it on an existing job that admits
+two ordinary workers. Keep the workflow's worker budget, native isolation and
+all historical replay windows; every whole-lane rotation and optimizer mutation
+must preserve that execution policy. Do not restamp one-worker wall times as
+two-worker observations. Complete final-head CI qualifies the changed placement.
+For a late cold direct-DFG owner canceled by the job limit, retain its partial
+receipt separately and reserve its existing full case budget without extending
+the case or enclosing job. Admit only completed children into a distinct cohort;
+unfinished owners keep explicit forecasts, including forecast-only owners with
+no observation. Preserve previous forecast identities. Measured-cost greedy
+restarts must admit constrained two-worker halves before unconstrained peers.
+Replay the new cohort and every retained historical window before publishing.
+For a Modeling image disappearing during the View journey, retain its actual
+failure picture, DOM and journey JSON in the existing View failure upload before
+attributing a cause. Record page crashes and correlate backend/cgroup evidence;
+another diagnostic's screenshot is not the failed frame.
+For a real Vite child crossing its short browser-entry bound inside a broad
+instrumented Import group, keep the full file in the existing exclusive
+publication batch. Preserve the explicit historical receipt even when another
+project is visited first, reserve the added case separately, and retain the
+real bundle and all export/identity/Node-leak assertions. Rerun every coverage
+producer and the aggregate after changing membership; do not extend either
+the child or case deadline.
 When pair and three-group moves strand a retained window, qualify the existing
 search's four-group cycle with complete replay contracts and Linux Focus. Keep
 the same whole-group admission, search bounds and historical measurements.
@@ -226,6 +464,9 @@ reads and lexing across the existing source rules without retaining the whole
 source tree. Run the complete owner locally and on Linux with
 `ci:focus --kind node --select scripts/ci/__tests__/rapier-release-payload.test.mjs`;
 `node` uses the file's real Node runner, not an empty Vitest selection.
+The complete Rapier payload file runs serially before the primary Node pool
+when its full-tree scan competes with a TypeScript compiler contract. Retain
+the source scope, one-read assertions and thirty-second subprocess bound.
 
 For Rapier setup cache `ECONNRESET` followed by source rebuilding, use the
 source-keyed release fallback before optional cache transfer. The unchanged
@@ -344,6 +585,12 @@ Focus can select a different executable and policy. Keep the verified sandbox,
 actual limits and all native/archive/pixel/fallback controls. Inspect quota-owned
 GPU workers before changing rendering or readiness bounds. Preserve the failed
 phase and screenshot; zero completed pictures supply no scene pixel acceptance.
+For archive-import Instance loss after the initial sixty frames, retain the native
+`pw:browser` stderr from compatibility CI/Focus before naming its exit cause.
+Keep the pinned carrier policy and every frame, pixel and deadline control.
+For an MCP App capture racing recovered-scene preparation, require a ready
+completion matching the latest submitted World/device before capture. Retain
+the sixty-frame floor, 180-second wait and complete Play/Preview pixel journey.
 The full Browser roster must select the maintained scene project, retaining its
 120-second case owner and the separate 15-second readiness stage bounds.
 
@@ -364,6 +611,12 @@ the named owner using the [runtime boundary contracts](../../scripts/ci/README.m
 Run `pnpm check:runtime-boundaries`, `pnpm test:runtime-boundaries` and the dist
 check after normal package production. Do not hide a runtime dependency with
 a consumer define, development-mode fallback or violation baseline.
+
+For the Water browser distribution probe failing to resolve the package before
+rendering, verify its Vite root is `packages/engine`, the declared umbrella
+consumer, and that Water dist was built. Preserve public/internal package imports
+without source aliases; root-level dependency hoisting is not required. Follow
+the [suite entry](../../scripts/ci/README.md#browser-gates).
 
 For cube/plane contact-matrix timeouts, run the Forward and Deferred Browser
 owners separately; each retains all 36 cases, its cold renderer and original
@@ -462,6 +715,13 @@ not silently add lane-zero work to that replay. Keep its original cost window.
 Freeze completed receipts in replay regressions, so a live timing-table refresh
 cannot replace the failure oracle. An interrupted compiler supplies no sample;
 retain its source forecast and all original job, file and assertion bounds.
+For a job-budget cancellation without a failing assertion, identify the last
+started command from immediate stage output. Exclusive source coverage emits
+bounded public Vitest module/case phases; no-View source preparation and SDK
+source commands stream their original output before close. Preserve captured
+logs, child exit identity and the existing stage heartbeat. Missing completion
+remains unverified; diagnostics do not justify a longer deadline or cached
+production bytes in an independent source-build proof.
 Keep local single-job coverage usable: placement cannot move work to a peer job
 when none exists; its execution barriers still serialize every exclusive owner.
 For an individual Modeling test timeout inside an ordinary coverage partition,
@@ -926,6 +1186,16 @@ under `artifacts/view-integration/<probe>/` before assigning a renderer cause.
 The CI owner matches native daemon spawn records to the failed child and retains
 its stderr after cleanup. Preserve the original timeout and failed exit; follow
 the [failure recovery route](../../scripts/ci/README.md#failure-recovery).
+For an MCP bundle 404 whose URL appends a bare package name to the importing
+module's directory, repair the dynamic import adapter's specifier classification.
+Package names retain native resolution; URL references retain broker admission.
+Preserve optional import rejection and qualify repeated Play through its original
+browser owner; removing a fabricated source request alone does not prove recovery.
+For SDK source View project-open Host failures, inspect
+`artifacts/sdk/view-source/backend/` for the original diagnostic child's daemon
+log. PID and start-time matching exclude unrelated sessions. Keep the native
+failure when log collection is unavailable; a disconnected socket alone does
+not identify the server or process cause.
 
 For repeated app builds, slow metric aggregation or successful diagnostic uploads,
 follow [one build and one metrics execution owner](../../scripts/ci/README.md#one-build-and-one-metrics-execution-owner).
@@ -1203,6 +1473,12 @@ the cold-start Play, same-project lock, cache-reuse and renderer-failure checks.
 Check the scan's entry set too: declared Runtime Pack secondary exports can
 introduce dependencies outside App's main graph. Resolve those entries through
 the executing client before optimization; retain native Engine module identity.
+For a native Worker preload fixture reload followed by a 504 optimized-module
+fetch, use the late dependency named in the original Vite log. Add that dependency
+to the fixture's existing include list through its owning workspace package
+(`@forgeax/engine-runtime > @forgeax/engine-water > clipper2-ts` for Water), retaining all six native
+error/lifecycle negatives and zero-GPU assertions. Run the complete focused owner,
+then the full `pnpm test:browser` entry point; keep the failed evidence.
 For paired replay work-index divergence, compare each consumer's selection
 against the tape's swapchain provenance and trailing probe work. The shared
 application selector owns both defaults and explicit work-index transport;
@@ -1261,6 +1537,19 @@ placeholder assets, manual frame loops or demo-side fetch workarounds.
 
 A camera-free World is valid. Repair `empty` startup by tracing any `render-system-no-camera` event to the renderer owner (no Camera needed). Template Browser
 smokes reject that event rather than exempting empty scenes from console checks.
+
+For a paired View install missing `@forgeax/engine-modeling`, materialize the
+Engine-pinned `packages/modeling` before `pnpm install`; preserve checkout
+credentials for that preparation. For a GPU texture preview missing stable
+Chrome, use the maintained browser channel or explicit executable on both the
+initial launch and cold reopen. Keep sandboxing and every pixel/lifecycle check.
+
+For paired publication, qualify and merge View before the Engine pin: Engine
+requires maintained-branch ancestry. A fully successful View cohort can retain
+its original build and four browser executions; partial cohorts need fresh
+artifacts. Main promotion requires the identical qualified PR tree. Trace empty
+post-merge PR lists through source/branch and commit association; never hide a
+newer failed or unfinished qualification behind an older green run.
 
 ## CI diagnosis and iteration
 
@@ -1835,6 +2124,13 @@ Preserve retryable initialization and real native tests; report a missing Host b
 WebAssembly. Actual simulator/device evidence
 remains separate from Node qualification. UI fixtures without external Packs
 use explicit Browser source selection while mixed selection retains its closure.
+If a selected Browser file is discarded by the maintained project runner,
+inspect `config/browser-file-selection.ts` and reproduce the exact existing
+file through `scripts/ci/run-vitest-projects.mjs`. The Vitest CLI and this runner
+must select the same file, optimizer entries and authored Pack roots. Preserve
+broad/mixed selectors and the unrelated-runner guard. Run the nearest
+`scripts/__tests__/vitest-browser-project.test.ts` controls, then retain actual
+Browser acceptance separately with its original connection and pixel deadlines.
 For compact manifest failures, inspect v4 source fragments and resolved receipt
 facts; matching numeric indices are not matching ABI values. Frame-based probes
 wait for the submitted receipt's completed-frame signal, not animation callbacks.
@@ -1991,3 +2287,8 @@ specialization; mixed or unknown batches keep the conservative default. Verify
 receiver/nonreceiver lookup separation, unchanged pixels and positive dynamic
 shadow controls, then run the complete Browser owner with its original frames
 and deadlines.
+
+For a roster Browser child missing packaged point-SSAO, prepare the existing
+verified profile before its authoritative roster shard. Use the shared point
+producer receipt and exact source/profile fingerprint; base-SSAO is not a
+replacement. Keep child heap, startup deadlines and frame/pixel acceptance.

@@ -39,7 +39,6 @@ export {
 export {
   createVideoFrameEndpoint,
   installWorkerVideoSourceProvider,
-  VIDEO_FRAME_SYNC_SYSTEM,
   type VideoFrameConsumerStatus,
   type VideoFrameEndpoint,
   type WorkerVideoSourceOptions,

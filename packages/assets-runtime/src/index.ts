@@ -72,9 +72,11 @@ export {
   DEFAULT_ASSET_BUDGET_BYTES,
   validateAssetBudgetBytes,
 } from './internal/asset-records.js';
+export { gpuTextureContribution } from './loaders/gpu-texture.js';
 // ─── Loader-injection surface ───────────────────────────────────────────────
 export { iesProfileContribution } from './loaders/ies-profile';
 export { terrainContribution } from './loaders/terrain';
+export { textureGeneratorContribution } from './loaders/texture-generator.js';
 export { MaterialGenerationCache } from './material/generation-cache.js';
 export {
   inspectMaterialRuntime,

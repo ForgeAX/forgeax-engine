@@ -329,7 +329,7 @@ const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).u
   const foxSceneGuid = foxSubAsset('scene', 0);
   const foxSkeletonGuid = foxSubAsset('skeleton', 0);
   const foxSkinGuid = foxSubAsset('skin', 0);
-  useBuiltAssetSource(assets, new URL('../dist', import.meta.url).pathname);
+  useBuiltAssetSource(assets, fileURLToPath(new URL('../dist', import.meta.url)));
   const foxSceneResult = await assets.load(foxSceneGuid.guid, 'scene');
   if (!foxSceneResult.ok) throw foxSceneResult.error;
   const foxSceneHandle = foxSceneResult.value;
@@ -390,11 +390,7 @@ const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).u
 
   async function drawCompletedFrame(label) {
     world.update().unwrap();
-    const drawn = renderer.draw({
-      leases: [attachment.value],
-      camera: { lease: attachment.value },
-      environment: { lease: attachment.value },
-    });
+    const drawn = renderer.draw({ source: attachment.value });
     if (!drawn.ok) {
       throw new Error(
         `volumetric-fog ${label} draw failed at frame ${framesObserved + 1}: ${drawn.error.code}`,

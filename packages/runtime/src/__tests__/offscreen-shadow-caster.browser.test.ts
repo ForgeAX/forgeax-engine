@@ -84,12 +84,7 @@ it('retains the same ground shadow when its caster moves behind the camera', asy
   const draw = async () => {
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
-    await drawReadyFrame(renderer, {
-      leases: [lease],
-      camera: { lease },
-      environment: { lease },
-      fixedStep: world.getResource(FixedTime).tick,
-    });
+    await drawReadyFrame(renderer, { source: lease, fixedStep: world.getResource(FixedTime).tick });
   };
   const snapshot = async (name: string) => {
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));

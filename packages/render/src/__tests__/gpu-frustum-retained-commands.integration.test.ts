@@ -85,11 +85,7 @@ it.each([
     if (!phaseStarted.ok) throw phaseStarted.error;
     for (let frame = 0; frame < 3; frame++) {
       world.update().unwrap();
-      const drawn = renderer.draw({
-        leases: [attached],
-        camera: { lease: attached },
-        environment: { lease: attached },
-      });
+      const drawn = renderer.draw({ source: attached });
       if (!drawn.ok) throw drawn.error;
     }
     expect(errors).toEqual([]);
@@ -118,11 +114,7 @@ it.each([
     // without re-encoding a single command.
     world.set(camera, Transform, { pos: [0, 0, 4], quat: [0, 1, 0, 0] }).unwrap();
     world.update().unwrap();
-    const reversedDraw = renderer.draw({
-      leases: [attached],
-      camera: { lease: attached },
-      environment: { lease: attached },
-    });
+    const reversedDraw = renderer.draw({ source: attached });
     if (!reversedDraw.ok) throw reversedDraw.error;
     const reversed = renderer.inspect().renderScene;
     expect(reversed.gpuDriven.batchCount).toBe(9);
@@ -197,11 +189,7 @@ it('re-encodes in proportion to edited batches, not to the batch count', async (
     );
     const draw = () => {
       world.update().unwrap();
-      const drawn = renderer.draw({
-        leases: [attached],
-        camera: { lease: attached },
-        environment: { lease: attached },
-      });
+      const drawn = renderer.draw({ source: attached });
       if (!drawn.ok) throw drawn.error;
     };
     try {

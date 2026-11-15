@@ -67,7 +67,11 @@ export function atmosphereMaterialVisibilityLayoutEntries(): GPUBindGroupLayoutE
   return [
     { binding: 3, visibility: 2, texture: { sampleType: 'depth', viewDimension: '2d-array' } },
     { binding: 4, visibility: 2, sampler: { type: 'comparison' } },
-    { binding: 16, visibility: 2, texture: { sampleType: 'float', viewDimension: '2d' } },
+    {
+      binding: 16,
+      visibility: 2,
+      texture: { sampleType: 'unfilterable-float', viewDimension: '2d' },
+    },
     { binding: 17, visibility: 2, sampler: { type: 'filtering' } },
   ];
 }

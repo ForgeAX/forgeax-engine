@@ -107,16 +107,27 @@ describe('sprite-lit pipeline cache-key string isolation (D-11 remap, AC-08)', (
   });
 
   it('createRenderer wiring contract: sprite-lit must be registered alongside sprite', async () => {
-    // Static source gate: createRenderer.ts must mention both shader
-    // identifiers in its registration code path. The literal must
-    // appear in source for the runtime to ship sprite-lit as a
-    // recognised material shader.
+    // Follow the renderer's ready stage into its extracted registration owner.
+    // Both canonical shader identifiers still belong to that exact code path.
     const fs = await import('node:fs');
-    const src = fs.readFileSync(
+    const renderer = fs.readFileSync(
       fileURLToPath(new URL('../../../render/src/assembly/webgpu-renderer.ts', import.meta.url)),
       'utf8',
     );
-    // Once t7 wires it, both literals appear (sprite already in tree).
+    expect(renderer).toContain("from './webgpu-ready'");
+    expect(renderer).toContain('return buildReadyWebGPU(');
+    const ready = fs.readFileSync(
+      fileURLToPath(new URL('../../../render/src/assembly/webgpu-ready.ts', import.meta.url)),
+      'utf8',
+    );
+    expect(ready).toContain("from './webgpu-ready-passes'");
+    expect(ready).toContain('materialModulesById(modules)');
+    const src = fs.readFileSync(
+      fileURLToPath(
+        new URL('../../../render/src/assembly/webgpu-ready-passes.ts', import.meta.url),
+      ),
+      'utf8',
+    );
     expect(src.includes("'forgeax::sprite'")).toBe(true);
     expect(src.includes("'forgeax::sprite-lit'")).toBe(true);
   });

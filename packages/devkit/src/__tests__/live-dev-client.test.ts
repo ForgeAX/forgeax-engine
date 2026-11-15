@@ -403,6 +403,35 @@ describe('live command transport', () => {
     expect(daemonFixture.children).toHaveLength(0);
   });
 
+  it.each([
+    { recorded: undefined, requested: '1' },
+    { recorded: false, requested: '1' },
+    { recorded: true, requested: undefined },
+  ])('replaces an owner when GPU timing changes ($recorded to $requested)', async ({
+    recorded,
+    requested,
+  }) => {
+    const root = await project();
+    const requests = await endpoint(
+      root,
+      { ok: true, value: { phase: 'ready', revision: 'old-timing' } },
+      { options: { gpuPassTiming: recorded } },
+    );
+    await readyDaemon(root, 'new-timing');
+    vi.stubEnv('FORGEAX_GPU_PASS_TIMING', requested);
+    try {
+      expect(await startLiveDev(root)).toMatchObject({
+        ok: true,
+        value: { phase: 'ready', revision: 'new-timing' },
+      });
+      expect(requests).toContain('/stop');
+      expect(daemonFixture.children).toHaveLength(1);
+    } finally {
+      vi.unstubAllEnvs();
+      daemonFixture.entry = undefined;
+    }
+  });
+
   it('replaces an owner recorded by another DevKit build', async () => {
     const root = await project();
     const requests = await endpoint(

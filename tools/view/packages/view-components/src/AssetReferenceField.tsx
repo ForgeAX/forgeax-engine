@@ -56,6 +56,7 @@ export function AssetReferenceField({
   onReveal,
   onClear,
   thumbnail,
+  readOnly = false,
 }: {
   value: unknown;
   labels?: Partial<AssetReferenceLabels>;
@@ -66,6 +67,7 @@ export function AssetReferenceField({
   onReveal?: () => void;
   onClear?: () => void;
   thumbnail?: AssetReferenceThumbnail;
+  readOnly?: boolean;
 }) {
   const writeClipboard = useClipboardAction();
   const [failedSrc, setFailedSrc] = useState<string>();
@@ -114,14 +116,14 @@ export function AssetReferenceField({
           <ChevronDown size={12} aria-hidden="true" />
         </div>
         <div className="asset-ref-actions">
-          <button type="button" className="asset-ref-act" disabled={!onUseSelection}
+          {!readOnly && <><button type="button" className="asset-ref-act" disabled={!onUseSelection}
             title={labels.useSelection} aria-label={labels.useSelection} onClick={onUseSelection}>
             <Crosshair size={13} />
           </button>
           <button type="button" className="asset-ref-act" disabled={!onBrowse}
             title={labels.browse} aria-label={labels.browse} onClick={onBrowse}>
             <Folder size={13} />
-          </button>
+          </button></>}
           <button type="button" className="asset-ref-act" disabled={!canOpen}
             title={openTitle} aria-label={openLabel} data-action={openAction} data-testid="asset-reference-open" onClick={onOpen}>
             <ExternalLink size={13} />
@@ -131,7 +133,7 @@ export function AssetReferenceField({
             <Focus size={13} />
           </button>
           <MenuDropdown label={labels.more} items={[
-            { id: 'clear', label: labels.clear, disabled: !bound || !onClear, ...(onClear ? { onSelect: onClear } : {}) },
+            ...(!readOnly ? [{ id: 'clear', label: labels.clear, disabled: !bound || !onClear, ...(onClear ? { onSelect: onClear } : {}) }] : []),
             { id: 'copy-guid', label: labels.copyGuid, disabled: !guid,
               onSelect: () => { if (guid) void writeClipboard(guid); } },
             { type: 'separator' },

@@ -53,22 +53,20 @@ it('uploads a patched suppression bitmap by visiting only its changed words, at 
     for (let slot = 0; slot < count; slot++)
       setSceneRow(slots, slot, {
         generation: 1,
-        worldId: 0,
         entityKey: slot,
-        snapshot: { worldId: 0, entityKey: slot } as RenderableSnapshot,
+        snapshot: { entityKey: slot } as RenderableSnapshot,
       });
     const before = slots.capture();
-    const active = new SlotIdentityKeys(before, [0]);
+    const active = new SlotIdentityKeys(before);
     const base = new Uint32Array(words);
     view.updateSuppression(buffer, true, base).unwrap();
     // Two rows far apart leave a later roster while the scene frame keeps them.
     slots.remove(3);
     slots.remove(count - 1);
-    const inactive = new SlotIdentityKeys(slots.capture(), [0]);
+    const inactive = new SlotIdentityKeys(slots.capture());
     const patched = patchSuppressedPrimitiveWords(
-      { slots: before, worldKeys: [0], activeEntityKeys: active, words: base },
+      { slots: before, activeEntityKeys: active, words: base },
       before,
-      [0],
       inactive,
       count,
     );

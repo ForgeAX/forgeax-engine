@@ -270,12 +270,12 @@ const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).u
             renderState: { blend: SPRITE_PREMULTIPLIED_ALPHA_BLEND, tags: { LightMode: 'Forward' }, queue: 3000 },
           },
         ],
-        // values field names align with sprite-lit.material.json
-        // paramSchema (colorTint / region / pivotAndSize / baseColorTexture;
-        // post-#520 SSOT). The pre-tweak-20260701 M2 script used the legacy
-        // baseColor / texture / pivot names which silently defaulted the
-        // UBO fields to schema defaults instead of the intended tint / atlas.
-        parameters: SPRITE_LIT_PARAMETERS,
+          // values field names align with sprite-lit.material.json
+          // paramSchema (colorTint / region / pivotAndSize / baseColorTexture;
+          // post-#520 SSOT). The pre-tweak-20260701 M2 script used the legacy
+          // baseColor / texture / pivot names which silently defaulted the
+          // UBO fields to schema defaults instead of the intended tint / atlas.
+          parameters: SPRITE_LIT_PARAMETERS,
         values: {
           colorTint: slot.tint,
           baseColorTexture: textureHandle,
@@ -413,15 +413,13 @@ async function renderCase({ includePoint, includeSpot, label }) {
   const world = buildRes.world;
   const attached = renderer.attach(world);
   if (!attached.ok) return { ok: false, error: `world attach (${label}): ${attached.error.code}` };
+  try {
+
   let draws = 0;
   let drawErrors = 0;
   for (let i = 0; i < SMOKE_MIN_FRAMES; i++) {
     world.update().unwrap();
-    await drawReadyFrame(renderer, {
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
+    await drawReadyFrame(renderer, { source: attached.value });
     draws++;
   }
   await sharedDevice?.queue.onSubmittedWorkDone();
@@ -495,6 +493,9 @@ async function renderCase({ includePoint, includeSpot, label }) {
   const b = tight[off + 2] ?? 0;
   console.log(`[smoke] case ${label} center=${r},${g},${b} frames=${draws}`);
   return { ok: true, center: [r, g, b], tight, draws };
+} finally {
+    attached.value.dispose();
+  }
 }
 
 // --- 4. Run the 2 cases + falsifier ---------------------------------------

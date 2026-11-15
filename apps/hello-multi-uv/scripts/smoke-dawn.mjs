@@ -17,10 +17,10 @@ import { solidTexture } from './texture-fixture.mjs';
 // second UV set would read uv0 via clamp-to-last (NOT (0,0)); the per-cell
 // variance here exists only because this plane carries a real second set.
 
-import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { emitSmokeReceipt } from '../../shared/scripts/smoke-receipt.mjs';
+import { readShaderManifestText } from '../../../scripts/lib/shader-manifest.mjs';
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const SMOKE_PIXEL_THRESHOLD = Number.parseFloat(process.env.SMOKE_PIXEL_THRESHOLD ?? '0.05');
@@ -208,7 +208,12 @@ const { Camera, DirectionalLight, MeshFilter, MeshRenderer } = await import('@fo
 const { readShaderManifestPublication } = await import('@forgeax/engine-shader');
 
 const { createPublicationAssets } = await import('@forgeax/engine-runtime/internal/renderer-host');
-const assets = await createPublicationAssets({shaderManifestUrl: `data:application/json,${encodeURIComponent(readFileSync(new URL('../dist/shaders/manifest.json', import.meta.url), 'utf8'))}`});
+const ASSETS_MANIFEST_URL = URL.createObjectURL(
+  new Blob([readShaderManifestText(new URL('../dist/shaders/manifest.json', import.meta.url))], { type: 'application/json' }),
+);
+process.once('exit', () => URL.revokeObjectURL(MANIFEST_URL));
+process.once('exit', () => URL.revokeObjectURL(ASSETS_MANIFEST_URL));
+const assets = await createPublicationAssets({shaderManifestUrl: ASSETS_MANIFEST_URL});
 const world = new World({assets});
 const baseColorTextureHandle = assets.create(solidTexture([255, 128, 64, 255])).unwrap();
 const detailTextureHandle = assets.create(solidTexture([64, 192, 255, 255])).unwrap();
@@ -291,8 +296,8 @@ const MANIFEST_PATH = resolve(appRoot, 'dist', 'shaders', 'manifest.json');
 let MANIFEST_URL;
 let manifestParsed;
 try {
-  const manifestRaw = readFileSync(MANIFEST_PATH, 'utf8');
-  MANIFEST_URL = `data:application/json,${encodeURIComponent(manifestRaw)}`;
+  const manifestRaw = readShaderManifestText(MANIFEST_PATH);
+  MANIFEST_URL = URL.createObjectURL(new Blob([manifestRaw], { type: 'application/json' }));
   manifestParsed = await readShaderManifestPublication(JSON.parse(manifestRaw));
 } catch {
   console.error('[smoke] FAIL - manifest.json missing or invalid. Run: pnpm --filter @forgeax/hello-multi-uv build first');
@@ -367,11 +372,7 @@ renderer.subscribe((event) => {
 // the first receipt. Warm-up only yields to the host lifecycle; it never installs
 // a late shader or pipeline registry entry.
 const yieldTick = () => new Promise((r) => setTimeout(r, 0));
-const drawFrame = () => drawReadyFrame(renderer, {
-  leases: [lease],
-  camera: { lease },
-  environment: { lease },
-});
+const drawFrame = () => drawReadyFrame(renderer, { source: lease });
 let lastReceipt;
 for (let warm = 0; warm < 16; warm++) {
   world.update().unwrap();

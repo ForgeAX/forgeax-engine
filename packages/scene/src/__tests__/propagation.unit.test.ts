@@ -1,10 +1,17 @@
-import { type EntityHandle, FixedUpdate, Update, World } from '@forgeax/engine-ecs';
+import {
+  ChangeEpochExhaustedError,
+  defineSystem,
+  type EntityHandle,
+  FixedUpdate,
+  Update,
+  World,
+} from '@forgeax/engine-ecs';
 import { describe, expect, it } from 'vitest';
-import { ChangeEpochExhaustedError } from '../../../ecs/src/errors';
 import { ChildOf, GlobalTransform, propagateTransforms, Transform } from '../index';
 import {
   beginTransformPropagationTrace,
   endTransformPropagationTrace,
+  PropagateTransforms,
   registerPropagateTransforms,
 } from '../systems/propagate-transforms';
 import { setMalformedParentEdge } from './fixtures/malformed-hierarchy-edge';
@@ -344,14 +351,13 @@ describe('scene propagation', () => {
     registerPropagateTransforms(world);
     const root = spawnTransform(world, [2, 0, 0]);
     const child = spawnTransform(world, [3, 0, 0], root);
-    world
-      .addSystem(Update, {
-        name: 'late-pose',
-        queries: [],
-        before: ['propagateTransforms'],
-        fn: () => world.set(child, Transform, { pos: [8, 0, 0] }),
-      })
-      .unwrap();
+    const systemToken1 = defineSystem({
+      name: 'late-pose',
+      queries: [],
+      before: [PropagateTransforms],
+      fn: () => world.set(child, Transform, { pos: [8, 0, 0] }),
+    });
+    world.addSystem(Update, systemToken1).unwrap();
     world.update(0).unwrap();
     expect(world.get(child, GlobalTransform).unwrap().world[12]).toBeCloseTo(10);
   });

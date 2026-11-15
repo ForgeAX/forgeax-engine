@@ -1,8 +1,3 @@
-import type { RhiError } from '@forgeax/engine-rhi';
-import type { AssetError } from '@forgeax/engine-types';
-import type { Antialias } from '../components/camera';
-import type { RenderPublicationError } from '../publication/contract';
-import type { SceneSdfUnavailableError } from './scene-sdf';
 // @forgeax/engine-render -- render cluster error classes.
 //
 // feat-20260704-runtime-tier1-decomposition M2 / w8 (D-3): the monolithic
@@ -23,6 +18,9 @@ import type {
   SurfaceFailureCode,
   SurfaceFailureKind,
 } from '@forgeax/engine-render-graph';
+import type { RhiError } from '@forgeax/engine-rhi';
+import type { AssetError } from '@forgeax/engine-types';
+import type { Antialias } from '../components/camera';
 import type { DeviceResourceKind, DeviceScopeReceipt } from '../device/resource-types';
 import type { SunCardinalityError } from '../environment/frame';
 import type { MotionBlurValidationError } from '../features/motion-blur/motion-blur-params';
@@ -33,6 +31,7 @@ import type {
   RenderFeatureStage,
 } from '../features/vocabulary';
 import type { AutoExposureError } from '../pipeline/standard-output/auto-exposure/inspection';
+import type { RenderPublicationError } from '../publication/contract';
 import type {
   SceneDataLane,
   SceneDataSchemaId,
@@ -42,6 +41,7 @@ import type {
 import type { TransmissionCapabilityFact } from '../transmission/backdrop';
 import type { CloudLayerError } from './cloud';
 import type { RecoveryOutcome, RecoveryPhase } from './recover';
+import type { SceneSdfUnavailableError } from './scene-sdf';
 
 // Public render errors keep one machine-readable order: closed `code`,
 // expected state, actionable `hint`, then typed `detail`. Consumers branch on
@@ -363,70 +363,6 @@ export class EquirectProjectionFailedError extends Error {
   }
 }
 
-// ── StandardLightBudgetExceededError ──────────────────────────────────────
-
-/** The finite local-light budget that a Standard frame agreed to admit. */
-export interface StandardLightBudgetExceededDetail {
-  readonly actual: number;
-  readonly budget: number;
-}
-
-/**
- * Structured refusal for a Standard frame whose finite local-light set is
- * outside the selected profile budget. The frame is rejected as a whole; the
- * record owner must not slice the input or submit a partial membership set.
- */
-export class StandardLightBudgetExceededError extends Error {
-  readonly code = 'standard-light-budget-exceeded' as const;
-  readonly expected: string;
-  readonly hint: string;
-  readonly detail: StandardLightBudgetExceededDetail;
-
-  constructor(actual: number, budget: number) {
-    const expected = `light count <= ${budget}`;
-    const hint =
-      `${actual} finite local lights exceed the admitted Standard budget ${budget}; raise the ` +
-      'configured light budget to a supported value or reduce the local-light set';
-    super(`Standard light budget exceeded: ${actual} > ${budget}`);
-    this.name = 'StandardLightBudgetExceededError';
-    this.expected = expected;
-    this.hint = hint;
-    this.detail = { actual, budget };
-  }
-}
-
-// ── StandardClusterIndexOverflowError ──────────────────────────────────────
-
-/** Cluster membership entries that could not fit the single shared index list. */
-export interface StandardClusterIndexOverflowDetail {
-  readonly actual: number;
-  readonly capacity: number;
-}
-
-/**
- * Structured refusal for a membership producer that exceeded the shared
- * Cluster index-list capacity. No truncated list is uploaded and no graph is
- * submitted for the rejected frame.
- */
-export class StandardClusterIndexOverflowError extends Error {
-  readonly code = 'standard-cluster-index-overflow' as const;
-  readonly expected: string;
-  readonly hint: string;
-  readonly detail: StandardClusterIndexOverflowDetail;
-
-  constructor(actual: number, capacity: number) {
-    const expected = `light index list entries <= ${capacity}`;
-    const hint =
-      `cluster binner overflow: writeCount ${actual} exceeds capacity ${capacity}; ` +
-      'reduce finite local lights or choose a supported cluster layout';
-    super(`Standard cluster index list overflow: ${actual} > ${capacity}`);
-    this.name = 'StandardClusterIndexOverflowError';
-    this.expected = expected;
-    this.hint = hint;
-    this.detail = { actual, capacity };
-  }
-}
-
 // ── StandardClusterTransportUnavailableError ───────────────────────────────
 
 export interface StandardClusterTransportUnavailableDetail {
@@ -681,7 +617,6 @@ export class SkinPaletteOverflowError extends Error {
 
 /** Detail for a recorded Skin draw outside its view's RenderQueue demand set. */
 export interface SkinDemandMissingDetail {
-  readonly worldId: number;
   readonly entityKey: number;
   readonly pass: 'main' | 'shadow';
 }
@@ -697,15 +632,15 @@ export class SkinDemandMissingError extends Error {
   readonly hint: string;
   readonly detail: SkinDemandMissingDetail;
 
-  constructor(worldId: number, entityKey: number, pass: 'main' | 'shadow') {
+  constructor(entityKey: number, pass: 'main' | 'shadow') {
     const expected =
       "every CPU-recorded Skin draw belongs to its view's ViewSkinDemand set (render-skin-demand, RenderQueue)";
-    const hint = `entity ${entityKey} of world ${worldId} reached the ${pass} pass without a demanded Skin palette; the demand set derives from the view's ViewFrame rows and shadow casters, so a recorded row outside them means the recording selected a row its RenderQueue inputs did not name`;
-    super(`Skin draw for entity ${entityKey} (world ${worldId}) was not demanded for this view`);
+    const hint = `entity ${entityKey} of world  reached the ${pass} pass without a demanded Skin palette; the demand set derives from the view's ViewFrame rows and shadow casters, so a recorded row outside them means the recording selected a row its RenderQueue inputs did not name`;
+    super(`Skin draw for entity ${entityKey} (world ) was not demanded for this view`);
     this.name = 'SkinDemandMissingError';
     this.expected = expected;
     this.hint = hint;
-    this.detail = { worldId, entityKey, pass };
+    this.detail = { entityKey, pass };
   }
 }
 
@@ -2331,8 +2266,9 @@ export interface VolumeDensityShapeMismatchDetail {
 
 export class VolumeDensityShapeMismatchError extends Error {
   readonly code = 'volume-density-shape-mismatch' as const;
-  readonly expected = 'density is a linear 3D TextureAsset';
-  readonly hint = 'bind a verified linear texture with viewDimension 3d';
+  readonly expected = 'density is a linear 3D TextureAsset, or sampling is uniform';
+  readonly hint =
+    "bind a verified linear texture with viewDimension 3d, or set sampling 'uniform' for a constant medium";
   readonly detail: VolumeDensityShapeMismatchDetail;
 
   constructor(guid: string, viewDimension: string) {
@@ -2369,7 +2305,7 @@ export class VolumeInvalidParametersError extends Error {
   readonly code = 'volume-invalid-parameters' as const;
   readonly expected = 'volume parameters remain finite and inside their closed ranges';
   readonly hint =
-    'repair optics or sampling; density-albedo requires linear rgba8unorm or rgba16float';
+    'repair optics or sampling (noise, density, density-albedo, uniform); density-albedo requires linear rgba8unorm or rgba16float';
   readonly detail: VolumeInvalidParametersDetail;
 
   constructor(
@@ -2384,7 +2320,8 @@ export class VolumeInvalidParametersError extends Error {
       input.sampling !== undefined &&
       input.sampling !== 'noise' &&
       input.sampling !== 'density' &&
-      input.sampling !== 'density-albedo';
+      input.sampling !== 'density-albedo' &&
+      input.sampling !== 'uniform';
     const field = invalidSampling
       ? 'sampling'
       : input.maxDistance !== undefined && input.maxDistance <= 0
@@ -2495,8 +2432,6 @@ export type RenderError =
   | TaaUnavailableError
   | ShadowInvalidConfigError
   | EquirectProjectionFailedError
-  | StandardLightBudgetExceededError
-  | StandardClusterIndexOverflowError
   | StandardClusterTransportUnavailableError
   | StandardProfileInvalidError
   | PointShadowAtlasUninitializedError

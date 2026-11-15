@@ -756,13 +756,10 @@ export function snapshotFromSample(
  * (`engine.run()` has not yet attached a backend). Returns the full
  * multi-device shape as `snapshotFromSample`, with every accessor
  * returning `false` / `0` / zero-vector. AI users can put this into the
- * Resource store to satisfy `world.getResource('InputSnapshot')` calls
+ * Resource store to satisfy `world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY)` calls
  * in fixtures or unit tests (charter P3: empty signal is the signal).
  * The underlying 7-field POD sample contract is unchanged (D-9).
  */
 export function createInputSnapshot(): InputSnapshot {
   return snapshotFromSample(createEmptyInputBackendSample());
 }
-
-/** Stable Resource key for `world.insertResource` / `world.getResource`. */
-export const INPUT_SNAPSHOT_RESOURCE_KEY = 'InputSnapshot';

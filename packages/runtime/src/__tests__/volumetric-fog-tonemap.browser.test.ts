@@ -20,6 +20,7 @@ import { propagateTransforms, scenePlugin, Transform } from '@forgeax/engine-sce
 import { expect, it } from 'vitest';
 import { commands } from 'vitest/browser';
 import { constructRuntimeRendererHost } from '../renderer-host';
+import { verifyAnalyticFogMsaa } from './analytic-fog-msaa.fixture';
 import { compactTape } from './compact-tape.fixture';
 import { testAssets } from './helpers/runtime-assets';
 import { collectWebGpuValidationErrors } from './webgpu-validation.fixture';
@@ -134,9 +135,7 @@ it.each([
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       world.update(1 / 60).unwrap();
       propagateTransforms(world).unwrap();
-      const receipt = value(
-        renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
-      );
+      const receipt = value(renderer.draw({ source: lease }));
       context.drawImage(canvas, 0, 0);
       value(await receipt.completed);
       completedFrames++;
@@ -232,3 +231,9 @@ it.each([
     canvas.remove();
   }
 });
+
+it(
+  'fogs native MSAA coverage and produces non-black MSAA plus FXAA output for 60 completed frames',
+  { timeout: 180_000 },
+  () => verifyAnalyticFogMsaa('/shaders/manifest.json'),
+);

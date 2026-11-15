@@ -28,14 +28,14 @@ it('poses only actual capsule demand and reuses task storage across absent/empty
       [{ joints: new Uint16Array(), shapes: new Float32Array() }, 'no-shadow-capsules'],
       [capsules, 'ready'],
     ] as const) {
-      f.skin.skeletonChanged(0, 7, {
+      f.skin.skeletonChanged(7, {
         kind: 'skeleton',
         jointCount: 1,
         inverseBindMatrices: mat4.identity(mat4.create()),
         ...(definition === undefined ? {} : { shadowCapsules: definition }),
       });
       f.matrix[12] = 7;
-      f.skin.joint(0, 19, f.matrix);
+      f.skin.joint(19, f.matrix);
       const frame = f.frames.prepareFrame(f.scene.slotsSnapshot());
       if (frame === undefined) throw new Error('Missing fixed capsule frame');
       tasks.begin(frame);
@@ -71,7 +71,7 @@ it('poses capsule endpoints through jointWorld times inverseBind and scales the 
     const second = mat4.identity(mat4.create());
     second[13] = -1;
     inverse.set(second, 16);
-    f.skin.skeletonChanged(0, 7, {
+    f.skin.skeletonChanged(7, {
       kind: 'skeleton',
       jointCount: 2,
       inverseBindMatrices: inverse,
@@ -82,7 +82,7 @@ it('poses capsule endpoints through jointWorld times inverseBind and scales the 
     world[5] = 2;
     world[10] = 2;
     world[12] = 3;
-    f.skin.joint(0, 20, world);
+    f.skin.joint(20, world);
     const frame = f.frames.prepareFrame(f.scene.slotsSnapshot());
     if (frame === undefined) throw new Error('Missing actual capsule pose frame');
     tasks.begin(frame);
@@ -108,7 +108,7 @@ it('omits an overflowing composed pose from capsule and draw demand without fail
     f.frames.discardFrame();
     const inverse = mat4.identity(mat4.create());
     inverse[0] = 3e38;
-    f.skin.skeletonChanged(0, 7, {
+    f.skin.skeletonChanged(7, {
       kind: 'skeleton',
       jointCount: 1,
       inverseBindMatrices: inverse,
@@ -116,7 +116,7 @@ it('omits an overflowing composed pose from capsule and draw demand without fail
     });
     const world = mat4.identity(mat4.create());
     world[0] = 3e38;
-    f.skin.joint(0, 19, world);
+    f.skin.joint(19, world);
     const frame = f.frames.prepareFrame(f.scene.slotsSnapshot());
     if (frame === undefined) throw new Error('Missing actual overflow frame');
     tasks.begin(frame);
@@ -145,7 +145,7 @@ it('keeps the Scene healthy when a shared Skeleton becomes malformed and omits o
         shadowCapsules: { joints: new Uint16Array([1]), shapes: new Float32Array(7).fill(1) },
       },
     ]) {
-      f.skin.skeletonChanged(0, 7, { kind: 'skeleton', ...malformed });
+      f.skin.skeletonChanged(7, { kind: 'skeleton', ...malformed });
       const frame = f.frames.prepareFrame(f.scene.slotsSnapshot());
       if (frame === undefined) throw new Error('Missing healthy Skin frame');
       tasks.begin(frame);
@@ -153,7 +153,7 @@ it('keeps the Scene healthy when a shared Skeleton becomes malformed and omits o
       await tasks.complete();
       f.frames.discardFrame();
     }
-    f.skin.skeletonChanged(0, 7, {
+    f.skin.skeletonChanged(7, {
       kind: 'skeleton',
       jointCount: 1,
       inverseBindMatrices: mat4.identity(mat4.create()),

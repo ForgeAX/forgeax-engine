@@ -8,7 +8,8 @@ import type {
   TextureFormat,
   TextureView,
 } from '@forgeax/engine-rhi';
-import { cloudHistoryExtent } from '../cloud/temporal';
+import type { CloudTransportFormat } from '../cloud/reconstruction/history';
+import { cloudHistoryExtent } from '../cloud/reconstruction/history';
 import type { DeviceScope } from '../device/device-scope';
 import {
   GPU_TEXTURE_USAGE_COPY_SRC,
@@ -47,7 +48,7 @@ export const TEMPORAL_PARAMS_BYTES = 48;
 export const CLOUD_HISTORY_FORMATS = Object.freeze({
   radiance: 'rgba16float',
   transmittance: 'rgba16float',
-  depth: 'rgba16float',
+  depth: 'rgba32float',
 } as const);
 
 export interface TemporalSurface {
@@ -65,8 +66,8 @@ export interface TsrGpuAnalysis {
   pendingInput: readonly [number, number] | undefined;
 }
 
-export interface TemporalGpuState {
-  readonly algorithm: 'taa' | 'tsr';
+interface TemporalGpuStateBase {
+  readonly algorithm: TemporalGpuMode;
   readonly tsr: TsrGpuAnalysis | undefined;
   readonly device: RhiDevice;
   readonly scope: DeviceScope;
@@ -77,12 +78,11 @@ export interface TemporalGpuState {
   readIndex: 0 | 1;
   pendingIndex: 0 | 1 | undefined;
   readonly color: [TemporalSurface, TemporalSurface];
-  readonly temporal: [TemporalSurface, TemporalSurface];
-  readonly stability: [TemporalSurface, TemporalSurface];
   /** TAA only: TSR runs its own shading analysis and never reads this history. */
   readonly flicker: [TemporalSurface, TemporalSurface] | undefined;
   /** Whether this candidate owns the optional cloud transport history MRT. */
   readonly cloudHistoryEnabled: boolean;
+  readonly cloudHistoryFormat: CloudTransportFormat;
   /** Previous/current cloud radiance, transmittance and representative depth. */
   readonly cloudRadiance: [TemporalSurface, TemporalSurface] | undefined;
   readonly cloudTransmittance: [TemporalSurface, TemporalSurface] | undefined;
@@ -93,6 +93,17 @@ export interface TemporalGpuState {
   paramsBuffer: Buffer | undefined;
   committed: boolean;
 }
+
+export type TemporalGpuMode = 'taa' | 'tsr' | 'scene-color';
+export type TemporalGpuState = TemporalGpuStateBase &
+  (
+    | {
+        readonly mode: 'taa' | 'tsr';
+        readonly temporal: [TemporalSurface, TemporalSurface];
+        readonly stability: [TemporalSurface, TemporalSurface];
+      }
+    | { readonly mode: 'scene-color'; readonly temporal?: never; readonly stability?: never }
+  );
 
 function createSurface(
   device: RhiDevice,
@@ -136,7 +147,8 @@ function createState(
   width: number,
   height: number,
   cloudHistoryEnabled: boolean,
-  algorithm: 'taa' | 'tsr',
+  cloudHistoryFormat: CloudTransportFormat,
+  algorithm: TemporalGpuMode,
   guideWidth: number,
   guideHeight: number,
 ): TemporalGpuState {
@@ -189,27 +201,34 @@ function createState(
       readIndex: 0,
       pendingIndex: undefined,
       color: [surface(`${algorithm}-history-color-a`), surface(`${algorithm}-history-color-b`)],
-      temporal: [
-        surface(`${algorithm}-history-temporal-a`, TEMPORAL_HISTORY_FORMATS.temporal),
-        surface(`${algorithm}-history-temporal-b`, TEMPORAL_HISTORY_FORMATS.temporal),
-      ],
-      stability: [
-        surface(
-          `${algorithm}-history-stability-a`,
-          isTsr ? 'rgba8unorm' : TEMPORAL_HISTORY_FORMATS.stability,
-        ),
-        surface(
-          `${algorithm}-history-stability-b`,
-          isTsr ? 'rgba8unorm' : TEMPORAL_HISTORY_FORMATS.stability,
-        ),
-      ],
-      flicker: isTsr
-        ? undefined
-        : [
-            surface('taa-history-flicker-a', TEMPORAL_HISTORY_FORMATS.flicker),
-            surface('taa-history-flicker-b', TEMPORAL_HISTORY_FORMATS.flicker),
-          ],
+      ...(algorithm === 'scene-color'
+        ? { mode: algorithm }
+        : {
+            mode: algorithm,
+            temporal: [
+              surface(`${algorithm}-history-temporal-a`, TEMPORAL_HISTORY_FORMATS.temporal),
+              surface(`${algorithm}-history-temporal-b`, TEMPORAL_HISTORY_FORMATS.temporal),
+            ],
+            stability: [
+              surface(
+                `${algorithm}-history-stability-a`,
+                isTsr ? 'rgba8unorm' : TEMPORAL_HISTORY_FORMATS.stability,
+              ),
+              surface(
+                `${algorithm}-history-stability-b`,
+                isTsr ? 'rgba8unorm' : TEMPORAL_HISTORY_FORMATS.stability,
+              ),
+            ],
+          }),
+      flicker:
+        isTsr || algorithm === 'scene-color'
+          ? undefined
+          : [
+              surface('taa-history-flicker-a', TEMPORAL_HISTORY_FORMATS.flicker),
+              surface('taa-history-flicker-b', TEMPORAL_HISTORY_FORMATS.flicker),
+            ],
       cloudHistoryEnabled,
+      cloudHistoryFormat,
       cloudRadiance: cloudHistoryEnabled
         ? [
             createSurface(
@@ -218,6 +237,7 @@ function createState(
               'cloud-history-radiance-a',
               cloudExtent.width,
               cloudExtent.height,
+              cloudHistoryFormat,
             ),
             createSurface(
               device,
@@ -225,6 +245,7 @@ function createState(
               'cloud-history-radiance-b',
               cloudExtent.width,
               cloudExtent.height,
+              cloudHistoryFormat,
             ),
           ]
         : undefined,
@@ -236,7 +257,7 @@ function createState(
               'cloud-history-transmittance-a',
               cloudExtent.width,
               cloudExtent.height,
-              CLOUD_HISTORY_FORMATS.transmittance,
+              cloudHistoryFormat,
             ),
             createSurface(
               device,
@@ -244,7 +265,7 @@ function createState(
               'cloud-history-transmittance-b',
               cloudExtent.width,
               cloudExtent.height,
-              CLOUD_HISTORY_FORMATS.transmittance,
+              cloudHistoryFormat,
             ),
           ]
         : undefined,
@@ -316,6 +337,7 @@ export function getTemporalGpuState(
   height: number,
   cloudHistoryRequested = false,
   camera?: CameraSnapshot,
+  mode: TemporalGpuMode = camera?.antialias === 'tsr' ? 'tsr' : 'taa',
 ): TemporalGpuState {
   // Graph preparation publishes this demand before any imported target is
   // resolved. That makes the first TAA and cloud pass share one candidate,
@@ -324,9 +346,13 @@ export function getTemporalGpuState(
     cloudHistoryRequested ||
     frameState.pendingCloudHistoryActive === true ||
     frameState.cloudHistoryActive === true;
-  const algorithm = camera?.antialias === 'tsr' ? 'tsr' : 'taa';
+  const algorithm = mode;
   if (algorithm === 'tsr') requireTsrCapabilities(device);
   const upper = temporalAnalysisCapacity(width, height, camera?.dynamicResolution?.maxScale);
+  const cloudHistoryFormat =
+    frameState.pendingCloudHistoryActive === true
+      ? (frameState.pendingCloudHistoryFormat ?? CLOUD_HISTORY_FORMATS.radiance)
+      : (frameState.cloudHistoryFormat ?? CLOUD_HISTORY_FORMATS.radiance);
   const matches = (state: TemporalGpuState | undefined): state is TemporalGpuState =>
     state !== undefined &&
     state.scope === scope &&
@@ -335,10 +361,12 @@ export function getTemporalGpuState(
       (state.tsr.width === upper.width && state.tsr.height === upper.height)) &&
     state.width === width &&
     state.height === height &&
+    state.mode === mode &&
     // Cloud history is a demand-shaped part of the temporal allocation. Keep
     // the two shapes distinct so turning CloudLayer off retires its six HDR
     // surfaces instead of retaining them on an otherwise TAA-only frame.
-    state.cloudHistoryEnabled === wantsCloudHistory;
+    state.cloudHistoryEnabled === wantsCloudHistory &&
+    (!wantsCloudHistory || state.cloudHistoryFormat === cloudHistoryFormat);
   const staged = frameState.temporalGpuState;
   if (matches(staged)) return staged;
   const existing = frameState.activeTemporalGpuState;
@@ -349,6 +377,7 @@ export function getTemporalGpuState(
     width,
     height,
     wantsCloudHistory,
+    cloudHistoryFormat,
     algorithm,
     upper.width,
     upper.height,

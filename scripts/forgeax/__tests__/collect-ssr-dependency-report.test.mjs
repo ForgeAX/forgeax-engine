@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import {
   buildDependencyReport,
+  DEFAULT_REQUIRED_ANCESTORS,
   FALLBACK_CHECK_NAMES,
   FORMAT_STAGE_NAMES,
   IDENTITY_FIELDS,
@@ -12,12 +13,112 @@ import {
   sameIdentity,
   validateIdentity,
 } from '../collect-ssr-dependency-report.mjs';
+import {
+  createSsrSquashFixture,
+  SSR_SOURCE_LINEAGE,
+} from './fixtures/ssr-source-lineage.fixture.mjs';
 
 const identity = Object.freeze({
   sourceHead: 'head',
   sourceTree: 'tree',
   lockSha256: 'lock',
   buildSha256: 'build',
+});
+
+test('requires the actual M0 squash landing while retaining all live receipt guards', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'forgeax-ssr-lineage-'));
+  try {
+    const fixture = await createSsrSquashFixture(root);
+    const requirement = DEFAULT_REQUIRED_ANCESTORS.find(
+      (entry) => entry.label === 'parentSsrM0Revision',
+    );
+    assert.equal(requirement?.revision, SSR_SOURCE_LINEAGE.landingM0);
+    assert.notEqual(requirement?.revision, SSR_SOURCE_LINEAGE.developmentM0);
+    const current = {
+      sourceHead: fixture.head,
+      sourceTree: fixture.tree,
+      lockSha256: 'fixture-lock',
+      buildSha256: 'fixture-build',
+    };
+    const dependencies = {
+      status: 'admitted',
+      identity: current,
+      admission: { status: 'admitted' },
+      reflectionFallback: {
+        identity: current,
+        source: 'probe',
+        state: 'active',
+        sourceGeneration: 1,
+        projectionGeneration: 1,
+        deviceGeneration: 1,
+        candidateVisible: false,
+      },
+      format: {
+        identity: current,
+        profile: 'r32float-mip-sampled-storage',
+        verdict: 'admitted',
+        evidence: 'real',
+        readback: { byteLength: 4, values: [1] },
+        stages: FORMAT_STAGE_NAMES.map((stage) => ({ stage, verdict: 'admitted' })),
+      },
+      temporal: { identity: current, successfulSubmit: true },
+    };
+    const requirements = DEFAULT_REQUIRED_ANCESTORS.map((entry) => ({
+      label: entry.label,
+      revision: entry.label === 'parentSsrM0Revision' ? fixture.landing : fixture.base,
+    }));
+    const report = (input = {}) =>
+      buildDependencyReport({
+        root,
+        identity: current,
+        inputIdentity: current,
+        dependencies,
+        requiredAncestors: requirements,
+        ...input,
+      });
+    assert.equal(report().status, 'admitted');
+    assert.equal(report({ dependencies: undefined }).status, 'fallback-only');
+    assert.equal(
+      report({ inputIdentity: { ...current, buildSha256: 'stale' } }).status,
+      'fallback-only',
+    );
+    assert.equal(
+      report({
+        dependencies: {
+          ...dependencies,
+          temporal: {
+            ...dependencies.temporal,
+            identity: { ...current, sourceTree: 'stale' },
+          },
+        },
+      }).status,
+      'fallback-only',
+    );
+    assert.equal(
+      report({
+        dependencies: {
+          ...dependencies,
+          format: {
+            ...dependencies.format,
+            stages: dependencies.format.stages.slice(1),
+          },
+        },
+      }).status,
+      'fallback-only',
+    );
+    for (const revision of [fixture.development, '0000000000000000000000000000000000000000']) {
+      const blocked = report({ requiredAncestors: [{ label: requirement.label, revision }] });
+      assert.equal(blocked.status, 'fallback-only');
+      assert.ok(blocked.failures.some((failure) => failure.code === 'required-ancestor-missing'));
+    }
+    assert.deepEqual(JSON.parse(fixture.git('show', `${fixture.landing}:owner.json`)).contracts, [
+      'identity-bound-live-receipts',
+      'format-eight-stages',
+      'successful-submit',
+    ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test('defines the exact four-field integration identity contract', () => {

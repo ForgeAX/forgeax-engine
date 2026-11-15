@@ -62,7 +62,7 @@ export function sourceHits(repoRoot: string, pattern: string): string[] {
       .map((line) => {
         const separator = line.indexOf(':');
         const lineEnd = line.indexOf(':', separator + 1);
-        return `${line.slice(0, separator)}:${line.slice(separator + 1, lineEnd)}:${line
+        return `${line.slice(0, separator).replaceAll('\\', '/')}:${line.slice(separator + 1, lineEnd)}:${line
           .slice(lineEnd + 1)
           .trim()}`;
       });

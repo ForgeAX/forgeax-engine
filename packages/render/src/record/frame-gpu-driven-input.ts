@@ -9,6 +9,7 @@ import type { VisibleSurfaceProjection } from '../raytracing/visible-surface';
 import type { CameraSnapshot } from '../render-contract';
 import type { RenderableSnapshot } from '../render-system-extract';
 import type { FrameList } from '../scene/frame-list';
+import { dispatchCasterMaterials } from '../scene/material-dispatch';
 import { ShadowMaterialContent } from '../scene/material-shadow-content';
 import type { PersistentShadowCasterProjection } from '../scene/render-scene';
 import type { ViewLights } from '../world/render-lights';
@@ -34,7 +35,7 @@ import { gpuDrivenMeshesForFrame } from './resident-meshes';
 export interface FrameGpuDrivenSources {
   readonly internals: RenderSystemInternals;
   readonly frameState: RenderFrameState;
-  readonly worlds: readonly RenderResourceScope[];
+  readonly sourceScope: RenderResourceScope;
   readonly camera: CameraSnapshot;
   readonly lights: ViewLights;
   readonly renderables: FrameList<RenderableSnapshot>;
@@ -67,8 +68,8 @@ export function buildFrameGpuDrivenInput(
   standard: StandardTopologyInputValue,
   pipelineState: PipelineState,
 ): FrameGpuDrivenInput {
-  const { internals, frameState, worlds, renderables, shadowCasterProjection } = sources;
-  const meshes = gpuDrivenMeshesForFrame(internals, worlds, input?.scene);
+  const { internals, frameState, sourceScope, renderables, shadowCasterProjection } = sources;
+  const meshes = gpuDrivenMeshesForFrame(internals, sourceScope, input?.scene);
   const visibleSurface = projectFrameVisibleSurface(internals, frame?.scene, renderables);
   const deferredProbeBuffer = prepareDeferredProbeBuffer(
     internals,
@@ -105,11 +106,14 @@ export function buildFrameGpuDrivenInput(
   if (hasShadows)
     collectGpuShadowMaterials(
       internals,
-      worlds,
+      sourceScope,
       artifacts.batchExecutions,
       meshes,
       shadowMaterials,
       undefined,
+      shadowCasterProjection === undefined
+        ? undefined
+        : dispatchCasterMaterials(shadowCasterProjection.dispatch),
     );
   const probeBuffer = gpuProbeBlendBufferFor(
     internals,

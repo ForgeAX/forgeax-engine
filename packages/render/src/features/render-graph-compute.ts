@@ -23,6 +23,62 @@ import {
   importRenderFeatureGraphBuffer,
   type RenderFeatureGraphBufferState,
 } from './render-graph-resources';
+import { isRenderFeatureTextureReference } from './texture-source';
+
+class RenderFeatureGraphTargetUnavailableError extends Error {
+  readonly detail: Readonly<{
+    readonly consumerFeatureIdentity: string;
+    readonly passName: string;
+    readonly scope?: string;
+    readonly target: Readonly<Record<string, string | number>>;
+  }>;
+
+  constructor(
+    featureIdentity: string,
+    passName: string,
+    scope: string | undefined,
+    target: RenderFeatureComputeTarget,
+  ) {
+    const identity = isRenderFeatureTextureReference(target)
+      ? {
+          kind: target.kind,
+          featureIdentity: target.featureIdentity,
+          name: target.name,
+          viewIdentity: target.viewIdentity,
+          format: target.format,
+        }
+      : typeof target === 'string'
+        ? { kind: 'named-target', name: target }
+        : {
+            kind: target.kind,
+            ...('name' in target && typeof target.name === 'string' ? { name: target.name } : {}),
+            ...('producerIdentity' in target && typeof target.producerIdentity === 'string'
+              ? { producerIdentity: target.producerIdentity }
+              : {}),
+            ...('allocationScope' in target && typeof target.allocationScope === 'string'
+              ? { allocationScope: target.allocationScope }
+              : {}),
+            ...('allocationKey' in target && typeof target.allocationKey === 'string'
+              ? { allocationKey: target.allocationKey }
+              : {}),
+            ...('format' in target && typeof target.format === 'string'
+              ? { format: target.format }
+              : {}),
+          };
+    const scopeDescription =
+      scope === undefined ? 'an unspecified graph scope' : `scope '${scope}'`;
+    super(
+      `graph target '${identity.name ?? identity.kind}' for feature '${featureIdentity}' pass '${passName}' is unavailable in ${scopeDescription}`,
+    );
+    this.name = 'RenderFeatureGraphTargetUnavailableError';
+    this.detail = {
+      consumerFeatureIdentity: featureIdentity,
+      passName,
+      ...(scope === undefined ? {} : { scope }),
+      target: identity,
+    };
+  }
+}
 
 /** Preserve physical usage scopes and copy barriers for graph and native command consumers. */
 export function visitRenderFeatureComputeSequence(
@@ -55,11 +111,13 @@ export function visitRenderFeatureComputeSequence(
       return err(
         new RenderFeatureStageFailedError(first.featureIdentity, first.order, 'plan', 'next-frame'),
       );
+    const firstWork = first.resolvedGpuCompute;
     let end = start + 1;
     const logicalPasses = [first];
     const earlyCopies: RenderFeaturePlanExecutionPass[] = [];
     const program = first.gpuCompute?.program;
-    if (program !== undefined && bufferOnly(first)) {
+    const collectBufferDispatches = (): void => {
+      if (program === undefined || !bufferOnly(first)) return;
       const uses = new Map<Buffer, Set<GraphBufferAccess>>();
       const remember = (work: RenderFeatureResolvedGpuComputePass): void => {
         for (const resource of work.buffers) {
@@ -71,7 +129,7 @@ export function visitRenderFeatureComputeSequence(
           accesses.add(resource.access);
         }
       };
-      remember(first.resolvedGpuCompute);
+      remember(firstWork);
       while (end < passes.length) {
         const next = passes[end];
         const nextWork = next?.resolvedGpuCompute;
@@ -85,6 +143,7 @@ export function visitRenderFeatureComputeSequence(
           // Copies may cross prior dispatches only with disjoint physical
           // buffers. Names, byte ranges and the current enabled bit are not proof.
           if (
+            (next.textureReadbacks?.length ?? 0) > 0 ||
             next.resolvedGpuCopies.some(
               (copy) => uses.has(copy.source.buffer) || uses.has(copy.destination.buffer),
             )
@@ -107,7 +166,8 @@ export function visitRenderFeatureComputeSequence(
         logicalPasses.push(next);
         end++;
       }
-    }
+    };
+    collectBufferDispatches();
     for (const copy of earlyCopies) {
       const added = actions.copy(copy);
       if (!added.ok) return added;
@@ -127,6 +187,7 @@ export class RenderFeatureComputeGraphProjection<FrameCtx extends RenderGraphFra
     resources?: RenderFeatureGraphBufferState,
     private readonly reportError?: (error: RenderError) => void,
     private readonly resolveTarget?: RenderFeatureGraphTargetResolver,
+    private readonly passNamePrefix = '',
   ) {
     this.resources = resources ?? createRenderFeatureGraphBufferState();
   }
@@ -137,7 +198,15 @@ export class RenderFeatureComputeGraphProjection<FrameCtx extends RenderGraphFra
     scope?: string,
   ): Result<void, RenderGraphError | RenderError> {
     return visitRenderFeatureComputeSequence(passes, {
-      copy: (pass) => projectRenderFeatureCopies(this.builder, this.resources, pass, scope),
+      copy: (pass) =>
+        projectRenderFeatureCopies(
+          this.builder,
+          this.resources,
+          pass,
+          scope,
+          this.passNamePrefix + pass.name,
+          this.resolveTarget,
+        ),
       compute: (group) => this.addPass(group, scope),
     });
   }
@@ -163,7 +232,13 @@ export class RenderFeatureComputeGraphProjection<FrameCtx extends RenderGraphFra
       let target = this.resolveTarget?.(handle);
       if (target === undefined)
         return err(
-          new RenderFeatureStageFailedError(featureIdentity, order, 'record', 'renderer-recover'),
+          new RenderFeatureStageFailedError(
+            featureIdentity,
+            order,
+            'record',
+            'renderer-recover',
+            new RenderFeatureGraphTargetUnavailableError(featureIdentity, name, scope, handle),
+          ),
         );
       if (typeof handle !== 'string' && handle.kind === 'scene-depth') {
         const view = this.builder.view(target.texture, { aspect: 'depth-only' });
@@ -213,7 +288,7 @@ export class RenderFeatureComputeGraphProjection<FrameCtx extends RenderGraphFra
       currentRenderFeaturePass(frame, logical.featureIdentity, logical.name, scope)?.enabled ??
       logical.enabled ??
       true;
-    return this.builder.addComputePass(name, {
+    return this.builder.addComputePass(this.passNamePrefix + name, {
       accesses,
       executeIf: (frame) => logicalPasses.some((logical) => enabled(frame, logical)),
       encodeDirect: (pass, frame, resources) => {

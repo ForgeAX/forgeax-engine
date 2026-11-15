@@ -1,12 +1,15 @@
+import { AUDIO_ENGINE_RESOURCE_KEY } from '@forgeax/engine-audio';
+import { InputFrameStartScan } from "@forgeax/engine-input";
+import { defineSystem } from "@forgeax/engine-ecs";
 import type { AssetHandle } from '@forgeax/engine-types';
 // Reproduce Bevy's `play_sound_effect` example.
 
 import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtimeBinding } from '@forgeax/apps-shared/asset-runtime-config';
 import { createApp } from '@forgeax/engine-app/browser';
 import { type AudioState, AudioSource, audioPlugin } from '@forgeax/engine-audio';
-import { WebAudioEngine, webAudioPlugin } from '@forgeax/engine-audio-webaudio';
+import { webAudioPlugin } from '@forgeax/engine-audio-webaudio';
 import { Update } from '@forgeax/engine-ecs';
-import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine-input';
+import { INPUT_SNAPSHOT_RESOURCE_KEY } from '@forgeax/engine-input';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 
 
@@ -44,7 +47,7 @@ const scene = buildPlaySoundEffectWorld(world, canvas.width / Math.max(canvas.he
 const assets = app.assets;
 if (assets === undefined) throw new Error('bevy-play-sound-effect: assets unavailable');
 configureRuntimeAssetCatalog(assets, runtimeBinding);
-const audioEngine = world.getResource<WebAudioEngine>('AudioEngine');
+const audioEngine = world.getResource(AUDIO_ENGINE_RESOURCE_KEY);
 let clipHandle: AssetHandle<'audio'> = HANDLE_NONE;
 let loaded = false;
 const guid = AssetGuid.parse(SFX_GUID);
@@ -71,12 +74,12 @@ if (!guid.ok) {
 let previousSpace = false;
 let triggerCount = 0;
 let lastTriggered = false;
-world.addSystem(Update, {
+const systemToken1 = defineSystem({
   name: 'play-sound-effect-controls',
-  after: ['input-frame-start-scan'],
+  after: [InputFrameStartScan],
   queries: [],
   fn: () => {
-    const snapshot = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+    const snapshot = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
     const space = snapshot?.keyboard.down(' ') ?? false;
     lastTriggered = false;
     if (space && !previousSpace && loaded) {
@@ -102,6 +105,7 @@ world.addSystem(Update, {
     triggerStatus.textContent = `triggers=${triggerCount} | last=${lastTriggered ? 1 : 0}`;
   },
 });
+world.addSystem(Update, systemToken1);
 
 const started = app.start();
 if (!started.ok) {

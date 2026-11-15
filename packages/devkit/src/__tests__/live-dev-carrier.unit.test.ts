@@ -244,6 +244,34 @@ beforeEach(() => {
 });
 
 describe('live DevKit borrowed carrier boundary', () => {
+  it.each([
+    undefined,
+    '0',
+    '1',
+  ])('passes GPU timing opt-in %s to the ordinary owner page', async (setting) => {
+    vi.stubEnv('FORGEAX_GPU_PASS_TIMING', setting);
+    const root = await mkdtemp(join(tmpdir(), 'forgeax-live-gpu-timing-'));
+    const port = await freePort();
+    const sessionPath = join(root, '.forgeax', 'session.json');
+    const daemon = runLiveDevDaemon(root, port, sessionPath);
+    try {
+      await vi.waitFor(() => expect(fixtures.browser.open).toHaveBeenCalledOnce());
+      const openOptions = fixtures.browser.open.mock.lastCall?.[0] as { serverUrl: string };
+      const url = new URL(openOptions.serverUrl);
+      expect(url.searchParams.get('forgeax-gpu-pass-timing')).toBe(setting === '1' ? '1' : null);
+      expect(url.searchParams.get('forgeaxBridge')).toBeTruthy();
+      const session = JSON.parse(await readFile(sessionPath, 'utf8')) as {
+        options: { gpuPassTiming: boolean };
+      };
+      expect(session.options.gpuPassTiming).toBe(setting === '1');
+    } finally {
+      await request(port, '/stop', 'POST');
+      await daemon;
+      await rm(root, { recursive: true, force: true });
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('applies the project preparation deadline to the backend child before browser startup', async () => {
     const root = await mkdtemp(join(tmpdir(), 'forgeax-live-preparation-budget-'));
     const port = await freePort();

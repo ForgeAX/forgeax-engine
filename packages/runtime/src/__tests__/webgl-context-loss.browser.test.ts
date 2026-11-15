@@ -35,7 +35,7 @@ it('recovers real WebGL context loss and assets through a replacement Renderer g
   const attached = renderer.attach(world);
   if (!attached.ok) throw attached.error;
   const lease = attached.value;
-  const request = { leases: [lease], camera: { lease }, environment: { lease } };
+  const request = { source: lease };
   const sample = async () => {
     const receipt = await drawReadyFrame(renderer, request, ['final-display']);
     const result = await renderer.observe(receipt, { include: ['final-display'] });

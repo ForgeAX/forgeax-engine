@@ -49,7 +49,7 @@ describe('standard dynamic geometry lifecycle', () => {
       const frame = { frameId, deviceGeneration: 1, completed: Promise.resolve(frameId) };
       const receipts = lifecycle.publishFrame(
         frame,
-        [world],
+        world,
         frameId + 4,
         (current) => {
           observed.push(current);
@@ -98,7 +98,7 @@ describe('standard dynamic geometry lifecycle', () => {
     }
     const frame = { frameId: 1, deviceGeneration: 1, completed: Promise.resolve() };
     if (frozen) Object.freeze(frame);
-    const receipts = lifecycle.publishFrame(frame, [world], undefined, () => {
+    const receipts = lifecycle.publishFrame(frame, world, undefined, () => {
       if (!frozen) frame.frameId++;
       return true;
     });
@@ -108,9 +108,7 @@ describe('standard dynamic geometry lifecycle', () => {
     expect(receipts.map((receipt) => receipt.frame.frameId)).toEqual(
       frozen ? Array(8).fill(1) : [2, 3, 4, 5, 6, 7, 8, 9],
     );
-    const next = lifecycle.publishFrame(Object.freeze({ frameId: 2, deviceGeneration: 1 }), [
-      world,
-    ]);
+    const next = lifecycle.publishFrame(Object.freeze({ frameId: 2, deviceGeneration: 1 }), world);
     expect(next[0]?.frame).not.toBe(receipts[0]?.frame);
   });
 
@@ -129,7 +127,7 @@ describe('standard dynamic geometry lifecycle', () => {
       },
       deviceGeneration: 1,
     });
-    const receipts = lifecycle.publishFrame(frame, [world]);
+    const receipts = lifecycle.publishFrame(frame, world);
     expect(receipts.map((receipt) => receipt.frameId)).toEqual([1, 4, 7]);
     expect(receipts.map((receipt) => receipt.frame.frameId)).toEqual([2, 5, 8]);
     expect(new Set(receipts.map((receipt) => receipt.frame)).size).toBe(3);
@@ -145,7 +143,7 @@ describe('standard dynamic geometry lifecycle', () => {
       if (!prepared.ok) return;
       expect(lifecycle.accept(prepared.value).ok).toBe(true);
       expect(
-        lifecycle.publishFrame({ frameId: entity, deviceGeneration: 1 }, [world]),
+        lifecycle.publishFrame({ frameId: entity, deviceGeneration: 1 }, world),
       ).toContainEqual(expect.objectContaining({ candidateId: prepared.value.candidateId }));
     }
     expect(lifecycle.inspect().published).toBe(33);
@@ -214,9 +212,9 @@ describe('standard dynamic geometry lifecycle', () => {
     if (!accepted.ok) return;
     expect(accepted.value.state).toBe('accepted');
     expect(accepted.value).not.toHaveProperty('mesh');
-    const receiptsBefore = lifecycle.publishFrame({ frameId: 4, deviceGeneration: 2 });
+    const receiptsBefore = lifecycle.publishFrame({ frameId: 4, deviceGeneration: 2 }, world);
     expect(receiptsBefore).toEqual([]);
-    const receipts = lifecycle.publishFrame({ frameId: 5, deviceGeneration: 3 });
+    const receipts = lifecycle.publishFrame({ frameId: 5, deviceGeneration: 3 }, world);
     expect(receipts).toHaveLength(1);
     expect(receipts[0]).toMatchObject({
       candidateId: accepted.value.candidateId,
@@ -295,11 +293,9 @@ describe('standard dynamic geometry lifecycle', () => {
     const accepted = lifecycle.accept(prepared.value, { world, fixedStep: 4 });
     expect(accepted.ok).toBe(true);
     if (!accepted.ok) return;
-    expect(lifecycle.publishFrame({ frameId: 1, deviceGeneration: 1 }, [otherWorld], 4)).toEqual(
-      [],
-    );
-    expect(lifecycle.publishFrame({ frameId: 2, deviceGeneration: 1 }, [world], 3)).toEqual([]);
-    expect(lifecycle.publishFrame({ frameId: 3, deviceGeneration: 1 }, [world], 4)).toHaveLength(1);
+    expect(lifecycle.publishFrame({ frameId: 1, deviceGeneration: 1 }, otherWorld, 4)).toEqual([]);
+    expect(lifecycle.publishFrame({ frameId: 2, deviceGeneration: 1 }, world, 3)).toEqual([]);
+    expect(lifecycle.publishFrame({ frameId: 3, deviceGeneration: 1 }, world, 4)).toHaveLength(1);
   });
 
   it('does not let a late lower revision replace a published candidate', () => {
@@ -334,7 +330,7 @@ describe('standard dynamic geometry lifecycle', () => {
     expect(accepted.ok).toBe(true);
     if (!accepted.ok) return;
     expect(accepted.value).not.toHaveProperty('mesh');
-    const firstFrame = lifecycle.publishFrame({ frameId: 1, deviceGeneration: 1 }, [world]);
+    const firstFrame = lifecycle.publishFrame({ frameId: 1, deviceGeneration: 1 }, world);
     expect(firstFrame).toHaveLength(1);
     expect(firstFrame[0]).toMatchObject({
       candidateId: newer.value.candidateId,
@@ -347,7 +343,7 @@ describe('standard dynamic geometry lifecycle', () => {
       error: { code: 'dynamic-geometry-stale' },
     });
     expect(lifecycle.cancel(older.value).ok).toBe(true);
-    const secondFrame = lifecycle.publishFrame({ frameId: 2, deviceGeneration: 1 }, [world]);
+    const secondFrame = lifecycle.publishFrame({ frameId: 2, deviceGeneration: 1 }, world);
     expect(secondFrame).toHaveLength(1);
     expect(secondFrame[0]).toMatchObject({
       candidateId: newer.value.candidateId,
@@ -378,7 +374,7 @@ describe('standard dynamic geometry lifecycle', () => {
     const acceptedPrevious = lifecycle.accept(previous.value);
     expect(acceptedPrevious.ok).toBe(true);
     if (!acceptedPrevious.ok) return;
-    expect(lifecycle.publishFrame({ frameId: 1, deviceGeneration: 1 })).toHaveLength(1);
+    expect(lifecycle.publishFrame({ frameId: 1, deviceGeneration: 1 }, world)).toHaveLength(1);
     expect(lifecycle.receipt(acceptedPrevious.value)).toMatchObject({ frameId: 1 });
 
     const replacement = lifecycle.prepare(
@@ -404,7 +400,7 @@ describe('standard dynamic geometry lifecycle', () => {
     expect(current.ok).toBe(true);
     if (!current.ok) return;
     expect(lifecycle.accept(current.value).ok).toBe(true);
-    expect(lifecycle.publishFrame({ frameId: 1, deviceGeneration: 1 })).toHaveLength(1);
+    expect(lifecycle.publishFrame({ frameId: 1, deviceGeneration: 1 }, world)).toHaveLength(1);
 
     const regressed = lifecycle.prepare(
       { world, mesh: mesh(), revision: 3, topologyRevision: 3 },
@@ -437,7 +433,7 @@ describe('standard dynamic geometry lifecycle', () => {
     const completed = Promise.resolve();
     const receipts = lifecycle.publishFrame(
       { frameId: 4, deviceGeneration: 1, completed },
-      [world],
+      world,
       5,
     );
     expect(receipts).toHaveLength(1);

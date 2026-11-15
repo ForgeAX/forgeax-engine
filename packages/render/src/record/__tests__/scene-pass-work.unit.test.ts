@@ -81,7 +81,6 @@ function fixture(count: number) {
     scene.apply(
       sources.map((snapshot) => ({
         kind: 'update',
-        worldId: 0,
         entityKey: snapshot.entityKey,
         snapshot,
       })),
@@ -110,9 +109,10 @@ function fixture(count: number) {
   const mesh = {
     submeshes: Array.from({ length: 3 }, () => ({ materialSlot: 0 })),
   } as unknown as MeshGpuHandles;
-  const worlds = [
-    { identity: 'pass-work-world', transparentSort: { mode: 0, yzAlpha: 1 } },
-  ] as unknown as RenderResourceScope[];
+  const world = {
+    identity: 'pass-work-world',
+    transparentSort: { mode: 0, yzAlpha: 1 },
+  } as unknown as RenderResourceScope;
   const gpu = new GpuDrawSelection(gpuBatches);
   const meshes = new Map(
     plan.batches.map((batch) => {
@@ -123,14 +123,12 @@ function fixture(count: number) {
   const project = vi.fn((rows: readonly ValidatedRenderable[]) =>
     dispatch.materials().project(
       rows.map((row) => {
-        const record = scene.slot(row.source.worldId, row.source.entityKey);
+        const record = scene.slot(row.source.entityKey);
         assert(record);
         return { slot: record.slot, source: row.source, renderableIndex: row.renderableIndex };
       }),
     ),
   );
-  const world = worlds[0];
-  assert(world);
   return {
     world,
     shared,
@@ -142,7 +140,6 @@ function fixture(count: number) {
     plan,
     gpu,
     meshes,
-    worlds,
     dispatch,
     project,
   };
@@ -166,7 +163,7 @@ it('retains TAA Direct edge geometry admitted by the jittered camera', () => {
   );
   expect(frustum.intersectsBox(planes, bounds)).toBe(false);
   expect(frustum.intersectsBox(jitteredPlanes, bounds)).toBe(true);
-  const source = f.scene.slot(0, 0)?.snapshot;
+  const source = f.scene.slot(0)?.snapshot;
   assert(source);
   const matrix = new Float32Array(source.transform.world);
   matrix[12] = 5.01;
@@ -175,7 +172,6 @@ it('retains TAA Direct edge geometry admitted by the jittered camera', () => {
     f.scene.apply([
       {
         kind: 'update',
-        worldId: 0,
         entityKey: 0,
         snapshot: {
           ...source,
@@ -199,7 +195,7 @@ it('retains TAA Direct edge geometry admitted by the jittered camera', () => {
       materials: f.dispatch.materials(),
       gpu: f.gpu,
       meshes: f.meshes,
-      worlds: f.worlds,
+      sourceScope: f.world,
       prepareUnbatched: () => [],
       viewDraws: [],
       prepareGeometry: (mesh) => mesh,
@@ -215,7 +211,7 @@ it('retains TAA Direct edge geometry admitted by the jittered camera', () => {
 });
 
 it('prepares separate actual Pass work without expanding unrelated GPU members', () => {
-  const f = fixture(10_000);
+  const f = fixture(10000);
   const forward = request('Forward');
   const temporal = request('Forward', { passKind: 'temporal' });
   const deferred = request('Deferred');
@@ -249,7 +245,7 @@ it('prepares separate actual Pass work without expanding unrelated GPU members',
     materials: f.dispatch.materials(),
     gpu: f.gpu,
     meshes: f.meshes,
-    worlds: f.worlds,
+    sourceScope: f.world,
     prepareUnbatched: () => [],
     viewDraws: [],
     prepareGeometry: (mesh) => mesh,
@@ -268,7 +264,7 @@ it('prepares separate actual Pass work without expanding unrelated GPU members',
     [],
     undefined,
     false,
-    { bindings: [], worlds: f.worlds, frame: f.dispatch.materials() },
+    { bindings: [], sourceScope: f.world, frame: f.dispatch.materials() },
     f.scene,
   );
   const work = prepared.finish(planned);
@@ -302,7 +298,7 @@ it('captures all selected sources independently of display GPU and material adop
     materials: frame,
     gpu: f.gpu,
     meshes: f.meshes,
-    worlds: f.worlds,
+    sourceScope: f.world,
     prepareUnbatched: () => [],
     viewDraws: [],
     prepareGeometry: (mesh) => mesh,
@@ -355,9 +351,7 @@ it('sorts each requested camera before folding its CPU draws', () => {
     };
     source.transform.world[14] = z;
     f.topology.apply(
-      f.scene.apply([
-        { kind: 'update', worldId: 0, entityKey: source.entityKey, snapshot: source },
-      ]),
+      f.scene.apply([{ kind: 'update', entityKey: source.entityKey, snapshot: source }]),
     );
     f.dispatch.bind(record.slot, source);
   }
@@ -386,7 +380,7 @@ it('sorts each requested camera before folding its CPU draws', () => {
     materials: f.dispatch.materials(),
     gpu: f.gpu,
     meshes,
-    worlds: f.worlds,
+    sourceScope: f.world,
     prepareUnbatched: () => [],
     viewDraws: [],
     prepareGeometry: (mesh) => mesh,
@@ -408,8 +402,8 @@ it('retains exact unbatched submeshes when one material is excluded by another P
     material: f.shared,
     materials: [f.shared, f.noLod],
   };
-  const events = f.scene.apply([{ kind: 'update', worldId: 0, entityKey: 10, snapshot: source }]);
-  const slot = f.scene.slot(0, 10);
+  const events = f.scene.apply([{ kind: 'update', entityKey: 10, snapshot: source }]);
+  const slot = f.scene.slot(10);
   assert(slot);
   f.dispatch.bind(slot.slot, source);
   f.topology.apply(events);
@@ -429,7 +423,7 @@ it('retains exact unbatched submeshes when one material is excluded by another P
       materials: f.dispatch.materials(),
       gpu: f.gpu,
       meshes: f.meshes,
-      worlds: f.worlds,
+      sourceScope: f.world,
       prepareUnbatched: (sources) =>
         sources.map(
           (source, renderableIndex) =>
@@ -469,7 +463,7 @@ it('records the captured material mode and clears already resolved GPU exclusion
     materials: frame,
     gpu: f.gpu,
     meshes: f.meshes,
-    worlds: f.worlds,
+    sourceScope: f.world,
     prepareUnbatched: () => [],
     viewDraws: [],
     prepareGeometry: (mesh) => mesh,
@@ -486,7 +480,7 @@ it('records the captured material mode and clears already resolved GPU exclusion
     [],
     undefined,
     false,
-    { bindings: [], worlds: f.worlds, frame },
+    { bindings: [], sourceScope: f.world, frame },
     f.scene,
   );
   const marker = Symbol('frame-owned-field');
@@ -567,7 +561,7 @@ it.each([
     materials: frame,
     gpu: f.gpu,
     meshes: f.meshes,
-    worlds: f.worlds,
+    sourceScope: f.world,
     prepareUnbatched: () => [],
     viewDraws: [],
     prepareGeometry: (mesh) => mesh,
@@ -584,7 +578,7 @@ it.each([
     [],
     undefined,
     false,
-    { bindings: [], worlds: f.worlds, frame },
+    { bindings: [], sourceScope: f.world, frame },
     f.scene,
   );
   const context = scenePassContext(
@@ -635,7 +629,7 @@ it('uses current camera admission before CPU validation while captures keep thei
     materials: f.dispatch.materials(),
     gpu: f.gpu,
     meshes: f.meshes,
-    worlds: f.worlds,
+    sourceScope: f.world,
     prepareUnbatched: () => [],
     viewDraws: [],
     prepareGeometry: (mesh) => mesh,
@@ -676,7 +670,7 @@ it('retains separate live fold buffers across cleanup and retires absent graph w
     materials: f.dispatch.materials(),
     gpu: f.gpu,
     meshes: f.meshes,
-    worlds: f.worlds,
+    sourceScope: f.world,
     prepareUnbatched: () => [],
     viewDraws: [],
     prepareGeometry: (mesh) => mesh,
@@ -697,7 +691,7 @@ it('retains separate live fold buffers across cleanup and retires absent graph w
     [],
     undefined,
     false,
-    { bindings: [], worlds: f.worlds, frame: f.dispatch.materials() },
+    { bindings: [], sourceScope: f.world, frame: f.dispatch.materials() },
     f.scene,
   );
   const buffers = new Map();
@@ -814,7 +808,7 @@ it.each([
     materials: materials,
     gpu: new GpuDrawSelection([]),
     meshes: new Map(),
-    worlds: [world],
+    sourceScope: world,
     prepareUnbatched: (rows) =>
       rows.map((source, renderableIndex) => ({
         ...base,
@@ -853,7 +847,7 @@ it('addresses each pass row once under the combined index with its last dispatch
     materials: f.dispatch.materials(),
     gpu: f.gpu,
     meshes: f.meshes,
-    worlds: f.worlds,
+    sourceScope: f.world,
     prepareUnbatched: () => [],
     viewDraws: [],
     prepareGeometry: (mesh) => mesh,
@@ -901,7 +895,7 @@ it('retains combined Scene Pass work until a selected phase output or request ro
     materials: f.dispatch.materials(),
     gpu: f.gpu,
     meshes: f.meshes,
-    worlds: f.worlds,
+    sourceScope: f.world,
     prepareUnbatched: () => [],
     viewDraws: [],
     prepareGeometry: (mesh) => mesh,
@@ -926,7 +920,7 @@ it('retains combined Scene Pass work until a selected phase output or request ro
   assert(source);
   const pose = new Float32Array(source.transform.world);
   pose[12] = 23;
-  f.topology.apply(f.scene.apply([{ kind: 'update', worldId: 0, entityKey: 0, world: pose }]));
+  f.topology.apply(f.scene.apply([{ kind: 'update', entityKey: 0, world: pose }]));
   const moved = prepareScenePasses([deferred, forward], {
     ...inputs,
     scene: {
@@ -962,7 +956,7 @@ it('skips folding source projection for an owned scene without Sprite demand', (
     materials,
     gpu: f.gpu,
     meshes: f.meshes,
-    worlds: f.worlds,
+    sourceScope: f.world,
     prepareUnbatched: () => [],
     viewDraws: [],
     prepareGeometry: (mesh: MeshGpuHandles) => mesh,
@@ -1016,7 +1010,7 @@ it('refreshes Sprite fold admission on parameter-only adoption with retained Pas
     materials,
     gpu: f.gpu,
     meshes: f.meshes,
-    worlds: f.worlds,
+    sourceScope: f.world,
     prepareUnbatched: () => [],
     viewDraws: [],
     prepareGeometry: (mesh: MeshGpuHandles) => mesh,
@@ -1068,7 +1062,7 @@ it('refreshes transmission slicing when only an owned scalar value changes', () 
     materials,
     gpu: f.gpu,
     meshes: f.meshes,
-    worlds: f.worlds,
+    sourceScope: f.world,
     prepareUnbatched: () => [],
     viewDraws: [],
     prepareGeometry: (mesh: MeshGpuHandles) => mesh,
@@ -1120,7 +1114,7 @@ it('does not keep superseded preparations through the current finish method', as
     materials: f.dispatch.materials(),
     gpu: f.gpu,
     meshes: f.meshes,
-    worlds: f.worlds,
+    sourceScope: f.world,
     prepareUnbatched: () => [],
     viewDraws: [],
     prepareGeometry: (mesh) => mesh,

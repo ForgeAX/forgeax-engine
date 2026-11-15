@@ -1,3 +1,6 @@
+import { GameCounterattackOrder, GamePlayerMovementOrder, GameHealthPickupCollectionOrder } from "../../src/system-order";
+import { PhysicsCollisionSync } from "@forgeax/engine-physics-rapier3d";
+import { defineSystem } from "@forgeax/engine-ecs";
 import type { AssetHandle } from '@forgeax/engine-types';
 import {
   FixedUpdate,
@@ -228,11 +231,11 @@ export function createHealthPickups(
   return {
     installSystem: (ctx) => {
       physics = ctx.physics;
-      world.addSystem(FixedUpdate, {
+      const systemToken1 = defineSystem({ sets: [GameHealthPickupCollectionOrder],
         name: 'game-health-pickup-collection',
         runIf: inState(GameState, 'Play'),
-        after: ['physicsCollisionSync', 'game-player-movement'],
-        before: ['game-counterattack'],
+        after: [PhysicsCollisionSync, GamePlayerMovementOrder],
+        before: [GameCounterattackOrder],
         queries: [],
         fn: (_world, _results, commands) => {
           const collisions = world.get(player, CollidingEntities);
@@ -262,7 +265,8 @@ export function createHealthPickups(
             return;
           }
         },
-      }).unwrap();
+      });
+world.addSystem(FixedUpdate, systemToken1).unwrap();
     },
     activate: (authoredLocalId) => {
       if (disposed) return false;

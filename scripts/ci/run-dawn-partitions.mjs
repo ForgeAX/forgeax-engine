@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DAWN_ISOLATED_GROUPS, DAWN_VITEST_CONFIG } from './dawn-gate-roster.mjs';
 import { runBrowserCommand } from './run-browser-gate-with-retry.mjs';
@@ -128,6 +128,26 @@ export function selectTransmissionSmokeOwner(features, owner) {
   }
 }
 
+/** Preserve the completed owner's raw reports before reclaiming its temporary directory. */
+export function finalizeDawnPartitionReports(temporary, evidenceDirectory) {
+  if (evidenceDirectory) {
+    const withinRoot = relative(ROOT, evidenceDirectory);
+    if (
+      !isAbsolute(evidenceDirectory) ||
+      withinRoot === '' ||
+      (withinRoot !== '..' && !withinRoot.startsWith(`..${sep}`) && !isAbsolute(withinRoot))
+    )
+      throw new Error(
+        'Dawn partition evidence directory must be absolute and outside the checkout',
+      );
+    mkdirSync(evidenceDirectory, { recursive: true });
+    const retained = join(evidenceDirectory, basename(temporary));
+    cpSync(temporary, retained, { recursive: true, force: false, errorOnExist: true });
+    console.log(`[dawn-partitions] evidence=${retained}`);
+  }
+  rmSync(temporary, { recursive: true, force: true });
+}
+
 export async function runDawnPartitions(kind, { env = process.env, smokeOwner } = {}) {
   const configuredPartitions = selectDawnTestPartitions(kind, env);
   const transmissionSmoke = kind === 'transmission' && env.FORGEAX_DAWN_ROSTER_SMOKE === '1';
@@ -196,7 +216,13 @@ export async function runDawnPartitions(kind, { env = process.env, smokeOwner } 
     );
     return 0;
   } finally {
-    rmSync(temporary, { recursive: true, force: true });
+    try {
+      finalizeDawnPartitionReports(temporary, env.FORGEAX_DAWN_PARTITION_EVIDENCE_DIR);
+    } catch (error) {
+      // Evidence housekeeping cannot replace the original test verdict. A
+      // failed copy keeps the temporary reports available for recovery.
+      console.error(`[dawn-partitions] evidence finalization failed; retained=${temporary}`, error);
+    }
   }
 }
 

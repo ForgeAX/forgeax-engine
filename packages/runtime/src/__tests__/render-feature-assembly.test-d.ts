@@ -12,8 +12,8 @@ type TestFrameData = {
 
 const feature = {
   identity: 'test.runtime-assembly',
-  extract({ owner }) {
-    return ok({ visibleCount: owner });
+  extract({ world }) {
+    return ok({ visibleCount: world.inspect().entityCount });
   },
   plan(data: TestFrameData, context: RenderFeaturePlanContext) {
     const count: number = data.visibleCount;

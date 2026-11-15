@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { chromium, webkit } from 'playwright';
 import { preview } from 'vite';
-import { waitForPreview } from './preview-readiness.mjs';
+import { executionSmokeReady, waitForPreview } from './preview-readiness.mjs';
 import { chromeLaunchOptions } from './chrome-options.mjs';
 
 const port = 5199;
@@ -57,7 +57,7 @@ try {
       waitUntil: 'domcontentloaded',
     });
     try {
-      await page.waitForFunction(() => globalThis.__forgeaxExecutionReady === true, null, { timeout: 30_000 });
+      await page.waitForFunction(executionSmokeReady, tier, { timeout: 30_000 });
     } catch (error) {
       const output = await page.locator('#execution-report').textContent();
       throw new Error(`${tier} did not become ready: ${String(error)}; output=${output}; errors=${errors.join(' | ')}; logs=${logs.join(' | ')}`);
@@ -101,7 +101,8 @@ try {
     await faultPage.waitForFunction(
       () =>
         globalThis.__forgeaxExecutionTelemetry?.registered.length === 2 &&
-        globalThis.__forgeaxExecutionReport?.().engine.health === 'running',
+        globalThis.__forgeaxExecutionReport?.().engine.health === 'running' &&
+        globalThis.__forgeaxExecutionReport?.().kernelDispatch.usedShared === true,
       null,
       { timeout: 30_000 },
     );

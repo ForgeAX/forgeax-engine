@@ -32,6 +32,8 @@ use naga::{
 use serde::{Deserialize, Serialize};
 use serde_json;
 use wasm_bindgen::prelude::*;
+#[path = "naga_entry_canonical.rs"]
+mod entry_canonical;
 #[path = "naga_entry_reads.rs"]
 mod entry_reads;
 
@@ -61,6 +63,8 @@ struct ComputeEntrySource {
 
 // This is a build-time projection. Naga retains the selected entry's workgroup
 // size, overrides and reachable globals/functions, and remaps every IR handle.
+// The closure is then canonicalised so identical closures cut from different
+// programs write identical text (see naga_entry_canonical.rs).
 fn compute_entry_sources(
     source: &str,
     entries: &[String],
@@ -90,17 +94,57 @@ fn compute_entry_sources(
             continue;
         }
         naga::compact::compact(&mut module, naga::compact::KeepUnused::No);
-        let info = Validator::new(ValidationFlags::all(), Capabilities::all())
-            .validate(&module)
-            .map_err(|e| e.to_string())?;
+        let closure = written_interface(&module)?;
+        entry_canonical::canonicalize_closure(&mut module);
+        let info = validate_module(&module)?;
         let source = write_checked_wgsl(&module, &info)
             .map_err(|error| format!("shader-compile-failed: {error}"))?;
+        // Canonical text must expose exactly the interface of the closure's
+        // uncanonicalised text: bindings, layouts, entry reads, workgroup size.
+        let written = naga::front::wgsl::parse_str(&source).map_err(|e| e.to_string())?;
+        let canonical = compute_interface(&written, &validate_module(&written)?)?;
+        if canonical != closure {
+            return Err(format!(
+                "shader-compile-failed: canonical closure of {entry} changed its interface: {}",
+                first_difference(&closure.to_string(), &canonical.to_string())
+            ));
+        }
         output.push(ComputeEntrySource {
             entry_point: entry.clone(),
             source,
         });
     }
     Ok(output)
+}
+
+/// Interface of `module` as a consumer of its written WGSL observes it.
+fn written_interface(module: &Module) -> Result<serde_json::Value, String> {
+    let info = validate_module(module)?;
+    let source =
+        naga::back::wgsl::write_string(module, &info, naga::back::wgsl::WriterFlags::empty())
+            .map_err(|error| format!("WGSL writeback failed: {error}"))?;
+    let reparsed = naga::front::wgsl::parse_str(&source).map_err(|e| e.to_string())?;
+    compute_interface(&reparsed, &validate_module(&reparsed)?)
+}
+
+fn first_difference(before: &str, after: &str) -> String {
+    let at = before
+        .bytes()
+        .zip(after.bytes())
+        .position(|(a, b)| a != b)
+        .unwrap_or(before.len().min(after.len()));
+    let start = before.floor_char_boundary(at.saturating_sub(60));
+    let excerpt = |text: &str| {
+        let end = text.floor_char_boundary((at + 60).min(text.len()));
+        text[start.min(end)..end].to_string()
+    };
+    format!("before …{}… after …{}…", excerpt(before), excerpt(after))
+}
+
+fn validate_module(module: &Module) -> Result<ModuleInfo, String> {
+    Validator::new(ValidationFlags::all(), Capabilities::all())
+        .validate(module)
+        .map_err(|e| e.to_string())
 }
 
 /// Produce portable WGSL for each selected compute entry; never driver binaries.
@@ -272,22 +316,41 @@ pub fn emit_reflection(validated: &ValidatedModule, options_json: &str) -> Resul
         serde_json::from_str(options_json).unwrap_or(ReflectionOptions {
             dynamic_offsets: Vec::new(),
         });
-    let bgls = derive_bgls(&validated.module, &validated.info, &options);
-    let mut layouter = Layouter::default();
-    layouter
-        .update(validated.module.to_ctx())
-        .map_err(|error| JsError::new(&format!("reflection layout failed: {error}")))?;
-    let uv_set_count = derive_uv_set_count(&validated.module);
-    let output = ReflectionOutput {
-        schema_version: "shader-reflection/3",
-        bound_globals: derive_bound_globals(&validated.module, &validated.info, &layouter)
-            .map_err(|error| JsError::new(&error))?,
-        uv_set_count,
-        entry_points: entry_reads::derive(&validated.module, &validated.info),
-        bindings: bgls,
-    };
+    let output = reflection_output(&validated.module, &validated.info, &options)
+        .map_err(|error| JsError::new(&error))?;
     serde_json::to_string(&output)
         .map_err(|e| JsError::new(&format!("reflection serialize failed: {e}")))
+}
+
+fn reflection_output(
+    module: &Module,
+    info: &ModuleInfo,
+    options: &ReflectionOptions,
+) -> Result<ReflectionOutput, String> {
+    let mut layouter = Layouter::default();
+    layouter
+        .update(module.to_ctx())
+        .map_err(|error| format!("reflection layout failed: {error}"))?;
+    Ok(ReflectionOutput {
+        schema_version: "shader-reflection/3",
+        bound_globals: derive_bound_globals(module, info, &layouter)?,
+        uv_set_count: derive_uv_set_count(module),
+        entry_points: entry_reads::derive(module, info),
+        bindings: derive_bgls(module, info, options),
+    })
+}
+
+/// The interface a pipeline sees: every reflected binding, struct layout and
+/// entry read, plus the entry's stage and workgroup size.
+fn compute_interface(module: &Module, info: &ModuleInfo) -> Result<serde_json::Value, String> {
+    let reflection = reflection_output(module, info, &ReflectionOptions::default())?;
+    let entries: Vec<_> = module
+        .entry_points
+        .iter()
+        .map(|entry| (entry.name.as_str(), entry.workgroup_size))
+        .collect();
+    serde_json::to_value((reflection, entries))
+        .map_err(|error| format!("reflection serialize failed: {error}"))
 }
 
 #[derive(Serialize, Deserialize, Default)]

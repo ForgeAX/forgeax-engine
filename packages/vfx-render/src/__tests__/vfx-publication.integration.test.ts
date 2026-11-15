@@ -19,7 +19,6 @@ import {
   VFX_GPU_RUNTIME_RESOURCE_KEY,
   VFX_PARTICLE_CORE_LAYOUT,
   type VfxGpuEffectAsset,
-  type VfxGpuRuntime,
   vfxGpuRuntimePlugin,
 } from '@forgeax/engine-vfx';
 import { expect, it, vi } from 'vitest';
@@ -66,7 +65,7 @@ const seedEffect = {
   programFingerprint: 'sha256:controlled-layout',
   emitters: [{ id: 'emitter', capacity: 4 }],
   program: {
-    format: 'forgeax-vfx-program-4',
+    format: 'forgeax-vfx-program-5',
     fingerprint: 'sha256:controlled-layout',
     emitters: [
       {
@@ -189,12 +188,11 @@ it('captures stock material GUIDs once per World extraction and refreshes every 
   const extract = () =>
     host.feature
       .extract({
-        worlds: [world],
-        owner: 0,
+        world: world,
         // Repeated or discarded candidates still capture current author values.
         frameNumber: 1,
         views: [{ identity: 'main', render: true }],
-        referenceAsset: (_worldIndex, identity, captured) => {
+        referenceAsset: (identity, captured) => {
           expect(identity).toBe(materialHandle);
           expect(captured).toBe(runtimeAssets(assets).borrow(materialHandle).unwrap());
           references++;
@@ -208,13 +206,13 @@ it('captures stock material GUIDs once per World extraction and refreshes every 
     const first = extract();
     expect(references).toBe(1);
     expect(
-      first.worlds[0]?.materials.get(effectFixtureReference(world, guid, 'material'))?.asset.values,
+      first.source?.materials.get(effectFixtureReference(world, guid, 'material'))?.asset.values,
     ).toEqual(material.values);
     assets.update(materialHandle, { values: { baseColor: [1, 0.5, 0, 1] } }).unwrap();
     const second = extract();
     expect(references).toBe(2);
     expect(
-      second.worlds[0]?.materials.get(effectFixtureReference(world, guid, 'material'))?.asset.values
+      second.source?.materials.get(effectFixtureReference(world, guid, 'material'))?.asset.values
         ?.baseColor,
     ).toEqual([1, 0.5, 0, 1]);
     const replacement = { ...material, values: { baseColor: [0, 0, 1, 1] } };
@@ -222,7 +220,7 @@ it('captures stock material GUIDs once per World extraction and refreshes every 
     const third = extract();
     expect(references).toBe(3);
     expect(
-      third.worlds[0]?.materials.get(effectFixtureReference(world, guid, 'material'))?.asset.values,
+      third.source?.materials.get(effectFixtureReference(world, guid, 'material'))?.asset.values,
     ).toEqual(replacement.values);
   } finally {
     (await host.detachWorld({ world })).unwrap();
@@ -304,8 +302,7 @@ it.each([
     world.update(1 / 60).unwrap();
     const frame = host.feature
       .extract({
-        worlds: [world],
-        owner: 0,
+        world: world,
         frameNumber: 1,
         views: [{ identity: 'main', render: true }],
       })
@@ -314,7 +311,7 @@ it.each([
     if (replacement === 'accessor') expect(propertyReads).toBe(4);
     expect(
       required(
-        required(frame.worlds[0]).materials.get(effectFixtureReference(world, guid, 'material')),
+        required(frame.source).materials.get(effectFixtureReference(world, guid, 'material')),
       ).projection,
     ).toBe(projection);
   } finally {
@@ -462,10 +459,10 @@ it.each([
       });
       candidate.accept();
       const accepted = receiver.accept(packet).unwrap();
-      const frame = required(accepted.packet.features[0]).data as Parameters<
-        typeof consumer.plan
-      >[0];
-      const row = required(required(frame.worlds[0]).materials.get(materialHandle));
+      const frame = required(
+        accepted.packet.features.find((feature) => feature.identity === consumer.identity),
+      ).data as Parameters<typeof consumer.plan>[0];
+      const row = required(required(frame.source).materials.get(materialHandle));
       const enabledKinds = kinds.filter((kind) => kind !== disabled);
       const used = pass.startsWith('particle-');
       if (used)
@@ -481,10 +478,13 @@ it.each([
         expect(row).not.toHaveProperty('projection');
         const redundant = {
           ...frame,
-          worlds: frame.worlds.map((world) => ({
-            ...world,
-            materials: new Map(world.materials).set(materialGuid, { ...row, projection }),
-          })),
+          source: {
+            ...required(frame.source),
+            materials: new Map(required(frame.source).materials).set(materialGuid, {
+              ...row,
+              projection,
+            }),
+          },
         };
         expect(serialize(redundant).byteLength - serialize(frame).byteLength).toBeGreaterThan(
           serialize(projection).byteLength * 0.8,
@@ -493,7 +493,7 @@ it.each([
       const planned = consumer.plan(
         frame,
         singleViewContext({
-          resolveAsset: (_index, reference, revision) =>
+          resolveAsset: (reference, revision) =>
             accepted.resources.resolveAsset(reference, revision),
           materialContext,
           caps: {} as never,
@@ -597,8 +597,7 @@ it.each([
     const extract = () =>
       source
         .extract({
-          worlds: [world],
-          owner: 0,
+          world: world,
           frameNumber: 1,
           views: [{ identity: 'main', render: true }],
         })
@@ -607,7 +606,7 @@ it.each([
     else {
       const frame = extract();
       const row = required(
-        required(frame.worlds[0]).materials.get(effectFixtureReference(world, guid, 'material')),
+        required(frame.source).materials.get(effectFixtureReference(world, guid, 'material')),
       );
       expect(projections).toBe(reads);
       expect(projections).toBeGreaterThanOrEqual(2);
@@ -629,7 +628,7 @@ it('publishes immutable VFX definitions once and keeps them out of frame feature
   const handle = runtimeAssetRegistry(world.assets).create(effect).unwrap();
   world.spawn({ component: ParticleEffectPlayer, data: { effect: handle } }).unwrap();
   const ctx = await createWorldContext(world, [vfxGpuRuntimePlugin()]);
-  const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+  const runtime = world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY);
   const feature = gpuParticleRenderFeature({ camera: { read: () => camera } });
   const identity = { source: 'vfx-publication', epoch: 1 };
   const publisher = createRenderPublisher(
@@ -696,7 +695,7 @@ async function publicationFixture(effectAsset = effect) {
     .unwrap();
   runtimeAssetRegistry(world.assets).release(handle).unwrap();
   const ctx = await createWorldContext(world, [vfxGpuRuntimePlugin()]);
-  const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+  const runtime = world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY);
   const source = gpuParticleRenderFeature({ camera: { read: () => camera } });
   const consumer = gpuParticleRenderFeature({ camera: { read: () => undefined } });
 
@@ -705,7 +704,9 @@ async function publicationFixture(effectAsset = effect) {
   const receiver = new RenderPublicationReceiver(identity);
   let resources: RenderResourceScope | undefined;
   type Frame = Parameters<typeof consumer.plan>[0];
-  const data = (packet: RenderPublication) => required(packet.features[0]).data as Frame;
+  const data = (packet: RenderPublication) =>
+    required(packet.features.find((feature) => feature.identity === consumer.identity))
+      .data as Frame;
   const seal = () => {
     const candidate = publisher.prepare(0).unwrap();
     const packet = structuredClone(candidate.message, {
@@ -720,7 +721,7 @@ async function publicationFixture(effectAsset = effect) {
     consumer.plan(
       data(packet),
       singleViewContext({
-        resolveAsset: (_index, effectHandle, revision) =>
+        resolveAsset: (effectHandle, revision) =>
           required(resources).resolveAsset(effectHandle, revision),
         caps: {} as never,
         frame: { frameNumber: packet.revision },
@@ -1113,8 +1114,8 @@ it('plans exact old/new effects with one GUID across two sealed frames, abort, A
     expect(
       second.assetVersions?.find((row) => row.value.kind === 'particle-effect')?.value,
     ).toEqual(updated);
-    const oldReference = required(f.data(first).worlds[0]?.intents[0]).emitter;
-    const current = required(f.data(second).worlds[0]?.intents.at(-1)).emitter;
+    const oldReference = required(f.data(first).source?.intents[0]).emitter;
+    const current = required(f.data(second).source?.intents.at(-1)).emitter;
     expect(current.id).toBe(oldReference.id);
     expect(current.effect).toBe(oldReference.effect);
     expect(current).not.toEqual(oldReference);
@@ -1201,8 +1202,7 @@ it('re-publishes discarded definitions and seeds a replacement epoch from curren
       const plan = consumer.plan(
         f.data(accepted.packet),
         singleViewContext({
-          resolveAsset: (_index, handle, revision) =>
-            accepted.resources.resolveAsset(handle, revision),
+          resolveAsset: (handle, revision) => accepted.resources.resolveAsset(handle, revision),
           caps: {} as never,
           frame: { frameNumber: packet.revision },
           generation: 1,
@@ -1210,14 +1210,13 @@ it('re-publishes discarded definitions and seeds a replacement epoch from curren
       );
       expect(programSources(plan)).toEqual([required(updated.program.emitters[0]).wgsl]);
       const broken = structuredClone(f.data(accepted.packet));
-      const retained = required(broken.worlds[0]?.retained[0]);
+      const retained = required(broken.source?.retained[0]);
       Object.assign(retained.intent, { programFingerprint: 'sha256:wrong-version' });
       expect(
         consumer.plan(
           broken,
           singleViewContext({
-            resolveAsset: (_index, handle, revision) =>
-              accepted.resources.resolveAsset(handle, revision),
+            resolveAsset: (handle, revision) => accepted.resources.resolveAsset(handle, revision),
             caps: {} as never,
             frame: { frameNumber: 2 },
             generation: 1,
@@ -1238,7 +1237,7 @@ it('releases fixed versions on recovery, re-entry, despawn and runtime detach', 
   try {
     f.world.update(1 / 60).unwrap();
     const first = f.seal();
-    const original = required(required(f.data(first).worlds[0]?.intents[0]).emitter.effect);
+    const original = required(required(f.data(first).source?.intents[0]).emitter.effect);
     expect(original).toBe(f.handle);
     expect(runtimeAssets(f.assets).inspect().snapshots).toBe(1);
     f.submit(first, f.plan(first));
@@ -1246,7 +1245,7 @@ it('releases fixed versions on recovery, re-entry, despawn and runtime detach', 
     expect(runtimeAssets(f.assets).inspect().snapshots).toBe(0);
     expect(f.assets.read(f.handle).ok).toBe(true);
     const recovered = f.seal();
-    expect(required(f.data(recovered).worlds[0]?.intents[0]).emitter.effect).toBe(f.handle);
+    expect(required(f.data(recovered).source?.intents[0]).emitter.effect).toBe(f.handle);
     expect(runtimeAssets(f.assets).inspect().snapshots).toBe(1);
     f.submit(recovered, f.plan(recovered, 1));
     f.world.despawn(f.player).unwrap();
@@ -1259,7 +1258,7 @@ it('releases fixed versions on recovery, re-entry, despawn and runtime detach', 
     f.world.spawn({ component: ParticleEffectPlayer, data: { effect: handle } }).unwrap();
     f.assets.release(handle).unwrap();
     const reentered = f.seal();
-    expect(required(f.data(reentered).worlds[0]?.intents[0]).emitter.effect).toBe(handle);
+    expect(required(f.data(reentered).source?.intents[0]).emitter.effect).toBe(handle);
     expect(handle).not.toBe(original);
     expect(runtimeAssets(f.assets).inspect().snapshots).toBe(1);
   } finally {
@@ -1273,13 +1272,13 @@ it('retires removed emitter IDs without dropping their pending old-version ticks
   try {
     f.world.update(1 / 60).unwrap();
     const first = f.seal();
-    const old = required(f.data(first).worlds[0]?.intents[0]).emitter;
+    const old = required(f.data(first).source?.intents[0]).emitter;
     f.submit(first, f.plan(first));
     f.world.update(1 / 60).unwrap();
     await f.replace(true);
     expect(runtimeAssets(f.assets).inspect().snapshots).toBe(2);
     const second = f.seal();
-    expect(f.data(second).worlds[0]?.intents.map((intent) => intent.emitter.id)).toContain(old.id);
+    expect(f.data(second).source?.intents.map((intent) => intent.emitter.id)).toContain(old.id);
     f.submit(second, f.plan(second));
     expect(f.runtime.lastCommittedEmitter(f.player, old.id)).toBeUndefined();
     expect(runtimeAssets(f.assets).inspect().snapshots).toBe(1);
@@ -1506,7 +1505,8 @@ async function meshPublicationFixture(kind: 'catalog' | 'custom' | 'player' = 'c
   const receiver = new RenderPublicationReceiver(identity);
   const consumer = gpuParticleRenderFeature({ camera: { read: () => camera } });
   const data = (packet: RenderPublication) =>
-    required(packet.features[0]).data as Parameters<typeof consumer.plan>[0];
+    required(packet.features.find((feature) => feature.identity === consumer.identity))
+      .data as Parameters<typeof consumer.plan>[0];
   world.update(1 / 60).unwrap();
   const publish = (materialBindings = false) => {
     const candidate = publisher.prepare(0).unwrap();
@@ -1524,7 +1524,7 @@ async function meshPublicationFixture(kind: 'catalog' | 'custom' | 'player' = 'c
         data(view),
         singleViewContext({
           targets: [{ name: 'color', kind: 'color', format: 'rgba8unorm', sampleCount: 1 }],
-          resolveAsset: (_index, assetHandle, revision) =>
+          resolveAsset: (assetHandle, revision) =>
             accepted.resources.resolveAsset(assetHandle, revision),
           ...(materialBindings
             ? { materialShaderBindingContract: () => ({ bindings: 'render-material' as const }) }
@@ -1594,9 +1594,9 @@ it('omits duplicated cooked records while keeping mutable authored VFX material 
   try {
     f.assets.replace(f.materialHandle, material).unwrap();
     const first = f.publish();
-    expect(
-      required(first.data.worlds[0]?.materials.get(f.materialHandle)).asset,
-    ).not.toHaveProperty('cooked');
+    expect(required(first.data.source?.materials.get(f.materialHandle)).asset).not.toHaveProperty(
+      'cooked',
+    );
     // Registry-admitted content never carries Cook records into the receiver.
     const resident = first.resources.lookupAsset<MaterialAsset>(f.materialGuid);
     expect(resident).toBeDefined();
@@ -1636,14 +1636,13 @@ it('extracts admitted material content without cooked data with or without a res
     for (const referenceAsset of [undefined, () => undefined]) {
       const frame = f.source
         .extract({
-          worlds: [f.world],
-          owner: 0,
+          world: f.world,
           frameNumber: 1,
           views: [],
           ...(referenceAsset === undefined ? {} : { referenceAsset }),
         })
         .unwrap();
-      expect(required(frame.worlds[0]?.materials.get(f.materialHandle)).asset).toEqual(admitted);
+      expect(required(frame.source?.materials.get(f.materialHandle)).asset).toEqual(admitted);
     }
   } finally {
     await f.close();
@@ -1663,7 +1662,7 @@ it('rejects material cooked accessors before replacing the accepted runtime cont
     expect(f.assets.replace(reference, material).ok).toBe(false);
     expect(getter).not.toHaveBeenCalled();
     expect(f.assets.read(reference).unwrap()).toEqual(prior);
-    expect(f.publish().data.worlds[0]?.materials.get(f.materialHandle)).toBeDefined();
+    expect(f.publish().data.source?.materials.get(f.materialHandle)).toBeDefined();
   } finally {
     await f.close();
   }
@@ -1673,7 +1672,7 @@ it('publishes a stock VFX mesh once through asset residency across steady frames
   const f = await meshPublicationFixture();
   try {
     const first = f.publish();
-    const reference = required(first.data.worlds[0]?.meshes.get(required(f.sourceMeshHandle)));
+    const reference = required(first.data.source?.meshes.get(required(f.sourceMeshHandle)));
     expect(reference).toBeTypeOf('number');
     expect(first.packet.assets.filter((row) => row.value.kind === 'mesh')).toHaveLength(1);
     expect(first.resources.lookupAsset(f.meshGuid)).toEqual(
@@ -1682,7 +1681,7 @@ it('publishes a stock VFX mesh once through asset residency across steady frames
     expect(first.geometry).toHaveLength(1);
     const second = f.publish();
     expect(second.packet.assets.filter((row) => row.value.kind === 'mesh')).toHaveLength(0);
-    expect(second.data.worlds[0]?.meshes.get(required(f.sourceMeshHandle))).toBe(reference);
+    expect(second.data.source?.meshes.get(required(f.sourceMeshHandle))).toBe(reference);
     expect(second.geometry).toEqual(first.geometry);
     const replacement = createBoxGeometry(3, 1, 1).unwrap();
     f.assets.replace(required(f.sourceMeshHandle), replacement).unwrap();
@@ -1703,7 +1702,7 @@ it('keeps a custom mesh provider inline and observes its unmanaged edits without
   const f = await meshPublicationFixture('custom');
   try {
     const first = f.publish();
-    expect(first.data.worlds[0]?.meshes.get(required(f.sourceMeshHandle))).toMatchObject({
+    expect(first.data.source?.meshes.get(required(f.sourceMeshHandle))).toMatchObject({
       kind: 'mesh',
     });
     expect(first.packet.assets.filter((row) => row.value.kind === 'mesh')).toHaveLength(0);
@@ -1713,7 +1712,7 @@ it('keeps a custom mesh provider inline and observes its unmanaged edits without
     positions[0] = required(positions[0]) + 2;
     const second = f.publish();
     expect(second.geometry[0]?.data).not.toEqual(first.geometry[0]?.data);
-    expect(first.data.worlds[0]?.meshes.get(required(f.sourceMeshHandle))).toMatchObject({
+    expect(first.data.source?.meshes.get(required(f.sourceMeshHandle))).toMatchObject({
       vertices: before,
     });
     expect(f.custom.vertices.byteLength).toBe(before.byteLength);
@@ -1726,7 +1725,7 @@ it('publishes managed replacement and restoration for a Player with only a non-c
   const f = await meshPublicationFixture('player');
   try {
     const first = f.publish();
-    expect(first.data.worlds[0]?.meshes.get(`player:${f.player}`)).toBe(f.handle);
+    expect(first.data.source?.meshes.get(`player:${f.player}`)).toBe(f.handle);
     expect(first.packet.assets.find((row) => row.handle === f.handle)?.guid).toBeUndefined();
     const vertices = new Float32Array(f.mesh.vertices);
     vertices[0] = required(vertices[0]) + 0.2;
@@ -1745,25 +1744,24 @@ it('publishes managed replacement and restoration for a Player with only a non-c
     f.world.set(f.player, MeshFilter, { assetHandle: nextHandle }).unwrap();
     f.world.update(1 / 60).unwrap();
     const rebound = f.publish();
-    expect(rebound.data.worlds[0]?.meshes.get(`player:${f.player}`)).toBe(nextHandle);
+    expect(rebound.data.source?.meshes.get(`player:${f.player}`)).toBe(nextHandle);
     expect(rebound.geometry[0]?.data).not.toEqual(first.geometry[0]?.data);
   } finally {
     await f.close();
   }
 });
 
-it('resolves published Player mesh references in their source World index', async () => {
+it('resolves published Player mesh references from the current source domain', async () => {
   const f = await meshPublicationFixture('player');
   try {
     const requested: number[] = [];
     const frame = f.source
       .extract({
-        worlds: [new World({ assets: new AssetRegistry() }), f.world],
-        owner: 1,
+        world: f.world,
         frameNumber: 1,
         views: [{ identity: 'main', render: true }],
-        referenceAsset: (index, identity, captured) => {
-          requested.push(index);
+        referenceAsset: (identity, captured) => {
+          requested.push(Number(identity));
           expect([f.handle, f.materialHandle]).toContain(identity);
           expect(runtimeAssets(f.world.assets).resolveAsset(Number(identity)).unwrap()).toBe(
             captured,
@@ -1773,14 +1771,14 @@ it('resolves published Player mesh references in their source World index', asyn
       })
       .unwrap();
     expect(requested.length).toBeGreaterThan(0);
-    expect(new Set(requested)).toEqual(new Set([1]));
+    expect(requested).toContain(f.handle);
     const resolved: number[] = [];
     const result = f.consumer.plan(
       structuredClone(frame),
       singleViewContext({
         targets: [{ name: 'color', kind: 'color', format: 'rgba8unorm', sampleCount: 1 }],
-        resolveAsset: (index, handle, revision) => {
-          resolved.push(index);
+        resolveAsset: (handle, revision) => {
+          resolved.push(handle);
           return runtimeAssets(f.world.assets).resolveAsset(handle, revision);
         },
         caps: {} as never,
@@ -1789,7 +1787,7 @@ it('resolves published Player mesh references in their source World index', asyn
       }),
     );
     expect(result.ok).toBe(true);
-    expect(new Set(resolved)).toEqual(new Set([1]));
+    expect(resolved).toContain(f.handle);
   } finally {
     await f.close();
   }
@@ -1914,7 +1912,6 @@ it('carries the exact published material handle through stock VFX group-one bind
     for (const binding of bindings) {
       if (binding.kind !== 'graphics-bindings') throw new Error('Expected material bindings');
       expect(binding.values.material).toEqual({
-        world: 0,
         handle,
       });
     }
@@ -1927,21 +1924,20 @@ it('carries the exact published material handle through stock VFX group-one bind
 it('keeps uncooked custom material providers free of redundant reference reads', async () => {
   const f = await meshPublicationFixture('custom');
   try {
-    const referenceAsset = vi.fn((_index: number, identity: unknown) => {
+    const referenceAsset = vi.fn((identity: unknown) => {
       if (identity === f.materialHandle)
         throw new Error('custom material reference was not requested');
       return undefined;
     });
     const frame = f.source
       .extract({
-        worlds: [f.world],
-        owner: 0,
+        world: f.world,
         frameNumber: 1,
         views: [{ identity: 'main', render: true }],
         referenceAsset,
       })
       .unwrap();
-    expect(frame.worlds[0]?.materials.has(f.materialHandle)).toBe(true);
+    expect(frame.source?.materials.has(f.materialHandle)).toBe(true);
     expect(referenceAsset.mock.calls.some((call) => call[1] === f.materialHandle)).toBe(false);
   } finally {
     await f.close();
@@ -1956,7 +1952,7 @@ it.each([
   try {
     const first = f.publish(true);
     const oldHandle = f.materialHandle;
-    expect(first.data.worlds[0]?.materials.has(oldHandle)).toBe(true);
+    expect(first.data.source?.materials.has(oldHandle)).toBe(true);
     const nextMaterial = f.assets.create(Materials.unlit([1, 0, 0, 1])).unwrap();
     const replacement = await loadEffect({
       ...f.definition,
@@ -1969,7 +1965,7 @@ it.each([
       },
     });
     const effectHandle = f.assets.create(replacement).unwrap();
-    const runtime = f.world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+    const runtime = f.world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY);
     if (state === 'disabled') runtime.setEmitterSessionEnabled(f.player, 'emitter', false);
     f.world
       .set(f.player, ParticleEffectPlayer, {
@@ -1981,12 +1977,12 @@ it.each([
     f.assets.release(effectHandle).unwrap();
     f.world.update(1 / 60).unwrap();
     const retained = f.publish(true);
-    expect(retained.data.worlds[0]?.intents).toEqual([]);
-    expect(retained.data.worlds[0]?.retained[0]?.emitter.id).toBe('emitter');
+    expect(retained.data.source?.intents).toEqual([]);
+    expect(retained.data.source?.retained[0]?.emitter.id).toBe('emitter');
     expect(planPasses(retained.planned).some((pass) => pass.kind === 'raster')).toBe(
       state === 'paused',
     );
-    expect(retained.data.worlds[0]?.materials.has(oldHandle)).toBe(true);
+    expect(retained.data.source?.materials.has(oldHandle)).toBe(true);
     expect(f.source.assetDependencies?.(retained.data)).toContain(oldHandle);
     expect(retained.resources.resolveAsset(oldHandle).ok).toBe(true);
     expect(retained.packet.retiredAssets).not.toContain(oldHandle);
@@ -1995,7 +1991,6 @@ it.each([
     );
     expect(bindings).toHaveLength(1);
     expect(bindings[0]?.kind === 'graphics-bindings' && bindings[0].values.material).toEqual({
-      world: 0,
       handle: oldHandle,
     });
     runtime.setEmitterSessionEnabled(f.player, 'emitter', true);
@@ -2004,7 +1999,7 @@ it.each([
     f.publish(true);
     f.world.update(1 / 60).unwrap();
     const changed = f.publish(true);
-    expect(changed.data.worlds[0]?.materials.has(oldHandle)).toBe(false);
+    expect(changed.data.source?.materials.has(oldHandle)).toBe(false);
     expect(changed.resources.resolveAsset(oldHandle).ok).toBe(false);
   } finally {
     await f.close();

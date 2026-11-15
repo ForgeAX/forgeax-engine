@@ -1,8 +1,8 @@
 import { probeR32FloatRenderCapability } from '@forgeax/engine-rhi';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
-import { readShaderManifestPublication } from '@forgeax/engine-shader';
 import { expect, it } from 'vitest';
 import * as wgpu from '../../../rhi-wgpu/src/index';
+import { readOwnedShaderManifestPublication } from '../../../shader/src/manifest-publication';
 import { weightedLuminanceHistogram } from '../pipeline/standard-output/auto-exposure/oracle';
 import { runPortableExposure, runPortablePyramid } from './portable-kernel-expansion-gpu';
 import {
@@ -18,7 +18,8 @@ it.each([
 ] as const)('qualifies Hi-Z, SSR and exact histogram exposure on %s raster execution', async (backend) => {
   const publication = await fetch('/shaders/manifest.json');
   expect(publication.ok).toBe(true);
-  const manifest = (await readShaderManifestPublication(
+  // Fresh JSON has one owner, matching ShaderRegistry's publication admission.
+  const manifest = (await readOwnedShaderManifestPublication(
     await publication.json(),
   )) as SsrShaderManifest;
   const find = (entry: string) => {

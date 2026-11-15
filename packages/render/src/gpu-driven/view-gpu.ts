@@ -1417,15 +1417,6 @@ export interface GpuDrivenLodSelectionInspection {
     readonly overflow: boolean;
     readonly lodHistogram: readonly { readonly level: number; readonly count: number }[];
   }[];
-  readonly worldSelections?: readonly {
-    readonly worldKey: number;
-    readonly primitiveSlot: number;
-    readonly slotGeneration: number;
-    readonly candidateCount: number;
-    readonly visible: number;
-    readonly occluded: number;
-    readonly lodHistogram: readonly { readonly level: number; readonly count: number }[];
-  }[];
   readonly geometryWork: number;
   readonly rootGeometryWork: number;
   /** In-frustum candidates dropped below the view's minimum caster diameter. */
@@ -1724,7 +1715,7 @@ function encodedViewTopology(
       batch.geometryAddress ??
       (batch.binding === undefined
         ? 0
-        : (scene.geometryIndexForResource(batch.binding.worldId, batch.binding.assetHandle) ?? 0));
+        : (scene.geometryIndexForResource(batch.binding.assetHandle) ?? 0));
     batches.setUint32(offset + 44, geometryAddress, true);
 
     for (let level = 0; level < lodCount; level++) {
@@ -2551,9 +2542,25 @@ export class GpuDrivenView {
     const previous = this.memberHolds;
     if (this.sceneRef === scene && previous[0]?.topology === topology) return;
     const holds: (typeof previous)[number][] = [];
-    for (const candidates of topology.members)
-      if (MemberCandidates.is(candidates))
-        holds.push({ topology, release: scene.inputs.holdMembers(candidates) });
+    try {
+      for (const candidates of topology.members)
+        if (MemberCandidates.is(candidates))
+          holds.push({ topology, release: scene.inputs.holdMembers(candidates) });
+    } catch (cause) {
+      let failure: AggregateError | undefined;
+      for (const hold of holds) {
+        try {
+          hold.release();
+        } catch (cleanup) {
+          if (failure === undefined)
+            failure = new AggregateError([cause, cleanup], 'Member lease rollback failed', {
+              cause,
+            });
+          else failure.errors.push(cleanup);
+        }
+      }
+      throw failure ?? cause;
+    }
     this.memberHolds = holds;
     for (const hold of previous) hold.release();
   }

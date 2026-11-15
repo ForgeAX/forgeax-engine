@@ -1,3 +1,5 @@
+import { PhysicsCollisionSync } from '@forgeax/engine-physics-rapier3d';
+import { PhysicsWorldResource } from '@forgeax/engine-physics';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createWorldContext, type EntityHandle, World } from '@forgeax/engine-ecs';
@@ -45,7 +47,7 @@ test('public Rapier3D contact reaches the shared projectile owner', async ({ onT
   const world = new World();
   const physics = createRapier3DPhysicsWorld(rapier);
   const context = await createWorldContext(world, [scenePlugin(), statePlugin()]);
-  world.insertResource('PhysicsWorld', physics);
+  world.insertResource(PhysicsWorldResource, physics);
   const releasePhysics = registerPhysicsSystems(world);
   const ownedEntities: EntityHandle[] = [];
   onTestFinished(async () => {
@@ -121,7 +123,7 @@ test('public Rapier3D contact reaches the shared projectile owner', async ({ onT
       if (outcome === 'cover-blocked') coverBlocked += 1;
     },
     onTargetResolved: () => {},
-    after: ['physicsCollisionSync'],
+    after: [PhysicsCollisionSync],
     before: [],
   });
 

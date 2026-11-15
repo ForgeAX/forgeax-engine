@@ -88,4 +88,4 @@ export {
   validateNetRecoveryPolicy,
 } from './session/recovery';
 export type { NetPluginConfig } from './session/session-plugin';
-export { netPlugin } from './session/session-plugin';
+export { NetSessionResource, netPlugin } from './session/session-plugin';

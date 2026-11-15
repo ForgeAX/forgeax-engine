@@ -1,3 +1,5 @@
+import { defineResource } from '@forgeax/engine-ecs';
+import { Update, defineSystem } from "@forgeax/engine-ecs";
 import type {
   ExecutionBootstrapEntry,
   ExecutionBootstrapHost,
@@ -22,6 +24,8 @@ import { M38_LIMITS, M38_PROVIDER_A_ID, M38_PROVIDER_B_ID, M38_PROVIDER_C_ID } f
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+const resource1 = defineResource<M38Proof>("m38IntelligenceProof");
+
 
 
 interface M38HostCloseDetail {
@@ -458,7 +462,7 @@ const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).u
         postFaultProbe: false,
       };
       state = localState;
-      world.insertResource('m38IntelligenceProof', currentProof);
+      world.insertResource(resource1, currentProof);
 
       const fail = (reason: string): void => {
         if (localState.phase === 'finished' || localState.failure !== undefined) return;
@@ -868,7 +872,7 @@ const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).u
         }
       };
 
-      const system = {
+      const system = defineSystem({
         name: 'm38-intelligence-worker-consumer',
         queries: [],
         fn(): void {
@@ -897,11 +901,11 @@ const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).u
             fail('M38 Host poll response fault recovery did not settle within the frame budget');
           }
         },
-      };
-      const update = world.scheduleToken('Update');
+      });
+      const update = Update;
       world.addSystem(update, system).unwrap();
       ctx.effect(
-        () => () => world.removeSystem(update, system.name),
+        () => () => world.removeSystem(update, system),
         'm38/intelligence-system',
       );
 

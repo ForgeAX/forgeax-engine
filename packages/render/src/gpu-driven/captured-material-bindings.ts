@@ -24,7 +24,6 @@ export function captureGpuMaterialBindings(
     if (source === undefined) throw new Error('Prepared batch has no shared material binding');
     return Object.freeze({
       material: source.material,
-      worldId: source.worldId,
       resourceClass: materialBindingClass,
     });
   });

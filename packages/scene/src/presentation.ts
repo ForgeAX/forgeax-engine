@@ -1,5 +1,6 @@
 import {
   defineComponent,
+  defineSystem,
   ENTITY_NULL_RAW,
   type EntityHandle,
   FixedTime,
@@ -251,6 +252,28 @@ export function readPresentationWorldMatrix(
   return sample(world, entity, state);
 }
 
+/** Copy the presentation matrix into caller-owned storage without a transient view. */
+export function copyPresentationWorldMatrix(
+  world: World,
+  entity: EntityHandle,
+  target: Float32Array,
+): boolean {
+  const state = presentations.get(world);
+  let field: 'world' | 'presentation' = 'world';
+  if (state !== undefined) {
+    refresh(world, state);
+    if (state.prepared === state.version) {
+      if (state.active.has(entity)) field = 'presentation';
+    } else if (state.history.size !== 0 || world.hasComponent(entity, TransformInterpolation)) {
+      const sampled = sample(world, entity, state);
+      if (sampled === undefined) return false;
+      for (let lane = 0; lane < 16; lane++) target[lane] = sampled[lane] as number;
+      return true;
+    }
+  }
+  return world[worldRead].copyArray(entity, GlobalTransform, field, target) === 16;
+}
+
 /** Explicit discontinuity: the next sampled pose starts at the new author value. */
 export function resetTransformInterpolation(world: World, entity: EntityHandle): void {
   const state = presentations.get(world);
@@ -417,25 +440,23 @@ export function registerTransformInterpolation(world: World): () => void {
     dropped: 0,
   };
   presentations.set(world, state);
-  world
-    .addSystem(FixedUpdate, {
-      name: 'captureTransformPrevious',
-      before: [FixedUpdate],
-      queries: [],
-      fn: () => capture(world, state, true),
-    })
-    .unwrap();
-  world
-    .addSystem(FixedUpdate, {
-      name: 'captureTransformCurrent',
-      after: [FixedUpdate],
-      queries: [],
-      fn: () => capture(world, state, false),
-    })
-    .unwrap();
+  const systemToken1 = defineSystem({
+    name: 'captureTransformPrevious',
+    before: [FixedUpdate],
+    queries: [],
+    fn: () => capture(world, state, true),
+  });
+  world.addSystem(FixedUpdate, systemToken1).unwrap();
+  const systemToken2 = defineSystem({
+    name: 'captureTransformCurrent',
+    after: [FixedUpdate],
+    queries: [],
+    fn: () => capture(world, state, false),
+  });
+  world.addSystem(FixedUpdate, systemToken2).unwrap();
   return () => {
-    world.removeSystem(FixedUpdate, 'captureTransformPrevious').unwrap();
-    world.removeSystem(FixedUpdate, 'captureTransformCurrent').unwrap();
+    world.removeSystem(FixedUpdate, systemToken1).unwrap();
+    world.removeSystem(FixedUpdate, systemToken2).unwrap();
     presentations.delete(world);
   };
 }

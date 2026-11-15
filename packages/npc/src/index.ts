@@ -1,6 +1,7 @@
 import {
   type Component,
   defineComponent,
+  defineSystem,
   type EntityHandle,
   Time,
   Update,
@@ -111,40 +112,39 @@ export function npcPlugin(options: NpcPluginOptions): Plugin {
       let previous = '';
       const systemName = options.systemName ?? 'npc-brain-sync';
       ctx.effect(() => {
-        world
-          .addSystem(Update, {
-            name: systemName,
-            queries: [{ with: [NpcBrain] }],
-            fn: (_world, queryResults) => {
-              const bindings: NpcBrainBinding[] = [];
-              for (const querySpan of queryResults[0].spans().unwrap()) {
-                const queryEntities = querySpan.entities;
-                for (let queryIndex = 0; queryIndex < querySpan.length; queryIndex++) {
-                  const queriedEntity = queryEntities[queryIndex] as EntityHandle;
+        const systemToken1 = defineSystem({
+          name: systemName,
+          queries: [{ with: [NpcBrain] }],
+          fn: (_world, queryResults) => {
+            const bindings: NpcBrainBinding[] = [];
+            for (const querySpan of queryResults[0].spans().unwrap()) {
+              const queryEntities = querySpan.entities;
+              for (let queryIndex = 0; queryIndex < querySpan.length; queryIndex++) {
+                const queriedEntity = queryEntities[queryIndex] as EntityHandle;
 
-                  const entity = queriedEntity;
-                  const value = world.get(entity, NpcBrain);
-                  if (!value.ok) continue;
-                  bindings.push({
-                    entity,
-                    soulId: value.value.soulId,
-                    affordanceRef: value.value.affordanceRef,
-                    enabled: value.value.enabled,
-                    lod: value.value.lod as NpcCognitiveLod,
-                  });
-                }
+                const entity = queriedEntity;
+                const value = world.get(entity, NpcBrain);
+                if (!value.ok) continue;
+                bindings.push({
+                  entity,
+                  soulId: value.value.soulId,
+                  affordanceRef: value.value.affordanceRef,
+                  enabled: value.value.enabled,
+                  lod: value.value.lod as NpcCognitiveLod,
+                });
               }
-              const signature = JSON.stringify(bindings);
-              if (signature !== previous) {
-                previous = signature;
-                void options.adapter.sync(bindings, world);
-              }
-              void options.adapter.tick(world.getResource(Time).delta, world);
-            },
-          })
-          .unwrap();
+            }
+            const signature = JSON.stringify(bindings);
+            if (signature !== previous) {
+              previous = signature;
+              void options.adapter.sync(bindings, world);
+            }
+            void options.adapter.tick(world.getResource(Time).delta, world);
+          },
+        });
+        world.addSystem(Update, systemToken1).unwrap();
         return async () => {
-          world.removeSystem(Update, systemName);
+          world.removeSystem(Update, systemToken1);
           await options.adapter.dispose?.();
         };
       }, 'npc/brain-sync');

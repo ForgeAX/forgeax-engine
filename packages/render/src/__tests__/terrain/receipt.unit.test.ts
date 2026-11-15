@@ -14,7 +14,6 @@ const receipt = (frameId: number): FrameReceipt => ({
   completed: Promise.resolve({ ok: true, value: undefined }),
 });
 const section = (high = 1): SubmittedTerrainSection => ({
-  worldId: 0,
   entity: 7,
   section: 0,
   asset: 1,
@@ -32,7 +31,7 @@ const section = (high = 1): SubmittedTerrainSection => ({
     heights: new Uint8Array([0, 0, 0, high, 0].flatMap(encodeTerrainHeight)),
   },
 });
-const request = { worldId: 0, entity: 7, x: 10.8, z: 20.4 };
+const request = { entity: 7, x: 10.8, z: 20.4 };
 describe('submitted terrain receipt contract', () => {
   it('retains the exact accepted surface after a newer source arrives, and expires at a bounded horizon', async () => {
     const owner = createTerrainReceiptOwner(() => true),

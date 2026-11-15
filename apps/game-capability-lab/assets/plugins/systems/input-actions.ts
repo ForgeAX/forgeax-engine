@@ -1,3 +1,5 @@
+import { GameInputActionsOrder } from "../../../src/system-order";
+import { defineSystem } from "@forgeax/engine-ecs";
 import { Update } from '@forgeax/engine-ecs';
 import type { InputSnapshot } from '@forgeax/engine-input';
 import { inState } from '@forgeax/engine-state';
@@ -18,7 +20,7 @@ export type InputActionsSystemContext = AssetLabActionContext & {
 
 /** Maps the frozen InputSnapshot to named feature/plugin actions. */
 export function installInputActionsSystem(ctx: InputActionsSystemContext): void {
-  ctx.world.addSystem(Update, {
+  const systemToken1 = defineSystem({ sets: [GameInputActionsOrder],
     name: 'game-input-actions',
     runIf: inState(GameState, 'Play'),
     queries: [],
@@ -37,5 +39,6 @@ export function installInputActionsSystem(ctx: InputActionsSystemContext): void 
       if (snap.action('spriteAtlas').justPressed()) applyAssetLab('sprite-atlas');
       if (snap.action('fontSource').justPressed()) applyAssetLab('font-source');
     },
-  }).unwrap();
+  });
+ctx.world.addSystem(Update, systemToken1).unwrap();
 }

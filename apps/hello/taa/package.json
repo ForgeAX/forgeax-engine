@@ -33,7 +33,7 @@
       },
       "bench": {
         "enabled": false,
-        "reason": "temporal-motion-blur benchmark is owned by packages/render/bench"
+        "reason": "TAA has no registered benchmark metric"
       },
       "gate": {
         "enabled": true,

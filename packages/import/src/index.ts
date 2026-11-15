@@ -164,6 +164,7 @@ export {
   type ScriptablePackFileAssetSnapshotError,
   type ScriptablePackFileAssetSnapshotSourceOptions,
 } from './scriptable-pack-file-snapshot.js';
+export { scriptablePackFingerprint } from './scriptable-pack-fingerprint';
 export {
   canonicalScriptableSourcePath,
   createDeclaredPackAssetSnapshotSource,

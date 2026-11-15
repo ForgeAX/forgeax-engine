@@ -36,7 +36,7 @@
 //       import('@forgeax/engine-ecs') / import('@forgeax/engine-runtime')
 //       BUILTIN_TRIANGLE
 //       await host initialization
-//       renderer.draw({ leases: [attachment.value], ... })
+//       renderer.draw({ source: attachment.value, ... })
 //   This helper deliberately does NOT host those tokens; the smoke scripts feed them in
 //   as parameters / thunks (charter proposition 6: shared-symbol grep is a behavioural
 //   gate independent of jscpd-style structural dedup).

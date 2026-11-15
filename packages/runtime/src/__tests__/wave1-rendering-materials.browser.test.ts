@@ -169,9 +169,7 @@ async function submitFrame(
 ): Promise<FrameSample> {
   propagateTransforms(world).unwrap();
   const receipt = await drawReadyFrame(renderer, {
-    leases: [lease],
-    camera: { lease },
-    environment: { lease },
+    source: lease,
     fixedStep: world.getResource(FixedTime).tick,
   });
   const observation = await renderer.observe(receipt, {

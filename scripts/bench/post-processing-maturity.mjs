@@ -11,15 +11,13 @@ import { create, globals } from '@forgeax/engine-dawn-node';
 import { World } from '@forgeax/engine-ecs';
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { encodePng } from '@forgeax/engine-image/png';
+import { NativeCookerRegistry } from '@forgeax/engine-pack/native-cooker';
 import {
   ANTIALIAS_NONE,
   ANTIALIAS_TAA,
   BLOOM_DISABLED,
   BLOOM_ENABLED,
   Camera,
-  CloudLayer,
-  CloudQualityValue,
-  createCloudLayerFeature,
   DepthOfField,
   DepthOfFieldQualityValue,
   DirectionalLight,
@@ -31,12 +29,19 @@ import {
   PointLight,
   ScreenSpaceReflection,
   TONEMAP_ACES_FILMIC,
+  VolumetricCloudLayer,
   VolumetricFog,
   VolumetricFogSamplingValue,
 } from '@forgeax/engine-render';
+import {
+  cloudMaterialDecoder,
+  cloudMaterialKind,
+  createCloudCookers,
+} from '@forgeax/engine-render/authoring';
 import { summarizeGpuPassTimingIntervals } from '@forgeax/engine-render/internal';
 import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
+import { ok } from '@forgeax/engine-types';
 
 import {
   attachRecorder,
@@ -49,6 +54,7 @@ import {
   tapeDigest,
 } from '../../packages/rhi-debug/dist/index.mjs';
 import * as webgpu from '../../packages/rhi-webgpu/dist/index.mjs';
+import { readShaderManifestText } from '../lib/shader-manifest.mjs';
 
 const output = resolve(process.env.FORGEAX_POST_EVIDENCE ?? 'artifacts/post-processing-maturity');
 mkdirSync(output, { recursive: true });
@@ -58,7 +64,7 @@ Object.defineProperty(globalThis, 'navigator', { value: { gpu }, configurable: t
 gpu.getPreferredCanvasFormat = () => 'rgba8unorm';
 const identity = await gpu.requestAdapter();
 assert.ok(identity, 'native adapter required');
-const manifest = readFileSync('shared-build-inputs/shaders/manifest.json', 'utf8');
+const manifest = readShaderManifestText('shared-build-inputs/shaders/manifest.json');
 const hashFile = (path) => createHash('sha256').update(readFileSync(path)).digest('hex');
 const ssrIdentity = {
   sourceHead: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
@@ -123,7 +129,6 @@ async function fixture(width, height, capture = false) {
       canvas,
       {
         ...(recorder ? { rhi: recorder.backend.rhi } : {}),
-        features: [createCloudLayerFeature()],
         ssrIdentity,
         gpuPassTiming: { maxPassesPerFrame: 128, maxFramesInFlight: 2, retentionFrames: 8 },
       },
@@ -132,6 +137,51 @@ async function fixture(width, height, capture = false) {
   );
   console.log(`[post-processing] renderer ready ${width}x${height}`);
   const { renderer, assets } = host;
+  const cloudCookers = new NativeCookerRegistry();
+  const unexpectedCloudCompile = async () => {
+    throw new Error('Uniform cloud preparation does not compile shaders');
+  };
+  for (const cooker of createCloudCookers({
+    loadSource: unexpectedCloudCompile,
+    compilerIdentity: unexpectedCloudCompile,
+    compile: unexpectedCloudCompile,
+  }))
+    cloudCookers.register(cooker);
+  const cloudDraft = (
+    await cloudCookers.runDraft('cloud-material', {
+      guid: '019a50a5-0000-7000-8000-000000000004',
+      sourcePath: 'environment-cloud.pack.ts',
+      source: {
+        version: 1,
+        model: {
+          kind: 'uniform',
+          sample: {
+            extinctionPerMeter: 0.00012,
+            albedo: [1, 1, 1],
+            emissivePerMeter: [0, 0, 0],
+            materialAO: 1,
+          },
+        },
+        parameters: {},
+      },
+    })
+  ).unwrap();
+  const uniformCloud = (
+    await cloudMaterialDecoder.decoder.decode({
+      envelope: {
+        guid: cloudDraft.guid,
+        kind: cloudDraft.payload.kind,
+        payload: cloudDraft.payload,
+        refs: cloudDraft.refs,
+        artifacts: {},
+      },
+      artifacts: { read: async () => ok(new Uint8Array()) },
+      signal: new AbortController().signal,
+    })
+  ).unwrap();
+
+  assets.installDecoder(cloudMaterialKind, cloudMaterialDecoder.decoder);
+  const cloudMaterial = assets.create(cloudMaterialKind, uniformCloud).unwrap();
   const world = new World({ assets });
   const cube = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
   const sphere = assets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
@@ -321,16 +371,15 @@ async function fixture(width, height, capture = false) {
     if (config.cloud)
       cloud = value(
         world.spawn({
-          component: CloudLayer,
+          component: VolumetricCloudLayer,
           data: {
-            baseHeight: 2,
-            thickness: 3,
-            scale: 0.15,
-            coverage: 0.7,
-            density: 0.4,
-            wind: config.wind ?? [0, 0, 0],
-            quality: CloudQualityValue[config.quality ?? 'medium'],
-            shadowRange: 100,
+            material: cloudMaterial,
+            bottomMeters: 2,
+            thicknessMeters: 3,
+            extinctionOverridePerMeter: 0.03 * 0.4,
+            viewSampleCountScale: { low: 0.5, medium: 1, high: 2 }[config.quality ?? 'medium'],
+            windOffsetMeters: config.wind ?? [0, 0, 0],
+            shadowExtentMeters: 100,
           },
         }),
       );
@@ -372,9 +421,7 @@ async function fixture(width, height, capture = false) {
     for (;;) {
       if (read) value(renderer.requestObservation(['linear-hdr', 'final-display']));
       start = performance.now();
-      receipt = value(
-        renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
-      );
+      receipt = value(renderer.draw({ source: lease }));
       cpuMs = performance.now() - start;
       if (receipt.presentation === 'ready') break;
       value(await receipt.completed);
@@ -456,18 +503,31 @@ async function fixture(width, height, capture = false) {
     assert.equal(cloudTextures.length, 6, 'one active cloud ping-pong MRT required');
     const cloudHistoryBytes = cloudTextures.reduce((sum, resource) => {
       assert.equal(resource.lifecycle.byteEstimate.status, 'known');
+      const descriptor = resource.descriptor.desc;
+      const historyWidth = Math.max(1, Math.ceil(canvas.width / 2));
+      const historyHeight = Math.max(1, Math.ceil(canvas.height / 2));
+      assert.equal(descriptor.size.width, historyWidth, 'Mode 0 history width');
+      assert.equal(descriptor.size.height, historyHeight, 'Mode 0 history height');
+      assert.ok(['rgba16float', 'rgba32float'].includes(descriptor.format));
+      if (descriptor.label.includes('depth')) assert.equal(descriptor.format, 'rgba32float');
+      const bytesPerTexel = descriptor.format === 'rgba32float' ? 16 : 8;
+      assert.equal(
+        resource.lifecycle.byteEstimate.bytes,
+        historyWidth * historyHeight * bytesPerTexel,
+      );
       return sum + resource.lifecycle.byteEstimate.bytes;
     }, 0);
     const cloudFacts = Object.values(renderer.inspect().cloudLayer).find(
       (row) => row.status === 'available',
-    ).resourceFacts;
-    assert.equal(
-      cloudFacts.declaredHistoryBytes,
-      cloudHistoryBytes,
-      'cloud inspection must match the six actual recorded half-resolution texture descriptors',
     );
+    assert.ok(cloudFacts?.mode0?.historyValid, 'captured Mode 0 must consume accepted history');
+    assert.ok(cloudHistoryBytes > 0, 'the six recorded history textures must own known bytes');
     const cloudWork = model.works.find((work) =>
-      work.pipeline.shaders.some((shader) => shader.source?.includes('struct CloudResolveParams')),
+      work.pipeline.shaders.some(
+        (shader) =>
+          shader.source?.includes('fn cloud_bilateral_upsample') &&
+          shader.source?.includes('displayProbe'),
+      ),
     );
     const adapter = value(await webgpu.rhi.requestAdapter());
     const replayDevice = value(

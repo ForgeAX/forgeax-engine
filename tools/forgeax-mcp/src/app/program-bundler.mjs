@@ -24,10 +24,11 @@ export async function bundlePackProgram(input) {
   }
   const driverUrl = new URL('driver.js', base).href;
   sources.set(driverUrl, { loader: 'js', contents:
-    `export function load(entry) { switch(entry) { ${Object.keys(program.modules).map(filename => `case ${JSON.stringify(filename)}: return require(${JSON.stringify(new URL(filename, new URL('modules/', base)).href)});`).join('')} default: throw new Error('Unknown Pack entry'); } }` });
+    `function load(entry) { switch(entry) { ${Object.keys(program.modules).map(filename => `case ${JSON.stringify(filename)}: return require(${JSON.stringify(new URL(filename, new URL('modules/', base)).href)});`).join('')} default: throw new Error('Unknown Pack entry'); } } export default Object.freeze({ load });` });
+  // Virtual URLs link graph edges; import.meta retains the published ESM driver's identity.
   const result = await build({
     logOverride: { 'empty-import-meta': 'error' },
-    entryPoints: [driverUrl], bundle: true, write: false, format: 'iife', globalName: '__forgeaxProgram', platform: 'browser', target: 'esnext',
+    entryPoints: [driverUrl], bundle: true, write: false, format: 'esm', platform: 'browser', target: 'esnext',
     plugins: [{ name: 'admitted-pack-program', setup(plugin) {
       plugin.onResolve({ filter: /.*/ }, args => {
         const path = new URL(args.path, args.pluginData?.url || base).href;
@@ -38,5 +39,5 @@ export async function bundlePackProgram(input) {
       plugin.onLoad({ filter: /.*/, namespace: 'pack-program' }, args => ({ ...sources.get(args.pluginData.url), pluginData: args.pluginData }));
     } }],
   });
-  return `${result.outputFiles[0].text}\nexport default Object.freeze(__forgeaxProgram);`;
+  return result.outputFiles[0].text;
 }

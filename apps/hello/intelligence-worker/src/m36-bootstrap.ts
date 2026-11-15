@@ -1,21 +1,12 @@
+import { defineResource } from '@forgeax/engine-ecs';
+import { Update, defineSystem } from "@forgeax/engine-ecs";
 import type {
   ExecutionBootstrapEntry,
   ExecutionBootstrapHost,
   ExecutionBootstrapValue,
   Plugin,
 } from '@forgeax/engine-app';
-import {
-  activityId,
-  createIntelligencePortClient,
-  type ActivityEvent,
-  type ActivityId,
-  type ActivityRef,
-  type ActivitySubmission,
-  type IntelligenceHostCommand,
-  type IntelligenceMessagePort,
-  type IntelligencePortClient,
-  type IntelligenceRealmMessage,
-} from '@forgeax/engine-intelligence';
+import { activityId, createIntelligencePortClient, type ActivityEvent, type ActivityId, type ActivityRef, type IntelligenceHostCommand, type IntelligenceMessagePort, type IntelligencePortClient, type IntelligenceRealmMessage } from '@forgeax/engine-intelligence';
 
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
@@ -28,6 +19,8 @@ import {
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+const resource1 = defineResource<M36Proof>("m36IntelligenceProof");
+
 
 
 interface M36HostCloseDetail {
@@ -546,7 +539,7 @@ const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).u
       };
       state = localState;
       proof = currentProof;
-      world.insertResource('m36IntelligenceProof', currentProof);
+      world.insertResource(resource1, currentProof);
 
       const fail = (reason: string): void => {
         if (localState.phase === 'finished' || localState.failure !== undefined) return;
@@ -926,7 +919,7 @@ const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).u
         }
       };
 
-      const system = {
+      const system = defineSystem({
         name: 'm36-intelligence-worker-consumer',
         queries: [],
         fn(): void {
@@ -965,11 +958,11 @@ const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).u
           }
           drive();
         },
-      };
-      const update = world.scheduleToken('Update');
+      });
+      const update = Update;
       world.addSystem(update, system).unwrap();
       ctx.effect(
-        () => () => world.removeSystem(update, system.name),
+        () => () => world.removeSystem(update, system),
         'm36/intelligence-system',
       );
 

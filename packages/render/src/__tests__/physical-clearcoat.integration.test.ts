@@ -154,6 +154,7 @@ describe('Standard clearcoat root contract', () => {
     expect(descriptor.entries.map((entry) => entry.binding)).toEqual([
       ...Array.from({ length: 17 }, (_, binding) => binding),
       46,
+      47,
     ]);
     expect(descriptor.entries[9]).toMatchObject({
       sampler: { type: 'non-filtering' },
@@ -173,6 +174,9 @@ describe('Standard clearcoat root contract', () => {
     expect(descriptor.entries[14]).toMatchObject({
       texture: { sampleType: 'unfilterable-float', viewDimension: '2d' },
     });
+    expect(descriptor.entries.find((entry) => entry.binding === 47)).toMatchObject({
+      texture: { sampleType: 'float', viewDimension: '2d' },
+    });
 
     // The medium is a project material artifact with an explicit empty
     // paramSchema. Its per-shader user region is therefore the reserved UBO
@@ -190,5 +194,6 @@ describe('Standard clearcoat root contract', () => {
     expect(source).toContain('@group(1) @binding(12) var surfaceNearestLayerTexture');
     expect(source).toContain('@group(1) @binding(13) var surfaceNearestDepthSampler');
     expect(source).toContain('@group(1) @binding(14) var surfaceNearestDepthTexture');
+    expect(source).toContain('@group(1) @binding(47) var skylightPrefilterMap: texture_2d<f32>');
   });
 });

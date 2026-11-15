@@ -116,7 +116,7 @@ it('stabilizes animated fog through normal ticks and history resets and rejects 
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
     await completeReadyFrame(() => {
-      const drawn = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
+      const drawn = renderer.draw({ source: lease });
       if (!drawn.ok) throw drawn.error;
       // Borrow the current WebGPU canvas image before the browser presents it.
       if (read && drawn.value.presentation === 'ready') context.drawImage(canvas, 0, 0);

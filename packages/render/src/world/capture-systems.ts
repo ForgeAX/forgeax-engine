@@ -1,5 +1,5 @@
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
-import { defineComponent } from '@forgeax/engine-ecs';
+import { defineComponent, defineSystem } from '@forgeax/engine-ecs';
 import { buildCaptureFaces, type CaptureFace } from '../capture/faces';
 import { PlanarTargetLease } from '../capture/planar-target';
 import type { RendererCaptureOwner } from '../capture/renderer-captures';
@@ -8,13 +8,13 @@ import { preparePlanarCapture } from '../record/frame';
 import type { CubeCaptureGraphWork } from '../record/target-capture-graph';
 import type { CameraSnapshot, RendererError } from '../render-contract';
 import { projectAuxiliaryCamerasForView } from '../render-system-extract';
-import { planarFaceFeatureWork } from './capture-face-feature-systems';
 import {
-  featureFrameOutcome,
-  RENDER_FEATURE_BATCH_SYSTEM,
-  RENDER_FEATURE_VIEWS_SYSTEM,
-  viewFeatureInputOf,
-} from './feature-systems';
+  RenderCaptureScheduleOrder,
+  RenderFeatureBatchOrder,
+  RenderFeatureViewsOrder,
+} from '../system-order';
+import { planarFaceFeatureWork } from './capture-face-feature-systems';
+import { featureFrameOutcome, viewFeatureInputOf } from './feature-systems';
 import { frameSubmitOutcome } from './frame-submit-systems';
 import { ViewRecorder } from './render-views';
 import { RenderCommit, RenderPrepare, renderSubmission } from './render-world';
@@ -144,12 +144,13 @@ function prepareViewCaptures(
           recordContext(internals).canvas,
         ),
       );
-  // Only a recording that reaches its captures selects the planar mirror;
-  // a held view without capture work keeps its last selection.
-  const records = recordsViewWork(view.mode, { ...route, auxiliaryCameras });
-  const planar = records
-    ? preparePlanarCapture(internals, captures, auxiliaryCameras, frameState.frameNumber)
-    : undefined;
+  // Only a recording that draws the display picture selects the planar mirror:
+  // the display graph records it on its own shadows. Any other recording
+  // keeps the last selection.
+  const planar =
+    view.mode === true
+      ? preparePlanarCapture(internals, captures, auxiliaryCameras, frameState.frameNumber)
+      : undefined;
   const displayCamera = view.cameras[0];
   const faces =
     displayCamera === undefined
@@ -213,108 +214,107 @@ function sharedCaptureRecorder(views: readonly StagedCaptureView[]): StagedCaptu
  * it promotes it; any other frame rolls its selection back.
  */
 export function registerViewCaptureSystems(world: World): void {
-  world
-    .addSystem(RenderPrepare, {
-      commands: 'none',
-      name: RENDER_CAPTURE_SCHEDULE_SYSTEM,
-      after: [RENDER_FEATURE_VIEWS_SYSTEM, RENDER_FEATURE_BATCH_SYSTEM],
-      queries: [{ read: [ViewRecorder, ViewFrame], optional: [ViewCaptureWork] }],
-      fn: (world, [rows]) => {
-        const frame = renderSubmission(world).frame;
-        const sealed = featureFrameOutcome(world)?.kind === 'sealed';
-        const views: StagedCaptureView[] = [];
+  const systemToken1 = defineSystem({
+    sets: [RenderCaptureScheduleOrder],
+    commands: 'none',
+    name: RENDER_CAPTURE_SCHEDULE_SYSTEM,
+    after: [RenderFeatureViewsOrder, RenderFeatureBatchOrder],
+    queries: [{ read: [ViewRecorder, ViewFrame], optional: [ViewCaptureWork] }],
+    fn: (world, [rows]) => {
+      const frame = renderSubmission(world).frame;
+      const sealed = featureFrameOutcome(world)?.kind === 'sealed';
+      const views: StagedCaptureView[] = [];
 
-        rows.forEach((row) => {
-          const entity = row.entity;
+      rows.forEach((row) => {
+        const entity = row.entity;
 
-          const staged = world
-            .resolveUniqueRef<ViewFrameState>(requireViewField(world, entity, ViewFrame, 'state'))
-            .unwrap();
-          if (staged.frame !== frame || staged.result?.ok !== true) return;
-          const input = viewFeatureInputOf(world, entity);
-          const stored = readViewField(world, entity, ViewCaptureWork, 'state');
-          views.push({
-            entity: entity,
-            staged,
-            owner: ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state')),
-            mode: staged.mode,
-            shared: sealed && input?.kind === 'prepared' && input.value.input !== undefined,
-            stored:
-              stored === undefined
-                ? undefined
-                : world.resolveUniqueRef<ViewCaptureWorkState>(stored).unwrap(),
-          });
+        const staged = world
+          .resolveUniqueRef<ViewFrameState>(requireViewField(world, entity, ViewFrame, 'state'))
+          .unwrap();
+        if (staged.frame !== frame || staged.result?.ok !== true) return;
+        const input = viewFeatureInputOf(world, entity);
+        const stored = readViewField(world, entity, ViewCaptureWork, 'state');
+        views.push({
+          entity: entity,
+          staged,
+          owner: ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state')),
+          mode: staged.mode,
+          shared: sealed && input?.kind === 'prepared' && input.value.input !== undefined,
+          stored:
+            stored === undefined
+              ? undefined
+              : world.resolveUniqueRef<ViewCaptureWorkState>(stored).unwrap(),
         });
-        const recorder = sharedCaptureRecorder(views);
-        // The first shared view's frame carries the cube snapshots, as its request did.
-        const sharedView = views.find((view) => view.shared);
-        const scheduled: ViewCaptureScheduleOutcome | undefined =
-          sharedView === undefined
-            ? undefined
+      });
+      const recorder = sharedCaptureRecorder(views);
+      // The first shared view's frame carries the cube snapshots, as its request did.
+      const sharedView = views.find((view) => view.shared);
+      const scheduled: ViewCaptureScheduleOutcome | undefined =
+        sharedView === undefined
+          ? undefined
+          : guarded(() => ({
+              kind: 'prepared' as const,
+              value: scheduleRendererCaptures(world, sharedView.staged, sharedView.owner),
+            }));
+      const first: { entity: EntityHandle; state: ViewCaptureWorkState }[] = [];
+      for (const view of views) {
+        const outcome: ViewCaptureOutcome =
+          view === recorder && scheduled?.kind === 'failed'
+            ? scheduled
             : guarded(() => ({
                 kind: 'prepared' as const,
-                value: scheduleRendererCaptures(world, sharedView.staged, sharedView.owner),
+                value: prepareViewCaptures(
+                  world,
+                  view.staged,
+                  view.owner,
+                  view === recorder && scheduled?.kind === 'prepared'
+                    ? scheduled.value
+                    : EMPTY_ROUTE,
+                  view.shared && view.mode !== true,
+                ),
               }));
-        const first: { entity: EntityHandle; state: ViewCaptureWorkState }[] = [];
-        for (const view of views) {
-          const outcome: ViewCaptureOutcome =
-            view === recorder && scheduled?.kind === 'failed'
-              ? scheduled
-              : guarded(() => ({
-                  kind: 'prepared' as const,
-                  value: prepareViewCaptures(
-                    world,
-                    view.staged,
-                    view.owner,
-                    view === recorder && scheduled?.kind === 'prepared'
-                      ? scheduled.value
-                      : EMPTY_ROUTE,
-                    view.shared && view.mode !== true,
-                  ),
-                }));
-          if (view.stored === undefined) {
-            first.push({ entity: view.entity, state: { frame, outcome } });
-            continue;
-          }
-          view.stored.frame = frame;
-          view.stored.outcome = outcome;
+        if (view.stored === undefined) {
+          first.push({ entity: view.entity, state: { frame, outcome } });
+          continue;
         }
-        // A view's first capture work attaches its component after the iteration.
-        for (const { entity, state } of first)
-          world
-            .addComponent(entity, {
-              component: ViewCaptureWork,
-              data: { state: world.allocUniqueRef('ViewCaptureWork', state) },
-            })
-            .unwrap();
-      },
-    })
-    .unwrap();
-  world
-    .addSystem(RenderCommit, {
-      commands: 'none',
-      name: RENDER_VIEW_CAPTURE_COMMIT_SYSTEM,
-      queries: [{ read: [ViewRecorder, ViewCaptureWork] }],
-      fn: (world, [rows]) => {
-        const submission = renderSubmission(world);
+        view.stored.frame = frame;
+        view.stored.outcome = outcome;
+      }
+      // A view's first capture work attaches its component after the iteration.
+      for (const { entity, state } of first)
+        world
+          .addComponent(entity, {
+            component: ViewCaptureWork,
+            data: { state: world.allocUniqueRef('ViewCaptureWork', state) },
+          })
+          .unwrap();
+    },
+  });
+  world.addSystem(RenderPrepare, systemToken1).unwrap();
+  const systemToken2 = defineSystem({
+    commands: 'none',
+    name: RENDER_VIEW_CAPTURE_COMMIT_SYSTEM,
+    queries: [{ read: [ViewRecorder, ViewCaptureWork] }],
+    fn: (world, [rows]) => {
+      const submission = renderSubmission(world);
 
-        rows.forEach((row) => {
-          const entity = row.entity;
+      rows.forEach((row) => {
+        const entity = row.entity;
 
-          const state = world
-            .resolveUniqueRef<ViewCaptureWorkState>(
-              requireViewField(world, entity, ViewCaptureWork, 'state'),
-            )
-            .unwrap();
-          if (state.frame !== submission.frame) return;
-          ownerOf(
-            world,
-            requireViewField(world, entity, ViewRecorder, 'state'),
-          ).captures.planar?.settle(submission.accepted);
-        });
-      },
-    })
-    .unwrap();
+        const state = world
+          .resolveUniqueRef<ViewCaptureWorkState>(
+            requireViewField(world, entity, ViewCaptureWork, 'state'),
+          )
+          .unwrap();
+        if (state.frame !== submission.frame) return;
+        ownerOf(
+          world,
+          requireViewField(world, entity, ViewRecorder, 'state'),
+        ).captures.planar?.settle(submission.accepted);
+      });
+    },
+  });
+  world.addSystem(RenderCommit, systemToken2).unwrap();
 }
 
 /**
@@ -328,19 +328,18 @@ export function registerCaptureSystems(
   owner: RendererCaptureOwner,
   report: (error: RendererError) => void,
 ): void {
-  world
-    .addSystem(RenderCommit, {
-      commands: 'none',
-      name: CUBE_CAPTURE_COMMIT_SYSTEM,
-      queries: [],
-      fn: (world) => {
-        const submission = renderSubmission(world);
-        const completed = owner.complete(
-          submission.accepted && frameSubmitOutcome(world).captureReady,
-          submission.completion,
-        );
-        if (!completed.ok) report(completed.error);
-      },
-    })
-    .unwrap();
+  const systemToken3 = defineSystem({
+    commands: 'none',
+    name: CUBE_CAPTURE_COMMIT_SYSTEM,
+    queries: [],
+    fn: (world) => {
+      const submission = renderSubmission(world);
+      const completed = owner.complete(
+        submission.accepted && frameSubmitOutcome(world).captureReady,
+        submission.completion,
+      );
+      if (!completed.ok) report(completed.error);
+    },
+  });
+  world.addSystem(RenderCommit, systemToken3).unwrap();
 }

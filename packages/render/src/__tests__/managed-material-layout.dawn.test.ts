@@ -41,7 +41,6 @@ it('GPU culling follows resized material content without reuploading candidates 
   const material = new MaterialResource(initial);
   const sources: RenderableSnapshot[] = [0, 1].map((entityKey) => ({
     entityKey,
-    worldId: 0,
     assetHandle: 3,
     transform: { world: mat4.identity(mat4.create()) },
     localAabb: new Float32Array([-0.25, -0.25, -0.25, 0.25, 0.25, 0.25]),
@@ -74,7 +73,6 @@ it('GPU culling follows resized material content without reuploading candidates 
   const delta = projection.apply(
     sources.map((snapshot) => ({
       kind: 'update' as const,
-      worldId: 0,
       entityKey: snapshot.entityKey,
       snapshot,
     })),

@@ -4,7 +4,7 @@ import { Atmosphere } from '../components/atmosphere';
 import { DirectionalLight } from '../components/directional-light';
 import { Fog } from '../components/fog';
 import { fogState, selectFogFrame } from '../render-system-extract';
-import { extractFrames } from '../render-system-extract-tail';
+import { extractSource } from '../render-system-extract-tail';
 
 function worldWithFog() {
   const world = new World();
@@ -44,10 +44,10 @@ describe('Fog frame owner integration', () => {
 
   it('does not publish a partial environment when Fog succeeds but Sun admission fails', () => {
     const { world, entity, sun } = worldWithFog();
-    const initial = extractFrames([world], 0);
+    const initial = extractSource(world);
     world.set(entity, Fog, { density: 0.08 }).unwrap();
     world.despawn(sun).unwrap();
-    const invalidEnvironment = extractFrames([world], 0);
+    const invalidEnvironment = extractSource(world);
     expect(invalidEnvironment.environmentReady).toBe(false);
     expect(invalidEnvironment.environment).toBeUndefined();
     expect(invalidEnvironment.fog).toBeUndefined();
@@ -55,7 +55,7 @@ describe('Fog frame owner integration', () => {
     expect(fogState(world).lkg?.density).toBeCloseTo(0.08);
     world.set(entity, Fog, { density: -1 }).unwrap();
     world.spawn({ component: DirectionalLight, data: { direction: [0, -1, 0] } }).unwrap();
-    const recovered = extractFrames([world], 0);
+    const recovered = extractSource(world);
     expect(recovered.environmentReady).toBe(true);
     expect(recovered.fog?.density).toBeCloseTo(0.08);
     expect(recovered.fogFailure?.code).toBe('environment-selection-invalid');
@@ -64,7 +64,7 @@ describe('Fog frame owner integration', () => {
 
   it('retains the last valid Fog frame after an invalid update and exposes failure', () => {
     const { world, entity } = worldWithFog();
-    const initial = extractFrames([world], 0);
+    const initial = extractSource(world);
     expect(initial.fog?.density).toBeCloseTo(0.03);
     expect(initial.fog?.heightFalloff).toBe(0);
 
@@ -76,7 +76,7 @@ describe('Fog frame owner integration', () => {
         maxOpacity: 0.8,
       })
       .unwrap();
-    const invalid = extractFrames([world], 0);
+    const invalid = extractSource(world);
     expect(invalid.fog).toEqual(initial.fog);
     expect(invalid.fogFailure).toMatchObject({
       code: 'environment-selection-invalid',
@@ -91,14 +91,14 @@ describe('Fog frame owner integration', () => {
         maxOpacity: 0.8,
       })
       .unwrap();
-    const invalidColor = extractFrames([world], 0);
+    const invalidColor = extractSource(world);
     expect(invalidColor.fog).toEqual(initial.fog);
     expect(invalidColor.fogFailure).toMatchObject({ detail: { field: 'color[0]' } });
   });
 
   it('clears the retained Fog only after a valid removal, never after an invalid frame', () => {
     const { world, entity } = worldWithFog();
-    expect(extractFrames([world], 0).fog).toBeDefined();
+    expect(extractSource(world).fog).toBeDefined();
     world
       .set(entity, Fog, {
         color: [0.2, 0.3, 0.4],
@@ -107,9 +107,9 @@ describe('Fog frame owner integration', () => {
         maxOpacity: 0.8,
       })
       .unwrap();
-    expect(extractFrames([world], 0).fog).toBeDefined();
+    expect(extractSource(world).fog).toBeDefined();
     world.removeComponent(entity, Fog).unwrap();
-    const removed = extractFrames([world], 0);
+    const removed = extractSource(world);
     expect(removed.fog).toBeUndefined();
     expect(removed.fogFailure).toBeUndefined();
   });

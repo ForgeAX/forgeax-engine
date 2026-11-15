@@ -34,6 +34,12 @@ import {
   viewTransmission,
   viewVolumetricFog,
 } from '../view-inspection';
+import { inspectWaterRenderGraph } from '../water/capabilities';
+import {
+  inspectWaterInfoPublications,
+  WATER_INFO_FEATURE_IDENTITY,
+} from '../water/water-info-feature';
+import { sharedFeatureGraphInspection } from '../world/feature-graph-systems';
 import type { ViewSettlementOwner } from '../world/view-settlement';
 
 /** Inputs owned by the renderer assembly for one detached output projection. */
@@ -207,7 +213,29 @@ export function projectRenderViewInspection(
   const motionBlur = viewMotionBlur(inspected);
   const transmission = viewTransmission(inspected);
   const iblBinding = projectIblBindingInspection(inspected.frameState.iblBindingInspection);
+  const projectWaterGraphInspection = (
+    graph: ReturnType<typeof viewGraphInfo>,
+    inspected: ViewSettlementOwner,
+    fields: readonly (keyof RenderInspection)[] | undefined,
+  ) =>
+    graph === undefined || fields?.includes('waterGraph') === false
+      ? {}
+      : {
+          waterGraph: inspectWaterRenderGraph(
+            graph,
+            inspected.internals.renderWorld === undefined
+              ? undefined
+              : sharedFeatureGraphInspection(inspected.internals.renderWorld),
+            inspectWaterInfoPublications(
+              inspected.internals.featureHost?.features.find(
+                (feature) => feature.identity === WATER_INFO_FEATURE_IDENTITY,
+              ),
+              inspected.internals.deviceGeneration ?? 0,
+            ),
+          ),
+        };
   return {
+    ...projectWaterGraphInspection(graph, inspected, fields),
     featureGraph: viewFeatureGraph(inspected),
     materialTextureSources: inspected.recorded.materialTextureSources,
     ...projectViewCounterInspection(inspected, fields),

@@ -1,13 +1,25 @@
-import { defineComponent, type EntityHandle, type World } from '@forgeax/engine-ecs';
-import { err, ok, type Result, type RhiError } from '@forgeax/engine-rhi';
-import type { RenderFeatureFrameResult } from '../features/host';
+import {
+  defineComponent,
+  defineResource,
+  defineSystem,
+  type EntityHandle,
+  type World,
+} from '@forgeax/engine-ecs';
+import { type BindGroup, err, ok, type Result, type RhiError } from '@forgeax/engine-rhi';
+import {
+  getRenderFeaturePlanExecutionProjection,
+  type RenderFeatureFrameResult,
+} from '../features/host';
+
 import { postProcessShaderEntrySignature } from '../fullscreen-post-process-pass';
+import { adoptPreparedMaterialBindings } from '../record/prepared-material-bindings';
 import type { RenderSystemInternals } from '../record/render-context';
 import {
   type RenderFeatureGraphCandidate,
   recordRenderFeatureCandidate,
 } from '../record/typed-frame-graph';
 import { releasePreparedResourceBatches } from '../render-system-record-attempt';
+import { RenderFeaturePlanOrder } from '../system-order';
 import { sceneDataSurfaceBindings } from '../temporal/standard-scene-data-admission';
 import {
   featureFrameOutcome,
@@ -164,6 +176,9 @@ function createViewFeaturePlan(
   );
   const candidate: RenderFeatureGraphCandidate = {
     plans: featureFrame.plans,
+    ...(featureFrame.featureTextureReadbacks === undefined
+      ? {}
+      : { featureTextureReadbacks: featureFrame.featureTextureReadbacks }),
     ...(sceneDataBindings.length === 0 || frameState.standardSceneSurfaceAdmission === undefined
       ? {}
       : { sceneDataAdmission: frameState.standardSceneSurfaceAdmission, sceneDataBindings }),
@@ -178,6 +193,20 @@ function createViewFeaturePlan(
     },
     onAbandoned: () => postProcess.params.discard(params),
     onAccepted: () => {
+      const bindings = new Set<BindGroup>();
+      for (const plan of featureFrame.plans)
+        for (const pass of getRenderFeaturePlanExecutionProjection(plan)?.passes ?? []) {
+          if (pass.enabled === false) continue;
+          for (const draw of pass.graphics?.draws ?? []) {
+            if (draw.enabled === false) continue;
+            for (const reference of draw.bindings) {
+              const binding = pass.resolvedGraphics?.resolve(reference);
+              if (binding?.kind === 'bindings' && binding.handle !== undefined)
+                bindings.add(binding.handle);
+            }
+          }
+        }
+      adoptPreparedMaterialBindings(owner.preparedResolver.caches.materialBindings, bindings);
       acceptFeaturePostProcess(owner, featureFrame, params);
     },
   };
@@ -230,75 +259,74 @@ function planView(
 export function registerFeaturePlanSystems(world: World): void {
   if (world.hasResource(FeaturePlanSystems)) return;
   world.insertResource(FeaturePlanSystems, true);
-  world
-    .addSystem(RenderQueue, {
-      commands: 'none',
-      name: RENDER_FEATURE_PLAN_SYSTEM,
-      queries: [{ read: [ViewRecorder, ViewFeatureInput], optional: [ViewFeaturePlans] }],
-      fn: (world, [rows]) => {
-        const frame = renderSubmission(world).frame;
-        const first: { entity: EntityHandle; state: ViewFeaturePlanState }[] = [];
+  const systemToken1 = defineSystem({
+    sets: [RenderFeaturePlanOrder],
+    commands: 'none',
+    name: RENDER_FEATURE_PLAN_SYSTEM,
+    queries: [{ read: [ViewRecorder, ViewFeatureInput], optional: [ViewFeaturePlans] }],
+    fn: (world, [rows]) => {
+      const frame = renderSubmission(world).frame;
+      const first: { entity: EntityHandle; state: ViewFeaturePlanState }[] = [];
 
-        rows.forEach((row) => {
-          const entity = row.entity;
+      rows.forEach((row) => {
+        const entity = row.entity;
 
-          const input = world
-            .resolveUniqueRef<ViewFeatureInputState>(
-              requireViewField(world, entity, ViewFeatureInput, 'state'),
-            )
-            .unwrap();
-          if (input.frame !== frame) return;
-          const outcome = planView(
-            world,
-            input,
-            ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state')),
-          );
-          if (outcome === undefined) return;
-          const stored = readViewField(world, entity, ViewFeaturePlans, 'state');
-          if (stored === undefined) {
-            first.push({ entity: entity, state: { frame, outcome, taken: false } });
-            return;
-          }
-          const state = world.resolveUniqueRef<ViewFeaturePlanState>(stored).unwrap();
-          state.frame = frame;
-          state.outcome = outcome;
-          state.taken = false;
-        });
-        // A view's first plan attaches its component after the iteration.
-        for (const { entity, state } of first)
-          world
-            .addComponent(entity, {
-              component: ViewFeaturePlans,
-              data: { state: world.allocUniqueRef('ViewFeaturePlans', state) },
-            })
-            .unwrap();
-      },
-    })
-    .unwrap();
-  world
-    .addSystem(RenderCleanup, {
-      commands: 'none',
-      name: RENDER_FEATURE_PLAN_RELEASE_SYSTEM,
-      queries: [{ read: [ViewFeaturePlans] }],
-      fn: (world, [rows]) => {
-        const frame = renderSubmission(world).frame;
+        const input = world
+          .resolveUniqueRef<ViewFeatureInputState>(
+            requireViewField(world, entity, ViewFeatureInput, 'state'),
+          )
+          .unwrap();
+        if (input.frame !== frame) return;
+        const outcome = planView(
+          world,
+          input,
+          ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state')),
+        );
+        if (outcome === undefined) return;
+        const stored = readViewField(world, entity, ViewFeaturePlans, 'state');
+        if (stored === undefined) {
+          first.push({ entity: entity, state: { frame, outcome, taken: false } });
+          return;
+        }
+        const state = world.resolveUniqueRef<ViewFeaturePlanState>(stored).unwrap();
+        state.frame = frame;
+        state.outcome = outcome;
+        state.taken = false;
+      });
+      // A view's first plan attaches its component after the iteration.
+      for (const { entity, state } of first)
+        world
+          .addComponent(entity, {
+            component: ViewFeaturePlans,
+            data: { state: world.allocUniqueRef('ViewFeaturePlans', state) },
+          })
+          .unwrap();
+    },
+  });
+  world.addSystem(RenderQueue, systemToken1).unwrap();
+  const systemToken2 = defineSystem({
+    commands: 'none',
+    name: RENDER_FEATURE_PLAN_RELEASE_SYSTEM,
+    queries: [{ read: [ViewFeaturePlans] }],
+    fn: (world, [rows]) => {
+      const frame = renderSubmission(world).frame;
 
-        rows.forEach((row) => {
-          const entity = row.entity;
+      rows.forEach((row) => {
+        const entity = row.entity;
 
-          const state = world
-            .resolveUniqueRef<ViewFeaturePlanState>(
-              requireViewField(world, entity, ViewFeaturePlans, 'state'),
-            )
-            .unwrap();
-          if (state.frame !== frame || state.taken || state.outcome.kind !== 'planned') return;
-          state.taken = true;
-          // No compile read the candidate: release its unpublished parameter buffers.
-          state.outcome.plan.candidate?.onAbandoned?.();
-        });
-      },
-    })
-    .unwrap();
+        const state = world
+          .resolveUniqueRef<ViewFeaturePlanState>(
+            requireViewField(world, entity, ViewFeaturePlans, 'state'),
+          )
+          .unwrap();
+        if (state.frame !== frame || state.taken || state.outcome.kind !== 'planned') return;
+        state.taken = true;
+        // No compile read the candidate: release its unpublished parameter buffers.
+        state.outcome.plan.candidate?.onAbandoned?.();
+      });
+    },
+  });
+  world.addSystem(RenderCleanup, systemToken2).unwrap();
 }
 
-const FeaturePlanSystems = Object.freeze({ name: 'FeaturePlanSystems' });
+const FeaturePlanSystems = defineResource<boolean>('FeaturePlanSystems');

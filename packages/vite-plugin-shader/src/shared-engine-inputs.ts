@@ -101,6 +101,18 @@ const REQUIRED_RESAMPLING_PROGRAMS = [
   },
 ] as const;
 
+const REQUIRED_WATER_INFO_RASTER_SHADERS = [
+  'forgeax::water-info-raster-water',
+  'forgeax::water-info-raster-ground',
+  'forgeax::water-info-raster-dilation',
+  'forgeax::water-mesh-raster',
+] as const;
+
+const REQUIRED_WATER_MESH_PRECISE_SHADERS = [
+  'forgeax::water-mesh-precise',
+  'forgeax::water-mesh-precise-msaa',
+] as const;
+
 function hasCurrentCompilerProfile(value: unknown): boolean {
   return (
     isShaderCompilerProfile(value) &&
@@ -157,6 +169,28 @@ export function hasCompleteEngineShaderProfile(input: {
     !input.entries.every(hasCurrentSourceReflection) ||
     !input.materialShaders.every(
       (entry) => hasCurrentArtifactFacts(entry) && entry.variants.every(hasCurrentArtifactFacts),
+    )
+  )
+    return false;
+
+  if (
+    !REQUIRED_WATER_INFO_RASTER_SHADERS.every((identifier) => {
+      const material = input.materialShaders.find((entry) => entry.identifier === identifier);
+      return (
+        input.entries.some((entry) => entry.identifier === identifier) &&
+        material?.receipt?.bindings === 'group-0' &&
+        material.variants.every((variant) => variant.receipt?.bindings === 'group-0')
+      );
+    })
+  )
+    return false;
+
+  // Precise programs bind native resources; they do not use zero-resource material receipts.
+  if (
+    !REQUIRED_WATER_MESH_PRECISE_SHADERS.every(
+      (identifier) =>
+        input.entries.some((entry) => entry.identifier === identifier) &&
+        input.materialShaders.some((entry) => entry.identifier === identifier),
     )
   )
     return false;
@@ -328,7 +362,10 @@ export function projectShaderManifestEntries(
   return [...entries.values()].map((entry) => ({ ...entry, glsl: '' }));
 }
 
-export async function loadSharedEngineShaderManifest(manifestPath: string): Promise<{
+export async function loadSharedEngineShaderManifest(
+  manifestPath: string,
+  repositoryRoot: string,
+): Promise<{
   readonly entries: ShaderManifestInput[];
   readonly materialShaders: MaterialShaderManifestEntry[];
   readonly publication: ShaderManifestPublication;
@@ -343,7 +380,6 @@ export async function loadSharedEngineShaderManifest(manifestPath: string): Prom
   const path = manifest.payload?.engineShaderManifest;
   if (path === undefined)
     throw new Error(`shared shader manifest lacks serialized payload: ${manifestPath}`);
-  const repositoryRoot = dirname(dirname(manifestPath));
   if (manifest.schemaVersion === 2) {
     if (manifest.producer !== 'repo-build-inputs' || manifest.inputFingerprint === undefined) {
       throw new Error(`shared shader manifest has invalid producer metadata: ${manifestPath}`);

@@ -14,6 +14,7 @@ import type {
   AssetPublicationEnvelope,
   AssetPublicationExternalEvidence,
   FontAsset,
+  GpuTextureAsset,
   ImportError,
   MaterialAsset,
   MeshAsset,
@@ -79,6 +80,7 @@ type AnimationGraphPackPayload = Omit<AnimationGraph, 'nodes'> & {
 
 /** Serialized producer payloads; runtime Assets never carry ref indices. */
 type SerializedPayloads = {
+  readonly 'gpu-texture': Pick<GpuTextureAsset, 'kind' | 'source'>;
   readonly mesh: (Omit<MeshAsset, 'distanceField'> | { readonly kind: 'mesh' }) & {
     readonly distanceField?: MeshDistanceFieldDescriptor;
   };

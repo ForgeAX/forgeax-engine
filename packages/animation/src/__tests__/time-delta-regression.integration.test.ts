@@ -15,12 +15,13 @@ import { runtimeAssetRegistry } from '@forgeax/engine-assets-runtime/internal';
 // driven `dt`, not with a fixed `1 / 60`.
 
 import type { EntityHandle } from '@forgeax/engine-ecs';
-import { createWorldContext, World } from '@forgeax/engine-ecs';
+import { createWorldContext, defineSystem, FixedUpdate, Update, World } from '@forgeax/engine-ecs';
 import type { AnimationClip } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { AnimationPlayer } from '../animation-player';
 import { defineAnimationGraph } from '../graph/define-animation-graph';
 import { animationPlugin } from '../plugin';
+import { EvaluateAnimationGraph } from '../systems/evaluate-animation-graph';
 
 function registerClip(world: World, duration: number) {
   const clip: AnimationClip = { kind: 'animation-clip', duration, channels: [] };
@@ -76,4 +77,39 @@ describe('animation systems honor real Time.delta (regression: hardcoded 1/60)',
     const ap = world.get(e, AnimationPlayer).unwrap() as unknown as { nodeTimes: Float64Array };
     expect(ap.nodeTimes[0]).toBeCloseTo(dt, 5);
   });
+});
+
+it.each([
+  ['update', Update],
+  ['fixed', FixedUpdate],
+] as const)('keeps the exported graph system identity through %s cadence replacement and disposal', async (cadence, schedule) => {
+  const world = new World({ assets: new AssetRegistry() });
+  const trace: string[] = [];
+  const probe = defineSystem({
+    name: 'after-graph-probe',
+    queries: [],
+    after: [EvaluateAnimationGraph],
+    fn: () => {
+      trace.push('probe');
+    },
+  });
+  world.addSystem(schedule, probe).unwrap();
+  const ctx = await createWorldContext(world, [animationPlugin({ cadence })]);
+  try {
+    expect(world.hasSystem(schedule, EvaluateAnimationGraph)).toBe(true);
+    world
+      .replaceSystem(schedule, EvaluateAnimationGraph, {
+        ...EvaluateAnimationGraph,
+        fn: () => {
+          trace.push('evaluate');
+        },
+      })
+      .unwrap();
+    world.update(1 / 60).unwrap();
+    expect(trace).toEqual(['evaluate', 'probe']);
+  } finally {
+    await ctx.fiber.dispose();
+    world.removeSystem(schedule, probe).unwrap();
+  }
+  expect(world.hasSystem(schedule, EvaluateAnimationGraph)).toBe(false);
 });

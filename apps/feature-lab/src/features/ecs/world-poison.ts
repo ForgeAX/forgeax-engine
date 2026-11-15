@@ -1,5 +1,7 @@
-import { defineComponent, Update, World } from '@forgeax/engine/ecs';
+import { defineComponent, defineResource, defineSystem, Update, World } from '@forgeax/engine/ecs';
 import { defineFeature } from '../../lab/feature';
+
+const resource1 = defineResource<boolean>('FLPoisonTrigger');
 
 export default defineFeature({
   title: 'World poison and rebuild',
@@ -13,21 +15,22 @@ export default defineFeature({
     const Hp = defineComponent('FLPoisonHp', { v: 'f32' });
     const build = () => {
       const w = new World();
-      w.addSystem(Update, {
+      const systemToken1 = defineSystem({
         name: 'fl-poison-boom',
         queries: [{ write: [Hp] }],
         fn: (world, [rows]) => {
           for (const row of rows) row.mut(Hp).v -= 1;
-          if (world.hasResource('FLPoisonTrigger')) throw new Error('boom');
+          if (world.hasResource(resource1)) throw new Error('boom');
         },
       });
+      w.addSystem(Update, systemToken1);
       return w;
     };
     const world = build();
     world.spawn({ component: Hp, data: { v: 10 } }).unwrap();
     checks.equal('healthy initially', world.execution.health, 'healthy');
     checks.ok('normal update', world.update(1 / 60).ok);
-    world.insertResource('FLPoisonTrigger', true);
+    world.insertResource(resource1, true);
     const failed = world.update(1 / 60);
     checks.equal('first failure', failed.ok ? 'ok' : failed.error.code, 'system-failed');
     if (!failed.ok && failed.error.code === 'system-failed')

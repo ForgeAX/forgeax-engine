@@ -106,7 +106,7 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) {}`,
       [0, buffer(particle)],
       [1, runtimeBuffer],
       [2, buffer(new Uint32Array([0]))],
-      [3, buffer(new Uint32Array([1, 0, 0, 0, 0, 0]))],
+      [3, buffer(new Uint32Array([1, 0, 0, 0, 0, 0, 0]))],
       [4, indirect],
       [6, output],
     ] as const;

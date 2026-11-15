@@ -24,7 +24,7 @@ import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import { worldDespawnScene } from '@forgeax/engine-scene';
 import { getRegisteredTokens } from './define-state';
 import { getCallbacks, OnEnter, OnExit } from './on-enter-on-exit';
-import { type StatePayload, stateResourceKey } from './resources';
+import { type StatePayload, stateResource } from './resources';
 import { getScopedComponent, SCOPED_MODE_VALUE } from './scoped-component';
 
 /**
@@ -82,9 +82,9 @@ function scopeDespawn(
 
 export function transitionStatesSystem(world: World): void {
   for (const token of getRegisteredTokens().values()) {
-    const key = stateResourceKey(token);
+    const key = stateResource(token);
     if (!world.hasResource(key)) continue;
-    const state = world.getResource<StatePayload>(key);
+    const state = world.getResource(key);
     const ns = state.next;
     if (ns === undefined) continue;
     const prevIdx = state.current;
@@ -131,7 +131,7 @@ export function transitionStatesSystem(world: World): void {
 
     // A callback can enqueue the same value/force again. Request identity,
     // rather than equality of its fields, determines whether it was consumed.
-    const afterCallbacks = world.getResource<StatePayload>(key);
+    const afterCallbacks = world.getResource(key);
     if (afterCallbacks.next === ns) {
       world.insertResource<StatePayload>(key, { ...afterCallbacks, next: undefined });
     }

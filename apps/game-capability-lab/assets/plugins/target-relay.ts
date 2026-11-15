@@ -1,12 +1,14 @@
+import { defineResource } from '@forgeax/engine-ecs';
+import { PhysicsWorldResource } from '@forgeax/engine-physics';
 import { Disabled, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import { vec3 } from '@forgeax/engine-math';
-import type { PhysicsWorld } from '@forgeax/engine-physics';
+
 import { Name, Transform } from '@forgeax/engine-scene';
 import { ResetPose } from './components/gameplay';
 import { ScoringTarget, scoringTargetEntities, type ScoringTargetQuery } from './scoring-target';
 import { TargetHealth } from './target-health';
 
-const TARGET_RELAY_RESOURCE = 'gameDefaultTargetRelay';
+const TARGET_RELAY_RESOURCE = defineResource<TargetRelayState>("gameDefaultTargetRelay");
 
 export type TargetRelaySnapshot = {
   readonly status: 'locked' | 'active' | 'complete';
@@ -52,7 +54,7 @@ export function createTargetRelay(
   variation?: TargetVariation,
 ): TargetRelayHandle {
   world.insertResource(TARGET_RELAY_RESOURCE, initialState());
-  const read = (): TargetRelayState => world.getResource<TargetRelayState>(TARGET_RELAY_RESOURCE);
+  const read = (): TargetRelayState => world.getResource(TARGET_RELAY_RESOURCE);
   const write = (state: TargetRelayState): void => world.insertResource(TARGET_RELAY_RESOURCE, state);
   const targetForStep = (step: number): EntityHandle | undefined => scoringTargetEntities(query)
     .find((entity) => {
@@ -87,8 +89,8 @@ export function createTargetRelay(
       quat: [pose.value.quatX, pose.value.quatY, pose.value.quatZ, pose.value.quatW],
       scale: [pose.value.scaleX, pose.value.scaleY, pose.value.scaleZ],
     });
-    if (world.hasResource('PhysicsWorld')) {
-      const physics = world.getResource<PhysicsWorld>('PhysicsWorld');
+    if (world.hasResource(PhysicsWorldResource)) {
+      const physics = world.getResource(PhysicsWorldResource);
       if (physics.hasBody(entity)) physics.teleport(entity, position);
     }
   };

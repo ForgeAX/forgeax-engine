@@ -28,7 +28,12 @@ export function atmosphereVisibilityLayout(device: RhiDevice): BindGroupLayout {
             texture: { sampleType: 'depth', viewDimension: '2d-array' },
           },
           { binding: 1, visibility: 6, sampler: { type: 'comparison' } },
-          { binding: 2, visibility: 6, texture: { sampleType: 'float', viewDimension: '2d' } },
+          // The Beer map is RGBA32F; the shader uses textureLoad and manual interpolation.
+          {
+            binding: 2,
+            visibility: 6,
+            texture: { sampleType: 'unfilterable-float', viewDimension: '2d' },
+          },
           { binding: 3, visibility: 6, sampler: { type: 'filtering' } },
           {
             binding: 4,

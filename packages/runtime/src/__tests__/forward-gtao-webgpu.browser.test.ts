@@ -31,6 +31,8 @@ import { commands } from 'vitest/browser';
 import {
   composeLinearLightingReference,
   computeGtaoRawReference,
+  depthReconstructedNormalField,
+  filterGtaoDepthPlaneReference,
   filterGtaoReference,
   GTAO_COMPARISON_BUDGET,
   materialNormalFieldMetrics,
@@ -58,6 +60,7 @@ import {
   recordedStandardMainFragmentSource,
   rgba16FloatPixel,
   rgba16FloatRgb,
+  settleForwardGtaoFeaturePreparation,
   sha256Hex,
   stableForwardGtaoGraphTargetProjection,
 } from './helpers/forward-gtao-capture';
@@ -70,7 +73,10 @@ import {
   verifyForwardGtaoCandidateFault,
   writeForwardGtaoFailureReport,
 } from './helpers/forward-gtao-failure';
-import { resolveForwardGtaoMaterialLineage } from './helpers/forward-gtao-material-lineage';
+import {
+  recordedForwardGtaoFragmentEntryPoints,
+  resolveForwardGtaoMaterialLineage,
+} from './helpers/forward-gtao-material-lineage';
 import {
   createForwardGtaoOrthographicCamera,
   createForwardGtaoOrthographicReferenceField,
@@ -934,7 +940,7 @@ function requirePresent<T>(value: T | undefined, message: string): T {
 type MorphCoverageRejectionEvidence = Readonly<{
   readonly weights: 1;
   readonly missingContributorId: string;
-  readonly sourceTuple: readonly [number, number, number, number];
+  readonly sourceTuple: readonly [number, number, number];
   readonly error: unknown;
   readonly rendererEvent: unknown;
 }>;
@@ -997,12 +1003,12 @@ function assertMorphSceneDataRejection(
   }
   const missingContributorId = ids[0];
   const sourceTuple = JSON.parse(missingContributorId) as unknown;
-  if (!Array.isArray(sourceTuple) || sourceTuple.length !== 4) {
+  if (!Array.isArray(sourceTuple) || sourceTuple.length !== 3) {
     throw new Error(
-      `Morph contributor id is not a four-part source tuple: ${missingContributorId}`,
+      `Morph contributor id is not a three-part source tuple: ${missingContributorId}`,
     );
   }
-  expect(sourceTuple).toEqual([0, expected.entityKey, expected.materialHandle, expect.any(Number)]);
+  expect(sourceTuple).toEqual([expected.entityKey, expected.materialHandle, expect.any(Number)]);
   expect(missingContributorId).toBe(JSON.stringify(sourceTuple));
   expect(new Set(ids).size).toBe(3);
   expect(contributors.map((row) => failureRecord(row)?.selectedPass).sort()).toEqual([
@@ -1015,7 +1021,6 @@ function assertMorphSceneDataRejection(
     expect(row?.id).toBe(JSON.stringify(row?.sourceTuple));
     expect(ids).toContain(row?.id);
     expect(row?.sourceTuple).toEqual([
-      0,
       expected.entityKey,
       expected.materialHandle,
       expect.any(Number),
@@ -1031,7 +1036,7 @@ function assertMorphSceneDataRejection(
   return {
     weights: expected.weights,
     missingContributorId,
-    sourceTuple: sourceTuple as [number, number, number, number],
+    sourceTuple: sourceTuple as [number, number, number],
     error: describeFailure(error),
   };
 }
@@ -1456,6 +1461,7 @@ async function writeForwardGtaoFinalLightingEvidence(input: {
           input.registry,
           input.selectedMaterial,
           input.shaderSource,
+          recordedForwardGtaoFragmentEntryPoints(input.tapeModel, input.shaderSource),
         ),
       };
     } catch (error) {
@@ -2035,11 +2041,18 @@ it('runs production Forward GTAO compute and fragment graph variants on WebGPU t
     | ReturnType<DebugDrawHost['featureGraphTraceForConformance']>
     | undefined;
   let clusterWorkPhase = 'cluster-cold';
-  const draw = async (selectedCamera: typeof camera = camera, allowRendererErrors = false) => {
+  const draw = async (
+    selectedCamera: typeof camera = camera,
+    allowRendererErrors = false,
+    deadline = Date.now() + 30_000,
+    preparationRetry = false,
+  ) => {
     failureOperation = 'renderer.draw';
     const startedAt = performance.now();
-    propagateTransforms(world).unwrap();
-    world.update(1 / 60).unwrap();
+    if (!preparationRetry) {
+      propagateTransforms(world).unwrap();
+      world.update(1 / 60).unwrap();
+    }
     const cameraAo = world.hasComponent(selectedCamera, AmbientOcclusion)
       ? { ...world.get(selectedCamera, AmbientOcclusion).unwrap() }
       : undefined;
@@ -2079,11 +2092,7 @@ it('runs production Forward GTAO compute and fragment graph variants on WebGPU t
     };
     let result: ReturnType<typeof renderer.draw>;
     try {
-      result = renderer.draw({
-        leases: [lease],
-        camera: { lease, entityKey: selectedCamera },
-        environment: { lease },
-      });
+      result = renderer.draw({ source: lease, camera: { entityKey: selectedCamera } });
     } catch (cause) {
       recordDrawFailureWithoutReceipt();
       throw cause;
@@ -2117,6 +2126,7 @@ it('runs production Forward GTAO compute and fragment graph variants on WebGPU t
         snapshot: diagnosticSnapshot,
       });
     }
+    if (await settleForwardGtaoFeaturePreparation(receipt, deadline)) return receipt;
     const frameEvidence = validatedClusterFrameReceipt(
       receipt,
       debugHost.clusterWorkObservationForConformance(),
@@ -2157,6 +2167,7 @@ it('runs production Forward GTAO compute and fragment graph variants on WebGPU t
     const startedAt = Date.now();
     const deadline = startedAt + 30_000;
     let attempts = 0;
+    let preparationRetry = false;
     let lastReceipt:
       | {
           readonly frameId: number;
@@ -2167,7 +2178,12 @@ it('runs production Forward GTAO compute and fragment graph variants on WebGPU t
     while (Date.now() < deadline) {
       attempts += 1;
       renderer.requestObservation?.(['final-display']);
-      const receipt = await draw(selectedCamera);
+      const receipt = await draw(selectedCamera, false, deadline, preparationRetry);
+      preparationRetry =
+        receipt.presentation === 'pending' &&
+        receipt.presentationPendingReason?.code === 'feature-preparation' &&
+        receipt.presentationPendingReason.featureIdentity ===
+          'test.forward-gtao-scene-data-consumer';
       const presentation = String(receipt.presentation);
       presentations.set(presentation, (presentations.get(presentation) ?? 0) + 1);
       lastReceipt = {
@@ -2176,6 +2192,9 @@ it('runs production Forward GTAO compute and fragment graph variants on WebGPU t
         pendingReason: receipt.presentationPendingReason,
       };
       if (receipt.presentation !== 'ready') {
+        if (preparationRetry && (receipt.observationDomains?.length ?? 0) > 0) {
+          value(await renderer.observe(receipt, { include: receipt.observationDomains ?? [] }));
+        }
         await new Promise<void>((resolve) => setTimeout(resolve, 10));
         continue;
       }
@@ -2717,22 +2736,30 @@ it('runs production Forward GTAO compute and fragment graph variants on WebGPU t
       GTAO_COMPARISON_BUDGET.materialNormalX12Y12AngularRadians,
     );
     expect(normalErrors.firstMismatch).toBeUndefined();
-    const fragmentRawVsCompute = byteErrorMetrics(fragmentRaw.bytes, computeRaw.bytes);
-    const fragmentFilterVsCompute = byteErrorMetrics(fragmentBlurred.bytes, computeBlurred.bytes);
-    const fragmentLinearVsCompute = linearErrorMetrics(
-      rgba16FloatRgb(fragmentLinear),
-      rgba16FloatRgb(computeLinear),
+    // With the SceneData consumer off, fragment AO runs on a depth-only prepass and
+    // reconstructs normals from depth; compute keeps the material normal. Each is
+    // checked against the reference for its own normal source.
+    const depthReferenceField = depthReconstructedNormalField(referenceField);
+    const fragmentRawReference = computeGtaoRawReference(depthReferenceField, referenceConfig);
+    const fragmentRawVsReference = byteErrorMetrics(
+      byteChannel(fragmentRaw.bytes, fragmentRaw.bytesPerTexel, 0),
+      byteChannel(fragmentRawReference.rgba, 4, 0),
     );
-    expect(fragmentRawVsCompute.maxAbsolute).toBeLessThanOrEqual(1);
-    expect(fragmentFilterVsCompute.maxAbsolute).toBeLessThanOrEqual(1);
-    expect(fragmentLinearVsCompute.maxAbsolute).toBeLessThanOrEqual(
-      GTAO_COMPARISON_BUDGET.linearLightingMaxAbsoluteError,
+    const fragmentFilterVsReference = byteErrorMetrics(
+      fragmentBlurred.bytes,
+      filterGtaoDepthPlaneReference(depthReferenceField, fragmentRawReference),
     );
-    expect(fragmentLinearVsCompute.maxRelative).toBeLessThanOrEqual(
-      GTAO_COMPARISON_BUDGET.linearLightingMaxRelativeError,
+    expect(fragmentRawVsReference.maxAbsolute).toBeLessThanOrEqual(
+      GTAO_COMPARISON_BUDGET.rawVisibilityMaxByteError,
     );
-    expect(fragmentLinearVsCompute.rmsAbsolute).toBeLessThanOrEqual(
-      GTAO_COMPARISON_BUDGET.linearLightingRmsAbsoluteError,
+    expect(fragmentRawVsReference.rms).toBeLessThanOrEqual(
+      GTAO_COMPARISON_BUDGET.rawVisibilityRmsByteError,
+    );
+    expect(fragmentFilterVsReference.maxAbsolute).toBeLessThanOrEqual(
+      GTAO_COMPARISON_BUDGET.filteredVisibilityMaxByteError,
+    );
+    expect(fragmentFilterVsReference.rms).toBeLessThanOrEqual(
+      GTAO_COMPARISON_BUDGET.filteredVisibilityRmsByteError,
     );
     expect(fragmentNormalMetrics.firstMismatch).toBeUndefined();
     const changedByAo = maxDisplayDelta(
@@ -2742,16 +2769,19 @@ it('runs production Forward GTAO compute and fragment graph variants on WebGPU t
       width,
       height,
     );
-    const stageDelta = maxDisplayDelta(
+    // The fragment variant reconstructs normals from depth, so it shades differently
+    // from the compute variant; each is held to its own reference above.
+    const fragmentChangedByAo = maxDisplayDelta(
+      withoutAo.bytes,
       fragmentOutput.bytes,
-      computeOutput.bytes,
-      fragmentOutput.metadata.bytesPerRow,
+      withoutAo.metadata.bytesPerRow,
       width,
       height,
     );
     expect(changedByAo.maximum).toBeGreaterThan(2);
     expect(changedByAo.changed).toBeGreaterThan(8);
-    expect(stageDelta.maximum).toBeLessThanOrEqual(1);
+    expect(fragmentChangedByAo.maximum).toBeGreaterThan(2);
+    expect(fragmentChangedByAo.changed).toBeGreaterThan(8);
 
     const contactIndex = requireContactReferencePixel(
       referenceField,
@@ -3187,14 +3217,13 @@ it('runs production Forward GTAO compute and fragment graph variants on WebGPU t
     expect(orthographicInspection?.execution).toBe('fragment');
     expect(orthographicInspection?.input.extent).toEqual({ width, height });
     expect(orthographicInspection?.output.extent).toEqual({ width, height });
-    const orthographicNormal = await captureTarget(
-      'standard-scene-surface-normal',
-      orthographicCamera,
-    );
     const orthographicRaw = await captureTarget('ssao-raw', orthographicCamera);
     const orthographicFiltered = await captureTarget('ssao-blurred', orthographicCamera);
     const orthographicLinear = await captureLinear(orthographicCamera);
-    const orthographicField = createForwardGtaoOrthographicReferenceField(width, height);
+    // Fragment AO on a depth-only prepass: the normal comes from orthographic depth.
+    const orthographicField = depthReconstructedNormalField(
+      createForwardGtaoOrthographicReferenceField(width, height),
+    );
     const orthographicRawReference = computeGtaoRawReference(orthographicField, {
       outputWidth: orthographicRaw.width,
       outputHeight: orthographicRaw.height,
@@ -3206,22 +3235,19 @@ it('runs production Forward GTAO compute and fragment graph variants on WebGPU t
       distanceFallOff: orthographicInspection.numerical.distanceFallOff,
       sampleBudget: orthographicInspection.numerical.sampleBudget,
     });
-    const orthographicFilteredReference = filterGtaoReference(
+    const orthographicFilteredReference = filterGtaoDepthPlaneReference(
       orthographicField,
       orthographicRawReference,
-      orthographicInspection.numerical.radius,
     );
+    // Visibility only, as for the perspective fragment pass: raw g/b now hold the
+    // depth-reconstructed normal, which the filtered check below covers.
     const orthographicRawMetrics = byteErrorMetrics(
-      orthographicRaw.bytes,
-      orthographicRawReference.rgba,
+      byteChannel(orthographicRaw.bytes, orthographicRaw.bytesPerTexel, 0),
+      byteChannel(orthographicRawReference.rgba, 4, 0),
     );
     const orthographicFilterMetrics = byteErrorMetrics(
       orthographicFiltered.bytes,
       orthographicFilteredReference,
-    );
-    const orthographicNormalMetrics = materialNormalFieldMetrics(
-      orthographicField,
-      orthographicNormal.bytes,
     );
     expect(orthographicRawMetrics.maxAbsolute).toBeLessThanOrEqual(
       GTAO_COMPARISON_BUDGET.rawVisibilityMaxByteError,
@@ -3235,7 +3261,6 @@ it('runs production Forward GTAO compute and fragment graph variants on WebGPU t
     expect(orthographicFilterMetrics.rms).toBeLessThanOrEqual(
       GTAO_COMPARISON_BUDGET.filteredVisibilityRmsByteError,
     );
-    expect(orthographicNormalMetrics.firstMismatch).toBeUndefined();
 
     const beforeResize = orthographicRaw;
     canvas.width = width + 2;
@@ -3630,6 +3655,7 @@ it('runs production Forward GTAO compute and fragment graph variants on WebGPU t
       hostAssembly.assets.shaderRegistry,
       selectedMaterial,
       capturedStandardSource,
+      recordedForwardGtaoFragmentEntryPoints(tapeModel, capturedStandardSource),
     );
     const selectedMaterialSourceSha256 = await sha256Hex(
       new TextEncoder().encode(capturedStandardSource),
@@ -3744,9 +3770,8 @@ it('runs production Forward GTAO compute and fragment graph variants on WebGPU t
         rawVisibilityErrors,
         rawNormalErrors,
         filteredErrors,
-        fragmentRawVsCompute,
-        fragmentFilterVsCompute,
-        fragmentLinearVsCompute,
+        fragmentRawVsReference,
+        fragmentFilterVsReference,
         normalErrors,
         ao0,
         ao1,
@@ -3824,14 +3849,12 @@ it('runs production Forward GTAO compute and fragment graph variants on WebGPU t
             textureIdentity: orthographicOutput.metadata.textureIdentity,
           }),
           linearHdr: await outputArtifact(orthographicLinear),
-          normal: await outputArtifact(orthographicNormal),
           raw: await outputArtifact(orthographicRaw),
           filtered: await outputArtifact(orthographicFiltered),
           resizedRaw: await outputArtifact(resizedRaw),
           recoveredRaw: await outputArtifact(recoveredRaw),
           rawReferenceMetrics: orthographicRawMetrics,
           filteredReferenceMetrics: orthographicFilterMetrics,
-          normalMetrics: orthographicNormalMetrics,
         },
         morphRecoveryRaw: await outputArtifact(morphRecoveredRaw),
       },

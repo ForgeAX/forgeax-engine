@@ -277,7 +277,7 @@ it.each([
   'identity',
   'zstd',
   'mutated',
-] as const)('retains loaded %s bytes without repeating identity transport or trusting mutable cache bytes', async (mode) => {
+] as const)('captures loaded %s bytes from one fresh transport read without trusting mutable loaded bytes', async (mode) => {
   const input = await fixture(false, mode === 'zstd' ? 'zstd' : 'identity');
   const fetcher = vi.fn(input.fetcher);
   const source = createCatalogSource({ entries: input.rows });
@@ -318,7 +318,8 @@ it.each([
       expect(decodePackBlob(defined(result.unwrap().blobs['mesh.bin.zst']))).toEqual(
         input.compressed,
       );
-    expect(fetcher.mock.calls.length).toBe(before);
+    // Nothing completed is retained: a capture re-reads the package document and the body once each.
+    expect(fetcher.mock.calls.length).toBe(before + (mode === 'mutated' ? 3 : 2));
   } finally {
     registry.clearCatalogSource();
   }

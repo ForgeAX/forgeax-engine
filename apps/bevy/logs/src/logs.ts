@@ -1,3 +1,4 @@
+import { defineSystem } from "@forgeax/engine-ecs";
 import { Update, type World } from '@forgeax/engine-ecs';
 
 let frameCount = 0;
@@ -9,7 +10,7 @@ let logOnceCalled = false;
  * once-per-session info log.
  */
 export function buildLogsWorld(world: World): void {
-  world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'log-system',
     queries: [],
     fn: () => {
@@ -23,4 +24,5 @@ export function buildLogsWorld(world: World): void {
       }
     },
   });
+world.addSystem(Update, systemToken1);
 }

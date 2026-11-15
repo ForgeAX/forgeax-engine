@@ -10,7 +10,7 @@ import type { RhiRenderPassEncoder } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { Transform } from '@forgeax/engine-scene';
 import { err, type MeshAsset, ok } from '@forgeax/engine-types';
-import { bench, describe } from 'vitest';
+import { afterAll, bench, describe } from 'vitest';
 import { createRenderer as constructRenderer } from '../../assembly/factory';
 import {
   Camera,
@@ -31,8 +31,8 @@ import { createPreparedPointsLinesSnapshot as createPointsLinesSnapshot } from '
 
 const VERTEX_LAYOUT = deriveVertexLayoutProjection(buildMeshAttributeMapForUvSets(1));
 const FLOATS_PER_VERTEX = VERTEX_LAYOUT.arrayStride / Float32Array.BYTES_PER_ELEMENT;
-const POINT_COUNT = 10_000;
-const SEGMENT_COUNT = 10_000;
+const POINT_COUNT = 10000;
+const SEGMENT_COUNT = 10000;
 const SAMPLE_COUNT = 30;
 const BENCH_OPTIONS = { iterations: SAMPLE_COUNT } as const;
 
@@ -72,7 +72,6 @@ function buildMesh(topology: 'point-list' | 'line-list'): MeshAsset {
 
 function snapshot(component: 'Points' | 'Lines') {
   return createPointsLinesSnapshot({
-    worldId: 0,
     entityKey: component === 'Points' ? 10 : 11,
     component,
     meshHandle: 99,
@@ -127,24 +126,22 @@ function buildDirectMesh(): MeshAsset {
   };
 }
 
-type RealRoute = {
+type RealScene = {
   readonly renderer: Awaited<ReturnType<typeof constructRenderer>>;
   readonly profiler: ReturnType<typeof createProfiler>;
-  readonly pointsLines: {
-    readonly world: World;
-    readonly lease: import('../../render-contract').RenderWorldLease;
-  };
-  readonly direct: {
-    readonly world: World;
-    readonly lease: import('../../render-contract').RenderWorldLease;
-  };
+  readonly world: World;
+  readonly lease: import('../../render-contract').RenderWorldLease;
+};
+type RealRoute = {
+  readonly pointsLines: RealScene;
+  readonly direct: RealScene;
 };
 
 function makeRealScene(
-  renderer: RealRoute['renderer'],
+  renderer: RealScene['renderer'],
   meshes: { readonly points: MeshAsset; readonly lines: MeshAsset },
   component: 'points-lines' | 'direct',
-): RealRoute['pointsLines'] {
+): Pick<RealScene, 'world' | 'lease'> {
   const assets = new AssetRegistry({ shaderRegistry: renderer.assetRegistry.shaderRegistry });
   const world = new World({ assets });
   const materialHandle = assets.create(MATERIAL).unwrap();
@@ -195,46 +192,42 @@ function makeRealScene(
 }
 
 async function createRealRoute(): Promise<RealRoute> {
-  const profiler = createProfiler();
-  const renderer = await constructRenderer(
-    { width: 1280, height: 720, getContext: () => null },
-    { rhi, profiler },
-    { shaderManifestUrl: manifestUrl() },
-  );
-  const initialized = await renderer.initialization;
-  if (!initialized.ok) throw initialized.error;
+  const createScene = async (
+    meshes: { readonly points: MeshAsset; readonly lines: MeshAsset },
+    component: 'points-lines' | 'direct',
+  ): Promise<RealScene> => {
+    const profiler = createProfiler();
+    const renderer = await constructRenderer(
+      { width: 1280, height: 720, getContext: () => null },
+      { rhi, profiler },
+      { shaderManifestUrl: manifestUrl() },
+    );
+    const initialized = await renderer.initialization;
+    if (!initialized.ok) throw initialized.error;
+    return { ...makeRealScene(renderer, meshes, component), renderer, profiler };
+  };
   return {
-    renderer,
-    profiler,
-    pointsLines: makeRealScene(renderer, { points: POINT_MESH, lines: LINE_MESH }, 'points-lines'),
-    direct: makeRealScene(
-      renderer,
-      { points: buildDirectMesh(), lines: buildDirectMesh() },
-      'direct',
-    ),
+    pointsLines: await createScene({ points: POINT_MESH, lines: LINE_MESH }, 'points-lines'),
+    direct: await createScene({ points: buildDirectMesh(), lines: buildDirectMesh() }, 'direct'),
   };
 }
 
-function drawRealFrame(route: RealRoute, scene: RealRoute['pointsLines']): void {
-  const drawn = route.renderer.draw({
-    leases: [scene.lease],
-    camera: { lease: scene.lease },
-    environment: { lease: scene.lease },
-  });
+function drawRealFrame(scene: RealScene): void {
+  const drawn = scene.renderer.draw({ source: scene.lease });
   if (!drawn.ok) throw drawn.error;
 }
 
-async function captureProfile(route: RealRoute, scene: RealRoute['pointsLines']) {
-  const capture = route.profiler.startCapture({
+async function captureProfile(scene: RealScene) {
+  const capture = scene.profiler.startCapture({
     frameLimit: 1,
     eventLimit: 10_000,
     detail: 'nested',
   });
   if (!capture.ok) throw capture.error;
-  drawRealFrame(route, scene);
+  drawRealFrame(scene);
   const finished = capture.value.finish();
   if (!finished.ok) throw finished.error;
-  const model = buildProfileModel(finished.value);
+  const model = buildProfileModel(finished.value, { orderEvidence: 'recorder-closure' });
   if (!model.ok) throw model.error;
   return model.value;
 }
@@ -340,8 +333,15 @@ const POINT_MESH = buildMesh('point-list');
 const LINE_MESH = buildMesh('line-list');
 validateWorkload(POINT_MESH, LINE_MESH);
 const REAL_ROUTE = await createRealRoute();
-const REAL_PROFILE = await captureProfile(REAL_ROUTE, REAL_ROUTE.pointsLines);
-const recordedPointsLines = REAL_ROUTE.renderer.inspect().renderScene.pointsLines;
+afterAll(async () => {
+  for (const scene of [REAL_ROUTE.pointsLines, REAL_ROUTE.direct]) {
+    scene.lease.dispose();
+    const disposed = await scene.renderer.dispose();
+    if (!disposed.ok) throw disposed.error;
+  }
+});
+const REAL_PROFILE = await captureProfile(REAL_ROUTE.pointsLines);
+const recordedPointsLines = REAL_ROUTE.pointsLines.renderer.inspect().renderScene.pointsLines;
 if (
   recordedPointsLines.length !== 2 ||
   recordedPointsLines.some((entry) => entry.drawCount === 0 || entry.refusal !== undefined) ||
@@ -350,7 +350,7 @@ if (
 ) {
   throw new Error('Points/Lines benchmark must draw its complete authored workload');
 }
-const DIRECT_PROFILE = await captureProfile(REAL_ROUTE, REAL_ROUTE.direct);
+const DIRECT_PROFILE = await captureProfile(REAL_ROUTE.direct);
 
 function phaseDeltas(): Readonly<Record<string, number>> {
   const direct = new Map(
@@ -372,7 +372,7 @@ console.info(
   JSON.stringify({
     workload: { points: POINT_COUNT, segments: SEGMENT_COUNT, samples: SAMPLE_COUNT },
     route: 'Renderer.extract-prepare-record',
-    baseline: 'same-Renderer.direct-mesh',
+    baseline: 'independent single-World Renderer with direct meshes',
     phases: phaseDeltas(),
     gpuTiming: {
       status: 'blocked',
@@ -384,10 +384,10 @@ let sink = 0;
 
 describe('Points/Lines 10k + 10k benchmark', () => {
   bench(
-    'same-Renderer direct baseline',
+    'independent-Renderer direct baseline',
     () => {
-      drawRealFrame(REAL_ROUTE, REAL_ROUTE.direct);
-      sink ^= REAL_ROUTE.renderer.inspect().frame.frameId;
+      drawRealFrame(REAL_ROUTE.direct);
+      sink ^= REAL_ROUTE.direct.renderer.inspect().frame.frameId;
     },
     BENCH_OPTIONS,
   );
@@ -395,8 +395,8 @@ describe('Points/Lines 10k + 10k benchmark', () => {
   bench(
     'Renderer extract prepare record',
     () => {
-      drawRealFrame(REAL_ROUTE, REAL_ROUTE.pointsLines);
-      sink ^= REAL_ROUTE.renderer.inspect().renderScene.pointsLines?.length ?? 0;
+      drawRealFrame(REAL_ROUTE.pointsLines);
+      sink ^= REAL_ROUTE.pointsLines.renderer.inspect().renderScene.pointsLines?.length ?? 0;
     },
     BENCH_OPTIONS,
   );
@@ -404,8 +404,8 @@ describe('Points/Lines 10k + 10k benchmark', () => {
   bench(
     'Renderer warm extract prepare record',
     () => {
-      drawRealFrame(REAL_ROUTE, REAL_ROUTE.pointsLines);
-      sink ^= REAL_ROUTE.renderer.inspect().renderScene.pointsLines?.length ?? 0;
+      drawRealFrame(REAL_ROUTE.pointsLines);
+      sink ^= REAL_ROUTE.pointsLines.renderer.inspect().renderScene.pointsLines?.length ?? 0;
     },
     BENCH_OPTIONS,
   );
@@ -413,7 +413,7 @@ describe('Points/Lines 10k + 10k benchmark', () => {
   bench(
     'Renderer inspection after record',
     () => {
-      sink ^= REAL_ROUTE.renderer.inspect().renderScene.pointsLines?.length ?? 0;
+      sink ^= REAL_ROUTE.pointsLines.renderer.inspect().renderScene.pointsLines?.length ?? 0;
     },
     BENCH_OPTIONS,
   );

@@ -25,6 +25,19 @@ function project(text: string) {
 }
 
 describe('live generation isolation imports', () => {
+  it('admits reflection probe authoring without admitting renderer execution', () => {
+    for (const specifier of ['@forgeax/engine/render', '@forgeax/engine-render']) {
+      const text = source(specifier).replace(
+        `import { model, sel } from '${specifier}';`,
+        `import { ReflectionProbe, REFLECTION_PROBE_UPDATE_ON_CHANGE } from '${specifier}';`,
+      );
+      expect(() => project(text)).not.toThrow();
+      expect(() =>
+        project(text.replace('REFLECTION_PROBE_UPDATE_ON_CHANGE', 'createRenderer')),
+      ).toThrow();
+    }
+  });
+
   it('admits the modeling kernel through the umbrella subpath and the physical package', () => {
     for (const specifier of ['@forgeax/engine/modeling', '@forgeax/engine-modeling'])
       expect(project(source(specifier))['crate.pack.ts']).toContain(specifier);

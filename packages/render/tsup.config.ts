@@ -11,6 +11,7 @@ export default defineConfig({
     'src/internal.ts',
     'src/temporal/index.ts',
     'src/construct-renderer.ts',
+    'src/tasks.ts',
   ],
   splitting: true,
   esbuildPlugins: [{ name: 'wgsl-source', setup(build) {

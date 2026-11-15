@@ -107,10 +107,10 @@ it('omits missing current pose instead of producing a valid task descriptor', as
     tasks = new SkinTasks(device, true);
   try {
     f.frames.discardFrame();
-    f.skin.joint(0, 19, undefined);
+    f.skin.joint(19, undefined);
     const frame = f.frames.prepareFrame(f.scene.slotsSnapshot());
     if (!frame) throw new Error('Missing fixed root');
-    const first = frame.slots.lookup(0, 17);
+    const first = frame.slots.lookup(17);
     if (!first) throw new Error('Missing source slot');
     tasks.begin(frame);
     const write = vi.spyOn(device.queue, 'writeBuffer');

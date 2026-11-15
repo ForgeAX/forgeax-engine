@@ -1,4 +1,7 @@
+import { defineSystem } from '@forgeax/engine-ecs';
 import { describe, expect, it, vi } from 'vitest';
+import { registeredSystem } from '../../__tests__/registered-system.fixture';
+import { dependencyNames } from '../../__tests__/schedule-graph.fixture';
 import {
   consumeViewEnvironment,
   registerEnvironmentAdmissionSystem,
@@ -75,7 +78,7 @@ it('schedules the environment commits in order after record-commit and one rejec
     RENDER_FOG_COMMIT_SYSTEM,
   ];
   for (const [before, after] of chain.slice(0, -1).map((name, i) => [name, chain[i + 1]]))
-    expect(commit?.dependencies).toContainEqual([before, after]);
+    expect(dependencyNames(commit)).toContainEqual([before, after]);
   for (const name of chain.slice(1))
     expect(commit?.systems.find((entry) => entry.name === name)?.queries[0]?.read).toEqual([
       'ViewRecorder',
@@ -130,7 +133,7 @@ it('without the commit systems an accepted scene submission publishes nothing', 
     RENDER_ATMOSPHERE_COMMIT_SYSTEM,
     RENDER_ENVIRONMENT_COMMIT_SYSTEM,
   ])
-    world.removeSystem(RenderCommit, name).unwrap();
+    world.removeSystem(RenderCommit, registeredSystem(world, RenderCommit, name)).unwrap();
   frame({ accepted: true, scene: true });
   expect(lifecycle.publish).not.toHaveBeenCalled();
   expect(publishAtmosphere).not.toHaveBeenCalled();
@@ -168,13 +171,12 @@ describe('render-environment-admit', () => {
         data: { state: world.allocUniqueRef('ViewRecorder', recorder) },
       })
       .unwrap();
-    world
-      .addSystem(RenderExtract, {
-        name: RENDER_VIEW_RECORDERS_SYSTEM,
-        queries: [],
-        fn: (world) => stageViewFrame(world, view, { cameraOwner: 0, resourceOwner: 0 }),
-      })
-      .unwrap();
+    const systemToken1 = defineSystem({
+      name: RENDER_VIEW_RECORDERS_SYSTEM,
+      queries: [],
+      fn: (world) => stageViewFrame(world, view, {}),
+    });
+    world.addSystem(RenderExtract, systemToken1).unwrap();
     return { world, view, lifecycle, frameState, fired };
   }
 

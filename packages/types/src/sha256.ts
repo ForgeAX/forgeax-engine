@@ -2,7 +2,7 @@ import { sha256 as digest } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 
 interface NodeHash {
-  update(input: string): NodeHash;
+  update(input: string | Uint8Array): NodeHash;
   digest(encoding: 'hex'): string;
 }
 
@@ -16,8 +16,17 @@ const nodeCrypto = (
   | { createHash(algorithm: 'sha256'): NodeHash }
   | undefined;
 
-/** Deterministic synchronous SHA-256 for runtime contract identities. */
-export function sha256(input: string): string {
+/**
+ * Deterministic synchronous SHA-256 hex for runtime contract identities. Text
+ * hashes its UTF-8 encoding, so `sha256(text)` equals `sha256(utf8Bytes(text))`.
+ */
+export function sha256(input: string | Uint8Array): string {
   if (nodeCrypto !== undefined) return nodeCrypto.createHash('sha256').update(input).digest('hex');
-  return bytesToHex(digest(new TextEncoder().encode(input)));
+  return bytesToHex(digest(typeof input === 'string' ? new TextEncoder().encode(input) : input));
+}
+
+/** Deterministic synchronous SHA-256 for raw runtime readback bytes. */
+export function sha256Bytes(input: Uint8Array): string {
+  if (nodeCrypto !== undefined) return nodeCrypto.createHash('sha256').update(input).digest('hex');
+  return bytesToHex(digest(input));
 }

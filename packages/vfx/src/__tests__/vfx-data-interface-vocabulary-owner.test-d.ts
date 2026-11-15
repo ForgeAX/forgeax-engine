@@ -9,13 +9,18 @@ import type {
 describe('VFX Data Interface vocabulary owner', () => {
   it('preserves the exact kinds, binding types, and tokens', () => {
     expectTypeOf<VfxDataInterfaceKind>().toEqualTypeOf<
-      'camera' | 'scene-depth' | 'noise' | 'scene-sdf' | 'force-fields'
+      'camera' | 'scene-depth' | 'noise' | 'scene-sdf' | 'force-fields' | 'water-surface'
     >();
     expectTypeOf<VfxDataInterfaceBindingType>().toEqualTypeOf<
-      'uniform' | 'sampled-depth' | 'sampled-float' | 'read-only-storage'
+      'uniform' | 'sampled-depth' | 'sampled-float' | 'read-only-storage' | 'sampled-float-pair'
     >();
     expectTypeOf<VfxDataInterfaceToken>().toEqualTypeOf<
-      'vfx:camera' | 'vfx:scene-depth' | 'vfx:noise' | 'vfx:scene-sdf' | 'vfx:force-fields'
+      | 'vfx:camera'
+      | 'vfx:scene-depth'
+      | 'vfx:noise'
+      | 'vfx:scene-sdf'
+      | 'vfx:force-fields'
+      | 'vfx:water-surface'
     >();
   });
 
@@ -27,5 +32,11 @@ describe('VFX Data Interface vocabulary owner', () => {
     expectTypeOf<
       VfxDataInterfaceProvider<'noise'>['bindingType']
     >().toEqualTypeOf<'sampled-float'>();
+    expectTypeOf<
+      VfxDataInterfaceProvider<'water-surface'>['bindingType']
+    >().toEqualTypeOf<'sampled-float-pair'>();
+    expectTypeOf<
+      VfxDataInterfaceProvider<'water-surface'>['token']
+    >().toEqualTypeOf<'vfx:water-surface'>();
   });
 });

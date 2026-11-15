@@ -264,19 +264,11 @@ function resolvePublicationSources(
   return { fragments: sourceFragments, indices: sourceIndices };
 }
 
-function expandPublicationRows(
-  rows: PublicationRows,
-  sources: PublicationSources,
-  receipts: readonly unknown[],
-  entryPoints: readonly unknown[],
-  reflections: readonly unknown[],
-  deferReflections = false,
-): Record<string, unknown> {
-  const selected = new Map<string, () => string>();
+function deferredReflectionReader(reflections: readonly unknown[]): (index: number) => unknown {
   const admittedReflections = new Map<number, unknown>();
   // First read of a deferred reflection snapshots, freezes and validates that
   // one table entry; the result is shared by every row that references it.
-  const admitReflection = (index: number): unknown => {
+  return (index: number): unknown => {
     if (admittedReflections.has(index)) return admittedReflections.get(index);
     // The owned table already shares immutable compiler facts. Validate only the
     // selected row; no clone or retained interning pool is needed here.
@@ -286,6 +278,29 @@ function expandPublicationRows(
     admittedReflections.set(index, snapshot);
     return snapshot;
   };
+}
+
+function attachDeferredReflection(
+  row: object,
+  index: number,
+  read: (index: number) => unknown,
+): void {
+  // This getter owns only its reflection reader and index, never the source
+  // expansion's maps or the rows awaiting admission.
+  Object.defineProperty(row, 'reflection', { enumerable: true, get: () => read(index) });
+  deferredReflectionRows.add(row);
+}
+
+function expandPublicationRows(
+  rows: PublicationRows,
+  sources: PublicationSources,
+  receipts: readonly unknown[],
+  entryPoints: readonly unknown[],
+  reflections: readonly unknown[],
+  deferReflections = false,
+): Record<string, unknown> {
+  const selected = new Map<string, () => string>();
+  const admitReflection = deferredReflectionReader(reflections);
   const expand = (row: Record<string, unknown>, field: string) => {
     const { sourceDigest, receiptIndex, entryPointsIndex, reflectionIndex, ...metadata } = row;
     const digest = sourceDigest as string;
@@ -303,11 +318,7 @@ function expandPublicationRows(
         : { reflection: reflections[reflectionIndex as number] }),
     };
     if (deferReflections && reflectionIndex !== undefined) {
-      Object.defineProperty(result, 'reflection', {
-        enumerable: true,
-        get: () => admitReflection(reflectionIndex as number),
-      });
-      deferredReflectionRows.add(result);
+      attachDeferredReflection(result, reflectionIndex as number, admitReflection);
     }
     const fragments = sources.fragments.get(digest) as readonly string[];
     let getter = selected.get(digest);
@@ -394,12 +405,12 @@ export function expandShaderManifestPublication(
   freezeTree(receipts);
   // Snapshot each shared compiler fact once before the first digest await.
   // No row owns a writable copy of this publication-local table.
-  const entryPoints = structuredClone(value.entryPoints);
+  const entryPoints = sharePublicationFacts(structuredClone(value.entryPoints));
   freezeTree(entryPoints);
   const deferReflections = options.deferReflections === true;
   // Owned JSON can share immutable facts immediately without eagerly validating
   // each reflection. Borrowed input first needs its independent snapshot.
-  const reflections = shareReflectionFacts(
+  const reflections = sharePublicationFacts(
     (deferReflections
       ? (value.reflections ?? [])
       : structuredClone(value.reflections ?? [])) as unknown[],
@@ -515,11 +526,11 @@ function plainTree(value: unknown, active: Set<object>, visited: Set<object>): b
 }
 
 /**
- * Called on detached snapshots or exclusively owned JSON at admission. The short-lived
- * pool shares complete immutable values, not resource or shader identities.
+ * Called on detached entry-read snapshots or exclusively owned reflection JSON at admission.
+ * The short-lived pool shares complete immutable values, not resource or shader identities.
  * No pool, key string or caller-owned object escapes with the accepted facts.
  */
-function shareReflectionFacts(rows: unknown[]): unknown[] {
+function sharePublicationFacts(rows: unknown[]): unknown[] {
   if (!plainTree(rows, new Set(), new Set())) return rows;
   const pool = new Map<string, Fact>();
   const primitives = new Map<unknown, Fact>();

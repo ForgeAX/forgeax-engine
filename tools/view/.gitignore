@@ -5,5 +5,6 @@ artifacts/
 **/.vite/
 .worktrees/
 .DS_Store
+/skills/
 # Independent floating clone; never a submodule or a product dependency.
 .forgeax-harness/

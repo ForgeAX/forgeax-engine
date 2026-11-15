@@ -1,14 +1,21 @@
-import { defineComponent, type EntityHandle, type World } from '@forgeax/engine-ecs';
+import { defineComponent, defineSystem, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import type { CaptureFace, CaptureFitKey } from '../capture/faces';
 import type { SelectedEnvironmentFrame } from '../environment/frame';
 import type { SsrDependenciesInspection } from '../inspection-types';
 import type { ReflectionProbeRecordState } from '../record/render-context';
 import type { CameraSnapshot } from '../render-contract';
 import { projectSsrDependencies, resolveSsrAdmissionGeneration } from '../ssr/admission';
+import {
+  RenderCaptureScheduleOrder,
+  RenderCascadeFitOrder,
+  RenderSceneOrder,
+  RenderViewFrameOrder,
+  ViewReflectionProbesOrder,
+} from '../system-order';
 import type { RenderTarget } from '../targets/contracts';
 import { resetTemporalHistory } from '../temporal/frame';
-import { RENDER_CAPTURE_SCHEDULE_SYSTEM, viewCaptureWorkOf } from './capture-systems';
-import { RENDER_CASCADE_FIT_SYSTEM } from './light-systems';
+import { viewCaptureWorkOf } from './capture-systems';
+
 import {
   pinAtmosphereSun,
   renderLightsOf,
@@ -19,10 +26,9 @@ import {
 import { RenderReflectionProbe, renderProbesOf } from './render-probes';
 import { ViewRecorder } from './render-views';
 import { RenderCleanup, RenderExtract, RenderPrepare, renderSubmission } from './render-world';
-import { RENDER_SCENE_SYSTEM, RenderProbeInput, type RenderProbeSource } from './scene-systems';
+import { RenderProbeInput } from './scene-systems';
 import { readViewField, requireViewField } from './view-field';
 import {
-  RENDER_VIEW_FRAME_SYSTEM,
   type StagedViewInputs,
   stagedViewInputs,
   ViewFrame,
@@ -138,15 +144,16 @@ function targetId(target: RenderTarget): number {
   return id;
 }
 
+/** A planar mirror records with the display view's lights and never fits its own. */
+type FittedCaptureKey = Exclude<CaptureFitKey, { readonly kind: 'planar' }>;
+
 /** The retained-fit identity of a key. */
-function fitKeyId(key: CaptureFitKey): string {
+function fitKeyId(key: FittedCaptureKey): string {
   switch (key.kind) {
     case 'probe':
       return `probe:${key.probeIndex}`;
     case 'cube':
       return `cube:${targetId(key.target)}:${key.layer}`;
-    case 'planar':
-      return `planar:${targetId(key.target)}`;
     case 'auxiliary':
       return `auxiliary:${targetId(key.target)}:${key.layer}`;
     case 'scene-input':
@@ -157,12 +164,12 @@ function fitKeyId(key: CaptureFitKey): string {
 /**
  * The roster a face fits against. A probe pins the Sun its capture generation
  * started under, a cube target pins it per candidate generation, and
- * planar/auxiliary faces pin the current Sun; a scene input fits the live lights.
+ * auxiliary faces pin the current Sun; a scene input fits the live lights.
  */
 function faceRoster(
   state: ViewCaptureFitsState,
   item: PendingCaptureFit,
-  key: CaptureFitKey,
+  key: FittedCaptureKey,
   generation: number | undefined,
   environment: SelectedEnvironmentFrame | undefined,
 ): ViewLights {
@@ -208,7 +215,7 @@ function fitCaptureFaces(
   for (const pinOwner of state.pins.keys()) if (!live(pinOwner)) state.pins.delete(pinOwner);
   const fit = (
     work: object,
-    key: CaptureFitKey,
+    key: FittedCaptureKey,
     camera: CameraSnapshot,
     generation: number | undefined,
     environment: SelectedEnvironmentFrame | undefined,
@@ -239,8 +246,12 @@ function fitCaptureFaces(
       work.atmosphere?.environment ?? item.environment,
     );
   }
-  for (const { key, work } of item.faces)
-    fit(work, key, work.faceCamera, work.candidateGeneration, item.environment);
+  for (const { key, work } of item.faces) {
+    // A planar mirror samples the display view's shadows, so it records with
+    // the display view's lights, cascades and shadow views.
+    if (key.kind === 'planar') state.fits.set(work, item.lights);
+    else fit(work, key, work.faceCamera, work.candidateGeneration, item.environment);
+  }
 }
 
 function stateOf(world: World, entity: EntityHandle | undefined) {
@@ -324,7 +335,7 @@ function prepareViewReflectionProbes(
       code: 'lights-unavailable',
       cause: new Error('A view prepares probes after render-cascade-fit'),
     };
-  const { frame, cameras, resourceWorld } = inputs;
+  const { frame, cameras, source: resourceWorld } = inputs;
   const { frameState, scene } = owner;
   const roster = renderProbesOf(world).roster;
   const facts = roster.facts;
@@ -369,6 +380,7 @@ function prepareViewReflectionProbes(
     if (reset.changed) {
       resetTemporalHistory(frameState, 'signature-change');
       frameState.ssrHistoryOwner?.reset('reflection-generation');
+      frameState.waterSsrHistoryOwner?.reset('reflection-generation');
     }
     frameState.ssrFallbackGeneration = reset.generation;
   } catch (cause) {
@@ -388,166 +400,159 @@ function prepareViewReflectionProbes(
  * is stored with its closed code, never thrown. `view-reflection-probes-settle`
  * (RenderCleanup) releases the capture tickets of state no recording took.
  * `render-capture-fit` (RenderPrepare, after `view-reflection-probes` and
- * `render-capture-schedule`) fits the cascades of every probe, cube, planar,
- * auxiliary and scene-input face work against its face camera into
+ * `render-capture-schedule`) fits the cascades of every probe, cube,
+ * auxiliary and scene-input face work against its face camera, and hands a
+ * planar face the display view's own lights, into
  * {@link ViewCaptureFits}; the recording reads them via `viewCaptureFitsOf`.
  */
 export function registerReflectionProbeSystems(world: World): void {
   const probes = renderProbesOf(world);
-  world
-    .addSystem(RenderExtract, {
-      commands: 'none',
-      name: RENDER_REFLECTION_PROBES_SYSTEM,
-      queries: [],
-      after: [RENDER_SCENE_SYSTEM],
-      fn: (world) => probes.adopt(world.getResource<RenderProbeSource>(RenderProbeInput).facts),
-    })
-    .unwrap();
-  world
-    .addSystem(RenderPrepare, {
-      commands: 'none',
-      name: RENDER_REFLECTION_PROBE_ROSTER_SYSTEM,
-      queries: [{ read: [RenderReflectionProbe] }],
-      fn: (_world, [rows]) => void probes.rebuild(rows),
-    })
-    .unwrap();
-  world
-    .addSystem(RenderPrepare, {
-      commands: 'none',
-      name: VIEW_REFLECTION_PROBES_SYSTEM,
-      after: [
-        RENDER_VIEW_FRAME_SYSTEM,
-        RENDER_CASCADE_FIT_SYSTEM,
-        RENDER_REFLECTION_PROBE_ROSTER_SYSTEM,
-      ],
-      // The cascade fit is read through `viewLightsOf`; an unfitted view has none.
-      queries: [
-        { read: [ViewRecorder, ViewFrame], optional: [ViewReflectionProbes, ViewCascadeFit] },
-      ],
-      fn: (world, [rows]) => {
-        const frame = renderSubmission(world).frame;
-        const first: { entity: EntityHandle; state: ViewReflectionProbesState }[] = [];
+  const systemToken1 = defineSystem({
+    commands: 'none',
+    name: RENDER_REFLECTION_PROBES_SYSTEM,
+    queries: [],
+    after: [RenderSceneOrder],
+    fn: (world) => probes.adopt(world.getResource(RenderProbeInput).facts),
+  });
+  world.addSystem(RenderExtract, systemToken1).unwrap();
+  const systemToken2 = defineSystem({
+    commands: 'none',
+    name: RENDER_REFLECTION_PROBE_ROSTER_SYSTEM,
+    queries: [{ read: [RenderReflectionProbe] }],
+    fn: (_world, [rows]) => void probes.rebuild(rows),
+  });
+  world.addSystem(RenderPrepare, systemToken2).unwrap();
+  const systemToken3 = defineSystem({
+    sets: [ViewReflectionProbesOrder],
+    commands: 'none',
+    name: VIEW_REFLECTION_PROBES_SYSTEM,
+    after: [RenderViewFrameOrder, RenderCascadeFitOrder, systemToken2],
+    // The cascade fit is read through `viewLightsOf`; an unfitted view has none.
+    queries: [
+      { read: [ViewRecorder, ViewFrame], optional: [ViewReflectionProbes, ViewCascadeFit] },
+    ],
+    fn: (world, [rows]) => {
+      const frame = renderSubmission(world).frame;
+      const first: { entity: EntityHandle; state: ViewReflectionProbesState }[] = [];
 
-        rows.forEach((row) => {
-          const entity = row.entity;
+      rows.forEach((row) => {
+        const entity = row.entity;
 
-          const staged = world
-            .resolveUniqueRef<ViewFrameState>(requireViewField(world, entity, ViewFrame, 'state'))
-            .unwrap();
-          if (staged.frame !== frame || staged.result?.ok !== true) return;
-          const outcome = prepareViewReflectionProbes(
-            world,
-            entity,
-            ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state')),
-            staged,
-          );
-          const stored = readViewField(world, entity, ViewReflectionProbes, 'state');
-          if (stored === undefined) {
-            first.push({ entity: entity, state: { frame, outcome, consumed: false } });
-            return;
+        const staged = world
+          .resolveUniqueRef<ViewFrameState>(requireViewField(world, entity, ViewFrame, 'state'))
+          .unwrap();
+        if (staged.frame !== frame || staged.result?.ok !== true) return;
+        const outcome = prepareViewReflectionProbes(
+          world,
+          entity,
+          ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state')),
+          staged,
+        );
+        const stored = readViewField(world, entity, ViewReflectionProbes, 'state');
+        if (stored === undefined) {
+          first.push({ entity: entity, state: { frame, outcome, consumed: false } });
+          return;
+        }
+        const state = world.resolveUniqueRef<ViewReflectionProbesState>(stored).unwrap();
+        state.frame = frame;
+        state.outcome = outcome;
+        state.consumed = false;
+      });
+      // A view's first probe state attaches its component after the iteration.
+      for (const { entity, state } of first)
+        world
+          .addComponent(entity, {
+            component: ViewReflectionProbes,
+            data: { state: world.allocUniqueRef('ViewReflectionProbes', state) },
+          })
+          .unwrap();
+    },
+  });
+  world.addSystem(RenderPrepare, systemToken3).unwrap();
+  const owner = renderLightsOf(world);
+  const systemToken4 = defineSystem({
+    commands: 'none',
+    name: RENDER_CAPTURE_FIT_SYSTEM,
+    after: [systemToken3, RenderCaptureScheduleOrder],
+    queries: [{ read: [ViewFrame], optional: [ViewCaptureFits] }],
+    fn: (world, [rows]) => {
+      const frame = renderSubmission(world).frame;
+      // Fitting spawns cascade view entities, which invalidates the query:
+      // the iteration only collects, the fits and attachments follow it.
+      const pending: (PendingCaptureFit & { state: ViewCaptureFitsState | undefined })[] = [];
+
+      rows.forEach((row) => {
+        const entity = row.entity;
+
+        const probes = viewReflectionProbesOf(world, entity);
+        const captures = viewCaptureWorkOf(world, entity);
+        const lights = viewLightsOf(world, entity);
+        const staged = world
+          .resolveUniqueRef<ViewFrameState>(requireViewField(world, entity, ViewFrame, 'state'))
+          .unwrap();
+        const stored = readViewField(world, entity, ViewCaptureFits, 'state');
+        const state =
+          stored === undefined
+            ? undefined
+            : world.resolveUniqueRef<ViewCaptureFitsState>(stored).unwrap();
+        if (lights === undefined || staged.result?.ok !== true) {
+          if (state !== undefined) {
+            state.frame = -1;
+            state.fits.clear();
           }
-          const state = world.resolveUniqueRef<ViewReflectionProbesState>(stored).unwrap();
-          state.frame = frame;
-          state.outcome = outcome;
-          state.consumed = false;
+          return;
+        }
+        pending.push({
+          entity: entity,
+          state,
+          lights,
+          probes: probes?.ok === true ? probes.value.probes : undefined,
+          faces: captures?.kind === 'prepared' ? captures.value.faces : [],
+          environment: staged.result.value.environment as SelectedEnvironmentFrame | undefined,
         });
-        // A view's first probe state attaches its component after the iteration.
-        for (const { entity, state } of first)
+      });
+      for (const item of pending) {
+        const state = item.state ?? {
+          frame,
+          fits: new Map(),
+          keys: new Map(),
+          pins: new Map(),
+        };
+        state.frame = frame;
+        state.fits.clear();
+        fitCaptureFaces(owner, state, item);
+        if (item.state === undefined)
           world
-            .addComponent(entity, {
-              component: ViewReflectionProbes,
-              data: { state: world.allocUniqueRef('ViewReflectionProbes', state) },
+            .addComponent(item.entity, {
+              component: ViewCaptureFits,
+              data: { state: world.allocUniqueRef('ViewCaptureFits', state) },
             })
             .unwrap();
-      },
-    })
-    .unwrap();
-  const owner = renderLightsOf(world);
-  world
-    .addSystem(RenderPrepare, {
-      commands: 'none',
-      name: RENDER_CAPTURE_FIT_SYSTEM,
-      after: [VIEW_REFLECTION_PROBES_SYSTEM, RENDER_CAPTURE_SCHEDULE_SYSTEM],
-      queries: [{ read: [ViewFrame], optional: [ViewCaptureFits] }],
-      fn: (world, [rows]) => {
-        const frame = renderSubmission(world).frame;
-        // Fitting spawns cascade view entities, which invalidates the query:
-        // the iteration only collects, the fits and attachments follow it.
-        const pending: (PendingCaptureFit & { state: ViewCaptureFitsState | undefined })[] = [];
+      }
+    },
+  });
+  world.addSystem(RenderPrepare, systemToken4).unwrap();
+  const systemToken5 = defineSystem({
+    commands: 'none',
+    name: VIEW_REFLECTION_PROBES_SETTLE_SYSTEM,
+    queries: [{ read: [ViewReflectionProbes] }],
+    fn: (world, [rows]) => {
+      const frame = renderSubmission(world).frame;
 
-        rows.forEach((row) => {
-          const entity = row.entity;
+      rows.forEach((row) => {
+        const entity = row.entity;
 
-          const probes = viewReflectionProbesOf(world, entity);
-          const captures = viewCaptureWorkOf(world, entity);
-          const lights = viewLightsOf(world, entity);
-          const staged = world
-            .resolveUniqueRef<ViewFrameState>(requireViewField(world, entity, ViewFrame, 'state'))
-            .unwrap();
-          const stored = readViewField(world, entity, ViewCaptureFits, 'state');
-          const state =
-            stored === undefined
-              ? undefined
-              : world.resolveUniqueRef<ViewCaptureFitsState>(stored).unwrap();
-          if (lights === undefined || staged.result?.ok !== true) {
-            if (state !== undefined) {
-              state.frame = -1;
-              state.fits.clear();
-            }
-            return;
-          }
-          pending.push({
-            entity: entity,
-            state,
-            lights,
-            probes: probes?.ok === true ? probes.value.probes : undefined,
-            faces: captures?.kind === 'prepared' ? captures.value.faces : [],
-            environment: staged.result.value.environment as SelectedEnvironmentFrame | undefined,
-          });
-        });
-        for (const item of pending) {
-          const state = item.state ?? {
-            frame,
-            fits: new Map(),
-            keys: new Map(),
-            pins: new Map(),
-          };
-          state.frame = frame;
-          state.fits.clear();
-          fitCaptureFaces(owner, state, item);
-          if (item.state === undefined)
-            world
-              .addComponent(item.entity, {
-                component: ViewCaptureFits,
-                data: { state: world.allocUniqueRef('ViewCaptureFits', state) },
-              })
-              .unwrap();
-        }
-      },
-    })
-    .unwrap();
-  world
-    .addSystem(RenderCleanup, {
-      commands: 'none',
-      name: VIEW_REFLECTION_PROBES_SETTLE_SYSTEM,
-      queries: [{ read: [ViewReflectionProbes] }],
-      fn: (world, [rows]) => {
-        const frame = renderSubmission(world).frame;
-
-        rows.forEach((row) => {
-          const entity = row.entity;
-
-          const state = world
-            .resolveUniqueRef<ViewReflectionProbesState>(
-              requireViewField(world, entity, ViewReflectionProbes, 'state'),
-            )
-            .unwrap();
-          if (state.frame !== frame || state.consumed || !state.outcome.ok) return;
-          state.consumed = true;
-          // Unrecorded capture work retires unsubmitted; no fallback was requested.
-          void state.outcome.value.probes.completeSubmission(false, undefined, undefined, false);
-        });
-      },
-    })
-    .unwrap();
+        const state = world
+          .resolveUniqueRef<ViewReflectionProbesState>(
+            requireViewField(world, entity, ViewReflectionProbes, 'state'),
+          )
+          .unwrap();
+        if (state.frame !== frame || state.consumed || !state.outcome.ok) return;
+        state.consumed = true;
+        // Unrecorded capture work retires unsubmitted; no fallback was requested.
+        void state.outcome.value.probes.completeSubmission(false, undefined, undefined, false);
+      });
+    },
+  });
+  world.addSystem(RenderCleanup, systemToken5).unwrap();
 }

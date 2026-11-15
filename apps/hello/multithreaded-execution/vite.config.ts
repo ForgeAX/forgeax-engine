@@ -1,3 +1,4 @@
+import { executionWorkerEntries } from '@forgeax/engine-devkit/plugin-build';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vite';
@@ -10,7 +11,7 @@ const isolationHeaders = {
 };
 
 export default defineConfig({
-  plugins: [forgeaxShader() as never],
+  plugins: [executionWorkerEntries([]), forgeaxShader() as never],
   server: { headers: isolationHeaders },
   preview: { headers: isolationHeaders },
   build: {

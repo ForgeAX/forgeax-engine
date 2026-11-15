@@ -5,10 +5,10 @@ import { describe, expect, it } from 'vitest';
 import { APP_PHASE_CATALOG } from '../types';
 
 describe('App profiler phase catalog ownership', () => {
-  it('matches the profiler receiver set by definition and has five unique phases', () => {
+  it('matches the profiler receiver set by definition and has eight unique phases', () => {
     const profiler = createProfiler();
     expect(profiler.registerPhaseCatalog('app', APP_PHASE_CATALOG).ok).toBe(true);
-    expect(APP_PHASE_CATALOG).toHaveLength(9);
+    expect(APP_PHASE_CATALOG).toHaveLength(8);
     expect(new Set(APP_PHASE_CATALOG).size).toBe(APP_PHASE_CATALOG.length);
     expect(new Set(APP_PHASE_CATALOG)).toEqual(new Set(profiler.phaseCatalog.app));
   });

@@ -23,8 +23,6 @@ test('all repository workflow runner selectors satisfy the pool contract', () =>
         ['standard', 'heavy'].includes(selector.pool) || selector.capabilities?.includes('gpu'),
     ),
   );
-  assert.ok(selfHosted.some((selector) => selector.capabilities?.includes('gpu')));
-  assert.ok(result.selectors.some((selector) => selector.kind === 'mixed'));
 });
 
 test('rejects a self-hosted selector without a pool label', () => {
@@ -41,6 +39,15 @@ test('rejects a self-hosted selector carrying both pool labels', () => {
     'bench.yml',
   );
   assert.match(result.errors[0], /found standard, heavy/);
+});
+
+test('admits an explicit GPU selector without requiring a live workflow to use it', () => {
+  const result = checkWorkflowText(
+    'jobs:\n  gpu:\n    runs-on: [self-hosted, Linux, X64, heavy, gpu]\n',
+    'gpu.yml',
+  );
+  assert.deepEqual(result.errors, []);
+  assert.ok(result.selectors[0].capabilities.includes('gpu'));
 });
 
 test('accepts the nightly GitHub-hosted matrix', () => {

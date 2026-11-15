@@ -1,6 +1,11 @@
+import { TerrainWalkerResource } from './ecs-resources.ts';
+
+import { Update, defineSystem } from "@forgeax/engine-ecs";
 import { Time, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import { GlobalTransform, Transform } from '@forgeax/engine-scene';
 import { Terrain, terrainHeight } from '@forgeax/engine-terrain';
+
+
 
 
 /** A real terrain-dependent gameplay writer; readiness gates movement, not the frame clock. */
@@ -9,14 +14,13 @@ export function installTerrainWalker(
   subjects: { terrain: EntityHandle; walker: EntityHandle },
   gate: { blocked: boolean },
 ) {
-  const token = world.scheduleToken('Update'),
+  const token = Update,
     name = 'terrain-walker';
-  world
-    .addSystem(token, {
+  const registeredSystem1 = defineSystem({
       name,
       queries: [],
       fn() {
-        const intent = world.getResource<{ speed: number; updates: number }>('TerrainWalker');
+        const intent = world.getResource(TerrainWalkerResource);
         if (gate.blocked || intent.speed === 0) return;
         const component = world.get(subjects.terrain, Terrain).unwrap();
         const root = world.assets!.read(component.asset)
@@ -40,9 +44,11 @@ export function installTerrainWalker(
           .unwrap();
         intent.updates++;
       },
-    })
+    });
+world
+    .addSystem(token, registeredSystem1)
     .unwrap();
   return () => {
-    world.removeSystem(token, name).unwrap();
+    world.removeSystem(token, registeredSystem1).unwrap();
   };
 }

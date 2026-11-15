@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { defineSystem } from "@forgeax/engine-ecs";
 import { createSmokePlatform } from '../../../../scripts/smoke-platform.mjs';
 // hello-video-cutscene headless dawn-node smoke
 // (feat-20260617-host-engine-contract-and-video-cutscene / M4 / w15).
@@ -23,12 +24,12 @@ import { createSmokePlatform } from '../../../../scripts/smoke-platform.mjs';
 //      pause duration never inflates dt.
 //   4. stop() after resume succeeds; resume() after stop is unusable
 //      (frame-loop guard returns err -- the host cannot restart a stopped app).
-
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { readFileSync } from 'node:fs';
+
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 
 
 const RERUN_CMD = 'pnpm --filter @forgeax/hello-video-cutscene smoke';
@@ -149,7 +150,8 @@ const { Time, Update } = await import('@forgeax/engine-ecs');
 
 const here = dirname(fileURLToPath(import.meta.url));
 const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MANIFEST_PATH, 'utf8'))}`;
+const MANIFEST_URL = URL.createObjectURL(new Blob([readShaderManifestText(MANIFEST_PATH)], { type: 'application/json' }));
+process.once('exit', () => URL.revokeObjectURL(MANIFEST_URL));
 
 const appResult = await createApp(mockCanvas, { platform: createSmokePlatform(mockCanvas), }, { shaderManifestUrl: MANIFEST_URL }).catch(
   (err) => {
@@ -193,8 +195,7 @@ let frameCount = 0;
 let lastDt = 0;
 const spin = quat.create();
 let angle = 0;
-world
-  .addSystem(Update, {
+const systemToken1 = defineSystem({
     name: 'video-cutscene-smoke-spin',
     queries: [],
     fn: () => {
@@ -207,7 +208,9 @@ world
         quat: [spin[0] ?? 0, spin[1] ?? 0, spin[2] ?? 0, spin[3] ?? 1],
       });
     },
-  })
+  });
+world
+  .addSystem(Update, systemToken1)
   .unwrap();
 
 const onErrorEvents = [];

@@ -1,3 +1,5 @@
+import { INPUT_SNAPSHOT_RESOURCE_KEY, INPUT_BACKEND_KEY } from '../src/resources';
+
 import { Update } from '@forgeax/engine-ecs';
 // Consolidated by feat-20260609-test-pool-startup-reduction-merge-tiny-test-files
 // biome-ignore-all lint/complexity/noUselessLoneBlockStatements: scope isolation between merged source files
@@ -33,16 +35,7 @@ import type {
   PointerPhaseEvent,
   VirtualJoystickConfig,
 } from '../src/input-snapshot';
-import {
-  createInputSnapshot,
-  INPUT_BACKEND_KEY,
-  INPUT_SNAPSHOT_RESOURCE_KEY,
-  type InputBackend,
-  InputFrameStartScan,
-  type InputSnapshot,
-  type PointerType,
-  snapshotFromSample,
-} from '../src/index';
+import { createInputSnapshot, type InputBackend, InputFrameStartScan, type InputSnapshot, type PointerType, snapshotFromSample } from '../src/index';
 import { diffGamepadFrame, type RawGamepadStub } from '../src/gamepad-frame';
 import {
   deriveVirtualAxes,
@@ -241,13 +234,13 @@ type __MergedKeep = ActionConfig | ActionState | BindState | Capabilities | Fake
 
         backend.pressKey('w');
         world.update(1 / 60).unwrap();
-        const snap = world.getResource<InputSnapshot>('InputSnapshot');
+        const snap = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
         expect(snap.keyboard.down('w')).toBe(true);
         expect(snap.keyboard.down('a')).toBe(false);
 
         backend.releaseKey('w');
         world.update(1 / 60).unwrap();
-        const snap2 = world.getResource<InputSnapshot>('InputSnapshot');
+        const snap2 = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
         expect(snap2.keyboard.down('w')).toBe(false);
       });
 
@@ -259,14 +252,14 @@ type __MergedKeep = ActionConfig | ActionState | BindState | Capabilities | Fake
 
         backend.pressKey('space');
         world.update(1 / 60).unwrap();
-        expect(world.getResource<InputSnapshot>('InputSnapshot').keyboard.up('space')).toBe(false);
+        expect(world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY).keyboard.up('space')).toBe(false);
 
         backend.releaseKey('space');
         world.update(1 / 60).unwrap();
-        expect(world.getResource<InputSnapshot>('InputSnapshot').keyboard.up('space')).toBe(true);
+        expect(world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY).keyboard.up('space')).toBe(true);
 
         world.update(1 / 60).unwrap();
-        expect(world.getResource<InputSnapshot>('InputSnapshot').keyboard.up('space')).toBe(false);
+        expect(world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY).keyboard.up('space')).toBe(false);
       });
 
       it('mouse.movementDelta is frozen at frame-start and cleared next frame', () => {
@@ -277,11 +270,11 @@ type __MergedKeep = ActionConfig | ActionState | BindState | Capabilities | Fake
 
         backend.addMovement(15, -7);
         world.update(1 / 60).unwrap();
-        const snap = world.getResource<InputSnapshot>('InputSnapshot');
+        const snap = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
         expect(snap.mouse.movementDelta).toEqual({ x: 15, y: -7 });
 
         world.update(1 / 60).unwrap();
-        const snap2 = world.getResource<InputSnapshot>('InputSnapshot');
+        const snap2 = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
         expect(snap2.mouse.movementDelta).toEqual({ x: 0, y: 0 });
       });
 
@@ -294,20 +287,20 @@ type __MergedKeep = ActionConfig | ActionState | BindState | Capabilities | Fake
         backend.pressButton(0);
         backend.pressButton(2);
         world.update(1 / 60).unwrap();
-        const snap = world.getResource<InputSnapshot>('InputSnapshot');
+        const snap = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
         expect(snap.mouse.button(0)).toBe(true);
         expect(snap.mouse.button(1)).toBe(false);
         expect(snap.mouse.button(2)).toBe(true);
       });
 
-      it('snapshot is exposed as a Resource via insertResource("InputSnapshot")', () => {
+      it('snapshot is exposed as a Resource via insertResource(INPUT_SNAPSHOT_RESOURCE_KEY)', () => {
         const backend = createFakeBackend();
         const world = new World();
         world.insertResource(INPUT_BACKEND_KEY, backend);
         world.addSystem(Update, InputFrameStartScan);
         world.update(1 / 60).unwrap();
-        expect(world.hasResource('InputSnapshot')).toBe(true);
-        const snap = world.getResource<InputSnapshot>('InputSnapshot');
+        expect(world.hasResource(INPUT_SNAPSHOT_RESOURCE_KEY)).toBe(true);
+        const snap = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
         expect(typeof snap.keyboard.down).toBe('function');
         expect(typeof snap.keyboard.up).toBe('function');
         expect(typeof snap.mouse.button).toBe('function');
@@ -332,15 +325,15 @@ type __MergedKeep = ActionConfig | ActionState | BindState | Capabilities | Fake
 
         backend.pressKey('w');
         world.update(1 / 60).unwrap();
-        expect(world.getResource<InputSnapshot>('InputSnapshot').keyboard.down('w')).toBe(true);
+        expect(world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY).keyboard.down('w')).toBe(true);
 
         backend.setFocus(false);
         world.update(1 / 60).unwrap();
-        expect(world.getResource<InputSnapshot>('InputSnapshot').keyboard.down('w')).toBe(true);
+        expect(world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY).keyboard.down('w')).toBe(true);
 
         backend.setFocus(true);
         world.update(1 / 60).unwrap();
-        expect(world.getResource<InputSnapshot>('InputSnapshot').keyboard.down('w')).toBe(true);
+        expect(world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY).keyboard.down('w')).toBe(true);
       });
 
       it('attachBrowserInputBackend returns a detach handle (charter P3 explicit lifecycle)', () => {

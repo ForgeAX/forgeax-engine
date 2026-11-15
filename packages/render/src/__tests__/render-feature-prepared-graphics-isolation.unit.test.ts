@@ -1,3 +1,4 @@
+import { World } from '@forgeax/engine-ecs';
 import type { RhiCaps } from '@forgeax/engine-rhi';
 import { err, ok } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
@@ -43,8 +44,7 @@ describe('prepared graphics feature isolation', () => {
       ordinaryFeature('synthetic.healthy'),
     ]).unwrap();
     const result = runSingleViewFeatureFrame(host, {
-      worlds: [],
-      owner: 0,
+      world: new World(),
       frameNumber: 1,
       caps,
     });
@@ -62,8 +62,7 @@ describe('prepared graphics feature isolation', () => {
   it('treats an empty feature as successful no-work without a phantom graphics pass', () => {
     const host = createRenderFeatureHost([preparedFeature('synthetic.empty', 'empty')]).unwrap();
     const result = runSingleViewFeatureFrame(host, {
-      worlds: [],
-      owner: 0,
+      world: new World(),
       frameNumber: 2,
       caps,
     });

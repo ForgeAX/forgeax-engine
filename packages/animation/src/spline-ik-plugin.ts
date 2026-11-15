@@ -1,5 +1,6 @@
 import {
   defineComponent,
+  defineSystem,
   ENTITY_NULL_RAW,
   type EntityHandle,
   FixedUpdate,
@@ -10,11 +11,22 @@ import { worldRead } from '@forgeax/engine-ecs/world-read';
 import { type Mat4, mat4 } from '@forgeax/engine-math';
 import { Path, PathAxis, type PreparedPath, preparePath } from '@forgeax/engine-path';
 import type { Plugin } from '@forgeax/engine-plugin';
-import { ChildOf, Transform } from '@forgeax/engine-scene';
-import { CAPTURE_SKELETAL_MOTION_BASE } from './skeletal-motion';
+import {
+  ChildOf,
+  PropagateTransforms,
+  PropagateTransformsFixed,
+  Transform,
+} from '@forgeax/engine-scene';
 import { SkeletonPose } from './skeleton-pose';
 import { SplineIKError } from './spline-ik-errors';
 import { createSplineIKSolver, type SplineIKSolver } from './spline-ik-solver';
+import {
+  AnimationGraphEvaluation,
+  AnimationPlayback,
+  SkeletalMotionCapture,
+  SplineIKRestore,
+  SplineIKSolve,
+} from './system-order';
 
 export const SplineIKLength = { preserve: 0, fit: 1 } as const;
 
@@ -72,16 +84,14 @@ export function splineIKPlugin(
       ctx.effect(() => {
         const world = ctx.world;
         // Animation owns cadence. Consume the installed schedule instead of another clock/option.
-        const playback = world
-          .scheduleData()
-          .filter((scope) =>
-            scope.systems.some((system) => system.name === 'advanceAnimationPlayer'),
-          );
-        if (playback.length !== 1 || !['Update', 'FixedUpdate'].includes(playback[0]?.name ?? ''))
+        const playback = [Update, FixedUpdate].filter((schedule) =>
+          world.hasSystem(schedule, AnimationPlayback),
+        );
+        const schedule = playback[0];
+        if (playback.length !== 1 || schedule === undefined)
           throw new SplineIKError('spline-ik-invalid', {
             reason: 'install exactly one animation playback cadence before Spline IK',
           });
-        const schedule = playback[0]?.name === 'FixedUpdate' ? FixedUpdate : Update;
 
         const leases = [Path, SplineIK].map((c) => world.components.register(c).unwrap());
         const bindings = new Map<EntityHandle, Binding>();
@@ -132,210 +142,202 @@ export function splineIKPlugin(
         };
         const restoreName = 'animation/restore-spline-base';
         const solveName = 'animation/solve-spline-ik';
-        world
-          .addSystem(schedule, {
-            name: restoreName,
-            before: ['evaluateAnimationGraph', 'advanceAnimationPlayer'],
-            queries: [],
-            fn() {
-              const live = new Set<EntityHandle>();
-              const writers = new Set<EntityHandle>();
-              for (const row of rows) {
-                const entity = row.entity;
-                const read = world[worldRead];
-                const configEnabled = read.getFieldValue(entity, SplineIK, 'enabled') === 1;
-                const configRoot = read.getFieldValue(entity, SplineIK, 'root') as EntityHandle;
-                const configTip = read.getFieldValue(entity, SplineIK, 'tip') as EntityHandle;
-                const configForwardAxis = read.getFieldValue(
-                  entity,
-                  SplineIK,
-                  'forwardAxis',
-                ) as number;
-                const configUpAxis = read.getFieldValue(entity, SplineIK, 'upAxis') as number;
-                live.add(entity);
-                if (!configEnabled) {
-                  const previous = bindings.get(entity);
-                  if (previous) retire(entity, previous);
-                  bindings.delete(entity);
-                  continue;
-                }
-                if (configRoot === ENTITY_NULL_RAW || configTip === ENTITY_NULL_RAW) {
-                  const previous = bindings.get(entity);
-                  if (previous) retire(entity, previous);
-                  bindings.delete(entity);
-                  report(
-                    entity,
-                    new SplineIKError('spline-ik-invalid', {
-                      reason: 'explicit root and tip required',
-                    }),
-                  );
-                  continue;
-                }
-                let binding = bindings.get(entity);
-                if (
-                  binding &&
-                  (binding.root !== configRoot ||
-                    binding.tip !== configTip ||
-                    binding.forward !== configForwardAxis ||
-                    binding.up !== configUpAxis)
-                ) {
-                  retire(entity, binding);
-                  bindings.delete(entity);
-                  binding = undefined;
-                }
-                if (!binding) {
-                  try {
-                    const joints = chain(world, configRoot, configTip);
-                    const solver = createSplineIKSolver(world, {
-                      joints,
-                      forwardAxis: configForwardAxis,
-                      upAxis: configUpAxis,
-                    }).unwrap();
-                    binding = {
-                      solver,
-                      root: configRoot,
-                      tip: configTip,
-                      forward: configForwardAxis,
-                      up: configUpAxis,
-                    };
-                    bindings.set(entity, binding);
-                  } catch (cause) {
-                    report(entity, cause);
-                    continue;
-                  }
-                }
-                for (const joint of binding.solver.joints) {
-                  if (writers.has(joint))
-                    throw new SplineIKError('spline-ik-conflict', {
-                      reason: 'overlapping spline chains',
-                      joint,
-                    });
-                  writers.add(joint);
-                }
+        const systemToken1 = defineSystem({
+          name: restoreName,
+          sets: [SplineIKRestore],
+          before: [AnimationGraphEvaluation, AnimationPlayback],
+          queries: [],
+          fn() {
+            const live = new Set<EntityHandle>();
+            const writers = new Set<EntityHandle>();
+            for (const row of rows) {
+              const entity = row.entity;
+              const read = world[worldRead];
+              const configEnabled = read.getFieldValue(entity, SplineIK, 'enabled') === 1;
+              const configRoot = read.getFieldValue(entity, SplineIK, 'root') as EntityHandle;
+              const configTip = read.getFieldValue(entity, SplineIK, 'tip') as EntityHandle;
+              const configForwardAxis = read.getFieldValue(
+                entity,
+                SplineIK,
+                'forwardAxis',
+              ) as number;
+              const configUpAxis = read.getFieldValue(entity, SplineIK, 'upAxis') as number;
+              live.add(entity);
+              if (!configEnabled) {
+                const previous = bindings.get(entity);
+                if (previous) retire(entity, previous);
+                bindings.delete(entity);
+                continue;
               }
-              for (const [entity, binding] of bindings) {
-                if (live.has(entity)) restore(entity, binding);
-                else {
-                  retire(entity, binding);
-                  bindings.delete(entity);
-                }
+              if (configRoot === ENTITY_NULL_RAW || configTip === ENTITY_NULL_RAW) {
+                const previous = bindings.get(entity);
+                if (previous) retire(entity, previous);
+                bindings.delete(entity);
+                report(
+                  entity,
+                  new SplineIKError('spline-ik-invalid', {
+                    reason: 'explicit root and tip required',
+                  }),
+                );
+                continue;
               }
-            },
-          })
-          .unwrap();
-        world
-          .addSystem(schedule, {
-            name: solveName,
-            after: ['advanceAnimationPlayer'],
-            before:
-              schedule === FixedUpdate
-                ? [CAPTURE_SKELETAL_MOTION_BASE, 'propagateTransformsFixed']
-                : ['propagateTransforms'],
-            queries: [],
-            fn() {
-              refreshDirtyPaths();
-              const used = new Set<EntityHandle>();
-              for (const row of rows) {
-                const entity = row.entity;
-                const read = world[worldRead];
-                const configEnabled = read.getFieldValue(entity, SplineIK, 'enabled') === 1;
-                const configPath = read.getFieldValue(entity, SplineIK, 'path') as EntityHandle;
-                const configLengthMode = read.getFieldValue(
-                  entity,
-                  SplineIK,
-                  'lengthMode',
-                ) as number;
-                const configWeight = read.getFieldValue(entity, SplineIK, 'weight') as number;
-                const configOffset = read.getFieldValue(entity, SplineIK, 'offset') as number;
-                const configReverse = read.getFieldValue(entity, SplineIK, 'reverse') === 1;
-                const configTwistStart = read.getFieldValue(
-                  entity,
-                  SplineIK,
-                  'twistStart',
-                ) as number;
-                const configTwistEnd = read.getFieldValue(entity, SplineIK, 'twistEnd') as number;
-                const binding = bindings.get(entity);
-                if (!binding || !configEnabled) continue;
+              let binding = bindings.get(entity);
+              if (
+                binding &&
+                (binding.root !== configRoot ||
+                  binding.tip !== configTip ||
+                  binding.forward !== configForwardAxis ||
+                  binding.up !== configUpAxis)
+              ) {
+                retire(entity, binding);
+                bindings.delete(entity);
+                binding = undefined;
+              }
+              if (!binding) {
                 try {
-                  if (configPath === ENTITY_NULL_RAW || !world.hasComponent(configPath, Path))
-                    throw new SplineIKError('spline-ik-stale', {
-                      reason: 'path removed',
-                      ...(configPath === ENTITY_NULL_RAW ? {} : { entity: configPath }),
-                    });
-                  if (
-                    configLengthMode !== SplineIKLength.preserve &&
-                    configLengthMode !== SplineIKLength.fit
-                  )
-                    throw new SplineIKError('spline-ik-invalid', {
-                      reason: 'undeclared length mode',
-                    });
-                  // Check every binding, including bindings sharing an already cached Path.
-                  {
-                    const joints = new Set(binding.solver.joints);
-                    let parent: EntityHandle | null = configPath;
-                    const seen = new Set<EntityHandle>();
-                    while (parent !== null) {
-                      if (joints.has(parent) || seen.has(parent) || seen.size > 128)
-                        throw new SplineIKError('spline-ik-conflict', {
-                          reason: 'curve hierarchy depends on controlled chain or is invalid',
-                        });
-                      seen.add(parent);
-                      if (!world.hasComponent(parent, ChildOf)) break;
-                      parent = world.get(parent, ChildOf).unwrap().parent;
-                    }
+                  const joints = chain(world, configRoot, configTip);
+                  const solver = createSplineIKSolver(world, {
+                    joints,
+                    forwardAxis: configForwardAxis,
+                    upAxis: configUpAxis,
+                  }).unwrap();
+                  binding = {
+                    solver,
+                    root: configRoot,
+                    tip: configTip,
+                    forward: configForwardAxis,
+                    up: configUpAxis,
+                  };
+                  bindings.set(entity, binding);
+                } catch (cause) {
+                  report(entity, cause);
+                  continue;
+                }
+              }
+              for (const joint of binding.solver.joints) {
+                if (writers.has(joint))
+                  throw new SplineIKError('spline-ik-conflict', {
+                    reason: 'overlapping spline chains',
+                    joint,
+                  });
+                writers.add(joint);
+              }
+            }
+            for (const [entity, binding] of bindings) {
+              if (live.has(entity)) restore(entity, binding);
+              else {
+                retire(entity, binding);
+                bindings.delete(entity);
+              }
+            }
+          },
+        });
+        world.addSystem(schedule, systemToken1).unwrap();
+        const systemToken2 = defineSystem({
+          name: solveName,
+          sets: [SplineIKSolve],
+          after: [AnimationPlayback],
+          before:
+            schedule === FixedUpdate
+              ? [SkeletalMotionCapture, PropagateTransformsFixed]
+              : [PropagateTransforms],
+          queries: [],
+          fn() {
+            refreshDirtyPaths();
+            const used = new Set<EntityHandle>();
+            for (const row of rows) {
+              const entity = row.entity;
+              const read = world[worldRead];
+              const configEnabled = read.getFieldValue(entity, SplineIK, 'enabled') === 1;
+              const configPath = read.getFieldValue(entity, SplineIK, 'path') as EntityHandle;
+              const configLengthMode = read.getFieldValue(entity, SplineIK, 'lengthMode') as number;
+              const configWeight = read.getFieldValue(entity, SplineIK, 'weight') as number;
+              const configOffset = read.getFieldValue(entity, SplineIK, 'offset') as number;
+              const configReverse = read.getFieldValue(entity, SplineIK, 'reverse') === 1;
+              const configTwistStart = read.getFieldValue(entity, SplineIK, 'twistStart') as number;
+              const configTwistEnd = read.getFieldValue(entity, SplineIK, 'twistEnd') as number;
+              const binding = bindings.get(entity);
+              if (!binding || !configEnabled) continue;
+              try {
+                if (configPath === ENTITY_NULL_RAW || !world.hasComponent(configPath, Path))
+                  throw new SplineIKError('spline-ik-stale', {
+                    reason: 'path removed',
+                    ...(configPath === ENTITY_NULL_RAW ? {} : { entity: configPath }),
+                  });
+                if (
+                  configLengthMode !== SplineIKLength.preserve &&
+                  configLengthMode !== SplineIKLength.fit
+                )
+                  throw new SplineIKError('spline-ik-invalid', {
+                    reason: 'undeclared length mode',
+                  });
+                // Check every binding, including bindings sharing an already cached Path.
+                {
+                  const joints = new Set(binding.solver.joints);
+                  let parent: EntityHandle | null = configPath;
+                  const seen = new Set<EntityHandle>();
+                  while (parent !== null) {
+                    if (joints.has(parent) || seen.has(parent) || seen.size > 128)
+                      throw new SplineIKError('spline-ik-conflict', {
+                        reason: 'curve hierarchy depends on controlled chain or is invalid',
+                      });
+                    seen.add(parent);
+                    if (!world.hasComponent(parent, ChildOf)) break;
+                    parent = world.get(parent, ChildOf).unwrap().parent;
                   }
-                  let curve = curves.get(configPath);
-                  if (!curve) {
-                    const pose = new SkeletonPose(world, [configPath]);
-                    const matrix = pose.matrices[
-                      pose.indices.get(configPath) as number
-                    ] as (typeof pose.matrices)[number];
-                    curve = {
-                      pose,
-                      linear: mat4.clone(matrix),
-                      prepared: prepare(configPath, matrix),
-                    };
-                    curves.set(configPath, curve);
-                    dirty.delete(configPath);
-                  } else {
-                    curve.pose.read();
-                    const matrix = curve.pose.matrices[
-                      curve.pose.indices.get(configPath) as number
-                    ] as (typeof curve.pose.matrices)[number];
-                    let changed = dirty.has(configPath);
-                    for (let i = 0; i < 12; i++) if (matrix[i] !== curve.linear[i]) changed = true;
-                    if (changed) {
-                      curve.prepared = prepare(configPath, matrix);
-                      curve.linear.set(matrix);
-                      dirty.delete(configPath);
-                    }
-                  }
-                  used.add(configPath);
+                }
+                let curve = curves.get(configPath);
+                if (!curve) {
+                  const pose = new SkeletonPose(world, [configPath]);
+                  const matrix = pose.matrices[
+                    pose.indices.get(configPath) as number
+                  ] as (typeof pose.matrices)[number];
+                  curve = {
+                    pose,
+                    linear: mat4.clone(matrix),
+                    prepared: prepare(configPath, matrix),
+                  };
+                  curves.set(configPath, curve);
+                  dirty.delete(configPath);
+                } else {
+                  curve.pose.read();
                   const matrix = curve.pose.matrices[
                     curve.pose.indices.get(configPath) as number
                   ] as (typeof curve.pose.matrices)[number];
-                  binding.solver
-                    .solve(curve.prepared, {
-                      origin: matrix.subarray(12, 15),
-                      weight: configWeight,
-                      offset: configOffset,
-                      direction: configReverse ? -1 : 1,
-                      lengthMode: configLengthMode === SplineIKLength.preserve ? 'preserve' : 'fit',
-                      twistStart: configTwistStart,
-                      twistEnd: configTwistEnd,
-                    })
-                    .unwrap();
-                } catch (cause) {
-                  report(entity, cause);
+                  let changed = dirty.has(configPath);
+                  for (let i = 0; i < 12; i++) if (matrix[i] !== curve.linear[i]) changed = true;
+                  if (changed) {
+                    curve.prepared = prepare(configPath, matrix);
+                    curve.linear.set(matrix);
+                    dirty.delete(configPath);
+                  }
                 }
+                used.add(configPath);
+                const matrix = curve.pose.matrices[
+                  curve.pose.indices.get(configPath) as number
+                ] as (typeof curve.pose.matrices)[number];
+                binding.solver
+                  .solve(curve.prepared, {
+                    origin: matrix.subarray(12, 15),
+                    weight: configWeight,
+                    offset: configOffset,
+                    direction: configReverse ? -1 : 1,
+                    lengthMode: configLengthMode === SplineIKLength.preserve ? 'preserve' : 'fit',
+                    twistStart: configTwistStart,
+                    twistEnd: configTwistEnd,
+                  })
+                  .unwrap();
+              } catch (cause) {
+                report(entity, cause);
               }
-              for (const path of curves.keys()) if (!used.has(path)) curves.delete(path);
-            },
-          })
-          .unwrap();
+            }
+            for (const path of curves.keys()) if (!used.has(path)) curves.delete(path);
+          },
+        });
+        world.addSystem(schedule, systemToken2).unwrap();
         return () => {
-          world.removeSystem(schedule, solveName).unwrap();
-          world.removeSystem(schedule, restoreName).unwrap();
+          world.removeSystem(schedule, systemToken2).unwrap();
+          world.removeSystem(schedule, systemToken1).unwrap();
           try {
             for (const [entity, binding] of bindings) retire(entity, binding);
           } finally {

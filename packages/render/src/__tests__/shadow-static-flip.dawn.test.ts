@@ -81,7 +81,6 @@ function placed(entityKey: number, x: number): RenderableSnapshot {
     material,
     materials: [material],
     materialBindingSources: ['engine-default'],
-    worldId: 0,
     entityKey,
     gpuDrivenDraws: [
       {
@@ -161,7 +160,6 @@ async function harness(initial: readonly RenderableSnapshot[], matrix?: Float32A
     const delta = projection.apply(
       values.map((value) => ({
         kind: 'update' as const,
-        worldId: value.worldId,
         entityKey: value.entityKey,
         snapshot: value,
       })),
@@ -286,7 +284,7 @@ async function harness(initial: readonly RenderableSnapshot[], matrix?: Float32A
   return {
     apply,
     remove: (entityKey: number) => {
-      const delta = projection.apply([{ kind: 'remove', worldId: 0, entityKey }]);
+      const delta = projection.apply([{ kind: 'remove', entityKey }]);
       scene.sync(delta, undefined, boundsOf).unwrap();
       batches.apply(delta);
     },

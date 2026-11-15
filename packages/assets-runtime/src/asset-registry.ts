@@ -39,8 +39,10 @@ import {
   type TranscodeCaps,
   type MeshAsset as TypesMeshAsset,
   validateMaterialValues,
+  validateTextureGenerator,
 } from '@forgeax/engine-types';
 import { defineAssetKind, isBuiltinAssetKind } from './asset-kind';
+import { copyAssetData } from './internal/asset-data';
 import { type AssetLimits, AssetRecords } from './internal/asset-records';
 import {
   type AdoptedAssetSource,
@@ -50,6 +52,7 @@ import {
   createAssetSource,
 } from './internal/asset-source';
 import { DecoderRegistry } from './internal/decoder-registry';
+import { trimRetainedBytes } from './internal/retention-budget';
 import { installRuntimeAssets } from './internal/runtime-assets';
 import { assetLoadCancelled, waitForAsset } from './internal/wait-for-asset';
 import { pluginAssetDecoder } from './loaders/plugin';
@@ -216,6 +219,7 @@ interface SourceAdoption {
 }
 
 export class AssetRegistry implements AssetReferenceOwner {
+  private hasTextureGenerators = false;
   readonly #decoders: DecoderRegistry;
   #source: AssetSource | undefined;
   #disposed = false;
@@ -402,7 +406,7 @@ export class AssetRegistry implements AssetReferenceOwner {
     dependencies: readonly number[],
     sources: ReadonlyMap<string, AssetHandle> = this.#runtimeByGuid,
     replacing?: AssetHandle<T['kind']>,
-    sourceContent: (guid: string) => Asset | undefined = (guid) => this.preparedSource(guid),
+    sourceContent: (guid: string) => Asset | undefined = (guid) => this.runtimeSource(guid),
     storage: 'copy' | 'take' = 'copy',
   ): Result<AssetHandle<T['kind']>, AssetError | MaterialError> {
     const kind =
@@ -527,6 +531,7 @@ export class AssetRegistry implements AssetReferenceOwner {
       replacing,
       storage,
     );
+    if (created.ok && kind.value === 'texture-generator') this.hasTextureGenerators = true;
     if (created.ok && kind.value === 'material') {
       const accepted = this.#runtime.borrow<MaterialAsset>(created.value).unwrap();
       this.prepareMaterialValueContract(accepted, textures);
@@ -549,8 +554,17 @@ export class AssetRegistry implements AssetReferenceOwner {
       own(section.heightTexture);
       own(section.weightTexture);
       own(section.material);
-      for (const dependency of this.#runtime.dependencies(Number(section.material)).unwrap())
-        own(dependency);
+      // Source retention can include shared assets that Terrain did not derive.
+      const material = this.#runtime.borrow<MaterialAsset>(Number(section.material)).unwrap();
+      const control = material.values?.terrainWeightTexture;
+      if (
+        control === null ||
+        typeof control !== 'object' ||
+        !('sampler' in control) ||
+        typeof control.sampler !== 'number'
+      )
+        throw new Error('Terrain control sampler was not linked');
+      own(control.sampler);
     }
   }
 
@@ -651,6 +665,75 @@ export class AssetRegistry implements AssetReferenceOwner {
     this.materialValueContracts.set(material, { parameters, textures });
   }
 
+  /** A generator and all its already-loaded output descriptors commit in one asset transaction. */
+  private updateTextureGeneratorGroup(
+    handle: AssetHandle,
+    patch: Readonly<Record<string, unknown>>,
+  ): Result<void, AssetError | MaterialError> {
+    const current =
+      this.#runtime.borrow<import('@forgeax/engine-types').TextureGeneratorAsset>(handle);
+    if (!current.ok) return current;
+    if ('kind' in patch)
+      return err(
+        new AssetError({
+          code: 'asset-invalid-value',
+          expected: 'an unchanged generator kind',
+          hint: 'update generator values, inputs or output declarations',
+        }),
+      );
+    return this.#runtime.adoptClosure(() => {
+      const updated = this.#runtime.update(
+        handle,
+        { ...current.value, ...patch },
+        {
+          replace: true,
+          prepare: (_previous, owned) => {
+            const prepared = this.prepareWithDecoder('texture-generator', owned);
+            return prepared.ok
+              ? ok({
+                  value: prepared.value.value as Record<string, unknown>,
+                  dependencies: prepared.value.dependencies,
+                })
+              : prepared;
+          },
+        },
+      );
+      if (!updated.ok) return updated;
+      const visited = new Set<number>([handle]);
+      const pending = [Number(handle)];
+      while (pending.length > 0) {
+        const next = pending.pop();
+        if (next === undefined) break;
+        for (const dependent of this.#runtime.dependentHandles(next)) {
+          if (visited.has(dependent)) continue;
+          visited.add(dependent);
+          const content = this.#runtime.borrow<Asset>(dependent);
+          if (!content.ok) return content;
+          if (content.value.kind === 'gpu-texture') {
+            const prepared = prepareRuntimeAsset(content.value, (guid) => this.runtimeSource(guid));
+            if (!prepared.ok) return prepared;
+            const replaced = this.#runtime.update(
+              dependent,
+              { ...prepared.value },
+              { replace: true },
+            );
+            if (!replaced.ok) return replaced;
+            pending.push(dependent);
+          } else if (content.value.kind === 'texture-generator') {
+            const replaced = this.#runtime.update(
+              dependent,
+              { ...content.value },
+              { replace: true },
+            );
+            if (!replaced.ok) return replaced;
+            pending.push(dependent);
+          }
+        }
+      }
+      return ok(undefined);
+    });
+  }
+
   /** Detached public content. Mutating this value never modifies the asset. */
   read<K extends string, P>(handle: AssetHandle<K, P>): Result<P, AssetError> {
     return this.#runtime.read<P>(handle);
@@ -733,8 +816,168 @@ export class AssetRegistry implements AssetReferenceOwner {
     handle: AssetHandle,
     patch: Readonly<Record<string, unknown>>,
   ): Result<void, AssetError | MaterialError> {
+    const committed = this.updateContent(handle, patch);
+    return committed.ok ? this.refreshTextureGeneratorInputs(handle) : committed;
+  }
+
+  private refreshTextureGeneratorInputs(handle: AssetHandle): Result<void, AssetError> {
+    if (!this.hasTextureGenerators) return ok(undefined);
     const kind = this.#runtime.kind(handle);
     if (!kind.ok) return kind;
+    if (kind.value !== 'texture' && kind.value !== 'gpu-texture' && kind.value !== 'sampler')
+      return ok(undefined);
+    for (const dependent of this.#runtime.dependentHandles(handle)) {
+      const content = this.#runtime.borrow<Asset>(dependent);
+      if (!content.ok) return content;
+      if (content.value.kind !== 'texture-generator') continue;
+      const updated = this.updateTextureGeneratorGroup(dependent as AssetHandle, {});
+      if (!updated.ok)
+        return err(
+          new AssetError({
+            code: 'asset-invalid-value',
+            expected: updated.error.expected,
+            hint: updated.error.hint,
+          }),
+        );
+    }
+    return ok(undefined);
+  }
+
+  private updateNumericMaterialValues(
+    handle: AssetHandle,
+    current: MaterialAsset,
+    patch: Readonly<Record<string, unknown>>,
+  ): Result<void, AssetError | MaterialError> | undefined {
+    const descriptors =
+      patch !== null && typeof patch === 'object'
+        ? Object.getOwnPropertyDescriptors(patch)
+        : undefined;
+    const values = descriptors?.values;
+    if (
+      descriptors !== undefined &&
+      Reflect.ownKeys(descriptors).length === 1 &&
+      values?.enumerable &&
+      Object.hasOwn(values, 'value') &&
+      values.value !== null &&
+      typeof values.value === 'object' &&
+      !Array.isArray(values.value)
+    ) {
+      const contract = this.materialValueContracts.get(current);
+      const valueDescriptors = Object.getOwnPropertyDescriptors(values.value);
+      const numeric =
+        contract !== undefined &&
+        Reflect.ownKeys(valueDescriptors).every((name) => {
+          if (typeof name !== 'string' || contract.textures.has(name)) return false;
+          const entry = valueDescriptors[name];
+          if (!entry?.enumerable || !Object.hasOwn(entry, 'value')) return false;
+          const previous = current.kind === 'material' ? current.values?.[name] : undefined;
+          // Changing a binding must transfer its holds through complete dependency preparation.
+          if (
+            typeof previous === 'string' ||
+            (previous !== null && typeof previous === 'object' && !Array.isArray(previous))
+          )
+            return false;
+          return (
+            typeof entry.value === 'number' ||
+            typeof entry.value === 'boolean' ||
+            Array.isArray(entry.value)
+          );
+        });
+      if (numeric)
+        return this.#runtime.update(handle, values.value, {
+          field: 'values',
+          prepare: (_current, owned) => {
+            const valid = validateMaterialValues(
+              '<runtime-material>',
+              owned as Record<string, MaterialValue>,
+              contract.parameters,
+            );
+            return valid.ok ? ok({ value: owned }) : valid;
+          },
+        });
+    }
+    return undefined;
+  }
+
+  private prepareContentPatch(
+    current: Asset,
+    update: Record<string, unknown>,
+  ): Result<{ asset: Asset; patch: Record<string, unknown> }, AssetError | MaterialError> {
+    if ('kind' in update || 'parent' in update)
+      return err(
+        new AssetError({
+          code: 'asset-invalid-value',
+          expected: 'runtime content with an unchanged kind and no source inheritance',
+          hint: 'create an independent asset from source content, then edit its runtime fields',
+        }),
+      );
+    if (current.kind === 'material' && 'values' in update) {
+      if (
+        update.values === null ||
+        typeof update.values !== 'object' ||
+        Array.isArray(update.values)
+      )
+        return err(
+          new AssetError({
+            code: 'asset-invalid-value',
+            expected: 'named material values',
+            hint: 'pass a material parameter patch',
+          }),
+        );
+      update.values = { ...current.values, ...update.values };
+    }
+    if (current.kind === 'mesh') {
+      const mesh = prepareRuntimeMeshPatch(current, update);
+      if (!mesh.ok) return mesh;
+      update = mesh.value as Record<string, unknown>;
+    }
+    const prepared = prepareRuntimeAsset({ ...current, ...update } as Asset, (guid) =>
+      this.preparedSource(guid),
+    );
+    return prepared.ok ? ok({ asset: prepared.value, patch: update }) : prepared;
+  }
+
+  private prepareTilesetAssetPatch(
+    asset: import('@forgeax/engine-types').TilesetAsset,
+    update: Record<string, unknown>,
+  ): Result<{ value: Record<string, unknown>; dependencies: readonly number[] }, AssetError> {
+    const linked = linkRuntimeTileset(asset, this, (guid) => this.#runtimeByGuid.get(guid));
+    return linked.ok
+      ? ok({
+          value: { ...update, atlases: linked.value.value.atlases },
+          dependencies: linked.value.dependencies,
+        })
+      : linked;
+  }
+
+  private prepareFontAssetPatch(
+    asset: import('@forgeax/engine-types').FontAsset,
+    update: Record<string, unknown>,
+  ): Result<{ value: Record<string, unknown>; dependencies: readonly number[] }, AssetError> {
+    const linked = linkRuntimeFont(asset, this, (guid) => this.#runtimeByGuid.get(guid));
+    return linked.ok
+      ? ok({
+          value: {
+            ...update,
+            atlas: linked.value.value.atlas,
+            sampler: linked.value.value.sampler,
+          },
+          dependencies: linked.value.dependencies,
+        })
+      : linked;
+  }
+
+  private updateContent(
+    handle: AssetHandle,
+    patch: Readonly<Record<string, unknown>>,
+  ): Result<void, AssetError | MaterialError> {
+    const kind = this.#runtime.kind(handle);
+    if (!kind.ok) return kind;
+    if (kind.value === 'texture-generator') return this.updateTextureGeneratorGroup(handle, patch);
+    const current = this.#runtime.borrow<Asset>(handle);
+    if (!current.ok) return current;
+    const derived = this.terrainDerivedWrite(current.value);
+    if (derived !== undefined) return err(derived);
     if (requiresOwnerPreparation(kind.value))
       return this.#runtime.update(handle, patch, {
         // Preparation sees a complete, detached candidate and declares its exact
@@ -746,10 +989,6 @@ export class AssetRegistry implements AssetReferenceOwner {
             AssetError
           >,
       });
-    const current = this.#runtime.borrow<Asset>(handle);
-    if (!current.ok) return current;
-    const derived = this.terrainDerivedWrite(current.value);
-    if (derived !== undefined) return err(derived);
     if (current.value.kind === 'terrain') {
       const source = captureTerrainEdit(current.value, patch);
       if (!source.ok) return source;
@@ -757,119 +996,22 @@ export class AssetRegistry implements AssetReferenceOwner {
       return adopted.ok ? ok(undefined) : adopted;
     }
     if (current.value.kind === 'material') {
-      const descriptors =
-        patch !== null && typeof patch === 'object'
-          ? Object.getOwnPropertyDescriptors(patch)
-          : undefined;
-      const values = descriptors?.values;
-      if (
-        descriptors !== undefined &&
-        Reflect.ownKeys(descriptors).length === 1 &&
-        values?.enumerable &&
-        Object.hasOwn(values, 'value') &&
-        values.value !== null &&
-        typeof values.value === 'object' &&
-        !Array.isArray(values.value)
-      ) {
-        const contract = this.materialValueContracts.get(current.value);
-        const valueDescriptors = Object.getOwnPropertyDescriptors(values.value);
-        const numeric =
-          contract !== undefined &&
-          Reflect.ownKeys(valueDescriptors).every((name) => {
-            if (typeof name !== 'string' || contract.textures.has(name)) return false;
-            const entry = valueDescriptors[name];
-            if (!entry?.enumerable || !Object.hasOwn(entry, 'value')) return false;
-            const previous =
-              current.value.kind === 'material' ? current.value.values?.[name] : undefined;
-            // Changing a binding must transfer its holds through complete dependency preparation.
-            if (
-              typeof previous === 'string' ||
-              (previous !== null && typeof previous === 'object' && !Array.isArray(previous))
-            )
-              return false;
-            return (
-              typeof entry.value === 'number' ||
-              typeof entry.value === 'boolean' ||
-              Array.isArray(entry.value)
-            );
-          });
-        if (numeric)
-          return this.#runtime.update(handle, values.value, {
-            field: 'values',
-            prepare: (_current, owned) => {
-              const valid = validateMaterialValues(
-                '<runtime-material>',
-                owned as Record<string, MaterialValue>,
-                contract.parameters,
-              );
-              return valid.ok ? ok({ value: owned }) : valid;
-            },
-          });
-      }
+      const numeric = this.updateNumericMaterialValues(handle, current.value, patch);
+      if (numeric !== undefined) return numeric;
     }
     let projection: MaterialRenderProjection | undefined;
     let textures: ReadonlySet<string> | undefined;
     const committed = this.#runtime.update(handle, patch, {
       prepare: (raw, update) => {
         const current = raw as unknown as Asset;
-        if ('kind' in update || 'parent' in update)
-          return err(
-            new AssetError({
-              code: 'asset-invalid-value',
-              expected: 'runtime content with an unchanged kind and no source inheritance',
-              hint: 'create an independent asset from source content, then edit its runtime fields',
-            }),
-          );
-        if (current.kind === 'material' && 'values' in update) {
-          if (
-            update.values === null ||
-            typeof update.values !== 'object' ||
-            Array.isArray(update.values)
-          )
-            return err(
-              new AssetError({
-                code: 'asset-invalid-value',
-                expected: 'named material values',
-                hint: 'pass a material parameter patch',
-              }),
-            );
-          update.values = { ...current.values, ...update.values };
-        }
-        if (current.kind === 'mesh') {
-          const mesh = prepareRuntimeMeshPatch(current, update);
-          if (!mesh.ok) return mesh;
-          update = mesh.value as Record<string, unknown>;
-        }
-        const prepared = prepareRuntimeAsset({ ...current, ...update } as Asset, (guid) =>
-          this.preparedSource(guid),
-        );
-        if (!prepared.ok) return prepared;
-        if (prepared.value.kind === 'tileset') {
-          const linked = linkRuntimeTileset(prepared.value, this, (guid) =>
-            this.#runtimeByGuid.get(guid),
-          );
-          return linked.ok
-            ? ok({
-                value: { ...update, atlases: linked.value.value.atlases },
-                dependencies: linked.value.dependencies,
-              })
-            : linked;
-        }
-        if (prepared.value.kind === 'font') {
-          const linked = linkRuntimeFont(prepared.value, this, (guid) =>
-            this.#runtimeByGuid.get(guid),
-          );
-          return linked.ok
-            ? ok({
-                value: {
-                  ...update,
-                  atlas: linked.value.value.atlas,
-                  sampler: linked.value.value.sampler,
-                },
-                dependencies: linked.value.dependencies,
-              })
-            : linked;
-        }
+        const admitted = this.prepareContentPatch(current, update);
+        if (!admitted.ok) return admitted;
+        update = admitted.value.patch;
+        const prepared = ok(admitted.value.asset);
+        if (prepared.value.kind === 'tileset')
+          return this.prepareTilesetAssetPatch(prepared.value, update);
+        if (prepared.value.kind === 'font')
+          return this.prepareFontAssetPatch(prepared.value, update);
         if (prepared.value.kind === 'terrain') {
           const checked = prepareRuntimeTerrain(prepared.value, this.#runtime, (guid) =>
             this.#runtimeByGuid.get(guid),
@@ -979,8 +1121,14 @@ export class AssetRegistry implements AssetReferenceOwner {
         (value, captured, limits) =>
           prepareTerrainHeightRange(value, captured, this.#runtime, handle, limits),
       );
-    if (current.value.kind === 'texture')
-      return this.#runtime.writeRange(handle, range as TextureRegion, prepareRuntimeTextureRange);
+    if (current.value.kind === 'texture') {
+      const committed = this.#runtime.writeRange(
+        handle,
+        range as TextureRegion,
+        prepareRuntimeTextureRange,
+      );
+      return committed.ok ? this.refreshTextureGeneratorInputs(handle) : committed;
+    }
     return Array.isArray(range)
       ? this.#runtime.writeRange(handle, range as readonly MeshRange[], prepareRuntimeMeshRanges)
       : this.#runtime.writeRange(handle, range as MeshRange, prepareRuntimeMeshRange);
@@ -990,14 +1138,77 @@ export class AssetRegistry implements AssetReferenceOwner {
     return this.#runtime.snapshot(handle);
   }
 
+  /** Read the current owned revision for an offline candidate's compare-and-replace guard. */
+  revision(handle: AssetHandle): Result<number, AssetError> {
+    return this.#runtime.version(handle);
+  }
+
+  /** Replace complete content only when the target still has the captured revision. */
+  replaceAtRevision<K extends string, P>(
+    handle: AssetHandle<K, P>,
+    expectedRevision: number,
+    raw: P extends ParticleEffectAsset ? ParticleEffectInput : P,
+  ): Result<void, AssetError | MaterialError> {
+    if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0)
+      return err(
+        new AssetError({
+          code: 'asset-invalid-value',
+          expected: 'a non-negative safe integer revision captured before candidate work',
+          hint: 'read registry.revision(handle) when freezing the source used by the candidate',
+        }),
+      );
+    const current = this.#runtime.version(handle);
+    if (!current.ok) return current;
+    if (current.value !== expectedRevision)
+      return err(
+        new AssetError({
+          code: 'asset-write-conflict',
+          expected: `asset revision ${expectedRevision} before offline candidate publication`,
+          hint: 'discard this stale candidate and retry from the currently published asset state',
+        }),
+      );
+    return this.replace(handle, raw);
+  }
+
   /** Atomically replace complete content while preserving the directly bound identity. */
   replace<K extends string, P>(
     handle: AssetHandle<K, P>,
     input: P extends ParticleEffectAsset ? ParticleEffectInput : P,
   ): Result<void, AssetError | MaterialError>;
   replace(handle: AssetHandle, raw: unknown): Result<void, AssetError | MaterialError> {
+    const committed = this.replaceContent(handle, raw);
+    return committed.ok ? this.refreshTextureGeneratorInputs(handle) : committed;
+  }
+
+  private replaceContent(
+    handle: AssetHandle,
+    raw: unknown,
+  ): Result<void, AssetError | MaterialError> {
     const kind = this.#runtime.kind(handle);
     if (!kind.ok) return kind;
+    const current = this.#runtime.borrow<Asset>(handle);
+    if (!current.ok) return current;
+    const derived = this.terrainDerivedWrite(current.value);
+    if (derived !== undefined) return err(derived);
+    if (kind.value === 'texture-generator') {
+      if (
+        raw === null ||
+        typeof raw !== 'object' ||
+        !('kind' in raw) ||
+        raw.kind !== 'texture-generator'
+      )
+        return err(
+          new AssetError({
+            code: 'asset-invalid-value',
+            expected: 'an unchanged generator kind',
+            hint: 'replace using a complete texture-generator payload',
+          }),
+        );
+      const valid = validateTextureGenerator(raw, true);
+      if (!valid.ok) return valid;
+      const { kind: _kind, ...fields } = valid.value;
+      return this.updateTextureGeneratorGroup(handle, fields);
+    }
     if (requiresOwnerPreparation(kind.value)) {
       const replaced = this.#runtime.adopt(
         kind.value,
@@ -1009,10 +1220,6 @@ export class AssetRegistry implements AssetReferenceOwner {
       return replaced.ok ? ok(undefined) : replaced;
     }
     const input = raw as Asset;
-    const current = this.#runtime.borrow<Asset>(handle);
-    if (!current.ok) return current;
-    const derived = this.terrainDerivedWrite(current.value);
-    if (derived !== undefined) return err(derived);
     if (current.value.kind === 'terrain') {
       if (input.kind !== 'terrain')
         return err(
@@ -1392,6 +1599,15 @@ export class AssetRegistry implements AssetReferenceOwner {
     }
   }
 
+  private runtimeSource(guid: string): Asset | undefined {
+    const handle = this.#runtimeByGuid.get(guid.toLowerCase());
+    if (handle !== undefined) {
+      const content = this.#runtime.borrow<Asset>(handle);
+      if (content.ok) return content.value;
+    }
+    return this.preparedSource(guid);
+  }
+
   private preparedSource(guid: string): Asset | undefined {
     return this.#source?.entry(guid.toLowerCase())?.value as Asset | undefined;
   }
@@ -1709,6 +1925,27 @@ export class AssetRegistry implements AssetReferenceOwner {
     this.#source?.preparePublication(candidate.pack, candidate.rows, candidate.assets);
   }
 
+  private invalidPreparedAuthorPath(path: readonly string[]): boolean {
+    return (
+      path.length === 0 ||
+      path[0] === 'kind' ||
+      path.some((part) => ['__proto__', 'prototype', 'constructor'].includes(part))
+    );
+  }
+
+  private installAdoptedMaterialProjection(asset: Asset): void {
+    const cooked = (asset as MaterialAsset & { cooked?: MaterialReady['record'] }).cooked;
+    if (cooked)
+      this.materialPayloadProjections.set(
+        asset,
+        installMaterialReadyShaders(
+          this.shaderRegistry,
+          { status: 'Ready', record: cooked },
+          this.materialArtifactRegistry,
+        ),
+      );
+  }
+
   /**
    * Adopt privately prepared content as runtime edits under existing GUID bindings.
    * Source/Catalog publication stays unchanged; sourceOf continues to report edits.
@@ -1745,12 +1982,7 @@ export class AssetRegistry implements AssetReferenceOwner {
     for (const field of fields) {
       const guid = field.guid.toLowerCase();
       const source = replacements.get(guid) ?? candidate.assets.get(guid);
-      if (
-        !source ||
-        field.path.length === 0 ||
-        field.path[0] === 'kind' ||
-        field.path.some((part) => ['__proto__', 'prototype', 'constructor'].includes(part))
-      )
+      if (!source || this.invalidPreparedAuthorPath(field.path))
         return err(
           new AssetError({
             code: 'asset-invalid-value',
@@ -1838,40 +2070,39 @@ export class AssetRegistry implements AssetReferenceOwner {
         );
       visiting.add(key);
       const dependencies: number[] = [];
-      if (asset.kind !== 'plugin' && this.#decoders.referencePolicy(row.kind) !== 'deferred')
+      if (row.kind !== 'plugin' && this.#decoders.referencePolicy(row.kind) !== 'deferred')
         for (const ref of row.refs ?? []) {
           const linked = adopt(ref);
           if (!linked.ok) return linked;
           dependencies.push(linked.value);
         }
-      if (asset.kind === 'material') {
-        const cooked = (asset as MaterialAsset & { cooked?: MaterialReady['record'] }).cooked;
-        if (cooked)
-          this.materialPayloadProjections.set(
-            asset,
-            installMaterialReadyShaders(
-              this.shaderRegistry,
-              { status: 'Ready', record: cooked },
-              this.materialArtifactRegistry,
-            ),
-          );
-      }
+      if (row.kind === 'material') this.installAdoptedMaterialProjection(asset);
       let content = asset;
-      if (asset.kind === 'scene') {
+      if (row.kind === 'scene') {
         // Scene decoder leaves schema-dependent reference indices in source form.
         // Resolve against this candidate's table before treating numbers as handles.
-        const linked = this.linkScene(asset, staged, envelopes.get(key)?.refs);
+        const linked = this.linkScene(asset as SceneAsset, staged, envelopes.get(key)?.refs);
         if (!linked.ok) return linked;
         content = linked.value.value;
         dependencies.push(...linked.value.dependencies);
       }
-      const created = this.createRuntimeContent(
-        content,
-        dependencies,
-        staged,
-        existing as AssetHandle<Asset['kind']> | undefined,
-        sourceContent,
-      );
+      const created = isBuiltinAssetKind(row.kind)
+        ? this.createRuntimeContent(
+            content,
+            dependencies,
+            staged,
+            existing as AssetHandle<Asset['kind']> | undefined,
+            sourceContent,
+          )
+        : this.#runtime.adopt(
+            row.kind,
+            content,
+            dependencies,
+            this.#decoders.canPrepare(row.kind) || replacements.has(key)
+              ? (owned: unknown) => this.prepareWithDecoder(row.kind, owned, staged)
+              : undefined,
+            existing,
+          );
       if (!created.ok) return created;
       staged.set(key, created.value);
       visiting.delete(key);
@@ -1923,15 +2154,18 @@ export class AssetRegistry implements AssetReferenceOwner {
     if (!result.ok) return result;
     for (const [guid, handle] of staged) {
       this.#runtimeByGuid.set(guid, handle);
-      if (!this.#runtimeGuids.has(handle))
+      if (!this.#runtimeGuids.has(handle)) {
+        const row = rows.get(guid);
+        if (row === undefined) throw new TypeError(`Missing staged catalog row ${guid}`);
         this.#runtimeGuids.set(handle, {
           guid,
-          kind: this.#runtime.borrow<Asset>(handle).unwrap().kind,
+          kind: row.kind,
           source: this.#source,
           revision: -1,
           publication: undefined,
           contentKey: undefined,
         });
+      }
     }
     return ok(undefined);
   }
@@ -2021,7 +2255,9 @@ export class AssetRegistry implements AssetReferenceOwner {
         ? {}
         : { maxConcurrentReads: options.maxConcurrentReads }),
     };
-    this.#runtime = new AssetRecords(options.limits);
+    this.#runtime = new AssetRecords(options.limits, (content) =>
+      this.copySnapshotContent(content),
+    );
     this.#decoders = new DecoderRegistry(options);
     installRuntimeAssets(
       this,
@@ -2108,6 +2344,35 @@ export class AssetRegistry implements AssetReferenceOwner {
     return projection;
   }
 
+  /**
+   * The accepted program projection of one live material. A detached `read()` copy is not the
+   * accepted payload and carries no projection, so a holder of a handle asks here.
+   */
+  getMaterialProjection(
+    handle: AssetHandle<'material'>,
+  ): Result<MaterialRenderProjection | undefined, AssetError> {
+    const valid = this.validate(handle, 'material');
+    if (!valid.ok) return valid;
+    return ok(
+      this.getMaterialProjectionForPayload(this.#runtime.borrow<MaterialAsset>(handle).unwrap()),
+    );
+  }
+
+  private copySnapshotContent<T>(content: T): T {
+    const copied = copyAssetData(content);
+    if (
+      content !== null &&
+      typeof content === 'object' &&
+      copied !== null &&
+      typeof copied === 'object'
+    ) {
+      const projection = this.materialPayloadProjections.get(content);
+      // A fixed copy retains the accepted program facts from this exact content.
+      if (projection !== undefined) this.materialPayloadProjections.set(copied, projection);
+    }
+    return copied;
+  }
+
   private prepareMaterialProgramProjection(
     material: MaterialAsset,
     sourceContent: (guid: string) => Asset | undefined = (guid) => this.preparedSource(guid),
@@ -2158,6 +2423,8 @@ export class AssetRegistry implements AssetReferenceOwner {
   /** Release completed source reads; held content and in-flight reads remain valid. */
   trimReadCache(): void {
     this.#source?.trimReadCache();
+    // Other owners in this realm, such as derived device texels, share the budget.
+    trimRetainedBytes();
   }
 
   /** Discard one decoded source; accepted runtime content changes only on explicit reload. */
@@ -2443,6 +2710,8 @@ export class AssetRegistry implements AssetReferenceOwner {
 /** Domain descriptors use their installed owner for the same admission as source decode. */
 function requiresOwnerPreparation(kind: string): boolean {
   return (
+    kind === 'texture-generator' ||
+    kind === 'gpu-texture' ||
     kind === 'particle-effect' ||
     kind === 'audio' ||
     kind === 'sampler' ||

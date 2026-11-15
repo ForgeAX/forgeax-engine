@@ -9,7 +9,6 @@ import {
   ParticleEffectPlayer,
   VFX_GPU_RUNTIME_RESOURCE_KEY,
   type VfxGpuEffectAsset,
-  type VfxGpuRuntime,
   vfxGpuRuntimePlugin,
 } from '@forgeax/engine-vfx';
 import { cookParticleCodeProgram } from '@forgeax/engine-vfx-compiler';
@@ -120,7 +119,7 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
     viewProjection: identity(),
   };
   type Frame = Parameters<ReturnType<typeof gpuParticleRenderFeature>['plan']>[0];
-  type Intent = Frame['worlds'][number]['intents'][number];
+  type Intent = NonNullable<Frame['source']>['intents'][number];
   let sequence = 0;
   const intent = (
     seed: number,
@@ -173,37 +172,34 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
   let frameNumber = 0;
   const frame = (intents: Intent[], retained: Intent[] = []): Frame => ({
     frameNumber: ++frameNumber,
-    worlds: [
-      {
-        sourceWorldIndex: 0,
-        worldId: 0,
-        runtimeId: 0,
-        renderGeneration: 0,
-        camera,
-        views: [{ identity: 'main', camera }],
-        emitterState: new Map([
-          [
-            `${Number(player)}:restart`,
-            {
-              enabled: true,
-              localToWorld: identity(),
-              player,
-              emitter: required(references.get(cooked)),
-            },
-          ],
-        ]),
-        materials: new Map(),
-        meshes: new Map(),
-        intents,
-        retained: retained.map((intent) => ({
-          player,
-          emitter: intent.emitter,
-          intent,
-          localToWorld: identity(),
-          visible: false,
-        })),
-      },
-    ],
+    source: {
+      worldId: 0,
+      runtimeId: 0,
+      renderGeneration: 0,
+      camera,
+      views: [{ identity: 'main', camera }],
+      emitterState: new Map([
+        [
+          `${Number(player)}:restart`,
+          {
+            enabled: true,
+            localToWorld: identity(),
+            player,
+            emitter: required(references.get(cooked)),
+          },
+        ],
+      ]),
+      materials: new Map(),
+      meshes: new Map(),
+      intents,
+      retained: retained.map((intent) => ({
+        player,
+        emitter: intent.emitter,
+        intent,
+        localToWorld: identity(),
+        visible: false,
+      })),
+    },
   });
   const makeOwner = () =>
     createRenderFeatureGpuWorkOwner({
@@ -222,7 +218,7 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
       .plan(
         input,
         singleViewContext({
-          resolveAsset: (_index, handle, revision) =>
+          resolveAsset: (handle, revision) =>
             runtimeAssets(world.assets).resolveAsset(handle, revision),
           targets: [],
           caps: device.caps,
@@ -547,7 +543,7 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
         })
         .unwrap();
       world.update(1 / 60).unwrap();
-      const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+      const runtime = world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY);
       expect(runtime.snapshot().map((intent) => intent.programFingerprint)).toEqual([
         required(references.get(cooked)).fingerprint,
         required(references.get(incompatible)).fingerprint,
@@ -556,8 +552,7 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
       const source = gpuParticleRenderFeature({ camera: { read: () => camera } });
       const published = source
         .extract({
-          worlds: [world],
-          owner: 0,
+          world: world,
           frameNumber: ++frameNumber,
           views: [{ identity: 'main', render: true }],
         })
@@ -596,8 +591,7 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
       world.update(1 / 60).unwrap();
       const recovery = source
         .extract({
-          worlds: [world],
-          owner: 0,
+          world: world,
           frameNumber: ++frameNumber,
           views: [{ identity: 'main', render: true }],
         })
@@ -615,7 +609,7 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
       replayed = prepare(recovery, feature, recoveredOwner, 2);
       expect(submittedPrograms(replayed)).toEqual(expected);
       await execute(replayed);
-      const finalIntent = required(required(recovery.worlds[0]).intents.at(-1));
+      const finalIntent = required(required(recovery.source).intents.at(-1));
       const standalone = prepare(frame([finalIntent]), freshFeature, freshOwner);
       await execute(standalone);
       const finalPrefix = finalStoragePrefix(replayed);
@@ -648,13 +642,12 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
       expect(runtime.snapshot().map((intent) => intent.reset)).toEqual([true, true]);
       const editedFrame = source
         .extract({
-          worlds: [world],
-          owner: 0,
+          world: world,
           frameNumber: ++frameNumber,
           views: [{ identity: 'main', render: true }],
         })
         .unwrap();
-      const editedIntents = required(editedFrame.worlds[0]).intents;
+      const editedIntents = required(editedFrame.source).intents;
       expect(editedIntents.map((intent) => intent.emitter.effect)).toEqual([
         editedHandle,
         editedHandle,

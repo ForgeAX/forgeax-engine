@@ -1,7 +1,9 @@
+import { InputFrameStartScan } from "@forgeax/engine-input";
+import { defineSystem } from "@forgeax/engine-ecs";
 import { createApp } from '@forgeax/engine-app/browser';
 import { Update } from '@forgeax/engine-ecs';
 import { BLOOM_DISABLED, BLOOM_ENABLED, Camera } from '@forgeax/engine/render';
-import { FRAME_START_SCAN_SYSTEM_NAME, INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine-input';
+import { INPUT_SNAPSHOT_RESOURCE_KEY } from '@forgeax/engine-input';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { buildBloom2dWorld } from './bloom-2d';
 
@@ -18,12 +20,12 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   const scene = buildBloom2dWorld(app.world);
   const state = { bloomEnabled: false, toggles: 0, quadCount: scene.quadCount, brightCount: scene.brightCount };
   let previousSpace = false;
-  app.world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'bevy-bloom-2d-toggle',
-    after: [FRAME_START_SCAN_SYSTEM_NAME],
+    after: [InputFrameStartScan],
     queries: [],
     fn: (world) => {
-      const snapshot = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+      const snapshot = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
       const space = snapshot.keyboard.down(' ');
       if (space && !previousSpace) {
         state.bloomEnabled = !state.bloomEnabled;
@@ -33,6 +35,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       previousSpace = space;
     },
   });
+app.world.addSystem(Update, systemToken1);
   const started = app.start();
   if (!started.ok) {
     console.error('[bevy-bloom-2d] app.start failed:', started.error.code, started.error.hint);

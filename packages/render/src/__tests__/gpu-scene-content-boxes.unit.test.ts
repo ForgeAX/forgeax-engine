@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import {
   GpuSceneContentBoxes,
   type GpuSceneSlotBounds,
-  type GpuSceneSlotRowBoxes,
   type SceneContentCursor,
 } from '../gpu-scene-content-boxes';
 import type {
@@ -13,7 +12,6 @@ import type {
 import { CONTENT_BOX, CONTENT_CHANGED, RowChangeLog } from '../scene/row-change-log';
 
 const slot = {
-  worldId: 0,
   entityKey: 1,
   slot: 3,
   generation: 1,
@@ -48,14 +46,9 @@ class Journal {
   readonly boxes = new GpuSceneContentBoxes();
   private readonly cursors: SceneContentCursor[] = [{ journal: this.log, position: 0 }];
 
-  record(
-    at: number,
-    change: RenderSceneApplyResult,
-    boundsOf?: GpuSceneSlotBounds,
-    rowBoxesOf?: GpuSceneSlotRowBoxes,
-  ): void {
+  record(at: number, change: RenderSceneApplyResult, boundsOf?: GpuSceneSlotBounds): void {
     expect(at).toBe(this.cursors.length);
-    this.boxes.record(this.log, change, boundsOf, rowBoxesOf);
+    this.boxes.record(this.log, change, boundsOf);
     this.cursors.push({ journal: this.log, position: this.log.position });
   }
 
@@ -108,6 +101,10 @@ class Journal {
     return this.boxes.changedSlotsSince(this.at(since), this.at(current));
   }
 
+  hasChangedSlotsSince(since: number, current: number) {
+    return this.boxes.hasChangedSlotsSince(this.at(since), this.at(current));
+  }
+
   slotBoundsSince(since: number, current: number, slots: Iterable<number>) {
     return this.boxes.slotBoundsSince(this.at(since), this.at(current), slots);
   }
@@ -115,9 +112,8 @@ class Journal {
 
 const union: RenderSceneBounds = { min: [0, 0, 0], max: [512, 2, 512] };
 const moved: RenderSceneBounds = { min: [0, 0, 0], max: [600, 2, 512] };
-const rowBoxes = new Float32Array([10, 0, 10, 12, 2, 12, 598, 0, 10, 600, 2, 12]);
 
-describe('GpuSceneContentBoxes row boxes', () => {
+describe('GpuSceneContentBoxes slot boxes', () => {
   it('keeps material-only changes independent of object membership and reports removed slots', () => {
     const log = new Journal();
     log.record(1, delta({ createdSlots: [slot] }));
@@ -127,6 +123,8 @@ describe('GpuSceneContentBoxes row boxes', () => {
     log.record(3, delta({ removedSlots: [slot] }));
     expect(log.changedSlotsSince(2, 3)).toEqual([slot.slot]);
     expect(log.changedSince(2, 3)).toBe('unbounded');
+    expect(log.hasChangedSlotsSince(1, 2)).toBe(false);
+    expect(log.hasChangedSlotsSince(2, 3)).toBe(true);
   });
 
   it('retains mesh-content evidence for independent views and skips unrelated slots', () => {
@@ -143,43 +141,15 @@ describe('GpuSceneContentBoxes row boxes', () => {
     expect(log.changedSince(2, 3, new Set([99]))).toEqual(new Float32Array());
   });
 
-  it('records the moved rows of an instance-only update instead of the union', () => {
+  it('records the old and new union of an instance-only update', () => {
     const log = new Journal();
     log.record(1, delta({ createdSlots: [slot] }), () => union);
-    log.record(
-      2,
-      delta({ updatedSlots: [slot], instanceUpdatedSlots: [slot] }),
-      () => moved,
-      () => rowBoxes,
-    );
-    expect(Array.from(log.changedSince(1, 2) as Float32Array)).toEqual(Array.from(rowBoxes));
-    expect(log.changedSlotsSince(1, 2)).toEqual([3]);
-    // The retained union follows the move, so a later whole-slot change
-    // reports the new union as its old box.
-    log.record(3, delta({ updatedSlots: [slot], contentUpdatedSlots: [slot] }), () => union);
-    expect(Array.from(log.changedSince(2, 3) as Float32Array)).toEqual([
-      0, 0, 0, 600, 2, 512, 0, 0, 0, 512, 2, 512,
-    ]);
-  });
-
-  it('keeps union boxes for content updates and unanswered row boxes', () => {
-    const log = new Journal();
-    log.record(1, delta({ createdSlots: [slot] }), () => union);
-    log.record(
-      2,
-      delta({ updatedSlots: [slot], contentUpdatedSlots: [slot] }),
-      () => moved,
-      () => rowBoxes,
-    );
+    log.record(2, delta({ updatedSlots: [slot], instanceUpdatedSlots: [slot] }), () => moved);
     expect(Array.from(log.changedSince(1, 2) as Float32Array)).toEqual([
       0, 0, 0, 512, 2, 512, 0, 0, 0, 600, 2, 512,
     ]);
-    log.record(
-      3,
-      delta({ updatedSlots: [slot], instanceUpdatedSlots: [slot] }),
-      () => union,
-      () => undefined,
-    );
+    expect(log.changedSlotsSince(1, 2)).toEqual([3]);
+    log.record(3, delta({ updatedSlots: [slot], contentUpdatedSlots: [slot] }), () => union);
     expect(Array.from(log.changedSince(2, 3) as Float32Array)).toEqual([
       0, 0, 0, 600, 2, 512, 0, 0, 0, 512, 2, 512,
     ]);
@@ -232,7 +202,6 @@ describe('GpuSceneContentBoxes changedBoundsMiss', () => {
     };
     const rowOf = (index: number): RenderSceneSlot =>
       ({
-        worldId: 0,
         entityKey: index + 1,
         slot: index,
         generation: 1,

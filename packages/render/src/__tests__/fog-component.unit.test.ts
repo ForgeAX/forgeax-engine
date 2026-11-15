@@ -27,8 +27,8 @@ describe('Fog component contract', () => {
   it('exposes one bounded authoring component with stable defaults', () => {
     expect(Fog.name).toBe('Fog');
     expect(Fog.fields.color.type).toBe('array<f32, 3>');
-    expect(Fog.fields.density.default).toBe(0.01);
-    expect(Fog.fields.heightFalloff.default).toBe(0);
+    expect(Fog.fields.density.default).toBeCloseTo(0.000960906, 9);
+    expect(Fog.fields.heightFalloff.default).toBeCloseTo(0.0138629436112, 9);
     expect(Fog.fields.maxOpacity.default).toBe(1);
     expect(Fog.fields.skyOpacity.type).toBe('f32');
     expect(Fog.fields.skyOpacity.default).toBe(1);
@@ -37,8 +37,8 @@ describe('Fog component contract', () => {
     const entity = world.spawn({ component: Fog, data: {} }).unwrap();
     const value = world.get(entity, Fog).unwrap();
     expect(Array.from(value.color)).toEqual([0, 0, 0]);
-    expect(value.density).toBeCloseTo(0.01);
-    expect(value.heightFalloff).toBe(0);
+    expect(value.density).toBeCloseTo(0.000960906, 9);
+    expect(value.heightFalloff).toBeCloseTo(0.0138629436112, 9);
     expect(value.maxOpacity).toBe(1);
     expect(value.mode).toBe(FogModeValue.exp);
     expect(value.near).toBe(0);
@@ -72,8 +72,20 @@ describe('Fog component contract', () => {
   });
 
   it('accepts Three.js Fog(color, near, far) and FogExp2(color, density) shapes', () => {
+    const world = new World();
+    const entity = world.spawn({ component: Fog, data: {} }).unwrap();
+    const heightFalloff = world.get(entity, Fog).unwrap().heightFalloff;
     expect(selectionIssue({ ...EXP_FOG, mode: 'linear', near: 65, far: 125 })).toBeUndefined();
     expect(selectionIssue({ ...EXP_FOG, mode: 'exp2', density: 0.02 })).toBeUndefined();
+    // Switching distance laws must not require clearing the default height profile.
+    expect(
+      selectionIssue({
+        ...EXP_FOG,
+        mode: 'linear',
+        heightFalloff,
+      }),
+    ).toBeUndefined();
+    expect(selectionIssue({ ...EXP_FOG, mode: 'exp2', heightFalloff })).toBeUndefined();
   });
 
   it.each([
@@ -81,8 +93,6 @@ describe('Fog component contract', () => {
     ['near', { mode: 'linear', near: -1 }],
     ['far', { mode: 'linear', near: 50, far: 50 }],
     ['far', { mode: 'linear', far: Number.POSITIVE_INFINITY }],
-    ['heightFalloff', { mode: 'exp2', heightFalloff: 0.1 }],
-    ['heightFalloff', { mode: 'linear', heightFalloff: 0.1 }],
   ] as const)('rejects an invalid %s for its mode', (field, override) => {
     expect(selectionIssue({ ...EXP_FOG, ...override })?.field).toBe(field);
   });

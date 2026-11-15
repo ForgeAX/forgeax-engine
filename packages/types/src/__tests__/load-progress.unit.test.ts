@@ -300,4 +300,15 @@ describe('load progress text', () => {
       percent: 100,
     });
   });
+
+  it('merges partial Host text without changing the shared English defaults', () => {
+    const labels = resolveLoadProgressLabels({
+      host: { game: 'Application', startupFailed: 'Application unavailable' },
+    });
+    expect(labels.host.game).toBe('Application');
+    expect(labels.host.startupFailed).toBe('Application unavailable');
+    expect(labels.host.copyDiagnostics).toBe('Copy diagnostics');
+    expect(DEFAULT_LOAD_PROGRESS_LABELS.host.game).toBe('Game');
+    expect(resolveLoadProgressLabels().host).toEqual(DEFAULT_LOAD_PROGRESS_LABELS.host);
+  });
 });

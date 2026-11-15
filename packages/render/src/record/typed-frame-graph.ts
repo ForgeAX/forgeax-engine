@@ -1,180 +1,269 @@
+import {
+  type SharedFeatureGraphPublication,
+  sharedFeatureGraphPublication,
+} from '../assembly/feature-frame-graph';
+
 import type { RecordedView } from '../assembly/frame-recording';
+
 import type { RendererFrameStageResult } from '../assembly/renderer-frame-transaction';
+
 import { isCaptureViewPipeline } from '../capture/capture-view';
-import { isTemporalAntialias } from '../components/camera';
+
+import { isMultisampleAntialias, isTemporalAntialias } from '../components/camera';
+
 import { projectedDecalTopology } from '../decals/graph';
-import { addAtmosphereBackground } from '../environment/background';
-import { recordAtmosphereCaptureBackground } from '../environment/capture';
+
+import { captureEditorAssistanceView } from '../features/editor-assistance/feature';
+
 import { chromaticAberrationActive, outputLensEffectsActive } from '../features/lens-effects';
+
 import { isOutlinePostProcess } from '../features/outline/shaders';
+
+import { importSharedGraphTextures } from '../features/shared-graph-textures';
+
 import { renderFeatureViewIdentity } from '../features/view';
-import { pmremExtent } from '../ibl/pmrem';
+
 import {
   addStandardClusterMembershipPass,
   importStandardClusterBuffers,
   standardClusterReadAccesses,
 } from '../pipeline/standard-lighting/graph';
+
 import { addBakedFieldPasses, bakedFieldGraphShape } from '../raytracing/baked-field-graph';
+
 import { addRayDiffusePasses } from '../raytracing/diffuse-graph';
+
 import {
   addIrradianceFieldPasses,
   irradianceFieldGraphShape,
 } from '../raytracing/irradiance-field-graph';
+
 import { addProbeGlobalPasses, probeGlobalGraphShape } from '../raytracing/probe-global-graph';
+
 import { addProbePlacementPass } from '../raytracing/probe-placement-graph';
+
 import { addScreenProbePasses, screenProbeGraphShape } from '../raytracing/screen-probe-graph';
+
 import { ShadowDepthLayers } from '../shadow-depth-layers';
+
+import { waterSsrTemporalEnabled } from '../ssr/water-profile';
+
 import {
   sceneDataTopologyFields,
   standardAoSceneDataUnavailable,
 } from '../temporal/standard-scene-data-admission';
+
 import { type TerrainShadowReceiver, terrainShadowTopology } from '../terrain/shadow-family';
-import { addTypedShadowPasses, shadowPipelinePreparationDemand } from '../typed-shadow-passes';
+
+import {
+  addPlanarReflectionPass,
+  addTypedShadowPasses,
+  importSharedShadowTargets,
+  type SharedShadowSource,
+  shadowPipelinePreparationDemand,
+} from '../typed-shadow-passes';
+
+import {
+  type WaterFluidMaterialPublication,
+  waterFluidBodyDescriptorReader,
+  waterFluidMaterialTopology,
+} from '../water/fluid-graph';
+
 import { EMPTY_VIEW_FEATURE_PLAN, type ViewFeaturePlan } from '../world/feature-plan-systems';
+
 import { recordViewFeatureGraph } from '../world/feature-systems';
+
 import { EMPTY_VIEW_PASS_PLAN, planOpaque, type ViewPassPlan } from '../world/pass-plan-systems';
+
 import type { ViewLights } from '../world/render-lights';
+
 import { renderSubmission, renderWorldFor } from '../world/render-world';
+
 import { reflectionFallbackDemandOf } from '../world/ssr-admission-systems';
+
 import { recordContext } from '../world/view-record-context';
+
 import { retainedFrameGraphPolicyMatches, serializeFrameGraphKey } from './frame-graph-key';
-import { resolveSpotShadowMapSize } from './frame-targets';
+
+import {
+  createRenderGraphPassInstrumentation,
+  renderGraphPassInstrumentationActive,
+  resolveSpotShadowMapSize,
+} from './frame-targets';
+
 import { createTimingInstrumentation } from './gpu-pass-timing-instrumentation';
+
 import { executeGraphTargetReplay } from './graph-target-pass-replay';
+
 import {
   encodeGraphTargetCapture,
   encodeReflectionFallbackReadback,
 } from './graph-target-readback';
+
 import {
   clearStaleGtaoCandidatePreparationFault,
   consumeGtaoCandidatePreparationFault,
 } from './gtao-candidate-preparation-fault';
+
 import { flushMeshDrawUploads } from './mesh-ssbo';
-import { addReflectionProbePmremPasses } from './reflection-probe-pmrem';
+
 import { scenePipelinePreparations } from './scene-pipeline-preparation';
+
 import { standardFeatureContribution } from './standard-feature-contribution';
+
 import { addTargetCaptureGraphPasses, type CubeCaptureGraphState } from './target-capture-graph';
 
 export type { CubeCaptureGraphState, CubeCaptureGraphWork } from './target-capture-graph';
 
 import { encodeMipmapLevel } from '@forgeax/engine-assets-runtime';
+
+import type { RecorderSession } from '@forgeax/engine-profiler';
+
 import {
   type CompiledRenderGraph,
+  type GraphTextureView,
   RenderGraphBuilder,
   type RenderGraphError,
+  type RenderGraphFrame,
   type RenderGraphGenerationAllocationEntry,
   type RenderGraphGenerationAllocationInspection,
+  type RenderGraphPassInstrumentation,
   type RenderGraphResourceAllocationInspection,
 } from '@forgeax/engine-render-graph';
-import type {
-  BindGroup,
-  RenderPipeline,
-  RhiCommandEncoder,
-  Sampler,
-  Texture,
-  TextureFormat,
-  TextureView,
-} from '@forgeax/engine-rhi';
+
+import type { RhiCommandEncoder, Texture, TextureFormat, TextureView } from '@forgeax/engine-rhi';
+
 import { multisampleRenderCapability, RhiError } from '@forgeax/engine-rhi';
+
 import { err, ok, type Result } from '@forgeax/engine-types';
+
 import { standardBloomAdmitted } from '../bloom-admission';
-import { CLOUD_LAYER_FEATURE_IDENTITY } from '../cloud/feature';
+import { CLOUD_LAYER_FEATURE_IDENTITY } from '../cloud/contracts';
+import type { CloudTransportFormat } from '../cloud/reconstruction/history';
 import {
   type RenderError,
+  RendererContractFailureError,
   RendererOperationError,
   RenderFeatureStageFailedError,
 } from '../errors/render';
+
 import { depthOfFieldTopology } from '../features/depth-of-field/depth-of-field-feature';
+
 import { resolveDepthOfFieldFrameParams } from '../features/depth-of-field/depth-of-field-params';
+
 import {
   type FeatureGraphConformanceEvent,
   recordFeatureGraphConformanceEvent,
 } from '../features/feature-graph-conformance-trace';
+
 import { featureScopeKey } from '../features/frame-plan';
+
 import {
   getRenderFeaturePlanExecutionProjection,
   hasNativeRenderFeatureExecutionSignature,
   hasSubmissionSensitiveFeatures,
   type RenderFeaturePlanExecution,
+  renderFeaturePlanRequiresPreparedResourceKey,
 } from '../features/host';
-import { motionBlurTemporalDemand } from '../features/motion-blur/motion-blur-params';
+
+import { MOTION_BLUR_FEATURE_IDENTITY } from '../features/motion-blur/motion-blur-feature';
+
 import {
   type RenderFeaturePlannedFrame,
   renderFeaturePlanSignature,
   renderFeaturePlanSignatureEvidenceMatches,
 } from '../features/plan';
+
 import {
   createRenderFeatureProjectionState,
   projectRenderFeatureShadows,
 } from '../features/render-graph-contribution';
+
+import { importRenderFeatureGraphBuffer } from '../features/render-graph-resources';
+
 import {
   inspectTransientViewGraphs,
   selectTransientViewPlans,
 } from '../features/transient-view-graph';
+
 import {
   buildFullscreenPostProcessPass,
   postProcessShaderEntrySignature,
 } from '../fullscreen-post-process-pass';
+
 import type { PreparedGpuDrivenFrame } from '../gpu-driven/production-raster';
-import {
-  GPU_TEXTURE_USAGE_COPY_DST,
-  GPU_TEXTURE_USAGE_COPY_SRC,
-  GPU_TEXTURE_USAGE_RENDER_ATTACHMENT,
-  GPU_TEXTURE_USAGE_STORAGE_BINDING,
-  GPU_TEXTURE_USAGE_TEXTURE_BINDING,
-} from '../gpu-texture-usage';
-import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_UNIFORM } from '../gpu-usage';
+
+import { GPU_TEXTURE_USAGE_TEXTURE_BINDING } from '../gpu-texture-usage';
+
+import { GPU_BUFFER_USAGE_INDIRECT } from '../gpu-usage';
+
 import type { RenderFeatureGraphInspection } from '../inspection-types';
-import type { RenderExtent } from '../pipeline/render-extent';
+
+import { type RenderExtent, renderInternalCopySize } from '../pipeline/render-extent';
+
 import {
   type StandardTopologyInputValue,
   standardLightingTopologySignature,
 } from '../pipeline/standard-lighting/topology';
+
 import { importAutoExposureGraphResources } from '../pipeline/standard-output/auto-exposure/gpu';
+
 import type { StandardLutGraphProjection } from '../pipeline/standard-output/lut-gpu';
+
 import { discardStandardOutputStates } from '../pipeline/standard-output/resources';
+
 import { buildStandard, standardPipeline } from '../pipeline/standard-pipeline';
+
+import { isStandardNamedPostProcess } from '../pipeline/standard-post';
+
 import {
   DEFAULT_STANDARD_PROFILE,
   resolveVolumetricFogProfile,
   STANDARD_PIPELINE_ID,
 } from '../pipeline/standard-profile';
-import { type ProbeBackgroundResources, recordProbeBackground } from '../reflection/background';
+
 import type { CameraSnapshot } from '../render-contract';
+
 import type {
   RenderPipelineBuildContext,
   RenderPipelineFrame,
   RenderPipelineTopology,
 } from '../render-pipeline';
+
 import type { ExtractedVolumetricFog } from '../render-system-extract';
+
 import { SHADOW_ATLAS_DEFAULT_FACE_SIZE } from '../shadow-atlas';
+
 import type { SsrSpatialAdmission } from '../ssr/admission';
-import {
-  CLOUD_HISTORY_FORMATS,
-  getTemporalGpuState,
-  hasPendingTemporalGpuSubmit,
-  TEMPORAL_HISTORY_FORMATS,
-  temporalReadIndex,
-  temporalWriteIndex,
-} from '../temporal/gpu';
+
+import { hasPendingTemporalGpuSubmit } from '../temporal/gpu';
+
 import { createTargetCoverageAttachment } from '../temporal/target-coverage-attachment';
+
 import { usesTsrCompute } from '../tsr/capabilities';
+
 import { hasVolumetricFogCapability } from '../volume/capability';
+
 import { deriveVolumetricFogExtent, deriveVolumetricFogResolvedExtent } from '../volume/resources';
+
+import { WATER_GPU_MESH_FEATURE } from '../water/gpu-mesh-source';
+
 import {
   abortGraphSubmission,
   commitGraphSubmission,
   type GraphSubmission,
 } from '../world/graph-submission-systems';
+
 import { type frameGraphChangedValues, frameGraphTopologyIdentity } from './frame-graph-identity';
-import { buildPerFrameBindGroups } from './frame-lighting';
+
 import {
   getTextureIdentity,
   type InstalledFrameGraph,
   type RenderFrameState,
 } from './frame-snapshot';
-import { createPassTimingInstrumentation } from './gpu-pass-timing/instrumentation';
+
 import type { GpuTimingCapture } from './gpu-timing';
+
 import type {
   FeatureGraphMetricsDelta,
   GraphEffectError,
@@ -182,15 +271,20 @@ import type {
   GraphRejectCode,
   ViewGraphCompileOutcome,
 } from './graph-adoption';
-import { encodeMainPass } from './main-pass';
+
 import { deriveMotionBlurExecutionReceipt } from './motion-blur-receipt';
+
+import { activeRenderProfileSession } from './profile-session';
+
 import type {
   _InternalRenderPipelineContext,
   PipelineState,
   RenderSystemInternals,
 } from './render-context';
-import { resolveSurfaceProfile } from './render-context';
-import { installScenePasses, registerScenePass, scenePassContext } from './scene-pass-work';
+
+import { resolveSurfaceProfile, runProfiledRenderPhase } from './render-context';
+
+import { installScenePasses } from './scene-pass-work';
 
 /** Consumers other than the main camera that may sample a frame's shadow maps. */
 export interface ShadowSamplerRoster {
@@ -219,750 +313,6 @@ export function shadowCameraCullAdmitted(roster: ShadowSamplerRoster): boolean {
     !roster.planarReflection &&
     roster.featureSceneInputs === 0
   );
-}
-
-function importTemporalHistoryTarget(
-  graph: RenderGraphBuilder<RenderPipelineFrame>,
-  label: string,
-  kind: 'color' | 'temporal' | 'stability' | 'flicker',
-  role: 'read' | 'write',
-  algorithm: 'taa' | 'tsr',
-  compute: boolean,
-): import('../render-pipeline').RenderPipelineTarget {
-  const format =
-    algorithm === 'tsr' && kind === 'stability' ? 'rgba8unorm' : TEMPORAL_HISTORY_FORMATS[kind];
-  const resolveSurface = (frame: RenderPipelineFrame) => {
-    const internal = frame as import('./render-context')._InternalRenderPipelineContext;
-    const state = getTemporalGpuState(
-      internal.frameState,
-      internal.runtime.device,
-      recordContext(internal.runtime).deviceScope,
-      frame.targetW,
-      frame.targetH,
-      false,
-      frame.camera,
-    );
-    const index = role === 'read' ? temporalReadIndex(state) : temporalWriteIndex(state);
-    const pair = state[kind];
-    if (pair === undefined) throw new Error(`temporal ${kind} history resolved for ${algorithm}`);
-    return pair[index];
-  };
-  const texture = graph.importTexture(
-    algorithm === 'tsr' ? label.replace('taa-', 'tsr-') : label,
-    {
-      format,
-      size: 'surface',
-      usage:
-        GPU_TEXTURE_USAGE_COPY_SRC |
-        GPU_TEXTURE_USAGE_COPY_DST |
-        GPU_TEXTURE_USAGE_RENDER_ATTACHMENT |
-        GPU_TEXTURE_USAGE_TEXTURE_BINDING |
-        (algorithm === 'tsr' && compute ? GPU_TEXTURE_USAGE_STORAGE_BINDING : 0),
-    },
-    (frame) => resolveSurface(frame).texture,
-  );
-  if (!texture.ok) throw texture.error;
-  const view = graph.importView(
-    texture.value,
-    { label: `${label}.view`, dimension: '2d' },
-    (frame) => resolveSurface(frame).view,
-  );
-  if (!view.ok) throw view.error;
-  return { texture: texture.value, view: view.value, format, sampleCount: 1 };
-}
-
-function importTemporalHistoryTargets(
-  graph: RenderGraphBuilder<RenderPipelineFrame>,
-  algorithm: 'taa' | 'tsr',
-  compute: boolean,
-): NonNullable<
-  import('../render-pipeline').RenderPipelineBuildContext<RenderPipelineFrame>['taaHistory']
-> {
-  return {
-    currentColor: importTemporalHistoryTarget(
-      graph,
-      'taa-history-current-color',
-      'color',
-      'write',
-      algorithm,
-      compute,
-    ),
-    currentStability: importTemporalHistoryTarget(
-      graph,
-      'taa-history-current-stability',
-      'stability',
-      'write',
-      algorithm,
-      compute,
-    ),
-    previousStability: importTemporalHistoryTarget(
-      graph,
-      'taa-history-previous-stability',
-      'stability',
-      'read',
-      algorithm,
-      compute,
-    ),
-    previousColor: importTemporalHistoryTarget(
-      graph,
-      'taa-history-previous-color',
-      'color',
-      'read',
-      algorithm,
-      compute,
-    ),
-    currentTemporal: importTemporalHistoryTarget(
-      graph,
-      'taa-history-current-temporal',
-      'temporal',
-      'write',
-      algorithm,
-      compute,
-    ),
-    previousTemporal: importTemporalHistoryTarget(
-      graph,
-      'taa-history-previous-temporal',
-      'temporal',
-      'read',
-      algorithm,
-      compute,
-    ),
-    ...(algorithm === 'taa'
-      ? {
-          currentFlicker: importTemporalHistoryTarget(
-            graph,
-            'taa-history-current-flicker',
-            'flicker',
-            'write',
-            algorithm,
-            compute,
-          ),
-          previousFlicker: importTemporalHistoryTarget(
-            graph,
-            'taa-history-previous-flicker',
-            'flicker',
-            'read',
-            algorithm,
-            compute,
-          ),
-        }
-      : {}),
-  };
-}
-
-type CloudHistoryKind = keyof typeof CLOUD_HISTORY_FORMATS;
-
-function cloudHistorySurface(
-  state: import('../temporal/gpu').TemporalGpuState,
-  kind: CloudHistoryKind,
-  index: 0 | 1,
-): { readonly texture: Texture; readonly view: TextureView } {
-  if (!state.cloudHistoryEnabled) {
-    throw new Error('cloud history target resolved without a cloud-enabled temporal state');
-  }
-  switch (kind) {
-    case 'radiance':
-      if (state.cloudRadiance === undefined)
-        throw new Error('cloud radiance history is unavailable');
-      return state.cloudRadiance[index];
-    case 'transmittance':
-      if (state.cloudTransmittance === undefined)
-        throw new Error('cloud transmittance history is unavailable');
-      return state.cloudTransmittance[index];
-    case 'depth':
-      if (state.cloudDepth === undefined) throw new Error('cloud depth history is unavailable');
-      return state.cloudDepth[index];
-  }
-}
-
-/** Import one renderer-owned cloud history attachment into the typed graph. */
-function importCloudHistoryTarget(
-  graph: RenderGraphBuilder<RenderPipelineFrame>,
-  label: string,
-  kind: CloudHistoryKind,
-  role: 'read' | 'write',
-): import('../render-pipeline').RenderPipelineTarget {
-  const format = CLOUD_HISTORY_FORMATS[kind];
-  const resolveSurface = (frame: RenderPipelineFrame) => {
-    const internal = frame as _InternalRenderPipelineContext;
-    const state = getTemporalGpuState(
-      internal.frameState,
-      internal.runtime.device,
-      recordContext(internal.runtime).deviceScope,
-      frame.targetW,
-      frame.targetH,
-      true,
-      frame.camera,
-    );
-    const index = role === 'read' ? temporalReadIndex(state) : temporalWriteIndex(state);
-    return cloudHistorySurface(state, kind, index);
-  };
-  const texture = graph.importTexture(
-    label,
-    {
-      format,
-      // Cloud transport/history is intentionally half-resolution. The
-      // renderer-owned temporal state allocates the same ceil(width/2) extent
-      // and the full-resolution resolve reconstructs scene colour from it.
-      size: 'half-surface',
-      usage:
-        GPU_TEXTURE_USAGE_COPY_SRC |
-        GPU_TEXTURE_USAGE_COPY_DST |
-        GPU_TEXTURE_USAGE_RENDER_ATTACHMENT |
-        GPU_TEXTURE_USAGE_TEXTURE_BINDING,
-      domain: 'linear-hdr',
-    },
-    (frame) => resolveSurface(frame).texture,
-  );
-  if (!texture.ok) throw texture.error;
-  const view = graph.importView(
-    texture.value,
-    { label: `${label}.view`, dimension: '2d' },
-    (frame) => resolveSurface(frame).view,
-  );
-  if (!view.ok) throw view.error;
-  return { texture: texture.value, view: view.value, format, sampleCount: 1 };
-}
-
-function importCloudHistoryTargets(
-  graph: RenderGraphBuilder<RenderPipelineFrame>,
-): NonNullable<
-  import('../render-pipeline').RenderPipelineBuildContext<RenderPipelineFrame>['cloudHistory']
-> {
-  return {
-    currentRadiance: importCloudHistoryTarget(
-      graph,
-      'cloud-history-radiance-current',
-      'radiance',
-      'write',
-    ),
-    previousRadiance: importCloudHistoryTarget(
-      graph,
-      'cloud-history-radiance-previous',
-      'radiance',
-      'read',
-    ),
-    currentTransmittance: importCloudHistoryTarget(
-      graph,
-      'cloud-history-transmittance-current',
-      'transmittance',
-      'write',
-    ),
-    previousTransmittance: importCloudHistoryTarget(
-      graph,
-      'cloud-history-transmittance-previous',
-      'transmittance',
-      'read',
-    ),
-    currentDepth: importCloudHistoryTarget(graph, 'cloud-history-depth-current', 'depth', 'write'),
-    previousDepth: importCloudHistoryTarget(graph, 'cloud-history-depth-previous', 'depth', 'read'),
-  };
-}
-
-function importSsrHistoryTarget(
-  graph: RenderGraphBuilder<RenderPipelineFrame>,
-  label: string,
-  role: 'read' | 'write',
-  extent: RenderExtent | undefined,
-  surface = false,
-  storage = true,
-): import('../render-pipeline').RenderPipelineTarget {
-  const resolveSurface = (frame: RenderPipelineFrame) => {
-    const internal = frame as import('./render-context')._InternalRenderPipelineContext;
-    const owner = internal.frameState.ssrHistoryOwner;
-    const candidate = owner?.candidate;
-    if (owner === undefined || candidate === undefined) {
-      throw new RhiError({
-        code: 'rhi-not-available',
-        expected: 'SSR history candidate to be staged before graph execution',
-        hint: 'begin the SSR history candidate before executing the admitted graph',
-      });
-    }
-    const slot =
-      role === 'read'
-        ? (candidate.readSlot ?? (candidate.writeSlot === 0 ? 1 : 0))
-        : candidate.writeSlot;
-    const resolved = owner.resources.slots[slot];
-    if (resolved === undefined)
-      throw new Error('SSR history slot is outside the admitted resource cohort');
-    return resolved;
-  };
-  const texture = graph.importTexture(
-    label,
-    {
-      format: surface ? 'rgba8unorm' : 'rgba16float',
-      size:
-        extent === undefined
-          ? 'surface'
-          : {
-              width: Math.max(1, Math.floor(extent.internalWidth)),
-              height: Math.max(1, Math.floor(extent.internalHeight)),
-            },
-      usage:
-        GPU_TEXTURE_USAGE_COPY_SRC |
-        GPU_TEXTURE_USAGE_COPY_DST |
-        GPU_TEXTURE_USAGE_RENDER_ATTACHMENT |
-        (storage ? GPU_TEXTURE_USAGE_STORAGE_BINDING : 0) |
-        GPU_TEXTURE_USAGE_TEXTURE_BINDING,
-      domain: 'linear-hdr',
-    },
-    (frame) => (surface ? resolveSurface(frame).surfaceTexture : resolveSurface(frame).texture),
-  );
-  if (!texture.ok) throw texture.error;
-  const view = graph.importView(
-    texture.value,
-    { label: `${label}.view`, dimension: '2d' },
-    (frame) => (surface ? resolveSurface(frame).surfaceView : resolveSurface(frame).view),
-  );
-  if (!view.ok) throw view.error;
-  return {
-    texture: texture.value,
-    view: view.value,
-    format: surface ? 'rgba8unorm' : 'rgba16float',
-    sampleCount: 1,
-    domain: 'linear-hdr',
-  };
-}
-
-function importSsrHistoryTargets(
-  graph: RenderGraphBuilder<RenderPipelineFrame>,
-  extent: RenderExtent | undefined,
-  storage: boolean,
-): NonNullable<
-  import('../render-pipeline').RenderPipelineBuildContext<RenderPipelineFrame>['ssrHistory']
-> {
-  return {
-    previous: importSsrHistoryTarget(graph, 'ssr-history-previous', 'read', extent, false, storage),
-    output: importSsrHistoryTarget(graph, 'ssr-history-output', 'write', extent, false, storage),
-    previousSurface: importSsrHistoryTarget(
-      graph,
-      'ssr-history-previous-surface',
-      'read',
-      extent,
-      true,
-      storage,
-    ),
-    outputSurface: importSsrHistoryTarget(
-      graph,
-      'ssr-history-output-surface',
-      'write',
-      extent,
-      true,
-      storage,
-    ),
-    params: (() => {
-      const imported = graph.importBuffer(
-        'ssr-history-params',
-        { size: 32, usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST },
-        (frame) => {
-          const internal = frame as import('./render-context')._InternalRenderPipelineContext;
-          const owner = internal.frameState.ssrHistoryOwner;
-          if (owner === undefined) {
-            throw new RhiError({
-              code: 'rhi-not-available',
-              expected: 'SSR history owner to be staged before graph execution',
-              hint: 'create the renderer-owned SSR history before executing the admitted graph',
-            });
-          }
-          return owner.resources.paramsBuffer;
-        },
-      );
-      if (!imported.ok) throw imported.error;
-      return imported.value;
-    })(),
-  };
-}
-
-export function shouldUseTemporalFrameTransaction(
-  antialias: CameraSnapshot['antialias'],
-  temporalDemand = false,
-): boolean {
-  return isTemporalAntialias(antialias) || temporalDemand;
-}
-
-export function isMotionBlurTemporalDemand(
-  motionBlur: CameraSnapshot['motionBlur'] | undefined,
-): boolean {
-  return (
-    motionBlur !== undefined &&
-    motionBlurTemporalDemand({
-      shutterAngle: motionBlur.shutterAngle,
-      maxRadiusPixels: motionBlur.maxRadiusPixels,
-      sampleCount: motionBlur.sampleCount,
-      targetFps: motionBlur.targetFps ?? 60,
-    })
-  );
-}
-
-export interface ReflectionProbeFilterGraphWork {
-  readonly probeIndex: number;
-  readonly faceIndex: number;
-  readonly mipLevel: number;
-}
-
-export interface ReflectionProbeFilterGraphState {
-  readonly work: readonly ReflectionProbeFilterGraphWork[];
-  readonly maxStepsPerFrame: number;
-}
-
-export interface ReflectionProbeGraphWork {
-  readonly captureGeneration?: number;
-  readonly atmosphere?: import('../environment/storage').AtmosphereStorage | undefined;
-  readonly background?: ProbeBackgroundResources;
-  readonly probeIndex: number;
-  readonly rawTexture: Texture;
-  readonly rawCubeView: TextureView;
-  readonly rawFaceViews: readonly TextureView[];
-  readonly rawDepthTexture: Texture;
-  readonly rawCaptureFace: number | undefined;
-  readonly rawDepthView: TextureView;
-  readonly rawSize: number;
-  readonly faceCamera?: import('../render-contract').CameraSnapshot;
-  readonly viewBindGroupDynamicOffset?: number;
-  readonly filteredTexture: Texture;
-  readonly filteredView: TextureView;
-  readonly filterScratchTexture: Texture;
-  readonly filterScratchView: TextureView;
-  readonly outputFormat: TextureFormat;
-  readonly sampler: Sampler;
-  readonly filterPipeline: RenderPipeline;
-  readonly filterGroup0: readonly BindGroup[] | undefined;
-  readonly filterGroup1: BindGroup;
-  readonly filteredSize: number;
-  readonly step: ReflectionProbeFilterGraphWork | undefined;
-}
-
-export interface ReflectionProbeGraphState {
-  readonly work: readonly ReflectionProbeGraphWork[];
-}
-
-export function boundedReflectionProbeFilterWork(
-  state: ReflectionProbeFilterGraphState,
-): readonly ReflectionProbeFilterGraphWork[] {
-  return state.work.slice(0, Math.max(0, state.maxStepsPerFrame));
-}
-
-/** Import the retained medium generation rather than the live display generation. */
-function importProbeAtmosphereTables(
-  builder: RenderGraphBuilder<RenderPipelineFrame>,
-  work: ReflectionProbeGraphWork,
-  clusters:
-    | import('../pipeline/standard-lighting/graph').StandardClusterGraphBuffers
-    | null
-    | undefined,
-): Result<
-  Record<string, import('@forgeax/engine-render-graph').GraphTextureView>,
-  RenderGraphError
-> {
-  const frozen = work.atmosphere;
-  const frozenViews: Record<string, import('@forgeax/engine-render-graph').GraphTextureView> = {};
-  if (frozen !== undefined) {
-    for (const [name, width, height, layers, mips, usage] of [
-      ['sky', 128, 128, 6, 1, 0x14],
-      ['irradiance', 16, 16, 6, 1, 0x14],
-      ['prefilter', 336, 256, 1, 1, 0x17],
-      ['distantSkyLight', 1, 1, 1, 1, 0x0c],
-      ['transmittance', 256, 64, 1, 1, 0x0c],
-      ['multipleScattering', 32, 32, 1, 1, 0x0c],
-    ] as const) {
-      const texture = builder.importTexture(
-        `reflection-probe.${work.probeIndex}.atmosphere.${name}`,
-        {
-          format: 'rgba16float',
-          size: { width, height, depthOrArrayLayers: layers },
-          mipLevelCount: mips,
-          usage: clusters?.kind === 'texture' ? (usage & ~0x08) | 0x10 : usage,
-        },
-        () => frozen[name],
-      );
-      if (!texture.ok) return texture;
-      const view = builder.view(texture.value, { dimension: layers === 6 ? 'cube' : '2d' });
-      if (!view.ok) return view;
-      frozenViews[name] = view.value;
-    }
-  }
-  return ok(frozenViews);
-}
-
-export function addReflectionProbeGraphPasses(
-  builder: RenderGraphBuilder<RenderPipelineFrame>,
-  state: ReflectionProbeGraphState,
-  environmentCube?: import('../environment/ibl').GraphEnvironment,
-  captureShadows?: import('../typed-shadow-passes').TypedShadowTargets,
-  clusters?: import('../pipeline/standard-lighting/graph').StandardClusterGraphBuffers | null,
-): Result<readonly import('@forgeax/engine-render-graph').GraphAccess[], RenderGraphError> {
-  const accesses: import('@forgeax/engine-render-graph').GraphAccess[] = [];
-  for (const work of state.work) {
-    const frozen = work.atmosphere;
-    const tables = importProbeAtmosphereTables(builder, work, clusters);
-    if (!tables.ok) return tables;
-    const frozenViews = tables.value;
-    const raw = builder.importTexture(
-      `reflection-probe.${work.probeIndex}.raw`,
-      {
-        format: work.outputFormat,
-        size: { width: work.rawSize, height: work.rawSize, depthOrArrayLayers: 6 },
-        mipLevelCount: 1,
-        sampleCount: 1,
-        dimension: '2d',
-        usage: 0x10 | 0x04 | 0x01,
-      },
-      () => work.rawTexture,
-    );
-    if (!raw.ok) return raw;
-    const rawCube = builder.importView(
-      raw.value,
-      {
-        label: `reflection-probe.${work.probeIndex}.raw-cube`,
-        dimension: 'cube',
-        arrayLayerCount: 6,
-      },
-      () => work.rawCubeView,
-    );
-    if (!rawCube.ok) return rawCube;
-    const filtered = builder.importTexture(
-      `reflection-probe.${work.probeIndex}.filtered`,
-      {
-        format: work.outputFormat,
-        size: pmremExtent(work.filteredSize),
-        mipLevelCount: 1,
-        sampleCount: 1,
-        dimension: '2d',
-        usage: 0x10 | 0x04 | 0x01,
-      },
-      () => work.filteredTexture,
-    );
-    if (!filtered.ok) return filtered;
-    const filteredAtlas = builder.importView(
-      filtered.value,
-      {
-        label: `reflection-probe.${work.probeIndex}.filtered-atlas`,
-        dimension: '2d',
-      },
-      () => work.filteredView,
-    );
-    if (!filteredAtlas.ok) return filteredAtlas;
-    if (work.rawCaptureFace !== undefined) {
-      const face = work.rawCaptureFace;
-      const view = builder.importView(
-        raw.value,
-        {
-          label: `reflection-probe.${work.probeIndex}.capture-face-${face}`,
-          dimension: '2d',
-          baseArrayLayer: face,
-          arrayLayerCount: 1,
-        },
-        () => work.rawFaceViews[face] as TextureView,
-      );
-      if (!view.ok) return view;
-      const depthTexture = builder.importTexture(
-        `reflection-probe.${work.probeIndex}.capture-depth`,
-        {
-          format: 'depth32float-stencil8',
-          size: { width: work.rawSize, height: work.rawSize, depthOrArrayLayers: 1 },
-          mipLevelCount: 1,
-          sampleCount: 1,
-          dimension: '2d',
-          usage: 0x10,
-        },
-        () => work.rawDepthTexture,
-      );
-      if (!depthTexture.ok) return depthTexture;
-      const depth = builder.importView(
-        depthTexture.value,
-        { label: `reflection-probe.${work.probeIndex}.capture-depth-view`, dimension: '2d' },
-        () => work.rawDepthView,
-      );
-      if (!depth.ok) return depth;
-      if (captureShadows !== undefined && frozen !== undefined) {
-        const prepared = addAtmosphereBackground(
-          builder,
-          { texture: raw.value, view: view.value, format: work.outputFormat, sampleCount: 1 },
-          { directional: captureShadows.directional?.view },
-          { mode: 'full', clusters },
-        );
-        if (!prepared.ok) return prepared;
-      }
-      const request = registerScenePass(builder, {
-        selector: undefined,
-        excludeSelector: undefined,
-        recordMode: undefined,
-        passKind: 'forward',
-        gpu: false,
-        gpuFilter: undefined,
-        late: false,
-        capture: true,
-        camera: () => work.faceCamera,
-      });
-      const added = builder.addRasterPass(`reflection-probe.${work.probeIndex}.capture.${face}`, {
-        accesses: [
-          ...(captureShadows === undefined
-            ? []
-            : [
-                captureShadows.directional?.view,
-                captureShadows.spot.view,
-                captureShadows.point?.view,
-              ]
-                .filter(
-                  (resource): resource is import('@forgeax/engine-render-graph').GraphTextureView =>
-                    resource !== undefined,
-                )
-                .map((resource) => ({ resource, usage: 'sampled-read' as const }))),
-          ...Object.values(frozenViews).map((resource) => ({
-            resource,
-            usage: 'sampled-read' as const,
-          })),
-          ...(environmentCube === undefined
-            ? []
-            : [environmentCube.sky, environmentCube.irradiance, environmentCube.prefilter].map(
-                (resource) => ({ resource, usage: 'sampled-read' as const }),
-              )),
-          { resource: view.value, usage: 'color-attachment' },
-          { resource: depth.value, usage: 'depth-stencil-write' },
-        ],
-        colorAttachments: [
-          {
-            view: view.value,
-            loadOp: captureShadows !== undefined && frozen !== undefined ? 'load' : 'clear',
-            storeOp: 'store',
-            clearValue: { r: 0, g: 0, b: 0, a: 1 },
-          },
-        ],
-        depthStencilAttachment: {
-          view: depth.value,
-          depthClearValue: 0,
-          depthLoadOp: 'clear',
-          depthStoreOp: 'store',
-          stencilClearValue: 0,
-          stencilLoadOp: 'clear',
-          stencilStoreOp: 'store',
-        },
-        encodeDirect: (pass, frame, resources) => {
-          const internal = scenePassContext(frame as _InternalRenderPipelineContext, request);
-          if (work.faceCamera === undefined || work.viewBindGroupDynamicOffset === undefined)
-            return;
-          const captured = (name: string) => {
-            const view = frozenViews[name];
-            if (view === undefined) throw new Error(`Missing frozen atmosphere view: ${name}`);
-            return resources.textureView(view).unwrap();
-          };
-          const neutralVolume = internal.pipelineState.atmosphereFallbackView;
-          if (
-            frozen !== undefined &&
-            internal.runtime.device.caps.storageBuffer &&
-            neutralVolume === undefined
-          )
-            throw new Error('Atmosphere capture requires the admitted View volume');
-          if (frozen !== undefined && captureShadows === undefined) {
-            recordAtmosphereCaptureBackground(
-              frame,
-              pass,
-              work.outputFormat,
-              work.viewBindGroupDynamicOffset,
-              captured('transmittance'),
-              captured('transmittance'),
-              captured('multipleScattering'),
-            );
-          } else if (frozen === undefined) {
-            recordProbeBackground(
-              work.background,
-              internal,
-              work.faceCamera,
-              pass,
-              environmentCube === undefined
-                ? undefined
-                : resources.textureView(environmentCube.sky).unwrap(),
-            );
-          }
-          const captureViews =
-            frozen === undefined || !internal.runtime.device.caps.storageBuffer
-              ? undefined
-              : {
-                  distantSkyLight: captured('distantSkyLight'),
-                  transmittance: captured('transmittance'),
-                  multipleScattering: captured('multipleScattering'),
-                  aerialPerspective: neutralVolume as TextureView,
-                  aerialTransmittance: neutralVolume as TextureView,
-                };
-          const capturedGroups = buildPerFrameBindGroups(
-            internal.runtime as RenderSystemInternals,
-            internal.frameState,
-            internal.pipelineState,
-            true,
-            internal.bindGroupCounts,
-            {
-              atmosphere: captureViews,
-              directionalShadow:
-                captureShadows?.directional === undefined
-                  ? (internal.frameState.frameOutputs.directionalShadowView ?? undefined)
-                  : resources.textureView(captureShadows.directional.view).unwrap(),
-              spotShadow:
-                captureShadows === undefined
-                  ? (internal.frameState.frameOutputs.spotShadowView ?? undefined)
-                  : resources.textureView(captureShadows.spot.view).unwrap(),
-            },
-            true,
-            internal.standardLighting,
-          );
-          const requireEnvironmentCube = () => {
-            if (environmentCube === undefined) throw new Error('Missing capture environment cube');
-            return environmentCube;
-          };
-          const captureContext = {
-            ...internal,
-            viewBindGroup: capturedGroups.viewBindGroup,
-            ...(environmentCube === undefined && frozen === undefined
-              ? {}
-              : {
-                  environmentIbl: {
-                    irradiance:
-                      frozen === undefined
-                        ? resources.textureView(requireEnvironmentCube().irradiance).unwrap()
-                        : captured('irradiance'),
-                    prefilter:
-                      frozen === undefined
-                        ? resources.textureView(requireEnvironmentCube().prefilter).unwrap()
-                        : captured('prefilter'),
-                  },
-                }),
-          };
-          delete captureContext.reflectionProbes;
-          delete captureContext.hdrpSsaoBlurredView;
-          delete captureContext.gpuDrivenSelection;
-          delete captureContext.gpuDrivenStandardPbrFrameResources;
-          encodeMainPass(
-            {
-              ...captureContext,
-              dispatch: internal.dispatch,
-              foldDispatchPlan: null,
-              camera: work.faceCamera,
-              viewBindGroupDynamicOffset: work.viewBindGroupDynamicOffset,
-              transparentColorFormat: work.outputFormat as GPUTextureFormat,
-              msaaActive: false,
-              splitLdrSprite: false,
-            },
-            pass,
-            undefined,
-            {
-              colorFormats: [work.outputFormat as GPUTextureFormat],
-              passKind: 'forward',
-            },
-          );
-        },
-      });
-      if (!added.ok) return added;
-    }
-    const filteredStep = addReflectionProbePmremPasses(
-      builder,
-      work,
-      rawCube.value,
-      filtered.value,
-      filteredAtlas.value,
-    );
-    if (!filteredStep.ok) return filteredStep;
-    accesses.push({ resource: filteredAtlas.value, usage: 'sampled-read' });
-  }
-  return ok(accesses);
 }
 
 export {
@@ -1043,6 +393,7 @@ export function updateRenderFeaturePlanRevision(
 /** A frame-local graph candidate that is committed only after compilation. */
 export interface RenderFeatureGraphCandidate {
   readonly plans: readonly RenderFeaturePlannedFrame[];
+  readonly featureTextureReadbacks?: readonly import('../render-contract').FeatureTextureReadbackDeclaration[];
   readonly sceneDataAdmission?: import('../temporal/scene-data').StandardSceneSurfaceAdmission;
   readonly sceneDataBindings?: readonly import('../temporal/scene-data').SceneDataSurfaceBinding[];
   readonly fullscreenEffects: ReadonlyMap<
@@ -1069,13 +420,16 @@ export interface RenderFeatureGraphCandidate {
 }
 
 const featureGraphStates = new WeakMap<RenderSystemInternals, RenderFeatureGraphRuntimeState>();
+
 const graphDeviceGenerations = new WeakMap<object, number>();
+
 const graphRetirementFailures = new WeakMap<
   RenderFrameState,
   Set<CompiledRenderGraph<RenderPipelineFrame>>
 >();
 
 type GraphGenerationRole = 'active' | 'candidate' | 'retiring';
+
 type GraphGenerationStatus = 'active' | 'retiring' | 'failed' | 'retired';
 
 interface GraphGenerationAllocationRecord {
@@ -1560,7 +914,8 @@ type SignatureValidationMetrics = Pick<
   | 'signatureValidationCacheMisses'
 >;
 
-function validateRenderFeaturePlans(
+/** @internal Shared typed-graph admission gate for renderer-produced Feature plans. */
+export function validateRenderFeaturePlans(
   plans: readonly RenderFeaturePlannedFrame[],
   metrics?: SignatureValidationMetrics,
 ): Result<readonly RenderFeaturePlanExecution[], RenderError> {
@@ -1569,44 +924,88 @@ function validateRenderFeaturePlans(
   let previousOrder = -1;
   for (const [order, planned] of plans.entries()) {
     const execution = getRenderFeaturePlanExecutionProjection(planned);
-    const signatureMetrics =
-      metrics === undefined ? undefined : { calls: 0, typedArrayBytes: 0, outputChars: 0 };
-    const started =
-      metrics === undefined
-        ? 0
-        : typeof performance === 'undefined'
-          ? Date.now()
-          : performance.now();
-    // The host records detached structural evidence, but graph admission must
-    // check it again so a mutation between the two synchronous stages cannot
-    // smuggle a stale plan into the compiled graph. Only candidates without
-    // evidence fall back to the canonical serializer.
-    const signatureCacheHit =
-      hasNativeRenderFeatureExecutionSignature(planned) ||
-      renderFeaturePlanSignatureEvidenceMatches(planned.plan, planned.signature);
-    if (metrics !== undefined) {
-      if (signatureCacheHit) metrics.signatureValidationCacheHits += 1;
-      else metrics.signatureValidationCacheMisses += 1;
-    }
-    const recomputedSignature = signatureCacheHit
-      ? planned.signature
-      : renderFeaturePlanSignature(planned.plan, signatureMetrics);
-    if (metrics !== undefined) {
-      const now = typeof performance === 'undefined' ? Date.now() : performance.now();
-      metrics.signatureValidationCalls += signatureMetrics?.calls ?? 0;
-      metrics.signatureValidationBytes += signatureMetrics?.typedArrayBytes ?? 0;
-      metrics.signatureValidationChars += signatureMetrics?.outputChars ?? 0;
-      metrics.signatureValidationCpuMs += now - started;
-    }
+    const measurePlanSignature = (
+      planned: RenderFeaturePlannedFrame,
+      metrics: SignatureValidationMetrics | undefined,
+    ) => {
+      const signatureMetrics =
+        metrics === undefined ? undefined : { calls: 0, typedArrayBytes: 0, outputChars: 0 };
+      const started =
+        metrics === undefined
+          ? 0
+          : typeof performance === 'undefined'
+            ? Date.now()
+            : performance.now();
+      // The host records detached structural evidence, but graph admission must
+      // check it again so a mutation between the two synchronous stages cannot
+      // smuggle a stale plan into the compiled graph. Only candidates without
+      // evidence fall back to the canonical serializer.
+      const signatureCacheHit =
+        hasNativeRenderFeatureExecutionSignature(planned) ||
+        renderFeaturePlanSignatureEvidenceMatches(planned.plan, planned.signature);
+      if (metrics !== undefined) {
+        if (signatureCacheHit) metrics.signatureValidationCacheHits += 1;
+        else metrics.signatureValidationCacheMisses += 1;
+      }
+      const recomputedSignature = signatureCacheHit
+        ? planned.signature
+        : renderFeaturePlanSignature(planned.plan, signatureMetrics);
+      if (metrics !== undefined) {
+        const now = typeof performance === 'undefined' ? Date.now() : performance.now();
+        metrics.signatureValidationCalls += signatureMetrics?.calls ?? 0;
+        metrics.signatureValidationBytes += signatureMetrics?.typedArrayBytes ?? 0;
+        metrics.signatureValidationChars += signatureMetrics?.outputChars ?? 0;
+        metrics.signatureValidationCpuMs += now - started;
+      }
+      return recomputedSignature;
+    };
+    const recomputedSignature = measurePlanSignature(planned, metrics);
+    const duplicateIdentity = identities.has(planned.featureIdentity);
+    const signatureMismatch = planned.signature !== recomputedSignature;
+    const executionMissing = execution === undefined;
+    const executionIdentityMismatch =
+      execution !== undefined && execution.featureIdentity !== planned.featureIdentity;
+    const executionOrderNotIncreasing = execution !== undefined && execution.order <= previousOrder;
     if (
-      identities.has(planned.featureIdentity) ||
-      planned.signature !== recomputedSignature ||
-      execution === undefined ||
-      execution.featureIdentity !== planned.featureIdentity ||
-      execution.order <= previousOrder
+      duplicateIdentity ||
+      signatureMismatch ||
+      executionMissing ||
+      executionIdentityMismatch ||
+      executionOrderNotIncreasing
     ) {
       return err(
-        new RenderFeatureStageFailedError(planned.featureIdentity, order, 'plan', 'next-frame'),
+        new RenderFeatureStageFailedError(planned.featureIdentity, order, 'plan', 'next-frame', {
+          kind: 'typed-render-feature-plan-admission',
+          failedPredicates: {
+            duplicateIdentity,
+            signatureMismatch,
+            executionMissing,
+            executionIdentityMismatch,
+            executionOrderNotIncreasing,
+          },
+          previousOrder,
+          planned: {
+            featureIdentity: planned.featureIdentity,
+            scope: planned.scope,
+            signaturePrefix: planned.signature.slice(0, 96),
+            signatureLength: planned.signature.length,
+          },
+          ...(execution === undefined
+            ? {}
+            : {
+                execution: {
+                  featureIdentity: execution.featureIdentity,
+                  scope: execution.scope,
+                  order: execution.order,
+                },
+              }),
+          ...(signatureMismatch
+            ? {
+                recomputedSignaturePrefix: recomputedSignature.slice(0, 96),
+                recomputedSignatureLength: recomputedSignature.length,
+              }
+            : {}),
+        }),
       );
     }
     identities.add(planned.featureIdentity);
@@ -1652,7 +1051,7 @@ function directionalTopologyOf(
       : {
           mapSize: shadowMapSize,
           cascadeCount,
-          ...(lights.directionalCsmConfig?.staticShadowCache === false
+          ...(lights.directionalCsmConfig?.staticShadowCache !== true
             ? { staticLayer: false as const }
             : {}),
         },
@@ -1739,6 +1138,7 @@ function cameraTopologyOf(
     ...(camera.dynamicResolution === undefined
       ? {}
       : { dynamicResolution: camera.dynamicResolution }),
+    postProcessing: camera.postProcessing !== false,
     tonemap: camera.tonemap,
     antialias: camera.antialias,
     // Bloom intensity is a frame parameter, not a graph identity. Fold
@@ -1761,18 +1161,19 @@ function outputTopologyOf(
   clearOnly: boolean,
 ): NonNullable<RenderPipelineTopology['output']> {
   const output = camera.output;
+  const postProcessing = !clearOnly && camera.postProcessing !== false;
   const preparedLut =
     frameState.pendingStandardLutGpuResources ?? frameState.standardLutGpuResources;
   const autoExposureResources =
     frameState.pendingAutoExposureGpuResources ?? frameState.autoExposureGpuResources;
   return {
     autoExposure:
-      !clearOnly && output?.exposure.kind === 'auto' && autoExposureResources !== undefined,
+      postProcessing && output?.exposure.kind === 'auto' && autoExposureResources !== undefined,
     whiteBalance:
-      !clearOnly && output !== undefined && (output.temperature !== 6504 || output.tint !== 0),
+      postProcessing && output !== undefined && (output.temperature !== 6504 || output.tint !== 0),
     temperature: output?.temperature ?? 6504,
     tint: output?.tint ?? 0,
-    colorLut: !clearOnly && (output?.colorLutStrength ?? 0) > 0 && preparedLut !== undefined,
+    colorLut: postProcessing && (output?.colorLutStrength ?? 0) > 0 && preparedLut !== undefined,
     colorLutStrength: output?.colorLutStrength ?? 0,
     ...(preparedLut === undefined
       ? {}
@@ -1817,17 +1218,37 @@ function shadowTopologyOf(
   };
 }
 
+/** Graph import shape of a fog owner's density: its 3D asset, or the unit volume for `uniform`. */
+function volumeDensityShapeOf(fog: ExtractedVolumetricFog):
+  | {
+      readonly format: GPUTextureFormat;
+      readonly extent: { readonly width: number; readonly height: number; readonly depth: number };
+    }
+  | undefined {
+  if (fog.fog?.sampling === 'uniform')
+    return { format: 'rgba8unorm', extent: { width: 1, height: 1, depth: 1 } };
+  const asset = fog.densityAsset;
+  if (asset?.shape.viewDimension !== '3d') return undefined;
+  return {
+    format: asset.format,
+    extent: {
+      width: asset.shape.extent.width,
+      height: asset.shape.extent.height,
+      depth: asset.shape.extent.depth,
+    },
+  };
+}
+
 function volumetricFogTopologyOf(
   internals: RenderSystemInternals,
   lights: ViewLights,
   volumetricFog: ExtractedVolumetricFog | undefined,
-  width: number,
-  height: number,
+  surface: { readonly width: number; readonly height: number },
 ): NonNullable<RenderPipelineTopology['volumetricFog']> {
-  const densityAsset = volumetricFog?.densityAsset;
+  const density = volumetricFog === undefined ? undefined : volumeDensityShapeOf(volumetricFog);
   if (
     volumetricFog?.status !== 'available' ||
-    densityAsset?.shape.viewDimension !== '3d' ||
+    density === undefined ||
     !hasSelectedVolumeLight(lights, volumetricFog) ||
     !hasVolumetricFogCapability(internals.device.caps, internals.volumetricFogShaders)
   ) {
@@ -1837,23 +1258,18 @@ function volumetricFogTopologyOf(
   const additional = volumetricFog.additional ?? [];
   return {
     enabled: true,
-    format: densityAsset.format,
-    additional: additional.flatMap((member) =>
-      member.densityAsset?.shape.viewDimension === '3d'
-        ? [{ format: member.densityAsset.format, extent: member.densityAsset.shape.extent }]
-        : [],
-    ),
-    extent: {
-      width: densityAsset.shape.extent.width,
-      height: densityAsset.shape.extent.height,
-      depth: densityAsset.shape.extent.depth,
-    },
+    format: density.format,
+    additional: additional.flatMap((member) => {
+      const shape = volumeDensityShapeOf(member);
+      return shape === undefined ? [] : [shape];
+    }),
+    extent: density.extent,
     froxelExtent: deriveVolumetricFogExtent(
-      { width, height },
+      surface,
       volumeProfile.depth * (1 + additional.length),
       volumeProfile.tileSize,
     ),
-    resolvedExtent: deriveVolumetricFogResolvedExtent({ width, height }, volumeProfile.tileSize),
+    resolvedExtent: deriveVolumetricFogResolvedExtent(surface, volumeProfile.tileSize),
     lightKind: volumetricFog.lightKind,
     lightEntity: volumetricFog.lightEntity,
     pointLightEntity: volumetricFog.pointLightEntity,
@@ -1920,7 +1336,8 @@ function admitMultisampleTopology(
 ): Result<boolean, RhiError> {
   if (internals.device.caps.backendKind !== 'wgpu-webgl2') return ok(true);
   const multisample = multisampleRenderCapability(internals.device);
-  if (camera.antialias !== 'msaa' || multisample?.ok === true) return ok(multisample?.ok === true);
+  if (!isMultisampleAntialias(camera.antialias) || multisample?.ok === true)
+    return ok(multisample?.ok === true);
   return err(
     multisample?.ok === false
       ? multisample.error
@@ -1940,6 +1357,22 @@ function atmosphereTopologyOf(frame: RenderFrameState, clearOnly: boolean) {
     atmosphere: !clearOnly && atmosphere,
     atmosphereBackgroundOnly: atmosphere && source.atmosphere.backgroundOnly,
   };
+}
+
+function editorAssistanceTopology(
+  internals: RenderSystemInternals,
+  frameState: RenderFrameState,
+  camera: CameraSnapshot,
+  clearOnly: boolean,
+) {
+  return clearOnly
+    ? undefined
+    : captureEditorAssistanceView(
+        recordContext(internals).featureHost,
+        internals.rendererFrameNumber ?? frameState.frameNumber,
+        renderFeatureViewIdentity(camera),
+        camera.outline,
+      );
 }
 
 function topologyOf(
@@ -1975,76 +1408,116 @@ function topologyOf(
   const fullscreenEffects = featureFullscreenEffects(internals, featureGraphCandidate);
   const config = featurePostEffectConfig(internals, frameState, featureGraphCandidate);
   const standardProfile = frameState.cameraStandardProfile ?? internals.standardProfile;
+  const editor = editorAssistanceTopology(internals, frameState, camera, clearOnly);
   const multisample = admitMultisampleTopology(internals, camera);
   if (!multisample.ok) return multisample;
-  return ok({
-    pipelineId: STANDARD_PIPELINE_ID,
-    ...sceneDataTopologyFields(
-      frameState.standardSceneSurfaceAdmission ?? featureGraphCandidate?.sceneDataAdmission,
-      featureGraphCandidate?.sceneDataBindings,
-    ),
-    ...(subsurface === undefined ? {} : { subsurface }),
-    forwardContactShadows: forwardContactDemand(clearOnly, standardLighting),
-    forwardCapsuleShadows: !clearOnly && forwardCapsuleShadows,
-    projectedDecals: projectedDecalTopology(clearOnly ? [] : (camera.projectedDecals ?? [])),
-    standardProfile,
-    config,
-    preTemporalEffects: preTemporalEffectsOf(config, fullscreenEffects),
-    clearOnly,
-    reflectionFallback: { enabled: reflectionFallbackDemandOf(internals) },
-    ssr,
-    ...(renderExtent === undefined ? {} : { extent: renderExtent }),
-    analyticFog: !clearOnly && analyticFog,
-    surface: {
-      width,
-      height,
-      storageFormat: pipelineState.format as TextureFormat,
-      viewFormat: surfaceProfile.value.viewFormat as TextureFormat,
-      profile: surfaceProfile.value,
-    },
-    camera: cameraTopologyOf(camera, clearOnly),
-    ...atmosphereTopologyOf(frameState, clearOnly),
-    output: outputTopologyOf(camera, frameState, clearOnly),
-    temporal: {
-      taa: isTemporalAntialias(camera.antialias),
-      motionBlur: isMotionBlurTemporalDemand(camera.motionBlur),
-    },
-    shadow: shadowTopologyOf(internals, lights, directional.value),
-    volumetricFog: volumetricFogTopologyOf(internals, lights, volumetricFog, width, height),
-    lane: {
-      compute: internals.device.caps.compute,
-      storageTexture: internals.device.caps.storageTexture,
-      storageBuffer: internals.device.caps.storageBuffer,
-      multisample: multisample.value,
-      maxColorAttachments: internals.device.caps.maxColorAttachments,
-      primitiveIndex: internals.device.features.has('primitive-index'),
-      maxColorAttachmentBytesPerSample: internals.device.limits.maxColorAttachmentBytesPerSample,
-    },
-    featureTopologySignature: featureTopologySignatureOf(
-      frameState,
-      featureGraphCandidate,
-      featurePlanRevision,
-      fullscreenEffects,
-      cubeCaptureState,
-    ),
-    gpuDrivenTopologySignature: gpuDrivenTopologySignatureOf(gpuDriven, stockRecording),
-    standardLightingTopologySignature: standardLightingTopologySignature(standardLighting),
-    // The view's RenderQueue pass plan is the only transmission, medium and
-    // transparent-composition authority of the graph.
-    transmissionDemand: passPlan.transmission.demand,
-    ...(passPlan.transmission.singleLayerMedium ? { singleLayerMedium: true } : {}),
-    ...(passPlan.transparent.topology === undefined
-      ? {}
-      : { transparency: passPlan.transparent.topology }),
-    opaque:
-      passPlan.opaque ??
-      planOpaque({
-        renderPath: (standardProfile ?? DEFAULT_STANDARD_PROFILE).renderPath,
-        gpuOcclusion: config?.gpuOcclusion,
-        clearOnly,
-      }),
-    ...(!clearOnly && analyticFog && unfoggedOpaque ? { unfoggedOpaque: true } : {}),
-  });
+  const waterView = featurePlansOf(internals, featureGraphCandidate).find(
+    (plan) =>
+      plan.scope !== 'frame' &&
+      plan.scope.view === renderFeatureViewIdentity(camera) &&
+      plan.plan.waterView !== undefined,
+  )?.plan.waterView;
+  const publishViewTopology = (
+    checkedDirectional: Extract<typeof directional, { ok: true }>,
+    checkedSurfaceProfile: Extract<typeof surfaceProfile, { ok: true }>,
+    checkedMultisample: Extract<typeof multisample, { ok: true }>,
+  ): Result<RenderPipelineTopology, RhiError> => {
+    const directional = checkedDirectional;
+    const surfaceProfile = checkedSurfaceProfile;
+    const multisample = checkedMultisample;
+    return ok({
+      pipelineId: STANDARD_PIPELINE_ID,
+      ...sceneDataTopologyFields(
+        frameState.standardSceneSurfaceAdmission ?? featureGraphCandidate?.sceneDataAdmission,
+        featureGraphCandidate?.sceneDataBindings,
+      ),
+      ...(subsurface === undefined ? {} : { subsurface }),
+      forwardContactShadows: forwardContactDemand(clearOnly, standardLighting),
+      forwardCapsuleShadows: !clearOnly && forwardCapsuleShadows,
+      projectedDecals: projectedDecalTopology(clearOnly ? [] : (camera.projectedDecals ?? [])),
+      standardProfile,
+      config,
+      preTemporalEffects: preTemporalEffectsOf(config, fullscreenEffects),
+      clearOnly,
+      reflectionFallback: { enabled: reflectionFallbackDemandOf(internals) },
+      ssr,
+      ...(renderExtent === undefined ? {} : { extent: renderExtent }),
+      analyticFog: !clearOnly && analyticFog,
+      surface: {
+        width,
+        height,
+        storageFormat: pipelineState.format as TextureFormat,
+        viewFormat: surfaceProfile.value.viewFormat as TextureFormat,
+        profile: surfaceProfile.value,
+      },
+      camera: {
+        ...cameraTopologyOf(camera, clearOnly),
+        ...(editor === undefined
+          ? {}
+          : {
+              outline: editor.authoredOutline !== undefined,
+              editorAssistance: true,
+              editorOutline: editor.source.outline !== undefined,
+            }),
+      },
+      ...atmosphereTopologyOf(frameState, clearOnly),
+      output: outputTopologyOf(camera, frameState, clearOnly),
+      temporal: {
+        taa: isTemporalAntialias(camera.antialias),
+        motionBlur: isMotionBlurTemporalDemand(camera.motionBlur),
+      },
+      shadow: shadowTopologyOf(internals, lights, directional.value),
+      volumetricFog: volumetricFogTopologyOf(
+        internals,
+        lights,
+        volumetricFog,
+        renderInternalCopySize({ extent: renderExtent, surface: { width, height } }),
+      ),
+      lane: {
+        compute: internals.device.caps.compute,
+        storageTexture: internals.device.caps.storageTexture,
+        storageBuffer: internals.device.caps.storageBuffer,
+        multisample: multisample.value,
+        maxColorAttachments: internals.device.caps.maxColorAttachments,
+        primitiveIndex: internals.device.features.has('primitive-index'),
+        maxColorAttachmentBytesPerSample: internals.device.limits.maxColorAttachmentBytesPerSample,
+      },
+      featureTopologySignature: featureTopologySignatureOf(
+        frameState,
+        featureGraphCandidate,
+        featurePlanRevision,
+        fullscreenEffects,
+        cubeCaptureState,
+      ),
+      gpuDrivenTopologySignature: gpuDrivenTopologySignatureOf(gpuDriven, stockRecording),
+      standardLightingTopologySignature: standardLightingTopologySignature(standardLighting),
+      // The view's RenderQueue pass plan is the only transmission, medium and
+      // transparent-composition authority of the graph.
+      transmissionDemand: passPlan.transmission.demand,
+      ...(passPlan.transmission.singleLayerMedium ? { singleLayerMedium: true } : {}),
+      ...(passPlan.transmission.water ? { water: true } : {}),
+      ...(waterView === undefined
+        ? {}
+        : {
+            waterView:
+              waterView.kind === 'available'
+                ? { kind: 'available' as const, underwater: waterView.state.immersionDepthM > 0 }
+                : { kind: 'unavailable' as const },
+          }),
+      ...(passPlan.transparent.topology === undefined
+        ? {}
+        : { transparency: passPlan.transparent.topology }),
+      opaque:
+        passPlan.opaque ??
+        planOpaque({
+          renderPath: (standardProfile ?? DEFAULT_STANDARD_PROFILE).renderPath,
+          gpuOcclusion: config?.gpuOcclusion,
+          clearOnly,
+        }),
+      ...(!clearOnly && analyticFog && unfoggedOpaque ? { unfoggedOpaque: true } : {}),
+    });
+  };
+  return publishViewTopology(directional, surfaceProfile, multisample);
 }
 
 export function retire(
@@ -2181,14 +1654,19 @@ function graphCameraOf(camera: CameraSnapshot, frameState: RenderFrameState): Ca
     : { ...camera, depthOfField: frameDepthOfField };
 }
 
-function hasCloudHistoryDemand(plans: readonly RenderFeaturePlanExecution[]): boolean {
-  return plans.some(
-    (execution) =>
-      execution.featureIdentity === CLOUD_LAYER_FEATURE_IDENTITY &&
-      execution.passes.some(
-        (pass) => pass.name === 'cloud-layer-transport' || pass.name === 'cloud-layer-resolve',
-      ),
-  );
+function cloudHistoryFormatOf(
+  plans: readonly RenderFeaturePlanExecution[],
+): CloudTransportFormat | undefined {
+  for (const execution of plans) {
+    if (execution.featureIdentity !== CLOUD_LAYER_FEATURE_IDENTITY) continue;
+    const transport = execution.passes.find((pass) => pass.name === 'cloud-layer-transport');
+    if (transport !== undefined)
+      return transport.graphics?.attachments.colors[0]?.format === 'rgba32float'
+        ? 'rgba32float'
+        : 'rgba16float';
+    if (execution.passes.some((pass) => pass.name === 'cloud-layer-resolve')) return 'rgba16float';
+  }
+  return undefined;
 }
 
 /** Transient views that own physical changes publish no prepared-resource lease of their own. */
@@ -2304,8 +1782,10 @@ function frameGraphCacheKey(
   topologyIdentity: ReturnType<typeof frameGraphTopologyIdentity>,
   gpuDrivenProjectionActive: boolean,
   cloudShadowResolution: number | undefined,
-  cloudHistoryDemand: boolean,
+  cloudHistoryFormat: CloudTransportFormat | undefined,
   cubeCaptureState: CubeCaptureGraphState | undefined,
+  sharedPublication: SharedFeatureGraphPublication | undefined,
+  fluid: WaterFluidMaterialPublication | undefined,
 ): string {
   const irradianceField = irradianceFieldInput(internals, frameState);
   const screenProbe = frameState.screenProbe?.ready;
@@ -2344,11 +1824,18 @@ function frameGraphCacheKey(
             probeGlobalGraphShape(probePlacement),
           ],
     featureSceneInputs: recordContext(internals).featureSceneInputs?.topologyKey,
+    sharedGraphTextures: sharedPublication?.topologyKey,
+    waterFluid: waterFluidMaterialTopology(fluid),
     // Cloud shadow targets are quality-derived graph resources. Include the
     // resolved texel grid in the cache key so a quality/resize change cannot
     // reuse a graph compiled for the previous allocation.
     cloudShadowResolution: cloudShadowResolution ?? 0,
-    cloudHistory: cloudHistoryDemand,
+    cloudHistory: cloudHistoryFormat,
+    waterSsrHistoryReference: frameState.waterSsrHistoryOwner?.candidate?.previousViewport,
+    ssrSceneColorReference:
+      frameState.activeTemporalGpuState === undefined
+        ? undefined
+        : [frameState.activeTemporalGpuState.width, frameState.activeTemporalGpuState.height],
     cubeCaptureSlots: cubeCaptureState?.work.map((work) => ({
       descriptor: work.physical.descriptor,
       planar: work.faceCamera.planarReflection !== undefined,
@@ -2366,13 +1853,33 @@ function frameGraphCacheKey(
   return serializeFrameGraphKey(input);
 }
 
+function waterFluidForRecording(viewIdentity: string) {
+  return (frame: RenderPipelineFrame): WaterFluidMaterialPublication | undefined => {
+    const internal = frame as _InternalRenderPipelineContext;
+    const current = internal.sharedFeatureGraph?.waterFluid.get(viewIdentity);
+    return current !== undefined &&
+      current.render.frameNumber ===
+        (internal.runtime.rendererFrameNumber ?? internal.frameState.frameNumber) &&
+      current.render.deviceGeneration === recordContext(internal.runtime).deviceScope.generation
+      ? current
+      : undefined;
+  };
+}
+
 function graphClockMs(): number {
   return typeof performance === 'undefined' ? Date.now() : performance.now();
 }
 
 type StandardGraphInputs = Pick<
   RenderPipelineBuildContext<RenderPipelineFrame>,
-  'standardOutput' | 'taaHistory' | 'cloudHistory' | 'targetCoverage' | 'ssrHistory'
+  | 'standardOutput'
+  | 'taaHistory'
+  | 'cloudHistory'
+  | 'targetCoverage'
+  | 'ssrHistory'
+  | 'waterSsr'
+  | 'ssrSceneColorHistory'
+  | 'ssrSceneColorOutput'
 >;
 
 function importColorLutSource(
@@ -2454,7 +1961,7 @@ function importStandardGraphInputs(
   frameState: RenderFrameState,
   camera: CameraSnapshot,
   topology: RenderPipelineTopology,
-  cloudHistoryDemand: boolean,
+  cloudHistoryFormat: CloudTransportFormat | undefined,
   ssr: SsrSpatialAdmission | undefined,
 ): Result<StandardGraphInputs, RenderGraphError> {
   const standardOutput = importStandardOutputInputs(builder, frameState, topology);
@@ -2466,7 +1973,10 @@ function importStandardGraphInputs(
         usesTsrCompute(topology.lane),
       )
     : undefined;
-  const cloudHistory = cloudHistoryDemand ? importCloudHistoryTargets(builder) : undefined;
+  const cloudHistory =
+    cloudHistoryFormat === undefined
+      ? undefined
+      : importCloudHistoryTargets(builder, cloudHistoryFormat);
   const targetCoverage =
     camera.dynamicResolution === undefined || topology.extent === undefined
       ? undefined
@@ -2476,13 +1986,48 @@ function importStandardGraphInputs(
     ssr?.status === 'admitted'
       ? importSsrHistoryTargets(builder, topology.extent, topology.lane.compute)
       : undefined;
-  return ok({
-    ...standardOutput.value,
-    ...(taaHistory === undefined ? {} : { taaHistory }),
-    ...(cloudHistory === undefined ? {} : { cloudHistory }),
-    ...(targetCoverage === undefined ? {} : { targetCoverage: targetCoverage.value }),
-    ...(ssrHistory === undefined ? {} : { ssrHistory }),
-  });
+  const collectStandardGraphInputs = () => {
+    return ok({
+      ...standardOutput.value,
+      ...(taaHistory === undefined ? {} : { taaHistory }),
+      ...(cloudHistory === undefined ? {} : { cloudHistory }),
+      ...(targetCoverage === undefined ? {} : { targetCoverage: targetCoverage.value }),
+      ...(ssrHistory === undefined ? {} : { ssrHistory }),
+      ...(ssrHistory === undefined || topology.water !== true
+        ? {}
+        : {
+            waterSsr: {
+              inputParams: importWaterSsrInputParams(builder),
+              ...(ssr?.status !== 'admitted' ||
+              !waterSsrTemporalEnabled(camera.antialias, ssr.config.waterTemporal)
+                ? {}
+                : {
+                    temporal: importSsrHistoryTargets(
+                      builder,
+                      topology.extent,
+                      topology.lane.compute,
+                      true,
+                      frameState.waterSsrHistoryOwner?.previousResources,
+                    ),
+                  }),
+            },
+          }),
+      ...(ssrHistory === undefined || topology.water !== true
+        ? {}
+        : {
+            ssrSceneColorHistory: importSsrSceneColorHistoryTarget(
+              builder,
+              frameState,
+              topology.surface.width,
+              topology.surface.height,
+            ),
+          }),
+      ...(ssrHistory === undefined || camera.antialias === 'taa'
+        ? {}
+        : { ssrSceneColorOutput: importSsrSceneColorOutput(builder) }),
+    });
+  };
+  return collectStandardGraphInputs();
 }
 
 function probePlacementContribution(
@@ -2543,12 +2088,19 @@ function installedFrameGraphOf(
   stockRecording: boolean,
   prepareGpuDrivenPipelines: InstalledFrameGraph['prepareGpuDrivenPipelines'],
   directionalShadowViewCount: number | undefined,
+  featureTextureAliases: ReadonlyMap<string, string>,
 ): InstalledFrameGraph {
   const requiresShadowPipelinePreparation = stockRecording
     ? shadowPipelinePreparationDemand(builder)
     : undefined;
   const compiledTargets = graph as CompiledGraphTargetAccess;
+  const waterFluidBodyDescriptor = waterFluidBodyDescriptorReader(builder);
+  const resolveTargetName = (name: string): string =>
+    compiledTargets.getColorTargetTexture(name) !== undefined
+      ? name
+      : (featureTextureAliases.get(name) ?? name);
   return {
+    ...(waterFluidBodyDescriptor === undefined ? {} : { waterFluidBodyDescriptor }),
     ...(requiresShadowPipelinePreparation === undefined
       ? {}
       : { requiresShadowPipelinePreparation }),
@@ -2559,9 +2111,11 @@ function installedFrameGraphOf(
     topologyKey,
     ...(preparedResourceKey === undefined ? {} : { preparedResourceKey }),
     targets: {
-      getColorTargetDescriptor: (name) => compiledTargets.getColorTargetDescriptor(name),
-      getColorTargetView: (name) => compiledTargets.getColorTargetView(name),
-      getColorTargetTexture: (name) => compiledTargets.getColorTargetTexture(name),
+      getColorTargetDescriptor: (name) =>
+        compiledTargets.getColorTargetDescriptor(resolveTargetName(name)),
+      getColorTargetView: (name) => compiledTargets.getColorTargetView(resolveTargetName(name)),
+      getColorTargetTexture: (name) =>
+        compiledTargets.getColorTargetTexture(resolveTargetName(name)),
       graphGeneration,
     },
   };
@@ -2679,7 +2233,10 @@ function existingFrameGraphOutcome(
   key: string,
   metrics: FeatureGraphMetricsDelta,
   effects: (overrides: Partial<GraphEffects>) => GraphEffects,
-  accepted: Pick<GraphEffects, 'postPending' | 'cloudHistoryActive' | 'gpuReplacement'>,
+  accepted: Pick<
+    GraphEffects,
+    'postPending' | 'cloudHistoryActive' | 'cloudHistoryFormat' | 'gpuReplacement'
+  >,
 ): ViewGraphCompileOutcome {
   metrics.lastTopologyKey = key;
   if (existing.kind === 'reused') {
@@ -2740,7 +2297,81 @@ export function compileViewGraph(input: GraphCompileInput): ViewGraphCompileOutc
   }
 }
 
+function acceptedGraphFeatures(
+  postPending: boolean,
+  cloudHistoryFormat: ReturnType<typeof cloudHistoryFormatOf>,
+) {
+  return {
+    postPending: postPending,
+    cloudHistoryActive: cloudHistoryFormat !== undefined,
+    ...(cloudHistoryFormat === undefined ? {} : { cloudHistoryFormat }),
+  };
+}
+
 function compileViewGraphStages(input: GraphCompileInput, frame: number): ViewGraphCompileOutcome {
+  const profileSession = activeRenderProfileSession(input.internals);
+  return compileViewGraphStagesOwned(input, frame, profileSession);
+}
+
+function compileViewGraphStagesOwned(
+  input: GraphCompileInput,
+  frame: number,
+  profileSession: RecorderSession | undefined,
+): ViewGraphCompileOutcome {
+  const readViewGraphCompileInputs = () => {
+    const {
+      internals,
+      frameState,
+      pipelineState,
+      camera,
+      lights,
+      shadowMapSize,
+      gpuDriven,
+      featurePlan = EMPTY_VIEW_FEATURE_PLAN,
+      cubeCaptureState,
+      clearOnly = false,
+      passPlan = EMPTY_VIEW_PASS_PLAN,
+      volumetricFog,
+      volumeTopologyCandidate = false,
+      standardLighting,
+      ssr,
+      renderExtent,
+      analyticFog = false,
+      cloudShadowResolution,
+      terrainReceivers = [],
+      subsurface,
+      rendererRecording = false,
+      unfoggedOpaque = false,
+      forwardCapsuleShadows = false,
+      shadowDepthLayers,
+    } = input;
+    return {
+      internals,
+      frameState,
+      pipelineState,
+      camera,
+      lights,
+      shadowMapSize,
+      gpuDriven,
+      featurePlan,
+      cubeCaptureState,
+      clearOnly,
+      passPlan,
+      volumetricFog,
+      volumeTopologyCandidate,
+      standardLighting,
+      ssr,
+      renderExtent,
+      analyticFog,
+      cloudShadowResolution,
+      terrainReceivers,
+      subsurface,
+      rendererRecording,
+      unfoggedOpaque,
+      forwardCapsuleShadows,
+      shadowDepthLayers,
+    };
+  };
   const {
     internals,
     frameState,
@@ -2749,24 +2380,24 @@ function compileViewGraphStages(input: GraphCompileInput, frame: number): ViewGr
     lights,
     shadowMapSize,
     gpuDriven,
-    featurePlan = EMPTY_VIEW_FEATURE_PLAN,
+    featurePlan,
     cubeCaptureState,
-    clearOnly = false,
-    passPlan = EMPTY_VIEW_PASS_PLAN,
+    clearOnly,
+    passPlan,
     volumetricFog,
-    volumeTopologyCandidate = false,
+    volumeTopologyCandidate,
     standardLighting,
     ssr,
     renderExtent,
-    analyticFog = false,
+    analyticFog,
     cloudShadowResolution,
-    terrainReceivers = [],
+    terrainReceivers,
     subsurface,
-    rendererRecording = false,
-    unfoggedOpaque = false,
-    forwardCapsuleShadows = false,
+    rendererRecording,
+    unfoggedOpaque,
+    forwardCapsuleShadows,
     shadowDepthLayers,
-  } = input;
+  } = readViewGraphCompileInputs();
   // `render-feature-plan` planned the Feature candidate compile reads (fullscreen
   // effects, post identities, plans, prepared-resource key) in RenderQueue.
   const featureGraphCandidate = featurePlan.candidate;
@@ -2836,25 +2467,70 @@ function compileViewGraphStages(input: GraphCompileInput, frame: number): ViewGr
       'topology',
     );
   }
+  const preflightFeatureTextureReadbacks = () => {
+    if (
+      internals.options?.featureTextureReadbackBudgetBytes !== undefined ||
+      (featureGraphCandidate?.featureTextureReadbacks?.length ?? 0) > 0
+    ) {
+      const readbackOwner = recordContext(internals).observationCaptureOwner;
+      const preflight = readbackOwner?.preflightFeatureTextureReadbacks?.(
+        recordContext(internals).observationFrameId ?? frame,
+        featureGraphCandidate?.featureTextureReadbacks ?? [],
+      );
+      if (preflight === undefined || !preflight.ok) {
+        metrics.validationFailures += 1;
+        const error =
+          preflight === undefined
+            ? new RendererContractFailureError(
+                'draw',
+                'an explicit feature-texture readback profile requires the Renderer observation owner',
+              )
+            : preflight.error;
+        return reject('feature-validation-failed', { route: 'feature', error }, 'topology');
+      }
+    }
+    return undefined;
+  };
+  const readbackPreflightFailure = preflightFeatureTextureReadbacks();
+  if (readbackPreflightFailure !== undefined) return readbackPreflightFailure;
   traceFeatureGraphEvent(
     internals,
     frameState.frameNumber,
     'typed-plan-validated',
     featurePlanTraceDetails(internals, featurePlans),
   );
-  const cloudHistoryDemand = hasCloudHistoryDemand(projectedFeaturePlans.value);
+  const cloudHistoryFormat = cloudHistoryFormatOf(projectedFeaturePlans.value);
+  const sharedPublication = sharedFeatureGraphPublication(internals.featureHost);
+  const collectViewFeaturePlanIndices = () => {
+    const viewPlanIndices = featurePlans.flatMap((_, index) => {
+      const passes = projectedFeaturePlans.value[index]?.passes ?? [];
+      return sharedPublication !== undefined &&
+        passes.length > 0 &&
+        passes.every((pass) => sharedPublication.passes.has(pass))
+        ? []
+        : [index];
+    });
+    return viewPlanIndices;
+  };
+  const viewPlanIndices = collectViewFeaturePlanIndices();
+  const viewPlans = viewPlanIndices.map(
+    (index) => featurePlans[index] as RenderFeaturePlannedFrame,
+  );
+  const viewExecutions = viewPlanIndices.map(
+    (index) => projectedFeaturePlans.value[index] as RenderFeaturePlanExecution,
+  );
   const planRevisionState = mutableFeatureGraphInspection(internals).planRevisionState;
   const nextPlanRevision = updateRenderFeaturePlanRevision(
     planRevisionState,
-    featurePlans,
-    projectedFeaturePlans.value,
+    viewPlans,
+    viewExecutions,
   );
   if (nextPlanRevision !== planRevisionState) metrics.planRevision = nextPlanRevision;
   const stockRecording = rendererRecording && frameState.activePipeline === standardPipeline;
   const transientViews = selectTransientViewPlans(
     internals,
-    featurePlans,
-    projectedFeaturePlans.value,
+    viewPlans,
+    viewExecutions,
     stockRecording && frameState.graphTargetCapture === undefined,
     frameState,
   );
@@ -2862,7 +2538,9 @@ function compileViewGraphStages(input: GraphCompileInput, frame: number): ViewGr
     internals,
     featureGraphCandidate,
     featurePlans,
-    transientViews.ownsPhysicalChanges,
+    transientViews.ownsPhysicalChanges ||
+      (sharedPublication !== undefined &&
+        !viewPlans.some(renderFeaturePlanRequiresPreparedResourceKey)),
   );
   const topologyResult = topologyOf(
     internals,
@@ -2890,302 +2568,530 @@ function compileViewGraphStages(input: GraphCompileInput, frame: number): ViewGr
     unfoggedOpaque,
     forwardCapsuleShadows,
   );
-  const topologyAdmission = admitStandardGraphTopology(
-    { internals, frameState, camera, stockRecording },
-    topologyResult,
-  );
-  if (!topologyAdmission.ok) {
-    metrics.buildFailures += 1;
-    const failure = topologyAdmission.error;
-    return reject(failure.code, { route: 'registry', error: failure.error }, failure.fallback);
-  }
-  const featurePostProcessEntries = featureFullscreenEffects(internals, featureGraphCandidate);
-  // Motion Blur's compute plan intentionally has no raster fullscreen shader
-  // declaration, but it is still a post chain consumer: Standard Post owns
-  // the named `motion-input`/`motion-output` targets and must project it after
-  // TAA. Keep the identity in this deferred set alongside declared fullscreen
-  // effects so an early forward/deferred contribution cannot resolve its
-  // scene-data target against an incomplete target map.
-  const fullscreenFeatureIds = new Set([
-    ...featurePostProcessEntries.keys(),
-    'forgeax.motion-blur',
-  ]);
-  const postProcessAdmission = admitFeaturePostProcessChain(
-    internals,
-    topologyAdmission.value,
-    featurePostProcessEntries,
-    camera.antialias === 'msaa' && topologyAdmission.value.lane.multisample,
-  );
-  const acceptedLkg = postProcessAdmission.pending ? lastKnownGood() : null;
-  if (acceptedLkg !== null) {
-    // Do not publish a candidate whose fullscreen chain is only partially
-    // ready. Keep the accepted graph (including its prior post-effect chain)
-    // and retry the same feature candidate on the next frame.
+  const completeViewGraphCompileCandidate = (): ViewGraphCompileOutcome => {
+    const topologyAdmission = admitStandardGraphTopology(
+      { internals, frameState, camera, stockRecording },
+      topologyResult,
+    );
+    if (!topologyAdmission.ok) {
+      metrics.buildFailures += 1;
+      const failure = topologyAdmission.error;
+      return reject(failure.code, { route: 'registry', error: failure.error }, failure.fallback);
+    }
+    const featurePostProcessEntries = featureFullscreenEffects(internals, featureGraphCandidate);
+    // Shader resources do not classify their owning plan. Only standalone effects
+    // and Standard's named post stages defer ordinary scene contribution.
+    const fullscreenFeatureIds = new Set([
+      ...(featureGraphCandidate?.postProcessIdentities ??
+        getRenderFeatureGraphState(internals).postProcessIdentities),
+      ...[...featurePostProcessEntries.keys()].filter(isStandardNamedPostProcess),
+      MOTION_BLUR_FEATURE_IDENTITY,
+    ]);
+    const postProcessAdmission = admitFeaturePostProcessChain(
+      internals,
+      topologyAdmission.value,
+      featurePostProcessEntries,
+      isMultisampleAntialias(camera.antialias) && topologyAdmission.value.lane.multisample,
+    );
+    const acceptedLkg = postProcessAdmission.pending ? lastKnownGood() : null;
+    if (acceptedLkg !== null) {
+      // Do not publish a candidate whose fullscreen chain is only partially
+      // ready. Keep the accepted graph (including its prior post-effect chain)
+      // and retry the same feature candidate on the next frame.
+      return {
+        frame,
+        kind: 'retained',
+        graph: acceptedLkg,
+        reason: 'post-chain-pending',
+        effects: effects(),
+      };
+    }
+    const topology = topologyForPostProcessAdmission(
+      topologyAdmission.value,
+      postProcessAdmission.pending,
+    );
+    // Keep Bloom's positive parameter values out of the compiled identity. A
+    // crossing of zero has already changed topology.camera.bloom above; the
+    // remaining values are uploaded by the active recorder without rebuilding
+    // targets or pipelines.
+    const topologyIdentity = frameGraphTopologyIdentity(topology, stockRecording);
+    const probePlacement = frameState.probePlacementFrame;
+    const shadowCameraCull = shadowCameraCullOf(internals, frameState, topology, cubeCaptureState);
+    const viewIdentity = renderFeatureViewIdentity(graphCamera);
+    const fluid = sharedPublication?.waterFluid.get(viewIdentity);
+    const installed = frameState.compiledFrameGraph;
+    const matchViewFrameGraph = () => {
+      let key: string;
+      let existing: ExistingFrameGraph;
+      if (profileSession === undefined) {
+        key = frameGraphCacheKey(
+          internals,
+          frameState,
+          topologyIdentity,
+          gpuDriven !== undefined,
+          cloudShadowResolution,
+          cloudHistoryFormat,
+          cubeCaptureState,
+          sharedPublication,
+          fluid,
+        );
+        existing = existingFrameGraphFor(internals, frameState, key);
+      } else {
+        const match = runProfiledRenderPhase(profileSession, 'graph/key-match', () => {
+          const candidateKey = frameGraphCacheKey(
+            internals,
+            frameState,
+            topologyIdentity,
+            gpuDriven !== undefined,
+            cloudShadowResolution,
+            cloudHistoryFormat,
+            cubeCaptureState,
+            sharedPublication,
+            fluid,
+          );
+          return {
+            key: candidateKey,
+            existing: existingFrameGraphFor(internals, frameState, candidateKey),
+          };
+        });
+        key = match.key;
+        existing = match.existing;
+      }
+      return { key, existing };
+    };
+    const { key, existing } = matchViewFrameGraph();
+    const accepted = acceptedGraphFeatures(postProcessAdmission.pending, cloudHistoryFormat);
+    if (existing.kind !== 'rebuild') {
+      return existingFrameGraphOutcome(existing, frame, key, metrics, effects, {
+        ...accepted,
+        gpuReplacement: gpuDriven,
+      });
+    }
+    retireStash = existing.retireStash;
+    metrics.rebuildAttempts += 1;
+    metrics.lastTopologyKey = key;
+    const buildStarted = graphClockMs();
+    const builder = new RenderGraphBuilder<RenderPipelineFrame>();
+    const sceneInputs = recordContext(internals).featureSceneInputs?.import(builder);
+    const graphInputs = importStandardGraphInputs(
+      builder,
+      frameState,
+      camera,
+      topology,
+      cloudHistoryFormat,
+      ssr,
+    );
+    if (!graphInputs.ok) {
+      return reject(
+        'graph-inputs-failed',
+        { route: 'registry', error: graphInputs.error },
+        'last-known-good',
+      );
+    }
+    const featureProjection = createRenderFeatureProjectionState();
+    const sharedTextures = importSharedGraphTextures(
+      builder,
+      sharedPublication,
+      featureProjection.graphTextures,
+      (frame) => (frame as _InternalRenderPipelineContext).sharedFeatureGraph,
+    );
+    for (const pass of sharedPublication?.passes ?? []) featureProjection.projected.add(pass);
+    const transientSlots = new Map<string, { complete: boolean; names: Set<string> }>();
+    let featureShadows:
+      | ReturnType<typeof projectRenderFeatureShadows<RenderPipelineFrame>>
+      | undefined;
+    let projectedGpuDriven = false;
+    let prepareGpuDrivenPipelines: InstalledFrameGraph['prepareGpuDrivenPipelines'];
+    const activePipeline = frameState.activePipeline;
+    let directionalShadowViewCount: number | undefined;
+    const build = pipelineBuildOf(activePipeline, stockRecording, frameState.gtaoExecutionOverride);
+    const prepareViewGraphBuildArguments = () => {
+      const buildArgs = [
+        {
+          graph: builder,
+          viewIdentity,
+          ...(fluid === undefined
+            ? {}
+            : { waterFluid: { publication: fluid, read: waterFluidForRecording(viewIdentity) } }),
+          getSharedGraphTextureBinding: (name) => sharedTextures.get(`frame:${name}`),
+          ...probePlacementContribution(builder, probePlacement),
+          ...diffuseGiContribution(builder, internals, frameState),
+          camera: { depthOfField: graphCamera.depthOfField },
+          observationCaptureDomains: recordContext(internals).observationCaptureDomains,
+          ...graphInputs.value,
+          ...(standardLighting === undefined ? {} : { standardLighting }),
+          capabilities: { rgba16floatRenderable: internals.device.caps.rgba16floatRenderable },
+          ...(cloudShadowResolution === undefined ? {} : { cloudShadowResolution }),
+          encodeTransmissionMip: ({ pass, resources, source, format }) => {
+            const sourceView = resources.textureView(source);
+            if (!sourceView.ok) throw sourceView.error;
+            const encoded = encodeMipmapLevel(internals.device, pass, sourceView.value, format);
+            if (!encoded.ok) throw encoded.error;
+          },
+          shadowDepthLayers,
+          projectGpuDriven: (target) => {
+            if (projectedGpuDriven || gpuDriven === undefined) return ok(undefined);
+            projectedGpuDriven = true;
+            const projected = gpuDriven.project(
+              builder,
+              target.format,
+              target.sampleCount,
+              () => frameState.surfaceSubmissionObservation,
+              target.additionalColorFormats,
+              target.lateOcclusion === true,
+              stockRecording,
+            );
+            if (projected.ok) prepareGpuDrivenPipelines = projected.value.preparePipelines;
+            return projected;
+          },
+          ...(gpuDriven?.projectShadow === undefined
+            ? {}
+            : {
+                projectGpuDrivenShadow: (identity, cameraPyramid) => {
+                  // Capture demand from the stock builder's actual projection calls,
+                  // rather than re-reading a possibly retained request/topology key.
+                  if (
+                    (activePipeline === standardPipeline ||
+                      isCaptureViewPipeline(activePipeline)) &&
+                    identity.kind === 'directional'
+                  ) {
+                    directionalShadowViewCount = Math.max(
+                      directionalShadowViewCount ?? 0,
+                      identity.index + 1,
+                    );
+                  }
+                  // A newly compiled graph still owns every shadow compute pass.
+                  return (
+                    gpuDriven.projectShadow?.(
+                      builder,
+                      identity,
+                      true,
+                      shadowCameraCull ? cameraPyramid : undefined,
+                    ) ?? ok(undefined)
+                  );
+                },
+                ...(gpuDriven.shadowViewPool === undefined
+                  ? {}
+                  : { gpuDrivenShadowDepthLayers: gpuDriven.shadowViewPool.staticLayers }),
+              }),
+          contributeShadowFeatures: () =>
+            (featureShadows ??= projectRenderFeatureShadows(
+              builder,
+              viewExecutions,
+              featureProjection,
+            )),
+          contributeFeatures: standardFeatureContribution({
+            internals,
+            frameState,
+            builder,
+            projectedFeaturePlans: viewExecutions,
+            featurePostProcessEntries,
+            fullscreenFeatureIds,
+            featureProjection,
+            sceneDataDepthViews: new Map(),
+            transientViews: transientViews.identities,
+            transientSlots,
+            sceneInputs,
+            surfaceSize: { width: surfaceWidth, height: surfaceHeight },
+            reportError: (error) => reportRenderFeatureGraphError(internals, error),
+          }),
+          getFeatureGraphTextureView: (name, viewIdentity) => {
+            const scope = featureScopeKey({ view: viewIdentity });
+            const matches = [...featureProjection.graphTextures.targets].filter(
+              ([target, resolved]) => target.name === name && resolved.scope === scope,
+            );
+            const match = matches[0];
+            return matches.length === 1 && match !== undefined ? match[1].view : undefined;
+          },
+          getFeatureGraphTextureFormat: (name, viewIdentity) => {
+            const scope = featureScopeKey({ view: viewIdentity });
+            const matches = [...featureProjection.graphTextures.targets].filter(
+              ([target, resolved]) => target.name === name && resolved.scope === scope,
+            );
+            const match = matches[0];
+            return matches.length === 1 && match !== undefined
+              ? (match[0].view?.format ?? match[0].format)
+              : undefined;
+          },
+          getFeatureGraphTextureBinding: (name, viewIdentity) => {
+            const scope = featureScopeKey({ view: viewIdentity });
+            const matches = [...featureProjection.graphTextures.targets].filter(
+              ([target, resolved]) => target.name === name && resolved.scope === scope,
+            );
+            if (matches.length !== 1) return undefined;
+            const match = matches[0];
+            if (!match) return undefined;
+            const [target, resolved] = match;
+            const format = target.view?.format ?? target.format;
+            return format === undefined ? undefined : { view: resolved.view, format };
+          },
+          getFeatureGraphTextureBindings: (prefix, viewIdentity, materialSourcesOnly = false) => {
+            const scope = featureScopeKey({ view: viewIdentity });
+            const result = new Map<
+              string,
+              Readonly<{
+                view: GraphTextureView;
+                format: import('@forgeax/engine-rhi').TextureFormat;
+              }>
+            >();
+            for (const [target, resolved] of featureProjection.graphTextures.targets) {
+              const name = target.name;
+              if (
+                resolved.scope !== scope ||
+                !name?.startsWith(prefix) ||
+                (materialSourcesOnly && target.materialSource !== true)
+              )
+                continue;
+              const format = target.view?.format ?? target.format;
+              if (format !== undefined) result.set(name, { view: resolved.view, format });
+            }
+            return result;
+          },
+          getWaterMeshGraphAccesses: () => {
+            const accesses: import('@forgeax/engine-render-graph').GraphAccess[] = [];
+            const visited = new Set<import('@forgeax/engine-rhi').Buffer>();
+            for (const execution of projectedFeaturePlans.value) {
+              if (
+                execution.featureIdentity !== WATER_GPU_MESH_FEATURE ||
+                execution.scope !==
+                  featureScopeKey({ view: renderFeatureViewIdentity(graphCamera) })
+              )
+                continue;
+              for (const pass of execution.passes)
+                for (const buffer of pass.gpuCompute?.dispatches.some(
+                  (dispatch) => dispatch.entryPoint === 'scatter',
+                )
+                  ? (pass.resolvedGpuCompute?.buffers ?? [])
+                  : []) {
+                  if (
+                    visited.has(buffer.buffer) ||
+                    (buffer.access !== 'storage-write' && buffer.access !== 'storage-read-write')
+                  )
+                    continue;
+                  visited.add(buffer.buffer);
+                  const imported = importRenderFeatureGraphBuffer(
+                    builder,
+                    featureProjection.buffers,
+                    buffer.name,
+                    buffer,
+                  );
+                  if (!imported.ok) throw imported.error;
+                  accesses.push({
+                    resource: imported.value,
+                    usage:
+                      (buffer.physicalUsage & GPU_BUFFER_USAGE_INDIRECT) !== 0
+                        ? 'indirect-read'
+                        : 'storage-read',
+                  });
+                }
+            }
+            return accesses;
+          },
+          contributeCubeCaptures: (environmentCube, shadows) => {
+            const reflectionProbes = addReflectionProbeGraphPasses(
+              builder,
+              {
+                work: (cubeCaptureState?.reflectionProbes?.work ?? []).map((work) => ({
+                  ...work,
+                  rawCaptureFace: undefined,
+                })),
+              },
+              environmentCube,
+            );
+            if (!reflectionProbes.ok) return reflectionProbes;
+            if (cubeCaptureState === undefined) return ok(undefined);
+            const planarView = addTargetCaptureGraphPasses(builder, {
+              ...cubeCaptureState,
+              work: [],
+            });
+            if (!planarView.ok || planarView.value === undefined) return planarView;
+            const recorded = addPlanarReflectionPass(builder, shadows, planarView.value);
+            return recorded.ok ? planarView : recorded;
+          },
+          hasFeature: (identity) =>
+            projectedFeaturePlans.value.some((execution) => execution.featureIdentity === identity),
+          hasFeatureWork: (identity, placement, sceneInput) =>
+            projectedFeaturePlans.value.some(
+              (execution) =>
+                (identity === undefined || execution.featureIdentity === identity) &&
+                execution.passes.length > 0 &&
+                (sceneInput === undefined ||
+                  execution.passes.some((pass) => pass.graphics?.sceneDepth !== undefined)) &&
+                (placement === undefined || (execution.placement ?? 'post') === placement),
+            ),
+          hasFeatureRasterWork: (identity, placement, passName) =>
+            projectedFeaturePlans.value.some(
+              (execution) =>
+                execution.featureIdentity === identity &&
+                execution.passes.some(
+                  (pass) =>
+                    pass.graphics !== undefined &&
+                    (passName === undefined || pass.name === passName),
+                ) &&
+                (placement === undefined || (execution.placement ?? 'post') === placement),
+            ),
+        } satisfies RenderPipelineBuildContext<RenderPipelineFrame>,
+        topology,
+      ] as const;
+      return buildArgs;
+    };
+    const buildArgs = prepareViewGraphBuildArguments();
+    const built =
+      profileSession === undefined
+        ? Reflect.apply(build, activePipeline, buildArgs)
+        : runProfiledRenderPhase(profileSession, 'graph/build', () =>
+            Reflect.apply(build, activePipeline, buildArgs),
+          );
+    if (!built.ok) {
+      metrics.buildFailures += 1;
+      return reject('graph-build-failed', { route: 'registry', error: built.error }, 'topology');
+    }
+    const retainViewGraphCaptureTarget = () => {
+      const graphCapture = frameState.graphTargetCapture;
+      if (graphCapture !== undefined && graphCapture.kind !== 'pass-replay') {
+        const captureScope = featureScopeKey({ view: renderFeatureViewIdentity(camera) });
+        const captureTargets = [...featureProjection.graphTextures.targets].filter(
+          ([target, resolved]) =>
+            target.name === graphCapture.name && resolved.scope === captureScope,
+        );
+        const uniqueCaptureTargets = new Map(
+          captureTargets.map(([, resolved]) => [resolved.label, resolved] as const),
+        );
+        if (uniqueCaptureTargets.size === 1) {
+          const captureTarget = uniqueCaptureTargets.values().next().value;
+          if (captureTarget !== undefined) {
+            const retained = builder.addCopyPass(
+              `graph-target-capture-retain:${graphCapture.name}`,
+              {
+                accesses: [{ resource: captureTarget.view, usage: 'copy-src' }],
+                encodeDirect: () => {},
+              },
+            );
+            if (!retained.ok) {
+              metrics.buildFailures += 1;
+              return reject(
+                'graph-build-failed',
+                { route: 'registry', error: retained.error },
+                'topology',
+              );
+            }
+          }
+        }
+      }
+      return undefined;
+    };
+    const captureTargetFailure = retainViewGraphCaptureTarget();
+    if (captureTargetFailure !== undefined) return captureTargetFailure;
+    metrics.compileAttempts += 1;
+    metrics.buildCpuMs += graphClockMs() - buildStarted;
+    metrics.compileCause = { installedTopologyKey: installed?.topologyKey, key };
+    const compileStarted = graphClockMs();
+    const compileViewGraphCandidate = () => {
+      let compiled: ReturnType<typeof builder.compile>;
+      try {
+        if (profileSession === undefined) {
+          compiled = builder.compile({
+            device: internals.device,
+            surfaceSize: { width: surfaceWidth, height: surfaceHeight },
+            reuseResourcesFrom: installed?.graph,
+          });
+        } else {
+          compiled = runProfiledRenderPhase(profileSession, 'graph/compile', () =>
+            builder.compile({
+              device: internals.device,
+              surfaceSize: { width: surfaceWidth, height: surfaceHeight },
+              reuseResourcesFrom: installed?.graph,
+            }),
+          );
+        }
+      } finally {
+        metrics.compileCpuMs += graphClockMs() - compileStarted;
+      }
+      return compiled;
+    };
+    const compiled = compileViewGraphCandidate();
+    if (!compiled.ok) {
+      metrics.compileFailures += 1;
+      return reject(
+        'graph-compile-failed',
+        { route: 'registry', error: compiled.error },
+        'last-known-good',
+      );
+    }
+    const candidateInfo = compiled.value.inspect();
+    const rejectViewGraphPreparationFault = () => {
+      if (
+        consumeGtaoCandidatePreparationFault(
+          frameState,
+          recordContext(internals).deviceScope.generation,
+          candidateInfo.passes.map((pass) => pass.name),
+        )
+      ) {
+        const error = new RendererOperationError('graph-build-failed', {
+          operation: 'draw',
+          cause: {
+            code: 'gtao-candidate-preparation-fault-injected',
+            expected: 'an AO graph candidate remains unpromoted after allocation',
+            hint: 'retry candidate preparation after this one-shot conformance fault',
+            detail: {
+              phase: 'post-allocation-before-promotion',
+              deviceGeneration: recordContext(internals).deviceScope.generation,
+              candidateGeneration: candidateInfo.generation,
+              passNames: Object.freeze(candidateInfo.passes.map((pass) => pass.name)),
+              resourceAllocation: candidateInfo.resourceAllocation,
+            },
+          },
+        });
+        const rejected = reject(
+          'graph-build-failed',
+          { route: 'registry', error },
+          'last-known-good',
+        );
+        return { ...rejected, effects: { ...rejected.effects, rejectedGraph: compiled.value } };
+      }
+      return undefined;
+    };
+    const candidatePreparationFailure = rejectViewGraphPreparationFault();
+    if (candidatePreparationFailure !== undefined) return candidatePreparationFailure;
+    traceCompiledFeatureGraph(
+      internals,
+      frameState,
+      featureGraphCandidate,
+      featurePlans,
+      compiled.value,
+    );
+    // Decorate the new graph object; adoption publishes it.
+    installScenePasses(builder, compiled.value);
+    metrics.compileSuccesses += 1;
+    // No new lease means the installed imports remain current, not a second
+    // resource transition back to an empty key on the following frame.
     return {
       frame,
-      kind: 'retained',
-      graph: acceptedLkg,
-      reason: 'post-chain-pending',
-      effects: effects(),
-    };
-  }
-  const topology = topologyForPostProcessAdmission(
-    topologyAdmission.value,
-    postProcessAdmission.pending,
-  );
-  // Keep Bloom's positive parameter values out of the compiled identity. A
-  // crossing of zero has already changed topology.camera.bloom above; the
-  // remaining values are uploaded by the active recorder without rebuilding
-  // targets or pipelines.
-  const topologyIdentity = frameGraphTopologyIdentity(topology, stockRecording);
-  const probePlacement = frameState.probePlacementFrame;
-  const shadowCameraCull = shadowCameraCullOf(internals, frameState, topology, cubeCaptureState);
-  const key = frameGraphCacheKey(
-    internals,
-    frameState,
-    topologyIdentity,
-    gpuDriven !== undefined,
-    cloudShadowResolution,
-    cloudHistoryDemand,
-    cubeCaptureState,
-  );
-  const installed = frameState.compiledFrameGraph;
-  const accepted = {
-    postPending: postProcessAdmission.pending,
-    cloudHistoryActive: cloudHistoryDemand,
-  };
-  const existing = existingFrameGraphFor(internals, frameState, key);
-  if (existing.kind !== 'rebuild') {
-    return existingFrameGraphOutcome(existing, frame, key, metrics, effects, {
-      ...accepted,
-      gpuReplacement: gpuDriven,
-    });
-  }
-  retireStash = existing.retireStash;
-  metrics.rebuildAttempts += 1;
-  metrics.lastTopologyKey = key;
-  const buildStarted = graphClockMs();
-  const builder = new RenderGraphBuilder<RenderPipelineFrame>();
-  const sceneInputs = recordContext(internals).featureSceneInputs?.import(builder);
-  const graphInputs = importStandardGraphInputs(
-    builder,
-    frameState,
-    camera,
-    topology,
-    cloudHistoryDemand,
-    ssr,
-  );
-  if (!graphInputs.ok) {
-    return reject(
-      'graph-inputs-failed',
-      { route: 'registry', error: graphInputs.error },
-      'last-known-good',
-    );
-  }
-  const featureProjection = createRenderFeatureProjectionState();
-  const transientSlots = new Map<string, { complete: boolean; names: Set<string> }>();
-  let featureShadows:
-    | ReturnType<typeof projectRenderFeatureShadows<RenderPipelineFrame>>
-    | undefined;
-  let projectedGpuDriven = false;
-  let prepareGpuDrivenPipelines: InstalledFrameGraph['prepareGpuDrivenPipelines'];
-  const activePipeline = frameState.activePipeline;
-  let directionalShadowViewCount: number | undefined;
-  const build = pipelineBuildOf(activePipeline, stockRecording, frameState.gtaoExecutionOverride);
-  const built = Reflect.apply(build, activePipeline, [
-    {
-      graph: builder,
-      ...probePlacementContribution(builder, probePlacement),
-      ...diffuseGiContribution(builder, internals, frameState),
-      camera: { depthOfField: graphCamera.depthOfField },
-      observationCaptureDomains: recordContext(internals).observationCaptureDomains,
-      ...graphInputs.value,
-      ...(standardLighting === undefined ? {} : { standardLighting }),
-      capabilities: { rgba16floatRenderable: internals.device.caps.rgba16floatRenderable },
-      ...(cloudShadowResolution === undefined ? {} : { cloudShadowResolution }),
-      encodeTransmissionMip: ({ pass, resources, source, format }) => {
-        const sourceView = resources.textureView(source);
-        if (!sourceView.ok) throw sourceView.error;
-        const encoded = encodeMipmapLevel(internals.device, pass, sourceView.value, format);
-        if (!encoded.ok) throw encoded.error;
-      },
-      shadowDepthLayers,
-      projectGpuDriven: (target) => {
-        if (projectedGpuDriven || gpuDriven === undefined) return ok(undefined);
-        projectedGpuDriven = true;
-        const projected = gpuDriven.project(
-          builder,
-          target.format,
-          target.sampleCount,
-          () => frameState.surfaceSubmissionObservation,
-          target.additionalColorFormats,
-          target.lateOcclusion === true,
-          stockRecording,
-        );
-        if (projected.ok) prepareGpuDrivenPipelines = projected.value.preparePipelines;
-        return projected;
-      },
-      ...(gpuDriven?.projectShadow === undefined
-        ? {}
-        : {
-            projectGpuDrivenShadow: (identity, cameraPyramid) => {
-              // Capture demand from the stock builder's actual projection calls,
-              // rather than re-reading a possibly retained request/topology key.
-              if (
-                (activePipeline === standardPipeline || isCaptureViewPipeline(activePipeline)) &&
-                identity.kind === 'directional'
-              ) {
-                directionalShadowViewCount = Math.max(
-                  directionalShadowViewCount ?? 0,
-                  identity.index + 1,
-                );
-              }
-              // A newly compiled graph still owns every shadow compute pass.
-              return (
-                gpuDriven.projectShadow?.(
-                  builder,
-                  identity,
-                  true,
-                  shadowCameraCull ? cameraPyramid : undefined,
-                ) ?? ok(undefined)
-              );
-            },
-            ...(gpuDriven.shadowViewPool === undefined
-              ? {}
-              : { gpuDrivenShadowDepthLayers: gpuDriven.shadowViewPool.staticLayers }),
-          }),
-      contributeShadowFeatures: () =>
-        (featureShadows ??= projectRenderFeatureShadows(
-          builder,
-          projectedFeaturePlans.value,
-          featureProjection,
-        )),
-      contributeFeatures: standardFeatureContribution({
-        internals,
-        frameState,
+      kind: 'compiled',
+      graph: compiled.value,
+      installed: installedFrameGraphOf(
         builder,
-        projectedFeaturePlans: projectedFeaturePlans.value,
-        featurePostProcessEntries,
-        fullscreenFeatureIds,
-        featureProjection,
-        sceneDataDepthViews: new Map(),
-        transientViews: transientViews.identities,
-        transientSlots,
-        sceneInputs,
-        surfaceSize: { width: surfaceWidth, height: surfaceHeight },
-        reportError: (error) => reportRenderFeatureGraphError(internals, error),
-      }),
-      contributeCubeCaptures: (environmentCube) => {
-        const reflectionProbes = addReflectionProbeGraphPasses(
-          builder,
-          {
-            work: (cubeCaptureState?.reflectionProbes?.work ?? []).map((work) => ({
-              ...work,
-              rawCaptureFace: undefined,
-            })),
-          },
-          environmentCube,
-        );
-        if (!reflectionProbes.ok) return reflectionProbes;
-        return cubeCaptureState === undefined
-          ? ok(undefined)
-          : addTargetCaptureGraphPasses(builder, { ...cubeCaptureState, work: [] });
-      },
-      hasFeature: (identity) =>
-        projectedFeaturePlans.value.some((execution) => execution.featureIdentity === identity),
-      hasFeatureWork: (identity, placement) =>
-        projectedFeaturePlans.value.some(
-          (execution) =>
-            execution.featureIdentity === identity &&
-            execution.passes.length > 0 &&
-            (placement === undefined || (execution.placement ?? 'post') === placement),
+        compiled.value,
+        key,
+        frameState.graphGeneration + 1,
+        topologyCandidate?.preparedResourceKey ?? installed?.preparedResourceKey,
+        stockRecording,
+        prepareGpuDrivenPipelines,
+        directionalShadowViewCount,
+        new Map(
+          [...featureProjection.graphTextures.targets].flatMap(([target, resolved]) => {
+            const name = target.name;
+            return name !== undefined &&
+              resolved.scope === featureScopeKey({ view: renderFeatureViewIdentity(camera) })
+              ? [[name, resolved.label] as const]
+              : [];
+          }),
         ),
-      hasFeatureRasterWork: (identity, placement) =>
-        projectedFeaturePlans.value.some(
-          (execution) =>
-            execution.featureIdentity === identity &&
-            execution.passes.some((pass) => pass.graphics !== undefined) &&
-            (placement === undefined || (execution.placement ?? 'post') === placement),
-        ),
-    },
-    topology,
-  ]);
-  if (!built.ok) {
-    metrics.buildFailures += 1;
-    return reject('graph-build-failed', { route: 'registry', error: built.error }, 'topology');
-  }
-  metrics.compileAttempts += 1;
-  metrics.buildCpuMs += graphClockMs() - buildStarted;
-  metrics.compileCause = { installedTopologyKey: installed?.topologyKey, key };
-  const compileStarted = graphClockMs();
-  const compiled = builder.compile({
-    device: internals.device,
-    surfaceSize: { width: surfaceWidth, height: surfaceHeight },
-    reuseResourcesFrom: installed?.graph,
-  });
-  metrics.compileCpuMs += graphClockMs() - compileStarted;
-  if (!compiled.ok) {
-    metrics.compileFailures += 1;
-    return reject(
-      'graph-compile-failed',
-      { route: 'registry', error: compiled.error },
-      'last-known-good',
-    );
-  }
-  const candidateInfo = compiled.value.inspect();
-  if (
-    consumeGtaoCandidatePreparationFault(
-      frameState,
-      recordContext(internals).deviceScope.generation,
-      candidateInfo.passes.map((pass) => pass.name),
-    )
-  ) {
-    const error = new RendererOperationError('graph-build-failed', {
-      operation: 'draw',
-      cause: {
-        code: 'gtao-candidate-preparation-fault-injected',
-        expected: 'an AO graph candidate remains unpromoted after allocation',
-        hint: 'retry candidate preparation after this one-shot conformance fault',
-        detail: {
-          phase: 'post-allocation-before-promotion',
-          deviceGeneration: recordContext(internals).deviceScope.generation,
-          candidateGeneration: candidateInfo.generation,
-          passNames: Object.freeze(candidateInfo.passes.map((pass) => pass.name)),
-          resourceAllocation: candidateInfo.resourceAllocation,
-        },
-      },
-    });
-    const rejected = reject('graph-build-failed', { route: 'registry', error }, 'last-known-good');
-    return { ...rejected, effects: { ...rejected.effects, rejectedGraph: compiled.value } };
-  }
-  traceCompiledFeatureGraph(
-    internals,
-    frameState,
-    featureGraphCandidate,
-    featurePlans,
-    compiled.value,
-  );
-  // Decorate the new graph object; adoption publishes it.
-  installScenePasses(builder, compiled.value);
-  metrics.compileSuccesses += 1;
-  // No new lease means the installed imports remain current, not a second
-  // resource transition back to an empty key on the following frame.
-  return {
-    frame,
-    kind: 'compiled',
-    graph: compiled.value,
-    installed: installedFrameGraphOf(
-      builder,
-      compiled.value,
-      key,
-      frameState.graphGeneration + 1,
-      topologyCandidate?.preparedResourceKey ?? installed?.preparedResourceKey,
-      stockRecording,
-      prepareGpuDrivenPipelines,
-      directionalShadowViewCount,
-    ),
-    effects: effects({ ...accepted, gpuReplacement: gpuDriven }),
+      ),
+      effects: effects({ ...accepted, gpuReplacement: gpuDriven }),
+    };
   };
+  return completeViewGraphCompileCandidate();
 }
 
 /** Shared target captures use the same lighting prelude and scene raster owner as display views. */
@@ -3200,6 +3106,55 @@ export function compileTargetCaptureFrameGraph(
   lighting: StandardTopologyInputValue,
   probe?: ReflectionProbeGraphWork,
   terrainReceivers: readonly TerrainShadowReceiver[] = [],
+  sharedShadows?: SharedShadowSource,
+): CompiledRenderGraph<RenderPipelineFrame> {
+  const profileSession = activeRenderProfileSession(internals);
+  if (profileSession === undefined)
+    return compileTargetCaptureFrameGraphOwned(
+      internals,
+      frameState,
+      pipelineState,
+      camera,
+      lights,
+      shadowMapSize,
+      state,
+      lighting,
+      probe,
+      terrainReceivers,
+      sharedShadows,
+      undefined,
+    );
+  return runProfiledRenderPhase(profileSession, 'graph/build', () =>
+    compileTargetCaptureFrameGraphOwned(
+      internals,
+      frameState,
+      pipelineState,
+      camera,
+      lights,
+      shadowMapSize,
+      state,
+      lighting,
+      probe,
+      terrainReceivers,
+      sharedShadows,
+      profileSession,
+    ),
+  );
+}
+
+function compileTargetCaptureFrameGraphOwned(
+  internals: RenderSystemInternals,
+  frameState: RenderFrameState,
+  pipelineState: PipelineState,
+  camera: CameraSnapshot,
+  lights: ViewLights,
+  shadowMapSize: number | undefined,
+  state: CubeCaptureGraphState,
+  lighting: StandardTopologyInputValue,
+  probe: ReflectionProbeGraphWork | undefined,
+  terrainReceivers: readonly TerrainShadowReceiver[],
+  sharedShadows: SharedShadowSource | undefined,
+  profileSession: RecorderSession | undefined,
 ): CompiledRenderGraph<RenderPipelineFrame> {
   const topology = topologyOf(
     internals,
@@ -3241,7 +3196,12 @@ export function compileTargetCaptureFrameGraph(
     const membership = addStandardClusterMembershipPass(graph, lighting, buffers.value);
     if (!membership.ok) throw membership.error;
   }
-  const shadows = addTypedShadowPasses(graph, topology.value);
+  // A planar mirror records with the display view's lights and samples the
+  // shadows that view rastered this frame.
+  const shadows =
+    sharedShadows === undefined
+      ? addTypedShadowPasses(graph, topology.value)
+      : importSharedShadowTargets(graph, topology.value, sharedShadows);
   if (!shadows.ok) throw shadows.error;
   const targets =
     probe === undefined
@@ -3269,13 +3229,19 @@ export function compileTargetCaptureFrameGraph(
           buffers.value,
         );
   if (!targets.ok) throw targets.error;
-  const compiled = graph.compile({
+  const compileOptions = {
     device: internals.device,
     surfaceSize: {
       width: recordContext(internals).canvas.width,
       height: recordContext(internals).canvas.height,
     },
-  });
+  };
+  const compiled =
+    profileSession === undefined
+      ? graph.compile(compileOptions)
+      : runProfiledRenderPhase(profileSession, 'graph/compile', () =>
+          graph.compile(compileOptions),
+        );
   if (!compiled.ok) throw compiled.error;
   installScenePasses(graph, compiled.value);
   return compiled.value;
@@ -3293,15 +3259,64 @@ export interface CompiledFrameHooks {
   readonly onSubmitted?: () => void;
   readonly onSubmittedWork?: (completed: Promise<void>) => void;
 }
+
 export interface EncodedFrameGraph {
   readonly internals: RenderSystemInternals;
   readonly frameState: RenderFrameState;
   readonly submission: GraphSubmission;
   readonly work: RecordedView;
 }
+
 export type FrameGraphEncodeOutcome =
   | { readonly kind: 'encoded'; readonly value: EncodedFrameGraph }
   | { readonly kind: 'rejected'; readonly stage: 'execute' | 'finish' };
+
+function combinePassInstrumentation<Frame extends RenderGraphFrame>(
+  base: RenderGraphPassInstrumentation<Frame> | undefined,
+  extra: RenderGraphPassInstrumentation<Frame> | undefined,
+): RenderGraphPassInstrumentation<Frame> | undefined {
+  if (base === undefined) return extra;
+  if (extra === undefined) return base;
+  return {
+    begin(pass, frame) {
+      const baseScope = base.begin(pass, frame);
+      const extraScope = extra.begin(pass, frame);
+      if (baseScope === undefined && extraScope === undefined) return undefined;
+      return {
+        ...baseScope,
+        ...extraScope,
+        endPass() {
+          try {
+            extraScope?.endPass?.();
+          } catch {
+            // Diagnostics cannot replace a graph pass result.
+          }
+          try {
+            baseScope?.endPass?.();
+          } catch {
+            // Diagnostics cannot replace a graph pass result.
+          }
+        },
+      };
+    },
+  };
+}
+
+function recordAtomicPasses(
+  runner: import('@forgeax/engine-render-graph').RenderGraphPassRunner | undefined,
+  encoded: Set<string>,
+  active: boolean,
+): import('@forgeax/engine-render-graph').RenderGraphPassRunner | undefined {
+  if (!active) return runner;
+  return (pass, encode) => {
+    const record = () => {
+      encode();
+      encoded.add(pass.name);
+    };
+    if (runner === undefined) record();
+    else runner(pass, record);
+  };
+}
 
 /** Encode and resolve readbacks into the open frame encoder; never submits or suspends. */
 export function recordCompiledFrameGraph(
@@ -3323,8 +3338,19 @@ export function recordCompiledFrameGraph(
     return { kind: 'rejected', stage: 'execute' };
   }
   const acceptedFeaturePlans = getRenderFeatureGraphState(internals).plans;
+  const editor = captureEditorAssistanceView(
+    recordContext(internals).featureHost,
+    internals.rendererFrameNumber ?? frameState.frameNumber,
+    renderFeatureViewIdentity(frame.camera),
+    frame.camera?.outline,
+  );
+  const atomic = acceptedFeaturePlans.filter((plan) => plan.plan.submission === 'atomic');
+  const encodedAtomicPasses = new Set<string>();
+  const observedRunner = recordAtomicPasses(runPass, encodedAtomicPasses, atomic.length !== 0);
   const executionFrame = {
     ...frame,
+    ...(editor === undefined ? {} : { editorAssistance: editor }),
+    sharedFeatureGraph: sharedFeatureGraphPublication(internals.featureHost),
     featureExecutions: acceptedFeaturePlans
       .map(getRenderFeaturePlanExecutionProjection)
       .filter((execution): execution is RenderFeaturePlanExecution => execution !== undefined),
@@ -3337,15 +3363,16 @@ export function recordCompiledFrameGraph(
   frameState.stagedMotionBlurExecution = { receipt: motionBlurExecution };
   const legacyTimingInstrumentation =
     timingCapture === undefined ? undefined : createTimingInstrumentation(timingCapture);
-  internals.observationGraphGeneration = frameState.compiledFrameGraphGeneration;
+  const graphGeneration = graph.inspect().generation;
+  internals.observationGraphGeneration = graphGeneration;
   const passTimingCapture = internals.gpuPassTimingCapture;
+  const profileInstrumentation = !renderGraphPassInstrumentationActive(internals)
+    ? undefined
+    : createRenderGraphPassInstrumentation({ internals, graph });
   const graphInstrumentation =
     passTimingCapture === undefined
-      ? legacyTimingInstrumentation
-      : createPassTimingInstrumentation<RenderPipelineFrame>(
-          passTimingCapture,
-          recordContext(internals).gpuPassTimingViewId,
-        );
+      ? combinePassInstrumentation(legacyTimingInstrumentation, profileInstrumentation)
+      : profileInstrumentation;
   const deviceScope = recordContext(internals).deviceScope;
   const graphDeviceGeneration = graphDeviceGenerations.get(graph);
   if (
@@ -3371,6 +3398,7 @@ export function recordCompiledFrameGraph(
   const capturedGeneration = deviceScope?.generation;
   const submission: GraphSubmission = {
     frame: renderSubmission(renderWorldFor(internals)).frame,
+    graph,
     timing: timingCapture,
     passTiming: passTimingCapture,
     gi: 'gi' in (resolvedFrameHooks ?? {}) ? resolvedFrameHooks?.gi : undefined,
@@ -3399,8 +3427,8 @@ export function recordCompiledFrameGraph(
         availablePassNames,
         graphTargetAccess: frameState.compiledFrameGraph?.targets,
         getTextureIdentity,
-        runPass,
-        executeInitial: () => graph.execute(executionFrame, runPass, graphInstrumentation),
+        runPass: observedRunner,
+        executeInitial: () => graph.execute(executionFrame, observedRunner, graphInstrumentation),
         executeReplay: (replayRunner) => graph.execute(executionFrame, replayRunner),
         reportFailure: (reason, passNames) => {
           internals.errorRegistry.fire(
@@ -3434,13 +3462,51 @@ export function recordCompiledFrameGraph(
         return { ok: false, stage: 'execute' };
       }
     } else {
-      const executed = graph.execute(executionFrame, runPass, graphInstrumentation);
+      const executed = graph.execute(executionFrame, observedRunner, graphInstrumentation);
       if (!executed.ok) {
         passTimingCapture?.abort({ code: executed.error.code });
         internals.errorRegistry.fire(executed.error);
         return { ok: false, stage: 'execute' };
       }
     }
+    for (const plan of atomic) {
+      const projection = getRenderFeaturePlanExecutionProjection(plan);
+      const missing = plan.plan.passes.filter((pass) => {
+        if (!encodedAtomicPasses.has(pass.name)) return true;
+        const actual = projection?.passes.find((candidate) => candidate.name === pass.name);
+        if (actual?.enabled === false) return true;
+        return (
+          (pass.kind === 'raster' || pass.kind === 'shadow-caster') &&
+          pass.draws.length > 0 &&
+          (actual?.graphics?.draws.every((draw) => draw.enabled === false) ?? true)
+        );
+      });
+      if (missing.length > 0) {
+        internals.errorRegistry.fire(
+          new RhiError({
+            code: 'webgpu-runtime-error',
+            expected: 'all passes of an atomic Feature work encode before submission',
+            hint: 'restore the omitted producer work and retry the entire frame',
+            detail: {
+              error: {
+                code: 'atomic-feature-work-incomplete',
+                message: JSON.stringify({
+                  featureIdentity: plan.featureIdentity,
+                  scope: plan.scope,
+                  missing: missing.map((pass) => pass.name),
+                }),
+              },
+            },
+          }),
+        );
+        return { ok: false, stage: 'execute' };
+      }
+    }
+    if (internals.observationFrameId !== undefined)
+      internals.observationCaptureOwner?.recordGraph(
+        internals.observationFrameId,
+        graph.inspect().generation,
+      );
     const afterGraphExecute = resolvedFrameHooks?.afterGraphExecute;
     internals.framePassNames?.push(...graph.inspect().passes.map((pass) => pass.name));
     if (afterGraphExecute !== undefined) {
@@ -3714,6 +3780,7 @@ function traceFeaturePlanInput(
     ...featurePlanTraceDetails(internals, plans),
   });
 }
+
 function traceCompiledFeatureGraph(
   internals: RenderSystemInternals,
   frameState: RenderFrameState,
@@ -3768,3 +3835,26 @@ function admitStandardGraphTopology(
   }
   return result;
 }
+
+import {
+  addReflectionProbeGraphPasses,
+  importCloudHistoryTargets,
+  importSsrHistoryTargets,
+  importSsrSceneColorHistoryTarget,
+  importSsrSceneColorOutput,
+  importTemporalHistoryTargets,
+  importWaterSsrInputParams,
+  isMotionBlurTemporalDemand,
+  type ReflectionProbeGraphWork,
+} from './frame-graph-history';
+
+export {
+  addReflectionProbeGraphPasses,
+  boundedReflectionProbeFilterWork,
+  isMotionBlurTemporalDemand,
+  type ReflectionProbeFilterGraphState,
+  type ReflectionProbeFilterGraphWork,
+  type ReflectionProbeGraphState,
+  type ReflectionProbeGraphWork,
+  shouldUseTemporalFrameTransaction,
+} from './frame-graph-history';

@@ -54,7 +54,8 @@ export function selectStandardClusterTransport(
   prepared: PreparedStandardLighting,
   reflectedAbi?: StandardClusterReflectedAbi,
 ): Result<StandardClusterTransport, RenderError> {
-  const requested = prepared.local.length;
+  const admitted = prepared.local.length;
+  const requested = admitted + prepared.droppedLocalLights;
   if (reflectedAbi === undefined) {
     return err(
       new StandardClusterTransportUnavailableError(
@@ -92,12 +93,12 @@ export function selectStandardClusterTransport(
     producer,
     layout: prepared.layout,
     requestedLightCount: requested,
-    admittedLightCount: requested,
+    admittedLightCount: admitted,
     membershipEntryCount: prepared.membershipEntryCount,
     occupiedClusterCount: occupiedClusterCount(prepared),
     clusterGridBytes: prepared.layout.clusterGridU32Length * Uint32Array.BYTES_PER_ELEMENT,
     lightIndexListBytes: prepared.membershipEntryCount * Uint32Array.BYTES_PER_ELEMENT,
-    lightDataBytes: requested * lightDataSlotBytes,
+    lightDataBytes: admitted * lightDataSlotBytes,
     lightDataSlotBytes,
     clusterUniformBytes,
     lightBoundsBytes: prepared.lightBounds.byteLength,

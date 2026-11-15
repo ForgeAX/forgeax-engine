@@ -10,7 +10,6 @@
     "sdkVersion",
     "engineCommit",
     "viewCommit",
-    "sourceWorkflowRunId",
     "artifacts",
     "npmPackages",
     "gates",
@@ -18,7 +17,8 @@
   ],
   "properties": {
     "schemaVersion": {
-      "const": "3.0.0"
+      "type": "string",
+      "enum": ["3.0.0", "4.0.0"]
     },
     "candidateId": {
       "type": "string",
@@ -35,6 +35,14 @@
     "sourceWorkflowRunId": {
       "type": "integer",
       "minimum": 1
+    },
+    "origin": {
+      "type": "string",
+      "enum": ["github-actions", "local"]
+    },
+    "localRunId": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
     },
     "artifacts": {
       "type": "array",
@@ -67,6 +75,65 @@
       "pattern": "^[0-9a-f]{40}$"
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "schemaVersion": { "const": "4.0.0" } },
+        "required": ["schemaVersion"]
+      },
+      "then": {
+        "properties": { "origin": { "type": "string" } },
+        "required": ["origin"]
+      }
+    },
+    {
+      "if": {
+        "properties": { "schemaVersion": { "const": "3.0.0" } },
+        "required": ["schemaVersion"]
+      },
+      "then": {
+        "properties": { "sourceWorkflowRunId": { "type": "integer" } },
+        "required": ["sourceWorkflowRunId"],
+        "not": {
+          "anyOf": [
+            { "properties": { "origin": { "type": "string" } }, "required": ["origin"] },
+            { "properties": { "localRunId": { "type": "string" } }, "required": ["localRunId"] }
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "schemaVersion": { "const": "4.0.0" },
+          "origin": { "const": "github-actions" }
+        },
+        "required": ["schemaVersion", "origin"]
+      },
+      "then": {
+        "properties": { "sourceWorkflowRunId": { "type": "integer" } },
+        "required": ["sourceWorkflowRunId"],
+        "not": { "properties": { "localRunId": { "type": "string" } }, "required": ["localRunId"] }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "schemaVersion": { "const": "4.0.0" },
+          "origin": { "const": "local" }
+        },
+        "required": ["schemaVersion", "origin"]
+      },
+      "then": {
+        "properties": { "localRunId": { "type": "string" } },
+        "required": ["localRunId"],
+        "not": {
+          "properties": { "sourceWorkflowRunId": { "type": "integer" } },
+          "required": ["sourceWorkflowRunId"]
+        }
+      }
+    }
+  ],
   "$defs": {
     "artifact": {
       "type": "object",
@@ -76,7 +143,7 @@
         "path": {
           "type": "string",
           "minLength": 1,
-          "pattern": "^(?!\\.)(?!.*(?:^|/)\\.\\.?/)[^/].*$"
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?(?:/|$))[^/].*$"
         },
         "bytes": {
           "type": "integer",

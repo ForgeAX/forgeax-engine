@@ -395,6 +395,44 @@ function value<T>(
   return result.value;
 }
 
+/** Settle this feature barrier; only a subsequent submitted ready frame is observable. */
+export async function settleForwardGtaoFeaturePreparation(
+  receipt: FrameReceipt,
+  deadline: number,
+): Promise<boolean> {
+  if (
+    receipt.presentation !== 'pending' ||
+    receipt.presentationPendingReason?.code !== 'feature-preparation' ||
+    receipt.presentationPendingReason.featureIdentity !== 'test.forward-gtao-scene-data-consumer'
+  )
+    return false;
+  const completion = receipt.preparationCompleted;
+  if (completion === undefined) {
+    throw new Error(`Feature preparation receipt ${receipt.frameId} omitted its completion signal`);
+  }
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) throw new Error('Forward GTAO capture deadline expired during preparation');
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    value(
+      await Promise.race([
+        completion,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error('Forward GTAO capture deadline expired during preparation')),
+            remaining,
+          );
+        }),
+      ]),
+    );
+    if (Date.now() >= deadline)
+      throw new Error('Forward GTAO capture deadline expired during preparation');
+    return true;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 function bytesPerTexel(format: string): number {
   switch (format) {
     case 'r8unorm':

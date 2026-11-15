@@ -54,7 +54,6 @@ it('keeps a direct instance buffer and bind group while a dynamic count fits its
       context,
       {
         source: {
-          worldId: 0,
           entityKey: 1,
           instances: {
             transforms: transformsFor(count),

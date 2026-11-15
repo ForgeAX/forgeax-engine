@@ -263,20 +263,19 @@ it('rejects conflicting programs atomically and preserves the installed shader',
   ).toThrow('mismatched');
 });
 
-it('shares equal ABI facts between separately received programs without freezing the input', () => {
+it('owns each received program without freezing the caller input', () => {
   const assets = new AssetRegistry({
     shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
   });
-  const first = structuredClone(program('forgeax::interned-a'));
-  const second = structuredClone(program('forgeax::interned-b'));
+  const first = structuredClone(program('forgeax::owned-a'));
+  const second = structuredClone(program('forgeax::owned-b'));
   installPublicationPrograms(assets, [first]);
   installPublicationPrograms(assets, [second]);
   const a = assets.shaderRegistry.findMaterialArtifact(first.key).unwrap();
   const b = assets.shaderRegistry.findMaterialArtifact(second.key).unwrap();
-  // Two Worker clones of equal facts resolve to one canonical receipt and schema.
-  expect(b.receipt).toBe(a.receipt);
-  expect(b.paramSchema).toBe(a.paramSchema);
-  expect(Object.isFrozen(a.receipt)).toBe(true);
+  // Each program keys its own receipt; equal facts are not looked up structurally.
+  expect(b.receipt).toEqual(a.receipt);
+  expect(b.paramSchema).toEqual(a.paramSchema);
   // The received rows stay the caller's mutable values.
   expect(Object.isFrozen(first.shader.receipt)).toBe(false);
 });
@@ -295,18 +294,13 @@ function byteProgram(key = 'game::byte-program') {
   } satisfies RenderPublication['programs'][number];
 }
 
-it('owns byte publications and rejects late tampering atomically without decoding', () => {
+it('keeps a private copy of byte publications and admits them by digest without decoding', () => {
   const assets = new AssetRegistry({
     shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
   });
   const first = byteProgram();
   const fresh = byteProgram('game::fresh-byte');
-  const changed = structuredClone(first);
-  changed.artifact.bytes[0] = 0;
   const decode = vi.spyOn(TextDecoder.prototype, 'decode');
-  expect(() => installPublicationPrograms(assets, [fresh, changed])).toThrow();
-  expect(assets.shaderRegistry.materialArtifactDeclaration(fresh.key)).toBeUndefined();
-  expect(assets.getMaterialArtifact(fresh.key)).toBeUndefined();
   installPublicationPrograms(assets, structuredClone([first, fresh]));
   expect(decode).not.toHaveBeenCalled();
   installPublicationPrograms(assets, structuredClone([first, fresh]));

@@ -1,3 +1,5 @@
+import { GameLookOrder, GamePickShootOrder } from "../../src/system-order";
+import { InputFrameStartScan } from "@forgeax/engine-input";
 import { defineSystem, Update, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import { pick, viewportToWorld } from '@forgeax/engine-picking';
 import type { InputSnapshot } from '@forgeax/engine-input';
@@ -24,11 +26,11 @@ const LOOK_SENS = 0.0022;
 export function installGameplayInput(ctx: GameplayInputContext): void {
   const clampPitch = (pitch: number) => Math.max(-1.2, Math.min(1.2, pitch));
 
-  const gameLook = defineSystem({
+  const gameLook = defineSystem({ sets: [GameLookOrder],
     name: 'game-look',
     runIf: inState(GameState, 'Play'),
     queries: [] as const,
-    after: ['input-frame-start-scan'],
+    after: [InputFrameStartScan],
     fn: () => {
       const snap = ctx.readInput();
       const mode = ctx.getMode();
@@ -51,11 +53,11 @@ export function installGameplayInput(ctx: GameplayInputContext): void {
   });
   ctx.world.addSystem(Update, gameLook);
 
-  const gamePickShoot = defineSystem({
+  const gamePickShoot = defineSystem({ sets: [GamePickShootOrder],
     name: 'game-pick-shoot',
     runIf: inState(GameState, 'Play'),
     queries: [] as const,
-    after: ['input-frame-start-scan'],
+    after: [InputFrameStartScan],
     fn: () => {
       const snap = ctx.readInput();
       for (const ev of snap.pointerEvents) {

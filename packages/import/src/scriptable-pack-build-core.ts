@@ -26,9 +26,11 @@ import type {
   AssetPublicationExternalEvidence,
   AssetRef,
   ImportedAsset,
+  MaterialAsset,
+  MaterialTable,
   Result,
 } from '@forgeax/engine-types';
-import { AssetError, err, ImportError, ok } from '@forgeax/engine-types';
+import { AssetError, err, ImportError, materialGuidText, ok } from '@forgeax/engine-types';
 import {
   createImportProduct,
   type ImportAssetProduct,
@@ -38,6 +40,7 @@ import { orderedPackPreparation } from './ordered-pack-preparation.js';
 import type {
   AssetOutputProducer,
   AssetOutputProducerRegistry,
+  AssetOutputProduct,
   PackBuildProduct,
   ScriptablePackAssetSnapshotSource,
   ScriptablePackDomainError,
@@ -65,6 +68,8 @@ export interface ScriptablePackBuildOptions {
   readonly authoringContractVersion?: string;
   /** Known published GUIDs used for the optional global reference gate. */
   readonly availableGuids?: ReadonlySet<string>;
+  /** Catalog kind facts for reference validation without forcing soft-reference content reads. */
+  readonly availableKinds?: ReadonlyMap<string, string>;
   /** Worklist mode defers reference closure until every subject is materialized. */
   readonly deferReferenceValidation?: boolean;
   readonly publication?: AssetPublicationEnvelope;
@@ -200,6 +205,117 @@ function referenceError(
   };
 }
 
+function localWaterReferenceError(
+  sourcePath: string,
+  sourceKey: string,
+  guid: string,
+  field: string,
+  expectedKind: string,
+  actualKind: string,
+): PackAuthoringError {
+  return {
+    code: 'pack-output-reference-kind-invalid',
+    expected: `${field} to reference a ${expectedKind} output in the available published or staged closure`,
+    hint: 'repair the Water source reference kind before publishing this Pack',
+    detail: { sourcePath, sourceKey, guid, field, expectedKind, actualKind },
+  };
+}
+
+function waterReferenceExpectations(
+  asset: PackOutput,
+): readonly (readonly [string, string, string])[] {
+  if (!record(asset)) return [];
+  const value = asset as Record<string, unknown>;
+  const references: (readonly [string, string, string])[] = [];
+  const add = (guid: unknown, expectedKind: string, field: string) => {
+    if (typeof guid === 'string') references.push([guid, expectedKind, field]);
+  };
+  if (value.kind === 'water-body') {
+    const appendWaterBodyReferences = (value: Record<string, unknown>) => {
+      add(value.surfaceMaterialGuid, 'material', 'surfaceMaterialGuid');
+      add(value.zoneGuid, 'water-zone', 'zoneGuid');
+      add(value.waveSetGuid, 'water-wave-set', 'waveSetGuid');
+      add(value.customMeshOverrideGuid, 'mesh', 'customMeshOverrideGuid');
+      add(
+        record(value.collision) ? value.collision.meshGuid : undefined,
+        'mesh',
+        'collision.meshGuid',
+      );
+      for (const field of [
+        'visibleMeshGuid',
+        'waterInfoMeshGuid',
+        'dilatedWaterInfoMeshGuid',
+        'brushShapeMeshGuid',
+        'collisionMeshGuid',
+      ])
+        add(value[field], 'mesh', field);
+      if (Array.isArray(value.riverSegmentMeshGuids))
+        for (const guid of value.riverSegmentMeshGuids) add(guid, 'mesh', 'riverSegmentMeshGuids');
+      for (const field of [
+        'riverToLakeTransitionMaterialGuid',
+        'riverToOceanTransitionMaterialGuid',
+        'waterInfoMaterialGuid',
+        'lodMaterialGuid',
+        'underwaterPostProcessMaterialGuid',
+      ])
+        add(value[field], 'material', field);
+    };
+    appendWaterBodyReferences(value);
+  } else if (value.kind === 'water-zone') {
+    add(value.farMaterialGuid, 'material', 'farMaterialGuid');
+  } else if (value.kind === 'water-brush-recipe') {
+    add(value.baseTerrainGuid, 'terrain', 'baseTerrainGuid');
+    if (Array.isArray(value.sourceBodyGuids))
+      for (const guid of value.sourceBodyGuids) add(guid, 'water-body', 'sourceBodyGuids');
+    if (Array.isArray(value.curves))
+      for (const guid of value.curves) add(guid, 'texture', 'curves');
+    if (Array.isArray(value.textures))
+      for (const guid of value.textures) add(guid, 'texture', 'textures');
+  } else if (value.kind === 'water-simulation-recipe') {
+    const appendSimulationReferences = (value: Record<string, unknown>) => {
+      if (Array.isArray(value.materialGuids))
+        for (const guid of value.materialGuids) add(guid, 'material', 'materialGuids');
+      if (Array.isArray(value.textureGuids))
+        for (const guid of value.textureGuids) add(guid, 'texture', 'textureGuids');
+      if (record(value.shallowStageConfig) && Array.isArray(value.shallowStageConfig.materialGuids))
+        for (const guid of value.shallowStageConfig.materialGuids)
+          add(guid, 'material', 'shallowStageConfig.materialGuids');
+      if (record(value.riverBakeConfig))
+        add(value.riverBakeConfig.sourceBodyGuid, 'water-body', 'riverBakeConfig.sourceBodyGuid');
+      if (record(value.oceanPatchConfig))
+        add(
+          value.oceanPatchConfig.noiseTextureGuid,
+          'texture',
+          'oceanPatchConfig.noiseTextureGuid',
+        );
+    };
+    appendSimulationReferences(value);
+  }
+  return references;
+}
+
+export function waterPackReferenceKindFailure(
+  sourcePath: string,
+  sourceKey: string,
+  asset: PackOutput,
+  knownKinds: ReadonlyMap<string, string>,
+): PackAuthoringError | undefined {
+  for (const [reference, expectedKind, field] of waterReferenceExpectations(asset)) {
+    const normalized = reference.toLowerCase();
+    const actualKind = knownKinds.get(normalized);
+    if (actualKind !== undefined && actualKind !== expectedKind)
+      return localWaterReferenceError(
+        sourcePath,
+        sourceKey,
+        normalized,
+        field,
+        expectedKind,
+        actualKind,
+      );
+  }
+  return undefined;
+}
+
 function productError(
   sourcePath: string,
   sourceKey: string,
@@ -286,6 +402,7 @@ type ScriptablePackBuildFailure = Extract<
 interface ProducedOutput {
   readonly imported: ImportedAsset<unknown>;
   readonly nativeFingerprint: string | undefined;
+  readonly sourceDependencies?: readonly string[];
 }
 
 function effectiveParameterValues(
@@ -454,6 +571,7 @@ async function cookCustomOutput(
   sourceKey: string,
   guid: string,
   asset: PackCookSource,
+  materialTable: MaterialTable,
 ): Promise<Result<ProducedOutput, ScriptablePackBuildFailure>> {
   const cookerRegistry = options.cookers;
   if (cookerRegistry === undefined)
@@ -487,7 +605,7 @@ async function cookCustomOutput(
     });
   const cookedAsset = cooked.value.payload;
   const produced = isAsset(cookedAsset)
-    ? await produceOrdinaryOutput(options, sourceKey, guid, cookedAsset)
+    ? await produceOrdinaryOutput(options, sourceKey, guid, cookedAsset, materialTable)
     : undefined;
   if (produced !== undefined && !produced.ok) return produced;
   const ordinary = produced?.ok === true ? produced.value : undefined;
@@ -526,7 +644,7 @@ async function invokeOutputProducer(
   guid: string,
   asset: Asset | PluginAssetSource | ParticleEffectAssetSource,
   producer: AssetOutputProducer,
-): Promise<Result<ImportAssetProduct<unknown>, ScriptablePackBuildFailure>> {
+): Promise<Result<AssetOutputProduct, ScriptablePackBuildFailure>> {
   const cookerRegistry = options.cookers;
   let produced: unknown;
   try {
@@ -573,7 +691,7 @@ async function invokeOutputProducer(
   }
   const invalidProduct = productError(options.sourcePath, sourceKey, producer, produced.value);
   if (invalidProduct !== undefined) return err(invalidProduct);
-  return ok(produced.value as ImportAssetProduct<unknown>);
+  return ok(produced.value as AssetOutputProduct);
 }
 
 /** Projected refs first, then cooker refs not already present (case-insensitive). */
@@ -611,10 +729,12 @@ async function cookAuthoredMaterial(
   asset: Asset | PluginAssetSource | ParticleEffectAssetSource,
   product: ImportAssetProduct<unknown>,
   cookerRegistry: Pick<NativeCookerRegistry, 'get' | 'runDraft'>,
+  materialTable: MaterialTable,
 ): Promise<Result<ProducedOutput, ScriptablePackBuildFailure>> {
   const cooked = await cookerRegistry.runDraft('material', {
     guid,
     source: asset,
+    table: materialTable,
     sourceKey,
     sourcePath: options.sourcePath,
     refs: product.refs.map((reference) => reference.guid),
@@ -685,6 +805,7 @@ async function produceOrdinaryOutput(
   sourceKey: string,
   guid: string,
   asset: PackOutput,
+  materialTable: MaterialTable,
 ): Promise<Result<ProducedOutput, ScriptablePackBuildFailure>> {
   // A custom source has been handled by its cooker; ordinary producers retain the closed Asset union.
   if (!isAsset(asset))
@@ -703,18 +824,62 @@ async function produceOrdinaryOutput(
   const product = await invokeOutputProducer(options, sourceKey, guid, asset, producer);
   if (!product.ok) return product;
   const cookerRegistry = options.cookers;
-  if (
-    asset.kind === 'material' &&
-    Array.isArray(asset.passes) &&
-    cookerRegistry?.get('material') !== undefined
-  ) {
-    return cookAuthoredMaterial(options, sourceKey, guid, asset, product.value, cookerRegistry);
+  if (asset.kind === 'material' && cookerRegistry?.get('material') !== undefined) {
+    return cookAuthoredMaterial(
+      options,
+      sourceKey,
+      guid,
+      asset,
+      product.value,
+      cookerRegistry,
+      materialTable,
+    );
   }
   const { payload, refs, artifacts } = product.value;
   return ok({
     imported: { guid, kind: asset.kind, payload, refs, artifacts },
-    nativeFingerprint: undefined,
+    nativeFingerprint: product.value.inputFingerprint,
+    ...(product.value.sourceDependencies === undefined
+      ? {}
+      : { sourceDependencies: product.value.sourceDependencies }),
   });
+}
+
+async function collectMaterialCookTable(
+  options: ScriptablePackBuildOptions,
+  packageId: PackageId,
+  outputs: PackOutputMap,
+  reader: ReturnType<typeof observedReader>['reader'],
+): Promise<Result<MaterialTable, ScriptablePackBuildFailure>> {
+  const table: Record<string, MaterialAsset> = {};
+  if (options.cookers?.get('material') === undefined) return ok(table);
+  for (const [sourceKey, asset] of Object.entries(outputs)) {
+    if (isAsset(asset) && asset.kind === 'material')
+      table[AssetGuid.format(AssetGuid.derive(packageId, sourceKey))] = asset;
+  }
+  const pending = Object.values(table);
+  for (let index = 0; index < pending.length; index++) {
+    const parent = pending[index]?.parent;
+    if (parent === undefined) continue;
+    const key = materialGuidText(parent);
+    if (table[key] !== undefined) continue;
+    const parsed = AssetGuid.parse(key);
+    if (!parsed.ok) return err(parsed.error);
+    const canonical = AssetGuid.format(parsed.value);
+    const local = table[canonical];
+    if (local !== undefined) {
+      table[key] = local;
+      continue;
+    }
+    const read = await reader.readByGuid(parsed.value);
+    if (!read.ok) return err(thrownBuildFailure(read.error, options.sourcePath));
+    if (!isAsset(read.value) || read.value.kind !== 'material')
+      return err(outputValueError(options.sourcePath, key, 'a MaterialAsset parent', read.value));
+    table[key] = read.value;
+    table[canonical] = read.value;
+    pending.push(read.value);
+  }
+  return ok(table);
 }
 
 /** Lower-case GUIDs referenced by outputs that this Pack does not itself produce. */
@@ -750,16 +915,18 @@ function externalEvidenceFor(
   reads: ReadonlyMap<string, ObservedRead>,
   referenced: ReadonlySet<string>,
 ): AssetPublicationExternalEvidence[] {
-  return [...reads.values()]
-    .sort((left, right) => left.guid.localeCompare(right.guid))
-    .map(
-      (read): AssetPublicationExternalEvidence => ({
-        guid: read.guid,
-        usage: referenced.has(read.guid) ? 'both' : 'content',
-        generation: read.generation,
-        digest: read.digest,
-      }),
-    );
+  const evidence: AssetPublicationExternalEvidence[] = [...reads.values()].map(
+    (read): AssetPublicationExternalEvidence => ({
+      guid: read.guid,
+      usage: referenced.has(read.guid) ? 'both' : 'content',
+      generation: read.generation,
+      digest: read.digest,
+    }),
+  );
+  for (const guid of referenced) {
+    if (!reads.has(guid)) evidence.push({ guid, usage: 'reference' });
+  }
+  return evidence.sort((left, right) => left.guid.localeCompare(right.guid));
 }
 
 async function packInputFingerprint(
@@ -794,6 +961,7 @@ function packImportProduct(
   options: ScriptablePackBuildOptions,
   imported: ImportedAsset<unknown>[],
   inputFingerprint: string,
+  sourceDependencies: readonly string[],
 ) {
   const refs = imported.flatMap((asset) => asset.refs);
   const artifacts = Object.fromEntries(
@@ -803,7 +971,12 @@ function packImportProduct(
   );
   return createImportProduct({
     assets: imported,
-    sourceDependencies: (options.sourceClosure ?? []).map((entry) => entry.path),
+    sourceDependencies: [
+      ...new Set([
+        ...(options.sourceClosure ?? []).map((entry) => entry.path),
+        ...sourceDependencies,
+      ]),
+    ].sort(),
     refs,
     artifacts,
     receipts: imported.map((asset) => ({
@@ -840,7 +1013,15 @@ export async function buildScriptablePack(
   const ownedOutputs = clone(built.value);
   const localGuids = new Set<string>();
   const nativeFingerprints = new Map<string, string>();
+  const sourceDependencies = new Set<string>();
   const sourceKeys = Object.keys(built.value).sort();
+  const materialTable = await collectMaterialCookTable(
+    options,
+    subjectPackageId,
+    ownedOutputs,
+    observed.reader,
+  );
+  if (!materialTable.ok) return materialTable;
   const parallel = (index: number): boolean => {
     const asset = ownedOutputs[sourceKeys[index] ?? ''];
     return (
@@ -848,7 +1029,6 @@ export async function buildScriptablePack(
       (declaresCookedExecution(asset) ||
         (isAsset(asset) &&
           asset.kind === 'material' &&
-          Array.isArray(asset.passes) &&
           options.cookers?.get(asset.kind)?.concurrency === 'parallel'))
     );
   };
@@ -883,8 +1063,8 @@ export async function buildScriptablePack(
     }
     localGuids.add(normalizedGuid);
     const produced = declaresCookedExecution(asset)
-      ? await cookCustomOutput(options, sourceKey, guid, asset)
-      : await produceOrdinaryOutput(options, sourceKey, guid, asset);
+      ? await cookCustomOutput(options, sourceKey, guid, asset, materialTable.value)
+      : await produceOrdinaryOutput(options, sourceKey, guid, asset, materialTable.value);
     if (!produced.ok) return produced;
     return ok({
       sourceKey,
@@ -906,21 +1086,44 @@ export async function buildScriptablePack(
       while (end < Math.min(index + 4, sourceKeys.length) && parallel(end)) end++;
     }
     const results = await Promise.allSettled(sourceKeys.slice(index, end).map(produce));
-    for (const settled of results) {
-      if (settled.status === 'rejected') throw settled.reason;
-      const result = settled.value;
-      if (!result.ok) return result;
-      if (result.value === undefined) continue;
-      const { sourceKey, produced, staged } = result.value;
-      imported.push(produced.imported);
-      if (produced.nativeFingerprint !== undefined)
-        nativeFingerprints.set(sourceKey, produced.nativeFingerprint);
-      stagedOutputs.push(staged);
-    }
+    const acceptProducedOutputs = () => {
+      for (const settled of results) {
+        if (settled.status === 'rejected') throw settled.reason;
+        const result = settled.value;
+        if (!result.ok) return result;
+        if (result.value === undefined) continue;
+        const { sourceKey, produced, staged } = result.value;
+        imported.push(produced.imported);
+        for (const path of produced.sourceDependencies ?? []) sourceDependencies.add(path);
+        if (produced.nativeFingerprint !== undefined)
+          nativeFingerprints.set(sourceKey, produced.nativeFingerprint);
+        stagedOutputs.push(staged);
+      }
+      return undefined;
+    };
+    const outputFailure = acceptProducedOutputs();
+    if (outputFailure !== undefined) return outputFailure;
     index = end;
   }
 
   const referenced = externalReferences(imported, localGuids);
+  const knownKinds = new Map(
+    [...(options.availableKinds ?? [])].map(([guid, kind]) => [guid.toLowerCase(), kind]),
+  );
+  for (const output of stagedOutputs)
+    knownKinds.set(
+      AssetGuid.format(output.guid).toLowerCase(),
+      String((output.asset as { kind?: unknown }).kind ?? 'unknown'),
+    );
+  for (const output of stagedOutputs) {
+    const kindFailure = waterPackReferenceKindFailure(
+      options.sourcePath,
+      output.sourceKey,
+      output.asset,
+      knownKinds,
+    );
+    if (kindFailure !== undefined) return err(kindFailure);
+  }
   const missing = missingReferenceFailure(options, availableGuids, referenced);
   if (missing !== undefined) return err(missing);
 
@@ -932,7 +1135,7 @@ export async function buildScriptablePack(
     externalEvidence,
     nativeFingerprints,
   );
-  const product = packImportProduct(options, imported, inputFingerprint);
+  const product = packImportProduct(options, imported, inputFingerprint, [...sourceDependencies]);
   if (!product.ok) return err(product.error);
   return ok({
     product: product.value,
@@ -1005,6 +1208,7 @@ export interface ScriptablePackBuildWorklistOptions {
   readonly cookers?: Pick<NativeCookerRegistry, 'get' | 'runDraft'>;
   readonly assetSource?: ScriptablePackAssetSnapshotSource;
   readonly availableGuids?: ReadonlySet<string>;
+  readonly availableKinds?: ReadonlyMap<string, string>;
   readonly incomingRefs?: ReadonlyMap<string, readonly string[]>;
   readonly maxPasses?: number;
   readonly maxConcurrency?: number;
@@ -1210,6 +1414,7 @@ export async function buildScriptablePackWorklist(
   );
   const staged = new Map<string, ScriptablePackStagedOutput>();
   const results = new Map<string, ScriptablePackBuildProduct>();
+  const resultSourcePaths = new Map<string, string>();
   const availableGuids = new Set(normalizedGuidSet(options.availableGuids) ?? []);
   const maxPasses = options.maxPasses ?? Math.max(1, options.subjects.length + 1);
   let iterations = 0;
@@ -1266,6 +1471,10 @@ export async function buildScriptablePackWorklist(
               ...(options.cookers === undefined ? {} : { cookers: options.cookers }),
               assetSource: stagedSource(visible, options.assetSource),
               availableGuids: new Set([...availableGuids, ...visible.keys()]),
+              availableKinds: new Map([
+                ...(options.availableKinds ?? []),
+                ...[...visible].map(([guid, output]) => [guid, String(output.asset.kind)] as const),
+              ]),
               deferReferenceValidation: true,
             })
           : ok(cached);
@@ -1289,19 +1498,25 @@ export async function buildScriptablePackWorklist(
       const { key, subject, cached, result, report, visible } = outcome.value;
       if (result.ok) {
         // Retry speculative content reads replaced by an earlier producer.
-        const staleReads = result.value.externalEvidence.filter(({ guid }) => {
-          const key = guid.toLowerCase();
-          return staged.has(key) && staged.get(key) !== visible.get(key);
-        });
-        if (staleReads.length > 0) {
-          for (const { guid } of staleReads) waiting.add(guid.toLowerCase());
-          continue;
-        }
+        const captureStaleReads = () => {
+          const staleReads = result.value.externalEvidence.filter(({ guid }) => {
+            const key = guid.toLowerCase();
+            return staged.has(key) && staged.get(key) !== visible.get(key);
+          });
+          if (staleReads.length > 0) {
+            for (const { guid } of staleReads) waiting.add(guid.toLowerCase());
+            return true;
+          }
+
+          return false;
+        };
+        if (captureStaleReads()) continue;
         if (cached === undefined && options.cache !== undefined) {
           report('persist', 'miss');
           await options.cache.write(subject, result.value);
         }
         results.set(key, result.value);
+        resultSourcePaths.set(key, subject.sourcePath);
         report('ready', cached === undefined ? 'miss' : 'hit');
         for (const output of result.value.stagedOutputs)
           staged.set(AssetGuid.format(output.guid).toLowerCase(), output);
@@ -1342,22 +1557,56 @@ export async function buildScriptablePackWorklist(
       },
     });
   }
-  const knownGuids = new Set([...availableGuids, ...staged.keys()]);
-  const missingReferences = new Set<string>();
-  for (const product of results.values()) {
-    const contentReads = new Set(product.externalEvidence.map((read) => read.guid.toLowerCase()));
-    for (const asset of product.product.assets) {
-      for (const reference of asset.refs) {
-        const guid = reference.guid.toLowerCase();
-        if (!knownGuids.has(guid) && !contentReads.has(guid)) missingReferences.add(guid);
+  const validateCompletedReferences = () => {
+    const knownKinds = new Map(
+      [...(options.availableKinds ?? [])].map(([guid, kind]) => [guid.toLowerCase(), kind]),
+    );
+    for (const output of staged.values())
+      knownKinds.set(
+        AssetGuid.format(output.guid).toLowerCase(),
+        String((output.asset as { kind?: unknown }).kind ?? 'unknown'),
+      );
+    for (const [key, product] of results) {
+      const sourcePath = resultSourcePaths.get(key);
+      if (sourcePath === undefined) throw new Error('Completed Pack product has no source path');
+      for (const output of product.stagedOutputs) {
+        const kindFailure = waterPackReferenceKindFailure(
+          sourcePath,
+          output.sourceKey,
+          output.asset,
+          knownKinds,
+        );
+        if (kindFailure !== undefined) return err(kindFailure);
       }
     }
-  }
-  if (missingReferences.size > 0) {
-    return err(
-      referenceError('pack-output-reference-missing', 'worklist', [...missingReferences].sort()),
-    );
-  }
+    const knownGuids = new Set([...availableGuids, ...staged.keys()]);
+    const missingReferences = new Set<string>();
+    for (const product of results.values()) {
+      for (const read of product.externalEvidence) {
+        const guid = read.guid.toLowerCase();
+        if (read.usage === 'reference' && !knownGuids.has(guid)) missingReferences.add(guid);
+      }
+      const contentReads = new Set(
+        product.externalEvidence
+          .filter((read) => read.usage !== 'reference')
+          .map((read) => read.guid.toLowerCase()),
+      );
+      for (const output of product.stagedOutputs) {
+        for (const [reference] of waterReferenceExpectations(output.asset)) {
+          const guid = reference.toLowerCase();
+          if (!knownGuids.has(guid) && !contentReads.has(guid)) missingReferences.add(guid);
+        }
+      }
+    }
+    if (missingReferences.size > 0) {
+      return err(
+        referenceError('pack-output-reference-missing', 'worklist', [...missingReferences].sort()),
+      );
+    }
+    return undefined;
+  };
+  const referenceFailure = validateCompletedReferences();
+  if (referenceFailure !== undefined) return referenceFailure;
   const removed = [...(options.incomingRefs?.keys() ?? [])].filter(
     (guid) => !staged.has(guid.toLowerCase()),
   );

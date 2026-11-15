@@ -8,7 +8,7 @@ import { Skin } from '@forgeax/engine-skinning';
 import type { MaterialAsset, MeshAsset } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import { MeshFilter, MeshRenderer } from '../components';
-import { extractFrames } from '../render-system-extract-tail';
+import { extractSource } from '../render-system-extract-tail';
 import { PersistentRenderScene } from '../scene/render-scene';
 
 function source(): MaterialAsset {
@@ -69,19 +69,18 @@ function fixture(material = source()) {
   const extract = () => {
     world.update(1 / 60).unwrap();
     return scene.extractComposition(
-      [world],
-      { cameraOwner: 0, resourceOwner: 0 },
+      world,
       assets,
       (request) => {
         if (typeof request !== 'string' && request.kind === 'partial')
-          for (const entities of request.entitiesByWorld) requestedEntities += entities?.size ?? 0;
-        return extractFrames([world], 0, assets, caches, {
+          requestedEntities += request.entities.size;
+        return extractSource(world, assets, caches, {
           cull: 'none',
           retainHidden: true,
           renderables: request,
         });
       },
-      [lease],
+      lease,
     );
   };
   return {

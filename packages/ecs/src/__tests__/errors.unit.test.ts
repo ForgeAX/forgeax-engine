@@ -1,6 +1,5 @@
-import type { MemoryErrorCode } from '../memory-types';
-// Consolidated by feat-20260609-test-pool-startup-reduction-merge-tiny-test-files
 // biome-ignore-all lint/complexity/noUselessLoneBlockStatements: scope isolation between merged source files
+// Consolidated by feat-20260609-test-pool-startup-reduction-merge-tiny-test-files
 //
 // Source files (N=10):
 //   - packages/ecs/src/__tests__/ac16-register-component-grep-gate.test.ts
@@ -23,7 +22,7 @@ import { fileURLToPath } from 'node:url';
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { describe, expect, expectTypeOf, it, test } from 'vitest';
 import { componentSchema, defineComponent } from '../component';
-import type { EcsErrorCode, EcsErrorDetail } from '../errors';
+import type { EcsErrorCode } from '../errors';
 import {
   ComponentAlreadyPresentError,
   ComponentNotPresentError,
@@ -38,10 +37,6 @@ import {
   RelationshipSelfCycleError,
   ResourceNotFoundError,
   SchemaUnsupportedFieldError,
-  SpriteAnimationInvalidError,
-  SpriteInstancesCountMismatchError,
-  SpriteInstancesMutuallyExclusiveWithInstancesError,
-  SpriteInstancesRequiresSpriteShaderError,
   StaleEntityError,
   UniqueRefDoubleReleaseError,
   UniqueRefReleasedError,
@@ -386,64 +381,6 @@ describe('managed-entity-dangling-errors.test.ts', () => {
       expect(err.detail.requested).toBe(32);
       expect(err.detail.current).toBe(64);
     });
-
-    it('EcsErrorCode closed union exhaustively covers the managed members', () => {
-      function assertNever(_x: never): never {
-        throw new Error('unreachable');
-      }
-      // The memory domain is exhaustively covered in memory-types.test-d.ts.
-      function check(code: Exclude<EcsErrorCode, MemoryErrorCode>): string {
-        switch (code) {
-          case 'stale-entity':
-          case 'component-already-present':
-          case 'component-not-present':
-          case 'cyclic-dependency':
-          case 'resource-not-found':
-          case 'system-before-unknown':
-          case 'unique-ref-released':
-          case 'unique-ref-double-release':
-          case 'managed-buffer-out-of-bounds':
-          case 'managed-buffer-shrink-not-supported':
-          case 'fixed-size-mismatch':
-          case 'relationship-self-cycle':
-          case 'relationship-detach-mismatch':
-          case 'remove-essential-component':
-          case 'spawn-data-unknown-field':
-          case 'shared-ref-released':
-          case 'shared-ref-double-release':
-          case 'shared-ref-payload-invalid':
-          case 'shared-ref-stale':
-          case 'unique-ref-stale':
-          // feat-20260713-mount-override-component-add-and-shared-ref-round
-          // M2 / w9 — shared-field value gate code. Required to keep this
-          // exhaustive switch over EcsErrorCode visually closed.
-          case 'shared-field-invalid-value':
-            return code;
-          // feat-20260714-bevy-style-system-sets M1 / w3 — system-set-not-registered
-          // case. Required to keep this exhaustive switch over EcsErrorCode
-          // visually closed.
-          case 'system-set-not-registered':
-          case 'component-field-invalid-value':
-          case 'component-numeric-value-invalid':
-          case 'managed-array-invalid-value':
-          case 'array-range-out-of-bounds':
-          case 'time-delta-invalid':
-          case 'time-config-invalid':
-          case 'schedule-scope-mismatch':
-          case 'derived-write-active':
-          case 'shared-kernel-ineligible':
-          case 'shared-kernel-failed':
-          case 'world-poisoned':
-          case 'command-failed':
-          case 'system-failed':
-            return code;
-          default:
-            return assertNever(code);
-        }
-      }
-      expect(check('unique-ref-released')).toBe('unique-ref-released');
-      expect(check('managed-buffer-out-of-bounds')).toBe('managed-buffer-out-of-bounds');
-    });
   });
 });
 
@@ -725,65 +662,6 @@ describe('result.test.ts', () => {
   });
 });
 
-// ─── from spawn-light-invalid-bounds-error-code.test.ts ───
-describe('spawn-light-invalid-bounds-error-code.test.ts', () => {
-  describe("EcsErrorCode +1 'spawn-light-invalid-bounds' union member [AC-06 (e)]", () => {
-    it("type-level: 'spawn-light-invalid-bounds' is assignable to EcsErrorCode", () => {
-      const code = 'spawn-light-invalid-bounds';
-      expect(code).toBe('spawn-light-invalid-bounds');
-    });
-
-    it("EcsErrorDetail discriminated variant for 'spawn-light-invalid-bounds' carries scalar and RGB fields", () => {
-      type InvalidLightBoundsDetail = Extract<
-        EcsErrorDetail,
-        { readonly code: 'spawn-light-invalid-bounds' }
-      >;
-      const range: InvalidLightBoundsDetail = {
-        code: 'spawn-light-invalid-bounds',
-        field: 'range',
-        got: -1,
-      };
-      const innerOuter: InvalidLightBoundsDetail = {
-        code: 'spawn-light-invalid-bounds',
-        field: 'innerOuter',
-        got: 25,
-      };
-      const outerNinety: InvalidLightBoundsDetail = {
-        code: 'spawn-light-invalid-bounds',
-        field: 'outerNinety',
-        got: 91,
-      };
-      const direction: InvalidLightBoundsDetail = {
-        code: 'spawn-light-invalid-bounds',
-        field: 'direction',
-        got: [Number.NaN, 0, 0],
-      };
-      const irradiance: InvalidLightBoundsDetail = {
-        code: 'spawn-light-invalid-bounds',
-        field: 'irradiance',
-        got: Array.from(new Float32Array(27)),
-      };
-      expect(range.code).toBe('spawn-light-invalid-bounds');
-      expect(innerOuter.code).toBe('spawn-light-invalid-bounds');
-      expect(outerNinety.code).toBe('spawn-light-invalid-bounds');
-      expect(direction.field).toBe('direction');
-      expect(irradiance.field).toBe('irradiance');
-    });
-
-    it("type-level: switch over EcsErrorCode includes 'spawn-light-invalid-bounds' branch", () => {
-      function describeCode(code: string): string {
-        switch (code) {
-          case 'spawn-light-invalid-bounds':
-            return 'spawn-light-invalid-bounds';
-          default:
-            return 'other';
-        }
-      }
-      expect(describeCode('spawn-light-invalid-bounds')).toBe('spawn-light-invalid-bounds');
-    });
-  });
-});
-
 // ─── from w8-ecs-error-code-kebab-grep-gate.test.ts ───
 describe('w8-ecs-error-code-kebab-grep-gate.test.ts', () => {
   describe('EcsErrorCode kebab grep gate (M-4 w8)', () => {
@@ -822,251 +700,6 @@ describe('w8-ecs-error-code-kebab-grep-gate.test.ts', () => {
       expect(hits, `SCREAMING_SNAKE error code literals remaining:\n${hits.join('\n')}`).toEqual(
         [],
       );
-    });
-  });
-});
-
-// ─── from sprite-animation-invalid-error.test.ts ───
-describe('sprite-animation-invalid-error.test.ts', () => {
-  describe("EcsErrorCode +1 'sprite-animation-invalid' union member [M1 T-04]", () => {
-    it("type-level: 'sprite-animation-invalid' is assignable to EcsErrorCode", () => {
-      const code = 'sprite-animation-invalid';
-      expect(code).toBe('sprite-animation-invalid');
-    });
-
-    it("EcsErrorDetail discriminated variant 'sprite-animation-invalid' carries field two-branch", () => {
-      const regionsLength = {
-        code: 'sprite-animation-invalid',
-        field: 'regions-length',
-        regionsLength: 12,
-        frameCount: 4,
-      };
-      const frameDuration = {
-        code: 'sprite-animation-invalid',
-        field: 'frame-duration',
-        frameDuration: 0,
-      };
-      expect(regionsLength.code).toBe('sprite-animation-invalid');
-      expect(frameDuration.code).toBe('sprite-animation-invalid');
-    });
-  });
-
-  describe('SpriteAnimationInvalidError class — 4-field surface (regions-length branch)', () => {
-    it("constructs with field='regions-length' and exposes 4 fields", () => {
-      const err = new SpriteAnimationInvalidError({
-        field: 'regions-length',
-        regionsLength: 12,
-        frameCount: 4,
-      });
-      expect(err.code).toBe('sprite-animation-invalid');
-      expect(err.expected).toBeTruthy();
-      expect(err.expected.length).toBeGreaterThan(0);
-      expect(err.hint).toBeTruthy();
-      expect(err.hint.length).toBeGreaterThan(0);
-      expect(err.detail.field).toBe('regions-length');
-      if (err.detail.field === 'regions-length') {
-        expect(err.detail.regionsLength).toBe(12);
-        expect(err.detail.frameCount).toBe(4);
-      }
-    });
-
-    it("constructs with field='frame-duration' and exposes 4 fields", () => {
-      const err = new SpriteAnimationInvalidError({
-        field: 'frame-duration',
-        frameDuration: 0,
-      });
-      expect(err.code).toBe('sprite-animation-invalid');
-      expect(err.expected).toBeTruthy();
-      expect(err.expected.length).toBeGreaterThan(0);
-      expect(err.hint).toBeTruthy();
-      expect(err.hint.length).toBeGreaterThan(0);
-      expect(err.detail.field).toBe('frame-duration');
-      if (err.detail.field === 'frame-duration') {
-        expect(err.detail.frameDuration).toBe(0);
-      }
-    });
-
-    it('field=frame-duration accepts negative frameDuration (AC-09 c)', () => {
-      const err = new SpriteAnimationInvalidError({
-        field: 'frame-duration',
-        frameDuration: -0.05,
-      });
-      expect(err.code).toBe('sprite-animation-invalid');
-      expect(err.detail.field).toBe('frame-duration');
-      if (err.detail.field === 'frame-duration') {
-        expect(err.detail.frameDuration).toBe(-0.05);
-      }
-    });
-
-    it('Error message embeds code + field + recovery hint (charter P3)', () => {
-      const err = new SpriteAnimationInvalidError({
-        field: 'regions-length',
-        regionsLength: 7,
-        frameCount: 3,
-      });
-      expect(err.message).toContain('sprite-animation-invalid');
-      expect(err.message).toContain('regions-length');
-    });
-
-    it('class .name override aligns with the error type', () => {
-      const err = new SpriteAnimationInvalidError({
-        field: 'frame-duration',
-        frameDuration: 0,
-      });
-      expect(err.name).toBe('SpriteAnimationInvalidError');
-    });
-  });
-
-  describe("type-level: switch over EcsErrorCode includes 'sprite-animation-invalid' branch", () => {
-    it('describeCode reaches the sprite-animation-invalid arm without default fall-through', () => {
-      function describeCode(code: string): string {
-        switch (code) {
-          case 'sprite-animation-invalid':
-            return 'sprite-animation-invalid';
-          default:
-            return 'other';
-        }
-      }
-      expect(describeCode('sprite-animation-invalid')).toBe('sprite-animation-invalid');
-    });
-  });
-});
-
-// ─── from sprite-instances-error-codes.test.ts ───
-// feat-20260625 M1 / w1 — 3 new EcsErrorCode members added by w2 for the
-// sprite-instances + tilemap-terrain-static-batch feat. Tests assert
-// (a) literal existence in EcsErrorCode union; (b) class instance carries
-// `.code` / `.hint` / `.detail` per AGENTS.md §Error model + charter P3
-// (`.hint` must contain actionable fix wording); (c) `.detail` discriminated
-// shape narrows correctly under `switch (err.code)` without a default arm.
-//
-// Boundary (plan-strategy §2 D-6): these 3 codes are DECLARED here (M1) but
-// FIRED at the render-system-extract entry (M3 w13). M1 tests intentionally
-// construct the classes directly — no extract-path fire test (that is M3).
-describe('sprite-instances-error-codes.test.ts', () => {
-  describe('EcsErrorCode +3 — sprite-instances-* family (M1 w1)', () => {
-    it('type-level: 3 new literals are assignable to EcsErrorCode', () => {
-      const a = 'sprite-instances-count-mismatch';
-      const b = 'sprite-instances-requires-sprite-shader';
-      const c = 'sprite-instances-mutually-exclusive-with-instances';
-      expect(a).toBe('sprite-instances-count-mismatch');
-      expect(b).toBe('sprite-instances-requires-sprite-shader');
-      expect(c).toBe('sprite-instances-mutually-exclusive-with-instances');
-    });
-
-    it('EcsErrorDetail discriminated variants narrow per `.code`', () => {
-      const countDetail = {
-        code: 'sprite-instances-count-mismatch',
-        transformsLength: 320,
-        regionsLength: 40,
-        expectedStride: { transforms: 16, regions: 4 },
-      };
-      const shadingDetail = {
-        code: 'sprite-instances-requires-sprite-shader',
-        entityId: 42,
-        observedMaterialShaderId: 'forgeax::default-standard-pbr',
-      };
-      const mutexDetail = {
-        code: 'sprite-instances-mutually-exclusive-with-instances',
-        entityId: 17,
-      };
-      expect(countDetail.code).toBe('sprite-instances-count-mismatch');
-      expect(shadingDetail.code).toBe('sprite-instances-requires-sprite-shader');
-      expect(mutexDetail.code).toBe('sprite-instances-mutually-exclusive-with-instances');
-    });
-  });
-
-  describe('SpriteInstancesCountMismatchError class — w2 surface', () => {
-    it('constructs with stride mismatch and exposes .code + .detail + .hint', () => {
-      const err = new SpriteInstancesCountMismatchError(320, 40);
-      expect(err.code).toBe('sprite-instances-count-mismatch');
-      expect(err.detail).toEqual({
-        code: 'sprite-instances-count-mismatch',
-        transformsLength: 320,
-        regionsLength: 40,
-        expectedStride: { transforms: 16, regions: 4 },
-      });
-      expect(err.hint.length).toBeGreaterThan(0);
-      expect(err.hint).toContain('transforms.length / 16');
-      expect(err.hint).toContain('regions.length / 4');
-    });
-
-    it('.name is the class name and .message embeds .code', () => {
-      const err = new SpriteInstancesCountMismatchError(320, 40);
-      expect(err.name).toBe('SpriteInstancesCountMismatchError');
-      expect(err.message).toContain('sprite-instances-count-mismatch');
-    });
-  });
-
-  describe('SpriteInstancesRequiresSpriteShaderError class — w2 surface', () => {
-    it('constructs with entity + observed materialShaderId and exposes .code + .detail + .hint', () => {
-      const err = new SpriteInstancesRequiresSpriteShaderError(42, 'forgeax::default-standard-pbr');
-      expect(err.code).toBe('sprite-instances-requires-sprite-shader');
-      expect(err.detail).toEqual({
-        code: 'sprite-instances-requires-sprite-shader',
-        entityId: 42,
-        observedMaterialShaderId: 'forgeax::default-standard-pbr',
-      });
-      expect(err.hint.length).toBeGreaterThan(0);
-      expect(err.hint).toContain("'forgeax::sprite'");
-      expect(err.hint).toContain('MaterialAsset');
-    });
-
-    it('.name is the class name and .message embeds .code', () => {
-      const err = new SpriteInstancesRequiresSpriteShaderError(42, 'forgeax::default-unlit');
-      expect(err.name).toBe('SpriteInstancesRequiresSpriteShaderError');
-      expect(err.message).toContain('sprite-instances-requires-sprite-shader');
-    });
-  });
-
-  describe('SpriteInstancesMutuallyExclusiveWithInstancesError class — w2 surface', () => {
-    it('constructs with entity and exposes .code + .detail + .hint', () => {
-      const err = new SpriteInstancesMutuallyExclusiveWithInstancesError(17);
-      expect(err.code).toBe('sprite-instances-mutually-exclusive-with-instances');
-      expect(err.detail).toEqual({
-        code: 'sprite-instances-mutually-exclusive-with-instances',
-        entityId: 17,
-      });
-      expect(err.hint.length).toBeGreaterThan(0);
-      expect(err.hint).toContain('remove Instances');
-      expect(err.hint).toContain('SpriteInstances supersedes Instances');
-    });
-
-    it('.name is the class name and .message embeds .code', () => {
-      const err = new SpriteInstancesMutuallyExclusiveWithInstancesError(17);
-      expect(err.name).toBe('SpriteInstancesMutuallyExclusiveWithInstancesError');
-      expect(err.message).toContain('sprite-instances-mutually-exclusive-with-instances');
-    });
-  });
-
-  describe('exhaustive switch over the 3 new codes (no default)', () => {
-    it('compile-time narrows all 3 branches; runtime hits each arm exactly once', () => {
-      const codes: string[] = [
-        'sprite-instances-count-mismatch',
-        'sprite-instances-requires-sprite-shader',
-        'sprite-instances-mutually-exclusive-with-instances',
-      ];
-      let count = 0;
-      let shading = 0;
-      let mutex = 0;
-      for (const code of codes) {
-        switch (code) {
-          case 'sprite-instances-count-mismatch':
-            count += 1;
-            break;
-          case 'sprite-instances-requires-sprite-shader':
-            shading += 1;
-            break;
-          case 'sprite-instances-mutually-exclusive-with-instances':
-            mutex += 1;
-            break;
-          default:
-            void code;
-        }
-      }
-      expect(count).toBe(1);
-      expect(shading).toBe(1);
-      expect(mutex).toBe(1);
     });
   });
 });

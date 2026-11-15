@@ -9,7 +9,7 @@ const GRID = 8;
 const COUNT = GRID * GRID;
 
 const APP_OPTIONS: CreateAppOptions = {
-  standardProfile: { ...DEFAULT_STANDARD_PROFILE, lightCount: 256 },
+  standardProfile: { ...DEFAULT_STANDARD_PROFILE, lightCount: 1024 },
 };
 
 export default defineFeature({
@@ -17,7 +17,7 @@ export default defineFeature({
   catalog: 'Standard clustered lighting',
   kind: 'visual',
   appOptions: APP_OPTIONS,
-  summary: `standardProfile.lightCount = 256 opts into the full Cluster budget; ${COUNT} small colored point lights share one clustered path.`,
+  summary: `standardProfile.lightCount = 1024 selects the full Cluster budget (also the default); ${COUNT} small colored point lights share one clustered path.`,
   expect: `ON: an ${GRID}x${GRID} grid of small rainbow light pools covers the floor. OFF: every light is at intensity 0 and the floor is dim. Checks: ${COUNT} lights requested and admitted on a compute-storage or cpu-storage transport.`,
   setup({ world, app }) {
     spawnGround(world);
@@ -75,8 +75,8 @@ export default defineFeature({
             detail: `admitted=${lighting?.admitted}`,
           },
           {
-            name: 'maxLights = 256',
-            ok: lighting?.maxLights === 256,
+            name: 'maxLights = 1024',
+            ok: lighting?.maxLights === 1024,
             detail: `maxLights=${lighting?.maxLights}`,
           },
           {

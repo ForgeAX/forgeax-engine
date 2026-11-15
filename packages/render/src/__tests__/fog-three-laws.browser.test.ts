@@ -34,7 +34,6 @@ function camera(projection: 'perspective' | 'orthographic'): CameraSnapshot {
   const world = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 5, 1]);
   return {
     entityKey: 1,
-    worldId: 0,
     historyVersion: 0,
     position: vec3.create(0, 0, 5),
     world,
@@ -172,17 +171,17 @@ it('evaluates the Three.js linear and exp2 fog laws on the GPU over view depth',
     expected: (p: (typeof POINTS)[number]) => number;
   }[] = [
     {
-      fog: { ...BASE, mode: 'linear' },
+      fog: { ...BASE, mode: 'linear', heightFalloff: 0.014 },
       ortho: false,
       expected: (p) => 0.9 * smoothstep(65, 125, depthOf(p)),
     },
     {
-      fog: { ...BASE, mode: 'linear' },
+      fog: { ...BASE, mode: 'linear', heightFalloff: 0.014 },
       ortho: true,
       expected: (p) => 0.9 * smoothstep(65, 125, depthOf(p)),
     },
     {
-      fog: { ...BASE, mode: 'exp2' },
+      fog: { ...BASE, mode: 'exp2', heightFalloff: 0.014 },
       ortho: false,
       expected: (p) => 0.9 * (1 - Math.exp(-((0.02 * depthOf(p)) ** 2))),
     },

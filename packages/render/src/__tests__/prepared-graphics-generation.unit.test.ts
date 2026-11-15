@@ -1,3 +1,4 @@
+import { World } from '@forgeax/engine-ecs';
 import { ok } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { createRenderFeatureHost } from '../features/host';
@@ -137,15 +138,13 @@ describe('prepared graphics generation ownership', () => {
   it('keeps registration while replacing prepared state after a pipeline generation switch', () => {
     const host = createRenderFeatureHost([feature()]).unwrap();
     const before = runSingleViewFeatureFrame(host, {
-      worlds: [],
-      owner: 0,
+      world: new World(),
       frameNumber: 1,
       generation: 1,
       caps: { backendKind: 'null' } as never,
     });
     const after = runSingleViewFeatureFrame(host, {
-      worlds: [],
-      owner: 0,
+      world: new World(),
       frameNumber: 2,
       generation: 2,
       caps: { backendKind: 'null' } as never,

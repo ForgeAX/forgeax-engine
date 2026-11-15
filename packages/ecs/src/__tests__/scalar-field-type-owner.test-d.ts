@@ -1,3 +1,4 @@
+import type { Handle } from '@forgeax/engine-types';
 import { describe, expectTypeOf, it } from 'vitest';
 import {
   defineComponent,
@@ -19,7 +20,6 @@ const expectedScalarTypes = [
   'u8',
   'bool',
   'enum',
-  'ref',
 ] as const satisfies readonly ScalarFieldType[];
 type ExpectedScalarFieldType = (typeof expectedScalarTypes)[number];
 
@@ -34,11 +34,10 @@ const ScalarFields = defineComponent('ScalarFieldTypeOwnerProof', {
   u8: 'u8',
   bool: 'bool',
   enum: 'enum',
-  ref: 'ref',
 });
 
 describe('ScalarFieldType owner', () => {
-  it('keeps the exact eleven-key scalar vocabulary', () => {
+  it('keeps the exact scalar scalar vocabulary', () => {
     expectTypeOf<ScalarFieldType>().toEqualTypeOf<ExpectedScalarFieldType>();
     expectTypeOf<ExpectedScalarFieldType>().toEqualTypeOf<ScalarFieldType>();
     expectTypeOf(expectedScalarTypes).toMatchTypeOf<readonly SchemaFieldType[]>();
@@ -61,11 +60,13 @@ describe('ScalarFieldType owner', () => {
       readonly u8: number;
       readonly bool: boolean;
       readonly enum: number;
-      readonly ref: number;
     }>();
 
     expectTypeOf<FieldValueType<'f32'>>().toEqualTypeOf<number>();
     expectTypeOf<FieldValueType<'bool'>>().toEqualTypeOf<boolean>();
-    expectTypeOf<FieldValueType<'ref'>>().toEqualTypeOf<number>();
+    expectTypeOf<FieldValueType<'unique<Resource>'>>().toEqualTypeOf<
+      Handle<'Resource', 'unique'>
+    >();
+    expectTypeOf<'ref'>().not.toExtend<SchemaFieldType>();
   });
 });

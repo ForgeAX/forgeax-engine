@@ -1,4 +1,4 @@
-import { Update, type World } from '@forgeax/engine-ecs';
+import { defineSystem, Update, type World } from '@forgeax/engine-ecs';
 import type { Renderer } from '@forgeax/engine-render';
 
 /** Opt-in browser proof observes the preceding App submission once per frame. */
@@ -17,25 +17,24 @@ export function installGpuDrivenEvidence(world: World, renderer: Renderer): void
   let frames = 0;
   const failures: string[] = [];
   let last = renderer.inspect().renderScene.gpuDriven;
-  world
-    .addSystem(Update, {
-      name: 'gpu-driven-evidence',
-      queries: [],
-      fn: () => {
-        const current = renderer.inspect();
-        if (current.frame.frameId === lastFrame) return;
-        lastFrame = current.frame.frameId;
-        last = current.renderScene.gpuDriven;
-        if (frames === 0 && !last.submitted) return;
-        frames++;
-        if (
-          (!last.submitted || last.indirectDrawCount === 0 || last.cpuFallbackDrawItems !== 0) &&
-          failures.length < 10
-        )
-          failures.push(JSON.stringify({ frame: lastFrame, gpu: last }));
-      },
-    })
-    .unwrap();
+  const systemToken1 = defineSystem({
+    name: 'gpu-driven-evidence',
+    queries: [],
+    fn: () => {
+      const current = renderer.inspect();
+      if (current.frame.frameId === lastFrame) return;
+      lastFrame = current.frame.frameId;
+      last = current.renderScene.gpuDriven;
+      if (frames === 0 && !last.submitted) return;
+      frames++;
+      if (
+        (!last.submitted || last.indirectDrawCount === 0 || last.cpuFallbackDrawItems !== 0) &&
+        failures.length < 10
+      )
+        failures.push(JSON.stringify({ frame: lastFrame, gpu: last }));
+    },
+  });
+  world.addSystem(Update, systemToken1).unwrap();
   Object.assign(globalThis, {
     __forgeaxGpuEvidence: () => ({
       frames,

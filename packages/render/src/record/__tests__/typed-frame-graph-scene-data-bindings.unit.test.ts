@@ -1,6 +1,10 @@
 import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import { describe, expect, it, vi } from 'vitest';
-import { deriveRenderFeaturePassAccess, type RenderFeaturePlannedFrame } from '../../features/plan';
+import {
+  deriveRenderFeaturePassAccess,
+  type RenderFeaturePlannedFrame,
+  renderFeaturePlanDeclarations,
+} from '../../features/plan';
 import type { RenderPipelineFrame, RenderPipelineTarget } from '../../render-pipeline';
 import type {
   SceneDataSurfaceBinding,
@@ -366,6 +370,18 @@ describe('typed frame graph SceneData bindings', () => {
       expect(temporalResolve(stale), `foreign temporal ${name} must not resolve`).toBeUndefined();
     }
   });
+  it('derives pass access with a shared plan resource index exactly as per-pass lookups', () => {
+    const { target } = normalCatalog();
+    const consumer = sampledSurfacePlan(target);
+    for (const planned of [consumer, plainComputePlan(3, 'history')]) {
+      const index = renderFeaturePlanDeclarations(planned.plan);
+      for (const pass of planned.plan.passes)
+        expect(deriveRenderFeaturePassAccess(planned.plan, pass, index)).toEqual(
+          deriveRenderFeaturePassAccess(planned.plan, pass),
+        );
+    }
+  });
+
   it('binds nothing from plans that declare no SceneData target, whatever their passes', () => {
     const { admission, target } = normalCatalog();
     const plain = [plainComputePlan(0), plainComputePlan(4), plainComputePlan(2, 'history')];

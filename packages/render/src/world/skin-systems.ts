@@ -1,24 +1,30 @@
-import { defineComponent, type EntityHandle, type World } from '@forgeax/engine-ecs';
+import { defineComponent, defineSystem, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import { isTemporalAntialias } from '../components/camera';
 import type { GpuDrawSelection } from '../gpu-driven/draw-selection';
 import type { SkinTaskBinding } from '../record/skin-tasks';
 import type { ExtractedFrame, RenderableSnapshot } from '../render-system-extract';
 import { recordRetirementError } from '../render-system-record-attempt';
 import { sparseRowsOf } from '../scene/frame-list';
+import {
+  RenderGpuDrivenPrepareOrder,
+  RenderRecordCommitOrder,
+  RenderRecordRetireOrder,
+  RenderSkinDemandOrder,
+  RenderSkinTrackOrder,
+} from '../system-order';
 import { standardSceneTemporalDemand } from '../temporal/standard-scene-data';
-import { RENDER_GPU_DRIVEN_PREPARE_SYSTEM } from './gpu-driven-systems';
+
 import { viewRecordHistory } from './record-history';
 import { ViewRecorder, ViewSubmission } from './render-views';
 import { RenderCleanup, RenderQueue, renderSubmission } from './render-world';
 import { recordsCaptures, viewShadowCastersOf } from './shadow-caster-systems';
-import { RENDER_RECORD_COMMIT_SYSTEM, RENDER_RECORD_RETIRE_SYSTEM } from './submission-systems';
+
 import { readViewField, requireViewField } from './view-field';
 import { ViewFrame, type ViewFrameState, viewFrameOf } from './view-frame-systems';
 import { recordContext } from './view-record-context';
 import {
   ownerOf,
   RENDER_SKIN_COMPLETE_SYSTEM,
-  RENDER_SKIN_TRACK_SYSTEM,
   registerViewCommit,
   type ViewSettlementOwner,
 } from './view-settlement';
@@ -27,7 +33,7 @@ import {
 export const RENDER_SKIN_DEMAND_SYSTEM = 'render-skin-demand';
 
 /**
- * The CPU Skin rows a view may draw, keyed by `worldEntityKey`: the row's task
+ * The CPU Skin rows a view may draw, keyed by the complete entity handle: the row's task
  * binding, composed and uploaded in RenderQueue, or `undefined` when the row
  * has no Scene slot or no current pose (no draw). Recording only reads it; a
  * CPU Skin draw whose row is absent is a `skin-demand-missing` diagnostic.
@@ -141,58 +147,58 @@ export function viewSkinDemandOf(
  * diagnostic. The system never throws; a failure is the view's result.
  */
 export function registerSkinDemandSystem(world: World): void {
-  world
-    .addSystem(RenderQueue, {
-      commands: 'none',
-      name: RENDER_SKIN_DEMAND_SYSTEM,
-      after: [RENDER_GPU_DRIVEN_PREPARE_SYSTEM],
-      queries: [{ read: [ViewRecorder, ViewFrame], optional: [ViewSkinDemand] }],
-      fn: (world, [rows]) => {
-        const frame = renderSubmission(world).frame;
-        const first: [EntityHandle, ViewSkinDemandState][] = [];
+  const systemToken1 = defineSystem({
+    sets: [RenderSkinDemandOrder],
+    commands: 'none',
+    name: RENDER_SKIN_DEMAND_SYSTEM,
+    after: [RenderGpuDrivenPrepareOrder],
+    queries: [{ read: [ViewRecorder, ViewFrame], optional: [ViewSkinDemand] }],
+    fn: (world, [rows]) => {
+      const frame = renderSubmission(world).frame;
+      const first: [EntityHandle, ViewSkinDemandState][] = [];
 
-        rows.forEach((row) => {
-          const entity = row.entity;
+      rows.forEach((row) => {
+        const entity = row.entity;
 
-          const view = world
-            .resolveUniqueRef<ViewFrameState>(requireViewField(world, entity, ViewFrame, 'state'))
-            .unwrap();
-          if (view.frame !== frame) return;
-          // A held view records nothing; its draws consume no palettes.
-          let result: SkinDemandResult | undefined;
-          if (view.mode !== false && view.result?.ok === true) {
-            try {
-              const owner = ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state'));
-              result = {
-                ok: true,
-                value: owner.skin.prepareDemand(
-                  skinDemandRows(world, entity, owner, view.result.value),
-                ),
-              };
-            } catch (cause) {
-              result = { ok: false, cause };
-            }
+        const view = world
+          .resolveUniqueRef<ViewFrameState>(requireViewField(world, entity, ViewFrame, 'state'))
+          .unwrap();
+        if (view.frame !== frame) return;
+        // A held view records nothing; its draws consume no palettes.
+        let result: SkinDemandResult | undefined;
+        if (view.mode !== false && view.result?.ok === true) {
+          try {
+            const owner = ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state'));
+            result = {
+              ok: true,
+              value: owner.skin.prepareDemand(
+                skinDemandRows(world, entity, owner, view.result.value),
+              ),
+            };
+          } catch (cause) {
+            result = { ok: false, cause };
           }
-          const slot = readViewField(world, entity, ViewSkinDemand, 'state');
-          if (slot === undefined) {
-            first.push([entity, { frame, result }]);
-            return;
-          }
-          const demand = world.resolveUniqueRef<ViewSkinDemandState>(slot).unwrap();
-          demand.frame = frame;
-          demand.result = result;
-        });
-        // A view's first demand attaches its component after the iteration.
-        for (const [entity, state] of first)
-          world
-            .addComponent(entity, {
-              component: ViewSkinDemand,
-              data: { state: world.allocUniqueRef('ViewSkinDemand', state) },
-            })
-            .unwrap();
-      },
-    })
-    .unwrap();
+        }
+        const slot = readViewField(world, entity, ViewSkinDemand, 'state');
+        if (slot === undefined) {
+          first.push([entity, { frame, result }]);
+          return;
+        }
+        const demand = world.resolveUniqueRef<ViewSkinDemandState>(slot).unwrap();
+        demand.frame = frame;
+        demand.result = result;
+      });
+      // A view's first demand attaches its component after the iteration.
+      for (const [entity, state] of first)
+        world
+          .addComponent(entity, {
+            component: ViewSkinDemand,
+            data: { state: world.allocUniqueRef('ViewSkinDemand', state) },
+          })
+          .unwrap();
+    },
+  });
+  world.addSystem(RenderQueue, systemToken1).unwrap();
 }
 
 /**
@@ -207,7 +213,7 @@ export function registerSkinDemandSystem(world: World): void {
 export function registerSkinSettlement(world: World): void {
   registerViewCommit(
     world,
-    RENDER_SKIN_TRACK_SYSTEM,
+    RenderSkinTrackOrder,
     ({ skin, internals }, renderWorld) => {
       const completion = renderSubmission(renderWorld).completion;
       if (completion === undefined) return;
@@ -217,33 +223,32 @@ export function registerSkinSettlement(world: World): void {
         internals.errorRegistry.fire(recordRetirementError([cause]));
       }
     },
-    RENDER_RECORD_COMMIT_SYSTEM,
+    RenderRecordCommitOrder,
   );
-  world
-    .addSystem(RenderCleanup, {
-      commands: 'none',
-      name: RENDER_SKIN_COMPLETE_SYSTEM,
-      queries: [{ read: [ViewRecorder, ViewSubmission] }],
-      after: [RENDER_RECORD_RETIRE_SYSTEM],
-      fn: (world, [views]) => {
-        const frame = renderSubmission(world).frame;
+  const systemToken2 = defineSystem({
+    commands: 'none',
+    name: RENDER_SKIN_COMPLETE_SYSTEM,
+    queries: [{ read: [ViewRecorder, ViewSubmission] }],
+    after: [RenderRecordRetireOrder],
+    fn: (world, [views]) => {
+      const frame = renderSubmission(world).frame;
 
-        views.forEach((row) => {
-          const entity = row.entity;
+      views.forEach((row) => {
+        const entity = row.entity;
 
-          if (requireViewField(world, entity, ViewSubmission, 'attempt') !== frame) return;
-          const { skin, internals } = ownerOf(
-            world,
-            requireViewField(world, entity, ViewRecorder, 'state'),
-          );
-          const failures = skin.complete(
-            requireViewField(world, entity, ViewSubmission, 'accepted') &&
-              requireViewField(world, entity, ViewSubmission, 'scene') &&
-              viewRecordHistory(world, entity)?.presentation === 'ready',
-          );
-          if (failures.length > 0) internals.errorRegistry.fire(recordRetirementError(failures));
-        });
-      },
-    })
-    .unwrap();
+        if (requireViewField(world, entity, ViewSubmission, 'attempt') !== frame) return;
+        const { skin, internals } = ownerOf(
+          world,
+          requireViewField(world, entity, ViewRecorder, 'state'),
+        );
+        const failures = skin.complete(
+          requireViewField(world, entity, ViewSubmission, 'accepted') &&
+            requireViewField(world, entity, ViewSubmission, 'scene') &&
+            viewRecordHistory(world, entity)?.presentation === 'ready',
+        );
+        if (failures.length > 0) internals.errorRegistry.fire(recordRetirementError(failures));
+      });
+    },
+  });
+  world.addSystem(RenderCleanup, systemToken2).unwrap();
 }

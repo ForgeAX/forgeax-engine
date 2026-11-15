@@ -335,11 +335,7 @@ describe('w10 -- shadow instanced dawn smoke (AC-05 behavioral)', () => {
     const drawErrors = 0;
     for (let i = 0; i < 60; i++) {
       world.update(1 / 60).unwrap();
-      await drawReadyFrame(renderer, {
-        leases: [attachment.value],
-        camera: { lease: attachment.value },
-        environment: { lease: attachment.value },
-      });
+      await drawReadyFrame(renderer, { source: attachment.value });
     }
     expect(drawErrors).toBe(0);
     // The integrated request owner covers scene passes, including shadows.

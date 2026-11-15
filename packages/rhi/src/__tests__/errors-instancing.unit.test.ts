@@ -79,10 +79,6 @@ describe('M2 / w8 — RhiErrorCode 21st member instancing-exceeds-uniform-cap', 
           return 'descriptor-invalid';
         case 'instancing-exceeds-uniform-cap':
           return 'instancing-cap';
-        case 'render-system-empty-worlds':
-          return 'empty-worlds';
-        case 'render-system-owner-out-of-range':
-          return 'owner-oob';
         case 'rhi-texture-format-capability-unavailable':
           return 'texture-format-unavailable';
       }

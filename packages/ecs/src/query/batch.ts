@@ -12,7 +12,7 @@ import type { FieldView } from '../storage/column';
 import type { Table } from '../storage/table';
 import type { QueryDescriptor } from './query';
 
-type InlineScalar = Exclude<ScalarFieldType, 'ref'> | 'entity';
+type InlineScalar = ScalarFieldType | 'entity';
 type InlineField = InlineScalar | `buffer<${number}>` | `array<${InlineScalar}, ${number}>`;
 type Schema<C> = C extends Component<string, infer S> ? S : never;
 export type NumericField<C extends Component> = Extract<
@@ -82,11 +82,10 @@ function inlineField(component: Component, field: string) {
   const numericArray =
     kind === 'fixed-array' &&
     element !== undefined &&
-    element !== 'ref' &&
     !element.startsWith('shared<') &&
     !element.startsWith('asset<');
   if (
-    !(kind === 'number' && reflection.type !== 'ref') &&
+    kind !== 'number' &&
     kind !== 'bool' &&
     kind !== 'entity' &&
     kind !== 'fixed-buffer' &&

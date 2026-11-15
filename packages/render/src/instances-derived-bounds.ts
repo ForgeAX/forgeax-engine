@@ -1,6 +1,5 @@
 import type { Mat4Like } from '@forgeax/engine-math';
 import { isFiniteBounds3 } from '@forgeax/engine-types';
-import { dynamicCapacity, shouldShrinkCapacity } from './dynamic-capacity';
 
 // `fingerprintNumericArray` runs on every bounds-cache lookup. Keep the bit
 // reinterpretation scratch outside the hot path so a cache hit does not
@@ -25,8 +24,6 @@ export interface DerivedInstancesUnionBoundsInput {
  * the packed instance matrix array respectively.
  */
 export interface InstanceBoundsCacheKey {
-  /** Optional scene/world scope for composite scenes; omitted for standalone tests. */
-  readonly worldId?: number;
   readonly entityKey: number;
   readonly meshGeneration: number;
   readonly transformGeneration: number;
@@ -271,6 +268,9 @@ function transformAabb(
   return isFiniteBounds3(out);
 }
 
+const composedScratch = new Float32Array(16);
+const transformedScratch = new Float32Array(6);
+
 /**
  * Derive the world-space AABB enclosing every instance of a mesh.
  *
@@ -288,8 +288,8 @@ export function deriveInstancesUnionBounds(
   if (transforms.length === 0 || transforms.length % 16 !== 0) return undefined;
   const local = meshAabb;
   const union = new Float32Array(6);
-  const composed = new Float32Array(16);
-  const transformed = new Float32Array(6);
+  const composed = composedScratch;
+  const transformed = transformedScratch;
   let initialized = false;
   for (let offset = 0; offset < transforms.length; offset += 16) {
     if (!finiteMatrixAt(transforms, offset)) return undefined;
@@ -300,284 +300,8 @@ export function deriveInstancesUnionBounds(
   return initialized && isFiniteBounds3(union) ? union : undefined;
 }
 
-/** Children per hierarchy node; four levels cover 65,536 rows. */
-const HIERARCHY_FANOUT = 16;
-/** Past this many dirty row ranges the change boxes collapse into one pair. */
-const MAX_ROW_CHANGE_RANGES = 32;
-
-const composedScratch = new Float32Array(16);
-/** Row/node box scratch: hierarchy writes copy out of it instead of allocating subarray views per row. */
-const boxScratch = new Float32Array(6);
-
-/**
- * World-space AABBs of changed instance rows for one revision step: pairs of
- * `[old, new]` boxes (12 floats per changed row range). Downstream
- * invalidation (shadow caches) can union these instead of the whole
- * collection bounds when a few rows move.
- */
-export interface InstanceRowBoxChange {
-  readonly revision: number;
-  /** `count * 12` floats: old box (6) then new box (6) per entry. */
-  readonly boxes: Float32Array;
-  readonly count: number;
-}
-
-/**
- * The hierarchy stores affine coefficients independently of the mesh bounds.
- * Editing a shared mesh evaluates one root interval; only changed instance
- * transforms update leaves and ancestors. Coefficient intervals can be looser
- * than the exact union, so actual GPU/triangle queries retain precise culling.
- */
-class InstanceRowBoundsHierarchy {
-  private readonly coefficients: Float32Array;
-  private readonly rowValid: Uint8Array;
-  private invalidRows = 0;
-  private readonly levels: { readonly coefficients: Float32Array; readonly filled: Uint8Array }[] =
-    [];
-  /** Rows in use; storage is sized for `capacity` so a resized collection keeps it. */
-  private rowCount: number;
-
-  constructor(
-    rows: number,
-    readonly capacity: number = rows,
-  ) {
-    if (rows > capacity) throw new RangeError('instance bounds rows exceed the hierarchy capacity');
-    this.rowCount = rows;
-    this.coefficients = new Float32Array(capacity * 12);
-    this.rowValid = new Uint8Array(capacity);
-    let width = capacity;
-    do {
-      width = Math.ceil(width / HIERARCHY_FANOUT);
-      this.levels.push({
-        coefficients: new Float32Array(width * 24),
-        filled: new Uint8Array(width),
-      });
-    } while (width > 1);
-  }
-
-  get rows(): number {
-    return this.rowCount;
-  }
-
-  /** Re-scope the hierarchy to `rows`; callers then rewrite every row. */
-  resize(rows: number): void {
-    if (rows > this.capacity)
-      throw new RangeError('instance bounds rows exceed the hierarchy capacity');
-    this.rowCount = rows;
-  }
-
-  writeRow(row: number, transforms: ArrayLike<number>): void {
-    const offset = row * 16;
-    let valid =
-      transforms.length - offset >= 16 &&
-      transforms[offset + 3] === 0 &&
-      transforms[offset + 7] === 0 &&
-      transforms[offset + 11] === 0 &&
-      transforms[offset + 15] === 1;
-    if (valid) {
-      for (let column = 0; column < 4 && valid; column++)
-        for (let axis = 0; axis < 3; axis++)
-          if (!Number.isFinite(transforms[offset + column * 4 + axis] as number)) {
-            valid = false;
-            break;
-          }
-    }
-    if (valid) {
-      const coefficients = this.coefficients;
-      const base = row * 12;
-      for (let column = 0; column < 4; column++)
-        for (let axis = 0; axis < 3; axis++)
-          coefficients[base + column * 3 + axis] = transforms[offset + column * 4 + axis] as number;
-    }
-    const was = this.rowValid[row] === 1;
-    if (was !== valid) this.invalidRows += valid ? -1 : 1;
-    this.rowValid[row] = valid ? 1 : 0;
-  }
-
-  markAllRowsUnset(): void {
-    this.invalidRows = this.rowCount;
-    this.rowValid.fill(0);
-  }
-
-  /** Children of `level`'s nodes that hold data for the current row count. */
-  private childCount(level: number): number {
-    let width = this.rowCount;
-    for (let index = 0; index < level; index += 1) width = Math.ceil(width / HIERARCHY_FANOUT);
-    return width;
-  }
-
-  private refreshNode(level: number, node: number, children: number): number {
-    const target = this.levels[level] as (typeof this.levels)[number];
-    const previous = this.levels[level - 1] as (typeof this.levels)[number];
-    const leaf = level === 0;
-    const source = leaf ? this.coefficients : previous.coefficients;
-    const filled = leaf ? this.rowValid : previous.filled;
-    const stride = leaf ? 12 : 24;
-    const span = leaf ? 0 : 12;
-    const out = target.coefficients;
-    const base = node * 24;
-    const first = node * HIERARCHY_FANOUT;
-    const last = Math.min(first + HIERARCHY_FANOUT, children);
-    let initialized = false;
-    for (let child = first; child < last; child++) {
-      if (filled[child] !== 1) continue;
-      const at = child * stride;
-      if (!initialized) {
-        for (let field = 0; field < 12; field++) {
-          out[base + field] = source[at + field] as number;
-          out[base + field + 12] = source[at + field + span] as number;
-        }
-        initialized = true;
-        continue;
-      }
-      for (let field = 0; field < 12; field++) {
-        const lo = source[at + field] as number;
-        const hi = source[at + field + span] as number;
-        // Branch-free min/max: scattered rows mispredict a compare-and-store.
-        out[base + field] = Math.min(out[base + field] as number, lo);
-        out[base + field + 12] = Math.max(out[base + field + 12] as number, hi);
-      }
-    }
-    target.filled[node] = initialized ? 1 : 0;
-    return last - first;
-  }
-
-  /**
-   * Rewrite every row from `transforms` and rebuild the hierarchy. Each leaf
-   * node folds its rows while they are written, so a full re-derive reads the
-   * row coefficients once; returns node visits like `refreshAll`.
-   */
-  rebuild(transforms: ArrayLike<number>): number {
-    this.markAllRowsUnset();
-    const rows = this.rowCount;
-    const leaf = this.levels[0] as (typeof this.levels)[number];
-    const out = leaf.coefficients;
-    const coefficients = this.coefficients;
-    const valid = this.rowValid;
-    const width = this.levels.length === 1 ? 1 : Math.ceil(rows / HIERARCHY_FANOUT);
-    for (let node = 0; node < width; node += 1) {
-      const base = node * 24;
-      const first = node * HIERARCHY_FANOUT;
-      const last = Math.min(first + HIERARCHY_FANOUT, rows);
-      let initialized = false;
-      for (let row = first; row < last; row++) {
-        this.writeRow(row, transforms);
-        if (valid[row] !== 1) continue;
-        const at = row * 12;
-        if (!initialized) {
-          for (let field = 0; field < 12; field++) {
-            const value = coefficients[at + field] as number;
-            out[base + field] = value;
-            out[base + field + 12] = value;
-          }
-          initialized = true;
-          continue;
-        }
-        for (let field = 0; field < 12; field++) {
-          const value = coefficients[at + field] as number;
-          out[base + field] = Math.min(out[base + field] as number, value);
-          out[base + field + 12] = Math.max(out[base + field + 12] as number, value);
-        }
-      }
-      leaf.filled[node] = initialized ? 1 : 0;
-    }
-    return rows + this.refreshLevels(1, width);
-  }
-
-  private refreshLevels(from: number, rows: number): number {
-    let visits = 0;
-    let children = rows;
-    for (let level = from; level < this.levels.length; level += 1) {
-      // The top level is always one root node, whatever the current row count.
-      const width = level === this.levels.length - 1 ? 1 : Math.ceil(children / HIERARCHY_FANOUT);
-      for (let node = 0; node < width; node += 1) visits += this.refreshNode(level, node, children);
-      children = width;
-    }
-    return visits;
-  }
-
-  /** Refresh the ancestors of the given sorted, disjoint row ranges. */
-  refreshRows(ranges: readonly { readonly start: number; readonly end: number }[]): number {
-    let visits = 0;
-    let spans = ranges.map((range) => ({ start: range.start, end: range.end }));
-    for (let level = 0; level < this.levels.length; level += 1) {
-      const parents: { start: number; end: number }[] = [];
-      for (const span of spans) {
-        const start = Math.floor(span.start / HIERARCHY_FANOUT);
-        const end = Math.floor((span.end - 1) / HIERARCHY_FANOUT) + 1;
-        const tail = parents[parents.length - 1];
-        if (tail !== undefined && start <= tail.end) tail.end = Math.max(tail.end, end);
-        else parents.push({ start, end });
-      }
-      const children = this.childCount(level);
-      for (const span of parents) {
-        for (let node = span.start; node < span.end; node += 1) {
-          visits += this.refreshNode(level, node, children);
-        }
-      }
-      spans = parents;
-    }
-    return visits;
-  }
-
-  union(mesh: ArrayLike<number> | undefined, world: ArrayLike<number>): Float32Array | undefined {
-    if (
-      this.invalidRows > 0 ||
-      mesh === undefined ||
-      !isFiniteBounds3(mesh) ||
-      !finiteMatrix(world)
-    )
-      return undefined;
-    const root = this.levels[this.levels.length - 1] as (typeof this.levels)[number];
-    if (root.filled[0] !== 1) return undefined;
-    const values = root.coefficients;
-    for (let axis = 0; axis < 3; axis++) {
-      let lo = values[9 + axis] as number;
-      let hi = values[21 + axis] as number;
-      for (let input = 0; input < 3; input++) {
-        const a = values[input * 3 + axis] as number;
-        const b = values[input * 3 + axis + 12] as number;
-        const x = mesh[input] as number;
-        const y = mesh[input + 3] as number;
-        lo += Math.min(a * x, a * y, b * x, b * y);
-        hi += Math.max(a * x, a * y, b * x, b * y);
-      }
-      boxScratch[axis] = lo;
-      boxScratch[axis + 3] = hi;
-    }
-    const result = new Float32Array(6);
-    return transformAabb(result, boxScratch, world) ? result : undefined;
-  }
-
-  rowBounds(
-    out: Float32Array,
-    first: number,
-    last: number,
-    mesh: ArrayLike<number>,
-    world: ArrayLike<number>,
-  ): void {
-    let initialized = false;
-    for (let row = first; row < last; row++) {
-      for (let column = 0; column < 4; column++)
-        for (let axis = 0; axis < 3; axis++)
-          rowMatrixScratch[column * 4 + axis] = this.coefficients[
-            row * 12 + column * 3 + axis
-          ] as number;
-      multiplyMat4(composedScratch, world, rowMatrixScratch);
-      transformAabb(boxScratch, mesh, composedScratch);
-      initialized = includeBox(out, boxScratch, initialized);
-    }
-  }
-}
-
-const rowMatrixScratch = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
-
 interface InstanceBoundsCacheEntry extends InstanceBoundsCacheKey {
   readonly bounds: Float32Array | undefined;
-  readonly collectionId?: number;
-  readonly revision?: number;
-  readonly hierarchy?: InstanceRowBoundsHierarchy;
-  readonly rowChange?: InstanceRowBoxChange;
 }
 
 export interface InstanceBoundsCacheInspection {
@@ -585,22 +309,6 @@ export interface InstanceBoundsCacheInspection {
   readonly misses: number;
   readonly derives: number;
   readonly invalidations: number;
-  /** Revisions answered by refreshing only dirty rows. */
-  readonly rowUpdates: number;
-  /** Hierarchy child visits (row boxes or nodes) across derives and updates. */
-  readonly nodeVisits: number;
-}
-
-/**
- * Optional revision facts for a renderer-owned instance collection. When the
- * cached entry holds `revision - 1` of the same collection and `dirtyRows`
- * is known, the cache refreshes only those rows and their hierarchy chain.
- */
-export interface InstanceBoundsRevisionInput {
-  readonly collectionId?: number;
-  readonly revision?: number;
-  /** Sorted, disjoint row ranges changed since `revision - 1`. */
-  readonly dirtyRows?: readonly { readonly start: number; readonly end: number }[];
 }
 
 /**
@@ -609,193 +317,47 @@ export interface InstanceBoundsRevisionInput {
  * generation (the normal RenderScene slot generation contract).
  */
 export class InstanceBoundsCache {
-  private readonly entries = new Map<string, InstanceBoundsCacheEntry>();
+  private readonly entries = new Map<number, InstanceBoundsCacheEntry>();
   private hits = 0;
   private misses = 0;
   private derives = 0;
   private invalidations = 0;
-  private rowUpdates = 0;
-  private nodeVisits = 0;
 
-  private key(input: Pick<InstanceBoundsCacheKey, 'worldId' | 'entityKey'>): string {
-    return `${input.worldId === undefined ? '' : `${input.worldId}:`}${input.entityKey}`;
+  private key(input: Pick<InstanceBoundsCacheKey, 'entityKey'>): number {
+    return input.entityKey;
   }
 
-  get(input: InstanceBoundsCacheInput & InstanceBoundsRevisionInput): Float32Array | undefined {
+  get(input: InstanceBoundsCacheInput): Float32Array | undefined {
     const key = this.key(input);
     const previous = this.entries.get(key);
     if (
       previous !== undefined &&
       previous.meshGeneration === input.meshGeneration &&
       previous.transformGeneration === input.transformGeneration &&
-      previous.matrixGeneration === input.matrixGeneration &&
-      previous.collectionId === input.collectionId
+      previous.matrixGeneration === input.matrixGeneration
     ) {
       this.hits += 1;
       return previous.bounds;
     }
     this.misses += 1;
-    if (
-      previous?.hierarchy !== undefined &&
-      previous.matrixGeneration === input.matrixGeneration &&
-      previous.collectionId === input.collectionId &&
-      input.transforms?.length === previous.hierarchy.rows * 16
-    ) {
-      const { rowChange: _stale, ...retained } = previous;
-      const adopted = {
-        ...retained,
-        meshGeneration: input.meshGeneration,
-        transformGeneration: input.transformGeneration,
-        bounds: previous.hierarchy.union(input.meshAabb, input.entityWorld),
-      };
-      this.entries.set(key, adopted);
-      return adopted.bounds;
-    }
-    const updated = this.updateRows(previous, input);
-    if (updated !== undefined) {
-      this.rowUpdates += 1;
-      this.entries.set(key, updated);
-      return updated.bounds;
-    }
     this.derives += 1;
-    const entry = this.derive(input);
-    this.entries.set(key, entry);
-    return entry.bounds;
-  }
-
-  /**
-   * Old/new world boxes of the rows changed by the entry's latest revision,
-   * or undefined when that revision was a full derive (callers then fall
-   * back to whole-collection bounds).
-   */
-  rowChange(entityKey: number, worldId?: number): InstanceRowBoxChange | undefined {
-    return this.entries.get(this.key({ entityKey, ...(worldId === undefined ? {} : { worldId }) }))
-      ?.rowChange;
-  }
-
-  private derive(
-    input: InstanceBoundsCacheInput & InstanceBoundsRevisionInput,
-  ): InstanceBoundsCacheEntry {
-    const base = {
-      ...(input.worldId === undefined ? {} : { worldId: input.worldId }),
+    const bounds = deriveInstancesUnionBounds(input);
+    this.entries.set(key, {
       entityKey: input.entityKey,
       meshGeneration: input.meshGeneration,
       transformGeneration: input.transformGeneration,
       matrixGeneration: input.matrixGeneration,
-    };
-    const { meshAabb, entityWorld, transforms } = input;
-    if (transforms === undefined || transforms.length === 0 || transforms.length % 16 !== 0) {
-      return { ...base, bounds: undefined };
-    }
-    // A full re-derive (a moving collection without dirty-row proof) rewrites
-    // the previous hierarchy in place: every row and node is recomputed below,
-    // and the replaced entry is dropped from the map. A collection whose count
-    // changes moves to a reserved capacity so spawn/retire frames reuse it.
-    const rows = transforms.length / 16;
-    const reusable = this.entries.get(this.key(input))?.hierarchy;
-    const resized = reusable !== undefined && reusable.rows !== rows;
-    const hierarchy =
-      reusable !== undefined &&
-      rows <= reusable.capacity &&
-      !(resized && shouldShrinkCapacity(rows, reusable.capacity))
-        ? reusable
-        : new InstanceRowBoundsHierarchy(rows, resized ? dynamicCapacity(rows) : rows);
-    hierarchy.resize(rows);
-    this.nodeVisits += hierarchy.rows + hierarchy.rebuild(transforms);
-    return {
-      ...base,
-      bounds: hierarchy.union(meshAabb, entityWorld),
-      ...(input.collectionId === undefined ? {} : { collectionId: input.collectionId }),
-      ...(input.revision === undefined ? {} : { revision: input.revision }),
-      hierarchy,
-    };
-  }
-
-  private updateRows(
-    previous: InstanceBoundsCacheEntry | undefined,
-    input: InstanceBoundsCacheInput & InstanceBoundsRevisionInput,
-  ): InstanceBoundsCacheEntry | undefined {
-    const hierarchy = previous?.hierarchy;
-    const { meshAabb, entityWorld, transforms, dirtyRows } = input;
-    if (
-      previous === undefined ||
-      hierarchy === undefined ||
-      dirtyRows === undefined ||
-      input.revision === undefined ||
-      previous.collectionId !== input.collectionId ||
-      previous.revision !== input.revision - 1 ||
-      previous.meshGeneration !== input.meshGeneration ||
-      previous.transformGeneration !== input.transformGeneration ||
-      meshAabb === undefined ||
-      transforms === undefined ||
-      transforms.length !== hierarchy.rows * 16
-    ) {
-      return undefined;
-    }
-    for (const range of dirtyRows) {
-      if (range.start < 0 || range.end > hierarchy.rows || range.start >= range.end)
-        return undefined;
-    }
-    const collapse = dirtyRows.length > MAX_ROW_CHANGE_RANGES;
-    const count = collapse ? 1 : dirtyRows.length;
-    const boxes = new Float32Array(count * 12);
-    let rowsVisited = 0;
-    for (let index = 0; index < dirtyRows.length; index += 1) {
-      const range = dirtyRows[index] as { readonly start: number; readonly end: number };
-      const entry = collapse ? 0 : index;
-      if (!collapse || index === 0) {
-        hierarchy.rowBounds(
-          boxes.subarray(entry * 12, entry * 12 + 6),
-          range.start,
-          range.end,
-          meshAabb,
-          entityWorld,
-        );
-      } else {
-        hierarchy.rowBounds(scratchBox, range.start, range.end, meshAabb, entityWorld);
-        includeBox(boxes.subarray(0, 6), scratchBox, true);
-      }
-      for (let row = range.start; row < range.end; row += 1) {
-        hierarchy.writeRow(row, transforms);
-      }
-      rowsVisited += range.end - range.start;
-      if (!collapse || index === 0) {
-        hierarchy.rowBounds(
-          boxes.subarray(entry * 12 + 6, entry * 12 + 12),
-          range.start,
-          range.end,
-          meshAabb,
-          entityWorld,
-        );
-      } else {
-        hierarchy.rowBounds(scratchBox, range.start, range.end, meshAabb, entityWorld);
-        includeBox(boxes.subarray(6, 12), scratchBox, true);
-      }
-    }
-    this.nodeVisits += rowsVisited + hierarchy.refreshRows(dirtyRows);
-    const { rowChange: _stale, ...retained } = previous;
-    const bounds = hierarchy.union(meshAabb, entityWorld);
-    // Row boxes are only meaningful while every row (before and after) was
-    // finite; otherwise consumers fall back to whole-collection bounds.
-    return {
-      ...retained,
-      matrixGeneration: input.matrixGeneration,
-      revision: input.revision,
       bounds,
-      ...(bounds === undefined || previous.bounds === undefined
-        ? {}
-        : { rowChange: { revision: input.revision, boxes, count } }),
-    };
+    });
+    return bounds;
   }
 
-  invalidate(entityKey?: number, worldId?: number): void {
+  invalidate(entityKey?: number): void {
     if (entityKey === undefined) {
       if (this.entries.size > 0) this.invalidations += this.entries.size;
       this.entries.clear();
     } else {
-      if (
-        this.entries.delete(this.key({ entityKey, ...(worldId === undefined ? {} : { worldId }) }))
-      ) {
+      if (this.entries.delete(this.key({ entityKey }))) {
         this.invalidations += 1;
       }
     }
@@ -807,10 +369,6 @@ export class InstanceBoundsCache {
       misses: this.misses,
       derives: this.derives,
       invalidations: this.invalidations,
-      rowUpdates: this.rowUpdates,
-      nodeVisits: this.nodeVisits,
     };
   }
 }
-
-const scratchBox = new Float32Array(6);

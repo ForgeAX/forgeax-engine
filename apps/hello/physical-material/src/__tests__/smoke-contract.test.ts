@@ -110,7 +110,7 @@ describe('physical material smoke contract', () => {
   it('closes Dawn renderer and targets before process exit', () => {
     const source = read('smoke-dawn.mjs');
     const phaseExecutor = readFileSync(new URL('../../evidence/phase-executor.mjs', import.meta.url), 'utf8');
-    expect(source).toContain('disposeRenderResources({ renderer, mutantRenderer, renderTarget, mutantRenderTarget, device: sharedDevice })');
+    expect(source).toMatch(/disposeRenderResources\(\{\s*renderer,\s*mutantRenderer,\s*renderTarget,\s*mutantRenderTarget,\s*device: sharedDevice,?\s*\}\)/);
     expect(phaseExecutor).toContain('await renderer.dispose();');
     expect(phaseExecutor).toContain('await mutantRenderer.dispose();');
     expect(phaseExecutor).toContain('renderTarget?.destroy();');

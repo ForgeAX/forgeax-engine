@@ -1,5 +1,9 @@
 import { deriveVertexLayoutProjection } from '@forgeax/engine-geometry';
+import { createMaterialShaderProgram } from '@forgeax/engine-shader';
 import { describe, expect, it, vi } from 'vitest';
+import { resolveMaterialPipelineBindGroups } from '../../assembly/material/pipeline-helpers';
+import { buildBindGroupLayoutDescriptor } from '../../pbr-pipeline';
+import type { PipelineSpec } from '../../pipeline-spec';
 import {
   createGeometryPipelineRequests,
   type GeometryPipelineRequestContext,
@@ -7,6 +11,139 @@ import {
   type PipelineRequestRuntime,
 } from '../geometry-pipeline-requests';
 import type { MaterialShaderPipelineEntry } from '../render-context';
+
+describe('direct medium geometry pipeline layout', () => {
+  const spec: PipelineSpec = {
+    shader: { id: 'test::medium', passKind: 'temporal', variantSet: undefined },
+    attachments: { colorFormats: ['rgba16float'], depthFormat: undefined, sampleCount: 1 },
+    geometry: { topology: 'triangle-list', vertexLayout: {} },
+    renderState: undefined,
+  };
+  const caps = { storageBuffer: true, probeBlend: true };
+  const direct = buildBindGroupLayoutDescriptor(spec, {
+    kind: 'pbr-surface-direct-instances',
+    caps,
+  });
+  const probe = buildBindGroupLayoutDescriptor(spec, { kind: 'pbr-instances', caps });
+  const scene = buildBindGroupLayoutDescriptor(spec, { kind: 'pbr-gpu-driven-instances', caps });
+  const mesh = { label: 'mesh' } as never;
+  const cluster = { label: 'cluster' } as never;
+  const state = {
+    meshBindGroupLayout: mesh,
+    hdrpMeshBindGroupLayout: cluster,
+    gpuDrivenClusterMeshBindGroupLayout: cluster,
+    pbrSkinMeshBindGroupLayout: null,
+    hdrpSkinMeshBindGroupLayout: null,
+    instancesBindGroupLayout: probe as never,
+    probeInstancesBindGroupLayout: probe as never,
+    surfaceDirectInstancesBindGroupLayout: direct as never,
+    gpuDrivenInstancesBindGroupLayout: scene as never,
+  };
+
+  it.each([
+    ['forward', false, 'single-layer-medium', true],
+    ['forward', true, 'single-layer-medium', true],
+    ['temporal', false, 'single-layer-medium', true],
+    ['temporal', true, 'single-layer-medium', true],
+    ['temporal', false, 'standard', false],
+    ['deferred', false, 'single-layer-medium', false],
+    ['shadow-caster', false, 'single-layer-medium', false],
+  ] as const)('resolves %s, clustered=%s, surface=%s to its address contract', (passKind, clustered, surfaceModel, directAddress) => {
+    const program = createMaterialShaderProgram(`
+      @group(3) @binding(1) var<storage, read> probes: array<vec4<f32>>;
+      @group(3) @binding(6) var<uniform> surfaceDirectAddress: vec4<u32>;
+      @vertex fn vs_temporal() -> @builtin(position) vec4<f32> {
+        return vec4<f32>(f32(surfaceDirectAddress.x), 0.0, 0.0, 1.0);
+      }
+      @fragment fn fs_temporal() -> @location(0) vec4<f32> { return probes[0]; }
+    `);
+    const ready = { pipeline: {} } as MaterialShaderPipelineEntry;
+    const lookup = vi.fn().mockReturnValue(ready);
+    const requests = createGeometryPipelineRequests(
+      {
+        runtime: {
+          device: { caps, limits: { maxSampledTexturesPerShaderStage: 32 } },
+          getMaterialArtifact: () => ({ program }),
+          getMaterialShaderArtifact: () => ({ program }),
+          getMaterialShaderPipelineEntry: lookup,
+          prepareMaterialShaderPipelineEntry: lookup,
+        },
+        pipelineState: {},
+        lightingKind: clustered ? 'clustered' : 'no-local-lights',
+        warnedNineSliceScaleEntities: new Set<number>(),
+      } as unknown as GeometryPipelineRequestContext,
+      {
+        passKind,
+        sampleCount: 1,
+        colorFormats: ['rgba16float'],
+        coverageOnly: false,
+        tonemapActive: true,
+        msaaActive: false,
+        viewBindGroupDynamicOffset: 0,
+        transparentDepthWrite: false,
+        oit: undefined,
+      },
+    );
+    const projection = deriveVertexLayoutProjection({ position: new Float32Array(9) });
+    const material = {
+      materialShaderId: 'test::medium',
+      surfaceModel,
+      paramSnapshot: {},
+      renderState: { cullMode: 'none' },
+    };
+    const entry = {
+      source: {
+        transform: {
+          world: new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]),
+        },
+      },
+      mesh: { layoutProjection: projection, indexFormat: 'uint16' },
+    };
+    expect(
+      requests.resolveDrawPipeline(
+        entry as Parameters<typeof requests.resolveDrawPipeline>[0],
+        'triangle-list',
+        material as Parameters<typeof requests.resolveDrawPipeline>[2],
+        undefined,
+        undefined,
+        material.renderState as never,
+        passKind === 'temporal' ? 'vs_temporal' : undefined,
+        passKind === 'temporal' ? 'fs_temporal' : undefined,
+        false,
+        undefined,
+      ),
+    ).toBe(true);
+    const call = lookup.mock.calls[0];
+    expect(call).toBeDefined();
+    if (directAddress) {
+      expect(call?.[5]).toContain('STORAGE_BUFFER_AVAILABLE=true');
+      expect(call?.[5]).toContain('PROBE_BLEND_AVAILABLE=true');
+    }
+    expect(call?.[6]).toBe(passKind);
+    expect(call?.[18]).toBe(passKind === 'temporal' ? 'vs_temporal' : undefined);
+    const layouts = resolveMaterialPipelineBindGroups(
+      call?.[15] ?? (clustered ? 'hdrp-pbr' : 'pbr'),
+      state,
+      clustered,
+      program.probeBlendRecordRequired,
+    );
+    expect(layouts?.instancesLayout).toBe(directAddress ? direct : probe);
+    expect(layouts?.meshLayout).toBe(clustered ? cluster : mesh);
+    expect(direct.entries.find((entry) => entry.binding === 6)?.buffer?.type).toBe('uniform');
+    expect(requests.pipelineSelection.sceneDirect).toBe(false);
+  });
+
+  it('keeps the ordinary probe and scene-index address contracts separate', () => {
+    expect(resolveMaterialPipelineBindGroups('pbr', state, false, true)?.instancesLayout).toBe(
+      probe,
+    );
+    expect(probe.entries.some((entry) => entry.binding === 6)).toBe(false);
+    expect(resolveMaterialPipelineBindGroups('gpu-driven-pbr', state)?.instancesLayout).toBe(scene);
+    expect(scene.entries.find((entry) => entry.binding === 6)?.buffer?.type).toBe(
+      'read-only-storage',
+    );
+  });
+});
 
 describe('main-pass material pipeline cache', () => {
   it.each([

@@ -46,7 +46,6 @@ async function fixture(cullingCountsOnly = false) {
     material,
     materials: [material],
     materialBindingSources: ['engine-default'],
-    worldId: 0,
     entityKey,
     gpuDrivenDraws: [
       {
@@ -69,7 +68,6 @@ async function fixture(cullingCountsOnly = false) {
   const delta = source.apply(
     [1, 2].map((entityKey) => ({
       kind: 'update' as const,
-      worldId: 0,
       entityKey,
       snapshot: snapshot(entityKey),
     })),

@@ -380,9 +380,7 @@ export async function verifyStandardParallax(
             renderer,
             {
               ...(entry.gpu ? {} : { geometryLane: 'direct' as const }),
-              leases: [lease],
-              camera: { lease },
-              environment: { lease },
+              source: lease,
             },
             frame === frameCount - 1 ? ['linear-hdr'] : undefined,
           );
@@ -650,7 +648,7 @@ export async function verifyParallaxTiledPits(
       propagateTransforms(world).unwrap();
       receipt = await drawReadyFrame(
         renderer,
-        { geometryLane: 'direct', leases: [lease], camera: { lease }, environment: { lease } },
+        { geometryLane: 'direct', source: lease },
         frame === testQuality.staticFrames - 1 ? ['linear-hdr'] : undefined,
       );
     }

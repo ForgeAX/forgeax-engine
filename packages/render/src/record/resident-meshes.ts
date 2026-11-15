@@ -8,21 +8,16 @@ import type { RenderSystemInternals } from './render-context';
 /** Prepare resident geometry once per shared mesh, without visiting scene members. */
 export function gpuDrivenMeshesForFrame(
   internals: RenderSystemInternals,
-  worlds: readonly RenderResourceScope[],
+  sourceScope: RenderResourceScope,
   scene: Pick<PersistentGpuDrivenState, 'plan' | 'meshes'> | undefined,
 ): ReadonlyMap<GpuDrivenBatchBinding, MeshGpuHandles> {
   // One resolution per world and mesh; numeric keys avoid a string per batch.
-  const resolved = new Map<number, Map<number, MeshGpuHandles | null>>();
+  const resolved = new Map<number, MeshGpuHandles | null>();
   const resolve = (
     binding: GpuDrivenBatchBinding,
     world: RenderResourceScope,
   ): MeshGpuHandles | undefined => {
-    let byAsset = resolved.get(binding.worldId);
-    if (byAsset === undefined) {
-      byAsset = new Map();
-      resolved.set(binding.worldId, byAsset);
-    }
-    const known = byAsset.get(binding.assetHandle);
+    const known = resolved.get(binding.assetHandle);
     if (known !== undefined) return known ?? undefined;
     const handle = binding.assetHandle as AssetHandle<'mesh'>;
     let gpu = internals.gpuStore.getMeshGpuHandles(handle, world);
@@ -42,7 +37,7 @@ export function gpuDrivenMeshesForFrame(
         if (resident.ok) gpu = resident.value;
       }
     }
-    byAsset.set(binding.assetHandle, gpu ?? null);
+    resolved.set(binding.assetHandle, gpu ?? null);
     return gpu;
   };
   // Downstream preparation keys on this table's identity; keep it while every
@@ -55,7 +50,7 @@ export function gpuDrivenMeshesForFrame(
     for (const batch of batches) {
       const binding = batch.binding;
       if (binding === undefined) continue;
-      const world = worlds[binding.worldId];
+      const world = sourceScope;
       if (world === undefined) continue;
       const gpu = resolve(binding, world);
       if (gpu !== undefined && previous.table.get(binding) !== gpu) {
@@ -73,7 +68,7 @@ export function gpuDrivenMeshesForFrame(
   for (const batch of batches ?? []) {
     const binding = batch.binding;
     if (binding === undefined) continue;
-    const world = worlds[binding.worldId];
+    const world = sourceScope;
     if (world === undefined) continue;
     const gpu = resolve(binding, world);
     if (gpu !== undefined) meshes.set(binding, gpu);

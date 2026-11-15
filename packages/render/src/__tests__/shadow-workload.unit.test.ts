@@ -28,7 +28,7 @@ function roster(ledger: ShadowRasterLedger, frameId = 7): LodObservationCapture 
   return {
     frameId,
     deviceGeneration: 2,
-    leases: [],
+    source: undefined,
     views: [
       {
         viewKey: 'main',

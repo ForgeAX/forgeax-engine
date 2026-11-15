@@ -37,6 +37,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 
 
 const SMOKE_DURATION_MS = Number.parseInt(process.env.SMOKE_DURATION_MS ?? '5000', 10);
@@ -159,9 +160,10 @@ const { AssetGuid } = await import('@forgeax/engine-pack/guid');
 const { parseGltf, gltfDocToSceneAsset } = await import('@forgeax/engine-gltf');
 
 const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const MANIFEST_URL = `data:application/json,${encodeURIComponent(
-  readFileSync(MANIFEST_PATH, 'utf8'),
-)}`;
+const MANIFEST_URL = URL.createObjectURL(
+  new Blob([readShaderManifestText(MANIFEST_PATH)], { type: 'application/json' }),
+);
+process.once('exit', () => URL.revokeObjectURL(MANIFEST_URL));
 
 let renderer;
 let assets;
@@ -216,11 +218,7 @@ const worldContext = await createWorldContext(world, [
 ]);
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
-const frameRequest = {
-  leases: [worldAttachment1.value],
-  camera: { lease: worldAttachment1.value },
-  environment: { lease: worldAttachment1.value },
-};
+const frameRequest = { source: worldAttachment1.value };
 useBuiltAssetSource(assets, resolve(here, '..', 'dist'));
 const sceneHandleRes = await assets.load(sceneGuid, 'scene');
 if (!sceneHandleRes.ok) throw sceneHandleRes.error;

@@ -43,3 +43,4 @@ export * from './runtime-scope.js';
 export * from './scene-contracts.js';
 export * from './texture/index.js';
 export * from './vfx.js';
+export * from './water-contracts.js';

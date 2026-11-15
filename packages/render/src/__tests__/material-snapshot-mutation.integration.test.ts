@@ -14,11 +14,11 @@ import { Materials } from '../materials';
 import { worldRenderResources } from '../publication/resource-scope';
 import {
   type MaterialSnapshotCache,
-  type MaterialSnapshotCachesByWorld,
+  type MaterialSnapshotContexts,
   readPersistentMaterialSnapshot,
   resolveMaterialSnapshot,
 } from '../render-system-extract';
-import { extractFrames } from '../render-system-extract-tail';
+import { extractSource } from '../render-system-extract-tail';
 import { subsurfaceDemand } from '../subsurface/demand';
 import { subsurfaceSelection } from './subsurface-selection.fixture';
 
@@ -31,7 +31,7 @@ function fixture(material: MaterialAsset = Materials.unlit([1, 0, 0, 1])) {
   const handle = assets.create(material).unwrap();
   const mesh = assets.create(BUILTIN_CUBE).unwrap();
   const cache: MaterialSnapshotCache = new Map();
-  const caches: MaterialSnapshotCachesByWorld = new WeakMap();
+  const caches: MaterialSnapshotContexts = new Map();
   world
     .spawn(
       { component: Transform, data: {} },
@@ -48,7 +48,7 @@ function fixture(material: MaterialAsset = Materials.unlit([1, 0, 0, 1])) {
     read: () =>
       resolveMaterialSnapshot(handle, worldRenderResources(world), assets, undefined, cache),
     extract: () => {
-      const row = extractFrames([world], 0, assets, caches).renderables.at(0);
+      const row = extractSource(world, assets, caches).renderables.at(0);
       if (row === undefined) throw new Error('missing extracted mesh');
       return row;
     },

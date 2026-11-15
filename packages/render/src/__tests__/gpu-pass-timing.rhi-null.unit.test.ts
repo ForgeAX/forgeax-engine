@@ -103,24 +103,4 @@ describe('GPU pass timing RhiNull refusal and exact-zero evidence', () => {
     expect(observed.value.timings).not.toHaveProperty('durationNanoseconds');
     expect(JSON.stringify(observed.value)).not.toContain('durationNanoseconds');
   });
-
-  it('marks a RhiNull artifact as refused rather than manufacturing GPU evidence', async () => {
-    const validatorModulePath = '../../bench/gpu-pass-timing/validator.js';
-    const { validateGpuPassTimingReport } = await import(validatorModulePath);
-    const refused = validateGpuPassTimingReport({
-      schemaVersion: '1.0',
-      benchmark: 'render-gpu-pass-timing',
-      source: { sourceHead: '0'.repeat(40), package: '@forgeax/engine-render' },
-      runner: { name: 'rhi-null-test', version: '1', os: 'test', browser: null },
-      backend: {
-        kind: 'null',
-        adapter: 'RhiNull',
-        driver: 'none',
-        browser: 'none',
-        realGpu: false,
-      },
-    });
-
-    expect(refused).toMatchObject({ ok: false, error: { code: 'artifact-not-real-gpu' } });
-  });
 });

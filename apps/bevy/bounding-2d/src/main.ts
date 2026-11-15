@@ -1,6 +1,7 @@
+import { defineSystem } from "@forgeax/engine-ecs";
 import { createApp } from '@forgeax/engine-app/browser';
 import { Update, Time } from '@forgeax/engine-ecs';
-import type { InputSnapshot } from '@forgeax/engine-input';
+
 import { INPUT_SNAPSHOT_RESOURCE_KEY } from '@forgeax/engine-input';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
@@ -35,17 +36,18 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   buildBounding2dWorld(app.world);
   let modeIndex = 2;
 
-  app.world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'bounding-2d',
     queries: [],
     fn: (world) => {
-      const input = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+      const input = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
       if (input.keyboard.justPressed('Space')) modeIndex = (modeIndex + 1) % BOUNDING_2D_TESTS.length;
       const time = world.getResource(Time);
       const mode: Bounding2dTest = BOUNDING_2D_TESTS[modeIndex] as Bounding2dTest;
       drawBounding2d(debugDraw, computeBounding2dState(time.elapsed, mode));
     },
   });
+app.world.addSystem(Update, systemToken1);
 
   const started = app.start();
   if (!started.ok) console.error('[bevy-bounding-2d] app.start failed:', started.error);

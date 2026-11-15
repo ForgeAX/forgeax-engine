@@ -107,3 +107,26 @@ it('retains both actual ray and Card programs in the storage ray producer', asyn
   }
   expect(target.resolved).toEqual(original.resolved);
 }, 60_000);
+
+it('publishes a compiled Card program for a clearcoat Standard material, without a ray-hit program', async () => {
+  const source: MaterialAsset = {
+    kind: 'material',
+    passes: [{ name: 'forward', program: { module: 'forgeax_material::standard' } }],
+    staticSwitches: { clearcoat: true },
+    values: { baseColor: [0.9, 0.9, 0.9, 1], clearcoat: 1, clearcoatRoughness: 0.05 },
+  };
+  const draft = await createMaterialPackCooker([], { profile: 'webgpu-storage-ray' }).cook({
+    guid: 'storage-ray-profile-clearcoat',
+    source,
+  });
+  const record = validateCookedMaterialRecord(
+    (draft.payload as { cooked: unknown }).cooked,
+  ).unwrap();
+  const rayPasses = record.programs.flatMap((program) =>
+    program.selections
+      .filter(({ context }) => context.pipeline === 'ray')
+      .map(({ context }) => context.pass),
+  );
+  // The coat has no Card channel; ray hits would need its specular lobe.
+  expect(rayPasses).toEqual(['card-capture']);
+}, 60_000);

@@ -21,8 +21,27 @@ HMR interpretation in DevKit or the bundler adapter; App, Renderer and animation
 consume explicit capabilities and diagnostic subscriptions. Follow the
 [runtime boundary contracts](../../scripts/ci/README.md#runtime-and-tool-boundary-contracts)
 when adding an adapter or diagnosing a boundary gate failure.
+The built-in Water Scene plugin installs synchronous `WaterPontoonSet` physics
+between backend sync and simulation and publishes splash/wake only after
+collision completion. Read runtime `WaterBuoyancy` for full numerical evidence;
+a render tape does not prove forces. Follow the Water README for saved
+relative/socket anchors and specified-body CPU particle DI. CPU DI requires a
+`WaterParticleQueryInstance` tick at the system position; particle query pins
+select independent execution, depth and wave branches. Inspect the exported
+system and particle request positions rather than presentation transforms.
+
+Water application ordering uses Runtime's exported `WaterSceneReconcile`,
+`WaterContactProbes`, `WaterBuoyancy` and `WaterBuoyancyCompletion` tokens.
+Use Physics's `PhysicsSync`/`PhysicsSimulation` around fixed motion and Input's
+`InputFrameStartScan` before camera input. Keep the same `defineSystem` token
+for registration and removal; diagnostic names do not identify schedule edges.
+Read status from `WATER_SCENE_STATUS_RESOURCE` and Physics from
+`PhysicsWorldResource`, deriving their complete owner types from the tokens.
 
 The app host follows `RenderScene -> Standard Pipeline -> DeviceScope -> FrameReceipt`.
+Feature texture completion carries the receipt's frame, device and graph identity;
+the final returned draw receipt owns credit and retirement. Preserve host completion
+holds without requiring object identity across this boundary.
 Use `createApp`, then let the host perform `attach -> draw`; use `inspect`, `observe`, and `recover`
 with the returned receipt. Domain producers keep their own assets, input, audio, and plugin owners.
 
@@ -73,7 +92,7 @@ the same serializable facts through its frame-complete message.
 
 ```ts
 import { createApp } from '@forgeax/engine/app/browser';
-import { Time, Update } from '@forgeax/engine/ecs';
+import { defineSystem, Time, Update } from '@forgeax/engine/ecs';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 
 const result = await createApp(canvas, {}, forgeaxBundlerAdapter());
@@ -83,14 +102,14 @@ if (!result.ok) {
 }
 
 const app = result.value;
-app.world.addSystem(Update, {
+app.world.addSystem(Update, defineSystem({
   name: 'move-player',
   queries: [],
   fn: (world) => {
     const delta = world.getResource(Time).delta;
     void delta;
   },
-}).unwrap();
+})).unwrap();
 app.start().unwrap();
 ```
 
@@ -136,6 +155,7 @@ const report = result.value.execution.report();
 | WebGPU adapter cannot be acquired | Keep `auto`; usable Worker WebGL2 remains eligible. Inspect `report.capabilities.workerWebGpu` for admission and `report.render.capabilities.backendKind` for the actual backend |
 | Shared numeric kernels | Leave `kernels: 'auto'`, serve COOP/COEP and inspect actual `kernelDispatch` |
 | Host-only bootstrap | Set `engine: false`; leave dependent policies auto or false |
+| Immutable native local carrier | With `engine: false`, pass the same-graph `localBootstrap` entry to preserve decoder/component identity; retain `bootstrap` as the Worker URL. See the [execution contract](../../packages/app/README.md#worker-execution). |
 | Partial Kernel write | Call `app.execution.rebuild()` and use the new World identity |
 | Fixed presentation rate (e.g. 30 FPS) | `app.execution.setFrameRateLimit(30)`; `null` removes it. Admission stays on display callbacks and World time is unchanged |
 
@@ -315,18 +335,19 @@ GPU particles, use [`packages/vfx-render/README.md`](../../packages/vfx-render/R
 Each frame has one host-owned sequence:
 
 ```text
-measured deltaSeconds -> world.update(deltaSeconds) -> renderer.draw({ leases, camera, environment })
+measured deltaSeconds -> world.update(deltaSeconds) -> renderer.draw({ source: lease })
 ```
 
 `createApp` measures the delta once. A `World` owns time integration, fixed-step catch-up, and `Time` / `FixedTime` resources. Do not add a callback list, app-owned elapsed clock, app-side time clamp, or a second requestAnimationFrame loop.
 
 The frame loop reports a failed world update or draw through `app.onError`. It does not swallow structured failures.
 
-Native startup Hosts with screen UI return `null` from `drawSource` until the
+Native startup Hosts with screen UI return `ui-only` from `sceneAdmission` until the
 existing root activation transaction commits. This submits UI-only pending frames
-even after shader initialization. Return `undefined` to admit the primary scene,
-and withdraw it on failure; take readiness from this return value, not from Camera presence or opaque
-UI pixels. The same App loop keeps World updates, UI, input, and Reload alive.
+even after shader initialization. Return `scene` to admit the primary source,
+and withdraw it on failure; take readiness from this return value, not from Camera
+presence or opaque UI pixels.
+The same App loop keeps World updates, UI, input, and Reload alive.
 
 ```ts
 const stopListening = app.onError((error) => {
@@ -389,13 +410,13 @@ app.world.addSystem(Update, AnimateHud).unwrap();
 For deterministic simulation, register the behavior on `FixedUpdate` instead. Use schedule edges or sets for ordering; never recreate an app callback queue.
 
 ```ts
-import { FixedUpdate } from '@forgeax/engine/ecs';
+import { defineSystem, FixedUpdate } from '@forgeax/engine/ecs';
 
-app.world.addSystem(FixedUpdate, {
+app.world.addSystem(FixedUpdate, defineSystem({
   name: 'step-combat',
   queries: [],
   fn: () => stepCombat(),
-}).unwrap();
+})).unwrap();
 ```
 
 ## Input and plugin wiring
@@ -440,7 +461,7 @@ const ReadInput = defineSystem({
   name: 'read-input',
   queries: [],
   fn: (world) => {
-    const input = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+    const input = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
     if (input.keyboard.down('KeyW')) moveForward();
   },
 });

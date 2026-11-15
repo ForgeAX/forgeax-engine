@@ -81,7 +81,7 @@ describe('Pack variant compilation ownership', () => {
     expect(second.passes).toEqual(first.passes);
   });
 
-  it('owns cached metadata against edits to a returned pass or the original schema', async () => {
+  it('keeps cached metadata read-only and independent of the first caller', async () => {
     const f = fixture();
     const input = request('first');
     const first = (await f.cook(input, 'snapshot')).unwrap();
@@ -90,7 +90,9 @@ describe('Pack variant compilation ownership', () => {
     const next = (await f.cook(nextRequest, 'snapshot')).unwrap();
     expect(f.calls()).toBe(1);
     expect(next).toEqual((await cookMaterialAsset(nextRequest)).unwrap());
-    Object.assign(next.passes[0]?.paramSchema[0] ?? {}, { name: 'borrowed-edit' });
+    expect(() =>
+      Object.assign(next.passes[0]?.paramSchema[0] ?? {}, { name: 'borrowed-edit' }),
+    ).toThrow(TypeError);
     expect((await f.cook(request('third'), 'snapshot')).unwrap().passes).toEqual(
       (await cookMaterialAsset(request('third'))).unwrap().passes,
     );

@@ -1,9 +1,9 @@
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import assert from 'node:assert/strict';
 import { emitSmokeReceipt, smokeFrameBudget } from '../../../shared/scripts/smoke-receipt.mjs';
-import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 
 const SMOKE_MIN_FRAMES = smokeFrameBudget();
 
@@ -109,11 +109,11 @@ const { Transform } = await import('@forgeax/engine-scene');
 const { encodePng } = await import('@forgeax/engine-image/png');
 const { mkdirSync, writeFileSync } = await import('node:fs');
 const here = dirname(fileURLToPath(import.meta.url));
-const manifest = readFileSync(resolve(here, '../dist/shaders/manifest.json'), 'utf8');
+const manifest = readShaderManifestText(resolve(here, '../dist/shaders/manifest.json'));
 const host = await constructRuntimeRendererHost(
   mockCanvas,
   {},
-  { shaderManifestUrl: `data:application/json,${encodeURIComponent(manifest)}` },
+  { shaderManifestUrl: `data:application/octet-stream;base64,${Buffer.from(manifest).toString('base64')}` },
 );
 assert(host.ok, JSON.stringify(host.error));
 const renderer = host.value.renderer,
@@ -129,11 +129,7 @@ let framesObserved = 0;
 async function draw() {
   world.update().unwrap();
   scene.sync();
-  const receipt = await drawReadyFrame(renderer, {
-      leases: [attachment],
-      camera: { lease: attachment },
-      environment: { lease: attachment },
-    });
+  const receipt = await drawReadyFrame(renderer, { source: attachment });
   const observed = await renderer.observe(receipt, { include: ['draws'] });
   assert(observed.ok, JSON.stringify(observed.error));
   await sharedDevice.queue.onSubmittedWorkDone();

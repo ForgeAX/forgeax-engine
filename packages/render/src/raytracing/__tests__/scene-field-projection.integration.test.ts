@@ -3,6 +3,7 @@ import { AssetRegistry, createMaterialLoader } from '@forgeax/engine-assets-runt
 import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { World } from '@forgeax/engine-ecs';
 import {
+  buildMeshDistanceField,
   buildVisibilityDistanceField,
   createBoxGeometry,
   encodeMeshDistanceField,
@@ -45,10 +46,12 @@ const matrix = (x = 0) => {
   value[12] = x;
   return value;
 };
-async function fixture(world = new World(), worldId = 0) {
-  const assets = new AssetRegistry({
-    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
-  });
+async function fixture(world = new World(), sourceAssets?: AssetRegistry) {
+  const assets =
+    sourceAssets ??
+    new AssetRegistry({
+      shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+    });
   world.bindAssets(assets).unwrap();
   const geometry = createBoxGeometry(1, 1, 1).unwrap();
   const positions = geometry.attributes.position as Float32Array;
@@ -105,7 +108,6 @@ async function fixture(world = new World(), worldId = 0) {
     paramSnapshot: { alphaCutoff: 0 },
   };
   const source: RenderableSnapshot = {
-    worldId,
     entityKey: 31,
     assetHandle: assets.create(mesh).unwrap(),
     transform: { world: matrix() },
@@ -121,14 +123,12 @@ async function fixture(world = new World(), worldId = 0) {
   };
   const scene = new RenderScene();
   const update = (snapshot = source) =>
-    scene.apply([
-      { kind: 'update', worldId: snapshot.worldId, entityKey: snapshot.entityKey, snapshot },
-    ]);
+    scene.apply([{ kind: 'update', entityKey: snapshot.entityKey, snapshot }]);
   update();
   const project = (maxInstances = 16) =>
     projectSceneFields(
       scene.slotsSnapshot(),
-      [world].map(worldRenderResources),
+      worldRenderResources(world),
       { maxInstances, maxFieldBytes: 1024 * 1024 },
       assets,
     );
@@ -207,12 +207,16 @@ it('observes runtime vertex replacement and restoration through the owning resol
 
 it('keeps runtime handles scoped to their actual owners', async () => {
   const first = await fixture(),
-    second = await fixture(new World(), 1);
+    second = await fixture(first.world, first.assets);
   expect(first.source.assetHandle).not.toBe(second.source.assetHandle);
-  first.update({ ...second.source, transform: { world: matrix(20) } });
+  first.update({
+    ...second.source,
+    entityKey: second.source.entityKey + 1,
+    transform: { world: matrix(20) },
+  });
   const result = projectSceneFields(
     first.scene.slotsSnapshot(),
-    [first.world, second.world].map(worldRenderResources),
+    worldRenderResources(first.world),
     { maxInstances: 4, maxFieldBytes: 1024 * 1024 },
     first.assets,
   ).unwrap();
@@ -256,11 +260,27 @@ it('freezes artifact, policy and instance facts across same-handle replacement a
   expect(second.sources[0]?.field).toEqual(replacement);
   expect(first.sources[0]?.instances?.generations).toEqual(new Uint32Array([5, 6]));
   expect(first.instances[0]?.transform[12]).toBe(2);
-  f.scene.apply([{ kind: 'remove', worldId: 0, entityKey: 31 }]);
+  f.scene.apply([{ kind: 'remove', entityKey: 31 }]);
   f.update({ ...f.source, entityKey: 44 });
   const next = f.project().unwrap();
   expect(next.sources[0]?.slot).toBe(first.sources[0]?.slot);
   expect(next.sources[0]?.generation).not.toBe(first.sources[0]?.generation);
+});
+
+it('names the sampled-visibility producer when a mesh carries a geometric field', async () => {
+  const f = await fixture();
+  const positions = f.mesh.attributes.position as Float32Array;
+  const indices = f.mesh.indices;
+  assert(indices);
+  const geometric = (await buildMeshDistanceField(positions, indices, { twoSided: true })).unwrap();
+  Reflect.set(f.mesh, 'distanceField', { ...geometric, sectionSidedness: [1, 1] });
+  f.assets.replace(f.source.assetHandle as AssetHandle<'mesh'>, f.mesh).unwrap();
+  const projected = f.project();
+  assert(!projected.ok);
+  expect(projected.error.code).toBe('ray-reference-invalid');
+  expect(String(projected.error.detail?.cause)).toMatch(
+    /sampled-visibility.*two-sided field.*buildVisibilityDistanceField/,
+  );
 });
 
 it('uses explicit complete-roster budgets and counts shared field bytes once', async () => {
@@ -272,7 +292,7 @@ it('uses explicit complete-roster budgets and counts shared field bytes once', a
   const project = (maxInstances: number, maxFieldBytes: number) =>
     projectSceneFields(
       f.scene.slotsSnapshot(),
-      [f.world].map(worldRenderResources),
+      worldRenderResources(f.world),
       { maxInstances, maxFieldBytes },
       f.assets,
     );
@@ -315,7 +335,7 @@ it.each([
   const projected = f.project().unwrap();
   expect(projected.instances).toHaveLength(1);
   expect(projected.sources.map((s) => s.entityKey)).toEqual([31]);
-  expect(projected.deforming).toEqual([expect.objectContaining({ worldId: 0, entityKey: 32 })]);
+  expect(projected.deforming).toEqual([expect.objectContaining({ entityKey: 32 })]);
 });
 
 it.each([
@@ -519,7 +539,7 @@ it('projects the actual transferred receiver mesh and rejects then restores runt
     publisher.recycle(packet.revision, returned).unwrap();
     return projectSceneFields(
       scene.compositionSlots(),
-      [accepted.resources],
+      accepted.resources,
       { maxInstances: 4, maxFieldBytes: 1024 * 1024 },
       f.assets,
     );
@@ -668,7 +688,7 @@ it('keeps cooked program admission while the owned material values advance', asy
     retained.consumePublication(received);
     const result = projectSceneFields(
       retained.compositionSlots(),
-      [received.resources],
+      received.resources,
       { maxInstances: 4, maxFieldBytes: 1024 * 1024 },
       receiverAssets,
     );
@@ -690,7 +710,6 @@ it('re-admits only the D changed rows and keeps the roster revision across unrel
   f.scene.apply(
     Array.from({ length: hidden }, (_, index) => ({
       kind: 'update' as const,
-      worldId: 0,
       entityKey: 1000 + index,
       snapshot: { ...f.source, entityKey: 1000 + index, authorVisible: false },
     })),
@@ -702,7 +721,7 @@ it('re-admits only the D changed rows and keeps the roster revision across unrel
     materials: new MaterialFrame(undefined),
     meshes: new MeshFrame(),
   });
-  const worlds = [f.world].map(worldRenderResources);
+  const worlds = worldRenderResources(f.world);
   const budget = { maxInstances: 16, maxFieldBytes: 1024 * 1024 };
   const fields = new SceneFieldRows();
   const cold = fields.update(rows(), worlds, budget, f.assets).unwrap();
@@ -716,7 +735,6 @@ it('re-admits only the D changed rows and keeps the roster revision across unrel
   f.scene.apply(
     Array.from({ length: D }, (_, index) => ({
       kind: 'update' as const,
-      worldId: 0,
       entityKey: 1000 + index * 37,
       snapshot: {
         ...f.source,
@@ -755,7 +773,6 @@ it.each([128, 1024])('assembles and diffs only 8 changed field sources at N=%i',
   f.scene.apply(
     Array.from({ length: count }, (_, entityKey) => ({
       kind: 'update' as const,
-      worldId: 0,
       entityKey,
       snapshot: { ...f.source, entityKey, transform: { world: matrix(entityKey) } },
     })),
@@ -765,10 +782,10 @@ it.each([128, 1024])('assembles and diffs only 8 changed field sources at N=%i',
     materials = new MaterialFrame(undefined),
     meshes = new MeshFrame();
   const rows = () => ({ identity, slots: f.scene.slotsSnapshot(), materials, meshes });
-  const worlds = [worldRenderResources(f.world)];
+  const sourceScope = worldRenderResources(f.world);
   const budget = { maxInstances: 1024, maxFieldBytes: 1024 * 1024 };
   const fields = new SceneFieldRows();
-  const cold = fields.update(rows(), worlds, budget, f.assets).unwrap();
+  const cold = fields.update(rows(), sourceScope, budget, f.assets).unwrap();
   expect(cold.sources).toHaveLength(count);
   const state = fieldEditState(cold.sources, cold.instances);
   fields.acceptChanges(fields.revision);
@@ -777,13 +794,12 @@ it.each([128, 1024])('assembles and diffs only 8 changed field sources at N=%i',
   f.scene.apply(
     Array.from({ length: 8 }, (_, entityKey) => ({
       kind: 'update' as const,
-      worldId: 0,
       entityKey,
       snapshot: { ...f.source, entityKey, transform: { world: matrix(entityKey + 10) } },
     })),
   );
   const visits = fields.visits;
-  const changed = fields.changes(rows(), worlds, budget, f.assets).unwrap();
+  const changed = fields.changes(rows(), sourceScope, budget, f.assets).unwrap();
   expect(fields.visits - visits).toBe(8);
   expect(changed.sources).toHaveLength(8);
   expect(changed.instances).toHaveLength(8);
@@ -797,7 +813,7 @@ it.each([128, 1024])('assembles and diffs only 8 changed field sources at N=%i',
   expect(keys).not.toHaveBeenCalled();
   enumerate.mockRestore();
   keys.mockRestore();
-  expect(fields.changes(rows(), worlds, budget, f.assets).unwrap().sources).toHaveLength(0);
+  expect(fields.changes(rows(), sourceScope, budget, f.assets).unwrap().sources).toHaveLength(0);
   expect(state.size).toBe(count);
 });
 
@@ -807,35 +823,37 @@ it('retains deferred source changes through removal, slot reuse and recovery', a
     materials = new MaterialFrame(undefined),
     meshes = new MeshFrame();
   const rows = () => ({ identity, slots: f.scene.slotsSnapshot(), materials, meshes });
-  const worlds = [worldRenderResources(f.world)];
+  const sourceScope = worldRenderResources(f.world);
   const budget = { maxInstances: 16, maxFieldBytes: 1024 * 1024 };
   const fields = new SceneFieldRows();
-  const cold = fields.update(rows(), worlds, budget, f.assets).unwrap();
+  const cold = fields.update(rows(), sourceScope, budget, f.assets).unwrap();
   const state = fieldEditState(cold.sources, cold.instances);
   fields.acceptChanges(fields.revision);
   f.update({ ...f.source, transform: { world: matrix(5) } });
-  const deferred = fields.changes(rows(), worlds, budget, f.assets).unwrap();
+  const deferred = fields.changes(rows(), sourceScope, budget, f.assets).unwrap();
   expect(diffFieldEdit(state, deferred).moved).toHaveLength(1);
   const oldRevision = fields.revision;
-  f.scene.apply([{ kind: 'remove', worldId: 0, entityKey: f.source.entityKey }]);
-  const removed = fields.changes(rows(), worlds, budget, f.assets).unwrap();
+  f.scene.apply([{ kind: 'remove', entityKey: f.source.entityKey }]);
+  const removed = fields.changes(rows(), sourceScope, budget, f.assets).unwrap();
   fields.acceptChanges(oldRevision);
   expect(diffFieldEdit(state, removed).removed).toHaveLength(1);
   f.update({ ...f.source, transform: { world: matrix(7) } });
-  const replaced = fields.changes(rows(), worlds, budget, f.assets).unwrap();
+  const replaced = fields.changes(rows(), sourceScope, budget, f.assets).unwrap();
   const edit = diffFieldEdit(state, replaced);
   expect(edit.removed).toHaveLength(1);
   expect(edit.added).toHaveLength(1);
   adoptFieldEdit(state, edit, [0]);
   fields.acceptChanges(fields.revision);
-  expect(diffFieldEdit(state, fields.changes(rows(), worlds, budget, f.assets).unwrap())).toEqual({
+  expect(
+    diffFieldEdit(state, fields.changes(rows(), sourceScope, budget, f.assets).unwrap()),
+  ).toEqual({
     moved: [],
     removed: [],
     added: [],
     rematerialized: [],
   });
   fields.reset();
-  const recovered = fields.changes(rows(), worlds, budget, f.assets).unwrap();
+  const recovered = fields.changes(rows(), sourceScope, budget, f.assets).unwrap();
   expect(recovered.changedSources).toBeUndefined();
   expect(diffFieldEdit(state, recovered).removed).toHaveLength(0);
 });
@@ -846,15 +864,15 @@ it('keeps incremental placement, binding, mesh and field edits equal to cold pro
     materials = new MaterialFrame(undefined),
     meshes = new MeshFrame();
   const rows = () => ({ identity, slots: f.scene.slotsSnapshot(), materials, meshes });
-  const worlds = [worldRenderResources(f.world)];
+  const sourceScope = worldRenderResources(f.world);
   const budget = { maxInstances: 16, maxFieldBytes: 1024 * 1024 };
   const fields = new SceneFieldRows();
-  const cold = fields.update(rows(), worlds, budget, f.assets).unwrap();
+  const cold = fields.update(rows(), sourceScope, budget, f.assets).unwrap();
   const state = fieldEditState(cold.sources, cold.instances);
   fields.acceptChanges(fields.revision);
   let source = f.source;
   const apply = (kind: 'moved' | 'rematerialized' | 'added') => {
-    const input = fields.changes(rows(), worlds, budget, f.assets).unwrap();
+    const input = fields.changes(rows(), sourceScope, budget, f.assets).unwrap();
     const edit = diffFieldEdit(state, input);
     expect(edit[kind]).toHaveLength(1);
     if (kind === 'added') expect(edit.removed).toHaveLength(1);
@@ -901,14 +919,14 @@ it.each([
     materials = new MaterialFrame(undefined),
     meshes = new MeshFrame();
   const rows = () => ({ identity, slots: f.scene.slotsSnapshot(), materials, meshes });
-  const worlds = [worldRenderResources(f.world)];
+  const sourceScope = worldRenderResources(f.world);
   const budget = {
     maxInstances: 1,
     maxFieldBytes: field.bricks.byteLength + field.values.byteLength,
   };
   if (failure === 'byte-budget') budget.maxInstances = 2;
   const fields = new SceneFieldRows();
-  fields.update(rows(), worlds, budget, f.assets).unwrap();
+  fields.update(rows(), sourceScope, budget, f.assets).unwrap();
   fields.acceptChanges(fields.revision);
   if (failure === 'placement') {
     const singular = matrix();
@@ -921,8 +939,8 @@ it.each([
         : f.source.assetHandle;
     f.update({ ...f.source, entityKey: 32, ...(assetHandle === undefined ? {} : { assetHandle }) });
   }
-  const actual = fields.changes(rows(), worlds, budget, f.assets);
-  const expected = projectSceneFields(f.scene.slotsSnapshot(), worlds, budget, f.assets);
+  const actual = fields.changes(rows(), sourceScope, budget, f.assets);
+  const expected = projectSceneFields(f.scene.slotsSnapshot(), sourceScope, budget, f.assets);
   expect(actual.ok).toBe(false);
   expect(actual).toEqual(expected);
 });

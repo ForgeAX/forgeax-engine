@@ -29,6 +29,7 @@ import { commands } from 'vitest/browser';
 import {
   computeGtaoRawReference,
   decodeMaterialNormalX12Y12,
+  depthReconstructedNormalField,
   GTAO_COMPARISON_BUDGET,
   reverseZDeviceDepth,
 } from '../../../render/src/__tests__/gtao-reference';
@@ -47,7 +48,10 @@ import {
   throwForForwardGtaoRendererErrors,
   writeForwardGtaoFailureReport,
 } from './helpers/forward-gtao-failure';
-import { resolveForwardGtaoMaterialLineage } from './helpers/forward-gtao-material-lineage';
+import {
+  recordedForwardGtaoFragmentEntryPoints,
+  resolveForwardGtaoMaterialLineage,
+} from './helpers/forward-gtao-material-lineage';
 import {
   createForwardGtaoAlphaMaskReferenceField,
   createForwardGtaoAlphaMaskScene,
@@ -417,11 +421,7 @@ it('samples the admitted SceneData tokens for Alpha Mask holes and posed Skin AO
     const requested = renderer.requestObservation?.(['final-display']);
     if (requested === undefined) throw new Error('final-display observation is unavailable');
     value(requested);
-    const result = renderer.draw({
-      leases: [lease],
-      camera: { lease, entityKey: camera },
-      environment: { lease },
-    });
+    const result = renderer.draw({ source: lease, camera: { entityKey: camera } });
     if (result === undefined) throw new Error('Renderer draw is unavailable');
     const receipt = value(result);
     failureReceipt = {
@@ -670,7 +670,9 @@ it('samples the admitted SceneData tokens for Alpha Mask holes and posed Skin AO
       consumer: alphaSurface.output,
       field: alphaField,
     });
-    const alphaRawReference = computeGtaoRawReference(alphaField, {
+    // The consumer is off while AO is captured: the prepass is depth-only and AO
+    // reconstructs its normal from depth, holes included.
+    const alphaRawReference = computeGtaoRawReference(depthReconstructedNormalField(alphaField), {
       outputWidth: alphaRaw.width,
       outputHeight: alphaRaw.height,
       radius: alphaInspection.numerical.radius,
@@ -887,7 +889,9 @@ it('samples the admitted SceneData tokens for Alpha Mask holes and posed Skin AO
       normalTexture: { texture: skinNormalTexture },
       emissive: [0.02, 0.01, 0.005],
     });
-    const pose: readonly [number, number, number] = [0.55, 0.15, -4];
+    // Within AO radius of the background: the depth-only prepass gives AO no material
+    // normal, so the pose has to reach it through depth contact.
+    const pose: readonly [number, number, number] = [0.55, 0.15, -5.2];
     const skin = createForwardGtaoSkinSubject(world, assets, skinMaterial, pose);
     const skinSurface = await captureSurface();
     const skinRaw = await captureTarget('ssao-raw');
@@ -1043,6 +1047,7 @@ it('samples the admitted SceneData tokens for Alpha Mask holes and posed Skin AO
               assets.shaderRegistry,
               selectedSkinMaterial,
               captured.source,
+              recordedForwardGtaoFragmentEntryPoints(skinTapeModel, captured.source),
             ),
           },
         ];
@@ -1156,7 +1161,7 @@ it('samples the admitted SceneData tokens for Alpha Mask holes and posed Skin AO
       consumer: skinSurface.output,
       field: skinField,
     });
-    const skinRawReference = computeGtaoRawReference(skinField, {
+    const skinRawReference = computeGtaoRawReference(depthReconstructedNormalField(skinField), {
       outputWidth: skinRaw.width,
       outputHeight: skinRaw.height,
       radius: skinInspection.numerical.radius,
@@ -1167,11 +1172,14 @@ it('samples the admitted SceneData tokens for Alpha Mask holes and posed Skin AO
       sampleBudget: skinInspection.numerical.sampleBudget,
       intensity: skinInspection.numerical.intensity,
     });
-    const unposedRawReference = computeGtaoRawReference(unposedField, {
-      ...skinInspection.numerical,
-      outputWidth: skinRaw.width,
-      outputHeight: skinRaw.height,
-    });
+    const unposedRawReference = computeGtaoRawReference(
+      depthReconstructedNormalField(unposedField),
+      {
+        ...skinInspection.numerical,
+        outputWidth: skinRaw.width,
+        outputHeight: skinRaw.height,
+      },
+    );
     const skinRawMetrics = rawReferenceMetrics(skinRaw, byteChannel(skinRawReference.rgba, 4, 0));
     const unposedVisibilityDelta = byteErrorMetrics(
       byteChannel(skinRawReference.rgba, 4, 0),

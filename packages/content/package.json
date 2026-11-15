@@ -18,12 +18,13 @@
   "files": [
     "dist",
     "src",
+    "scripts",
     "assets",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsup",
+    "build": "node scripts/build.mjs",
     "test": "tsc -p tsconfig.assets.json && vitest run"
   },
   "dependencies": {
@@ -31,7 +32,8 @@
     "@forgeax/engine-math": "workspace:*",
     "@forgeax/engine-pack": "workspace:*",
     "@forgeax/engine-render": "workspace:*",
-    "@forgeax/engine-types": "workspace:*"
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-water": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",

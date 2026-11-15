@@ -72,6 +72,15 @@ describe('barrel distortion retained graph frame authority', () => {
   it('uses current View UBO and receipt camera after an LKG compile failure', async () => {
     cameraInputs.length = 0;
     viewUboInputs.length = 0;
+    const standardGraphs = new WeakSet<RenderGraphBuilder<never>>();
+    const addRasterPass = RenderGraphBuilder.prototype.addRasterPass;
+    const passSpy = vi
+      .spyOn(RenderGraphBuilder.prototype, 'addRasterPass')
+      .mockImplementation(function (...args) {
+        if (args[0] === 'main') standardGraphs.add(this as RenderGraphBuilder<never>);
+        return addRasterPass.apply(this, args);
+      });
+    const compileGraph = RenderGraphBuilder.prototype.compile;
     const compileSpy = vi.spyOn(RenderGraphBuilder.prototype, 'compile');
     let candidateEnabled = false;
     let featurePlanCalls = 0;
@@ -100,41 +109,27 @@ describe('barrel distortion retained graph frame authority', () => {
                 scope: { view: view.identity },
                 resources: [
                   {
-                    kind: 'compute-program' as const,
-                    name: 'retained-camera.candidate-program',
-                    program: {
-                      wgsl: '@compute @workgroup_size(1) fn main() {}',
-                      entryPoints: ['main'],
-                      bindings: [
-                        {
-                          entries: [{ binding: 0, visibility: 4, buffer: { type: 'storage' } }],
-                        },
-                      ],
+                    kind: 'graph-texture' as const,
+                    name: 'retained-camera.candidate-color',
+                    allocationKey: 'retained-camera.candidate-color',
+                    descriptor: {
+                      format: 'rgba8unorm' as const,
+                      size: { width: 64, height: 64, depthOrArrayLayers: 1 },
                     },
-                  },
-                  {
-                    kind: 'buffer' as const,
-                    name: 'retained-camera.candidate-buffer',
-                    size: 4,
-                    usage: ['storage' as const],
-                    data: new Uint32Array([0]),
-                  },
-                  {
-                    kind: 'compute-bindings' as const,
-                    name: 'retained-camera.candidate-bindings',
-                    program: 'retained-camera.candidate-program',
-                    entries: [{ binding: 0, resource: 'retained-camera.candidate-buffer' }],
                   },
                 ],
                 passes: [
                   {
-                    kind: 'compute' as const,
+                    kind: 'raster' as const,
                     name: 'retained-camera.candidate-pass',
-                    program: 'retained-camera.candidate-program',
-                    bindings: 'retained-camera.candidate-bindings',
-                    dispatches: [
-                      { kind: 'direct' as const, entryPoint: 'main', workgroups: [1, 1, 1] },
+                    colorAttachments: [
+                      {
+                        target: 'retained-camera.candidate-color',
+                        loadOp: 'clear' as const,
+                        storeOp: 'store' as const,
+                      },
                     ],
+                    draws: [],
                   },
                 ],
               })),
@@ -146,6 +141,8 @@ describe('barrel distortion retained graph frame authority', () => {
         { rhi, features: [feature] },
         { shaderManifestUrl: renderLifecycleManifestUrl() },
       );
+      const rendererErrors: unknown[] = [];
+      renderer.onError((error) => rendererErrors.push(error));
       const initialized = await renderer.initialization;
       expect(initialized.ok).toBe(true);
       if (!initialized.ok) return;
@@ -180,11 +177,7 @@ describe('barrel distortion retained graph frame authority', () => {
         )
         .unwrap();
       expect(world.update().ok).toBe(true);
-      const frameInput = {
-        leases: [attached.value],
-        camera: { lease: attached.value },
-        environment: { lease: attached.value },
-      };
+      const frameInput = { source: attached.value };
       const initial = renderer.draw(frameInput);
       expect(initial.ok).toBe(true);
       if (!initial.ok) return;
@@ -224,13 +217,17 @@ describe('barrel distortion retained graph frame authority', () => {
         .unwrap();
       expect(world.update().ok).toBe(true);
       candidateEnabled = true;
-      compileSpy.mockReturnValue(
-        err(
-          Object.assign(new Error('forced compile rejection'), { code: 'graph-compile-failed' }),
-        ) as never,
-      );
+      compileSpy.mockImplementation(function (...args) {
+        return standardGraphs.has(this as RenderGraphBuilder<never>)
+          ? (err(
+              Object.assign(new Error('forced compile rejection'), {
+                code: 'graph-compile-failed',
+              }),
+            ) as never)
+          : compileGraph.apply(this, args);
+      });
       const candidate = renderer.draw(frameInput);
-      expect(candidate.ok, JSON.stringify(candidate)).toBe(true);
+      expect(candidate.ok, JSON.stringify({ candidate, rendererErrors })).toBe(true);
       if (!candidate.ok) return;
       if (candidate.value === undefined) throw new Error('Expected a submitted frame receipt');
       await Promise.resolve();
@@ -257,12 +254,17 @@ describe('barrel distortion retained graph frame authority', () => {
       expect(featurePlanCalls).toBeGreaterThan(1);
       expect(compileSpy).toHaveBeenCalled();
       expect(renderer.perFramePassNames).toEqual(lastKnownGoodPasses);
-      expect(renderer.inspect().featureDiagnostics[0]).toMatchObject({
+      expect(
+        renderer
+          .inspect()
+          .featureDiagnostics.find((diagnostic) => diagnostic.identity === feature.identity),
+      ).toMatchObject({
         identity: 'synthetic.retained-camera',
         status: 'active',
       });
     } finally {
       compileSpy.mockRestore();
+      passSpy.mockRestore();
       await renderer?.dispose();
     }
   });
@@ -275,6 +277,8 @@ describe('barrel distortion retained graph frame authority', () => {
       { rhi },
       { shaderManifestUrl: renderLifecycleManifestUrl() },
     );
+    const rendererErrors: unknown[] = [];
+    renderer.onError((error) => rendererErrors.push(error));
     try {
       const initialized = await renderer.initialization;
       expect(initialized.ok).toBe(true);
@@ -303,11 +307,7 @@ describe('barrel distortion retained graph frame authority', () => {
         )
         .unwrap();
       expect(world.update().ok).toBe(true);
-      const frameInput = {
-        leases: [attached.value],
-        camera: { lease: attached.value },
-        environment: { lease: attached.value },
-      };
+      const frameInput = { source: attached.value };
       const initial = renderer.draw(frameInput);
       expect(initial.ok).toBe(true);
       if (!initial.ok) return;
@@ -316,17 +316,37 @@ describe('barrel distortion retained graph frame authority', () => {
 
       canvas.width = 1280;
       canvas.height = 720;
+      // Adopt the resized lighting topology before testing a same-topology failed disable.
+      const resized = renderer.draw(frameInput);
+      expect(resized.ok).toBe(true);
+      if (!resized.ok || resized.value === undefined)
+        throw new Error('Expected a resized frame receipt');
+      expect(resized.value.barrelDistortion).toMatchObject({ width: 1280, height: 720 });
+      expect(resized.value.barrelDistortion?.strength).toBeCloseTo(0.2, 6);
       world.removeComponent(cameraEntity, BarrelDistortion).unwrap();
       expect(world.update().ok).toBe(true);
+      const standardGraphs = new WeakSet<RenderGraphBuilder<never>>();
+      const addRasterPass = RenderGraphBuilder.prototype.addRasterPass;
+      const passSpy = vi
+        .spyOn(RenderGraphBuilder.prototype, 'addRasterPass')
+        .mockImplementation(function (...args) {
+          if (args[0] === 'main') standardGraphs.add(this as RenderGraphBuilder<never>);
+          return addRasterPass.apply(this, args);
+        });
+      const compileGraph = RenderGraphBuilder.prototype.compile;
       const compileSpy = vi.spyOn(RenderGraphBuilder.prototype, 'compile');
-      compileSpy.mockReturnValue(
-        err(
-          Object.assign(new Error('forced disable rejection'), { code: 'graph-compile-failed' }),
-        ) as never,
-      );
+      compileSpy.mockImplementation(function (...args) {
+        return standardGraphs.has(this as RenderGraphBuilder<never>)
+          ? (err(
+              Object.assign(new Error('forced disable rejection'), {
+                code: 'graph-compile-failed',
+              }),
+            ) as never)
+          : compileGraph.apply(this, args);
+      });
       try {
         const candidate = renderer.draw(frameInput);
-        expect(candidate.ok, JSON.stringify(candidate)).toBe(true);
+        expect(candidate.ok, JSON.stringify({ candidate, rendererErrors })).toBe(true);
         if (!candidate.ok) return;
         if (candidate.value === undefined) throw new Error('Expected a submitted frame receipt');
         await Promise.resolve();
@@ -350,6 +370,7 @@ describe('barrel distortion retained graph frame authority', () => {
         ).toBe(true);
       } finally {
         compileSpy.mockRestore();
+        passSpy.mockRestore();
       }
 
       const disabled = renderer.draw(frameInput);

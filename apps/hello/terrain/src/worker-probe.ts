@@ -95,15 +95,7 @@ export async function startTerrainWorkerProbe(
   );
   const name = `terrain-worker-${crypto.randomUUID()}`,
     channel = new BroadcastChannel(name);
-  try {
-    const app = (
-      await createApp(
-        canvas,
-        {
-          ...(runtimeBinding === undefined ? {} : { assetRuntimeBinding: runtimeBinding }),
-          execution: {
-            workers: { engine: true, render: !engineOnly, kernels: false },
-            bootstrap: new URL(
+const bootstrapUrl = new URL(
               engineOnly
                 ? import.meta.env.DEV
                   ? '/src/engine-only-bootstrap.ts'
@@ -112,7 +104,16 @@ export async function startTerrainWorkerProbe(
                   ? '/src/worker-bootstrap.ts'
                   : '/assets/terrain-bootstrap.js',
               location.href,
-            ),
+            );
+  try {
+    const app = (
+      await createApp(
+        canvas,
+        {
+          ...(runtimeBinding === undefined ? {} : { assetRuntimeBinding: runtimeBinding }),
+          execution: {
+            workers: { engine: true, render: !engineOnly, kernels: false },
+            bootstrap: bootstrapUrl,
             bootstrapData: { channel: name, rootGuid: AssetGuid.format(rootGuid) },
             bootstrapPort: source.port2,
             diagnostics: { rhiCapture: true },
@@ -131,7 +132,6 @@ export async function startTerrainWorkerProbe(
       if (app.remoteEval === undefined) throw new Error('Engine-only proof requires inspection');
       const inspect = app.remoteEval.bind(app);
       const snapshot = async (request?: {
-        worldId: number;
         entity: number;
         x: number;
         z: number;
@@ -169,7 +169,7 @@ export async function startTerrainWorkerProbe(
       );
       app.start().unwrap();
       await inspect(
-        `const s=world.getResource('TerrainSubjects');world.set(s.camera,world.components.resolve('Camera'),{antialias:${ANTIALIAS_TAA}}).unwrap();return true;`,
+        `const s=world.getResource((await _import(${JSON.stringify(bootstrapUrl.href)})).TerrainSubjectsResource);world.set(s.camera,world.components.resolve('Camera'),{antialias:${ANTIALIAS_TAA}}).unwrap();return true;`,
       );
       capture = () => inspect(captureScript);
       window.__verifyTerrainWorker = async () => {
@@ -188,7 +188,6 @@ export async function startTerrainWorkerProbe(
         const before = await snapshot();
         const identity = app.execution.report().world.identity;
         const request = {
-          worldId: 0,
           entity: subjects.subjects.terrain,
           x: 62,
           z: 62,
@@ -277,7 +276,7 @@ export async function startTerrainWorkerProbe(
     const events: unknown[] = [],
       failures: unknown[] = [];
     const stateCode =
-      "const subjects=world.getResource('TerrainSubjects');const sample=world.getResource('TerrainReloadPolicy').sample(62,62);const walker=world.getResource('TerrainWalker');return {...sample,gate:{...world.getResource('TerrainGameplayGate')},walker:{...walker},position:Array.from(world.get(subjects.walker,world.components.resolve('Transform')).unwrap().pos),physics:world.getResource('PhysicsWorld').getTerrainAssetVersion(subjects.terrain),failures:world.getResource('TerrainWriterFailures')};";
+      `const subjects=world.getResource((await _import(${JSON.stringify(bootstrapUrl.href)})).TerrainSubjectsResource);const sample=world.getResource((await _import(${JSON.stringify(bootstrapUrl.href)})).TerrainReloadPolicyResource).sample(62,62);const walker=world.getResource((await _import(${JSON.stringify(bootstrapUrl.href)})).TerrainWalkerResource);return {...sample,gate:{...world.getResource((await _import(${JSON.stringify(bootstrapUrl.href)})).TerrainGameplayGateResource)},walker:{...walker},position:Array.from(world.get(subjects.walker,world.components.resolve('Transform')).unwrap().pos),physics:world.getResource((await _import(${JSON.stringify(bootstrapUrl.href)})).PhysicsWorldResource).getTerrainAssetVersion(subjects.terrain),failures:world.getResource((await _import(${JSON.stringify(bootstrapUrl.href)})).TerrainWriterFailuresResource)};`;
     const state = async () => {
       const value = (await inspect(stateCode)) as { asset: number; failures: unknown[] };
       return {
@@ -308,21 +307,21 @@ export async function startTerrainWorkerProbe(
       failures,
       submitted: () =>
         inspect(
-          "const s=world.getResource('TerrainSubjects');const sample=world.getResource('TerrainReloadPolicy').sample(62,62);return await world.getResource('TerrainQuery')({worldId:0,entity:s.terrain,x:62,z:62,expectedAsset:sample.asset,expectedVersion:sample.version});",
+          `const s=world.getResource((await _import(${JSON.stringify(bootstrapUrl.href)})).TerrainSubjectsResource);const sample=world.getResource((await _import(${JSON.stringify(bootstrapUrl.href)})).TerrainReloadPolicyResource).sample(62,62);return await world.getResource((await _import(${JSON.stringify(bootstrapUrl.href)})).TerrainQueryResource)({entity:s.terrain,x:62,z:62,expectedAsset:sample.asset,expectedVersion:sample.version});`,
         ),
-      move: () => inspect("world.getResource('TerrainWalker').speed=1;return true;"),
-      retry: () => inspect("world.getResource('TerrainReloadPolicy').retry();return true;"),
+      move: () => inspect(`world.getResource((await _import(${JSON.stringify(bootstrapUrl.href)})).TerrainWalkerResource).speed=1;return true;`),
+      retry: () => inspect(`world.getResource((await _import(${JSON.stringify(bootstrapUrl.href)})).TerrainReloadPolicyResource).retry();return true;`),
       rejectOnCatalog: () => {
         rejectOnCatalog = true;
       },
     };
     window.__terrainWorkerQuery = (frameId) =>
       inspect(
-        `const s=world.getResource('TerrainSubjects');return await execution.querySubmittedTerrainHeight(${frameId},{worldId:0,entity:s.terrain,x:62,z:62});`,
+        `const s=world.getResource((await _import(${JSON.stringify(bootstrapUrl.href)})).TerrainSubjectsResource);return await execution.querySubmittedTerrainHeight(${frameId},{entity:s.terrain,x:62,z:62});`,
       );
     window.__terrainWorkerReject = () => channel.postMessage({ kind: 'reject-next-submit' });
     window.__verifyTerrainWorker = async () => {
-      await inspect("world.getResource('TerrainWalker').speed=1; return true;");
+      await inspect(`world.getResource((await _import(${JSON.stringify(bootstrapUrl.href)})).TerrainWalkerResource).speed=1; return true;`);
       const deadline = performance.now() + 60000;
       while (
         (app.execution?.report().render?.completedFrame ?? 0) < 60 &&
@@ -345,14 +344,13 @@ export async function startTerrainWorkerProbe(
       const queryFrameId = app.execution?.report().render?.completedFrame;
       if (queryFrameId === undefined) throw new Error('missing submitted Source frame identity');
       const request = {
-        worldId: 0,
         entity: subjects.subjects.terrain,
         x: 62,
         z: 62,
         expectedAsset: subjects.asset,
       };
       const result = await inspect(
-        `const request=${JSON.stringify(request)}; const height=await execution.querySubmittedTerrainHeight(${queryFrameId},request); const wrongRoot=await execution.querySubmittedTerrainHeight(${queryFrameId},{...request,expectedAsset:${subjects.asset + 1}}); const stale=await execution.querySubmittedTerrainHeight(1,request); const gate=world.getResource('TerrainGameplayGate'); const walker=world.getResource('TerrainWalker'); const walkerPosition=Array.from(world.get(walker.entity,world.components.resolve('Transform')).unwrap().pos); const hit=world.getResource('PhysicsWorld').raycast(new Float32Array([62,50,62]),new Float32Array([0,-1,0]),100); return {height,wrongRoot,stale,gate,walker,walkerPosition,collisionHeight:hit?.point[1]};`,
+        `const request=${JSON.stringify(request)}; const height=await execution.querySubmittedTerrainHeight(${queryFrameId},request); const wrongRoot=await execution.querySubmittedTerrainHeight(${queryFrameId},{...request,expectedAsset:${subjects.asset + 1}}); const stale=await execution.querySubmittedTerrainHeight(1,request); const gate=world.getResource((await _import(${JSON.stringify(bootstrapUrl.href)})).TerrainGameplayGateResource); const walker=world.getResource((await _import(${JSON.stringify(bootstrapUrl.href)})).TerrainWalkerResource); const walkerPosition=Array.from(world.get(walker.entity,world.components.resolve('Transform')).unwrap().pos); const hit=world.getResource((await _import(${JSON.stringify(bootstrapUrl.href)})).PhysicsWorldResource).raycast(new Float32Array([62,50,62]),new Float32Array([0,-1,0]),100); return {height,wrongRoot,stale,gate,walker,walkerPosition,collisionHeight:hit?.point[1]};`,
       );
       const proof = result as {
         height: { ok: boolean; value?: number };

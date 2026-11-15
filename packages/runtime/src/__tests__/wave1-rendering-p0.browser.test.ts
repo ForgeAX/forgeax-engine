@@ -221,9 +221,8 @@ async function submitFrame(
 ): Promise<FrameReceipt> {
   propagateTransforms(world).unwrap();
   const receipt = await drawReadyFrame(renderer, {
-    leases: [lease],
-    camera: { lease, ...(cameraEntity === undefined ? {} : { entityKey: cameraEntity }) },
-    environment: { lease },
+    source: lease,
+    camera: { ...(cameraEntity === undefined ? {} : { entityKey: cameraEntity }) },
     fixedStep: world.getResource(FixedTime).tick,
   });
   return receipt;

@@ -12,7 +12,7 @@ export default defineConfig({
     'host-adapter': 'src/host-adapter.ts',
     'engine-worker-runtime': 'src/execution/engine-worker-runtime.ts',
     'render-worker-runtime': 'src/execution/render-worker-runtime.ts',
-    'kernel-worker-runtime': 'src/execution/kernel-worker-runtime.ts',
+    'task-worker-runtime': 'src/execution/task-worker-runtime.ts',
   },
   external: [
     // Keep the renderer package boundary intact. The app shell must not inline

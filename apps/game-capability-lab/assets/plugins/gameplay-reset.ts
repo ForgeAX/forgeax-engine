@@ -30,7 +30,6 @@ import type { GameplayVfx } from './gameplay-vfx';
 import type { AttackPresentationHandle } from './systems/attack-presentation';
 import type { AnimatedMaterialTarget } from './animated-target-material';
 import { resetAnimatedMaterial } from './animated-target-material';
-import type { MultiWorldOverlay } from './multi-world-overlay';
 import type { GameplayChangeDetectionHandle } from './change-detection';
 import type { HitStreakHandle } from './hit-streak';
 import { ChargeShot, FreeCameraMotion, GameplayInput, HitFlash, CameraRig, PlayerMotion, ResetPose } from './components/gameplay';
@@ -53,7 +52,8 @@ type ResetGameplayArgs = {
   readonly debugAxes: DebugAxesHandle;
   readonly projectileEntities: () => readonly EntityHandle[];
   readonly targetEntities: () => readonly EntityHandle[];
-  readonly spriteAtlasLoop: { readonly untrack: (entity: EntityHandle) => void; readonly reset: () => void } | undefined;
+  readonly spriteAtlasLoop:
+    | { readonly untrack: (entity: EntityHandle) => void; readonly reset: () => void } | undefined;
   readonly materialsForCurrentMesh: (entity: EntityHandle, flashing: boolean) => readonly MatHandle[];
   readonly physics: PhysicsWorld | undefined;
   readonly player: EntityHandle | undefined;
@@ -88,9 +88,8 @@ type ResetGameplayArgs = {
   readonly settingsState: GameSettingsState;
   readonly setMode: (mode: 'topdown' | 'orbit' | 'fps' | 'pan') => void;
   readonly lightingMode: LightingModeHandle;
-  readonly multiWorldOverlay: MultiWorldOverlay | undefined;
   readonly gameplayAudio: GameplayAudio | undefined;
-  readonly materialElapsedOriginKey: string;
+  readonly materialElapsedOriginKey: import('@forgeax/engine/ecs').Resource<number>;
   readonly animatedMaterial: AnimatedMaterialTarget | undefined;
   readonly vfxHitLoop: GameplayVfx;
   readonly gameplayVfx: GameplayVfx;
@@ -162,7 +161,6 @@ export function createGameplayReset(args: ResetGameplayArgs): () => void {
     args.settingsState.depthOfField = false;
     args.lightingMode.reset();
     args.setMode('topdown');
-    args.multiWorldOverlay?.setEnabled(true);
     if (args.player !== undefined) {
       args.world.set(args.player, Transform, { pos: [args.initX, args.playerY, args.initZ], quat: [0, 0, 0, 1] });
       if (args.physics?.hasBody(args.player)) args.physics.teleport(args.player, vec3.create(args.initX, args.playerY, args.initZ));

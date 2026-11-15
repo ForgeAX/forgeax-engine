@@ -1,14 +1,16 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { createTilemapSmoke } from './smoke-host.mjs';
 import { buildTilemapScene } from '../src/scene.ts';
+import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 const here=dirname(fileURLToPath(import.meta.url));
-const manifest=readFileSync(resolve(here, '..', 'dist', 'shaders', 'manifest.json'),'utf8');
-const host=await createTilemapSmoke(`data:application/json,${encodeURIComponent(manifest)}`);
+const MANIFEST_PATH=resolve(here, '..', 'dist', 'shaders', 'manifest.json');
+const MANIFEST_URL=URL.createObjectURL(new Blob([readShaderManifestText(MANIFEST_PATH)], { type: 'application/json' }));
+process.once('exit', () => URL.revokeObjectURL(MANIFEST_URL));
+const host=await createTilemapSmoke(MANIFEST_URL);
 const scene=buildTilemapScene(host.world,host.assets);
 const frames=Math.max(60,Number(process.env.SMOKE_MIN_FRAMES??60));
 await host.draw(Math.floor(frames/2));

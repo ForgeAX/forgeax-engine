@@ -1015,6 +1015,18 @@ describe('temporal material PSO creation contract', () => {
     });
   });
 
+  it.each([
+    'rgba8uint',
+    'r32uint',
+  ] as const)('refuses an integer normal carrier as a temporal velocity target: %s', (colorFormat) => {
+    const result = validateTemporalPipelineContract(source, { ...context, colorFormat });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe('shader-compile-failed');
+      expect(result.error.expected).toBe('temporal material target format is rgba16float');
+    }
+  });
+
   it('accepts r8unorm only for the output-domain coverage temporal variant', () => {
     const coverageContext = {
       ...context,
@@ -1330,6 +1342,10 @@ describe('material shader color-domain contract', () => {
   it('routes HDR sprite targets to fs_main_hdr while unorm targets use fs_main', () => {
     const source = [
       readFileSync(resolve(import.meta.dirname, '../assembly/webgpu-renderer.ts'), 'utf8'),
+      readFileSync(
+        resolve(import.meta.dirname, '../assembly/renderer-frame-operations.ts'),
+        'utf8',
+      ),
       readFileSync(resolve(import.meta.dirname, '../assembly/material-fragment-entry.ts'), 'utf8'),
       readFileSync(resolve(import.meta.dirname, '../assembly/webgpu-ready-passes.ts'), 'utf8'),
     ]
@@ -1385,7 +1401,7 @@ describe('material shader color-domain contract', () => {
     );
     expect(source).toContain('? (vertexEntryPoint ?? authoredVertexEntry)');
     expect(source).toMatch(
-      /const instancesLayout =\s+[\s\S]*layoutKind === 'gpu-driven-pbr'[\s\S]*layoutKind === 'gpu-driven-skin'[\s\S]*layoutKind === 'gpu-driven-cluster-pbr'[\s\S]*layoutKind === 'gpu-driven-cluster-skin'[\s\S]*state\.gpuDrivenInstancesBindGroupLayout/u,
+      /function materialPipelineInstancesLayout\([\s\S]*layoutKind === 'gpu-driven-pbr'[\s\S]*layoutKind === 'gpu-driven-skin'[\s\S]*layoutKind === 'gpu-driven-cluster-pbr'[\s\S]*layoutKind === 'gpu-driven-cluster-skin'[\s\S]*state\.gpuDrivenInstancesBindGroupLayout/u,
     );
   });
 });

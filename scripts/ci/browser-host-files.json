@@ -1,5 +1,4 @@
 [
-  "packages/audio-webaudio/bench/music/__tests__/pcm-retention.browser.test.ts",
   "packages/audio-webaudio/src/__tests__/acoustic-regions.browser.test.ts",
   "packages/audio-webaudio/src/__tests__/audio-webaudio.browser.test.ts",
   "packages/audio-webaudio/src/__tests__/configurable-buses.browser.test.ts",

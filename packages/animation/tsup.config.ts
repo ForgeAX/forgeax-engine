@@ -1,5 +1,6 @@
 import { defineConfig } from 'tsup';
 export default defineConfig({
+  splitting: true,
   entry: ['src/index.ts', 'src/target-id.ts', 'src/animated-bounds.ts', 'src/skeletal-motion.ts', 'src/spline-ik.ts'],
   format: ['esm'],
   dts: false,

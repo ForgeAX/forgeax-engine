@@ -8,10 +8,16 @@
     "outDir": "./dist",
     "tsBuildInfoFile": "./dist/.tsbuildinfo",
     "ignoreDeprecations": "6.0",
-    "types": ["node"]
+    "types": [
+      "node"
+    ]
   },
-  "include": ["src/**/*"],
-  "exclude": ["src/**/__tests__/**/*.ts"],
+  "include": [
+    "src/**/*"
+  ],
+  "exclude": [
+    "src/**/__tests__/**/*.ts"
+  ],
   "references": [
     { "path": "../assets-runtime" },
     { "path": "../codec" },
@@ -22,6 +28,8 @@
     { "path": "../input" },
     { "path": "../math" },
     { "path": "../pack" },
+    { "path": "../platform" },
+    { "path": "../physics" },
     { "path": "../plugin" },
     { "path": "../profiler" },
     { "path": "../render-graph" },
@@ -34,6 +42,7 @@
     { "path": "../vite-plugin-shader" },
     { "path": "../skinning" },
     { "path": "../types" },
-    {"path": "../terrain"}
+    {"path": "../terrain"},
+    { "path": "../water" }
   ]
 }

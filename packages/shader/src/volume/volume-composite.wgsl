@@ -83,6 +83,114 @@ fn vacuum_volume_neighborhood(
   return true;
 }
 
+// Relative view-depth rejection keeps the silhouette transition local;
+// a fixed world-unit threshold creates halos at far occluders. One threshold
+// serves both the neighbour weights and the footprint edge decision.
+fn surface_depth_threshold(center_depth : f32) -> f32 {
+  return max(center_depth * 0.08, 0.25);
+}
+
+fn surface_depth_weight(neighbor_depth : f32, center_depth : f32) -> f32 {
+  let delta = abs(neighbor_depth - center_depth);
+  return select(0.0, exp(-delta * 0.08), delta <= surface_depth_threshold(center_depth));
+}
+
+// An infinite far plane reconstructs sky as an infinite (or NaN) distance.
+// The edge decision compares depths capped at a finite ceiling, so sky vs sky
+// is one surface (delta 0) and sky vs geometry is an edge. `select` maps NaN to
+// the ceiling without relying on NaN ordering in min/max. Finite depths below
+// the ceiling are unchanged.
+const SURFACE_DEPTH_CEILING : f32 = 1e30;
+
+fn surface_edge_depth(depth : f32) -> f32 {
+  return select(SURFACE_DEPTH_CEILING, depth, depth < SURFACE_DEPTH_CEILING);
+}
+
+// Another surface only when the relative threshold says so. A zero weight is
+// not that signal: exp underflows on one far continuous surface.
+fn surface_depth_rejected(neighbor_depth : f32, center_depth : f32) -> bool {
+  let center = surface_edge_depth(center_depth);
+  return abs(surface_edge_depth(neighbor_depth) - center) > surface_depth_threshold(center);
+}
+
+struct ResolvedFootprint {
+  value : vec4<f32>,
+  crosses_surface : bool,
+};
+
+// Each resolved texel was integrated to the scene depth of the one pixel that
+// contains its centre (volume-integrate.wgsl). When the hardware-bilinear
+// footprint of this pixel holds a texel integrated to another surface, the
+// filtered value would place the fog edge on the texel grid. Reweight the same
+// 2x2 texels by surface similarity instead (joint-bilateral upsample), falling
+// back to the texel whose integration depth is nearest this pixel's depth.
+fn reconstruct_resolved_footprint(
+  uv : vec2<f32>,
+  center_depth : f32,
+) -> ResolvedFootprint {
+  let dimensions = max(vec2<i32>(textureDimensions(resolved_volume)), vec2<i32>(1));
+  let position = uv * vec2<f32>(dimensions) - vec2<f32>(0.5);
+  let base = vec2<i32>(floor(position));
+  let fraction = position - floor(position);
+  let corners = array<vec2<i32>, 4>(
+    vec2<i32>(0, 0),
+    vec2<i32>(1, 0),
+    vec2<i32>(0, 1),
+    vec2<i32>(1, 1),
+  );
+  let bilinear = array<f32, 4>(
+    (1.0 - fraction.x) * (1.0 - fraction.y),
+    fraction.x * (1.0 - fraction.y),
+    (1.0 - fraction.x) * fraction.y,
+    fraction.x * fraction.y,
+  );
+  var weights : array<f32, 4>;
+  var crosses_surface = false;
+  var nearest = 0u;
+  var nearest_gap = SURFACE_DEPTH_CEILING;
+  for (var index = 0u; index < 4u; index += 1u) {
+    let texel = clamp(base + corners[index], vec2<i32>(0), dimensions - vec2<i32>(1));
+    // The same texel-centre pixel the integrator clipped this texel's ray at.
+    let texel_depth = linear_scene_depth((vec2<f32>(texel) + vec2<f32>(0.5)) /
+      vec2<f32>(dimensions));
+    let rejected = surface_depth_rejected(texel_depth, center_depth);
+    // Below the 8-bit filtering fraction a texel does not contribute.
+    crosses_surface = crosses_surface || (bilinear[index] > 1.0 / 256.0 && rejected);
+    // Same-surface texels keep a positive similarity even where exp underflows.
+    weights[index] = select(
+      bilinear[index] * max(surface_depth_weight(texel_depth, center_depth), 1e-4),
+      0.0,
+      rejected,
+    );
+    let gap = abs(surface_edge_depth(texel_depth) - surface_edge_depth(center_depth));
+    if (gap < nearest_gap) {
+      nearest = index;
+      nearest_gap = gap;
+    }
+  }
+  var output : ResolvedFootprint;
+  output.crosses_surface = crosses_surface;
+  output.value = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+  if (!crosses_surface) { return output; }
+  var accumulated = vec4<f32>(0.0);
+  var total_weight = 0.0;
+  for (var index = 0u; index < 4u; index += 1u) {
+    if (weights[index] > 0.0) {
+      let texel = clamp(base + corners[index], vec2<i32>(0), dimensions - vec2<i32>(1));
+      accumulated += textureLoad(resolved_volume, texel, 0) * weights[index];
+      total_weight += weights[index];
+    }
+  }
+  // Nearest-depth texel only when every contributing texel is another surface.
+  if (total_weight > 0.0) {
+    output.value = accumulated / total_weight;
+  } else {
+    let texel = clamp(base + corners[nearest], vec2<i32>(0), dimensions - vec2<i32>(1));
+    output.value = textureLoad(resolved_volume, texel, 0);
+  }
+  return output;
+}
+
 fn edge_aware_resolved_volume(uv : vec2<f32>) -> vec4<f32> {
   let dimensions = max(vec2<f32>(textureDimensions(resolved_volume)), vec2<f32>(1.0));
   let texel = 1.0 / dimensions;
@@ -113,6 +221,10 @@ fn edge_aware_resolved_volume(uv : vec2<f32>) -> vec4<f32> {
     return vec4<f32>(0.0, 0.0, 0.0, 1.0);
   }
   let center_depth = linear_scene_depth(uv);
+  // Pixels whose footprint stays on one surface keep the filtered
+  // reconstruction below unchanged; only depth-edge footprints are rebuilt.
+  let footprint = reconstruct_resolved_footprint(uv, center_depth);
+  if (footprint.crosses_surface) { return footprint.value; }
   var accumulated = center * 4.0;
   var total_weight = 4.0;
   let spatial_weights = array<f32, 8>(2.0, 2.0, 2.0, 2.0, 1.0, 1.0, 1.0, 1.0);
@@ -125,10 +237,7 @@ fn edge_aware_resolved_volume(uv : vec2<f32>) -> vec4<f32> {
       0.0,
     );
     let neighbor_depth = linear_scene_depth(neighbor_uv);
-    // Relative view-depth rejection keeps the silhouette transition local;
-    // a fixed world-unit threshold creates halos at far occluders.
-    let depth_weight = select(0.0, exp(-abs(neighbor_depth - center_depth) * 0.08),
-      abs(neighbor_depth - center_depth) <= max(center_depth * 0.08, 0.25));
+    let depth_weight = surface_depth_weight(neighbor_depth, center_depth);
     // Transmittance is the available edge signal: retain hard depth/occluder
     // boundaries while reconstructing smooth low-frequency scattering.
     let spatial_weight = select(spatial_weights[index], 4.0, neighbor_count == 2u);

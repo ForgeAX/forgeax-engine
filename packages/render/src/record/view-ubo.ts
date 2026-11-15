@@ -69,7 +69,9 @@ export const PLANAR_REFLECTION_UNIFORM_OFFSET =
 export const PLANAR_REFLECTION_UNIFORM_SIZE = 96;
 /** A never-written, therefore disabled, projection inside the same slot. */
 export const PLANAR_REFLECTION_DISABLED_UNIFORM_OFFSET = PLANAR_REFLECTION_UNIFORM_OFFSET + 256;
-export const VIEW_UNIFORM_BUFFER_SIZE = PLANAR_REFLECTION_UNIFORM_OFFSET + VIEW_UNIFORM_SLOT_STRIDE;
+export const POST_PROCESS_VIEW_UNIFORM_OFFSET =
+  PLANAR_REFLECTION_UNIFORM_OFFSET + VIEW_UNIFORM_SLOT_STRIDE;
+export const VIEW_UNIFORM_BUFFER_SIZE = POST_PROCESS_VIEW_UNIFORM_OFFSET + VIEW_UNIFORM_SLOT_STRIDE;
 
 export function translucentViewOffset(composition: TranslucentFogComposition): number {
   return (
@@ -211,6 +213,9 @@ function writePointsLinesPayload(
 
 /** Cloud shadow plane the View tail carries at floats [240..255]. */
 interface ViewCloudShadowProjection {
+  readonly beerMap?: boolean;
+  readonly surfaceStrength?: number;
+  readonly atmosphereStrength?: number;
   readonly origin: readonly [number, number, number];
   readonly right: readonly [number, number, number];
   readonly up: readonly [number, number, number];
@@ -317,8 +322,11 @@ export function writeViewUbo(
 
     if (camera.clipping !== undefined) writeClippingLanes(viewPayload, camera.clipping);
     writeFogAndClockLanes(viewPayload, fog, frameTimeSeconds);
-    if (atmosphere !== undefined)
-      writeAtmosphereUniform(viewPayload, 292, atmosphere, camera.far, sceneCapture ? 64 : 0);
+    if (atmosphere !== undefined) {
+      writeAtmosphereUniform(viewPayload, 292, atmosphere, sceneCapture ? 64 : 0);
+      // The low bit selects aerial perspective; the second describes the captured sun lane.
+      if (lights.directional !== undefined) viewPayload[319] = (viewPayload[319] ?? 0) + 2;
+    }
     writeCameraAndSunLanes(viewPayload, mainProjection, camera, light, viewport, scratch.words);
     writeCascadeProjectionLanes(viewPayload, lights, mainProjection, scratch.inverse);
     if (camera.screenSpaceReflection !== undefined)
@@ -342,6 +350,19 @@ export function writeViewUbo(
     if (byteOffset !== 0) return;
     uploadTranslucentFogViews(queue, viewUniformBuffer, viewPayload, scratch.auxiliary);
     uploadPointShadowFaceViews(queue, viewUniformBuffer, viewPayload, lights, scratch.auxiliary);
+    if (resolvedTemporal !== undefined) {
+      const postProcessPayload = scratch.auxiliary;
+      postProcessPayload.set(viewPayload);
+      postProcessPayload.set(viewPayload.subarray(196, 212), 0);
+      mat4.invert(scratch.inverse, mat4.view(postProcessPayload));
+      postProcessPayload.set(scratch.inverse, 44);
+      const uploaded = queue.writeBuffer(
+        viewUniformBuffer,
+        POST_PROCESS_VIEW_UNIFORM_OFFSET,
+        postProcessPayload,
+      );
+      if (!uploaded.ok) throw uploaded.error;
+    }
   } finally {
     writingViewUbo = previousWriting;
   }
@@ -512,16 +533,23 @@ function writeCloudShadowLanes(
   viewPayload[241] = projection.origin[1] ?? 0;
   viewPayload[242] = projection.origin[2] ?? 0;
   viewPayload[243] = projection.baseHeight ?? 0;
-  viewPayload[247] = projection.thickness ?? 0;
   viewPayload[244] = projection.right[0] ?? 0;
   viewPayload[245] = projection.right[1] ?? 0;
   viewPayload[246] = projection.right[2] ?? 0;
+  viewPayload[247] = projection.beerMap
+    ? (projection.atmosphereStrength ?? 1)
+    : (projection.thickness ?? 0);
   viewPayload[248] = projection.up[0] ?? 0;
   viewPayload[249] = projection.up[1] ?? 0;
   viewPayload[250] = projection.up[2] ?? 0;
   viewPayload[252] = projection.range;
-  viewPayload[253] = projection.lowSun ? 0 : 1;
+  viewPayload[253] = projection.beerMap
+    ? (projection.surfaceStrength ?? 1)
+    : projection.lowSun
+      ? 0
+      : 1;
   viewPayload[254] = projection.lowSun ? 1 : 0;
+  viewPayload[255] = projection.beerMap ? 1 : 0;
 }
 
 /** splitPlanes [108..123], cascade count/blend [124..125], bias [126..127], filter [128..131]. */

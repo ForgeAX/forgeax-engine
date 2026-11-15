@@ -146,11 +146,12 @@ export async function captureTransparencyForgeaxBrowser(
     if (!worldAttachment1.ok) throw worldAttachment1.error;
     const lease = worldAttachment1.value;
     const drawFrame = async () => {
-      const receipt = await drawReadyFrame(renderer, {
-        leases: [lease],
-        camera: { lease },
-        environment: { lease },
-      });
+      if (rendererKind === 'webgl') {
+        const drawn = renderer.draw({ source: lease });
+        if (!drawn.ok) throw drawn.error;
+        return drawn.value;
+      }
+      const receipt = await drawReadyFrame(renderer, { source: lease });
       const observed = await renderer.observe(receipt, { include: ['draws'] });
       if (!observed.ok) throw new Error(`transparent ForgeAX observation failed: ${observed.error.code}`);
       return receipt;

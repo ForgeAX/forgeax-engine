@@ -11,6 +11,11 @@ import type {
 import { RhiError } from '@forgeax/engine-rhi';
 import { ok, type Result, shaderSourceDescriptor } from '@forgeax/engine-types';
 import type { StandardClusterGraphBuffers } from '../pipeline/standard-lighting/graph';
+import {
+  ATMOSPHERE_SKY_FACES,
+  atmosphereSkyCubePass,
+  SkyPass,
+} from '../record/gpu-pass-timing/sky-pass-names';
 import type { _InternalRenderPipelineContext } from '../record/render-context';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
 import type { RenderPipelineFrame, RenderPipelineTarget } from '../render-pipeline';
@@ -167,12 +172,12 @@ export function addAtmosphereBackground(
         20,
       );
       values.set(settings.capturePosition, 24);
-      writeAtmosphereUniform(values, 292, settings, 96000);
+      writeAtmosphereUniform(values, 292, settings);
       frame.runtime.device.queue
         .writeBuffer(resources.buffer(params.value).unwrap(), 0, values)
         .unwrap();
       const triangles = new Float32Array(6 * 9);
-      for (let face = 0; face < 6; face += 1) {
+      for (let face = 0; face < ATMOSPHERE_SKY_FACES; face += 1) {
         triangles.set([-1, -1, face + 1, 3, -1, face + 1, -1, 3, face + 1], face * 9);
       }
       frame.runtime.device.queue
@@ -268,14 +273,14 @@ export function addAtmosphereBackground(
     state = { cubePipeline, cubeLayout, backgroundPipeline, backgroundLayout, sampler };
     return state;
   };
-  for (let face = 0; face < 6; face += 1) {
+  for (let face = 0; face < ATMOSPHERE_SKY_FACES; face += 1) {
     const faceView = graph.view(cube.value, {
       dimension: '2d',
       baseArrayLayer: face,
       arrayLayerCount: 1,
     });
     if (!faceView.ok) return faceView;
-    const pass = graph.addRasterPass(`atmosphere-cube-${face}`, {
+    const pass = graph.addRasterPass(atmosphereSkyCubePass(face), {
       accesses: [
         { resource: faceView.value, usage: 'color-attachment' },
         { resource: params.value, usage: 'uniform-read' },
@@ -328,7 +333,7 @@ export function addAtmosphereBackground(
   }
   const ibl = addAtmosphereIbl(graph, cubeView.value, vertices.value, dirty);
   if (!ibl.ok) return ibl;
-  const background = graph.addRasterPass('atmosphere-background', {
+  const background = graph.addRasterPass(SkyPass.atmosphereBackground, {
     accesses: [
       ...atmosphereVisibilityAccesses(visibility),
       { resource: tables.value.skyView, usage: 'sampled-read' },

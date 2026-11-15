@@ -57,7 +57,6 @@ mkdirSync(dir, { recursive: true });
 const report = { status: 'RUNNING', renderPath, cases: [] };
 const query = (receipt, view, extra = {}) =>
   querySubmittedTerrainHeight(receipt, {
-    worldId: 0,
     entity: h.subjects.terrain,
     x: 58.2,
     z: 60.4,

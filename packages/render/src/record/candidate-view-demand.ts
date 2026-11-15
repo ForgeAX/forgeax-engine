@@ -17,7 +17,6 @@ import { renderProbesOf } from '../world/render-probes';
 import {
   displayShortSideLimit,
   RenderView,
-  type RenderViewFrameSource,
   RenderViewInput,
   type RenderViewSource,
   resolveViewCamera,
@@ -46,7 +45,6 @@ export type AcceptedViewDemandSource = NonNullable<
 export interface CandidateViewDemand {
   readonly selectionCamera: ScenePassSelectionCamera;
   readonly geometry: GeometryPipelineRequestContext;
-  readonly worldId: number;
   readonly hasLocalLights: boolean;
   readonly ssao: boolean;
   readonly reflectionFallbackDemand: boolean;
@@ -66,7 +64,7 @@ export interface CandidateViewDemandInput {
   readonly view?: EntityHandle;
 }
 
-function candidateSceneInput(input: CandidateViewDemandInput, worldId: number) {
+function candidateSceneInput(input: CandidateViewDemandInput) {
   // Novel pass families require the ordinary graph producer. Candidate ids are local to this recipe.
   if (
     input.materials.hasMedium ||
@@ -105,7 +103,6 @@ function candidateSceneInput(input: CandidateViewDemandInput, worldId: number) {
           ),
         }),
     entityKey: input.preparation.entity,
-    worldId,
     transform: input.preparation.transform,
   };
   return {
@@ -156,7 +153,7 @@ function acceptedCamera(
   if (camera === undefined) return undefined;
   if (camera.stereo !== undefined) return undefined;
   const current = world.hasResource(RenderViewInput)
-    ? world.getResource<RenderViewFrameSource>(RenderViewInput)
+    ? world.getResource(RenderViewInput)
     : undefined;
   if (current === undefined) return undefined;
   const cap = current.maxRenderShortSide;
@@ -175,7 +172,7 @@ function acceptedCamera(
     primary: view.primary,
     primaryCamera: metadata.cameras[0],
     canvas,
-    attachment: () => accepted.resources.identity,
+    attachment: accepted.resources.identity,
     targetExtent: (target) => context.getRenderTargetPhysical?.(target)?.descriptor,
   };
   const state: ViewCameraState = {
@@ -291,12 +288,11 @@ function readReflectionDemand(
 function currentAcceptedScene(owner: ViewSettlementOwner, accepted: AcceptedViewDemandSource) {
   const retained = owner.scene.compositionRetainedScene();
   if (retained === undefined || !retained.isSourceCurrent()) return undefined;
-  const worldId = retained.worlds.indexOf(accepted.resources);
-  if (worldId < 0) return undefined;
+  if (retained.source !== accepted.resources) return undefined;
   const lights = renderLightsOf(renderWorldFor(owner.internals)).borrowAdoptedRoster(
     accepted.metadata.lights,
   );
-  return lights === undefined ? undefined : { worldId, lights };
+  return lights === undefined ? undefined : { lights };
 }
 
 /** Derive actual demand from the accepted source and its already-adopted persistent products. */
@@ -311,8 +307,8 @@ export function readCandidateViewDemand(
   const world = renderWorldFor(internals);
   const adopted = currentAcceptedScene(owner, accepted);
   if (adopted === undefined) return undefined;
-  const { worldId, lights } = adopted;
-  const candidate = candidateSceneInput(input, worldId);
+  const { lights } = adopted;
+  const candidate = candidateSceneInput(input);
   if (candidate === undefined) return undefined;
   const camera = acceptedCamera(owner, accepted, input.view);
   if (camera === undefined) return undefined;
@@ -329,7 +325,7 @@ export function readCandidateViewDemand(
   if (ssr === undefined) return undefined;
   const context = recordContext(internals);
   const source = world.hasResource(RenderViewInput)
-    ? world.getResource<RenderViewFrameSource>(RenderViewInput)
+    ? world.getResource(RenderViewInput)
     : undefined;
   if (source === undefined) return undefined;
   const gpuLane = gpuDrivenPipelineLane(renderPath, ssr.reflectionFallbackCandidate);
@@ -356,7 +352,7 @@ export function readCandidateViewDemand(
     )
       return false;
     const current = scene.compositionRetainedScene();
-    return current?.worlds.includes(accepted.resources) === true && current.isSourceCurrent();
+    return current?.source === accepted.resources && current.isSourceCurrent();
   };
   if (!sourceCurrent()) return undefined;
   return {
@@ -375,7 +371,6 @@ export function readCandidateViewDemand(
       warnedNineSliceScaleEntities: frameState.warnedNineSliceScaleEntities,
     },
     selectionCamera: camera,
-    worldId,
     hasLocalLights: lighting.hasLocalLights,
     ssao,
     reflectionFallbackDemand: ssr.reflectionFallbackDemand,

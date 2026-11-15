@@ -3,6 +3,7 @@ import { RhiError } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { err } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
+import { dependencyNames } from '../../__tests__/schedule-graph.fixture';
 import { RENDER_CAPTURE_GRAPH_COMPILE_SYSTEM } from '../capture-graph-systems';
 import { RENDER_FEATURE_GRAPH_COMPILE_SYSTEM } from '../feature-graph-systems';
 import { RENDER_GRAPH_SEAL_SYSTEM } from '../graph-seal-systems';
@@ -39,24 +40,24 @@ describe('RenderRecord', () => {
       'render-frame-submit-report',
       'render-surface-ui-present-prepare',
     ]);
-    expect(record?.dependencies).toContainEqual([
+    expect(dependencyNames(record)).toContainEqual([
       'render-surface-ui-present-prepare',
       RENDER_ENCODER_OPEN_SYSTEM,
     ]);
     // scheduleData inventories registration; these edges establish execution order.
-    expect(record?.dependencies).toContainEqual([
+    expect(dependencyNames(record)).toContainEqual([
       'render-feature-graph-compile',
       'render-feature-graph-encode',
     ]);
-    expect(record?.dependencies).toContainEqual([
+    expect(dependencyNames(record)).toContainEqual([
       'render-view-graph-encode',
       'render-composite-encode',
     ]);
-    expect(record?.dependencies).toContainEqual([
+    expect(dependencyNames(record)).toContainEqual([
       'render-surface-ui-encode',
       'render-frame-submit',
     ]);
-    expect(record?.dependencies).toContainEqual([
+    expect(dependencyNames(record)).toContainEqual([
       'render-frame-submit',
       'render-view-record-settle',
     ]);
@@ -124,6 +125,6 @@ describe('RenderRecord', () => {
   it('fails as data when RenderRecord runs without its frame input', () => {
     const world = createRenderWorld();
     expect(world.run(RenderRecord).ok).toBe(true);
-    expect(world.getResource<{ kind: string }>(RenderFrameEncoder).kind).toBe('failed');
+    expect(world.getResource(RenderFrameEncoder).kind).toBe('failed');
   });
 });

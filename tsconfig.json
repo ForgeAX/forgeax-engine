@@ -129,6 +129,9 @@
       "path": "./packages/physics"
     },
     {
+      "path": "./packages/water"
+    },
+    {
       "path": "./packages/physics-rapier3d"
     },
     {

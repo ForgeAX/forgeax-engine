@@ -158,6 +158,15 @@ Generation omits only resource names already declared by the selected template;
 its built-in bindings and custom resources retain one declaration per binding in
 both direct and scene-index programs.
 
+When composable helpers import generated parameters, the selected Surface and
+its helpers share one canonical parameter provider, including the private
+scene-index row. Lexical references also import implicitly used schema resources;
+local declarations, fields, members and qualified names do not create imports.
+The compiler derives the complete Engine template closure before validating
+Surface helpers. A Surface may reuse resources from those same Engine modules;
+new resource-bearing helpers, unrelated Engine modules and project-owned resource
+declarations remain forbidden. This does not create a resource-name whitelist.
+
 Full-custom raster programs may conditionally declare `vs_scene_index` under
 `GPU_DRIVEN_SCENE_INDEX_AVAILABLE` and keep their direct entry in the opposite
 branch. Cook compiles each address independently with the native selector,
@@ -172,10 +181,35 @@ program publishes the same address pair from the root parameter schema. Its
 default opaque coverage requires position and vertex normal (plus skin attributes when
 selected), while retaining native transforms, clipping and LOD coverage.
 
-Material publications use `material-cook/4`: one validated root contract and a
+Material publications use `material-cook/5`: one validated root contract and a
 complete program set selected by Pass and compiler context. Pack and Native
 cookers share the publication builder. Independent modules retain independent
 WGSL; shared modules reuse code while entry choices remain pipeline facts.
+
+The Pack cooker producer identity is `material-pack-cooker/5`. It invalidates
+older derived products without changing the durable `material-cook/5` wire
+schema; source, canonical deformation layout and compiler fingerprints still
+participate in the normal identity. Re-cook affected Water publications.
+
+Water's `waterVertexMapping` defaults to true. The compiler enables
+`WATER_HEIGHT_MAPPING_AVAILABLE` only when that choice and a selected
+WaterInfo, Baked or fixed-height source are both available. It does not change
+fragment field selection or `waterWaves`. Independent
+`waterDynamicBoundsClip` lowers to `WATER_DYNAMIC_BOUNDS_CLIP`, default false;
+its value is never inferred from WaterInfo, mapping or a family name.
+
+`WATER_TRANSITION_AVAILABLE` derives from disabled ordinary waves and an enabled
+Lake/Ocean transition. The selected default deformation requires
+`waveVelocityMaskThresholdMPerSec: f32`; when fixed/Baked velocity does not take
+precedence, it also requires `maximumFlowVelocityMPerSec: f32` even if Info is
+enabled, because source mode can select vertex fallback. Missing or incompatible
+fields return `material-derived-interface-mismatch` before shader compilation.
+
+`WATER_DEFAULT_DEFORMATION_AVAILABLE` derives from the resolved deformation module,
+including inheritance. Only the Engine default selects the stock fragment wave
+normal recomputation; custom deformation normals remain authoritative. An unused
+optional deformation slot does not revoke Standard's position-bounds proof, but
+any selected deformation still prevents that undeformed-position certification.
 
 Standard Pack materials publish both plain and vertex-color programs, including
 matching direct and scene-index address pairs. The ABI receipt's vertex inputs
@@ -575,6 +609,10 @@ projection preserves active backend directives; explicit author axes or `all`
 flatten active boolean branches too. Opaque expressions retain their nesting.
 Directive scanning uses Types' `stripWgslComments`, sharing nested-comment,
 quoted-path and source-offset handling with material schema readers.
+Each composition projects imported modules once and uses those same bytes for
+reachability. Modules without conditional or group-import work retain their
+ordinary source with normalized line endings; source diagnostics still inspect
+the complete declared import table before native composition.
 
 Surface dynamic-input field types and byte footprints have one Types authority.
 The derived layout supplies CPU write widths and generated WGSL word loads;
@@ -593,3 +631,12 @@ All scene-index programs share reflection admission for scene-material and
 visible-item storage addresses, read-only bindings, array strides and row span.
 Standard rows additionally validate derived members; medium templates keep their
 opaque payload without maintaining a second copy of those storage checks.
+
+## Texture generator program preparation
+
+`createTextureGeneratorPackCooker(roots, { sourceSnapshot })` registers the
+`texture-generator` native producer. It composes each selected fragment with the
+Engine full-screen vertex stage and validates the actual MRT target interface.
+The result owns its WGSL/reflection program closure, compiler fingerprint and
+shader source dependencies. No GPU device or pixel generation runs during Cook.
+Cache identity includes the executing compiler dependencies and shader sources.

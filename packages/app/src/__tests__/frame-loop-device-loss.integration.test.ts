@@ -1,4 +1,4 @@
-import { Time, Update, World } from '@forgeax/engine-ecs';
+import { defineSystem, Time, Update, World } from '@forgeax/engine-ecs';
 import type { Renderer, RendererState, RenderWorldLease } from '@forgeax/engine-render';
 import { describe, expect, it, vi } from 'vitest';
 import { createFrameLoop } from '../internal/frame-loop';
@@ -56,21 +56,17 @@ function renderer(states: readonly RendererState[]) {
 }
 
 describe('M4 / m4_t1 — App frame admission fences device loss', () => {
-  it('keeps rAF alive but freezes primary and injected Worlds during loss', () => {
+  it('keeps rAF alive but freezes the source World during loss', () => {
     const primary = new World();
-    const injected = new World();
-    primary.addSystem(Update, { name: 'primary-update', queries: [], fn: () => {} }).unwrap();
-    injected.addSystem(Update, { name: 'injected-update', queries: [], fn: () => {} }).unwrap();
+    primary
+      .addSystem(Update, defineSystem({ name: 'primary-update', queries: [], fn: () => {} }))
+      .unwrap();
     const events: string[] = [];
     primary
-      .addSystem(Update, { name: 'observe-primary', queries: [], fn: () => events.push('primary') })
-      .unwrap();
-    injected
-      .addSystem(Update, {
-        name: 'observe-injected',
-        queries: [],
-        fn: () => events.push('injected'),
-      })
+      .addSystem(
+        Update,
+        defineSystem({ name: 'observe-primary', queries: [], fn: () => events.push('primary') }),
+      )
       .unwrap();
     const clock = scheduler();
     let measured = 1000;
@@ -78,7 +74,6 @@ describe('M4 / m4_t1 — App frame admission fences device loss', () => {
     const loop = createFrameLoop({
       world: primary,
       renderer: rendererState.value,
-      drawSource: () => ({ worlds: [primary, injected], cameraOwner: 0, resourceOwner: 0 }),
       platform: testPlatform({ now: () => measured, raf: clock.raf, caf: clock.caf }),
     });
 
@@ -90,14 +85,13 @@ describe('M4 / m4_t1 — App frame admission fences device loss', () => {
 
     expect(events).toEqual([]);
     expect(primary.getResource(Time).delta).toBe(0);
-    expect(injected.getResource(Time).delta).toBe(0);
     expect(rendererState.draws).toBe(0);
 
     measured = 1024;
     clock.tick(measured);
-    expect(events).toEqual(['primary', 'injected']);
+
+    expect(events).toEqual(['primary']);
     expect(primary.getResource(Time).delta).toBeCloseTo(0.004);
-    expect(injected.getResource(Time).delta).toBeCloseTo(0.004);
     expect(rendererState.draws).toBe(1);
     loop.stop().unwrap();
   });
@@ -105,15 +99,14 @@ describe('M4 / m4_t1 — App frame admission fences device loss', () => {
   it('does not update or issue a receipt from stepFrame while recovering', () => {
     const world = new World();
     let updates = 0;
-    world
-      .addSystem(Update, {
-        name: 'count-update',
-        queries: [],
-        fn: () => {
-          updates += 1;
-        },
-      })
-      .unwrap();
+    const systemToken5 = defineSystem({
+      name: 'count-update',
+      queries: [],
+      fn: () => {
+        updates += 1;
+      },
+    });
+    world.addSystem(Update, systemToken5).unwrap();
     const rendererState = renderer(['device-lost']);
     const loop = createFrameLoop({
       world,

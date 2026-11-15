@@ -1,3 +1,4 @@
+import { defineSystem } from "@forgeax/engine-ecs";
 import { Time, Update } from '@forgeax/engine-ecs';
 import type { Plugin } from '@forgeax/engine-plugin';
 
@@ -7,17 +8,16 @@ function printPlugin(name: 'hello' | 'world', message: string): Plugin {
     inject: ['world'],
     apply(ctx) {
       ctx.effect(() => {
-        ctx.world
-          .addSystem(Update, {
+        const system = defineSystem({
             name: `print-${name}-system`,
             queries: [],
             fn: () => {
               console.log(message);
               void ctx.world.getResource(Time).delta;
             },
-          })
-          .unwrap();
-        return () => ctx.world.removeSystem(Update, `print-${name}-system`);
+          });
+        ctx.world.addSystem(Update, system).unwrap();
+        return () => ctx.world.removeSystem(Update, system);
       }, `print/${name}`);
     },
   };

@@ -119,8 +119,10 @@ function resolveRelativeImport(importer: string, specifier: string): string | un
   return relativeScriptableImportCandidates(importer, specifier).find((candidate) =>
     capturedSources === undefined || !Object.hasOwn(capturedSources, importer)
       ? existsSync(candidate) && statSync(candidate).isFile()
-      : Object.hasOwn(capturedSources, candidate) ||
-        (capturedJsonInputs !== undefined && Object.hasOwn(capturedJsonInputs, candidate)),
+      : specifier.endsWith('?bytes')
+        ? Object.hasOwn(capturedSources, `${candidate}?bytes`)
+        : Object.hasOwn(capturedSources, candidate) ||
+          (capturedJsonInputs !== undefined && Object.hasOwn(capturedJsonInputs, candidate)),
   );
 }
 
@@ -199,8 +201,18 @@ function capturedTranspileCache(): ReadonlyMap<string, unknown> {
   return cache;
 }
 
-/** Materialize captured JSON, raw text or ordinary JSON as a data-only module. */
+/** Materialize captured bytes, raw text, or JSON as a data-only module. */
 function compileDataModule(path: string, outputRoot: string): string | undefined {
+  if (path.endsWith('?bytes')) {
+    const sourcePath = path.slice(0, -6);
+    const encoded = capturedSources?.[path];
+    if (capturedSources !== undefined && encoded === undefined)
+      throw new Error(`Binary resource absent from captured source: ${sourcePath}`);
+    const bytes = encoded === undefined ? readFileSync(sourcePath) : Buffer.from(encoded, 'base64');
+    const dataName = `${outputName(path)}.bin`;
+    writeFileSync(join(outputRoot, dataName), bytes);
+    return `import { readFileSync } from 'node:fs';\nexport default new Uint8Array(readFileSync(new URL('./${dataName}', import.meta.url)));\n`;
+  }
   const captured = capturedJsonModule(path, capturedJsonInputs, outputRoot, outputName(path));
   if (captured !== undefined) return captured;
   if (path.endsWith('?raw')) {
@@ -270,8 +282,8 @@ function compileModuleClosure(
           const target =
             resolved === undefined
               ? undefined
-              : specifier.endsWith('?raw')
-                ? `${resolved}?raw`
+              : /\?(?:raw|bytes)$/.test(specifier)
+                ? `${resolved}${specifier.slice(specifier.lastIndexOf('?'))}`
                 : resolved;
           const local =
             target !== undefined &&

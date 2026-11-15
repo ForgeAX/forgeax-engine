@@ -1,3 +1,4 @@
+import { PhysicsWorld2DResource } from '@forgeax/engine-physics';
 // packages/physics-rapier2d/__tests__/moveandslide-2d.test.ts
 //
 // feat-20260617-kinematic-character-controller-move-and-slide . M3 . AC-12
@@ -129,7 +130,7 @@ describe('moveAndSlide 2D (AC-12)', () => {
       if (!RAPIER) throw new Error('Real Rapier is required for this regression');
       const world = prepareWorld();
       const pw = createRapier2DPhysicsWorld(RAPIER);
-      world.insertResource('PhysicsWorld', pw);
+      world.insertResource(PhysicsWorld2DResource, pw);
       registerPhysicsSystems2D(world);
       const character = spawnCharacter(world, [0, 1]);
       world.update(1 / 60).unwrap();
@@ -181,7 +182,7 @@ describe('moveAndSlide 2D (AC-12)', () => {
       if (!RAPIER) throw new Error('Real Rapier is required for this regression');
       const world = prepareWorld();
       const pw = createRapier2DPhysicsWorld(RAPIER);
-      world.insertResource('PhysicsWorld', pw);
+      world.insertResource(PhysicsWorld2DResource, pw);
       registerPhysicsSystems2D(world);
       spawnStaticBox(world, [10.7, 1], [0.1, 1]);
       const character = spawnCharacter(world, [0, 1]);
@@ -200,7 +201,7 @@ describe('moveAndSlide 2D (AC-12)', () => {
       if (!RAPIER) throw new Error('Real Rapier is required for this regression');
       const world = prepareWorld();
       const pw = createRapier2DPhysicsWorld(RAPIER);
-      world.insertResource('PhysicsWorld', pw);
+      world.insertResource(PhysicsWorld2DResource, pw);
       const parent = world.spawn({ component: Transform, data: { pos: [5, 0, 0] } }).unwrap();
       const child = spawnPairedEntity(world,
         { component: Transform, data: { pos: [0, 1, 0] } },
@@ -251,7 +252,7 @@ describe('moveAndSlide 2D (AC-12)', () => {
       if (!RAPIER) return;
       const world = prepareWorld();
       const pw = createRapier2DPhysicsWorld(RAPIER);
-      world.insertResource('PhysicsWorld', pw);
+      world.insertResource(PhysicsWorld2DResource, pw);
       registerPhysicsSystems2D(world);
 
       // Ground top at y=-0.35 -> rest center y=0.45.
@@ -273,7 +274,7 @@ describe('moveAndSlide 2D (AC-12)', () => {
       if (!RAPIER) return;
       const world = prepareWorld();
       const pw = createRapier2DPhysicsWorld(RAPIER);
-      world.insertResource('PhysicsWorld', pw);
+      world.insertResource(PhysicsWorld2DResource, pw);
       registerPhysicsSystems2D(world);
 
       spawnStaticBox(world, [0, -0.85], [10, 0.5]);
@@ -299,7 +300,7 @@ describe('moveAndSlide 2D (AC-12)', () => {
       if (!RAPIER) return;
       const world = prepareWorld();
       const pw = createRapier2DPhysicsWorld(RAPIER);
-      world.insertResource('PhysicsWorld', pw);
+      world.insertResource(PhysicsWorld2DResource, pw);
       registerPhysicsSystems2D(world);
 
       spawnStaticBox(world, [0, -0.85], [10, 0.5]);
@@ -326,7 +327,7 @@ describe('moveAndSlide 2D (AC-12)', () => {
       if (!RAPIER) return;
       const world = prepareWorld();
       const pw = createRapier2DPhysicsWorld(RAPIER);
-      world.insertResource('PhysicsWorld', pw);
+      world.insertResource(PhysicsWorld2DResource, pw);
       registerPhysicsSystems2D(world);
 
       // 30deg ramp ascending toward +x; surface near x≈0.8 is around y=0.
@@ -351,7 +352,7 @@ describe('moveAndSlide 2D (AC-12)', () => {
       if (!RAPIER) return;
       const world = prepareWorld();
       const pw = createRapier2DPhysicsWorld(RAPIER);
-      world.insertResource('PhysicsWorld', pw);
+      world.insertResource(PhysicsWorld2DResource, pw);
       registerPhysicsSystems2D(world);
 
       // 60deg ramp — steeper than default maxSlopeClimbDeg=45.
@@ -378,7 +379,7 @@ describe('moveAndSlide 2D (AC-12)', () => {
       if (!RAPIER) return;
       const world = prepareWorld();
       const pw = createRapier2DPhysicsWorld(RAPIER);
-      world.insertResource('PhysicsWorld', pw);
+      world.insertResource(PhysicsWorld2DResource, pw);
       registerPhysicsSystems2D(world);
 
       // Ground top at y=-0.35 -> rest center 0.45; ledge top at y=-0.25.
@@ -408,7 +409,7 @@ describe('moveAndSlide 2D (AC-12)', () => {
       if (!RAPIER) return;
       const world = prepareWorld();
       const pw = createRapier2DPhysicsWorld(RAPIER);
-      world.insertResource('PhysicsWorld', pw);
+      world.insertResource(PhysicsWorld2DResource, pw);
       registerPhysicsSystems2D(world);
 
       spawnStaticBox(world, [0, -0.85], [4, 0.5]);
@@ -431,7 +432,7 @@ describe('moveAndSlide 2D (AC-12)', () => {
       if (!RAPIER) return;
       const world = prepareWorld();
       const pw = createRapier2DPhysicsWorld(RAPIER);
-      world.insertResource('PhysicsWorld', pw);
+      world.insertResource(PhysicsWorld2DResource, pw);
       registerPhysicsSystems2D(world);
 
       spawnRawRamp(pw, RAPIER, [4, -1.0], -20);
@@ -457,7 +458,7 @@ describe('moveAndSlide 2D (AC-12)', () => {
       if (!RAPIER) return;
       const world = prepareWorld();
       const pw = createRapier2DPhysicsWorld(RAPIER);
-      world.insertResource('PhysicsWorld', pw);
+      world.insertResource(PhysicsWorld2DResource, pw);
       registerPhysicsSystems2D(world);
 
       // Short platform: top at y=0 (center -0.5), spanning x in [-2, 1].
@@ -487,7 +488,7 @@ describe('moveAndSlide 2D (AC-12)', () => {
       if (!RAPIER) return;
       const world = prepareWorld();
       const pw = createRapier2DPhysicsWorld(RAPIER);
-      world.insertResource('PhysicsWorld', pw);
+      world.insertResource(PhysicsWorld2DResource, pw);
       registerPhysicsSystems2D(world);
 
       spawnStaticBox(world, [0, -0.85], [10, 0.5]);
@@ -509,7 +510,7 @@ describe('moveAndSlide 2D (AC-12)', () => {
       if (!RAPIER) return;
       const world = prepareWorld();
       const pw = createRapier2DPhysicsWorld(RAPIER);
-      world.insertResource('PhysicsWorld', pw);
+      world.insertResource(PhysicsWorld2DResource, pw);
       registerPhysicsSystems2D(world);
 
       try {
@@ -528,7 +529,7 @@ describe('moveAndSlide 2D (AC-12)', () => {
       if (!RAPIER) return;
       const world = prepareWorld();
       const pw = createRapier2DPhysicsWorld(RAPIER);
-      world.insertResource('PhysicsWorld', pw);
+      world.insertResource(PhysicsWorld2DResource, pw);
       registerPhysicsSystems2D(world);
 
       // Plain kinematic body (no CharacterController) — Transform drives it.
@@ -558,7 +559,7 @@ describe('moveAndSlide 2D (AC-12)', () => {
       if (!RAPIER) return;
       const world = prepareWorld();
       const pw = createRapier2DPhysicsWorld(RAPIER);
-      world.insertResource('PhysicsWorld', pw);
+      world.insertResource(PhysicsWorld2DResource, pw);
       registerPhysicsSystems2D(world);
 
       spawnStaticBox(world, [0, -0.85], [10, 0.5]);
@@ -583,7 +584,7 @@ describe('moveAndSlide 2D (AC-12)', () => {
       if (!RAPIER) return;
       const world = prepareWorld();
       const pw = createRapier2DPhysicsWorld(RAPIER);
-      world.insertResource('PhysicsWorld', pw);
+      world.insertResource(PhysicsWorld2DResource, pw);
       registerPhysicsSystems2D(world);
 
       spawnStaticBox(world, [0, -0.85], [10, 0.5]);
@@ -605,7 +606,7 @@ describe('moveAndSlide 2D (AC-12)', () => {
       if (!RAPIER) return;
       const world = prepareWorld();
       const pw = createRapier2DPhysicsWorld(RAPIER);
-      world.insertResource('PhysicsWorld', pw);
+      world.insertResource(PhysicsWorld2DResource, pw);
       registerPhysicsSystems2D(world);
 
       spawnStaticBox(world, [0, -0.85], [10, 0.5]);

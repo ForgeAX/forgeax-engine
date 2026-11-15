@@ -108,10 +108,14 @@ enclose the selected geometry, and `submesh` retains its usual meaning.
 Only the material is a static GUID dependency for this source. Do not add
 `MeshRenderer` unless a separate ordinary Scene draw is intended.
 
-## Program v3 data plane
+## Schema v3 authoring data plane
 
-The minimum-fidelity slice exposes a schema-driven Program v3 authoring boundary
-through `defineParticleEffectSourceV3`. Its fixed Core record is 112 bytes
+`defineParticleEffectSourceV3` keeps the authoring schema at version 3. Its sole
+cooked GPU ABI is `forgeax-vfx-program-5`; there is no Program 4 compatibility
+reader. Recook older payloads before publication.
+
+The minimum-fidelity slice exposes a schema-driven authoring boundary through
+`defineParticleEffectSourceV3`. Its fixed Core record is 112 bytes
 (`VfxParticle`); effect snapshot values live in `VfxParameters`, while optional
 `VfxCustom` values use a persistent GPU storage record capped at four
 `vec4`-equivalent lanes. The compiler derives the WGSL declarations, reflection,
@@ -137,7 +141,7 @@ export const effect = defineParticleEffectSourceV3({
 });
 ```
 
-Program v3 keeps the existing bounded `channels`/`events` and sub-emitter
+Schema-v3 source keeps the existing bounded `channels`/`events` and sub-emitter
 path. The unused `vfx:channel` Data Interface token is not part of the v3
 vocabulary; `camera`, single-sample `scene-depth`, and `noise` are
 generation-owned resources and must be supplied by the renderer host.
@@ -285,10 +289,50 @@ and takes visible effect when it plays. The unknown-name error carries `detail.p
 (the offending name) and `detail.validNames`.
 
 Diagnostics are read from the runtime resource:
-`world.getResource('VfxGpuRuntime').diagnostics()` returns every active `vfx-*` code with
+`world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY).diagnostics()` returns every active `vfx-*` code with
 its `detail`. Nothing else surfaces them yet, so poll it in tests and tools after
 `world.update`. Parameters changed on a live Player are
 applied on the next frame without restarting it.
+## Water-grid emission and translucent sphere billboards
+
+`waterGridEmission` plus `#import forgeax_vfx::data::water_surface` opts a
+schema-v3 emitter into Water-grid GPU emission. `scanCellCapacity` bounds
+examined cells and must fit the accepted domain; `maximumEmissionPerCell` is
+the per-cell limit and `maxParticlesPerFrame` the total append limit. Zero
+`maxParticlesPerFrame` disables only grid appends; scheduled rate and explicit
+bursts remain independent. The Render host binds one generation-qualified
+grid/solver-normal pair (see the
+[`water-surface` owner](../vfx-render/README.md#water-surface-grid-emission)).
+
+R8's `iron-ball-entry` effect is a separate Pack particle effect for the
+cannonball water-impact response. Its source is declared in
+[`coast.pack.ts`](../../apps/water/r8-integration-acceptance/assets/coast.pack.ts)
+and its update module is
+[`iron-ball-entry.vfx.wgsl`](../../apps/water/r8-integration-acceptance/assets/vfx/iron-ball-entry.vfx.wgsl).
+The splash billboard opts into `shading: { kind: 'translucent-water-sphere' }`
+to use the dedicated Engine shader. Its material input declarations are in
+[`water-entry-splash-material-inputs.ts`](../../apps/water/r8-integration-acceptance/assets/vfx/water-entry-splash-material-inputs.ts).
+This impact-driven effect does not exercise Water-grid emission. Material
+declarations must match the current fragment-`vec4<f32>` inputs:
+`subsurfaceGainOpacity`, `waterSphereShading`,
+`waterSphereFlattenSphere`, and `waterSphereProjection`.
+
+The Engine opacity adaptation computes `uvNoise = TexCoord4 * scale + ParticleRandom`,
+`N = noise.r`, and `uvMask = TexCoord3 + vec2((N - 0.7) * strength)`, then
+uses `SphereMask(uvMask, (0.5, 0.5))` and `Mask * 0.25 * ParticleAlpha`
+before soft-particle fading. Scale and strength are conceptual Niagara pins,
+not Engine field names; normal detail samples the same `uvNoise`. Engine
+declares normalized-quad TexCoord3 and texture-sheet TexCoord4 projections;
+Niagara UV3/UV4 tiling is unknown, and this adds no UV-editor contract. Engine
+broadcasts one stable id/seed spawn scalar to both axes. UE's 128x128 repeat
+pattern comes from the VF PseudoRandom math cycle, not a random texture.
+The selected material instance has no overrides (inherited scale 1, strength
+0.5). Engine-authored radius `0.5` and hardness `50` occupy
+`waterSphereProjection.zw` in hardness-then-radius order; `.x` is the shared
+random offset and `.y` is reserved. The four custom lanes are
+`subsurfaceGainOpacity`, `waterSphereShading`, `waterSphereFlattenSphere`, and
+`waterSphereProjection`. Source declarations alone do not prove
+material cooking or runtime output.
 
 ## Load and play
 
@@ -336,8 +380,9 @@ responsibility.
 
 > [!IMPORTANT]
 > The descriptor is an inspection/read-model contract, not a second authoring
-> language. Program v3 source plus `.vfx.wgsl` is authoritative. Older payloads
-> are rejected at the loader boundary and must be cold-cooked before publication.
+> language. Schema-v3 source plus `.vfx.wgsl` is authoritative; the runtime
+> accepts the Program 5 cooked ABI. Older payloads are rejected at the loader
+> boundary and must be cold-cooked before publication.
 
 ## Runtime invariants
 
@@ -412,9 +457,9 @@ the first failure in that order. Repair it and validate again.
 |:--|:--|
 | `vfx-source-version-unsupported` | Migrate behavior to WGSL and cold-cook the supported schema |
 | `vfx-source-invalid` | Repair `detail.path`; unknown and unsupported fields fail closed |
-| `vfx-asset-version-unsupported` | Cold-cook the older source and publish a Program v3 payload |
-| `vfx-asset-v3-program-missing` | Republish the Program v3 asset-local `particle-effect/program.json` artifact |
-| `vfx-asset-v3-fingerprint-mismatch` | Cold-cook the v3 payload and program atomically |
+| `vfx-asset-version-unsupported` | Cold-cook the older source and publish the Program 5 payload |
+| `vfx-asset-v3-program-missing` | Republish the Program 5 asset-local `particle-effect/program.json` artifact |
+| `vfx-asset-v3-fingerprint-mismatch` | Cold-cook the schema-v3 payload and Program 5 artifact atomically |
 | `vfx-effect-unavailable` | Load the shared effect before the first update |
 | `vfx-intent-queue-overflow` | Recover the Renderer or restart the player; inspect render readiness |
 

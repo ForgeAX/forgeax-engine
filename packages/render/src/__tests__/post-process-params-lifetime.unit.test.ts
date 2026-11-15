@@ -4,9 +4,9 @@ import { createPostProcessParamsOwner } from '../assembly/post-process-params';
 import {
   collectRequiredFullscreenPostProcesses,
   registerStandardPostProcessBuiltins,
-  withBuiltinRenderFeatures,
 } from '../assembly/render-feature-post-processes';
-import type { PostProcessShaderEntry } from '../fullscreen-post-process-pass';
+import { withBuiltinRenderFeatures } from '../features/builtins';
+import { entryHasDepthRead, type PostProcessShaderEntry } from '../fullscreen-post-process-pass';
 import { RhiErrorListenerRegistry } from '../lifecycle';
 
 it('retains Standard shader parameters across empty Feature frames and device recovery', async () => {
@@ -27,7 +27,7 @@ it('retains Standard shader parameters across empty Feature frames and device re
   for (const [id, entry] of owner.builtinEntries) {
     expect(required.get(id)).toBe(entry.source);
     const buffer = owner.getBuffer(id);
-    if (entry.params === undefined) expect(buffer, id).toBeUndefined();
+    if (entry.params === undefined && !entryHasDepthRead(entry)) expect(buffer, id).toBeUndefined();
     else {
       expect(buffer, id).toBeDefined();
       buffers.set(id, buffer as object);

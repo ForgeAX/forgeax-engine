@@ -259,11 +259,7 @@ export async function renderFogFrames(
       const last = index === frames - 1;
       const pending = last ? options.recorder?.captureFrame() : undefined;
       if (pending !== undefined) (await options.recorder?.frameBoundary())?.unwrap();
-      const frame = await drawReadyFrame(
-        renderer,
-        { leases: [lease], camera: { lease }, environment: { lease } },
-        last ? [domain] : undefined,
-      );
+      const frame = await drawReadyFrame(renderer, { source: lease }, last ? [domain] : undefined);
       expect(frame.presentation, JSON.stringify(frame.presentationPendingReason)).toBe('ready');
       let tape: EncodedTape | undefined;
       if (pending !== undefined) {

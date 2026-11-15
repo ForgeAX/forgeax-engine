@@ -31,7 +31,6 @@ function row(
 ): ValidatedRenderable & { world: RenderResourceScope } {
   return {
     source: {
-      worldId: 0,
       entityKey: index,
       material: resource,
       materials: [resource],
@@ -61,26 +60,26 @@ it('consumes producer material slots while keeping values and World scopes speci
   const a = material();
   const b = material();
   const sources = [
-    { batch: { binding: { material: a, worldId: 1 } }, materialBindingClass: 'probe:2' },
-    { batch: { binding: { material: a, worldId: 0 } }, materialBindingClass: 'probe:2' },
-    { batch: { binding: { material: b, worldId: 0 } }, materialBindingClass: '' },
-    { batch: { binding: { material: a, worldId: 0 } }, materialBindingClass: '' },
+    { batch: { binding: { material: a } }, materialBindingClass: 'probe:2' },
+    { batch: { binding: { material: a } }, materialBindingClass: 'probe:2' },
+    { batch: { binding: { material: b } }, materialBindingClass: '' },
+    { batch: { binding: { material: a } }, materialBindingClass: '' },
   ];
   const bindings = captureGpuMaterialBindings(sources as never);
   const layout = capturedGpuMaterialLayout(bindings);
   expect(capturedGpuMaterialLayout(Object.freeze([...bindings]))).toBeUndefined();
   // A prepared descriptor may later be replaced or edited; the capture owns its facts.
   const firstSource = sources[0] as (typeof sources)[number];
-  firstSource.batch.binding.worldId = 0;
+  firstSource.batch.binding.material = b;
   const oldScope = row(0).world;
   const nextScope = row(1).world;
-  let worlds = [oldScope, oldScope];
+  let sourceScope = oldScope;
   let frame = new MaterialFrame(undefined).with(a).with(b);
   const before = frame.get(a)?.snapshot;
   const prepare = () =>
     buildDispatchPlan(ceiling(0, 3), [], [], [], [], undefined, false, {
       bindings,
-      worlds,
+      sourceScope,
       frame,
     });
   const first = prepare();
@@ -94,25 +93,29 @@ it('consumes producer material slots while keeping values and World scopes speci
     '',
   ]);
   frame = frame.with(a, 1, { ...a.snapshot, roughness: 0.125 });
-  worlds = [oldScope, nextScope];
+  sourceScope = nextScope;
   const next = prepare();
   expect(next.materialBindings[0]?.world).toBe(nextScope);
-  expect(next.materialBindings[2]?.world).toBe(oldScope);
+  expect(next.materialBindings[2]?.world).toBe(nextScope);
   expect(next.materialSlots[0]?.roughness).toBe(0.125);
   expect(first.materialSlots[0]).toBe(before);
   expect(first.materialBindings[0]?.world).toBe(oldScope);
   expect(next.materialBindings).not.toBe(first.materialBindings);
   expect(next.materialSlots).not.toBe(first.materialSlots);
   expect(() => prepare()).not.toThrow();
-  worlds = [oldScope];
-  expect(prepare).toThrow('the asset scope for every shared material');
-  worlds = [oldScope, nextScope];
+  expect(() =>
+    buildDispatchPlan(ceiling(0, 3), [], [], [], [], undefined, false, {
+      bindings,
+      frame,
+    } as never),
+  ).toThrow('the asset scope for every shared material');
+  sourceScope = nextScope;
   expect(prepare().materialBindingSlots).toBe(first.materialBindingSlots);
 
   // Mixed CPU demand keeps the ordinary merged slot order and must not edit the capture.
   const mixed = buildDispatchPlan(ceiling(1, 4), [row(0, b)], [], [], [], undefined, false, {
     bindings,
-    worlds,
+    sourceScope,
     frame,
   });
   expect(mixed.materialBindingSlots.get(b)?.get('')).toBe(0);
@@ -209,9 +212,9 @@ describe('material slot identity and scope', () => {
       [],
       [],
       new Map([
-        ['0:0', 'probe:0'],
-        ['0:1', 'probe:1'],
-        ['0:2', 'probe:0'],
+        ['0', 'probe:0'],
+        ['1', 'probe:1'],
+        ['2', 'probe:0'],
       ]),
     );
     expect(plan.materialSlotIndices).toEqual([[0], [1], [0]]);
@@ -294,12 +297,12 @@ describe('shared GPU materials without CPU geometry', () => {
     const accepted = a.snapshot;
     const frame = new MaterialFrame(undefined).with(a).with(b);
     a.adopt({ ...a.snapshot, roughness: 0.125 });
-    const worlds = [row(0).world, row(1).world];
+    const sourceScope = row(0).world;
     const bindings = [
-      { material: a, worldId: 1, resourceClass: 'probe:23' },
-      { material: a, worldId: 1, resourceClass: 'probe:23' },
-      { material: a, worldId: 1, resourceClass: 'probe:41' },
-      { material: b, worldId: 0, resourceClass: '' },
+      { material: a, resourceClass: 'probe:23' },
+      { material: a, resourceClass: 'probe:23' },
+      { material: a, resourceClass: 'probe:41' },
+      { material: b, resourceClass: '' },
     ];
     const plan = buildDispatchPlan(
       ceiling(0, 3),
@@ -309,7 +312,7 @@ describe('shared GPU materials without CPU geometry', () => {
       [],
       undefined,
       false,
-      { bindings, worlds, frame },
+      { bindings, sourceScope, frame },
     );
     expect(plan.validatedOrdered).toEqual([]);
     expect(plan.materialSlotIndices).toEqual([]);
@@ -317,9 +320,9 @@ describe('shared GPU materials without CPU geometry', () => {
     expect(plan.materialSlots[0]).toBe(accepted);
     expect(plan.materialSlots[0]?.roughness).toBe(1);
     expect(plan.materialBindings).toEqual([
-      { material: a, world: worlds[1], resourceClass: 'probe:23' },
-      { material: a, world: worlds[1], resourceClass: 'probe:41' },
-      { material: b, world: worlds[0], resourceClass: '' },
+      { material: a, world: sourceScope, resourceClass: 'probe:23' },
+      { material: a, world: sourceScope, resourceClass: 'probe:41' },
+      { material: b, world: sourceScope, resourceClass: '' },
     ]);
   });
 
@@ -328,8 +331,8 @@ describe('shared GPU materials without CPU geometry', () => {
     const b = material();
     const direct = row(0, a);
     const plan = buildDispatchPlan(ceiling(0, 2), [direct], [], [], [], undefined, false, {
-      bindings: [a, b].map((material) => ({ material, worldId: 0, resourceClass: '' })),
-      worlds: [direct.world],
+      bindings: [a, b].map((material) => ({ material, resourceClass: '' })),
+      sourceScope: direct.world,
       frame: new MaterialFrame(undefined).with(a).with(b),
     });
     expect(plan.validatedOrdered).toEqual([]);
@@ -350,10 +353,9 @@ describe('shared GPU materials without CPU geometry', () => {
       {
         bindings: ['', 'probe:2'].map((resourceClass) => ({
           material: a,
-          worldId: 0,
           resourceClass,
         })),
-        worlds: [row(0).world],
+        sourceScope: row(0).world,
         frame: new MaterialFrame(undefined).with(a),
       },
     );
@@ -366,7 +368,7 @@ describe('shared GPU materials without CPU geometry', () => {
     expect(() =>
       buildDispatchPlan(ceiling(8), [direct], [], [], [], undefined, false, {
         bindings: [],
-        worlds: [direct.world],
+        sourceScope: direct.world,
         frame: new MaterialFrame(undefined),
       }),
     ).toThrowError(
@@ -375,7 +377,6 @@ describe('shared GPU materials without CPU geometry', () => {
         detail: expect.objectContaining({
           error: expect.objectContaining({
             detail: expect.objectContaining({
-              worldId: 0,
               entityKey: 73,
               primaryMaterial: true,
               materialIdentity: expect.any(Number),
@@ -390,8 +391,8 @@ describe('shared GPU materials without CPU geometry', () => {
   it('rejects an unfixed shared material instead of borrowing its current value', () => {
     expect(() =>
       buildDispatchPlan(ceiling(0, 1), [], unreadableDispatch, [], [], undefined, false, {
-        bindings: [{ material: material(), worldId: 0, resourceClass: '' }],
-        worlds: [row(0).world],
+        bindings: [{ material: material(), resourceClass: '' }],
+        sourceScope: row(0).world,
         frame: new MaterialFrame(undefined),
       }),
     ).toThrow('a fixed material version for every prepared binding');
@@ -402,11 +403,11 @@ it('prepares current GPU tables while keeping material edits, scopes and older r
   const a = material();
   const before = a.snapshot;
   let frame = new MaterialFrame(undefined).with(a);
-  const worlds = [row(0).world];
-  const bindings = Object.freeze([Object.freeze({ material: a, worldId: 0, resourceClass: '' })]);
+  let sourceScope = row(0).world;
+  const bindings = Object.freeze([Object.freeze({ material: a, resourceClass: '' })]);
   const runtime = ceiling(0, 2);
   const prepare = () =>
-    buildDispatchPlan(runtime, [], [], [], [], undefined, false, { bindings, worlds, frame });
+    buildDispatchPlan(runtime, [], [], [], [], undefined, false, { bindings, sourceScope, frame });
   const first = prepare();
   const repeated = prepare();
   expect(repeated.materialSlots).toEqual(first.materialSlots);
@@ -420,10 +421,10 @@ it('prepares current GPU tables while keeping material edits, scopes and older r
   const edited = prepare();
   expect(edited.materialSlots[0]).toBe(a.snapshot);
   expect(first.materialSlots[0]).toBe(before);
-  const previousWorld = worlds[0];
-  worlds[0] = row(1).world;
+  const previousWorld = sourceScope;
+  sourceScope = row(1).world;
   const moved = prepare();
-  expect(moved.materialBindings[0]?.world).toBe(worlds[0]);
+  expect(moved.materialBindings[0]?.world).toBe(sourceScope);
   expect(first.materialBindings[0]?.world).toBe(previousWorld);
   expect(moved.materialBindings).not.toBe(edited.materialBindings);
 });
@@ -431,18 +432,18 @@ it('prepares current GPU tables while keeping material edits, scopes and older r
 it('observes mutable members even in a frozen borrowed GPU binding array', () => {
   const a = material();
   const frame = new MaterialFrame(undefined).with(a);
-  const worlds = [row(0).world, row(1).world];
-  const binding = { material: a, worldId: 0, resourceClass: '' };
+  let sourceScope = row(0).world;
+  const binding = { material: a, resourceClass: '' };
   const bindings = Object.freeze([binding]);
   const runtime = ceiling(0, 2);
   const prepare = () =>
-    buildDispatchPlan(runtime, [], [], [], [], undefined, false, { bindings, worlds, frame });
+    buildDispatchPlan(runtime, [], [], [], [], undefined, false, { bindings, sourceScope, frame });
   const first = prepare();
-  binding.worldId = 1;
+  sourceScope = row(1).world;
   binding.resourceClass = 'probe:2';
   const next = prepare();
-  expect(next.materialBindings[0]?.world).toBe(worlds[1]);
+  expect(next.materialBindings[0]?.world).toBe(sourceScope);
   expect(next.materialBindingSlots.get(a)?.get('probe:2')).toBe(0);
   expect(next.materialBindingSlots.get(a)?.has('')).toBe(false);
-  expect(first.materialBindings[0]?.world).toBe(worlds[0]);
+  expect(first.materialBindings[0]?.world).not.toBe(sourceScope);
 });

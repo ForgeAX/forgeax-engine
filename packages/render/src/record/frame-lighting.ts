@@ -1,24 +1,8 @@
-import { mat4 } from '@forgeax/engine-math';
-import type { AssetHandle, ManifestEntry } from '@forgeax/engine-types';
-import { fnv1a32 } from '@forgeax/engine-types';
-import { meshSsboBuffer } from '../assembly/mesh-ssbo-grow';
-import { standardBloomAdmitted } from '../bloom-admission';
-import { hasCapsuleShadowDemand } from '../capsule-shadow/inspection';
-import {
-  type AtmosphereViews,
-  atmosphereBindings,
-  pushAtmosphereBindingResources,
-} from '../environment/bindings';
-import type { RenderResourceScope } from '../publication/resource-scope';
-import { type FrameList, rasterRowsOf } from '../scene/frame-list';
-import { hasRasterDemand } from '../scene/raster-demand';
-import type { ViewLights } from '../world/render-lights';
-import { standardLightingPipelineDemand } from './view-pipeline-demand';
 // @forgeax/engine-runtime - RendererState record stage: per-frame lighting.
 // feat-20260704 M5/w31: further-split from frame.ts (AC-05 <=1500 lines/file).
 // Pure leaf helpers invoked once each from recordFrame; behavior verbatim.
 
-import { vec3 } from '@forgeax/engine-math';
+import { mat4, vec3 } from '@forgeax/engine-math';
 import {
   type BindGroup,
   type BindGroupEntry,
@@ -31,9 +15,18 @@ import {
   LIGHT_TEXTURE_RESAMPLE_COMPUTE_IDENTIFIER,
   LIGHT_TEXTURE_RESAMPLE_FRAGMENT_IDENTIFIER,
 } from '@forgeax/engine-shader';
-import { err, ok, type Result } from '@forgeax/engine-types';
+import type { AssetHandle, ManifestEntry } from '@forgeax/engine-types';
+import { err, fnv1a32, ok, type Result } from '@forgeax/engine-types';
+import { meshSsboBuffer } from '../assembly/mesh-ssbo-grow';
+import { standardBloomAdmitted } from '../bloom-admission';
+import { hasCapsuleShadowDemand } from '../capsule-shadow/inspection';
 import { spotBinningSphere } from '../cluster-binner';
 import { ablateLocalLights } from '../diagnostics/render-ablation';
+import {
+  type AtmosphereViews,
+  atmosphereBindings,
+  pushAtmosphereBindingResources,
+} from '../environment/bindings';
 import {
   PointShadowAtlasBoundsViolationError,
   PointShadowAtlasUninitializedError,
@@ -73,6 +66,7 @@ import {
   writeCookieSliceMipChain,
 } from '../prepare/extended-lighting/resources';
 import type { LightTextureSource } from '../prepare/extended-lighting/spot-modifiers';
+import type { RenderResourceScope } from '../publication/resource-scope';
 import type { ReflectionProbeTable } from '../reflection/gpu-table';
 import type { ReflectionProbeSelectionResult } from '../reflection/projection';
 import type { CameraSnapshot, RenderHdrpClusterPhase } from '../render-contract';
@@ -83,6 +77,8 @@ import type {
   SkyboxSnapshot,
   SkylightSnapshot,
 } from '../render-system-extract';
+import { type FrameList, rasterRowsOf } from '../scene/frame-list';
+import { hasRasterDemand } from '../scene/raster-demand';
 import {
   SHADOW_ATLAS_DEFAULT_FACE_SIZE,
   SHADOW_ATLAS_DEFAULT_LAYERS,
@@ -90,6 +86,13 @@ import {
 } from '../shadow-atlas';
 import { getOrCreateSsaoBuffers } from '../ssao-buffers';
 import { buildSsaoUniformPayload } from '../ssao-uniform';
+import type { ViewLights } from '../world/render-lights';
+import {
+  clusterLocalLightLimit,
+  clusterLocalLights,
+  warnStandardClusterEntryCap,
+  warnStandardLocalLightCap,
+} from './cluster-local-lights';
 import { captureClusterWorkSample } from './cluster-work-conformance';
 // extendedLighting keeps Spot modifier factors on the existing light record
 // path; no additional render pass or submit owner is introduced.
@@ -111,6 +114,7 @@ import type {
   RecordProfileRunner,
   RenderSystemInternals,
 } from './render-context';
+import { standardLightingPipelineDemand } from './view-pipeline-demand';
 import { POINTS_LINES_VIEW_BYTES, SHADOW_PARAMS_BYTES, VIEW_UNIFORM_BYTES } from './view-ubo';
 
 interface StandardReflectionProbeBinding {
@@ -123,7 +127,7 @@ export function resolveReflectionProbeBinding(
   table?: ReflectionProbeTable,
 ): StandardReflectionProbeBinding {
   if (selection.kind !== 'probe') return { probeIndex: undefined, useSkylight: true };
-  const primitiveKey = `${selection.worldId}:${selection.entityKey}`;
+  const primitiveKey = `${selection.entityKey}`;
   const tableIndex = table?.cpuIndexByPrimitive(primitiveKey);
   return { probeIndex: tableIndex ?? selection.entityKey, useSkylight: false };
 }
@@ -201,6 +205,8 @@ function stockClusterMembership(
 }
 
 interface ViewBindGroupTargets {
+  readonly viewBindGroupLayout?: BindGroupLayout | undefined;
+  readonly sceneDepth?: TextureView | undefined;
   readonly directionalShadow?: TextureView | undefined;
   readonly spotShadow?: TextureView | undefined;
   readonly shadowMoments?: TextureView | undefined;
@@ -289,6 +295,9 @@ export function buildViewBindGroup(
   const keys = viewChainKeys;
   keys.length = 0;
   keys.push(pipelineState.viewUniformBuffer);
+  const viewLayout = graphTargets?.viewBindGroupLayout ?? pipelineState.viewBindGroupLayout;
+  keys.push(viewLayout);
+  if (graphTargets?.sceneDepth !== undefined) keys.push(graphTargets.sceneDepth);
   pushAtmosphereBindingResources(keys, pipelineState, graphTargets?.atmosphere);
   keys.push(b3View, shadowSampler, b5View, pipelineState.shadowParamsBuffer, b8View);
   if (extendedLightingResources !== undefined) {
@@ -314,6 +323,14 @@ export function buildViewBindGroup(
     () => {
       const entries: BindGroupEntry[] = [
         ...atmosphereBindings(pipelineState, graphTargets?.atmosphere),
+        ...(graphTargets?.sceneDepth === undefined
+          ? []
+          : [
+              {
+                binding: 1,
+                resource: { kind: 'textureView' as const, value: graphTargets.sceneDepth },
+              },
+            ]),
         {
           binding: 0,
           resource: {
@@ -483,7 +500,7 @@ export function buildViewBindGroup(
       ];
       const viewBindGroupResult = internals.device.createBindGroup({
         label: 'pbr-view-bg',
-        layout: pipelineState.viewBindGroupLayout,
+        layout: viewLayout,
         entries,
       });
       if (!viewBindGroupResult.ok) throw viewBindGroupResult.error;
@@ -510,7 +527,10 @@ export function buildPerFrameBindGroups(
   pipelineState: PipelineState,
   hasValidated: boolean,
   bindGroupCounts: BindGroupCounts,
-  graphTargets?: ViewBindGroupTargets,
+  graphTargets?: ViewBindGroupTargets & {
+    readonly viewBindGroupLayout?: BindGroupLayout;
+    readonly sceneDepth?: TextureView;
+  },
   includeView = true,
   standardLighting?: StandardTopologyInputValue,
 ): {
@@ -733,7 +753,6 @@ function prepareFrameShadowSnapshots(
   // orphan-shadow / missing-companion configuration to warn about -- castShadow
   // defaults true on the single component, so the warn condition can never
   // arise. The error class + RuntimeErrorCode member have been removed in M4 (m4-t2).
-
   // feat-20260612-point-light-shadows-urp-hdrp M3 / T-M3-2 (plan-strategy §D-1):
   // project lights.pointShadow onto frameState so the URP point shadow caster
   // pass can read the snapshot list during graph execute. Lazy-allocate the
@@ -849,7 +868,9 @@ function sameMembers(a: ReadonlySet<number>, b: ReadonlySet<number> | undefined)
   return true;
 }
 
-export function createStandardLocalLights(lights: ViewLights): StandardLocalLightInput[] {
+export function createStandardLocalLights(
+  lights: Pick<ViewLights, 'point' | 'spot' | 'rect' | 'additionalDirectional'>,
+): StandardLocalLightInput[] {
   return [
     ...lights.point.map((source) => ({
       kind: 'point' as const,
@@ -940,6 +961,40 @@ function standardScreenTransportDemand(
   );
 }
 
+/**
+ * The Cluster's local lights for one view. Over the limit the Cluster keeps
+ * the first lights in canonical order, drops the rest and warns once; within
+ * it the roster passes through untouched. A camera-less view has none.
+ */
+function admitStandardLocalLights(
+  internals: RenderSystemInternals,
+  frameState: RenderFrameState,
+  lights: ViewLights,
+  camera: CameraSnapshot | undefined,
+  slotCapacity: number | undefined,
+): {
+  readonly local: ReturnType<typeof createStandardLocalLights>;
+  readonly droppedLocalLights: number;
+} {
+  if (camera === undefined) return { local: [], droppedLocalLights: 0 };
+  const admitted = clusterLocalLights(internals, lights, slotCapacity);
+  warnStandardLocalLightCap(
+    frameState,
+    admitted,
+    clusterLocalLightLimit(internals, lights, slotCapacity),
+  );
+  if (admitted.dropped === 0)
+    return { local: ablateLocalLights(createStandardLocalLights(lights)), droppedLocalLights: 0 };
+  const kept =
+    lights.additionalDirectional === undefined
+      ? admitted.kept
+      : { ...admitted.kept, additionalDirectional: lights.additionalDirectional };
+  return {
+    local: ablateLocalLights(createStandardLocalLights(kept)),
+    droppedLocalLights: admitted.dropped,
+  };
+}
+
 function prepareStandardLightingTopology(
   internals: RenderSystemInternals,
   frameState: RenderFrameState,
@@ -958,7 +1013,15 @@ function prepareStandardLightingTopology(
   renderables?: FrameList<RenderableSnapshot>,
 ): Result<StandardTopologyInputValue, RenderError> {
   const clusterGrid = frameState.installedPipelineConfig?.clusterGrid ?? DEFAULT_CLUSTER_GRID;
-  const local = camera === undefined ? [] : ablateLocalLights(createStandardLocalLights(lights));
+  const reflectedAbi = pipelineState?.standardClusterAbi ?? internals.standardClusterAbi;
+  const lightCount = internals.standardProfile?.lightCount ?? DEFAULT_STANDARD_PROFILE.lightCount;
+  const { local, droppedLocalLights } = admitStandardLocalLights(
+    internals,
+    frameState,
+    lights,
+    camera,
+    reflectedAbi?.directLightSlot.capacity,
+  );
   const needsClusterAo = standardScreenTransportDemand(
     internals,
     frameState,
@@ -966,7 +1029,6 @@ function prepareStandardLightingTopology(
     directionalLight,
     renderables,
   );
-  const reflectedAbi = pipelineState?.standardClusterAbi ?? internals.standardClusterAbi;
   const requiresCluster =
     standardLightingPipelineDemand(
       camera !== undefined,
@@ -993,7 +1055,8 @@ function prepareStandardLightingTopology(
       near: viewCamera.near,
       far: viewCamera.far,
       grid: clusterGrid,
-      lightCount: internals.standardProfile?.lightCount ?? DEFAULT_STANDARD_PROFILE.lightCount,
+      lightCount,
+      ...(droppedLocalLights === 0 ? {} : { droppedLocalLights }),
       renderPath:
         (frameState.cameraStandardProfile ?? internals.standardProfile)?.renderPath ??
         DEFAULT_STANDARD_PROFILE.renderPath,
@@ -1003,6 +1066,12 @@ function prepareStandardLightingTopology(
     stockClusterMembership(frameState, clusterGrid),
   );
   if (!prepared.ok) return prepared;
+  if (camera !== undefined)
+    warnStandardClusterEntryCap(
+      frameState,
+      prepared.value,
+      prepared.value.layout.lightIndexListCapacity,
+    );
   // Storage-capable Standard frames keep the same Cluster ABI even when the
   // local-light corpus is empty. Directional-only scenes still need the
   // unified mesh group(2) contract so their PBR draws do not select a second
@@ -1372,12 +1441,13 @@ function captureClusterTableWork(
   },
 ): void {
   const capture = frameState.standardClusterWorkConformance;
-  if (capture === undefined || !capture.enabled) return;
+  const installed = frameState.compiledFrameGraph;
+  if (capture === undefined || !capture.enabled || installed == null) return;
   captureClusterWorkSample(capture, {
     frameNumber: frameState.frameNumber,
     viewEntityKey: camera.entityKey ?? 0,
     deviceGeneration: internals.deviceScope?.generation ?? 0,
-    graphGeneration: frameState.graphGeneration,
+    graphGeneration: installed.targets.graphGeneration,
     ...input,
   });
 }
@@ -1493,7 +1563,6 @@ function buildClusterUniformPayload(
   frameState: RenderFrameState,
   camera: CameraSnapshot,
   prepared: PreparedStandardLighting,
-  transport: StandardClusterTransport,
   hdrpBuffers: HdrpBuffers,
   reflectedAbi: StandardClusterReflectedAbi,
 ): Uint8Array {
@@ -1512,7 +1581,8 @@ function buildClusterUniformPayload(
       near: camera.near,
       far: camera.far,
       ssaoIntensity: clusterSsaoIntensity,
-      lightCount: transport.admittedLightCount,
+      lightCount: prepared.membershipLightCount,
+      directionalLightCount: prepared.local.length - prepared.membershipLightCount,
       ...(hdrpBuffers.kind === 'texture' && hdrpBuffers.layout.ao !== undefined
         ? { aoLayout: hdrpBuffers.layout.ao }
         : {}),
@@ -1605,7 +1675,6 @@ export function writeHdrpClusterAndSsaoBuffers(
     frameState,
     camera,
     prepared,
-    transport,
     hdrpBuffers,
     reflectedAbi,
   );

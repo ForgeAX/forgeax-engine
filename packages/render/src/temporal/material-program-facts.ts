@@ -17,11 +17,24 @@ const selections = new GenerationalWeakMap<
   MaterialSnapshot,
   Map<Pass, ProgramObservation> | false
 >();
+// A parameter write replaces the snapshot and keeps its program subtrees. The
+// material remembers only the fixed program inputs, so retired parameter values
+// are not retained when the next snapshot shares its program observations.
+type ProgramInputs = {
+  readonly [Name in (typeof PROGRAM_FIELDS)[number]]: MaterialSnapshot[Name];
+};
+const materialSelections = new WeakMap<
+  MaterialResource,
+  {
+    inputs: ProgramInputs;
+    entries: Map<Pass, ProgramObservation>;
+  }
+>();
 const fixedTrees = new WeakSet<object>();
 const PROGRAM_FIELDS = [
   'passes',
   'materialProgramKeys',
-  'materialEntryPoints',
+  'materialProgramInputs',
   'materialPublication',
   'materialContext',
 ] as const;
@@ -59,6 +72,32 @@ function fixedProgramSnapshot(snapshot: MaterialSnapshot): boolean {
   }
 }
 
+function sameProgramInputs(inputs: ProgramInputs, snapshot: MaterialSnapshot): boolean {
+  for (const name of PROGRAM_FIELDS) if (inputs[name] !== snapshot[name]) return false;
+  return true;
+}
+
+/** Both inputs passed the fixed proof; retain program facts without value payloads. */
+function materialProgramObservations(
+  material: MaterialResource,
+  snapshot: MaterialSnapshot,
+): Map<Pass, ProgramObservation> {
+  const latest = materialSelections.get(material);
+  if (latest !== undefined && sameProgramInputs(latest.inputs, snapshot)) return latest.entries;
+  const entries = new Map<Pass, ProgramObservation>();
+  materialSelections.set(material, {
+    inputs: {
+      passes: snapshot.passes,
+      materialProgramKeys: snapshot.materialProgramKeys,
+      materialProgramInputs: snapshot.materialProgramInputs,
+      materialPublication: snapshot.materialPublication,
+      materialContext: snapshot.materialContext,
+    },
+    entries,
+  });
+  return entries;
+}
+
 /** Only complete immutable observations can share serialization and selected facts. */
 export function retainedMaterialProgramFacts(
   material: MaterialResource,
@@ -75,7 +114,7 @@ export function retainedMaterialProgramFacts(
       selections.set(snapshot, false);
       return undefined;
     }
-    entries = new Map();
+    entries = materialProgramObservations(material, snapshot);
     selections.set(snapshot, entries);
   }
   const publicationKey = snapshot.materialProgramKeys?.[pass.name] ?? fallbackProgramKey;
@@ -118,7 +157,7 @@ export function materialProgramFact(
     selectedProgramKey,
     registryLookupKey,
     fragmentEntryPoints: Object.freeze(
-      (snapshot.materialEntryPoints?.[pass.name] ?? [])
+      (snapshot.materialProgramInputs?.[pass.name]?.entryPoints ?? [])
         .filter((entry) => entry.stage === 'fragment')
         .map((entry) => entry.name),
     ),

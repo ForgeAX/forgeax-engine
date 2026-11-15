@@ -20,7 +20,6 @@ import {
 
 type Draws = Map<number, readonly GpuDrivenBatch[]>;
 type Meshes = Map<number, Draws>;
-type Worlds = Map<number, Meshes>;
 
 function sameGeometry(
   source: RenderableSnapshot,
@@ -72,7 +71,7 @@ export class GpuDrawSelection {
     );
   }
   /** Source-addressed index by material, or by group for row-material batches. */
-  #materials: Map<MaterialResource | RowMaterialGroup, Worlds> | undefined;
+  #materials: Map<MaterialResource | RowMaterialGroup, Meshes> | undefined;
   /** Row-material groups of the index; one per batch class. */
   readonly #groups: RowMaterialGroup[] = [];
   /** Owned executions per shared binding; selections diff these to retain derived answers. */
@@ -116,23 +115,18 @@ export class GpuDrawSelection {
     return changed;
   }
 
-  private get materials(): Map<MaterialResource | RowMaterialGroup, Worlds> {
+  private get materials(): Map<MaterialResource | RowMaterialGroup, Meshes> {
     if (this.#materials !== undefined) return this.#materials;
-    const materials = new Map<MaterialResource | RowMaterialGroup, Worlds>();
+    const materials = new Map<MaterialResource | RowMaterialGroup, Meshes>();
     for (const owned of this.#byBinding.values())
       for (const batch of owned) {
         const binding = batch.binding as GpuDrivenBatchBinding;
         const key = gpuDrawCoverageKey(binding);
-        let worlds = materials.get(key);
-        if (worlds === undefined) {
-          worlds = new Map();
-          materials.set(key, worlds);
-          if (binding.rowGroup !== undefined) this.#groups.push(binding.rowGroup);
-        }
-        let meshes = worlds.get(binding.worldId);
+        let meshes = materials.get(key);
         if (meshes === undefined) {
           meshes = new Map();
-          worlds.set(binding.worldId, meshes);
+          materials.set(key, meshes);
+          if (binding.rowGroup !== undefined) this.#groups.push(binding.rowGroup);
         }
         let draws = meshes.get(binding.assetHandle);
         if (draws === undefined) {
@@ -184,7 +178,6 @@ export class GpuDrawSelection {
     }
     return materials
       .get(group ?? material)
-      ?.get(source.worldId)
       ?.get(source.assetHandle)
       ?.get(gpuDrivenSourceDrawItemIndex(draw, compactIndex));
   }
@@ -194,9 +187,16 @@ export class GpuDrawSelection {
    * uncovered binding keeps a CPU-recorded residual draw.
    */
   coversBinding(binding: GpuDrivenBatchBinding): boolean {
+    const source = binding.source;
+    return source === undefined
+      ? this.coversExecution(binding)
+      : source.draws.every((draw) => this.coversExecution(draw.binding));
+  }
+
+  /** A Mesh source owns all submeshes; one executed submesh cannot cover its CPU residuals. */
+  private coversExecution(binding: GpuDrivenBatchBinding): boolean {
     const owned = this.materials
       .get(gpuDrawCoverageKey(binding))
-      ?.get(binding.worldId)
       ?.get(binding.assetHandle)
       ?.get(binding.drawItemIndex);
     return (

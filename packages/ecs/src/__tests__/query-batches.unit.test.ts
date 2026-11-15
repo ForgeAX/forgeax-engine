@@ -12,6 +12,32 @@ const Position = defineComponent('BatchPosition', { x: 'f32' });
 const Tint = defineComponent('BatchTint', { alpha: 'f32' });
 const Active = defineComponent('BatchActive', {}, { storage: 'sparse' });
 
+it('keeps sparse batches generation-correct after removing and recycling a selected entity', () => {
+  const world = new World();
+  const first = world
+    .spawn({ component: Position, data: { x: 7 } }, { component: Active, data: {} })
+    .unwrap();
+  const query = world.query({ read: [Position], with: [Active] }).unwrap();
+  const batches = query.batches().unwrap();
+  world.despawn(first).unwrap();
+  const replacement = world.spawn({ component: Position, data: { x: 31 } }).unwrap();
+  expect(replacement).not.toBe(first);
+  expect(Array.from(batches)).toHaveLength(0);
+  world.addComponent(replacement, { component: Active, data: {} }).unwrap();
+  const selected: { entity: number; x: number }[] = [];
+  for (const batch of batches) {
+    const entities = batch.entities;
+    const x = batch.read(Position, 'x');
+    for (let index = 0; index < batch.count; index++) {
+      const row = batch.kind === 'indexed' ? (batch.rows[index] as number) : batch.start + index;
+      selected.push({ entity: entities[row] as number, x: x[row] as number });
+    }
+  }
+  expect(selected).toEqual([{ entity: replacement, x: 31 }]);
+  world.removeComponent(replacement, Active).unwrap();
+  expect(Array.from(batches)).toHaveLength(0);
+});
+
 describe('physical query batches', () => {
   it('reads sparse physical rows and optional columns without gathering', () => {
     const world = new World();

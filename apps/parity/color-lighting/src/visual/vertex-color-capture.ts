@@ -434,7 +434,8 @@ async function copyForgeaxObservation(
 }
 
 
-function setupWorld(assets: AssetRegistry, fixture: VertexColorSemanticFixture, forceWhite = false): World {
+function setupWorld(assets: AssetRegistry, fixture: VertexColorSemanticFixture, forceWhite = false,
+): World {
   const world = new World({ assets });
   const alphaCutoff = typeof fixture.alphaCutoff === 'number' ? fixture.alphaCutoff : undefined;
   const material = Materials.unlit([1, 1, 1, 1], {
@@ -462,11 +463,11 @@ function setupWorld(assets: AssetRegistry, fixture: VertexColorSemanticFixture, 
       component: Camera,
       data: {
         ...perspective({ fov: Math.PI / 4, aspect: 1 }),
-        // The producer reads the renderer-owned linear-HDR observation below.
-        // Explicitly opt into the linear output-transform path; the camera's
-        // zero-config tonemap path writes directly to the display surface and
-        // intentionally publishes no HDR observation attachment.
-        tonemap: TONEMAP_LINEAR,
+          // The producer reads the renderer-owned linear-HDR observation below.
+          // Explicitly opt into the linear output-transform path; the camera's
+          // zero-config tonemap path writes directly to the display surface and
+          // intentionally publishes no HDR observation attachment.
+          tonemap: TONEMAP_LINEAR,
         clearColor: [0, 0, 0, 1],
       },
     },
@@ -492,7 +493,7 @@ async function captureForgeaxWithAssembly(
       world.update().unwrap();
       finalReceipt = await drawReadyFrame(
         renderer,
-        { leases: [lease], camera: { lease }, environment: { lease } },
+        { source: lease },
         frame === FRAME_COUNT - 1 ? ['final-display'] : undefined,
       );
     }

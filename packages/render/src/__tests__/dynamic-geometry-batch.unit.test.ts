@@ -1,13 +1,13 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { runtimeAssetRegistry, runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
-import { FixedTime, FixedUpdate, World } from '@forgeax/engine-ecs';
+import { defineSystem, FixedTime, FixedUpdate, World } from '@forgeax/engine-ecs';
 import { vec3 } from '@forgeax/engine-math';
+import { PhysicsWorldResource } from '@forgeax/engine-physics';
+import { createRapier3DPhysicsWorld, loadRapier3D } from '@forgeax/engine-physics-rapier3d';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { Transform } from '@forgeax/engine-scene';
 import { err, type MeshAsset, ok } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
-import { createRapier3DPhysicsWorld } from '../../../physics-rapier3d/src/rapier-physics-world-3d';
-import { loadRapier3D } from '../../../physics-rapier3d/src/wasm-loader';
 import {
   createDynamicGeometryHost,
   createRendererDynamicGeometryHost,
@@ -251,7 +251,7 @@ describe('dynamic geometry batch admission', () => {
     expect(f.handles()).not.toEqual(old);
     expect(accepted.map((candidate) => candidate.state)).toEqual(['accepted', 'accepted']);
     expect(f.topologyChanged).toHaveBeenCalledTimes(1);
-    const receipts = f.host.publishDynamicGeometry({ frameId: 1, deviceGeneration: 1 });
+    const receipts = f.host.publishDynamicGeometry({ frameId: 1, deviceGeneration: 1 }, f.world);
     expect(receipts.map((receipt) => receipt.candidateId).sort()).toEqual(
       prepared.map((candidate) => candidate.candidateId).sort(),
     );
@@ -279,7 +279,7 @@ describe('dynamic geometry batch admission', () => {
       false,
     );
     expect(f.handles()).toEqual(old);
-    const receipts = f.host.publishDynamicGeometry({ frameId: 1, deviceGeneration: 1 });
+    const receipts = f.host.publishDynamicGeometry({ frameId: 1, deviceGeneration: 1 }, f.world);
     expect(receipts.map((receipt) => receipt.candidateId).sort()).toEqual(
       prior.map((candidate) => candidate.candidateId).sort(),
     );
@@ -291,7 +291,7 @@ describe('dynamic geometry batch admission', () => {
     const f = await fixture();
     const ordering = { world: f.world, fixedStep: 0 };
     const prior = f.host.acceptDynamicGeometryCandidates(f.prepare(1), ordering).unwrap();
-    f.host.publishDynamicGeometry({ frameId: 1, deviceGeneration: 1 });
+    f.host.publishDynamicGeometry({ frameId: 1, deviceGeneration: 1 }, f.world);
     const pending = f.prepare(2);
     const before = f.snapshot(pending);
     const priorReceipts = prior.map((candidate) => f.host.dynamicGeometryReceipt(candidate));
@@ -439,7 +439,7 @@ describe('dynamic geometry batch admission', () => {
       expect(f.handles()).toEqual(before);
       expect(f.host.dynamicGeometryFault(f.world)).toBeDefined();
       expect(
-        dynamicGeometryFrameError([f.world], (world) => f.host.dynamicGeometryFault(world)),
+        dynamicGeometryFrameError(f.world, (world) => f.host.dynamicGeometryFault(world)),
       ).toBeDefined();
       expect(() =>
         f.host.acceptDynamicGeometryCandidates(next, { world: f.world, fixedStep: 0 }),
@@ -466,7 +466,7 @@ describe('dynamic geometry batch admission', () => {
       expect(f.handles()).not.toEqual(before);
       expect(f.host.dynamicGeometryFault(f.world)).toBeDefined();
       expect(
-        dynamicGeometryFrameError([f.world], (world) => f.host.dynamicGeometryFault(world)),
+        dynamicGeometryFrameError(f.world, (world) => f.host.dynamicGeometryFault(world)),
       ).toBeDefined();
     } finally {
       f.store.destroyAll();
@@ -504,7 +504,7 @@ describe('dynamic geometry batch admission', () => {
       );
       expect(f.host.dynamicGeometryFault(f.world)).toBeDefined();
       expect(
-        dynamicGeometryFrameError([f.world], (world) => f.host.dynamicGeometryFault(world)),
+        dynamicGeometryFrameError(f.world, (world) => f.host.dynamicGeometryFault(world)),
       ).toBeDefined();
     } finally {
       vi.restoreAllMocks();
@@ -520,7 +520,7 @@ describe('dynamic geometry batch admission', () => {
     try {
       physics.setGravity(vec3.create(0, 0, 0));
       physics.setMoveContext(f.world, Transform);
-      f.world.insertResource('PhysicsWorld', physics);
+      f.world.insertResource(PhysicsWorldResource, physics);
       f.entities.forEach((entity, index) => {
         physics.ensureBody(
           Number(entity),
@@ -540,9 +540,12 @@ describe('dynamic geometry batch admission', () => {
           undefined,
         );
       });
-      f.world
-        .addSystem(FixedUpdate, { name: 'dynamic-geometry-test-clock', queries: [], fn: () => {} })
-        .unwrap();
+      const systemToken1 = defineSystem({
+        name: 'dynamic-geometry-test-clock',
+        queries: [],
+        fn: () => {},
+      });
+      f.world.addSystem(FixedUpdate, systemToken1).unwrap();
       f.world.update(1 / 60).unwrap();
       expect(f.world.getResource(FixedTime).tick).toBe(1);
 
@@ -552,7 +555,7 @@ describe('dynamic geometry batch admission', () => {
           fixedStep: f.world.getResource(FixedTime).tick,
         })
         .unwrap();
-      f.host.publishDynamicGeometry({ frameId: 1, deviceGeneration: 1 });
+      f.host.publishDynamicGeometry({ frameId: 1, deviceGeneration: 1 }, f.world);
       const pending = f.prepare(2, true);
       const before = f.snapshot(pending);
       const priorReceipts = prior.map((candidate) => f.host.dynamicGeometryReceipt(candidate));

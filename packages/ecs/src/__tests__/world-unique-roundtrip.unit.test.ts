@@ -99,7 +99,7 @@ function buildCases(w: World): RoundCase[] {
     {
       vocab: 'unique<T>',
       Component: Mat as unknown as Component,
-      // The ref<T> vocab requires alloc'ing a handle into the World's
+      // The unique<T> vocab requires alloc'ing a handle into the World's
       // UniqueRefStore. The generators alloc inside the round (after the
       // counter snapshot), so the closing despawn / set / removeComponent
       // path must release them back to net-zero.
@@ -133,7 +133,7 @@ describe('world managed round-trip net-zero matrix (feat-20260614 M2 / AC-12)', 
         const c = cases.find((cs) => cs.vocab === vocab);
         if (!c) throw new Error('case missing');
 
-        // Snapshot counters BEFORE any value generation. ref<T>'s value
+        // Snapshot counters BEFORE any value generation. unique<T>'s value
         // generator alloc's into the World's UniqueRefStore inside the
         // round, so the round's full release-dispatch must net-zero those
         // back to 0 by the end of despawn.
@@ -160,7 +160,7 @@ describe('world managed round-trip net-zero matrix (feat-20260614 M2 / AC-12)', 
         const c = cases.find((cs) => cs.vocab === vocab);
         if (!c) throw new Error('case missing');
 
-        // Snapshot before any v1/v3 alloc so ref<T>'s allocator hits land
+        // Snapshot before any v1/v3 alloc so unique<T>'s allocator hits land
         // inside the round; the closing despawn must release both the
         // v1-released-by-removeComponent and the v3-installed-by-addComponent
         // payloads to net-zero the counters.

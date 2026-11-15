@@ -116,8 +116,8 @@ function createRecoveryGraphHarness(texture = false, sharedInternals?: RenderSys
       lights = {
         ...lights,
         directionalCsmConfig: enabled
-          ? undefined
-          : ({ staticShadowCache: false } as ViewLights['directionalCsmConfig']),
+          ? ({ staticShadowCache: true } as ViewLights['directionalCsmConfig'])
+          : undefined,
       };
     },
     setDevice(nextDevice: RhiDevice) {
@@ -270,7 +270,7 @@ describe('detached recovery graph execution boundary', () => {
     const harness = createRecoveryGraphHarness();
     harness.setDevice(device);
     harness.setCascadeCount(1);
-    const originalRoots = [{ worldId: 0, entityKey: 7 }];
+    const originalRoots = [{ entityKey: 7 }];
     const original = harness.compile(1, originalRoots);
     if (original === null) throw new Error('initial Terrain graph failed');
     harness.accept();
@@ -292,7 +292,7 @@ describe('detached recovery graph execution boundary', () => {
       inspect.mockClear();
       harness.setFail(true);
       // Pending admission and failed-build fallback both refuse changed roots.
-      expect(harness.compile(1, [{ worldId: 1, entityKey: 7 }])).toBeNull();
+      expect(harness.compile(1, [{ entityKey: 8 }])).toBeNull();
       expect(parse).toHaveBeenCalledTimes(2);
       expect(inspect).not.toHaveBeenCalled();
       expect(harness.frameState.compiledFrameGraph?.graph).toBe(original);
@@ -313,8 +313,8 @@ describe('detached recovery graph execution boundary', () => {
     const harness = createRecoveryGraphHarness();
     harness.setDevice(device);
     harness.setCascadeCount(4);
-    const originalRoots = [{ worldId: 0, entityKey: 7 }];
-    const replacementRoots = [{ worldId: 1, entityKey: 7 }];
+    const originalRoots = [{ entityKey: 7 }];
+    const replacementRoots = [{ entityKey: 8 }];
     const original = harness.compile(1, originalRoots);
     if (original === null) throw new Error('original Terrain graph failed');
     harness.accept();
@@ -361,24 +361,24 @@ describe('detached recovery graph execution boundary', () => {
     const cached = harness.compile();
     if (cached === null) throw new Error('cached graph failed');
     harness.accept();
-    expect(directional()).toEqual({ mapSize: 16, cascadeCount: 3 });
+    expect(directional()).toEqual({ mapSize: 16, cascadeCount: 3, staticLayer: false });
     expect(harness.compile()).toBe(cached);
+
+    harness.setStaticShadowCache(true);
+    const layered = harness.compile();
+    if (layered === null) throw new Error('static-layer graph failed');
+    expect(layered).not.toBe(cached);
+    harness.accept();
+    expect(directional()).toEqual({ mapSize: 16, cascadeCount: 3 });
+    expect(harness.compile()).toBe(layered);
 
     harness.setStaticShadowCache(false);
     const single = harness.compile();
     if (single === null) throw new Error('single-layer graph failed');
-    expect(single).not.toBe(cached);
+    expect(single).not.toBe(layered);
     harness.accept();
     expect(directional()).toEqual({ mapSize: 16, cascadeCount: 3, staticLayer: false });
-    expect(harness.compile()).toBe(single);
-
-    harness.setStaticShadowCache(true);
-    const restored = harness.compile();
-    if (restored === null) throw new Error('restored graph failed');
-    expect(restored).not.toBe(single);
-    harness.accept();
-    expect(directional()).toEqual({ mapSize: 16, cascadeCount: 3 });
-    await restored.retire();
+    await single.retire();
   });
 
   it('rejects an exhausted Terrain layer carrier instead of falling back to an accepted graph', async () => {
@@ -390,12 +390,12 @@ describe('detached recovery graph execution boundary', () => {
     const harness = createRecoveryGraphHarness();
     harness.setDevice(device);
     harness.setCascadeCount(4);
-    const originalRoots = [{ worldId: 0, entityKey: 1 }];
+    const originalRoots = [{ entityKey: 1 }];
     const graph = harness.compile(1, originalRoots);
     if (graph === null) throw new Error('original Terrain graph failed');
     harness.accept();
     const accepted = harness.frameState.compiledFrameGraph;
-    const exhausted = Array.from({ length: 64 }, (_, entityKey) => ({ worldId: 0, entityKey }));
+    const exhausted = Array.from({ length: 64 }, (_, entityKey) => ({ entityKey }));
     expect(harness.compile(1, exhausted)).toBeNull();
     expect(harness.frameState.compiledFrameGraph).toBe(accepted);
     expect(harness.compile(1, originalRoots)).toBe(graph);
@@ -455,13 +455,15 @@ describe('detached recovery graph execution boundary', () => {
     const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
     const harness = createRecoveryGraphHarness();
     harness.setDevice(device);
+    const previousGeneration = harness.frameState.graphGeneration;
 
     const graph = harness.compile();
     if (graph === null) throw new Error('compile failed');
     const installed = harness.frameState.compiledFrameGraph;
     expect(installed?.graph).toBe(graph);
     expect(installed?.topologyKey).toEqual(expect.any(String));
-    expect(installed?.targets.graphGeneration).toBe(harness.frameState.graphGeneration);
+    expect(installed?.targets.graphGeneration).toBe(graph.inspect().generation);
+    expect(harness.frameState.graphGeneration).toBe(previousGeneration + 1);
     harness.accept();
     expect(harness.compile()).toBe(graph);
     expect(harness.frameState.compiledFrameGraph).toBe(installed);

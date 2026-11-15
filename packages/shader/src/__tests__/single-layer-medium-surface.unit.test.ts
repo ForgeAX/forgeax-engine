@@ -23,11 +23,12 @@ describe('single-layer medium shader model', () => {
     expect(template).toContain('surfaceInput.instanceIndex = frame.instanceIndex');
     expect(template).toContain('@group(3) @binding(6) var<uniform> surfaceDirectAddress');
     expect(template).toContain('return surfaceDirectAddress.frameBase + instanceIndex;');
-    expect(template).toContain(
-      'return surfaceVertex(vertex, meshes[0u].worldFromLocal, instances[instanceIndex].localFromInstance, view.worldViewProj, view.cameraPos, view.inverseViewProj, view.temporalProjection.z >= 0.5, surfaceInstanceIndex, 0u, vec2<u32>(0u));',
+    const vertexSource = template.replace(/\s+/g, ' ');
+    expect(vertexSource).toContain(
+      'return surfaceVertex(vertex, meshes[0u].worldFromLocal, instances[transformIndex].localFromInstance, meshes[0u].previousWorldFromLocal, instances[transformIndex].previousLocalFromInstance, view.worldViewProj, view.cameraPos, view.inverseViewProj, view.temporalProjection.z >= 0.5, surfaceInstanceIndex, 0u, vec2<u32>(0u), meshMotionValid(meshes[0u].temporal.y));',
     );
-    expect(template).toContain(
-      'return surfaceVertex(vertex, draw.world, SCENE_INDEX_LOCAL_IDENTITY, view.worldViewProj, view.cameraPos, view.inverseViewProj, view.temporalProjection.z >= 0.5, visibleItem.z, visibleItem.y, draw.probe);',
+    expect(vertexSource).toContain(
+      'return surfaceVertex(vertex, draw.world, SCENE_INDEX_LOCAL_IDENTITY, draw.previousWorld, SCENE_INDEX_LOCAL_IDENTITY, view.worldViewProj, view.cameraPos, view.inverseViewProj, view.temporalProjection.z >= 0.5, visibleItem.z, visibleItem.y, draw.probe, meshMotionValid(draw.temporal.y));',
     );
     expect(template).toContain(
       'return select(cameraPos - worldPosition, nearWorld - farWorld, orthographic);',
@@ -66,7 +67,15 @@ describe('single-layer medium shader model', () => {
     expect(template).toContain('dot(endpoint - surfacePosition, surfaceNormal)');
     expect(template).toContain('mediumOneMinusExpNeg');
     expect(template).toContain('if (extinction <= 0.0)');
-    expect(template).toContain('sampleIblDiffuse');
+    expect(template).toContain(
+      '#import forgeax_pbr::standard_lighting::{SkylightUniforms, sampleSkylightDiffuse, sampleSkylightRadiance}',
+    );
+    expect(template.replace(/\s+/g, ' ')).toContain(
+      'sampleSkylightDiffuse( mediumSkylight, normal, mediumIrradianceMap, mediumIrradianceSampler, )',
+    );
+    expect(source('standard-lighting.wgsl')).toContain(
+      'return sampleIblDiffuse(normal, rotation, irradianceMap, irradianceSampler)',
+    );
     expect(template).toContain('evaluateProbeDiffuse');
     expect(template).toContain('u32(probeHeader.x) + 1u == probeIdentity.x');
     expect(template).toContain('u32(probeHeader.y) == probeIdentity.y');

@@ -1,3 +1,4 @@
+import { World } from '@forgeax/engine-ecs';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { err, ok } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
@@ -136,8 +137,7 @@ async function fixture() {
       {
         identity: 'main',
         render: true,
-        worlds: [],
-        owner: 1,
+        world: new World(),
         frameNumber: number,
         generation,
         caps: device.caps,

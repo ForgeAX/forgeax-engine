@@ -52,9 +52,10 @@ describe('device-owned automatic Standard path', () => {
   });
   it('validates automatic profile fields and still rejects malformed author intent', () => {
     expect(validateRenderProfile(profile)).toBeUndefined();
-    expect(
-      validateRenderProfile({ ...profile, lightCount: 17 } as unknown as RenderProfile),
-    ).toContain('lightCount');
+    for (const lightCount of [1, 17, 256, 1024])
+      expect(validateRenderProfile({ ...profile, lightCount })).toBeUndefined();
+    for (const lightCount of [0, 1025, 2.5, Number.NaN])
+      expect(validateRenderProfile({ ...profile, lightCount })).toContain('lightCount');
     expect(
       validateRenderProfile({ ...profile, extra: true } as unknown as RenderProfile),
     ).toContain('extra');

@@ -1,7 +1,22 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { RasterGraphIdentity } from '../gpu-driven/raster-graph-identity';
 
 const resources = 1;
+
+it('compares class membership without sorting changing rosters', () => {
+  const owner = new RasterGraphIdentity();
+  const batches = ['z', 'a', 'm'].map((key) => ({ classKey: key, recordingClassKey: key }));
+  const sort = vi.spyOn(Array.prototype, 'sort');
+  try {
+    const first = { ...owner.update({}, 1, 1, batches, {}, undefined) };
+    const shuffled = owner.update({}, 1, 1, [...batches].reverse(), {}, undefined);
+    expect(shuffled.raw).toBe(first.raw);
+    expect(shuffled.recording).toBe(first.recording);
+    expect(sort).not.toHaveBeenCalled();
+  } finally {
+    sort.mockRestore();
+  }
+});
 
 describe('raster graph dependency projections', () => {
   it('retains only the stock identity across physical mesh replacement', () => {

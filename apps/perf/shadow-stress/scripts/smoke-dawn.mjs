@@ -4,14 +4,14 @@ import { encodePng } from '@forgeax/engine-image/png';
 // same Vite bundle served by the browser path. Only requestAnimationFrame
 // receives a synthetic timestamp; performance.now stays real so the profiler
 // records actual CPU phase durations.
-
 import { bindSmokeCanvasWindow } from '../../../../scripts/smoke-platform.mjs';
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { emitSmokeReceipt } from '../../../shared/scripts/smoke-receipt.mjs';
+import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 
 const TAG = '[perf-shadow-stress/dawn]';
 const here = dirname(fileURLToPath(import.meta.url));
@@ -34,7 +34,7 @@ function fail(message) {
 const entryName = readdirSync(resolve(distRoot, 'assets')).find((name) => /^index-.*\.js$/u.test(name));
 if (entryName === undefined) fail('dist entry missing; run the app build first');
 const entryPath = resolve(distRoot, 'assets', entryName);
-const manifestBody = readFileSync(resolve(distRoot, 'shaders', 'manifest.json'), 'utf8');
+const manifestBody = readShaderManifestText(resolve(distRoot, 'shaders', 'manifest.json'));
 
 let create;
 let globals;
@@ -149,6 +149,11 @@ const waitDeadline = Date.now() + 60_000;
 while (globalThis.__forgeaxShadowStress === undefined && Date.now() < waitDeadline) await delay(10);
 if (globalThis.__forgeaxShadowStress === undefined) fail('app did not finish bootstrap within 60s');
 const evidence = globalThis.__forgeaxShadowStress;
+for (const field of ['completedFrames', 'preparationCompletedFrames', 'warmupFrames', 'profileFrames', 'sampleFrames']) {
+  if (!Number.isSafeInteger(evidence[field]) || evidence[field] < 0) {
+    fail(`published app evidence has invalid ${field}; refresh the owning app output before this smoke`);
+  }
+}
 const { warmupFrames, profileFrames, sampleFrames } = evidence;
 const targetFrames = warmupFrames + profileFrames + sampleFrames + 1;
 

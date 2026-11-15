@@ -1,0 +1,57 @@
+{
+  "name": "@forgeax/water-body-query",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "scripts": { "dev": "node ../../../scripts/vite-app.mjs dev --host 127.0.0.1", "build": "node ../../../scripts/vite-app.mjs build", "typecheck": "tsc --noEmit" },
+  "dependencies": {
+    "@forgeax/apps-shared": "workspace:*",
+    "@forgeax/engine": "workspace:*",
+    "@forgeax/engine-water": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-terrain": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-pack": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/engine-vite-plugin-pack": "workspace:*",
+    "@forgeax/engine-vite-plugin-rhi-debug": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "playwright": "^1.56.1",
+    "pngjs": "^7.0.0",
+    "typescript": "6.0.3",
+    "vite": "8.3.5"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": true,
+        "path": "dist",
+        "compression": "gzip"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "The generic FPS reporter samples requestAnimationFrame rather than completed Engine frames; no dedicated completed-frame FPS metric is declared for this app."
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "Interactive body queries have no dedicated benchmark suite or registered benchmark report protocol."
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "The visual smoke requires a separately running Vite server and caller-selected evidence output; no standalone metric gate is provided."
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "This maintained Water demo has no spike report."
+      }
+    }
+  }
+}

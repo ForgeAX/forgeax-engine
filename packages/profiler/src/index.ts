@@ -14,13 +14,19 @@ export { compareProfileCaptures } from './compare.js';
 /** Structured expected-failure vocabulary for profiler operations. */
 export type { ProfilerError, ProfilerErrorCode } from './errors.js';
 export type {
+  ProfileDurationDistribution,
   ProfileFrameModel,
   ProfileModel,
+  ProfilePhaseInvocationModel,
   ProfilePhaseModel,
   ProfileSummaryModel,
 } from './model.js';
 /** Projects a validated capture into offline frame and phase summaries. */
-export { buildProfileModel } from './model.js';
+export {
+  type BuildProfileModelOptions,
+  buildProfileModel,
+  type ProfileRecordOrderEvidence,
+} from './model.js';
 /** Bounded CPU profiler capability; it is inert until a host passes it to App or Render. */
 export type { Profiler } from './profiler.js';
 /** Creates an opt-in bounded profiler with optional sink and allocation evidence. */
@@ -32,8 +38,10 @@ export type {
   ProfileAllocationReport,
   ProfileCapture,
   ProfileCompleteness,
+  ProfileCompletionCpuObservation,
   ProfileFrameToken,
   ProfilePhaseRecord,
+  ProfileReceiptCompletionIdentity,
   ProfileRecord,
   ProfileResult,
   ProfileSink,

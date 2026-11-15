@@ -12,6 +12,7 @@ import {
   RECORDED_CAPABILITY_FEATURES,
   requiredReplayDescriptorFeatures,
   usesAccelerationStructures,
+  usesFilterableFloat32Textures,
 } from './device-request';
 import {
   encodeAccelerationStructureBuild,
@@ -457,24 +458,32 @@ function requiredReplayCapabilities(tape: Tape): ReadonlySet<string> {
     ...tape.bootstrap.map((resource) => resource.create as unknown as RhiCallEvent),
     ...tape.events,
   ];
+  if (usesFilterableFloat32Textures(tape)) required.add('float32Filterable');
   for (const event of events) {
     switch (event.kind) {
       case 'createTexture': {
-        const formats = [event.desc.format, ...(event.desc.viewFormats ?? [])];
-        for (const format of formats) {
-          const compression = textureCompressionFeature(format);
-          const capability = RECORDED_CAPABILITY_FEATURES.find(
-            ([, feature]) => feature === compression,
-          )?.[0];
-          if (capability !== undefined) required.add(capability);
-          if (format === 'rgba16float') required.add('rgba16floatRenderable');
-          if (format === 'rg11b10ufloat' && (event.desc.usage & 0x10) !== 0) {
-            required.add('rg11b10ufloatRenderable');
+        const collectTextureCapabilities = () => {
+          const formats = [event.desc.format, ...(event.desc.viewFormats ?? [])];
+          for (const format of formats) {
+            const compression = textureCompressionFeature(format);
+            const capability = RECORDED_CAPABILITY_FEATURES.find(
+              ([, feature]) => feature === compression,
+            )?.[0];
+            if (capability !== undefined) required.add(capability);
+            if (format === 'rgba16float' && (event.desc.usage & 0x10) !== 0)
+              required.add('rgba16floatRenderable');
+            if (format === 'rgba32float' && (event.desc.usage & 0x10) !== 0)
+              required.add('rgba32floatRenderable');
+            if (format === 'rgba16float' && (event.desc.usage & 0x08) !== 0)
+              required.add('rgba16floatStorage');
+            if (format === 'rgba32float' && (event.desc.usage & 0x08) !== 0)
+              required.add('rgba32floatStorage');
+            if (format === 'rg11b10ufloat' && (event.desc.usage & 0x10) !== 0) {
+              required.add('rg11b10ufloatRenderable');
+            }
           }
-          if (format === 'r32float' || format === 'rg32float' || format === 'rgba32float') {
-            required.add('float32Filterable');
-          }
-        }
+        };
+        collectTextureCapabilities();
         break;
       }
       case 'createBindGroupLayout':

@@ -6,6 +6,16 @@ import { Mobility } from './components/mobility';
 import { MorphWeights } from './components/morph-weights';
 import { Name } from './components/name';
 import { GlobalTransform, Transform } from './components/transform';
+import {
+  WaterBodyInstance,
+  WaterContactProbeSet,
+  WaterExclusionVolume,
+  WaterFluidSimulation,
+  WaterPontoonSet,
+  WaterShallowCollider,
+  WaterTerrainProvider,
+  WaterZoneInstance,
+} from './components/water';
 import { TransformInterpolation } from './presentation';
 import { registerMobilityStaticMoved } from './systems/mobility-static-moved';
 import { registerPropagateTransforms } from './systems/propagate-transforms';
@@ -19,6 +29,14 @@ const SCENE_COMPONENTS: readonly Component[] = [
   Transform,
   GlobalTransform,
   TransformInterpolation,
+  WaterBodyInstance,
+  WaterZoneInstance,
+  WaterTerrainProvider,
+  WaterExclusionVolume,
+  WaterPontoonSet,
+  WaterFluidSimulation,
+  WaterContactProbeSet,
+  WaterShallowCollider,
 ];
 
 function registerSceneComponents(world: World): () => void {

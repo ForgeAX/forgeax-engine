@@ -47,7 +47,7 @@ export function runtimeTerrainFixture(input: Omit<TerrainSource, 'layers' | 'wei
     .unwrap();
   const rows: RenderableSnapshot[] = [],
     dispatch: DispatchEntry[] = [];
-  extractTerrainSources(world, assets, undefined, 0, rows, dispatch);
+  extractTerrainSources(world, assets, undefined, rows, dispatch);
   const source = rows[0];
   if (source === undefined) throw new Error('Expected admitted Terrain source');
   return { assets, world, handle, source, entity };

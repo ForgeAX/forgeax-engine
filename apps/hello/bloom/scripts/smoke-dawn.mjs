@@ -330,6 +330,7 @@ const { Transform } = scenePkg;
 
 
 const here = dirname(fileURLToPath(import.meta.url));
+const evidenceDir = resolve(process.env.SMOKE_EVIDENCE_DIR ?? resolve(here, '..', 'evidence'));
 const repoRoot = resolve(here, '..', '..', '..', '..');
 const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
 const MANIFEST_URL = URL.createObjectURL(new Blob([readFileSync(MANIFEST_PATH)], { type: 'application/json' }));
@@ -941,8 +942,8 @@ const performanceEvidence = CAPTURE_GPU_TIMINGS
   : undefined;
 let timingFailure;
 if (performanceEvidence !== undefined) {
-  const performancePath = resolve(here, '..', 'evidence', 'performance-dawn-result.json');
-  mkdirSync(resolve(here, '..', 'evidence'), { recursive: true });
+  const performancePath = resolve(evidenceDir, 'performance-dawn-result.json');
+  mkdirSync(evidenceDir, { recursive: true });
   writeFileSync(performancePath, `${JSON.stringify(performanceEvidence, null, 2)}\n`);
   console.log(`[smoke] performance evidence=${performancePath}`);
   if (performanceEvidence.measurement.status !== 'pass') {
@@ -1032,8 +1033,8 @@ const sourceRevision = execFileSync('git', ['rev-parse', 'HEAD'], {
   encoding: 'utf8',
 }).trim();
 const evidenceFileName = FALSIFY_BLOOM ? 'falsify-dawn-result.json' : 'dawn-result.json';
-const evidencePath = resolve(here, '..', 'evidence', evidenceFileName);
-mkdirSync(resolve(here, '..', 'evidence'), { recursive: true });
+const evidencePath = resolve(evidenceDir, evidenceFileName);
+mkdirSync(evidenceDir, { recursive: true });
 writeFileSync(
   evidencePath,
   `${JSON.stringify(

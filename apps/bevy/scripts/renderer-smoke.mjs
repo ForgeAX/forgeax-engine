@@ -42,11 +42,7 @@ export async function drawSmokeFrame(renderer, world) {
   }
   return {
     ok: true,
-    value: await drawReadyFrame(renderer, {
-      leases: [lease],
-      camera: { lease },
-      environment: { lease },
-    }),
+    value: await drawReadyFrame(renderer, { source: lease }),
   };
 }
 

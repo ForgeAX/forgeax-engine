@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
-import { VIDEO_SOURCE_PROVIDER_KEY, VideoPlayer, type VideoSourceProvider } from '@forgeax/engine-graphics-extras';
+import { VIDEO_SOURCE_PROVIDER_KEY, VideoPlayer } from '@forgeax/engine-graphics-extras';
 import { Transform } from '@forgeax/engine-scene';
 import { World } from '@forgeax/engine-ecs';
 import {
@@ -32,7 +32,7 @@ describe('game-default guided WebM hit context', () => {
     expect(panel).toBeDefined();
     if (panel === undefined) return;
 
-    const provider = world.getResource<VideoSourceProvider>(VIDEO_SOURCE_PROVIDER_KEY);
+    const provider = world.getResource(VIDEO_SOURCE_PROVIDER_KEY);
     expect(provider.getSource(panel.entity, panel.videoHandle)).toBe(video);
     panel.toggle();
     expect(panel.snapshot()).toMatchObject({ active: 'video', hitReactions: 0, lastHitPlayhead: null });

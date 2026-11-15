@@ -29,9 +29,5 @@ createRenderer(canvas).then((created) => {
   if (!created.ok) return;
   const attached = created.value.attach(world);
   if (!attached.ok) return;
-  void created.value.draw({
-    leases: [attached.value],
-    camera: { lease: attached.value },
-    environment: { lease: attached.value },
-  });
+  void created.value.draw({ source: attached.value });
 });

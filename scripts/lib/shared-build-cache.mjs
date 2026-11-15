@@ -69,6 +69,8 @@ export function sharedShaderInputFingerprint(root, engineEntries) {
         join(root, 'package.json'),
         join(root, 'pnpm-lock.yaml'),
         join(root, 'scripts/build-shared-inputs.mjs'),
+        join(root, 'scripts/lib/shader-source-budget.mjs'),
+        join(root, 'scripts/lib/runner-resources.mjs'),
         join(root, 'scripts/ci/build-shared-app-inputs.mjs'),
         join(root, 'scripts/lib/shared-build-cache.mjs'),
         join(root, 'scripts/build-task-cache.mjs'),

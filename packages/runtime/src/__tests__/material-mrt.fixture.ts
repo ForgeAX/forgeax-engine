@@ -204,14 +204,7 @@ export async function verifyMaterialMrt(options: {
     const draw = async () => {
       world.update(1 / 60).unwrap();
       propagateTransforms(world).unwrap();
-      const receipt = renderValue(
-        renderer.draw({
-          leases: [lease],
-          camera: { lease },
-          environment: { lease },
-          geometryLane: 'direct',
-        }),
-      );
+      const receipt = renderValue(renderer.draw({ source: lease, geometryLane: 'direct' }));
       renderValue(await receipt.completed);
       await new Promise((resolve) => setTimeout(resolve, 0));
     };

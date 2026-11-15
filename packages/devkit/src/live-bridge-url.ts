@@ -4,9 +4,12 @@
 /** Query parameter carrying the live owner's bridge token to the page it launched. */
 export const LIVE_BRIDGE_OWNER_PARAM = 'forgeaxBridge';
 
-export function ownerPageUrl(url: string, token: string): string {
+export const GPU_PASS_TIMING_PARAM = 'forgeax-gpu-pass-timing';
+
+export function ownerPageUrl(url: string, token: string, gpuPassTiming: boolean): string {
   const owner = new URL(url);
   owner.searchParams.set(LIVE_BRIDGE_OWNER_PARAM, token);
+  if (gpuPassTiming) owner.searchParams.set(GPU_PASS_TIMING_PARAM, '1');
   return owner.href;
 }
 

@@ -639,6 +639,52 @@ describe('ScriptablePack import bridge with optional parameters', () => {
     expect(result).toMatchObject({ ok: false, error: { code: 'pack-content-dependency-stalled' } });
   });
 
+  it.each([
+    false,
+    true,
+  ])('validates producer-only references against the completed worklist (available: %s)', async (available) => {
+    const packageId = id('01900000-0000-7000-8000-000000000134');
+    const dependency = AssetGuid.format(AssetGuid.derive(packageId, 'scene/dependency'));
+    const outputs = new AssetOutputProducerRegistry();
+    outputs.register({
+      kind: 'scene',
+      version: 'test',
+      produce: ({ asset }) =>
+        ok({ payload: asset as never, refs: [{ guid: dependency }], artifacts: {} }),
+    });
+    const result = await buildScriptablePackWorklist({
+      subjects: [
+        {
+          sourcePath: 'assets/reference.pack.ts',
+          definition: definePack({
+            schemaVersion: '2.0.0',
+            packageId,
+            build: () => ok({ 'scene/main': scene() }),
+          }),
+        },
+      ],
+      outputs,
+      availableGuids: new Set(available ? [dependency] : []),
+    });
+    if (available) {
+      expect(result).toMatchObject({
+        ok: true,
+        value: {
+          buildProducts: [
+            {
+              externalEvidence: [{ guid: dependency, usage: 'reference' }],
+            },
+          ],
+        },
+      });
+    } else {
+      expect(result).toMatchObject({
+        ok: false,
+        error: { code: 'pack-output-reference-missing', detail: { guids: [dependency] } },
+      });
+    }
+  });
+
   it('publishes serial dependencies before admitting the next subject', async () => {
     const producerId = id('01900000-0000-7000-8000-000000000132');
     const dependency = AssetGuid.derive(producerId, 'scene/main');

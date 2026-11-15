@@ -177,11 +177,7 @@ it.each([
       const draw = async (capture = false) => {
         world.update(1 / 60).unwrap();
         propagateTransforms(world).unwrap();
-        return drawReadyFrame(
-          renderer,
-          { leases: [lease], camera: { lease }, environment: { lease } },
-          capture ? ['final-display'] : undefined,
-        );
+        return drawReadyFrame(renderer, { source: lease }, capture ? ['final-display'] : undefined);
       };
       const sample = async (name: string) => {
         const receipt = await draw(true);

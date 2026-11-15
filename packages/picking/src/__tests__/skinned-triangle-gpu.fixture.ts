@@ -108,9 +108,7 @@ export async function verifySkinnedPicking(
       for (let i = 0; i < poseFrames - 1; i++) {
         await drawReadyFrame(renderer, {
           geometryLane: 'direct',
-          leases: [lease],
-          camera: { lease },
-          environment: { lease },
+          source: lease,
         });
         frames++;
       }
@@ -120,9 +118,7 @@ export async function verifySkinnedPicking(
       const receipt = renderValue(
         renderer.draw({
           geometryLane: 'direct',
-          leases: [lease],
-          camera: { lease },
-          environment: { lease },
+          source: lease,
         }),
       );
       renderValue(await receipt.completed);
@@ -387,9 +383,7 @@ export async function measureDeformedFrames(renderer: Renderer, save: Save) {
         const receipt = renderValue(
           renderer.draw({
             geometryLane: 'direct',
-            leases: [lease],
-            camera: { lease },
-            environment: { lease },
+            source: lease,
           }),
         );
         const cpuSubmitMs = performance.now() - started;

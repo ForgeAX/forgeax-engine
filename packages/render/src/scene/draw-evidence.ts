@@ -24,7 +24,7 @@ export interface DrawChangeVisitor {
   /** A slot whose availability or probe record changed without a row write. */
   row(slot: number): void;
   /** A Mesh whose effective draw facts may differ for every slot drawing it. */
-  mesh(worldId: number, handle: number): void;
+  mesh(handle: number): void;
 }
 
 /**
@@ -64,7 +64,7 @@ export function drawChangesSince(
   if (before.meshes !== after.meshes)
     after.meshes.changesSince(before.meshes, (previous, current) => {
       const geometry = current ?? previous;
-      if (geometry !== undefined) visit.mesh(geometry.worldId, geometry.handle);
+      if (geometry !== undefined) visit.mesh(geometry.handle);
     });
   return true;
 }

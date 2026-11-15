@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { SkyPass } from '../record/gpu-pass-timing/sky-pass-names';
 
 const inject = readFileSync(
   new URL('../../../shader/src/volume/volume-inject.wgsl', import.meta.url),
@@ -26,13 +27,17 @@ describe('volumetric fog Point and Spot accumulation', () => {
   });
 
   it('keeps the four-pass topology and has no synthetic beam pass', () => {
-    expect(passes).toContain("'volume-inject'");
-    expect(passes).toContain("'volume-integrate'");
-    expect(passes).toContain("'volume-temporal'");
-    expect(passes).toContain("'volume-composite'");
+    const registeredPasses = [
+      ...passes.matchAll(/graph\.add(?:Compute|Raster)Pass\(SkyPass\.(volume\w+),/g),
+    ].map(([, name]) => SkyPass[name as keyof typeof SkyPass]);
+    expect(registeredPasses).toEqual([
+      'volume-inject',
+      'volume-integrate',
+      'volume-temporal',
+      'volume-composite',
+    ]);
     expect(passes).not.toContain('volume-beam');
     expect(passes).not.toContain('godray');
-    expect(passes.match(/graph\.add(?:Compute|Raster)Pass\('volume-[a-z-]+'/g)).toHaveLength(4);
   });
 
   it('retains falsifier hooks for off lights, occluders, and shadow visibility', () => {

@@ -1,26 +1,23 @@
-import { type RhiCaps, RhiError } from '@forgeax/engine-rhi';
+import { RhiError } from '@forgeax/engine-rhi';
 import {
   SINGLE_LAYER_MEDIUM_MSAA_PAIRED_COLOR_WGSL,
   SINGLE_LAYER_MEDIUM_MSAA_RAW_DEPTH_WGSL,
   SINGLE_LAYER_MEDIUM_RAW_DEPTH_WGSL,
 } from '@forgeax/engine-shader';
-import {
-  BARREL_DISTORTION_FEATURE_IDENTITY,
-  createBarrelDistortionRenderFeature,
-} from '../features/barrel-distortion';
-import type { RenderFeatureHost } from '../features/host';
 import { CHROMATIC_ABERRATION_PROGRAM, LENS_EFFECTS_PROGRAM } from '../features/lens-effects';
 import { LENS_FLARE_PROGRAMS } from '../features/lens-flare';
-import { createMotionBlurFeature } from '../features/motion-blur/motion-blur-feature';
 import { OUTLINE_PROGRAMS } from '../features/outline/shaders';
 import { SMAA_PROGRAMS } from '../features/smaa/shaders';
 import type { RenderFeature } from '../features/types';
 import {
   SINGLE_LAYER_MEDIUM_MSAA_PAIRED_COLOR_POST_PROCESS_ID,
   SINGLE_LAYER_MEDIUM_MSAA_RAW_DEPTH_POST_PROCESS_ID,
+  SINGLE_LAYER_MEDIUM_MSAA_SURFACE_PROGRAMS,
   SINGLE_LAYER_MEDIUM_RAW_DEPTH_POST_PROCESS_ID,
 } from '../pipeline/single-layer-medium-passes';
 import type { RendererState } from '../render-system';
+import { SSR_SCENE_COLOR_HISTORY_PROGRAM } from '../ssr/scene-color-input';
+import { WATER_SLW_POST_PROCESS_PROGRAMS } from '../water/slw-graph';
 
 const STANDARD_POST_PROCESS_PROGRAMS = [
   CHROMATIC_ABERRATION_PROGRAM,
@@ -28,6 +25,9 @@ const STANDARD_POST_PROCESS_PROGRAMS = [
   ...LENS_FLARE_PROGRAMS,
   ...OUTLINE_PROGRAMS,
   ...SMAA_PROGRAMS,
+  SSR_SCENE_COLOR_HISTORY_PROGRAM,
+  ...SINGLE_LAYER_MEDIUM_MSAA_SURFACE_PROGRAMS,
+  ...WATER_SLW_POST_PROCESS_PROGRAMS.map((entry) => ({ ...entry, kind: 'fullscreen' as const })),
 ];
 
 /** Standard owns these static declarations and their device-bound parameters. */
@@ -36,16 +36,6 @@ export function registerStandardPostProcessBuiltins(
 ): void {
   for (const { kind: _kind, name, ...entry } of STANDARD_POST_PROCESS_PROGRAMS)
     renderSystem.registerBuiltinPostProcess(name, entry);
-}
-
-export function withBuiltinRenderFeatures(
-  requested: readonly RenderFeature<unknown>[],
-): RenderFeature<unknown>[] {
-  const features = [...requested];
-  if (!features.some((feature) => feature.identity === BARREL_DISTORTION_FEATURE_IDENTITY)) {
-    features.push(createBarrelDistortionRenderFeature());
-  }
-  return features;
 }
 
 export function collectRequiredFullscreenPostProcesses(
@@ -91,20 +81,4 @@ export function collectRequiredFullscreenPostProcesses(
     }
   }
   return Object.freeze([...entries.values()]);
-}
-
-/**
- * The motion blur compute lane installs with the Renderer on a capable
- * device: a Feature joins the Render World schedule only between frames.
- */
-export function installMotionBlurFeature(host: RenderFeatureHost, caps: Readonly<RhiCaps>): void {
-  if (
-    caps.compute !== true ||
-    caps.storageBuffer !== true ||
-    caps.storageTexture !== true ||
-    caps.rgba16floatRenderable !== true
-  )
-    return;
-  const installed = host.install(createMotionBlurFeature() as RenderFeature<unknown>);
-  if (!installed.ok) throw installed.error;
 }

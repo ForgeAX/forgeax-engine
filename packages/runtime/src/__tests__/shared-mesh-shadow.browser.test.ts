@@ -123,9 +123,7 @@ it.each([
       world.update(1 / 60).unwrap();
       propagateTransforms(world).unwrap();
       const receipt = await drawReadyFrame(renderer, {
-        leases: [lease],
-        camera: { lease },
-        environment: { lease },
+        source: lease,
         fixedStep: world.getResource(FixedTime).tick,
       });
       presentation = receipt.presentation;
@@ -164,12 +162,7 @@ it.each([
     for (let frame = 0; frame < 60; frame++) {
       world.update(1 / 60).unwrap();
       propagateTransforms(world).unwrap();
-      const drawn = renderer.draw({
-        leases: [lease],
-        camera: { lease },
-        environment: { lease },
-        fixedStep: world.getResource(FixedTime).tick,
-      });
+      const drawn = renderer.draw({ source: lease, fixedStep: world.getResource(FixedTime).tick });
       if (!drawn.ok) throw drawn.error;
       const completed = await drawn.value.completed;
       if (!completed.ok) throw completed.error;

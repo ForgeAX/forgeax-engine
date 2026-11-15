@@ -1,4 +1,4 @@
-import { Update, World } from '@forgeax/engine/ecs';
+import { defineSystem, Update, World } from '@forgeax/engine/ecs';
 import { defineFeature } from '../../lab/feature';
 
 export default defineFeature({
@@ -11,16 +11,15 @@ export default defineFeature({
     'Warm frame backing is reused, old grants reject, leased data survives retirement, and idle backing can be trimmed.',
   run(checks) {
     const world = new World();
-    world
-      .addSystem(Update, {
-        name: 'lab-memory',
-        commands: 'none',
-        queries: [],
-        fn: (world) => {
-          world.frameArena.alloc(Float32Array, 1024).unwrap().fill(3);
-        },
-      })
-      .unwrap();
+    const systemToken1 = defineSystem({
+      name: 'lab-memory',
+      commands: 'none',
+      queries: [],
+      fn: (world) => {
+        world.frameArena.alloc(Float32Array, 1024).unwrap().fill(3);
+      },
+    });
+    world.addSystem(Update, systemToken1).unwrap();
     world.update().unwrap();
     const allocations = world.memoryStats().arena.backingAllocations;
     world.update().unwrap();

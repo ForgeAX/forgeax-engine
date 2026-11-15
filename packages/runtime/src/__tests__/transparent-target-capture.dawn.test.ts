@@ -157,9 +157,7 @@ it.each(
   const draw = async () => {
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
-    const receipt = unwrap(
-      renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
-    );
+    const receipt = unwrap(renderer.draw({ source: lease }));
     unwrap(await receipt.completed);
     return receipt;
   };
@@ -168,11 +166,7 @@ it.each(
       world.set(fog, Fog, { density }).unwrap();
       world.update(1 / 60).unwrap();
       propagateTransforms(world).unwrap();
-      await drawReadyFrame(renderer, {
-        leases: [lease],
-        camera: { lease },
-        environment: { lease },
-      });
+      await drawReadyFrame(renderer, { source: lease });
       const ticket = unwrap(renderer.requestTargetReadback(target, { mipLevel: 0 }));
       const receipt = await draw();
       const observed = unwrap(

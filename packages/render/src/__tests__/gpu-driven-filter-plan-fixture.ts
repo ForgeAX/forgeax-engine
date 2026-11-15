@@ -40,7 +40,6 @@ export function createFilterPlanFixture(
     [0, 1, 2].map((index) => {
       const world = mat4.identity(mat4.create());
       const snapshot: RenderableSnapshot = preparedPbrSnapshot({
-        worldId: 0,
         entityKey: index + 1,
         assetHandle: options.sharedGeometry ? 3 : 3 + index,
         transform: { world },
@@ -72,7 +71,6 @@ export function createFilterPlanFixture(
       });
       return {
         kind: 'update' as const,
-        worldId: 0,
         entityKey: index + 1,
         snapshot: { ...snapshot, material: shared, materials: [shared] },
       };
@@ -146,17 +144,11 @@ export function createFilterPlanFixture(
       ).unwrap();
       const batch =
         execution.route === 'gpu' ? { ...source, prepared: execution.prepared } : source;
-      return prepareBatchRows(batch, { mesh, worldKeys: undefined, execution });
+      return prepareBatchRows(batch, { mesh, execution });
     });
-    return assemblePreparedPlan(
-      { ...plan, batches: rows.map((row) => row.source) },
-      rows,
-      undefined,
-    );
+    return assemblePreparedPlan({ ...plan, batches: rows.map((row) => row.source) }, rows);
   };
-  const bindings = new Map(
-    slots.map((slot) => [`${slot.worldId}:${slot.entityKey}`, slot.slot === 1 ? 'B' : 'A']),
-  );
+  const bindings = new Map(slots.map((slot) => [`${slot.entityKey}`, slot.slot === 1 ? 'B' : 'A']));
   return { source, slots, prepare, bindings, mesh, material: shared };
 }
 

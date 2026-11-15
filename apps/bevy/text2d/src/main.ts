@@ -1,3 +1,4 @@
+import { defineSystem } from "@forgeax/engine-ecs";
 import type { AssetHandle } from '@forgeax/engine-types';
 import { createRuntimeAssetImportTransport, runtimeBinding } from '@forgeax/apps-shared/asset-runtime-config';
 import { createApp } from '@forgeax/engine-app/browser';
@@ -84,7 +85,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   if (m34RecoveryMode) {
     const recoveryScene = buildText2dFontRecoveryWorld(app.world, assets.read(font.value).unwrap());
     let m34Phase = 0;
-    app.world.addSystem(Update, {
+    const systemToken1 = defineSystem({
       name: 'text2d-m34-frame-keepalive',
       queries: [],
       fn: (world) => {
@@ -92,6 +93,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
         m34Phase += 0.001;
       },
     });
+app.world.addSystem(Update, systemToken1);
     recoveryController = createText2dFontRecoveryController(
       app.world,
       recoveryScene,
@@ -101,11 +103,12 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   } else {
     const fontHandle: AssetHandle<'font'> = font.value;
     const scene = buildText2dWorld(app.world, fontHandle);
-    app.world.addSystem(Update, {
+    const systemToken2 = defineSystem({
       name: 'text2d-motion',
       queries: [],
       fn: (world) => stepText2d(world, scene, world.hasResource(Time) ? world.getResource(Time).delta : 0),
     });
+app.world.addSystem(Update, systemToken2);
   }
   console.info(`[bevy-text2d] state=${app.renderer.inspect().state}`);
   const started = app.start();

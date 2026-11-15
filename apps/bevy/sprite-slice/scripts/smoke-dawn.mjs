@@ -2,9 +2,10 @@
 import { encodePng } from '@forgeax/engine-image/png';
 import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 
 const frames = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const width = 320;
@@ -26,7 +27,7 @@ const { World } = await import('@forgeax/engine-ecs');
 const { createRenderer } = await import('@forgeax/engine-runtime');
 const { buildSpriteSliceWorld, makeSlicePixels, TEXTURE_SIZE } = await import(resolve(here, '..', 'src', 'sprite-slice.ts'));
 const manifestPath = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const hostResult = await constructRuntimeRendererHost(canvas, {}, { shaderManifestUrl: `data:application/json,${encodeURIComponent(readFileSync(manifestPath, 'utf8'))}` });
+const hostResult = await constructRuntimeRendererHost(canvas, {}, { shaderManifestUrl: `data:application/json,${encodeURIComponent(readShaderManifestText(manifestPath))}` });
 if (!hostResult.ok) throw hostResult.error;
 const { renderer, assets: smokeAssets } = hostResult.value;
 const world = new World({ assets: smokeAssets });

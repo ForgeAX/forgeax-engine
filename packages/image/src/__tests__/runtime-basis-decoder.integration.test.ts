@@ -1,4 +1,5 @@
 import { initBasisTranscoder } from '@forgeax/engine-codec';
+import { type AssetOutputProduct, textureAssetOutputProducer } from '@forgeax/engine-import';
 import { type AssetDecoderInput, ok, type TextureAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import type {
@@ -46,18 +47,19 @@ async function decode(
   profile = 'uastc-ldr',
   colorSpace = 'linear',
   includeCodec = true,
+  product?: AssetOutputProduct,
 ) {
   const digest = await crypto.subtle.digest('SHA-256', new Uint8Array(bytes));
   const input: AssetDecoderInput<TextureAsset> = {
     envelope: {
       guid: 'image-fixture',
       kind: 'texture',
-      payload: { kind: 'texture', colorSpace } as TextureAsset,
+      payload: (product?.payload ?? { kind: 'texture', colorSpace }) as TextureAsset,
       refs: [],
       artifacts: {
         body: {
           path: `image.${container}`,
-          mediaType: `image/${container}`,
+          mediaType: product?.artifacts.body?.mediaType ?? `image/${container}`,
           contentEncoding: 'identity',
           byteLength: bytes.byteLength,
           integrity: {
@@ -66,7 +68,7 @@ async function decode(
           },
           ...(includeCodec
             ? {
-                assetCodec: {
+                assetCodec: product?.artifacts.body?.assetCodec ?? {
                   name: 'basis' as const,
                   container: container as 'basis' | 'ktx2',
                   profile,
@@ -110,6 +112,32 @@ const FILE_CLASSES = ['KTX2File', 'BasisFile'] as const;
 type FileClass = (typeof FILE_CLASSES)[number];
 
 describe('Image owner Basis decoding', () => {
+  it('loads the standard ScriptablePack portable texture product with its complete authored mip chain', async () => {
+    const bytes = await makeBasis(true, true);
+    const source: TextureAsset = {
+      kind: 'texture',
+      shape: { viewDimension: '2d', extent: { width: 4, height: 4 } },
+      format: 'rgba8unorm',
+      colorSpace: 'linear',
+      encoding: 'ktx2',
+      mips: { kind: 'packed', levelCount: 3 },
+      data: bytes,
+    };
+    const product = (
+      await textureAssetOutputProducer.produce({
+        guid: '019ffa97-3000-7000-8000-000000000010',
+        sourceKey: 'texture/color',
+        asset: source,
+      })
+    ).unwrap();
+    const body = product.artifacts.body;
+    if (body === undefined) throw new Error('Portable texture product has no body');
+    const decoded = (
+      await decode(body.bytes, 'ktx2', 'uastc-ldr', 'linear', true, product)
+    ).unwrap();
+    expect(decoded).toEqual(source);
+    expect(decoded.data).toBe(body.bytes);
+  });
   it.each([
     'basis',
     'ktx2',

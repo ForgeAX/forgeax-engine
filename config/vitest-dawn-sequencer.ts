@@ -113,6 +113,7 @@ function shiftedDawnScore(
   right: number,
   first: TestSpecification,
   second?: TestSpecification,
+  maximumOverload = Number.POSITIVE_INFINITY,
 ): number[] {
   let overload = 0;
   let peak = 0;
@@ -120,6 +121,21 @@ function shiftedDawnScore(
   const firstCosts = costs.get(first);
   const secondCosts = second ? costs.get(second) : undefined;
   if (!firstCosts) throw new Error('Dawn transfer has no complete cost vector');
+  // Overflow contributions are nonnegative. A transfer already worse on the
+  // latest cohort cannot improve the complete objective; retain the original
+  // scoring order for every candidate that survives this lower bound.
+  const latest = loads.length - 1;
+  if (latest >= 0) {
+    const delta = (secondCosts?.[latest] ?? 0) - firstCosts[latest];
+    let lowerBound = 0;
+    for (let lane = 0; lane < loads[latest].length; lane++) {
+      const value = loads[latest][lane] + (lane === left ? delta : lane === right ? -delta : 0);
+      lowerBound += Math.max(0, value - dawnReplaySeconds) ** 2;
+    }
+    if (lowerBound > maximumOverload + 1e-6) {
+      return [Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY];
+    }
+  }
   for (let sample = 0; sample < loads.length; sample++) {
     const delta = (secondCosts?.[sample] ?? 0) - firstCosts[sample];
     for (let lane = 0; lane < loads[sample].length; lane++) {
@@ -169,7 +185,7 @@ function findDawnRelocation(
             bin.seconds + (lane === to ? reserve(file) : lane === from ? -reserve(file) : 0),
         );
         if (!fitsDawnCapacity(retained, capacity, largest)) continue;
-        const next = shiftedDawnScore(loads, costs, from, to, file);
+        const next = shiftedDawnScore(loads, costs, from, to, file, undefined, best[0]);
         if (improvesDawnScore(next, best)) {
           best = next;
           selected = { kind: 'move', from, to, index, score: next };
@@ -241,14 +257,12 @@ function refineDawnShards(
   const reserve = (file: TestSpecification) =>
     reserves.get(file) ?? unmeasuredFileSeconds / ordinaryWorkers;
   const costs = snapshots.map((snapshot) => {
-    // Partial runs keep explicit inherited forecasts separate from observations.
-    // The retained global maxima still own capacity and every older scenario.
+    // Replay only the cohort's observed files and explicit inherited forecasts.
+    // Later discoveries never ran in that historical window. Retained maxima
+    // still rank every current file and constrain capacity through `reserve`.
     const fileCosts = new Map(Object.entries({ ...snapshot.reservedFiles, ...snapshot.files }));
     const values = new Map(
-      [...paths].map(([file, path]) => [
-        file,
-        (fileCosts.get(path) ?? reserve(file) * ordinaryWorkers) / ordinaryWorkers,
-      ]),
+      [...paths].map(([file, path]) => [file, (fileCosts.get(path) ?? 0) / ordinaryWorkers]),
     );
     return (file: TestSpecification) => values.get(file) ?? reserve(file);
   });
@@ -306,7 +320,7 @@ function refineDawnShards(
               (bin, lane) => bin.seconds + (lane === left ? delta : lane === right ? -delta : 0),
             );
             if (!fitsDawnCapacity(retained, capacity, largest)) continue;
-            const next = shiftedDawnScore(loads, costVectors, left, right, first, second);
+            const next = shiftedDawnScore(loads, costVectors, left, right, first, second, best[0]);
             if (improvesDawnScore(next, best)) {
               best = next;
               selected = { kind: 'swap', left, right, a, b, score: next };

@@ -113,7 +113,7 @@ it('recovers a planning allocation failure after private dirty cursors accepted 
     if (inspecting) return Reflect.apply(push, this, items);
     inspecting = true;
     try {
-      if (new Error().stack?.includes('highestDirtyEntities'))
+      if (new Error().stack?.includes('propagateParentTransforms'))
         throw new Error('planning allocation fault');
     } finally {
       inspecting = false;
@@ -152,11 +152,8 @@ it('re-walks a planned subtree when its rows move, leave, or gain a child', () =
     propagateTransforms(world).unwrap();
   };
   propagateTransforms(world).unwrap();
-  move(10); // walks the root and records its plan
-  beginTransformPropagationTrace();
-  move(20); // runs the plan
-  const planned = endTransformPropagationTrace();
-  expect([planned.hierarchyRootCursorReuses, planned.hierarchyEntityLookups]).toEqual([0, 1]);
+  move(10);
+  move(20);
   expect([x(a), x(b), x(c)]).toEqual([22, 23, 24]);
   // Removing the first row of the shared table moves a planned row.
   world.despawn(mover).unwrap();

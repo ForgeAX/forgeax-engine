@@ -1,8 +1,6 @@
-#!/usr/bin/env node
-import { parseArgs } from 'node:util';
-import { cpuProfileGraph } from './analyze_cpu_profile.mjs';
+import { cpuProfileGraph } from './cpu_profile.mjs';
 import { cpuSampleTimeline } from './cpu_timeline.mjs';
-import { canonical, emitJson, loadJson, requireFact, runCli } from './lib.mjs';
+import { canonical, requireFact } from './lib.mjs';
 
 export function intersectCpuAnchors(before, after, timeOriginMs) {
   requireFact(
@@ -442,54 +440,3 @@ export function analyzeCaptureWindows(raw, report, frames, maps, rawSha256, top 
       'Each realm is separate. Ending-sample weights can include scheduling delay; first-sample startup and unobserved tail are unsampled. Inclusive stacks overlap and realm times must not be added. Only these supplied same-capture frame gaps and smoke observation receipts are analyzed; an earlier unprofiled gap cannot be attributed.',
   };
 }
-
-runCli(import.meta.url, async () => {
-  const { values, positionals } = parseArgs({
-    allowPositionals: true,
-    options: {
-      help: { type: 'boolean' },
-      report: { type: 'string' },
-      frames: { type: 'string' },
-      maps: { type: 'string' },
-      output: { type: 'string' },
-      top: { type: 'string', default: '30' },
-    },
-  });
-  if (values.help) {
-    process.stdout.write(
-      'node analyze_cpu_windows.mjs CPU_PROFILES --report REPORT --frames SAMPLED_FRAMES [--maps CPU_NODE_MAPS] [--top 30] [--output FILE]\nOffline adapter for existing Frontline ordinary CPU collector records: report.coldFirelineCpu anchors, cpu.commonWindow, windows.sampled.submissionGaps and observed smokeAppearance; frames.firstLiveAt/end/timeOrigin/frames, optional closingFrame and smokeObservations. No Engine install or live capture. CDP times are us; page clocks/output durations are ms. Refuses missing/nonintersecting anchors or foreign gap/map facts. Partial common-window coverage exits 2. Output defaults to stdout and cannot overwrite inputs.\n',
-    );
-    return;
-  }
-  requireFact(
-    positionals.length === 1 && values.report && values.frames,
-    'Require CPU_PROFILES, --report and --frames',
-  );
-  const paths = [
-    positionals[0],
-    values.report,
-    values.frames,
-    ...(values.maps ? [values.maps] : []),
-  ];
-  const [raw, report, frames, maps] = await Promise.all(paths.map(loadJson));
-  const result = analyzeCaptureWindows(
-    raw.value,
-    report.value,
-    frames.value,
-    maps?.value,
-    raw.sha256,
-    Number(values.top),
-  );
-  await emitJson(
-    {
-      inputs: paths.map((path, index) => ({
-        path,
-        sha256: [raw, report, frames, maps][index].sha256,
-      })),
-      ...result,
-    },
-    values.output,
-    paths,
-  );
-  if (result.completeness !== 'complete') process.exitCode = 2;
-});

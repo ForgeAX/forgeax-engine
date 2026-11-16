@@ -87,9 +87,7 @@ describe('active-body physics writeback', () => {
     const physics = createRapier3DPhysicsWorld(RAPIER);
     world.insertResource(PhysicsWorldResource, physics);
     registerPhysicsSystems(world);
-    const body = world
-      .spawn({ component: Transform, data: { scale: [2, 3, 4], shear: [0.1, 0.2, 0.3] } })
-      .unwrap();
+    const body = world.spawn({ component: Transform, data: { scale: [2, 3, 4] } }).unwrap();
     const pose = {
       entity: body,
       pos: { x: 0.1, y: 2, z: 3 },
@@ -101,7 +99,6 @@ describe('active-body physics writeback', () => {
     try {
       tick(world);
       const initial = world.get(body, Transform).unwrap();
-      const originalShear = Array.from(initial.shear);
       expect(Array.from(initial.pos)).toEqual([Math.fround(0.1), 2, 3]);
       expect(Array.from(initial.quat)).toEqual([
         0,
@@ -126,7 +123,6 @@ describe('active-body physics writeback', () => {
       tick(world);
       expect(transformPos(world, body)[1]).toBe(6);
       expect(Array.from(world.get(body, Transform).unwrap().scale)).toEqual([2, 3, 4]);
-      expect(Array.from(world.get(body, Transform).unwrap().shear)).toEqual(originalShear);
       world.removeComponent(body, Disabled).unwrap();
       pose.pos.y = 7;
       tick(world);

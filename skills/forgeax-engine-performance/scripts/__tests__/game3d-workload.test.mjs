@@ -1,36 +1,78 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { admitGame3dWorkload, assertGame3dWorkloadStable, game3dWorkloadReceipt } from '../game3d_workload.mjs';
+import {
+  admitGame3dWorkload,
+  assertGame3dWorkloadStable,
+  game3dWorkloadReceipt,
+} from '../game3d_workload.mjs';
 
-const ready = () => ({ busy: false, guid: 'published-runtime-vase', generation: 1, entity: 1048577,
-  values: { height: 2.4, radius: 0.75, sides: 32 }, vertexCount: 495, aabb: [-0.75, 0, -0.75, 0.75, 2.4, 0.75] });
+const ready = () => ({
+  busy: false,
+  guid: 'published-runtime-vase',
+  generation: 1,
+  entity: 1048577,
+  values: { height: 2.4, radius: 0.75, sides: 32 },
+  vertexCount: 495,
+  aabb: [-0.75, 0, -0.75, 0.75, 2.4, 0.75],
+});
 
 test('detaches the actual producer receipt and rejects a preserved old mesh after generation failure', () => {
-  const state = ready(), receipt = game3dWorkloadReceipt(state);
-  state.values.height = 3; state.aabb[0] = -3;
+  const state = ready(),
+    receipt = game3dWorkloadReceipt(state);
+  state.values.height = 3;
+  state.aabb[0] = -3;
   assert.equal(receipt.values.height, 2.4);
   assert.equal(receipt.aabb[0], -0.75);
-  assert.throws(() => game3dWorkloadReceipt({ ...ready(), error: 'producer rejected publication' }), /generation failed/);
+  assert.throws(
+    () => game3dWorkloadReceipt({ ...ready(), error: 'producer rejected publication' }),
+    /generation failed/,
+  );
   assert.throws(() => game3dWorkloadReceipt({ ...ready(), error: '' }), /generation failed/);
   for (const change of [
-    state => { state.vertexCount = 0; },
-    state => { state.generation = undefined; },
-    state => { state.entity = undefined; },
-    state => { state.aabb[0] = NaN; },
-    state => { state.aabb[0] = 10; },
-    state => { state.values.sides = 16; },
-  ]) { const state = ready(); change(state); assert.throws(() => game3dWorkloadReceipt(state)); }
+    (state) => {
+      state.vertexCount = 0;
+    },
+    (state) => {
+      state.generation = undefined;
+    },
+    (state) => {
+      state.entity = undefined;
+    },
+    (state) => {
+      state.aabb[0] = NaN;
+    },
+    (state) => {
+      state.aabb[0] = 10;
+    },
+    (state) => {
+      state.values.sides = 16;
+    },
+  ]) {
+    const state = ready();
+    change(state);
+    assert.throws(() => game3dWorkloadReceipt(state));
+  }
 });
 
 test('waits only for live producer busy state and never retries a terminal generation error', async () => {
-  let time = 0, reads = 0;
-  const play = { state: async () => ++reads < 3 ? { ...ready(), busy: true } : ready(), wait: async ms => { time += ms; } };
+  let time = 0,
+    reads = 0;
+  const play = {
+    state: async () => (++reads < 3 ? { ...ready(), busy: true } : ready()),
+    wait: async (ms) => {
+      time += ms;
+    },
+  };
   assert.equal((await admitGame3dWorkload(play, { now: () => time })).generation, 1);
   assert.equal(reads, 3);
   reads = 0;
-  play.state = async () => { reads++; return { ...ready(), error: 'publication-conflict' }; };
-  await assert.rejects(admitGame3dWorkload(play, { now: () => time }), error => {
-    assert.equal(error.workload.state.error, 'publication-conflict'); return true;
+  play.state = async () => {
+    reads++;
+    return { ...ready(), error: 'publication-conflict' };
+  };
+  await assert.rejects(admitGame3dWorkload(play, { now: () => time }), (error) => {
+    assert.equal(error.workload.state.error, 'publication-conflict');
+    return true;
   });
   assert.equal(reads, 1);
   play.state = async () => ({ ...ready(), busy: true });
@@ -44,7 +86,47 @@ test('rejects a new generation or changed geometry at capture completion', async
   play.state = async () => ({ ...ready(), generation: 2 });
   await assert.rejects(assertGame3dWorkloadStable(play, receipt), /changed during/);
   play.state = async () => ({ ...ready(), aabb: [-0.7, 0, -0.75, 0.75, 2.4, 0.75] });
-  await assert.rejects(assertGame3dWorkloadStable(play, receipt), error => {
-    assert(error.workload.state); return true;
+  await assert.rejects(assertGame3dWorkloadStable(play, receipt), (error) => {
+    assert(error.workload.state);
+    return true;
   });
+});
+
+test('stock corridor is explicit and validates the real player and runtime identity', async () => {
+  const player = {
+    position: [1.2, 1.015, 8],
+    mode: 'robot',
+    transformProgress: 0,
+    controls: { run: false },
+  };
+  const renderer = {
+    state: 'alive',
+    rendererError: null,
+    execution: {
+      fault: null,
+      world: { identity: 'world-a', health: 'healthy' },
+      workers: { engine: { enabled: true }, render: { enabled: true } },
+      render: { epoch: 1, capabilities: { backendKind: 'webgpu' } },
+    },
+  };
+  const play = {
+    state: async (id) => {
+      assert.equal(id, 'game-3d.player');
+      return structuredClone(player);
+    },
+    page: { evaluate: async () => structuredClone(renderer) },
+  };
+  const receipt = await admitGame3dWorkload(play, { scenario: 'stock-corridor' });
+  assert.equal(receipt.topic, 'game-3d.player');
+  assert.equal(receipt.worldIdentity, 'world-a');
+  assert.deepEqual(await assertGame3dWorkloadStable(play, receipt), receipt);
+  renderer.execution.world.identity = 'world-b';
+  await assert.rejects(assertGame3dWorkloadStable(play, receipt), /changed during/);
+  renderer.execution.world.identity = 'world-a';
+  player.position[1] = -10;
+  await assert.rejects(admitGame3dWorkload(play, { scenario: 'stock-corridor' }), /height/);
+  player.position[1] = 1.015;
+  renderer.execution.workers.render.enabled = false;
+  await assert.rejects(admitGame3dWorkload(play, { scenario: 'stock-corridor' }));
+  await assert.rejects(admitGame3dWorkload(play, { scenario: 'unknown' }), /Unknown/);
 });

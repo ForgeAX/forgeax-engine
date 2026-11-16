@@ -6,6 +6,9 @@
 
 import type { Component, ScalarFieldType, TypedArrayFor } from './component';
 import type { EntityHandle } from './entity-handle';
+import type { RemovedComponentsCursor } from './removed-components';
+
+export type { RemovedComponentsCursor } from './removed-components';
 
 /** Stable identity for the World-owned semantic read capability. */
 export const worldRead: unique symbol = Symbol.for('forgeax.ecs.worldRead');
@@ -25,6 +28,24 @@ export interface WorldRead {
   ) => boolean;
   /** Existing source-relationship index revision; unindexed components return zero. */
   readonly getRelationshipEpoch: (component: Component) => number;
+  /** Last mutation epoch that wrote this entity's component; absent or untracked returns zero. */
+  readonly getChangedEpoch: (entity: EntityHandle, component: Component) => number;
+  /** Last epoch at which any entity's value of this component was written; untouched returns zero. */
+  readonly getComponentEpoch: (component: Component) => number;
+  /** Epoch at which this entity gained the component; absent returns zero. */
+  readonly getAddedEpoch: (entity: EntityHandle, component: Component) => number;
+  /** Global mutation epoch; equal values across two reads mean no write happened between them. */
+  readonly getMutationEpoch: () => number;
+  /**
+   * Visit entities that lost the component (removal or despawn) since this
+   * cursor's previous read. Events are retained for two `World.update()` calls;
+   * the first read of a component starts its stream.
+   */
+  readonly readRemoved: (
+    component: Component,
+    cursor: RemovedComponentsCursor,
+    visit: (entity: EntityHandle) => void,
+  ) => void;
   readonly getFieldValue: (
     entity: EntityHandle,
     component: Component,

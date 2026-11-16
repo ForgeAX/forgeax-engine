@@ -79,7 +79,7 @@ describe('World execution health', () => {
     const targetTable = world[worldInternal].getGraph().tables[targetArchetype.tableId];
     const targetStorage = targetTable?.storage.get(componentId(WorldHealthChildren));
     if (targetStorage === undefined) throw new Error('fixture target storage missing');
-    targetStorage.fields.delete('entities:count');
+    targetStorage.fields.delete('entities');
 
     const buffer = createCommandBuffer(world, 'relationship-flush', Update.name);
     const pending = buffer.spawn({ component: WorldHealthChildOf, data: { parent: target } });

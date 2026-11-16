@@ -1,3 +1,4 @@
+import { RemovedComponentEvents } from './removed-components';
 import {
   assertResource,
   createResourceStore,
@@ -5,6 +6,7 @@ import {
   type ResourceIdentity,
   type ResourceStore,
 } from './resource';
+import { CHANGE_CHUNK_SHIFT, stampChange, stampChangeRange } from './storage/change-column';
 import { ChangeIndex } from './storage/change-index';
 // @forgeax/engine-ecs — World: top-level ECS container.
 //
@@ -171,11 +173,14 @@ import {
   getTable,
 } from './storage/archetype-graph';
 import { ArrayRangeLog, type ArrayRangesChange } from './storage/array-range-log';
+import { ARRAY_FIELD_ARITY, ArrayStore } from './storage/array-store';
 import {
   type ChangeTicks,
   markComponentsAdded,
   readComponentAdded,
+  readComponentChanged,
   removeSparseTag,
+  writeComponentChanged,
 } from './storage/change-detection';
 import { bufferOfWrite, type Column, type FieldView, normalizeBufferWrite } from './storage/column';
 import { EntityRecords } from './storage/entity-records';
@@ -219,10 +224,7 @@ import {
 import {
   detachWorldInspection,
   elementByteSize,
-  readArrayElementAt,
   reinterpretBufferRegion,
-  reinterpretSlotBytes,
-  writeArrayElementAt,
 } from './world-storage-primitives';
 
 /**
@@ -402,6 +404,12 @@ const NO_LINKED_CHILDREN: readonly EntityHandle[] = Object.freeze([]);
 
 const elementMetaKeys = new Map<string, string | null>();
 /** Array element keywords form a small closed set; classify each once. */
+/** Element view constructor of an array field (entity elements are u32). */
+function arrayElementCtor(arrayMeta: ArrayMeta): (typeof TYPE_METADATA)[string]['viewCtor'] {
+  // biome-ignore lint/style/noNonNullAssertion: admitted array element types resolve to metadata
+  return TYPE_METADATA[fieldTypeToMetaKey(arrayMeta.elementType)!]!.viewCtor;
+}
+
 function elementMetaKey(elementType: string): string | null {
   let key = elementMetaKeys.get(elementType);
   if (key === undefined) {
@@ -431,6 +439,14 @@ export class World {
     },
     getRelationshipEpoch: (component) =>
       this.relationshipIndexes.get(componentId(component))?.epoch ?? 0,
+    getChangedEpoch: (entity, component) =>
+      this.internalgetChangedEpoch(entity, componentId(component)),
+    getComponentEpoch: (component) => this.componentMutationEpochs[componentId(component)] ?? 0,
+    getAddedEpoch: (entity, component) =>
+      this.internalgetComponentChange(entity, componentId(component))?.added ?? 0,
+    getMutationEpoch: () => this.mutationEpoch,
+    readRemoved: (component, cursor, visit) =>
+      this.removedEventsFor(componentId(component)).read(cursor, visit),
     getFieldValue: this.internalgetFieldValue.bind(this),
     getArrayLength: this.internalgetArrayLength.bind(this),
     getArrayElement: this.internalgetArrayElement.bind(this),
@@ -444,8 +460,10 @@ export class World {
   private readonly graph: ArchetypeGraph;
   private readonly records = new EntityRecords();
   private readonly freeIndices: number[] = [];
-  /** BufferPool for schema-declared variable buffers and arrays. */
+  /** Handle table behind `world.buffers` (owned system buffers). */
   private readonly bufferPool = new BufferPool();
+  /** Backing of variable `array<T>` / `buffer` fields; columns hold the location. */
+  private readonly arrayStore = new ArrayStore();
   private readonly arenaOwner: WorldFrameArena;
   readonly frameArena: FrameArena;
   readonly buffers: OwnedBuffers;
@@ -460,8 +478,9 @@ export class World {
   private readonly spawnArchetypes = new Map<number, Archetype[]>();
   /** Single-component added publication without a per-call id array. */
   private readonly addedScratch: number[] = [0];
-  private readonly componentChangeIndices = new Map<number, ChangeIndex>();
   private readonly structuralChangeIndex = new ChangeIndex();
+  /** Removal events, created on first read of a component's stream. */
+  private readonly removedComponents = new Map<number, RemovedComponentEvents>();
   /** Bounded history of in-place `setArrayRange` writes. */
   private readonly arrayRangeLog = new ArrayRangeLog();
   /** One packed reverse index per relationship source component. */
@@ -520,8 +539,12 @@ export class World {
       getArrayRangesChangedSince: this.internalgetArrayRangesChangedSince.bind(this),
       getArrayView: this.getArrayView.bind(this),
       getBufferPool: () => this.bufferPool,
+      getArrayStore: () => this.arrayStore,
       getFrameArena: () => this.arenaOwner,
       maintainMemory: () => this.buffers.maintain(),
+      updateRemovedComponents: () => {
+        for (const events of this.removedComponents.values()) events.update();
+      },
       getClockWriter: () => this.clock.writer,
       getComponentChange: this.internalgetComponentChange.bind(this),
       getComponentMutationEpochs: () => this.componentMutationEpochs,
@@ -534,7 +557,7 @@ export class World {
         this.derivedWriteActive = false;
       },
       isDerivedWriteActive: () => this.derivedWriteActive,
-      getComponentChangeIndex: (id) => this.componentChangeIndices.get(id),
+      visitComponentChanged: this.internalvisitComponentChanged.bind(this),
       getStructuralChangeIndex: () => this.structuralChangeIndex,
       getEntityArchetype: this.internalgetEntityArchetype.bind(this),
       getFixedAccumulator: () => this.fixedAccumulator,
@@ -556,6 +579,7 @@ export class World {
       getStructureEpoch: this.getStructureEpoch.bind(this),
       lookupAlive: this.lookupAlive.bind(this),
       markComponentChanged: this.internalmarkComponentChanged.bind(this),
+      publishLocatedChange: this.internalpublishLocatedChange.bind(this),
       markComponentRangeChanged: this.internalmarkComponentRangeChanged.bind(this),
       materializeEntity: this.materializeEntity.bind(this),
       materializePendingEntity: this.materializePendingEntity.bind(this),
@@ -634,8 +658,58 @@ export class World {
       ? undefined
       : {
           added,
-          changed: this.componentChangeIndices.get(componentId)?.get(entityIndex(entity)) ?? 0,
+          changed: this.internalgetChangedEpoch(entity, componentId),
         };
+  }
+
+  /** Last write epoch of a live entity's component, or 0. */
+  private internalgetChangedEpoch(entity: EntityHandle, componentId: number): number {
+    const slot = entityIndex(entity);
+    if (!this.records.isLive(slot, entityGeneration(entity))) return 0;
+    return readComponentChanged(this.graph, this.records, slot, componentId) ?? 0;
+  }
+
+  /**
+   * Visit live slots whose component was written in `(since, upper]`, scanning
+   * each owning table's chunk summaries; returns the chunks and rows examined.
+   */
+  private internalvisitComponentChanged(
+    componentId: number,
+    since: number,
+    upper: number,
+    visit: (slot: number) => void,
+  ): number {
+    let examined = 0;
+    // Epoch 0 means never written; a negative `since` must not admit it.
+    const floor = since < 0 ? 0 : since;
+    const sparseSet = this.graph.sparseTags.get(componentId);
+    if (sparseSet !== undefined) {
+      if (sparseSet.changed.max <= floor) return 1;
+      for (let index = 0; index < sparseSet.size; index++) {
+        const epoch = sparseSet.changed.epochs[index] as number;
+        if (epoch > floor && epoch <= upper)
+          visit(entityIndex(sparseSet.dense[index] as EntityHandle));
+      }
+      return sparseSet.size;
+    }
+    for (const table of this.graph.tables) {
+      const changed = table?.storage.get(componentId)?.changed;
+      if (changed === undefined) continue;
+      examined++;
+      if (changed.max <= floor) continue;
+      const entities = table.entities.view;
+      for (let chunk = 0; chunk < changed.chunks.length; chunk++) {
+        examined++;
+        if ((changed.chunks[chunk] as number) <= floor) continue;
+        const end = Math.min(table.size, (chunk + 1) << CHANGE_CHUNK_SHIFT);
+        for (let row = chunk << CHANGE_CHUNK_SHIFT; row < end; row++) {
+          examined++;
+          const epoch = changed.epochs[row] as number;
+          if (epoch > floor && epoch <= upper) visit(entityIndex(entities[row] as EntityHandle));
+        }
+      }
+    }
+    return examined;
   }
 
   /** Allocate one epoch after a mutation has succeeded. */
@@ -662,7 +736,7 @@ export class World {
       throw new Error(`Derived component ${componentId} is not in the table.`);
     }
     this.componentMutationEpochs[componentId] = epoch;
-    this.publishRangeChangeIndex(table, componentId, rowStart, rowCount, epoch);
+    this.publishRangeChange(table, componentId, rowStart, rowCount, epoch);
   }
 
   /** Record one successful structural mutation. */
@@ -680,34 +754,42 @@ export class World {
     }
   }
 
-  private publishComponentChangeIndex(entity: EntityHandle, id: number, epoch: number): void {
+  private publishComponentChange(entity: EntityHandle, id: number, epoch: number): void {
     try {
-      let index = this.componentChangeIndices.get(id);
-      if (index === undefined) {
-        index = new ChangeIndex();
-        this.componentChangeIndices.set(id, index);
-      }
-      index.set(entityIndex(entity), epoch);
+      writeComponentChanged(this.graph, this.records, entityIndex(entity), id, epoch);
     } catch (cause) {
       this.poisonAfterEntityMutation('World.publishComponentChange', cause);
       throw cause;
     }
   }
 
-  private forgetComponentChangeIndex(entity: EntityHandle, id: number): void {
-    this.componentChangeIndices.get(id)?.delete(entityIndex(entity));
+  private notifyComponentRemoved(entity: EntityHandle, id: number): void {
+    this.removedComponents.get(id)?.send(entity);
   }
 
-  private publishRangeChangeIndex(
+  private removedEventsFor(id: number): RemovedComponentEvents {
+    let events = this.removedComponents.get(id);
+    if (events === undefined) {
+      events = new RemovedComponentEvents();
+      this.removedComponents.set(id, events);
+    }
+    return events;
+  }
+
+  private publishRangeChange(
     table: Table,
     id: number,
     start: number,
     count: number,
     epoch: number,
   ): void {
-    const entities = table.entities.view;
-    for (let row = start; row < start + count; row++)
-      this.publishComponentChangeIndex(entities[row] as EntityHandle, id, epoch);
+    const changed = table.storage.get(id)?.changed;
+    try {
+      if (changed !== undefined) stampChangeRange(changed, start, count, epoch);
+    } catch (cause) {
+      this.poisonAfterEntityMutation('World.publishComponentChange', cause);
+      throw cause;
+    }
   }
 
   /** Current structural revision for mounted World projections. */
@@ -724,19 +806,24 @@ export class World {
     for (let index = 0; index < componentIds.length; index++) {
       const componentId = componentIds[index] as number;
       this.componentMutationEpochs[componentId] = epoch;
-      this.publishComponentChangeIndex(entity, componentId, epoch);
+      this.publishComponentChange(entity, componentId, epoch);
     }
   }
 
   /** Mark an existing component as changed at the current tick. */
-  private internalmarkComponentChanged(entity: EntityHandle, componentId: number): void {
+  private internalmarkComponentChanged(entity: EntityHandle, componentId: number): boolean {
     const slot = this.liveSlot(entity);
-    if (slot < 0) return;
+    if (slot < 0) return false;
     if (readComponentAdded(this.graph, this.records, slot, entity, componentId) === undefined)
-      return;
+      return false;
     const epoch = this.internalnextMutationEpoch();
     this.componentMutationEpochs[componentId] = epoch;
-    this.publishComponentChangeIndex(entity, componentId, epoch);
+    this.publishComponentChange(entity, componentId, epoch);
+    return true;
+  }
+
+  private internalpublishLocatedChange(_slot: number, componentId: number, epoch: number): void {
+    this.componentMutationEpochs[componentId] = epoch;
   }
 
   /** Mark one contiguous component range with a single epoch. */
@@ -749,7 +836,7 @@ export class World {
     if (!table.storage.has(componentId) || rowCount === 0) return;
     const epoch = this.internalnextMutationEpoch();
     this.componentMutationEpochs[componentId] = epoch;
-    this.publishRangeChangeIndex(table, componentId, rowStart, rowCount, epoch);
+    this.publishRangeChange(table, componentId, rowStart, rowCount, epoch);
   }
 
   /** Query facade write after the facade has already marked evidence. */
@@ -961,7 +1048,7 @@ export class World {
   trimMemory(): Result<number, MemoryError> {
     if (this.arenaOwner.isActive)
       return err(new MemoryError({ kind: 'scope', reason: 'reentrant' }));
-    return ok(this.arenaOwner.trim() + this.bufferPool.trim());
+    return ok(this.arenaOwner.trim() + this.bufferPool.trim() + this.arrayStore.trim());
   }
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -1175,11 +1262,7 @@ export class World {
   private tableRow(slot: number): number {
     const records = this.records;
     if (slot < 0 || slot >= records.length) return -1;
-    return (
-      this.graph.archetypes[records.archetypeId[slot] as number]?.rows[
-        records.archetypeRow[slot] as number
-      ] ?? -1
-    );
+    return records.tableRow[slot] as number;
   }
 
   private markComponentChanged(entity: EntityHandle, component: Component): void {
@@ -1757,8 +1840,8 @@ export class World {
    * avoid the `get` overhead (1 `{}` alloc + N-field readRow walk).
    *
    * Fixed `array<T,N>` columns (feat-20260602) store their elements inline, so
-   * the view aliases the archetype column buffer directly (no BufferPool
-   * indirection); variable `array<T>` columns still alias the BufferPool slot.
+   * the view aliases the archetype column buffer directly; variable
+   * `array<T>` columns alias their `[block, byteOffset, count]` location.
    * The returned view's element type follows the schema element type
    * (`array<entity,N>` -> `Uint32Array`, `array<f32,N>` -> `Float32Array`,
    * etc.) -- the prior f32-only early-return gate is removed.
@@ -1866,13 +1949,14 @@ export class World {
       );
     }
     if (values.length === 0) return ok(undefined);
-    const previous = this.componentChangeIndices.get(localId)?.get(entityIndex(entity)) ?? 0;
+    const previous =
+      readComponentChanged(this.graph, this.records, entityIndex(entity), localId) ?? 0;
     if (column !== undefined) column.view.set(values, row * column.arity + offset);
     else (view as Float32Array).set(values, offset);
     try {
       const epoch = this.internalnextMutationEpoch();
       this.componentMutationEpochs[localId] = epoch;
-      this.publishComponentChangeIndex(entity, localId, epoch);
+      this.publishComponentChange(entity, localId, epoch);
       if (offset === 0 && values.length === size)
         this.arrayRangeLog.forgetField(entity as number, localId, fieldName);
       else
@@ -2076,7 +2160,7 @@ export class World {
             if (isFixedBuffer) {
               // feat-20260602: fixed `buffer<N>` lives inline as a stride-N u8
               // column (arity = N bytes). Write the payload straight into the
-              // row window -- no BufferPool slot.
+              // row window.
               const expected = bufferFieldByteLength(fieldType);
               if (bytes.byteLength !== expected) {
                 return err(new FixedSizeMismatchError(fieldName, expected, bytes.byteLength));
@@ -2089,18 +2173,13 @@ export class World {
               // (verify round 1 B2 fix path). The helper zeroes the column on
               // release; sentinel slot id 0 is a no-op.
               this.releaseManagedFieldOnRow(arch, component, row, fieldName);
-              const allocR = this.bufferPool.alloc(bytes.byteLength);
-              if (!allocR.ok) {
+              if (!this.storeArray(col, row, bytes, bytes.byteLength, bytes.byteLength)) {
                 const ctx: ErrorContext = {
                   systemName: `World.set (${component.name}.${fieldName})`,
                 };
-                this.routeError(allocR.error as EcsError, ctx);
-                col.view[row] = 0;
+                this.routeError(this.arrayAllocError(bytes.byteLength), ctx);
                 continue;
               }
-              const slot = allocR.value;
-              slot.view.set(bytes);
-              col.view[row] = slot.id;
             }
           }
         } else if (kind === 'string') {
@@ -2217,8 +2296,8 @@ export class World {
         field.type === 'buffer' ||
         (field.arrayMeta !== undefined && field.arrayMeta.length === undefined)
       ) {
-        const slot = col.view[row];
-        if (slot && this.bufferPool.backingBuffer(slot) === buffer) destination = null;
+        const block = col.view[row * ARRAY_FIELD_ARITY] as number;
+        if (block !== 0 && this.arrayStore.buffer(block) === buffer) destination = null;
       }
     }
     return destination;
@@ -2236,8 +2315,8 @@ export class World {
   /**
    * Append `value` to the variable `array<T>` field `fieldName` on `entity`.
    *
-   * BufferPool grow is amortized O(1) via the size-class freelist (research
-   * Finding 5). Relationship target arrays grow byte-wise.
+   * Appends write in place; the location moves to a larger cell or block
+   * only when the current one is full.
    *
    * @returns `Result<void, EcsError>` with the normal stale/component errors.
    *
@@ -2280,42 +2359,16 @@ export class World {
     /* istanbul ignore next -- arrayMeta.elementType is guaranteed in TYPE_METADATA */
     if (!meta) return err(new ComponentNotPresentError(entity as number, component.name));
     const elementBytes = meta.byteSize;
-    const slotId = col.view[row] as number;
-
-    const countCol = col?.countField === undefined ? undefined : fieldCols.get(col.countField);
-    /* istanbul ignore next -- variable arrays always allocate the count column */
-    if (countCol === undefined) {
-      return err(new ComponentNotPresentError(entity as number, component.name));
-    }
-    const count = countCol.view[row] as number;
-    const newCount = count + 1;
-    const newByteLength = newCount * elementBytes;
-
-    let liveSlotId = slotId;
-    if (liveSlotId === 0) {
-      // Empty/unallocated slot — alloc fresh.
-      const allocR = this.bufferPool.alloc(newByteLength);
-      if (!allocR.ok) return err(allocR.error);
-      liveSlotId = allocR.value.id;
-      col.view[row] = liveSlotId;
-    } else {
-      // A previously-allocated slot may have drained below its high-water
-      // mark: swap-remove (`_removeArrayElementByValue`) and `pop` only lower
-      // the count column, never shrink the managed buffer. When the refilled
-      // length still fits inside the slot's current logical length, reuse the
-      // buffer in place -- routing through `grow` would hit the (correct, but
-      // here irrelevant) shrink-not-supported guard and strand the field
-      // (e.g. `Children.entities` never repopulating after a full drain).
-      if (newByteLength > this.bufferPool.byteLength(liveSlotId)) {
-        const growR = this.bufferPool.grow(liveSlotId, newByteLength);
-        if (!growR.ok) return err(growR.error);
-      }
-    }
-    const liveBytes = this.bufferPool.view(liveSlotId);
-    // Reinterpret the slot bytes as the element-typed view and write at the
-    // tail index. Entity values are stored as their u32 bit pattern.
-    writeArrayElementAt(liveBytes, count, arrayMeta.elementType, value as number);
-    countCol.view[row] = newCount;
+    const location = col.view as Uint32Array;
+    const base = row * ARRAY_FIELD_ARITY;
+    const count = location[base + 2] as number;
+    // Swap-remove only lowers the count; refills reuse the cell in place and
+    // move to a larger one only past its capacity.
+    if (!this.arrayStore.reserve(location, base, count * elementBytes, (count + 1) * elementBytes))
+      return err(this.arrayAllocError((count + 1) * elementBytes));
+    const elements = this.arrayStore.view(location[base] as number, meta.viewCtor);
+    elements[(location[base + 1] as number) / elementBytes + count] = value as number;
+    location[base + 2] = count + 1;
     this.markComponentChanged(entity, component);
     return ok(undefined);
   }
@@ -2359,17 +2412,12 @@ export class World {
     }
 
     const byteLength = minimum * meta.byteSize;
-    const slotId = col.view[row] as number;
-    if (slotId === 0) {
-      if (minimum === 0) return ok(undefined);
-      const allocated = this.bufferPool.alloc(byteLength);
-      if (!allocated.ok) return allocated;
-      col.view[row] = allocated.value.id;
-      return ok(undefined);
-    }
-    if (this.bufferPool.byteLength(slotId) >= byteLength) return ok(undefined);
-    const grown = this.bufferPool.grow(slotId, byteLength);
-    return grown.ok ? ok(undefined) : grown;
+    const location = col.view as Uint32Array;
+    const base = row * ARRAY_FIELD_ARITY;
+    const liveBytes = (location[base + 2] as number) * meta.byteSize;
+    return this.arrayStore.reserve(location, base, liveBytes, byteLength)
+      ? ok(undefined)
+      : err(this.arrayAllocError(byteLength));
   }
 
   /**
@@ -2392,25 +2440,22 @@ export class World {
     if (!fieldCols) return err(new ComponentNotPresentError(entity as number, component.name));
     const col = fieldCols.get(fieldName);
     const arrayMeta = componentDefinition(component).fields[fieldName]?.arrayMeta;
-    const countCol = col?.countField === undefined ? undefined : fieldCols.get(col.countField);
-    if (!col || !arrayMeta || arrayMeta.length !== undefined || !countCol) {
+    if (!col || !arrayMeta || arrayMeta.length !== undefined) {
       return err(new ComponentNotPresentError(entity as number, component.name));
     }
-    const row = this.tableRow(rec);
-    const count = countCol.view[row] as number;
+    const location = col.view as Uint32Array;
+    const base = this.tableRow(rec) * ARRAY_FIELD_ARITY;
+    const count = location[base + 2] as number;
     if (slot < 0 || slot >= count) return ok(undefined);
-    const slotId = col.view[row] as number;
-    if (slotId === 0) return ok(undefined);
-    const liveBytes = this.bufferPool.view(slotId);
     const last = count - 1;
-    const moved =
-      slot === last
-        ? undefined
-        : (readArrayElementAt(liveBytes, last, arrayMeta.elementType) as EntityHandle);
+    let moved: EntityHandle | undefined;
     if (slot !== last) {
-      writeArrayElementAt(liveBytes, slot, arrayMeta.elementType, moved as number);
+      const elements = this.arrayStore.view(location[base] as number, arrayElementCtor(arrayMeta));
+      const start = (location[base + 1] as number) / elements.BYTES_PER_ELEMENT;
+      moved = elements[start + last] as EntityHandle;
+      elements[start + slot] = moved;
     }
-    countCol.view[row] = last;
+    location[base + 2] = last;
     this.markComponentChanged(entity, component);
     return ok(moved);
   }
@@ -2756,7 +2801,7 @@ export class World {
       try {
         this.internalnextMutationEpoch();
         this.advanceStructureEpoch(entity);
-        this.forgetComponentChangeIndex(entity, localId);
+        this.notifyComponentRemoved(entity, localId);
       } catch (cause) {
         this.poisonAfterEntityMutation('World.removeComponent', cause);
         throw cause;
@@ -2824,6 +2869,8 @@ export class World {
       const tableRow = appendTableRow(table, entity, this.mutationEpoch + 1);
       const archetypeRow = appendArchetypeRow(arch, tableRow);
       this.records.archetypeRow[slot] = archetypeRow;
+      this.records.tableId[slot] = arch.tableId;
+      this.records.tableRow[slot] = tableRow;
 
       // Write initial data. Apply the same default-resolution path as the
       // synchronous World.spawn / addComponent operations.
@@ -2977,15 +3024,9 @@ export class World {
     const col = fieldCols.get(fieldName);
     if (!col) return undefined;
 
-    const elementCount =
-      arrayMeta.length ??
-      ((col.countField === undefined ? undefined : fieldCols.get(col.countField)?.view[row]) as
-        | number
-        | undefined) ??
-      0;
     // A transient view: retaining one view per row would cost a live
     // object per entity.
-    return this.materializeArrayView(col, row, arrayMeta, elementCount);
+    return this.materializeArrayView(col, row, arrayMeta);
   }
 
   /** Read one scalar column without constructing a component snapshot. */
@@ -3018,12 +3059,10 @@ export class World {
     const arrayMeta = componentDefinition(component).fields[fieldName]?.arrayMeta;
     if (arrayMeta === undefined) return undefined;
     if (arrayMeta.length !== undefined) return arrayMeta.length;
-    const countField = fieldCols.get(fieldName)?.countField;
-    const count = countField === undefined ? undefined : fieldCols.get(countField)?.view[row];
-    return typeof count === 'number' ? count : 0;
+    return (fieldCols.get(fieldName)?.view[row * ARRAY_FIELD_ARITY + 2] as number | undefined) ?? 0;
   }
 
-  /** Read one array element directly from its column or BufferPool slot. */
+  /** Read one array element directly from its inline column or ArrayStore cell. */
   private internalgetArrayElement(
     entity: EntityHandle,
     component: Component,
@@ -3042,26 +3081,12 @@ export class World {
     if (arrayMeta === undefined) return undefined;
     const col = fieldCols.get(fieldName);
     if (col === undefined) return undefined;
-    const length =
-      arrayMeta.length ??
-      (col.countField === undefined ? undefined : fieldCols.get(col.countField)?.view[row]);
-    if (length === undefined || index >= length) return undefined;
-    if (arrayMeta.length !== undefined) return col.view[row * col.arity + index] as number;
-
-    const slotId = col.view[row] as number;
-    const bytes = this.bufferPool.view(slotId);
-    if (arrayMeta.elementType === 'entity') {
-      const byteOffset = index * 4;
-      if (byteOffset + 4 > bytes.byteLength) return undefined;
-      return (
-        ((bytes[byteOffset] ?? 0) |
-          ((bytes[byteOffset + 1] ?? 0) << 8) |
-          ((bytes[byteOffset + 2] ?? 0) << 16) |
-          ((bytes[byteOffset + 3] ?? 0) << 24)) >>>
-        0
-      );
-    }
-    return readArrayElementAt(bytes, index, arrayMeta.elementType);
+    if (arrayMeta.length !== undefined)
+      return index < arrayMeta.length ? (col.view[row * col.arity + index] as number) : undefined;
+    const base = row * ARRAY_FIELD_ARITY;
+    if (index >= (col.view[base + 2] as number)) return undefined;
+    const elements = this.arrayStore.view(col.view[base] as number, arrayElementCtor(arrayMeta));
+    return elements[(col.view[base + 1] as number) / elements.BYTES_PER_ELEMENT + index];
   }
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -3115,10 +3140,13 @@ export class World {
             row * arity + arity,
           );
         } else {
-          // Variable `'buffer'`: column stores slot id; the live view is
-          // resolved on demand so post-grow callers always see the refreshed
-          // Uint8Array.
-          (out as Record<string, unknown>)[fieldName] = this.bufferPool.view(raw as number);
+          // Variable `'buffer'`: the column holds [block, byteOffset, byteLength].
+          const base = row * ARRAY_FIELD_ARITY;
+          (out as Record<string, unknown>)[fieldName] = this.arrayStore.bytes(
+            col.view[base] as number,
+            col.view[base + 1] as number,
+            col.view[base + 2] as number,
+          );
         }
       } else if (kind === 'string') {
         // M1 string-field read path (AC-03 / AC-09): resolve the column
@@ -3137,15 +3165,9 @@ export class World {
         if (arrayMeta !== undefined) {
           // M1 read path: materialise a fresh TypedArray snapshot each call
           // (D-4 no cache; plan-strategy §2.2 read-only contract). The
-          // snapshot aliases the BufferPool slot bytes; mutations route
-          // through the World mutation API.
-          const elementCount =
-            arrayMeta.length ??
-            ((col.countField === undefined
-              ? undefined
-              : fieldCols.get(col.countField)?.view[row]) as number | undefined) ??
-            0;
-          const materialized = this.materializeArrayView(col, row, arrayMeta, elementCount);
+          // snapshot aliases the stored elements; mutations route through
+          // the World mutation API.
+          const materialized = this.materializeArrayView(col, row, arrayMeta);
           // Relationship target arrays are a read-only projection. Keep the
           // public component snapshot detached so mutating the returned view
           // cannot bypass the World-owned mirror/index path.
@@ -3215,15 +3237,12 @@ export class World {
         // + `'buffer<N>'` (fixed):
         //   - `buffer<N>` (feat-20260602) — lives inline as a stride-N u8
         //     column (arity = N). Copy any provided payload straight into the
-        //     row window (truncate to N); no BufferPool slot.
-        //   - `'buffer'`  — variable capacity; alloc one BufferPool slot sized
-        //     to the provided payload's byteLength. Missing / non-buffer raw
-        //     -> alloc(0) zero-length live view (verify round 1 B2 fix path;
-        //     pre-fix the bare keyword routed `bufferFieldByteLength('buffer')`
-        //     -> NaN -> alloc(NaN) -> managed-buffer-out-of-bounds, dropping
-        //     the payload bytes silently). Failures route to Layer 3
-        //     error channel; column slot stays at 0 (sentinel) so subsequent
-        //     release short-circuits.
+        //     row window (truncate to N).
+        //   - `'buffer'`  — variable capacity; store the payload in the
+        //     world's ArrayStore and write its location onto the column.
+        //     Missing / non-buffer raw stores an empty location. Failures
+        //     route to Layer 3 error channel; the location stays empty so
+        //     subsequent release short-circuits.
         //   raw is normalized from any AllowSharedBufferSource view to a
         //   Uint8Array over its bytes (feat-20260621 V2 / AC-A4).
         const bytes = normalizeBufferWrite(raw);
@@ -3234,23 +3253,13 @@ export class World {
             (col.view as Uint8Array).set(bytes.subarray(0, copyLen), row * arity);
           }
         } else {
-          const allocBytes = bytes !== null ? bytes.byteLength : 0;
-          const allocR = this.bufferPool.alloc(allocBytes);
-          if (!allocR.ok) {
+          const byteLength = bytes !== null ? bytes.byteLength : 0;
+          if (!this.storeArray(col, row, bytes, byteLength, byteLength)) {
             const ctx: ErrorContext = {
               systemName: `World.spawn (${component.name}.${fieldName})`,
             };
-            this.routeError(allocR.error, ctx);
-            col.view[row] = 0;
-            continue;
+            this.routeError(this.arrayAllocError(byteLength), ctx);
           }
-          const slot = allocR.value;
-          if (bytes !== null) {
-            // allocBytes is the payload's exact byteLength so no truncation.
-            const copyLen = Math.min(bytes.byteLength, slot.view.byteLength);
-            slot.view.set(bytes.subarray(0, copyLen));
-          }
-          col.view[row] = slot.id;
         }
       } else if (kind === 'string') {
         // M1 string-field spawn path (AC-04 / AC-06): route the JS string
@@ -3332,8 +3341,7 @@ export class World {
       return;
     }
     if (kind === 'buffer') {
-      this.releaseManagedBufferSlot(raw);
-      col.view[row] = 0;
+      this.releaseArray(col, row);
       return;
     }
     if (kind === 'array' || kind === 'fixed-array') {
@@ -3346,24 +3354,22 @@ export class World {
       const isSharedElement = arrayMeta.elementType.startsWith('shared<');
       const isAssetElement = arrayMeta.elementType.startsWith('asset<');
       if (arrayMeta.length === undefined) {
-        // Variable `array<T>`: BufferPool slot id in primary column + live
-        // count in `<fieldName>:count` sidecar. For `array<shared<T>>`,
-        // walk live elements and release each shared handle BEFORE
-        // releasing the slot bytes (feat-20260614 M4 / D-3 — slot bytes
-        // are only valid until the slot is recycled).
-        const slotId = col.view[row] as number;
-        const countCol = col?.countField === undefined ? undefined : fieldCols.get(col.countField);
-        if ((isSharedElement || isAssetElement) && slotId !== 0) {
-          const liveCount = countCol !== undefined ? (countCol.view[row] as number) : 0;
-          const slotView = liveCount > 0 ? this.bufferPool.view(slotId) : null;
-          if (slotView !== null && slotView.byteLength > 0) {
-            if (isAssetElement) this.releaseAssetArrayElements(slotView, liveCount);
-            else this.releaseSharedArrayElements(slotView, liveCount);
-          }
+        // Variable `array<T>`: [block, byteOffset, count]. For
+        // `array<shared<T>>` / `array<asset<T>>`, release each element
+        // handle BEFORE the cell is released (feat-20260614 M4 / D-3 — the
+        // bytes are only valid until the cell is reused).
+        const base = row * ARRAY_FIELD_ARITY;
+        const liveCount = col.view[base + 2] as number;
+        if ((isSharedElement || isAssetElement) && liveCount > 0) {
+          const elements = this.arrayStore.bytes(
+            col.view[base] as number,
+            col.view[base + 1] as number,
+            liveCount * 4,
+          );
+          if (isAssetElement) this.releaseAssetArrayElements(elements, liveCount);
+          else this.releaseSharedArrayElements(elements, liveCount);
         }
-        this.releaseManagedBufferSlot(slotId);
-        col.view[row] = 0;
-        if (countCol !== undefined) countCol.view[row] = 0;
+        this.releaseArray(col, row);
         return;
       }
       // Fixed `array<T,N>` (feat-20260602): inline stride-N column, no
@@ -3431,10 +3437,46 @@ export class World {
     this.routeError(r.error, ctx);
   }
 
-  /** Release one variable-buffer slot; id 0 is the unallocated sentinel. */
-  private releaseManagedBufferSlot(slotId: number): void {
-    if (slotId === 0) return; // sentinel: skip silently.
-    this.bufferPool.release(slotId);
+  /** Release a variable array / buffer cell and reset its location to empty. */
+  private releaseArray(col: Column, row: number): void {
+    const location = col.view as Uint32Array;
+    const base = row * ARRAY_FIELD_ARITY;
+    this.arrayStore.release(location[base] as number, location[base + 1] as number);
+    location[base] = 0;
+    location[base + 1] = 0;
+    location[base + 2] = 0;
+  }
+
+  /**
+   * Place a variable array / buffer of `byteLength` bytes for `row`, copy
+   * `bytes` into it and record `count`. On failure the location is empty.
+   */
+  private storeArray(
+    col: Column,
+    row: number,
+    bytes: Uint8Array | null,
+    byteLength: number,
+    count: number,
+  ): boolean {
+    const location = col.view as Uint32Array;
+    const base = row * ARRAY_FIELD_ARITY;
+    if (!this.arrayStore.alloc(location, base, byteLength)) {
+      location[base] = 0;
+      location[base + 1] = 0;
+      location[base + 2] = 0;
+      return false;
+    }
+    if (bytes !== null && byteLength > 0)
+      new Uint8Array(this.arrayStore.buffer(location[base] as number)).set(
+        bytes.byteLength === byteLength ? bytes : bytes.subarray(0, byteLength),
+        location[base + 1] as number,
+      );
+    location[base + 2] = count;
+    return true;
+  }
+
+  private arrayAllocError(byteLength: number): ManagedBufferOutOfBoundsError {
+    return new ManagedBufferOutOfBoundsError(byteLength, this.arrayStore.committedBytes);
   }
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -3460,7 +3502,7 @@ export class World {
 
   /**
    * Write an array field for spawn or set. Fixed arrays stay inline; variable
-   * arrays use one BufferPool slot plus a live-count sidecar.
+   * arrays store one ArrayStore cell whose location and count sit on the column.
    */
   private writeArrayField(
     arch: Archetype,
@@ -3594,45 +3636,34 @@ export class World {
     // — D-3 calling convention. Spawn path's fresh rows carry stale swap-pop
     // debris which MUST NOT be released here.
     const byteLength = effectiveCount * elementBytes;
-    const allocR = this.bufferPool.alloc(byteLength);
-    if (!allocR.ok) {
+    if (!this.storeArray(col, row, payloadBytes, byteLength, effectiveCount)) {
+      const error = this.arrayAllocError(byteLength);
       this.routeArrayError(
         {
-          code: allocR.error.code,
-          hint: allocR.error.hint,
-          expected: allocR.error.expected,
-          detail: allocR.error.detail,
+          code: error.code,
+          hint: error.hint,
+          expected: error.expected,
+          detail: error.detail,
         } as ManagedArrayErrorEnvelope,
         component.name,
         fieldName,
       );
-      col.view[row] = 0;
-      if (isVariable) {
-        const countCol = col?.countField === undefined ? undefined : fieldCols.get(col.countField);
-        if (countCol !== undefined) countCol.view[row] = 0;
-      }
       return;
-    }
-    const slot = allocR.value;
-    if (payloadBytes !== null) {
-      const copyLen = Math.min(payloadBytes.byteLength, slot.view.byteLength);
-      slot.view.set(payloadBytes.subarray(0, copyLen));
-    }
-    col.view[row] = slot.id;
-    if (isVariable) {
-      const countCol = col?.countField === undefined ? undefined : fieldCols.get(col.countField);
-      /* istanbul ignore else -- count column allocated by createArchetype */
-      if (countCol !== undefined) countCol.view[row] = effectiveCount;
     }
     // feat-20260614 M4 / D-3: variable `array<shared<T>>` element-level
     // retain. Walk the live element prefix (effectiveCount u32 handles) and
     // retain each non-sentinel handle. Prior elements were released by the
     // caller via `releaseManagedFieldOnRow` on the set path (D-3 calling
     // convention); the spawn path has no priors.
-    if (metaKey === 'asset' && effectiveCount > 0)
-      this.retainAssetArrayElements(slot.view, effectiveCount);
-    if (metaKey === 'shared' && effectiveCount > 0) {
-      this.retainSharedArrayElements(slot.view, effectiveCount);
+    if ((metaKey === 'asset' || metaKey === 'shared') && effectiveCount > 0) {
+      const base = row * ARRAY_FIELD_ARITY;
+      const elements = this.arrayStore.bytes(
+        col.view[base] as number,
+        col.view[base + 1] as number,
+        byteLength,
+      );
+      if (metaKey === 'asset') this.retainAssetArrayElements(elements, effectiveCount);
+      else this.retainSharedArrayElements(elements, effectiveCount);
     }
   }
 
@@ -3684,15 +3715,10 @@ export class World {
 
   /**
    * Materialize an array snapshot. Fixed arrays alias their inline column;
-   * variable arrays alias the live BufferPool slot and use the count sidecar.
+   * variable arrays alias their ArrayStore cell for the column's count.
    * Both views are transient and must not be held across structural changes.
    */
-  private materializeArrayView(
-    col: Column,
-    row: number,
-    arrayMeta: ArrayMeta,
-    elementCount: number,
-  ): FieldView {
+  private materializeArrayView(col: Column, row: number, arrayMeta: ArrayMeta): FieldView {
     if (arrayMeta.length !== undefined) {
       // Fixed `array<T,N>` (feat-20260602): the elements live INLINE in the
       // stride-N column. Reinterpret the row's byte window directly — no
@@ -3707,10 +3733,13 @@ export class World {
         arrayMeta.length,
       );
     }
-    return reinterpretSlotBytes(
-      this.bufferPool.view(col.view[row] as number),
-      arrayMeta.elementType,
-      elementCount,
+    const base = row * ARRAY_FIELD_ARITY;
+    const Ctor = arrayElementCtor(arrayMeta);
+    const block = col.view[base] as number;
+    return new Ctor(
+      this.arrayStore.buffer(block),
+      col.view[base + 1] as number,
+      col.view[base + 2] as number,
     );
   }
 
@@ -3739,6 +3768,7 @@ export class World {
       const moved = entityIndex(tableSwap.movedEntity);
       const records = this.records;
       if (records.generationOf(moved) === entityGeneration(tableSwap.movedEntity)) {
+        records.tableRow[moved] = tableSwap.newRow;
         const movedArchetype = this.graph.archetypes[records.archetypeId[moved] as number];
         if (movedArchetype !== undefined) {
           movedArchetype.rows[records.archetypeRow[moved] as number] = tableSwap.newRow;
@@ -3749,7 +3779,7 @@ export class World {
 
   /**
    * Copy surviving component columns into the target row, then swap-remove
-   * the source row. Managed handles and variable-array sidecars are copied
+   * the source row. Managed handles and variable-array locations are copied
    * verbatim; release remains the responsibility of remove/despawn paths.
    */
   private migrateEntity(slot: number, srcArch: Archetype, targetArch: Archetype): void {
@@ -3762,7 +3792,7 @@ export class World {
     const newArchetypeRow = appendArchetypeRow(targetArch, newTableRow);
 
     // Copy shared component data: the whole stride window per row, including
-    // managed handles and variable-array count sidecars.
+    // managed handles and variable-array locations.
     for (const [compId, srcComponentStorage] of srcTable.storage) {
       const targetComponentStorage = targetTable.storage.get(compId);
       if (targetComponentStorage === undefined) continue; // Component was removed.
@@ -3772,6 +3802,11 @@ export class World {
         if (targetCol !== undefined) copyColumnRow(srcCol, oldTableRow, targetCol, newTableRow);
       }
       targetComponentStorage.added[newTableRow] = srcComponentStorage.added[oldTableRow] ?? 0;
+      stampChange(
+        targetComponentStorage.changed,
+        newTableRow,
+        srcComponentStorage.changed.epochs[oldTableRow] ?? 0,
+      );
     }
 
     this.removeArchetypeMembership(srcArch, oldArchetypeRow);
@@ -3779,6 +3814,8 @@ export class World {
 
     this.records.archetypeId[slot] = targetArch.id;
     this.records.archetypeRow[slot] = newArchetypeRow;
+    this.records.tableId[slot] = targetArch.tableId;
+    this.records.tableRow[slot] = newTableRow;
   }
 
   private moveEntityArchetype(slot: number, srcArch: Archetype, targetArch: Archetype): void {
@@ -3847,9 +3884,11 @@ export class World {
       this.internalnextMutationEpoch();
       this.advanceStructureEpoch(entity);
       for (const component of archetype?.components ?? [])
-        this.forgetComponentChangeIndex(entity, componentId(component));
+        this.notifyComponentRemoved(entity, componentId(component));
       records.archetypeId[slot] = -1;
       records.archetypeRow[slot] = -1;
+      records.tableId[slot] = -1;
+      records.tableRow[slot] = -1;
       const next = (records.generation[slot] as number) + 1;
       records.generation[slot] = next;
       if (!isRetiredSlot(next)) this.freeIndices.push(slot);

@@ -135,11 +135,35 @@ function packageOutput(
   return { ok: true, value: { format, output, distRoot } };
 }
 
+function invalidPackageOptions(options: PackageOptions): CommandResult<never> | undefined {
+  if (
+    options.format !== 'tauri' &&
+    (options.platform !== undefined || options.prepareOnly !== undefined)
+  ) {
+    return {
+      ok: false,
+      error: {
+        code: 'package-options-invalid',
+        expected: 'platform and prepareOnly only with the tauri format',
+        hint: 'Use --format tauri --platform windows|macos|linux|android|ios.',
+        detail: {},
+      },
+    };
+  }
+  return undefined;
+}
+
 export async function packageCommand(
   options: PackageOptions = {},
 ): Promise<CommandResult<unknown>> {
+  const invalid = invalidPackageOptions(options);
+  if (invalid !== undefined) return invalid;
   const facts = await readProjectFacts(options.root);
   if (!facts.ok) return facts;
+  if (options.format === 'tauri') {
+    const { packageTauriProject } = await import('./tauri-package.js');
+    return packageTauriProject(facts.value, options);
+  }
   const planned = packageOutput(facts.value, options);
   if (!planned.ok) return planned;
   const { format, output, distRoot } = planned.value;

@@ -117,7 +117,7 @@ publication, including edit and retirement evidence.
 
 `await assets.readMeshGeometry(guid, { signal })` reads independently owned
 published base geometry for CPU processing. The `MeshGeometry` result contains
-vertices, attributes, optional indices, submeshes and optional AABB, with no
+vertices, empty attribute layout declarations, `attributeStorage: 'interleaved'`, optional indices, submeshes and optional AABB, with no
 Asset `kind`, runtime handle or render-readiness receipt. It uses the configured
 source's verified Pack/artifact transport and Mesh decoder, checks canonical
 geometry, and rejects cancellation, invalidation, decoder retirement, changed
@@ -359,6 +359,17 @@ Performance evidence and remaining acceptance belong to the
 
 ## Runtime content
 
+Mesh content has one retained vertex representation: interleaved rows. Full
+authoring channels are validated before admission and then discarded from the
+owned runtime value. The native binary decoder validates rows directly without
+allocating duplicate channels. Read CPU lanes through geometry's
+`meshAttributeWindow`; request explicit contiguous output with `copyMeshAttribute`
+when needed. Attribute range edits write the corresponding strided row lanes;
+complete row edits do not regenerate a channel mirror. `attributes` on reads
+declares layout, so its empty array lengths are not vertex counts. Detached
+authoring edits can use `meshAttributeChannels(read)` and pass the resulting
+complete channels to `update`; ordinary `writeRange` avoids that conversion.
+
 `update` merges owned fields, `replace` validates complete content, and `writeRange`
 updates mesh attribute or texture pixel ranges. A successful operation commits
 content and automatic change evidence together; a rejected operation changes
@@ -595,3 +606,8 @@ Generator edits adopt all loaded output descriptors atomically. Neither pixels n
 RHI objects enter Registry content. `TextureAsset`, the `texture` kind and existing
 CPU image consumers retain their byte-backed contract. Renderer owns generation,
 mips, sampling, device recovery and the accepted GPU allocation lifetime.
+
+Retiring a publication source releases its Catalog replica directory and cached
+snapshot. Runtime handles keep their accepted content and provenance; immutable
+observations already returned to callers remain valid. A retired source refuses
+new reads, and a replacement source builds its own current directory.

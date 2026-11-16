@@ -1,4 +1,8 @@
 import { assetDataBytes } from '@forgeax/engine-assets-runtime/internal';
+import {
+  deriveVertexLayoutProjection,
+  interleavedMeshFiniteFailure,
+} from '@forgeax/engine-geometry';
 import type { AssetHandle, MeshAsset } from '@forgeax/engine-types';
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { attributeChannelBytes, packedRowsEligible } from './publication/packed-rows-mesh';
@@ -326,9 +330,11 @@ function validateMesh(mesh: MeshAsset, admitted: boolean): string | undefined {
     if (vertices.some((value) => !Number.isFinite(value)))
       return 'MeshAsset.vertices must be finite';
   } else {
-    for (let index = 0, length = vertices.length; index < length; index++) {
-      if (!Number.isFinite(vertices[index])) return 'MeshAsset.vertices must be finite';
-    }
+    if (
+      interleavedMeshFiniteFailure(vertices, deriveVertexLayoutProjection(mesh.attributes)) !==
+      undefined
+    )
+      return 'MeshAsset.vertices must be finite';
   }
   return undefined;
 }

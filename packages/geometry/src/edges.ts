@@ -8,6 +8,7 @@ import {
   type Result,
   type VertexAttributeMap,
 } from '@forgeax/engine-types';
+import { copyMeshAttribute } from './mesh-storage';
 import { packInterleavedVertexAttributes } from './vertex-attribute-layout';
 
 const WELD_EPSILON = 1e-4;
@@ -113,7 +114,10 @@ function validatePosition(source: MeshAsset): Result<Float32Array, AssetError> {
     return err(parseFailure('kind', source?.kind, 'kind must be mesh'));
   }
   const attributes = source.attributes;
-  const raw = attributes?.position;
+  const raw =
+    source.attributeStorage === 'interleaved'
+      ? copyMeshAttribute(source, 'position')
+      : attributes?.position;
   if (raw === undefined) {
     return err(parseFailure('attributes.position', undefined, 'position is required'));
   }

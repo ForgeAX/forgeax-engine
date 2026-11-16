@@ -133,7 +133,7 @@ function socketPosition(
     const transform = world.get(entity, Transform);
     if (!transform.ok) return err(invalid({ kind: 'socket', socket, reason: 'transform-missing' }));
     const t = transform.value;
-    mat4.compose(local, t.pos, t.quat, t.scale, t.shear);
+    mat4.compose(local, t.pos, t.quat, t.scale);
     mat4.multiply(matrix, matrix, local);
   }
   const socketTransform = world.get(socket, Transform);

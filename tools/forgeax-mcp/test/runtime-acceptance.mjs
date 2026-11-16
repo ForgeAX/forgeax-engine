@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
+import { once } from 'node:events';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import { resolve } from 'node:path';
 import { build } from 'esbuild';
 import { chromium } from 'playwright';
@@ -20,8 +22,15 @@ assert.ok(logo, 'the default Host document must carry its SVG logo');
 assert.equal(Buffer.from(logo, 'base64').toString('utf8'), await readFile(
   resolve(import.meta.dirname, '../../../packages/devkit/src/host/forgeax-logo.svg'), 'utf8'));
 const context = new Context();
+const server = createServer((_request, response) => {
+  response.writeHead(200, { 'content-type': 'text/html' });
+  response.end('<!doctype html><title>Runtime acceptance Host</title>');
+});
 let browser;
 try {
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const hostOrigin = `http://127.0.0.1:${server.address().port}`;
   const result = await startNativePlugin(context, {
     name: 'project-root',
     apply(ctx) {
@@ -41,6 +50,10 @@ try {
   const errors = [], consoleErrors = [];
   page.on('pageerror', error => errors.push(error.message));
   page.on('console', message => { if (message.type() === 'error') consoleErrors.push(message.text()); });
+  // A native Host has an assigned site; about:blank cannot host an isolated
+  // srcdoc in Chromium 158 without failing its SiteInstance invariant.
+  await page.goto(hostOrigin);
+  assert.equal(await page.evaluate(() => globalThis.origin), hostOrigin);
   const document = hostStartupDocument('Runtime acceptance').replace('</body>', `<script>
     ${hostStartupScript(false)};
     const canvas = document.querySelector('#app'); canvas.width = 128; canvas.height = 128;
@@ -58,6 +71,9 @@ try {
   await frameLocator.locator('canvas#app').waitFor({ state: 'attached' });
   const frame = page.frames().find(candidate => candidate.parentFrame() === page.mainFrame());
   assert.ok(frame, 'the sandboxed Engine document must have a Playwright Frame');
+  assert.equal(await page.locator('iframe').getAttribute('sandbox'), 'allow-scripts');
+  const documentOrigin = await frame.evaluate(() => globalThis.origin);
+  assert.equal(documentOrigin, 'null', 'the sandboxed document must retain its opaque origin');
   await frame.waitForFunction(() => document.querySelector('canvas#app')?.forgeaxFrameProgress?.completed?.frameId >= 60);
   await assertNoRuntimeFailure(frame, 'Healthy native document', errors, consoleErrors);
   const positivePng = await frame.locator('canvas#app').evaluate(canvas => canvas.toDataURL());
@@ -87,12 +103,16 @@ try {
   assert.equal(consoleErrors.length, 1);
   await assert.rejects(() => assertNoRuntimeFailure(frame, 'Console failure', errors, consoleErrors),
     /no browser console errors/);
-  const summary = { ok: true, positive, retainedFrameCount: 60,
+  const summary = { ok: true, positive, retainedFrameCount: 60, hostOrigin, documentOrigin,
     rejected: ['visible native fatal with empty browser errors', 'hidden retained startup failure', 'black PNG', 'white PNG', 'runtime console error'],
     boundary: 'Actual native child failure in a sandboxed iframe, generated startup DOM and decoded 2D pixels; no GPU qualification' };
   await writeFile(resolve(evidence, 'result.json'), JSON.stringify(summary, null, 2));
   console.log(JSON.stringify(summary));
 } finally {
-  await browser?.close();
-  await context.fiber.dispose();
+  try {
+    await browser?.close();
+    await context.fiber.dispose();
+  } finally {
+    await new Promise(resolveClose => server.close(resolveClose));
+  }
 }

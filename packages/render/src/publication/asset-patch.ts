@@ -9,7 +9,8 @@ import {
   validateMaterialValues,
 } from '@forgeax/engine-types';
 import { RenderPublicationError } from './contract';
-import { forgetMeshAttributeChannels, isPackedRowsMesh } from './packed-rows-mesh';
+import { beforePublishedMeshBufferWrite, ownPublishedMeshBuffers } from './mesh-buffer-ownership';
+import { isPackedRowsMesh } from './packed-rows-mesh';
 
 export interface PublishedAssetPatch {
   readonly handle: number;
@@ -366,10 +367,10 @@ function prepareBinaryPatch(
       ranges,
     },
     commit: () => {
+      for (const { target } of writes) beforePublishedMeshBufferWrite(target.buffer);
       for (const { target, bytes, offset, rowBytes, stride } of writes)
         writeStridedRows(target, bytes, offset, rowBytes, stride);
-      // In-place row writes invalidate channels rebuilt from the prior value.
-      if (packedRows) forgetMeshAttributeChannels(current as MeshAsset);
+      if (current.kind === 'mesh') ownPublishedMeshBuffers(next as unknown as MeshAsset);
     },
   };
 }

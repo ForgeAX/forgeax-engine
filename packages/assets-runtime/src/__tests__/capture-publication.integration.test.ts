@@ -1,4 +1,8 @@
-import { createBoxGeometry, meshAssetContribution } from '@forgeax/engine-geometry';
+import {
+  copyMeshAttribute,
+  createBoxGeometry,
+  meshAssetContribution,
+} from '@forgeax/engine-geometry';
 import { serializeCookedMaterialRecord } from '@forgeax/engine-pack';
 import { encodeAssetBundle } from '@forgeax/engine-pack/bundle';
 import {
@@ -134,9 +138,9 @@ it.each([
         decoders: runtimePackDecoders,
       });
       expect(result.ok, `${encoding}: ${JSON.stringify(result)}`).toBe(true);
-      expect((defined(result.unwrap().get(guid)) as MeshAsset).attributes.position).toEqual(
-        input.original.attributes.position,
-      );
+      expect(
+        copyMeshAttribute(defined(result.unwrap().get(guid)) as MeshAsset, 'position'),
+      ).toEqual(copyMeshAttribute(input.original, 'position'));
     }
   }
 });
@@ -489,8 +493,8 @@ it.each([
   ).unwrap();
   expect(decoded.size).toBe(2);
   registry?.dispose();
-  expect((defined(decoded.get(guid)) as MeshAsset).attributes.position).toEqual(
-    input.original.attributes.position,
+  expect(copyMeshAttribute(defined(decoded.get(guid)) as MeshAsset, 'position')).toEqual(
+    copyMeshAttribute(input.original, 'position'),
   );
   expect((defined(decoded.get(sibling)) as MeshAsset).indices).toEqual(input.original.indices);
 });

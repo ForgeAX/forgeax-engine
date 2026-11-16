@@ -41,9 +41,7 @@ export function spawnRosterMatches(
 }
 
 function tableRow(world: World, slot: number): number {
-  const records = world[worldInternal].getRecords();
-  const archetype = world[worldInternal].getGraph().archetypes[records.archetypeId[slot] as number];
-  return archetype?.rows[records.archetypeRow[slot] as number] ?? -1;
+  return world[worldInternal].getRecords().tableRow[slot] ?? -1;
 }
 
 function archetypeOf(world: World, slot: number): Archetype | undefined {

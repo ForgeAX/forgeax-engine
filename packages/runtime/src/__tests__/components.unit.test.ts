@@ -142,7 +142,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
   // w7 - 5 component schema runtime registration + multi-component spawn (TDD red).
   //
   // Locks plan-strategy 7.2 naming + requirements IN-1 schema field set:
-  //   Transform: pos:[f32x3] + quat:[f32x4] + scale:[f32x3] + shear:[f32x3]
+  //   Transform: pos:[f32x3] + quat:[f32x4] + scale:[f32x3]
   //   MeshFilter:         assetHandle:'asset<mesh>' (u32)
   //   MeshRenderer:       materials:'array<asset<material>>' (u32)
   //   Camera:             fov:f32 + aspect:f32 + near:f32 + far:f32   = 4 f32
@@ -159,16 +159,15 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
   // abstraction: components are flat-scalar SoA columns, not nested objects).
 
   describe('w7 - 5 component schemas register through defineComponent', () => {
-    it('Transform has the four authored local affine array fields', () => {
+    it('Transform has the three authored local array fields', () => {
       expect(Transform.name).toBe('Transform');
-      expect(Object.keys(componentSchema(Transform)).length).toBe(4);
+      expect(Object.keys(componentSchema(Transform)).length).toBe(3);
       // pos: inline [x, y, z]
       expect(componentSchema(Transform).pos).toBe('array<f32, 3>');
       // quat: inline [x, y, z, w] quaternion
       expect(componentSchema(Transform).quat).toBe('array<f32, 4>');
       // scale: inline [x, y, z]
       expect(componentSchema(Transform).scale).toBe('array<f32, 3>');
-      expect(componentSchema(Transform).shear).toBe('array<f32, 3>');
       expect(GlobalTransform.name).toBe('GlobalTransform');
       expect(componentSchema(GlobalTransform).world).toBe('array<f32, 16>');
     });
@@ -484,7 +483,6 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(componentSchema(Transform).pos).toBe('array<f32, 3>');
       expect(componentSchema(Transform).quat).toBe('array<f32, 4>');
       expect(componentSchema(Transform).scale).toBe('array<f32, 3>');
-      expect(componentSchema(Transform).shear).toBe('array<f32, 3>');
     });
 
     it('ChildOf / Children frozen tokens (schema immutable)', () => {

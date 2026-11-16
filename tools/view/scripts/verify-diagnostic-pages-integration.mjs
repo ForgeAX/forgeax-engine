@@ -296,10 +296,20 @@ try {
    completed:globalThis.__diagnosticCompletedFrames[identity]??0,
    ready:globalThis.__diagnosticReadyCompletedFrames[identity]??0};
  });
- await page.waitForFunction(() => {
+ // Cold pipeline/asset preparation and sustained completed pictures are separate
+ // bounded phases. Preserve the full Scene, sixty real ready frames and the
+ // original ninety-second steady-picture window.
+ const waitForReadyPictures=minimum=>page.waitForFunction(minimum=> {
   const identity=globalThis.__forgeaxGameInspection?.renderer()?.execution?.world?.identity;
-  return !!identity && globalThis.__diagnosticReadyCompletedFrames[identity]>=60;
- },undefined,{timeout:90000});
+  return !!identity && globalThis.__diagnosticReadyCompletedFrames[identity]>=minimum;
+ },minimum,{timeout:90000});
+ await waitForReadyPictures(1);
+ await page.evaluate(() => {
+  const identity=globalThis.__forgeaxGameInspection?.renderer()?.execution?.world?.identity;
+  globalThis.__diagnosticReadiness.steadyWait={identity,milliseconds:performance.now(),
+   ready:globalThis.__diagnosticReadyCompletedFrames[identity]??0};
+ });
+ await waitForReadyPictures(60);
  const sceneCompletedFrames=await page.evaluate(()=>globalThis.__diagnosticCompletedFrames);
  await writeFile(resolve(output,'scene-target.json'),JSON.stringify({
   target:sceneOpened.preview.target,

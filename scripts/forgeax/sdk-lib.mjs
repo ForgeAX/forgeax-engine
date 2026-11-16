@@ -595,7 +595,7 @@ export async function waitForNpmPublications(
   {
     tag,
     fetchImpl = fetch,
-    timeoutMs = 20 * 60_000,
+    timeoutMs = 30 * 60_000,
     intervalMs = 10_000,
     now = Date.now,
     sleep = (duration) => new Promise((accept) => setTimeout(accept, duration)),

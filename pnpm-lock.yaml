@@ -14600,6 +14600,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../geometry
       '@forgeax/engine-graphics-extras':
         specifier: workspace:*
         version: link:../graphics-extras
@@ -14622,9 +14625,6 @@ importers:
         specifier: workspace:*
         version: link:../types
     devDependencies:
-      '@forgeax/engine-geometry':
-        specifier: workspace:*
-        version: link:../geometry
       '@forgeax/engine-pack':
         specifier: workspace:*
         version: link:../pack
@@ -15207,6 +15207,9 @@ importers:
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../ecs
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../geometry
       '@forgeax/engine-plugin':
         specifier: workspace:*
         version: link:../plugin

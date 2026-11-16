@@ -1,3 +1,4 @@
+import { meshAttributeWindow } from '@forgeax/engine-geometry';
 import type { MeshAsset } from '@forgeax/engine-types';
 import type { RenderFeaturePlanContext, RenderFeaturePlanView } from '../plan';
 import { transformHelperPoint } from './geometry';
@@ -222,17 +223,23 @@ export function projectEditorAssistance(
     const mesh: MeshAsset | undefined =
       reference === undefined ? undefined : resolveEditorAssistanceMesh(reference, context);
     if (mesh === undefined) return;
-    const rawPosition = mesh.attributes.position;
-    const positions =
-      rawPosition instanceof ArrayBuffer ? new Float32Array(rawPosition) : rawPosition;
-    if (!(positions instanceof Float32Array)) return;
+    const positions = meshAttributeWindow(mesh, 'position');
+    if (positions === undefined || !(positions.data instanceof Float32Array)) return;
+    const colors = meshAttributeWindow(mesh, 'color');
+    const colorAt = (index: number): EditorAssistanceColor => {
+      if (colors === undefined) return primitive.color;
+      const base = colors.offset + index * colors.stride;
+      return [0, 1, 2, 3].map(
+        (channel) => (colors.data[base + channel] ?? 1) * (primitive.color[channel] ?? 1),
+      ) as unknown as EditorAssistanceColor;
+    };
     const vertex = (index: number): Clip =>
       clipPoint(
         matrix,
         transformHelperPoint(primitive.transform, [
-          positions[index * 3] ?? 0,
-          positions[index * 3 + 1] ?? 0,
-          positions[index * 3 + 2] ?? 0,
+          positions.data[positions.offset + index * positions.stride] ?? 0,
+          positions.data[positions.offset + index * positions.stride + 1] ?? 0,
+          positions.data[positions.offset + index * positions.stride + 2] ?? 0,
         ]),
       );
     for (const section of mesh.submeshes) {
@@ -242,14 +249,7 @@ export function projectEditorAssistance(
       const step = section.topology === 'line-list' ? 2 : 3;
       for (let i = 0; i + step - 1 < count; i += step) {
         const index = (n: number) => mesh.indices?.[offset + i + n] ?? offset + i + n;
-        const colors = mesh.attributes.color;
-        const color: EditorAssistanceColor =
-          colors instanceof Float32Array
-            ? ([0, 1, 2, 3].map(
-                (channel) =>
-                  (colors[index(0) * 4 + channel] ?? 1) * (primitive.color[channel] ?? 1),
-              ) as unknown as EditorAssistanceColor)
-            : primitive.color;
+        const color = colors === undefined ? primitive.color : colorAt(index(0));
         if (step === 2)
           line(vertex(index(0)), vertex(index(1)), color, primitive.depth, primitive.action);
         else
@@ -260,15 +260,7 @@ export function projectEditorAssistance(
             color,
             primitive.depth,
             primitive.action,
-            colors instanceof Float32Array
-              ? [0, 1, 2].map(
-                  (n) =>
-                    [0, 1, 2, 3].map(
-                      (channel) =>
-                        (colors[index(n) * 4 + channel] ?? 1) * (primitive.color[channel] ?? 1),
-                    ) as unknown as EditorAssistanceColor,
-                )
-              : undefined,
+            colors !== undefined ? [0, 1, 2].map((n) => colorAt(index(n))) : undefined,
           );
         if (vertices >= MAX_VERTICES) {
           truncated = true;

@@ -7,7 +7,7 @@ export function runtimeBrowserLaunchOptions() {
     ...(process.env.FORGEAX_BROWSER_EXECUTABLE
       ? { executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE }
       : { channel: process.env.FORGEAX_CHROME_CHANNEL ?? browserLaunch.channel }),
-    headless: false,
+    headless: process.env.FORGEAX_BROWSER_HEADLESS === '1',
     args: [
       '--enable-unsafe-webgpu',
       software

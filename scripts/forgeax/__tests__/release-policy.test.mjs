@@ -11,9 +11,46 @@ import {
   assertReleaseSource,
   assertSuccessfulCandidateRun,
   developmentVersion,
+  publicationController,
   releasePolicy,
   stableVersionOf,
 } from '../release-policy.mjs';
+
+test('publication repair controllers must be exact Main ancestors and never replace the Candidate', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'forgeax-publication-controller-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const git = (...args) =>
+    execFileSync(
+      'git',
+      [
+        '-c',
+        'user.name=Fixture',
+        '-c',
+        'user.email=fixture@example.com',
+        '-c',
+        'commit.gpgsign=false',
+        ...args,
+      ],
+      { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+    ).trim();
+  git('init', '--initial-branch=main');
+  git('commit', '--allow-empty', '-m', 'Candidate controller');
+  const candidate = git('rev-parse', 'HEAD');
+  git('commit', '--allow-empty', '-m', 'Reviewed publication repair');
+  const reviewed = git('rev-parse', 'HEAD');
+  git('update-ref', 'refs/remotes/origin/main', reviewed);
+  git('checkout', '--detach', candidate);
+  git('commit', '--allow-empty', '-m', 'Unmerged controller');
+  const unmerged = git('rev-parse', 'HEAD');
+  assert.equal(publicationController(candidate, '', join(root, 'absent')), candidate);
+  assert.equal(publicationController(candidate, reviewed, root), reviewed);
+  assert.equal(publicationController(candidate, candidate, root), candidate);
+  assert.throws(() => publicationController(candidate, unmerged, root), /not-on-main/);
+  assert.throws(() => publicationController(candidate, 'f'.repeat(40), root), /not-on-main/);
+  for (const invalid of ['main', reviewed.slice(0, 12), '--all', `${reviewed}; false`])
+    assert.throws(() => publicationController(candidate, invalid, root), /sha-invalid/);
+  assert.throws(() => publicationController('invalid', reviewed, root), /sha-invalid/);
+});
 
 test('retained failed or active Candidate artifacts never authorize Promotion', () => {
   const run = {

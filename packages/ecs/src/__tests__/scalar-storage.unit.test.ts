@@ -1,14 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { defineComponent, fieldTypeToMetaKey, TYPE_METADATA } from '../component';
+import { defineComponent, fieldTypeToMetaKey } from '../component';
 import { createColumn, growColumn } from '../storage/column';
 import { World } from '../world';
 import { worldRead } from '../world-read';
-import {
-  elementByteSize,
-  readArrayElementAt,
-  reinterpretSlotBytes,
-  writeArrayElementAt,
-} from '../world-storage-primitives';
+import { elementByteSize } from '../world-storage-primitives';
 
 const cases = [
   ['f32', 4, 1 / 3, Math.fround(1 / 3)],
@@ -24,20 +19,13 @@ const cases = [
 ] as const;
 
 describe('scalar storage', () => {
-  it.each(
-    cases,
-  )('%s preserves conversion across column growth and byte subviews', (type, width, input, expected) => {
+  it.each(cases)('%s preserves conversion across column growth', (type, width, input, expected) => {
     expect(elementByteSize(type)).toBe(width);
     for (const shared of [false, true]) {
       const column = createColumn(type, 2, 1, shared);
       column.view[1] = input;
       const grown = growColumn(column, 4);
       expect(Array.from(grown.view)).toEqual([0, expected, 0, 0]);
-      const bytes = new Uint8Array(grown.buffer, width, width * 2);
-      writeArrayElementAt(bytes, 1, type, input);
-      expect(readArrayElementAt(bytes, 1, type)).toBe(expected);
-      expect(readArrayElementAt(bytes, 2, type)).toBe(0);
-      expect(Array.from(reinterpretSlotBytes(bytes, type, 2))).toEqual([expected, expected]);
       expect(grown.view[0]).toBe(0);
       expect(grown.view[3]).toBe(0);
     }
@@ -66,71 +54,11 @@ describe('scalar storage', () => {
     world.despawn(entity).unwrap();
   });
 
-  it.each([
-    'entity',
-    'shared<Payload>',
-  ] as const)('reinterprets %s handles as unsigned words', (type) => {
-    const words = new Uint32Array([7, 0xffffffff, 9]);
-    const bytes = new Uint8Array(words.buffer, 4, 4);
-    expect(Array.from(reinterpretSlotBytes(bytes, type, 1))).toEqual([0xffffffff]);
-    expect(readArrayElementAt(bytes, 0, type)).toBe(0xffffffff);
-  });
-
   it('does not resolve Object prototype names as storage types', () => {
     for (const name of ['constructor', 'toString', '__proto__']) {
       expect(fieldTypeToMetaKey(name)).toBeNull();
     }
   });
-});
-
-it.each(
-  cases,
-)('%s scalar reads/writes preserve exact native edge conversions and partial tails', (type, width) => {
-  const Ctor = TYPE_METADATA[type]?.viewCtor;
-  if (Ctor === undefined) throw new Error('Expected admitted scalar constructor');
-  for (const shared of [false, true]) {
-    const makeBuffer = () =>
-      shared ? new SharedArrayBuffer(width * 4 + 1) : new ArrayBuffer(width * 4 + 1);
-    const actual = new Uint8Array(makeBuffer(), width, width * 2 + 1);
-    const reference = new Uint8Array(makeBuffer(), width, width * 2 + 1);
-    const native = new Ctor(
-      reference.buffer,
-      reference.byteOffset,
-      Math.floor(reference.byteLength / width),
-    );
-    for (const index of [-1, -0, 0, 1, 1.5, 2, Number.NaN, Infinity]) {
-      for (const value of [
-        0,
-        -0,
-        Number.NaN,
-        Infinity,
-        -Infinity,
-        -1,
-        Number.MAX_SAFE_INTEGER,
-        1 / 3,
-      ]) {
-        native[index] = value;
-        writeArrayElementAt(actual, index, type, value);
-        expect(Array.from(new Uint8Array(actual.buffer))).toEqual(
-          Array.from(new Uint8Array(reference.buffer)),
-        );
-        expect(readArrayElementAt(actual, index, type)).toBe(native[index] ?? 0);
-      }
-    }
-  }
-});
-
-it('preserves empty, detached and misaligned scalar access failures', () => {
-  const empty = new Uint8Array(0);
-  expect(readArrayElementAt(empty, 0, 'f32')).toBe(0);
-  expect(() => writeArrayElementAt(empty, 0, 'f32', 1)).not.toThrow();
-  const misaligned = new Uint8Array(new ArrayBuffer(16), 1, 8);
-  expect(() => readArrayElementAt(misaligned, 0, 'f32')).toThrow(RangeError);
-  expect(() => writeArrayElementAt(misaligned, 0, 'f32', 1)).toThrow(RangeError);
-  const detached = new Uint8Array(8);
-  structuredClone(detached.buffer, { transfer: [detached.buffer] });
-  expect(() => readArrayElementAt(detached, 0, 'f32')).toThrow(TypeError);
-  expect(() => writeArrayElementAt(detached, 0, 'f32', 1)).toThrow(TypeError);
 });
 
 it('resolves current scalar storage after growth, migration, swap-remove and identity reuse', () => {

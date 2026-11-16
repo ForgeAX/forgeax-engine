@@ -8,6 +8,8 @@ import {
   createPrimitiveMesh,
   encodeMeshDistanceField,
   MESH_VISIBILITY_DISTANCE_FIELD_CODEC,
+  meshAttributeChannels,
+  meshAttributeWindow,
   packInterleavedVertexAttributes,
 } from '@forgeax/engine-geometry';
 import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
@@ -137,28 +139,21 @@ function fixture(
 }
 
 describe('native render publication', () => {
-  it('transfers affine transforms and ordinary lens offsets without retaining author storage', () => {
+  it('transfers ordinary lens offsets without retaining author storage', () => {
     const f = fixture();
     try {
       const camera = [...f.world.query({ read: [Camera] }).unwrap()][0]?.entity;
       if (camera === undefined) throw new Error('missing camera');
       f.world.set(camera, Camera, { projectionOffset: [0.25, -0.5] }).unwrap();
-      f.world.set(f.first, Transform, { shear: [0.5, 0.25, -0.2] }).unwrap();
       f.world.update(0).unwrap();
       const first = f.publish().frame;
       expect(first.cameras[0]?.projectionOffset).toEqual([0.25, -0.5]);
       const mesh = first.renderables.find((row) => row.entityKey === f.first);
-      expect(mesh?.transform.world[4]).toBeCloseTo(0.5);
-      expect(mesh?.transform.world[8]).toBeCloseTo(0.25);
-      expect(mesh?.transform.world[9]).toBeCloseTo(-0.2);
+      expect(mesh).toBeDefined();
       f.world.set(camera, Camera, { projectionOffset: [-0.25, 0.5] }).unwrap();
-      f.world.set(f.first, Transform, { shear: [0, 0, 0] }).unwrap();
       f.world.update(0).unwrap();
       const changed = f.publish().frame;
       expect(changed.cameras[0]?.projectionOffset).toEqual([-0.25, 0.5]);
-      expect(changed.renderables.find((row) => row.entityKey === f.first)?.transform.world[4]).toBe(
-        0,
-      );
       expect(first.cameras[0]?.projectionOffset).toEqual([0.25, -0.5]);
     } finally {
       f.publisher.dispose();
@@ -1189,7 +1184,8 @@ it('publishes static mesh attachments across realms and restores them after expl
   const changed = f.publish();
   expect(changed.packet.assetPatches.map((row) => row.handle)).toContain(handle);
   const projected = changed.resources.resolveAsset<MeshAsset>(handle).unwrap();
-  expect((projected.attributes.position as Float32Array)[0]).toBe(position[0]);
+  const projectedPosition = meshAttributeWindow(projected, 'position');
+  expect(projectedPosition?.data[projectedPosition.offset]).toBe(position[0]);
   expect(changed.packet.upserts).toHaveLength(0);
   expect(projected).not.toHaveProperty('distanceField');
   expect(projected).not.toHaveProperty('cardLayout');
@@ -1198,7 +1194,10 @@ it('publishes static mesh attachments across realms and restores them after expl
   expect(restored.vertices[0]).toBe(original.vertices[0]);
   expect(restored.distanceField).toEqual(original.distanceField);
   expect(restored.cardLayout).toEqual(original.cardLayout);
-  expect(f.assets.read(handle).unwrap()).toEqual(original);
+  const { attributeStorage, ...restoredFields } = restored;
+  expect(attributeStorage).toBe('interleaved');
+  expect({ ...restoredFields, attributes: meshAttributeChannels(restored) }).toEqual(original);
+  expect(f.assets.read(handle).unwrap()).toEqual(restored);
   f.publisher.dispose();
 });
 

@@ -1,6 +1,7 @@
 import { createWorldContext, World } from '@forgeax/engine-ecs';
 import {
   buildMeshCollision,
+  copyMeshAttribute,
   createBoxGeometry,
   createWireframeGeometry,
   deriveVertexLayoutProjection,
@@ -396,7 +397,11 @@ describe('preview binding facts and display ownership', () => {
       ).toMatchObject({ overlays: ['tags'] });
       const replaced = overlayRows();
       expect(replaced).toHaveLength(1);
-      expect(Array.from(replaced[0]?.attributes.position as Float32Array).slice(3, 4)).toEqual([2]);
+      const overlay = replaced[0];
+      if (overlay === undefined) throw new Error('expected replaced overlay');
+      const positions = copyMeshAttribute(overlay, 'position');
+      if (positions === undefined) throw new Error('expected replaced overlay positions');
+      expect(Array.from(positions).slice(3, 4)).toEqual([2]);
       await fiber.dispose();
       expect(overlayRows()).toHaveLength(0);
     } finally {

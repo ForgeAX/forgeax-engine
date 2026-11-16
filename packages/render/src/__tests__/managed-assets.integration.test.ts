@@ -1,7 +1,11 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { createRenderReadLease } from '@forgeax/engine-ecs/projection';
-import { createMeshBuilder, createPrimitiveMesh } from '@forgeax/engine-geometry';
+import {
+  copyMeshAttribute,
+  createMeshBuilder,
+  createPrimitiveMesh,
+} from '@forgeax/engine-geometry';
 import { vec3 } from '@forgeax/engine-math';
 import type { Buffer, Result, RhiError } from '@forgeax/engine-rhi';
 import { RhiNullCommandEncoder, RhiNullDevice, RhiNullQueue } from '@forgeax/engine-rhi-null';
@@ -357,7 +361,7 @@ it('publishes every material program context across native cloning without entit
           attributes: {
             ...BUILTIN_CUBE.attributes,
             ...(vertexColor
-              ? { color: assets.read(colored).unwrap().attributes.color as Float32Array }
+              ? { color: copyMeshAttribute(assets.read(colored).unwrap(), 'color') as Float32Array }
               : {}),
           },
         })

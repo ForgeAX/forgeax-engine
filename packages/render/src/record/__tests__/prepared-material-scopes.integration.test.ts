@@ -19,6 +19,7 @@ import {
 import { expect, it, vi } from 'vitest';
 import { createPreparedGraphicsStore } from '../../features/prepared-graphics-store';
 import type { SkylightBindGroupResources } from '../../ibl/skylight-bind-group';
+import { buildPbrMaterialUserRegionEntries } from '../../pbr-pipeline';
 import { createPreparedGraphicsResolver } from '../../prepare/prepared-graphics-resolver';
 import { createRenderPublisher } from '../../publication/publisher';
 import { RenderPublicationReceiver } from '../../publication/receiver';
@@ -375,6 +376,38 @@ function lastUploadedRoughness(fixture: ReturnType<typeof scopedMaterialFixture>
   if (bytes === undefined) throw new Error('Expected material UBO upload');
   return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getFloat32(0, true);
 }
+
+it.each([
+  { name: 'empty', schema: [] },
+  { name: 'texture-only', schema: [{ name: 'albedo', type: 'texture2d' }] },
+  { name: 'numeric', schema: [{ name: 'roughness', type: 'f32' }] },
+] satisfies Array<{
+  name: string;
+  schema: ParamSchemaEntry[];
+}>)('keeps the PBR material UBO reservation and IBL offsets for a $name schema', ({ schema }) => {
+  const f = scopedMaterialFixture();
+  f.schema.splice(0, f.schema.length, ...schema);
+  const lease = f.acquire();
+  const entries = f.createBindGroup.mock.lastCall?.[0].entries;
+  expect(entries).toBeDefined();
+  const userRegion = buildPbrMaterialUserRegionEntries(schema);
+  for (const expected of userRegion) {
+    const entry = entries?.find((candidate) => candidate.binding === expected.binding);
+    expect(entry?.resource.kind).toBe(
+      expected.buffer ? 'buffer' : expected.sampler ? 'sampler' : 'textureView',
+    );
+  }
+  expect(entries?.find((entry) => entry.binding === userRegion.length)?.resource).toEqual({
+    kind: 'textureView',
+    value: f.skylight.irradianceView,
+  });
+  expect(f.createBuffer.mock.calls).toHaveLength(1);
+  expect(f.writeBuffer.mock.lastCall?.[2].byteLength).toBeGreaterThanOrEqual(16);
+  expect(lease.dynamicOffsets).toEqual([0]);
+  lease.release().unwrap();
+  expect(f.destroyBuffer).toHaveBeenCalledTimes(1);
+  f.assets.dispose();
+});
 
 it('binds the captured material handle when its GUID alias was retired', () => {
   const f = scopedMaterialFixture();

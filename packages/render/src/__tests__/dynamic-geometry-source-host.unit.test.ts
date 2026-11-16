@@ -1,7 +1,7 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { runtimeAssetRegistry, runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { defineSystem, FixedTime, FixedUpdate, World } from '@forgeax/engine-ecs';
-import { createBoxGeometry } from '@forgeax/engine-geometry';
+import { createBoxGeometry, meshAttributeWindow } from '@forgeax/engine-geometry';
 import { Transform } from '@forgeax/engine-scene';
 import { err, type MaterialAsset, type MeshAsset, ok } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
@@ -240,9 +240,9 @@ it('captures managed content before async upload and accepts only a payload-free
   expect(snapshot).toBeDefined();
   expect(snapshot).not.toBe(source);
   expect(snapshot?.vertices[0]).toBe(original.vertex);
-  const snapshotPositions = snapshot?.attributes.position;
-  if (!(snapshotPositions instanceof Float32Array)) throw new Error('snapshot has no positions');
-  expect(snapshotPositions[0]).toBe(original.position);
+  const snapshotPositions = snapshot && meshAttributeWindow(snapshot, 'position');
+  if (snapshotPositions === undefined) throw new Error('snapshot has no positions');
+  expect(snapshotPositions.data[snapshotPositions.offset]).toBe(original.position);
   expect(snapshot?.indices?.[0]).toBe(original.index);
   expect(snapshot?.aabb?.[0]).toBe(original.bound);
   expect(copies).toBe(0);
@@ -351,13 +351,16 @@ it.each([
   }
   const authorPositions = f.input.mesh.attributes.position;
   if (!(authorPositions instanceof Float32Array)) throw new Error('author positions missing');
-  const expected = structuredClone(f.input.mesh);
+  const managed = runtimeAssets(f.world.assets).resolveAsset<MeshAsset>(f.meshHandle).unwrap();
+  const expected = structuredClone(managed);
+  const expectedChannels = structuredClone(f.input.mesh.attributes);
   let received: typeof expected | undefined;
   f.prepare.mockImplementationOnce(async (input, options) => {
     const transfers = options?.transfers;
     expect(transfers?.length).toBeGreaterThan(0);
     expect(transfers).not.toContain(f.input.mesh.vertices.buffer);
     expect(transfers).not.toContain(authorPositions.buffer);
+    expect(transfers).not.toContain(managed.vertices.buffer);
     const privateVertices = input.mesh.vertices;
     const privatePositions = input.mesh.attributes.position;
     received = structuredClone(input.mesh, { transfer: [...(transfers ?? [])] });
@@ -376,17 +379,19 @@ it.each([
   ).unwrap();
   expect(f.input.mesh.vertices.byteLength).toBeGreaterThan(0);
   expect(f.input.mesh.attributes.position?.byteLength).toBeGreaterThan(0);
+  expect(managed.vertices.byteLength).toBeGreaterThan(0);
   if (kind === 'shared') {
-    const position = received?.attributes.position;
+    const position = received && meshAttributeWindow(received, 'position')?.data;
     expect(ArrayBuffer.isView(position) && position.buffer instanceof ArrayBuffer).toBe(true);
   }
   expect(received).toEqual(expected);
+  expect(received && meshAttributeChannels(received)).toEqual(expectedChannels);
   f.host.acceptDynamicGeometry(candidate, { world: f.world, fixedStep: 0 }).unwrap();
   expect(f.world.get(f.entity, MeshFilter).unwrap().assetHandle).toBe(f.meshHandle);
   f.detach();
 });
 
-it('sends an opted-in raster mesh as packed rows and charges only the bytes it holds', async () => {
+it('sends canonical rows with or without an explicit request and charges only held bytes', async () => {
   const full = fixture();
   const fullCandidate = full.host.prepareDynamicGeometry(full.input);
   const fullBytes = full.lifecycle.inspect().meshBytes;
@@ -410,16 +415,17 @@ it('sends an opted-in raster mesh as packed rows and charges only the bytes it h
   expect(attributeChannelBytes(sent.mesh)).toBe(0);
   expect(sent.transfers).toContain(sent.mesh.vertices.buffer);
   expect(meshAttributeChannels(sent.mesh)).toEqual(f.input.mesh.attributes);
-  // The World mesh keeps every channel for picking, patches and recovery.
+  // World and Render retain rows; CPU consumers explicitly read their channels.
   const world = runtimeAssets(f.world.assets).read<MeshAsset>(f.meshHandle).unwrap();
-  expect(world.attributes.position?.byteLength).toBe(authorPositions?.byteLength);
-  expect(isPackedRowsMesh(world)).toBe(false);
-  expect(f.lifecycle.inspect().meshBytes).toBe(fullBytes - attributeChannelBytes(f.input.mesh));
+  expect(world.attributes.position?.byteLength).toBe(0);
+  expect(meshAttributeChannels(world).position?.byteLength).toBe(authorPositions?.byteLength);
+  expect(isPackedRowsMesh(world)).toBe(true);
+  expect(f.lifecycle.inspect().meshBytes).toBe(fullBytes);
   f.host.acceptDynamicGeometry(candidate, { world: f.world, fixedStep: 0 }).unwrap();
   f.detach();
 });
 
-it('keeps full channels for an ineligible mesh even when packed rows are requested', async () => {
+it('retains canonical rows and readable channels for line meshes', async () => {
   const f = fixture();
   const lines = runtimeAssetRegistry(f.world.assets)
     .create({
@@ -442,8 +448,9 @@ it('keeps full channels for an ineligible mesh even when packed rows are request
       renderAttributes: 'packed-rows',
     })
   ).unwrap();
-  expect(sent === undefined ? undefined : isPackedRowsMesh(sent)).toBe(false);
-  expect(sent?.attributes.position?.byteLength).toBeGreaterThan(0);
+  expect(sent === undefined ? undefined : isPackedRowsMesh(sent)).toBe(true);
+  expect(sent?.attributes.position?.byteLength).toBe(0);
+  expect(sent && meshAttributeChannels(sent).position).toEqual(f.input.mesh.attributes.position);
   f.detach();
 });
 

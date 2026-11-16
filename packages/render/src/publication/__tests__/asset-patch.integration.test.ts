@@ -144,7 +144,8 @@ it('transfers only mesh channel and texture region bytes without publishing thei
     expect(packet.assets).toHaveLength(0);
     expect(packet.upserts).toHaveLength(0);
     expect(packet.templates).toHaveLength(0);
-    expect(bytes).toBe(12 + 12 + 16);
+    // One position range and one texture region; no duplicate CPU channel.
+    expect(bytes).toBe(12 + 16);
     const accepted = f.receiver.accept(encodeRenderPublication(packet)).unwrap();
     const mesh = accepted.resources.resolveAsset<MeshAsset>(f.mesh).unwrap();
     const texture = accepted.resources.resolveAsset<TextureAsset>(f.texture).unwrap();
@@ -192,8 +193,8 @@ it('publishes a multi-range mesh write as one patch with changed bytes only', ()
     const patch = packet.assetPatches[0];
     assert(patch);
     const patchBytes = patch.ranges.reduce((sum, range) => sum + range.bytes.byteLength, 0);
-    // Interleaved rows once, their derived packed channels once, and three indices.
-    expect(patchBytes).toBe(2 * stride * 2 + 3 * indices.BYTES_PER_ELEMENT);
+    // Interleaved rows once and three indices; channels remain derived views.
+    expect(patchBytes).toBe(2 * stride + 3 * indices.BYTES_PER_ELEMENT);
     const accepted = f.receiver.accept(encodeRenderPublication(packet)).unwrap();
     const mesh = accepted.resources.resolveAsset<MeshAsset>(f.mesh).unwrap();
     expect([...mesh.vertices.subarray((2 * stride) / 4, (4 * stride) / 4)]).toEqual([...rows]);

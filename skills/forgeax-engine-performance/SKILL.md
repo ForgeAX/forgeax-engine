@@ -1,9 +1,9 @@
 ---
 name: forgeax-engine-performance
 description: >-
-  Evidence-driven ForgeAX CPU and GPU optimization. Use when diagnosing slow
-  frames, GC or physics costs, reducing submission or shader work, replaying a
-  captured frame as a GPU benchmark, comparing benchmarks, or adding techniques.
+  Evidence-driven ForgeAX CPU, GPU and memory analysis. Use when diagnosing slow
+  frames, GC or physics costs, heap/allocation ownership, submission or shader
+  costs, captured-frame GPU benchmarks or benchmark regressions.
 ---
 
 # forgeax-engine-performance
@@ -17,7 +17,97 @@ counterexamples and dated measurements stay in the linked Harness references;
 raw captures stay outside source. Integrate later experience into the applicable
 rule here as well as its evidence reference.
 
+## Deliver performance evidence
+
+Every performance measurement must deliver a programmatically generated visual
+and a reusable visual report to the user. Default to SVG or PNG plus self-contained
+offline HTML, with direct links in the final reply; saving files without sharing
+them or returning only numeric tables is incomplete. Keep the raw inputs,
+digests, source/build/workload identities, units, coverage and generation command
+with the report. Open the HTML and inspect the generated image before delivery.
+
+| Measured question | Default visual route |
+| --- | --- |
+| CPU samples across targets and completion intervals | `cpu.mjs report`; deliver `timeline.svg` and `timeline.html`, retain AI-readable JSON and optional Perfetto trace |
+| Samples, CPU/GC costs, allocation rows, GPU pass costs or before/after summaries | `render_metric_report.mjs`; explicitly select source rows and same-unit value pointers, then deliver `report.svg` and `report.html` |
+
+Choose time-order call stacks for CPU chronology, row-order lines for sample
+sequences and grouped bars for comparable summaries. Preserve unknown values as
+gaps; do not infer distributions from percentiles, compare unrelated cohorts or
+turn GPU pass sums into frame latency. Carry failed/partial producer status into
+the visible report. If capture or visualization fails, share the available
+diagnostic artifacts and name the missing deliverable; never invent data to fill it.
+
+For CPU timelines, use [cpu.mjs](scripts/cpu.mjs): its public `project play`
+adapter captures and reports; `report` reopens saved captures; `calibrate` measures
+the selected browser's actual sampler cadence. Read the CPU workflow and tool
+coverage
+when selecting capture detail, recovering source names or importing existing data.
+
+- Qualify detail on the real program. Preserve full call trees, native/unknown
+  frames, source coverage and actual interval median/p95/rate. Count short-call
+  samples before attribution; zoom cannot recover missing samples.
+- Calibrate the exact browser for a requested resolution. A positive-integer
+  request, timestamp granularity and observed cadence do not establish per-call
+  duration accuracy. Report an unmet criterion explicitly.
+- Keep profiler-off controls separate. Signal sampling needs no business-function
+  instrumentation but interrupts execution; high-rate captures are diagnostics.
+- Keep target coverage visible. Focused sampling can improve detail; separately
+  captured targets cannot be stitched into simultaneous per-frame evidence.
+- Show function/system names first; put source coordinates and captured VM names
+  in hover/details. Recover names only from authenticated map content.
+- Keep completion gaps separate from execution scopes, CPU estimates separate
+  from GPU/scheduler facts, and same-window diagnosis separate from earlier stalls.
+
+## Memory hierarchy
+
+Run `node --expose-gc --test skills/forgeax-engine-performance/scripts/__tests__/*.test.mjs`
+for the tool contracts; `ci-core` owns the same complete suite. The GC flag is for
+the explicit allocation-event control, not ordinary capture or performance acceptance.
+
+Use [memory.mjs](scripts/memory.mjs) for generic sampled allocation profiles and
+V8 object snapshots: `report` writes normalized AI data, offline folder/treemap
+HTML and both SVGs; `inspect` returns bounded path/children/records/reference pages;
+`capture` samples an explicitly owned Node workload module. Read the memory
+workflow
+when capturing or interpreting its hierarchy.
+
+| Population | Hierarchy and metric | Boundary |
+| --- | --- | --- |
+| Sampled allocations | Allocation call stack; V8 node self bytes, recorded samples and ordinals | Sampling does not enumerate every real allocation/object; orphan owners and sample-size totals remain separate |
+| Snapshot objects | Type / name / object ID; conserved shallow bytes and captured-node counts, raw references | Grouping is not dominator ownership; weak references do not retain; VM/native nodes are not logical application-object counts |
+
+Default Node sampling requests 32768 bytes and includes collected-object samples;
+snapshot capture requires explicit `--mode objects` or `--mode both`. Neither inserts business
+allocation hooks or forces GC. Sampling adds overhead; snapshots can block and
+trigger GC. Reading existing files is offline. Keep the metadata and requested
+population visible, hide raw string contents in normalized snapshot views, and
+retain raw inputs privately. Keep retained-size analysis, native GC events,
+allocation-event counts, matched comparisons and GPU/process memory separate.
+
+Snapshot reports use lossless indexed graph storage to avoid repeating millions of reference IDs and names. `memory.mjs inspect/report` and the HTML loader decode it automatically; use those entrypoints instead of assuming `memory.json.nodes` contains object rows. Keep every object and reference; compact storage is not display truncation.
+
+Treemap block area and folder totals use the same bytes. Show exact values and
+full paths in details; rendering aggregation never truncates the AI model.
+
 ## Numeric allocation ownership
+
+When changing vertex storage, qualify every contributing pass, including temporal
+and shadow. Preserve omitted shader entries until the pipeline owner resolves its
+pass-specific default; packed-layout selection must not invent a forward entry.
+
+Runtime Mesh assets retain interleaved vertex rows, not both rows and complete
+attribute channels. Empty declarations must not retain nonempty backing storage
+or share transferable backing across independent meshes. Resolve geometry's `meshAttributeWindow` once per CPU loop;
+offsets and strides address the existing typed backing without Proxy access or
+per-vertex objects. Keep contiguous channel conversions explicit and temporary.
+Raster upload, Worker publication and range edits consume canonical rows directly.
+Publication-owned GPU comparison sources may borrow those rows only with the
+publication buffer's generation witness. Advance it before writes, reject stale
+candidates before exact byte equality, and retire borrowed comparisons when an
+edited GPU generation forks. Uncontrolled caller buffers still need a detached
+snapshot. Test real hash collisions, nonzero windows, shared/leased generations,
+rejected transactions and retirement; a short hash is never the equality contract.
 
 Choose storage by the last reader. Inspect existing arena/pool use at the hot
 owner before introducing another allocator; preserve persistent semantic facts.
@@ -942,13 +1032,16 @@ lower whole-Worker allocation, a smaller retained heap, or a solved runtime targ
 | Cache regressions, cold ownership and Native completion attribution | Regression repair case |
 | Capture adapters and analytical tools | Toolbox |
 
-The tools below read local artifacts and use Node built-ins. They do not launch a
-browser, acquire a GPU lease, build Engine, or qualify a delivery gate.
+Analysis and rendering entrypoints read local artifacts using Node built-ins;
+original function-name recovery accepts the caller's pinned TypeScript parser.
+Capture adapters run inside public `project play` and require its browser/GPU
+admission. Tool output alone does not qualify a delivery gate.
 
 | Tool | Input and useful result |
 | --- | --- |
-| [analyze_cpu_profile.mjs](scripts/analyze_cpu_profile.mjs) | CDP/V8 profile; sampled self/inclusive time, recursion-safe symbol totals and unobserved interval |
-| [analyze_cpu_windows.mjs](scripts/analyze_cpu_windows.mjs) | Existing ordinary CPU capture, clock anchors and frame receipts; separate same-capture LIVE/gap windows with coverage, identity and reordered-sample audit |
+| [memory.mjs](scripts/memory.mjs) | Generic allocation-stack and snapshot-object explorer; report/inspect/owned-Node capture, folders and squarified treemap, AI JSON, SVG/PNG and offline HTML |
+| [cpu.mjs](scripts/cpu.mjs) | One CPU entry: live game-3d capture plus automatic report, exact-browser calibration, and saved profile/directory analysis; HTML, SVG, AI JSON, integrated totals/gap analysis and Perfetto trace |
+| [render_metric_report.mjs](scripts/render_metric_report.mjs) | Explicit JSON Pointer selections from measured data; same-unit bar/line SVG, offline HTML with row filtering/reload/table, source digest and reusable report JSON; null stays unavailable |
 | [summarize_gpu_timing.mjs](scripts/summarize_gpu_timing.mjs) | Engine GPU observations; semantic pass costs, completeness, interval union and timestamp envelope |
 | [analyze_gpu_timeline.mjs](scripts/analyze_gpu_timeline.mjs) | Existing GPU observations and same-report completion receipts; semantic interval overlap, measured envelopes and missing source population |
 | [analyze_heap_profile.mjs](scripts/analyze_heap_profile.mjs) | SamplingHeapProfile; conserved direct/ancestor/unresolved byte partitions and source owner distribution |
@@ -965,6 +1058,8 @@ browser, acquire a GPU lease, build Engine, or qualify a delivery gate.
 | [allocation_probe.mjs](scripts/allocation_probe.mjs) | Node unit-test helper; sampled bytes per call of a warmed function, to keep a removed allocation removed |
 | [summarize_native_gc.mjs](scripts/summarize_native_gc.mjs) | Owned-thread native trace; Minor/Major/finalization durations and bounded allocation/promotion counters |
 | [compare_samples.mjs](scripts/compare_samples.mjs) | Raw sample arrays plus selected workload identity; matched descriptive statistics or explicit mismatch |
+
+The game memory adapters require an explicit matching workload. Their default `runtime-vase` admission retains its producer/publication checks. For the stock robot corridor, set `FORGEAX_MEMORY_WORKLOAD=stock-corridor`; admission then validates the actual player, hardware backend, both Workers, world identity and Render epoch, with bounded real motion throughout. A missing vase projection is a workload mismatch, never permission to bypass its checks. Pause/drain must include physical Render completion before debugger archives or snapshots.
 
 For moving `game-3d` allocation captures, set `FORGEAX_ALLOCATION_OUTPUT` to a
 new absolute directory outside source, then run `forgeax project play
@@ -1012,6 +1107,45 @@ totals cannot establish ordinary allocation rates or the moving budget.
 Run an entrypoint with `--help`; Toolbox owns arguments,
 exit meanings and capture adapters. Use private output paths and retain raw
 inputs. These summaries establish their stated analytical boundary only.
+
+For CPU work, run `node <skill>/scripts/cpu.mjs --help`.
+`node <skill>/scripts/cpu.mjs report CAPTURE_DIRECTORY` loads that capture's raw
+profiles, report, frame receipts and optional source map table, then creates its
+new `view` directory. A single `.cpuprofile` also works. Supply `--dist` and
+`--engine-root` together to recover authenticated original function/system names.
+Existing output is rejected rather than overwritten.
+
+| Live diagnostic setting | Default / override |
+| --- | --- |
+| Requested sample interval | 1 microsecond; `FORGEAX_CPU_INTERVAL_US` |
+| Profiled motion window | 3000 ms; `FORGEAX_CPU_WINDOW_MS` permits 1000..30000 |
+| Sampled targets | All JS targets; `FORGEAX_CPU_TARGET` selects `Host`, `forgeax-engine` or `forgeax-render` for focused detail |
+| Ordinary controls | Three 5000 ms motion windows with V8 Profiler/Debugger off |
+| Output | Required new absolute `FORGEAX_CPU_OUTPUT`; report written to `view/` |
+| Original names in release builds | `FORGEAX_CPU_DIST` selects the frozen distribution; `FORGEAX_CPU_ENGINE_ROOT` selects its Engine source/build checkout (default current directory) |
+
+The same CPU HTML includes Top-down and Bottom-up self-cost call trees over the
+visible range. `call-tree.svg` and `call-trees.json` preserve that aggregate view;
+`cpu.mjs tree timeline.json --direction top-down --output NEW_JSON` queries the
+full capture by default. Scattered visits merge by stack context; recursion levels
+stay separate and sample counts are not invocation counts.
+
+Use `cpu.mjs` as the public `project play` adapter. Freeze runtime/build bytes,
+retain real WASD and completion admission, drain both Engine publication and
+physical Render completion before source archiving, and verify resumed progress.
+Release runs use the supported `forgeax-cpu-profile` inspection opt-in with an idle
+Engine recorder. The game-3d CPU case
+records observed limits and counterexamples; do not turn one browser's numbers
+into guaranteed defaults. GPU, GC, heap and scheduler methods below remain separate.
+
+For numeric samples, run `node <skill>/scripts/render_metric_report.mjs INPUT.json
+--rows-pointer /samples --unit ms --chart line --out-dir NEW_PRIVATE_DIRECTORY`.
+For CPU self costs use `--rows-pointer /topSelf --label-pointer /functionName
+--value-pointer /selfMs --unit ms`; for GPU pass summaries select `/passes` and
+repeat `--value-pointer /durationMs/mean --value-pointer /durationMs/p95`.
+For a comparison summary select its root and explicit same-unit pointers such as
+`/baseline/p95` and `/candidate/p95`; inspect producer comparability first.
+These are display projections, not new acceptance or clock authorities.
 
 Keep reusable decisions in this Engine entrypoint; add detailed method and
 counterexample evidence to the existing topic, and dated results to one scoped

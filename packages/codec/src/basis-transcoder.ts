@@ -129,11 +129,22 @@ function instantiateOnHost(
 let importer: TranscoderImporter = defaultImporter;
 
 /**
- * Lazy-init singleton (D-10): null = never attempted, Promise = init in flight,
- * resolved = ready, rejected = cleared so the next call retries.
+ * Coalesce initialization strongly; retain idle pure codec instances weakly.
+ * Callers and open files keep active instances alive. The compiled WASM cache
+ * above survives collection where the Host supports it, avoiding recompilation.
  * @internal
  */
 let _initPromise: Promise<BasisTranscoderModule> | null = null;
+/** @internal Weak initialization result retained while an active caller owns it. */
+let _readyPromise: WeakRef<Promise<BasisTranscoderModule>> | undefined;
+/** @internal Idle transcoder instance; open files own active instances strongly. */
+let _readyModule: WeakRef<BasisTranscoderModule> | undefined;
+/**
+ * Native Hosts configure instantiation once before texture loading. Keep that
+ * recipe independently of an idle instance so later init() calls still work.
+ * @internal
+ */
+let _readyHost: BasisWasmHost | undefined;
 
 /**
  * Lazy-init the Basis transcoder WASM module (D-10 main-thread singleton).
@@ -142,13 +153,33 @@ let _initPromise: Promise<BasisTranscoderModule> | null = null;
  * `forgeax-native` selects the generated Emscripten factory for bundling.
  */
 export function initBasisTranscoder(host?: BasisWasmHost): Promise<BasisTranscoderModule> {
-  if (_initPromise !== null) return _initPromise;
+  const held = _initPromise ?? _readyPromise?.deref();
+  if (held !== undefined && held !== null) return held;
+  const ready = _readyModule?.deref();
+  if (ready !== undefined) {
+    const result = Promise.resolve(ready);
+    _readyPromise = new WeakRef(result);
+    return result;
+  }
   traceBasisPhase('basis.init.start');
-  _initPromise = importer(host).catch((cause: unknown) => {
-    _initPromise = null;
-    throw new Error('codec-init-failed', { cause });
-  });
-  return _initPromise;
+  const selectedHost = host ?? _readyHost;
+  const request = importer(selectedHost).then(
+    (module) => {
+      if (_initPromise === request) {
+        _readyModule = new WeakRef(module);
+        _readyPromise = new WeakRef(request);
+        _readyHost = selectedHost;
+        _initPromise = null;
+      }
+      return module;
+    },
+    (cause: unknown) => {
+      if (_initPromise === request) _initPromise = null;
+      throw new Error('codec-init-failed', { cause });
+    },
+  );
+  _initPromise = request;
+  return request;
 }
 
 /**
@@ -159,6 +190,9 @@ export function initBasisTranscoder(host?: BasisWasmHost): Promise<BasisTranscod
 export function _setBasisTranscoderImporter(next?: TranscoderImporter): void {
   importer = next ?? defaultImporter;
   _initPromise = null;
+  _readyPromise = undefined;
+  _readyModule = undefined;
+  _readyHost = undefined;
 }
 
 /** One transcoded mip level (mip-major output). */

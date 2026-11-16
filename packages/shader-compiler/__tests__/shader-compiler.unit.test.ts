@@ -1181,6 +1181,7 @@ beforeAll(async () => {
   const SHADOW_PCF = readSrc('shadow-pcf.wgsl');
 
   PBR_ENTRY_IMPORTS = {
+    'forgeax_geometry::tangent_frame32': readSrc('tangent-frame32.wgsl'),
     'forgeax_material::displacement': readSrc('standard-displacement.wgsl'),
     'forgeax_material::texture_coordinates': readSrc('texture-coordinates.wgsl'),
     'forgeax_material::terrain_vertex': readSrc('terrain-vertex.wgsl'),

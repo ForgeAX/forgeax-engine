@@ -1330,7 +1330,9 @@ export class RenderPublicationReceiver {
     });
   }
 
-  /** Renderer consumers pass their registry; scene-only receivers need no shader installation. */
+  /** Renderer consumers pass their registry; scene-only receivers need no shader installation.
+   * The received record and its asset buffers belong to this receiver; callers
+   * transfer them or supply independent publication copies, never later mutate them. */
   accept(
     message: RenderPublicationMessage,
     materialAssets?: AssetRegistry,
@@ -2031,16 +2033,17 @@ export class RenderPublicationReceiver {
     projections: ReadonlyMap<AcceptedAssetRow, MaterialRenderProjection>,
   ): AcceptedAssetRow[] {
     return packet.assets.map((row) => {
-      const value = ownAdmittedAssetValue(row.value);
+      const admitted = ownAdmittedAssetValue(row.value);
       const { materialProjectionSource: _source, ...received } = row;
+      const value =
+        (this.preparedMeshes.get(row.handle)?.revision === row.revision
+          ? this.preparedMeshes.get(row.handle)?.mesh
+          : undefined) ?? admitted;
       return {
         ...received,
         materialProjection: projections.get(row) ?? null,
         // Non-JSON inputs retain their exact payload types and mutable behavior.
-        value:
-          (this.preparedMeshes.get(row.handle)?.revision === row.revision
-            ? this.preparedMeshes.get(row.handle)?.mesh
-            : undefined) ?? value,
+        value: value.kind === 'mesh' ? ownReceivedPublishedMesh(value) : value,
       };
     });
   }

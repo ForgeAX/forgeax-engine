@@ -1085,7 +1085,6 @@ interface SourceTransform {
     pos: Float32Array;
     quat: Float32Array;
     scale: Float32Array;
-    shear: Float32Array;
   };
 }
 
@@ -1247,7 +1246,12 @@ function decomposeSourceMatrix(
       'Camera.matrixWorldInverse requires a rigid view; non-rigid views need native camera support',
       camera.uuid,
     ).unwrap();
-  return { pos: position, quat: rotation, scale, shear };
+  if (shear.some((value) => Math.abs(value) > 1e-5))
+    unsupported(
+      'Object3D matrixWorld with shear is not representable by Transform',
+      object.uuid,
+    ).unwrap();
+  return { pos: position, quat: rotation, scale };
 }
 
 function isCulled(frame: ScenePreparation, object: Renderable, frustum: Frustum): boolean {

@@ -87,6 +87,30 @@ function location(bundle, entry) {
   };
 }
 
+function recoverSourceFunctionName(
+  original,
+  originalBundle,
+  originalEntry,
+  resolveSourceFunctionName,
+) {
+  if (resolveSourceFunctionName && originalBundle && originalEntry) {
+    const sourceIndex = originalBundle.payload.sources.indexOf(originalEntry.originalSource);
+    const text = originalBundle.payload.sourcesContent?.[sourceIndex];
+    if (typeof text === 'string') {
+      const name = resolveSourceFunctionName({
+        file: original.file,
+        text,
+        line: original.line,
+        column: original.column,
+      });
+      if (typeof name === 'string' && name.length > 0) {
+        original.functionName = name;
+        original.functionNameOrigin = 'lexical-function-containing-authenticated-map-coordinate';
+      }
+    }
+  }
+}
+
 /**
  * Offline source-map attribution, adapted from the Game allocation diagnostic.
  * baseUrl is the served document/directory URL, including its deployment prefix.
@@ -102,6 +126,7 @@ export async function symbolizeNodes({
   engineDirectory,
   distSourceDirectory,
   engineSourceDirectory,
+  resolveSourceFunctionName,
 }) {
   if (!Array.isArray(inputNodes)) throw Error('Source attribution requires call-frame nodes');
   if (!Array.isArray(scriptDigests))
@@ -189,6 +214,8 @@ export async function symbolizeNodes({
     const bundle = maps.get(f.url);
     const entry = bundle?.map.findEntry(f.lineNumber, f.columnNumber);
     let original = bundle && location(bundle, entry);
+    let originalBundle = bundle,
+      originalEntry = entry;
     if (!original) continue;
     const intermediate = sourceFile(bundle, entry.originalSource);
     if (
@@ -230,11 +257,14 @@ export async function symbolizeNodes({
       const compiled = cached.compiled;
       const source = compiled?.map.findEntry(entry.originalLine, entry.originalColumn);
       original = compiled && location(compiled, source);
+      originalBundle = compiled;
+      originalEntry = source;
       if (!original) continue;
       const originalFile = sourceFile(compiled, source.originalSource);
       if (originalFile && within(originalFile, engineSourceRoot))
         original.file = `engine/${portable(relative(engineSourceRoot, originalFile))}`;
     }
+    recoverSourceFunctionName(original, originalBundle, originalEntry, resolveSourceFunctionName);
     symbols.set(node.id, original);
   }
   return {

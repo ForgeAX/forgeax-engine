@@ -2,7 +2,11 @@
 import { brotliCompressSync, brotliDecompressSync } from 'node:zlib';
 import { AssetRegistry, createCatalogSource } from '@forgeax/engine-assets-runtime';
 import { runtimeAssetReference } from '@forgeax/engine-assets-runtime/internal';
-import { createBoxGeometry, meshAssetContribution } from '@forgeax/engine-geometry';
+import {
+  copyMeshAttribute,
+  createBoxGeometry,
+  meshAssetContribution,
+} from '@forgeax/engine-geometry';
 import { meshAssetOutputProducer, normaliseForPack } from '@forgeax/engine-import';
 import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -132,7 +136,8 @@ describe('native package transport', () => {
         result = await registry.load(guid, 'mesh');
       }
       const loaded = registry.read(result.unwrap()).unwrap();
-      expect(loaded.attributes.position).toEqual(mesh.attributes.position);
+      expect(copyMeshAttribute(loaded, 'position')?.length).toBeGreaterThan(0);
+      expect(copyMeshAttribute(loaded, 'position')).toEqual(copyMeshAttribute(mesh, 'position'));
       expect(loaded.indices).toEqual(mesh.indices);
       expect(loaded.aabb).toEqual(mesh.aabb);
     } finally {

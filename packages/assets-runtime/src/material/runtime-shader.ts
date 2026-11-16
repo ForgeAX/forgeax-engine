@@ -8,6 +8,7 @@ import {
   type MaterialArtifactRegistry,
   type MaterialRuntimeArtifact,
   materialArtifactConflict,
+  retainMaterialRuntimeArtifact,
   type ShaderRegistry,
 } from '@forgeax/engine-shader';
 import type {
@@ -360,9 +361,7 @@ export function installMaterialReadyShaders(
     }
     // Resident program bytes are immutable; the registry shares them.
     const artifact: MaterialRuntimeArtifact =
-      previous === undefined
-        ? { ...candidate, bytes: program.artifact.bytes }
-        : { ...candidate, bytes: previous.bytes };
+      previous === undefined ? retainMaterialRuntimeArtifact(candidate) : previous;
     if (previous === undefined) pending.set(key, artifact);
     const input = {
       bytes: artifact.bytes,

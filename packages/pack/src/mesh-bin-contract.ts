@@ -1,12 +1,12 @@
 /** Canonical mesh binary wire facts shared by build-time and runtime owners. */
 
-export const MESH_BIN_VERSION = 5 as const;
+export const MESH_BIN_VERSION = 6 as const;
 export const MESH_BIN_PROJECTION_VERSION = 1 as const;
 export const MESH_BIN_HEADER_BYTES = 80;
 export const MESH_BIN_DIGEST_BYTES = 32;
 
 export interface MeshBinHeader {
-  readonly version: 4 | 5;
+  readonly version: 4 | 5 | 6;
   readonly projectionVersion: 1;
   readonly mask: number;
   readonly digest: string;
@@ -80,9 +80,20 @@ export function writeMeshBinHeader(header: MeshBinHeader, out: Uint8Array): void
   view.setUint32(28, header.indexWidth, true);
   view.setUint32(32, header.indexBytes, true);
   view.setUint32(36, header.jsonBytes, true);
-  view.setUint32(40, header.version === 5 ? header.morphBytes : 0, true);
+  view.setUint32(40, header.version >= 5 ? header.morphBytes : 0, true);
   view.setUint32(44, 0, true);
   out.set(digestBytes(header.digest), 48);
+}
+
+function validVersionedMeshFields(
+  version: number,
+  mask: number,
+  morphBytes: number,
+  reserved: number,
+): boolean {
+  if (version < 6 && (mask & (1 << 14)) !== 0) return false;
+  if (morphBytes % 4 !== 0) return false;
+  return version < 5 || reserved === 0;
 }
 
 export function decodeMeshBinHeader(
@@ -93,17 +104,17 @@ export function decodeMeshBinHeader(
     return failure(
       'mesh-bin-header-truncated',
       sourceKey,
-      `mesh-bin v4/v5 header (${MESH_BIN_HEADER_BYTES} bytes)`,
+      `mesh-bin v4/v5/v6 header (${MESH_BIN_HEADER_BYTES} bytes)`,
       `${bytes.byteLength} bytes`,
     );
   }
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const version = view.getUint32(0, true);
-  if (version !== 4 && version !== MESH_BIN_VERSION) {
+  if (version !== 4 && version !== 5 && version !== MESH_BIN_VERSION) {
     return failure(
       'mesh-bin-version-unsupported',
       sourceKey,
-      'mesh-bin v4 or v5',
+      'mesh-bin v4, v5 or v6',
       `version ${version}`,
     );
   }
@@ -116,13 +127,12 @@ export function decodeMeshBinHeader(
   const indexWidth = view.getUint32(28, true);
   const indexBytes = view.getUint32(32, true);
   const jsonBytes = view.getUint32(36, true);
-  const morphBytes = version === 5 ? view.getUint32(40, true) : 0;
+  const morphBytes = version >= 5 ? view.getUint32(40, true) : 0;
   const digest = readDigest(bytes.subarray(48, 48 + MESH_BIN_DIGEST_BYTES));
   if (
     projectionVersion !== MESH_BIN_PROJECTION_VERSION ||
     mask === 0 ||
-    morphBytes % 4 !== 0 ||
-    (version === 5 && view.getUint32(44, true) !== 0) ||
+    !validVersionedMeshFields(version, mask, morphBytes, view.getUint32(44, true)) ||
     stride === 0 ||
     !Number.isSafeInteger(vertexCount) ||
     !Number.isSafeInteger(vertexBytes) ||

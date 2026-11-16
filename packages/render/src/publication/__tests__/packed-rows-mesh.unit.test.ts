@@ -52,7 +52,8 @@ it('rebuilds exact canonical channels from the rows on demand', () => {
   const packed = trimToPackedRows(full, copyAssetData);
   const channels = meshAttributeChannels(packed);
   expect(channels).toEqual(full.attributes);
-  expect(meshAttributeChannels(packed)).toBe(channels);
+  expect(meshAttributeChannels(packed)).toEqual(channels);
+  expect(meshAttributeChannels(packed)).not.toBe(channels);
   expect(meshAttributeChannels(full)).toBe(full.attributes);
 });
 
@@ -82,13 +83,11 @@ it('rejects malformed packed-rows payloads explicitly', () => {
       ...packed,
       attributes: { ...packed.attributes, position: new Float32Array(3) },
     }),
-  ).toMatch(/position must be an empty float32 layout key/);
+  ).toMatch(/interleaved position requires an empty canonical layout declaration/);
   expect(packedRowsMeshError({ ...packed, vertices: packed.vertices.subarray(0, 5) })).toMatch(
-    /whole interleaved vertex rows/,
+    /vertexCount|vertices.byteLength/,
   );
-  expect(packedRowsMeshError({ ...packed, lods: [] } as unknown as MeshAsset)).toMatch(
-    /static raster triangle/,
-  );
+  expect(packedRowsMeshError({ ...packed, lods: [] })).toBeUndefined();
 });
 
 it('compares a packed-rows mesh with its full form by the rebuilt channel bytes', () => {
@@ -123,7 +122,7 @@ it('validates packed-rows payloads at the Render receiver and conflicts by conte
     mesh: malformed,
   });
   expect(rejected.ok).toBe(false);
-  expect(String(rejected.ok ? '' : rejected.error.message)).toMatch(/packed-rows/);
+  expect(String(rejected.ok ? '' : rejected.error.message)).toMatch(/interleaved/);
   const prepared = receiver
     .prepareMesh({ ...identity, meshHandle: 7 as never, revision: 1, mesh: packed })
     .unwrap();
@@ -186,9 +185,19 @@ it('applies paired row/channel patches from rows and rejects channel-only patche
   expect(Array.from(fullPositions.subarray(0, 3))).toEqual([9, 8, 7]);
 });
 
-it('never admits the packed-rows form into a managed World asset store', () => {
+it('uses the same validated canonical rows in World and Render asset stores', () => {
   const assets = new AssetRegistry();
   const packed = trimToPackedRows(box(), copyAssetData);
-  expect(assets.create(packed).ok).toBe(false);
+  const handle = assets.create(packed).unwrap();
+  const accepted = assets.read(handle).unwrap();
+  expect(accepted.attributeStorage).toBe('interleaved');
+  expect(Object.values(accepted.attributes).every((value) => value.byteLength === 0)).toBe(true);
+  expect(meshAttributeChannels(accepted)).toEqual(meshAttributeChannels(packed));
+  expect(
+    assets.create({
+      ...packed,
+      attributes: { ...packed.attributes, position: new Float32Array(3) },
+    }).ok,
+  ).toBe(false);
   assets.dispose();
 });

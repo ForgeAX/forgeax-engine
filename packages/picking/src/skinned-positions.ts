@@ -1,6 +1,6 @@
 import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
-
 import type { EntityHandle, FrameArena, World } from '@forgeax/engine-ecs';
+import { copyMeshAttribute } from '@forgeax/engine-geometry';
 import { mat4 } from '@forgeax/engine-math';
 import { GlobalTransform } from '@forgeax/engine-scene';
 import { Skin, skinVertexPosition } from '@forgeax/engine-skinning';
@@ -9,6 +9,15 @@ import type { MeshAsset, SkeletonAsset } from '@forgeax/engine-types';
 /** Shared storage policy: standalone geometry is owned; query geometry is borrowed. */
 export function deformationStorage(count: number, arena?: FrameArena): Float32Array {
   return arena ? arena.alloc(Float32Array, count).unwrap() : new Float32Array(count);
+}
+
+/** Resolve both influence streams under one storage decision, without retaining them. */
+function meshSkinChannels(mesh: MeshAsset) {
+  if (mesh.attributeStorage !== 'interleaved') return mesh.attributes;
+  return {
+    skinIndex: copyMeshAttribute(mesh, 'skinIndex'),
+    skinWeight: copyMeshAttribute(mesh, 'skinWeight'),
+  };
 }
 
 /** Query-local world vertices: no retained pose, GPU readback or World mutation. */
@@ -26,8 +35,7 @@ export function skinnedPositions(
   if (!resolved.ok || resolved.value.kind !== 'skeleton') return undefined;
   const { jointCount, inverseBindMatrices } = resolved.value;
   const joints = skin.value.joints;
-  const indices = mesh.attributes.skinIndex;
-  const weights = mesh.attributes.skinWeight;
+  const { skinIndex: indices, skinWeight: weights } = meshSkinChannels(mesh);
   const count = positions.length / 3;
   if (
     !Number.isInteger(count) ||

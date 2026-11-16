@@ -422,21 +422,18 @@ describe('Water buoyancy fixed Runtime assembly', () => {
   it.each([
     {
       scale: [-1, 1, 1],
-      shear: [0, 0, 0],
       rotation: [0, 0, 0, 1],
       anchor: [1, 0, 0],
       expected: [9, 20, 30],
     },
     {
       scale: [-2, 3, 4],
-      shear: [0.5, 0.25, -0.5],
       rotation: [0, Math.SQRT1_2, 0, Math.SQRT1_2],
       anchor: [1, 2, 3],
-      expected: [22, 20, 26],
+      expected: [22, 26, 32],
     },
-  ])('preserves reflected and affine relative anchors for $scale / $shear', async ({
+  ])('preserves reflected and affine relative anchors for $scale', async ({
     scale,
-    shear,
     rotation,
     anchor,
     expected,
@@ -447,7 +444,7 @@ describe('Water buoyancy fixed Runtime assembly', () => {
     try {
       const root = world
         .spawn(
-          { component: Transform, data: { pos: [10, 20, 30], scale, shear } },
+          { component: Transform, data: { pos: [10, 20, 30], scale } },
           { component: RigidBody, data: { mass: 10, gravityScale: 0 } },
           { component: Collider },
           { component: WaterPontoonSet, data: { anchorsM: anchor, radiiM: [0.5] } },

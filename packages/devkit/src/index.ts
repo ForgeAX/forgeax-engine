@@ -190,6 +190,7 @@ export type {
   ProjectCommandOptions,
   ProjectFacts,
   ShaderCheckOptions,
+  TauriPlatform,
 } from './types.js';
 export { resolveProjectPort } from './types.js';
 export { runUnifiedCli, type UnifiedCliResult } from './unified-cli.js';

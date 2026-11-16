@@ -1,16 +1,7 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { test } from 'node:test';
-import { fileURLToPath } from 'node:url';
-import {
-  analyzeCaptureWindows,
-  analyzeCpuWindow,
-  intersectCpuAnchors,
-} from '../analyze_cpu_windows.mjs';
 import { cpuSampleTimeline } from '../cpu_timeline.mjs';
+import { analyzeCaptureWindows, analyzeCpuWindow, intersectCpuAnchors } from '../cpu_windows.mjs';
 import { digest } from '../lib.mjs';
 
 const frame = (functionName) => ({
@@ -170,31 +161,6 @@ test('rejects foreign gaps, incomplete captures, stale mappings and missing LIVE
     const x = capture();
     mutate(x);
     assert.throws(() => analyzeCaptureWindows(x.raw, x.report, x.frames, x.maps, hash));
-  }
-});
-
-test('CLI replays explicit inputs, marks partial coverage, and protects every input', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'forgeax-cpu-window-'));
-  try {
-    const x = capture();
-    x.frames.end = 1.2;
-    const files = ['raw', 'report', 'frames'].map((name) => join(dir, `${name}.json`));
-    for (const [index, name] of ['raw', 'report', 'frames'].entries())
-      await writeFile(files[index], JSON.stringify(x[name]));
-    const script = fileURLToPath(new URL('../analyze_cpu_windows.mjs', import.meta.url));
-    const args = [script, files[0], '--report', files[1], '--frames', files[2]];
-    const child = spawnSync(process.execPath, args, { encoding: 'utf8' });
-    assert.equal(child.status, 2, child.stderr);
-    const result = JSON.parse(child.stdout);
-    assert.equal(result.completeness, 'partial');
-    assert.equal(result.inputs[0].sha256, digest(await readFile(files[0])));
-    assert.equal(
-      spawnSync(process.execPath, [...args, '--output', files[1]], { encoding: 'utf8' }).status,
-      1,
-    );
-    assert.equal(spawnSync(process.execPath, [script, '--help'], { encoding: 'utf8' }).status, 0);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
   }
 });
 

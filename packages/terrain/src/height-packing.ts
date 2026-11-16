@@ -1,4 +1,4 @@
-import { createTerrainGrids } from '@forgeax/engine-geometry';
+import { createTerrainGrids, prepareMeshData } from '@forgeax/engine-geometry';
 import type {
   Asset,
   MaterialAsset,
@@ -112,6 +112,15 @@ function gridGeometryMatches(actual: MeshAsset, expected: MeshAsset): boolean {
     actual.morphTargets?.length
   )
     return false;
+  if (actual.attributeStorage === 'interleaved') {
+    // Packed equality above already proves every numeric lane. Validate its
+    // declaration instead of expecting a second set of authored channels.
+    return (
+      prepareMeshData(actual, '<terrain-grid>').ok &&
+      Object.keys(actual.attributes).length === Object.keys(expected.attributes).length &&
+      Object.keys(expected.attributes).every((key) => Object.hasOwn(actual.attributes, key))
+    );
+  }
   return (
     Object.keys(actual.attributes).length === Object.keys(expected.attributes).length &&
     Object.entries(expected.attributes).every(([key, value]) =>

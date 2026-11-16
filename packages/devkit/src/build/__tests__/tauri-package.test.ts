@@ -24,7 +24,7 @@ it('embeds unchanged browser resources with one native close owner and no native
     );
     const config = JSON.parse(await readFile(resolve(root, 'src-tauri/tauri.conf.json'), 'utf8'));
     expect(config.build).toEqual({ frontendDist: '../web' });
-    expect(config.identifier).toBe('com.forgeax.game.test-game');
+    expect(config.identifier).toBe('com.forgeax.game.gtestgame');
     expect(config.app.windows).toEqual([]);
     // Tauri's static style nonce must not suppress runtime UiAsset inline CSS.
     expect(config.app.security.dangerousDisableAssetCspModification).toEqual(['style-src']);
@@ -41,8 +41,9 @@ it('embeds unchanged browser resources with one native close owner and no native
     expect(directives['font-src']).toEqual(["'self'", 'data:']);
     const cargo = await readFile(resolve(root, 'src-tauri/Cargo.toml'), 'utf8');
     expect(cargo).not.toMatch(/wgpu|rapier|blitz/);
+    expect(cargo).toContain('crate-type = ["staticlib", "cdylib", "rlib"]');
     expect(cargo).toContain('tauri = { version = "=2.11.5"');
-    const source = await readFile(resolve(root, 'src-tauri/src/main.rs'), 'utf8');
+    const source = await readFile(resolve(root, 'src-tauri/src/lib.rs'), 'utf8');
     expect(source).toContain('await globalThis.__forgeaxTauriDispose?.()');
     expect(source).toContain('observation?.execution?.frame?.completed');
     expect(source).toContain('api.prevent_close()');

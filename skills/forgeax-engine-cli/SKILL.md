@@ -29,7 +29,7 @@ game root as `pnpm exec forgeax <path> ... --json`. Exact flags come from
 | Observe | `dev find --name <n>`, `dev focus --name <n>`, `dev camera set/release` | Temporary camera, no scene edits |
 | Reload / stop | `dev reload`, `dev stop` | Reload invalidates revisions and refs |
 | Production output | `project build`, `project preview` | Serves verified `dist/` over HTTP |
-| Release | `project package [--format web-zip\|single-html] [--output <file>]` | Only when release is requested |
+| Release | `project package [--format web-zip\|single-html\|tauri] [--output <file>]` | Only when release is requested |
 
 - Observations return `revision`; pass it to `eval` (optionally `verify`) so stale
   runtimes fail. Disk edits invalidate the runtime; `dev reload` after dependency or Engine changes.
@@ -249,6 +249,8 @@ See the [DevKit workspace contract](../../packages/devkit/README.md#engine-works
 | Create from the SDK or initialize an existing project | `forgeax project new [dir] --template empty\|game-3d` / `forgeax project init` / `forgeax project check` |
 | Install/verify project-local Engine skills | `forgeax project skill install` / `forgeax project skill verify` |
 | Package a hosted Web ZIP including Engine runtime (large JSON documents zstd-stored; `--compress=false` keeps plain JSON) | `forgeax project package --format web-zip [--output release/game-web.zip] [--compress=false]` |
+| Build native WebView installers | `forgeax project package --format tauri --platform windows\|macos\|linux\|android\|ios --json` |
+| Export a Tauri project for another host | `forgeax project package --format tauri --platform ios --prepare-only --json` |
 | Create a single-HTML offline candidate | `forgeax project package --format single-html --output release/game-offline.html --json` |
 | Browser compositor screenshot including Canvas and HTML/Shadow DOM | `forgeax project capture --backend auto --require-ui --output <png> --json` |
 | Headless software compositor capture | `forgeax project capture --headless true --backend software --require-ui --output <png> --json` |
@@ -260,6 +262,16 @@ See the [DevKit workspace contract](../../packages/devkit/README.md#engine-works
 | Inspect or maintain project plugins | `forgeax project plugin list\|inspect\|configure\|disable\|enable\|install\|uninstall` |
 | Query or mutate live World/Renderer | eval(script), below |
 | Analyze an offline RHI tape | forgeax-engine-rhi-debug |
+
+Tauri packaging requires a new output directory (`--output`, default
+`release/<id>-tauri-<platform>`). Desktop builds run on the matching OS; iOS needs
+macOS, Xcode/XcodeGen and signing; Android needs JDK and Android SDK/NDK.
+`--prepare-only` seals and exports the project without native tools. Generated
+`pnpm build:<platform>` scripts initialize mobile targets and forward Tauri flags.
+Native packages are under `artifacts/`; the result distinguishes prepared/built
+and leaves runtime acceptance `not-run`. Run the packaged desktop smoke separately
+(60 completed frames and Host cleanup); Android/iOS require device acceptance.
+See [DevKit Tauri contract](../../packages/devkit/README.md) for signing and output paths.
 
 > [!IMPORTANT]
 > project new requires an explicit template: game-3d for 3D games, empty otherwise. Targets must be outside the unpacked SDK; its root/subdirectories return project-target-inside-sdk. project init handles existing external projects.

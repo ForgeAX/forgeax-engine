@@ -746,13 +746,17 @@ changes; scalar rows reuse it and previously published program artifacts. The
 receiver binds that fixed table to its admitted payload, never the latest GUID
 entry, so old frames and later Mesh layout changes preserve the same source.
 
-Unselected cooked programs cross Worker publication as `sourceEncoding: 'utf8'`
-declarations, using the accompanying artifact as their sole byte payload. Receiver
-admission checks the complete batch, byte digests, schemas and ABI metadata before
-commit without decoding unused WGSL. Only selected material/pass lookups prepare
-source descriptions. Already prepared and directly authored source rows keep their
-existing form. Device recovery adopts pending declarations and prepared CPU facts
-after choosing replacement-device builtins; it does not prepare unused variants.
+A Render receiver publishes its backend and material capability tier. Worker
+material projections carry every pipeline, geometry, visibility and address
+variant in that domain, plus its backend's ray closure. Unrelated tiers stay
+in source Ready; they do not cross the Worker boundary. An unsupported custom
+set keeps its complete contract for ordinary admission. A new receiver epoch
+creates a fresh publisher and selects again from the complete source contract.
+Within the receiving domain, unselected cooked programs remain lazy
+`sourceEncoding: 'utf8'` declarations whose artifact is their sole byte payload.
+Receiver admission still checks byte digests, schemas and ABI metadata before
+commit. Device registry recovery adopts these declarations and prepared CPU
+facts without preparing unused variants.
 
 Mesh rows contain only instance facts: current/previous transforms, temporal and
 surface metadata, and an optional Sprite region. A real draw stages its selected

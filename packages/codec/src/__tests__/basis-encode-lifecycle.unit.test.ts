@@ -1,6 +1,6 @@
 import type { BasisEncodeMode, BasisEncodeOptions } from '@forgeax/engine-codec/encode';
 import { _setBasisEncoderImporter, basisEncode } from '@forgeax/engine-codec/encode';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const TEST_CONSTRUCTOR_SENTINEL = 'm120-controlled-constructor-throw';
 const TEST_DELETE_SENTINEL = 'm120-controlled-delete-throw';
@@ -8,6 +8,27 @@ const TEST_OPERATION_SENTINEL = 'm120-controlled-operation-throw';
 const CLEANUP_FAILURE_REASON = 'encoder cleanup failed';
 const CONSTRUCTOR_FAILURE_REASON = 'encoder constructor failed';
 const MODES = ['etc1s', 'uastc-ldr', 'uastc-hdr'] as const;
+
+it('keeps real encoder progress off stdout so CLI JSON remains machine readable', async () => {
+  _setBasisEncoderImporter();
+  const stdout = vi.spyOn(console, 'log').mockImplementation(() => {});
+  const diagnostics = vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    const encoded = await basisEncode(new Uint8Array(4 * 4 * 4).fill(127), {
+      ...makeOptions('uastc-ldr'),
+      width: 4,
+      height: 4,
+      mipGen: true,
+    });
+    expect(encoded.ok).toBe(true);
+    expect(stdout).not.toHaveBeenCalled();
+    expect(diagnostics).toHaveBeenCalled();
+  } finally {
+    stdout.mockRestore();
+    diagnostics.mockRestore();
+    _setBasisEncoderImporter();
+  }
+});
 
 interface FakeEncoderState {
   readonly constructorIds: number[];

@@ -1218,8 +1218,7 @@ function appendEntity(table: Table, entity: number): number {
     });
 
     describe('fixed-only component leaves BufferPool live-count at 0 (AC-07 / w9)', () => {
-      const liveCount = (world: World): number =>
-        (world as unknown as { bufferPool: { _liveCount(): number } }).bufferPool._liveCount();
+      const liveCount = (world: World): number => world.memoryStats().arrays.liveArrays;
 
       it('array<f32,16>-only spawn->get->despawn never touches the pool', () => {
         const Mat = defineComponent('Mat16Pool', { m: 'array<f32, 16>' });
@@ -1255,8 +1254,7 @@ function appendEntity(table: Table, entity: number): number {
     });
 
     describe('AC-08 variable buffer (no N) path post-inline (w15)', () => {
-      const liveCount = (world: World): number =>
-        (world as unknown as { bufferPool: { _liveCount(): number } }).bufferPool._liveCount();
+      const liveCount = (world: World): number => world.memoryStats().arrays.liveArrays;
 
       it('variable buffer spawn->set->get round-trip works', () => {
         const C = defineComponent('VarBuf', { blob: 'buffer' });
@@ -1315,7 +1313,7 @@ function appendEntity(table: Table, entity: number): number {
         const e2 = world
           .spawn(
             { component: FixedMat, data: { m: new Float32Array(16) } },
-            { component: VarArr, data: { data: new Float32Array(0) } },
+            { component: VarArr, data: { data: new Float32Array(2) } },
           )
           .unwrap();
         expect(liveCount(world)).toBe(1);

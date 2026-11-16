@@ -23,6 +23,7 @@ import type { ScheduleToken } from './schedule-token';
 import type { Archetype } from './storage/archetype';
 import type { ArchetypeGraph } from './storage/archetype-graph';
 import type { ArrayRangesChange } from './storage/array-range-log';
+import type { ArrayStore } from './storage/array-store';
 import type { ChangeTicks } from './storage/change-detection';
 import type { ChangeIndex } from './storage/change-index';
 import type { EntityRecords } from './storage/entity-records';
@@ -61,14 +62,23 @@ export interface WorldInternal {
     fieldName: string,
   ) => ArrayLike<number> | undefined;
   readonly getBufferPool: () => BufferPool;
+  readonly getArrayStore: () => ArrayStore;
   readonly getFrameArena: () => WorldFrameArena;
   readonly maintainMemory: () => void;
+  /** Rotate removed-component event buffers; called once per `World.update()`. */
+  readonly updateRemovedComponents: () => void;
   readonly getClockWriter: () => ClockWriter;
   readonly getComponentChange: (
     entity: EntityHandle,
     componentId: number,
   ) => ChangeTicks | undefined;
-  readonly getComponentChangeIndex: (id: number) => ChangeIndex | undefined;
+  /** Visit slots whose component was written in `(since, upper]`; returns rows examined. */
+  readonly visitComponentChanged: (
+    componentId: number,
+    since: number,
+    upper: number,
+    visit: (slot: number) => void,
+  ) => number;
   readonly getStructuralChangeIndex: () => ChangeIndex;
   readonly getComponentMutationEpochs: () => readonly number[];
   readonly getEntityArchetype: (entity: EntityHandle) => Archetype | undefined;
@@ -89,7 +99,12 @@ export interface WorldInternal {
     operation: string,
     component?: string,
   ) => Result<number, EcsError>;
-  readonly markComponentChanged: (entity: EntityHandle, componentId: number) => void;
+  readonly markComponentChanged: (entity: EntityHandle, componentId: number) => boolean;
+  /**
+   * Index a change the caller already wrote to the entity's `changed` column,
+   * at an epoch it reserved with `nextMutationEpoch`.
+   */
+  readonly publishLocatedChange: (slot: number, componentId: number, epoch: number) => void;
   readonly markComponentRangeChanged: (
     table: Table,
     componentId: number,

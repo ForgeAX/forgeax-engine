@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
@@ -22,7 +30,7 @@ test('SDK seed waits for same-head core and point publications outside its origi
   assert.equal(s.needs, 'shader-producer-inputs');
   assert.equal(s['timeout-minutes'], 30);
   assert.equal(p['timeout-minutes'], 70);
-  assert.equal(w.jobs.consumers['timeout-minutes'], "${{ matrix.group == 'source' && 35 || 30 }}");
+  assert.equal(w.jobs.consumers['timeout-minutes'], `\${{ matrix.group == 'source' && 40 || 30 }}`);
   assert.deepEqual(w.jobs.consumers.strategy.matrix.group, ['project', 'source']);
   assert.equal(w.jobs.consumers.strategy.matrix.include.length, 2);
   const restore = s.steps.find((x) => x.name === 'Restore admitted SDK shader inputs');
@@ -33,6 +41,83 @@ test('SDK seed waits for same-head core and point publications outside its origi
   );
   assert.match(restore.run, /core_artifact_id/);
   assert.match(restore.run, /point_artifact_id/);
+});
+
+test('Candidate builders receive admitted shader inputs before their cold Engine build', () => {
+  const workflow = parse(readFileSync('.github/workflows/sdk-release-candidate.yml', 'utf8'));
+  const resolve = workflow.jobs['resolve-source'];
+  const selector = resolve.steps.find((step) => step.id === 'shaders');
+  assert.ok(selector, 'Candidate must select optional inputs for its pinned source');
+  assert.equal(selector.env.SOURCE_SHA, `\${{ steps.source.outputs.source_sha }}`);
+  for (const owner of ['build-sdk', 'reproducibility', 'collision']) {
+    const steps = workflow.jobs[owner].steps;
+    const build = steps.findIndex((step) => /pnpm (?:sdk:build|build:engine)/.test(step.run ?? ''));
+    const restore = steps.findIndex((step) =>
+      (step.run ?? '').includes('scripts/ci/download-sdk-shader-inputs.mjs'),
+    );
+    assert.ok(restore >= 0 && restore < build, `${owner} must restore before production`);
+    assert.match(steps[restore].if, /needs\.resolve-source\.outputs\.core_artifact_id/);
+    assert.match(steps[restore].run, /needs\.resolve-source\.outputs\.point_artifact_id/);
+    assert.equal(workflow.jobs[owner]['timeout-minutes'], owner === 'build-sdk' ? 120 : 90);
+  }
+});
+
+test('Candidate Preview and collision use the same admitted or cold shader manifest', {
+  skip: process.platform === 'win32',
+}, () => {
+  const workflow = parse(readFileSync('.github/workflows/sdk-release-candidate.yml', 'utf8'));
+  const steps = workflow.jobs.collision.steps;
+  const build = steps.find(
+    (step) => step.name === 'Build Engine and Preview for full game-3d collision acceptance',
+  );
+  const journey = steps.find((step) => step.name === 'Run full game-3d collision journey');
+  assert.equal(
+    journey.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST,
+    `\${{ env.FORGEAX_CANDIDATE_SHADER_MANIFEST }}`,
+  );
+  for (const restored of [false, true]) {
+    const root = mkdtempSync(join(tmpdir(), 'candidate shader manifest '));
+    try {
+      const binary = join(root, 'pnpm');
+      const trace = join(root, 'commands');
+      const environment = join(root, 'environment');
+      const workspace = join(root, 'workspace');
+      writeFileSync(
+        binary,
+        '#!/bin/sh\nprintf "%s\\0" "$@" >> "$PNPM_TRACE"\nprintf "\\n" >> "$PNPM_TRACE"\n',
+      );
+      chmodSync(binary, 0o755);
+      execFileSync('bash', ['-euo', 'pipefail', '-c', build.run], {
+        env: {
+          ...process.env,
+          PATH: `${root}:${process.env.PATH}`,
+          PNPM_TRACE: trace,
+          GITHUB_ENV: environment,
+          GITHUB_WORKSPACE: workspace,
+          FORGEAX_SDK_SHADER_INPUTS: restored ? join(root, 'admitted') : '',
+        },
+      });
+      const manifest = join(
+        workspace,
+        restored ? 'shared-app-inputs' : 'shared-build-inputs',
+        'manifest.json',
+      );
+      const commands = readFileSync(trace, 'utf8')
+        .trimEnd()
+        .split('\n')
+        .map((line) => line.split('\0').slice(0, -1));
+      assert.deepEqual(commands, [
+        ['build:engine'],
+        ['build:app', 'preview', '--shared-input-manifest', manifest],
+      ]);
+      assert.equal(
+        readFileSync(environment, 'utf8'),
+        `FORGEAX_CANDIDATE_SHADER_MANIFEST=${manifest}\n`,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
 });
 
 function producerFixture() {

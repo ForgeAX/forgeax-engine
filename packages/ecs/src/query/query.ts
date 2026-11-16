@@ -12,7 +12,7 @@ import {
   type TypedArrayFor,
 } from '../component';
 import { Disabled } from '../entity';
-import { type EntityHandle, encodeEntity, entityGeneration, entityIndex } from '../entity-handle';
+import { type EntityHandle, entityGeneration, entityIndex } from '../entity-handle';
 import {
   DerivedWriteActiveError,
   QueryDataRequiresFieldsError,
@@ -29,7 +29,8 @@ import type { WorldExecutionState } from '../execution/shared-kernel';
 import { DERIVED_WRITER, QUERY_ITERATING } from '../internal';
 import { isRelationshipTarget, relationshipRole } from '../relationship-index';
 import { type Archetype, type ArchetypeId, archetypeHasComponent } from '../storage/archetype';
-import { sparseTagIndex } from '../storage/change-detection';
+import { CHANGE_CHUNK_SHIFT } from '../storage/change-column';
+import { readComponentChanged, sparseTagIndex } from '../storage/change-detection';
 import {
   type Column,
   columnWindow,
@@ -39,7 +40,6 @@ import {
 import type { Table } from '../storage/table';
 import { type WorldInternal, worldInternal } from '../world-internal';
 import { type BatchLease, IndexedBatch, type QueryBatch, RangeBatch } from './batch';
-import { type ChangedEntities, ChangedEntityOrder } from './change-order';
 import { createDerivedRangeWriter, type DerivedRangeWriter } from './derived-range-writer';
 
 export interface QueryDescriptor<
@@ -94,6 +94,9 @@ export interface QuerySpan<
   /** Packed entity identities for this contiguous table range. */
   readonly entities: Readonly<Uint32Array>;
   readonly length: number;
+  /** Table holding the span, and the table row of its first entity. */
+  readonly tableId: number;
+  readonly rowStart: number;
   get<C extends R[number]>(component: C): ReadonlyColumnShape<C>;
   mut<C extends W[number]>(component: C): MutableColumnShape<C>;
 }
@@ -146,8 +149,11 @@ interface CompiledDescriptor<
 }
 
 /** Shared terminal step; iterator results are read immediately by consumers. */
+/** Changed identities of one iteration, held in a query-owned typed buffer. */
+export type ChangedEntities = Uint32Array & { [index: number]: EntityHandle };
 const NO_CHANGED_ENTITIES = new Uint32Array(0) as ChangedEntities;
 const NO_CANDIDATES = new Uint32Array(0);
+const CHANGE_CHUNK = 1 << CHANGE_CHUNK_SHIFT;
 const QUERY_DONE: IteratorReturnResult<undefined> = Object.freeze({
   done: true,
   value: undefined,
@@ -261,11 +267,7 @@ class QueryRowFacade<
       owner.getGraph().archetypes[records.archetypeId[slot] as number] === this.archetype
     ) {
       const archetype = this.archetype as Archetype;
-      return owner.readRow(
-        archetype,
-        component,
-        archetype.rows[records.archetypeRow[slot] as number] ?? -1,
-      );
+      return owner.readRow(archetype, component, records.tableRow[slot] ?? -1);
     }
     const result = owner.getQueryRow(this.entity, component);
     if (!result.ok) throw result.error;
@@ -306,9 +308,13 @@ class QuerySpanFacade<R extends readonly Component[], W extends readonly Compone
   constructor(
     private readonly world: WorldQueryAccess,
     private readonly table: Table,
-    private readonly rowStart: number,
+    readonly rowStart: number,
     readonly length: number,
   ) {}
+
+  get tableId(): number {
+    return this.table.id;
+  }
 
   /** Derived on demand: a changed-row span rarely needs its identity window. */
   get entities(): Readonly<Uint32Array> {
@@ -370,17 +376,11 @@ function buildColumnShape(
     if (column === undefined) continue;
     const fieldType = schema[fieldName];
     appendColumnShape(shape, fieldName, column, fieldType, rowStart, rowCount, fullTable);
-    const countField = column.countField;
-    if (countField !== undefined) {
-      const countColumn = fields.get(countField);
-      if (countColumn !== undefined)
-        appendColumnShape(shape, countField, countColumn, fieldType, rowStart, rowCount, fullTable);
-    }
   }
   return shape;
 }
 
-/** The declared field and its optional sidecar share the same managed access rule. */
+/** One declared field's window under its managed access rule. */
 function appendColumnShape(
   shape: Record<string, FieldView | ManagedColumnReader<string>>,
   name: string,
@@ -398,6 +398,34 @@ function appendColumnShape(
   shape[name] = columnWindow(column, start, start + rowCount * column.arity, managed, fullTable);
 }
 
+/** Scan the chunks whose maxima exceed `since`; a row qualifies when every
+ * predicate column reads a changed epoch in `(since, upper]`. */
+function scanChangedChunks(
+  entities: ArrayLike<number>,
+  size: number,
+  columns: ReadonlyArray<ArrayLike<number>>,
+  width: number,
+  chunks: ArrayLike<number> | undefined,
+  since: number,
+  upper: number,
+  candidates: Uint32Array,
+  count: number,
+): number {
+  for (let start = 0, chunk = 0; start < size; start += CHANGE_CHUNK, chunk++) {
+    if (chunks !== undefined && (chunks[chunk] as number) <= since) continue;
+    const end = Math.min(size, start + CHANGE_CHUNK);
+    for (let row = start; row < end; row++) {
+      let lane = 0;
+      for (; lane < width; lane++) {
+        const epoch = (columns[lane] as Float64Array)[row] as number;
+        if (epoch <= since || epoch > upper) break;
+      }
+      if (lane === width) candidates[count++] = entities[row] as number;
+    }
+  }
+  return count;
+}
+
 class ExecutableQuery<
   R extends readonly Component[],
   W extends readonly Component[],
@@ -413,7 +441,6 @@ class ExecutableQuery<
     | (Iterator<QueryRow<R, W, O>> & { reset(): void; return(): IteratorResult<QueryRow<R, W, O>> })
     | undefined;
   private spansResult: Result<Iterable<QuerySpan<R, W>>, QuerySpanUnavailableError> | undefined;
-  private changedOrder: ChangedEntityOrder | undefined;
   private batchesResult:
     | Result<Iterable<QueryBatch<R, W, O>>, QueryBatchUnavailableError>
     | undefined;
@@ -525,7 +552,7 @@ class ExecutableQuery<
         const archetype = this.query.world[worldInternal].getEntityArchetype(entity);
         if (archetype === undefined) continue;
         const records = this.query.world[worldInternal].getRecords();
-        const tableRow = archetype.rows[records.archetypeRow[entityIndex(entity)] ?? -1] ?? -1;
+        const tableRow = records.tableRow[entityIndex(entity)] ?? -1;
         const table = this.query.world[worldInternal].getGraph().tables[archetype.tableId];
         if (
           table === undefined ||
@@ -712,7 +739,7 @@ class ExecutableQuery<
         const archetype = this.owner.getGraph().archetypes[records.archetypeId[slot] ?? -1];
         const table =
           archetype === undefined ? undefined : this.owner.getGraph().tables[archetype.tableId];
-        const start = archetype?.rows[records.archetypeRow[slot] ?? -1] ?? -1;
+        const start = records.tableRow[slot] ?? -1;
         if (
           table === undefined ||
           (!current && !this.query.denseChangeMatches(entity, table, start, this.upperBound))
@@ -724,7 +751,7 @@ class ExecutableQuery<
           const nextSlot = entityIndex(next);
           const nextArchetype =
             this.owner.getGraph().archetypes[records.archetypeId[nextSlot] ?? -1];
-          const nextRow = nextArchetype?.rows[records.archetypeRow[nextSlot] ?? -1] ?? -1;
+          const nextRow = records.tableRow[nextSlot] ?? -1;
           if (
             nextArchetype?.tableId !== table.id ||
             nextRow !== start + count ||
@@ -927,7 +954,6 @@ class ExecutableQuery<
     };
   }
 
-  /** Only producer-indexed identities; physical ordering is derived for this actual iteration. */
   /**
    * One candidate buffer per query: an iteration only begins after the
    * previous one closed (`beginIteration`), so the buffer is never shared.
@@ -937,46 +963,78 @@ class ExecutableQuery<
   // Allocated on the first change scan: structural queries never use them.
   private candidates: Uint32Array = NO_CANDIDATES;
   private candidateCount = 0;
-  private candidateUpper = 0;
-  private collectCandidateVisitor: ((index: number) => void) | undefined;
-  private candidateVisitor(): (index: number) => void {
-    this.collectCandidateVisitor ??= (index) => this.collectCandidate(index);
-    return this.collectCandidateVisitor;
-  }
-  private collectCandidate(index: number): void {
-    const owner = this.world[worldInternal];
-    const graph = owner.getGraph();
-    const records = owner.getRecords();
-    const archetype = graph.archetypes[records.archetypeId[index] ?? -1];
-    if (archetype === undefined || !this.archetypeMatches(archetype)) return;
-    const entity = encodeEntity(index, records.generation[index] as number);
-    const table = graph.tables[archetype.tableId];
-    const row = archetype.rows[records.archetypeRow[index] as number] ?? -1;
-    if (table === undefined || !this.changeMatches(entity, table, row, this.candidateUpper)) return;
-    if (this.candidateCount === this.candidates.length) {
-      const grown = new Uint32Array(Math.max(64, this.candidates.length * 2));
-      grown.set(this.candidates);
-      this.candidates = grown;
-    }
-    this.candidates[this.candidateCount++] = entity;
-  }
+  private readonly probeColumns: Float64Array[] = [];
 
+  /**
+   * Changed identities in physical order, or `undefined` when the iteration
+   * must walk matched archetypes and test each row (sparse routes).
+   */
   private changedEntityCandidates(upper: number): ChangedEntities | undefined {
     const primary = this.compiled.changedIds[0] ?? this.compiled.addedIds[0];
-    if (primary === undefined) return undefined;
+    if (primary === undefined || this.compiled.sparseRoute) return undefined;
     this.candidateCount = 0;
     if (this.hasUnchangedInput()) return NO_CHANGED_ENTITIES;
-    const owner = this.world[worldInternal];
-    this.candidateUpper = upper;
-    owner
-      .getComponentChangeIndex(primary)
-      ?.visitSince(this.lastObservedEpoch, upper, this.candidateVisitor());
-    const entities = this.candidates.subarray(0, this.candidateCount) as ChangedEntities;
-    if (entities.length > 1) {
-      this.changedOrder ??= new ChangedEntityOrder(owner, this.compiled.sparseRoute);
-      this.changedOrder.sort(entities);
+    this.collectMatchedRows(upper);
+    return this.candidates.subarray(0, this.candidateCount) as ChangedEntities;
+  }
+
+  /**
+   * Probe matched table rows. The primary changed column's chunk maxima skip
+   * whole tables and 64-row chunks no write reached since the last observed
+   * epoch; a chunk maximum never under-reports, so skipping is exact.
+   */
+  private collectMatchedRows(upper: number): void {
+    this.refreshMatches();
+    const tables = this.matchedTables;
+    const changedIds = this.compiled.changedIds;
+    const addedIds = this.compiled.addedIds;
+    const since = this.lastObservedEpoch;
+    let rows = 0;
+    for (let index = 0; index < tables.length; index++) rows += (tables[index] as Table).size;
+    if (this.candidates.length < rows)
+      this.candidates = new Uint32Array(Math.max(64, rows, this.candidates.length * 2));
+    const columns = this.probeColumns;
+    const candidates = this.candidates;
+    let count = 0;
+    for (let index = 0; index < tables.length; index++) {
+      const table = tables[index] as Table;
+      const entities = table.entities.view;
+      const size = table.size;
+      // Column ticks answer every predicate once each input has a row column.
+      let width = 0;
+      let primary: ReturnType<typeof table.storage.get> | undefined;
+      for (let id = 0; id < changedIds.length; id++) {
+        const storage = table.storage.get(changedIds[id] as ComponentId);
+        if (storage === undefined) break;
+        primary ??= storage;
+        columns[width++] = storage.changed.epochs;
+      }
+      for (let id = 0; width === changedIds.length + id && id < addedIds.length; id++) {
+        const column = table.storage.get(addedIds[id] as ComponentId)?.added;
+        if (column !== undefined) columns[width++] = column;
+      }
+      if (width === changedIds.length + addedIds.length) {
+        const chunks = primary?.changed.chunks;
+        if (primary !== undefined && primary.changed.max <= since) continue;
+        count = scanChangedChunks(
+          entities,
+          size,
+          columns,
+          width,
+          chunks,
+          since,
+          upper,
+          candidates,
+          count,
+        );
+        continue;
+      }
+      for (let row = 0; row < size; row++) {
+        const entity = entities[row] as EntityHandle;
+        if (this.changeMatches(entity, table, row, upper)) candidates[count++] = entity;
+      }
     }
-    return entities;
+    this.candidateCount = count;
   }
 
   private hasUnchangedInput(): boolean {
@@ -1057,21 +1115,39 @@ class ExecutableQuery<
     return true;
   }
 
+  /** Changed epoch of one input on a row: its table column, or its sparse tag set. */
+  private changedEpoch(
+    entity: EntityHandle,
+    table: Table,
+    row: number,
+    componentId: ComponentId,
+  ): number {
+    const column = table.storage.get(componentId)?.changed;
+    if (column !== undefined) return column.epochs[row] ?? 0;
+    const owner = this.world[worldInternal];
+    return (
+      readComponentChanged(
+        owner.getGraph(),
+        owner.getRecords(),
+        entityIndex(entity),
+        componentId,
+      ) ?? 0
+    );
+  }
+
   private changeMatches(
     entity: EntityHandle,
     table: Table,
     row: number,
     upperBound: number,
+    firstChanged = 0,
   ): boolean {
-    const graph = this.world[worldInternal].getGraph();
     const changedIds = this.compiled.changedIds;
-    for (let index = 0; index < changedIds.length; index++) {
-      const componentId = changedIds[index] as ComponentId;
-      const epoch =
-        this.world[worldInternal].getComponentChangeIndex(componentId)?.get(entityIndex(entity)) ??
-        0;
+    for (let index = firstChanged; index < changedIds.length; index++) {
+      const epoch = this.changedEpoch(entity, table, row, changedIds[index] as ComponentId);
       if (epoch <= this.lastObservedEpoch || epoch > upperBound) return false;
     }
+    const graph = this.world[worldInternal].getGraph();
     const addedIds = this.compiled.addedIds;
     for (let index = 0; index < addedIds.length; index++) {
       const componentId = addedIds[index] as ComponentId;
@@ -1094,10 +1170,7 @@ class ExecutableQuery<
   ): boolean {
     const changedIds = this.compiled.changedIds;
     for (let index = 0; index < changedIds.length; index++) {
-      const componentId = changedIds[index] as ComponentId;
-      const epoch =
-        this.world[worldInternal].getComponentChangeIndex(componentId)?.get(entityIndex(entity)) ??
-        0;
+      const epoch = this.changedEpoch(entity, table, row, changedIds[index] as ComponentId);
       if (epoch <= this.lastObservedEpoch || epoch > upperBound) return false;
     }
     const addedIds = this.compiled.addedIds;

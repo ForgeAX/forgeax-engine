@@ -1,3 +1,4 @@
+import { copyRetainedZstdBytes } from '@forgeax/engine-codec';
 import {
   type CookedMaterialRecord,
   type MaterialCookProgramContext,
@@ -271,6 +272,9 @@ export function createMaterialLoader(options: MaterialLoaderOptions) {
             },
           );
         }
+        // Preserve transport storage through the validator's independent copy.
+        // This association checks exact bytes and never authorizes admission.
+        copyRetainedZstdBytes(published.bytes, program.artifact.bytes);
         programs.push(program);
       }
       const refs = [

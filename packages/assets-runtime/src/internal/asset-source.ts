@@ -1,4 +1,4 @@
-import { prepareMeshData } from '@forgeax/engine-geometry';
+import { interleavedMesh, prepareMeshData } from '@forgeax/engine-geometry';
 import { validateArtifactPath } from '@forgeax/engine-pack/artifact-path';
 import type { RuntimePackEnvelope } from '@forgeax/engine-pack/runtime';
 import type {
@@ -521,17 +521,21 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
           detail: { guid, generation: revision },
         });
       // Only the CPU geometry leaves; no graph Ready entry or runtime handle is made.
-      const mesh = decoded.value.value as MeshAsset;
-      if (mesh?.kind !== 'mesh')
+      const decodedMesh = decoded.value.value as MeshAsset;
+      if (decodedMesh?.kind !== 'mesh')
         return err(sourceFailure(guid, 'decoder returned another payload kind'));
-      const geometry = prepareMeshData(mesh, guid);
+      const geometry = prepareMeshData(decodedMesh, guid);
       if (!geometry.ok) return err(sourceFailure(guid, geometry.error.actual));
+      const mesh = interleavedMesh(decodedMesh);
       // The decoder handed its output over, but a custom decoder may still hold
       // its buffers; the public CPU read gives the caller private storage.
       return ok(
         copyAssetData({
           vertices: mesh.vertices,
           attributes: mesh.attributes,
+          ...(mesh.attributeStorage === undefined
+            ? {}
+            : { attributeStorage: mesh.attributeStorage }),
           submeshes: mesh.submeshes,
           ...(mesh.indices === undefined ? {} : { indices: mesh.indices }),
           ...(mesh.aabb === undefined ? {} : { aabb: mesh.aabb }),

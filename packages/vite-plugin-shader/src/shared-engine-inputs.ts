@@ -362,14 +362,35 @@ export function projectShaderManifestEntries(
   return [...entries.values()].map((entry) => ({ ...entry, glsl: '' }));
 }
 
-export async function loadSharedEngineShaderManifest(
-  manifestPath: string,
-  repositoryRoot: string,
-): Promise<{
+interface SharedEngineShaderManifest {
   readonly entries: ShaderManifestInput[];
   readonly materialShaders: MaterialShaderManifestEntry[];
   readonly publication: ShaderManifestPublication;
-}> {
+}
+
+// An active publication owns its admitted rows. Weak keys and the weak digest
+// lookup let plugin close retire the entire graph rather than retaining it globally.
+const sharedPublicationInputs = new WeakMap<
+  ShaderManifestPublication,
+  SharedEngineShaderManifest
+>();
+let lastSharedPublication:
+  | { digest: string; publication: WeakRef<ShaderManifestPublication> }
+  | undefined;
+
+function freezeSharedInput(value: unknown, seen = new WeakSet<object>()): void {
+  if (value === null || typeof value !== 'object' || seen.has(value)) return;
+  seen.add(value);
+  // Expanded WGSL is lazy. Inspect data descriptors without invoking its getters.
+  for (const descriptor of Object.values(Object.getOwnPropertyDescriptors(value)))
+    if ('value' in descriptor) freezeSharedInput(descriptor.value, seen);
+  Object.freeze(value);
+}
+
+export async function loadSharedEngineShaderManifest(
+  manifestPath: string,
+  repositoryRoot: string,
+): Promise<SharedEngineShaderManifest> {
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
     readonly schemaVersion?: number;
     readonly producer?: string;
@@ -395,5 +416,22 @@ export async function loadSharedEngineShaderManifest(
       }
     }
   }
-  return readNodePublication(JSON.parse(readFileSync(resolve(repositoryRoot, path), 'utf8')));
+  const bytes = readFileSync(resolve(repositoryRoot, path), 'utf8');
+  const digest = createHash('sha256').update(bytes).digest('hex');
+  const publication =
+    lastSharedPublication?.digest === digest
+      ? lastSharedPublication.publication.deref()
+      : undefined;
+  let input = publication === undefined ? undefined : sharedPublicationInputs.get(publication);
+  if (input === undefined) {
+    input = readNodePublication(JSON.parse(bytes));
+    freezeSharedInput(input);
+    sharedPublicationInputs.set(input.publication, input);
+    lastSharedPublication = { digest, publication: new WeakRef(input.publication) };
+  }
+  return {
+    entries: [...input.entries],
+    materialShaders: [...input.materialShaders],
+    publication: input.publication,
+  };
 }

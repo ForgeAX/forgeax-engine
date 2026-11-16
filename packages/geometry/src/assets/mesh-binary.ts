@@ -182,6 +182,7 @@ function deriveAabb(vertices: Float32Array, stride: number): Float32Array | unde
 }
 
 interface MeshParts {
+  readonly attributeStorage?: 'interleaved';
   readonly vertices: unknown;
   readonly indices?: unknown;
   readonly attributes?: unknown;
@@ -239,6 +240,16 @@ function vertexAttributesFor(raw: unknown): VertexAttributeMap | undefined {
     return undefined;
   if (skinIndex !== undefined) attributes.skinIndex = skinIndex;
   if (skinWeight !== undefined) attributes.skinWeight = skinWeight;
+  if (source.tangentFrame !== undefined) {
+    const value = source.tangentFrame;
+    if (value instanceof Uint32Array) attributes.tangentFrame = value;
+    else if (
+      Array.isArray(value) &&
+      value.every((word) => Number.isInteger(word) && word >= 0 && word <= 0xffffffff)
+    )
+      attributes.tangentFrame = new Uint32Array(value);
+    else return undefined;
+  }
   return attributes;
 }
 
@@ -292,6 +303,7 @@ function unpackExtraUvSets(
 }
 
 interface MeshStreams {
+  readonly attributeStorage?: 'interleaved';
   readonly vertices: Float32Array;
   readonly indices: Uint16Array | Uint32Array | undefined;
   readonly attributes: VertexAttributeMap;
@@ -314,7 +326,14 @@ function meshStreamsFor(parts: MeshParts): MeshStreams | undefined {
   const uvSetCount = parts.uvSetCount ?? 1;
   if (stride > 0 && uvSetCount > 1 && !unpackExtraUvSets(attributes, vertices, stride, uvSetCount))
     return undefined;
-  return { vertices, indices, attributes, stride, submeshes };
+  return {
+    vertices,
+    indices,
+    attributes,
+    stride,
+    submeshes,
+    ...(parts.attributeStorage === undefined ? {} : { attributeStorage: parts.attributeStorage }),
+  };
 }
 
 interface MorphStreams {
@@ -345,6 +364,9 @@ function collisionFor(
   return validateMeshCollisionAttachment(
     {
       kind: 'mesh',
+      ...(streams.attributeStorage === undefined
+        ? {}
+        : { attributeStorage: streams.attributeStorage }),
       vertices: streams.vertices,
       attributes: streams.attributes,
       submeshes: streams.submeshes,
@@ -374,6 +396,7 @@ function meshFromParts(parts: MeshParts, refs: readonly string[]): MeshAsset | u
   if (collision !== undefined && !collision.ok) return undefined;
   const mesh: MeshAsset = {
     kind: 'mesh',
+    ...(parts.attributeStorage === undefined ? {} : { attributeStorage: parts.attributeStorage }),
     vertices,
     ...(indices === undefined ? {} : { indices }),
     attributes,
@@ -393,8 +416,9 @@ function meshFromParts(parts: MeshParts, refs: readonly string[]): MeshAsset | u
 export function decodeMeshBinary(
   bytes: Uint8Array,
   refs: readonly string[],
+  storage: 'channels' | 'interleaved' = 'channels',
 ): MeshAsset | undefined {
-  const decoded = unpackMeshBin(bytes);
+  const decoded = unpackMeshBin(bytes, '<mesh binary>', storage);
   if (!decoded.ok) return undefined;
   return meshFromParts(
     {
@@ -405,6 +429,18 @@ export function decodeMeshBinary(
   );
 }
 
+function meshPayloadFloatsPerVertex(attributes: unknown): number {
+  const sourceAttributes =
+    attributes !== null && typeof attributes === 'object'
+      ? (attributes as VertexAttributeMap)
+      : undefined;
+  const projection =
+    sourceAttributes === undefined ? undefined : deriveVertexLayoutProjection(sourceAttributes);
+  return projection === undefined || projection.attributes.length === 0
+    ? PROCEDURAL_FLOATS_PER_VERTEX
+    : projection.arrayStride / Float32Array.BYTES_PER_ELEMENT;
+}
+
 export function normalizeMeshPayload(
   payload: unknown,
   refs: readonly string[],
@@ -412,18 +448,12 @@ export function normalizeMeshPayload(
   if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return undefined;
   const source = payload as Record<string, unknown>;
   if (source.kind !== 'mesh' || source.distanceField !== undefined) return undefined;
-  const sourceAttributes =
-    source.attributes !== null && typeof source.attributes === 'object'
-      ? (source.attributes as VertexAttributeMap)
-      : undefined;
-  const projection =
-    sourceAttributes === undefined ? undefined : deriveVertexLayoutProjection(sourceAttributes);
-  const floatsPerVertex =
-    projection === undefined || projection.attributes.length === 0
-      ? PROCEDURAL_FLOATS_PER_VERTEX
-      : projection.arrayStride / Float32Array.BYTES_PER_ELEMENT;
+  const attributeStorage = source.attributeStorage;
+  if (attributeStorage !== undefined && attributeStorage !== 'interleaved') return undefined;
+  const floatsPerVertex = meshPayloadFloatsPerVertex(source.attributes);
   return meshFromParts(
     {
+      ...(attributeStorage === undefined ? {} : { attributeStorage }),
       vertices: source.vertices,
       ...(source.collision === undefined ? {} : { collision: source.collision }),
       ...(source.cardLayout === undefined

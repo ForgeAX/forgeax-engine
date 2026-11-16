@@ -6734,6 +6734,7 @@
       "dependencies": {
         "@forgeax/engine-assets-runtime": "workspace:*",
         "@forgeax/engine-ecs": "workspace:*",
+        "@forgeax/engine-geometry": "workspace:*",
         "@forgeax/engine-graphics-extras": "workspace:*",
         "@forgeax/engine-math": "workspace:*",
         "@forgeax/engine-render": "workspace:*",
@@ -6743,7 +6744,6 @@
         "@forgeax/engine-types": "workspace:*",
       },
       "devDependencies": {
-        "@forgeax/engine-geometry": "workspace:*",
         "@forgeax/engine-pack": "workspace:*",
         "@forgeax/engine-rhi-debug": "workspace:*",
         "@forgeax/engine-rhi-webgpu": "workspace:*",
@@ -7065,6 +7065,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@forgeax/engine-ecs": "workspace:*",
+        "@forgeax/engine-geometry": "workspace:*",
         "@forgeax/engine-plugin": "workspace:*",
         "@forgeax/engine-types": "workspace:*",
       },

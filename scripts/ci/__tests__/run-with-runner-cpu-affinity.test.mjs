@@ -8,6 +8,7 @@ import { Worker } from 'node:worker_threads';
 import { parse } from 'yaml';
 
 import {
+  commandCpuTimeDiagnostics,
   constrainRunnerGpuThreads,
   formatCpuList,
   parseCpuList,
@@ -69,6 +70,60 @@ test('CPU pressure preserves cgroup v1 nanosecond counters without mixing units'
           : undefined,
     }),
     { cgroupV1Stat: 'nr_periods 8\nnr_throttled 3\nthrottled_time 9000000' },
+  );
+});
+
+test('opt-in CPU time diagnostics retain raw units and only the host aggregate', () => {
+  const files = {
+    '/proc/stat': 'cpu 100 0 60 840 0 0 0 30 0 0\ncpu0 50 0 30 420 0 0 0 15 0 0\nintr 9000\n',
+    '/sys/fs/cgroup/cpuacct/cpuacct.usage': '9007199254740993\n',
+  };
+  assert.deepEqual(
+    readCpuPressureDiagnostics({ read: (path) => files[path] }),
+    null,
+    'ordinary callers retain their existing collection scope',
+  );
+  assert.deepEqual(
+    readCpuPressureDiagnostics({ read: (path) => files[path], includeCpuTimes: true }),
+    {
+      hostCpuTimes: 'cpu 100 0 60 840 0 0 0 30 0 0',
+      cgroupV1CpuUsageNanoseconds: '9007199254740993',
+    },
+  );
+  assert.deepEqual(
+    readCpuPressureDiagnostics({ read: () => 'cpu0 1 2 3', includeCpuTimes: true })?.hostCpuTimes,
+    undefined,
+    'a per-CPU row cannot stand in for host aggregate accounting',
+  );
+});
+
+test('CPU time evidence follows the explicit coverage entry and leaves other commands unchanged', () => {
+  const root = fileURLToPath(new URL('../../../', import.meta.url));
+  const entry = fileURLToPath(new URL('../run-split-vitest-coverage.mjs', import.meta.url));
+  assert.equal(
+    commandCpuTimeDiagnostics(['node', 'scripts/ci/run-split-vitest-coverage.mjs'], { cwd: root }),
+    true,
+  );
+  assert.equal(
+    commandCpuTimeDiagnostics(['node', '--import', 'tsx', entry], { cwd: '/tmp' }),
+    true,
+  );
+  assert.equal(
+    commandCpuTimeDiagnostics(['node', 'scripts/ci/run-split-vitest-browser.mjs'], { cwd: root }),
+    false,
+  );
+  assert.equal(commandCpuTimeDiagnostics(['node', 'other.mjs', entry], { cwd: root }), false);
+  assert.equal(
+    commandCpuTimeDiagnostics(['node', '/other/scripts/ci/run-split-vitest-coverage.mjs'], {
+      cwd: root,
+    }),
+    false,
+  );
+  assert.equal(
+    commandCpuTimeDiagnostics(['node', '--eval', "console.log('run-split-vitest-coverage.mjs')"], {
+      cwd: root,
+    }),
+    false,
   );
 });
 
@@ -389,6 +444,28 @@ test('uses distinct physical cores when the allowed mask contains SMT siblings',
   assert.equal(selectedCpus.length, 4);
   assert.ok(selectedCpus.every((cpu) => allowedCpus.includes(cpu)));
   assert.equal(new Set(selectedTopology?.map((item) => item.siblings)).size, 4);
+});
+
+test('shared SMT runners keep every physical core available without narrowing to a quota window', () => {
+  const allowedCpus = parseCpuList('0-31');
+  const result = resolveRunnerCpuAffinity({
+    platform: 'linux',
+    resources: { cpus: 8, containerized: true },
+    allowedCpus,
+    read(path) {
+      const cpu = Number(/cpu(\d+)\/topology\/thread_siblings_list$/.exec(path)?.[1]);
+      const firstSibling = Math.floor(cpu / 2) * 2;
+      return `${firstSibling}-${firstSibling + 1}`;
+    },
+  });
+  assert.equal(result.mode, 'taskset');
+  assert.equal(result.reason, 'distinct-physical-core-pool-with-quota');
+  assert.equal(result.runnerCpus, 8, 'CPU-time admission retains the cgroup quota');
+  assert.equal(result.selectedCpuCount, 16, 'all physical cores remain in the scheduler pool');
+  assert.deepEqual(
+    parseCpuList(result.selectedCpuList),
+    allowedCpus.filter((cpu) => cpu % 2 === 0),
+  );
 });
 
 test('falls back to the logical budget when fewer physical cores are available', () => {

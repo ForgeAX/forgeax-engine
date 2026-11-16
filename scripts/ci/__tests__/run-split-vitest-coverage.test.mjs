@@ -174,7 +174,7 @@ test('run 43703295156 retains complete costs and a full direct-DFG case reservat
     receipt.originalJobs.reduce((sum, job) => sum + job.groups.length, 0),
     49,
   );
-  const groups = coverageGroups(allProjectNames(), 8);
+  const groups = waterCoverageGroupsThrough(receipt.runId);
   assert.deepEqual(
     [...Object.keys(receipt.completedSeconds), ...Object.keys(receipt.reservedSeconds)].sort(),
     groups.map((group) => group.label).sort(),
@@ -208,6 +208,75 @@ test('run 43703295156 retains complete costs and a full direct-DFG case reservat
   );
 });
 
+test('run 43744332755 retains complete children and every unfinished owner within the original window', () => {
+  const receipt = JSON.parse(
+    readFileSync(
+      new URL('./fixtures/coverage-completed-43744332755.json', import.meta.url),
+      'utf8',
+    ),
+  );
+  const ledger = JSON.parse(
+    readFileSync(new URL('../coverage-completed-child-seconds.json', import.meta.url), 'utf8'),
+  );
+  assert.deepEqual(
+    ledger.replayRuns.find((run) => run.runId === receipt.runId),
+    receipt,
+  );
+  assert.equal(Object.keys(receipt.completedSeconds).length, 58);
+  assert.equal(Object.keys(receipt.reservedSeconds).length, 6);
+  assert.equal(receipt.interruptedGroups.length, 1);
+  assert.equal(receipt.unstartedGroups.length, 5);
+  assert.equal(receipt.originalJobs.flatMap((job) => job.groups).length, 58);
+  assert.equal(
+    receipt.originalJobs.every(
+      (job) => job.runId === receipt.runId && job.sourceHead === receipt.head && !job.inherited,
+    ),
+    true,
+  );
+  const groups = waterCoverageGroupsThrough(receipt.runId);
+  assert.deepEqual(
+    [...Object.keys(receipt.completedSeconds), ...Object.keys(receipt.reservedSeconds)].sort(),
+    groups.map((group) => group.label).sort(),
+  );
+  for (const label of [...receipt.interruptedGroups, ...receipt.unstartedGroups])
+    assert.equal(receipt.completedSeconds[label], undefined);
+  const assignment = assignCoverageShards(groups, 4, { typecheck: false });
+  const finishes = coverageAssignmentLaneFinishes(groups, assignment, 4, false, true, 0);
+  assert.ok(Math.max(...finishes) <= 2300, `retain the original setup headroom: ${finishes}`);
+});
+
+test('GTAO publication admission shares the exclusive CPU contract batch exactly once', () => {
+  const file = 'packages/runtime/src/__tests__/gtao-deferred-admission.integration.test.ts';
+  const groups = coverageGroups(allProjectNames(), 8);
+  const owners = groups.filter((group) => group.files.includes(file));
+  assert.equal(owners.length, 1);
+  const owner = owners[0];
+  assert.equal(owner.label, coldOwnerLabels[0], 'retain the original three-file timing identity');
+  assert.ok(isExclusiveCoverageGroup(owner));
+  assert.equal(owner.gpuLease, false, 'Null-RHI admission is CPU work');
+  assert.equal(
+    owner.sourceCompilation,
+    false,
+    'the complete published profile is loaded, not cooked',
+  );
+  assert.equal(owner.reservationWeight, 95, 'reserve all original case bounds and one startup');
+  assert.deepEqual(owner.files.toSorted(), [...coldCoverageFiles, file].toSorted());
+  assert.ok(
+    groups
+      .filter((group) => group.files.length === 0)
+      .every((group) => group.excludes.includes(file)),
+  );
+  const single = coverageGroups(['@forgeax/engine-runtime'], 8).find((group) =>
+    group.files.includes(file),
+  );
+  assert.equal(single.label, `@forgeax/engine-runtime:${file}`);
+  assert.equal(
+    single.observedSeconds,
+    undefined,
+    'a partial selection cannot claim the old batch receipt',
+  );
+});
+
 test('cold source and TypeScript files drain neighboring instrumented children', async () => {
   const groups = waterCoverageGroupsThrough(43668054135);
   const cold = (group) => group.files.some((file) => coldCoverageFiles.includes(file));
@@ -233,7 +302,13 @@ test('cold source and TypeScript files drain neighboring instrumented children',
   assert.equal(new Set(results).size, groups.length);
   for (const file of coldCoverageFiles) {
     const [owner] = owners.filter((group) => group.files.includes(file));
-    assert.deepEqual(owner.files, coldCoverageFiles);
+    assert.deepEqual(
+      owner.files.toSorted(),
+      [
+        ...coldCoverageFiles,
+        'packages/runtime/src/__tests__/gtao-deferred-admission.integration.test.ts',
+      ].toSorted(),
+    );
     assert.ok(
       groups
         .filter((group) => group !== owner)
@@ -253,7 +328,7 @@ test('cold source and TypeScript files drain neighboring instrumented children',
     assert.equal(owner.weight, 0, 'historical project receipts already contain this case work');
     assert.equal(
       owner.reservationWeight,
-      65,
+      95,
       'current admission retains one complete cold process',
     );
     const project = `@forgeax/engine-${file.split('/')[1]}`;
@@ -861,6 +936,7 @@ test('cold compiler file sets keep one owner and drain all neighboring work', as
     'packages/modeling/src/__tests__/bake-cage.unit.test.ts',
     'packages/modeling/src/__tests__/subd-crease.unit.test.ts',
     'packages/devkit/src/__tests__/execution-bootstrap-cache.integration.test.ts',
+    'packages/devkit/src/__tests__/asset-libraries.integration.test.ts',
     'packages/pack/src/__tests__/material-surface-publication.unit.test.ts',
     'packages/vite-plugin-pack/src/__tests__/declared-standard-material.integration.test.ts',
     'packages/vite-plugin-shader/src/__tests__/vite-plugin-shader.unit.test.ts',
@@ -900,6 +976,35 @@ test('cold compiler file sets keep one owner and drain all neighboring work', as
     },
   });
   assert.equal(exclusiveRuns, 18);
+});
+
+test('asset-library catalogs share the complete exclusive bootstrap owner with their original deadline', () => {
+  const file = 'packages/devkit/src/__tests__/asset-libraries.integration.test.ts';
+  const bootstrap = 'packages/devkit/src/__tests__/execution-bootstrap-cache.integration.test.ts';
+  const groups = coverageGroups(['@forgeax/engine-devkit'], 8);
+  const owners = groups.filter((group) => group.files.includes(file));
+  assert.equal(owners.length, 1);
+  const owner = owners[0];
+  assert.deepEqual(owner.files, [bootstrap, file]);
+  assert.equal(owner.label, `@forgeax/engine-devkit:${bootstrap}`);
+  assert.equal(isExclusiveCoverageGroup(owner), true);
+  assert.equal(owner.gpuLease, false);
+  assert.ok(owner.reservationWeight >= 195);
+  assert.equal(
+    coverageGroupMaxWorkers(
+      owner,
+      { coverage: true, maxWorkers: 2 },
+      { cpus: 8, memoryBytes: 16e9 },
+      2,
+    ),
+    1,
+  );
+  assert.ok(
+    groups
+      .filter((group) => group !== owner)
+      .every((group) => group.files.length > 0 || group.excludes.includes(file)),
+  );
+  assert.match(readFileSync(file, 'utf8'), /}, 120_000\);/);
 });
 
 test('cold large-scene contracts execute once without competing coverage children', () => {
@@ -1132,7 +1237,7 @@ test('complete Render coverage retains admitted workers and limited source headr
   const gate = producer.steps.find((step) => step.run?.includes('--shard-count='));
   assert.match(
     gate.run,
-    /--max-workers=\$\{\{ \(matrix\.shard == 0 \|\| matrix\.shard == 2\) && '2' \|\| '1' \}\}/,
+    /--max-workers=\$\{\{ \(matrix\.shard == 0 \|\| matrix\.shard == 1 \|\| matrix\.shard == 2\) && '2' \|\| '1' \}\}/,
   );
   assert.match(producer['timeout-minutes'], /^\$\{\{ matrix\.shard == 0 && 50 \|\| 45 \}\}$/);
   assert.deepEqual(producer.strategy.matrix.shard, [0, 1, 2, 3]);
@@ -1167,6 +1272,38 @@ test('complete Render coverage retains admitted workers and limited source headr
   assert.ok(source);
   assert.ok(assignment[groups.indexOf(source)] >= 0);
   assert.equal(coverageGroupMaxWorkers(source, options, resources, 2), 1);
+});
+
+test('timed-out lane two admits bounded ordinary workers without moving its complete owners', () => {
+  const groups = coverageGroups(allProjectNames(), 8);
+  const assignment = assignCoverageShards(groups, 4, { typecheck: false });
+  const options = parseArgs(['--max-workers=2', '--modeling-max-workers=2']);
+  const resources = { cpus: 8, memoryBytes: 16_000_000_000 };
+  for (const label of ['@forgeax/engine-devkit:shard-1-of-2', '@forgeax/engine-vite-plugin-pack']) {
+    const index = groups.findIndex((group) => group.label === label);
+    assert.ok(index >= 0);
+    assert.equal(assignment[index], 1, 'retain the original partition');
+    assert.equal(coverageGroupMaxWorkers(groups[index], options, resources, 2), 2);
+    assert.equal(coverageGroupMaxWorkers(groups[index], options, { ...resources, cpus: 7 }, 2), 1);
+    assert.equal(
+      coverageGroupMaxWorkers(
+        groups[index],
+        options,
+        { ...resources, memoryBytes: 12_000_000_000 },
+        2,
+      ),
+      1,
+    );
+  }
+  const source = groups.find((group) =>
+    group.files.includes(
+      'packages/vite-plugin-shader/src/__tests__/production-resampling-vite.integration.test.ts',
+    ),
+  );
+  assert.ok(source);
+  assert.equal(assignment[groups.indexOf(source)], 1);
+  assert.equal(coverageGroupMaxWorkers(source, options, resources, 2), 1);
+  assert.ok(isExclusiveCoverageGroup(source));
 });
 
 test('modeling tier budgets remain mandatory and uninstrumented outside coverage children', () => {
@@ -2151,6 +2288,7 @@ test('isolates a heavy test file into its own child and excludes it elsewhere', 
   const allFiles = [
     bootstrapFile,
     libraryFile,
+
     sceneFile,
     ...nativeFiles,
     liveProcessFile,
@@ -2174,6 +2312,7 @@ test('isolates a heavy test file into its own child and excludes it elsewhere', 
       {
         projects: ['@forgeax/engine-devkit'],
         files: [bootstrapFile, libraryFile],
+
         excludes: [],
         gpuLease: false,
       },

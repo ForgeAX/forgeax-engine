@@ -1593,7 +1593,7 @@ export async function writeSingleHtml(
 export function packageFormatError(format: string): CommandResult<never> {
   return errorResult(
     'package-format-unsupported',
-    'package format to be web-zip or single-html',
+    'package format to be web-zip, single-html or tauri',
     'Use web-zip for HTTPS hosting or single-html for a self-contained file:// delivery.',
     { format },
   );

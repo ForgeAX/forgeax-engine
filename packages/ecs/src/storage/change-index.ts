@@ -121,6 +121,10 @@ export class ChangeIndex {
   private readEntries = 0;
   private readLeafKey = -1;
   private readLeaf: Float64Array | undefined;
+  // Writes arrive in slot runs; the last written leaf skips the descent.
+  // Only `delete` can detach (and park) a leaf, so it alone clears this.
+  private writeLeafKey = -1;
+  private writeLeaf: Leaf | undefined;
 
   get size(): number {
     return this.root?.size ?? 0;
@@ -143,52 +147,94 @@ export class ChangeIndex {
   }
 
   set(key: number, epoch: number): void {
+    const leafKey = this.readLeafKey;
+    const leaf = this.readLeaf;
     this.readLeafKey = -1;
     this.readLeaf = undefined;
-    this.root = write(this.root, key, epoch, ROOT_SHIFT, this.spares);
+    if (!this.overwrite(key, epoch))
+      this.root = write(this.root, key, epoch, ROOT_SHIFT, this.spares);
+    // Writes mutate existing leaves in place, so a cached leaf stays valid
+    // once the write succeeded; a cached miss may now be a new leaf.
+    if (leaf !== undefined) {
+      this.readLeafKey = leafKey;
+      this.readLeaf = leaf;
+    }
+  }
+
+  /** Overwrite an occupied lane along its existing path; sizes are unchanged. */
+  private overwrite(key: number, epoch: number): boolean {
+    if (epoch === 0) return false;
+    const leafKey = key >>> 6;
+    let leaf = leafKey === this.writeLeafKey ? this.writeLeaf : undefined;
+    if (leaf === undefined) {
+      let found = this.root;
+      for (let shift = ROOT_SHIFT; shift > 0 && found !== undefined; shift -= 6)
+        found = (found as Branch).children[(key >>> shift) & MASK];
+      if (found === undefined) return false;
+      leaf = found as Leaf;
+      this.writeLeafKey = leafKey;
+      this.writeLeaf = leaf;
+    }
+    const epochs = leaf.epochs;
+    if (epochs[key & MASK] === 0) return false;
+    epochs[key & MASK] = epoch;
+    // Every ancestor's max already covers its leaf's max.
+    if (epoch <= leaf.max) return true;
+    let node = this.root;
+    for (let shift = ROOT_SHIFT; node !== undefined; shift -= 6) {
+      if (epoch > node.max) node.max = epoch;
+      if (shift === 0) break;
+      node = (node as Branch).children[(key >>> shift) & MASK];
+    }
+    return true;
   }
 
   delete(key: number): void {
     this.readLeafKey = -1;
     this.readLeaf = undefined;
+    this.writeLeafKey = -1;
+    this.writeLeaf = undefined;
     this.root = erase(this.root, key, ROOT_SHIFT, this.spares);
   }
 
   /** Synchronous owner callback, in stable slot order; no borrowed values escape. */
   visitSince(since: number, upper: number, visit: (key: number) => void): void {
-    this.readEntries = 0;
-    if (this.root !== undefined) this.read(this.root, 0, ROOT_SHIFT, since, upper, visit);
+    this.readEntries =
+      this.root === undefined ? 0 : read(this.root, 0, ROOT_SHIFT, since, upper, visit);
   }
+}
 
-  private read(
-    node: Node,
-    base: number,
-    shift: number,
-    since: number,
-    upper: number,
-    visit: (key: number) => void,
-  ): void {
-    this.readEntries++;
-    if (node.max <= since) return;
-    if (shift === 0) {
-      const leaf = node as Leaf;
-      for (let lane = 0; lane < WIDTH; lane++) {
-        this.readEntries++;
-        const epoch = leaf.epochs[lane] ?? 0;
-        if (epoch > 0 && epoch > since && epoch <= upper) visit(base + lane);
-      }
-      return;
-    }
-    const branch = node as Branch;
+// Returns the checked-entry count; a local tally keeps the lane loop free of
+// owner writes.
+function read(
+  node: Node,
+  base: number,
+  shift: number,
+  since: number,
+  upper: number,
+  visit: (key: number) => void,
+): number {
+  if (node.max <= since) return 1;
+  let checked = 1;
+  if (shift === 0) {
+    const epochs = (node as Leaf).epochs;
+    checked += WIDTH;
     for (let lane = 0; lane < WIDTH; lane++) {
-      this.readEntries++;
-      const child = branch.children[lane];
-      if (child === undefined) continue;
-      // Pruned children still count as one checked entry, as if entered.
-      // Slot keys stay below 2^24: integer shifts keep `base` a small int
-      // (a `2 ** shift` product would box a double per recursive call).
-      if (child.max <= since) this.readEntries++;
-      else this.read(child, base + (lane << shift), shift - 6, since, upper, visit);
+      const epoch = epochs[lane] as number;
+      if (epoch > since && epoch <= upper && epoch > 0) visit(base + lane);
     }
+    return checked;
   }
+  const children = (node as Branch).children;
+  for (let lane = 0; lane < WIDTH; lane++) {
+    checked++;
+    const child = children[lane];
+    if (child === undefined) continue;
+    // Pruned children still count as one checked entry, as if entered.
+    // Slot keys stay below 2^24: integer shifts keep `base` a small int
+    // (a `2 ** shift` product would box a double per recursive call).
+    if (child.max <= since) checked++;
+    else checked += read(child, base + (lane << shift), shift - 6, since, upper, visit);
+  }
+  return checked;
 }

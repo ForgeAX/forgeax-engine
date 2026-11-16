@@ -11,7 +11,10 @@ import { runnerResources } from '../lib/runner-resources.mjs';
 const PROC_STATUS = '/proc/self/status';
 
 /** Raw kernel counters distinguish cgroup limits from shared-host CPU and memory pressure. */
-export function readCpuPressureDiagnostics({ read = (path) => readFileSync(path, 'utf8') } = {}) {
+export function readCpuPressureDiagnostics({
+  read = (path) => readFileSync(path, 'utf8'),
+  includeCpuTimes = false,
+} = {}) {
   const diagnostics = {};
   for (const [key, path] of [
     ['cgroupV2Stat', '/sys/fs/cgroup/cpu.stat'],
@@ -26,10 +29,20 @@ export function readCpuPressureDiagnostics({ read = (path) => readFileSync(path,
     ['cgroupV1MemoryUsage', '/sys/fs/cgroup/memory/memory.usage_in_bytes'],
     ['cgroupV1MemoryPeak', '/sys/fs/cgroup/memory/memory.max_usage_in_bytes'],
     ['cgroupV1MemoryOom', '/sys/fs/cgroup/memory/memory.oom_control'],
+    ...(includeCpuTimes
+      ? [
+          ['hostCpuTimes', '/proc/stat'],
+          ['cgroupV1CpuUsageNanoseconds', '/sys/fs/cgroup/cpuacct/cpuacct.usage'],
+        ]
+      : []),
   ]) {
     try {
       const value = read(path)?.trim();
-      if (value) diagnostics[key] = value;
+      if (!value) continue;
+      if (key === 'hostCpuTimes') {
+        const aggregate = value.split('\n', 1)[0];
+        if (/^cpu\s+\d/.test(aggregate)) diagnostics[key] = aggregate;
+      } else diagnostics[key] = value;
     } catch {
       // These optional kernel interfaces may be absent or unreadable on a runner.
     }
@@ -138,18 +151,21 @@ export function resolveRunnerCpuAffinity({
   }
   const usePhysicalCores = physicalCoreCpus.length >= resources.cpus;
   const cpuPool = usePhysicalCores ? physicalCoreCpus : allowedCpus;
-  // A quota is a time budget, not a reservation of particular host cores.
-  // Hash-selected windows can collide across concurrent containers on the
-  // same kernel. Leave placement to the scheduler when the available pool
-  // exceeds our budget; worker admission still uses the cgroup quota.
-  if (cpuPool.length > resources.cpus) {
+  // Keep every available physical core in the scheduler's pool. A small hashed
+  // window can collide with another container, while retaining SMT aliases can
+  // place both busy software-renderer workers on one physical core. The cgroup
+  // quota still bounds CPU time; this mask neither reserves nor adds capacity.
+  if (cpuPool.length > resources.cpus && cpuPool.length === allowedCpus.length) {
     return { ok: true, mode: 'none', reason: 'shared-cpu-set-with-quota', ...common };
   }
-  const selectedCpus = cpuPool.slice(0, resources.cpus);
+  const selectedCpus = cpuPool;
   return {
     ok: true,
     mode: 'taskset',
-    reason: 'bind-to-cgroup-cpu-budget',
+    reason:
+      selectedCpus.length > resources.cpus
+        ? 'distinct-physical-core-pool-with-quota'
+        : 'bind-to-cgroup-cpu-budget',
     selectedCpuCount: selectedCpus.length,
     selectedCpuList: formatCpuList(selectedCpus),
     selectedCpuTopology: usePhysicalCores ? 'distinct-physical-cores' : 'logical-cpu-window',
@@ -370,6 +386,23 @@ export function constrainRunnerGpuThreads(
   return result;
 }
 
+/** Match the explicit command entry, without changing unrelated callers. */
+export function commandCpuTimeDiagnostics(command, { cwd = process.cwd() } = {}) {
+  const coverageEntry = fileURLToPath(new URL('./run-split-vitest-coverage.mjs', import.meta.url));
+  for (let index = 1; index < command.length; index += 1) {
+    const argument = command[index];
+    if (typeof argument !== 'string') return false;
+    if (['--eval', '-e', '--print', '-p'].includes(argument)) return false;
+    if (['--import', '--require', '-r', '--loader'].includes(argument)) {
+      index += 1;
+      continue;
+    }
+    if (argument.startsWith('-')) continue;
+    return resolve(cwd, argument) === coverageEntry;
+  }
+  return false;
+}
+
 function run(command, affinity) {
   const env = {
     ...process.env,
@@ -383,7 +416,10 @@ function run(command, affinity) {
   const child = spawn(childCommand, childArgs, { env, stdio: 'inherit' });
   const started = performance.now();
   const sampleCpuPressure = (state) => {
-    const counters = readCpuPressureDiagnostics();
+    const counters = readCpuPressureDiagnostics({
+      includeCpuTimes:
+        commandCpuTimeDiagnostics(command) || process.env.FORGEAX_CI_CPU_TIME_DIAGNOSTICS === '1',
+    });
     if (counters === null) return;
     process.stdout.write(
       `[runner-cpu-pressure] ${JSON.stringify({

@@ -73,6 +73,16 @@ describe('Standard PBR artifact receipt vertex ABI', () => {
     );
 
     expect(receipt.vertexInputs).toEqual(testCase.vertexInputs);
+    expect(receipt.tangentFrame32).toEqual({
+      directEntry: 'vs_main_packed',
+      sceneIndexEntry: 'vs_scene_index_packed',
+      vertexInputs: [
+        ...testCase.vertexInputs.filter(
+          (input) => input.semantic !== 'normal' && input.semantic !== 'tangent',
+        ),
+        { semantic: 'tangentFrame', location: 14, format: 'uint32' },
+      ],
+    });
     expect(receipt.positionBounds).toBe('standard-input');
     expect(receipt.generation).toBe(5);
     expect(receipt.reflection.vertexInputs).toEqual(testCase.vertexInputs);

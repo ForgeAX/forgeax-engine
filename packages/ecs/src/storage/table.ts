@@ -11,8 +11,15 @@ import {
 import { Entity } from '../entity';
 import type { EntityHandle } from '../entity-handle';
 import { archetypeKey } from './archetype';
+import { ARRAY_FIELD_ARITY } from './array-store';
+import {
+  type ChangeColumn,
+  createChangeColumn,
+  growChangeColumn,
+  moveChange,
+} from './change-column';
 import { PROJECTION_BLOCK_SIZE } from './change-detection';
-import { arrayCountColumnName, type Column, createColumn, growColumn } from './column';
+import { type Column, createColumn, growColumn } from './column';
 
 const INITIAL_CAPACITY = 64;
 
@@ -22,6 +29,8 @@ interface TableComponentStorage {
   readonly component: Component;
   fields: Map<string, Column>;
   added: Float64Array;
+  /** Epoch of the row's last write, with its chunk summary; travels with the row like `added`. */
+  changed: ChangeColumn;
 }
 
 export interface Table {
@@ -78,21 +87,22 @@ export function createTable(
         );
         continue;
       }
+      if (arrayMeta !== undefined || fieldType === 'buffer') {
+        // Variable array / buffer: [block, byteOffset, count] in ArrayStore.
+        fields.set(fieldName, createColumn('u32', capacity, ARRAY_FIELD_ARITY, shared));
+        continue;
+      }
       const metaKey = fieldTypeToMetaKey(fieldType);
       const scalarType: ScalarFieldType | null =
         metaKey === null ? null : (TYPE_METADATA[metaKey]?.storage ?? null);
       if (scalarType === null) continue;
-      const column = createColumn(scalarType, capacity, 1, shared);
-      fields.set(fieldName, column);
-      if (arrayMeta !== undefined && arrayMeta.length === undefined) {
-        column.countField = arrayCountColumnName(fieldName);
-        fields.set(column.countField, createColumn('u32', capacity, 1, shared));
-      }
+      fields.set(fieldName, createColumn(scalarType, capacity, 1, shared));
     }
     storage.set(componentId(component), {
       component,
       fields,
       added: new Float64Array(capacity),
+      changed: createChangeColumn(capacity),
     });
   }
   const entities = storage.get(componentId(Entity))?.fields.get('self');
@@ -139,6 +149,7 @@ export function removeTableRow(
     for (const column of componentStorage.fields.values())
       copyColumnRow(column, lastRow, column, row);
     componentStorage.added[row] = componentStorage.added[lastRow] ?? 0;
+    moveChange(componentStorage.changed, row, lastRow);
   }
   table.size = lastRow;
   return { movedEntity, newRow: row };
@@ -186,6 +197,7 @@ export function growTable(table: Table, targetCapacity: number): void {
     const added = new Float64Array(capacity);
     added.set(componentStorage.added);
     componentStorage.added = added;
+    componentStorage.changed = growChangeColumn(componentStorage.changed, capacity);
   }
   const membership = new Float64Array(Math.ceil(capacity / PROJECTION_BLOCK_SIZE));
   membership.set(table.membership);

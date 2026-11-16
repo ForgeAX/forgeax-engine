@@ -1270,7 +1270,16 @@ if (selected('project')) {
 
   async function closeSelectedPage(page) {
     if (page === undefined || page.isClosed()) return;
-    await closeSelectedResource('page', () => page.close());
+    await closeSelectedResource('page', async () => {
+      // The gameplay click owns a native pointer lock. Retire that input lease
+      // before Chromium disposes the context; a locked SwiftShader game can
+      // otherwise stall Target.disposeBrowserContext after healthy gameplay.
+      await page.evaluate(() => document.exitPointerLock());
+      await page.waitForFunction(() => document.pointerLockElement === null, undefined, {
+        timeout: CLEANUP_TIMEOUT_MS,
+      });
+      await page.close();
+    });
   }
 
   async function closeSelectedResource(label, close, timeoutMs = CLEANUP_TIMEOUT_MS) {

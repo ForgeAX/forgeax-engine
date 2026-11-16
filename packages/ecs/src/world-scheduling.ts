@@ -417,6 +417,7 @@ export function worldUpdate(
     if (mismatch) return err(mismatch);
   }
 
+  world[worldInternal].updateRemovedComponents();
   const measured = Math.min(deltaSeconds, time.maxDeltaSeconds);
   time.delta = measured;
   time.elapsed += measured;

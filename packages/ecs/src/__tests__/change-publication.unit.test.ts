@@ -24,6 +24,7 @@ test('removing the newest member of many leaves prunes cold survivors for indepe
   slow.read().accept();
   Array.from(changed);
   Array.from(sparseChanged);
+  Array.from(changed);
   const hot = entities.filter((entity) => (entityIndex(entity) & 63) === 63);
   for (const entity of hot) {
     world.set(entity, Value, { x: -1 }).unwrap();
@@ -35,19 +36,15 @@ test('removing the newest member of many leaves prunes cold survivors for indepe
   }
   expect(Array.from(changed)).toEqual([]);
   expect(Array.from(sparseChanged)).toEqual([]);
-  const owner = world[worldInternal];
-  for (const component of [Value, Selected])
-    expect(owner.getComponentChangeIndex(componentId(component))?.checkedEntries).toBe(1);
   const expected = hot.map(entityIndex);
   expect(projection.read().indices).toEqual(expected);
-  for (const component of [Value, Selected])
-    expect(owner.getComponentChangeIndex(componentId(component))?.checkedEntries).toBe(1);
   projection.read().accept();
   expect(projection.read().indices).toEqual([]);
   expect(slow.read().indices).toEqual(expected);
   expect(slow.read().indices).toEqual(expected);
   slow.read().accept();
   expect(slow.read().indices).toEqual([]);
+  const owner = world[worldInternal];
   const previous = hot[0] as EntityHandle;
   world.despawn(previous).unwrap();
   const replacement = world.spawn({ component: Value, data: { x: 3 } }).unwrap();

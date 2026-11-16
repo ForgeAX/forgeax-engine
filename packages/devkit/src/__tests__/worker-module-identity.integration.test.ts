@@ -42,7 +42,7 @@ it('shares installed Engine component, schedule and resource identity across dev
       resolve(scope, 'engine-skinning/package.json'),
       JSON.stringify({ name: '@forgeax/engine-skinning', type: 'module', exports: './index.mjs' }),
     );
-    for (const name of ['ecs', 'types']) {
+    for (const name of ['ecs', 'types', 'geometry']) {
       await symlink(resolve(packages, name), resolve(scope, `engine-${name}`));
     }
     await writeFile(
@@ -64,7 +64,8 @@ it('shares installed Engine component, schedule and resource identity across dev
       `import { Skin } from '@forgeax/engine/skinning';
        globalThis.__skinLoaded = !!Skin;
        const worker = new Worker(new URL('./node_modules/@forgeax/worker-host/engine-worker-runtime.mjs', import.meta.url), { type: 'module' });
-       worker.onmessage = event => { globalThis.__identity = event.data.identity; globalThis.__workerGraphicsRejections = event.data.rejected; };
+       worker.onerror = event => { globalThis.__workerError = event.message; };
+       worker.onmessage = event => { globalThis.__workerFailure = event.data.failure; globalThis.__identity = event.data.identity; globalThis.__workerGraphicsRejections = event.data.rejected; };
        worker.postMessage('/bootstrap.js');`,
     );
     await writeFile(
@@ -77,6 +78,7 @@ it('shares installed Engine component, schedule and resource identity across dev
       `import './graphics-guard.mjs';
        import { Skin } from '@forgeax/engine-skinning';
        import { Update, FixedUpdate, Time, FixedTime, SHARED_KERNEL_EXECUTOR_RESOURCE_KEY } from '@forgeax/engine-ecs';
+       self.addEventListener('unhandledrejection', event => self.postMessage({ failure: String(event.reason) }));
        self.onmessage = async event => {
          const bootstrap = await import(/* @vite-ignore */ event.data);
          const identity = Skin === bootstrap.Skin && Update === bootstrap.Update && FixedUpdate === bootstrap.FixedUpdate && Time === bootstrap.Time && FixedTime === bootstrap.FixedTime && SHARED_KERNEL_EXECUTOR_RESOURCE_KEY === bootstrap.SHARED_KERNEL_EXECUTOR_RESOURCE_KEY;
@@ -110,8 +112,28 @@ it('shares installed Engine component, schedule and resource identity across dev
     await installBrowserHostGraphicsGuard(page);
     const errors: string[] = [];
     page.on('pageerror', (error) => errors.push(error.message));
+    const startupErrors: string[] = [];
+    page.on('console', (message) => {
+      if (message.type() === 'error') startupErrors.push(message.text());
+    });
+    page.on('requestfailed', (request) =>
+      startupErrors.push(`${request.url()}: ${request.failure()?.errorText}`),
+    );
     await page.goto(server.resolvedUrls?.local[0] ?? '');
-    await page.waitForFunction(() => '__identity' in globalThis, undefined, { timeout: 30_000 });
+    try {
+      await page.waitForFunction(
+        () => '__identity' in globalThis || '__workerError' in globalThis,
+        undefined,
+        { timeout: 30_000 },
+      );
+    } catch (cause) {
+      throw new Error(
+        `Worker identity startup failed: ${JSON.stringify({ errors, startupErrors })}`,
+        { cause },
+      );
+    }
+    expect(await page.evaluate(() => Reflect.get(globalThis, '__workerError'))).toBeUndefined();
+    expect(await page.evaluate(() => Reflect.get(globalThis, '__workerFailure'))).toBeUndefined();
     await assertSoftwareGraphicsGuard(page);
     expect(errors).toEqual([]);
     expect(await page.evaluate(() => Reflect.get(globalThis, '__identity'))).toBe(true);

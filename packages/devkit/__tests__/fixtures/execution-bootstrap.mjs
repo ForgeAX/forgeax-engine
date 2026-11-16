@@ -1,5 +1,6 @@
 import { scenePublicationFenceFromCatalog } from '@forgeax/engine/assets-runtime';
 import { Update, defineSystem } from '@forgeax/engine/ecs';
+import { meshAttributeWindow } from '@forgeax/engine/geometry';
 import { preparePackProgram } from '@forgeax/engine/pack/runtime';
 import {
   AssetGuid,
@@ -127,8 +128,10 @@ export default async function bootstrap(data) {
               member === undefined
                 ? undefined
                 : ctx.assets.read(world.get(member, MeshFilter).unwrap().assetHandle).unwrap();
-            const xs =
-              mesh && Array.from(mesh.attributes.position).filter((_, index) => index % 3 === 0);
+            const positions = mesh && meshAttributeWindow(mesh, 'position');
+            const xs = positions && Array.from({ length: positions.count }, (_, index) =>
+              positions.data[positions.offset + index * positions.stride],
+            );
             return {
               world: world.identity,
               gameTicks,
@@ -136,7 +139,7 @@ export default async function bootstrap(data) {
               width: xs && Math.max(...xs) - Math.min(...xs),
               typed:
                 mesh &&
-                mesh.attributes.position instanceof Float32Array &&
+                positions?.data instanceof Float32Array &&
                 ArrayBuffer.isView(mesh.indices),
               frames,
               renderer: renderer.state(),

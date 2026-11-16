@@ -2,6 +2,10 @@
   "generationBaselineCommit": "11d914eddf3c0c6db8ce64fd48dd39638addc02e",
   "capabilities": [
     {
+      "name": "Tauri platform packaging",
+      "form": "build-time"
+    },
+    {
       "name": "Renderer extract/prepare/record",
       "form": "built-in"
     },

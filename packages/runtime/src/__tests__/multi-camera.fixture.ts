@@ -194,6 +194,9 @@ export async function verifyMultiCamera(
           return result.value;
         },
         {
+          // The deferred SSR path admits cold async compute pipelines. Let its
+          // preparation use the existing complete-ready-frame owner budget.
+          ...(journey === 'deferred-ssao-ssr' ? { timeoutMs: 90_000 } : {}),
           onCompleted: async (receipt) => {
             await recycling;
             if (receipt.presentation === 'ready' && capturedAttempt !== undefined)

@@ -1,3 +1,4 @@
+#import forgeax_geometry::tangent_frame32::{decodeTangentFrame32}
 #pragma variant_axis STORAGE_BUFFER_AVAILABLE
 #if TERRAIN_GEOMETRY_AVAILABLE == true
 #import forgeax_material::terrain_vertex::{terrainVertex, terrainNormal}
@@ -68,6 +69,73 @@ struct VsInput {
   @location(5) skinWeight : vec4<f32>,
 #endif
 };
+
+struct Frame32Input {
+  @location(14) tangentFrame : u32,
+
+  @location(0) position : vec3<f32>,
+#ifndef OPAQUE_SHADOW_COVERAGE_AVAILABLE
+#ifndef STANDARD_UV_INPUT_UNUSED
+  @location(2) uv : vec2<f32>,
+#endif
+#ifndef STANDARD_TANGENT_INPUT_UNUSED
+#endif
+#if VERTEX_COLOR_AVAILABLE == true
+  @location(13) color : vec4<f32>,
+#endif
+#ifndef STANDARD_UV_INPUT_UNUSED
+#ifndef STANDARD_SINGLE_UV_SET
+  @location(6) uv1 : vec2<f32>,
+  @location(7) uv2 : vec2<f32>,
+  @location(8) uv3 : vec2<f32>,
+  @location(9) uv4 : vec2<f32>,
+  @location(10) uv5 : vec2<f32>,
+  @location(11) uv6 : vec2<f32>,
+  @location(12) uv7 : vec2<f32>,
+#endif
+#endif
+#endif
+#if SKINNING_DISABLED == false
+  @location(4) skinIndex : vec4<u32>,
+  @location(5) skinWeight : vec4<f32>,
+#endif
+};
+
+fn frame32Input(input:Frame32Input)->VsInput {
+  var output : VsInput;
+  let frame=decodeTangentFrame32(input.tangentFrame);
+
+  output.position = input.position;
+  output.normal = frame.normal;
+#ifndef OPAQUE_SHADOW_COVERAGE_AVAILABLE
+#ifndef STANDARD_UV_INPUT_UNUSED
+  output.uv = input.uv;
+#endif
+#ifndef STANDARD_TANGENT_INPUT_UNUSED
+  output.tangent = frame.tangent;
+#endif
+#if VERTEX_COLOR_AVAILABLE == true
+  output.color = input.color;
+#endif
+#ifndef STANDARD_UV_INPUT_UNUSED
+#ifndef STANDARD_SINGLE_UV_SET
+  output.uv1 = input.uv1;
+  output.uv2 = input.uv2;
+  output.uv3 = input.uv3;
+  output.uv4 = input.uv4;
+  output.uv5 = input.uv5;
+  output.uv6 = input.uv6;
+  output.uv7 = input.uv7;
+#endif
+#endif
+#endif
+#if SKINNING_DISABLED == false
+  output.skinIndex = input.skinIndex;
+  output.skinWeight = input.skinWeight;
+#endif
+  return output;
+}
+
 
 struct VsOut {
   // Surface specialization must not perturb identical caster position arithmetic.
@@ -311,16 +379,34 @@ fn shadowVertex(source : VsInput, idx : u32, vertex : u32) -> VsOut {
   return out;
 }
 
+fn vs_main_impl_entry(in : VsInput, idx : u32, vertex : u32) -> VsOut {
+  return shadowVertex(in, idx, vertex);
+}
+
 @vertex
 fn vs_main(in : VsInput, @builtin(instance_index) idx : u32, @builtin(vertex_index) vertex : u32) -> VsOut {
-  return shadowVertex(in, idx, vertex);
+  return vs_main_impl_entry(in, idx, vertex);
+}
+
+@vertex
+fn vs_main_packed(input : Frame32Input, @builtin(instance_index) idx : u32, @builtin(vertex_index) vertex : u32) -> VsOut {
+  return vs_main_impl_entry(frame32Input(input), idx, vertex);
 }
 
 // Scene-index shadow batches use a receipt-owned entry point so the indirect
 // lane cannot silently reinterpret the visible stream as instance indices.
+fn vs_scene_index_impl_entry(in : VsInput, idx : u32, vertex : u32) -> VsOut {
+  return shadowVertex(in, idx, vertex);
+}
+
 @vertex
 fn vs_scene_index(in : VsInput, @builtin(instance_index) idx : u32, @builtin(vertex_index) vertex : u32) -> VsOut {
-  return shadowVertex(in, idx, vertex);
+  return vs_scene_index_impl_entry(in, idx, vertex);
+}
+
+@vertex
+fn vs_scene_index_packed(input : Frame32Input, @builtin(instance_index) idx : u32, @builtin(vertex_index) vertex : u32) -> VsOut {
+  return vs_scene_index_impl_entry(frame32Input(input), idx, vertex);
 }
 
 #if GPU_DRIVEN_SCENE_INDEX_AVAILABLE == true
@@ -338,12 +424,17 @@ struct PositionOnlyVsInput {
   @location(1) normal : vec3<f32>,
 };
 
+struct PositionOnlyFrame32Input {
+  @location(0) position:vec3<f32>,
+  @location(14) tangentFrame:u32,
+};
+
+
 struct PositionOnlyVsOut {
   @builtin(position) @invariant clip : vec4<f32>,
 };
 
-@vertex
-fn vs_scene_index_position_only(in : PositionOnlyVsInput, @builtin(instance_index) idx : u32, @builtin(vertex_index) vertex : u32) -> PositionOnlyVsOut {
+fn shadowPositionOnly(in : PositionOnlyVsInput, idx : u32, vertex : u32) -> PositionOnlyVsOut {
   let visible = visibleItems[idx];
   let morphedPosition = sceneIndexMorphPosition(visible.x, vertex, in.position);
   let morphedNormal = sceneIndexMorphNormal(visible.x, vertex, in.normal);
@@ -361,6 +452,16 @@ fn vs_scene_index_position_only(in : PositionOnlyVsInput, @builtin(instance_inde
   var out : PositionOnlyVsOut;
   out.clip = projectShadowPosition(worldMatrix * vec4<f32>(localPosition, 1.0), transformNormal(worldMatrix, biasLocalNormal));
   return out;
+}
+
+@vertex
+fn vs_scene_index_position_only(in : PositionOnlyVsInput, @builtin(instance_index) idx : u32, @builtin(vertex_index) vertex : u32) -> PositionOnlyVsOut {
+  return shadowPositionOnly(in,idx,vertex);
+}
+
+@vertex
+fn vs_scene_index_position_only_packed(input:PositionOnlyFrame32Input,@builtin(instance_index) idx:u32,@builtin(vertex_index) vertex:u32)->PositionOnlyVsOut {
+  return shadowPositionOnly(PositionOnlyVsInput(input.position,decodeTangentFrame32(input.tangentFrame).normal),idx,vertex);
 }
 #endif
 #endif

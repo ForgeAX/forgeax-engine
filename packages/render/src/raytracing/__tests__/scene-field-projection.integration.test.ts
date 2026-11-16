@@ -8,6 +8,7 @@ import {
   createBoxGeometry,
   encodeMeshDistanceField,
   MESH_VISIBILITY_DISTANCE_FIELD_CODEC,
+  meshAttributeChannels,
 } from '@forgeax/engine-geometry';
 import { mat4 } from '@forgeax/engine-math';
 import { validateCookedMaterialRecord } from '@forgeax/engine-pack';
@@ -223,7 +224,13 @@ it('keeps runtime handles scoped to their actual owners', async () => {
   expect(result.sources.map((source) => source.scope)).toEqual(
     [first.world, second.world].map(worldRenderResources),
   );
-  expect(result.sources.map((source) => source.mesh)).toEqual([first.mesh, second.mesh]);
+  expect(
+    result.sources.map(({ mesh }) => {
+      const { attributeStorage, ...fields } = mesh;
+      expect(attributeStorage).toBe('interleaved');
+      return { ...fields, attributes: meshAttributeChannels(mesh) };
+    }),
+  ).toEqual([first.mesh, second.mesh]);
   expect(new Set(result.instances.map((instance) => instance.geometryId)).size).toBe(2);
   expect(new Set(result.instances.map((instance) => instance.field)).size).toBe(2);
   expect(result.instances.map((instance) => instance.transform[12])).toEqual([0, 20]);

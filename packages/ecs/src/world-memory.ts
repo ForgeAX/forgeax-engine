@@ -1,13 +1,15 @@
 import type { BufferPoolStats } from './buffer-pool';
 import type { FrameArenaStats } from './frame-arena';
 import type { BufferReaderStats } from './owned-buffers';
+import type { ArrayStoreStats } from './storage/array-store';
 import type { World } from './world';
 import { worldInternal } from './world-internal';
 
 const COVERAGE = Object.freeze({
   backing: Object.freeze([
     'arena',
-    'managed-and-owned-pool',
+    'owned-pool',
+    'component-arrays',
     'tables',
     'entity-records',
     'archetype-rows',
@@ -17,7 +19,10 @@ const COVERAGE = Object.freeze({
 });
 export interface WorldMemoryStats {
   readonly arena: FrameArenaStats;
+  /** Owned system buffers (`world.buffers`). */
   readonly buffers: BufferPoolStats;
+  /** Variable `array<T>` / `buffer` component fields. */
+  readonly arrays: ArrayStoreStats;
   readonly readers: BufferReaderStats;
   readonly tableBytes: number;
   readonly entityRecordBytes: number;
@@ -46,13 +51,16 @@ export function readWorldMemoryStats(world: World): WorldMemoryStats {
   return {
     arena: internal.getFrameArena().stats(),
     buffers: internal.getBufferPool().stats(),
+    arrays: internal.getArrayStore().stats(),
     readers: world.buffers.stats(),
     tableBytes,
     archetypeBytes,
     entityRecordBytes:
       records.generation.byteLength +
       records.archetypeId.byteLength +
-      records.archetypeRow.byteLength,
+      records.archetypeRow.byteLength +
+      records.tableId.byteLength +
+      records.tableRow.byteLength,
     coverage: COVERAGE,
   };
 }

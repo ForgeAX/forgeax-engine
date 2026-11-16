@@ -199,6 +199,13 @@ export interface MaterialProgramAbi {
   readonly systemInputs?: MaterialProgramSystemInputs;
   /** Explicit attachment read or independent snapshot of depth before this pass. */
   readonly sceneDepth?: MaterialSceneDepth;
+  /** Compiler-validated physical entry inputs for compressed tangent frames.
+   * Binding/resource facts are shared with the ordinary entry family. */
+  readonly tangentFrame32?: {
+    readonly directEntry: string;
+    readonly sceneIndexEntry?: string;
+    readonly vertexInputs: readonly MaterialProgramVertexInput[];
+  };
   readonly postProcess?: MaterialPostProcessContract;
   readonly directEntry: string;
   /** Absent for a program that only has a direct entry. */
@@ -383,6 +390,34 @@ export function isMaterialSurfaceProgramAbi(value: unknown): value is MaterialSu
   return validDynamicInput();
 }
 
+const validIndex = (candidate: unknown): candidate is number =>
+  typeof candidate === 'number' && Number.isSafeInteger(candidate) && candidate >= 0;
+const validInputs = (inputs: unknown): boolean =>
+  Array.isArray(inputs) &&
+  inputs.every(
+    (input) =>
+      input !== null &&
+      typeof input === 'object' &&
+      typeof (input as { semantic?: unknown }).semantic === 'string' &&
+      validIndex((input as { location?: unknown }).location) &&
+      typeof (input as { format?: unknown }).format === 'string',
+  ) &&
+  new Set(inputs.map((input) => (input as { location: number }).location)).size === inputs.length;
+
+function validGeometryInputs(inputs: unknown, frame: unknown): boolean {
+  const packed = frame as Record<string, unknown> | undefined;
+  const validPacked =
+    packed === undefined ||
+    (packed !== null &&
+      typeof packed === 'object' &&
+      typeof packed.directEntry === 'string' &&
+      packed.directEntry.length > 0 &&
+      (packed.sceneIndexEntry === undefined ||
+        (typeof packed.sceneIndexEntry === 'string' && packed.sceneIndexEntry.length > 0)) &&
+      validInputs(packed.vertexInputs));
+  return validInputs(inputs) && validPacked;
+}
+
 /**
  * Runtime-safe boundary check for ABI facts carried by a cooked publication.
  * Pack and Catalog use this instead of trusting JSON shape or rebuilding an
@@ -396,19 +431,6 @@ export function isMaterialProgramAbi(value: unknown): value is MaterialProgramAb
   const row = abi.materialRow;
   const reflection = abi.reflection;
   const generation = abi.generation;
-  const validIndex = (candidate: unknown): candidate is number =>
-    typeof candidate === 'number' && Number.isSafeInteger(candidate) && candidate >= 0;
-  const validInputs = (inputs: unknown): boolean =>
-    Array.isArray(inputs) &&
-    inputs.every(
-      (input) =>
-        input !== null &&
-        typeof input === 'object' &&
-        typeof (input as { semantic?: unknown }).semantic === 'string' &&
-        validIndex((input as { location?: unknown }).location) &&
-        typeof (input as { format?: unknown }).format === 'string',
-    ) &&
-    new Set(inputs.map((input) => (input as { location: number }).location)).size === inputs.length;
   const validRow = (candidate: unknown): boolean => {
     if (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate))
       return false;
@@ -486,7 +508,7 @@ export function isMaterialProgramAbi(value: unknown): value is MaterialProgramAb
         Number.isSafeInteger((uv as { set?: unknown }).set) &&
         ((uv as { set: number }).set ?? -1) >= 0,
     ) &&
-    validInputs(abi.vertexInputs) &&
+    validGeometryInputs(abi.vertexInputs, abi.tangentFrame32) &&
     abi.alphaMask !== null &&
     typeof abi.alphaMask === 'object' &&
     typeof (abi.alphaMask as { cutoff?: unknown }).cutoff === 'string' &&

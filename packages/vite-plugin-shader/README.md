@@ -27,6 +27,12 @@ project root then cannot replace the producer root during config resolution.
 DevKit supplies its existing Engine workspace authority. Missing inventory and
 invalid publications still fail admission.
 
+Repeated Node loads of the same live publication share verified immutable row
+facts; each consumer receives its own entry and material collections. Inventory
+checks and the actual payload digest run on every load, so changed or missing
+bytes cannot reuse admission. Weak publication ownership retires the expanded
+graph when its consumers release it; the lookup does not retain it globally.
+
 The ray query, transport, raster-receiver and diffuse-composite entries use this same loader in
 both standalone and Vite builds. Their traversal module and imports live in
 `packages/shader/src`; test-side string insertion is not a publication path.

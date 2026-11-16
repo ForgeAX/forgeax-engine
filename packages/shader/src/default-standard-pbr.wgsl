@@ -1,3 +1,4 @@
+#import forgeax_geometry::tangent_frame32::{decodeTangentFrame32}
 #ifdef VISIBLE_SURFACE_AVAILABLE
 enable primitive_index;
 #endif
@@ -534,6 +535,113 @@ struct VsIn  {
   @location(13) color  : vec4<f32>,
 #endif
 };
+
+struct Frame32Input {
+  @location(14) tangentFrame : u32,
+
+  @location(0) pos     : vec3<f32>,
+#ifndef STANDARD_UV_INPUT_UNUSED
+  @location(2) uv      : vec2<f32>,
+#endif
+#ifndef STANDARD_TANGENT_INPUT_UNUSED
+#endif
+  // MaterialAsset per-slot texCoord: reserve the canonical UV0-UV7 inputs.
+  // Missing mesh sets are supplied by the pipeline's clamp-to-last aliases.
+#ifndef STANDARD_UV_INPUT_UNUSED
+#ifndef STANDARD_SINGLE_UV_SET
+  @location(6) uv1     : vec2<f32>,
+#endif
+#endif
+#ifndef STANDARD_UV_INPUT_UNUSED
+#ifndef STANDARD_SINGLE_UV_SET
+  @location(7) uv2     : vec2<f32>,
+#endif
+#endif
+#ifndef STANDARD_UV_INPUT_UNUSED
+#ifndef STANDARD_SINGLE_UV_SET
+  @location(8) uv3     : vec2<f32>,
+#endif
+#endif
+#ifndef STANDARD_UV_INPUT_UNUSED
+#ifndef STANDARD_SINGLE_UV_SET
+  @location(9) uv4     : vec2<f32>,
+#endif
+#endif
+#ifndef STANDARD_UV_INPUT_UNUSED
+#ifndef STANDARD_SINGLE_UV_SET
+  @location(10) uv5    : vec2<f32>,
+#endif
+#endif
+#ifndef STANDARD_UV_INPUT_UNUSED
+#ifndef STANDARD_SINGLE_UV_SET
+  @location(11) uv6    : vec2<f32>,
+#endif
+#endif
+#ifndef STANDARD_UV_INPUT_UNUSED
+#ifndef STANDARD_SINGLE_UV_SET
+  @location(12) uv7    : vec2<f32>,
+#endif
+#endif
+#ifdef VERTEX_COLOR_AVAILABLE
+  @location(13) color  : vec4<f32>,
+#endif
+};
+
+fn frame32Input(input:Frame32Input)->VsIn {
+  var output : VsIn;
+  let frame=decodeTangentFrame32(input.tangentFrame);
+
+  output.pos = input.pos;
+  output.normal = frame.normal;
+#ifndef STANDARD_UV_INPUT_UNUSED
+  output.uv = input.uv;
+#endif
+#ifndef STANDARD_TANGENT_INPUT_UNUSED
+  output.tangent = frame.tangent;
+#endif
+  // MaterialAsset per-slot texCoord: reserve the canonical UV0-UV7 inputs.
+  // Missing mesh sets are supplied by the pipeline's clamp-to-last aliases.
+#ifndef STANDARD_UV_INPUT_UNUSED
+#ifndef STANDARD_SINGLE_UV_SET
+  output.uv1 = input.uv1;
+#endif
+#endif
+#ifndef STANDARD_UV_INPUT_UNUSED
+#ifndef STANDARD_SINGLE_UV_SET
+  output.uv2 = input.uv2;
+#endif
+#endif
+#ifndef STANDARD_UV_INPUT_UNUSED
+#ifndef STANDARD_SINGLE_UV_SET
+  output.uv3 = input.uv3;
+#endif
+#endif
+#ifndef STANDARD_UV_INPUT_UNUSED
+#ifndef STANDARD_SINGLE_UV_SET
+  output.uv4 = input.uv4;
+#endif
+#endif
+#ifndef STANDARD_UV_INPUT_UNUSED
+#ifndef STANDARD_SINGLE_UV_SET
+  output.uv5 = input.uv5;
+#endif
+#endif
+#ifndef STANDARD_UV_INPUT_UNUSED
+#ifndef STANDARD_SINGLE_UV_SET
+  output.uv6 = input.uv6;
+#endif
+#endif
+#ifndef STANDARD_UV_INPUT_UNUSED
+#ifndef STANDARD_SINGLE_UV_SET
+  output.uv7 = input.uv7;
+#endif
+#endif
+#ifdef VERTEX_COLOR_AVAILABLE
+  output.color = input.color;
+#endif
+  return output;
+}
+
 struct VsOut {
   @builtin(position) @invariant clip : vec4<f32>,
 #if WATER_WAVES_AVAILABLE == true
@@ -961,8 +1069,7 @@ fn standardReceivesShadows(in : VsOut) -> bool {
 #endif
 }
 
-@vertex
-fn vs_main(in : VsIn, @builtin(instance_index) idx : u32, @builtin(vertex_index) vertex : u32) -> VsOut {
+fn vs_main_impl_entry(in : VsIn, idx : u32, vertex : u32) -> VsOut {
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
   // This variant binds only the GPU Scene tables; every entry reads the
   // visible stream.
@@ -1011,10 +1118,29 @@ fn vs_main(in : VsIn, @builtin(instance_index) idx : u32, @builtin(vertex_index)
 #endif
 }
 
+@vertex
+fn vs_main(in : VsIn, @builtin(instance_index) idx : u32, @builtin(vertex_index) vertex : u32) -> VsOut {
+  return vs_main_impl_entry(in, idx, vertex);
+}
+
+@vertex
+fn vs_main_packed(input : Frame32Input, @builtin(instance_index) idx : u32, @builtin(vertex_index) vertex : u32) -> VsOut {
+  return vs_main_impl_entry(frame32Input(input), idx, vertex);
+}
+
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
+fn vs_scene_index_impl_entry(in : VsIn, idx : u32, vertex : u32) -> VsOut {
+  return sceneIndexVertex(in, idx, vertex);
+}
+
 @vertex
 fn vs_scene_index(in : VsIn, @builtin(instance_index) idx : u32, @builtin(vertex_index) vertex : u32) -> VsOut {
-  return sceneIndexVertex(in, idx, vertex);
+  return vs_scene_index_impl_entry(in, idx, vertex);
+}
+
+@vertex
+fn vs_scene_index_packed(input : Frame32Input, @builtin(instance_index) idx : u32, @builtin(vertex_index) vertex : u32) -> VsOut {
+  return vs_scene_index_impl_entry(frame32Input(input), idx, vertex);
 }
 #endif
 
@@ -2368,8 +2494,7 @@ struct TemporalVsOut {
 #endif
 };
 
-@vertex
-fn vs_temporal(in : VsIn, @builtin(instance_index) idx : u32) -> TemporalVsOut {
+fn vs_temporal_impl_entry(in : VsIn, idx : u32) -> TemporalVsOut {
   var localPosition = standardVertexPosition(in);
   var temporalWaterCoverageXZ = vec2<f32>(0.0);
   var temporalWaterMeshInstanceIndex = 0u;
@@ -2465,6 +2590,16 @@ fn vs_temporal(in : VsIn, @builtin(instance_index) idx : u32) -> TemporalVsOut {
 #endif
 #endif
   return out;
+}
+
+@vertex
+fn vs_temporal(in : VsIn, @builtin(instance_index) idx : u32) -> TemporalVsOut {
+  return vs_temporal_impl_entry(in, idx);
+}
+
+@vertex
+fn vs_temporal_packed(input : Frame32Input, @builtin(instance_index) idx : u32) -> TemporalVsOut {
+  return vs_temporal_impl_entry(frame32Input(input), idx);
 }
 
 fn temporalVertexAlpha(in : TemporalVsOut) -> f32 {

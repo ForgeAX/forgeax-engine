@@ -175,18 +175,24 @@ class CurrentStateProjection implements StateProjection {
       for (let index = 0; index < this.#flags.length; index++)
         if (((this.#flags[index] ?? 0) & ACCEPTED) !== 0) this.#enqueue(index);
       for (let cursor = 0; cursor < this.#candidateIds.length; cursor++) {
-        const index = this.#owner.getComponentChangeIndex(this.#candidateIds[cursor] as number);
-        index?.visitSince(-1, epoch, this.#enqueue);
-        checkedIndexEntries += index?.checkedEntries ?? 0;
+        checkedIndexEntries += this.#owner.visitComponentChanged(
+          this.#candidateIds[cursor] as number,
+          -1,
+          epoch,
+          this.#enqueue,
+        );
       }
     } else {
       this.#membershipWork = false;
       for (let cursor = 0; cursor < this.#ids.length; cursor++) {
         const id = this.#ids[cursor] as number;
         if ((mutationEpochs[id] ?? 0) <= this.#acceptedEpoch) continue;
-        const index = this.#owner.getComponentChangeIndex(id);
-        index?.visitSince(this.#acceptedEpoch, epoch, this.#enqueue);
-        checkedIndexEntries += index?.checkedEntries ?? 0;
+        checkedIndexEntries += this.#owner.visitComponentChanged(
+          id,
+          this.#acceptedEpoch,
+          epoch,
+          this.#enqueue,
+        );
       }
       if (structure !== this.#acceptedStructure) {
         this.#membershipWork = true;

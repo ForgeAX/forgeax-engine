@@ -88,6 +88,7 @@ export type BatchArtifactResolver = (
     readonly alphaMask: boolean;
     /** UV0-only, tangent- and basis-free vertex inputs (STANDARD_LEAN_INPUTS). */
     readonly leanInputs: boolean;
+    readonly tangentFrame32?: boolean;
   },
 ) => MaterialShaderArtifact | undefined;
 
@@ -151,6 +152,9 @@ export function prepareBatchExecution(
     pass.sceneIndexProgramKey !== undefined || isCanonicalStandardPbrMaterialShader(pass.shaderId);
   const artifact = resolve(pass.sceneIndexProgramKey ?? pass.shaderId, {
     vertexColorAvailable: hasGpuDrivenVertexColor(geometry.receipt.vertexInputs),
+    ...(geometry.receipt.vertexInputs.some((input) => input.semantic === 'tangentFrame')
+      ? { tangentFrame32: true }
+      : {}),
     deformation: geometry.deformation,
     pass: pass.kind,
     address: 'scene-index',

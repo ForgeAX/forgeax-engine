@@ -15,7 +15,6 @@ import type {
 import type { FrameObservation, FrameObservationOptions } from '../record/frame';
 import type { CurrentGraphTarget, GraphTargetCaptureRequest } from '../record/frame-snapshot';
 import type {
-  DrawOwnerOptions,
   FrameReceipt,
   HealthSnapshot,
   RenderDebugOverlay,
@@ -126,8 +125,7 @@ export interface RendererLegacyHostAdapter {
   attachScene(world: World): RenderResult<void, RhiError>;
   detachScene(world: World): void;
   draw(
-    worldsOrRequest: readonly World[] | RenderFrameInput | PublishedRenderFrameInput,
-    options?: DrawOwnerOptions,
+    input: RenderFrameInput | PublishedRenderFrameInput,
   ): RenderResult<void | FrameReceipt, RhiError | RenderError>;
   observeCurrentFrame(
     options: FrameObservationOptions,

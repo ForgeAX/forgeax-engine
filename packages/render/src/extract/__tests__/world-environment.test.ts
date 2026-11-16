@@ -1,24 +1,83 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { Disabled, Time, World } from '@forgeax/engine-ecs';
+import { NativeCookerRegistry } from '@forgeax/engine-pack/native-cooker';
 import { GlobalTransform, Transform } from '@forgeax/engine-scene';
+import { ok } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
-import { CloudLayer } from '../../components/cloud-layer';
+import {
+  cloudMaterialDecoder,
+  cloudMaterialKind,
+  createCloudCookers,
+} from '../../cloud/authoring/assets';
+import type { CloudMaterialAsset } from '../../cloud/contracts';
+import type { ExtractedCloudLayer } from '../../cloud/extract';
 import { DirectionalLight } from '../../components/directional-light';
 import { Fog } from '../../components/fog';
 import { PointLight } from '../../components/point-light';
+import { VolumetricCloudLayer } from '../../components/volumetric-cloud-layer';
 import {
   createWorldInternalView,
   prepareExtractContext,
   selectFogFrame,
 } from '../../render-system-extract';
+import { EnvironmentFrameGate } from '../environment-frame-gate';
 import { extractWorldEnvironment } from '../world-environment';
 
 function extractor(world: World) {
-  const context = prepareExtractContext(world);
+  const context = { ...prepareExtractContext(world), environmentGate: new EnvironmentFrameGate() };
   const internal = createWorldInternalView(world);
   return {
     internal,
     extract: () => extractWorldEnvironment(world, context, internal, undefined),
   };
+}
+
+function cookedCloud(layer: ExtractedCloudLayer | undefined) {
+  if (layer?.status !== 'analytic') throw new Error('Expected the cooked uniform cloud fixture');
+  return layer;
+}
+
+async function cloudWorld() {
+  const registry = new NativeCookerRegistry();
+  const unexpectedCompile = async (): Promise<never> => {
+    throw new Error('The uniform extraction fixture needs no renderer compilation');
+  };
+  for (const cooker of createCloudCookers({
+    loadSource: unexpectedCompile,
+    compilerIdentity: unexpectedCompile,
+    compile: unexpectedCompile,
+  }))
+    registry.register(cooker);
+  const draft = (
+    await registry.runDraft<CloudMaterialAsset>('cloud-material', {
+      guid: '019a50a5-0000-7000-8000-000000000004',
+      sourcePath: 'environment-cloud.pack.ts',
+      source: {
+        version: 1,
+        model: {
+          kind: 'uniform',
+          sample: {
+            extinctionPerMeter: 0.002,
+            albedo: [1, 1, 1],
+            emissivePerMeter: [0, 0, 0],
+            materialAO: 1,
+          },
+        },
+        parameters: {},
+      },
+    })
+  ).unwrap();
+  const decoded = (
+    await cloudMaterialDecoder.decoder.decode({
+      envelope: { guid: draft.guid, payload: draft.payload, refs: draft.refs, artifacts: {} },
+      artifacts: { read: async () => ok(new Uint8Array()) },
+      signal: new AbortController().signal,
+    } as never)
+  ).unwrap();
+  const assets = new AssetRegistry();
+  assets.installDecoder(cloudMaterialKind, cloudMaterialDecoder.decoder);
+  const material = assets.create(cloudMaterialKind, decoded).unwrap();
+  return { world: new World({ assets }), material };
 }
 
 describe('World environment storage matching', () => {
@@ -45,30 +104,47 @@ describe('World environment storage matching', () => {
     expect(moved?.position[0]).toBe(4);
   });
 
-  it('keeps live Fog, cloud Time and moving poses independent of older produced frames', () => {
+  it('keeps retained light projections private to independent source readers', () => {
     const world = new World();
+    world.spawn({ component: PointLight, data: { intensity: 2 } }).unwrap();
+    const a = extractor(world).extract;
+    const b = extractor(world).extract;
+    const first = a().lights.point[0];
+    const second = b().lights.point[0];
+    expect(first).toEqual(second);
+    expect(first).not.toBe(second);
+    expect(a().lights.point[0]).toBe(first);
+    expect(b().lights.point[0]).toBe(second);
+  });
+
+  it('keeps live Fog, cooked cloud edits and moving poses independent of older produced frames', async () => {
+    const { world, material } = await cloudWorld();
     const fog = world.spawn({ component: Fog, data: { density: 0.03 } }).unwrap();
-    world.spawn({ component: CloudLayer, data: {} }).unwrap();
+    const cloud = world.spawn({ component: VolumetricCloudLayer, data: { material } }).unwrap();
     world.spawn({ component: DirectionalLight, data: { direction: [0, -1, 0] } }).unwrap();
     const lamp = world
       .spawn({ component: PointLight, data: {} }, { component: Transform, data: {} })
       .unwrap();
-    const context = prepareExtractContext(world);
+    const context = {
+      ...prepareExtractContext(world),
+      environmentGate: new EnvironmentFrameGate(),
+    };
     const internal = createWorldInternalView(world);
     const extract = () => extractWorldEnvironment(world, context, internal, selectFogFrame(world));
     world.update(1 / 60).unwrap();
     const first = extract();
-    const firstTime = first.cloudLayer?.worldTimeSeconds;
-    expect(firstTime).toBe(world.getResource(Time).elapsed);
+    const firstTime = world.getResource(Time).elapsed;
+    expect(cookedCloud(first.cloudLayer).sample.extinctionPerMeter).toBe(0.002);
     world.set(fog, Fog, { density: 0.06 }).unwrap();
+    world.set(cloud, VolumetricCloudLayer, { extinctionOverridePerMeter: 0.004 }).unwrap();
     world.update(1 / 60).unwrap();
     world
       .set(lamp, GlobalTransform, { world: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 3, 4, 5, 1] })
       .unwrap();
     const second = extract();
-    expect(second.cloudLayer?.worldTimeSeconds).toBe(world.getResource(Time).elapsed);
-    expect(second.cloudLayer?.worldTimeSeconds).toBeGreaterThan(firstTime as number);
-    expect(first.cloudLayer?.worldTimeSeconds).toBe(firstTime);
+    expect(world.getResource(Time).elapsed).toBeGreaterThan(firstTime);
+    expect(cookedCloud(second.cloudLayer).sample.extinctionPerMeter).toBeCloseTo(0.004);
+    expect(cookedCloud(first.cloudLayer).sample.extinctionPerMeter).toBe(0.002);
     expect(first.environment.fog?.density).toBeCloseTo(0.03);
     expect(second.environment.fog?.density).toBeCloseTo(0.06);
     expect(first.lights.point[0]?.position[0]).toBe(0);
@@ -98,25 +174,29 @@ describe('World environment storage matching', () => {
     expect(extract().lights.point).toHaveLength(0);
   });
 
-  it('keeps World queries independent and discovers a cloud after an empty extraction', () => {
-    const first = new World();
+  it('keeps World queries independent and discovers a cloud after an empty extraction', async () => {
+    const { world: first, material } = await cloudWorld();
     const second = new World();
     const a = extractor(first).extract;
     const b = extractor(second).extract;
     expect(a().cloudLayer).toBeUndefined();
     expect(b().cloudLayer).toBeUndefined();
-    const cloud = first.spawn({ component: CloudLayer, data: { coverage: 0.3 } }).unwrap();
+    const cloud = first
+      .spawn({ component: VolumetricCloudLayer, data: { material, bottomMeters: 3000 } })
+      .unwrap();
     const sun = first
       .spawn({
         component: DirectionalLight,
         data: { intensity: 2, direction: [0, -1, 0], castShadow: false },
       })
       .unwrap();
-    expect(a().cloudLayer?.entityKey).toBe(cloud);
-    expect(a().cloudLayer?.sunRadiance).toEqual([2, 2, 2]);
+    const snapshot = a();
+    expect(cookedCloud(snapshot.cloudLayer).bottomMeters).toBe(3000);
+    expect(Array.from(snapshot.lights.directional?.color ?? [])).toEqual([2, 2, 2]);
     expect(b().cloudLayer).toBeUndefined();
     first.set(sun, DirectionalLight, { intensity: 4 }).unwrap();
-    expect(a().cloudLayer?.sunRadiance).toEqual([4, 4, 4]);
+    expect(Array.from(a().lights.directional?.color ?? [])).toEqual([4, 4, 4]);
+    expect(Array.from(snapshot.lights.directional?.color ?? [])).toEqual([2, 2, 2]);
     first.despawn(cloud).unwrap();
     expect(a().cloudLayer).toBeUndefined();
   });

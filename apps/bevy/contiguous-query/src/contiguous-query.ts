@@ -1,4 +1,5 @@
 
+import { defineSystem } from "@forgeax/engine-ecs";
 import {
   Time,
   Update,
@@ -63,7 +64,7 @@ const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).u
     { component: Camera, data: orthographic({ left: -640, right: 640, bottom: -360, top: 360, near: 0.1, far: 2000 }) },
   );
 
-  world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'contiguous-query-health-decay',
     queries: [],
     fn: (world) => {
@@ -86,7 +87,8 @@ const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).u
       }
       state.decayPasses += 1;
     },
-  }).unwrap();
+  });
+world.addSystem(Update, systemToken1).unwrap();
 
   return state;
 }

@@ -1,19 +1,32 @@
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { build } from 'vite';
 import { expect, it, vi } from 'vitest';
+import {
+  createLiveSyncProjectDirectory,
+  prepareLiveSyncSharedInputs,
+} from '../../scripts/live-sync-inputs.mjs';
 import { verifyDist, writeDistManifest } from '../dist.js';
 import { createViteConfig } from '../host.js';
 import { readProjectFacts } from '../project.js';
 
 it('includes platform HTML before sealing and still detects later output mutation', async () => {
-  const root = await realpath(await mkdtemp(resolve(tmpdir(), 'forgeax-build-head-')));
+  const sourceRoot = resolve(import.meta.dirname, '../../../..');
+  const manifest =
+    process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST ??
+    resolve(sourceRoot, 'shared-build-inputs/manifest.json');
+  const { root, temporaryRoot } = await createLiveSyncProjectDirectory(
+    'forgeax-build-head-',
+    sourceRoot,
+    manifest,
+  );
   try {
-    const manifest =
-      process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST ??
-      resolve(import.meta.dirname, '../../../../shared-build-inputs/manifest.json');
-    await readFile(manifest); // Prepared by the required Engine build, outside this bounded HTML check.
+    await prepareLiveSyncSharedInputs({
+      sourceRoot,
+      projectRoot: root,
+      temporaryRoot,
+      manifestPath: manifest,
+    });
     vi.stubEnv('FORGEAX_SHARED_APP_INPUTS_MANIFEST', manifest);
     await mkdir(resolve(root, 'assets'));
     await writeFile(resolve(root, 'package.json'), '{"name":"build-head","type":"module"}');
@@ -34,6 +47,7 @@ it('includes platform HTML before sealing and still detects later output mutatio
     const html = await readFile(resolve(root, 'dist/index.html'), 'utf8');
     expect(html).toContain('platform-test');
     expect(html).toContain('platformBeforeBootstrap');
+    expect([...html.matchAll(/src="[^"]*\/assets\/index-[^/"]+\.js"/g)]).toHaveLength(1);
     await writeDistManifest(facts.value, '/');
     expect(await verifyDist(resolve(root, 'dist'))).toMatchObject({ ok: true });
     await writeFile(resolve(root, 'dist/index.html'), `${html}\n<!-- modified after build -->`);
@@ -43,6 +57,6 @@ it('includes platform HTML before sealing and still detects later output mutatio
     });
   } finally {
     vi.unstubAllEnvs();
-    await rm(root, { recursive: true, force: true });
+    await rm(temporaryRoot, { recursive: true, force: true });
   }
 }, 120_000);

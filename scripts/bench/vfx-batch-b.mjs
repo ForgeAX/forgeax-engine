@@ -1,5 +1,8 @@
 import { spawnSync } from 'node:child_process';
 import { cpus, platform, release } from 'node:os';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { pnpmCommand } from '../lib/pnpm-command.mjs';
 
 export const VFX_BATCH_B_PROTOCOL = Object.freeze({
   benchmark: 'vfx-batch-b',
@@ -12,13 +15,18 @@ export const VFX_BATCH_B_PROTOCOL = Object.freeze({
 });
 
 function collectGpuRuns() {
+  const [command, ...prefix] = pnpmCommand();
   return VFX_BATCH_B_PROTOCOL.capacities.map((capacity) => {
-    const result = spawnSync('pnpm', ['--filter', '@forgeax/hello-boss-lightning', 'smoke'], {
-      cwd: process.cwd(),
-      encoding: 'utf8',
-      env: { ...process.env, VFX_BENCH_CAPACITY: String(capacity) },
-      maxBuffer: 16 * 1024 * 1024,
-    });
+    const result = spawnSync(
+      command,
+      [...prefix, '--filter', '@forgeax/hello-boss-lightning', 'smoke'],
+      {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+        env: { ...process.env, VFX_BENCH_CAPACITY: String(capacity) },
+        maxBuffer: 16 * 1024 * 1024,
+      },
+    );
     const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
     const line = output
       .split(/\r?\n/)
@@ -123,7 +131,7 @@ export function validateVfxBatchBReport(value) {
   return { ok: true, value };
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const report = runVfxBatchBBenchmark();
   const result = validateVfxBatchBReport(report);
   console.log(JSON.stringify(report));

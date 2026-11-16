@@ -2,7 +2,7 @@
 // biome-ignore-all lint/complexity/noUselessLoneBlockStatements: source test block isolation
 import { type Mat4, mat4, vec3 } from '@forgeax/engine-math';
 import { describe, expect, it, vi } from 'vitest';
-import { bin, type ClusterBinError } from '../../../render/src/cluster-binner';
+import { bin } from '../../../render/src/cluster-binner';
 
 vi.mock('@forgeax/engine-rhi-wgpu', () => {
   return {
@@ -34,10 +34,10 @@ vi.mock('@forgeax/engine-rhi-wgpu', () => {
     return mat4.identity(mat4.create());
   }
 
-  // ── index-overflow error shape (via cluster-binner's ClusterBinError) ─────────
+  // ── index-list overflow keeps the first K entries per cluster ───────────────
 
-  describe('ClusterBinError index-overflow shape (AC-24 detail ports)', () => {
-    it('bin overflow returns err with code index-overflow', () => {
+  describe('cluster index-list overflow caps entries per cluster', () => {
+    it('bin overflow keeps at most capacity entries and never fails', () => {
       const grid = { x: 2, y: 2, z: 2 };
       const near = 0.1;
       const far = 100;
@@ -55,17 +55,8 @@ vi.mock('@forgeax/engine-rhi-wgpu', () => {
       const lightIndexList = new Uint32Array(64);
       const result = bin(lights, view, proj, grid, near, far, clusterGrid, lightIndexList, 64);
 
-      expect(result.ok).toBe(false);
-
-      // TypeScript requires explicit narrowing before accessing result.error
-      if (!result.ok) {
-        const err: ClusterBinError = result.error;
-        expect(err.code).toBe('index-overflow');
-        expect(err.detail.actual).toBeGreaterThan(64);
-        expect(err.detail.capacity).toBe(64);
-        expect(err.hint.length).toBeGreaterThan(0);
-        expect(err.expected.length).toBeGreaterThan(0);
-      }
+      expect(result.ok).toBe(true);
+      if (result.ok) expect(result.value).toBeLessThanOrEqual(64);
     });
 
     it('bin non-overflow returns ok', () => {

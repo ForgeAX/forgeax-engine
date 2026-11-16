@@ -19,7 +19,6 @@ class OwnedEntry implements NativeDrawEntry {
     this.record = Object.freeze({
       slot: record.slot,
       generation: record.generation,
-      worldId: record.worldId,
       entityKey: record.entityKey,
     });
     Object.freeze(this);

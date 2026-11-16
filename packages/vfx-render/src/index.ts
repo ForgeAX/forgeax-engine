@@ -42,11 +42,13 @@ export type {
   VfxDataInterfaceAvailabilitySource,
   VfxDataInterfaceProvider,
   VfxDataInterfaceRegistry,
+  VfxWaterSurfaceAvailabilitySource,
 } from './host/data-interface-providers.js';
 export {
   createCameraProvider,
   createSceneDepthProvider,
   createVfxDataInterfaceRegistry,
+  createWaterSurfaceProvider,
 } from './host/data-interface-providers.js';
 export type {
   VfxRuntimeHost,

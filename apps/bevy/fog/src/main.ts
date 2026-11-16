@@ -1,4 +1,4 @@
-import { World } from '@forgeax/engine-ecs';
+
 import { createApp } from '@forgeax/engine-app/browser';
 import { buildFogWorld, type FogDemoPhase, type FogPhase } from './fog.js';
 
@@ -9,14 +9,12 @@ declare global {
         applyPhase(phase: FogPhase): {
           readonly changedFrom: FogPhase | undefined;
           readonly revision: number;
-          readonly ownerChanged: boolean;
-          readonly resourceOwner: number;
+          readonly environmentChanged: boolean;
         };
         setPhase(phase: FogDemoPhase): {
           readonly changedFrom: FogPhase | undefined;
           readonly revision: number;
-          readonly ownerChanged: boolean;
-          readonly resourceOwner: number;
+          readonly environmentChanged: boolean;
         };
         currentPhase(): FogDemoPhase;
         resize(width: number, height: number): void;
@@ -47,13 +45,6 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   }
   const app = appResult.value;
   const fog = buildFogWorld(app.world, target.width / Math.max(target.height, 1));
-  const resourceWorld = new World();
-  let resourceOwner = 0;
-  app.setDrawSource(() => ({
-    worlds: [app.world, resourceWorld],
-    cameraOwner: 0,
-    resourceOwner,
-  }));
   app.onError((error) => console.error('[bevy-fog] app error:', error.code, error.hint));
   const started = app.start();
   if (!started.ok) {
@@ -106,15 +97,14 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   globalThis.__bevyFogBrowser = {
     ready: true,
     applyPhase(phase) {
-      const state = fog.applyPhase(phase, phase === 'owner-switch' ? resourceWorld : undefined);
-      if (state.ownerChanged) resourceOwner = 1;
-      return { ...state, resourceOwner };
+      const state = fog.applyPhase(phase);
+      return state;
     },
     setPhase(phase) {
       const state = fog.setPhase(phase);
       if (phase !== 'disabled') activeDemoPhase = phase;
       updateFogUi(phase);
-      return { ...state, resourceOwner };
+      return state;
     },
     currentPhase() {
       const phase = fog.currentPhase();

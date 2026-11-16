@@ -14,22 +14,20 @@ describe('render feature visibility context', () => {
     const feature: RenderFeature<{ readonly count: number }> = {
       identity: 'synthetic.visibility-context',
       extract: (context) => {
-        receivedSnapshots = context.visibilitySnapshots;
-        context.reportHiddenEntity?.({ world, entity: 7 as never });
-        return ok({ count: context.worlds.length });
+        receivedSnapshots = context.visibilitySnapshot;
+        context.reportHiddenEntity?.({ entity: 7 as never });
+        return ok({ count: context.world.inspect().entityCount });
       },
       plan: () => ok({ work: [{ scope: { view: 'main' }, resources: [], passes: [] }] }),
     };
     const host = createRenderFeatureHost([feature]).unwrap();
-    const snapshots = [{ world, snapshot: {} as never }];
-    const builtIn: RenderFeatureHiddenEntityReport = { world, entity: 7 as never };
-
+    const snapshots = {} as never;
+    const builtIn: RenderFeatureHiddenEntityReport = { entity: 7 as never };
     const result = runSingleViewFeatureFrame(host, {
-      worlds: [world],
-      owner: 0,
+      world: world,
       frameNumber: 1,
       caps: {} as never,
-      visibilitySnapshots: snapshots,
+      visibilitySnapshot: snapshots,
       hiddenEntityReports: [builtIn],
     });
 
@@ -52,8 +50,7 @@ it.each([
     }));
     const hiddenEntityReports = kind === 'captured' ? captureHiddenEntityReports(input) : input;
     const result = runSingleViewFeatureFrame(host, {
-      worlds: [world],
-      owner: 0,
+      world: world,
       frameNumber: 1,
       caps: new RhiNullDevice(
         new RhiNullQueue(),
@@ -77,24 +74,19 @@ it('keeps fixed producer reports and held results independently of later input m
   );
   const host = createRenderFeatureHost([]).unwrap();
   try {
-    const input = [
-      { world, entity: 1 as EntityHandle },
-      { world, entity: 1 as EntityHandle },
-    ];
+    const input = [{ entity: 1 as EntityHandle }, { entity: 1 as EntityHandle }];
     const reports = captureHiddenEntityReports(input);
     const first = runSingleViewFeatureFrame(host, {
-      worlds: [world],
-      owner: 0,
+      world: world,
       frameNumber: 1,
       caps: device.caps,
       hiddenEntityReports: reports,
     });
     expect(first.hiddenEntityReports).toBe(reports);
     expect(first.hiddenEntityReports).toHaveLength(1);
-    input[0] = { world, entity: 2 as EntityHandle };
+    input[0] = { entity: 2 as EntityHandle };
     const next = runSingleViewFeatureFrame(host, {
-      worlds: [world],
-      owner: 0,
+      world: world,
       frameNumber: 2,
       caps: device.caps,
       hiddenEntityReports: captureHiddenEntityReports(input),
@@ -129,8 +121,7 @@ it('keeps borrowed descendants live through each frame', () => {
   try {
     const run = (reports: readonly RenderFeatureHiddenEntityReport[]) =>
       runSingleViewFeatureFrame(host, {
-        worlds: [world],
-        owner: 0,
+        world: world,
         frameNumber: 1,
         caps: device.caps,
         hiddenEntityReports: reports,
@@ -145,9 +136,8 @@ it('keeps borrowed descendants live through each frame', () => {
   }
 });
 
-it('merges fixed producer reports with custom additions by World and entity in original order', () => {
+it('merges fixed producer reports with custom additions by source entity handle in original order', () => {
   const first = new World();
-  const second = new World();
   const device = new RhiNullDevice(
     new RhiNullQueue(),
     (bookkeeper, descriptor) => new RhiNullCommandEncoder(bookkeeper, descriptor),
@@ -155,26 +145,22 @@ it('merges fixed producer reports with custom additions by World and entity in o
   const feature: RenderFeature<undefined> = {
     identity: 'fixture.fixed-hidden-additions',
     extract(context) {
-      context.reportHiddenEntity?.({ world: first, entity: 7 as EntityHandle });
-      context.reportHiddenEntity?.({ world: second, entity: 7 as EntityHandle });
+      context.reportHiddenEntity?.({ entity: 7 as EntityHandle });
+      context.reportHiddenEntity?.({ entity: 8 as EntityHandle });
       return ok(undefined);
     },
     plan: () => ok({ work: [] }),
   };
   const host = createRenderFeatureHost([feature]).unwrap();
   try {
-    const reports = captureHiddenEntityReports([{ world: first, entity: 7 as EntityHandle }]);
+    const reports = captureHiddenEntityReports([{ entity: 7 as EntityHandle }]);
     const result = runSingleViewFeatureFrame(host, {
-      worlds: [first, second],
-      owner: 0,
+      world: first,
       frameNumber: 1,
       caps: device.caps,
       hiddenEntityReports: reports,
     });
-    expect(result.hiddenEntityReports).toEqual([
-      { world: first, entity: 7 },
-      { world: second, entity: 7 },
-    ]);
+    expect(result.hiddenEntityReports).toEqual([{ entity: 7 }, { entity: 8 }]);
     expect(result.hiddenEntityReports).not.toBe(reports);
     expect(reports).toHaveLength(1);
   } finally {

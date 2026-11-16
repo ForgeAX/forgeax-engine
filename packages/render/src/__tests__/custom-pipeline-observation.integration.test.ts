@@ -56,11 +56,7 @@ it('a custom pipeline output transform captures the armed final-display observat
     { component: Transform, data: { pos: [0, 0, 4] } },
     { component: Camera, data: perspective({ fov: Math.PI / 3, aspect: 1 }) },
   );
-  const input = {
-    leases: [attachment.value],
-    camera: { lease: attachment.value },
-    environment: { lease: attachment.value },
-  };
+  const input = { source: attachment.value };
   try {
     world.update(1 / 60).unwrap();
     expect(renderer.draw(input).ok).toBe(true);

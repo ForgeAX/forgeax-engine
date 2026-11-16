@@ -1,7 +1,6 @@
 import { box3, frustum } from '@forgeax/engine-math';
 import { buildCameraFrusta } from '../camera-frusta';
 import type { GpuDrawSelection } from '../gpu-driven/draw-selection';
-import { worldEntityKey } from '../record/frame-snapshot';
 import type {
   CameraAdmission,
   DispatchEntry,
@@ -121,6 +120,7 @@ class PersistentFrameCull {
   private readonly shadowOnly = new Set<number>();
   private readonly hidden = new Set<number>();
   private readonly hiddenSections = new Map<number, Set<number>>();
+  private readonly hiddenNativeDraws = new Map<number, Set<string>>();
   // GPU-owned candidates are culled by their view pass. Their CPU test is
   // deferred: only camera-visibility readers and frustum statistics pay it.
   private readonly deferredSources: RenderableSnapshot[] = [];
@@ -207,7 +207,8 @@ class PersistentFrameCull {
     const selected = sameVisibility
       ? previous.renderables
       : (this.visible ?? previous?.renderables.slice(0, this.visibleCount) ?? []);
-    if (!sameVisibility) for (const source of selected) admittedSubsurface.add(source, materials);
+    if (!sameVisibility)
+      for (const source of selected) admittedSubsurface.add(source, materials, this.meshes);
 
     admittedSubsurface.adopt(materials);
     if (sameAddresses && previous.sourceDispatch === this.frame.dispatch)
@@ -217,8 +218,9 @@ class PersistentFrameCull {
 
   private projectCandidate(candidate: RenderableSnapshot, index: number): void {
     if (this.newSources) {
-      this.sourceSubsurface.add(candidate, this.materials);
-      if (candidate.authorVisible !== false) this.authorSubsurface.add(candidate, this.materials);
+      this.sourceSubsurface.add(candidate, this.materials, this.meshes);
+      if (candidate.authorVisible !== false)
+        this.authorSubsurface.add(candidate, this.materials, this.meshes);
     }
     if (candidate.authorVisible === false) {
       this.culled += 1;
@@ -278,7 +280,16 @@ class PersistentFrameCull {
   }
 
   private hide(candidate: RenderableSnapshot): void {
-    const key = worldEntityKey(candidate.worldId, candidate.entityKey);
+    const key = candidate.entityKey;
+    if (candidate.nativeDraw !== undefined) {
+      let draws = this.hiddenNativeDraws.get(key);
+      if (draws === undefined) {
+        draws = new Set<string>();
+        this.hiddenNativeDraws.set(key, draws);
+      }
+      draws.add(candidate.nativeDraw.key);
+      return;
+    }
     if (candidate.terrainSection === undefined) {
       this.hidden.add(key);
       return;
@@ -314,7 +325,9 @@ class PersistentFrameCull {
   readonly cameraVisible = (source: RenderableSnapshot): boolean => {
     const deferred = this.deferredAt(source);
     if (deferred !== undefined) return this.testDeferred(deferred) !== false;
-    const key = worldEntityKey(source.worldId, source.entityKey);
+    const key = source.entityKey;
+    if (source.nativeDraw !== undefined)
+      return this.hiddenNativeDraws.get(key)?.has(source.nativeDraw.key) !== true;
     return source.terrainSection === undefined
       ? !this.hidden.has(key)
       : this.hiddenSections.get(key)?.has(source.terrainSection.index) !== true;
@@ -324,7 +337,7 @@ class PersistentFrameCull {
     if (this.deferredSources.length === 0) return undefined;
     if (this.deferredByEntity === undefined || this.deferredBySection === undefined)
       this.indexDeferred();
-    const key = worldEntityKey(source.worldId, source.entityKey);
+    const key = source.entityKey;
     return source.terrainSection === undefined
       ? this.deferredByEntity?.get(key)
       : this.deferredBySection?.get(key)?.get(source.terrainSection.index);
@@ -337,7 +350,7 @@ class PersistentFrameCull {
     this.deferredBySection = bySection;
     for (let i = 0; i < this.deferredSources.length; i++) {
       const deferred = this.deferredSources[i] as RenderableSnapshot;
-      const key = worldEntityKey(deferred.worldId, deferred.entityKey);
+      const key = deferred.entityKey;
       if (deferred.terrainSection === undefined) {
         byEntity.set(key, i);
         continue;
@@ -759,12 +772,9 @@ export function cullResidualFrame(
     return visible;
   };
   const cameraVisible = (source: RenderableSnapshot): boolean => {
-    const slot = gpuOwned.slots.identitySlot(source.worldId, source.entityKey);
+    const slot = gpuOwned.slots.identitySlot(source.entityKey);
     if (slot !== undefined && hiddenSlots.has(slot)) return false;
-    return (
-      isResidualSlot(slot) ||
-      ownedVisibility(source, worldEntityKey(source.worldId, source.entityKey)) !== false
-    );
+    return isResidualSlot(slot) || ownedVisibility(source, source.entityKey) !== false;
   };
   let ownedStats: { readonly culled: number; readonly total: number } | undefined;
   const ownedStatistics = () => {
@@ -772,10 +782,10 @@ export function cullResidualFrame(
     let ownedCulled = 0;
     let ownedTotal = 0;
     for (const source of frame.renderables) {
-      const key = worldEntityKey(source.worldId, source.entityKey);
+      const key = source.entityKey;
       if (
         source.authorVisible === false ||
-        isResidualSlot(gpuOwned.slots.identitySlot(source.worldId, source.entityKey))
+        isResidualSlot(gpuOwned.slots.identitySlot(source.entityKey))
       )
         continue;
       const visible = ownedVisibility(source, key);

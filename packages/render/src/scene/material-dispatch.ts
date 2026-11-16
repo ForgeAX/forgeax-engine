@@ -4,7 +4,8 @@ import {
   materialUsesSpriteGeometry,
   ownedMaterialValues,
 } from '../material-resource';
-import { getOpaqueResourceIdentity, worldEntityKey } from '../record/frame-snapshot';
+import type { MaterialSourceSnapshot } from '../material-source';
+import { getOpaqueResourceIdentity } from '../record/frame-snapshot';
 import { isMediumMaterial, matchesRecordMode } from '../record/material-pass-selection';
 import {
   appendMaterialDispatchEntries,
@@ -97,7 +98,7 @@ class BindingColumns {
   }
 
   entity(slot: number): number {
-    return (this.identity[slot] ?? 0) % 4294967296;
+    return this.identity[slot] ?? 0;
   }
 }
 /** The binding group key; equal keys select the same held materials and members. */
@@ -109,9 +110,9 @@ function materialBindingKey(
   direct = [...new Set(snapshot.materials.length === 0 ? [snapshot.material] : snapshot.materials)],
   geometry = meshMaterialGeometry(snapshot),
 ): string {
-  return overrides === undefined
-    ? `direct:${direct.map(getOpaqueResourceIdentity).join(',')}`
-    : `mesh:${snapshot.worldId}:${snapshot.assetHandle}:${geometry}:${getOpaqueResourceIdentity(overrides)}`;
+  return overrides === undefined || snapshot.assetHandle === undefined
+    ? `${direct.some((resource) => resource.snapshot.sourceAssets !== undefined) ? `source:${0}:` : ''}direct:${direct.map(getOpaqueResourceIdentity).join(',')}`
+    : `mesh:${0}:${snapshot.assetHandle}:${geometry}:${getOpaqueResourceIdentity(overrides)}`;
 }
 
 /** An unreadable source takes the ordinary replacement path, which retires the old binding. */
@@ -137,6 +138,8 @@ export interface DispatchPassWork {
   /** Member entries, equal to the length of `entries()`. */
   readonly count: number;
   entries(): Iterable<DispatchEntry>;
+  /** Captured physical addresses, before materializing entries or deriving frame ranks. */
+  slots?(): Iterable<number>;
 }
 interface QueryWork {
   members: Node<Roster> | undefined;
@@ -154,6 +157,7 @@ export interface AcceptedMaterial {
 }
 
 interface MaterialDemandCounts {
+  readonly water: number;
   readonly transmission: number;
   readonly rough: number;
   readonly backs: number;
@@ -163,6 +167,7 @@ interface MaterialDemandCounts {
   readonly foldableSprites: number;
 }
 const EMPTY_DEMAND: MaterialDemandCounts = {
+  water: 0,
   transmission: 0,
   rough: 0,
   backs: 0,
@@ -179,13 +184,17 @@ function demandCounts(material: AcceptedMaterial | undefined): MaterialDemandCou
   const transmission = matchesRecordMode(snapshot, 'transmission');
   const roughness = snapshot.paramSnapshot?.roughness ?? snapshot.roughness;
   return {
+    water: snapshot.surfaceModel === 'single-layer-water' ? material.bindings : 0,
     transmission: transmission ? material.bindings : 0,
     rough: transmission && typeof roughness === 'number' && roughness > 0 ? material.bindings : 0,
     backs:
       transmission && material.passes.some((pass) => pass.tags.LightMode === 'TransmissionBack')
         ? material.bindings
         : 0,
-    medium: isMediumMaterial(snapshot) ? material.bindings : 0,
+    medium:
+      isMediumMaterial(snapshot) && snapshot.surfaceModel !== 'single-layer-water'
+        ? material.bindings
+        : 0,
     unfogged:
       snapshot.renderState?.fog === false && matchesRecordMode(snapshot, 'opaque-unfogged')
         ? material.bindings
@@ -205,6 +214,7 @@ function replaceDemand(
   const old = demandCounts(previous);
   const current = demandCounts(next);
   return {
+    water: counts.water - old.water + current.water,
     transmission: counts.transmission - old.transmission + current.transmission,
     rough: counts.rough - old.rough + current.rough,
     medium: counts.medium - old.medium + current.medium,
@@ -278,6 +288,9 @@ export class MaterialFrame {
   get hasMedium(): boolean {
     return this.counts.medium > 0;
   }
+  get hasWater(): boolean {
+    return this.counts.water > 0;
+  }
   /** Accepted owned Sprite materials that can participate in folding. */
   get hasFoldableSprites(): boolean {
     return this.counts.foldableSprites > 0;
@@ -348,7 +361,7 @@ export class MaterialFrame {
       readonly entry: DispatchEntry;
     }[] = [];
     for (const draw of draws) {
-      const identity = worldEntityKey(draw.source.worldId, draw.source.entityKey);
+      const identity = draw.source.entityKey;
       this.drawEntries(draw, (entry, pass) => entries.push({ pass, identity, entry }));
     }
     entries.sort(
@@ -726,6 +739,7 @@ class FrameDispatch extends FrameListBase<DispatchEntry> {
       pass: work.pass,
       resource: work.resource,
       count: work.groups.count,
+      slots: () => workBindings(work),
       *entries() {
         for (const binding of workBindings(work)) yield dispatch.entry(work.pass, binding);
       },
@@ -886,6 +900,7 @@ class FrameDispatchIterator implements IterableIterator<DispatchEntry> {
 export function dispatchPassWork(list: DispatchList):
   | {
       readonly slots: number;
+      readonly source: SceneSlotFrame;
       readonly work: Iterable<DispatchPassWork>;
       readonly dispatch: DispatchList &
         Pick<FrameDispatch, 'passWorkChangesSince' | 'identifiedPassWork'>;
@@ -894,8 +909,36 @@ export function dispatchPassWork(list: DispatchList):
     }
   | undefined {
   return list instanceof FrameDispatch
-    ? { slots: list.slots.length, work: list.passWork(), dispatch: list, lineage: list.lineage }
+    ? {
+        slots: list.slots.length,
+        source: list.slots,
+        work: list.passWork(),
+        dispatch: list,
+        lineage: list.lineage,
+      }
     : undefined;
+}
+
+const casterMaterialCache = new WeakMap<DispatchList, ReadonlySet<MaterialResource>>();
+
+/**
+ * Materials that at least one shadow-casting member draws with; `undefined`
+ * for a flat list, which carries no Pass rosters.
+ */
+export function dispatchCasterMaterials(
+  list: DispatchList,
+): ReadonlySet<MaterialResource> | undefined {
+  if (!(list instanceof FrameDispatch)) return undefined;
+  let materials = casterMaterialCache.get(list);
+  if (materials === undefined) {
+    const collected = new Set<MaterialResource>();
+    for (const work of list.passWork())
+      if (work.pass.tags.LightMode === 'ShadowCaster' && work.count > 0)
+        collected.add(work.resource);
+    materials = collected;
+    casterMaterialCache.set(list, materials);
+  }
+  return materials;
 }
 
 type MaterialBinding = Pick<
@@ -904,6 +947,7 @@ type MaterialBinding = Pick<
 >;
 interface BindingGroup {
   readonly source: MaterialBinding;
+  readonly worldId: number;
   readonly identity: number;
   readonly mesh: MeshExpression | undefined;
   readonly held: readonly MaterialResource[];
@@ -925,7 +969,6 @@ interface BindingGroup {
   readonly staged: Record<GroupRoster, number[]>;
 }
 interface MeshExpression {
-  readonly worldId: number;
   readonly handle: number;
   holders: number;
 }
@@ -1030,7 +1073,6 @@ interface BindingInputs {
   readonly materials: RenderableSnapshot['materials'];
   readonly material: MaterialResource;
   readonly materialOverrides: RenderableSnapshot['materialOverrides'];
-  readonly worldId: number;
   readonly assetHandle: number | undefined;
   readonly geometry: MeshMaterialGeometry;
   readonly overrides: readonly (MaterialResource | undefined)[] | undefined;
@@ -1101,6 +1143,19 @@ export class MaterialDispatch {
     return this.materialFrame;
   }
 
+  /** Exact sources of the current accepted bindings, including hidden preparation. */
+  *materialSources(): Iterable<{
+    readonly worldId: number;
+    readonly source: MaterialSourceSnapshot;
+  }> {
+    for (const group of this.groups.values()) {
+      for (const resource of this.groupResources.get(group) ?? group.held) {
+        const source = this.materialFrame.get(resource)?.snapshot.sourceAssets;
+        if (source !== undefined) yield { worldId: group.worldId, source };
+      }
+    }
+  }
+
   /** Adopt named Mesh changes without visiting their binding groups or members. */
   prepare(meshes: MeshFrame): void {
     this.assertSourceWritable();
@@ -1110,7 +1165,7 @@ export class MaterialDispatch {
     ) => {
       const source = after ?? before;
       if (source === undefined) return;
-      const expression = this.meshes.get(`${source.worldId}:${source.handle}`);
+      const expression = this.meshes.get(`${source.handle}`);
       if (expression === undefined) return;
       if (after === undefined) throw new Error('Bound Mesh has no accepted geometry version');
       if (
@@ -1127,7 +1182,7 @@ export class MaterialDispatch {
     if (this.meshFrame === undefined) {
       // First adoption reads the actual bound Mesh sources, never their groups.
       for (const expression of this.meshes.values())
-        changed(undefined, meshes.get(expression.worldId, expression.handle));
+        changed(undefined, meshes.get(expression.handle));
     } else if (this.meshFrame !== meshes) meshes.changesSince(this.meshFrame, changed);
     this.meshFrame = meshes;
     for (const resource of this.unpublished)
@@ -1160,7 +1215,7 @@ export class MaterialDispatch {
     this.assertSourceWritable();
     const columns = this.bindings;
     const current = columns.groups[slot];
-    const identity = worldEntityKey(snapshot.worldId, snapshot.entityKey);
+    const identity = snapshot.entityKey;
     const flags =
       (snapshot.authorVisible !== false ? VISIBLE : 0) |
       (snapshot.shadowCaster !== false ? CASTER : 0) |
@@ -1191,53 +1246,57 @@ export class MaterialDispatch {
       const { overrides, direct, geometry, key } = this.bindingInputs(snapshot);
       let group = this.groups.get(key);
       if (group === undefined) {
-        let mesh: MeshExpression | undefined;
-        if (overrides !== undefined && snapshot.assetHandle !== undefined) {
-          const meshKey = `${snapshot.worldId}:${snapshot.assetHandle}`;
-          mesh = this.meshes.get(meshKey);
-          if (mesh === undefined) {
-            mesh = {
-              worldId: snapshot.worldId,
-              handle: snapshot.assetHandle,
-              holders: 0,
-            };
-            this.meshes.set(meshKey, mesh);
+        const createMaterialBindingGroup = (): BindingGroup => {
+          let mesh: MeshExpression | undefined;
+          if (overrides !== undefined && snapshot.assetHandle !== undefined) {
+            const meshKey = `${snapshot.assetHandle}`;
+            mesh = this.meshes.get(meshKey);
+            if (mesh === undefined) {
+              mesh = {
+                handle: snapshot.assetHandle,
+                holders: 0,
+              };
+              this.meshes.set(meshKey, mesh);
+            }
           }
-        }
-        const source: MaterialBinding = {
-          material: snapshot.material,
-          materials: direct,
-          materialBindingSources: snapshot.materialBindingSources,
-          ...(overrides === undefined ? {} : { materialOverrides: overrides }),
+          const source: MaterialBinding = {
+            material: snapshot.material,
+            materials: direct,
+            materialBindingSources: snapshot.materialBindingSources,
+            ...(overrides === undefined ? {} : { materialOverrides: overrides }),
+          };
+          const held =
+            overrides === undefined || mesh === undefined
+              ? direct
+              : [
+                  ...new Set(
+                    overrides.filter((value): value is MaterialResource => value !== undefined),
+                  ),
+                ];
+          for (const resource of held) {
+            this.adopt(resource);
+            this.hold(resource);
+          }
+          const created: BindingGroup = {
+            source,
+            worldId: 0,
+            identity: getOpaqueResourceIdentity(source),
+            mesh,
+            held,
+            key,
+            geometry,
+            holders: 0,
+            members: undefined,
+            nonCasters: 0,
+            ownCasters: undefined,
+            prepared: undefined,
+            staged: { members: [], ownCasters: [], prepared: [] },
+          };
+          this.groups.set(key, created);
+          if (mesh !== undefined) mesh.holders++;
+          return created;
         };
-        const held =
-          overrides === undefined
-            ? direct
-            : [
-                ...new Set(
-                  overrides.filter((value): value is MaterialResource => value !== undefined),
-                ),
-              ];
-        for (const resource of held) {
-          this.adopt(resource);
-          this.hold(resource);
-        }
-        group = {
-          source,
-          identity: getOpaqueResourceIdentity(source),
-          mesh,
-          held,
-          key,
-          geometry,
-          holders: 0,
-          members: undefined,
-          nonCasters: 0,
-          ownCasters: undefined,
-          prepared: undefined,
-          staged: { members: [], ownCasters: [], prepared: [] },
-        };
-        this.groups.set(key, group);
-        if (mesh !== undefined) mesh.holders++;
+        group = createMaterialBindingGroup();
       }
       // Rebinding is explicit author work and admits current author overrides.
       for (const resource of group.held) {
@@ -1272,7 +1331,6 @@ export class MaterialDispatch {
     if (
       recent !== undefined &&
       recent.material === snapshot.material &&
-      recent.worldId === snapshot.worldId &&
       recent.assetHandle === snapshot.assetHandle &&
       recent.geometry === geometry &&
       sameElements(recent.materials, snapshot.materials) &&
@@ -1292,7 +1350,6 @@ export class MaterialDispatch {
       material: snapshot.material,
       materialOverrides:
         snapshot.materialOverrides === undefined ? undefined : [...snapshot.materialOverrides],
-      worldId: snapshot.worldId,
       assetHandle: snapshot.assetHandle,
       geometry,
       overrides,
@@ -1313,7 +1370,7 @@ export class MaterialDispatch {
       const mesh = group.mesh;
       if (mesh !== undefined) {
         if (--mesh.holders === 0) {
-          this.meshes.delete(`${mesh.worldId}:${mesh.handle}`);
+          this.meshes.delete(`${mesh.handle}`);
         }
       }
       for (const resource of group.held) this.release(resource);
@@ -1511,8 +1568,7 @@ export class MaterialDispatch {
     resolve: MeshMaterialResolver | undefined,
     pending: MeshMaterialBindingWrite[],
   ): { mesh: MeshGeometry | undefined; resources: MaterialResource[] } {
-    const mesh =
-      group.mesh === undefined ? undefined : meshes?.get(group.mesh.worldId, group.mesh.handle);
+    const mesh = group.mesh === undefined ? undefined : meshes?.get(group.mesh.handle);
     if (group.mesh !== undefined && mesh === undefined)
       throw new Error('Mesh Pass query requires accepted geometry');
     const effective =

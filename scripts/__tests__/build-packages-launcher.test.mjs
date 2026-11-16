@@ -6,6 +6,83 @@ import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+test('the package launcher forwards an admitted Assets export to the Content lifecycle', () => {
+  const root = mkdtempSync(join(tmpdir(), 'forgeax-content-source-launch-'));
+  const env = { ...process.env, GIT_ALLOW_PROTOCOL: 'file', EXPECTED_PRODUCT_SHA: '' };
+  const git = (cwd, ...args) => {
+    const result = spawnSync('git', ['-C', cwd, ...args], { env, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  try {
+    git(root, 'init', '-q');
+    git(root, 'config', 'user.name', 'Source test');
+    git(root, 'config', 'user.email', 'source@example.invalid');
+    writeFileSync(join(root, 'package.json'), '{"private":true}');
+    writeFileSync(
+      join(root, 'pnpm-workspace.yaml'),
+      "packages:\n  - 'packages/*'\nverifyDepsBeforeRun: false\nshellEmulator: true\n",
+    );
+    const remote = join(root, 'source');
+    mkdirSync(remote);
+    git(remote, 'init', '-q');
+    git(remote, 'config', 'user.name', 'Source test');
+    git(remote, 'config', 'user.email', 'source@example.invalid');
+    git(remote, 'config', 'core.autocrlf', 'false');
+    mkdirSync(join(remote, 'water'));
+    const original = join(process.cwd(), 'packages/content/assets/water');
+    const provenance = JSON.parse(readFileSync(join(original, 'provenance.json'), 'utf8'));
+    for (const { file } of provenance.files)
+      writeFileSync(join(remote, 'water', file), readFileSync(join(original, file)));
+    git(remote, 'add', '.');
+    git(remote, 'commit', '-qm', 'original Water sources');
+    git(root, 'submodule', 'add', remote, 'forgeax-engine-assets');
+    const pkg = join(root, 'packages/content');
+    mkdirSync(join(pkg, 'assets/water'), { recursive: true });
+    writeFileSync(join(pkg, 'assets/water/provenance.json'), JSON.stringify(provenance));
+    writeFileSync(
+      join(pkg, 'package.json'),
+      JSON.stringify({
+        name: '@forgeax/engine-content',
+        scripts: { build: 'node build.mjs' },
+      }),
+    );
+    // Launcher isolation control; the real Content preparation runs before this child.
+    writeFileSync(
+      join(pkg, 'build.mjs'),
+      "import { mkdirSync, writeFileSync } from 'node:fs'; mkdirSync('dist'); writeFileSync('dist/args', JSON.stringify(process.argv.slice(2)));\n",
+    );
+    git(root, 'add', '.');
+    git(root, 'commit', '-qm', 'Content lifecycle fixture');
+    const result = spawnSync(
+      process.execPath,
+      [
+        fileURLToPath(new URL('../build-packages.mjs', import.meta.url)),
+        '--target=@forgeax/engine-content',
+        '--assets-source-root',
+        remote,
+      ],
+      {
+        cwd: root,
+        env: { ...env, FORGEAX_REPO_ROOT: root, FORGEAX_PACKAGE_BUILD_RUNNER: 'pnpm' },
+        encoding: 'utf8',
+        timeout: 30000,
+      },
+    );
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.deepEqual(JSON.parse(readFileSync(join(pkg, 'dist/args'), 'utf8')), [
+      '--source-root',
+      join(remote, 'water'),
+    ]);
+    assert.deepEqual(
+      readFileSync(join(pkg, 'assets/water', provenance.files[0].file)),
+      readFileSync(join(original, provenance.files[0].file)),
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('a clean package build waits for a declared development compiler', () => {
   const root = mkdtempSync(join(tmpdir(), 'forgeax-package-compiler-'));
   try {

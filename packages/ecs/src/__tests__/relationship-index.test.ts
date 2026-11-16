@@ -8,6 +8,7 @@ import { getDerivedWriter } from '../internal';
 import { defineRelationship, RelationshipIndex, relationshipRole } from '../relationship-index';
 import { World } from '../world';
 import { worldInternal } from '../world-internal';
+import { worldRead } from '../world-read';
 
 describe('relationship index', () => {
   it('resolves the source row again when first mirror admission moves its table neighbor', () => {
@@ -127,18 +128,16 @@ describe('relationship index', () => {
     const world = new World();
     const target = world.spawn().unwrap();
     const source = world.spawn({ component: pair.source, data: { target } }).unwrap();
-    const beforeEpoch = world[worldInternal].getRelationshipEpoch(pair.source);
+    const beforeEpoch = world[worldRead].getRelationshipEpoch(pair.source);
     const exposed = world.get(target, pair.target).unwrap().sources;
 
     exposed.fill(0);
     exposed[0] = 0;
 
     expect(Array.from(world.get(target, pair.target).unwrap().sources)).toEqual([source]);
-    expect(
-      Array.from(world[worldInternal].getRelationshipTargetEntities(pair.source, target)),
-    ).toEqual([source]);
+    expect(world[worldRead].hasRelationshipEdge(pair.source, source, target)).toBe(true);
     expect(world.get(source, pair.source).unwrap().target).toBe(target);
-    expect(world[worldInternal].getRelationshipEpoch(pair.source)).toBe(beforeEpoch);
+    expect(world[worldRead].getRelationshipEpoch(pair.source)).toBe(beforeEpoch);
   });
 
   it('routes source set, row mutation, reparent, and null detach through one mirror owner', () => {
@@ -199,7 +198,7 @@ describe('relationship index', () => {
     const beforeValue = world.get(source, pair.source).unwrap().target;
     const beforeMirror = Array.from(world.get(target, pair.target).unwrap().sources);
     const beforeMutation = world[worldInternal].getMutationEpoch();
-    const beforeRelationship = world[worldInternal].getRelationshipEpoch(pair.source);
+    const beforeRelationship = world[worldRead].getRelationshipEpoch(pair.source);
     const result = world.set(source, pair.source, { target: stale });
 
     expect(result.ok).toBe(false);
@@ -207,7 +206,7 @@ describe('relationship index', () => {
     expect(world.get(source, pair.source).unwrap().target).toBe(beforeValue);
     expect(Array.from(world.get(target, pair.target).unwrap().sources)).toEqual(beforeMirror);
     expect(world[worldInternal].getMutationEpoch()).toBe(beforeMutation);
-    expect(world[worldInternal].getRelationshipEpoch(pair.source)).toBe(beforeRelationship);
+    expect(world[worldRead].getRelationshipEpoch(pair.source)).toBe(beforeRelationship);
 
     const row = world
       .query({ write: [pair.source] })
@@ -219,7 +218,7 @@ describe('relationship index', () => {
     }).toThrow('stale');
     expect(world.get(source, pair.source).unwrap().target).toBe(beforeValue);
     expect(world[worldInternal].getMutationEpoch()).toBe(beforeMutation);
-    expect(world[worldInternal].getRelationshipEpoch(pair.source)).toBe(beforeRelationship);
+    expect(world[worldRead].getRelationshipEpoch(pair.source)).toBe(beforeRelationship);
   });
 
   it('prepares mirror capacity before source structural mutation on allocation failure', () => {
@@ -238,7 +237,7 @@ describe('relationship index', () => {
     const originalAlloc = pool.alloc;
     const beforeMutation = world[worldInternal].getMutationEpoch();
     const beforeStructure = world[worldInternal].getStructureEpoch();
-    const beforeRelationship = world[worldInternal].getRelationshipEpoch(pair.source);
+    const beforeRelationship = world[worldRead].getRelationshipEpoch(pair.source);
     const structural = world[worldInternal].getStructuralChangeIndex();
     const pending = (): number[] => {
       const identities: number[] = [];
@@ -261,7 +260,7 @@ describe('relationship index', () => {
       expect(world.hasComponent(target, pair.target)).toBe(false);
       expect(world[worldInternal].getMutationEpoch()).toBe(beforeMutation);
       expect(world[worldInternal].getStructureEpoch()).toBe(beforeStructure);
-      expect(world[worldInternal].getRelationshipEpoch(pair.source)).toBe(beforeRelationship);
+      expect(world[worldRead].getRelationshipEpoch(pair.source)).toBe(beforeRelationship);
       expect(pool._liveCount()).toBe(0);
       expect(pending()).toEqual(beforeEvidence);
     } finally {

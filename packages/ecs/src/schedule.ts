@@ -1,8 +1,3 @@
-// @forgeax/engine-ecs — DAG Schedule: Kahn topological sort + cycle detection.
-//
-// addSystem registers a system + marks dirty. First update() triggers buildSchedule().
-// Same in-degree systems ordered by addSystem call order (stable tie-breaker, D-05).
-
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { type CommandBuffer, createCommandBuffer, flushCommands } from './commands';
 import type { Component } from './component';
@@ -15,221 +10,150 @@ import {
 } from './errors';
 import { isSuspendedMemoryResult, MemoryError } from './memory-types';
 import type { Query, QueryDescriptor } from './query/query';
-// type-only import: erases at build time, carries no runtime edge (same
-// criterion as scripts/check-ecs-no-runtime-import.mjs). `world.ts` already
-// value-imports `schedule.ts`; this back-reference is type-space only so no
-// runtime cycle forms (plan-strategy D-1).
-import type { ScheduleToken } from './schedule-token';
+import { beginScheduleCommandDrain, beginScheduleSystem } from './schedule-observation';
+import { FixedUpdate, isScheduleToken, type ScheduleToken, Update } from './schedule-token';
 import type { World } from './world';
 import { worldInternal } from './world-internal';
 
-// ────────────────────────────────────────────────────────────────────────────
-// Types
-// ────────────────────────────────────────────────────────────────────────────
+const SYSTEM_ID = Symbol.for('forgeax.ecs.system.identity');
+const SYSTEM_SET_ID = Symbol.for('forgeax.ecs.system-set.identity');
 
-type SystemQueryResults<
-  Qs extends ReadonlyArray<QueryDescriptor> = ReadonlyArray<QueryDescriptor>,
-> = {
+/** A stable system identity; its name is a diagnostic label. */
+export interface SystemToken {
+  readonly [SYSTEM_ID]: true;
+  readonly name: string;
+}
+
+export interface SystemSet {
+  readonly [SYSTEM_SET_ID]: true;
+  readonly name: string;
+  readonly runIf?: (world: World) => boolean;
+  readonly chained?: boolean;
+}
+
+export type SystemOrderReference = SystemToken | SystemSet | ScheduleToken;
+export type ScheduleNode = SystemToken | ScheduleToken;
+
+type SystemQueryResults<Qs extends readonly QueryDescriptor[]> = {
   [K in keyof Qs]: Qs[K] extends QueryDescriptor<
-    infer R extends ReadonlyArray<Component>,
-    infer W extends ReadonlyArray<Component>,
-    infer O extends ReadonlyArray<Component>
+    infer R extends readonly Component[],
+    infer W extends readonly Component[],
+    infer O extends readonly Component[]
   >
     ? Query<NoInfer<R>, NoInfer<W>, NoInfer<O>>
     : Query;
 };
 
-/**
- * System descriptor passed to `world.addSystem` — `fn` receives one persistent
- * executable Query per descriptor, mapped over `Qs` without casts.
- *
- * `Qs` is the tuple of query descriptors; defaults to
- * `readonly QueryDescriptor[]` so non-generic call sites stay zero-modification
- * (KD-5). The `fn` first parameter is mapped over `Qs` so each
- * `queryResults[i]` recovers its own row access roles (S-5, KD-2).
- *
- * @example
- * ```ts
- * // Single-query system — row access recovers each component schema.
- * import { defineComponent, World } from '@forgeax/engine-ecs';
- *
- * const Position = defineComponent('Position', { x: 'f32', y: 'f32' });
- * const Velocity = defineComponent('Velocity', { dx: 'f32', dy: 'f32' });
- *
- * const world = new World();
- * world.addSystem(Update, {
- *   name: 'movement',
- *   queries: [{ write: [Position], read: [Velocity] }],
- *   fn: (_world, queryResults, _commands) => {
- *     for (const row of queryResults[0]) {
- *       row.mut(Position).x += row.get(Velocity).dx;
- *     }
- *   },
- * });
- * ```
- *
- * @example
- * ```ts
- * // Multi-query system — each queryResults[i] keeps its own row shape.
- * const Health = defineComponent('Health', { hp: 'f32' });
- * world.addSystem(Update, {
- *   name: 'multi',
- *   queries: [{ read: [Position] }, { read: [Health] }],
- *   fn: (_world, queryResults) => {
- *     for (const row of queryResults[0]) void row.get(Position).x;
- *     for (const row of queryResults[1]) void row.get(Health).hp;
- *   },
- * });
- * ```
- *
- * @example
- * ```ts
- * // Commands-only system — `queries: []` is a legal form; fn receives `[]`.
- * world.addSystem(Update, {
- *   name: 'spawner',
- *   queries: [],
- *   fn: (_world, _queryResults, commands) => {
- *     commands.spawn({ component: Position, data: { x: 0, y: 0 } });
- *   },
- * });
- * ```
- */
+/** Executable behavior and ordering, independent of registration identity. */
 export interface SystemDescriptor<
-  Qs extends ReadonlyArray<QueryDescriptor> = ReadonlyArray<QueryDescriptor>,
+  Qs extends readonly QueryDescriptor[] = readonly QueryDescriptor[],
 > {
-  /** Unique system name (used for before/after references). */
-  readonly name: string;
-  /** Query descriptors this system reads. */
   readonly queries: Qs;
-  /**
-   * Deferred structural capability, snapshotted at registration. `none` passes
-   * a permanently closed capability and creates no per-run transaction.
-   * Direct World writes retain their ordinary structural/query fences.
-   */
   readonly commands?: 'deferred' | 'none';
-  /**
-   * System function — receives the World, resolved query results, and commands.
-   *
-   * @param world The owning World — read resources (`world.getResource(KEY)`),
-   * resolve components by name, etc. without closure capture.
-   * @param queryResults Mapped over `Qs`: each entry is a persistent Query.
-   * @param commands Deferred-mutation buffer (flushed after the system).
-   */
-  readonly fn: (
-    world: World,
-    queryResults: SystemQueryResults<Qs>,
-    commands: CommandBuffer,
-  ) => void | unknown;
-  /** Run this system after named systems or the FixedUpdate anchor. */
-  readonly after?: ReadonlyArray<string | ScheduleToken>;
-  /** Run this system before named systems or the FixedUpdate anchor. */
-  readonly before?: ReadonlyArray<string | ScheduleToken>;
-  /**
-   * Run condition. Evaluated each frame after ParamValidation passes (tag
-   * 'ok') and before query iteration. Returning `false` skips the system silently —
-   * no query runs, no fn call, no state added (plan-strategy D-8). Omitting it
-   * (undefined) always runs the system.
-   */
+  readonly fn: (world: World, queries: SystemQueryResults<Qs>, commands: CommandBuffer) => unknown;
+  readonly before?: readonly SystemOrderReference[];
+  readonly after?: readonly SystemOrderReference[];
   readonly runIf?: (world: World) => boolean;
 }
 
-/**
- * A registered system token returned by {@link defineSystem}. Structurally the
- * frozen {@link SystemDescriptor} itself (plan-strategy D-6 — "define ==
- * register"). `world.addSystem(handle)` consumes it directly; the generic `Qs`
- * flows through so the `fn` per-query row access shapes survive (S-5).
- */
-export type SystemHandle<
-  Qs extends ReadonlyArray<QueryDescriptor> = ReadonlyArray<QueryDescriptor>,
-> = SystemDescriptor<Qs>;
+export type System<Qs extends readonly QueryDescriptor[] = readonly QueryDescriptor[]> =
+  SystemDescriptor<Qs> & SystemToken & { readonly sets?: readonly SystemSet[] };
 
-/** A query-free system receives the same closed immutable empty tuple. */
+export function defineSystem<const Qs extends readonly QueryDescriptor[]>(
+  descriptor: SystemDescriptor<Qs> & {
+    readonly name: string;
+    readonly sets?: readonly SystemSet[];
+  },
+): System<Qs> {
+  const { name, queries, fn, commands, before, after, runIf, sets } = descriptor;
+  if (name.length === 0) throw new RangeError('A system requires a diagnostic name');
+  for (const set of sets ?? [])
+    if (!isSystemSet(set)) throw new TypeError('System membership requires a system set token');
+  for (const reference of [...(before ?? []), ...(after ?? [])]) {
+    if (!isSystemToken(reference) && !isSystemSet(reference) && !isScheduleToken(reference))
+      throw new TypeError('System ordering requires a system, system set or schedule token');
+  }
+  return Object.freeze({
+    name,
+    queries,
+    fn,
+    [SYSTEM_ID]: true as const,
+    ...(commands === undefined ? {} : { commands }),
+    ...(before === undefined ? {} : { before }),
+    ...(after === undefined ? {} : { after }),
+    ...(runIf === undefined ? {} : { runIf }),
+    ...(sets === undefined ? {} : { sets }),
+  });
+}
+
+export function defineSystemSet(options: {
+  readonly name: string;
+  readonly runIf?: (world: World) => boolean;
+  readonly chained?: boolean;
+}): SystemSet {
+  if (options.name.length === 0) throw new RangeError('A system set requires a diagnostic name');
+  return Object.freeze({
+    name: options.name,
+    [SYSTEM_SET_ID]: true as const,
+    ...(options.runIf === undefined ? {} : { runIf: options.runIf }),
+    ...(options.chained === undefined ? {} : { chained: options.chained }),
+  });
+}
+
+export function isSystemToken(value: unknown): value is SystemToken {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    (value as Partial<SystemToken>)[SYSTEM_ID] === true
+  );
+}
+export function isSystemSet(value: unknown): value is SystemSet {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    (value as Partial<SystemSet>)[SYSTEM_SET_ID] === true
+  );
+}
+
 const EMPTY_QUERY_RESULTS: readonly [] = Object.freeze([]);
-
 function deferredCommandsUnavailable(): never {
   throw new Error('System declared commands: none; deferred structural commands are unavailable');
 }
-
-/** No invocation-owned state exists when the system explicitly declines it. */
 const NO_COMMANDS: CommandBuffer = Object.freeze({
-  status: 'aborted',
+  status: 'committed',
   spawn: deferredCommandsUnavailable,
   despawn: deferredCommandsUnavailable,
   addComponent: deferredCommandsUnavailable,
   removeComponent: deferredCommandsUnavailable,
+  isDeferred: () => false,
   commit: deferredCommandsUnavailable,
   abort: () => {},
-  isDeferred: () => false,
 });
 
-/** Internal system record with registration index. */
 interface SystemRecord {
   descriptor: SystemDescriptor;
-  /** Registration order index (for tie-breaking). */
-  registrationIndex: number;
-  /** Cached executable Queries, one per descriptor. */
+  readonly registrationIndex: number;
   queries: Query[] | null;
   deferredCommands: boolean;
 }
-
-// ────────────────────────────────────────────────────────────────────────────
-// Schedule
-// ────────────────────────────────────────────────────────────────────────────
-
-/**
- * Per-set record in the Schedule. Created lazily on first addSystems /
- * addSystems call for a given set name.
- */
 export interface SetRecord {
-  /** Member system names (insertion-ordered, Set preserves add order). */
-  readonly members: Set<string>;
-  /** Snapshot of runIf from the defining token. */
-  readonly runIf: ((world: import('./world').World) => boolean) | undefined;
-  /** Snapshot of chained from the defining token. */
+  readonly members: Set<SystemToken>;
+  readonly runIf: ((world: World) => boolean) | undefined;
   readonly chained: boolean;
 }
-
-/** The Schedule manages system registration, DAG sorting, and execution. */
 export interface Schedule {
-  /** Owning token for scope-aware diagnostics. */
   readonly token: ScheduleToken;
-  /** All registered systems by name. */
-  systems: Map<string, SystemRecord>;
-  /** Set records keyed by set name. Created lazily. */
-  sets: Map<string, SetRecord>;
-  /** Next registration index. */
+  readonly systems: Map<SystemToken, SystemRecord>;
+  readonly sets: Map<SystemSet, SetRecord>;
   nextIndex: number;
-  /** Whether the sorted order is stale. */
   dirty: boolean;
-  /** Sorted system names after buildSchedule(). */
-  sortedOrder: string[];
-  /** Direct predecessor names derived while the DAG is built. */
-  predecessors: Map<string, readonly string[]>;
-  /** Reverse set membership derived with the schedule graph. */
-  systemToSets: Map<string, string[]>;
-  /**
-   * Every built system is query-free, ungated and edge-free: one run needs no
-   * set gate, query materialization or predecessor flush. Derived on build.
-   */
+  sortedOrder: ScheduleNode[];
+  predecessors: Map<ScheduleNode, readonly ScheduleNode[]>;
+  systemToSets: Map<SystemToken, SystemSet[]>;
   plain: boolean;
-  /** At least one built system can enqueue deferred structural work. */
   deferredCommands: boolean;
-  /** `scheduleRevision` at which cross-schedule references last validated. */
-  validatedRevision: number;
+  referencesValidated: boolean;
 }
-
-/**
- * Process-wide registration revision: any system addition, removal or
- * replacement in any schedule advances it, so a run revalidates references
- * only after registration actually changed.
- */
-let scheduleRevision = 0;
-
-export function currentScheduleRevision(): number {
-  return scheduleRevision;
-}
-
-/** Create a fresh Schedule. */
 export function createSchedule(token: ScheduleToken): Schedule {
   return {
     token,
@@ -242,463 +166,227 @@ export function createSchedule(token: ScheduleToken): Schedule {
     systemToSets: new Map(),
     plain: true,
     deferredCommands: false,
-    validatedRevision: -1,
+    referencesValidated: false,
   };
 }
-
-/**
- * Register a system. Marks schedule as dirty.
- * Queries are lazily initialized on first runSchedule.
- *
- * `const Qs` locks the `queries` tuple at the call site so `fn`'s first
- * parameter recovers per-query row shapes without `as const` annotations
- * (S-5, KD-2). `SystemRecord` itself is intentionally non-generic — the
- * heterogeneous `Qs` cannot be expressed inside the systems Map (KD-3).
- */
-export function addSystem<const Qs extends ReadonlyArray<QueryDescriptor>>(
+export function addSystem<const Qs extends readonly QueryDescriptor[]>(
   schedule: Schedule,
-  descriptor: SystemDescriptor<Qs>,
+  system: System<Qs>,
 ): void {
-  const record: SystemRecord = {
-    descriptor: descriptor as unknown as SystemDescriptor,
+  if (!isSystemToken(system)) throw new TypeError('Use defineSystem to create a system token');
+  if (schedule.systems.has(system)) return;
+  for (const set of system.sets ?? [])
+    if (!isSystemSet(set)) throw new TypeError('Use defineSystemSet to create a system set');
+  schedule.systems.set(system, {
+    descriptor: system as unknown as SystemDescriptor,
     registrationIndex: schedule.nextIndex++,
     queries: null,
-    deferredCommands: descriptor.commands !== 'none',
-  };
-  schedule.systems.set(descriptor.name, record);
-  schedule.dirty = true;
-  scheduleRevision += 1;
-}
-
-// ────────────────────────────────────────────────────────────────────────────
-// System token construction (token-first World ownership)
-// ────────────────────────────────────────────────────────────────────────────
-
-/**
- * Define a system at module level. Returns a frozen {@link SystemHandle} token
- * (the descriptor itself); executable registration is World-local.
- *
- * `world.addSystem(handle)` consumes the token directly — no by-name overload
- * (OOS-8). Duplicate names are resolved by the owning World schedule.
- *
- * `const Qs` locks the `queries` tuple so `fn`'s query-results parameter
- * recovers per-query row access shapes without `as const` (S-5).
- *
- * @example
- * ```ts
- * const Move = defineSystem({
- *   name: 'movement',
- *   queries: [{ with: [Position, Velocity] }],
- *   fn: (_world, queryResults) => { ... },
- * });
- * world.addSystem(Move);
- * ```
- */
-export function defineSystem<const Qs extends ReadonlyArray<QueryDescriptor>>(
-  descriptor: SystemDescriptor<Qs>,
-): SystemHandle<Qs> {
-  const handle = Object.freeze(descriptor) as unknown as SystemHandle<Qs>;
-  return handle;
-}
-
-/**
- */
-// ────────────────────────────────────────────────────────────────────────────
-// SystemSet — nominal token (D-2c step 1, w2)
-// ────────────────────────────────────────────────────────────────────────────
-
-/** Brand symbol for {@link SystemSet}. Declared (not runtime-initialised) so
- * the token interface carries nominal identity without a runtime allocation.
- * Mirrors the `FORGEAX_STATE_BRAND` pattern in `@forgeax/engine-state`. */
-declare const FORGEAX_SYSTEM_SET_BRAND: unique symbol;
-
-/**
- * Opaque branded type for system-set tokens.
- *
- * Use {@link defineSystemSet} to create a token; never construct manually.
- * The {@link __forgeaxSystemSet} brand prevents plain-object assignment and
- * enables TypeScript narrowing at the two mutation entry points.
- */
-export interface SystemSet {
-  /** Brand — prevents structural compatibility with plain objects. */
-  readonly __forgeaxSystemSet: typeof FORGEAX_SYSTEM_SET_BRAND;
-  /** The user-supplied set name. */
-  readonly name: string;
-  /** Optional per-frame run condition. Consumed by M3 condition gate. */
-  readonly runIf?: (world: import('./world').World) => boolean;
-  /** Whether this set forms a sequential chain (M2). */
-  readonly chained?: boolean;
-}
-
-/**
- * Define a system set at module level. Returns a frozen branded token and
- * keeps membership in the World-local Schedule.
- *
- * Duplicate names are independent tokens; the owning World decides membership.
- *
- * @example
- * ```ts
- * const GameplaySet = defineSystemSet({ name: 'gameplay', runIf: (w) => !w.getResource<boolean>('paused') });
- * const OrderedSet = defineSystemSet({ name: 'ordered', chained: true });
- * ```
- */
-export function defineSystemSet(opts: {
-  readonly name: string;
-  readonly runIf?: (world: import('./world').World) => boolean;
-  readonly chained?: boolean;
-}): SystemSet {
-  const token: Record<string, unknown> = {
-    __forgeaxSystemSet: undefined as unknown as typeof FORGEAX_SYSTEM_SET_BRAND,
-    name: opts.name,
-  };
-  if (opts.runIf !== undefined) {
-    token.runIf = opts.runIf;
-  }
-  if (opts.chained !== undefined) {
-    token.chained = opts.chained;
-  }
-  const frozen = Object.freeze(token) as unknown as SystemSet;
-  return frozen;
-}
-
-/**
-/**
- * Validate every token in `tokens` for local structural validity.
- * Returns `ok(undefined)` for a structurally valid token and reports an empty
- * token name as a structured registration error.
- *
- * Does not write any Schedule state — callers consume the `Result` and proceed
- * only on `ok`.
- */
-function validateSystemSetTokens(
-  tokens: readonly SystemSet[],
-): Result<void, SystemSetNotRegisteredError> {
-  for (const token of tokens) {
-    if (token.name.length === 0) {
-      return err(systemSetNotRegistered(token.name, []));
+    deferredCommands: system.commands !== 'none',
+  });
+  for (const set of system.sets ?? []) {
+    if (!isSystemSet(set)) throw new TypeError('Use defineSystemSet to create a system set');
+    let record = schedule.sets.get(set);
+    if (record === undefined) {
+      record = { members: new Set(), runIf: set.runIf, chained: set.chained ?? false };
+      schedule.sets.set(set, record);
     }
+    record.members.add(system);
   }
-  return ok(undefined);
+  schedule.dirty = true;
 }
-
-/**
- * Remove a registered system by name (M2 — plan-strategy D-3).
- *
- * Drops the entry from `schedule.systems` and marks the schedule dirty so the
- * next `runSchedule` rebuilds the sorted order via Kahn topo. Cycle detection
- * already happens inside `buildSchedule`, so a removal that breaks an unrelated
- * `before/after` reference simply skips the unknown name (existing behaviour).
- *
- * Failure: name not registered → `Result.err(ScheduleMutationError)` with
- * `.code = 'system-before-unknown'` and `.detail.candidates` carrying the
- * registered names for AI-friendly typo recovery.
- */
 export function removeSystem(
   schedule: Schedule,
-  name: string,
+  system: SystemToken,
 ): Result<void, ScheduleMutationError> {
-  if (!schedule.systems.has(name)) {
-    return err(
-      new ScheduleMutationError(
-        'system-before-unknown',
-        `Cannot removeSystem: no system registered as "${name}".`,
-        'Call world.inspect().systems to discover registered names.',
-        { candidates: [...schedule.systems.keys()] },
-      ),
-    );
-  }
-  schedule.systems.delete(name);
-  // Prune set membership: remove this system name from every set's members (D-1).
-  for (const [, setRecord] of schedule.sets) {
-    setRecord.members.delete(name);
+  if (!schedule.systems.has(system)) return missingSystem(schedule, system);
+  schedule.systems.delete(system);
+  for (const [token, set] of schedule.sets) {
+    set.members.delete(system);
+    if (set.members.size === 0) schedule.sets.delete(token);
   }
   schedule.dirty = true;
-  scheduleRevision += 1;
   return ok(undefined);
 }
-
-/**
- * Replace a registered system in-place (M2 — plan-strategy D-3 atomic semantics).
- *
- * Overwrites the `descriptor` field of the existing `SystemRecord` while
- * keeping `registrationIndex` and the `Map` slot identical, so all `before /
- * after` edges that reference this name remain bound to the same slot. Marks
- * the schedule dirty: the next `runSchedule` re-sorts.
- *
- * Failure: name not registered → `Result.err(ScheduleMutationError)` with
- * `.code = 'system-before-unknown'`.
- */
-export function replaceSystem<const Qs extends ReadonlyArray<QueryDescriptor>>(
+export function replaceSystem<const Qs extends readonly QueryDescriptor[]>(
   schedule: Schedule,
-  name: string,
+  system: SystemToken,
   descriptor: SystemDescriptor<Qs>,
 ): Result<void, ScheduleMutationError> {
-  const record = schedule.systems.get(name);
-  if (!record) {
-    return err(
-      new ScheduleMutationError(
-        'system-before-unknown',
-        `Cannot replaceSystem: no system registered as "${name}".`,
-        'Call world.inspect().systems to discover registered names; or addSystem(descriptor) to register a new system.',
-        { candidates: [...schedule.systems.keys()] },
-      ),
-    );
-  }
+  const record = schedule.systems.get(system);
+  if (record === undefined) return missingSystem(schedule, system);
   record.descriptor = descriptor as unknown as SystemDescriptor;
   record.deferredCommands = descriptor.commands !== 'none';
-  // Reset cached query states — descriptor.queries may have changed shape.
   record.queries = null;
   schedule.dirty = true;
-  scheduleRevision += 1;
   return ok(undefined);
 }
-
-/**
- * Batch-register systems to a set. Validates the set token before writing.
- *
- * - First call for a system name: registers via the existing `addSystem` path.
- * - Subsequent calls: only adds the system name to the set's members (dedup).
- * - `runIf` / `chained` are snapshotted from the token into the SetRecord on
- *   first encounter.
- *
- * Returns `Result.err` with `SystemSetNotRegisteredError` if the set token
- * fails identity validation.
- */
-export function addSystems<const Qs extends ReadonlyArray<QueryDescriptor>>(
+function missingSystem(
+  schedule: Schedule,
+  system: SystemToken,
+): Result<never, ScheduleMutationError> {
+  return err(
+    new ScheduleMutationError(
+      'system-before-unknown',
+      `System '${system?.name ?? 'Unknown'}' is not registered in ${schedule.token.name}.`,
+      'Pass the original registered system token.',
+      { candidates: [...schedule.systems.keys()].map((token) => token.name) },
+    ),
+  );
+}
+export function addSystems<const Qs extends readonly QueryDescriptor[]>(
   schedule: Schedule,
   set: SystemSet,
-  systems: ReadonlyArray<SystemDescriptor<Qs>>,
+  systems: readonly System<Qs>[],
 ): Result<void, SystemSetNotRegisteredError> {
-  const validated = validateSystemSetTokens([set]);
-  if (!validated.ok) {
-    return err(validated.error);
+  if (!isSystemSet(set)) return err(systemSetNotRegistered('Unknown', []));
+  if (systems.length === 0) return ok(undefined);
+  let record = schedule.sets.get(set);
+  if (record === undefined) {
+    record = { members: new Set(), runIf: set.runIf, chained: set.chained ?? false };
+    schedule.sets.set(set, record);
   }
-
-  const setName = set.name;
-  let record = schedule.sets.get(setName);
-  if (!record) {
-    record = {
-      members: new Set(),
-      runIf: set.runIf,
-      chained: set.chained ?? false,
-    };
-    schedule.sets.set(setName, record);
-  }
-
   for (const system of systems) {
-    const name = system.name;
-    // Dedup: only register the system once in schedule.systems.
-    if (!schedule.systems.has(name)) {
-      addSystem(schedule, system);
-    }
-    // Always add membership — multi-belong is supported.
-    record.members.add(name);
+    addSystem(schedule, system);
+    record.members.add(system);
   }
-
   schedule.dirty = true;
-  scheduleRevision += 1;
   return ok(undefined);
 }
 
-/**
- * Build the sorted execution order via Kahn's topological sort.
- * Throws CyclicDependencyError if a cycle is detected.
- *
- * @returns sorted system names
- */
-export function buildSchedule(schedule: Schedule): string[] {
+/** Compile object identities into an ordered graph. Missing optional owners add no edge. */
+export function buildSchedule(schedule: Schedule): ScheduleNode[] {
   const systems = schedule.systems;
-  const names = [...systems.keys()];
-  if (schedule.token.name === 'Update') names.push('FixedUpdate');
-  const nameSet = new Set(names);
-
-  // Build adjacency list + in-degree map.
-  const adj = new Map<string, string[]>(); // adj[a] = [b] means a → b (a must run before b)
-  const inDegree = new Map<string, number>();
-  const predecessors = new Map<string, Set<string>>();
-
-  for (const name of names) {
-    adj.set(name, []);
-    inDegree.set(name, 0);
-    predecessors.set(name, new Set());
+  const nodes: ScheduleNode[] = [...systems.keys()];
+  if (schedule.token === Update) nodes.push(FixedUpdate);
+  const present = new Set(nodes);
+  const adjacent = new Map<ScheduleNode, Set<ScheduleNode>>();
+  const predecessors = new Map<ScheduleNode, Set<ScheduleNode>>();
+  const degree = new Map<ScheduleNode, number>();
+  for (const node of nodes) {
+    adjacent.set(node, new Set());
+    predecessors.set(node, new Set());
+    degree.set(node, 0);
   }
-
-  const addEdge = (source: string, target: string): void => {
-    adj.get(source)?.push(target);
-    predecessors.get(target)?.add(source);
-    inDegree.set(target, (inDegree.get(target) ?? 0) + 1);
+  const edge = (from: ScheduleNode, to: ScheduleNode): void => {
+    const outgoing = adjacent.get(from);
+    if (outgoing === undefined || outgoing.has(to)) return;
+    outgoing.add(to);
+    predecessors.get(to)?.add(from);
+    degree.set(to, (degree.get(to) ?? 0) + 1);
   };
-  const orderReferenceName = (reference: string | ScheduleToken): string =>
-    typeof reference === 'string' ? reference : reference.name;
-
-  // A reference to the registration scope brackets every execution of that
-  // schedule. Reuse the existing ordering vocabulary for per-tick boundaries.
-  const first = new Set<string>();
-  const last = new Set<string>();
-  for (const [name, record] of systems) {
-    if (record.descriptor.before?.includes(schedule.token)) first.add(name);
-    if (record.descriptor.after?.includes(schedule.token)) last.add(name);
+  const first = new Set<SystemToken>();
+  const last = new Set<SystemToken>();
+  for (const [system, record] of systems) {
+    if (record.descriptor.before?.includes(schedule.token)) first.add(system);
+    if (record.descriptor.after?.includes(schedule.token)) last.add(system);
   }
-  for (const name of names) {
-    if (first.has(name) && last.has(name)) addEdge(name, name);
-    if (!first.has(name)) for (const start of first) addEdge(start, name);
-    if (!last.has(name)) for (const end of last) addEdge(name, end);
+  for (const node of nodes) {
+    if (first.has(node as SystemToken) && last.has(node as SystemToken)) edge(node, node);
+    if (!first.has(node as SystemToken)) for (const start of first) edge(start, node);
+    if (!last.has(node as SystemToken)) for (const end of last) edge(node, end);
   }
-
-  for (const [name, record] of systems) {
-    const desc = record.descriptor;
-
-    // "after" constraints: for each dep in after, dep → name (dep runs before name)
-    if (desc.after) {
-      for (const reference of desc.after) {
-        if (reference === schedule.token) continue;
-        const dep = orderReferenceName(reference);
-        if (!nameSet.has(dep)) continue; // scope validation handles cross-schedule references
-        addEdge(dep, name);
-      }
+  const targets = (reference: SystemOrderReference): readonly ScheduleNode[] => {
+    if (isSystemSet(reference)) return [...(schedule.sets.get(reference)?.members ?? [])];
+    return present.has(reference) ? [reference] : [];
+  };
+  for (const [system, record] of systems) {
+    for (const reference of record.descriptor.after ?? []) {
+      if (reference !== schedule.token)
+        for (const dependency of targets(reference)) edge(dependency, system);
     }
-
-    // "before" constraints: for each target in before, name → target (name runs before target)
-    if (desc.before) {
-      for (const reference of desc.before) {
-        if (reference === schedule.token) continue;
-        const target = orderReferenceName(reference);
-        if (!nameSet.has(target)) continue; // scope validation handles cross-schedule references
-        addEdge(name, target);
-      }
+    for (const reference of record.descriptor.before ?? []) {
+      if (reference !== schedule.token)
+        for (const target of targets(reference)) edge(system, target);
     }
   }
-
-  // Set membership contributes only run conditions and optional chaining.
-  const systemToSets = new Map<string, string[]>();
-  for (const [setName, setRecord] of schedule.sets) {
-    for (const member of setRecord.members) {
-      if (!systems.has(member)) continue;
-      let sets = systemToSets.get(member);
-      if (sets === undefined) {
-        sets = [];
-        systemToSets.set(member, sets);
+  const memberships = new Map<SystemToken, SystemSet[]>();
+  for (const [set, record] of schedule.sets) {
+    for (const member of record.members) {
+      let groups = memberships.get(member);
+      if (groups === undefined) {
+        groups = [];
+        memberships.set(member, groups);
       }
-      sets.push(setName);
+      groups.push(set);
     }
-    if (setRecord.chained) {
-      const members = [...setRecord.members];
-      for (let i = 0; i < members.length - 1; i++) {
-        const m1 = members[i];
-        const m2 = members[i + 1];
-        if (!m1 || !m2 || !nameSet.has(m1) || !nameSet.has(m2)) continue;
-        // m1 → m2 (m1 runs before m2)
-        addEdge(m1, m2);
+    if (record.chained) {
+      const members = [...record.members];
+      for (let index = 1; index < members.length; index++) {
+        const previous = members[index - 1];
+        const next = members[index];
+        if (previous !== undefined && next !== undefined) edge(previous, next);
       }
     }
   }
-
-  // Kahn's algorithm with registration-order tie-breaker.
-  // Use a queue sorted by registrationIndex for deterministic ordering.
-  const queue: string[] = [];
-  for (const name of names) {
-    if (inDegree.get(name) === 0) {
-      queue.push(name);
-    }
-  }
-  // Sort initial queue by registration index. The fixed anchor is intrinsic and
-  // receives a deterministic slot after user systems with the same indegree.
-  queue.sort(
-    (a, b) =>
-      (systems.get(a)?.registrationIndex ?? Number.MAX_SAFE_INTEGER) -
-      (systems.get(b)?.registrationIndex ?? Number.MAX_SAFE_INTEGER),
-  );
-
-  const sorted: string[] = [];
+  const registration = (node: ScheduleNode): number =>
+    systems.get(node as SystemToken)?.registrationIndex ?? Number.MAX_SAFE_INTEGER;
+  const compare = (a: ScheduleNode, b: ScheduleNode): number => registration(a) - registration(b);
+  const queue = nodes.filter((node) => degree.get(node) === 0).sort(compare);
+  const sorted: ScheduleNode[] = [];
   while (queue.length > 0) {
-    // biome-ignore lint/style/noNonNullAssertion: while(queue.length > 0) guarantees shift() returns a value
-    const current = queue.shift()!;
-    sorted.push(current);
-
-    const neighbors = adj.get(current) ?? [];
-    // Collect newly freed neighbors, then sort by registration index
-    const freed: string[] = [];
-    for (const neighbor of neighbors) {
-      const newDeg = (inDegree.get(neighbor) ?? 0) - 1;
-      inDegree.set(neighbor, newDeg);
-      if (newDeg === 0) {
-        freed.push(neighbor);
-      }
+    const node = queue.shift();
+    if (node === undefined) break;
+    sorted.push(node);
+    const ready: ScheduleNode[] = [];
+    for (const next of adjacent.get(node) ?? []) {
+      const remaining = (degree.get(next) ?? 0) - 1;
+      degree.set(next, remaining);
+      if (remaining === 0) ready.push(next);
     }
-    freed.sort(
-      (a, b) =>
-        (systems.get(a)?.registrationIndex ?? Number.MAX_SAFE_INTEGER) -
-        (systems.get(b)?.registrationIndex ?? Number.MAX_SAFE_INTEGER),
-    );
-    queue.push(...freed);
+    queue.push(...ready.sort(compare));
   }
-
-  // Cycle detection: if we didn't process all nodes, there's a cycle.
-  if (sorted.length < names.length) {
-    // Find nodes still with in-degree > 0 (part of cycle).
-    const remaining = names.filter((n) => !sorted.includes(n));
-    const cyclePath = findCyclePath(remaining, adj);
-    throw new CyclicDependencyError(cyclePath);
+  if (sorted.length !== nodes.length) {
+    const unfinished = nodes.filter((node) => !sorted.includes(node));
+    throw new CyclicDependencyError(findCyclePath(unfinished, adjacent).map((node) => node.name));
   }
-
   schedule.sortedOrder = sorted;
-  schedule.predecessors = new Map([...predecessors].map(([name, edges]) => [name, [...edges]]));
-  schedule.systemToSets = systemToSets;
+  schedule.predecessors = new Map([...predecessors].map(([node, before]) => [node, [...before]]));
+  schedule.systemToSets = memberships;
   schedule.plain =
-    schedule.sets.size === 0 &&
-    sorted.every((name) => {
-      const record = systems.get(name);
+    ![...schedule.sets.values()].some((set) => set.runIf !== undefined) &&
+    sorted.every((node) => {
+      const record = systems.get(node as SystemToken);
       return (
         record !== undefined &&
         record.descriptor.queries.length === 0 &&
         record.descriptor.runIf === undefined &&
-        (predecessors.get(name)?.size ?? 0) === 0
+        (predecessors.get(node)?.size ?? 0) === 0
       );
     });
-  schedule.deferredCommands = sorted.some((name) => systems.get(name)?.deferredCommands === true);
+  schedule.deferredCommands = sorted.some(
+    (node) => systems.get(node as SystemToken)?.deferredCommands === true,
+  );
   schedule.dirty = false;
   return sorted;
 }
-
-/**
- * Find a cycle path among the remaining (unprocessed) nodes.
- * Returns the cycle as a readonly array of node names.
- */
-function findCyclePath(remaining: string[], adj: Map<string, string[]>): readonly string[] {
-  const remainSet = new Set(remaining);
-  const visited = new Set<string>();
-  const path: string[] = [];
-
-  function dfs(node: string): readonly string[] | null {
-    if (visited.has(node)) {
-      // Found cycle: extract cycle from path
-      const cycleStart = path.indexOf(node);
-      const cycle = path.slice(cycleStart);
-      cycle.push(node);
-      return cycle;
-    }
-    visited.add(node);
+function findCyclePath(
+  nodes: ScheduleNode[],
+  edges: Map<ScheduleNode, Set<ScheduleNode>>,
+): ScheduleNode[] {
+  const remaining = new Set(nodes);
+  const done = new Set<ScheduleNode>();
+  const path: ScheduleNode[] = [];
+  const active = new Set<ScheduleNode>();
+  const visit = (node: ScheduleNode): ScheduleNode[] | undefined => {
+    if (active.has(node)) return [...path.slice(path.indexOf(node)), node];
+    if (done.has(node)) return undefined;
+    active.add(node);
     path.push(node);
-
-    for (const neighbor of adj.get(node) ?? []) {
-      if (!remainSet.has(neighbor)) continue;
-      const result = dfs(neighbor);
-      if (result) return result;
+    for (const next of edges.get(node) ?? []) {
+      if (!remaining.has(next)) continue;
+      const cycle = visit(next);
+      if (cycle !== undefined) return cycle;
     }
-
     path.pop();
-    return null;
+    active.delete(node);
+    done.add(node);
+    return undefined;
+  };
+  for (const node of nodes) {
+    const cycle = visit(node);
+    if (cycle !== undefined) return cycle;
   }
-
-  for (const start of remaining) {
-    visited.clear();
-    path.length = 0;
-    const result = dfs(start);
-    if (result) return result;
-  }
-
-  /* istanbul ignore next -- fallback: DFS always finds cycle in remaining nodes */
-  return remaining;
+  return nodes;
 }
 
 function poisonSystemFailure(world: World, systemName: string, cause: unknown): void {
@@ -713,7 +401,7 @@ function poisonSystemFailure(world: World, systemName: string, cause: unknown): 
 }
 
 function abortOutstandingCommands(
-  commandsBySystem: Map<string, ReturnType<typeof createCommandBuffer>> | undefined,
+  commandsBySystem: Map<SystemToken, ReturnType<typeof createCommandBuffer>> | undefined,
 ): void {
   if (commandsBySystem === undefined) return;
   commandsBySystem.forEach(abortOpenCommands);
@@ -730,46 +418,61 @@ function flushCommandForWorld(this: World, commands: ReturnType<typeof createCom
 
 /** Apply only buffers that have an explicit graph edge into the next system. */
 function flushPredecessorCommands(
-  predecessors: readonly string[] | undefined,
+  predecessors: readonly ScheduleNode[] | undefined,
+  scheduleName: string,
   world: World,
-  commandsBySystem: Map<string, ReturnType<typeof createCommandBuffer>> | undefined,
+  commandsBySystem: Map<SystemToken, ReturnType<typeof createCommandBuffer>> | undefined,
 ): void {
   // Systems without inbound edges skip the iterator entirely.
   if (predecessors === undefined || predecessors.length === 0 || commandsBySystem === undefined)
     return;
-  for (let index = 0; index < predecessors.length; index++) {
-    const predecessor = predecessors[index] as string;
-    const producerCommands = commandsBySystem.get(predecessor);
-    if (producerCommands) {
-      try {
+  let observation: ReturnType<typeof beginScheduleCommandDrain>;
+  let observationAttempted = false;
+  try {
+    for (const predecessor of predecessors) {
+      const producerCommands = commandsBySystem.get(predecessor as SystemToken);
+      if (producerCommands) {
+        if (!observationAttempted) {
+          observationAttempted = true;
+          observation = beginScheduleCommandDrain(world, scheduleName);
+        }
         flushCommands(producerCommands, world);
-      } catch (error) {
-        abortOutstandingCommands(commandsBySystem);
-        throw error;
       }
     }
+  } catch (error) {
+    abortOutstandingCommands(commandsBySystem);
+    throw error;
+  } finally {
+    observation?.end();
   }
 }
 
 /** One invocation owns its capability, error boundary and returned Result. */
 function invokeSystem(
   record: SystemRecord,
-  name: string,
+  system: SystemToken,
   scheduleName: string,
   world: World,
   queries: Parameters<SystemRecord['descriptor']['fn']>[1],
-  commandsBySystem: Map<string, ReturnType<typeof createCommandBuffer>> | undefined,
+  commandsBySystem: Map<SystemToken, ReturnType<typeof createCommandBuffer>> | undefined,
+  observation?: ReturnType<typeof beginScheduleSystem>,
 ): void {
+  const name = system.name;
   const commands = record.deferredCommands
     ? createCommandBuffer(world, name, scheduleName)
     : undefined;
   if (commands !== undefined) {
     if (commandsBySystem === undefined) throw new Error('Missing deferred execution storage');
-    commandsBySystem.set(name, commands);
+    commandsBySystem.set(system, commands);
   }
   let returnValue: unknown;
   try {
-    returnValue = record.descriptor.fn(world, queries, commands ?? NO_COMMANDS);
+    observation?.functionStart();
+    try {
+      returnValue = record.descriptor.fn(world, queries, commands ?? NO_COMMANDS);
+    } finally {
+      observation?.functionEnd();
+    }
     if (isSuspendedMemoryResult(returnValue))
       throw new MemoryError({ kind: 'scope', reason: 'asynchronous' });
   } catch (error) {
@@ -793,115 +496,176 @@ function invokeSystem(
  * The world parameter provides the archetype graph, component ID resolution,
  * and resource checks.
  *
- * Layer 2 (ParamValidation): query empty → skip, resource missing → invalid.
+ * Empty required queries skip their system; explicit runIf predicates gate execution.
  * A returned Result error poisons the active frame and stops execution.
  */
 function runScheduleBody(
   schedule: Schedule,
   world: World,
-  selected: ReadonlySet<string> | undefined,
-  commandsBySystem: Map<string, ReturnType<typeof createCommandBuffer>> | undefined,
+  selected: ReadonlySet<ScheduleNode> | undefined,
+  commandsBySystem: Map<SystemToken, ReturnType<typeof createCommandBuffer>> | undefined,
   finalDrain = true,
   start: number,
   end: number,
-): void {
+): readonly ScheduleNode[] | undefined {
   const order = schedule.sortedOrder;
   if (selected === undefined && (commandsBySystem?.size ?? 0) === 0 && schedule.plain) {
-    for (let index = start; index < end; index++) {
-      const name = order[index] as string;
-      const record = schedule.systems.get(name);
-      /* istanbul ignore next -- sortedOrder comes from systems Map keys */
-      if (!record) continue;
-
-      invokeSystem(record, name, schedule.token.name, world, EMPTY_QUERY_RESULTS, commandsBySystem);
-    }
-    if (finalDrain && commandsBySystem !== undefined) {
-      try {
-        commandsBySystem.forEach(flushCommandForWorld, world);
-      } catch (error) {
-        abortOutstandingCommands(commandsBySystem);
-        throw error;
+    const runPlainSchedule = () => {
+      for (let index = start; index < end; index++) {
+        const name = order[index] as SystemToken;
+        const record = schedule.systems.get(name);
+        /* istanbul ignore next -- sortedOrder comes from systems Map keys */
+        if (!record) continue;
+        const observation = beginScheduleSystem(world, schedule.token.name, name.name);
+        let outcome: 'skipped' | 'failed-before-invoke' | 'invoked' | 'failed-invoke' = 'skipped';
+        try {
+          try {
+            invokeSystem(
+              record,
+              name,
+              schedule.token.name,
+              world,
+              EMPTY_QUERY_RESULTS,
+              commandsBySystem,
+              observation,
+            );
+            outcome = 'invoked';
+          } catch (cause) {
+            outcome = 'failed-invoke';
+            throw cause;
+          }
+          if (schedule.token.name === 'FixedUpdate' && fixedStepIsDeferred(world))
+            return schedule.sortedOrder.slice(schedule.sortedOrder.indexOf(name) + 1);
+        } finally {
+          observation?.end(outcome);
+        }
       }
-    }
-    return;
+      if (finalDrain && commandsBySystem !== undefined) {
+        const observation = beginScheduleCommandDrain(world, schedule.token.name);
+        try {
+          commandsBySystem.forEach(flushCommandForWorld, world);
+        } catch (error) {
+          abortOutstandingCommands(commandsBySystem);
+          throw error;
+        } finally {
+          observation?.end();
+        }
+      }
+      return undefined;
+    };
+    return runPlainSchedule();
   }
   const systemToSets = schedule.systemToSets;
 
   // Per-frame set runIf cache (D-5). Discarded at frame end — no cross-frame state.
   // Created on the first gated set so ungated schedules allocate nothing here.
-  let setRunIfCache: Map<string, boolean> | undefined;
+  let setRunIfCache: Map<SystemSet, boolean> | undefined;
 
   for (let index = start; index < end; index++) {
-    const name = order[index] as string;
+    const name = order[index] as SystemToken;
     if (selected && !selected.has(name)) continue;
     const record = schedule.systems.get(name);
     /* istanbul ignore next -- defensive: sortedOrder comes from systems Map keys */
     if (!record) continue;
+    const observation = beginScheduleSystem(world, schedule.token.name, name.name);
+    let outcome: 'skipped' | 'failed-before-invoke' | 'invoked' | 'failed-invoke' = 'skipped';
+    try {
+      flushPredecessorCommands(
+        schedule.predecessors.get(name),
+        schedule.token.name,
+        world,
+        commandsBySystem,
+      );
 
-    flushPredecessorCommands(schedule.predecessors.get(name), world, commandsBySystem);
-
-    // Lazily initialize the persistent executable queries on first run.
-    if (record.queries === null) {
-      record.queries = record.descriptor.queries.map((descriptor) => {
-        const result = world.query(descriptor);
-        if (!result.ok) throw result.error;
-        return result.value;
-      });
-    }
-    // ── Set-level runIf AND gate (D-5) ──
-    // before system-level runIf. Each set's runIf is lazily cached per frame. ──
-    const setNames = systemToSets.get(name);
-    let allSetConditionsPass = true;
-    if (setNames) {
-      for (const setName of setNames) {
-        const setRecord = schedule.sets.get(setName);
-        if (setRecord?.runIf) {
-          setRunIfCache ??= new Map();
-          let cached = setRunIfCache.get(setName);
-          if (cached === undefined) {
-            cached = setRecord.runIf(world);
-            setRunIfCache.set(setName, cached);
-          }
-          if (!cached) {
-            allSetConditionsPass = false;
-            break;
+      // Lazily initialize the persistent executable queries on first run.
+      if (record.queries === null) {
+        record.queries = record.descriptor.queries.map((descriptor) => {
+          const result = world.query(descriptor);
+          if (!result.ok) throw result.error;
+          return result.value;
+        });
+      }
+      const evaluateSetConditions = () => {
+        // ── Set-level runIf AND gate (D-5) ──
+        // before system-level runIf. Each set's runIf is lazily cached per frame. ──
+        const setNames = systemToSets.get(name);
+        let allSetConditionsPass = true;
+        if (setNames) {
+          for (const setName of setNames) {
+            const setRecord = schedule.sets.get(setName);
+            if (setRecord?.runIf) {
+              setRunIfCache ??= new Map();
+              let cached = setRunIfCache.get(setName);
+              if (cached === undefined) {
+                cached = setRecord.runIf(world);
+                setRunIfCache.set(setName, cached);
+              }
+              if (!cached) {
+                allSetConditionsPass = false;
+                break;
+              }
+            }
           }
         }
+        return allSetConditionsPass;
+      };
+      const allSetConditionsPass = evaluateSetConditions();
+      if (!allSetConditionsPass) continue;
+
+      // ── Run condition (runIf) — evaluated after query preparation, before
+      // query iteration. false -> skip silently (no query, no fn, no cursor advance). ──
+      if (record.descriptor.runIf && !record.descriptor.runIf(world)) {
+        continue;
       }
-    }
-    if (!allSetConditionsPass) {
-      continue; // skip system: no system runIf, query iteration, or fn
-    }
 
-    // ── Run condition (runIf) — evaluated after ParamValidation 'ok', before
-    // query iteration. false -> skip silently (no query, no fn, no cursor advance). ──
-    if (record.descriptor.runIf && !record.descriptor.runIf(world)) {
-      continue;
+      // ── Layer 3: system execution + Result collection ──
+      // trusted-cast: the descriptor tuple constructed the matching Query tuple above.
+      try {
+        invokeSystem(
+          record,
+          name,
+          schedule.token.name,
+          world,
+          record.queries as Parameters<typeof record.descriptor.fn>[1],
+          commandsBySystem,
+          observation,
+        );
+        outcome = 'invoked';
+      } catch (cause) {
+        outcome = 'failed-invoke';
+        throw cause;
+      }
+      if (schedule.token.name === 'FixedUpdate' && fixedStepIsDeferred(world))
+        return schedule.sortedOrder
+          .slice(schedule.sortedOrder.indexOf(name) + 1)
+          .filter((candidate) => selected === undefined || selected.has(candidate));
+    } catch (cause) {
+      if (outcome === 'skipped') outcome = 'failed-before-invoke';
+      throw cause;
+    } finally {
+      observation?.end(outcome);
     }
-
-    // ── Layer 3: system execution + Result collection ──
-    // trusted-cast: the descriptor tuple constructed the matching Query tuple above.
-    invokeSystem(
-      record,
-      name,
-      schedule.token.name,
-      world,
-      record.queries as Parameters<typeof record.descriptor.fn>[1],
-      commandsBySystem,
-    );
     // void return is treated as successful execution.
   }
 
-  if (finalDrain && commandsBySystem !== undefined) {
-    // A schedule boundary drains every remaining buffer, including commands
-    // enqueued by lifecycle hooks while another command is being applied.
-    try {
-      commandsBySystem.forEach(flushCommandForWorld, world);
-    } catch (error) {
-      abortOutstandingCommands(commandsBySystem);
-      throw error;
+  const drainScheduleBoundary = () => {
+    if (finalDrain && commandsBySystem !== undefined) {
+      // A schedule boundary drains every remaining buffer, including commands
+      // enqueued by lifecycle hooks while another command is being applied.
+      const observation = beginScheduleCommandDrain(world, schedule.token.name);
+      try {
+        commandsBySystem.forEach(flushCommandForWorld, world);
+      } catch (error) {
+        abortOutstandingCommands(commandsBySystem);
+        throw error;
+      } finally {
+        observation?.end();
+      }
     }
-  }
+  };
+  drainScheduleBoundary();
+
+  return undefined;
 }
 
 /**
@@ -913,12 +677,12 @@ function runScheduleBody(
 export function runSchedule(
   schedule: Schedule,
   world: World,
-  selectedNames?: readonly string[],
-  commandsBySystem?: Map<string, ReturnType<typeof createCommandBuffer>>,
+  selectedNames?: readonly ScheduleNode[],
+  commandsBySystem?: Map<SystemToken, ReturnType<typeof createCommandBuffer>>,
   finalDrain = true,
   selectedStart = 0,
   selectedEnd?: number,
-): void {
+): readonly ScheduleNode[] | undefined {
   if (schedule.dirty) buildSchedule(schedule);
   // Update borrows a window of this exact compiled order. A registration during
   // the preceding segment may replace it: only that cold path needs membership
@@ -932,14 +696,27 @@ export function runSchedule(
   const selected = direct ? undefined : new Set(selectedNames?.slice(selectedStart, selectedEnd));
   if (commandsBySystem === undefined && schedule.deferredCommands) commandsBySystem = new Map();
   let completed = false;
+  let remaining: readonly ScheduleNode[] | undefined;
   try {
-    runScheduleBody(schedule, world, selected, commandsBySystem, finalDrain, start, end);
+    remaining = runScheduleBody(
+      schedule,
+      world,
+      selected,
+      commandsBySystem,
+      finalDrain,
+      start,
+      end,
+    );
     completed = true;
+    return remaining;
   } finally {
     // When Update is split around the FixedUpdate anchor, the first segment
     // deliberately leaves its command buffers open so FixedUpdate observes a
     // stable pre-frame World and the second segment can drain them. Only the
     // final segment (or an exceptional exit) may abort outstanding buffers.
-    if (!completed || finalDrain) abortOutstandingCommands(commandsBySystem);
+    if (!completed || (finalDrain && remaining === undefined))
+      abortOutstandingCommands(commandsBySystem);
   }
 }
+
+import { fixedStepIsDeferred } from './fixed-step-barrier';

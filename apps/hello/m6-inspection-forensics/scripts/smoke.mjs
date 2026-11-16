@@ -222,19 +222,19 @@ async function runRemoteLiveBrowser() {
     );
     if (!Array.isArray(entities) || entities.length < 3) throw new Error(`unexpected live entities: ${JSON.stringify(entities)}`);
     const handle = entities[0];
-    const before = liveEval(env, "(async () => { world.insertResource('m6Probe', { value: 1 }); return world.getResource('m6Probe').value; })()");
+    const before = liveEval(env, "(async () => { world.insertResource(globalThis.__m6ProbeResource ??= (await _import('@forgeax/engine-ecs')).defineResource('m6Probe'), { value: 1 }); return world.getResource(globalThis.__m6ProbeResource).value; })()");
     liveEval(
       env,
-      "(async () => { world.insertResource('m6Probe', { value: 7 }); return 'mutated'; })()",
+      "(async () => { world.insertResource(globalThis.__m6ProbeResource, { value: 7 }); return 'mutated'; })()",
     );
-    const after = liveEval(env, "world.getResource('m6Probe').value");
+    const after = liveEval(env, "world.getResource(globalThis.__m6ProbeResource).value");
     if (before !== 1 || after !== 7) {
       throw new Error(`live resource mutation did not read back: before=${before} after=${after}`);
     }
     const baselineArtifact = await captureSettledArtifact(page, 'before');
     const baselineCapture = liveEval(
       env,
-      `(async () => { const m = await _import('@forgeax/engine-scene'); const t = world.get(${JSON.stringify(handle)}, m.Transform); return { available: rhiCapture !== undefined, probe: world.getResource('m6Probe').value, posX: t.ok ? t.value.pos[0] : null }; })()`,
+      `(async () => { const m = await _import('@forgeax/engine-scene'); const t = world.get(${JSON.stringify(handle)}, m.Transform); return { available: rhiCapture !== undefined, probe: world.getResource(globalThis.__m6ProbeResource).value, posX: t.ok ? t.value.pos[0] : null }; })()`,
     );
     baselineCapture.capture = baselineArtifact;
     if (
@@ -257,7 +257,7 @@ async function runRemoteLiveBrowser() {
     const mutatedArtifact = await captureSettledArtifact(page, 'after');
     const mutatedCapture = liveEval(
       env,
-      `(async () => { const m = await _import('@forgeax/engine-scene'); const t = world.get(${JSON.stringify(handle)}, m.Transform); return { available: rhiCapture !== undefined, probe: world.getResource('m6Probe').value, posX: t.ok ? t.value.pos[0] : null }; })()`,
+      `(async () => { const m = await _import('@forgeax/engine-scene'); const t = world.get(${JSON.stringify(handle)}, m.Transform); return { available: rhiCapture !== undefined, probe: world.getResource(globalThis.__m6ProbeResource).value, posX: t.ok ? t.value.pos[0] : null }; })()`,
     );
     mutatedCapture.capture = mutatedArtifact;
     if (

@@ -1,8 +1,11 @@
 // biome-ignore-all lint/complexity/noUselessLoneBlockStatements: scope isolation between merged source files
+import { defineResource } from '../resource';
+
 // Consolidated by feat-20260609-test-pool-startup-reduction-merge-tiny-test-files
 
 import { componentId, componentSchema } from '../component';
 import { componentDefinition } from '../component-schema';
+import { defineSystem } from '../schedule';
 import { Update } from '../schedule-token';
 import type { EntityRecords } from '../storage/entity-records';
 //
@@ -146,7 +149,7 @@ import { handleNumeric } from './utils/handle-numeric';
       const result = world.get(entity, Holder);
       expect(result.ok).toBe(true);
       if (result.ok) {
-        // `ref<T>` fields return the branded u32 handle, not the resolved payload.
+        // `unique<T>` fields return the branded u32 handle, not the resolved payload.
         // Identity check: the stored handle matches what we allocated.
         expect(result.value.value).toBe(handle);
       }
@@ -226,22 +229,24 @@ import { handleNumeric } from './utils/handle-numeric';
       const Pos = defineComponent('DfSpawnPos', { x: { type: 'f32' }, y: { type: 'f32' } });
       let entityCountDuringSystem = 0;
 
-      world.addSystem(Update, {
+      const systemToken1 = defineSystem({
         name: 'spawner',
         queries: [],
         fn: (_world, _queries, commands) => {
           commands.spawn({ component: Pos, data: { x: 10, y: 20 } });
         },
       });
+      world.addSystem(Update, systemToken1);
 
-      world.addSystem(Update, {
+      const systemToken2 = defineSystem({
         name: 'counter',
         queries: [{ read: [Pos] }],
         fn: (_world, queryResults) => {
           for (const query of queryResults) entityCountDuringSystem += [...query].length;
         },
-        after: ['spawner'],
+        after: [systemToken1],
       });
+      world.addSystem(Update, systemToken2);
 
       world.update();
       // With edge-derived visibility, counter(after:spawner) sees spawner's deferred entity
@@ -261,15 +266,16 @@ import { handleNumeric } from './utils/handle-numeric';
 
       let entitySeenDuringSystem = false;
 
-      world.addSystem(Update, {
+      const systemToken3 = defineSystem({
         name: 'destroyer',
         queries: [],
         fn: (_world, _queries, commands) => {
           commands.despawn(e);
         },
       });
+      world.addSystem(Update, systemToken3);
 
-      world.addSystem(Update, {
+      const systemToken4 = defineSystem({
         name: 'checker',
         queries: [{ read: [Tag] }],
         fn: (_world, queryResults) => {
@@ -277,8 +283,9 @@ import { handleNumeric } from './utils/handle-numeric';
             if ([...query].length > 0) entitySeenDuringSystem = true;
           }
         },
-        after: ['destroyer'],
+        after: [systemToken3],
       });
+      world.addSystem(Update, systemToken4);
 
       world.update();
       // With edge-derived visibility, checker(after:destroyer) does NOT see
@@ -292,13 +299,14 @@ import { handleNumeric } from './utils/handle-numeric';
       const Vel = defineComponent('DfAddVel', { vx: { type: 'f32' } });
       const e = world.spawn({ component: Pos, data: { x: 1 } }).unwrap();
 
-      world.addSystem(Update, {
+      const systemToken5 = defineSystem({
         name: 'adder',
         queries: [],
         fn: (_world, _queries, commands) => {
           commands.addComponent(e, { component: Vel, data: { vx: 5 } });
         },
       });
+      world.addSystem(Update, systemToken5);
 
       world.update();
       // After flush, entity should have Vel
@@ -314,13 +322,14 @@ import { handleNumeric } from './utils/handle-numeric';
         .spawn({ component: Pos, data: { x: 1 } }, { component: Vel, data: { vx: 5 } })
         .unwrap();
 
-      world.addSystem(Update, {
+      const systemToken6 = defineSystem({
         name: 'remover',
         queries: [],
         fn: (_world, _queries, commands) => {
           commands.removeComponent(e, Vel);
         },
       });
+      world.addSystem(Update, systemToken6);
 
       world.update();
       // After flush, entity should no longer have Vel
@@ -334,7 +343,7 @@ import { handleNumeric } from './utils/handle-numeric';
       const Pos = defineComponent('PendPos', { x: { type: 'f32' } });
       let pendingEntity: EntityHandle | undefined;
 
-      world.addSystem(Update, {
+      const systemToken7 = defineSystem({
         name: 'spawner',
         queries: [],
         fn: (_world, _queries, commands) => {
@@ -345,6 +354,7 @@ import { handleNumeric } from './utils/handle-numeric';
           expect(entityIndex(pendingEntity!)).toBeGreaterThanOrEqual(0);
         },
       });
+      world.addSystem(Update, systemToken7);
 
       world.update();
       expect(pendingEntity).toBeDefined();
@@ -354,7 +364,7 @@ import { handleNumeric } from './utils/handle-numeric';
       const world = new World();
       const Pos = defineComponent('IsDfPos', { x: { type: 'f32' } });
 
-      world.addSystem(Update, {
+      const systemToken8 = defineSystem({
         name: 'checker',
         queries: [],
         fn: (_world, _queries, commands) => {
@@ -362,6 +372,7 @@ import { handleNumeric } from './utils/handle-numeric';
           expect(commands.isDeferred(pending)).toBe(true);
         },
       });
+      world.addSystem(Update, systemToken8);
 
       world.update();
     });
@@ -371,13 +382,14 @@ import { handleNumeric } from './utils/handle-numeric';
       const Pos = defineComponent('PendGetPos', { x: { type: 'f32' } });
       let pendingEntity: EntityHandle | undefined;
 
-      world.addSystem(Update, {
+      const systemToken9 = defineSystem({
         name: 'spawner',
         queries: [],
         fn: (_world, _queries, commands) => {
           pendingEntity = commands.spawn({ component: Pos, data: { x: 42 } });
         },
       });
+      world.addSystem(Update, systemToken9);
 
       world.update();
       // After flush, the entity should be accessible
@@ -394,7 +406,7 @@ import { handleNumeric } from './utils/handle-numeric';
       const Tag = defineComponent('CascadeTag', { v: { type: 'i32' } });
 
       // Test that multiple commands in one frame all flush.
-      world.addSystem(Update, {
+      const systemToken10 = defineSystem({
         name: 'multiSpawner',
         queries: [],
         fn: (_world, _queries, commands) => {
@@ -403,18 +415,20 @@ import { handleNumeric } from './utils/handle-numeric';
           commands.spawn({ component: Tag, data: { v: 3 } });
         },
       });
+      world.addSystem(Update, systemToken10);
 
       world.update();
 
       // After flush, all 3 entities should exist
       let count = 0;
-      world.addSystem(Update, {
+      const systemToken11 = defineSystem({
         name: 'counter',
         queries: [{ read: [Tag] }],
         fn: (_world, queryResults) => {
           for (const query of queryResults) count += [...query].length;
         },
       });
+      world.addSystem(Update, systemToken11);
 
       world.update();
       expect(count).toBe(3);
@@ -427,26 +441,28 @@ import { handleNumeric } from './utils/handle-numeric';
       const Pos = defineComponent('FlushQPos', { x: { type: 'f32' } });
 
       // First update: deferred spawn
-      world.addSystem(Update, {
+      const systemToken12 = defineSystem({
         name: 'spawner',
         queries: [],
         fn: (_world, _queries, commands) => {
           commands.spawn({ component: Pos, data: { x: 1 } });
         },
       });
+      world.addSystem(Update, systemToken12);
 
       world.update();
 
       // Replace spawner with a no-op
       // Use a new system to count — the query should see the flushed entity
       let found = 0;
-      world.addSystem(Update, {
+      const systemToken13 = defineSystem({
         name: 'verifier',
         queries: [{ read: [Pos] }],
         fn: (_world, queryResults) => {
           for (const query of queryResults) found += [...query].length;
         },
       });
+      world.addSystem(Update, systemToken13);
 
       world.update();
       expect(found).toBeGreaterThanOrEqual(1);
@@ -503,26 +519,14 @@ import { handleNumeric } from './utils/handle-numeric';
       expect(typeof TYPE_METADATA).toBe('object');
     });
 
-    it('covers the 11 legacy scalar keys', () => {
-      for (const k of [
-        'f32',
-        'f64',
-        'i32',
-        'u32',
-        'i16',
-        'u16',
-        'i8',
-        'u8',
-        'bool',
-        'enum',
-        'ref',
-      ]) {
+    it('covers the scalar keys', () => {
+      for (const k of ['f32', 'f64', 'i32', 'u32', 'i16', 'u16', 'i8', 'u8', 'bool', 'enum']) {
         expect(TYPE_METADATA[k]).toBeDefined();
       }
     });
 
-    it('covers the 6 vocab-family keys', () => {
-      for (const k of ['entity', 'string', 'buffer', 'ref', 'shared', 'array']) {
+    it('covers the reference and collection family keys', () => {
+      for (const k of ['entity', 'string', 'buffer', 'unique', 'shared', 'asset', 'array']) {
         expect(TYPE_METADATA[k]).toBeDefined();
       }
     });
@@ -538,7 +542,7 @@ import { handleNumeric } from './utils/handle-numeric';
     it('vocab rows expose the predicate columns', () => {
       expect(TYPE_METADATA.entity?.isEntityRef).toBe(true);
       expect(TYPE_METADATA.buffer?.isBuffer).toBe(true);
-      expect(TYPE_METADATA.ref?.isManaged).toBe(true);
+      expect(TYPE_METADATA.unique?.isManaged).toBe(true);
       expect(TYPE_METADATA.array?.isArray).toBe(true);
     });
   });
@@ -644,7 +648,7 @@ import { handleNumeric } from './utils/handle-numeric';
       expect(componentId(B)).toBe(componentId(A) + 1);
     });
 
-    it('supports all 11 scalar field types', () => {
+    it('supports all scalar field types', () => {
       const allTypes: ComponentSchema = {
         f: 'f32',
         d: 'f64',
@@ -656,7 +660,7 @@ import { handleNumeric } from './utils/handle-numeric';
         ub: 'u8',
         flag: 'bool',
         e: 'enum',
-        r: 'ref',
+        r: 'unique<Resource>',
       };
       const comp = defineComponent('AllTypes', allTypes);
       expect(componentSchema(comp)).toEqual(allTypes);
@@ -822,7 +826,7 @@ import { handleNumeric } from './utils/handle-numeric';
       const Tag = defineTag('AC14_Pending');
       let pending: EntityHandle | undefined;
 
-      world.addSystem(Update, {
+      const systemToken14 = defineSystem({
         name: 'ac14-spawner',
         queries: [],
         fn: (_world, _queries, commands) => {
@@ -832,6 +836,7 @@ import { handleNumeric } from './utils/handle-numeric';
           expect(isAlive(world, pending!)).toBe(false);
         },
       });
+      world.addSystem(Update, systemToken14);
 
       world.update();
 
@@ -1507,7 +1512,7 @@ import { handleNumeric } from './utils/handle-numeric';
       const A = defineComponent('PendA', { v: { type: 'f32' } });
 
       let pendingEntity: EntityHandle | undefined;
-      world.addSystem(Update, {
+      const systemToken15 = defineSystem({
         name: 'deferSpawn',
         queries: [],
         fn: (_world, _results, commands) => {
@@ -1515,6 +1520,7 @@ import { handleNumeric } from './utils/handle-numeric';
           expect(commands.isDeferred(pendingEntity)).toBe(true);
         },
       });
+      world.addSystem(Update, systemToken15);
 
       world.update();
 
@@ -1571,20 +1577,24 @@ import { handleNumeric } from './utils/handle-numeric';
   describe('world.inspect().systems (AC-05)', () => {
     it('exposes systems as Array<{ name: string }>', () => {
       const world = new World();
-      world.addSystem(Update, { name: 'sysA', queries: [], fn: () => {} });
+      const systemToken16 = defineSystem({ name: 'sysA', queries: [], fn: () => {} });
+      world.addSystem(Update, systemToken16);
 
       const snap = world.inspect();
       expect(Array.isArray(snap.systems)).toBe(true);
-      expect(snap.systems[0]).toEqual({ name: 'sysA', sets: [] });
+      expect(snap.systems[0]).toEqual({ id: 0, name: 'sysA', sets: [] });
     });
 
     it('keeps systemCount === systems.length as a derived invariant', () => {
       const world = new World();
       expect(world.inspect().systems.length).toBe(world.inspect().systemCount);
 
-      world.addSystem(Update, { name: 'sysA', queries: [], fn: () => {} });
-      world.addSystem(Update, { name: 'sysB', queries: [], fn: () => {} });
-      world.addSystem(Update, { name: 'sysC', queries: [], fn: () => {} });
+      const systemToken17 = defineSystem({ name: 'sysA', queries: [], fn: () => {} });
+      world.addSystem(Update, systemToken17);
+      const systemToken18 = defineSystem({ name: 'sysB', queries: [], fn: () => {} });
+      world.addSystem(Update, systemToken18);
+      const systemToken19 = defineSystem({ name: 'sysC', queries: [], fn: () => {} });
+      world.addSystem(Update, systemToken19);
 
       const snap = world.inspect();
       expect(snap.systems.length).toBe(snap.systemCount);
@@ -1594,16 +1604,20 @@ import { handleNumeric } from './utils/handle-numeric';
       const world = new World();
       const baseline = world.inspect().systems.length;
 
-      world.addSystem(Update, { name: 'sA', queries: [], fn: () => {} });
-      world.addSystem(Update, { name: 'sB', queries: [], fn: () => {} });
+      const systemToken20 = defineSystem({ name: 'sA', queries: [], fn: () => {} });
+      world.addSystem(Update, systemToken20);
+      const systemToken21 = defineSystem({ name: 'sB', queries: [], fn: () => {} });
+      world.addSystem(Update, systemToken21);
 
       expect(world.inspect().systems.length).toBe(baseline + 2);
     });
 
     it('every system entry has a non-empty name', () => {
       const world = new World();
-      world.addSystem(Update, { name: 'movement', queries: [], fn: () => {} });
-      world.addSystem(Update, { name: 'render', queries: [], fn: () => {} });
+      const systemToken22 = defineSystem({ name: 'movement', queries: [], fn: () => {} });
+      world.addSystem(Update, systemToken22);
+      const systemToken23 = defineSystem({ name: 'render', queries: [], fn: () => {} });
+      world.addSystem(Update, systemToken23);
 
       const snap = world.inspect();
       for (const entry of snap.systems) {
@@ -1638,7 +1652,7 @@ import { handleNumeric } from './utils/handle-numeric';
         .unwrap();
 
       // Register a movement system that integrates velocity into position
-      world.addSystem(Update, {
+      const systemToken24 = defineSystem({
         name: 'movement',
         queries: [{ read: [Velocity], write: [Position] }],
         fn: (_world, queryResults) => {
@@ -1652,17 +1666,19 @@ import { handleNumeric } from './utils/handle-numeric';
           }
         },
       });
+      world.addSystem(Update, systemToken24);
 
       // Register a system that deferred-despawns entities at x > 5
-      world.addSystem(Update, {
+      const systemToken25 = defineSystem({
         name: 'despawner',
         queries: [{ with: [Position] }],
         fn: (_world, _queryResults, commands) => {
           // Deferred despawn e2
           commands.despawn(e2);
         },
-        after: ['movement'],
+        after: [systemToken24],
       });
+      world.addSystem(Update, systemToken25);
 
       // Frame 1: movement runs, then despawner queues despawn
       world.update();
@@ -1688,7 +1704,7 @@ import { handleNumeric } from './utils/handle-numeric';
 
       // System that spawns an entity on first frame
       let frame = 0;
-      world.addSystem(Update, {
+      const systemToken26 = defineSystem({
         name: 'spawner',
         queries: [],
         fn: (_world, _queries, commands) => {
@@ -1698,16 +1714,18 @@ import { handleNumeric } from './utils/handle-numeric';
           frame++;
         },
       });
+      world.addSystem(Update, systemToken26);
 
-      world.addSystem(Update, {
+      const systemToken27 = defineSystem({
         name: 'counter',
         queries: [{ read: [Tag] }],
         fn: (_world, queryResults) => {
           spawnedCount = 0;
           for (const query of queryResults) spawnedCount += [...query].length;
         },
-        after: ['spawner'],
+        after: [systemToken26],
       });
+      world.addSystem(Update, systemToken27);
 
       // Frame 1: spawner defers spawn, counter sees 0 during this frame
       world.update();
@@ -1719,23 +1737,26 @@ import { handleNumeric } from './utils/handle-numeric';
     });
 
     it('resources are accessible across frames', () => {
-      const world = new World();
-      world.insertResource('frameCount', { count: 0 });
+      const resource1 = defineResource<{ count: number }>('frameCount');
 
-      world.addSystem(Update, {
+      const world = new World();
+      world.insertResource(resource1, { count: 0 });
+
+      const systemToken28 = defineSystem({
         name: 'frameCounter',
         queries: [],
         fn: () => {
-          const fc = world.getResource<{ count: number }>('frameCount');
+          const fc = world.getResource(resource1);
           fc.count += 1;
         },
       });
+      world.addSystem(Update, systemToken28);
 
       world.update();
       world.update();
       world.update();
 
-      expect(world.getResource<{ count: number }>('frameCount')).toEqual({ count: 3 });
+      expect(world.getResource(resource1)).toEqual({ count: 3 });
     });
   });
 
@@ -1764,7 +1785,7 @@ import { handleNumeric } from './utils/handle-numeric';
       let y: Float32Array | undefined;
       let current: Int32Array | undefined;
       let max: Int32Array | undefined;
-      world.addSystem(Update, {
+      const systemToken29 = defineSystem({
         name: 'mixedReader',
         queries: [{ read: [Position, Health] }],
         fn: (_world, queryResults) => {
@@ -1780,6 +1801,7 @@ import { handleNumeric } from './utils/handle-numeric';
           }
         },
       });
+      world.addSystem(Update, systemToken29);
 
       world.update();
 
@@ -1814,7 +1836,7 @@ import { handleNumeric } from './utils/handle-numeric';
 
       // Query With both: should match
       let matchCount = 0;
-      world.addSystem(Update, {
+      const systemToken30 = defineSystem({
         name: 'tagQuery',
         queries: [{ read: [Position], with: [Player] }],
         fn: (_world, queryResults) => {
@@ -1827,13 +1849,14 @@ import { handleNumeric } from './utils/handle-numeric';
           }
         },
       });
+      world.addSystem(Update, systemToken30);
 
       world.update();
       expect(matchCount).toBe(1);
 
       // Query Without Player: should NOT match
       let excludedCount = 0;
-      world.addSystem(Update, {
+      const systemToken31 = defineSystem({
         name: 'excludeTag',
         queries: [{ read: [Position], without: [Player] }],
         fn: (_world, queryResults) => {
@@ -1841,6 +1864,7 @@ import { handleNumeric } from './utils/handle-numeric';
           for (const query of queryResults) excludedCount += [...query].length;
         },
       });
+      world.addSystem(Update, systemToken31);
 
       world.update();
       expect(excludedCount).toBe(0);
@@ -1865,7 +1889,7 @@ import { handleNumeric } from './utils/handle-numeric';
 
       // Query for Position+Velocity: should match 1
       let pvCount = 0;
-      world.addSystem(Update, {
+      const systemToken32 = defineSystem({
         name: 'pvCounter',
         queries: [{ read: [Position, Velocity] }],
         fn: (_world, queryResults) => {
@@ -1873,10 +1897,11 @@ import { handleNumeric } from './utils/handle-numeric';
           for (const query of queryResults) pvCount += [...query].length;
         },
       });
+      world.addSystem(Update, systemToken32);
 
       // Query for Position+Velocity+Gravity: should match 0 initially
       let pvgCount = 0;
-      world.addSystem(Update, {
+      const systemToken33 = defineSystem({
         name: 'pvgCounter',
         queries: [{ read: [Position, Velocity, Gravity] }],
         fn: (_world, queryResults) => {
@@ -1884,6 +1909,7 @@ import { handleNumeric } from './utils/handle-numeric';
           for (const query of queryResults) pvgCount += [...query].length;
         },
       });
+      world.addSystem(Update, systemToken33);
 
       world.update();
       expect(pvCount).toBe(1);
@@ -1919,7 +1945,7 @@ import { handleNumeric } from './utils/handle-numeric';
 
       // Query With A, Without B: should initially have 0
       let aNotBCount = 0;
-      world.addSystem(Update, {
+      const systemToken34 = defineSystem({
         name: 'aNotB',
         queries: [{ read: [A], without: [B] }],
         fn: (_world, queryResults) => {
@@ -1927,6 +1953,7 @@ import { handleNumeric } from './utils/handle-numeric';
           for (const query of queryResults) aNotBCount += [...query].length;
         },
       });
+      world.addSystem(Update, systemToken34);
 
       world.update();
       expect(aNotBCount).toBe(0); // entity has both A and B
@@ -1965,7 +1992,7 @@ import { handleNumeric } from './utils/handle-numeric';
       let totalPosEntities = 0;
       let posValues: number[] = [];
 
-      world.addSystem(Update, {
+      const systemToken35 = defineSystem({
         name: 'posReader',
         queries: [{ read: [Pos] }],
         fn: (_world, queryResults) => {
@@ -1979,13 +2006,14 @@ import { handleNumeric } from './utils/handle-numeric';
           }
         },
       });
+      world.addSystem(Update, systemToken35);
 
       world.update();
       expect(totalPosEntities).toBe(3);
       expect(posValues.sort()).toEqual([1, 2, 3]);
 
       // Deferred despawn e2, add Acc to e1
-      world.addSystem(Update, {
+      const systemToken36 = defineSystem({
         name: 'modifier',
         queries: [],
         fn: (_world, _q, commands) => {
@@ -1993,6 +2021,7 @@ import { handleNumeric } from './utils/handle-numeric';
           commands.addComponent(e1, { component: Acc, data: { a: 100 } });
         },
       });
+      world.addSystem(Update, systemToken36);
 
       world.update();
 
@@ -2019,7 +2048,7 @@ import { handleNumeric } from './utils/handle-numeric';
       expect(refs).toBeInstanceOf(UniqueRefStore);
     });
 
-    it('spawn + despawn on a ref<T> field dispatches without external store wiring', () => {
+    it('spawn + despawn on a unique<T> field dispatches without external store wiring', () => {
       // Behavioural counterpart: the despawn release loop must traverse the
       // internal uniqueRefs without throwing. Before w2 the uniqueRefs slot
       // is null and `releaseManagedRefHandle` short-circuits silently, so this
@@ -2102,7 +2131,7 @@ import { handleNumeric } from './utils/handle-numeric';
   });
 
   // ────────────────────────────────────────────────────────────────────────
-  // t10 — brand-class NULL sentinel cross-test (handle<T> / entity / ref<T>)
+  // t10 — brand-class NULL sentinel cross-test (handle<T> / entity / unique<T>)
   // ────────────────────────────────────────────────────────────────────────
 }
 {
@@ -2130,7 +2159,7 @@ import { handleNumeric } from './utils/handle-numeric';
       const world = new World();
       const Hp = defineComponent('DirectMatHp', { current: 'i32', max: 'i32' });
       let pending: EntityHandle | undefined;
-      world.addSystem(Update, {
+      const systemToken37 = defineSystem({
         name: 'deferred-spawner',
         queries: [],
         fn: (_world, _q, commands) => {
@@ -2138,6 +2167,7 @@ import { handleNumeric } from './utils/handle-numeric';
           pending = commands.spawn({ component: Hp, data: { current: 7, max: 9 } });
         },
       });
+      world.addSystem(Update, systemToken37);
       // update() runs the system then flushes commands -> _materializePendingEntity.
       world.update();
       expect(pending).toBeDefined();
@@ -2170,8 +2200,7 @@ import { handleNumeric } from './utils/handle-numeric';
   });
 
   describe('AC-05 — EcsErrorCode remains a closed source-owned union', () => {
-    it('keeps the mutation epoch infrastructure failure out of the core union', () => {
-      // @ts-expect-error mutation epoch exhaustion is an infrastructure throw, not a World Result code.
+    it('includes the mutation epoch failure already exposed by World operations', () => {
       const code: EcsErrorCode = 'change-epoch-exhausted';
       expect(code).toBe('change-epoch-exhausted');
     });
@@ -2218,8 +2247,8 @@ import { handleNumeric } from './utils/handle-numeric';
     it('enum -> 0', () => {
       expect(typeDefault('enum')).toBe(0);
     });
-    it('ref (legacy scalar) -> 0', () => {
-      expect(typeDefault('ref')).toBe(0);
+    it('unique<Resource> -> 0', () => {
+      expect(typeDefault('unique<Resource>')).toBe(0);
     });
   });
 
@@ -2355,13 +2384,14 @@ import { handleNumeric } from './utils/handle-numeric';
       const world = new World();
 
       let pendingEntity: EntityHandle | undefined;
-      world.addSystem(Update, {
+      const systemToken38 = defineSystem({
         name: 'defer-spawn',
         queries: [],
         fn: (_world, _q, commands) => {
           pendingEntity = commands.spawn({ component: Tag, data: {} });
         },
       });
+      world.addSystem(Update, systemToken38);
       world.update();
       expect(pendingEntity).toBeDefined();
 
@@ -2375,7 +2405,7 @@ import { handleNumeric } from './utils/handle-numeric';
       // don't see the entity. After flush, get succeeds.
       // The direct pending test uses the deferred-path inside a system:
       let seenBeforeFlush = false;
-      world.addSystem(Update, {
+      const systemToken39 = defineSystem({
         name: 'check-pending',
         queries: [{ with: [Tag] }],
         fn: (_world, queries, commands) => {
@@ -2389,6 +2419,7 @@ import { handleNumeric } from './utils/handle-numeric';
           seenBeforeFlush = true;
         },
       });
+      world.addSystem(Update, systemToken39);
       world.update();
       expect(seenBeforeFlush).toBe(true);
     });
@@ -2476,7 +2507,7 @@ import { handleNumeric } from './utils/handle-numeric';
       const world = new World();
 
       let spawnedHandle: EntityHandle | undefined;
-      world.addSystem(Update, {
+      const systemToken40 = defineSystem({
         name: 'lifecycle-spawn',
         queries: [],
         fn: (_world, _q, commands) => {
@@ -2491,6 +2522,7 @@ import { handleNumeric } from './utils/handle-numeric';
           }
         },
       });
+      world.addSystem(Update, systemToken40);
       world.update();
 
       expect(spawnedHandle).toBeDefined();

@@ -54,6 +54,14 @@ export class PipelineResourceIndex<T extends object> {
     this.finalizer.register(value, { id, key, group });
     return id;
   }
+  /** Name a live record under a second weak key, removed with its owner. */
+  alias(key: string, id: number): void {
+    const ref = this.rows.get(id);
+    const value = ref?.deref();
+    if (ref === undefined || value === undefined) return;
+    this.keys.set(key, { id, ref });
+    this.finalizer.register(value, { id, key, group: undefined });
+  }
   /** Live records of one group, in insertion order (the order of `values()`). */
   *grouped(group: string): IterableIterator<T> {
     const rows = this.groups.get(group);

@@ -178,7 +178,7 @@ describe('Player mesh effects through ordinary Pack build production', () => {
       if (!(artifactBytes instanceof Uint8Array))
         throw new Error(`missing emitted VFX program at ${artifact.path}`);
       const program = JSON.parse(new TextDecoder().decode(artifactBytes));
-      expect(program.format).toBe('forgeax-vfx-program-4');
+      expect(program.format).toBe('forgeax-vfx-program-5');
       expect(program.emitters[0]?.renderers[0]).toMatchObject({
         kind: 'mesh',
         mesh,

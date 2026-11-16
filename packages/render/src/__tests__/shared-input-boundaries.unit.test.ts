@@ -100,9 +100,7 @@ it('poisons a partially updated Scene on a real mapping capacity failure and sti
     source = receiptRow().source,
     scene = new RenderScene();
   gpu
-    .sync(
-      scene.apply([{ kind: 'update', worldId: 0, entityKey: source.entityKey, snapshot: source }]),
-    )
+    .sync(scene.apply([{ kind: 'update', entityKey: source.entityKey, snapshot: source }]))
     .unwrap();
   const held = gpu.captureResources().unwrap();
   try {

@@ -146,11 +146,7 @@ it('batches 260 alternating instance LODs into six WebGL2 page draws without los
   const draw = async (capture = false) => {
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
-    return drawReadyFrame(
-      renderer,
-      { leases: [lease], camera: { lease }, environment: { lease } },
-      capture ? ['linear-hdr'] : undefined,
-    );
+    return drawReadyFrame(renderer, { source: lease }, capture ? ['linear-hdr'] : undefined);
   };
   const sample = async (name: string, expectedLow: (ordinal: number) => boolean, count = COUNT) => {
     for (let frame = 0; frame < 60; frame++) await draw();

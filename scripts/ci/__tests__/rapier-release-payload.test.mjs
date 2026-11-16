@@ -232,3 +232,14 @@ test('native publication satisfies the unchanged engineering stance gate', (t) =
   for (const source of subjects)
     assert.equal(counts[source], 1, 'shared source rules must read each ordinary source only once');
 });
+
+test('the full-tree stance owner runs outside parallel compiler contracts', () => {
+  const ci = parse(readFileSync('.github/workflows/ci.yml', 'utf8'));
+  const step = ci.jobs['primary-pnpm'].steps.find(
+    (step) => step.name === 'CI execution and process lifecycle regression',
+  );
+  const command = 'node --test scripts/ci/__tests__/rapier-release-payload.test.mjs';
+  assert.ok(step.run.split('\n').includes(command));
+  assert.equal(step.run.match(/rapier-release-payload\.test\.mjs/g)?.length, 1);
+  assert.ok(step.run.indexOf(command) < step.run.indexOf('node --test --test-concurrency=2'));
+});

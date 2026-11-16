@@ -142,7 +142,9 @@ export class MaterialSourceCatalog {
         ? 'forgeax_material::opaque_surface'
         : sourceModuleId === 'forgeax::single-layer-medium'
           ? 'forgeax_material::default_single_layer_medium_surface'
-          : 'forgeax_material::default_standard_surface');
+          : sourceModuleId === 'forgeax::single-layer-water'
+            ? 'forgeax_material::default_single_layer_water_surface'
+            : 'forgeax_material::default_standard_surface');
     const selected = this.#modules.get(selectedId);
     if (selected === undefined) {
       return err(

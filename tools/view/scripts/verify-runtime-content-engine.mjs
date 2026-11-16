@@ -511,8 +511,7 @@ try {
         export default { name: 'runtime-content-behavior', inject: ['world'], apply(ctx${typed}) {
           ctx.effect(() => {
             const marker = ctx.world.spawn({ component: Transform, data: { pos: [9, 0, 0] } }).unwrap();
-            ctx.world.insertResource('runtime-content-behavior', { marker });
-            return () => { ctx.world.despawn(marker).unwrap(); ctx.world.removeResource('runtime-content-behavior'); };
+            return () => { ctx.world.despawn(marker).unwrap(); };
           });
         } };`,
     };

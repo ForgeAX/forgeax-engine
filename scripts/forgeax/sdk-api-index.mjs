@@ -49,7 +49,12 @@ const DOMAINS = [
         'ecs',
         [
           'World: spawn get set addComponent despawn insertResource getResource addSystem removeSystem',
-          'SystemDescriptor: name queries fn after before',
+          'SystemDescriptor: queries fn after before',
+          'SystemToken: name',
+          'defineSystem',
+          'defineSystemSet',
+          'defineSchedule',
+          'defineResource',
           'QueryDescriptor: read write with without',
           'QueryRow: entity get mut',
           'defineComponent',
@@ -67,7 +72,7 @@ const DOMAINS = [
           'sceneEntity',
           'readPresentationWorldMatrix',
           'setTransformLookAt',
-          '+Name worldDespawnScene GlobalTransform ChildOf Children PROPAGATE_TRANSFORMS_SYSTEM',
+          '+Name worldDespawnScene GlobalTransform ChildOf Children PropagateTransforms PropagateTransformsFixed',
         ],
       ],
       [
@@ -85,6 +90,7 @@ const DOMAINS = [
     ],
     gotchas: [
       'Import from `@forgeax/engine/<facade>` only, never physical `@forgeax/engine-*` packages.',
+      'Use original objects for schedules, systems, sets and resources. Names are diagnostic; resource tokens infer value types.',
       'Expected failures return `Result` (`r.ok ? r.value : r.error`, `.unwrap()` throws): World methods, asset loads, geometry, pack builds.',
       'Math values are branded `Float32Array`s from `vec3.create(x, y, z)` / `quat.create()`; functions write into `out` and return it. Component data takes plain arrays (`{ pos: [0, 1, 0] }`).',
       'Pack output keys (sourceKeys) must match {{pack/guid PACK_SOURCE_KEY_RE}} (lower case).',
@@ -204,6 +210,7 @@ const DOMAINS = [
           'ColliderShapeValue',
           'CharacterController: snapToGroundDist grounded',
           'PhysicsWorld: raycast moveAndSlide teleport applyBodyImpulse setBodyMotion',
+          '+PhysicsWorldResource PhysicsWorld2DResource PhysicsSync PhysicsSimulation',
         ],
       ],
       [
@@ -232,7 +239,7 @@ const DOMAINS = [
     ],
     gotchas: [
       'Screen to ground: `viewportToWorld` (canvas pixels, top-left origin, after transform propagation) returns a world ray; solve `origin.y + t * dir.y = 0` for the ground. `pick` returns the nearest entity AABB hit.',
-      'Input: in a system read `world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY)`; `mouse.position` (canvas pixels, hover) may be `undefined`.',
+      'Input: in a system read `world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY)`; `mouse.position` (canvas pixels, hover) may be `undefined`.',
     ],
   },
   {

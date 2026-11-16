@@ -219,7 +219,7 @@ export interface ScenePassInputs {
   readonly materials: MaterialFrame;
   readonly gpu: GpuDrawSelection;
   readonly meshes: ReadonlyMap<GpuDrivenBatchBinding, MeshGpuHandles>;
-  readonly worlds: readonly RenderResourceScope[];
+  readonly sourceScope: RenderResourceScope;
   readonly prepareUnbatched: (
     sources: FrameList<RenderableSnapshot>,
   ) => readonly ValidatedRenderable[];
@@ -349,7 +349,9 @@ function queueScenePass(
   const eye = request.camera?.() ?? camera;
   const matches = (resource: MaterialResource) => {
     const accepted = materials.get(resource);
-    if (accepted === undefined) throw new Error('Direct draw requires its accepted material');
+    if (accepted === undefined) {
+      throw new Error('Direct draw requires its accepted material');
+    }
     return materialMatchesPass(
       accepted,
       request.selector,
@@ -361,6 +363,12 @@ function queueScenePass(
     request.recordMode === 'translucent' ||
     request.recordMode === 'translucent-before-transmission';
   const admitted = !(request.capture || isTemporalAntialias(eye?.antialias));
+  const cameraVisible = admitted ? inputs.cameraVisible : undefined;
+  const visible =
+    request.recordMode === 'opaque-depth'
+      ? (source: RenderableSnapshot) =>
+          source.waterOwner === undefined && cameraVisible?.(source) !== false
+      : cameraVisible;
   // The Record graph owner selected this request roster. Its per-pass row
   // cache queues only consumers of that compiled graph; frame-independent
   // phase sorting and pass plans were already produced in RenderQueue.
@@ -372,14 +380,14 @@ function queueScenePass(
     gpu,
     select: selectDirectPassMaterial(request, materials, gpu),
     meshes: inputs.meshes,
-    worlds: inputs.worlds,
+    sourceScope: inputs.sourceScope,
     shadow: request.passKind === 'shadow',
     materials,
     prepareUnbatched: inputs.prepareUnbatched,
     admits: matches,
     viewDraws: request.late ? [] : inputs.viewDraws,
     prepareGeometry: inputs.prepareGeometry,
-    visible: admitted ? inputs.cameraVisible : undefined,
+    visible,
     admission: admitted ? inputs.cameraAdmission : undefined,
     lod: (lodRows) => inputs.lod(lodRows, request),
     lodCamera: lodCameraTokens(eye),

@@ -3,6 +3,7 @@ import {
   DEFAULT_LOAD_PROGRESS_LABELS,
   encodeBase64,
   type LoadProgressLabels,
+  resolveLoadProgressLabels,
 } from '@forgeax/engine-types';
 import forgeaxLogo from './forgeax-logo.svg?raw';
 import { type StartupCacheIdentity, startupCacheSource } from './startup-cache-source.js';
@@ -42,10 +43,11 @@ function startupMarkup(
  */
 export function hostStartupDocument(
   title: string,
-  labels: LoadProgressLabels = DEFAULT_LOAD_PROGRESS_LABELS,
+  input: LoadProgressLabels = DEFAULT_LOAD_PROGRESS_LABELS,
   versions?: HostVersions,
   ui: StartupUiOptions = {},
 ): string {
+  const labels = resolveLoadProgressLabels(input);
   const status = labels.phases['engine-code'] ?? labels.loading;
   const html = `<!doctype html>
 <html lang="${escapeHtml(labels.lang)}">
@@ -104,7 +106,7 @@ export function hostStartupDocument(
   </head>
   <body>
     <div id="app-shell"><canvas id="app"></canvas><div id="game-ui"></div>
-    <div id="forgeax-status">${versions === undefined ? '' : `Game ${escapeHtml(versions.game)} | Engine ${escapeHtml(versions.engine)} | `}<span id="forgeax-fps" aria-label="Completed game frames per second">FPS --</span></div>
+    <div id="forgeax-status">${versions === undefined ? '' : `${escapeHtml(labels.host.game)} ${escapeHtml(versions.game)} | ${escapeHtml(labels.host.engine)} ${escapeHtml(versions.engine)} | `}<span id="forgeax-fps" aria-label="${escapeHtml(labels.host.completedFramesPerSecond)}">FPS --</span></div>
 ${startupMarkup(
   'forgeax-loading',
   'status',
@@ -138,22 +140,22 @@ ${startupMarkup(
   ui.failure,
   `    <div id="forgeax-fatal" role="alert">
       <div id="forgeax-fatal-content">
-        <p id="forgeax-fatal-message">Unable to start the game.</p>
+        <p id="forgeax-fatal-message">${escapeHtml(labels.host.startupFailed)}</p>
         <section id="forgeax-fatal-diagnostics" aria-labelledby="forgeax-fatal-diagnostics-title">
           <div id="forgeax-fatal-diagnostics-header">
-            <h2 id="forgeax-fatal-diagnostics-title">Diagnostics</h2>
-            <button id="forgeax-fatal-copy" type="button">Copy diagnostics</button>
+            <h2 id="forgeax-fatal-diagnostics-title">${escapeHtml(labels.host.diagnostics)}</h2>
+            <button id="forgeax-fatal-copy" type="button">${escapeHtml(labels.host.copyDiagnostics)}</button>
           </div>
           <p id="forgeax-fatal-copy-status" aria-live="polite"></p>
           <pre id="forgeax-fatal-details" tabindex="0"></pre>
         </section>
-        <button id="forgeax-fatal-reload" type="button">Reload</button>
+        <button id="forgeax-fatal-reload" type="button">${escapeHtml(labels.reload)}</button>
       </div>
     </div>
 `,
 )}
     </div>
-    <noscript>JavaScript is required to start this game. Please enable JavaScript and reload.</noscript>
+    <noscript>${escapeHtml(labels.host.javascriptRequired)}</noscript>
   </body>
 </html>
 `;
@@ -188,10 +190,11 @@ ${styles.replaceAll('<', '\\3c ')}
 export function hostStartupScript(
   startupScreen = true,
   hostExpression = 'undefined',
-  labels: LoadProgressLabels = DEFAULT_LOAD_PROGRESS_LABELS,
+  input: LoadProgressLabels = DEFAULT_LOAD_PROGRESS_LABELS,
   cacheIdentity?: StartupCacheIdentity,
   ui: StartupUiOptions = {},
 ): string {
+  const labels = resolveLoadProgressLabels(input);
   const startupEnabled = startupScreen ? 'true' : 'false';
   return `
       ((host) => {
@@ -265,7 +268,7 @@ export function hostStartupScript(
         // Editor Play uses it and waits for a completed game frame. Every page
         // retains fatal diagnostics independently of the chosen presentation.
         const fatalEnabled = true;
-        const startupCache = ${startupCacheSource(cacheIdentity)};
+        const startupCache = ${startupCacheSource(cacheIdentity, labels.host)};
         let phase = gamePage ? 'loading' : 'disabled';
         let slowTimer;
         let fadeTimer;
@@ -379,7 +382,7 @@ export function hostStartupScript(
             }
           }
           uiCopyStatus = copied ? 'copied' : 'failed';
-          setText(fatalCopyStatus, copied ? 'Diagnostics copied.' : 'Could not copy diagnostics.');
+          setText(fatalCopyStatus, copied ? labels.host.diagnosticsCopied : labels.host.diagnosticsCopyFailed);
           notifyUi();
           return copied;
         };
@@ -705,11 +708,11 @@ export function hostStartupScript(
             return;
           }
           if (seen.size >= 64) {
-            lines.push((prefix || 'cause') + ': [diagnostic node limit]');
+            lines.push((prefix || 'cause') + ': ' + labels.host.diagnosticNodeLimit);
             return;
           }
           if (seen.has(value)) {
-            lines.push((prefix || 'cause') + ': [circular]');
+            lines.push((prefix || 'cause') + ': ' + labels.host.circularDiagnostic);
             return;
           }
           seen.add(value);
@@ -778,12 +781,12 @@ export function hostStartupScript(
             appendStructuredFailure(reason, '', new Set(), lines);
             if (lines.length > 0) return lines.join('\\n');
             try {
-              return JSON.stringify(reason) || 'Unknown structured startup failure';
+              return JSON.stringify(reason) || labels.host.unknownStructuredFailure;
             } catch {
-              return 'Unserializable structured startup failure';
+              return labels.host.unserializableStructuredFailure;
             }
           }
-          return String(reason ?? 'Unknown startup failure');
+          return String(reason ?? labels.host.unknownStartupFailure);
         };
         const show = (reason, execution) => {
           const runtimeFailure = execution?.fault !== undefined && execution.fault !== null;
@@ -801,14 +804,14 @@ export function hostStartupScript(
           bindFatalCopy();
           let details = formatStartupFailure(reason);
           const notice = fatal;
-          const message = runtimeFailure ? 'The game stopped because execution failed.' : 'Unable to start the game.';
+          const message = runtimeFailure ? labels.host.runtimeFailed : labels.host.startupFailed;
           if (/webgpu|adapter-unavailable|no usable (rendering )?backend/i.test(details)) {
-            details += '\\n\\nRenderer diagnosis: ForgeAX supports browser WebGPU and a wgpu/WebGL2 fallback. This failure alone does not prove that WebGPU is unsupported; use the structured code, hint, and nested backend causes above.';
+            details += '\\n\\n' + labels.host.rendererDiagnosis;
           }
           // Keep the existing plain-text diagnostic fallback for hosts that
           // provide only one synthetic HTMLElement in a test harness.
           if (notice !== null && fatalMessage === notice) {
-            notice.textContent = (runtimeFailure ? 'ForgeAX game stopped.\\n' : 'ForgeAX game failed to start.\\n') + message + '\\n' + details;
+            notice.textContent = (runtimeFailure ? labels.host.runtimeFailureTitle : labels.host.startupFailureTitle) + '\\n' + message + '\\n' + details;
           } else {
             setText(fatalMessage, message);
             setText(fatalDetails, details);
@@ -833,7 +836,7 @@ export function hostStartupScript(
               setDisplay(notice, 'none');
               setDisplay(loading, 'grid');
               setAttribute(loading, 'aria-hidden', 'false');
-              setText(loadingStatus, 'Refreshing cached startup resources and retrying once…');
+              setText(loadingStatus, labels.host.cacheRefreshing);
             }).then(result => {
               if (phase === 'destroyed') return;
               if (result.status === 'reloaded' || result.status === 'disabled') { disposeUi('loading'); return; }
@@ -843,11 +846,11 @@ export function hostStartupScript(
               setText(fatalMessage, message);
               if (result.status === 'exhausted') {
                 uiRecovery = 'exhausted';
-                uiDiagnostics = details + '\\n\\nAutomatic startup cache recovery was attempted once.' +
-                  (result.previous ? '\\nFirst failure:\\n' + result.previous : '');
+                uiDiagnostics = details + '\\n\\n' + labels.host.cacheRetried +
+                  (result.previous ? '\\n' + labels.host.firstFailure + '\\n' + result.previous : '');
               } else if (result.status === 'failed') {
                 uiRecovery = 'failed';
-                uiDiagnostics = details + '\\n\\nStartup cache recovery failed: ' + result.error;
+                uiDiagnostics = details + '\\n\\n' + labels.host.cacheRecoveryFailed + ' ' + result.error;
               }
               setText(fatalDetails, uiDiagnostics);
               notifyUi();

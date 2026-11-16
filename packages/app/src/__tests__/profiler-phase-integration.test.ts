@@ -4,6 +4,7 @@ import { createProfiler } from '@forgeax/engine-profiler';
 import type { Renderer, RenderFrameInput } from '@forgeax/engine-render';
 import { describe, expect, it } from 'vitest';
 import { createFrameLoop } from '../internal/frame-loop';
+import { appSchedulePhaseCatalog } from '../internal/profiled-schedule-runs';
 import { APP_PHASE_CATALOG } from '../types';
 import { testPlatform } from './platform-fixture';
 
@@ -59,34 +60,36 @@ function finish(profiler: ReturnType<typeof createProfiler>) {
 describe('App and Render profiler integration', () => {
   it('keeps normal and App-only frames on one capture identity', () => {
     const profiler = createProfiler();
-    start(profiler);
     const scheduler = makeScheduler();
     const drawOptions: unknown[] = [];
+    const world = new World();
     const loop = createFrameLoop({
-      world: new World(),
+      world,
       renderer: makeRenderer((options) => drawOptions.push(options)),
       profiler,
       platform: testPlatform({ now: () => 1000, raf: scheduler.raf, caf: scheduler.caf }),
     });
 
+    start(profiler);
     loop.start().unwrap();
     scheduler.tick(1000);
     loop.stop().unwrap();
 
     const capture = finish(profiler);
-    expect(capture.records.filter((record) => record.source === 'app')).toHaveLength(5);
+    expect(capture.records.filter((record) => record.source === 'app')).toHaveLength(4);
     expect(capture.records.every((record) => record.frameId === 1)).toBe(true);
     expect(drawOptions[0]).toMatchObject({
       captureId: capture.captureId,
       frameId: 1,
     });
-    expect(capture.phaseCatalog.app).toEqual(APP_PHASE_CATALOG);
+    expect(new Set(capture.phaseCatalog.app)).toEqual(
+      new Set([...APP_PHASE_CATALOG, ...appSchedulePhaseCatalog([world])]),
+    );
     expect(profiler.phaseCatalog.app).toEqual([]);
   });
 
   it('isolates a renderer failure while the host frame loop continues', () => {
     const profiler = createProfiler();
-    start(profiler);
     const scheduler = makeScheduler();
     let draws = 0;
     const errors: unknown[] = [];
@@ -101,6 +104,7 @@ describe('App and Render profiler integration', () => {
       platform: testPlatform({ now: () => 1000, raf: scheduler.raf, caf: scheduler.caf }),
     });
 
+    start(profiler);
     loop.start().unwrap();
     scheduler.tick(1000);
     scheduler.tick(1000);
@@ -109,6 +113,6 @@ describe('App and Render profiler integration', () => {
     const capture = finish(profiler);
     expect(draws).toBe(2);
     expect(errors).toHaveLength(2);
-    expect(capture.records.filter((record) => record.source === 'app')).toHaveLength(10);
+    expect(capture.records.filter((record) => record.source === 'app')).toHaveLength(8);
   });
 });

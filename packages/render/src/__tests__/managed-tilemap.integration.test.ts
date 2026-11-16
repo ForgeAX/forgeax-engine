@@ -11,7 +11,7 @@ import { Tilemap, TilemapSort } from '../components/tilemap';
 import { createRenderPublisher } from '../publication/publisher';
 import { RenderPublicationReceiver } from '../publication/receiver';
 import { encodeRenderPublication, renderPublicationTransfers } from '../publication/record';
-import { extractFrames } from '../render-system-extract-tail';
+import { extractSource } from '../render-system-extract-tail';
 import { PersistentRenderScene } from '../scene/render-scene';
 import { tilemapGeometry } from '../tilemap-geometry';
 
@@ -85,26 +85,18 @@ it.each([
       return result;
     }
     return scene.extractComposition(
-      [world],
-      { cameraOwner: 0, resourceOwner: 0 },
+      world,
       assets,
       (request) => {
-        if (typeof request === 'object')
-          for (const entities of request.entitiesByWorld) extractions += entities?.size ?? 0;
+        if (typeof request === 'object') extractions += request.entities.size;
         else if (request === 'full') extractions += maps.length;
-        return extractFrames(
-          [world],
-          { cameraOwner: 0, resourceOwner: 0 },
-          assets,
-          scene.materialSnapshotCacheStore(),
-          {
-            cull: 'none',
-            retainHidden: true,
-            renderables: request,
-          },
-        );
+        return extractSource(world, assets, scene.materialSnapshotCacheStore(), {
+          cull: 'none',
+          retainHidden: true,
+          renderables: request,
+        });
       },
-      [lease],
+      lease,
     );
   };
   try {

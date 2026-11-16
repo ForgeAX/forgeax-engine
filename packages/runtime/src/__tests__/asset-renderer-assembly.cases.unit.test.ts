@@ -1,6 +1,7 @@
 import { World } from '@forgeax/engine-ecs';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { describe, expect, it } from 'vitest';
+import { defaultAssetDecoderContributions } from '../asset-contributions';
 import { createRenderer as createRuntimeRenderer } from '../createRenderer';
 import { EngineEnvironmentError } from '../errors/environment';
 import { requireRenderer } from './renderer-test-utils';
@@ -10,6 +11,11 @@ function makeMockCanvas(_options: unknown): HTMLCanvasElement {
 }
 
 describe('runtime renderer assembly contract', () => {
+  it('assembles each built-in decoder kind once', () => {
+    const kinds = defaultAssetDecoderContributions.map((contribution) => contribution.kind.kind);
+    expect(new Set(kinds).size).toBe(kinds.length);
+  });
+
   it('returns a Result and unwraps an injected RHI renderer', async () => {
     const created = await createRuntimeRenderer(
       makeMockCanvas({ webgpu: 'context', webgl2: 'context' }),
@@ -50,11 +56,7 @@ describe('runtime renderer assembly contract', () => {
     expect(attached.ok).toBe(true);
     if (!attached.ok) return;
     expect(world.update(1 / 60).ok).toBe(true);
-    const frame = renderer.draw({
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
+    const frame = renderer.draw({ source: attached.value });
     expect(frame.ok).toBe(true);
     if (frame.ok) {
       const observed = await renderer.observe(frame.value, { include: ['timings'] });

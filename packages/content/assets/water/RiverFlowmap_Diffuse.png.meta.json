@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "external-asset-package",
+  "importer": "image",
+  "source": "RiverFlowmap_Diffuse.png",
+  "importSettings": { "colorSpace": "srgb", "mipmap": true, "compressionMode": "none" },
+  "subAssets": [{ "guid": "ef7f4ae3-f033-5d51-b756-18c8d4a6b40c", "sourceIndex": 0, "kind": "texture", "sourceKey": "texture" }]
+}

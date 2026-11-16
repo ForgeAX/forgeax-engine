@@ -16,8 +16,8 @@ can each be deleted as a whole; then remove their GUID references as the table b
 | `assets/player/` | Input sampling, fixed-step `moveAndSlide` movement, walk animation, the `game-3d.player` read projection, HUD state sent to the UI. Provides the `game3dPlayer` service. | Delete it; also remove its GUID from `world.pack.ts`. |
 | `assets/player/character.pack.ts`, `shared/player-rig.ts` | Procedural skinned character: mesh, skeleton, skin, walk clip. The robot is a placeholder. | Reshape the mesh and materials into your game's hero; the skeleton and walk clip can stay. |
 | `assets/camera/` | Pointer-lock third-person camera in the three.js style: an `eye` and a `look` point, each eased toward its goal, written with `setTransformLookAt`; snaps after `game3dPlayer.teleport`. Change the camera by changing how those two points move. | Delete it; also remove its GUID from `world.pack.ts`. |
-| `assets/materials.pack.ts`, `shaders/rusted-iron.wgsl` | Procedural materials and an import-first Surface shader. | Delete the shader and its material together. |
-| `assets/geometry.pack.ts` | Minimal primitive meshes (ground, cube, ramp) for the static colliders. The one rich procedural mesh is the multi-submesh character. | Remove unused meshes and their scene entities. |
+| `assets/materials.pack.ts`, `shaders/` | GPU-generated paving texture with mipmaps and an anisotropic sampler; rusted iron uses an import-first Surface shader. | Delete each shader with its generator or material. |
+| `assets/geometry.pack.ts` | Primitive meshes for the ground and rusted iron sphere directly ahead of the player, with matching static colliders. The character has multiple submeshes. | Remove unused meshes and their scene entities. |
 | `assets/ui/` | One UiAsset (`guide.ui.html/css`). Engine→UI: `player-hud.ts` shows state posted over `GameHost.port`. Touch: `player-controls.ts` posts virtual stick/button intent, HUD hidden on touch. The screen-centre crosshair is off by default; set `crosshair: true` in the `plugin/host` config of `ui.pack.ts` to show it while the pointer is locked. `forge.json#roots.frontend` holds the GUID of its `plugin/host` output. | Delete it; also remove `roots.frontend` from `forge.json`. |
 | `assets/shared/` | What features share without importing each other: package ids and GUID helpers, port channel names and message types (`player-protocol.ts`), the `game3dPlayer` service type (input, look angles, `teleport` / `onTeleport`), the player rig and third-person math. | Shrink as features go. |
 | `*/__tests__/` | A few key tests per feature; `assets/__tests__/plugin-fixture.ts` is the shared fake. | Deleted with the feature. |
@@ -48,15 +48,43 @@ Shared kernels need COOP/COEP in production; `forgeax project preview` provides 
 
 ## Sky and lighting
 
-The sky is the analytic `Atmosphere` component driven by the sun, the shadow-casting `DirectionalLight`;
-no sky image is stored. It uses `backgroundOnly: true` so it runs on baseline WebGPU and WebGL2 devices;
-remove that flag for aerial perspective on devices with 32 sampled textures per stage. A second `DirectionalLight` without `castShadow` is a cool, unshadowed light from the opposite
-side; the sun is the first shadow-casting one. `Skylight` without an `equirect` uses the sky for ambient light, and its `groundColor`
-turns that into a hemisphere ambient with a warm bounce from below. Colors are written as sRGB
-hex through `color.linearRgb(0x…)` (pack `parameters` defaults stay literal linear
-`[r, g, b]`, since View rewrites them in place); the camera uses ACES with `exposure` 0.95. Tune the
-sun's `sunColor`/`sunIntensity` in View under **Parameters → Runtime** on `scene.pack.ts`. The
-sun caps `shadowDistance` at 56 m for the 28 m showcase; tune it to your own level size.
+The clear-day recipe uses one shadow-casting `DirectionalLight`, physical
+`Atmosphere` and default `Skylight`, with a thin height medium. It has no sky image
+or independent fill lights. The full aerial-perspective and solar-attenuation
+paths remain enabled; half the default Mie scattering/absorption gives clearer
+low-angle sky. Fog density is `0.00008` per metre, with the Engine's default height
+falloff and atmosphere-driven source color.
+
+| Owner | Authored choice | Purpose |
+|:--|:--|:--|
+| Ground | 2 km square with a matching static collider | Keep actual geometry beneath the horizon instead of hiding a small platform's void with dense fog |
+| Ground Surface | Light warm stone, alternating 2 m checker cells; GPU-generated 512 px sRGB texture, full mip chain and 16x anisotropic repeat sampler | Preserve perspective detail at grazing angles and filter distant cells without a procedural distance fade |
+| Sun | Slightly warm linear RGB `(1,0.95,0.87)`, intensity 12 lux | A creative showcase key within the current HDR working range; this is not a measured daylight calibration |
+| Shadows | 56 m cascade distance | Spend near-field shadow resolution on the character and sphere |
+| ReflectionProbe | 128 px, local to the sphere, on-change updates | Reflect the real lit ground into the metal rather than leaving its underside at sky-only black |
+| Camera | ACES, FXAA, auto exposure, compensation 0, range `[-12,4]`, Bloom off | Preserve bright color and readable highlights without a glow wash |
+
+Engine light APIs retain lux/candela meanings. The starter's creative intensity
+is not a redefinition of those units. Raising it to real daylight values requires
+checking HDR headroom, exposure limits and fallback together. `rangeEv` is log2
+of the exposure multiplier, not Unreal's camera EV100.
+
+The initial 12-degree orbit pitch, 6.5 m distance and 0.7 m target-height offset
+are shared between scene bootstrap and the runtime follow camera in
+`assets/shared/third-person.ts`. Mouse look still changes the orbit normally.
+The iron sphere directly ahead of the player retains its radius-1 m static
+collider. The local reflection probe has a one-work-per-frame renderer budget;
+its initial filtered reflection appears after several completed submissions.
+
+Tune `sunColor` / `sunIntensity` in View under **Parameters → Runtime** on
+`scene.pack.ts`. In `materials.pack.ts`, `tileColor` / `tileContrast` belong to
+`generator/paving`; `tileSize` controls the material UV repeat. `gpuTextureOutputs`
+publishes `gpu-texture/paving/albedo` for the ordinary Standard material's
+`baseColorTexture`. Build prepares `shaders/paving-texture.wgsl`; Renderer generates
+the pixels and ten mip levels on the GPU. The sampler uses linear magnification,
+minification and mip interpolation, repeat addressing and `maxAnisotropy: 16`.
+The texture contains a seamless 2-by-2 cell repeat, with sRGB encoding and
+linear-light mip averaging. No CPU pixel buffer or per-frame texture upload is needed.
 
 ## Import-first Surface material example
 

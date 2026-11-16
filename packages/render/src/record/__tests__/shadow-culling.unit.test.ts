@@ -7,12 +7,11 @@ import type { RenderableSnapshot } from '../../render-system-extract';
 import { RenderScene } from '../../scene/render-scene';
 import { shadowViewContains } from '../shadow-culling';
 
-function snapshot(x = 0, worldId = 0) {
+function snapshot(x = 0) {
   const world = mat4.identity(mat4.create());
   const transforms = mat4.identity(mat4.create());
   transforms[12] = x;
   return {
-    worldId,
     entityKey: 7,
     assetHandle: 1,
     transform: { world },
@@ -24,13 +23,11 @@ function snapshot(x = 0, worldId = 0) {
   } satisfies RenderableSnapshot;
 }
 function publish(scene: RenderScene, source: RenderableSnapshot) {
-  scene.apply([
-    { kind: 'update', worldId: source.worldId, entityKey: source.entityKey, snapshot: source },
-  ]);
+  scene.apply([{ kind: 'update', entityKey: source.entityKey, snapshot: source }]);
 }
 function resolver(scene: RenderScene) {
   return (source: RenderableSnapshot, out: box3.Box3) => {
-    const slot = scene.slot(source.worldId, source.entityKey);
+    const slot = scene.slot(source.entityKey);
     return slot !== undefined && scene.writeCullingWorldBoundsAt(slot, out);
   };
 }
@@ -72,26 +69,26 @@ describe('shadow world bounds ownership', () => {
     expect(visible()).toBe(true);
     const moved = mat4.identity(mat4.create());
     moved[12] = 5;
-    scene.apply([], [{ worldId: 0, entities: new Uint32Array([7]), worlds: moved }]);
+    scene.apply([], [{ entities: new Uint32Array([7]), worlds: moved }]);
     expect(visible()).toBe(false);
     source = { ...snapshot(-5), transform: { world: moved } };
     source = { ...source, instances: { ...source.instances, revision: 2 } };
-    scene.apply([{ kind: 'update', worldId: 0, entityKey: 7, instances: source.instances }]);
+    scene.apply([{ kind: 'update', entityKey: 7, instances: source.instances }]);
     expect(visible()).toBe(true);
     source = { ...source, localAabb: new Float32Array([5, 0, 0.2, 6, 1, 0.4]) };
     publish(scene, source);
     expect(visible()).toBe(false);
-    scene.apply([{ kind: 'remove', worldId: 0, entityKey: 7 }]);
+    scene.apply([{ kind: 'remove', entityKey: 7 }]);
     source = snapshot();
     publish(scene, source);
     expect(visible()).toBe(true);
-    const secondWorld = snapshot(8, 1);
+    const secondWorld = { ...snapshot(8), entityKey: 8 };
     publish(scene, secondWorld);
     expect(shadowViewContains(secondWorld, planes, resolver(scene))).toBe(false);
     expect(visible()).toBe(true);
-    scene.remapWorlds([1, 0]);
-    expect(shadowViewContains({ ...source, worldId: 1 }, planes, resolver(scene))).toBe(true);
-    expect(shadowViewContains({ ...secondWorld, worldId: 0 }, planes, resolver(scene))).toBe(false);
+    scene.apply([]);
+    expect(shadowViewContains({ ...source }, planes, resolver(scene))).toBe(true);
+    expect(shadowViewContains({ ...secondWorld }, planes, resolver(scene))).toBe(false);
   });
 
   it('matches direct instance unions under rotation, reflection and nonuniform scale', () => {

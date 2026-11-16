@@ -6,6 +6,8 @@ import type { box3 } from '@forgeax/engine-math';
 import type { MaterialCookRasterContext } from '@forgeax/engine-pack/material-cook';
 import { RhiError } from '@forgeax/engine-rhi';
 import { err, ok, type Result } from '@forgeax/engine-types';
+import { stereoEyeCameras } from '../components/stereo-camera';
+import { renderFeatureViewIdentity } from '../features/view';
 import { projectGlyphView } from '../glyph-source';
 import type { SubmissionPlan } from '../gpu-driven/batch-topology';
 import { GpuDrawSelection } from '../gpu-driven/draw-selection';
@@ -24,7 +26,6 @@ import type { PointsLinesRetainedSnapshot } from '../points-lines/snapshot';
 import type { RenderPublicationIdentity } from '../publication/contract';
 import type { PreparedRenderPublication } from '../publication/receiver';
 import type { RenderResourceScope } from '../publication/resource-scope';
-import { worldEntityKey } from '../record/frame-snapshot';
 import {
   ReflectionProbeProjection,
   type ReflectionProbeSelectionResult,
@@ -32,7 +33,7 @@ import {
 import type {
   DispatchList,
   ExtractedFrame,
-  MaterialSnapshotCachesByWorld,
+  MaterialSnapshotContexts,
   RenderableSnapshot,
 } from '../render-system-extract';
 import type { SubsurfaceDemand } from '../subsurface/selection';
@@ -40,6 +41,7 @@ import { standardSceneTemporalDemand } from '../temporal/standard-scene-data';
 import { projectTerrainView, terrainSectionKey } from '../terrain/view.js';
 import { projectTilemapView } from '../tilemap-source';
 import type { TransmissionDemand } from '../transmission/projection';
+import { projectWaterMeshView } from '../water-mesh-source';
 import { registerMaterialSystems } from '../world/material-systems';
 import type { ProbeRoster } from '../world/render-probes';
 import { beginRenderFrame, createRenderWorld, endRenderFrame } from '../world/render-world';
@@ -161,6 +163,12 @@ export interface PersistentRenderSceneOptions extends SceneCompositionOptions {
     | undefined;
 }
 
+/** Texture-backed GPU Scene rows and the slot lookup for rows recorded without a native Scene. */
+export interface SceneTextureTables {
+  readonly scene: GpuScene;
+  readonly slotForEntity: (entityKey: number) => RenderSceneSlot | undefined;
+}
+
 export interface PersistentGpuDrivenState {
   /** Fixed numeric roots borrowed through this physical recording. */
   readonly skin?: SkinSceneFrame | undefined;
@@ -187,11 +195,9 @@ export interface PersistentGpuDrivenState {
   /** Roots `drawSnapshotAt` reads; retained consumers link two states through their diff. */
   readonly draws?: DrawEvidence;
   /** Native Scene's existing entity index; borrowed states can omit this projection. */
-  readonly slotForEntity?: (worldId: number, entityKey: number) => RenderSceneSlot | undefined;
-  /** Stable renderer-local World keys aligned with RenderSceneSlot.worldId. */
-  readonly worldKeys?: readonly number[];
-  /** Public World identities aligned with RenderSceneSlot.worldId. */
-  readonly worldIdentities?: readonly string[];
+  readonly slotForEntity?: (entityKey: number) => RenderSceneSlot | undefined;
+  /** Lifecycle identity of the one accepted source. */
+  readonly sourceIdentity?: string;
   readonly structureMetrics?: GpuDrivenStructureMetrics;
   /** Stable retained ProbeBlend upload projection from the Scene owner. */
   readonly probeBlend?: ProbeBlendBufferProjection;
@@ -241,17 +247,6 @@ interface ViewEntry {
   /** This view's Skin recordings over the shared Skin inputs. */
   skin: SkinFrames | undefined;
 }
-
-function sameWorldSequence(
-  left: readonly RenderResourceScope[],
-  right: readonly RenderResourceScope[],
-): boolean {
-  if (left.length !== right.length) return false;
-  for (let index = 0; index < left.length; index += 1) {
-    if (left[index] !== right[index]) return false;
-  }
-  return true;
-}
 /**
  * One view's scene state over the renderer's shared {@link SceneComposition}:
  * its own submitted history and draw addresses (a {@link RenderScene} over
@@ -288,7 +283,7 @@ export class PersistentRenderScene {
     | {
         readonly scene: RenderScene | undefined;
         readonly sceneRevision: number;
-        readonly worlds: readonly RenderResourceScope[];
+        readonly sourceScope: RenderResourceScope | undefined;
         readonly renderables: FrameList<RenderableSnapshot>;
         readonly dispatch: DispatchList;
         readonly projection: PersistentVisibilityProjection;
@@ -443,7 +438,12 @@ export class PersistentRenderScene {
   }
 
   /** World identity is the author/runtime identity; array position is only a frame routing detail. */
-  private projectSceneSources(frame: ExtractedFrame, view: ViewEntry) {
+  private projectSceneSources(
+    frame: ExtractedFrame,
+    view: ViewEntry,
+    viewIdentity: string | undefined,
+    publishedWaterMeshOwners: Iterable<RenderableSnapshot>,
+  ) {
     const entry = view.shared;
     const shared = this.shared;
     entry.materialDispatch.prepare(view.projection.meshFrame());
@@ -451,7 +451,7 @@ export class PersistentRenderScene {
       frame,
       this.terrainAccepted,
       entry.materialDispatch.materials(),
-      entry.worlds,
+      entry.source,
       shared.terrainSources,
       (world, handle) =>
         shared.prepareMeshMaterial(world, handle, 'terrain', false, shared.sourceAssets),
@@ -461,18 +461,24 @@ export class PersistentRenderScene {
     const glyphView = projectGlyphView(
       terrainView.frame,
       terrainView.materials,
-      entry.worlds,
+      entry.source,
       shared.glyphSources,
       shared.sourceAssets,
       view.projection.hasSource('glyph'),
     );
-    return projectTilemapView(
+    const tilemapView = projectTilemapView(
       glyphView.frame,
       glyphView.materials,
-      entry.worlds,
+      entry.source,
       shared.tilemapSources,
       shared.sourceAssets,
       view.projection.hasSource('tilemap'),
+    );
+    return projectWaterMeshView(
+      tilemapView.frame,
+      tilemapView.materials,
+      viewIdentity,
+      publishedWaterMeshOwners,
     );
   }
 
@@ -484,34 +490,19 @@ export class PersistentRenderScene {
     return this.shared.publicationBaselineRequired(resources, scene);
   }
 
-  materialSnapshotCacheStore(context?: MaterialCookRasterContext): MaterialSnapshotCachesByWorld {
+  materialSnapshotCacheStore(context?: MaterialCookRasterContext): MaterialSnapshotContexts {
     return this.shared.materialSnapshotCacheStore(context);
   }
-
-  visibilityWorldKeysFor(worlds: readonly RenderResourceScope[]): readonly number[] {
-    return this.shared.visibilityWorldKeysFor(worlds);
-  }
-
   compositionSlots(): SceneSlotFrame {
     return this.shared.compositionSlots();
   }
 
-  compositionSlot(worldId: number, entityKey: number): RenderSceneSlot | undefined {
-    return this.shared.compositionSlot(worldId, entityKey);
+  compositionSlot(entityKey: number): RenderSceneSlot | undefined {
+    return this.shared.compositionSlot(entityKey);
   }
 
   shadowCasterProjection(): PersistentShadowCasterProjection | undefined {
     return this.shadowProjection;
-  }
-
-  private stableEntityKey(
-    worlds: readonly RenderResourceScope[],
-    renderable: Pick<RenderableSnapshot, 'worldId' | 'entityKey'>,
-  ): number {
-    return worldEntityKey(
-      this.shared.visibilityWorldKeysFor(worlds)[renderable.worldId] ?? renderable.worldId,
-      renderable.entityKey,
-    );
   }
   /**
    * Project extracted renderables into the final primary-raster submission.
@@ -521,7 +512,7 @@ export class PersistentRenderScene {
    * production-raster admission caches key on.
    */
   projectVisibility(
-    worlds: readonly RenderResourceScope[],
+    sourceScope: RenderResourceScope | undefined,
     renderables: FrameList<RenderableSnapshot>,
     dispatch: DispatchList,
     roster?: SceneSlotFrame,
@@ -537,7 +528,7 @@ export class PersistentRenderScene {
       cached !== undefined &&
       cached.scene === scene &&
       cached.sceneRevision === sceneRevision &&
-      sameWorldSequence(cached.worlds, worlds) &&
+      cached.sourceScope === sourceScope &&
       cached.renderables === renderables &&
       cached.dispatch === dispatch
     ) {
@@ -549,11 +540,11 @@ export class PersistentRenderScene {
     let activeEntityRevision: number;
     if (roster === undefined) {
       const keys = new Set<number>();
-      for (const renderable of renderables) keys.add(this.stableEntityKey(worlds, renderable));
+      for (const renderable of renderables) keys.add(renderable.entityKey);
       activeEntityKeys = keys;
       activeEntityRevision = this.activeEntityRevision(keys);
     } else {
-      const keys = new SlotIdentityKeys(roster, this.visibilityWorldKeysFor(worlds));
+      const keys = new SlotIdentityKeys(roster);
       activeEntityKeys = keys;
       activeEntityRevision = this.rosterEntityRevision(keys);
     }
@@ -561,7 +552,7 @@ export class PersistentRenderScene {
     this.visibilityProjectionCache = {
       scene,
       sceneRevision,
-      worlds: [...worlds],
+      sourceScope,
       renderables,
       dispatch,
       projection,
@@ -635,8 +626,8 @@ export class PersistentRenderScene {
     );
   }
 
-  reflectionProbeSelection(worldId: number, entityKey: number): ReflectionProbeSelectionResult {
-    return this.reflectionProbes.selection(worldId, entityKey);
+  reflectionProbeSelection(entityKey: number): ReflectionProbeSelectionResult {
+    return this.reflectionProbes.selection(entityKey);
   }
 
   reflectionProbeProjection(): ReturnType<ReflectionProbeProjection['snapshot']> {
@@ -648,11 +639,23 @@ export class PersistentRenderScene {
    * through this scene's private Render World (the same scene, adoption and
    * material systems the Renderer runs), then derive this view's frame.
    */
-  consumePublication(input: PreparedRenderPublication): ExtractedFrame {
+  consumePublication(input: PreparedRenderPublication, viewIdentity?: string): ExtractedFrame {
     const direct = this.directRenderWorld(this.options.assets);
     direct.source.staged = true;
     direct.source.publication = input;
-    return this.followPublication(this.runDirectFrame(direct), input.frame);
+    const cameras = input.frame.cameras.flatMap((camera) =>
+      camera.eye === undefined ? stereoEyeCameras(camera) : [camera],
+    );
+    const camera =
+      viewIdentity === undefined
+        ? cameras[0]
+        : cameras.find((candidate) => renderFeatureViewIdentity(candidate) === viewIdentity);
+    const frame = { ...input.frame, cameras: camera === undefined ? [] : [camera] };
+    return this.followPublication(
+      this.runDirectFrame(direct),
+      frame,
+      viewIdentity ?? (camera === undefined ? undefined : renderFeatureViewIdentity(camera)),
+    );
   }
 
   /** Run one frame of the private Render World; its scene adoption is the step. */
@@ -661,7 +664,7 @@ export class PersistentRenderScene {
   ): RenderSceneAdoption {
     beginRenderFrame(direct.world, ++direct.frame);
     endRenderFrame(direct.world);
-    return direct.world.getResource<RenderSceneAdoption>(RenderSceneDelta);
+    return direct.world.getResource(RenderSceneDelta);
   }
 
   /** A failed shared step that retired the composition retires this view with it. */
@@ -680,22 +683,20 @@ export class PersistentRenderScene {
     }
   }
 
-  /** Observe the source Worlds into the shared composition, then derive this view's frame. */
+  /** Observe the source World into the shared composition, then derive this view's frame. */
   extractComposition(
-    worlds: readonly World[],
-    owner: { readonly cameraOwner: number; readonly resourceOwner: number },
+    world: World,
     assets: AssetRegistry,
     buildCandidateFrame: (request: PersistentRenderCandidateRequest) => ExtractedFrame,
-    leases?: readonly RenderReadLease[],
+    lease: RenderReadLease,
   ): ExtractedFrame {
     const direct = this.directRenderWorld(assets);
     const source = direct.source;
     let resourceFrame: ExtractedFrame | undefined;
     source.staged = true;
     source.assets = assets;
-    source.worlds = worlds;
-    source.owner = { cameraOwner: owner.cameraOwner, resourceOwner: owner.resourceOwner };
-    source.leases = leases;
+    source.world = world;
+    source.lease = lease;
     // The step's first built frame is its resource frame.
     source.buildCandidateFrame = (request) => {
       const frame = buildCandidateFrame(request);
@@ -704,7 +705,12 @@ export class PersistentRenderScene {
     };
     const adoption = this.runDirectFrame(direct);
     const advance = this.sharedStep(() => adoptedAdvance(adoption));
-    return this.deriveFramePlan(this.follow(advance), resourceFrame ?? buildCandidateFrame('none'));
+    const frame = resourceFrame ?? buildCandidateFrame('none');
+    return this.deriveFramePlan(
+      this.follow(advance),
+      frame,
+      renderFeatureViewIdentity(frame.cameras[0]),
+    );
   }
 
   private directRenderWorld(
@@ -727,19 +733,27 @@ export class PersistentRenderScene {
   followAdoption(
     adoption: RenderSceneAdoption,
     buildCandidateFrame: (request: PersistentRenderCandidateRequest) => ExtractedFrame,
-    resourceWorld: World | undefined,
   ): ExtractedFrame {
     const advance = this.sharedStep(() => adoptedAdvance(adoption));
     const resourceFrame = buildCandidateFrame('none');
-    this.shared.fenceViewResourceFrame(resourceWorld, resourceFrame);
-    return this.deriveFramePlan(this.follow(advance), resourceFrame);
+    this.shared.fenceViewResourceFrame(resourceFrame);
+    return this.deriveFramePlan(
+      this.follow(advance),
+      resourceFrame,
+      renderFeatureViewIdentity(resourceFrame.cameras[0]),
+    );
   }
 
   /** Derive this view's frame from the adopted publication and its own camera rewrite. */
-  followPublication(adoption: RenderSceneAdoption, frame: ExtractedFrame): ExtractedFrame {
+  followPublication(
+    adoption: RenderSceneAdoption,
+    frame: ExtractedFrame,
+    viewIdentity: string | undefined,
+  ): ExtractedFrame {
     return this.deriveFramePlan(
       this.follow(this.sharedStep(() => adoptedAdvance(adoption))),
       frame,
+      viewIdentity,
     );
   }
 
@@ -871,6 +885,18 @@ export class PersistentRenderScene {
     return this.shared.compositionRetainedScene();
   }
 
+  /**
+   * The resident texture-backed GPU Scene of this view's composition. Rows
+   * drawn without a native Scene find their slot by entity.
+   */
+  compositionSceneTextureTables(): SceneTextureTables | undefined {
+    const view = this.view;
+    const scene = this.shared.gpuSceneTextureResident;
+    if (view === undefined || scene === undefined || view.shared !== this.shared.entry)
+      return undefined;
+    return { scene, slotForEntity: view.projection.slotsSnapshot().lookup };
+  }
+
   compositionGpuDrivenState(): PersistentGpuDrivenState | undefined {
     const view = this.view;
     const scene = this.shared.gpuSceneResident;
@@ -905,8 +931,7 @@ export class PersistentRenderScene {
       slotAt: slots.slotAt,
       drawSnapshotAt: this.slotDraws(view),
       slotForEntity: slots.lookup,
-      worldKeys: entry.worldKeys,
-      worldIdentities: entry.worlds.map((world) => world.identity),
+      sourceIdentity: entry.source.identity,
       structureMetrics: this.shared.structureMetrics,
       probeBlend: entry.probeProjection.recordBufferProjection(),
     };
@@ -984,7 +1009,7 @@ export class PersistentRenderScene {
 
   /** Capture current CPU scene facts; commitTemporalFrame publishes them only after submit. */
   prepareTemporalFrame(
-    visible: Iterable<Pick<RenderableSnapshot, 'worldId' | 'entityKey'>>,
+    visible: Iterable<Pick<RenderableSnapshot, 'entityKey'>>,
     roster?: SceneSlotFrame,
   ): void {
     const view = this.view;
@@ -1010,7 +1035,11 @@ export class PersistentRenderScene {
    * Derive an ephemeral frame plan from persistent scene facts. The scene
    * retains identity/topology/read versions; no prior frame object is an authority.
    */
-  private deriveFramePlan(view: ViewEntry, resourceFrame: ExtractedFrame): ExtractedFrame {
+  private deriveFramePlan(
+    view: ViewEntry,
+    resourceFrame: ExtractedFrame,
+    viewIdentity: string | undefined,
+  ): ExtractedFrame {
     const entry = view.shared;
     const projection = view.projection;
     const dispatch = this.shared.materialPasses(entry);
@@ -1018,7 +1047,7 @@ export class PersistentRenderScene {
       ...resourceFrame,
       hiddenEntityReports: entry.hiddenEntityReports,
       visibilityStats:
-        entry.sourceStates.length === 0
+        entry.sourceState === undefined
           ? resourceFrame.visibilityStats
           : { explicitlyHidden: entry.hiddenEntityReports.length },
       dispatch,
@@ -1043,7 +1072,7 @@ export class PersistentRenderScene {
       unavailable.size === 0 || view.temporalDemanded
         ? candidates
         : new FrameProjection(candidates, (snapshot) => {
-            const slot = acceptedSlots.lookup(snapshot.worldId, snapshot.entityKey);
+            const slot = acceptedSlots.lookup(snapshot.entityKey);
             return slot !== undefined && unavailable.has(slot.slot)
               ? { ...snapshot, authorVisible: false }
               : snapshot;
@@ -1055,11 +1084,16 @@ export class PersistentRenderScene {
       entry.probeProjection,
       this.probeAttachMemo,
     );
+    // Publication frames carry deltas; their complete owners live in the adopted scene rows.
+    const waterMeshOwners =
+      entry.publicationRevision === undefined ? resourceFrame.renderables : materialized;
     const { frame: ownedFrame, materials: materialFrame } = this.projectSceneSources(
       frameWithProbes,
       view,
+      viewIdentity,
+      waterMeshOwners,
     );
-    const resource = entry.worlds[0];
+    const resource = entry.source;
     const publicationRevision = entry.publicationRevision;
     const sceneRevision = projection.revisionValue();
     const dispatchRevision = entry.materialDispatch.revisionValue();
@@ -1074,8 +1108,7 @@ export class PersistentRenderScene {
             revision: publicationRevision,
             isCurrent: () =>
               this.shared.entry === entry &&
-              entry.worlds.length === 1 &&
-              entry.worlds[0] === resource &&
+              entry.source === resource &&
               entry.publicationRevision === publicationRevision &&
               resource.revision === publicationRevision &&
               projection.revisionValue() === sceneRevision &&
@@ -1085,7 +1118,8 @@ export class PersistentRenderScene {
     const hasGeneratedDraws =
       projection.hasSource('terrain') ||
       projection.hasSource('glyph') ||
-      projection.hasSource('tilemap');
+      projection.hasSource('tilemap') ||
+      frameWithProbes.renderables.some((source) => source.waterMeshSource !== undefined);
     const skinFrame = this.prepareSkinFrame(view);
     const { frame: result, subsurface } = view.cull.cull({
       shared: entry,
@@ -1152,7 +1186,7 @@ export class PersistentRenderScene {
         return materialProgramProjection.project(ownedFrame.dispatch, materialFrame);
       },
       worldBoundsOf: (source, out, row) => {
-        const slot = sceneRow(row, source) ?? shadowSlots.lookup(source.worldId, source.entityKey);
+        const slot = sceneRow(row, source) ?? shadowSlots.lookup(source.entityKey);
         return source.terrainSection !== undefined || source.generatedMesh !== undefined
           ? writeBounds(worldBounds(source), out)
           : slot !== undefined &&

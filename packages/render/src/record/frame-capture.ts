@@ -4,18 +4,22 @@
 
 import type { CompiledRenderGraph } from '@forgeax/engine-render-graph';
 import { err, ok, type Result } from '@forgeax/engine-rhi';
-import type { CloudShadowProjection } from '../cloud/shadow';
+import type { CloudShadowProjection } from '../cloud/lighting/shadow';
 import { stageAtmospherePublish } from '../environment/storage';
 import { RendererOperationError } from '../errors/render';
 import type { RenderPipelineFrame } from '../render-pipeline';
 import type { DirectionalLightSnapshot } from '../render-system-extract';
 import { markPipelinePreparationPending } from '../render-system-presentation';
 import type { TerrainShadowReceiver } from '../terrain/shadow-family';
+import type { ResolvedShadowTargets, SharedShadowSource } from '../typed-shadow-passes';
 import type { ViewLights } from '../world/render-lights';
 import type { CubeCaptureFrameInput } from './frame';
 import { buildPerFrameBindGroups } from './frame-lighting';
 import type { BindGroupCounts, RenderFrameState } from './frame-snapshot';
-import { createPassTimingInstrumentation } from './gpu-pass-timing/instrumentation';
+import {
+  createRenderGraphPassInstrumentation,
+  renderGraphPassInstrumentationActive,
+} from './frame-targets';
 import { flushMeshDrawUploads } from './mesh-ssbo';
 import type {
   _InternalRenderPipelineContext,
@@ -39,6 +43,8 @@ export type CubeCaptureFrame = ReturnType<
   CompiledCaptureView;
 export type ProbeCaptureFrame = ReturnType<typeof prepareTargetCaptureLighting> &
   CompiledCaptureView;
+/** The planar mirror records inside the display graph, on the display view's shadows. */
+export type PlanarCaptureFrame = CubeCaptureFrame & { readonly shadows: SharedShadowSource };
 
 type CaptureCloudShadow =
   | (CloudShadowProjection & { readonly baseHeight: number; readonly thickness: number })
@@ -60,6 +66,7 @@ function compileCubeCaptureFrame(
   work: CubeCaptureGraphWork,
   graphShadowMapSize: number | undefined,
   terrainReceivers: readonly TerrainShadowReceiver[],
+  sharedShadows?: SharedShadowSource,
 ): CubeCaptureFrame {
   const lighting = prepareTargetCaptureLighting(
     cubeCapture.state,
@@ -80,6 +87,7 @@ function compileCubeCaptureFrame(
     lighting.lighting,
     undefined,
     terrainReceivers,
+    sharedShadows,
   );
   return { ...lighting, graph, viewport: work.physical.descriptor };
 }
@@ -123,7 +131,11 @@ function compileProbeCaptureFrame(
   return { ...lighting, graph, viewport: { width: probe.rawSize, height: probe.rawSize } };
 }
 
-/** Cube-target faces first, then raw reflection-probe faces, in capture order. */
+/**
+ * Cube-target faces first, then raw reflection-probe faces, in capture order.
+ * The planar mirror compiles apart: the display graph records it after its
+ * own shadows, which the mirror samples instead of rasterising its own.
+ */
 function compileCaptureFrames(
   internals: RenderSystemInternals,
   frameState: RenderFrameState,
@@ -134,9 +146,27 @@ function compileCaptureFrames(
   terrainReceivers: readonly TerrainShadowReceiver[],
   captureFrames: CubeCaptureFrame[],
   probeCaptureFrames: ProbeCaptureFrame[],
-): void {
-  if (cubeCapture === undefined) return;
-  for (const work of cubeCaptureWork)
+): PlanarCaptureFrame | undefined {
+  if (cubeCapture === undefined) return undefined;
+  let planar: PlanarCaptureFrame | undefined;
+  for (const work of cubeCaptureWork) {
+    if (work.faceCamera.planarReflection !== undefined) {
+      const shadows: SharedShadowSource = { current: undefined };
+      planar = {
+        ...compileCubeCaptureFrame(
+          internals,
+          frameState,
+          pipelineState,
+          cubeCapture,
+          work,
+          graphShadowMapSize,
+          terrainReceivers,
+          shadows,
+        ),
+        shadows,
+      };
+      continue;
+    }
     captureFrames.push(
       compileCubeCaptureFrame(
         internals,
@@ -148,6 +178,7 @@ function compileCaptureFrames(
         terrainReceivers,
       ),
     );
+  }
   for (const probe of cubeCapture.reflectionProbes?.graph.work ?? []) {
     const frame = compileProbeCaptureFrame(
       internals,
@@ -160,11 +191,14 @@ function compileCaptureFrames(
     );
     if (frame !== undefined) probeCaptureFrames.push(frame);
   }
+  return planar;
 }
 
 /** The capture compiler's explicit input; production resolves it from current view components. */
 export interface CaptureGraphCompileInput {
   readonly internals: RenderSystemInternals;
+  /** Immutable resolved camera identity for the producer that admits this pass vocabulary. */
+  readonly cameraEntityKey?: number | undefined;
   readonly frameState: RenderFrameState;
   readonly pipelineState: PipelineState;
   readonly capture: CubeCaptureFrameInput | undefined;
@@ -177,6 +211,7 @@ export interface CaptureGraphCompileInput {
 export interface CaptureGraphBatch {
   readonly cube: readonly CubeCaptureFrame[];
   readonly probes: readonly ProbeCaptureFrame[];
+  readonly planar?: PlanarCaptureFrame | undefined;
 }
 
 export type CaptureGraphOutcome = Result<
@@ -198,15 +233,25 @@ export function captureGraphFailure(cause: unknown): RendererOperationError<'gra
 
 /** Release every successfully compiled graph, including a partially failed batch. */
 export function retireCaptureGraphBatch(batch: CaptureGraphBatch): void {
-  for (const capture of [...batch.cube, ...batch.probes]) void capture.graph.retire();
+  for (const capture of captureGraphFrames(batch)) void capture.graph.retire();
+}
+
+/** Every compiled frame of a batch, the planar mirror last. */
+export function captureGraphFrames(
+  batch: CaptureGraphBatch,
+): readonly (CubeCaptureFrame | ProbeCaptureFrame)[] {
+  return batch.planar === undefined
+    ? [...batch.cube, ...batch.probes]
+    : [...batch.cube, ...batch.probes, batch.planar];
 }
 
 /** Compile through the same owner for a Render World view and a direct recorder. */
 export function compileCaptureGraphBatch(input: CaptureGraphCompileInput): CaptureGraphOutcome {
   const cube: CubeCaptureFrame[] = [];
   const probes: ProbeCaptureFrame[] = [];
+  let planar: PlanarCaptureFrame | undefined;
   try {
-    compileCaptureFrames(
+    planar = compileCaptureFrames(
       input.internals,
       input.frameState,
       input.pipelineState,
@@ -217,9 +262,9 @@ export function compileCaptureGraphBatch(input: CaptureGraphCompileInput): Captu
       cube,
       probes,
     );
-    return ok({ cube, probes });
+    return ok({ cube, probes, planar });
   } catch (cause) {
-    retireCaptureGraphBatch({ cube, probes });
+    retireCaptureGraphBatch({ cube, probes, planar });
     return err(captureGraphFailure(cause));
   }
 }
@@ -237,7 +282,6 @@ function executeCaptureFrame(
   bindGroupCounts: BindGroupCounts,
   lightTextureResamples: import('../prepare/extended-lighting/light-texture-resample').ScheduledLightTextureResample[],
 ): void {
-  const timing = internals.gpuPassTimingCapture;
   writeViewUbo(
     internals.device.queue,
     capture.pipeline.viewUniformBuffer,
@@ -283,6 +327,7 @@ function executeCaptureFrame(
     capsuleShadowDirectional: false,
   };
   delete context.capsuleShadowLight;
+  delete context.planarReflectionCapture;
   delete context.gpuDrivenShadowViews;
   delete context.shadowDirectRequired;
   delete context.directionalShadowCascadeMiss;
@@ -303,12 +348,19 @@ function executeCaptureFrame(
     lightTextureResamples.push(...pendingResamples);
     delete capture.frameState.pendingLightTextureResamples;
   }
+  const captureInternals = capture.runtime;
+  const instrumentation = renderGraphPassInstrumentationActive(captureInternals)
+    ? createRenderGraphPassInstrumentation({
+        internals: captureInternals,
+        graph: capture.graph,
+        owner: 'capture',
+        ...(capture.work.faceCamera.entityKey === undefined
+          ? {}
+          : { viewId: capture.work.faceCamera.entityKey }),
+      })
+    : undefined;
   const execute = () => {
-    const executed = capture.graph.execute(
-      context,
-      undefined,
-      timing === undefined ? undefined : createPassTimingInstrumentation(timing),
-    );
+    const executed = capture.graph.execute(context, undefined, instrumentation);
     if (!executed.ok) throw executed.error;
   };
   // Only the program owner can distinguish a pending native compile from a
@@ -356,4 +408,44 @@ export function executeCaptureFrames(
       bindGroupCounts,
       lightTextureResamples,
     );
+}
+
+/**
+ * Record the planar mirror from inside the display graph, once the display
+ * view's shadows are written: the mirror's View UBO already carries the
+ * display view's light matrices, so it samples those same layers.
+ */
+export function planarCaptureRecorder(
+  internals: RenderSystemInternals,
+  frameState: RenderFrameState,
+  passCtx: _InternalRenderPipelineContext,
+  planar: PlanarCaptureFrame,
+  light: DirectionalLightSnapshot,
+  projectorSpotIndex: number | undefined,
+  cloudShadowProjection: CaptureCloudShadow,
+  elapsedSeconds: number | undefined,
+  hasValidated: boolean,
+  bindGroupCounts: BindGroupCounts,
+  lightTextureResamples: import('../prepare/extended-lighting/light-texture-resample').ScheduledLightTextureResample[],
+): (shadows: ResolvedShadowTargets) => void {
+  return (shadows) => {
+    planar.shadows.current = shadows;
+    try {
+      executeCaptureFrame(
+        internals,
+        frameState,
+        passCtx,
+        planar,
+        light,
+        projectorSpotIndex,
+        cloudShadowProjection,
+        elapsedSeconds,
+        hasValidated,
+        bindGroupCounts,
+        lightTextureResamples,
+      );
+    } finally {
+      planar.shadows.current = undefined;
+    }
+  };
 }

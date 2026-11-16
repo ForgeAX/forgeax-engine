@@ -1,3 +1,5 @@
+import { InputFrameStartScan } from "@forgeax/engine-input";
+import { defineSystem } from "@forgeax/engine-ecs";
 import type { AssetHandle } from '@forgeax/engine-types';
 import { installGpuDrivenEvidence } from '@forgeax/apps-shared/gpu-driven-evidence';
 import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtimeBinding } from '@forgeax/apps-shared/asset-runtime-config';
@@ -25,7 +27,7 @@ import { Update } from '@forgeax/engine-ecs';
 
 import { createApp } from '@forgeax/engine-app/browser';
 import { ENTITY_NULL_RAW, type EntityHandle, World } from '@forgeax/engine-ecs';
-import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine-input';
+import { INPUT_SNAPSHOT_RESOURCE_KEY } from '@forgeax/engine-input';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import {
   AnimationPlayer,
@@ -234,12 +236,12 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       '<span style="color:#8a90a8;">[1] run  [2] punch  [3] shot  [Space] Pause</span>';
   };
 
-  world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'fbx-skin-clip-toggle',
-    after: ['input-frame-start-scan'],
+    after: [InputFrameStartScan],
     queries: [],
     fn: () => {
-      const snap = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+      const snap = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
       if (snap === undefined) return;
 
       for (let i = 0; i < clipHandles.length; i++) {
@@ -278,6 +280,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       prevSpace = curSpace;
     },
   });
+world.addSystem(Update, systemToken1);
 
   refreshHud();
   app.start();

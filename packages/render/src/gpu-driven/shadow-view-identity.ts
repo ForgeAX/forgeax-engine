@@ -45,7 +45,7 @@ export function shadowViewIdentityKey(identity: ShadowViewIdentity): string {
 function serializeIdentityKey(identity: ShadowViewIdentity): string {
   return `${identity.kind}:${identity.index}:${identity.face ?? ''}${
     identity.layer === undefined ? '' : `:${identity.layer}`
-  }${identity.terrainReceiver === undefined ? '' : `:terrain:${identity.terrainReceiver.worldId}:${identity.terrainReceiver.entityKey}`}`;
+  }${identity.terrainReceiver === undefined ? '' : `:terrain:${identity.terrainReceiver.entityKey}`}`;
 }
 
 /** Capture a detached logical value at its producer, never a submission capability. */

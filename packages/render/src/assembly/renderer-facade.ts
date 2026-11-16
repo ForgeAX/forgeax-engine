@@ -35,7 +35,8 @@ import {
 } from '../errors/render';
 import { MotionBlurValidationError } from '../features/motion-blur/motion-blur-params';
 import {
-  STANDARD_LIGHT_COUNTS,
+  isStandardLightCount,
+  STANDARD_MAX_LIGHT_COUNT,
   STANDARD_PIPELINE_ID,
   STANDARD_POST_STAGE_NAMES,
 } from '../pipeline/standard-profile';
@@ -92,8 +93,23 @@ export function exposeRenderer(renderer: RendererHostImplementation): Renderer {
   };
   // Projection and texture-budget failures are public, asset-caused RenderErrors
   // that name the source problem; wrapping them would hide it behind a device code.
+  const expiredProjectionError = (
+    cause: unknown,
+  ): RendererOperationError<'scene-projection-failed'> | undefined => {
+    const error = asRecord(cause);
+    const detail = asRecord(error?.detail);
+    const source = asRecord(detail?.error);
+    if (error?.code !== 'webgpu-runtime-error' || source?.code !== 'state-projection-expired')
+      return undefined;
+    const projection = asRecord(source.detail) ?? source;
+    return new RendererOperationError('scene-projection-failed', {
+      operation: 'draw',
+      cause: structuredRendererCause(projection, 'World source projection'),
+    });
+  };
   const eventError = (cause: RendererError): RenderError =>
-    cause instanceof RendererOperationError ||
+    expiredProjectionError(cause) ??
+    (cause instanceof RendererOperationError ||
     cause instanceof EquirectProjectionFailedError ||
     cause instanceof ExternalTextureInvalidError ||
     cause instanceof ExternalTextureStateInvalidError ||
@@ -102,8 +118,10 @@ export function exposeRenderer(renderer: RendererHostImplementation): Renderer {
       : new RendererOperationError('device-operation-failed', {
           operation: 'renderer-event',
           cause: structuredRendererCause(cause, 'renderer-event'),
-        });
+        }));
   const drawError = (cause: RhiError | RenderError): RenderError => {
+    const projectionFailure = expiredProjectionError(cause);
+    if (projectionFailure !== undefined) return projectionFailure;
     if (
       cause instanceof MotionBlurValidationError ||
       cause instanceof RenderPublicationError ||
@@ -577,6 +595,12 @@ export function structuredRendererCause(cause: unknown, operation: string): Rend
   };
 }
 
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
 function projectRecoveryFailureDetail(
   failure: RecoverFailure,
   inspection: RenderInspection['recovery'],
@@ -685,8 +709,8 @@ function validateStandardPipelineSelection(profile: RenderProfile): string | und
   if (profile.pipelineId !== STANDARD_PIPELINE_ID) {
     return `RenderProfile.pipelineId must be '${STANDARD_PIPELINE_ID}'`;
   }
-  if (!STANDARD_LIGHT_COUNTS.some((count) => count === profile.lightCount)) {
-    return 'RenderProfile.lightCount must be 1, 32, or 256';
+  if (!isStandardLightCount(profile.lightCount)) {
+    return `RenderProfile.lightCount must be an integer from 1 to ${STANDARD_MAX_LIGHT_COUNT}`;
   }
   if (profile.renderPath !== 'forward' && profile.renderPath !== 'deferred') {
     return "RenderProfile.renderPath must be 'forward' or 'deferred'";
@@ -888,9 +912,14 @@ export function freezeRenderProfile(profile: RenderProfile): RenderProfile {
                 }),
           }),
         }),
+    // Only the exact gather reads per-pixel visible-surface identity; field,
+    // screen-probe and baked gathers keep the caller's visibleSurface choice.
     ...(profile.diffuseGi === undefined
       ? {}
-      : { visibleSurface: true, diffuseGi: freezeDiffuseGi(profile.diffuseGi) }),
+      : {
+          ...(profile.diffuseGi.gather === 'exact' ? { visibleSurface: true } : {}),
+          diffuseGi: freezeDiffuseGi(profile.diffuseGi),
+        }),
     ssao: typeof profile.ssao === 'object' ? Object.freeze({ ...profile.ssao }) : profile.ssao,
     ...(profile.volumetricFog === undefined
       ? {}

@@ -84,9 +84,8 @@ it.each([
     for (const source of [worldRenderResources(world), remote]) {
       const binding = preparedMaterialBindings(
         runtime,
-        [source],
+        source,
         'field::texture',
-        0,
         material,
         layout,
       ).unwrap();
@@ -194,9 +193,8 @@ it('uploads accepted values on World and published-reader paths without mutating
   for (const source of [worldRenderResources(world), reader]) {
     const bindings = preparedMaterialBindings(
       runtime,
-      [source],
+      source,
       'shader',
-      0,
       handle,
       {} as BindGroupLayout,
     ).unwrap();
@@ -215,9 +213,8 @@ it('uploads accepted values on World and published-reader paths without mutating
   ] as const) {
     const bindings = preparedMaterialBindings(
       runtime,
-      [world, other].map(worldRenderResources),
+      worldRenderResources(owner === 1 ? other : world),
       'shader',
-      owner,
       owner === 1 ? otherHandle : handle,
       {} as BindGroupLayout,
     ).unwrap();
@@ -229,9 +226,8 @@ it('uploads accepted values on World and published-reader paths without mutating
   for (const source of [worldRenderResources(world), publish()]) {
     const restored = preparedMaterialBindings(
       runtime,
-      [source],
+      source,
       'shader',
-      0,
       handle,
       {} as BindGroupLayout,
     ).unwrap();
@@ -280,9 +276,8 @@ it('binds the shared direct DFG texture for prepared feature materials and renew
   const prepare = () => {
     const result = preparedMaterialBindings(
       runtime,
-      [world].map(worldRenderResources),
+      worldRenderResources(world),
       'game::prepared-dfg',
-      0,
       handle,
       layout,
     ).unwrap();

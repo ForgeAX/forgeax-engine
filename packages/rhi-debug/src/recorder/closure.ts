@@ -23,7 +23,7 @@ export function _collectFrameReferencedHandleIds(events: readonly RhiCallEvent[]
  */
 export function _computeClosure(
   seedHandleIds: Set<HandleId>,
-  bootstrapCreates: Map<HandleId, RhiCallEvent>,
+  bootstrapCreates: Pick<ReadonlyMap<HandleId, RhiCallEvent>, 'get'>,
   inFrameHandleIds: Set<HandleId>,
 ): { closure: Set<HandleId>; missing: HandleId | null } {
   const closure = new Set(seedHandleIds);
@@ -60,7 +60,7 @@ export function _computeClosure(
  */
 export function _topoSortClosure(
   closure: Set<HandleId>,
-  bootstrapCreates: Map<HandleId, RhiCallEvent>,
+  bootstrapCreates: Pick<ReadonlyMap<HandleId, RhiCallEvent>, 'get'>,
 ): RhiCallEvent[] {
   const inDegree = new Map<HandleId, number>();
   const dependents = new Map<HandleId, HandleId[]>();

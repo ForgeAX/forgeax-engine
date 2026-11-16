@@ -1,5 +1,5 @@
 import type { QuerySpan } from '@forgeax/engine-ecs';
-import { ExecutionParticle } from './shared-kernel';
+import kernelModule, { ExecutionParticle } from './shared-kernel';
 
 export function runFaultKernel(spans: readonly QuerySpan[]): void {
   const first = spans[0];
@@ -9,4 +9,4 @@ export function runFaultKernel(spans: readonly QuerySpan[]): void {
   throw new Error('intentional partial-write fault');
 }
 
-export default { run: runFaultKernel };
+export default { ...kernelModule, run: runFaultKernel };

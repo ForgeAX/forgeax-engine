@@ -1,17 +1,17 @@
 import type { World } from '@forgeax/engine-ecs';
+import { defineSystem } from '@forgeax/engine-ecs';
 import type { RhiError } from '@forgeax/engine-rhi';
 import type { SceneComposition } from '../scene/scene-composition';
+import {
+  RenderFogCommitOrder,
+  RenderGpuDrivenCommitOrder,
+  RenderRecordCommitOrder,
+} from '../system-order';
 import { ViewRecorder, ViewSubmission } from './render-views';
 import { RenderCleanup, RenderCommit, renderSubmission } from './render-world';
-import { RENDER_RECORD_COMMIT_SYSTEM } from './submission-systems';
+
 import { requireViewField } from './view-field';
-import {
-  ownerOf,
-  RENDER_FOG_COMMIT_SYSTEM,
-  RENDER_GPU_DRIVEN_ABORT_SYSTEM,
-  RENDER_GPU_DRIVEN_COMMIT_SYSTEM,
-  registerViewCommit,
-} from './view-settlement';
+import { ownerOf, RENDER_GPU_DRIVEN_ABORT_SYSTEM, registerViewCommit } from './view-settlement';
 
 /** RenderCommit: the GPU Scene frame stamp and canonical submitted history advance. */
 export const RENDER_SCENE_COMMIT_SYSTEM = 'render-scene-commit';
@@ -30,61 +30,59 @@ export function registerSceneRowSystems(
   composition: SceneComposition,
   report: (error: RhiError) => void,
 ): void {
-  world
-    .addSystem(RenderCommit, {
-      commands: 'none',
-      name: RENDER_SCENE_COMMIT_SYSTEM,
-      queries: [{ read: [ViewSubmission] }],
-      after: [RENDER_RECORD_COMMIT_SYSTEM],
-      fn: (world, [views]) => {
-        const submission = renderSubmission(world);
-        if (!submission.accepted) return;
-        let scene = false;
-        let temporal = false;
-        for (const span of views.spans().unwrap()) {
-          const columns = span.get(ViewSubmission);
-          for (let index = 0; index < span.length; index++) {
-            if (
-              columns.accepted[index] !== 1 ||
-              columns.scene[index] !== 1 ||
-              columns.attempt[index] !== submission.frame
-            )
-              continue;
-            scene = true;
-            temporal ||= columns.temporal[index] === 1;
-          }
-        }
-        if (!scene) return;
-        const committed = composition.commitFrame(temporal);
-        if (!committed.ok) report(committed.error);
-      },
-    })
-    .unwrap();
-  world
-    .addSystem(RenderCommit, {
-      commands: 'none',
-      name: RENDER_VIEW_RASTER_LANE_SYSTEM,
-      queries: [{ read: [ViewRecorder, ViewSubmission] }],
-      // Next frame's CPU cull bypass follows only a lane this frame submitted.
-      fn: (world, [views]) => {
-        const frame = renderSubmission(world).frame;
-
-        views.forEach((row) => {
-          const entity = row.entity;
-
+  const systemToken1 = defineSystem({
+    commands: 'none',
+    name: RENDER_SCENE_COMMIT_SYSTEM,
+    queries: [{ read: [ViewSubmission] }],
+    after: [RenderRecordCommitOrder],
+    fn: (world, [views]) => {
+      const submission = renderSubmission(world);
+      if (!submission.accepted) return;
+      let scene = false;
+      let temporal = false;
+      for (const span of views.spans().unwrap()) {
+        const columns = span.get(ViewSubmission);
+        for (let index = 0; index < span.length; index++) {
           if (
-            !requireViewField(world, entity, ViewSubmission, 'accepted') ||
-            requireViewField(world, entity, ViewSubmission, 'attempt') !== frame
+            columns.accepted[index] !== 1 ||
+            columns.scene[index] !== 1 ||
+            columns.attempt[index] !== submission.frame
           )
-            return;
-          ownerOf(
-            world,
-            requireViewField(world, entity, ViewRecorder, 'state'),
-          ).scene.commitRasterLane();
-        });
-      },
-    })
-    .unwrap();
+            continue;
+          scene = true;
+          temporal ||= columns.temporal[index] === 1;
+        }
+      }
+      if (!scene) return;
+      const committed = composition.commitFrame(temporal);
+      if (!committed.ok) report(committed.error);
+    },
+  });
+  world.addSystem(RenderCommit, systemToken1).unwrap();
+  const systemToken2 = defineSystem({
+    commands: 'none',
+    name: RENDER_VIEW_RASTER_LANE_SYSTEM,
+    queries: [{ read: [ViewRecorder, ViewSubmission] }],
+    // Next frame's CPU cull bypass follows only a lane this frame submitted.
+    fn: (world, [views]) => {
+      const frame = renderSubmission(world).frame;
+
+      views.forEach((row) => {
+        const entity = row.entity;
+
+        if (
+          !requireViewField(world, entity, ViewSubmission, 'accepted') ||
+          requireViewField(world, entity, ViewSubmission, 'attempt') !== frame
+        )
+          return;
+        ownerOf(
+          world,
+          requireViewField(world, entity, ViewRecorder, 'state'),
+        ).scene.commitRasterLane();
+      });
+    },
+  });
+  world.addSystem(RenderCommit, systemToken2).unwrap();
 }
 
 /**
@@ -96,7 +94,7 @@ export function registerSceneRowSystems(
 export function registerGpuDrivenSettlement(world: World): void {
   registerViewCommit(
     world,
-    RENDER_GPU_DRIVEN_COMMIT_SYSTEM,
+    RenderGpuDrivenCommitOrder,
     ({ frameState, internals }) => {
       const staged = frameState.gpuDrivenFrame;
       if (staged?.commit === undefined) return;
@@ -104,23 +102,22 @@ export function registerGpuDrivenSettlement(world: World): void {
       const consumed = staged.prepared._consumeSurfaceDynamicInput?.(staged.commit.frameNumber);
       if (consumed !== undefined && !consumed.ok) internals.errorRegistry.fire(consumed.error);
     },
-    RENDER_FOG_COMMIT_SYSTEM,
+    RenderFogCommitOrder,
     'scene',
   );
-  world
-    .addSystem(RenderCleanup, {
-      commands: 'none',
-      name: RENDER_GPU_DRIVEN_ABORT_SYSTEM,
-      queries: [{ read: [ViewRecorder] }],
-      fn: (world, [views]) => {
-        views.forEach((row) => {
-          const entity = row.entity;
+  const systemToken3 = defineSystem({
+    commands: 'none',
+    name: RENDER_GPU_DRIVEN_ABORT_SYSTEM,
+    queries: [{ read: [ViewRecorder] }],
+    fn: (world, [views]) => {
+      views.forEach((row) => {
+        const entity = row.entity;
 
-          const owner = ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state'));
-          owner.frameState.gpuDrivenFrame?.prepared._abortResourceReplacement?.();
-          owner.frameState.gpuDrivenFrame = undefined;
-        });
-      },
-    })
-    .unwrap();
+        const owner = ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state'));
+        owner.frameState.gpuDrivenFrame?.prepared._abortResourceReplacement?.();
+        owner.frameState.gpuDrivenFrame = undefined;
+      });
+    },
+  });
+  world.addSystem(RenderCleanup, systemToken3).unwrap();
 }

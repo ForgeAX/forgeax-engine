@@ -15,7 +15,7 @@ export async function verifyRetainedRayScene(kernel: string) {
   const offscreen = source.project();
   source.update(30);
   const moved = source.project();
-  source.retained.apply([{ kind: 'remove', worldId: 0, entityKey: 32 }]);
+  source.retained.apply([{ kind: 'remove', entityKey: 32 }]);
   source.update(-60, 33);
   const reused = source.project();
   const projections = [first, offscreen, moved, reused];

@@ -1,13 +1,13 @@
-import type { AssetHandle } from '@forgeax/engine-types';
-import { cameraLensProjection } from '../camera-projection';
-import type { RenderResourceScope } from '../publication/resource-scope';
+import { requireWaterValue } from '@forgeax/engine-water/internal';
 // @forgeax/engine-runtime - RendererState record stage: helpers.
 // Extracted from render-system-record.ts (feat-20260704 M3/w17, pure move).
 
 import { type Mat4, mat4 } from '@forgeax/engine-math';
-import type { EquirectAsset } from '@forgeax/engine-types';
+import type { AssetHandle, EquirectAsset } from '@forgeax/engine-types';
+import { cameraLensProjection } from '../camera-projection';
 import { EquirectProjectionFailedError } from '../errors/render';
 import { isStandardPbrMaterialShader } from '../pbr-pipeline';
+import type { RenderResourceScope } from '../publication/resource-scope';
 import type { CameraSnapshot } from '../render-contract';
 import type {
   ExtractedFrame,
@@ -243,6 +243,28 @@ export function computeProjectionMatrix(camera: CameraSnapshot, out: Mat4): Mat4
     return projection;
   }
   return cameraLensProjection(camera, out);
+}
+
+/** Water's near-corner tolerance uses view XY after reverse-Z near unprojection. */
+export function cameraNearPlaneCornerDistanceM(camera: CameraSnapshot): number {
+  const inverse = computeProjectionMatrix(camera, mat4.create());
+  mat4.invert(inverse, inverse);
+  const x =
+    requireWaterValue(inverse[0]) +
+    requireWaterValue(inverse[4]) +
+    requireWaterValue(inverse[8]) +
+    requireWaterValue(inverse[12]);
+  const y =
+    requireWaterValue(inverse[1]) +
+    requireWaterValue(inverse[5]) +
+    requireWaterValue(inverse[9]) +
+    requireWaterValue(inverse[13]);
+  const w =
+    requireWaterValue(inverse[3]) +
+    requireWaterValue(inverse[7]) +
+    requireWaterValue(inverse[11]) +
+    requireWaterValue(inverse[15]);
+  return Math.hypot(x / w, y / w);
 }
 
 function createViewProjectionScratch() {

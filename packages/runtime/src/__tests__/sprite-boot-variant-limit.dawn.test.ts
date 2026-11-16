@@ -221,11 +221,7 @@ async function firstFrameLitPixels(
   const attachment = renderer.attach(world);
   if (!attachment.ok) throw attachment.error;
   world.update(1 / 60).unwrap();
-  const drawn = await drawReadyFrame(renderer, {
-    leases: [attachment.value],
-    camera: { lease: attachment.value },
-    environment: { lease: attachment.value },
-  });
+  const drawn = await drawReadyFrame(renderer, { source: attachment.value });
   expect(drawn.presentation).toBe('ready');
   await device.queue.onSubmittedWorkDone();
   if (target === undefined) throw new Error('render target was not configured');

@@ -1,4 +1,10 @@
-import { defineComponent, type EntityHandle, type World } from '@forgeax/engine-ecs';
+import {
+  defineComponent,
+  defineResource,
+  defineSystem,
+  type EntityHandle,
+  type World,
+} from '@forgeax/engine-ecs';
 import type { RenderReadLease } from '@forgeax/engine-ecs/projection';
 import { type Handle, toShared } from '@forgeax/engine-types';
 import { selectCaptureViewCamera } from '../capture/capture-view';
@@ -13,11 +19,12 @@ import { CameraViewInvalidError } from '../errors/render';
 import type { PreparedRenderPublication, RenderPublicationReceiver } from '../publication/receiver';
 import type {
   CameraSnapshot,
-  DrawOwnerOptions,
+  DrawOptions,
   PhysicalViewExtent,
   ResolvedViewCamera,
 } from '../render-contract';
 import { cameraForView, resolveCameraTarget, selectCameraRoles } from '../render-system-extract';
+import { RenderViewCamerasOrder, RenderViewsOrder } from '../system-order';
 import type { RenderTarget } from '../targets/contracts';
 import { RenderCommit, RenderExtract, renderSubmission } from './render-world';
 import { requireViewField } from './view-field';
@@ -224,7 +231,7 @@ export interface RenderViewSource {
   readonly primaryCamera: CameraSnapshot | undefined;
   /** The Renderer's drawing-buffer extent. */
   readonly canvas: { readonly width: number; readonly height: number };
-  attachment(camera: CameraSnapshot): string | undefined;
+  readonly attachment: string | undefined;
   /** A resident RenderTarget's physical size; undefined while it is not resident. */
   targetExtent(
     target: RenderTarget,
@@ -232,7 +239,7 @@ export interface RenderViewSource {
 }
 
 /** World resource key of the frame's {@link RenderViewSource}. */
-export const RenderViewInput = Object.freeze({ name: 'RenderViewSource' });
+export const RenderViewInput = defineResource<RenderViewFrameSource>('RenderViewSource');
 
 /**
  * The display camera of a primary view. An invalid camera leaves it
@@ -253,14 +260,6 @@ function primaryDisplayCamera(
 }
 
 /** The identity of the source World a camera belongs to. */
-export function cameraAttachmentId(
-  camera: CameraSnapshot,
-  world: World | undefined,
-  worlds: readonly World[],
-): string | undefined {
-  return camera.worldId === undefined ? world?.identity : worlds[camera.worldId]?.identity;
-}
-
 /** A frame entry's retained {@link RenderViewSource}; it rewrites it before each frame. */
 export class RenderViewFrameSource implements RenderViewSource {
   cameras: readonly CameraSnapshot[] = [];
@@ -270,10 +269,9 @@ export class RenderViewFrameSource implements RenderViewSource {
   primaryCamera: CameraSnapshot | undefined;
   /** The camera owner World; source Worlds name each attachment. */
   world: World | undefined;
-  worlds: readonly World[] = [];
   /** The frame's draw options; each recording view stages its own camera over them. */
-  opts: DrawOwnerOptions = { cameraOwner: 0, resourceOwner: 0 };
-  leases: readonly RenderReadLease[] | undefined;
+  opts: DrawOptions = {};
+  lease: RenderReadLease | undefined;
   publication: PreparedRenderPublication | undefined;
   /** Snapshots the publication for a view that cannot apply its delta; absent for a private frame. */
   receiver: RenderPublicationReceiver | undefined;
@@ -299,9 +297,9 @@ export class RenderViewFrameSource implements RenderViewSource {
   stage(
     cameras: readonly CameraSnapshot[],
     captures: readonly CameraSnapshot[],
-    worlds: readonly World[],
-    opts: DrawOwnerOptions,
-    leases: readonly RenderReadLease[] | undefined,
+    world: World | undefined,
+    opts: DrawOptions,
+    lease: RenderReadLease | undefined,
     publication: PreparedRenderPublication | undefined,
     receiver?: RenderPublicationReceiver,
     maxRenderShortSide = 0,
@@ -309,7 +307,6 @@ export class RenderViewFrameSource implements RenderViewSource {
     assertRenderShortSide(maxRenderShortSide);
     assertViewCameras(cameras, maxRenderShortSide > 0);
     this.maxRenderShortSide = maxRenderShortSide;
-    const world = worlds[opts.cameraOwner];
     this.cameras = cameras;
     this.captures = captures;
     this.primary = maxRenderShortSide === 0 && !cameras.some((camera) => camera.view !== undefined);
@@ -317,21 +314,20 @@ export class RenderViewFrameSource implements RenderViewSource {
       ? primaryDisplayCamera(publication, world, opts.cameraEntityKey)
       : undefined;
     this.world = world;
-    this.worlds = worlds;
     this.opts = opts;
-    this.leases = leases;
+    this.lease = lease;
     this.publication = publication;
     this.receiver = receiver;
   }
 
   clear(): void {
-    this.cameras = this.captures = this.worlds = [];
+    this.cameras = this.captures = [];
     this.primary = false;
-    this.primaryCamera = this.world = this.leases = this.publication = this.receiver = undefined;
+    this.primaryCamera = this.world = this.lease = this.publication = this.receiver = undefined;
   }
 
-  attachment(camera: CameraSnapshot): string | undefined {
-    return cameraAttachmentId(camera, this.world, this.worlds);
+  get attachment(): string | undefined {
+    return this.publication?.resources.identity ?? this.world?.identity;
   }
 
   targetExtent(target: RenderTarget) {
@@ -476,88 +472,86 @@ export class RenderViews {
   };
 
   constructor(readonly world: World) {
-    world
-      .addSystem(RenderExtract, {
-        commands: 'none',
-        name: RENDER_VIEWS_SYSTEM,
-        queries: [],
-        fn: (world) => {
-          if (world.hasResource(RenderViewInput))
-            this.apply(world.getResource<RenderViewSource>(RenderViewInput));
-        },
-      })
-      .unwrap();
-    world
-      .addSystem(RenderExtract, {
-        commands: 'none',
-        name: RENDER_VIEW_CAMERAS_SYSTEM,
-        after: [RENDER_VIEWS_SYSTEM],
-        queries: [{ read: [RenderView, ViewCamera] }],
-        // Each view's final camera (aspect, stereo eye) and recording extent
-        // become World state before any RenderPrepare system reads them.
-        fn: (world, [views]) => {
-          if (!world.hasResource(RenderViewInput)) return;
-          const source = world.getResource<RenderViewSource>(RenderViewInput);
+    const systemToken1 = defineSystem({
+      sets: [RenderViewsOrder],
+      commands: 'none',
+      name: RENDER_VIEWS_SYSTEM,
+      queries: [],
+      fn: (world) => {
+        if (world.hasResource(RenderViewInput)) this.apply(world.getResource(RenderViewInput));
+      },
+    });
+    world.addSystem(RenderExtract, systemToken1).unwrap();
+    const systemToken2 = defineSystem({
+      sets: [RenderViewCamerasOrder],
+      commands: 'none',
+      name: RENDER_VIEW_CAMERAS_SYSTEM,
+      after: [systemToken1],
+      queries: [{ read: [RenderView, ViewCamera] }],
+      // Each view's final camera (aspect, stereo eye) and recording extent
+      // become World state before any RenderPrepare system reads them.
+      fn: (world, [views]) => {
+        if (!world.hasResource(RenderViewInput)) return;
+        const source = world.getResource(RenderViewInput);
 
-          for (const span of views.spans().unwrap()) {
-            const columns = span.get(RenderView);
-            const states = span.get(ViewCamera).state;
-            for (let index = 0; index < span.length; index++) {
-              if (columns.enabled[index] === 0) continue;
-              const view = this.facts;
-              view.enabled = true;
-              view.primary = columns.primary[index] !== 0;
-              view.capture = columns.capture[index] !== 0;
-              view.camera = columns.camera[index] as number;
-              view.eye = columns.eye[index] as number;
-              view.order = columns.order[index] as number;
-              view.resolutionScale = columns.resolutionScale[index] as number;
-              view.maxRenderShortSide = columns.maxRenderShortSide[index] as number;
-              view.updateInterval = columns.updateInterval[index] as number;
-              view.target = columns.target.get(index) as Handle<'RenderTarget', 'shared'>;
-              const offset = index * 4;
-              for (let axis = 0; axis < 4; axis++)
-                view.viewport[axis] = columns.viewport[offset + axis] as number;
-              const state = world
-                .resolveUniqueRef<ViewCameraState>(
-                  states.get(index) as Handle<'ViewCamera', 'unique'>,
-                )
-                .unwrap();
-              resolveViewCamera(world, view, state, source);
-            }
-          }
-        },
-      })
-      .unwrap();
-    world
-      .addSystem(RenderCommit, {
-        commands: 'none',
-        name: RENDER_VIEW_HISTORY_SYSTEM,
-        queries: [{ read: [RenderView, ViewRecorder, ViewSubmission] }],
-        // An accepted attempt of this frame that rendered a new picture advances
-        // its view's cadence history; a held, rejected or stale view keeps it.
-        fn: (world, [views]) => {
-          const frame = renderSubmission(world).frame;
-
-          views.forEach((row) => {
-            const entity = row.entity;
-
-            if (
-              !requireViewField(world, entity, ViewSubmission, 'accepted') ||
-              requireViewField(world, entity, ViewSubmission, 'attempt') !== frame ||
-              requireViewField(world, entity, RenderView, 'primary')
-            )
-              return;
-            const view = world
-              .resolveUniqueRef<ViewHistory>(requireViewField(world, entity, ViewRecorder, 'state'))
+        for (const span of views.spans().unwrap()) {
+          const columns = span.get(RenderView);
+          const states = span.get(ViewCamera).state;
+          for (let index = 0; index < span.length; index++) {
+            if (columns.enabled[index] === 0) continue;
+            const view = this.facts;
+            view.enabled = true;
+            view.primary = columns.primary[index] !== 0;
+            view.capture = columns.capture[index] !== 0;
+            view.camera = columns.camera[index] as number;
+            view.eye = columns.eye[index] as number;
+            view.order = columns.order[index] as number;
+            view.resolutionScale = columns.resolutionScale[index] as number;
+            view.maxRenderShortSide = columns.maxRenderShortSide[index] as number;
+            view.updateInterval = columns.updateInterval[index] as number;
+            view.target = columns.target.get(index) as Handle<'RenderTarget', 'shared'>;
+            const offset = index * 4;
+            for (let axis = 0; axis < 4; axis++)
+              view.viewport[axis] = columns.viewport[offset + axis] as number;
+            const state = world
+              .resolveUniqueRef<ViewCameraState>(
+                states.get(index) as Handle<'ViewCamera', 'unique'>,
+              )
               .unwrap();
-            if (!view.rendered) return;
-            view.lastFrame = frame;
-            view.renderedFrames += 1;
-          });
-        },
-      })
-      .unwrap();
+            resolveViewCamera(world, view, state, source);
+          }
+        }
+      },
+    });
+    world.addSystem(RenderExtract, systemToken2).unwrap();
+    const systemToken3 = defineSystem({
+      commands: 'none',
+      name: RENDER_VIEW_HISTORY_SYSTEM,
+      queries: [{ read: [RenderView, ViewRecorder, ViewSubmission] }],
+      // An accepted attempt of this frame that rendered a new picture advances
+      // its view's cadence history; a held, rejected or stale view keeps it.
+      fn: (world, [views]) => {
+        const frame = renderSubmission(world).frame;
+
+        views.forEach((row) => {
+          const entity = row.entity;
+
+          if (
+            !requireViewField(world, entity, ViewSubmission, 'accepted') ||
+            requireViewField(world, entity, ViewSubmission, 'attempt') !== frame ||
+            requireViewField(world, entity, RenderView, 'primary')
+          )
+            return;
+          const view = world
+            .resolveUniqueRef<ViewHistory>(requireViewField(world, entity, ViewRecorder, 'state'))
+            .unwrap();
+          if (!view.rendered) return;
+          view.lastFrame = frame;
+          view.renderedFrames += 1;
+        });
+      },
+    });
+    world.addSystem(RenderCommit, systemToken3).unwrap();
   }
 
   /** Any view declared by the last sync. */
@@ -589,7 +583,7 @@ export class RenderViews {
     const cap = source.maxRenderShortSide ?? 0;
     for (const camera of source.cameras) {
       if (camera.view === undefined && (cap === 0 || camera.target !== undefined)) continue;
-      const attachment = source.attachment(camera) ?? '';
+      const attachment = source.attachment ?? '';
       if (camera.stereo === undefined) {
         this.write(camera, ViewEyeValue.mono, attachment, frame, false, cap);
         declaredNow += 1;
@@ -601,7 +595,7 @@ export class RenderViews {
     }
     for (const camera of source.captures) {
       if (camera.entityKey === undefined || camera.target === undefined) continue;
-      this.write(camera, ViewEyeValue.mono, source.attachment(camera) ?? '', frame, true);
+      this.write(camera, ViewEyeValue.mono, source.attachment ?? '', frame, true);
       declaredNow += 1;
     }
     if (declaredNow !== this.declared.size) {
@@ -623,7 +617,7 @@ export class RenderViews {
         false,
         camera?.entityKey ?? 0,
         camera?.historyVersion ?? 0,
-        camera === undefined ? '' : (source.attachment(camera) ?? ''),
+        camera === undefined ? '' : (source.attachment ?? ''),
       );
       return;
     }

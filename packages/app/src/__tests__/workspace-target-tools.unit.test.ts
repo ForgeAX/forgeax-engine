@@ -11,11 +11,13 @@ import {
   MeshFilter,
   MeshRenderer,
   Outline,
+  readEditorAssistance,
   setActiveCamera,
+  VolumetricCloudLayer,
 } from '@forgeax/engine-render';
 import { ChildOf, Name, propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { Skin } from '@forgeax/engine-skinning';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { publishBrowserFrameSubmitted, resetBrowserFrameProgress } from '../browser-frame-signal';
 import { engineWorkspaceTargetToolsPlugin } from '../workspace-target-tools';
 
@@ -36,7 +38,128 @@ async function fixture() {
 }
 
 describe('workspace target tools plugin', () => {
-  it('outlines the selected render hierarchy and restores camera authoring on clear and disposal', async () => {
+  it('returns detached, explicitly registered game observations for only the selected live entity', async () => {
+    const world = new World();
+    const cloud = world.spawn().unwrap();
+    const plain = world.spawn().unwrap();
+    const context = await createWorldContext(world);
+    contexts.push(context);
+    const snapshot = { density: 0.4 };
+    const value = { snapshotHistory: { version: 1, entries: [snapshot] } };
+    const read = vi.fn(() => value);
+    const cliRead = vi.fn(() => null);
+    let registered = true;
+    const fiber = context.plugin(engineWorkspaceTargetToolsPlugin, {
+      targetId: 'play',
+      display: { canvas: {} as HTMLCanvasElement, app: { world } as never },
+      gameReads: () => [
+        { id: 'cli-only', title: 'CLI', read: cliRead },
+        {
+          id: 'oversized',
+          title: 'Oversized',
+          read: cliRead,
+          workspace: { entity: () => cloud, read: () => 'x'.repeat(128 * 1024) },
+        },
+        {
+          id: 'invalid',
+          title: 'Invalid',
+          read: cliRead,
+          workspace: { entity: () => cloud, read: () => ({ density: Number.NaN }) },
+        },
+        ...(registered
+          ? [
+              {
+                id: 'vc-ue5.cloud',
+                title: 'Cloud',
+                read: cliRead,
+                workspace: { entity: () => cloud, read },
+              },
+            ]
+          : []),
+      ],
+    });
+    await fiber.await();
+    const tools = context.engineWorkspaceTargetTools;
+    assert(tools);
+    const entityId = `play:${world.identity}:${cloud}`;
+    expect(await tools.inspect({ entityId: `play:${world.identity}:${plain}` })).not.toHaveProperty(
+      'gameObservations',
+    );
+    expect(() => tools.inspect({ entityId: `other:${world.identity}:${cloud}` })).toThrow();
+    expect(() => tools.inspect({ entityId: `play:${new World().identity}:${cloud}` })).toThrow();
+    const aborted = AbortSignal.abort();
+    expect(() => tools.inspect({ entityId, signal: aborted })).toThrow();
+    expect(read).not.toHaveBeenCalled();
+    const first = await tools.inspect({ entityId });
+    snapshot.density = 0.9;
+    expect(first.gameObservations).toEqual([
+      {
+        id: 'vc-ue5.cloud',
+        targetId: 'play',
+        worldId: world.identity,
+        value: { snapshotHistory: { version: 1, entries: [{ density: 0.4 }] } },
+      },
+    ]);
+    expect((await tools.inspect({ entityId })).gameObservations?.[0]?.value).toEqual(value);
+    registered = false;
+    expect(await tools.inspect({ entityId })).not.toHaveProperty('gameObservations');
+    expect(cliRead).not.toHaveBeenCalled();
+    await fiber.dispose();
+    expect(() => tools.inspect({ entityId })).toThrow(/unavailable/);
+    expect(read).toHaveBeenCalledTimes(2);
+  });
+
+  it('projects only the real matching World renderer and revokes the target inspection on disposal', async () => {
+    const world = new World();
+    const cloud = world
+      .spawn({ component: VolumetricCloudLayer, data: { material: 0 as never } })
+      .unwrap();
+    const plain = world.spawn().unwrap();
+    const context = await createWorldContext(world);
+    contexts.push(context);
+    const facts = {
+      frame: { frameId: 12, deviceGeneration: 3 },
+      cloudLayer: { view: { acceptedFrame: 11 } },
+    };
+    const inspect = vi.fn(() => facts);
+    const app = { world, renderer: { inspect } } as never;
+    const fiber = await context.plugin(engineWorkspaceTargetToolsPlugin, {
+      targetId: 'target',
+      display: { canvas: {} as HTMLCanvasElement, app },
+    });
+    await fiber.await();
+    const tools = context.engineWorkspaceTargetTools;
+    assert(tools);
+    expect(
+      await tools.inspect({ entityId: `target:${world.identity}:${plain}` }),
+    ).not.toHaveProperty('rendererObservation');
+    expect(inspect).not.toHaveBeenCalled();
+    expect(
+      (await tools.inspect({ entityId: `target:${world.identity}:${cloud}` })).rendererObservation,
+    ).toEqual({ targetId: 'target', worldId: world.identity, ...facts });
+    expect(inspect).toHaveBeenCalledExactlyOnceWith({ fields: ['frame', 'cloudLayer'] });
+    await fiber.dispose();
+    expect(() => tools.inspect({ entityId: `target:${world.identity}:${cloud}` })).toThrow(
+      /unavailable/,
+    );
+    expect(inspect).toHaveBeenCalledTimes(1);
+    const mismatch = await context.plugin(engineWorkspaceTargetToolsPlugin, {
+      targetId: 'replacement',
+      display: {
+        canvas: {} as HTMLCanvasElement,
+        app: { world: new World(), renderer: { inspect } } as never,
+      },
+    });
+    await mismatch.await();
+    expect(
+      await context.engineWorkspaceTargetTools?.inspect({
+        entityId: `replacement:${world.identity}:${cloud}`,
+      }),
+    ).not.toHaveProperty('rendererObservation');
+    expect(inspect).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps editor selection separate from authored outlines on clear and disposal', async () => {
     const world = new World();
     const camera = world
       .spawn({ component: Camera, data: {} }, { component: Transform, data: {} })
@@ -63,20 +186,18 @@ describe('workspace target tools plugin', () => {
     const tools = context.engineWorkspaceTargetTools;
     assert(tools?.highlight);
     tools.highlight({ entityId: `target:${world.identity}:${parent}` });
-    expect(Array.from(world.get(camera, Outline).unwrap().entities)).toEqual([parent, child]);
-    expect(world.get(camera, Outline).unwrap().width).toBe(4);
+    const assistance = readEditorAssistance(world);
+    assert(assistance);
+    expect(assistance.snapshot()?.selected).toEqual([parent]);
+    expect(world.get(camera, Outline).ok).toBe(false);
     setActiveCamera(world, secondCamera);
     world.update().unwrap();
     expect(world.get(camera, Outline).ok).toBe(false);
-    expect(Array.from(world.get(secondCamera, Outline).unwrap().entities)).toEqual([
-      authored,
-      parent,
-      child,
-    ]);
-    expect(world.get(secondCamera, Outline).unwrap().width).toBe(2);
+    expect(Array.from(world.get(secondCamera, Outline).unwrap().entities)).toEqual([authored]);
     const gameAdded = world.spawn().unwrap();
-    world.set(secondCamera, Outline, { entities: [authored, parent, child, gameAdded] }).unwrap();
+    world.set(secondCamera, Outline, { entities: [authored, gameAdded] }).unwrap();
     tools.highlight({});
+    expect(assistance.snapshot()?.selected).toEqual([]);
     expect(Array.from(world.get(secondCamera, Outline).unwrap().entities)).toEqual([
       authored,
       gameAdded,
@@ -84,10 +205,12 @@ describe('workspace target tools plugin', () => {
     expect(Array.from(world.get(secondCamera, Outline).unwrap().visibleColor)).toEqual([0, 1, 0]);
     tools.highlight({ entityId: `target:${world.identity}:${parent}` });
     await fiber.dispose();
+    expect(assistance.snapshot()?.selected).toEqual([]);
     expect(Array.from(world.get(secondCamera, Outline).unwrap().entities)).toEqual([
       authored,
       gameAdded,
     ]);
+    expect(world.componentsOf(child).ok).toBe(true);
     expect(world.get(parent, Name).unwrap().value).toBe('Group');
   });
   it('picks submitted frames without ActiveCamera and rejects reset, old World and resized extents', async () => {

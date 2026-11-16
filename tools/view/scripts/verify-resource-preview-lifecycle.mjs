@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import { startViewLiveIntegration } from './workspace-fixture.mjs';
 import { uvAtPoint, uvBounds, uvTransform } from '../packages/view-plugin-mesh/src/ui/uv-viewport.ts';
+import { verifyContentBrowserQueryLifetime } from './verify-content-browser-query-lifetime.mjs';
 
 const view = resolve(import.meta.dirname, '..');
 const engine = dirname(fileURLToPath(import.meta.resolve('@forgeax/engine/package.json')));
@@ -23,6 +24,7 @@ const wait = async (predicate, label) => {
 };
 try {
   await mkdir(output, { recursive: true });
+  await verifyContentBrowserQueryLifetime({ output: join(output, 'content-browser-query-lifetime') });
   await mkdir(join(root, 'assets'));
   const source = await readFile(join(view, 'scripts/fixtures/workspace-proof.pack.ts'), 'utf8');
   await writeFile(join(root, 'assets/proof.pack.ts'), source.replace("'mesh/box':", "'mesh/other': { ...box.value, materialSlots: [{ slotName: 'surface', defaultMaterial: guid('material/box') }] },\n      'mesh/box':"));

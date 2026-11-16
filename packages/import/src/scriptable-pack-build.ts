@@ -13,6 +13,7 @@ export type {
   ScriptablePackBuildWorkItem,
   ScriptablePackBuildWorklistProduct,
 } from './scriptable-pack-build-core.js';
+export { waterPackReferenceKindFailure } from './scriptable-pack-build-core.js';
 
 export interface ScriptablePackBuildOptions extends Omit<ExecutionOptions, 'cookers'> {
   readonly cookers?: readonly NativeCooker[];

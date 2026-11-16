@@ -34,7 +34,7 @@ describe('DirectLightSlot WGSL ABI', () => {
     expect(standard).not.toContain('pointLightsBuffer');
     expect(standard).not.toContain('spotLightsBuffer');
     expect(clustered).toContain('DirectLightSlot');
-    expect(clustered).toContain('array<DirectLightSlot, 256>');
+    expect(clustered).toContain('array<DirectLightSlot, 1024>');
     expect(clustered).not.toContain('struct LightSlot');
   });
 });

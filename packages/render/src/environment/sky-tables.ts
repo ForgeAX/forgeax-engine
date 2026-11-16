@@ -11,6 +11,7 @@ import {
   type Sampler,
 } from '@forgeax/engine-rhi';
 import { ok, type Result, shaderSourceDescriptor } from '@forgeax/engine-types';
+import { AtmosphereRasterLutPass } from '../record/gpu-pass-timing/sky-pass-names';
 import type { _InternalRenderPipelineContext } from '../record/render-context';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
 import type { RenderPipelineFrame } from '../render-pipeline';
@@ -128,8 +129,8 @@ export function addAtmosphereSkyLuts(
     const parameters =
       stage.captured && captureInput !== undefined ? captureInput.parameters : view.value;
     const localVisibility: AtmosphereVisibility = stage.visibility;
-    const label = stage.captured ? 'capture-sky-view' : stage.name.replaceAll('_', '-');
-    const added = graph.addRasterPass(`atmosphere-${label}-fragment`, {
+    const passName = AtmosphereRasterLutPass[stage.captured ? 'capture_sky_view' : stage.name];
+    const added = graph.addRasterPass(passName, {
       accesses: [
         ...atmosphereVisibilityAccesses(localVisibility),
         { resource: parameters, usage: 'uniform-read' },

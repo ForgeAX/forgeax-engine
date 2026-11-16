@@ -35,6 +35,12 @@ import { SceneRows, type WorldTransformSpan } from './scene-rows';
 import { SceneSlotFrame } from './scene-slots';
 import type { SkinSceneFrame } from './skin-scene-inputs';
 
+type SurfaceColumnReader<T> = (
+  entityKey: number,
+  content: RowContent | undefined,
+  materials: Pick<RenderableSnapshot, 'material' | 'materials'> | undefined,
+) => T;
+
 /** Captured native columns; this delegates to existing Mesh binding ownership, never a row cache. */
 class SceneSurfaceRows {
   constructor(
@@ -61,26 +67,37 @@ class SceneSurfaceRows {
     );
   }
 
-  read<T>(
-    index: number,
-    read: (
-      worldId: number,
-      entityKey: number,
-      content: RowContent | undefined,
-      materials: Pick<RenderableSnapshot, 'material' | 'materials'> | undefined,
-    ) => T,
-  ): T {
+  read<T>(index: number, read: SurfaceColumnReader<T>): T {
     let found = false;
-    const result = this.source.readContentAt(index, (content, worldId, entityKey, slot) => {
+    const result = this.source.readContentAt(index, (content, entityKey, slot) => {
       found = true;
-      const pending = this.unavailable?.has(slot) === true;
-      const materials = pending ? content : meshDrawMaterials(content, this.meshes, worldId);
-      // The old temporal projector validates accepted materials before judging a contributor.
-      if (!pending && this.materials !== undefined && content.authorVisible !== false)
-        hasDisplacementSource(materials, this.materials);
-      return read(worldId, entityKey, content, materials);
+      return this.consume(content, entityKey, slot, read);
     });
-    return found ? (result as T) : read(-1, -1, undefined, undefined);
+    return found ? (result as T) : read(-1, undefined, undefined);
+  }
+
+  /** Used only when the dispatch and this reader captured the exact same slot frame. */
+  readSlot<T>(slot: number, read: SurfaceColumnReader<T>): T {
+    let found = false;
+    const result = this.source.readContentSlot(slot, (content, entityKey, address) => {
+      found = true;
+      return this.consume(content, entityKey, address, read);
+    });
+    return found ? (result as T) : read(-1, undefined, undefined);
+  }
+
+  private consume<T>(
+    content: RowContent,
+    entityKey: number,
+    slot: number,
+    read: SurfaceColumnReader<T>,
+  ): T {
+    const pending = this.unavailable?.has(slot) === true;
+    const materials = pending ? content : meshDrawMaterials(content, this.meshes);
+    // Keep accepted-material validation identical for rank and physical-slot reads.
+    if (!pending && this.materials !== undefined && content.authorVisible !== false)
+      hasDisplacementSource(materials, this.materials);
+    return read(entityKey, content, materials);
   }
 }
 
@@ -155,7 +172,7 @@ export class RenderScene {
   private lastResyncReason: RenderSceneResyncReason | undefined;
 
   /** Private rows over `source` scopes, or a view over rows another owner writes. */
-  constructor(source: readonly RenderResourceScope[] | SceneRows = []) {
+  constructor(source?: RenderResourceScope | SceneRows) {
     if (source instanceof SceneRows) {
       this.rows = source;
       this.ownsRows = false;
@@ -180,9 +197,8 @@ export class RenderScene {
     this.nativeDrawRoster.clear();
     this.pin();
   }
-
-  setSources(sources: readonly RenderResourceScope[]): void {
-    if (this.ownsRows) this.rows.setSources(sources);
+  setSource(source: RenderResourceScope | undefined): void {
+    if (this.ownsRows) this.rows.setSource(source);
   }
 
   meshFrame(): MeshFrame {
@@ -195,10 +211,10 @@ export class RenderScene {
   }
 
   /** Direct asset evidence changes one shared geometry row, without visiting its instances. */
-  adoptMesh(worldId: number, handle: number, mesh: MeshAsset | undefined): boolean {
+  adoptMesh(handle: number, mesh: MeshAsset | undefined): boolean {
     const adopted = this.ownsRows
-      ? this.rows.adoptMesh(worldId, handle, mesh)
-      : this.rows.holdsMesh(worldId, handle) && mesh !== undefined;
+      ? this.rows.adoptMesh(handle, mesh)
+      : this.rows.holdsMesh(handle) && mesh !== undefined;
     this.meshes = this.rows.meshFrame();
     return adopted;
   }
@@ -222,7 +238,7 @@ export class RenderScene {
                   ? undefined
                   : `section:${source.terrainSection.index}`);
               if (key === undefined) continue;
-              const record = scene.lookup(source.worldId, source.entityKey);
+              const record = scene.lookup(source.entityKey);
               if (record === undefined) throw new Error('A draw must belong to the retained Scene');
               if (draw === undefined) draw = { record, key };
               else {
@@ -239,7 +255,7 @@ export class RenderScene {
 
   /** Source, terrain and folded draws share addresses across this view and its captures. */
   meshDrawSlot(source: RenderableSnapshot, folded = false, row?: RenderSceneSlot): number {
-    const record = sceneRow(row, source) ?? this.lookup(source.worldId, source.entityKey);
+    const record = sceneRow(row, source) ?? this.lookup(source.entityKey);
     if (record === undefined) throw new Error('A draw must belong to the retained Scene');
     return this.meshDrawSlots.index(
       record,
@@ -335,11 +351,6 @@ export class RenderScene {
   }
 
   /** Rebind positional World indices while retaining stable slot and submission history. */
-  remapWorlds(indices: readonly number[]): void {
-    this.rows.remapWorlds(indices);
-    this.pin();
-    this.invalidateSnapshots();
-  }
 
   /** The owner remapped the shared rows' World indices; the next observed delta re-pins them. */
   observeRemap(): void {
@@ -538,13 +549,13 @@ export class RenderScene {
    * frame), so no visible slot is visited.
    */
   captureSubmission(
-    visible: Iterable<Pick<RenderableSnapshot, 'worldId' | 'entityKey'>>,
+    visible: Iterable<Pick<RenderableSnapshot, 'entityKey'>>,
     roster?: SceneSlotFrame,
   ): RenderSceneSubmissionCapture {
     if (roster !== undefined) return { revision: this.revision, visible: undefined };
     const slots = new Map<number, number>();
     for (const snapshot of visible) {
-      const slot = this.lookup(snapshot.worldId, snapshot.entityKey);
+      const slot = this.lookup(snapshot.entityKey);
       if (slot !== undefined) slots.set(slot.slot, slot.generation);
     }
     return { revision: this.revision, visible: slots };
@@ -570,21 +581,19 @@ export class RenderScene {
     return this.revision;
   }
 
-  readonly slot = (worldId: number, entityKey: number): RenderSceneSlot | undefined => {
-    return this.lookup(worldId, entityKey);
+  readonly slot = (entityKey: number): RenderSceneSlot | undefined => {
+    return this.lookup(entityKey);
   };
 
   /** Current slot of a projected snapshot: one identity-root descent. */
   slotOf(snapshot: RenderableSnapshot): RenderSceneSlot | undefined {
-    return this.lookup(snapshot.worldId, snapshot.entityKey);
+    return this.lookup(snapshot.entityKey);
   }
-
-  has(worldId: number, entityKey: number): boolean {
-    return this.lookup(worldId, entityKey) !== undefined;
+  has(entityKey: number): boolean {
+    return this.lookup(entityKey) !== undefined;
   }
-
-  snapshot(worldId: number, entityKey: number): RenderableSnapshot | undefined {
-    return this.lookup(worldId, entityKey)?.snapshot;
+  snapshot(entityKey: number): RenderableSnapshot | undefined {
+    return this.lookup(entityKey)?.snapshot;
   }
 
   pointsLinesSnapshots(): readonly PointsLinesRetainedSnapshot[] {
@@ -625,10 +634,9 @@ export class RenderScene {
 
   inspect(): RenderSceneInspection {
     return {
-      records: this.frame.map(({ slot, generation, worldId, entityKey }) => ({
+      records: this.frame.map(({ slot, generation, entityKey }) => ({
         slot,
         generation,
-        worldId,
         entityKey,
       })),
       slotCapacity: this.frame.capacity,
@@ -644,16 +652,14 @@ export class RenderScene {
     };
   }
 
-  private lookup(worldId: number, entityKey: number): RenderSceneSlot | undefined {
-    return this.frame.lookup(worldId, entityKey);
+  private lookup(entityKey: number): RenderSceneSlot | undefined {
+    return this.frame.lookup(entityKey);
   }
 
   private temporalSnapshot(
     slot: RenderSceneSlot,
     resetHistory = false,
-    displacementSource = hasDisplacementSource(
-      meshDrawMaterials(slot.snapshot, this.meshes, slot.worldId),
-    ),
+    displacementSource = hasDisplacementSource(meshDrawMaterials(slot.snapshot, this.meshes)),
   ): RenderableTemporalSnapshot {
     return createTemporalSnapshot(slot, resetHistory, this.frame, this.history, displacementSource);
   }
@@ -681,12 +687,8 @@ export class RenderScene {
     return this.rows.writeCullingWorldBoundsAt(slot, out, meshes, materials, skin);
   }
 
-  instanceRowBoxesAt(slot: RenderSceneSlot): Float32Array | undefined {
-    return this.rows.instanceRowBoxesAt(slot);
-  }
-
   cullingWorldBounds(snapshot: RenderableSnapshot): RenderSceneBounds | undefined {
-    const slot = this.lookup(snapshot.worldId, snapshot.entityKey);
+    const slot = this.lookup(snapshot.entityKey);
     return slot === undefined ? worldBounds(snapshot) : this.cullingWorldBoundsAt(slot);
   }
 }
@@ -697,9 +699,7 @@ export function sceneRow(
   row: RenderSceneSlot | undefined,
   source: RenderableSnapshot,
 ): RenderSceneSlot | undefined {
-  return row !== undefined && row.worldId === source.worldId && row.entityKey === source.entityKey
-    ? row
-    : undefined;
+  return row !== undefined && row.entityKey === source.entityKey ? row : undefined;
 }
 
 export function sceneSnapshotDelta(slots: FrameList<RenderSceneSlot>): RenderSceneApplyResult {

@@ -10,6 +10,10 @@ are public `pages.list` and `pack.reveal` workspace operations, available from
 `forgeax view workspace pages list` and `forgeax view workspace pack reveal`. Pack source inspection uses the Pack authoring
 gateway's `asset.inspect`, also available through Engine asset CLI. The MCP
 wrapper adds schema, size limits, local authentication and names derived from the public operation IDs.
+Hosted dynamic imports retain native package-specifier resolution. Relative and
+absolute URL references use the admitted project source graph; optional Node
+transport imports keep their native rejection in browser documents rather than
+becoming fabricated HTTP paths under the importing package.
 The selected View package must provide both public page operations. An older
 View checkout will return an owner or operation failure; the adapter does not
 fall back to private Broker access.
@@ -17,11 +21,21 @@ fall back to private Broker access.
 ## Dependency floors
 
 The MCP SDK accepts `@hono/node-server` 2.x. Both workspace package-manager
-policies require 2.1.3 or later in that major to prevent static middleware from
-decoding a routed path a second time
+policies pin 2.1.6, retaining the single static-path decode
 ([GHSA-rmxm-3fg6-px4f](https://github.com/advisories/GHSA-rmxm-3fg6-px4f)).
-The real HTTP regression retains public encoded filenames and protected routes
-while rejecting malformed paths that could bypass prefix middleware.
+It also rejects raw backslashes before URL path normalization
+([GHSA-jpvv-r467-5p4w](https://github.com/advisories/GHSA-jpvv-r467-5p4w))
+and handles socket resets during asynchronous WebSocket upgrades
+([GHSA-qv5m-9pm6-hqp3](https://github.com/advisories/GHSA-qv5m-9pm6-hqp3)).
+The real HTTP regression retains public encoded filenames, protected routes and
+query backslashes while rejecting malformed request paths.
+
+Both policies also pin Hono 4.13.16, which repairs wildcard middleware admission
+for encoded line terminators
+([GHSA-h7mg-cq63-vhpq](https://github.com/advisories/GHSA-h7mg-cq63-vhpq)),
+mount-prefix normalization, form validation, CSRF ping checks and CSS escaping.
+The real HTTP regression requires every encoded line terminator to retain the
+protected route's denial before static serving or the not-found handler.
 
 The workspace's npm/Bun and pnpm overrides require Zod 4.6.7, body-parser 2.4.0,
 qs 6.16.1 and fast-uri 3.1.9 within their existing major versions. The SDK's Express
@@ -33,10 +47,6 @@ scheme, host and relative-reference identity during normalization.
 Express also accepts qs 6.16.1, which fixes comma-array serialization throwing
 on elements with a non-callable own `toString`
 ([GHSA-6pq8-jhm2-2vcw](https://github.com/advisories/GHSA-6pq8-jhm2-2vcw)).
-The legacy SDK accepts the patched `@hono/node-server` 2.x line. Both package
-manager policies pin 2.1.3, which removes a second static-path decoding step that
-could bypass middleware mounted on a static prefix
-([GHSA-rmxm-3fg6-px4f](https://github.com/advisories/GHSA-rmxm-3fg6-px4f)).
 Regenerate both workspace lockfiles when changing these policies. Keep normal
 compressed request handling enabled.
 
@@ -63,7 +73,9 @@ expected project's target publication within 180 seconds, then lock that target
 and wait at most 120 seconds for its running phase and completed restoration.
 Starting observations never renew the deadline; failed, lost or replaced targets
 reject the wait. Owner-state polling does not depend on animation frames. Retain
-the complete Scene, Play and lifecycle gates.
+the complete Scene, Play and lifecycle gates. Scene/Play progress must be `ready`
+and match the latest submitted World and device generation before admitting the
+existing 60-frame floor; preparation completions cannot admit capture.
 
 Simulation evidence must record the carrier's `srcdoc`, sandbox and CSP conditions.
 It qualifies that adapter path; actual Codex behavior still requires native
@@ -151,6 +163,9 @@ compilation failures remain structured program failures. Engine Worker runtime
 module delivery and top-level await are not qualified by this document adapter.
 The document bootstrap captures native dynamic import before remote module rewriting;
 network adapters borrow it instead of recursively importing through themselves.
+The program host borrows that physical bootstrap loader and reports a missing loader explicitly.
+Admitted graphs compile to one native ESM driver: `import.meta.url` identifies its published Blob,
+not the compiler's virtual linking base; relative file resources require Engine asset identity or an admitted absolute URL.
 Opaque sandboxes use a classic physical Worker bootstrap that imports the logical
 ESM entry. The CPU browser contract covers document and Worker data/blob imports.
 

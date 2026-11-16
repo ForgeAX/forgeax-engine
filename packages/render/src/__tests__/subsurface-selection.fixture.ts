@@ -9,7 +9,7 @@ export function subsurfaceSelection(materials: Iterable<MaterialSnapshot>): Subs
   for (const snapshot of materials) {
     const material = new MaterialResource(snapshot);
     frame = frame.with(material);
-    selection.add({ material, materials: [material] }, frame);
+    selection.add({ material, materials: [material], materialBindingSources: [] }, frame);
   }
   selection.adopt(frame);
   return selection;

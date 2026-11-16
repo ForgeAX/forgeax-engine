@@ -1,10 +1,11 @@
-import { createWorldContext, FixedUpdate, World } from '@forgeax/engine-ecs';
+import { createWorldContext, defineSystem, FixedUpdate, World } from '@forgeax/engine-ecs';
 import { vec3 } from '@forgeax/engine-math';
-import type { PhysicsWorld } from '@forgeax/engine-physics';
+
 import {
   CharacterController,
   Collider,
   ColliderShapeValue,
+  PhysicsWorldResource,
   RigidBody,
   RigidBodyTypeValue,
   registerPhysicsComponents,
@@ -12,6 +13,7 @@ import {
 import { GlobalTransform, Transform } from '@forgeax/engine-scene';
 import type { SceneAsset, SceneEntity } from '@forgeax/engine-types';
 import { afterAll, beforeAll, expect, it } from 'vitest';
+import { PhysicsStepSimulation, PhysicsSyncBackend } from '../physics-sync';
 import { registerPhysicsSystems } from '../physics-sync.js';
 import { createRapier3DPhysicsWorld } from '../rapier-physics-world-3d.js';
 import { loadRapier3D } from '../wasm-loader.js';
@@ -641,7 +643,7 @@ async function fixture() {
   world.components.register(GlobalTransform).unwrap();
   registerPhysicsComponents(world);
   const physics = createRapier3DPhysicsWorld(await loadRapier3D());
-  world.insertResource('PhysicsWorld', physics);
+  world.insertResource(PhysicsWorldResource, physics);
   registerPhysicsSystems(world);
   let entity = 0;
   for (const [key, value] of Object.entries(asset.entities)) {
@@ -656,13 +658,13 @@ async function fixture() {
   let start: [number, number] | undefined,
     verticalVelocity = 0;
   // Same per-tick move as a walking character: one moveAndSlide toward -Z with gravity, between sync and step.
-  world.addSystem(FixedUpdate, {
+  const systemToken1 = defineSystem({
     name: 'kcc-riser-walk',
-    after: ['physicsSyncBackend'],
-    before: ['physicsStepSimulation'],
+    after: [PhysicsSyncBackend],
+    before: [PhysicsStepSimulation],
     queries: [],
     fn: () => {
-      const pw = world.getResource<PhysicsWorld>('PhysicsWorld');
+      const pw = world.getResource(PhysicsWorldResource);
       if (!pw.hasBody(entity)) return;
       if (start) {
         pw.teleport(entity, vec3.create(start[0], ORIGIN, start[1]));
@@ -681,6 +683,7 @@ async function fixture() {
         verticalVelocity = 0;
     },
   });
+  world.addSystem(FixedUpdate, systemToken1);
   const tick = () => world.update(DT).unwrap();
   const position = () =>
     [...world.get(entity as never, Transform).unwrap().pos] as [number, number, number];
@@ -746,7 +749,7 @@ it('climbs an 18 cm riser when accelerating from rest at its capsule contact', a
   world.components.register(GlobalTransform).unwrap();
   registerPhysicsComponents(world);
   const physics = createRapier3DPhysicsWorld(await loadRapier3D());
-  world.insertResource('PhysicsWorld', physics);
+  world.insertResource(PhysicsWorldResource, physics);
   registerPhysicsSystems(world);
   for (let i = 0; i < 6; i++) {
     const height = (i + 1) * 0.18;

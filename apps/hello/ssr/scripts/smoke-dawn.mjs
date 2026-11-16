@@ -310,10 +310,10 @@ const shaderManifestUrl = URL.createObjectURL(new Blob([JSON.stringify(manifest)
 process.once('exit', () => URL.revokeObjectURL(shaderManifestUrl));
 // A dirty source checkout can share HEAD and render dist while serving a
 // different trace. Bind timing evidence to the actual compiled GPU input.
-const traceShader = manifest.entries.find(entry => /fn ssr_trace\s*\(/.test(entry.wgsl));
+const traceShader = manifest.entries.find((entry) => /fn ssr_trace\s*\(/.test(entry.wgsl));
 if (traceShader === undefined) throw new Error('SSR trace is missing from the shader manifest');
 const traceShaderSha256 = createHash('sha256').update(traceShader.wgsl).digest('hex');
-const composeShader = manifest.entries.find(entry => /fn fs_ssr_compose\s*\(/.test(entry.wgsl));
+const composeShader = manifest.entries.find((entry) => /fn fs_ssr_compose\s*\(/.test(entry.wgsl));
 if (composeShader === undefined) throw new Error('SSR compose is missing from the shader manifest');
 const composeShaderSha256 = createHash('sha256').update(composeShader.wgsl).digest('hex');
 const shaderManifestSha256 = createHash('sha256')
@@ -584,9 +584,9 @@ const panelTransforms = [
   [[0, 0, 3], [2.4, 2.4, 0.12]],
   [[0, 0, -3], [2.4, 2.4, 0.12]],
 ];
-// The reflection evidence lane keeps the authored colored panels so the
-// producer-owned fallback MRT is falsifiable with a non-neutral GPU sample.
-for (let face = 0; face < CUBE_CAMERA_FACE_ORDER.length; face += 1) {
+  // The reflection evidence lane keeps the authored colored panels so the
+  // producer-owned fallback MRT is falsifiable with a non-neutral GPU sample.
+  for (let face = 0; face < CUBE_CAMERA_FACE_ORDER.length; face += 1) {
   const panelMaterial = assets.create(SSR_EVIDENCE
       ? Materials.standard({ baseColor: FACE_COLORS[face], metallic: 0, roughness: 0.45 })
       : Materials.unlit(FACE_COLORS[face])).unwrap();
@@ -872,11 +872,13 @@ if (displayDir !== undefined) {
         pos: [objectOrigin[0] + objectOffset, objectOrigin[1], objectOrigin[2]],
       }).unwrap();
       journey.push({ stage: 'motion', cameraOffset, objectOffset,
-        ...await advanceDisplayFrame(index === 7 ? 'motion-end' : undefined) });
+        ...(await advanceDisplayFrame(index === 7 ? 'motion-end' : undefined)),
+      });
     }
     for (let heldFrames = 1; heldFrames <= DISPLAY_HOLD_FRAMES; heldFrames++) {
       journey.push({ stage: 'recovery', heldFrames,
-        ...await advanceDisplayFrame([8, 32, 64, 128].includes(heldFrames) ? `recovery-${heldFrames}` : undefined) });
+        ...(await advanceDisplayFrame([8, 32, 64, 128].includes(heldFrames) ? `recovery-${heldFrames}` : undefined)),
+      });
     }
   }
   const displayFrames = [];
@@ -1065,11 +1067,7 @@ if (!PERFORMANCE_ONLY) {
       process.exit(1);
     }
     const cpuStart = hostNowMs();
-    const next = renderer.draw({
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
+    const next = renderer.draw({ source: attached.value });
     if (!next.ok) {
       console.error(`[smoke] FAIL - receipt draw failed: ${next.error.code}`);
       process.exit(1);
@@ -1104,11 +1102,7 @@ if (!SSR_EVIDENCE) {
     console.error(`[smoke] FAIL - material world update failed: ${updated.error.code}`);
     process.exit(1);
   }
-  const next = renderer.draw({
-    leases: [attached.value],
-    camera: { lease: attached.value },
-    environment: { lease: attached.value },
-  });
+  const next = renderer.draw({ source: attached.value });
   if (!next.ok) {
     console.error(`[smoke] FAIL - material receipt draw failed: ${next.error.code}`);
     process.exit(1);
@@ -1120,7 +1114,7 @@ if (!SSR_EVIDENCE) {
     process.exit(1);
   }
 }
-const observedFaces = observed.ok ? observed.value.targetReadbacks ?? [] : [];
+const observedFaces = observed.ok ? ( observed.value.targetReadbacks ?? []) : [];
 const lowerYellowProbe = observedFaces[4] === undefined
   ? undefined
   : (() => {
@@ -1235,11 +1229,7 @@ if (SSR_REFLECTION_EVIDENCE) {
     }
     const updated = world.update(1 / 60);
     if (!updated.ok) throw updated.error;
-    const next = renderer.draw({
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
+    const next = renderer.draw({ source: attached.value });
     if (!next.ok) throw next.error;
     const completed = await next.value.completed;
     if (!completed.ok) throw completed.error;
@@ -1277,11 +1267,7 @@ let submitFailure;
 let deviceRecovery;
 const drawEvidenceFrame = async () => {
   world.update(1 / 60).unwrap();
-  const next = renderer.draw({
-    leases: [attached.value],
-    camera: { lease: attached.value },
-    environment: { lease: attached.value },
-  }).unwrap();
+  const next = renderer.draw({ source: attached.value }).unwrap();
   (await next.completed).unwrap();
   for (const passName of renderer.inspect().perFramePassNames) reflectionPassNames.add(passName);
   return next;
@@ -1299,11 +1285,7 @@ if (SSR_REFLECTION_EVIDENCE) {
   submitFailureArmed = true;
   const failedUpdate = world.update(1 / 60);
   if (!failedUpdate.ok) throw failedUpdate.error;
-  const failedDraw = renderer.draw({
-    leases: [attached.value],
-    camera: { lease: attached.value },
-    environment: { lease: attached.value },
-  });
+  const failedDraw = renderer.draw({ source: attached.value });
   if (failedDraw.ok) throw new Error('reflection fallback submit fault was not injected');
   const afterFailure = renderer.inspect().reflectionProbes;
   const afterRow = fallbackRow(afterFailure, 'probe');
@@ -1540,7 +1522,7 @@ const cpuPhaseProfileSummary = cpuProfileCapture === undefined
       phaseStats: cpuPhaseStats,
     };
 const timingStatus = timingObservedFrames.length === 0
-  ? timingObservations.at(-1)?.status ?? 'unavailable'
+  ? ( timingObservations.at(-1)?.status ?? 'unavailable')
     : timingReasons.length === 0
     ? 'complete'
     : 'partial';

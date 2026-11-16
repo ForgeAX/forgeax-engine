@@ -3,7 +3,7 @@ import type { TextureView } from '@forgeax/engine-rhi';
 import type { RendererGenerationFence } from '../assembly/renderer-frame-transaction';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
 import type { RenderPipelineFrame } from '../render-pipeline';
-import type { RayDiffuseTargets } from './diffuse-graph';
+import type { ExactRayDiffuseTargets, RayDiffuseTargets } from './diffuse-graph';
 import { RAY_PATH_STRIDE } from './path-tracer';
 import { addRayReconstructionPasses, type RayGraphShared } from './ray-graph-shared';
 import type { PreparedRayReflections } from './reflections-prepare';
@@ -18,7 +18,7 @@ export function addRayReflectionPasses(
     readonly fence: RendererGenerationFence;
     readonly generation: number;
   },
-  target: RayDiffuseTargets,
+  target: ExactRayDiffuseTargets,
   reflection: NonNullable<RayDiffuseTargets['reflection']>,
 ) {
   const { records, view, pixelCount } = shared;

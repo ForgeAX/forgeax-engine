@@ -23,6 +23,7 @@ export interface LiveOwnerOptions {
   readonly headless: boolean;
   readonly backend: string;
   readonly rhiCapture: boolean;
+  readonly gpuPassTiming: boolean;
   readonly workers: unknown;
   readonly animation: unknown;
 }
@@ -77,12 +78,15 @@ export function changedLiveOptions(
 ): readonly string[] {
   return Object.entries(requested)
     .filter(([, value]) => value !== undefined)
-    .filter(
-      ([key, value]) =>
+    .filter(([key, value]) => {
+      const recorded = current?.[key as keyof LiveOwnerOptions];
+      // Owner records written before GPU timing was persisted were untimed.
+      if (key === 'gpuPassTiming') return value !== (recorded === undefined ? false : recorded);
+      return (
         current === undefined ||
-        JSON.stringify(canonical(value)) !==
-          JSON.stringify(canonical(current[key as keyof LiveOwnerOptions])),
-    )
+        JSON.stringify(canonical(value)) !== JSON.stringify(canonical(recorded))
+      );
+    })
     .map(([key]) => key);
 }
 

@@ -1,3 +1,4 @@
+import { World } from '@forgeax/engine-ecs';
 import { type ComputePipeline, err, ok, type Result, RhiError } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { expect, it, vi } from 'vitest';
@@ -144,8 +145,7 @@ it('holds presentation pending for declared compute preparation until backend co
   const frame = () =>
     prepareFeatureFrame(host, [
       {
-        worlds: [],
-        owner: 0,
+        world: new World(),
         identity: 'main',
         render: true,
         frameNumber: 1,
@@ -157,7 +157,16 @@ it('holds presentation pending for declared compute preparation until backend co
   try {
     const pending = frame();
     expect(pending.frame.preparationPending).toBe(true);
-    expect(pending.frame.errors).toHaveLength(1);
+    expect(pending.frame.preparationPendingReason).toMatchObject({
+      code: 'feature-preparation',
+      featureIdentity: 'host-compute-prepare',
+      resource: JSON.stringify(['frame', 'actual']),
+      operation: 'prepare-gpu-program',
+      reason: 'rhi-not-available:pipeline-pending',
+    });
+    expect(pending.frame.errors).toEqual([]);
+    expect(f.asyncCreate).toHaveBeenCalledTimes(1);
+    expect(f.sync).not.toHaveBeenCalled();
     abortFeatureFrame(host);
     const finish = f.completions[0];
     if (finish === undefined) throw Error('missing actual backend completion');

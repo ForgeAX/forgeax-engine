@@ -7,12 +7,78 @@ description: ForgeAX WGSL composition, reflection, and cooked shader contracts. 
 
 ## Contract index
 
+Water uses the root-owned `water-deformation/1` declaration and canonical
+input layout from Types; cook receipts cover color, depth, shadow and velocity.
+A Surface-only WaterInfo reader can omit deformation. The reflected
+`water-frame/3` entrypoint bindings determine the actual Water resource subset,
+visibility and dynamic-offset order. Fixed/Baked Body inputs need no texture;
+WaterInfo readers require a real same-view target. See the
+[Water material contract](../../packages/water/README.md#material-family).
+Every Body GPU row retains its accepted fixed fallback constants independently
+of the sampled source mode; disabling WaterInfo must preserve that buffer path.
+The Water-only input ABI carries raw `vertexColor` and vertex-decoded
+`vertexFlowXZ`; decode and actor-direction transformation precede interpolation.
+Static Baked/fixed switches select their source explicitly, while one Body
+publication retains the real WaterInfo and Baked resources it can access.
+`waterVertexMapping` lowers independently to vertex height availability and
+does not prune fragment reads or waves. `waterDynamicBoundsClip` lowers to
+`WATER_DYNAMIC_BOUNDS_CLIP` with default false, independently of mapping/Info.
+Its stock consumer uses post-WPO fragment position and the generation-qualified
+Body row's `dynamicBoundsCenterExtentXZ`, without requiring an Info texture.
+Absent bounds bypass clipping. Use the compiler's `material-pack-cooker/5` producer to
+invalidate older derived bytes; the durable publication stays `material-cook/5`.
+`WATER_TRANSITION_AVAILABLE` derives from disabled ordinary waves plus an enabled
+transition. Its default deformation requires the authored `f32` wave-mask speed
+and, when vertex flow can be selected, the `f32` maximum decoded-flow speed.
+Missing fields reject before compilation; an Info switch alone does not exclude
+the Body's runtime vertex-flow fallback.
+Water Surface input preserves pre-WPO normal/position and pre-Water scene
+depth. Its appended `wavePhaseXZ` derives from small morphed WaterMesh coverage
+plus target-relative tile offsets before wrapping; do not interpolate wrapped
+phase or subtract large absolute `f32` positions. Only resolved stock default
+deformation enables complete fragment Gerstner-normal evaluation. Source depth
+uses no-WPO position, transition velocity uses post-WPO position, and target rows
+select waves/time. Keep `refractionPixelNormalStrength` and `refractionDepthBias`
+dimensionless, with `physicalIor` independent. The ordinary inherited
+`criticalAngleDot` and `refractionBottomAmount` control underside response
+independently of `specular`. Water SSR hit motion must match the exact opaque
+depth texel within its FP16 log-depth precision before replacing matrix
+reprojection; the coarse traced ray depth is not a layer identity.
+Stock default Water deformation applies the tile schema v7 flat-far boundary
+mask to current/previous positions and normals. Only emitted same-owner,
+same-generation far geometry at the same mean height grants a side bit. The
+boundary smoothly approaches the mean plane over `max(4 m, 2 * maxWaveHeightM)`;
+the fragment Gerstner normal uses the same spatial weight. Unmasked tiles are
+exact no-ops, and transitions/custom deformation retain their existing output.
+This continuity mechanism is ForgeAX policy; it does not establish UE parity.
+The connected foam branch's
+graph-owned texture and distinct clamp/wrap samplers follow the existing medium physical tail; only an
+actually declared branch admits and binds it. It is not an authored texture
+parameter and does not change the generic medium Surface ABI.
+Shared contact foam and additive shallow-wave foam remain independent inputs.
+Combine their sampled responses with the existing maximum operation; a valid
+contact capture domain cannot mask a stronger wave source. Shared contact and
+residual-only mapping publish bounded foam coverage. Multiply coverage by the
+authored opacity/scattering texture samples; do not apply legacy height power,
+boost or threshold. Retain material amount, depth fade, normals and optics.
+SLW volume uses the shared diffuse-indirect sky input before surface AO and
+converts E/pi to isotropic ambient with a factor of one quarter. Keep the
+existing receiver AO on surface diffuse only; precomputed bent-normal lighting
+is unavailable without a lighting-owned producer.
+
 The shader compiler is build-time only: it composes real module slots, reflects
 the closed compiler context, and records actual WASM provenance. Material
 identity is layered across `materialContractDigest`, `sourceClosureDigest`,
 `layoutIdentity`, `programIdentity`, `cookIdentity`, and
 `materialPublicationIdentity`; runtime receives the Pack projection and never
 compiles, cooks, or interprets feature macros.
+
+Standard's raster interface reserves one default-device inter-stage input for
+`front_facing`. Fragment position and NDC reconstruct from builtin position and
+the inverse view projection. Water-only coverage/grid inputs retain their own
+lane, and the wave mask shares the Water normal's fourth component. Keep
+vertex color, all eight UV sets, object basis and scene indexing within the
+remaining fifteen locations, and rebuild cooked profiles after template edits.
 
 > [!IMPORTANT]
 > The authoring route is WGSL source plus one MaterialAsset contract. Build-time composition and reflection publish a module manifest entry; material cook publishes the artifact and receipt; runtime resolves both through the catalog. App code never installs or duplicates a shader artifact. The recovery route is source or cook repair.

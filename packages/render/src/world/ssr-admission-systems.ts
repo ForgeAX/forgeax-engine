@@ -1,4 +1,4 @@
-import { defineComponent, type EntityHandle, type World } from '@forgeax/engine-ecs';
+import { defineComponent, defineSystem, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import type { RhiCaps } from '@forgeax/engine-rhi';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import { hasSsrSceneInputs } from '../record/main-pass';
@@ -11,8 +11,9 @@ import {
   type SsrDependenciesInspection,
   type SsrSpatialAdmission,
 } from '../ssr/admission';
+import { RenderPhaseSortOrder, RenderSsrAdmissionOrder } from '../system-order';
 import { type PassPlanInput, type ViewPassPlanQueue, ViewPassPlans } from './pass-plan-systems';
-import { RENDER_PHASE_SORT_SYSTEM, type ViewPhaseQueue, ViewPhases } from './queue-systems';
+import { type ViewPhaseQueue, ViewPhases } from './queue-systems';
 import { ViewRecorder } from './render-views';
 import { RenderQueue, renderSubmission, renderWorldFor } from './render-world';
 import { ViewStandardLighting, viewStandardLightingOf } from './standard-lighting-systems';
@@ -64,10 +65,10 @@ interface SsrSceneInputDemand {
   readonly renderPath: 'forward' | 'deferred';
   readonly sceneInputs: boolean;
   readonly requested: boolean;
-  readonly sources: readonly {
+  readonly source: {
     readonly resource: RenderResourceScope;
     readonly revision: RenderResourceScope['revision'];
-  }[];
+  };
 }
 
 /** Borrow the normal Queue producer's scalar corpus proof, never its pass plan. */
@@ -87,8 +88,8 @@ export function readSsrSceneInputDemand(
     demand.renderPath !== renderPath ||
     demand.requested !== requested ||
     !sameValue(demand.camera, camera) ||
-    !demand.sources.some((source) => source.resource === resources) ||
-    demand.sources.some((source) => source.resource.revision !== source.revision)
+    demand.source.resource !== resources ||
+    demand.source.resource.revision !== demand.source.revision
   )
     return undefined;
   return demand.sceneInputs;
@@ -200,6 +201,10 @@ function admitViewSsr(
   const { camera, dependencies, probeFallbackDemand } = input.ssr;
   const reportedPath = lighting.lighting.value.standard.prepared.renderPath;
   const renderPath: 'forward' | 'deferred' = reportedPath === 'deferred' ? 'deferred' : 'forward';
+  const pairedMsaaSurface =
+    reportedPath === 'forward' &&
+    camera.antialias === 'msaa' &&
+    (input.materials.hasWater || input.preparation?.hasWater === true);
   const reflectionFallbackCandidate =
     probeFallbackDemand ||
     (dependencies.requested === true && dependencies.reflectionFallback !== undefined);
@@ -209,6 +214,7 @@ function admitViewSsr(
       hasSsrSceneInputs(
         { renderables: input.renderables, dispatch, materialFrame: input.materials },
         reportedPath,
+        pairedMsaaSurface,
       );
     const recorder = readViewField(world, entity, ViewRecorder, 'state');
     const retained =
@@ -222,7 +228,7 @@ function admitViewSsr(
             renderPath,
             sceneInputs,
             requested: reflectionFallbackCandidate || camera.screenSpaceReflection !== undefined,
-            sources: retained.worlds.map((resource) => ({ resource, revision: resource.revision })),
+            source: { resource: retained.source, revision: retained.source.revision },
           }
         : undefined;
     return {
@@ -241,65 +247,66 @@ function admitViewSsr(
  * rejected input is stored, never thrown.
  */
 export function registerSsrAdmissionSystem(world: World): void {
-  world
-    .addSystem(RenderQueue, {
-      commands: 'none',
-      name: RENDER_SSR_ADMISSION_SYSTEM,
-      after: [RENDER_PHASE_SORT_SYSTEM],
-      queries: [
-        {
-          read: [ViewPassPlans],
-          optional: [ViewPhases, ViewStandardLighting, ViewSsrAdmission],
-        },
-      ],
-      fn: (world, [views]) => {
-        const frame = renderSubmission(world).frame;
-        const first: { entity: EntityHandle; state: ViewSsrAdmissionState }[] = [];
-
-        views.forEach((row) => {
-          const entity = row.entity;
-
-          const input = world
-            .resolveUniqueRef<ViewPassPlanQueue>(
-              requireViewField(world, entity, ViewPassPlans, 'state'),
-            )
-            .unwrap().staged;
-          if (input === undefined) return;
-          const stored = readViewField(world, entity, ViewSsrAdmission, 'state');
-          const previous =
-            stored === undefined
-              ? undefined
-              : world.resolveUniqueRef<ViewSsrAdmissionState>(stored).unwrap();
-          if (previous?.frame === frame) return;
-          const phases = input.phaseSorted
-            ? readViewField(world, entity, ViewPhases, 'state')
-            : undefined;
-          const ordered =
-            phases === undefined
-              ? undefined
-              : world.resolveUniqueRef<ViewPhaseQueue>(phases).unwrap().ordered;
-          const { outcome, demand } = admitViewSsr(world, entity, input, ordered ?? input.dispatch);
-          if (previous === undefined) {
-            first.push({
-              entity: entity,
-              state: { frame, outcome, ...(demand === undefined ? {} : { demand }) },
-            });
-            return;
-          }
-          previous.frame = frame;
-          previous.outcome = outcome;
-          if (demand === undefined) delete previous.demand;
-          else previous.demand = demand;
-        });
-        // A view's first admission attaches its component after the iteration.
-        for (const { entity, state } of first)
-          world
-            .addComponent(entity, {
-              component: ViewSsrAdmission,
-              data: { state: world.allocUniqueRef('ViewSsrAdmission', state) },
-            })
-            .unwrap();
+  if (world.hasSystem(RenderQueue, RenderSsrAdmissionOrder)) return;
+  const systemToken1 = defineSystem({
+    sets: [RenderSsrAdmissionOrder],
+    commands: 'none',
+    name: RENDER_SSR_ADMISSION_SYSTEM,
+    after: [RenderPhaseSortOrder],
+    queries: [
+      {
+        read: [ViewPassPlans],
+        optional: [ViewPhases, ViewStandardLighting, ViewSsrAdmission],
       },
-    })
-    .unwrap();
+    ],
+    fn: (world, [views]) => {
+      const frame = renderSubmission(world).frame;
+      const first: { entity: EntityHandle; state: ViewSsrAdmissionState }[] = [];
+
+      views.forEach((row) => {
+        const entity = row.entity;
+
+        const input = world
+          .resolveUniqueRef<ViewPassPlanQueue>(
+            requireViewField(world, entity, ViewPassPlans, 'state'),
+          )
+          .unwrap().staged;
+        if (input === undefined) return;
+        const stored = readViewField(world, entity, ViewSsrAdmission, 'state');
+        const previous =
+          stored === undefined
+            ? undefined
+            : world.resolveUniqueRef<ViewSsrAdmissionState>(stored).unwrap();
+        if (previous?.frame === frame) return;
+        const phases = input.phaseSorted
+          ? readViewField(world, entity, ViewPhases, 'state')
+          : undefined;
+        const ordered =
+          phases === undefined
+            ? undefined
+            : world.resolveUniqueRef<ViewPhaseQueue>(phases).unwrap().ordered;
+        const { outcome, demand } = admitViewSsr(world, entity, input, ordered ?? input.dispatch);
+        if (previous === undefined) {
+          first.push({
+            entity: entity,
+            state: { frame, outcome, ...(demand === undefined ? {} : { demand }) },
+          });
+          return;
+        }
+        previous.frame = frame;
+        previous.outcome = outcome;
+        if (demand === undefined) delete previous.demand;
+        else previous.demand = demand;
+      });
+      // A view's first admission attaches its component after the iteration.
+      for (const { entity, state } of first)
+        world
+          .addComponent(entity, {
+            component: ViewSsrAdmission,
+            data: { state: world.allocUniqueRef('ViewSsrAdmission', state) },
+          })
+          .unwrap();
+    },
+  });
+  world.addSystem(RenderQueue, systemToken1).unwrap();
 }

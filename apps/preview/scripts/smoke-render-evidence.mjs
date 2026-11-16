@@ -64,8 +64,10 @@ while (Date.now() < deadline) {
 }
 await page.waitForFunction(() => {
   const value = globalThis.__forgeaxGameDefaultRenderEvidence;
-  return value?.snapshot().customProjectileMesh.available === true && value.snapshot().customProjectileMesh.textureSource === 'procedural';
-}, { timeout: 10_000 });
+  return ( value?.snapshot().customProjectileMesh.available === true && value.snapshot().customProjectileMesh.textureSource === 'procedural'
+      );
+}, { timeout: 10_000 },
+  );
 await page.waitForTimeout(250);
 
 async function snapshot(name) {
@@ -75,10 +77,10 @@ async function snapshot(name) {
   return { path, width: png.width, height: png.height, data: png.data };
 }
 
-// Establish the visual baseline through the same reset owner exercised later.
-// Comparing natural page-start settling with post-reset settling makes physics
-// timing, rather than reset semantics, the dominant pixel difference.
-await page.evaluate(() => globalThis.__forgeaxGameDefaultRenderEvidence.reset());
+  // Establish the visual baseline through the same reset owner exercised later.
+  // Comparing natural page-start settling with post-reset settling makes physics
+  // timing, rather than reset semantics, the dominant pixel difference.
+  await page.evaluate(() => globalThis.__forgeaxGameDefaultRenderEvidence.reset());
 await page.waitForTimeout(250);
 const evidence = await page.evaluate(() => {
   const value = globalThis.__forgeaxGameDefaultRenderEvidence;
@@ -116,9 +118,9 @@ const disableBeforeReset = await page.evaluate(() => {
 if (disableBeforeReset.targetDisabling.activeCount !== targetCount - 1 || disableBeforeReset.targetDisabling.disabledCount !== 1 || disableBeforeReset.targetDisabling.disableEvents !== 1) {
   throw new Error(`entity-disabling evidence missing: ${JSON.stringify(disableBeforeReset.targetDisabling)}`);
 }
-// Let the structural Disabled marker and its target-health query settle before
-// the next pointer event; this keeps the browser probe at a schedule boundary.
-await page.waitForTimeout(100);
+  // Let the structural Disabled marker and its target-health query settle before
+  // the next pointer event; this keeps the browser probe at a schedule boundary.
+  await page.waitForTimeout(100);
 
 const animationBefore = await page.evaluate(() => globalThis.__forgeaxGameDefaultRenderEvidence.snapshot());
 await page.waitForTimeout(250);
@@ -133,19 +135,19 @@ const flashBefore = await page.evaluate(() => {
 await page.waitForTimeout(60);
 const flash = await snapshot('hit-flash');
 
-// Exercise the same reset owner directly so this visual probe does not depend
-// on browser focus surviving the preceding pointer/scroll gestures. Keyboard
-// reset remains covered by the input smoke; this probe asserts reset semantics.
-await page.evaluate(() => globalThis.__forgeaxGameDefaultRenderEvidence.reset());
+  // Exercise the same reset owner directly so this visual probe does not depend
+  // on browser focus surviving the preceding pointer/scroll gestures. Keyboard
+  // reset remains covered by the input smoke; this probe asserts reset semantics.
+  await page.evaluate(() => globalThis.__forgeaxGameDefaultRenderEvidence.reset());
 await page.waitForTimeout(250);
 const resetState = await page.evaluate(() => globalThis.__forgeaxGameDefaultRenderEvidence.snapshot());
 const reset = await snapshot('reset');
 
-// Aim off the exact canvas centre: top-down picking deliberately rejects a
-// zero-length direction, so a centred click cannot exercise deferred shooting.
-// Run this after reset so structural target disabling has returned to the
-// authored query population before the pointer path is exercised.
-await page.mouse.click(500, 300);
+  // Aim off the exact canvas centre: top-down picking deliberately rejects a
+  // zero-length direction, so a centred click cannot exercise deferred shooting.
+  // Run this after reset so structural target disabling has returned to the
+  // authored query population before the pointer path is exercised.
+  await page.mouse.click(500, 300);
 await page.waitForTimeout(120);
 const deferredCommandsAfter = await page.evaluate(() => {
   const value = globalThis.__forgeaxGameDefaultRenderEvidence;
@@ -256,7 +258,8 @@ const resetDelta = changedPixels(baseline, reset);
 const resetDriftBudget = targetCount * 200;
 const report = {
   mode: production ? 'production' : 'dev',
-  oracle: 'baseline -> hit-flash and transient chromatic aberration change compositor pixels; R reset returns the baseline; the secondary World stays routed through the primary camera/light owner; bloom and depth-aware post-process toggles compose with the effect chain; orbit mode changes the camera composition at a fixed player-relative radius; recovery re-triggers the same flash without reload',
+  oracle:
+      'baseline -> hit-flash and transient chromatic aberration change compositor pixels; R reset returns the baseline; bloom and depth-aware post-process toggles compose with the effect chain; orbit mode changes the camera composition at a fixed player-relative radius; recovery re-triggers the same flash without reload',
   artifacts: { baseline: baseline.path, flash: flash.path, reset: reset.path, animatedTarget: animation.path, bloomOff: bloomOff.path, depthOfFieldOn: depthOfFieldOn.path, orbit: orbit.path, orbitZoom: orbitZoom.path, pan: pan.path, panMoved: panMoved.path },
   semantic: { evidence, scoreBefore, scoreAfter, disableBeforeReset, deferredCommandsAfter, animationBefore, animationAfter, animationReset, flashBefore, resetState, bloomBefore, bloomAfter, depthOfFieldBefore, depthOfFieldAfter, orbitBefore, orbitAfter, orbitReset, panBefore, panAfter, panReset },
   pixel: { flashDelta, resetDelta, resetDriftBudget, animationDelta: changedPixels(baseline, animation), bloomDelta: changedPixels(reset, bloomOff), depthOfFieldDelta: changedPixels(reset, depthOfFieldOn), orbitDelta: changedPixels(reset, orbit), orbitZoomDelta: changedPixels(orbit, orbitZoom), panDelta: changedPixels(reset, panMoved) },
@@ -270,7 +273,6 @@ writeFileSync(resolve(ARTIFACT_DIR, 'report.json'), `${JSON.stringify(report, nu
   if (pageErrors.length > 0) throw new Error(`page errors: ${pageErrors.join(' | ')}`);
 if (evidence.materialShaderIdentifiers?.includes?.('game_default::hit_flash') !== true) throw new Error('hit-flash shader was not registered');
 if (evidence.materialShaderIdentifiers?.includes?.('game_default::animated_target') !== true) throw new Error('animated-target shader was not registered');
-if (evidence.multiWorld?.enabled !== true || evidence.multiWorld.worldCount !== 2 || evidence.multiWorld.entityCount !== 2 || evidence.multiWorld.cameraOwner !== 0 || evidence.multiWorld.resourceOwner !== 0) throw new Error(`multi-world routing contract failed: ${JSON.stringify(evidence.multiWorld)}`);
 if (evidence.multiMaterial?.available !== true || evidence.multiMaterial.materialCount !== 2 || evidence.multiMaterial.submeshCount !== 2 || evidence.multiMaterial.slotsAligned !== true || JSON.stringify(evidence.multiMaterial.topologies) !== JSON.stringify(['triangle-list', 'line-list'])) throw new Error(`multi-material submesh contract failed: ${JSON.stringify(evidence.multiMaterial)}`);
   if (evidence.customProjectileMesh?.available !== true || evidence.customProjectileMesh.textureSource !== 'procedural' || typeof evidence.customProjectileMesh.textureFormat !== 'string' || evidence.customProjectileMesh.textureFormat.length === 0) throw new Error(`procedural projectile texture witness failed: ${JSON.stringify(evidence.customProjectileMesh)}`);
   if (evidence.clearcoatMaterial?.enabled !== true || Math.abs(evidence.clearcoatMaterial.strength - 0.85) > 1e-6 || Math.abs(evidence.clearcoatMaterial.roughness - 0.12) > 1e-6) throw new Error(`clearcoat material witness failed: ${JSON.stringify(evidence.clearcoatMaterial)}`);
@@ -280,7 +282,6 @@ if (evidence.multiMaterial?.available !== true || evidence.multiMaterial.materia
   if (flashBefore.chromaticAberration?.active !== true || flashBefore.chromaticAberration.intensity <= 0 || resetState.chromaticAberration?.active !== false) throw new Error(`chromatic aberration transition failed: ${JSON.stringify({ flashBefore: flashBefore.chromaticAberration, reset: resetState.chromaticAberration })}`);
   if (flashBefore.activeFlashCount !== 1 || resetState.activeFlashCount !== 0) throw new Error(`semantic transition failed: ${JSON.stringify({ flashBefore, resetState })}`);
   if (flashBefore.multiMaterial?.available !== true || flashBefore.multiMaterial.materialCount !== 2 || flashBefore.multiMaterial.submeshCount !== 2 || resetState.multiMaterial?.slotsAligned !== true) throw new Error(`multi-material flash/reset preservation failed: ${JSON.stringify({ before: flashBefore.multiMaterial, reset: resetState.multiMaterial })}`);
-  if (flashBefore.multiWorld?.worldCount !== 2 || resetState.multiWorld?.worldCount !== 2) throw new Error(`multi-world flash/reset preservation failed: ${JSON.stringify({ before: flashBefore.multiWorld, reset: resetState.multiWorld })}`);
   if (resetState.targetHealth.totalCurrent < resetState.targetHealth.totalMax - 0.5) throw new Error(`target health reset failed: ${JSON.stringify(resetState.targetHealth)}`);
   if (resetState.targetDisabling.activeCount !== targetCount || resetState.targetDisabling.disabledCount !== 0) throw new Error(`entity-disabling reset failed: ${JSON.stringify(resetState.targetDisabling)}`);
   if (bloomBefore.before.bloomEnabled !== true || bloomBefore.after.bloomEnabled !== false || bloomAfter.bloomEnabled !== true) throw new Error(`bloom toggle transition failed: ${JSON.stringify({ bloomBefore, bloomAfter })}`);

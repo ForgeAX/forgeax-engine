@@ -5,7 +5,6 @@ export function writeAtmosphereUniform(
   out: Float32Array,
   offset: number,
   p: AtmosphereParameters,
-  far: number,
   referenceSamples = 0,
 ): void {
   out.set(
@@ -28,7 +27,8 @@ export function writeAtmosphereUniform(
       p.aerialPerspectiveDistanceScale,
       referenceSamples,
       p.sunAngularRadius,
-      Math.max(0.001, Math.min(far * 0.001, 96)),
+      // UE's AP volume depth is independent of opaque geometry clipping.
+      96,
       p.backgroundOnly ? 0 : 1,
     ],
     offset,

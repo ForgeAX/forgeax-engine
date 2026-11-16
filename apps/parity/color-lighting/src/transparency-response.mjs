@@ -11,7 +11,7 @@ import * as THREE from 'three/webgpu';
 import { fog, float, vec3, exp, positionView, texture } from 'three/tsl';
 
 const size=128;
-const unwrap=result=>{if(!result?.ok)throw result?.error??new Error('Missing result');return result.value;};
+const unwrap= (result) =>{if(!result?.ok)throw result?.error??new Error('Missing result');return result.value;};
 const recorder=new URLSearchParams(location.search).has('capture')?(await import('@forgeax/engine/rhi-debug')).attachRecorder(webgpu).unwrap():undefined;
 const renderer=unwrap(await createRenderer(document.querySelector('#forgeax'),{rhi:recorder?.backend.rhi??webgpu.rhi},forgeaxBundlerAdapter()));
 const three=new THREE.WebGPURenderer({canvas:document.querySelector('#three'),antialias:false,alpha:true});await three.init();three.setSize(size,size,false);
@@ -25,7 +25,7 @@ async function nativeWorld(p,target) {
  world.spawn({component:Transform,data:{}},{component:Camera,data:camera}).unwrap();
  if(target)world.spawn({component:Transform,data:{}},{component:Camera,data:{...camera,target:world.allocSharedRef('RenderTarget',target)}}).unwrap();
  for(const plane of planes) {
-  const premult=p.blend==='premultiplied', color=plane.color.map(v=>v*(premult?plane.alpha:1));
+  const premult=p.blend==='premultiplied', color=plane.color.map((v) =>v*(premult?plane.alpha:1));
   const mesh=assets.create(createPlaneGeometry(plane.size,plane.size).unwrap()).unwrap();
   const material=assets.create(Materials.unlit([...color,plane.alpha],{queue:3000,renderState:{cullMode:'none',depthWriteEnabled:false,blend:{color:{srcFactor:premult?'one':'src-alpha',dstFactor:'one-minus-src-alpha',operation:'add'},alpha:{srcFactor:'one',dstFactor:'one-minus-src-alpha',operation:'add'}}}})).unwrap();
   world.spawn({component:Transform,data:{pos:[0,0,plane.z]}},{component:MeshFilter,data:{assetHandle:mesh}},{component:MeshRenderer,data:{materials:[material]}}).unwrap();
@@ -49,8 +49,8 @@ async function native(p,capture) {
  try {
   let ready;
   world.update(1/60).unwrap();propagateTransforms(world).unwrap();
-  const draw=async(armed=false)=>{if(armed)unwrap(renderer.requestObservation(['linear-hdr','final-display']));const receipt=unwrap(renderer.draw({leases:[lease],camera:{lease},environment:{lease}}));unwrap(await receipt.completed);return receipt;};
-  for(let i=0;i<120;i++){ready=await draw();if(ready.presentation==='ready')break;await new Promise(r=>setTimeout(r,2));}
+  const draw=async(armed=false)=>{if(armed)unwrap(renderer.requestObservation(['linear-hdr','final-display']));const receipt=unwrap(renderer.draw({ source: lease }));unwrap(await receipt.completed);return receipt;};
+  for(let i=0;i<120;i++){ready=await draw();if(ready.presentation==='ready')break;await new Promise((r) =>setTimeout(r,2));}
   if(ready.presentation!=='ready')throw new Error('Scene did not become ready');
   const ticket=unwrap(renderer.requestTargetReadback(target,{mipLevel:0}));
   let pending;
@@ -83,9 +83,9 @@ async function reference(p) {
   const material=new THREE.NodeMaterial();material.fragmentNode=texture(target.texture);material.toneMapped=true;
   const quad=new THREE.QuadMesh(material);await quad.renderAsync(three);material.dispose();
   return {linear};
- } finally {scene.traverse(o=>{if(o.isMesh){o.geometry.dispose();o.material.dispose();}});target.dispose();}
+ } finally {scene.traverse((o) =>{if(o.isMesh){o.geometry.dispose();o.material.dispose();}});target.dispose();}
 }
-const srgb=x=>x<=.0031308?12.92*Math.max(0,x):1.055*Math.max(0,x)**(1/2.4)-.055;
+const srgb= (x) =>x<=.0031308?12.92*Math.max(0,x):1.055*Math.max(0,x)**(1/2.4)-.055;
 function metrics(a,b) {
  let sum=0,max=0,count=0;
  for(let y=20;y<size-20;y++)for(let x=20;x<size-20;x++)for(let c=0;c<4;c++) {const i=(y*size+x)*4+c,d=Math.abs(a[i]-b[i]);if(!Number.isFinite(d))throw new Error('Non-finite pixel');sum+=d;max=Math.max(max,d);count++;}

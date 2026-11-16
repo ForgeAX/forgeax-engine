@@ -74,6 +74,14 @@ export interface IblBindingInspection {
 export interface ResolvedMeshMaterialBinding {
   readonly handle: number;
   readonly source: MeshMaterialBindingSource;
+  /** Accepted source revision from the MaterialSnapshot recorded by an actual draw. */
+  readonly sourceRevision?: number;
+  /** Exact accepted DrawReceipt identity that consumed this material slot. */
+  readonly drawReceipt?: Readonly<{
+    frameId: number;
+    deviceGeneration: number;
+    graphGeneration: number;
+  }>;
 }
 
 /** Lifecycle values projected from an already prepared resident binding. */
@@ -111,6 +119,11 @@ export interface MeshMaterialBindingResidency {
 
 /** Public read-only observation of the bindings used by the last frame. */
 export interface MeshMaterialBindingObservation {
+  /** Stable source lifetime identity for inspection and asynchronous feedback. */
+  readonly waterFoamInputs?: readonly (
+    | import('./water/foam-inspection').WaterFoamDrawInspection
+    | undefined
+  )[];
   readonly worldId: number;
   /** Stable World identity for cross-world inspection; worldId is only a frame slot. */
   readonly worldIdentity?: string;
@@ -204,6 +217,10 @@ const EMPTY_RESIDENCY: MeshMaterialBindingResidency = publishMeshMaterialBinding
  * deterministic even while a preparation candidate is incomplete.
  */
 export function projectMeshMaterialBindingObservation(input: {
+  readonly waterFoamInputs?: readonly (
+    | import('./water/foam-inspection').WaterFoamDrawInspection
+    | undefined
+  )[];
   readonly worldId: number;
   readonly worldIdentity?: string;
   readonly entityKey: number;
@@ -216,6 +233,9 @@ export function projectMeshMaterialBindingObservation(input: {
     return capturedResidencies.has(value) ? value : captureResidency(value, false);
   });
   return {
+    ...(input.waterFoamInputs === undefined
+      ? {}
+      : { waterFoamInputs: Object.freeze([...input.waterFoamInputs]) }),
     worldId: input.worldId,
     ...(input.worldIdentity === undefined ? {} : { worldIdentity: input.worldIdentity }),
     entityKey: input.entityKey,

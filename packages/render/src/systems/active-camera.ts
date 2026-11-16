@@ -1,3 +1,4 @@
+import { defineResource } from '@forgeax/engine-ecs';
 // @forgeax/engine-runtime - ActiveCamera KV resource + selection helper.
 //
 // feat-20260630-viewport-2x2-run-x-display-redesign M2 w12 / plan-strategy D-2.
@@ -57,7 +58,7 @@ export interface ActiveCamera {
 }
 
 /** World resource key for the `ActiveCamera` KV entry. */
-export const ACTIVE_CAMERA_KEY = 'ActiveCamera' as const;
+export const ACTIVE_CAMERA_KEY = defineResource<ActiveCamera>('ActiveCamera');
 
 // ────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -77,7 +78,7 @@ export const ACTIVE_CAMERA_KEY = 'ActiveCamera' as const;
  */
 export function getActiveCamera(world: World): ActiveCamera | undefined {
   if (!world.hasResource(ACTIVE_CAMERA_KEY)) return undefined;
-  return world.getResource<ActiveCamera>(ACTIVE_CAMERA_KEY);
+  return world.getResource(ACTIVE_CAMERA_KEY);
 }
 
 /**

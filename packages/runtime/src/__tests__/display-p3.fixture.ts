@@ -210,7 +210,7 @@ export function createDisplayP3Scene(
     )
     .unwrap();
   const lease = value(renderer.attach(world));
-  const request = { leases: [lease], camera: { lease }, environment: { lease } };
+  const request = { source: lease };
   const advanceWorld = () => {
     propagateTransforms(world);
     world.update(1 / 60).unwrap();

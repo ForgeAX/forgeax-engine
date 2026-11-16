@@ -231,6 +231,7 @@ export function createNativeResourceAdmission(input: {
   /** Host frame number; retained domain indexes are pruned between frames. */
   readonly frame: number;
   readonly isActive: () => boolean;
+  readonly isScopeActive?: (scope: RenderFeatureWorkScope) => boolean;
   readonly prepare: (
     resources: readonly RenderFeatureResourceDeclaration[],
     keys: ReadonlyMap<string, string>,
@@ -264,6 +265,8 @@ export function createNativeResourceAdmission(input: {
   const programs = new Map<string, { readonly descriptor: object; readonly wait: boolean }>();
   const scopeState = (scope: RenderFeatureWorkScope) => {
     if (!input.isActive()) throw new Error('Native resource admission is outside its plan stage');
+    if (input.isScopeActive?.(scope) === false)
+      throw new Error('Native resource admission targets a disabled view stage');
     const key = featureScopeKey(scope);
     let state = scopes.get(key);
     if (state === undefined) {

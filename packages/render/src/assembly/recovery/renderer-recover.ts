@@ -53,8 +53,9 @@ export type PerShaderMaterialLayoutCacheEntry = {
 export type PreparedMaterialPipelineLayoutCacheEntry = {
   readonly source: string;
   readonly bindings: import('@forgeax/engine-types').MaterialProgramBindingContract;
-  readonly sceneInputKind: 'view' | 'depth' | 'view-depth';
+  readonly sceneInputKind: 'view' | 'depth' | 'view-depth' | 'post-process';
   readonly usesMaterialGroup: boolean;
+  readonly waterInfoFormat?: 'rgba16float' | 'rgba32float';
   meshLayout: PipelineLayout | undefined;
   clusterLayout: PipelineLayout | undefined;
 };
@@ -277,7 +278,9 @@ export function createRendererRecovery(deps: RendererRecoveryDependencies): Rend
 
     // Candidate device-bound state is isolated from the active aggregate. The
     // old roots remain authoritative until the final synchronous publication.
-    const candidateGpuStore = new GpuResidencyCache();
+    const candidateGpuStore = new GpuResidencyCache(internals.options?.tasks, {
+      textureMipSkip: internals.options?.textureMipSkip,
+    });
     const candidateDynamicTextureStore = new DynamicTextureStore();
     // Re-acquire through the SAME backend pack (the
     // idempotent factory primitives tryCreateRendererFromBackend uses). On the

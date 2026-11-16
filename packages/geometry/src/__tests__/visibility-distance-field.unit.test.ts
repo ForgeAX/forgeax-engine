@@ -9,6 +9,9 @@ import { distanceFieldTexel } from '../distance-field-bricks';
 import { createTriangleQuery } from '../triangle-query';
 import { buildVisibilityDistanceField } from '../visibility-distance-field';
 
+const MAX_VISIBILITY_CLOSEST_POINT_BUDGET = 2_147_483_648;
+const MAX_VISIBILITY_SIGN_RAY_BUDGET = 17_179_869_184;
+
 const positions = [-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0];
 const indices = [0, 1, 2, 0, 2, 3];
 
@@ -229,4 +232,47 @@ it('rounds the stored border outward so f32 trace bounds still contain the sourc
   ).unwrap();
   expect(validateMeshDistanceField(field).ok).toBe(true);
   expect((await encodeMeshDistanceField(field)).ok).toBe(true);
+});
+
+it('lets a cook raise each work budget without changing a successful field', async () => {
+  const options = { voxelSize: 0.25, triangleSidedness: [0, 1] };
+  const field = (await buildVisibilityDistanceField(positions, indices, options)).unwrap();
+  const raised = (
+    await buildVisibilityDistanceField(positions, indices, {
+      ...options,
+      closestPointBudget: MAX_VISIBILITY_CLOSEST_POINT_BUDGET,
+      signRayBudget: MAX_VISIBILITY_SIGN_RAY_BUDGET,
+    })
+  ).unwrap();
+  expect(raised).toEqual(field);
+  for (const [budget, name] of [
+    ['closestPointBudget', 'closestPointBudget'],
+    ['signRayBudget', 'signRayBudget'],
+  ] as const) {
+    const starved = await buildVisibilityDistanceField(positions, indices, {
+      ...options,
+      [budget]: 1,
+    });
+    assert(!starved.ok);
+    expect(starved.error.code).toBe('distance-field-limit');
+    expect(starved.error.detail.reason).toMatch(new RegExp(`budget exhausted; raise ${name}`));
+  }
+});
+
+it.each([
+  ['closestPointBudget', 0],
+  ['closestPointBudget', 2.5],
+  ['closestPointBudget', MAX_VISIBILITY_CLOSEST_POINT_BUDGET + 1],
+  ['signRayBudget', 0],
+  ['signRayBudget', Number.NaN],
+  ['signRayBudget', MAX_VISIBILITY_SIGN_RAY_BUDGET + 1],
+] as const)('rejects %s %s instead of an unbounded cook', async (budget, value) => {
+  const result = await buildVisibilityDistanceField(positions, indices, {
+    voxelSize: 0.25,
+    triangleSidedness: [0, 1],
+    [budget]: value,
+  });
+  assert(!result.ok);
+  expect(result.error.code).toBe('distance-field-limit');
+  expect(result.error.detail.reason).toContain(`${budget} must be an integer`);
 });

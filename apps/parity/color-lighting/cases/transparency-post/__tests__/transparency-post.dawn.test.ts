@@ -49,11 +49,7 @@ describe('transparency post Dawn GPU integration', () => {
         const attachment = renderer.attach(world);
         if (!attachment.ok) throw attachment.error;
         world.update().unwrap();
-        const frameRequest = {
-          leases: [attachment.value],
-          camera: { lease: attachment.value },
-          environment: { lease: attachment.value },
-        };
+        const frameRequest = { source: attachment.value };
         const drawn = renderer.draw(frameRequest);
         expect(drawn.ok).toBe(true);
         if (!drawn.ok) throw new Error(drawn.error.hint);
@@ -100,5 +96,6 @@ describe('transparency post Dawn GPU integration', () => {
         'utf8',
       );
     }
-  }, 120_000);
+  }, 120_000,
+  );
 });

@@ -23,8 +23,8 @@ type FrameData = {
 const feature = {
   identity: 'test.public-surface',
   extract(context: RenderFeatureExtractContext) {
-    const owner: number = context.owner;
-    return ok<FrameData>({ visibleCount: owner });
+    const count: number = context.world.inspect().entityCount;
+    return ok<FrameData>({ visibleCount: count });
   },
   plan(data: FrameData, context: RenderFeaturePlanContext) {
     const count: number = data.visibleCount;

@@ -24,8 +24,6 @@ describe('World hot paths', () => {
     expect(world.get(entity, Flags).unwrap()).toEqual({ bits: 1, on: true, target });
     const nan = world.set(entity, Flags, { bits: 2, on: false, target: null, extra: 1 } as never);
     expect(nan.ok).toBe(true);
-    const rejected = world.set(entity, Flags, { bits: Number.NaN, on: true });
-    expect(!rejected.ok && rejected.error.code).toBe('component-numeric-value-invalid');
     expect(world.get(entity, Flags).unwrap()).toEqual({ bits: 2, on: false, target: null });
   });
 

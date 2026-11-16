@@ -1,6 +1,7 @@
 import type { EngineWorkspaceTarget, EngineWorkspaceProject, EngineWorkspaceAsset, EngineWorkspaceCameraResult, EngineWorkspaceAssetBinding, EngineWorkspaceTargetTools, EngineWorkspacePreviewDisplay, EngineWorkspacePreviewDisplayOptions } from '@forgeax/engine/app';
 import { createWorkspaceId } from './id.ts';
 export type { MaterialPreviewMesh, MaterialPreviewState } from '@forgeax/engine/app';
+export type { WorkspaceCloudMaterialInspection } from '@forgeax/engine/app';
 export type { PresentationSnapshot, WorkspacePresentation } from './presentation.ts';
 import { serializeWorkspaceSceneSelection } from './scene-selection.ts';
 /** Optional display producer projection. Consumers must discover the operation before calling. */

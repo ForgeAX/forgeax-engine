@@ -84,8 +84,8 @@ describe('authored CPU directional cascade cadence', () => {
       prepareDirectionalShadowCache(
         internals,
         state,
-        [world].map(worldRenderResources),
-        proven ? [lease] : undefined,
+        worldRenderResources(world),
+        proven ? lease : undefined,
         input,
         1024,
         { reads, epoch: changes.epoch, change: 'quiet' },
@@ -201,9 +201,9 @@ describe('authored CPU directional cascade cadence', () => {
         version: lease.captureVersion(),
       };
       const source = {
-        worlds: [worldRenderResources(world)],
+        sourceScope: worldRenderResources(world),
         shadowMaterials: undefined,
-        worldStateTokens: [worldStateToken],
+        worldStateToken,
         assetCatalogEpoch: 1,
         meshReads: {} as ShadowMeshReads,
         lodSelection: undefined,
@@ -227,21 +227,19 @@ describe('authored CPU directional cascade cadence', () => {
       for (const changed of [
         { ...source, meshReads: {} as ShadowMeshReads },
         { ...source, lodSelection: {} },
-        { ...source, worlds: [] },
+        { ...source, sourceScope: worldRenderResources(new World()) },
         { ...source, casterContent: { ...source.casterContent, owner: {} } },
         { ...source, casterContent: { ...source.casterContent, dispatchRevision: 2 } },
-        { ...source, worldStateTokens: [{ ...worldStateToken, worldIdentity: 'replacement' }] },
+        { ...source, worldStateToken: { ...worldStateToken, worldIdentity: 'replacement' } },
         {
           ...source,
-          worldStateTokens: [
-            {
-              ...worldStateToken,
-              version: {
-                ...worldStateToken.version,
-                structureEpoch: worldStateToken.version.structureEpoch + 1,
-              },
+          worldStateToken: {
+            ...worldStateToken,
+            version: {
+              ...worldStateToken.version,
+              structureEpoch: worldStateToken.version.structureEpoch + 1,
             },
-          ],
+          },
         },
       ])
         expect(directionalShadowSourceChanged(source, changed)).toBe(true);

@@ -7,6 +7,7 @@ import { AssetRegistry, createCatalogSource } from '@forgeax/engine-assets-runti
 import { borrowAudioClip } from '@forgeax/engine-audio/internal';
 import { createHostAudioConsumer, WebAudioEngine } from '@forgeax/engine-audio-webaudio';
 import { World } from '@forgeax/engine-ecs';
+import { imageImporter } from '@forgeax/engine-image/image-importer';
 import { decodeCatalogWire } from '@forgeax/engine-pack';
 import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
 import { createScriptablePackSourceSnapshot } from '@forgeax/engine-pack/source-node';
@@ -293,7 +294,7 @@ async function cookExternalParticleProgram(): Promise<ParticleEffectAsset['progr
   if (!cooked.ok) throw new Error(cooked.error.hint);
   const program = JSON.parse(
     JSON.stringify({
-      format: 'forgeax-vfx-program-4' as const,
+      format: 'forgeax-vfx-program-5' as const,
       emitters: cooked.value.artifact.program.emitters,
     }),
   ) as ParticleEffectAsset['program'];
@@ -917,6 +918,107 @@ export default {
     expect(classifyWatchedPath('hud.ui.html')).toEqual({ kind: 'source' });
     expect(classifyWatchedPath('fonts/hud.woff2')).toEqual({ kind: 'source' });
   });
+
+  it(
+    'reads native Meta image content without importing unread sources',
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), 'forgeax-scriptable-meta-content-'));
+      const assets = join(root, 'assets');
+      const derivedGuid = AssetGuid.format(AssetGuid.derive(DERIVED_PACKAGE_ID, 'texture'));
+      const importImage = vi.spyOn(imageImporter, 'import');
+      const plugin = createPluginPackInternal({
+        roots: [assets],
+        watch: false,
+        producerReadiness: 'on-demand',
+        importers: [imageImporter],
+        ddc: { projectDdcRoot: join(root, '.forgeax', 'ddc', 'v2') },
+      });
+      try {
+        await mkdir(assets);
+        await writeFile(
+          join(assets, 'atlas.png'),
+          Buffer.from(
+            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+            'base64',
+          ),
+        );
+        await writeFile(join(assets, 'unread.png'), 'invalid image');
+        for (const [source, guid] of [
+          ['atlas.png', DEPENDENCY_GUID],
+          ['unread.png', GENERATED_GUID],
+        ]) {
+          await writeFile(
+            join(assets, `${source}.meta.json`),
+            JSON.stringify({
+              schemaVersion: '1.0.0',
+              kind: 'external-asset-package',
+              importer: 'image',
+              source,
+              importSettings: { colorSpace: 'linear', mipmap: false, compressionMode: 'none' },
+              subAssets: [{ guid, sourceIndex: 0, kind: 'texture', sourceKey: 'texture' }],
+            }),
+          );
+        }
+        await writeFile(
+          join(assets, 'derived.pack.ts'),
+          [
+            `const packageId = new Uint8Array(${JSON.stringify([...DERIVED_PACKAGE_ID])});`,
+            `const dependency = new Uint8Array(${JSON.stringify(DEPENDENCY_GUID_BYTES)});`,
+            'export default {',
+            "schemaVersion: '2.0.0', packageId,",
+            'build: async ({ readByGuid }) => {',
+            '  const source = await readByGuid(dependency);',
+            '  if (!source.ok) return source;',
+            '  return { ok: true, value: { texture: source.value } };',
+            '},',
+            '};',
+          ].join('\n'),
+        );
+        const middlewares: Middleware[] = [];
+        plugin.configureServer({
+          middlewares: { use: (middleware) => middlewares.push(middleware as Middleware) },
+          ws: { send: () => {} },
+        });
+        const binding = createStandaloneRuntimeAssetBinding('scriptable-meta-content');
+        await plugin.rebind(binding, [assets]);
+        const catalog = await request(middlewares, binding.catalogUrl);
+        expect(catalog.statusCode, String(catalog.body)).toBe(200);
+        const snapshot = decodeCatalogWire(JSON.parse(String(catalog.body))).unwrap();
+        const derived = snapshot.find((entry) => entry.guid === derivedGuid);
+        expect(derived).toMatchObject({ lifecycle: 'current' });
+        const body = await request(middlewares, derived?.packageUrl ?? '');
+        expect(body.statusCode).toBe(200);
+        const pack = JSON.parse(String(body.body));
+        expect(pack.assets).toEqual([
+          expect.objectContaining({
+            guid: derivedGuid,
+            payload: expect.objectContaining({
+              kind: 'texture',
+              format: 'rgba8unorm',
+              colorSpace: 'linear',
+              shape: { viewDimension: '2d', extent: { width: 1, height: 1 } },
+            }),
+          }),
+        ]);
+        const artifactUrl = new URL(
+          pack.assets[0].artifacts.body.path,
+          `http://forgeax.test${derived?.packageUrl ?? ''}`,
+        ).pathname;
+        const artifact = await request(middlewares, artifactUrl);
+        expect(artifact.statusCode).toBe(200);
+        expect(artifact.body).toEqual(new Uint8Array([0, 0, 0, 255]));
+        expect(importImage).toHaveBeenCalled();
+        expect(
+          importImage.mock.calls.every(([context]) => context.source.endsWith('atlas.png')),
+        ).toBe(true);
+      } finally {
+        await plugin.closeBundle();
+        importImage.mockRestore();
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+    SCRIPTABLE_PACK_INTEGRATION_TIMEOUT_MS,
+  );
 
   it(
     'uses a published Pack payload for ScriptablePack content reads',

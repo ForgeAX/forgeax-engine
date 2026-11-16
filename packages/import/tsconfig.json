@@ -22,6 +22,7 @@
     { "path": "../scene" },
     { "path": "../shader" },
     { "path": "../types" }
-    ,{ "path": "../tool-runtime" }
+    ,{ "path": "../tool-runtime" },
+    { "path": "../water" }
   ]
 }

@@ -8,7 +8,7 @@ import { Instances } from '../components/instances';
 import { MeshFilter } from '../components/mesh-filter';
 import { MeshRenderer } from '../components/mesh-renderer';
 import { GPU_DRIVEN_VIEW_WGSL } from '../gpu-driven/view-gpu';
-import { extractFrames } from '../render-system-extract-tail';
+import { extractSource } from '../render-system-extract-tail';
 
 const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 
@@ -55,7 +55,7 @@ describe('Instances CPU/GPU culling ownership', () => {
     const entity = spawnInstancedCube(world, worldAssets, 20, -20);
     world.update(0).unwrap();
 
-    const frame = extractFrames([world], 0, worldAssets);
+    const frame = extractSource(world, worldAssets);
 
     expect(frame.renderables.map((renderable) => renderable.entityKey)).toContain(entity);
     expect(frame.frustumStats).toEqual({ culled: 0, total: 1 });
@@ -68,13 +68,13 @@ describe('Instances CPU/GPU culling ownership', () => {
     spawnCamera(world);
     const entity = spawnInstancedCube(world, worldAssets, 20, -20);
     world.update(0).unwrap();
-    expect(extractFrames([world], 0, worldAssets).renderables).toHaveLength(1);
+    expect(extractSource(world, worldAssets).renderables).toHaveLength(1);
 
     world.set(entity, Transform, { pos: [40, 0, 0] }).unwrap();
     world.set(entity, Instances, { transforms: translated(-40) }).unwrap();
     world.update(0).unwrap();
 
-    const frame = extractFrames([world], 0, worldAssets);
+    const frame = extractSource(world, worldAssets);
     expect(frame.renderables).toHaveLength(1);
     expect(frame.renderables.at(0)?.instances?.instanceCount).toBe(1);
   });
@@ -97,7 +97,7 @@ describe('Instances CPU/GPU culling ownership', () => {
       .unwrap();
     world.update(0).unwrap();
 
-    const frame = extractFrames([world], 0, worldAssets);
+    const frame = extractSource(world, worldAssets);
     expect(
       frame.renderables.find((renderable) => renderable.entityKey === entity)?.instances,
     ).toMatchObject({ instanceCount: 0 });

@@ -192,13 +192,7 @@ export async function verifyChannelViews(
         try {
           const receipt = renderValue(
             renderer.draw(
-              packet === undefined
-                ? {
-                    leases: [required(lease)],
-                    camera: { lease: required(lease) },
-                    environment: { lease: required(lease) },
-                  }
-                : { publication: packet },
+              packet === undefined ? { source: required(lease) } : { publication: packet },
             ),
           );
           renderValue(await receipt.completed);

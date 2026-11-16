@@ -2,7 +2,7 @@ import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { runtimeAssetRegistry } from '@forgeax/engine-assets-runtime/internal';
 import { createWorldContext, type EntityHandle, World } from '@forgeax/engine-ecs';
 import { quat } from '@forgeax/engine-math';
-import { ChildOf, scenePlugin, Transform } from '@forgeax/engine-scene';
+import { ChildOf, PropagateTransforms, scenePlugin, Transform } from '@forgeax/engine-scene';
 import type { AnimationClip, AnimationTargetIdValue } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import {
@@ -14,6 +14,7 @@ import {
   deriveAnimationTargetId,
   retargetAnimationClip,
 } from '../index';
+import { AdvanceAnimationPlayer } from '../systems/advance-animation-player';
 
 async function fixture() {
   const world = new World({ assets: new AssetRegistry() });
@@ -388,8 +389,8 @@ it('preserves root motion through changing blend slots, loop wrap and retarget-b
       defineSystem({
         name: 'retargetThenIK',
         queries: [],
-        after: ['advanceAnimationPlayer'],
-        before: ['propagateTransforms'],
+        after: [AdvanceAnimationPlayer],
+        before: [PropagateTransforms],
         fn() {
           const sourceX = world.get(source[0], Transform).unwrap().pos[0] as number;
           expectedX = 4 + (sourceX + 3) * 1.7;

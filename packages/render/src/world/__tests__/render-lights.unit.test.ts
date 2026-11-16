@@ -1,6 +1,10 @@
 import type { EntityHandle } from '@forgeax/engine-ecs';
+import { defineSystem, World } from '@forgeax/engine-ecs';
 import { mat4, vec3 } from '@forgeax/engine-math';
 import { describe, expect, it, vi } from 'vitest';
+import { registeredSystem } from '../../__tests__/registered-system.fixture';
+import { dependencyNames } from '../../__tests__/schedule-graph.fixture';
+import { viewSourceFixture } from '../../__tests__/view-source.fixture';
 import type { CaptureFace } from '../../capture/faces';
 import type { ReflectionProbeRecordState } from '../../record/render-context';
 import type { ReflectionProbeGraphWork } from '../../record/typed-frame-graph';
@@ -16,6 +20,7 @@ import type {
   SpotLightSnapshot,
 } from '../../render-system-extract';
 import * as extract from '../../render-system-extract';
+import { RenderCaptureScheduleOrder, RenderSceneOrder } from '../../system-order';
 import type { RenderTarget } from '../../targets/contracts';
 import { RENDER_CAPTURE_SCHEDULE_SYSTEM, ViewCaptureWork } from '../capture-systems';
 import {
@@ -69,7 +74,6 @@ function point(entity: number, x = 0): PointLightSnapshot {
   return {
     kind: 'point',
     entity,
-    worldId: 0,
     position: new Float32Array([x, 1, 0]),
     color: new Float32Array([1, 1, 1]),
     intensity: 1,
@@ -90,7 +94,6 @@ function pointShadow(entity: number, x = 0): PointShadowSnapshot {
   }
   return {
     entity,
-    worldId: 0,
     position: new Float32Array([x, 1, 0]),
     mapSize: 512,
     nearPlane: 0.1,
@@ -106,7 +109,6 @@ function spot(entity: number, castShadow = true): SpotLightSnapshot {
   return {
     kind: 'spot',
     entity,
-    worldId: 0,
     position: new Float32Array([0, 2, entity]),
     direction: new Float32Array([0, -1, 0]),
     color: new Float32Array([1, 1, 1]),
@@ -333,15 +335,19 @@ describe('RenderLights shadow view fit', () => {
 describe('light systems', () => {
   it('order render-lights after render-scene and fit shadow views from changed rows in RenderPrepare', () => {
     const world = createRenderWorld();
-    world
-      .addSystem(RenderExtract, { name: RENDER_SCENE_SYSTEM, queries: [], fn: () => {} })
-      .unwrap();
+    const systemToken1 = defineSystem({
+      sets: [RenderSceneOrder],
+      name: RENDER_SCENE_SYSTEM,
+      queries: [],
+      fn: () => {},
+    });
+    world.addSystem(RenderExtract, systemToken1).unwrap();
     world.insertResource(RenderLightInput, { roster: undefined });
     registerLightSystems(world);
     const data = world.scheduleData();
     const extract = data.find((schedule) => schedule.name === 'RenderExtract');
     const prepare = data.find((schedule) => schedule.name === 'RenderPrepare');
-    expect(extract?.dependencies).toContainEqual([RENDER_SCENE_SYSTEM, RENDER_LIGHTS_SYSTEM]);
+    expect(dependencyNames(extract)).toContainEqual([RENDER_SCENE_SYSTEM, RENDER_LIGHTS_SYSTEM]);
     expect(prepare?.systems.map((system) => system.name)).toContain(RENDER_SHADOW_VIEWS_SYSTEM);
     const fit = prepare?.systems.find((system) => system.name === RENDER_SHADOW_VIEWS_SYSTEM);
     expect(fit?.queries.flatMap((query) => query.changed)).toEqual([
@@ -349,7 +355,7 @@ describe('light systems', () => {
       'RenderPointShadow',
     ]);
     // Cascades fit per view entity after the light views, and history commits per view.
-    expect(prepare?.dependencies).toContainEqual([
+    expect(dependencyNames(prepare)).toContainEqual([
       RENDER_SHADOW_VIEWS_SYSTEM,
       RENDER_CASCADE_FIT_SYSTEM,
     ]);
@@ -362,14 +368,18 @@ describe('light systems', () => {
 
   it('spawns no light without render-lights', () => {
     const { world, frame } = lightWorld();
-    world.removeSystem(RenderExtract, RENDER_LIGHTS_SYSTEM).unwrap();
+    world
+      .removeSystem(RenderExtract, registeredSystem(world, RenderExtract, 'render-lights'))
+      .unwrap();
     frame(lights([10], [20]));
     expect([...world.query({ read: [RenderLight] }).unwrap()].length).toBe(0);
   });
 
   it('fits no point or spot shadow view without render-shadow-views', () => {
     const { world, owner, frame } = lightWorld();
-    world.removeSystem(RenderPrepare, RENDER_SHADOW_VIEWS_SYSTEM).unwrap();
+    world
+      .removeSystem(RenderPrepare, registeredSystem(world, RenderPrepare, 'render-shadow-views'))
+      .unwrap();
     frame(lights([10], [20]));
     expect([...world.query({ read: [RenderLight] }).unwrap()].length).toBe(2);
     expect(owner.shadowViews).toEqual([]);
@@ -404,6 +414,7 @@ function viewSnapshot(entityKey: number, x: number, composed: boolean): CameraSn
  * then `submit(entity, accepted, scene)` records a view's attempt before commit.
  */
 function viewWorld() {
+  const sourceWorld = new World();
   const world = createRenderWorld();
   const input: { roster: LightRoster | undefined } = { roster: undefined };
   world.insertResource(RenderLightInput, input);
@@ -420,16 +431,16 @@ function viewWorld() {
     const composed = cameras.some((camera) => camera.view !== undefined);
     // The frame source's Worlds stage a view's resource scopes.
     const source = {
-      worlds: [],
+      world: sourceWorld,
       cameras: composed ? cameras : [],
       captures: [],
       primary: !composed,
       primaryCamera: composed ? undefined : cameras[0],
       canvas: { width: 64, height: 64 },
-      attachment: () => 'world-a',
+      attachment: 'world-a',
       targetExtent: () => undefined,
     } as RenderViewSource;
-    world.insertResource(RenderViewInput, source);
+    world.insertResource(RenderViewInput, viewSourceFixture(source));
     beginRenderFrame(world, ++frames);
     submit(frames);
     endRenderFrame(world);
@@ -535,7 +546,9 @@ describe('render-cascade-fit', () => {
 
   it('fits no view cascades without render-cascade-fit', () => {
     const { world, views, frame, lightsOf } = viewWorld();
-    world.removeSystem(RenderPrepare, RENDER_CASCADE_FIT_SYSTEM).unwrap();
+    world
+      .removeSystem(RenderPrepare, registeredSystem(world, RenderPrepare, 'render-cascade-fit'))
+      .unwrap();
     frame(sunLights(), [viewSnapshot(5, 0, false)]);
     expect(lightsOf(views.primary)).toBeUndefined();
     expect([...world.query({ read: [CascadeViewOf] }).unwrap()]).toEqual([]);
@@ -584,7 +597,9 @@ describe('render-cascade-history', () => {
 
   it('never advances without render-cascade-history', () => {
     const { world, views, frame, submit, history } = viewWorld();
-    world.removeSystem(RenderCommit, RENDER_CASCADE_HISTORY_SYSTEM).unwrap();
+    world
+      .removeSystem(RenderCommit, registeredSystem(world, RenderCommit, 'render-cascade-history'))
+      .unwrap();
     const display = [viewSnapshot(5, 0, false)];
     frame(sunLights(), display);
     const primary = views.primary as EntityHandle;
@@ -684,13 +699,12 @@ describe('render-capture-fit', () => {
         },
       })
       .unwrap();
-    world
-      .addSystem(RenderExtract, {
-        name: 'test-stage',
-        queries: [],
-        fn: (world) => stageViewFrame(world, view, { cameraOwner: 0, resourceOwner: 0 }),
-      })
-      .unwrap();
+    const systemToken2 = defineSystem({
+      name: 'test-stage',
+      queries: [],
+      fn: (world) => stageViewFrame(world, view, {}),
+    });
+    world.addSystem(RenderExtract, systemToken2).unwrap();
     return { ...fixture, view, work, faceCamera };
   }
 
@@ -729,31 +743,31 @@ describe('render-capture-fit', () => {
       face({ kind: 'scene-input', featureIdentity: 'sdf', target: sceneTarget }, 44),
     ];
     // Stands in for `render-capture-schedule`: the faces are data the fit reads.
-    world
-      .addSystem(RenderPrepare, {
-        name: RENDER_CAPTURE_SCHEDULE_SYSTEM,
-        queries: [{ read: [ViewFrame], optional: [ViewCaptureWork] }],
-        fn: (world, [rows]) => {
-          const value = { cube: [], sceneInputs: [], auxiliaryCameras: [], faces };
-          const outcome = { kind: 'prepared' as const, value };
-          const collected = [...rows].map((row) => ({
-            entity: row.entity,
-            stored: row.get(ViewCaptureWork),
-          }));
-          for (const { entity, stored } of collected) {
-            const state = { frame: renderSubmission(world).frame, outcome };
-            if (stored === undefined)
-              world
-                .addComponent(entity, {
-                  component: ViewCaptureWork,
-                  data: { state: world.allocUniqueRef('ViewCaptureWork', state) },
-                })
-                .unwrap();
-            else Object.assign(world.resolveUniqueRef<object>(stored.state).unwrap(), state);
-          }
-        },
-      })
-      .unwrap();
+    const systemToken3 = defineSystem({
+      sets: [RenderCaptureScheduleOrder],
+      name: RENDER_CAPTURE_SCHEDULE_SYSTEM,
+      queries: [{ read: [ViewFrame], optional: [ViewCaptureWork] }],
+      fn: (world, [rows]) => {
+        const value = { cube: [], sceneInputs: [], auxiliaryCameras: [], faces };
+        const outcome = { kind: 'prepared' as const, value };
+        const collected = [...rows].map((row) => ({
+          entity: row.entity,
+          stored: row.get(ViewCaptureWork),
+        }));
+        for (const { entity, stored } of collected) {
+          const state = { frame: renderSubmission(world).frame, outcome };
+          if (stored === undefined)
+            world
+              .addComponent(entity, {
+                component: ViewCaptureWork,
+                data: { state: world.allocUniqueRef('ViewCaptureWork', state) },
+              })
+              .unwrap();
+          else Object.assign(world.resolveUniqueRef<object>(stored.state).unwrap(), state);
+        }
+      },
+    });
+    world.addSystem(RenderPrepare, systemToken3).unwrap();
     const shadowViews = () => [...world.query({ read: [ShadowView] }).unwrap()].length;
     frame(sunLights(), [viewSnapshot(5, 0, false)]);
     const first = faces.map((item) => viewCaptureFitsOf(world, view)?.get(item.work));

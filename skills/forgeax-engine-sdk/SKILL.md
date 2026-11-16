@@ -41,7 +41,7 @@ Export each plugin from a `*.pack.ts` as a `kind: 'plugin'` output and select it
 ```ts
 import type {} from '@forgeax/engine/app';
 import type {} from '@forgeax/engine/assets-runtime';
-import { Update } from '@forgeax/engine/ecs';
+import { Update, defineSystem } from '@forgeax/engine/ecs';
 import { createBoxGeometry } from '@forgeax/engine/geometry';
 import type { Plugin } from '@forgeax/engine/plugin';
 import { Materials, MeshFilter, MeshRenderer } from '@forgeax/engine/render';
@@ -66,11 +66,12 @@ export const game: Plugin.Object<{}> = {
       ).unwrap();
       yield () => world.despawn(box).unwrap();
       let score = 0;
-      world.addSystem(Update, {
+      const updateHud = defineSystem({
         name: 'my-game/hud', queries: [],
         fn: () => host!.port?.postMessage({ channel: 'hud', state: { score: ++score } }),
-      }).unwrap();
-      yield () => world.removeSystem(Update, 'my-game/hud').unwrap();
+      });
+      world.addSystem(Update, updateHud).unwrap();
+      yield () => world.removeSystem(Update, updateHud).unwrap();
       const unregister = host!.gameProjection?.registerRead({ id: 'my-game.state', title: 'Score', read: () => ({ score }) });
       if (unregister) yield unregister;
     });
@@ -199,6 +200,30 @@ Successful `new` also performs a two-second, best-effort check of the configured
 
 ## SDK production and publication
 
+For PR source cancellation after the complete View journey emits `ok: true`,
+retain the cold source build and every browser/case assertion. The source
+consumer's 35-minute job envelope includes final exit and uploads; the seed
+and other consumers keep 30 minutes. Preserve actual cancelled evidence and
+qualify the complete next run; this calibration does not prove a speedup.
+
+For a PR seed canceled during `build:engine`, inspect its live stage output and
+the separate same-head core base/shared point admission prerequisite. Producer
+waiting precedes the unchanged 30-minute seed budget. Downloads survive the clean
+in runner temporary storage; after rebuilding the compiler, both original
+path-bound publications must pass current source/profile and digest checks.
+Never relabel point as base, copy compiler outputs, rewrite receipts or lengthen
+the seed budget. Follow [SDK consumers](../../scripts/ci/README.md#sdk-consumers).
+
+For a cold SDK heap failure after shader compilation completes, inspect the
+profile-container and declaration children separately. Their own heaps must
+inherit the runner budget; a compiler child's explicit heap does not propagate
+to its parent. Follow the [CI memory policy](../../scripts/ci/README.md), retain
+one SDK compiler worker and the bounded publication verification subprocess.
+Publication verification inherits the same runner-derived child heap for JSON
+admission. Its separate 128 MiB retained-heap assertion after GC and complete
+source/count/digest checks remain mandatory; an explicit 512 MiB Node argument
+must not override that environment and fail before those checks execute.
+
 For SDK carrier path failures, compare canonical download and resolver-selected
 Engine roots at the existing containment owner. Qualify aliased parents and
 out-of-download package redirects through the same installer; retain version,
@@ -239,6 +264,19 @@ public `main` (development) or `stable` (stable). Stable Promotion then copies t
 original verified Release assets to the public repository through `sdk-release-public.yml`;
 use that workflow with an existing stable version to backfill or retry. Delivery
 requires the public Release and every other enabled stage.
+
+On Linux x64, the complete development Candidate and Promotion can run on the
+local machine with `node scripts/forgeax/local-sdk-release.mjs --stage all`
+(`pnpm sdk:release:local -- --stage all` is the installed-workspace alias). It
+pins the selected version and source SHA in
+`artifacts/sdk-local/<version>/local-release-state.json` and resumes that exact
+Candidate after interruption. RC and stable continue to use the GitHub Actions
+release route. See the repository's
+[local release procedure](../../packages/engine/RELEASING.md).
+
+After Candidate gates pass, `--stage preflight --version <locked-version>` checks npm access and
+source-mirror prerequisites without publishing; `--stage promote` resumes that same locked
+Candidate and performs publication.
 
 > [!IMPORTANT]
 > Every SDK publication starts with

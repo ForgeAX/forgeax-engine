@@ -1,9 +1,10 @@
+import { decodeDocumentText } from '@forgeax/engine-codec';
 import { encodePng } from '@forgeax/engine-image/png';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { freemem, loadavg } from 'node:os';
-import { dirname, resolve } from 'node:path';
+import { dirname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assembleRuntimePacks, createAssetRuntimeAssembly } from '@forgeax/engine-app';
 import { AssetRegistry, createCatalogSource } from '@forgeax/engine-assets-runtime';
@@ -40,6 +41,7 @@ import { teardownDawnInstance } from '../../../../scripts/lib/dawn-teardown.mjs'
 
 import { emitSmokeReceipt, smokeFrameBudget } from '../../../shared/scripts/smoke-receipt.mjs';
 import { setupGpuShim } from '../../triangle/scripts/smoke-helpers.mjs';
+import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 import cases from '../src/sdf-cases.json' with { type: 'json' };
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -61,12 +63,12 @@ globalThis.fetch = async (request) => {
   const url = new URL(typeof request === 'string' ? request : request.url, 'http://127.0.0.1');
   if (url.hostname === '127.0.0.1') {
     const path = resolve(dist, url.pathname.slice(1));
-    assert(path.startsWith(`${dist}/`));
+    assert(path.startsWith(dist + sep));
     if (existsSync(path)) return new Response(readFileSync(path));
   }
   return originalFetch(request);
 };
-const manifest = JSON.parse(readFileSync(resolve(dist, 'shaders/manifest.json'), 'utf8'));
+const manifest = JSON.parse(readShaderManifestText(resolve(dist, 'shaders/manifest.json')));
 const scenario = cases.find((item) => item.id === (process.env.FORGEAX_SDF_CASE ?? 'default'));
 assert(scenario, 'Select a declared SDF case');
 const diagnostic = process.env.FORGEAX_SDF_DIAGNOSTICS === '1';
@@ -392,8 +394,7 @@ async function drawCapturedFrame(renderer, recorder, lease) {
   const capture = recorder.captureFrame();
   unwrap(await recorder.frameBoundary());
   const receipt = unwrap(
-    renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
-  );
+    renderer.draw({ source: lease }));
   unwrap(await receipt.completed);
   unwrap(await recorder.frameBoundary());
   return unwrap(await capture).bytes;
@@ -897,8 +898,7 @@ async function run(collision, depthOnly = false) {
         recorder !== undefined && shouldCaptureFrame(frame) ? recorder.captureFrame() : undefined;
       if (capture !== undefined) unwrap(await recorder.frameBoundary());
       const receipt = unwrap(
-        renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
-      );
+        renderer.draw({ source: lease }));
       const recorded = performance.now();
       unwrap(await receipt.completed);
       const completed = performance.now();
@@ -1030,8 +1030,7 @@ async function run(collision, depthOnly = false) {
         const capture = [0, 24, 59].includes(frame) ? recorder.captureFrame() : undefined;
         if (capture !== undefined) unwrap(await recorder.frameBoundary());
         const receipt = unwrap(
-          renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
-        );
+          renderer.draw({ source: lease }));
         unwrap(await receipt.completed);
         rebuiltFrames++;
         if (capture !== undefined) {
@@ -1106,11 +1105,7 @@ async function run(collision, depthOnly = false) {
         world.set(entity, MeshFilter, { assetHandle: invalidHandle }).unwrap();
       world.update(1 / 60).unwrap();
       const beforeRejected = host.inspect(world);
-      const rejected = renderer.draw({
-        leases: [lease],
-        camera: { lease },
-        environment: { lease },
-      });
+      const rejected = renderer.draw({ source: lease });
       const completion = rejected.ok ? await rejected.value.completed : undefined;
       const afterRejected = host.inspect(world);
       writeFileSync(
@@ -1192,8 +1187,7 @@ async function run(collision, depthOnly = false) {
       await releaseSdfDemand();
       world.update(1 / 60).unwrap();
       const changed = unwrap(
-        renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
-      );
+        renderer.draw({ source: lease }));
       unwrap(await changed.completed);
       unwrap(await recorder.frameBoundary());
       const lifecycleTape = unwrap(await capture).bytes;

@@ -6,38 +6,52 @@ import {
 } from '@forgeax/engine-assets-runtime/internal';
 import { type EntityHandle, Time, type World } from '@forgeax/engine-ecs';
 import type { RhiCaps } from '@forgeax/engine-rhi';
-import { Children, GlobalTransform, readPresentationWorldMatrix } from '@forgeax/engine-scene';
+import { readPresentationWorldMatrix } from '@forgeax/engine-scene';
 import { type Asset, err, ok, type Result } from '@forgeax/engine-types';
 import { planarCaptureDemanded } from '../capture/planar-material';
 import { MeshFilter } from '../components/mesh-filter';
-import { stereoEyeCameras } from '../components/stereo-camera';
 import { Visibility, VisibilityStateValue } from '../components/visibility';
 import { EnvironmentFrameGate } from '../extract/environment-frame-gate';
 import { renderMaterialContext } from '../extract/material-context';
+import { withBuiltinRenderFeatures } from '../features/builtins';
 import { fullscreenRenderFeatureDeclaration } from '../features/fullscreen';
 import {
   isOwnedRenderFeatureProgramData,
   ownRenderFeatureProgramData,
 } from '../features/prepared-gpu-work';
-import type { RenderFeature, RenderFeatureExtractContext } from '../features/types';
-import { renderFeatureCameraView } from '../features/view';
-import { MaterialResource } from '../material-resource';
 import {
+  captureRenderFeatureSource,
+  renderFeatureSourceContext,
+  renderFeatureSourceFailure,
+} from '../features/source';
+import type {
+  RenderFeature,
+  RenderFeatureCompletion,
+  RenderFeatureExtractContext,
+  RenderFeatureSubmission,
+} from '../features/types';
+import { MaterialResource, materialResource } from '../material-resource';
+import { materialSourceMatchesCurrent, materialSourceReferences } from '../material-source';
+import type { FeatureTextureReadbackResult } from '../render-contract';
+import {
+  createWorldInternalView,
   type DispatchEntry,
   type MaterialSnapshot,
-  type MaterialSnapshotCachesByWorld,
+  type MaterialSnapshotContexts,
   type RenderableSnapshot,
   resolveMaterialSnapshot,
   resolveRuntimeAssetReference,
+  Severity,
+  type WaterMeshSourceState,
+  type WaterMeshViewFacts,
 } from '../render-system-extract';
-import { extractFrames } from '../render-system-extract-tail';
+import { extractSource } from '../render-system-extract-tail';
 import {
-  acceptRenderSourceEntities,
-  captureRenderSourceEntities,
   createGlobalTransformChangeQuery,
   createRenderSourceState,
   isRenderableMember,
-  renderSourceHierarchyChanged,
+  type RenderSourceChanges,
+  readRenderSourceChanges,
 } from '../scene/render-source';
 import { registerRenderSourceSystems } from '../scene/source-systems';
 import { getTransparentSortConfig } from '../systems/transparent-sort-config';
@@ -88,6 +102,20 @@ const EMPTY_MATERIAL_RESOURCES: readonly (MaterialResource | undefined)[] = Obje
 /** Column capacity above this floor shrinks once demand falls below 1/ratio of it. */
 const STORAGE_SHRINK_FLOOR = 64 * 1024;
 const STORAGE_SHRINK_RATIO = 8;
+
+interface SourceFeatureAcknowledgment {
+  readonly identity: string;
+  readonly feedback: unknown;
+  readonly submission?: RenderFeatureSubmission | undefined;
+}
+type SourceFeatureFlight = {
+  readonly features: RenderPublication['features'];
+  readonly owners: readonly RenderFeature<unknown>[];
+} & (
+  | { readonly phase: 'accepted' }
+  | { readonly phase: 'submitted'; readonly receipts: readonly SourceFeatureAcknowledgment[] }
+  | { readonly phase: 'completed' }
+);
 
 function publicationKeyValue(key: string, value: unknown): unknown {
   return value instanceof Map
@@ -247,10 +275,12 @@ export function createRenderPublisher(
   const releaseTransforms = registerRenderSourceSystems(world);
   const source = createRenderSourceState(world);
   const transforms = createGlobalTransformChangeQuery(world);
-  const caches: MaterialSnapshotCachesByWorld = new WeakMap();
-  // PlanarReflection demand at the last extraction; a flip re-routes cached receivers.
+  const caches: MaterialSnapshotContexts = new Map();
+  // A capture demand flip re-routes cached planar receivers.
   let planarDemand: boolean | undefined;
   const members = new Set<number>();
+  const acceptedWaterMeshOwners = new Set<number>();
+  let acceptedWaterMeshSourceState: WaterMeshSourceState | undefined;
   const publishedPrograms = new Set<string>();
   const publishedMaterialProjections = new PublishedMaterialProjections();
   // An accepted projection is an immutable program contract: a reload installs
@@ -277,19 +307,15 @@ export function createRenderPublisher(
   let canvasConsumers = new Map<number, readonly CanvasTextureSource[]>();
   let videoConsumers = new Map<number, readonly number[]>();
   // One consuming frame and a bounded number of sealed successors.
-  const flights = new Map<
-    number,
-    {
-      features: RenderPublication['features'];
-      owners: readonly RenderFeature<unknown>[];
-      submitted: boolean;
-    }
-  >();
+  const flights = new Map<number, SourceFeatureFlight>();
   const skinJoints = new SkinJointReferences();
   let frameDependencies = new Set<number>();
   let revision = 0,
     disposed = false,
     failed = false;
+  const builtinFeatureSources = withBuiltinRenderFeatures(features, capabilities).map(
+    (feature) => feature.source ?? feature,
+  );
   let preparationPhase: 'idle' | 'preparing' | 'candidate' | 'settling' = 'idle';
   const phaseIs = (phase: typeof preparationPhase): boolean => preparationPhase === phase;
   let lastScannedRows = 0,
@@ -351,9 +377,17 @@ export function createRenderPublisher(
    * the packet and the deferred acceptance that commits its publisher state.
    */
   class PublicationPreparation {
-    readonly featureSources = [...features];
-    readonly batch = source.projection.read();
-    readonly sourceRows = captureRenderSourceEntities(world, source, this.batch);
+    readonly featureSources = withBuiltinRenderFeatures(features, capabilities).map((feature) => {
+      if (features.some((requested) => requested.identity === feature.identity))
+        return feature.source ?? feature;
+      return (
+        builtinFeatureSources.find((builtin) => builtin.identity === feature.identity) ?? feature
+      );
+    });
+    readonly sourceChanges: RenderSourceChanges;
+    get batch() {
+      return this.sourceChanges.batch;
+    }
     readonly changed: Set<number>;
     readonly removed = new Set<number>();
     readonly invalidated = new Set<number>();
@@ -368,6 +402,8 @@ export function createRenderPublisher(
     private recentReferences: MaterialReferences | undefined;
     private readonly templates: RenderPublicationTemplate[] = [];
     private readonly upserts: number[] = [];
+    private nextWaterMeshOwners: Set<number> | undefined;
+    private nextWaterMeshSourceState: WaterMeshSourceState | undefined;
     private readonly programs = new Map<string, RenderPublication['programs'][number]>();
     private readonly programMaterials = new Set<MaterialSnapshot>();
     private readonly nextDependencies = new Map<number, readonly number[]>();
@@ -384,6 +420,17 @@ export function createRenderPublisher(
       readonly baseline: boolean,
       readonly observation: SourcePreparationObservation | undefined,
     ) {
+      this.changed = new Set(pending);
+      this.sourceChanges = readRenderSourceChanges(world, source, members, baseline, {
+        changed: this.changed,
+        content: false,
+        removed: this.removed,
+        ...(observation === undefined
+          ? {}
+          : {
+              onChanged: (reason, inserted) => observation.count(reason, inserted),
+            }),
+      });
       const batch = this.batch;
       lastScannedRows = batch.scannedRows;
       observation?.fact('scannedRows', batch.scannedRows);
@@ -391,7 +438,6 @@ export function createRenderPublisher(
       observation?.fact('changedComponentKinds', batch.changedComponents.length);
       observation?.fact('membershipChanged', batch.membershipChanged);
       observation?.fact('pending', pending.size);
-      this.changed = new Set(pending);
       this.assetBatch = assetObserver.read().unwrap();
       observation?.fact('assetChanges', this.assetBatch.changes.length);
       for (const change of this.assetBatch.changes)
@@ -412,66 +458,12 @@ export function createRenderPublisher(
     }
 
     private collectSourceChanges(): void {
-      let sourceCursor = 0;
-      for (const index of this.batch.indices) {
-        const currentSource = this.sourceRows[sourceCursor++];
-        const previous = source.entities.get(index)?.entity,
-          current = currentSource?.entity;
-        if (previous !== undefined) this.retirePreviousSource(previous, current);
-        if (current === undefined) continue;
-        if (isRenderableMember(world, current) && this.renderableChanged(index, current))
-          addChanged(this.changed, current, this.observation, 'renderable-component-or-new');
-        if (
-          currentSource !== undefined &&
-          renderSourceHierarchyChanged(source, index, currentSource)
-        )
-          this.addHierarchyChanges(current);
-      }
-    }
-
-    /** A replaced or no-longer-renderable source row leaves membership and joint tracking. */
-    private retirePreviousSource(previous: number, current: number | undefined): void {
-      if (members.has(previous) && (current !== previous || !isRenderableMember(world, previous)))
-        this.removed.add(previous);
-      if (
-        skinJoints.has(previous) &&
-        (current !== previous || !world.hasComponent(previous as EntityHandle, GlobalTransform))
-      )
-        skinJoints.mark(previous);
-    }
-
-    private renderableChanged(index: number, current: EntityHandle): boolean {
-      const observation = this.observation;
-      return (
-        this.baseline ||
-        this.batch.hasStructuralChange(index) ||
-        !members.has(current) ||
-        source.renderableComponents.some((component) => {
-          const dirty = source.projection.changed(current, component);
-          if (dirty && observation !== undefined && component.name === 'MeshFilter')
-            observation.count('mesh-filter-write');
-          return dirty;
-        })
-      );
-    }
-
-    private addHierarchyChanges(root: number): void {
-      const queue = [root],
-        visited = new Set<number>();
-      while (queue.length) {
-        const entity = queue.pop() as EntityHandle;
-        if (visited.has(entity)) continue;
-        visited.add(entity);
-        if (isRenderableMember(world, entity))
-          addChanged(this.changed, entity, this.observation, 'hierarchy');
-        if (world.hasComponent(entity, Children))
-          queue.push(
-            ...Array.from(
-              world.get(entity, Children).unwrap().entities,
-              (child) => child as EntityHandle,
-            ),
-          );
-      }
+      const changes = this.sourceChanges.changes;
+      for (const entity of changes.retiredTransforms)
+        if (skinJoints.has(entity)) skinJoints.mark(entity);
+      if (this.observation !== undefined)
+        for (let index = 0; index < changes.meshFilterWrites; index++)
+          this.observation.count('mesh-filter-write');
     }
 
     private addBaselineMembers(): void {
@@ -602,18 +594,78 @@ export function createRenderPublisher(
     prepare(
       sampleTimeSeconds: number,
       temporalReset: boolean,
+      waterMeshViewFacts?: WaterMeshViewFacts,
     ): Result<RenderPublicationCandidate, RenderPublicationError> {
       const observation = this.observation;
       observation?.phase('extract');
-      const extracted = this.withoutPreparingRenderables();
+      const extracted = new Set(this.withoutPreparingRenderables());
+      for (const entity of acceptedWaterMeshOwners)
+        if (this.removed.has(entity)) extracted.add(entity);
+      const captureInvalidatedSourceEntities = () => {
+        const invalidatedSources = new Set<number>();
+        for (const { cache } of caches.values())
+          for (const [handle, entry] of cache)
+            if (
+              entry.snapshot.sourceAssets !== undefined &&
+              (entry.retry !== undefined ||
+                !materialSourceMatchesCurrent(
+                  worldRenderResources(world),
+                  entry.snapshot.sourceAssets,
+                ))
+            )
+              invalidatedSources.add(handle);
+        if (this.invalidated.size > 0 || invalidatedSources.size > 0)
+          for (const [entity, handles] of dependencies)
+            if (
+              handles.some(
+                (handle) =>
+                  invalidatedSources.has(handle) ||
+                  (acceptedWaterMeshOwners.has(entity) && this.invalidated.has(handle)),
+              )
+            )
+              extracted.add(entity);
+      };
+      captureInvalidatedSourceEntities();
       environmentGate.assetsChanged = this.baseline || this.assetBatch.changes.length > 0;
-      const frame = extractFrames([world], { cameraOwner: 0, resourceOwner: 0 }, assets, caches, {
+      const frame = extractSource(world, assets, caches, {
         ...(capabilities === undefined ? {} : renderMaterialContext(capabilities, limits)),
         cull: 'none',
         retainHidden: true,
-        renderables: extracted.size ? { kind: 'partial', entitiesByWorld: [extracted] } : 'none',
+        renderables: extracted.size ? { kind: 'partial', entities: extracted } : 'none',
+        ...(acceptedWaterMeshSourceState === undefined
+          ? {}
+          : { waterMeshSourceState: acceptedWaterMeshSourceState }),
+        ...(waterMeshViewFacts === undefined ? {} : { waterMeshViewFacts }),
         environmentGate,
       });
+      const waterRefresh = frame.waterMeshOwnerRefreshes?.find((refresh) => refresh.worldId === 0);
+      const captureWaterOwnerRefresh = () => {
+        if (waterRefresh !== undefined) {
+          const currentWaterOwners = new Set(waterRefresh.ownerEntityKeys);
+          const ordinaryRenderableEntities = new Set(
+            frame.renderables
+              .filter((renderable) => renderable.waterMeshSource === undefined)
+              .map((renderable) => renderable.entityKey),
+          );
+          for (const entity of acceptedWaterMeshOwners) {
+            if (!currentWaterOwners.has(entity) && !ordinaryRenderableEntities.has(entity))
+              this.removed.add(entity);
+            else this.removed.delete(entity);
+          }
+          for (const entity of currentWaterOwners) this.removed.delete(entity);
+          this.nextWaterMeshOwners = currentWaterOwners;
+          this.nextWaterMeshSourceState = {
+            system: waterRefresh.system,
+            inputKey: waterRefresh.inputKey,
+            ownerEntityKeys: [...currentWaterOwners],
+            ownerSources: waterRefresh.ownerSources,
+          };
+        } else {
+          // The unchanged input key includes current WaterBody membership and liveness.
+          for (const entity of acceptedWaterMeshOwners) this.removed.delete(entity);
+        }
+      };
+      captureWaterOwnerRefresh();
       observation?.phase('templates');
       observation?.fact('renderables', frame.renderables.length);
       this.invalidatePlanarRouting();
@@ -625,8 +677,14 @@ export function createRenderPublisher(
       observation?.phase('packet');
       const nextFrameDependencies = this.collectFrameDependencies(frame, featureRows);
       const emitted = new Set(frame.renderables.map((row) => row.entityKey));
+      // An unchanged accepted water owner is intentionally omitted from this delta.
       for (const entity of this.changed)
-        if (members.has(entity) && !emitted.has(entity)) this.removed.add(entity);
+        if (
+          members.has(entity) &&
+          !emitted.has(entity) &&
+          !(waterRefresh === undefined && acceptedWaterMeshOwners.has(entity))
+        )
+          this.removed.add(entity);
       for (const entity of this.removed) this.matrixRows.delete(entity);
       this.prepareJointUpdates(frame);
       const nextVideoConsumers = projectTextureConsumers(
@@ -645,9 +703,9 @@ export function createRenderPublisher(
       this.canvasFrames = publicationCanvasFrames(nextCanvasConsumers);
       const {
         renderables: _rows,
+        waterMeshOwnerRefreshes: _waterMeshOwnerRefreshes,
         dispatch: _dispatch,
-        visibilitySnapshots: _visibility,
-        featureVisibilitySnapshots: _features,
+        visibilitySnapshot: _visibility,
         hiddenEntityReports: _hidden,
         ...extractedMetadata
       } = frame;
@@ -658,6 +716,8 @@ export function createRenderPublisher(
       const retired = this.closure?.retired() ?? EMPTY_IDENTITIES;
       const materialProjections = this.collectMaterialProjections(assetRows);
       this.holdMaterials();
+      const referencedMaterials = referencedMaterialRows();
+      this.referenceMaterialSources(referencedMaterials);
       const retiredMaterials = retiredMaterialIds();
       const publishedMaterials = publishedMaterialRows();
       const preparedRows: PreparedAssetRow[] = [];
@@ -667,7 +727,13 @@ export function createRenderPublisher(
       observation?.phase('packet');
       const packet: RenderPublication = {
         ...identity,
-        materials: publishedMaterials,
+        materials: publishedMaterials.map(({ id, value }) => ({
+          id,
+          value:
+            value.sourceAssets === undefined
+              ? value
+              : { ...value, sourceAssets: materialSourceReferences(value.sourceAssets) },
+        })),
         retiredMaterials,
         revision: revision + 1,
         base: revision,
@@ -681,7 +747,7 @@ export function createRenderPublisher(
         videoFrames: this.videoFrames,
         ...(this.canvasFrames.length > 0 ? { canvasFrames: this.canvasFrames } : {}),
         targets: targetSnapshot(),
-        targetSources: publicationTargetSources(referencedMaterialRows()),
+        targetSources: publicationTargetSources(referencedMaterials),
         features: featureRows,
         assetVersions: this.addedAssetVersions(),
         retiredAssetVersions: this.retiredAssetVersions(),
@@ -699,7 +765,7 @@ export function createRenderPublisher(
       observation?.fact('upsertRows', this.upserts.length / 2);
       const message = encodeRenderPublication(packet, acceptedMetadata);
       observation?.phase('candidate');
-      this.batch.validate();
+      this.sourceChanges.validate();
       preparationPhase = 'candidate';
       let closed = false;
       return ok({
@@ -712,7 +778,7 @@ export function createRenderPublisher(
           preparationPhase = 'settling';
           try {
             observation?.phase('accept');
-            this.batch.accept();
+            this.sourceChanges.accept();
             this.assetBatch.accept();
             assetVersions = this.nextAssetVersions;
             commitMaterialProjections(retired, materialProjections);
@@ -730,7 +796,7 @@ export function createRenderPublisher(
             flights.set(revision, {
               features: featureRows,
               owners: this.featureSources,
-              submitted: false,
+              phase: 'accepted',
             });
             storage = spareStorage.pop();
             closeFrames(this.videoFrames, this.canvasFrames);
@@ -738,6 +804,11 @@ export function createRenderPublisher(
             canvasConsumers = nextCanvasConsumers;
             frameDependencies = nextFrameDependencies;
             this.commitMembership(removedConsumers);
+            if (this.nextWaterMeshOwners !== undefined) {
+              acceptedWaterMeshOwners.clear();
+              for (const entity of this.nextWaterMeshOwners) acceptedWaterMeshOwners.add(entity);
+              acceptedWaterMeshSourceState = this.nextWaterMeshSourceState;
+            }
             observation?.finish('accepted');
             activeObservation = undefined;
           } catch (cause) {
@@ -752,11 +823,14 @@ export function createRenderPublisher(
           if (closed) return;
           closed = true;
           preparationPhase = 'settling';
+          this.sourceChanges.discard();
           try {
-            for (const row of featureRows)
+            for (const row of featureRows) {
+              if (row.failure !== undefined) continue;
               this.featureSources
                 .find((feature) => feature.identity === row.identity)
                 ?.onSourceFrameDiscarded?.(row.data);
+            }
             closeFrames(this.videoFrames, this.canvasFrames);
             observation?.finish('discarded');
           } finally {
@@ -776,44 +850,76 @@ export function createRenderPublisher(
       const demanded = planarCaptureDemanded(world);
       if (planarDemand === demanded) return;
       planarDemand = demanded;
-      for (const { cache } of caches.get(worldRenderResources(world))?.values() ?? [])
+      for (const { cache } of caches.values())
         for (const [handle, cached] of cache)
           if (cached.planarRouted !== undefined && cached.planarRouted !== demanded)
             this.invalidated.add(handle);
     }
 
     private republishInvalidatedMaterials(): void {
-      for (const handle of this.invalidated) {
-        for (const { cache, geometry, vertexColor } of caches
-          .get(worldRenderResources(world))
-          ?.values() ?? []) {
+      const handles = new Set([
+        ...this.invalidated,
+        ...[...caches.values()].flatMap(({ cache }) =>
+          [...cache]
+            .filter(
+              ([, entry]) =>
+                entry.retry !== undefined ||
+                (entry.snapshot.sourceAssets !== undefined &&
+                  !materialSourceMatchesCurrent(
+                    worldRenderResources(world),
+                    entry.snapshot.sourceAssets,
+                  )),
+            )
+            .map(([handle]) => handle),
+        ),
+      ]);
+      for (const handle of handles) {
+        for (const { cache, geometry, vertexColor } of caches.values()) {
           if (!cache.has(handle)) continue;
+          const previous = cache.get(handle);
+          const retained = previous === undefined ? undefined : materialResource(previous.snapshot);
+          const retainedId = retained === undefined ? undefined : materialIds.get(retained);
           const context =
             capabilities === undefined
               ? undefined
               : renderMaterialContext(capabilities, limits).materialContext;
-          const snapshot = resolveMaterialSnapshot(
-            handle,
-            worldRenderResources(world),
-            assets,
-            undefined,
-            cache,
-            context === undefined ? undefined : { ...context, geometry },
-            undefined,
-            vertexColor,
-          );
-          const resource = MaterialResource.from(snapshot);
-          const id = materialIds.get(resource);
-          if (id !== undefined && materialRecords.has(id)) {
-            this.publishMaterial(resource);
-            this.publishPrograms([snapshot]);
+          try {
+            const snapshot = resolveMaterialSnapshot(
+              handle,
+              worldRenderResources(world),
+              assets,
+              undefined,
+              cache,
+              context === undefined ? undefined : { ...context, geometry },
+              undefined,
+              vertexColor,
+            );
+            const resource = MaterialResource.from(snapshot);
+            const id = materialIds.get(resource);
+            if (id !== undefined && materialRecords.has(id)) {
+              this.publishMaterial(resource);
+              this.publishPrograms([snapshot]);
+            }
+          } catch (cause) {
+            if (
+              previous === undefined ||
+              retainedId === undefined ||
+              !materialRecords.has(retainedId)
+            )
+              throw cause;
+            retained?.adopt(previous.snapshot);
+            cache.set(handle, { ...previous, retry: { cause } });
+            createWorldInternalView(world)._routeError(cause, {
+              severity: Severity.Error,
+              systemName: 'RenderPublisher.material-admission',
+            });
           }
         }
       }
     }
 
     /** Grouping is synchronous: no temporary column escapes template admission. */
-    private addRenderableTemplates(frame: ReturnType<typeof extractFrames>): string | undefined {
+    private addRenderableTemplates(frame: ReturnType<typeof extractSource>): string | undefined {
       const count = frame.renderables.length;
       if (count === 0) return undefined;
       const entries: readonly DispatchEntry[] = Array.isArray(frame.dispatch)
@@ -833,7 +939,7 @@ export function createRenderPublisher(
     }
 
     private groupRenderableTemplates(
-      frame: ReturnType<typeof extractFrames>,
+      frame: ReturnType<typeof extractSource>,
       entries: readonly DispatchEntry[],
       storage: Int32Array,
     ): string | undefined {
@@ -881,7 +987,7 @@ export function createRenderPublisher(
       const references = this.materialReferences(material, materials, materialOverrides);
       nextMaterialDependencies.set(entityKey, references.dependencies);
       const shareable = this.shareable(row, meshCounts);
-      // extractFrames owns these plain source-row envelopes. Compare the exact
+      // extractSource owns these plain source-row envelopes. Compare the exact
       // publication fields before constructing another envelope on a hit.
       const bucketKey = shareable ? `${row.assetHandle}|${references.key}` : undefined;
       const bucket =
@@ -897,7 +1003,6 @@ export function createRenderPublisher(
       let key: string | undefined;
       if (known === undefined) {
         const {
-          worldId: _world,
           entityKey: _entity,
           transform: _transform,
           material: _material,
@@ -1047,7 +1152,6 @@ export function createRenderPublisher(
       for (const key in fields) {
         if (
           !Object.hasOwn(fields, key) ||
-          key === 'worldId' ||
           key === 'entityKey' ||
           key === 'transform' ||
           key === 'material' ||
@@ -1211,29 +1315,46 @@ export function createRenderPublisher(
     }
 
     private extractFeatureRows(
-      frame: ReturnType<typeof extractFrames>,
+      frame: ReturnType<typeof extractSource>,
     ): RenderPublication['features'] {
-      return this.featureSources.map((feature) => {
-        const data = feature.extract(this.featureExtractContext(frame)).unwrap();
+      return this.featureSources.flatMap((feature, order) => {
+        const captured = captureRenderFeatureSource(
+          feature,
+          this.featureExtractContext(frame),
+          order,
+        );
+        const data = captured.result.ok ? captured.result.value : undefined;
+        if (
+          captured.result.ok &&
+          captured.hiddenEntities.length === 0 &&
+          Object.hasOwn(feature, 'inactiveSourceData') &&
+          data === feature.inactiveSourceData
+        )
+          return [];
         const fullscreen = fullscreenRenderFeatureDeclaration(feature);
-        return {
-          identity: feature.identity,
-          data,
-          ...(fullscreen === undefined ||
-          publishedFullscreenFeatures.get(feature.identity) === fullscreen
-            ? {}
-            : { fullscreen }),
-        };
+        return [
+          {
+            identity: feature.identity,
+            data,
+            ...(captured.result.ok
+              ? {}
+              : { failure: renderFeatureSourceFailure(captured.result.error) }),
+            ...(captured.hiddenEntities.length === 0
+              ? {}
+              : { hiddenEntities: captured.hiddenEntities }),
+            ...(fullscreen === undefined ||
+            publishedFullscreenFeatures.get(feature.identity) === fullscreen
+              ? {}
+              : { fullscreen }),
+          },
+        ];
       });
     }
 
     private featureExtractContext(
-      frame: ReturnType<typeof extractFrames>,
+      frame: ReturnType<typeof extractSource>,
     ): RenderFeatureExtractContext {
-      return {
-        worlds: [world],
-        owner: 0,
-        frameNumber: revision + 1,
+      return renderFeatureSourceContext(world, frame, revision + 1, {
         receiverSession: `${identity.source}:${identity.epoch}`,
         ...(capabilities === undefined
           ? {}
@@ -1242,33 +1363,66 @@ export function createRenderPublisher(
               ...(limits === undefined ? {} : { limits }),
               ...renderMaterialContext(capabilities, limits),
             }),
-        views: frame.cameras
-          .filter((camera) => camera.view?.enabled !== false)
-          .flatMap(stereoEyeCameras)
-          .map((camera) => ({
-            ...renderFeatureCameraView(camera),
-            ...(frame.cloudLayer === undefined ? {} : { frame: { cloudLayer: frame.cloudLayer } }),
-          })),
-        visibilitySnapshots: frame.featureVisibilitySnapshots,
-        referenceAssetVersion: (sourceWorldIndex, version) => {
-          if (sourceWorldIndex !== 0) throw new TypeError('fixed asset source World mismatch');
-          const key = `${version.handle}:${version.revision}`;
-          const prior = this.nextAssetVersions.get(key) ?? assetVersions.get(key);
-          this.nextAssetVersions.set(key, prior ?? version);
+        referenceAssetVersion: (version) => {
+          this.referenceAssetVersion(version.handle, version).unwrap();
         },
-        referenceAsset: (sourceWorldIndex, identity, captured) =>
-          sourceWorldIndex === 0 ? currentFeatureAsset(identity, captured) : undefined,
-      };
+        referenceAsset: (identity, captured) => currentFeatureAsset(identity, captured),
+      });
+    }
+
+    private referenceAssetVersion(
+      handle: number,
+      captured?: Readonly<{ revision: number; value: Asset }>,
+    ): Result<
+      Readonly<{ handle: number; revision: number; value: Asset; contentRevision?: number }>,
+      import('@forgeax/engine-types').AssetError
+    > {
+      const records = runtimeAssets(assets);
+      const revision = captured === undefined ? records.version(handle) : ok(captured.revision);
+      if (!revision.ok) return revision;
+      const key = `${handle}:${revision.value}`;
+      const prior = this.nextAssetVersions.get(key) ?? assetVersions.get(key);
+      const value =
+        prior === undefined
+          ? captured === undefined
+            ? records.borrow<Asset>(handle)
+            : ok(captured.value)
+          : ok(prior.value);
+      if (!value.ok) return value;
+      const version = prior ?? { handle, revision: revision.value, value: value.value };
+      if (version.value.kind === 'material') {
+        const projection = assets.getMaterialProjectionForPayload(version.value);
+        for (const pass of projection?.passes ?? [])
+          for (const program of pass.programs) this.publishProgram(program.specializationKey);
+      }
+      this.nextAssetVersions.set(key, version);
+      return ok({
+        ...version,
+        ...(captured === undefined ? { contentRevision: revision.value } : {}),
+      });
+    }
+
+    private referenceMaterialSources(materials: RenderPublication['materials']): void {
+      this.publishPrograms(materials.map(({ value }) => value));
+      for (const { value } of materials)
+        for (const asset of value.sourceAssets?.assets ?? []) {
+          if (asset.value === undefined)
+            throw new Error('Accepted material source payload is unavailable');
+          this.referenceAssetVersion(asset.handle, {
+            revision: asset.revision,
+            value: asset.value,
+          }).unwrap();
+        }
     }
 
     private collectFrameDependencies(
-      frame: ReturnType<typeof extractFrames>,
+      frame: ReturnType<typeof extractSource>,
       featureRows: RenderPublication['features'],
     ): Set<number> {
       const nextFrameDependencies = new Set(publicationFrameDependencies(frame));
       for (const feature of this.featureSources) {
         const row = featureRows.find((row) => row.identity === feature.identity);
-        if (row === undefined) continue;
+        if (row === undefined || row.failure !== undefined) continue;
         for (const identity of feature.assetDependencies?.(row.data) ?? []) {
           const handle =
             typeof identity === 'string' ? runtimeAssetReference(assets, identity) : identity;
@@ -1284,7 +1438,7 @@ export function createRenderPublisher(
     }
 
     // Reference changes are static Binding edits, never a joint-to-consumer fanout.
-    private prepareJointUpdates(frame: ReturnType<typeof extractFrames>): void {
+    private prepareJointUpdates(frame: ReturnType<typeof extractSource>): void {
       let referenceEdits: Map<number, readonly number[] | undefined> | undefined;
       for (const entity of this.removed)
         if (skinJoints.hasBinding(entity)) {
@@ -1502,7 +1656,6 @@ export function createRenderPublisher(
       }
       for (const entity of this.matrixRows.keys()) pending.delete(entity);
       for (const entity of this.removed) pending.delete(entity);
-      acceptRenderSourceEntities(source, this.batch.indices, this.sourceRows);
     }
 
     private acceptanceFailure(cause: unknown): AggregateError {
@@ -1543,12 +1696,17 @@ export function createRenderPublisher(
       : [...materialRows]
           .filter(([id]) => (materialHolds.get(id) ?? materialRecords.get(id)?.holds ?? 0) > 0)
           .map(([id, value]) => ({ id, value }));
-  /** Every material a row of this packet references, held ones included, so their target sources resolve. */
+  /** Final material roster, including unchanged consumers and retained last-good owners. */
   const referencedMaterialRows = (): RenderPublication['materials'] =>
-    [...materialSources].map(([id, resource]) => ({
-      id,
-      value: materialRows.get(id) ?? resource.snapshot,
-    }));
+    [...new Set([...materialRecords.keys(), ...materialSources.keys()])]
+      .filter((id) => (materialHolds.get(id) ?? materialRecords.get(id)?.holds ?? 0) > 0)
+      .map((id) => ({
+        id,
+        value:
+          materialRows.get(id) ??
+          materialRecords.get(id)?.snapshot ??
+          (materialSources.get(id) as MaterialResource).snapshot,
+      }));
   const targetSnapshot = (): RenderPublication['targets'] => targetOwner?.snapshot() ?? [];
   const currentFeatureAsset = (identity: string | number, captured: Asset): number | undefined => {
     const handle =
@@ -1608,7 +1766,10 @@ export function createRenderPublisher(
     prepare(
       sampleTimeSeconds: number,
       temporalReset = false,
-      execution?: { readonly frameId: number },
+      execution?: {
+        readonly frameId: number;
+        readonly waterMeshViewFacts?: WaterMeshViewFacts;
+      },
     ): Result<RenderPublicationCandidate, RenderPublicationError> {
       if (disposed || failed)
         return fail('disposed', 'publisher retired or failed; start a new source epoch');
@@ -1632,7 +1793,7 @@ export function createRenderPublisher(
       let preparation: PublicationPreparation | undefined;
       try {
         preparation = new PublicationPreparation(baseline, observation);
-        return preparation.prepare(sampleTimeSeconds, temporalReset);
+        return preparation.prepare(sampleTimeSeconds, temporalReset, execution?.waterMeshViewFacts);
       } catch (cause) {
         observation?.finish('prepare-error');
         activeObservation = undefined;
@@ -1647,12 +1808,12 @@ export function createRenderPublisher(
     },
     acknowledgeFeatures(
       acceptedRevision: number,
-      receipts: readonly { readonly identity: string; readonly feedback: unknown }[],
+      receipts: readonly SourceFeatureAcknowledgment[],
     ): Result<void, RenderPublicationError> {
       if (disposed || failed)
         return fail('disposed', 'publisher retired or failed; start a new source epoch');
       const flight = flights.get(acceptedRevision);
-      if (flight === undefined || flight.submitted)
+      if (flight === undefined || flight.phase !== 'accepted')
         return fail('revision', 'feature acknowledgment');
       const identities = new Set<string>();
       for (const receipt of receipts) {
@@ -1660,15 +1821,93 @@ export function createRenderPublisher(
           return fail('revision', 'duplicate feature acknowledgment');
         const row = flight.features.find((row) => row.identity === receipt.identity);
         const feature = flight.owners.find((feature) => feature.identity === receipt.identity);
-        if (row === undefined || feature === undefined)
+        if (row === undefined || row.failure !== undefined || feature === undefined)
           return fail('shape', 'unknown feature acknowledgment');
         identities.add(receipt.identity);
       }
-      flight.submitted = true;
+      flights.set(acceptedRevision, {
+        ...flight,
+        phase: 'submitted',
+        receipts: receipts.map((receipt) => ({ ...receipt })),
+      });
       for (const receipt of receipts) {
         const row = flight.features.find((row) => row.identity === receipt.identity);
         const feature = flight.owners.find((feature) => feature.identity === receipt.identity);
-        feature?.onSourceFrameSubmitted?.(row?.data, receipt.feedback);
+        feature?.onSourceFrameSubmitted?.(row?.data, receipt.feedback, receipt.submission);
+      }
+      return ok(undefined);
+    },
+    completeFeatures(
+      acceptedRevision: number,
+      completion: RenderFeatureCompletion,
+      readbacks: FeatureTextureReadbackResult = { ok: true, value: [] },
+    ): Result<void, RenderPublicationError> {
+      if (disposed || failed)
+        return fail('disposed', 'publisher retired or failed; start a new source epoch');
+      const flight = flights.get(acceptedRevision);
+      if (flights.keys().next().value !== acceptedRevision || flight?.phase !== 'submitted')
+        return fail('revision', 'submitted feature completion in publication order');
+      if (
+        ![
+          completion.frameId,
+          completion.deviceGeneration,
+          ...(completion.graphGeneration === undefined ? [] : [completion.graphGeneration]),
+        ].every((value) => Number.isSafeInteger(value) && value >= 0)
+      )
+        return fail('shape', 'actual completed Renderer receipt facts');
+      if (readbacks.ok) {
+        const validateCompletedFeatureReadbacks = (
+          checkedReadbacks: Extract<FeatureTextureReadbackResult, { ok: true }>,
+        ) => {
+          const owners = new Set(flight.owners.map((feature) => feature.identity));
+          const seen = new Set<string>();
+          for (const observation of checkedReadbacks.value) {
+            const key = `${observation.featureIdentity}\u0000${observation.viewIdentity ?? 'frame'}\u0000${observation.name}`;
+            if (
+              !owners.has(observation.featureIdentity) ||
+              observation.name.length === 0 ||
+              observation.targetName.length === 0 ||
+              seen.has(key) ||
+              observation.metadata.frameId !== completion.frameId ||
+              observation.metadata.deviceGeneration !== completion.deviceGeneration ||
+              (completion.graphGeneration !== undefined &&
+                observation.metadata.graphGeneration !== completion.graphGeneration)
+            )
+              return fail('shape', 'receipt-bound feature-texture observations');
+            seen.add(key);
+          }
+          return undefined;
+        };
+        const readbackFailure = validateCompletedFeatureReadbacks(readbacks);
+        if (readbackFailure !== undefined) return readbackFailure;
+      } else if (
+        typeof readbacks.error.code !== 'string' ||
+        typeof readbacks.error.expected !== 'string' ||
+        typeof readbacks.error.hint !== 'string'
+      )
+        return fail('shape', 'structured feature-texture readback error');
+      flights.set(acceptedRevision, {
+        features: flight.features,
+        owners: flight.owners,
+        phase: 'completed',
+      });
+      for (const receipt of flight.receipts) {
+        const row = flight.features.find((row) => row.identity === receipt.identity);
+        const feature = flight.owners.find((feature) => feature.identity === receipt.identity);
+        feature?.onSourceFrameCompleted?.(
+          row?.data,
+          completion,
+          receipt.feedback,
+          receipt.submission,
+          readbacks.ok
+            ? {
+                ok: true,
+                value: readbacks.value.filter(
+                  (observation) => observation.featureIdentity === receipt.identity,
+                ),
+              }
+            : readbacks,
+        );
       }
       return ok(undefined);
     },

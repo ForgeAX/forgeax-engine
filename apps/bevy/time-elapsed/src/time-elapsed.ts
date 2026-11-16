@@ -8,7 +8,7 @@
 // pulses in scale — both pure functions of the elapsed clock.
 //
 // forgeax mapping:
-//   - Res<Time>.elapsed_secs() -> world.getResource('Time').elapsed — the accumulated-
+//   - Res<Time>.elapsed_secs() -> world.getResource(Time).elapsed — the accumulated-
 //                                 seconds field added in solo round 20260713-212920. Before
 //                                 it, the Time resource was { dt } only, so an absolute-time
 //                                 animation had to hand-accumulate dt in its own system

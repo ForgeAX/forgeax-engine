@@ -242,11 +242,7 @@ const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).u
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const lease = worldAttachment1.value;
-const frameRequest = {
-  leases: [worldAttachment1.value],
-  camera: { lease: worldAttachment1.value },
-  environment: { lease: worldAttachment1.value },
-};
+const frameRequest = { source: worldAttachment1.value };
 // Bind the managed wood texture handle into the material; the cube mesh
 // is created in the same World asset registry.
 const woodTexHandle = unwrapHandle(world.assets.create(woodTexAsset).unwrap());

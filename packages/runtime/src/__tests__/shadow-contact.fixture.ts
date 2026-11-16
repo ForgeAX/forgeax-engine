@@ -112,12 +112,7 @@ export function registerShadowContactCases(
         propagateTransforms(world).unwrap();
         receipt = await drawReadyFrame(
           renderer,
-          {
-            leases: [lease],
-            camera: { lease },
-            environment: { lease },
-            fixedStep: world.getResource(FixedTime).tick,
-          },
+          { source: lease, fixedStep: world.getResource(FixedTime).tick },
           frame === 2 ? ['final-display'] : undefined,
         );
       }

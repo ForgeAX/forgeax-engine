@@ -7,6 +7,7 @@ import { join, resolve } from 'node:path';
 import { nativeOutputReady, sha, verifyWindowsX64 } from '../native-output.mjs';
 import {
   git as sourceGit,
+  buildStandaloneGclientConfig,
   nativeBuildCache,
   nativeBuildConcurrency,
   prepareGclientGit,
@@ -16,6 +17,24 @@ import {
   verifyWindowsBuildCommands,
 } from '../prepare-native.mjs';
 const directory = mkdtempSync(join(tmpdir(), 'forgeax-dawn-output-'));
+
+test('standalone Windows x64 gclient config overrides vpython host architecture probing', () => {
+  const standalone = [
+    'solutions = [',
+    '  { "name" : ".",',
+    '    "custom_vars" : {',
+    '      "dawn_node" : True,',
+    '    }',
+    '  },',
+    ']',
+  ].join('\n');
+  const configured = buildStandaloneGclientConfig(standalone, 'x64');
+  assert.match(configured, /"custom_deps" : \{"third_party\/swiftshader": None\}/);
+  assert.match(configured, /"dawn_node" : True,\n      "host_cpu" : "x64",/);
+  const unmodifiedArch = buildStandaloneGclientConfig(standalone, undefined);
+  assert.doesNotMatch(unmodifiedArch, /"host_cpu"/);
+  assert.throws(() => buildStandaloneGclientConfig('solutions = []', 'x64'), /standalone-contract-mismatch/);
+});
 
 test('Windows MSBuild probe stays below MAX_PATH in a deep source checkout', { skip: process.platform !== 'win32' }, () => {
   const packageRoot = 'C:/Users/developer/projects/game-engine/deep-checkout/packages/dawn-node';
@@ -42,7 +61,7 @@ test('Windows SDK discovery supplies the native Ninja MSVC toolchain', { skip: p
     ].join('\n'),
   );
   writeFileSync(join(source, 'main.cpp'), '#include <d3d12.h>\n#include <dxgi1_4.h>\n#include <span>\n#include <vector>\nint main() { std::vector<int> values{1, 2}; return std::span(values).size() == 2 ? 0 : 1; }\n');
-  const result = spawnSync('cmake', ['-S', source, '-B', build, '-A', 'x64'], {
+  const result = spawnSync('cmake', ['-S', source, '-B', build, '-G', 'Visual Studio 17 2022', '-A', 'x64'], {
     encoding: 'utf8',
     windowsHide: true,
   });

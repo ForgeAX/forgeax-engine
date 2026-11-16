@@ -1,6 +1,6 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { runtimeAssetRegistry, runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
-import { FixedTime, FixedUpdate, World } from '@forgeax/engine-ecs';
+import { defineSystem, FixedTime, FixedUpdate, World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { Transform } from '@forgeax/engine-scene';
 import { err, type MaterialAsset, type MeshAsset, ok } from '@forgeax/engine-types';
@@ -26,7 +26,8 @@ function fixture(
   maxSnapshots = 128,
 ) {
   const world = new World({ assets: new AssetRegistry({ limits: { maxSnapshots } }) });
-  world.addSystem(FixedUpdate, { name: 'source-fixed-time', queries: [], fn: () => {} }).unwrap();
+  const systemToken1 = defineSystem({ name: 'source-fixed-time', queries: [], fn: () => {} });
+  world.addSystem(FixedUpdate, systemToken1).unwrap();
   const previous = runtimeAssetRegistry(world.assets)
     .create(createBoxGeometry(1, 1, 1).unwrap())
     .unwrap();
@@ -184,22 +185,21 @@ it('reserves the existing candidate budget while waiting and mutates only on syn
   expect(f.host.isDynamicGeometryCurrent(candidate)).toBe(true);
   expect(f.world.get(f.entity, MeshFilter).unwrap().assetHandle).toBe(f.previous);
   let accepted = false;
-  f.world
-    .addSystem(FixedUpdate, {
-      name: 'admit-source-geometry',
-      queries: [],
-      fn: () => {
-        if (accepted) return;
-        f.host
-          .acceptDynamicGeometry(candidate, {
-            world: f.world,
-            fixedStep: f.world.getResource(FixedTime).tick,
-          })
-          .unwrap();
-        accepted = true;
-      },
-    })
-    .unwrap();
+  const systemToken2 = defineSystem({
+    name: 'admit-source-geometry',
+    queries: [],
+    fn: () => {
+      if (accepted) return;
+      f.host
+        .acceptDynamicGeometry(candidate, {
+          world: f.world,
+          fixedStep: f.world.getResource(FixedTime).tick,
+        })
+        .unwrap();
+      accepted = true;
+    },
+  });
+  f.world.addSystem(FixedUpdate, systemToken2).unwrap();
   f.world.update(1 / 60).unwrap();
   expect(accepted).toBe(true);
   expect(f.world.get(f.entity, MeshFilter).unwrap().assetHandle).toBe(f.meshHandle);
@@ -844,12 +844,12 @@ it.each([
   const accepted = f.host
     .acceptDynamicGeometry(candidate, { world: f.world, fixedStep: 0 })
     .unwrap();
-  expect(f.host.publishDynamicGeometry({ frameId: 1, deviceGeneration: 1 })).toEqual([]);
+  expect(f.host.publishDynamicGeometry({ frameId: 1, deviceGeneration: 1 }, f.world)).toEqual([]);
   f.submitted(false);
-  expect(f.host.publishDynamicGeometry({ frameId: 1, deviceGeneration: 1 })).toEqual([]);
+  expect(f.host.publishDynamicGeometry({ frameId: 1, deviceGeneration: 1 }, f.world)).toEqual([]);
   f.submitted();
   f.world.update(steps / 60).unwrap();
-  const receipts = f.host.publishDynamicGeometry({ frameId: 2, deviceGeneration: 1 });
+  const receipts = f.host.publishDynamicGeometry({ frameId: 2, deviceGeneration: 1 }, f.world);
   expect(f.world.getResource(FixedTime).tick).toBe(steps);
   expect(receipts).toMatchObject([
     {
@@ -1038,7 +1038,7 @@ async function publishedSameHandlePair(materialIdentity?: string) {
       })
       .unwrap();
     f.submitted();
-    const receipts = f.host.publishDynamicGeometry({ frameId, deviceGeneration: 1 });
+    const receipts = f.host.publishDynamicGeometry({ frameId, deviceGeneration: 1 }, f.world);
     expect(receipts.some((receipt) => receipt.candidateId === accepted.candidateId)).toBe(true);
     expect(f.host.dynamicGeometryReceipt(accepted)).toBeDefined();
     return accepted;
@@ -1099,7 +1099,7 @@ it('keeps old published geometry when a registered accepted successor is cancell
   expect(f.host.dynamicGeometryReceipt(accepted)).toBeUndefined();
   expect(f.host.retireSupersededDynamicGeometry?.(old, successor)?.ok).toBe(false);
   f.host.cancelDynamicGeometry(accepted).unwrap();
-  f.host.publishDynamicGeometry({ frameId: 3, deviceGeneration: 1 });
+  f.host.publishDynamicGeometry({ frameId: 3, deviceGeneration: 1 }, f.world);
   expect(f.host.retireSupersededDynamicGeometry?.(old, accepted)?.ok).toBe(false);
   expect(f.host.isDynamicGeometryCurrent(old)).toBe(true);
   expect(f.host.dynamicGeometryReceipt(old)).toBeDefined();
@@ -1130,11 +1130,11 @@ it('defers same-entity retirement until the registered successor is truly consum
   expect(f.host.retireSupersededDynamicGeometry?.(old, next)?.ok).toBe(true);
   expect(f.lifecycle.inspect()).toEqual(before);
   f.unconsumed();
-  f.host.publishDynamicGeometry({ frameId: 3, deviceGeneration: 1 });
+  f.host.publishDynamicGeometry({ frameId: 3, deviceGeneration: 1 }, f.world);
   expect(f.host.dynamicGeometryReceipt(old)).toBeDefined();
   expect(f.host.dynamicGeometryReceipt(next)).toBeUndefined();
   f.submitted();
-  f.host.publishDynamicGeometry({ frameId: 4, deviceGeneration: 1 });
+  f.host.publishDynamicGeometry({ frameId: 4, deviceGeneration: 1 }, f.world);
   for (let turn = 0; turn < 12; turn++) await Promise.resolve();
   expect(f.host.dynamicGeometryReceipt(old)).toBeUndefined();
   expect(f.host.dynamicGeometryReceipt(next)).toBeDefined();
@@ -1161,10 +1161,10 @@ it('revalidates live material identity before a deferred retirement releases its
   expect(f.host.retireSupersededDynamicGeometry?.(old, next)?.ok).toBe(true);
   f.world.set(f.entity, MeshRenderer, { materials: [] }).unwrap();
   f.submitted();
-  f.host.publishDynamicGeometry({ frameId: 3, deviceGeneration: 1 });
+  f.host.publishDynamicGeometry({ frameId: 3, deviceGeneration: 1 }, f.world);
   expect(f.host.dynamicGeometryReceipt(old)).toBeDefined();
   f.world.set(f.entity, MeshRenderer, { materials }).unwrap();
-  f.host.publishDynamicGeometry({ frameId: 4, deviceGeneration: 1 });
+  f.host.publishDynamicGeometry({ frameId: 4, deviceGeneration: 1 }, f.world);
   for (let turn = 0; turn < 12; turn++) await Promise.resolve();
   expect(f.host.dynamicGeometryReceipt(old)).toBeUndefined();
   expect(f.host.isDynamicGeometryCurrent(next)).toBe(true);
@@ -1201,7 +1201,7 @@ it.each([
   expect(f.host.isDynamicGeometryCurrent(b)).toBe(false);
   expect(f.host.dynamicGeometryReceipt(old)).toBeDefined();
   f.submitted();
-  f.host.publishDynamicGeometry({ frameId: 3, deviceGeneration: 1 });
+  f.host.publishDynamicGeometry({ frameId: 3, deviceGeneration: 1 }, f.world);
   for (let turn = 0; turn < 12; turn++) await Promise.resolve();
   expect(f.host.dynamicGeometryReceipt(old)).toBeUndefined();
   expect(f.host.dynamicGeometryReceipt(c)).toBeDefined();
@@ -1215,7 +1215,7 @@ it('keeps the original published lease when the carried unpublished successor is
   const c = await acceptedReplacement(f, 4);
   f.host.cancelDynamicGeometry(c).unwrap();
   f.submitted();
-  f.host.publishDynamicGeometry({ frameId: 3, deviceGeneration: 1 });
+  f.host.publishDynamicGeometry({ frameId: 3, deviceGeneration: 1 }, f.world);
   for (let turn = 0; turn < 12; turn++) await Promise.resolve();
   expect(f.host.dynamicGeometryReceipt(old)).toBeDefined();
   expect(f.host.isDynamicGeometryCurrent(old)).toBe(true);

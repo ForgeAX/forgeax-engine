@@ -111,7 +111,7 @@ it.each([
             ? 'asset-decode-failed'
             : 'asset-package-invalid',
       ...(failure === 'program-digest-mismatch'
-        ? { detail: { cause: { code: 'material-cook-record-invalid' } } }
+        ? { detail: { cause: { code: 'asset-artifact-integrity-mismatch' } } }
         : {}),
     },
   });

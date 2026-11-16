@@ -5,7 +5,6 @@ describe('Standard scene reflection probe binding', () => {
   it('maps a selected scene probe to both Standard lanes', () => {
     const selection = {
       kind: 'probe' as const,
-      worldId: 2,
       entityKey: 7,
       normalizedDistance: 0.25,
     };

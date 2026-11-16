@@ -1,3 +1,5 @@
+import { PhysicsWorldResource } from '@forgeax/engine/physics';
+import { vec3 } from '@forgeax/engine/math';
 import { createInputSnapshot, INPUT_SNAPSHOT_RESOURCE_KEY } from '@forgeax/engine/input';
 import { propagateTransforms, Transform } from '@forgeax/engine/scene';
 import { describe, expect, it, vi } from 'vitest';
@@ -76,15 +78,22 @@ describe('game-3d camera', () => {
   it('pulls in front of a collider between the player and the orbit, then eases back out', async () => {
     const { world, ctx, entity } = await cameraFixture();
     let hit: { timeOfImpact: number } | undefined = { timeOfImpact: 2 };
-    world.insertResource('PhysicsWorld', {
-      raycast: () => (hit === undefined ? undefined : { entity: 0, point: [0, 0, 0], normal: [0, 0, 1], ...hit }),
+    const unexpectedPhysics = () => { throw new Error('This camera fixture only exercises raycasting'); };
+    world.insertResource(PhysicsWorldResource, {
+      dispose: unexpectedPhysics, setGravity: unexpectedPhysics, getGravity: unexpectedPhysics,
+      teleport: unexpectedPhysics, synchronizeCharacter: unexpectedPhysics,
+      moveAndSlide: unexpectedPhysics, step: unexpectedPhysics,
+      getBodyCount: unexpectedPhysics, hasBody: unexpectedPhysics,
+      raycast: () => (hit === undefined ? undefined : {
+        entity: 0, point: vec3.create(0, 0, 0), normal: vec3.create(0, 0, 1), ...hit,
+      }),
     });
     try {
       await ctx.plugin(cameraPlugin);
       const camera = entity('camera');
       const focusDistance = () => {
         const pos = world.get(camera, Transform).unwrap().pos;
-        return Math.hypot(pos[0] ?? 0, (pos[1] ?? 0) - 0.5, pos[2] ?? 0);
+        return Math.hypot(pos[0] ?? 0, (pos[1] ?? 0) - 0.7, pos[2] ?? 0);
       };
       world.update(1 / 60).unwrap();
       expect(focusDistance()).toBeCloseTo(0.6 + 2 - 0.3, 3);

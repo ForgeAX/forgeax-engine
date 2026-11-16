@@ -8,7 +8,7 @@ import { captureAssetPublication } from '../capture-publication';
 import { createCatalogSource } from '../catalog-source';
 import { defined } from './assert-defined';
 
-it('shares verified stored bytes across source packages while isolating decoded caller data', async () => {
+it('coalesces in-flight reads across source packages while isolating decoded caller data', async () => {
   const raw = Uint8Array.of(1, 2, 3);
   const kind = defineAssetKind<Uint8Array>('test-binary');
   const descriptor = {
@@ -76,7 +76,8 @@ it('shares verified stored bytes across source packages while isolating decoded 
       )
     ).unwrap();
     expect(fixed.blobs['shared.bin']).toEqual(raw);
-    expect(fetcher).toHaveBeenCalledTimes(3);
+    // Two package documents and one shared body for the loads; the capture reads its package and body again.
+    expect(fetcher).toHaveBeenCalledTimes(5);
   } finally {
     assets.dispose();
   }
@@ -85,7 +86,7 @@ it('shares verified stored bytes across source packages while isolating decoded 
 it.each([
   'identity',
   'zstd',
-] as const)('loads %s and captures original stored bytes without repeated I/O', async (encoding) => {
+] as const)('loads %s and captures original stored bytes with one more body read', async (encoding) => {
   const guid = '00000000-0000-7000-8000-000000000918';
   const packageUrl = 'https://source.invalid/main.pack.json';
   const raw = new Uint8Array([2, 4, 6, 8]);
@@ -127,7 +128,8 @@ it.each([
       await captureAssetPublication(row, [row], source, fetcher, { registry: assets })
     ).unwrap();
     expect(fixed.blobs['body.bin']).toEqual(stored);
-    expect(fetcher).toHaveBeenCalledTimes(count);
+    // Nothing completed is retained: the capture re-reads the package document and the body.
+    expect(fetcher).toHaveBeenCalledTimes(count + 2);
   } finally {
     assets.dispose();
   }

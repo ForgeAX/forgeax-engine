@@ -1,4 +1,4 @@
-import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine/input';
+import { INPUT_SNAPSHOT_RESOURCE_KEY } from '@forgeax/engine/input';
 import { CheckList, defineFeature } from '../../lab/feature';
 import { spawnStage } from '../../lab/stage';
 import { privateBackend } from './support/private-backend';
@@ -17,9 +17,9 @@ export default defineFeature({
     return {
       async checks() {
         const c = new CheckList();
-        const first = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY).capabilities;
+        const first = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY).capabilities;
         await frames(3);
-        const later = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY).capabilities;
+        const later = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY).capabilities;
         c.equal('live pointer capability', first.pointer, typeof PointerEvent !== 'undefined');
         c.equal(
           'live gamepad capability = API presence',

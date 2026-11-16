@@ -11,7 +11,7 @@ import {
 } from '@forgeax/engine-render';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { describe, expect, it } from 'vitest';
-import { extractFrames } from '../../../render/src/render-system-extract-tail';
+import { extractSource } from '../../../render/src/render-system-extract-tail';
 import { pick } from '../pick';
 
 const VIEWPORT = 600;
@@ -65,7 +65,7 @@ describe('visibility picking boundary', () => {
     const before = pick(world, camera, VIEWPORT / 2, VIEWPORT / 2, VIEWPORT, VIEWPORT);
 
     world.set(entity, Visibility, { state: VisibilityStateValue.hidden }).unwrap();
-    extractFrames([world], 0);
+    extractSource(world);
     propagateTransforms(world);
     const after = pick(world, camera, VIEWPORT / 2, VIEWPORT / 2, VIEWPORT, VIEWPORT);
 

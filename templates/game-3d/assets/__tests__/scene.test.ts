@@ -1,4 +1,4 @@
-import { CAMERA_EXPOSURE_MODE_MANUAL } from '@forgeax/engine/render';
+import { CAMERA_EXPOSURE_MODE_AUTO } from '@forgeax/engine/render';
 import { describe, expect, it } from 'vitest';
 import { PLAYER_COLLIDER } from '../shared/player-rig.ts';
 import scenePack from '../scene.pack.ts';
@@ -14,23 +14,24 @@ async function build(pack: {
 }
 
 describe('world scene', () => {
-  it('lights the scene with a shadow-casting sun, an unshadowed second DirectionalLight and an analytic Atmosphere sky, with no sky image', async () => {
+  it('lights the clear-day scene with one shadow-casting sun and a physical sky', async () => {
     const scene = (await build(scenePack))['scene/showcase'] as {
       readonly entities: Record<string, { readonly components: Record<string, Record<string, unknown>> }>;
     };
     const components = Object.values(scene.entities).map((entry) => entry.components);
     const directionals = components.filter((entry) => entry.DirectionalLight);
-    // The sun is the first castShadow DirectionalLight; the other one never requests shadows.
-    expect(directionals).toHaveLength(2);
+    // The daylight recipe has one key light; the sky supplies environment lighting.
+    expect(directionals).toHaveLength(1);
     expect(directionals[0]?.DirectionalLight?.castShadow).toBe(true);
-    expect(directionals[1]?.DirectionalLight?.castShadow).toBeUndefined();
     expect(components.filter((entry) => entry.Atmosphere)).toHaveLength(1);
-    // A starter must run on baseline device limits.
-    expect(components.find((entry) => entry.Atmosphere)?.Atmosphere?.backgroundOnly).toBe(true);
+    // Keep the full physical transport, with less aerosol haze for a clear day.
+    expect(components.find((entry) => entry.Atmosphere)?.Atmosphere).toEqual({ mieScattering: 1.998e-6, mieAbsorption: 0.222e-6 });
     expect(components.filter((entry) => entry.SkyboxBackground)).toHaveLength(0);
     const skylights = components.filter((entry) => entry.Skylight);
     expect(skylights).toHaveLength(1);
-    expect(skylights[0]?.Skylight?.equirect).toBeUndefined();
+    expect(skylights[0]?.Skylight).toEqual({});
+    expect(components.filter((entry) => entry.Fog)).toHaveLength(1);
+    expect(components.find((entry) => entry.Fog)?.Fog).toEqual({ density: 0.00008 });
   });
 
   it('authors physics on the player and every visible walkable obstacle', { timeout: 30000 }, async () => {
@@ -50,13 +51,17 @@ describe('world scene', () => {
     });
     for (const name of [
       'Ground',
-      'Lacquer Collision Cube',
-      'Rusted Iron Ramp',
+      'Rusted Iron Sphere',
     ]) {
       const object = components.find((entry) => entry.Name?.value === name);
       expect(object?.RigidBody).toMatchObject({ type: 0 });
       expect(object?.Collider).toBeDefined();
     }
+    const sphere = components.find((entry) => entry.Name?.value === 'Rusted Iron Sphere');
+    expect(sphere).toMatchObject({
+      Transform: { pos: [0, 1, 2.4], scale: [1, 1, 1] },
+      Collider: { shape: 1, radius: 1 },
+    });
     expect(components.find((entry) => entry.Name?.value === 'Player Body')?.Skin).toBeDefined();
     expect(scene.skinGuids).toHaveLength(1);
     const sun = components.find((entry) => entry.DirectionalLight)?.DirectionalLight;
@@ -64,10 +69,14 @@ describe('world scene', () => {
     // The game opts into shadows while the engine owns the cascade defaults.
     expect(sun).not.toHaveProperty('cascadeCount');
     expect(components.some((entry) => entry.Skylight !== undefined)).toBe(true);
-    expect(components.some((entry) => entry.PointLight !== undefined)).toBe(true);
+    expect(components.some((entry) => entry.PointLight !== undefined)).toBe(false);
     const camera = components.find((entry) => entry.Camera !== undefined)?.Camera;
     expect(components.some((entry) => entry.Atmosphere !== undefined)).toBe(true);
-    // The template keeps a fixed exposure so lighting edits show directly in the frame.
-    expect(camera).toMatchObject({ exposure: 0.95, exposureMode: CAMERA_EXPOSURE_MODE_MANUAL });
+    // The template meters exposure automatically with no compensation bias.
+    expect(camera).toMatchObject({
+      exposure: 0.95,
+      exposureMode: CAMERA_EXPOSURE_MODE_AUTO,
+      compensationEv: 0,
+    });
   });
 });

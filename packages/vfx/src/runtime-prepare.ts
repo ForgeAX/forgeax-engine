@@ -135,11 +135,22 @@ function reflectionShapeValid(
   reflection: Record<string, unknown>,
   rendererCount: number,
   executable: ReturnType<typeof program>,
+  waterGridEmission: boolean,
 ): reflection is ReflectionTables {
   const entryPoints = reflection.entryPoints;
+  const waterEntryPoints = [
+    'forgeax_vfx_water_emission_cells_main',
+    'forgeax_vfx_water_emission_scan_blocks_main',
+    'forgeax_vfx_water_emission_scan_block_offsets_main',
+    'forgeax_vfx_water_emission_add_offsets_main',
+    'forgeax_vfx_water_emission_append_main',
+  ];
   return (
     Array.isArray(entryPoints) &&
     REQUIRED_ENTRY_POINTS.every((name) => entryPoints.includes(name)) &&
+    (waterGridEmission
+      ? waterEntryPoints.every((name) => entryPoints.includes(name))
+      : waterEntryPoints.every((name) => !entryPoints.includes(name))) &&
     entryPoints.every((name) => typeof name === 'string' && executable.entries.has(name)) &&
     Array.isArray(reflection.bindings) &&
     Array.isArray(reflection.resources) &&
@@ -202,6 +213,71 @@ function forceFieldsMatchReflection(
       requirements[0].binding !== 17 ||
       requirements[0].bindingType !== 'read-only-storage' ||
       !bindingKeys.has('0:17'));
+}
+
+function validateWaterInterfaceBindings(
+  value: Record<string, unknown>,
+  bindingKeys: ReadonlySet<string>,
+  slots: Set<number>,
+  waterGridEmission: boolean,
+): boolean {
+  if (value.kind === 'water-surface') {
+    if (
+      value.token !== 'vfx:water-surface' ||
+      value.binding !== 18 ||
+      value.solverNormalBinding !== 19 ||
+      value.domainBinding !== 20 ||
+      value.bindingType !== 'sampled-float-pair' ||
+      !bindingKeys.has('0:19') ||
+      !bindingKeys.has('0:20') ||
+      slots.has(19) ||
+      slots.has(20)
+    )
+      return false;
+    slots.add(19);
+    slots.add(20);
+    if (waterGridEmission) {
+      if (value.waterEmissionBinding !== 21 || !bindingKeys.has('0:21') || slots.has(21))
+        return false;
+      slots.add(21);
+    } else if (value.waterEmissionBinding !== undefined) return false;
+  } else if (
+    value.solverNormalBinding !== undefined ||
+    value.domainBinding !== undefined ||
+    value.waterEmissionBinding !== undefined
+  )
+    return false;
+  return true;
+}
+
+function dataInterfacesMatchBindings(
+  dataInterfaces: readonly unknown[],
+  bindingKeys: ReadonlySet<string>,
+  waterGridEmission: boolean,
+): boolean {
+  const tokens = new Set<string>();
+  const slots = new Set<number>();
+  for (const value of dataInterfaces) {
+    if (
+      !record(value) ||
+      typeof value.token !== 'string' ||
+      typeof value.kind !== 'string' ||
+      !Number.isSafeInteger(value.binding) ||
+      (value.binding as number) < 0 ||
+      tokens.has(value.token) ||
+      slots.has(value.binding as number) ||
+      !bindingKeys.has(`0:${value.binding}`)
+    )
+      return false;
+    tokens.add(value.token);
+    slots.add(value.binding as number);
+    const valid = validateWaterInterfaceBindings(value, bindingKeys, slots, waterGridEmission);
+    if (!valid) return false;
+  }
+  return (
+    !waterGridEmission ||
+    dataInterfaces.some((entry) => record(entry) && entry.kind === 'water-surface')
+  );
 }
 
 function linkReference(
@@ -350,10 +426,13 @@ function prepareRuntimeEmitter(
   if (layoutIdentity !== undefined && layoutIdentity !== layoutKey)
     return invalid(`${path}.layout`, 'one shared Parameters/Custom layout across effect emitters');
   const executable = program(value.wgsl);
-  if (!reflectionShapeValid(reflection, value.renderers.length, executable))
+  const waterGridEmission = value.waterGridEmission !== undefined;
+  if (!reflectionShapeValid(reflection, value.renderers.length, executable, waterGridEmission))
     return invalid(`${path}.reflection`);
   const bindingKeys = reflectedBindingKeys(reflection.bindings, executable, path);
   if (!bindingKeys.ok) return bindingKeys;
+  if (!dataInterfacesMatchBindings(reflection.dataInterfaces, bindingKeys.value, waterGridEmission))
+    return invalid(`${path}.reflection.dataInterfaces`);
   const fields = value.forceFields;
   if (!forceFieldsMatchReflection(fields, reflection.dataInterfaces, bindingKeys.value, path))
     return invalid(`${path}.forceFields`);

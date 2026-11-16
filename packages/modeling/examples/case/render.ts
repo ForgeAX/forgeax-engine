@@ -562,7 +562,7 @@ export async function createCaseRenderer(options: {
     world.update(1 / 60).unwrap();
     const lease = attached.value;
     for (let i = 0; i < frames; i++) {
-      await drawReadyFrame(renderer, { leases: [lease], camera: { lease }, environment: { lease } });
+      await drawReadyFrame(renderer, { source: lease });
     }
     if (device === undefined || target === undefined) throw new Error('device not captured');
     const buffer = device.createBuffer({ size: bytesPerRow * HEIGHT, usage: 0x0001 | 0x0008 });

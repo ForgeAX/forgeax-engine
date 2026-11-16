@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-const variants = ['uniform', 'height', 'owner-switch', 'recovery'];
+const variants = ['uniform', 'height', 'environment-replace', 'recovery'];
 const requested = process.env.FORGEAX_FALSIFY;
 if (requested !== undefined && !variants.includes(requested)) throw new Error(`unknown Fog falsifier: ${requested}`);
 if (requested !== undefined) {

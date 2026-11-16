@@ -40,11 +40,16 @@ export class SharedCollisionGeometry {
 
   constructor(
     readonly owner: AssetReferenceOwner,
-    private readonly native: NativeSharedGeometry,
+    private native: NativeSharedGeometry,
     private readonly rapier: Rapier3DModule,
   ) {
     this.records = runtimeAssets(owner);
     this.observer = this.records.observe().unwrap();
+  }
+
+  /** A native snapshot preserves geometry ids; only the owning native set changes. */
+  rebindNative(native: NativeSharedGeometry): void {
+    this.native = native;
   }
 
   private failure(reason: string): never {

@@ -17,6 +17,7 @@ vi.mock('@forgeax/engine-vite-plugin-shader', async (importOriginal) => {
 
 const { createViteConfig } = await import('../host.js');
 const { readProjectFacts } = await import('../project.js');
+const { findEngineWorkspaceRoot } = await import('../asset-libraries.js');
 
 async function configFor(forgeax: Record<string, unknown>) {
   const root = await mkdtemp(resolve(tmpdir(), 'forgeax-devkit-shader-options-'));
@@ -39,13 +40,19 @@ async function configFor(forgeax: Record<string, unknown>) {
     if (!facts.ok) throw new Error(JSON.stringify(facts.error));
     shaderOptions.length = 0;
     await createViteConfig(facts.value, 'build');
-    return shaderOptions.at(-1) as { engineEntries?: unknown } | undefined;
+    return shaderOptions.at(-1) as { engineEntries?: unknown; workspaceRoot?: string } | undefined;
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 }
 
 describe('DevKit shader build options', () => {
+  it('retains the Engine producer workspace when the project is outside its source checkout', async () => {
+    const workspaceRoot = findEngineWorkspaceRoot();
+    expect(workspaceRoot).toBeDefined();
+    expect((await configFor({}))?.workspaceRoot).toBe(workspaceRoot);
+  }, 60_000);
+
   it('builds point-shadow Standard shaders only when package.json opts in', async () => {
     expect((await configFor({ pointShadows: true }))?.engineEntries).toEqual({
       pointShadows: true,

@@ -32,6 +32,6 @@ export function installGameplayInputMap(world: World): () => InputSnapshot {
   world.insertResource(INPUT_MAP_KEY, GAME_DEFAULT_INPUT_MAP);
   const empty = createInputSnapshot();
   return () => world.hasResource(INPUT_SNAPSHOT_RESOURCE_KEY)
-    ? world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY)
+    ? world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY)
     : empty;
 }

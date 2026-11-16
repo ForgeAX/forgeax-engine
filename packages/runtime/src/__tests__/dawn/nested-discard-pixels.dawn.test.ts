@@ -310,11 +310,7 @@ async function withScene<T>(scene: Scene, probe: Probe<T>): Promise<T> {
       const pending = last ? probe.recorder?.captureFrame() : undefined;
       if (pending !== undefined && probe.recorder !== undefined)
         (await probe.recorder.frameBoundary()).unwrap();
-      await drawReadyFrame(renderer, {
-        leases: [attachment],
-        camera: { lease: attachment },
-        environment: { lease: attachment },
-      });
+      await drawReadyFrame(renderer, { source: attachment });
       if (pending !== undefined && probe.recorder !== undefined)
         (await probe.recorder.frameBoundary()).unwrap();
       capture = pending ?? capture;

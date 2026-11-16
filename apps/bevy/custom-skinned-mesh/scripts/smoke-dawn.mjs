@@ -2,10 +2,11 @@
 import { encodePng } from '@forgeax/engine-image/png';
 import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
+import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -82,7 +83,7 @@ const { World } = await import('@forgeax/engine-ecs');
 const { createRenderer } = await import('@forgeax/engine-runtime');
 const { scenePlugin, Transform } = await import('@forgeax/engine-scene');
 const { buildWorld } = await import(resolve(appRoot, 'src/main.ts'));
-const manifest = readFileSync(resolve(appRoot, 'dist/shaders/manifest.json'), 'utf8');
+const manifest = readShaderManifestText(resolve(appRoot, 'dist/shaders/manifest.json'));
 const hostResult = await constructRuntimeRendererHost(canvas, {}, { shaderManifestUrl: `data:application/json,${encodeURIComponent(manifest)}` });
 if (!hostResult.ok) throw hostResult.error;
 const { renderer, assets: smokeAssets } = hostResult.value;

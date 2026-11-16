@@ -7,7 +7,11 @@
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
 #import forgeax_view::common::{sceneIndexDraw, applyLodCoverage}
 #else
+#ifdef GPU_SCENE_DIRECT
+#import forgeax_view::common::{sceneIndexDraw}
+#else
 #import forgeax_view::common::{meshes, instances}
+#endif
 #endif
 #import forgeax_shadow::surface::{projectShadowPosition}
 #import forgeax_scene_temporal::{packSceneTemporalV1WithValidity}
@@ -26,6 +30,7 @@
 #pragma variant_axis SKINNING_DISABLED
 #pragma variant_axis GPU_DRIVEN_SCENE_INDEX_AVAILABLE
 #pragma variant_axis LOD_DITHER
+#pragma variant_axis GPU_SCENE_DIRECT
 
 // @forgeax/engine-shader - unlit.wgsl (M5 feat-20260511-asset-system-v1;
 // refactored M5 T-18 feat-20260512-naga-oil-composition-hmr to pull View +
@@ -202,8 +207,13 @@ fn unlitVertex(in : VsIn, idx : u32) -> VsOut {
   // Scene rows carry the composed object world.
   let localToWorld = sceneIndexDraw(visible.x).world;
 #else
+#ifdef GPU_SCENE_DIRECT
+  // The draw's first instance is the slot's first scene instance row.
+  let localToWorld = sceneIndexDraw(idx).world;
+#else
   // Entity world from the dynamic-offset Mesh row times the per-instance local.
   let localToWorld = meshes[0].worldFromLocal * instances[idx].localFromInstance;
+#endif
 #endif
 #endif
   let world = localToWorld * vec4<f32>(in.pos, 1.0);
@@ -417,6 +427,10 @@ struct TemporalVsOut {
   @location(7) @interpolate(flat) materialAddress : vec2<u32>,
   // x = color-history reactive mask, y = current-frame motion validity.
   @location(8) @interpolate(flat) sceneTemporal : vec2<f32>,
+#else
+#ifdef GPU_SCENE_DIRECT
+  @location(8) @interpolate(flat) sceneTemporal : vec2<f32>,
+#endif
 #endif
 };
 
@@ -438,9 +452,13 @@ fn vs_temporal(in : VsIn, @builtin(instance_index) idx : u32) -> TemporalVsOut {
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
   previousWorld = sceneIndexDraw(visibleItems[idx].x).previousWorld * vec4<f32>(in.pos, 1.0);
 #else
+#ifdef GPU_SCENE_DIRECT
+  previousWorld = sceneIndexDraw(idx).previousWorld * vec4<f32>(in.pos, 1.0);
+#else
 #if STORAGE_BUFFER_AVAILABLE == true
   previousWorld = meshes[0].previousWorldFromLocal *
     instances[idx].previousLocalFromInstance * vec4<f32>(in.pos, 1.0);
+#endif
 #endif
 #endif
 #endif
@@ -448,6 +466,10 @@ fn vs_temporal(in : VsIn, @builtin(instance_index) idx : u32) -> TemporalVsOut {
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
   out.materialAddress = current.materialAddress;
   out.sceneTemporal = sceneIndexDraw(visibleItems[idx].x).temporal;
+#else
+#ifdef GPU_SCENE_DIRECT
+  out.sceneTemporal = sceneIndexDraw(idx).temporal;
+#endif
 #endif
 #if SKINNING_DISABLED == false
   out.skinHistoryValid = select(0u, 1u, skinTaskHistoryValid(descriptor));
@@ -494,9 +516,14 @@ fn fs_temporal(in : TemporalVsOut) -> @location(0) vec4<f32> {
   reactive = in.sceneTemporal.x;
   motionValid = in.sceneTemporal.y > 0.5;
 #else
+#ifdef GPU_SCENE_DIRECT
+  reactive = in.sceneTemporal.x;
+  motionValid = in.sceneTemporal.y > 0.5;
+#else
 #if STORAGE_BUFFER_AVAILABLE == true
   reactive = meshes[0].temporal.x;
   motionValid = meshMotionValid(meshes[0].temporal.y);
+#endif
 #endif
 #endif
   motionValid = motionValid && in.skinHistoryValid != 0u;

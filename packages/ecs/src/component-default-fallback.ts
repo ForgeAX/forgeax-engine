@@ -1,84 +1,4 @@
-// @forgeax/engine-ecs - Layer-3 default-value SSOT helper (feat-20260517-
-// spawn-default-fallback / M1).
-//
-// AI users: this file is the SINGLE PHYSICAL LOCATION of the layer-3
-// `typeDefault(fieldType)` table. Three runtime paths consume it (D-2
-// / plan-strategy §2.1 / AC-05):
-//
-//   - `world.spawn(...)`               (M2 — t9)
-//   - `world.addComponent(...)`        (M2 — t9, ComponentData<S> shared)
-//
-// Two-layer split (D-3 / plan-strategy §2.2 — DELIBERATELY NOT MERGED):
-//
-//   layer-3 (this file)
-//     "raw value fallback" — fills missing schema fields with the
-//     spawn-data raw shape: 0 / false / ENTITY_NULL_RAW / [] / 0 (slot
-//     id placeholder). The output is the input shape `world.spawn`
-//     receives (`Partial<ShapeOf<S>>` -> `Record<string, unknown>` with
-//     all schema keys present).
-//
-//   layer-4 (silent fallback inside writeRow / write{Buffer,Array,
-//            UniqueRef}Field)
-//     "column-store value fallback" — when raw === 0 hits a managed-
-//     family arm (string / unique<T> / buffer / buffer<N> / array<T> for
-//     T != entity), the column store routes 0 to "empty slot" semantics
-//     (UniqueRefStore handle 0 / BufferPool slot 0 / array slot
-//     length === 0). The two layers are NEVER merged — layer-3 stays
-//     pure / unaware of column physics; layer-4 stays inside writeRow
-//     where the column instance is in scope.
-//
-// The 14-vocab x default-value table (AC-06 closed table, grep-gate t2
-// keyword "layer-3 typeDefault table"):
-//
-//   ScalarFieldType (11 arms):
-//     f32 / f64 / i32 / u32 / i16 / u16 / i8 / u8       -> 0
-//     bool                                              -> false
-//     enum / ref (legacy scalar)                        -> 0
-//
-//   SchemaVocabKeyword (8 arms; one "buffer" + one "buffer<N>"; one
-//   "ref<T>" + one "handle<T>"; one "entity" + one "string"; two array
-//   variants — array<T,N> / array<T> — collapse to two table arms:
-//     'string'                  -> 0  (uniqueRefs handle slot;
-//                                       resolved payload '' on read)
-//     'entity'                  -> ENTITY_NULL_RAW (NULL_ENTITY u32
-//                                       = 0xffffffff)
-//     'array<entity>'           -> []  (THE ONLY array<T> arm with []
-//                                       — entity[] runtime shape is a
-//                                       JS array of Entity, not a
-//                                       BufferPool slot id)
-//     'array<T>'  (T != entity) -> 0  (BufferPool slot id; layer-4
-//                                       writeArrayField bottoms out to
-//                                       empty slot — D-2 asymmetric;
-//                                       SceneAsset byte-equivalence,
-//                                       OOS-6 letter)
-//     'array<T, N>' (any T)     -> 0  (inline stride-N column,
-//                                       feat-20260602; fallback writes the
-//                                       zeroed row, not a slot id)
-//     'buffer'                  -> 0  (BufferPool slot id; variable
-//                                       byte capacity)
-//     'buffer<N>'               -> 0  (inline stride-N u8 column,
-//                                       feat-20260602; fallback writes the
-//                                       zeroed row, not a slot id)
-//     'unique<T>'                  -> 0  (UniqueRefStore handle slot)
-//     'handle<T>'               -> 0  (unmanaged handle phantom u32;
-//                                       schema-level nullable -> NULL
-//                                       sentinel 0)
-//
-// Brand-class semantics (AC-10 / requirements §A-3 reframe round 2):
-// `handle<T>` and `ref<T>` are SCHEMA-LEVEL nullable. Spawn `data: {}`
-// is legal; layer-3 fills 0 (NULL sentinel for unmanaged handles) /
-// 0 (uniqueRefs handle slot, '' payload). SceneAsset.instantiate
-// produces byte-equivalent column state.
-//
-// Anchors:
-//   - requirements §AC-05 (helper SSOT) + §AC-06 (closed 14-vocab table)
-//     + §AC-09 (SceneAsset byte-equiv) + §AC-10 (brand-class nullable)
-//   - plan-strategy §2.1 (helper file location decision)
-//             §2.2 (two-layer split JSDoc declaration)
-//             §2.3 (array<T> T!=entity asymmetric raw 0)
-//             §3.1 (helper node in component graph)
-//             §8.2 (naming rules: fillComponentDefaults / typeDefault)
-//             §8.4 (head JSDoc as discovery anchor)
+// Shared raw input defaults for spawn and component insertion.
 
 import type { Component, ComponentSchema } from './component';
 import { componentSchema } from './component';
@@ -112,9 +32,9 @@ function typeDefault(fieldType: string): unknown {
   // JS array literal — entity[] runtime shape is a JS Array<Entity>,
   // not a BufferPool slot id (D-2 asymmetric pivot).
   if (fieldType === 'array<entity>') return [];
-  // every other vocab keyword (incl. 'string' / 'unique<T>' / 'handle<T>'
+  // every other vocab keyword (incl. 'string' / 'unique<T>' / 'asset<kind>'
   // / 'buffer' / 'buffer<N>' / 'array<T>' (T!=entity) / 'array<T, N>')
-  // and every remaining ScalarFieldType (f* / i* / u* / enum / ref)
+  // and every remaining ScalarFieldType (f* / i* / u* / enum)
   // defaults to numeric 0 at the spawn-data raw surface. Layer-4
   // silent fallback inside writeRow turns 0 into the empty-slot
   // shape on the column-store side when applicable.

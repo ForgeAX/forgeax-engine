@@ -49,6 +49,13 @@ import type { SkyboxSnapshot, SkylightSnapshot } from '../render-system-extract'
 import { recordContext } from '../world/view-record-context';
 import { createProbeBackgroundResources, type ProbeBackgroundResources } from './background';
 import {
+  type FallbackReceiptFields,
+  type FallbackStagingFrame,
+  fallbackReceiptFields,
+  type StagedFallbackEvidence,
+  stageFallbackEvidence,
+} from './fallback-staging';
+import {
   advanceProbeFilter,
   commitProbeFilterStep,
   createProbeFilterState,
@@ -59,13 +66,10 @@ import { inspectReflectionFallback, type ReflectionFallbackFailureInput } from '
 import {
   admitReflectionProbe,
   DEFAULT_REFLECTION_PROBE_LIMITS,
-  deriveReflectionFallbackProjection,
   type ReflectionFallbackProjection,
   type ReflectionProbeFact,
   type ReflectionProbeSelectionResult,
-  reflectionFallbackCoverage,
   reflectionFallbackProjectionSignature,
-  reflectionFallbackSourceKey,
   resolveReflectionFallbackSource,
 } from './projection';
 
@@ -120,6 +124,10 @@ type PendingFallback = {
   readonly projection: ReflectionFallbackProjection;
   /** Prepared with this ticket's immutable projection; valid for this ticket's lifetime. */
   readonly signature: string;
+  /** The projection's receipt fields, prepared once with the projection. */
+  readonly receiptFields: FallbackReceiptFields;
+  /** Derived evidence shares this ticket owner's retention and retirement. */
+  readonly evidence?: StagedFallbackEvidence;
 };
 
 function hasNonNeutralFallback(tickets: ReadonlyMap<string, PendingFallback>): boolean {
@@ -142,6 +150,7 @@ const NEUTRAL_FRAME_PROJECTION: ReflectionFallbackProjection = Object.freeze({
 });
 
 const NEUTRAL_FRAME_SIGNATURE = reflectionFallbackProjectionSignature(NEUTRAL_FRAME_PROJECTION);
+const NEUTRAL_FRAME_RECEIPT_FIELDS = fallbackReceiptFields(NEUTRAL_FRAME_PROJECTION);
 
 const REFLECTION_PROBE_PRODUCER_ID = 'forgeax::render::reflection-probe-record-owner';
 // Probe uniforms share the existing Skylight ABI.  Offset the negative
@@ -208,7 +217,6 @@ export class ReflectionProbeRecordOwner {
     }
     return {
       updates: [...this.resources.values()].map((resource) => ({
-        worldId: resource.fact.worldId,
         entityKey: resource.fact.entityKey,
         intent: resource.fact.updateIntent ?? 'once',
         activeGeneration: resource.filter.activeGeneration,
@@ -427,16 +435,14 @@ export class ReflectionProbeRecordOwner {
       string,
       { readonly fact: ReflectionProbeFact; readonly ready: boolean }
     >();
-    for (const fact of facts
-      .slice()
-      .sort((a, b) => a.worldId - b.worldId || a.entityKey - b.entityKey)) {
+    for (const fact of facts.slice().sort((a, b) => a.entityKey - b.entityKey)) {
       const admission = admitReflectionProbe(
         fact,
         { acceptedCount, acceptedBytes },
         DEFAULT_REFLECTION_PROBE_LIMITS,
       );
       if (!admission.ok) continue;
-      const key = `${fact.worldId}:${fact.entityKey}`;
+      const key = `${fact.entityKey}`;
       const resource = this.resources.get(key);
       if (resource === undefined) continue;
       acceptedCount += 1;
@@ -449,10 +455,7 @@ export class ReflectionProbeRecordOwner {
       });
     }
     for (const selection of selections.values()) {
-      const probe =
-        selection.kind === 'probe'
-          ? accepted.get(`${selection.worldId}:${selection.entityKey}`)
-          : undefined;
+      const probe = selection.kind === 'probe' ? accepted.get(`${selection.entityKey}`) : undefined;
       if (
         nonNeutralFallbackSource(
           resolveReflectionFallbackSource(selection, probe?.ready === true, skylight !== undefined),
@@ -472,7 +475,7 @@ export class ReflectionProbeRecordOwner {
     sceneRevision = '',
     skybox?: SkyboxSnapshot,
     environment?: SelectedEnvironmentFrame,
-    resourceWorld: RenderResourceScope | number = 0,
+    resourceWorld?: RenderResourceScope,
   ): ReflectionProbeRecordState {
     this.currentFrame = frameId;
     this.refreshFallbackCapabilities(frameId);
@@ -490,15 +493,12 @@ export class ReflectionProbeRecordOwner {
       firstSelection?.kind === 'probe'
         ? {
             kind: 'probe',
-            worldId: firstSelection.worldId,
             entityKey: firstSelection.entityKey,
           }
         : { kind: 'skylight' };
     if (facts.length > 0) this.ensurePipelineWarmup();
     void this.pipelineWarmup;
-    const ordered = facts
-      .slice()
-      .sort((a, b) => a.worldId - b.worldId || a.entityKey - b.entityKey);
+    const ordered = facts.slice().sort((a, b) => a.entityKey - b.entityKey);
     let acceptedCount = 0;
     let acceptedBytes = 0;
     const accepted = new Map<string, ProbeGpuResource>();
@@ -509,7 +509,7 @@ export class ReflectionProbeRecordOwner {
         DEFAULT_REFLECTION_PROBE_LIMITS,
       );
       if (!admission.ok) continue;
-      const key = `${fact.worldId}:${fact.entityKey}`;
+      const key = `${fact.entityKey}`;
       const resource = this.resourceFor(
         key,
         fact,
@@ -549,9 +549,8 @@ export class ReflectionProbeRecordOwner {
           : undefined;
         if (active === undefined) return undefined;
         return {
-          primitiveKey: `${resource.fact.worldId}:${resource.fact.entityKey}`,
+          primitiveKey: `${resource.fact.entityKey}`,
           index: resource.index,
-          worldId: resource.fact.worldId,
           entityKey: resource.fact.entityKey,
           center: resource.fact.center,
           halfExtents: resource.fact.halfExtents,
@@ -750,7 +749,7 @@ export class ReflectionProbeRecordOwner {
     for (const { resource, pending } of captureTickets) {
       if (
         resource.pending !== pending ||
-        this.resources.get(`${resource.fact.worldId}:${resource.fact.entityKey}`) !== resource
+        this.resources.get(`${resource.fact.entityKey}`) !== resource
       )
         continue;
       delete resource.pending;
@@ -784,7 +783,7 @@ export class ReflectionProbeRecordOwner {
     frameId: number,
     skylight: SkylightSnapshot | undefined,
     environment: SelectedEnvironmentFrame | undefined,
-    resourceWorld: RenderResourceScope | number = 0,
+    resourceWorld?: RenderResourceScope,
   ): ReadonlyMap<string, PendingFallback> {
     const tickets = new Map<string, PendingFallback>();
     // With no environment source every renderable resolves to the same exact
@@ -806,17 +805,13 @@ export class ReflectionProbeRecordOwner {
       stagedSelections.size === 0 || skylight === undefined
         ? ''
         : `:${JSON.stringify([skylight.equirectHandle, skylight.intensity, ...skylight.color, ...skylight.rotation, ...(skylight.ambientIrradiance ?? [0, 0, 0]), ...skylightGroundLane(skylight, true), skyContent])}`;
+    const frame: FallbackStagingFrame = {
+      skylight,
+      skylightSignature,
+      environmentSignature: environment?.environmentSignature ?? '',
+    };
     for (const [renderableKey, selection] of stagedSelections)
-      this.stageFallbackProjection(
-        renderableKey,
-        selection,
-        accepted,
-        frameId,
-        skylight,
-        skylightSignature,
-        environment,
-        tickets,
-      );
+      this.stageFallbackProjection(renderableKey, selection, accepted, frameId, frame, tickets);
     // Retire rows that disappeared from this frame's main-pass selection.
     // Keeping them would make a detached inspection row outlive its source.
     for (const renderableKey of this.fallbackReceipts.keys()) {
@@ -852,6 +847,7 @@ export class ReflectionProbeRecordOwner {
       deviceGeneration: recordContext(this.internals).deviceScope.generation,
       projection: NEUTRAL_FRAME_PROJECTION,
       signature: NEUTRAL_FRAME_SIGNATURE,
+      receiptFields: NEUTRAL_FRAME_RECEIPT_FIELDS,
     };
     tickets.set('__frame__', pending);
     this.latestFallbackTickets.set('__frame__', pending);
@@ -863,47 +859,27 @@ export class ReflectionProbeRecordOwner {
     selection: ReflectionProbeSelectionResult,
     accepted: ReadonlyMap<string, ProbeGpuResource>,
     frameId: number,
-    skylight: SkylightSnapshot | undefined,
-    skylightSignature: string,
-    environment: SelectedEnvironmentFrame | undefined,
+    frame: FallbackStagingFrame,
     tickets: Map<string, PendingFallback>,
   ): void {
-    const probeKey =
-      selection.kind === 'probe' ? `${selection.worldId}:${selection.entityKey}` : undefined;
-    const resource = probeKey === undefined ? undefined : accepted.get(probeKey);
-    const source = resolveReflectionFallbackSource(
-      selection,
-      resource?.active !== undefined &&
-        resource.activeFact?.center.every((v, i) => v === resource.fact.center[i]) === true,
-      skylight !== undefined,
-    );
-    const projectionInput = {
-      renderableKey,
-      sourceKey:
-        reflectionFallbackSourceKey(source, selection, skylight) +
-        (source === 'probe' && resource !== undefined
-          ? `@${resource.filter.activeGeneration}:${resource.fact.boxProjection === true}:${resource.fact.intensity}`
-          : '') +
-        skylightSignature +
-        (source === 'skylight' ? `:environment:${environment?.environmentSignature ?? ''}` : ''),
-      source,
-      coverage: reflectionFallbackCoverage(source, resource?.fact, selection),
-      ...(resource === undefined ? {} : { extent: resource.fact.halfExtents }),
-      linearHdr: [0, 0, 0, 0] as const,
-      brdfSignature: 'standard-pbr-ibl-v1',
-    };
     const previousCandidate = this.latestFallbackTickets.get(renderableKey);
-    const projection = deriveReflectionFallbackProjection(projectionInput);
-    if (!projection.ok) {
+    const staged = stageFallbackEvidence(
+      previousCandidate?.evidence,
+      renderableKey,
+      selection,
+      accepted,
+      frame,
+    );
+    if (!staged.ok) {
       this.recordFallbackFailure({
         stage: 'prepare',
-        code: projection.error.code,
-        expected: projection.error.expected,
-        detail: { renderableKey, field: projection.error.field },
+        code: staged.error.code,
+        expected: staged.error.expected,
+        detail: { renderableKey, field: staged.error.field },
       });
       return;
     }
-    const signature = reflectionFallbackProjectionSignature(projection.value);
+    const signature = staged.signature;
     if (previousCandidate !== undefined && previousCandidate.signature !== signature) {
       this.fallbackRetiredFrames.set(renderableKey, frameId);
     }
@@ -923,8 +899,10 @@ export class ReflectionProbeRecordOwner {
       ticket: ++this.nextFallbackTicket,
       frameId,
       deviceGeneration: recordContext(this.internals).deviceScope.generation,
-      projection: projection.value,
+      projection: staged.projection,
       signature,
+      receiptFields: staged.receiptFields,
+      evidence: staged,
     };
     tickets.set(renderableKey, pending);
     this.latestFallbackTickets.set(renderableKey, pending);
@@ -950,16 +928,14 @@ export class ReflectionProbeRecordOwner {
         return;
       }
     }
-    const selectedSourceKey =
-      this.lastSelection.kind === 'probe'
-        ? `probe:${this.lastSelection.worldId}:${this.lastSelection.entityKey}`
-        : undefined;
+    const selectedSourcePrefix =
+      this.lastSelection.kind === 'probe' ? `probe:${this.lastSelection.entityKey}@` : undefined;
     let sourceMatch: string | undefined;
     for (const [key, pending] of tickets) {
       const matches =
-        (selectedSourceKey !== undefined &&
-          pending.projection.sourceKey?.startsWith(`${selectedSourceKey}@`) === true) ||
-        (selectedSourceKey === undefined && pending.projection.source === 'skylight');
+        (selectedSourcePrefix !== undefined &&
+          pending.projection.sourceKey?.startsWith(selectedSourcePrefix) === true) ||
+        (selectedSourcePrefix === undefined && pending.projection.source === 'skylight');
       if (matches && (sourceMatch === undefined || key < sourceMatch)) sourceMatch = key;
     }
     if (sourceMatch !== undefined) {
@@ -999,13 +975,13 @@ export class ReflectionProbeRecordOwner {
     const previousSignature = this.fallbackSignatures.get(renderableKey);
     const changed = signature !== previousSignature;
     const previous = this.fallbackReceipts.get(renderableKey);
-    const generations = this.fallbackGenerations.get(renderableKey) ?? {
+    const known = this.fallbackGenerations.get(renderableKey);
+    const generations = known ?? {
       source: previous?.sourceGeneration ?? 0,
       projection: previous?.projectionGeneration ?? 0,
     };
-    const { linearHdr: _referencePixel, ...projection } = pending.projection;
     const receipt = Object.freeze({
-      ...projection,
+      ...pending.receiptFields,
       rendererId: recordContext(this.internals).deviceScope.owner,
       producerId: REFLECTION_PROBE_PRODUCER_ID,
       ...(this.internals.ssrIdentity === undefined ? {} : { identity: this.internals.ssrIdentity }),
@@ -1016,10 +992,12 @@ export class ReflectionProbeRecordOwner {
       state,
       candidateVisible: false,
     }) satisfies ReflectionFallbackReceipt;
-    this.fallbackGenerations.set(renderableKey, {
-      source: receipt.sourceGeneration,
-      projection: receipt.projectionGeneration,
-    });
+    // An unchanged signature keeps the recorded generations as they are.
+    if (changed || known === undefined)
+      this.fallbackGenerations.set(renderableKey, {
+        source: receipt.sourceGeneration,
+        projection: receipt.projectionGeneration,
+      });
     this.fallbackSignatures.set(renderableKey, signature);
     this.fallbackReceipts.set(renderableKey, receipt);
     this.fallbackCommittedFrames.set(renderableKey, pending.frameId);
@@ -1291,7 +1269,7 @@ export class ReflectionProbeRecordOwner {
     sceneRevision = '',
     skylight?: SkylightSnapshot,
     environment?: SelectedEnvironmentFrame,
-    resourceWorld: RenderResourceScope | number = 0,
+    resourceWorld?: RenderResourceScope,
   ): ProbeGpuResource | undefined {
     const cache =
       skylight !== undefined && skylight.equirectHandle !== 0

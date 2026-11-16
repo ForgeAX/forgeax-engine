@@ -31,6 +31,12 @@ export type ProfilerError =
       };
     }
   | {
+      readonly code: 'phase-catalog-provider-failed';
+      readonly expected: string;
+      readonly hint: string;
+      readonly detail: { readonly source: ProfileSource; readonly message: string };
+    }
+  | {
       readonly code: 'profile-source-failed';
       readonly expected: string;
       readonly hint: string;

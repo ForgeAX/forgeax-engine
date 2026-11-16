@@ -2,7 +2,12 @@ import type { GlobalSdfGrid } from '../raytracing/global-sdf';
 import type { GlobalSdfQueryOptions } from '../raytracing/global-sdf-query';
 import type { SsaoParameterConfig } from '../ssao-config';
 export const STANDARD_PIPELINE_ID = 'forgeax::standard' as const;
-export const STANDARD_LIGHT_COUNTS = [1, 32, 256] as const;
+/**
+ * Largest `StandardProfile.lightCount`: the Cluster's DirectLightSlot array
+ * length. The slot array is fixed and lights past it are dropped in canonical
+ * order.
+ */
+export const STANDARD_MAX_LIGHT_COUNT = 1024;
 export {
   CLUSTER_GRID_COUNT_WORD_OFFSET_U32,
   CLUSTER_GRID_STRIDE_U32,
@@ -10,7 +15,18 @@ export {
   LIGHT_INDEX_LIST_CAPACITY,
 } from './standard-lighting/layout';
 
-export type StandardLightCount = (typeof STANDARD_LIGHT_COUNTS)[number];
+/** Integer local-light budget in `1..STANDARD_MAX_LIGHT_COUNT`. */
+export type StandardLightCount = number;
+
+/** Whether `value` is an integer local-light budget in `1..STANDARD_MAX_LIGHT_COUNT`. */
+export function isStandardLightCount(value: unknown): value is StandardLightCount {
+  return (
+    typeof value === 'number' &&
+    Number.isInteger(value) &&
+    value >= 1 &&
+    value <= STANDARD_MAX_LIGHT_COUNT
+  );
+}
 export type StandardVolumetricFogQuality = 'low' | 'high';
 
 interface StandardDiffuseGiCommon {
@@ -223,7 +239,7 @@ export const DEFAULT_STANDARD_PROFILE: StandardProfile = Object.freeze({
   pipelineId: STANDARD_PIPELINE_ID,
   // Runtime light admission follows the selected profile; physical Cluster
   // capacity comes from the published DirectLightSlot reflection.
-  lightCount: 256,
+  lightCount: STANDARD_MAX_LIGHT_COUNT,
   renderPath: 'forward',
   pbr: true,
   ibl: true,

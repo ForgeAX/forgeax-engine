@@ -40,6 +40,7 @@ export {
   type SurfaceComposition,
   type SurfaceCompositionRequest,
   type SurfaceCompositionStage,
+  waterDeformationAbiSource,
 } from './material/compose.js';
 export { composeMaterial } from './material/compose-material.js';
 export {
@@ -141,3 +142,5 @@ export {
   type ParsedReflection,
   parseReflection,
 } from './reflection.js';
+
+export { createTextureGeneratorPackCooker } from './texture-generator-cooker.js';

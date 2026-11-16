@@ -261,43 +261,62 @@ export async function verifyLightingChannels(
   const draw = async (observe: boolean, capture: boolean) => {
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
-    const pending = capture ? options.recorder?.captureFrame() : undefined;
-    if (pending !== undefined) (await options.recorder?.frameBoundary())?.unwrap();
     time += 1 / 60;
-    const receipt = await completeReadyFrame(async () => {
-      const candidate = publisher?.prepare(time).unwrap();
-      const packet =
-        candidate === undefined
-          ? undefined
-          : structuredClone(candidate.message, {
-              transfer: renderPublicationTransfers(candidate.message),
-            });
-      candidate?.accept();
-      try {
-        if (observe) renderValue(required(renderer.requestObservation?.(['linear-hdr'])));
-        const receipt = renderValue(
-          renderer.draw(
-            packet === undefined
-              ? {
-                  leases: [required(lease)],
-                  camera: { lease: required(lease) },
-                  environment: { lease: required(lease) },
-                }
-              : { publication: packet },
-          ),
-        );
-        renderValue(await receipt.completed);
-        return receipt;
-      } finally {
-        if (packet !== undefined)
-          required(publisher).recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
-      }
-    });
+    let recycling: Promise<void> | undefined;
     let tape: EncodedTape | undefined;
-    if (pending !== undefined) {
-      (await options.recorder?.frameBoundary())?.unwrap();
-      tape = compactTape((await pending).unwrap());
-    }
+    const receipt = await completeReadyFrame(
+      async () => {
+        const candidate = publisher?.prepare(time).unwrap();
+        const packet =
+          candidate === undefined
+            ? undefined
+            : structuredClone(candidate.message, {
+                transfer: renderPublicationTransfers(candidate.message),
+              });
+        candidate?.accept();
+        const recycle = () => {
+          if (packet !== undefined)
+            required(publisher)
+              .recycle(packet.revision, renderPublicationTransfers(packet))
+              .unwrap();
+        };
+        try {
+          const pending = capture ? options.recorder?.captureFrame() : undefined;
+          if (pending !== undefined) (await options.recorder?.frameBoundary())?.unwrap();
+          if (observe) renderValue(required(renderer.requestObservation?.(['linear-hdr'])));
+          const receipt = renderValue(
+            renderer.draw(
+              packet === undefined ? { source: required(lease) } : { publication: packet },
+            ),
+          );
+          // Return the preparation signal before waiting for the native fence.
+          // Publication storage remains owned until this physical frame completes.
+          recycling = receipt.completed.then(recycle, (error) => {
+            recycle();
+            throw error;
+          });
+          void recycling.catch(() => {});
+          // Each recording owns one physical submission, including cold attempts.
+          if (pending !== undefined) {
+            (await options.recorder?.frameBoundary())?.unwrap();
+            const recorded = compactTape((await pending).unwrap());
+            if (receipt.presentation === 'ready') tape = recorded;
+          }
+          return receipt;
+        } catch (error) {
+          if (recycling === undefined) recycle();
+          throw error;
+        }
+      },
+      {
+        async onCompleted(receipt) {
+          await recycling;
+          recycling = undefined;
+          if (observe && receipt.presentation !== 'ready' && receipt.observationDomains?.length)
+            renderValue(await renderer.observe(receipt, { include: receipt.observationDomains }));
+        },
+      },
+    );
     const observation = observe
       ? renderValue(
           await renderer.observe(receipt, { include: ['linear-hdr'] }),

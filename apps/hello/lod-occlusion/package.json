@@ -43,6 +43,7 @@
   },
   "dependencies": {
     "@forgeax/apps-shared": "workspace:*",
+    "@forgeax/engine-codec": "workspace:*",
     "@forgeax/engine-ecs": "workspace:*",
     "@forgeax/engine-gltf": "workspace:*",
     "@forgeax/engine-math": "workspace:*",

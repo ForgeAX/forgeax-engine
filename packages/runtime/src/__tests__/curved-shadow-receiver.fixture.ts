@@ -164,7 +164,7 @@ export async function createCurvedShadowReceiverFixture(
           propagateTransforms(world).unwrap();
           const receipt = await drawReadyFrame(
             renderer,
-            { leases: [lease], camera: { lease }, environment: { lease } },
+            { source: lease },
             frame === 2 ? ['linear-hdr'] : undefined,
           );
           if (frame !== 2) continue;

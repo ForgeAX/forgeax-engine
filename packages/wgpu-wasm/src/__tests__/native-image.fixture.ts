@@ -1,12 +1,10 @@
-import { commands } from 'vitest/browser';
+import { type BrowserCommands, commands as browserCommands } from 'vitest/browser';
 import type * as CanonicalWgpu from '../../pkg/wgpu_wasm';
 import type { NativeWgpuInitializer } from '../native-host';
 
-declare module 'vitest/browser' {
-  interface BrowserCommands {
-    prepareNativeWgpuModule(): Promise<string>;
-  }
-}
+const commands = browserCommands as BrowserCommands & {
+  prepareNativeWgpuModule(): Promise<string>;
+};
 
 export const TOP = [220, 30, 60, 255];
 export const BOTTOM = [20, 200, 90, 255];

@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { materialPipelineCacheKey } from '../assembly/material-shader-policy';
 import { SHADOW_CASTER_SHADER_ID } from '../pbr-pipeline';
-import { shadowCasterDepthOnly } from '../record/shadow-pass';
+import {
+  positionOnlyShadowVertexEntry,
+  SHADOW_CASTER_POSITION_ONLY_ENTRY,
+  shadowCasterDepthOnly,
+} from '../record/shadow-pass';
 
 type Projection = Parameters<typeof shadowCasterDepthOnly>[1];
 type Batch = Parameters<typeof shadowCasterDepthOnly>[2];
@@ -120,5 +124,34 @@ describe('materialPipelineCacheKey', () => {
     expect(materialPipelineCacheKey('spec', 'vs_scene_index', null)).toBe(
       'spec|vertex:vs_scene_index|fs:none',
     );
+  });
+});
+
+describe('positionOnlyShadowVertexEntry', () => {
+  const artifact = (entries: readonly string[]) =>
+    ({
+      material: SHADOW_CASTER_SHADER_ID,
+      receipt: { sceneIndexEntry: 'vs_scene_index' },
+      program: { entryPoints: entries.map((name) => ({ stage: 'vertex', name })) },
+    }) as unknown as Parameters<typeof positionOnlyShadowVertexEntry>[0];
+
+  it('binds the position-only stream for rigid casters that declare it', () => {
+    expect(
+      positionOnlyShadowVertexEntry(
+        artifact(['vs_scene_index', SHADOW_CASTER_POSITION_ONLY_ENTRY]),
+        { deformation: 'rigid' },
+      ),
+    ).toBe(SHADOW_CASTER_POSITION_ONLY_ENTRY);
+  });
+
+  it('keeps the full entry for skinned casters, older artifacts and authored entries', () => {
+    const both = artifact(['vs_scene_index', SHADOW_CASTER_POSITION_ONLY_ENTRY, 'vs_shadow']);
+    expect(positionOnlyShadowVertexEntry(both, { deformation: 'skin' })).toBe('vs_scene_index');
+    expect(
+      positionOnlyShadowVertexEntry(artifact(['vs_scene_index']), { deformation: 'rigid' }),
+    ).toBe('vs_scene_index');
+    expect(
+      positionOnlyShadowVertexEntry(both, { deformation: 'rigid', shadowVertexEntry: 'vs_shadow' }),
+    ).toBe('vs_shadow');
   });
 });

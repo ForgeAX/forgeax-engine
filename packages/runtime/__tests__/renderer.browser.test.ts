@@ -76,11 +76,7 @@ describe('renderer.browser - WebGPU path RHI contract (AC-05)', () => {
     world.update(1 / 60).unwrap();
     const events: RendererEvent[] = [];
     const unsubscribe = renderer.subscribe((event) => events.push(event));
-    const drawn = renderer.draw({
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
+    const drawn = renderer.draw({ source: attached.value });
     expect(drawn.ok).toBe(true);
     if (!drawn.ok) return;
     expect(drawn.value.presentation).toBe('ready');
@@ -92,11 +88,7 @@ describe('renderer.browser - WebGPU path RHI contract (AC-05)', () => {
     );
     const draw = async () => {
       world.update(1 / 60).unwrap();
-      const result = created.value.draw({
-        leases: [attached.value],
-        camera: { lease: attached.value },
-        environment: { lease: attached.value },
-      });
+      const result = created.value.draw({ source: attached.value });
       if (!result.ok) throw new Error(JSON.stringify(result.error));
       expect((await result.value.completed).ok).toBe(true);
     };

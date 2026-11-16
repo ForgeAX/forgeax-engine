@@ -281,8 +281,7 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){(*p).age+=ctx.de
             {
               identity: 'main',
               render: true,
-              worlds: [world],
-              owner: 0,
+              world: world,
               frameNumber: frameNumber * 2 + _repeat,
               generation: 0,
               caps: device.caps,
@@ -349,5 +348,5 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){(*p).age+=ctx.de
       assets.dispose();
     }
   },
-  600_000,
+  600000,
 );

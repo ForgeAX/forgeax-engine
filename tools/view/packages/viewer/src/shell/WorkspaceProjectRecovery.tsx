@@ -104,8 +104,8 @@ function useWorkspaceRecovery(client?: WorkspaceRecoveryClient, { adoptRemote = 
     }
   }, [busy, client]);
 
-  const onOpenProject = useCallback((event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
+  const onOpenProject = useCallback((event?: FormEvent<HTMLFormElement>) => {
+    event?.preventDefault();
     if (!client?.openProject || busy || !projectRoot.trim()) return;
     if (client.projectSession) { void client.projectSession.open(projectRoot.trim()); return; }
     setBusy(true);
@@ -160,8 +160,8 @@ export function WorkspaceProjectRecovery({ client, required }: { client: Workspa
       initialFocusRef={inputRef}
       footer={(
         <Button
-          form={PROJECT_OPEN_FORM_ID}
-          type="submit"
+          type="button"
+          onClick={() => onOpenProject()}
           variant="primary"
           loading={busy}
           disabled={busy || !projectRoot.trim()}

@@ -1,3 +1,4 @@
+import { defineSystem } from "@forgeax/engine-ecs";
 import { Update } from '@forgeax/engine-ecs';
 import type { RenderFeature } from '@forgeax/engine-render';
 import { ok } from '@forgeax/engine-types';
@@ -9,7 +10,27 @@ function holdUntilGate<T>(completion: Promise<T>, gate: Promise<void>): Promise<
 }
 
 const entry: ExecutionBootstrapEntry = async (data) => {
-  const options = data as { stallMs?: number; cleanupMs?: number; cleanupChannel?: string; fail?: boolean; holdFirstCompletion?: boolean };
+  const options = data as { stallMs?: number; cleanupMs?: number; cleanupChannel?: string; fail?: boolean; holdFirstCompletion?: boolean; cleanupEvidence?: boolean };
+  if (options.cleanupEvidence && options.cleanupChannel) {
+    // Both actual Worker realms already consume this fixture-owned witness.
+    // Forward teardown facts only; leave timing, receipts and protocol intact.
+    const witness = new BroadcastChannel(options.cleanupChannel);
+    const warn = console.warn.bind(console);
+    let rows = 0;
+    console.warn = (...args: unknown[]) => {
+      warn(...args);
+      const row = args[0];
+      if (typeof row !== 'string' || !row.includes('"kind":"render-worker-disposal"') || rows >= 24)
+        return;
+      try {
+        witness.postMessage({ ...JSON.parse(row), observedAt: performance.timeOrigin + performance.now() });
+        rows++;
+      } catch (cause) {
+        console.error('Worker cleanup evidence transport failed', cause);
+      }
+    };
+    // The witness shares this Worker realm's lifetime, including forced termination.
+  }
   const base = await baseEntry(1);
   let tick = 0;
   let marker = 0;
@@ -73,7 +94,8 @@ const entry: ExecutionBootstrapEntry = async (data) => {
       apply(ctx) {
         port = ctx.executionBootstrapHost.port;
         const witness = new BroadcastChannel(options.cleanupChannel ?? 'missing-cleanup-witness');
-        ctx.world.addSystem(Update, { name: 'contract-tick', queries: [], fn: () => { marker = ++tick; } }).unwrap();
+        const systemToken1 = defineSystem({ name: 'contract-tick', queries: [], fn: () => { marker = ++tick; } });
+ctx.world.addSystem(Update, systemToken1).unwrap();
         const receive = (event: MessageEvent) => {
           if (event.data === 'mutate-sealed-source') {
             // Cross an await exactly like an admitted asynchronous inspection.
@@ -84,7 +106,7 @@ const entry: ExecutionBootstrapEntry = async (data) => {
         return async () => {
           witness.postMessage({ kind: 'cleanup-started' });
           await new Promise((resolve) => setTimeout(resolve, options.cleanupMs ?? 25));
-          ctx.world.removeSystem(Update, 'contract-tick').unwrap();
+          ctx.world.removeSystem(Update, systemToken1).unwrap();
           port?.removeEventListener('message', receive);
           witness.postMessage({ kind: 'cleanup-completed' });
           witness.close();

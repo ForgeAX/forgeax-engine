@@ -17,7 +17,6 @@ import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
 import { MAX_VOLUMETRIC_FOG_OWNERS } from '../volume/component';
 import { additionalVolumeDensityBinding } from '../volume/passes';
 import { VOLUMETRIC_FOG_PARAMS_BYTES } from '../volume/resources';
-import { STANDARD_CLUSTER_TEST_ABI } from './cluster-test-abi';
 
 const MAP_READ = 0x0001;
 const BUFFER_COPY_DST = 0x0008;
@@ -31,9 +30,6 @@ const SIZE = 8;
 const PACKED_LAYERS = Math.ceil(SIZE / 4);
 const BYTES_PER_ROW = 256;
 const BYTES_PER_PIXEL = 8;
-const MAX_CLUSTER_LIGHTS = 256;
-const CLUSTER_LIGHT_DATA_BYTES =
-  MAX_CLUSTER_LIGHTS * STANDARD_CLUSTER_TEST_ABI.directLightSlot.byteSize;
 const CLUSTER_UNIFORM_BYTES = 32;
 const VOLUME_BOUNDS_MIN_Z = 0.1;
 const VOLUME_BOUNDS_MAX_Z = 0.9;
@@ -43,6 +39,12 @@ const NON_UNIFORM_EXTINCTION = 0.05;
 const MIN_NON_UNIFORM_REFERENCE_SEPARATION = 0.05;
 const MIN_NON_UNIFORM_GPU_SEPARATION = 0.05;
 const engineManifest = await buildEngineShaderManifest();
+const lightDataBinding = engineManifest.entries
+  .find(({ wgsl }) => wgsl.includes('fn volume_inject'))
+  ?.reflection?.boundGlobals.find(({ group, binding }) => group === 0 && binding === 7);
+const reflectedLightDataBytes = lightDataBinding?.typeDescriptor?.byteSize;
+if (reflectedLightDataBytes === undefined) throw new Error('Missing volume light-data ABI');
+const CLUSTER_LIGHT_DATA_BYTES = reflectedLightDataBytes;
 
 interface StageValues {
   readonly red: number[];
@@ -70,7 +72,7 @@ interface StageReadbackOptions {
   /** Optional RGBA8 density field for the production integrate stage. */
   readonly densityData?: Uint8Array;
   readonly densityFormat?: 'rgba8unorm' | 'rgba16float';
-  readonly sampling?: 0 | 1 | 2;
+  readonly sampling?: 0 | 1 | 2 | 3;
   readonly boundsOffsetX?: number;
   readonly boundsMinZ?: number;
   readonly boundsMaxZ?: number;
@@ -498,6 +500,9 @@ function viewUniformData(options: StageReadbackOptions): Float32Array {
   viewData[229] = 10;
   viewData[230] = 0;
   viewData[235] = 1;
+  // No cooked cloud producer: disable the View-owned spatial BSM projection.
+  // The production direct-sun consumer then retains the unshadowed #3197 baseline.
+  viewData.set([0, 0, 0, 0], 252);
   return viewData;
 }
 
@@ -517,10 +522,6 @@ function baseVolumeParams(options: StageReadbackOptions): Float32Array {
   paramsData.set([0, -1, 0, options.frameIndex ?? 0], 20);
   paramsData.set([1, 1, 1, 0], 24);
   paramsData.set([options.maxDistance ?? 2, 0, 0, 0], 28);
-  // `simulation.w` is the renderer-owned selected-sun cloud transmittance
-  // carrier. A fixture without a CloudLayer must retain the unshadowed
-  // #3197 baseline instead of reading the typed-array zero value.
-  paramsData[35] = 1;
   return paramsData;
 }
 
@@ -1449,6 +1450,24 @@ describe('volumetric fog production stage readback on Dawn', () => {
     expect(denseTransmission).toBeLessThan(mediumTransmission);
     expect(mediumTransmission).toBeLessThan(emptyTransmission);
     expect(denseScattering).toBeGreaterThan(mediumScattering);
+  });
+
+  it('integrates a texture-free uniform medium exactly like a full unit density field', async () => {
+    // The texture is still bound (production binds the 1x1x1 unit volume); a zero
+    // field proves uniform sampling never reads it.
+    const uniform = await runInjectReadback({ sampling: 3, densityByte: 0 });
+    const field = await runInjectReadback({ sampling: 1, densityByte: 255 });
+    const empty = await runInjectReadback({ sampling: 1, densityByte: 0 });
+    for (const channel of ['red', 'green', 'blue', 'alpha'] as const) {
+      expect(uniform.integrate[channel].length).toBeGreaterThan(0);
+      uniform.integrate[channel].forEach((value, index) => {
+        expect(value).toBeCloseTo(field.integrate[channel][index] ?? Number.NaN, 4);
+      });
+    }
+    expect(firstStageValue(uniform.integrate.alpha, 'uniform transmission')).toBeLessThan(
+      firstStageValue(empty.integrate.alpha, 'empty transmission'),
+    );
+    expect(firstStageValue(uniform.integrate.red, 'uniform scattering')).toBeGreaterThan(0);
   });
 
   it('keeps extinction monotonic and bounds temporal jitter spread', async () => {

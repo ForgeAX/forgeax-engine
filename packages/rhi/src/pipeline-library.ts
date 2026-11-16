@@ -208,11 +208,25 @@ export interface PipelineLibrary {
     | Result<ComputePipeline | undefined, RhiError>
     | Promise<Result<ComputePipeline | undefined, RhiError>>;
   inspect(options?: { readonly runtimeRequests?: boolean }): PipelineLibraryInspection;
-  export(limits?: PipelineLibraryLimits): Result<PipelineLibraryManifest, RhiError>;
+  export(
+    limits?: PipelineLibraryLimits,
+    options?: PipelineLibraryExportOptions,
+  ): Result<PipelineLibraryManifest, RhiError>;
   prepare(
     manifest: PipelineLibraryManifest,
     options?: PipelineLibraryPrepareOptions,
   ): Promise<Result<PipelineLibraryInspection, RhiError>>;
+}
+
+/** Selection for one export action; omission lists every compiled recipe. */
+export interface PipelineLibraryExportOptions {
+  /**
+   * List only recipes a renderer asked this device for. A recipe that is
+   * compiled solely because `prepare()` imported it is left out, so an export
+   * taken on top of an installed library does not carry forward entries the
+   * running build never requests.
+   */
+  readonly requestedOnly?: boolean;
 }
 
 /** Limits for one input/export action, never a device resource capacity. */

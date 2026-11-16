@@ -79,11 +79,7 @@ describe('runtime renderer recovery consumer', () => {
     expect(attached.ok).toBe(true);
     if (!attached.ok) return;
     expect(world.update().ok).toBe(true);
-    const frame = host.value.renderer.draw({
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
+    const frame = host.value.renderer.draw({ source: attached.value });
     expect(frame.ok).toBe(true);
     if (frame.ok && frame.value !== undefined) {
       const after = host.value.renderer.inspect();

@@ -1,7 +1,9 @@
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { cloudMaterialDecoder, cloudMaterialKind, createCloudCookers } from '@forgeax/engine-render/authoring';
+import { ok } from '@forgeax/engine-types';
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 
-import { ANTIALIAS_NONE, ANTIALIAS_TAA, Atmosphere, Camera, CameraView, DynamicResolution, CloudLayer, DirectionalLight, Fog, Materials, MeshFilter, MeshRenderer, VolumetricFog } from '@forgeax/engine-render';
+import { ANTIALIAS_NONE, ANTIALIAS_TAA, Atmosphere, Camera, CameraView, DynamicResolution, VolumetricCloudLayer, DirectionalLight, Fog, Materials, MeshFilter, MeshRenderer, VolumetricFog } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
 import type { MaterialAsset, TextureAsset } from '@forgeax/engine-types';
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
@@ -19,9 +21,39 @@ export interface AtmosphereEvidenceSettings {
   alpha?: number; transmission?: number; panelDistance?: number;
 }
 /** Bounded controls for the physical-scale acceptance fixture. */
-export function atmosphereEvidenceControls(world: World, assets: AssetRegistry, scene: {
+export async function atmosphereEvidenceControls(world: World, assets: AssetRegistry, scene: {
   atmosphere?: EntityHandle; sun?: EntityHandle; camera?: EntityHandle;
 }) {
+  const unexpectedCloudCompile = async (): Promise<never> => {
+    throw new Error('Uniform cloud preparation does not compile shaders');
+  };
+  const [cloudCooker] = createCloudCookers({
+    loadSource: unexpectedCloudCompile,
+    compilerIdentity: unexpectedCloudCompile,
+    compile: unexpectedCloudCompile,
+  });
+  const cloudDraft = await cloudCooker.cook({
+    guid: '019a50a5-0000-7000-8000-000000000004',
+    sourcePath: 'environment-cloud.pack.ts',
+    source: {
+      version: 1,
+      model: { kind: 'uniform', sample: {
+        extinctionPerMeter: 0.00012,
+        albedo: [1, 1, 1],
+        emissivePerMeter: [0, 0, 0],
+        materialAO: 1,
+      } },
+      parameters: {},
+    },
+  });
+  const uniformCloud = (await cloudMaterialDecoder.decoder.decode({
+    envelope: { guid: cloudDraft.guid, kind: cloudDraft.payload.kind, payload: cloudDraft.payload, refs: cloudDraft.refs, artifacts: {} },
+    artifacts: { read: async () => ok(new Uint8Array()) },
+    signal: new AbortController().signal,
+  })).unwrap();
+
+  assets.installDecoder(cloudMaterialKind, cloudMaterialDecoder.decoder);
+  const cloudMaterial = assets.create(cloudMaterialKind, uniformCloud).unwrap();
   const cubeHandle = assets.create(BUILTIN_CUBE).unwrap();
   let secondCamera: EntityHandle | undefined;
   let panel: EntityHandle | undefined;
@@ -69,10 +101,10 @@ export function atmosphereEvidenceControls(world: World, assets: AssetRegistry, 
     if (settings.shadows!==undefined) world.set(sun,DirectionalLight,{castShadow:settings.shadows,shadowDistance:25000,mapSize:1024}).unwrap();
     if (settings.mie!==undefined) world.set(atmosphere,Atmosphere,{mieScattering:settings.mie}).unwrap();
     if (settings.clouds!==undefined) {
-      if (settings.clouds) world.addComponent(atmosphere,{component:CloudLayer,data:{baseHeight:1200,thickness:800,scale:.0004,wind:[0,0,0],coverage:.55,shadowRange:60000,quality:2}}).unwrap();
-      else world.removeComponent(atmosphere,CloudLayer).unwrap();
+      if (settings.clouds) world.addComponent(atmosphere,{component:VolumetricCloudLayer,data:{material:cloudMaterial,bottomMeters:1200,thicknessMeters:800,extinctionOverridePerMeter:.00012*.55}}).unwrap();
+      else world.removeComponent(atmosphere,VolumetricCloudLayer).unwrap();
     }
-    if (settings.cloudCoverage!==undefined) world.set(atmosphere,CloudLayer,{coverage:settings.cloudCoverage}).unwrap();
+    if (settings.cloudCoverage!==undefined) world.set(atmosphere,VolumetricCloudLayer,{extinctionOverridePerMeter:.00012*settings.cloudCoverage}).unwrap();
     if (settings.fog!==undefined) {
       if (settings.fog) world.addComponent(atmosphere,{component:Fog,data:{color:[0,0,0],density:.00004,heightFalloff:.001,maxOpacity:.9}}).unwrap();
       else world.removeComponent(atmosphere,Fog).unwrap();

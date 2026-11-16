@@ -66,6 +66,10 @@ function fixture() {
   );
   write('node_modules/vitest/vitest.mjs', "import '../../fixture-step.mjs';\n");
   write(
+    'scripts/ci/check-water-browser-distribution.mjs',
+    "process.argv[2]='water-distribution'; await import('../../fixture-step.mjs');\n",
+  );
+  write(
     'scripts/ci/run-split-vitest-browser.mjs',
     "process.argv[2]='browser'; await import('../../fixture-step.mjs');\n",
   );
@@ -78,6 +82,7 @@ function fixture() {
     "process.argv[2]='dawn'; await import('../../fixture-step.mjs');\n",
   );
   for (const [name, step, script] of [
+    ['@forgeax/engine-water', 'water', 'build'],
     ['@forgeax/engine-devkit', 'devkit', 'test:runtime-browser'],
     ['@forgeax/mesh-io-parity', 'mesh-io', 'verify'],
   ])
@@ -188,13 +193,15 @@ for (const suite of ['browser', 'dawn'])
         .map(JSON.parse);
       assert.deepEqual(
         steps.map((row) => row.step),
-        suite === 'browser' ? ['run', 'browser', 'devkit', 'mesh-io'] : ['build', 'shared', 'dawn'],
+        suite === 'browser'
+          ? ['water', 'water-distribution', 'run', 'browser', 'devkit', 'mesh-io']
+          : ['build', 'shared', 'dawn'],
       );
       if (suite === 'browser') {
-        assert.equal(steps[0].visibility, '1');
-        assert.equal(steps[1].visibility, '0');
+        assert.equal(steps[2].visibility, '1');
+        assert.equal(steps[3].visibility, '0');
         assert.ok(
-          steps[0].args.includes(
+          steps[2].args.includes(
             'apps/hello/entity-visibility/src/__tests__/visibility.browser.test.ts',
           ),
         );
@@ -256,7 +263,7 @@ test('a failed owner retains its exit and prevents subsequent suite commands', a
       .map(JSON.parse);
     assert.deepEqual(
       steps.map((row) => row.step),
-      ['run'],
+      ['water', 'water-distribution', 'run'],
     );
   } finally {
     await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });

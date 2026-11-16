@@ -1,3 +1,4 @@
+import { PhysicsWorldResource } from '@forgeax/engine/physics';
 import { FixedUpdate, Update } from '@forgeax/engine/ecs';
 import { INPUT_BACKEND_KEY, InputFrameStartScan, type InputBackendSample } from '@forgeax/engine/input';
 import { CharacterController } from '@forgeax/engine/physics';
@@ -11,6 +12,18 @@ const empty = (): InputBackendSample => ({
   movementX: 0, movementY: 0, wheelDelta: 0, focused: true, pointerLocked: false,
 });
 
+function deliverQueuedMessages(sender: MessagePort, receiver: MessagePort): Promise<void> {
+  return new Promise((resolve) => {
+    const receive = (event: MessageEvent) => {
+      if (!event.data.barrier) return;
+      receiver.removeEventListener('message', receive);
+      resolve();
+    };
+    receiver.addEventListener('message', receive);
+    sender.postMessage({ barrier: true });
+  });
+}
+
 async function fixture() {
   const base = await pluginFixture();
   const { world, ctx, entity } = base;
@@ -22,13 +35,18 @@ async function fixture() {
   world.components.register(CharacterController).unwrap();
   world.addComponent(entity('player'), { component: CharacterController, data: { grounded: true } }).unwrap();
   const moves: number[][] = [];
-  world.insertResource('PhysicsWorld', {
+  const unexpectedPhysics = () => { throw new Error('This input fixture only exercises character intent'); };
+  world.insertResource(PhysicsWorldResource, {
+    dispose: unexpectedPhysics, setGravity: unexpectedPhysics, getGravity: unexpectedPhysics,
+    raycast: unexpectedPhysics, teleport: unexpectedPhysics, synchronizeCharacter: unexpectedPhysics,
+    step: unexpectedPhysics, getBodyCount: unexpectedPhysics,
     hasBody: () => true,
-    moveAndSlide: (_entity: unknown, delta: ArrayLike<number>) => { moves.push(Array.from(delta)); return delta; },
+    moveAndSlide: (_entity, delta) => { moves.push(Array.from(delta)); return delta; },
   });
   let sample = empty();
   world.insertResource(INPUT_BACKEND_KEY, { sample: () => sample, detach() {} });
-  world.addSystem(Update, { ...InputFrameStartScan, before: [FixedUpdate] }).unwrap();
+  world.addSystem(Update, InputFrameStartScan).unwrap();
+  world.replaceSystem(Update, InputFrameStartScan, { ...InputFrameStartScan, before: [FixedUpdate] }).unwrap();
   const player = await ctx.plugin(playerPlugin, { speed: 5.5, jumpSpeed: 6, gravity: 18, walk: '019fb7ce-1000-7000-8000-000000000001', transform: '019fb7ce-1000-7000-8000-000000000002', wheels: '019fb7ce-1000-7000-8000-000000000003' });
   const hud: PlayerHudState[] = [];
   channel.port1.addEventListener('message', (event) => {
@@ -36,19 +54,12 @@ async function fixture() {
   });
   channel.port1.start();
   const send = async (...messages: (PlayerControl | Record<string, unknown>)[]) => {
-    const delivered = new Promise<void>((resolve) => {
-      const receive = (event: MessageEvent) => {
-        if (!event.data.barrier) return;
-        channel.port2.removeEventListener('message', receive); resolve();
-      };
-      channel.port2.addEventListener('message', receive);
-    });
     for (const message of messages) channel.port1.postMessage({ channel: PLAYER_CONTROL_CHANNEL, ...message });
-    channel.port1.postMessage({ barrier: true });
-    await delivered;
+    await deliverQueuedMessages(channel.port1, channel.port2);
   };
   return {
     ...base, size, moves, send, player, hud,
+    flushHud: () => deliverQueuedMessages(channel.port2, channel.port1),
     input: () => ctx.get('game3dPlayer')!.readInput(),
     tick(next: Partial<InputBackendSample> = {}, dt = 1 / 60) {
       moves.length = 0; sample = { ...empty(), ...next }; world.update(dt).unwrap();
@@ -78,7 +89,7 @@ describe('ordinary game UI touch input consumption', () => {
       f.tick();
       expect(f.moves[0]?.[0]).toBe(0); expect(f.moves[0]?.[2]).toBe(0);
       // The HUD reports the applied fixed-step displacement: running, walking, then stopped.
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      await f.flushHud();
       expect(f.hud.map((state) => state.speed)).toEqual([0, 9.4, 5.5, 0]);
     } finally { await f.dispose(); }
   });

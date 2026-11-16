@@ -103,23 +103,20 @@ function plan(kind: 'owned' | 'mutable' | 'camera' | 'force-fields' | 'events' |
     feature.plan(
       {
         frameNumber: 1,
-        worlds: [
-          {
-            sourceWorldIndex: 0,
-            worldId: 0,
-            runtimeId: 0,
-            renderGeneration: 0,
-            camera,
-            views: [{ identity: 'main', camera }],
-            intents: [intent],
-            retained: [],
-            materials: new Map(),
-            meshes: new Map(),
-            emitterState: new Map([
-              ['1:stock', { enabled: true, localToWorld: matrix, player: 1, emitter: reference }],
-            ]),
-          },
-        ],
+        source: {
+          worldId: 0,
+          runtimeId: 0,
+          renderGeneration: 0,
+          camera,
+          views: [{ identity: 'main', camera }],
+          intents: [intent],
+          retained: [],
+          materials: new Map(),
+          meshes: new Map(),
+          emitterState: new Map([
+            ['1:stock', { enabled: true, localToWorld: matrix, player: 1, emitter: reference }],
+          ]),
+        },
       } as never,
       {
         views: [{ identity: 'main', render: true, targets: [], frame: { frameNumber: 1 } }],

@@ -7,6 +7,7 @@ export {
   materialValuesToLinearRuntime,
   srgbChannelToLinear,
 } from './color-space.js';
+export * from './deformation.js';
 export {
   createMaterialError,
   type GltfMaterialUvSetMissingDetail,
@@ -28,6 +29,7 @@ export {
   type MaterialTextureCoordinateInvalidDetail,
 } from './errors.js';
 export * from './particle-input.js';
+export * from './pass-tags.js';
 export {
   type MaterialTable,
   materialGuidText,

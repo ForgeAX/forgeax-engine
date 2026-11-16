@@ -39,7 +39,7 @@ interface Region {
 }
 export interface FeatureSceneSdfSource {
   readonly retained: PersistentGpuDrivenState['retained'];
-  readonly scopes: readonly RenderResourceScope[];
+  readonly sourceScope: RenderResourceScope;
 }
 
 /** A demand-scoped Renderer producer. Candidate replacement commits only after
@@ -50,26 +50,20 @@ export function createFeatureSceneSdf(internals: RenderSystemInternals) {
   const candidates = new Map<string, Region>();
   const failed = new Set<string>();
   const release = (region: Region) => region.lifetime.retire();
-  /** Per-World collision rows; a recovered Renderer creates a new feature and starts cold. */
-  const collisions = new Map<number, CollisionSceneRows>();
-  const collisionRows = (world: number, scope: RenderResourceScope) => {
-    let rows = collisions.get(world);
-    if (rows?.scope !== scope) {
-      rows = new CollisionSceneRows(scope, world);
-      collisions.set(world, rows);
-    }
-    return rows;
+  let collisions: CollisionSceneRows | undefined;
+  const collisionRows = (scope: RenderResourceScope) => {
+    if (collisions?.scope !== scope) collisions = new CollisionSceneRows(scope);
+    return collisions;
   };
-  const sourceKey = (request: Request, current: FeatureSceneSdfSource): SourceKey => {
+  const sourceKey = (current: FeatureSceneSdfSource): SourceKey => {
     const retained = current.retained;
     if (retained === undefined || !retained.isCurrent() || !retained.isSourceCurrent())
-      throw new SceneSdfUnavailableError({ reason: 'missing-source', world: request.world });
-    const scope = current.scopes[request.world];
-    if (scope === undefined)
-      throw new SceneSdfUnavailableError({ reason: 'missing-source', world: request.world });
+      throw new SceneSdfUnavailableError({ reason: 'missing-source' });
+    const scope = current.sourceScope;
+    if (scope === undefined) throw new SceneSdfUnavailableError({ reason: 'missing-source' });
     // Mesh and Material frames carry adopted asset publications; the collision
     // roster revision moves only when one of this World's contributions changed.
-    return [retained.identity, collisionRows(request.world, scope).sync(retained), scope];
+    return [retained.identity, collisionRows(scope).sync(retained), scope];
   };
   return {
     begin() {
@@ -85,18 +79,12 @@ export function createFeatureSceneSdf(internals: RenderSystemInternals) {
         ...descriptor,
         coverageDistance: descriptor.maxDistance,
       });
-      if (
-        !Number.isSafeInteger(request.world) ||
-        request.world < 0 ||
-        !normalized.ok ||
-        normalized.value.dimensions.some((v) => v < 2)
-      ) {
-        throw new SceneSdfUnavailableError({ reason: 'invalid-range', world: request.world });
+      if (!normalized.ok || normalized.value.dimensions.some((v) => v < 2)) {
+        throw new SceneSdfUnavailableError({ reason: 'invalid-range' });
       }
       const key = JSON.stringify([identity, request.name]);
-      const refs = sourceKey(request, current);
+      const refs = sourceKey(current);
       const rangeKey = JSON.stringify([
-        request.world,
         normalized.value.origin,
         normalized.value.dimensions,
         normalized.value.spacing,
@@ -117,7 +105,7 @@ export function createFeatureSceneSdf(internals: RenderSystemInternals) {
         // All consumers in one transaction observe the same source. Keep the
         // candidate reachable for rejection cleanup rather than overwriting it.
         if (candidate !== undefined)
-          throw new SceneSdfUnavailableError({ reason: 'missing-source', world: request.world });
+          throw new SceneSdfUnavailableError({ reason: 'missing-source' });
         region = undefined;
       }
       if (region === undefined) {
@@ -128,8 +116,8 @@ export function createFeatureSceneSdf(internals: RenderSystemInternals) {
           device.limits.minStorageBufferOffsetAlignment > 256 ||
           256 % device.limits.minStorageBufferOffsetAlignment !== 0
         )
-          throw new SceneSdfUnavailableError({ reason: 'capability', world: request.world });
-        const projection = collisionRows(request.world, refs[2]).project(request.descriptor);
+          throw new SceneSdfUnavailableError({ reason: 'capability' });
+        const projection = collisionRows(refs[2]).project(request.descriptor);
         const packed = packGlobalSdfComposition(projection.instances, {
           ...request.descriptor,
           coverageDistance: request.descriptor.maxDistance,
@@ -137,11 +125,10 @@ export function createFeatureSceneSdf(internals: RenderSystemInternals) {
         if (!packed.ok)
           throw new SceneSdfUnavailableError({
             reason: 'invalid-range',
-            world: request.world,
             cause: packed.error,
           });
         if (packed.value.grid.dimensions.some((v) => v < 2))
-          throw new SceneSdfUnavailableError({ reason: 'invalid-range', world: request.world });
+          throw new SceneSdfUnavailableError({ reason: 'invalid-range' });
         const factory = internals.immediateShaderModuleFactory ?? internals.shaderModuleFactory;
         const module = factory?.createShaderModule({
           code: GLOBAL_SDF_COMPOSE_WGSL,
@@ -150,7 +137,6 @@ export function createFeatureSceneSdf(internals: RenderSystemInternals) {
         if (module === undefined || !module.ok)
           throw new SceneSdfUnavailableError({
             reason: 'preparing',
-            world: request.world,
             cause: module?.error,
           });
         const compose = createGlobalSdfCompositionRecorder(device, module.value).unwrap();
@@ -162,7 +148,7 @@ export function createFeatureSceneSdf(internals: RenderSystemInternals) {
             size > device.limits.maxStorageBufferBindingSize ||
             size > device.limits.maxBufferSize
           )
-            throw new SceneSdfUnavailableError({ reason: 'budget', world: request.world });
+            throw new SceneSdfUnavailableError({ reason: 'budget' });
           const buffer = device
             .createBuffer({ label: 'scene-sdf.grid-and-voxels', size, usage: 128 | 12 })
             .unwrap();
@@ -294,7 +280,7 @@ export function createFeatureSceneSdf(internals: RenderSystemInternals) {
       failed.clear();
     },
     dispose() {
-      collisions.clear();
+      collisions = undefined;
       for (const region of new Set([...candidates.values(), ...regions.values()])) release(region);
       candidates.clear();
       requested.clear();
@@ -302,7 +288,7 @@ export function createFeatureSceneSdf(internals: RenderSystemInternals) {
       failed.clear();
     },
     detach(scope: RenderResourceScope) {
-      for (const [world, rows] of collisions) if (rows.scope === scope) collisions.delete(world);
+      if (collisions?.scope === scope) collisions = undefined;
       for (const map of [regions, candidates, requested])
         for (const [key, region] of map) {
           if (region.sourceKey[2] !== scope) continue;

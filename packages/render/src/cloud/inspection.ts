@@ -1,6 +1,42 @@
 import type { RhiCaps } from '@forgeax/engine-rhi';
-import type { CloudLayerResourceFacts } from './resources';
-import type { CloudTemporalResetReason } from './temporal';
+import type { CloudParameterValue } from './contracts';
+/** Evidence level for bytes owned by the prepared GPU path. */
+export type CloudGpuResourceEvidence = 'unavailable' | 'declared' | 'measured';
+
+export interface CloudLayerResourceFacts {
+  readonly generation: number;
+  /** CPU-side packed formation payload; this is not GPU residency. */
+  readonly cacheBytes: number;
+  /** Measured GPU bytes, or zero when no prepared-owner receipt was supplied. */
+  readonly shadowBytes: number;
+  readonly historyBytes: number;
+  readonly inFlightBytes: number;
+  readonly residentBytes: number;
+  readonly resourceCount: number;
+  /** Whether the GPU byte fields are measured, only graph-declared, or unknown. */
+  readonly gpuEvidence: CloudGpuResourceEvidence;
+  /** Descriptor-derived allocation sizes, independent from physical residency. */
+  readonly declaredShadowBytes: number;
+  readonly declaredHistoryBytes: number;
+  readonly declaredResidentBytes: number;
+  readonly declaredResourceCount: number;
+  /** Measured GPU resource count, kept separate from logical declarations. */
+  readonly measuredGpuResourceCount: number;
+  readonly cacheResolution: number;
+  readonly shadowResolution: number;
+}
+
+export type CloudTemporalResetReason =
+  | 'authoring-generation'
+  | 'camera-cut'
+  | 'resize'
+  | 'recovery'
+  | 'time-discontinuity'
+  | 'cloud-shadow-revision'
+  | 'device-generation'
+  | 'history-missing'
+  | 'reprojection-outside'
+  | 'scene-depth-disocclusion';
 
 export type CloudLayerInspectionStatus = 'off' | 'available' | 'unavailable' | 'degraded';
 export type CloudLayerResourceStage = 'none' | 'candidate' | 'accepted' | 'lkg' | 'recovering';
@@ -21,7 +57,46 @@ export interface CloudLayerBudgetObservation {
   readonly reason?: string;
 }
 
+/**
+ * Detached effective inputs of cloud work recorded for this view and confirmed
+ * by the exact ready Renderer receipt. Missing keys carry no claim.
+ */
+export interface CloudCompletedAdoption {
+  readonly requestRevision: number;
+  readonly worldIdentity: string;
+  readonly entity: number;
+  readonly frameId: number;
+  readonly deviceGeneration: number;
+  /** Submitted FrameReceipt graph identity; the compositor for camera-view output. */
+  readonly graphGeneration: number;
+  readonly path: 'analytic' | 'sampled' | 'program';
+  readonly materialGuid?: string;
+  readonly instanceGuid?: string;
+  readonly cookIdentity: string;
+  readonly programIdentity?: string;
+  readonly values: Readonly<Record<string, CloudParameterValue>>;
+  /** Custom material uniforms and static switches, separate from engine layer fields. */
+  readonly materialValues?: Readonly<Record<string, CloudParameterValue>>;
+  readonly unavailableFields: Readonly<Record<string, 'inactive' | 'unsupported'>>;
+}
+
 export interface CloudLayerInspection {
+  readonly completedAdoption?: CloudCompletedAdoption;
+  readonly mode0?: {
+    readonly viewId: string;
+    readonly deviceGeneration: number;
+    readonly materialIdentity: string;
+    readonly historyValid: boolean;
+    readonly preparedPhase: number;
+    readonly acceptedFrame: number | undefined;
+    readonly acceptedPhase: number | undefined;
+    readonly resetReasons: readonly string[];
+    readonly diagnostic?: {
+      readonly mode: number;
+      readonly status: 'inactive' | 'display' | 'probe' | 'unsupported';
+      readonly reason?: string;
+    };
+  };
   readonly status: CloudLayerInspectionStatus;
   readonly resourceStage: CloudLayerResourceStage;
   readonly sourceKey: string | undefined;

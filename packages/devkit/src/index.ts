@@ -1,3 +1,4 @@
+export { assetLibrarySourceIdentity } from './asset-libraries.js';
 export { createDevKitBackend, type DevKitBackend } from './backend.js';
 export {
   callDevKitBackend,

@@ -1,9 +1,11 @@
+import { defineResource } from '@forgeax/engine-ecs';
+import { defineSystem } from "@forgeax/engine-ecs";
 import { Update, defineComponent, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import type { HudHandle } from './hud';
 import { scoringTargetEntities, type ScoringTargetQuery } from './scoring-target';
 
-export const GAME_DEFAULT_SCORE_RESOURCE = 'gameDefaultScore';
-export const GAME_DEFAULT_CHANGE_DETECTION_WITNESS = '__forgeaxGameDefaultChangeDetectionWitness';
+export const GAME_DEFAULT_SCORE_RESOURCE = defineResource<ScoreResource>("gameDefaultScore");
+export const GAME_DEFAULT_CHANGE_DETECTION_WITNESS = defineResource<GameplayChangeDetectionWitness>("__forgeaxGameDefaultChangeDetectionWitness");
 
 const TargetHitState = defineComponent(
   'GameDefaultTargetHitState',
@@ -40,38 +42,41 @@ export function installGameplayChangeDetection(args: {
     resourceChanges: 0,
     score: 0,
   });
-  const witness = world.getResource<GameplayChangeDetectionWitness>(GAME_DEFAULT_CHANGE_DETECTION_WITNESS);
+  const witness = world.getResource(GAME_DEFAULT_CHANGE_DETECTION_WITNESS);
   world.insertResource<ScoreResource>(GAME_DEFAULT_SCORE_RESOURCE, { value: 0 });
   let lastResourceChangeTick = -1;
 
-  world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'game-score-added-targets',
     queries: [{ added: [TargetHitState] }],
     fn: (_world, queryResults) => {
       for (const _row of queryResults[0]) witness.addedTargets += 1;
     },
-  }).unwrap();
-  world.addSystem(Update, {
+  });
+world.addSystem(Update, systemToken1).unwrap();
+  const systemToken2 = defineSystem({
     name: 'game-score-changed-targets',
     queries: [{ changed: [TargetHitState] }],
     fn: (_world, queryResults) => {
       for (const _row of queryResults[0]) witness.changedTargets += 1;
     },
-  }).unwrap();
-  world.addSystem(Update, {
+  });
+world.addSystem(Update, systemToken2).unwrap();
+  const systemToken3 = defineSystem({
     name: 'game-score-resource-probe',
     queries: [],
     fn: (_world) => {
       const ticks = _world.getResourceChange(GAME_DEFAULT_SCORE_RESOURCE);
       if (ticks !== undefined && ticks.changed > lastResourceChangeTick) {
         lastResourceChangeTick = ticks.changed;
-        const score = _world.getResource<ScoreResource>(GAME_DEFAULT_SCORE_RESOURCE).value;
+        const score = _world.getResource(GAME_DEFAULT_SCORE_RESOURCE).value;
         witness.resourceChanges += 1;
         witness.score = score;
         hud.setScore(score);
       }
     },
-  }).unwrap();
+  });
+world.addSystem(Update, systemToken3).unwrap();
   for (const entity of scoringTargetEntities(targetQuery)) {
     world.addComponent(entity, { component: TargetHitState, data: { hits: 0 } }).unwrap();
   }
@@ -80,11 +85,11 @@ export function installGameplayChangeDetection(args: {
     recordHit(entity, points) {
       const current = world.get(entity, TargetHitState).unwrap();
       world.set(entity, TargetHitState, { hits: current.hits + 1 }).unwrap();
-      const score = world.getResource<ScoreResource>(GAME_DEFAULT_SCORE_RESOURCE).value;
+      const score = world.getResource(GAME_DEFAULT_SCORE_RESOURCE).value;
       world.insertResource(GAME_DEFAULT_SCORE_RESOURCE, { value: score + points });
     },
     readScore() {
-      return world.getResource<ScoreResource>(GAME_DEFAULT_SCORE_RESOURCE).value;
+      return world.getResource(GAME_DEFAULT_SCORE_RESOURCE).value;
     },
     reset() {
       for (const entity of scoringTargetEntities(targetQuery)) world.set(entity, TargetHitState, { hits: 0 }).unwrap();

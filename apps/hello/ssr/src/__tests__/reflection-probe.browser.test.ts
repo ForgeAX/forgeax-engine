@@ -11,7 +11,6 @@ describe('ReflectionProbe Browser paired evidence contract', () => {
 
   it('selects a box candidate inside and Skylight outside', () => {
     const fact = {
-      worldId: 0,
       entityKey: 4,
       center: [0, 0, 0] as const,
       halfExtents: [1, 1, 1] as const,

@@ -18,6 +18,7 @@
 // The World + spin math live in the shared src/rotation.ts (SSOT for this app AND
 // the dawn smoke), so the two never drift.
 
+import { defineSystem } from "@forgeax/engine-ecs";
 import { createApp } from '@forgeax/engine-app/browser';
 import { Time, Update } from '@forgeax/engine-ecs';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
@@ -48,16 +49,17 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
 
   // The Update system: spin every Rotatable each frame off the auto-provided
   // Time.delta (Bevy's `add_systems(Update, rotate_cube)`).
-  app.world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'rotate-cube',
     queries: [],
     fn: (world) => {
-      const dt = world.hasResource('Time')
+      const dt = world.hasResource(Time)
         ? world.getResource(Time).delta
         : 0;
       stepSpin(world, dt);
     },
   });
+app.world.addSystem(Update, systemToken1);
 
   const started = app.start();
   if (!started.ok) console.error('[bevy-3d-rotation] app.start failed:', started.error);

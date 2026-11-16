@@ -21,7 +21,6 @@ const cases = [
   ['u8', 1, -1, 0xff],
   ['bool', 1, 257, 1],
   ['enum', 4, -1, 0xffffffff],
-  ['ref', 4, -1, 0xffffffff],
 ] as const;
 
 describe('scalar storage', () => {

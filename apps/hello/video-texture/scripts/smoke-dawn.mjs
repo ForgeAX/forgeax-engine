@@ -25,7 +25,6 @@
 // Exit codes:
 //   0 = green (structural chain survived)
 //   1 = red (crash / draw error)
-
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 
@@ -123,10 +122,11 @@ const mockCanvas = {
 
 // --- 3. Drive engine ECS path with video asset -------------------------------
 
-import { readFileSync } from 'node:fs';
+
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 
 
 const { World } = await import('@forgeax/engine-ecs');
@@ -138,9 +138,10 @@ const { VideoPlayer } = await import('@forgeax/engine-graphics-extras');
 const { AssetGuid } = await import('@forgeax/engine-pack/guid');
 
 const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const MANIFEST_URL = `data:application/json,${encodeURIComponent(
-  readFileSync(MANIFEST_PATH, 'utf8'),
-)}`;
+const MANIFEST_URL = URL.createObjectURL(
+  new Blob([readShaderManifestText(MANIFEST_PATH)], { type: 'application/json' }),
+);
+process.once('exit', () => URL.revokeObjectURL(MANIFEST_URL));
 
 let renderer;
 let assets;
@@ -216,11 +217,7 @@ const primitiveQuad = sceneAssets.create(createPrimitiveMesh('quad').unwrap()).u
 
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
-const frameRequest = {
-  leases: [worldAttachment1.value],
-  camera: { lease: worldAttachment1.value },
-  environment: { lease: worldAttachment1.value },
-};
+const frameRequest = { source: worldAttachment1.value };
 
 // NB: do NOT insert a VideoSourceProvider — dawn has no HTMLVideoElement.
 // The record stage's single per-frame upload path resolves element===undefined,

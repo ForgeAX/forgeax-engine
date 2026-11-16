@@ -384,7 +384,7 @@ export interface DynamicGeometryLifecycle {
       readonly deviceGeneration: number;
       readonly completed?: Promise<unknown>;
     },
-    worlds?: readonly object[],
+    world: object,
     fixedStep?: number,
     canPublish?: (candidate: DynamicGeometryCandidate) => boolean,
     recordStageLane?: (
@@ -1272,7 +1272,7 @@ export function createDynamicGeometryLifecycle(
       release(candidate.candidateId, record);
       return ok(undefined);
     },
-    publishFrame(frame, worlds, fixedStep, canPublish, recordStageLane) {
+    publishFrame(frame, world, fixedStep, canPublish, recordStageLane) {
       if (disposed || frame.deviceGeneration !== currentGeneration) return [];
       const receipts: DynamicGeometryReceipt[] = [];
       let sharedFrame: DynamicGeometryReceipt['frame'] | undefined;
@@ -1286,7 +1286,7 @@ export function createDynamicGeometryLifecycle(
           // remains one-shot once that history is invalidated.
           (canPublish !== undefined || !record.historyInvalidated);
         if (record.candidate.state !== 'accepted' && !canRepeatPublished) continue;
-        if (worlds !== undefined && !worlds.includes(record.world)) continue;
+        if (record.world !== world) continue;
         if (
           record.candidate.fixedStep !== undefined &&
           (fixedStep === undefined || record.candidate.fixedStep > fixedStep)

@@ -82,15 +82,6 @@ export interface ActionState {
   readonly raw: number;
 }
 
-// ─── Constants ───────────────────────────────────────────────────
-
-/**
- * Resource key for the immutable InputMap (ActionConfig[]) inserted into
- * the World. Canvas-form createApp does this automatically; assemble-form
- * hosts insert it directly (D-7).
- */
-export const INPUT_MAP_KEY = 'InputMap';
-
 /** Default per-action deadzone (Godot prior-art, F2). */
 const DEFAULT_DEADZONE = 0.2;
 

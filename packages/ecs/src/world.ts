@@ -1,3 +1,10 @@
+import {
+  assertResource,
+  createResourceStore,
+  type Resource,
+  type ResourceIdentity,
+  type ResourceStore,
+} from './resource';
 import { ChangeIndex } from './storage/change-index';
 // @forgeax/engine-ecs — World: top-level ECS container.
 //
@@ -10,8 +17,19 @@ import { ChangeIndex } from './storage/change-index';
 // Construction errors (EntityIndexOverflowError) still throw — they are
 // build-time / infrastructure failures.
 
-import type { AssetError, AssetReferenceOwner, Handle, Result } from '@forgeax/engine-types';
-import { err, isRetiredSlot, ok, toShared, toUnique, unwrapHandle } from '@forgeax/engine-types';
+import {
+  type AssetError,
+  type AssetReferenceOwner,
+  err,
+  type Handle,
+  isRetiredSlot,
+  ok,
+  type Result,
+  toShared,
+  toUnique,
+  unwrapHandle,
+} from '@forgeax/engine-types';
+
 import {
   holdAssetFields,
   invalidAssetBinding,
@@ -30,9 +48,6 @@ import {
   fieldTypeToMetaKey,
   type InputShapeOf,
   isEntityField,
-  isManagedArrayField,
-  isManagedBufferField,
-  isManagedField,
   type ShapeOf,
   TYPE_METADATA,
 } from './component';
@@ -60,47 +75,44 @@ import {
   entityGeneration,
   entityIndex,
 } from './entity-handle';
-import type {
-  CommandFailedError,
-  ComponentFieldInvalidValueError,
-  ComponentNotDefinedError,
-  DerivedRangeOutOfBoundsError,
-  DerivedWriteActiveError,
-  ManagedArrayErrorEnvelope,
-  ManagedArrayInvalidValueError,
-  ManagedBufferShrinkNotSupportedError,
-  RelationshipDetachMismatchError,
-  RelationshipMirrorComponentNotRegisteredError,
-  RelationshipMirrorFieldTypeMismatchError,
-  ScheduleMutationError,
-  ScheduleScopeMismatchError,
-  SharedKernelEligibilityError,
-  SharedKernelFailureError,
-  SystemFailedError,
-  SystemSetNotRegisteredError,
-  TimeConfigInvalidError,
-  TimeDeltaInvalidError,
-  UniqueRefDoubleReleaseError,
-  UniqueRefReleasedError,
-  UniqueRefStaleError,
-} from './errors';
 import {
   ArrayRangeOutOfBoundsError,
   ChangeEpochExhaustedError,
+  type CommandFailedError,
   ComponentAlreadyPresentError,
+  type ComponentFieldInvalidValueError,
+  type ComponentNotDefinedError,
   ComponentNotPresentError,
-  ComponentNumericValueInvalidError,
+  type DerivedRangeOutOfBoundsError,
+  type DerivedWriteActiveError,
   EntityIndexOverflowError,
   FixedSizeMismatchError,
+  type ManagedArrayErrorEnvelope,
+  type ManagedArrayInvalidValueError,
   ManagedBufferOutOfBoundsError,
+  type ManagedBufferShrinkNotSupportedError,
+  type RelationshipDetachMismatchError,
+  type RelationshipMirrorComponentNotRegisteredError,
+  type RelationshipMirrorFieldTypeMismatchError,
   RelationshipSelfCycleError,
   RelationshipTargetReadonlyError,
-  RemoveEssentialComponentError,
+  RemoveEntityComponentError,
+  type ScheduleMutationError,
+  type ScheduleScopeMismatchError,
+  type SharedKernelEligibilityError,
+  type SharedKernelFailureError,
   StaleEntityError,
+  type SystemFailedError,
+  type SystemSetNotRegisteredError,
+  type TimeConfigInvalidError,
+  type TimeDeltaInvalidError,
+  type UniqueRefDoubleReleaseError,
+  type UniqueRefReleasedError,
+  type UniqueRefStaleError,
   validateEnumFieldValues,
-  validateNumericFieldValues,
   type WorldPoisonedError,
 } from './errors';
+
 import { worldPoisonedError } from './errors/shared-kernel-errors';
 import {
   createWorldIdentity,
@@ -112,8 +124,13 @@ import {
 import { type FrameArena, WorldFrameArena } from './frame-arena';
 import { isSuspendedMemoryResult, MemoryError } from './memory-types';
 import { OwnedBuffers } from './owned-buffers';
-import type { QueryDescriptor } from './query/query';
-import { createQuery, type Query, type QueryCreationError } from './query/query';
+import {
+  createQuery,
+  type Query,
+  type QueryCreationError,
+  type QueryDescriptor,
+} from './query/query';
+
 import {
   isRelationshipTarget,
   RelationshipIndex,
@@ -122,11 +139,23 @@ import {
   relationshipRole,
   relationshipSource,
 } from './relationship-index';
-import { createResourceStore, type ResourceStore } from './resource';
-import { createSchedule, type Schedule, type SystemDescriptor, type SystemSet } from './schedule';
+
+import {
+  createSchedule,
+  isSystemSet,
+  type Schedule,
+  type System,
+  type SystemDescriptor,
+  type SystemSet,
+  type SystemToken,
+} from './schedule';
+import {
+  observeScheduleRuns as observeWorldScheduleRuns,
+  type ScheduleRunObserver,
+} from './schedule-observation';
 import { FixedUpdate, isDomainSchedule, type ScheduleToken, Update } from './schedule-token';
-import type { SharedRefStore } from './shared-ref-store.js';
-import { SharedRefStore as SharedRefStoreImpl } from './shared-ref-store.js';
+import { type SharedRefStore, SharedRefStore as SharedRefStoreImpl } from './shared-ref-store.js';
+
 import {
   type Archetype,
   appendArchetypeRow,
@@ -157,13 +186,7 @@ import {
   removeTableRow,
   type Table,
 } from './storage/table';
-import {
-  createWorldClock,
-  DEFAULT_TIME_POLICY,
-  FIXED_TIME_RESOURCE_KEY,
-  TIME_RESOURCE_KEY,
-  type WorldOptions,
-} from './time';
+import { createWorldClock, DEFAULT_TIME_POLICY, FixedTime, Time, type WorldOptions } from './time';
 import { type UniqueRefStore, UniqueRefStore as UniqueRefStoreImpl } from './unique-ref-store';
 import { copyWorldArray } from './world-array-read';
 import {
@@ -215,7 +238,6 @@ export type EcsError =
   | ComponentNotPresentError
   | ComponentAlreadyPresentError
   | ComponentFieldInvalidValueError
-  | ComponentNumericValueInvalidError
   | ManagedArrayInvalidValueError
   | UniqueRefReleasedError
   | UniqueRefDoubleReleaseError
@@ -229,7 +251,7 @@ export type EcsError =
   | RelationshipDetachMismatchError
   | RelationshipTargetReadonlyError
   | ComponentNotDefinedError
-  | RemoveEssentialComponentError
+  | RemoveEntityComponentError
   | SystemSetNotRegisteredError
   | SystemFailedError
   | TimeDeltaInvalidError
@@ -265,7 +287,7 @@ type ErrorContext = { readonly systemName: string };
 
 /**
  * Per-archetype summary returned by `world.inspect()`. Sorted ComponentId key
- * (always prefixed by the essential id=0 Entity column, e.g. "0+2+5+7"),
+ * (always prefixed by the id=0 Entity column, e.g. "0+2+5+7"),
  * human-readable component names, live entity count, allocated row capacity.
  */
 export interface ArchetypeInfo {
@@ -309,7 +331,7 @@ export interface WorldInspection {
   /** Number of registered systems. Always equals `systems.length` (M2 derived invariant). */
   readonly systemCount: number;
   /**
-   * Per-system summary (M3 — plan-strategy D-8). One entry per
+   * Per-system summary. One entry per
    * registered system, in registration order. The `systemCount` field is
    * preserved as a derived alias of `systems.length` so existing inspector
    * P0 e2e cases that read `systemCount` keep working.
@@ -342,8 +364,9 @@ export interface WorldScheduleQueryData {
 
 /** JSON-safe system registration and access metadata. */
 export interface WorldScheduleSystemData {
+  readonly id: number;
   readonly name: string;
-  readonly sets: readonly string[];
+  readonly sets: readonly number[];
   readonly before: readonly string[];
   readonly after: readonly string[];
   readonly queries: readonly WorldScheduleQueryData[];
@@ -352,19 +375,20 @@ export interface WorldScheduleSystemData {
 
 /** JSON-safe system-set membership and ordering metadata. */
 export interface WorldScheduleSetData {
+  readonly id: number;
   readonly name: string;
-  readonly members: readonly string[];
-  readonly before: readonly string[];
-  readonly after: readonly string[];
+  readonly members: readonly number[];
   readonly chained: boolean;
 }
 
 /** JSON-safe projection of one explicit World schedule. */
 export interface WorldScheduleData {
+  readonly id: number;
+  readonly anchors: readonly { readonly id: number; readonly name: string }[];
   readonly name: string;
   readonly systems: readonly WorldScheduleSystemData[];
   readonly systemSets: readonly WorldScheduleSetData[];
-  readonly dependencies: readonly (readonly [string, string])[];
+  readonly dependencies: readonly (readonly [number, number])[];
 }
 
 /** `Object.is` over stored column numbers, inlinable without boxing doubles. */
@@ -480,12 +504,12 @@ export class World {
     this.buffers = new OwnedBuffers(this.bufferPool, options.memory?.buffers);
     this.graph = createArchetypeGraph(options.storage === 'shared');
     this.clock = createWorldClock({ ...DEFAULT_TIME_POLICY, ...options.time });
-    this.resources.entries.set(TIME_RESOURCE_KEY, {
+    this.resources.entries.set(Time, {
       value: this.clock.time,
       added: 0,
       changed: 0,
     });
-    this.resources.entries.set(FIXED_TIME_RESOURCE_KEY, {
+    this.resources.entries.set(FixedTime, {
       value: this.clock.fixed,
       added: 0,
       changed: 0,
@@ -519,8 +543,6 @@ export class World {
       getQueryRow: (entity, component) =>
         this.get(entity, component) as Result<Record<string, unknown>, EcsError>,
       getRecords: () => this.records,
-      getRelationshipEpoch: this[worldRead].getRelationshipEpoch,
-      getRelationshipTargetEntities: this.relationshipTargetEntries.bind(this),
       getResources: () => this.resources,
       getSchedule: (token) => {
         let schedule = this.schedules.get(token);
@@ -531,7 +553,6 @@ export class World {
         return schedule;
       },
       getSchedules: () => this.schedules,
-      getSharedRefs: () => this.sharedRefs,
       getStructureEpoch: this.getStructureEpoch.bind(this),
       lookupAlive: this.lookupAlive.bind(this),
       markComponentChanged: this.internalmarkComponentChanged.bind(this),
@@ -556,15 +577,6 @@ export class World {
   /** Immutable integrity state for execution coordinators and headless callers. */
   get execution(): WorldExecutionState {
     return this.executionState;
-  }
-
-  /** Resolve a schedule token owned by this World realm without package singleton identity. */
-  scheduleToken(
-    name: import('./schedule-token').ScheduleName,
-  ): import('./schedule-token').ScheduleToken {
-    if (name === 'Update') return Update;
-    if (name === 'FixedUpdate') return FixedUpdate;
-    return FixedUpdate;
   }
 
   /** Seal the first execution fault; application code recovers with a new World. */
@@ -754,8 +766,9 @@ export class World {
   }
 
   /** Return resource change ticks for diagnostics and resource-driven systems. */
-  getResourceChange(name: string): ChangeTicks | undefined {
-    const entry = this.resources.entries.get(name);
+  getResourceChange(key: ResourceIdentity): ChangeTicks | undefined {
+    assertResource(key);
+    const entry = this.resources.entries.get(key);
     return entry === undefined ? undefined : { added: entry.added, changed: entry.changed };
   }
 
@@ -782,97 +795,65 @@ export class World {
    * ```ts
    * const Position = defineComponent('Position', { x: 'f32', y: 'f32' });
    * const world = new World();
-   * world.addSystem(Update, {
+   * world.addSystem(Update, defineSystem({
    *   name: 'read-pos',
    *   queries: [{ with: [Position] }],
    *   fn: (world, queries) => { void world; for (const row of queries[0]) { void row.entity; } },
-   * });
+   * }));
    * ```
    */
   addSystem<const Qs extends ReadonlyArray<QueryDescriptor>>(
     schedule: import('./schedule-token').ScheduleToken,
-    descriptor: SystemDescriptor<Qs>,
+    descriptor: System<Qs>,
   ): Result<void, ScheduleScopeMismatchError> {
     return worldAddSystem(this, schedule, descriptor);
   }
 
   /**
-   * Remove a registered system by name (M2 — plan-strategy D-3).
-   *
-   * Returns `Result<void, ScheduleMutationError>`:
-   * - ok branch: the slot is dropped and the schedule will rebuild on the
-   *   next `update()`.
-   * - err branch with `.code === 'system-before-unknown'`: no system carries
-   *   this name; `.detail.candidates` lists the registered names.
-   *
-   * Designed to support `@forgeax/engine-remote`'s typed `injectSystem` /
-   * `removeSystem` channel and the WS-disconnect reverse-remove path.
-   *
-   * @example
-   * ```ts
-   * const r = world.removeSystem(Update, 'movement');
-   * if (!r.ok) console.error(r.error.code, r.error.detail.candidates);
-   * ```
+   * Observe synchronous system and command-drain boundaries while subscribed.
+   * The callback is a generic diagnostics seam; observer failures are ignored
+   * by the scheduler and cannot alter World execution.
    */
+  observeScheduleRuns(observer: ScheduleRunObserver): () => void {
+    return observeWorldScheduleRuns(this, observer);
+  }
+
+  /** Remove this exact registered system identity and its set memberships. */
   removeSystem(
     schedule: import('./schedule-token').ScheduleToken,
-    name: string,
+    system: SystemToken,
   ): Result<void, ScheduleMutationError | ScheduleScopeMismatchError> {
-    return worldRemoveSystem(this, schedule, name);
+    return worldRemoveSystem(this, schedule, system);
   }
 
-  /**
-   * Replace a registered system in-place (M2 — plan-strategy D-3 atomic semantics).
-   *
-   * Overwrites the descriptor stored under `name` while preserving the
-   * registration slot — `before / after` references that target this name
-   * remain bound.
-   *
-   * Returns `Result<void, ScheduleMutationError>`:
-   * - ok branch: descriptor swapped, schedule marked dirty.
-   * - err branch with `.code === 'system-before-unknown'`: no system carries
-   *   this name; use `addSystem(descriptor)` to register a new one instead.
-   *
-   * @example
-   * ```ts
-   * const r = world.replaceSystem(Update, 'movement', {
-   *   name: 'movement',
-   *   queries: [{ with: [Position] }],
-   *   fn: (world, queryResults) => { ... },
-   * });
-   * ```
-   */
+  /** Replace an implementation while preserving its identity, order and set memberships. */
   replaceSystem<const Qs extends ReadonlyArray<QueryDescriptor>>(
     schedule: import('./schedule-token').ScheduleToken,
-    name: string,
+    system: SystemToken,
     descriptor: SystemDescriptor<Qs>,
   ): Result<void, ScheduleMutationError | ScheduleScopeMismatchError> {
-    return worldReplaceSystem(this, schedule, name, descriptor);
+    return worldReplaceSystem(this, schedule, system, descriptor);
   }
 
-  /**
-   * Batch-register systems to a set. Validates the set token before writing.
-   *
-   * - First call for a system name: registers it via the existing `addSystem` path.
-   * - Subsequent calls: only adds the system name to the set's members (dedup).
-   *
-   * Returns `Result.err` with `SystemSetNotRegisteredError` if the set token
-   * fails identity validation.
-   *
-   * @example
-   * ```ts
-   * const GameplaySet = defineSystemSet({ name: 'gameplay' });
-   * const world = new World();
-   * const r = world.addSystems(Update, GameplaySet, [movement, collision]);
-   * if (!r.ok) console.error(r.error.code, r.error.hint);
-   * ```
-   */
+  /** Register these system identities as members of this schedule-local set. */
   addSystems<const Qs extends ReadonlyArray<QueryDescriptor>>(
     schedule: import('./schedule-token').ScheduleToken,
     set: SystemSet,
-    systems: ReadonlyArray<SystemDescriptor<Qs>>,
+    systems: ReadonlyArray<System<Qs>>,
   ): Result<void, SystemSetNotRegisteredError | ScheduleScopeMismatchError> {
     return worldAddSystems(this, schedule, set, systems);
+  }
+
+  /** Test registration by identity without reading an inspection snapshot. */
+  hasSystem(
+    schedule: import('./schedule-token').ScheduleToken,
+    system: SystemToken | SystemSet,
+  ): boolean {
+    const current = this.schedules.get(schedule);
+    if (current === undefined) return false;
+    return isSystemSet(system)
+      ? (current.sets.get(system)?.members.size ?? 0) > 0
+      : current.systems.has(system);
   }
 
   /**
@@ -988,7 +969,7 @@ export class World {
   // ──────────────────────────────────────────────────────────────────────────
 
   /** Insert or overwrite a resource (idempotent, E-13). */
-  insertResource<T>(key: string | { readonly name: string }, value: T): void {
+  insertResource<T>(key: Resource<T>, value: NoInfer<T>): void {
     worldInsertResource(this, key, value);
   }
 
@@ -996,20 +977,17 @@ export class World {
    * Get a resource by key.
    * @throws ResourceNotFoundError if key not found (E-14).
    */
-  getResource(key: typeof import('./time').Time): import('./time').TimeResource;
-  getResource(key: typeof import('./time').FixedTime): import('./time').FixedTimeResource;
-  getResource<T>(key: string | { readonly name: string }): T;
-  getResource<T>(key: string | { readonly name: string }): T {
+  getResource<T>(key: Resource<T>): T {
     return worldGetResource<T>(this, key);
   }
 
   /** Check if a resource exists. */
-  hasResource(key: string | { readonly name: string }): boolean {
+  hasResource(key: ResourceIdentity): boolean {
     return worldHasResource(this, key);
   }
 
   /** Remove a resource by key. */
-  removeResource(key: string | { readonly name: string }): void {
+  removeResource(key: ResourceIdentity): void {
     worldRemoveResource(this, key);
   }
 
@@ -1057,9 +1035,9 @@ export class World {
   /**
    * Allocate a standalone managed reference handle with an optional release
    * callback. Returns a branded {@link Handle}<Target, 'unique'> that can be
-   * stored in schema-vocab `ref<T>` fields or resolved through
+   * stored in schema-vocab `unique<T>` fields or resolved through
    * {@link UniqueRefStore.resolve} (via `world.get` on a component with
-   * `ref<T>` fields).
+   * `unique<T>` fields).
    *
    * When the handle is released (despawn / removeComponent / set-overwrite),
    * the `onRelease` callback fires with the payload (captured on the stack);
@@ -1225,24 +1203,6 @@ export class World {
     return index;
   }
 
-  /** Read the World-owned materialized target array; never consults a shadow list. */
-  private relationshipTargetEntries(
-    source: Component,
-    target: EntityHandle,
-  ): readonly EntityHandle[] {
-    const role = relationshipRole(source);
-    if (role?.kind !== 'source') return [];
-    const mirror = relationshipMirror(source);
-    if (mirror === undefined) return [];
-    // Internal relationship maintenance may read the live mirror view
-    // directly; the public `get` path clones target arrays to keep them
-    // read-only. Avoid allocating a component snapshot on every append or
-    // removal while retaining the same World-owned storage authority.
-    return (
-      (this.getArrayView(target, mirror, role.targetField) as EntityHandle[] | undefined) ?? []
-    );
-  }
-
   /** Read a relationship target length without materialising its array view. */
   private relationshipTargetLength(source: Component, target: EntityHandle): number {
     const role = relationshipRole(source);
@@ -1277,7 +1237,6 @@ export class World {
     err(invalidAssetBinding('an asset owner attached to the World'));
 
   private preflightComponentFieldValues(
-    holder: EntityHandle | null,
     component: Component,
     data: Readonly<Record<string, unknown>>,
   ): Result<void, EcsError> {
@@ -1292,12 +1251,6 @@ export class World {
     if (arrayError !== null) return err(arrayError as unknown as EcsError);
     const sharedError = validateSharedFieldValues(component, data);
     if (sharedError !== null) return err(sharedError as unknown as EcsError);
-    const numericError = validateNumericFieldValues(
-      component,
-      data,
-      holder === null ? undefined : (holder as number),
-    );
-    if (numericError !== null) return err(numericError as unknown as EcsError);
     return ok(undefined);
   }
 
@@ -1319,7 +1272,6 @@ export class World {
     if (keyError !== null) return err(keyError as unknown as EcsError);
     const filled = fillComponentDefaults(componentData.component, data);
     const valuePreflight = this.preflightComponentFieldValues(
-      holder,
       componentData.component,
       filled as Record<string, unknown>,
     );
@@ -1453,7 +1405,6 @@ export class World {
     const row = this.tableRow(slot);
     const currentValue = this.readRow(arch, component, row) as Record<string, unknown>;
     const valuePreflight = this.preflightComponentFieldValues(
-      entity,
       component,
       value as Record<string, unknown>,
     );
@@ -2035,7 +1986,6 @@ export class World {
       );
     }
     const valuePreflight = this.preflightComponentFieldValues(
-      entity,
       component,
       value as Record<string, unknown>,
     );
@@ -2093,12 +2043,8 @@ export class World {
         // changed, and managed allocation/release paths own lifecycle effects.
         changed ||=
           managed || arrayMeta !== undefined || kind === 'buffer' || kind === 'fixed-buffer';
-        // M1/M2 release loop (set path): release the prior managed value
-        // BEFORE writing the new one. Single SSOT helper `releaseManagedFieldOnRow`
-        // (feat-20260614 D-2) covers every managed-field family (`ref<T>` /
-        // `string` / `buffer` / variable `array<T>`); it self-skips fields that
-        // do not match `isManagedField` here, but for set-ref/string we already
-        // gated on it so the call is hot. Zeroes the column when applicable.
+        // Release the previous scalar reference before writing its replacement.
+        // The definition-time field plan selects its existing lifecycle owner.
         if (managed) {
           this.releaseManagedFieldOnRow(arch, component, row, fieldName);
         }
@@ -2159,7 +2105,7 @@ export class World {
           }
         } else if (kind === 'string') {
           // M1 string-field set path (AC-05 path 3): the prior handle was
-          // already released by the unified `isManagedField` pre-write block
+          // already released by the scalar-reference pre-write block
           // above (D-R3) -- here we just alloc the new handle and store the
           // u32. Mirrors the array<T> release-then-alloc pattern (D-5) so AI
           // users observe the UniqueRefStore _liveCount net-zero invariant
@@ -2218,20 +2164,6 @@ export class World {
   ): Result<void, EcsError> {
     const definition = componentDefinition(component);
     const plans = definition.plan.fields;
-    for (const fieldName in data) {
-      if (plans[fieldName]?.kind !== 'number') continue;
-      const raw = data[fieldName];
-      if (Number.isNaN(raw)) {
-        return err(
-          new ComponentNumericValueInvalidError(
-            entity as number,
-            component.name,
-            fieldName,
-            raw as number,
-          ),
-        );
-      }
-    }
     if (definition.plan.hasLabeledEnum) {
       const enumError = validateEnumFieldValues(component, data, entity as number);
       if (enumError !== null) return err(enumError as unknown as EcsError);
@@ -2758,12 +2690,10 @@ export class World {
     component: Component<string, S>,
     internal: boolean,
   ): Result<void, EcsError> {
-    // Essential-component hard reject (feat-20260602 / plan-strategy D-3): the
-    // id=0 `Entity` component is carried by every archetype unconditionally (it
-    // is the row's own packed handle) and cannot be removed. Reject before any
-    // liveness lookup so the rejection is structural, not entity-state-dependent.
+    // Entity carries the row's identity and cannot be removed. Reject before
+    // liveness lookup so the rejection does not depend on entity state.
     if (componentId(component) === componentId(EntityComponent)) {
-      return err(new RemoveEssentialComponentError(component.name));
+      return err(new RemoveEntityComponentError());
     }
 
     const rec = this.liveSlot(entity);
@@ -2806,7 +2736,7 @@ export class World {
       }
     }
 
-    // M1 release loop (removeComponent path): release every `ref<T>` field
+    // M1 release loop (removeComponent path): release every `unique<T>` field
     // on the component being removed before migration drops the row.
     if (component.storage === 'table') {
       this.releaseManagedRefsOnRow(srcArch, component as Component, this.tableRow(rec));
@@ -2901,7 +2831,7 @@ export class World {
         this.writeRow(arch, cd.component, tableRow, cd.data as Record<string, unknown>);
       }
 
-      // The reserved handle is the source of truth for the essential Entity
+      // The reserved handle is the source of truth for the Entity
       // self column. Relationship maintenance is part of the write boundary;
       // component/epoch publication waits until it has completed.
       this.writeEntitySelf(arch, tableRow, entity);
@@ -3232,7 +3162,7 @@ export class World {
   }
 
   /**
-   * Write the full packed entity handle into the row's essential id=0 `Entity`
+   * Write the full packed entity handle into the row's id=0 `Entity`
    * column (`self` field). Called by `spawn` / `materializePendingEntity`
    * after the row is appended (feat-20260602 / plan-strategy D-3). The column
    * always exists -- `createArchetype` folds the Entity column into every
@@ -3325,7 +3255,7 @@ export class World {
       } else if (kind === 'string') {
         // M1 string-field spawn path (AC-04 / AC-06): route the JS string
         // payload through `uniqueRefs.alloc('String', text)` -- the same
-        // UniqueRefStore the `ref<T>` arm uses (D-R3 single-arm dispatch).
+        // UniqueRefStore the `unique<T>` arm uses (D-R3 single-arm dispatch).
         // The store holds the immutable string by strong reference so
         // identity is stable across reads (AC-03). Missing / non-string raw
         // falls back to '' so AI users always see a readable string on
@@ -3381,48 +3311,37 @@ export class World {
     row: number,
     fieldName: string,
   ): void {
-    // Plain numeric, bool, entity and inline non-reference fields own nothing.
-    if (componentDefinition(component).plan.fields[fieldName]?.releases !== true) return;
+    const definition = componentDefinition(component);
+    const plan = definition.plan.fields[fieldName];
+    if (plan?.releases !== true) return;
     const fieldCols = this.table(arch).storage.get(componentId(component))?.fields;
-    if (!fieldCols) return;
-    const col = fieldCols.get(fieldName);
-    if (!col) return;
-    const fieldType = (componentSchema(component) as Record<string, string>)[fieldName] ?? '';
-    if (isManagedField(fieldType)) {
-      // Sub-dispatch by the schema-vocab keyword (feat-20260614 M4 / AC-08):
-      //   - 'shared<T>' scalar    -> SharedRefStore.release (rc--; drop on rc=0)
-      //   - 'unique<T>' / 'string' -> UniqueRefStore.release (direct slot drop)
-      // Both column shapes are u32 handles; the lookup store differs.
-      // Keeping both arms inside the unified `isManagedField` block is
-      // intentional: meta key (TYPE_METADATA `'shared'` vs `'ref'`) decides
-      // the store, not a separate top-level branch (architecture-principles
-      // §1 SSOT — meta key = release semantics).
-      const handleU32 = col.view[row] as number;
-      if (fieldType.startsWith('asset<')) {
-        releaseAssetReference(this.assets, handleU32);
-        return;
-      }
-      if (fieldType.startsWith('shared<')) {
-        this.releaseSharedRefHandle(handleU32, component.name, fieldName);
-        return;
-      }
-      this.releaseManagedRefHandle(handleU32, component.name, fieldName);
+    const col = fieldCols?.get(fieldName);
+    if (fieldCols === undefined || col === undefined) return;
+    const kind = plan.kind;
+    const raw = col.view[row] as number;
+    if (kind === 'asset') {
+      releaseAssetReference(this.assets, raw);
       return;
     }
-    if (isManagedBufferField(fieldType)) {
-      if (fieldType === 'buffer') {
-        const slotId = col.view[row] as number;
-        this.releaseManagedBufferSlot(slotId);
-        col.view[row] = 0;
-      }
+    if (kind === 'shared') {
+      this.releaseSharedRefHandle(raw, component.name, fieldName);
       return;
     }
-    if (isManagedArrayField(fieldType)) {
+    if (kind === 'unique' || kind === 'string') {
+      this.releaseManagedRefHandle(raw, component.name, fieldName);
+      return;
+    }
+    if (kind === 'buffer') {
+      this.releaseManagedBufferSlot(raw);
+      col.view[row] = 0;
+      return;
+    }
+    if (kind === 'array' || kind === 'fixed-array') {
       // Use the pre-parsed arrayMeta cached on the component descriptor at
       // registration (AC-03c parse-free hot path); reaching for
       // `parseManagedArraySchema` here would violate the parse-free
       // invariant exercised by hierarchy.unit.test.ts §w5 AC-03(a).
-      const arrayMeta = componentDefinition(component).fields[fieldName]?.arrayMeta;
+      const arrayMeta = definition.fields[fieldName]?.arrayMeta;
       if (arrayMeta === undefined) return;
       const isSharedElement = arrayMeta.elementType.startsWith('shared<');
       const isAssetElement = arrayMeta.elementType.startsWith('asset<');

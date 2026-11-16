@@ -1,4 +1,5 @@
 import { createWorldContext, World } from '@forgeax/engine-ecs';
+import { PhysicsWorldResource } from '@forgeax/engine-physics';
 import { describe, expect, it } from 'vitest';
 import {
   CharacterController,
@@ -17,7 +18,7 @@ describe('physics component vocabulary plugin', () => {
     expect(world.components.resolve(Collider.name)).toBe(Collider);
     expect(world.components.resolve(CharacterController.name)).toBe(CharacterController);
     expect(world.components.resolve(CollidingEntities.name)).toBe(CollidingEntities);
-    expect(world.hasResource('PhysicsWorld')).toBe(false);
+    expect(world.hasResource(PhysicsWorldResource)).toBe(false);
 
     await context.fiber.dispose();
     expect(world.components.resolve(RigidBody.name)).toBeUndefined();

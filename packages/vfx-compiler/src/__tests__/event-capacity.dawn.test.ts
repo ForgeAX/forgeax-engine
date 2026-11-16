@@ -94,7 +94,7 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>, custo
       [0, make(particles)],
       [1, make(runtime, true)],
       [2, make(new Uint32Array([liveSlot, 0, 0, 0]))],
-      [3, make(new Uint32Array([1, 0, previousEvents, previousEvents, 0, 0]))],
+      [3, make(new Uint32Array([1, 0, previousEvents, previousEvents, 0, 0, 0]))],
       [4, make(new Uint32Array([6, 1, 0, 0, 0]))],
       [5, make(scratch)],
       [8, make(events)],
@@ -131,7 +131,8 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>, custo
     pass.end();
     device.queue.submit([encoder.finish()]);
     const actualParticles = await read(at(0));
-    const counts = await read(at(3));
+    const counterReadback = await read(at(3));
+    const counts = counterReadback.slice(0, 6);
     const indirect = await read(at(4));
     const indices = await read(at(2));
     const flags = await read(at(5));
@@ -141,6 +142,8 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>, custo
     expect((await device.popErrorScope())?.message).toBeUndefined();
     expect(actualParticles[liveSlot * 28 + 24]).toBe(99);
     const accepted = eventSlots >= 2 ? 2 : 0;
+    expect(counterReadback).toHaveLength(7);
+    expect(counterReadback[6], 'event-only emission preserves zero gridEmissionCount').toBe(0);
     expect(counts).toEqual([
       1 + accepted,
       0,

@@ -1,6 +1,9 @@
+import { defineResource } from '@forgeax/engine-ecs';
+import { InputFrameStartScan } from "@forgeax/engine-input";
+import { defineSystem } from "@forgeax/engine-ecs";
 import type { AssetHandle } from '@forgeax/engine-types';
 import { FixedTime, FixedUpdate, defineComponent, type EntityHandle, type World, Update } from '@forgeax/engine-ecs';
-import { INPUT_SNAPSHOT_RESOURCE_KEY, FRAME_START_SCAN_SYSTEM_NAME, type InputSnapshot } from '@forgeax/engine-input';
+import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine-input';
 
 import { Camera, DirectionalLight, Materials, MeshFilter, MeshRenderer, perspective } from '@forgeax/engine-render';
 
@@ -44,7 +47,7 @@ export interface PhysicsFixedState {
   lastAlpha: number;
 }
 
-export const PHYSICS_FIXED_STATE = 'bevyPhysicsFixedState';
+export const PHYSICS_FIXED_STATE = defineResource<PhysicsFixedState>("bevyPhysicsFixedState");
 
 function material(world: World, color: readonly [number, number, number, number]): AssetHandle<'material'> {
 const sceneAssets = world.assets;
@@ -90,17 +93,17 @@ const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).u
 
 function readInput(world: World): InputSnapshot | undefined {
   if (!world.hasResource(INPUT_SNAPSHOT_RESOURCE_KEY)) return undefined;
-  return world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+  return world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
 }
 
 export function installPhysicsFixedSystems(world: World): void {
-  world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'accumulate-fixed-loop-input',
-    after: [FRAME_START_SCAN_SYSTEM_NAME],
+    after: [InputFrameStartScan],
     before: [FixedUpdate],
     queries: [],
     fn: (world) => {
-      const state = world.getResource<PhysicsFixedState>(PHYSICS_FIXED_STATE);
+      const state = world.getResource(PHYSICS_FIXED_STATE);
       const input = readInput(world);
       const rawX = input ? Number(input.keyboard.downCode('KeyD')) - Number(input.keyboard.downCode('KeyA')) : 0;
       const rawZ = input ? Number(input.keyboard.downCode('KeyS')) - Number(input.keyboard.downCode('KeyW')) : 0;
@@ -110,12 +113,13 @@ export function installPhysicsFixedSystems(world: World): void {
       world.set(state.player, Velocity, { x: x * SPEED, y: 0, z: z * SPEED });
     },
   });
+world.addSystem(Update, systemToken1);
 
-  world.addSystem(FixedUpdate, {
+  const systemToken2 = defineSystem({
     name: 'advance-fixed-physics',
     queries: [],
     fn: (world) => {
-      const state = world.getResource<PhysicsFixedState>(PHYSICS_FIXED_STATE);
+      const state = world.getResource(PHYSICS_FIXED_STATE);
       const fixed = world.getResource(FixedTime);
       const current = world.get(state.player, PhysicalTranslation);
       const previous = world.get(state.player, PreviousPhysicalTranslation);
@@ -130,13 +134,14 @@ export function installPhysicsFixedSystems(world: World): void {
       state.fixedSteps += 1;
     },
   });
+world.addSystem(FixedUpdate, systemToken2);
 
-  world.addSystem(Update, {
+  const systemToken3 = defineSystem({
     name: 'interpolate-fixed-physics-render',
     after: [FixedUpdate],
     queries: [],
     fn: (world) => {
-      const state = world.getResource<PhysicsFixedState>(PHYSICS_FIXED_STATE);
+      const state = world.getResource(PHYSICS_FIXED_STATE);
       const fixed = world.getResource(FixedTime);
       const current = world.get(state.player, PhysicalTranslation);
       const previous = world.get(state.player, PreviousPhysicalTranslation);
@@ -153,8 +158,9 @@ export function installPhysicsFixedSystems(world: World): void {
       state.interpolationFrames += 1;
     },
   });
+world.addSystem(Update, systemToken3);
 }
 
 export function readPhysicsFixedState(world: World): PhysicsFixedState {
-  return { ...world.getResource<PhysicsFixedState>(PHYSICS_FIXED_STATE) };
+  return { ...world.getResource(PHYSICS_FIXED_STATE) };
 }

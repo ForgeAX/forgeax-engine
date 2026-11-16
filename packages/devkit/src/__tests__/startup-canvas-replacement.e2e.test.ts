@@ -342,6 +342,14 @@ it('enters the generated game after its canvas is replaced during startup', asyn
       chromiumSandbox: true,
     });
     const page = await browser.newPage();
+    // Match the HTTP carrier while the adopted Play remains hidden and opaque.
+    await page.route('http://forgeax.test/', (route) =>
+      route.fulfill({
+        contentType: 'text/html',
+        body: '<!doctype html><html><body></body></html>',
+      }),
+    );
+    await page.goto('http://forgeax.test/');
     record('hidden-document-bootstrap');
     // Stop can hide an adopted Play before its document arrives. Its generated
     // module entry must still initialize so the owner can acknowledge cleanup.
@@ -365,6 +373,12 @@ it('enters the generated game after its canvas is replaced during startup', asyn
         page.frameLocator('#preparing-play').locator('html').getAttribute('data-entry-imported'),
       )
       .toBe('true');
+    expect(
+      await page
+        .frameLocator('#preparing-play')
+        .locator('html')
+        .evaluate(() => globalThis.origin),
+    ).toBe('null');
     await page.locator('#preparing-play').evaluate((frame) => frame.remove());
     // Run the actual generated startup owner. Renderer/device qualification
     // remains in the unchanged generated-worker-game and browser/Dawn gates.

@@ -13,9 +13,15 @@ import {
   startPluginAsset,
 } from '@forgeax/engine-plugin';
 import { validateDynamicGeometryMeshBudget, validateRenderProfile } from '@forgeax/engine-render';
+import { assertTextureMipSkip } from '@forgeax/engine-render/internal';
 import type { ToolRun, ToolRunOptions } from '@forgeax/engine-tool-runtime';
 import type { ImportContext, ImportProduct } from '@forgeax/engine-types';
-import { err, ok, type PluginAssetDefinition } from '@forgeax/engine-types';
+import {
+  DEFAULT_LOAD_PROGRESS_LABELS,
+  err,
+  ok,
+  type PluginAssetDefinition,
+} from '@forgeax/engine-types';
 import { validateStartupUi } from '../host/startup-ui.js';
 import type { DevKitAppOptions, DevKitDeliveryOptions } from '../plugin-build.js';
 
@@ -137,10 +143,13 @@ const runs = new Map<number, ToolRun<unknown>>();
 /** The closed set of public project App option keys. */
 const APP_OPTION_KEYS: ReadonlySet<string> = new Set([
   'dynamicGeometryMeshBudgetBytes',
+  'textureMipSkip',
   'assetBudgetBytes',
+  'canvasPixelRatio',
   'standardProfile',
   'pipelineLibrary',
   'backgroundPipelineLibrary',
+  'backgroundPipelineLibraryConcurrency',
   'time',
   'renderPipelineCapacity',
   'renderTaskYield',
@@ -149,14 +158,24 @@ const APP_OPTION_KEYS: ReadonlySet<string> = new Set([
   'wechat',
 ]);
 
-const LOADING_LABEL_KEYS = new Set(['lang', 'loading', 'elapsed', 'slow', 'reload']);
+const LOADING_LABEL_KEYS = new Set(Object.keys(DEFAULT_LOAD_PROGRESS_LABELS));
+const HOST_LABEL_KEYS = new Set(Object.keys(DEFAULT_LOAD_PROGRESS_LABELS.host));
 
 function validateRenderTaskYield(value: unknown): void {
   if (value !== undefined && value !== 'none' && value !== 'features')
     throw new TypeError("devkitAppOptions.renderTaskYield must be 'none' or 'features'");
 }
 
-/** Optional loading labels are strings, plus a `phases` map of phase id to string. */
+/** Background requests in flight: an integer 1..4, matching the RHI bound; no clamping. */
+function validateBackgroundPipelineLibraryConcurrency(value: unknown): void {
+  if (value === undefined) return;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1 || value > 4)
+    throw new TypeError(
+      'devkitAppOptions.backgroundPipelineLibraryConcurrency must be an integer in 1..4',
+    );
+}
+
+/** Host text is closed; apps may add phase ids to the progress-label map. */
 function validateLoadingLabels(value: unknown): void {
   if (value === undefined) return;
   const record = (candidate: unknown): candidate is Record<string, unknown> =>
@@ -166,12 +185,25 @@ function validateLoadingLabels(value: unknown): void {
     Object.entries(value).every(([key, label]) =>
       key === 'phases'
         ? record(label) && Object.values(label).every((name) => typeof name === 'string')
-        : LOADING_LABEL_KEYS.has(key) && typeof label === 'string',
+        : key === 'host'
+          ? record(label) &&
+            Object.entries(label).every(
+              ([name, text]) => HOST_LABEL_KEYS.has(name) && typeof text === 'string',
+            )
+          : LOADING_LABEL_KEYS.has(key) && typeof label === 'string',
     );
   if (!valid)
     throw new TypeError(
-      'devkitAppOptions.loadingLabels must contain lang/loading/elapsed/slow/reload strings and a phases string map',
+      'devkitAppOptions.loadingLabels must contain known text strings, a phases string map, and optional known host text strings',
     );
+}
+
+/** Byte budgets and the texture mip skip share Render's validators with App. */
+function validateResourceBudgetOptions(options: DevKitAppOptions): void {
+  if (options.dynamicGeometryMeshBudgetBytes !== undefined)
+    validateDynamicGeometryMeshBudget(options.dynamicGeometryMeshBudgetBytes);
+  if (options.textureMipSkip !== undefined) assertTextureMipSkip(options.textureMipSkip);
+  if (options.assetBudgetBytes !== undefined) validateAssetBudgetBytes(options.assetBudgetBytes);
 }
 
 function validateWechatOptions(wechat: DevKitAppOptions['wechat']): void {
@@ -203,10 +235,12 @@ function projectAppOptions(value: unknown): DevKitAppOptions {
   )
     throw new TypeError('devkitAppOptions must contain only public project App options');
   const options = copyPackData(value) as DevKitAppOptions;
+  validateCanvasPixelRatio(options.canvasPixelRatio);
   const capacity = options.renderPipelineCapacity;
   if (capacity !== undefined && capacity !== 2 && capacity !== 3 && capacity !== 4)
     throw new TypeError('devkitAppOptions.renderPipelineCapacity must be 2, 3 or 4');
   validateRenderTaskYield(options.renderTaskYield);
+  validateBackgroundPipelineLibraryConcurrency(options.backgroundPipelineLibraryConcurrency);
   validateWechatOptions(options.wechat);
   if (options.time !== undefined) {
     const time = options.time;
@@ -229,9 +263,7 @@ function projectAppOptions(value: unknown): DevKitAppOptions {
   }
   validateLoadingLabels(options.loadingLabels);
   validateStartupUi(options.startupUi);
-  if (options.dynamicGeometryMeshBudgetBytes !== undefined)
-    validateDynamicGeometryMeshBudget(options.dynamicGeometryMeshBudgetBytes);
-  if (options.assetBudgetBytes !== undefined) validateAssetBudgetBytes(options.assetBudgetBytes);
+  validateResourceBudgetOptions(options);
   if (options.standardProfile !== undefined) {
     const invalid = validateRenderProfile(options.standardProfile);
     if (invalid !== undefined) throw new TypeError(invalid);
@@ -471,3 +503,21 @@ process.on('message', (request: BuildProcessRequest | BuildCallbackResponse) => 
 process.once('disconnect', () => {
   process.exit(0);
 });
+
+function validateCanvasPixelRatio(pixelRatio: DevKitAppOptions['canvasPixelRatio']): void {
+  if (
+    pixelRatio !== undefined &&
+    pixelRatio !== 'device' &&
+    !(typeof pixelRatio === 'number' && Number.isFinite(pixelRatio) && pixelRatio > 0) &&
+    !(
+      typeof pixelRatio === 'object' &&
+      pixelRatio !== null &&
+      pixelRatio.mode === 'device' &&
+      typeof pixelRatio.max === 'number' &&
+      Number.isFinite(pixelRatio.max) &&
+      pixelRatio.max > 0 &&
+      Reflect.ownKeys(pixelRatio).every((key) => key === 'mode' || key === 'max')
+    )
+  )
+    throw new TypeError('devkitAppOptions.canvasPixelRatio must be positive and finite or device');
+}

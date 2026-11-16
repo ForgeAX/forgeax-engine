@@ -226,9 +226,7 @@ export async function renderWorldResponse(
       propagateTransforms(world).unwrap();
       // Presentation readiness includes completed image-based Skylight publication.
       unwrap(renderer.requestObservation?.(['linear-hdr']));
-      const receipt = unwrap(
-        renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
-      );
+      const receipt = unwrap(renderer.draw({ source: lease }));
       unwrap(await receipt.completed);
       if (receipt.presentation === 'ready') {
         const hdr = unwrap(
@@ -236,9 +234,7 @@ export async function renderWorldResponse(
         ).observations?.find((item) => item.domain === 'linear-hdr');
         if (hdr === undefined) throw new Error('missing linear HDR observation');
         await onReady?.(async () => {
-          const next = unwrap(
-            renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
-          );
+          const next = unwrap(renderer.draw({ source: lease }));
           unwrap(await next.completed);
         });
         return responseRgb(hdr.bytes, hdr.metadata.bytesPerRow);

@@ -8,7 +8,10 @@ import { BrowserPluginProgramArchive } from '../plugin-programs-browser.js';
 
 const capabilities = Array.from({ length: 12 }, (_, index) => `cap${index}`);
 
-it('keeps the host entry static closure small while programs keep public facades', async () => {
+it.each([
+  'javascript',
+  'html',
+])('keeps the %s host entry static closure small while programs keep public facades', async (kind) => {
   const root = await realpath(await mkdtemp(resolve(tmpdir(), 'forgeax-host-closure-')));
   try {
     await writeFile(resolve(root, 'package.json'), '{"name":"consumer","type":"module"}');
@@ -47,6 +50,12 @@ it('keeps the host entry static closure small while programs keep public facades
       resolve(root, 'game.js'),
       "import { cap3 } from '@forgeax/engine-cap3'; import { cap7 } from '@forgeax/engine-cap7'; export default { cap3, cap7 };",
     );
+    const entry = resolve(host, kind === 'html' ? 'index.html' : 'main.js');
+    if (kind === 'html')
+      await writeFile(
+        entry,
+        '<!doctype html><script type="module">await new Promise(resolve => requestAnimationFrame(resolve));await import("./main.js");</script>',
+      );
     const archive = new BrowserPluginProgramArchive();
     archive.entries.set('game', resolve(root, 'game.js'));
     const workers = executionWorkerEntries([], 'browser', host);
@@ -74,7 +83,10 @@ it('keeps the host entry static closure small while programs keep public facades
         write: false,
         minify: false,
         modulePreload: false,
-        rollupOptions: { input: { main: resolve(host, 'main.js') } },
+        rollupOptions: {
+          preserveEntrySignatures: 'allow-extension',
+          input: { [kind === 'html' ? 'index' : 'main']: entry },
+        },
       },
     });
     const output = (Array.isArray(result) ? result[0] : result) as Rollup.RollupOutput;
@@ -83,10 +95,20 @@ it('keeps the host entry static closure small while programs keep public facades
         .filter((chunk): chunk is Rollup.OutputChunk => chunk.type === 'chunk')
         .map((chunk) => [chunk.fileName, chunk]),
     );
-    const main = [...chunks.values()].find(
-      (chunk) => chunk.facadeModuleId === normalizePath(resolve(host, 'main.js')),
+    const html = output.output.find(
+      (chunk) => chunk.type === 'asset' && chunk.fileName.endsWith('index.html'),
     );
+    const htmlSource = html?.type === 'asset' ? String(html.source) : '';
+    if (kind === 'html') expect(htmlSource).toMatch(/src="\/assets\/index-[^/]+\.js"/);
+    const htmlEntry = htmlSource.match(/src="\/(assets\/index-[^"]+\.js)"/)?.[1];
+    const main =
+      kind === 'html'
+        ? chunks.get(htmlEntry ?? '')
+        : [...chunks.values()].find((chunk) => chunk.facadeModuleId === normalizePath(entry));
     if (!main) throw new Error('missing host entry');
+    if (kind === 'html') {
+      expect(main.fileName).toMatch(/^assets\/index-[^/]+\.js$/);
+    }
     const closure = new Set<string>();
     const visit = (file: string) => {
       if (closure.has(file)) return;
@@ -102,6 +124,56 @@ it('keeps the host entry static closure small while programs keep public facades
     expect(published).toHaveLength(capabilities.length);
     for (const file of closure)
       expect(published.map((chunk) => chunk.fileName)).not.toContain(file);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it('keeps distinct groups for HTML pages with the same basename', async () => {
+  const root = await realpath(await mkdtemp(resolve(tmpdir(), 'forgeax-page-groups-')));
+  try {
+    await mkdir(resolve(root, 'other'));
+    for (const page of ['index.html', 'other/index.html'])
+      await writeFile(
+        resolve(root, page),
+        '<!doctype html><script type="module">await Promise.resolve();globalThis.page = import.meta.url;</script>',
+      );
+    const archive = new BrowserPluginProgramArchive();
+    const result = await build({
+      root,
+      configFile: false,
+      logLevel: 'silent',
+      plugins: [
+        {
+          name: 'page-groups-probe',
+          buildEnd() {
+            archive.prepareGroups(this);
+          },
+          outputOptions(output) {
+            return archive.groupedOutput(output);
+          },
+        },
+      ],
+      build: {
+        write: false,
+        modulePreload: false,
+        rollupOptions: {
+          preserveEntrySignatures: 'allow-extension',
+          input: { index: resolve(root, 'index.html'), other: resolve(root, 'other/index.html') },
+        },
+      },
+    });
+    const output = (Array.isArray(result) ? result[0] : result) as Rollup.RollupOutput;
+    const entries = output.output
+      .filter((chunk) => chunk.type === 'asset' && chunk.fileName.endsWith('index.html'))
+      .map((chunk) =>
+        chunk.type === 'asset'
+          ? String(chunk.source).match(/src="\/(assets\/index-[^"]+\.js)"/)?.[1]
+          : undefined,
+      );
+    expect(entries).toHaveLength(2);
+    expect(entries.every((entry) => entry !== undefined)).toBe(true);
+    expect(new Set(entries).size).toBe(2);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

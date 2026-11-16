@@ -140,6 +140,10 @@ export interface VfxRuntimeHostControl {
 
 export interface VfxRuntimeHost {
   readonly feature: ReturnType<typeof gpuParticleRenderFeature>;
+  /** Independent renderer caches over the same World control authority. */
+  createRenderFeature(
+    providers?: readonly VfxDataInterfaceProvider[],
+  ): ReturnType<typeof gpuParticleRenderFeature>;
   readonly dataInterfaces: VfxDataInterfaceRegistry;
   inspect(world: World): VfxRuntimeHostInspectSnapshot | undefined;
   acquireControl(world: World): Result<VfxRuntimeHostControl, VfxRuntimeHostControlError>;
@@ -213,80 +217,86 @@ export function createVfxRuntimeHost(options: VfxRuntimeHostOptions): VfxRuntime
       .borrow<Kind extends 'material' ? MaterialAsset : MeshAsset>(reference)
       .unwrap();
   };
-  const feature = gpuParticleRenderFeature({
-    camera: options.camera,
-    ...(options.instanceArenas === undefined ? {} : { instanceArenas: options.instanceArenas }),
-    ...(options.nativePlanning === undefined ? {} : { nativePlanning: options.nativePlanning }),
-    ...(options.retainedResources === undefined
-      ? {}
-      : { retainedResources: options.retainedResources }),
-    ...(options.isolateViewGraph === undefined
-      ? {}
-      : { isolateViewGraph: options.isolateViewGraph }),
-    ...(options.sceneSdf === undefined ? {} : { sceneSdf: options.sceneSdf }),
-    dataInterfaces,
-    material: createHostMaterialSource(
-      (world, guid) => readRenderAsset(world, guid, 'material'),
-      (world) => {
-        const assets = worlds.get(world)?.assets;
-        if (assets === undefined) return false;
-        // Do not invoke a custom accessor merely to discover capture support.
-        const own = Object.getOwnPropertyDescriptor(assets, 'getMaterialProjectionForPayload');
-        if (own !== undefined) return own.value === stockMaterialProjection;
-        return (
-          Object.getPrototypeOf(assets) === AssetRegistry.prototype &&
-          Object.getOwnPropertyDescriptor(
-            AssetRegistry.prototype,
-            'getMaterialProjectionForPayload',
-          )?.value === stockMaterialProjection
-        );
-      },
-      (world, material, context) => {
-        const assets = worlds.get(world)?.assets;
-        if (assets === undefined || !('getMaterialProjectionForPayload' in assets))
-          return undefined;
-        const readProjection = assets.getMaterialProjectionForPayload;
-        const projection = readProjection.call(assets, material);
-        if (readProjection !== stockMaterialProjection || projection === undefined)
-          return projection;
-        // Ordinary raster variants are never selected by particleMaterialPass.
-        const passes = projection.passes.filter(
-          (pass) =>
-            pass.name !== 'forward' && pass.name !== 'deferred' && pass.name !== 'shadow-caster',
-        );
-        if (passes.length === 0) return undefined;
-        if (passes.length === projection.passes.length)
-          return selectParticleMaterialContext(projection, context);
-        // Selection's legacy/modern address policy is derived across all passes.
-        // Preserve mixed legacy inputs when removing raster rows could change it.
-        const modern = (rows: MaterialRenderProjection['passes']) =>
-          rows.some((pass) =>
-            pass.programs.some(
-              (program) =>
-                program.context.pipeline !== 'ray' &&
-                (program.address !== undefined ||
-                  program.entry !== undefined ||
-                  program.abi !== undefined),
-            ),
+  const createFeature = (registry = dataInterfaces) =>
+    gpuParticleRenderFeature({
+      camera: options.camera,
+      ...(options.instanceArenas === undefined ? {} : { instanceArenas: options.instanceArenas }),
+      ...(options.nativePlanning === undefined ? {} : { nativePlanning: options.nativePlanning }),
+      ...(options.retainedResources === undefined
+        ? {}
+        : { retainedResources: options.retainedResources }),
+      ...(options.isolateViewGraph === undefined
+        ? {}
+        : { isolateViewGraph: options.isolateViewGraph }),
+      ...(options.sceneSdf === undefined ? {} : { sceneSdf: options.sceneSdf }),
+      dataInterfaces: registry,
+      material: createHostMaterialSource(
+        (world, guid) => readRenderAsset(world, guid, 'material'),
+        (world) => {
+          const assets = worlds.get(world)?.assets;
+          if (assets === undefined) return false;
+          // Do not invoke a custom accessor merely to discover capture support.
+          const own = Object.getOwnPropertyDescriptor(assets, 'getMaterialProjectionForPayload');
+          if (own !== undefined) return own.value === stockMaterialProjection;
+          return (
+            Object.getPrototypeOf(assets) === AssetRegistry.prototype &&
+            Object.getOwnPropertyDescriptor(
+              AssetRegistry.prototype,
+              'getMaterialProjectionForPayload',
+            )?.value === stockMaterialProjection
           );
-        return modern(passes) === modern(projection.passes)
-          ? selectParticleMaterialContext({ ...projection, passes }, context)
-          : projection;
+        },
+        (world, material, context) => {
+          const assets = worlds.get(world)?.assets;
+          if (assets === undefined || !('getMaterialProjectionForPayload' in assets))
+            return undefined;
+          const readProjection = assets.getMaterialProjectionForPayload;
+          const projection = readProjection.call(assets, material);
+          if (readProjection !== stockMaterialProjection || projection === undefined)
+            return projection;
+          // Ordinary raster variants are never selected by particleMaterialPass.
+          const passes = projection.passes.filter(
+            (pass) =>
+              pass.name !== 'forward' && pass.name !== 'deferred' && pass.name !== 'shadow-caster',
+          );
+          if (passes.length === 0) return undefined;
+          if (passes.length === projection.passes.length)
+            return selectParticleMaterialContext(projection, context);
+          // Selection's legacy/modern address policy is derived across all passes.
+          // Preserve mixed legacy inputs when removing raster rows could change it.
+          const modern = (rows: MaterialRenderProjection['passes']) =>
+            rows.some((pass) =>
+              pass.programs.some(
+                (program) =>
+                  program.context.pipeline !== 'ray' &&
+                  (program.address !== undefined ||
+                    program.entry !== undefined ||
+                    program.abi !== undefined),
+              ),
+            );
+          return modern(passes) === modern(projection.passes)
+            ? selectParticleMaterialContext({ ...projection, passes }, context)
+            : projection;
+        },
+      ),
+      mesh: { read: (world, guid) => readRenderAsset(world, guid, 'mesh') },
+      playerConsumption: {
+        isEnabled: (world, player) => !pausedPlayers.get(world)?.has(player),
       },
-    ),
-    mesh: { read: (world, guid) => readRenderAsset(world, guid, 'mesh') },
-    playerConsumption: {
-      isEnabled: (world, player) => !pausedPlayers.get(world)?.has(player),
-    },
-  });
+    });
+  const feature = createFeature();
   return {
     feature,
+    createRenderFeature: (providers) =>
+      createFeature(
+        providers === undefined ? dataInterfaces : createVfxDataInterfaceRegistry(providers),
+      ),
     dataInterfaces,
     inspect: (world) => {
       const attached = worlds.get(world);
       if (attached === undefined || !world.hasResource(VFX_GPU_RUNTIME_RESOURCE_KEY))
         return undefined;
-      const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+      const runtime = world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY);
       return Object.freeze({
         generation: attached.generation,
         renderGeneration: runtime.renderGeneration,
@@ -351,7 +361,7 @@ export function createVfxRuntimeHost(options: VfxRuntimeHostOptions): VfxRuntime
             ),
           );
         }
-        return ok(action(world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY)));
+        return ok(action(world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY)));
       };
       type InstanceAction<T> =
         | { readonly kind: 'value'; readonly value: T }
@@ -361,7 +371,7 @@ export function createVfxRuntimeHost(options: VfxRuntimeHostOptions): VfxRuntime
         action: (instance: ParticleEffectInstance) => Result<T, { readonly code: string }>,
       ): Result<T, VfxRuntimeHostControlError> => {
         const result = withRuntime(player, (runtime): InstanceAction<T> => {
-          const instance = runtime.getInstance(player);
+          const instance = runtime.getOrCreateAcceptedInstance(player);
           if (instance === undefined) {
             return { kind: 'error', causeCode: 'vfx-instance-unavailable' };
           }
@@ -376,7 +386,7 @@ export function createVfxRuntimeHost(options: VfxRuntimeHostOptions): VfxRuntime
             controlFailure(
               'vfx-host-control-instance-rejected',
               'the live typed VFX instance to accept this control input',
-              'run one update or repair the reflected instance contract before retrying',
+              'allow player admission and repair the current reflected contract before retrying',
               {
                 requestedGeneration,
                 currentGeneration: requestedGeneration,

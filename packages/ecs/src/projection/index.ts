@@ -12,14 +12,7 @@ import { worldInternal } from '../world-internal';
 export { fillComponentDefaults } from '../component-default-fallback';
 export {
   ComponentNotDefinedError,
-  InstanceTransformsStrideMismatchError,
   ManagedBufferOutOfBoundsError,
-  ResourceInvalidValueError,
-  SpawnLightInvalidBoundsError,
-  SpriteAnimationInvalidError,
-  SpriteInstancesCountMismatchError,
-  SpriteInstancesMutuallyExclusiveWithInstancesError,
-  SpriteInstancesRequiresSpriteShaderError,
   StaleEntityError,
 } from '../errors';
 export type { ArrayRange, ArrayRangesChange } from '../storage/array-range-log';

@@ -11,7 +11,7 @@ import { projectedDecalTopology } from '../decals/graph';
 import { Materials } from '../materials';
 import { publicationFrameDependencies } from '../publication/dependencies';
 import { prepareExtractContext } from '../render-system-extract';
-import { extractFrames } from '../render-system-extract-tail';
+import { extractSource } from '../render-system-extract-tail';
 import { testAssets } from './helpers/runtime-assets';
 
 function setup() {
@@ -121,7 +121,7 @@ describe('projected decal source contract', () => {
       .unwrap();
     world.set(entity, ProjectedDecal, { material }).unwrap();
     const decals = extract();
-    const frame = extractFrames([world], 0, testAssets(world));
+    const frame = extractSource(world, testAssets(world));
     expect(decals[0]?.samplers[0]?.magFilter).toBe('nearest');
     expect(publicationFrameDependencies(frame)).toEqual(
       expect.arrayContaining([material, color, sampler]),

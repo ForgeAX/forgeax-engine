@@ -1,6 +1,8 @@
 import {
   createMaterialError,
   err,
+  isMaterialDeformationDeclaration,
+  type MaterialDeformationDeclaration,
   type MaterialDynamicInputLayout,
   type MaterialError,
   type MaterialSurfaceModel,
@@ -8,6 +10,8 @@ import {
   type Result,
   type StandardLayerPlan,
   stripWgslComments,
+  waterDeformationInputLayout,
+  waterDeformationInputLayoutHash,
 } from '@forgeax/engine-types';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
@@ -23,6 +27,7 @@ import {
 } from './source-catalog.js';
 import {
   SINGLE_LAYER_MEDIUM_SURFACE_MODULE,
+  SINGLE_LAYER_WATER_SURFACE_MODULE,
   validateSurfaceDependency,
   validateSurfaceSource,
 } from './surface-contract.js';
@@ -86,6 +91,7 @@ export interface SurfaceCompositionRequest {
   readonly surfaceModel?: MaterialSurfaceModel;
   /** Producer-derived page ABI, inlined into the selected Surface closure. */
   readonly dynamicInput?: MaterialDynamicInputLayout;
+  readonly deformation?: MaterialDeformationDeclaration;
 }
 
 export interface SurfaceComposition {
@@ -109,9 +115,9 @@ export interface SurfaceComposition {
   readonly readsVertexColor: boolean;
 }
 
-/** True when the Surface source refers to the `vertexColor` SurfaceInput field. */
+/** Raw color and Water's vertex-decoded flow both consume the color vertex stream. */
 export function surfaceSourceReadsVertexColor(source: string): boolean {
-  return /\bvertexColor\b/.test(stripWgslComments(source));
+  return /\b(?:vertexColor|vertexFlowXZ)\b/.test(stripWgslComments(source));
 }
 
 export interface StandardSourcePreparationRequest {
@@ -123,6 +129,8 @@ export interface StandardSourcePreparationRequest {
   readonly surfaceModule?: string;
   readonly sourceRecords: readonly MaterialSourceInput[];
   readonly generatedParameters?: string;
+  readonly surfaceModel?: MaterialSurfaceModel;
+  readonly deformation?: MaterialDeformationDeclaration;
 }
 
 export interface PreparedStandardSource {
@@ -669,6 +677,33 @@ const MEDIUM_SURFACE_DATA_FIELDS = [
   ['maxDistanceMeters', 'f32'],
 ] as const;
 
+const WATER_SURFACE_INPUT_FIELDS = [
+  ...MEDIUM_SURFACE_INPUT_FIELDS,
+  ['pixelDepthM', 'f32'],
+  ['originalNormalWS', 'vec3<f32>'],
+  ['originalPositionWS', 'vec3<f32>'],
+  ['sceneDepthWithoutWaterM', 'f32'],
+  ['vertexFlowXZ', 'vec2<f32>'],
+  ['wavePhaseXZ', 'vec2<f32>'],
+] as const;
+const WATER_SURFACE_DATA_FIELDS = [
+  ['normalWS', 'vec3<f32>'],
+  ['roughness', 'f32'],
+  ['coverage', 'f32'],
+  ['foam', 'f32'],
+  ['absorption', 'vec3<f32>'],
+  ['scattering', 'vec3<f32>'],
+  ['physicalIor', 'f32'],
+  ['phaseG', 'f32'],
+  ['maxDistanceMeters', 'f32'],
+  ['refractionPixelNormalStrength', 'f32'],
+  ['refractionDepthBias', 'f32'],
+  ['colorScaleBehindWater', 'vec3<f32>'],
+  ['baseColor', 'vec3<f32>'],
+  ['opacity', 'f32'],
+  ['emissive', 'vec3<f32>'],
+] as const;
+
 function validateSurfaceAbi(
   request: SurfaceCompositionRequest,
   source: { readonly path: string; readonly source: string },
@@ -690,10 +725,14 @@ function validateSurfaceAbi(
     return undefined;
   };
   const medium = request.surfaceModel === 'single-layer-medium';
-  const actual = medium
-    ? (check('SingleLayerMediumSurfaceInput', MEDIUM_SURFACE_INPUT_FIELDS) ??
-      check('SingleLayerMediumSurfaceData', MEDIUM_SURFACE_DATA_FIELDS))
-    : (check('SurfaceInput', SURFACE_INPUT_FIELDS) ?? check('SurfaceData', SURFACE_DATA_FIELDS));
+  const water = request.surfaceModel === 'single-layer-water';
+  const actual = water
+    ? (check('SingleLayerWaterSurfaceInput', WATER_SURFACE_INPUT_FIELDS) ??
+      check('SingleLayerWaterSurfaceData', WATER_SURFACE_DATA_FIELDS))
+    : medium
+      ? (check('SingleLayerMediumSurfaceInput', MEDIUM_SURFACE_INPUT_FIELDS) ??
+        check('SingleLayerMediumSurfaceData', MEDIUM_SURFACE_DATA_FIELDS))
+      : (check('SurfaceInput', SURFACE_INPUT_FIELDS) ?? check('SurfaceData', SURFACE_DATA_FIELDS));
   if (actual !== undefined) {
     return err(
       createMaterialError('material-surface-abi-mismatch', {
@@ -702,9 +741,11 @@ function validateSurfaceAbi(
         pass: request.pass,
         source: source.path,
         slot: 'surface',
-        expected: medium
-          ? 'single_layer_medium_surface_v1 canonical SingleLayerMediumSurfaceInput/SingleLayerMediumSurfaceData field order'
-          : 'surface_v1 canonical SurfaceInput/SurfaceData field order',
+        expected: water
+          ? 'single_layer_water_surface_v1 canonical SingleLayerWaterSurfaceInput/SingleLayerWaterSurfaceData field order'
+          : medium
+            ? 'single_layer_medium_surface_v1 canonical SingleLayerMediumSurfaceInput/SingleLayerMediumSurfaceData field order'
+            : 'surface_v1 canonical SurfaceInput/SurfaceData field order',
         actual,
         action: 'repair-surface-export',
       }),
@@ -816,9 +857,6 @@ function inlineSurfaceImplementationUncached(
     selectedImports.aliases,
   );
   const abiBody = surfaceAbiSource.replace(DEFINE_IMPORT_PATH_RE, '');
-  const parameters = useParameterModuleImport
-    ? parameterModuleImport(generatedParameters)
-    : generatedParameters.replace(DEFINE_IMPORT_PATH_RE, '');
   const commonImport =
     templateBody.match(/^\s*#import\s+forgeax_view::common[^\n]*\n?/m)?.[0] ?? '';
   const templateWithoutCommonImport =
@@ -871,7 +909,11 @@ function inlineSurfaceImplementationUncached(
   const body = useParameterModuleImport
     ? `${selectedBodyWithCanonicalNames}\n${helperBody}\n${templateWithoutCommonImport}`
     : `${templateWithoutCommonImport}\n${selectedBodyWithCanonicalNames}\n${helperBody}`;
-  return `${parameters}\n${abiBody}\n${dynamicInputSource}\n${commonImport}${helperImportPrelude}${selectedHeaderImports}${body}`;
+  const entry = `${abiBody}\n${dynamicInputSource}\n${commonImport}${helperImportPrelude}${selectedHeaderImports}${body}`;
+  const parameters = useParameterModuleImport
+    ? parameterModuleImport(generatedParameters, entry)
+    : generatedParameters.replace(DEFINE_IMPORT_PATH_RE, '');
+  return `${parameters}\n${entry}`;
 }
 
 function rewriteInlineImports(
@@ -909,24 +951,42 @@ function extractLeadingImports(source: string): string {
  * the lowered entry. Inlining the generated declarations into the root while
  * leaving the helper imported creates a second naga_oil module global, so the
  * helper observes a different private scene-row provider. Import the generated
- * type/provider once; the selected Surface's own resource imports are hoisted
- * alongside it so texture and sampler references retain their declared binding
- * identity.
+ * declarations referenced by the lowered entry from that provider, including
+ * implicit schema-derived texture/sampler names. Entry-owned declarations and
+ * imports from other modules retain their own authority.
  */
-function parameterModuleImport(generatedParameters: string): string {
-  const symbols = new Set<string>();
-  if (/\bstruct\s+MaterialParameters\b/.test(generatedParameters)) {
-    symbols.add('MaterialParameters');
+function parameterModuleImport(generatedParameters: string, entry: string): string {
+  const generated = new Set(
+    topLevelDeclarations(tokenizeWgsl(generatedParameters)).map((declaration) => declaration.name),
+  );
+  const tokens = tokenizeWgsl(entry);
+  const declarations = topLevelDeclarations(tokens);
+  const owned = new Set(declarations.map((declaration) => declaration.name));
+  for (const directive of importDirectives(entry)) {
+    if (directive.moduleId === 'forgeax_material::parameters') continue;
+    for (const symbol of directive.symbols) owned.add(symbol.local);
+    if (directive.moduleAlias !== undefined) owned.add(directive.moduleAlias);
   }
-  if (/\bconst\s+MATERIAL_SCENE_ROW_VEC4_COUNT\b/.test(generatedParameters)) {
-    symbols.add('MATERIAL_SCENE_ROW_VEC4_COUNT');
-  }
-  // Only types, layout constants and the material provider belong in the canonical root import.
-  // Resource imports remain authored on the selected Surface and are hoisted
-  // with its import prelude, avoiding naga_oil's duplicate-global edge cases
-  // for scene-only declarations such as sceneMaterials.
-  if (/\bvar(?:<[^>]+>)?\s+material\s*:/.test(generatedParameters)) {
-    symbols.add('material');
+  const analysis = analyzeWgslBindings(tokens, declarations);
+  // Scene lowering adds provider/type reads after composition.
+  const symbols = new Set(
+    ['MaterialParameters', 'MATERIAL_SCENE_ROW_VEC4_COUNT', 'material'].filter(
+      (name) => generated.has(name) && !owned.has(name),
+    ),
+  );
+  for (const [index, token] of tokens.entries()) {
+    if (
+      token.kind !== 'identifier' ||
+      !generated.has(token.text) ||
+      owned.has(token.text) ||
+      tokens[index - 1]?.text === '.' ||
+      (tokens[index - 1]?.text === ':' && tokens[index - 2]?.text === ':') ||
+      analysis.structFields.has(index) ||
+      analysis.localDeclarations.has(index) ||
+      isShadowed(analysis, analysis.scopeAt[index] ?? 0, index, token.text)
+    )
+      continue;
+    symbols.add(token.text);
   }
   if (symbols.size === 0) return '';
   return `#import forgeax_material::parameters::{${[...symbols].sort().join(', ')}}`;
@@ -977,6 +1037,8 @@ export function prepareStandardSource(
     pass: request.pass ?? 'Forward',
     templateModule: request.templateModule,
     ...(request.surfaceModule === undefined ? {} : { surfaceModule: request.surfaceModule }),
+    ...(request.surfaceModel === undefined ? {} : { surfaceModel: request.surfaceModel }),
+    ...(request.deformation === undefined ? {} : { deformation: request.deformation }),
     sources: catalog.value,
     ...(request.generatedParameters === undefined
       ? {}
@@ -997,6 +1059,95 @@ export function composeSurfaceSource(
 ): Result<SurfaceComposition, MaterialError> {
   const template = request.sources.get(request.templateModule);
   if (!template.ok) return err(template.error);
+  let templateSource = template.value.source;
+  templateSource = templateSource.replace(
+    /^\s*#pragma\s+material_slot\s+deformation[^\n]*\n?/gm,
+    '',
+  );
+  const deformation = request.deformation;
+  if (deformation !== undefined) {
+    const validateDeformationRoot = () => {
+      if (
+        !template.value.slots.includes('deformation') ||
+        !templateSource.includes('forgeax_material::slot::deformation')
+      )
+        return err(
+          createMaterialError('material-surface-abi-mismatch', {
+            code: 'material-surface-abi-mismatch',
+            material: request.material,
+            pass: request.pass,
+            source: template.value.path,
+            slot: 'surface',
+            expected: 'a template with the root deformation slot',
+            actual: 'the selected template does not consume deformation',
+            action: 'repair-surface-export',
+          }),
+        );
+      const deformationSource = request.sources.get(deformation.module);
+      if (!deformationSource.ok) return err(deformationSource.error);
+      const source = stripWgslComments(deformationSource.value.source);
+      if (
+        !isMaterialDeformationDeclaration(deformation) ||
+        !/\bfn\s+deform_water_vertex\s*\(\s*input\s*:\s*WaterDeformationInput\s*\)\s*->\s*WaterDeformationOutput\s*\{/u.test(
+          source,
+        ) ||
+        /@(vertex|fragment|compute|group|binding)\b/u.test(source)
+      )
+        return err(
+          createMaterialError('material-surface-abi-mismatch', {
+            code: 'material-surface-abi-mismatch',
+            material: request.material,
+            pass: request.pass,
+            source: deformationSource.value.path,
+            slot: 'surface',
+            expected:
+              'water-deformation/1 root fn deform_water_vertex(input: WaterDeformationInput) -> WaterDeformationOutput without stage or resource declarations',
+            actual: 'incompatible root deformation declaration or export',
+            action: 'repair-surface-export',
+          }),
+        );
+
+      return undefined;
+    };
+    const validateDeformationRootFailure = validateDeformationRoot();
+    if (validateDeformationRootFailure !== undefined) return validateDeformationRootFailure;
+
+    const validateDeformationClosure = () => {
+      const pending = [deformation.module];
+      const checked = new Set<string>();
+      while (pending.length > 0) {
+        const module = pending.pop();
+        if (module === undefined) continue;
+        if (
+          checked.has(module) ||
+          module === 'forgeax_material::water_deformation_v1' ||
+          module === 'forgeax_material::parameters'
+        )
+          continue;
+        checked.add(module);
+        const record = request.sources.get(module);
+        if (!record.ok) return err(record.error);
+        // These Engine readers own the only resource declarations exposed to WPO.
+        if (record.value.provenance === 'engine' && module === 'forgeax_material::water_waves')
+          continue;
+        const validated = validateSurfaceDependency({
+          material: request.material,
+          pass: request.pass,
+          source: record.value.source,
+          sourcePath: record.value.path,
+        });
+        if (!validated.ok) return err(validated.error);
+        pending.push(...importedModules(record.value.source));
+      }
+      return undefined;
+    };
+    const deformationClosureFailure = validateDeformationClosure();
+    if (deformationClosureFailure !== undefined) return deformationClosureFailure;
+    templateSource = templateSource.replaceAll(
+      'forgeax_material::slot::deformation',
+      deformation.module,
+    );
+  }
   let engineTemplateInputs = template.value.provenance === 'engine';
   const selected = request.sources.resolveSurfaceSlot(
     request.material,
@@ -1016,37 +1167,54 @@ export function composeSurfaceSource(
   if (!validated.ok) return err(validated.error);
 
   const surfaceAbiModule =
-    request.surfaceModel === 'single-layer-medium'
-      ? SINGLE_LAYER_MEDIUM_SURFACE_MODULE
-      : 'forgeax_material::surface_v1';
+    request.surfaceModel === 'single-layer-water'
+      ? SINGLE_LAYER_WATER_SURFACE_MODULE
+      : request.surfaceModel === 'single-layer-medium'
+        ? SINGLE_LAYER_MEDIUM_SURFACE_MODULE
+        : 'forgeax_material::surface_v1';
   const surfaceAbi = request.sources.get(surfaceAbiModule);
   if (!surfaceAbi.ok) return err(surfaceAbi.error);
   const validAbi = validateSurfaceAbi(request, surfaceAbi.value);
   if (!validAbi.ok) return validAbi;
 
-  const generatedParameters =
-    request.generatedParameters ?? '#define_import_path forgeax_material::parameters\n';
-  const dynamicInputSource =
-    request.dynamicInput === undefined
+  const prepareSurfaceInputSources = () => {
+    const generatedParameters =
+      request.generatedParameters ?? '#define_import_path forgeax_material::parameters\n';
+    const dynamicInputSource =
+      request.dynamicInput === undefined
+        ? ''
+        : generateMaterialDynamicInputAccessor(request.dynamicInput);
+    const dynamicInputModule =
+      request.dynamicInput === undefined
+        ? undefined
+        : materialDynamicInputModuleId(request.dynamicInput);
+    const parameterSource = hasAuthoredMaterialInterface(template.value.source)
       ? ''
-      : generateMaterialDynamicInputAccessor(request.dynamicInput);
-  const dynamicInputModule =
-    request.dynamicInput === undefined
-      ? undefined
-      : materialDynamicInputModuleId(request.dynamicInput);
-  const parameterSource = hasAuthoredMaterialInterface(template.value.source)
-    ? ''
-    : generatedParameters;
-  const imports: Record<string, string> = {};
-  const closureSources: Record<string, string> = {
-    [request.templateModule]: template.value.source,
-    ...(parameterSource.length === 0 ? {} : { 'forgeax_material::parameters': parameterSource }),
-    [surfaceAbiModule]: surfaceAbi.value.source,
-    [selected.value.moduleId]: selected.value.source,
-    ...(dynamicInputModule === undefined ? {} : { [dynamicInputModule]: dynamicInputSource }),
+      : generatedParameters;
+
+    return { dynamicInputSource, dynamicInputModule, parameterSource };
   };
-  const queue = [
-    ...importedModules(template.value.source).map((module) => ({
+  const { dynamicInputSource, dynamicInputModule, parameterSource } = prepareSurfaceInputSources();
+  const imports: Record<string, string> = {};
+  const deformationAbi = deformation === undefined ? undefined : waterDeformationAbiSource();
+  if (deformationAbi !== undefined)
+    imports['forgeax_material::water_deformation_v1'] = deformationAbi;
+  const createClosureSources = () => {
+    const closureSources: Record<string, string> = {
+      [request.templateModule]: templateSource,
+      ...(parameterSource.length === 0 ? {} : { 'forgeax_material::parameters': parameterSource }),
+      [surfaceAbiModule]: surfaceAbi.value.source,
+      [selected.value.moduleId]: selected.value.source,
+      ...(dynamicInputModule === undefined ? {} : { [dynamicInputModule]: dynamicInputSource }),
+      ...(deformationAbi === undefined
+        ? {}
+        : { 'forgeax_material::water_deformation_v1': deformationAbi }),
+    };
+    return closureSources;
+  };
+  const closureSources = createClosureSources();
+  const templateQueue = [
+    ...importedModules(templateSource).map((module) => ({
       module,
       surfaceDependency: false,
       // The template and selected Surface are inlined into the entry. Their
@@ -1055,6 +1223,8 @@ export function composeSurfaceSource(
       // parameter provider registered below.
       composable: false,
     })),
+  ];
+  const surfaceQueue = [
     ...importedModules(selected.value.source).map((module) => ({
       module,
       surfaceDependency: true,
@@ -1062,85 +1232,118 @@ export function composeSurfaceSource(
     })),
   ];
   const visited = new Set<string>();
+  const templateEngineDependencies = new Set<string>();
   const validatedSurfaceDependencies = new Set<string>();
   let readsVertexColor = surfaceSourceReadsVertexColor(selected.value.source);
   let useParameterModuleImport = false;
   const inlineSurfaceHelpers: Array<{ readonly moduleId: string; readonly source: string }> = [];
-  while (queue.length > 0) {
-    const next = queue.shift();
-    if (next === undefined) continue;
-    const module = next.module;
-    if (
-      module === request.templateModule ||
-      module === surfaceAbiModule ||
-      module === 'forgeax_material::surface_v1' ||
-      module === 'forgeax_material::slot::surface' ||
-      module === selected.value.moduleId ||
-      module === 'forgeax_material::parameters'
-    ) {
-      // Surface implementations are inlined into the root entry, so the
-      // generated parameter module is normally inlined as well.  A transitive
-      // helper, however, remains a naga_oil composable module and may import
-      // the parameter provider itself.  Keep that one provider in the closure
-      // so the helper resolves against the exact generated source used by the
-      // root (including the scene-index private provider).
-      if (
-        module === 'forgeax_material::parameters' &&
-        next.composable &&
-        parameterSource.length > 0
-      ) {
-        imports[module] = parameterSource;
-        useParameterModuleImport = true;
+  // Derive the complete template-owned Engine closure before admitting any
+  // Surface reuse, independent of import depth or the Surface's import order.
+  const collectSurfaceClosure = () => {
+    for (const queue of [templateQueue, surfaceQueue]) {
+      while (queue.length > 0) {
+        const next = queue.shift();
+        if (next === undefined) continue;
+        const module = next.module;
+        if (module === 'forgeax_material::slot::deformation' && deformation === undefined) continue;
+        if (module === 'forgeax_material::water_deformation_input' && deformation === undefined)
+          continue;
+        if (module === 'forgeax_material::water_deformation_v1' && deformationAbi !== undefined)
+          continue;
+        const skipInlinedModule = () => {
+          if (
+            module === request.templateModule ||
+            module === surfaceAbiModule ||
+            module === 'forgeax_material::surface_v1' ||
+            module === 'forgeax_material::slot::surface' ||
+            module === selected.value.moduleId ||
+            module === 'forgeax_material::parameters'
+          ) {
+            // Surface implementations are inlined into the root entry, so the
+            // generated parameter module is normally inlined as well.  A transitive
+            // helper, however, remains a naga_oil composable module and may import
+            // the parameter provider itself.  Keep that one provider in the closure
+            // so the helper resolves against the exact generated source used by the
+            // root (including the scene-index private provider).
+            if (
+              module === 'forgeax_material::parameters' &&
+              next.composable &&
+              parameterSource.length > 0
+            ) {
+              imports[module] = parameterSource;
+              useParameterModuleImport = true;
+            }
+            return true;
+          }
+          return false;
+        };
+        if (skipInlinedModule()) continue;
+        const collectDependency = () => {
+          const record = request.sources.get(module);
+          if (!record.ok) return err(record.error);
+          if (!next.surfaceDependency && record.value.provenance !== 'engine')
+            engineTemplateInputs = false;
+          if (!next.surfaceDependency && record.value.provenance === 'engine')
+            templateEngineDependencies.add(module);
+          const engineWaterReader =
+            module === 'forgeax_material::water_waves' && record.value.provenance === 'engine';
+          const needsSurfaceValidation =
+            next.surfaceDependency &&
+            !engineWaterReader &&
+            !templateEngineDependencies.has(module) &&
+            !validatedSurfaceDependencies.has(module);
+          if (visited.has(module) && !needsSurfaceValidation) return undefined;
+          if (needsSurfaceValidation && surfaceSourceReadsVertexColor(record.value.source)) {
+            readsVertexColor = true;
+          }
+          if (needsSurfaceValidation) {
+            const dependency = validateSurfaceDependency({
+              material: request.material,
+              pass: request.pass,
+              source: record.value.source,
+              sourcePath: record.value.path,
+            });
+            if (!dependency.ok) return err(dependency.error);
+            validatedSurfaceDependencies.add(module);
+          }
+          if (visited.has(module)) return undefined;
+          visited.add(module);
+          const surfaceTypedHelper =
+            next.surfaceDependency &&
+            (importedModules(record.value.source).includes(surfaceAbiModule) ||
+              importedModules(record.value.source).includes('forgeax_material::surface_v1'));
+          if (surfaceTypedHelper) {
+            // naga_oil cannot write back a composable function whose parameter is
+            // the Surface ABI (its numbered uv fields are treated as substitution
+            // identifiers). Inline that helper into the root entry, where it shares
+            // the canonical ABI declaration with the authored Surface. Its own
+            // non-ABI imports are hoisted by inlineSurfaceImplementation.
+            inlineSurfaceHelpers.push({ moduleId: module, source: record.value.source });
+          } else {
+            imports[module] = record.value.source;
+          }
+          closureSources[module] = record.value.source;
+          queue.push(
+            ...importedModules(record.value.source).map((child) => ({
+              module: child,
+              surfaceDependency: next.surfaceDependency,
+              composable: true,
+            })),
+          );
+          return undefined;
+        };
+        const dependencyFailure = collectDependency();
+        if (dependencyFailure !== undefined) return dependencyFailure;
       }
-      continue;
     }
-    const record = request.sources.get(module);
-    if (!record.ok) return err(record.error);
-    if (!next.surfaceDependency && record.value.provenance !== 'engine')
-      engineTemplateInputs = false;
-    const needsSurfaceValidation =
-      next.surfaceDependency && !validatedSurfaceDependencies.has(module);
-    if (visited.has(module) && !needsSurfaceValidation) continue;
-    if (needsSurfaceValidation && surfaceSourceReadsVertexColor(record.value.source)) {
-      readsVertexColor = true;
-    }
-    if (needsSurfaceValidation) {
-      const dependency = validateSurfaceDependency({
-        material: request.material,
-        pass: request.pass,
-        source: record.value.source,
-        sourcePath: record.value.path,
-      });
-      if (!dependency.ok) return err(dependency.error);
-      validatedSurfaceDependencies.add(module);
-    }
-    if (visited.has(module)) continue;
-    visited.add(module);
-    const surfaceTypedHelper =
-      next.surfaceDependency &&
-      (importedModules(record.value.source).includes(surfaceAbiModule) ||
-        importedModules(record.value.source).includes('forgeax_material::surface_v1'));
-    if (surfaceTypedHelper) {
-      // naga_oil cannot write back a composable function whose parameter is
-      // the Surface ABI (its numbered uv fields are treated as substitution
-      // identifiers). Inline that helper into the root entry, where it shares
-      // the canonical ABI declaration with the authored Surface. Its own
-      // non-ABI imports are hoisted by inlineSurfaceImplementation.
-      inlineSurfaceHelpers.push({ moduleId: module, source: record.value.source });
-    } else {
-      imports[module] = record.value.source;
-    }
-    closureSources[module] = record.value.source;
-    queue.push(
-      ...importedModules(record.value.source).map((child) => ({
-        module: child,
-        surfaceDependency: next.surfaceDependency,
-        composable: true,
-      })),
-    );
-  }
+
+    return undefined;
+  };
+  const collectSurfaceClosureFailure = collectSurfaceClosure();
+  if (collectSurfaceClosureFailure !== undefined) return collectSurfaceClosureFailure;
+
   const source = inlineSurfaceImplementation(
-    template.value.source,
+    templateSource,
     selected.value.source,
     surfaceAbi.value.source,
     parameterSource,
@@ -1161,4 +1364,22 @@ export function composeSurfaceSource(
     stages: ['slot-resolution', 'source-closure', 'surface-validation', 'parameter-generation'],
     readsVertexColor,
   });
+}
+
+export function waterDeformationAbiSource(): string {
+  const layout = waterDeformationInputLayout();
+  return `#define_import_path forgeax_material::water_deformation_v1
+// ${waterDeformationInputLayoutHash()}
+struct WaterDeformationInput {
+${layout.fields.map((field) => `  ${field.name}: ${field.type},`).join('\n')}
+};
+struct WaterDeformationOutput {
+  currentPositionM: vec3<f32>,
+  previousPositionM: vec3<f32>,
+  currentNormalYUp: vec3<f32>,
+  previousNormalYUp: vec3<f32>,
+  waterMask: f32,
+  bodyRenderIndex: u32,
+};
+`;
 }

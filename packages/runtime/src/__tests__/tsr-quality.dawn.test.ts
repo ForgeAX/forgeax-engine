@@ -108,7 +108,7 @@ async function qualityRoute(
       const capture = await beginQualityCapture(recorder, i === count - 1 || i === count - 16);
       const receipt = await drawReadyFrame(
         renderer,
-        { leases: [lease], camera: { lease }, environment: { lease }, sampleTimeSeconds: i / 60 },
+        { source: lease, sampleTimeSeconds: i / 60 },
         observe ? ['linear-ldr'] : undefined,
       );
       await endQualityCapture(capture, evidence, i === count - 16);

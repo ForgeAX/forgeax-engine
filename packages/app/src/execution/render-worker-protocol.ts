@@ -1,9 +1,12 @@
 import type {
   DynamicGeometryError,
+  FeatureTextureObservation,
   GpuPassTimingObservation,
   GpuPassTimingOptions,
   MeshResidencyError,
   PublishedMeshPreparation,
+  RenderFeatureCompletion,
+  RenderFeatureSubmission,
   RenderInspection,
   RenderPublicationError,
   RenderPublicationIdentity,
@@ -67,6 +70,13 @@ export interface CompletedMeshConsumption {
   readonly bindings: Float64Array;
 }
 
+/** One source-owned feature receipt returned only after the published draw submits. */
+export interface SubmittedFeatureReceipt {
+  readonly identity: string;
+  readonly feedback: unknown;
+  readonly submission?: RenderFeatureSubmission;
+}
+
 export type RenderWorkerInput =
   | {
       readonly kind: 'geometry-observe-next';
@@ -91,16 +101,22 @@ export type RenderWorkerInput =
       | 'shaderManifestUrl'
       | 'build'
       | 'outputColorSpace'
+      | 'renderBackend'
       | 'pipelineLibrary'
       | 'backgroundPipelineLibrary'
+      | 'backgroundPipelineLibraryConcurrency'
       | 'dynamicGeometryMeshBudgetBytes'
       | 'assetBudgetBytes'
+      | 'featureTextureReadbackBudgetBytes'
+      | 'textureMipSkip'
       | 'loadProgressScope'
     > & {
       readonly kind: 'init';
       readonly identity: RenderPublicationIdentity;
       /** Direct Host port for render-submitted / render-complete notices. */
       readonly hostPort?: MessagePort;
+      /** Submits background tasks to the Engine Worker's dispatcher. */
+      readonly taskPort?: MessagePort;
       readonly worldIdentity: string;
       readonly rhiCapture?: boolean;
       readonly gpuStub?: import('@forgeax/engine-rhi-webgpu').WebGpuStubProfile;
@@ -138,6 +154,7 @@ export type RenderWorkerInput =
       readonly request: import('@forgeax/engine-render').SubmittedTerrainHeightRequest;
     }
   | { readonly kind: 'capture-cancel'; readonly requestId: number }
+  | { readonly kind: 'memory-pressure' }
   | { readonly kind: 'bounds'; readonly requestId: number; readonly entity: number }
   | {
       readonly kind: 'inspect';
@@ -148,6 +165,7 @@ export type RenderWorkerInput =
           Parameters<import('@forgeax/engine-render').Renderer['inspect']>[0]
         >['pipelineLibraryLimits']
       >;
+      readonly pipelineLibraryRequestedOnly?: boolean;
       readonly runtimeRequests?: boolean;
       readonly fields?: readonly (keyof RenderInspection)[];
       readonly requestId: number;
@@ -221,14 +239,20 @@ export type RenderWorkerOutput =
   | {
       readonly kind: 'submitted';
       readonly frame: ExecutionFrameSubmitted;
+      readonly identity: RenderPublicationIdentity;
       readonly revision: number;
-      readonly features: readonly { readonly identity: string; readonly feedback: unknown }[];
+      readonly features: readonly SubmittedFeatureReceipt[];
     }
   | {
       readonly kind: 'completed';
+      readonly identity: RenderPublicationIdentity;
+      readonly completion: RenderFeatureCompletion;
       readonly frame: ExecutionFrameCompletion;
       readonly revision: number;
       readonly buffers: ArrayBuffer[];
+      readonly featureTextureReadbacks?: readonly FeatureTextureObservation[];
+      readonly featureTextureReadbackError?: SerializedRenderError;
+      readonly gpuPassTiming?: GpuPassTimingObservation;
       readonly meshConsumption?: CompletedMeshConsumption;
     }
   | {

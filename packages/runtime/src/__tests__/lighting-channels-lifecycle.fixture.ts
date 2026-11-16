@@ -122,11 +122,7 @@ export async function verifyChannelLifecycle(
     propagateTransforms(scene.world).unwrap();
     const pending = name === undefined ? undefined : recorder.captureFrame();
     if (pending) (await recorder.frameBoundary()).unwrap();
-    const receipt = await drawReadyFrame(
-      renderer,
-      { leases: [lease], camera: { lease }, environment: { lease } },
-      ['linear-hdr'],
-    );
+    const receipt = await drawReadyFrame(renderer, { source: lease }, ['linear-hdr']);
     if (pending) {
       (await recorder.frameBoundary()).unwrap();
       const tape = compactTape((await pending).unwrap());

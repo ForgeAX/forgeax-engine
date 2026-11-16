@@ -5,7 +5,10 @@ import type { MeshGpuHandles } from '../device/gpu-residency';
 import { directMorphGeometry } from '../device/morph-geometry';
 import { capturedGpuMaterialLayout } from '../gpu-driven/captured-material-bindings';
 import type { GpuDrivenMaterialBinding } from '../gpu-driven/production-raster';
-import { disposeTransientInstanceBuffers } from '../instance-buffer-cache';
+import {
+  disposeTransientInstanceBuffers,
+  type InstanceBufferCacheKey,
+} from '../instance-buffer-cache';
 import { type MaterialResource, materialUsesSpriteGeometry } from '../material-resource';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import { renderAsset } from '../publication/resource-scope';
@@ -25,7 +28,6 @@ import {
   instanceCollectionCacheKey,
   type RenderFrameState,
   type ValidatedRenderable,
-  worldEntityKey,
 } from './frame-snapshot';
 import {
   acceptedMaterialSnapshot,
@@ -67,7 +69,6 @@ function unacceptedGeometryMaterial(
         code: 'geometry-material-not-accepted',
         message: 'Geometry preparation has no accepted material',
         detail: {
-          worldId: r.worldId,
           entityKey: r.entityKey,
           meshHandle: r.assetHandle,
           materialHandle: r.material.snapshot.materialHandle,
@@ -253,19 +254,12 @@ function prepareMeshResidency(
 export function validateRenderables(
   internals: RenderSystemInternals,
   world: RenderResourceScope,
-  // feat-20260709-editor-world-partition ENGINE-fix-round2 (defect 2): the full
-  // worlds[] list. Each renderable's mesh handle is a user-tier slot in its OWN
-  // world's sharedRefs; resolving against a foreign world either misses
-  // (asset-not-registered) or resolves the wrong slot payload. `world` (the
-  // resource-owner) is retained as the fallback for renderables whose worldId
-  // is out of range (defensive; extractFrames always stamps a valid index).
-  worlds: readonly RenderResourceScope[],
+  sourceScope: RenderResourceScope,
   _pipelineState: PipelineState,
   _frameState: RenderFrameState,
   renderables: FrameList<RenderableSnapshot>,
   transparentDispatch: DispatchList,
   excludedEntityKeys: ReadonlySet<number> = new Set<number>(),
-  worldKeys?: readonly number[],
   profilePhase?: RecordProfileRunner,
   retainedOverlays?: DispatchOverlays,
   materials?: import('../scene/material-dispatch').MaterialFrame,
@@ -282,12 +276,11 @@ export function validateRenderables(
     const input = renderables.at(rIdx);
     if (input === undefined) continue;
     const r = meshes === undefined ? input : meshDrawSnapshot(input, meshes);
-    if (excludedEntityKeys.has(worldEntityKey(worldKeys?.[r.worldId] ?? r.worldId, r.entityKey)))
-      continue;
+    if (excludedEntityKeys.has(r.entityKey)) continue;
     // The CPU shadow path reads the complete persistent projection. Ordinary
     // hidden rows own no geometry work once their explicit preparation retires.
     if (r.authorVisible === false && r.pipelinePreparation === undefined) continue;
-    const renderableWorld = worlds[r.worldId] ?? world;
+    const renderableWorld = sourceScope ?? world;
     if (r.generatedMesh === undefined && r.assetHandle === undefined) continue;
     const assetRes = runRecordProfilePhase(profilePhase, 'record/validation/asset', () =>
       r.generatedMesh === undefined
@@ -317,7 +310,7 @@ export function validateRenderables(
         new RhiError({
           code: 'asset-not-registered',
           expected: 'GPU mesh buffers uploaded for assetHandle',
-          hint: 'await renderer.initialization before draw([world], { cameraOwner: 0, resourceOwner: 0 }); ensure AssetRegistry.configureGpuDevice ran so user meshes are uploaded',
+          hint: 'await renderer.initialization before draw({ source: lease }); ensure AssetRegistry.configureGpuDevice ran so user meshes are uploaded',
           detail: { assetHandle: r.assetHandle ?? 0 },
         }),
       );
@@ -330,7 +323,7 @@ export function validateRenderables(
       internals.gpuStore.ensureNineSliceGeometry().unwrap(),
     );
     if (r.morph !== undefined)
-      effectiveMeshHandles = directMorphGeometry(internals, worlds, r, effectiveMeshHandles);
+      effectiveMeshHandles = directMorphGeometry(internals, sourceScope, r, effectiveMeshHandles);
     const overlay = overlays.get(rIdx);
     validated.push({
       meshSlot: rIdx,
@@ -345,10 +338,8 @@ export function validateRenderables(
   }
   return validated;
 }
-
 // Keep the primary record-stage name explicit at its call site while sharing
 // the same owner implementation for the complete retained ShadowCaster view.
-
 /**
  * feat-20260704 M3/w18: build the dispatch-ordered render plan, extracted
  * verbatim from `recordFrame`. (1) M3/w26 dispatch-ordered reorder: reorder
@@ -505,7 +496,7 @@ export function buildDispatchPlan(
 
 type SharedMaterialFrame = {
   readonly bindings: readonly GpuDrivenMaterialBinding[];
-  readonly worlds: readonly RenderResourceScope[];
+  readonly sourceScope: RenderResourceScope;
   readonly frame: MaterialFrame;
 };
 
@@ -606,9 +597,7 @@ function buildMaterialTable(
   const materialGroups = materialRows.map((entry) => materialGroupOf(entry, sharedMaterials));
   const materialSlotPlan = buildMaterialSlotPlan(materialGroups, (_material, owner) => {
     const source = materialRows[owner]?.source;
-    return source === undefined
-      ? ''
-      : (materialBindingClasses?.get(`${source.worldId}:${source.entityKey}`) ?? '');
+    return source === undefined ? '' : (materialBindingClasses?.get(`${source.entityKey}`) ?? '');
   });
   const slots = materialSlotPlan.slots.map((material, slot) =>
     acceptedMaterialSnapshot(
@@ -724,7 +713,7 @@ function appendSharedMaterialBindings(
       classes = new Map();
       slots.set(binding.material, classes);
     }
-    const world = sharedMaterials.worlds[binding.worldId];
+    const world = sharedMaterials.sourceScope;
     if (world === undefined)
       throw new RhiError({
         code: 'rhi-descriptor-invalid',
@@ -770,7 +759,7 @@ function appendSharedMaterialValue(
   sharedMaterials: SharedMaterialFrame,
   binding: GpuDrivenMaterialBinding,
 ): void {
-  const world = sharedMaterials.worlds[binding.worldId];
+  const world = sharedMaterials.sourceScope;
   if (world === undefined)
     throw new RhiError({
       code: 'rhi-descriptor-invalid',
@@ -962,26 +951,24 @@ export function cleanPerFrameCaches(
     (frameState.instanceBufferChunks?.size ?? 0) === 0
   )
     return;
-  // Build a Set<number> of worldEntityKey composites from the validated
-  // renderables. D-1a #4: validatedEntityKeys are worldEntityKey(worldId, entityKey)
-  // composites matching the write-side keys of #1-#3 — cross-world false eviction
-  // is prevented because worldEntityKey(0, k) !== worldEntityKey(1, k).
+  // Retain exactly the validated source entity handles.
   const validatedEntityKeys = new Set<number>(retainedEntityKeys);
-  let instanceCollectionKeys: Set<number> | undefined;
+  let instanceCollectionKeys: Set<InstanceBufferCacheKey> | undefined;
   for (const v of validated) {
-    const entityKey = worldEntityKey(v.source.worldId, v.source.entityKey);
+    const entityKey = v.source.entityKey;
     validatedEntityKeys.add(entityKey);
     instanceCollectionKeys?.add(entityKey);
     if (v.source.instances !== undefined) {
-      const collection = instanceCollectionCacheKey(v.source.worldId, v.source.instances);
-      if (!validatedEntityKeys.has(collection)) {
+      const collection = instanceCollectionCacheKey(v.source.instances);
+      if (!instanceCollectionKeys?.has(collection)) {
         instanceCollectionKeys ??= new Set(validatedEntityKeys);
         instanceCollectionKeys.add(collection);
       }
     }
   }
 
-  const validatedInstanceKeys = instanceCollectionKeys ?? validatedEntityKeys;
+  const validatedInstanceKeys: Set<InstanceBufferCacheKey> =
+    instanceCollectionKeys ?? new Set<InstanceBufferCacheKey>(validatedEntityKeys);
 
   // Clean per-entity material BG cache: drop outer-Map entries whose
   // entityKey is absent from the current validated set. The shared and
@@ -996,7 +983,6 @@ export function cleanPerFrameCaches(
   if (retainedFoldKeys !== undefined) {
     for (const key of retainedFoldKeys) validatedInstanceKeys.add(key);
   }
-
   // D-5 retrofit: instanceBuffers clean-up. The instanceBuffers Map is
   // keyed by cacheKey (packed Entity u32, same as entityKey on
   // RenderableSnapshot). Drop entries whose key is no longer in the
@@ -1004,10 +990,8 @@ export function cleanPerFrameCaches(
   // buffer before Map.delete so despawned entities release their
   // instance-buffer backing memory symmetrically (D-6).
   //
-  // D-1a #1: instanceBuffers keys on the positive half (>= 0) are
-  // worldEntityKey composites matching the write side. Negative half
-  // fold-bucket keys (< 0) are this plan's combined draw indices. Distinct
-  // graph nodes have distinct slots even when they draw the same source.
+  // Entity and collection owners use numeric or string keys; fold draw slots
+  // add their own keys after entity membership is established above.
   for (const [key, entry] of frameState.instanceBuffers.entries()) {
     if (!validatedInstanceKeys.has(key)) {
       if (!entry.buffer.isDestroyed) {
@@ -1028,7 +1012,7 @@ export function cleanPerFrameCaches(
 /** Chunk starts retire with their collection owner, independently of other caches. */
 function retireAbsentInstanceChunks(
   chunksByOwner: RenderFrameState['instanceBufferChunks'],
-  validatedInstanceKeys: ReadonlySet<number>,
+  validatedInstanceKeys: ReadonlySet<InstanceBufferCacheKey>,
   errorRegistry: RenderSystemInternals['errorRegistry'],
 ): void {
   if (chunksByOwner === undefined) return;

@@ -102,7 +102,7 @@ it('uses conservative absent policy for malformed retained graph keys', () => {
         key,
         {
           ...directional,
-          terrainReceivers: [{ worldId: 0, entityKey: 1 }],
+          terrainReceivers: [{ entityKey: 1 }],
         },
         false,
       ),

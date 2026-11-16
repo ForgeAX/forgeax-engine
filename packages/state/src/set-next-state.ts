@@ -15,7 +15,7 @@ import { err, ok, type Result } from '@forgeax/engine-types';
 import type { StateToken, StateTokenVariant } from './define-state';
 import type { StateError } from './errors';
 import { invalidVariant, stateNotRegistered } from './errors';
-import { type StatePayload, stateResourceKey } from './resources';
+import { type StatePayload, stateResource } from './resources';
 
 /**
  * Request a state transition for `token` to `variant` at the next frame.
@@ -49,7 +49,7 @@ function _runCheckAndWrite(
   variant: string,
   force: boolean,
 ): Result<void, StateError> {
-  const key = stateResourceKey(token);
+  const key = stateResource(token);
   if (!world.hasResource(key)) {
     return err(stateNotRegistered(token.name));
   }
@@ -60,7 +60,7 @@ function _runCheckAndWrite(
   }
 
   world.insertResource<StatePayload>(key, {
-    ...world.getResource<StatePayload>(key),
+    ...world.getResource(key),
     next: { value: idx, force },
   });
   return ok(undefined);
@@ -85,11 +85,11 @@ function readVariant(
   token: StateToken,
   field: 'current' | 'previous',
 ): Result<string, StateError> {
-  const key = stateResourceKey(token);
+  const key = stateResource(token);
   if (!world.hasResource(key)) {
     return err(stateNotRegistered(token.name));
   }
-  const idx = world.getResource<StatePayload>(key)[field];
+  const idx = world.getResource(key)[field];
   const variant = token.variants[idx];
   if (variant === undefined) {
     return err(invalidVariant(token.name, String(idx), token.variants));

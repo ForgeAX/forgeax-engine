@@ -25,7 +25,6 @@ it('observes unqualified candidate getters on every actual execution update', as
   });
   const transform = { world: mat4.identity(mat4.create()) };
   const snapshots = Array.from({ length: 256 }, (_, entityKey) => ({
-    worldId: 0,
     entityKey,
     assetHandle: 3,
     material,
@@ -39,7 +38,6 @@ it('observes unqualified candidate getters on every actual execution update', as
       projection.apply(
         snapshots.map((snapshot) => ({
           kind: 'update' as const,
-          worldId: 0,
           entityKey: snapshot.entityKey,
           snapshot,
         })),
@@ -141,11 +139,7 @@ it('observes unqualified candidate getters on every actual execution update', as
       material: new MaterialResource(material.snapshot),
     };
     scene
-      .sync(
-        projection.apply([
-          { kind: 'update', worldId: 0, entityKey: added.entityKey, snapshot: added },
-        ]),
-      )
+      .sync(projection.apply([{ kind: 'update', entityKey: added.entityKey, snapshot: added }]))
       .unwrap();
     update({ ...changed, revision: 4 });
     expect(reads).toBe(2 * candidates.length);

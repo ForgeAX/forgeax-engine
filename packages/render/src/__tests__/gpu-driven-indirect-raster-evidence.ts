@@ -66,7 +66,6 @@ function snapshot(entityKey: number, kind: 'indexed' | 'non-indexed'): Renderabl
     material,
     materials: [material],
     materialBindingSources: ['engine-default'],
-    worldId: 0,
     entityKey,
     gpuDrivenDraws: [
       {
@@ -96,7 +95,6 @@ function snapshot(entityKey: number, kind: 'indexed' | 'non-indexed'): Renderabl
 function updateSnapshot(value: RenderableSnapshot) {
   return {
     kind: 'update' as const,
-    worldId: value.worldId,
     entityKey: value.entityKey,
     snapshot: value,
   };

@@ -218,12 +218,33 @@ function latticeDimensions(
   return ok(dimensions);
 }
 
+/** Default and ceiling of one cook's closest-point primitive tests. */
+const DEFAULT_VISIBILITY_CLOSEST_POINT_BUDGET = 134_217_728;
+const MAX_VISIBILITY_CLOSEST_POINT_BUDGET = 16 * DEFAULT_VISIBILITY_CLOSEST_POINT_BUDGET;
+/** Default and ceiling of one cook's sign-vote ray primitive tests. */
+const DEFAULT_VISIBILITY_SIGN_RAY_BUDGET = 1_073_741_824;
+const MAX_VISIBILITY_SIGN_RAY_BUDGET = 16 * DEFAULT_VISIBILITY_SIGN_RAY_BUDGET;
+
+export interface VisibilityDistanceFieldOptions {
+  readonly voxelSize: number;
+  readonly triangleSidedness: ArrayLike<number>;
+  /** Closest-point primitive tests for the whole cook, at most 2,147,483,648. */
+  readonly closestPointBudget?: number;
+  /** Sign-vote ray primitive tests for the whole cook, at most 17,179,869,184. */
+  readonly signRayBudget?: number;
+}
+
+function budgetFailure(name: string, value: number, max: number): FieldFailure | undefined {
+  if (Number.isInteger(value) && value >= 1 && value <= max) return undefined;
+  return distanceFieldFailure(`${name} must be an integer in 1..${max}`, 'distance-field-limit');
+}
+
 /** Banded unsigned distance with a 98-direction backface vote for the sign. */
 class VisibilitySampler {
   negativeSamples = 0;
   private readonly query: ReturnType<typeof createTriangleQuery>;
-  private readonly nearestBudget = { remaining: 134_217_728 };
-  private readonly rayBudget = { remaining: 1_073_741_824 };
+  private readonly nearestBudget: { remaining: number };
+  private readonly rayBudget: { remaining: number };
   private readonly hit = { primitive: -1, distance: 0, frontFace: false };
   private readonly allTwoSided: boolean;
   private readonly activeFlags: readonly number[];
@@ -239,7 +260,10 @@ class VisibilitySampler {
     origin: FieldTriple,
     spacing: number,
     distanceBand: number,
+    budgets: { readonly closestPoint: number; readonly signRay: number },
   ) {
+    this.nearestBudget = { remaining: budgets.closestPoint };
+    this.rayBudget = { remaining: budgets.signRay };
     this.query = createTriangleQuery(triangles);
     this.activeFlags = activeFlags;
     this.allTwoSided = activeFlags.every((v) => v === 1);
@@ -270,7 +294,7 @@ class VisibilitySampler {
     const nearest = this.query.nearestSquared(center, guard, this.nearestBudget);
     if (nearest === null)
       return distanceFieldFailure(
-        'visibility brick closest-point budget exhausted',
+        'visibility brick closest-point budget exhausted; raise closestPointBudget or the voxel size',
         'distance-field-limit',
       );
     if (nearest >= guard * guard) {
@@ -302,7 +326,7 @@ class VisibilitySampler {
     const nearest = this.query.nearestSquared(p, distanceBand, this.nearestBudget);
     if (nearest === null)
       return distanceFieldFailure(
-        'visibility closest-point budget exhausted',
+        'visibility closest-point budget exhausted; raise closestPointBudget or the voxel size',
         'distance-field-limit',
       );
     const distance = Math.sqrt(nearest);
@@ -329,7 +353,10 @@ class VisibilitySampler {
       ];
       const found = this.query.trace(hit, start, d, 0, distanceBand, this.rayBudget);
       if (found === null)
-        return distanceFieldFailure('visibility sign-ray budget exhausted', 'distance-field-limit');
+        return distanceFieldFailure(
+          'visibility sign-ray budget exhausted; raise signRayBudget or the voxel size',
+          'distance-field-limit',
+        );
       if (found && !hit.frontFace && this.activeFlags[hit.primitive] === 0) back++;
       remaining--;
       // Remaining votes cannot undo a negative decision, or supply enough
@@ -348,8 +375,16 @@ class VisibilitySampler {
 export async function buildVisibilityDistanceField(
   positions: ArrayLike<number>,
   indices: ArrayLike<number>,
-  options: { readonly voxelSize: number; readonly triangleSidedness: ArrayLike<number> },
+  options: VisibilityDistanceFieldOptions,
 ): Promise<Result<MeshDistanceField, DistanceFieldError>> {
+  const {
+    closestPointBudget = DEFAULT_VISIBILITY_CLOSEST_POINT_BUDGET,
+    signRayBudget = DEFAULT_VISIBILITY_SIGN_RAY_BUDGET,
+  } = options;
+  const budgetError =
+    budgetFailure('closestPointBudget', closestPointBudget, MAX_VISIBILITY_CLOSEST_POINT_BUDGET) ??
+    budgetFailure('signRayBudget', signRayBudget, MAX_VISIBILITY_SIGN_RAY_BUDGET);
+  if (budgetError !== undefined) return budgetError;
   const spacing = Math.fround(options.voxelSize);
   const inputFailure = visibilityInputFailure(
     positions,
@@ -381,6 +416,7 @@ export async function buildVisibilityDistanceField(
     origin,
     spacing,
     distanceBand,
+    { closestPoint: closestPointBudget, signRay: signRayBudget },
   );
   const storage = new FieldBrickBuilder(dimensions),
     brick = new Float32Array(64);

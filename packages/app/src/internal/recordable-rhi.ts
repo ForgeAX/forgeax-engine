@@ -28,6 +28,7 @@ export async function recordableBackend(
   if (pack.createShaderModule === undefined)
     throw new Error('RHI-debug requires a backend createShaderModule capability');
   return {
+    ...pack,
     // Consume the startup probe once; recovery requests a fresh adapter.
     rhi: nativeAdapter?.ok
       ? {

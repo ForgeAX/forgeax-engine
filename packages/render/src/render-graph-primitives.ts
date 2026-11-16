@@ -35,6 +35,9 @@ import {
 } from './ssao-buffers';
 import { getSsaoParameters } from './ssao-config';
 import { buildSsaoUniformPayload } from './ssao-uniform';
+import { SSR_SCENE_COLOR_HISTORY_PROGRAM } from './ssr/scene-color-input';
+import { getTemporalGpuState, stageTemporalGpuWrite } from './temporal/gpu';
+import { recordContext } from './world/view-record-context';
 
 type DepthResolutionContext = Pick<_InternalRenderPipelineContext, 'runtime'> & {
   readonly frameState: {
@@ -198,7 +201,7 @@ function ensureSsaoRecordCompanions(internals: _InternalRenderPipelineContext): 
 function ssaoBindGroupEntries(
   buffers: SsaoBuffers,
   companions: NonNullable<ReturnType<typeof ensureSsaoRecordCompanions>>,
-  normal: TextureView,
+  normal: TextureView | null,
   depth: TextureView,
   raw: TextureView,
 ): readonly BindGroupEntry[] {
@@ -210,7 +213,10 @@ function ssaoBindGroupEntries(
       binding: 3,
       resource: { kind: 'sampler', value: companions.filteringSampler },
     },
-    { binding: 4, resource: { kind: 'textureView', value: normal } },
+    // The depth-only layout has no normal slot.
+    ...(normal === null
+      ? []
+      : [{ binding: 4, resource: { kind: 'textureView', value: normal } } as const]),
     { binding: 5, resource: { kind: 'textureView', value: depth } },
     { binding: 6, resource: { kind: 'sampler', value: companions.depthSampler } },
     { binding: 7, resource: { kind: 'textureView', value: raw } },
@@ -421,6 +427,64 @@ export function recordSsaoCalcPass(
  */
 export interface SsaoBlurPassViews extends SsaoCalcPassViews {
   readonly raw: TextureView;
+}
+
+export interface SsaoDepthPassViews {
+  readonly output: TextureView;
+  readonly depth: TextureView;
+  /** Real AO input for the blur; the calc binds the 1x1 fallback. */
+  readonly raw?: TextureView | undefined;
+}
+
+/**
+ * Depth-only prepass AO: fs_ssao_calc_depth / fs_ssao_blur_depth reconstruct
+ * view normals from depth, so the layout omits the normal binding (4).
+ */
+export function recordSsaoDepthPass(
+  _c: _InternalRenderPipelineContext,
+  stage: 'calc' | 'blur',
+  pass: RhiRenderPassEncoder,
+  views: SsaoDepthPassViews,
+): void {
+  const pp = _c.pipelineState.perPassResources;
+  const pipeline = stage === 'calc' ? pp.ssaoDepthCalcPipeline : pp.ssaoDepthBlurPipeline;
+  const layout = pp.ssaoDepthBgl;
+  if (pipeline == null || layout == null) {
+    throw new PostProcessError({
+      code: 'post-process-not-found',
+      detail: { id: `forgeax::post::ssao-${stage}-depth` },
+    });
+  }
+  const buffers = getOrCreateSsaoBuffers(_c.runtime);
+  const companions = ensureSsaoRecordCompanions(_c);
+  if (buffers === null || companions === null) return;
+  if (stage === 'calc') {
+    const payload = buildSsaoUniformPayload(_c.camera, _c.frameState.installedPipelineConfig?.ssao);
+    const written = _c.runtime.device.queue.writeBuffer(buffers.uniformBuffer, 0, payload);
+    if (!written.ok) {
+      _c.runtime.errorRegistry.fire(written.error);
+      return;
+    }
+  }
+  const raw = views.raw ?? companions.fallbackRawView;
+  const group = getOrCreateFromChain(
+    _c.frameState.postProcessBgCache,
+    [raw, views.depth],
+    `ssao-${stage}-depth`,
+    () => {
+      const created = _c.runtime.device.createBindGroup({
+        label: `ssao-${stage}-depth-bg`,
+        layout,
+        entries: ssaoBindGroupEntries(buffers, companions, null, views.depth, raw),
+      });
+      if (!created.ok) throw created.error;
+      return created.value;
+    },
+    _c.bindGroupCounts,
+  );
+  pass.setPipeline(pipeline);
+  pass.setBindGroup(0, group);
+  pass.draw(3, 1, 0, 0);
 }
 
 export function recordSsaoBlurPass(
@@ -675,39 +739,43 @@ function dispatchFullscreenPass(
   // built-in FXAA copy idiom. The `color` key is BOTH the copy dst and the
   // sampled input (resolve its GPU texture via `${color}::tex` for the copy,
   // its TextureView via `${color}` for the bind group).
-  let inputView: TextureView | null;
-  if (compositeOverSwapchain) {
-    const scratchTex = resolveCtx?.resolve(`${color}::tex`);
-    const scratchView = resolveCtx?.resolve(color);
-    if (scratchTex === undefined || scratchView === undefined) {
-      throw new PostProcessError({
-        code: 'fullscreen-input-not-found',
-        detail: { readsKey: color, passName: name },
-      });
+  const resolveFullscreenInputView = () => {
+    let inputView: TextureView | null;
+    if (compositeOverSwapchain) {
+      const scratchTex = resolveCtx?.resolve(`${color}::tex`);
+      const scratchView = resolveCtx?.resolve(color);
+      if (scratchTex === undefined || scratchView === undefined) {
+        throw new PostProcessError({
+          code: 'fullscreen-input-not-found',
+          detail: { readsKey: color, passName: name },
+        });
+      }
+      ctx.encoder.copyTextureToTexture(
+        { texture: ctx.outputTarget().texture, mipLevel: 0, origin: { x: 0, y: 0, z: 0 } },
+        { texture: scratchTex as Texture, mipLevel: 0, origin: { x: 0, y: 0, z: 0 } },
+        { width: ctx.targetW, height: ctx.targetH, depthOrArrayLayers: 1 },
+      );
+      inputView = scratchView as TextureView;
+    } else if (reads.length === 0) {
+      // reads === [] preserves the legacy swap-chain sample path (used by
+      // tonemap-style passes that read the framebuffer directly).
+      inputView = ctx.outputTarget().view;
+    } else {
+      // reads with a key MUST resolve through the graph compile output, otherwise
+      // the dispatcher throws fullscreen-input-not-found (charter P3 fail-fast).
+      const readsKey = reads[0] as string;
+      const resolved = resolveCtx?.resolve(readsKey);
+      if (resolved === undefined) {
+        throw new PostProcessError({
+          code: 'fullscreen-input-not-found',
+          detail: { readsKey, passName: name },
+        });
+      }
+      inputView = resolved as TextureView;
     }
-    ctx.encoder.copyTextureToTexture(
-      { texture: ctx.outputTarget().texture, mipLevel: 0, origin: { x: 0, y: 0, z: 0 } },
-      { texture: scratchTex as Texture, mipLevel: 0, origin: { x: 0, y: 0, z: 0 } },
-      { width: ctx.targetW, height: ctx.targetH, depthOrArrayLayers: 1 },
-    );
-    inputView = scratchView as TextureView;
-  } else if (reads.length === 0) {
-    // reads === [] preserves the legacy swap-chain sample path (used by
-    // tonemap-style passes that read the framebuffer directly).
-    inputView = ctx.outputTarget().view;
-  } else {
-    // reads with a key MUST resolve through the graph compile output, otherwise
-    // the dispatcher throws fullscreen-input-not-found (charter P3 fail-fast).
-    const readsKey = reads[0] as string;
-    const resolved = resolveCtx?.resolve(readsKey);
-    if (resolved === undefined) {
-      throw new PostProcessError({
-        code: 'fullscreen-input-not-found',
-        detail: { readsKey, passName: name },
-      });
-    }
-    inputView = resolved as TextureView;
-  }
+    return inputView;
+  };
+  const inputView = resolveFullscreenInputView();
   if (inputView === null) return;
 
   // ── BGL/Pipeline build (before depth resolution so built.depthSampler is
@@ -732,28 +800,32 @@ function dispatchFullscreenPass(
   // discrimination). Color input logic is unchanged (AC-03 zero-regression).
   let depthTexView: TextureView | null = graphDepthView ?? null;
   let depthSampler: Sampler | null = null;
-  if (entry.reads && entry.reads.length > 0) {
-    const internals = requireRenderGraphRecordContext(ctx);
-    for (const read of entry.reads) {
-      if (typeof read !== 'string' && read.sampleType === 'depth') {
-        const depthKey = read.key;
-        depthTexView ??= resolveDepthOnlyView(
-          internals,
-          depthKey,
-          'post-process-scene-depth-only-view',
-          internals.geometryDepthKey,
-        );
-        if (depthTexView === null) {
-          throw new PostProcessError({
-            code: 'fullscreen-input-not-found',
-            detail: { readsKey: depthKey, passName: name },
-          });
+  const resolveFullscreenDepthReads = (
+    built: NonNullable<ReturnType<typeof buildFullscreenPostProcessPass>>,
+  ) => {
+    if (entry.reads && entry.reads.length > 0) {
+      const internals = requireRenderGraphRecordContext(ctx);
+      for (const read of entry.reads) {
+        if (typeof read !== 'string' && read.sampleType === 'depth') {
+          const depthKey = read.key;
+          depthTexView ??= resolveDepthOnlyView(
+            internals,
+            depthKey,
+            'post-process-scene-depth-only-view',
+            internals.geometryDepthKey,
+          );
+          if (depthTexView === null) {
+            throw new PostProcessError({
+              code: 'fullscreen-input-not-found',
+              detail: { readsKey: depthKey, passName: name },
+            });
+          }
+          depthSampler = built.depthSampler;
         }
-        depthSampler = built.depthSampler;
       }
     }
-  }
-
+  };
+  resolveFullscreenDepthReads(built);
   // feat-20260621 M4' composite-over-swap-chain write target: the swap-chain's
   // NON-srgb storage view (R-COLORSPACE — the scratch holds an already-sRGB-
   // encoded copy, so writing through the srgb view would double-encode; mirrors
@@ -832,29 +904,36 @@ function dispatchFullscreenPass(
     paramsBuffer = ctx.runtime.getPostProcessParamsBuffer?.(shader) ?? null;
   }
 
-  const bindGroup = createFullscreenBindGroup(
-    ctx.runtime.device,
-    built.bindGroupLayout,
-    inputView,
-    built.sampler,
-    paramsBuffer,
-    depthTexView,
-    depthSampler,
-    built.extraColorBindings.map((binding, index) => {
-      const read = entry.reads?.filter(
-        (candidate) => typeof candidate === 'string' || candidate.sampleType !== 'depth',
-      )[index + 1];
-      const key = typeof read === 'string' ? read : read?.key;
-      const view = key === undefined ? undefined : resolveCtx?.resolve(key);
-      if (view === undefined) {
-        throw new PostProcessError({
-          code: 'fullscreen-input-not-found',
-          detail: { readsKey: key ?? 'additional-read', passName: name },
-        });
-      }
-      return { binding, view: view as TextureView };
-    }),
-  );
+  const createFullscreenPassBindings = (
+    built: NonNullable<ReturnType<typeof buildFullscreenPostProcessPass>>,
+    inputView: TextureView,
+  ) => {
+    const bindGroup = createFullscreenBindGroup(
+      ctx.runtime.device,
+      built.bindGroupLayout,
+      inputView,
+      built.sampler,
+      paramsBuffer,
+      depthTexView,
+      depthSampler,
+      built.extraColorBindings.map((binding, index) => {
+        const read = entry.reads?.filter(
+          (candidate) => typeof candidate === 'string' || candidate.sampleType !== 'depth',
+        )[index + 1];
+        const key = typeof read === 'string' ? read : read?.key;
+        const view = key === undefined ? undefined : resolveCtx?.resolve(key);
+        if (view === undefined) {
+          throw new PostProcessError({
+            code: 'fullscreen-input-not-found',
+            detail: { readsKey: key ?? 'additional-read', passName: name },
+          });
+        }
+        return { binding, view: view as TextureView };
+      }),
+    );
+    return bindGroup;
+  };
+  const bindGroup = createFullscreenPassBindings(built, inputView);
   if (bindGroup === null) return;
 
   // Pipeline source-of-truth (M4 / T-10-a, solving M1 CONCERN-1):
@@ -884,10 +963,8 @@ function dispatchFullscreenPass(
 
   // Open a render pass writing into the resolved color target. Fullscreen
   // post-process passes are non-MSAA and depth-less; the typed graph owns MRT attachments.
-  // setBindGroup(1, ...) (group=1 reserved per plan-strategy convention;
-  // group=0 is reserved for future view bind groups, mirroring the
-  // recordTonemap / recordSkybox pattern that uses slot 0 only when the
-  // pipeline declares a single bind group at slot 0).
+  // Group one contains pass inputs. The draw handle binds the reserved empty
+  // group zero when the declaration does not use View.
   const pass =
     graphPass ??
     ctx.encoder.beginRenderPass(
@@ -903,6 +980,20 @@ function dispatchFullscreenPass(
     );
   pass.setBindGroup(1, bindGroup);
   handle.draw(pass, inputView);
+  if (shader === SSR_SCENE_COLOR_HISTORY_PROGRAM.name) {
+    const internal = requireRenderGraphRecordContext(ctx);
+    const state = getTemporalGpuState(
+      internal.frameState,
+      internal.runtime.device,
+      recordContext(internal.runtime).deviceScope,
+      ctx.targetW,
+      ctx.targetH,
+      false,
+      internal.camera,
+      'scene-color',
+    );
+    stageTemporalGpuWrite(internal.frameState, state);
+  }
   if (graphPass === undefined) pass.end();
 }
 

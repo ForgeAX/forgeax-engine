@@ -167,12 +167,7 @@ it.each(
       draws.length = 0;
       world.update().unwrap();
       const receipt = result(
-        renderer.draw({
-          leases: [lease],
-          camera: { lease },
-          environment: { lease },
-          geometryLane: mode === 'direct' ? 'direct' : 'automatic',
-        }),
+        renderer.draw({ source: lease, geometryLane: mode === 'direct' ? 'direct' : 'automatic' }),
       );
       if (receipt !== undefined) result(await receipt.completed);
       expect(errors).toEqual([]);

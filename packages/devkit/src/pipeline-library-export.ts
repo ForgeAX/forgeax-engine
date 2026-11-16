@@ -19,12 +19,18 @@ export async function exportPipelineLibrary(
         Parameters<import('@forgeax/engine-render').Renderer['inspect']>[0]
       >['pipelineLibraryLimits']
     >;
+    /** Leave out recipes that only an installed library compiled in this session. */
+    readonly requestedOnly?: boolean;
   },
 ) {
   const options =
-    args.limits === undefined
+    args.limits === undefined && args.requestedOnly !== true
       ? '{pipelineLibrary:true}'
-      : JSON.stringify({ pipelineLibrary: true, pipelineLibraryLimits: args.limits });
+      : JSON.stringify({
+          pipelineLibrary: true,
+          ...(args.limits === undefined ? {} : { pipelineLibraryLimits: args.limits }),
+          ...(args.requestedOnly === true ? { pipelineLibraryRequestedOnly: true } : {}),
+        });
   const response = (await liveDevControl(root, 'eval', {
     revision: args.revision,
     code: `const result = typeof execution !== 'undefined' && execution.inspectRenderer
@@ -86,6 +92,7 @@ export async function exportPipelineLibrary(
     inspection,
     frame,
     limits: policy ?? args.limits,
+    selection: args.requestedOnly === true ? 'requested-only' : 'all-compiled',
     scope:
       'The retained live recipe graph on the current WebGPU device. Full-route collection requires a collector retaining its dependencies. Synchronous creation does not prove native compilation completion. Unvisited gameplay/settings still require coverage.',
   };

@@ -1,3 +1,5 @@
+import { GameProjectileSimulationOrder, GameChargeShotOrder } from "../../../src/system-order";
+import { defineSystem } from "@forgeax/engine-ecs";
 import { FixedTime, FixedUpdate, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import type { InputSnapshot } from '@forgeax/engine-input';
 import { inState } from '@forgeax/engine-state';
@@ -21,10 +23,10 @@ function powerFor(seconds: number): number {
 
 /** Turns a held InputSnapshot action into ECS charge intent. */
 export function installChargeShotSystem(ctx: ChargeShotSystemContext): void {
-  ctx.world.addSystem(FixedUpdate, {
+  const systemToken1 = defineSystem({ sets: [GameChargeShotOrder],
     name: 'game-charge-shot',
     runIf: inState(GameState, 'Play'),
-    before: ['game-projectile-simulation'],
+    before: [GameProjectileSimulationOrder],
     queries: [],
     fn: () => {
       const state = ctx.world.get(ctx.root, ChargeShot);
@@ -55,5 +57,6 @@ export function installChargeShotSystem(ctx: ChargeShotSystemContext): void {
 
       if (state.value.release === 0) ctx.hud.setChargeStatus('Hold C to charge · release to fire', 'ready', 0);
     },
-  }).unwrap();
+  });
+ctx.world.addSystem(FixedUpdate, systemToken1).unwrap();
 }

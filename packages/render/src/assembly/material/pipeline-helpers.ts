@@ -105,6 +105,7 @@ export function resolveMaterialPipelineGroup2Contract(
     case 'hdrp-pbr':
     case 'gpu-driven-cluster-pbr':
     case 'surface-direct-cluster-pbr':
+    case 'scene-direct-cluster-unlit':
       return 'cluster';
     case 'hdrp-skin':
     case 'gpu-driven-cluster-skin':
@@ -117,6 +118,7 @@ export function resolveMaterialPipelineGroup2Contract(
     case 'surface-direct-pbr':
     case 'sprite-urp':
     case 'unlit-urp':
+    case 'scene-direct-unlit':
       return 'mesh';
     case undefined:
       return declared;
@@ -132,7 +134,28 @@ interface MaterialPipelineBindGroupState {
   readonly probeInstancesBindGroupLayout?: BindGroupLayout;
   readonly gpuDrivenInstancesBindGroupLayout?: BindGroupLayout | null;
   readonly surfaceDirectInstancesBindGroupLayout?: BindGroupLayout | null;
+  readonly sceneDirectInstancesBindGroupLayout?: BindGroupLayout | null;
   readonly gpuDrivenClusterMeshBindGroupLayout?: BindGroupLayout | null;
+}
+
+/** Slot-3 layout: direct Surface rows, GPU Scene rows, scene-index tables or packed instances. */
+function materialPipelineInstancesLayout(
+  layoutKind: LayoutKind,
+  state: MaterialPipelineBindGroupState,
+  probeBlend: boolean,
+): BindGroupLayout | null | undefined {
+  if (layoutKind === 'surface-direct-pbr' || layoutKind === 'surface-direct-cluster-pbr')
+    return state.surfaceDirectInstancesBindGroupLayout;
+  if (layoutKind === 'scene-direct-unlit' || layoutKind === 'scene-direct-cluster-unlit')
+    return state.sceneDirectInstancesBindGroupLayout;
+  if (
+    layoutKind === 'gpu-driven-pbr' ||
+    layoutKind === 'gpu-driven-skin' ||
+    layoutKind === 'gpu-driven-cluster-pbr' ||
+    layoutKind === 'gpu-driven-cluster-skin'
+  )
+    return state.gpuDrivenInstancesBindGroupLayout;
+  return probeBlend ? state.probeInstancesBindGroupLayout : state.instancesBindGroupLayout;
 }
 
 export function resolveMaterialPipelineBindGroups(
@@ -142,7 +165,9 @@ export function resolveMaterialPipelineBindGroups(
   probeBlend = false,
 ): { readonly meshLayout: BindGroupLayout; readonly instancesLayout: BindGroupLayout } | null {
   const meshLayout =
-    layoutKind === 'gpu-driven-cluster-pbr' || layoutKind === 'surface-direct-cluster-pbr'
+    layoutKind === 'gpu-driven-cluster-pbr' ||
+    layoutKind === 'surface-direct-cluster-pbr' ||
+    layoutKind === 'scene-direct-cluster-unlit'
       ? state.gpuDrivenClusterMeshBindGroupLayout
       : layoutKind === 'hdrp-pbr' || (clustered && layoutKind === 'gpu-driven-pbr')
         ? state.hdrpMeshBindGroupLayout
@@ -154,17 +179,7 @@ export function resolveMaterialPipelineBindGroups(
               ? state.pbrSkinMeshBindGroupLayout
               : state.meshBindGroupLayout;
   if (meshLayout == null) return null;
-  const instancesLayout =
-    layoutKind === 'surface-direct-pbr' || layoutKind === 'surface-direct-cluster-pbr'
-      ? state.surfaceDirectInstancesBindGroupLayout
-      : layoutKind === 'gpu-driven-pbr' ||
-          layoutKind === 'gpu-driven-skin' ||
-          layoutKind === 'gpu-driven-cluster-pbr' ||
-          layoutKind === 'gpu-driven-cluster-skin'
-        ? state.gpuDrivenInstancesBindGroupLayout
-        : probeBlend
-          ? state.probeInstancesBindGroupLayout
-          : state.instancesBindGroupLayout;
+  const instancesLayout = materialPipelineInstancesLayout(layoutKind, state, probeBlend);
   return instancesLayout === null || instancesLayout === undefined
     ? null
     : { meshLayout, instancesLayout };

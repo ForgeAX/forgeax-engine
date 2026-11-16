@@ -22,7 +22,7 @@ vi.mock('../backend-selection', async (importOriginal) => {
 
 import { constructRuntimeRendererHost } from '../renderer-host';
 
-function environmentError(code: 'adapter-unavailable' | 'limit-exceeded') {
+function environmentError(code: 'adapter-unavailable' | 'limit-exceeded' | 'device-lost') {
   return new EngineEnvironmentError('no usable rendering backend', {
     webgpuError: new RhiError({
       code,
@@ -94,6 +94,42 @@ describe('runtime renderer backend fallback boundary', () => {
     );
     expect(target.getContext).toHaveBeenCalledOnce();
     assets.dispose();
+  });
+
+  it('uses the Channel 3 attempt when the WebGPU device is lost during initialization', async () => {
+    const firstPack = { name: 'webgpu' };
+    const fallbackPack = { name: 'wgpu' };
+    const assets = new AssetRegistry();
+    mocks.loadBackendPack
+      .mockResolvedValueOnce({ ok: true, kind: 'webgpu', value: firstPack })
+      .mockResolvedValueOnce({ ok: true, kind: 'wgpu-webgl2', value: fallbackPack });
+    mocks.constructRendererHost
+      .mockResolvedValueOnce({ ok: false, error: environmentError('device-lost') })
+      .mockResolvedValueOnce({ ok: true, value: { assets } });
+
+    const result = await constructRuntimeRendererHost(canvas());
+
+    expect(result.ok).toBe(true);
+    expect(mocks.loadBackendPack).toHaveBeenNthCalledWith(2, undefined, 'wgpu-webgl2');
+    expect(mocks.constructRendererHost).toHaveBeenLastCalledWith(
+      expect.anything(),
+      undefined,
+      undefined,
+      fallbackPack,
+    );
+    assets.dispose();
+  });
+
+  it('does not fall back when the host requires WebGPU', async () => {
+    const firstPack = { name: 'webgpu' };
+    const failure = environmentError('limit-exceeded');
+    mocks.loadBackendPack.mockResolvedValueOnce({ ok: true, kind: 'webgpu', value: firstPack });
+    mocks.constructRendererHost.mockResolvedValueOnce({ ok: false, error: failure });
+
+    const result = await constructRuntimeRendererHost(canvas(), { renderBackend: 'webgpu' });
+
+    expect(result).toEqual({ ok: false, error: failure });
+    expect(mocks.loadBackendPack).toHaveBeenCalledOnce();
   });
 
   it('never falls back for an explicitly injected RHI and retains structured detail', async () => {
@@ -189,6 +225,45 @@ describe('runtime renderer backend fallback boundary', () => {
     expect(result.error.detail.webgpuError).toBe(primary.detail.webgpuError);
     expect(result.error.detail.wgpuError).toBe(fallback);
     expect(result.error.message).toContain('WASM HTTP 404');
+  });
+
+  it('retains the real native requestDevice failure alongside the fallback cause', async () => {
+    const adapter = (
+      await requestAdapterFrom({
+        requestAdapter: async () => ({
+          requestDevice: async () => {
+            throw new DOMException('DynamicLib.Open: dxil.dll Windows Error: 87', 'OperationError');
+          },
+        }),
+      })
+    ).unwrap();
+    const requested = await adapter.requestDevice();
+    if (requested.ok) throw new Error('Expected native device rejection');
+    const primary = new EngineEnvironmentError('native device rejected', {
+      webgpuError: requested.error,
+    });
+    const fallback = new RhiError({
+      code: 'rhi-not-available',
+      expected: 'fallback backend',
+      hint: 'fallback unavailable',
+    });
+    mocks.loadBackendPack
+      .mockResolvedValueOnce({ ok: true, kind: 'webgpu', value: {} })
+      .mockResolvedValueOnce({ ok: false, kind: 'wgpu-webgl2', error: fallback });
+    mocks.constructRendererHost.mockResolvedValueOnce({ ok: false, error: primary });
+    const result = await constructRuntimeRendererHost(canvas());
+    if (result.ok || !(result.error instanceof EngineEnvironmentError))
+      throw new Error('Expected environment failure');
+    expect(mocks.loadBackendPack).toHaveBeenCalledTimes(2);
+    expect(result.error.detail.webgpuError).toBe(requested.error);
+    expect(requested.error.detail).toEqual({
+      error: {
+        code: 'request-device-threw',
+        name: 'OperationError',
+        message: 'DynamicLib.Open: dxil.dll Windows Error: 87',
+      },
+    });
+    expect(result.error.detail.wgpuError).toBe(fallback);
   });
 
   it('does not retry an already selected wgpu backend', async () => {

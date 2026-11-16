@@ -78,9 +78,7 @@ export async function measureLocalIes(renderer: Renderer, kind: IesLightKind, co
     const began = performance.now();
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
-    const receipt = renderValue(
-      renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
-    );
+    const receipt = renderValue(renderer.draw({ source: lease }));
     const cpuMs = performance.now() - began;
     renderValue(await receipt.completed);
     const timing = renderValue(await renderer.observe(receipt, { include: ['timings'] })).timings;

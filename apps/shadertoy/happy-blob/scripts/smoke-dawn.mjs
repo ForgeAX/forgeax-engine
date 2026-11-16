@@ -28,6 +28,7 @@ import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { readShaderManifestPublication } from '@forgeax/engine-shader';
+import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 
 const requestedSmokeFrames = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const SMOKE_MIN_FRAMES =
@@ -156,9 +157,10 @@ if (!existsSync(MANIFEST_PATH)) {
   console.error('  hint: rebuild via `pnpm --filter @forgeax/engine-shadertoy-happy-blob build`');
   process.exit(1);
 }
-const manifestRaw = readFileSync(MANIFEST_PATH, 'utf8');
+const manifestRaw = readShaderManifestText(MANIFEST_PATH);
 const manifestParsed = await readShaderManifestPublication(JSON.parse(manifestRaw));
-const MANIFEST_URL = `data:application/json,${encodeURIComponent(manifestRaw)}`;
+const MANIFEST_URL = URL.createObjectURL(new Blob([manifestRaw], { type: 'application/json' }));
+process.once('exit', () => URL.revokeObjectURL(MANIFEST_URL));
 
 const matShaderEntry = (manifestParsed.materialShaders ?? []).find(
   (m) => m && m.identifier === 'shadertoy::happy_blob',
@@ -225,11 +227,7 @@ const values = {
 const world = new World({ assets });
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
-const frameRequest = {
-  leases: [worldAttachment1.value],
-  camera: { lease: worldAttachment1.value },
-  environment: { lease: worldAttachment1.value },
-};
+const frameRequest = { source: worldAttachment1.value };
 const materialHandle = assets.create({
   kind: 'material',
   passes: [

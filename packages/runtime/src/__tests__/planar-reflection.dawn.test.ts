@@ -213,12 +213,7 @@ it('captures offscreen geometry, clips the opposite half space and records the w
     const draw = async () => {
       world.update(1 / 60).unwrap();
       propagateTransforms(world).unwrap();
-      const frame = activeRenderer.draw({
-        leases: [lease.value],
-        camera: { lease: lease.value },
-        environment: { lease: lease.value },
-        geometryLane: 'direct',
-      });
+      const frame = activeRenderer.draw({ source: lease.value, geometryLane: 'direct' });
       if (!frame.ok) {
         const failure = JSON.stringify(
           { draw: frame.error, errors, nativeErrors },

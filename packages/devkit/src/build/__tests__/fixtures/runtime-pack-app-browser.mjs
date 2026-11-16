@@ -1,3 +1,7 @@
+import { defineResource } from '@forgeax/engine/ecs';
+
+const GeneratedAppPluginResource = defineResource('generated-app-plugin');
+
 import { createApp } from '@forgeax/engine/app/browser';
 import {
   createCatalogSource,
@@ -69,6 +73,7 @@ export async function open() {
       { shaderManifestUrl: manifest },
     )
   ).unwrap();
+  app.pluginContext.provide('generatedPluginResource', GeneratedAppPluginResource);
   runtime = app.pluginContext.get('runtimePacks');
   if (!runtime || app.assets !== app.pluginContext.assets) throw new Error('App provider missing');
   (
@@ -125,14 +130,14 @@ export function sources(language) {
       import { Transform } from '@forgeax/engine/scene';
       import { MeshFilter } from '@forgeax/engine/render';
       globalThis.appPluginEvaluated = true;
-      export default { inject: ['world', 'toolApi'], apply(ctx${language === 'ts' ? ': any' : ''}) {
+      export default { inject: ['world', 'toolApi', 'generatedPluginResource'], apply(ctx${language === 'ts' ? ': any' : ''}) {
         const members = [...ctx.world.query({ read: [Transform, MeshFilter] }).unwrap()].length;
         ctx.effect(() => registerAssetTools(ctx));
         ctx.effect(() => {
           state.active++;
           const marker = ctx.world.spawn({ component: Transform, data: { pos: [9, 0, 0] } }).unwrap();
-          ctx.world.insertResource('generated-app-plugin', { members, marker });
-          return () => { state.active--; ctx.world.despawn(marker).unwrap(); ctx.world.removeResource('generated-app-plugin'); };
+          ctx.world.insertResource(ctx.generatedPluginResource, { members, marker });
+          return () => { state.active--; ctx.world.despawn(marker).unwrap(); ctx.world.removeResource(ctx.generatedPluginResource); };
         });
       } };`,
   };
@@ -228,7 +233,7 @@ export async function install() {
   return {
     lazy,
     lazyExecutor: globalThis.appExecutorEvaluated !== true,
-    members: app.world.getResource('generated-app-plugin').members,
+    members: app.world.getResource(GeneratedAppPluginResource).members,
   };
 }
 
@@ -271,10 +276,10 @@ export const prepareDelivery = prepareRuntimePackDelivery;
 
 export async function close() {
   const world = app.world;
-  const marker = world.getResource('generated-app-plugin')?.marker;
+  const marker = world.getResource(GeneratedAppPluginResource)?.marker;
   (await app.dispose()).unwrap();
   return {
-    effectRemoved: !world.hasResource('generated-app-plugin'),
+    effectRemoved: !world.hasResource(GeneratedAppPluginResource),
     markerRemoved: marker === undefined || !world.hasComponent(marker, Transform),
     assets: app.assets.inspect().assets.length,
     catalogDetached: !app.assets.hasCatalogSource,

@@ -1,15 +1,17 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Camera, CAMERA_PROJECTION_ORTHOGRAPHIC, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { Tilemap } from '@forgeax/engine-render/authoring';
 import { Transform } from '@forgeax/engine-scene';
 import { createTilemapSmoke } from '../../tilemap/scripts/smoke-host.mjs';
+import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 const here=dirname(fileURLToPath(import.meta.url));
-const manifest=readFileSync(resolve(here, '..', 'dist', 'shaders', 'manifest.json'),'utf8');
-const host=await createTilemapSmoke(`data:application/json,${encodeURIComponent(manifest)}`);
+const manifest=readShaderManifestText(resolve(here, '..', 'dist', 'shaders', 'manifest.json'));
+const MANIFEST_URL = URL.createObjectURL(new Blob([manifest], { type: 'application/json' }));
+process.once('exit', () => URL.revokeObjectURL(MANIFEST_URL));
+const host=await createTilemapSmoke(MANIFEST_URL);
 const {world,assets}=host;
 const pixels=new Uint8Array(16*16*4);for(let i=0;i<pixels.length;i+=4)pixels.set([255,0,0,255],i);
 const atlas=assets.create({kind:'texture',shape:{viewDimension:'2d',extent:{width:16,height:16}},format:'rgba8unorm',colorSpace:'linear',mips:{kind:'none'},data:pixels}).unwrap();

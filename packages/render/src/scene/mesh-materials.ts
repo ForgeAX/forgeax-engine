@@ -52,7 +52,6 @@ function sameBinding(
 }
 export type MeshMaterialGeometry = MaterialCookRasterContext['geometry'];
 export type MeshMaterialResolver = (
-  worldId: number,
   handle: number,
   geometry: MeshMaterialGeometry,
   vertexColor: boolean,
@@ -192,7 +191,6 @@ function buildMeshMaterials(
       material =
         typeof handle === 'number' && handle !== 0
           ? resolve(
-              mesh.worldId,
               handle,
               geometry,
               mesh.layout.attributes.some((attribute) => attribute.key === 'color'),

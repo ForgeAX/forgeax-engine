@@ -25,7 +25,7 @@ import {
 } from './native-unit-owner.js';
 import { installBrowserHostGraphicsGuard } from './support/browser-host-graphics-guard.js';
 
-it('shares installed Engine component identity across dev Worker and bootstrap imports', async () => {
+it('shares installed Engine component, schedule and resource identity across dev Worker and bootstrap imports', async () => {
   const root = await realpath(await mkdtemp(resolve(tmpdir(), 'forgeax-worker-dev-identity-')));
   const packages = resolve(import.meta.dirname, '../../..');
   const scope = resolve(root, 'node_modules/@forgeax');
@@ -69,15 +69,17 @@ it('shares installed Engine component identity across dev Worker and bootstrap i
     );
     await writeFile(
       resolve(root, 'bootstrap.js'),
-      "export { Skin } from '@forgeax/engine/skinning';",
+      "export { Skin } from '@forgeax/engine/skinning'; export { Update, FixedUpdate, Time, FixedTime, SHARED_KERNEL_EXECUTOR_RESOURCE_KEY } from '@forgeax/engine-ecs';",
     );
     await writeFile(resolve(scope, 'worker-host/graphics-guard.mjs'), guard);
     await writeFile(
       resolve(scope, 'worker-host/engine-worker-runtime.mjs'),
       `import './graphics-guard.mjs';
        import { Skin } from '@forgeax/engine-skinning';
+       import { Update, FixedUpdate, Time, FixedTime, SHARED_KERNEL_EXECUTOR_RESOURCE_KEY } from '@forgeax/engine-ecs';
        self.onmessage = async event => {
-         const identity = Skin === (await import(/* @vite-ignore */ event.data)).Skin;
+         const bootstrap = await import(/* @vite-ignore */ event.data);
+         const identity = Skin === bootstrap.Skin && Update === bootstrap.Update && FixedUpdate === bootstrap.FixedUpdate && Time === bootstrap.Time && FixedTime === bootstrap.FixedTime && SHARED_KERNEL_EXECUTOR_RESOURCE_KEY === bootstrap.SHARED_KERNEL_EXECUTOR_RESOURCE_KEY;
          const gpu = Object.getOwnPropertyDescriptor(navigator, 'gpu')?.value;
          const rejected = [];
          if (!gpu || !Object.isFrozen(gpu)) rejected.push('guard missing');
@@ -255,7 +257,7 @@ it('serves snapshotted App Worker entries without exposing sibling inputs', asyn
     await writeFile(resolve(app, 'dist/index.mjs'), 'export const ready = true;');
     await symlink(app, resolve(facade, 'node_modules/@forgeax/engine-app'));
     await writeFile(resolve(snapshot, 'private.txt'), 'unrelated snapshot input');
-    for (const worker of ['engine', 'render', 'kernel']) {
+    for (const worker of ['engine', 'render', 'task']) {
       await writeFile(
         resolve(app, `dist/${worker}-worker-runtime.mjs`),
         'self.postMessage("ready");',
@@ -275,7 +277,7 @@ it('serves snapshotted App Worker entries without exposing sibling inputs', asyn
     const origin = server.resolvedUrls?.local[0] ?? '';
     const privateResponse = await fetch(new URL(`/@fs/${snapshot}/private.txt`, origin));
     expect(privateResponse.status).toBe(403);
-    for (const worker of ['engine', 'render', 'kernel']) {
+    for (const worker of ['engine', 'render', 'task']) {
       record(`worker-fetch:${worker}`);
       const response = await fetch(
         new URL(`/@fs/${app}/dist/${worker}-worker-runtime.mjs`, origin),
@@ -486,7 +488,7 @@ it('builds ordinary App module Workers without opting into skeletal Physics', as
     const files = outputs.flatMap((output) => ('output' in output ? output.output : []));
     expect(files.some((file) => file.fileName.includes('engine-worker-runtime'))).toBe(true);
     expect(files.some((file) => file.fileName.includes('render-worker-runtime'))).toBe(true);
-    expect(files.some((file) => file.fileName.includes('kernel-worker-runtime'))).toBe(true);
+    expect(files.some((file) => file.fileName.includes('task-worker-runtime'))).toBe(true);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

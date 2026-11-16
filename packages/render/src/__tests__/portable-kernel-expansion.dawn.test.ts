@@ -45,6 +45,7 @@ beforeAll(async () => {
         'forgeax_depth_pyramid::sample': read('depth-pyramid-sample'),
         'forgeax_view::common': read('common'),
         'forgeax_pbr::gbuffer': read('standard-gbuffer'),
+        forgeax_scene_temporal: read('scene-temporal'),
       },
     });
     if (!result.ok) throw result.error;

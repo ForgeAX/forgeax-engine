@@ -18,6 +18,7 @@ import { describe, expect, it } from 'vitest';
 import {
   renderLifecycleManifestUrl,
   standardPbrManifestRow,
+  waterInfoShaderFixture,
 } from '../../../render/src/__tests__/shader-manifest-fixture';
 import { createRenderer } from '../createRenderer';
 import { testAssets } from './helpers/runtime-assets';
@@ -34,6 +35,7 @@ function required<T>(
 const VOLUME_MANIFEST = `data:application/json,${encodeURIComponent(
   JSON.stringify({
     entries: [
+      ...waterInfoShaderFixture.entries,
       { hash: 'pbr', wgsl: 'f_schlick', glsl: '', bindings: '' },
       { hash: 'unlit', wgsl: 'unlit', glsl: '', bindings: '' },
       { hash: 'tonemap', wgsl: 'struct TonemapParams {}', glsl: '', bindings: '' },
@@ -42,7 +44,10 @@ const VOLUME_MANIFEST = `data:application/json,${encodeURIComponent(
       { hash: 'volume-temporal', wgsl: 'fn volume_temporal() {}', glsl: '', bindings: '' },
       { hash: 'volume-composite', wgsl: 'fn volume_fs() {}', glsl: '', bindings: '' },
     ],
-    materialShaders: [standardPbrManifestRow('f_schlick')],
+    materialShaders: [
+      ...waterInfoShaderFixture.materialShaders,
+      standardPbrManifestRow('f_schlick'),
+    ],
   }),
 )}`;
 
@@ -170,6 +175,7 @@ describe('volumetric fog record recovery projection', () => {
       { rhi: failingNullRhi(controller) as never },
       { shaderManifestUrl: VOLUME_MANIFEST },
     );
+    if (!created.ok) throw created.error;
     expect(created.ok).toBe(true);
     if (!created.ok) return;
     const renderer = created.value;
@@ -223,11 +229,7 @@ describe('volumetric fog record recovery projection', () => {
     const lease = renderer.attach(world);
     expect(lease.ok).toBe(true);
     if (!lease.ok) return;
-    const request = {
-      leases: [lease.value],
-      camera: { lease: lease.value },
-      environment: { lease: lease.value },
-    } as const;
+    const request = { source: lease.value } as const;
 
     expect(renderer.draw(request).ok).toBe(true);
     const accepted = renderer.inspect().volumetricFog;
@@ -358,11 +360,7 @@ it.each([
         },
       })
       .unwrap();
-    const request = {
-      leases: [attached],
-      camera: { lease: attached },
-      environment: { lease: attached },
-    };
+    const request = { source: attached };
     world.update(1 / 60).unwrap();
     const errors: unknown[] = [];
     renderer.subscribe((event) => {

@@ -226,11 +226,7 @@ it('captures the RectAreaLight source texture upload, slot metadata and lit pixe
       propagateTransforms(world).unwrap();
       const pending = recorder.captureFrame();
       (await recorder.frameBoundary()).unwrap();
-      const receipt = await drawReadyFrame(
-        renderer,
-        { leases: [lease], camera: { lease }, environment: { lease } },
-        ['linear-hdr'],
-      );
+      const receipt = await drawReadyFrame(renderer, { source: lease }, ['linear-hdr']);
       const live = renderValue(
         await renderer.observe(receipt, { include: ['linear-hdr'] }),
       ).observations?.find((item) => item.domain === 'linear-hdr');
@@ -275,11 +271,7 @@ it('captures the RectAreaLight source texture upload, slot metadata and lit pixe
     for (let i = 0; i < 4; i++) {
       world.update(1 / 60).unwrap();
       propagateTransforms(world).unwrap();
-      await drawReadyFrame(renderer, {
-        leases: [lease],
-        camera: { lease },
-        environment: { lease },
-      });
+      await drawReadyFrame(renderer, { source: lease });
     }
 
     // Bind the source inside the captured frame so its upload is part of the tape.

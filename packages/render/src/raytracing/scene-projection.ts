@@ -16,7 +16,7 @@ import type { VisibleSurfaceProjection } from './visible-surface';
 /** One frozen query projection of the complete retained scene, including offscreen sources. */
 export function projectRayScene(
   slots: FrameList<RenderSceneSlot>,
-  worlds: readonly RenderResourceScope[],
+  sourceScope: RenderResourceScope,
   visibleSurface: VisibleSurfaceProjection,
   frame?: { readonly materials: MaterialFrame; readonly meshes: MeshFrame },
 ) {
@@ -40,18 +40,17 @@ export function projectRayScene(
   // These dense material addresses belong only to this snapshot. World handles
   // and retained surface rows remain the source identity; no identity allocator.
   const materials: {
-    readonly worldId: number;
     readonly handle: number;
     readonly snapshot: MaterialSnapshot;
   }[] = [];
-  const materialIds = new Map<number, Map<number, number>>();
+  const materialIds = new Map<number, number>();
   for (const slot of [...sources].sort((a, b) => a.slot - b.slot)) {
     const base = surfaces.slotBases.get(slot.slot);
     if (base === undefined) continue;
     const source = slot.snapshot;
     if (source.assetHandle === undefined)
       return rayReferenceFailure('retained transport source has no Mesh identity').unwrap();
-    const world = worlds[slot.worldId];
+    const world = sourceScope;
     if (world === undefined)
       return rayReferenceFailure('retained transport slot has no matching resource World').unwrap();
     const mesh = world.resolveAsset<MeshAsset>(source.assetHandle).unwrap();
@@ -99,16 +98,11 @@ export function projectRayScene(
       const handle = material?.materialHandle;
       if (material === undefined || handle === undefined)
         return rayReferenceFailure('transport draw has no published material handle').unwrap();
-      let worldMaterials = materialIds.get(slot.worldId);
-      if (worldMaterials === undefined) {
-        worldMaterials = new Map();
-        materialIds.set(slot.worldId, worldMaterials);
-      }
-      let materialId = worldMaterials.get(handle);
+      let materialId = materialIds.get(handle);
       if (materialId === undefined) {
         materialId = materials.length;
-        materials.push({ worldId: slot.worldId, handle, snapshot: material });
-        worldMaterials.set(handle, materialId);
+        materials.push({ handle, snapshot: material });
+        materialIds.set(handle, materialId);
       }
       const sourceIndices = draw.kind === 'indexed' ? mesh.indices : undefined;
       if (

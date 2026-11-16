@@ -3,9 +3,11 @@
 // directional light and the point light. The scene lives in scene.mjs so the
 // Dawn smoke falsifies exactly this composition.
 
+import { InputFrameStartScan } from "@forgeax/engine-input";
+import { defineSystem } from "@forgeax/engine-ecs";
 import { createApp } from '@forgeax/engine-app/browser';
 import { Update } from '@forgeax/engine-ecs';
-import { FRAME_START_SCAN_SYSTEM_NAME, INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine-input';
+import { INPUT_SNAPSHOT_RESOURCE_KEY } from '@forgeax/engine-input';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { spawnCasterReceiverScene, toggleLight, toggleParticipation } from './scene.mjs';
 
@@ -27,12 +29,12 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   console.log('Controls:\n  C - toggle shadow casters\n  R - toggle shadow receivers\n  L - switch between directional and point lights');
   console.log('Using DirectionalLight');
 
-  app.world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'bevy-shadow-caster-receiver-keys',
-    after: [FRAME_START_SCAN_SYSTEM_NAME],
+    after: [InputFrameStartScan],
     queries: [],
     fn: (world) => {
-      const keyboard = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY)?.keyboard;
+      const keyboard = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY)?.keyboard;
       if (keyboard === undefined) return;
       if (keyboard.justPressedCode('KeyL')) console.log(`Using ${toggleLight(world, scene)}`);
       if (keyboard.justPressedCode('KeyC')) {
@@ -45,6 +47,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       }
     },
   });
+app.world.addSystem(Update, systemToken1);
 
   const started = app.start();
   if (!started.ok) console.error('[bevy-shadow-caster-receiver] app.start() failed:', started.error);

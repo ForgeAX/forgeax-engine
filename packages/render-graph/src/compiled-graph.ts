@@ -11,6 +11,7 @@ import type {
   Tlas,
 } from '@forgeax/engine-rhi';
 import { mipDimension } from '@forgeax/engine-types';
+import { subtractTextureRange, textureRangeCovered } from './content-ranges.js';
 import { err, ok, RenderGraphError, type Result } from './errors.js';
 import type { ResolvedColorTargetDescriptor } from './graph.js';
 import type {
@@ -21,7 +22,7 @@ import type {
   ResourceHandleData,
   TextureViewRecord,
 } from './kernel-internal.js';
-import { handleData, releaseGraphTexture } from './kernel-internal.js';
+import { handleData, physicalAllocationKey, releaseGraphTexture } from './kernel-internal.js';
 import type {
   CompiledRenderGraph,
   CompiledRenderGraphInfo,
@@ -30,6 +31,7 @@ import type {
   GraphBuffer,
   GraphResourceResolver,
   GraphTexture,
+  GraphTextureContentRange,
   GraphTextureDescriptor,
   GraphTextureView,
   RasterColorAttachment,
@@ -37,12 +39,14 @@ import type {
   RenderGraphFrame,
   RenderGraphPassExecution,
   RenderGraphPassInstrumentation,
+  RenderGraphPassInstrumentationScope,
   RenderGraphPassRunner,
   RenderGraphResourceAllocationInspection,
 } from './types.js';
 
 const compiledGraphs = new WeakSet<object>();
 const executingGraphs = new WeakSet<object>();
+type StagedTextureWrite = { readonly range: GraphTextureContentRange; readonly stored: boolean };
 
 type Writable<T> = { -readonly [K in keyof T]: T[K] };
 
@@ -265,6 +269,41 @@ function coversUsage(port: GraphAccessUsage, child: GraphAccessUsage): boolean {
   );
 }
 
+function safePassScope<FrameCtx extends RenderGraphFrame>(
+  instrumentation: RenderGraphPassInstrumentation<FrameCtx> | undefined,
+  execution: RenderGraphPassExecution | undefined,
+  frame: FrameCtx,
+): RenderGraphPassInstrumentationScope | undefined {
+  if (instrumentation === undefined || execution === undefined) return undefined;
+  try {
+    return instrumentation.begin(execution, frame);
+  } catch {
+    // Instrumentation is diagnostic and cannot change graph execution.
+    return undefined;
+  }
+}
+
+function safeEndPass(scope: RenderGraphPassInstrumentationScope | undefined): void {
+  try {
+    scope?.endPass?.();
+  } catch {
+    // Instrumentation is diagnostic and cannot replace a graph pass result.
+  }
+}
+
+function decorateDescriptor<T>(
+  scope: RenderGraphPassInstrumentationScope | undefined,
+  decorate: ((descriptor: T) => T) | undefined,
+  descriptor: T,
+): T {
+  try {
+    return decorate?.call(scope, descriptor) ?? descriptor;
+  } catch {
+    // Instrumentation is diagnostic and cannot alter the pass descriptor.
+    return descriptor;
+  }
+}
+
 function bufferSize<FrameCtx>(
   resource: CompiledResource<FrameCtx> | undefined,
 ): number | undefined {
@@ -328,6 +367,7 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
   private retireResult: Promise<Result<void, RenderGraphError>> | undefined;
   private readonly allocationLedger: RenderGraphAllocationLedger;
   private inspection: CompiledRenderGraphInfo | undefined;
+  private importsResolved = false;
   // Frame-resource tables and per-pass resolvers are retained across frames:
   // every execution refills the same tables, so steady frames allocate neither.
   private readonly frameResources = {
@@ -347,7 +387,7 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
   private readonly importedViews = new Map<number, { texture: Texture; view: TextureView }>();
   /** The compiler owns fixed membership; mutable resolution values stay with their records. */
   private readonly resourceOrder: readonly CompiledResource<FrameCtx>[];
-  private readonly viewOrder: readonly CompiledView<FrameCtx>[];
+  private readonly pendingTextureWrites = new Map<string, StagedTextureWrite[]>();
 
   constructor(
     private readonly generation: number,
@@ -358,10 +398,15 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
     private readonly passes: readonly CompiledPass<FrameCtx>[],
     private readonly info: CompiledRenderGraphInfo,
     private readonly colorTargetDescriptors: ReadonlyMap<string, ResolvedColorTargetDescriptor>,
+    private readonly requiredTextureReads: readonly {
+      readonly resourceId: number;
+      readonly range: GraphTextureContentRange;
+      readonly passName: string;
+      readonly usage: GraphAccessUsage;
+    }[],
   ) {
     compiledGraphs.add(this);
     this.resourceOrder = [...resources.values()];
-    this.viewOrder = [...views.values()];
     const infoByLabel = new Map(info.resources.map((resource) => [resource.label, resource]));
     const entries: AllocationEntry[] = [];
     let importedResourceCount = 0;
@@ -387,13 +432,23 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
     const allocation = this.allocationLedger.inspect();
     if (this.inspection?.resourceAllocation === allocation) return this.inspection;
     const states = new Map<string, 'live' | 'pending-retirement' | 'released'>();
+    const imports = new Map<string, string>();
     for (const resource of this.resources.values()) {
       states.set(
         resource.record.label,
         this.allocationLedger.state(resource.texture ?? resource.buffer),
       );
+      if (this.importsResolved && resource.record.origin === 'imported') {
+        const handle =
+          this.frameResources.textures.get(resource.record.id) ??
+          this.frameResources.buffers.get(resource.record.id);
+        if (handle !== undefined) imports.set(resource.record.label, physicalAllocationKey(handle));
+      }
     }
     const resources = this.info.resources.map((resource) => {
+      const imported = imports.get(resource.label);
+      if (imported !== undefined)
+        return Object.freeze({ ...resource, physicalAllocationKey: imported });
       if (resource.origin !== 'created' || resource.physicalAllocationKey === undefined)
         return resource;
       return Object.freeze({ ...resource, allocationState: states.get(resource.label) });
@@ -406,6 +461,16 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
     return this.inspection;
   }
 
+  /** The immutable declaration facts captured at compile time, without allocation inspection. */
+  passDeclarations(): CompiledRenderGraphInfo['passes'] {
+    return this.info.passes;
+  }
+
+  /** The immutable compiled generation, without materializing allocation inspection. */
+  compiledGeneration(): number {
+    return this.generation;
+  }
+
   retainTexture(
     device: RhiDevice,
     label: string,
@@ -414,11 +479,64 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
     if (this.retired || this.device !== device) return undefined;
     for (const resource of this.resources.values()) {
       const allocation = resource.textureAllocation;
-      if (resource.record.label !== label || allocation?.signature !== signature) continue;
+      if (
+        resource.record.label !== label ||
+        resource.record.kind !== 'texture' ||
+        resource.record.origin !== 'created' ||
+        allocation?.signature !== signature
+      )
+        continue;
       allocation.references += 1;
       return allocation;
     }
     return undefined;
+  }
+
+  /** @internal Compiler-only snapshot of the shared allocation proof. */
+  _getCommittedTextureRanges(
+    device: RhiDevice,
+    label: string,
+    signature: string,
+  ): readonly GraphTextureContentRange[] | undefined {
+    if (this.retired || this.device !== device) return undefined;
+    for (const resource of this.resources.values()) {
+      const allocation = resource.textureAllocation;
+      if (
+        resource.record.label === label &&
+        resource.record.kind === 'texture' &&
+        resource.record.origin === 'created' &&
+        resource.record.descriptor.lifetime === 'persistent' &&
+        allocation?.signature === signature
+      )
+        return allocation.committedContentRanges;
+    }
+    return undefined;
+  }
+
+  commitExecution(): void {
+    if (this.retired) {
+      this.pendingTextureWrites.clear();
+      return;
+    }
+    for (const [key, writes] of this.pendingTextureWrites) {
+      const allocation = [...this.resources.values()].find(
+        (resource) =>
+          resource.textureAllocation !== undefined &&
+          physicalAllocationKey(resource.textureAllocation.texture) === key,
+      )?.textureAllocation;
+      if (allocation === undefined) continue;
+      const committed = allocation.committedContentRanges;
+      for (const write of writes) {
+        const remaining = committed.flatMap((range) => subtractTextureRange(range, write.range));
+        committed.splice(0, committed.length, ...remaining);
+        if (write.stored) committed.push(write.range);
+      }
+    }
+    this.pendingTextureWrites.clear();
+  }
+
+  discardExecution(): void {
+    this.pendingTextureWrites.clear();
   }
 
   reuseTextureView(
@@ -486,7 +604,11 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
       return {
         texture,
         format: declared.format,
-        size: { width: descriptor.size.width, height: descriptor.size.height },
+        size: {
+          width: descriptor.size.width,
+          height: descriptor.size.height,
+          depthOrArrayLayers: descriptor.size.depthOrArrayLayers ?? 1,
+        },
         usage: descriptor.usage ?? resource.usage,
         sample: descriptor.sampleCount ?? 1,
       };
@@ -510,10 +632,43 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
       );
     }
 
+    for (const read of this.requiredTextureReads) {
+      const resource = this.resources.get(read.resourceId);
+      const committed = resource?.textureAllocation?.committedContentRanges ?? [];
+      if (textureRangeCovered(read.range, committed)) continue;
+      return err(
+        new RenderGraphError({
+          code: 'uninitialized-read',
+          expected: `borrowed persistent texture content remains initialized before pass '${read.passName}' executes`,
+          hint: 'recompile the candidate after the allocation content changes',
+          detail: {
+            passName: read.passName,
+            ...(resource === undefined ? {} : { resourceLabel: resource.record.label }),
+            usage: read.usage,
+          },
+        }),
+      );
+    }
+
     const resolved = this.resolveFrameResources(frame);
     if (!resolved.ok) return resolved;
-
-    return this.#executeResolved(frame, resolved.value, runPass, instrumentation);
+    const writes = new Map<string, StagedTextureWrite[]>();
+    const executed = this.#executeResolved(
+      frame,
+      resolved.value,
+      runPass,
+      instrumentation,
+      { next: 0 },
+      writes,
+    );
+    if (executed.ok) {
+      for (const [key, ranges] of writes) {
+        const pending = this.pendingTextureWrites.get(key) ?? [];
+        pending.push(...ranges);
+        this.pendingTextureWrites.set(key, pending);
+      }
+    }
+    return executed;
   }
 
   #executeResolved(
@@ -522,6 +677,7 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
     runPass?: RenderGraphPassRunner,
     instrumentation?: RenderGraphPassInstrumentation<FrameCtx>,
     indices = { next: 0 },
+    writes = new Map<string, StagedTextureWrite[]>(),
   ): Result<void, RenderGraphError> {
     if (this.retired || executingGraphs.has(this))
       return this.subgraphError('execution', 'a live, non-recursive compiled graph');
@@ -538,31 +694,48 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
             runPass === undefined && instrumentation === undefined
               ? undefined
               : { name: pass.name, kind: pass.pass.kind, executionIndex };
+          let didEncode = execution === undefined;
           // No closure in this loop body: a captured binding would allocate a
           // context per pass even when no runner observes the pass.
-          const encodeResult =
-            runPass === undefined || execution === undefined
-              ? this.#encodePass(
-                  pass,
-                  frame,
-                  resolved,
-                  resolver,
-                  execution,
-                  runPass,
-                  instrumentation,
-                  indices,
-                )
-              : this.#observePass(
-                  pass,
-                  frame,
-                  resolved,
-                  resolver,
-                  execution,
-                  runPass,
-                  instrumentation,
-                  indices,
-                );
+          const observe = runPass !== undefined && execution !== undefined;
+          if (!observe) didEncode = true;
+          const encodeResult = !observe
+            ? this.#encodePass(
+                pass,
+                frame,
+                resolved,
+                resolver,
+                execution,
+                runPass,
+                instrumentation,
+                indices,
+                writes,
+              )
+            : this.#observePass(
+                pass,
+                frame,
+                resolved,
+                resolver,
+                execution,
+                runPass,
+                instrumentation,
+                indices,
+                writes,
+                () => {
+                  didEncode = true;
+                },
+              );
           if (!encodeResult.ok) return encodeResult;
+          if (didEncode) {
+            for (const write of pass.pass.kind === 'subgraph' ? [] : pass.textureWrites) {
+              const texture = resolved.textures.get(write.resourceId);
+              if (texture === undefined) continue;
+              const key = physicalAllocationKey(texture);
+              const ranges = writes.get(key) ?? [];
+              ranges.push({ range: write.range, stored: write.stored });
+              writes.set(key, ranges);
+            }
+          }
         } catch (cause) {
           return err(
             new RenderGraphError({
@@ -589,9 +762,12 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
     runPass: RenderGraphPassRunner,
     instrumentation: RenderGraphPassInstrumentation<FrameCtx> | undefined,
     indices: { next: number },
+    writes: Map<string, StagedTextureWrite[]>,
+    didEncode: () => void,
   ): Result<void, RenderGraphError> {
     let encodeResult: Result<void, RenderGraphError> = ok(undefined);
     runPass(execution, () => {
+      didEncode();
       encodeResult = this.#encodePass(
         pass,
         frame,
@@ -601,6 +777,7 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
         runPass,
         instrumentation,
         indices,
+        writes,
       );
     });
     return encodeResult;
@@ -615,6 +792,7 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
     runPass: RenderGraphPassRunner | undefined,
     instrumentation: RenderGraphPassInstrumentation<FrameCtx> | undefined,
     indices: { next: number },
+    writes: Map<string, StagedTextureWrite[]>,
   ): Result<void, RenderGraphError> {
     // Resolve instrumentation only when the runner actually enters the
     // pass. A runner may inspect or skip a pass without calling encode;
@@ -623,97 +801,125 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
     const scope =
       pass.pass.kind === 'subgraph' || execution === undefined
         ? undefined
-        : instrumentation?.begin(execution, frame);
-    switch (pass.pass.kind) {
-      case 'raster': {
-        const descriptor = pass.pass.descriptor;
-        // Native beginRenderPass consumes its descriptor synchronously. Reuse
-        // this graph's private recording storage; instrumented calls retain
-        // their independent descriptors for observer ownership.
-        const context = this.resolvers.get(pass);
-        const retained = scope === undefined ? context?.raster : undefined;
-        const colors = resolveRasterColors(
-          descriptor.colorAttachments,
-          frame,
-          resolver,
-          retained?.colorAttachments,
-        );
-        if (!colors.ok) return colors;
-        const colorAttachments = colors.value;
-        const depth = resolveRasterDepth(
-          descriptor.depthStencilAttachment,
-          resolver,
-          retained?.depthStencilAttachment,
-        );
-        if (!depth.ok) return depth;
-        const depthStencilAttachment = depth.value;
-        const querySet =
-          typeof descriptor.occlusionQuerySet === 'function'
-            ? descriptor.occlusionQuerySet(frame)
-            : descriptor.occlusionQuerySet;
-        const baseDescriptor: Writable<RenderPassDescriptor> = retained ?? {
-          label: pass.name,
-          colorAttachments,
-        };
-        if (depthStencilAttachment === undefined) delete baseDescriptor.depthStencilAttachment;
-        else baseDescriptor.depthStencilAttachment = depthStencilAttachment;
-        if (querySet === undefined) delete baseDescriptor.occlusionQuerySet;
-        else baseDescriptor.occlusionQuerySet = querySet;
-        if (scope === undefined && context !== undefined) context.raster = baseDescriptor;
-        const instrumentedDescriptor =
-          scope?.renderPassDescriptor?.(baseDescriptor) ?? baseDescriptor;
-        const encoder = frame.encoder.beginRenderPass(instrumentedDescriptor);
-        try {
-          if (descriptor.encodeDirect !== undefined)
-            descriptor.encodeDirect(encoder, frame, resolver);
-          else descriptor.encode({ pass: encoder, frame, resources: resolver });
-        } finally {
-          encoder.end();
-        }
-        break;
-      }
-      case 'compute': {
-        const begin = pass.pass.descriptor.begin?.(frame);
-        const instrumentedBegin = scope?.computePassDescriptor?.(begin ?? {}) ?? begin;
-        let encoder: RhiComputePassEncoder;
-        try {
-          encoder = frame.encoder.beginComputePass(
-            this.computePassDescriptor(pass, instrumentedBegin, scope !== undefined),
+        : safePassScope(instrumentation, execution, frame);
+    try {
+      switch (pass.pass.kind) {
+        case 'raster': {
+          const resolveRasterPassDescriptor = (
+            descriptor: Extract<CompiledPass<FrameCtx>['pass'], { kind: 'raster' }>['descriptor'],
+          ) => {
+            // Native beginRenderPass consumes its descriptor synchronously. Reuse
+            // this graph's private recording storage; instrumented calls retain
+            // their independent descriptors for observer ownership.
+            const context = this.resolvers.get(pass);
+            const retained = scope === undefined ? context?.raster : undefined;
+            const colors = resolveRasterColors(
+              descriptor.colorAttachments,
+              frame,
+              resolver,
+              retained?.colorAttachments,
+            );
+            if (!colors.ok) return colors;
+            const colorAttachments = colors.value;
+            const depth = resolveRasterDepth(
+              descriptor.depthStencilAttachment,
+              resolver,
+              retained?.depthStencilAttachment,
+            );
+            if (!depth.ok) return depth;
+            const depthStencilAttachment = depth.value;
+            const querySet =
+              typeof descriptor.occlusionQuerySet === 'function'
+                ? descriptor.occlusionQuerySet(frame)
+                : descriptor.occlusionQuerySet;
+            const baseDescriptor: Writable<RenderPassDescriptor> = retained ?? {
+              label: pass.name,
+              colorAttachments,
+            };
+            if (depthStencilAttachment === undefined) delete baseDescriptor.depthStencilAttachment;
+            else baseDescriptor.depthStencilAttachment = depthStencilAttachment;
+            if (querySet === undefined) delete baseDescriptor.occlusionQuerySet;
+            else baseDescriptor.occlusionQuerySet = querySet;
+            if (scope === undefined && context !== undefined) context.raster = baseDescriptor;
+            return ok(baseDescriptor);
+          };
+          const descriptor = pass.pass.descriptor;
+          const rasterDescriptor = resolveRasterPassDescriptor(descriptor);
+          if (!rasterDescriptor.ok) return rasterDescriptor;
+          const baseDescriptor = rasterDescriptor.value;
+          const instrumentedDescriptor = decorateDescriptor(
+            scope,
+            scope?.renderPassDescriptor,
+            baseDescriptor,
           );
-        } catch (cause) {
-          pass.pass.descriptor.onBeginError?.(frame, cause);
-          throw cause;
+          const encoder = frame.encoder.beginRenderPass(instrumentedDescriptor);
+          try {
+            if (descriptor.encodeDirect !== undefined)
+              descriptor.encodeDirect(encoder, frame, resolver);
+            else descriptor.encode({ pass: encoder, frame, resources: resolver });
+          } finally {
+            encoder.end();
+          }
+          break;
         }
-        try {
-          if (pass.pass.descriptor.encodeDirect !== undefined)
-            pass.pass.descriptor.encodeDirect(encoder, frame, resolver);
-          else pass.pass.descriptor.encode({ pass: encoder, frame, resources: resolver });
-        } finally {
-          encoder.end();
+        case 'compute': {
+          const begin = pass.pass.descriptor.begin?.(frame);
+          const instrumentedBegin =
+            scope?.computePassDescriptor === undefined
+              ? begin
+              : decorateDescriptor(scope, scope.computePassDescriptor, begin ?? {});
+          let encoder: RhiComputePassEncoder;
+          try {
+            encoder = frame.encoder.beginComputePass(
+              this.computePassDescriptor(pass, instrumentedBegin, scope !== undefined),
+            );
+          } catch (cause) {
+            pass.pass.descriptor.onBeginError?.(frame, cause);
+            throw cause;
+          }
+          try {
+            if (pass.pass.descriptor.encodeDirect !== undefined)
+              pass.pass.descriptor.encodeDirect(encoder, frame, resolver);
+            else pass.pass.descriptor.encode({ pass: encoder, frame, resources: resolver });
+          } finally {
+            encoder.end();
+          }
+          pass.pass.descriptor.after?.(frame);
+          break;
         }
-        pass.pass.descriptor.after?.(frame);
-        break;
+        case 'copy':
+          try {
+            scope?.beforeCopy?.(frame.encoder);
+          } catch {
+            // Instrumentation is diagnostic and cannot prevent the copy body.
+          }
+          try {
+            if (pass.pass.descriptor.encodeDirect !== undefined)
+              pass.pass.descriptor.encodeDirect(frame.encoder, frame, resolver);
+            else
+              pass.pass.descriptor.encode({ encoder: frame.encoder, frame, resources: resolver });
+          } finally {
+            try {
+              scope?.afterCopy?.(frame.encoder);
+            } catch {
+              // Instrumentation is diagnostic and cannot replace a copy error.
+            }
+          }
+          break;
+        case 'subgraph':
+          return this.executeSubgraph(
+            pass,
+            frame,
+            resolved,
+            resolver,
+            runPass,
+            instrumentation,
+            indices,
+            writes,
+          );
       }
-      case 'copy':
-        scope?.beforeCopy?.(frame.encoder);
-        try {
-          if (pass.pass.descriptor.encodeDirect !== undefined)
-            pass.pass.descriptor.encodeDirect(frame.encoder, frame, resolver);
-          else pass.pass.descriptor.encode({ encoder: frame.encoder, frame, resources: resolver });
-        } finally {
-          scope?.afterCopy?.(frame.encoder);
-        }
-        break;
-      case 'subgraph':
-        return this.executeSubgraph(
-          pass,
-          frame,
-          resolved,
-          resolver,
-          runPass,
-          instrumentation,
-          indices,
-        );
+    } finally {
+      safeEndPass(scope);
     }
     return ok(undefined);
   }
@@ -749,6 +955,7 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
     runPass: RenderGraphPassRunner | undefined,
     instrumentation: RenderGraphPassInstrumentation<FrameCtx> | undefined,
     indices: { next: number },
+    writes: Map<string, StagedTextureWrite[]>,
   ): Result<void, RenderGraphError> {
     if (pass.pass.kind !== 'subgraph') return this.subgraphError('kind', 'a subgraph pass');
     const descriptor = pass.pass.descriptor;
@@ -775,41 +982,59 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
                 executionIndex: indices.next++,
               };
               const encode = () => {
-                const scope = instrumentation?.begin(execution, frame);
-                switch (work.kind) {
-                  case 'compute': {
-                    const descriptor =
-                      scope?.computePassDescriptor?.(work.descriptor ?? {}) ?? work.descriptor;
-                    const encoder = frame.encoder.beginComputePass({
-                      ...descriptor,
-                      label: work.name,
-                    });
-                    try {
-                      work.encode(encoder);
-                    } finally {
-                      encoder.end();
+                const scope = safePassScope(instrumentation, execution, frame);
+                try {
+                  switch (work.kind) {
+                    case 'compute': {
+                      const descriptor = decorateDescriptor(
+                        scope,
+                        scope?.computePassDescriptor,
+                        work.descriptor ?? {},
+                      );
+                      const encoder = frame.encoder.beginComputePass({
+                        ...descriptor,
+                        label: work.name,
+                      });
+                      try {
+                        work.encode(encoder);
+                      } finally {
+                        encoder.end();
+                      }
+                      break;
                     }
-                    break;
+                    case 'raster': {
+                      const descriptor = decorateDescriptor(
+                        scope,
+                        scope?.renderPassDescriptor,
+                        work.descriptor,
+                      );
+                      const encoder = frame.encoder.beginRenderPass(descriptor);
+                      try {
+                        work.encode(encoder);
+                      } finally {
+                        encoder.end();
+                      }
+                      break;
+                    }
+                    case 'copy':
+                      try {
+                        scope?.beforeCopy?.(frame.encoder);
+                      } catch {
+                        // Instrumentation is diagnostic and cannot prevent the copy body.
+                      }
+                      try {
+                        work.encode(frame.encoder);
+                      } finally {
+                        try {
+                          scope?.afterCopy?.(frame.encoder);
+                        } catch {
+                          // Instrumentation is diagnostic and cannot replace a copy error.
+                        }
+                      }
+                      break;
                   }
-                  case 'raster': {
-                    const descriptor =
-                      scope?.renderPassDescriptor?.(work.descriptor) ?? work.descriptor;
-                    const encoder = frame.encoder.beginRenderPass(descriptor);
-                    try {
-                      work.encode(encoder);
-                    } finally {
-                      encoder.end();
-                    }
-                    break;
-                  }
-                  case 'copy':
-                    scope?.beforeCopy?.(frame.encoder);
-                    try {
-                      work.encode(frame.encoder);
-                    } finally {
-                      scope?.afterCopy?.(frame.encoder);
-                    }
-                    break;
+                } finally {
+                  safeEndPass(scope);
                 }
               };
               if (runPass === undefined) encode();
@@ -904,7 +1129,7 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
     // Import callbacks can retire a graph; validation and encoding use this one snapshot.
     if (this.retired || child.retired)
       return this.subgraphError('child', 'parent and child remain live after import resolution');
-    return child.#executeResolved(frame, childResources, runPass, instrumentation, indices);
+    return child.#executeResolved(frame, childResources, runPass, instrumentation, indices, writes);
   }
 
   retire(): Promise<Result<void, RenderGraphError>> {
@@ -989,61 +1214,80 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
     // frame overwrites the same entries; clearing would shrink and regrow the
     // hash tables every frame.
     const { buffers, textures, views, accelerationStructures } = frameResources;
-
-    for (let index = 0; index < this.resourceOrder.length; index++) {
-      const compiled = this.resourceOrder[index] as CompiledResource<FrameCtx>;
-      if (!isResolved(compiled)) continue;
-      try {
-        if (compiled.record.kind === 'texture') {
-          const texture =
-            compiled.record.origin === 'created'
-              ? compiled.texture
-              : compiled.record.resolve(frame);
-          if (texture === undefined) return err(resolutionError(compiled.record.label));
-          textures.set(compiled.record.id, texture);
-        } else if (compiled.record.kind === 'acceleration-structure') {
-          accelerationStructures.set(compiled.record.id, compiled.record.resolve(frame));
-        } else {
-          const buffer =
-            compiled.record.origin === 'created' ? compiled.buffer : compiled.record.resolve(frame);
-          if (buffer === undefined) return err(resolutionError(compiled.record.label));
-          buffers.set(compiled.record.id, buffer);
-        }
-      } catch (cause) {
-        return err(resolutionError(compiled.record.label, cause));
-      }
-    }
-
-    for (let index = 0; index < this.viewOrder.length; index++) {
-      const compiledView = this.viewOrder[index] as CompiledView<FrameCtx>;
-      if (this.resources.get(compiledView.record.textureId)?.usage === 0) continue;
-      if (compiledView.record.resolve !== undefined) {
+    let resolved = false;
+    try {
+      for (let index = 0; index < this.resourceOrder.length; index++) {
+        const compiled = this.resourceOrder[index] as CompiledResource<FrameCtx>;
+        if (!isResolved(compiled)) continue;
         try {
-          views.set(compiledView.record.id, compiledView.record.resolve(frame));
+          if (compiled.record.kind === 'texture') {
+            const texture =
+              compiled.record.origin === 'created'
+                ? compiled.texture
+                : compiled.record.resolve(frame);
+            if (texture === undefined) return err(resolutionError(compiled.record.label));
+            if (
+              compiled.record.origin === 'imported' &&
+              textures.get(compiled.record.id) !== texture
+            )
+              this.inspection = undefined;
+            textures.set(compiled.record.id, texture);
+          } else if (compiled.record.kind === 'acceleration-structure') {
+            accelerationStructures.set(compiled.record.id, compiled.record.resolve(frame));
+          } else {
+            const buffer =
+              compiled.record.origin === 'created'
+                ? compiled.buffer
+                : compiled.record.resolve(frame);
+            if (buffer === undefined) return err(resolutionError(compiled.record.label));
+            if (compiled.record.origin === 'imported' && buffers.get(compiled.record.id) !== buffer)
+              this.inspection = undefined;
+            buffers.set(compiled.record.id, buffer);
+          }
         } catch (cause) {
-          return err(resolutionError(compiledView.record.label, cause));
+          return err(resolutionError(compiled.record.label, cause));
         }
-        continue;
       }
-      if (compiledView.view !== undefined) {
-        views.set(compiledView.record.id, compiledView.view);
-        continue;
-      }
-      const texture = textures.get(compiledView.record.textureId);
-      if (texture === undefined) return err(resolutionError(compiledView.record.label));
-      // A view of an imported texture depends only on that texture and the
-      // compiled descriptor: re-create it only when the import changes.
-      const previous = this.importedViews.get(compiledView.record.id);
-      if (previous?.texture === texture) {
-        views.set(compiledView.record.id, previous.view);
-        continue;
-      }
-      const created = this.device.createTextureView(texture, compiledView.record.descriptor);
-      if (!created.ok) return err(resolutionError(compiledView.record.label, created.error));
-      this.importedViews.set(compiledView.record.id, { texture, view: created.value });
-      views.set(compiledView.record.id, created.value);
+
+      const resolveImportedViews = () => {
+        for (const compiledView of this.views.values()) {
+          if (this.resources.get(compiledView.record.textureId)?.usage === 0) continue;
+          if (compiledView.record.resolve !== undefined) {
+            try {
+              views.set(compiledView.record.id, compiledView.record.resolve(frame));
+            } catch (cause) {
+              return err(resolutionError(compiledView.record.label, cause));
+            }
+            continue;
+          }
+          if (compiledView.view !== undefined) {
+            views.set(compiledView.record.id, compiledView.view);
+            continue;
+          }
+          const texture = textures.get(compiledView.record.textureId);
+          if (texture === undefined) return err(resolutionError(compiledView.record.label));
+          // A view of an imported texture depends only on that texture and the
+          // compiled descriptor: re-create it only when the import changes.
+          const previous = this.importedViews.get(compiledView.record.id);
+          if (previous?.texture === texture) {
+            views.set(compiledView.record.id, previous.view);
+            continue;
+          }
+          const created = this.device.createTextureView(texture, compiledView.record.descriptor);
+          if (!created.ok) return err(resolutionError(compiledView.record.label, created.error));
+          this.importedViews.set(compiledView.record.id, { texture, view: created.value });
+          views.set(compiledView.record.id, created.value);
+        }
+        return undefined;
+      };
+      const viewFailure = resolveImportedViews();
+      if (viewFailure !== undefined) return viewFailure;
+      resolved = true;
+      return ok(frameResources);
+    } finally {
+      if (this.importsResolved !== resolved) this.inspection = undefined;
+      this.importsResolved = resolved;
     }
-    return ok(frameResources);
   }
 
   private passResolver(
@@ -1218,4 +1462,22 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
       },
     };
   }
+}
+
+/** Read frozen compile-time pass facts without materializing resource allocation inspection. */
+export function compiledRenderGraphPassDeclarations(
+  graph: Pick<CompiledRenderGraph<RenderGraphFrame>, 'inspect'>,
+): CompiledRenderGraphInfo['passes'] {
+  return graph instanceof CompiledRenderGraphImpl
+    ? graph.passDeclarations()
+    : graph.inspect().passes;
+}
+
+/** Read the immutable compiled generation without materializing allocation inspection. */
+export function compiledRenderGraphGeneration(
+  graph: Pick<CompiledRenderGraph<RenderGraphFrame>, 'inspect'>,
+): number {
+  return graph instanceof CompiledRenderGraphImpl
+    ? graph.compiledGeneration()
+    : graph.inspect().generation;
 }

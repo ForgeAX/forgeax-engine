@@ -42,7 +42,7 @@ const mesh = {
     indexOffset: materialSlot * 3,
   })),
 } as unknown as MeshGpuHandles;
-const worlds = [{ identity: 'direct-world' }] as RenderResourceScope[];
+const sourceScope = { identity: 'direct-world' } as RenderResourceScope;
 const direct: BatchExecution = {
   route: 'direct',
   material: material.snapshot,
@@ -52,7 +52,6 @@ const gpu = { route: 'gpu' } as BatchExecution;
 
 function source(entityKey: number, drawIndices = [0]): RenderableSnapshot {
   return {
-    worldId: 0,
     entityKey,
     assetHandle: 2,
     material,
@@ -96,7 +95,7 @@ function directDrawRows(
     binding: GpuDrivenBatchBinding,
   ) => import('../../render-system-extract').MaterialSnapshot | undefined,
   meshes: ReadonlyMap<GpuDrivenBatchBinding, MeshGpuHandles>,
-  scopes: readonly RenderResourceScope[],
+  sourceScope: RenderResourceScope,
   pass: string,
   prepareUnbatched: (sources: FrameList<RenderableSnapshot>) => readonly ValidatedRenderable[],
   viewDraws: FrameList<RenderableSnapshot> = [],
@@ -110,7 +109,7 @@ function directDrawRows(
     selection: [],
     select,
     meshes,
-    worlds: scopes,
+    sourceScope: sourceScope,
     shadow: pass === 'shadow',
     materials: undefined,
     prepareUnbatched,
@@ -125,7 +124,6 @@ function setup(sources: FrameList<RenderableSnapshot>) {
   scene.apply(
     sources.map((snapshot) => ({
       kind: 'update',
-      worldId: 0,
       entityKey: snapshot.entityKey,
       snapshot,
     })),
@@ -147,7 +145,7 @@ function setup(sources: FrameList<RenderableSnapshot>) {
   return { scene, topology, executions, meshes, select };
 }
 
-it.each([1, 10_000, 50_000])('visits only direct members beside %i GPU instances', (count) => {
+it.each([1, 10000, 50000])('visits only direct members beside %i GPU instances', (count) => {
   const f = setup([
     ...Array.from({ length: count }, (_, index) => source(index)),
     source(count, [2, 1]),
@@ -180,7 +178,7 @@ it.each([1, 10_000, 50_000])('visits only direct members beside %i GPU instances
     },
     f.select,
     f.meshes,
-    worlds,
+    sourceScope,
     'shadow',
     unbatched,
   );
@@ -201,14 +199,14 @@ it('uses fixed executions, preserves source instances and rejects recycled slots
     unbatchedSlots: f.topology.unbatchedSlots,
   };
   material.adopt({ ...material.snapshot, passes: [] });
-  expect(directDrawRows(state, f.select, f.meshes, worlds, 'shadow', () => [])[0]?.source).toBe(
-    f.scene.slot(0, 7)?.snapshot,
-  );
+  expect(
+    directDrawRows(state, f.select, f.meshes, sourceScope, 'shadow', () => [])[0]?.source,
+  ).toBe(f.scene.slot(7)?.snapshot);
   f.scene.apply([
-    { kind: 'remove', worldId: 0, entityKey: 7 },
-    { kind: 'update', worldId: 0, entityKey: 8, snapshot: source(8) },
+    { kind: 'remove', entityKey: 7 },
+    { kind: 'update', entityKey: 8, snapshot: source(8) },
   ]);
-  expect(() => directDrawRows(state, f.select, f.meshes, worlds, 'shadow', () => [])).toThrow(
+  expect(() => directDrawRows(state, f.select, f.meshes, sourceScope, 'shadow', () => [])).toThrow(
     'live generation',
   );
 });
@@ -218,13 +216,13 @@ it('publishes unbatched additions/removals even when GPU plan revision does not 
   const before = f.topology.unbatchedSlots;
   const revision = f.topology.query(f.topology.sourcePlan(), undefined).revision;
   const value = { ...source(3), gpuDrivenDraws: [] };
-  f.topology.apply(f.scene.apply([{ kind: 'update', worldId: 0, entityKey: 3, snapshot: value }]));
+  f.topology.apply(f.scene.apply([{ kind: 'update', entityKey: 3, snapshot: value }]));
   const added = f.topology.unbatchedSlots;
   expect([...before]).toEqual([]);
-  expect([...added]).toEqual([f.scene.slot(0, 3)?.slot]);
+  expect([...added]).toEqual([f.scene.slot(3)?.slot]);
   expect(f.topology.query(f.topology.sourcePlan(), undefined).revision).toBe(revision);
   expect(f.topology.unbatchedSlots).toBe(added);
-  f.topology.apply(f.scene.apply([{ kind: 'remove', worldId: 0, entityKey: 3 }]));
+  f.topology.apply(f.scene.apply([{ kind: 'remove', entityKey: 3 }]));
   expect([...f.topology.unbatchedSlots]).toEqual([]);
   expect(added.size).toBe(1);
 });
@@ -264,7 +262,7 @@ it('prepares only unbatched geometry and keeps Terrain sections distinct', () =>
     },
     f.select,
     f.meshes,
-    worlds,
+    sourceScope,
     'shadow',
     prepare,
     sections,
@@ -317,7 +315,7 @@ it.each([
   transform[12] = 10;
   assert(first.instances);
   const next = { ...first, instances: { ...first.instances, transforms: transform, revision: 1 } };
-  f.topology.apply(f.scene.apply([{ kind: 'update', worldId: 0, entityKey: 7, snapshot: next }]));
+  f.topology.apply(f.scene.apply([{ kind: 'update', entityKey: 7, snapshot: next }]));
   const shadow = directDrawRows(
     {
       plan: f.topology.query(f.topology.sourcePlan(), undefined),
@@ -327,7 +325,7 @@ it.each([
     },
     f.select,
     f.meshes,
-    worlds,
+    sourceScope,
     'shadow',
     () => [],
   )[0];
@@ -362,7 +360,7 @@ it('does not revive a source that the Scene drawable owner withheld', () => {
     },
     f.select,
     f.meshes,
-    worlds,
+    sourceScope,
     'shadow',
     prepare,
   );
@@ -398,7 +396,7 @@ it('prepares nine-slice geometry once per shared direct binding from its fixed m
     },
     f.select,
     f.meshes,
-    worlds,
+    sourceScope,
     'shadow',
     () => [],
     [],
@@ -441,7 +439,7 @@ it('records native view geometry without re-admitting its non-drawing source roo
     },
     f.select,
     f.meshes,
-    worlds,
+    sourceScope,
     'forward',
     prepare,
     [draw],
@@ -484,7 +482,7 @@ it('reprojects retained instance LOD runs when the camera moves without changing
       selection: [],
       select: f.select,
       meshes: f.meshes,
-      worlds,
+      sourceScope,
       shadow: false,
       materials: undefined,
       prepareUnbatched: () => [],

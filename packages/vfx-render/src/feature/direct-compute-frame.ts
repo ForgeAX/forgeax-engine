@@ -1,5 +1,6 @@
 import type { RenderFeatureWork } from '@forgeax/engine-render';
 import type { VfxArenaRange } from './instance-arena';
+import { COUNTERS_BYTES } from './plan-declarations';
 
 type Resource = RenderFeatureWork['resources'][number];
 type Pass = RenderFeatureWork['passes'][number];
@@ -19,7 +20,7 @@ interface Bucket {
 /** One job table holds at most sixteen 352-byte rows (one arena slab). */
 const JOB_BYTES = 352;
 const TABLE_BYTES = 16 * JOB_BYTES;
-const JOB_STRIDES_PREFIX = [112, 4, 24, 20, 4, 4] as const;
+const JOB_STRIDES_PREFIX = [112, 4, COUNTERS_BYTES, 20, 4, 4] as const;
 /**
  * Bucket key parts of retained range/entry lists. Callers pass the same frozen
  * lists every frame, so their joined names are built once per list.

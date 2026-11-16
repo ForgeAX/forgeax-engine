@@ -5,6 +5,7 @@ import {
   type EndpointEvent,
   type NetEndpoint,
   NetSession,
+  NetSessionResource,
   type PeerId,
 } from '@forgeax/engine-net';
 import { ok } from '@forgeax/engine-types';
@@ -51,7 +52,7 @@ export async function createMemorySnake(ids: readonly number[] = []) {
     },
   };
   const server = await createServerWorld(endpoint);
-  const authority = server.world.getResource<NetSession>('net-session');
+  const authority = server.world.getResource(NetSessionResource);
   const connect = (id: number) => {
     if (clients.has(id)) throw new Error(`Duplicate memory fixture peer ${id}`);
     const [host, endpoint] = createMemoryEndpointPair();

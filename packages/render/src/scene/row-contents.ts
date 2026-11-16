@@ -5,9 +5,9 @@ import type { RenderableSnapshot } from '../render-system-extract';
  * The drawable facts of one row without its identity and pose. Rows whose
  * facts are equal field by field (arrays element by element) share one value.
  */
-export type RowContent = Omit<RenderableSnapshot, 'worldId' | 'entityKey' | 'transform'>;
+export type RowContent = Omit<RenderableSnapshot, 'entityKey' | 'transform'>;
 
-const EXCLUDED = new Set(['worldId', 'entityKey', 'transform', 'temporal']);
+const EXCLUDED = new Set(['entityKey', 'transform', 'temporal']);
 const RECENT_LIMIT = 64;
 
 function token(value: unknown): string {

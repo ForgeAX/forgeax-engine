@@ -1,7 +1,9 @@
 import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
 import { materialContribution } from '@forgeax/engine-render';
 import type { Asset, CatalogEntry, MaterialAsset } from '@forgeax/engine-types';
+import { AssetError, err, ok } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
+import { defineAssetKind } from '../asset-kind.js';
 import { AssetRegistry } from '../asset-registry.js';
 import type { CatalogListener } from '../catalog-source';
 import { createCatalogSource } from '../catalog-source.js';
@@ -13,6 +15,77 @@ const packageUrl = 'https://prepared.invalid/candidate.pack.json';
 const fetcher: typeof fetch = async () => new Response('', { status: 404 });
 const invalid = (): MaterialAsset =>
   ({ kind: 'material', passes: [], values: {} }) as unknown as MaterialAsset;
+
+it.each([
+  { count: 0 },
+  { count: 2 },
+])('adopts custom prepared payload %s with its registered owner and declared kind', async (value) => {
+  const registry = new AssetRegistry({ scopeId: 'prepared-custom' });
+  const kind = defineAssetKind<unknown>('prepared-custom-kind');
+  let accept = true;
+  registry.installDecoder(kind, {
+    decode: async ({ envelope }) => ok(envelope.payload),
+    prepare: (input) =>
+      accept
+        ? ok(input)
+        : err(
+            new AssetError({
+              code: 'asset-invalid-value',
+              expected: 'accepted custom candidate',
+              hint: 'repair candidate',
+            }),
+          ),
+  });
+  registry.setCatalogSource(createCatalogSource({ entries: [] }), fetcher);
+  const candidate = () => {
+    const publication = createRuntimePackPublication({
+      scopeId: 'prepared-custom',
+      sourcePath: 'custom.pack.ts',
+      sourceRevision: 'draft',
+      packageUrl,
+      pack: { assets: [{ guid, kind: kind.kind, payload: value, refs: [], artifacts: {} }] },
+    });
+    const rows = [
+      {
+        guid,
+        kind: kind.kind,
+        sourcePath: 'custom.pack.ts',
+        packageUrl,
+        refs: [],
+        publication: publication.publication,
+      },
+    ];
+    return { pack: publication.pack, rows };
+  };
+  try {
+    const first = candidate();
+    (
+      await registry.preparePublication(first.rows, fetcher, undefined, { pack: first.pack })
+    ).unwrap();
+    let handle: import('@forgeax/engine-types').AssetHandle | undefined;
+    registry
+      .adoptPreparedContent(first.pack, [], (handles) => {
+        handle = handles.get(guid);
+      })
+      .unwrap();
+    if (!handle) throw new Error('Missing custom handle');
+    expect(registry.read(handle).unwrap()).toMatchObject(value);
+    expect(registry.validate(handle, kind.kind).ok).toBe(true);
+    expect(registry.catalogEntry(guid)).toBeUndefined();
+    const second = candidate();
+    (
+      await registry.preparePublication(second.rows, fetcher, undefined, { pack: second.pack })
+    ).unwrap();
+    accept = false;
+    expect(registry.adoptPreparedContent(second.pack)).toMatchObject({
+      ok: false,
+      error: { code: 'asset-invalid-value' },
+    });
+    expect(registry.read(handle).unwrap()).toMatchObject(value);
+  } finally {
+    registry.dispose();
+  }
+});
 async function fixture() {
   const publication = createRuntimePackPublication({
     scopeId: 'prepared-test',

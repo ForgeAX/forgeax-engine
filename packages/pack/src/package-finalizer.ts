@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto';
-import type {
-  ArtifactDescriptor,
-  AssetEnvelopeV2,
-  CookReceipt,
-  ImportedArtifactBody,
+import {
+  type ArtifactDescriptor,
+  type AssetEnvelopeV2,
+  type CookReceipt,
+  type ImportedArtifactBody,
+  isDeepFrozenJson,
 } from '@forgeax/engine-types';
 import { encodeMaterialProgramWire } from './material-program-wire.js';
 
@@ -78,7 +79,33 @@ function failure(
   return { ok: false, error: { code, expected, hint, detail } };
 }
 
+// Deep-frozen JSON cannot change, so its ordered copy and JSON text are
+// computed once however many assets share it.
+const sortedFrozen = new WeakMap<object, unknown>();
+const revisionStableFrozen = new WeakMap<object, unknown>();
+const jsonTextFrozen = new WeakMap<object, string>();
+
+/** Only deep-frozen JSON enters a cache, so a hit needs no second check. */
+function frozenOnce(
+  cache: WeakMap<object, unknown>,
+  value: unknown,
+  derive: (value: unknown) => unknown,
+): unknown {
+  if (value === null || typeof value !== 'object' || !Object.isFrozen(value)) return derive(value);
+  const cached = cache.get(value);
+  if (cached !== undefined) return cached;
+  const output = derive(value);
+  if (!isDeepFrozenJson(value)) return output;
+  if (output !== null && typeof output === 'object') Object.freeze(output);
+  cache.set(value, output);
+  return output;
+}
+
 function sorted(value: unknown): unknown {
+  return frozenOnce(sortedFrozen, value, sortedValue);
+}
+
+function sortedValue(value: unknown): unknown {
   if (value instanceof Uint8Array) return Buffer.from(value).toString('base64');
   if (Array.isArray(value)) {
     // Portable scalar arrays already have canonical order. Keep the original
@@ -221,9 +248,29 @@ function writeJsonValue(input: unknown, key: string, writer: JsonWriter, prefix 
     return true;
   }
   if (prefix) appendJson(writer, prefix);
+  const text = frozenJsonText(input);
+  if (text !== undefined) appendJson(writer, text);
+  else writeJsonContainer(input, writer);
+  return true;
+}
+
+function writeJsonContainer(input: object, writer: JsonWriter): void {
   if (Array.isArray(input)) writeJsonArray(input, writer);
   else writeJsonObject(input, writer);
-  return true;
+}
+
+/** Deep-frozen JSON always writes the same text, so it is written once. */
+function frozenJsonText(input: object): string | undefined {
+  if (!Object.isFrozen(input)) return undefined;
+  const cached = jsonTextFrozen.get(input);
+  if (cached !== undefined || !isDeepFrozenJson(input)) return cached;
+  const parts: string[] = [];
+  const local: JsonWriter = { pending: '', write: (chunk) => parts.push(chunk) };
+  writeJsonContainer(input, local);
+  parts.push(local.pending);
+  const text = parts.join('');
+  jsonTextFrozen.set(input, text);
+  return text;
 }
 
 /** Serialize the already ordered product without one package-sized JS string. */
@@ -257,7 +304,7 @@ function jsonBytes(value: unknown): Uint8Array {
 }
 
 function packageUrl(base: string, packagePath: string): string {
-  const prefix = base === '/' ? '' : `/${base.replace(/^\/+|\/+$/g, '')}`;
+  const prefix = base.replace(/\/+$/, '');
   return `${prefix}/${packagePath.replace(/^\/+/, '')}`;
 }
 
@@ -504,6 +551,11 @@ function sha256(bytes: Uint8Array): string {
 }
 
 function revisionStable(value: unknown, digestBytes: (bytes: Uint8Array) => string): unknown {
+  // Deep-frozen JSON holds no bytes, so its stable form does not depend on the digest.
+  return frozenOnce(revisionStableFrozen, value, (item) => revisionStableValue(item, digestBytes));
+}
+
+function revisionStableValue(value: unknown, digestBytes: (bytes: Uint8Array) => string): unknown {
   if (value instanceof Uint8Array) {
     return {
       byteLength: value.byteLength,

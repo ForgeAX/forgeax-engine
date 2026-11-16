@@ -2,7 +2,7 @@ import { World } from '@forgeax/engine-ecs';
 import {
   createReplicaCoordinator,
   decodeAndApplyReplicationPacket,
-  type NetSession,
+  NetSessionResource,
   type PeerId,
 } from '@forgeax/engine-net';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -32,9 +32,7 @@ describe('Snake deterministic convergence', () => {
       ],
       respawnAt: null,
     });
-    authority.world
-      .getResource<NetSession>('net-session')
-      .requestFullBaselineForSession(2 as never);
+    authority.world.getResource(NetSessionResource).requestFullBaselineForSession(2 as never);
     const start = memory.sent.length;
     expect(memory.update(1).ok).toBe(true);
     const firstBatch = memory.sent

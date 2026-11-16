@@ -15,6 +15,7 @@ import type {
   RenderPassDepthStencilAttachment,
   RenderPipeline,
   RhiRenderPassEncoder,
+  TextureFormat,
 } from '@forgeax/engine-rhi';
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { type RenderError, RenderFeatureStageFailedError } from '../errors/render';
@@ -26,7 +27,6 @@ import type { SceneDataTarget } from '../temporal/scene-data';
 import { currentRenderFeaturePass } from './frame-execution';
 import type { RenderFeatureResolvedGpuBuffer } from './prepared-gpu-work';
 import type {
-  RenderFeatureDepthStencilAttachment,
   RenderFeatureGraphicsPassDescriptor,
   RenderFeaturePreparedGraphicsState,
   RenderFeaturePreparedRef,
@@ -39,6 +39,7 @@ import {
   type RenderFeatureGraphBufferState,
 } from './render-graph-resources';
 import type { RenderFeatureTargetHandle } from './targets';
+import type { RenderFeatureTextureReference } from './texture-source';
 
 export interface RenderFeatureGraphTarget {
   readonly texture: GraphTexture;
@@ -47,7 +48,7 @@ export interface RenderFeatureGraphTarget {
 }
 
 export type RenderFeatureGraphTargetResolver = (
-  resource: string | RenderFeatureTargetHandle | SceneDataTarget,
+  resource: string | RenderFeatureTargetHandle | SceneDataTarget | RenderFeatureTextureReference,
 ) => RenderFeatureGraphTarget | undefined;
 
 export type RenderFeatureGraphBindingsResolution =
@@ -70,15 +71,6 @@ export type RenderFeatureLightingResolver<FrameCtx extends RenderGraphFrame> = (
   pipeline: RenderPipeline,
 ) => BindGroup | undefined;
 
-/** Depth-only formats have no stencil operations; both graph routes share this rule. */
-function stencilOperations(
-  depth: RenderFeatureDepthStencilAttachment,
-): Pick<RenderPassDepthStencilAttachment, 'stencilLoadOp' | 'stencilStoreOp'> | undefined {
-  if (depth.format !== 'depth24plus-stencil8' && depth.format !== 'depth32float-stencil8')
-    return undefined;
-  return { stencilLoadOp: depth.depthLoadOp, stencilStoreOp: depth.depthStoreOp };
-}
-
 /** Prepared draws embedded by the owning pipeline into its light-view passes. */
 export interface RenderFeatureShadowDraws<FrameCtx extends RenderGraphFrame> {
   readonly accesses: readonly GraphAccess[];
@@ -96,8 +88,64 @@ interface ResolvedDrawBuffers {
   readonly indirect: ReadonlyMap<object, GraphBuffer>;
 }
 
-function missing(featureIdentity: string, order: number): RenderFeatureStageFailedError {
-  return new RenderFeatureStageFailedError(featureIdentity, order, 'record', 'renderer-recover');
+function missing(
+  featureIdentity: string,
+  order: number,
+  cause?: Error,
+): RenderFeatureStageFailedError {
+  return new RenderFeatureStageFailedError(
+    featureIdentity,
+    order,
+    'record',
+    'renderer-recover',
+    cause,
+  );
+}
+
+function missingTarget(
+  featureIdentity: string,
+  order: number,
+  pass: string,
+  role: string,
+  target: unknown,
+): RenderFeatureStageFailedError {
+  const label =
+    typeof target === 'string'
+      ? target
+      : target !== null && typeof target === 'object' && 'name' in target
+        ? String(target.name)
+        : '<unnamed>';
+  return missing(
+    featureIdentity,
+    order,
+    new Error(`Raster pass "${pass}" could not resolve ${role} target "${label}".`),
+  );
+}
+
+function hasStencilAspect(format: TextureFormat): boolean {
+  return (
+    format === 'stencil8' || format === 'depth24plus-stencil8' || format === 'depth32float-stencil8'
+  );
+}
+
+function depthStencilOperations(
+  depth: NonNullable<RenderFeatureGraphicsPassDescriptor['attachments']['depthStencil']>,
+  readOnly: boolean,
+): Omit<RasterDepthStencilAttachment, 'view'> {
+  const stencil = hasStencilAspect(depth.format);
+  return readOnly
+    ? { depthReadOnly: true, ...(stencil ? { stencilReadOnly: true } : {}) }
+    : {
+        ...(depth.depthClearValue === undefined ? {} : { depthClearValue: depth.depthClearValue }),
+        depthLoadOp: depth.depthLoadOp,
+        depthStoreOp: depth.depthStoreOp,
+        ...(stencil
+          ? {
+              stencilLoadOp: depth.depthLoadOp,
+              stencilStoreOp: depth.depthStoreOp,
+            }
+          : {}),
+      };
 }
 
 function resolved(
@@ -232,6 +280,7 @@ export class RenderFeatureRasterGraphProjection<FrameCtx extends RenderGraphFram
     snapshot: PreparedGraphicsResolvedSnapshot,
     enabled = true,
     scope?: string,
+    graphName = name,
   ): Result<void, RenderGraphError | RenderError> {
     const validated = validateOwnedRenderFeatureGraphicsPass(featureIdentity, descriptor, state);
     if (!validated.ok) return validated;
@@ -247,7 +296,10 @@ export class RenderFeatureRasterGraphProjection<FrameCtx extends RenderGraphFram
     const colors = [];
     for (const attachment of descriptor.attachments.colors) {
       const target = this.resolveTarget(attachment.resource);
-      if (target === undefined) return err(missing(featureIdentity, order));
+      if (target === undefined)
+        return err(
+          missingTarget(featureIdentity, order, name, 'color attachment', attachment.resource),
+        );
       accesses.push({ resource: target.view, usage: 'color-attachment' } as const);
       if (target.resolveTarget !== undefined) {
         accesses.push({ resource: target.resolveTarget, usage: 'color-attachment' } as const);
@@ -266,7 +318,8 @@ export class RenderFeatureRasterGraphProjection<FrameCtx extends RenderGraphFram
     const depth = descriptor.attachments.depthStencil;
     if (depth !== undefined) {
       const target = this.resolveTarget(depth.resource);
-      if (target === undefined) return err(missing(featureIdentity, order));
+      if (target === undefined)
+        return err(missingTarget(featureIdentity, order, name, 'depth attachment', depth.resource));
       const sampledTarget = (descriptor.sampledTargets ?? []).find(
         (candidate) => this.resolveTarget(candidate)?.texture === target.texture,
       );
@@ -338,22 +391,26 @@ export class RenderFeatureRasterGraphProjection<FrameCtx extends RenderGraphFram
         usage: readOnly ? ('depth-stencil-read' as const) : ('depth-stencil-write' as const),
       });
       depthStencilAttachment = readOnly
-        ? { view: target.view, depthReadOnly: true, stencilReadOnly: true }
+        ? { view: target.view, ...depthStencilOperations(depth, true) }
         : {
             view: target.view,
-            depthLoadOp: depth.depthLoadOp,
-            depthStoreOp: depth.depthStoreOp,
-            ...stencilOperations(depth),
+            ...depthStencilOperations(depth, false),
           };
     }
 
-    for (const sampled of descriptor.sampledTargets ?? []) {
-      const source = this.resolveTarget(sampled);
-      const target = source?.texture === originalDepth?.texture ? sampledDepth : source;
-      if (target === undefined) return err(missing(featureIdentity, order));
-      accesses.push({ resource: target.view, usage: 'sampled-read' } as const);
-    }
+    const projectRasterSampledTargets = () => {
+      for (const sampled of descriptor.sampledTargets ?? []) {
+        const source = this.resolveTarget(sampled);
+        const target = source?.texture === originalDepth?.texture ? sampledDepth : source;
+        if (target === undefined)
+          return err(missingTarget(featureIdentity, order, name, 'sampled', sampled));
+        accesses.push({ resource: target.view, usage: 'sampled-read' } as const);
+      }
 
+      return undefined;
+    };
+    const sampledTargetFailure = projectRasterSampledTargets();
+    if (sampledTargetFailure !== undefined) return sampledTargetFailure;
     const drawBuffers = this.importDrawBuffers(name, featureIdentity, order, descriptor, snapshot);
     if (!drawBuffers.ok) return drawBuffers;
     for (const handle of drawBuffers.value.vertex.values()) {
@@ -366,33 +423,69 @@ export class RenderFeatureRasterGraphProjection<FrameCtx extends RenderGraphFram
       accesses.push({ resource: handle, usage: 'indirect-read' } as const);
     }
 
+    const importRasterExplicitBindingBuffers = () => {
+      for (const draw of descriptor.draws)
+        for (const reference of draw.bindings) {
+          const binding = resolved(snapshot, reference);
+          if (binding?.kind !== 'bindings') continue;
+          for (const storage of binding.descriptor?.values.bufferBindings ?? []) {
+            const buffer = snapshot.resolveGpuResource?.(storage.resource);
+            if (buffer === undefined) return err(missing(featureIdentity, order));
+            const imported = importRenderFeatureGraphBuffer(
+              this.builder,
+              this.buffers,
+              storage.resource,
+              buffer,
+            );
+            if (!imported.ok) return imported;
+            accesses.push({
+              resource: imported.value,
+              usage: storage.access === 'read' ? 'storage-read' : 'storage-read-write',
+            });
+          }
+        }
+
+      return undefined;
+    };
+    const explicitBindingFailure = importRasterExplicitBindingBuffers();
+    if (explicitBindingFailure !== undefined) return explicitBindingFailure;
     // Feature-owned fullscreen/material bind groups may carry a read-only
     // storage buffer (for example the bounded procedural cloud cache). Import
     // it into the same graph so the compute producer is ordered before the
     // raster consumer and the buffer lease follows queue retirement.
-    for (const draw of descriptor.draws) {
-      for (const reference of draw.bindings) {
-        const binding = resolved(snapshot, reference);
-        const names =
-          binding?.kind === 'bindings' ? binding.descriptor?.values.storageBuffers : undefined;
-        if (!Array.isArray(names)) continue;
-        for (const name of names) {
-          if (typeof name !== 'string') continue;
-          const physical = snapshot.resolveGpuResource?.(name);
-          if (physical === undefined) continue;
-          const imported = importRenderFeatureGraphBuffer(
-            this.builder,
-            this.buffers,
-            `${name}.${featureIdentity}.${order}`,
-            physical,
-          );
-          if (!imported.ok) return imported;
-          accesses.push({ resource: imported.value, usage: 'storage-read' } as const);
+    const importRasterNamedBindingBuffers = () => {
+      for (const draw of descriptor.draws) {
+        for (const reference of draw.bindings) {
+          const binding = resolved(snapshot, reference);
+          if (binding?.kind !== 'bindings') continue;
+          for (const [field, usage] of [
+            ['storageBuffers', 'storage-read'],
+            ['uniformBuffers', 'uniform-read'],
+          ] as const) {
+            const names = binding.descriptor?.values[field];
+            if (!Array.isArray(names)) continue;
+            for (const name of names) {
+              if (typeof name !== 'string') continue;
+              const physical = snapshot.resolveGpuResource?.(name);
+              if (physical === undefined) continue;
+              const imported = importRenderFeatureGraphBuffer(
+                this.builder,
+                this.buffers,
+                `${name}.${featureIdentity}.${order}`,
+                physical,
+              );
+              if (!imported.ok) return imported;
+              accesses.push({ resource: imported.value, usage });
+            }
+          }
         }
       }
-    }
 
-    return this.builder.addRasterPass(name, {
+      return undefined;
+    };
+    const namedBindingFailure = importRasterNamedBindingBuffers();
+    if (namedBindingFailure !== undefined) return namedBindingFailure;
+    return this.builder.addRasterPass(graphName, {
       accesses,
       executeIf: (frame) =>
         currentRenderFeaturePass(frame, featureIdentity, name, scope)?.enabled ?? enabled,
@@ -472,14 +565,11 @@ export class RenderFeatureRasterGraphProjection<FrameCtx extends RenderGraphFram
       depthStencilAttachment = sampled
         ? {
             view: resources.textureView(target.view).unwrap(),
-            depthReadOnly: true,
-            stencilReadOnly: true,
+            ...depthStencilOperations(depth, true),
           }
         : {
             view: resources.textureView(target.view).unwrap(),
-            depthLoadOp: depth.depthLoadOp,
-            depthStoreOp: depth.depthStoreOp,
-            ...stencilOperations(depth),
+            ...depthStencilOperations(depth, false),
           };
     }
     return {
@@ -579,18 +669,37 @@ export class RenderFeatureRasterGraphProjection<FrameCtx extends RenderGraphFram
       const activeDraw = current?.graphics?.draws[drawIndex] ?? draw;
       if (activeDraw.enabled === false) continue;
       const pipeline = resolved(activeSnapshot, activeDraw.pipeline);
-      if (pipeline?.kind !== 'pipeline') throw missing(featureIdentity, order);
+      if (pipeline?.kind !== 'pipeline')
+        throw missing(
+          featureIdentity,
+          order,
+          new Error(`Raster pass "${name}" has no prepared pipeline for draw ${drawIndex}.`),
+        );
       pass.setPipeline(pipeline.handle);
       if (pipeline.standardLighting === true) {
         const lighting = this.resolveStandardLighting?.(frame, pipeline.handle);
-        if (lighting === undefined) throw missing(featureIdentity, order);
+        if (lighting === undefined)
+          throw missing(
+            featureIdentity,
+            order,
+            new Error(
+              `Raster pass "${name}" could not resolve Standard lighting for draw ${drawIndex}.`,
+            ),
+          );
         pass.setBindGroup(2, lighting);
       }
       let nextGroup = 0;
       for (const reference of activeDraw.bindings) {
         const group = nextGroup++;
         const binding = resolved(activeSnapshot, reference);
-        if (binding?.kind !== 'bindings') throw missing(featureIdentity, order);
+        if (binding?.kind !== 'bindings')
+          throw missing(
+            featureIdentity,
+            order,
+            new Error(
+              `Raster pass "${name}" has no prepared binding for draw ${drawIndex}, group ${group}.`,
+            ),
+          );
         const targetGroup = binding.descriptor?.values.group ?? group;
         if (shadowView !== undefined && targetGroup === 0) {
           pass.setBindGroup(0, shadowView, [0, 0]);
@@ -613,6 +722,9 @@ export class RenderFeatureRasterGraphProjection<FrameCtx extends RenderGraphFram
             });
           if (
             binding.descriptor?.values.fullscreen === true ||
+            binding.descriptor?.values.postProcess === true ||
+            binding.descriptor?.values.waterMaterial !== undefined ||
+            binding.descriptor?.values.bufferBindings !== undefined ||
             (resolveTarget !== this.resolveTarget &&
               binding.descriptor?.values.sceneDepth !== undefined)
           )
@@ -625,7 +737,14 @@ export class RenderFeatureRasterGraphProjection<FrameCtx extends RenderGraphFram
           'handle' in resolvedBindings
             ? resolvedBindings.handle
             : resolvedBindings;
-        if (handle === undefined) throw missing(featureIdentity, order);
+        if (handle === undefined)
+          throw missing(
+            featureIdentity,
+            order,
+            new Error(
+              `Raster pass "${name}" could not resolve draw ${drawIndex}, group ${targetGroup} bindings.`,
+            ),
+          );
         const dynamicOffsets =
           resolvedBindings !== undefined &&
           typeof resolvedBindings === 'object' &&

@@ -1,3 +1,7 @@
+import { StateSet } from '@forgeax/engine-state';
+import { defineResource as defineEcsResource } from '@forgeax/engine-ecs';
+const ecsM1CompositionPluginBuiltResource = defineEcsResource("m1CompositionPluginBuilt");
+import { defineSystem } from "@forgeax/engine-ecs";
 import { createSmokePlatform } from '../../../../scripts/smoke-platform.mjs';
 import assert from 'node:assert/strict';
 import { createApp, inputPlugin } from '@forgeax/engine-app';
@@ -67,7 +71,7 @@ function makeRenderer(drawCalls) {
       return 'alive';
     },
     draw(input) {
-      drawCalls.push({ worldCount: input.leases.length });
+      drawCalls.push({ worldCount: input.source === null ? 0 : 1 });
       return ok(undefined);
     },
     subscribe() {
@@ -121,8 +125,8 @@ async function main() {
     name: 'm1-composition',
     inject: ['world'],
     apply(ctx) {
-      ctx.world.insertResource('m1CompositionPluginBuilt', true);
-      return () => ctx.world.removeResource('m1CompositionPluginBuilt');
+      ctx.world.insertResource(ecsM1CompositionPluginBuiltResource, true);
+      return () => ctx.world.removeResource(ecsM1CompositionPluginBuiltResource);
     },
   };
 
@@ -151,22 +155,22 @@ async function main() {
     exitedPlay += 1;
   });
 
-  assertResult(
-    world.addSystem(Update, {
+  const systemToken1 = defineSystem({
       name: 'm1-update-before-fixed',
-      after: ['transitionStates'],
+      after: [StateSet],
       before: [FixedUpdate],
       queries: [],
       fn() {
         scheduleTrace.push('update-before-fixed');
       },
-    }),
+    });
+assertResult(
+    world.addSystem(Update, systemToken1),
     'update-before-fixed registration',
   );
-  assertResult(
-    world.addSystem(Update, {
+  const systemToken2 = defineSystem({
       name: 'm1-input-reader',
-      after: ['m1-update-before-fixed'],
+      after: [systemToken1],
       before: [FixedUpdate],
       queries: [],
       fn(world) {
@@ -177,25 +181,27 @@ async function main() {
         });
         snapshotReference = snapshot;
       },
-    }),
+    });
+assertResult(
+    world.addSystem(Update, systemToken2),
     'input reader registration',
   );
-  assertResult(
-    world.addSystem(Update, {
+  const systemToken3 = defineSystem({
       name: 'm1-input-reader-same-frame',
-      after: ['m1-input-reader'],
+      after: [systemToken2],
       before: [FixedUpdate],
       queries: [],
       fn(world) {
         assert.equal(world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY), snapshotReference);
       },
-    }),
+    });
+assertResult(
+    world.addSystem(Update, systemToken3),
     'same-frame input registration',
   );
-  assertResult(
-    world.addSystem(Update, {
+  const systemToken4 = defineSystem({
       name: 'm1-deferred-spawn',
-      after: ['m1-input-reader-same-frame'],
+      after: [systemToken3],
       before: [FixedUpdate],
       queries: [],
       fn(world, _queries, commands) {
@@ -205,11 +211,12 @@ async function main() {
         assert.equal(commands.isDeferred(deferredEntity), true);
         assert.equal(world.inspect().entityCount, deferredBeforeCount);
       },
-    }),
+    });
+assertResult(
+    world.addSystem(Update, systemToken4),
     'deferred mutation registration',
   );
-  assertResult(
-    world.addSystem(FixedUpdate, {
+  const systemToken5 = defineSystem({
       name: 'm1-fixed-probe',
       queries: [],
       fn(world) {
@@ -225,38 +232,43 @@ async function main() {
           'fixed position write',
         );
       },
-    }),
+    });
+assertResult(
+    world.addSystem(FixedUpdate, systemToken5),
     'fixed registration',
   );
-  assertResult(
-    world.addSystem(Update, {
+  const systemToken6 = defineSystem({
       name: 'm1-update-after-fixed',
       after: [FixedUpdate],
       queries: [],
       fn() {
         scheduleTrace.push('update-after-fixed');
       },
-    }),
+    });
+assertResult(
+    world.addSystem(Update, systemToken6),
     'update-after-fixed registration',
   );
 
-  assertResult(
-    secondaryWorld.addSystem(Update, {
+  const systemToken7 = defineSystem({
       name: 'secondary-before-fixed',
       before: [FixedUpdate],
       queries: [],
       fn() {},
-    }),
+    });
+assertResult(
+    secondaryWorld.addSystem(Update, systemToken7),
     'secondary update registration',
   );
-  assertResult(
-    secondaryWorld.addSystem(FixedUpdate, {
+  const systemToken8 = defineSystem({
       name: 'secondary-fixed',
       queries: [],
       fn() {
         secondaryFixedTicks += 1;
       },
-    }),
+    });
+assertResult(
+    secondaryWorld.addSystem(FixedUpdate, systemToken8),
     'secondary fixed registration',
   );
   assertResult(secondaryWorld.spawn({ component: Marker, data: { value: 2 }}), 'secondary marker spawn');
@@ -302,7 +314,6 @@ async function main() {
     world,
     plugins: [inputBackendPlugin(inputBackend), statePlugin(), inputPlugin(), plugin],
     silenceUnhandledErrors: true,
-    drawSource: () => ({ worlds: [world, secondaryWorld], cameraOwner: 0, resourceOwner: 0 }),
   });
   assert.equal(appResult.ok, true);
   if (!appResult.ok) return;
@@ -328,21 +339,20 @@ async function main() {
     assert.equal(playEntity !== undefined, true);
     assert.equal(world.inspect().entityCount, deferredBeforeCount + 1);
     assert.equal([...world.iterDescendants(root)].length, 1);
-    assert.equal(world.getResource('m1CompositionPluginBuilt'), true);
+    assert.equal(world.getResource(ecsM1CompositionPluginBuiltResource), true);
     const pluginNames = [...app.pluginContext.registry.values()].map((runtime) => runtime.name);
     assert.equal(pluginNames.includes('state'), true);
     assert.equal(pluginNames.includes('input'), true);
     assert.equal(pluginNames.includes('m1-composition'), true);
-    assert.equal(drawCalls[0]?.worldCount, 2);
-    assert.equal(secondaryFixedTicks, 2);
+    assert.equal(drawCalls[0]?.worldCount, 1);
+    assert.equal(secondaryFixedTicks, 0);
     console.log('[m1-composition] schedule order: update-before-fixed -> fixed -> fixed -> update-after-fixed');
     console.log('[m1-composition] deferred mutation, state lifecycle, input, hierarchy, and math: PASS');
 
     assertResult(setNextState(world, Mode, 'menu'), 'request menu');
-    assertResult(
-      world.addSystem(Update, {
+    const systemToken9 = defineSystem({
         name: 'm1-composition-fault',
-        after: ['m1-update-after-fixed'],
+        after: [systemToken6],
         queries: [],
         fn() {
           if (!faultThrown) {
@@ -350,7 +360,9 @@ async function main() {
             throw new Error('m1 composition fault');
           }
         },
-      }),
+      });
+assertResult(
+      world.addSystem(Update, systemToken9),
       'fault registration',
     );
     clock = firstTimestamp + 200;
@@ -359,16 +371,16 @@ async function main() {
     assert.equal(exitedPlay, 1);
     assert.equal(assertResult(getState(world, Mode), 'state read'), 'menu');
     assert.equal(world.get(playEntity, PhaseMarker).ok, false);
-    console.log('[m1-composition] multi-world drawSource and plugin registry: PASS');
+    console.log('[m1-composition] single-source App and plugin registry: PASS');
 
     clock = firstTimestamp + 400;
     pendingFrames.shift()(firstTimestamp + 400);
     assert.equal(faultThrown, true);
     // The poisoned World retry is fanned out as a second App update failure.
     assert.equal(errors.filter((error) => error.code === 'app-system-update-failed').length, 2);
-    assert.equal(secondaryFixedTicks, 6);
-    // The secondary World remains renderable on both poisoned-primary retries.
-    assert.equal(drawCalls.length, 3);
+    assert.equal(secondaryFixedTicks, 0);
+    // An independent World is never updated or drawn by this App.
+    assert.equal(drawCalls.length, 1);
     assertResult(app.stop(), 'app stop');
     console.log('[m1-composition] App error fan-out and same-process recovery: PASS');
   } finally {

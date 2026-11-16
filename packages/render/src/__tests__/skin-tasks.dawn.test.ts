@@ -15,7 +15,7 @@ it.each([
   try {
     await f.frames.submitFrame(f.frame, Promise.resolve(), true);
     f.matrix[12] = 5;
-    f.skin.joint(0, 19, f.matrix);
+    f.skin.joint(19, f.matrix);
     const frame = f.frames.prepareFrame(f.scene.slotsSnapshot());
     if (!frame) throw new Error('Missing current fixed root');
     tasks.begin(frame);

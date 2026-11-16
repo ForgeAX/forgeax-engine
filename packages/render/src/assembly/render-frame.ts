@@ -1,6 +1,8 @@
 import type { World } from '@forgeax/engine-ecs';
 import { RendererOperationError } from '../errors/render';
 import { MaterialUniformRecording } from '../record/material-uniforms';
+import { activeRenderProfileSession } from '../record/profile-session';
+import { runProfiledRenderPhase } from '../record/render-context';
 import { featureFrameOutcome } from '../world/feature-systems';
 import { beginFrameSubmission, frameSubmitOutcome } from '../world/frame-submit-systems';
 import {
@@ -22,6 +24,10 @@ export function* prepareRenderFrame(
   input: RenderRecordInputState & { readonly world: World },
 ): FramePreparation {
   const { world, rendererInternals: owner } = input;
+  const submission = renderSubmission(world);
+  const profileSession = submission.profileSessionPinned
+    ? submission.profileSession
+    : (submission.profileSession ?? activeRenderProfileSession(owner));
   const uniforms = new MaterialUniformRecording();
   const generation = owner?.deviceScope.generation;
   const isCurrent = () =>
@@ -51,38 +57,49 @@ export function* prepareRenderFrame(
             ? 'features-prepared'
             : 'recording-checkpoint',
       };
-      if (!isCurrent()) return false;
+      const resumedCurrent =
+        profileSession === undefined
+          ? isCurrent()
+          : runProfiledRenderPhase(profileSession, 'queue-resume', isCurrent);
+      if (!resumedCurrent) return false;
     }
-    const recorded = uniforms.run(() => runRenderRecord(world, staged));
+    const recorded = uniforms.run(() => runRenderRecord(world, staged, profileSession));
     if (!recorded.ok) throw recorded.error;
-    const outcome = frameSubmitOutcome(world);
-    if (outcome.failures.length === 1) throw outcome.failures[0];
-    if (outcome.failures.length > 1)
-      throw new AggregateError(outcome.failures, 'Renderer frame submission failed');
-    if (!outcome.result.ok && outcome.result.stage === 'submit')
-      throw new RendererOperationError('frame-submit-rejected', {
-        operation: 'draw',
-        stage: 'submit',
-        accepted: false,
-        ...(outcome.rejectionCause === undefined
-          ? {}
-          : {
-              cause: {
-                code: outcome.rejectionCause.code,
-                expected: outcome.rejectionCause.expected,
-                hint: outcome.rejectionCause.hint,
-                ...(outcome.rejectionCause.detail === undefined
-                  ? {}
-                  : { detail: outcome.rejectionCause.detail }),
-              },
-            }),
-      });
-    return outcome.result.ok;
+    const acceptSubmittedFrame = (world: World) => {
+      const outcome = frameSubmitOutcome(world);
+      if (outcome.failures.length === 1) throw outcome.failures[0];
+      if (outcome.failures.length > 1)
+        throw new AggregateError(outcome.failures, 'Renderer frame submission failed');
+      if (!outcome.result.ok && outcome.result.stage === 'submit')
+        throw new RendererOperationError('frame-submit-rejected', {
+          operation: 'draw',
+          stage: 'submit',
+          accepted: false,
+          ...(outcome.rejectionCause === undefined
+            ? {}
+            : {
+                cause: {
+                  code: outcome.rejectionCause.code,
+                  expected: outcome.rejectionCause.expected,
+                  hint: outcome.rejectionCause.hint,
+                  ...(outcome.rejectionCause.detail === undefined
+                    ? {}
+                    : { detail: outcome.rejectionCause.detail }),
+                },
+              }),
+        });
+      return outcome.result.ok;
+    };
+    return acceptSubmittedFrame(world);
   } catch (cause) {
     failure = cause;
     throw cause;
   } finally {
-    completeFramePreparation(uniforms, world, release, failure);
+    if (profileSession === undefined) completeFramePreparation(uniforms, world, release, failure);
+    else
+      runProfiledRenderPhase(profileSession, 'finally-cleanup', () =>
+        completeFramePreparation(uniforms, world, release, failure),
+      );
   }
 }
 

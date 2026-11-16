@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { createRenderReadLease } from '@forgeax/engine-ecs/projection';
@@ -27,9 +28,13 @@ import {
   createMaterialShaderProgram,
   createStandardPbrArtifactReceipt,
   type MaterialShaderArtifact,
+  violatedVariantPermutationRules,
 } from '@forgeax/engine-shader';
 import { ok } from '@forgeax/engine-types';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import {
+  buildEngineShaderManifest,
+  publishedVariantDefines,
+} from '@forgeax/engine-vite-plugin-shader';
 import { describe, expect, it } from 'vitest';
 import { type GpuDrivenPbrProgram, standardPbrProgramKey } from '../gpu-driven/pbr-program';
 import { GpuDrivenProduction, type PreparedGpuDrivenFrame } from '../gpu-driven/production-raster';
@@ -80,6 +85,10 @@ import { nativeDeviceFixture } from './native-device-fixture';
 
 const STANDARD_PBR_RECEIPT = createStandardPbrArtifactReceipt();
 const ENGINE_SHADER_MANIFEST = await buildEngineShaderManifest();
+const STANDARD_PBR_SOURCE = readFileSync(
+  new URL('../../../shader/src/default-standard-pbr.wgsl', import.meta.url),
+  'utf8',
+);
 const STANDARD_PBR_PRODUCER = ENGINE_SHADER_MANIFEST.materialShaders.find(
   ({ identifier }) => identifier === 'forgeax::default-standard-pbr',
 );
@@ -87,6 +96,8 @@ const STANDARD_PBR_GPU_VARIANT = STANDARD_PBR_PRODUCER?.variants.find(
   ({ defines }) =>
     defines.STORAGE_BUFFER_AVAILABLE === true &&
     defines.GPU_DRIVEN_SCENE_INDEX_AVAILABLE === true &&
+    defines.WATER_WAVES_AVAILABLE === false &&
+    defines.WATER_INFO_RGBA16 === false &&
     defines.COVERAGE_ONLY === false &&
     defines.VISIBLE_SURFACE_AVAILABLE === false &&
     defines.CLUSTER_FORWARD_AVAILABLE === false &&
@@ -94,12 +105,15 @@ const STANDARD_PBR_GPU_VARIANT = STANDARD_PBR_PRODUCER?.variants.find(
     defines.PROBE_BLEND_AVAILABLE === false &&
     defines.EXTENDED_LIGHTING_AVAILABLE === false &&
     defines.TRANSMISSION_AVAILABLE === false &&
-    defines.PROJECTOR_AVAILABLE === false,
+    defines.PROJECTOR_AVAILABLE === false &&
+    defines.STANDARD_LEAN_INPUTS !== true,
 );
 const STANDARD_PBR_COLORED_GPU_VARIANT = STANDARD_PBR_PRODUCER?.variants.find(
   ({ defines }) =>
     defines.STORAGE_BUFFER_AVAILABLE === true &&
     defines.GPU_DRIVEN_SCENE_INDEX_AVAILABLE === true &&
+    defines.WATER_WAVES_AVAILABLE === false &&
+    defines.WATER_INFO_RGBA16 === false &&
     defines.COVERAGE_ONLY === false &&
     defines.VISIBLE_SURFACE_AVAILABLE === false &&
     defines.CLUSTER_FORWARD_AVAILABLE === false &&
@@ -107,7 +121,8 @@ const STANDARD_PBR_COLORED_GPU_VARIANT = STANDARD_PBR_PRODUCER?.variants.find(
     defines.PROBE_BLEND_AVAILABLE === false &&
     defines.EXTENDED_LIGHTING_AVAILABLE === false &&
     defines.TRANSMISSION_AVAILABLE === false &&
-    defines.PROJECTOR_AVAILABLE === false,
+    defines.PROJECTOR_AVAILABLE === false &&
+    defines.STANDARD_LEAN_INPUTS !== true,
 );
 const STANDARD_PBR_COLORED_RECEIPT = createStandardPbrArtifactReceipt(false, true);
 const SHADOW_CASTER_PRODUCER = ENGINE_SHADER_MANIFEST.materialShaders.find(
@@ -119,9 +134,43 @@ const SHADOW_CASTER_GPU_ALPHA_VARIANT = SHADOW_CASTER_PRODUCER?.variants.find(
     defines.SKINNING_DISABLED === true &&
     defines.GPU_DRIVEN_SCENE_INDEX_AVAILABLE === true &&
     defines.GPU_DRIVEN_SCENE_INDEX_EXPLICIT === false &&
+    defines.WATER_WAVES_AVAILABLE === false &&
+    defines.WATER_INFO_RGBA16 === false &&
     defines.ALPHA_MASK === true &&
-    defines.VERTEX_COLOR_AVAILABLE === false,
+    defines.VERTEX_COLOR_AVAILABLE === false &&
+    defines.STANDARD_LEAN_INPUTS !== true,
 );
+// The masked lean caster keeps only UV0 (UE ShadowDepthVertexShader.usf:191-194):
+// it must still cut the same holes as the full caster.
+const SHADOW_CASTER_GPU_ALPHA_LEAN_VARIANT = SHADOW_CASTER_PRODUCER?.variants.find(
+  ({ defines }) =>
+    defines.STORAGE_BUFFER_AVAILABLE === true &&
+    defines.SKINNING_DISABLED === true &&
+    defines.GPU_DRIVEN_SCENE_INDEX_AVAILABLE === true &&
+    defines.GPU_DRIVEN_SCENE_INDEX_EXPLICIT === false &&
+    defines.WATER_WAVES_AVAILABLE === false &&
+    defines.WATER_INFO_RGBA16 === false &&
+    defines.ALPHA_MASK === true &&
+    defines.VERTEX_COLOR_AVAILABLE === false &&
+    defines.STANDARD_LEAN_INPUTS === true,
+);
+
+it.each([
+  ['Standard', STANDARD_PBR_GPU_VARIANT],
+  ['Standard with vertex color', STANDARD_PBR_COLORED_GPU_VARIANT],
+  ['Shadow', SHADOW_CASTER_GPU_ALPHA_VARIANT],
+  ['lean Shadow', SHADOW_CASTER_GPU_ALPHA_LEAN_VARIANT],
+] as const)('selects the ordinary mesh layout for %s', (_label, variant) => {
+  expect(variant).toBeDefined();
+  if (variant === undefined) throw new Error('missing ordinary scene-index variant');
+  expect(variant.defines.WATER_WAVES_AVAILABLE).toBe(false);
+  expect(variant.defines.WATER_INFO_RGBA16).toBe(false);
+  const vertex = variant.entryPoints?.find((entry) => entry.name === 'vs_scene_index');
+  expect(vertex).toBeDefined();
+  expect(
+    vertex?.bindings.filter((binding) => binding.group === 2).map(({ binding }) => binding),
+  ).toEqual([0]);
+});
 
 // Keep the existing 60-frame local/native window and CI lightweight profile.
 const STABLE_FRAME_COUNT = 60;
@@ -241,7 +290,6 @@ function alphaMaskSnapshot(
     material,
     materials: [material],
     materialBindingSources: ['engine-default'],
-    worldId: 0,
     entityKey: 1,
     gpuDrivenDraws: [
       {
@@ -426,6 +474,8 @@ type AlphaMaskShadowView = {
 type AlphaMaskShadowDepthReadback = {
   readonly identity: AlphaMaskShadowIdentity;
   readonly buffer: Buffer;
+  /** Lean-caster probes: `cut` rasterizes the discarded material and must leave the clear depth. */
+  readonly lean?: 'covered' | 'cut';
 };
 const READBACK_USAGE = GPU_BUFFER_USAGE_MAP_READ | GPU_BUFFER_USAGE_COPY_DST;
 
@@ -480,6 +530,15 @@ async function compileAlphaMaskShaders(device: RhiDevice, vertexColorAvailable: 
       label: 'shadow-caster-gpu-driven-producer-alpha-mask',
     })
   ).unwrap();
+  expect(SHADOW_CASTER_GPU_ALPHA_LEAN_VARIANT).toBeDefined();
+  if (SHADOW_CASTER_GPU_ALPHA_LEAN_VARIANT === undefined) return undefined;
+  expect(SHADOW_CASTER_GPU_ALPHA_LEAN_VARIANT.composedWgsl).not.toMatch(/uv2And3|objectBasis0/);
+  const leanShadowCaster = (
+    await createShaderModule(device, {
+      code: SHADOW_CASTER_GPU_ALPHA_LEAN_VARIANT.composedWgsl,
+      label: 'shadow-caster-gpu-driven-producer-alpha-mask-lean',
+    })
+  ).unwrap();
   expect(STANDARD_PBR_RECEIPT.alphaMask).toEqual({
     cutoff: 'alphaCutoff',
     source: 'baseColor.a',
@@ -490,6 +549,7 @@ async function compileAlphaMaskShaders(device: RhiDevice, vertexColorAvailable: 
     producer: producer.value,
     defaultProducer: defaultProducer.value,
     shadowCaster,
+    leanShadowCaster,
   };
 }
 
@@ -804,8 +864,7 @@ function alphaMaskExtractedFrame(source: RenderableSnapshot): ExtractedFrame {
     frustumStats: { culled: 0, total: 1 },
     visibilityStats: { explicitlyHidden: 0 },
     postProcessParams: new Map(),
-    visibilitySnapshots: [],
-    featureVisibilitySnapshots: [],
+    visibilitySnapshot: undefined,
     hiddenEntityReports: [],
   } as unknown as ExtractedFrame;
 }
@@ -1101,6 +1160,7 @@ function addAlphaMaskShadowDepthRasters(
   shadows: Readonly<Record<AlphaMaskShadowKind, AlphaMaskShadowResources>>,
   shadowViewBindGroups: ReadonlyMap<AlphaMaskShadowKind, BindGroup>,
   submissionFor: (identity: AlphaMaskShadowIdentity) => GpuDrivenShadowSubmission | undefined,
+  labelSuffix = '',
 ): boolean {
   for (const target of targets) {
     const submission = submissionFor(target.identity);
@@ -1114,27 +1174,30 @@ function addAlphaMaskShadowDepthRasters(
     if (submission === undefined || shadowViewGroup === undefined || readback === undefined)
       return false;
     graph
-      .addRasterPass(`gpu-driven.alpha-mask.${target.identity.kind}-shadow-depth-raster`, {
-        accesses: [
-          ...shadowViewRasterAccesses(resources),
-          { resource: target.view, usage: 'depth-stencil-write' },
-        ],
-        colorAttachments: [],
-        depthStencilAttachment: {
-          view: target.view,
-          depthClearValue: 0,
-          depthLoadOp: 'clear',
-          depthStoreOp: 'store',
+      .addRasterPass(
+        `gpu-driven.alpha-mask.${target.identity.kind}${labelSuffix}-shadow-depth-raster`,
+        {
+          accesses: [
+            ...shadowViewRasterAccesses(resources),
+            { resource: target.view, usage: 'depth-stencil-write' },
+          ],
+          colorAttachments: [],
+          depthStencilAttachment: {
+            view: target.view,
+            depthClearValue: 0,
+            depthLoadOp: 'clear',
+            depthStoreOp: 'store',
+          },
+          encode: ({ pass }) => {
+            pass.setBindGroup(0, shadowViewGroup, [0, 0]);
+            recordGpuDrivenShadowIndirect(pass, submission);
+          },
         },
-        encode: ({ pass }) => {
-          pass.setBindGroup(0, shadowViewGroup, [0, 0]);
-          recordGpuDrivenShadowIndirect(pass, submission);
-        },
-      })
+      )
       .unwrap();
     addTextureReadbackPass(
       graph,
-      `gpu-driven.alpha-mask.${target.identity.kind}-shadow-depth-readback`,
+      `gpu-driven.alpha-mask.${target.identity.kind}${labelSuffix}-shadow-depth-readback`,
       target.texture,
       target.view,
       readback.resource,
@@ -1168,11 +1231,10 @@ interface AlphaMaskRun {
 
 function extractAlphaMaskComposition(run: AlphaMaskRun): void {
   run.persistentScene.extractComposition(
-    [run.persistentWorld],
-    { cameraOwner: 0, resourceOwner: 0 },
+    run.persistentWorld,
     run.persistentAssets,
     () => run.persistentFrame,
-    [run.persistentLease],
+    run.persistentLease,
   );
 }
 
@@ -1334,9 +1396,11 @@ async function expectAlphaMaskReadbacks(run: AlphaMaskRun): Promise<void> {
   expect(Array.from(shadowIndirect.slice(0, 2))).toEqual([3, 1]);
   expect(Array.from(pointShadowIndirect.slice(0, 2))).toEqual([3, 1]);
   expect(Array.from(spotShadowIndirect.slice(0, 2))).toEqual([3, 1]);
-  for (const { identity, buffer } of run.shadowDepthReadbackBuffers) {
+  for (const { identity, buffer, lean } of run.shadowDepthReadbackBuffers) {
     const depth = new Float32Array(await readFirstBytes(buffer, 4))[0] ?? 1;
-    expect(depth, `${identity.kind} shadow depth raster readback`).toBeGreaterThan(0);
+    const label = `${identity.kind}${lean === undefined ? '' : `-lean-${lean}`} shadow depth raster readback`;
+    if (lean === 'cut') expect(depth, label).toBe(0);
+    else expect(depth, label).toBeGreaterThan(0);
   }
 }
 
@@ -1440,11 +1504,10 @@ describe('GPU-driven production PBR Dawn regression', () => {
     });
     const persistentFrame = alphaMaskExtractedFrame(source);
     persistentScene.extractComposition(
-      [persistentWorld],
-      { cameraOwner: 0, resourceOwner: 0 },
+      persistentWorld,
       persistentAssets,
       () => persistentFrame,
-      [persistentLease],
+      persistentLease,
     );
     const initialGpuState = persistentScene.compositionGpuDrivenState();
     expect(initialGpuState).toBeDefined();
@@ -1530,6 +1593,13 @@ describe('GPU-driven production PBR Dawn regression', () => {
       gpuMesh,
     );
     if (shadowPipeline === undefined) return;
+    const leanShadowPipeline = createAlphaMaskShadowPipeline(
+      device,
+      pipelineLayout,
+      shaders.leanShadowCaster,
+      gpuMesh,
+    );
+    if (leanShadowPipeline === undefined) return;
 
     const shadowUpdated = preparedFrame.updateShadowViews?.(shadowViews);
     expect(shadowUpdated?.ok).toBe(true);
@@ -1553,21 +1623,55 @@ describe('GPU-driven production PBR Dawn regression', () => {
         .unwrap();
       return { identity, texture, view: graph.view(texture).unwrap() };
     });
-    const shadowDepthReadbackBuffers = ALPHA_MASK_SHADOW_IDENTITIES.map((identity) => ({
-      identity,
-      buffer: createReadbackBuffer(
-        device,
-        `gpu-driven-alpha-mask.${identity.kind}-shadow-depth-readback`,
-      ),
-    }));
-    const shadowDepthReadbackResources = shadowDepthReadbackBuffers.map(({ identity, buffer }) => ({
-      identity,
-      resource: importReadback(
-        graph,
-        `gpu-driven-alpha-mask.${identity.kind}-shadow-depth-readback`,
-        buffer,
-      ),
-    }));
+    const directionalIdentity = ALPHA_MASK_SHADOW_IDENTITIES[0];
+    // materialLeanInputs admits only UV0 materials; other sets keep the full caster.
+    const leanProbes = (coordinateSet === undefined ? (['covered', 'cut'] as const) : []).map(
+      (lean) => {
+        const texture = graph
+          .createTexture(`gpu-driven-alpha-mask.directional-lean-${lean}-shadow-depth`, {
+            format: 'depth32float',
+            size: { width: 1, height: 1 },
+          })
+          .unwrap();
+        const buffer = createReadbackBuffer(
+          device,
+          `gpu-driven-alpha-mask.directional-lean-${lean}-shadow-depth-readback`,
+        );
+        return {
+          lean,
+          target: { identity: directionalIdentity, texture, view: graph.view(texture).unwrap() },
+          readback: { identity: directionalIdentity, buffer, lean },
+          resource: {
+            identity: directionalIdentity,
+            resource: importReadback(
+              graph,
+              `gpu-driven-alpha-mask.directional-lean-${lean}-shadow-depth-readback`,
+              buffer,
+            ),
+          },
+        };
+      },
+    );
+    const shadowDepthReadbackBuffers: AlphaMaskShadowDepthReadback[] = [
+      ...ALPHA_MASK_SHADOW_IDENTITIES.map((identity) => ({
+        identity,
+        buffer: createReadbackBuffer(
+          device,
+          `gpu-driven-alpha-mask.${identity.kind}-shadow-depth-readback`,
+        ),
+      })),
+      ...leanProbes.map(({ readback }) => readback),
+    ];
+    const shadowDepthReadbackResources = shadowDepthReadbackBuffers
+      .filter(({ lean }) => lean === undefined)
+      .map(({ identity, buffer }) => ({
+        identity,
+        resource: importReadback(
+          graph,
+          `gpu-driven-alpha-mask.${identity.kind}-shadow-depth-readback`,
+          buffer,
+        ),
+      }));
 
     const opaqueOutput = graph
       .createTexture('gpu-driven-alpha-mask-opaque', {
@@ -1654,6 +1758,24 @@ describe('GPU-driven production PBR Dawn regression', () => {
         alphaMaskShadowSubmission(preparedFrame, identity, shadowPipeline, opaqueMaterialBindGroup),
     );
     if (!shadowDepthsAdded) return;
+    for (const probe of leanProbes) {
+      const leanAdded = addAlphaMaskShadowDepthRasters(
+        graph,
+        [probe.target],
+        [probe.resource],
+        shadows,
+        views.shadowViewBindGroups,
+        (identity) =>
+          alphaMaskShadowSubmission(
+            preparedFrame,
+            identity,
+            leanShadowPipeline,
+            probe.lean === 'cut' ? discardedMaterialBindGroup : opaqueMaterialBindGroup,
+          ),
+        `-lean-${probe.lean}`,
+      );
+      if (!leanAdded) return;
+    }
     addTextureReadbackPass(
       graph,
       'gpu-driven.alpha-mask.opaque-readback',
@@ -1732,4 +1854,112 @@ describe('GPU-driven production PBR Dawn regression', () => {
     persistentLease.dispose();
     persistentAssets.dispose();
   });
+});
+
+// STANDARD_LEAN_INPUTS removes UV sets 1-7, the object-space position and the
+// object basis from the vertex output and keeps the tangent for normal maps; every published lean
+// row must still validate, and its interface must be smaller than the general
+// row it replaces.
+it('validates every STANDARD_LEAN_INPUTS row and shrinks its vertex output', {
+  timeout: 600_000,
+}, async () => {
+  const standard = STANDARD_PBR_PRODUCER;
+  if (standard === undefined) throw new Error('missing Standard PBR manifest entry');
+  const byKey = new Map(standard.variants.map((variant) => [variant.definesKey, variant]));
+  const expectedLean = publishedVariantDefines(STANDARD_PBR_SOURCE).filter(
+    (defines) => defines.STANDARD_LEAN_INPUTS === true,
+  );
+  const lean = standard.variants.filter((variant) => variant.defines.STANDARD_LEAN_INPUTS === true);
+  expect(lean.map((variant) => variant.defines)).toEqual(expectedLean);
+  for (const waves of [false, true]) {
+    for (const rgba16 of [false, true]) {
+      expect(
+        lean.filter(
+          (variant) =>
+            variant.defines.WATER_WAVES_AVAILABLE === waves &&
+            variant.defines.WATER_INFO_RGBA16 === rgba16,
+        ),
+      ).toHaveLength(288);
+    }
+  }
+
+  const adapter = await navigator.gpu.requestAdapter();
+  if (adapter === null) throw new Error('lean input validation requires a GPU adapter');
+  const device = await adapter.requestDevice();
+  const failures: string[] = [];
+  const vsOut = (code: string) => /struct VsOut\s*\{([^}]*)\}/.exec(code)?.[1] ?? '';
+  for (const variant of lean) {
+    const module = device.createShaderModule({ code: variant.composedWgsl });
+    const errors = (await module.getCompilationInfo()).messages.filter((m) => m.type === 'error');
+    if (errors.length > 0) failures.push(`${variant.definesKey}: ${errors[0]?.message}`);
+    const generalDefines: Record<string, boolean> = {
+      ...variant.defines,
+      STANDARD_LEAN_INPUTS: false,
+    };
+    for (const rule of violatedVariantPermutationRules(generalDefines)) {
+      if (
+        rule.axis !== 'WATER_INFO_RGBA16' ||
+        rule.value !== false ||
+        generalDefines.WATER_WAVES_AVAILABLE !== false
+      ) {
+        throw new Error(`unsupported general comparison for ${variant.definesKey}`);
+      }
+      generalDefines[rule.axis] = rule.value;
+    }
+    const general = byKey.get(
+      variant.definesKey
+        .replace('STANDARD_LEAN_INPUTS=true', 'STANDARD_LEAN_INPUTS=false')
+        .replace(
+          `WATER_INFO_RGBA16=${variant.defines.WATER_INFO_RGBA16}`,
+          `WATER_INFO_RGBA16=${generalDefines.WATER_INFO_RGBA16}`,
+        ),
+    );
+    if (general === undefined) throw new Error(`missing general row for ${variant.definesKey}`);
+    expect(general.defines).toEqual(generalDefines);
+    const fields = vsOut(variant.composedWgsl);
+    expect(fields).not.toMatch(/\b(?:uvPair[123]|positionOS|objectBasis\d)_?\s*:/);
+    expect(fields).toMatch(/\bworldTangent_?\s*:/);
+    expect(fields).toMatch(/\buvPair0_?\s*:\s*vec2<f32>/);
+    expect(fields.length).toBeLessThan(vsOut(general.composedWgsl).length);
+  }
+  device.destroy();
+  expect(failures).toEqual([]);
+});
+
+// The depth / shadow caster keeps only position, UV0 and the material row for
+// a lean batch, as UE's depth-only pass (DepthOnlyVertexShader.usf:15-16).
+it('validates every lean shadow-caster row and drops its normal, tangent and UV1-7', {
+  timeout: 600_000,
+}, async () => {
+  const caster = ENGINE_SHADER_MANIFEST.materialShaders.find(
+    (entry) => entry.identifier === 'forgeax::default-shadow-caster',
+  );
+  if (caster === undefined) throw new Error('missing shadow caster manifest entry');
+  const lean = caster.variants.filter((variant) => variant.defines.STANDARD_LEAN_INPUTS === true);
+  expect(lean.length).toBeGreaterThan(0);
+  expect(
+    lean.every(
+      (variant) =>
+        variant.defines.GPU_DRIVEN_SCENE_INDEX_AVAILABLE === true &&
+        variant.defines.STORAGE_BUFFER_AVAILABLE === true,
+    ),
+  ).toBe(true);
+
+  const adapter = await navigator.gpu.requestAdapter();
+  if (adapter === null) throw new Error('lean input validation requires a GPU adapter');
+  const device = await adapter.requestDevice();
+  const failures: string[] = [];
+  const vsOut = (code: string) => /struct VsOut\s*\{([^}]*)\}/.exec(code)?.[1] ?? '';
+  for (const variant of lean) {
+    const module = device.createShaderModule({ code: variant.composedWgsl });
+    const errors = (await module.getCompilationInfo()).messages.filter((m) => m.type === 'error');
+    if (errors.length > 0) failures.push(`${variant.definesKey}: ${errors[0]?.message}`);
+    const fields = vsOut(variant.composedWgsl);
+    expect(fields).not.toMatch(
+      /\b(?:normalWS|tangentWS|positionOS|uv0And1|uv2And3|uv4And5|uv6And7|objectBasis\d)_?\s*:/,
+    );
+    expect(fields).toMatch(/\buv0_?\s*:\s*vec2<f32>/);
+  }
+  device.destroy();
+  expect(failures).toEqual([]);
 });

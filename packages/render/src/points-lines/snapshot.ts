@@ -24,7 +24,6 @@ export type PointsLinesStyle =
  * from the accepted asset scope when consuming an actual draw.
  */
 export interface PointsLinesRetainedSnapshot {
-  readonly worldId: number;
   readonly entityKey: number;
   readonly component: 'Points' | 'Lines' | undefined;
   readonly meshHandle: number;
@@ -60,7 +59,6 @@ export function createPointsLinesSnapshot(
   input: PointsLinesSnapshotInput,
 ): PointsLinesRetainedSnapshot {
   return {
-    worldId: input.worldId,
     entityKey: input.entityKey,
     component: input.component,
     meshHandle: input.meshHandle,

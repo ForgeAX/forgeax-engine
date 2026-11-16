@@ -19,7 +19,10 @@ export function isOrdinaryMaterialVariant(
     // use by an alpha-cutout material, so they add no boot pipelines.
     variant.defines.ALPHA_MASK !== true &&
     variant.defines.DIRECTIONAL_SHADOW_SIMPLE !== true &&
-    variant.defines.LEAN_LIGHTING !== true
+    variant.defines.LEAN_LIGHTING !== true &&
+    variant.defines.WATER_WAVES_AVAILABLE !== true &&
+    variant.defines.WATER_INFO_RGBA16 !== true &&
+    variant.defines.STANDARD_LEAN_INPUTS !== true
   );
 }
 
@@ -83,6 +86,9 @@ export function selectSkinPrewarmVariants(
         defines.COVERAGE_ONLY !== true &&
         defines.VISIBLE_SURFACE_AVAILABLE !== true &&
         defines.ALPHA_MASK !== true &&
+        defines.WATER_WAVES_AVAILABLE !== true &&
+        defines.WATER_INFO_RGBA16 !== true &&
+        defines.STANDARD_LEAN_INPUTS !== true &&
         (defines.ATMOSPHERE_AVAILABLE ?? false) === atmosphereAvailable &&
         defines.STORAGE_BUFFER_AVAILABLE === storageBufferCapable &&
         defines.PROBE_BLEND_AVAILABLE !== true &&

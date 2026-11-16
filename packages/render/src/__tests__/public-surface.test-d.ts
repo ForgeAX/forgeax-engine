@@ -48,11 +48,7 @@ void publicToneModes;
 declare const lease: RenderWorldLease;
 declare const receipt: FrameReceipt;
 declare const request: FrameObservationRequest;
-const drawRequest: RenderFrameInput = {
-  leases: [lease],
-  camera: { lease },
-  environment: { lease },
-};
+const drawRequest: RenderFrameInput = { source: lease };
 void receipt;
 void request;
 void drawRequest;

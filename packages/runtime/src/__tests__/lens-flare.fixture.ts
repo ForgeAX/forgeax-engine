@@ -176,14 +176,7 @@ export async function verifyLensFlare(
     if (observe) renderValue(requestObservation(['linear-ldr']));
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
-    const receipt = renderValue(
-      renderer.draw({
-        leases: [lease],
-        camera: { lease },
-        environment: { lease },
-        geometryLane: 'direct',
-      }),
-    );
+    const receipt = renderValue(renderer.draw({ source: lease, geometryLane: 'direct' }));
     renderValue(await receipt.completed);
     completedFrames++;
     return receipt;

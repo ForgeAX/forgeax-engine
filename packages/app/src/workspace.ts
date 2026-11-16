@@ -1,3 +1,5 @@
+import { defineSystem } from '@forgeax/engine-ecs';
+
 export type {
   PackDraftField,
   PackDraftReply,
@@ -39,6 +41,7 @@ import {
   workspaceAssetFacts,
   workspaceAssetKind,
 } from './workspace-asset-facts';
+import { inspectWorkspaceCloudMaterial } from './workspace-cloud-material';
 import type { EngineWorkspaceRuntimePackRequest } from './workspace-runtime-pack';
 import type { EngineWorkspaceTargetTools } from './workspace-target-tools';
 
@@ -61,6 +64,8 @@ export const ENGINE_WORKSPACE_PREVIEWABLE_KINDS = [
   'material',
   'mesh',
   'texture',
+  'texture-generator',
+  'gpu-texture',
   'equirect',
   'vfx',
 ] as const;
@@ -319,6 +324,7 @@ export interface EngineWorkspacePlay extends EngineWorkspacePreview {
  * workspace preview below.
  */
 export interface EngineWorkspaceResourcePreviewOwner {
+  readonly refreshContent?: () => void;
   readonly material?: EngineWorkspacePreview['material'];
   readonly texture?: TextureViewControl;
   readonly assetBinding?: EngineWorkspaceAssetBinding;
@@ -956,7 +962,8 @@ function createDefaultWorkspaceCameraInputController(
       },
     });
   };
-  world.addSystem(Update, { name: systemName, queries: [], fn: tick }).unwrap();
+  const systemToken1 = defineSystem({ name: systemName, queries: [], fn: tick });
+  world.addSystem(Update, systemToken1).unwrap();
   return {
     apply,
     get pivot() {
@@ -969,7 +976,7 @@ function createDefaultWorkspaceCameraInputController(
       velocity = [0, 0, 0];
     },
     dispose() {
-      world.removeSystem(Update, systemName);
+      world.removeSystem(Update, systemToken1);
       velocity = [0, 0, 0];
     },
   };
@@ -1599,6 +1606,7 @@ export async function createEngineWorkspaceAppPreview(
         )?.unwrap();
       }
       assetBinding = nextBinding;
+      resourceOwner?.refreshContent?.();
     },
     get target() {
       return target.target;
@@ -1742,6 +1750,7 @@ export function createEngineWorkspaceAppTarget(
   const control = tools?.control;
   const pick = tools?.pick;
   const highlight = tools?.highlight;
+  const assistance = tools?.assistance;
   const preview: EngineWorkspacePreview = {
     get target() {
       return currentTarget;
@@ -1787,9 +1796,19 @@ export function createEngineWorkspaceAppTarget(
       ? {}
       : {
           tools: {
+            ...(assistance
+              ? {
+                  assistance: (
+                    value: import('./workspace-editor-assistance').EngineWorkspaceAssistanceRequest,
+                  ) => {
+                    assertOpen();
+                    return assistance(value);
+                  },
+                }
+              : {}),
             ...(pick
               ? {
-                  pick: (value: { x: number; y: number }) => {
+                  pick: (value: Parameters<NonNullable<EngineWorkspaceTargetTools['pick']>>[0]) => {
                     assertOpen();
                     return pick(value);
                   },
@@ -2009,6 +2028,7 @@ export function createEngineWorkspaceAppTarget(
           connectionId: value.connectionId,
           reason: 'client-disconnected',
         });
+      tools?.revokeConnection?.(value.connectionId);
       tools?.control?.revoke(value.connectionId);
       return camera();
     },
@@ -2064,7 +2084,17 @@ export async function inspectEngineWorkspaceAsset(
     : undefined;
   // Neutral catalog kinds remain inspectable even without a runtime loader.
   const kind = entry?.kind ?? 'mesh';
-  if (kind !== 'mesh' && kind !== 'material' && kind !== 'texture' && kind !== 'equirect')
+  if (kind === 'cloud-material' || kind === 'cloud-material-instance') {
+    return { ...identity, ...(await inspectWorkspaceCloudMaterial(assets, guid, kind, signal)) };
+  }
+  if (
+    kind !== 'mesh' &&
+    kind !== 'material' &&
+    kind !== 'texture' &&
+    kind !== 'equirect' &&
+    kind !== 'texture-generator' &&
+    kind !== 'gpu-texture'
+  )
     return identity;
   const handle = (await assets.load(guid, kind, signal === undefined ? {} : { signal })).unwrap();
   try {

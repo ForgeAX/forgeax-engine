@@ -9,13 +9,11 @@ import { preparedSnapshot } from './gpu-driven-production-fixture';
 it('queries shared geometry/material identity without expanding its consumers', () => {
   const source = preparedSnapshot(1, 3);
   const topology = new BatchTopology();
-  topology.rebuild([
-    { slot: 0, generation: 0, version: 0, worldId: 0, entityKey: 1, snapshot: source },
-  ]);
+  topology.rebuild([{ slot: 0, generation: 0, version: 0, entityKey: 1, snapshot: source }]);
   const owned = new GpuDrawSelection(topology.query(topology.sourcePlan(), undefined).batches);
   expect(owned.ownsAll(source)).toBe(true);
   expect(owned.ownsAll({ ...source, entityKey: 99 })).toBe(true);
-  expect(owned.ownsAll({ ...source, worldId: 1 })).toBe(false);
+  expect(owned.ownsAll({ ...source })).toBe(true);
   expect(owned.ownsAll({ ...source, assetHandle: 4 })).toBe(false);
   const independent = new MaterialResource(source.material.snapshot);
   expect(owned.ownsAll({ ...source, material: independent, materials: [independent] })).toBe(false);
@@ -32,9 +30,7 @@ it('keeps sparse source draw indices and partial GPU ownership', () => {
   if (first === undefined) throw new Error('Missing source geometry');
   const sparse = { ...source, gpuDrivenDraws: [{ ...first, drawItemIndex: 7 }] };
   const topology = new BatchTopology();
-  topology.rebuild([
-    { slot: 0, generation: 0, version: 0, worldId: 0, entityKey: 1, snapshot: sparse },
-  ]);
+  topology.rebuild([{ slot: 0, generation: 0, version: 0, entityKey: 1, snapshot: sparse }]);
   const owned = new GpuDrawSelection(topology.query(topology.sourcePlan(), undefined).batches);
   expect(owned.has(sparse, 7)).toBe(true);
   expect(owned.has(sparse, 0)).toBe(false);
@@ -55,17 +51,16 @@ it('projects visibility from scene slots with independent state during nested ev
     slot,
     generation: 0,
     version: 0,
-    worldId: 0,
     entityKey: 10 + index,
     snapshot: { ...source, entityKey: 10 + index },
   }));
   let nested: Uint32Array | undefined;
   const active = new Set<number>([11]);
   active.has = (entity: number) => {
-    if (entity === 10) nested = suppressedPrimitiveWords(slots, undefined, new Set([10]), 64);
+    if (entity === 10) nested = suppressedPrimitiveWords(slots, new Set([10]), 64);
     return entity === 11;
   };
-  expect([...suppressedPrimitiveWords(slots, undefined, active, 64)]).toEqual([2, 0]);
+  expect([...suppressedPrimitiveWords(slots, active, 64)]).toEqual([2, 0]);
   expect(nested === undefined ? undefined : [...nested]).toEqual([0, 2]);
-  expect([...suppressedPrimitiveWords(slots, undefined, new Set([10, 11]), 64)]).toEqual([0, 0]);
+  expect([...suppressedPrimitiveWords(slots, new Set([10, 11]), 64)]).toEqual([0, 0]);
 });

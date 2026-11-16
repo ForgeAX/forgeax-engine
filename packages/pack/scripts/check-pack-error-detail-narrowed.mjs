@@ -16,7 +16,7 @@
 
 import { join } from 'node:path';
 import process from 'node:process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 // Resolve repo root relative to this file (packages/pack/scripts/)
 const SCRIPT_DIR = fileURLToPath(new URL('.', import.meta.url));
@@ -27,7 +27,7 @@ const tsMorphPath = join(REPO_ROOT, 'node_modules', 'ts-morph', 'dist', 'ts-morp
 
 let Project, SyntaxKind;
 try {
-  const mod = await import(tsMorphPath);
+  const mod = await import(pathToFileURL(tsMorphPath).href);
   Project = mod.Project;
   SyntaxKind = mod.ts.SyntaxKind;
 } catch (e) {

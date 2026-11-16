@@ -1,4 +1,4 @@
-import { Update, World } from '@forgeax/engine/ecs';
+import { defineSystem, Update, World } from '@forgeax/engine/ecs';
 import { defineState, inState, registerStatesPlugin, setNextState } from '@forgeax/engine/state';
 import { defineFeature } from '../../lab/feature';
 
@@ -17,7 +17,7 @@ export default defineFeature({
     const dispose = registerStatesPlugin(world);
     let ticks = 0;
     const running = inState(FLGateGame, 'running');
-    world.addSystem(Update, {
+    const systemToken1 = defineSystem({
       name: 'fl-gate-sim',
       queries: [],
       runIf: running,
@@ -25,6 +25,7 @@ export default defineFeature({
         ticks += 1;
       },
     });
+    world.addSystem(Update, systemToken1);
     world.update(1 / 60);
     checks.equal('skipped while paused', ticks, 0);
     checks.ok('predicate false while paused', !running(world));

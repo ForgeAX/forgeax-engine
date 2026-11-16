@@ -1,7 +1,9 @@
 import type { RhiAdapter, RhiDevice } from '@forgeax/engine-rhi';
-import { describe, expect, it } from 'vitest';
+import { ok } from '@forgeax/engine-types';
+import { describe, expect, it, vi } from 'vitest';
 import {
   deriveDeviceFeatureAdmission,
+  inspectDeviceCapabilities,
   isTimestampQueryAdmitted,
 } from '../assembly/device-feature-admission.js';
 
@@ -23,6 +25,22 @@ function deviceCaps(
 }
 
 describe('shared device feature admission', () => {
+  it.each([
+    undefined,
+    0,
+    8,
+    9,
+    10,
+    16,
+    32,
+  ])('preserves the adapter storage-stage capacity %s for late material publication', (limit) => {
+    const admitted = deriveDeviceFeatureAdmission(
+      adapter([], limit === undefined ? {} : { maxStorageBuffersPerShaderStage: limit }),
+    );
+    expect(admitted.requiredLimits?.maxStorageBuffersPerShaderStage).toBe(
+      limit !== undefined && limit > 8 ? limit : undefined,
+    );
+  });
   it('admits precise HDR and bounded scratch only within adapter capabilities', () => {
     const full = deriveDeviceFeatureAdmission(
       adapter(['float32-filterable', 'float32-blendable', 'texture-formats-tier2'], {
@@ -159,5 +177,138 @@ describe('shared device feature admission', () => {
     expect(deriveDeviceFeatureAdmission(supported)).toEqual(
       deriveDeviceFeatureAdmission(supported),
     );
+  });
+});
+
+describe('actual renderer device inspection', () => {
+  const info = (isFallbackAdapter: unknown = false) => ({
+    vendor: 'actual-vendor',
+    architecture: 'actual-architecture',
+    device: 'actual-device',
+    description: 'actual-description',
+    isFallbackAdapter,
+  });
+  const fixture = (adapterInfo: unknown) => {
+    const operations = {
+      requestAdapter: vi.fn(),
+      requestDevice: vi.fn(),
+      submit: vi.fn(),
+      probe: vi.fn(),
+    };
+    operations.requestAdapter.mockResolvedValue({ requestDevice: operations.requestDevice });
+    const nativeDevice = vi.fn(() =>
+      ok({ adapterInfo, queue: { submit: operations.submit } } as unknown as GPUDevice),
+    );
+    const device = {
+      caps: { backendKind: 'webgpu' },
+      limits: { maxTextureDimension2D: 8192 },
+      nativeDevice,
+      queue: { submit: operations.submit },
+      probeTextureFormatCapability: operations.probe,
+    } as unknown as RhiDevice;
+    return { device, nativeDevice, operations };
+  };
+
+  it.each([
+    false,
+    true,
+  ])('copies the actual native fallback flag %s without requesting GPU work', (fallback) => {
+    const original = info(fallback);
+    const { device, nativeDevice, operations } = fixture(original);
+    vi.stubGlobal('navigator', { gpu: { requestAdapter: operations.requestAdapter } });
+    try {
+      const snapshot = inspectDeviceCapabilities(device, 7).deviceInfo;
+      expect(snapshot).toEqual({ deviceGeneration: 7, adapterInfo: original });
+      expect(nativeDevice).toHaveBeenCalledOnce();
+      for (const operation of Object.values(operations)) expect(operation).not.toHaveBeenCalled();
+      original.vendor = 'later';
+      expect(snapshot?.adapterInfo?.vendor).toBe('actual-vendor');
+      expect(Object.isFrozen(snapshot)).toBe(true);
+      expect(Object.isFrozen(snapshot?.adapterInfo)).toBe(true);
+      expect(structuredClone(snapshot)).toEqual(snapshot);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it.each([
+    undefined,
+    null,
+    'false',
+    0,
+  ])('keeps an unavailable fallback flag %s unknown', (fallback) => {
+    const original = info();
+    Object.assign(original, { isFallbackAdapter: fallback });
+    const { device } = fixture(original);
+    expect(inspectDeviceCapabilities(device, 3).deviceInfo?.adapterInfo).toEqual({
+      ...original,
+      isFallbackAdapter: null,
+    });
+  });
+
+  it.each([
+    undefined,
+    null,
+    {},
+    { vendor: 42 },
+  ])('reports incomplete native adapter information %j as unavailable', (adapterInfo) => {
+    const { device } = fixture(adapterInfo);
+    expect(inspectDeviceCapabilities(device, 4).deviceInfo).toEqual({
+      deviceGeneration: 4,
+      adapterInfo: null,
+    });
+  });
+
+  it('reports unavailable or throwing native access without changing device capabilities', () => {
+    for (const nativeDevice of [
+      () => ({ ok: false }),
+      () => {
+        throw new Error('native access');
+      },
+      () =>
+        ok(
+          Object.defineProperty({}, 'adapterInfo', {
+            get() {
+              throw new Error('native info');
+            },
+          }),
+        ),
+      () =>
+        ok({
+          adapterInfo: Object.defineProperty(info(), 'isFallbackAdapter', {
+            get() {
+              throw new Error('fallback info');
+            },
+          }),
+        }),
+    ]) {
+      const { device } = fixture(info());
+      Object.assign(device, { nativeDevice });
+      const snapshot = inspectDeviceCapabilities(device, 6);
+      expect(snapshot.deviceInfo).toEqual({ deviceGeneration: 6, adapterInfo: null });
+      expect(snapshot.capabilities.backendKind).toBe('webgpu');
+      expect(snapshot.limits.maxTextureDimension2D).toBe(8192);
+    }
+  });
+
+  it('does not read native adapter information when its field is not selected', () => {
+    const { device, nativeDevice } = fixture(info());
+    const snapshot = inspectDeviceCapabilities(device, 5, false);
+    expect(snapshot).not.toHaveProperty('deviceInfo');
+    expect(nativeDevice).not.toHaveBeenCalled();
+  });
+
+  it('reads the current device and generation instead of retaining previous-generation facts', () => {
+    const old = fixture(info(true));
+    const replacement = fixture({ ...info(false), device: 'replacement-device' });
+    const previous = inspectDeviceCapabilities(old.device, 8).deviceInfo;
+    const current = inspectDeviceCapabilities(replacement.device, 9).deviceInfo;
+    expect(previous?.deviceGeneration).toBe(8);
+    expect(previous?.adapterInfo?.isFallbackAdapter).toBe(true);
+    expect(current?.deviceGeneration).toBe(9);
+    expect(current?.adapterInfo?.device).toBe('replacement-device');
+    expect(current?.adapterInfo?.isFallbackAdapter).toBe(false);
+    expect(old.nativeDevice).toHaveBeenCalledOnce();
+    expect(replacement.nativeDevice).toHaveBeenCalledOnce();
   });
 });

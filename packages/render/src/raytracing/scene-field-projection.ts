@@ -136,7 +136,6 @@ export function validateSceneFieldBudget(budget: {
  * occludes nor bounces field GI. It still receives GI and appears in screen traces.
  */
 export interface SceneFieldDeformingSource {
-  readonly worldId: number;
   readonly entityKey: number;
   readonly slot: number;
 }
@@ -190,7 +189,7 @@ type FieldRowEntry =
   | FieldRowFailure;
 
 interface FieldContext {
-  readonly worlds: readonly RenderResourceScope[];
+  readonly sourceScope: RenderResourceScope;
   readonly budget: FieldBudget;
   readonly assets: Pick<AssetRegistry, 'getMaterialProjectionForPayload'>;
 }
@@ -212,7 +211,6 @@ function sameFieldEntry(before: FieldRowEntry, after: FieldRowEntry): boolean {
   return (
     before.kind === 'deforming' &&
     after.kind === 'deforming' &&
-    before.source.worldId === after.source.worldId &&
     before.source.entityKey === after.source.entityKey &&
     before.source.slot === after.source.slot
   );
@@ -242,7 +240,7 @@ export class SceneFieldRows {
   #projection: Result<SceneFieldProjection, RayReferenceError> | undefined;
   #assembled = -1;
   /** Unacknowledged source addresses, not another copy of the complete roster. */
-  readonly #pending = new Map<string, Pick<RenderSceneRecord, 'worldId' | 'slot'>>();
+  readonly #pending = new Map<string, Pick<RenderSceneRecord, 'slot'>>();
   #instanceCount = 0;
   #fieldBytes = 0;
   #failures = 0;
@@ -275,11 +273,11 @@ export class SceneFieldRows {
 
   update(
     rows: ProjectedRows,
-    worlds: readonly RenderResourceScope[],
+    sourceScope: RenderResourceScope,
     budget: FieldBudget,
     assets: Pick<AssetRegistry, 'getMaterialProjectionForPayload'>,
   ): Result<SceneFieldProjection, RayReferenceError> {
-    const synced = this.#sync(rows, worlds, budget, assets);
+    const synced = this.#sync(rows, sourceScope, budget, assets);
     if (!synced.ok) return synced;
     if (this.#projection === undefined || this.#assembled !== this.#rows.revision) {
       this.#projection = this.#assemble(budget);
@@ -291,11 +289,11 @@ export class SceneFieldRows {
   /** Current changed sources only; deferred edits retain their addresses until accepted. */
   changes(
     rows: ProjectedRows,
-    worlds: readonly RenderResourceScope[],
+    sourceScope: RenderResourceScope,
     budget: FieldBudget,
     assets: Pick<AssetRegistry, 'getMaterialProjectionForPayload'>,
   ): Result<FieldEditInput, RayReferenceError> {
-    const synced = this.#sync(rows, worlds, budget, assets);
+    const synced = this.#sync(rows, sourceScope, budget, assets);
     if (!synced.ok) return synced;
     // Invalid inputs retain the cold path's exact ordered errors and budget precedence.
     if (
@@ -313,8 +311,7 @@ export class SceneFieldRows {
     const changedSources = [...this.#pending.values()];
     for (const source of changedSources) {
       const entry = this.#rows.get(source.slot);
-      if (entry?.kind === 'field' && entry.record.worldId === source.worldId)
-        this.#append(entry, projection, geometries);
+      if (entry?.kind === 'field') this.#append(entry, projection, geometries);
     }
     return ok({ ...projection, changedSources });
   }
@@ -328,7 +325,7 @@ export class SceneFieldRows {
 
   #sync(
     rows: ProjectedRows,
-    worlds: readonly RenderResourceScope[],
+    sourceScope: RenderResourceScope,
     budget: FieldBudget,
     assets: Pick<AssetRegistry, 'getMaterialProjectionForPayload'>,
   ): Result<void, RayReferenceError> {
@@ -340,11 +337,10 @@ export class SceneFieldRows {
       before.assets !== assets ||
       before.budget.maxInstances !== budget.maxInstances ||
       before.budget.maxFieldBytes !== budget.maxFieldBytes ||
-      before.worlds.length !== worlds.length ||
-      before.worlds.some((world, index) => world !== worlds[index])
+      before.sourceScope !== sourceScope
     )
       this.reset();
-    this.#context = { worlds, budget, assets };
+    this.#context = { sourceScope, budget, assets };
     const changed = this.#rows.sync(rows);
     for (let i = 0; i < changed.changed.length; i++) {
       const beforeEntry = changed.before[i],
@@ -358,7 +354,7 @@ export class SceneFieldRows {
             : entry?.kind === 'deforming'
               ? entry.source
               : undefined;
-        if (source !== undefined) this.#pending.set(`${source.worldId}:${source.slot}`, source);
+        if (source !== undefined) this.#pending.set(`${source.slot}`, source);
       }
     }
     return ok(undefined);
@@ -480,7 +476,7 @@ export class SceneFieldRows {
   #admit(
     slot: RenderSceneSlot,
     rows: ProjectedRows,
-    { worlds, assets }: FieldContext,
+    { sourceScope, assets }: FieldContext,
     read: ReadAsset,
   ): FieldRowEntry | undefined {
     const source = slot.snapshot;
@@ -489,17 +485,16 @@ export class SceneFieldRows {
       return fail(FieldStage.Source, rayReferenceFailure('retained field has no Mesh source'));
     if (source.authorVisible === false) return undefined;
     if (
-      ![slot.slot, slot.generation, slot.worldId, slot.entityKey].every(
+      ![slot.slot, slot.generation, slot.entityKey].every(
         (v) => Number.isInteger(v) && v >= 0 && v <= 0xffff_ffff,
       ) ||
-      source.worldId !== slot.worldId ||
       source.entityKey !== slot.entityKey
     )
       return fail(
         FieldStage.Source,
         rayReferenceFailure('retained field requires unique, matching scene owner identities'),
       );
-    const scope = worlds[slot.worldId];
+    const scope = sourceScope;
     if (scope === undefined)
       return fail(
         FieldStage.Source,
@@ -518,7 +513,7 @@ export class SceneFieldRows {
     if (isDeformingFieldSource(source, mesh))
       return {
         kind: 'deforming',
-        source: { worldId: slot.worldId, entityKey: slot.entityKey, slot: slot.slot },
+        source: { entityKey: slot.entityKey, slot: slot.slot },
       };
     if (field === undefined)
       return fail(
@@ -556,7 +551,7 @@ export class SceneFieldRows {
     if (geometry !== undefined) return fail(FieldStage.Geometry, geometry, { count });
     const qualified = this.#qualifyField(field, assetRevision);
     if (qualified !== undefined) return fail(FieldStage.Field, qualified, { count });
-    const shared = rows.meshes.get(slot.worldId, source.assetHandle);
+    const shared = rows.meshes.get(source.assetHandle);
     const bindings =
       shared === undefined
         ? source
@@ -568,7 +563,6 @@ export class SceneFieldRows {
     return {
       kind: 'field',
       record: {
-        worldId: slot.worldId,
         entityKey: slot.entityKey,
         slot: slot.slot,
         generation: slot.generation,
@@ -601,7 +595,11 @@ export class SceneFieldRows {
     const cached = this.#fields.get(field);
     if (cached?.revision === revision) return cached.result;
     let result: Result<never, RayReferenceError> | undefined;
-    if (!hasAdmittedFieldArtifact(field))
+    if (field.policy.kind !== 'sampled-visibility')
+      result = rayReferenceFailure(
+        `field GI traces sampled-visibility mesh distance fields only; this mesh carries a ${field.policy.kind} field (buildMeshDistanceField). Build it with buildVisibilityDistanceField, or cookMeshDistanceFieldProduct with a numeric voxelSize`,
+      );
+    else if (!hasAdmittedFieldArtifact(field))
       result = rayReferenceFailure(
         'retained field requires its admitted sampled-visibility artifact Integrity and Codec',
       );
@@ -617,7 +615,7 @@ export class SceneFieldRows {
 /** One cold projection of a fixed composition; persistent consumers keep a {@link SceneFieldRows}. */
 export function projectSceneFields(
   slots: FrameList<RenderSceneSlot>,
-  worlds: readonly RenderResourceScope[],
+  sourceScope: RenderResourceScope,
   budget: FieldBudget,
   assets: Pick<AssetRegistry, 'getMaterialProjectionForPayload'>,
   frame?: { readonly materials: MaterialFrame; readonly meshes: MeshFrame },
@@ -629,7 +627,7 @@ export function projectSceneFields(
       materials: frame?.materials ?? new MaterialFrame(undefined),
       meshes: frame?.meshes ?? new MeshFrame(),
     },
-    worlds,
+    sourceScope,
     budget,
     assets,
   );

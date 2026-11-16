@@ -93,11 +93,7 @@ it('submits resident LOD1, then admits late LOD2 without using retired mesh buff
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
     device.pushErrorScope('validation');
-    const receipt = await drawReadyFrame(renderer, {
-      leases: [lease],
-      camera: { lease },
-      environment: { lease },
-    });
+    const receipt = await drawReadyFrame(renderer, { source: lease });
     const validation = device.popErrorScope();
     expect(await validation, `native validation at frame ${receipt.frameId}`).toBeNull();
   };

@@ -984,7 +984,7 @@ describe('display Frontend Fiber surface ownership', () => {
     }
   });
 
-  it('submits the starting Play extent through Engine before readiness and revokes detached requests', async () => {
+  it('submits the starting Play extent and removes identity transforms after Engine confirmation', async () => {
     const previous = globalThis.ResizeObserver;
     globalThis.ResizeObserver = class {
       constructor(callback) { this.callback = callback; }
@@ -1032,16 +1032,23 @@ describe('display Frontend Fiber surface ownership', () => {
       assert.equal(requests[0].width, 1920);
       assert.equal(requests[0].height, 1080);
       assert.equal(target.width, 1280, 'Only Engine confirmation changes the target extent');
+      const frame = root.children.find(element => element.tagName === 'IFRAME');
+      assert.equal(frame.style.transform, 'scale(1.5)', 'The unconfirmed target still needs real fit scaling');
       await new Promise(resolve => setTimeout(resolve, 130));
       assert.equal(requests.length, 1, 'ResizeObserver must not duplicate the extent while Engine readiness is pending');
       state = { ...state, play: { ...state.play, phase: 'running' } }; publish(state);
       ready();
       await new Promise(resolve => setImmediate(resolve));
       assert.equal(requests.length, 1, 'The pending initial resize survives the starting-to-running publication');
-      const frame = root.children.find(element => element.tagName === 'IFRAME');
       assert.equal(frame.style.width, '960px');
       assert.equal(frame.style.height, '540px');
-      assert.equal(frame.style.transform, 'scale(1)');
+      assert.equal(frame.style.transform, 'none');
+      assert.equal(frame.style.left, '10px');
+      assert.equal(frame.style.top, '20px');
+      state = { ...state, play: { ...state.play, target: { ...state.play.target, width: 3840, height: 2160 } } }; publish(state);
+      assert.equal(frame.style.transform, 'scale(0.5)', 'A larger target retains real downscaling');
+      state = { ...state, play: { ...state.play, target: { ...state.play.target, width: 1920, height: 1080 } } }; publish(state);
+      assert.equal(frame.style.transform, 'none', 'Returning to the confirmed extent clears the previous transform');
       detach();
       assert.equal(requests[0].signal.aborted, true);
       assert.equal(frame.style.visibility, 'visible');

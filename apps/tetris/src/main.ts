@@ -207,11 +207,7 @@ async function bootstrap(): Promise<void> {
     paint();
     updateHud();
     world.update().unwrap();
-    const r = renderer.draw({
-      leases: [lease],
-      camera: { lease },
-      environment: { lease },
-    });
+    const r = renderer.draw({ source: lease });
     if (!r.ok) {
       console.error('[tetris] draw error:', r.error);
       pushError(r.error.code, r.error.hint);

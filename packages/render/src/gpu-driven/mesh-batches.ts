@@ -46,7 +46,7 @@ export function meshGeometryDraws(
     location: attribute.shaderLocation,
     format: attribute.format,
   }));
-  const identity = `${mesh.worldId}:${mesh.handle}:${mesh.layout.digest}`;
+  const identity = `${mesh.handle}:${mesh.layout.digest}`;
   let vertexStart = 0;
   const draws = mesh.submeshes.map((submesh, drawItemIndex): GpuDrivenDrawSnapshot => {
     const material = materials[submesh.materialSlot] ?? defaultMeshMaterial;
@@ -124,7 +124,6 @@ function meshDraws(source: MeshBatchSource, mesh: MeshGeometry): readonly Eligib
     return Object.freeze({
       sourceDrawIndex: drawItemIndex,
       binding: Object.freeze({
-        worldId: mesh.worldId,
         assetHandle: mesh.handle,
         ...(lods === undefined ? {} : { lods }),
         material: materials.materials[draw.materialSlot] ?? materials.material,
@@ -137,7 +136,6 @@ function meshDraws(source: MeshBatchSource, mesh: MeshGeometry): readonly Eligib
       }),
       key: Object.freeze({
         drawItemIndex,
-        worldId: mesh.worldId,
         assetHandle: mesh.handle,
         drawKind: draw.kind,
         first: draw.first,
@@ -286,9 +284,7 @@ export class MeshBatchProjection {
         meshes.changesSince(this.meshes, (before, after) => {
           const geometry = after ?? before;
           if (geometry === undefined) return;
-          for (const member of this.sourcesByMesh
-            .get(`${geometry.worldId}:${geometry.handle}`)
-            ?.values() ?? [])
+          for (const member of this.sourcesByMesh.get(`${geometry.handle}`)?.values() ?? [])
             if (batches.get(member.batchId) === member) touched.set(member.batchId, member);
         });
       for (const member of touched.values()) this.update(member, meshes);
@@ -337,7 +333,7 @@ export class MeshBatchProjection {
   private index(member: GpuDrivenBatch): void {
     const binding = member.binding;
     if (binding === undefined) return;
-    const key = `${binding.worldId}:${binding.assetHandle}`;
+    const key = `${binding.assetHandle}`;
     const previous = this.meshKeyBySource.get(member.batchId);
     if (previous !== undefined && previous !== key) this.unindex(member.batchId);
     this.meshKeyBySource.set(member.batchId, key);
@@ -368,7 +364,7 @@ export class MeshBatchProjection {
     if (binding === undefined) throw new Error('Mesh membership requires its source binding');
     this.index(member);
     const authored = binding.source;
-    const mesh = meshes?.get(binding.worldId, binding.assetHandle);
+    const mesh = meshes?.get(binding.assetHandle);
     const draws =
       authored === undefined ? [] : mesh === undefined ? authored.draws : meshDraws(authored, mesh);
     let group = this.groups.get(member.batchId);

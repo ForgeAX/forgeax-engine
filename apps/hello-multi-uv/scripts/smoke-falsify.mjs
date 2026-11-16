@@ -20,9 +20,9 @@ import { readShaderManifestPublication } from '@forgeax/engine-shader';
 //       the checkerboard difference was not from uv1 data; AC-10
 //       must be arbitrated by human Read(image). DEGENERATE.
 
-import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
+import { readShaderManifestText } from '../../../scripts/lib/shader-manifest.mjs';
 
 const SMOKE_MIN_FRAMES = 60;
 const SMOKE_PIXEL_THRESHOLD = 0.05;
@@ -196,7 +196,7 @@ const { Transform } = await import('@forgeax/engine-scene');
 const { Camera, DirectionalLight, MeshFilter, MeshRenderer } = await import('@forgeax/engine-render');
 
 const { createPublicationAssets } = await import('@forgeax/engine-runtime/internal/renderer-host');
-const assets = await createPublicationAssets({shaderManifestUrl: `data:application/json,${encodeURIComponent(readFileSync(new URL('../dist/shaders/manifest.json', import.meta.url), 'utf8'))}`});
+const assets = await createPublicationAssets({shaderManifestUrl: `data:application/json,${encodeURIComponent(readShaderManifestText(new URL('../dist/shaders/manifest.json', import.meta.url)))}`});
 const world = new World({assets});
 const DEMO_MATERIAL_SHADER_PATH = 'hello-multi-uv::multi-uv-demo';
 const baseColorTextureHandle = assets.create(solidTexture([255, 128, 64, 255])).unwrap();
@@ -247,7 +247,7 @@ const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
 let MANIFEST_URL;
 let manifestParsed;
 try {
-  const manifestRaw = readFileSync(MANIFEST_PATH, 'utf8');
+  const manifestRaw = readShaderManifestText(MANIFEST_PATH);
   MANIFEST_URL = `data:application/json,${encodeURIComponent(manifestRaw)}`;
   manifestParsed = await readShaderManifestPublication(JSON.parse(manifestRaw));
 } catch {
@@ -269,11 +269,7 @@ try {
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const lease = worldAttachment1.value;
-const drawFrame = () => drawReadyFrame(renderer, {
-  leases: [lease],
-  camera: { lease },
-  environment: { lease },
-});
+const drawFrame = () => drawReadyFrame(renderer, { source: lease });
 
 
 const errors = [];

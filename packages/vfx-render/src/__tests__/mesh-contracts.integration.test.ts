@@ -5,7 +5,6 @@ import type { MeshAsset, ParticleEffectAsset } from '@forgeax/engine-types';
 import {
   ParticleEffectPlayer,
   VFX_GPU_RUNTIME_RESOURCE_KEY,
-  type VfxGpuRuntime,
   vfxGpuRuntimePlugin,
 } from '@forgeax/engine-vfx';
 import { cookParticleCodeProgram } from '@forgeax/engine-vfx-compiler';
@@ -99,7 +98,7 @@ async function fixture(
     })
     .unwrap();
   const context = await createWorldContext(world, [vfxGpuRuntimePlugin()]);
-  const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+  const runtime = world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY);
   const feature = gpuParticleRenderFeature({
     playerConsumption: { isEnabled: isConsumed },
     mesh: { read: () => geometry },
@@ -115,11 +114,10 @@ async function fixture(
   });
   const targets = [{ name: 'color', kind: 'color', format: 'rgba8unorm', sampleCount: 1 }] as const;
   let frameNumber = 0;
-  const frame = (leadingWorld?: World, generation = 0) => {
+  const frame = (materialContract = false, generation = 0) => {
     const extracted = feature
       .extract({
-        worlds: leadingWorld === undefined ? [world] : [leadingWorld, world],
-        owner: 0,
+        world,
         views: [{ identity: 'main', render: true }],
         frameNumber: ++frameNumber,
       })
@@ -133,7 +131,7 @@ async function fixture(
           frame: { frameNumber },
           generation,
           sceneData: {} as never,
-          ...(leadingWorld === undefined
+          ...(!materialContract
             ? {}
             : {
                 materialShaderBindingContract: () => ({ bindings: 'render-material' as const }),
@@ -148,16 +146,17 @@ async function fixture(
   return { world, player, runtime, frame, dispose: () => context.fiber.dispose() };
 }
 
-it('keeps material scope in the original composition when a preceding World has no VFX', async () => {
+it('binds the material from its single source asset domain', async () => {
   const f = await fixture([emitter('world-isolation')]);
   try {
-    const { plan } = f.frame(new World({ assets: new AssetRegistry() }));
+    const { plan } = f.frame(true);
     const bindings = planResources(plan).filter(
       (resource) => resource.kind === 'graphics-bindings' && resource.values.group === 1,
     );
     expect(bindings.length).toBeGreaterThan(0);
     for (const resource of bindings)
-      expect(resource).toMatchObject({ values: { material: { world: 1 } } });
+      expect(resource).toMatchObject({ values: { material: { handle: expect.any(Number) } } });
+    for (const resource of bindings) expect(resource.values.material).not.toHaveProperty('world');
   } finally {
     await f.dispose();
   }
@@ -366,7 +365,7 @@ it.each([
     () => consumed,
   );
   const frame = (count: number, generation = 0) => {
-    const result = f.frame(undefined, generation);
+    const result = f.frame(false, generation);
     const passes = planPasses(result.plan);
     for (const suffix of ['.copy', '.project', '.shadow']) {
       expect(passes.filter((pass) => pass.name.endsWith(suffix))).toHaveLength(count);

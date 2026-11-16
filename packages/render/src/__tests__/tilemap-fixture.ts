@@ -6,7 +6,7 @@ import { DEFAULT_UNLIT_PARAM_SCHEMA } from '@forgeax/engine-shader';
 import type { TilesetAsset } from '@forgeax/engine-types';
 import { CAMERA_PROJECTION_ORTHOGRAPHIC, Camera } from '../components';
 import { Tilemap } from '../components/tilemap';
-import { extractFrames } from '../render-system-extract-tail';
+import { extractSource } from '../render-system-extract-tail';
 import { PersistentRenderScene } from '../scene/render-scene';
 
 export function tilemapFixture(
@@ -85,21 +85,19 @@ export function tilemapFixture(
     )
     .unwrap();
   const scene = new PersistentRenderScene({ assets }),
-    lease = createRenderReadLease(world),
-    owners = { cameraOwner: 0, resourceOwner: 0 };
+    lease = createRenderReadLease(world);
   const draw = () => {
     world.update(0).unwrap();
     return scene.extractComposition(
-      [world],
-      owners,
+      world,
       assets,
       (request) =>
-        extractFrames([world], owners, assets, scene.materialSnapshotCacheStore(), {
+        extractSource(world, assets, scene.materialSnapshotCacheStore(), {
           cull: 'none',
           retainHidden: true,
           renderables: request,
         }),
-      [lease],
+      lease,
     );
   };
   const dispose = () => {

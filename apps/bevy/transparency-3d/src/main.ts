@@ -1,3 +1,4 @@
+import { defineSystem } from "@forgeax/engine-ecs";
 import { createApp } from '@forgeax/engine-app/browser';
 import { Time, Update } from '@forgeax/engine-ecs';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
@@ -25,16 +26,17 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   const assets = app.assets;
   if (assets === undefined) throw new Error('asset owner unavailable');
   const scene = buildTransparencyWorld(app.world, assets, target.width / Math.max(target.height, 1));
-  app.world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'fade-transparency',
     queries: [],
     fn: (world) => {
-      const elapsed = world.hasResource('Time')
-        ? world.getResource<{ dt: number; elapsed: number }>(Time).elapsed
+      const elapsed = world.hasResource(Time)
+        ? world.getResource(Time).elapsed
         : 0;
       stepTransparencyAlpha(assets, scene, elapsed);
     },
   });
+app.world.addSystem(Update, systemToken1);
   app.onError((error) => console.error('[bevy-transparency-3d] app error:', error.code, error.hint));
   const started = app.start();
   if (!started.ok) console.error('[bevy-transparency-3d] app.start failed:', started.error);

@@ -1,6 +1,8 @@
+import { InputFrameStartScan } from "@forgeax/engine-input";
+import { defineSystem } from "@forgeax/engine-ecs";
 import { createApp } from '@forgeax/engine-app/browser';
 import { Update } from '@forgeax/engine-ecs';
-import { FRAME_START_SCAN_SYSTEM_NAME, INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine-input';
+import { INPUT_SNAPSHOT_RESOURCE_KEY } from '@forgeax/engine-input';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { buildGamepadInputWorld, stepGamepadInput } from './gamepad-input';
 
@@ -15,12 +17,13 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   }
   const app = appResult.value;
   const state = buildGamepadInputWorld(app.world);
-  app.world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'bevy-gamepad-input-read',
-    after: [FRAME_START_SCAN_SYSTEM_NAME],
+    after: [InputFrameStartScan],
     queries: [],
-    fn: (world) => stepGamepadInput(world, world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY)),
+    fn: (world) => stepGamepadInput(world, world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY)),
   });
+app.world.addSystem(Update, systemToken1);
   const started = app.start();
   if (!started.ok) {
     console.error('[bevy-gamepad-input] app.start failed:', started.error.code, started.error.hint);

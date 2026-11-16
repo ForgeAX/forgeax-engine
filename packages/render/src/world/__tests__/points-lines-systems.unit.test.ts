@@ -1,4 +1,7 @@
+import { defineSystem, World } from '@forgeax/engine-ecs';
 import { describe, expect, it, vi } from 'vitest';
+import { registeredSystem } from '../../__tests__/registered-system.fixture';
+import { viewSourceFixture } from '../../__tests__/view-source.fixture';
 import {
   type PointsLinesFrameOutcome,
   type PreparedPointsLines,
@@ -9,7 +12,6 @@ import type { CameraSnapshot } from '../../render-contract';
 import type { ExtractedFrame } from '../../render-system-extract';
 import { RENDER_CASCADE_FIT_SYSTEM } from '../light-systems';
 import {
-  POINTS_LINES_COMMIT_SYSTEM,
   POINTS_LINES_SETTLE_SYSTEM,
   registerPointsLinesSystems,
   VIEW_POINTS_LINES_SYSTEM,
@@ -60,16 +62,22 @@ function setup(removed = false) {
   const world = createRenderWorld();
   const views = new RenderViews(world);
   registerPointsLinesSystems(world);
-  if (removed) world.removeSystem(RenderCommit, POINTS_LINES_COMMIT_SYSTEM).unwrap();
-  world.insertResource(RenderViewInput, {
-    cameras: [camera],
-    captures: [],
-    primary: false,
-    primaryCamera: undefined,
-    canvas: { width: 64, height: 64 },
-    attachment: () => 'w',
-    targetExtent: () => undefined,
-  });
+  if (removed)
+    world
+      .removeSystem(RenderCommit, registeredSystem(world, RenderCommit, 'points-lines-commit'))
+      .unwrap();
+  world.insertResource(
+    RenderViewInput,
+    viewSourceFixture({
+      cameras: [camera],
+      captures: [],
+      primary: false,
+      primaryCamera: undefined,
+      canvas: { width: 64, height: 64 },
+      attachment: 'w',
+      targetExtent: () => undefined,
+    }),
+  );
   beginRenderFrame(world, 1);
   const entity = views.ordered[0] as NonNullable<(typeof views.ordered)[0]>;
   const calls: string[] = [];
@@ -113,13 +121,15 @@ describe('points-lines systems', () => {
 });
 
 describe('view-points-lines system', () => {
-  const opts = { cameraOwner: 0, resourceOwner: 0 } as const;
+  const opts = {} as const;
 
   function stagedSetup(prepare: (owner: StandardPointsLinesOwner) => PointsLinesFrameOutcome) {
     const world = createRenderWorld();
     world.insertResource(
       RenderViewInput,
-      new RenderViewFrameSource({ canvas: { width: 8, height: 8 } }),
+      Object.assign(new RenderViewFrameSource({ canvas: { width: 8, height: 8 } }), {
+        world: new World(),
+      }),
     );
     registerPointsLinesSystems(world);
     const recorder = {
@@ -152,13 +162,12 @@ describe('view-points-lines system', () => {
       vi.spyOn(owner, 'prepareFrame').mockImplementation(() => prepare(owner));
       owners.set(entity, owner);
     }
-    world
-      .addSystem(RenderExtract, {
-        name: RENDER_VIEW_RECORDERS_SYSTEM,
-        queries: [],
-        fn: (world) => stageViewFrame(world, staged, opts),
-      })
-      .unwrap();
+    const systemToken1 = defineSystem({
+      name: RENDER_VIEW_RECORDERS_SYSTEM,
+      queries: [],
+      fn: (world) => stageViewFrame(world, staged, opts),
+    });
+    world.addSystem(RenderExtract, systemToken1).unwrap();
     return { world, staged, held, owners, capacity };
   }
 
@@ -186,8 +195,8 @@ describe('view-points-lines system', () => {
 
   it('grows the view buffer to the prepared slots in RenderPrepare, before recording', () => {
     const rows = new Map([
-      ['0:1', { submission: undefined, slot: 0, stale: () => false }],
-      ['0:2', { submission: undefined, slot: 1, stale: () => false }],
+      ['1', { submission: undefined, slot: 0, stale: () => false }],
+      ['2', { submission: undefined, slot: 1, stale: () => false }],
     ]);
     const { world, capacity } = stagedSetup(() => ({ ok: true, rows, slots: 2 }));
     beginRenderFrame(world, 1);
@@ -215,13 +224,13 @@ describe('view-points-lines system', () => {
     const row = { submission: {}, slot: 3, stale: () => false } as unknown as PreparedPointsLines;
     const { world, staged } = stagedSetup(() => ({
       ok: true,
-      rows: new Map([['0:1', row]]),
+      rows: new Map([['1', row]]),
       slots: 4,
     }));
     beginRenderFrame(world, 1);
     expect(preparedPointsLinesSlots(internalsOf(world, staged))).toBe(4);
     const rows = consumeViewPointsLines(internalsOf(world, staged));
-    expect(rows?.slot({ source: { worldId: 0, entityKey: 1 } } as never)).toBe(3);
+    expect(rows?.slot({ source: { entityKey: 1 } } as never)).toBe(3);
     endRenderFrame(world);
   });
 
@@ -251,7 +260,9 @@ describe('view-points-lines system', () => {
 
   it('stages nothing once the system is removed', () => {
     const { world, staged, owners } = stagedSetup(() => ({ ok: true, rows: new Map(), slots: 0 }));
-    world.removeSystem(RenderPrepare, VIEW_POINTS_LINES_SYSTEM).unwrap();
+    world
+      .removeSystem(RenderPrepare, registeredSystem(world, RenderPrepare, 'view-points-lines'))
+      .unwrap();
     beginRenderFrame(world, 1);
     expect(owners.get(staged)?.stagedOutcome(1)).toBeUndefined();
     endRenderFrame(world);
@@ -259,7 +270,9 @@ describe('view-points-lines system', () => {
 
   it('keeps an unsettled outcome once the settle system is removed', () => {
     const { world, staged, owners } = stagedSetup(() => ({ ok: true, rows: new Map(), slots: 0 }));
-    world.removeSystem(RenderCleanup, POINTS_LINES_SETTLE_SYSTEM).unwrap();
+    world
+      .removeSystem(RenderCleanup, registeredSystem(world, RenderCleanup, 'points-lines-settle'))
+      .unwrap();
     beginRenderFrame(world, 1);
     endRenderFrame(world);
     expect(owners.get(staged)?.stagedOutcome(1)).toBeDefined();
@@ -282,7 +295,7 @@ describe('view-points-lines system', () => {
     const row = { submission: {}, slot: 0, stale: () => stale } as unknown as PreparedPointsLines;
     const { world, staged } = stagedSetup(() => ({
       ok: true,
-      rows: new Map([['0:1', row]]),
+      rows: new Map([['1', row]]),
       slots: 1,
     }));
     beginRenderFrame(world, 1);
@@ -304,7 +317,7 @@ describe('view-points-lines system', () => {
 
 describe('Points/Lines frame preparation set', () => {
   const row = (entityKey: number, extra: object = {}) =>
-    ({ worldId: 0, entityKey, pointsLines: {}, ...extra }) as never;
+    ({ entityKey, pointsLines: {}, ...extra }) as never;
 
   it('prepares the whole retained set, for every row of the set it is given', () => {
     const owner = new StandardPointsLinesOwner({} as never);
@@ -315,7 +328,7 @@ describe('Points/Lines frame preparation set', () => {
       () => ({ assetRevision: () => 1 }) as never,
       true,
     );
-    expect(outcome.ok && [...outcome.rows.keys()]).toEqual(['0:1', '0:2', '0:3']);
+    expect(outcome.ok && [...outcome.rows.keys()]).toEqual(['1', '2', '3']);
     expect(outcome.ok && [...outcome.rows.values()].map((prepared) => prepared.slot)).toEqual([
       0, 1, 2,
     ]);

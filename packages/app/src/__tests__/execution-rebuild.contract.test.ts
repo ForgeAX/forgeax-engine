@@ -1,4 +1,4 @@
-import { Update, World } from '@forgeax/engine-ecs';
+import { defineSystem, Update, World } from '@forgeax/engine-ecs';
 import { describe, expect, it } from 'vitest';
 import { createExecutionReport, unavailableExecutionCapabilities } from '../execution';
 import { createLocalExecutionControl } from '../execution/control';
@@ -31,15 +31,14 @@ describe('execution rebuild contract', () => {
 
     control.setEngineHealth('running');
     expect(control.report().engine.health).toBe('running');
-    world
-      .addSystem(Update, {
-        name: 'execution-contract-failure',
-        queries: [],
-        fn() {
-          throw new Error('execution contract failure');
-        },
-      })
-      .unwrap();
+    const systemToken1 = defineSystem({
+      name: 'execution-contract-failure',
+      queries: [],
+      fn() {
+        throw new Error('execution contract failure');
+      },
+    });
+    world.addSystem(Update, systemToken1).unwrap();
     expect(world.update(1 / 60).ok).toBe(false);
     expect(control.report().world).toEqual({
       identity: world.identity,

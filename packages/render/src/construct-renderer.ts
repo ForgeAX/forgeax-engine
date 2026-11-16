@@ -77,6 +77,14 @@ export async function constructRendererHost(
     if (options?.dynamicGeometryMeshBudgetBytes !== undefined)
       validateDynamicGeometryMeshBudget(options.dynamicGeometryMeshBudgetBytes);
     if (options?.assetBudgetBytes !== undefined) validateAssetBudgetBytes(options.assetBudgetBytes);
+    if (
+      options?.featureTextureReadbackBudgetBytes !== undefined &&
+      (!Number.isSafeInteger(options.featureTextureReadbackBudgetBytes) ||
+        options.featureTextureReadbackBudgetBytes < 0)
+    )
+      throw new RangeError(
+        'featureTextureReadbackBudgetBytes must be an explicit non-negative safe integer',
+      );
     const implementation = await createRenderer(canvas, options, bundler, backend);
     const initialization = implementation.initialization.then(
       (ready): RenderResult<void, RenderError> =>
@@ -93,10 +101,21 @@ export async function constructRendererHost(
     // A host with CPU UI starts its App before awaiting scene work. Hosts
     // without a presentation source retain the ordinary ready-to-draw barrier.
     if (options?.ui === undefined) {
-      const initialized = await initialization;
-      if (!initialized.ok) {
+      const ready = await implementation.initialization;
+      if (!ready.ok) {
         implementation.dispose();
-        return initialized;
+        // Losing the device before the first frame is an environment failure:
+        // the caller may assemble another backend instead of reporting a
+        // renderer contract defect.
+        if (ready.error.code === 'device-lost')
+          return {
+            ok: false,
+            error: new EngineEnvironmentError('device lost during renderer initialization', {
+              webgpuError: ready.error,
+            }),
+          };
+        const initialized = await initialization;
+        if (!initialized.ok) return initialized;
       }
     }
     return {

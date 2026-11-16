@@ -10,7 +10,11 @@ import { describe, expect, it } from 'vitest';
 import { AssetRegistry } from '../asset-registry.js';
 import { runtimeAssets } from '../internal/runtime-assets.js';
 import type { MaterialReady } from '../material/loader.js';
-import { MATERIAL_CONTEXT, materialRecordFixture } from './fixtures/material-publication.js';
+import {
+  fixtureSelections,
+  MATERIAL_CONTEXT,
+  materialRecordFixture,
+} from './fixtures/material-publication.js';
 import { loadMaterialFixture } from './fixtures/runtime-material';
 import { publishRuntimeAssets } from './fixtures/runtime-publication';
 
@@ -40,7 +44,7 @@ function ready(
         digest: createMaterialArtifactDigest(bytes),
         bytes,
       },
-      selections: [{ pass: 'Forward', context: MATERIAL_CONTEXT }],
+      selections: fixtureSelections('Forward', MATERIAL_CONTEXT),
     },
   ];
   const base = materialRecordFixture({
@@ -76,13 +80,12 @@ function ready(
 }
 
 describe('material specialization runtime consumer', async () => {
-  it('keeps immutable artifacts by specialization key and rejects conflicting bytes', async () => {
+  it('keeps the program first admitted for a specialization key', async () => {
     const assets = new AssetRegistry({ shaderRegistry: createShaderRegistry() });
     (await loadMaterialFixture(assets, ready(1, 'key-a', 'variant-a').record)).unwrap();
     (await loadMaterialFixture(assets, ready(1, 'key-a', 'variant-a').record)).unwrap();
-    await expect(
-      loadMaterialFixture(assets, ready(1, 'key-a', 'variant-b').record),
-    ).rejects.toMatchObject({ code: 'material-artifact-conflict' });
+    // A cooked key names its content; a repeated key reuses the admitted program.
+    (await loadMaterialFixture(assets, ready(1, 'key-a', 'variant-b').record)).unwrap();
     expect(assets.getMaterialArtifact('key-a')?.bytes).toEqual(
       new TextEncoder().encode('variant-a'),
     );
@@ -98,9 +101,14 @@ describe('material specialization runtime consumer', async () => {
       new TextEncoder().encode('variant-b'),
     );
   });
-  it('rejects a specialization schema conflict even when artifact bytes are unchanged', async () => {
+  it('rejects a schema conflict for a key held outside runtime admission', async () => {
     const assets = new AssetRegistry({ shaderRegistry: createShaderRegistry() });
-    (await loadMaterialFixture(assets, ready(1, 'key-a', 'variant-a').record)).unwrap();
+    const record = ready(1, 'key-a', 'variant-a').record;
+    const program = record.programs[0];
+    if (program === undefined) throw new Error('missing program');
+    assets.materialArtifactRegistry
+      .register({ key: 'key-a', bytes: program.artifact.bytes, metadata: { paramSchema: [] } })
+      .unwrap();
     await expect(
       loadMaterialFixture(
         assets,
@@ -168,6 +176,9 @@ describe('material specialization runtime consumer', async () => {
         runtimeAssets(assets).borrow<MaterialAsset>(copy).unwrap(),
       )?.specializationKey,
     ).toBe('key-a');
+    // A handle holder reads the same projection; a detached read is not the accepted payload.
+    expect(assets.getMaterialProjection(copy).unwrap()?.specializationKey).toBe('key-a');
+    expect(assets.getMaterialProjectionForPayload(assets.read(copy).unwrap())).toBeUndefined();
     expect(b.projection?.specializationKey).toBe('key-b');
     assets.release(copy).unwrap();
   });

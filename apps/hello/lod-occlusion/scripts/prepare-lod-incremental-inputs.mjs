@@ -10,6 +10,7 @@ import { gltfImporter } from '@forgeax/engine-gltf';
 import { ImporterRegistry, normaliseForPack, produceSourcePackage } from '@forgeax/engine-import';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import { isEngineMaterial, readShaderManifestPublication } from '@forgeax/engine-shader';
+import { decodeShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 
 const appRoot = fileURLToPath(new URL('../', import.meta.url));
 const baseline = 'f34758bab0284ac1d63f55b701170ab4d8793299';
@@ -108,7 +109,7 @@ export async function prepareLodIncrementalInputs(options) {
   let shaderBytes;
   if (options.shaderManifest !== undefined) {
     shaderBytes = await readFile(resolve(options.shaderManifest));
-    const expanded = await readShaderManifestPublication(JSON.parse(shaderBytes.toString('utf8')));
+    const expanded = await readShaderManifestPublication(JSON.parse(decodeShaderManifestText(shaderBytes)));
     /** @type {{ materialShaders?: {identifier: string}[] }} */
     const publication = /** @type {{ materialShaders?: {identifier: string}[] }} */ (expanded);
     if (

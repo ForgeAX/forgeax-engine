@@ -577,19 +577,6 @@
       ]
     },
     {
-      "package": "@forgeax/hello-multi-world",
-      "path": "apps/hello/multi-world/package.json",
-      "classification": "run",
-      "gates": [
-        {
-          "gateId": "hello-multi-world/smoke",
-          "commandId": "smoke",
-          "executionClass": "independent",
-          "oracle": "frameReceipt"
-        }
-      ]
-    },
-    {
       "package": "@forgeax/hello-multithreaded-execution",
       "path": "apps/hello/multithreaded-execution/package.json",
       "classification": "excluded",
@@ -1034,7 +1021,7 @@
           "oracle": "frameReceipt"
         }
       ],
-      "reason": "Core CI retains hello-multi-world; the tutorial Browser bootstrap remains covered."
+      "reason": "Core CI retains the single-source Renderer smokes; the tutorial Browser bootstrap remains covered."
     },
     {
       "package": "@forgeax/app-learn-render-1-getting-started-7-camera",

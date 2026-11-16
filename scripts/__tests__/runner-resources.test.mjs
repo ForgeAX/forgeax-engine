@@ -9,6 +9,7 @@ import {
   readMemoryPressureDiagnostics,
   runnerResources,
   shaderCompileWorkers,
+  shaderProducerHeapSize,
   workspaceConcurrency,
 } from '../lib/runner-resources.mjs';
 
@@ -109,6 +110,16 @@ test('shader production respects CPU, memory and the same sixteen-worker ceiling
   assert.equal(shaderCompileWorkers(container, '64'), 7);
   assert.equal(shaderCompileWorkers(container, '2'), 2);
   assert.equal(shaderCompileWorkers(container, 'invalid'), 7);
+});
+
+test('shader producer heap grows with runner memory and preserves native headroom', () => {
+  assert.equal(shaderProducerHeapSize({ memoryBytes: 8 * 1024 ** 3 }), 4096);
+  assert.equal(shaderProducerHeapSize({ memoryBytes: 12 * 1024 ** 3 }), 6144);
+  assert.equal(shaderProducerHeapSize({ memoryBytes: 16 * 1024 ** 3 }), 8192);
+  assert.equal(shaderProducerHeapSize({ memoryBytes: 24 * 1024 ** 3 }), 12288);
+  assert.equal(shaderProducerHeapSize({ memoryBytes: 32 * 1024 ** 3 }), 16384);
+  assert.equal(shaderProducerHeapSize({ memoryBytes: 48 * 1024 ** 3 }), 24576);
+  assert.equal(shaderProducerHeapSize({ memoryBytes: 128 * 1024 ** 3 }), 24576);
 });
 
 test('parallel compiler owners share container resources and retain smaller overrides', () => {

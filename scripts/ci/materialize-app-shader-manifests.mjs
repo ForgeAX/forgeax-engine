@@ -11,6 +11,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
+import { readShaderManifestText } from '../lib/shader-manifest.mjs';
 import {
   APP_SHADER_MANIFEST_DELTA,
   mergeAppShaderManifest,
@@ -178,7 +179,7 @@ for (const appRoot of appRoots) {
       try {
         const identity = fileIdentity(target);
         if (processedManifests.has(identity)) continue;
-        const appManifest = JSON.parse(readFileSync(target, 'utf8'));
+        const appManifest = JSON.parse(readShaderManifestText(target));
         if (appManifest?.forgeaxTransport === APP_SHADER_MANIFEST_DELTA) {
           if (
             Array.isArray(appManifest.entries) &&

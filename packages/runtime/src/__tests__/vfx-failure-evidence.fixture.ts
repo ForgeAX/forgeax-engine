@@ -21,7 +21,6 @@ import {
   ParticleEffectPlayer,
   VFX_GPU_RUNTIME_RESOURCE_KEY,
   type VfxGpuEffectAsset,
-  type VfxGpuRuntime,
 } from '@forgeax/engine-vfx';
 import type { VfxRuntimeHost } from '@forgeax/engine-vfx-render';
 
@@ -153,7 +152,7 @@ function effectFacts(world: World, handle: number) {
 }
 
 export function snapshotVfxFailureState(world: World, renderer: Renderer, host: VfxRuntimeHost) {
-  const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+  const runtime = world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY);
   const inspection = renderer.inspect();
   return {
     worldIdentity: world.identity,

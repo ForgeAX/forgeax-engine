@@ -7,7 +7,7 @@ import { Instances } from '../components/instances';
 import { MeshFilter } from '../components/mesh-filter';
 import { MeshRenderer } from '../components/mesh-renderer';
 import { Visibility, VisibilityStateValue } from '../components/visibility';
-import { extractFrames } from '../render-system-extract-tail';
+import { extractSource } from '../render-system-extract-tail';
 
 const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 
@@ -36,7 +36,7 @@ describe('visibility instance producer gate', () => {
     const world = new World({ assets: worldAssets });
     const entity = spawnInstance(world, worldAssets, 'hidden');
 
-    const frame = extractFrames([world], 0, worldAssets);
+    const frame = extractSource(world, worldAssets);
 
     expect(frame.renderables.some((item) => item.entityKey === entity)).toBe(false);
     expect(frame.dispatch.some((item) => item.entityIndex === 0)).toBe(false);
@@ -48,7 +48,7 @@ describe('visibility instance producer gate', () => {
     spawnInstance(world, worldAssets, 'hidden');
     const visible = spawnInstance(world, worldAssets, 'visible');
 
-    const frame = extractFrames([world], 0, worldAssets);
+    const frame = extractSource(world, worldAssets);
 
     expect(frame.renderables.map((item) => item.entityKey)).toEqual([visible]);
     expect(frame.dispatch.length).toBe(2);

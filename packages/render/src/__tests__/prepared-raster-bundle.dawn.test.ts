@@ -109,6 +109,7 @@ it('matches direct native pixels for 60 frames across uploads, ranges, attachmen
       const bindings: PreparedRasterBindings = {
         pipeline,
         view,
+        viewOffset: 0,
         material,
         mesh,
         meshOffsets: [0],

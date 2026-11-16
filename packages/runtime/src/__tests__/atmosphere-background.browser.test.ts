@@ -117,11 +117,7 @@ it.each(['webgpu', 'wgpu-webgl2'] as const)('renders an explicit physical sky ba
     const draw = async (observe = false) => {
       world.update(1 / 60).unwrap();
       propagateTransforms(world).unwrap();
-      return drawReadyFrame(
-        renderer,
-        { leases: [lease], camera: { lease }, environment: { lease } },
-        observe ? ['final-display'] : undefined,
-      );
+      return drawReadyFrame(renderer, { source: lease }, observe ? ['final-display'] : undefined);
     };
     const sample = async (name: string) => {
       const receipt = await draw(true);

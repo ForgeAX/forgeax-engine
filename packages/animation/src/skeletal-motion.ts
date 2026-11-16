@@ -1,4 +1,6 @@
 import {
+  defineResource,
+  defineSystem,
   Entity,
   type EntityHandle,
   FixedTime,
@@ -14,12 +16,16 @@ import {
   ColliderShapeValue,
   type ManagedJointBinding,
   ManagedPhysicsError,
+  PhysicsSimulation,
+  PhysicsSync,
   type PhysicsWorld,
+  PhysicsWorldResource,
+  PhysicsWritebackPhase,
   RigidBody,
   RigidBodyTypeValue,
 } from '@forgeax/engine-physics';
 import type { Plugin } from '@forgeax/engine-plugin';
-import { Transform } from '@forgeax/engine-scene';
+import { PropagateTransforms, Transform, TransformFixedSet } from '@forgeax/engine-scene';
 import { type AnimationTargetIdValue, err, ok, type Result } from '@forgeax/engine-types';
 import { AnimationPlayer } from './animation-player';
 import { AnimatedBy, AnimationTargetId, AnimationTargets } from './animation-target';
@@ -33,6 +39,14 @@ import {
 import { SkeletonPose, SkeletonTransformReader } from './skeleton-pose';
 import { AnimationBindingError } from './solver-errors';
 import { SpringBoneSimulation } from './spring-bone';
+import {
+  AnimationGraphEvaluation,
+  AnimationPlayback,
+  SkeletalMotionCapture,
+  SkeletalMotionCompose,
+  SkeletalMotionPrepare,
+  SkeletalMotionRestore,
+} from './system-order';
 
 export const RESTORE_SKELETAL_MOTION_BASE = 'restoreSkeletalMotionBase';
 export type {
@@ -51,7 +65,7 @@ export {
 export const CAPTURE_SKELETAL_MOTION_BASE = 'captureSkeletalMotionBase';
 export const COMPOSE_SKELETAL_MOTION = 'composeSkeletalMotion';
 export const PREPARE_SKELETAL_MOTION_JOINTS = 'prepareSkeletalMotionJoints';
-const RESOURCE = 'SkeletalMotion';
+export const SkeletalMotionResource = defineResource<MotionOwner>('SkeletalMotion');
 
 function bodyVolume(shape: PhysicalBone['shape']): number {
   return shape.kind === 'cuboid'
@@ -387,8 +401,8 @@ class ManagedSkeletalMotion implements SkeletalMotionBinding {
       if (this.world.get(body.entity, Entity).ok) this.world.despawn(body.entity).unwrap();
     this.poseReader.unregister(this.pose.entities);
     this.status = 'disposed';
-    if (this.world.hasResource(RESOURCE)) {
-      const bindings = this.world.getResource<MotionOwner>(RESOURCE).bindings;
+    if (this.world.hasResource(SkeletalMotionResource)) {
+      const bindings = this.world.getResource(SkeletalMotionResource).bindings;
       if (bindings.get(this.player) === this) bindings.delete(this.player);
     }
   }
@@ -396,8 +410,8 @@ class ManagedSkeletalMotion implements SkeletalMotionBinding {
   private validateOwner(): void {
     if (
       this.physics &&
-      (!this.world.hasResource('PhysicsWorld') ||
-        this.world.getResource('PhysicsWorld') !== this.physics)
+      (!this.world.hasResource(PhysicsWorldResource) ||
+        this.world.getResource(PhysicsWorldResource) !== this.physics)
     )
       throw new SkeletalMotionError('animation-motion-stale', {
         target: String(this.player),
@@ -521,11 +535,11 @@ class ManagedSkeletalMotion implements SkeletalMotionBinding {
 
   prepare(): void {
     if (this.physical.length === 0) return;
-    if (!this.world.hasResource('PhysicsWorld')) {
+    if (!this.world.hasResource(PhysicsWorldResource)) {
       this.status = 'waiting-physics';
       return;
     }
-    const physics = this.world.getResource<PhysicsWorld>('PhysicsWorld');
+    const physics = this.world.getResource(PhysicsWorldResource);
     if (!physics.createManagedJoints || !physics.getBodyMotion || !physics.setBodyMotion)
       throw new SkeletalMotionError('animation-motion-unavailable', {
         reason: 'backend lacks ordinary managed joint/motion capability',
@@ -675,8 +689,8 @@ interface MotionOwner {
  * Query before an external pose write; the detached snapshot is not a retained reservation.
  */
 export function skeletalMotionWriterEntities(world: World): readonly EntityHandle[] {
-  if (!world.hasResource(RESOURCE)) return [];
-  const owner = world.getResource<MotionOwner>(RESOURCE);
+  if (!world.hasResource(SkeletalMotionResource)) return [];
+  const owner = world.getResource(SkeletalMotionResource);
   return [...new Set([...owner.bindings.values()].flatMap((binding) => binding.writerEntities))];
 }
 
@@ -687,28 +701,20 @@ export function bindSkeletalMotion(
 ): Result<SkeletalMotionBinding, SkeletalMotionFailure> {
   const valid = validateSkeletalMotionDefinition(definition);
   if (!valid.ok) return valid;
-  if (!world.hasResource(RESOURCE))
+  if (!world.hasResource(SkeletalMotionResource))
     return err(
       new SkeletalMotionError('animation-motion-unavailable', {
         reason: 'install skeletalMotionPlugin and fixed animation playback first',
       }),
     );
-  const owner = world.getResource<MotionOwner>(RESOURCE);
+  const owner = world.getResource(SkeletalMotionResource);
   if (definition.physical && !owner.physics)
     return err(
       new SkeletalMotionError('animation-motion-unavailable', {
         reason: 'physical definitions require skeletalMotionPlugin({ physics: true })',
       }),
     );
-  if (
-    !world
-      .scheduleData()
-      .some(
-        (scope) =>
-          scope.name === 'FixedUpdate' &&
-          scope.systems.some((system) => system.name === 'advanceAnimationPlayer'),
-      )
-  )
+  if (!world.hasSystem(FixedUpdate, AnimationPlayback))
     return err(
       new SkeletalMotionError('animation-motion-unavailable', {
         reason: 'motion requires animation playback in FixedUpdate',
@@ -757,9 +763,9 @@ export function skeletalMotionPlugin(options: { readonly physics?: boolean } = {
     apply(ctx) {
       ctx.effect(() => {
         const world = ctx.world;
-        if (world.hasResource(RESOURCE))
+        if (world.hasResource(SkeletalMotionResource))
           throw new SkeletalMotionError('animation-motion-conflict', {
-            target: RESOURCE,
+            target: SkeletalMotionResource.name,
             reason: 'owner already installed',
           });
         const owner: MotionOwner = {
@@ -780,60 +786,61 @@ export function skeletalMotionPlugin(options: { readonly physics?: boolean } = {
             }
           }
         };
-        world.insertResource(RESOURCE, owner);
-        const names: string[] = [];
+        world.insertResource(SkeletalMotionResource, owner);
+        const restore = defineSystem({
+          name: RESTORE_SKELETAL_MOTION_BASE,
+          sets: [SkeletalMotionRestore],
+          queries: [],
+          before: [AnimationGraphEvaluation, AnimationPlayback],
+          fn: run('restore'),
+        });
+        const capture = defineSystem({
+          name: CAPTURE_SKELETAL_MOTION_BASE,
+          queries: [],
+          sets: [SkeletalMotionCapture],
+          after: [AnimationPlayback],
+          before: [TransformFixedSet],
+          fn: run('capture'),
+        });
+        const prepare = defineSystem({
+          name: PREPARE_SKELETAL_MOTION_JOINTS,
+          queries: [],
+          sets: [SkeletalMotionPrepare],
+          after: [PhysicsSync],
+          before: [PhysicsSimulation],
+          fn: run('prepare'),
+        });
+        const compose = defineSystem({
+          name: COMPOSE_SKELETAL_MOTION,
+          queries: [],
+          sets: [SkeletalMotionCompose],
+          after: options.physics ? [PhysicsWritebackPhase] : [capture],
+          fn: run('compose'),
+        });
+        const systems = options.physics
+          ? [restore, capture, prepare, compose]
+          : [restore, capture, compose];
+        const present = defineSystem({
+          name: 'presentSkeletalMotion',
+          queries: [],
+          after: [FixedUpdate],
+          before: [PropagateTransforms],
+          fn: () => {},
+        });
         try {
-          const systems = [
-            {
-              name: RESTORE_SKELETAL_MOTION_BASE,
-              before: ['evaluateAnimationGraph', 'advanceAnimationPlayer'],
-              fn: run('restore'),
-            },
-            {
-              name: CAPTURE_SKELETAL_MOTION_BASE,
-              after: ['advanceAnimationPlayer'],
-              before: ['propagateTransformsFixed'],
-              fn: run('capture'),
-            },
-            {
-              name: PREPARE_SKELETAL_MOTION_JOINTS,
-              after: ['physicsSyncBackend'],
-              before: ['physicsStepSimulation'],
-              fn: run('prepare'),
-            },
-            { name: COMPOSE_SKELETAL_MOTION, after: ['physicsWriteback'], fn: run('compose') },
-          ];
-          // Spring-only worlds use the same pose cadence without requiring a physics backend.
-          const hasPhysicalSystems = options.physics === true;
-          for (const system of systems) {
-            if (!hasPhysicalSystems && system.name === PREPARE_SKELETAL_MOTION_JOINTS) continue;
-            const registered =
-              system.name === COMPOSE_SKELETAL_MOTION && !hasPhysicalSystems
-                ? { ...system, after: [CAPTURE_SKELETAL_MOTION_BASE] }
-                : system;
-            world.addSystem(FixedUpdate, { ...registered, queries: [] }).unwrap();
-            names.push(system.name);
-          }
-          world
-            .addSystem(Update, {
-              name: 'presentSkeletalMotion',
-              queries: [],
-              after: [FixedUpdate],
-              before: ['propagateTransforms'],
-              fn: () => {},
-            })
-            .unwrap();
+          for (const system of systems) world.addSystem(FixedUpdate, system).unwrap();
+          world.addSystem(Update, present).unwrap();
         } catch (cause) {
-          for (const name of names.reverse()) world.removeSystem(FixedUpdate, name);
-          world.removeResource(RESOURCE);
+          for (const system of [...systems].reverse()) world.removeSystem(FixedUpdate, system);
+          world.removeResource(SkeletalMotionResource);
           throw cause;
         }
         return () => {
           for (const binding of owner.bindings.values()) binding.dispose();
           owner.bindings.clear();
-          world.removeSystem(Update, 'presentSkeletalMotion');
-          for (const name of names.reverse()) world.removeSystem(FixedUpdate, name);
-          world.removeResource(RESOURCE);
+          world.removeSystem(Update, present);
+          for (const system of [...systems].reverse()) world.removeSystem(FixedUpdate, system);
+          world.removeResource(SkeletalMotionResource);
         };
       }, 'skeletal-motion/runtime');
     },

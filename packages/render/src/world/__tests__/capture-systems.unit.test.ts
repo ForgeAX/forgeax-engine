@@ -1,13 +1,16 @@
 import type { EntityHandle } from '@forgeax/engine-ecs';
+import { World } from '@forgeax/engine-ecs';
 import { describe, expect, it } from 'vitest';
+import { registeredSystem } from '../../__tests__/registered-system.fixture';
+import { viewSourceFixture } from '../../__tests__/view-source.fixture';
 import { createRendererCaptureOwner } from '../../capture/renderer-captures';
 import type { CubeCaptureWork } from '../../capture/scheduler';
 import { createRenderFeatureHost } from '../../features/host';
 import type { CubeCameraSnapshot, RendererError } from '../../render-contract';
+
 import type { RenderTarget } from '../../targets/contracts';
 import {
   CUBE_CAPTURE_COMMIT_SYSTEM,
-  RENDER_CAPTURE_SCHEDULE_SYSTEM,
   RENDER_VIEW_CAPTURE_COMMIT_SYSTEM,
   recordsViewWork,
   registerCaptureSystems,
@@ -112,7 +115,9 @@ describe('cube capture commit system', () => {
 
   it('never advances the capture once the commit system is removed', () => {
     const { world, frame } = setup();
-    world.removeSystem(RenderCommit, CUBE_CAPTURE_COMMIT_SYSTEM).unwrap();
+    world
+      .removeSystem(RenderCommit, registeredSystem(world, RenderCommit, 'cube-capture-commit'))
+      .unwrap();
     expect(frame(1, true)).toBe('+X');
     // Without the commit the face stays in flight and is re-recorded.
     expect(frame(2, true)).toBe('+X');
@@ -172,12 +177,16 @@ function ownedRecorder({ name, fail }: ViewSpec, calls: string[]) {
 function viewSetup(views: readonly ViewSpec[]) {
   const host = createRenderFeatureHost([]).unwrap();
   const world = host.world;
-  world.insertResource(RenderViewInput, { worlds: [], leases: undefined });
+  world.insertResource(
+    RenderViewInput,
+    viewSourceFixture({ world: new World(), lease: undefined }),
+  );
   registerViewCaptureSystems(world);
   // The owner-only recorders carry the capture side alone; RenderCommit runs the capture commit alone.
   const commitSystems = world.scheduleData().find((data) => data.name === 'RenderCommit');
   for (const { name } of commitSystems?.systems ?? [])
-    if (name !== RENDER_VIEW_CAPTURE_COMMIT_SYSTEM) world.removeSystem(RenderCommit, name).unwrap();
+    if (name !== RENDER_VIEW_CAPTURE_COMMIT_SYSTEM)
+      world.removeSystem(RenderCommit, registeredSystem(world, RenderCommit, name)).unwrap();
   const calls: string[] = [];
   const frames: ViewFrameState[] = [];
   const inputs: ViewFeatureInputState[] = [];
@@ -186,7 +195,7 @@ function viewSetup(views: readonly ViewSpec[]) {
     const frame = {
       frame: 0,
       mode,
-      opts: { cameraOwner: 0, resourceOwner: 0 },
+      opts: {},
       result: { ok: true, value: { cubeCameras: [], cameras: [], auxiliaryCameras: [] } },
     } as unknown as ViewFrameState;
     const input: ViewFeatureInputState = {
@@ -197,8 +206,7 @@ function viewSetup(views: readonly ViewSpec[]) {
           input: {
             identity: name,
             render: mode === true,
-            worlds: [],
-            owner: 0,
+            world: new World(),
             frameNumber: 0,
             caps: {} as never,
           },
@@ -266,7 +274,8 @@ describe('view capture systems', () => {
       { name: 'capture', mode: 'capture' },
     ]);
     f.prepare(1);
-    expect(f.calls).toEqual(['schedule:display', 'prepare:display', 'prepare:capture']);
+    // The capture view draws no display picture, so only the display selects the mirror.
+    expect(f.calls).toEqual(['schedule:display', 'prepare:display']);
     const capture = viewCaptureWorkOf(f.world, f.entities[1]);
     expect(capture?.kind === 'prepared' && capture.value.cube).toEqual([cubeWork]);
     f.host.dispose();
@@ -296,7 +305,12 @@ describe('view capture systems', () => {
 
   it('leaves the recording no capture work once the schedule system is removed', () => {
     const f = viewSetup([{ name: 'display', mode: true }]);
-    f.world.removeSystem(RenderPrepare, RENDER_CAPTURE_SCHEDULE_SYSTEM).unwrap();
+    f.world
+      .removeSystem(
+        RenderPrepare,
+        registeredSystem(f.world, RenderPrepare, 'render-capture-schedule'),
+      )
+      .unwrap();
     f.prepare(1);
     // Recording reads the component only: no scheduler run, no capture work, no commit.
     expect(viewCaptureWorkOf(f.world, f.entities[0])).toBeUndefined();

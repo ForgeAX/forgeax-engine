@@ -1,41 +1,23 @@
+import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { build } from 'vite';
+import { promisify } from 'node:util';
 import { expect, it } from 'vitest';
 
+const execute = promisify(execFile);
+
 it('bundles glTF and mesh field production through the published browser entry', async () => {
-  const entry = fileURLToPath(new URL('browser-package-consumer.js', import.meta.url));
-  const modules: string[] = [];
-  const exports: string[] = [];
-  const imports: string[] = [];
-  await build({
-    root: fileURLToPath(new URL('../../../../', import.meta.url)),
-    configFile: false,
-    logLevel: 'silent',
-    plugins: [
-      {
-        name: 'import-browser-consumer',
-        resolveId: (id) => (id === entry ? `\0${entry}` : undefined),
-        load: (id) =>
-          id === `\0${entry}`
-            ? `export { gltfImporter } from '@forgeax/engine-gltf';
-               export { cookMeshDistanceFieldProduct, encodeMeshDistanceFieldProduct }
-                 from '@forgeax/engine-import';`
-            : undefined,
-        generateBundle(_, bundle) {
-          for (const output of Object.values(bundle)) {
-            if (output.type !== 'chunk') continue;
-            modules.push(...Object.keys(output.modules));
-            exports.push(...output.exports);
-            imports.push(...output.imports, ...output.dynamicImports);
-          }
-        },
-      },
-    ],
-    build: {
-      write: false,
-      lib: { entry, formats: ['es'], fileName: 'import-browser-consumer' },
-    },
-  });
+  // Keep Vite's real production build outside the instrumented Vitest server.
+  // The original five-second case budget and every browser-entry oracle remain.
+  const { stdout } = await execute(
+    process.execPath,
+    [fileURLToPath(new URL('browser-package-build.fixture.mjs', import.meta.url))],
+    { encoding: 'utf8', timeout: 4500, maxBuffer: 2 * 1024 * 1024 },
+  );
+  const { modules, exports, imports } = JSON.parse(stdout) as {
+    modules: string[];
+    exports: string[];
+    imports: string[];
+  };
   expect(exports).toEqual(
     expect.arrayContaining([
       'gltfImporter',

@@ -9,7 +9,7 @@ export interface ParticleEmitterDefinition {
 
 /** Serializable cooked GPU program carried by the ordinary particle asset. */
 export interface ParticleEffectProgram {
-  readonly format: 'forgeax-vfx-program-4';
+  readonly format: 'forgeax-vfx-program-5';
   readonly fingerprint: string;
   readonly emitters: readonly ParticleEffectProgramEmitter[];
 }
@@ -55,7 +55,7 @@ export type ParticleEffectInput = Omit<
 
 /** Narrow Program v3 payload used by the new code-first compiler boundary. */
 export interface ParticleEffectProgramV3 extends Omit<ParticleEffectProgram, 'format'> {
-  readonly format: 'forgeax-vfx-program-4';
+  readonly format: 'forgeax-vfx-program-5';
 }
 
 export interface ParticleEffectAssetV3

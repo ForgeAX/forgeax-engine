@@ -7,8 +7,15 @@ import {
   packInterleavedVertexAttributes,
   unpackInterleavedVertexAttributes,
 } from '@forgeax/engine-geometry';
+import { mat4 } from '@forgeax/engine-math';
 import { disposePluginFiber, type Plugin } from '@forgeax/engine-plugin';
-import { Materials, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
+import {
+  type EditorAssistancePrimitive,
+  editorAssistance,
+  Materials,
+  MeshFilter,
+  MeshRenderer,
+} from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
 import { type AssetHandle, type MeshAsset, UV_ATTRIBUTE_KEYS } from '@forgeax/engine-types';
 import type { App } from './types';
@@ -149,7 +156,12 @@ export const workspaceMeshDisplayPlugin: Plugin.Object<Options> = {
       scale: Array.from(transform.scale),
     };
     const handles: number[] = [];
-    const overlays = new Map<string, EntityHandle>();
+    const overlays = new Map<string, EditorAssistancePrimitive>();
+    const assistanceOwner = {};
+    const assistance = editorAssistance(world);
+    const overlayTransform = Array.from(
+      mat4.compose(mat4.create(), placement.pos, placement.quat, placement.scale),
+    );
     const carriers = new Map<
       string,
       { mesh: AssetHandle<'mesh'>; material: AssetHandle<'material'> }
@@ -186,8 +198,7 @@ export const workspaceMeshDisplayPlugin: Plugin.Object<Options> = {
         world.set(entity, MeshFilter, originalFilter).unwrap();
         world.set(entity, MeshRenderer, originalRenderer).unwrap();
       }
-      for (const overlay of overlays.values())
-        if (world.get(overlay, MeshFilter).ok) world.despawn(overlay).unwrap();
+      assistance.release(assistanceOwner);
       for (const handle of handles.reverse()) assets.release(handle).unwrap();
     });
     assets.retain(originalFilter.assetHandle, 'mesh').unwrap();
@@ -223,23 +234,21 @@ export const workspaceMeshDisplayPlugin: Plugin.Object<Options> = {
         assets.release(handle).unwrap();
       }
     };
-    const overlay = (key: string, show: boolean, value?: ReturnType<typeof carrier>) => {
-      const current = overlays.get(key);
-      if (!show && current) {
-        world.despawn(current).unwrap();
-        overlays.delete(key);
-      }
-      if (show && !current && value)
-        overlays.set(
-          key,
-          world
-            .spawn(
-              { component: Transform, data: placement },
-              { component: MeshFilter, data: { assetHandle: value.mesh } },
-              { component: MeshRenderer, data: { materials: [value.material] } },
-            )
-            .unwrap(),
-        );
+    const overlay = (
+      key: string,
+      show: boolean,
+      value?: ReturnType<typeof carrier>,
+      color: readonly [number, number, number, number] = [1, 1, 1, 1],
+    ) => {
+      if (!show) overlays.delete(key);
+      else if (value)
+        overlays.set(key, {
+          kind: 'mesh',
+          mesh: value.mesh,
+          transform: overlayTransform,
+          color,
+          depth: 'always',
+        });
     };
     ctx.provide('engineWorkspacePreviewDisplay', {
       get(options) {
@@ -393,8 +402,8 @@ export const workspaceMeshDisplayPlugin: Plugin.Object<Options> = {
             lines ? { ...originalRenderer, materials: [lines.material] } : originalRenderer,
           )
           .unwrap();
-        overlay('collision', next.collision, collision);
-        overlay('bounds', next.bounds, bounds);
+        overlay('collision', next.collision, collision, [0.1, 1, 0.35, 1]);
+        overlay('bounds', next.bounds, bounds, [1, 0.65, 0.05, 1]);
         for (const [key, geometry] of prepared) {
           overlay(`user:${key}`, false);
           releaseCarrier(`user:${key}`);
@@ -405,6 +414,10 @@ export const workspaceMeshDisplayPlugin: Plugin.Object<Options> = {
               carrier(`user:${key}`, () => geometry, [1, 1, 1, 1]),
             );
         }
+        if (overlays.size > 0) {
+          assistance.configure({ enabled: true }).unwrap();
+          assistance.contribute(assistanceOwner, [...overlays.values()]).unwrap();
+        } else assistance.release(assistanceOwner);
         state = {
           ...next,
           overlays: [...shown].sort(),

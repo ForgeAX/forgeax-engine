@@ -1,4 +1,5 @@
 import type {
+  GraphAccess,
   GraphTextureDescriptor,
   RenderGraphBuilder,
   RenderGraphError,
@@ -10,6 +11,7 @@ import { motionBlurTemporalDemand } from '../features/motion-blur/motion-blur-pa
 import { GPU_TEXTURE_USAGE_COPY_SRC } from '../gpu-texture-usage';
 import type { RenderExtent } from '../pipeline/render-extent';
 import { renderExtentSize } from '../pipeline/render-extent';
+import type { WaterInfoGraphTargets } from '../pipeline/standard-build-context';
 import { selectMainPassMaterials } from '../record/main-pass';
 import type { _InternalRenderPipelineContext } from '../record/render-context';
 import { scenePassContext } from '../record/scene-pass-work';
@@ -82,10 +84,18 @@ export interface StandardTemporalDemandInput {
   readonly motionBlur: boolean;
   readonly ssr?: boolean;
   readonly visibleSurface?: boolean;
+  /** Diffuse GI reprojects its history through the shared motion target. */
+  readonly diffuseGi?: boolean;
 }
 
 export interface StandardTemporalDemand {
-  readonly consumerIds: readonly ('taa' | 'motion-blur' | 'ssr' | 'visible-surface')[];
+  readonly consumerIds: readonly (
+    | 'taa'
+    | 'motion-blur'
+    | 'ssr'
+    | 'visible-surface'
+    | 'diffuse-gi'
+  )[];
   readonly targetCount: 0 | 1;
   readonly producerPassCount: 0 | 1;
   readonly historyCount: 0 | 1;
@@ -108,6 +118,7 @@ export function aggregateTemporalDemand(
     ...(input.motionBlur ? (['motion-blur'] as const) : []),
     ...(input.ssr ? (['ssr'] as const) : []),
     ...(input.visibleSurface ? (['visible-surface'] as const) : []),
+    ...(input.diffuseGi ? (['diffuse-gi'] as const) : []),
   ];
   const requested = consumerIds.length > 0;
   return Object.freeze({
@@ -300,11 +311,14 @@ export function addStandardSceneDataPass(
   depth: RenderPipelineTarget,
   gpuDriven?: RenderPipelineGpuDrivenProjection,
   surfaces: 'opaque' | 'forward-only-opaque' = 'opaque',
+  waterInfoTargets?: WaterInfoGraphTargets,
+  extraAccesses?: readonly GraphAccess[],
 ): Result<void, RenderGraphError> {
   const selector = COLOR_PASS_SELECTOR;
   const excludeSelector = surfaces === 'forward-only-opaque' ? DEFERRED_PASS_SELECTOR : undefined;
   return addTypedScenePass(graph, {
     name: 'standard-scene-data',
+    extraAccesses,
     // GBuffer already wrote this loaded target. An empty CPU supplement has
     // no work. The GPU owner derives live eligibility from its encoder predicate.
     executeIf:
@@ -319,6 +333,7 @@ export function addStandardSceneDataPass(
             )?.size !== 0 || gpuDriven?.hasWork(surfaces, 'fs_temporal') === true,
     gpuDrivenFilter: surfaces,
     ...(gpuDriven === undefined ? {} : { gpuDriven }),
+    ...(waterInfoTargets === undefined || waterInfoTargets.size === 0 ? {} : { waterInfoTargets }),
     color: target,
     depth,
     selector,

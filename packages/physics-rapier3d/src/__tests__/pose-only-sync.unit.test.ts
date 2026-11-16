@@ -12,7 +12,7 @@ import { GlobalTransform, Transform } from '@forgeax/engine-scene';
 import { expect, test, vi } from 'vitest';
 import type { RigidBody as NativeBody, World as NativeWorld } from '../../pkg/rapier.mjs';
 import { createRapier3DPhysicsWorld, loadRapier3D } from '../index';
-import type { PhysicsSyncState } from '../physics-sync';
+import type { PhysicsSyncState } from '../physics-sync-descriptor';
 
 const rapier = await loadRapier3D();
 if ('code' in rapier) throw rapier;

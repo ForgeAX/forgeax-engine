@@ -6,10 +6,7 @@ import {
   runtimeAssets,
 } from '@forgeax/engine-assets-runtime/internal';
 import { Time, type TimeResource, type World } from '@forgeax/engine-ecs';
-import {
-  VIDEO_SOURCE_PROVIDER_KEY,
-  type VideoSourceProvider,
-} from '@forgeax/engine-graphics-extras';
+import { VIDEO_SOURCE_PROVIDER_KEY } from '@forgeax/engine-graphics-extras';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import { type Asset, AssetError, type AssetHandle, err } from '@forgeax/engine-types';
 import {
@@ -81,7 +78,7 @@ export function worldRenderResources(world: World): RenderResourceScope {
     videoFrame: (entity, clip) =>
       world.hasResource(VIDEO_SOURCE_PROVIDER_KEY)
         ? world
-            .getResource<VideoSourceProvider>(VIDEO_SOURCE_PROVIDER_KEY)
+            .getResource(VIDEO_SOURCE_PROVIDER_KEY)
             .getSource(
               entity as import('@forgeax/engine-ecs').EntityHandle,
               clip as AssetHandle<'video'>,

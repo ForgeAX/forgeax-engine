@@ -1,16 +1,77 @@
-import { type EntityHandle, Update } from '@forgeax/engine-ecs';
 import type { CanvasInputBoundary } from '@forgeax/engine-input';
 import { pickDisplay, pickTriangleDisplay } from '@forgeax/engine-picking';
 import type { Plugin } from '@forgeax/engine-plugin';
-import { Camera, getActiveCamera, Outline } from '@forgeax/engine-render';
-import { Children, GlobalTransform } from '@forgeax/engine-scene';
+import type { RenderInspection } from '@forgeax/engine-render';
+import { editorAssistance, readEditorAssistance } from '@forgeax/engine-render';
 import { readBrowserFrameSubmitted } from './browser-frame-signal';
+import type { GameProjectionValue, GameReadDef } from './game-context';
 import type { AppObservation } from './observation';
 import type { App } from './types';
 import { EngineWorkspaceError } from './workspace';
+import {
+  createWorkspaceEditorAssistance,
+  type EngineWorkspaceAssistanceRequest,
+} from './workspace-editor-assistance';
 import { createObservationInspection, observationEntity } from './workspace-target-inspection';
 
 type Inspection = ReturnType<typeof createObservationInspection>;
+type WorkspaceGameObservation = {
+  readonly id: string;
+  readonly targetId: string;
+  readonly worldId: string;
+  readonly value: GameProjectionValue;
+};
+
+const MAX_GAME_OBSERVATION_BYTES = 128 * 1024;
+
+function inspectGameReads(
+  definitions: Iterable<GameReadDef>,
+  { entity, targetId, worldId }: ReturnType<Inspection['inspect']>,
+): WorkspaceGameObservation[] {
+  const observations: WorkspaceGameObservation[] = [];
+  let remainingBytes = MAX_GAME_OBSERVATION_BYTES;
+  const encoder = new TextEncoder();
+  for (const { id, workspace } of definitions) {
+    try {
+      if (workspace?.entity() !== entity) continue;
+      const value = workspace.read();
+      if (value === undefined) continue;
+      // A detached copy preserves the observation across game ticks and transport.
+      const json = JSON.stringify({ id, targetId, worldId, value }, (_key, item) => {
+        if (typeof item === 'number' && !Number.isFinite(item))
+          throw new TypeError('Game observations require finite numbers');
+        if (
+          typeof item === 'object' &&
+          item !== null &&
+          !Array.isArray(item) &&
+          Object.getPrototypeOf(item) !== Object.prototype &&
+          Object.getPrototypeOf(item) !== null
+        )
+          throw new TypeError('Game observations require plain JSON objects');
+        return item;
+      });
+      if (json.length > remainingBytes) continue;
+      const bytes = encoder.encode(json).byteLength;
+      if (bytes > remainingBytes) continue;
+      observations.push(JSON.parse(json));
+      remainingBytes -= bytes;
+    } catch {
+      // A game-owned read must not prevent inspection of Engine-owned facts.
+    }
+  }
+  return observations;
+}
+
+export type EngineWorkspaceEntityInspection = ReturnType<Inspection['inspect']> & {
+  readonly source?: EngineWorkspaceEntitySource;
+  readonly gameObservations?: readonly WorkspaceGameObservation[];
+  readonly rendererObservation?: {
+    readonly targetId: string;
+    readonly worldId: string;
+    readonly frame: RenderInspection['frame'];
+    readonly cloudLayer?: RenderInspection['cloudLayer'];
+  };
+};
 export type EngineWorkspacePickGranularity = 'bounds' | 'triangle';
 export interface EngineWorkspaceEntitySource {
   readonly guid: string;
@@ -26,22 +87,24 @@ export interface EngineWorkspaceEntitySource {
 }
 /** The same capability can be local or carried across a Host transport. */
 export interface EngineWorkspaceTargetTools {
+  /** Retire only the derived presentation held by this connection. */
+  revokeConnection?(connectionId: string): void;
   tree(
     input?: Parameters<Inspection['tree']>[0],
   ): ReturnType<Inspection['tree']> | Promise<ReturnType<Inspection['tree']>>;
   inspect(
-    input: Parameters<Inspection['inspect']>[0],
-  ):
-    | (ReturnType<Inspection['inspect']> & { readonly source?: EngineWorkspaceEntitySource })
-    | Promise<
-        ReturnType<Inspection['inspect']> & { readonly source?: EngineWorkspaceEntitySource }
-      >;
+    input: Parameters<Inspection['inspect']>[0] & { readonly signal?: AbortSignal },
+  ): EngineWorkspaceEntityInspection | Promise<EngineWorkspaceEntityInspection>;
   focus(input: { entityId: string }): unknown | Promise<unknown>;
   pick?: (input: {
     x: number;
     y: number;
     granularity?: EngineWorkspacePickGranularity;
+    frameId?: number;
+    deviceGeneration?: number;
+    viewIdentity?: string;
   }) => unknown | Promise<unknown>;
+  assistance?: (input: EngineWorkspaceAssistanceRequest) => unknown | Promise<unknown>;
   highlight?: (input: { entityId?: string }) => unknown | Promise<unknown>;
   control?: {
     mode(): 'player' | 'observer';
@@ -62,6 +125,7 @@ export const engineWorkspaceTargetToolsPlugin: Plugin.Object<{
   observation?: AppObservation;
   input?: CanvasInputBoundary;
   display?: { canvas: HTMLCanvasElement; app: App };
+  gameReads?: () => Iterable<GameReadDef>;
 }> = {
   name: 'forgeax:workspace-target-tools',
   inject: ['world'],
@@ -75,123 +139,14 @@ export const engineWorkspaceTargetToolsPlugin: Plugin.Object<{
       options.targetId,
       () => ctx.get('assets', false) || undefined,
     );
-    let highlight: EntityHandle | undefined;
-    const highlightSystem = `workspace-highlight:${ctx.fiber.uid}`;
-    let syncing = false;
-    let outlineLease:
-      | {
-          camera: EntityHandle;
-          members: number[];
-          introduced: number[];
-          createdStyle?: {
-            visibleColor: number[];
-            hiddenColor: number[];
-            width: number;
-            occlusion: number;
-          };
-        }
-      | undefined;
+    const assistanceOwner = {};
+    const editor =
+      display === undefined
+        ? undefined
+        : createWorkspaceEditorAssistance(ctx.world, options.targetId, display.canvas);
     let available = true;
     let ownsObservation = false;
     let controlOwner: string | undefined;
-    const same = (left: readonly number[], right: readonly number[]) =>
-      left.length === right.length && left.every((value, index) => value === right[index]);
-    const releaseOutline = () => {
-      const lease = outlineLease;
-      outlineLease = undefined;
-      if (!lease) return;
-      const current = ctx.world.get(lease.camera, Outline);
-      if (!current.ok) return;
-      const remaining = Array.from(current.value.entities).filter(
-        (entity) => !lease.introduced.includes(entity),
-      );
-      if (same(remaining, Array.from(current.value.entities))) return;
-      const style = lease.createdStyle;
-      if (
-        style &&
-        remaining.length === 0 &&
-        current.value.width === style.width &&
-        current.value.occlusion === style.occlusion &&
-        same(Array.from(current.value.visibleColor), style.visibleColor) &&
-        same(Array.from(current.value.hiddenColor), style.hiddenColor)
-      )
-        ctx.world.removeComponent(lease.camera, Outline).unwrap();
-      else ctx.world.set(lease.camera, Outline, { entities: remaining }).unwrap();
-    };
-    const activeCamera = (): EntityHandle | undefined => {
-      const active = getActiveCamera(ctx.world)?.entity;
-      let first: EntityHandle | undefined;
-      for (const querySpan of ctx.world
-        .query({ with: [Camera, GlobalTransform] })
-        .unwrap()
-        .spans()
-        .unwrap()) {
-        const queryEntities = querySpan.entities;
-        for (let queryIndex = 0; queryIndex < querySpan.length; queryIndex++) {
-          const queriedEntity = queryEntities[queryIndex] as EntityHandle;
-
-          first ??= queriedEntity;
-          if (queriedEntity === active) return queriedEntity;
-        }
-      }
-      return first;
-    };
-    const outlineMembers = (): number[] => {
-      if (highlight === undefined) return [];
-      const pending = [highlight];
-      const visited = new Set<number>();
-      while (pending.length > 0) {
-        const entity = pending.pop();
-        if (entity === undefined || visited.has(entity) || !ctx.world.componentsOf(entity).ok)
-          continue;
-        visited.add(entity);
-        const children = ctx.world.get(entity, Children);
-        if (children.ok)
-          for (const child of children.value.entities) pending.push(child as EntityHandle);
-      }
-      return [...visited];
-    };
-    const syncOutline = () => {
-      const members = outlineMembers();
-      if (highlight !== undefined && members.length === 0) highlight = undefined;
-      const camera = members.length > 0 ? activeCamera() : undefined;
-      const current = camera === undefined ? undefined : ctx.world.get(camera, Outline);
-      if (
-        outlineLease &&
-        camera === outlineLease.camera &&
-        same(members, outlineLease.members) &&
-        current?.ok &&
-        members.every((entity) => current.value.entities.includes(entity))
-      )
-        return;
-      releaseOutline();
-      if (camera === undefined || members.length === 0) return;
-      const existing = ctx.world.get(camera, Outline);
-      const authored = existing.ok ? Array.from(existing.value.entities) : [];
-      const introduced = members.filter((entity) => !authored.includes(entity));
-      if (existing.ok)
-        ctx.world.set(camera, Outline, { entities: [...authored, ...introduced] }).unwrap();
-      else
-        ctx.world
-          .addComponent(camera, { component: Outline, data: { entities: members, width: 4 } })
-          .unwrap();
-      const added = ctx.world.get(camera, Outline).unwrap();
-      outlineLease = {
-        camera,
-        members,
-        introduced,
-        ...(existing.ok
-          ? {}
-          : {
-              createdStyle: {
-                visibleColor: Array.from(added.visibleColor),
-                hiddenColor: Array.from(added.hiddenColor),
-                width: added.width,
-                occlusion: added.occlusion,
-              },
-            }),
-      };
-    };
     const release = () => {
       if (ownsObservation) options.observation?.release();
       ownsObservation = false;
@@ -200,9 +155,9 @@ export const engineWorkspaceTargetToolsPlugin: Plugin.Object<{
     };
     ctx.effect(() => () => {
       available = false;
+      editor?.dispose();
       release();
-      if (syncing) ctx.world.removeSystem(Update, highlightSystem);
-      releaseOutline();
+      readEditorAssistance(ctx.world)?.releaseSelection(assistanceOwner);
     });
     const assertAvailable = () => {
       if (!available)
@@ -213,16 +168,29 @@ export const engineWorkspaceTargetToolsPlugin: Plugin.Object<{
         );
     };
     ctx.provide('engineWorkspaceTargetTools', {
+      ...(editor === undefined ? {} : { revokeConnection: editor.revoke }),
+      ...(editor === undefined
+        ? {}
+        : {
+            assistance: (request: EngineWorkspaceAssistanceRequest) => {
+              assertAvailable();
+              return editor.invoke(request);
+            },
+          }),
       ...(display
         ? {
             pick({
               x,
               y,
               granularity = 'bounds',
+              ...submitted
             }: {
               x: number;
               y: number;
               granularity?: EngineWorkspacePickGranularity;
+              frameId?: number;
+              deviceGeneration?: number;
+              viewIdentity?: string;
             }) {
               assertAvailable();
               if (granularity !== 'bounds' && granularity !== 'triangle')
@@ -260,13 +228,28 @@ export const engineWorkspaceTargetToolsPlugin: Plugin.Object<{
                     canvasExtent: { width: canvas.width, height: canvas.height },
                   },
                 );
+              const helper = editor?.pick({ x, y, ...submitted });
+              if (helper?.action !== undefined)
+                return {
+                  targetId: options.targetId,
+                  frameId: helper.frame.frameId,
+                  entityId: `${options.targetId}:${ctx.world.identity}:${helper.action.entity}`,
+                  granularity,
+                  helper: helper.action.kind,
+                };
+              const matched = helper?.frame ?? frame;
+              if (matched.barrelDistortion?.camera === undefined)
+                throw new EngineWorkspaceError(
+                  'engine-workspace-frame-unavailable',
+                  'A submitted camera mapping',
+                );
               let entityId: string | null;
               if (granularity === 'triangle') {
                 const result = pickTriangleDisplay(
                   ctx.world,
                   x,
                   y,
-                  frame.barrelDistortion,
+                  matched.barrelDistortion,
                   canvas.width,
                   canvas.height,
                 );
@@ -286,7 +269,7 @@ export const engineWorkspaceTargetToolsPlugin: Plugin.Object<{
                   ctx.world,
                   x,
                   y,
-                  frame.barrelDistortion,
+                  matched.barrelDistortion,
                   canvas.width,
                   canvas.height,
                 );
@@ -296,32 +279,22 @@ export const engineWorkspaceTargetToolsPlugin: Plugin.Object<{
               }
               return {
                 targetId: options.targetId,
-                frameId: frame.frameId,
+                frameId: matched.frameId,
                 entityId,
                 granularity,
               };
             },
             highlight(input: { entityId?: string }) {
               assertAvailable();
-              highlight =
-                input.entityId === undefined
-                  ? undefined
-                  : observationEntity(ctx.world, input.entityId, options.targetId);
-              if (!syncing && highlight !== undefined) {
-                ctx.world
-                  .addSystem(Update, {
-                    name: highlightSystem,
-                    queries: [],
-                    fn: syncOutline,
-                  })
-                  .unwrap();
-                syncing = true;
+              if (input.entityId === undefined)
+                readEditorAssistance(ctx.world)?.releaseSelection(assistanceOwner);
+              else {
+                const entity = observationEntity(ctx.world, input.entityId, options.targetId);
+                const assistance = editorAssistance(ctx.world);
+                assistance.configure({ enabled: true, camera: undefined }).unwrap();
+                assistance.select([entity], undefined, assistanceOwner).unwrap();
               }
-              syncOutline();
-              if (syncing && highlight === undefined) {
-                ctx.world.removeSystem(Update, highlightSystem).unwrap();
-                syncing = false;
-              }
+              editor?.observe();
               return { entityId: input.entityId ?? null };
             },
           }
@@ -381,7 +354,31 @@ export const engineWorkspaceTargetToolsPlugin: Plugin.Object<{
       },
       inspect(input) {
         assertAvailable();
-        return inspection.inspect(input);
+        input.signal?.throwIfAborted();
+        const entity = inspection.inspect(input);
+        if (display?.app.world !== ctx.world) return entity;
+        const gameObservations =
+          options.gameReads === undefined ? [] : inspectGameReads(options.gameReads(), entity);
+        input.signal?.throwIfAborted();
+        assertAvailable();
+        if (display.app.world !== ctx.world)
+          throw new EngineWorkspaceError(
+            'engine-workspace-target-stale',
+            'The same App World after the inspection',
+          );
+        const observed = gameObservations.length ? { ...entity, gameObservations } : entity;
+        if (!entity.components.some((component) => component.name === 'VolumetricCloudLayer'))
+          return observed;
+        const renderer = display.app.renderer.inspect({ fields: ['frame', 'cloudLayer'] });
+        return {
+          ...observed,
+          rendererObservation: {
+            targetId: options.targetId,
+            worldId: ctx.world.identity,
+            frame: renderer.frame,
+            ...(renderer.cloudLayer === undefined ? {} : { cloudLayer: renderer.cloudLayer }),
+          },
+        };
       },
     });
   },

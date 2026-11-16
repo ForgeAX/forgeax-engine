@@ -206,11 +206,7 @@ const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).u
   // across its sampleCount * frameCount window.
   const tick = (): void => {
     world.update().unwrap();
-    const frame = renderer.draw({
-      leases: [lease],
-      camera: { lease },
-      environment: { lease },
-    });
+    const frame = renderer.draw({ source: lease });
     if (!frame.ok) throw frame.error;
     requestAnimationFrame(tick);
   };

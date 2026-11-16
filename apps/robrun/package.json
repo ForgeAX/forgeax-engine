@@ -1,0 +1,40 @@
+{
+  "name": "@forgeax/robrun-port",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/serve.mjs",
+    "build": "vite build",
+    "benchmark": "node scripts/benchmark.mjs",
+    "preview": "node scripts/serve.mjs --production",
+    "test": "node --test src/__tests__/*.test.js"
+  },
+  "dependencies": {
+    "@forgeax/engine": "workspace:*",
+    "meshoptimizer": "1.1.1"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "Vite application chunks vary by build; Engine package sizes are tracked separately."
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "Requires an external reference snapshot; use scripts/benchmark.mjs for matched ready-frame captures."
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "Runtime motion diagnostics use the browser collector rather than a Vitest microbenchmark."
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/robrun-port test"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "Native map viewer; raw measurement artifacts stay outside the source checkout."
+      }
+    }
+  }
+}

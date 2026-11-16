@@ -116,7 +116,7 @@ export async function verifyOutline(
     world.update(1 / 60).unwrap();
     return drawReadyFrame(
       renderer,
-      { leases: [lease], camera: { lease }, environment: { lease } },
+      { source: lease },
       observe ? ['final-display', 'linear-ldr'] : undefined,
     );
   };

@@ -1,6 +1,7 @@
 // biome-ignore-all lint/complexity/noUselessLoneBlockStatements: source test block isolation
 import type { Renderer as RendererType } from '@forgeax/engine-render';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { waterInfoShaderFixture } from '../../../render/src/__tests__/shader-manifest-fixture';
 import { createRenderer } from '../createRenderer';
 import { standardMaterialShaderVariants } from './helpers/standard-material-manifest';
 
@@ -52,7 +53,7 @@ afterEach(() => vi.restoreAllMocks());
       __mockTag: 'gpu-device',
       lost,
       features: new Set(),
-      limits: {},
+      limits: { maxStorageBuffersPerShaderStage: 8 },
       queue: {
         submit: () => undefined,
         onSubmittedWorkDone: () => Promise.resolve(undefined),
@@ -112,6 +113,7 @@ afterEach(() => vi.restoreAllMocks());
     });
     const manifest = {
       entries: [
+        ...waterInfoShaderFixture.entries,
         { hash: 'pbr00000', wgsl: '/* pbr stub - calls f_schlick( */', glsl: '', bindings: '' },
         { hash: 'unlit000', wgsl: '/* unlit stub */', glsl: '', bindings: '' },
         {
@@ -122,6 +124,7 @@ afterEach(() => vi.restoreAllMocks());
         },
       ],
       materialShaders: [
+        ...waterInfoShaderFixture.materialShaders,
         materialShaderStub('forgeax::default-standard-pbr'),
         materialShaderStub('forgeax::default-unlit'),
       ],

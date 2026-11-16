@@ -1,5 +1,5 @@
 import { terrainDerivedClosureValid, terrainHeight } from '@forgeax/engine-terrain';
-import { cookTerrain } from '@forgeax/engine-terrain/cook';
+import { buildTerrainAssets, cookTerrain } from '@forgeax/engine-terrain/cook';
 import {
   type Asset,
   type AssetHandle,
@@ -12,6 +12,7 @@ import { installDefaultAssetDecoders } from '../../../runtime/src/asset-contribu
 import { AssetRegistry } from '../asset-registry';
 import { runtimeAssets } from '../internal/runtime-assets';
 import { prepareTerrainHeightRange } from '../runtime-terrain';
+import { terrainSourceFixture } from './fixtures/terrain-source';
 
 function fixture(assemble = true) {
   const assets = new AssetRegistry();
@@ -116,6 +117,48 @@ it('atomically derives height edits under the bound identity and retains fixed o
   assets.dispose();
 });
 
+it('rejects stale offline Terrain candidates and atomically accepts the current revision', () => {
+  const { assets, source } = fixture();
+  const handle = assets.create(source).unwrap();
+  const candidateRevision = assets.revision(handle).unwrap();
+  const observer = assets.observe().unwrap();
+  assets.update(handle, { heights: new Float32Array([0, 0, 0, 3]) }).unwrap();
+  const editedRevision = assets.revision(handle).unwrap();
+  const staleCandidate = { ...source, heights: new Float32Array([0, 0, 0, 8]) };
+  expect(assets.replaceAtRevision(handle, candidateRevision, staleCandidate)).toMatchObject({
+    ok: false,
+    error: { code: 'asset-write-conflict' },
+  });
+  expect(assets.revision(handle).unwrap()).toBe(editedRevision);
+  expect(terrainHeight(assets.read(handle).unwrap(), 1, 1)).toBe(3);
+  expect(terrainDerivedClosureValid(assets.read(handle).unwrap(), closure(assets, handle))).toBe(
+    true,
+  );
+
+  const currentRevision = assets.revision(handle).unwrap();
+  const acceptedCandidate = { ...source, heights: new Float32Array([0, 0, 0, 9]) };
+  assets.replaceAtRevision(handle, currentRevision, acceptedCandidate).unwrap();
+  const acceptedRevision = assets.revision(handle).unwrap();
+  expect(acceptedRevision).toBeGreaterThan(currentRevision);
+  const accepted = assets.read<TerrainAsset>(handle).unwrap();
+  expect(terrainHeight(accepted, 1, 1)).toBe(9);
+  expect(terrainDerivedClosureValid(accepted, closure(assets, handle))).toBe(true);
+  const invalidCandidate = { ...source, heights: new Float32Array([0, 0, 0, Number.NaN]) };
+  expect(assets.replaceAtRevision(handle, acceptedRevision, invalidCandidate).ok).toBe(false);
+  expect(assets.revision(handle).unwrap()).toBe(acceptedRevision);
+  expect(assets.read<TerrainAsset>(handle).unwrap()).toEqual(accepted);
+  expect(terrainDerivedClosureValid(assets.read(handle).unwrap(), closure(assets, handle))).toBe(
+    true,
+  );
+  const changes = observer.read().unwrap();
+  expect(
+    changes.changes.filter((value) => value.handle === handle).map((value) => value.revision),
+  ).toEqual([acceptedRevision]);
+  changes.accept();
+  observer.dispose();
+  assets.dispose();
+});
+
 it('rejects invalid height/layer edits and forged derived fields without publishing partial outputs', () => {
   const { assets, source } = fixture();
   const handle = assets.create(source).unwrap();
@@ -153,6 +196,118 @@ it('keeps derived output immutable while independent output copies remain editab
   expect(assets.read(material).unwrap().values?.terrainLod).toEqual([0, 0, 1, 1]);
   observer.dispose();
   assets.dispose();
+});
+
+it('protects generated Terrain outputs without claiming shared source dependencies', async () => {
+  const ids = new Map<string, string>();
+  const guid = (key: string) => {
+    const existing = ids.get(key);
+    if (existing !== undefined) return existing;
+    const value = `019f0000-0000-7000-8000-${String(ids.size + 1).padStart(12, '0')}`;
+    ids.set(key, value);
+    return value;
+  };
+  const author = fixture();
+  const layer = author.assets.read(author.layer).unwrap();
+  const source = {
+    ...author.source,
+    layers: [{ material: guid('layer'), blend: 'weight' as const }],
+  };
+  const outputs = buildTerrainAssets(source, guid, { [guid('layer')]: layer }).unwrap();
+  author.assets.dispose();
+  const { assets, publish } = terrainSourceFixture(guid, {
+    'section/0/material': [guid('layer'), guid('shared'), guid('image'), guid('sampler')],
+  });
+  const image: TextureAsset = {
+    kind: 'texture',
+    format: 'rgba8unorm',
+    colorSpace: 'linear',
+    shape: { viewDimension: '2d', extent: { width: 1, height: 1 } },
+    mips: { kind: 'none' },
+    data: Uint8Array.of(255, 255, 255, 255),
+  };
+  publish({
+    ...outputs,
+    layer,
+    shared: layer,
+    image,
+    sampler: { kind: 'sampler', magFilter: 'linear', minFilter: 'linear' },
+  });
+  try {
+    const rootHandle = (await assets.load(guid('terrain'), 'terrain')).unwrap();
+    const root = assets.read(rootHandle).unwrap();
+    const section = root.sections[0];
+    if (section === undefined) throw new Error('Expected Terrain section');
+    const sectionHandle = section.material as AssetHandle<'material'>;
+    const sectionMaterial = assets.read(sectionHandle).unwrap();
+    const control = sectionMaterial.values?.terrainWeightTexture as {
+      readonly sampler: AssetHandle<'sampler'>;
+    };
+    expect(runtimeAssets(assets).dependencies(sectionHandle).unwrap()).toContain(
+      (await assets.load(guid('shared'), 'material')).unwrap(),
+    );
+    for (const [key, kind] of [
+      ['layer', 'material'],
+      ['shared', 'material'],
+      ['image', 'texture'],
+      ['sampler', 'sampler'],
+    ] as const) {
+      const handle = (await assets.load(guid(key), kind)).unwrap();
+      expect(assets.replace(handle, assets.read(handle).unwrap()).ok).toBe(true);
+    }
+    const shared = (await assets.load(guid('shared'), 'material')).unwrap();
+    assets.update(shared, { values: { roughness: 0.25 } }).unwrap();
+    expect(assets.read(shared).unwrap().values?.roughness).toBe(0.25);
+    const sharedImage = (await assets.load(guid('image'), 'texture')).unwrap();
+    const imageRange = {
+      origin: { x: 0, y: 0 },
+      size: { width: 1, height: 1 },
+      data: Uint8Array.of(0, 255, 0, 255),
+    };
+    assets.writeRange(sharedImage, imageRange).unwrap();
+    const sharedSampler = (await assets.load(guid('sampler'), 'sampler')).unwrap();
+    assets.update(sharedSampler, { magFilter: 'nearest' }).unwrap();
+    const rejection = {
+      ok: false,
+      error: { code: 'asset-invalid-value', expected: 'writes to Terrain author fields' },
+    };
+    for (const handle of [
+      ...root.grids,
+      section.heightTexture,
+      section.weightTexture,
+      section.material,
+      control.sampler,
+    ]) {
+      const derived = handle as AssetHandle;
+      const value = assets.read<Asset>(derived).unwrap();
+      expect(assets.replace(derived, value), `generated ${value.kind} ${derived}`).toMatchObject(
+        rejection,
+      );
+      expect(assets.update(derived, {}), `generated ${value.kind} ${derived}`).toMatchObject(
+        rejection,
+      );
+    }
+    for (const handle of [section.heightTexture, section.weightTexture])
+      expect(assets.writeRange(handle as AssetHandle<'texture'>, imageRange)).toMatchObject(
+        rejection,
+      );
+    const grid = root.grids[0] as AssetHandle<'mesh'>;
+    expect(
+      assets.writeRange(grid, {
+        attribute: 'position',
+        first: 0,
+        values: Float32Array.of(0, 0, 0),
+      }),
+    ).toMatchObject(rejection);
+    const copied = assets.copy(control.sampler).unwrap();
+    expect(assets.update(control.sampler, { magFilter: 'nearest' }).ok).toBe(false);
+    expect(assets.update(copied, { magFilter: 'nearest' }).ok).toBe(true);
+    expect(
+      terrainDerivedClosureValid(assets.read(rootHandle).unwrap(), closure(assets, rootHandle)),
+    ).toBe(true);
+  } finally {
+    assets.dispose();
+  }
 });
 
 it('adopts a seam rectangle and its atlas at one revision without replacing identities or old captures', () => {

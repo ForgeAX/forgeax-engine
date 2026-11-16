@@ -9,7 +9,6 @@ import {
   ParticleEffectPlayer,
   particleEffectContribution,
   VFX_GPU_RUNTIME_RESOURCE_KEY,
-  type VfxGpuRuntime,
   vfxGpuRuntimePlugin,
   vfxParticleCoreField,
 } from '@forgeax/engine-vfx';
@@ -80,7 +79,7 @@ export async function verifyFixedFieldTicks(cooked: {
     .unwrap();
   world.spawn({ component: ParticleEffectPlayer, data: { effect } }).unwrap();
   const ctx = await createWorldContext(world, [vfxGpuRuntimePlugin()]);
-  const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+  const runtime = world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY);
   const camera = {
     position: new Float32Array(3),
     right: new Float32Array([1, 0, 0]),
@@ -99,8 +98,7 @@ export async function verifyFixedFieldTicks(cooked: {
   const execute = async () => {
     const source = feature
       .extract({
-        worlds: [world],
-        owner: 0,
+        world: world,
         views: [{ identity: 'main', render: true }],
         frameNumber: ++frameNumber,
       })
@@ -114,7 +112,7 @@ export async function verifyFixedFieldTicks(cooked: {
           generation: 0,
           frame: { frameNumber },
           sceneData: {} as never,
-          resolveAsset: (_index, handle, revision) =>
+          resolveAsset: (handle, revision) =>
             runtimeAssets(world.assets).resolveAsset(handle, revision),
         }),
       )

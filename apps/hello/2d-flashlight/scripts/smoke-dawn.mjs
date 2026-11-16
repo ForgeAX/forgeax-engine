@@ -263,9 +263,9 @@ function allocMaterial(world, tint, texHandle, samplerHandle) {
       },
     ],
     parameters: SPRITE_LIT_PARAMETERS,
-    // values field names align with sprite-lit.material.json paramSchema
-    // (colorTint / region / pivotAndSize / baseColorTexture; post-#520 SSOT).
-    values: {
+      // values field names align with sprite-lit.material.json paramSchema
+      // (colorTint / region / pivotAndSize / baseColorTexture; post-#520 SSOT).
+      values: {
       colorTint: tint,
       baseColorTexture: texHandle,
       region: [0, 0, 1, 1],
@@ -390,21 +390,19 @@ async function buildPointCircleWorld({ intensity = 2.0 } = {}) {
 // point-circle centres on world (0, 0) so framebuffer center is the AC-2
 // center; edge world (1, 0) maps to pixel column (1/1.5+1)/2*800=667.
 
-const PIXEL_SWEEP_CENTER = { x: Math.round(((2.0 - 1.9) / 1.5 + 1) / 2 * WIDTH), y: HEIGHT >> 1 };
+const PIXEL_SWEEP_CENTER = { x: Math.round((((2.0 - 1.9) / 1.5 + 1) / 2) * WIDTH), y: HEIGHT >> 1 };
 const PIXEL_POINT_CENTER = { x: WIDTH >> 1, y: HEIGHT >> 1 };
-const PIXEL_POINT_EDGE = { x: Math.round((1.0 / 1.5 + 1) / 2 * WIDTH), y: HEIGHT >> 1 };
+const PIXEL_POINT_EDGE = { x: Math.round(((1.0 / 1.5 + 1) / 2) * WIDTH), y: HEIGHT >> 1 };
 
 async function renderAndReadback(world, label) {
   const attached = renderer.attach(world);
   if (!attached.ok) return { ok: false, error: `${label}: attach failed: ${attached.error.code}` };
+  try {
+
   let draws = 0;
   for (let i = 0; i < SMOKE_MIN_FRAMES; i++) {
     world.update().unwrap();
-    await drawReadyFrame(renderer, {
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
+    await drawReadyFrame(renderer, { source: attached.value });
     draws++;
   }
   await sharedDevice?.queue.onSubmittedWorkDone();
@@ -456,6 +454,9 @@ async function renderAndReadback(world, label) {
     return { ok: false, error: `${label}: NaN/Inf detected in readback (sum=${totalSum})` };
   }
   return { ok: true, samplePixel, draws };
+} finally {
+    attached.value.dispose();
+  }
 }
 
 async function runSceneCase(label, buildFn, samplePoints) {

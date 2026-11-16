@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { defineComponent } from '../component';
 import type { EntityHandle } from '../entity-handle';
+import { defineSystem } from '../schedule';
 import { Update } from '../schedule-token';
 import { World } from '../world';
 
@@ -39,15 +40,14 @@ describe('component requirements', () => {
     const world = new World();
     let entity: EntityHandle | undefined;
 
-    world
-      .addSystem(Update, {
-        name: 'requirements-deferred-spawn',
-        queries: [],
-        fn: (_world, _queries, commands) => {
-          entity = commands.spawn({ component: Carrier, data: {} });
-        },
-      })
-      .unwrap();
+    const systemToken1 = defineSystem({
+      name: 'requirements-deferred-spawn',
+      queries: [],
+      fn: (_world, _queries, commands) => {
+        entity = commands.spawn({ component: Carrier, data: {} });
+      },
+    });
+    world.addSystem(Update, systemToken1).unwrap();
 
     expect(world.update(0).ok).toBe(true);
     expect(entity).toBeDefined();
@@ -60,15 +60,14 @@ describe('component requirements', () => {
     const world = new World();
     const entity = world.spawn().unwrap();
 
-    world
-      .addSystem(Update, {
-        name: 'requirements-deferred-add',
-        queries: [],
-        fn: (_world, _queries, commands) => {
-          commands.addComponent(entity, { component: Carrier, data: {} });
-        },
-      })
-      .unwrap();
+    const systemToken2 = defineSystem({
+      name: 'requirements-deferred-add',
+      queries: [],
+      fn: (_world, _queries, commands) => {
+        commands.addComponent(entity, { component: Carrier, data: {} });
+      },
+    });
+    world.addSystem(Update, systemToken2).unwrap();
 
     expect(world.update(0).ok).toBe(true);
     expect(world.get(entity, Base).ok).toBe(true);

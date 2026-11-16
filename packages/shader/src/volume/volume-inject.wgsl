@@ -43,7 +43,7 @@ struct VolumeSet { scene : VolumeParams, members : array<VolumeParams, 11>, };
 @group(0) @binding(5) var<uniform> volume_set : VolumeSet;
 var<private> volume_params : VolumeParams;
 @group(0) @binding(6) var volume_froxel : texture_storage_2d_array<rgba8unorm, write>;
-@group(0) @binding(7) var<storage, read> light_data : array<DirectLightSlot, 256>;
+@group(0) @binding(7) var<storage, read> light_data : array<DirectLightSlot, 1024>;
 @group(0) @binding(8) var<uniform> cluster_uniform : ClusterUniform;
 @group(0) @binding(9) var spotShadowMap : texture_depth_2d_array;
 @group(0) @binding(0) var<uniform> view : View;
@@ -134,7 +134,7 @@ fn selected_cluster_light_slot(value : f32) -> i32 {
   let slot = i32(round(value));
   if (slot < 0) { return -1; }
   let index = u32(slot);
-  if (index >= cluster_uniform.grid.w || index >= 256u) { return -1; }
+  if (index >= cluster_uniform.grid.w || index >= 1024u) { return -1; }
   return slot;
 }
 

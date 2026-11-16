@@ -20,7 +20,200 @@ import type {
 import { createRenderPipelineTarget } from '../render-pipeline';
 import type { RendererState } from '../render-system';
 import { FORWARD_PASS_SELECTOR } from '../systems/pass-selector';
+import { STANDARD_SURFACE_MSAA_NORMAL } from '../temporal/scene-data';
 import { addTypedFullscreenPass, addTypedScenePass } from '../typed-render-graph-primitives';
+import type { WaterInfoGraphTargets } from './standard-build-context';
+
+const MSAA_SURFACE_RESOLVE = 'forgeax.single-layer-medium-msaa-surface';
+const MSAA_SELECTED_COLOR = 'forgeax.single-layer-medium-msaa-selected-color';
+const MSAA_SELECTED_COLOR_FALLBACK = 'forgeax.single-layer-medium-msaa-selected-color-fallback';
+const MSAA_FULLSCREEN_VERTEX = `
+struct VertexOutput { @builtin(position) position: vec4<f32> };
+@vertex fn vs_main(@builtin(vertex_index) vertex: u32) -> VertexOutput {
+  var positions = array<vec2<f32>, 3>(vec2<f32>(-1.0, -1.0), vec2<f32>(3.0, -1.0), vec2<f32>(-1.0, 3.0));
+  return VertexOutput(vec4<f32>(positions[vertex], 0.0, 1.0));
+}`;
+
+function selectedColorSource(fallback: boolean): string {
+  return `${MSAA_FULLSCREEN_VERTEX}
+@group(1) @binding(0) var color: texture_multisampled_2d<f32>;
+@group(1) @binding(1) var colorSampler: sampler;
+@group(1) @binding(2) var selectedSample: texture_2d<u32>;
+${fallback ? '@group(1) @binding(3) var fallback: texture_multisampled_2d<f32>;\nstruct Output { @location(0) color: vec4<f32>, @location(1) fallback: vec4<f32> };' : ''}
+@fragment fn fs_main(input: VertexOutput) -> ${fallback ? 'Output' : '@location(0) vec4<f32>'} {
+  let pixel = vec2<i32>(input.position.xy);
+  let sampleIndex = i32(textureLoad(selectedSample, pixel, 0).r);
+  ${fallback ? 'return Output(textureLoad(color, pixel, sampleIndex), textureLoad(fallback, pixel, sampleIndex));' : 'return textureLoad(color, pixel, sampleIndex);'}
+}`;
+}
+
+export const SINGLE_LAYER_MEDIUM_MSAA_SURFACE_PROGRAMS = [
+  {
+    name: MSAA_SURFACE_RESOLVE,
+    kind: 'fullscreen' as const,
+    depthOutput: 'depth32float-stencil8' as const,
+    reads: [
+      { key: 'input', sampleType: 'multisampled-float' as const },
+      { key: 'depth', sampleType: 'depth' as const },
+      { key: 'normal', sampleType: 'multisampled-uint' as const },
+      { key: 'temporal', sampleType: 'multisampled-float' as const },
+    ],
+    source: `${MSAA_FULLSCREEN_VERTEX}
+@group(1) @binding(0) var color: texture_multisampled_2d<f32>;
+@group(1) @binding(1) var colorSampler: sampler;
+@group(1) @binding(3) var depth: texture_depth_multisampled_2d;
+@group(1) @binding(4) var depthSampler: sampler;
+@group(1) @binding(5) var normal: texture_multisampled_2d<u32>;
+@group(1) @binding(6) var temporal: texture_multisampled_2d<f32>;
+struct Output { @location(0) selectedSample: u32, @location(1) normal: u32,
+  @location(2) temporal: vec4<f32>, @location(3) rawDepth: f32, @builtin(frag_depth) depth: f32 };
+@fragment fn fs_main(input: VertexOutput) -> Output {
+  let pixel = vec2<i32>(input.position.xy);
+  var selected = 0;
+  var nearest = textureLoad(depth, pixel, 0);
+  for (var sampleIndex = 1; sampleIndex < 4; sampleIndex++) {
+    let candidate = textureLoad(depth, pixel, sampleIndex);
+    if (candidate > nearest) { nearest = candidate; selected = sampleIndex; }
+  }
+  let normalBytes = textureLoad(normal, pixel, selected);
+  let packedNormal = normalBytes.x | (normalBytes.y << 8u) | (normalBytes.z << 16u) | (normalBytes.w << 24u);
+  return Output(u32(selected), packedNormal,
+    textureLoad(temporal, pixel, selected), nearest, nearest);
+}`,
+  },
+  {
+    name: MSAA_SELECTED_COLOR,
+    kind: 'fullscreen' as const,
+    source: selectedColorSource(false),
+    reads: [
+      { key: 'input', sampleType: 'multisampled-float' as const },
+      { key: 'selected-sample', sampleType: 'uint' as const },
+    ],
+  },
+  {
+    name: MSAA_SELECTED_COLOR_FALLBACK,
+    kind: 'fullscreen' as const,
+    source: selectedColorSource(true),
+    reads: [
+      { key: 'input', sampleType: 'multisampled-float' as const },
+      { key: 'selected-sample', sampleType: 'uint' as const },
+      { key: 'fallback', sampleType: 'multisampled-float' as const },
+    ],
+  },
+];
+
+/** Fixed opaque sample identity survives later color writers, including underwater translucency. */
+export function addSingleLayerMediumMsaaSurfaceProducer(input: {
+  readonly graph: RenderGraphBuilder<RenderPipelineFrame>;
+  readonly sourceColor: RenderPipelineTarget;
+  readonly sourceDepth: RenderPipelineTarget;
+  readonly sourceNormal: RenderPipelineTarget;
+  readonly sourceTemporal: RenderPipelineTarget;
+  readonly sourceFallback?: RenderPipelineTarget;
+  readonly size: GraphTextureDescriptor['size'];
+}): Result<
+  {
+    readonly selectedSample: RenderPipelineTarget;
+    readonly normal: RenderPipelineTarget;
+    readonly temporal: RenderPipelineTarget;
+    readonly rawDepth: RenderPipelineTarget;
+    readonly depth: RenderPipelineTarget;
+    readonly color: RenderPipelineTarget;
+    readonly fallback?: RenderPipelineTarget;
+    readonly resolveColor: () => Result<void, RenderGraphError>;
+  },
+  RenderGraphError
+> {
+  const sources = [
+    input.sourceColor,
+    input.sourceDepth,
+    input.sourceNormal,
+    input.sourceTemporal,
+    ...(input.sourceFallback === undefined ? [] : [input.sourceFallback]),
+  ];
+  if (sources.some((target) => target.sampleCount !== 4))
+    return err(
+      new RenderGraphError({
+        code: 'resource-descriptor-invalid',
+        expected: 'matched 4x opaque color/depth/normal/temporal inputs',
+        hint: 'produce all opaque surface facts at four samples before resolving them',
+        detail: {
+          resourceLabel: 'single-layer-medium-msaa-surface',
+          field: 'source.sampleCount',
+          expected: '4',
+          actual: sources.map((source) => source.sampleCount).join(','),
+        },
+      }),
+    );
+  if (input.sourceNormal.format !== STANDARD_SURFACE_MSAA_NORMAL.format)
+    return err(
+      new RenderGraphError({
+        code: 'resource-descriptor-invalid',
+        expected: 'a byte-exact four-sample packed normal carrier',
+        hint: 'use the Standard multisampled normal entry with its rgba8uint attachment',
+        detail: {
+          resourceLabel: 'single-layer-medium-msaa-surface',
+          field: 'sourceNormal.format',
+          expected: STANDARD_SURFACE_MSAA_NORMAL.format,
+          actual: input.sourceNormal.format,
+        },
+      }),
+    );
+  const make = (label: string, format: RenderPipelineTarget['format']) =>
+    createRenderPipelineTarget(input.graph, label, { format, size: input.size, sampleCount: 1 });
+  const selectedSample = make('water-opaque-selected-sample', 'r32uint');
+  if (!selectedSample.ok) return selectedSample;
+  const normal = make('water-opaque-normal', 'r32uint');
+  if (!normal.ok) return normal;
+  const temporal = make('standard-scene-temporal', 'rgba16float');
+  if (!temporal.ok) return temporal;
+  const rawDepth = make('water-opaque-raw-depth', 'r32float');
+  if (!rawDepth.ok) return rawDepth;
+  const depth = make('water-opaque-depth', 'depth32float-stencil8');
+  if (!depth.ok) return depth;
+  const color = make('water-opaque-nearest-color', input.sourceColor.format);
+  if (!color.ok) return color;
+  const fallback =
+    input.sourceFallback === undefined
+      ? undefined
+      : make('water-opaque-fallback', input.sourceFallback.format);
+  if (fallback !== undefined && !fallback.ok) return fallback;
+  const produced = addTypedFullscreenPass(input.graph, {
+    name: 'water-opaque-msaa-surface-resolve',
+    shader: MSAA_SURFACE_RESOLVE,
+    input: input.sourceColor,
+    depth: input.sourceDepth,
+    outputs: [selectedSample.value, normal.value, temporal.value, rawDepth.value],
+    depthOutput: depth.value,
+    additionalReads: [
+      { key: 'normal', target: input.sourceNormal },
+      { key: 'temporal', target: input.sourceTemporal },
+    ],
+  });
+  if (!produced.ok) return produced;
+  return ok({
+    selectedSample: selectedSample.value,
+    normal: normal.value,
+    temporal: temporal.value,
+    rawDepth: rawDepth.value,
+    depth: depth.value,
+    color: color.value,
+    ...(fallback?.ok !== true ? {} : { fallback: fallback.value }),
+    resolveColor: () =>
+      addTypedFullscreenPass(input.graph, {
+        name: 'water-opaque-msaa-color-resolve',
+        shader: fallback === undefined ? MSAA_SELECTED_COLOR : MSAA_SELECTED_COLOR_FALLBACK,
+        input: input.sourceColor,
+        outputs: [color.value, ...(fallback?.ok !== true ? [] : [fallback.value])],
+        additionalReads: [
+          { key: 'selected-sample', target: selectedSample.value },
+          ...(input.sourceFallback === undefined
+            ? []
+            : [{ key: 'fallback', target: input.sourceFallback }]),
+        ],
+      }),
+  });
+}
 
 /** Stable renderer-owned post-process identity for the independent depth copy. */
 export const SINGLE_LAYER_MEDIUM_RAW_DEPTH_POST_PROCESS_ID =
@@ -207,6 +400,8 @@ export interface SingleLayerMediumPassInput {
   /** Producer-owned pair of opaque color and sampled raw-depth facts. */
   readonly surfacePair: RenderPipelineSurfaceMediumPair;
   readonly gpuDriven?: RenderPipelineGpuDrivenProjection | undefined;
+  readonly waterInfoTargets?: WaterInfoGraphTargets | undefined;
+  readonly temporal?: RenderPipelineTarget | undefined;
 }
 
 /**
@@ -235,28 +430,34 @@ export function addSingleLayerMediumPasses(
     );
   }
   const sampled = input.sampled ?? [];
-  const nearest = addTypedScenePass(input.graph, {
-    name: 'single-layer-medium-nearest-layer',
-    color: input.nearestLayer,
-    depth: input.nearestDepth,
-    sampled,
-    ...(input.directionalShadow === undefined
-      ? {}
-      : { directionalShadow: input.directionalShadow }),
-    ...(input.spotShadow === undefined ? {} : { spotShadow: input.spotShadow }),
-    ...(input.cloudShadow === undefined ? {} : { cloudShadow: input.cloudShadow }),
-    ...(input.ssao === undefined ? {} : { ssao: input.ssao }),
-    selector: FORWARD_PASS_SELECTOR,
-    colorLoadOp: 'clear',
-    depthLoadOp: 'clear',
-    recordMode: 'single-layer-medium-nearest-layer',
-    transmissionBackdrop: pair.opaqueColor,
-    surfacePair: pair,
-    gpuDrivenFilter: 'single-layer-medium',
-    ...(input.extraAccesses === undefined ? {} : { extraAccesses: input.extraAccesses }),
-    ...(input.gpuDriven === undefined ? {} : { gpuDriven: input.gpuDriven }),
-  });
-  if (!nearest.ok) return nearest;
+  const addNearestLayerPass = () => {
+    const nearest = addTypedScenePass(input.graph, {
+      name: 'single-layer-medium-nearest-layer',
+      color: input.nearestLayer,
+      depth: input.nearestDepth,
+      sampled,
+      ...(input.directionalShadow === undefined
+        ? {}
+        : { directionalShadow: input.directionalShadow }),
+      ...(input.spotShadow === undefined ? {} : { spotShadow: input.spotShadow }),
+      ...(input.cloudShadow === undefined ? {} : { cloudShadow: input.cloudShadow }),
+      ...(input.ssao === undefined ? {} : { ssao: input.ssao }),
+      selector: FORWARD_PASS_SELECTOR,
+      colorLoadOp: 'clear',
+      depthLoadOp: 'clear',
+      recordMode: 'single-layer-medium-nearest-layer',
+      transmissionBackdrop: pair.opaqueColor,
+      surfacePair: pair,
+      gpuDrivenFilter: 'single-layer-medium',
+      ...(input.extraAccesses === undefined ? {} : { extraAccesses: input.extraAccesses }),
+      ...(input.gpuDriven === undefined ? {} : { gpuDriven: input.gpuDriven }),
+      ...(input.waterInfoTargets === undefined ? {} : { waterInfoTargets: input.waterInfoTargets }),
+    });
+    if (!nearest.ok) return nearest;
+    return undefined;
+  };
+  const addNearestLayerPassFailure = addNearestLayerPass();
+  if (addNearestLayerPassFailure !== undefined) return addNearestLayerPassFailure;
 
   const nearestPair =
     input.nearestLayer.sampleCount === 4
@@ -279,32 +480,57 @@ export function addSingleLayerMediumPasses(
         })();
   if (!nearestPair.ok) return nearestPair;
 
-  const colorSampled = [...sampled, nearestPair.value.color];
-  const color = addTypedScenePass(input.graph, {
-    name: 'single-layer-medium-color',
-    color: input.color,
-    ...(input.colorResolve === undefined ? {} : { resolve: input.colorResolve }),
-    depth: input.depth,
-    sampled: colorSampled,
-    ...(input.directionalShadow === undefined
-      ? {}
-      : { directionalShadow: input.directionalShadow }),
-    ...(input.spotShadow === undefined ? {} : { spotShadow: input.spotShadow }),
-    ...(input.cloudShadow === undefined ? {} : { cloudShadow: input.cloudShadow }),
-    ...(input.ssao === undefined ? {} : { ssao: input.ssao }),
-    selector: FORWARD_PASS_SELECTOR,
-    colorLoadOp: 'load',
-    depthLoadOp: 'load',
-    recordMode: 'single-layer-medium-color',
-    transmissionBackdrop: pair.opaqueColor,
-    surfacePair: pair,
-    surfaceNearestLayer: nearestPair.value.color.view,
-    surfaceNearestDepth: nearestPair.value.depth.view,
-    gpuDrivenFilter: 'single-layer-medium',
-    ...(input.extraAccesses === undefined ? {} : { extraAccesses: input.extraAccesses }),
-    ...(input.gpuDriven === undefined ? {} : { gpuDriven: input.gpuDriven }),
-  });
-  if (!color.ok) return color;
+  const addMediumColorPass = (checkedPair: Extract<typeof nearestPair, { ok: true }>) => {
+    const colorSampled = [...sampled, checkedPair.value.color];
+    const color = addTypedScenePass(input.graph, {
+      name: 'single-layer-medium-color',
+      color: input.color,
+      ...(input.colorResolve === undefined ? {} : { resolve: input.colorResolve }),
+      depth: input.depth,
+      sampled: colorSampled,
+      ...(input.directionalShadow === undefined
+        ? {}
+        : { directionalShadow: input.directionalShadow }),
+      ...(input.spotShadow === undefined ? {} : { spotShadow: input.spotShadow }),
+      ...(input.cloudShadow === undefined ? {} : { cloudShadow: input.cloudShadow }),
+      ...(input.ssao === undefined ? {} : { ssao: input.ssao }),
+      selector: FORWARD_PASS_SELECTOR,
+      colorLoadOp: 'load',
+      depthLoadOp: 'load',
+      recordMode: 'single-layer-medium-color',
+      transmissionBackdrop: pair.opaqueColor,
+      surfacePair: pair,
+      surfaceNearestLayer: checkedPair.value.color.view,
+      surfaceNearestDepth: checkedPair.value.depth.view,
+      gpuDrivenFilter: 'single-layer-medium',
+      ...(input.extraAccesses === undefined ? {} : { extraAccesses: input.extraAccesses }),
+      ...(input.gpuDriven === undefined ? {} : { gpuDriven: input.gpuDriven }),
+      ...(input.waterInfoTargets === undefined ? {} : { waterInfoTargets: input.waterInfoTargets }),
+    });
+    if (!color.ok) return color;
+    return undefined;
+  };
+  const addMediumColorPassFailure = addMediumColorPass(nearestPair);
+  if (addMediumColorPassFailure !== undefined) return addMediumColorPassFailure;
+  if (input.temporal !== undefined) {
+    const velocity = addTypedScenePass(input.graph, {
+      name: 'single-layer-medium-velocity',
+      color: input.temporal,
+      depth: input.depth,
+      selector: FORWARD_PASS_SELECTOR,
+      recordMode: 'single-layer-medium-color',
+      passKind: 'temporal',
+      colorLoadOp: 'load',
+      depthLoadOp: 'load',
+      transmissionBackdrop: pair.opaqueColor,
+      surfacePair: pair,
+      surfaceNearestLayer: nearestPair.value.color.view,
+      surfaceNearestDepth: nearestPair.value.depth.view,
+      ...(input.extraAccesses === undefined ? {} : { extraAccesses: input.extraAccesses }),
+      ...(input.waterInfoTargets === undefined ? {} : { waterInfoTargets: input.waterInfoTargets }),
+    });
+    if (!velocity.ok) return velocity;
+  }
   return ok(undefined);
 }
 

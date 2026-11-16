@@ -75,5 +75,7 @@ export {
   validMusicBpm,
   validMusicScore,
 } from './music';
-export { AUDIO_TICK_SYSTEM_NAME, audioPlugin } from './plugin-factory';
+export { audioPlugin } from './plugin-factory';
 export { audioBackendPlugin } from './plugin-service';
+
+export { AudioTickOrder } from './system-order';

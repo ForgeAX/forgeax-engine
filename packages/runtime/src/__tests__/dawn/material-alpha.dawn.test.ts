@@ -274,11 +274,7 @@ async function captureCase(testCase: AlphaCase): Promise<[number, number, number
       data: { direction: [0, 0, -1], color: [1, 1, 1], intensity: 1, castShadow: false },
     });
     world.update().unwrap();
-    await drawReadyFrame(renderer, {
-      leases: [attachment.value],
-      camera: { lease: attachment.value },
-      environment: { lease: attachment.value },
-    });
+    await drawReadyFrame(renderer, { source: attachment.value });
     await device.queue.onSubmittedWorkDone();
     if (target === undefined) throw new Error('runtime Dawn render target not configured');
     return await readCenter(device, target);

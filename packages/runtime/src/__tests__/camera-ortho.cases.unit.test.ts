@@ -35,10 +35,11 @@ afterEach(() => vi.restoreAllMocks());
     ];
   }
 
-  describe('Camera schema (34 fields: projection, exposure, color grading, post-process, target, targetLayer, clearColor, and aspect-sync)', () => {
-    it('Camera.schema has 34 fields including auto exposure and color grading state', () => {
-      expect(Object.keys(Camera.fields).length).toBe(34);
+  describe('Camera schema (35 fields: projection, exposure, color grading, post-process, target, targetLayer, clearColor, and aspect-sync)', () => {
+    it('Camera.schema has 35 fields including auto exposure and color grading state', () => {
+      expect(Object.keys(Camera.fields).length).toBe(35);
       expect(componentFieldType(Camera, 'targetLayer')).toBe('u32');
+      expect(componentFieldType(Camera, 'postProcessing')).toBe('bool');
       expect(componentFieldType(Camera, 'fov')).toBe('f32');
       expect(componentFieldType(Camera, 'aspect')).toBe('f32');
       expect(componentFieldType(Camera, 'near')).toBe('f32');

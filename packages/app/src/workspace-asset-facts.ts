@@ -25,12 +25,13 @@ export interface WorkspaceMeshFacts extends Readonly<Record<string, unknown>> {
 }
 
 export interface WorkspaceTextureFacts extends Readonly<Record<string, unknown>> {
-  readonly kind: 'texture' | 'equirect';
+  readonly kind: 'texture' | 'gpu-texture' | 'equirect';
   readonly shape: Extract<Asset, { kind: 'texture' }>['shape'];
   readonly format: string;
   readonly colorSpace: string;
   readonly mips: Extract<Asset, { kind: 'texture' }>['mips'];
   readonly dataBytes: number;
+  readonly source?: Extract<Asset, { kind: 'gpu-texture' }>['source'];
 }
 
 export interface WorkspaceMaterialFacts extends Readonly<Record<string, unknown>> {
@@ -46,6 +47,13 @@ export interface WorkspaceMaterialFacts extends Readonly<Record<string, unknown>
 }
 
 export type EngineWorkspaceAssetFacts =
+  | (Readonly<Record<string, unknown>> & {
+      readonly kind: 'texture-generator';
+      readonly outputs: Extract<Asset, { kind: 'texture-generator' }>['outputs'];
+      readonly values: Extract<Asset, { kind: 'texture-generator' }>['values'];
+      readonly passCount: number;
+      readonly dataBytes: 0;
+    })
   | WorkspaceMeshFacts
   | WorkspaceTextureFacts
   | WorkspaceMaterialFacts;
@@ -94,43 +102,16 @@ export function workspaceMeshTriangles(
 
 /** Detached, bounded facts from the payload retained by the preview owner. */
 export function workspaceAssetFacts(payload: Asset): EngineWorkspaceAssetFacts | undefined {
-  if (payload.kind === 'mesh') {
-    let triangleCount = 0;
-    workspaceMeshTriangles(payload, () => {
-      triangleCount++;
-    });
+  if (payload.kind === 'mesh') return workspaceMeshFacts(payload);
+  if (payload.kind === 'texture-generator')
     return {
-      kind: 'mesh',
-      vertexCount:
-        deriveVertexCount(payload.vertices, deriveVertexLayoutProjection(payload.attributes)) ??
-        null,
-      indexCount: payload.indices?.length ?? 0,
-      triangleCount,
-      uvChannelCount: Object.keys(payload.attributes).filter((key) => /^uv[1-7]?$/.test(key))
-        .length,
-      submeshes: structuredClone(payload.submeshes),
-      materialSlots: structuredClone(payload.materialSlots),
-      ...(payload.aabb ? { aabb: Array.from(payload.aabb) } : {}),
-      indexFormat:
-        payload.indices === undefined
-          ? 'none'
-          : payload.indices instanceof Uint16Array
-            ? 'uint16'
-            : 'uint32',
-      attributes: Object.keys(payload.attributes),
-      geometryBytes: payload.vertices.byteLength + (payload.indices?.byteLength ?? 0),
-      lodCount: 1 + (payload.lods?.length ?? 0),
-      skinned:
-        payload.attributes.skinIndex !== undefined || payload.attributes.skinWeight !== undefined,
-      morphTargetCount: payload.morphTargets?.length ?? 0,
-      collision: {
-        present: payload.collision !== undefined,
-        vertexCount: (payload.collision?.positions.length ?? 0) / 3,
-        triangleCount: (payload.collision?.indices.length ?? 0) / 3,
-      },
+      kind: payload.kind,
+      outputs: structuredClone(payload.outputs),
+      values: structuredClone(payload.values),
+      passCount: payload.passes.length,
+      dataBytes: 0,
     };
-  }
-  if (payload.kind === 'texture' || payload.kind === 'equirect') {
+  if (payload.kind === 'texture' || payload.kind === 'gpu-texture' || payload.kind === 'equirect') {
     const source = textureViewSource(payload);
     return {
       kind: payload.kind,
@@ -138,7 +119,8 @@ export function workspaceAssetFacts(payload: Asset): EngineWorkspaceAssetFacts |
       format: source.format,
       colorSpace: source.colorSpace,
       mips: structuredClone(source.mips),
-      dataBytes: source.data.byteLength,
+      dataBytes: source.kind === 'texture' ? source.data.byteLength : 0,
+      ...(source.kind === 'texture' ? {} : { source: structuredClone(source.source) }),
     };
   }
   if (payload.kind === 'material')
@@ -156,4 +138,39 @@ export function workspaceAssetFacts(payload: Asset): EngineWorkspaceAssetFacts |
       })),
     };
   return undefined;
+}
+
+function workspaceMeshFacts(payload: MeshAsset): WorkspaceMeshFacts {
+  let triangleCount = 0;
+  workspaceMeshTriangles(payload, () => {
+    triangleCount++;
+  });
+  return {
+    kind: 'mesh',
+    vertexCount:
+      deriveVertexCount(payload.vertices, deriveVertexLayoutProjection(payload.attributes)) ?? null,
+    indexCount: payload.indices?.length ?? 0,
+    triangleCount,
+    uvChannelCount: Object.keys(payload.attributes).filter((key) => /^uv[1-7]?$/.test(key)).length,
+    submeshes: structuredClone(payload.submeshes),
+    materialSlots: structuredClone(payload.materialSlots),
+    ...(payload.aabb ? { aabb: Array.from(payload.aabb) } : {}),
+    indexFormat:
+      payload.indices === undefined
+        ? 'none'
+        : payload.indices instanceof Uint16Array
+          ? 'uint16'
+          : 'uint32',
+    attributes: Object.keys(payload.attributes),
+    geometryBytes: payload.vertices.byteLength + (payload.indices?.byteLength ?? 0),
+    lodCount: 1 + (payload.lods?.length ?? 0),
+    skinned:
+      payload.attributes.skinIndex !== undefined || payload.attributes.skinWeight !== undefined,
+    morphTargetCount: payload.morphTargets?.length ?? 0,
+    collision: {
+      present: payload.collision !== undefined,
+      vertexCount: (payload.collision?.positions.length ?? 0) / 3,
+      triangleCount: (payload.collision?.indices.length ?? 0) / 3,
+    },
+  };
 }

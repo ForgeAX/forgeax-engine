@@ -1,3 +1,4 @@
+import { World } from '@forgeax/engine-ecs';
 import type { RhiCaps } from '@forgeax/engine-rhi';
 import { err, ok } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
@@ -46,8 +47,7 @@ describe('render feature prepared diagnostics', () => {
   it('projects disabled and failed states with code-directed recovery data', () => {
     const disabledHost = createRenderFeatureHost([feature('healthy')]).unwrap();
     runSingleViewFeatureFrame(disabledHost, {
-      worlds: [],
-      owner: 0,
+      world: new World(),
       frameNumber: 1,
       caps: caps(false),
     });
@@ -64,8 +64,7 @@ describe('render feature prepared diagnostics', () => {
 
     const failedHost = createRenderFeatureHost([feature('failed')]).unwrap();
     runSingleViewFeatureFrame(failedHost, {
-      worlds: [],
-      owner: 0,
+      world: new World(),
       frameNumber: 1,
       caps: caps(true),
     });

@@ -3,6 +3,14 @@ import { describe, expect, it } from 'vitest';
 import type { VolumetricFogAuthoring } from '../volume/component';
 import { extractVolumetricFog } from '../volume/extract';
 
+const density = {
+  guid: 'smoke-a',
+  generation: 1,
+  format: 'r8unorm',
+  colorSpace: 'linear',
+  shape: { viewDimension: '3d', extent: { width: 16, height: 16, depth: 16 } },
+} as const;
+
 const fog: VolumetricFogAuthoring = {
   light: 0 as EntityHandle,
   density: {
@@ -40,7 +48,7 @@ describe('independent local volumetric fog owners', () => {
   ])('admits %i independently placed density fields without changing their sampling or optics', (count) => {
     const fields = Array.from({ length: count }, (_, index) => ({
       ...fog,
-      density: { ...fog.density, guid: `density-${index}`, generation: index + 1 },
+      density: { ...density, guid: `density-${index}`, generation: index + 1 },
       bounds: { min: [index * 0.175, 0, 0] as const, max: [index * 0.175 + 1, 1, 1] as const },
       extinction: [index + 1, 2, 3] as const,
       emission: [index / 9, 0, 0] as const,

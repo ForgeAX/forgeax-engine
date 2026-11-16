@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { defineSystemSet } from '../schedule';
+import { defineSystem, defineSystemSet } from '../schedule';
 import { FixedUpdate, Update } from '../schedule-token';
 import { World } from '../world';
 
@@ -12,7 +12,7 @@ describe('ScheduleToken registration', () => {
 
   it('requires ScheduleToken as the first registration argument', () => {
     const world = new World();
-    const system = { name: 'update-system', queries: [], fn: () => {} };
+    const system = defineSystem({ name: 'update-system', queries: [], fn: () => {} });
 
     world.addSystem(Update, system);
     // @ts-expect-error token-first registration has no implicit Update overload
@@ -22,7 +22,7 @@ describe('ScheduleToken registration', () => {
   it('scopes set membership and configuration to a token', () => {
     const world = new World();
     const set = defineSystemSet({ name: 'update-set' });
-    const system = { name: 'set-system', queries: [], fn: () => {} };
+    const system = defineSystem({ name: 'set-system', queries: [], fn: () => {} });
 
     expect(world.addSystems(Update, set, [system]).ok).toBe(true);
     expect(world.inspect().systemCount).toBe(1);
@@ -30,26 +30,23 @@ describe('ScheduleToken registration', () => {
 
   it('requires a token for removal and replacement', () => {
     const world = new World();
-    world.addSystem(Update, { name: 'replaceable', queries: [], fn: () => {} });
+    const systemToken1 = defineSystem({ name: 'replaceable', queries: [], fn: () => {} });
+    world.addSystem(Update, systemToken1);
 
-    expect(world.removeSystem(Update, 'replaceable').ok).toBe(true);
-    world.addSystem(Update, { name: 'replaceable', queries: [], fn: () => {} });
+    expect(world.removeSystem(Update, systemToken1).ok).toBe(true);
+    const systemToken2 = defineSystem({ name: 'replaceable', queries: [], fn: () => {} });
+    world.addSystem(Update, systemToken2);
     expect(
-      world.replaceSystem(Update, 'replaceable', {
-        name: 'replaceable',
-        queries: [],
-        fn: () => {},
-      }).ok,
+      world.replaceSystem(
+        Update,
+        systemToken2,
+        defineSystem({
+          name: 'replaceable',
+          queries: [],
+          fn: () => {},
+        }),
+      ).ok,
     ).toBe(true);
-  });
-
-  it('publishes one identity for split runtime bundles', () => {
-    const registry = globalThis as typeof globalThis & {
-      readonly [key: symbol]: unknown;
-    };
-
-    expect(registry[Symbol.for('forgeax.ecs.schedule-token.Update')]).toBe(Update);
-    expect(registry[Symbol.for('forgeax.ecs.schedule-token.FixedUpdate')]).toBe(FixedUpdate);
   });
 
   it('refreshes set membership after removal and keeps run conditions live each frame', () => {
@@ -64,14 +61,17 @@ describe('ScheduleToken registration', () => {
         return enabled;
       },
     });
-    const system = (name: string) => ({
-      name,
-      queries: [] as const,
-      fn: () => {
-        calls.push(name);
-      },
-    });
-    world.addSystems(Update, set, [system('a'), system('b')]).unwrap();
+    const system = (name: string) =>
+      defineSystem({
+        name,
+        queries: [] as const,
+        fn: () => {
+          calls.push(name);
+        },
+      });
+    const a = system('a');
+    const b = system('b');
+    world.addSystems(Update, set, [a, b]).unwrap();
     world.update(0).unwrap();
     expect(calls).toEqual([]);
     expect(checks).toBe(1);
@@ -79,13 +79,14 @@ describe('ScheduleToken registration', () => {
     world.update(0).unwrap();
     expect(calls).toEqual(['a', 'b']);
     expect(checks).toBe(2);
-    world.removeSystem(Update, 'a').unwrap();
-    world.addSystem(Update, system('a')).unwrap();
+    world.removeSystem(Update, a).unwrap();
+    const systemToken3 = system('a');
+    world.addSystem(Update, systemToken3).unwrap();
     enabled = false;
     world.update(0).unwrap();
     expect(calls).toEqual(['a', 'b', 'a']);
     expect(checks).toBe(3);
-    world.replaceSystem(Update, 'b', system('b')).unwrap();
+    world.replaceSystem(Update, b, system('b')).unwrap();
     world.update(0).unwrap();
     expect(calls).toEqual(['a', 'b', 'a', 'a']);
     expect(checks).toBe(4);

@@ -3,13 +3,36 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, rmSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { prepareWaterContent } from '../../packages/content/scripts/prepare-water-content.mjs';
 import { hasExpandedSource } from '../lib/source-repository.mjs';
 import { submoduleGitEnvironment } from './submodule-git-environment.mjs';
 
 const assetPath = 'forgeax-engine-assets';
 
-export function prepareAssetsCheckout(root = process.cwd()) {
-  if (hasExpandedSource(root, assetPath, 'README.md'))
+function verifyExport(sourceRoot, expected, checked, environment) {
+  // Fetch objects only. The shared checkout and its index never change.
+  checked(['-C', assetPath, 'fetch', '--no-tags', 'origin', expected], environment);
+  const actual = checked(['-C', assetPath, 'rev-parse', 'FETCH_HEAD']);
+  if (actual !== expected)
+    throw new Error(`[assets-checkout] export pin mismatch expected=${expected} actual=${actual}`);
+  checked(['-C', assetPath, 'cat-file', '-e', `${expected}^{commit}`]);
+  const rows = checked(['-C', assetPath, 'ls-tree', '-r', expected, '--', 'water']).split('\n');
+  if (!rows[0]) throw new Error(`[assets-checkout] pinned Water source missing pin=${expected}`);
+  for (const row of rows) {
+    const entry = row.match(/^100644 blob ([a-f0-9]+)\t(water\/.+)$/);
+    if (!entry) throw new Error(`[assets-checkout] unsupported exported source: ${row}`);
+    const path = resolve(sourceRoot, entry[2]);
+    const digest = checked(['-C', assetPath, 'hash-object', '--no-filters', path]);
+    if (digest !== entry[1])
+      throw new Error(
+        `[assets-checkout] exported source mismatch path=${entry[2]} pin=${expected}`,
+      );
+  }
+  return { path: assetPath, status: 'exported', expected, actual, sourceRoot: resolve(sourceRoot) };
+}
+
+export function prepareAssetsCheckout(root = process.cwd(), { sourceRoot } = {}) {
+  if (sourceRoot === undefined && hasExpandedSource(root, assetPath, 'README.md'))
     return { path: assetPath, status: 'expanded' };
   const run = (args, env = process.env) =>
     spawnSync('git', ['-C', root, ...args], {
@@ -42,6 +65,7 @@ export function prepareAssetsCheckout(root = process.cwd()) {
   const expected = pin[1];
   let repaired = false;
   const environment = submoduleGitEnvironment(root, assetPath);
+  if (sourceRoot !== undefined) return verifyExport(sourceRoot, expected, checked, environment);
   const initialized = existsSync(resolve(root, assetPath, '.git'));
   const ownedDirectory = resolve(
     root,
@@ -103,7 +127,18 @@ export function prepareAssetsCheckout(root = process.cwd()) {
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
-    console.log(JSON.stringify(prepareAssetsCheckout()));
+    const args = process.argv.slice(2);
+    if (args.length !== 0 && (args.length !== 2 || args[0] !== '--source-root' || !args[1]))
+      throw new Error(
+        'usage: prepare-assets-checkout.mjs [--source-root <assets-export-directory>]',
+      );
+    const sourceRoot = args[1] === undefined ? undefined : resolve(args[1]);
+    const checkout = prepareAssetsCheckout(process.cwd(), { sourceRoot });
+    const waterContent = await prepareWaterContent({
+      repositoryRoot: process.cwd(),
+      ...(sourceRoot === undefined ? {} : { sourceRoot: resolve(sourceRoot, 'water') }),
+    });
+    console.log(JSON.stringify({ ...checkout, waterContent }));
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;

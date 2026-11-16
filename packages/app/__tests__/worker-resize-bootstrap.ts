@@ -1,3 +1,4 @@
+import { defineSystem } from "@forgeax/engine-ecs";
 import { Time, Update } from '@forgeax/engine-ecs';
 import type { ExecutionBootstrapEntry } from '../src/execution/bootstrap-entry';
 import { BarrelDistortion, Camera, perspective } from '@forgeax/engine-render';
@@ -19,7 +20,7 @@ const entry: ExecutionBootstrapEntry = () => ({
             },
           )
           .unwrap();
-        const system = {
+        const system = defineSystem({
           name: 'worker-resize-probe',
           queries: [],
           fn: () => {
@@ -32,9 +33,9 @@ const entry: ExecutionBootstrapEntry = () => ({
               });
             }
           },
-        };
+        });
         ctx.world.addSystem(Update, system).unwrap();
-        return () => ctx.world.removeSystem(Update, system.name).unwrap();
+        return () => ctx.world.removeSystem(Update, system).unwrap();
       },
     },
   ],

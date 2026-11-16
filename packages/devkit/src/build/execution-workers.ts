@@ -159,7 +159,9 @@ export function executionWorkerEntries(
       if (id.startsWith(externalPrefix)) return { id, external: true };
       if (!importer || !/^@forgeax\/engine(?:$|[/-])/.test(id)) return null;
       const filename = importer.split('?')[0] ?? importer;
-      if (isAbsolute(filename) && (await engineOwner(dirname(filename)))) return null;
+      // Dev capture must recognize transitive Engine imports as Host capabilities
+      // before project session URLs are frozen. Builds retain their internal graph.
+      if (building && isAbsolute(filename) && (await engineOwner(dirname(filename)))) return null;
       const resolved = await this.resolve(id, importer, { ...options, skipSelf: true });
       if (!resolved || resolved.external) this.error(`Engine capability unavailable: ${id}`);
       resolved.id = await canonicalModuleId(resolved.id);
@@ -450,12 +452,12 @@ export function loadImport(specifier) {
         }
         return this.error('Vite preload helper no longer exposes its native import function');
       }
-      // These are the three App-owned literal constructor sites. Let Rollup
+      // These are the four App-owned literal constructor sites. Let Rollup
       // emit ordinary entries before Vite creates isolated Worker bundles;
       // otherwise a later bootstrap import evaluates Engine singletons twice
       // in the same realm (components, schedules and scene instance state).
       const pattern =
-        /new Worker\(\s*new URL\(\s*(['"])(\.\/(?:engine|render|kernel)-worker-runtime\.mjs)\1,\s*import\.meta\.url\s*\)/g;
+        /new Worker\(\s*new URL\(\s*(['"])(\.\/(?:engine|render|task)-worker-runtime\.mjs)\1,\s*import\.meta\.url\s*\)/g;
       const matches = [...code.matchAll(pattern)];
       if (matches.length === 0) return null;
       const output = new MagicString(code);

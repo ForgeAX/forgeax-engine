@@ -32,6 +32,7 @@ it.each([
       imports: {
         'forgeax_view::common': source('common'),
         'forgeax_pbr::gbuffer': gbufferSource,
+        forgeax_scene_temporal: source('scene-temporal'),
         'forgeax_depth_pyramid::sample': source('depth-pyramid-sample'),
       },
     });

@@ -54,10 +54,7 @@ import {
 } from './hdr-pipeline';
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 
-
 // 2. example-specific glue
-
-
 
 // LO exposure default value (LearnOpenGL section 5.6, default exposure=1.0).
 // Grep-able constant so AI users land on the per-pixel exposure scalar.
@@ -685,11 +682,7 @@ function installCaptureHook(app: App, world: App['world'], canvas: HTMLCanvasEle
   const lease = attached.value;
   win.__captureHdr = async (): Promise<Uint8Array> => {
     world.update(1 / 60).unwrap();
-    const frame = renderer.draw({
-      leases: [lease],
-      camera: { lease },
-      environment: { lease },
-    });
+    const frame = renderer.draw({ source: lease });
     if (!frame.ok) throw frame.error;
     await renderer.observe(frame.value, { include: ['draws'] });
     const r = await captureCanvasPixels(canvas);

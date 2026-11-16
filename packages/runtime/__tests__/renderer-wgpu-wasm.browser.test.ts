@@ -102,11 +102,6 @@ describe.skip('renderer-wgpu-wasm.browser - chromium real path with rhi-wgpu esc
     expect(attached.ok).toBe(true);
     if (!attached.ok) return;
     expect(() =>
-      renderer?.draw({
-        leases: [attached.value],
-        camera: { lease: attached.value },
-        environment: { lease: attached.value },
-      }),
-    ).not.toThrow();
+      renderer?.draw({ source: attached.value })).not.toThrow();
   });
 });

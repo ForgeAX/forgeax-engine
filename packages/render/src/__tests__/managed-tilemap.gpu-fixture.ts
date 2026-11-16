@@ -155,7 +155,7 @@ export async function verifyRuntimeTilemap(
             ? { publication: encodeRenderPublication(packet) }
             : (() => {
                 assert(lease);
-                return { leases: [lease] as const, camera: { lease }, environment: { lease } };
+                return { source: lease };
               })();
         const result = renderer.draw(request);
         assert(

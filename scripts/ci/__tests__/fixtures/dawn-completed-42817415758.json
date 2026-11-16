@@ -381,7 +381,10 @@
     "packages/shader/src/__tests__/ssao-cluster-pack.dawn.test.ts": 4.387,
     "packages/vfx-compiler/src/__tests__/event-capacity.dawn.test.ts": 3.9002967032967053,
     "packages/vfx-render/src/__tests__/restart-resources.dawn.test.ts": 3.983296703296705,
-    "packages/vite-plugin-shader/src/__tests__/particle-atmosphere.dawn.test.ts": 5.407383838383839
+    "packages/vite-plugin-shader/src/__tests__/particle-atmosphere.dawn.test.ts": 5.407383838383839,
+    "packages/render/src/__tests__/managed-tilemap.dawn.test.ts": 49.0674953271028,
+    "packages/render/src/record/__tests__/indirect-bundle-retirement.dawn.test.ts": 3.9024953271028027,
+    "packages/render/src/__tests__/material-vertex-texture.dawn.test.ts": 3.8310618556700957
   },
   "fileForecast": {
     "policy": "Interrupted ordinary-3 retains each historical maximum or its reported test duration plus the largest complete-process overhead share from this run, whichever is larger. These are placement forecasts, not completed costs.",
@@ -389,7 +392,9 @@
     "overheadSecondsPerFile": 1.7106853932584267,
     "kind": "partial-process-reserve",
     "sourceHead": "3d396763e7ee1102f329ba686138371a7ca04167",
-    "fileCount": 75
+    "fileCount": 78,
+    "frozenPriorGlobalFiles": 3,
+    "frozenPriorGlobalRunId": 42929802533
   },
   "ordinaryReceipts": [
     {

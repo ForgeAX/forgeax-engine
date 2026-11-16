@@ -1,6 +1,6 @@
 import { AssetRegistry } from '@forgeax/engine/assets-runtime';
-import { Update } from '@forgeax/engine/ecs';
-import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine/input';
+import { defineSystem, Update } from '@forgeax/engine/ecs';
+import { INPUT_SNAPSHOT_RESOURCE_KEY } from '@forgeax/engine/input';
 import { captureModels, decodeSnapshot, model } from '@forgeax/engine/modeling';
 import { MeshFilter, MeshRenderer } from '@forgeax/engine/render';
 import type { AssetHandle, MeshAsset } from '@forgeax/engine/types';
@@ -123,12 +123,12 @@ export default defineFeature({
     let paused = false;
     let tick = 0;
     let previous = { left: false, right: false, space: false };
-    world.addSystem(Update, {
+    const systemToken1 = defineSystem({
       name: 'fl-modeling-replay',
       queries: [],
       fn: (world) => {
         if (!playing) return;
-        const keyboard = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY)?.keyboard;
+        const keyboard = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY)?.keyboard;
         const now = {
           left: keyboard?.down('ArrowLeft') === true,
           right: keyboard?.down('ArrowRight') === true,
@@ -148,6 +148,7 @@ export default defineFeature({
         if (tick++ % HOLD === 0) show(current >= last ? 0 : current + 1);
       },
     });
+    world.addSystem(Update, systemToken1);
     show(0);
     return {
       toggle(on) {

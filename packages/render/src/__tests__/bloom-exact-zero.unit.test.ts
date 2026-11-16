@@ -24,7 +24,11 @@ beforeAll(async () => {
   device = result.value;
 });
 
-function topology(bloom: 'off' | 'on', bloomIntensity = 1): RenderPipelineTopology {
+function topology(
+  bloom: 'off' | 'on',
+  bloomIntensity = 1,
+  postProcessing = true,
+): RenderPipelineTopology {
   return {
     pipelineId: STANDARD_PIPELINE_ID,
     standardProfile: DEFAULT_STANDARD_PROFILE,
@@ -40,6 +44,7 @@ function topology(bloom: 'off' | 'on', bloomIntensity = 1): RenderPipelineTopolo
       antialias: 'fxaa',
       bloom,
       bloomIntensity,
+      postProcessing,
     },
     shadow: {
       directional: { mapSize: 64, cascadeCount: 1 },
@@ -87,7 +92,7 @@ function clusteredStandardLighting() {
   return lighting.value;
 }
 
-function inspect(bloom: 'off' | 'on', bloomIntensity = 1) {
+function inspect(bloom: 'off' | 'on', bloomIntensity = 1, postProcessing = true) {
   const graph = new RenderGraphBuilder<RenderPipelineFrame>();
   const built = standardPipeline.build(
     {
@@ -96,7 +101,7 @@ function inspect(bloom: 'off' | 'on', bloomIntensity = 1) {
       projectGpuDriven: () => ok(undefined),
       contributeFeatures: () => ok(undefined),
     },
-    topology(bloom, bloomIntensity),
+    topology(bloom, bloomIntensity, postProcessing),
   );
   if (!built.ok) throw built.error;
   const compiled = graph.compile({ device, surfaceSize: { width: 640, height: 360 } });
@@ -172,10 +177,25 @@ describe('Standard Bloom exact-zero topology', () => {
     );
     expect(forwardSource).toContain('addStandardPost');
     expect(clusteredSource).toContain('addStandardPost');
-    const gate = postSource.indexOf('bloom: !clearOnly && standardBloomAdmitted(topology.camera)');
+    const postGate = postSource.indexOf(
+      'const postProcessing = !clearOnly && camera.postProcessing !== false;',
+    );
+    const gate = postSource.indexOf(
+      'bloom: postProcessing && standardBloomAdmitted(topology.camera)',
+    );
     const declaration = postSource.indexOf('const bloomSpecs = standardBloomTargetSpecs(');
-    expect(gate).toBeGreaterThanOrEqual(0);
+    expect(postGate).toBeGreaterThanOrEqual(0);
+    expect(gate).toBeGreaterThan(postGate);
     expect(declaration).toBeGreaterThan(gate);
+  });
+
+  it('declares no Bloom work when camera post-processing is disabled', () => {
+    const info = inspect('on', 1, false);
+    expect(info.passes.filter((pass) => pass.name.startsWith('bloom-'))).toHaveLength(0);
+    expect(info.resources.filter((resource) => resource.label.startsWith('bloom-'))).toHaveLength(
+      0,
+    );
+    expect(inspectStandardBloomGraph(info).status).toBe('empty');
   });
 
   it('keeps one shared Bloom chain when enabled', () => {

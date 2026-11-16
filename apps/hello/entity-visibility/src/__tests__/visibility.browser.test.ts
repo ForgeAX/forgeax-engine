@@ -191,11 +191,7 @@ describe('entity visibility browser visual red test', () => {
           const updateResult = scene.world.update(1 / 60);
           if (!updateResult.ok)
             throw new Error(`world.update failed: ${describeStructuredError(updateResult.error)}`);
-          await drawReadyFrame(activeRenderer, {
-            leases: [attached.value],
-            camera: { lease: attached.value },
-            environment: { lease: attached.value },
-          });
+          await drawReadyFrame(activeRenderer, { source: attached.value });
           await new Promise<void>((resolve) => setTimeout(resolve, 120));
           if (lostReason !== undefined) {
             if (lostReason === 'destroyed') {

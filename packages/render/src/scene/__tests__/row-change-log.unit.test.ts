@@ -6,9 +6,8 @@ import { setSceneRow } from './scene-row-writes';
 
 const row = (entityKey: number, generation = 1) => ({
   generation,
-  worldId: 0,
   entityKey,
-  snapshot: { worldId: 0, entityKey } as RenderableSnapshot,
+  snapshot: { entityKey } as RenderableSnapshot,
 });
 
 function populated(count: number): SceneSlots {

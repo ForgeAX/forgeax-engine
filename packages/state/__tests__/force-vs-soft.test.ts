@@ -22,7 +22,7 @@ import { registerStatesPlugin } from '../src/register-plugin';
 import { setNextState, setNextStateForce, getState, getPreviousState } from '../src/set-next-state';
 import { despawnOnExit, despawnOnEnter } from '../src/scoped-component';
 import { addOnEnter, addOnExit } from '../src/on-enter-on-exit';
-import { type StatePayload, stateResourceKey } from '../src/resources';
+import { stateResource } from '../src/resources';
 
 const LevelId = defineState('LevelId', ['main-menu', 'tutorial', 'street-a'] as const);
 
@@ -139,8 +139,8 @@ describe('force vs soft same-state transitions', () => {
     world.update(1 / 60).unwrap();
 
     // NextState should be cleared after same-state no-op
-    const nsKey = stateResourceKey(LevelId);
-    const ns = world.getResource<StatePayload>(nsKey).next;
+    const nsKey = stateResource(LevelId);
+    const ns = world.getResource(nsKey).next;
     expect(ns).toBeUndefined();
   });
 });

@@ -1,5 +1,6 @@
 import type { AssetReferenceOwner } from '@forgeax/engine-types';
 import type { WorldMemoryOptions } from './memory-types';
+import { defineResource } from './resource';
 
 export interface TimeResource {
   readonly delta: number;
@@ -42,11 +43,6 @@ export interface WorldClock {
   readonly writer: ClockWriter;
 }
 
-interface ResourceToken<T> {
-  readonly name: string;
-  readonly __resourceType?: T;
-}
-
 /**
  * `substeps` runs FixedUpdate once per owed step. `merged` runs it once with
  * `FixedTime.delta` set to the owed steps' total (still capped by
@@ -70,13 +66,9 @@ export interface WorldOptions {
 }
 
 /** World-owned variable-rate clock resource key. */
-export const Time = Object.freeze({ name: 'Time' }) as ResourceToken<TimeResource> & TimeResource;
+export const Time = defineResource<TimeResource>('Time');
 /** World-owned fixed-rate clock, policy, and catch-up metric resource key. */
-export const FixedTime = Object.freeze({ name: 'FixedTime' }) as ResourceToken<FixedTimeResource> &
-  FixedTimeResource;
-
-export const TIME_RESOURCE_KEY = Time.name;
-export const FIXED_TIME_RESOURCE_KEY = FixedTime.name;
+export const FixedTime = defineResource<FixedTimeResource>('FixedTime');
 
 export const DEFAULT_TIME_POLICY: Required<TimePolicy> = {
   fixedDeltaSeconds: 1 / 60,

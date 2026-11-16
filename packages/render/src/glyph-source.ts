@@ -65,10 +65,17 @@ interface FontContent {
 
 /** Adopts only changed Font roots. No entity catalogue or Font-to-label reverse index. */
 export class GlyphSources {
-  private worlds = new WeakMap<RenderResourceScope, Map<number, FontContent>>();
-
+  private source: RenderResourceScope | undefined;
+  private readonly roots = new Map<number, FontContent>();
+  private rootsFor(source: RenderResourceScope): Map<number, FontContent> {
+    if (this.source !== source) {
+      this.clear();
+      this.source = source;
+    }
+    return this.roots;
+  }
   private content(world: RenderResourceScope, handle: AssetHandle<'font'>): FontContent {
-    let roots = this.worlds.get(world);
+    const roots = this.rootsFor(world);
     const cached = roots?.get(handle);
     if (cached !== undefined) return cached;
     const font = world.resolveAsset<FontAsset>(handle).unwrap();
@@ -85,16 +92,12 @@ export class GlyphSources {
       colors: new Map(),
       bytes: 0,
     };
-    if (roots === undefined) {
-      roots = new Map();
-      this.worlds.set(world, roots);
-    }
     roots.set(handle, content);
     return content;
   }
 
   adopt(world: RenderResourceScope, changes: readonly AssetChange[]): void {
-    const roots = this.worlds.get(world);
+    const roots = this.rootsFor(world);
     if (roots === undefined) return;
     for (const change of changes) roots.delete(change.handle);
   }
@@ -180,17 +183,17 @@ export class GlyphSources {
   }
 
   detach(world: RenderResourceScope): void {
-    this.worlds.delete(world);
+    if (this.source === world) this.clear();
   }
   clear(): void {
-    this.worlds = new WeakMap();
+    this.roots.clear();
+    this.source = undefined;
   }
 }
 
 /** Snapshot changed component rows; layout is deferred until actual view consumption. */
 export function extractGlyphSources(
   world: World,
-  worldId: number,
   renderables: RenderableSnapshot[],
   selected?: ReadonlySet<number>,
   visibility?: { effective(entity: number): string },
@@ -227,7 +230,6 @@ export function extractGlyphSources(
         color: [glyph.color[0] ?? 1, glyph.color[1] ?? 1, glyph.color[2] ?? 1, glyph.color[3] ?? 1],
       },
       transform: { world: new Float32Array(matrix) },
-      worldId,
       entityKey: entity,
       material: rootMaterial,
       materials: [rootMaterial],
@@ -259,7 +261,7 @@ export function extractGlyphSources(
 export function projectGlyphView(
   frame: ExtractedFrame,
   materials: MaterialFrame,
-  worlds: readonly RenderResourceScope[],
+  sourceScope: RenderResourceScope,
   sources: GlyphSources,
   assets: AssetRegistry | undefined,
   hasSources = frame.renderables.some((source) => source.glyph !== undefined),
@@ -273,7 +275,7 @@ export function projectGlyphView(
       source.glyph.text.length === 0
     )
       return source;
-    const world = worlds[source.worldId];
+    const world = sourceScope;
     if (world === undefined) throw new Error('GlyphText requires its source resource scope');
     if (assets === undefined) throw new Error('GlyphText requires the renderer asset service');
     const { mesh, material } = sources.resolve(world, source.glyph, assets);

@@ -7,21 +7,27 @@ describe('recording-owned shadow policies', () => {
   it('shares directional policies across cascades and layers, and observes the next recording', () => {
     const config = { shadowRevision: 1, shadowRadius: 2, shadowBiasMode: 0 };
     const lights = {
-      directional: { entity: 7, worldId: 0 },
+      directional: { entity: 7 },
       directionalCsmConfig: config,
       pointShadow: [],
       spot: [],
     } as unknown as ViewLights;
-    const worlds = [{} as RenderResourceScope];
+    const sourceScope = {} as RenderResourceScope;
     const identity = { kind: 'directional', index: 0 } as const;
-    const read = createShadowUpdatePolicy(lights, worlds, 1024, 512, () => undefined);
+    const read = createShadowUpdatePolicy(lights, sourceScope, 1024, 512, () => undefined);
     const first = read(identity);
-    expect(first).toEqual(shadowUpdatePolicy(identity, lights, worlds, 1024, 512, undefined));
+    expect(first).toEqual(shadowUpdatePolicy(identity, lights, sourceScope, 1024, 512, undefined));
     expect(read({ kind: 'directional', index: 3, layer: 'static' })).toBe(first);
     expect(first?.constantBias).toBe(false);
     config.shadowRevision = 2;
     config.shadowBiasMode = 1;
-    const next = createShadowUpdatePolicy(lights, worlds, 2048, 512, () => undefined)(identity);
+    const next = createShadowUpdatePolicy(
+      lights,
+      sourceScope,
+      2048,
+      512,
+      () => undefined,
+    )(identity);
     expect(next?.revision.revision).toBe(2);
     expect(next?.constantBias).toBe(true);
     expect(first?.constantBias).toBe(false);
@@ -33,12 +39,12 @@ describe('recording-owned shadow policies', () => {
     const lights = {
       directional: undefined,
       directionalCsmConfig: undefined,
-      pointShadow: [{ shadowAtlasLayer: 1, worldId: 0, entity: 9, shadowRevision: 3 }],
-      spot: [{ shadowAtlasTile: 1, worldId: 0, entity: 10, shadowRevision: 4 }],
+      pointShadow: [{ shadowAtlasLayer: 1, entity: 9, shadowRevision: 3 }],
+      spot: [{ shadowAtlasTile: 1, entity: 10, shadowRevision: 4 }],
     } as unknown as ViewLights;
     const read = createShadowUpdatePolicy(
       lights,
-      [{} as RenderResourceScope],
+      {} as RenderResourceScope,
       1024,
       512,
       () => undefined,

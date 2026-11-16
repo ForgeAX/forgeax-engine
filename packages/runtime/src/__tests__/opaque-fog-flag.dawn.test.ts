@@ -6,6 +6,7 @@ import { Transform } from '@forgeax/engine-scene';
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
 import { constructRuntimeRendererHost } from '../renderer-host';
+import { verifyAnalyticFogMsaa } from './analytic-fog-msaa.fixture';
 import { offscreenCanvas } from './hdr-evidence.fixture';
 import { testAssets } from './helpers/runtime-assets';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
@@ -99,3 +100,9 @@ it('opaque renderState.fog:false skips analytic fog on the forward path', {
     target.destroy();
   }
 });
+
+it(
+  'fogs each covered MSAA sample, preserves empty sky, and composes FXAA for 60 completed frames',
+  { timeout: 180_000 },
+  () => verifyAnalyticFogMsaa(manifestUrl),
+);

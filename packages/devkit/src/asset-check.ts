@@ -2,7 +2,10 @@ import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { readdir, readFile } from 'node:fs/promises';
 import { join, relative, resolve } from 'node:path';
-import { createMaterialPackCooker } from '@forgeax/engine-shader-compiler';
+import {
+  createMaterialPackCooker,
+  createTextureGeneratorPackCooker,
+} from '@forgeax/engine-shader-compiler';
 import { createParticleCodeNativeCookerFromRoots } from '@forgeax/engine-vfx-compiler';
 
 /** One authored asset that the real cookers rejected. */
@@ -89,6 +92,7 @@ export async function checkProjectAssets(
   for (const root of roots) await listPackFiles(root, packs, skipped);
   // Cookers scan their roots on creation; build them only for a row that needs one.
   let material: ReturnType<typeof createMaterialPackCooker> | undefined;
+  let generator: ReturnType<typeof createTextureGeneratorPackCooker> | undefined;
   let particle: ReturnType<typeof createParticleCodeNativeCookerFromRoots> | undefined;
   const failures: AssetCheckFailure[] = [];
   let checked = 0;
@@ -104,7 +108,13 @@ export async function checkProjectAssets(
     if (!isRecord(document) || !isRecord(document.assets)) continue;
     const packageId = typeof document.packageId === 'string' ? document.packageId : name;
     for (const [key, row] of Object.entries(document.assets)) {
-      if (!isRecord(row) || (row.kind !== 'material' && row.kind !== 'particle-effect')) continue;
+      if (
+        !isRecord(row) ||
+        (row.kind !== 'material' &&
+          row.kind !== 'particle-effect' &&
+          row.kind !== 'texture-generator')
+      )
+        continue;
       const guid = dryGuid(packageId, key);
       try {
         if (row.kind === 'material') {
@@ -116,6 +126,9 @@ export async function checkProjectAssets(
             sourcePath: path,
             refs: Array.isArray(row.refs) ? row.refs : [],
           });
+        } else if (row.kind === 'texture-generator') {
+          generator ??= createTextureGeneratorPackCooker(roots);
+          await generator.cook({ guid, source: row.payload });
         } else {
           particle ??= createParticleCodeNativeCookerFromRoots(roots);
           await particle.cook({ guid, source: row.payload });

@@ -129,17 +129,9 @@ async function bootstrap() {
   console.info('[parity-standard-lanes:startup]', 'worlds-ready', performance.now() - started);
   const framePreparationStarted = performance.now();
   try {
-    await drawReadyFrame(directRenderer, {
-      leases: [worldAttachment1.value],
-      camera: { lease: worldAttachment1.value },
-      environment: { lease: worldAttachment1.value },
-    });
+    await drawReadyFrame(directRenderer, { source: worldAttachment1.value });
     console.info('[parity-standard-lanes:startup]', 'direct-frame-ready', performance.now() - started);
-    await drawReadyFrame(clusteredRenderer, {
-      leases: [worldAttachment2.value],
-      camera: { lease: worldAttachment2.value },
-      environment: { lease: worldAttachment2.value },
-    });
+    await drawReadyFrame(clusteredRenderer, { source: worldAttachment2.value });
   } catch (error) {
     const inspectPipelinePreparation = (renderer: Renderer) => {
       try {
@@ -260,14 +252,11 @@ declare global {
 
 type ParityScene = { renderer: Renderer; world: World; lease: RenderWorldLease };
 
-function declareCaptureHooks(ready: Promise<{ direct: ParityScene; clustered: ParityScene }>): void {
+function declareCaptureHooks(ready: Promise<{ direct: ParityScene; clustered: ParityScene }>,
+): void {
   const captureFor = async ({ renderer, world, lease }: ParityScene): Promise<Uint8Array> => {
     world.update().unwrap();
-    return captureDisplayFrame(renderer, {
-      leases: [lease],
-      camera: { lease },
-      environment: { lease },
-    });
+    return captureDisplayFrame(renderer, { source: lease });
   };
   window.__captureLeft = async () => {
     const { direct } = await ready;

@@ -16,41 +16,23 @@ export async function requireRenderer(
   return result.value;
 }
 
-const leasesByRenderer = new WeakMap<Renderer, Map<World, RenderWorldLease>>();
+const sources = new WeakMap<Renderer, { world: World; lease: RenderWorldLease }>();
 
-/** Adapt pre-lease multi-world fixtures to the public frame input contract. */
-export function drawWithOwners(
+/** Keep one explicit source lease for this renderer fixture. */
+export function drawWorld(
   renderer: Renderer,
-  worldsOrWorld: World | readonly World[],
-  options: { readonly cameraOwner?: number; readonly resourceOwner?: number } = {},
+  world: World,
 ): RenderResult<FrameReceipt, RenderError> {
-  const worlds = Array.isArray(worldsOrWorld) ? worldsOrWorld : [worldsOrWorld];
-  let leases = leasesByRenderer.get(renderer);
-  if (leases === undefined) {
-    leases = new Map();
-    leasesByRenderer.set(renderer, leases);
+  let source = sources.get(renderer);
+  if (source !== undefined && source.world !== world) {
+    source.lease.dispose();
+    source = undefined;
   }
-  const attached = worlds.map((world) => {
-    const existing = leases.get(world);
-    if (existing !== undefined) return existing;
-    const result = renderer.attach(world);
-    if (!result.ok) throw result.error;
-    leases.set(world, result.value);
-    return result.value;
-  });
-  const camera = worlds[options.cameraOwner ?? 0];
-  const environment = worlds[options.resourceOwner ?? 0];
-  if (camera === undefined || environment === undefined) {
-    throw new Error('drawWithOwners requires cameraOwner/resourceOwner worlds');
+  if (source === undefined) {
+    const attached = renderer.attach(world);
+    if (!attached.ok) return attached;
+    source = { world, lease: attached.value };
+    sources.set(renderer, source);
   }
-  const cameraLease = leases.get(camera);
-  const environmentLease = leases.get(environment);
-  if (cameraLease === undefined || environmentLease === undefined) {
-    throw new Error('drawWithOwners failed to attach owner worlds');
-  }
-  return renderer.draw({
-    leases: attached,
-    camera: { lease: cameraLease },
-    environment: { lease: environmentLease },
-  });
+  return renderer.draw({ source: source.lease });
 }

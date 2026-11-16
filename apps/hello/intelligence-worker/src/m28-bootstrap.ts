@@ -1,3 +1,5 @@
+import { defineResource } from '@forgeax/engine-ecs';
+import { Update, defineSystem } from "@forgeax/engine-ecs";
 import type {
   ExecutionBootstrapEntry,
   ExecutionBootstrapHost,
@@ -17,6 +19,8 @@ import { Transform } from '@forgeax/engine-scene';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+const resource1 = defineResource<M28Proof>("m28IntelligenceProof");
+
 
 
 const M28_LIMITS = {
@@ -118,7 +122,7 @@ const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).u
         frameCount: 0,
         terminalCompleted: false,
       };
-      world.insertResource('m28IntelligenceProof', proof);
+      world.insertResource(resource1, proof);
 
       const post = (event: string, detail: Record<string, unknown> = {}): void => {
         evidencePort?.postMessage({ kind: 'm28-worker-event', event, detail });
@@ -227,7 +231,7 @@ const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).u
         }
       };
 
-      const system = {
+      const system = defineSystem({
         name: 'm28-intelligence-worker-consumer',
         queries: [],
         fn(): void {
@@ -236,11 +240,11 @@ const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).u
           for (const event of intelligence.poll()) recordEvent(event);
           drive();
         },
-      };
-      const update = world.scheduleToken('Update');
+      });
+      const update = Update;
       world.addSystem(update, system).unwrap();
       ctx.effect(
-        () => () => world.removeSystem(update, system.name),
+        () => () => world.removeSystem(update, system),
         'm28/intelligence-system',
       );
 

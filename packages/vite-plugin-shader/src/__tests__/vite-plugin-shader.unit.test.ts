@@ -35,6 +35,7 @@ import {
   type CompileResult as ShaderCompileResult,
 } from '@forgeax/engine-shader-compiler';
 import {
+  type ManifestEntry,
   type MaterialProgramAbi,
   projectMaterialParameterSchema,
   TERRAIN_MATERIAL_PARAMETERS,
@@ -43,7 +44,10 @@ import { type Plugin, build as viteBuild } from 'vite';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { readShaderManifestPublication } from '../../../shader/src/manifest-publication.js';
 import { loadEngineImportsMap } from '../engine-imports-map.js';
-import { loadEngineShaderEntries } from '../engine-inputs/load-engine-shader-entries.js';
+import {
+  loadCloudDensityModules,
+  loadEngineShaderEntries,
+} from '../engine-inputs/load-engine-shader-entries.js';
 import { buildEngineShaderManifest, forgeaxShader, isSupportedVariantDefines } from '../index.js';
 import * as manifestPublication from '../manifest-publication.js';
 import { publishShaderManifest } from '../manifest-publication.js';
@@ -54,10 +58,7 @@ import {
   projectShaderManifestEntries,
 } from '../shared-engine-inputs.js';
 import { toRollupLog } from '../wrap.js';
-
-// Manifest assertions inspect admitted outputs. Missing profiles still compile
-// the complete Naga source matrix, so retain the existing cold-build deadline.
-const SHADER_MANIFEST_TEST_TIMEOUT_MS = 900_000;
+import { SHADER_MANIFEST_TEST_TIMEOUT_MS } from './shader-manifest.fixture.js';
 
 // Direct compiler coverage must exercise the same fully-defined boolean ABI as
 // the production engine-entry producer. Keeping omitted axes at false mirrors
@@ -76,18 +77,20 @@ const ENGINE_SHADER_DEFAULT_DEFINES: Record<string, boolean> = {
   GPU_DRIVEN_SCENE_INDEX_AVAILABLE: false,
   REFLECTION_FALLBACK_AVAILABLE: false,
   POINT_SHADOW_AVAILABLE: false,
+  WATER_WAVES_AVAILABLE: false,
+  WATER_INFO_RGBA16: false,
 };
 
 const STANDARD_NON_CLUSTER_VARIANT_KEY =
-  'ALPHA_MASK=false+ATMOSPHERE_AVAILABLE=false+CLIPPING_PLANES=false+CLUSTER_FORWARD_AVAILABLE=false+COVERAGE_ONLY=false+DIRECTIONAL_SHADOW_SIMPLE=false+EXTENDED_LIGHTING_AVAILABLE=true+GPU_DRIVEN_SCENE_INDEX_AVAILABLE=true+LEAN_LIGHTING=false+LOD_DITHER=false+PROBE_BLEND_AVAILABLE=false+PROJECTOR_AVAILABLE=true+REFLECTION_FALLBACK_AVAILABLE=true+STORAGE_BUFFER_AVAILABLE=true+TRANSMISSION_AVAILABLE=false+VERTEX_COLOR_AVAILABLE=true+VISIBLE_SURFACE_AVAILABLE=false';
+  'ALPHA_MASK=false+ATMOSPHERE_AVAILABLE=false+CLIPPING_PLANES=false+CLUSTER_FORWARD_AVAILABLE=false+COVERAGE_ONLY=false+DIRECTIONAL_SHADOW_SIMPLE=false+EXTENDED_LIGHTING_AVAILABLE=true+GPU_DRIVEN_SCENE_INDEX_AVAILABLE=true+LEAN_LIGHTING=false+LOD_DITHER=false+PROBE_BLEND_AVAILABLE=false+PROJECTOR_AVAILABLE=true+REFLECTION_FALLBACK_AVAILABLE=true+STANDARD_LEAN_INPUTS=false+STORAGE_BUFFER_AVAILABLE=true+TRANSMISSION_AVAILABLE=false+VERTEX_COLOR_AVAILABLE=true+VISIBLE_SURFACE_AVAILABLE=false+WATER_INFO_RGBA16=false+WATER_WAVES_AVAILABLE=false';
 const STANDARD_EXTENDED_LIGHTING_OFF_VARIANT_KEY =
-  'ALPHA_MASK=false+ATMOSPHERE_AVAILABLE=false+CLIPPING_PLANES=false+CLUSTER_FORWARD_AVAILABLE=false+COVERAGE_ONLY=false+DIRECTIONAL_SHADOW_SIMPLE=false+EXTENDED_LIGHTING_AVAILABLE=false+GPU_DRIVEN_SCENE_INDEX_AVAILABLE=false+LEAN_LIGHTING=false+LOD_DITHER=false+PROBE_BLEND_AVAILABLE=false+PROJECTOR_AVAILABLE=false+REFLECTION_FALLBACK_AVAILABLE=false+STORAGE_BUFFER_AVAILABLE=true+TRANSMISSION_AVAILABLE=false+VERTEX_COLOR_AVAILABLE=false+VISIBLE_SURFACE_AVAILABLE=false';
+  'ALPHA_MASK=false+ATMOSPHERE_AVAILABLE=false+CLIPPING_PLANES=false+CLUSTER_FORWARD_AVAILABLE=false+COVERAGE_ONLY=false+DIRECTIONAL_SHADOW_SIMPLE=false+EXTENDED_LIGHTING_AVAILABLE=false+GPU_DRIVEN_SCENE_INDEX_AVAILABLE=false+LEAN_LIGHTING=false+LOD_DITHER=false+PROBE_BLEND_AVAILABLE=false+PROJECTOR_AVAILABLE=false+REFLECTION_FALLBACK_AVAILABLE=false+STANDARD_LEAN_INPUTS=false+STORAGE_BUFFER_AVAILABLE=true+TRANSMISSION_AVAILABLE=false+VERTEX_COLOR_AVAILABLE=false+VISIBLE_SURFACE_AVAILABLE=false+WATER_INFO_RGBA16=false+WATER_WAVES_AVAILABLE=false';
 const STANDARD_SHARED_TRANSMISSION_VARIANT_KEY = STANDARD_EXTENDED_LIGHTING_OFF_VARIANT_KEY.replace(
   'TRANSMISSION_AVAILABLE=false',
   'TRANSMISSION_AVAILABLE=true',
 );
 const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
-  'ALPHA_MASK=false+ATMOSPHERE_AVAILABLE=false+CLIPPING_PLANES=false+CLUSTER_FORWARD_AVAILABLE=true+COVERAGE_ONLY=false+DIRECTIONAL_SHADOW_SIMPLE=false+EXTENDED_LIGHTING_AVAILABLE=true+GPU_DRIVEN_SCENE_INDEX_AVAILABLE=true+LEAN_LIGHTING=false+LOD_DITHER=false+PROBE_BLEND_AVAILABLE=true+PROJECTOR_AVAILABLE=true+REFLECTION_FALLBACK_AVAILABLE=true+STORAGE_BUFFER_AVAILABLE=true+TRANSMISSION_AVAILABLE=false+VERTEX_COLOR_AVAILABLE=true+VISIBLE_SURFACE_AVAILABLE=false';
+  'ALPHA_MASK=false+ATMOSPHERE_AVAILABLE=false+CLIPPING_PLANES=false+CLUSTER_FORWARD_AVAILABLE=true+COVERAGE_ONLY=false+DIRECTIONAL_SHADOW_SIMPLE=false+EXTENDED_LIGHTING_AVAILABLE=true+GPU_DRIVEN_SCENE_INDEX_AVAILABLE=true+LEAN_LIGHTING=false+LOD_DITHER=false+PROBE_BLEND_AVAILABLE=true+PROJECTOR_AVAILABLE=true+REFLECTION_FALLBACK_AVAILABLE=true+STANDARD_LEAN_INPUTS=false+STORAGE_BUFFER_AVAILABLE=true+TRANSMISSION_AVAILABLE=false+VERTEX_COLOR_AVAILABLE=true+VISIBLE_SURFACE_AVAILABLE=false+WATER_INFO_RGBA16=false+WATER_WAVES_AVAILABLE=false';
 
 {
   describe('shared-engine-inputs.test.ts', () => {
@@ -155,7 +158,10 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
           ),
         );
         expect(
-          await loadSharedEngineShaderManifest(join(root, 'shared-app-inputs', 'manifest.json')),
+          await loadSharedEngineShaderManifest(
+            join(root, 'shared-app-inputs', 'manifest.json'),
+            root,
+          ),
         ).toMatchObject({
           entries: [{ hash: 'engine', wgsl: 'engine' }],
           materialShaders: [{ identifier: 'forgeax::default-unlit' }],
@@ -199,6 +205,7 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
           process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST = sharedManifest;
           try {
             const plugin = forgeaxShader();
+            plugin.configResolved({ root });
             const emitted: Array<{ type: 'asset'; fileName: string; source: string }> = [];
             const context = {
               emitted,
@@ -1324,8 +1331,9 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
             return asset.fileName;
           },
         };
+        plugin.configResolved({ root } as never);
         await plugin.buildStart.call(context);
-        plugin.generateBundle.call(context);
+        await plugin.generateBundle.call(context);
         const asset = emitted.find((entry) => entry.fileName === 'shaders/manifest.json');
         expect(asset).toBeDefined();
         expect(JSON.parse(asset?.source ?? '{}').entries).toEqual([]);
@@ -1403,7 +1411,7 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
   const particleMeshSurfaceSchema = PARTICLE_MESH_SURFACE_PARAM_SCHEMA;
 
   type ViteEngineManifest = {
-    entries: Array<{ wgsl: string }>;
+    entries: Array<Pick<ManifestEntry, 'identifier' | 'wgsl'>>;
     materialShaders: MaterialShaderEntry[];
   };
 
@@ -1419,7 +1427,7 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
       });
       const ctx = createMockContext();
       await plugin.buildStart?.call(ctx as never);
-      plugin.generateBundle?.call(ctx as never);
+      await plugin.generateBundle?.call(ctx as never);
 
       const manifestAsset = ctx.emitted.find((a) => a.fileName === 'shaders/manifest.json');
       if (manifestAsset === undefined) {
@@ -1430,6 +1438,32 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
       )) as ViteEngineManifest;
     })();
     return viteEngineManifestPromise;
+  }
+
+  async function expectCloudShaderRoster(manifest: ViteEngineManifest): Promise<readonly string[]> {
+    const { identity } = await loadCloudDensityModules();
+    const ids = [
+      'forgeax::cloud-analytic-view',
+      'forgeax::cloud-mode0-compose',
+      'forgeax::cloud-mode0-reconstruct',
+      `forgeax::cloud-sampled-view-${identity}-0`,
+      `forgeax::cloud-sampled-view-${identity}-1`,
+      'forgeax::cloud-shadow-filter',
+    ];
+    // Reserved engine programs need a compiled entry and a named lookup row.
+    // These shader rows do not publish authored MaterialAssets.
+    for (const identifier of ids) {
+      expect(manifest.entries.filter((entry) => entry.identifier === identifier)).toHaveLength(1);
+      expect(
+        manifest.materialShaders.filter((entry) => entry.identifier === identifier),
+      ).toHaveLength(1);
+    }
+    expect(
+      [...manifest.entries, ...manifest.materialShaders].some((entry) =>
+        entry.identifier?.startsWith('forgeax::cloud-atmosphere-'),
+      ),
+    ).toBe(false);
+    return ids;
   }
 
   // These standalone marker assertions inspect one immutable default manifest.
@@ -1474,19 +1508,10 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
         ),
         'material shader source identities must be checkout-independent in shipped manifests',
       ).toBe(true);
-      // feat-20260609 T-018 fixup: shadow_caster joined materialShaders[] as
-      // 6th engine entry (Surface-aware depth-only PSO,
-      // `forgeax::default-shadow-caster`). Its generated schema follows the
-      // shared Standard pipeline contract.
-      // bug-20260610 walked the variant_axis channel: shadow_caster.wgsl
-      // declares `#pragma variant_axis STORAGE_BUFFER_AVAILABLE` and the
-      // STORAGE_BUFFER_AVAILABLE=false variant is surfaced on the same
-      // `forgeax::default-shadow-caster` material-shader entry (no synthetic
-      // engine identifier needed now that shadow_caster is a material shader).
       expect(
         manifest.materialShaders.length,
-        'materialShaders[] must contain exactly 45 named engine shader entries',
-      ).toBe(45);
+        'materialShaders[] must contain exactly 55 named engine shader entries',
+      ).toBe(55);
 
       const diffusion = manifest.materialShaders.find(
         (entry) => entry.identifier === 'forgeax::engine-subsurface-diffusion',
@@ -1509,6 +1534,14 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
       expect(pointsLines).toBeDefined();
       expect(pointsLines?.sourcePath).toMatch(/points-lines\.wgsl$/);
       expect(JSON.parse(pointsLines?.paramSchema ?? 'null')).toEqual(DEFAULT_UNLIT_PARAM_SCHEMA);
+      for (const [identifier, filename] of [
+        ['forgeax::water-info-raster-water', 'water-info-raster-water.wgsl'],
+        ['forgeax::water-info-raster-ground', 'water-info-raster-ground.wgsl'],
+        ['forgeax::water-info-raster-dilation', 'water-info-raster-dilation.wgsl'],
+      ] as const) {
+        const shader = manifest.materialShaders.find((entry) => entry.identifier === identifier);
+        expect(shader?.sourcePath.endsWith(filename)).toBe(true);
+      }
       expect(
         standardPbr?.variants?.find(
           (variant) =>
@@ -1517,6 +1550,11 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
         ),
         'the URP standard-PBR variant must be present',
       ).toBeDefined();
+      const defaultPbrWgsl = standardPbr?.variants?.find(
+        (variant) => variant.definesKey === STANDARD_NON_CLUSTER_VARIANT_KEY,
+      )?.composedWgsl ?? '';
+      expect(defaultPbrWgsl).not.toContain('waterBodyData');
+      expect(defaultPbrWgsl).not.toContain('waterMeshTileWords');
       expect(
         standardPbr?.variants?.find(
           (variant) =>
@@ -1545,6 +1583,7 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
       expect(extendedLightingOffWgsl).not.toContain('@group(0) @binding(11)');
       expect(extendedLightingOffWgsl).not.toContain('@group(0) @binding(15)');
 
+const assertSharedTransmissionVariantBindings = () => {
       // The low-limit transmission variant reuses the fixed 16-texture layout:
       // transmission, thickness and the backdrop take the split scalar-map pairs.
       const sharedTransmissionWgsl =
@@ -1568,6 +1607,8 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
       expect(group1.has('alphaTexture')).toBe(false);
       expect([...group1.values()].filter((binding) => [12, 14, 32].includes(binding))).toEqual([]);
 
+};
+assertSharedTransmissionVariantBindings();
       expect(
         manifest.materialShaders
           .find((entry) => entry.identifier === 'forgeax::default-standard-pbr')
@@ -1601,11 +1642,10 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
       );
 
       const ids = manifest.materialShaders.map((ms) => ms.identifier).sort();
+      const cloudIds = await expectCloudShaderRoster(manifest);
       expect(ids).toEqual([
         'forgeax::analytic-fog',
-          'forgeax::cloud-atmosphere-resolve',
-          'forgeax::cloud-atmosphere-transport',
-          'forgeax::cloud-atmosphere-transport-analytic',
+        ...cloudIds,
         'forgeax::default-shadow-caster',
         'forgeax::default-standard-pbr',
         'forgeax::default-unlit',
@@ -1638,6 +1678,7 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
         'forgeax::vfx-render.particles.beam-inputs',
         'forgeax::vfx-render.particles.billboard',
         'forgeax::vfx-render.particles.billboard-inputs',
+        'forgeax::vfx-render.particles.billboard-water-sphere',
         'forgeax::vfx-render.particles.mesh',
         'forgeax::vfx-render.particles.mesh-inputs',
         'forgeax::vfx-render.particles.mesh-inputs-unlit',
@@ -1647,6 +1688,12 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
         'forgeax::vfx-render.particles.ribbon-inputs',
         'forgeax::vfx-render.particles.trail',
         'forgeax::vfx-render.particles.trail-inputs',
+        'forgeax::water-info-raster-dilation',
+        'forgeax::water-info-raster-ground',
+        'forgeax::water-info-raster-water',
+        'forgeax::water-mesh-precise',
+        'forgeax::water-mesh-precise-msaa',
+        'forgeax::water-mesh-raster',
       ]);
 
       // Each entry must have a paramSchema array; shadow-caster shares Standard
@@ -1762,13 +1809,11 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
         // The entries[] array should still contain all compiled shaders (utility + material)
         expect(manifest.entries.length).toBeGreaterThanOrEqual(4);
 
-        // Reserved utility identities share the named manifest roster but are not material publications.
         const ids = manifest.materialShaders.map((ms) => ms.identifier).sort();
+        const cloudIds = await expectCloudShaderRoster(manifest);
         expect(ids).toEqual([
           'forgeax::analytic-fog',
-          'forgeax::cloud-atmosphere-resolve',
-          'forgeax::cloud-atmosphere-transport',
-          'forgeax::cloud-atmosphere-transport-analytic',
+          ...cloudIds,
           'forgeax::default-shadow-caster',
           'forgeax::default-standard-pbr',
           'forgeax::default-unlit',
@@ -1801,6 +1846,7 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
           'forgeax::vfx-render.particles.beam-inputs',
           'forgeax::vfx-render.particles.billboard',
           'forgeax::vfx-render.particles.billboard-inputs',
+          'forgeax::vfx-render.particles.billboard-water-sphere',
           'forgeax::vfx-render.particles.mesh',
           'forgeax::vfx-render.particles.mesh-inputs',
           'forgeax::vfx-render.particles.mesh-inputs-unlit',
@@ -1810,6 +1856,12 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
           'forgeax::vfx-render.particles.ribbon-inputs',
           'forgeax::vfx-render.particles.trail',
           'forgeax::vfx-render.particles.trail-inputs',
+          'forgeax::water-info-raster-dilation',
+          'forgeax::water-info-raster-ground',
+          'forgeax::water-info-raster-water',
+          'forgeax::water-mesh-precise',
+          'forgeax::water-mesh-precise-msaa',
+          'forgeax::water-mesh-raster',
         ]);
       },
       SHADER_MANIFEST_TEST_TIMEOUT_MS,
@@ -2618,6 +2670,19 @@ ${MINIMAL_WGSL.trim()}
           CLUSTER_FORWARD_AVAILABLE: true,
         }),
       ).toBe(true);
+      expect(
+        isSupportedVariantDefines({ STORAGE_BUFFER_AVAILABLE: false, WATER_WAVES_AVAILABLE: true }),
+      ).toBe(false);
+      expect(
+        isSupportedVariantDefines({ STORAGE_BUFFER_AVAILABLE: true, WATER_WAVES_AVAILABLE: true }),
+      ).toBe(true);
+      expect(
+        isSupportedVariantDefines({
+          WATER_INFO_RGBA16: true,
+          WATER_WAVES_AVAILABLE: false,
+          STANDARD_LEAN_INPUTS: false,
+        }),
+      ).toBe(false);
       const r = await compileShader(stripPragmas(readSrc('default-standard-pbr.wgsl')), {
         id: 'pbr#cfw-uniform-downlevel',
         imports: IMPORTS,
@@ -2631,6 +2696,8 @@ ${MINIMAL_WGSL.trim()}
           STORAGE_BUFFER_AVAILABLE: false,
           CLUSTER_FORWARD_AVAILABLE: true,
           GPU_DRIVEN_SCENE_INDEX_AVAILABLE: false,
+          WATER_WAVES_AVAILABLE: false,
+          WATER_INFO_RGBA16: false,
         },
       });
       expect(r.ok, r.ok ? '' : r.error.message).toBe(true);

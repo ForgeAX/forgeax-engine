@@ -10,6 +10,7 @@ import {
   type Sampler,
 } from '@forgeax/engine-rhi';
 import { ok, type Result, shaderSourceDescriptor } from '@forgeax/engine-types';
+import { SkyPass } from '../record/gpu-pass-timing/sky-pass-names';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
 import type { RenderPipelineFrame, RenderPipelineTarget } from '../render-pipeline';
 import type { GraphAtmosphere } from './luts';
@@ -76,7 +77,7 @@ export function addAtmosphereComposition(
         ]),
   ];
   let state: { layout: BindGroupLayout; pipelines: RenderPipeline[]; sampler: Sampler } | undefined;
-  const added = graph.addRasterPass('atmosphere-opaque-composition', {
+  const added = graph.addRasterPass(SkyPass.atmosphereComposition, {
     accesses: [
       ...atmosphereVisibilityAccesses(atmosphere.visibility),
       { resource: view.value, usage: 'uniform-read' },

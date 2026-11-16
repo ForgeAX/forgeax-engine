@@ -1,9 +1,10 @@
-import { createWorldContext, FixedUpdate, World } from '@forgeax/engine-ecs';
+import { createWorldContext, defineSystem, FixedUpdate, World } from '@forgeax/engine-ecs';
 import { quat } from '@forgeax/engine-math';
 import { RigidBody } from '@forgeax/engine-physics';
 import { ChildOf, GlobalTransform, Transform } from '@forgeax/engine-scene';
 import { describe, expect, it } from 'vitest';
 import { DesiredPathPose, Path, PathFollower, PathMotion, pathPlugin } from '../index';
+import { PathFollowOrder } from '../system-order';
 import { definition } from './fixture';
 
 async function setup() {
@@ -89,16 +90,15 @@ describe('native World path following', () => {
   });
   it('reads moving path transforms from the same fixed tick', async () => {
     const { world, context, path, follower } = await setup();
-    world
-      .addSystem(FixedUpdate, {
-        name: 'move-path',
-        before: ['path/follow'],
-        queries: [],
-        fn() {
-          world.set(path, Transform, { pos: [2, 0, 0] }).unwrap();
-        },
-      })
-      .unwrap();
+    const systemToken1 = defineSystem({
+      name: 'move-path',
+      before: [PathFollowOrder],
+      queries: [],
+      fn() {
+        world.set(path, Transform, { pos: [2, 0, 0] }).unwrap();
+      },
+    });
+    world.addSystem(FixedUpdate, systemToken1).unwrap();
     world.update(1 / 60).unwrap();
     expect(world.get(follower, GlobalTransform).unwrap().world[12]).toBe(2);
     await context.fiber.dispose();

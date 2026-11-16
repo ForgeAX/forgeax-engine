@@ -10,6 +10,7 @@ import {
   World,
 } from '@forgeax/engine-ecs';
 import { describe, expect, it } from 'vitest';
+import { defineSystem } from '../schedule';
 
 const { source: ChildOf, target: Children } = defineRelationship({
   sourceName: 'M0PerfChildOf',
@@ -195,7 +196,7 @@ describe('M0 ECS reduction workload characterization', () => {
         () => {
           const world = new World();
           const Marker = defineComponent('M0PerfCommandMarker', {});
-          world.addSystem(Update, {
+          const systemToken1 = defineSystem({
             name: 'm0-command-batch',
             queries: [],
             fn: (_world, _queries, commands) => {
@@ -203,6 +204,7 @@ describe('M0 ECS reduction workload characterization', () => {
                 commands.spawn({ component: Marker, data: {} });
             },
           });
+          world.addSystem(Update, systemToken1);
           return Number(world.update(0).ok);
         },
         { commands: COMMAND_COUNT },

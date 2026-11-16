@@ -2,7 +2,7 @@ import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import type { App } from '@forgeax/engine-app';
 import { createApp } from '@forgeax/engine-app/browser';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
-import { type EntityHandle, Update, type World } from '@forgeax/engine-ecs';
+import { defineSystem, type EntityHandle, Update, type World } from '@forgeax/engine-ecs';
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { createFrontendHost } from '@forgeax/engine-host/frontend';
 import { createHostAssembly } from '@forgeax/engine-host/protocol';
@@ -14,6 +14,7 @@ import {
   type NetEndpointConnector,
   type NetRecoverySnapshot,
   type NetSession,
+  NetSessionResource,
   netPlugin,
   type SessionId,
 } from '@forgeax/engine-net';
@@ -159,7 +160,7 @@ function snakeClientPlugin(options: SnakeClientPluginOptions): Plugin {
         }),
       );
       const world = ctx.world;
-      const session = world.getResource<NetSession>('net-session');
+      const session = world.getResource(NetSessionResource);
       const replica = createReplicaCoordinator(world, snakeProfile);
       session.attachReplica(replica, snakeProfile.limits);
       // The World receive system announces this session after Host activation.
@@ -595,7 +596,7 @@ export function registerReplicaDerivation(
       sinks.stateTarget.dataset.renderEntityCount = String(renderEntities.size);
   }
 
-  world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'snake-replica-derivation',
     queries: [],
     fn: (world) => {
@@ -621,6 +622,7 @@ export function registerReplicaDerivation(
       publishFrame(world, frame);
     },
   });
+  world.addSystem(Update, systemToken1);
   return renderEntities;
 }
 

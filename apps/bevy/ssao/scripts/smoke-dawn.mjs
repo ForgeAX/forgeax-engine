@@ -5,11 +5,11 @@ import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErr
 // The same occlusion-heavy scene is rendered with Standard SSAO disabled and
 // enabled. The readbacks must differ and both runs must complete the 60-frame
 // gate without renderer errors.
-
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
@@ -91,7 +91,7 @@ const mockCanvas = {
 
 const here = dirname(fileURLToPath(import.meta.url));
 const manifestPath = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const manifestUrl = `data:application/json,${encodeURIComponent(readFileSync(manifestPath, 'utf8'))}`;
+const manifestUrl = `data:application/json,${encodeURIComponent(readShaderManifestText(manifestPath))}`;
 const { World } = await import('@forgeax/engine-ecs');
 const { DEFAULT_STANDARD_PROFILE } = await import('@forgeax/engine-render');
 const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/internal/renderer-host');
@@ -187,11 +187,7 @@ async function runVariant(ssao, label) {
   let latestReceipt;
   for (let i = 0; i < targetFrames; i += 1) {
     world.update().unwrap();
-    const result = renderer.draw({
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
+    const result = renderer.draw({ source: attached.value });
     if (!result.ok) {
       drawErrors += 1;
       throw new Error(`${label} frame ${framesObserved}: ${JSON.stringify({ error: result.error, events: errors })}`);

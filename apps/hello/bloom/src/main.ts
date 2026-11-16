@@ -1,5 +1,7 @@
+import { InputFrameStartScan } from "@forgeax/engine-input";
+import { defineSystem } from "@forgeax/engine/ecs";
 import { Update } from '@forgeax/engine/ecs';
-import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine/input';
+import { INPUT_SNAPSHOT_RESOURCE_KEY } from '@forgeax/engine/input';
 // apps/hello/bloom -- Bloom real-time comparison demo
 // (feat-20260531-bloom-first-declarative-render-graph-pass / M4 / w18).
 //
@@ -55,7 +57,7 @@ import { waitForReadyFrames } from './wait-for-ready-frames';
 
 import type { MaterialAsset } from '@forgeax/engine/types';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
-import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
 const BUILTIN_SPHERE = createPrimitiveMesh('sphere').unwrap();
 
@@ -219,12 +221,12 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return true;
   };
 
-  world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'bloom-space-toggle',
-    after: ['input-frame-start-scan'],
+    after: [InputFrameStartScan],
     queries: [],
     fn: () => {
-      const snap = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+      const snap = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
       if (snap === undefined) return;
 
       const cur = snap.keyboard.down(' ');
@@ -234,6 +236,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       prevSpace = cur;
     },
   });
+world.addSystem(Update, systemToken1);
 
   const inspectCarrier = () => {
     const inspection = app.renderer.inspect();

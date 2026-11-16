@@ -6,10 +6,9 @@ import {
   GPU_BUFFER_USAGE_STORAGE,
   GPU_BUFFER_USAGE_UNIFORM,
 } from '../gpu-usage';
-import type { InstanceBufferCacheEntry } from '../instance-buffer-cache';
+import type { InstanceBufferCacheEntry, InstanceBufferCacheKey } from '../instance-buffer-cache';
 import type { SpriteInstancesSnapshot } from '../render-system-extract';
 import { renderWorldFor } from '../world/render-world';
-import { worldEntityKey } from './frame-snapshot';
 import { INSTANCE_UBO_FULL_ARRAY_BYTES, MAX_UNIFORM_INSTANCES } from './mesh-ssbo';
 import type { _InternalRenderPipelineContext } from './render-context';
 
@@ -82,7 +81,7 @@ export function resolveSpriteInstanceDraws(
   const snapshot = spriteEntry.source.spriteInstances;
   if (snapshot === undefined) return [];
   if (snapshot.instanceCount === 0) {
-    retireSpritePages(c, spriteEntry.source.worldId, snapshot);
+    retireSpritePages(c, snapshot);
     return [];
   }
   const uniform = !runtime.device.caps.storageBuffer;
@@ -98,7 +97,6 @@ export function resolveSpriteInstanceDraws(
     );
     const buffer = uploadSpriteInstanceBuffer(
       c,
-      spriteEntry.source.worldId,
       snapshot,
       payload,
       (uniform ? GPU_BUFFER_USAGE_UNIFORM : GPU_BUFFER_USAGE_STORAGE) | GPU_BUFFER_USAGE_COPY_DST,
@@ -108,17 +106,16 @@ export function resolveSpriteInstanceDraws(
     if (buffer === null) return [];
     draws.push({ buffer, count, firstInstanceOrdinal: start });
   }
-  retireSpritePages(c, spriteEntry.source.worldId, snapshot);
+  retireSpritePages(c, snapshot);
   return draws;
 }
 
 /** Source shrink and backend recovery release only this collection's obsolete pages. */
 function retireSpritePages(
   c: Pick<_InternalRenderPipelineContext, 'runtime' | 'frameState'>,
-  worldId: number,
   snapshot: SpriteInstancesSnapshot,
 ): void {
-  const pages = c.frameState.instanceBufferChunks?.get(worldEntityKey(worldId, snapshot.cacheKey));
+  const pages = c.frameState.instanceBufferChunks?.get(snapshot.cacheKey);
   if (pages === undefined) return;
   for (const [start, resident] of pages) {
     if (
@@ -144,7 +141,6 @@ function retireSpritePages(
  */
 export function uploadSpriteInstanceBuffer(
   c: Pick<_InternalRenderPipelineContext, 'runtime' | 'frameState'>,
-  worldId: number,
   snapshot: Pick<SpriteInstancesSnapshot, 'archVersion' | 'cacheKey'>,
   payload: Float32Array,
   usage: number,
@@ -175,7 +171,7 @@ export function uploadSpriteInstanceBuffer(
     );
     return null;
   }
-  const key = worldEntityKey(worldId, snapshot.cacheKey);
+  const key = snapshot.cacheKey;
   const cache = spritePageCache(frameState, key, pageStart);
   const address = pageStart ?? key;
   const cached = cache.get(address);
@@ -222,7 +218,7 @@ function spritePageCache(
   frameState: _InternalRenderPipelineContext['frameState'],
   key: number,
   pageStart: number | undefined,
-): Map<number, InstanceBufferCacheEntry> {
+): Map<InstanceBufferCacheKey, InstanceBufferCacheEntry> {
   let cache = frameState.instanceBuffers;
   if (pageStart !== undefined) {
     cache = frameState.instanceBufferChunks?.get(key) ?? new Map();

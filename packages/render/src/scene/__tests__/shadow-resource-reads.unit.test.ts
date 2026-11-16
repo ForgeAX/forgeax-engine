@@ -23,8 +23,8 @@ function snapshot(
     ...(reads === undefined
       ? {}
       : {
-          materialEntryPoints: {
-            shadow: [{ name: 'vs_main', stage: 'vertex', bindings: reads }],
+          materialProgramInputs: {
+            shadow: { entryPoints: [{ name: 'vs_main', stage: 'vertex', bindings: reads }] },
           },
         }),
   };

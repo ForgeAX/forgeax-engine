@@ -1,4 +1,8 @@
-import type { DerivedPhysicsMotion, DerivedPhysicsPublication } from '@forgeax/engine-physics';
+import type {
+  DerivedPhysicsMotion,
+  DerivedPhysicsPublication,
+  PhysicsVector,
+} from '@forgeax/engine-physics';
 import type {
   DerivedBodyRecord,
   DerivedBodySource,
@@ -33,6 +37,7 @@ export interface DerivedAdmissionUndo {
   readonly old: DerivedBodyRecord | undefined;
   readonly automaticAdditionalMass: number;
   readonly automaticRecordMass: number | undefined;
+  readonly entityScale: PhysicsVector | undefined;
   readonly source: DerivedBodySource | undefined;
   readonly publication: DerivedPhysicsPublication | undefined;
   readonly colliders: readonly {

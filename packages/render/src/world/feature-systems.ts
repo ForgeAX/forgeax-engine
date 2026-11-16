@@ -1,7 +1,10 @@
 import {
   defineComponent,
+  defineResource,
+  defineSystem,
   defineSystemSet,
   type EntityHandle,
+  registerScheduleWork,
   type World,
 } from '@forgeax/engine-ecs';
 import { RhiError } from '@forgeax/engine-rhi';
@@ -20,7 +23,15 @@ import type {
 } from '../features/host';
 import type { MotionBlurFeatureInput } from '../features/motion-blur/motion-blur-feature';
 import type { RenderFeaturePlannedFrame } from '../features/plan';
+import type { RenderFeatureProfileGraphPass } from '../features/types';
 import type { SkylightBindGroupResources } from '../ibl/skylight-bind-group';
+import {
+  RenderCaptureFaceInputsOrder,
+  RenderFeatureBatchOrder,
+  RenderFeatureOpenOrder,
+  RenderFeatureViewsOrder,
+  RenderMotionBlurPlanOrder,
+} from '../system-order';
 import { viewAccepted } from './render-views';
 import { RenderCleanup, RenderCommit, RenderPrepare, renderSubmission } from './render-world';
 import { requireViewField } from './view-field';
@@ -51,7 +62,7 @@ export const RENDER_MOTION_BLUR_PLAN_SYSTEM = 'render-motion-blur-plan';
 export const RENDER_CAPTURE_FACE_INPUTS_SYSTEM = 'render-capture-face-inputs';
 
 /** World resource key of the capture-face Feature inputs staged for one Renderer frame. */
-export const CaptureFaceInputsKey = Object.freeze({ name: 'RenderCaptureFaceInputs' });
+export const CaptureFaceInputsKey = defineResource<CaptureFaceInputs>('RenderCaptureFaceInputs');
 
 /** Capture faces' Feature frame inputs for `frame`; merged into the open Feature frame. */
 export interface CaptureFaceInputs {
@@ -61,7 +72,7 @@ export interface CaptureFaceInputs {
 
 function captureFaceInputsOf(world: World): readonly RenderFeatureFrameInput[] {
   if (!world.hasResource(CaptureFaceInputsKey)) return [];
-  const staged = world.getResource<CaptureFaceInputs>(CaptureFaceInputsKey);
+  const staged = world.getResource(CaptureFaceInputsKey);
   return staged.frame === renderSubmission(world).frame ? staged.inputs : [];
 }
 
@@ -72,7 +83,7 @@ export function stageCaptureFaceInputs(
 ): void {
   const staged: CaptureFaceInputs = { frame: renderSubmission(world).frame, inputs };
   if (world.hasResource(CaptureFaceInputsKey)) {
-    Object.assign(world.getResource<CaptureFaceInputs>(CaptureFaceInputsKey), staged);
+    Object.assign(world.getResource(CaptureFaceInputsKey), staged);
   } else world.insertResource(CaptureFaceInputsKey, staged);
 }
 /** RenderPrepare system opening the Renderer's Feature frame over every view's input. */
@@ -83,6 +94,20 @@ export const RENDER_FEATURE_BATCH_SYSTEM = 'render-feature-batch';
 export const RENDER_FEATURE_COMMIT_SYSTEM = 'render-feature-commit';
 /** RenderCleanup system aborting a Feature frame no submission accepted. */
 export const RENDER_FEATURE_ABORT_SYSTEM = 'render-feature-abort';
+
+const featureProfileWorkReleases = new WeakMap<World, Map<string, readonly (() => void)[]>>();
+
+export function renderFeaturePlanProfileWork(identity: string): string {
+  return `render/feature/${identity}/plan`;
+}
+
+export function renderFeatureAdmissionProfileWork(identity: string): string {
+  return `render/feature/${identity}/native-admission`;
+}
+
+export function renderFeatureProfileWorkNames(identity: string): readonly string[] {
+  return [renderFeaturePlanProfileWork(identity), renderFeatureAdmissionProfileWork(identity)];
+}
 
 /** Features prepare in installation order. */
 export const RenderFeatureSet = defineSystemSet({ name: 'render-features', chained: true });
@@ -193,7 +218,7 @@ interface FeatureFrameState {
 }
 
 /** World resource key of the Renderer's Feature frame. */
-const RenderFeatureFrameKey = Object.freeze({ name: 'RenderFeatureFrame' });
+const RenderFeatureFrameKey = defineResource<FeatureFrameState>('RenderFeatureFrame');
 
 /** The system that extracts, plans and prepares one installed Feature. */
 export function renderFeatureSystemName(identity: string): string {
@@ -202,7 +227,7 @@ export function renderFeatureSystemName(identity: string): string {
 
 function featureFrameState(world: World): FeatureFrameState | undefined {
   return world.hasResource(RenderFeatureFrameKey)
-    ? world.getResource<FeatureFrameState>(RenderFeatureFrameKey)
+    ? world.getResource(RenderFeatureFrameKey)
     : undefined;
 }
 
@@ -215,6 +240,14 @@ function currentFeatureFrame(world: World): FeatureFrame | undefined {
 /** The sealed Feature frame of the current Renderer frame, if one opened. */
 export function featureFrameOutcome(world: World): FeatureFrameOutcome | undefined {
   return currentFeatureFrame(world)?.outcome;
+}
+
+/** Current host declarations for exact shared-graph passes in live view scopes. */
+export function renderFeatureProfileGraphPasses(
+  world: World,
+  viewScopes: readonly string[],
+): readonly RenderFeatureProfileGraphPass[] {
+  return featureFrameState(world)?.host.profileGraphPasses(viewScopes) ?? Object.freeze([]);
 }
 
 /** A recording view's sealed Feature result. */
@@ -320,83 +353,77 @@ export function bindRenderFeatureFrame(
 ): void {
   const state: FeatureFrameState = { host, report, current: undefined };
   world.insertResource(RenderFeatureFrameKey, state);
-  world
-    .addSystem(RenderPrepare, {
-      commands: 'none',
-      name: RENDER_FEATURE_OPEN_SYSTEM,
-      after: [
-        RENDER_FEATURE_VIEWS_SYSTEM,
-        RENDER_MOTION_BLUR_PLAN_SYSTEM,
-        RENDER_CAPTURE_FACE_INPUTS_SYSTEM,
-      ],
-      queries: [{ read: [ViewFeatureInput] }],
-      fn: (world, [rows]) => {
-        const inputs: RenderFeatureFrameInput[] = [];
-        const frame = renderSubmission(world).frame;
+  const systemToken1 = defineSystem({
+    sets: [RenderFeatureOpenOrder],
+    commands: 'none',
+    name: RENDER_FEATURE_OPEN_SYSTEM,
+    after: [RenderFeatureViewsOrder, RenderMotionBlurPlanOrder, RenderCaptureFaceInputsOrder],
+    queries: [{ read: [ViewFeatureInput] }],
+    fn: (world, [rows]) => {
+      const inputs: RenderFeatureFrameInput[] = [];
+      const frame = renderSubmission(world).frame;
 
-        rows.forEach((row) => {
-          const entity = row.entity;
+      rows.forEach((row) => {
+        const entity = row.entity;
 
-          const view = world
-            .resolveUniqueRef<ViewFeatureInputState>(
-              requireViewField(world, entity, ViewFeatureInput, 'state'),
-            )
-            .unwrap();
-          if (view.frame !== frame || view.outcome.kind !== 'prepared') return;
-          const input = view.outcome.value.input;
-          if (input === undefined) return;
-          const motionBlur = view.motionBlur?.frame === frame ? view.motionBlur.input : undefined;
-          inputs.push(motionBlur === undefined ? input : { ...input, motionBlur });
-        });
-        inputs.push(...captureFaceInputsOf(world));
-        openFeatureFrame(state, frame, inputs);
-      },
-    })
-    .unwrap();
-  world
-    .addSystem(RenderPrepare, {
-      commands: 'none',
-      name: RENDER_FEATURE_BATCH_SYSTEM,
-      after: [RENDER_FEATURE_OPEN_SYSTEM],
-      queries: [],
-      fn: (world) => {
-        const current = state.current;
-        if (current?.frame === renderSubmission(world).frame) sealFeatureFrame(state, current);
-      },
-    })
-    .unwrap();
-  world
-    .addSystem(RenderCommit, {
-      commands: 'none',
-      name: RENDER_FEATURE_COMMIT_SYSTEM,
-      queries: [],
-      fn: (world) => {
-        const current = currentFeatureFrame(world);
-        if (current === undefined || current.settled || current.outcome?.kind !== 'sealed') return;
-        if (!renderSubmission(world).accepted) return;
-        reportFailures(
-          state,
-          commitFeatureFrame(world, current, current.outcome.batch, state.report),
-        );
-      },
-    })
-    .unwrap();
-  world
-    .addSystem(RenderCleanup, {
-      commands: 'none',
-      name: RENDER_FEATURE_ABORT_SYSTEM,
-      queries: [],
-      fn: (world) => {
-        const current = currentFeatureFrame(world);
-        if (current === undefined) return;
-        state.current = undefined;
-        reportFailures(
-          state,
-          abortFeatureFrame(current, state.report, renderSubmission(world).completion),
-        );
-      },
-    })
-    .unwrap();
+        const view = world
+          .resolveUniqueRef<ViewFeatureInputState>(
+            requireViewField(world, entity, ViewFeatureInput, 'state'),
+          )
+          .unwrap();
+        if (view.frame !== frame || view.outcome.kind !== 'prepared') return;
+        const input = view.outcome.value.input;
+        if (input === undefined) return;
+        const motionBlur = view.motionBlur?.frame === frame ? view.motionBlur.input : undefined;
+        inputs.push(motionBlur === undefined ? input : { ...input, motionBlur });
+      });
+      inputs.push(...captureFaceInputsOf(world));
+      openFeatureFrame(state, frame, inputs);
+    },
+  });
+  world.addSystem(RenderPrepare, systemToken1).unwrap();
+  const systemToken2 = defineSystem({
+    sets: [RenderFeatureBatchOrder],
+    commands: 'none',
+    name: RENDER_FEATURE_BATCH_SYSTEM,
+    after: [systemToken1],
+    queries: [],
+    fn: (world) => {
+      const current = state.current;
+      if (current?.frame === renderSubmission(world).frame) sealFeatureFrame(state, current);
+    },
+  });
+  world.addSystem(RenderPrepare, systemToken2).unwrap();
+  const systemToken3 = defineSystem({
+    commands: 'none',
+    name: RENDER_FEATURE_COMMIT_SYSTEM,
+    queries: [],
+    fn: (world) => {
+      const current = currentFeatureFrame(world);
+      if (current === undefined || current.settled || current.outcome?.kind !== 'sealed') return;
+      if (!renderSubmission(world).accepted) return;
+      reportFailures(
+        state,
+        commitFeatureFrame(world, current, current.outcome.batch, state.report),
+      );
+    },
+  });
+  world.addSystem(RenderCommit, systemToken3).unwrap();
+  const systemToken4 = defineSystem({
+    commands: 'none',
+    name: RENDER_FEATURE_ABORT_SYSTEM,
+    queries: [],
+    fn: (world) => {
+      const current = currentFeatureFrame(world);
+      if (current === undefined) return;
+      state.current = undefined;
+      reportFailures(
+        state,
+        abortFeatureFrame(current, state.report, renderSubmission(world).completion),
+      );
+    },
+  });
+  world.addSystem(RenderCleanup, systemToken4).unwrap();
 }
 
 function reportFailures(state: FeatureFrameState, failures: readonly unknown[]): void {
@@ -460,30 +487,45 @@ function sealFeatureFrame(state: FeatureFrameState, current: FeatureFrame): void
   }
 }
 
-export function addRenderFeatureSystem(world: World, identity: string): void {
-  world
-    .addSystems(RenderPrepare, RenderFeatureSet, [
-      {
-        name: renderFeatureSystemName(identity),
-        after: [RENDER_FEATURE_OPEN_SYSTEM],
-        before: [RENDER_FEATURE_BATCH_SYSTEM],
-        queries: [],
-        fn: (world) => {
-          const current = currentFeatureFrame(world);
-          if (current?.open === undefined || current.failure !== undefined) return;
-          try {
-            current.host.prepareFeature(current.open, identity);
-          } catch (cause) {
-            current.failure = { cause };
-          }
-        },
-      },
-    ])
-    .unwrap();
-}
-
-/** Idempotent: a system already removed from the schedule stays removed. */
-export function removeRenderFeatureSystem(world: World, identity: string): void {
-  const removed = world.removeSystem(RenderPrepare, renderFeatureSystemName(identity));
-  if (!removed.ok && removed.error.code !== 'system-before-unknown') throw removed.error;
+export function addRenderFeatureSystem(
+  world: World,
+  identity: string,
+  profileWorkNames: readonly string[] = [],
+): () => void {
+  const system = defineSystem({
+    name: renderFeatureSystemName(identity),
+    after: [RenderFeatureOpenOrder],
+    before: [RenderFeatureBatchOrder],
+    queries: [],
+    fn: (world) => {
+      const current = currentFeatureFrame(world);
+      if (current?.open === undefined || current.failure !== undefined) return;
+      try {
+        current.host.prepareFeature(current.open, identity);
+      } catch (cause) {
+        current.failure = { cause };
+      }
+    },
+  });
+  world.addSystems(RenderPrepare, RenderFeatureSet, [system]).unwrap();
+  let byIdentity = featureProfileWorkReleases.get(world);
+  if (byIdentity === undefined) {
+    byIdentity = new Map();
+    featureProfileWorkReleases.set(world, byIdentity);
+  }
+  byIdentity.set(
+    identity,
+    [...renderFeatureProfileWorkNames(identity), ...profileWorkNames].map((name) =>
+      registerScheduleWork(world, name),
+    ),
+  );
+  return () => {
+    const byIdentity = featureProfileWorkReleases.get(world);
+    const releases = byIdentity?.get(identity);
+    byIdentity?.delete(identity);
+    for (const release of releases ?? []) release();
+    if (byIdentity?.size === 0) featureProfileWorkReleases.delete(world);
+    const removed = world.removeSystem(RenderPrepare, system);
+    if (!removed.ok && removed.error.code !== 'system-before-unknown') throw removed.error;
+  };
 }

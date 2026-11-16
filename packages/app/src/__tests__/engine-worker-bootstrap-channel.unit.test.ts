@@ -162,8 +162,11 @@ describe('Engine Worker thick bootstrap channel', () => {
       bootstrapData: { gameId: 'sample' },
       dynamicGeometryMeshBudgetBytes: 512 * 1024 * 1024,
       assetBudgetBytes: 6 * 1024 * 1024 * 1024,
+      textureMipSkip: 1,
       pipelineLibrary,
       backgroundPipelineLibrary,
+      backgroundPipelineLibraryConcurrency: 4,
+      renderBackend: 'webgl2',
       bootstrapPort: channel.port2,
       assetCatalog: {
         url: '/__pack/scopes/sample/7/catalog.json',
@@ -183,8 +186,11 @@ describe('Engine Worker thick bootstrap channel', () => {
       bootstrapData: { gameId: 'sample' },
       dynamicGeometryMeshBudgetBytes: 512 * 1024 * 1024,
       assetBudgetBytes: 6 * 1024 * 1024 * 1024,
+      textureMipSkip: 1,
       pipelineLibrary,
       backgroundPipelineLibrary,
+      backgroundPipelineLibraryConcurrency: 4,
+      renderBackend: 'webgl2',
       bootstrapPort: channel.port2,
       assetCatalog: {
         url: '/__pack/scopes/sample/7/catalog.json',
@@ -336,8 +342,8 @@ it('retires retained and late Renderer delivery when the session is disposed', a
   (await shutdown).unwrap();
 });
 
-it('retires Host-owned Kernel Workers on lane disposal and Engine disposal', async () => {
-  const kernels: Array<{
+it('retires Host-owned pool Workers on retire and Engine disposal', async () => {
+  const pool: Array<{
     postMessage: ReturnType<typeof vi.fn>;
     terminate: ReturnType<typeof vi.fn>;
   }> = [];
@@ -347,7 +353,7 @@ it('retires Host-owned Kernel Workers on lane disposal and Engine disposal', asy
       readonly postMessage = vi.fn();
       readonly terminate = vi.fn();
       constructor() {
-        kernels.push(this);
+        pool.push(this);
       }
     },
   );
@@ -364,35 +370,31 @@ it('retires Host-owned Kernel Workers on lane disposal and Engine disposal', asy
   try {
     for (const [workerId, channel] of channels.entries())
       worker.onmessage?.({
-        data: {
-          kind: 'kernel-worker',
-          workerId,
-          port: channel.port2,
-        },
+        data: { kind: 'task-worker', workerId, port: channel.port2 },
       } as unknown as MessageEvent<EngineToHostMessage>);
-    expect(kernels).toHaveLength(2);
-    const connect = kernels[0]?.postMessage.mock.calls[0]?.[0] as
+    expect(pool).toHaveLength(2);
+    const connect = pool[0]?.postMessage.mock.calls[0]?.[0] as
       | { readonly kind: string; readonly port: MessagePort }
       | undefined;
-    const transfer = kernels[0]?.postMessage.mock.calls[0]?.[1] as Transferable[] | undefined;
-    expect(connect?.kind).toBe('kernel-connect');
+    const transfer = pool[0]?.postMessage.mock.calls[0]?.[1] as Transferable[] | undefined;
+    expect(connect?.kind).toBe('task-connect');
     expect(connect?.port).toBe(channels[0]?.port2);
     expect(transfer).toHaveLength(1);
     expect(transfer?.[0]).toBe(channels[0]?.port2);
     worker.onmessage?.({
-      data: { kind: 'kernel-retire', workerId: 0 },
+      data: { kind: 'task-retire', workerId: 0 },
     } as MessageEvent<EngineToHostMessage>);
-    expect(kernels[0]?.terminate).toHaveBeenCalledOnce();
-    expect(kernels[1]?.terminate).not.toHaveBeenCalled();
+    expect(pool[0]?.terminate).toHaveBeenCalledOnce();
+    expect(pool[1]?.terminate).not.toHaveBeenCalled();
     (await started.value.dispose()).unwrap();
-    expect(kernels[0]?.terminate).toHaveBeenCalledOnce();
-    expect(kernels[1]?.terminate).toHaveBeenCalledOnce();
+    expect(pool[0]?.terminate).toHaveBeenCalledOnce();
+    expect(pool[1]?.terminate).toHaveBeenCalledOnce();
     const lateClose = vi.fn();
     worker.onmessage?.({
-      data: { kind: 'kernel-worker', workerId: 2, port: { close: lateClose } },
+      data: { kind: 'task-worker', workerId: 2, port: { close: lateClose } },
     } as unknown as MessageEvent<EngineToHostMessage>);
     expect(lateClose).toHaveBeenCalledOnce();
-    expect(kernels).toHaveLength(2);
+    expect(pool).toHaveLength(2);
   } finally {
     await started.value.dispose();
     for (const channel of channels) {
@@ -403,36 +405,36 @@ it('retires Host-owned Kernel Workers on lane disposal and Engine disposal', asy
   }
 });
 
-it('preserves Kernel Worker creation failure through the existing startup fault', async () => {
+it('reports pool Worker creation failure to its dispatcher without failing startup', async () => {
   vi.stubGlobal(
     'Worker',
     class {
       constructor() {
-        throw new Error('native Kernel unavailable');
+        throw new Error('native pool Worker unavailable');
       }
     },
   );
-  const worker = new FakeWorker(false);
+  const worker = new FakeWorker();
   const channel = new MessageChannel();
   try {
-    const pending = startEngineWorker({
+    const started = await startEngineWorker({
       canvas: { transferControlToOffscreen: () => ({}) } as unknown as HTMLCanvasElement,
       bootstrapUrl: 'https://example.test/bootstrap.js',
       timeoutMs: 100,
       workers: workerSelection({ engine: true, render: false, kernels: true }),
       workerFactory: () => worker as unknown as Worker,
     });
+    if (!started.ok) throw started.error;
     worker.onmessage?.({
-      data: { kind: 'kernel-worker', workerId: 0, port: channel.port2 },
+      data: { kind: 'task-worker', workerId: 0, port: channel.port2 },
     } as unknown as MessageEvent<EngineToHostMessage>);
-    expect(await pending).toMatchObject({
-      ok: false,
-      error: {
-        code: 'app-execution-bootstrap-failed',
-        detail: { cause: { message: 'Error: native Kernel unavailable' } },
-      },
+    expect(worker.posts.map(({ message }) => message)).toContainEqual({
+      kind: 'task-worker-error',
+      workerId: 0,
+      message: 'Error: native pool Worker unavailable',
     });
-    expect(worker.terminate).toHaveBeenCalledOnce();
+    expect(worker.terminate).not.toHaveBeenCalled();
+    (await started.value.dispose()).unwrap();
   } finally {
     channel.port1.close();
     channel.port2.close();

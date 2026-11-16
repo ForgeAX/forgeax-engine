@@ -1,4 +1,5 @@
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { waterInfoShaderFixture } from '../../../render/src/__tests__/shader-manifest-fixture';
 import { testAssets } from './helpers/runtime-assets';
 // Consolidated by feat-20260608-ci-time-cut M5 w13/w14: merges
 //   - render-system.test.ts
@@ -23,7 +24,7 @@ import { prepareExtractContext } from '../../../render/src/render-system-extract
 import { extractFrame } from '../../../render/src/render-system-extract-tail';
 import { standardMaterialShaderVariants } from './helpers/standard-material-manifest';
 import { mockRenderBundles } from './mock-render-bundles';
-import { drawWithOwners } from './renderer-test-utils';
+import { drawWorld } from './renderer-test-utils';
 
 type RendererErrorObservation = {
   readonly code: string;
@@ -67,7 +68,7 @@ function drawPublished(renderer: RendererType, world: WorldType) {
   const attached = renderer.attach(world);
   if (!attached.ok) throw attached.error;
   world.update().unwrap();
-  return drawWithOwners(renderer, world);
+  return drawWorld(renderer, world);
 }
 
 // ─── from render-system.test.ts ───
@@ -184,7 +185,7 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       __mockTag: 'gpu-device',
       lost,
       features: new Set(),
-      limits: { maxTextureDimension2D: 8192 },
+      limits: { maxTextureDimension2D: 8192, maxStorageBuffersPerShaderStage: 8 },
       queue: {
         submit: () => {
           log.queueSubmitCount++;
@@ -286,6 +287,7 @@ function drawPublished(renderer: RendererType, world: WorldType) {
     });
     const manifest = {
       entries: [
+        ...waterInfoShaderFixture.entries,
         { hash: 'pbr00000', wgsl: '/* pbr stub - calls f_schlick( */', glsl: '', bindings: '' },
         { hash: 'unlit000', wgsl: '/* unlit stub */', glsl: '', bindings: '' },
         {
@@ -296,6 +298,7 @@ function drawPublished(renderer: RendererType, world: WorldType) {
         },
       ],
       materialShaders: [
+        ...waterInfoShaderFixture.materialShaders,
         materialShaderStub('forgeax::default-standard-pbr'),
         materialShaderStub('forgeax::default-unlit'),
         materialShaderStub('forgeax::default-shadow-caster'),

@@ -1,3 +1,7 @@
+import { PhysicsWorldResource } from '@forgeax/engine-physics';
+import { PathFollowOrder } from "@forgeax/engine-path";
+import { PhysicsStepSimulation, PhysicsSyncBackend } from "@forgeax/engine-physics-rapier3d";
+import { defineSystem } from "@forgeax/engine-ecs";
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import {
   configureRuntimeAssetCatalog,
@@ -9,20 +13,8 @@ import { createApp } from '@forgeax/engine-app/browser';
 import { type EntityHandle, FixedTime, FixedUpdate } from '@forgeax/engine-ecs';
 import { quat, vec3 } from '@forgeax/engine-math';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import {
-  createPathSample,
-  DesiredPathPose,
-  PATH_FOLLOW_SYSTEM,
-  Path,
-  PathFollower,
-  pathPlugin,
-  preparePath,
-} from '@forgeax/engine-path';
-import { CharacterController,
-  Collider,
-  type PhysicsWorld,
-  RigidBody,
-  RigidBodyTypeValue } from '@forgeax/engine-physics';
+import { createPathSample, DesiredPathPose, Path, PathFollower, pathPlugin, preparePath } from '@forgeax/engine-path';
+import { CharacterController, Collider, RigidBody, RigidBodyTypeValue } from '@forgeax/engine-physics';
 import physics3d from '@forgeax/engine-physics-rapier3d';
 import { Camera, Materials, MeshFilter, MeshRenderer, perspective } from '@forgeax/engine-render';
 import {
@@ -117,11 +109,10 @@ world
   .unwrap();
 const delta = vec3.create();
 // Existing PhysicsWorld owns actual movement. The path never writes this body.
-world
-  .addSystem(FixedUpdate, {
+const systemToken1 = defineSystem({
     name: 'platform/motor',
-    after: [PATH_FOLLOW_SYSTEM, 'physicsSyncBackend'],
-    before: ['physicsStepSimulation'],
+    after: [PathFollowOrder, PhysicsSyncBackend],
+    before: [PhysicsStepSimulation],
     queries: [],
     fn() {
       const desired = world.get(platform, DesiredPathPose).unwrap();
@@ -131,9 +122,11 @@ world
         desired.position,
         world.get(platform, GlobalTransform).unwrap().world.subarray(12, 15),
       );
-      world.getResource<PhysicsWorld>('PhysicsWorld').moveAndSlide(platform, delta);
+      world.getResource(PhysicsWorldResource).moveAndSlide(platform, delta);
     },
-  })
+  });
+world
+  .addSystem(FixedUpdate, systemToken1)
   .unwrap();
 world
   .spawn(

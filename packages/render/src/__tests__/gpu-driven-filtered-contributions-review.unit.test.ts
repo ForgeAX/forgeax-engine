@@ -93,17 +93,12 @@ it('captures direct-lane LOD before source edits and preserves its window on GPU
   const range = { first: 3, count: 3, baseVertex: 0 };
   const source = { ...native, lod: { coverages, ranges: [range], hysteresis: 0.1 } };
   const prepare = () =>
-    assemblePreparedPlan(
-      { ...f.source, batches: [source] },
-      [
-        prepareBatchRows(source, {
-          mesh: undefined,
-          worldKeys: undefined,
-          execution: { route: 'none' },
-        }),
-      ],
-      undefined,
-    );
+    assemblePreparedPlan({ ...f.source, batches: [source] }, [
+      prepareBatchRows(source, {
+        mesh: undefined,
+        execution: { route: 'none' },
+      }),
+    ]);
   const owner = new FilteredPlanContributionOwner();
   const first = owner.update(prepare());
   const old = first.plan.batches.at(0);

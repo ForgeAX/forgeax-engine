@@ -28,8 +28,8 @@ const entry: ExecutionBootstrapEntry = (data) => {
   let submittedErrors: readonly string[] = [];
   const feature: RenderFeature<{ revision: number }> = {
     identity: 'publication.geometry-proof',
-    extract: ({ worlds }) => {
-      if (worlds.length !== 1) throw new Error('Feature extraction lost the source World');
+    extract: ({ world }) => {
+      if (world === undefined) throw new Error('Feature extraction lost the source World');
       return ok({ revision });
     },
     plan: (frame) =>

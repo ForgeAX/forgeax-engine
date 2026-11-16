@@ -268,8 +268,8 @@ export function formatViolation(kept) {
 // === jscpd subprocess driver ==================================================
 
 function spawnJscpd(configPaths) {
-  const jscpdBin = join(REPO_ROOT, 'node_modules', '.bin', 'jscpd');
-  return spawnSync(jscpdBin, ['--config', 'config/jscpd.json', ...configPaths], {
+  const jscpdBin = join(REPO_ROOT, 'node_modules', 'jscpd', 'bin', 'jscpd');
+  return spawnSync(process.execPath, [jscpdBin, '--config', 'config/jscpd.json', ...configPaths], {
     cwd: REPO_ROOT,
     stdio: 'inherit',
     shell: false,

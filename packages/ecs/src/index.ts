@@ -48,41 +48,15 @@
  * ```
  */
 
-import { isComponentDefinitionOrderValid } from './component';
-// ────────────────────────────────────────────────────────────────────────────
-// Essential-id forced registration (feat-20260602 M1 / w1; plan-strategy
-// D-1 / D-6b; feat-20260611 D-9 SSOT switch to ESSENTIAL_COMPONENT_IDS).
-//
-// The `Entity` component MUST be the first `defineComponent` evaluated in the
-// process so the owner identity assigns it id=0. ESM
-// evaluates import bindings in source order before any other statement, so this
-// import -- placed textually first among the barrel's module imports -- forces
-// `entity.ts` (and thus `defineComponent('Entity', ...)`) to run ahead of
-// every downstream component module. The fail-fast assertion below converts
-// an import-order regression from a silent runtime mis-id into a structured
-// startup throw (charter P3).
-//
-// The assertion reads `ESSENTIAL_COMPONENT_IDS` (the SSOT for which ids must
-// be present and where) rather than hard-coding a token property so adding a
-// future essential component requires updating exactly one place.
-//
-// `Entity` is re-exported from the barrel as a value (the id=0 component
-// token). The matching type-space handle type is `EntityHandle`, re-exported
-// from `./entity-handle` -- the two no longer share a name (feat-20260611 I-1;
-// renamed from `./entity` to `./entity-handle` in tweak-20260611-M3 to make
-// the file's role explicit; tweak-20260612 then lifted the Entity component
-// from the historical `components/entity.ts` back into `./entity` since that
-// slot was free).
-import { Disabled, Entity, ESSENTIAL_COMPONENT_IDS, foldEssentials } from './entity';
+import { componentId, isComponentDefinitionOrderValid } from './component';
+// Entity must register before every other component so its storage identity is 0.
+// Keep this import ahead of downstream component-defining modules.
+import { Disabled, Entity } from './entity';
 
-if (
-  !isComponentDefinitionOrderValid() ||
-  ESSENTIAL_COMPONENT_IDS.length !== 1 ||
-  ESSENTIAL_COMPONENT_IDS[0] !== 0
-) {
+if (!isComponentDefinitionOrderValid() || componentId(Entity) !== 0) {
   throw new Error(
-    'forgeax-engine-ecs: ESSENTIAL_COMPONENT_IDS invariant violated ' +
-      `(expected [0], got [${ESSENTIAL_COMPONENT_IDS.join(', ')}]). ` +
+    'forgeax-engine-ecs: Entity invariant violated ' +
+      `(expected id=0, got ${componentId(Entity)}). ` +
       'A defineComponent() call evaluated before the @forgeax/engine-ecs barrel forced the id counter ' +
       'past 0. Ensure no module defines a component at import time before importing from the barrel.',
   );
@@ -113,7 +87,6 @@ export {
 export {
   defineSchedule,
   FixedUpdate,
-  type ScheduleName,
   type ScheduleToken,
   Update,
 } from './schedule-token';
@@ -131,7 +104,7 @@ export {
  */
 export type { EcsError } from './world';
 /**
- * The id=0 essential `Entity` component token. The matching type-space handle
+ * The id=0 `Entity` component token. The matching type-space handle
  * type (the branded number returned by `world.spawn` and accepted by every
  * World method that takes an entity argument) is `EntityHandle`, exported
  * separately from this barrel.
@@ -145,7 +118,7 @@ export type { EcsError } from './world';
  * world.get(e, Entity).unwrap().self === e;
  * ```
  */
-export { Disabled, Entity, ESSENTIAL_COMPONENT_IDS, foldEssentials };
+export { Disabled, Entity };
 
 // ────────────────────────────────────────────────────────────────────────────
 // Core API — the 80% surface most users need
@@ -155,9 +128,9 @@ export { Disabled, Entity, ESSENTIAL_COMPONENT_IDS, foldEssentials };
  * Two-axis phantom-branded handle: `Handle<TargetTag, Mode>`.
  *
  * - `Mode = 'unique'` — released by ECS on despawn / removeComponent / set
- *   (e.g. derived from schema vocab `ref<T>`).
+ *   (e.g. derived from schema vocab `unique<T>`).
  * - `Mode = 'shared'` — external owner manages release; ECS treats as
- *   plain id (e.g. derived from schema vocab `handle<T>`,
+ *   plain id (e.g. derived from schema vocab `asset<kind>`,
  *   `MeshFilter.assetHandle: Handle<'MeshAsset','shared'>`).
  *
  * Cross-mode and cross-target assignment is a TS error (AC-02).
@@ -223,6 +196,14 @@ export type {
   QueryRow,
   QuerySpan,
 } from './query/query';
+export type { ScheduleRunObserver, ScheduleWorkScope } from './schedule-observation.js';
+export {
+  beginScheduleWork,
+  hasScheduleRunObservers,
+  registerScheduleWork,
+  runScheduleWork,
+  scheduleWorkNames,
+} from './schedule-observation.js';
 /** Non-asset shared ECS values use generation-checked, reference-counted storage.
  * Asset component fields retain the injected asset owner instead.
  */
@@ -246,21 +227,21 @@ export { type ComponentData, World } from './world.js';
  */
 export type { CommandBuffer } from './commands';
 /**
- * System descriptor for `world.addSystem()`. Declares queries, execution function,
+ * System declaration created with `defineSystem`. Declares queries, execution function,
  * and optional before/after ordering constraints.
  *
  * @example
  * ```ts
- * world.addSystem(Update, {
+ * world.addSystem(Update, defineSystem({
  *   name: 'movement',
  *   queries: [{ with: [Position, Velocity] }],
  *   fn: (world, results, commands) => { ... },
- * });
+ * }));
  * ```
  */
 /**
  * SystemSet nominal branded token type. Use {@link defineSystemSet} to create
- * a token; never construct manually. The {@link SystemSet.__forgeaxSystemSet}
+ * a token; never construct manually. Its private
  * brand prevents plain-object assignment.
  *
  * @example
@@ -270,9 +251,11 @@ export type { CommandBuffer } from './commands';
  * ```
  */
 export type {
+  System,
   SystemDescriptor,
-  SystemHandle,
+  SystemOrderReference,
   SystemSet,
+  SystemToken,
 } from './schedule';
 /**
  * Define a frozen system token. Executable registration is World-local through
@@ -293,7 +276,8 @@ export type {
  *
  * @example
  * ```ts
- * const GameplaySet = defineSystemSet({ name: 'gameplay', runIf: (w) => !w.getResource<boolean>('paused') });
+ * const Paused = defineResource<boolean>('paused');
+ * const GameplaySet = defineSystemSet({ name: 'gameplay', runIf: (w) => !w.getResource(Paused) });
  * const OrderedSet = defineSystemSet({ name: 'ordered', chained: true });
  * ```
  */
@@ -356,10 +340,13 @@ export { ENTITY_MAX_GENERATION, ENTITY_MAX_INDEX, ENTITY_NULL_RAW } from './enti
 // command channel.
 // w9: ECS_MUTATING_METHODS export deleted — sandbox dismantled; mutating-methods.ts removed.
 
+export { ChangeEpochExhaustedError } from './errors';
 export {
   QueryBatchUnavailableError,
   type QueryBatchUnavailableReason,
 } from './errors/query-batch-errors';
+export { SHARED_KERNEL_EXECUTOR_RESOURCE_KEY } from './execution/shared-kernel';
+export { deferFixedStep, fixedStepIsDeferred } from './fixed-step-barrier';
 export type { FrameArena, FrameArenaStats } from './frame-arena';
 export type {
   MemoryArray,
@@ -372,5 +359,5 @@ export type {
 export { MemoryError } from './memory-types';
 export type { BufferHandle, BufferLease, OwnedBuffers } from './owned-buffers';
 export type { NumericField, QueryBatch, QueryBatchColumns, ReadonlyColumn } from './query/batch';
-
+export { defineResource, type Resource } from './resource';
 export type { WorldMemoryStats } from './world-memory';

@@ -1,16 +1,19 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
-import { FixedTime, FixedUpdate, World } from '@forgeax/engine-ecs';
+import { defineSystem, FixedTime, FixedUpdate, World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
+import type { InputBackendSample } from '@forgeax/engine-input';
 import {
   type DynamicGeometryCandidate,
   MeshFilter,
   MeshRenderer,
+  type RenderFeature,
+  type RenderFeatureSubmission,
   renderPublicationTransfers,
 } from '@forgeax/engine-render';
 import { renderPublicationTiming } from '@forgeax/engine-render/internal';
 import { Transform } from '@forgeax/engine-scene';
 import { DEFAULT_UNLIT_PARAM_SCHEMA, ShaderRegistry } from '@forgeax/engine-shader';
-import { ShaderSource } from '@forgeax/engine-types';
+import { ok, ShaderSource } from '@forgeax/engine-types';
 import { afterEach, expect, it, vi } from 'vitest';
 import type {
   EngineToHostMessage,
@@ -75,6 +78,361 @@ class CreditWorker {
   terminate() {}
 }
 afterEach(() => vi.unstubAllGlobals());
+
+async function submittedFeatureFixture() {
+  vi.stubGlobal('Worker', CreditWorker);
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  const world = new World({ assets });
+  const sourceData = { sourceFrameGeneration: 12 };
+  const feedback = { sourceFrameGeneration: 12, viewIdentity: 'camera:left' };
+  const submission: RenderFeatureSubmission = {
+    works: [{ scope: { view: 'camera:left' }, passes: [{ name: 'water-info-raster' }] }],
+  };
+  const acknowledged: {
+    readonly data: unknown;
+    readonly feedback: unknown;
+    readonly submission: RenderFeatureSubmission | undefined;
+  }[] = [];
+  const completed: unknown[] = [];
+  const readbackResults: unknown[] = [];
+  const messages: EngineToHostMessage[] = [];
+  const feature: RenderFeature<unknown> = {
+    identity: 'water-info-producer',
+    extract: () => ok(sourceData),
+    plan: () => ok({ work: [] }),
+    onSourceFrameSubmitted: (data, receivedFeedback, receivedSubmission) =>
+      acknowledged.push({
+        data,
+        feedback: receivedFeedback,
+        submission: receivedSubmission,
+      }),
+    onSourceFrameCompleted: (data, completion, receivedFeedback, receivedSubmission, readbacks) => {
+      completed.push({
+        data,
+        completion,
+        feedback: receivedFeedback,
+        submission: receivedSubmission,
+      });
+      readbackResults.push(readbacks);
+    },
+  };
+  const canvas = {} as OffscreenCanvas;
+  const source = new SourceRenderWorker(
+    world,
+    assets,
+    {
+      kind: 'init',
+      canvas,
+      startupTimeoutMs: null,
+      bootstrapUrl: '',
+      workers: workerSelection({ render: true, kernels: false }),
+    },
+    (message) => messages.push(message),
+    [feature],
+  );
+
+  await source.start(canvas);
+  const frame: ExecutionFrameMessage = {
+    kind: 'frame',
+    worldIdentity: world.identity,
+    frameId: 12,
+    deltaSeconds: 1 / 60,
+    inputSample: {
+      downKeys: new Set(),
+      upKeys: new Set(),
+      buttons: [false, false, false],
+      movementX: 0,
+      movementY: 0,
+      wheelDelta: 0,
+      focused: true,
+      pointerLocked: false,
+    } satisfies InputBackendSample,
+    canvasWidth: 64,
+    canvasHeight: 64,
+  };
+  source.publish(frame, frame.deltaSeconds);
+  const draw = CreditWorker.current.packets[0];
+  if (draw === undefined) throw new Error('source publication was not sent to the Render Worker');
+  const submitted = {
+    kind: 'submitted',
+    identity: { source: draw.publication.source, epoch: draw.publication.epoch },
+    revision: draw.publication.revision,
+    frame: {
+      kind: 'frame-submitted',
+      worldIdentity: world.identity,
+      frameId: frame.frameId,
+      deviceGeneration: 7,
+    },
+    features: [{ identity: feature.identity, feedback, submission }],
+  } satisfies Extract<RenderWorkerOutput, { readonly kind: 'submitted' }>;
+  return { source, feature, acknowledged, completed, readbackResults, messages, submitted, draw };
+}
+
+it('completes a submitted source feature from the actual GPU receipt before recycling its publication', async () => {
+  const fixture = await submittedFeatureFixture();
+  try {
+    const worker = CreditWorker.current;
+    worker.emit(fixture.submitted);
+    const message = {
+      kind: 'completed',
+      identity: fixture.submitted.identity,
+      revision: fixture.submitted.revision,
+      completion: { frameId: 312, deviceGeneration: 7, graphGeneration: 19 },
+      buffers: renderPublicationTransfers(fixture.draw.publication),
+      frame: {
+        kind: 'frame-complete',
+        worldIdentity: fixture.submitted.frame.worldIdentity,
+        frameId: 12,
+        deviceGeneration: 7,
+        engineUpdateMs: 0,
+        kernelWaitMs: 0,
+      },
+    } satisfies Extract<RenderWorkerOutput, { kind: 'completed' }>;
+    worker.emit({
+      ...message,
+      identity: { ...message.identity, epoch: message.identity.epoch + 1 },
+    });
+    expect(fixture.completed).toEqual([]);
+    worker.emit(message);
+    expect(fixture.completed).toEqual([
+      {
+        data: { sourceFrameGeneration: 12 },
+        completion: { frameId: 312, deviceGeneration: 7, graphGeneration: 19 },
+        feedback: fixture.submitted.features[0]?.feedback,
+        submission: fixture.submitted.features[0]?.submission,
+      },
+    ]);
+    expect(fixture.source.hasPublicationCapacity).toBe(true);
+    expect(fixture.messages.some((message) => message.kind === 'fault')).toBe(false);
+  } finally {
+    await fixture.source.dispose();
+  }
+});
+
+it('forwards only receipt-matched feature texture bytes through the source publisher', async () => {
+  const fixture = await submittedFeatureFixture();
+  try {
+    const worker = CreditWorker.current;
+    worker.emit(fixture.submitted);
+    const readback = {
+      domain: 'feature-texture' as const,
+      featureIdentity: fixture.feature.identity,
+      name: 'water-test-normal',
+      targetName: 'water-test-normal-target',
+      bytes: new Uint8Array(256),
+      metadata: {
+        frameId: 312,
+        deviceGeneration: 7,
+        graphGeneration: 19,
+        format: 'rgba8unorm' as const,
+        textureIdentity: 4,
+        readbackIdentity: 9,
+        width: 1,
+        height: 1,
+        bytesPerRow: 256,
+        footprint: { resourceCount: 1, bindGroupCount: 0 },
+      },
+    };
+    worker.emit({
+      kind: 'completed',
+      identity: fixture.submitted.identity,
+      revision: fixture.submitted.revision,
+      completion: { frameId: 312, deviceGeneration: 7, graphGeneration: 19 },
+      buffers: renderPublicationTransfers(fixture.draw.publication),
+      featureTextureReadbacks: [readback],
+      frame: {
+        kind: 'frame-complete',
+        worldIdentity: fixture.submitted.frame.worldIdentity,
+        frameId: 12,
+        deviceGeneration: 7,
+        engineUpdateMs: 0,
+        kernelWaitMs: 0,
+      },
+    });
+    expect(fixture.readbackResults).toEqual([{ ok: true, value: [readback] }]);
+    expect(fixture.source.hasPublicationCapacity).toBe(true);
+    expect(fixture.messages.some((message) => message.kind === 'fault')).toBe(false);
+  } finally {
+    await fixture.source.dispose();
+  }
+});
+
+it('rejects feature readbacks with a non-layout row pitch before source callbacks', async () => {
+  const fixture = await submittedFeatureFixture();
+  try {
+    const worker = CreditWorker.current;
+    worker.emit(fixture.submitted);
+    worker.emit({
+      kind: 'completed',
+      identity: fixture.submitted.identity,
+      revision: fixture.submitted.revision,
+      completion: { frameId: 312, deviceGeneration: 7, graphGeneration: 19 },
+      buffers: renderPublicationTransfers(fixture.draw.publication),
+      featureTextureReadbacks: [
+        {
+          domain: 'feature-texture',
+          featureIdentity: fixture.feature.identity,
+          name: 'water-test-normal',
+          targetName: 'water-test-normal-target',
+          bytes: new Uint8Array(4),
+          metadata: {
+            frameId: 312,
+            deviceGeneration: 7,
+            graphGeneration: 19,
+            format: 'rgba8unorm',
+            textureIdentity: 4,
+            readbackIdentity: 9,
+            width: 1,
+            height: 1,
+            bytesPerRow: 4,
+            footprint: { resourceCount: 1, bindGroupCount: 0 },
+          },
+        },
+      ],
+      frame: {
+        kind: 'frame-complete',
+        worldIdentity: fixture.submitted.frame.worldIdentity,
+        frameId: 12,
+        deviceGeneration: 7,
+        engineUpdateMs: 0,
+        kernelWaitMs: 0,
+      },
+    });
+    expect(fixture.readbackResults).toEqual([]);
+    expect(fixture.messages.some((message) => message.kind === 'fault')).toBe(true);
+  } finally {
+    await fixture.source.dispose();
+  }
+});
+
+it.each([
+  'source-frame',
+  'world',
+  'device',
+  'buffers',
+  'receipt',
+  'unsubmitted',
+] as const)('rejects an invalid %s completion before source callbacks or capacity release', async (kind) => {
+  const fixture = await submittedFeatureFixture();
+  try {
+    const worker = CreditWorker.current;
+    if (kind !== 'unsubmitted') worker.emit(fixture.submitted);
+    worker.emit({
+      kind: 'completed',
+      identity: fixture.submitted.identity,
+      revision: fixture.submitted.revision,
+      completion: {
+        frameId: kind === 'receipt' ? Number.NaN : 312,
+        deviceGeneration: kind === 'device' ? 8 : 7,
+        graphGeneration: 19,
+      },
+      buffers: kind === 'buffers' ? [] : renderPublicationTransfers(fixture.draw.publication),
+      frame: {
+        kind: 'frame-complete',
+        worldIdentity: kind === 'world' ? 'another-world' : fixture.submitted.frame.worldIdentity,
+        frameId: kind === 'source-frame' ? 13 : 12,
+        deviceGeneration: 7,
+        engineUpdateMs: 0,
+        kernelWaitMs: 0,
+      },
+    });
+    expect(fixture.completed).toEqual([]);
+    expect(fixture.messages.some((message) => message.kind === 'fault')).toBe(true);
+  } finally {
+    await fixture.source.dispose();
+  }
+});
+
+it('acknowledges view-scoped feature work only for its matching source epoch and frame', async () => {
+  const fixture = await submittedFeatureFixture();
+  try {
+    CreditWorker.current.emit({
+      ...fixture.submitted,
+      identity: { ...fixture.submitted.identity, epoch: fixture.submitted.identity.epoch + 1 },
+    });
+    expect(fixture.acknowledged).toEqual([]);
+    CreditWorker.current.emit(fixture.submitted);
+    expect(fixture.acknowledged).toEqual([
+      {
+        data: { sourceFrameGeneration: 12 },
+        feedback: { sourceFrameGeneration: 12, viewIdentity: 'camera:left' },
+        submission: {
+          works: [{ scope: { view: 'camera:left' }, passes: [{ name: 'water-info-raster' }] }],
+        },
+      },
+    ]);
+  } finally {
+    await fixture.source.dispose();
+  }
+});
+
+it('rejects feature acknowledgments for a different submitted frame ID', async () => {
+  const fixture = await submittedFeatureFixture();
+  try {
+    CreditWorker.current.emit({
+      ...fixture.submitted,
+      frame: { ...fixture.submitted.frame, frameId: fixture.submitted.frame.frameId + 1 },
+    });
+    expect(fixture.acknowledged).toEqual([]);
+    expect(fixture.messages.some((message) => message.kind === 'fault')).toBe(true);
+  } finally {
+    await fixture.source.dispose();
+  }
+});
+
+it('rejects feature acknowledgments from a different world identity', async () => {
+  const fixture = await submittedFeatureFixture();
+  try {
+    CreditWorker.current.emit({
+      ...fixture.submitted,
+      frame: { ...fixture.submitted.frame, worldIdentity: 'another-world' },
+    });
+    expect(fixture.acknowledged).toEqual([]);
+    expect(fixture.messages.some((message) => message.kind === 'fault')).toBe(true);
+  } finally {
+    await fixture.source.dispose();
+  }
+});
+
+it('reports a malformed submitted identity as a structured host fault', async () => {
+  const fixture = await submittedFeatureFixture();
+  try {
+    const { identity: _identity, ...malformed } = fixture.submitted;
+    expect(() => CreditWorker.current.emit(malformed)).not.toThrow();
+    expect(fixture.acknowledged).toEqual([]);
+    expect(fixture.messages).toContainEqual(
+      expect.objectContaining({
+        kind: 'fault',
+        code: 'render-worker-protocol-invalid',
+        retryable: false,
+        detail: expect.objectContaining({ stage: 'transport' }),
+      }),
+    );
+  } finally {
+    await fixture.source.dispose();
+  }
+});
+
+it('reports a malformed submitted frame as a structured host fault', async () => {
+  const fixture = await submittedFeatureFixture();
+  try {
+    const { frame: _frame, ...malformed } = fixture.submitted;
+    expect(() => CreditWorker.current.emit(malformed)).not.toThrow();
+    expect(fixture.acknowledged).toEqual([]);
+    expect(fixture.messages).toContainEqual(
+      expect.objectContaining({
+        kind: 'fault',
+        code: 'render-worker-protocol-invalid',
+        retryable: false,
+        detail: expect.objectContaining({ stage: 'transport' }),
+      }),
+    );
+  } finally {
+    await fixture.source.dispose();
+  }
+});
 
 async function programTransportFixture(post: (message: EngineToHostMessage) => void = () => {}) {
   vi.stubGlobal('Worker', CreditWorker);
@@ -412,22 +770,21 @@ it('publishes geometry without a global temporal reset and faults paired recover
     });
     let candidate: DynamicGeometryCandidate = (await prepared).unwrap();
     let accepted = false;
-    world
-      .addSystem(FixedUpdate, {
-        name: 'geometry-admission',
-        queries: [],
-        fn: () => {
-          if (accepted) return;
-          candidate = source.dynamicGeometry
-            .acceptDynamicGeometry(candidate, {
-              world,
-              fixedStep: world.getResource(FixedTime).tick,
-            })
-            .unwrap();
-          accepted = true;
-        },
-      })
-      .unwrap();
+    const systemToken1 = defineSystem({
+      name: 'geometry-admission',
+      queries: [],
+      fn: () => {
+        if (accepted) return;
+        candidate = source.dynamicGeometry
+          .acceptDynamicGeometry(candidate, {
+            world,
+            fixedStep: world.getResource(FixedTime).tick,
+          })
+          .unwrap();
+        accepted = true;
+      },
+    });
+    world.addSystem(FixedUpdate, systemToken1).unwrap();
     world.update(1 / 60).unwrap();
     const tick = world.getResource(FixedTime).tick;
     source.publish(
@@ -455,8 +812,23 @@ it('publishes geometry without a global temporal reset and faults paired recover
     if (draw === undefined) throw new Error('missing publication');
     expect(renderPublicationTiming(draw.publication).temporalReset).toBe(false);
     world.update(1 / 60).unwrap();
+    const identity = { source: draw.publication.source, epoch: draw.publication.epoch };
+    worker.emit({
+      kind: 'submitted',
+      identity,
+      revision: draw.publication.revision,
+      frame: {
+        kind: 'frame-submitted',
+        worldIdentity: world.identity,
+        frameId: 50,
+        deviceGeneration: 7,
+      },
+      features: [],
+    });
     worker.emit({
       kind: 'completed',
+      identity,
+      completion: { frameId: 3, deviceGeneration: 7 },
       revision: draw.publication.revision,
       buffers: renderPublicationTransfers(draw.publication),
       frame: {
@@ -564,14 +936,30 @@ it.each([
     if (draw === undefined) throw new Error('No publication');
     const p = draw.publication;
     const buffers = renderPublicationTransfers(p);
+    const identity = { source: p.source, epoch: p.epoch };
+    worker.emit({
+      kind: 'submitted',
+      identity,
+      revision: p.revision,
+      frame: {
+        kind: 'frame-submitted',
+        worldIdentity: world.identity,
+        frameId: draw.frameId,
+        deviceGeneration: 7,
+      },
+      features: [],
+    });
     worker.emit({
       kind: 'completed',
+      identity,
+      completion: { frameId: draw.frameId + 300, deviceGeneration: 7 },
       revision: p.revision,
       buffers,
       frame: {
         kind: 'frame-complete',
         worldIdentity: world.identity,
         frameId: draw.frameId,
+        deviceGeneration: 7,
         engineUpdateMs: 0,
         kernelWaitMs: 0,
       },
@@ -606,7 +994,7 @@ it.each([
       expect(source.hasPublicationCapacity).toBe(false);
     }
     complete();
-    expect(hostMessages.filter((message) => message.kind === 'fault')).toHaveLength(0);
+    expect(hostMessages.filter((message) => message.kind === 'fault')).toEqual([]);
     expect(source.hasPublicationCapacity).toBe(true);
     source.publish({ ...frame, frameId: capacity + 1 }, capacity);
     expect(worker.packets.map((packet) => packet.frameId)).toEqual(
@@ -789,14 +1177,30 @@ it.each([
     reason: { code: 'timestamp-query-unsupported' },
     capability: { timestampQuery: false, timestampPeriodNanoseconds: null },
   } as const;
+  const identity = { source: publication.source, epoch: publication.epoch };
+  worker.emit({
+    kind: 'submitted',
+    identity,
+    revision: publication.revision,
+    frame: {
+      kind: 'frame-submitted',
+      worldIdentity: world.identity,
+      frameId: 7,
+      deviceGeneration: 7,
+    },
+    features: [],
+  });
   worker.emit({
     kind: 'completed',
+    identity,
+    completion: { frameId: 307, deviceGeneration: 7 },
     revision: publication.revision,
     buffers: renderPublicationTransfers(publication),
     frame: {
       kind: 'frame-complete',
       worldIdentity: world.identity,
       frameId: 7,
+      deviceGeneration: 7,
       presentation: 'pending',
       presentationPendingReason: {
         code: 'scene-pipeline-preparation',
@@ -1270,10 +1674,12 @@ it('carries selected inspection fields to the child without adding frame work', 
     const pending = source.inspectRenderer({
       fields: ['frame', 'pipelineLibrary'],
       runtimeRequests: true,
+      pipelineLibraryRequestedOnly: true,
     });
     const request = inspectionRequest(worker);
     expect(request.fields).toEqual(['frame', 'pipelineLibrary']);
     expect(request.runtimeRequests).toBe(true);
+    expect(request.pipelineLibraryRequestedOnly).toBe(true);
     const value = { frame: inspectedFacts.frame, pipelineLibrary: undefined };
     worker.emit({ ...inspectionReply(request), result: { ok: true, value } });
     expect(await pending).toEqual({ ok: true, value });

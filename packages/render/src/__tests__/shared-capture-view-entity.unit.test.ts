@@ -1,4 +1,4 @@
-import { World } from '@forgeax/engine-ecs';
+import { defineSystem, World } from '@forgeax/engine-ecs';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect, it, vi } from 'vitest';
@@ -7,14 +7,15 @@ import { ANTIALIAS_NONE, Camera } from '../components/camera';
 import { CameraView } from '../components/camera-view';
 import { CubeCamera } from '../components/cube-camera';
 import * as graphs from '../record/typed-frame-graph';
-import { RENDER_CAPTURE_GRAPH_COMPILE_SYSTEM } from '../world/capture-graph-systems';
 import {
-  RENDER_GRAPH_SEAL_SYSTEM,
-  ViewGraphSeal,
-  viewGraphSealOutcome,
-} from '../world/graph-seal-systems';
-import { RENDER_GRAPH_COMPILE_SYSTEM } from '../world/graph-systems';
-import { RENDER_ENCODER_OPEN_SYSTEM } from '../world/record-systems';
+  RenderCaptureGraphCompileOrder,
+  RenderEncoderOpenOrder,
+  RenderGraphCompileOrder,
+  RenderGraphSealOrder,
+} from '../system-order';
+
+import { ViewGraphSeal, viewGraphSealOutcome } from '../world/graph-seal-systems';
+
 import { RenderView, RenderViewInput, ViewSubmission } from '../world/render-views';
 import { RenderRecord, renderSubmission } from '../world/render-world';
 import { renderLifecycleManifestUrl } from './shader-manifest-fixture';
@@ -76,46 +77,39 @@ it("records the multi-view shared capture attempt on the primary recorder's view
         },
       )
       .unwrap();
-    const input = {
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    };
+    const input = { source: attached.value };
     if (renderWorld === undefined) throw new Error('expected the Renderer Render World');
     let compilingCaptures = false;
-    renderWorld
-      .addSystem(RenderRecord, {
-        name: 'test-capture-compile-enter',
-        after: [RENDER_ENCODER_OPEN_SYSTEM],
-        before: [RENDER_CAPTURE_GRAPH_COMPILE_SYSTEM],
-        queries: [],
-        fn: () => {
-          compilingCaptures = true;
-        },
-      })
-      .unwrap();
-    renderWorld
-      .addSystem(RenderRecord, {
-        name: 'test-capture-compile-leave',
-        after: [RENDER_CAPTURE_GRAPH_COMPILE_SYSTEM],
-        before: [RENDER_GRAPH_COMPILE_SYSTEM],
-        queries: [],
-        fn: () => {
-          compilingCaptures = false;
-        },
-      })
-      .unwrap();
+    const systemToken1 = defineSystem({
+      name: 'test-capture-compile-enter',
+      after: [RenderEncoderOpenOrder],
+      before: [RenderCaptureGraphCompileOrder],
+      queries: [],
+      fn: () => {
+        compilingCaptures = true;
+      },
+    });
+    renderWorld.addSystem(RenderRecord, systemToken1).unwrap();
+    const systemToken2 = defineSystem({
+      name: 'test-capture-compile-leave',
+      after: [RenderCaptureGraphCompileOrder],
+      before: [RenderGraphCompileOrder],
+      queries: [],
+      fn: () => {
+        compilingCaptures = false;
+      },
+    });
+    renderWorld.addSystem(RenderRecord, systemToken2).unwrap();
     const sealed: string[] = [];
-    renderWorld
-      .addSystem(RenderRecord, {
-        name: 'test-capture-seal-product',
-        after: [RENDER_GRAPH_SEAL_SYSTEM],
-        queries: [{ read: [ViewGraphSeal] }],
-        fn: (world, [rows]) => {
-          for (const row of rows) sealed.push(viewGraphSealOutcome(world, row.entity).kind);
-        },
-      })
-      .unwrap();
+    const systemToken3 = defineSystem({
+      name: 'test-capture-seal-product',
+      after: [RenderGraphSealOrder],
+      queries: [{ read: [ViewGraphSeal] }],
+      fn: (world, [rows]) => {
+        for (const row of rows) sealed.push(viewGraphSealOutcome(world, row.entity).kind);
+      },
+    });
+    renderWorld.addSystem(RenderRecord, systemToken3).unwrap();
     const compile = graphs.compileTargetCaptureFrameGraph;
     const calls: boolean[] = [];
     const captureCompile = vi

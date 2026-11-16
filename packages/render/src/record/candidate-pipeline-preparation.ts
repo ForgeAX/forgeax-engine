@@ -41,7 +41,7 @@ export function candidateMaterialPipelineRequests(
 ) {
   const request = (args: MaterialPipelineRequest): CandidateMaterialPipelineRequest => {
     const owned: CandidateMaterialPipelineRequest = args;
-    owned[22] = true;
+    owned[24] = true;
     return owned;
   };
   return {
@@ -98,7 +98,6 @@ type Request = {
   readonly materials: MaterialFrame;
   projection?: {
     readonly graph: InstalledFrameGraph;
-    readonly worldId: number;
     readonly clustered: boolean;
     readonly reflectionFallback: boolean;
     readonly shadowViews: boolean;
@@ -224,13 +223,10 @@ export class CandidatePipelinePreparationOwner {
         continue;
       }
       try {
-        const worldId =
-          input.world === undefined
-            ? 0
-            : (context.resourceScopes?.findIndex(
-                (scope) => scope.identity === input.world?.identity,
-              ) ?? -1);
-        if (worldId < 0) {
+        if (
+          input.world !== undefined &&
+          context.resourceScopes?.identity !== input.world.identity
+        ) {
           request.finish(err(unavailable('candidate World is absent from the current view')));
           continue;
         }
@@ -240,13 +236,11 @@ export class CandidatePipelinePreparationOwner {
         if (
           projection === undefined ||
           projection.graph !== graph ||
-          projection.worldId !== worldId ||
           projection.clustered !== clustered ||
           projection.reflectionFallback !== reflectionFallback ||
           projection.shadowViews !== shadowViews
         ) {
           projection = request.projection = this.project(request, graph, {
-            worldId,
             clustered,
             reflectionFallback,
             shadowViews,
@@ -257,10 +251,13 @@ export class CandidatePipelinePreparationOwner {
         const { materials } = request;
         const state = { ...context.frameState, pipelinePreparationPending: false };
         delete state.pipelinePreparationPendingReason;
+        // Accepted-scene emptiness cannot omit a newly prepared candidate's lighting program.
+        delete state.standardSceneSurfaceAdmission;
         const candidateContext: _InternalRenderPipelineContext = {
           ...context,
           frameState: state,
           materialFrame: materials,
+          validatedOrdered: [entry],
           pipelinePreparationEntries: [entry],
           // This material frame owns the candidate, not the current visible scene.
           shadowValidatedOrdered: [],
@@ -269,7 +266,15 @@ export class CandidatePipelinePreparationOwner {
         let matched = false;
         const prepare = () => {
           for (const prepareScene of graph.scenePipelinePreparations ?? [])
-            if (prepareScene(candidateContext, artifacts.materialArtifacts)) matched = true;
+            if (
+              prepareScene.kind !== 'utility' &&
+              prepareScene(candidateContext, artifacts.materialArtifacts)
+            )
+              matched = true;
+          if (matched)
+            for (const prepareScene of graph.scenePipelinePreparations ?? [])
+              if (prepareScene.kind === 'utility')
+                prepareScene(candidateContext, artifacts.materialArtifacts);
           if (matched && shadowViews)
             prepareShadowMaterialPipelines(candidateContext, true, () => false);
         };
@@ -291,7 +296,6 @@ export class CandidatePipelinePreparationOwner {
     request: Request,
     graph: InstalledFrameGraph,
     facts: {
-      worldId: number;
       clustered: boolean;
       reflectionFallback: boolean;
       shadowViews: boolean;
@@ -299,7 +303,7 @@ export class CandidatePipelinePreparationOwner {
     },
   ): NonNullable<Request['projection']> {
     const { input } = request;
-    const { worldId, clustered, reflectionFallback, shadowViews, runtime } = facts;
+    const { clustered, reflectionFallback, shadowViews, runtime } = facts;
     const { preparation } = input;
     const { resources, materials } = request;
     const resourceFor = (id: number): MaterialResource => {
@@ -325,7 +329,6 @@ export class CandidatePipelinePreparationOwner {
             ),
           }),
       entityKey: preparation.entity,
-      worldId,
       transform: preparation.transform,
       authorVisible: false,
       pipelinePreparation: preparation.template.dispatch,
@@ -366,7 +369,6 @@ export class CandidatePipelinePreparationOwner {
     });
     return {
       graph,
-      worldId,
       clustered,
       reflectionFallback,
       shadowViews,
@@ -388,7 +390,7 @@ export class CandidatePipelinePreparationOwner {
     if (
       passes === undefined ||
       passes.length === 0 ||
-      passes.some((pass) => pass.demand === undefined) ||
+      passes.some((pass) => pass.kind !== 'utility' && pass.demand === undefined) ||
       scenePassRequests(graph.graph).some((pass) => pass.capture || pass.camera !== undefined)
     ) {
       if (observe) this.unsupportedGraph++;
@@ -435,7 +437,6 @@ export class CandidatePipelinePreparationOwner {
       prepareMaterialShaderPipelineEntry: view.lookup.entry,
     };
     const projection = this.project(request, graph, {
-      worldId: view.worldId,
       clustered: view.geometry.lightingKind === 'clustered',
       reflectionFallback: view.reflectionFallbackDemand,
       shadowViews: view.hasShadowViews,
@@ -461,6 +462,7 @@ export class CandidatePipelinePreparationOwner {
     };
     let matched = false;
     for (const pass of passes) {
+      if (pass.kind === 'utility') continue;
       if (pass.demand === undefined) return false;
       if (
         prepareTypedScenePipelineDemand(

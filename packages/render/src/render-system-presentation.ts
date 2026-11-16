@@ -2,7 +2,6 @@ import type { AssetHandle } from '@forgeax/engine-types';
 import type { GpuDrawSelection } from './gpu-driven/draw-selection';
 import type { MaterialResource } from './material-resource';
 import type { RenderResourceScope } from './publication/resource-scope';
-import { worldEntityKey } from './record/frame-snapshot';
 import type { RenderSystemInternals } from './record/render-context';
 import type { FramePresentation, FramePresentationPendingReason } from './render-contract';
 import type {
@@ -119,18 +118,17 @@ export function projectFramePresentation(input: {
   readonly renderables: FrameList<RenderableSnapshot>;
   /** Materials of GPU-executed bindings, standing for every row they draw. */
   readonly coveredBindings?: Iterable<{
-    readonly worldId: number;
     readonly material: MaterialResource;
   }>;
-  readonly preparedWorlds: readonly RenderResourceScope[];
+  readonly preparedSourceScope: RenderResourceScope;
   readonly internals: RenderSystemInternals;
   readonly onPending?: (reason: FramePresentationPendingReason) => void;
 }): FramePresentation {
   const observeResidency = createMaterialResidencyObserver(input.internals, false);
-  const pending = (worldId: number, material: MaterialResource): boolean => {
+  const pending = (material: MaterialResource): boolean => {
     const snapshot = material.snapshot;
     const readiness = observeResidency(
-      input.preparedWorlds[worldId],
+      input.preparedSourceScope,
       snapshot,
       material.ownsValues(snapshot),
     ).readiness;
@@ -138,19 +136,18 @@ export function projectFramePresentation(input: {
   };
   for (const renderable of input.renderables) {
     for (const material of renderable.materials) {
-      if (pending(renderable.worldId, material)) {
+      if (pending(material)) {
         input.onPending?.({
           code: 'material-residency',
-          worldId: renderable.worldId,
           entity: renderable.entityKey,
         });
         return 'pending';
       }
     }
   }
-  for (const { worldId, material } of input.coveredBindings ?? []) {
-    if (pending(worldId, material)) {
-      input.onPending?.({ code: 'material-residency', worldId });
+  for (const { material } of input.coveredBindings ?? []) {
+    if (pending(material)) {
+      input.onPending?.({ code: 'material-residency' });
       return 'pending';
     }
   }
@@ -188,17 +185,13 @@ type PresentationDraws = ReturnType<typeof createPresentationDraws>;
  */
 export function missingDrawEvidence(
   renderables: FrameList<RenderableSnapshot>,
-  worldKeys: readonly number[],
   draws: PresentationDraws,
-  preparedWorlds: readonly RenderResourceScope[],
+  preparedSourceScope: RenderResourceScope,
   internals: RenderSystemInternals,
 ): FramePresentationPendingReason | undefined {
   for (const renderable of renderables) {
-    const entityKey = worldEntityKey(
-      worldKeys[renderable.worldId] ?? renderable.worldId,
-      renderable.entityKey,
-    );
-    const missing = renderableDrawGap(renderable, entityKey, draws, preparedWorlds, internals);
+    const entityKey = renderable.entityKey;
+    const missing = renderableDrawGap(renderable, entityKey, draws, preparedSourceScope, internals);
     if (missing !== undefined) return missing;
   }
   return undefined;
@@ -208,15 +201,14 @@ function renderableDrawGap(
   renderable: RenderableSnapshot,
   entityKey: number,
   draws: PresentationDraws,
-  preparedWorlds: readonly RenderResourceScope[],
+  preparedSourceScope: RenderResourceScope,
   internals: RenderSystemInternals,
 ): FramePresentationPendingReason | undefined {
   // Runs for every displayed row of every frame: the pending reason is
   // allocated only when a gap is actually found.
-  const worldId = renderable.worldId;
   const entity = renderable.entityKey;
-  if (!draws.hasEntity(entityKey)) return { code: 'draw-entity-missing', worldId, entity };
-  const renderableWorld = preparedWorlds[worldId];
+  if (!draws.hasEntity(entityKey)) return { code: 'draw-entity-missing', entity };
+  const renderableWorld = preparedSourceScope;
   const meshHandles =
     renderableWorld === undefined
       ? undefined
@@ -226,15 +218,15 @@ function renderableDrawGap(
             renderable.assetHandle as AssetHandle<'mesh'>,
             renderableWorld,
           );
-  if (meshHandles === undefined) return { code: 'mesh-residency', worldId, entity };
+  if (meshHandles === undefined) return { code: 'mesh-residency', entity };
   const terrain = renderable.terrainSection;
   if (terrain !== undefined && !draws.hasTerrain(entityKey, terrain.index))
-    return { code: 'draw-terrain-missing', worldId, entity, section: terrain.index };
+    return { code: 'draw-terrain-missing', entity, section: terrain.index };
   if (renderable.pointsLines !== undefined) return undefined;
   const submeshCount = meshHandles.submeshes.length;
   for (let submesh = 0; submesh < submeshCount; submesh++) {
     if (!draws.hasSubmesh(entityKey, submesh))
-      return { code: 'draw-submesh-missing', worldId, entity, submesh };
+      return { code: 'draw-submesh-missing', entity, submesh };
   }
   return undefined;
 }

@@ -117,7 +117,9 @@ When an entity is despawned, `audioTickSystem` detects its removal on the next f
 ## Health check
 
 ```ts
-const backend = world.getResource('AudioEngine');
+import { AUDIO_ENGINE_RESOURCE_KEY } from '@forgeax/engine/audio';
+
+const backend = world.getResource(AUDIO_ENGINE_RESOURCE_KEY);
 const { contextState, activeSourceCount } = backend.getState();
 // contextState: 'running' | 'suspended' | 'closed'
 // activeSourceCount: number of currently active AudioBufferSourceNode instances
@@ -262,9 +264,6 @@ The caller resumes/closes borrowed live contexts and controls offline rendering;
 destroy disconnects this engine's graph without closing the borrowed context.
 Default contexts remain lazy, gesture-resumed and engine-owned.
 
-Source references, measurements and reproduction commands:
-[control validation](./bench/README.md).
-
 ## Clip start and seek (G17)
 
 `AudioPlayOptions.fromPosition` defaults to zero. `AudioSource.fromPosition`
@@ -273,7 +272,7 @@ Host does not write playback progress into ECS. For repeated seeks to the same
 position, call the realm-neutral backend explicitly:
 
 ```ts
-const backend = world.getResource<AudioBackend>(AUDIO_ENGINE_RESOURCE_KEY);
+const backend = world.getResource(AUDIO_ENGINE_RESOURCE_KEY);
 backend.seek(entityId, 12.5);
 ```
 
@@ -371,22 +370,7 @@ queue/node high water; `AudioState.cache` reports retained sources, encoded/deco
 bytes, byte high water and pending entity plays. Native platform working memory is
 outside the explicit cache budget.
 
-For reproducible native PCM, public App tiers and cost measurements, prepare outside
-the physical lease, then execute the prepared native owner:
-
-```sh
-node packages/audio-webaudio/bench/music/prepare.mjs
-FORGEAX_MUSIC_RUN=final node packages/audio-webaudio/bench/music/run.mjs --prepare-only
-FORGEAX_LOCAL_GPU_LEASE=1 FORGEAX_MUSIC_RUN=final \
-  node scripts/ci/local-gpu-lease.mjs --timeout-ms 2700000 -- \
-  node packages/audio-webaudio/bench/music/run.mjs --native-only
-```
-
-The complete native owner uses the maintained bounded lease; its 45-minute
-process ceiling is a cleanup backstop, not a larger stage budget. Preparation
-records the exact source/site workload before admission. The native phase rejects
-changed inputs and saves each completed workload before continuing. Clean cost
-measurements also require the frozen quiet admission.
+Clean cost measurements require the frozen quiet admission.
 Final acceptance additionally runs the full
 Browser/Dawn/Smoke and SDK gates; these probes do not substitute for those gates.
 
@@ -426,7 +410,6 @@ failures. Native node/accounting probes measure Engine-owned connections; they
 cannot certify immediate browser audio-thread garbage collection.
 
 See [regional semantics and saved authoring](../audio/README.md#acoustic-regions),
-fixed source mechanisms and acceptance, and the
-[public Pack/native evidence probe](bench/acoustic/run.mjs).
+and fixed source mechanisms and acceptance.
 
 If the caller closes a supplied native Context, the next state read or admitted playback/listener/acoustic control retires the old source taps, pending playback controls and bus graph through the existing destroy path. Closed listener access returns `undefined`; playback cannot create another Context. A rebuilt App creates its fresh Host owner explicitly. Native regressions cover both an active regional source at close and disposal while real clip decode is pending.

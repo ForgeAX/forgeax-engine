@@ -35,7 +35,9 @@ it.each([
         sourceSnapshot: createScriptablePackSourceSnapshot(),
         filesystemInputs: undefined,
       },
-      budget === undefined ? {} : { dynamicGeometryMeshBudgetBytes: budget, time },
+      budget === undefined
+        ? {}
+        : { dynamicGeometryMeshBudgetBytes: budget, textureMipSkip: 2, time },
     );
     const source = await readFile(resolve(root, 'wechat-main.ts'), 'utf8');
     expect(source).toContain('Game 1.2.3 | Engine ');
@@ -60,6 +62,7 @@ it.each([
       },
     );
     expect(options.dynamicGeometryMeshBudgetBytes).toBe(budget);
+    expect(options.textureMipSkip).toBe(budget === undefined ? undefined : 2);
     const world = runInNewContext(
       `${source.slice(source.indexOf('const world = new World('), source.indexOf('let game;'))} world`,
       { World },

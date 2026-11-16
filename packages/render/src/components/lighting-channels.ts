@@ -1,4 +1,4 @@
-import { ResourceInvalidValueError } from '../errors/ecs-validation';
+import { ResourceInvalidValueError } from '../errors/component-validation';
 
 /** All 32 independent surface direct-light channels; zero matches no lights. */
 export const LIGHTING_CHANNELS_DEFAULT = 0xffffffff;

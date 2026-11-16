@@ -161,6 +161,7 @@ async function compileShader(name: string, id: string): Promise<string> {
     imports: {
       'forgeax_view::common': readShader('common'),
       'forgeax_pbr::gbuffer': readShader('standard-gbuffer'),
+      forgeax_scene_temporal: readShader('scene-temporal'),
       'forgeax_depth_pyramid::sample': readShader('depth-pyramid-sample'),
     },
   });

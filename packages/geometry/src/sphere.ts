@@ -32,12 +32,13 @@ export function createSphereGeometry(
   for (let iy = 0; iy <= hs; iy++) {
     const v = iy / hs;
     const phi = v * Math.PI;
+    const sinPhi = iy === 0 || iy === hs ? 0 : Math.sin(phi);
     for (let ix = 0; ix <= ws; ix++) {
       const u = ix / ws;
-      const theta = u * Math.PI * 2;
-      const x = -radius * Math.cos(theta) * Math.sin(phi);
+      const theta = ix === ws ? 0 : u * Math.PI * 2;
+      const x = -radius * Math.cos(theta) * sinPhi;
       const y = radius * Math.cos(phi);
-      const z = radius * Math.sin(theta) * Math.sin(phi);
+      const z = radius * Math.sin(theta) * sinPhi;
       const nx = x / radius;
       const ny = y / radius;
       const nz = z / radius;

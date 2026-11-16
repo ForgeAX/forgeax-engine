@@ -1,11 +1,13 @@
 import type { World } from '@forgeax/engine-ecs';
+import { defineSystem } from '@forgeax/engine-ecs';
 import type { SubmissionPlan } from '../gpu-driven/batch-topology';
 import type { MaterialResource } from '../material-resource';
 import type { RenderableSnapshot } from '../render-system-extract';
 import type { RenderSceneApplyResult, RenderSceneSlot } from '../scene/render-scene-types';
 import type { CompositionEntry } from '../scene/scene-composition';
+import { RenderScenePublishOrder } from '../system-order';
 import { RenderPrepare } from './render-world';
-import { RENDER_SCENE_PUBLISH_SYSTEM, sceneRowStep } from './scene-systems';
+import { sceneRowStep } from './scene-systems';
 
 /*
  * Material adoption and the batch plan of the shared scene composition (E08).
@@ -82,32 +84,29 @@ export function sourcePlanOf(entry: CompositionEntry): SubmissionPlan {
 
 /** Register the composition's material and batch-plan RenderPrepare systems. */
 export function registerMaterialSystems(world: World): void {
-  world
-    .addSystem(RenderPrepare, {
-      name: RENDER_MATERIAL_ADOPT_SYSTEM,
-      queries: [],
-      before: [RENDER_SCENE_PUBLISH_SYSTEM],
-      fn: sceneRowStep(world, (stage) => adoptSceneMaterials(stage.entry, stage.change)),
-    })
-    .unwrap();
-  world
-    .addSystem(RenderPrepare, {
-      name: RENDER_MATERIAL_PASSES_SYSTEM,
-      queries: [],
-      after: [RENDER_MATERIAL_ADOPT_SYSTEM],
-      before: [RENDER_SCENE_PUBLISH_SYSTEM],
-      fn: sceneRowStep(world, (stage, composition) => composition.queryMaterialPasses(stage.entry)),
-    })
-    .unwrap();
-  world
-    .addSystem(RenderPrepare, {
-      name: RENDER_BATCH_PLAN_SYSTEM,
-      queries: [],
-      after: [RENDER_MATERIAL_ADOPT_SYSTEM],
-      before: [RENDER_SCENE_PUBLISH_SYSTEM],
-      fn: sceneRowStep(world, (stage, composition) =>
-        composition.acceptBatchPlan(stage.entry, sourcePlanOf(stage.entry)),
-      ),
-    })
-    .unwrap();
+  const systemToken1 = defineSystem({
+    name: RENDER_MATERIAL_ADOPT_SYSTEM,
+    queries: [],
+    before: [RenderScenePublishOrder],
+    fn: sceneRowStep(world, (stage) => adoptSceneMaterials(stage.entry, stage.change)),
+  });
+  world.addSystem(RenderPrepare, systemToken1).unwrap();
+  const systemToken2 = defineSystem({
+    name: RENDER_MATERIAL_PASSES_SYSTEM,
+    queries: [],
+    after: [systemToken1],
+    before: [RenderScenePublishOrder],
+    fn: sceneRowStep(world, (stage, composition) => composition.queryMaterialPasses(stage.entry)),
+  });
+  world.addSystem(RenderPrepare, systemToken2).unwrap();
+  const systemToken3 = defineSystem({
+    name: RENDER_BATCH_PLAN_SYSTEM,
+    queries: [],
+    after: [systemToken1],
+    before: [RenderScenePublishOrder],
+    fn: sceneRowStep(world, (stage, composition) =>
+      composition.acceptBatchPlan(stage.entry, sourcePlanOf(stage.entry)),
+    ),
+  });
+  world.addSystem(RenderPrepare, systemToken3).unwrap();
 }

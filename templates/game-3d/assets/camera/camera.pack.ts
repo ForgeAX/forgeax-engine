@@ -1,17 +1,18 @@
+import { PhysicsWorldResource } from '@forgeax/engine/physics';
+import { Game3dPlayerInputOrder } from '../shared/system-order.ts';
+import { PropagateTransforms } from "@forgeax/engine/scene";
+import { defineSystem } from "@forgeax/engine/ecs";
 import { definePack, definePackageId } from '@forgeax/engine/pack/source';
 import { ok } from '@forgeax/engine/types';
 import { FixedUpdate, Time, Update, type World } from '@forgeax/engine/ecs';
 import { vec3 } from '@forgeax/engine/math';
-import type { PhysicsWorld } from '@forgeax/engine/physics';
+
 import type { Plugin } from '@forgeax/engine/plugin';
-import { PROPAGATE_TRANSFORMS_SYSTEM, readPresentationWorldMatrix, setTransformLookAt } from '@forgeax/engine/scene';
+import { readPresentationWorldMatrix, setTransformLookAt } from '@forgeax/engine/scene';
 import type { Game3dPlayerService } from '../shared/player-protocol.ts';
-import { integratePointerLook, orbitPosition } from '../shared/third-person.ts';
+import { CAMERA_DISTANCE, CAMERA_TARGET_HEIGHT, integratePointerLook, orbitPosition } from '../shared/third-person.ts';
 import { resolveGameEntity } from '../shared/scene-refs.ts';
 
-const CAMERA_DISTANCE = 6.5;
-/** The camera looks at this point above the player's origin. */
-const CAMERA_TARGET_HEIGHT = 0.5;
 /** Exponential follow rates (1/s) for the eye and the look point, like three's `lerp(target, 1 - exp(-k dt))`. */
 const EYE_FOLLOW = 10;
 const LOOK_FOLLOW = 14;
@@ -23,11 +24,11 @@ const CAMERA_MIN_DISTANCE = 1.2;
 
 /** How far the orbit can extend from `target` before a collider blocks the view. */
 function clearDistance(world: World, target: Point, yaw: number, pitch: number): number {
-  if (!world.hasResource('PhysicsWorld')) return CAMERA_DISTANCE;
+  if (!world.hasResource(PhysicsWorldResource)) return CAMERA_DISTANCE;
   const far = orbitPosition(target, yaw, pitch, 1);
   const origin = orbitPosition(target, yaw, pitch, CAMERA_RAY_START);
   const hit = world
-    .getResource<PhysicsWorld>('PhysicsWorld')
+    .getResource(PhysicsWorldResource)
     .raycast(
       vec3.create(origin[0], origin[1], origin[2]),
       vec3.create(far[0] - target[0], far[1] - target[1], far[2] - target[2]),
@@ -73,11 +74,10 @@ export const camera: Plugin = {
       yield playerService.onTeleport(() => {
         snap = true;
       });
-      world
-        .addSystem(Update, {
+      const systemToken1 = defineSystem({
           name: 'game-3d-camera',
-          after: [FixedUpdate, 'game-3d-player-input'],
-          before: [PROPAGATE_TRANSFORMS_SYSTEM],
+          after: [FixedUpdate, Game3dPlayerInputOrder],
+          before: [PropagateTransforms],
           queries: [],
           fn: () => {
             const input = playerService.readInput();
@@ -102,9 +102,11 @@ export const camera: Plugin = {
             snap = false;
             setTransformLookAt(world, camera, eye, look).unwrap();
           },
-        })
+        });
+world
+        .addSystem(Update, systemToken1)
         .unwrap();
-      yield () => world.removeSystem(Update, 'game-3d-camera').unwrap();
+      yield () => world.removeSystem(Update, systemToken1).unwrap();
     }, 'game-3d/camera');
   },
 };

@@ -1,4 +1,5 @@
 import type { World } from '@forgeax/engine-ecs';
+import { defineSystem } from '@forgeax/engine-ecs';
 import type { RhiDevice, RhiTextureFormatCapabilityReceipt } from '@forgeax/engine-rhi';
 import type { Handle } from '@forgeax/engine-types';
 import type { createPostProcessParamsOwner } from '../assembly/post-process-params';
@@ -113,7 +114,7 @@ export interface ViewSettlementOwner {
 
 /** The recording state formerly captured by the RenderSystem constructor. */
 export interface ViewRecordingState {
-  preparedWorlds: readonly RenderResourceScope[];
+  preparedSourceScope: RenderResourceScope | undefined;
   directFrameId: number;
   readonly dispatchCounts: { unlit: number };
   readonly pendingFeatureErrors: Map<string, PendingRenderFeatureErrorReport>;
@@ -149,9 +150,9 @@ export interface SkinSettlement {
   readonly paletteUploadBytes: number;
   /** Open the view's recording Skin frame; `render-view-frame` calls it once per staged view. */
   beginRecording(): void;
-  /** Compose and upload the palettes of the CPU Skin rows a view may draw, keyed by `worldEntityKey`. */
+  /** Compose and upload the palettes of the CPU Skin rows a view may draw, keyed by the complete entity handle. */
   prepareDemand(
-    rows: Iterable<Pick<RenderableSnapshot, 'worldId' | 'entityKey'>>,
+    rows: Iterable<Pick<RenderableSnapshot, 'entityKey'>>,
   ): Map<number, SkinTaskBinding | undefined>;
   /** The submitted work pins this recording's task buffers and Scene roots until completion. */
   trackSubmittedWork(completed: Promise<void>): void;
@@ -180,35 +181,39 @@ export function ownerOf(world: World, state: Handle<string, 'unique'>): ViewSett
  */
 export function registerViewCommit(
   world: World,
-  name: string,
+  stage: import('@forgeax/engine-ecs').SystemSet,
   commit: (owner: ViewSettlementOwner, world: World) => void,
-  after: string,
+  after: import('@forgeax/engine-ecs').SystemOrderReference,
   scope: 'accepted' | 'scene' | 'presented' = 'accepted',
 ): void {
   world
-    .addSystem(RenderCommit, {
-      commands: 'none',
-      name,
-      queries: [{ read: [ViewRecorder, ViewSubmission], optional: [ViewRecordHistory] }],
-      after: [after],
-      fn: (world, [views]) => {
-        const frame = renderSubmission(world).frame;
+    .addSystem(
+      RenderCommit,
+      defineSystem({
+        commands: 'none',
+        name: stage.name,
+        sets: [stage],
+        queries: [{ read: [ViewRecorder, ViewSubmission], optional: [ViewRecordHistory] }],
+        after: [after],
+        fn: (world, [views]) => {
+          const frame = renderSubmission(world).frame;
 
-        views.forEach((row) => {
-          const entity = row.entity;
+          views.forEach((row) => {
+            const entity = row.entity;
 
-          if (
-            !requireViewField(world, entity, ViewSubmission, 'accepted') ||
-            requireViewField(world, entity, ViewSubmission, 'attempt') !== frame
-          )
-            return;
-          if (scope !== 'accepted' && !requireViewField(world, entity, ViewSubmission, 'scene'))
-            return;
-          if (scope === 'presented' && viewRecordHistory(world, entity)?.presentation !== 'ready')
-            return;
-          commit(ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state')), world);
-        });
-      },
-    })
+            if (
+              !requireViewField(world, entity, ViewSubmission, 'accepted') ||
+              requireViewField(world, entity, ViewSubmission, 'attempt') !== frame
+            )
+              return;
+            if (scope !== 'accepted' && !requireViewField(world, entity, ViewSubmission, 'scene'))
+              return;
+            if (scope === 'presented' && viewRecordHistory(world, entity)?.presentation !== 'ready')
+              return;
+            commit(ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state')), world);
+          });
+        },
+      }),
+    )
     .unwrap();
 }

@@ -17,12 +17,13 @@ import type {
   ParticleRendererSortingV3,
   ParticleRendererSourceV3,
   ParticleRendererSourceV3Base,
+  ParticleWaterGridEmissionSource,
 } from './code-source-v3.js';
 import type { VfxDataInterfaceRequirement } from './data-interface.js';
 import type { VfxEffectReflection } from './effect-contract.js';
 
 /** The only cooked GPU program ABI exposed by the runtime. */
-export const VFX_GPU_PROGRAM_FORMAT = 'forgeax-vfx-program-4' as const;
+export const VFX_GPU_PROGRAM_FORMAT = 'forgeax-vfx-program-5' as const;
 export const VFX_GPU_PROGRAM_ARTIFACT_KEY = 'particle-effect/program.json' as const;
 
 export interface VfxGpuStageReflection extends ParticleStageSource {
@@ -81,6 +82,7 @@ export interface VfxGpuEmitterProgram
   extends Omit<ParticleEffectProgramEmitter, 'renderers' | 'reflection'> {
   readonly schedule: ParticleEmitterSourceV3['schedule'];
   readonly bounds: ParticleEmitterSourceV3['bounds'];
+  readonly waterGridEmission?: ParticleWaterGridEmissionSource;
   readonly renderers: readonly ParticleRendererSourceV3[];
   readonly channels?: readonly ParticleChannelSource[];
   readonly events?: readonly ParticleEventSource[];

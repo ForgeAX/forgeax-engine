@@ -133,7 +133,8 @@ describe('parity-instancing-static Browser WebGPU population acceptance', () => 
     canvas = undefined;
   });
 
-  it.each(COUNTS)(
+  it.each(COUNTS,
+  )(
     `renders %s instances for ${FRAME_COUNT} frames with stable residency and visible spread`,
     async (count) => {
       expect(navigator.gpu, 'Browser WebGPU is required for this acceptance path').toBeDefined();
@@ -202,20 +203,24 @@ describe('parity-instancing-static Browser WebGPU population acceptance', () => 
         if (event.kind === 'error') errors.push({ code: event.error.code, hint: event.error.hint });
       });
 
-      const frameInput = {
-        leases: [lease],
-        camera: { lease },
-        environment: { lease },
-      };
+      const frameInput = { source: lease };
       let firstUploadBytes = 0;
       let stableUploadBytes = 0;
       let submittedFrames = 0;
+    let pendingReason: unknown;
       for (let frame = 0; frame < FRAME_COUNT;) {
-        expect(++submittedFrames, "bounded asynchronous preparation").toBeLessThanOrEqual(FRAME_COUNT + 120);
+        expect(++submittedFrames,
+        `bounded asynchronous preparation: ${JSON.stringify({ pendingReason, errors })}`,
+      ).toBeLessThanOrEqual(FRAME_COUNT + 120);
         expect(world.update(1 / 60).ok).toBe(true);
         const drawn = renderer.draw(frameInput);
         expect(drawn.ok).toBe(true);
         if (!drawn.ok) return;
+      pendingReason = drawn.value.presentationPendingReason;
+      if (drawn.value.presentation === 'pending' && drawn.value.preparationCompleted !== undefined) {
+        const prepared = await drawn.value.preparationCompleted;
+        expect(prepared.ok, JSON.stringify({ pendingReason, errors })).toBe(true);
+      }
         const completed = await drawn.value.completed;
         expect(completed.ok).toBe(true);
         const gpu = renderer.inspect().renderScene.gpu;
@@ -228,7 +233,6 @@ describe('parity-instancing-static Browser WebGPU population acceptance', () => 
         if (drawn.value.presentation === 'ready') frame += 1;
         await new Promise<void>((resolve) => setTimeout(resolve, 0));
       }
-
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       await new Promise<void>((resolve) => setTimeout(resolve, 50));
@@ -264,6 +268,5 @@ describe('parity-instancing-static Browser WebGPU population acceptance', () => 
       );
       expect(visibleSamples, `visible spread evidence for ${count}: ${JSON.stringify(spread)}`).toBeGreaterThanOrEqual(3);
     },
-    900_000,
-  );
+    900_000);
 });

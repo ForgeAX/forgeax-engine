@@ -24,6 +24,8 @@ test('transferred shaders bind source, compiler, WASM, lockfile, profile and exa
     'packages/vfx-render/src/shaders/main.wgsl',
     'pnpm-lock.yaml',
     'scripts/build-shared-inputs.mjs',
+    'scripts/lib/shader-source-budget.mjs',
+    'scripts/lib/runner-resources.mjs',
     'scripts/ci/build-shared-app-inputs.mjs',
     'scripts/lib/shared-build-cache.mjs',
     'scripts/build-task-cache.mjs',

@@ -47,7 +47,7 @@ export class FieldEditState extends Map<string, FieldEditEntry> {
 
   override set(id: string, value: FieldEditEntry): this {
     const parts = id.split(':');
-    const key = `${parts[0]}:${parts[2]}`;
+    const key = parts[1] as string;
     let rows = this.#rows.get(key);
     if (rows === undefined) {
       rows = new Set();
@@ -64,7 +64,7 @@ export class FieldEditState extends Map<string, FieldEditEntry> {
 
   override delete(id: string): boolean {
     const parts = id.split(':');
-    const key = `${parts[0]}:${parts[2]}`;
+    const key = parts[1] as string;
     const rows = this.#rows.get(key);
     rows?.delete(id);
     if (rows?.size === 0) this.#rows.delete(key);
@@ -78,10 +78,8 @@ export class FieldEditState extends Map<string, FieldEditEntry> {
     super.clear();
   }
 
-  *identities(
-    sources: readonly Pick<RenderSceneRecord, 'worldId' | 'slot'>[],
-  ): IterableIterator<string> {
-    for (const source of sources) yield* this.#rows.get(`${source.worldId}:${source.slot}`) ?? [];
+  *identities(sources: readonly Pick<RenderSceneRecord, 'slot'>[]): IterableIterator<string> {
+    for (const source of sources) yield* this.#rows.get(`${source.slot}`) ?? [];
   }
 }
 
@@ -90,7 +88,7 @@ export interface FieldEditInput {
   readonly sources: readonly SceneFieldSource[];
   readonly instances: readonly SdfMeshInstance[];
   /** Omitted only for a complete cold snapshot. Missing rows of these sources leave. */
-  readonly changedSources?: readonly Pick<RenderSceneRecord, 'worldId' | 'slot'>[];
+  readonly changedSources?: readonly Pick<RenderSceneRecord, 'slot'>[];
 }
 
 /** One projected identity entering a prepared field or changing its materials. */
@@ -143,7 +141,7 @@ function identities(sources: readonly SceneFieldSource[], instances: readonly Sd
       const instance = instances[source.firstInstance + ordinal];
       if (instance === undefined) throw new Error('field edit lost a projected instance');
       out.push({
-        id: `${source.worldId}:${source.entityKey}:${source.slot}:${source.generation}:${source.instances?.generations?.[ordinal] ?? 0}`,
+        id: `${source.entityKey}:${source.slot}:${source.generation}:${source.instances?.generations?.[ordinal] ?? 0}`,
         source,
         instance,
       });

@@ -84,7 +84,7 @@ it('uses the public publication Renderer for preparation and exact submitted dra
     const second = await draw();
     expect(prepared.recordStageLane(first, entity).ok).toBe(false);
     expect(prepared.recordStageLane(second, entity).unwrap()).toBe('cpu');
-    const uiOnly = value(renderer.draw({ leases: [], camera: null, environment: null }));
+    const uiOnly = value(renderer.draw({ source: null }));
     value(await uiOnly.completed);
     expect(prepared.recordStageLane(uiOnly, entity).ok).toBe(false);
     const resumed = await draw();

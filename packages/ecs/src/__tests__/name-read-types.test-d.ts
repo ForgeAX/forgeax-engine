@@ -1,3 +1,4 @@
+import { defineSystem } from '../schedule';
 import { Update } from '../schedule-token';
 // w7 --- 3-point AC-02: world.get(e, C).unwrap().value infers as `string`.
 //
@@ -31,7 +32,7 @@ describe('w7 --- (a) inside world.addSystem fn callback (AC-02)', () => {
     const w = new World();
     const e = w.spawn({ component: TestName, data: { value: 'Player' } }).unwrap();
 
-    w.addSystem(Update, {
+    const systemToken1 = defineSystem({
       name: 'reader',
       queries: [],
       fn: () => {
@@ -39,6 +40,7 @@ describe('w7 --- (a) inside world.addSystem fn callback (AC-02)', () => {
         expectTypeOf(value).toEqualTypeOf<string>();
       },
     });
+    w.addSystem(Update, systemToken1);
   });
 });
 
@@ -47,7 +49,7 @@ describe('w7 --- (b) inside a QueryRow loop (AC-02)', () => {
     const w = new World();
     const e = w.spawn({ component: TestName, data: { value: 'Boss' } }).unwrap();
 
-    w.addSystem(Update, {
+    const systemToken2 = defineSystem({
       name: 'queryReader',
       queries: [{ with: [TestName] }],
       fn: (_world, results) => {
@@ -59,6 +61,7 @@ describe('w7 --- (b) inside a QueryRow loop (AC-02)', () => {
         }
       },
     });
+    w.addSystem(Update, systemToken2);
   });
 });
 

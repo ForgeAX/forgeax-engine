@@ -136,9 +136,7 @@ it('caps clipped closed Standard meshes in forward and deferred, direct and GPU-
       propagateTransforms(world).unwrap();
       for (let frame = 0; frame < 3; frame++)
         await drawReadyFrame(renderer, {
-          leases: [lease],
-          camera: { lease },
-          environment: { lease },
+          source: lease,
           ...(direct ? { geometryLane: 'direct' as const } : {}),
         });
       // Center: the far wall; x = 40: the band where only the inner side walls

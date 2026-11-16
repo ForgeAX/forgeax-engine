@@ -1,4 +1,5 @@
-import { Time, Update } from '@forgeax/engine-ecs';
+import { defineSystem, Time, Update } from '@forgeax/engine-ecs';
+import { InputFrameStartScan } from '@forgeax/engine-input';
 // learn-render-first-person.ts -- first-person camera controls SSOT for
 // apps/learn-render/2.lighting/ (1, 2, 3, 4, 5, 6). Exports addFirstPersonSystem
 // (with optional flashlight SpotLight narrowing), createFirstPersonControls
@@ -197,68 +198,74 @@ export function addFirstPersonSystem(world: App['world'], opts: FirstPersonOptio
   };
 
   if (opts.flashlight) {
-    world.addSystem(Update, {
-      name: opts.name,
-      after: ['input-frame-start-scan'],
-      queries: [{ write: [Transform], with: [Camera] }, { write: [Transform, SpotLight] }],
-      fn: (world, queries) => {
-        const snapshot = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
-        if (snapshot === undefined) return;
-        const time = world.getResource(Time);
-        const dt = time.delta;
-        if (!seeded)
+    world.addSystem(
+      Update,
+      defineSystem({
+        name: opts.name,
+        after: [InputFrameStartScan],
+        queries: [{ write: [Transform], with: [Camera] }, { write: [Transform, SpotLight] }],
+        fn: (world, queries) => {
+          const snapshot = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
+          if (snapshot === undefined) return;
+          const time = world.getResource(Time);
+          const dt = time.delta;
+          if (!seeded)
+            for (const row of queries[0]) {
+              seedFrom(row.mut(Transform).quat);
+              break;
+            }
+          const { forward, displacement } = tick(dt, snapshot);
+
+          let camPosX = 0;
+          let camPosY = 0;
+          let camPosZ = 3;
           for (const row of queries[0]) {
-            seedFrom(row.mut(Transform).quat);
-            break;
+            const transform = row.mut(Transform);
+            camPosX = (transform.pos[0] ?? 0) + displacement.x;
+            camPosY = (transform.pos[1] ?? 0) + displacement.y;
+            camPosZ = (transform.pos[2] ?? 0) + displacement.z;
+            transform.pos.set([camPosX, camPosY, camPosZ]);
+            transform.quat.set([qTmp[0] ?? 0, qTmp[1] ?? 0, qTmp[2] ?? 0, qTmp[3] ?? 1]);
           }
-        const { forward, displacement } = tick(dt, snapshot);
 
-        let camPosX = 0;
-        let camPosY = 0;
-        let camPosZ = 3;
-        for (const row of queries[0]) {
-          const transform = row.mut(Transform);
-          camPosX = (transform.pos[0] ?? 0) + displacement.x;
-          camPosY = (transform.pos[1] ?? 0) + displacement.y;
-          camPosZ = (transform.pos[2] ?? 0) + displacement.z;
-          transform.pos.set([camPosX, camPosY, camPosZ]);
-          transform.quat.set([qTmp[0] ?? 0, qTmp[1] ?? 0, qTmp[2] ?? 0, qTmp[3] ?? 1]);
-        }
-
-        for (const row of queries[1]) {
-          row.mut(Transform).pos.set([camPosX, camPosY, camPosZ]);
-          row.mut(SpotLight).direction.set([forward.x, forward.y, forward.z]);
-        }
-      },
-    });
+          for (const row of queries[1]) {
+            row.mut(Transform).pos.set([camPosX, camPosY, camPosZ]);
+            row.mut(SpotLight).direction.set([forward.x, forward.y, forward.z]);
+          }
+        },
+      }),
+    );
   } else {
-    world.addSystem(Update, {
-      name: opts.name,
-      after: ['input-frame-start-scan'],
-      queries: [{ write: [Transform], with: [Camera] }],
-      fn: (world, queries) => {
-        const snapshot = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
-        if (snapshot === undefined) return;
-        const time = world.getResource(Time);
-        const dt = time.delta;
-        if (!seeded)
-          for (const row of queries[0]) {
-            seedFrom(row.mut(Transform).quat);
-            break;
-          }
-        const { displacement } = tick(dt, snapshot);
+    world.addSystem(
+      Update,
+      defineSystem({
+        name: opts.name,
+        after: [InputFrameStartScan],
+        queries: [{ write: [Transform], with: [Camera] }],
+        fn: (world, queries) => {
+          const snapshot = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
+          if (snapshot === undefined) return;
+          const time = world.getResource(Time);
+          const dt = time.delta;
+          if (!seeded)
+            for (const row of queries[0]) {
+              seedFrom(row.mut(Transform).quat);
+              break;
+            }
+          const { displacement } = tick(dt, snapshot);
 
-        for (const row of queries[0]) {
-          const transform = row.mut(Transform);
-          transform.pos.set([
-            (transform.pos[0] ?? 0) + displacement.x,
-            (transform.pos[1] ?? 0) + displacement.y,
-            (transform.pos[2] ?? 0) + displacement.z,
-          ]);
-          transform.quat.set([qTmp[0] ?? 0, qTmp[1] ?? 0, qTmp[2] ?? 0, qTmp[3] ?? 1]);
-        }
-      },
-    });
+          for (const row of queries[0]) {
+            const transform = row.mut(Transform);
+            transform.pos.set([
+              (transform.pos[0] ?? 0) + displacement.x,
+              (transform.pos[1] ?? 0) + displacement.y,
+              (transform.pos[2] ?? 0) + displacement.z,
+            ]);
+            transform.quat.set([qTmp[0] ?? 0, qTmp[1] ?? 0, qTmp[2] ?? 0, qTmp[3] ?? 1]);
+          }
+        },
+      }),
+    );
   }
 }
 

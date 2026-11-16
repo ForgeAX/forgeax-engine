@@ -1,6 +1,6 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { runtimeAssetRegistry, runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
-import { FixedTime, FixedUpdate, World } from '@forgeax/engine-ecs';
+import { defineSystem, FixedTime, FixedUpdate, World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { Transform } from '@forgeax/engine-scene';
 import { ok } from '@forgeax/engine-types';
@@ -38,22 +38,21 @@ function fixture(maxCandidates = 32) {
     recordStageLane: (candidate) => (consumed.has(candidate.entity ?? -1) ? 'cpu' : undefined),
     publishedFixedStep: () => world.getResource(FixedTime).tick,
   });
-  world
-    .addSystem(FixedUpdate, {
-      name: 'admit-dynamic-geometry',
-      queries: [],
-      fn: () => {
-        if (admission === undefined) return;
-        accepted = host
-          .acceptDynamicGeometryCandidates(admission, {
-            world,
-            fixedStep: world.getResource(FixedTime).tick,
-          })
-          .unwrap();
-        admission = undefined;
-      },
-    })
-    .unwrap();
+  const systemToken1 = defineSystem({
+    name: 'admit-dynamic-geometry',
+    queries: [],
+    fn: () => {
+      if (admission === undefined) return;
+      accepted = host
+        .acceptDynamicGeometryCandidates(admission, {
+          world,
+          fixedStep: world.getResource(FixedTime).tick,
+        })
+        .unwrap();
+      admission = undefined;
+    },
+  });
+  world.addSystem(FixedUpdate, systemToken1).unwrap();
   const entity = () =>
     world
       .spawn(
@@ -82,10 +81,13 @@ function fixture(maxCandidates = 32) {
     return accepted;
   };
   const publish = () =>
-    host.publishDynamicGeometry({
-      frameId: world.getResource(FixedTime).tick,
-      deviceGeneration: 1,
-    });
+    host.publishDynamicGeometry(
+      {
+        frameId: world.getResource(FixedTime).tick,
+        deviceGeneration: 1,
+      },
+      world,
+    );
   return {
     world,
     previous,

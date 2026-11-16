@@ -11,12 +11,12 @@
 //   (f) culling semantic guard: the narrow-fov orbit camera leaves >= 80% of
 //       the grid outside the frustum every frame, so maxVisible / total
 //       <= 0.20 across the run (culling actually removes the majority)
-
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
-import { readFileSync } from 'node:fs';
+
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
+import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 
 const SMOKE_DURATION_MS = Number.parseInt(process.env.SMOKE_DURATION_MS ?? '5000', 10);
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
@@ -127,7 +127,10 @@ const { quat } = mathPkg;
 
 const here = dirname(fileURLToPath(import.meta.url));
 const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MANIFEST_PATH, 'utf8'))}`;
+const MANIFEST_URL = URL.createObjectURL(
+  new Blob([readShaderManifestText(MANIFEST_PATH)], { type: 'application/json' }),
+);
+process.once('exit', () => URL.revokeObjectURL(MANIFEST_URL));
 
 let renderer;
 let assets;
@@ -237,11 +240,7 @@ for (let i = 0; i < TARGET_FRAMES; i++) {
   });
 
   world.update().unwrap();
-  await drawReadyFrame(renderer, {
-    leases: [worldAttachment1.value],
-    camera: { lease: worldAttachment1.value },
-    environment: { lease: worldAttachment1.value },
-  });
+  await drawReadyFrame(renderer, { source: worldAttachment1.value });
 
   // Low-level host diagnostics prove culling; public Renderer inspection is POD-only.
   const stats = renderDiagnostics.frustumStats;

@@ -1,3 +1,4 @@
+import { defineResource } from '@forgeax/engine-ecs';
 // apps/bevy/run-conditions - reproduction of Bevy's ecs/run_conditions example.
 //
 // Bevy mapping:
@@ -9,6 +10,7 @@
 //     no app-side clock or callback loop is introduced.
 
 
+import { defineSystem } from "@forgeax/engine-ecs";
 import {
   Time,
   Update,
@@ -25,7 +27,7 @@ import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 
 
-export const RUN_CONDITION_STATE = 'bevyRunConditionsState';
+export const RUN_CONDITION_STATE = defineResource<RunConditionState>("bevyRunConditionsState");
 export const UNLOCK_SECONDS = 2;
 
 const ALWAYS_SPEED = 110;
@@ -111,7 +113,7 @@ export function buildRunConditionsWorld(world: World): RunConditionState {
   };
   world.insertResource(RUN_CONDITION_STATE, state);
 
-  world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'run-conditions-clock',
     queries: [],
     fn: (world) => {
@@ -120,40 +122,42 @@ export function buildRunConditionsWorld(world: World): RunConditionState {
       state.unlocked = state.elapsed >= UNLOCK_SECONDS;
       if (!state.unlocked) state.skippedFrames += 1;
     },
-  }).unwrap();
+  });
+world.addSystem(Update, systemToken1).unwrap();
 
-  world.addSystem(Update, {
+  const systemToken2 = defineSystem({
     name: 'run-conditions-always',
     queries: [],
     fn: () => {
       state.alwaysRuns += 1;
       setX(world, alwaysEntity, wrappedTrack(state.elapsed, ALWAYS_SPEED, 0));
     },
-  }).unwrap();
+  });
+world.addSystem(Update, systemToken2).unwrap();
 
   const Gated = defineSystemSet({
     name: 'run-conditions-gated',
-    runIf: (world) => world.getResource<RunConditionState>(RUN_CONDITION_STATE).unlocked,
+    runIf: (world) => world.getResource(RUN_CONDITION_STATE).unlocked,
   });
-  const gatedMotion = {
+  const gatedMotion = defineSystem({
     name: 'run-conditions-gated-motion',
     queries: [],
     fn: () => {
       state.gatedRuns += 1;
       setX(world, gatedEntity, wrappedTrack(state.elapsed, GATED_SPEED, UNLOCK_SECONDS));
     },
-  } as const;
-  const gatedPulse = {
+  });
+  const gatedPulse = defineSystem({
     name: 'run-conditions-pulse-once',
     queries: [],
     runIf: (world: World) => {
-      const state = world.getResource<RunConditionState>(RUN_CONDITION_STATE);
+      const state = world.getResource(RUN_CONDITION_STATE);
       return state.gatedRuns > 0 && state.pulseRuns === 0;
     },
     fn: () => {
       state.pulseRuns += 1;
     },
-  } as const;
+  });
   world.addSystems(Update, Gated, [gatedMotion, gatedPulse]).unwrap();
 
   return state;

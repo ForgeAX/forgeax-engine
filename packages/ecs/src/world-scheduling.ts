@@ -1,7 +1,16 @@
+import {
+  type Resource,
+  type ResourceIdentity,
+  getResource as resGet,
+  hasResource as resHas,
+  insertResource as resInsert,
+  removeResource as resRemove,
+} from './resource';
 // @forgeax/engine-ecs -- World schedule and resource orchestration.
 
 import { err, ok, type Result } from '@forgeax/engine-types';
-import type { CommandBufferImpl } from './commands';
+import { type CommandBufferImpl, detachCommandBufferPayloads } from './commands';
+
 import {
   CommandFailedError,
   CyclicDependencyError,
@@ -18,22 +27,25 @@ import { worldPoisonedError } from './errors/shared-kernel-errors';
 import {
   SHARED_KERNEL_EXECUTOR_RESOURCE_KEY,
   type SharedKernelDispatch,
-  type SharedKernelExecutor,
 } from './execution/shared-kernel';
-import type { QueryDescriptor } from './query/query';
 import {
-  getResource as resGet,
-  hasResource as resHas,
-  insertResource as resInsert,
-  removeResource as resRemove,
-} from './resource';
+  discardDeferredFixedStep,
+  onDeferredFixedStepReady,
+  resumeDeferredFixedStep,
+  withFixedStepDeferral,
+} from './fixed-step-barrier';
+import type { QueryDescriptor } from './query/query';
+
 import {
   buildSchedule,
-  currentScheduleRevision,
+  isSystemSet,
   runSchedule,
   type Schedule,
+  type ScheduleNode,
+  type System,
   type SystemDescriptor,
   type SystemSet,
+  type SystemToken,
   addSystem as scheduleAddSystem,
   addSystems as scheduleAddSystems,
   removeSystem as scheduleRemoveSystem,
@@ -47,7 +59,7 @@ import {
   Update,
 } from './schedule-token';
 import type { ArchetypeGraph } from './storage/archetype-graph';
-import { FIXED_TIME_RESOURCE_KEY, type MutableFixedTimeResource, TIME_RESOURCE_KEY } from './time';
+import { FixedTime, type MutableFixedTimeResource, Time } from './time';
 import type {
   World,
   WorldInspection,
@@ -57,13 +69,56 @@ import type {
 } from './world';
 import { worldInternal } from './world-internal';
 
-const FIXED_ANCHOR_NAME = FixedUpdate.name;
-type ResourceKey = string | { readonly name: string };
+const fixedContinuations = new WeakMap<
+  World,
+  {
+    remaining: readonly ScheduleNode[];
+    commands: Map<SystemToken, CommandBufferImpl>;
+    stepsRemaining: number;
+  }
+>();
 
-function resourceName(key: ResourceKey): string {
-  return typeof key === 'string' ? key : key.name;
+function abortFixedContinuation(world: World): void {
+  const pending = fixedContinuations.get(world);
+  if (pending)
+    for (const commands of pending.commands.values())
+      if (commands.status === 'open') commands.abort();
+  fixedContinuations.delete(world);
+  discardDeferredFixedStep(world);
 }
 
+function continueFixedWhenReady(world: World): void {
+  onDeferredFixedStepReady(world, () => {
+    if (worldPoisonedError(world.execution) !== undefined) {
+      abortFixedContinuation(world);
+      return;
+    }
+    const arena = world[worldInternal].getFrameArena();
+    const ownsArena = !arena.isActive;
+    if (ownsArena) arena.open();
+    const accumulator = { value: world[worldInternal].getFixedAccumulator() };
+    try {
+      const fixed = world[worldInternal].getClockWriter().fixed;
+      runFixed(world, fixed, accumulator);
+      world[worldInternal].setFixedAccumulator(accumulator.value);
+      fixed.overstep = accumulator.value;
+    } catch (cause) {
+      abortFixedContinuation(world);
+      world[worldInternal].poisonExecution({
+        code: 'shared-kernel-failed',
+        kernelName: 'schedule:FixedUpdate',
+        cause,
+        partialWrite: true,
+        retryable: false,
+      });
+    } finally {
+      if (ownsArena) {
+        arena.close();
+        world[worldInternal].maintainMemory();
+      }
+    }
+  });
+}
 function warmSharedKernel(world: World, descriptor: unknown): void {
   if (
     (descriptor as { readonly kind?: string }).kind !== 'shared-kernel' ||
@@ -71,7 +126,7 @@ function warmSharedKernel(world: World, descriptor: unknown): void {
   )
     return;
   world
-    .getResource<SharedKernelExecutor>(SHARED_KERNEL_EXECUTOR_RESOURCE_KEY)
+    .getResource(SHARED_KERNEL_EXECUTOR_RESOURCE_KEY)
     .warmup?.(descriptor as SharedKernelDispatch);
 }
 
@@ -86,7 +141,7 @@ function scheduleFor(
 
 function setOwner(world: World, set: SystemSet): ScheduleToken | undefined {
   for (const [token, schedule] of world[worldInternal].getSchedules()) {
-    if (schedule.sets.has(set.name)) return token;
+    if (schedule.sets.has(set)) return token;
   }
   return undefined;
 }
@@ -102,11 +157,16 @@ function scopeError(
 export function worldAddSystem<const Qs extends ReadonlyArray<QueryDescriptor>>(
   world: World,
   token: ScheduleToken,
-  descriptor: SystemDescriptor<Qs>,
+  descriptor: System<Qs>,
 ): Result<void, ScheduleScopeMismatchError> {
   const target = scheduleFor(world, token);
   if (!target.ok) return target;
+  for (const set of descriptor.sets ?? []) {
+    const owner = setOwner(world, set);
+    if (owner !== undefined && owner !== token) return scopeError(token, owner, set.name);
+  }
   scheduleAddSystem(target.value, descriptor);
+  invalidateScheduleReferences(world);
   warmSharedKernel(world, descriptor);
   return ok(undefined);
 }
@@ -114,23 +174,28 @@ export function worldAddSystem<const Qs extends ReadonlyArray<QueryDescriptor>>(
 export function worldRemoveSystem(
   world: World,
   token: ScheduleToken,
-  name: string,
+  system: SystemToken,
 ): ReturnType<typeof scheduleRemoveSystem> | Result<never, ScheduleScopeMismatchError> {
   const target = scheduleFor(world, token);
   if (!target.ok) return target;
-  return scheduleRemoveSystem(target.value, name);
+  const removed = scheduleRemoveSystem(target.value, system);
+  if (removed.ok) invalidateScheduleReferences(world);
+  return removed;
 }
 
 export function worldReplaceSystem<const Qs extends ReadonlyArray<QueryDescriptor>>(
   world: World,
   token: ScheduleToken,
-  name: string,
+  system: SystemToken,
   descriptor: SystemDescriptor<Qs>,
 ): ReturnType<typeof scheduleReplaceSystem> | Result<never, ScheduleScopeMismatchError> {
   const target = scheduleFor(world, token);
   if (!target.ok) return target;
-  const replaced = scheduleReplaceSystem(target.value, name, descriptor);
-  if (replaced.ok) warmSharedKernel(world, descriptor);
+  const replaced = scheduleReplaceSystem(target.value, system, descriptor);
+  if (replaced.ok) {
+    invalidateScheduleReferences(world);
+    warmSharedKernel(world, descriptor);
+  }
   return replaced;
 }
 
@@ -138,17 +203,29 @@ export function worldAddSystems<const Qs extends ReadonlyArray<QueryDescriptor>>
   world: World,
   token: ScheduleToken,
   set: SystemSet,
-  systems: ReadonlyArray<SystemDescriptor<Qs>>,
+  systems: ReadonlyArray<System<Qs>>,
 ): Result<void, SystemSetNotRegisteredError | ScheduleScopeMismatchError> {
   const target = scheduleFor(world, token);
   if (!target.ok) return target;
   const owner = setOwner(world, set);
   if (owner && owner !== token) return scopeError(token, owner, set.name);
+  for (const system of systems)
+    for (const group of system.sets ?? []) {
+      const owner = setOwner(world, group);
+      if (owner !== undefined && owner !== token) return scopeError(token, owner, group.name);
+    }
   const added = scheduleAddSystems(target.value, set, systems);
   if (added.ok) {
+    invalidateScheduleReferences(world);
     for (const system of systems) warmSharedKernel(world, system);
   }
   return added;
+}
+
+/** Registration can change an identity edge's scope in any schedule of this World. */
+function invalidateScheduleReferences(world: World): void {
+  for (const schedule of world[worldInternal].getSchedules().values())
+    schedule.referencesValidated = false;
 }
 
 function validateScheduleReferences(
@@ -156,11 +233,9 @@ function validateScheduleReferences(
   token: ScheduleToken,
   schedule: Schedule,
 ): ScheduleScopeMismatchError | undefined {
-  // References only change with registration, which advances the revision.
-  const revision = currentScheduleRevision();
-  if (schedule.validatedRevision === revision) return undefined;
+  if (schedule.referencesValidated) return undefined;
   const mismatch = scheduleReferenceMismatch(world, token, schedule);
-  if (mismatch === undefined) schedule.validatedRevision = revision;
+  if (mismatch === undefined) schedule.referencesValidated = true;
   return mismatch;
 }
 
@@ -181,12 +256,16 @@ function scheduleReferenceMismatch(
         }
         continue;
       }
-      if (typeof reference === 'string') {
-        for (const [otherToken, other] of world[worldInternal].getSchedules()) {
-          if (otherToken !== token && other.systems.has(reference)) {
-            return new ScheduleScopeMismatchError(token.name, otherToken.name, reference);
-          }
-        }
+      const local = isSystemSet(reference)
+        ? schedule.sets.has(reference)
+        : schedule.systems.has(reference);
+      if (local) continue;
+      for (const [otherToken, other] of world[worldInternal].getSchedules()) {
+        const registered = isSystemSet(reference)
+          ? other.sets.has(reference)
+          : other.systems.has(reference);
+        if (otherToken !== token && registered)
+          return new ScheduleScopeMismatchError(token.name, otherToken.name, reference.name);
       }
     }
   }
@@ -200,6 +279,32 @@ function runFixed(
 ): void {
   const fixedSchedule = world[worldInternal].getSchedule(FixedUpdate) as Schedule | undefined;
   if (!fixedSchedule) return;
+  let stepBudget = fixed.maxStepsPerUpdate;
+  const pending = fixedContinuations.get(world);
+  if (pending !== undefined) {
+    let remaining: readonly ScheduleNode[] | undefined;
+    try {
+      if (!resumeDeferredFixedStep(world)) return;
+      remaining = withFixedStepDeferral(world, () =>
+        runSchedule(fixedSchedule, world, pending.remaining, pending.commands),
+      );
+    } catch (cause) {
+      abortFixedContinuation(world);
+      throw cause;
+    }
+    if (remaining !== undefined) {
+      for (const buffer of pending.commands.values()) detachCommandBufferPayloads(buffer);
+      pending.remaining = remaining;
+      continueFixedWhenReady(world);
+      return;
+    }
+    stepBudget = pending.stepsRemaining;
+    fixedContinuations.delete(world);
+  }
+  if (stepBudget === 0) {
+    discardFixedOverflow(fixed, accumulator);
+    return;
+  }
   if (fixedSchedule.systems.size === 0) {
     discardFixedOverflow(fixed, accumulator);
     return;
@@ -228,21 +333,33 @@ function runFixed(
     }
   }
   // Compare against the original total, not a repeatedly rounded remainder:
-  // Compare against the original total, not a repeatedly rounded remainder:
   // at 60 Hz, rounding 0.05 - delta twice otherwise loses the third tick.
   while (
     fixed.catchUp === 'substeps' &&
     accumulated >= (steps + 1) * fixed.delta &&
-    steps < fixed.maxStepsPerUpdate
+    steps < stepBudget
   ) {
     accumulator.value = Math.round((accumulated - (steps + 1) * fixed.delta) * 1e12) / 1e12;
     fixed.overstep = accumulator.value;
     fixed.tick += 1;
     fixed.stepDelta = fixed.delta;
-    runSchedule(fixedSchedule, world);
+    const commands = new Map<SystemToken, CommandBufferImpl>();
+    const remaining = withFixedStepDeferral(world, () =>
+      runSchedule(fixedSchedule, world, undefined, commands),
+    );
+    if (remaining !== undefined) {
+      for (const buffer of commands.values()) detachCommandBufferPayloads(buffer);
+      fixedContinuations.set(world, {
+        remaining,
+        commands,
+        stepsRemaining: stepBudget - steps - 1,
+      });
+      continueFixedWhenReady(world);
+      return;
+    }
     steps += 1;
   }
-  if (steps === fixed.maxStepsPerUpdate && accumulator.value >= fixed.delta) {
+  if (steps === stepBudget && accumulator.value >= fixed.delta) {
     const remainder = accumulator.value % fixed.delta;
     const dropped = accumulator.value - remainder;
     accumulator.value = remainder;
@@ -315,13 +432,13 @@ export function worldUpdate(
   try {
     if (update.dirty) buildSchedule(update);
     const order = update.sortedOrder;
-    const anchor = order.indexOf(FIXED_ANCHOR_NAME);
+    const anchor = order.indexOf(FixedUpdate);
     if (anchor < 0) {
       runSchedule(update, world);
       if (measured > 0) discardFixedOverflow(fixed, accumulator);
     } else {
       const updateCommands = update.deferredCommands
-        ? new Map<string, CommandBufferImpl>()
+        ? new Map<SystemToken, CommandBufferImpl>()
         : undefined;
       runSchedule(update, world, order, updateCommands, false, 0, anchor);
       if (measured > 0) runFixed(world, fixed, accumulator);
@@ -404,34 +521,38 @@ export function worldRun(
   return ok(undefined);
 }
 
-export function worldInsertResource<T>(world: World, key: ResourceKey, value: T): void {
-  const name = resourceName(key);
-  if (name === TIME_RESOURCE_KEY || name === FIXED_TIME_RESOURCE_KEY) {
+function isClockResource(resource: object): boolean {
+  return resource === Time || resource === FixedTime;
+}
+
+export function worldInsertResource<T>(world: World, key: Resource<T>, value: T): void {
+  const name = key.name;
+  if (isClockResource(key)) {
     throw new ProtectedResourceError(name, 'insert');
   }
   resInsert(
     world[worldInternal].getResources(),
-    name,
+    key,
     value,
     world[worldInternal].nextMutationEpoch(),
   );
 }
 
-export function worldGetResource<T>(world: World, key: ResourceKey): T {
-  return resGet<T>(world[worldInternal].getResources(), resourceName(key));
+export function worldGetResource<T>(world: World, key: Resource<T>): T {
+  return resGet<T>(world[worldInternal].getResources(), key);
 }
 
-export function worldHasResource(world: World, key: ResourceKey): boolean {
-  return resHas(world[worldInternal].getResources(), resourceName(key));
+export function worldHasResource(world: World, key: ResourceIdentity): boolean {
+  return resHas(world[worldInternal].getResources(), key);
 }
 
-export function worldRemoveResource(world: World, key: ResourceKey): void {
-  const name = resourceName(key);
-  if (name === TIME_RESOURCE_KEY || name === FIXED_TIME_RESOURCE_KEY) {
+export function worldRemoveResource(world: World, key: ResourceIdentity): void {
+  const name = key.name;
+  if (isClockResource(key)) {
     throw new ProtectedResourceError(name, 'remove');
   }
-  if (resHas(world[worldInternal].getResources(), name)) {
-    resRemove(world[worldInternal].getResources(), name);
+  if (resHas(world[worldInternal].getResources(), key)) {
+    resRemove(world[worldInternal].getResources(), key);
     world[worldInternal].nextMutationEpoch();
   }
 }
@@ -458,14 +579,13 @@ export function worldInspect(world: World): WorldInspection {
   const schedules = [
     ...(world[worldInternal].getSchedules() as ReadonlyMap<ScheduleToken, Schedule>),
   ].map(([token, schedule]) => {
-    const systems = [...schedule.systems.entries()]
-      .filter(([name]) => name !== FIXED_ANCHOR_NAME)
-      .map(([name]) => ({
-        name,
-        sets: [...schedule.sets].flatMap(([setName, record]) =>
-          record.members.has(name) ? [setName] : [],
-        ),
-      }));
+    const systems = [...schedule.systems.entries()].map(([name]) => ({
+      id: schedule.systems.get(name)?.registrationIndex ?? -1,
+      name: name.name,
+      sets: [...schedule.sets].flatMap(([set, record]) =>
+        record.members.has(name) ? [set.name] : [],
+      ),
+    }));
     return { schedule: token, systems };
   });
   const systems = schedules.flatMap((entry) => entry.systems);
@@ -485,7 +605,7 @@ export function worldInspect(world: World): WorldInspection {
     activeComponents: [...activeComponentSet],
     systemCount: systems.length,
     systems,
-    resourceKeys: [...resources.entries.keys()],
+    resourceKeys: [...resources.entries.keys()].map((key) => key.name),
     schedules,
     scheduleSystemCount(token: ScheduleToken): number {
       return schedules.find((entry) => entry.schedule === token)?.systems.length ?? 0;
@@ -493,8 +613,8 @@ export function worldInspect(world: World): WorldInspection {
   };
 }
 
-function referenceName(reference: string | ScheduleToken): string {
-  return typeof reference === 'string' ? reference : reference.name;
+function referenceName(reference: { readonly name: string }): string {
+  return reference.name;
 }
 
 function componentNames(components: readonly { readonly name: string }[] | undefined): string[] {
@@ -515,41 +635,40 @@ function queryData(query: QueryDescriptor): WorldScheduleQueryData {
 
 /** Project schedule registration into a JSON-safe graph for tooling and AI inspection. */
 export function worldScheduleData(world: World): ReadonlyArray<WorldScheduleData> {
-  return [...(world[worldInternal].getSchedules() as ReadonlyMap<ScheduleToken, Schedule>)].map(
-    ([token, schedule]) => {
-      if (schedule.dirty) buildSchedule(schedule);
-
-      const systems: WorldScheduleSystemData[] = [...schedule.systems.entries()]
-        .filter(([name]) => name !== FIXED_ANCHOR_NAME)
-        .map(([name, record]) => {
-          const descriptor = record.descriptor;
-          const queries = descriptor.queries.map(queryData);
-          return {
-            name,
-            sets: [...schedule.sets].flatMap(([setName, set]) =>
-              set.members.has(name) ? [setName] : [],
-            ),
-            before: (descriptor.before ?? []).map((reference) => referenceName(reference)),
-            after: (descriptor.after ?? []).map((reference) => referenceName(reference)),
-            queries,
-            resources: [],
-          };
-        });
-
-      const systemSets = [...schedule.sets].map(([name, set]) => ({
-        name,
-        members: [...set.members].filter((member) => schedule.systems.has(member)),
-        before: [],
-        after: [],
-        chained: set.chained,
-      }));
-      const dependencies = [...schedule.predecessors].flatMap(([target, predecessors]) =>
-        [...predecessors].map((source) => [source, target] as const),
-      );
-
-      return { name: token.name, systems, systemSets, dependencies };
-    },
-  );
+  return [...world[worldInternal].getSchedules()].map(([token, schedule], scheduleId) => {
+    if (schedule.dirty) buildSchedule(schedule);
+    const sets = [...schedule.sets];
+    const systemId = (system: import('./schedule').ScheduleNode): number =>
+      system === FixedUpdate
+        ? -1
+        : (schedule.systems.get(system as SystemToken)?.registrationIndex ?? -1);
+    const systems: WorldScheduleSystemData[] = [...schedule.systems].map(([system, record]) => ({
+      id: record.registrationIndex,
+      name: system.name,
+      sets: sets.flatMap(([, set], index) => (set.members.has(system) ? [index] : [])),
+      before: (record.descriptor.before ?? []).map(referenceName),
+      after: (record.descriptor.after ?? []).map(referenceName),
+      queries: record.descriptor.queries.map(queryData),
+      resources: [],
+    }));
+    const systemSets = sets.map(([set, record], id) => ({
+      id,
+      name: set.name,
+      members: [...record.members].map(systemId),
+      chained: record.chained,
+    }));
+    const dependencies = [...schedule.predecessors].flatMap(([target, predecessors]) =>
+      predecessors.map((source) => [systemId(source), systemId(target)] as const),
+    );
+    return {
+      id: scheduleId,
+      name: token.name,
+      systems,
+      systemSets,
+      dependencies,
+      anchors: token === Update ? [{ id: -1, name: FixedUpdate.name }] : [],
+    };
+  });
 }
 
 function queryUsesComponent(query: QueryDescriptor, component: object): boolean {

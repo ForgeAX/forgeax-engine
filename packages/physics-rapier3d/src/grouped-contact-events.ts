@@ -124,6 +124,26 @@ export class GroupedContactEvents {
     }
   }
 
+  removeShapes(entity: number, shapes: ReadonlySet<string>): void {
+    for (const [key, state] of this.logical) {
+      const observation = state.observation;
+      if (
+        !(
+          (observation.entityA === entity &&
+            observation.shapeA !== undefined &&
+            shapes.has(observation.shapeA)) ||
+          (observation.entityB === entity &&
+            observation.shapeB !== undefined &&
+            shapes.has(observation.shapeB))
+        )
+      )
+        continue;
+      for (const native of state.pairs.keys()) this.native.delete(native);
+      this.logical.delete(key);
+      this.changes.delete(key);
+    }
+  }
+
   clear(): void {
     this.logical.clear();
     this.native.clear();

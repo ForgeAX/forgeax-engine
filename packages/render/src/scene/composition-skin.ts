@@ -1,6 +1,6 @@
 import type { EntityHandle } from '@forgeax/engine-ecs';
 import { mat4 } from '@forgeax/engine-math';
-import { readPresentationWorldMatrix } from '@forgeax/engine-scene';
+import { copyPresentationWorldMatrix } from '@forgeax/engine-scene';
 import type { SkeletonAsset } from '@forgeax/engine-types';
 import type { GpuInputArena } from '../gpu-input-arena';
 import type { RenderResourceScope } from '../publication/resource-scope';
@@ -11,7 +11,7 @@ import { SkinSceneInputs } from './skin-scene-inputs';
 /** The composition facts Skin adoption reads; the Scene owns the entry. */
 export interface SkinCompositionEntry {
   skin: SkinSceneInputs | undefined;
-  readonly worlds: readonly RenderResourceScope[];
+  readonly source: RenderResourceScope;
   readonly projection: { slotsSnapshot(): SceneSlotFrame };
 }
 
@@ -58,8 +58,8 @@ export class CompositionSkinAdoption {
           delta.contentUpdatedSlots.some((slot) => slot.snapshot.skinBinding !== undefined) ||
           delta.recreatedSlots.some((slot) => slot.snapshot.skinBinding !== undefined))
       ) {
-        entry.skin = new SkinSceneInputs(this.host.inputArena(), (worldId, handle) => {
-          const definition = entry.worlds[worldId]?.resolveAsset<SkeletonAsset>(handle);
+        entry.skin = new SkinSceneInputs(this.host.inputArena(), (handle) => {
+          const definition = entry.source?.resolveAsset<SkeletonAsset>(handle);
           return definition?.ok && definition.value.kind === 'skeleton'
             ? definition.value
             : undefined;
@@ -72,17 +72,17 @@ export class CompositionSkinAdoption {
   }
 
   /** Reads the same presentation matrix as every other render extraction. */
-  joint(entry: SkinCompositionEntry, worldId: number, entity: number): void {
+  joint(entry: SkinCompositionEntry, entity: number): void {
     try {
       const skin = entry.skin,
-        world = entry.worlds[worldId]?.world;
-      if (skin === undefined || world === undefined || !skin.hasJoint(worldId, entity)) return;
-      const source = readPresentationWorldMatrix(world, entity as EntityHandle);
-      if (source === undefined) {
-        skin.joint(worldId, entity, undefined);
+        world = entry.source?.world;
+      if (skin === undefined || world === undefined || !skin.hasJoint(entity)) return;
+      this.jointScratch ??= mat4.create();
+      if (!copyPresentationWorldMatrix(world, entity as EntityHandle, this.jointScratch)) {
+        skin.joint(entity, undefined);
         return;
       }
-      this.adopt(skin, worldId, entity, source, 0);
+      skin.joint(entity, this.jointScratch);
     } catch (cause) {
       this.fail(entry, cause);
     }
@@ -100,10 +100,9 @@ export class CompositionSkinAdoption {
     try {
       const skin = entry.skin;
       if (skin === undefined) return;
-      if (baseline) for (const joint of skin.firstJoints(0) ?? []) skin.joint(0, joint, undefined);
-      for (const joint of retired) skin.joint(0, joint, undefined);
-      for (const index of rows)
-        this.adopt(skin, 0, entities[index] as number, transforms, index * 16);
+      if (baseline) for (const joint of skin.firstJoints() ?? []) skin.joint(joint, undefined);
+      for (const joint of retired) skin.joint(joint, undefined);
+      for (const index of rows) this.adopt(skin, entities[index] as number, transforms, index * 16);
     } catch (cause) {
       this.fail(entry, cause);
     }
@@ -111,12 +110,11 @@ export class CompositionSkinAdoption {
 
   skeleton(
     entry: SkinCompositionEntry,
-    worldId: number,
     handle: number,
     definition: SkeletonAsset | undefined,
   ): void {
     try {
-      entry.skin?.skeletonChanged(worldId, handle, definition);
+      entry.skin?.skeletonChanged(handle, definition);
     } catch (cause) {
       this.fail(entry, cause);
     }
@@ -125,22 +123,17 @@ export class CompositionSkinAdoption {
   initializeJoints(entry: SkinCompositionEntry): void {
     const skin = entry.skin;
     if (skin === undefined) return;
-    for (let worldId = 0; worldId < entry.worlds.length; worldId++) {
-      const first = skin.firstJoints(worldId);
-      if (first === undefined) continue;
-      for (const entity of first) this.joint(entry, worldId, entity);
-    }
+    for (const entity of skin.firstJoints() ?? []) this.joint(entry, entity);
   }
 
   private adopt(
     skin: SkinSceneInputs,
-    worldId: number,
     entity: number,
     source: ArrayLike<number>,
     offset: number,
   ): void {
     this.jointScratch ??= mat4.create();
     for (let lane = 0; lane < 16; lane++) this.jointScratch[lane] = source[offset + lane] as number;
-    skin.joint(worldId, entity, this.jointScratch);
+    skin.joint(entity, this.jointScratch);
   }
 }

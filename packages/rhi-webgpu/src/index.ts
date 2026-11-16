@@ -1,9 +1,5 @@
 import type { RhiCanvasTarget } from '@forgeax/engine-rhi';
-import {
-  limitExceeded,
-  projectAdapterCapabilities,
-  shaderCompileFailed,
-} from '@forgeax/engine-rhi';
+import { projectAdapterCapabilities, shaderCompileFailed } from '@forgeax/engine-rhi';
 // @forgeax/engine-rhi-webgpu — thin WebGPU shim implementing the @forgeax/engine-rhi interface shape.
 //
 // Shape rules (shared between README + AGENTS.md '## RHI / WebGPU' section):
@@ -64,12 +60,8 @@ import {
   makeRhiDevice,
   pipelineLibraryFor,
 } from './device';
-import {
-  adapterUnavailable,
-  featureNotEnabled,
-  requestAdapterFailed,
-  requestDeviceFailed,
-} from './errors';
+import { adapterUnavailable, requestAdapterFailed, requestDeviceFailed } from './errors';
+import { probeFloatTextureCapabilities } from './internal/float-texture-capabilities';
 
 /**
  * The `GPU` subset accepted at the provider seam (research §F-6 webgpu-utils +
@@ -139,8 +131,8 @@ function normalizeDeviceDescriptor(
  * lost + a `queue` placeholder).
  *
  * Differences from the full GPUDevice spec:
- * - `onuncapturederror` / `pushErrorScope` / `createCommandEncoder` not required
- *   (only needed at M3).
+ * - Error scopes are optional at this provider seam; when absent, float
+ *   texture capability fields fail closed.
  * - `wgslLanguageFeatures` / `getPreferredCanvasFormat` not required (charter
  *   proposition 1: progressive disclosure).
  *
@@ -164,28 +156,8 @@ export interface GpuDeviceLike {
   createRenderPipelineAsync?(descriptor: GPURenderPipelineDescriptor): Promise<unknown>;
   createComputePipelineAsync?(descriptor: GPUComputePipelineDescriptor): Promise<unknown>;
   createShaderModule(descriptor: GPUShaderModuleDescriptor): unknown;
-}
-
-/**
- * Maps an OperationError that may occur during `requestDevice` back into a
- * RhiError.
- *
- * Spec behavior (research §F-5 / W3C CR §"Adapter Selection"):
- * - `requiredFeatures` exceeds the adapter → reject with `OperationError`.
- * - `requiredLimits` exceeds the adapter → reject with `OperationError`.
- *
- * This package distinguishes feature vs limit by message keyword; the message
- * format is not interoperable between the mock and real GPU implementations
- * (research §F-4: ecosystem-wide message-field inconsistency), but the keywords
- * 'feature' / 'limit' work as a heuristic on both sides. Detailed
- * classification (including limit-name / feature-name extraction) is left to a
- * follow-up loop (plan-strategy §3 R2 fallback).
- */
-function classifyRequestDeviceError(e: unknown): Result<never, RhiError> {
-  const msg = e instanceof Error ? e.message : String(e);
-  if (/feature/i.test(msg)) return featureNotEnabled();
-  if (/limit/i.test(msg)) return err(limitExceeded());
-  return requestDeviceFailed(e);
+  pushErrorScope?(filter: GPUErrorFilter): void;
+  popErrorScope?(): Promise<GPUError | null>;
 }
 
 function createRawShaderModule(
@@ -374,7 +346,7 @@ function makeRhiAdapter(rawAdapter: GpuAdapterLike, featureLevel?: string): RhiA
           normalizeDeviceDescriptor(rawAdapter, opts as GPUDeviceDescriptor | undefined),
         );
       } catch (e) {
-        return classifyRequestDeviceError(e);
+        return requestDeviceFailed(e);
       }
       const native = rawDevice as unknown as GPUDevice;
       let depthTextureLoad = true;
@@ -390,7 +362,8 @@ function makeRhiAdapter(rawAdapter: GpuAdapterLike, featureLevel?: string): RhiA
           return requestDeviceFailed(cause);
         }
       }
-      const { device } = makeRhiDevice(native, { depthTextureLoad });
+      const floatTextureCapabilities = await probeFloatTextureCapabilities(native);
+      const { device } = makeRhiDevice(native, { depthTextureLoad }, floatTextureCapabilities);
       return ok(device);
     },
   };

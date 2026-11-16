@@ -387,41 +387,41 @@ async function readbackAfterDraw(
   // below uses both rAF + setTimeout fences to bracket both modes.
   const attached = renderer.attach(world);
   if (!attached.ok) throw attached.error;
-  for (let i = 0; i < FRAMES_PER_SCENE; i++) {
-    world.update(1 / 60).unwrap();
-    const r = renderer.draw({
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
-    if (!r.ok) throw new Error(`renderer.draw frame ${i} failed`);
-    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-  }
-  // Final compositor fence: rAF + setTimeout(0) double-yield so the
-  // compositor and the createImageBitmap fetch are not on the same
-  // microtask edge.
-  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-  await new Promise<void>((resolve) => setTimeout(resolve, 50));
-  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-  // Two-shot test-owned canvas readback: the first call can kick the
-  // chromium compositor into consuming the WebGPU swap-chain; the second
-  // samples the consumed canvas content.
-  const readCanvas = async (): Promise<Uint8Array> => {
-    const bitmap = await createImageBitmap(canvas);
-    const offscreen = new OffscreenCanvas(bitmap.width, bitmap.height);
-    const context = offscreen.getContext('2d', { willReadFrequently: true });
-    if (context === null) {
-      bitmap.close();
-      throw new Error('OffscreenCanvas 2D context unavailable for canvas readback');
+  try {
+    for (let i = 0; i < FRAMES_PER_SCENE; i++) {
+      world.update(1 / 60).unwrap();
+      const r = renderer.draw({ source: attached.value });
+      if (!r.ok) throw new Error(`renderer.draw frame ${i} failed`);
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     }
-    context.drawImage(bitmap, 0, 0);
-    const image = context.getImageData(0, 0, bitmap.width, bitmap.height);
-    bitmap.close();
-    return new Uint8Array(image.data.buffer, image.data.byteOffset, image.data.byteLength);
-  };
-  await readCanvas();
-  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-  return readCanvas();
+    // Final compositor fence: rAF + setTimeout(0) double-yield so the
+    // compositor and the createImageBitmap fetch are not on the same
+    // microtask edge.
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    // Two-shot test-owned canvas readback: the first call can kick the
+    // chromium compositor into consuming the WebGPU swap-chain; the second
+    // samples the consumed canvas content.
+    const readCanvas = async (): Promise<Uint8Array> => {
+      const bitmap = await createImageBitmap(canvas);
+      const offscreen = new OffscreenCanvas(bitmap.width, bitmap.height);
+      const context = offscreen.getContext('2d', { willReadFrequently: true });
+      if (context === null) {
+        bitmap.close();
+        throw new Error('OffscreenCanvas 2D context unavailable for canvas readback');
+      }
+      context.drawImage(bitmap, 0, 0);
+      const image = context.getImageData(0, 0, bitmap.width, bitmap.height);
+      bitmap.close();
+      return new Uint8Array(image.data.buffer, image.data.byteOffset, image.data.byteLength);
+    };
+    await readCanvas();
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    return await readCanvas();
+  } finally {
+    attached.value.dispose();
+  }
 }
 
 // Did the chromium compositor actually consume the painted frame in

@@ -1,4 +1,5 @@
 import type { MaterialCookRasterContext } from '@forgeax/engine-pack/material-cook';
+import type { MaterialProgramBindingContract } from '@forgeax/engine-types';
 
 export type MaterialVariantContext = MaterialCookRasterContext;
 
@@ -44,4 +45,39 @@ export function lowerMaterialVariantContext(
     MATERIAL_VALIDATION_ENABLED: context.instrumentation === 'validation',
     VISIBLE_SURFACE_AVAILABLE: context.visibleSurface === true,
   });
+}
+
+/**
+ * Whether a program's declared binding contract carries the Render material
+ * groups after group 0. The group-0 and View contracts stop at group 0: their
+ * pipeline layouts have no cluster group, so nothing they compile may select a
+ * resource that lives there.
+ */
+export function materialBindingsCarryClusterGroup(
+  bindings: MaterialProgramBindingContract | undefined,
+): boolean {
+  const contract = bindings ?? 'render-material';
+  return (
+    contract === 'render-material' ||
+    contract === 'render-material-with-scene-depth' ||
+    contract === 'render-material-and-scene-depth'
+  );
+}
+
+/**
+ * Lower the context for one program. The declared binding contract narrows the
+ * context selectors to the resources that contract can bind. The packed
+ * cluster and atmosphere records of the uniform fallback are group 2
+ * resources, so a group-0 or View program never selects them: its fallback
+ * fog is the same View-only fog its storage variants compile without the
+ * group 0 atmosphere tables, and the same fog the packaged particle programs
+ * compile, instead of importing a texture its layout cannot hold.
+ */
+export function lowerMaterialProgramVariantContext(
+  context: MaterialVariantContext,
+  bindings: MaterialProgramBindingContract | undefined,
+): Readonly<Record<string, boolean>> {
+  const lowered = lowerMaterialVariantContext(context);
+  if (materialBindingsCarryClusterGroup(bindings)) return lowered;
+  return Object.freeze({ ...lowered, CLUSTER_FORWARD_AVAILABLE: false });
 }

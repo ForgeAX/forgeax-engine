@@ -33,7 +33,7 @@ export default definePack({
 
 const GAME = `import type {} from '@forgeax/engine/app';
 import type {} from '@forgeax/engine/assets-runtime';
-import { Time, Update } from '@forgeax/engine/ecs';
+import { Time, Update, defineSystem } from '@forgeax/engine/ecs';
 import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine/input';
 import { quat } from '@forgeax/engine/math';
 import type { Plugin } from '@forgeax/engine/plugin';
@@ -69,8 +69,8 @@ export const game: Plugin.Object<{ readonly mesh: string; readonly material: str
       yield () => { for (const entity of entities) world.despawn(entity).unwrap(); };
       const unregister = host.gameProjection?.registerRead({ id: 'fixture.state', title: 'Play fixture', read: () => ({ ...state }) });
       yield () => unregister?.();
-      world.addSystem(Update, { name: 'play-fixture/input', queries: [], fn() {
-        const input = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+      const inputSystem = defineSystem({ name: 'play-fixture/input', queries: [], fn() {
+        const input = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
         state.frames += 1;
         state.clock += world.getResource(Time).delta;
         if (state.clock >= 180) state.phase = 'lost';
@@ -83,8 +83,9 @@ export const game: Plugin.Object<{ readonly mesh: string; readonly material: str
           state.clicks += 1;
           state.click = { x: input.mouse.position.x / size.width, y: input.mouse.position.y / size.height };
         }
-      } }).unwrap();
-      yield () => world.removeSystem(Update, 'play-fixture/input').unwrap();
+      } });
+      world.addSystem(Update, inputSystem).unwrap();
+      yield () => world.removeSystem(Update, inputSystem).unwrap();
     });
   },
 };

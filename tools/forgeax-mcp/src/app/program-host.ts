@@ -5,6 +5,7 @@ const SLOT = Symbol.for(PROGRAM_IMPORTS_SLOT);
 
 /** Borrow actual realm imports; compiled program URLs and namespace leases retire with the platform. */
 export function createMcpProgramHosts(global: any, invoke: any, bytes: any) {
+  const loadNative = global.__fxMcpImport;
   const registry: Map<string, Map<string, Readonly<Record<string, unknown>>>> = global[SLOT] ??= new Map();
   const owned = new Set<string>();
   const urls = new Map<string, string>();
@@ -58,7 +59,9 @@ export function createMcpProgramHosts(global: any, invoke: any, bytes: any) {
         const entry = decodeURIComponent(entryUrl.hash.slice(1));
         entryUrl.hash = '';
         if (urls.get(entryUrl.href) !== bindingId) throw new Error('Module outside this MCP program host');
-        const driver = (await import(/* @vite-ignore */ entryUrl.href)).default;
+        if (typeof loadNative !== 'function') throw new Error('MCP native module loader is unavailable');
+        const driver = (await loadNative(entryUrl.href)).default;
+        lifetime.signal.throwIfAborted();
         return Object.freeze(driver.load(entry));
       },
     };

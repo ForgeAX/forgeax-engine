@@ -24,6 +24,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { readFileSync } from 'node:fs';
 import { emitSmokeReceipt } from '../../shared/scripts/smoke-receipt.mjs';
+import { readShaderManifestText } from '../../../scripts/lib/shader-manifest.mjs';
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 
@@ -133,7 +134,7 @@ const {
 const { fbxImporter } = await import('@forgeax/engine-fbx');
 
 const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const MANIFEST_URL = URL.createObjectURL(new Blob([readFileSync(MANIFEST_PATH)], { type: 'application/json' }));
+const MANIFEST_URL = URL.createObjectURL(new Blob([readShaderManifestText(MANIFEST_PATH)], { type: 'application/json' }));
 process.once('exit', () => URL.revokeObjectURL(MANIFEST_URL));
 
 let renderer;

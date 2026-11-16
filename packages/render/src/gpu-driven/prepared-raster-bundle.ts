@@ -12,6 +12,7 @@ import type {
 export interface PreparedRasterBindings {
   readonly pipeline: RenderPipeline;
   readonly view: BindGroup;
+  readonly viewOffset: number;
   readonly material: BindGroup;
   readonly materialOffset: number;
   readonly mesh: BindGroup;
@@ -46,6 +47,7 @@ function equal(a: PreparedRasterBindings, b: PreparedRasterBindings): boolean {
   if (
     a.pipeline !== b.pipeline ||
     a.view !== b.view ||
+    a.viewOffset !== b.viewOffset ||
     a.material !== b.material ||
     a.materialOffset !== b.materialOffset ||
     a.mesh !== b.mesh ||
@@ -83,8 +85,8 @@ export function recordPreparedRasters(
       commands.setPipeline(b.pipeline);
       count++;
     }
-    if (pipelineChanged || previous?.view !== b.view) {
-      commands.setBindGroup(0, b.view, [0, 0]);
+    if (pipelineChanged || previous?.view !== b.view || previous.viewOffset !== b.viewOffset) {
+      commands.setBindGroup(0, b.view, [b.viewOffset, 0]);
       count++;
     }
     if (

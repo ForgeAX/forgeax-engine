@@ -5,6 +5,7 @@ import type {
   RenderFeaturePlan,
   RenderFeaturePlanContext,
 } from './plan';
+import { captureUnusedSurfaceData } from './surface-data-usage';
 import type { RenderFeature, RenderFeatureExtractContext } from './types';
 
 /** Host-owned fullscreen effect declaration carried by one RenderFeature. */
@@ -101,5 +102,5 @@ export function createFullscreenRenderFeature(
       ),
   };
   Object.defineProperty(feature, declarationKey, { value: declaration });
-  return Object.freeze(feature);
+  return Object.freeze(captureUnusedSurfaceData(feature));
 }

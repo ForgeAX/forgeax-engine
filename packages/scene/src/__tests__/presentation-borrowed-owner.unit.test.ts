@@ -1,4 +1,10 @@
-import { createWorldContext, FixedTime, FixedUpdate, World } from '@forgeax/engine-ecs';
+import {
+  createWorldContext,
+  defineSystem,
+  FixedTime,
+  FixedUpdate,
+  World,
+} from '@forgeax/engine-ecs';
 import { expect, it, vi } from 'vitest';
 import {
   ChildOf,
@@ -23,15 +29,14 @@ it('samples the current moving subtree without materializing full component snap
     )
     .unwrap();
   const other = world.spawn({ component: Transform, data: { pos: [100, 0, 0] } }).unwrap();
-  world
-    .addSystem(FixedUpdate, {
-      name: 'move-borrowed-owner',
-      queries: [],
-      fn: () => {
-        world.set(root, Transform, { pos: [world.getResource(FixedTime).tick * 2, 0, 0] }).unwrap();
-      },
-    })
-    .unwrap();
+  const systemToken1 = defineSystem({
+    name: 'move-borrowed-owner',
+    queries: [],
+    fn: () => {
+      world.set(root, Transform, { pos: [world.getResource(FixedTime).tick * 2, 0, 0] }).unwrap();
+    },
+  });
+  world.addSystem(FixedUpdate, systemToken1).unwrap();
   try {
     const snapshots = vi.spyOn(world, 'get');
     const owner = Reflect.get(world, Symbol.for('forgeax.ecs.worldInternal')) as {

@@ -1,4 +1,7 @@
+import { defineSystem, World } from '@forgeax/engine-ecs';
 import { describe, expect, it, vi } from 'vitest';
+import { registeredSystem } from '../../__tests__/registered-system.fixture';
+import { RenderStandardLightingOrder, RenderViewFrameOrder } from '../../system-order';
 
 const planned = vi.hoisted(() => ({ current: undefined as undefined | (() => unknown) }));
 vi.mock('../../record/view-topology', () => ({ planViewTopology: () => planned.current?.() }));
@@ -33,7 +36,7 @@ import {
 } from '../view-topology-systems';
 import { registerViewFrameStub, withInertTemporal } from './temporal-owner-fixture';
 
-const opts = { cameraOwner: 0, resourceOwner: 0 } as const;
+const opts = {} as const;
 const topology = { shadowMapSize: 512, terrainReceivers: [] } as unknown as ViewTopology;
 
 function setup(
@@ -43,7 +46,9 @@ function setup(
   const world = createRenderWorld();
   world.insertResource(
     RenderViewInput,
-    new RenderViewFrameSource({ canvas: { width: 8, height: 8 } }),
+    Object.assign(new RenderViewFrameSource({ canvas: { width: 8, height: 8 } }), {
+      world: new World(),
+    }),
   );
   const order: string[] = [];
   const staged = world.spawn().unwrap();
@@ -55,23 +60,23 @@ function setup(
     value: { renderables: [], cameras: [] } as unknown as ExtractedFrame,
   }));
   // Stands in for `render-standard-lighting`: the staged view's stored outcome.
-  world
-    .addSystem(RenderPrepare, {
-      name: RENDER_STANDARD_LIGHTING_SYSTEM,
-      after: [RENDER_VIEW_FRAME_SYSTEM],
-      queries: [],
-      fn: (world) => {
-        order.push(RENDER_STANDARD_LIGHTING_SYSTEM);
-        storeViewStandardLighting(
-          world,
-          staged,
-          lighting === 'prepared'
-            ? ({ kind: 'prepared', lighting: {}, fence: {} } as never)
-            : { kind: 'not-admitted' },
-        );
-      },
-    })
-    .unwrap();
+  const systemToken1 = defineSystem({
+    sets: [RenderStandardLightingOrder],
+    name: RENDER_STANDARD_LIGHTING_SYSTEM,
+    after: [RenderViewFrameOrder],
+    queries: [],
+    fn: (world) => {
+      order.push(RENDER_STANDARD_LIGHTING_SYSTEM);
+      storeViewStandardLighting(
+        world,
+        staged,
+        lighting === 'prepared'
+          ? ({ kind: 'prepared', lighting: {}, fence: {} } as never)
+          : { kind: 'not-admitted' },
+      );
+    },
+  });
+  world.addSystem(RenderPrepare, systemToken1).unwrap();
   planned.current = () => {
     order.push(RENDER_VIEW_TOPOLOGY_SYSTEM);
     return prepare();
@@ -97,13 +102,12 @@ function setup(
       })
       .unwrap();
   }
-  world
-    .addSystem(RenderExtract, {
-      name: RENDER_VIEW_RECORDERS_SYSTEM,
-      queries: [],
-      fn: (world) => stageViewFrame(world, staged, opts),
-    })
-    .unwrap();
+  const systemToken2 = defineSystem({
+    name: RENDER_VIEW_RECORDERS_SYSTEM,
+    queries: [],
+    fn: (world) => stageViewFrame(world, staged, opts),
+  });
+  world.addSystem(RenderExtract, systemToken2).unwrap();
   const internals = { renderWorld: world, viewEntity: staged } as unknown as RenderSystemInternals;
   return { world, order, staged, held, internals };
 }
@@ -135,7 +139,9 @@ describe('render-view-topology system', () => {
     const { world, staged, internals } = setup(() => ({ kind: 'planned', topology }));
     beginRenderFrame(world, 1);
     endRenderFrame(world);
-    world.removeSystem(RenderPrepare, RENDER_VIEW_TOPOLOGY_SYSTEM).unwrap();
+    world
+      .removeSystem(RenderPrepare, registeredSystem(world, RenderPrepare, 'render-view-topology'))
+      .unwrap();
     beginRenderFrame(world, 2);
     expect(viewTopologyOf(world, staged)).toBeUndefined();
     expect(() => consumeViewTopology(internals, unplanned)).toThrow(RENDER_VIEW_TOPOLOGY_SYSTEM);

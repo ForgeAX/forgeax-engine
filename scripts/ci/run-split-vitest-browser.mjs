@@ -109,7 +109,7 @@ const shortRendererBootstrapBrowserFiles = new Set([
   'packages/render/src/__tests__/managed-material-runtime.browser.test.ts',
   'packages/runtime/src/__tests__/barrel-distortion-zero-size.browser.test.ts',
   'packages/runtime/src/__tests__/clamp-to-last.e2e.browser.test.ts',
-  'packages/runtime/src/__tests__/composite-skybox-cross-world.browser.test.ts',
+  'packages/runtime/src/__tests__/single-source-skybox.browser.test.ts',
 ]);
 const renderWorkerPreloadBrowserFile =
   'packages/app/src/__tests__/render-worker-preload-errors.browser.test.ts';
@@ -314,6 +314,7 @@ export function parseArgs(argv) {
     '--shard-strategy',
   ]);
   const options = {
+    continueOnFailure: false,
     dryRun: false,
     files: [],
     groupConcurrency: defaultGroupConcurrency,
@@ -328,6 +329,10 @@ export function parseArgs(argv) {
     const argument = argv[index];
     if (argument === '--dry-run') {
       options.dryRun = true;
+      continue;
+    }
+    if (argument === '--continue-on-failure') {
+      options.continueOnFailure = true;
       continue;
     }
     const [key, inlineValue] = argument.split('=', 2);
@@ -791,6 +796,7 @@ async function main() {
     .map((_group, index) => index)
     .filter((index) => shardAssignment[index] === options.shardIndex);
   const observations = [];
+  const failures = [];
   let complete = false;
   try {
     await runGroups({
@@ -799,17 +805,24 @@ async function main() {
       order: browserGroupRunOrder(groups, selectedIndexes, options.groupConcurrency),
       isExclusive: (index) => browserGroupRequiresExclusiveRunner(groups[index]),
       runGroupImpl: async (index) => {
-        if (!browserGroupIsHostOnly(groups[index])) await prepareShaders();
-        const observation = await runGroup({
-          cliPath,
-          group: groups[index],
-          groupIndex: index + 1,
-          groupCount: groups.length,
-          maxWorkers: options.maxWorkers,
-        });
-        observations.push(observation);
+        try {
+          if (!browserGroupIsHostOnly(groups[index])) await prepareShaders();
+          const observation = await runGroup({
+            cliPath,
+            group: groups[index],
+            groupIndex: index + 1,
+            groupCount: groups.length,
+            maxWorkers: options.maxWorkers,
+          });
+          observations.push(observation);
+        } catch (error) {
+          if (!options.continueOnFailure) throw error;
+          failures.push({ group: index + 1, files: groups[index], error: String(error) });
+          process.stderr.write(`[browser-failure-batch] ${JSON.stringify(failures.at(-1))}\n`);
+        }
       },
     });
+    if (failures.length) throw new Error(`${failures.length} complete Browser owners failed`);
     complete = true;
   } finally {
     if (process.env.FORGEAX_BROWSER_COST_REPORT === '1')

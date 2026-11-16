@@ -106,7 +106,7 @@ test('the workflow uses every Engine-owned shard and rejects invalid matrix IDs'
   const selected = ids.flatMap(id => plan('--shard', String(id), '--dry-run').filter(([owner]) => owner !== 'prepare').map(step => JSON.stringify(step))).sort();
   assert.deepEqual(selected, all);
   assert.match(workflow, /FORGEAX_BROWSER_CI_LIGHTWEIGHT: '1'/);
-  assert.match(workflow, /view_shards: \$\{\{ steps.view-shards.outputs.shards \}\}/);
+  assert.match(workflow, /view_shards: \$\{\{ steps\.view-shards\.outputs\.shards \|\| needs\.context\.outputs\.view_shards \}\}/);
   assert.match(workflow, /shard: \$\{\{ fromJSON\(needs.build.outputs.view_shards\) \}\}/);
   assert.match(workflow, /run: xvfb-run -a pnpm test:view -- --candidate --shard \$\{\{ matrix.shard \}\}/);
   assert.doesNotMatch(workflow, /--list-groups|VIEW_CONSUMER_GROUPS|--group|owner %/);

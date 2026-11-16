@@ -468,7 +468,7 @@ export class ViewWorkspaceBroker {
   private async invokeDomain(operation: string, args: Args = {}, { signal, caller, clientId = 'view-owner', token, requestId }: WorkspaceCallContext = {}, publishOpen = true): Promise<unknown> {
     const requestedAsset = operation === 'asset.open' ? this.assets?.find(asset => asset.guid === args.guid) : undefined;
     if (operation === 'asset.open' && (args.detailsOnly === true || requestedAsset?.previewable === false
-      || (requestedAsset && !['scene', 'mesh', 'material', 'texture', 'equirect'].includes(requestedAsset.kind)))) {
+      || (requestedAsset && !isSceneWorkspaceAsset(requestedAsset) && !isTypePreviewAsset(requestedAsset)))) {
       const result = await this.invoke('asset.inspect', args, { signal, caller, clientId, token, requestId });
       this.recordOpenRequest({ requestId, result: result as WorkspaceDomainResult, guid: args.guid, detailsOnly: true });
       this.changed();

@@ -270,17 +270,18 @@ const region = [0, 0, 0.5, 0.5];
 const materialHandle = world.assets.create({
   kind: 'material',
   passes: [
-    // feat-20260626-sprite-transparent-collapse M3 — post M1/M2 SSOT:
-    // `renderState.blend` drives LDR split + premultiplied-alpha
-    // blend pipeline + chunk-gpu-instancing transparentDispatch routing
-    // (preset `SPRITE_PREMULTIPLIED_ALPHA_BLEND`).
-    { name: 'Forward', program: { module: 'forgeax::sprite' }, renderState: { blend: SPRITE_PREMULTIPLIED_ALPHA_BLEND, tags: { LightMode: 'Forward' }, queue: 3000 } },
+      // feat-20260626-sprite-transparent-collapse M3 — post M1/M2 SSOT:
+      // `renderState.blend` drives LDR split + premultiplied-alpha
+      // blend pipeline + chunk-gpu-instancing transparentDispatch routing
+      // (preset `SPRITE_PREMULTIPLIED_ALPHA_BLEND`).
+      { name: 'Forward', program: { module: 'forgeax::sprite' }, renderState: { blend: SPRITE_PREMULTIPLIED_ALPHA_BLEND, tags: { LightMode: 'Forward' }, queue: 3000 },
+      },
   ],
   values: {
-    // feat-20260625 M3 / w11 (D-4): UBO-aligned field names. Legacy
-    // baseColor / texture / pivot lost their fold post-R1; declare the
-    // 1:1 paramSchema forms directly.
-    colorTint: [1, 1, 1, 1],
+      // feat-20260625 M3 / w11 (D-4): UBO-aligned field names. Legacy
+      // baseColor / texture / pivot lost their fold post-R1; declare the
+      // 1:1 paramSchema forms directly.
+      colorTint: [1, 1, 1, 1],
     baseColorTexture: textureHandle,
     region,
     pivotAndSize: [0.5, 0.5, 1, 1],
@@ -347,11 +348,7 @@ for (let i = 0; i < TARGET_FRAMES; i++) {
     // Counters describe one physical submission, including preparation attempts.
     rhiDrawIndexedCallsThisFrame = 0;
     rhiLastInstanceCount = 0;
-    const result = renderer.draw({
-      leases: [worldAttachment1.value],
-      camera: { lease: worldAttachment1.value },
-      environment: { lease: worldAttachment1.value },
-    });
+    const result = renderer.draw({ source: worldAttachment1.value });
     if (!result.ok) throw result.error;
     return result.value;
   });

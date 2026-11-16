@@ -1,8 +1,12 @@
 // biome-ignore-all lint/complexity/noUselessLoneBlockStatements: scope isolation between merged source files
+import { defineResource } from '../resource';
+import type { SystemOrderReference } from '../schedule';
+
 // Consolidated by feat-20260609-test-pool-startup-reduction-merge-tiny-test-files
 
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { defineSystem } from '../schedule';
 import { Update } from '../schedule-token';
 //
 // Source files (N=29):
@@ -208,7 +212,7 @@ import { handleNumeric } from './utils/handle-numeric';
       expect(r2.vertexData[0]).toBe(42);
     });
 
-    it('(2) `ref<T>` field stores managed Handle; auto-released on despawn (AC-03 path 1)', () => {
+    it('(2) `unique<T>` field stores managed Handle; auto-released on despawn (AC-03 path 1)', () => {
       const Mat = defineComponent('Mat', { material: { type: 'unique<MaterialAsset>' } });
       const w = new World();
       const store = refsOf(w);
@@ -482,25 +486,31 @@ import { handleNumeric } from './utils/handle-numeric';
       const world = new World();
       expect(world.inspect().systemCount).toBe(0);
 
-      world.addSystem(Update, {
+      const systemToken1 = defineSystem({
         name: 'inspSys1',
         queries: [],
         fn: () => {},
       });
+      world.addSystem(Update, systemToken1);
       expect(world.inspect().systemCount).toBe(1);
 
-      world.addSystem(Update, {
+      const systemToken2 = defineSystem({
         name: 'inspSys2',
         queries: [],
         fn: () => {},
       });
+      world.addSystem(Update, systemToken2);
       expect(world.inspect().systemCount).toBe(2);
     });
 
     it('resourceKeys reflects inserted and removed resources', () => {
+      const resource2 = defineResource<unknown>('config');
+
+      const resource1 = defineResource<unknown>('timer');
+
       const world = new World();
-      world.insertResource('timer', { elapsed: 0 });
-      world.insertResource('config', { debug: true });
+      world.insertResource(resource1, { elapsed: 0 });
+      world.insertResource(resource2, { debug: true });
 
       // World constructor registers protected Time and FixedTime resources
       // which appear alongside user-inserted resources.
@@ -509,7 +519,7 @@ import { handleNumeric } from './utils/handle-numeric';
       expect(keys).toContain('config');
       expect(keys.length).toBe(4);
 
-      world.removeResource('timer');
+      world.removeResource(resource1);
       // Protected Time and FixedTime resources persist alongside user resources
       const timeKeys = world.inspect().resourceKeys;
       expect(timeKeys).toContain('Time');
@@ -678,26 +688,13 @@ import { handleNumeric } from './utils/handle-numeric';
       }).toThrow(/managed-array-element-type-not-allowed/);
     });
 
-    it('MANAGED_ARRAY_ELEMENT_TYPES still has 12 members and excludes "string"', () => {
-      expect(MANAGED_ARRAY_ELEMENT_TYPES.size).toBe(12);
+    it('MANAGED_ARRAY_ELEMENT_TYPES contains only numeric, boolean and entity elements and excludes "string"', () => {
+      expect(MANAGED_ARRAY_ELEMENT_TYPES.size).toBe(11);
       expect(MANAGED_ARRAY_ELEMENT_TYPES.has('string' as never)).toBe(false);
-      // Explicit allow-list snapshot --- any drift in the 12 members shows up
+      // Explicit allow-list snapshot --- any change to the accepted elements shows up
       // as a diff here, signalling a vocab evolution that needs design review.
       expect([...MANAGED_ARRAY_ELEMENT_TYPES].sort()).toEqual(
-        [
-          'bool',
-          'enum',
-          'entity',
-          'f32',
-          'f64',
-          'i16',
-          'i32',
-          'i8',
-          'ref',
-          'u16',
-          'u32',
-          'u8',
-        ].sort(),
+        ['bool', 'enum', 'entity', 'f32', 'f64', 'i16', 'i32', 'i8', 'u16', 'u32', 'u8'].sort(),
       );
     });
   });
@@ -1246,11 +1243,11 @@ import { handleNumeric } from './utils/handle-numeric';
   });
 
   // ---------------------------------------------------------------------------
-  // (a) ref<T> carry-over - Object.is on resolved payload survives migrate.
+  // (a) unique<T> carry-over - Object.is on resolved payload survives migrate.
   // ---------------------------------------------------------------------------
 
-  describe('w16 - ref<T> field archetype migrate carry-over (AC-04)', () => {
-    it('addComponent triggers migrate; ref<T> handle u32 stays bit-equal', () => {
+  describe('w16 - unique<T> field archetype migrate carry-over (AC-04)', () => {
+    it('addComponent triggers migrate; unique<T> handle u32 stays bit-equal', () => {
       const Mat = defineComponent('Mat', { handle: { type: 'unique<MaterialAsset>' } });
       const Anchor = defineComponent('Anchor', { x: { type: 'f32' } });
       const w = new World();
@@ -1288,7 +1285,7 @@ import { handleNumeric } from './utils/handle-numeric';
       expect(resolvedAfter.value).toBe(payload);
     });
 
-    it('removeComponent triggers migrate; surviving ref<T> handle u32 stays bit-equal', () => {
+    it('removeComponent triggers migrate; surviving unique<T> handle u32 stays bit-equal', () => {
       const Mat = defineComponent('Mat', { handle: { type: 'unique<MaterialAsset>' } });
       const Anchor = defineComponent('Anchor', { x: { type: 'f32' } });
       const w = new World();
@@ -1322,7 +1319,7 @@ import { handleNumeric } from './utils/handle-numeric';
       expect(r.value).toBe(payload);
     });
 
-    it('multi-hop migrate (add then remove) keeps ref<T> handle u32 bit-equal end-to-end', () => {
+    it('multi-hop migrate (add then remove) keeps unique<T> handle u32 bit-equal end-to-end', () => {
       const Mat = defineComponent('Mat', { handle: { type: 'unique<MaterialAsset>' } });
       const Anchor = defineComponent('Anchor', { x: { type: 'f32' } });
       const Tag = defineComponent('Tag', { v: { type: 'u32' } });
@@ -1710,8 +1707,8 @@ import { handleNumeric } from './utils/handle-numeric';
   // (b) World release loop integration tests (AC-03 - 3 paths).
   // ---------------------------------------------------------------------------
 
-  describe('w6 - World ref<T> field release loop', () => {
-    it('world.despawn(e) releases ref<T> field handle (path 1)', () => {
+  describe('w6 - World unique<T> field release loop', () => {
+    it('world.despawn(e) releases unique<T> field handle (path 1)', () => {
       const Mat = defineComponent('Mat', { handle: { type: 'unique<MaterialAsset>' } });
       const w = new World();
       const store = refsOf(w);
@@ -1729,7 +1726,7 @@ import { handleNumeric } from './utils/handle-numeric';
       expect(r.error.code).toBe('unique-ref-stale');
     });
 
-    it('world.removeComponent(e, C) releases ref<T> field handle (path 2)', () => {
+    it('world.removeComponent(e, C) releases unique<T> field handle (path 2)', () => {
       const Mat = defineComponent('Mat', { handle: { type: 'unique<MaterialAsset>' } });
       const Anchor = defineComponent('Anchor', { x: { type: 'f32' } });
       const w = new World();
@@ -1774,8 +1771,8 @@ import { handleNumeric } from './utils/handle-numeric';
       expect(rNew.ok).toBe(true);
     });
 
-    it('null ref<T> field on spawn does not call release on despawn (boundary)', () => {
-      // Boundary case: ref<T> field can hold null; despawn must not attempt to
+    it('null unique<T> field on spawn does not call release on despawn (boundary)', () => {
+      // Boundary case: unique<T> field can hold null; despawn must not attempt to
       // release a null slot (would surface as unique-ref-double-release noise).
       const Mat = defineComponent('Mat', { handle: { type: 'unique<MaterialAsset>' } });
       const w = new World();
@@ -1797,88 +1794,112 @@ import { handleNumeric } from './utils/handle-numeric';
   // --- from resource.test.ts ---
   describe('insertResource / getResource', () => {
     it('insertResource stores a value and getResource retrieves it', () => {
+      const resource3 = defineResource<{ delta: number; elapsed: number }>('time');
+
       const world = new World();
-      world.insertResource('time', { delta: 0.016, elapsed: 0 });
-      const time = world.getResource<{ delta: number; elapsed: number }>('time');
+      world.insertResource(resource3, { delta: 0.016, elapsed: 0 });
+      const time = world.getResource(resource3);
       expect(time).toEqual({ delta: 0.016, elapsed: 0 });
     });
 
     it('getResource returns the exact reference (not a copy)', () => {
+      const resource4 = defineResource<{ count: number }>('counter');
+
       const world = new World();
       const obj = { count: 0 };
-      world.insertResource('counter', obj);
-      const retrieved = world.getResource<{ count: number }>('counter');
+      world.insertResource(resource4, obj);
+      const retrieved = world.getResource(resource4);
       expect(retrieved).toBe(obj);
     });
 
     it('supports primitive values', () => {
+      const resource5 = defineResource<number>('fps');
+
       const world = new World();
-      world.insertResource('fps', 60);
-      expect(world.getResource<number>('fps')).toBe(60);
+      world.insertResource(resource5, 60);
+      expect(world.getResource(resource5)).toBe(60);
     });
 
     it('supports string values', () => {
+      const resource6 = defineResource<string>('name');
+
       const world = new World();
-      world.insertResource('name', 'hello');
-      expect(world.getResource<string>('name')).toBe('hello');
+      world.insertResource(resource6, 'hello');
+      expect(world.getResource(resource6)).toBe('hello');
     });
   });
 
   describe('hasResource', () => {
     it('returns true for existing resource', () => {
+      const resource7 = defineResource<number>('exists');
+
       const world = new World();
-      world.insertResource('exists', 42);
-      expect(world.hasResource('exists')).toBe(true);
+      world.insertResource(resource7, 42);
+      expect(world.hasResource(resource7)).toBe(true);
     });
 
     it('returns false for non-existing resource', () => {
+      const resource8 = defineResource<unknown>('nope');
+
       const world = new World();
-      expect(world.hasResource('nope')).toBe(false);
+      expect(world.hasResource(resource8)).toBe(false);
     });
   });
 
   describe('removeResource', () => {
     it('removes an existing resource', () => {
+      const resource9 = defineResource<number>('temp');
+
       const world = new World();
-      world.insertResource('temp', 100);
-      world.removeResource('temp');
-      expect(world.hasResource('temp')).toBe(false);
+      world.insertResource(resource9, 100);
+      world.removeResource(resource9);
+      expect(world.hasResource(resource9)).toBe(false);
     });
 
     it('getResource after remove throws ResourceNotFoundError', () => {
+      const resource10 = defineResource<number>('gone');
+
       const world = new World();
-      world.insertResource('gone', 1);
-      world.removeResource('gone');
-      expect(() => world.getResource('gone')).toThrow(ResourceNotFoundError);
+      world.insertResource(resource10, 1);
+      world.removeResource(resource10);
+      expect(() => world.getResource(resource10)).toThrow(ResourceNotFoundError);
     });
   });
 
   describe('idempotent overwrite (E-13)', () => {
     it('insertResource with same key overwrites old value', () => {
+      const resource11 = defineResource<{ v: number }>('data');
+
       const world = new World();
-      world.insertResource('data', { v: 1 });
-      world.insertResource('data', { v: 2 });
-      expect(world.getResource<{ v: number }>('data')).toEqual({ v: 2 });
+      world.insertResource(resource11, { v: 1 });
+      world.insertResource(resource11, { v: 2 });
+      expect(world.getResource(resource11)).toEqual({ v: 2 });
     });
 
     it('overwrite is idempotent — double insert same value is fine', () => {
+      const resource12 = defineResource<number>('stable');
+
       const world = new World();
-      world.insertResource('stable', 42);
-      world.insertResource('stable', 42);
-      expect(world.getResource<number>('stable')).toBe(42);
+      world.insertResource(resource12, 42);
+      world.insertResource(resource12, 42);
+      expect(world.getResource(resource12)).toBe(42);
     });
   });
 
   describe('getResource not found (E-14)', () => {
     it('getResource on non-existing key throws ResourceNotFoundError', () => {
+      const resource13 = defineResource<unknown>('missing');
+
       const world = new World();
-      expect(() => world.getResource('missing')).toThrow(ResourceNotFoundError);
+      expect(() => world.getResource(resource13)).toThrow(ResourceNotFoundError);
     });
 
     it('ResourceNotFoundError contains key in message', () => {
+      const resource14 = defineResource<unknown>('myKey');
+
       const world = new World();
       try {
-        world.getResource('myKey');
+        world.getResource(resource14);
         expect.unreachable('should have thrown');
       } catch (err) {
         expect(err).toBeInstanceOf(ResourceNotFoundError);
@@ -1887,9 +1908,11 @@ import { handleNumeric } from './utils/handle-numeric';
     });
 
     it('ResourceNotFoundError has hint property', () => {
+      const resource15 = defineResource<unknown>('foo');
+
       const world = new World();
       try {
-        world.getResource('foo');
+        world.getResource(resource15);
         expect.unreachable('should have thrown');
       } catch (err) {
         expect(err).toBeInstanceOf(ResourceNotFoundError);
@@ -1903,10 +1926,12 @@ import { handleNumeric } from './utils/handle-numeric';
   describe('schedule.removeSystem (AC-04)', () => {
     it('removes a registered system; world.inspect() no longer lists it', () => {
       const world = new World();
-      world.addSystem(Update, { name: 'sysA', queries: [], fn: () => {} });
-      world.addSystem(Update, { name: 'sysB', queries: [], fn: () => {} });
+      const systemToken3 = defineSystem({ name: 'sysA', queries: [], fn: () => {} });
+      world.addSystem(Update, systemToken3);
+      const systemToken4 = defineSystem({ name: 'sysB', queries: [], fn: () => {} });
+      world.addSystem(Update, systemToken4);
 
-      const r = world.removeSystem(Update, 'sysA');
+      const r = world.removeSystem(Update, systemToken3);
       expect(r.ok).toBe(true);
 
       const snap = world.inspect();
@@ -1917,9 +1942,13 @@ import { handleNumeric } from './utils/handle-numeric';
 
     it('returns Result.err with code system-before-unknown when name does not exist', () => {
       const world = new World();
-      world.addSystem(Update, { name: 'sysA', queries: [], fn: () => {} });
+      const systemToken5 = defineSystem({ name: 'sysA', queries: [], fn: () => {} });
+      world.addSystem(Update, systemToken5);
 
-      const r = world.removeSystem(Update, 'nonexistent');
+      const r = world.removeSystem(
+        Update,
+        defineSystem({ name: 'nonexistent', queries: [], fn: () => {} }),
+      );
       expect(r.ok).toBe(false);
       if (r.ok) return;
       expect(r.error.code).toBe('system-before-unknown');
@@ -1931,19 +1960,25 @@ import { handleNumeric } from './utils/handle-numeric';
       const world = new World();
       const log: string[] = [];
 
-      world.addSystem(Update, { name: 'sysA', queries: [], fn: () => log.push('A-old') });
-      world.addSystem(Update, {
+      const systemToken6 = defineSystem({ name: 'sysA', queries: [], fn: () => log.push('A-old') });
+      world.addSystem(Update, systemToken6);
+      const systemToken7 = defineSystem({
         name: 'sysB',
         queries: [],
         fn: () => log.push('B'),
-        after: ['sysA'],
+        after: [systemToken6],
       });
+      world.addSystem(Update, systemToken7);
 
-      const r = world.replaceSystem(Update, 'sysA', {
-        name: 'sysA',
-        queries: [],
-        fn: () => log.push('A-new'),
-      });
+      const r = world.replaceSystem(
+        Update,
+        systemToken6,
+        defineSystem({
+          name: 'sysA',
+          queries: [],
+          fn: () => log.push('A-new'),
+        }),
+      );
       expect(r.ok).toBe(true);
 
       world.update();
@@ -1954,11 +1989,15 @@ import { handleNumeric } from './utils/handle-numeric';
     it('returns Result.err with code system-before-unknown when target name not registered', () => {
       const world = new World();
 
-      const r = world.replaceSystem(Update, 'nonexistent', {
-        name: 'nonexistent',
-        queries: [],
-        fn: () => {},
-      });
+      const r = world.replaceSystem(
+        Update,
+        defineSystem({ name: 'nonexistent', queries: [], fn: () => {} }),
+        defineSystem({
+          name: 'nonexistent',
+          queries: [],
+          fn: () => {},
+        }),
+      );
       expect(r.ok).toBe(false);
       if (r.ok) return;
       expect(r.error.code).toBe('system-before-unknown');
@@ -1973,13 +2012,14 @@ import { handleNumeric } from './utils/handle-numeric';
       const Pos = defineComponent('SchedPos', { x: { type: 'f32' }, y: { type: 'f32' } });
       const log: string[] = [];
 
-      world.addSystem(Update, {
+      const systemToken8 = defineSystem({
         name: 'movement',
         queries: [{ with: [Pos] }],
         fn: () => {
           log.push('movement');
         },
       });
+      world.addSystem(Update, systemToken8);
 
       world.update();
       expect(log).toEqual(['movement']);
@@ -1992,13 +2032,14 @@ import { handleNumeric } from './utils/handle-numeric';
 
       let receivedBundleCount = 0;
 
-      world.addSystem(Update, {
+      const systemToken9 = defineSystem({
         name: 'reader',
         queries: [{ read: [Pos] }],
         fn: (_world, queryResults, _commands) => {
           for (const query of queryResults) receivedBundleCount += [...query].length;
         },
       });
+      world.addSystem(Update, systemToken9);
 
       world.update();
       expect(receivedBundleCount).toBe(1);
@@ -2010,18 +2051,20 @@ import { handleNumeric } from './utils/handle-numeric';
       const world = new World();
       const log: string[] = [];
 
-      world.addSystem(Update, {
+      const systemToken10 = defineSystem({
         name: 'sysA',
         queries: [],
         fn: () => log.push('A'),
       });
+      world.addSystem(Update, systemToken10);
 
-      world.addSystem(Update, {
+      const systemToken11 = defineSystem({
         name: 'sysB',
         queries: [],
         fn: () => log.push('B'),
-        after: ['sysA'],
+        after: [systemToken10],
       });
+      world.addSystem(Update, systemToken11);
 
       world.update();
       expect(log.indexOf('A')).toBeLessThan(log.indexOf('B'));
@@ -2032,18 +2075,20 @@ import { handleNumeric } from './utils/handle-numeric';
       const log: string[] = [];
 
       // Register B first, then A with before: ['sysB']
-      world.addSystem(Update, {
+      const systemToken12 = defineSystem({
         name: 'sysB',
         queries: [],
         fn: () => log.push('B'),
       });
+      world.addSystem(Update, systemToken12);
 
-      world.addSystem(Update, {
+      const systemToken13 = defineSystem({
         name: 'sysA',
         queries: [],
         fn: () => log.push('A'),
-        before: ['sysB'],
+        before: [systemToken12],
       });
+      world.addSystem(Update, systemToken13);
 
       world.update();
       expect(log.indexOf('A')).toBeLessThan(log.indexOf('B'));
@@ -2053,33 +2098,41 @@ import { handleNumeric } from './utils/handle-numeric';
       const world = new World();
       const log: string[] = [];
 
-      world.addSystem(Update, {
+      const systemToken14 = defineSystem({
         name: 'A',
         queries: [],
         fn: () => log.push('A'),
       });
+      world.addSystem(Update, systemToken14);
 
-      world.addSystem(Update, {
+      const forwardOrder1: SystemOrderReference[] = [];
+      const systemToken15 = defineSystem({
         name: 'B',
         queries: [],
         fn: () => log.push('B'),
-        after: ['A'],
-        before: ['D'],
+        after: [systemToken14],
+        before: forwardOrder1,
       });
+      world.addSystem(Update, systemToken15);
 
-      world.addSystem(Update, {
+      const forwardOrder2: SystemOrderReference[] = [];
+      const systemToken16 = defineSystem({
         name: 'C',
         queries: [],
         fn: () => log.push('C'),
-        after: ['A'],
-        before: ['D'],
+        after: [systemToken14],
+        before: forwardOrder2,
       });
+      world.addSystem(Update, systemToken16);
 
-      world.addSystem(Update, {
+      const systemToken17 = defineSystem({
         name: 'D',
         queries: [],
         fn: () => log.push('D'),
       });
+      forwardOrder2.push(systemToken17);
+      forwardOrder1.push(systemToken17);
+      world.addSystem(Update, systemToken17);
 
       world.update();
 
@@ -2097,9 +2150,24 @@ import { handleNumeric } from './utils/handle-numeric';
       const world = new World();
       const log: string[] = [];
 
-      world.addSystem(Update, { name: 'first', queries: [], fn: () => log.push('first') });
-      world.addSystem(Update, { name: 'second', queries: [], fn: () => log.push('second') });
-      world.addSystem(Update, { name: 'third', queries: [], fn: () => log.push('third') });
+      const systemToken18 = defineSystem({
+        name: 'first',
+        queries: [],
+        fn: () => log.push('first'),
+      });
+      world.addSystem(Update, systemToken18);
+      const systemToken19 = defineSystem({
+        name: 'second',
+        queries: [],
+        fn: () => log.push('second'),
+      });
+      world.addSystem(Update, systemToken19);
+      const systemToken20 = defineSystem({
+        name: 'third',
+        queries: [],
+        fn: () => log.push('third'),
+      });
+      world.addSystem(Update, systemToken20);
 
       world.update();
       expect(log).toEqual(['first', 'second', 'third']);
@@ -2109,26 +2177,30 @@ import { handleNumeric } from './utils/handle-numeric';
       const world = new World();
       const log: string[] = [];
 
-      world.addSystem(Update, { name: 'root', queries: [], fn: () => log.push('root') });
+      const systemToken21 = defineSystem({ name: 'root', queries: [], fn: () => log.push('root') });
+      world.addSystem(Update, systemToken21);
       // Three systems all after 'root', no order among themselves
-      world.addSystem(Update, {
+      const systemToken22 = defineSystem({
         name: 'childC',
         queries: [],
         fn: () => log.push('childC'),
-        after: ['root'],
+        after: [systemToken21],
       });
-      world.addSystem(Update, {
+      world.addSystem(Update, systemToken22);
+      const systemToken23 = defineSystem({
         name: 'childA',
         queries: [],
         fn: () => log.push('childA'),
-        after: ['root'],
+        after: [systemToken21],
       });
-      world.addSystem(Update, {
+      world.addSystem(Update, systemToken23);
+      const systemToken24 = defineSystem({
         name: 'childB',
         queries: [],
         fn: () => log.push('childB'),
-        after: ['root'],
+        after: [systemToken21],
       });
+      world.addSystem(Update, systemToken24);
 
       world.update();
       expect(log[0]).toBe('root');
@@ -2141,9 +2213,29 @@ import { handleNumeric } from './utils/handle-numeric';
     it('cyclic dependency throws CyclicDependencyError', () => {
       const world = new World();
 
-      world.addSystem(Update, { name: 'A', queries: [], fn: () => {}, after: ['C'] });
-      world.addSystem(Update, { name: 'B', queries: [], fn: () => {}, after: ['A'] });
-      world.addSystem(Update, { name: 'C', queries: [], fn: () => {}, after: ['B'] });
+      const forwardOrder3: SystemOrderReference[] = [];
+      const systemToken25 = defineSystem({
+        name: 'A',
+        queries: [],
+        fn: () => {},
+        after: forwardOrder3,
+      });
+      world.addSystem(Update, systemToken25);
+      const systemToken26 = defineSystem({
+        name: 'B',
+        queries: [],
+        fn: () => {},
+        after: [systemToken25],
+      });
+      world.addSystem(Update, systemToken26);
+      const systemToken27 = defineSystem({
+        name: 'C',
+        queries: [],
+        fn: () => {},
+        after: [systemToken26],
+      });
+      forwardOrder3.push(systemToken27);
+      world.addSystem(Update, systemToken27);
 
       const result = world.update();
       expect(result.ok).toBe(false);
@@ -2153,9 +2245,29 @@ import { handleNumeric } from './utils/handle-numeric';
     it('CyclicDependencyError message contains cycle path', () => {
       const world = new World();
 
-      world.addSystem(Update, { name: 'X', queries: [], fn: () => {}, after: ['Z'] });
-      world.addSystem(Update, { name: 'Y', queries: [], fn: () => {}, after: ['X'] });
-      world.addSystem(Update, { name: 'Z', queries: [], fn: () => {}, after: ['Y'] });
+      const forwardOrder4: SystemOrderReference[] = [];
+      const systemToken28 = defineSystem({
+        name: 'X',
+        queries: [],
+        fn: () => {},
+        after: forwardOrder4,
+      });
+      world.addSystem(Update, systemToken28);
+      const systemToken29 = defineSystem({
+        name: 'Y',
+        queries: [],
+        fn: () => {},
+        after: [systemToken28],
+      });
+      world.addSystem(Update, systemToken29);
+      const systemToken30 = defineSystem({
+        name: 'Z',
+        queries: [],
+        fn: () => {},
+        after: [systemToken29],
+      });
+      forwardOrder4.push(systemToken30);
+      world.addSystem(Update, systemToken30);
 
       const result = world.update();
       expect(result.ok).toBe(false);
@@ -2180,17 +2292,37 @@ import { handleNumeric } from './utils/handle-numeric';
       const log: string[] = [];
 
       // Linear chain: free1 → free2 (no cycle)
-      world.addSystem(Update, { name: 'free1', queries: [], fn: () => log.push('free1') });
-      world.addSystem(Update, {
+      const systemToken31 = defineSystem({
+        name: 'free1',
+        queries: [],
+        fn: () => log.push('free1'),
+      });
+      world.addSystem(Update, systemToken31);
+      const systemToken32 = defineSystem({
         name: 'free2',
         queries: [],
         fn: () => log.push('free2'),
-        after: ['free1'],
+        after: [systemToken31],
       });
+      world.addSystem(Update, systemToken32);
 
       // Cycle: cyc1 → cyc2 → cyc1
-      world.addSystem(Update, { name: 'cyc1', queries: [], fn: () => {}, after: ['cyc2'] });
-      world.addSystem(Update, { name: 'cyc2', queries: [], fn: () => {}, after: ['cyc1'] });
+      const forwardOrder5: SystemOrderReference[] = [];
+      const systemToken33 = defineSystem({
+        name: 'cyc1',
+        queries: [],
+        fn: () => {},
+        after: forwardOrder5,
+      });
+      world.addSystem(Update, systemToken33);
+      const systemToken34 = defineSystem({
+        name: 'cyc2',
+        queries: [],
+        fn: () => {},
+        after: [systemToken33],
+      });
+      forwardOrder5.push(systemToken34);
+      world.addSystem(Update, systemToken34);
 
       const result = world.update();
       expect(result.ok).toBe(false);
@@ -2200,11 +2332,38 @@ import { handleNumeric } from './utils/handle-numeric';
     it('4-node cycle: A→B→C→D→A with an uncycled system E', () => {
       const world = new World();
 
-      world.addSystem(Update, { name: 'E', queries: [], fn: () => {} });
-      world.addSystem(Update, { name: 'A', queries: [], fn: () => {}, after: ['D'] });
-      world.addSystem(Update, { name: 'B', queries: [], fn: () => {}, after: ['A'] });
-      world.addSystem(Update, { name: 'C', queries: [], fn: () => {}, after: ['B'] });
-      world.addSystem(Update, { name: 'D', queries: [], fn: () => {}, after: ['C'] });
+      const systemToken35 = defineSystem({ name: 'E', queries: [], fn: () => {} });
+      world.addSystem(Update, systemToken35);
+      const forwardOrder6: SystemOrderReference[] = [];
+      const systemToken36 = defineSystem({
+        name: 'A',
+        queries: [],
+        fn: () => {},
+        after: forwardOrder6,
+      });
+      world.addSystem(Update, systemToken36);
+      const systemToken37 = defineSystem({
+        name: 'B',
+        queries: [],
+        fn: () => {},
+        after: [systemToken36],
+      });
+      world.addSystem(Update, systemToken37);
+      const systemToken38 = defineSystem({
+        name: 'C',
+        queries: [],
+        fn: () => {},
+        after: [systemToken37],
+      });
+      world.addSystem(Update, systemToken38);
+      const systemToken39 = defineSystem({
+        name: 'D',
+        queries: [],
+        fn: () => {},
+        after: [systemToken38],
+      });
+      forwardOrder6.push(systemToken39);
+      world.addSystem(Update, systemToken39);
 
       const result = world.update();
       expect(result.ok).toBe(false);
@@ -2223,12 +2382,13 @@ import { handleNumeric } from './utils/handle-numeric';
       const world = new World();
       const log: string[] = [];
 
-      world.addSystem(Update, {
+      const systemToken40 = defineSystem({
         name: 'sys1',
         queries: [],
         fn: () => log.push('sys1'),
-        after: ['nonexistent'],
+        after: [defineSystem({ name: 'nonexistent', queries: [], fn: () => {} })],
       });
+      world.addSystem(Update, systemToken40);
 
       world.update();
       expect(log).toEqual(['sys1']);
@@ -2254,8 +2414,15 @@ import { handleNumeric } from './utils/handle-numeric';
       const world = new World();
       const log: string[] = [];
 
-      world.addSystem(Update, { name: 'A', queries: [], fn: () => log.push('A') });
-      world.addSystem(Update, { name: 'B', queries: [], fn: () => log.push('B'), before: ['A'] });
+      const systemToken41 = defineSystem({ name: 'A', queries: [], fn: () => log.push('A') });
+      world.addSystem(Update, systemToken41);
+      const systemToken42 = defineSystem({
+        name: 'B',
+        queries: [],
+        fn: () => log.push('B'),
+        before: [systemToken41],
+      });
+      world.addSystem(Update, systemToken42);
 
       // First update builds schedule
       world.update();
@@ -2279,13 +2446,14 @@ import { handleNumeric } from './utils/handle-numeric';
       // No entities spawned — query will match nothing
 
       let bodyExecuted = false;
-      world.addSystem(Update, {
+      const systemToken43 = defineSystem({
         name: 'emptyQuerySystem',
         queries: [{ with: [Pos] }],
         fn: () => {
           bodyExecuted = true;
         },
       });
+      world.addSystem(Update, systemToken43);
 
       world.update();
       // Per Bevy Finding 6: Query<D, F> is always Ok (empty is valid).
@@ -2300,13 +2468,14 @@ import { handleNumeric } from './utils/handle-numeric';
       world.spawn({ component: Pos, data: { x: 1 } });
 
       let bodyExecuted = false;
-      world.addSystem(Update, {
+      const systemToken44 = defineSystem({
         name: 'okSystem',
         queries: [{ with: [Pos] }],
         fn: () => {
           bodyExecuted = true;
         },
       });
+      world.addSystem(Update, systemToken44);
 
       world.update();
       expect(bodyExecuted).toBe(true);
@@ -2376,11 +2545,11 @@ import { handleNumeric } from './utils/handle-numeric';
   });
 
   // ---------------------------------------------------------------------------
-  // (c) Mixed string + ref<T> on the same entity: both stay identity-stable.
+  // (c) Mixed string + unique<T> on the same entity: both stay identity-stable.
   // ---------------------------------------------------------------------------
 
-  describe('w8 --- mixed string + ref<T> carry-over (AC-04, D-R3 symmetry)', () => {
-    it('addComponent migrate keeps BOTH string identity and ref<T> handle bit-equal', () => {
+  describe('w8 --- mixed string + unique<T> carry-over (AC-04, D-R3 symmetry)', () => {
+    it('addComponent migrate keeps BOTH string identity and unique<T> handle bit-equal', () => {
       const Mixed = defineComponent('Mixed', {
         label: { type: 'string' },
         mat: { type: 'unique<MaterialAsset>' },
@@ -2518,10 +2687,10 @@ import { handleNumeric } from './utils/handle-numeric';
   });
 
   describe("w5 - mixed 'string' + 'unique<T>' single-arm release (AC-05)", () => {
-    it('despawn(e) releases BOTH the string handle AND the ref<T> handle', () => {
+    it('despawn(e) releases BOTH the string handle AND the unique<T> handle', () => {
       // The same isManagedField arm must fan out across BOTH fields. This
       // test is the load-bearing observable for w6's predicate merge: any
-      // future regression that re-splits string vs ref<T> dispatch would
+      // future regression that re-splits string vs unique<T> dispatch would
       // leave one of the two handles live after despawn.
       const Mat = defineComponent('Mat', {
         label: { type: 'string' },
@@ -2546,7 +2715,7 @@ import { handleNumeric } from './utils/handle-numeric';
       if (!got.ok) throw new Error('expected ok');
       expect(got.value.label).toBe('mat-7');
 
-      // Despawn must release the ref<T> handle (existing AC-05 path).
+      // Despawn must release the unique<T> handle (existing AC-05 path).
       w.despawn(e).unwrap();
       const resolveMat = refs.resolve(matH);
       expect(resolveMat.ok).toBe(false);
@@ -2599,7 +2768,7 @@ import { handleNumeric } from './utils/handle-numeric';
 
     it('set on string field releases the prior payload (path 3)', () => {
       // Field-overwrite path: the prior string handle must be released
-      // BEFORE the new alloc, mirroring the ref<T> path 3 release-then-alloc
+      // BEFORE the new alloc, mirroring the unique<T> path 3 release-then-alloc
       // invariant (D-5 net-zero on same-bucket reuse).
       const StrName3 = defineComponent('StrName3', { value: { type: 'string' } });
       const w = new World();
@@ -2635,10 +2804,10 @@ import { handleNumeric } from './utils/handle-numeric';
   });
 
   // ---------------------------------------------------------------------------
-  // (2) Behavioural: mixed string + ref<T> entity drops both in one pass.
+  // (2) Behavioural: mixed string + unique<T> entity drops both in one pass.
   // ---------------------------------------------------------------------------
 
-  describe('w11 --- mixed string + ref<T> release (AC-05 single-arm dispatch)', () => {
+  describe('w11 --- mixed string + unique<T> release (AC-05 single-arm dispatch)', () => {
     it('despawn drops BOTH slots in the same loop pass; _liveCount delta = 2', () => {
       const Mixed = defineComponent('Mixed', {
         label: { type: 'string' },
@@ -2662,7 +2831,7 @@ import { handleNumeric } from './utils/handle-numeric';
       w.despawn(e).unwrap();
       const liveAfter = refs._liveCount();
 
-      // Net release count: -2 = -1 string handle + -1 ref<T> handle.
+      // Net release count: -2 = -1 string handle + -1 unique<T> handle.
       expect(liveBefore - liveAfter).toBe(2);
 
       // The ref handle resolves as released (string handle is internally

@@ -188,6 +188,46 @@ export function standardSharedTransmissionDefines(
   return overrides;
 }
 
+/**
+ * Define overrides for the lean-input row: the material reads UV0 only and no
+ * object basis or object-space position, so the vertex stage neither fetches
+ * nor interpolates UV1-7, the flat basis or positionOS. UE sizes TexCoords
+ * from the translator's used UV count (HLSLMaterialTranslator.cpp:15704-15716,
+ * LocalVertexFactoryCommon.ush:32-33 `TexCoords[(NUM_TEX_COORD_INTERPOLATORS+1)/2]`)
+ * and does not interpolate the instance transform under GPU Scene
+ * (LocalVertexFactoryCommon.ush:12-15). The Surface row keeps the tangent, as
+ * UE keeps TANGENTTOWORLD_INTERPOLATOR_BLOCK (LocalVertexFactoryCommon.ush:19-20),
+ * so normal-mapped materials qualify. The shadow caster evaluates coverage
+ * only and never reads the tangent frame, so its lean row drops it as well.
+ */
+export function standardLeanInputDefines(
+  defines: Readonly<Record<string, boolean>> | undefined,
+  program: 'surface' | 'shadow-caster' = 'surface',
+): Readonly<Record<string, boolean>> {
+  if (defines?.STANDARD_LEAN_INPUTS !== true) return {};
+  return {
+    STANDARD_SINGLE_UV_SET: true,
+    ...(program === 'shadow-caster' ? { STANDARD_TANGENT_INPUT_UNUSED: true } : {}),
+    STANDARD_OBJECT_BASIS_UNUSED: true,
+    STANDARD_OBJECT_POSITION_UNUSED: true,
+  };
+}
+
+/**
+ * Whether a Standard override mask (presence + projection selectors) can use
+ * the lean-input row: no triplanar / object-space normal projection (they read
+ * positionOS and the object basis) and no parallax march (it reads every UV
+ * set's derivatives). Tangent-space normal, clearcoat-normal and anisotropy
+ * maps read only the tangent, which the Surface lean row keeps.
+ */
+export function standardLeanInputMaskCompatible(mask: number): boolean {
+  return (
+    !standardMaskHasBit(mask, STANDARD_TRIPLANAR_PROJECTION_BIT) &&
+    !standardMaskHasBit(mask, STANDARD_OBJECT_SPACE_NORMAL_BIT) &&
+    !standardMaskHasBit(mask, STANDARD_PARALLAX_DISPLACEMENT_BIT)
+  );
+}
+
 export type StandardSharedTransmissionHost =
   (typeof STANDARD_SHARED_TRANSMISSION_SLOTS)[number]['host'];
 

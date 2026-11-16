@@ -153,6 +153,23 @@ def check_repo(repo: Path) -> tuple[int, list[tuple[str, str, str]]]:
         modules = _list_submodules(repo)
     except ValueError as error:
         return 1, [(".gitmodules", "", str(error))]
+    tree = _git(repo, "ls-tree", "-rz", "HEAD")
+    if tree.returncode != 0:
+        return 1, [("HEAD", "", f"could not enumerate source pins: {_git_detail(tree)}")]
+    declared = {path for path, _branch in modules}
+    missing = []
+    for entry in tree.stdout.split("\0"):
+        if not entry.startswith("160000 commit "):
+            continue
+        metadata, path = entry.split("\t", 1)
+        if path not in declared:
+            missing.append((
+                path,
+                metadata.split()[2],
+                "gitlink in HEAD is missing its .gitmodules declaration; restore its maintained source mapping",
+            ))
+    if missing:
+        return 1, missing
     if not modules:
         return 0, []
 

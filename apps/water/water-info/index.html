@@ -1,0 +1,10 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="theme-color" content="#edf3ef"><title>水体信息采集 | ForgeAX</title></head>
+<body><canvas id="scene" aria-label="实时水体信息与地形场景"></canvas><button id="panel-toggle" class="panel-toggle" type="button" aria-expanded="true" title="隐藏面板">面板</button>
+<aside class="inspector"><header><div><span class="eyebrow">FORGEAX / WATER R2</span><h1>水体信息采集</h1></div><span id="render-state">启动中</span></header>
+<section class="controls"><h2>地形输入</h2><div class="segmented"><button type="button" data-terrain="a" aria-pressed="true">地形 A</button><button type="button" data-terrain="b" aria-pressed="false">地形 B</button></div>
+<h2>采集参数</h2><div class="segmented"><button type="button" data-format="rgba16f" aria-pressed="true">16 位浮点</button><button type="button" data-format="rgba32f" aria-pressed="false">32 位浮点</button></div>
+<label>分辨率<select id="resolution"><option value="128">128 × 128</option><option value="256" selected>256 × 256</option><option value="512">512 × 512</option></select></label>
+<label class="check"><input id="local" type="checkbox"> 按视图局部对齐</label><label>模糊半径 <output id="blur-value">2 px</output><input id="blur" type="range" min="0" max="16" value="2"></label></section>
+<section class="readouts"><h2>引擎采集结果</h2><dl><div><dt>地形提供者</dt><dd id="ground">—</dd></div><div><dt>采集代次</dt><dd id="generation">—</dd></div><div><dt>WaterInfo 回执</dt><dd id="capture">—</dd></div><div><dt>已提交帧</dt><dd id="passes">—</dd></div><div><dt>源网格</dt><dd id="digest">—</dd></div><div><dt>采集视图</dt><dd id="slice">—</dd></div></dl></section>
+<section class="pixel"><h2>场景探针</h2><div class="probe"><span id="probe-uv">U — · V —</span><strong id="probe-texel">—</strong></div><p id="probe-state">场景中心 · 32.0, 32.0 m</p></section>
+<p id="status" role="status">等待首帧采集</p></aside><script type="module" src="/src/main.ts"></script></body></html>

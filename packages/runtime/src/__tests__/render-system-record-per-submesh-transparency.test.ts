@@ -1,3 +1,8 @@
+import { drawWorld } from '../../../render/src/__tests__/draw-world';
+import {
+  standardPbrManifestRow,
+  waterInfoShaderFixture,
+} from '../../../render/src/__tests__/shader-manifest-fixture';
 import { testAssets } from './helpers/runtime-assets';
 // @perf-budget-skip: intentional full mock-GPU render regression smoke gate.
 
@@ -24,10 +29,10 @@ import { testAssets } from './helpers/runtime-assets';
 // render-system-record-multi-material-textureview.test.ts (bug-20260610 D2).
 
 import type { World as WorldType } from '@forgeax/engine-ecs';
-import type { Renderer as RendererType } from '@forgeax/engine-render';
 import type { Handle, MaterialAsset, MeshAsset, TextureAsset } from '@forgeax/engine-types';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { standardMaterialShaderVariants } from './helpers/standard-material-manifest';
+import type { Renderer as RendererType } from '../../../render/src/render-contract';
+import { NULL_LIMITS } from '../../../rhi-null/src/device';
 import { mockRenderBundles } from './mock-render-bundles';
 
 // Load the renderer graph in setup so a cold transform cannot outlive a
@@ -101,7 +106,7 @@ function makeMockGPUDevice(spies: DeviceSpies): { device: unknown } {
     __mockTag: 'gpu-device',
     lost,
     features: new Set(),
-    limits: {},
+    limits: { ...NULL_LIMITS, maxStorageTexturesPerShaderStage: 4 },
     queue: {
       submit: () => undefined,
       onSubmittedWorkDone: async () => undefined,
@@ -112,6 +117,7 @@ function makeMockGPUDevice(spies: DeviceSpies): { device: unknown } {
     createBindGroupLayout: () => ({}),
     createPipelineLayout: () => ({}),
     createRenderPipeline: () => ({}),
+    createComputePipeline: () => ({ getBindGroupLayout: () => ({}) }),
     createBindGroup: (desc: {
       label?: string;
       entries?: readonly { binding: number; resource: unknown }[];
@@ -129,6 +135,13 @@ function makeMockGPUDevice(spies: DeviceSpies): { device: unknown } {
       unmap: () => undefined,
     }),
     createCommandEncoder: () => ({
+      copyBufferToBuffer: () => undefined,
+      beginComputePass: () => ({
+        setPipeline: () => undefined,
+        setBindGroup: () => undefined,
+        dispatchWorkgroups: () => undefined,
+        end: () => undefined,
+      }),
       beginRenderPass: () => ({
         setPipeline: () => undefined,
         setVertexBuffer: () => undefined,
@@ -139,6 +152,8 @@ function makeMockGPUDevice(spies: DeviceSpies): { device: unknown } {
         setScissorRect: () => undefined,
         draw: () => undefined,
         drawIndexed: () => undefined,
+        drawIndirect: () => undefined,
+        drawIndexedIndirect: () => undefined,
         end: () => undefined,
       }),
       finish: () => ({}),
@@ -171,19 +186,11 @@ function buildManifestDataUrl(): string {
     sourcePath: `${identifier}.wgsl`,
     composedWgsl: '/* stub */',
     paramSchema,
-    variants:
-      identifier === 'forgeax::default-standard-pbr' ? standardMaterialShaderVariants() : [],
+    variants: [],
   });
-  const pbrParamSchema = JSON.stringify([
-    { name: 'baseColor', type: 'color', default: [1, 1, 1, 1] },
-    { name: 'metallic', type: 'f32', default: 0 },
-    { name: 'roughness', type: 'f32', default: 0.5 },
-    { name: 'baseColorTexture', type: 'texture2d' },
-    { name: 'metallicRoughnessTexture', type: 'texture2d' },
-    { name: 'normalTexture', type: 'texture2d' },
-  ]);
   const manifest = {
     entries: [
+      ...waterInfoShaderFixture.entries,
       { hash: 'pbr00000', wgsl: '/* pbr stub - calls f_schlick( */', glsl: '', bindings: '' },
       { hash: 'unlit000', wgsl: '/* unlit stub */', glsl: '', bindings: '' },
       {
@@ -200,7 +207,8 @@ function buildManifestDataUrl(): string {
       },
     ],
     materialShaders: [
-      materialShaderStub('forgeax::default-standard-pbr', pbrParamSchema),
+      ...waterInfoShaderFixture.materialShaders,
+      standardPbrManifestRow('/* pbr stub - calls f_schlick( */'),
       materialShaderStub('forgeax::default-unlit'),
       materialShaderStub('forgeax::sprite'),
     ],
@@ -208,10 +216,7 @@ function buildManifestDataUrl(): string {
   return `data:application/json,${encodeURIComponent(JSON.stringify(manifest))}`;
 }
 
-interface RendererLike {
-  subscribe: RendererType['subscribe'];
-  draw: (worlds: unknown, opts: { cameraOwner: number; resourceOwner: number }) => void;
-}
+type RendererLike = Pick<RendererType, 'subscribe' | 'draw' | 'attach'>;
 
 async function importEngine(): Promise<{
   createRenderer: (...args: readonly unknown[]) => Promise<RendererLike>;
@@ -405,7 +410,7 @@ async function spawnMixedTransparentScene(): Promise<{
     { component: C.Transform, data: cameraTransform() },
   );
   world.spawn(
-    { component: C.DirectionalLight, data: {} },
+    { component: C.DirectionalLight, data: { direction: [-0.5, -1, -0.3] } },
     { component: C.Transform, data: cameraTransform() },
   );
   world.spawn(
@@ -443,13 +448,15 @@ describe('record: per-submesh transparency (feat-city-glb Bug 5)', () => {
       throw new Error('World attachment failed');
     }
     (world as WorldType).update().unwrap();
-    renderer.draw([world], { cameraOwner: 0, resourceOwner: 0 });
+    const firstDraw = drawWorld(renderer, world as WorldType);
+    if (!firstDraw.ok) throw firstDraw.error;
     await new Promise((resolve) => setTimeout(resolve, 0));
     if (!(renderer as unknown as RendererType).attach(world as WorldType).ok) {
       throw new Error('World attachment failed');
     }
     (world as WorldType).update().unwrap();
-    renderer.draw([world], { cameraOwner: 0, resourceOwner: 0 });
+    const secondDraw = drawWorld(renderer, world as WorldType);
+    if (!secondDraw.ok) throw secondDraw.error;
 
     // The transparent submesh must be drawn through the generic PBR per-submesh
     // path (label 'pbr-material-skylight-bg'), NOT the sprite fallback

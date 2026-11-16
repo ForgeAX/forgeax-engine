@@ -1,10 +1,13 @@
 // @perf-budget-skip: real generated game, detached live owner, Vite dev runtime and sandboxed Chromium.
 import { execFileSync } from 'node:child_process';
-import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { cp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
 import { afterAll, beforeAll, expect, it } from 'vitest';
+import {
+  createLiveSyncProjectDirectory,
+  prepareLiveSyncSharedInputs,
+} from '../../scripts/live-sync-inputs.mjs';
 
 // The detached owner runs the built CLI next to the library it is loaded from.
 const { liveDevControl, startLiveDev } = (await import(
@@ -85,6 +88,7 @@ interface LookValue {
 }
 
 let root = '';
+let temporaryRoot = '';
 
 async function look(args: Record<string, unknown> = {}): Promise<LookValue> {
   const result = (await liveDevControl(root, 'look', args)) as {
@@ -116,11 +120,24 @@ async function devDependencyHash(): Promise<unknown> {
 }
 
 beforeAll(async () => {
-  root = await mkdtemp(resolve(tmpdir(), 'forgeax-dev-look-'));
+  const directory = await createLiveSyncProjectDirectory(
+    'forgeax-dev-look-',
+    resolve(import.meta.dirname, '../../../..'),
+    process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST,
+  );
+  root = directory.root;
+  temporaryRoot = directory.temporaryRoot;
   await cp(resolve(import.meta.dirname, '../../../../templates/empty'), root, {
     recursive: true,
-    filter: (source) => !/(^|\/)(node_modules|dist|\.forgeax)(\/|$)/.test(source),
+    filter: (source) => !/(^|[\\/])(node_modules|dist|\.forgeax)([\\/]|$)/.test(source),
   });
+  if (process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST)
+    await prepareLiveSyncSharedInputs({
+      sourceRoot: resolve(import.meta.dirname, '../../../..'),
+      projectRoot: root,
+      temporaryRoot,
+      manifestPath: process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST,
+    });
   await mkdir(resolve(root, 'assets/look'), { recursive: true });
   // A game resolves its installed Engine, so Vite crawls the Engine runtime
   // dependencies before the first page. Without it, a cold dependency cache
@@ -145,7 +162,7 @@ beforeAll(async () => {
 afterAll(async () => {
   if (root === '') return;
   await liveDevControl(root, 'stop').catch(() => undefined);
-  await rm(root, { recursive: true, force: true });
+  await rm(temporaryRoot, { recursive: true, force: true });
 });
 
 const LOOK_E2E_TIMEOUT_MS = Number(process.env.FORGEAX_LOOK_E2E_TIMEOUT_MS ?? 600_000);

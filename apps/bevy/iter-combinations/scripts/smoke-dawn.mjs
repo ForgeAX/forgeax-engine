@@ -39,11 +39,11 @@ import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErr
 // Output literals (grep-stable): `[bevy-iter-combinations] backend=webgpu`,
 // `[smoke] frames observed=<N>`, `[smoke] motionMeanDelta=<f>`,
 // `[smoke] earlySpread=<f> lateSpread=<f>`, `[smoke] wrote PNG=<path>`.
-
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
@@ -141,7 +141,7 @@ const { buildIterCombinationsWorld, stepInteract, stepIntegrate, bodySpread } = 
 );
 
 const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MANIFEST_PATH, 'utf8'))}`;
+const MANIFEST_URL = `data:application/json,${encodeURIComponent(readShaderManifestText(MANIFEST_PATH))}`;
 
 let renderer;
 try {

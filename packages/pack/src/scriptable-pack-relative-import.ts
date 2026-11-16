@@ -16,10 +16,7 @@ export function relativeScriptableImportCandidates(
   specifier: string,
 ): readonly string[] {
   if (!specifier.startsWith('.')) return [];
-  const raw = resolve(
-    dirname(importer),
-    specifier.endsWith('?raw') ? specifier.slice(0, -4) : specifier,
-  );
+  const raw = resolve(dirname(importer), specifier.replace(/\?(?:raw|bytes)$/, ''));
   const extension = extname(raw);
   const stem = raw.slice(0, raw.length - extension.length);
   const substitutions =

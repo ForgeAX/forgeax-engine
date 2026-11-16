@@ -9,10 +9,10 @@ import { Visibility, VisibilityStateValue } from '../components/visibility';
 import { MaterialResource } from '../material-resource';
 import type { RenderableSnapshot } from '../render-system-extract';
 import { defaultMaterialSnapshot } from '../render-system-extract';
-import { extractFrames } from '../render-system-extract-tail';
+import { extractSource } from '../render-system-extract-tail';
 import { RenderScene } from '../scene/render-scene';
 
-const ENTITY_COUNT = 10_000;
+const ENTITY_COUNT = 10000;
 const SAMPLE_COUNT = 101;
 const LIGHTWEIGHT_RENDER_SCENE_PERF = process.env.FORGEAX_RENDER_PERF_LIGHTWEIGHT === '1';
 // The full 100k scene remains the local/nightly scaling check.  CI keeps the
@@ -42,7 +42,6 @@ function sceneSnapshot(entityKey: number): RenderableSnapshot {
     material,
     materials: [material],
     materialBindingSources: ['engine-default'],
-    worldId: 0,
     entityKey,
   };
 }
@@ -84,7 +83,7 @@ function median(values: readonly number[]): number {
 }
 
 function measureWorldSamples(worlds: readonly World[]): number[][] {
-  for (const world of worlds) extractFrames([world], 0);
+  for (const world of worlds) extractSource(world);
   const samples = worlds.map(() => [] as number[]);
   for (let sample = 0; sample < SAMPLE_COUNT; sample++) {
     const firstWorldIndex = sample % worlds.length;
@@ -93,7 +92,7 @@ function measureWorldSamples(worlds: readonly World[]): number[][] {
       const world = worlds[worldIndex];
       if (world === undefined) continue;
       const start = performance.now();
-      extractFrames([world], 0);
+      extractSource(world);
       samples[worldIndex]?.push(performance.now() - start);
     }
   }
@@ -136,7 +135,7 @@ describe(`visibility extraction performance (10k + RenderScene ${RENDER_SCENE_EN
             ? new Float32Array(16)
             : new Float32Array(previous.transform.world);
         world[12] = (world[12] ?? 0) + 1;
-        return { kind: 'update' as const, worldId: 0, entityKey, world };
+        return { kind: 'update' as const, entityKey, world };
       }),
     );
 
@@ -157,5 +156,5 @@ describe(`visibility extraction performance (10k + RenderScene ${RENDER_SCENE_EN
     );
     expect(scene.materialize()).toBe(changed);
     expect(scene.querySpatial({ min: [-1, -1, -1], max: [1, 1, 1] }).length).toBeGreaterThan(0);
-  }, 60_000);
+  }, 60000);
 });

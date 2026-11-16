@@ -1,3 +1,6 @@
+import { GameCounterattackOrder, GamePlayerMovementOrder, GameHealthPickupCollectionOrder, GameEnergyCoreExtractionOrder } from "../../src/system-order";
+import { PhysicsCollisionSync } from "@forgeax/engine-physics-rapier3d";
+import { defineSystem } from "@forgeax/engine-ecs";
 import type { AssetHandle } from '@forgeax/engine-types';
 import {
   FixedUpdate,
@@ -322,11 +325,11 @@ export function createEnergyCoreExtraction(
   return {
     installSystem: (ctx) => {
       physics = ctx.physics;
-      world.addSystem(FixedUpdate, {
+      const systemToken1 = defineSystem({ sets: [GameEnergyCoreExtractionOrder],
         name: 'game-energy-core-extraction',
         runIf: inState(GameState, 'Play'),
-        after: ['physicsCollisionSync', 'game-player-movement', 'game-health-pickup-collection'],
-        before: ['game-counterattack'],
+        after: [PhysicsCollisionSync, GamePlayerMovementOrder, GameHealthPickupCollectionOrder],
+        before: [GameCounterattackOrder],
         queries: [],
         fn: (_world, _results, commands) => {
           const state = objective();
@@ -389,7 +392,8 @@ export function createEnergyCoreExtraction(
           world.set(beaconEntity, ExtractionObjective, next);
           ctx.onProgress(snapshot());
         },
-      }).unwrap();
+      });
+world.addSystem(FixedUpdate, systemToken1).unwrap();
     },
     reset,
     snapshot,

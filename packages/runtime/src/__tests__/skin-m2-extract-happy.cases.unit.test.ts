@@ -8,7 +8,7 @@ import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { Skin } from '@forgeax/engine-skinning';
 import { afterEach, expect, it, vi } from 'vitest';
 import { SkinTasks } from '../../../render/src/record/skin-tasks';
-import { extractFrames } from '../../../render/src/render-system-extract-tail';
+import { extractSource } from '../../../render/src/render-system-extract-tail';
 import { PersistentRenderScene } from '../../../render/src/scene/render-scene';
 
 afterEach(() => vi.restoreAllMocks());
@@ -51,17 +51,15 @@ async function fixture() {
   };
   const extract = () => {
     propagateTransforms(world);
-    const owner = { cameraOwner: 0, resourceOwner: 0 };
     const frame = scene.extractComposition(
-      [world],
-      owner,
+      world,
       assets,
       (renderables) =>
-        extractFrames([world], owner, assets, scene.materialSnapshotCacheStore(), {
+        extractSource(world, assets, scene.materialSnapshotCacheStore(), {
           cull: 'none',
           renderables,
         }),
-      [lease],
+      lease,
     );
     const fixed = scene.skinRecordingFrame();
     if (fixed === undefined) throw new Error('Missing accepted Skin frame');
@@ -96,7 +94,7 @@ it('resolves distinct actual task windows from shared managed geometry', async (
     expect(error).not.toHaveBeenCalled();
     expect(frame.renderables).toHaveLength(2);
     const tasks = frame.renderables.map((row) => {
-      const slot = f.scene.compositionSlot(row.worldId, row.entityKey);
+      const slot = f.scene.compositionSlot(row.entityKey);
       if (slot === undefined) throw new Error('Missing accepted Skin slot');
       return f.tasks.demand(slot);
     });
@@ -126,7 +124,7 @@ it.each([
       expect(error.mock.calls[0]?.[1]).toMatchObject({ code });
     } else expect(error).not.toHaveBeenCalled();
     const resolved = frame.renderables.map((row) => {
-      const slot = f.scene.compositionSlot(row.worldId, row.entityKey);
+      const slot = f.scene.compositionSlot(row.entityKey);
       if (slot === undefined) throw new Error('Missing accepted Skin slot');
       return f.tasks.demand(slot);
     });

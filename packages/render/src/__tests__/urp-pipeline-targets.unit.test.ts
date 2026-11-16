@@ -20,6 +20,54 @@ function targets(
 }
 
 describe('urp render feature targets', () => {
+  it('keeps FP32 Mode 0 radiance through resolve without widening input or probes', () => {
+    const targets = resolveStandardRenderFeatureTargets({
+      tonemap: 'aces-filmic',
+      antialias: 'none',
+      colorAttachmentFormat: 'bgra8unorm-srgb',
+      storageBuffer: true,
+      multisample: true,
+      analyticCloud: true,
+      cloudTransportFormat: 'rgba32float',
+    });
+    const formats = Object.fromEntries(targets.map((target) => [target.name, target.format]));
+    expect(formats).toMatchObject({
+      'motion-input': 'rgba16float',
+      'motion-output': 'rgba32float',
+      'cloud-mode0-trace-far': 'rgba32float',
+      'cloud-mode0-trace-near': 'rgba32float',
+      'cloud-history-radiance-current': 'rgba32float',
+      'cloud-history-transmittance-previous': 'rgba32float',
+      'cloud-mode0-probe-color': 'rgba16float',
+    });
+  });
+  it('projects the resolved Water surface to features while retaining real four-sample opaque production', () => {
+    const input = {
+      tonemap: 'aces-filmic',
+      antialias: 'msaa',
+      colorAttachmentFormat: 'bgra8unorm-srgb' as const,
+      storageBuffer: true,
+      multisample: true,
+    };
+    const opaque = resolveStandardRenderFeatureTargets(input);
+    expect(opaque.slice(0, 3).every((target) => target.sampleCount === 4)).toBe(true);
+    const water = resolveStandardRenderFeatureTargets({ ...input, singleLayerWater: true });
+    expect(logicalRenderFeatureTargets(water)).toEqual(
+      expect.arrayContaining([
+        { name: 'color', kind: 'color', format: 'rgba16float', sampleCount: 1 },
+        { name: 'depth', kind: 'depth', format: 'depth32float-stencil8', sampleCount: 1 },
+      ]),
+    );
+    expect(resolveStandardRenderFeatureTargets({ ...input, singleLayerWater: true })).toBe(water);
+    expect(Object.isFrozen(water)).toBe(true);
+    expect(water.find((target) => target.name === 'opaque-depth')).toMatchObject({
+      kind: 'scene-depth',
+      format: 'depth32float-stencil8',
+      sampleCount: 4,
+    });
+    expect(water).not.toBe(opaque);
+  });
+
   it('uses four immutable Standard definitions across equivalent configuration objects', () => {
     const definitions = new Set<unknown>();
     for (const tonemap of ['none', 'aces-filmic', 'agx', 'future-tonemap']) {
@@ -44,7 +92,17 @@ describe('urp render feature targets', () => {
                 expect(resolveStandardRenderFeatureTargets({ ...input })).toBe(targets);
                 const logical = logicalRenderFeatureTargets(targets);
                 expect(logicalRenderFeatureTargets(targets)).toBe(logical);
-                expect(targets).toHaveLength(cloudHistory ? 13 : 7);
+                expect(targets).toHaveLength(cloudHistory ? 18 : 12);
+                expect(targets.find((target) => target.name === 'cloud-shadow-raw')?.format).toBe(
+                  'rgba32float',
+                );
+                expect(targets.filter((target) => target.name === 'opaque-depth')).toHaveLength(1);
+                expect(targets.at(-1)).toMatchObject({
+                  name: 'opaque-depth',
+                  kind: 'scene-depth',
+                  format: 'depth32float-stencil8',
+                  sampleCount: antialias === 'msaa' && multisample ? 4 : 1,
+                });
                 expect(targets[0]?.format).toBe('rgba16float');
                 expect(targets[1]?.format).toBe('depth32float-stencil8');
                 expect(
@@ -55,7 +113,22 @@ describe('urp render feature targets', () => {
                         target.sampleCount === (antialias === 'msaa' && multisample ? 4 : 1),
                     ),
                 ).toBe(true);
-                expect(targets.slice(3).every((target) => target.sampleCount === 1)).toBe(true);
+                expect(
+                  targets
+                    .slice(3)
+                    .every(
+                      (target) =>
+                        target.sampleCount ===
+                        (target.name === 'editor-depth' || target.name === 'opaque-depth'
+                          ? targets[1]?.sampleCount
+                          : 1),
+                    ),
+                ).toBe(true);
+                expect(
+                  targets
+                    .filter((target) => target.name?.startsWith('editor-'))
+                    .map((target) => target.name),
+                ).toEqual(['editor-input', 'editor-output', 'editor-depth']);
                 expect(Object.isFrozen(targets)).toBe(true);
                 expect(Object.isFrozen(logical)).toBe(true);
                 expect(targets.every(Object.isFrozen)).toBe(true);
@@ -173,7 +246,8 @@ describe('urp render feature targets', () => {
     input.cloudHistory = true;
     const cloud = resolveStandardRenderFeatureTargets(input);
     expect(cloud).toHaveLength(first.length + 6);
-    expect(first).toHaveLength(7);
+    expect(first).toHaveLength(12);
+    expect(first.at(-1)).toMatchObject({ name: 'opaque-depth', sampleCount: 1 });
     expect(resolveStandardRenderFeatureTargets(input)).toEqual(cloud);
   });
 

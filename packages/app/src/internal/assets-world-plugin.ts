@@ -11,8 +11,6 @@ declare module '@forgeax/engine-plugin' {
   }
 }
 
-const ASSET_REGISTRY_RESOURCE_KEY = 'AssetRegistry' as const;
-
 /** Project the Host-owned AssetRegistry as a declared dependent service. */
 export function rendererAssetsPlugin(assets: AssetRegistry | undefined): Plugin {
   return {
@@ -50,7 +48,7 @@ export function assetRegistryPlugin(
   };
 }
 
-/** Project the realm AssetRegistry into World resource lookup reversibly. */
+/** Bind the realm Registry as the World's asset reference owner. */
 export function assetsWorldPlugin(): Plugin {
   return {
     name: 'assets-world',
@@ -58,12 +56,6 @@ export function assetsWorldPlugin(): Plugin {
     apply(ctx) {
       if (ctx.assets === undefined) return;
       ctx.world.bindAssets(ctx.assets).unwrap();
-      ctx.effect(() => {
-        ctx.world.insertResource(ASSET_REGISTRY_RESOURCE_KEY, ctx.assets);
-        return () => {
-          ctx.world.removeResource(ASSET_REGISTRY_RESOURCE_KEY);
-        };
-      }, 'assets/world-resource');
     },
   };
 }

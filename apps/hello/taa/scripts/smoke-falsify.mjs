@@ -11,7 +11,7 @@ import { runCarrier, runCarrierAsync } from './smoke-carrier.mjs';
 const SCRIPT_DIR = import.meta.dirname;
 const APP_ROOT = resolve(SCRIPT_DIR, '..');
 const REPO_ROOT = resolve(APP_ROOT, '..', '..', '..');
-const EVIDENCE_DIR = resolve(APP_ROOT, 'evidence', 'readback');
+const EVIDENCE_DIR = resolve(process.env.SMOKE_EVIDENCE_DIR ?? resolve(APP_ROOT, 'evidence', 'readback'));
 const FALSIFIER_PROFILES = Object.freeze({
   full: Object.freeze({
     frames: 60,

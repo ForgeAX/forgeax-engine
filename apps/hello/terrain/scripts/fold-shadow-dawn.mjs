@@ -208,7 +208,6 @@ try {
       ]) {
         const height = (
           await querySubmittedTerrainHeight(blockedOff.receipt, {
-            worldId: 0,
             entity: h.subjects.terrain,
             expectedAsset: foldHandle,
             x: position[0],

@@ -1,8 +1,5 @@
 import { expect, it } from 'vitest';
 import { MaterialResource } from '../../material-resource';
-import { worldRenderResources } from '../../publication/resource-scope';
-import { projectRayScene } from '../../raytracing/scene-projection';
-import { projectVisibleSurfaces } from '../../raytracing/visible-surface';
 import { retainedTransportPlane } from './scene-projection.fixture';
 
 it('projects the accepted material snapshot across edits without consulting newer World values', () => {
@@ -21,7 +18,6 @@ it('projects the accepted material snapshot across edits without consulting newe
     source.retained.apply([
       {
         kind: 'update',
-        worldId: 0,
         entityKey: 31,
         snapshot: {
           ...firstSlot.snapshot,
@@ -41,30 +37,15 @@ it('projects the accepted material snapshot across edits without consulting newe
   };
   replace(replacement);
   const second = source.project();
-  expect(first.materials).toEqual([
-    { worldId: 0, handle: initial.materialHandle, snapshot: initial },
-  ]);
-  expect(second.materials).toEqual([
-    { worldId: 0, handle: initial.materialHandle, snapshot: replacement },
-  ]);
+  expect(first.materials).toEqual([{ handle: initial.materialHandle, snapshot: initial }]);
+  expect(second.materials).toEqual([{ handle: initial.materialHandle, snapshot: replacement }]);
   expect(first.materials[0]?.snapshot.paramSnapshot?.emissiveIntensity).toBe(2);
   // Geometry identity and acceleration inputs do not change with a material edit.
   expect(second.scene.triangles).toEqual(first.scene.triangles);
   expect(second.scene.nodes).toEqual(first.scene.nodes);
-  // Each World retains its owning asset identity.
-  const secondWorld = retainedTransportPlane({ kind: 'material' });
-  const slots = secondWorld.retained
-    .slotsSnapshot()
-    .map((slot) => ({ ...slot, slot: slot.slot + 1, worldId: 1 }));
-  const combined = projectRayScene(
-    [...source.retained.slotsSnapshot(), ...slots],
-    [source.world, secondWorld.world].map(worldRenderResources),
-    projectVisibleSurfaces([...source.retained.slotsSnapshot(), ...slots], 16).unwrap(),
-  );
-  const secondSlot = secondWorld.retained.slotsSnapshot().at(0);
-  if (secondSlot === undefined) throw new Error('missing second World fixture slot');
-  expect(combined.materials.map((material) => [material.worldId, material.handle])).toEqual([
-    [0, initial.materialHandle],
-    [1, secondSlot.snapshot.material.snapshot.materialHandle],
-  ]);
+  // Independent Renderer sources cannot overwrite held accepted material facts.
+  const other = retainedTransportPlane({ kind: 'material' });
+  const otherProjection = other.project();
+  expect(otherProjection.materials[0]?.snapshot).not.toBe(replacement);
+  expect(second.materials).toEqual([{ handle: initial.materialHandle, snapshot: replacement }]);
 });

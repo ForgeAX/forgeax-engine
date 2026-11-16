@@ -139,5 +139,6 @@ export {
 export { type WithVertexColorsOptions, withVertexColor, withVertexColors } from './vertex-color';
 export {
   buildVisibilityDistanceField,
+  type VisibilityDistanceFieldOptions,
   visibilityDistanceFieldSourceDigest,
 } from './visibility-distance-field';

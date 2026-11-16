@@ -33,11 +33,7 @@ it('records an auxiliary RenderTarget camera as its own capture view beside the 
     readback: true,
   });
   if (!target.ok) throw target.error;
-  const input = {
-    leases: [attached.value],
-    camera: { lease: attached.value },
-    environment: { lease: attached.value },
-  };
+  const input = { source: attached.value };
   const draw = async (frames: number) => {
     for (let frame = 0; frame < frames; frame++) {
       expect(world.update().ok).toBe(true);

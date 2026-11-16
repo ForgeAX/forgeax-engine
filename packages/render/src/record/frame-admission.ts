@@ -1,4 +1,3 @@
-import { recordContext } from '../world/view-record-context';
 // Frame admission and scene-input decisions made before any GPU-driven
 // preparation: which camera records, whether the device/pipeline may record,
 // whether the frame defers to a preparation barrier, and which material,
@@ -6,6 +5,7 @@ import { recordContext } from '../world/view-record-context';
 
 import { type Buffer, RhiError } from '@forgeax/engine-rhi';
 import type { AssetHandle } from '@forgeax/engine-types';
+import { atmosphereFrameAdmissible } from '../environment/capability';
 import { RendererOperationError } from '../errors/render';
 import { resolveDepthOfFieldFrameParams } from '../features/depth-of-field/depth-of-field-params';
 import type { StandardTopologyInputValue } from '../pipeline/standard-lighting/topology';
@@ -27,12 +27,12 @@ import { SubsurfaceSelection } from '../subsurface/selection';
 import { visibleSurfaceOf } from '../world/gi-systems';
 import type { ViewLights } from '../world/render-lights';
 import { renderWorldFor } from '../world/render-world';
+import { recordContext } from '../world/view-record-context';
 import type { CubeCaptureFrameInput, FrameRecordingInput } from './frame';
 import {
   activeFrameCameras,
   type RenderFrameState,
   resetFrameRecordingOutputs,
-  worldEntityKey,
 } from './frame-snapshot';
 import { ensureProbeBlendRecordBuffer } from './probe-blend-buffer';
 import type { PipelineState, RenderSystemInternals } from './render-context';
@@ -137,19 +137,15 @@ function assertAtmosphereAdmission(
   frameState: RenderFrameState,
   pipelineState: PipelineState,
 ): void {
+  const environment = frameState.environmentFrame?.source;
   if (
-    frameState.environmentFrame?.source.kind !== 'atmosphere' ||
-    (frameState.environmentFrame.source.atmosphere.backgroundOnly &&
-      internals.device.caps.rgba16floatRenderable) ||
-    (!internals.device.caps.storageBuffer &&
-      internals.device.caps.rgba16floatRenderable &&
-      (internals.device.limits.maxTextureDimension2D ?? 0) >= 1024 &&
-      (internals.device.limits.maxSampledTexturesPerShaderStage ?? 0) >= 16) ||
-    (pipelineState.atmosphereAvailable === true &&
-      internals.device.caps.compute &&
-      internals.device.caps.storageTexture &&
-      internals.device.caps.rgba16floatRenderable &&
-      (internals.device.limits.maxTextureDimension3D ?? 0) >= 32)
+    environment?.kind !== 'atmosphere' ||
+    atmosphereFrameAdmissible({
+      atmosphereAvailable: pipelineState.atmosphereAvailable,
+      backgroundOnly: environment.atmosphere.backgroundOnly,
+      caps: internals.device.caps,
+      limits: internals.device.limits,
+    })
   ) {
     return;
   }
@@ -369,9 +365,7 @@ export function projectFrameVisibleSurface(
 function manualProbeBlendRecords(renderables: FrameList<RenderableSnapshot>) {
   return renderables.flatMap((source) => {
     const record = source.probeBlendRecord;
-    return record === undefined
-      ? []
-      : [{ cacheKey: worldEntityKey(source.worldId, source.entityKey), record }];
+    return record === undefined ? [] : [{ cacheKey: source.entityKey, record }];
   });
 }
 

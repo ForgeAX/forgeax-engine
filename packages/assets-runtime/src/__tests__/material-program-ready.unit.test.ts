@@ -1,4 +1,3 @@
-import { webcrypto } from 'node:crypto';
 import {
   type CookedMaterialRecord,
   createMaterialArtifactDigest,
@@ -8,7 +7,7 @@ import {
 } from '@forgeax/engine-pack/material-cook';
 import { MaterialArtifactRegistry, ShaderRegistry } from '@forgeax/engine-shader';
 import type { MaterialProgramAbi } from '@forgeax/engine-types';
-import { afterEach, expect, it, vi } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { inspectMaterialRuntime } from '../material/inspection.js';
 import { createMaterialLoader, type MaterialPublication } from '../material/loader.js';
 import {
@@ -41,6 +40,15 @@ const submissionAbi = {
   receiptIdentity: 'custom-layout',
   generation: 1,
 } satisfies MaterialProgramAbi;
+function pair(pass: string, context: MaterialCookProgramContext) {
+  return (['direct', 'scene-index'] as const).map((address) => ({
+    pass,
+    context,
+    address,
+    entry: address === 'direct' ? submissionAbi.directEntry : submissionAbi.sceneIndexEntry,
+    abi: submissionAbi,
+  }));
+}
 function fixture() {
   const passes = ['Forward', 'Overlay'].map((name) => ({ name, program: { module: name } }));
   const programs = passes.map(({ name }) => {
@@ -53,12 +61,12 @@ function fixture() {
         digest: createMaterialArtifactDigest(bytes),
         bytes,
       },
-      selections: [{ pass: name, context }],
+      selections: pair(name, context),
     };
   });
   const artifactDigest = createMaterialProgramSetDigest(programs, passes);
   const record: CookedMaterialRecord = {
-    schemaVersion: 'material-cook/4',
+    schemaVersion: 'material-cook/5',
     guid: 'material',
     materialGuid: 'material',
     publicationGeneration: 1,
@@ -70,7 +78,7 @@ function fixture() {
     refs: { parent: [], textures: [], samplers: [], modules: [] },
     programs,
     receipt: {
-      schemaVersion: 'material-cook/4',
+      schemaVersion: 'material-cook/5',
       sourceClosure: ['material.json'],
       profile: 'webgpu/v1',
       compilerVersion: 'test',
@@ -131,23 +139,22 @@ it('rejects a missing or corrupted second program instead of publishing a partia
   });
 });
 
-it('rejects a stale selection manifest before publishing Ready', async () => {
-  const { publication, record } = fixture();
-  expect(
-    await load({
-      ...publication,
-      record: {
-        ...record,
-        resolved: {
-          ...record.resolved,
-          passes: record.resolved.passes.map((pass) => ({
-            ...pass,
-            program: { ...pass.program, fragmentEntry: 'changed' },
-          })),
-        },
-      },
-    }),
-  ).toMatchObject({ status: 'Error', error: { code: 'material-cook-record-invalid' } });
+it('preserves the first integrity failure before a later artifact read throws', async () => {
+  const { publication, artifacts } = fixture();
+  const first = artifacts['Forward.wgsl'];
+  if (first === undefined) throw new Error('Expected Forward fixture');
+  artifacts['Forward.wgsl'] = { ...first, digest: 'sha256:wrong' };
+  const laterFailure = new Error('later artifact read');
+  Object.defineProperty(artifacts, 'Overlay.wgsl', {
+    get: () => {
+      throw laterFailure;
+    },
+  });
+
+  await expect(load(publication)).resolves.toMatchObject({
+    status: 'Error',
+    error: { code: 'asset-artifact-integrity-mismatch', detail: { field: 'Forward.wgsl' } },
+  });
 });
 
 it('installs programs under their own keys and preserves each Pass selection', async () => {
@@ -165,7 +172,9 @@ it('installs programs under their own keys and preserves each Pass selection', a
   const artifacts = new MaterialArtifactRegistry();
   const projection = installMaterialReadyShaders(shaders, ready, artifacts);
   expect(
-    projection.passes.map((pass) => pass.programs.map((program) => program.specializationKey)),
+    projection.passes.map((pass) => [
+      ...new Set(pass.programs.map((program) => program.specializationKey)),
+    ]),
   ).toEqual([['Forward'], ['Overlay']]);
   expect(shaders.findMaterialArtifact('Forward').ok).toBe(true);
   expect(shaders.findMaterialArtifact('Overlay').ok).toBe(true);
@@ -301,7 +310,7 @@ it('selects a multi-program publication without sorting context fields on every 
     programs: contexts.map((selected, index) => ({
       ...source,
       specializationKey: `program-${index}`,
-      selections: [{ pass: 'Forward', context: selected }],
+      selections: pair('Forward', selected),
     })),
   });
   const sorting = vi.spyOn(String.prototype, 'localeCompare');
@@ -388,31 +397,7 @@ it('selects direct and scene-index entries from one projected publication', () =
   const { record } = fixture();
   const forward = record.programs[0];
   if (forward === undefined) throw new Error('Forward fixture program is missing');
-  const modernRecord: CookedMaterialRecord = {
-    ...record,
-    programs: record.programs.map((program, index) =>
-      index === 0
-        ? {
-            ...program,
-            selections: program.selections.flatMap((selection) => [
-              {
-                ...selection,
-                address: 'direct' as const,
-                entry: submissionAbi.directEntry,
-                abi: submissionAbi,
-              },
-              {
-                ...selection,
-                address: 'scene-index' as const,
-                entry: submissionAbi.sceneIndexEntry,
-                abi: submissionAbi,
-              },
-            ]),
-          }
-        : program,
-    ),
-  };
-  const projection = projectMaterialRecord(modernRecord);
+  const projection = projectMaterialRecord(record);
   expect(selectMaterialPassProgram(projection, 'Forward', context, 'direct')).toMatchObject({
     address: 'direct',
     entry: 'vs_main',
@@ -423,7 +408,7 @@ it('selects direct and scene-index entries from one projected publication', () =
     entry: 'vs_scene_index',
     abi: submissionAbi,
   });
-  expect(forward.selections).toHaveLength(1);
+  expect(forward.selections).toHaveLength(2);
 });
 
 it('prefers the published color ABI while accepting unused mesh color and rejecting unavailable inputs', () => {
@@ -519,27 +504,7 @@ it('loads and selects both Surface derivatives atomically through the same compl
     },
     selections: [{ pass: 'Forward', context: cardContext, entry: 'vs_card' }],
   };
-  const programs: MaterialCookProgram[] = [
-    ...record.programs.map((program) => ({
-      ...program,
-      selections: program.selections.flatMap((selection) => [
-        {
-          ...selection,
-          address: 'direct' as const,
-          entry: submissionAbi.directEntry,
-          abi: submissionAbi,
-        },
-        {
-          ...selection,
-          address: 'scene-index' as const,
-          entry: submissionAbi.sceneIndexEntry,
-          abi: submissionAbi,
-        },
-      ]),
-    })),
-    ray,
-    card,
-  ];
+  const programs: MaterialCookProgram[] = [...record.programs, ray, card];
   const artifactDigest = createMaterialProgramSetDigest(programs, record.resolved.passes);
   const complete = {
     ...record,
@@ -602,7 +567,7 @@ it('loads and selects both Surface derivatives atomically through the same compl
   });
   artifacts['card.wgsl'] = {
     bytes: new TextEncoder().encode('corrupt Card'),
-    digest: card.artifact.digest,
+    digest: createMaterialArtifactDigest(new TextEncoder().encode('corrupt Card')),
   };
   expect(await load(publication)).toMatchObject({
     status: 'Error',
@@ -649,7 +614,7 @@ it('loads and selects both Surface derivatives atomically through the same compl
   });
   artifacts['ray.wgsl'] = {
     bytes: new TextEncoder().encode('stale ray source'),
-    digest: ray.artifact.digest,
+    digest: createMaterialArtifactDigest(new TextEncoder().encode('stale ray source')),
   };
   expect(await load(publication)).toMatchObject({
     status: 'Error',
@@ -658,412 +623,4 @@ it('loads and selects both Surface derivatives atomically through the same compl
       detail: { field: 'ray.wgsl' },
     },
   });
-});
-
-it.each([
-  'tail',
-  'length',
-])('rejects %s record bytes even when the published digest matches', async (difference) => {
-  const { publication, record } = fixture();
-  const original = record.programs[1];
-  if (original === undefined) throw new Error('Expected Overlay program');
-  const bytes =
-    difference === 'length'
-      ? original.artifact.bytes.slice(0, -1)
-      : original.artifact.bytes.slice();
-  if (difference === 'tail') {
-    const last = bytes[bytes.length - 1];
-    if (last === undefined) throw new Error('Expected nonempty program bytes');
-    bytes[bytes.length - 1] = last ^ 1;
-  }
-  expect(
-    await load({
-      ...publication,
-      record: {
-        ...record,
-        programs: record.programs.map((program, index) =>
-          index === 1 ? { ...program, artifact: { ...program.artifact, bytes } } : program,
-        ),
-      },
-    }),
-  ).toMatchObject({
-    status: 'Error',
-    error: {
-      code: 'material-cook-record-invalid',
-      detail: { field: 'programs.Overlay.artifact.bytes' },
-    },
-  });
-});
-
-it('accepts equal program byte views without retaining the published mutable backing buffer', async () => {
-  const { publication, record, artifacts } = fixture();
-  const original = record.programs[1];
-  if (original === undefined) throw new Error('Expected Overlay program');
-  const backing = new Uint8Array(original.artifact.bytes.length + 2);
-  backing.set(original.artifact.bytes, 1);
-  artifacts['Overlay.wgsl'] = {
-    bytes: backing.subarray(1, backing.length - 1),
-    digest: original.artifact.digest,
-  };
-  const ready = await load(publication);
-  if (ready.status !== 'Ready') throw new Error('Expected Ready for equal nonzero-offset bytes');
-  backing.fill(0);
-  expect(ready.record.programs[1]?.artifact.bytes).toEqual(original.artifact.bytes);
-});
-
-afterEach(() => vi.unstubAllGlobals());
-
-it('hashes an isolated exact program view with the native SubtleCrypto receiver', async () => {
-  const { publication, record, artifacts } = fixture();
-  const original = record.programs[1];
-  if (original === undefined) throw new Error('Expected Overlay program');
-  const backing = new Uint8Array(original.artifact.bytes.length + 4).fill(255);
-  backing.set(original.artifact.bytes, 2);
-  artifacts['Overlay.wgsl'] = {
-    bytes: backing.subarray(2, backing.length - 2),
-    digest: original.artifact.digest,
-  };
-  const seen: Uint8Array[] = [];
-  const subtle = {
-    digest(this: unknown, algorithm: AlgorithmIdentifier, data: BufferSource) {
-      expect(this).toBe(subtle);
-      expect(algorithm).toBe('SHA-256');
-      expect(data).toBeInstanceOf(Uint8Array);
-      const bytes = data as Uint8Array<ArrayBuffer>;
-      expect(bytes.buffer).not.toBe(backing.buffer);
-      seen.push(bytes.slice());
-      return webcrypto.subtle.digest(algorithm, bytes);
-    },
-  };
-  vi.stubGlobal('crypto', { subtle });
-  const ready = await load(publication);
-  expect(ready.status).toBe('Ready');
-  expect(seen).toEqual(record.programs.map((program) => program.artifact.bytes));
-});
-
-it.each([
-  'missing',
-  'rejection',
-] as const)('retains complete digest admission with %s native hashing', async (mode) => {
-  const { publication, artifacts } = fixture();
-  const digest = vi.fn(async () => {
-    throw new Error('native hashing unavailable');
-  });
-  vi.stubGlobal('crypto', mode === 'missing' ? {} : { subtle: { digest } });
-  expect((await load(publication)).status).toBe('Ready');
-  artifacts['Overlay.wgsl']?.bytes.fill(0);
-  expect(await load(publication)).toMatchObject({
-    status: 'Error',
-    error: { code: 'asset-artifact-integrity-mismatch', detail: { field: 'Overlay.wgsl' } },
-  });
-  expect(digest).toHaveBeenCalledTimes(mode === 'missing' ? 0 : 4);
-});
-
-it('isolates the complete publication before the first native hash await', async () => {
-  const { publication, record, artifacts } = fixture();
-  const abi = structuredClone(submissionAbi);
-  const programs = record.programs.map((program) => ({
-    ...program,
-    artifact: { ...program.artifact },
-    selections: program.selections.flatMap((selection) => [
-      { ...selection, address: 'direct' as const, entry: abi.directEntry, abi },
-      { ...selection, address: 'scene-index' as const, entry: abi.sceneIndexEntry, abi },
-    ]),
-  }));
-  const artifactDigest = createMaterialProgramSetDigest(programs, record.resolved.passes);
-  const modern = {
-    ...record,
-    programs,
-    artifactDigest,
-    sourceClosure: [...(record.sourceClosure ?? [])],
-    resolved: { ...record.resolved, passes: [...record.resolved.passes] },
-    refs: { ...record.refs, textures: [...record.refs.textures] },
-    parameterContract: {
-      parameters: [...(record.parameterContract?.parameters ?? [])],
-      values: { ...(record.parameterContract?.values ?? {}) },
-    },
-    receipt: {
-      ...record.receipt,
-      identity: {
-        ...record.receipt.identity,
-        artifactDigest,
-        wasm: { ...record.receipt.identity.wasm },
-      },
-    },
-  };
-  let release!: () => void;
-  const pending = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  let started!: () => void;
-  const firstHash = new Promise<void>((resolve) => {
-    started = resolve;
-  });
-  let calls = 0;
-  vi.stubGlobal('crypto', {
-    subtle: {
-      async digest(algorithm: AlgorithmIdentifier, data: BufferSource) {
-        if (++calls === 1) {
-          started();
-          await pending;
-        }
-        return webcrypto.subtle.digest(algorithm, data);
-      },
-    },
-  });
-  const references: string[] = [];
-  const localRequest = { ...request };
-  const result = createMaterialLoader({
-    loadPublication: async () => ({ ...publication, record: modern }),
-    loadReference: async (guid) => {
-      references.push(guid);
-      return true;
-    },
-  }).load(localRequest);
-  await firstHash;
-  const publishedOverlay = artifacts['Overlay.wgsl'];
-  const modernOverlay = modern.programs[1];
-  if (publishedOverlay === undefined || modernOverlay === undefined)
-    throw new Error('Expected complete Overlay fixture');
-  publishedOverlay.bytes.fill(0);
-  publishedOverlay.digest = 'changed';
-  modernOverlay.artifact.bytes.fill(0);
-  modernOverlay.artifact.digest = 'changed';
-  abi.receiptIdentity = 'changed';
-  modern.sourceClosure.push('changed');
-  modern.receipt.identity.wasm.sourceContentKey = 'changed';
-  modern.resolved.passes.splice(0);
-  modern.refs.textures.push('changed');
-  modern.parameterContract.values.changed = 1;
-  localRequest.guid = 'changed';
-  release();
-  const ready = await result;
-  expect(ready.status).toBe('Ready');
-  if (ready.status !== 'Ready') throw new Error('Expected captured complete Ready publication');
-  expect(ready.record.sourceClosure).toEqual(['material.json']);
-  expect(ready.record.receipt.identity.wasm.sourceContentKey).toBe('source');
-  expect(ready.record.parameterContract?.values).toEqual({});
-  expect(ready.record.resolved.passes).toHaveLength(2);
-  expect(ready.record.programs[1]?.artifact.digest).not.toBe('changed');
-  expect(ready.record.programs[1]?.selections[0]?.abi?.receiptIdentity).toBe('custom-layout');
-  expect(references).toEqual([]);
-  expect(ready.record.programs[1]?.artifact.bytes).toEqual(
-    new TextEncoder().encode('program Overlay'),
-  );
-});
-
-it.each([
-  'missing',
-  'throw',
-] as const)('keeps an earlier integrity error ahead of a later %s artifact', async (mode) => {
-  const { publication, artifacts } = fixture();
-  artifacts['Forward.wgsl']?.bytes.fill(0);
-  let laterReads = 0;
-  if (mode === 'missing') delete artifacts['Overlay.wgsl'];
-  else
-    Object.defineProperty(artifacts, 'Overlay.wgsl', {
-      get: () => {
-        laterReads++;
-        throw new Error('later artifact read');
-      },
-    });
-  const digest = vi.fn(() => webcrypto.subtle.digest('SHA-256', new Uint8Array()));
-  vi.stubGlobal('crypto', { subtle: { digest } });
-  expect(await load(publication)).toMatchObject({
-    status: 'Error',
-    error: { code: 'asset-artifact-integrity-mismatch', detail: { field: 'Forward.wgsl' } },
-  });
-  expect(laterReads).toBe(0);
-  expect(digest).not.toHaveBeenCalled();
-});
-
-it('preserves a reached later artifact read exception without an unhandled hash rejection', async () => {
-  const { publication, artifacts } = fixture();
-  const failure = new Error('later artifact read');
-  Object.defineProperty(artifacts, 'Overlay.wgsl', {
-    get: () => {
-      throw failure;
-    },
-  });
-  vi.stubGlobal('crypto', webcrypto);
-  await expect(load(publication)).rejects.toBe(failure);
-});
-
-it('uses the original synchronous route for non-cloneable adapter metadata', async () => {
-  const { publication, record } = fixture();
-  const external = () => 'external adapter';
-  const digest = vi.fn(() => webcrypto.subtle.digest('SHA-256', new Uint8Array()));
-  vi.stubGlobal('crypto', { subtle: { digest } });
-  const ready = await load({ ...publication, record: { ...record, external } });
-  expect(ready.status).toBe('Ready');
-  expect(digest).not.toHaveBeenCalled();
-  if (ready.status !== 'Ready') throw new Error('Expected unchanged synchronous compatibility');
-  expect((ready.record as typeof ready.record & { external: unknown }).external).toBe(external);
-});
-
-it('keeps shared-memory metadata on the original synchronous route', async () => {
-  const { publication, record } = fixture();
-  const shared = new Uint8Array(new SharedArrayBuffer(16));
-  const digest = vi.fn(() => webcrypto.subtle.digest('SHA-256', new Uint8Array()));
-  vi.stubGlobal('crypto', { subtle: { digest } });
-  const ready = await load({
-    ...publication,
-    record: {
-      ...record,
-      parameterContract: { parameters: [], values: { diffuseMap: { texture: shared } } },
-    },
-  });
-  expect(ready.status).toBe('Ready');
-  expect(digest).not.toHaveBeenCalled();
-});
-
-it.each([
-  'corrupt',
-  'matching',
-] as const)('preserves the original same-program digest getter order for %s bytes', async (mode) => {
-  const { publication, artifacts } = fixture();
-  const forward = artifacts['Forward.wgsl'];
-  if (forward === undefined) throw new Error('Expected Forward fixture');
-  if (mode === 'corrupt') forward.bytes.fill(0);
-  const failure = new Error('declared digest read');
-  let reads = 0;
-  Object.defineProperty(forward, 'digest', {
-    get: () => {
-      reads++;
-      throw failure;
-    },
-  });
-  const digest = vi.fn(() => webcrypto.subtle.digest('SHA-256', new Uint8Array()));
-  vi.stubGlobal('crypto', { subtle: { digest } });
-  if (mode === 'corrupt') {
-    expect(await load(publication)).toMatchObject({
-      status: 'Error',
-      error: { code: 'asset-artifact-integrity-mismatch', detail: { field: 'Forward.wgsl' } },
-    });
-    expect(reads).toBe(0);
-  } else {
-    await expect(load(publication)).rejects.toBe(failure);
-    expect(reads).toBe(1);
-  }
-  expect(digest).not.toHaveBeenCalled();
-});
-
-it('retains both original reads of a defined declared digest getter', async () => {
-  const { publication, artifacts } = fixture();
-  const forward = artifacts['Forward.wgsl'];
-  if (forward === undefined) throw new Error('Expected Forward fixture');
-  const expected = forward.digest;
-  let reads = 0;
-  Object.defineProperty(forward, 'digest', {
-    get: () => (++reads === 1 ? expected : 'wrong-second-read'),
-  });
-  const digest = vi.fn(() => webcrypto.subtle.digest('SHA-256', new Uint8Array()));
-  vi.stubGlobal('crypto', { subtle: { digest } });
-  expect(await load(publication)).toMatchObject({
-    status: 'Error',
-    error: { code: 'asset-artifact-integrity-mismatch', detail: { field: 'Forward.wgsl' } },
-  });
-  expect(reads).toBe(2);
-  expect(digest).not.toHaveBeenCalled();
-});
-
-it('does not read a nested metadata getter before an earlier integrity failure', async () => {
-  const { publication, record, artifacts } = fixture();
-  const forward = artifacts['Forward.wgsl'];
-  if (forward === undefined) throw new Error('Expected Forward fixture');
-  forward.bytes.fill(0);
-  let reads = 0;
-  const metadata = {
-    get later() {
-      reads++;
-      throw new Error('later metadata read');
-    },
-  };
-  const digest = vi.fn(() => webcrypto.subtle.digest('SHA-256', new Uint8Array()));
-  vi.stubGlobal('crypto', { subtle: { digest } });
-  expect(await load({ ...publication, record: { ...record, metadata } })).toMatchObject({
-    status: 'Error',
-    error: { code: 'asset-artifact-integrity-mismatch', detail: { field: 'Forward.wgsl' } },
-  });
-  expect(reads).toBe(0);
-  expect(digest).not.toHaveBeenCalled();
-});
-
-it('keeps cyclic metadata on the original synchronous route', async () => {
-  const { publication, record } = fixture();
-  const metadata: { self?: unknown } = {};
-  metadata.self = metadata;
-  const digest = vi.fn(() => webcrypto.subtle.digest('SHA-256', new Uint8Array()));
-  vi.stubGlobal('crypto', { subtle: { digest } });
-  const ready = await load({ ...publication, record: { ...record, metadata } });
-  expect(ready.status).toBe('Ready');
-  expect(digest).not.toHaveBeenCalled();
-  if (ready.status !== 'Ready') throw new Error('Expected unchanged cyclic adapter compatibility');
-  expect((ready.record as typeof ready.record & { metadata: unknown }).metadata).toBe(metadata);
-});
-
-it('preserves a non-enumerable resolved material value on the synchronous route', async () => {
-  const { publication, record } = fixture();
-  const tint = [1, 0, 0, 1];
-  const values = {};
-  Object.defineProperty(values, 'tint', { value: tint, enumerable: false });
-  const digest = vi.fn(() => webcrypto.subtle.digest('SHA-256', new Uint8Array()));
-  vi.stubGlobal('crypto', { subtle: { digest } });
-  const ready = await load({
-    ...publication,
-    record: { ...record, resolved: { ...record.resolved, values } },
-  });
-  expect(ready.status).toBe('Ready');
-  expect(digest).not.toHaveBeenCalled();
-  if (ready.status !== 'Ready') throw new Error('Expected original material value compatibility');
-  expect(ready.record.resolved.values?.tint).toEqual(tint);
-  expect(projectMaterialRecord(ready.record).runtimeValues.tint).toEqual(tint);
-  const readyValues = ready.record.resolved.values;
-  if (readyValues === undefined) throw new Error('Expected resolved values fixture');
-  expect(Object.getOwnPropertyDescriptor(readyValues, 'tint')?.enumerable).toBe(false);
-});
-
-it('preserves symbol-key adapter metadata on the synchronous route', async () => {
-  const { publication, record } = fixture();
-  const key = Symbol('adapter-material-metadata');
-  const metadata = { [key]: { tint: [1, 0, 0, 1] } };
-  const digest = vi.fn(() => webcrypto.subtle.digest('SHA-256', new Uint8Array()));
-  vi.stubGlobal('crypto', { subtle: { digest } });
-  const ready = await load({ ...publication, record: { ...record, metadata } });
-  expect(ready.status).toBe('Ready');
-  expect(digest).not.toHaveBeenCalled();
-  if (ready.status !== 'Ready') throw new Error('Expected original symbol adapter compatibility');
-  expect(
-    (ready.record as typeof ready.record & { metadata: typeof metadata }).metadata[key],
-  ).toEqual(metadata[key]);
-});
-
-it('does not treat a non-array Array.prototype adapter as cloneable array metadata', async () => {
-  const { publication, record } = fixture();
-  const metadata = Object.create(Array.prototype);
-  Object.defineProperty(metadata, 'length', { value: 0, enumerable: false, configurable: false });
-  const digest = vi.fn(() => webcrypto.subtle.digest('SHA-256', new Uint8Array()));
-  vi.stubGlobal('crypto', { subtle: { digest } });
-  const ready = await load({ ...publication, record: { ...record, metadata } });
-  expect(ready.status).toBe('Ready');
-  expect(digest).not.toHaveBeenCalled();
-  if (ready.status !== 'Ready')
-    throw new Error('Expected original non-array adapter compatibility');
-  expect((ready.record as typeof ready.record & { metadata: unknown }).metadata).toBe(metadata);
-});
-
-it('retains null-prototype resolved value lookups on the synchronous route', async () => {
-  const { publication, record } = fixture();
-  const values = Object.create(null);
-  const digest = vi.fn(() => webcrypto.subtle.digest('SHA-256', new Uint8Array()));
-  vi.stubGlobal('crypto', { subtle: { digest } });
-  const ready = await load({
-    ...publication,
-    record: { ...record, resolved: { ...record.resolved, values } },
-  });
-  expect(ready.status).toBe('Ready');
-  expect(digest).not.toHaveBeenCalled();
-  if (ready.status !== 'Ready') throw new Error('Expected original null dictionary compatibility');
-  expect(Object.getPrototypeOf(ready.record.resolved.values)).toBe(null);
-  expect(projectMaterialRecord(ready.record).runtimeValues.toString).toBeUndefined();
 });

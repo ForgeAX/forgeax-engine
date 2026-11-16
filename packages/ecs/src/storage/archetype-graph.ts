@@ -8,7 +8,7 @@ import type { Component, ComponentId } from '../component';
 import * as componentOwner from '../component';
 import { type Archetype, type ArchetypeId, archetypeKey, createArchetype } from './archetype';
 import type { SparseTagSet } from './change-detection';
-import { canonicalComponents, createTable, type Table, type TableId, tableKey } from './table';
+import { canonicalComponents, createTable, type Table, type TableId } from './table';
 
 /**
  * The ArchetypeGraph owns all archetypes and their edge caches.
@@ -65,7 +65,9 @@ function getOrCreateTable(graph: ArchetypeGraph, components: ReadonlyArray<Compo
   const tableComponents = canonicalComponents(
     components.filter((component) => component.storage === 'table'),
   );
-  const key = tableKey(tableComponents.map((component) => componentOwner.componentId(component)));
+  const key = archetypeKey(
+    tableComponents.map((component) => componentOwner.componentId(component)),
+  );
   const existingId = graph.tableDedupByKey.get(key);
   if (existingId !== undefined) return getTable(graph, existingId);
   const directories = [graph.activeTables];

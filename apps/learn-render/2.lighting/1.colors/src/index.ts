@@ -1,3 +1,5 @@
+import { InputFrameStartScan } from "@forgeax/engine-input";
+import { defineSystem } from "@forgeax/engine-ecs";
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { Update } from '@forgeax/engine-ecs';
 // apps/learn-render/2.lighting/1.colors/src/index.ts
@@ -17,7 +19,7 @@ import { Update } from '@forgeax/engine-ecs';
 import { createApp } from '@forgeax/engine-app/browser';
 import type { App, CanvasAppError } from '@forgeax/engine-app';
 import { World } from '@forgeax/engine-ecs';
-import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputBackend, type InputSnapshot } from '@forgeax/engine-input';
+import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputBackend } from '@forgeax/engine-input';
 import { vec3 } from '@forgeax/engine-math';
 
 import { Transform } from '@forgeax/engine-scene';
@@ -1270,17 +1272,18 @@ function installCaptureHook(
 
 function addScrollFovSystem(world: App['world']): void {
   const scrollFov = createScrollFovAccumulator();
-  world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'learn-render-colors-scroll-fov',
-    after: ['input-frame-start-scan'],
+    after: [InputFrameStartScan],
     queries: [{ write: [Camera] }],
     fn: (world, queryResults) => {
-      const snapshot = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+      const snapshot = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
       if (snapshot === undefined) return;
       scrollFov.apply(snapshot.mouse.wheelDelta);
       for (const row of queryResults[0]) row.mut(Camera).fov = scrollFov.fovRad;
     },
   });
+world.addSystem(Update, systemToken1);
 }
 
 function reportBootstrapError(err: CanvasAppError): void {

@@ -37,7 +37,7 @@ function gbufferClassEvidence(
   if (classIndex === undefined) {
     const gate = gbufferOrderInterfaceEvidence(
       batch.artifact,
-      batch.orderDiagnosticState,
+      batch.renderState,
       batch.deformation,
       batch.raster.diagnosticGBufferVertexEntry(batch.artifact),
     );

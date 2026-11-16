@@ -1,11 +1,11 @@
-import { FixedTime, FixedUpdate, Update, World } from '@forgeax/engine/ecs';
+import { defineSystem, FixedTime, FixedUpdate, Update, World } from '@forgeax/engine/ecs';
 import { defineFeature } from '../../lab/feature';
 
 function simulate(deltas: readonly number[]): { ticks: number[]; x: number } {
   const world = new World({ time: { fixedDeltaSeconds: 1 / 50 } });
   const state = { x: 0, v: 1 };
   const ticks: number[] = [];
-  world.addSystem(FixedUpdate, {
+  const systemToken1 = defineSystem({
     name: 'fl-fixed-integrate',
     queries: [],
     fn: (world) => {
@@ -14,11 +14,13 @@ function simulate(deltas: readonly number[]): { ticks: number[]; x: number } {
       state.x += state.v * dt;
     },
   });
-  world.addSystem(Update, {
+  world.addSystem(FixedUpdate, systemToken1);
+  const systemToken2 = defineSystem({
     name: 'fl-fixed-sample',
     queries: [],
     fn: (world) => void ticks.push(world.getResource(FixedTime).tick),
   });
+  world.addSystem(Update, systemToken2);
   for (const d of deltas) world.update(d);
   return { ticks, x: state.x };
 }
@@ -34,13 +36,14 @@ export default defineFeature({
   run(checks) {
     const world = new World();
     let steps = 0;
-    world.addSystem(FixedUpdate, {
+    const systemToken3 = defineSystem({
       name: 'fl-fixed-count',
       queries: [],
       fn: () => {
         steps += 1;
       },
     });
+    world.addSystem(FixedUpdate, systemToken3);
     const fixed = () => world.getResource(FixedTime);
     checks.near('default fixed delta', fixed().delta, 1 / 60);
     checks.equal('default max steps', fixed().maxStepsPerUpdate, 4);

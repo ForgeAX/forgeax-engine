@@ -57,6 +57,65 @@ function cookedPayload(value: { readonly payload: unknown }): unknown {
 }
 
 describe('cookMaterialAsset', () => {
+  it('keeps distinct certified Standard Surface contracts on distinct program identities', {
+    timeout: 30_000,
+  }, async () => {
+    const source: MaterialAsset = {
+      kind: 'material',
+      colorSpace: 'linear',
+      parameters: standardSurfaceParameters([]),
+      values: { baseColor: [0.12, 0.42, 0.31, 1], roughness: 0.22, metallic: 0 },
+      passes: [
+        {
+          name: 'forward',
+          program: { module: 'forgeax_material::standard' },
+          renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
+        },
+      ],
+    };
+    const cooker = createMaterialPackCooker();
+    const implicit = packRecord(
+      cookedPayload(await cooker.cook({ guid: 'implicit-standard-surface', source })),
+    );
+    const explicit = packRecord(
+      cookedPayload(
+        await cooker.cook({
+          guid: 'explicit-standard-surface',
+          source: {
+            ...source,
+            surface: { model: 'standard', module: 'forgeax_material::default_standard_surface' },
+          },
+        }),
+      ),
+    );
+    expect(
+      explicit.programs.some((program) =>
+        program.selections.some((selection) => selection.abi?.surface?.model === 'standard'),
+      ),
+    ).toBe(true);
+    expect(
+      explicit.programs.some((program) =>
+        implicit.programs.some((previous) => previous.artifact.digest === program.artifact.digest),
+      ),
+    ).toBe(true);
+    const conflicting = explicit.programs.flatMap((program) => {
+      const previous = implicit.programs.find(
+        (candidate) => candidate.specializationKey === program.specializationKey,
+      );
+      return previous === undefined ||
+        JSON.stringify(previous.selections[0]?.abi) === JSON.stringify(program.selections[0]?.abi)
+        ? []
+        : [
+            {
+              key: program.specializationKey,
+              previous: previous.selections[0]?.abi?.surface,
+              current: program.selections[0]?.abi?.surface,
+            },
+          ];
+    });
+    expect(conflicting).toEqual([]);
+  });
+
   it('cooks the public Unlit factory through the ordinary native material producer', {
     timeout: 30_000,
   }, async () => {
@@ -387,7 +446,7 @@ fn fs_main() -> @location(0) vec4<f32> {
       expect(draft.payload).toMatchObject({
         passes: [{ renderState: { tags: { LightMode: 'Forward' } } }],
         cooked: {
-          schemaVersion: 'material-cook/4',
+          schemaVersion: 'material-cook/5',
           authored: { passes: [{ renderState: { tags: { LightMode: 'Forward' } } }] },
           resolved: { passes: [{ renderState: { tags: { LightMode: 'Forward' } } }] },
           receipt: { identity: { sourceClosureDigest: expect.any(String) } },

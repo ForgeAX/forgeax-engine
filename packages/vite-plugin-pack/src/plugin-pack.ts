@@ -2,7 +2,12 @@ import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ScriptablePackPublicationSnapshot } from '@forgeax/engine-ddc';
-import { createAcceptedPublicationStore, DdcLifecycle, resolveDdcRoot } from '@forgeax/engine-ddc';
+import {
+  createAcceptedPublicationStore,
+  DdcLifecycle,
+  defaultBuildCacheRoot,
+  resolveDdcRoot,
+} from '@forgeax/engine-ddc';
 import {
   canonicalScriptableSourcePath,
   commitImportPublication,
@@ -239,7 +244,17 @@ export function createPluginPackInternal(
   opts: PluginPackInternalOptions = {},
   internal: Pick<PluginPackInternalOptions, 'transportBase'> = {},
 ) {
-  const composition = { ...opts, ...internal };
+  const merged = { ...opts, ...internal };
+  // Builds reuse unchanged cooked products unless the host names its own cache root.
+  const composition = {
+    ...merged,
+    ddc: {
+      ...merged.ddc,
+      buildCacheRoot:
+        merged.ddc?.buildCacheRoot ??
+        defaultBuildCacheRoot(process.cwd(), process.env.FORGEAX_BUILD_CACHE_DIR),
+    },
+  };
   const explicitTransportBase = composition.transportBase;
   let transportBase = explicitTransportBase;
   let declarationTarget = resolve(process.cwd(), '.forgeax', 'generated', 'assets.d.ts');
@@ -506,8 +521,8 @@ export function createPluginPackInternal(
       // Each production attempt admits current native cooker identities. A
       // long-lived dev owner must not freeze them across material source edits.
       const productDdc = await createSourcePackageBuildDdc({
-        root: opts.ddc?.buildCacheRoot,
-        identityRoot: opts.ddc?.identityRoot ?? process.cwd(),
+        root: composition.ddc.buildCacheRoot,
+        identityRoot: composition.ddc.identityRoot ?? process.cwd(),
         producerIdentity: opts.producerIdentity,
         cookers: opts.cookers,
       }).catch(() => undefined);

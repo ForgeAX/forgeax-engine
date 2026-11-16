@@ -8,9 +8,7 @@ import type {
   PackV2,
   PluginBuildTarget,
 } from '@forgeax/engine-types';
-import { createAssetPublication, encodeBase64 } from '@forgeax/engine-types';
-import { sha256 } from '@noble/hashes/sha2.js';
-import { bytesToHex } from '@noble/hashes/utils.js';
+import { createAssetPublication, encodeBase64, sha256 } from '@forgeax/engine-types';
 import type { PackBlob } from './blob.js';
 import { decodeMaterialProgramWire, encodeMaterialProgramWire } from './material-program-wire.js';
 import type { PackProgram } from './program.js';
@@ -137,9 +135,8 @@ function stable(value: unknown): string {
   }
   return JSON.stringify(value) ?? 'null';
 }
-
 function digest(value: unknown): string {
-  return `sha256:${bytesToHex(sha256(new TextEncoder().encode(stable(value))))}`;
+  return `sha256:${sha256(stable(value))}`;
 }
 
 function normalizedAssets(pack: RuntimePackInput): readonly RuntimePackAsset[] {

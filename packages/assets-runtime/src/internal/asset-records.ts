@@ -105,6 +105,8 @@ export interface AssetVersion<T> {
   readonly value: T;
   /** Exact predecessor evidence retained with this fixed version; absent means full replacement. */
   readonly delta?: AssetVersionDelta;
+  /** Whether the complete captured dependency closure still matches the live records. */
+  matchesCurrent(): boolean;
   retain(): AssetVersion<T>;
   dispose(): void;
 }
@@ -391,7 +393,10 @@ export class AssetRecords implements AssetReferenceOwner {
   private candidateBytes = 0;
   private scope: object | undefined;
 
-  constructor(limits: AssetLimits = {}) {
+  constructor(
+    limits: AssetLimits = {},
+    private readonly copySnapshotContent: typeof copyAssetData = copyAssetData,
+  ) {
     this.limits = {
       maxAssets: 65_536,
       maxBytes: DEFAULT_ASSET_BUDGET_BYTES,
@@ -600,7 +605,7 @@ export class AssetRecords implements AssetReferenceOwner {
   /** A public read is an independently owned value, including every binary view. */
   read<T>(handle: number): Result<T, AssetError> {
     const found = this.entry(handle);
-    return found.ok ? this.capture(found.value.value as T) : found;
+    return found.ok ? this.capture(found.value.value as T, 'detached') : found;
   }
 
   copy<K extends string, P>(handle: AssetHandle<K, P>): Result<AssetHandle<K, P>, AssetError> {
@@ -1034,6 +1039,16 @@ export class AssetRecords implements AssetReferenceOwner {
     return ok(undefined);
   }
 
+  /** Derive dependents from the authoritative held-reference graph. */
+  dependentHandles(handle: number): readonly number[] {
+    const found: number[] = [];
+    for (const [key, record] of this.records) {
+      const candidate = this.replacements?.get(key) ?? record;
+      if (candidate.dependencies.includes(handle)) found.push(key);
+    }
+    return found;
+  }
+
   dependencies(handle: number): Result<readonly number[], AssetError> {
     const found = this.entry(handle);
     return found.ok ? ok(found.value.dependencies) : found;
@@ -1132,6 +1147,7 @@ export class AssetRecords implements AssetReferenceOwner {
         revision: pinned.revision,
         value: pinned.value as T,
         ...(pinned.delta === undefined ? {} : { delta: pinned.delta }),
+        matchesCurrent: () => active && pinned.snapshot.matchesCurrent(true),
         retain: () => {
           if (!active) throw failure('asset-reference-invalid', 'a live fixed content lease');
           return lease();
@@ -1217,7 +1233,7 @@ export class AssetRecords implements AssetReferenceOwner {
     const values = new Map<number, { value: unknown; revision: number }>();
     for (const [reference, record] of selected)
       values.set(reference, {
-        value: copyAssetData(record.value),
+        value: this.copySnapshotContent(record.value),
         revision: record.revision,
       });
     this.snapshots++;
@@ -1365,9 +1381,13 @@ export class AssetRecords implements AssetReferenceOwner {
     }
   }
 
-  private capture<T>(input: T, storage: 'copy' | 'take' = 'copy'): Result<T, AssetError> {
+  private capture<T>(
+    input: T,
+    storage: 'copy' | 'take' | 'detached' = 'copy',
+  ): Result<T, AssetError> {
     try {
-      return ok(storage === 'take' ? takeAssetData(input) : copyAssetData(input));
+      const copy = storage === 'detached' ? copyAssetData : this.copySnapshotContent;
+      return ok(storage === 'take' ? takeAssetData(input) : copy(input));
     } catch (cause) {
       return err(
         failure('asset-invalid-value', cause instanceof Error ? cause.message : String(cause)),

@@ -168,7 +168,7 @@ export async function createVideoTexturePanel(
   ).unwrap();
   const host = createVideoHost();
   const previousProvider = world.hasResource(VIDEO_SOURCE_PROVIDER_KEY)
-    ? world.getResource<VideoSourceProvider>(VIDEO_SOURCE_PROVIDER_KEY)
+    ? world.getResource(VIDEO_SOURCE_PROVIDER_KEY)
     : undefined;
   world.insertResource(VIDEO_SOURCE_PROVIDER_KEY, host);
 

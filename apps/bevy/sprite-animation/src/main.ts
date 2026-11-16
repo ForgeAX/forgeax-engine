@@ -1,5 +1,6 @@
 // Reproduction of Bevy's `sprite_animation` example.
 
+import { defineSystem } from "@forgeax/engine-ecs";
 import { createApp } from '@forgeax/engine-app/browser';
 import { Update } from '@forgeax/engine-ecs';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
@@ -35,11 +36,12 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   };
   const handle = assets.create(texture).unwrap();
   buildSpriteAnimationWorld(app.world, handle);
-  const system = app.world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'sprite-animation-tick',
     queries: [],
     fn: (world) => tickSpriteAnimation(world),
   });
+const system = app.world.addSystem(Update, systemToken1);
   if (!system.ok) {
     console.error('[bevy-sprite-animation] system registration failed:', system.error);
     return;

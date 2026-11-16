@@ -19,8 +19,7 @@ const skylight = {
 function probe(index: number): ReflectionProbeTableRow {
   return {
     index,
-    primitiveKey: `2:${index + 100}`,
-    worldId: 2,
+    primitiveKey: `${index + 100}`,
     entityKey: index + 100,
     center: [0, 0, 0],
     halfExtents: [1, 1, 1],
@@ -64,9 +63,9 @@ describe('shared reflection probe resource classes', () => {
     const target = probe(41);
     const table = buildReflectionProbeTable([target]);
     const selections: ReflectionProbeRecordState['selections'] = new Map([
-      ['0:7', { kind: 'probe', worldId: 2, entityKey: 141, normalizedDistance: 0 }],
+      ['7', { kind: 'probe', entityKey: 141, normalizedDistance: 0 }],
     ]);
-    expect(reflectionProbeMaterial({ table, selections }, skylight, '', 0, 7)).toEqual(
+    expect(reflectionProbeMaterial({ table, selections }, skylight, '', 7)).toEqual(
       reflectionProbeMaterial({ table, selections: unreadableSelections }, skylight, 'probe:41'),
     );
   });

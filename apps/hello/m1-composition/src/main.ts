@@ -1,12 +1,33 @@
+import { defineResource } from '@forgeax/engine-ecs';
+import { StateSet } from "@forgeax/engine-state";
+import { defineSystem } from "@forgeax/engine-ecs";
 import { createApp } from '@forgeax/engine-app/browser';
 import { FixedUpdate, Update, defineComponent } from '@forgeax/engine-ecs';
-import { INPUT_MAP_KEY, INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine-input';
+import { INPUT_MAP_KEY, INPUT_SNAPSHOT_RESOURCE_KEY } from '@forgeax/engine-input';
 
 import { Camera, DirectionalLight, Materials, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { ChildOf, Transform } from '@forgeax/engine-scene';
 import { addOnEnter, addOnExit, defineState, despawnOnExit, getState, setNextState } from '@forgeax/engine-state';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+export const M1LiveRootResource = defineResource<unknown>("m1LiveRoot");
+
+export const M1LiveInputResource = defineResource<{ jump: boolean; justPressed: boolean }>("m1LiveInput");
+
+export const M19LiveInputResource = defineResource<typeof m19LiveInput>("m19LiveInput");
+
+export const M1LivePositionResource = defineResource<{ x: number; y: number; z: number }>("m1LivePosition");
+
+export const M1LiveErrorsResource = defineResource<unknown>("m1LiveErrors");
+
+export const M1LiveFixedTicksResource = defineResource<unknown>("m1LiveFixedTicks");
+
+export const M1LiveFramesResource = defineResource<unknown>("m1LiveFrames");
+
+export const M1LivePhaseResource = defineResource<unknown>("m1LivePhase");
+
+export const M1LivePluginBuiltResource = defineResource<unknown>("m1LivePluginBuilt");
+
 
 
 const Mode = defineState('M1LiveCompositionMode', ['menu', 'play']);
@@ -25,8 +46,8 @@ const appResult = await createApp(
         name: 'm1-live-composition',
         inject: ['world'],
         apply(ctx) {
-          ctx.world.insertResource('m1LivePluginBuilt', { value: true });
-          return () => ctx.world.removeResource('m1LivePluginBuilt');
+          ctx.world.insertResource(M1LivePluginBuiltResource, { value: true });
+          return () => ctx.world.removeResource(M1LivePluginBuiltResource);
         },
       },
     ],
@@ -80,16 +101,16 @@ function appendM19Log(log: string[], value: string): void {
   if (log.length > 64) log.shift();
 }
 
-world.insertResource('m1LivePhase', liveState);
-world.insertResource('m1LiveFrames', liveFrames);
-world.insertResource('m1LiveFixedTicks', liveFixedTicks);
-world.insertResource('m1LiveErrors', liveErrors);
-world.insertResource('m1LivePosition', livePosition);
-world.insertResource('m19LiveInput', m19LiveInput);
+world.insertResource(M1LivePhaseResource, liveState);
+world.insertResource(M1LiveFramesResource, liveFrames);
+world.insertResource(M1LiveFixedTicksResource, liveFixedTicks);
+world.insertResource(M1LiveErrorsResource, liveErrors);
+world.insertResource(M1LivePositionResource, livePosition);
+world.insertResource(M19LiveInputResource, m19LiveInput);
 world.insertResource(INPUT_MAP_KEY, [
   { action: 'jump', bindings: [{ type: 'key', key: 'Space' }] },
 ]);
-world.insertResource('m1LiveInput', { jump: false, justPressed: false });
+world.insertResource(M1LiveInputResource, { jump: false, justPressed: false });
 
 const material = app.assets.create(Materials.unlit([0.1, 0.7, 0.95, 1])).unwrap();
 const root = world.spawn(
@@ -99,7 +120,7 @@ const root = world.spawn(
 ).unwrap();
 const child = world.spawn({ component: Marker, data: { value: 7 } }).unwrap();
 world.addChild(root, child, ChildOf, { parent: root }).unwrap();
-world.insertResource('m1LiveRoot', root);
+world.insertResource(M1LiveRootResource, root);
 
 world.spawn({ component: Transform, data: { pos: [0, 0, 5] } }, { component: Camera, data: { fov: Math.PI / 3, aspect: 16 / 9 } }).unwrap();
 world.spawn({ component: DirectionalLight, data: { castShadow: true, direction: [-0.4, -0.7, -1], color: [1, 1, 1], intensity: 1.2 } }).unwrap();
@@ -112,21 +133,21 @@ addOnExit(Mode, 'play', () => {
   liveState.value = 'menu';
 });
 
-world.addSystem(Update, {
+const systemToken1 = defineSystem({
   name: 'm1-live-observe',
-  after: ['transitionStates'],
+  after: [StateSet],
   before: [FixedUpdate],
   queries: [],
   fn(world) {
     liveFrames.value += 1;
     const current = getState(world, Mode);
     if (current.ok) liveState.value = current.value;
-    const snapshot = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+    const snapshot = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
     const jump = snapshot.action('jump');
-    const liveInput = world.getResource<{ jump: boolean; justPressed: boolean }>('m1LiveInput');
+    const liveInput = world.getResource(M1LiveInputResource);
     liveInput.jump = jump.isPressed();
     liveInput.justPressed = jump.justPressed();
-    const m19 = world.getResource<typeof m19LiveInput>('m19LiveInput');
+    const m19 = world.getResource(M19LiveInputResource);
     const keyboardDown = snapshot.keyboard.downCode('KeyW');
     const keyboardJustPressed = snapshot.keyboard.justPressedCode('KeyW');
     const keyboardJustReleased = snapshot.keyboard.upCode('KeyW');
@@ -165,18 +186,20 @@ world.addSystem(Update, {
     if (mouseJustReleased) appendM19Log(m19.edgeLog, 'mouse:justReleased');
     if (gamepad.justPressed(0)) appendM19Log(m19.edgeLog, 'gamepad:justPressed');
     if (gamepad.justReleased(0)) appendM19Log(m19.edgeLog, 'gamepad:justReleased');
-    const position = world.getResource<{ x: number; y: number; z: number }>('m1LivePosition');
+    const position = world.getResource(M1LivePositionResource);
     world.set(root, Transform, { pos: [position.x, position.y, position.z] }).unwrap();
     status.textContent = `phase=${liveState.value} frames=${liveFrames.value} fixed=${liveFixedTicks.value}`;
   },
-}).unwrap();
-world.addSystem(FixedUpdate, {
+});
+world.addSystem(Update, systemToken1).unwrap();
+const systemToken2 = defineSystem({
   name: 'm1-live-fixed',
   queries: [],
   fn() {
     liveFixedTicks.value += 1;
   },
-}).unwrap();
+});
+world.addSystem(FixedUpdate, systemToken2).unwrap();
 
 app.onError((error) => {
   liveErrors.value += 1;

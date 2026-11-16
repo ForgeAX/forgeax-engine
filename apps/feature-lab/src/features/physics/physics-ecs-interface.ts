@@ -6,6 +6,7 @@ import {
   CollisionEvent,
   PHYSICS_ERROR_HINTS,
   PhysicsError,
+  PhysicsWorldResource,
   RigidBody,
   registerPhysicsComponents,
 } from '@forgeax/engine/physics';
@@ -59,7 +60,7 @@ export default defineFeature({
       'CollidingEntities is a component token',
       typeof CollidingEntities === 'object' && CollidingEntities !== null,
     );
-    checks.ok('no PhysicsWorld without a backend plugin', !world.hasResource('PhysicsWorld'));
+    checks.ok('no PhysicsWorld without a backend plugin', !world.hasResource(PhysicsWorldResource));
     const error = new PhysicsError({
       code: 'body-not-found',
       expected: 'a registered body',

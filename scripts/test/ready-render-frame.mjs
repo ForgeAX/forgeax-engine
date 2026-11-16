@@ -1,20 +1,19 @@
 /** The Engine test owner translates one scene lease into its current draw contract. */
 export function drawSceneFrame(renderer, scene) {
-  return drawReadyFrame(renderer, {
-    leases: [scene],
-    camera: { lease: scene },
-    environment: { lease: scene },
-  });
+  return drawReadyFrame(renderer, { source: scene });
 }
 
 /** Submit one ready scene picture without advancing the caller's World. */
 export async function drawReadyFrame(renderer, request, observation, options) {
   let consumePending;
+  let submissionAttempt = 0;
   return completeReadyFrame(async () => {
     // The previous receipt has settled preparation and GPU work. Recycle its
     // observation before admitting another frame, after both completion signals.
     await consumePending?.();
     consumePending = undefined;
+    const attempt = ++submissionAttempt;
+    await options?.beforeSubmit?.({ attempt, renderer, request });
     if (observation !== undefined) {
       const armed = renderer.requestObservation?.(observation);
       if (armed === undefined) throw new Error('Renderer observation is unavailable');
@@ -23,6 +22,7 @@ export async function drawReadyFrame(renderer, request, observation, options) {
     const submitted = renderer.draw(request);
     if (!submitted.ok) throw submitted.error;
     const receipt = submitted.value;
+    await options?.afterSubmit?.(receipt, { attempt, renderer, request });
     if (observation !== undefined && receipt.presentation !== 'ready') {
       const domains = receipt.observationDomains;
       if (domains === undefined) throw new Error('Armed receipt has no observation-domain facts');

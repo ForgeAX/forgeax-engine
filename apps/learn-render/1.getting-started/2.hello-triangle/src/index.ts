@@ -178,11 +178,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
         reportBootstrapError('[learn-render 1.2 hello-triangle] update failed:', updated.error);
         return;
       }
-      const drawn = renderer.draw({
-        leases: [attached.value],
-        camera: { lease: attached.value },
-        environment: { lease: attached.value },
-      });
+      const drawn = renderer.draw({ source: attached.value });
       if (!drawn.ok) {
         reportBootstrapError('[learn-render 1.2 hello-triangle] draw failed:', drawn.error);
         return;
@@ -200,11 +196,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     // Body delegates to the host-owned canvas capture helper.
     window.__captureHelloTriangle = async (): Promise<Uint8Array> => {
       world.update(1 / 60).unwrap();
-      const drawn = renderer.draw({
-        leases: [attached.value],
-        camera: { lease: attached.value },
-        environment: { lease: attached.value },
-      });
+      const drawn = renderer.draw({ source: attached.value });
       if (!drawn.ok) {
         reportBootstrapError(
           '[learn-render 1.2 hello-triangle] capture draw failed:',

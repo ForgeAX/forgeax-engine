@@ -12,8 +12,9 @@ import {
   stableCustomMaterialBrowserEvidence,
   visualCausalityRepeatabilityDiff,
 } from '../lib/runtime.mjs';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { readShaderManifestText } from '../../../../../../scripts/lib/shader-manifest.mjs';
 
 const CHURN_RESIZE_HISTORY = '640x360>480x270>720x405>640x360>480x270>720x405>640x360';
 
@@ -778,7 +779,7 @@ function runMultiUvFalsifier() {
 async function readMultiUvManifest() {
   try {
     return await readShaderManifestPublication(
-      JSON.parse(readFileSync(resolve(multiUvRoot(), 'dist', 'shaders', 'manifest.json'), 'utf8')),
+      JSON.parse(readShaderManifestText(resolve(multiUvRoot(), 'dist', 'shaders', 'manifest.json'))),
     );
   } catch (error) {
     console.error(`[m3-programmable] multi-UV variant: FAIL - manifest unreadable: ${error}`);

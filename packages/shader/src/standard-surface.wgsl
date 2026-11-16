@@ -344,10 +344,32 @@ fn evaluateUnlitStandardSurface(in : VsOut, baseColor : vec4<f32>, emissive : ve
 }
 
 fn evaluateStandardSurface(in : VsOut, factors : StandardSurfaceFactors) -> StandardPbrOutput {
+  return evaluateStandardSurfaceWithNormalMode(in, factors, in.worldNormal, false);
+}
+
+// A geometry adapter that already owns its complete world-space normal can
+// use the shared material/light evaluator without sampling the normal texture
+// a second time. Ordinary material callers keep the established tangent-space
+// normal path through the wrapper above.
+fn evaluateStandardSurfaceWithWorldNormal(
+  in : VsOut,
+  factors : StandardSurfaceFactors,
+  worldNormal : vec3<f32>,
+) -> StandardPbrOutput {
+  return evaluateStandardSurfaceWithNormalMode(in, factors, worldNormal, true);
+}
+
+fn evaluateStandardSurfaceWithNormalMode(
+  in : VsOut,
+  factors : StandardSurfaceFactors,
+  worldNormal : vec3<f32>,
+  useWorldNormal : bool,
+) -> StandardPbrOutput {
   var useDirectDfgLut = false;
 #ifdef DIRECT_DFG_LUT_AVAILABLE
   useDirectDfgLut = material.directMultiscatteringLut != 0u;
 #endif
+  let geometricNormal = select(in.worldNormal, worldNormal, useWorldNormal);
   // TBN basis composed via forgeax_pbr::tbn helpers; default fallback
   // (defaultNormalTextureView) RG=(128,128) -> tangent (0,0,1) -> world n
   // unchanged.
@@ -356,10 +378,10 @@ fn evaluateStandardSurface(in : VsOut, factors : StandardSurfaceFactors) -> Stan
   let normTangent = scaleTangentSpaceNormal(
     decodeTangentSpaceNormalRg(normSampleRg), material.normalScale,
   );
-  let n = applyTBN(in.worldNormal, in.worldTangent, normTangent);
+  let n = select(applyTBN(in.worldNormal, in.worldTangent, normTangent), normalize(geometricNormal), useWorldNormal);
 
   // Both spreads are taken before alpha test, while control flow is uniform.
-  let normalSpread = max(geometricNormalSpread(in.worldNormal), shadingNormalSpread(n));
+  let normalSpread = max(geometricNormalSpread(geometricNormal), shadingNormalSpread(n));
   let baseUv = transformedMaterialUv(material.baseColorTextureCoordinatesTransform, material.baseColorTextureCoordinatesMetadata, material.baseColorTextureCoordinatesRotation, in);
   let baseSample = sampleMaterialTexture(baseColorTexture, baseColorTexture_sampler, baseUv, material.baseColorTextureCoordinatesMetadata.zw);
   let vertexColor = materialVertexColor(in);

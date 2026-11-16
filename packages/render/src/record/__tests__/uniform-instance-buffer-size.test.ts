@@ -60,7 +60,6 @@ it('sizes sprite uniform instance buffers to the full shader array', () => {
   const { c, sizes, fired } = uniformContext();
   const buffer = uploadSpriteInstanceBuffer(
     c,
-    0,
     { archVersion: 1, cacheKey: 7 },
     new Float32Array(40),
     GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
@@ -75,7 +74,6 @@ it('caps sprite uniform payloads at the shader array instead of storage limits',
   const { c, sizes, fired } = uniformContext();
   const buffer = uploadSpriteInstanceBuffer(
     c,
-    0,
     { archVersion: 1, cacheKey: 7 },
     new Float32Array(INSTANCE_UBO_FULL_ARRAY_BYTES / 4 + 20),
     GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
@@ -89,13 +87,14 @@ it('caps sprite uniform payloads at the shader array instead of storage limits',
 it.each([
   undefined,
   0,
-])('isolates equal Sprite collection keys across Worlds at page %s', (page) => {
-  const { c, sizes, fired } = uniformContext();
+])('isolates equal Sprite collection keys across Renderer owners at page %s', (page) => {
+  const firstOwner = uniformContext(),
+    otherOwner = uniformContext();
+  const owners = [firstOwner, otherOwner] as const;
   const snapshot = { archVersion: 1, cacheKey: 7 };
-  const upload = (world: number, version = 1) =>
+  const upload = (owner: 0 | 1, version = 1) =>
     uploadSpriteInstanceBuffer(
-      c,
-      world,
+      owners[owner].c,
       { ...snapshot, archVersion: version },
       new Float32Array(40),
       GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
@@ -109,11 +108,11 @@ it.each([
   expect(other).not.toBe(first);
   expect(upload(0)).toBe(first);
   expect(upload(1)).toBe(other);
-  expect(sizes).toHaveLength(2);
+  expect(firstOwner.sizes.length + otherOwner.sizes.length).toBe(2);
   expect(upload(0, 2)).not.toBe(first);
   expect(upload(1)).toBe(other);
-  expect(sizes).toHaveLength(3);
-  expect(fired).toEqual([]);
+  expect(firstOwner.sizes.length + otherOwner.sizes.length).toBe(3);
+  expect([...firstOwner.fired, ...otherOwner.fired]).toEqual([]);
 });
 
 it.each([
@@ -135,7 +134,7 @@ it.each([
   }
   const snapshot = { transforms, regions, instanceCount: count, cacheKey: 7, archVersion: 1 };
   const entry = {
-    source: { worldId: 0, spriteInstances: snapshot },
+    source: { spriteInstances: snapshot },
   } as _InternalRenderPipelineContext['validatedOrdered'][number];
   try {
     const draws = resolveSpriteInstanceDraws(c, entry);

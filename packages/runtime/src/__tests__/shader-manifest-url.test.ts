@@ -3,6 +3,7 @@ import {
   SHADER_MANIFEST_PUBLICATION_VERSION,
 } from '@forgeax/engine-shader';
 import { expect, it } from 'vitest';
+import { waterInfoShaderFixture } from '../../../render/src/__tests__/shader-manifest-fixture';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 
 it('fetches every shader variant and binding through a verified shared-source publication', async () => {
@@ -12,10 +13,12 @@ it('fetches every shader variant and binding through a verified shared-source pu
   const manifest: Parameters<typeof shaderManifestUrl>[0] = {
     schemaVersion: '1.0.0',
     entries: [
+      ...waterInfoShaderFixture.entries,
       { hash: 'first', wgsl: first, glsl: '', bindings: '[{"group":0,"binding":1}]' },
       { hash: 'second', wgsl: second, glsl: '', bindings: '[]' },
     ],
     materialShaders: [
+      ...waterInfoShaderFixture.materialShaders,
       {
         identifier: 'fixture::material',
         sourcePath: 'fixture/material.wgsl',

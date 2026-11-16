@@ -50,6 +50,15 @@ The SDK 0.4.19 capability additions use these examples and owner gates:
 
 ## Feature kinds
 
+The experimental Water R7 rows (`Advanced shallow water simulation`, `River
+water bake`, `World Ocean FFT patch`) route to
+[`apps/water/r7-advanced-shallow-bake-fft`](../water/r7-advanced-shallow-bake-fft/README.md)
+and `packages/water/src/__tests__/advanced-simulation.unit.test.ts`. Their
+producer-backed Pack, durable Bake reload and real GPU resource lifetime belong
+to that project rather than the Lab's empty asset catalog. `GATE_PROVED_ROWS`
+records this owner route; fresh hardware acceptance and paired UE runtime/pixel
+equivalence remain separate, pending evidence.
+
 | Kind | Where | Proof |
 |:--|:--|:--|
 | `visual` | `src/features/<area>/<slug>.ts` | `toggle(on)` switches the feature off and back on; the runner screenshots both states after 60 frames and fails when the mean pixel difference is below the threshold. Optional `checks()` add structured assertions. |
@@ -78,6 +87,18 @@ Runtime asset editing has an independent visual page:
 `?f=import-loading/runtime-asset-editing`. Two quads share one mutable material;
 a third uses an independent copy. Its checks retain a fixed snapshot and verify
 that rejected writes preserve current content.
+
+Local water fluid simulation uses the producer-backed project at
+`apps/water/r6-legacy-rt-fluid` (`pnpm --filter @forgeax/water-r6-legacy-rt-fluid dev`,
+port 5386), registered in `GATE_PROVED_ROWS`. Its saved Scene has Ripple and
+Shallow basins with real water materials, independent WaveFoam controls, impulse,
+moving-grid, quality, multiview, resize and renderer recovery actions. Acceptance
+requires same-camera reset/inject/propagate browser frames, finite nonzero solver
+RT readback and captured pass/binding identities; CPU state alone is insufficient.
+The owning gates are Water's `fluid-simulation.unit.test.ts`, Runtime's
+`water-scene-plugin.integration.test.ts`, Render's `fluid-feature.unit.test.ts`
+and `fluid-normal.dawn.test.ts`, plus the maintained browser/Dawn and core-smoke
+routes. Engine GPU evidence does not establish UE runtime pixel matching.
 
 `src/node-features/cli-preview/pack-live-parameters-and-drafts.ts` runs real
 filesystem draft edit/undo/redo/Save/reopen and conflict refresh without executing

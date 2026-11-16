@@ -264,8 +264,23 @@ fn cloud_direct_solar_factor(
   let offset = worldPosition - shadowOrigin;
   let uv = vec2<f32>(dot(offset, shadowRight), dot(offset, shadowUp)) / max(shadowProjection.x, 1e-6) + vec2<f32>(0.5);
   let inRange = all(uv >= vec2<f32>(0.0)) && all(uv <= vec2<f32>(1.0));
-  let available = shadowProjection.y > 0.5 && shadowProjection.z < 0.5 && shadowProjection.x > 0.0;
-  let sampled = textureSampleLevel(cloudShadowMap, cloudShadowSampler, clamp(uv, vec2<f32>(0.0), vec2<f32>(1.0)), 0.0).r;
+  let available = (shadowProjection.w > 0.5 || shadowProjection.y > 0.5) && shadowProjection.z < 0.5 && shadowProjection.x > 0.0;
+  let dimensions = vec2i(textureDimensions(cloudShadowMap));
+  let samplePosition = clamp(uv, vec2f(0.0), vec2f(1.0)) * vec2f(dimensions) - 0.5;
+  let base = vec2i(floor(samplePosition));
+  let fraction = fract(samplePosition);
+  let last = dimensions - vec2i(1);
+  let a = textureLoad(cloudShadowMap, clamp(base, vec2i(0), last), 0).xyz;
+  let b = textureLoad(cloudShadowMap, clamp(base + vec2i(1,0), vec2i(0), last), 0).xyz;
+  let c = textureLoad(cloudShadowMap, clamp(base + vec2i(0,1), vec2i(0), last), 0).xyz;
+  let d = textureLoad(cloudShadowMap, clamp(base + vec2i(1,1), vec2i(0), last), 0).xyz;
+  let encoded = mix(mix(a,b,fraction.x),mix(c,d,fraction.x),fraction.y);
+  var sampled = encoded.r;
+  if shadowProjection.w > 0.5 {
+    let depthMeters = dot(offset, -normalize(cross(shadowRight, shadowUp)));
+    let tau = min(encoded.z, encoded.y * max(0.0, depthMeters - encoded.x));
+    sampled = mix(1.0, exp(-tau), clamp(shadowProjection.y,0.0,1.0));
+  }
   // Low sun, no cloud producer, malformed receivers and receivers outside the
   // bounded map all retain the direct-sun fallback of one.
   return select(1.0, clamp(sampled, 0.0, 1.0), validReceiver && inRange && available);

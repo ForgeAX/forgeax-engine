@@ -509,7 +509,7 @@ export function createMaterialPackCooker(
           )
           .sort(),
       ];
-      const hash = createHash('sha256').update('material-pack-cooker/3');
+      const hash = createHash('sha256').update('material-pack-cooker/5');
       if (options.profile !== undefined) hash.update(`\0profile:${options.profile}`);
       const native = await getCompilerFingerprint();
       if (!native.ok) throw native.error;
@@ -560,31 +560,35 @@ export function createMaterialPackCooker(
       const aliases = materialModuleAliases(sources, normalizedInput);
       // An alias of an Engine-owned template retains that template's identity.
       // Project names and arbitrary Surface slots do not select Standard policy.
-      const templateAliases = new Map(
-        aliases.flatMap((alias) => {
-          const owner = sources.engine.find(
-            (source) =>
-              source.path === alias.path &&
-              (isStandardRootModule(source.moduleId) || SPRITE_ROOT_MODULES.has(source.moduleId)),
-          );
-          return owner === undefined ? [] : [[alias.moduleId, owner.moduleId] as const];
-        }),
-      );
-      if (templateAliases.size > 0 && normalizedInput.source.passes !== undefined) {
-        normalizedInput = {
-          ...normalizedInput,
-          source: {
-            ...normalizedInput.source,
-            passes: normalizedInput.source.passes.map((pass) => ({
-              ...pass,
-              program: {
-                ...pass.program,
-                module: templateAliases.get(pass.program.module) ?? pass.program.module,
-              },
-            })) as unknown as NonNullable<MaterialAsset['passes']>,
-          },
-        };
-      }
+      const normalizeMaterialCookTemplateAliases = () => {
+        const templateAliases = new Map(
+          aliases.flatMap((alias) => {
+            const owner = sources.engine.find(
+              (source) =>
+                source.path === alias.path &&
+                (isStandardRootModule(source.moduleId) || SPRITE_ROOT_MODULES.has(source.moduleId)),
+            );
+            return owner === undefined ? [] : [[alias.moduleId, owner.moduleId] as const];
+          }),
+        );
+        if (templateAliases.size > 0 && normalizedInput.source.passes !== undefined) {
+          normalizedInput = {
+            ...normalizedInput,
+            source: {
+              ...normalizedInput.source,
+              passes: normalizedInput.source.passes.map((pass) => ({
+                ...pass,
+                program: {
+                  ...pass.program,
+                  module: templateAliases.get(pass.program.module) ?? pass.program.module,
+                },
+              })) as unknown as NonNullable<MaterialAsset['passes']>,
+            },
+          };
+        }
+        return templateAliases;
+      };
+      const templateAliases = normalizeMaterialCookTemplateAliases();
       const { catalog, sourceIdentity } = prepareSources({
         sourceRoots,
         sources,
@@ -599,24 +603,29 @@ export function createMaterialPackCooker(
       if (!resolved.ok) throw resolved.error;
       // The root selects skinning for every raster pass, including its shadow
       // wrapper. A Ready publication must match the geometry the Renderer asks for.
-      const context = {
-        ...DEFAULT_MATERIAL_VARIANT_CONTEXT,
-        geometry: resolved.value.asset.passes?.some(
-          (pass) =>
-            terrainProgramSource(pass.program.module) !== undefined ||
-            ['forgeax_material::terrain_surface', 'forgeax_material::terrain_id_surface'].includes(
-              pass.program.moduleSlots?.surface ?? '',
-            ),
-        )
-          ? ('terrain' as const)
-          : resolved.value.asset.passes?.some(
-                (pass) =>
-                  pass.program.module === 'forgeax::pbr-skin' ||
-                  pass.program.module === 'forgeax_material::pbr-skin',
-              )
-            ? ('skinned' as const)
-            : ('mesh' as const),
+      const selectMaterialCookRasterContext = () => {
+        const context = {
+          ...DEFAULT_MATERIAL_VARIANT_CONTEXT,
+          geometry: resolved.value.asset.passes?.some(
+            (pass) =>
+              terrainProgramSource(pass.program.module) !== undefined ||
+              [
+                'forgeax_material::terrain_surface',
+                'forgeax_material::terrain_id_surface',
+              ].includes(pass.program.moduleSlots?.surface ?? ''),
+          )
+            ? ('terrain' as const)
+            : resolved.value.asset.passes?.some(
+                  (pass) =>
+                    pass.program.module === 'forgeax::pbr-skin' ||
+                    pass.program.module === 'forgeax_material::pbr-skin',
+                )
+              ? ('skinned' as const)
+              : ('mesh' as const),
+        };
+        return context;
       };
+      const context = selectMaterialCookRasterContext();
       const cooked = await cookRaster({
         material: normalizedInput.guid,
         table,
@@ -637,13 +646,20 @@ export function createMaterialPackCooker(
       // Publish both buffer layouts; the component selects the exact program.
       const passes = [...cooked.value.passes];
       const resolvedAsset = cooked.value.resolved.asset;
-      const spriteRoot =
-        resolvedAsset.passes?.some((pass) => SPRITE_ROOT_MODULES.has(pass.program.module)) === true;
-      const storageOnlyMedium = resolvedAsset.surface?.model === 'single-layer-medium';
-      const gpuParticleRoot =
-        resolvedAsset.passes?.some((pass) =>
-          pass.program.module.startsWith('forgeax::vfx-render.particles.'),
-        ) === true;
+      const classifyMaterialRasterRoots = () => {
+        const spriteRoot =
+          resolvedAsset.passes?.some((pass) => SPRITE_ROOT_MODULES.has(pass.program.module)) ===
+          true;
+        const storageOnlyMedium =
+          resolvedAsset.surface?.model === 'single-layer-medium' ||
+          resolvedAsset.surface?.model === 'single-layer-water';
+        const gpuParticleRoot =
+          resolvedAsset.passes?.some((pass) =>
+            pass.program.module.startsWith('forgeax::vfx-render.particles.'),
+          ) === true;
+        return { spriteRoot, storageOnlyMedium, gpuParticleRoot };
+      };
+      const { spriteRoot, storageOnlyMedium, gpuParticleRoot } = classifyMaterialRasterRoots();
 
       if (resolvedAsset.passes?.some((pass) => UNLIT_ROOT_MODULES.has(pass.program.module))) {
         const skinned = await cookRaster({
@@ -688,13 +704,17 @@ export function createMaterialPackCooker(
       // storage/compute-backed inputs outside this raster fallback route.
       // Explicit validation targets require storage WebGPU at startup.
       // Portable publication still cooks both uniform-fallback backends by default.
-      const fallbackGeometries = new Set(
-        storageOnly || spriteRoot || storageOnlyMedium || gpuParticleRoot
-          ? []
-          : passes
-              .filter((pass) => pass.context.visibleSurface !== true)
-              .map((pass) => pass.context.geometry),
-      );
+      const collectMaterialFallbackGeometries = () => {
+        const fallbackGeometries = new Set(
+          storageOnly || spriteRoot || storageOnlyMedium || gpuParticleRoot
+            ? []
+            : passes
+                .filter((pass) => pass.context.visibleSurface !== true)
+                .map((pass) => pass.context.geometry),
+        );
+        return fallbackGeometries;
+      };
+      const fallbackGeometries = collectMaterialFallbackGeometries();
       for (const geometry of fallbackGeometries) {
         for (const backend of ['webgpu', 'webgl2'] as const) {
           const fallback = await cookRaster({
@@ -719,24 +739,28 @@ export function createMaterialPackCooker(
       }
       // Publish each sampled-texture View topology with the same authored material.
       // Storage support alone does not establish the optional texture budget.
-      const textureContexts = new Map(
-        passes.map((pass) => [
-          `${pass.context.geometry}:${pass.context.visibleSurface === true}`,
-          {
-            geometry: pass.context.geometry,
-            ...(pass.context.visibleSurface === true ? { visibleSurface: true as const } : {}),
-          },
-        ]),
-      );
-      const textureVariants = [...textureContexts.values()].flatMap((projection) =>
-        (
-          [
-            'storage-buffer-minimum',
-            'storage-buffer-projector',
-            'storage-buffer-atmosphere',
-          ] as const
-        ).map((capability) => ({ projection, capability })),
-      );
+      const collectMaterialTextureVariantInputs = () => {
+        const textureContexts = new Map(
+          passes.map((pass) => [
+            `${pass.context.geometry}:${pass.context.visibleSurface === true}`,
+            {
+              geometry: pass.context.geometry,
+              ...(pass.context.visibleSurface === true ? { visibleSurface: true as const } : {}),
+            },
+          ]),
+        );
+        const textureVariants = [...textureContexts.values()].flatMap((projection) =>
+          (
+            [
+              'storage-buffer-minimum',
+              'storage-buffer-projector',
+              'storage-buffer-atmosphere',
+            ] as const
+          ).map((capability) => ({ projection, capability })),
+        );
+        return textureVariants;
+      };
+      const textureVariants = collectMaterialTextureVariantInputs();
       const specializedVariants = await mapMaterialVariants(
         textureVariants,
         compiler.concurrency,
@@ -764,24 +788,30 @@ export function createMaterialPackCooker(
       // alone never selects that program: a Surface that does not read it
       // would pay the extra fetch and interpolants for a constant 1. Unlit roots
       // have no Surface slot and keep their colour ABI.
-      const colorContexts = new Map(
-        passes
-          .filter(
-            (pass) =>
-              pass.abi !== undefined &&
-              (isStandardRootModule(pass.module) || UNLIT_ROOT_MODULES.has(pass.module)) &&
-              pass.readsVertexColor !== false,
-          )
-          .map((pass) => [
-            JSON.stringify([
-              pass.context.backend,
-              pass.context.geometry,
-              pass.context.capability,
-              pass.context.visibleSurface === true,
+      const collectMaterialColorVariantContexts = () => {
+        const colorContexts = new Map(
+          passes
+            .filter(
+              (pass) =>
+                pass.abi !== undefined &&
+                (isStandardRootModule(pass.module) ||
+                  UNLIT_ROOT_MODULES.has(pass.module) ||
+                  pass.module === 'forgeax::single-layer-water') &&
+                pass.readsVertexColor !== false,
+            )
+            .map((pass) => [
+              JSON.stringify([
+                pass.context.backend,
+                pass.context.geometry,
+                pass.context.capability,
+                pass.context.visibleSurface === true,
+              ]),
+              pass.context,
             ]),
-            pass.context,
-          ]),
-      );
+        );
+        return colorContexts;
+      };
+      const colorContexts = collectMaterialColorVariantContexts();
       const coloredVariants = await mapMaterialVariants(
         [...colorContexts.values()],
         compiler.concurrency,
@@ -797,21 +827,24 @@ export function createMaterialPackCooker(
             sourceIdentity,
           ),
       );
-      for (const colored of coloredVariants) {
-        passes.push(
-          ...colored.passes.filter(
-            (pass) =>
-              pass.abi?.vertexInputs.some((input) => input.semantic === 'color') &&
-              !passes.some(
-                (existing) =>
-                  existing.pass === pass.pass &&
-                  materialProgramContextKey(existing.context) ===
-                    materialProgramContextKey(pass.context) &&
-                  existing.abi?.vertexInputs.some((input) => input.semantic === 'color'),
-              ),
-          ),
-        );
-      }
+      const appendMaterialColoredVariantPasses = () => {
+        for (const colored of coloredVariants) {
+          passes.push(
+            ...colored.passes.filter(
+              (pass) =>
+                pass.abi?.vertexInputs.some((input) => input.semantic === 'color') &&
+                !passes.some(
+                  (existing) =>
+                    existing.pass === pass.pass &&
+                    materialProgramContextKey(existing.context) ===
+                      materialProgramContextKey(pass.context) &&
+                    existing.abi?.vertexInputs.some((input) => input.semantic === 'color'),
+                ),
+            ),
+          );
+        }
+      };
+      appendMaterialColoredVariantPasses();
       const programs = [...materialPrograms(passes, normalizedInput)];
       const derivatives: CookedRayMaterial[] = [];
       for (const rayContext of options.profile === 'webgpu-storage' ||
@@ -838,81 +871,86 @@ export function createMaterialPackCooker(
         derivatives.push(cooked.value);
         programs.push(rayMaterialProgram(cooked.value.program, pass.name, normalizedInput));
       }
-      const sourceClosure = unique([
-        ...(normalizedInput.sourcePath === undefined ? [] : [resolve(normalizedInput.sourcePath)]),
-        ...(normalizedInput.sourceKey === undefined || normalizedInput.sourcePath === undefined
-          ? []
-          : [resolve(dirname(resolve(normalizedInput.sourcePath)), normalizedInput.sourceKey)]),
-        ...passes.flatMap((pass) => pass.sourceClosure),
-        ...derivatives.flatMap((cooked) => cooked.sourceClosure),
-      ]);
-      const passClosureDigests = [
-        ...new Set([
-          ...passes.map((pass) => pass.sourceClosureDigest),
-          ...derivatives.map((cooked) => cooked.program.sourceClosureDigest),
-        ]),
-      ].sort();
-      const fingerprint =
-        passClosureDigests.length === 1 && passClosureDigests[0] !== undefined
-          ? passClosureDigests[0]
-          : inputDigest(sourceClosure, [...sources.engine, ...sources.project]);
-      // The source bytes can stay identical when the cooker adds a required
-      // backend program. Give the producer a new input identity so existing
-      // DDC publications cannot keep the old storage-only program set.
-      const producerFingerprint = `sha256:${createHash('sha256')
-        .update(
-          `material-raster-variants/3:${fingerprint}${options.profile === undefined ? '' : `:${options.profile}`}`,
-        )
-        .digest('hex')}`;
-      const record = cookedRecord(
-        storageOnly
-          ? { ...normalizedInput, profile: `${options.profile}-validation/v1` }
-          : normalizedInput,
-        cooked.value.resolved.asset,
-        sourceClosure,
-        layoutIdentity,
-        programs,
-        fingerprint,
-        cooked.value.layerPlan.identity,
-      );
-      const authoredRefs = collectMaterialCookRefs(resolved.value.asset);
-      const activeResources = new Set([...record.refs.textures, ...record.refs.samplers]);
-      const inactiveResources = new Set(
-        record.resolved.staticSwitches === undefined
-          ? []
-          : [...authoredRefs.textures, ...authoredRefs.samplers].filter(
-              (ref) => !activeResources.has(ref),
-            ),
-      );
-      return {
-        guid: normalizedInput.guid,
-        payload: {
-          ...normalizedInput.source,
-          // Keep binary compiler output native through producer fingerprinting.
-          // The Pack output boundary owns the one JSON-compatible projection.
-          cooked: record,
-        },
-        refs: unique([
-          ...(normalizedInput.refs ?? []).filter((ref) => !inactiveResources.has(ref)),
-          ...record.refs.parent,
-          ...record.refs.textures,
-          ...record.refs.samplers,
-        ]),
-        artifacts: Object.fromEntries(
-          record.programs.map(({ artifact }) => [
-            artifact.path,
-            { mediaType: artifact.mediaType, bytes: artifact.bytes },
+      const completeMaterialCookPublication = () => {
+        const sourceClosure = unique([
+          ...(normalizedInput.sourcePath === undefined
+            ? []
+            : [resolve(normalizedInput.sourcePath)]),
+          ...(normalizedInput.sourceKey === undefined || normalizedInput.sourcePath === undefined
+            ? []
+            : [resolve(dirname(resolve(normalizedInput.sourcePath)), normalizedInput.sourceKey)]),
+          ...passes.flatMap((pass) => pass.sourceClosure),
+          ...derivatives.flatMap((cooked) => cooked.sourceClosure),
+        ]);
+        const passClosureDigests = [
+          ...new Set([
+            ...passes.map((pass) => pass.sourceClosureDigest),
+            ...derivatives.map((cooked) => cooked.program.sourceClosureDigest),
           ]),
-        ),
-        inputFingerprint: producerFingerprint,
-        sourceDependencies: unique(
-          sourceClosure.flatMap((source) => {
-            if (isAbsolute(source)) return [source];
-            const record = catalog.value.get(source);
-            return record.ok && record.value.virtual !== true ? [resolve(record.value.path)] : [];
-          }),
-        ),
+        ].sort();
+        const fingerprint =
+          passClosureDigests.length === 1 && passClosureDigests[0] !== undefined
+            ? passClosureDigests[0]
+            : inputDigest(sourceClosure, [...sources.engine, ...sources.project]);
+        // The source bytes can stay identical when the cooker adds a required
+        // backend program. Give the producer a new input identity so existing
+        // DDC publications cannot keep the old storage-only program set.
+        const producerFingerprint = `sha256:${createHash('sha256')
+          .update(
+            `material-raster-variants/5:${fingerprint}${options.profile === undefined ? '' : `:${options.profile}`}`,
+          )
+          .digest('hex')}`;
+        const record = cookedRecord(
+          storageOnly
+            ? { ...normalizedInput, profile: `${options.profile}-validation/v1` }
+            : normalizedInput,
+          cooked.value.resolved.asset,
+          sourceClosure,
+          layoutIdentity,
+          programs,
+          fingerprint,
+          cooked.value.layerPlan.identity,
+        );
+        const authoredRefs = collectMaterialCookRefs(resolved.value.asset);
+        const activeResources = new Set([...record.refs.textures, ...record.refs.samplers]);
+        const inactiveResources = new Set(
+          record.resolved.staticSwitches === undefined
+            ? []
+            : [...authoredRefs.textures, ...authoredRefs.samplers].filter(
+                (ref) => !activeResources.has(ref),
+              ),
+        );
+        return {
+          guid: normalizedInput.guid,
+          payload: {
+            ...normalizedInput.source,
+            // Keep binary compiler output native through producer fingerprinting.
+            // The Pack output boundary owns the one JSON-compatible projection.
+            cooked: record,
+          },
+          refs: unique([
+            ...(normalizedInput.refs ?? []).filter((ref) => !inactiveResources.has(ref)),
+            ...record.refs.parent,
+            ...record.refs.textures,
+            ...record.refs.samplers,
+          ]),
+          artifacts: Object.fromEntries(
+            record.programs.map(({ artifact }) => [
+              artifact.path,
+              { mediaType: artifact.mediaType, bytes: artifact.bytes },
+            ]),
+          ),
+          inputFingerprint: producerFingerprint,
+          sourceDependencies: unique(
+            sourceClosure.flatMap((source) => {
+              if (isAbsolute(source)) return [source];
+              const record = catalog.value.get(source);
+              return record.ok && record.value.virtual !== true ? [resolve(record.value.path)] : [];
+            }),
+          ),
+        };
       };
+      return completeMaterialCookPublication();
     },
   };
   return withNodeMaterialWorkers(cooker, cookRoots, options.profile, snapshot);

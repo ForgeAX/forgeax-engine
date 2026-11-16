@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="theme-color" content="#edf3ef"><title>水面网格 | ForgeAX</title></head>
+<body><canvas id="scene" aria-label="实时水面网格场景"></canvas>
+  <button id="panel-toggle" class="panel-toggle" type="button" aria-expanded="true" title="隐藏面板">面板</button>
+  <aside class="inspector"><header><div><span class="eyebrow">FORGEAX / WATER R2</span><h1>水面网格</h1></div><span id="render-state">启动中</span></header>
+    <nav class="tabs"><button type="button" data-mode="ocean" aria-pressed="true">海洋</button><button type="button" data-mode="river">河流</button><button type="button" data-mode="lake">湖泊</button><button type="button" data-mode="island">岛屿</button></nav>
+    <label class="toggle"><input id="edge-toggle" type="checkbox"><span>显示瓦片与 LOD 边界</span></label>
+    <section class="camera-controls"><h2>相机视角</h2><label>距离 <output id="camera-distance-value">104 m</output><input id="camera-distance" type="range" min="24" max="180" step="1" value="104"></label><label>高度 <output id="camera-height-value">8 m</output><input id="camera-height" type="range" min="3" max="105" step="1" value="8"></label></section>
+    <div class="metrics"><div><span>当前水体</span><strong id="mode-readout">海洋</strong></div><div><span>近场瓦片</span><strong id="tiles">—</strong></div><div><span>远场实例</span><strong id="far">—</strong></div><div><span>LOD 范围</span><strong id="lod-range">—</strong></div><div><span>树深度</span><strong id="depth">—</strong></div><div><span>布局摘要</span><strong id="digest">—</strong></div></div>
+    <details class="tile-details"><summary>当前瓦片</summary><div id="roster" class="roster"></div></details>
+    <p id="status" role="status">等待水面网格提交</p></aside>
+  <script type="module" src="/src/main.ts"></script></body></html>

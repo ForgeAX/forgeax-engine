@@ -44,6 +44,14 @@ product hit. The runtime scope is rebound after that projection is restored;
 source, product, publication generation and policy identity still invalidate it.
 With `FORGEAX_WORKSPACE_TIMING=1`, `forgeax.pack-commit.timing` separates HTTP
 compression, Meta staging/commit and authored commit from product preparation.
+The existing `forgeax.authored-pack.timing` stream also observes worklist
+cache/cook/persist/ready transitions per source and native discovery/cook calls
+per registered recipe, source key and GUID. Records carry a process-monotonic
+`atMs`, phase duration and original structured failures; a cancelled command
+can leave a start without an end. Worklist phase durations include admission
+and dependency waits, while native durations measure the actual recipe call.
+These observations leave cache identities, input bytes, concurrency, generation
+validation and readiness deadlines unchanged.
 
 For production Meta imports, DevKit also supplies `producerIdentity` from its
 sealed build-program graph and plugin configuration. Custom hosts may supply
@@ -125,17 +133,22 @@ publication order, failure draining and the complete Catalog readiness barrier.
 
 ### Public ScriptablePack consumer contract
 
-`SCRIPTABLE_PACK_CAPABILITY_MANIFEST` publishes the 17 durable kinds and the
+`SCRIPTABLE_PACK_CAPABILITY_MANIFEST` publishes the durable kinds and the
 three Host capability boundaries. Dev and production use the same Pack v2,
 Catalog, payload, `refs`, `artifacts`, receipts, and structured recovery
 fields; only the transport locator changes. Do not add a sidecar fallback for
 a valid ScriptablePack GUID.
 
-The ordered durable matrix is `mesh`, `material`, `scene`, `texture`,
-`equirect`, `sampler`, `font`, `render-pipeline`, `tileset`, `video`,
-`skeleton`, `skin`, `animation-clip`, `animation-graph`, `audio`, and
-`particle-effect`, and `ies-profile`; its SSOT is `SCRIPTABLE_PACK_ASSET_KINDS` in
-`@forgeax/engine-pack`.
+The ordered durable matrix is `plugin`, `mesh`, `material`, `scene`, `texture`, `texture-generator`,
+`gpu-texture`, `equirect`, `sampler`, `font`, `render-pipeline`, `tileset`,
+`video`, `skeleton`, `skin`, `animation-clip`, `animation-graph`, `audio`,
+`particle-effect`, `ies-profile`, `terrain`, `navigation-mesh`, `water-body`,
+`water-zone`, `water-wave-set`, `water-brush-recipe`, and `water-simulation-recipe`; its SSOT is
+`SCRIPTABLE_PACK_ASSET_KINDS` in `@forgeax/engine-pack`.
+`texture-generator` publishes its cooked GPU program through the ordinary Pack
+transport; `gpu-texture` publishes an output reference, never generated pixels.
+[GPU declarations](../pack/README.md#runtime-gpu-texture-declarations) use the
+same `.pack.json` / `.pack.ts` route in development and production.
 
 ### ScriptablePack publication
 

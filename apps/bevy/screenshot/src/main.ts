@@ -1,6 +1,7 @@
+import { defineSystem } from "@forgeax/engine-ecs";
 import { Update } from '@forgeax/engine-ecs';
 import { createApp } from '@forgeax/engine-app/browser';
-import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine-input';
+import { INPUT_SNAPSHOT_RESOURCE_KEY } from '@forgeax/engine-input';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { captureCanvasPixels } from '../../../shared/src/canvas-capture';
 import { buildScreenshotWorld, stepScreenshot } from './screenshot.js';
@@ -17,16 +18,17 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
 
   buildScreenshotWorld(app.world);
 
-  app.world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'screenshot-detect',
     queries: [],
     fn: (world) => {
-      const snapshot = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+      const snapshot = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
       if (stepScreenshot(world, snapshot)) {
         screenshotDue = true;
       }
     },
   });
+app.world.addSystem(Update, systemToken1);
 
   const started = app.start();
   if (!started.ok) {

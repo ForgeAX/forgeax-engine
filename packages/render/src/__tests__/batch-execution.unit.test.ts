@@ -51,6 +51,8 @@ it('prepares one shared geometry and material version without entity inputs', ()
     pass: 'forward',
     address: 'scene-index',
     alphaMask: false,
+    // No standardTextureMask: an unknown mask keeps the general inputs.
+    leanInputs: false,
   });
   if (accepted.route !== 'gpu') throw new Error('Expected shared GPU execution');
   const next = { ...material, roughness: 0.9 };

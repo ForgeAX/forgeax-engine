@@ -5,9 +5,9 @@ import {
   frameRequest,
   type PreparedFeatureMode,
   preparedFeature,
-  preparedManifest,
   preparedWorld,
 } from './render-feature-prepared-graphics.fixture';
+import { preparedManifest } from './render-feature-prepared-graphics-manifest.fixture';
 
 function canvas(): HTMLCanvasElement {
   return { width: 64, height: 64, getContext: () => null } as unknown as HTMLCanvasElement;

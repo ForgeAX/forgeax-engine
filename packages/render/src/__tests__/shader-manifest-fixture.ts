@@ -3,7 +3,10 @@ import {
   DEFAULT_STANDARD_PBR_PARAM_SCHEMA,
   DEFAULT_UNLIT_PARAM_SCHEMA,
 } from '@forgeax/engine-shader';
+import { compileShader, reachableShaderImportIds } from '@forgeax/engine-shader-compiler';
 import type { ShaderReflection } from '@forgeax/engine-types';
+import { loadEngineShaderEntries } from '../../../vite-plugin-shader/src/engine-inputs/load-engine-shader-entries';
+import { waterInfoRasterEngineEntries } from '../../../vite-plugin-shader/src/engine-inputs/water-info-raster-roster';
 import { STANDARD_CLUSTER_TEST_REFLECTION } from './cluster-test-abi';
 
 type FixtureEntry = {
@@ -14,8 +17,10 @@ type FixtureEntry = {
   readonly reflection?: ShaderReflection;
 };
 
-const pbrWgsl = '// fixture marker: f_schlick\n';
-const unlitWgsl = '// fixture marker: default-unlit\n';
+// RhiNull fixtures retain the temporal entry names required by pipeline admission.
+const temporalEntries = '\nfn vs_temporal() {}\nfn fs_temporal() {}\n';
+const pbrWgsl = `// fixture marker: f_schlick\n${temporalEntries}`;
+const unlitWgsl = `// fixture marker: default-unlit\n${temporalEntries}`;
 const shadowCasterWgsl = '// fixture marker: shadow-caster\n';
 const fixtureCompilerProfile = {
   id: 'forgeax-material-wgsl-v1',
@@ -26,7 +31,7 @@ const fixtureCompilerProfile = {
   nagaVersion: '30.0.1',
 } as const;
 
-const entries: readonly FixtureEntry[] = [
+const baseEntries: readonly FixtureEntry[] = [
   {
     hash: 'fixture-pbr',
     wgsl: pbrWgsl,
@@ -85,34 +90,40 @@ const entries: readonly FixtureEntry[] = [
  * prewarms both transmission axes: a low sampled-texture limit selects the
  * shared-slot variant instead of dropping transmission.
  */
-export function standardPbrFixtureVariants(composedWgsl: string) {
+export function standardPbrFixtureVariants(composedWgsl: string, includeWaterWaves = false) {
   const variants = [];
   for (const cluster of [false, true]) {
     for (const storage of [false, true]) {
       for (const vertexColor of [false, true]) {
         for (const transmission of [false, true]) {
-          const defines = {
-            CLUSTER_FORWARD_AVAILABLE: cluster,
-            STORAGE_BUFFER_AVAILABLE: storage,
-            TRANSMISSION_AVAILABLE: transmission,
-            VERTEX_COLOR_AVAILABLE: vertexColor,
-          };
-          const sortedDefines = Object.entries(defines).sort(([left], [right]) =>
-            left < right ? -1 : left > right ? 1 : 0,
-          );
-          const definesKey = sortedDefines.every(([, value]) => value)
-            ? ''
-            : sortedDefines.map(([key, value]) => `${key}=${value}`).join('+');
-          variants.push({
-            definesKey,
-            defines,
-            composedWgsl,
-            hash: 'cafe1234',
-            sourceDigest: 'a'.repeat(64),
-            compilerProfile: fixtureCompilerProfile,
-            receipt: createStandardPbrArtifactReceipt(false, vertexColor),
-            reflection: STANDARD_CLUSTER_TEST_REFLECTION,
-          });
+          for (const waterWaves of includeWaterWaves ? [false, true] : [undefined]) {
+            for (const waterInfoRgba16 of includeWaterWaves ? [false, true] : [undefined]) {
+              const defines = {
+                CLUSTER_FORWARD_AVAILABLE: cluster,
+                STORAGE_BUFFER_AVAILABLE: storage,
+                TRANSMISSION_AVAILABLE: transmission,
+                VERTEX_COLOR_AVAILABLE: vertexColor,
+                ...(waterWaves === undefined ? {} : { WATER_WAVES_AVAILABLE: waterWaves }),
+                ...(waterInfoRgba16 === undefined ? {} : { WATER_INFO_RGBA16: waterInfoRgba16 }),
+              };
+              const sortedDefines = Object.entries(defines).sort(([left], [right]) =>
+                left < right ? -1 : left > right ? 1 : 0,
+              );
+              const definesKey = sortedDefines.every(([, value]) => value)
+                ? ''
+                : sortedDefines.map(([key, value]) => `${key}=${value}`).join('+');
+              variants.push({
+                definesKey,
+                defines,
+                composedWgsl,
+                hash: 'cafe1234',
+                sourceDigest: 'a'.repeat(64),
+                compilerProfile: fixtureCompilerProfile,
+                receipt: createStandardPbrArtifactReceipt(false, vertexColor),
+                reflection: STANDARD_CLUSTER_TEST_REFLECTION,
+              });
+            }
+          }
         }
       }
     }
@@ -169,7 +180,7 @@ const shadowCasterVariants = (() => {
   return variants;
 })();
 
-const materialShaders = [
+const baseMaterialShaders = [
   {
     identifier: 'forgeax::engine-standard-deferred-lighting',
     sourcePath: 'fixture://forgeax/standard-deferred-lighting.wgsl',
@@ -219,13 +230,68 @@ const materialShaders = [
   },
 ] as const;
 
+// Renderer fixtures use the real Engine WaterInfo roster so default feature
+// admission stays aligned with the shaders published by the Engine manifest.
+export const waterInfoShaderFixture = await (async () => {
+  const engine = await loadEngineShaderEntries();
+  const entries: FixtureEntry[] = [];
+  const materialShaders = [];
+  for (const shader of waterInfoRasterEngineEntries(engine)) {
+    const reachable = reachableShaderImportIds(shader.source, engine.imports, shader.defines ?? {});
+    const compiled = await compileShader(shader.source, {
+      id: shader.id,
+      imports: Object.fromEntries(
+        Object.entries(engine.imports).filter(([id]) => reachable.has(id)),
+      ),
+      ...(shader.defines === undefined ? {} : { defines: shader.defines }),
+    });
+    if (!compiled.ok)
+      throw new Error(
+        `Unable to compile Engine shader fixture '${shader.id}': ${JSON.stringify(compiled.error)}`,
+      );
+    if (shader.reservedIdentifier === undefined)
+      throw new Error(`Engine shader fixture '${shader.id}' has no reserved identifier`);
+    const { manifestEntry } = compiled.value;
+    entries.push({
+      hash: manifestEntry.hash,
+      wgsl: manifestEntry.wgsl,
+      glsl: '',
+      bindings:
+        typeof manifestEntry.bindings === 'string'
+          ? manifestEntry.bindings
+          : JSON.stringify(manifestEntry.bindings),
+    });
+    materialShaders.push({
+      identifier: shader.reservedIdentifier,
+      sourcePath: shader.id,
+      hash: manifestEntry.hash,
+      composedWgsl: manifestEntry.wgsl,
+      paramSchema: '[]',
+      variants: [],
+    });
+  }
+  return { entries, materialShaders };
+})();
+
+const entries = [...baseEntries, ...waterInfoShaderFixture.entries];
+const materialShaders = [...baseMaterialShaders, ...waterInfoShaderFixture.materialShaders];
+
 /**
  * Build the smallest manifest that exercises renderer post-process assembly.
  * The fixture is intentionally self-contained so package tests do not depend
  * on a generated app dist directory or on the caller's working directory.
  */
-export function renderLifecycleManifestUrl(): string {
+export function renderLifecycleManifestUrl(
+  options: { readonly waterWaves?: boolean } = {},
+): string {
+  const fixtureMaterials = options.waterWaves
+    ? materialShaders.map((shader) =>
+        shader.identifier === 'forgeax::default-standard-pbr'
+          ? { ...shader, variants: standardPbrFixtureVariants(shader.composedWgsl, true) }
+          : shader,
+      )
+    : materialShaders;
   return `data:application/json,${encodeURIComponent(
-    JSON.stringify({ entries, materialShaders }),
+    JSON.stringify({ entries, materialShaders: fixtureMaterials }),
   )}`;
 }

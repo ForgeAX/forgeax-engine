@@ -103,7 +103,6 @@ function camera(projection: CameraSnapshot['projection']): CameraSnapshot {
   world[14] = 7;
   return {
     entityKey: 1,
-    worldId: 0,
     historyVersion: 0,
     position: vec3.create(3, 0, 7),
     world,

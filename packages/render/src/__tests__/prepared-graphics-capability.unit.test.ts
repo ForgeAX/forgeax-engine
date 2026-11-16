@@ -1,3 +1,4 @@
+import { World } from '@forgeax/engine-ecs';
 import type { RhiCaps } from '@forgeax/engine-rhi';
 import { ok } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
@@ -80,8 +81,7 @@ describe('prepared graphics capability projection', () => {
   it('projects supported capability into an accepted machine-readable operation', () => {
     const host = createRenderFeatureHost([preparedFeature()]).unwrap();
     const result = runSingleViewFeatureFrame(host, {
-      worlds: [],
-      owner: 0,
+      world: new World(),
       frameNumber: 1,
       caps: supportedCaps,
     });
@@ -95,8 +95,7 @@ describe('prepared graphics capability projection', () => {
   it('does not admit an inactive empty plan on an unsupported backend', () => {
     const host = createRenderFeatureHost([preparedFeature()]).unwrap();
     const result = runSingleViewFeatureFrame(host, {
-      worlds: [],
-      owner: 0,
+      world: new World(),
       frameNumber: 1,
       caps: missingCaps,
     });
@@ -110,8 +109,7 @@ describe('prepared graphics capability projection', () => {
   it('returns a structured capability failure without a silent operation', () => {
     const host = createRenderFeatureHost([activePreparedFeature()]).unwrap();
     const result = runSingleViewFeatureFrame(host, {
-      worlds: [],
-      owner: 0,
+      world: new World(),
       frameNumber: 1,
       caps: missingCaps,
     });
@@ -134,8 +132,7 @@ describe('prepared graphics capability projection', () => {
     let enabled = true;
     const host = createRenderFeatureHost([activePreparedFeature(() => enabled)]).unwrap();
     const failed = runSingleViewFeatureFrame(host, {
-      worlds: [],
-      owner: 0,
+      world: new World(),
       frameNumber: 1,
       caps: missingCaps,
     });
@@ -144,8 +141,7 @@ describe('prepared graphics capability projection', () => {
 
     enabled = false;
     const recovered = runSingleViewFeatureFrame(host, {
-      worlds: [],
-      owner: 0,
+      world: new World(),
       frameNumber: 2,
       caps: missingCaps,
     });

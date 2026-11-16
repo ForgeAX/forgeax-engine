@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>水域 R7 · 浅水与海面</title></head>
+<body>
+  <canvas id="scene" tabindex="0" aria-label="三维水域"></canvas>
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark">≈</span><div><strong>水域 <span>R7</span></strong><small>浅水 · 河流 · 海面</small></div></div>
+    <nav class="tabs" aria-label="场景"><button data-mode="shallow" aria-selected="true">浅水交互</button><button data-mode="river" aria-selected="false">河流烘焙</button><button data-mode="ocean" aria-selected="false">海面 FFT</button></nav>
+    <button id="panel-toggle" class="icon-button" aria-label="收起控制面板" title="收起控制面板">☰</button>
+  </header>
+  <aside id="panel" aria-label="水域控制">
+    <div class="panel-title"><h1 id="mode-title">浅水交互</h1><span class="live"><i></i><span id="state">等待水域</span></span></div>
+    <section class="panel-section"><div class="section-heading"><h2>视角</h2><button id="recenter" class="icon-button small" title="回到水域" aria-label="回到水域">◎</button></div>
+      <div class="segments" role="group" aria-label="观察距离"><button data-view="near">近景</button><button data-view="middle" aria-pressed="true">中景</button><button data-view="far">远景</button></div>
+    </section>
+    <section class="panel-section mode-panel" data-panel="shallow">
+      <div class="section-heading"><h2>交互与移动</h2><button id="reset-shallow" class="icon-button small" title="重置浅水" aria-label="重置浅水">↺</button></div>
+      <div class="control-row"><label for="shallow-enabled">浅水模拟</label><input id="shallow-enabled" type="checkbox" checked/></div>
+      <div class="control-row"><label for="pawn-contact">水面接触</label><input id="pawn-contact" type="checkbox" checked/></div>
+      <div class="control-row"><label for="pawn-motion">移动碰撞体</label><input id="pawn-motion" type="checkbox" checked/></div>
+      <div class="control-row"><label for="patch-follow">移动模拟区域</label><input id="patch-follow" type="checkbox" checked/></div>
+      <div class="control-row"><label for="ndc-enabled">瞬时碰撞注入</label><input id="ndc-enabled" type="checkbox" checked/></div>
+      <label class="range-label" for="impact-radius">碰撞半径 <output id="radius-value">1.2 m</output></label><input id="impact-radius" type="range" min="0.5" max="2.5" step="0.1" value="1.2"/>
+      <button id="impact" class="primary command">投入碰撞体</button>
+    </section>
+    <section class="panel-section mode-panel" data-panel="shallow">
+      <h2>刚体碰撞</h2>
+      <label class="range-label" for="rigid-path">采样路径</label><select id="rigid-path"><option value="simple">中心软边界</option><option value="accurate">四角面积</option><option value="distance-field">距离场</option><option value="water-height">距离场与水深门限</option><option value="disabled">关闭刚体</option></select>
+      <label class="range-label" for="rigid-fixture">碰撞体</label><select id="rigid-fixture"><option value="rotation">原地旋转</option><option value="bounds">组件边界</option><option value="distance-field">非均匀距离场</option><option value="ties">重叠体</option><option value="height">垂向选择</option><option value="all">全部</option></select>
+      <label class="range-label" for="water-height">世界水位</label><select id="water-height"><option value="0">0 m</option><option value="4">4 m</option></select>
+      <div class="control-row"><label for="rigid-motion">旋转运动</label><input id="rigid-motion" type="checkbox" checked/></div>
+      <div class="fact-row"><span>候选组件</span><strong id="rigid-count">--</strong></div>
+      <div class="fact-row"><span>水面高度</span><strong id="rigid-height">--</strong></div>
+    </section>
+    <section class="panel-section mode-panel" data-panel="river" hidden>
+      <div class="section-heading"><h2>源与汇</h2><button id="reset-river" class="icon-button small" title="重置河流" aria-label="重置河流">↺</button></div>
+      <div class="control-row"><label for="river-enabled">河流模拟</label><input id="river-enabled" type="checkbox" checked/></div>
+      <div class="control-row"><label for="river-detail">海面细节</label><input id="river-detail" type="checkbox"/></div>
+      <div class="control-row"><label for="source">上游水源</label><input id="source" type="checkbox" checked/></div>
+      <div class="control-row"><label for="sink">下游水汇</label><input id="sink" type="checkbox" checked/></div>
+      <label class="range-label" for="source-speed">流速 <output id="speed-value">1.2 m/s</output></label><input id="source-speed" type="range" min="0" max="3" step="0.1" value="1.2"/>
+      <button id="bake" class="primary command">烘焙并发布</button>
+      <div class="fact-row"><span>持久化</span><strong id="bake-state">尚未烘焙</strong></div>
+      <div class="fact-row"><span>内容版本</span><code id="bake-version">--</code></div>
+      <div class="fact-row"><span>来源</span><strong id="bake-origin">实时场</strong></div>
+      <button id="retry-save" class="secondary command" hidden>重试保存与接纳</button>
+      <button id="cold-reload" class="secondary command">冷启动重载</button>
+    </section>
+    <section class="panel-section mode-panel" data-panel="ocean" hidden>
+      <div class="section-heading"><h2>频域海面</h2><button id="reset-ocean" class="icon-button small" title="重置海面" aria-label="重置海面">↺</button></div>
+      <button id="request-ocean" class="primary command">创建海面</button>
+      <div class="control-row"><label for="ocean-pause">暂停演化</label><input id="ocean-pause" type="checkbox"/></div>
+      <div class="control-row"><label for="ocean-enabled">海面法线</label><input id="ocean-enabled" type="checkbox" checked/></div>
+      <div class="control-row"><label for="ocean-grid">生成网格</label><input id="ocean-grid" type="checkbox"/></div>
+      <div class="fact-row"><span>分辨率</span><strong id="ocean-size">未申请</strong></div>
+      <div class="fact-row"><span>状态</span><strong id="ocean-state">未申请</strong></div>
+    </section>
+    <section id="query-section" class="panel-section" hidden>
+      <h2>水体查询</h2><div class="query-head"><span>位置</span><span>高度 / 深度</span><span>流速</span></div><div id="queries"></div>
+    </section>
+    <section class="panel-section evidence-section"><div class="section-heading"><h2>场数据</h2><button id="capture" class="icon-button small" title="捕获中间场" aria-label="捕获中间场">▣</button></div>
+      <select id="texture-selection" aria-label="已完成的纹理"><option value="">等待捕获</option></select>
+      <div class="textures"><figure><canvas id="field-preview" width="128" height="128"></canvas><figcaption>高度与流速</figcaption></figure><figure><canvas id="normal-preview" width="128" height="128"></canvas><figcaption>实际法线</figcaption></figure></div>
+      <div class="fact-row"><span>阶段</span><strong id="stage">--</strong></div>
+      <div class="fact-row"><span>模拟步</span><strong id="step">0</strong></div>
+    </section>
+  </aside>
+  <div class="view-label"><span id="scene-number">01 / 03</span><strong id="scene-label">交互浅水池</strong></div>
+  <footer><span class="status-dot"></span><span id="receipt">等待首个完成帧</span><span id="fps">-- FPS</span><button id="export" title="导出状态" aria-label="导出状态">↓</button></footer>
+  <div id="message" role="status" hidden></div>
+  <script type="module" src="/src/main.ts"></script>
+</body></html>

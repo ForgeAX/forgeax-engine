@@ -488,11 +488,7 @@ describe('Surface water bounded cost budget', () => {
       const pendingUpload = input.page.beginUpload();
       if (!pendingUpload.ok) throw pendingUpload.error;
       const started = performance.now();
-      const drawn = await drawReadyFrame(activeRenderer, {
-        leases: [lease],
-        camera: { lease },
-        environment: { lease },
-      });
+      const drawn = await drawReadyFrame(activeRenderer, { source: lease });
       const cpuSubmitElapsedMs = performance.now() - started;
       const inspection = activeRenderer.inspect();
       const gpuDriven = inspection.renderScene.gpuDriven;

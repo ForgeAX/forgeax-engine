@@ -1,3 +1,4 @@
+import { defineSystem } from "@forgeax/engine-ecs";
 import type { AssetHandle } from '@forgeax/engine-types';
 import type { App } from '@forgeax/engine-app';
 import { AudioSource } from '@forgeax/engine-audio';
@@ -120,8 +121,7 @@ const primitiveCube = app.assets.create(createPrimitiveMesh('cube').unwrap()).un
   panel
     .querySelector<HTMLSelectElement>('#controls-filter')!
     .addEventListener('change', (event) => setFilter((event.target as HTMLSelectElement).value));
-  world
-    .addSystem(Update, {
+  const systemToken1 = defineSystem({
       name: 'hello-audio-spectrum',
       queries: [],
       fn: () => {
@@ -168,6 +168,8 @@ const primitiveCube = app.assets.create(createPrimitiveMesh('cube').unwrap()).un
           error ||
           `${source.paused ? 'Paused' : position === undefined ? 'Stopped' : 'Playing'} · ${(position ?? 0).toFixed(3)} s · ${source.playbackRate}× · peak ${Math.round(peakHz)} Hz`;
       },
-    })
+    });
+world
+    .addSystem(Update, systemToken1)
     .unwrap();
 }

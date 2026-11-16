@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MeshFilter, MeshRenderer } from '@forgeax/engine-render';
@@ -8,9 +7,12 @@ import { Tilemap } from '@forgeax/engine-render/authoring';
 import { Transform } from '@forgeax/engine-scene';
 import { createTilemapSmoke } from '../../tilemap/scripts/smoke-host.mjs';
 import { buildObjectTilemapScene } from '../src/scene.ts';
+import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 const here=dirname(fileURLToPath(import.meta.url));
-const manifest=readFileSync(resolve(here, '..', 'dist', 'shaders', 'manifest.json'),'utf8');
-const host=await createTilemapSmoke(`data:application/json,${encodeURIComponent(manifest)}`);
+const manifest=readShaderManifestText(resolve(here, '..', 'dist', 'shaders', 'manifest.json'));
+const MANIFEST_URL = URL.createObjectURL(new Blob([manifest], { type: 'application/json' }));
+process.once('exit', () => URL.revokeObjectURL(MANIFEST_URL));
+const host=await createTilemapSmoke(MANIFEST_URL);
 const scene=buildObjectTilemapScene(host.world,host.assets),frames=Math.max(60,Number(process.env.SMOKE_MIN_FRAMES??60));
 const points=[[15.5,8],[8.5,12.5],[17.5,17.5],[4.5,22.5],[16,31]].map(([x,y])=>[x*8,(32-y)*8]);
 await host.draw(Math.floor(frames/2));

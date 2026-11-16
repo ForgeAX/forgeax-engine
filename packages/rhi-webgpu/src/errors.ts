@@ -65,15 +65,3 @@ function nativeRequestFailed(
     }),
   );
 }
-
-/** feature not enabled path (boundary cases / requirements). */
-export function featureNotEnabled(featureName?: string | undefined): Result<never, RhiError> {
-  const fname = featureName ?? 'compute';
-  return err(
-    new RhiError({
-      code: 'feature-not-enabled',
-      expected: `feature ${fname} to be enabled`,
-      hint: `verify device.features.${fname} before calling this entry point`,
-    }),
-  );
-}

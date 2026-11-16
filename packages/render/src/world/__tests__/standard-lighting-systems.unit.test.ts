@@ -1,8 +1,22 @@
+import { defineSystem, World } from '@forgeax/engine-ecs';
 import { describe, expect, it } from 'vitest';
+import type { SystemOrderReference } from '../../../../ecs/src/schedule';
+import { registeredSystem } from '../../__tests__/registered-system.fixture';
 import { RendererOperationError } from '../../errors/render';
+import { MaterialResource } from '../../material-resource';
+import { DEFAULT_STANDARD_PROFILE, type StandardProfile } from '../../pipeline/standard-profile';
 import type { RenderFrameState } from '../../record/frame-snapshot';
 import type { PipelineState, RenderSystemInternals } from '../../record/render-context';
-import type { ExtractedFrame } from '../../render-system-extract';
+import { defaultMaterialSnapshot, type ExtractedFrame } from '../../render-system-extract';
+
+import { MaterialFrame } from '../../scene/material-dispatch';
+import type { PersistentShadowCasterProjection } from '../../scene/render-scene';
+import {
+  RenderCascadeFitOrder,
+  RenderEnvironmentAdmitOrder,
+  RenderStandardLightingOrder,
+  RenderViewFrameOrder,
+} from '../../system-order';
 import { VIEW_ENVIRONMENT_ADMIT_SYSTEM } from '../environment-systems';
 import { RENDER_CASCADE_FIT_SYSTEM } from '../light-systems';
 import { createViewRecord, ViewCascadeFit, type ViewLights } from '../render-lights';
@@ -31,7 +45,7 @@ import {
 } from '../view-frame-systems';
 import { registerViewFrameStub, withInertTemporal } from './temporal-owner-fixture';
 
-const opts = { cameraOwner: 0, resourceOwner: 0 } as const;
+const opts = {} as const;
 const pipelineState = {} as PipelineState;
 const lighting = { ok: true, value: { totalLightCount: 0 } } as unknown as FrameLighting;
 const fence = { pipelineState, pipelineHandle: 2, deviceGeneration: 5 } as const;
@@ -46,50 +60,54 @@ function setup(
   prepare: () => ViewStandardLightingOutcome,
   owner?: Record<string, unknown>,
   lights: ViewLights | null = {} as ViewLights,
+  frame = { renderables: [], cameras: [] } as unknown as ExtractedFrame,
 ) {
   const world = createRenderWorld();
   world.insertResource(
     RenderViewInput,
-    new RenderViewFrameSource({ canvas: { width: 8, height: 8 } }),
+    Object.assign(new RenderViewFrameSource({ canvas: { width: 8, height: 8 } }), {
+      world: new World(),
+    }),
   );
   const order: string[] = [];
   // Registered first so only `after` can order the lighting behind its inputs.
   const staged = world.spawn().unwrap();
   const held = world.spawn().unwrap();
+  const forwardOrder1: SystemOrderReference[] = [];
+  const systemToken1 = defineSystem({
+    sets: [RenderStandardLightingOrder],
+    name: RENDER_STANDARD_LIGHTING_SYSTEM,
+    after: forwardOrder1,
+    queries: [],
+    fn: (world) => {
+      order.push(RENDER_STANDARD_LIGHTING_SYSTEM);
+      storeViewStandardLighting(world, staged, prepare());
+    },
+  });
   if (owner !== undefined) registerStandardLightingSystem(world);
-  else
-    world
-      .addSystem(RenderPrepare, {
-        name: RENDER_STANDARD_LIGHTING_SYSTEM,
-        after: [RENDER_VIEW_FRAME_SYSTEM, RENDER_CASCADE_FIT_SYSTEM, VIEW_ENVIRONMENT_ADMIT_SYSTEM],
-        queries: [],
-        fn: (world) => {
-          order.push(RENDER_STANDARD_LIGHTING_SYSTEM);
-          storeViewStandardLighting(world, staged, prepare());
-        },
-      })
-      .unwrap();
+  else world.addSystem(RenderPrepare, systemToken1).unwrap();
   registerViewFrameStub(world, () => {
     order.push(RENDER_VIEW_FRAME_SYSTEM);
-    return { ok: true, value: { renderables: [], cameras: [] } as unknown as ExtractedFrame };
+    return { ok: true, value: frame };
   });
-  world
-    .addSystem(RenderPrepare, {
-      name: RENDER_CASCADE_FIT_SYSTEM,
-      queries: [],
-      fn: () => void order.push(RENDER_CASCADE_FIT_SYSTEM),
-    })
-    .unwrap();
-  world
-    .addSystem(RenderPrepare, {
-      name: VIEW_ENVIRONMENT_ADMIT_SYSTEM,
-      after: [RENDER_VIEW_FRAME_SYSTEM],
-      queries: [],
-      fn: () => {
-        order.push(VIEW_ENVIRONMENT_ADMIT_SYSTEM);
-      },
-    })
-    .unwrap();
+  const systemToken2 = defineSystem({
+    sets: [RenderCascadeFitOrder],
+    name: RENDER_CASCADE_FIT_SYSTEM,
+    queries: [],
+    fn: () => void order.push(RENDER_CASCADE_FIT_SYSTEM),
+  });
+  world.addSystem(RenderPrepare, systemToken2).unwrap();
+  const systemToken3 = defineSystem({
+    sets: [RenderEnvironmentAdmitOrder],
+    name: VIEW_ENVIRONMENT_ADMIT_SYSTEM,
+    after: [RenderViewFrameOrder],
+    queries: [],
+    fn: () => {
+      order.push(VIEW_ENVIRONMENT_ADMIT_SYSTEM);
+    },
+  });
+  forwardOrder1.push(RenderViewFrameOrder, systemToken2, systemToken3);
+  world.addSystem(RenderPrepare, systemToken3).unwrap();
   for (const entity of [staged, held]) {
     const state = world.allocUniqueRef('ViewRecorder', withInertTemporal({}, owner));
     world.addComponent(entity, { component: ViewRecorder, data: { state } }).unwrap();
@@ -102,13 +120,12 @@ function setup(
       })
       .unwrap();
   }
-  world
-    .addSystem(RenderExtract, {
-      name: RENDER_VIEW_RECORDERS_SYSTEM,
-      queries: [],
-      fn: (world) => stageViewFrame(world, staged, opts),
-    })
-    .unwrap();
+  const systemToken4 = defineSystem({
+    name: RENDER_VIEW_RECORDERS_SYSTEM,
+    queries: [],
+    fn: (world) => stageViewFrame(world, staged, opts),
+  });
+  world.addSystem(RenderExtract, systemToken4).unwrap();
   const internals = {
     renderWorld: world,
     viewEntity: staged,
@@ -132,18 +149,92 @@ function viewOwner() {
     standardInstall: { configured: undefined, built: 4, cameraSignature: '', cameraFailure: '' },
   } as unknown as RenderFrameState & Record<string, unknown>;
   const internals = {
-    device: { caps: { storageBuffer: true }, limits: { maxColorAttachments: 8 } },
+    device: {
+      caps: { storageBuffer: true },
+      limits: { maxColorAttachments: 8, maxColorAttachmentBytesPerSample: 72 },
+    },
     deviceScope: { generation: 5 },
-    standardProfile: undefined,
+    standardProfile: undefined as StandardProfile | undefined,
     errorRegistry: { fire: () => undefined },
     getPipelineState: () => {
       throw cause;
     },
   };
-  return { owner: { frameState, internals }, frameState, cause };
+  return {
+    owner: {
+      frameState,
+      internals,
+      scene: {
+        materialFrame: () => new MaterialFrame(undefined),
+        shadowCasterProjection: (): PersistentShadowCasterProjection | undefined => undefined,
+      },
+    },
+    frameState,
+    cause,
+  };
 }
 
 describe('render-standard-lighting system', () => {
+  it.each([
+    'scene',
+    'candidate',
+  ] as const)("derives the lighting profile from this view's %s SLW demand and restores the author profile", (source) => {
+    const { owner, frameState } = viewOwner();
+    owner.internals.standardProfile = DEFAULT_STANDARD_PROFILE;
+    const resource = new MaterialResource({
+      ...defaultMaterialSnapshot(),
+      surfaceModel: 'single-layer-water',
+    });
+    let materials = new MaterialFrame(undefined).with(resource);
+    if (source === 'scene')
+      owner.scene.shadowCasterProjection = () =>
+        ({
+          content: { materials },
+          renderables: [],
+        }) as unknown as PersistentShadowCasterProjection;
+    else
+      frameState.candidatePipelinePreparations = {
+        get materials() {
+          return materials;
+        },
+      } as unknown as NonNullable<RenderFrameState['candidatePipelinePreparations']>;
+    const frame = {
+      renderables: [],
+      cameras: [{ antialias: 'none' }],
+    } as unknown as ExtractedFrame;
+    const { world } = setup(() => ({ kind: 'not-admitted' }), owner, {} as ViewLights, frame);
+    beginRenderFrame(world, 1);
+    expect(frameState.cameraStandardProfile?.renderPath).toBe('deferred');
+    endRenderFrame(world);
+    materials = materials.with(resource, 0);
+    beginRenderFrame(world, 2);
+    expect(frameState.cameraStandardProfile).toBe(DEFAULT_STANDARD_PROFILE);
+    endRenderFrame(world);
+  });
+  it('ignores unselected shared SLW materials when the view projection has no Water', () => {
+    const { owner, frameState } = viewOwner();
+    owner.internals.standardProfile = DEFAULT_STANDARD_PROFILE;
+    owner.scene.materialFrame = () =>
+      new MaterialFrame(undefined).with(
+        new MaterialResource({
+          ...defaultMaterialSnapshot(),
+          surfaceModel: 'single-layer-water',
+        }),
+      );
+    owner.scene.shadowCasterProjection = () =>
+      ({
+        content: { materials: new MaterialFrame(undefined) },
+        renderables: [],
+      }) as unknown as PersistentShadowCasterProjection;
+    const frame = {
+      renderables: [],
+      cameras: [{ antialias: 'none' }],
+    } as unknown as ExtractedFrame;
+    const { world } = setup(() => ({ kind: 'not-admitted' }), owner, {} as ViewLights, frame);
+    beginRenderFrame(world, 1);
+    expect(frameState.cameraStandardProfile).toBe(DEFAULT_STANDARD_PROFILE);
+    endRenderFrame(world);
+  });
   it('admits the camera configuration and prepares from the view owner, never throwing', () => {
     const { owner, frameState, cause } = viewOwner();
     const { world, staged, held } = setup(() => ({ kind: 'not-admitted' }), owner);
@@ -198,7 +289,12 @@ describe('render-standard-lighting system', () => {
     const { world, staged, internals } = setup(() => ({ kind: 'prepared', lighting, fence }));
     beginRenderFrame(world, 1);
     endRenderFrame(world);
-    world.removeSystem(RenderPrepare, RENDER_STANDARD_LIGHTING_SYSTEM).unwrap();
+    world
+      .removeSystem(
+        RenderPrepare,
+        registeredSystem(world, RenderPrepare, 'render-standard-lighting'),
+      )
+      .unwrap();
     beginRenderFrame(world, 2);
     // The stored lighting is the previous frame's only.
     expect(viewStandardLightingOf(world, staged)).toBeUndefined();

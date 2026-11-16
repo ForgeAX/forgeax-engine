@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "external-asset-package",
+  "importer": "image",
+  "source": "T_WaterFlow_01_Foam_Tiled.png",
+  "importSettings": { "colorSpace": "srgb", "mipmap": true, "compressionMode": "none" },
+  "subAssets": [{ "guid": "74a9fd75-4f63-5abd-bcc8-7ac02f2a1295", "sourceIndex": 0, "kind": "texture", "sourceKey": "texture" }]
+}

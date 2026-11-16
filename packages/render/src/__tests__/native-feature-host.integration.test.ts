@@ -1,3 +1,5 @@
+import { World } from '@forgeax/engine-ecs';
+
 function required<T>(value: T | null | undefined): T {
   if (value === null || value === undefined) throw new Error('Missing fixture value');
   return value;
@@ -95,8 +97,7 @@ async function fixture() {
   const input = (frameNumber: number, generation = 0): RenderFeatureFrameInput => ({
     identity: 'main',
     render: true,
-    worlds: [],
-    owner: 1,
+    world: new World(),
     frameNumber,
     generation,
     caps: device.caps,
@@ -216,8 +217,7 @@ describe('native primary work through the actual Feature Host', () => {
     const input = (frameNumber: number): RenderFeatureFrameInput => ({
       identity: 'main',
       render: true,
-      worlds: [],
-      owner: 1,
+      world: new World(),
       frameNumber,
       generation: 0,
       caps: {} as never,
@@ -261,8 +261,7 @@ describe('native primary work through the actual Feature Host', () => {
         {
           identity: 'main',
           render: true,
-          worlds: [],
-          owner: 1,
+          world: new World(),
           frameNumber: 1,
           generation: 0,
           caps: {} as never,

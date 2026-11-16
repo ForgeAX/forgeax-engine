@@ -1,0 +1,5 @@
+{
+  "id": "water-r7-advanced-shallow-bake-fft", "name": "Water R7 Simulation Reach",
+  "schemaVersion": "3.0.0", "roots": {}, "assetRoots": ["assets"],
+  "assetLibraries": ["@forgeax/engine/content"]
+}

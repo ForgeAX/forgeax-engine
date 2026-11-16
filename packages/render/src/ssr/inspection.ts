@@ -102,6 +102,7 @@ export function projectSsrSpatialInspection(
             maxDistance: config.maxDistance,
             thickness: config.thickness,
             maxRoughness: config.maxRoughness,
+            waterTemporal: config.waterTemporal,
           }),
     viewRange: admission.viewRange,
     coverage: copyCoverage(projection.coverage),

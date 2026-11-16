@@ -14,7 +14,7 @@ import { createRenderPublisher } from '../publication/publisher';
 import { RenderPublicationReceiver } from '../publication/receiver';
 import { encodeRenderPublication, renderPublicationTransfers } from '../publication/record';
 import type { MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
-import { extractFrames } from '../render-system-extract-tail';
+import { extractSource } from '../render-system-extract-tail';
 import { PersistentRenderScene, RenderScene } from '../scene/render-scene';
 
 const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
@@ -57,24 +57,21 @@ describe('managed assets in persistent rendering', () => {
     );
     const scene = new PersistentRenderScene({ getDevice: () => device });
     const caches = scene.materialSnapshotCacheStore();
-    const owner = { cameraOwner: 0, resourceOwner: 0 };
     let requestedEntities = 0;
     const draw = () =>
       scene.extractComposition(
-        [world],
-        owner,
+        world,
         assets,
         (request) => {
           if (typeof request !== 'string' && request.kind === 'partial')
-            for (const entities of request.entitiesByWorld)
-              requestedEntities += entities?.size ?? 0;
-          return extractFrames([world], owner, assets, caches, {
+            requestedEntities += request.entities.size;
+          return extractSource(world, assets, caches, {
             cull: 'none',
             retainHidden: true,
             renderables: request,
           });
         },
-        [lease],
+        lease,
       );
     try {
       draw();
@@ -199,27 +196,23 @@ it('fences transitive resource edits and retires dependencies on rebind and remo
     .unwrap();
   const scene = new PersistentRenderScene();
   const lease = createRenderReadLease(world);
-  const owner = { cameraOwner: 0, resourceOwner: 0 };
+
   let extracted = 0;
   const draw = () => {
     world.update(0).unwrap();
     return scene.extractComposition(
-      [world],
-      owner,
+      world,
       assets,
       (request) => {
         if (typeof request !== 'string' && request.kind === 'partial')
-          extracted += request.entitiesByWorld.reduce(
-            (total, rows) => total + (rows?.size ?? 0),
-            0,
-          );
-        return extractFrames([world], owner, assets, scene.materialSnapshotCacheStore(), {
+          extracted += request.entities.size;
+        return extractSource(world, assets, scene.materialSnapshotCacheStore(), {
           cull: 'none',
           retainHidden: true,
           renderables: request,
         });
       },
-      [lease],
+      lease,
     );
   };
   try {
@@ -456,7 +449,6 @@ it('grows one shared material through a stable GPU descriptor without rewriting 
   const material = new MaterialResource(initial);
   const world = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
   const snapshots: RenderableSnapshot[] = Array.from({ length: 128 }, (_, entityKey) => ({
-    worldId: 0,
     entityKey,
     assetHandle: 1,
     material,
@@ -470,7 +462,6 @@ it('grows one shared material through a stable GPU descriptor without rewriting 
         projection.apply(
           snapshots.map((snapshot) => ({
             kind: 'update' as const,
-            worldId: snapshot.worldId,
             entityKey: snapshot.entityKey,
             snapshot,
           })),

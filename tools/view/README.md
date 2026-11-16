@@ -1143,3 +1143,37 @@ are not source image levels.
 The UI and public `view.workspace.preview.texture.get/set` operations address
 the exact Engine target/generation. Settings change that preview's display and
 never rewrite the asset. Pixel generation stays on the Engine-owned surface.
+
+## Paired Engine CI
+
+PR CI defaults to Engine's `main` branch. A PR that introduces a matching Engine
+capability may declare `Engine-Revision: <full commit SHA>` in its description.
+Build and browser shards use that exact Engine source; the View checkout remains
+the current PR. Remove the declaration once the default branch includes the API.
+For a CI repair, declare `CI-Repair-From: <completed run ID>` before pushing.
+A unique successful architecture, build or browser check from the same ancestral
+PR run retains its original run/job/source identity, including when a sibling
+failed. Failed, absent or ambiguous checks execute fresh. Declare affected
+successes in one `CI-Repair-Rerun:` line using exact comma-separated check names
+(`architecture`, `build`, `browser (0)` through `browser (3)`). Current context
+and workflow contracts always run; every final lane must still succeed.
+
+The build transfers its ordinary point/SSAO shader inputs to fresh browser jobs.
+The existing producer verifies source, compiler, profile and payload digests
+before reuse; mismatches retain normal source compilation. Fresh browsers need
+a fixed Engine SHA and the original unexpired build artifact. Missing artifacts
+or a floating Engine revision require a fresh build; successful browser siblings
+retain their own evidence. The four original jobs and deadlines remain.
+
+A main push reuses a completed successful PR cohort only when its merge commit
+and qualified PR head have identical Git trees. Every inherited job follows its
+provenance to the original executed source. Different trees or absent success
+retain full normal CI. The newest matching run is authoritative: a later failure
+or unfinished attempt blocks promotion. A cleared PR list requires the same
+source repository/branch and an independent commit-to-PR association; a nonempty
+foreign PR list never qualifies. This permits View-first paired publication
+while Engine still requires the View pin to be reachable on View main.
+Post-merge qualification inherits the final green PR executions; it does not
+reapply that PR iteration's already-consumed fresh declarations.
+
+Paired CI materializes the Engine-pinned Modeling workspace before installing workspace dependencies in architecture, build and browser jobs. It does not change that package or its gitlink.

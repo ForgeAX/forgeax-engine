@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { it } from 'node:test';
+import { runInNewContext } from 'node:vm';
 
 const workflow = readFileSync(
   new URL('../.github/workflows/ci.yml', import.meta.url),
@@ -18,6 +19,23 @@ it('GPU game probes retain the Engine browser lane unrounded adapter limits', ()
     'verify-runtime-content-engine',
   ]) {
     const source = readFileSync(new URL(`../scripts/${name}.mjs`, import.meta.url), 'utf8');
+    if (name === 'verify-game3d-workspace') {
+      assert.match(source, /const browserLaunch = JSON\.parse\(await readFile\(join\(checkout, 'scripts\/ci\/browser-launch\.json'\), 'utf8'\)\)/);
+      const options = source.match(/browser = await chromium\.launch\((\{[\s\S]*?\n  \})\);/)?.[1];
+      assert.ok(options, 'the actual game launch must expose its inherited options');
+      const policy = [
+        '--disable-dawn-features=disallow_unsafe_apis,tiered_adapter_limits',
+        '--disable-gpu-watchdog',
+        '--future-engine-launch-policy',
+      ];
+      const launch = runInNewContext(`(${options})`, {
+        browserLaunch: { args: policy }, process: { env: {} },
+      });
+      for (const flag of policy) assert.ok(launch.args.includes(flag), flag);
+      assert.ok(launch.args.includes('--use-angle=swiftshader'));
+      assert.equal(launch.chromiumSandbox, true);
+      continue;
+    }
     assert.ok(
       source.includes('--disable-dawn-features=disallow_unsafe_apis,tiered_adapter_limits'),
       name,
@@ -35,8 +53,13 @@ it('runs independent architecture and build lanes with every consumer required',
   const build = workflow.slice(workflow.indexOf('  build:'), workflow.indexOf('  browser:'));
   const browser = workflow.slice(workflow.indexOf('  browser:'), workflow.indexOf('  bootstrap:'));
   for (const lane of [architecture, build]) {
-    assert.doesNotMatch(lane, /^ {4}(?:needs|if):/m);
+    assert.match(lane, /^ {4}needs: context$/m);
+    assert.doesNotMatch(lane, /^ {4}if:/m);
+    assert.match(lane, /ref: \$\{\{ needs\.context\.outputs\.engine_ref \}\}/);
   }
+  assert.match(architecture, /Reuse architecture: \$\{\{ needs\.context\.outputs\.architecture_origin \}\}/);
+  assert.match(architecture, /if: needs\.context\.outputs\.architecture_reused != 'true'/);
+  assert.doesNotMatch(build, /architecture_reused/);
   for (const lane of [build, browser]) {
     const preparation = lane.indexOf('uses: ./.github/actions/prepare-wgpu-wasm');
     assert.ok(preparation >= 0, 'native builds must retain the Engine source-build fallback');
@@ -46,7 +69,7 @@ it('runs independent architecture and build lanes with every consumer required',
   assert.match(build, /run: pnpm build:engine && pnpm build:tools/);
   assert.match(build, /shards\.length !== 4/);
   assert.match(build, /new Set\(shards\)\.size !== shards\.length/);
-  assert.match(browser, /^ {2}browser:\n {4}needs: build/m);
+  assert.match(browser, /^ {2}browser:\n {4}needs: \[context, build\]/m);
   assert.match(browser, /fail-fast: false/);
   assert.match(browser, /shard: \$\{\{ fromJSON\(needs\.build\.outputs\.view_shards\) \}\}/);
   assert.match(browser, /--candidate --shard \$\{\{ matrix\.shard \}\}/);

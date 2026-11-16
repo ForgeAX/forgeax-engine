@@ -32,7 +32,12 @@ import {
 } from '@forgeax/engine-rhi-debug';
 import { Transform } from '@forgeax/engine-scene';
 import { createBuiltinMaterialAsset } from '@forgeax/engine-shader';
-import { ok, type ParticleEffectAsset, type Result } from '@forgeax/engine-types';
+import {
+  type MaterialRootAsset,
+  ok,
+  type ParticleEffectAsset,
+  type Result,
+} from '@forgeax/engine-types';
 import { ParticleEffectPlayer } from '@forgeax/engine-vfx';
 import type { ParticleCodeModuleSet } from '@forgeax/engine-vfx-compiler';
 import { createVfxRuntimeHost } from '@forgeax/engine-vfx-render';
@@ -341,7 +346,7 @@ function sampleEffectSource(
   };
 }
 
-type StandardMaterial = ReturnType<typeof createBuiltinMaterialAsset>;
+type StandardMaterial = MaterialRootAsset;
 type BoxMesh = ReturnType<ReturnType<typeof createBoxGeometry>['unwrap']>;
 
 /** The constructed renderer, its World and the authored subjects every sample reuses. */
@@ -412,13 +417,7 @@ export class VfxMeshLightingRig {
     if (source === undefined) {
       const lease = this.lease;
       if (lease === undefined) throw new Error('Missing World lease');
-      return ok(
-        await drawReadyFrame(renderer, {
-          leases: [lease],
-          camera: { lease },
-          environment: { lease },
-        }),
-      );
+      return ok(await drawReadyFrame(renderer, { source: lease }));
     }
     let recycling: Promise<void> | undefined;
     const receipt = await completeReadyFrame(
@@ -871,7 +870,7 @@ async function authorLightingScene(
       },
     })
     .unwrap();
-  const material = createBuiltinMaterialAsset('standard');
+  const material = createBuiltinMaterialAsset('standard') as StandardMaterial;
   const mesh = createBoxGeometry(0.5, 0.5, 0.5).unwrap();
   const materialGuid = AssetGuid.random();
   const meshGuid = AssetGuid.random();

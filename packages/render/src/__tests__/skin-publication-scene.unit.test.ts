@@ -18,7 +18,7 @@ it('carries sparse Worker joint columns through Persistent admission and cold re
   const read = (entity: number) => {
     const frame = scene.skinRecordingFrame();
     if (!frame) throw new Error('Missing accepted Skin frame');
-    const slot = frame.slots.lookup(0, entity);
+    const slot = frame.slots.lookup(entity);
     if (!slot) throw new Error('Missing accepted Scene slot');
     const out = mat4.create();
     expect(frame.current.matrix(slot.slot, 0, out, mat4.create())).toBe(true);
@@ -56,7 +56,7 @@ function endpoint(missing = false) {
   const arena = new GpuInputArena(),
     scene = new RenderScene();
   let resources: RenderResourceScope | undefined;
-  const skin = new SkinSceneInputs(arena, (_world, handle) => {
+  const skin = new SkinSceneInputs(arena, (handle) => {
     const value = resources?.resolveAsset(handle);
     return value?.ok && value.value.kind === 'skeleton' ? value.value : undefined;
   });
@@ -65,7 +65,7 @@ function endpoint(missing = false) {
     const packet = f.publish(),
       prepared = receiver.accept(encodeRenderPublication(packet)).unwrap();
     resources = prepared.resources;
-    scene.setSources([resources]);
+    scene.setSource(resources);
     const delta = scene.apply(prepared.operations);
     skin.apply(delta);
     for (const change of prepared.assetChanges) {
@@ -73,21 +73,20 @@ function endpoint(missing = false) {
       // Removal of a referenced Skeleton is meaningful too; this owner does not
       // enumerate Bindings to decide whether the resource has consumers.
       skin.skeletonChanged(
-        0,
         change.handle,
         value.ok && value.value.kind === 'skeleton' ? value.value : undefined,
       );
     }
-    for (const entity of prepared.skinJoints?.retired ?? []) skin.joint(0, entity, undefined);
+    for (const entity of prepared.skinJoints?.retired ?? []) skin.joint(entity, undefined);
     for (const row of prepared.skinJoints?.rows ?? []) {
       for (let lane = 0; lane < 16; lane++)
         scratch[lane] = required(packet.transforms[row * 16 + lane]);
-      skin.joint(0, required(packet.transformEntities[row]), scratch);
+      skin.joint(required(packet.transformEntities[row]), scratch);
     }
     return { packet, prepared, delta };
   }
   const slot = (entity: number) => {
-    const value = scene.slotsSnapshot().lookup(0, entity);
+    const value = scene.slotsSnapshot().lookup(entity);
     if (!value) throw new Error('Missing actual Scene slot');
     return value.slot;
   };
@@ -209,7 +208,7 @@ it('retires the final source reference then samples it once when a new Skin reus
       f.world.removeComponent(f.second, Skin).unwrap();
       const retired = f.adopt();
       expect([...retired.packet.retiredJoints]).toEqual([Number(f.firstJoint)]);
-      expect(f.skin.hasJoint(0, Number(f.firstJoint))).toBe(false);
+      expect(f.skin.hasJoint(Number(f.firstJoint))).toBe(false);
       f.world.set(f.firstJoint, Transform, { pos: [11, 0, 0] }).unwrap();
       expect(f.adopt().packet.transformEntities).toHaveLength(0);
       f.world

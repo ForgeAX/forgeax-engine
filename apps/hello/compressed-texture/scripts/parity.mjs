@@ -35,14 +35,14 @@
 //     per-row drift shears the checkerboard so decoded cell centres no longer
 //     match ground truth. This MUST produce a FAIL, proving the cell-centre
 //     comparison is sensitive to a stride defect (AC-14 falsification, §5.4).
-
 import { setTimeout as delay } from 'node:timers/promises';
-import { readFileSync } from 'node:fs';
+
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 
 
 const FALSIFY = process.env.FALSIFY ?? '';
@@ -271,7 +271,7 @@ const { MeshFilter, MeshRenderer, DirectionalLight, Camera, perspective } = awai
 
 
 const MANIFEST_URL = `data:application/json,${encodeURIComponent(
-  readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '..', 'dist', 'shaders', 'manifest.json'), 'utf8'),
+  readShaderManifestText(resolve(dirname(fileURLToPath(import.meta.url)), '..', 'dist', 'shaders', 'manifest.json')),
 )}`;
 
 const created = await constructRuntimeRendererHost(mockCanvas, {}, { shaderManifestUrl: MANIFEST_URL });
@@ -364,11 +364,7 @@ const start = performance.now();
 let frames = 0;
 while (true) {
   world.update().unwrap();
-  renderer.draw({
-    leases: [lease],
-    camera: { lease },
-    environment: { lease },
-  });
+  renderer.draw({ source: lease });
   frames++;
   if (performance.now() - start >= SMOKE_DURATION_MS) break;
   await delay(0);

@@ -5,6 +5,7 @@ import {
 } from '../features/fullscreen';
 import { validateRenderFeaturePlan } from '../features/plan';
 import {
+  type PostProcessShaderEntry,
   postProcessShaderEntrySignature,
   postProcessShaderModuleLabel,
   postProcessShaderPipelineLabel,
@@ -74,6 +75,21 @@ describe('fullscreen RenderFeature plan', () => {
     entry.usesView = true;
     checkChanged();
     expect(postProcessShaderEntrySignature({ ...entry })).toBe(previous);
+  });
+
+  it('invalidates a fullscreen declaration when its hardware depth output changes in place', () => {
+    const entry: { source: string; depthOutput?: PostProcessShaderEntry['depthOutput'] } = {
+      source: 'shader',
+    };
+    const colorOnly = postProcessShaderEntrySignature(entry);
+    entry.depthOutput = 'depth32float-stencil8';
+    const depth = postProcessShaderEntrySignature(entry);
+    expect(depth).not.toBe(colorOnly);
+    expect(postProcessShaderEntrySignature({ ...entry })).toBe(depth);
+    entry.depthOutput = 'depth32float';
+    expect(postProcessShaderEntrySignature(entry)).not.toBe(depth);
+    delete entry.depthOutput;
+    expect(postProcessShaderEntrySignature(entry)).toBe(colorOnly);
   });
 
   it('keeps the cooked effect on the Standard post-stage owner', () => {

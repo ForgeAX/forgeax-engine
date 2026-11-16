@@ -346,6 +346,8 @@ export async function verifyStandardDisplacement(
         mapSize: testQuality.shadowMapSize,
         shadowDistance: 8,
         cascadeCount: 2,
+        // This fixture checks the retained static shadow layer, which is opt-in.
+        staticShadowCache: true,
       },
     })
     .unwrap();
@@ -471,9 +473,7 @@ export async function verifyStandardDisplacement(
             renderer,
             {
               ...(entry.gpu ? {} : { geometryLane: 'direct' as const }),
-              leases: [lease],
-              camera: { lease },
-              environment: { lease },
+              source: lease,
             },
             observe ? ['linear-hdr'] : undefined,
           );

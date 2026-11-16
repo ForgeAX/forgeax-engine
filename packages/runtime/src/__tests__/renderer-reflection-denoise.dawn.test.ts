@@ -1,4 +1,5 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { stdout } from 'node:process';
 import { Materials, MeshRenderer, type StandardDiffuseGi } from '@forgeax/engine-render';
 import {
   attachRecorder,
@@ -8,7 +9,7 @@ import {
   replayDeviceRequest,
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
-import { Transform } from '@forgeax/engine-scene';
+import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { ok } from '@forgeax/engine-types';
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { assert, expect, it } from 'vitest';
@@ -18,6 +19,10 @@ import {
   irradianceFieldGi,
   SIZE,
 } from './renderer-irradiance-field.fixture';
+import {
+  completeFixturePicture,
+  requireValidReflectionSignal,
+} from './renderer-ready-draw.fixture';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 
 const manifest = shaderManifestUrl(await buildEngineShaderManifest());
@@ -36,10 +41,12 @@ const gi: StandardDiffuseGi = {
   reflections: { maxRoughnessToTrace: 0.4, roughnessFadeLength: 0.1 },
 };
 /** Red channel of a 16-byte-per-pixel signal; NaN where the pixel is invalid. */
-const red = (signal: Float32Array) =>
-  Float64Array.from({ length: PIXELS }, (_, i) =>
+const red = (signal: Float32Array) => {
+  requireValidReflectionSignal(signal, PIXELS, 'reflection readback');
+  return Float64Array.from({ length: PIXELS }, (_, i) =>
     signal[i * 4 + 3] === 1 ? (signal[i * 4] ?? Number.NaN) : Number.NaN,
   );
+};
 const mean = (values: ArrayLike<number>) => {
   let sum = 0;
   for (let i = 0; i < values.length; i++) sum += values[i] ?? Number.NaN;
@@ -82,7 +89,96 @@ it('denoises traced Lite reflections without ghosting under camera motion', {
       ) => ok(recorder.backend.unwrapDeviceForSurface(device).unwrap()),
     },
   });
+  const submit = () => {
+    const submitted = h.submit();
+    if (!submitted.ok) throw submitted.error;
+    return submitted.value;
+  };
+  const drawPicture = () =>
+    completeFixturePicture(() => {
+      h.world.update(1 / 60).unwrap();
+      propagateTransforms(h.world).unwrap();
+      return submit();
+    }, submit);
   const result: Record<string, unknown> = {};
+  const submissions: Record<string, unknown>[] = [];
+  const inspection = () => {
+    const state = h.renderer.inspect({
+      runtimeRequests: true,
+      fields: ['frame', 'profile', 'diffuseGi', 'pipelineLibrary', 'recovery'],
+    });
+    const requests = state.pipelineLibrary?.runtimeRequests;
+    return {
+      ...state,
+      pipelineLibrary: {
+        ...state.pipelineLibrary,
+        runtimeRequests:
+          requests === undefined
+            ? undefined
+            : {
+                ...requests,
+                requests: requests.requests.map((request) => ({
+                  sequence: request.sequence,
+                  kind: request.kind,
+                  mode: request.mode,
+                  label: request.label,
+                  outcome: request.outcome,
+                  preloadAtDemand: request.preloadAtDemand,
+                  requestedAtMs: request.requestedAtMs,
+                  startedAtMs: request.startedAtMs,
+                  completedAtMs: request.completedAtMs,
+                })),
+              },
+      },
+    };
+  };
+  const evidence = (kind: string, detail: unknown) => {
+    const event = JSON.stringify({ kind, at: new Date().toISOString(), detail }, (_key, value) =>
+      value instanceof Error
+        ? {
+            ...value,
+            name: value.name,
+            message: value.message,
+            stack: value.stack,
+            cause: value.cause,
+          }
+        : value,
+    );
+    stdout.write(`[reflection-denoise-evidence] ${event}\n`);
+    appendFileSync(`${directory}/preparation-events.jsonl`, `${event}\n`);
+  };
+  const unsubscribe = h.renderer.subscribe((event) => {
+    if (event.kind !== 'frame-submitted') return;
+    const receipt = event.receipt;
+    const row: Record<string, unknown> = {
+      frameId: receipt.frameId,
+      graphGeneration: receipt.graphGeneration,
+      deviceGeneration: receipt.deviceGeneration,
+      presentation: receipt.presentation,
+      pendingReason: receipt.presentationPendingReason,
+      preparation: receipt.preparationCompleted === undefined ? 'not-signalled' : 'pending',
+      completion: 'pending',
+    };
+    submissions.push(row);
+    if (submissions.length > 8) submissions.shift();
+    if (receipt.presentation !== 'ready')
+      evidence('submitted-pending', {
+        row,
+        inspection: inspection(),
+      });
+    const settled = (phase: string, value: unknown) => {
+      row[phase] = value;
+      if (receipt.presentation !== 'ready') evidence(`${phase}-settled`, row);
+    };
+    void receipt.preparationCompleted?.then(
+      (value) => settled('preparation', value),
+      (error: unknown) => settled('preparation', { rejected: error }),
+    );
+    void receipt.completed.then(
+      (value) => settled('completion', value),
+      (error: unknown) => settled('completion', { rejected: error }),
+    );
+  });
   /** History is a ping-pong pair; the one written last holds the larger ages. */
   const ages = async () => {
     const pair = await Promise.all([
@@ -109,9 +205,31 @@ it('denoises traced Lite reflections without ghosting under camera motion', {
     const raw: Float64Array[] = [];
     const denoised: Float64Array[] = [];
     for (let f = 0; f < 16; f++) {
-      await h.draw();
-      raw.push(red(await h.read('reflection-signal')));
-      denoised.push(red(await h.read('reflection-denoised')));
+      const receipt = await drawPicture();
+      const signal = await h.read('reflection-signal');
+      const filtered = await h.read('reflection-denoised');
+      save(
+        'sample-signal.bin',
+        new Uint8Array(signal.buffer, signal.byteOffset, signal.byteLength),
+      );
+      save(
+        'sample-denoised.bin',
+        new Uint8Array(filtered.buffer, filtered.byteOffset, filtered.byteLength),
+      );
+      const validPixels = (values: Float32Array) =>
+        Array.from({ length: PIXELS }, (_, i) => values[i * 4 + 3] === 1).filter(Boolean).length;
+      evidence('sample-readback', {
+        sample: f,
+        frameId: receipt.frameId,
+        presentation: receipt.presentation,
+        pendingReason: receipt.presentationPendingReason,
+        signalValid: validPixels(signal),
+        denoisedValid: validPixels(filtered),
+        signalNonfinite: signal.filter((value) => !Number.isFinite(value)).length,
+        denoisedNonfinite: filtered.filter((value) => !Number.isFinite(value)).length,
+      });
+      raw.push(red(signal));
+      denoised.push(red(filtered));
     }
     const before = temporalNoise(raw);
     const after = temporalNoise(denoised);
@@ -137,7 +255,7 @@ it('denoises traced Lite reflections without ghosting under camera motion', {
     // time and read the denoiser's storage output back from the replay.
     const pending = recorder.captureFrame();
     (await recorder.frameBoundary()).unwrap();
-    await h.draw();
+    await drawPicture();
     (await recorder.frameBoundary()).unwrap();
     const live = await h.read('reflection-denoised');
     const encoded = (await pending).unwrap();
@@ -207,7 +325,7 @@ it('denoises traced Lite reflections without ghosting under camera motion', {
     // clamp does not.
     const stale = after.average;
     h.world.set(h.camera, Transform, { pos: [1, 0, 0] }).unwrap();
-    await h.draw();
+    await drawPicture();
     const first = red(await h.read('reflection-denoised'));
     const firstRaw = red(await h.read('reflection-signal'));
     // The history written by the moved frame is the younger of the pair.
@@ -215,7 +333,7 @@ it('denoises traced Lite reflections without ghosting under camera motion', {
     await h.settle(12);
     const settled: Float64Array[] = [];
     for (let f = 0; f < 16; f++) {
-      await h.draw();
+      await drawPicture();
       settled.push(red(await h.read('reflection-denoised')));
     }
     const reference = temporalNoise(settled);
@@ -250,9 +368,18 @@ it('denoises traced Lite reflections without ghosting under camera motion', {
     expect(ghost).toBeLessThan(0.15);
     expect(h.errors).toEqual([]);
     save('result.json', result);
+  } catch (error) {
+    evidence('original-case-failed', {
+      error,
+      submissions,
+      inspection: inspection(),
+      errors: h.errors,
+    });
+    throw error;
   } finally {
     save('latest-state.json', { result, errors: h.errors });
     await h.dispose();
+    unsubscribe();
     (await recorder.dispose()).unwrap();
   }
 });

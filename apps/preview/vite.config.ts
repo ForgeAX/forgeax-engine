@@ -10,7 +10,10 @@ import { fbxImporter } from '@forgeax/engine-fbx';
 import { gltfImporter } from '@forgeax/engine-gltf';
 import { fontImporter } from '@forgeax/engine-font/font-importer';
 import { createUiImporter } from '@forgeax/engine-ui/importer';
-import { createMaterialPackCooker } from '@forgeax/engine-shader-compiler';
+import {
+  createMaterialPackCooker,
+  createTextureGeneratorPackCooker,
+} from '@forgeax/engine-shader-compiler';
 import { parseProducerReadiness } from '@forgeax/engine-import';
 import { forgeaxShader } from '@forgeax/engine-vite-plugin-shader';
 import vitePluginRhiDebug from '@forgeax/engine-vite-plugin-rhi-debug';
@@ -53,9 +56,14 @@ const previewUiAuthoringMetaPath = resolve(
 );
 const surfaceEvidencePackRoot = resolve(here, 'assets', 'surface-standard-evidence.pack.ts');
 const surfaceOnly = process.env.FORGEAX_SURFACE_ONLY === '1';
+const waterRecipePackRoots = [
+  resolve(here, 'assets', 'water-r0-recipes.pack.ts'),
+  resolve(here, 'assets', 'water-r0-base-terrain.pack.ts'),
+];
 const surfacePackRoots = [
   resolve(templatesDir, 'game-3d', 'assets', 'materials.pack.ts'),
   surfaceEvidencePackRoot,
+  ...waterRecipePackRoots,
   resolve(here, 'assets', 'surface-water-splash.pack.json'),
   resolve(here, 'assets', 'surface-water-splash-material.pack.json'),
 ];
@@ -190,7 +198,7 @@ const packRoots = surfaceOnly
       ...templatePackRoots,
       ...(selectedTemplateSlugs.length > 0 || process.env.FORGEAX_TEMPLATE_SMOKE === '1'
         ? []
-        : [surfaceEvidencePackRoot, previewUiAuthoringMetaPath]),
+        : [surfaceEvidencePackRoot, ...waterRecipePackRoots, previewUiAuthoringMetaPath]),
     ];
 const particleSourceRoots = surfaceOnly ? [resolve(here, 'assets')] : selectTemplateAssetRoots(
   [
@@ -233,6 +241,11 @@ export default defineConfig(async ({ command }) => {
       cookers: [
         ...convoyCookers,
         createMaterialPackCooker([
+          resolve(game3dRoot, 'assets', 'shaders'),
+          resolve(here, 'assets', 'shaders'),
+          resolve(templateAssetRoot),
+        ]),
+        createTextureGeneratorPackCooker([
           resolve(game3dRoot, 'assets', 'shaders'),
           resolve(here, 'assets', 'shaders'),
           resolve(templateAssetRoot),

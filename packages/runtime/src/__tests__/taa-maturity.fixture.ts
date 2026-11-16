@@ -160,7 +160,7 @@ export async function scene(
     if (observe)
       renderer.requestObservation && renderValue(renderer.requestObservation(['final-display']));
     const start = performance.now();
-    const submitted = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
+    const submitted = renderer.draw({ source: lease });
     if (!submitted.ok) {
       json('draw-failure.json', {
         mode: process.env.TAA_MATURITY,

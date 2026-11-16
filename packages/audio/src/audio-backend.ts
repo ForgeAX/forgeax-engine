@@ -1,3 +1,4 @@
+import { defineResource } from '@forgeax/engine-ecs';
 // Realm-neutral controls and observations; native playback belongs to the Host.
 
 import type { AssetHandle, AssetReferenceOwner, AudioError } from '@forgeax/engine-types';
@@ -7,7 +8,7 @@ import type { MusicCommand, MusicState } from './music';
 
 export type BusName = string;
 
-export const AUDIO_ENGINE_RESOURCE_KEY = 'AudioEngine' as const;
+export const AUDIO_ENGINE_RESOURCE_KEY = defineResource<AudioBackend>('AudioEngine');
 
 export interface AudioPlayOptions {
   readonly acousticRoutes?: AcousticRoutes;

@@ -74,11 +74,7 @@ it.each([
         propagateTransforms(world).unwrap();
         receipt = await drawReadyFrame(
           renderer,
-          {
-            leases: [lease],
-            camera: { lease },
-            environment: { lease },
-          },
+          { source: lease },
           frame === 59 ? ['linear-hdr'] : undefined,
         );
       }

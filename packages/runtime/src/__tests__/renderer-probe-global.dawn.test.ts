@@ -402,13 +402,7 @@ it.each([
       },
     },
   });
-  const submit = () =>
-    renderer.draw({
-      leases: [lease],
-      camera: { lease },
-      environment: { lease },
-      geometryLane,
-    });
+  const submit = () => renderer.draw({ source: lease, geometryLane });
   const draw = async () => {
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
@@ -428,11 +422,7 @@ it.each([
   const hdr = async () => {
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
-    const receipt = await drawReadyFrame(
-      renderer,
-      { leases: [lease], camera: { lease }, environment: { lease }, geometryLane },
-      ['linear-hdr'],
-    );
+    const receipt = await drawReadyFrame(renderer, { source: lease, geometryLane }, ['linear-hdr']);
     const item = renderValue(
       await renderer.observe(receipt, { include: ['linear-hdr'] }),
     ).observations?.find((item) => item.domain === 'linear-hdr');
@@ -761,7 +751,14 @@ it.each([
     const staleSource = submit();
     expect(afterExtract).toBeUndefined();
     expect(staleSource.ok).toBe(false);
-    if (!staleSource.ok) expect(staleSource.error.code).toBe('frame-submit-rejected');
+    if (!staleSource.ok)
+      expect(staleSource.error).toMatchObject({
+        code: 'scene-projection-failed',
+        detail: {
+          operation: 'draw',
+          cause: { code: 'state-projection-expired' },
+        },
+      });
     expect(submitCount).toBe(submissionsBeforeStaleSource);
     expect(renderer.inspect().probePlacement?.submittedFrames).toBe(accepted);
     await draw();

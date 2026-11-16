@@ -14,8 +14,6 @@ import {
 export interface TransparentSortSource {
   readonly transform: { readonly world: Float32Array };
   readonly material?: MaterialSnapshot;
-  /** World of the entry's entity (`DispatchEntry.entityIndex`); absent reads as 0. */
-  readonly worldId?: number;
 }
 
 /** Indexed by `DispatchEntry.renderableIndex`; read once per sorted slot and frame. */
@@ -70,7 +68,6 @@ export function transparentSortValue(
 /** Entries of one row share its key; at most this many per row keep a retained identity. */
 const ROW_ENTRIES = 64;
 /** Row keys above this World index cannot carry an entry ordinal exactly. */
-const MAX_IDENTITY_WORLD = 2 ** 15;
 /** Fresh ties are spaced so later insertions between neighbours rarely exhaust a gap. */
 const TIE_STEP = 1024;
 
@@ -282,12 +279,8 @@ export class TransparentSortCache {
       const source = renderables.at(entry.renderableIndex);
       // Identity only selects which retained item a slot reuses; the order is
       // derived from this frame's facts and scan order alone.
-      const worldId = source?.worldId ?? 0;
       const entityKey = entry.entityIndex;
-      const row =
-        worldId < MAX_IDENTITY_WORLD && entityKey >= 0 && entityKey < 4294967296
-          ? worldId * 4294967296 + entityKey
-          : -1 - entry.renderableIndex;
+      const row = entityKey >= 0 && entityKey < 4294967296 ? entityKey : -1 - entry.renderableIndex;
       ordinal = row === previousRow ? ordinal + 1 : 0;
       previousRow = row;
       const pose = source?.transform.world;

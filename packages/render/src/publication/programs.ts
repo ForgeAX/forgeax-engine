@@ -8,7 +8,6 @@ import {
 } from '@forgeax/engine-shader';
 import {
   getAdmittedParamSchemaInterface,
-  internJson,
   isMaterialProgramAbi,
   type MaterialAsset,
   type ParamSchemaEntry,
@@ -18,8 +17,8 @@ import {
   ownRenderFeatureProgramData,
   ownRenderFeatureProgramDataWith,
 } from '../features/prepared-gpu-work';
+import { type MaterialProgramInputs, materialProgramInputs } from '../material-program-inputs';
 import type { MaterialSnapshot } from '../render-system-extract';
-import { sameValue } from '../same-value';
 import { type RenderPublication, RenderPublicationError } from './contract';
 import type { PreparedRenderPublication } from './receiver';
 
@@ -101,230 +100,69 @@ function publicationProjectionServesMaterial(
   return true;
 }
 
-function projectionInternKey(value: PublishedMaterialProjection): string {
-  return `${value.materialGuid}\u0000${value.specializationKey}\u0000${value.artifactHash}\u0000${value.publicationGeneration}`;
-}
-
-function programInternKey(value: PublishedMaterialProjectionProgram): string {
-  return `${value.specializationKey}\u0000${value.artifactHash}`;
-}
-
 /**
- * Digest-keyed buckets of owned content. A value stays alive only while an
- * admitted row holds it; a key is a candidate selector, never proof of content.
+ * One cooked program serves several selections (direct and scene-index) under the
+ * same specialization key and digest, so the row's address and entry are part of
+ * its identity; otherwise the second selection would resolve to the first's row.
  */
-class InternTable<T extends object> {
-  static readonly BUCKET = 4;
-  readonly #slots = new Map<string, WeakRef<T>[]>();
-  readonly #collected = new FinalizationRegistry<string>((key) => {
-    const live = this.#slots.get(key)?.filter((slot) => slot.deref() !== undefined);
-    if (live === undefined) return;
-    if (live.length === 0) this.#slots.delete(key);
-    else this.#slots.set(key, live);
-  });
-  /** The first owned value under this key that the comparison proves equal to the input. */
-  find(key: string, equal: (value: T) => boolean): T | undefined {
-    for (const slot of this.#slots.get(key) ?? []) {
-      const value = slot.deref();
-      if (value !== undefined && equal(value)) return value;
-    }
-    return undefined;
-  }
-  add(key: string, value: T): void {
-    const bucket = (this.#slots.get(key) ?? []).filter((slot) => slot.deref() !== undefined);
-    bucket.unshift(new WeakRef(value));
-    this.#slots.set(key, bucket.slice(0, InternTable.BUCKET));
-    this.#collected.register(value, key);
-  }
-  get size(): number {
-    let size = 0;
-    for (const bucket of this.#slots.values())
-      for (const slot of bucket) if (slot.deref() !== undefined) size += 1;
-    return size;
-  }
-  clear(): void {
-    this.#slots.clear();
-  }
+function programId(value: PublishedMaterialProjectionProgram): string {
+  return `${value.specializationKey}\u0000${value.artifactHash}\u0000${value.address ?? ''}\u0000${value.entry ?? ''}`;
 }
 
 /**
- * Receiver-owned admission of Worker-cloned material projections. Every Worker
- * packet carries private copies, but materials published from one cooked root
- * (copies, damage variants) share identical projections and program rows.
- *
- * The digest fields only select a candidate: a received row reuses owned
- * content only after a structural comparison proves it equal to content that
- * already passed full validation. A mismatch, a non-JSON row or an unseen
- * digest takes the complete validation and copy. Receiver state and material
- * checks are repeated for every row. Reused content is deeply frozen.
- *
- * Validated program rows are additionally retained (bounded, least recently
- * admitted first out). A program is cooked content, and the publisher sends its
- * source only once per receiver; when the last material using it retires (for
- * example a loading-time pipeline preparation draw) the next material with the
- * same program would otherwise repeat the full ABI validation and deep copy on
- * its first frame.
+ * The receiver's program table. A cooked program is identified by its
+ * specialization key and artifact digest, and the publisher sends each program
+ * row's content under that identity; the receiver validates and owns a row the
+ * first time it sees the id, and every projection after that references the
+ * table entry. Projections themselves carry per-material values, so each is
+ * validated for shape and owned once per publication; nothing is interned or
+ * compared structurally.
  */
 export class PublicationMaterialProjectionAdmission {
-  static readonly RETAINED_PROGRAMS = 1024;
-  readonly #projections = new InternTable<PublishedMaterialProjection>();
-  readonly #programs = new InternTable<PublishedMaterialProjectionProgram>();
-  readonly #retainedPrograms = new Set<PublishedMaterialProjectionProgram>();
-  readonly #retainedProgramLimit: number;
-  /** Owned projections that passed shape validation in this realm. */
-  readonly #validated = new WeakSet<object>();
+  readonly #programs = new Map<string, PublishedMaterialProjectionProgram>();
 
-  constructor(options: { readonly retainedPrograms?: number } = {}) {
-    const limit =
-      options.retainedPrograms ?? PublicationMaterialProjectionAdmission.RETAINED_PROGRAMS;
-    if (!Number.isSafeInteger(limit) || limit < 0)
-      throw new RangeError('retainedPrograms must be a non-negative safe integer');
-    this.#retainedProgramLimit = limit;
+  /** Program table entry count, for diagnostics and tests. */
+  get size(): { readonly programs: number } {
+    return { programs: this.#programs.size };
   }
 
-  /** Interned slot counts, for diagnostics and tests. */
-  get size(): {
-    readonly projections: number;
-    readonly programs: number;
-    readonly retainedPrograms: number;
-  } {
-    return {
-      projections: this.#projections.size,
-      programs: this.#programs.size,
-      retainedPrograms: this.#retainedPrograms.size,
-    };
-  }
-
-  /**
-   * Validate and own one received projection. `aliases` maps a received object
-   * to its owned result within one packet, where structured clone preserves
-   * sharing between rows. Returns undefined for an invalid projection.
-   */
+  /** Validate and own one received projection; undefined when it is invalid. */
   admit(
     input: unknown,
     material: MaterialAsset,
     available: (key: string) => boolean,
-    aliases?: Map<object, PublishedMaterialProjection>,
   ): PublishedMaterialProjection | undefined {
     if (input === null || typeof input !== 'object') return undefined;
-    let owned =
-      aliases?.get(input) ??
-      (this.#validated.has(input) ? (input as PublishedMaterialProjection) : undefined);
-    if (owned === undefined) {
-      owned = this.#intern(input);
-      if (owned === undefined) return undefined;
-      aliases?.set(input, owned);
-    }
+    const reused = new Map<object, PublishedMaterialProjectionProgram>();
+    const validProgram = (program: unknown): boolean => {
+      if (program === null || typeof program !== 'object') return false;
+      const row = program as PublishedMaterialProjectionProgram;
+      const id =
+        typeof row.specializationKey === 'string' && typeof row.artifactHash === 'string'
+          ? programId(row)
+          : undefined;
+      const known = id === undefined ? undefined : this.#programs.get(id);
+      if (known !== undefined) {
+        reused.set(program, known);
+        return true;
+      }
+      if (!validPublicationProjectionProgram(program)) return false;
+      const owned = ownRenderFeatureProgramData(row);
+      if (id !== undefined && isOwnedRenderFeatureProgramData(owned)) this.#programs.set(id, owned);
+      reused.set(program, owned);
+      return true;
+    };
+    if (!validPublicationProjectionShape(input, validProgram)) return undefined;
+    const owned = ownRenderFeatureProgramDataWith(input as PublishedMaterialProjection, (node) =>
+      reused.get(node),
+    );
+    if (!isOwnedRenderFeatureProgramData(owned)) return undefined;
     return publicationProjectionServesMaterial(owned, material, available) ? owned : undefined;
   }
 
   clear(): void {
-    this.#projections.clear();
     this.#programs.clear();
-    this.#retainedPrograms.clear();
   }
-
-  #retain(program: PublishedMaterialProjectionProgram): void {
-    if (this.#retainedProgramLimit === 0) return;
-    // Refresh recency; Set iteration order is insertion order.
-    this.#retainedPrograms.delete(program);
-    this.#retainedPrograms.add(program);
-    if (this.#retainedPrograms.size <= this.#retainedProgramLimit) return;
-    const oldest = this.#retainedPrograms.values().next();
-    if (oldest.done !== true) this.#retainedPrograms.delete(oldest.value);
-  }
-
-  #intern(input: object): PublishedMaterialProjection | undefined {
-    const candidate = input as PublishedMaterialProjection;
-    const key = projectionKeyOf(candidate);
-    // Runtime material copies keep their source's key and program closure but
-    // carry their own values. Reject on the small value fields before walking the
-    // program closure, and remember one owned projection whose closure is proven
-    // equal so its validated rows are shared without a second comparison.
-    let samePrograms: PublishedMaterialProjection | undefined;
-    const known =
-      key === undefined
-        ? undefined
-        : this.#projections.find(key, (value) => {
-            const equalValues = equalProjectionExceptPasses(value, candidate);
-            if (!equalValues && samePrograms !== undefined) return false;
-            const equalPasses = sameValue(value.passes, candidate.passes);
-            if (equalPasses) samePrograms ??= value;
-            return equalValues && equalPasses;
-          });
-    if (known !== undefined) return known;
-    // Unseen content: validate each program row once per digest, then own the
-    // projection while sharing every already owned, equal program row.
-    const reused = new Map<object, PublishedMaterialProjectionProgram>();
-    const paired = new Map<object, PublishedMaterialProjectionProgram>();
-    if (samePrograms !== undefined)
-      samePrograms.passes.forEach((pass, passIndex) => {
-        const received = candidate.passes[passIndex]?.programs;
-        pass.programs.forEach((program, programIndex) => {
-          const row = received?.[programIndex];
-          if (row !== null && typeof row === 'object') paired.set(row, program);
-        });
-      });
-    const validProgram = (program: unknown): boolean => {
-      if (program === null || typeof program !== 'object') return false;
-      const proven = paired.get(program);
-      if (proven !== undefined) {
-        this.#retain(proven);
-        reused.set(program, proven);
-        return true;
-      }
-      const row = program as PublishedMaterialProjectionProgram;
-      const programKey =
-        typeof row.specializationKey === 'string' && typeof row.artifactHash === 'string'
-          ? programInternKey(row)
-          : undefined;
-      const prior =
-        programKey === undefined
-          ? undefined
-          : this.#programs.find(programKey, (value) => sameValue(value, program));
-      if (prior !== undefined) {
-        this.#retain(prior);
-        reused.set(program, prior);
-        return true;
-      }
-      if (!validPublicationProjectionProgram(program)) return false;
-      // The ABI is held as canonical deep-frozen JSON shared with every equal
-      // ABI node; ownership keeps it by identity.
-      const abi = canonicalCopy(row.abi);
-      const ownedProgram = ownRenderFeatureProgramData(abi === undefined ? row : { ...row, abi });
-      if (programKey !== undefined && isOwnedRenderFeatureProgramData(ownedProgram)) {
-        this.#programs.add(programKey, ownedProgram);
-        this.#retain(ownedProgram);
-      }
-      reused.set(program, ownedProgram);
-      return true;
-    };
-    if (!validPublicationProjectionShape(input, validProgram)) return undefined;
-    const owned = ownRenderFeatureProgramDataWith(candidate, (node) => reused.get(node));
-    if (!isOwnedRenderFeatureProgramData(owned)) return owned;
-    this.#validated.add(owned);
-    if (key !== undefined) this.#projections.add(key, owned);
-    return owned;
-  }
-}
-
-const PASSES: ReadonlySet<string> = new Set(['passes']);
-
-/** Structural equality of every projection field except the program closure. */
-function equalProjectionExceptPasses(owned: object, received: object): boolean {
-  return (
-    Object.hasOwn(received, 'passes') === Object.hasOwn(owned, 'passes') &&
-    sameValue(owned, received, PASSES)
-  );
-}
-
-function projectionKeyOf(value: PublishedMaterialProjection): string | undefined {
-  return typeof value.materialGuid === 'string' &&
-    typeof value.specializationKey === 'string' &&
-    typeof value.artifactHash === 'string' &&
-    Number.isSafeInteger(value.publicationGeneration)
-    ? projectionInternKey(value)
-    : undefined;
 }
 
 /** The same complete program closure feeds scene publication and candidate preparation. */
@@ -409,23 +247,24 @@ export function publicationMaterialSchemaRebinder(registry: ShaderRegistry) {
       matchesSchema(material, shader.paramSchema)
         ? { ...material, materialParamSchema: shader.paramSchema }
         : material;
-    const entryPoints = Object.fromEntries(
+    const programInputs = Object.fromEntries(
       material.passes.flatMap((pass) => {
         const key =
           material.materialProgramKeys?.[pass.name] ??
           runtimeMaterialShaderId(pass.program.module, pass.name);
         if (key === undefined) return [];
-        const reads = registry.materialArtifact(key)?.program.entryPoints;
-        return reads === undefined ? [] : [[pass.name, reads]];
+        const artifact = registry.materialArtifact(key);
+        const inputs = artifact === undefined ? undefined : materialProgramInputs(artifact);
+        return inputs === undefined ? [] : [[pass.name, inputs]];
       }),
     );
     // A re-published material that already carries these exact program reads
     // keeps its identity; a fresh object would invalidate every material cache.
     if (
-      Object.keys(entryPoints).length > 0 &&
-      !sameEntryPoints(rebound.materialEntryPoints, entryPoints)
+      Object.keys(programInputs).length > 0 &&
+      !sameProgramInputs(rebound.materialProgramInputs, programInputs)
     )
-      rebound = { ...rebound, materialEntryPoints: Object.freeze(entryPoints) };
+      rebound = { ...rebound, materialProgramInputs: Object.freeze(programInputs) };
     if (rebound !== material) rebound = Object.freeze(rebound);
     materials.set(material, rebound);
     return rebound;
@@ -433,15 +272,20 @@ export function publicationMaterialSchemaRebinder(registry: ShaderRegistry) {
   return rebind;
 }
 
-function sameEntryPoints(
-  current: MaterialSnapshot['materialEntryPoints'],
-  next: Readonly<Record<string, unknown>>,
+function sameProgramInputs(
+  current: MaterialSnapshot['materialProgramInputs'],
+  next: Readonly<Record<string, MaterialProgramInputs>>,
 ): boolean {
   if (current === undefined) return false;
   const keys = Object.keys(next);
   if (Object.keys(current).length !== keys.length) return false;
-  for (const key of keys)
-    if ((current as Readonly<Record<string, unknown>>)[key] !== next[key]) return false;
+  for (const key of keys) {
+    if (
+      current[key]?.entryPoints !== next[key]?.entryPoints ||
+      current[key]?.systemInputs !== next[key]?.systemInputs
+    )
+      return false;
+  }
   return true;
 }
 
@@ -453,38 +297,9 @@ export function rebindPublicationMaterialSchemas(
   const rebind = publicationMaterialSchemaRebinder(registry);
   for (const resource of input.materialUpdates) {
     const rebound = rebind(resource.snapshot);
-    if (rebound !== resource.snapshot) resource.adoptProgramSnapshot(rebound);
+    if (rebound !== resource.snapshot) resource.adoptProgramSnapshot(rebound, true);
   }
   return input;
-}
-
-/**
- * Worker clones give every received program private copies of ABI facts that
- * repeat across programs (bindings, field names, entry reads, vertex inputs).
- * A private copy of each fact becomes canonical deep-frozen JSON held once
- * per realm, and the registry keeps deep-frozen receipts and entry reads by
- * identity, so equal facts of different programs share one node. The caller's
- * row is not frozen, and the WGSL source string is not part of any key.
- */
-function canonicalShaderEntry<
-  T extends Pick<MaterialShaderEntry, 'paramSchema' | 'receipt' | 'entryPoints'>,
->(shader: T): T {
-  const receipt = canonicalCopy(shader.receipt);
-  const entryPoints = canonicalCopy(shader.entryPoints);
-  const paramSchema = canonicalCopy(shader.paramSchema);
-  return {
-    ...shader,
-    ...(receipt === undefined ? {} : { receipt }),
-    ...(entryPoints === undefined ? {} : { entryPoints }),
-    ...(paramSchema === undefined ? {} : { paramSchema }),
-  };
-}
-
-/** The canonical node equal to a private copy of `value`, or undefined when it is not plain JSON. */
-function canonicalCopy<T>(value: T): T | undefined {
-  return value === null || typeof value !== 'object'
-    ? undefined
-    : internJson(structuredClone(value as T & object));
 }
 
 /** Validate direct-source publication without changing its eager admission route. */
@@ -509,38 +324,7 @@ function publicationSourceEntry(
       subject: `conflicting immutable shader ${key}`,
     });
   }
-  return previous.ok ? undefined : canonicalShaderEntry(shader);
-}
-
-const verifiedProgramEvidence = new Set<readonly unknown[]>();
-
-/**
- * Establish the digest evidence of received byte programs off this thread. The
- * evidence stays held until the returned release runs, so call that only after
- * installPublicationPrograms: admission then compares those bytes instead of
- * hashing them. Undefined means the packet carries no byte program.
- */
-export function verifyPublicationPrograms(
-  programs: RenderPublication['programs'] | undefined,
-): Promise<() => void> | undefined {
-  // Runs before the receiver validates the packet: skip any row it will reject.
-  if (!Array.isArray(programs)) return undefined;
-  let rows: Promise<unknown>[] | undefined;
-  for (const row of programs as RenderPublication['programs']) {
-    const shader: unknown = row?.shader;
-    const artifact = row?.artifact;
-    if (shader === null || typeof shader !== 'object' || !('sourceEncoding' in shader)) continue;
-    if (!(artifact?.bytes instanceof Uint8Array) || typeof artifact.digest !== 'string') continue;
-    rows ??= [];
-    rows.push(ShaderRegistry.verifyMaterialArtifactBytes(artifact.bytes, artifact.digest));
-  }
-  const pending = rows === undefined ? undefined : Promise.all(rows);
-  return pending?.then((evidence) => {
-    verifiedProgramEvidence.add(evidence);
-    return () => {
-      verifiedProgramEvidence.delete(evidence);
-    };
-  });
+  return previous.ok ? undefined : shader;
 }
 
 /** Admit immutable producer artifacts before the full Renderer prepares their pipelines. */
@@ -588,7 +372,7 @@ export function installPublicationPrograms(
       if (!accepted.value) {
         shaders ??= new ShaderRegistry({ manifestUrl: undefined });
         shaders.installMaterialArtifactBytes(row.key, {
-          ...canonicalShaderEntry(row.shader),
+          ...row.shader,
           ...evidence,
         });
       }

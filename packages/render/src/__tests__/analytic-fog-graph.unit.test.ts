@@ -31,7 +31,7 @@ beforeAll(async () => {
 function topology(
   bloom: 'off' | 'on',
   options: {
-    readonly antialias?: 'fxaa' | 'taa';
+    readonly antialias?: 'fxaa' | 'taa' | 'msaa' | 'msaa-fxaa';
     readonly depthOfField?: boolean;
     readonly extent?: RenderExtent;
   } = {},
@@ -67,7 +67,7 @@ function topology(
     lane: {
       compute: true,
       storageBuffer: true,
-      multisample: false,
+      multisample: true,
       maxColorAttachments: 8,
     },
     featureTopologySignature: 'none',
@@ -137,7 +137,7 @@ function importedTaaHistory(graph: RenderGraphBuilder<RenderPipelineFrame>) {
 function inspect(
   fog: boolean,
   options: {
-    readonly antialias?: 'fxaa' | 'taa';
+    readonly antialias?: 'fxaa' | 'taa' | 'msaa' | 'msaa-fxaa';
     readonly depthOfField?: boolean;
     readonly extent?: RenderExtent;
     readonly unfoggedOpaque?: true;
@@ -174,6 +174,124 @@ function inspect(
 }
 
 describe('analytic distance and height fog graph', () => {
+  it('blends the shared fog kernel into the actual 4x opaque target and resolves its average', async () => {
+    const localDevice = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+    const shader = (await rhi.createShaderModule(localDevice, { code: 'synthetic' })).unwrap();
+    const graph = new RenderGraphBuilder<RenderPipelineFrame>();
+    const color = createRenderPipelineTarget(graph, 'color-msaa', {
+      format: 'rgba16float',
+      size: 'surface',
+      sampleCount: 4,
+    }).unwrap();
+    const resolve = createRenderPipelineTarget(graph, 'color-average', {
+      format: 'rgba16float',
+      size: 'surface',
+      sampleCount: 1,
+    }).unwrap();
+    const depth = createRenderPipelineTarget(graph, 'depth-msaa', {
+      format: 'depth32float-stencil8',
+      size: 'surface',
+      sampleCount: 4,
+    }).unwrap();
+    graph
+      .addRasterPass('opaque', {
+        accesses: [
+          { resource: color.view, usage: 'color-attachment' },
+          { resource: depth.view, usage: 'depth-stencil-write' },
+        ],
+        colorAttachments: [
+          {
+            view: color.view,
+            loadOp: 'clear',
+            storeOp: 'store',
+            clearValue: { r: 1, g: 1, b: 1, a: 1 },
+          },
+        ],
+        depthStencilAttachment: {
+          view: depth.view,
+          depthLoadOp: 'clear',
+          depthStoreOp: 'store',
+          depthClearValue: 0,
+          stencilLoadOp: 'clear',
+          stencilStoreOp: 'store',
+          stencilClearValue: 0,
+        },
+        encodeDirect: () => {},
+      })
+      .unwrap();
+    const depthSample = graph.view(depth.texture, { aspect: 'depth-only' }).unwrap();
+    const rasters = vi.spyOn(graph, 'addRasterPass');
+    addAnalyticFogPass(graph, { color, depth: depthSample, resolve }).unwrap();
+    expect(rasters.mock.calls.at(-1)?.[1].colorAttachments).toEqual([
+      expect.objectContaining({
+        view: color.view,
+        resolveTarget: resolve.view,
+        loadOp: 'load',
+        storeOp: 'store',
+      }),
+    ]);
+    const pipelines = vi.spyOn(localDevice, 'createRenderPipeline');
+    const layouts = vi.spyOn(localDevice, 'createBindGroupLayout');
+    const groups = vi.spyOn(localDevice, 'createBindGroup');
+    const uniform = localDevice.createBuffer({ size: 4096, usage: 72 }).unwrap();
+    const compiled = graph
+      .compile({ device: localDevice, surfaceSize: { width: 8, height: 8 } })
+      .unwrap();
+    compiled
+      .execute({
+        encoder: localDevice.createCommandEncoder().unwrap(),
+        runtime: {
+          device: localDevice,
+          lookupPostProcess: () => ({ source: 'synthetic' }),
+          shaderModuleFactory: { createShaderModule: () => ok(shader) },
+        },
+        pipelineState: { viewUniformBuffer: uniform },
+      } as unknown as RenderPipelineFrame)
+      .unwrap();
+    expect(pipelines.mock.calls.at(-1)?.[0]).toMatchObject({
+      multisample: { count: 4 },
+      fragment: {
+        entryPoint: 'fs_msaa',
+        targets: [
+          {
+            format: 'rgba16float',
+            blend: {
+              color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' },
+              alpha: { srcFactor: 'zero', dstFactor: 'one' },
+            },
+          },
+        ],
+      },
+    });
+    expect(layouts.mock.calls.at(-1)?.[0].entries).toContainEqual(
+      expect.objectContaining({
+        binding: 2,
+        texture: { sampleType: 'depth', viewDimension: '2d', multisampled: true },
+      }),
+    );
+    const entries = groups.mock.calls.at(-1)?.[0].entries;
+    expect(entries === undefined ? [] : Array.from(entries, (entry) => entry.binding)).toEqual([
+      0, 2,
+    ]);
+    (await compiled.retire()).unwrap();
+    localDevice.destroyBuffer(uniform).unwrap();
+  });
+  it('keeps native FXAA after multisampled fog and resolve', () => {
+    const names = inspect(true, { antialias: 'msaa-fxaa' }).passes.map((pass) => pass.name);
+    expect(names).toContain('fxaa');
+    expect(names.indexOf('fxaa')).toBeGreaterThan(names.indexOf('analytic-fog'));
+  });
+  it('fogs multisampled opaque color before resolving and drawing translucency', () => {
+    const info = inspect(true, { antialias: 'msaa' });
+    const fog = info.passes.find((pass) => pass.name === 'analytic-fog');
+    expect(fog?.accesses).toContainEqual({
+      resource: 'scene-color-msaa',
+      usage: 'color-attachment',
+    });
+    expect(fog?.accesses).toContainEqual({ resource: 'scene-depth', usage: 'sampled-read' });
+    const names = info.passes.map((pass) => pass.name);
+    expect(names.indexOf('analytic-fog')).toBeLessThan(names.indexOf('transparent'));
+  });
   it('is absent when disabled, with no fog target or volume history', () => {
     const info = inspect(false);
     expect(info.passes.some((p) => p.name === 'analytic-fog')).toBe(false);

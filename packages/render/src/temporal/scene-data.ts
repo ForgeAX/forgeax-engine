@@ -8,6 +8,13 @@ export const SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA =
   'forgeax::scene-data::standard-surface-normal-v1' as const;
 export const SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA =
   'forgeax::scene-data::standard-surface-depth-v1' as const;
+const STANDARD_SURFACE_MSAA_NORMAL_OUTPUTS = [{ name: 'normal', format: 'rgba8uint' }] as const;
+/** Four integer bytes retain the packed Standard normal on a legal 4x attachment. */
+export const STANDARD_SURFACE_MSAA_NORMAL = {
+  format: STANDARD_SURFACE_MSAA_NORMAL_OUTPUTS[0].format,
+  fragmentEntryPoint: 'fs_ao_input_msaa',
+  outputs: STANDARD_SURFACE_MSAA_NORMAL_OUTPUTS,
+} as const;
 export type SceneDataSchemaId =
   | typeof SCENE_DATA_TEMPORAL_V1_SCHEMA
   | typeof SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA
@@ -37,7 +44,6 @@ export type StandardSceneDataContributorRejectedField =
   | 'fragment-entry-point';
 
 export type StandardSceneDataContributorTuple = readonly [
-  renderSourceIndex: number,
   entityKey: number,
   materialHandle: number,
   passIndex: number,

@@ -8,7 +8,7 @@ import {
   recordLoadTimeline,
 } from '@forgeax/engine-types';
 import { traceAssetLoadPhase } from '../registry/load-trace.js';
-import { readDocumentJson } from './retained-pack-json.js';
+import { readDocumentJson } from './pack-json.js';
 
 // Public gateways drop idempotent package GETs, including HTTP/2 streams reset
 // mid-body. Every catalog, Pack, artifact, and loader-binary read shares this

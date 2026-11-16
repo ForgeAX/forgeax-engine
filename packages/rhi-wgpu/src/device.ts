@@ -70,6 +70,10 @@ import {
 import { doubleDestroy, makeRhiBuffer, type RawBufferLike, unwrapBuffer } from './buffer';
 import { makeRhiCommandEncoder, type RawCommandEncoderLike } from './command-encoder';
 import { descriptorInvalid, featureNotEnabled, webgpuRuntimeError } from './errors';
+import {
+  UNVERIFIED_FLOAT_TEXTURE_CAPABILITIES,
+  type VerifiedFloatTextureCapabilities,
+} from './internal/float-texture-capabilities';
 import { probeR32FloatCapability } from './internal/r32float-capability';
 import { makeRhiQueue, normalizeExtent, type RawQueueLike } from './queue';
 import { makeRhiRenderBundleEncoder, type RawRenderBundleLike } from './render-pass-encoder';
@@ -106,6 +110,8 @@ export interface RawDeviceLike {
   readonly queue?: unknown;
   // forgeax-async-whitelist: wasm-bindgen — wgpu-wasm `Device.lost` Promise passthrough
   readonly lost?: Promise<{ readonly reason: string; readonly message: string }> | undefined;
+  pushErrorScope?(filter: GPUErrorFilter): void;
+  popErrorScope?(): Promise<GPUError | null>;
   createBuffer?(desc: unknown): unknown;
   createTexture?(desc: unknown): unknown;
   createSampler?(desc?: unknown): unknown;
@@ -169,7 +175,7 @@ function probeRgba16floatRenderable(raw: RawDeviceLike): boolean {
     tex = raw.createTexture({
       label: 'forgeax-caps-probe-rgba16float-renderable',
       format: 'rgba16float',
-      usage: 16, // GPUTextureUsage.RENDER_ATTACHMENT
+      usage: 20, // GPUTextureUsage.TEXTURE_BINDING | RENDER_ATTACHMENT
       // wgpu-wasm deserializes TextureDescriptor.size as Extent3dJs;
       // preserve its named POD shape instead of relying on array coercion.
       size: { width: 1, height: 1, depthOrArrayLayers: 1 },
@@ -181,6 +187,46 @@ function probeRgba16floatRenderable(raw: RawDeviceLike): boolean {
     if (tex !== undefined && typeof (tex as { destroy?: () => void }).destroy === 'function') {
       (tex as { destroy: () => void }).destroy();
     }
+  }
+}
+
+function probeRgba32floatRenderable(raw: RawDeviceLike): boolean {
+  // WebGPU permits rgba32float render attachments; float32-blendable only gates blending.
+  let tex: unknown | undefined;
+  try {
+    if (raw.createTexture === undefined) return false;
+    tex = raw.createTexture({
+      label: 'forgeax-caps-probe-rgba32float-renderable',
+      format: 'rgba32float',
+      usage: 20,
+      size: { width: 1, height: 1, depthOrArrayLayers: 1 },
+    });
+    return true;
+  } catch {
+    return false;
+  } finally {
+    if (tex !== undefined && typeof (tex as { destroy?: () => void }).destroy === 'function')
+      (tex as { destroy: () => void }).destroy();
+  }
+}
+
+function probeFloatStorage(raw: RawDeviceLike, format: 'rgba16float' | 'rgba32float'): boolean {
+  // The tested sampled + storage usage uses write-only storage access, available without tier2.
+  let tex: unknown | undefined;
+  try {
+    if (raw.createTexture === undefined) return false;
+    tex = raw.createTexture({
+      label: `forgeax-caps-probe-${format}-storage`,
+      format,
+      usage: 12,
+      size: { width: 1, height: 1, depthOrArrayLayers: 1 },
+    });
+    return true;
+  } catch {
+    return false;
+  } finally {
+    if (tex !== undefined && typeof (tex as { destroy?: () => void }).destroy === 'function')
+      (tex as { destroy: () => void }).destroy();
   }
 }
 
@@ -246,7 +292,7 @@ class RhiWgpuDeviceImpl implements RhiDevice {
   private readonly deviceGeneration: number;
   private r32FloatProbe: ReturnType<typeof probeR32FloatCapability> | undefined;
 
-  constructor(raw: RawDeviceLike) {
+  constructor(raw: RawDeviceLike, floatTextureCapabilities?: VerifiedFloatTextureCapabilities) {
     this.raw = raw;
     RAW_DEVICE_MAP.set(this, raw);
     this.deviceGeneration = nextWgpuDeviceGeneration++;
@@ -276,12 +322,24 @@ class RhiWgpuDeviceImpl implements RhiDevice {
     const rawFeatures = (raw.features as ReadonlySet<string> | undefined) ?? new Set<string>();
     const rawLimits = (raw.limits as Record<string, number> | undefined) ?? {};
     const hasFeature = (name: string): boolean => rawFeatures.has(name);
-    // HDR renderable + filterable caps probed from the live device (D-1 + D-2):
-    // RENDER_ATTACHMENT on float formats and float32 filterable sampling are
-    // device-level validations that an adapter feature check alone cannot
-    // guarantee.
+    // HDR renderable/storage + filterable caps probed from the live device:
+    // float format usages and filterable sampling are device-level validations
+    // that an adapter feature check alone cannot guarantee.
+    const hasAnyValidationScopeMethod =
+      typeof raw.pushErrorScope === 'function' || typeof raw.popErrorScope === 'function';
+    const verifiedFloatCaps =
+      floatTextureCapabilities ??
+      (hasAnyValidationScopeMethod
+        ? UNVERIFIED_FLOAT_TEXTURE_CAPABILITIES
+        : {
+            ...UNVERIFIED_FLOAT_TEXTURE_CAPABILITIES,
+            rgba16floatRenderable: probeRgba16floatRenderable(raw),
+            rgba32floatRenderable: probeRgba32floatRenderable(raw),
+            rgba16floatStorage: probeFloatStorage(raw, 'rgba16float'),
+            rgba32floatStorage: probeFloatStorage(raw, 'rgba32float'),
+          });
     const hdrCaps = {
-      rgba16floatRenderable: probeRgba16floatRenderable(raw),
+      ...verifiedFloatCaps,
       rg11b10ufloatRenderable: probeRg11b10ufloatRenderable(raw, rawFeatures),
       float32Filterable: probeFloat32Filterable(raw, rawFeatures),
     };
@@ -700,8 +758,11 @@ function isDescriptorParseError(error: unknown): boolean {
  * RAW_DEVICE_MAP WeakMap registered through this factory; the rhi-wgpu shim
  * will follow the same pattern in M3 / w23 facade integration).
  */
-export function makeRhiDevice(raw: RawDeviceLike): { device: RhiDevice } {
-  return { device: new RhiWgpuDeviceImpl(raw) };
+export function makeRhiDevice(
+  raw: RawDeviceLike,
+  floatTextureCapabilities?: VerifiedFloatTextureCapabilities,
+): { device: RhiDevice } {
+  return { device: new RhiWgpuDeviceImpl(raw, floatTextureCapabilities) };
 }
 
 /** Release a raw browser or wasm device acquired for one Renderer generation. */

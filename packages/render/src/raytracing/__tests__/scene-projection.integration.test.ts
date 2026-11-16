@@ -16,7 +16,7 @@ import { projectRayScene } from '../scene-projection';
 import { RaySceneProjection } from '../scene-retained';
 import { projectVisibleSurfaces, resolveVisibleSurface } from '../visible-surface';
 
-function fixture(world = new World({ assets: new AssetRegistry() }), worldId = 0) {
+function fixture(world = new World({ assets: new AssetRegistry() })) {
   const positions = new Float32Array([-1, -1, 0, 1, -1, 0, 0, 1, 0, 0, 1, 0]);
   const mesh: MeshAsset = {
     kind: 'mesh',
@@ -36,7 +36,6 @@ function fixture(world = new World({ assets: new AssetRegistry() }), worldId = 0
   const material = new MaterialResource({ ...defaultMaterialSnapshot(), materialHandle });
   const source = preparedPbrSnapshot({
     entityKey: 31,
-    worldId,
     assetHandle,
     transform: { world: mat4.identity(mat4.create()) },
     material,
@@ -64,9 +63,7 @@ function firstDraw(source: RenderableSnapshot) {
   return draw;
 }
 function update(scene: RenderScene, source: RenderableSnapshot) {
-  scene.apply([
-    { kind: 'update', worldId: source.worldId, entityKey: source.entityKey, snapshot: source },
-  ]);
+  scene.apply([{ kind: 'update', entityKey: source.entityKey, snapshot: source }]);
 }
 const query = (x = 0) => ({
   origin: [x, 0, 2] as const,
@@ -87,13 +84,12 @@ it('keeps complete retained sources and joins a hit to the exact draw range and 
   // No camera/filter input exists here: even the far, offscreen contributor is retained.
   const projected = projectRayScene(
     retained.slotsSnapshot(),
-    [world].map(worldRenderResources),
+    worldRenderResources(world),
     projectVisibleSurfaces(retained.slotsSnapshot(), 9).unwrap(),
   );
   expect(projected.scene.triangleCount).toBe(2);
   expect(projected.materials).toEqual([
     {
-      worldId: 0,
       handle: source.material.snapshot.materialHandle,
       snapshot: source.material.snapshot,
     },
@@ -132,7 +128,7 @@ it('composes root and instance transforms and detaches the accepted snapshot acr
   });
   const accepted = projectRayScene(
     retained.slotsSnapshot(),
-    [world].map(worldRenderResources),
+    worldRenderResources(world),
     projectVisibleSurfaces(retained.slotsSnapshot(), 3).unwrap(),
   );
   const hit = traceReferenceRay(accepted.scene, query(5));
@@ -142,11 +138,11 @@ it('composes root and instance transforms and detaches the accepted snapshot acr
   expect(identity).toMatchObject({ entityKey: 31, instanceGeneration: 88 });
   (mesh.attributes.position as Float32Array)[2] = 1;
   transforms[12] = 4;
-  retained.apply([{ kind: 'remove', worldId: 0, entityKey: 31 }]);
+  retained.apply([{ kind: 'remove', entityKey: 31 }]);
   update(retained, { ...source, entityKey: 44 });
   const next = projectRayScene(
     retained.slotsSnapshot(),
-    [world].map(worldRenderResources),
+    worldRenderResources(world),
     projectVisibleSurfaces(retained.slotsSnapshot(), 3).unwrap(),
   );
   expect(traceReferenceRay(accepted.scene, query(5))?.t).toBe(2);
@@ -157,9 +153,9 @@ it('composes root and instance transforms and detaches the accepted snapshot acr
   );
 });
 
-it('keeps material handles from different Worlds distinct and admits non-indexed ranges', () => {
+it('keeps source material handles distinct and admits non-indexed ranges', () => {
   const first = fixture();
-  const second = fixture(new World({ assets: new AssetRegistry() }), 1);
+  const second = fixture(first.world);
   expect(first.source.material.snapshot.materialHandle).not.toBe(
     second.source.material.snapshot.materialHandle,
   );
@@ -167,6 +163,7 @@ it('keeps material handles from different Worlds distinct and admits non-indexed
   update(retained, first.source);
   update(retained, {
     ...second.source,
+    entityKey: 32,
     gpuDrivenDraws: [
       {
         ...firstDraw(second.source),
@@ -178,18 +175,16 @@ it('keeps material handles from different Worlds distinct and admits non-indexed
   });
   const projection = projectRayScene(
     retained.slotsSnapshot(),
-    [first.world, second.world].map(worldRenderResources),
+    worldRenderResources(first.world),
     projectVisibleSurfaces(retained.slotsSnapshot(), 6).unwrap(),
   );
   expect(projection.scene.triangleCount).toBe(2);
   expect(projection.materials).toEqual([
     {
-      worldId: 0,
       handle: first.source.material.snapshot.materialHandle,
       snapshot: first.source.material.snapshot,
     },
     {
-      worldId: 1,
       handle: second.source.material.snapshot.materialHandle,
       snapshot: second.source.material.snapshot,
     },
@@ -203,14 +198,14 @@ it('rejects missing Worlds, bad base vertices, absent index buffers and partial 
   expect(() =>
     projectRayScene(
       retained.slotsSnapshot(),
-      [],
+      undefined as never,
       projectVisibleSurfaces(retained.slotsSnapshot(), 3).unwrap(),
     ),
   ).toThrow();
   expect(() =>
     projectRayScene(
       retained.slotsSnapshot(),
-      [world].map(worldRenderResources),
+      worldRenderResources(world),
       projectVisibleSurfaces(retained.slotsSnapshot(), 2).unwrap(),
     ),
   ).toThrow();
@@ -222,7 +217,7 @@ it('rejects missing Worlds, bad base vertices, absent index buffers and partial 
     expect(() =>
       projectRayScene(
         retained.slotsSnapshot(),
-        [world].map(worldRenderResources),
+        worldRenderResources(world),
         projectVisibleSurfaces(retained.slotsSnapshot(), 3).unwrap(),
       ),
     ).toThrow();
@@ -245,7 +240,7 @@ it('rejects missing Worlds, bad base vertices, absent index buffers and partial 
   expect(() =>
     projectRayScene(
       retained.slotsSnapshot(),
-      [original.world].map(worldRenderResources),
+      worldRenderResources(original.world),
       projectVisibleSurfaces(retained.slotsSnapshot(), 3).unwrap(),
     ),
   ).toThrow();
@@ -260,7 +255,7 @@ it('refuses an unrepresented contributor instead of turning missing geometry int
   expect(() =>
     projectRayScene(
       retained.slotsSnapshot(),
-      [world].map(worldRenderResources),
+      worldRenderResources(world),
       projectVisibleSurfaces(retained.slotsSnapshot(), 6).unwrap(),
     ),
   ).toThrow();
@@ -268,7 +263,7 @@ it('refuses an unrepresented contributor instead of turning missing geometry int
   expect(() =>
     projectRayScene(
       retained.slotsSnapshot(),
-      [world].map(worldRenderResources),
+      worldRenderResources(world),
       projectVisibleSurfaces(retained.slotsSnapshot(), 6).unwrap(),
     ),
   ).toThrow();
@@ -276,7 +271,7 @@ it('refuses an unrepresented contributor instead of turning missing geometry int
   expect(
     projectRayScene(
       retained.slotsSnapshot(),
-      [world].map(worldRenderResources),
+      worldRenderResources(world),
       projectVisibleSurfaces(retained.slotsSnapshot(), 6).unwrap(),
     ).scene.triangleCount,
   ).toBe(1);
@@ -291,7 +286,7 @@ it.each([16, 512])('reprojects only the changed retained ray row at N=%i', (coun
     bindings: 1,
     passes: [],
   });
-  const meshes = new MeshFrame().with(0, source.assetHandle, mesh);
+  const meshes = new MeshFrame().with(source.assetHandle, mesh);
   const retained = new RenderScene();
   for (let i = 0; i < count; i++) update(retained, { ...source, entityKey: i + 1 });
   const scope = worldRenderResources(world);
@@ -308,7 +303,7 @@ it.each([16, 512])('reprojects only the changed retained ray row at N=%i', (coun
   const firstRows = rows(1);
   const first = projection.sync(
     firstRows,
-    [scope],
+    scope,
     projectVisibleSurfaces(firstRows.slots, count * 3 + 1).unwrap(),
   );
   read.mockClear();
@@ -318,7 +313,7 @@ it.each([16, 512])('reprojects only the changed retained ray row at N=%i', (coun
   const nextRows = rows(2);
   const next = projection.sync(
     nextRows,
-    [scope],
+    scope,
     projectVisibleSurfaces(nextRows.slots, count * 3 + 1).unwrap(),
   );
   expect(read).toHaveBeenCalledTimes(1);
@@ -329,7 +324,7 @@ it.each([16, 512])('reprojects only the changed retained ray row at N=%i', (coun
   expect(
     projection.sync(
       nextRows,
-      [scope],
+      scope,
       projectVisibleSurfaces(nextRows.slots, count * 3 + 1).unwrap(),
     ),
   ).toBe(next);
@@ -383,7 +378,7 @@ function retainedFixture() {
     const slots = retained.slotsSnapshot();
     return projection.sync(
       { identity, revision: ++revision, slots, materials, meshes },
-      [worldRenderResources(f.world)],
+      worldRenderResources(f.world),
       projectVisibleSurfaces(slots, 64).unwrap(),
     );
   };

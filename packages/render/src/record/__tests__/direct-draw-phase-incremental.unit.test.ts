@@ -1,4 +1,5 @@
 import { mat4, vec3 } from '@forgeax/engine-math';
+import { AssetGuid } from '@forgeax/engine-pack/guid';
 import type { RhiRenderPassEncoder } from '@forgeax/engine-rhi';
 import { assert, expect, it, onTestFinished, vi } from 'vitest';
 import { receiptRow } from '../../__tests__/gpu-draw-selection-fixture';
@@ -14,7 +15,9 @@ import { MaterialDispatch, MaterialFrame } from '../../scene/material-dispatch';
 import type { ProbeBlendBufferProjection } from '../../scene/probe-blend';
 import { RenderScene } from '../../scene/render-scene';
 import { TRANSPARENT_SORT_MODE_DISTANCE } from '../../systems/transparent-sort-config';
+import { finalizeWaterMaterialAdmissionDraws } from '../../water/mesh-source-admission';
 import { type DirectDrawInput, DirectDrawPhase, ViewDrawPhases } from '../direct-draw-phase';
+import type { ValidatedRenderable } from '../frame-snapshot';
 import { MaterialRelations } from '../material-binding-index';
 import { MemberMaterialPasses } from '../material-pass-groups';
 
@@ -61,7 +64,7 @@ const probe = {
 const mesh = {
   submeshes: Array.from({ length: 3 }, () => ({ materialSlot: 0 })),
 } as unknown as MeshGpuHandles;
-const worlds = [{ identity: 'binned-world' }] as unknown as RenderResourceScope[];
+const sourceScope = [{ identity: 'binned-world' }] as unknown as RenderResourceScope;
 
 function source(entityKey: number, resource: MaterialResource, z = entityKey): RenderableSnapshot {
   const base = receiptRow().source;
@@ -91,14 +94,13 @@ function fixture(opaqueCount: number, glassCount: number) {
       scene.apply(
         sources.map((snapshot) => ({
           kind: 'update' as const,
-          worldId: 0,
           entityKey: snapshot.entityKey,
           snapshot,
         })),
       ),
     );
     for (const snapshot of sources) {
-      const record = scene.slot(0, snapshot.entityKey);
+      const record = scene.slot(snapshot.entityKey);
       assert(record);
       dispatch.bind(record.slot, record.snapshot);
     }
@@ -130,7 +132,7 @@ function fixture(opaqueCount: number, glassCount: number) {
       selection: [],
       select: (binding): MaterialSnapshot | undefined => materials.get(binding.material)?.snapshot,
       meshes,
-      worlds,
+      sourceScope,
       shadow: false,
       materials,
       prepareUnbatched: () => [],
@@ -145,6 +147,100 @@ function fixture(opaqueCount: number, glassCount: number) {
 
 const order = (output: ReturnType<DirectDrawPhase['emit']>) =>
   output.dispatch.map((entry) => entry.entityIndex as number);
+
+it('retains sealed published rows while readdressing only changed members', () => {
+  const f = fixture(4, 0);
+  const phase = new DirectDrawPhase();
+  const raw = f.input();
+  assert(raw.materials);
+  const materials = raw.materials.with(opaque, undefined, {
+    ...opaque.snapshot,
+    immutableValues: true,
+  });
+  const input = () => ({
+    ...f.input(),
+    materials,
+    select: (binding: GpuDrivenBatchBinding) => materials.get(binding.material)?.snapshot,
+  });
+  const first = drawn(phase, input());
+  finalizeWaterMaterialAdmissionDraws(first.rows);
+  expect(Object.getOwnPropertyDescriptor(first.rows[0], 'renderableIndex')?.writable).toBe(false);
+  const work = { ...phase.work };
+  const bins = { ...phase.binWork };
+  expect(drawn(phase, input())).toBe(first);
+  f.write([source(1, opaque, 20)]);
+  const moved = drawn(phase, input());
+  expect(moved.dispatch).toBe(first.dispatch);
+  expect(moved.rows[0]).toBe(first.rows[0]);
+  expect(moved.rows[1]).not.toBe(first.rows[1]);
+  expect(first.rows[1]?.source.transform.world[14]).toBe(1);
+  finalizeWaterMaterialAdmissionDraws(moved.rows);
+  const shifted = phase.emit(100);
+  expect(shifted.rows.map((row) => row.renderableIndex)).toEqual([100, 101, 102, 103]);
+  expect(moved.rows.map((row) => row.renderableIndex)).toEqual([0, 1, 2, 3]);
+  expect(shifted.dispatch).not.toBe(moved.dispatch);
+  expect(shifted.entryRows.every((row) => shifted.rows.includes(row))).toBe(true);
+  expect(phase.work.rebuilt - work.rebuilt).toBe(1);
+  expect(phase.binWork.enqueued).toBe(bins.enqueued);
+  expect(phase.binWork.dequeued).toBe(bins.dequeued);
+  expect(phase.emit(100)).toBe(shifted);
+});
+
+it('reorders sealed publications without rewriting their original compact addresses', () => {
+  const f = fixture(0, 3);
+  const phase = new DirectDrawPhase();
+  const first = drawn(phase, f.input(eye(-1)));
+  const addresses = first.rows.map((row) => [row.source.entityKey, row.renderableIndex]);
+  finalizeWaterMaterialAdmissionDraws(first.rows);
+  const work = { ...phase.work };
+  const bins = { ...phase.binWork };
+  const next = drawn(phase, f.input(eye(3)));
+  expect(order(next)).toEqual([...order(first)].reverse());
+  expect(first.rows.map((row) => [row.source.entityKey, row.renderableIndex])).toEqual(addresses);
+  const firstByEntity = new Map(first.rows.map((row) => [row.source.entityKey, row]));
+  expect(next.rows.find((row) => row.source.entityKey === 1)).toBe(firstByEntity.get(1));
+  expect(next.rows.find((row) => row.source.entityKey === 0)).not.toBe(firstByEntity.get(0));
+  expect(next.dispatch.map((entry) => entry.renderableIndex)).toEqual([0, 1, 2]);
+  expect(next.entryRows).toEqual(next.rows);
+  expect(phase.work.rebuilt).toBe(work.rebuilt);
+  expect(phase.binWork).toEqual(bins);
+  expect(drawn(phase, f.input(eye(3)))).toBe(next);
+});
+
+it('projects readonly LOD rows without changing placement or quiet camera identities', () => {
+  const f = fixture(1, 0);
+  const guid = AssetGuid.parse('00000000-0000-7000-8000-000000000001');
+  assert(guid.ok);
+  f.write([
+    {
+      ...source(0, opaque),
+      lods: [{ mesh: guid.value, screenCoverage: 0.5 }],
+    },
+  ]);
+  const phase = new DirectDrawPhase();
+  let projected: ValidatedRenderable | undefined;
+  const lod: DirectDrawInput['lod'] = (rows) => {
+    projected ??= Object.freeze({ ...(rows[0] as ValidatedRenderable), renderableIndex: 91 });
+    return [projected];
+  };
+  const input = (camera: number): DirectDrawInput => ({ ...f.input(), lod, lodCamera: [camera] });
+  const first = drawn(phase, input(0));
+  expect(first.rows[0]?.renderableIndex).toBe(0);
+  expect(projected?.renderableIndex).toBe(91);
+  const work = { ...phase.work };
+  const bins = { ...phase.binWork };
+  expect(drawn(phase, input(1))).toBe(first);
+  assert(projected);
+  projected = Object.freeze({ ...projected, mesh: { ...mesh } });
+  const next = drawn(phase, input(2));
+  expect(next.rows[0]?.mesh).toBe(projected.mesh);
+  expect(next.rows[0]).not.toBe(first.rows[0]);
+  expect(next.rows[0]?.renderableIndex).toBe(0);
+  expect(projected.renderableIndex).toBe(91);
+  expect(phase.work.rebuilt).toBe(work.rebuilt);
+  expect(phase.binWork).toEqual(bins);
+  expect(drawn(phase, input(3))).toBe(next);
+});
 
 it('refreshes retained rows even when no authored pass enters a bin', () => {
   const f = fixture(1, 0);
@@ -379,14 +475,14 @@ it('keeps views independent: each view orders its own camera from its own diffs'
 });
 
 it('re-reads only flipped rows when camera admission evidence changes', () => {
-  const f = fixture(1_000, 0);
+  const f = fixture(1000, 0);
   const phase = new DirectDrawPhase();
   const residual = FrameSet.from(Array.from({ length: 1_000 }, (_, slot) => slot));
   let hidden = new FrameSet();
   const frusta = {};
   const admitted = () => {
     const input = f.input();
-    const slotOf = (entity: number) => f.scene.slot(0, entity)?.slot ?? -1;
+    const slotOf = (entity: number) => f.scene.slot(entity)?.slot ?? -1;
     return {
       ...input,
       visible: (row: RenderableSnapshot) => !hidden.has(slotOf(row.entityKey)),
@@ -395,7 +491,7 @@ it('re-reads only flipped rows when camera admission evidence changes', () => {
   };
   expect(drawn(phase, admitted()).rows).toHaveLength(1_000);
   const work = { ...phase.work };
-  hidden = hidden.with(f.scene.slot(0, 10)?.slot ?? -1).with(f.scene.slot(0, 11)?.slot ?? -1);
+  hidden = hidden.with(f.scene.slot(10)?.slot ?? -1).with(f.scene.slot(11)?.slot ?? -1);
   const output = drawn(phase, admitted());
   expect(phase.work.rebuilt - work.rebuilt).toBe(2);
   expect(output.rows).toHaveLength(998);

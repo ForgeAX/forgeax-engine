@@ -184,6 +184,7 @@ interface LiveDevDaemonState {
   readonly animation: AnimationPlaybackOptions;
   /** Attach the existing RHI recorder to the live App when explicitly requested. */
   readonly rhiCapture: boolean;
+  readonly gpuPassTiming: boolean;
   session: BrowserCaptureSession | undefined;
   projectUrl: string | undefined;
   status: LiveDevStatus;
@@ -383,6 +384,7 @@ async function writeSessionRecord(state: LiveDevDaemonState): Promise<void> {
         headless: state.status.headless,
         backend: state.status.backendRequested,
         rhiCapture: state.rhiCapture,
+        gpuPassTiming: state.gpuPassTiming,
         workers: state.requestedWorkers ?? {},
         animation: state.animation,
       },
@@ -1320,7 +1322,7 @@ async function openSession(
         outputDir: liveArtifactDirectory(revision),
         ...(state.projectUrl === undefined
           ? {}
-          : { serverUrl: ownerPageUrl(state.projectUrl, state.bridgeToken) }),
+          : { serverUrl: ownerPageUrl(state.projectUrl, state.bridgeToken, state.gpuPassTiming) }),
         ...(state.carrier === undefined
           ? {}
           : {
@@ -3260,6 +3262,7 @@ export async function runLiveDevDaemon(
         ? environmentAnimationPlayback()
         : animationPlayback(options.animation),
     rhiCapture,
+    gpuPassTiming: process.env.FORGEAX_GPU_PASS_TIMING === '1',
     session: undefined,
     projectUrl: undefined,
     status: {
@@ -3849,6 +3852,7 @@ function requestedOptions(options: LiveStartOptions): RequestedLiveOptions {
     headless: options.headless,
     backend: options.backend,
     rhiCapture: options.rhiCapture,
+    gpuPassTiming: process.env.FORGEAX_GPU_PASS_TIMING === '1',
     workers: options.workers,
     animation: options.animation === undefined ? undefined : animationPlayback(options.animation),
   };

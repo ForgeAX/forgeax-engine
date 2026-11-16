@@ -51,6 +51,8 @@ function loadEngineImports(): Record<string, string> {
     'forgeax_atmosphere::coordinates': read('atmosphere-coordinates.wgsl'),
     'forgeax_atmosphere::sampling': read('atmosphere-sampling.wgsl'),
     'forgeax_cloud::layer': read('cloud.wgsl'),
+    'forgeax_cloud::geometry': read('cloud/geometry.wgsl'),
+    'forgeax_cloud::shadow': read('cloud/shadow.wgsl'),
     'forgeax_standard::cluster_texture_data': read('cluster-texture-data.wgsl'),
     'forgeax_standard::cluster': read('standard-cluster.wgsl'),
     'forgeax_pbr::brdf': read('brdf.wgsl'),

@@ -22,8 +22,6 @@ const rendererReadyFailureCodes = [
 const rendererDrawFailureCodes = [
   'rhi-not-available',
   'webgpu-runtime-error',
-  'render-system-empty-worlds',
-  'render-system-owner-out-of-range',
   'render-system-no-camera',
   'render-system-multi-camera',
   'render-system-multi-light',

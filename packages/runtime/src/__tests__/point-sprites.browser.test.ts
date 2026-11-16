@@ -186,7 +186,7 @@ it('draws world-sized, per-point coloured, soft additive point sprites updated f
       propagateTransforms(world).unwrap();
       receipt = await drawReadyFrame(
         renderer,
-        { leases: [lease], camera: { lease }, environment: { lease } },
+        { source: lease },
         frame === 59 ? ['linear-ldr'] : undefined,
       );
     }

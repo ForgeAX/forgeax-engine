@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { DeviceScope } from '../device/device-scope';
+import { getOrCreateIblCache } from '../ibl/IblPipelineCache';
 import {
   beginProbeIblUpdate,
   createIblKernelCache,
@@ -8,6 +10,22 @@ import {
 } from '../ibl/kernel-cache';
 
 describe('ReflectionProbe IBL topology', () => {
+  it('keeps equal-generation kernel identities inside their renderer device scope', () => {
+    const first = DeviceScope.create(7, 'first-renderer');
+    const second = DeviceScope.create(7, 'second-renderer');
+    try {
+      const a = getOrCreateIblCache(first);
+      const b = getOrCreateIblCache(second);
+      expect(getOrCreateIblCache(first)).toBe(a);
+      expect(getOrCreateIblCache(second)).toBe(b);
+      expect(a.probeKernel).not.toBe(b.probeKernel);
+      for (const key of ['pipelineIdentity', 'samplerIdentity', 'brdfLutIdentity'] as const)
+        expect(a.probeKernel[key]).not.toBe(b.probeKernel[key]);
+    } finally {
+      first.dispose();
+      second.dispose();
+    }
+  });
   it('shares only generation-scoped kernels and keeps probe outputs independent', () => {
     const kernels = createIblKernelCache(7);
     const first = createProbeIblOutput({ entityKey: 1, resolution: 256, deviceGeneration: 7 });

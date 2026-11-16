@@ -39,8 +39,8 @@ const NUM_LIGHTS = (() => {
   const requested = process.env.FORGEAX_DEFERRED_LIGHTS;
   if (requested === undefined) return DEFAULT_NUM_LIGHTS;
   const parsed = Number(requested);
-  if (Number.isInteger(parsed) && parsed >= 1 && parsed <= 256) return parsed;
-  throw new Error('FORGEAX_DEFERRED_LIGHTS must be an integer in [1, 256]');
+  if (Number.isInteger(parsed) && parsed >= 1 && parsed <= 1024) return parsed;
+  throw new Error('FORGEAX_DEFERRED_LIGHTS must be an integer in [1, 1024]');
 })();
 const CUBE_SCALE = 0.5;
 const CUBE_SPACING = 3.0;
@@ -48,11 +48,9 @@ const CUBE_Y = -0.5;
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-// Known-noise app.onError codes during the Standard deferred demo.
-const KNOWN_NOISE_CODES = new Set([
-  'standard-light-budget-exceeded',
-  'standard-cluster-index-overflow',
-]);
+// Known-noise app.onError codes during the Standard deferred demo. Light
+// overflow no longer rejects frames (the Cluster truncates and warns once).
+const KNOWN_NOISE_CODES = new Set([]);
 
 const consoleErrors = [];
 const originalConsoleError = console.error.bind(console);
@@ -188,7 +186,7 @@ const profiler =
         // clock, so diagnostic profiling must use an independent monotonic clock.
         clock: createProfileClock(() => Number(process.hrtime.bigint() / 1000n)),
       });
-const standardLightCount = NUM_LIGHTS === 1 ? 1 : NUM_LIGHTS === 256 ? 256 : 32;
+const standardLightCount = NUM_LIGHTS;
 const appOptions = {
   standardProfile: {
     ...DEFAULT_STANDARD_PROFILE,

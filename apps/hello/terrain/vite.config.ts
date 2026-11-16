@@ -1,3 +1,4 @@
+import { executionWorkerEntries } from '@forgeax/engine-devkit/plugin-build';
 import { resolve } from 'node:path';
 import { pluginPack } from '@forgeax/engine-vite-plugin-pack';
 import { createMaterialPackCooker } from '@forgeax/engine-shader-compiler';
@@ -9,6 +10,7 @@ const here = import.meta.dirname,
   root = resolve(here, '../../..');
 export default defineConfig(({ command }) => ({
   plugins: [
+    executionWorkerEntries([]),
     forgeaxShader() as never,
     pluginPack({
       runtimeBinding: createStandaloneRuntimeAssetBinding('hello-terrain'),

@@ -1,7 +1,7 @@
 import { AssetRegistry, createCatalogSource } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { Context } from '@forgeax/engine-plugin';
-import type { createProfiler } from '@forgeax/engine-profiler';
+
 import type { RendererHostAssembly } from '@forgeax/engine-runtime/internal/renderer-host';
 import { ok } from '@forgeax/engine-types';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -390,9 +390,11 @@ it.each([
   vi.stubGlobal('cancelAnimationFrame', () => {
     frame = undefined;
   });
-  const bootstrap = `data:text/javascript,${encodeURIComponent(`export default () => ({ plugins: [{
+  const bootstrap = `data:text/javascript,${encodeURIComponent(`import { defineResource } from '${import.meta.resolve('@forgeax/engine-ecs')}';
+  export const ObservedProfiler = defineResource('observedProfiler');
+  export default () => ({ plugins: [{
     name: 'observe-profiler', inject: ['world'], apply(ctx) {
-      ctx.world.insertResource('observedProfiler', ctx.get('profiler') ?? null);
+      ctx.world.insertResource(ObservedProfiler, ctx.get('profiler') ?? null);
     }
   }] })`)}`;
   const canvas = {
@@ -435,9 +437,8 @@ it.each([
   try {
     if (!('world' in app) || !(app.world instanceof World)) throw new Error('Expected local World');
     const options = constructRuntimeRendererHost.mock.calls.at(-1)?.[1];
-    const observed = app.world.getResource<ReturnType<typeof createProfiler> | null>(
-      'observedProfiler',
-    );
+    const { ObservedProfiler } = await import(/* @vite-ignore */ bootstrap);
+    const observed = app.world.getResource(ObservedProfiler);
     if (enabled) {
       expect(options.profiler).toBeDefined();
       expect(observed).toBe(options.profiler);

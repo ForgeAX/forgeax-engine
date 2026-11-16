@@ -18,7 +18,11 @@ export function browserFixtureSources(root, owners) {
       const imported = [base, `${base}.ts`, `${base}.mjs`, resolve(base, 'index.ts')].find(
         (path) => existsSync(path) && /\.(?:ts|mjs)$/.test(path),
       );
-      if (imported && (imported.includes('/__tests__/') || imported.includes('/scripts/test/')))
+      const portablePath = imported?.replaceAll('\\', '/');
+      if (
+        portablePath &&
+        (portablePath.includes('/__tests__/') || portablePath.includes('/scripts/test/'))
+      )
         pending.push(imported);
     };
     const visit = (node) => {

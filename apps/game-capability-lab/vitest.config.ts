@@ -12,7 +12,6 @@ export default defineProject({
       '__tests__/attack-presentation.test.ts',
       '__tests__/animated-target-material.test.ts',
       '__tests__/custom-projectile-mesh.test.ts',
-      '__tests__/multi-world-overlay.test.ts',
       '__tests__/boss-lightning-vfx-assets.test.ts',
       '__tests__/ui-manifest.test.ts',
       '__tests__/asset-lab-actions.test.ts',

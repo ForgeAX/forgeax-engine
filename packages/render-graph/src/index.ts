@@ -8,6 +8,10 @@
 
 export { RenderGraphBuilder, renderGraphCompileCount } from './builder.js';
 export {
+  compiledRenderGraphGeneration,
+  compiledRenderGraphPassDeclarations,
+} from './compiled-graph.js';
+export {
   err,
   type InvalidFormatDetail,
   ok,

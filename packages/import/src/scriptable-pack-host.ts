@@ -55,6 +55,7 @@ import {
   type ScriptablePackBuildProduct,
   type ScriptablePackBuildWorkItem,
   type ScriptablePackBuildWorklistOptions,
+  waterPackReferenceKindFailure,
 } from './scriptable-pack-build.js';
 import { scriptablePackFingerprintAsync } from './scriptable-pack-fingerprint.js';
 import { createPreExternalizedSceneAssetOutputProducer } from './scriptable-pack-output-producers.js';
@@ -103,6 +104,7 @@ export interface ScriptablePackProductionOptions {
   /** Build-time producers used for custom or otherwise uncooked asset rows. */
   readonly cookers?: readonly NativeCooker[];
   readonly availableGuids?: ReadonlySet<string>;
+  readonly availableKinds?: ReadonlyMap<string, string>;
   readonly incomingRefs?: ReadonlyMap<string, readonly string[]>;
   readonly maxPasses?: number;
   readonly maxConcurrency?: number;
@@ -470,6 +472,7 @@ export interface DirectPackTransportInput {
   readonly sourceRevision: string;
   readonly policy: PackageFinalizePolicy;
   readonly availableGuids?: ReadonlySet<string>;
+  readonly availableKinds?: ReadonlyMap<string, string>;
   /** Staging only: validate references when the complete generation is materialized. */
   readonly deferReferenceValidation?: boolean;
   readonly cookers?: readonly NativeCooker[];
@@ -745,15 +748,21 @@ export async function prepareDirectPackTransport(
   }
   if (unsupported.length === input.projected.assets.length) {
     const raw = rawDirectProduct(input);
-    const known = new Set([...availableGuids, ...localGuids]);
-    const missing = new Set<string>();
-    for (const asset of raw.product.assets) {
-      for (const reference of asset.refs) {
-        if (!known.has(reference.guid.toLowerCase())) missing.add(reference.guid.toLowerCase());
+    const validateRawReferences = () => {
+      const known = new Set([...availableGuids, ...localGuids]);
+      const missing = new Set<string>();
+      for (const asset of raw.product.assets) {
+        for (const reference of asset.refs) {
+          if (!known.has(reference.guid.toLowerCase())) missing.add(reference.guid.toLowerCase());
+        }
       }
-    }
-    if (missing.size > 0 && !input.deferReferenceValidation)
-      return err(directReferenceFailure(input.sourcePath, [...missing]));
+      if (missing.size > 0 && !input.deferReferenceValidation)
+        return err(directReferenceFailure(input.sourcePath, [...missing]));
+
+      return undefined;
+    };
+    const referenceFailure = validateRawReferences();
+    if (referenceFailure !== undefined) return referenceFailure;
     const finalized = await finalizePackageTransportSource(
       projectImportProductForBuild(raw.product),
       input.policy,
@@ -827,10 +836,23 @@ export async function prepareDirectPackTransport(
   }));
   const missing = new Set<string>();
   const known = new Set([...availableGuids, ...localGuids]);
+  const knownKinds = new Map(
+    [...(input.availableKinds ?? [])].map(([guid, kind]) => [guid.toLowerCase(), kind]),
+  );
+  for (const asset of input.projected.assets) knownKinds.set(asset.guid.toLowerCase(), asset.kind);
   for (const asset of assets) {
     for (const reference of asset.refs) {
       if (!known.has(reference.guid.toLowerCase())) missing.add(reference.guid.toLowerCase());
     }
+  }
+  for (const asset of input.projected.assets) {
+    const kindFailure = waterPackReferenceKindFailure(
+      input.sourcePath,
+      asset.sourceKey,
+      { ...(asset.payload as Record<string, unknown>), kind: asset.kind } as Asset,
+      knownKinds,
+    );
+    if (kindFailure !== undefined) return err(kindFailure);
   }
   if (missing.size > 0 && !input.deferReferenceValidation)
     return err(directReferenceFailure(input.sourcePath, [...missing]));
@@ -1050,6 +1072,11 @@ export async function produceScriptablePackProducts(
     ...(options.availableGuids ?? []),
     ...external.map((output) => AssetGuid.format(output.guid).toLowerCase()),
   ]);
+  const availableKinds = new Map(
+    [...(options.availableKinds ?? [])].map(([guid, kind]) => [guid.toLowerCase(), kind]),
+  );
+  for (const output of external)
+    availableKinds.set(AssetGuid.format(output.guid).toLowerCase(), String(output.asset.kind));
   const workItems: ScriptablePackBuildWorkItem[] = options.sources.map((source) => ({
     definition: source.definition,
     sourcePath: source.sourcePath,
@@ -1076,6 +1103,7 @@ export async function produceScriptablePackProducts(
     ...(options.cookers === undefined ? {} : { cookers: options.cookers }),
     ...(assetSource === undefined ? {} : { assetSource }),
     availableGuids,
+    availableKinds,
     ...(options.incomingRefs === undefined ? {} : { incomingRefs: options.incomingRefs }),
     ...(options.maxPasses === undefined ? {} : { maxPasses: options.maxPasses }),
     ...(options.maxConcurrency === undefined ? {} : { maxConcurrency: options.maxConcurrency }),

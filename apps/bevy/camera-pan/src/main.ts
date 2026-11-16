@@ -1,6 +1,7 @@
+import { defineSystem } from "@forgeax/engine-ecs";
 import { Time, Update } from '@forgeax/engine-ecs';
 import { createApp } from '@forgeax/engine-app/browser';
-import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine-input';
+import { INPUT_SNAPSHOT_RESOURCE_KEY } from '@forgeax/engine-input';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { buildCameraPanWorld, cameraPanInput, stepCameraPan } from './camera-pan';
@@ -18,15 +19,16 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   if (!appResult.ok) return console.error('[bevy-camera-pan] createApp failed:', appResult.error);
   const app = appResult.value;
   buildCameraPanWorld(app.world);
-  app.world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'pan-camera',
     queries: [],
     fn: (world) => {
-      const dt = world.hasResource('Time') ? world.getResource(Time).delta : 0;
-      const snapshot = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+      const dt = world.hasResource(Time) ? world.getResource(Time).delta : 0;
+      const snapshot = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
       stepCameraPan(world, dt, cameraPanInput(snapshot));
     },
   });
+app.world.addSystem(Update, systemToken1);
   const captureWindow = globalThis as typeof globalThis & {
     __prepareCameraPanCapture?: () => Promise<void>;
   };

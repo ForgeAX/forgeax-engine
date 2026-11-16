@@ -228,12 +228,7 @@ export async function verifyRendererDiffuse(
     seed: 47,
     environment: [0.25, 0.5, 0.75] as const,
   };
-  const request = {
-    leases: [lease],
-    camera: { lease },
-    environment: { lease },
-    geometryLane: 'direct' as const,
-  };
+  const request = { source: lease, geometryLane: 'direct' as const };
   const submit = () => renderer.draw(request);
   const advanceWorld = () => {
     world.update(1 / 60).unwrap();

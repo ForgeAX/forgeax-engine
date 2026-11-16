@@ -30,7 +30,7 @@ import {
 import {
   createScriptablePackSourceSnapshot,
   loadScriptablePack,
-  SCRIPTABLE_PACK_BUILD_TIMEOUT_MS,
+  scriptablePackBuildTimeoutMs,
 } from '@forgeax/engine-pack/source-node';
 import {
   Camera,
@@ -41,7 +41,12 @@ import {
   SpotLight,
 } from '@forgeax/engine-render';
 import { Name, sceneFieldWritable, Transform } from '@forgeax/engine-scene';
+import {
+  captureMaterialSourceSnapshot,
+  createTextureGeneratorPackCooker,
+} from '@forgeax/engine-shader-compiler';
 import { ok } from '@forgeax/engine-types';
+import type { WorkspacePackCookInput } from './workspace-pack-cook.js';
 
 // Conservative automatic discovery; explicit TS bindings still use the target's full vocabulary.
 const directSceneComponents = new Map(
@@ -66,6 +71,7 @@ export function createWorkspacePackAuthoring(options: {
   readonly preview: (targetId: string) => EngineWorkspacePreview | undefined;
   readonly publishSource?: (sourcePath: string) => Promise<void>;
   readonly changed?: (reply: PackDraftReply) => void;
+  readonly prepareContent?: (input: WorkspacePackCookInput) => Promise<RuntimePackContent>;
 }) {
   const bindings = new Map<string, EngineWorkspacePreview>();
   const dependencySources = new Map<string, Set<string>>();
@@ -106,6 +112,42 @@ export function createWorkspacePackAuthoring(options: {
     const target = targetFor(sourcePath);
     if (!target) throw new Error('Open this asset preview before applying live fields');
     return target;
+  };
+  const prepareGpuOutputs = async (
+    outputs: PackOutputMap,
+    sourcePath: string,
+    signal: AbortSignal,
+  ): Promise<PackOutputMap> => {
+    const generators = Object.entries(outputs).filter(
+      ([, asset]) => asset.kind === 'texture-generator',
+    );
+    if (generators.length === 0) return outputs;
+    const roots = options.sourceRoots.map((root) => resolve(options.root, root));
+    const snapshot = await captureMaterialSourceSnapshot(roots);
+    const cooker = createTextureGeneratorPackCooker(roots, { sourceSnapshot: snapshot });
+    const sources = new Map(
+      [...snapshot.engine, ...snapshot.project].map((source) => [source.path, source.source]),
+    );
+    const prepared = { ...outputs };
+    const dependencies = new Set<string>();
+    const document = manager.sourceAt(sourcePath)?.document;
+    if (document === undefined) throw new Error('Authoring source was closed');
+    for (const [key, asset] of generators) {
+      signal.throwIfAborted();
+      const guid = AssetGuid.format(AssetGuid.derive(definePackageId(document.packageId), key));
+      const product = await cooker.cook({ guid, source: asset });
+      prepared[key] = product.payload as import('@forgeax/engine-types').TextureGeneratorAsset;
+      for (const path of product.sourceDependencies ?? []) {
+        dependencies.add(path);
+        observe(sourcePath, path);
+      }
+    }
+    for (const path of dependencies) {
+      signal.throwIfAborted();
+      if ((await readFile(path, 'utf8')) !== sources.get(path))
+        throw new Error(`Generation shader source changed: ${path}`);
+    }
+    return prepared;
   };
   const generate = async ({
     document,
@@ -158,8 +200,27 @@ export function createWorkspacePackAuthoring(options: {
           observe(document.sourcePath, row.sourcePath);
         }
       }
+      const outputs = Object.fromEntries(
+        Object.entries(json.assets).map(([key, asset]) => [
+          key,
+          { ...asset.payload, kind: asset.kind },
+        ]),
+      ) as PackOutputMap;
+      const prepared = await prepareGpuOutputs(outputs, document.sourcePath, signal);
+      const preparedJson = {
+        ...json,
+        assets: Object.fromEntries(
+          Object.entries(json.assets).map(([key, entry]) => {
+            const asset = prepared[key];
+            return [
+              key,
+              asset?.kind === 'texture-generator' ? { ...entry, payload: { ...asset } } : entry,
+            ];
+          }),
+        ),
+      };
       return {
-        data: { content: { source: json, blobs, dependencies } },
+        data: { content: { source: preparedJson, blobs, dependencies } },
         parameters: document.fields.filter((field) => typeof field.apply === 'object'),
         dependencies,
       };
@@ -179,7 +240,7 @@ export function createWorkspacePackAuthoring(options: {
       const definition = (
         await loadScriptablePack(absolute, {
           sourceSnapshot: snapshot,
-          buildTimeoutMs: SCRIPTABLE_PACK_BUILD_TIMEOUT_MS,
+          buildTimeoutMs: scriptablePackBuildTimeoutMs(),
           signal,
         })
       ).unwrap();
@@ -250,7 +311,7 @@ export function createWorkspacePackAuthoring(options: {
       }
       return {
         data: {
-          outputs: built.value,
+          outputs: await prepareGpuOutputs(built.value, document.sourcePath, signal),
           ...(definition.sceneComponents ? { sceneComponents: definition.sceneComponents } : {}),
         },
         parameters,
@@ -286,25 +347,41 @@ export function createWorkspacePackAuthoring(options: {
         generate,
         async adopt(result, values, signal, currentValues) {
           if (!targetFor(document.sourcePath)) return false;
-          const content =
-            'content' in result.data
-              ? result.data.content
-              : (
-                  await prepareRuntimePackContent(
-                    document.packageId,
-                    applyPackParameterBindings(
-                      result.parameters,
-                      result.data.outputs,
-                      values,
-                    ).unwrap(),
-                    {
-                      dependencies: result.dependencies,
-                      ...(result.data.sceneComponents
-                        ? { sceneComponents: result.data.sceneComponents }
-                        : {}),
-                    },
-                  )
-                ).unwrap();
+          let content: RuntimePackContent;
+          if ('content' in result.data) {
+            content = result.data.content;
+          } else {
+            const data = result.data;
+            const outputs = applyPackParameterBindings(
+              result.parameters,
+              data.outputs,
+              values,
+            ).unwrap();
+            const optionsForContent = {
+              dependencies: result.dependencies,
+              ...(data.sceneComponents ? { sceneComponents: data.sceneComponents } : {}),
+            };
+            const needsCook = Object.values(outputs).some(
+              (output) =>
+                'execution' in output || (output.kind === 'material' && 'passes' in output),
+            );
+            content =
+              needsCook && options.prepareContent
+                ? await options.prepareContent({
+                    ...optionsForContent,
+                    packageId: document.packageId,
+                    sourcePath: resolve(
+                      options.root,
+                      manager.sourceAt(document.sourcePath)?.generator?.sourcePath ??
+                        document.sourcePath,
+                    ),
+                    outputs,
+                    signal,
+                  })
+                : (
+                    await prepareRuntimePackContent(document.packageId, outputs, optionsForContent)
+                  ).unwrap();
+          }
           signal.throwIfAborted();
           const target = requireTarget(document.sourcePath);
           if (!target.prepareAssetContent || !target.commitAssetContent)

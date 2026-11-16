@@ -2,7 +2,6 @@
 // biome-ignore-all lint/complexity/noUselessLoneBlockStatements: source test block isolation
 import type { EntityHandle } from '@forgeax/engine-ecs';
 import { World } from '@forgeax/engine-ecs';
-import { SpriteAnimationInvalidError } from '@forgeax/engine-ecs/projection';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { worldInternal } from '../../../ecs/src/world-internal';
 import {
@@ -10,6 +9,7 @@ import {
   SpriteAnimation,
   SpriteRegionOverride,
 } from '../../../render/src/components';
+import { SpriteAnimationInvalidError } from '../errors/sprite-animation';
 import { spriteAnimationTickSystem } from '../systems/sprite-animation-tick';
 
 afterEach(() => vi.restoreAllMocks());

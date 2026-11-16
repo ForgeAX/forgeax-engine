@@ -11,10 +11,15 @@ import { installRuntimeVase } from '../../template-probes/game-3d/runtime-vase/i
 import { reduceTestProject } from '../../test/reduce-test-project.mjs';
 import quality from '../../test/render-quality.json' with { type: 'json' };
 
-const source = await readFile(
-  new URL('../../../tools/view/scripts/verify-diagnostic-pages-integration.mjs', import.meta.url),
-  'utf8',
-);
+const viewPin = execFileSync('git', ['ls-files', '--stage', '--', 'tools/view'], {
+  encoding: 'utf8',
+}).match(/^160000 ([a-f0-9]{40}) 0\ttools\/view\r?$/m)?.[1];
+assert.ok(viewPin, 'View diagnostic contracts require the maintained source gitlink');
+const source = execFileSync(
+  'git',
+  ['-C', 'tools/view', 'show', `${viewPin}:scripts/verify-diagnostic-pages-integration.mjs`],
+  { encoding: 'utf8' },
+).replaceAll('\r\n', '\n');
 const start = source.indexOf('async function prepareDiagnosticGameProject(');
 const end = source.indexOf('\ntry {\n for (const directory', start);
 assert.ok(start >= 0 && end > start);
@@ -288,17 +293,31 @@ for (const lightweight of [false, true])
       for (const [path, bytes] of originals) {
         const copied = await readFile(resolve(root, 'assets', path));
         {
-          const expected =
-            lightweight && path === 'scene.pack.ts'
-              ? Buffer.from(
-                  bytes
-                    .toString()
-                    .replaceAll(
-                      'DirectionalLight: {',
-                      `DirectionalLight: {cascadeCount: ${quality.cascadeCount},mapSize: 128,`,
-                    ),
+          let expected = bytes;
+          if (lightweight && path === 'scene.pack.ts') {
+            expected = Buffer.from(
+              bytes
+                .toString()
+                .replaceAll(
+                  'DirectionalLight: {',
+                  `DirectionalLight: {cascadeCount: ${quality.cascadeCount},mapSize: 128,`,
                 )
-              : bytes;
+                .replace(
+                  'resolution: 128,',
+                  `resolution: ${Math.min(128, quality.reflectionResolution)},`,
+                ),
+            );
+          } else if (lightweight && path === 'geometry.pack.ts') {
+            expected = Buffer.from(
+              bytes
+                .toString()
+                .replace(
+                  /createSphereGeometry\(([^,]+), (\d+), (\d+)\)/g,
+                  (_, radius, width, height) =>
+                    `createSphereGeometry(${radius}, ${Math.min(+width, quality.geometry.sphereWidth)}, ${Math.min(+height, quality.geometry.sphereHeight)})`,
+                ),
+            );
+          }
           assert.deepEqual(copied, expected, path);
         }
       }

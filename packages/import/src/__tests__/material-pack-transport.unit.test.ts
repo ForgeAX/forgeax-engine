@@ -20,7 +20,7 @@ function asset(inline = bytes): ImportedAsset<unknown> {
     payload: {
       kind: 'material',
       cooked: {
-        schemaVersion: 'material-cook/4',
+        schemaVersion: 'material-cook/5',
         programs: [
           {
             artifact: {

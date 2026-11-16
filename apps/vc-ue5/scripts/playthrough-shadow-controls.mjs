@@ -1,0 +1,132 @@
+import assert from 'node:assert/strict';
+
+export default async function shadowControls(play) {
+  const read = 'vc-ue5.cloud';
+  await play.page.locator('html[data-forgeax-input="open"]').waitFor();
+  await play.page.locator('.properties details').evaluateAll(items => items.forEach(item => { item.open = true; }));
+  const completed = () => play.page.evaluate(() => {
+    const frame = document.querySelector('canvas')?.forgeaxFrameProgress?.completed;
+    if (!frame?.worldIdentity) throw Error('Actual completed World required');
+    return frame;
+  });
+  const first = await completed();
+  const apply = async (ground, atmosphere) => {
+    const before = await play.state(read);
+    await play.page.locator('[data-ui-part="ground-shadow"]').setChecked(ground);
+    await play.page.locator('[data-ui-part="atmosphere-shadow"]').setChecked(atmosphere);
+    return play.waitFor((state) => state.groundShadowEnabled === ground && state.atmosphereShadowEnabled === atmosphere, { read });
+  };
+  await play.step('Prepare cloud band with a kilometer-scale receiver view', async () => {
+    const before = await play.state(read);
+    await play.page.locator('[data-ui-part="surface-shadow-strength"]').fill('0');
+    await play.waitFor((state) => state.effectiveSurfaceShadowStrength === 0, { read });
+    await play.page.locator('[data-ui-action="shadow-comparison"]').click();
+    await play.waitFor((state) => state.mode === 'band' && state.cameraView === 'shadow', { read });
+    const state = await play.state(read);
+    assert.ok(Math.abs(state.sunElevation - 36) < 1e-4);
+    assert.ok(Math.abs(state.sunAzimuth - 90) < 1e-4);
+    assert.equal(state.halfWidthMeters, 800);
+    assert.equal(state.effectiveSurfaceShadowStrength, 1);
+    const frame = await play.screenshot('shadow-band-800');
+    assert.ok(frame.rendered);
+  });
+  const camera = await play.state('vc-ue5.ground');
+  const band = await play.state(read);
+  await play.step('Widen only the cloud material instance at the same camera and sun', async () => {
+    await play.page.locator('[data-ui-action="cloud-band-wide"]').click();
+    const wide = await play.waitFor((state) => state.mode === 'band-wide', { read });
+    assert.equal(wide.halfWidthMeters, 1600);
+    assert.equal(wide.programIdentity, band.programIdentity);
+    assert.equal(wide.sunAzimuth, band.sunAzimuth);
+    assert.deepEqual((await play.state('vc-ue5.ground')).position, camera.position);
+    assert.ok((await play.screenshot('shadow-band-1600')).rendered);
+  });
+  await play.step('Control ground and atmosphere shadows independently', async () => {
+    await play.page.locator('details').evaluateAll((items) => items.forEach((item) => { item.open = true; }));
+    const both = await apply(true, true);
+    const surfaceOff = await apply(false, true);
+    assert.equal(surfaceOff.effectiveSurfaceShadowStrength, 0);
+    assert.equal(surfaceOff.effectiveAtmosphereShadowStrength, both.effectiveAtmosphereShadowStrength);
+    assert.equal(surfaceOff.castCloudShadows, true);
+    assert.equal(surfaceOff.selfShadow, both.selfShadow);
+    assert.ok((await play.screenshot('shadow-ground-off-atmosphere-on')).rendered);
+    const atmosphereOff = await apply(true, false);
+    assert.equal(atmosphereOff.effectiveSurfaceShadowStrength, both.effectiveSurfaceShadowStrength);
+    assert.equal(atmosphereOff.effectiveAtmosphereShadowStrength, 0);
+    assert.equal(atmosphereOff.castCloudShadows, true);
+    assert.ok((await play.screenshot('shadow-ground-on-atmosphere-off')).rendered);
+    const neither = await apply(false, false);
+    assert.equal(neither.castCloudShadows, false);
+    assert.equal(neither.selfShadow, both.selfShadow);
+    assert.equal(neither.shadowMode, both.shadowMode);
+    assert.deepEqual((await play.state('vc-ue5.ground')).position, camera.position);
+    assert.deepEqual((await play.state('vc-ue5.ground')).rotation, camera.rotation);
+    assert.ok((await play.screenshot('shadow-external-off')).rendered);
+    await apply(true, false);
+  });
+  await play.step('Inspect the band shadow at ground height with a constant camera and sun', async () => {
+    const sun = await play.state(read);
+    await play.page.locator('[data-ui-action="camera-ground-shadow"]').click();
+    await play.waitFor((state) => state.cameraView === 'ground-shadow', { read });
+    const groundCamera = await play.state('vc-ue5.ground');
+    assert.equal(groundCamera.position[1], 20);
+    const unchanged = async () => {
+      const pose = await play.state('vc-ue5.ground');
+      const state = await play.state(read);
+      assert.deepEqual(pose.position, groundCamera.position);
+      assert.deepEqual(pose.rotation, groundCamera.rotation);
+      assert.equal(state.sunElevation, sun.sunElevation);
+      assert.equal(state.sunAzimuth, sun.sunAzimuth);
+      return state;
+    };
+    await play.page.locator('[data-ui-action="cloud-band"]').click();
+    await play.waitFor((state) => state.mode === 'band', { read });
+    assert.ok((await play.screenshot('ground-eye-band-800')).rendered);
+    await unchanged();
+    await apply(false, false);
+    assert.ok((await play.screenshot('ground-eye-band-800-off')).rendered);
+    await unchanged();
+    await apply(true, false);
+    assert.ok((await play.screenshot('ground-eye-band-800-restored')).rendered);
+    await unchanged();
+    await play.page.locator('[data-ui-action="cloud-band-wide"]').click();
+    await play.waitFor((state) => state.mode === 'band-wide', { read });
+    assert.ok((await play.screenshot('ground-eye-band-1600-on')).rendered);
+    await unchanged();
+    await apply(false, false);
+    assert.ok((await play.screenshot('ground-eye-band-1600-off')).rendered);
+    await unchanged();
+    await apply(true, false);
+    assert.ok((await play.screenshot('ground-eye-band-1600-restored')).rendered);
+    await unchanged();
+    await play.page.locator('[data-ui-action="camera-shadow"]').click();
+    await play.waitFor((state) => state.cameraView === 'shadow', { read });
+    assert.deepEqual((await play.state('vc-ue5.ground')).position, camera.position);
+    assert.deepEqual((await play.state('vc-ue5.ground')).rotation, camera.rotation);
+  });
+  await play.step('Switch camera views without changing the edited sun', async () => {
+    await play.page.locator('[data-ui-part="sun-elevation"]').evaluate(input => { input.value = '24'; input.dispatchEvent(new Event('input', { bubbles: true })); });
+    await play.waitFor((state) => Math.abs(state.sunElevation - 24) < 1e-4, { read });
+    const sun = await play.state(read);
+    await play.page.locator('[data-ui-action="reset"]').click();
+    await play.waitFor((state) => state.cameraView === 'ground', { read });
+    await play.page.locator('[data-ui-action="camera-shadow"]').click();
+    const restored = await play.waitFor((state) => state.cameraView === 'shadow', { read });
+    assert.equal(restored.sunElevation, sun.sunElevation);
+    assert.equal(restored.sunAzimuth, sun.sunAzimuth);
+    await play.page.locator('[data-ui-action="route"]').click();
+    await play.waitFor((state) => state.routeRunning && state.cameraView === 'ground', { read });
+    const route = await play.state('vc-ue5.ground');
+    assert.ok(route.position[1] < 1);
+    await play.page.locator('[data-ui-action="route"]').click();
+    await play.waitFor((state) => !state.routeRunning && state.cameraView === 'ground', { read });
+    await play.page.locator('[data-ui-action="camera-shadow"]').click();
+    await play.waitFor((state) => state.cameraView === 'shadow', { read });
+    const last = await completed();
+    assert.equal(last.worldIdentity, first.worldIdentity);
+    assert.equal(last.deviceGeneration, first.deviceGeneration);
+    assert.ok(last.frameId > first.frameId);
+  });
+  return { first, last: await completed(), cloud: await play.state(read), camera: await play.state('vc-ue5.ground'),
+    scope: 'Actual rendered control and same-World camera checks; manual cloud/shadow correspondence remains H1.' };
+}

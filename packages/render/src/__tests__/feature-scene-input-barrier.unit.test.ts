@@ -1,3 +1,4 @@
+import { World } from '@forgeax/engine-ecs';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { ok } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
@@ -5,18 +6,16 @@ import { createFeatureSceneInputs } from '../assembly/feature-scene-inputs';
 import { createRenderFeatureHost } from '../features/host';
 import { createRenderFeatureGpuWorkOwner } from '../features/prepared-gpu-work';
 import type { RenderFeature } from '../features/types';
+import { worldRenderResources } from '../publication/resource-scope';
 import * as frameKernels from '../record/frame';
 import type { RenderSystemInternals } from '../record/render-context';
 import { ViewCaptureWork } from '../world/capture-systems';
-import {
-  RENDER_CAPTURE_GRAPH_ENCODE_SYSTEM,
-  ViewGraphSeal,
-  viewGraphEncodingOutcome,
-} from '../world/graph-seal-systems';
+import { ViewGraphSeal, viewGraphEncodingOutcome } from '../world/graph-seal-systems';
 import { awaitsRenderRecord } from '../world/graph-systems';
 import { endRenderFrame, RenderRecord } from '../world/render-world';
 import { stageFeatureFrame } from './feature-frame-driver';
 import { type FrameRecording, submitFrameRecordings } from './frame-recording-driver';
+import { registeredSystem } from './registered-system.fixture';
 
 it.each([
   { render: true, failure: 'capture' },
@@ -47,6 +46,7 @@ it.each([
   const events: string[] = [];
   const feature: RenderFeature<undefined> = {
     identity: 'depth-consumer',
+    placement: 'scene',
     extract: () => ok(undefined),
     plan: () =>
       ok({
@@ -97,8 +97,7 @@ it.each([
     {
       identity: 'held-or-active',
       render,
-      worlds: [],
-      owner: 0,
+      world: new World(),
       frameNumber: 1,
       caps: device.caps,
       sceneResources: owner,
@@ -158,9 +157,19 @@ it.each([
     };
   });
   if (failure === 'barrier')
-    host.world.removeSystem(RenderRecord, RENDER_CAPTURE_GRAPH_ENCODE_SYSTEM).unwrap();
+    host.world
+      .removeSystem(
+        RenderRecord,
+        registeredSystem(host.world, RenderRecord, 'render-capture-graph-encode'),
+      )
+      .unwrap();
   function* record(): FrameRecording {
-    yield { kind: 'shared-work', internals, sceneInputs: owner.work.length > 0 };
+    yield {
+      kind: 'shared-work',
+      internals,
+      sourceScope: worldRenderResources(host.world),
+      sceneInputs: owner.work.length > 0,
+    };
     if (awaitsRenderRecord(host.world)) yield { kind: 'compile', world: host.world };
     const encoded = viewGraphEncodingOutcome(host.world, view);
     if (encoded.kind === 'failed') throw encoded.cause;

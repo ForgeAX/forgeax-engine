@@ -1,6 +1,7 @@
 import { mat4, vec3 } from '@forgeax/engine-math';
 import type { Buffer, RhiQueue } from '@forgeax/engine-rhi';
 import { describe, expect, it } from 'vitest';
+import { earthAtmosphere } from '../../__tests__/atmosphere-fixture';
 import { MaterialResource } from '../../material-resource';
 import type { CameraSnapshot } from '../../render-contract';
 import type { MaterialSnapshot, RenderableSnapshot } from '../../render-system-extract';
@@ -13,7 +14,12 @@ import {
   computeViewProjectionMatrix,
 } from '../helpers';
 import { MESH_PER_ENTITY_STRIDE, uploadMeshSsboBatch } from '../mesh-ssbo';
-import { VIEW_UNIFORM_BYTES, VIEW_UNIFORM_SLOT_STRIDE, writeViewUbo } from '../view-ubo';
+import {
+  PLANAR_REFLECTION_UNIFORM_OFFSET,
+  VIEW_UNIFORM_BYTES,
+  VIEW_UNIFORM_SLOT_STRIDE,
+  writeViewUbo,
+} from '../view-ubo';
 
 function uploadEntries(
   queue: RhiQueue,
@@ -83,7 +89,6 @@ function recordingQueue(): {
 function camera(): CameraSnapshot {
   return {
     entityKey: 1,
-    worldId: 0,
     historyVersion: 0,
     position: vec3.create(0, 0, 5),
     world: identityMatrix(),
@@ -134,6 +139,59 @@ function temporalView(): TemporalView {
 }
 
 describe('temporal GPU payloads', () => {
+  it('retains the complete View facts while pairing post-process reconstruction with TAA depth', () => {
+    const { queue, uploads, offsets } = recordingQueue();
+    const source = {
+      ...camera(),
+      antialias: 'taa' as const,
+      clipping: { planes: [[1, 0, 0, -3] as const], clipShadows: true },
+    };
+    const temporal = { ...temporalView(), currentJitterUv: [0.25 / 800, -0.5 / 600] as const };
+    writeViewUbo(
+      queue,
+      {} as Buffer,
+      source,
+      {
+        kind: 'directional',
+        direction: vec3.create(0.25, -1, 0.5),
+        color: vec3.create(3, 4, 5),
+        intensity: 1,
+        contactShadowLength: 0,
+        lightingChannels: 0x80000001,
+      },
+      { point: [], spot: [], pointShadow: [] } as never,
+      [],
+      temporal,
+      undefined,
+      undefined,
+      {
+        color: [0.2, 0.3, 0.4],
+        density: 0.1,
+        heightFalloff: 0.2,
+        maxOpacity: 0.9,
+        mode: 'exp',
+        near: 0,
+        far: 100,
+      },
+      earthAtmosphere,
+    );
+    const main = new Float32Array(uploads[0]?.buffer ?? new ArrayBuffer(0));
+    const copyIndex = offsets.indexOf(PLANAR_REFLECTION_UNIFORM_OFFSET + VIEW_UNIFORM_SLOT_STRIDE);
+    expect(copyIndex).toBeGreaterThan(-1);
+    const copy = new Float32Array(uploads[copyIndex]?.buffer ?? new ArrayBuffer(0));
+    const expected = main.slice();
+    expected.set(main.subarray(196, 212), 0);
+    const inverse = mat4.create();
+    mat4.invert(inverse, mat4.view(expected));
+    expected.set(inverse, 44);
+    expect(copy).toEqual(expected);
+    expect(copy.subarray(0, 16)).not.toEqual(main.subarray(0, 16));
+    const product = mat4.create();
+    mat4.multiply(product, mat4.view(copy), mat4.view(copy.subarray(44, 60)));
+    for (let index = 0; index < 16; index++)
+      expect(product[index]).toBeCloseTo(index % 5 === 0 ? 1 : 0, 5);
+  });
+
   it('publishes physical viewport dimensions in existing View padding', () => {
     const { queue, uploads } = recordingQueue();
     const light = {

@@ -316,11 +316,7 @@ export async function verifyMaterialPublication(options: {
           if (!before.ok) throw before.error;
         }
         world.update(1 / 60).unwrap();
-        const result = renderer.draw({
-          leases: [lease],
-          camera: { lease },
-          environment: { lease },
-        });
+        const result = renderer.draw({ source: lease });
         if (!result.ok) throw result.error;
         if (capture !== undefined) {
           const after = await recorder.frameBoundary();

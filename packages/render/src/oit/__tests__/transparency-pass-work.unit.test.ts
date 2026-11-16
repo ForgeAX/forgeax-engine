@@ -47,7 +47,6 @@ function scene(opaque: number, transparent: number) {
   for (let id = 0; id < opaque + transparent; id++) {
     const resource = id < opaque ? (solid[id % solid.length] as MaterialResource) : glass;
     const snapshot: RenderableSnapshot = {
-      worldId: 0,
       entityKey: id,
       assetHandle: 1,
       material: resource,
@@ -60,7 +59,7 @@ function scene(opaque: number, transparent: number) {
     };
     rows.push(snapshot);
     owner.bind(id, snapshot);
-    setSceneRow(slots, id, { slot: id, generation: 1, worldId: 0, entityKey: id, snapshot });
+    setSceneRow(slots, id, { slot: id, generation: 1, entityKey: id, snapshot });
   }
   const dispatch = owner.query(slots.capture());
   let reads = 0;
@@ -130,7 +129,6 @@ it('revisits only changed Pass work of a sorted view across frames of unique mat
   const slots = new SceneSlots();
   for (const [id, resource] of resources.entries()) {
     const snapshot: RenderableSnapshot = {
-      worldId: 0,
       entityKey: id,
       assetHandle: 1,
       material: resource,
@@ -139,7 +137,7 @@ it('revisits only changed Pass work of a sorted view across frames of unique mat
       transform: { world: new Float32Array(16) },
     };
     owner.bind(id, snapshot);
-    setSceneRow(slots, id, { slot: id, generation: 1, worldId: 0, entityKey: id, snapshot });
+    setSceneRow(slots, id, { slot: id, generation: 1, entityKey: id, snapshot });
   }
   const frame = slots.capture();
   const resolve = () => {

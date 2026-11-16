@@ -86,7 +86,10 @@ it.each([
     expect(catalog.map((row) => row.publication)).toEqual(rows.map((row) => row.publication));
     expect(catalog.map((row) => row.projection)).toEqual(rows.map((row) => row.projection));
     expect(catalog[0]?.projection).toBe(catalog[1]?.projection);
-    expect(fetcher.mock.calls.filter(([url]) => String(url) === packageUrl)).toHaveLength(1);
+    // Only in-flight reads coalesce; each sequential sibling load reads its package document once.
+    expect(fetcher.mock.calls.filter(([url]) => String(url) === packageUrl)).toHaveLength(
+      guids.length,
+    );
   } finally {
     registry.dispose();
   }

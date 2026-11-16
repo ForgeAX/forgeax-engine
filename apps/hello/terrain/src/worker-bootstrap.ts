@@ -1,3 +1,9 @@
+import { TerrainSubjectsResource, TerrainReloadPolicyResource, TerrainQueryResource, TerrainWriterFailuresResource } from './ecs-resources.ts';
+export * from './ecs-resources.ts';
+export { PhysicsWorldResource } from '@forgeax/engine-physics';
+import { TerrainWalkerResource } from './ecs-resources.ts';
+
+import { Update, defineSystem } from "@forgeax/engine-ecs";
 import { AssetGuid } from '@forgeax/engine-pack/source';
 import { terrainBootstrapData } from './identity.ts';
 import { runtimeBinding } from '@forgeax/apps-shared/asset-runtime-config';
@@ -10,6 +16,12 @@ import { Terrain } from '@forgeax/engine-terrain';
 import { installTerrainWalker } from './walker.ts';
 import { terrainReloadPolicy } from './reload-policy.ts';
 import { buildTerrainWorld } from './scene.ts';
+
+
+
+
+
+
 
 const entry: ExecutionBootstrapEntry = (data) => {
   const input = terrainBootstrapData(data);
@@ -104,21 +116,20 @@ const entry: ExecutionBootstrapEntry = (data) => {
             },
             'terrain/reload-policy',
           );
-          ctx.world.insertResource('TerrainReloadPolicy', policy);
-          ctx.world.insertResource('TerrainSubjects', subjects);
-          ctx.world.insertResource('TerrainQuery', query);
+          ctx.world.insertResource(TerrainReloadPolicyResource, policy);
+          ctx.world.insertResource(TerrainSubjectsResource, subjects);
+          ctx.world.insertResource(TerrainQueryResource, query);
           const failures: unknown[] = [];
-          ctx.world.insertResource('TerrainWriterFailures', failures);
+          ctx.world.insertResource(TerrainWriterFailuresResource, failures);
           let prior: { position: number[]; updates: number } | undefined;
-          const token = ctx.world.scheduleToken('Update'),
+          const token = Update,
             audit = 'terrain-worker-writer-audit';
-          ctx.world
-            .addSystem(token, {
+          const systemToken1 = defineSystem({
               name: audit,
               queries: [],
               fn() {
                 const position = Array.from(ctx.world.get(subjects.walker, Transform).unwrap().pos),
-                  updates = ctx.world.getResource<{ updates: number }>('TerrainWalker').updates;
+                  updates = ctx.world.getResource(TerrainWalkerResource).updates;
                 if (policy.gate.blocked) {
                   if (
                     prior !== undefined &&
@@ -128,10 +139,12 @@ const entry: ExecutionBootstrapEntry = (data) => {
                   prior = { position, updates };
                 } else prior = undefined;
               },
-            })
+            });
+ctx.world
+            .addSystem(token, systemToken1)
             .unwrap();
           ctx.effect(
-            () => () => ctx.world.removeSystem(token, audit).unwrap(),
+            () => () => ctx.world.removeSystem(token, systemToken1).unwrap(),
             'terrain/writer-audit',
           );
           const root = ctx.world.get(subjects.terrain, Terrain).unwrap().asset;

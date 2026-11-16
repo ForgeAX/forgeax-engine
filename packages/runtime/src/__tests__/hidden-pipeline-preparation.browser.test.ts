@@ -144,7 +144,7 @@ it.each([
             ? { publication: packet }
             : lease === undefined
               ? undefined
-              : { leases: [lease], camera: { lease }, environment: { lease } };
+              : { source: lease };
         if (request === undefined) throw new Error('missing scene owner');
         const result = renderer.draw(request);
         if (!result.ok) throw new Error(JSON.stringify(result.error), { cause: result.error });

@@ -13,7 +13,7 @@ import { DEFAULT_MATERIAL_VARIANT_CONTEXT } from '../../../shader-compiler/src/m
 import { MeshFilter, MeshRenderer, SpriteInstances } from '../components';
 import type { MaterialResource } from '../material-resource';
 import { interleaveSpriteInstanceBuffer } from '../record/sprite-instance-buffer';
-import { extractFrames } from '../render-system-extract-tail';
+import { extractSource } from '../render-system-extract-tail';
 import { PersistentRenderScene } from '../scene/render-scene';
 
 const BUILTIN_QUAD = createPrimitiveMesh('quad').unwrap();
@@ -85,21 +85,18 @@ it.each([
     for (let frame = -2; frame < 3; frame++) {
       if (frame === 1) assets.update(material, { values: { colorTint: [0, 1, 0, 1] } }).unwrap();
       const result = scene.extractComposition(
-        [world],
-        { cameraOwner: 0, resourceOwner: 0 },
+        world,
         assets,
         (request) => {
-          if (typeof request === 'object')
-            for (const entities of request.entitiesByWorld)
-              extractedEntities += entities?.size ?? 0;
-          return extractFrames([world], 0, assets, caches, {
+          if (typeof request === 'object') extractedEntities += request.entities.size;
+          return extractSource(world, assets, caches, {
             materialContext: DEFAULT_MATERIAL_VARIANT_CONTEXT,
             cull: 'none',
             retainHidden: true,
             renderables: request,
           });
         },
-        [lease],
+        lease,
       );
       if (frame < 0) {
         extractedEntities = 0;
@@ -148,4 +145,4 @@ it.each([
     lease.dispose();
     assets.dispose();
   }
-}, 30_000);
+}, 30000);

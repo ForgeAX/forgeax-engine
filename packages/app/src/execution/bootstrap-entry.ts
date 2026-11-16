@@ -187,10 +187,11 @@ function isSsrAdmissionIdentity(value: unknown): value is SsrAdmissionIdentity {
 export async function prepareBootstrapEntry(
   moduleUrl: string,
   data: ExecutionBootstrapValue | undefined,
+  localEntry?: ExecutionBootstrapEntry,
 ): Promise<Result<PreparedExecutionBootstrap, AppErrorType>> {
   const valid = validateExecutionBootstrapData(data, moduleUrl);
   if (!valid.ok) return valid;
-  const loaded = await loadBootstrapEntry(moduleUrl);
+  const loaded = localEntry === undefined ? await loadBootstrapEntry(moduleUrl) : ok(localEntry);
   if (!loaded.ok) return loaded;
   try {
     const prepared = await loaded.value(data);

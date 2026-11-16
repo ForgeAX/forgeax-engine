@@ -52,7 +52,9 @@ async function fixture(storage = true) {
     },
     bindGroupCounts: { createBindGroup: 0, keys: [] },
   } as unknown as _InternalRenderPipelineContext;
-  const makeRow = (worldId: number) => {
+  let nextEntity = 7;
+  const makeRow = () => {
+    const entity = nextEntity++;
     const transforms = new Float32Array(32 * 16);
     for (let i = 0; i < 32; i++) {
       transforms[i * 16] = 1;
@@ -62,9 +64,8 @@ async function fixture(storage = true) {
       transforms[i * 16 + 12] = i;
     }
     const source = {
-      worldId,
-      entityKey: 7,
-      instances: { cacheKey: 7, archVersion: 1, revision: 1, instanceCount: 32, transforms },
+      entityKey: entity,
+      instances: { cacheKey: entity, archVersion: 1, revision: 1, instanceCount: 32, transforms },
     } as unknown as RenderableSnapshot & {
       instances: NonNullable<RenderableSnapshot['instances']>;
     };
@@ -97,7 +98,7 @@ it.each([
     metallic: 0,
     roughness: 1,
   });
-  const base = makeRow(0);
+  const base = makeRow();
   const entry = {
     ...base,
     source: { ...base.source, material, materials: [material] },
@@ -132,7 +133,7 @@ it.each([
 
 it('retains exact opaque LOD permutations across views without rewriting source or unchanged bytes', async () => {
   const { context, device, makeRow, owners } = await fixture(false);
-  const base = makeRow(0);
+  const base = makeRow();
   const material = new MaterialResource({
     passes: [],
     materialShaderId: 'forgeax::default-unlit',
@@ -220,7 +221,7 @@ it('retains exact opaque LOD permutations across views without rewriting source 
 
 it('retains exact chunk bindings and uploads no unchanged instance bytes', async () => {
   const { device, makeRow, resolve, owners } = await fixture();
-  const row = makeRow(0);
+  const row = makeRow();
   const write = vi.spyOn(device.queue, 'writeBuffer');
   const first = resolve(row);
   expect(first.map((draw) => [draw.firstInstanceOrdinal, draw.instanceCount])).toEqual([
@@ -241,14 +242,14 @@ it('retains exact chunk bindings and uploads no unchanged instance bytes', async
   disposeInstanceBufferChunks(owners);
 });
 
-it('replaces changed windows and retires stale chunks without visiting another World', async () => {
+it('replaces changed windows and retires stale chunks without visiting another collection', async () => {
   const { context, device, makeRow, resolve, owners } = await fixture();
-  const first = makeRow(0),
-    second = makeRow(1);
+  const first = makeRow(),
+    second = makeRow();
   resolve(first);
   const retained = resolve(second);
-  const ownerKey = instanceCollectionCacheKey(0, first.source.instances);
-  const secondKey = instanceCollectionCacheKey(1, second.source.instances);
+  const ownerKey = instanceCollectionCacheKey(first.source.instances);
+  const secondKey = instanceCollectionCacheKey(second.source.instances);
   const writes = vi.spyOn(device.queue, 'writeBuffer');
   resolve(first, 16);
   expect([...(owners.get(ownerKey)?.keys() ?? [])]).toEqual([0, 16]);
@@ -295,7 +296,7 @@ it('uses the same collection ownership for chunked uniform fallback', async () =
       })
       .unwrap(),
   );
-  const row = makeRow(0);
+  const row = makeRow();
   Reflect.set(row.source.instances, 'instanceCount', 300);
   Reflect.set(row.source.instances, 'transforms', new Float32Array(300 * 16));
   const first = resolveGeometryInstanceBuffer(context, row as never, [], false);
@@ -308,7 +309,7 @@ it('uses the same collection ownership for chunked uniform fallback', async () =
   expect(second?.map((draw) => draw.instanceBuffer)).toEqual(
     first?.map((draw) => draw.instanceBuffer),
   );
-  const key = instanceCollectionCacheKey(0, row.source.instances);
+  const key = instanceCollectionCacheKey(row.source.instances);
   expect([...(owners.get(key)?.keys() ?? [])]).toEqual([0, 128, 256]);
   Reflect.set(row.source.instances, 'instanceCount', 160);
   Reflect.set(row.source.instances, 'revision', 2);
@@ -324,7 +325,7 @@ it('uses the same collection ownership for chunked uniform fallback', async () =
 it('copies exact arena windows before upload return and reuses backing across changing revisions', async () => {
   const { context, device, makeRow, resolve } = await fixture();
   const world = renderWorldFor(context.runtime);
-  const row = makeRow(0);
+  const row = makeRow();
   const uploaded: Float32Array[] = [];
   const realWrite = device.queue.writeBuffer.bind(device.queue);
   vi.spyOn(device.queue, 'writeBuffer').mockImplementation((buffer, offset, data, start, size) => {
@@ -359,7 +360,7 @@ it('copies exact arena windows before upload return and reuses backing across ch
 it('retries an instance upload after scratch admission fails without publishing its revision', async () => {
   const { context, device, makeRow, resolve } = await fixture();
   const world = renderWorldFor(context.runtime);
-  const row = makeRow(0);
+  const row = makeRow();
   const error = new MemoryError({ kind: 'budget', requestedBytes: 1024, limitBytes: 0 });
   const admission = vi.spyOn(world.frameArena, 'alloc').mockReturnValueOnce(err(error));
   const write = vi.spyOn(device.queue, 'writeBuffer');

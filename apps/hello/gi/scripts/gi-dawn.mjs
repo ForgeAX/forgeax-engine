@@ -392,12 +392,8 @@ export async function createFrameDriver({ renderer, world, lease }) {
   const draw = async (domains) => {
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
-    return drawReadyFrame(renderer, {
-      leases: [lease],
-      camera: { lease },
-      environment: { lease },
-      geometryLane: 'direct',
-    }, domains);
+    return drawReadyFrame(renderer, { source: lease,
+      geometryLane: 'direct' }, domains);
   };
   const observe = async (domains, include = domains) => {
     const receipt = await draw(domains);

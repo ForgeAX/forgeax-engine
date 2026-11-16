@@ -14,6 +14,9 @@ export function isRenderTextureSourceToken(value: unknown): value is RenderTextu
     source.owner.length > 0 &&
     Number.isSafeInteger(source.id) &&
     (source.id ?? 0) > 0 &&
-    (source.source === 'target' || source.source === 'canvas' || source.source === 'external')
+    (source.source === 'target' ||
+      source.source === 'canvas' ||
+      source.source === 'external' ||
+      source.source === 'feature')
   );
 }

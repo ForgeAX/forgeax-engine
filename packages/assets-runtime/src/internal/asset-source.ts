@@ -2,6 +2,7 @@ import { prepareMeshData } from '@forgeax/engine-geometry';
 import { validateArtifactPath } from '@forgeax/engine-pack/artifact-path';
 import type { RuntimePackEnvelope } from '@forgeax/engine-pack/runtime';
 import type {
+  ArtifactDescriptor,
   Asset,
   AssetArtifactReader,
   AssetDecoder,
@@ -22,17 +23,14 @@ import type {
 import { err, isValidAssetGuidString, ok } from '@forgeax/engine-types';
 import type { CatalogSource } from '../catalog-source.js';
 import type { MeshGeometry } from '../mesh-geometry.js';
+import { validateAssetReferences } from '../prepare-payload.js';
 import {
   type ArtifactReadRequest,
-  decodeArtifactTransport,
-  finishArtifactBytes,
-  liveGroupedArtifact,
   readArtifact,
-  readStoredArtifact,
-  verifyArtifactBytes,
+  readBundledArtifact,
 } from '../registry/artifact-io.js';
 import { CatalogReplica } from '../registry/catalog-state.js';
-import { ArtifactCache } from './artifact-cache.js';
+import { copyAssetData } from './asset-data.js';
 import { AssetGraph, type AssetGraphSnapshot } from './asset-graph.js';
 import { BundleStore } from './bundle-store.js';
 import type { DecoderRegistry } from './decoder-registry.js';
@@ -40,6 +38,7 @@ import { freezeRuntimePayload } from './immutable-payload.js';
 import { PackReader, type VerifiedPack } from './pack-reader.js';
 import { bytesOf, readPackage } from './package-read.js';
 import { validatePublicationReferences } from './publication-references.js';
+import { realmRetention } from './retention-budget.js';
 import type { RuntimeCatalogRow } from './validate-runtime-row.js';
 import { validateRuntimeRow } from './validate-runtime-row.js';
 import { assetLoadCancelled, waitForAsset } from './wait-for-asset.js';
@@ -63,6 +62,13 @@ type AssetSourceSnapshot = AssetGraphSnapshot & {
   readonly generation: number;
   readonly bundleTransfers: ReturnType<BundleStore<AssetLoadError>['transfers']['snapshot']>;
 };
+
+type PackEnvelope = VerifiedPack['assets'][number];
+interface OpenedPack {
+  readonly assets: ReadonlyMap<string, PackEnvelope>;
+}
+/** Packs opened by one closure load, keyed by package URL and publication. */
+type PackScope = Map<string, Promise<Result<OpenedPack, AssetLoadError>>>;
 
 interface SourceEntry {
   readonly value: unknown;
@@ -195,8 +201,12 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
     return admitted;
   };
   const reader = new PackReader(options.fetcher === undefined ? {} : { fetcher: options.fetcher });
-  const cache = new ArtifactCache();
-  const bundles = new BundleStore<AssetLoadError>();
+  // Resident Bundle entries share the realm's budget; other reads only coalesce.
+  const retained = realmRetention();
+  // In-flight transport reads only; settled bytes are owned by the decoded asset.
+  const inflight = new Map<string, Promise<Result<Uint8Array, AssetLoadError>>>();
+  const programs = new Map<string, Promise<Result<Uint8Array, AssetLoadError>>>();
+  const bundles = new BundleStore<AssetLoadError>(retained);
   const lifetime = new AbortController();
   const sourceFetcher = (url: string) =>
     options.catalog.openPackage?.(url) ?? options.fetcher ?? globalThis.fetch.bind(globalThis);
@@ -213,8 +223,8 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
       artifactKey: request.artifactKey,
     });
     if (!path.ok) return err(artifactError(request.guid, path.error.code));
-    // One source cache retains the transport bytes. Domain decode and fixed
-    // export share them, while each decode validates its own descriptor.
+    // Concurrent reads share one transport request; each decode validates
+    // its own descriptor.
     const url = resolveArtifactUrl(request.packageUrl, path.value);
     const range = descriptor.byteRange;
     const decodeError = (error: { readonly expected: string; readonly hint: string }) => ({
@@ -223,53 +233,18 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
       hint: error.hint,
     });
     if (range !== undefined) {
-      const live = liveGroupedArtifact(descriptor);
-      if (live !== undefined) return ok({ stored: live, decoded: live });
-      const reading = bundles.read({
+      const reading = readBundledArtifact(bundles, request, {
+        fetcher,
         url,
-        range,
-        fetch: async (entry) => {
-          const read = await readStoredArtifact(
-            request,
-            fetcher,
-            url,
-            range,
-            { signal: lifetime.signal },
-            entry,
-            (response) =>
-              bundles.transfers.observe(
-                `${url}\0${range.bundleDigest}`,
-                entry ? range.length : undefined,
-                response,
-              ),
-          );
-          if (read.ok) return read;
+        init: { signal: lifetime.signal },
+        unreadable: (failure) => {
           const error = artifactError(request.guid, descriptor.path);
-          return err(
-            'code' in read.error
-              ? { ...error, expected: read.error.expected, hint: read.error.hint }
-              : error,
-          );
+          return 'code' in failure
+            ? { ...error, expected: failure.expected, hint: failure.hint }
+            : error;
         },
-        finish: async (stored) => {
-          if (descriptor.decodedRange !== undefined) {
-            const group = await decodeArtifactTransport(stored, request);
-            return group.ok ? group : err(decodeError(group.error));
-          }
-          const decoded = await readArtifact(request, fetcher, async () => ok(stored));
-          return decoded.ok ? decoded : err(decodeError(decoded.error));
-        },
-        reuse: async (copy) => {
-          if (descriptor.decodedRange !== undefined) return ok(copy);
-          const verified = await verifyArtifactBytes(copy, request);
-          return verified.ok ? verified : err(decodeError(verified.error));
-        },
+        rejected: decodeError,
         invalid: (reason) => artifactError(request.guid, reason),
-        // A decoded group is read only to select and verify a private member.
-        shared: descriptor.decodedRange !== undefined,
-        ...(descriptor.integrity === undefined || descriptor.decodedRange !== undefined
-          ? {}
-          : { digest: descriptor.integrity.digest }),
       });
       const decoded = await waitForAsset(reading, signal, request.guid);
       if (!decoded.ok)
@@ -277,12 +252,6 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
           ? err({ ...decoded.error, detail: { ...decoded.error.detail, guid: request.guid } })
           : decoded;
       if (signal.aborted || lifetime.signal.aborted) return err(assetLoadCancelled(request.guid));
-      if (descriptor.decodedRange !== undefined) {
-        const artifact = await finishArtifactBytes(decoded.value, request);
-        return artifact.ok
-          ? ok({ stored: artifact.value, decoded: artifact.value })
-          : err(decodeError(artifact.error));
-      }
       // Bundle entries move into their extracted value; there is no second stored copy.
       return ok({ stored: decoded.value, decoded: decoded.value });
     }
@@ -294,24 +263,43 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
       descriptor.integrity?.algorithm,
       descriptor.integrity?.digest,
     ]);
-    const reading = cache.read(key, async () => {
-      const read = await readPackage(fetcher, url, bytesOf, { signal: lifetime.signal });
-      return read.ok ? read : err(artifactError(request.guid, descriptor.path));
-    });
+    let reading = inflight.get(key);
+    if (reading === undefined) {
+      const current = readPackage(fetcher, url, bytesOf, { signal: lifetime.signal }).then(
+        (read) => (read.ok ? read : err(artifactError(request.guid, descriptor.path))),
+      );
+      const settled = current.finally(() => {
+        if (inflight.get(key) === settled) inflight.delete(key);
+      });
+      inflight.set(key, settled);
+      reading = settled;
+    }
     const stored = await waitForAsset(reading, signal, request.guid);
     if (!stored.ok) return stored;
     if (signal.aborted || lifetime.signal.aborted) return err(assetLoadCancelled(request.guid));
     const decoded = await readArtifact(request, fetcher, async () => ok(stored.value));
-    if (!decoded.ok) {
-      cache.clear(key);
-      return err(decodeError(decoded.error));
-    }
+    if (!decoded.ok) return err(decodeError(decoded.error));
     return ok({ stored: stored.value, decoded: decoded.value });
   };
   const decoders = options.decoders;
+  // One closure load owns the packs it opens: each pack is decoded once per load
+  // and indexed by GUID when opened, so every root in it is a direct lookup.
+  const openPack = async (
+    url: string,
+    tuple: Parameters<PackReader['read']>[1],
+    signal: AbortSignal,
+    fetcher: ReturnType<typeof sourceFetcher>,
+  ): Promise<Result<OpenedPack, AssetLoadError>> => {
+    const pack = await reader.read(url, tuple, signal, fetcher);
+    if (!pack.ok) return pack;
+    const assets = new Map<string, PackEnvelope>();
+    for (const asset of pack.value.assets) assets.set(asset.guid.toLowerCase(), asset);
+    return ok({ assets });
+  };
   const decodeRoot = async (
     guid: string,
     signal: AbortSignal,
+    scope: PackScope,
   ): Promise<Result<SourceEntry, AssetLoadError>> => {
     const row = session.get(guid);
     if (row === undefined) return err(missing(guid));
@@ -323,16 +311,30 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
       ...publication,
       scopeId: session.scopeId,
     };
-    const pack = await reader.read(row.packageUrl, tuple, signal, fetcher);
+    const packKey = `${row.packageUrl}\u0000${tuple.generation}\u0000${tuple.digest}\u0000${tuple.outputSetDigest}`;
+    let opened = scope.get(packKey);
+    if (opened === undefined) {
+      opened = openPack(row.packageUrl, tuple, signal, fetcher);
+      scope.set(packKey, opened);
+    }
+    const pack = await opened;
     if (!pack.ok) return pack;
-    const envelope = pack.value.assets.find(
-      (asset) => asset.guid.toLowerCase() === guid.toLowerCase(),
-    );
+    const envelope = pack.value.assets.get(guid.toLowerCase());
     if (envelope === undefined) return err(missing(guid));
     const output = publication.outputs.find(
       (output) => output.guid.toLowerCase() === guid.toLowerCase(),
     );
     if (output === undefined) return err(missing(guid));
+    const read = async (descriptor: ArtifactDescriptor) => {
+      if (descriptor.integrity === undefined)
+        return Promise.resolve(err(artifactError(guid, descriptor.path)));
+      const result = await storedArtifact(
+        { packageUrl: row.packageUrl, guid, artifactKey: descriptor.path, descriptor },
+        signal,
+        fetcher,
+      );
+      return result.ok ? ok(result.value.decoded) : result;
+    };
     const artifacts: AssetArtifactReader = {
       locate: (descriptor) => {
         const path = validateArtifactPath(descriptor.path, {
@@ -342,41 +344,75 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
         });
         return path.ok ? resolveArtifactUrl(row.packageUrl, path.value) : undefined;
       },
-      read: async (descriptor) => {
-        if (descriptor.integrity === undefined)
+      program: (descriptor) => {
+        const integrity = descriptor.integrity;
+        if (integrity === undefined)
           return Promise.resolve(err(artifactError(guid, descriptor.path)));
-        const result = await storedArtifact(
-          { packageUrl: row.packageUrl, guid, artifactKey: descriptor.path, descriptor },
-          signal,
-          fetcher,
-        );
-        return result.ok ? ok(result.value.decoded) : result;
+        const key = `${integrity.digest}:${descriptor.byteLength}`;
+        let resident = programs.get(key);
+        if (resident === undefined) {
+          resident = read(descriptor);
+          programs.set(key, resident);
+          void resident.then((result) => {
+            if (!result.ok) programs.delete(key);
+          });
+        }
+        return resident;
       },
+      read,
     };
     const input: AssetDecoderInput<unknown> = { envelope, artifacts, signal };
     const decoded = await decoders.loadByKind(envelope.kind, input);
     if (!decoded.ok) return decoded;
+    if (
+      envelope.kind.startsWith('water-') &&
+      decoded.value &&
+      typeof decoded.value === 'object' &&
+      'kind' in decoded.value
+    ) {
+      for (const ref of envelope.refs) {
+        const dependency = await session.require(ref);
+        if (!dependency.ok) return dependency;
+      }
+      const referenceError = validateAssetReferences(
+        decoded.value as Asset,
+        guid,
+        envelope.refs.map((ref) => ({ guid: ref })),
+        (target) => session.get(target)?.kind,
+      );
+      if (referenceError)
+        return err({
+          code: 'asset-decode-failed',
+          expected: referenceError.expected,
+          hint: referenceError.hint,
+          detail: {
+            guid,
+            kind: envelope.kind,
+            cause: {
+              code: referenceError.code,
+              expected: referenceError.expected,
+              hint: referenceError.hint,
+              detail: referenceError.detail,
+            },
+          },
+        });
+    }
     return ok({
       value: freezeRuntimePayload(decoded.value),
       kind: envelope.kind,
-      refs: [
-        ...new Set([
-          ...envelope.refs,
-          ...publication.externalEvidence
-            .filter((edge) => edge.usage !== 'content')
-            .map((edge) => edge.guid),
-        ]),
-      ],
+      // The graph decodes this output's references. The publication fence owns package evidence.
+      refs: [...new Set(envelope.refs)],
       publication: tuple,
       digest: output.digest,
       references: decoders.referencePolicy(envelope.kind),
     });
   };
-  const graph = new AssetGraph<SourceEntry>({
+  const graph = new AssetGraph<SourceEntry, PackScope>({
     ...(options.maxConcurrentReads === undefined
       ? {}
       : { maxConcurrentReads: options.maxConcurrentReads }),
     read: decodeRoot,
+    openScope: () => new Map(),
   });
 
   const unsubscribeCatalog = session.subscribe((delta) => {
@@ -426,8 +462,6 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
     },
     readArtifact: storedArtifact,
     trimReadCache: () => {
-      reader.trim();
-      cache.trim();
       bundles.trim();
     },
     invalidate: (guid) => {
@@ -447,14 +481,7 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
         prepared.set(row.guid.toLowerCase(), {
           value,
           kind: row.kind,
-          refs: [
-            ...new Set([
-              ...envelope.refs,
-              ...row.publication.externalEvidence
-                .filter((edge) => edge.usage !== 'content')
-                .map((edge) => edge.guid),
-            ]),
-          ],
+          refs: [...new Set(envelope.refs)],
           references: decoders.referencePolicy(row.kind),
           publication: { ...row.publication, scopeId: session.scopeId },
           digest: output.digest,
@@ -478,7 +505,7 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
       // First demand may publish the declared output. Capture invalidation only
       // after that admission, just as ordinary source loads do.
       const revision = graph.revision(guid);
-      const decoded = await decodeRoot(guid, signal);
+      const decoded = await decodeRoot(guid, signal, new Map());
       if (!decoded.ok) return decoded;
       if (signal.aborted || lifetime.signal.aborted) return err(assetLoadCancelled(guid));
       const current = checkCurrent(guid, {
@@ -493,20 +520,23 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
           hint: 'retry the current Mesh publication',
           detail: { guid, generation: revision },
         });
-      // DecoderRegistry captured this fresh result; move only its independently
-      // owned CPU geometry out. No graph Ready entry or runtime handle is made.
+      // Only the CPU geometry leaves; no graph Ready entry or runtime handle is made.
       const mesh = decoded.value.value as MeshAsset;
       if (mesh?.kind !== 'mesh')
         return err(sourceFailure(guid, 'decoder returned another payload kind'));
       const geometry = prepareMeshData(mesh, guid);
       if (!geometry.ok) return err(sourceFailure(guid, geometry.error.actual));
-      return ok({
-        vertices: mesh.vertices,
-        attributes: mesh.attributes,
-        submeshes: mesh.submeshes,
-        ...(mesh.indices === undefined ? {} : { indices: mesh.indices }),
-        ...(mesh.aabb === undefined ? {} : { aabb: mesh.aabb }),
-      });
+      // The decoder handed its output over, but a custom decoder may still hold
+      // its buffers; the public CPU read gives the caller private storage.
+      return ok(
+        copyAssetData({
+          vertices: mesh.vertices,
+          attributes: mesh.attributes,
+          submeshes: mesh.submeshes,
+          ...(mesh.indices === undefined ? {} : { indices: mesh.indices }),
+          ...(mesh.aabb === undefined ? {} : { aabb: mesh.aabb }),
+        }),
+      );
     },
     readPluginDefinition: async (guid) => {
       const loaded = await registry.load(guid, 'plugin');
@@ -574,8 +604,10 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
       graph.dispose();
       reader.dispose();
       unsubscribeCatalog();
-      cache.clear();
+      inflight.clear();
+      programs.clear();
       bundles.clear();
+      retained.leave(bundles);
       session.dispose();
     },
   };

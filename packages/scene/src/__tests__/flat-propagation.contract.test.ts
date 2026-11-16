@@ -1,9 +1,14 @@
 // @ts-expect-error The Vitest runtime provides Node's fs module; scene package declarations stay browser-safe.
+
 import { readFileSync } from 'node:fs';
-import { type EntityHandle, FixedUpdate, Update, World } from '@forgeax/engine-ecs';
+import { defineSystem, type EntityHandle, FixedUpdate, Update, World } from '@forgeax/engine-ecs';
 import { describe, expect, it } from 'vitest';
 import { GlobalTransform, propagateTransforms, Transform } from '../index';
-import { registerPropagateTransforms } from '../systems/propagate-transforms';
+import {
+  PropagateTransforms,
+  PropagateTransformsFixed,
+  registerPropagateTransforms,
+} from '../systems/propagate-transforms';
 
 const COUNTS = [10_000, 100_000] as const;
 const MOVERS = [1, 100, 10_000] as const;
@@ -42,30 +47,36 @@ describe('flat Transform propagation contract', () => {
     if (first === undefined) throw new Error('expected first flat entity');
     let observed = 0;
     world
-      .addSystem(Update, {
-        name: `flat-writer-${movers}`,
-        queries: [],
-        before: ['propagateTransforms'],
-        fn: () => {
-          for (let index = 0; index < movers; index += 1) {
-            const entity = entities[index];
-            if (entity !== undefined) world.set(entity, Transform, { pos: [index + 1, 0, 0] });
-          }
-        },
-      })
+      .addSystem(
+        Update,
+        defineSystem({
+          name: `flat-writer-${movers}`,
+          queries: [],
+          before: [PropagateTransforms],
+          fn: () => {
+            for (let index = 0; index < movers; index += 1) {
+              const entity = entities[index];
+              if (entity !== undefined) world.set(entity, Transform, { pos: [index + 1, 0, 0] });
+            }
+          },
+        }),
+      )
       .unwrap();
     world
-      .addSystem(Update, {
-        name: `flat-reader-${movers}`,
-        queries: [],
-        after: ['propagateTransforms'],
-        fn: () => {
-          observed = 0;
-          for (const row of world.query({ read: [GlobalTransform] }).unwrap()) {
-            observed += row.get(GlobalTransform).world[12] ?? 0;
-          }
-        },
-      })
+      .addSystem(
+        Update,
+        defineSystem({
+          name: `flat-reader-${movers}`,
+          queries: [],
+          after: [PropagateTransforms],
+          fn: () => {
+            observed = 0;
+            for (const row of world.query({ read: [GlobalTransform] }).unwrap()) {
+              observed += row.get(GlobalTransform).world[12] ?? 0;
+            }
+          },
+        }),
+      )
       .unwrap();
 
     expect(world.update(0).ok).toBe(true);
@@ -78,28 +89,26 @@ describe('flat Transform propagation contract', () => {
     const first = entities[0];
     if (first === undefined) throw new Error('expected first flat entity');
     const trace: string[] = [];
-    world
-      .addSystem(FixedUpdate, {
-        name: 'flat-fixed-writer',
-        queries: [],
-        before: ['propagateTransformsFixed'],
-        fn: () => {
-          trace.push('writer');
-          world.set(first, Transform, { pos: [9, 0, 0] });
-        },
-      })
-      .unwrap();
-    world
-      .addSystem(FixedUpdate, {
-        name: 'flat-fixed-reader',
-        queries: [],
-        after: ['propagateTransformsFixed'],
-        fn: () => {
-          trace.push('reader');
-          expect(world.get(first, GlobalTransform).unwrap().world[12]).toBeCloseTo(9);
-        },
-      })
-      .unwrap();
+    const systemToken1 = defineSystem({
+      name: 'flat-fixed-writer',
+      queries: [],
+      before: [PropagateTransformsFixed],
+      fn: () => {
+        trace.push('writer');
+        world.set(first, Transform, { pos: [9, 0, 0] });
+      },
+    });
+    world.addSystem(FixedUpdate, systemToken1).unwrap();
+    const systemToken2 = defineSystem({
+      name: 'flat-fixed-reader',
+      queries: [],
+      after: [PropagateTransformsFixed],
+      fn: () => {
+        trace.push('reader');
+        expect(world.get(first, GlobalTransform).unwrap().world[12]).toBeCloseTo(9);
+      },
+    });
+    world.addSystem(FixedUpdate, systemToken2).unwrap();
 
     expect(world.update(1 / 60).ok).toBe(true);
     expect(trace).toEqual(['writer', 'reader']);

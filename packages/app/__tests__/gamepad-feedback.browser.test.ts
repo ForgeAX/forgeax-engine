@@ -1,7 +1,9 @@
+import { GamepadFeedbackProbeOrder } from './gamepad-feedback-bootstrap';
+import { defineSystem } from "@forgeax/engine-ecs";
 import { type App } from '@forgeax/engine-app';
 import { createApp } from '@forgeax/engine-app/browser';
 import { Update } from '@forgeax/engine-ecs';
-import { GAMEPAD_FEEDBACK_KEY, INPUT_SNAPSHOT_RESOURCE_KEY, type GamepadFeedback, type GamepadFeedbackResult, type InputSnapshot } from '@forgeax/engine-input';
+import { GAMEPAD_FEEDBACK_KEY, INPUT_SNAPSHOT_RESOURCE_KEY, type GamepadFeedbackResult } from '@forgeax/engine-input';
 import { expect, it } from 'vitest';
 
 it.each([false, true])('transports ordered feedback through actual App/ECS with engine Worker=%s (native double)', async engine => {
@@ -47,14 +49,15 @@ it.each([false, true])('transports ordered feedback through actual App/ECS with 
     expect(app.execution.report().workers.engine.enabled).toBe(engine);
     if (!engine) {
       // Host execution bootstrap receives the same port; polling below also exercises the public resource.
-      app.world.addSystem(Update, { name: 'host-feedback-results', queries: [], after: ['gamepad-feedback-browser-probe'],
+      const systemToken1 = defineSystem({ name: 'host-feedback-results', queries: [], after: [GamepadFeedbackProbeOrder],
         fn(world) {
-          const snapshot = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+          const snapshot = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
           expect(Object.isFrozen(snapshot.gamepad(0).feedbackTarget)).toBe(true);
-          const feedback = world.getResource<GamepadFeedback>(GAMEPAD_FEEDBACK_KEY);
+          const feedback = world.getResource(GAMEPAD_FEEDBACK_KEY);
           results.push(...feedback.readResults());
         },
-      }).unwrap();
+      });
+app.world.addSystem(Update, systemToken1).unwrap();
     }
     app.start().unwrap();
     await expect.poll(() => results.length, { timeout: 90_000 }).toBe(3);

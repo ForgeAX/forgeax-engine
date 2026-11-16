@@ -71,6 +71,15 @@ export interface StandardClusterTransportInspection {
   readonly producer: StandardClusterTransport['producer'];
   readonly requested: StandardClusterTransport['requestedLightCount'];
   readonly admitted: StandardClusterTransport['admittedLightCount'];
+  /** Local lights over the limit that the Cluster does not shade (`requested - admitted`). */
+  readonly droppedLocalLights: number;
+  /**
+   * Per-cluster entry cap K applied when the light index list overflowed:
+   * each cluster kept its first K lights. `null` when every entry fit.
+   */
+  readonly clusterEntryCapK: number | null;
+  /** Cluster entries dropped under `clusterEntryCapK`. */
+  readonly droppedClusterEntries: number;
   readonly shadowed: number;
   readonly maxLights: number;
   readonly indexCount: StandardClusterTransport['membershipEntryCount'];
@@ -95,6 +104,9 @@ export interface StandardNoLocalLightingInspection {
   readonly producer: 'none';
   readonly requested: 0;
   readonly admitted: 0;
+  readonly droppedLocalLights: 0;
+  readonly clusterEntryCapK: null;
+  readonly droppedClusterEntries: 0;
   readonly shadowed: 0;
   readonly maxLights: number;
   readonly indexCount: 0;
@@ -121,6 +133,9 @@ export function inspectStandardClusterTransport(
     producer: transport.producer,
     requested: transport.requestedLightCount,
     admitted: transport.admittedLightCount,
+    droppedLocalLights: transport.requestedLightCount - transport.admittedLightCount,
+    clusterEntryCapK: prepared.clusterEntryCapK ?? null,
+    droppedClusterEntries: prepared.droppedClusterEntries,
     shadowed: prepared.local.filter((light) => light.shadowed === true).length,
     maxLights: prepared.maxLights,
     indexCount: transport.membershipEntryCount,
@@ -175,6 +190,9 @@ export function inspectStandardLighting(
       producer: 'none' as const,
       requested: 0 as const,
       admitted: 0 as const,
+      droppedLocalLights: 0 as const,
+      clusterEntryCapK: null,
+      droppedClusterEntries: 0 as const,
       shadowed: 0 as const,
       maxLights: input.prepared.maxLights,
       indexCount: 0 as const,

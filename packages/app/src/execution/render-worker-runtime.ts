@@ -1,14 +1,22 @@
+import { stepRetainedBytes, trimRetainedBytes } from '@forgeax/engine-assets-runtime/internal';
+import { createTaskClient, type TaskClient } from '@forgeax/engine-platform';
 import {
+  type FeatureTextureObservation,
+  type FrameDomainObservation,
   type FrameReceipt,
   type GpuPassTimingObservation,
   type PublishedRenderFrameInput,
   querySubmittedTerrainHeight,
+  type RenderError,
   type Renderer,
   type RendererOperationError,
   type RendererOptions,
   type RenderFeature,
+  type RenderFeatureCompletion,
   type RenderPublication,
+  RenderPublicationError,
   type RenderPublicationIdentity,
+  type RenderResult,
   renderPublicationBytes,
   renderPublicationTransfers,
 } from '@forgeax/engine-render';
@@ -17,7 +25,6 @@ import {
   fullscreenRenderFeatureDeclaration,
   ownReceivedPublicationMaterials,
   renderGraphCompileCount,
-  verifyPublicationPrograms,
 } from '@forgeax/engine-render/internal';
 import { createRhiDebugError, type RecorderAttachment } from '@forgeax/engine-rhi-debug';
 import {
@@ -56,6 +63,7 @@ import type {
   CompletedMeshConsumption,
   RenderWorkerInput,
   RenderWorkerOutput,
+  SubmittedFeatureReceipt,
 } from './render-worker-protocol';
 import { createRenderWorkerTaskTurns, yieldRenderWorkerTaskTurn } from './render-worker-task-turn';
 import { readRendererInspection, rendererInspectionFailure } from './renderer-inspection';
@@ -77,6 +85,8 @@ let meshResidency: RenderMeshResidency | undefined;
 let publicationIdentity: RenderPublicationIdentity | undefined;
 /** Host port for render-submitted / render-complete; Host credit bypasses the Engine tick. */
 let hostPort: MessagePort | undefined;
+/** Background tasks run on the Engine Worker's pool; absent, the Renderer runs them inline. */
+let taskClient: TaskClient | undefined;
 /** Always-on draw cadence and stall accounting (Render Worker clock). */
 const drawTiming = new RenderDrawTiming({
   now: () => performance.now(),
@@ -395,6 +405,11 @@ async function completeFrame(
   snapshotBoundary?: Promise<unknown>,
   meshConsumption?: CompletedMeshConsumption,
   captureDraw?: CaptureDrawTransaction,
+  featureSourceCompletion?: {
+    readonly completion: RenderFeatureCompletion;
+    readonly observations: Promise<RenderResult<readonly FrameDomainObservation[], RenderError>>;
+    readonly settleReadbackFlight: () => void;
+  },
 ): Promise<void> {
   const submittedAt = performance.now();
   let creditReturned = false;
@@ -433,39 +448,107 @@ async function completeFrame(
     traceCompletion('render-previous-prefix-passed', message, receipt);
     if (failed) return;
     const buffers = renderPublicationTransfers(message.publication);
-    const frame = {
-      kind: 'frame-complete',
-      worldIdentity: message.worldIdentity,
-      frameId: message.frameId,
-      deviceGeneration: receipt.deviceGeneration,
-      ...(receipt.shadowWorkload === undefined ? {} : { shadowWorkload: receipt.shadowWorkload }),
-      ...(receipt.graphGeneration === undefined
-        ? {}
-        : { graphGeneration: receipt.graphGeneration }),
-      ...(receipt.barrelDistortion === undefined
-        ? {}
-        : { barrelDistortion: receipt.barrelDistortion }),
-      presentation: receipt.presentation,
-      ...(receipt.presentation !== 'pending' || receipt.presentationPendingReason === undefined
-        ? {}
-        : { presentationPendingReason: receipt.presentationPendingReason }),
-      engineUpdateMs: 0,
-      kernelWaitMs: 0,
-      renderSubmitToCompleteMs: performance.now() - submittedAt,
-    } as const;
-    scope.postMessage(
-      {
-        kind: 'completed',
-        revision: message.publication.revision,
-        buffers,
-        ...(meshConsumption === undefined ? {} : { meshConsumption }),
-        frame,
-      },
-      meshConsumption?.bindings.buffer instanceof ArrayBuffer
-        ? [...buffers, meshConsumption.bindings.buffer]
-        : buffers,
-    );
-    hostPort?.postMessage({ kind: 'render-complete', epoch: message.publication.epoch, frame });
+    let featureTextureReadbacks: readonly FeatureTextureObservation[] | undefined;
+    let featureTextureReadbackError: SerializedRenderError | undefined;
+    if (featureSourceCompletion !== undefined) {
+      const identity = featureSourceCompletion.completion;
+      if (
+        identity.frameId !== receipt.frameId ||
+        identity.deviceGeneration !== receipt.deviceGeneration ||
+        identity.graphGeneration !== receipt.graphGeneration
+      )
+        throw new RenderPublicationError({
+          reason: 'identity',
+          subject: 'feature texture observations differ from the returned draw receipt',
+        });
+      try {
+        const observed = await featureSourceCompletion.observations;
+        if (!observed.ok)
+          featureTextureReadbackError = {
+            code: observed.error.code,
+            expected: observed.error.expected,
+            hint: observed.error.hint,
+            detail:
+              'detail' in observed.error ? serializableDetail(observed.error.detail) : undefined,
+          };
+        else {
+          const rows = observed.value.filter(
+            (row): row is FeatureTextureObservation => row.domain === 'feature-texture',
+          );
+          if (rows.length > 0)
+            featureTextureReadbacks = rows.map((row) => ({
+              ...row,
+              bytes: transferable(row.bytes),
+            }));
+        }
+      } catch (cause) {
+        featureTextureReadbackError = {
+          code: 'observation-unavailable',
+          expected: 'the requested feature texture readback completes for its submitted frame',
+          hint: 'inspect the original cause and retry the feature texture readback',
+          detail: serializableDetail(cause),
+        };
+      }
+    }
+    const completedFrame = () => {
+      const frame = {
+        kind: 'frame-complete',
+        worldIdentity: message.worldIdentity,
+        frameId: message.frameId,
+        deviceGeneration: receipt.deviceGeneration,
+        ...(receipt.shadowWorkload === undefined ? {} : { shadowWorkload: receipt.shadowWorkload }),
+        ...(receipt.graphGeneration === undefined
+          ? {}
+          : { graphGeneration: receipt.graphGeneration }),
+        ...(receipt.barrelDistortion === undefined
+          ? {}
+          : { barrelDistortion: receipt.barrelDistortion }),
+        presentation: receipt.presentation,
+        ...(receipt.presentation !== 'pending' || receipt.presentationPendingReason === undefined
+          ? {}
+          : { presentationPendingReason: receipt.presentationPendingReason }),
+        engineUpdateMs: 0,
+        kernelWaitMs: 0,
+        renderSubmitToCompleteMs: performance.now() - submittedAt,
+      } as const;
+
+      return frame;
+    };
+    const frame = completedFrame();
+    const publishCompletion = () => {
+      scope.postMessage(
+        {
+          kind: 'completed',
+          identity: { source: message.publication.source, epoch: message.publication.epoch },
+          completion: {
+            frameId: receipt.frameId,
+            deviceGeneration: receipt.deviceGeneration,
+            ...(receipt.graphGeneration === undefined
+              ? {}
+              : { graphGeneration: receipt.graphGeneration }),
+          },
+          revision: message.publication.revision,
+          buffers,
+          ...(featureTextureReadbacks === undefined ? {} : { featureTextureReadbacks }),
+          ...(featureTextureReadbackError === undefined ? {} : { featureTextureReadbackError }),
+          ...(meshConsumption === undefined ? {} : { meshConsumption }),
+          frame,
+        },
+        [
+          ...new Set<Transferable>([
+            ...buffers,
+            ...(featureTextureReadbacks?.flatMap((row) =>
+              row.bytes.buffer instanceof ArrayBuffer ? [row.bytes.buffer] : [],
+            ) ?? []),
+            ...(meshConsumption?.bindings.buffer instanceof ArrayBuffer
+              ? [meshConsumption.bindings.buffer]
+              : []),
+          ]),
+        ],
+      );
+      hostPort?.postMessage({ kind: 'render-complete', epoch: message.publication.epoch, frame });
+    };
+    publishCompletion();
     // The Host may admit the next frame now; its draw can arrive during a
     // checkpoint of the current draw, before this receipt is fully retired.
     creditReturned = true;
@@ -478,6 +561,11 @@ async function completeFrame(
   } finally {
     // A frame that returns no credit still passes the prefix to its successor.
     credited();
+    try {
+      featureSourceCompletion?.settleReadbackFlight();
+    } catch (cause) {
+      fail(message, cause);
+    }
     // Observation failure cannot let disposal outrun this frame or its predecessor.
     const retirement = await drainRenderCompletion(receipt.completed, previous);
     // Credit follows the GPU work alone, so a retirement-only failure reports here.
@@ -558,25 +646,59 @@ function receiveHdrObserveNext(
   } else hdrRequest = { ...message, cancelled: false, started: false };
 }
 
+/** Teardown milestones from the actual cleanup awaits, with no acceptance projection. */
+function traceDisposal(
+  stage:
+    | 'initialization'
+    | 'draw'
+    | 'retirement'
+    | 'mesh-release'
+    | 'renderer-destroy'
+    | 'recorder-destroy'
+    | 'ack',
+): void {
+  // Bounded teardown evidence survives a forced Worker termination. It does
+  // not publish a receipt or change the cleanup owner, order or deadline.
+  console.warn(
+    JSON.stringify({
+      kind: 'render-worker-disposal',
+      owner: 'render',
+      stage,
+      identity: publicationIdentity,
+      worldIdentity: inspectionWorldIdentity,
+      preparing: activePreparationAbort !== undefined,
+      drawing: drawing !== undefined,
+      queued: queued.length,
+      framesInFlight,
+      unretiredReceipts,
+    }),
+  );
+}
+
 /** Disposes mesh residency, Renderer and recorder in order; returns the first cleanup failure. */
 async function disposeRenderResources(): Promise<unknown> {
   let cleanupFailure: unknown;
   try {
+    traceDisposal('mesh-release');
     await meshResidency?.dispose();
   } catch (cause) {
     cleanupFailure = cause;
   }
   try {
+    traceDisposal('renderer-destroy');
     const disposed = await renderer?.dispose();
     if (disposed?.ok === false) throw disposed.error;
   } catch (cause) {
     cleanupFailure ??= cause;
   }
   try {
+    traceDisposal('recorder-destroy');
     await attachment?.dispose();
   } catch (cause) {
     cleanupFailure ??= cause;
   }
+  taskClient?.dispose();
+  taskClient = undefined;
   return cleanupFailure;
 }
 
@@ -586,13 +708,18 @@ async function receiveDispose(): Promise<void> {
   activePreparationAbort?.abort();
   invalidateCaptureRequests();
   try {
+    traceDisposal('initialization');
     await initializing;
+    traceDisposal('draw');
     await drawing;
+    traceDisposal('retirement');
     await completing;
     const cleanupFailure = await disposeRenderResources();
     if (cleanupFailure !== undefined) throw cleanupFailure;
+    traceDisposal('ack');
     scope.postMessage({ kind: 'disposed' });
   } catch (cause) {
+    console.error('[render-worker-disposal-failed]', serializableDetail(cause));
     scope.postMessage({ kind: 'disposed', error: serializableDetail(cause) });
   } finally {
     unsubscribeRenderer?.();
@@ -699,17 +826,13 @@ async function receive(message: RenderWorkerInput): Promise<void> {
       case 'terrain-height':
         return await receiveTerrainHeight(message);
       case 'bounds':
-        scope.postMessage({
-          kind: 'bounds-result',
-          requestId: message.requestId,
-          bounds:
-            publicationIdentity === undefined
-              ? undefined
-              : renderer?.bounds(publicationIdentity, message.entity),
-        });
+        receiveBounds(message);
         return;
       case 'capture-cancel':
         receiveCaptureCancel(message.requestId);
+        return;
+      case 'memory-pressure':
+        trimRetainedBytes();
         return;
       case 'capture':
         return await receiveCapture(message);
@@ -719,6 +842,17 @@ async function receive(message: RenderWorkerInput): Promise<void> {
   } catch (cause) {
     fail(message, cause);
   }
+}
+
+function receiveBounds(message: Extract<RenderWorkerInput, { kind: 'bounds' }>): void {
+  scope.postMessage({
+    kind: 'bounds-result',
+    requestId: message.requestId,
+    bounds:
+      publicationIdentity === undefined
+        ? undefined
+        : renderer?.bounds(publicationIdentity, message.entity),
+  });
 }
 
 async function receiveTerrainHeight(
@@ -818,6 +952,8 @@ async function receiveCapture(message: CaptureMessage): Promise<void> {
 function adoptInitPolicies(message: InitMessage): void {
   canvas = message.canvas;
   hostPort = message.hostPort;
+  taskClient?.dispose();
+  taskClient = message.taskPort === undefined ? undefined : createTaskClient(message.taskPort);
   geometryLane = message.geometryLane;
   renderTaskYield = message.renderTaskYield ?? 'none';
   renderPipelineCapacity = renderPipelineCapacityOf(message.renderPipelineCapacity);
@@ -852,21 +988,31 @@ function initRendererOptions(
   return {
     ...recorderRendererOptions(attachment),
     publicationSource: message.identity,
+    ...(taskClient === undefined ? {} : { tasks: taskClient }),
+    maxRenderShortSide: 0,
     ...(message.shadowWorkload === true ? { shadowWorkload: true } : {}),
     ...(message.gpuPassTiming === undefined ? {} : { gpuPassTiming: message.gpuPassTiming }),
     ...(message.pipelineLibrary === undefined ? {} : { pipelineLibrary: message.pipelineLibrary }),
     ...(message.backgroundPipelineLibrary === undefined
       ? {}
       : { backgroundPipelineLibrary: message.backgroundPipelineLibrary }),
+    ...(message.backgroundPipelineLibraryConcurrency === undefined
+      ? {}
+      : { backgroundPipelineLibraryConcurrency: message.backgroundPipelineLibraryConcurrency }),
     ...(message.outputColorSpace === undefined
       ? {}
       : { outputColorSpace: message.outputColorSpace }),
+    ...(message.renderBackend === undefined ? {} : { renderBackend: message.renderBackend }),
     ...(message.dynamicGeometryMeshBudgetBytes === undefined
       ? {}
       : { dynamicGeometryMeshBudgetBytes: message.dynamicGeometryMeshBudgetBytes }),
     ...(message.assetBudgetBytes === undefined
       ? {}
       : { assetBudgetBytes: message.assetBudgetBytes }),
+    ...(message.featureTextureReadbackBudgetBytes === undefined
+      ? {}
+      : { featureTextureReadbackBudgetBytes: message.featureTextureReadbackBudgetBytes }),
+    ...(message.textureMipSkip === undefined ? {} : { textureMipSkip: message.textureMipSkip }),
     ...(prepared.features === undefined ? {} : { features: prepared.features }),
     ...(prepared.ssrIdentity === undefined ? {} : { ssrIdentity: prepared.ssrIdentity }),
   };
@@ -1071,9 +1217,6 @@ async function receiveInit(message: InitMessage): Promise<void> {
 }
 
 /** Resizes the canvas, synchronizes published features and yields; false when the turn lost admission. */
-/** Releases the digest evidence of the current draw's byte programs once that draw has admitted them. */
-let releaseVerifiedPrograms: (() => void) | undefined;
-
 async function prepareDrawTurn(message: DrawMessage, target: OffscreenCanvas): Promise<boolean> {
   if (message.width > 0 && message.height > 0) {
     if (target.width !== message.width) target.width = message.width;
@@ -1081,13 +1224,6 @@ async function prepareDrawTurn(message: DrawMessage, target: OffscreenCanvas): P
   }
   await synchronizeFeatures(message.publication.side?.features ?? []);
   if (failed || shuttingDown) return false;
-  // A packet that introduces byte programs has their digests computed off this
-  // thread; the held evidence lets the synchronous admission skip its own hash.
-  const verification = verifyPublicationPrograms(message.publication.side?.programs);
-  if (verification !== undefined) {
-    releaseVerifiedPrograms = await verification;
-    if (failed || shuttingDown) return false;
-  }
   // Keep this draw in the same serial drain and retain its publication
   // credit. A real older receipt may complete during this single task turn,
   // letting its existing completion/ACK wake the Engine Worker before the
@@ -1157,8 +1293,9 @@ async function deliverHdrObservation(
 
 function publishedFrameInput(
   message: DrawMessage,
-  features: { identity: string; feedback: unknown }[],
+  features: SubmittedFeatureReceipt[],
   observeGeometry: boolean,
+  onFeatureSourceCompleted: NonNullable<PublishedRenderFrameInput['onFeatureSourceCompleted']>,
 ): PublishedRenderFrameInput {
   return {
     publication: ownReceivedPublicationMaterials(message.publication),
@@ -1169,7 +1306,9 @@ function publishedFrameInput(
         }
       : {}),
     ...(geometryLane === undefined ? {} : { geometryLane }),
-    onFeatureSourceSubmitted: (identity, feedback) => features.push({ identity, feedback }),
+    onFeatureSourceSubmitted: (identity, feedback, submission) =>
+      features.push({ identity, feedback, ...(submission === undefined ? {} : { submission }) }),
+    onFeatureSourceCompleted,
   };
 }
 
@@ -1224,7 +1363,7 @@ function retainTerrainReceipt(frameId: number, receipt: FrameReceipt): void {
 function postSubmitted(
   message: DrawMessage,
   receipt: FrameReceipt,
-  features: { identity: string; feedback: unknown }[],
+  features: SubmittedFeatureReceipt[],
 ): void {
   drawTiming.submit();
   const drawIntervalMs = drawTiming.intervalMs;
@@ -1252,6 +1391,9 @@ function postSubmitted(
     ...(drawTiming.stallReason === undefined ? {} : { renderStallReason: drawTiming.stallReason }),
     ...(rhiCommands === undefined ? {} : { rhiCommands }),
     publicationBytes: renderPublicationBytes(message.publication),
+    ...(receipt.editorAssistance === undefined
+      ? {}
+      : { editorAssistance: { ...receipt.editorAssistance, frameId: message.frameId } }),
     ...(receipt.shadowWorkload === undefined ? {} : { shadowWorkload: receipt.shadowWorkload }),
     ...(receipt.graphGeneration === undefined ? {} : { graphGeneration: receipt.graphGeneration }),
     ...(receipt.barrelDistortion === undefined
@@ -1260,6 +1402,10 @@ function postSubmitted(
   } as const;
   scope.postMessage({
     kind: 'submitted',
+    identity: {
+      source: message.publication.source,
+      epoch: message.publication.epoch,
+    },
     revision: message.publication.revision,
     features,
     frame: submittedFrame,
@@ -1305,13 +1451,23 @@ async function deliverGeometryObservation(
 async function receiveDraw(message: DrawMessage): Promise<void> {
   let completionOwnsFrame = false;
   drawTiming.begin(message);
+  stepRetainedBytes();
   try {
     if (renderer === undefined || canvas === undefined || busy)
       throw new Error('Render Worker has no publication credit');
     const frameRenderer = renderer;
     busy = true;
     if (!(await prepareDrawTurn(message, canvas))) return;
-    const features: { identity: string; feedback: unknown }[] = [];
+    const features: SubmittedFeatureReceipt[] = [];
+    let featureSourceCompletion:
+      | {
+          readonly completion: RenderFeatureCompletion;
+          readonly observations: Promise<
+            RenderResult<readonly FrameDomainObservation[], RenderError>
+          >;
+          readonly settleReadbackFlight: () => void;
+        }
+      | undefined;
     const geometry = claimGeometryRequest();
     const geometrySourceMatches = matchesGeometrySource(message, geometry);
     const hdr = claimHdrRequest();
@@ -1320,6 +1476,9 @@ async function receiveDraw(message: DrawMessage): Promise<void> {
       message,
       features,
       geometry !== undefined && !geometry.cancelled && geometrySourceMatches,
+      (completion, observations, settleReadbackFlight) => {
+        featureSourceCompletion = { completion, observations, settleReadbackFlight };
+      },
     );
     const captureDraw = attachment === undefined ? undefined : { recordingGenerations: [] };
     let draw: ReturnType<Renderer['draw']>;
@@ -1361,6 +1520,7 @@ async function receiveDraw(message: DrawMessage): Promise<void> {
       snapshotBoundary,
       meshConsumption,
       captureDraw,
+      featureSourceCompletion,
     );
     if (failed) return;
     postSubmitted(message, receipt, features);
@@ -1373,8 +1533,6 @@ async function receiveDraw(message: DrawMessage): Promise<void> {
   } catch (cause) {
     fail(message, cause);
   } finally {
-    releaseVerifiedPrograms?.();
-    releaseVerifiedPrograms = undefined;
     drawTiming.end();
     busy = false;
     if (!completionOwnsFrame) {

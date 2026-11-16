@@ -5,6 +5,7 @@ export const BARREL_DISTORTION_FEATURE_IDENTITY = BARREL_DISTORTION_POST_PROCESS
 import { ok, type Result } from '@forgeax/engine-types';
 import type { RenderError } from '../errors/render';
 import type { RenderFeaturePlan } from './plan';
+import { captureUnusedSurfaceData } from './surface-data-usage';
 import type { RenderFeature, RenderFeatureExtractContext, RenderFeaturePlanContext } from './types';
 
 /**
@@ -97,81 +98,88 @@ export interface BarrelDistortionFeatureFrame {
   readonly views: readonly string[];
 }
 
+const INACTIVE_BARREL_FRAME: BarrelDistortionFeatureFrame = Object.freeze({
+  views: Object.freeze([]),
+});
+
 export function createBarrelDistortionRenderFeature(): RenderFeature<BarrelDistortionFeatureFrame> {
-  return Object.freeze({
-    identity: BARREL_DISTORTION_FEATURE_IDENTITY,
-    requiredCapabilities: ['rgba16floatRenderable'] as const,
-    requiredFullscreenPostProcesses: [
-      { identity: BARREL_DISTORTION_POST_PROCESS_ID, source: BARREL_DISTORTION_WGSL },
-    ],
-    extract: (
-      context: RenderFeatureExtractContext,
-    ): Result<BarrelDistortionFeatureFrame, RenderError> =>
-      ok({
-        views: context.views
+  return Object.freeze(
+    captureUnusedSurfaceData({
+      identity: BARREL_DISTORTION_FEATURE_IDENTITY,
+      inactiveSourceData: INACTIVE_BARREL_FRAME,
+      requiredCapabilities: ['rgba16floatRenderable'] as const,
+      requiredFullscreenPostProcesses: [
+        { identity: BARREL_DISTORTION_POST_PROCESS_ID, source: BARREL_DISTORTION_WGSL },
+      ],
+      extract: (
+        context: RenderFeatureExtractContext,
+      ): Result<BarrelDistortionFeatureFrame, RenderError> => {
+        const views = context.views
           .filter(
             (view) => view.render && (view.selectedCamera?.barrelDistortion?.strength ?? 0) > 0,
           )
-          .map((view) => view.identity),
-      }),
-    plan: (
-      data: BarrelDistortionFeatureFrame,
-      _context: RenderFeaturePlanContext,
-    ): Result<RenderFeaturePlan, RenderError> =>
-      ok({
-        work: data.views.map((view) => ({
-          scope: { view },
-          resources: [
-            {
-              kind: 'fullscreen-program' as const,
-              name: BARREL_DISTORTION_POST_PROCESS_ID,
-              source: BARREL_DISTORTION_WGSL,
-              reads: ['ldrColor'],
-              params: { byteSize: 16, defaultValue: new Uint8Array(16) },
-            },
-            {
-              kind: 'graphics-program' as const,
-              name: 'barrel-distortion-pipeline',
-              program: {
-                shader: BARREL_DISTORTION_POST_PROCESS_ID,
-                vertexLayout: 'none',
-                colorFormats: ['rgba16float'],
-                sampleCount: 1,
+          .map((view) => view.identity);
+        return ok(views.length === 0 ? INACTIVE_BARREL_FRAME : { views });
+      },
+      plan: (
+        data: BarrelDistortionFeatureFrame,
+        _context: RenderFeaturePlanContext,
+      ): Result<RenderFeaturePlan, RenderError> =>
+        ok({
+          work: data.views.map((view) => ({
+            scope: { view },
+            resources: [
+              {
+                kind: 'fullscreen-program' as const,
+                name: BARREL_DISTORTION_POST_PROCESS_ID,
+                source: BARREL_DISTORTION_WGSL,
+                reads: ['ldrColor'],
+                params: { byteSize: 16, defaultValue: new Uint8Array(16) },
               },
-            },
-            {
-              kind: 'graphics-bindings' as const,
-              name: 'barrel-distortion-bindings',
-              program: 'barrel-distortion-pipeline',
-              values: {
-                group: 1,
-                fullscreen: true,
-                shader: BARREL_DISTORTION_POST_PROCESS_ID,
-                input: 'barrel-input',
-              },
-              logicalTargets: { input: 'barrel-input' },
-            },
-          ],
-          passes: [
-            {
-              kind: 'raster' as const,
-              name: 'barrel-distortion',
-              colorAttachments: [
-                { target: 'barrel-output', loadOp: 'clear' as const, storeOp: 'store' as const },
-              ],
-              sampledTargets: ['barrel-input'],
-              draws: [
-                {
-                  program: 'barrel-distortion-pipeline',
-                  bindings: ['barrel-distortion-bindings'],
-                  vertexData: [],
-                  vertexLayout: 'none' as const,
-                  draw: { kind: 'draw' as const, vertexCount: 3, instanceCount: 1 },
+              {
+                kind: 'graphics-program' as const,
+                name: 'barrel-distortion-pipeline',
+                program: {
+                  shader: BARREL_DISTORTION_POST_PROCESS_ID,
+                  vertexLayout: 'none',
+                  colorFormats: ['rgba16float'],
+                  sampleCount: 1,
                 },
-              ],
-            },
-          ],
-        })),
-      }),
-  });
+              },
+              {
+                kind: 'graphics-bindings' as const,
+                name: 'barrel-distortion-bindings',
+                program: 'barrel-distortion-pipeline',
+                values: {
+                  group: 1,
+                  fullscreen: true,
+                  shader: BARREL_DISTORTION_POST_PROCESS_ID,
+                  input: 'barrel-input',
+                },
+                logicalTargets: { input: 'barrel-input' },
+              },
+            ],
+            passes: [
+              {
+                kind: 'raster' as const,
+                name: 'barrel-distortion',
+                colorAttachments: [
+                  { target: 'barrel-output', loadOp: 'clear' as const, storeOp: 'store' as const },
+                ],
+                sampledTargets: ['barrel-input'],
+                draws: [
+                  {
+                    program: 'barrel-distortion-pipeline',
+                    bindings: ['barrel-distortion-bindings'],
+                    vertexData: [],
+                    vertexLayout: 'none' as const,
+                    draw: { kind: 'draw' as const, vertexCount: 3, instanceCount: 1 },
+                  },
+                ],
+              },
+            ],
+          })),
+        }),
+    }),
+  );
 }

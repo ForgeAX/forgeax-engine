@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { AssetRegistry, createCatalogSource } from '@forgeax/engine-assets-runtime';
-import { FixedTime, FixedUpdate, Time, Update, World } from '@forgeax/engine-ecs';
+import { defineSystem, FixedTime, FixedUpdate, Time, Update, World } from '@forgeax/engine-ecs';
 import {
   buildMeshCardLayout,
   buildVisibilityDistanceField,
@@ -15,6 +15,7 @@ import {
   ChildOf,
   Children,
   GlobalTransform,
+  PropagateTransforms,
   readPresentationWorldMatrix,
   Transform,
   TransformInterpolation,
@@ -24,6 +25,7 @@ import { Skin } from '@forgeax/engine-skinning';
 import { type MaterialAsset, type MeshAsset, ok } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { publishRuntimeAssets } from '../../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
+
 import { subsurfaceSelection } from '../../__tests__/subsurface-selection.fixture';
 import { materialContribution } from '../../assets/asset-decoders';
 import {
@@ -1615,8 +1617,8 @@ it('publishes detached view configuration and seeds a late view from the current
   const f = fixture();
   const camera = f.world
     .spawn(
-      { component: Transform, data: {} },
-      { component: Camera, data: {} },
+      { component: Transform, data: { pos: [0, 0, 10] } },
+      { component: Camera, data: { fov: 1, aspect: 1, near: 0.1, far: 100 } },
       { component: CameraView, data: { viewport: [0.5, 0, 0.5, 1], updateInterval: 4 } },
     )
     .unwrap();
@@ -1696,31 +1698,29 @@ it('publishes the same interpolated root, camera and animated skin across half-f
     .unwrap();
   const camera = Array.from(f.world.query({ read: [Camera] }).unwrap())[0]?.entity;
   if (camera === undefined) throw new Error('expected fixture camera');
-  f.world
-    .addSystem(FixedUpdate, {
-      name: 'move',
-      queries: [],
-      fn: () => {
-        f.world
-          .set(f.first, Transform, { pos: [f.world.getResource(FixedTime).tick, 0, 0] })
-          .unwrap();
-      },
-    })
-    .unwrap();
-  f.world
-    .addSystem(Update, {
-      name: 'sample-camera-and-animation',
-      after: [FixedUpdate],
-      before: ['propagateTransforms'],
-      queries: [],
-      fn: () => {
-        const root = readPresentationWorldMatrix(f.world, f.first);
-        if (root === undefined) throw new Error('expected player pose');
-        f.world.set(camera, Transform, { pos: [root[12] ?? 0, 0, 5] }).unwrap();
-        f.world.set(joint, Transform, { pos: [f.world.getResource(Time).elapsed, 0, 0] }).unwrap();
-      },
-    })
-    .unwrap();
+  const systemToken1 = defineSystem({
+    name: 'move',
+    queries: [],
+    fn: () => {
+      f.world
+        .set(f.first, Transform, { pos: [f.world.getResource(FixedTime).tick, 0, 0] })
+        .unwrap();
+    },
+  });
+  f.world.addSystem(FixedUpdate, systemToken1).unwrap();
+  const systemToken2 = defineSystem({
+    name: 'sample-camera-and-animation',
+    after: [FixedUpdate],
+    before: [PropagateTransforms],
+    queries: [],
+    fn: () => {
+      const root = readPresentationWorldMatrix(f.world, f.first);
+      if (root === undefined) throw new Error('expected player pose');
+      f.world.set(camera, Transform, { pos: [root[12] ?? 0, 0, 5] }).unwrap();
+      f.world.set(joint, Transform, { pos: [f.world.getResource(Time).elapsed, 0, 0] }).unwrap();
+    },
+  });
+  f.world.addSystem(Update, systemToken2).unwrap();
   try {
     f.world.update(2 / 60).unwrap();
     let previous: number | undefined;

@@ -1,3 +1,4 @@
+import { defineSystem } from "@forgeax/engine-ecs";
 import { FixedUpdate, Update, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import { Transform } from '@forgeax/engine-scene';
 import { inState } from '@forgeax/engine-state';
@@ -14,7 +15,7 @@ export type FbxTargetCompanionSystemContext = {
 
 /** Keep an imported FBX presentation on the same ECS target as physics and scoring. */
 export function installFbxTargetCompanionSystem(ctx: FbxTargetCompanionSystemContext): void {
-  ctx.world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'game-fbx-target-companion',
     runIf: inState(GameState, 'Play'),
     after: [FixedUpdate],
@@ -29,5 +30,6 @@ export function installFbxTargetCompanionSystem(ctx: FbxTargetCompanionSystemCon
         scale: ctx.rootScale,
       });
     },
-  }).unwrap();
+  });
+ctx.world.addSystem(Update, systemToken1).unwrap();
 }

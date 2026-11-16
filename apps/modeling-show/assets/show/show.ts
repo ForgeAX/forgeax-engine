@@ -1,8 +1,11 @@
-import { ADVANCE_ANIMATION_PLAYER_SYSTEM, AnimationPlayer, AnimationTargetId, bindAnimationTargets } from '@forgeax/engine/animation';
+import { AdvanceAnimationPlayer } from "@forgeax/engine/animation";
+import { InputFrameStartScan } from "@forgeax/engine/input";
+import { defineSystem } from "@forgeax/engine/ecs";
+import { AnimationPlayer, AnimationTargetId, bindAnimationTargets } from '@forgeax/engine/animation';
 import type { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import { type ComponentData, ENTITY_NULL_RAW, type EntityHandle, Time, Update, type World } from '@forgeax/engine/ecs';
 import { createCylinderGeometry, createSphereGeometry } from '@forgeax/engine/geometry';
-import { FRAME_START_SCAN_SYSTEM_NAME, INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine/input';
+import { INPUT_SNAPSHOT_RESOURCE_KEY } from '@forgeax/engine/input';
 import { quat } from '@forgeax/engine/math';
 import { studioEnvironment } from '@forgeax/engine-modeling';
 import { createPathSample, PathParameterization, type PreparedPath, preparePath } from '@forgeax/engine/path';
@@ -820,7 +823,7 @@ export function createShow(world: World, assets: AssetRegistry, options: ShowOpt
   /** One frame of canvas gestures from the frozen input snapshot (none without the input plugin). */
   function gestures(): OrbitInput | undefined {
     if (!world.hasResource(INPUT_SNAPSHOT_RESOURCE_KEY)) return undefined;
-    const snap = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+    const snap = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
     const position = snap.mouse.position;
     const pan = snap.mouse.button(2) || (snap.mouse.button(0) && snap.keyboard.down('Shift'));
     const dragging = snap.mouse.button(0) || snap.mouse.button(2);
@@ -1078,22 +1081,23 @@ export function createShow(world: World, assets: AssetRegistry, options: ShowOpt
       options.observe?.(show.state());
     },
     dispose() {
-      world.removeSystem(Update, SYSTEM);
+      world.removeSystem(Update, systemToken1);
       for (const root of scenes) worldDespawnScene(world, root).unwrap();
       for (const entity of owned.reverse()) world.despawn(entity).unwrap();
       if (reflection !== undefined) options.renderTargets?.destroyRenderTarget(reflection);
     },
   };
   const SYSTEM = 'modeling-show.director';
-  world
-    .addSystem(Update, {
+  const systemToken1 = defineSystem({
       name: SYSTEM,
       queries: [],
       // Gestures read the snapshot the input plugin froze this frame (when the realm has one).
-      after: [FRAME_START_SCAN_SYSTEM_NAME],
-      before: [ADVANCE_ANIMATION_PLAYER_SYSTEM],
+      after: [InputFrameStartScan],
+      before: [AdvanceAnimationPlayer],
       fn: (world) => show.update(world.getResource(Time).delta),
-    })
+    });
+world
+    .addSystem(Update, systemToken1)
     .unwrap();
   return show;
 }

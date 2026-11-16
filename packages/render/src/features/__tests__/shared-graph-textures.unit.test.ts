@@ -15,6 +15,42 @@ import {
 import { createRenderFeatureGraphTextureTarget } from '../targets';
 
 describe('recording-owned shared texture imports', () => {
+  it('resolves repeated aliases of one view while rejecting a second physical producer', () => {
+    const state = createRenderFeatureGraphTextureTargets();
+    const builder = new RenderGraphBuilder();
+    const texture = builder
+      .createTexture('info', { format: 'rgba16float', size: { width: 8, height: 8 } })
+      .unwrap();
+    const view = builder.view(texture).unwrap();
+    const descriptor = { format: 'rgba16float' as const, size: { width: 8, height: 8 } };
+    const alias = () =>
+      createRenderFeatureGraphTextureTarget({
+        kind: 'graph-texture',
+        name: 'info',
+        producerIdentity: 'water-info-producer',
+        format: 'rgba16float',
+        sampleCount: 1,
+        allocationKey: 'info',
+        descriptor,
+      });
+    const resolved = { texture, view, label: 'info', scope: 'view:camera:265' };
+    state.targets.set(alias(), resolved);
+    state.targets.set(alias(), resolved);
+    const reference = {
+      kind: 'feature-texture' as const,
+      featureIdentity: 'water-info-producer',
+      name: 'info',
+      viewIdentity: 'camera:265',
+      format: 'rgba16float' as const,
+      sampleCount: 1 as const,
+    };
+    const resolve = graphTextureTargetResolver(state, () => undefined);
+    expect(resolve(reference)).toBe(resolved);
+    expect(resolve({ ...reference, viewIdentity: 'camera:other' })).toBeUndefined();
+    const other = builder.createTexture('other', descriptor).unwrap();
+    state.targets.set(alias(), { ...resolved, texture: other, view: builder.view(other).unwrap() });
+    expect(resolve(reference)).toBeUndefined();
+  });
   it('resolves each recording physical allocation and rejects missing or incompatible exports', async () => {
     const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
     const produce = (width = 16) => {

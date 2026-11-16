@@ -32,6 +32,7 @@ import {
 } from '@forgeax/engine-water';
 
 import {
+  acceptWaterMeshViewForRenderer,
   requireWaterValue,
   waterMeshCandidateViewsForRenderer,
   waterZoneMeshViewForRenderer,
@@ -1645,12 +1646,7 @@ export function createWaterInfoSourceFeature(): RenderFeature<WaterInfoPublicati
               bodyInput.targetFormat === candidate.waterInfoFormat
             );
           });
-          if (exactClosure)
-            system.acceptWaterMeshView(
-              candidate.zoneGuid,
-              sourceView.viewIdentity,
-              candidate.publicationGeneration,
-            );
+          if (exactClosure) acceptWaterMeshViewForRenderer(system, candidate);
         }
       }
     },
@@ -3739,11 +3735,7 @@ function createWaterInfoFeatureOwned(
                 frame.history
             )
               continue;
-            system.acceptWaterMeshView(
-              candidate.zoneGuid,
-              frame.viewIdentity,
-              candidate.publicationGeneration,
-            );
+            acceptWaterMeshViewForRenderer(system, candidate);
           }
         })
         .catch(() => {

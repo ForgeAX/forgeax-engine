@@ -1,5 +1,6 @@
 export { requireWaterValue } from './required-value.js';
 export {
+  acceptWaterMeshViewForRenderer,
   buildWaterZoneMeshViewForRenderer,
   waterMeshCandidateViewsForRenderer,
   waterZoneMeshViewForRenderer,
@@ -8,6 +9,7 @@ export { waterMeshFlatFarBoundaryMask } from './water-mesh.js';
 export type { WaterMeshLayoutReceipt } from './water-mesh-abi.js';
 export {
   createWaterMeshLayoutReceipt,
+  isWaterMeshContinuityPayloadValid,
   isWaterMeshLayoutReceiptValid,
   WATER_MESH_INSTANCE_LAYOUT,
   WATER_MESH_INSTANCE_LAYOUT_HASH,

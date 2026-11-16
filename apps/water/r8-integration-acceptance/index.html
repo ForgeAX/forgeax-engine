@@ -1,34 +1,68 @@
 <!doctype html>
 <html lang="zh-CN">
-  <head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="theme-color" content="#172427" /><link rel="icon" type="image/png" href="/favicon.png" /><title>ForgeAX · 水境</title></head>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0c1827" />
+    <link rel="icon" href="data:," />
+    <title>ForgeAX · 水境实验室</title>
+  </head>
   <body>
-    <canvas id="scene" tabindex="0" aria-label="海岸水体场景"></canvas>
-    <header class="identity"><span class="brand">FORGEAX</span><h1>水境</h1><span class="edition">海岸 · R8</span></header>
+    <canvas id="scene" tabindex="0" aria-label="海岸水体场景，点击后使用 WASD 或方向键驾驶"></canvas>
+    <header class="identity"><span class="brand">FORGEAX</span><h1>水境</h1><span class="edition">海岸实验室 · R8</span></header>
     <div class="telemetry"><span id="fps">-- FPS</span><i></i><span id="state">正在准备场景</span></div>
     <button id="panel-toggle" class="icon-button panel-toggle" aria-controls="controls-panel" aria-expanded="true" title="收起控制面板">☰</button>
-    <aside id="controls-panel">
-      <div class="panel-head"><strong>海岸观测</strong><span id="mode-badge">Q0 光学 + R7 局部交互</span></div>
-      <section><h2>视角</h2><div class="segmented views"><button data-view="near">近景</button><button data-view="middle" aria-pressed="true">中景</button><button data-view="far">远景</button><button data-view="underwater">水下</button></div>
-        <label>观测区域<select id="region"><option value="ship">双桅帆船</option><option value="island">中央岛屿</option><option value="shallows">近海浅滩</option><option value="ocean">远海</option></select></label>
-        <div class="row"><button id="reset-ship">重置船只</button><label class="toggle"><input id="follow" type="checkbox" />跟随船只</label></div>
+    <aside id="controls-panel" aria-label="场景调控">
+      <div class="panel-head"><div><span class="eyebrow">SCENE LAB</span><strong>调一片自己的海</strong></div><span id="mode-badge">正在载入</span></div>
+      <section class="overview" aria-label="已接纳场景状态">
+        <div class="overview-cells"><div><span>已接纳画质</span><b id="accepted-quality">--</b></div><div><span>完成帧率</span><b id="panel-fps">--</b></div><div><span>船只状态</span><b id="drive-status">--</b></div></div>
+        <p id="accepted-workload">等待场景对象</p><p id="control-status" role="status">等待首次接纳</p>
       </section>
-      <section><h2>船只与泡沫</h2>
-        <div class="row"><label class="toggle"><input id="buoyancy-enabled" type="checkbox" checked />浮力</label><label class="toggle"><input id="crests-enabled" type="checkbox" checked />浪尖白沫</label></div>
-        <div class="row"><label class="toggle"><input id="depth-foam-enabled" type="checkbox" checked />船岸水线</label><label class="toggle"><input id="contacts-enabled" type="checkbox" checked />接触与尾迹</label></div>
-        <label>航行速度<output id="ship-speed-value">6 m/s</output><input id="ship-speed" type="range" min="0" max="8" step="0.5" value="6" /></label>
-        <label>航线<select id="ship-route"><option value="circle">绕岛</option><option value="straight">直线</option></select></label>
-        <div class="row"><button id="ship-go">起航</button><button id="ship-stop">停止</button><label class="toggle"><input id="ship-loop" type="checkbox" checked />循环</label></div>
-        <div class="row"><button id="fire-ball">船首发射铁球</button><label class="toggle"><input id="local-water-enabled" type="checkbox" checked />局部水波</label></div>
-        <div class="row"><label class="toggle"><input id="debug-pontoons" type="checkbox" />浮筒</label><label class="toggle"><input id="debug-contacts" type="checkbox" />接触探针</label></div>
-        <div class="row"><label class="toggle"><input id="debug-forces" type="checkbox" />浮力矢量</label><label class="toggle"><input id="debug-normals" type="checkbox" />波面法线</label></div>
-        <pre id="force-data" hidden></pre>
-      </section>
-      <section><h2>海况与光照</h2><label>风浪强度<output id="wind-value">1.00 ×</output><input id="waves" type="range" min="0" max="2.4" step="0.01" value="1" /></label><label>天空<select id="weather"><option value="day">日间</option><option value="sunset">暮光</option><option value="overcast">阴天</option></select></label><label class="toggle"><input id="clouds" type="checkbox" />云朵</label><label>水体颜色<input id="water-color" type="color" value="#47b3a3" /></label><label>曝光<output id="exposure-value">1.00</output><input id="exposure" type="range" min="0.3" max="2" step="0.05" value="1" /></label><label class="toggle"><input id="pause" type="checkbox" />暂停场景</label></section>
-      <section><h2>配置</h2><label>质量与分支<select id="quality"><option value="Q0">Q0 · 完整光学</option><option value="Q1">Q1 · 较低参数</option><option value="Q2">Q2 · 关闭屏幕反射</option><optgroup label="基础外观配置 · 对照未验证"><option value="Q3">Q3 · CPU 网格 / 类型默认材质</option><option value="Q4">Q4 · 平坦外观适配</option></optgroup><option value="R1">UE-R1 · GPU 网格</option><option value="R5">UE-R5 · 异步浮力</option><option value="R6">UE-R6 · 局部流体</option><option value="R7-shallow">R7 · 局部浅水组合</option><optgroup label="海岸尚未组装 · 未验证"><option value="Q3" disabled>Q3 · CPU 网格基础材质</option><option value="Q4" disabled>Q4 · 外观替代</option><option value="R7-bake" disabled>UE-R7 · 河流烘焙</option><option value="R7-fft" disabled>UE-R7 · FFT</option></optgroup></select></label><div class="facts"><div><span>实施能力</span><b id="implementation">待观测</b></div><div><span>对照结果</span><b id="comparison">未配对验证</b></div><div><span>逻辑资源</span><b id="memory">--</b></div><div><span>完成帧</span><b id="frame">--</b></div></div><p id="transition" class="status-line">等待首帧</p></section>
-      <details><summary>能力要求</summary><p id="requirements" class="status-line"></p></details>
-      <details><summary>失效与恢复</summary><div class="fault-grid"><button data-fault="zone">移除 / 恢复 Zone</button><button data-fault="ocean">修改海面高度</button><button data-fault="water-info-delay">延迟一帧 WaterInfo</button><button data-fault="body">重建水体实例</button><button data-fault="material">材质缺失 / 恢复</button><button data-fault="resize">切换分辨率</button><button data-fault="loss">设备丢失与重建</button></div></details>
-      <details><summary>运行事实</summary><pre id="facts">等待完成帧</pre></details>
-      <div class="panel-footer"><button id="capture" title="录制 RHI 帧">◉ 录帧</button><button id="export" title="导出运行事实">↓ 导出</button><span id="receipt">--</span></div>
+      <nav class="dimension-nav" aria-label="调控维度"><a href="#dimension-performance">画质</a><a href="#dimension-sea">海面</a><a href="#dimension-waves">风浪</a><a href="#dimension-foam">泡沫</a><a href="#dimension-hull">船体</a><a href="#dimension-driving">驾驶</a><a href="#dimension-entry">落水</a><a href="#dimension-weather">天气</a><a href="#dimension-view">镜头</a></nav>
+      <div class="dimensions">
+        <details id="dimension-performance" class="coast-dimension" open>
+          <summary><span class="dimension-icon">◈</span><span><strong>画质与性能</strong><small>真实几何、波谱与模拟负载</small></span></summary>
+          <div class="dimension-body"><div id="quality-controls"></div><p class="dimension-note">四档预设提交整组配置。下方显示运行时接纳值；细调后转为自定义。</p><div id="controls-performance"></div></div>
+        </details>
+        <details id="dimension-sea" class="coast-dimension">
+          <summary><span class="dimension-icon">◒</span><span><strong>海面观感</strong><small>水色、通透、光泽与倒影</small></span></summary>
+          <div class="dimension-body"><label class="simple-field">散射色调<input id="water-color" type="color" value="#47b3a3" /></label><p class="dimension-note">显示已接纳散射系数的归一化色调；放开选色后应用到当前分支。通透程度联动吸收与散射。</p><div id="controls-sea"></div></div>
+        </details>
+        <details id="dimension-waves" class="coast-dimension">
+          <summary><span class="dimension-icon">≈</span><span><strong>风与海浪</strong><small>浪高、波长、方向与局部波寿命</small></span></summary>
+          <div class="dimension-body"><label class="hero-slider" for="waves"><span>背景风浪强度</span><output id="wind-value">1.00 ×</output><input id="waves" type="range" min="0" max="2.4" step="0.01" value="1" /></label><p class="dimension-note">振幅倍率，不改变场景时间。拖动预览数值，松手重新生成波谱。</p><label class="toggle"><input id="local-water-enabled" type="checkbox" checked />局部落水与航行波</label><div id="controls-waves"></div></div>
+        </details>
+        <details id="dimension-foam" class="coast-dimension">
+          <summary><span class="dimension-icon">⁙</span><span><strong>泡沫与尾迹</strong><small>覆盖、触发、生成与消退</small></span></summary>
+          <div class="dimension-body"><div class="toggle-grid"><label class="toggle"><input id="crests-enabled" type="checkbox" checked />浪尖白沫</label><label class="toggle"><input id="depth-foam-enabled" type="checkbox" checked />船岸水线</label><label class="toggle"><input id="contacts-enabled" type="checkbox" checked />接触与尾迹</label></div><p class="dimension-note">泡沫是水面覆盖场。空中水滴数量与寿命位于「炮弹与落水」。</p><div id="controls-foam"></div></div>
+        </details>
+        <details id="dimension-hull" class="coast-dimension">
+          <summary><span class="dimension-icon">⌁</span><span><strong>船体与探针</strong><small>质量、浮力、升沉与水阻</small></span></summary>
+          <div class="dimension-body"><label class="toggle"><input id="buoyancy-enabled" type="checkbox" checked />启用真实浮力</label><div id="controls-hull"></div><details class="subsection"><summary>显示船体求解标记</summary><div class="toggle-grid"><label class="toggle"><input id="debug-pontoons" type="checkbox" />浮力探针</label><label class="toggle"><input id="debug-contacts" type="checkbox" />接触探针</label><label class="toggle"><input id="debug-forces" type="checkbox" />浮力矢量</label><label class="toggle"><input id="debug-normals" type="checkbox" />波面法线</label></div><pre id="force-data" hidden></pre></details></div>
+        </details>
+        <details id="dimension-driving" class="coast-dimension">
+          <summary><span class="dimension-icon">↗</span><span><strong>驾驶与航线</strong><small>推力、响应、舵效与惯性</small></span></summary>
+          <div class="dimension-body"><div id="driving-controls"></div><div class="helm-keys" aria-hidden="true"><kbd>W ↑</kbd><span>前进</span><kbd>S ↓</kbd><span>倒车</span><kbd>A ←</kbd><span>左舵</span><kbd>D →</kbd><span>右舵</span><kbd>Space</kbd><span>加速</span></div><div id="controls-driving"></div><details class="subsection"><summary>自动航行</summary><label class="hero-slider"><span>目标航速</span><output id="ship-speed-value">6 m/s</output><input id="ship-speed" type="range" min="0" max="8" step="0.5" value="6" /></label><label class="simple-field">航线<select id="ship-route"><option value="circle">绕岛</option><option value="straight">直线</option></select></label><div class="row"><button id="ship-go">起航</button><button id="ship-stop">停止</button><label class="toggle"><input id="ship-loop" type="checkbox" checked />循环</label></div></details><button id="reset-ship" class="full-button">重置船只与原生运动</button></div>
+        </details>
+        <details id="dimension-entry" class="coast-dimension">
+          <summary><span class="dimension-icon">✦</span><span><strong>炮弹与落水</strong><small>发射、喷溅水滴与扩散波</small></span></summary>
+          <div class="dimension-body"><button id="fire-ball" class="primary-action">↗ 船首发射铁球</button><p class="dimension-note">发射与水滴参数作用于下一次发射 / 落水；扩散波参数作用于水面模拟。</p><div id="controls-entry"></div></div>
+        </details>
+        <details id="dimension-weather" class="coast-dimension">
+          <summary><span class="dimension-icon">☀</span><span><strong>天气与光照</strong><small>天空、云、日光与环境亮度</small></span></summary>
+          <div class="dimension-body"><label class="simple-field">天空<select id="weather"><option value="day">晴朗日间</option><option value="sunset">暖色暮光</option><option value="overcast">阴天</option></select></label><label class="toggle"><input id="clouds" type="checkbox" />天空云层</label><label class="hero-slider"><span>画面曝光</span><output id="exposure-value">1.00</output><input id="exposure" type="range" min="0.3" max="2" step="0.05" value="1" /></label><div id="controls-weather"></div></div>
+        </details>
+        <details id="dimension-view" class="coast-dimension">
+          <summary><span class="dimension-icon">◎</span><span><strong>观察与镜头</strong><small>取景、水下观察与场景时钟</small></span></summary>
+          <div class="dimension-body"><div class="segmented views"><button data-view="near">近景</button><button data-view="middle" aria-pressed="true">中景</button><button data-view="far">远景</button><button data-view="underwater">水下</button></div><label class="simple-field">观测区域<select id="region"><option value="ship">双桅帆船</option><option value="island">中央岛屿</option><option value="shallows">近海浅滩</option><option value="ocean">远海</option></select></label><div class="toggle-grid"><label class="toggle"><input id="follow" type="checkbox" />跟随船只</label><label class="toggle"><input id="pause" type="checkbox" />暂停场景</label></div><div id="controls-view"></div></div>
+        </details>
+        <details id="advanced-dimension" class="coast-dimension secondary-dimension"><summary><span class="dimension-icon">⊞</span><span><strong>高级对象参数</strong><small>完整可调字段、分支与只读发布事实</small></span></summary><div id="advanced-controls" class="dimension-body"></div></details>
+        <details id="diagnostic-dimension" class="coast-dimension secondary-dimension">
+          <summary><span class="dimension-icon">⌘</span><span><strong>渲染与诊断</strong><small>按需读取；展开才采集运行事实</small></span></summary>
+          <div class="dimension-body"><label class="simple-field">渲染分支<select id="quality"><option value="Q0">Q0 · 完整光学</option><option value="Q1">Q1 · 较低光学参数</option><option value="Q2">Q2 · 关闭屏幕反射</option><option value="Q3">Q3 · CPU 网格 / 默认材质</option><option value="Q4">Q4 · 平坦外观</option><option value="R1">R1 · GPU 网格</option><option value="R5">R5 · 异步浮力</option><option value="R6">R6 · 局部流体</option><option value="R7-shallow">R7 · 局部浅水</option><optgroup label="独立 R7 专属操作"><option value="R7-bake" disabled>河流 GPU Bake</option><option value="R7-fft" disabled>FFT 实验</option></optgroup></select></label><p class="dimension-note">渲染分支决定功能组合，与四档质量负载预设分别选择。</p><div class="facts"><div><span>实施能力</span><b id="implementation">待观测</b></div><div><span>对照结果</span><b id="comparison">未配对验证</b></div><div><span>逻辑资源</span><b id="memory">--</b></div><div><span>完成帧</span><b id="frame">--</b></div></div><p id="transition" class="status-line">等待首帧</p><details class="subsection"><summary>能力要求</summary><p id="requirements" class="status-line"></p></details><details class="subsection"><summary>失效与恢复</summary><div class="fault-grid"><button data-fault="zone">移除 / 恢复 Zone</button><button data-fault="ocean">修改海面高度</button><button data-fault="water-info-delay">延迟一帧 WaterInfo</button><button data-fault="body">重建水体实例</button><button data-fault="material">材质缺失 / 恢复</button><button data-fault="resize">切换分辨率</button><button data-fault="loss">设备丢失与重建</button></div></details><details class="subsection"><summary>运行事实</summary><pre id="facts">展开后读取完成帧</pre></details></div>
+        </details>
+      </div>
+      <div class="panel-footer"><button id="capture" title="按需录制 RHI 帧">◉ 录帧</button><button id="export" title="导出运行事实">↓ 导出</button><span id="receipt">--</span></div>
     </aside>
     <div id="message" role="status" hidden></div>
     <script type="module" src="/src/main.ts"></script>

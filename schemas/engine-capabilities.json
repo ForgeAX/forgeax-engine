@@ -1374,6 +1374,10 @@
       "form": "built-in"
     },
     {
+      "name": "`AssetRegistry.loadMany`",
+      "form": "built-in"
+    },
+    {
       "name": "Asset decoder ownership",
       "form": "built-in"
     },

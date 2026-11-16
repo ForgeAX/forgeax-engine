@@ -3,14 +3,14 @@
   "policy": "engine-public-source/1",
   "producerSha256": "4d096a0ff7de41edb100fa41ed1533b2db35cad4718473b2be656b3366afe619",
   "release": {
-    "version": "0.6.0-dev.16823.d4d4fc2f5389",
+    "version": "0.6.0-dev.16824.b4817e551c93",
     "channel": "next",
-    "candidateSha256": "7a288287108a51baacd8191a0b738cfbefa90d9e78aeeaba960e92eab94a8670"
+    "candidateSha256": "52ec71cea8983447015fe87028064bf7a7ae53d6f3ad17ee5c08a8e5268d5375"
   },
   "sources": [
     {
       "root": ".",
-      "commit": "d4d4fc2f5389fb653e3810ab0207e43f55668328"
+      "commit": "b4817e551c93a7126e13f16f76028184dd2b9c64"
     },
     {
       "root": "forgeax-engine-assets",
@@ -4919,9 +4919,9 @@
     },
     {
       "path": "apps/bevy/ssao/scripts/smoke-dawn.mjs",
-      "bytes": 10220,
+      "bytes": 10335,
       "executable": false,
-      "sha256": "179b6615d277c4cfec26427221abdb6b0ae80434e2d778cd602081283c2ad8dd"
+      "sha256": "650bffc48b253b830a87f8ec90d564942cba95b76a305aad976bafceb9b99a5e"
     },
     {
       "path": "apps/bevy/ssao/src/main.ts",
@@ -6065,9 +6065,9 @@
     },
     {
       "path": "apps/demo-gallery/__tests__/scan-demos.test.mjs",
-      "bytes": 3246,
+      "bytes": 3959,
       "executable": false,
-      "sha256": "e8b2ebdf9547d719297f1844f89b45dc9ce648db75487e25f4e22be08e7025c5"
+      "sha256": "fbf67d819b8965470232f6d2034254d8c5b88d6f4c31aa5c85e468ec25c00743"
     },
     {
       "path": "apps/demo-gallery/demo-catalog.ts",
@@ -6167,9 +6167,9 @@
     },
     {
       "path": "apps/demo-gallery/scripts/scan-demos.mjs",
-      "bytes": 4875,
+      "bytes": 4918,
       "executable": false,
-      "sha256": "b5d5f56292ed33a22b5dc1ea3749506f8b52be57b62d8ef50714013f77df8f86"
+      "sha256": "3958b89422a407653680aba45ad3dc6583851c40e5d47df3af2ee37df208ef66"
     },
     {
       "path": "apps/demo-gallery/src/gallery.css",
@@ -7211,9 +7211,15 @@
     },
     {
       "path": "apps/feature-lab/src/features/import-loading/load-by-guid.ts",
-      "bytes": 3018,
+      "bytes": 3443,
       "executable": false,
-      "sha256": "e6da4b78fbcd82f4dc1fc7be27117d98e3c101e60ca1cadc0aa0d08932b07c3d"
+      "sha256": "87a845861ddbfb7bc120d92047f6e4542241bfc493713fbbea89319cb469cf8e"
+    },
+    {
+      "path": "apps/feature-lab/src/features/import-loading/load-many.ts",
+      "bytes": 1976,
+      "executable": false,
+      "sha256": "c65c8581bb015c23c198b06cef2d60a4b0efb07dad94df391f614e4c0f348904"
     },
     {
       "path": "apps/feature-lab/src/features/import-loading/loader-registry.ts",
@@ -25348,34 +25354,76 @@
       "sha256": "d945086de51d43e473967b0f39d3a643f08580ed6f0cf986545d5554b3cb296c"
     },
     {
-      "path": "apps/water/body-geometry/assets/body-geometry.pack.ts",
-      "bytes": 5474,
+      "path": "apps/water/__tests__/material-source.unit.test.ts",
+      "bytes": 3883,
       "executable": false,
-      "sha256": "3884d205a973e215773217f9e279a3741c6cb16d7d7aae090f34ac1e6ad84b04"
+      "sha256": "f86dea64d5f62f70755d0f2f24907bd4924d4efc69ff6bfd75aa71d9847d1134"
+    },
+    {
+      "path": "apps/water/__tests__/runtime-form.test.mjs",
+      "bytes": 10392,
+      "executable": false,
+      "sha256": "bc1658f06d85fc4d2ee20c36016e2c05ccdad34b4992a8a7be160479f3fab12c"
+    },
+    {
+      "path": "apps/water/body-editor.ts",
+      "bytes": 7313,
+      "executable": false,
+      "sha256": "b6070513e87a4e9110839bdf006648a2f66a16adc224a498eb9f15c02d957c53"
+    },
+    {
+      "path": "apps/water/body-geometry/assets/body-geometry.pack.ts",
+      "bytes": 6741,
+      "executable": false,
+      "sha256": "3efd86fd1df84e78c76e5735ba20b68f423064496c20389d0e05417d6eccad22"
+    },
+    {
+      "path": "apps/water/body-geometry/assets/geometry-surface.wgsl",
+      "bytes": 587,
+      "executable": false,
+      "sha256": "ca03f0f009b01328df3656e0cbb841d9fc017378375db2d324158b40eb4af095"
+    },
+    {
+      "path": "apps/water/body-geometry/forge.json",
+      "bytes": 197,
+      "executable": false,
+      "sha256": "8f1fa9858379628d5ee07ace573fbe9ce8f501ea751436b0a8ba439fe50870ee"
     },
     {
       "path": "apps/water/body-geometry/index.html",
-      "bytes": 5285,
+      "bytes": 5678,
       "executable": false,
-      "sha256": "0f66c74b53ef9b55cbdde6ed54eb08a147f3a5c442f721867e4a663830a69271"
+      "sha256": "346e9d2f2a953ea07caa389a303a581ed90db8337753362393b3b74ec816c431"
     },
     {
       "path": "apps/water/body-geometry/package.json",
-      "bytes": 1657,
+      "bytes": 1834,
       "executable": false,
-      "sha256": "02e51ef7dd8c5b74efb6eb6b877cad19f0211a92c2edade8827d736adc093647"
+      "sha256": "8117e4b9b01c6f191fcd7767404b4e9bb54e60fc3679f115d27dcd0a540af72e"
     },
     {
       "path": "apps/water/body-geometry/README.md",
-      "bytes": 1568,
+      "bytes": 2544,
       "executable": false,
-      "sha256": "57b0d4bd711d74fadd58df87b895458cc46cd56e32054f86d92dc9f6ad887e55"
+      "sha256": "5dd1b64724ee9c1ac56aa26dc35ef16fb2a7290bee8b5fb1f7f6a199e8c0109c"
     },
     {
       "path": "apps/water/body-geometry/scripts/smoke.mjs",
       "bytes": 46293,
       "executable": false,
       "sha256": "505f0e424310419f1f53430bfed96db2b92b616c72d96c351e758e44001de06d"
+    },
+    {
+      "path": "apps/water/body-geometry/src/__tests__/geometry-publication.unit.test.ts",
+      "bytes": 1050,
+      "executable": false,
+      "sha256": "7ad9e95cdba7ba7b612a97423bbee8092c1c98dcaf270922e36f3ccfc005b1f6"
+    },
+    {
+      "path": "apps/water/body-geometry/src/geometry-publication.ts",
+      "bytes": 638,
+      "executable": false,
+      "sha256": "a652cec65a0fa8307f7df3b8df61f141ab6c5919941e469a31d8e7b68b160511"
     },
     {
       "path": "apps/water/body-geometry/src/identity.ts",
@@ -25385,15 +25433,15 @@
     },
     {
       "path": "apps/water/body-geometry/src/main.ts",
-      "bytes": 57213,
+      "bytes": 70239,
       "executable": false,
-      "sha256": "59be72fc95b9504b19b4b373334597f1dc132faecf88a489748f895a6467fe5f"
+      "sha256": "11732dcc12fba7182b20e53f52bdd77ce97b31ed114706d45ec5171fdec52b54"
     },
     {
       "path": "apps/water/body-geometry/src/style.css",
-      "bytes": 6960,
+      "bytes": 8109,
       "executable": false,
-      "sha256": "f0cd5555c490f007103196af83899a9a2197dbd0c75918885b887930ca8c8ce0"
+      "sha256": "03cada7fbf4a147075dcad30f4192601868653ac543b16487833c477362702f3"
     },
     {
       "path": "apps/water/body-geometry/src/vite-env.d.ts",
@@ -25409,27 +25457,27 @@
     },
     {
       "path": "apps/water/body-geometry/vite.config.ts",
-      "bytes": 880,
+      "bytes": 1964,
       "executable": false,
-      "sha256": "c8b9191192b9c99fbefea41f348f7819ec3ee8635032b3a128db889923b809a3"
+      "sha256": "962b9fe50e6e2cc6382cf4694c040221b5080a70674b690a85065a5d001e165e"
     },
     {
       "path": "apps/water/body-query/assets/body-query.pack.ts",
-      "bytes": 5210,
+      "bytes": 6364,
       "executable": false,
-      "sha256": "8b42f34115274bb60d324ac4eda1363e9b0fa6ecfbe9f31369069f483e59d7dc"
+      "sha256": "7b4450b750c00aaa69d3bd9710e1bc00c8903d98de780ac5ff358b026a963c75"
     },
     {
-      "path": "apps/water/body-query/index.html",
-      "bytes": 3375,
+      "path": "apps/water/body-query/forge.json",
+      "bytes": 181,
       "executable": false,
-      "sha256": "e9cc24ce569a77cbaf23b7d9c61ffc8fe13070ddfad0cce1d0ea95134e8d65c5"
+      "sha256": "11382a7e7b46ff2f244fb816510cbdd7383ebec6de471f7f9adada696627b37f"
     },
     {
       "path": "apps/water/body-query/package.json",
-      "bytes": 2061,
+      "bytes": 2137,
       "executable": false,
-      "sha256": "634c9ea292f399b4dfda318a65a244d5daaa5db50422d4d8ee53c60802b0cd45"
+      "sha256": "a3da4528b69f94dc86a3aa6cd75ecef39370d2708e1f2b7cf1207075cee03dcb"
     },
     {
       "path": "apps/water/body-query/scripts/visual-smoke.mjs",
@@ -25445,9 +25493,9 @@
     },
     {
       "path": "apps/water/body-query/src/main.ts",
-      "bytes": 18992,
+      "bytes": 21406,
       "executable": false,
-      "sha256": "51b3d682ad9748ab3aaaebc9590dd6e564cdb4e6f9fb226d30d67a9dd4b8b45a"
+      "sha256": "315571738276d2933ed4dd7758aae3ea71c29659015b5e875a32a6077e8091de"
     },
     {
       "path": "apps/water/body-query/src/style.css",
@@ -25469,9 +25517,15 @@
     },
     {
       "path": "apps/water/body-query/vite.config.ts",
-      "bytes": 795,
+      "bytes": 1685,
       "executable": false,
-      "sha256": "4f8ec616bd553e9d72bdc9f6000f1322a8a54b3e2c6e5617148055b3fb27a49b"
+      "sha256": "54a0bca04975f23387b9ed4da5880cd70ba02f739e33125bf58cfc2eef13b97e"
+    },
+    {
+      "path": "apps/water/camera-controls.ts",
+      "bytes": 7221,
+      "executable": false,
+      "sha256": "83d85ca66d9871309f5ee4c9bb5d3d11d90735d3e1e8ea1ba8315611dbe0880e"
     },
     {
       "path": "apps/water/demo-wave-set.ts",
@@ -25480,10 +25534,124 @@
       "sha256": "3aca4ec36ba783831aa64b2b0c1cec490a16966825e9eb72829a1b760a864f2d"
     },
     {
-      "path": "apps/water/r3-slw-reflection-underwater/assets/water-r3.pack.ts",
-      "bytes": 9695,
+      "path": "apps/water/harbor-assets.ts",
+      "bytes": 1496,
       "executable": false,
-      "sha256": "68cea31cbb09c923d595cf2aa838a1198314cf0c4ce88a618dd6573713a022d1"
+      "sha256": "300283bf1a7ed6e4b072780d41dcbe6dbe9472a5f2f90cbed84cab5d9c2f39e0"
+    },
+    {
+      "path": "apps/water/material-source.ts",
+      "bytes": 1711,
+      "executable": false,
+      "sha256": "5c1cf2248d8e5721cff68e726352bc10614871c96466e4cc942938ed8b6ed8e8"
+    },
+    {
+      "path": "apps/water/museum-presentation.ts",
+      "bytes": 7169,
+      "executable": false,
+      "sha256": "1ad53abda13231cda65426e56b5854d46f67cab31ad2fef7282dda262d21efd0"
+    },
+    {
+      "path": "apps/water/observatory.css",
+      "bytes": 2023,
+      "executable": false,
+      "sha256": "51fb4188feeea60da53356335f083747d5a3e2f458fe7fc17105f889c8cb4179"
+    },
+    {
+      "path": "apps/water/presentation-assets.pack.ts",
+      "bytes": 4000,
+      "executable": false,
+      "sha256": "07decdbe94e07775623bd91cef03a7673d2507cbe88a5abb809ca9932167e594"
+    },
+    {
+      "path": "apps/water/presentation-identity.ts",
+      "bytes": 293,
+      "executable": false,
+      "sha256": "1036fd33886fa16e731c3f3770044a459bdc1575704362e9ffe9605cb4768122"
+    },
+    {
+      "path": "apps/water/presentation.ts",
+      "bytes": 16768,
+      "executable": false,
+      "sha256": "056992f83e39b0da55c18003fd40b2346057c9c85ba2de31724450c53cd5fcbe"
+    },
+    {
+      "path": "apps/water/r0-scene-foundation/assets/foundation.pack.ts",
+      "bytes": 3122,
+      "executable": false,
+      "sha256": "ab2abe7820fba2d4fff2846358cfa0024955996e205bfbb7eed3998625469744"
+    },
+    {
+      "path": "apps/water/r0-scene-foundation/index.html",
+      "bytes": 732,
+      "executable": false,
+      "sha256": "9913f00b20781adf734200440f208a8b940b462a798991aac9d38e4d11e5aebe"
+    },
+    {
+      "path": "apps/water/r0-scene-foundation/package.json",
+      "bytes": 1690,
+      "executable": false,
+      "sha256": "9217a81b61152ed14b816546ac63d2bbfa8f3ffb1f5786a2e2609ed3e4980b0c"
+    },
+    {
+      "path": "apps/water/r0-scene-foundation/README.md",
+      "bytes": 503,
+      "executable": false,
+      "sha256": "cbdaf8466d5e2f97b1f48837758544ca0dbc8d82eb79155292de94be4287b64a"
+    },
+    {
+      "path": "apps/water/r0-scene-foundation/src/identity.ts",
+      "bytes": 319,
+      "executable": false,
+      "sha256": "b71ce02cacc7758040e5c7e5bc5defe24a4052eb1795082c7f3280ff71569b01"
+    },
+    {
+      "path": "apps/water/r0-scene-foundation/src/main.ts",
+      "bytes": 13596,
+      "executable": false,
+      "sha256": "7877a91da5d3d4e4ec19524b371ff852eb2a72dc54a4e0a23f6ae3fcddd0e7be"
+    },
+    {
+      "path": "apps/water/r0-scene-foundation/src/vite-env.d.ts",
+      "bytes": 244,
+      "executable": false,
+      "sha256": "50ef3b497b45aa82093c8ba7213855d7fa4d73111f172ae007253d788c1e61a7"
+    },
+    {
+      "path": "apps/water/r0-scene-foundation/tsconfig.json",
+      "bytes": 202,
+      "executable": false,
+      "sha256": "7e46228a9f1b81dea9b3c0156d00dfc15ee8c218dd3c12c6c70b5a7fd5e8b6c2"
+    },
+    {
+      "path": "apps/water/r0-scene-foundation/vite.config.ts",
+      "bytes": 1342,
+      "executable": false,
+      "sha256": "aefceb05de9df9a9fbfa224a6e77945c9851494132c324fdd054e7416b797d5c"
+    },
+    {
+      "path": "apps/water/r1-terrain.ts",
+      "bytes": 8138,
+      "executable": false,
+      "sha256": "d66b1ba5e2d2d5a12202ce0a79a7b8252086eeeb6c252ab11ea0bbf2b3e14cfd"
+    },
+    {
+      "path": "apps/water/r2-laboratory.ts",
+      "bytes": 16936,
+      "executable": false,
+      "sha256": "32209da2f9758a566b246cb939b60da395d8ff71371105c02406ca931b57aeb1"
+    },
+    {
+      "path": "apps/water/r2-observatory.ts",
+      "bytes": 5385,
+      "executable": false,
+      "sha256": "a73a30b1ac8e1f7111a82b374c3e3248dac988d1893009790572996aff57b68f"
+    },
+    {
+      "path": "apps/water/r3-slw-reflection-underwater/assets/water-r3.pack.ts",
+      "bytes": 11650,
+      "executable": false,
+      "sha256": "e4e41937208a18dac62256cca30791fd4b75f03083b5e14c0fd8e7a43b4a3efa"
     },
     {
       "path": "apps/water/r3-slw-reflection-underwater/forge.json",
@@ -25499,21 +25667,15 @@
     },
     {
       "path": "apps/water/r3-slw-reflection-underwater/package.json",
-      "bytes": 1758,
+      "bytes": 1810,
       "executable": false,
-      "sha256": "7eb3a048d0ba1f18cc14a20196cc4c14f3e951d32f5e4b783e09ee33ec8df646"
+      "sha256": "493cd43daf6973d978b52336567ee03ad98ed4eef046c05675996bb10d6a83cd"
     },
     {
       "path": "apps/water/r3-slw-reflection-underwater/README.md",
-      "bytes": 1411,
+      "bytes": 1847,
       "executable": false,
-      "sha256": "4abea9cb611abe576567297fbded18649708a468e43c769d52acda6950a42d9a"
-    },
-    {
-      "path": "apps/water/r3-slw-reflection-underwater/src/camera-controls.ts",
-      "bytes": 6363,
-      "executable": false,
-      "sha256": "96e42e20e46df3d04878dd1529cb6c6650cd3c39a2d5c94d83c9fd41f6af79ea"
+      "sha256": "3f65a08429dfeb54b704bc290d25242389a23c37ce3583bb259f71506a02ff54"
     },
     {
       "path": "apps/water/r3-slw-reflection-underwater/src/identity.ts",
@@ -25523,15 +25685,15 @@
     },
     {
       "path": "apps/water/r3-slw-reflection-underwater/src/main.ts",
-      "bytes": 25512,
+      "bytes": 29553,
       "executable": false,
-      "sha256": "903cd45922e9635b4617123c63f6bbac5b5bd15b1e0e4ce98c08389a362b008a"
+      "sha256": "a44b0451ac4c9f851dbd0a04a936313925fb7951a7efd18d9b921b91e38c007f"
     },
     {
       "path": "apps/water/r3-slw-reflection-underwater/src/material-panel.ts",
-      "bytes": 22206,
+      "bytes": 22198,
       "executable": false,
-      "sha256": "3bc2cb9bdf46a6af0bf11327bb8dffa7b31aac55d88e30113a2bbd761f295722"
+      "sha256": "d82ac0b439347c9d695aa726b0efbe8a6cc7238b15f7dbe12ca6ec07f190d5a9"
     },
     {
       "path": "apps/water/r3-slw-reflection-underwater/src/material-presets.ts",
@@ -25565,15 +25727,21 @@
     },
     {
       "path": "apps/water/r3-slw-reflection-underwater/vite.config.ts",
-      "bytes": 1999,
+      "bytes": 2382,
       "executable": false,
-      "sha256": "3b820c41e710a4193baedc9ce1f18f05bc9bb50ef48e6d9ef9326860378dff50"
+      "sha256": "687ad1e846d1d3b3b816f63e083fcf7f3f1b3e54999d6a5adcce2fcfc3f52a9f"
+    },
+    {
+      "path": "apps/water/r4-buoyancy-foam/assets/__tests__/harbor.unit.test.ts",
+      "bytes": 1693,
+      "executable": false,
+      "sha256": "ff3012102c503f67fe4edd8e3658db523c70b60e94e31f8bbff5cdb839a07219"
     },
     {
       "path": "apps/water/r4-buoyancy-foam/assets/harbor.pack.ts",
-      "bytes": 11858,
+      "bytes": 18986,
       "executable": false,
-      "sha256": "7ac5c4d979dffc917550922e4178c9a22829de57d7416d6c240ae7d0d82a50df"
+      "sha256": "3254bed53d6496085186415b1f6a6b9374da256a2ec3234cf1144d36b3571717"
     },
     {
       "path": "apps/water/r4-buoyancy-foam/forge.json",
@@ -25583,21 +25751,45 @@
     },
     {
       "path": "apps/water/r4-buoyancy-foam/index.html",
-      "bytes": 7395,
+      "bytes": 12608,
       "executable": false,
-      "sha256": "7d89fcddf0ee9cb218d8f87fef2010d6451a47d791c24abf58cc432c7502fcc9"
+      "sha256": "3396dada25ccef478458446bbe04e78d0bff34eed6710e304b437ce9e17ed7ca"
     },
     {
       "path": "apps/water/r4-buoyancy-foam/package.json",
-      "bytes": 1652,
+      "bytes": 1766,
       "executable": false,
-      "sha256": "166e987286ab1eaa0d6419b23130f161c60d7e454e158c6505d1454b4340aa50"
+      "sha256": "1ffea27912b0a00d3119c4697f5ec9059dc8f8b801865dd385ab9d04bab5a015"
     },
     {
       "path": "apps/water/r4-buoyancy-foam/README.md",
-      "bytes": 1990,
+      "bytes": 1389,
       "executable": false,
-      "sha256": "0cbbf11f26c14726b37be2eca2e94fc452767876b9333d6d40167a5ae9e97d96"
+      "sha256": "6d9c30170156669e8de1564188b2ca5325d7ec6e162aef772d802e094374d6b6"
+    },
+    {
+      "path": "apps/water/r4-buoyancy-foam/src/__tests__/boat-buoyancy.unit.test.ts",
+      "bytes": 11768,
+      "executable": false,
+      "sha256": "97e2bccde205a65f224cde4e089d60c9476199a6f8b489016e2f59ebd6345804"
+    },
+    {
+      "path": "apps/water/r4-buoyancy-foam/src/__tests__/boat-controls.unit.test.ts",
+      "bytes": 3995,
+      "executable": false,
+      "sha256": "3a0d2acf2faf6608f446737ff4a367cb0128861a465d89eaa20b99dd19567e8a"
+    },
+    {
+      "path": "apps/water/r4-buoyancy-foam/src/boat-controls.ts",
+      "bytes": 2596,
+      "executable": false,
+      "sha256": "d3158e5b54fef935dc3f76c288a456cd0b9e0723ddfeef0e9321b8161b768734"
+    },
+    {
+      "path": "apps/water/r4-buoyancy-foam/src/experience.css",
+      "bytes": 3309,
+      "executable": false,
+      "sha256": "0dcfcc7cf7dbff0a86f3419ed17b31807c2e564410458c7f0cc224ef342c6d9c"
     },
     {
       "path": "apps/water/r4-buoyancy-foam/src/identity.ts",
@@ -25607,9 +25799,9 @@
     },
     {
       "path": "apps/water/r4-buoyancy-foam/src/main.ts",
-      "bytes": 33978,
+      "bytes": 131,
       "executable": false,
-      "sha256": "4a17e4e72742f74c9451c6bf230422610d911250d927c837493b103967a74ff5"
+      "sha256": "1249b927e1de3a54a0f809c5f73007681f0229240109dcd99314c8dd6dc4d555"
     },
     {
       "path": "apps/water/r4-buoyancy-foam/src/style.css",
@@ -25619,9 +25811,9 @@
     },
     {
       "path": "apps/water/r4-buoyancy-foam/src/vite-env.d.ts",
-      "bytes": 294,
+      "bytes": 315,
       "executable": false,
-      "sha256": "2fb5a621d811f938be25d3f75f5be57d84ac31bf8ba81bd95b575926f6376ea4"
+      "sha256": "a5aca822d9a7f6c25622c821a42e5059eded8a6ae7d3843176910bea8cfa26b0"
     },
     {
       "path": "apps/water/r4-buoyancy-foam/tsconfig.json",
@@ -25631,21 +25823,33 @@
     },
     {
       "path": "apps/water/r4-buoyancy-foam/vite.config.ts",
-      "bytes": 1888,
+      "bytes": 2359,
       "executable": false,
-      "sha256": "76b5312e8b4375dac7e3fcc8baee12c71a423b681443bbb94b0ad2e63ea6c222"
+      "sha256": "5353e391719dc9c4c13ecc4d5abd1637c6913756bb5ee37b09b9ba32f45db5af"
+    },
+    {
+      "path": "apps/water/r4-buoyancy-foam/vitest.config.ts",
+      "bytes": 346,
+      "executable": false,
+      "sha256": "d8d8368dfcdde2701fe9793ffbf2a889e002a325eec092ffe98e68a9df6ea3e5"
+    },
+    {
+      "path": "apps/water/r5-gpu-mesh-async-pontoons/assets/__tests__/buoyancy-fallback.unit.test.ts",
+      "bytes": 6082,
+      "executable": false,
+      "sha256": "f3a14b9ceea1216e2bbfeabc58edac6183fb3da3fd8f225f884fd6682c7263aa"
     },
     {
       "path": "apps/water/r5-gpu-mesh-async-pontoons/assets/__tests__/hull.unit.test.ts",
-      "bytes": 1330,
+      "bytes": 1808,
       "executable": false,
-      "sha256": "e8896dc5433e553d79e729788a111910afef258edbe450b2bfbaff746e5c4247"
+      "sha256": "23bdef7834bebcd75e31feaa673fa5d7c3fa9047706c9bebbc3b7f988d35fc4c"
     },
     {
       "path": "apps/water/r5-gpu-mesh-async-pontoons/assets/estuary.pack.ts",
-      "bytes": 13012,
+      "bytes": 20891,
       "executable": false,
-      "sha256": "188ddf5cb977e664b2133ecc7331fdf15f3c9071384f60ec7750310d5ce88b4b"
+      "sha256": "b1f555c9626feb14bd7c72904017dd0e1e6f988caf799ff9749b00c8c1620e93"
     },
     {
       "path": "apps/water/r5-gpu-mesh-async-pontoons/forge.json",
@@ -25655,33 +25859,39 @@
     },
     {
       "path": "apps/water/r5-gpu-mesh-async-pontoons/index.html",
-      "bytes": 10116,
+      "bytes": 12608,
       "executable": false,
-      "sha256": "8aac56f217090b854dc7ad3ece3a6f0238dadc82f6b23213c62ae7d6a3953625"
+      "sha256": "3396dada25ccef478458446bbe04e78d0bff34eed6710e304b437ce9e17ed7ca"
     },
     {
       "path": "apps/water/r5-gpu-mesh-async-pontoons/package.json",
-      "bytes": 1741,
+      "bytes": 1829,
       "executable": false,
-      "sha256": "e90d8509c7bd08da575809456b96c4db1adfb752cbdb23f6b68008ba0ae98424"
+      "sha256": "896507b5903f1318283c3601f6d2367b4024032cd24c0610b879fc7be1ffc3bc"
     },
     {
       "path": "apps/water/r5-gpu-mesh-async-pontoons/README.md",
-      "bytes": 1887,
+      "bytes": 7112,
       "executable": false,
-      "sha256": "6c449719dc8ce8ed57a3a86bd3af3a828dc27c44aeb802696cfcec0dacd3a3d5"
+      "sha256": "f3036ca0a872111ccdfb6f86f726738421042b1e08293ebe57bbf013f9d1ed46"
+    },
+    {
+      "path": "apps/water/r5-gpu-mesh-async-pontoons/src/experience.css",
+      "bytes": 3309,
+      "executable": false,
+      "sha256": "0dcfcc7cf7dbff0a86f3419ed17b31807c2e564410458c7f0cc224ef342c6d9c"
     },
     {
       "path": "apps/water/r5-gpu-mesh-async-pontoons/src/identity.ts",
-      "bytes": 983,
+      "bytes": 1015,
       "executable": false,
-      "sha256": "59abb1bed545e2cc730ef5580c4821aa7f1afc2d54bebdf65759c30c00460ed8"
+      "sha256": "4e87de5f4e89bb6d4daf3738f783d0d32614817c6f4a1365ab7804cb4000f5cd"
     },
     {
       "path": "apps/water/r5-gpu-mesh-async-pontoons/src/main.ts",
-      "bytes": 41195,
+      "bytes": 58075,
       "executable": false,
-      "sha256": "0650e7faddd0cd9b36c92c1312c0570e48cb9ea70ccbfe6178c838327ce31a0a"
+      "sha256": "3782929ced353e94875ab2738562f808d42c51233ff71537c050056fd1220975"
     },
     {
       "path": "apps/water/r5-gpu-mesh-async-pontoons/src/style.css",
@@ -25703,9 +25913,9 @@
     },
     {
       "path": "apps/water/r5-gpu-mesh-async-pontoons/vite.config.ts",
-      "bytes": 2051,
+      "bytes": 2412,
       "executable": false,
-      "sha256": "91bef59452a8e42937ac24513d6a38145c9ccd22db445a1dfac853f5d2091f4d"
+      "sha256": "ed023d1b2c0aa428000bb67a9d62cb1938522c0367b15ee732e8034237a98f27"
     },
     {
       "path": "apps/water/r5-gpu-mesh-async-pontoons/vitest.config.ts",
@@ -25715,9 +25925,9 @@
     },
     {
       "path": "apps/water/r6-legacy-rt-fluid/assets/basins.pack.ts",
-      "bytes": 7855,
+      "bytes": 10717,
       "executable": false,
-      "sha256": "c87886cbe5bd21559cee028a7441c5a7e4fa61b75c060b0a60c1ccb706345115"
+      "sha256": "10968b7d2b62c9c88106b72578273704e2584b2ae6bb5a8eb49e89071c3cee3c"
     },
     {
       "path": "apps/water/r6-legacy-rt-fluid/forge.json",
@@ -25733,9 +25943,15 @@
     },
     {
       "path": "apps/water/r6-legacy-rt-fluid/package.json",
-      "bytes": 1738,
+      "bytes": 1797,
       "executable": false,
-      "sha256": "c16ab03539ee8a375125f07428328591f4117d29d43ee84f75be18e3054c32d7"
+      "sha256": "439f50e94e499489afbf2a690b6c7cf91f26f34a2d9201bee08d0eed1cb1f112"
+    },
+    {
+      "path": "apps/water/r6-legacy-rt-fluid/README.md",
+      "bytes": 1417,
+      "executable": false,
+      "sha256": "8cd901cb385295e90025eb2bbfd847d637cc5d164cd45e741c0f81473324b8bc"
     },
     {
       "path": "apps/water/r6-legacy-rt-fluid/src/identity.ts",
@@ -25745,9 +25961,9 @@
     },
     {
       "path": "apps/water/r6-legacy-rt-fluid/src/main.ts",
-      "bytes": 19896,
+      "bytes": 25004,
       "executable": false,
-      "sha256": "84d1905ee083ab08c4e56465710204784ee937b94bc82e8541448e4c3ba1f265"
+      "sha256": "0ccfdb95c7cf30fbbb6a081ae851d7fc274ca76b361616b4994ebe3ffc0f5157"
     },
     {
       "path": "apps/water/r6-legacy-rt-fluid/src/style.css",
@@ -25769,15 +25985,15 @@
     },
     {
       "path": "apps/water/r6-legacy-rt-fluid/vite.config.ts",
-      "bytes": 1651,
+      "bytes": 1993,
       "executable": false,
-      "sha256": "62c40b0906f353678f5618c2015dd7088f7f431c5b5457b767df6dce8c93a533"
+      "sha256": "a57ff2743cced9c66dda26b71e15d6ad28cc18df3a20423a4546875998e67ad9"
     },
     {
       "path": "apps/water/r7-advanced-shallow-bake-fft/assets/reach.pack.ts",
-      "bytes": 10271,
+      "bytes": 14650,
       "executable": false,
-      "sha256": "df8a8a67d1c219abce2ec192b1317143ea21eb3566d81d01bb255e60b67c4169"
+      "sha256": "787bcd49e61d74cf3cc49e1e05e724f3a23c71f1dc6c9ef49757d5356243a91f"
     },
     {
       "path": "apps/water/r7-advanced-shallow-bake-fft/forge.json",
@@ -25787,21 +26003,21 @@
     },
     {
       "path": "apps/water/r7-advanced-shallow-bake-fft/index.html",
-      "bytes": 7873,
+      "bytes": 8379,
       "executable": false,
-      "sha256": "5227b49c8ad574c561aa3f902c6b9dc2e9ff1d3dcb14904ef483d88138bdb882"
+      "sha256": "220c1b59f26ab764a1073478eadde585dedb57609485de935aee08d482d5d0a4"
     },
     {
       "path": "apps/water/r7-advanced-shallow-bake-fft/package.json",
-      "bytes": 1746,
+      "bytes": 1834,
       "executable": false,
-      "sha256": "460746bf266704192c2002377c003a69be357f3bc2f680ba98e7c0a33806dc58"
+      "sha256": "420d339197c3b441838e43e155a3dc9e30cde7afbe860d14a3ead1a47460b3ee"
     },
     {
       "path": "apps/water/r7-advanced-shallow-bake-fft/README.md",
-      "bytes": 5488,
+      "bytes": 6810,
       "executable": false,
-      "sha256": "f0419ad910d239ccd03d5b50fb59d34d4045b6e0f0da5e2964015eaceed465e3"
+      "sha256": "eefacda495f44e1f04d9172f61a369d007cc17f67c985dd4395929c0d99598a2"
     },
     {
       "path": "apps/water/r7-advanced-shallow-bake-fft/src/identity.ts",
@@ -25811,9 +26027,9 @@
     },
     {
       "path": "apps/water/r7-advanced-shallow-bake-fft/src/main.ts",
-      "bytes": 49106,
+      "bytes": 68340,
       "executable": false,
-      "sha256": "84878a9c8b10318aa8f237ed4d8e2ae9c92453e117155b9eb9aa761e7985ced8"
+      "sha256": "dde01f1ed69d7fd1f163391432040bd68a7c8e853e5ee77931a931f267be67d9"
     },
     {
       "path": "apps/water/r7-advanced-shallow-bake-fft/src/storage.ts",
@@ -25841,9 +26057,93 @@
     },
     {
       "path": "apps/water/r7-advanced-shallow-bake-fft/vite.config.ts",
-      "bytes": 2044,
+      "bytes": 2405,
       "executable": false,
-      "sha256": "ab8a876dcb25c22b7c4800a919ade06646a8420f791e8e17d760747326fd6fb7"
+      "sha256": "eae2f003b14e41dca56f4283da5b17120a314c913911cb2dafd4cb9322356646"
+    },
+    {
+      "path": "apps/water/r8-entry-experiment/forge.json",
+      "bytes": 202,
+      "executable": false,
+      "sha256": "4e7cf2939fd4843fd30f60e8b48857103e2583858a31736096e5313326669ab4"
+    },
+    {
+      "path": "apps/water/r8-entry-experiment/index.html",
+      "bytes": 745,
+      "executable": false,
+      "sha256": "ecaa5ce9128b337c6c654a9d723ee6861a26b57f331de90fbd14bbb4cf0ed22d"
+    },
+    {
+      "path": "apps/water/r8-entry-experiment/package.json",
+      "bytes": 1651,
+      "executable": false,
+      "sha256": "1a2cb1b5f297a616110c7e1aa5918dc3665fa01a4be1c376efdf78ebd829e4c2"
+    },
+    {
+      "path": "apps/water/r8-entry-experiment/README.md",
+      "bytes": 4753,
+      "executable": false,
+      "sha256": "9ed8daef8f983f9414a614e0c77f85c968c858fc57aa8510b41e0d074b0c0959"
+    },
+    {
+      "path": "apps/water/r8-entry-experiment/src/__tests__/entry-zone.unit.test.ts",
+      "bytes": 1149,
+      "executable": false,
+      "sha256": "0da4adf9a5e1c9e9f17302f351d95195f070443c2ea905ed685bc8f5b4b62c1d"
+    },
+    {
+      "path": "apps/water/r8-entry-experiment/src/entry-zone.ts",
+      "bytes": 536,
+      "executable": false,
+      "sha256": "96a333aeb1e6636f8de8095bbe091a97cbb1b7150247b4700b868f61f29c5ee4"
+    },
+    {
+      "path": "apps/water/r8-entry-experiment/src/main.ts",
+      "bytes": 31104,
+      "executable": false,
+      "sha256": "83d4572d673fbaf0d44904e2200913c25b06607b24895858ccf98b8bd3d78fb5"
+    },
+    {
+      "path": "apps/water/r8-entry-experiment/src/vite-env.d.ts",
+      "bytes": 244,
+      "executable": false,
+      "sha256": "50ef3b497b45aa82093c8ba7213855d7fa4d73111f172ae007253d788c1e61a7"
+    },
+    {
+      "path": "apps/water/r8-entry-experiment/tsconfig.json",
+      "bytes": 202,
+      "executable": false,
+      "sha256": "7e46228a9f1b81dea9b3c0156d00dfc15ee8c218dd3c12c6c70b5a7fd5e8b6c2"
+    },
+    {
+      "path": "apps/water/r8-entry-experiment/vite.config.ts",
+      "bytes": 2655,
+      "executable": false,
+      "sha256": "debd885a2d4b4c3314aff28f0cd0e8f845172674d3e857097439f443b692a44d"
+    },
+    {
+      "path": "apps/water/r8-entry-experiment/vitest.config.ts",
+      "bytes": 314,
+      "executable": false,
+      "sha256": "88322cc1a2f0be93cc9eee14b014cf1d1a35f1a6e77eca2d3deaafeec1d7b743"
+    },
+    {
+      "path": "apps/water/r8-integration-acceptance/assets/__tests__/entry-attachment.dawn.test.ts",
+      "bytes": 6441,
+      "executable": false,
+      "sha256": "761fb868be9e70da16ed8eae77c5596650a816680ebaae953891e2bc1aac297c"
+    },
+    {
+      "path": "apps/water/r8-integration-acceptance/assets/__tests__/entry-program.integration.test.ts",
+      "bytes": 7065,
+      "executable": false,
+      "sha256": "14d5cbe68599070f7604e6238f0a430fae3de3f721d4217c9b622ae73b23531a"
+    },
+    {
+      "path": "apps/water/r8-integration-acceptance/assets/__tests__/entry-splash.unit.test.ts",
+      "bytes": 2369,
+      "executable": false,
+      "sha256": "6d976db8c3f14afe1a4453aaa58fa648c1ef3ccfaaf9a79c42d19fb4cc79855e"
     },
     {
       "path": "apps/water/r8-integration-acceptance/assets/__tests__/ship-rig.unit.test.ts",
@@ -25853,9 +26153,27 @@
     },
     {
       "path": "apps/water/r8-integration-acceptance/assets/coast.pack.ts",
-      "bytes": 28701,
+      "bytes": 34693,
       "executable": false,
-      "sha256": "5770abd64f9d32d0767a71f026cca680cb3fa3d8e73fb98759a9ddd7912e8566"
+      "sha256": "e016202f260368795f8909d4092b5a8d7ec4961a872b48618e25a4507b30b147"
+    },
+    {
+      "path": "apps/water/r8-integration-acceptance/assets/entry-program.ts",
+      "bytes": 641,
+      "executable": false,
+      "sha256": "e10382a800bea352d265e271cea1c0902e4069144df09ef7741565d8bef3343a"
+    },
+    {
+      "path": "apps/water/r8-integration-acceptance/assets/entry-splash.ts",
+      "bytes": 3088,
+      "executable": false,
+      "sha256": "d0fbf64dbbbd90e44a4bb18cd8c219d90b0b0b285def57fbdfd26a6615d68271"
+    },
+    {
+      "path": "apps/water/r8-integration-acceptance/assets/entry-surfaces.ts",
+      "bytes": 3147,
+      "executable": false,
+      "sha256": "05db507f201c322e74df8e304f4524b868b41c6e2a3da9cec4fc4cb2c2d9fd9c"
     },
     {
       "path": "apps/water/r8-integration-acceptance/assets/foam-textures.ts",
@@ -25865,9 +26183,9 @@
     },
     {
       "path": "apps/water/r8-integration-acceptance/assets/local-water.ts",
-      "bytes": 3803,
+      "bytes": 4040,
       "executable": false,
-      "sha256": "52667cca8bfe0fb262228cb89b1b5b9024339e25d25a84019990d830730f82b5"
+      "sha256": "9ed98c879b0ae5bfad0cea4d36536bfec0f3e5ef67149eaed581b35fa06ac93a"
     },
     {
       "path": "apps/water/r8-integration-acceptance/assets/ocean-foam.ts",
@@ -25877,9 +26195,9 @@
     },
     {
       "path": "apps/water/r8-integration-acceptance/assets/procedural.ts",
-      "bytes": 14760,
+      "bytes": 16245,
       "executable": false,
-      "sha256": "33ab6e4777e9b46f2615d54603d634e7bdc41d0fd93c041d6f84c310337c9cbb"
+      "sha256": "f56374eeeb627d6962bb5e74592291d6f5821b568c055c3393a2e81d23258995"
     },
     {
       "path": "apps/water/r8-integration-acceptance/assets/ship-rig.ts",
@@ -25888,10 +26206,28 @@
       "sha256": "9458c4c43550e7a655186a2fe4b5894d66bc7bd6cdee917183bb3108d99cd41a"
     },
     {
-      "path": "apps/water/r8-integration-acceptance/assets/vfx/iron-ball-entry.vfx.wgsl",
-      "bytes": 2298,
+      "path": "apps/water/r8-integration-acceptance/assets/vfx/iron-ball-entry-motion.wgsl",
+      "bytes": 3850,
       "executable": false,
-      "sha256": "8461076937c0321324d44f9189b266ec20b66491043eab5194470b328b6d0477"
+      "sha256": "cfffaf219eb7d0f25007785b9495f082cf10777430b339325f0381e004a19fc1"
+    },
+    {
+      "path": "apps/water/r8-integration-acceptance/assets/vfx/iron-ball-entry-surface.vfx.wgsl",
+      "bytes": 1375,
+      "executable": false,
+      "sha256": "3a335b0de726eeaa6e3afe5ff2998f29eff992886d99eda3e36e735d27f4b291"
+    },
+    {
+      "path": "apps/water/r8-integration-acceptance/assets/vfx/iron-ball-entry-tongue.vfx.wgsl",
+      "bytes": 1373,
+      "executable": false,
+      "sha256": "d7372be01f23e3a2689edadec08053cb443a4ac158058f01d5387856e70331a4"
+    },
+    {
+      "path": "apps/water/r8-integration-acceptance/assets/vfx/iron-ball-entry.vfx.wgsl",
+      "bytes": 2631,
+      "executable": false,
+      "sha256": "5f656a984884d68a0a6a98bf55cdfda3e507f18a89f6452bbb16727038be37b7"
     },
     {
       "path": "apps/water/r8-integration-acceptance/assets/vfx/water-entry-splash-material-inputs.ts",
@@ -25907,21 +26243,21 @@
     },
     {
       "path": "apps/water/r8-integration-acceptance/index.html",
-      "bytes": 6206,
+      "bytes": 11775,
       "executable": false,
-      "sha256": "8037ca89c8c4f29932fef951a93c156115c2f39d01da1197e0723f5bac578b42"
+      "sha256": "799ec7e95afc835f22ed9fcbca8c4ff049b55a2651fb6b719b3dac87b845da43"
     },
     {
       "path": "apps/water/r8-integration-acceptance/package.json",
-      "bytes": 1769,
+      "bytes": 1852,
       "executable": false,
-      "sha256": "2104e9fd4e599e7cd728141a534f8ff79bf54f62b284d35ff7c0aad6ca062dae"
+      "sha256": "cecec5f850769727206fa9ac64a13b98ffff3689b7ef955a613085bd273b5f95"
     },
     {
       "path": "apps/water/r8-integration-acceptance/README.md",
-      "bytes": 9199,
+      "bytes": 16640,
       "executable": false,
-      "sha256": "0934dabe6edb5e5a1109e66fd6d8b558401582c856adfa268946c4f06d7ec9ac"
+      "sha256": "5a5f8515eb8a654ce178e4efa4b0de30406ac664b121cffbbe6dce46235cf05e"
     },
     {
       "path": "apps/water/r8-integration-acceptance/scripts/__tests__/profile-capture-transfer.unit.test.mjs",
@@ -25942,22 +26278,64 @@
       "sha256": "f6437c30f2008904c79c63d2c5ffc9dd487a9a70d8c2123ec1682b94e02ff1e4"
     },
     {
+      "path": "apps/water/r8-integration-acceptance/src/__tests__/control-panel.unit.test.ts",
+      "bytes": 7370,
+      "executable": false,
+      "sha256": "1b0636755a1d2a711b54e12c31af3fa0aadf1f6a7929f83d481742c13a38a2ca"
+    },
+    {
+      "path": "apps/water/r8-integration-acceptance/src/__tests__/iron-ball.unit.test.ts",
+      "bytes": 9315,
+      "executable": false,
+      "sha256": "107ca127fb3e9857ba0c6372addaecf592949854a93cd378974a6b8a9d6ad02f"
+    },
+    {
+      "path": "apps/water/r8-integration-acceptance/src/__tests__/ship-handling.unit.test.ts",
+      "bytes": 3249,
+      "executable": false,
+      "sha256": "20caee2d66cd4bb7b71068df6e5f4d3ccd298703f70e229dbd3f1d14ee0105b0"
+    },
+    {
       "path": "apps/water/r8-integration-acceptance/src/__tests__/water-r8-fixed-trace.unit.test.ts",
       "bytes": 6575,
       "executable": false,
       "sha256": "7deead3bd3f3c0a8203f8594a2407c34b2de4682cecf51d8ee91469a6989fd96"
     },
     {
+      "path": "apps/water/r8-integration-acceptance/src/configuration-evidence.ts",
+      "bytes": 34338,
+      "executable": false,
+      "sha256": "f0c8822701721a9f82453ef36e9ce5b00f194228ed243fda72081019f84a2804"
+    },
+    {
+      "path": "apps/water/r8-integration-acceptance/src/control-panel.ts",
+      "bytes": 24199,
+      "executable": false,
+      "sha256": "a53becb49814ac77d9788d9905deb7272aacf030cbd88c4ac3e0a8fcf25eb4cf"
+    },
+    {
+      "path": "apps/water/r8-integration-acceptance/src/entry-attachment.ts",
+      "bytes": 2601,
+      "executable": false,
+      "sha256": "b8fa14f9b79b807a76d3be536a97c491b94884de12722c2fb6f8d8d15f38f295"
+    },
+    {
       "path": "apps/water/r8-integration-acceptance/src/identity.ts",
       "bytes": 999,
       "executable": false,
-      "sha256": "613f042be238af2cd843ebd7fca4797a30e528b2d510e00dde428c9c73adeb63"
+      "sha256": "21a935cf44fa19d7a34facd3e137885630b069c70355b5a986a4c3c1d4a96630"
+    },
+    {
+      "path": "apps/water/r8-integration-acceptance/src/iron-ball.ts",
+      "bytes": 2801,
+      "executable": false,
+      "sha256": "bd4215abc5a8a6b5db7dd89f9968edf581a175ac65057c0b776274e64bca7f86"
     },
     {
       "path": "apps/water/r8-integration-acceptance/src/main.ts",
-      "bytes": 155051,
+      "bytes": 156867,
       "executable": false,
-      "sha256": "365e2b9117f5a7f6be4a9dfc13d3f6ce24cec144ff60ebf85301bd25545af234"
+      "sha256": "bc9598136785eddf143b87f0ba10da082208985e70c525735f8ea65ebb4879b8"
     },
     {
       "path": "apps/water/r8-integration-acceptance/src/physics-trace.ts",
@@ -25966,10 +26344,28 @@
       "sha256": "93c5369485df38457333c5fc48326cf680a2cf10fa398f7170bf3b9599364318"
     },
     {
-      "path": "apps/water/r8-integration-acceptance/src/style.css",
-      "bytes": 6084,
+      "path": "apps/water/r8-integration-acceptance/src/profile-capture.ts",
+      "bytes": 43295,
       "executable": false,
-      "sha256": "6fd5d6528b4b9245e45206683550e567f3beebb5b83fc224d49bc30e2ed65f24"
+      "sha256": "4e2570a8f6aec02374c692e3a957e6f65c88dde7d79c3fe28f5c7b7872a93171"
+    },
+    {
+      "path": "apps/water/r8-integration-acceptance/src/quality-presets.ts",
+      "bytes": 1472,
+      "executable": false,
+      "sha256": "3e35fc83a1eeb2dd3da6e536c400f46e58ac7a70139f42c30480cb637e06d92b"
+    },
+    {
+      "path": "apps/water/r8-integration-acceptance/src/ship-handling.ts",
+      "bytes": 2643,
+      "executable": false,
+      "sha256": "4aaf95e99737e0b54731133f776d21e9d17012d22aa19848441abc18f930b7c4"
+    },
+    {
+      "path": "apps/water/r8-integration-acceptance/src/style.css",
+      "bytes": 10062,
+      "executable": false,
+      "sha256": "1c5acdb5d232dbff8341d400c36d1f0ad461793e598ff7c964614710402d23f5"
     },
     {
       "path": "apps/water/r8-integration-acceptance/src/vite-env.d.ts",
@@ -25985,27 +26381,81 @@
     },
     {
       "path": "apps/water/r8-integration-acceptance/vite.config.ts",
-      "bytes": 2906,
+      "bytes": 2973,
       "executable": false,
-      "sha256": "d812b7e5fe53da7b232f365014300a8d257c50e8cc180ba24dc3e6e086621b16"
+      "sha256": "892278bc0b469009c9a1cb6bb1681cc243901b86212f427dc9d5595946b340eb"
     },
     {
       "path": "apps/water/r8-integration-acceptance/vitest.config.ts",
-      "bytes": 355,
+      "bytes": 422,
       "executable": false,
-      "sha256": "9e40016c16bf201f820e56d77e11670c4ca77ffe0d749101cb5cec0f2c5727ee"
+      "sha256": "47b2d8153120ec17e4731a8701c0b55ae510fd836ae792b8bdbe030e73fb8094"
+    },
+    {
+      "path": "apps/water/README.md",
+      "bytes": 2295,
+      "executable": false,
+      "sha256": "04837d0eb353774883a93934c7bbb8fe861c53c67aeb556b7beeb8f3136cd0b4"
+    },
+    {
+      "path": "apps/water/runtime-form.ts",
+      "bytes": 22919,
+      "executable": false,
+      "sha256": "aa1bdc547824b3a71cf40a406dbb74c15659417bbb14b1e0ecef9ec2d8d96281"
+    },
+    {
+      "path": "apps/water/runtime-input.ts",
+      "bytes": 3393,
+      "executable": false,
+      "sha256": "357e78d138266d54114f9290c7c2d5fe7cbd75df4eac91aa56b71243343e18f9"
+    },
+    {
+      "path": "apps/water/settings-panel.css",
+      "bytes": 7482,
+      "executable": false,
+      "sha256": "3f42bef28f2871aa63bec287d14139806d816c048638959855b3e8291c8769dc"
+    },
+    {
+      "path": "apps/water/settings-panel.ts",
+      "bytes": 2731,
+      "executable": false,
+      "sha256": "9ebc4a8bc4c774e32b22de19e0bf49708c1d21f092fa64ec4925e7e976a0b928"
+    },
+    {
+      "path": "apps/water/stage-catalog.ts",
+      "bytes": 1153,
+      "executable": false,
+      "sha256": "8dc13b241bac6d4066d769915e57ce18af9f22206ae1eebff407fb61575e7291"
     },
     {
       "path": "apps/water/standard-water-material.ts",
-      "bytes": 540,
+      "bytes": 323,
       "executable": false,
-      "sha256": "f032bd757a5a0f0c15a6c66e176d5fd26f8e64ae1f61cf32ba893e0395b00c7b"
+      "sha256": "8d5106d1c44386daaa2064c8ee79cf45ace2275fe6894caf9f1c3f0a0d4ed672"
+    },
+    {
+      "path": "apps/water/suite.css",
+      "bytes": 1792,
+      "executable": false,
+      "sha256": "27fa496ae27d484f94cc9a1f586d202fda8510121e06225b162aba49752c5842"
+    },
+    {
+      "path": "apps/water/terrain-presentation.ts",
+      "bytes": 844,
+      "executable": false,
+      "sha256": "d28fe55bb0749e584bad25aa6f50501d180338fb9503370690f127b0e8fe3efb"
     },
     {
       "path": "apps/water/terrain-provider/assets/terrain-provider.pack.ts",
-      "bytes": 5256,
+      "bytes": 5679,
       "executable": false,
-      "sha256": "4be406075c659ee0c31eeca3bcc4e2ff20951a6d6389045c55a7cbdcbcddf814"
+      "sha256": "1d084036385d646908e06d01e44eca35f56721d381b60dc86febc3c016089c96"
+    },
+    {
+      "path": "apps/water/terrain-provider/forge.json",
+      "bytes": 193,
+      "executable": false,
+      "sha256": "95a37644190af306231181e9db3d1fff0d47a953bf427900cd330452b733f9c9"
     },
     {
       "path": "apps/water/terrain-provider/index.html",
@@ -26015,15 +26465,15 @@
     },
     {
       "path": "apps/water/terrain-provider/package.json",
-      "bytes": 2094,
+      "bytes": 2169,
       "executable": false,
-      "sha256": "cbec2d90c6a4794a75ec485782f0862fae2baf8a1f4143d4cfe16f9ee4f753a3"
+      "sha256": "d1a51805f0966907b9796750523ccf2802adf4c2af5cd5e3bc39c22d65848a07"
     },
     {
       "path": "apps/water/terrain-provider/README.md",
-      "bytes": 817,
+      "bytes": 1104,
       "executable": false,
-      "sha256": "3fa5d6bb594503d529817fc475b87029c586cc52a3173ffa4314c656da0f3a8a"
+      "sha256": "9b26788f2c9b4af46e453927031ef8d1cd949260e99ca3d8042e2af7e05a456a"
     },
     {
       "path": "apps/water/terrain-provider/scripts/smoke.mjs",
@@ -26039,9 +26489,9 @@
     },
     {
       "path": "apps/water/terrain-provider/src/main.ts",
-      "bytes": 11682,
+      "bytes": 12222,
       "executable": false,
-      "sha256": "3ad29a999c34ba0f2138f39e0ceb04cd70db61088f3b2e77ddf3ac443405f3e0"
+      "sha256": "b70bc61677be5f17499702ab87d45a50b8f830ecb271dfda84062839abd9ec8b"
     },
     {
       "path": "apps/water/terrain-provider/src/style.css",
@@ -26063,9 +26513,9 @@
     },
     {
       "path": "apps/water/terrain-provider/vite.config.ts",
-      "bytes": 1015,
+      "bytes": 1645,
       "executable": false,
-      "sha256": "a84519d8d095b96d1b988f0482208ca956fcd88e2e86eec13027255bd892aa95"
+      "sha256": "fde98bcf2be9b4456b95f6717485cbca706281116d3d3650c056c811894dc109"
     },
     {
       "path": "apps/water/visual-smoke-helpers.mjs",
@@ -26075,21 +26525,21 @@
     },
     {
       "path": "apps/water/water-info/assets/water-info.pack.ts",
-      "bytes": 4085,
+      "bytes": 4810,
       "executable": false,
-      "sha256": "a8fc60e3d9ecf96c449a48723257a056233ee5a93aa829a5f14c05b05e088858"
+      "sha256": "ad25dc13809da47f910eb4c5514a0ad30a1de9bd861651dfcb3c0ebdf40b730a"
     },
     {
-      "path": "apps/water/water-info/index.html",
-      "bytes": 2197,
+      "path": "apps/water/water-info/forge.json",
+      "bytes": 193,
       "executable": false,
-      "sha256": "cdba536cb0bd6b85898d2297eede2090306a0902342b2a8f232f621d2d7b29f3"
+      "sha256": "68a4f9e2692599e26c021e7654d2fd4c126eac2c39c0ef03c8e2b09ac3de875e"
     },
     {
       "path": "apps/water/water-info/package.json",
-      "bytes": 2061,
+      "bytes": 2122,
       "executable": false,
-      "sha256": "97289763374e7c52db2a960ac6ac244267f0d62e6cde310bf0f9756c879a35b4"
+      "sha256": "0c8788f6ccba2147e18c1f95285bee0c16ecf4726dbccc517820246ff863f584"
     },
     {
       "path": "apps/water/water-info/src/identity.ts",
@@ -26099,9 +26549,9 @@
     },
     {
       "path": "apps/water/water-info/src/main.ts",
-      "bytes": 13118,
+      "bytes": 15575,
       "executable": false,
-      "sha256": "7a7f624995e184aee6171afedc4861c450246e7e9b00f3b14d713f364a6aa07b"
+      "sha256": "18aedc2693d7e40ba519857087015ab0251c3dee1649c2bc9772a2a3971c423e"
     },
     {
       "path": "apps/water/water-info/src/style.css",
@@ -26123,33 +26573,63 @@
     },
     {
       "path": "apps/water/water-info/vite.config.ts",
-      "bytes": 936,
+      "bytes": 1676,
       "executable": false,
-      "sha256": "7bdffdc96fb21b4ceeb1cab142fd8d74bc3ac921b5f7d2310a818c65532bf021"
+      "sha256": "9ab0caca017caab53cdea5f53bf366723cb6d30afb042936d0ef7e57419caf8f"
+    },
+    {
+      "path": "apps/water/water-mesh/assets/__tests__/watershed-cook.unit.test.ts",
+      "bytes": 3768,
+      "executable": false,
+      "sha256": "31a397f1261a8725441e7e444c2fe301439f4c130bd4021712eebeab43183ded"
+    },
+    {
+      "path": "apps/water/water-mesh/assets/__tests__/watershed-flow.unit.test.ts",
+      "bytes": 5156,
+      "executable": false,
+      "sha256": "9ad227e0da7b623e2acf976a01cd875c57770e254760e6b1a1a17b3a5f4b608a"
     },
     {
       "path": "apps/water/water-mesh/assets/water-mesh.pack.ts",
-      "bytes": 10235,
+      "bytes": 15226,
       "executable": false,
-      "sha256": "40ce02fbfd78af75c2902386d0151e76c633bc15df793ce660eccd548d0f9549"
+      "sha256": "cc321bd79f0ae04b6b2a1a2400a261a11415d96cbf2bf571b677e1e90878c726"
+    },
+    {
+      "path": "apps/water/water-mesh/forge.json",
+      "bytes": 184,
+      "executable": false,
+      "sha256": "7e5f439d103093c1c9bb7e48e5d104aa3933a895876a4af6548b76eec39f5dc0"
     },
     {
       "path": "apps/water/water-mesh/index.html",
-      "bytes": 2017,
+      "bytes": 3463,
       "executable": false,
-      "sha256": "f75cf8ca32d413df2c711912f35b133bc3207507ef539f4f8f47ea39307291ae"
+      "sha256": "06d5639f63f482b1fd2b988b761f2f10541681eb8e39f5e63f96c09ff178a4cd"
     },
     {
       "path": "apps/water/water-mesh/package.json",
-      "bytes": 2087,
+      "bytes": 2221,
       "executable": false,
-      "sha256": "1331838d8daa816075591f701e3787a7ad35a81e8375958eff17e53f5e1796a7"
+      "sha256": "7d6b7b0460ca710976e2f64b2bf42a2115337465a17f58ea8910e6c7ea525e44"
+    },
+    {
+      "path": "apps/water/water-mesh/README.md",
+      "bytes": 3011,
+      "executable": false,
+      "sha256": "0ffe765317d43b3386cc828263750e9452979c569ce6ca35b47aa3f4c2698d21"
     },
     {
       "path": "apps/water/water-mesh/scripts/visual-smoke.mjs",
       "bytes": 32819,
       "executable": false,
       "sha256": "59934ffe41fced6cc2c08e1c8cdcb6e6b6025ff05429ce39a047f5726687a79f"
+    },
+    {
+      "path": "apps/water/water-mesh/src/__tests__/sea-controls.unit.test.ts",
+      "bytes": 5623,
+      "executable": false,
+      "sha256": "dece218659c187a19d96b8f2bcb10aea03327fb4efd657931ba6e882edb5583d"
     },
     {
       "path": "apps/water/water-mesh/src/identity.ts",
@@ -26159,21 +26639,39 @@
     },
     {
       "path": "apps/water/water-mesh/src/main.ts",
-      "bytes": 13123,
+      "bytes": 34805,
       "executable": false,
-      "sha256": "025b6f3c5d39a065baff3dcdaf589c459ffad16c08cc0ee84401738748d349ae"
+      "sha256": "470ff50cf4931955641bbf350c5c3c03184a33706b25f7f031981b62ca738e28"
+    },
+    {
+      "path": "apps/water/water-mesh/src/scenery.ts",
+      "bytes": 5861,
+      "executable": false,
+      "sha256": "eb9376927b6cef5a0d673b3215d3fe23301b4a1fd497062e210635878a54107a"
+    },
+    {
+      "path": "apps/water/water-mesh/src/sea-controls.ts",
+      "bytes": 2082,
+      "executable": false,
+      "sha256": "8cd02164bf9b35ac37d080e9945443cd94bd56132274b91bd226aea613935645"
     },
     {
       "path": "apps/water/water-mesh/src/style.css",
-      "bytes": 3220,
+      "bytes": 4049,
       "executable": false,
-      "sha256": "f8fad0571e906b7911572c7fb544f2f2464cd5ce1554ea1d710298e9b93436cd"
+      "sha256": "ee45487a825fdfaaba3864685852fe6a60f28d5b623fce02853fa41136b1e747"
     },
     {
       "path": "apps/water/water-mesh/src/vite-env.d.ts",
       "bytes": 191,
       "executable": false,
       "sha256": "f2bbc095516481ddcc8b4acb1c3ad1b8fe9234872dc9f81f72c7ba4c206f8811"
+    },
+    {
+      "path": "apps/water/water-mesh/src/watershed.ts",
+      "bytes": 4324,
+      "executable": false,
+      "sha256": "e2adaf8c1efbb80a859fef8229d525ce816759bbf321b3ef239ad66acf1064bb"
     },
     {
       "path": "apps/water/water-mesh/tsconfig.json",
@@ -26183,27 +26681,33 @@
     },
     {
       "path": "apps/water/water-mesh/vite.config.ts",
-      "bytes": 936,
+      "bytes": 1945,
       "executable": false,
-      "sha256": "eade93f81b8c782fbb0ee9b7001f3c932eb8820755b489a3369dbe6982fff903"
+      "sha256": "6865bc3ee0008efa597e145a8e7cdfdfc78fda5e7f9f57ce9e65128b571ded16"
+    },
+    {
+      "path": "apps/water/water-mesh/vitest.config.ts",
+      "bytes": 338,
+      "executable": false,
+      "sha256": "a86a0d97719ff77734f944c421a8cd80d64e7b2a769e9d8eebc71512640de94e"
     },
     {
       "path": "apps/water/waves/assets/waves.pack.ts",
-      "bytes": 2852,
+      "bytes": 3620,
       "executable": false,
-      "sha256": "ecbfbf5a4652db1847fea8f9287190deccd2479d7c2ae02da9071889911b9beb"
+      "sha256": "7d9d3281d456801fc5a9b81024ff3f73b88ccfac9e89851b0e1b6195e3221754"
     },
     {
-      "path": "apps/water/waves/index.html",
-      "bytes": 2064,
+      "path": "apps/water/waves/forge.json",
+      "bytes": 171,
       "executable": false,
-      "sha256": "102abc466156f2a224bc2cacd318268646dc809cc03a8045021225d1573c42cc"
+      "sha256": "069938e8c76a7ef2886e155e8f759346f0b08e14e8341c6ba4c407dd2bce9336"
     },
     {
       "path": "apps/water/waves/package.json",
-      "bytes": 1938,
+      "bytes": 2014,
       "executable": false,
-      "sha256": "ae977244b3c30213fce661c5198cb1decd1938f0b059388f038c6962edc73ea1"
+      "sha256": "99b311831713ff83ab2aac36960cdeb5171618036037fb1c804e0f7f7059e97d"
     },
     {
       "path": "apps/water/waves/scripts/visual-smoke.mjs",
@@ -26219,9 +26723,9 @@
     },
     {
       "path": "apps/water/waves/src/main.ts",
-      "bytes": 11407,
+      "bytes": 12799,
       "executable": false,
-      "sha256": "aa38750ebb3c01dbc7b9e5d3feac578dab0217f4b402237538926efbcbcadd80"
+      "sha256": "76e6639e357c093adc2e35d9e7a919240ec6a9bce5bf863526faeb788308e89d"
     },
     {
       "path": "apps/water/waves/src/style.css",
@@ -26243,9 +26747,9 @@
     },
     {
       "path": "apps/water/waves/vite.config.ts",
-      "bytes": 790,
+      "bytes": 1680,
       "executable": false,
-      "sha256": "d41903f57ae401c9eef00b84bd885fa18289457bbae057c42ac8b4600044aee9"
+      "sha256": "6ff4fe5617c298a0499404610772a8d2ed20f7a3aee7d1fa04172639091406fb"
     },
     {
       "path": "biome.json",
@@ -26255,9 +26759,9 @@
     },
     {
       "path": "bun.lock",
-      "bytes": 609669,
+      "bytes": 611403,
       "executable": false,
-      "sha256": "292c93a3f01ca0d51909453705316fc7ef1b0fd833cc47d1ba271ead7c3eb84e"
+      "sha256": "3717a93050ca90959fa75b4ea11507068441f1f564b6a409b58f257f7c8b3157"
     },
     {
       "path": "CLAUDE.md",
@@ -26345,9 +26849,9 @@
     },
     {
       "path": "config/vitest-dawn-sequencer.ts",
-      "bytes": 17055,
+      "bytes": 17890,
       "executable": false,
-      "sha256": "983c96d79f536ec6ba1cf9a835d5e31fafd927ed535921baedeca729d3fa948c"
+      "sha256": "80bc44b3da61642049aa7cf2df1af754c543c0d4688efd9445b120f5f92cd74f"
     },
     {
       "path": "config/vitest-render-source-alias.ts",
@@ -30653,9 +31157,9 @@
     },
     {
       "path": "packages/app/README.md",
-      "bytes": 117402,
+      "bytes": 117667,
       "executable": false,
-      "sha256": "44264548331dd015ed6e0a77b05427a97c098a09fffe4442cd57010ac34a50f0"
+      "sha256": "9ef087f97c9147b05c01d29d41f43bedf10641de501d92932d498cc365f3beb9"
     },
     {
       "path": "packages/app/schema/execution-report.schema.json",
@@ -32099,9 +32603,9 @@
     },
     {
       "path": "packages/assets-runtime/README.md",
-      "bytes": 38549,
+      "bytes": 39066,
       "executable": false,
-      "sha256": "7e582c9529852def739af8e5adbcc26ba5b264ab6bc140e449d38fd45c4973e4"
+      "sha256": "2ab572a2a25e3815003964088a93a8d7360aaf0cba7de9d70de3b59fa0dd0a48"
     },
     {
       "path": "packages/assets-runtime/src/__tests__/aabb.unit.test.ts",
@@ -32486,6 +32990,12 @@
       "bytes": 34803,
       "executable": false,
       "sha256": "da3bfeb835add7e5daad518f16b183bdb259203f2aae4d69b9ae4bebf3278b2f"
+    },
+    {
+      "path": "packages/assets-runtime/src/__tests__/load-many.integration.test.ts",
+      "bytes": 7922,
+      "executable": false,
+      "sha256": "7ffb6d97cd262145f9394e0f0bd9e848525740f2d1f4554e976ac697968a155d"
     },
     {
       "path": "packages/assets-runtime/src/__tests__/managed-mesh.integration.test.ts",
@@ -32903,9 +33413,9 @@
     },
     {
       "path": "packages/assets-runtime/src/asset-registry.ts",
-      "bytes": 107144,
+      "bytes": 109605,
       "executable": false,
-      "sha256": "6fe7cfff284515d97fec24b41dfcff9a550ede2234207e94ad4f24f327523426"
+      "sha256": "66876ed722ddf40089d393029bb5034417749aaab52217ad0c4a5e4d202dfa0f"
     },
     {
       "path": "packages/assets-runtime/src/capture-publication.ts",
@@ -32939,9 +33449,9 @@
     },
     {
       "path": "packages/assets-runtime/src/index.ts",
-      "bytes": 6215,
+      "bytes": 6240,
       "executable": false,
-      "sha256": "9ab825dcb054323b58a466d91bafd0b78c1859aed6e765882079c1f3ff0d1f31"
+      "sha256": "bc0e6090e8b44c5af035b62f050fe05cbe754e1519a496d0f9533509f56ff05d"
     },
     {
       "path": "packages/assets-runtime/src/internal.ts",
@@ -32963,9 +33473,9 @@
     },
     {
       "path": "packages/assets-runtime/src/internal/asset-graph.ts",
-      "bytes": 13774,
+      "bytes": 13802,
       "executable": false,
-      "sha256": "7dd0166bd5a70bcb80aabed678ed67d4888c1eb131fa26f18249b955063c7aef"
+      "sha256": "350c421df0df46397cea44c8820b85fcae8f6347f7cf37c0f530898d6dc75b5f"
     },
     {
       "path": "packages/assets-runtime/src/internal/asset-records.ts",
@@ -32975,9 +33485,9 @@
     },
     {
       "path": "packages/assets-runtime/src/internal/asset-source.ts",
-      "bytes": 26433,
+      "bytes": 26570,
       "executable": false,
-      "sha256": "abcad54f5d7d3f7b2444045e2baafb30e43d2fc9cc26aabbe96b4894dcb7e869"
+      "sha256": "4431eb7c2e713b586706f42c31a21aad5fc9f34dd97ea6bdc1cc558d2ef8205c"
     },
     {
       "path": "packages/assets-runtime/src/internal/bundle-diagnostics.ts",
@@ -34901,9 +35411,9 @@
     },
     {
       "path": "packages/devkit/README.md",
-      "bytes": 210636,
+      "bytes": 212555,
       "executable": false,
-      "sha256": "953f5a48303d686fa915e5fee40d43162a8a523c94744d58d0b12faa08d46fc8"
+      "sha256": "e088fb99f5ec59a61c9d68bf85ae9dcb7b5877e1aca55b2b4208cc8ca523daf9"
     },
     {
       "path": "packages/devkit/scripts/__tests__/live-sync-inputs.test.mjs",
@@ -35981,9 +36491,9 @@
     },
     {
       "path": "packages/devkit/src/__tests__/tauri-package.test.ts",
-      "bytes": 6638,
+      "bytes": 6913,
       "executable": false,
-      "sha256": "2eebcd375a1856d3cb601dc284873c616e16f912788021d13fb7deaa7f06a974"
+      "sha256": "d3d12ecc9b6abc0d60df149da1160370f39d498307e7fd12bab920bc0077b60f"
     },
     {
       "path": "packages/devkit/src/__tests__/template-catalog.test.ts",
@@ -36419,21 +36929,27 @@
     },
     {
       "path": "packages/devkit/src/build/__tests__/tauri-package.test.ts",
-      "bytes": 3661,
+      "bytes": 5548,
       "executable": false,
-      "sha256": "417efb9388de4154d2c550d2ddc8e0b5ea8f70ea1c4cdae73baa3d14eb5c5462"
+      "sha256": "0b8ecb2065e737c243935c98cc0cff01476fe49b604a931dc854945e9d269497"
     },
     {
       "path": "packages/devkit/src/build/__tests__/tauri-platforms.test.ts",
-      "bytes": 3811,
+      "bytes": 4757,
       "executable": false,
-      "sha256": "b353a0adcd62c5bf7ce79f7a43a9f1282566df9dfb136c82759828a5b7757373"
+      "sha256": "59d007f8695fcb792b3eda05fafa24c4037102d294fd7b998700181c73e5c3ae"
     },
     {
       "path": "packages/devkit/src/build/__tests__/tauri-runtime-programs.test.ts",
       "bytes": 7312,
       "executable": false,
       "sha256": "918451580fb745a7b4374b1f03eea449b47343830ea37cbaf2b4d3f7abd5c16a"
+    },
+    {
+      "path": "packages/devkit/src/build/__tests__/tauri-smoke.test.ts",
+      "bytes": 2422,
+      "executable": false,
+      "sha256": "f2e54d7b99dec8c47f124e8bfd21438731b492e72f525245b7f1fd71a695c3b9"
     },
     {
       "path": "packages/devkit/src/build/__tests__/wechat-artifact-deduplication.integration.test.ts",
@@ -36616,16 +37132,22 @@
       "sha256": "30d0a1cef36df08910c69f208f984e27819127d73a3caf66e0c9af68e66e7767"
     },
     {
-      "path": "packages/devkit/src/build/tauri-source.ts",
-      "bytes": 17854,
+      "path": "packages/devkit/src/build/tauri-resource-server.ts",
+      "bytes": 5036,
       "executable": false,
-      "sha256": "24c4a148cdbee685f043c69ef9d4a30519f217c0c3ea5b6af0cc7577a2528b0e"
+      "sha256": "c3a4df22ed7d7692813fdc67931744391befadc219c8ee29079e354eb4642f07"
+    },
+    {
+      "path": "packages/devkit/src/build/tauri-source.ts",
+      "bytes": 19271,
+      "executable": false,
+      "sha256": "28657ad640c82fa2211ff8f4e5832d2a320959ac40006fec383a6f88a345ac08"
     },
     {
       "path": "packages/devkit/src/build/tauri.ts",
-      "bytes": 7014,
+      "bytes": 11911,
       "executable": false,
-      "sha256": "b41166c824338f52058f972dabc1dc9aee7bceed6819160eae56aeb00f55cc8f"
+      "sha256": "cd2d1b9a2457cdc92e17c9021085ba67c7dac8499fbe051e07a968917ec3ef10"
     },
     {
       "path": "packages/devkit/src/build/wechat.ts",
@@ -37133,9 +37655,9 @@
     },
     {
       "path": "packages/devkit/src/tauri-package.ts",
-      "bytes": 9450,
+      "bytes": 9473,
       "executable": false,
-      "sha256": "29fbfc85b4ba973a83a412564514073c2ade9532e5b0b1ad368a49b0af24fc64"
+      "sha256": "ca8b26df3c57da56b20e4513205038ef88166cb44460e65a74e9f8d5b0b142c5"
     },
     {
       "path": "packages/devkit/src/templates/descriptor.ts",
@@ -53477,9 +53999,9 @@
     },
     {
       "path": "packages/render/README.md",
-      "bytes": 814963,
+      "bytes": 818075,
       "executable": false,
-      "sha256": "91627928f08443bf201726e99314517ce7accc38ff1b815d375d0d5702ce0946"
+      "sha256": "7cb414f40c94c22cdb9940876f8311f8c3c3269c02846da551fd16135b9e491f"
     },
     {
       "path": "packages/render/scripts/__tests__/probe-live-webgl.test.mjs",
@@ -53543,9 +54065,9 @@
     },
     {
       "path": "packages/render/src/__tests__/advanced-lifecycle.unit.test.ts",
-      "bytes": 64149,
+      "bytes": 77020,
       "executable": false,
-      "sha256": "db4d3fefa52fd1b14d2035a7412baffa302601093325111b59d134a3b41b421c"
+      "sha256": "1ae3bd1ed8530d6feb727b44c51ecb4c3b775f242e6b7eecaa6b61ba1386ca74"
     },
     {
       "path": "packages/render/src/__tests__/advanced-rigid-history.dawn.test.ts",
@@ -53747,9 +54269,9 @@
     },
     {
       "path": "packages/render/src/__tests__/batch-execution.unit.test.ts",
-      "bytes": 7184,
+      "bytes": 7501,
       "executable": false,
-      "sha256": "d6ca625e0f5cb2353034e3056bbf49068f47911702e27cd4ffa879e078e83cbe"
+      "sha256": "6055a2f9a73627cc6a72fa4e3951553b6c6e9f05445f4d941dd9c36d201dd7b9"
     },
     {
       "path": "packages/render/src/__tests__/batch-member-pages.unit.test.ts",
@@ -54161,9 +54683,9 @@
     },
     {
       "path": "packages/render/src/__tests__/dispersive-dispersion.browser.test.ts",
-      "bytes": 6494,
+      "bytes": 6621,
       "executable": false,
-      "sha256": "528c0bc72aa6cca9fa37b6eb6eae89731c6506e070ffe3f99a92947f54276310"
+      "sha256": "5908fd299a1098edfe26df790e1b2b3f0b8a86d9d4bfa882037c257447393b49"
     },
     {
       "path": "packages/render/src/__tests__/dispersive-ocean-gpu.fixture.ts",
@@ -54179,9 +54701,9 @@
     },
     {
       "path": "packages/render/src/__tests__/dispersive-ocean.dawn.test.ts",
-      "bytes": 38198,
+      "bytes": 42185,
       "executable": false,
-      "sha256": "9c990000e6782ccc9d59202ea8cd7bbb169e3ce8aac8d4c343763fd44970e7a1"
+      "sha256": "90e9cb42e7154dc5f74d8eba75a477dfaf81f3f1955d847bc1832dd86edf6303"
     },
     {
       "path": "packages/render/src/__tests__/dispersive-query.dawn.test.ts",
@@ -58019,9 +58541,9 @@
     },
     {
       "path": "packages/render/src/__tests__/receipt-observation-retirement.unit.test.ts",
-      "bytes": 8203,
+      "bytes": 12202,
       "executable": false,
-      "sha256": "063b5f5e2da36ea9182191c53386ea3ab405e889fd9d93774d8227a0e6a1be7d"
+      "sha256": "edf9c704a340f026bbe2065db1067e20f3c58bebed966dfe4b091b60518bf293"
     },
     {
       "path": "packages/render/src/__tests__/recording-skin-tasks.unit.test.ts",
@@ -58775,9 +59297,9 @@
     },
     {
       "path": "packages/render/src/__tests__/renderer-selected-inspection.integration.test.ts",
-      "bytes": 5531,
+      "bytes": 6075,
       "executable": false,
-      "sha256": "82b2cdc68d508d6367d23d9b9add78f2139ef21f01c9dac1bdcfbc4f25d72a8a"
+      "sha256": "c8cb2cbdc8621a8136ee813bd020c9bfc80ef4ee5b60eca1dbdc2f11725fd950"
     },
     {
       "path": "packages/render/src/__tests__/renderer-target-history-recovery.integration.test.ts",
@@ -59189,9 +59711,9 @@
     },
     {
       "path": "packages/render/src/__tests__/shared-scene-composition.integration.test.ts",
-      "bytes": 5552,
+      "bytes": 10835,
       "executable": false,
-      "sha256": "5cf8c2b23f49175309653b8e771a6c5d57adc14015e2b363dcf76a59466a2723"
+      "sha256": "2a2be86a5d2c15585cbb7634c0cd7f86000e1db7c543f6a48cd9a331ba12d0f7"
     },
     {
       "path": "packages/render/src/__tests__/shared-vertex-retirement.unit.test.ts",
@@ -60809,9 +61331,9 @@
     },
     {
       "path": "packages/render/src/__tests__/water-advanced-material.integration.test.ts",
-      "bytes": 5757,
+      "bytes": 6073,
       "executable": false,
-      "sha256": "b08895aa843800cc46bcb8bbcac8b1d49bf625cf7d1743278458553d1cf89d21"
+      "sha256": "bb47045cc3a174bafa81511704de015d50508670f1781960df2d4e9e6ef83964"
     },
     {
       "path": "packages/render/src/__tests__/water-brush-canvas-shape.unit.test.ts",
@@ -60899,9 +61421,9 @@
     },
     {
       "path": "packages/render/src/__tests__/water-wave-material.unit.test.ts",
-      "bytes": 62591,
+      "bytes": 65374,
       "executable": false,
-      "sha256": "a45316a50bc014ed39385655a7900a6d79199402d2747c94300dd41fde9c9ff3"
+      "sha256": "23ad59ebf4afe5c0014870ddaa7ccd0729c2d27051379881b354374de0e9152b"
     },
     {
       "path": "packages/render/src/__tests__/webgl-compressed-texture-data.fixture.ts",
@@ -61091,9 +61613,9 @@
     },
     {
       "path": "packages/render/src/assembly/feature-frame-graph.ts",
-      "bytes": 11358,
+      "bytes": 12116,
       "executable": false,
-      "sha256": "00ca731ae63186ce99bb9376d9eb1b0343e4c4495f6cbb7e4a80fe7d0d3c2cec"
+      "sha256": "94bb18b55db14f9a0c5844d001b6bb33bba7d5c6dc074ca8908c563ffbbdbef7"
     },
     {
       "path": "packages/render/src/assembly/feature-scene-inputs.ts",
@@ -61187,9 +61709,9 @@
     },
     {
       "path": "packages/render/src/assembly/material/__tests__/layout-cache.unit.test.ts",
-      "bytes": 13941,
+      "bytes": 14389,
       "executable": false,
-      "sha256": "d88887bf04d58a6909c0ef3c1f6bea56d7f14ce867e8ee24a84a02fbfc0928b4"
+      "sha256": "d10fa0c2d26de107ed316d8b6ee1d24c0377a8e2ac402a7f2535d2ec90140f92"
     },
     {
       "path": "packages/render/src/assembly/material/__tests__/pipeline-vertex-entry.unit.test.ts",
@@ -61235,9 +61757,9 @@
     },
     {
       "path": "packages/render/src/assembly/material/layout-cache.ts",
-      "bytes": 28882,
+      "bytes": 29011,
       "executable": false,
-      "sha256": "1a7c0158e99747441e52dc03239df8ebdaf929a258dfdbb93122a0bb4d036ac3"
+      "sha256": "bd9bbe08cf49a61597aaf4407ef9d3d83d5e6656fe121fe238e616f4b1955989"
     },
     {
       "path": "packages/render/src/assembly/material/pipeline-helpers.ts",
@@ -61361,15 +61883,15 @@
     },
     {
       "path": "packages/render/src/assembly/renderer-feature-inspection.ts",
-      "bytes": 1821,
+      "bytes": 2338,
       "executable": false,
-      "sha256": "27d22879ebc25393d14db159b9932dd1fa37781d4617fcb2ba1faaf2f608bab4"
+      "sha256": "70cc9ca8b5f08f76c8d9e3d101a4f274297942ab0332ba9f2c97d2b891eef408"
     },
     {
       "path": "packages/render/src/assembly/renderer-frame-operations.ts",
-      "bytes": 16344,
+      "bytes": 13888,
       "executable": false,
-      "sha256": "d958a21c36f9ef9a6e1705140200f03873c8084103227076374c2c377a36f5f7"
+      "sha256": "267b76dd663d016d29bb81863f339ed15fa6b4b07a0a492ce6880b8005bddf43"
     },
     {
       "path": "packages/render/src/assembly/renderer-frame-transaction.ts",
@@ -61385,9 +61907,9 @@
     },
     {
       "path": "packages/render/src/assembly/renderer-inspection.ts",
-      "bytes": 21257,
+      "bytes": 22042,
       "executable": false,
-      "sha256": "ec1feff1a1dc01951b3014409ac6f3ebcd8379571f8dbde00b0e991c2d504a2f"
+      "sha256": "be268790f47a69230c3bf04683ea2bc2f96ab92d75bf0c5c40fa54b319414c26"
     },
     {
       "path": "packages/render/src/assembly/renderer-lifecycle.ts",
@@ -61547,9 +62069,9 @@
     },
     {
       "path": "packages/render/src/assembly/webgpu-renderer-observation-owner.ts",
-      "bytes": 22011,
+      "bytes": 23998,
       "executable": false,
-      "sha256": "a87658c0af85067a4fdbc6f263f9373e8b6d1f1b252047268f2dcab3bf450126"
+      "sha256": "d8fff448009713fa8f9bbb36085c4c06beea24d90583a82dd06c0f275f90d30b"
     },
     {
       "path": "packages/render/src/assembly/webgpu-renderer-observation.ts",
@@ -61565,9 +62087,9 @@
     },
     {
       "path": "packages/render/src/assembly/webgpu-renderer.ts",
-      "bytes": 167574,
+      "bytes": 166681,
       "executable": false,
-      "sha256": "358ff77d7b562cbc1c54e71cc83145d304f1cc158e0f05eebb996b286afae9ed"
+      "sha256": "6a04c2ff411b03012de20c387c8fe0ce7ec8178df800bde1a4913ae43a0e3963"
     },
     {
       "path": "packages/render/src/assembly/webgpu-vertex-layouts.ts",
@@ -62956,6 +63478,12 @@
       "sha256": "c8e81806932abfa194301c902216c33488fbb508a11960ff9ab350627c1a09f1"
     },
     {
+      "path": "packages/render/src/features/__tests__/frame-execution.unit.test.ts",
+      "bytes": 5425,
+      "executable": false,
+      "sha256": "ab37b26b4481d917eace71cffdea9b91e05e970735ee7ae359698b4cd2029e45"
+    },
+    {
       "path": "packages/render/src/features/__tests__/shared-graph-textures-gpu.fixture.ts",
       "bytes": 6144,
       "executable": false,
@@ -62975,9 +63503,9 @@
     },
     {
       "path": "packages/render/src/features/__tests__/shared-graph-textures.unit.test.ts",
-      "bytes": 7167,
+      "bytes": 8764,
       "executable": false,
-      "sha256": "00cb2b12c00c5efb828756dd254ce2c8f7b788a4bc675d2bf1d570987f0315be"
+      "sha256": "a33a4e870f484fac8223f3d8ad36dbe67abb9db62f0602ef1bde9076f4abbab2"
     },
     {
       "path": "packages/render/src/features/__tests__/source-capture.unit.test.ts",
@@ -62993,9 +63521,9 @@
     },
     {
       "path": "packages/render/src/features/builtins.ts",
-      "bytes": 3220,
+      "bytes": 3293,
       "executable": false,
-      "sha256": "8cf2fa71e5974434a993d8926bc1e812d3b5f59beccc0e82026d29e9fccb7300"
+      "sha256": "0ecf8ef0be760299bb0dbbd529ac1e4c475fbd6693c88946136e7bc271ca94c8"
     },
     {
       "path": "packages/render/src/features/depth-of-field/__tests__/depth-of-field-graph.unit.test.ts",
@@ -63125,9 +63653,9 @@
     },
     {
       "path": "packages/render/src/features/frame-execution.ts",
-      "bytes": 1025,
+      "bytes": 1065,
       "executable": false,
-      "sha256": "92875f12f54902e14015a992aef50a00ab46756ab7560b41fa0e59db6b6df358"
+      "sha256": "80cbfc5603dadaad8a5ab857ac1982ba0efe27c839d19875ee4e10d1709bbe22"
     },
     {
       "path": "packages/render/src/features/frame-plan.ts",
@@ -63149,9 +63677,9 @@
     },
     {
       "path": "packages/render/src/features/graph-texture-targets.ts",
-      "bytes": 14442,
+      "bytes": 15209,
       "executable": false,
-      "sha256": "b1528ed819c317e88010b2efdbb1065edfd5845a2b68b223875c290bf0ebfac3"
+      "sha256": "62ec119a339f1746a3cc1c667792847aa101874c65acc98656ab62e1534607ac"
     },
     {
       "path": "packages/render/src/features/graphics-projection.ts",
@@ -63167,9 +63695,9 @@
     },
     {
       "path": "packages/render/src/features/host.ts",
-      "bytes": 142359,
+      "bytes": 144346,
       "executable": false,
-      "sha256": "f753f7aae55e0434a557097848c2a55096243340771fc1d4b3d050c265f89a8f"
+      "sha256": "9822df751fbe628bb99f1a43447f1316d23a882de1750d5f37c44a5fa912c4ad"
     },
     {
       "path": "packages/render/src/features/lens-effects.ts",
@@ -63305,9 +63833,9 @@
     },
     {
       "path": "packages/render/src/features/render-graph-compute.ts",
-      "bytes": 12480,
+      "bytes": 12536,
       "executable": false,
-      "sha256": "1ecddc4e4add30649e7654cbaf57bf9a6409ef289d2c56d7fe63f11ccbcaca24"
+      "sha256": "e3f97a12c02fae10308544338dfdfccd5480e42f1d4c00503a072537c5381e79"
     },
     {
       "path": "packages/render/src/features/render-graph-contribution.ts",
@@ -63461,9 +63989,9 @@
     },
     {
       "path": "packages/render/src/gpu-driven/batch-execution.ts",
-      "bytes": 10302,
+      "bytes": 10670,
       "executable": false,
-      "sha256": "a379225c517b9c9ca94cf4058e50b5ba087fb750dd73a3d09b10a491afcd1f56"
+      "sha256": "50ecc986bfc7d7792a101c689bb4827100d74092cedc0827d0845f7cc9b2fbd5"
     },
     {
       "path": "packages/render/src/gpu-driven/batch-key.ts",
@@ -65513,9 +66041,9 @@
     },
     {
       "path": "packages/render/src/record/__tests__/direct-draw-phase-incremental.unit.test.ts",
-      "bytes": 40214,
+      "bytes": 42033,
       "executable": false,
-      "sha256": "24d0b898bbf200eb6236d49c6507138c2f1e3c8beddabc12618ae1efbd2f0048"
+      "sha256": "363cee74a1cdfa99bc770417ed06989a28e12729cd938923bff2fa99469ae1c1"
     },
     {
       "path": "packages/render/src/record/__tests__/direct-draw-phase.unit.test.ts",
@@ -65561,9 +66089,9 @@
     },
     {
       "path": "packages/render/src/record/__tests__/feature-depth-binding-lifetime.unit.test.ts",
-      "bytes": 12815,
+      "bytes": 17930,
       "executable": false,
-      "sha256": "0f75f9f3a0f0d35d1b5eb074d979fcc920b6cef8631ea102b1f8539b23d393f4"
+      "sha256": "57606e21e9fbae0a54c01bd0d26fc34cf2592c8510b76394f1ce73918569b92e"
     },
     {
       "path": "packages/render/src/record/__tests__/first-entry-map.unit.test.ts",
@@ -65663,9 +66191,9 @@
     },
     {
       "path": "packages/render/src/record/__tests__/graph-compile-purity.unit.test.ts",
-      "bytes": 20592,
+      "bytes": 21796,
       "executable": false,
-      "sha256": "e841046608030e9364912bf27c9cbcc2a24ffd12bdd5cc6990beb7b0c83d0d61"
+      "sha256": "b76ff1e6d6b55f225cad4477c38dd10ba4d9afedbc0fcf572fae723e6c82680b"
     },
     {
       "path": "packages/render/src/record/__tests__/gtao-candidate-preparation-fault.unit.test.ts",
@@ -66203,9 +66731,9 @@
     },
     {
       "path": "packages/render/src/record/frame-lighting.ts",
-      "bytes": 74142,
+      "bytes": 75151,
       "executable": false,
-      "sha256": "52a64d3d95fdde52d71045d619617e355530e75016b8cba656c5b6f4c25deda4"
+      "sha256": "97c1b11a1c7392e43df40283f4a9e119c339fff230a31fca431d925d6dc3362c"
     },
     {
       "path": "packages/render/src/record/frame-snapshot.ts",
@@ -66623,15 +67151,15 @@
     },
     {
       "path": "packages/render/src/record/typed-frame-graph-bindings.ts",
-      "bytes": 39506,
+      "bytes": 39610,
       "executable": false,
-      "sha256": "b7ad4241c3bc0c03b2b62f5b71f5266b1de812401e14a7b9cd98f7e22889f94f"
+      "sha256": "8a327a5b14dd68dec4e3c44a6115292e2e7581afb80d21e857c896f8cc9a2bdc"
     },
     {
       "path": "packages/render/src/record/typed-frame-graph.ts",
-      "bytes": 147050,
+      "bytes": 147077,
       "executable": false,
-      "sha256": "4cb8d6a435a86503bcdb57dea669aa94ef9a789456fdff1d81302ca548a1d0c9"
+      "sha256": "0070722ee8cc37a807ade08e513ed6e4ffca7a1e7058c189495314fbcb48bd6a"
     },
     {
       "path": "packages/render/src/record/typed-scene-pipeline-demand.ts",
@@ -67175,9 +67703,9 @@
     },
     {
       "path": "packages/render/src/scene/render-source.ts",
-      "bytes": 13802,
+      "bytes": 16335,
       "executable": false,
-      "sha256": "10894b12fd4e033cd1c29ed145aba113d37887f279bea1734fe40ff91a4060c0"
+      "sha256": "5326655b9a3346359942d671f476b86c64014050c6151ee7d7f91a1e15232d43"
     },
     {
       "path": "packages/render/src/scene/residual-bounds-proof.ts",
@@ -68111,9 +68639,9 @@
     },
     {
       "path": "packages/render/src/water/__tests__/fluid-feature.unit.test.ts",
-      "bytes": 33622,
+      "bytes": 45088,
       "executable": false,
-      "sha256": "6c3d2fb311b3d89281b1db7143c13bd668a7e692339585673dbf1b70c3fdf83b"
+      "sha256": "87c966f542c811634e3dbd974ce60a922b8c80643462726e8bcf16e82096ec73"
     },
     {
       "path": "packages/render/src/water/__tests__/fluid-foam.unit.test.ts",
@@ -68147,9 +68675,9 @@
     },
     {
       "path": "packages/render/src/water/__tests__/gpu-mesh-source.unit.test.ts",
-      "bytes": 26218,
+      "bytes": 29260,
       "executable": false,
-      "sha256": "f08612f5eaec436519ed98fe996d3f8297e10c60ea80dd5fae9058f9073bf631"
+      "sha256": "a207663d28287a514c7c3f938292f1e267c0d80ef86a0792e8c481275cf937d2"
     },
     {
       "path": "packages/render/src/water/__tests__/material-admission.unit.test.ts",
@@ -68162,6 +68690,12 @@
       "bytes": 2362,
       "executable": false,
       "sha256": "2c178c446635b4c22c041d83dedc47b42f690d4942af0f2d6ace1a73d9f3fc24"
+    },
+    {
+      "path": "packages/render/src/water/__tests__/transition-continuity-upload.unit.test.ts",
+      "bytes": 6237,
+      "executable": false,
+      "sha256": "76e2d75f8e0465dbaefb907094fb04fd9efadca559e59ff7d7af4fc2f220dc39"
     },
     {
       "path": "packages/render/src/water/__tests__/underwater-feature.unit.test.ts",
@@ -68201,9 +68735,9 @@
     },
     {
       "path": "packages/render/src/water/__tests__/water-info-retained-closure.unit.test.ts",
-      "bytes": 17100,
+      "bytes": 18554,
       "executable": false,
-      "sha256": "9b69f6c3ee78ec02b38edd23c45df24af07976d9bcc625dce34fe874b6a3e94a"
+      "sha256": "81cbcec8ca1f7f591d045200039b2f565070fae09c7ef694e2b16115409005d5"
     },
     {
       "path": "packages/render/src/water/advanced-collisions.ts",
@@ -68213,9 +68747,9 @@
     },
     {
       "path": "packages/render/src/water/advanced-feature.ts",
-      "bytes": 118971,
+      "bytes": 121776,
       "executable": false,
-      "sha256": "c8aa5868d437bb8ebe104ebdf3a5aee457edf95226e6f874dc7ffd199c2d5b61"
+      "sha256": "b04f9a70a267d43860909f3d29663c9c3563ee7796dc1009d836c0151624172b"
     },
     {
       "path": "packages/render/src/water/advanced-fft-shader.ts",
@@ -68255,21 +68789,21 @@
     },
     {
       "path": "packages/render/src/water/dispersive-ocean-shader.ts",
-      "bytes": 16068,
+      "bytes": 17101,
       "executable": false,
-      "sha256": "c68491791f05ff485ebea382471df707269e1ff4f271cfcd61229e9c23498df0"
+      "sha256": "bc298722e65ed344b01972f96023f872ce4b7616b84c1e8e86d69f50efd4a0f1"
     },
     {
       "path": "packages/render/src/water/dispersive-ocean.ts",
-      "bytes": 19291,
+      "bytes": 20041,
       "executable": false,
-      "sha256": "3a7a25f75f15121bb8ec4f7223b314ec03db805dfb102188051ca9ad228334c3"
+      "sha256": "ec57277598dddeaa53c4fe4b06d63b64900c47297baa6b9f6bfd136683d47e9d"
     },
     {
       "path": "packages/render/src/water/fluid-feature.ts",
-      "bytes": 34017,
+      "bytes": 38018,
       "executable": false,
-      "sha256": "a14b8d224ce85ac92b15ae9cfc7c276dc4684e3db71d52cab9532c71d1f7df2d"
+      "sha256": "c9f6a09283c69c4d2cab722118354a17d311a9969c4948bd4302b1e4e4aacdb5"
     },
     {
       "path": "packages/render/src/water/fluid-foam.ts",
@@ -68279,9 +68813,9 @@
     },
     {
       "path": "packages/render/src/water/fluid-graph.ts",
-      "bytes": 50273,
+      "bytes": 51105,
       "executable": false,
-      "sha256": "7294d1dc90d41ff28e307cca224dc754430202e0aa60bce9d08eb636835bc221"
+      "sha256": "6754a860a3e19f66e129835cddcb57b0249ca717972e26d6c5a38225cecdbcc0"
     },
     {
       "path": "packages/render/src/water/fluid-shaders.ts",
@@ -68321,9 +68855,9 @@
     },
     {
       "path": "packages/render/src/water/gpu-mesh-source.ts",
-      "bytes": 14570,
+      "bytes": 14913,
       "executable": false,
-      "sha256": "f1fb07c676ce369c8cd7ba31ab908326ca994d1565a4cdf164d3be5e27e3a72c"
+      "sha256": "76be1f02195c307144d0aa966e9c64fad2a7ef6cc4672c0e0309304b96bdbb14"
     },
     {
       "path": "packages/render/src/water/material-admission.ts",
@@ -68333,9 +68867,9 @@
     },
     {
       "path": "packages/render/src/water/mesh-source-admission.ts",
-      "bytes": 12179,
+      "bytes": 12002,
       "executable": false,
-      "sha256": "b7797cf52637cc67582825c5de0f93d8a67ce99cfb8ce3f4d9e34ab68517b7e0"
+      "sha256": "b4e735f828cbd56be29ea0992818d085b23f85aebcf1230bdac29d90661de62e"
     },
     {
       "path": "packages/render/src/water/slw-graph.ts",
@@ -68357,9 +68891,9 @@
     },
     {
       "path": "packages/render/src/water/water-info-feature.ts",
-      "bytes": 145848,
+      "bytes": 145651,
       "executable": false,
-      "sha256": "6eedffa38fead97aba314107a89f865114a7dd8f045e9f438a02d37ff7748ebd"
+      "sha256": "c019e29f64963d1b2af693f68f419adb0222a3ff7a141327e5a1f96cf370c0dc"
     },
     {
       "path": "packages/render/src/water/water-info-producer.ts",
@@ -68375,9 +68909,9 @@
     },
     {
       "path": "packages/render/src/water/wave-material.ts",
-      "bytes": 53697,
+      "bytes": 55597,
       "executable": false,
-      "sha256": "bd69863d172723394e3b818759b8fed65e1d0d3862bb9abcff5326a8b9d04fca"
+      "sha256": "f08d1dce6bc49b8f9fc1fd658150887180f9d30164c287fb1257f60b8e8e4b07"
     },
     {
       "path": "packages/render/src/wgsl-raw.d.ts",
@@ -68417,9 +68951,9 @@
     },
     {
       "path": "packages/render/src/world/__tests__/feature-graph-systems.unit.test.ts",
-      "bytes": 39443,
+      "bytes": 42706,
       "executable": false,
-      "sha256": "3db69a1efea9387045c69f2ac8faa0de8ee38645b117d82dda80aada17e5cbe7"
+      "sha256": "33f18ca87a9e548f1585126c1bb986615d9ceef20097b8f45a1c9a7b8aa0eb38"
     },
     {
       "path": "packages/render/src/world/__tests__/feature-plan-systems.integration.test.ts",
@@ -76559,9 +77093,9 @@
     },
     {
       "path": "packages/scene/src/__tests__/hierarchy-propagation.perf.test.ts",
-      "bytes": 5842,
+      "bytes": 5914,
       "executable": false,
-      "sha256": "b704445ab220e186c8be185210b5333dd4e89b590f6db1b46db55fa4b54f1809"
+      "sha256": "e49d68703c4a640caf52bc3ce77ff517122e92d737d0107987571b9a45562e28"
     },
     {
       "path": "packages/scene/src/__tests__/keyed-scene.integration.test.ts",
@@ -76622,6 +77156,12 @@
       "bytes": 14913,
       "executable": false,
       "sha256": "ad59858bb2a1265fa4cfb5611465c236209408823cdb8ed4a832c287cb6f7e18"
+    },
+    {
+      "path": "packages/scene/src/__tests__/replay-propagation.unit.test.ts",
+      "bytes": 3739,
+      "executable": false,
+      "sha256": "d5d6146f4a206fe6ea989009a042c254fd7e52934a1b6fb8fc24b83cd83f5322"
     },
     {
       "path": "packages/scene/src/__tests__/scene-binding.integration.test.ts",
@@ -76871,9 +77411,9 @@
     },
     {
       "path": "packages/scene/src/systems/propagate-transforms.ts",
-      "bytes": 51089,
+      "bytes": 57747,
       "executable": false,
-      "sha256": "74b79be482aec5b8ee7e142ded5183d949c6c64508e49b74bf4690c33e32eb69"
+      "sha256": "3d966d1324a4213583ac6cbde6b1ca06f0b51b682cf6a6a8622aa3c1ad2d5943"
     },
     {
       "path": "packages/scene/tsconfig.json",
@@ -76943,9 +77483,9 @@
     },
     {
       "path": "packages/shader-compiler/README.md",
-      "bytes": 42002,
+      "bytes": 42384,
       "executable": false,
-      "sha256": "c2252a3cb049cebf50916ab10d71b969410a996013608c246cfe723f82bbda08"
+      "sha256": "ca50641fc18271b2a16a336fc117bf4a864669aafd4f15bf6ac8393178ae9ac3"
     },
     {
       "path": "packages/shader-compiler/src/__tests__/alpha-mask-variant.unit.test.ts",
@@ -77524,6 +78064,18 @@
       "sha256": "816bdd4fc3b18bb39da1eb5fb508d5ec4c178037e25d11a7a97cd007d97a5987"
     },
     {
+      "path": "packages/shader-compiler/src/material/__tests__/water-body-geometry-surface.integration.test.ts",
+      "bytes": 2338,
+      "executable": false,
+      "sha256": "b5882cd183fd03623b92b3180d305e9db194898c9c5cf2a1c9281c3bf0c84d31"
+    },
+    {
+      "path": "packages/shader-compiler/src/material/__tests__/water-transition-continuity.unit.test.ts",
+      "bytes": 3709,
+      "executable": false,
+      "sha256": "ae4cfda4784683ddaac398bcebe51885f971e284506be6528bd7b7f6ae8fc16b"
+    },
+    {
       "path": "packages/shader-compiler/src/material/__tests__/water-vertex-mapping.integration.test.ts",
       "bytes": 16324,
       "executable": false,
@@ -77549,9 +78101,9 @@
     },
     {
       "path": "packages/shader-compiler/src/material/compose.ts",
-      "bytes": 52896,
+      "bytes": 53027,
       "executable": false,
-      "sha256": "92f3b3a4898c5d4e01a1eb8fe072164c194ecf0442f2183e6f3881aafb99dab6"
+      "sha256": "0841fdbf22f1f396e55e479435fd2e022ba88c465e6b5b75badbddc44f4ea3d3"
     },
     {
       "path": "packages/shader-compiler/src/material/cook.ts",
@@ -77599,7 +78151,7 @@
       "path": "packages/shader-compiler/src/material/pack-cooker.ts",
       "bytes": 39457,
       "executable": false,
-      "sha256": "3e447caaa71d7b9483f3cb29eaffb4ae027f1ec66aeec3190ba2d8b0615b67ef"
+      "sha256": "b9573fc4130920e3b6651e18a0e152d95442aa332571d0456346304761310f8e"
     },
     {
       "path": "packages/shader-compiler/src/material/pack-variant-reuse.ts",
@@ -77741,9 +78293,9 @@
     },
     {
       "path": "packages/shader/README.md",
-      "bytes": 69500,
+      "bytes": 70241,
       "executable": false,
-      "sha256": "eb3dbe10001b5bbd64405dc1ac31630d520139441afbaad5ef6661e4f24b80e6"
+      "sha256": "b0df830cc0d3e8235f57d1d3ad3ae4f78e3511f7057ab3494ef0e807bba17466"
     },
     {
       "path": "packages/shader/scripts/check-pbr-ibl-callsite.mjs",
@@ -78383,21 +78935,33 @@
     },
     {
       "path": "packages/shader/src/__tests__/water-shallow-foam.dawn.test.ts",
-      "bytes": 15852,
+      "bytes": 16040,
       "executable": false,
-      "sha256": "534f290f689f12be3c5e9241f18bce773e35655ee99f64a14d5bbbb7cb00626a"
+      "sha256": "bdda4e3a32d38e16708e7ba18faf5aedb0f00ec376a2aba9ce4ea15b020b5ffd"
     },
     {
       "path": "packages/shader/src/__tests__/water-shallow-sampling.dawn.test.ts",
-      "bytes": 5272,
+      "bytes": 5288,
       "executable": false,
-      "sha256": "54c97a877fda2d2a0a7cc410a21d6eece4d42a32ad725b1d8be2f1ca3777e191"
+      "sha256": "d7a9c56d118d2df49e2d2a2a6b0bbe02dfa613020860fdf5a166c6c798d16101"
     },
     {
       "path": "packages/shader/src/__tests__/water-transition-bounds.dawn.test.ts",
-      "bytes": 34899,
+      "bytes": 34936,
       "executable": false,
-      "sha256": "ab9d30a72403632edccd704a7f3ea116bc59c5fbe1673fbdbb2dbaff98b2f98b"
+      "sha256": "a3fd0fe167940518e29b35682b04c8471f6b4a8b868816fb35e7bc7a94d80772"
+    },
+    {
+      "path": "packages/shader/src/__tests__/water-transition-continuity.dawn.test.ts",
+      "bytes": 8935,
+      "executable": false,
+      "sha256": "28906ab3199457eaac172e0e1ef488039e9b1fa9396c791da321b0030ef77745"
+    },
+    {
+      "path": "packages/shader/src/__tests__/water-transition-continuity.fixture.ts",
+      "bytes": 6739,
+      "executable": false,
+      "sha256": "84c39e24c00d6df393fa51f38d3d6da29e40ddca7e3e3a2b0a447a2eed77edcc"
     },
     {
       "path": "packages/shader/src/__tests__/water-underwater-phase.dawn.test.ts",
@@ -79217,9 +79781,9 @@
     },
     {
       "path": "packages/shader/src/single-layer-water.wgsl",
-      "bytes": 22083,
+      "bytes": 22565,
       "executable": false,
-      "sha256": "4d67a4081bf8afcaf0c3e6babf5ce908cdffe084ba5f50e2abae0a9f1c896dcf"
+      "sha256": "03e671d9cb35077e04d1b27ad4f28ef6bde8bc32bca6a6e2943396665f2f6ee0"
     },
     {
       "path": "packages/shader/src/skin-task.wgsl",
@@ -79517,9 +80081,9 @@
     },
     {
       "path": "packages/shader/src/water-advanced-sampling.wgsl",
-      "bytes": 9405,
+      "bytes": 9002,
       "executable": false,
-      "sha256": "653e781a01c3745d0f8fed840434d09fd24fe680a7d4e0e31974433bd1e6ed4b"
+      "sha256": "f3fd1b3ce123d2cdea6a2cd58972b3f0504450eef5a9df568eb34616f2c1d1ba"
     },
     {
       "path": "packages/shader/src/water-deformation-default.wgsl",
@@ -79571,9 +80135,15 @@
     },
     {
       "path": "packages/shader/src/water-surface.wgsl",
-      "bytes": 22434,
+      "bytes": 23280,
       "executable": false,
-      "sha256": "1699548fffe555afe7c0c8eec31803d07837d11be9db2259a52e9c697338b293"
+      "sha256": "a15cc27e9f7890a08e295aaa7b137a17229b2e689ee23340dc40b53eb09c3944"
+    },
+    {
+      "path": "packages/shader/src/water-transition-continuity.wgsl",
+      "bytes": 3816,
+      "executable": false,
+      "sha256": "636df0fbf0f67385e7c27038616ff243612f2587b54fcc9eeb7e464a1b0f6c22"
     },
     {
       "path": "packages/shader/src/water-underwater.wgsl",
@@ -79583,9 +80153,9 @@
     },
     {
       "path": "packages/shader/src/water-waves.wgsl",
-      "bytes": 24501,
+      "bytes": 24507,
       "executable": false,
-      "sha256": "46408e38a77893d792aad083ac9b49134356ff86a695419272a7ea51437fc6dc"
+      "sha256": "2f939086e4710f79801984d2f0b972cd8247fc9df5e0731f03601dc9b8677a54"
     },
     {
       "path": "packages/shader/src/wgsl-raw.d.ts",
@@ -81899,9 +82469,9 @@
     },
     {
       "path": "packages/types/src/water-contracts.ts",
-      "bytes": 31023,
+      "bytes": 31249,
       "executable": false,
-      "sha256": "d9599678fd912aed0759a8c98a6344639b3f73e79fb7c89590cf389d55524bc1"
+      "sha256": "5d8f140dacc642fbb78fb8539418a99fcc5c48985b752b68b53a658052dedc3c"
     },
     {
       "path": "packages/types/src/wgsl-comments.ts",
@@ -85709,9 +86279,9 @@
     },
     {
       "path": "packages/vite-plugin-shader/README.md",
-      "bytes": 22306,
+      "bytes": 22586,
       "executable": false,
-      "sha256": "1b37e2a61df731f2c61935f0426c2bab98c5d7f6187f4fa2efb8821896ddf94e"
+      "sha256": "770091a61565bab8cae6dd7fa678c14efe7e7c431da3580319eaae6ccd894fd4"
     },
     {
       "path": "packages/vite-plugin-shader/src/__tests__/alpha-mask-variant-axis.unit.test.ts",
@@ -86021,9 +86591,9 @@
     },
     {
       "path": "packages/vite-plugin-shader/src/engine-inputs/load-engine-shader-entries.ts",
-      "bytes": 25917,
+      "bytes": 26018,
       "executable": false,
-      "sha256": "957f4e172a35fe4c661b02a22e69036307449d36871da1a600cc1b6122aa2fbd"
+      "sha256": "cb4b03f4aba784c83767a5389b121a14c6fb74660452105cc523e8a372a4ac65"
     },
     {
       "path": "packages/vite-plugin-shader/src/engine-inputs/packaged-profiles.ts",
@@ -86159,9 +86729,9 @@
     },
     {
       "path": "packages/water/README.md",
-      "bytes": 61809,
+      "bytes": 65610,
       "executable": false,
-      "sha256": "21fd184e8aa1688c3f1aa035806b4eaeddf20ce11476a99e4fef2baa47c6d8fd"
+      "sha256": "a7d366819f114317ee9419fb26b8fa76a3807bc5730e37d171d515b61380dc2a"
     },
     {
       "path": "packages/water/src/__tests__/advanced-simulation.unit.test.ts",
@@ -86195,9 +86765,9 @@
     },
     {
       "path": "packages/water/src/__tests__/buoyancy-step.unit.test.ts",
-      "bytes": 44848,
+      "bytes": 45913,
       "executable": false,
-      "sha256": "5c8e90c67c7bfb1fa423d5737fb3caf3140f30534c7b79b1101103c9d5e52fef"
+      "sha256": "435a15ec1d785c6bd9096e8e0d8628f62d3e54b3236875bc8282c1b46beae25f"
     },
     {
       "path": "packages/water/src/__tests__/capability-report.unit.test.ts",
@@ -86207,9 +86777,9 @@
     },
     {
       "path": "packages/water/src/__tests__/dispersive-ocean.unit.test.ts",
-      "bytes": 37270,
+      "bytes": 42712,
       "executable": false,
-      "sha256": "01f2ac5e9218865334484cab1134cec33e30bd4a5e2b5a70bbfc10deae43cad4"
+      "sha256": "1c8185a732b1e897cd9ce31c302129f3a93476331da16f65b486367d16a26be1"
     },
     {
       "path": "packages/water/src/__tests__/fixtures/ue-5.8.1-river-mesh-bodysetup.json",
@@ -86255,9 +86825,9 @@
     },
     {
       "path": "packages/water/src/__tests__/r2-mesh-info-waves-query.unit.test.ts",
-      "bytes": 97310,
+      "bytes": 100219,
       "executable": false,
-      "sha256": "f616074a9a0aed6cb1d641111d086b3066de11fdf6aa0f1276789645f0b0f084"
+      "sha256": "64286705773fd12709a52480d5f34f8b1d71477aa2023f4768b650a531b89b9b"
     },
     {
       "path": "packages/water/src/__tests__/r5-render-bounds.unit.test.ts",
@@ -86272,10 +86842,34 @@
       "sha256": "9ec01c5c969f576d2a19430ed73e49450683d545cea390d4d2a1bb836c9ab50d"
     },
     {
+      "path": "packages/water/src/__tests__/water-mesh-continuity-current-frame.unit.test.ts",
+      "bytes": 6099,
+      "executable": false,
+      "sha256": "57642f06aa1119cc88892e77ff488d283e7a1a7be2370aa27421589a274c7ea7"
+    },
+    {
+      "path": "packages/water/src/__tests__/water-mesh-continuity.fixture.ts",
+      "bytes": 1354,
+      "executable": false,
+      "sha256": "476cbfabd03eaed1d2e459490be63cc377856e3b800f7608562d977399e66b27"
+    },
+    {
+      "path": "packages/water/src/__tests__/water-mesh-continuity.unit.test.ts",
+      "bytes": 5615,
+      "executable": false,
+      "sha256": "385e4b779667ec7ae4253b8d82e578af7715023c73ed0906cc5c6a2123d2b091"
+    },
+    {
       "path": "packages/water/src/__tests__/water-mesh-lod.unit.test.ts",
       "bytes": 7977,
       "executable": false,
       "sha256": "da37d733c872163332e4bc77a5d10cddf79a9c6d41630928d564237aa0e591c6"
+    },
+    {
+      "path": "packages/water/src/__tests__/water-mesh-serialization.unit.test.ts",
+      "bytes": 4206,
+      "executable": false,
+      "sha256": "5fe69e510fce805f31bf25f814bd9891759203d37a17e28857568f7b7eb29dc6"
     },
     {
       "path": "packages/water/src/__tests__/waves-upload.unit.test.ts",
@@ -86387,9 +86981,9 @@
     },
     {
       "path": "packages/water/src/internal.ts",
-      "bytes": 636,
+      "bytes": 707,
       "executable": false,
-      "sha256": "c3b106501bbbc37c6f89270c086e5ea19eb145439b2bb4b2f83506f69010a41b"
+      "sha256": "e91988fb485ec0698313bea0f2d81ed5e24a3ffdf0020f9a9b37f2bee65f8e66"
     },
     {
       "path": "packages/water/src/material-family.ts",
@@ -86399,9 +86993,9 @@
     },
     {
       "path": "packages/water/src/ocean-patch.ts",
-      "bytes": 41734,
+      "bytes": 44943,
       "executable": false,
-      "sha256": "a2bca70375cc6075aff93139932f7883646102395636de8ecd8288a2e5bebc4d"
+      "sha256": "bb74df6969bce5432c4c4e8b5e80e03914aab27157609c40e9037884dc3b6021"
     },
     {
       "path": "packages/water/src/operation-observation.ts",
@@ -86471,15 +87065,15 @@
     },
     {
       "path": "packages/water/src/system-internal.ts",
-      "bytes": 2112,
+      "bytes": 2449,
       "executable": false,
-      "sha256": "d2c5d7dbfbe8b7f005c75b735b052c2a470be4d765c917022165ea36439d188d"
+      "sha256": "55c77285727b7ac7e8fe3a07143d35b28cc5fba965ad99bdc45b6ee6a870ef99"
     },
     {
       "path": "packages/water/src/system.ts",
-      "bytes": 166277,
+      "bytes": 168525,
       "executable": false,
-      "sha256": "d6742b098c750b9a73aa960310de2208740646bbd942ea4ce9e5d05e88c914d3"
+      "sha256": "16c301ce9a4403c437bb38fd00d0cb568d188c40b2ee79c70bf32d5a5697036b"
     },
     {
       "path": "packages/water/src/ue-default-water-brush-curve.ts",
@@ -86489,9 +87083,9 @@
     },
     {
       "path": "packages/water/src/validate.ts",
-      "bytes": 127822,
+      "bytes": 128548,
       "executable": false,
-      "sha256": "3593ad15e500f77e37a571b07e3635e3421cae9fa1b4f5899e4bf739a6386827"
+      "sha256": "e84cf158cede947f81b7844a08e8ed67defdfd7e19697b75e9decc28faf1ea6e"
     },
     {
       "path": "packages/water/src/view-state.ts",
@@ -86513,9 +87107,9 @@
     },
     {
       "path": "packages/water/src/water-mesh-abi.ts",
-      "bytes": 4044,
+      "bytes": 5893,
       "executable": false,
-      "sha256": "6446845a1f5f401d480064a69dafe550ea4741628d855b178a5a9dc3bc45f83d"
+      "sha256": "b70c88ec3abb246c3d24df5dbb2e7b0781117222a3eb9a7fd668a9e8ed3b6751"
     },
     {
       "path": "packages/water/src/water-mesh-budget.ts",
@@ -86524,10 +87118,16 @@
       "sha256": "be5fa161a4dbcea0762698b4ff356b1d7cf7941fe1be58bbec288c58c015d3d7"
     },
     {
-      "path": "packages/water/src/water-mesh.ts",
-      "bytes": 54092,
+      "path": "packages/water/src/water-mesh-continuity.ts",
+      "bytes": 15379,
       "executable": false,
-      "sha256": "a18039030141407f394f0f49a1029b98815cef2690012a4a1ee1480053eb93dc"
+      "sha256": "234006c6b3add935b8f6ec82e87c8dcf86e0e670ff5186a47672b813cf942a24"
+    },
+    {
+      "path": "packages/water/src/water-mesh.ts",
+      "bytes": 55559,
+      "executable": false,
+      "sha256": "e9dae066d7611630e42d70cb9640399465f512b64b9bc6666e8049ad3e38449a"
     },
     {
       "path": "packages/water/src/water-solver-codec.ts",
@@ -86873,9 +87473,9 @@
     },
     {
       "path": "pnpm-lock.yaml",
-      "bytes": 862360,
+      "bytes": 865084,
       "executable": false,
-      "sha256": "cd9768d886fb80270e0ea1dee0b403ffca4d93f1bf6d11d58ab74d3cbf896118"
+      "sha256": "7b4d264c465124a82e35b79265ad74756fdac316ffb7f4a1cb192750b8470dce"
     },
     {
       "path": "pnpm-workspace.yaml",
@@ -86909,9 +87509,9 @@
     },
     {
       "path": "schemas/engine-capabilities.json",
-      "bytes": 34414,
+      "bytes": 34494,
       "executable": false,
-      "sha256": "4b7d5ca9ba29bb8c5c4833ad4b2dd611ed17e5836a8f9a944c31b6a8d6e932d5"
+      "sha256": "7ff60bb5ed90d850b1abacc46d4be6f53d65b993c78c31f4a17adda9cec17e29"
     },
     {
       "path": "schemas/forgeax-dist.schema.json",
@@ -88781,9 +89381,9 @@
     },
     {
       "path": "scripts/ci/__tests__/dawn-gate-roster.test.mjs",
-      "bytes": 51300,
+      "bytes": 54103,
       "executable": false,
-      "sha256": "b6d5e700aa26414f15c37a3024e979ef8c1b754ab5fbea62006bfc8b1ba213f8"
+      "sha256": "b0039ac224584bff6279976cdca221c4d8eb2794e905d7381695da38848e125e"
     },
     {
       "path": "scripts/ci/__tests__/dawn-partition-evidence.test.mjs",
@@ -89260,6 +89860,18 @@
       "sha256": "859fb5e50e7f525548376fcf0aa881e3a0b8112ee1c7f81e5f2ad90c0a093592"
     },
     {
+      "path": "scripts/ci/__tests__/fixtures/dawn-completed-43851698763.json",
+      "bytes": 40788,
+      "executable": false,
+      "sha256": "cbfa6338ab611b422122a2222285a7f16a5364bc32ad6e919dc8a50b779f2671"
+    },
+    {
+      "path": "scripts/ci/__tests__/fixtures/dawn-completed-43904183011.json",
+      "bytes": 40498,
+      "executable": false,
+      "sha256": "7d27e45736bc55e670d7040b640ab2189c1c37b3199bc733e2fd39629d127872"
+    },
+    {
       "path": "scripts/ci/__tests__/fixtures/dawn-ledger-before-41998440989.json",
       "bytes": 39091,
       "executable": false,
@@ -89591,9 +90203,9 @@
     },
     {
       "path": "scripts/ci/__tests__/sdk-shader-artifacts.test.mjs",
-      "bytes": 17059,
+      "bytes": 17756,
       "executable": false,
-      "sha256": "84ead04abd8249737021a402bc7ab22f4d849dcb8b23f70c74c4d98adaea8f59"
+      "sha256": "0b69d663d5cad52ddd0a0a9544b56377f596648e4c37de20c71eb47263b3eec0"
     },
     {
       "path": "scripts/ci/__tests__/sdk-source-preparation.test.mjs",
@@ -90035,15 +90647,15 @@
     },
     {
       "path": "scripts/ci/dawn-file-seconds.json",
-      "bytes": 47489,
+      "bytes": 47586,
       "executable": false,
-      "sha256": "0f6f13e8f3b5d3c45f1d1bb8fc549b2cc217edd8f116a3ed3498555e50171782"
+      "sha256": "d02363765c3d004b1dc3d97c4325cff4056db7d8a8b5226f55d301346521d660"
     },
     {
       "path": "scripts/ci/dawn-gate-roster.mjs",
-      "bytes": 8245,
+      "bytes": 8419,
       "executable": false,
-      "sha256": "be69d073c2c5fa7d768b1dd0105cc3bfd5b48860d6013261cb65992c8e01fe0b"
+      "sha256": "d73490f487a4e71f6f0e4b4a069c196b0efb49a8fc8f7337ee2cf0bff9826f93"
     },
     {
       "path": "scripts/ci/dawn-heavy-roster.mjs",
@@ -90254,6 +90866,18 @@
       "bytes": 39998,
       "executable": false,
       "sha256": "859fb5e50e7f525548376fcf0aa881e3a0b8112ee1c7f81e5f2ad90c0a093592"
+    },
+    {
+      "path": "scripts/ci/dawn-timing-snapshots/43851698763.json",
+      "bytes": 40788,
+      "executable": false,
+      "sha256": "cbfa6338ab611b422122a2222285a7f16a5364bc32ad6e919dc8a50b779f2671"
+    },
+    {
+      "path": "scripts/ci/dawn-timing-snapshots/43904183011.json",
+      "bytes": 40498,
+      "executable": false,
+      "sha256": "7d27e45736bc55e670d7040b640ab2189c1c37b3199bc733e2fd39629d127872"
     },
     {
       "path": "scripts/ci/delete-workflow-artifacts.mjs",
@@ -90737,9 +91361,9 @@
     },
     {
       "path": "scripts/ci/webgpu-compatibility-surface.json",
-      "bytes": 238375,
+      "bytes": 239403,
       "executable": false,
-      "sha256": "a707bdcecc637dcfa5e7b7a24cb7f8a43dca7382e1d4203552df8f160ac73b2f"
+      "sha256": "057c7d942e490a55f0be83de06b0295c4906d0e52ca7f7ead202c9140a073f39"
     },
     {
       "path": "scripts/ci/with-apt-ubuntu-sources.sh",
@@ -92975,9 +93599,9 @@
     },
     {
       "path": "skills/forgeax-engine-assets/SKILL.md",
-      "bytes": 30435,
+      "bytes": 31075,
       "executable": false,
-      "sha256": "fb3b6b86875a7083378eb73a76251ef41b6e44553c4c7509184d29b48df2aefb"
+      "sha256": "396b3892754f8bbb3c4caf6b30a9284c2a41eb19cdc3e2476a09bebc81880c69"
     },
     {
       "path": "skills/forgeax-engine-audio/SKILL.md",
@@ -93005,9 +93629,9 @@
     },
     {
       "path": "skills/forgeax-engine-cli/SKILL.md",
-      "bytes": 56352,
+      "bytes": 57421,
       "executable": false,
-      "sha256": "c2157d2b0129511c457dbed0a09f7b0b71d3ba26a11023661dcd81f8136c4e7c"
+      "sha256": "645fb3498a47d7a2d4555b391a678a2b7aa891eabef50fadc549ba7313a06c58"
     },
     {
       "path": "skills/forgeax-engine-debug-draw/SKILL.md",
@@ -93017,9 +93641,9 @@
     },
     {
       "path": "skills/forgeax-engine-debug/SKILL.md",
-      "bytes": 176407,
+      "bytes": 178008,
       "executable": false,
-      "sha256": "009ca42527f906ab77d6e4648f5fa02f9c25e262f77d0e79fa4926b2ce2ccb1e"
+      "sha256": "c6ef43b9869171478e85b65f29aa9e9401d061435742581db79919334ba6d799"
     },
     {
       "path": "skills/forgeax-engine-ecs/SKILL.md",
@@ -93041,9 +93665,9 @@
     },
     {
       "path": "skills/forgeax-engine-material/SKILL.md",
-      "bytes": 39742,
+      "bytes": 41709,
       "executable": false,
-      "sha256": "ff7a7d1cab2f570b5c80160697521d93c040c3861d1d370105cf7d2898af0db9"
+      "sha256": "0083734e3cc842ac26b018d8b3c2fab40432f8e33fbda9e539e2630bad5719e4"
     },
     {
       "path": "skills/forgeax-engine-math/SKILL.md",
@@ -93106,16 +93730,28 @@
       "sha256": "60ba59e72eb6025199991d4222b0ac6db829fe9319cbc08eaf3303f0dc1dce80"
     },
     {
-      "path": "skills/forgeax-engine-performance/scripts/__tests__/cpu-timeline.test.mjs",
-      "bytes": 12702,
+      "path": "skills/forgeax-engine-performance/scripts/__tests__/cpu-query.test.mjs",
+      "bytes": 9157,
       "executable": false,
-      "sha256": "8c64b1feae225003987cc58c5d0b6d45456f8456145ff238df4f15acf19b3ce3"
+      "sha256": "c23a319863e53ed6ac0166d72a0c6d5c251fecc7d511e07c6b59435d278f9c50"
+    },
+    {
+      "path": "skills/forgeax-engine-performance/scripts/__tests__/cpu-timeline.test.mjs",
+      "bytes": 12705,
+      "executable": false,
+      "sha256": "d8044475c4bc659c61da911b701c39b793139d2a2f36aff1e76dfedf23a929f1"
     },
     {
       "path": "skills/forgeax-engine-performance/scripts/__tests__/cpu-windows.test.mjs",
       "bytes": 8174,
       "executable": false,
       "sha256": "d938fcf3c287401959c902ae2ba4d75c8197dac4b475c7743b52f06aa101e9ec"
+    },
+    {
+      "path": "skills/forgeax-engine-performance/scripts/__tests__/echarts-view.test.mjs",
+      "bytes": 4884,
+      "executable": false,
+      "sha256": "fa33a00b26dfd99cd2c8326ac8b1200fb0507f922bbb8578bc3fbb59205497d4"
     },
     {
       "path": "skills/forgeax-engine-performance/scripts/__tests__/feature-plan-census.test.mjs",
@@ -93148,6 +93784,12 @@
       "sha256": "0d45af72bc1f2adfa2531ed4cd86ddd9670261f38cc8b33aa59715f126aad475"
     },
     {
+      "path": "skills/forgeax-engine-performance/scripts/__tests__/gpu-tools.test.mjs",
+      "bytes": 9285,
+      "executable": false,
+      "sha256": "66bdd37a9c3d5fb2b7b4d2d5e02804f474ac9808d14dd38e89591b6c66381a7d"
+    },
+    {
       "path": "skills/forgeax-engine-performance/scripts/__tests__/heap-compare.test.mjs",
       "bytes": 5948,
       "executable": false,
@@ -93166,16 +93808,28 @@
       "sha256": "57a6ff6e667bc13c5eb025983bea6a9361b4749000dec5a94e8adde1c05d99e2"
     },
     {
-      "path": "skills/forgeax-engine-performance/scripts/__tests__/memory-explorer.test.mjs",
-      "bytes": 9446,
+      "path": "skills/forgeax-engine-performance/scripts/__tests__/interactive-plots.test.mjs",
+      "bytes": 3147,
       "executable": false,
-      "sha256": "2de037f6b94f6927af7c3ef0d7fe97f94d1581861d12198b2b0dba036c19b677"
+      "sha256": "e2b721038e680830b0f0a23dc1cf5e331033678f225bd315145a0f8af47a0b31"
+    },
+    {
+      "path": "skills/forgeax-engine-performance/scripts/__tests__/memory-explorer.test.mjs",
+      "bytes": 14530,
+      "executable": false,
+      "sha256": "3325fd585c06ef3562056864301de28d09c8bf3ba6907947049e2752b736911f"
     },
     {
       "path": "skills/forgeax-engine-performance/scripts/__tests__/metric-report.test.mjs",
       "bytes": 3844,
       "executable": false,
       "sha256": "48a0c8d56e1dc9b31afcca6cafbb860e52f233cf0afb4ddc2b91f26e28634482"
+    },
+    {
+      "path": "skills/forgeax-engine-performance/scripts/__tests__/perfetto-view.test.mjs",
+      "bytes": 4850,
+      "executable": false,
+      "sha256": "80a982eef876eebadc3638ce63cf65dad11dc7eee66429e1b9eca2c5dfa7ac7e"
     },
     {
       "path": "skills/forgeax-engine-performance/scripts/__tests__/source-function-names.test.mjs",
@@ -93268,16 +93922,34 @@
       "sha256": "f73d59803ee58799b71ea3097659da2c6d74cfd3a6a7efb3ed293e2155d6ccdf"
     },
     {
+      "path": "skills/forgeax-engine-performance/scripts/cpu_perfetto_view.mjs",
+      "bytes": 1672,
+      "executable": false,
+      "sha256": "1707100b4bfd1fae5b9252b91f15404c5fc50e55c4a013d776cea5bc7ec029d9"
+    },
+    {
       "path": "skills/forgeax-engine-performance/scripts/cpu_profile.mjs",
       "bytes": 2034,
       "executable": false,
       "sha256": "7ac4106fed71da9ff52c6cfe265e620be659e698519c09fc12ba3a1336409c0b"
     },
     {
-      "path": "skills/forgeax-engine-performance/scripts/cpu_timeline_view.mjs",
-      "bytes": 32710,
+      "path": "skills/forgeax-engine-performance/scripts/cpu_query.mjs",
+      "bytes": 8543,
       "executable": false,
-      "sha256": "64e8ca061c304f59dae1c2d48f2d883b634dcbe5c46b59ce58c20bcf00223b47"
+      "sha256": "ddb74d9600846226c6d25d285769a2ecc29ce82a1caca724453845302022848b"
+    },
+    {
+      "path": "skills/forgeax-engine-performance/scripts/cpu_report_server.mjs",
+      "bytes": 1313,
+      "executable": false,
+      "sha256": "6e003bc3c13653fd93c17f54fc6b4b066e99dbbcd29cce6d7af1d99e593e13b3"
+    },
+    {
+      "path": "skills/forgeax-engine-performance/scripts/cpu_timeline_view.mjs",
+      "bytes": 31569,
+      "executable": false,
+      "sha256": "929b49519ac0b1b89bd2f6309799fcdc6f6a22fdbc245f94b8b5a9969b01cf2a"
     },
     {
       "path": "skills/forgeax-engine-performance/scripts/cpu_timeline.mjs",
@@ -93293,9 +93965,27 @@
     },
     {
       "path": "skills/forgeax-engine-performance/scripts/cpu.mjs",
-      "bytes": 7324,
+      "bytes": 7580,
       "executable": false,
-      "sha256": "b5589f356c4835ce863230956141c9d4518908d83d39d54f4b4e8b7b5097fddb"
+      "sha256": "4b52e0a40b4b20ddb51db4fa19666a357e4efe89b38d5e2534f268b9c6a066e5"
+    },
+    {
+      "path": "skills/forgeax-engine-performance/scripts/echarts_memory.mjs",
+      "bytes": 6669,
+      "executable": false,
+      "sha256": "1ace56b7b6ace306ed3f56093b628ca30ff75edc1961d3b3967b8e9081c519cd"
+    },
+    {
+      "path": "skills/forgeax-engine-performance/scripts/echarts_metric.mjs",
+      "bytes": 4507,
+      "executable": false,
+      "sha256": "012b5d9f45eed33e79e8507a586a8271529032bd273abb6e922655da22e379d5"
+    },
+    {
+      "path": "skills/forgeax-engine-performance/scripts/echarts_runtime.mjs",
+      "bytes": 1007,
+      "executable": false,
+      "sha256": "42d06b7b08512d0492daa79a83e4220dd5ad6e858e5d28d03d5d7f9040d0ca7c"
     },
     {
       "path": "skills/forgeax-engine-performance/scripts/feature_plan_census_runtime.mjs",
@@ -93320,6 +94010,48 @@
       "bytes": 4944,
       "executable": false,
       "sha256": "79cadf9be68f8cadce8b3673ebb9b5d687b778d256070a42b504db0a392205fa"
+    },
+    {
+      "path": "skills/forgeax-engine-performance/scripts/gpu_images.mjs",
+      "bytes": 3093,
+      "executable": false,
+      "sha256": "86f5ff1dbba0ae9959f90b2ce06b740ef76195edca62a3b82397e4530b70358d"
+    },
+    {
+      "path": "skills/forgeax-engine-performance/scripts/gpu_model.mjs",
+      "bytes": 12661,
+      "executable": false,
+      "sha256": "353817908f6db189d9236307bf422503122b0a319cdfe350acca62286c00742e"
+    },
+    {
+      "path": "skills/forgeax-engine-performance/scripts/gpu_runtime.mjs",
+      "bytes": 4313,
+      "executable": false,
+      "sha256": "64535f5648c40f114017d4d3845a94b0038f9fc89a8f7b0c6543ce9fc7811ef6"
+    },
+    {
+      "path": "skills/forgeax-engine-performance/scripts/gpu_timing.mjs",
+      "bytes": 6011,
+      "executable": false,
+      "sha256": "94670ea14dbcbe605b9f821364443e18666a1f93938232a8bdc2a8106bb44ea5"
+    },
+    {
+      "path": "skills/forgeax-engine-performance/scripts/gpu_view_client.mjs",
+      "bytes": 17868,
+      "executable": false,
+      "sha256": "273bf1949369b70669451b7e148a8a9407884cf80cecce45ce2496eba3461405"
+    },
+    {
+      "path": "skills/forgeax-engine-performance/scripts/gpu_view.mjs",
+      "bytes": 8843,
+      "executable": false,
+      "sha256": "58bc02d5abb24bab98b6384c592e07d9eba81d5314d7de08d77ed69acad460c7"
+    },
+    {
+      "path": "skills/forgeax-engine-performance/scripts/gpu.mjs",
+      "bytes": 7689,
+      "executable": false,
+      "sha256": "8c0aa6fa1c1ad319c4d3058155ecab1207705e270fba9485cf2754339b70f701"
     },
     {
       "path": "skills/forgeax-engine-performance/scripts/heap_profile.mjs",
@@ -93353,33 +94085,51 @@
     },
     {
       "path": "skills/forgeax-engine-performance/scripts/memory_model.mjs",
-      "bytes": 11444,
+      "bytes": 14572,
       "executable": false,
-      "sha256": "b9959a31e516da588973ceba5188ca0fec6f886b7fb5b51ca0bb8a44920b9dbb"
+      "sha256": "f9754d2d9a74dfb0b10f5361c12c3da88546efb0fba942201e03edf3c3f8626b"
     },
     {
       "path": "skills/forgeax-engine-performance/scripts/memory_view.mjs",
-      "bytes": 20316,
+      "bytes": 25685,
       "executable": false,
-      "sha256": "f70500480b6f639dfc03b5ae18c425d2f3b5a939b39c42b8b923399b0901c893"
+      "sha256": "34748931b047c4322483f6a73357a60cfb02264cb3bedeb9825000fbc287008e"
     },
     {
       "path": "skills/forgeax-engine-performance/scripts/memory.mjs",
-      "bytes": 11083,
+      "bytes": 12920,
       "executable": false,
-      "sha256": "a6a2f5451ef85b6cd2c6b960475a560b894e688c69d7ea594e34471d577dfdfb"
+      "sha256": "74a855a7af5b3c377be1011cdc5dfcb7831c4a9df263cadb001f5b39edbe29db"
+    },
+    {
+      "path": "skills/forgeax-engine-performance/scripts/perfetto_view.mjs",
+      "bytes": 8694,
+      "executable": false,
+      "sha256": "94c23123b2f0f78e0bd765545f5e007bfe99907051b1b043c81d17bb9fde534e"
+    },
+    {
+      "path": "skills/forgeax-engine-performance/scripts/plot_interaction.mjs",
+      "bytes": 5157,
+      "executable": false,
+      "sha256": "7be55d39dd8ee7fb9dfc009a0dfd9708e82db45ecc2e7c1a2d4d95555ceb55fd"
     },
     {
       "path": "skills/forgeax-engine-performance/scripts/render_cpu_timeline.mjs",
-      "bytes": 19751,
+      "bytes": 19936,
       "executable": false,
-      "sha256": "03d12e269eb186d9dd51339a6c76d93774605b9442e09cea1093eb12ffa87d1d"
+      "sha256": "e35f158e0b82ee0338ccbd94c5d7e126c04e8f6e428b3bd2ed6c22a4fecb1e88"
     },
     {
       "path": "skills/forgeax-engine-performance/scripts/render_metric_report.mjs",
-      "bytes": 12647,
+      "bytes": 19337,
       "executable": false,
-      "sha256": "b86c779769098377d51a8c88767bc5efe8690353e335a3f7d1b6adc0b72b0c52"
+      "sha256": "dfbb7d593fe97c898edb20dc97021e8ff7fb4cbdcf017374727421e5977763fc"
+    },
+    {
+      "path": "skills/forgeax-engine-performance/scripts/report_server.mjs",
+      "bytes": 2077,
+      "executable": false,
+      "sha256": "494bf5f291b8e9b5cef0179cf55cf2942ae4468de4b863e1094b7660a1a4bec2"
     },
     {
       "path": "skills/forgeax-engine-performance/scripts/source_function_names.mjs",
@@ -93425,9 +94175,9 @@
     },
     {
       "path": "skills/forgeax-engine-performance/SKILL.md",
-      "bytes": 104489,
+      "bytes": 113298,
       "executable": false,
-      "sha256": "df54309896ff123454289150add59c9c21c5ae59b4e9479b08c0b3e8306c1ccc"
+      "sha256": "bea59a3602bddfea8cf0a302b2287fe1d8d63a0a98002e6025ac799c65e8565b"
     },
     {
       "path": "skills/forgeax-engine-physics/SKILL.md",
@@ -93437,15 +94187,15 @@
     },
     {
       "path": "skills/forgeax-engine-render-pipeline/SKILL.md",
-      "bytes": 75586,
+      "bytes": 75784,
       "executable": false,
-      "sha256": "054e0931d3b20f5edbd1b05f804db4e2d7458aa179467df1502fd5e375aaa32b"
+      "sha256": "c2de3e1c1cfc800d8c2964b7462cd75ec94d3397e3d3ca18ae611bfcc5058f33"
     },
     {
       "path": "skills/forgeax-engine-rhi-debug/SKILL.md",
-      "bytes": 24617,
+      "bytes": 25035,
       "executable": false,
-      "sha256": "18dadad2411969d47ab9afcb07fe4fdb6b99b3e6796f40746738e28a61d98f50"
+      "sha256": "6313a196a80dafa861ab627867fb6e94a75edfb4dd6880e8952d5a62699379bd"
     },
     {
       "path": "skills/forgeax-engine-rhi/SKILL.md",
@@ -93491,9 +94241,9 @@
     },
     {
       "path": "skills/forgeax-engine-shader/SKILL.md",
-      "bytes": 15837,
+      "bytes": 16474,
       "executable": false,
-      "sha256": "ce1fcf533bdbf346dff6804159dd801a5598a77ec2372e8694c05a1e2fd27028"
+      "sha256": "3f38f56999209a0d0033fd767174edd68da5f96aad4f263f1e2049cc0d35080a"
     },
     {
       "path": "skills/forgeax-engine-state/SKILL.md",

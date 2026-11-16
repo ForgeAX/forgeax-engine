@@ -6,14 +6,18 @@ import { WATER_BODY_DATA_STRIDE_BYTES } from '../../../water/src/waves';
 
 const shaderRoot = new URL('../', import.meta.url);
 const imports = Object.fromEntries(
-  ['water-waves', 'water-deformation-input', 'water-deformation-default', 'water-fluid'].map(
-    (name) => {
-      const source = readFileSync(new URL(`${name}.wgsl`, shaderRoot), 'utf8');
-      const path = /^#define_import_path\s+(\S+)/m.exec(source)?.[1];
-      if (path === undefined) throw new Error(`Missing production module identity: ${name}`);
-      return [path, source];
-    },
-  ),
+  [
+    'water-waves',
+    'water-deformation-input',
+    'water-deformation-default',
+    'water-transition-continuity',
+    'water-fluid',
+  ].map((name) => {
+    const source = readFileSync(new URL(`${name}.wgsl`, shaderRoot), 'utf8');
+    const path = /^#define_import_path\s+(\S+)/m.exec(source)?.[1];
+    if (path === undefined) throw new Error(`Missing production module identity: ${name}`);
+    return [path, source];
+  }),
 );
 imports['forgeax_material::water_deformation_v1'] = `
 #define_import_path forgeax_material::water_deformation_v1

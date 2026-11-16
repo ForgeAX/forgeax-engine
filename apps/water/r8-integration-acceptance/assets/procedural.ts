@@ -1,6 +1,7 @@
 import { createMeshBuilder } from '@forgeax/engine/geometry';
 import { halfFloat } from '@forgeax/engine/math';
 import type { EquirectAsset, TextureAsset } from '@forgeax/engine/types';
+import { requireDemoValue } from '../../runtime-input';
 import { COAST_SEED, SUN_DIRECTION } from '../src/identity';
 
 export const clamp = (value: number) => Math.max(0, Math.min(1, value));
@@ -34,7 +35,7 @@ export function surfaceTexture(kind: 'sand' | 'wood' | 'rock'): TextureAsset {
             noise * 0.08
           : kind === 'wood'
             ? 0.83 + 0.055 * Math.sin(y * 0.19 + Math.sin(x * 0.035)) + 0.06 * noise
-            : 0.6 + 0.25 * noise + 0.15 * Math.sin(x * 0.08) * Math.cos(y * 0.12);
+            : 0.84 + 0.07 * noise + 0.025 * Math.sin(x * 0.08 + Math.sin(y * 0.05) * 1.7);
       const color =
         kind === 'sand'
           ? [1, 0.94, 0.79]
@@ -42,7 +43,9 @@ export function surfaceTexture(kind: 'sand' | 'wood' | 'rock'): TextureAsset {
             ? [0.91, 0.86, 0.77]
             : [0.82, 0.85, 0.83];
       for (let c = 0; c < 3; c++)
-        data[(y * size + x) * 4 + c] = Math.round(clamp(grain * color[c]!) * 255);
+        data[(y * size + x) * 4 + c] = Math.round(
+          clamp(grain * requireDemoValue(color[c], 'accepted authored scene member')) * 255,
+        );
       data[(y * size + x) * 4 + 3] = 255;
     }
   return {
@@ -138,9 +141,10 @@ const cloudPuffs = Array.from({ length: 72 }, (_, cluster) => {
 export function environment(
   preset: 'day' | 'sunset' | 'overcast',
   cloudsEnabled = true,
+  resolution = 2048,
 ): EquirectAsset {
-  const width = 2048,
-    height = 1024,
+  const width = resolution,
+    height = resolution / 2,
     data = new Uint8Array(width * height * 8),
     view = new DataView(data.buffer);
   const cover = preset === 'overcast' ? 1.45 : 1;
@@ -181,7 +185,12 @@ export function environment(
         dx = cp * Math.sin(phi),
         dz = cp * Math.cos(phi);
       const h = Math.exp(-Math.max(up, 0) * 6),
-        alignment = Math.max(0, dx * sun[0]! + up * sun[1]! + dz * sun[2]!);
+        alignment = Math.max(
+          0,
+          dx * requireDemoValue(sun[0], 'accepted authored scene member') +
+            up * requireDemoValue(sun[1], 'accepted authored scene member') +
+            dz * requireDemoValue(sun[2], 'accepted authored scene member'),
+        );
       let cloud = 0,
         cloudLight = 0,
         nearestCloud = Number.POSITIVE_INFINITY;
@@ -189,7 +198,7 @@ export function environment(
         const detail = cloudNoise(dx * 104 + dz * 31, up * 168 + dz * 61),
           edge = 0.78 + detail * 0.38;
         // Ray/sphere thickness gives the bitmap clouds rounded tops and shaded bases.
-        for (const puff of cloudColumns[x]!) {
+        for (const puff of requireDemoValue(cloudColumns[x], 'accepted authored scene member')) {
           const along = dx * puff.x + up * puff.y + dz * puff.z,
             radius = puff.radius * edge * cover,
             discriminant = radius * radius - puff.distanceSquared + along * along;
@@ -205,7 +214,12 @@ export function environment(
           const nx = (dx * entry - puff.x) / radius,
             ny = (up * entry - puff.y) / radius,
             nz = (dz * entry - puff.z) / radius,
-            direct = Math.max(0, nx * sun[0]! + ny * sun[1]! + nz * sun[2]!);
+            direct = Math.max(
+              0,
+              nx * requireDemoValue(sun[0], 'accepted authored scene member') +
+                ny * requireDemoValue(sun[1], 'accepted authored scene member') +
+                nz * requireDemoValue(sun[2], 'accepted authored scene member'),
+            );
           const interior = cloudNoise(puff.x * 0.05 + nx * 4, puff.z * 0.05 + nz * 4 + ny * 3);
           cloudLight =
             0.16 + direct * 0.23 + clamp(ny + 0.25) * 0.2 + interior * 0.14 + detail * 0.1;
@@ -217,10 +231,18 @@ export function environment(
       const ground = clamp((up + 0.05) * 20);
       for (let c = 0; c < 3; c++) {
         const base =
-          (zenith[c]! * (1 - h) + horizon[c]! * h) * (1 - cloud) +
-          cloud * cloudLight * [1.04, 1.06, 1.08][c]!;
-        const glow = (alignment ** 80 * 0.2 + alignment ** 600 * 3) * [1, 0.85, 0.62][c]!;
-        const value = (base + glow) * ground + [0.08, 0.13, 0.14][c]! * (1 - ground);
+          (requireDemoValue(zenith[c], 'accepted authored scene member') * (1 - h) +
+            requireDemoValue(horizon[c], 'accepted authored scene member') * h) *
+            (1 - cloud) +
+          cloud *
+            cloudLight *
+            requireDemoValue([1.04, 1.06, 1.08][c], 'accepted authored scene member');
+        const glow =
+          (alignment ** 80 * 0.2 + alignment ** 600 * 3) *
+          requireDemoValue([1, 0.85, 0.62][c], 'accepted authored scene member');
+        const value =
+          (base + glow) * ground +
+          requireDemoValue([0.08, 0.13, 0.14][c], 'accepted authored scene member') * (1 - ground);
         view.setUint16((y * width + x) * 8 + c * 2, halfFloat.f32ToF16(value), true);
       }
       view.setUint16((y * width + x) * 8 + 6, halfFloat.f32ToF16(1), true);
@@ -241,17 +263,20 @@ const stations = [
 ] as const;
 export const hullSheer = (x: number) => 1.4 * clamp(-x / 9) ** 2 + 0.75 * clamp(x / 8.2) ** 4;
 export const hullWidth = (x: number) => {
-  const last = stations[stations.length - 1]!;
+  const last = requireDemoValue(stations[stations.length - 1], 'accepted authored scene member');
   if (x >= last[0]) return last[1];
   const index = Math.max(
     0,
     Math.min(stations.length - 2, stations.findIndex((station) => station[0] > x) - 1),
   );
-  const a = stations[index]!,
-    b = stations[index + 1]!,
+  const a = requireDemoValue(stations[index], 'accepted authored scene member'),
+    b = requireDemoValue(stations[index + 1], 'accepted authored scene member'),
     t = clamp((x - a[0]) / (b[0] - a[0]));
-  const p = stations[Math.max(0, index - 1)]![1],
-    q = stations[Math.min(stations.length - 1, index + 2)]![1];
+  const p = requireDemoValue(stations[Math.max(0, index - 1)], 'accepted authored scene member')[1],
+    q = requireDemoValue(
+      stations[Math.min(stations.length - 1, index + 2)],
+      'accepted authored scene member',
+    )[1];
   return (
     0.5 *
     (2 * a[1] +
@@ -289,11 +314,12 @@ export function hullWaterlinePoint(
   const rocker = 1.05 * (Math.abs(x + 0.5) / 10) ** 3,
     delta = hullSheer(x) - rocker,
     y = (heightM - rocker - (delta * 1.35) / 2.9) / (1 + delta / 2.9);
-  if (y < hullSection[0]![0] || y > 1.55) return undefined;
+  if (y < requireDemoValue(hullSection[0], 'accepted authored scene member')[0] || y > 1.55)
+    return undefined;
   const side = hullSection.slice(0, 5);
   const next = side.findIndex((point) => point[0] >= y);
-  const a = side[Math.max(0, next - 1)]!,
-    b = side[Math.max(1, next)]!;
+  const a = requireDemoValue(side[Math.max(0, next - 1)], 'accepted authored scene member'),
+    b = requireDemoValue(side[Math.max(1, next)], 'accepted authored scene member');
   const weight = clamp((y - a[0]) / (b[0] - a[0]));
   return hullVertex(x, y, Math.abs(a[1] + (b[1] - a[1]) * weight));
 }
@@ -307,7 +333,7 @@ export function hullMesh(includeDeck = true) {
   for (let i = 0; i <= count; i++)
     for (let j = 0; j < section.length; j++) {
       const x = -9 + (17.2 * i) / count,
-        [y, z] = section[j]!;
+        [y, z] = requireDemoValue(section[j], 'accepted authored scene member');
       positions.push(...hullVertex(x, y, z));
       uv.push((x + 9) / 3, j * 0.075);
     }

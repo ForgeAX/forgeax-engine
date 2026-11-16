@@ -1,0 +1,8 @@
+{
+  "id": "water-body-query",
+  "name": "Water Body Query",
+  "schemaVersion": "3.0.0",
+  "roots": {},
+  "assetRoots": ["assets"],
+  "assetLibraries": ["@forgeax/engine/content"]
+}

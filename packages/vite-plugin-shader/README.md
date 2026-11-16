@@ -21,6 +21,11 @@ owns the canonical WGSL entry and import closure; `shared-engine-inputs.ts`
 owns packaged dev/prod manifest projection. Both paths feed the same plugin
 manifest owner and the same `SHADER_MANIFEST_PATH` constant.
 
+The stock import catalog includes the dependencies of its published modules.
+`loadCloudRendererModules()` consumes that same catalog; registering a new
+imported module belongs to the Engine source loader, not a Cloud-specific
+exception or a caller-maintained substitute catalog.
+
 Shared inventory paths belong to their producer workspace. Hosts serving a
 project outside that workspace pass `workspaceRoot` to `forgeaxShader`; Vite's
 project root then cannot replace the producer root during config resolution.

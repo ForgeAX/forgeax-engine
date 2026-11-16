@@ -9,6 +9,7 @@ import {
   type BindGroupLayout,
   type RhiDevice,
   RhiError,
+  type Texture,
   type TextureView,
 } from '@forgeax/engine-rhi';
 import {
@@ -207,6 +208,10 @@ function stockClusterMembership(
 interface ViewBindGroupTargets {
   readonly viewBindGroupLayout?: BindGroupLayout | undefined;
   readonly sceneDepth?: TextureView | undefined;
+  /** Prepared auto layouts are identified by their pipeline and layout accessor. */
+  readonly viewLayoutIdentity?: readonly object[] | undefined;
+  /** Create the sampled view only on a successful bind-group cache miss. */
+  readonly sceneDepthTexture?: Texture | undefined;
   readonly directionalShadow?: TextureView | undefined;
   readonly spotShadow?: TextureView | undefined;
   readonly shadowMoments?: TextureView | undefined;
@@ -290,45 +295,63 @@ export function buildViewBindGroup(
   const lowLimitCloudBindings = !extendedLighting && !projectorAvailable;
   const b11View = graphTargets?.projector ?? pipelineState.defaultWhiteTextureView;
   const b12Sampler = graphTargets?.projectorSampler ?? pipelineState.defaultSampler;
-  // The chain key is rebuilt into one retained array on every pass that
-  // binds the View group; entries are built only on a cache miss.
-  const keys = viewChainKeys;
-  keys.length = 0;
-  keys.push(pipelineState.viewUniformBuffer);
-  const viewLayout = graphTargets?.viewBindGroupLayout ?? pipelineState.viewBindGroupLayout;
-  keys.push(viewLayout);
-  if (graphTargets?.sceneDepth !== undefined) keys.push(graphTargets.sceneDepth);
-  pushAtmosphereBindingResources(keys, pipelineState, graphTargets?.atmosphere);
-  keys.push(b3View, shadowSampler, b5View, pipelineState.shadowParamsBuffer, b8View);
-  if (extendedLightingResources !== undefined) {
+  const captureViewBindingKey = () => {
+    // The chain key is rebuilt into one retained array on every pass that
+    // binds the View group; entries are built only on a cache miss.
+    const keys = viewChainKeys;
+    keys.length = 0;
     keys.push(
-      extendedLightingResources.moments,
-      extendedLightingResources.sampler,
-      extendedLightingResources.iesProfileTextureView,
-      extendedLightingResources.cookieTextureView,
-      extendedLightingResources.ltcLambertTextureView,
-      extendedLightingResources.ltcGgxTextureView,
-      extendedLightingResources.cookieMatrixBuffer,
+      internals.device,
+      internals.deviceScope ?? internals.device,
+      pipelineState.viewUniformBuffer,
     );
-  } else if (projectorAvailable) {
-    keys.push(b11View, b12Sampler);
-  }
-  keys.push(pipelineState.pointsLinesViewBuffer ?? pipelineState.viewUniformBuffer);
-  if (!lowLimitCloudBindings) keys.push(cloudShadowView);
-  keys.push(pipelineState.viewLinearSampler ?? pipelineState.defaultSampler);
+    const viewLayout = graphTargets?.viewBindGroupLayout ?? pipelineState.viewBindGroupLayout;
+    keys.push(...(graphTargets?.viewLayoutIdentity ?? [viewLayout]));
+    if (graphTargets?.sceneDepthTexture !== undefined) keys.push(graphTargets.sceneDepthTexture);
+    else if (graphTargets?.sceneDepth !== undefined) keys.push(graphTargets.sceneDepth);
+    pushAtmosphereBindingResources(keys, pipelineState, graphTargets?.atmosphere);
+    keys.push(b3View, shadowSampler, b5View, pipelineState.shadowParamsBuffer, b8View);
+    if (extendedLightingResources !== undefined) {
+      keys.push(
+        extendedLightingResources.moments,
+        extendedLightingResources.sampler,
+        extendedLightingResources.iesProfileTextureView,
+        extendedLightingResources.cookieTextureView,
+        extendedLightingResources.ltcLambertTextureView,
+        extendedLightingResources.ltcGgxTextureView,
+        extendedLightingResources.cookieMatrixBuffer,
+      );
+    } else if (projectorAvailable) {
+      keys.push(b11View, b12Sampler);
+    }
+    keys.push(pipelineState.pointsLinesViewBuffer ?? pipelineState.viewUniformBuffer);
+    if (!lowLimitCloudBindings) keys.push(cloudShadowView);
+    keys.push(pipelineState.viewLinearSampler ?? pipelineState.defaultSampler);
+    return { keys, viewLayout };
+  };
+  const { keys, viewLayout } = captureViewBindingKey();
   return getOrCreateFromChain(
     frameState.viewBindGroupCache,
     keys,
     'view-main',
     () => {
+      const sceneDepth =
+        graphTargets?.sceneDepthTexture === undefined
+          ? graphTargets?.sceneDepth
+          : internals.device
+              .createTextureView(graphTargets.sceneDepthTexture, {
+                aspect: 'depth-only',
+                dimension: '2d',
+              })
+              .unwrap();
       const entries: BindGroupEntry[] = [
         ...atmosphereBindings(pipelineState, graphTargets?.atmosphere),
-        ...(graphTargets?.sceneDepth === undefined
+        ...(sceneDepth === undefined
           ? []
           : [
               {
                 binding: 1,
-                resource: { kind: 'textureView' as const, value: graphTargets.sceneDepth },
+                resource: { kind: 'textureView' as const, value: sceneDepth },
               },
             ]),
         {

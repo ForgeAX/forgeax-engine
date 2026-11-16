@@ -56,6 +56,7 @@ struct RigidPrimitive { inverse:mat4x4<f32>, previous:mat4x4<f32>, shape:vec4<f3
 @group(0) @binding(17) var<storage,read> primitives:array<RigidPrimitive>;
 @group(0) @binding(18) var<storage,read> instances:array<Instance>;
 @group(0) @binding(19) var<storage,read> fields:array<u32>;
+@group(0) @binding(20) var<storage,read> waveImpulses:array<vec4<f32>>;
 ${SDF_SAMPLE_WGSL}
 var<private> intervals:array<vec2<f32>,${DISPERSIVE_MAX_COLUMN_INTERVALS}>;
 var<private> intervalCount:u32;
@@ -237,6 +238,23 @@ fn layerWeight(k:f32,lo:f32,hi:f32)->f32{
       v=state.zw*c-state.xy*(omega2*dt*integrals.y)+delta*(integrals.x/dt);
       // Attenuate free modes, not their source history or zero-frequency water volume.
       let envelope=exp(-p[7].z*dt);eta*=envelope;v*=envelope;
+    }
+  }
+  // The Laplacian of a Gaussian supplies localized momentum with exactly zero DC.
+  // Its analytic transform avoids a resolution-dependent sampled volume correction.
+  if(k>0.0000001){
+    let omega=sqrt(p[1].y*k*finiteDepthFactor(k*p[1].x));
+    let cell=p[0].y/p[0].x;
+    let signedIndex=vec2<f32>(select(index,index-vec2<i32>(i32(p[0].x)),index>vec2<i32>(i32(p[0].x/2.0))));
+    let waveVector=signedIndex*TAU/p[0].y;
+    for(var impulseIndex=0u;impulseIndex<u32(p[4].w);impulseIndex++){
+      let impulse=waveImpulses[impulseIndex*2u];let age=waveImpulses[impulseIndex*2u+1u].x;
+      let radius2=impulse.z*impulse.z;
+      let amplitude=-impulse.w*0.5*TAU*radius2*radius2*k*k*exp(-0.5*radius2*k*k)/(cell*cell);
+      let angle=-dot(waveVector,impulse.xy+vec2<f32>(0.5*p[0].y-0.5*cell));
+      let spectral=amplitude*vec2<f32>(cos(angle),sin(angle))*exp(-p[7].z*age);
+      eta+=spectral*sin(omega*age)/omega;
+      v+=spectral*cos(omega*age);
     }
   }
   textureStore(outputGrid,index,vec4<f32>(eta,v));textureStore(outputSource,index,source);

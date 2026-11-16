@@ -5682,6 +5682,7 @@
         "@forgeax/engine-pack": "workspace:*",
         "@forgeax/engine-render": "workspace:*",
         "@forgeax/engine-scene": "workspace:*",
+        "@forgeax/engine-shader-compiler": "workspace:*",
         "@forgeax/engine-types": "workspace:*",
         "@forgeax/engine-vite-plugin-pack": "workspace:*",
         "@forgeax/engine-vite-plugin-rhi-debug": "workspace:*",
@@ -5715,6 +5716,25 @@
         "@webgpu/types": "^0.1.74",
         "playwright": "^1.56.1",
         "pngjs": "^7.0.0",
+        "typescript": "6.0.3",
+        "vite": "8.3.5",
+      },
+    },
+    "apps/water/r0-scene-foundation": {
+      "name": "@forgeax/water-r0-scene-foundation",
+      "version": "0.0.0",
+      "dependencies": {
+        "@forgeax/apps-shared": "workspace:*",
+        "@forgeax/engine": "workspace:*",
+      },
+      "devDependencies": {
+        "@forgeax/engine-devkit": "workspace:*",
+        "@forgeax/engine-image": "workspace:*",
+        "@forgeax/engine-shader-compiler": "workspace:*",
+        "@forgeax/engine-vite-plugin-pack": "workspace:*",
+        "@forgeax/engine-vite-plugin-rhi-debug": "workspace:*",
+        "@forgeax/engine-vite-plugin-shader": "workspace:*",
+        "@webgpu/types": "^0.1.74",
         "typescript": "6.0.3",
         "vite": "8.3.5",
       },
@@ -5797,6 +5817,25 @@
     },
     "apps/water/r7-advanced-shallow-bake-fft": {
       "name": "@forgeax/water-r7-advanced-shallow-bake-fft",
+      "version": "0.0.0",
+      "dependencies": {
+        "@forgeax/apps-shared": "workspace:*",
+        "@forgeax/engine": "workspace:*",
+      },
+      "devDependencies": {
+        "@forgeax/engine-devkit": "workspace:*",
+        "@forgeax/engine-image": "workspace:*",
+        "@forgeax/engine-shader-compiler": "workspace:*",
+        "@forgeax/engine-vite-plugin-pack": "workspace:*",
+        "@forgeax/engine-vite-plugin-rhi-debug": "workspace:*",
+        "@forgeax/engine-vite-plugin-shader": "workspace:*",
+        "@webgpu/types": "^0.1.74",
+        "typescript": "6.0.3",
+        "vite": "8.3.5",
+      },
+    },
+    "apps/water/r8-entry-experiment": {
+      "name": "@forgeax/water-r8-entry-experiment",
       "version": "0.0.0",
       "dependencies": {
         "@forgeax/apps-shared": "workspace:*",
@@ -8633,6 +8672,8 @@
 
     "@forgeax/water-mesh-demo": ["@forgeax/water-mesh-demo@workspace:apps/water/water-mesh"],
 
+    "@forgeax/water-r0-scene-foundation": ["@forgeax/water-r0-scene-foundation@workspace:apps/water/r0-scene-foundation"],
+
     "@forgeax/water-r3-slw-reflection-underwater": ["@forgeax/water-r3-slw-reflection-underwater@workspace:apps/water/r3-slw-reflection-underwater"],
 
     "@forgeax/water-r4-buoyancy-foam": ["@forgeax/water-r4-buoyancy-foam@workspace:apps/water/r4-buoyancy-foam"],
@@ -8642,6 +8683,8 @@
     "@forgeax/water-r6-legacy-rt-fluid": ["@forgeax/water-r6-legacy-rt-fluid@workspace:apps/water/r6-legacy-rt-fluid"],
 
     "@forgeax/water-r7-advanced-shallow-bake-fft": ["@forgeax/water-r7-advanced-shallow-bake-fft@workspace:apps/water/r7-advanced-shallow-bake-fft"],
+
+    "@forgeax/water-r8-entry-experiment": ["@forgeax/water-r8-entry-experiment@workspace:apps/water/r8-entry-experiment"],
 
     "@forgeax/water-r8-integration-acceptance": ["@forgeax/water-r8-integration-acceptance@workspace:apps/water/r8-integration-acceptance"],
 

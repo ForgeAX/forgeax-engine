@@ -509,7 +509,7 @@ export function createMaterialPackCooker(
           )
           .sort(),
       ];
-      const hash = createHash('sha256').update('material-pack-cooker/5');
+      const hash = createHash('sha256').update('material-pack-cooker/6');
       if (options.profile !== undefined) hash.update(`\0profile:${options.profile}`);
       const native = await getCompilerFingerprint();
       if (!native.ok) throw native.error;
@@ -897,7 +897,7 @@ export function createMaterialPackCooker(
         // DDC publications cannot keep the old storage-only program set.
         const producerFingerprint = `sha256:${createHash('sha256')
           .update(
-            `material-raster-variants/5:${fingerprint}${options.profile === undefined ? '' : `:${options.profile}`}`,
+            `material-raster-variants/6:${fingerprint}${options.profile === undefined ? '' : `:${options.profile}`}`,
           )
           .digest('hex')}`;
         const record = cookedRecord(

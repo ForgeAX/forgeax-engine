@@ -1,10 +1,13 @@
 import { mkdir, readdir, rename, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import type { ProjectFacts } from '../types.js';
+import { tauriResourceProtocol, tauriResourceServerSource } from './tauri-resource-server.js';
 import { tauriBuildScript, tauriLibrarySource, tauriSmokeScript } from './tauri-source.js';
 
 /** Tauri embeds the ordinary browser closure; it owns no second runtime or renderer. */
 export async function writeTauriProject(facts: ProjectFacts, outDir: string): Promise<void> {
+  // Android requires a nonzero application version.
+  const version = '0.0.1';
   const files = await readdir(outDir);
   await mkdir(resolve(outDir, 'web'));
   for (const name of files) await rename(resolve(outDir, name), resolve(outDir, 'web', name));
@@ -15,7 +18,7 @@ export async function writeTauriProject(facts: ProjectFacts, outDir: string): Pr
   const config = {
     $schema: 'https://schema.tauri.app/config/2',
     productName: facts.name,
-    version: '0.0.0',
+    version,
     identifier: `com.forgeax.game.g${identifier.replace(/-/g, '') || 'game'}`,
     build: { frontendDist: '../web' },
     app: {
@@ -31,11 +34,12 @@ export async function writeTauriProject(facts: ProjectFacts, outDir: string): Pr
       active: true,
       targets: 'all',
       icon: ['icons/icon.icns', 'icons/icon.ico', 'icons/32x32.png', 'icons/128x128.png'],
+      windows: { wix: { language: { 'en-US': { localePath: 'locales/en-US.wxl' } } } },
     },
   };
   const manifest = {
     name: `forgeax-tauri-${identifier || 'game'}`,
-    version: '0.0.0',
+    version,
     private: true,
     type: 'module',
     scripts: {
@@ -51,11 +55,21 @@ export async function writeTauriProject(facts: ProjectFacts, outDir: string): Pr
     devDependencies: { '@tauri-apps/cli': '2.11.4' },
   };
   const sources: Record<string, string> = {
+    // WiX accepts Unicode database strings; summary information requires an ANSI code page.
+    'src-tauri/locales/en-US.wxl': `<?xml version="1.0" encoding="utf-8"?>
+<WixLocalization Culture="en-US" Codepage="65001" xmlns="http://schemas.microsoft.com/wix/2006/localization">
+  <String Id="TauriLanguage">1033</String>
+  <String Id="TauriCodepage">1252</String>
+  <String Id="InstallAppFeature">Install application</String>
+  <String Id="PathEnvVarFeature">Add the application to PATH</String>
+  <String Id="LaunchApp">Launch application</String>
+</WixLocalization>
+`,
     'package.json': `${JSON.stringify(manifest, null, 2)}\n`,
     'src-tauri/tauri.conf.json': `${JSON.stringify(config, null, 2)}\n`,
     'src-tauri/Cargo.toml': `[package]
 name = "forgeax-game"
-version = "0.0.0"
+version = "${version}"
 edition = "2021"
 rust-version = "1.87"
 publish = false
@@ -76,6 +90,9 @@ tauri-macros = "=2.6.3"
 tauri-utils = "=2.9.3"
 serde_json = "1"
 
+[target.'cfg(any(target_os = "windows", target_os = "android"))'.dependencies]
+tiny_http = "=0.12.0"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "=0.6.5"
 objc2-app-kit = "=0.3.2"
@@ -87,6 +104,10 @@ block2 = "=0.6.2"
 custom-protocol = ["tauri/custom-protocol"]
 `,
     'src-tauri/build.rs': `fn main() {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("android") {
+        println!("cargo:rustc-link-arg=-Wl,-z,max-page-size=16384");
+        println!("cargo:rustc-link-arg=-Wl,-z,common-page-size=16384");
+    }
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
         tauri_build::AppManifest::new().commands(&["smoke_report", "finish_close", "request_close"])
     )).expect("Tauri application permissions could not be built");
@@ -105,6 +126,16 @@ custom-protocol = ["tauri/custom-protocol"]
     'src-tauri/src/main.rs':
       '#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]\nfn main() { forgeax_game_lib::run(); }\n',
     'src-tauri/src/lib.rs': tauriLibrarySource,
+    'src-tauri/src/asset_server.rs': tauriResourceServerSource,
+    'src-tauri/android/loopback-network.xml': `<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+  <base-config cleartextTrafficPermitted="false" />
+  <domain-config cleartextTrafficPermitted="true">
+    <domain includeSubdomains="false">127.0.0.1</domain>
+    <domain includeSubdomains="false">${tauriResourceProtocol}.localhost</domain>
+  </domain-config>
+</network-security-config>
+`,
     'scripts/build.mjs': tauriBuildScript,
     'scripts/smoke.mjs': tauriSmokeScript,
     'icon.svg':
@@ -131,6 +162,39 @@ Forward Tauri CLI flags after the command, for example \`pnpm build:android --ta
 Configure Android release keystores in the generated Gradle project and Apple signing through
 \`APPLE_DEVELOPMENT_TEAM\` and Xcode provisioning. Signing keys remain external to the distribution.
 Use the generated project's ordinary Tauri configuration to customize identity, version and signing.
+
+## Automation and human setup
+
+| Owner | Responsibility |
+|:--|:--|
+| ForgeAX | Seal the game code/resources, generate the native host and scripts, invoke the selected native builder, and collect its artifacts. For native builds, the package command installs the pinned Tauri CLI in temporary project storage. |
+| Platform tools | Compile/link, apply configured signing, maintain automatic provisioning where available, and provide device installation/debugging commands. |
+| Developer or operator | Prepare system toolchains; supply the signing identity/team; complete account login, two-factor checks, keychain prompts, device trust and physical-device confirmations. |
+
+The exporter does not install Xcode, Android SDK/NDK or system compilers, sign in to
+accounts, enable phone developer settings, install the app on every target device,
+create desktop shortcuts, or submit store releases. An agent/operator may perform
+some of that setup separately. It is not part of a successful package receipt.
+
+| Platform | Developer setup beyond the build tools above | Ordinary app installation |
+|:--|:--|:--|
+| Windows | Configure code signing when required by the distribution channel. | Run the EXE/MSI installer; no build toolchain is needed. |
+| macOS | Supply Apple signing/notarization configuration for the chosen distribution channel. | Open/copy the APP from the DMG; Xcode is a build-machine requirement. |
+| Linux | Supply packaging dependencies and choose the target package format. | Use the package manager or AppImage; system install/execute permissions apply. |
+| Android | ADB/USB testing needs developer options, USB debugging and phone authorization. Debug builds use the platform debug key; release signing needs a configured keystore. | A signed APK can be installed through a supported installer; an AAB is store input. USB debugging is not a general requirement for playing the app. Device, region and store verification rules still apply. |
+| iOS | Install Xcode iOS platform support; select an Apple account/team and provisioning. Local development testing needs an unlocked, trusted iPhone with Developer Mode enabled, including the restart confirmation and any developer-app trust prompt. | App Store/TestFlight users do not need Xcode or Developer Mode. A development-signed test app and a distribution IPA have different signing/provisioning requirements. |
+
+A free Apple Personal Team supports testing on your own device; its provisioning
+expires after seven days, requiring a rebuild/reinstall. It does not establish
+store/TestFlight distribution readiness. Xcode can create development certificates
+and profiles automatically after the account, team and device are configured.
+A release APK named \`*-unsigned.apk\` still needs signing before installation.
+
+See Apple's [Personal Team](https://developer.apple.com/help/account/basics/about-your-developer-account)
+and [Developer Mode](https://developer.apple.com/documentation/xcode/enabling-developer-mode-on-a-device)
+guides, plus Android's [USB debugging](https://developer.android.com/studio/run/device),
+[APK installation](https://developer.android.com/distribute/marketing-tools/alternative-distribution),
+and [developer verification](https://developer.android.com/developer-verification/guides/faq).
 
 | Output | Path |
 |:--|:--|

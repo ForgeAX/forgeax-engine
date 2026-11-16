@@ -5,6 +5,20 @@ description: ForgeAX MaterialAsset authoring and visibility route. Use when crea
 
 # forgeax-engine-material
 
+Optional River `transitionContinuity` uses the accepted end-spline position and
+actual current-generation Ocean coverage adjacency. Author finite meter reach
+and blend width; the complete shared triangle is closed inside the inner reach
+and upstream height is retained outside support. The derived support includes
+adjacent ordinary patches of the same River and shares its target wave row,
+without changing their material. Source flow/depth remain
+native/query-owned. WaterMesh v8 keeps a 96-byte record and adds a `WCN1` numeric
+support offset in byte 92; vertex and fragment share its original-grid policy.
+Use `material-pack-cooker/6` to recook, retaining durable `material-cook/5`.
+GPU traversal, independent Baked depth, custom deformation and independent
+advanced displacement are outside this initial continuity contract. See the
+[owning Water contract](../../packages/water/README.md#optional-terminal-surface-continuity)
+and execute the nearest production Dawn gate before claiming pixels accepted.
+
 ## Contract index
 
 ## Water Material Entry
@@ -13,6 +27,9 @@ For coast integration, use the [R8 entry](../../apps/water/r8-integration-accept
 Capability support does not establish an assembled branch or reference parity.
 Keep Q0, appearance replacements and optional R6 simulation independent; missing
 contact foam does not authorize a replacement mesh or enabling another branch.
+For WaterMesh source revisions, an unchanged Body can appear in both retained
+and current WaterInfo targets. Material binding must resolve its accepted draw
+key to the complete cohort; Body identity alone does not select an instance range.
 Accept a mode only when completed receipts agree with its current Body/Zone,
 WaterInfo, mesh and graph generations. Read current Renderer state separately
 from the last submitted inspection, and preserve failed recovery attempts.
@@ -51,6 +68,14 @@ For stronger sailing waves, author the independent finite nonnegative recipe
 in visible and external receiver fields before evolution. Preserve source velocity,
 geometry and stopped decay when comparing gains; foam is a separate emitted history.
 Local free waves dissipate in the owning Engine solver, including receiver fields.
+For a localized momentum input, use `OceanPatch.enqueueWaveImpulse` with world
+XZ, cell-resolved radius, signed vertical velocity and native time. The same
+gravity field owns displacement, normal and foam; the impulse has zero net
+volume. The author owns incident-energy calibration. A `sourceReceiver` keeps
+that input out of its own buoyancy while preserving other receivers. Complete
+submission consumes queued inputs; discard/pause retains them and reset clears
+them. Read the Water contract and validate actual propagation with background
+waves present. This linear input does not imply a nonlinear impact solver.
 The optional positive `waveDampingPerSecond` defaults to 0.35/s; scene recipes
 may tune the rate. It attenuates nonzero Fourier modes by elapsed time while
 conserving mean displaced water. Foam has separate coverage decay, and surviving
@@ -129,8 +154,9 @@ requires `maximumFlowVelocityMPerSec: f32` unless fixed/Baked velocity wins.
 Repair the named field on a structured cook rejection and re-cook.
 Stock Water recomputes complete Gerstner normals per fragment. The source Body
 owns height/depth/velocity; a transition target owns wave phase/time/range.
-Far Ocean tiles use that Ocean's mean base height; conservative wave bounds
-remain culling inputs and never lower the rendered far plane.
+Far Ocean tiles retain the owning Ocean's original baseHeightM - maxWaveHeightM
+placement. Keep explicit saved levels and conservative culling bounds independent;
+view-window selection must not introduce automatic mean-plane placement.
 Phase and depth exclude WPO, while pixel transition velocity uses post-WPO
 position. Custom deformation normals remain authoritative.
 Custom defaults select fixed height/depth and vertex velocity; fullscreen

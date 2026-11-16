@@ -6,11 +6,19 @@ import type { RenderInspection } from '../render-contract';
 export function projectRendererFeatureInspection(
   featureHost: RenderFeatureHost | undefined,
   completedCloudAdoption?: (view: string) => CloudCompletedAdoption | undefined,
-): Pick<RenderInspection, 'features' | 'featureDiagnostics' | 'featureHost' | 'cloudLayer'> {
-  const featureDiagnostics = featureHost?.diagnostics() ?? Object.freeze([]);
-  const cloudLayer = featureDiagnostics.find(
-    (diagnostic) => diagnostic.identity === 'forgeax.cloud-layer',
-  )?.inspection as Readonly<Record<string, CloudLayerInspection>> | undefined;
+  fields?: readonly (keyof RenderInspection)[],
+): Partial<
+  Pick<RenderInspection, 'features' | 'featureDiagnostics' | 'featureHost' | 'cloudLayer'>
+> {
+  const featureDiagnostics =
+    fields?.some((field) => field === 'featureDiagnostics' || field === 'cloudLayer') === false
+      ? undefined
+      : (featureHost?.diagnostics() ?? Object.freeze([]));
+  const cloudLayer =
+    fields?.includes('cloudLayer') === false
+      ? undefined
+      : (featureDiagnostics?.find((diagnostic) => diagnostic.identity === 'forgeax.cloud-layer')
+          ?.inspection as Readonly<Record<string, CloudLayerInspection>> | undefined);
   let cloudLayerWithAdoption: Record<string, CloudLayerInspection> | undefined;
   if (cloudLayer !== undefined && completedCloudAdoption !== undefined) {
     for (const view of Object.keys(cloudLayer)) {
@@ -22,8 +30,14 @@ export function projectRendererFeatureInspection(
     }
   }
   return {
-    features: Object.freeze((featureHost?.features ?? []).map((feature) => feature.identity)),
-    featureDiagnostics,
+    ...(fields?.includes('features') === false
+      ? {}
+      : {
+          features: Object.freeze((featureHost?.features ?? []).map((feature) => feature.identity)),
+        }),
+    ...(fields?.includes('featureDiagnostics') === false || featureDiagnostics === undefined
+      ? {}
+      : { featureDiagnostics }),
     ...(cloudLayer === undefined
       ? {}
       : {
@@ -32,6 +46,8 @@ export function projectRendererFeatureInspection(
               ? cloudLayer
               : Object.freeze(cloudLayerWithAdoption),
         }),
-    ...(featureHost?.inspection === undefined ? {} : { featureHost: featureHost.inspection() }),
+    ...(fields?.includes('featureHost') === false || featureHost?.inspection === undefined
+      ? {}
+      : { featureHost: featureHost.inspection() }),
   };
 }

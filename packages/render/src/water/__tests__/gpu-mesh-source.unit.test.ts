@@ -1,11 +1,12 @@
 import { World } from '@forgeax/engine-ecs';
 import { AssetGuid, definePackageId } from '@forgeax/engine-pack/source';
-import { RhiNullDevice } from '@forgeax/engine-rhi-null';
+import { rhi } from '@forgeax/engine-rhi-null';
 import { ok } from '@forgeax/engine-types';
 import {
   buildWaterPackOutputs,
   createWaterZoneViewWindow,
   WATER_SYSTEM_RESOURCE,
+  type WaterBodySnapshot,
   type WaterBodySourceAsset,
   type WaterDependencySnapshot,
   WaterSystem,
@@ -161,7 +162,7 @@ it.each([
     generation: 1,
     frame: { frameNumber: 1 },
     caps: {
-      ...new RhiNullDevice().caps,
+      ...(await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap().caps,
       compute: true,
       storageBuffer: true,
       rgba16floatRenderable: true,
@@ -320,7 +321,11 @@ it.each([
             },
           }
         : { guid: waveGuid, field: 'waveSetGuid', kind: 'water-wave-set', status };
-  const { water, zone, mount } = await fixture(0, asset, { dependency });
+  const { water, zone, mount } = await fixture(
+    0,
+    asset,
+    dependency === undefined ? {} : { dependency },
+  );
   mount('body');
   expect(
     buildWaterGpuMeshZone('world', zone, water.snapshots(), {
@@ -461,7 +466,7 @@ it('transfers boundary masks derived from the selected far receipt with the GPU 
       {
         generation: 1,
         frame: { frameNumber: 10 },
-        caps: new RhiNullDevice().caps,
+        caps: (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap().caps,
         views: [
           { identity: 'main', render: true, targets: [], sceneData: { deviceGeneration: 4 } },
         ],
@@ -525,7 +530,7 @@ it.each([
   const planContext = {
     generation: 1,
     frame: { frameNumber: 10 },
-    caps: new RhiNullDevice().caps,
+    caps: (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap().caps,
     views: [
       {
         identity: 'main',
@@ -714,4 +719,95 @@ it.each([
   ).waveDependency;
   expect(receiver.plan(missingReadiness as never, planContext as never).ok).toBe(false);
   world.removeResource(WATER_SYSTEM_RESOURCE);
+});
+
+it.each([
+  'other-zone',
+  'unbound',
+  'stale-generation',
+  'hidden',
+  'mesh-disabled',
+] as const)('does not reject the current GPU Zone because of an inactive continuity body: %s', async (kind) => {
+  const { zone, mount } = await fixture();
+  const current = mount('current');
+  if (current.binding.kind !== 'bound') throw new Error('Expected bound fixture body');
+  const policy = {
+    ...current,
+    guid: 'policy',
+    asset: {
+      ...current.asset,
+      type: 'river',
+      transitionContinuity: { target: 'ocean', endpoint: 'end', reachM: 8, blendWidthM: 2 },
+    },
+  } as WaterBodySnapshot;
+  const ignored: WaterBodySnapshot =
+    kind === 'other-zone'
+      ? {
+          ...policy,
+          binding: {
+            ...current.binding,
+            kind: 'bound',
+            zoneGuid: 'other-zone',
+            zoneGeneration: zone.generation,
+          },
+        }
+      : kind === 'unbound'
+        ? ({
+            ...policy,
+            binding: { kind: 'zone-unbound', retryOnCatalogChange: true },
+          } as WaterBodySnapshot)
+        : kind === 'stale-generation'
+          ? {
+              ...policy,
+              binding: {
+                ...current.binding,
+                kind: 'bound',
+                zoneGuid: zone.guid,
+                zoneGeneration: zone.generation + 1,
+              },
+            }
+          : kind === 'hidden'
+            ? {
+                ...policy,
+                asset: {
+                  ...policy.asset,
+                  renderOptions: {
+                    castShadow: false,
+                    receiveShadow: true,
+                    ...policy.asset.renderOptions,
+                    visible: false,
+                  },
+                },
+              }
+            : {
+                ...policy,
+                asset: {
+                  ...policy.asset,
+                  flags: { ...policy.asset.flags, affectsWaterMesh: false },
+                },
+              };
+  const result = buildWaterGpuMeshZone('world', zone, [ignored, current], {
+    identity: 'main',
+    position: [0, 4, 0],
+  }).unwrap();
+  expect(result?.bodies.map((body) => body.guid)).toEqual(['current']);
+});
+
+it('rejects continuity only for an active current-generation body bound to this GPU Zone', async () => {
+  const { zone, mount } = await fixture();
+  const current = mount('current');
+  const policy = {
+    ...current,
+    asset: {
+      ...current.asset,
+      type: 'river',
+      transitionContinuity: { target: 'ocean', endpoint: 'end', reachM: 8, blendWidthM: 2 },
+    },
+  } as WaterBodySnapshot;
+  expect(
+    buildWaterGpuMeshZone('world', zone, [policy], { identity: 'main', position: [0, 4, 0] }),
+  ).toMatchObject({
+    ok: false,
+    error: { code: 'invalid-source', expected: expect.stringContaining('terminal continuity') },
+  });
 });

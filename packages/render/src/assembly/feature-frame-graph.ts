@@ -88,6 +88,27 @@ export function compileSharedFeatureGraph(
   );
 }
 
+/** Previous resource owners belong to compilation, never retained projection callbacks. */
+function compileSharedFeatureGraphResources(
+  builder: RenderGraphBuilder<WaterFluidGraphFrame>,
+  device: RenderSystemInternals['device'],
+  width: number,
+  height: number,
+  previous:
+    | import('@forgeax/engine-render-graph').CompiledRenderGraph<WaterFluidGraphFrame>
+    | undefined,
+  profileSession: import('@forgeax/engine-profiler').RecorderSession | undefined,
+) {
+  const options = {
+    device,
+    surfaceSize: { width, height },
+    ...(previous === undefined ? {} : { reuseResourcesFrom: previous }),
+  };
+  return profileSession === undefined
+    ? builder.compile(options)
+    : runProfiledRenderPhase(profileSession, 'graph/compile', () => builder.compile(options));
+}
+
 function compileSharedFeatureGraphOwned(
   internals: RenderSystemInternals,
   result: RenderFeatureFrameResult,
@@ -204,21 +225,30 @@ function compileSharedFeatureGraphOwned(
         const source = entry.impulseNoise;
         const scope = resources[entry.worldIndex];
         if (source === undefined || scope === undefined) return;
-        const resolved = scope.resolveAsset(source.handle, source.revision);
-        if (!resolved.ok || resolved.value.kind !== 'texture') return;
+        // Feature planning already captured and validated these exact bytes.
+        // A live scope need not retain the extraction snapshot's version token.
+        const asset = source.asset;
         const resident = internals.gpuStore.ensureResident(
           source.handle as AssetHandle<'texture'>,
-          resolved.value,
+          asset,
           scope,
         );
         if (!resident.ok) throw resident.error;
-        return { texture: resident.value.texture.handle, asset: resolved.value };
+        return { texture: resident.value.texture.handle, asset };
       },
       getFeatureGraphTextureBinding(name, viewIdentity) {
         const matches = [...state.graphTextures.targets].filter(
           ([target, resolved]) => target.name === name && resolved.scope === `view:${viewIdentity}`,
         );
-        const match = matches.length === 1 ? matches[0] : undefined;
+        const first = matches[0];
+        const match =
+          first !== undefined &&
+          matches.every(
+            ([, resolved]) =>
+              resolved.texture === first[1].texture && resolved.view === first[1].view,
+          )
+            ? first
+            : undefined;
         return match === undefined ? undefined : { view: match[1].view, format: match[0].format };
       },
       resolveShallowFoamSource(source) {
@@ -237,20 +267,14 @@ function compileSharedFeatureGraphOwned(
     exported.push(...added.value);
   }
   const textures = canonicalSharedGraphTextures(exported);
-  const compileOptions = {
-    device: internals.device,
-    surfaceSize: {
-      width: internals.canvas.width,
-      height: internals.canvas.height,
-    },
-    ...(previous === undefined ? {} : { reuseResourcesFrom: previous }),
-  };
-  const compiled =
-    profileSession === undefined
-      ? builder.compile(compileOptions)
-      : runProfiledRenderPhase(profileSession, 'graph/compile', () =>
-          builder.compile(compileOptions),
-        );
+  const compiled = compileSharedFeatureGraphResources(
+    builder,
+    internals.device,
+    internals.canvas.width,
+    internals.canvas.height,
+    previous,
+    profileSession,
+  );
   if (!compiled.ok) throw compiled.error;
   const publishCompiledSharedGraph = () => {
     if (internals.featureHost !== undefined) {

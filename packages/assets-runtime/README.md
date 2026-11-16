@@ -259,14 +259,20 @@ Publication reference checks index each shared output table once per check,
 including deferred references. The index is discarded when the check returns;
 subsequent reads still validate current dependency digests and generations.
 
-Verified Pack documents are held strongly through a burst of sibling reads, then
-kept through weak references after two seconds without a read. When the host
-reports memory pressure, `trimReadCache` demotes those documents immediately.
-A live document can be reused; after collection, a later request fetches and
-verifies the same complete publication tuple again. Decoded runtime content and
-shared immutable material facts stay with their accepted consumers. This cache
-release never invalidates a publication or retires a live asset. Hosts without
-`WeakRef` retain the strong read cache.
+`assets.loadMany(guids, kind, { signal })` loads a finite homogeneous roster
+serially. Its closure reads share verified Pack documents and GUID indexes until
+the operation settles, then release them. Ordinary independent loads retain only
+in-flight Pack reads; there are no retention timers or weak document caches.
+Each returned entry owns one grant, including duplicate GUIDs. Failure or
+cancellation releases earlier grants and admits no later read. Existing runtime
+handles keep their gameplay edits, and Catalog replacement cannot mix sources
+within a batch. Decoded runtime content and shared immutable material facts stay
+with their accepted consumers. Use this operation for a known startup roster,
+rather than reopening the same large Pack for each asset or increasing decode
+concurrency to hide repeated parsing. An optional awaited `onProgress(completed, total)`
+callback can report progress or yield to the host without closing the shared
+read scope. It receives no grants; handles stay batch-owned until success.
+Cancellation, source replacement or a thrown callback rolls back admitted grants.
 
 Transient network/body failures and HTTP 408/429/500/502/503/504 retry twice,
 after 250 ms and 750 ms, with `cache: 'reload'`. Aborts and permanent errors fail

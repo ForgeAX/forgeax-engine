@@ -4,7 +4,7 @@ export const WATER_R8_SCOPE = 'water-r8-integration-acceptance';
 export const COAST_SEED = 0x831fa27;
 export const SUN_DIRECTION = [-0.45, -0.8, -0.32] as const;
 export const COAST_MESH_PROFILES = {
-  coast64: { tessellationFactor: 6, quadsPerEdge: 64 },
+  coast64: { tessellationFactor: 3, quadsPerEdge: 64 },
   reference256: { tessellationFactor: 8, quadsPerEdge: 256 },
 } as const;
 export const IRON_BALL_RADIUS_M = 0.6;

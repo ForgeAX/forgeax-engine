@@ -1,9 +1,9 @@
 ---
 name: forgeax-engine-performance
 description: >-
-  Evidence-driven ForgeAX CPU, GPU and memory analysis. Use when diagnosing slow
-  frames, GC or physics costs, heap/allocation ownership, submission or shader
-  costs, captured-frame GPU benchmarks or benchmark regressions.
+  ForgeaX CPU, GPU and memory performance analysis. Use when diagnosing slow
+  frames, GC or physics costs, heap/allocation ownership, GPU resources or timing,
+  submission or shader costs, captured-frame benchmarks or regressions.
 ---
 
 # forgeax-engine-performance
@@ -20,16 +20,43 @@ rule here as well as its evidence reference.
 ## Deliver performance evidence
 
 Every performance measurement must deliver a programmatically generated visual
-and a reusable visual report to the user. Default to SVG or PNG plus self-contained
-offline HTML, with direct links in the final reply; saving files without sharing
+and a reusable visual report to the user. Default to SVG or PNG plus reusable
+HTML (self-contained offline where the selected viewer supports it), with direct links in the final reply; saving files without sharing
 them or returning only numeric tables is incomplete. Keep the raw inputs,
 digests, source/build/workload identities, units, coverage and generation command
 with the report. Open the HTML and inspect the generated image before delivery.
+Interactive HTML must support a concrete inspection action on its graphics, not
+only display an SVG. Verify hover details, click-to-inspect/drilldown, filtering
+or ordering, zoom/pan/reset, reload and export on real report data. Keep source
+row/node identities stable across sorting; preserve missing values and line
+sequence gaps. Static PNG/SVG remains an export of the evidence.
 
 | Measured question | Default visual route |
 | --- | --- |
 | CPU samples across targets and completion intervals | `cpu.mjs report`; deliver `timeline.svg` and `timeline.html`, retain AI-readable JSON and optional Perfetto trace |
 | Samples, CPU/GC costs, allocation rows, GPU pass costs or before/after summaries | `render_metric_report.mjs`; explicitly select source rows and same-unit value pointers, then deliver `report.svg` and `report.html` |
+
+For the ECharts trial, pass `--html-viewer echarts --echarts-js LOCAL_RUNTIME`
+to `memory.mjs report` or `render_metric_report.mjs`. Prepare outside the checkout
+with `npm install --prefix /absolute/viewer-runtime --ignore-scripts --no-audit
+--no-fund echarts@6.1.0`; select its `node_modules/echarts/dist/echarts.min.js`.
+The generator embeds the runtime and package LICENSE/NOTICE into one offline HTML
+and records its digest. ECharts memory HTML compresses the embedded JSON with gzip;
+opening it requires browser `DecompressionStream` support. Keep the runtime package and notices with reusable tools.
+The default remains the SVG viewer during comparison.
+
+| ECharts surface | Inspection action |
+| --- | --- |
+| Memory blocks | Wheel zoom, drag pan, click drilldown, Fit; shared Back/breadcrumbs, bytes/count, full-capture search, file reload, SVG/PNG export |
+| Metric bars/lines | Native tooltip, wheel/slider zoom, restore, click source detail; shared sort/filter, file reload and SVG export |
+
+Memory charts project at most 2,000 visible tree entries, including Self and
+aggregated Other slices; clicking Other opens the complete child list. Raw AI
+queries retain the full graph. Preserve the current chart viewport on table/search
+redraws; a changed memory focus, metric or depth resets it. Metric re-sorting keeps
+zoom; filtering changes the population and resets it. Large snapshot JSON parsing,
+indexing and reference queries still run on the main thread; do not describe the
+projection bound as a streaming loader or full-query speedup.
 
 Choose time-order call stacks for CPU chronology, row-order lines for sample
 sequences and grouped bars for comparable summaries. Preserve unknown values as
@@ -37,6 +64,30 @@ gaps; do not infer distributions from percentiles, compare unrelated cohorts or
 turn GPU pass sums into frame latency. Carry failed/partial producer status into
 the visible report. If capture or visualization fails, share the available
 diagnostic artifacts and name the missing deliverable; never invent data to fill it.
+
+CPU `timeline.html` uses the pinned Perfetto v59.1 UI for timeline rendering,
+zoom/pan, track groups, search, range selection and slice argument inspection.
+Open it with `node scripts/cpu.mjs serve REPORT_DIRECTORY` from this skill; use
+the loopback URL it prints. `report` accepts raw profiles/capture directories or
+an existing normalized `timeline.json`. `--perfetto-ui HTTP_UI_BASE` selects a
+self-hosted build. The official embedding protocol requires HTTP, not `file://`;
+the default hosted UI needs network to load. Trace buffers are passed to its
+browser frame with sharing disabled. Self-host the UI for a network-independent
+deployment; do not describe the default report as wholly offline.
+
+| CPU deliverable | Consumer |
+| --- | --- |
+| `timeline.html` + `timeline.trace.json` | Perfetto timeline; completion selector and millisecond range controls; reopen Chrome JSON, normalized CPU JSON or binary traces |
+| `timeline-inspector.html` | Offline Top-down/Bottom-up trees, function/completion details and call-tree SVG export |
+| `timeline.json`, `analysis.json`, `call-trees.json`, `cpu.mjs query` | Complete machine-readable capture and bounded range/target analysis |
+| `timeline.svg`, generated PNG/screenshot | Programmatic image delivered alongside the live viewer link |
+
+For this route, verify the actual Perfetto canvas has painted slices, select a
+slice and inspect its original-name/source arguments, zoom/pan, change a completion
+range, reopen a file and retry the viewer. A completed PING/PONG handshake only
+means the UI accepted messages; it does not prove trace parsing or rendering.
+Keep sampled JS targets distinct from OS threads and completion gaps distinct
+from frame execution scopes. Retain the original capture identity on re-render.
 
 For CPU timelines, use [cpu.mjs](scripts/cpu.mjs): its public `project play`
 adapter captures and reports; `report` reopens saved captures; `calibrate` measures
@@ -68,6 +119,7 @@ the explicit allocation-event control, not ordinary capture or performance accep
 Use [memory.mjs](scripts/memory.mjs) for generic sampled allocation profiles and
 V8 object snapshots: `report` writes normalized AI data, offline folder/treemap
 HTML and both SVGs; `inspect` returns bounded path/children/records/reference pages;
+`rank` returns paged global hotspots (`--by self|total`, `--query NAME`);
 `capture` samples an explicitly owned Node workload module. Read the memory
 workflow
 when capturing or interpreting its hierarchy.
@@ -87,8 +139,18 @@ allocation-event counts, matched comparisons and GPU/process memory separate.
 
 Snapshot reports use lossless indexed graph storage to avoid repeating millions of reference IDs and names. `memory.mjs inspect/report` and the HTML loader decode it automatically; use those entrypoints instead of assuming `memory.json.nodes` contains object rows. Keep every object and reference; compact storage is not display truncation.
 
-Treemap block area and folder totals use the same bytes. Show exact values and
-full paths in details; rendering aggregation never truncates the AI model.
+Choose `--metric count` on `report`, `capture`, `inspect` or `rank` for allocation
+sample or snapshot-node counts. Byte size remains the default. HTML switches
+size/count without recapture; charts, sibling order, search and exports use the
+selected metric. `Self` counts local records; `Total` includes descendants.
+For AI hotspots use `rank memory.json --metric count --by self --limit 20`, then
+`inspect memory.json --node ID --metric count` for a full path. Use `--by total`
+for snapshot type/name groups; inclusive ranked rows overlap and cannot be summed.
+Byte-based allocation sampling favors larger allocations: recorded sample count
+is not an unbiased real allocation-event count or an allocation rate.
+Treemap block area and folder totals use the same selected metric, including
+count-only zero-byte branches. Show exact values and full paths in details;
+rendering aggregation never truncates the AI model.
 
 ## Numeric allocation ownership
 
@@ -1014,6 +1076,46 @@ readback. When moving uploads to creation, validate capture bootstrap and fresh
 replay as well as live pixels. Removing allocation from one owner does not prove
 lower whole-Worker allocation, a smaller retained heap, or a solved runtime target.
 
+## GPU capture workbench
+
+Use [gpu.mjs](scripts/gpu.mjs) for the resource-byte/count hierarchy, captured
+pass/resource usage graph, selected-work shader/binding graph and API resource
+spans. Keep the canonical tape digest, resource IDs and `workIndex`; do not
+create another recorder or replay owner. Existing GPU summary/overlap analyzers
+remain the numerical authority; this entry adds their visual delivery.
+
+```sh
+node <skill>/scripts/gpu.mjs setup
+node <skill>/scripts/gpu.mjs report frame.rhitape --out-dir /outside/source/gpu-view
+node <skill>/scripts/gpu.mjs query /outside/source/gpu-view/gpu.json --search shadow
+node <skill>/scripts/gpu.mjs serve /outside/source/gpu-view
+node <skill>/scripts/gpu.mjs images /outside/source/gpu-view
+node <skill>/scripts/gpu.mjs timing capture.json --pointer /gpu/samples/0/observation/frame --out-dir /outside/source/gpu-time
+```
+
+`report` uses the built RHI Debug module at `packages/rhi-debug/dist/index.mjs`
+under the current directory; supply `--rhi-module` for another installation.
+Alternatively pass `{identity:{tapeDigest},frameModel}` JSON from the canonical
+producer. `setup` downloads pinned, integrity-checked ECharts/Cytoscape/ELK
+runtimes once; `--runtime-dir` overrides the default user cache. Resource HTML
+embeds those runtimes and licenses and works offline. Perfetto uses its pinned
+hosted UI; `--perfetto-ui` selects a separately hosted build and requires HTTP.
+`images` needs Playwright and sandboxed Chrome; `--playwright-module` selects an
+installed module. Every report emits SVG + HTML + AI JSON; share those links and
+the generated PNGs after inspecting the images and real interactions.
+
+> [!IMPORTANT]
+> Bytes cover the captured resource closure and descriptor payload, not native
+> allocation or residency. Views share backing texture IDs. Unknown sizes remain
+> unknown, including unsupported 3D texture estimates. Count means unique observed
+> API objects; only buffer/texture destruction is observed. Graph edges project
+> draw/dispatch bindings and attachments, not transfer-only events, barriers or a
+> compiled scheduling DAG. API spans use event indices, not GPU time/retirement.
+> The timeline accepts raw live begin/end ticks for one Renderer frame. Separate
+> display lanes preserve overlap; sum, union and envelope are not hardware
+> occupancy or whole-frame latency. Do not invent intervals from replay duration
+> aggregates, align GPU ticks with CPU clocks, or join unrelated captures by labels.
+
 ## Select detailed methods and evidence
 
 | Need | Reference |
@@ -1040,6 +1142,7 @@ admission. Tool output alone does not qualify a delivery gate.
 | Tool | Input and useful result |
 | --- | --- |
 | [memory.mjs](scripts/memory.mjs) | Generic allocation-stack and snapshot-object explorer; report/inspect/owned-Node capture, folders and squarified treemap, AI JSON, SVG/PNG and offline HTML |
+| [gpu.mjs](scripts/gpu.mjs) | Canonical RHI capture to AI resource/work queries, offline ECharts hierarchy and Cytoscape/ELK usage/pipeline graphs, SVG/PNG; raw live GPU timestamps to Perfetto with overlapping lanes |
 | [cpu.mjs](scripts/cpu.mjs) | One CPU entry: live game-3d capture plus automatic report, exact-browser calibration, and saved profile/directory analysis; HTML, SVG, AI JSON, integrated totals/gap analysis and Perfetto trace |
 | [render_metric_report.mjs](scripts/render_metric_report.mjs) | Explicit JSON Pointer selections from measured data; same-unit bar/line SVG, offline HTML with row filtering/reload/table, source digest and reusable report JSON; null stays unavailable |
 | [summarize_gpu_timing.mjs](scripts/summarize_gpu_timing.mjs) | Engine GPU observations; semantic pass costs, completeness, interval union and timestamp envelope |
@@ -1124,11 +1227,28 @@ Existing output is rejected rather than overwritten.
 | Output | Required new absolute `FORGEAX_CPU_OUTPUT`; report written to `view/` |
 | Original names in release builds | `FORGEAX_CPU_DIST` selects the frozen distribution; `FORGEAX_CPU_ENGINE_ROOT` selects its Engine source/build checkout (default current directory) |
 
-The same CPU HTML includes Top-down and Bottom-up self-cost call trees over the
-visible range. `call-tree.svg` and `call-trees.json` preserve that aggregate view;
-`cpu.mjs tree timeline.json --direction top-down --output NEW_JSON` queries the
-full capture by default. Scattered visits merge by stack context; recursion levels
-stay separate and sample counts are not invocation counts.
+The offline inspector contains Top-down/Bottom-up trees and completion/function
+details; Perfetto owns interactive timelines. Query the derived
+model with `cpu.mjs query timeline.json`; `--view` selects `functions` (default),
+`intervals`, `tree` or `completions`. All use the viewer's normalized samples and
+existing aggregation functions. Keep GPU/memory domain queries at their existing
+entrypoints; do not add another recorder, query language or scenario analyzer.
+
+| Selection / projection | Controls and meaning |
+| --- | --- |
+| Target and range | `--target NAME_OR_ID`; `--from-ms N --to-ms N`, or `--completion-index N` from completion rows; optional subrange must stay inside that completion |
+| Function contexts / intervals | `--search TEXT` matches names/source; `--node-id N` selects a target-local context and requires one target |
+| Order and page | Functions: `--sort selfMs` (default) or `inclusiveMs`; intervals: `startMs` (default) or `durationMs`; completions: `completionGapMs` (default) or `startMs`; `--limit 100 --offset 0` bounds rows after aggregation |
+| Call trees | `--view tree --direction top-down` or `bottom-up`; keeps complete paths without row filters/paging. Scattered visits aggregate; recursion remains distinct |
+
+Compose completion rows -> one completion selection -> function contexts -> that
+node's intervals. Interval rows retain canonical `sliceIndex`, original/clipped
+bounds and normalized `sampleRange`; sample indices are not original CDP indices
+or invocation counts. Results retain input SHA-256, capture identity, clock,
+coverage and reconstruction audit. An unobserved interval stays unknown.
+For in-process composition import `selectCpuTimeline` and `queryCpuTimeline` from
+[scripts/cpu_query.mjs](scripts/cpu_query.mjs); reuse a borrowed selection across
+projections. `--output NEW_JSON` saves CLI output without overwriting existing data.
 
 Use `cpu.mjs` as the public `project play` adapter. Freeze runtime/build bytes,
 retain real WASD and completion admission, drain both Engine publication and

@@ -209,9 +209,11 @@ type SubmittedSequence =
       sequence: number;
       timeSeconds: number;
       profile?: SubmittedOceanProfileFacts;
+      nativeSourceStep: number | undefined;
       sourceIdentity?: string;
       collisions?: AdvancedCollisionSnapshot;
       sourceRevision: number;
+      waveImpulseSequence?: number;
       captureRequest: number;
       querySources?: readonly ReceiverSourceState[];
     }>;
@@ -249,7 +251,15 @@ function receiverSourceStates(
     return {
       receiver,
       sourceIdentity: dispersiveSourceIdentity(source),
-      hasHistory: source.roster.length > 0 || prior?.hasHistory === true,
+      hasHistory:
+        source.roster.length > 0 ||
+        prior?.hasHistory === true ||
+        (row.frame?.waveImpulses?.some(
+          (impulse) =>
+            impulse.sourceReceiver?.entity !== receiver.entity ||
+            impulse.sourceReceiver?.generation !== receiver.generation,
+        ) ??
+          false),
     };
   });
 }
@@ -862,7 +872,11 @@ function pendingOceanWork(
       ? [names.grid, names.previousGrid, names.materialGrid, names.foam, names.mapping]
       : []),
   ];
-  if (retainVisualOutput) outputs.push(names.visualNormal);
+  if (
+    retainVisualOutput ||
+    (config.algorithm === 'mode-projected-gravity/1' && 'visualNormalDetailFft' in config)
+  )
+    outputs.push(names.visualNormal);
   const normalOutputs = new Set<string>([names.normal, names.previousNormal, names.materialNormal]);
   const passes: RenderFeaturePassDeclaration[] =
     previous === undefined
@@ -889,7 +903,10 @@ function pendingOceanWork(
           !('visualNormalDetailFft' in config) ||
           previous.visualOutput === undefined
         )
-          return [];
+          return [
+            texture(name, 1, 1, 'rgba8unorm', `${name}-neutral`, true, true),
+            view(`${name}-view`, name),
+          ];
         const output = previous.visualOutput;
         return [
           texture(
@@ -1152,7 +1169,15 @@ function dispersiveOceanWork(
           prefix: dispersiveQueryPrefix(names.prefix, source.receiver),
           size: row.size,
           generation: row.generation,
-          frame: { ...row.frame, captureStages: false },
+          frame: {
+            ...row.frame,
+            captureStages: false,
+            waveImpulses: (row.frame.waveImpulses ?? []).filter(
+              (impulse) =>
+                impulse.sourceReceiver?.entity !== source.receiver.entity ||
+                impulse.sourceReceiver?.generation !== source.receiver.generation,
+            ),
+          },
           config: receiverConfig,
           collisions: dispersiveExternalSources(row.collisions.value, source.receiver),
           ...(fieldInitialization === undefined ? {} : { fieldInitialization }),
@@ -2120,12 +2145,17 @@ function failure(
   row: { readonly recipe: WaterAdvancedRecipe; readonly generation: number },
   code: WaterAdvancedError['code'],
   expected: string,
+  cause?: unknown,
 ): WaterAdvancedError {
   return {
     code,
     expected,
     hint: 'inspect the exact recipe, capabilities and submitted stage roster before resetting',
-    detail: { recipeGuid: row.recipe.guid, generation: row.generation },
+    detail: {
+      recipeGuid: row.recipe.guid,
+      generation: row.generation,
+      ...(cause === undefined ? {} : { cause }),
+    },
   };
 }
 function hasCompute(submission: RenderFeatureSubmission | undefined, name: string): boolean {
@@ -2503,6 +2533,9 @@ function planOceanRow(
     allocation: reset,
     frame: {
       ...row.frame,
+      waveImpulses: (row.frame.waveImpulses ?? []).filter(
+        (impulse) => impulse.sequence > (previous?.waveImpulseSequence ?? 0),
+      ),
       reset,
       reseedSource: previous?.sourceRevision !== row.frame.sourceRevision,
       captureStages:
@@ -2547,6 +2580,19 @@ function planOceanRow(
                     row,
                     'water-advanced-invalid-input',
                     `a full native source interval in [0, ${config.maximumIntervalSeconds}] seconds`,
+                    {
+                      deltaSeconds: delta,
+                      maximumIntervalSeconds: config.maximumIntervalSeconds,
+                      currentTimeSeconds: frame.timeSeconds,
+                      priorTimeSeconds: previous?.timeSeconds,
+                      currentSequence: frame.sequence,
+                      priorSequence: previous?.sequence,
+                      currentNativeStep: frame.nativeSourceStep,
+                      priorNativeStep: previous?.nativeSourceStep,
+                      captureRequested: frame.captureStages,
+                      sourceRevision: frame.sourceRevision,
+                      priorSourceRevision: previous?.sourceRevision,
+                    },
                   )
                 : undefined;
         return error;
@@ -2579,12 +2625,14 @@ function planOceanRow(
           (frame.paused &&
             !frame.captureStages &&
             !frame.queryFeedback &&
+            !frame.waveImpulses?.length &&
             !frame.reset &&
             !frame.visualNormalDetailFft?.reset) ||
           (previous !== undefined &&
             delta === 0 &&
             !frame.captureStages &&
             !frame.queryFeedback &&
+            !frame.waveImpulses?.length &&
             !frame.reset &&
             !row.allocation &&
             row.collisions?.kind === 'ready' &&
@@ -3060,18 +3108,26 @@ export function createWaterAdvancedFeature(waterInfoFeature: object): RenderFeat
         shallow,
         oceans,
       };
-      const [firstWork] = work;
+      const scopes = new Map<string, RenderFeatureWork[]>();
+      for (const item of work) {
+        const key = item.scope === 'frame' ? 'frame' : item.scope.view;
+        const group = scopes.get(key) ?? [];
+        group.push(item);
+        scopes.set(key, group);
+      }
       return ok({
-        work:
-          firstWork === undefined
+        work: [...scopes.values()].flatMap((group) => {
+          const first = group[0];
+          return first === undefined
             ? []
             : [
                 {
-                  scope: firstWork.scope,
-                  resources: work.flatMap((item) => item.resources),
-                  passes: work.flatMap((item) => item.passes),
+                  scope: first.scope,
+                  resources: group.flatMap((item) => item.resources),
+                  passes: group.flatMap((item) => item.passes),
                 },
-              ],
+              ];
+        }),
         sourceFeedback,
       });
     },
@@ -3098,7 +3154,6 @@ export function createWaterAdvancedFeature(waterInfoFeature: object): RenderFeat
           ? [{ ...planned.row, frame: original.frame }]
           : [];
       });
-      plannedOceanPasses.delete(data);
       for (const row of shallow) {
         initializedShallow.set(row.key, row.generation);
         if (row.collisions.kind === 'ready')
@@ -3110,68 +3165,79 @@ export function createWaterAdvancedFeature(waterInfoFeature: object): RenderFeat
             collisions: row.collisions.value,
           });
       }
-      for (const row of oceans) {
-        const previous = submittedSequences.get(row.key);
-        const sourceOwner = source?.oceans.get(row.key);
-        const querySources = receiverSourceStates(
-          row,
-          previous?.kind === 'ocean' ? previous.querySources : undefined,
-        );
-        const plan = oceanPlans?.get(row.key);
-        const visual = plan ? submittedVisualNormalDetailFft(plan.row, submission) : undefined;
-        const child = row.frame?.visualNormalDetailFft;
-        initializedOcean.set(row.key, {
-          generation: row.generation,
-          size: row.size,
-          querySources,
-          ...(visual && child && plan
-            ? {
-                visualOutput: {
-                  generation: row.generation,
-                  revision: child.revision,
-                  noiseRevision: child.noiseRevision,
-                  size: visual.size,
-                  deviceGeneration: plan.deviceGeneration,
-                },
-              }
-            : {}),
-        });
-        submittedSequences.set(row.key, {
-          kind: 'ocean',
-          generation: row.generation,
-          deviceGeneration: receiverDevice ?? 0,
-          sequence: row.frame.sequence,
-          timeSeconds: row.frame.timeSeconds,
-          ...(sourceOwner === undefined
-            ? {}
-            : {
-                profile: Object.freeze({
-                  owner: sourceOwner.owner,
-                  world: sourceOwner.world,
-                  recipe: row.recipe,
-                  worldIdentity: row.worldIdentity,
-                  generation: row.generation,
-                  viewIdentity: row.viewIdentity,
-                  size: row.size,
-                  deviceGeneration: receiverDevice ?? 0,
+      const commitOceanSequences = () => {
+        for (const row of oceans) {
+          const previous = submittedSequences.get(row.key);
+          const sourceOwner = source?.oceans.get(row.key);
+          const querySources = receiverSourceStates(
+            row,
+            previous?.kind === 'ocean' ? previous.querySources : undefined,
+          );
+          const plan = oceanPlans?.get(row.key);
+          const visual = plan ? submittedVisualNormalDetailFft(plan.row, submission) : undefined;
+          const child = row.frame?.visualNormalDetailFft;
+          initializedOcean.set(row.key, {
+            generation: row.generation,
+            size: row.size,
+            querySources,
+            ...(visual && child && plan
+              ? {
+                  visualOutput: {
+                    generation: row.generation,
+                    revision: child.revision,
+                    noiseRevision: child.noiseRevision,
+                    size: visual.size,
+                    deviceGeneration: plan.deviceGeneration,
+                  },
+                }
+              : {}),
+          });
+          submittedSequences.set(row.key, {
+            kind: 'ocean',
+            generation: row.generation,
+            deviceGeneration: receiverDevice ?? 0,
+            sequence: row.frame.sequence,
+            timeSeconds: row.frame.timeSeconds,
+            nativeSourceStep: row.frame.nativeSourceStep,
+            ...(sourceOwner === undefined
+              ? {}
+              : {
+                  profile: Object.freeze({
+                    owner: sourceOwner.owner,
+                    world: sourceOwner.world,
+                    recipe: row.recipe,
+                    worldIdentity: row.worldIdentity,
+                    generation: row.generation,
+                    viewIdentity: row.viewIdentity,
+                    size: row.size,
+                    deviceGeneration: receiverDevice ?? 0,
+                  }),
                 }),
-              }),
-          sourceRevision: row.frame.sourceRevision,
-          captureRequest: Math.max(
-            row.frame.captureRequest ?? 0,
-            previous?.kind === 'ocean' && previous.generation === row.generation
-              ? previous.captureRequest
-              : 0,
-          ),
-          querySources,
-          ...(row.collisions?.kind === 'ready'
-            ? {
-                sourceIdentity: dispersiveSourceIdentity(row.collisions.value),
-                collisions: row.collisions.value,
-              }
-            : {}),
-        });
-      }
+            sourceRevision: row.frame.sourceRevision,
+            waveImpulseSequence: Math.max(
+              previous?.kind === 'ocean' && previous.generation === row.generation
+                ? (previous.waveImpulseSequence ?? 0)
+                : 0,
+              ...(row.frame.waveImpulses ?? []).map((impulse) => impulse.sequence),
+            ),
+            captureRequest: Math.max(
+              row.frame.captureRequest ?? 0,
+              previous?.kind === 'ocean' && previous.generation === row.generation
+                ? previous.captureRequest
+                : 0,
+            ),
+            querySources,
+            ...(row.collisions?.kind === 'ready'
+              ? {
+                  sourceIdentity: dispersiveSourceIdentity(row.collisions.value),
+                  collisions: row.collisions.value,
+                }
+              : {}),
+          });
+        }
+      };
+      commitOceanSequences();
+      plannedOceanPasses.delete(data);
       submitted = source ? { data, source, shallow, oceans } : undefined;
     },
     onSourceFrameSubmitted(data, feedback, submission) {

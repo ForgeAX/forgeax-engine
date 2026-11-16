@@ -1,3 +1,5 @@
+import { setFlagsFromString } from 'node:v8';
+import { runInNewContext } from 'node:vm';
 import { World } from '@forgeax/engine-ecs';
 import { type PhysicsWorld, PhysicsWorldResource } from '@forgeax/engine-physics';
 import {
@@ -66,6 +68,7 @@ async function fixture(
   systemEncode = false,
   preparationPending = false,
   featureIdentity = 'shared-copy',
+  computeProjection = false,
 ) {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const shader = (await rhi.createShaderModule(device, { code: 'synthetic' })).unwrap();
@@ -110,7 +113,7 @@ async function fixture(
                       ? { view: 'view' }
                       : 'frame',
                   resources: [
-                    ...(nativePreparation
+                    ...(nativePreparation || computeProjection
                       ? [
                           {
                             kind: 'compute-program' as const,
@@ -118,6 +121,21 @@ async function fixture(
                             program: ownRenderFeatureProgramData({
                               wgsl: 'synthetic',
                               entryPoints: ['main'],
+                              ...(computeProjection
+                                ? {
+                                    bindings: [
+                                      {
+                                        entries: [
+                                          {
+                                            binding: 0,
+                                            visibility: 4,
+                                            buffer: { type: 'storage' as const },
+                                          },
+                                        ],
+                                      },
+                                    ],
+                                  }
+                                : {}),
                             }),
                           },
                         ]
@@ -130,13 +148,37 @@ async function fixture(
                       data: new Uint32Array([7, 0, 0, 0]),
                     },
                     { kind: 'buffer', name: 'destination', size: 16, usage: ['storage'] },
+                    ...(computeProjection
+                      ? [
+                          ownRenderFeatureProgramData({
+                            kind: 'compute-bindings' as const,
+                            name: 'shared-bindings',
+                            program: 'shared-program',
+                            entries: [{ binding: 0, resource: 'destination' }],
+                          }),
+                        ]
+                      : []),
                   ],
                   passes: [
-                    {
-                      kind: 'copy',
-                      name: 'shared-copy-pass',
-                      copies: [{ source: 'source', destination: 'destination', size: 16 }],
-                    },
+                    ...(computeProjection
+                      ? [
+                          {
+                            kind: 'compute' as const,
+                            name: 'shared-compute-pass',
+                            program: 'shared-program',
+                            bindings: 'shared-bindings',
+                            dispatches: [
+                              { kind: 'direct' as const, entryPoint: 'main', workgroups: [1] },
+                            ],
+                          },
+                        ]
+                      : [
+                          {
+                            kind: 'copy',
+                            name: 'shared-copy-pass',
+                            copies: [{ source: 'source', destination: 'destination', size: 16 }],
+                          },
+                        ]),
                   ],
                 },
               ],
@@ -228,6 +270,37 @@ async function fixture(
 }
 
 describe('shared Feature graph systems', () => {
+  it('releases superseded shared compute graphs while the newest projection stays published', async () => {
+    setFlagsFromString('--expose-gc');
+    const gc = runInNewContext('gc') as () => void;
+    const f = await fixture(false, false, 'shared-compute', true);
+    const released = (() => {
+      expect(f.record().ok).toBe(true);
+      expect(encodeSharedFeatureGraph(f.world, frameEncoder(f.world)).ok).toBe(true);
+      const outcome = sharedFeatureGraphOutcome(f.world);
+      assert(outcome?.ok && outcome.receipt.kind === 'compiled');
+      const weak = new WeakRef(outcome.receipt.graph);
+      f.finish(true, Promise.resolve());
+      return weak;
+    })();
+    try {
+      for (let frame = 0; frame < 8; frame++) {
+        f.next();
+        expect(f.record().ok).toBe(true);
+        expect(encodeSharedFeatureGraph(f.world, frameEncoder(f.world)).ok).toBe(true);
+        f.finish(true, Promise.resolve());
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+      for (let attempt = 0; attempt < 10 && released.deref() !== undefined; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        gc();
+      }
+      expect(sharedGraphTextures(f.host)?.graph).toBeDefined();
+      expect(released.deref()).toBeUndefined();
+    } finally {
+      f.dispose();
+    }
+  });
   it('declares the exact compiled physical name of a hoisted conditional pass', async () => {
     const f = await fixture(false, false, WATER_ADVANCED_FEATURE_IDENTITY);
     try {

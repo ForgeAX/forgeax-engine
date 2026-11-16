@@ -11,6 +11,7 @@ import {
 } from '@forgeax/engine-scene';
 import { Skin } from '@forgeax/engine-skinning';
 import { Terrain } from '@forgeax/engine-terrain';
+import { WATER_SYSTEM_RESOURCE, type WaterSystem } from '@forgeax/engine-water';
 import {
   Instances,
   Layer,
@@ -33,6 +34,66 @@ export interface RenderSourceEntity {
 }
 
 const EMPTY_SOURCE_ROWS: readonly (RenderSourceEntity | undefined)[] = Object.freeze([]);
+
+interface RenderWaterSource {
+  readonly entity: EntityHandle;
+  readonly generation: number;
+  readonly zoneGuid: string | undefined;
+  readonly zoneGeneration: number;
+}
+
+function captureRenderWaterSources(world: World): ReadonlyMap<number, RenderWaterSource> {
+  const rows = new Map<number, RenderWaterSource>();
+  const water = world.hasResource(WATER_SYSTEM_RESOURCE)
+    ? world.getResource<WaterSystem>(WATER_SYSTEM_RESOURCE)
+    : undefined;
+  for (const body of water?.snapshots() ?? []) {
+    const match = body.instanceEntity === undefined ? /^scene-entity:(\d+)$/.exec(body.guid) : null;
+    const entity = (body.instanceEntity ?? (match === null ? undefined : Number(match[1]))) as
+      | EntityHandle
+      | undefined;
+    if (
+      entity === undefined ||
+      !Number.isSafeInteger(entity) ||
+      !world.hasComponent(entity, WaterBodyInstance)
+    )
+      continue;
+    rows.set(entity, {
+      entity,
+      generation: body.sceneGeneration,
+      zoneGuid: body.binding.kind === 'bound' ? body.binding.zoneGuid : undefined,
+      zoneGeneration: body.binding.kind === 'bound' ? body.binding.zoneGeneration : 0,
+    });
+  }
+  return rows;
+}
+
+/** Water resources can advance without a component write. Observe their accepted source identities. */
+export function readRenderWaterSources(
+  world: World,
+  source: ReturnType<typeof createRenderSourceState>,
+) {
+  const rows = captureRenderWaterSources(world);
+  const changed = new Set<number>();
+  for (const [entity, row] of rows) {
+    const previous = source.water.rows.get(entity);
+    if (
+      previous?.generation !== row.generation ||
+      previous.zoneGuid !== row.zoneGuid ||
+      previous.zoneGeneration !== row.zoneGeneration
+    )
+      changed.add(entity);
+  }
+  for (const entity of source.water.rows.keys()) if (!rows.has(entity)) changed.add(entity);
+  return { rows, changed };
+}
+
+export function acceptRenderWaterSources(
+  source: ReturnType<typeof createRenderSourceState>,
+  candidate: ReturnType<typeof readRenderWaterSources>,
+): void {
+  source.water.rows = candidate.rows;
+}
 
 /**
  * Accepted source rows keyed by entity slot, stored as typed columns: a
@@ -163,6 +224,7 @@ export function createRenderSourceState(world: World, additional: readonly Compo
     entities,
     batch,
     renderableComponents,
+    water: { rows: captureRenderWaterSources(world) },
   };
 }
 
@@ -360,6 +422,7 @@ export function readRenderSourceChanges(
 ) {
   const batch = source.projection.read();
   const rows = captureRenderSourceEntities(world, source, batch);
+  const waterSources = readRenderWaterSources(world, source);
   const changes = observeRenderSourceChanges(
     world,
     source,
@@ -369,6 +432,11 @@ export function readRenderSourceChanges(
     baseline,
     buffers,
   );
+  for (const entity of waterSources.changed) {
+    if (!isRenderableMember(world, entity)) continue;
+    buffers.changed.add(entity);
+    if (buffers.content !== false) buffers.content.add(entity);
+  }
   let closed = false;
   const validate = () => {
     if (closed) throw new Error('Render source candidate is closed');
@@ -382,6 +450,7 @@ export function readRenderSourceChanges(
       validate();
       batch.accept();
       acceptRenderSourceEntities(source, batch.indices, rows);
+      acceptRenderWaterSources(source, waterSources);
       closed = true;
     },
     discard() {

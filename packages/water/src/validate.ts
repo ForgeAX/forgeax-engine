@@ -1511,6 +1511,20 @@ function validateWaterBodyPayload(
   fail: (expected: string) => Result<WaterAsset, WaterError>,
 ): Result<WaterAsset, WaterError> | undefined {
   {
+    if (
+      asset.transitionContinuity !== undefined &&
+      (asset.type !== 'river' ||
+        !closed(asset.transitionContinuity, ['target', 'endpoint', 'reachM', 'blendWidthM']) ||
+        asset.transitionContinuity.target !== 'ocean' ||
+        asset.transitionContinuity.endpoint !== 'end' ||
+        !finite(asset.transitionContinuity.reachM) ||
+        !finite(asset.transitionContinuity.blendWidthM) ||
+        asset.transitionContinuity.blendWidthM <= 0 ||
+        asset.transitionContinuity.reachM <= asset.transitionContinuity.blendWidthM)
+    )
+      return fail(
+        'optional River terminal continuity with finite positive blend width and longer endpoint reach',
+      );
     const problem = validateBodySchema(asset, closed, fail);
     if (problem !== undefined) return problem;
   }
@@ -1805,6 +1819,7 @@ function validateBodySchema(
         'customMeshOverrideGuid',
         'riverToLakeTransitionMaterialGuid',
         'riverToOceanTransitionMaterialGuid',
+        'transitionContinuity',
         'waterInfoMaterialGuid',
         'lodMaterialGuid',
         'underwaterPostProcessMaterialGuid',

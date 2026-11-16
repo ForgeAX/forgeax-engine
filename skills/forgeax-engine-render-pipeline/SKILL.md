@@ -92,7 +92,9 @@ The shared builtin roster owns registration. Publication selects each Feature's
 optional `source` adapter and retains it for the publisher lifetime; WaterInfo's
 adapter emits the v6 DTO, never its renderer-owned frame. Local source capture
 retains exact asset versions and renderer-owned view/device/graph facts. Plan
-resolves captured revisions first. GPU WaterMesh consumes the same-frame
+resolves captured revisions first. Shared fluid impulse noise residency consumes
+the validated captured TextureAsset with its owning source scope; do not
+re-resolve a released extraction snapshot through a live exact-version lookup. GPU WaterMesh consumes the same-frame
 WaterInfo publication after WaterInfo plans, retaining normal generation fences.
 GPU near sources derive their flat-far boundary mask only from the selected
 same-view/Zone far receipt, with matching Body generation and mean height.

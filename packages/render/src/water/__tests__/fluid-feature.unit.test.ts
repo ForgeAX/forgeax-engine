@@ -4,8 +4,10 @@ import { AssetGuid, definePackageId } from '@forgeax/engine-pack/source';
 import { PhysicsWorldResource } from '@forgeax/engine-physics';
 import { type CompiledRenderGraph, RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import { rhi } from '@forgeax/engine-rhi-null';
+import { ok } from '@forgeax/engine-types';
 import {
   buildWaterPackOutputs,
+  cookWaterAsset,
   prepareWaterFluidFrame,
   WATER_BUOYANCY_RESOURCE,
   WATER_SYSTEM_RESOURCE,
@@ -13,6 +15,7 @@ import {
   type WaterDependencySnapshot,
   type WaterFluidRecipe,
   WaterSystem,
+  waterBodyOwnerKey,
 } from '@forgeax/engine-water';
 import { assert, expect, it, vi } from 'vitest';
 import { publishRuntimeAssets } from '../../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
@@ -21,8 +24,10 @@ import {
   prepareFeatureFrame,
   submitFeatureFrame,
 } from '../../__tests__/feature-frame-driver';
+import { compileSharedFeatureGraph } from '../../assembly/feature-frame-graph';
 import { createRenderFeatureHost } from '../../features/host';
 import { createRenderPublisher } from '../../publication/publisher';
+import { worldRenderResources } from '../../publication/resource-scope';
 import { createSceneDataCatalog } from '../../temporal/scene-data-catalog';
 import {
   createWaterFluidFeature,
@@ -31,6 +36,230 @@ import {
 } from '../fluid-feature';
 import { prepareWaterFluidFoamFrame, type WaterFluidFoamMaterial } from '../fluid-foam';
 import { addWaterFluidSharedGraph, type WaterFluidGraphFrame } from '../fluid-graph';
+import {
+  createWaterInfoFeature,
+  waterInfoFramePublicationForRenderer,
+} from '../water-info-feature';
+
+it('holds WaterInfo-dependent fluid impulses until the actual same-frame producer publishes a closure', async () => {
+  const f = await fixture(
+    { ...recipe(), terrainMode: 'water-info', foamEnabled: false },
+    'fluid',
+    false,
+    true,
+  );
+  const info = createWaterInfoFeature();
+  const fluid = createWaterFluidFeature({}, info);
+  const view = {
+    identity: 'main',
+    render: true,
+    frame: {
+      frameNumber: 6,
+      view: {
+        identity: 'main',
+        width: 16,
+        height: 16,
+        cameraRevision: 0,
+        deviceGeneration: 0,
+        cameraPosition: [0, 3, 0] as const,
+      },
+    },
+  };
+  const frame = 6;
+  const scope = worldRenderResources(f.world);
+  expect(scope.handleForGuid(recipe().impulseNoiseGuid)).toBeDefined();
+  const noiseHandle = (await f.assets.load(recipe().impulseNoiseGuid, 'texture')).unwrap();
+  const noiseAsset = f.assets.read(noiseHandle).unwrap();
+  const noiseRevision = f.assets.revision(noiseHandle).unwrap();
+  const planContext = {
+    frame: { frameNumber: frame },
+    generation: 0,
+    deviceGeneration: 0,
+    caps: f.device.caps,
+    views: [
+      {
+        ...view,
+        targets: [],
+        sceneData: createSceneDataCatalog({
+          featureIdentity: fluid.identity,
+          viewIdentity: 'main',
+          generation: 0,
+          planIdentity: 'fluid-readiness',
+          rgba16floatRenderable: true,
+        }),
+      },
+    ],
+  };
+  const extractContext = {
+    world: f.world,
+    frameNumber: frame,
+    views: [view],
+    caps: f.device.caps,
+  };
+  const infoInput = info.extract(extractContext).unwrap();
+  info.plan(infoInput, planContext).unwrap();
+  const data = fluid
+    .extract({
+      world: f.world,
+      frameNumber: frame,
+      views: [view],
+      referenceAssetVersion: (version) => {
+        expect(version).toEqual({
+          handle: noiseHandle,
+          revision: noiseRevision,
+          value: noiseAsset,
+          contentRevision: noiseRevision,
+        });
+      },
+    })
+    .unwrap();
+  expect(data.sourceBlockers).toEqual([]);
+  try {
+    expect(fluid.plan(data, planContext).unwrap()).toMatchObject({
+      pendingSource: { resource: f.visibleGuid, reason: 'asset-dependency-pending' },
+      work: [],
+    });
+    expect(waterFluidRenderFrame([fluid])).toBeUndefined();
+    fluid.onFrameSubmitted?.(data);
+    expect(f.system.fluid.inspect().fluid?.queuedImpulses).toBe(1);
+    const publication = waterInfoFramePublicationForRenderer(info, 'main', frame, 0);
+    assert(publication);
+    // A missing/failed source has no live loading request. It must remain an
+    // explicit error rather than being converted to pending presentation.
+    const body = publication.waveBodies[0];
+    assert(body);
+    const key = waterBodyOwnerKey(
+      f.world.identity,
+      body.bodyGuid,
+      body.bodyGeneration,
+      body.zoneGeneration,
+    );
+    const availability = publication.waterInfoAvailability as Map<string, unknown>;
+    for (const kind of ['missing', 'failed', 'incompatible'] as const) {
+      availability.set(key, {
+        kind,
+        bodyGuid: body.bodyGuid,
+        bodyGeneration: body.bodyGeneration,
+        field: 'visibleMeshGuid',
+        ...(kind === 'failed'
+          ? { failure: { code: 'load-failed', expected: 'real mesh bytes', hint: 'repair source' } }
+          : {}),
+      });
+      expect(fluid.plan(data, planContext).ok).toBe(false);
+    }
+    // Exact publication identity is required even when a retained producer
+    // history exists for another frame, device or view.
+    for (const context of [
+      { ...planContext, frame: { frameNumber: frame + 1 } },
+      { ...planContext, deviceGeneration: 1 },
+      {
+        ...planContext,
+        views: [
+          {
+            ...view,
+            ...planContext.views[0],
+            identity: 'other',
+            targets: [],
+            sceneData: createSceneDataCatalog({
+              featureIdentity: fluid.identity,
+              viewIdentity: 'other',
+              generation: 0,
+              planIdentity: 'other-view',
+              rgba16floatRenderable: true,
+            }),
+          },
+        ],
+      },
+    ])
+      expect(fluid.plan(data, context).ok).toBe(false);
+    f.readyInfo();
+    const recovered = info.extract(extractContext).unwrap();
+    info.plan(recovered, planContext).unwrap();
+    expect(recovered.views[0]?.publication.rows.get(key)?.bodyGeneration).toBe(body.bodyGeneration);
+    expect(fluid.plan(data, planContext).unwrap().pendingSource).toBeUndefined();
+    for (const entry of [
+      { ...data.simulations[0], worldIdentity: 'another-world' },
+      { ...data.simulations[0], worldIndex: 1 },
+    ])
+      expect(
+        fluid.plan({ ...data, simulations: [entry] } as WaterFluidFeatureFrame, planContext).ok,
+      ).toBe(false);
+    fluid.plan(data, planContext).unwrap();
+    const render = waterFluidRenderFrame([fluid]);
+    assert(render);
+    // Ready metadata alone cannot manufacture the physical shared texture.
+    expect(
+      addWaterFluidSharedGraph({
+        graph: new RenderGraphBuilder<WaterFluidGraphFrame>(),
+        waterFluid: render,
+        waterInfoPublication: recovered.views[0]?.publication,
+      }).ok,
+    ).toBe(false);
+    expect(f.system.fluid.inspect().fluid?.queuedImpulses).toBe(1);
+  } finally {
+    f.dispose();
+  }
+});
+
+it('records a direct impulse from its captured noise after the source snapshot is released', async () => {
+  const f = await fixture({ ...recipe(), foamEnabled: false });
+  f.readyInfo();
+  f.change('valid');
+  const graphs: NonNullable<ReturnType<typeof compileSharedFeatureGraph>>[] = [];
+  try {
+    const impulse = {
+      kind: 'direct' as const,
+      positionM: [8, 0, 8] as const,
+      radiusM: 1,
+      heightDeltaM: -1,
+      lifetimeSeconds: 0,
+      foamStrength: 1,
+    };
+    f.system.fluid.enqueueImpulse('fluid', impulse).unwrap();
+    const batch = f.run();
+    expect(batch.frame.errors).toEqual([]);
+    const render = waterFluidRenderFrame(f.host.features);
+    assert(render);
+    const source = render.simulations[0]?.impulseNoise;
+    assert(source);
+    const scope = worldRenderResources(f.world);
+    expect(scope.assetRevision(source.handle)).toBe(source.revision);
+    expect(scope.resolveAsset(source.handle, source.revision).ok).toBe(false);
+    const noise = f.device
+      .createTexture({
+        format: source.asset.format,
+        size: { width: 1, height: 1 },
+        usage: 0x04,
+      })
+      .unwrap();
+    const uploaded: unknown[] = [];
+    const graph = compileSharedFeatureGraph(
+      {
+        device: f.device,
+        featureHost: f.host,
+        canvas: { width: 16, height: 16 },
+        gpuStore: {
+          ensureResident(handle: number, asset: unknown, owner: unknown) {
+            uploaded.push({ handle, asset, owner });
+            return ok({ texture: { handle: noise } });
+          },
+        },
+      } as unknown as Parameters<typeof compileSharedFeatureGraph>[0],
+      batch.frame,
+      [scope],
+      batch.views,
+    );
+    assert(graph);
+    graphs.push(graph);
+    expect(uploaded).toEqual([{ handle: source.handle, asset: source.asset, owner: scope }]);
+    expect(render.simulations[0]?.frame.impulses).toContainEqual(
+      expect.objectContaining({ heightDeltaM: -1 }),
+    );
+  } finally {
+    for (const graph of graphs) await graph.retire();
+    f.dispose();
+  }
+});
 
 it('allocates one bounded contact-event buffer regardless of the current event count', async () => {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
@@ -247,9 +476,27 @@ function recipe(): WaterFluidRecipe {
   };
 }
 
-async function fixture(configuration = recipe(), instanceId = 'fluid', ocean = false) {
+async function fixture(
+  configuration = recipe(),
+  instanceId = 'fluid',
+  ocean = false,
+  info = false,
+) {
   const packageId = definePackageId('019a0000-0000-7000-8000-000000000491');
   const guid = (key: string) => AssetGuid.format(AssetGuid.derive(packageId, key));
+  const zone = {
+    kind: 'water-zone' as const,
+    extentM: { spanXM: 16, spanZM: 16 },
+    tileSizeM: 4,
+    tessellationFactor: 1,
+    lodScale: 1,
+    waterInfo: {
+      resolution: { widthPx: 16, heightPx: 16 },
+      format: 'rgba16f' as const,
+      blurRadius: 0,
+      localTessellation: false,
+    },
+  };
   const point = (inputKey: number, x: number, z: number) => ({
     inputKey,
     positionM: [x, 0, z] as const,
@@ -269,6 +516,7 @@ async function fixture(configuration = recipe(), instanceId = 'fluid', ocean = f
         body: {
           kind: 'water-body',
           type: 'lake',
+          ...(info ? { zoneGuid: guid('zone') } : {}),
           ...(ocean
             ? {
                 type: 'ocean' as const,
@@ -284,7 +532,7 @@ async function fixture(configuration = recipe(), instanceId = 'fluid', ocean = f
           overlapPriority: 0,
           maxWaveHeightM: 0.2,
           surfaceMaterialGuid: guid('material'),
-          flags: { affectsWaterInfo: false, affectsWaterMesh: false, affectsLandscape: false },
+          flags: { affectsWaterInfo: info, affectsWaterMesh: false, affectsLandscape: false },
           collision: { type: 'none', enabled: false },
           queryFootprint: [
             [-2, -2],
@@ -301,16 +549,81 @@ async function fixture(configuration = recipe(), instanceId = 'fluid', ocean = f
     guid: guid('waves'),
     kind: 'water-wave-set',
     field: 'waveSetGuid',
-    status: 'pending',
+    status: info ? 'valid' : 'pending',
+    ...(info
+      ? {
+          payload: cookWaterAsset({
+            kind: 'water-wave-set',
+            waveSource: {
+              kind: 'predefined',
+              waves: [{ directionXZ: [1, 0], wavelengthM: 8, amplitudeM: 0.2, steepness: 0.1 }],
+            },
+            depthMaskM: 2,
+            maxWaveHeightM: 0.2,
+            timeSource: 'scene-clock',
+          }).unwrap(),
+        }
+      : {}),
   };
+  let visibleReady = false;
+  const outputs = new Map(Object.entries(packed).map(([key, value]) => [guid(key), value]));
+  const systemDependencies = (
+    asset: import('@forgeax/engine-types').WaterBodyAsset,
+  ): WaterDependencySnapshot[] => [
+    dependency,
+    ...(info
+      ? ['waterInfoMeshGuid', 'dilatedWaterInfoMeshGuid', 'visibleMeshGuid'].flatMap((field) => {
+          const key = asset[field as keyof typeof asset];
+          if (typeof key !== 'string') return [];
+          return [
+            {
+              guid: key,
+              field,
+              kind: 'mesh',
+              status: 'valid' as const,
+              payload: outputs.get(key),
+            },
+          ];
+        })
+      : []),
+  ];
   const system = new WaterSystem(
-    () => undefined,
-    () => [dependency],
+    (key) => (info && key === guid('zone') ? { generation: 1, asset: zone } : undefined),
+    systemDependencies,
+    () => (info ? [{ guid: guid('zone'), generation: 1, asset: zone }] : []),
   );
   const body = system
     .mountBody('body', '1', { ...packed.body, waveSetGuid: guid('waves') })
     .unwrap();
-  vi.spyOn(system, 'snapshot').mockImplementation(() => ({ ...body, dependencies: [dependency] }));
+  if (info) {
+    const snapshot = system.snapshot.bind(system);
+    const snapshots = system.snapshots.bind(system);
+    const withLoading = (body: NonNullable<ReturnType<typeof snapshot>>) =>
+      visibleReady
+        ? body
+        : {
+            ...body,
+            dependencies: body.dependencies.map((entry) =>
+              entry.field === 'visibleMeshGuid'
+                ? {
+                    guid: entry.guid,
+                    kind: entry.kind,
+                    field: 'visibleMeshGuid',
+                    status: 'pending' as const,
+                  }
+                : entry,
+            ),
+          };
+    vi.spyOn(system, 'snapshot').mockImplementation((guid) => {
+      const body = snapshot(guid);
+      return body === undefined ? undefined : withLoading(body);
+    });
+    vi.spyOn(system, 'snapshots').mockImplementation(() => snapshots().map(withLoading));
+  } else
+    vi.spyOn(system, 'snapshot').mockImplementation(() => ({
+      ...body,
+      dependencies: [dependency],
+    }));
   system.fluid
     .reconcile([
       {
@@ -382,7 +695,28 @@ async function fixture(configuration = recipe(), instanceId = 'fluid', ocean = f
             status,
             failure: { code: 'load-failed', expected: 'wave bytes', hint: 'repair catalog' },
           }
-        : { guid: guid('waves'), kind: 'water-wave-set', field: 'waveSetGuid', status };
+        : {
+            guid: guid('waves'),
+            kind: 'water-wave-set',
+            field: 'waveSetGuid',
+            status,
+            ...(status === 'valid'
+              ? {
+                  payload: cookWaterAsset({
+                    kind: 'water-wave-set',
+                    waveSource: {
+                      kind: 'predefined',
+                      waves: [
+                        { directionXZ: [1, 0], wavelengthM: 8, amplitudeM: 0.2, steepness: 0.1 },
+                      ],
+                    },
+                    depthMaskM: 2,
+                    maxWaveHeightM: 0.2,
+                    timeSource: 'scene-clock',
+                  }).unwrap(),
+                }
+              : {}),
+          };
   };
   const dispose = () => {
     abortFeatureFrame(host);
@@ -390,7 +724,20 @@ async function fixture(configuration = recipe(), instanceId = 'fluid', ocean = f
     system.fluid.clear();
     assets.dispose();
   };
-  return { system, host, run, change, dispose, world, device, assets };
+  const visibleGuid = (packed.body as import('@forgeax/engine-types').WaterBodyAsset)
+    .visibleMeshGuid;
+  const readyInfo = () => {
+    visibleReady = true;
+    const body = system.snapshot('body');
+    assert(body);
+    system
+      .acceptOutput('body', 'geometry', body.outputGenerations.geometry, {
+        generation: 1,
+        digest: 'loaded-geometry',
+      })
+      .unwrap();
+  };
+  return { system, host, run, change, dispose, world, device, assets, visibleGuid, readyInfo };
 }
 
 it('bounds continuous visual contact state during cold GPU preparation and keeps newer contacts after an older acknowledgement', async () => {
@@ -679,6 +1026,7 @@ it.each([
   const noise = device
     .createTexture({
       format: 'rgba8unorm-srgb',
+      textureBindingViewDimension: undefined,
       size: { width: 1, height: 1 },
       usage: 0x04,
     })

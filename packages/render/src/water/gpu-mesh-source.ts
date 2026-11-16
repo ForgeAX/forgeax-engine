@@ -97,6 +97,16 @@ const point = (m: readonly number[], x: number, y: number, z: number) =>
   ] as const;
 
 /** Captures accepted static triangle geometry only. Occupancy and visible tiles are exclusively GPU outputs. */
+function waterGpuBodyParticipatesInZone(body: WaterBodySnapshot, zone: WaterZoneSnapshot): boolean {
+  return (
+    body.binding.kind === 'bound' &&
+    body.binding.zoneGuid === zone.guid &&
+    body.binding.zoneGeneration === zone.generation &&
+    body.asset.flags.affectsWaterMesh &&
+    body.asset.renderOptions?.visible !== false
+  );
+}
+
 export function buildWaterGpuMeshZone(
   worldIdentity: string,
   zone: WaterZoneSnapshot,
@@ -186,14 +196,11 @@ export function buildWaterGpuMeshZone(
   }[] = [];
   const captureGpuWaterMeshBodies = () => {
     for (const body of snapshots) {
-      if (
-        body.binding.kind !== 'bound' ||
-        body.binding.zoneGuid !== zone.guid ||
-        body.binding.zoneGeneration !== zone.generation ||
-        !body.asset.flags.affectsWaterMesh ||
-        body.asset.renderOptions?.visible === false
-      )
-        continue;
+      if (!waterGpuBodyParticipatesInZone(body, zone)) continue;
+      if (body.asset.transitionContinuity !== undefined)
+        return fail(
+          'terminal continuity support from the CPU WaterMesh producer; GPU traversal does not publish this optional payload',
+        );
       if (body.dirty.has('geometry') || body.outputReceipts.geometry === undefined)
         return ok(undefined);
       const resolveGpuBodyMeshReferences = () => {

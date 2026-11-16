@@ -326,7 +326,9 @@ export function createMaterialLayoutCache({
             sceneInputKind === 'post-process'
               ? MATERIAL_POST_PROCESS_SCENE_LAYOUT.entries
               : sceneInputKind === 'view-depth'
-                ? preparedStandardViewDepthLayoutEntries(currentState, currentBuildDevice())
+                ? bindings === 'render-standard-material-and-scene-depth'
+                  ? preparedStandardViewDepthLayoutEntries(currentState, currentBuildDevice())
+                  : viewAndSceneDepthLayoutEntries()
                 : [
                     {
                       binding: 0,

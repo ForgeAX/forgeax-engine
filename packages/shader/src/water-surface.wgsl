@@ -1,4 +1,5 @@
 #define_import_path forgeax_material::water_surface
+#import forgeax_material::water_transition_continuity::{waterMeshContinuityWeight}
 #import forgeax_material::single_layer_water_surface_v1::{SingleLayerWaterSurfaceInput, SingleLayerWaterSurfaceData}
 #import forgeax_material::water_waves::{waterBodyHeightDepth, waterBodyVelocity, waterMaterialDrawData, waterBodyData, waterMeshWaveBodyIndex, waterMeshTileIsFar, waterWaveDepthAt, evaluateWaterWavesForward, waterMeshFarBoundaryWeight}
 #import forgeax_pbr::tbn::{decodeTangentSpaceNormalRg}
@@ -71,8 +72,9 @@ fn waterSurfaceWaveSample(input: SingleLayerWaterSurfaceInput, waveWeight: f32) 
   // Gerstner Normal and its depth override exclude WPO; the velocity mask does not.
   let depth = waterWaveDepthAt(bodyIndex, input.originalPositionWS.xz, vec3<f32>(0.0));
   let wave = evaluateWaterWavesForward(waveBodyIndex, input.wavePhaseXZ, select(0.0, depth.x, depth.y > 0.5), waterBodyData[waveBodyIndex].timeAndMask.x);
+  let join = waterMeshContinuityWeight(input.instanceIndex, input.positionOS.xz);
   let boundaryWeight = waterMeshFarBoundaryWeight(input.instanceIndex, bodyIndex, waveBodyIndex, input.originalPositionWS.xz);
-  let weight = waveWeight * boundaryWeight;
+  let weight = mix(waveWeight * boundaryWeight, 1.0, join);
   return WaterSurfaceWaveSample(mix(vec3<f32>(0.0, 1.0, 0.0), wave.normal, weight), wave.compression, weight);
 }
 #endif
@@ -176,6 +178,16 @@ fn evaluate_surface(input: SingleLayerWaterSurfaceInput) -> SingleLayerWaterSurf
 #endif
 #endif
   var geometricNormal = physicalWave.normal;
+#if WATER_DEFAULT_DEFORMATION_AVAILABLE == true
+  let joinWeight = waterMeshContinuityWeight(input.instanceIndex, input.positionOS.xz);
+#if WATER_SHADOW_PASS == false
+  // Derivatives are evaluated uniformly before selecting the authored blend.
+  let triangleCross = cross(dpdx(input.positionWS), dpdy(input.positionWS));
+  let triangleNormal = triangleCross / max(length(triangleCross), 0.000001);
+  let orientedNormal = select(-triangleNormal, triangleNormal, dot(triangleNormal, input.geometricNormalWS) >= 0.0);
+  geometricNormal = select(geometricNormal, orientedNormal, joinWeight > 0.0 && joinWeight < 1.0 && length(triangleCross) > 0.000001);
+#endif
+#endif
  #if WATER_SHALLOW_SIMULATION == true
   if(shallowInside(advancedUv)){
     #if WATER_SHALLOW_ADDITIVE == true

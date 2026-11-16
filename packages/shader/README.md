@@ -25,6 +25,17 @@ Display and cube rays retain atmospheric scattering up to a planet intersection.
 Ground reflection belongs to `atmosphere_multiple_scattering_texel`; the display
 background adds no Lambertian planet surface. Keep the default ground albedo
 independent of authored terrain materials and Skylight tint.
+## Water terminal continuity
+
+`water_transition_continuity` consumes WaterMesh v8 `WCN1` numeric support from
+actual paired coverage. Vertex lookup and fragment triangle interpolation use
+original unit-grid coordinates, before horizontal displacement. Full support
+selects the target mean plane and unmasked target Gerstner phase/current and
+previous clocks; source depth/flow remain source-owned. Outside support the
+existing deformation is unchanged. Intermediate normals use the actual
+rendered triangle derivative, evaluated uniformly before selection. There is no
+per-fragment polygon/ring-distance loop and no extra inter-stage location.
+See the [Water policy and limitations](../water/README.md#optional-terminal-surface-continuity).
 
 ## Public shader input boundary
 

@@ -58,6 +58,14 @@ export type WaterOceanPatchState =
       generation: number;
       error: WaterAdvancedError;
     }>;
+/** A zero-volume localized vertical-velocity impulse, evolved by the gravity-wave field. */
+export type WaterWaveImpulse = Readonly<{
+  positionXZ: readonly [number, number];
+  radiusM: number;
+  velocityImpulseMps: number;
+  timeSeconds: number;
+  sourceReceiver?: WaterResidualQueryReceiver;
+}>;
 export type WaterOceanPatchFrame = Readonly<{
   recipe: OceanRecipe;
   generation: number;
@@ -77,6 +85,7 @@ export type WaterOceanPatchFrame = Readonly<{
   }>;
   captureStages: boolean;
   captureRequest: number | null;
+  waveImpulses?: readonly (WaterWaveImpulse & { readonly sequence: number })[];
   queryReceivers?: readonly WaterResidualQueryReceiver[];
   queryFeedback?: WaterResidualQueryRegion &
     Readonly<{
@@ -114,6 +123,7 @@ export type WaterOceanPatchInspection = Readonly<{
   }>;
   submittedSequence: number;
   completedSequence: number;
+  pendingWaveImpulses: number;
   events: readonly Readonly<{
     event: 'created-1x1' | 'requested-resolution' | 'ready' | 'paused' | 'reset' | 'retired';
     generation: number;
@@ -201,6 +211,8 @@ export class WaterOceanPatch {
   #state: WaterOceanPatchState;
   #events: WaterOceanPatchInspection['events'][number][] = [];
   #pending: WaterOceanPatchFrame | undefined;
+  #waveImpulses: (WaterWaveImpulse & { readonly sequence: number })[] = [];
+  #waveImpulseSequence = 0;
   #captureRequest = 0;
   #submittedCaptureRequest = 0;
   #issued = new WeakMap<
@@ -211,6 +223,7 @@ export class WaterOceanPatch {
       reset: boolean;
       references: number;
       completion?: WaterAdvancedCompletion;
+      stageCompletion?: WaterAdvancedCompletion;
       visualNormalDetailFft?: Readonly<{
         revision: number;
         size: number;
@@ -376,6 +389,50 @@ export class WaterOceanPatch {
     if (this.#state.status === 'ready' || this.#state.status === 'paused')
       this.#state = { ...this.#state, status: paused ? 'paused' : 'ready' };
     if (paused) this.event('paused', this.recipe.asset.oceanPatchConfig.fftResolution);
+  }
+  enqueueWaveImpulse(input: WaterWaveImpulse): Result<number, WaterAdvancedError> {
+    const config = this.recipe.asset.oceanPatchConfig;
+    if (!this.#enabled || this.#state.status === 'retired')
+      return err(this.failure('water-advanced-disabled', 'an enabled live wave field'));
+    const finiteF32 = (value: number) => Number.isFinite(Math.fround(value));
+    if (
+      config.algorithm !== 'mode-projected-gravity/1' ||
+      input.positionXZ.length !== 2 ||
+      ![...input.positionXZ, input.radiusM, input.velocityImpulseMps, input.timeSeconds].every(
+        finiteF32,
+      ) ||
+      Math.fround(input.radiusM) <= 0 ||
+      input.radiusM > config.domainLengthM / 8 ||
+      input.timeSeconds < 0 ||
+      input.timeSeconds < (this.#waveImpulses.at(-1)?.timeSeconds ?? 0) ||
+      input.positionXZ.some(
+        (value, axis) => Math.abs(value - (config.centerXZ[axis] ?? 0)) > config.domainLengthM / 2,
+      ) ||
+      (input.sourceReceiver !== undefined &&
+        ![input.sourceReceiver.entity, input.sourceReceiver.generation].every(
+          (value) => Number.isSafeInteger(value) && value >= 0,
+        )) ||
+      this.#waveImpulses.length >= 64
+    )
+      return err(
+        this.failure(
+          'water-advanced-invalid-input',
+          'at most 64 finite positive-radius wave impulses inside the native domain',
+        ),
+      );
+    const sequence = ++this.#waveImpulseSequence;
+    this.#waveImpulses.push(
+      Object.freeze({
+        ...input,
+        positionXZ: Object.freeze([...input.positionXZ]) as readonly [number, number],
+        ...(input.sourceReceiver === undefined
+          ? {}
+          : { sourceReceiver: Object.freeze({ ...input.sourceReceiver }) }),
+        sequence,
+      }),
+    );
+    this.abandonUnretainedPending();
+    return ok(sequence);
   }
   reset(): void {
     if (this.#state.status === 'retired') return;
@@ -689,7 +746,7 @@ export class WaterOceanPatch {
       frame.captureRequest !== this.#captureRequest
     )
       return ok(undefined);
-    delete issued.completion;
+    delete issued.stageCompletion;
     const error = this.failure(
       'water-advanced-readback-unavailable',
       'completed feature-texture observations delivered to the World owner',
@@ -744,6 +801,18 @@ export class WaterOceanPatch {
         captureStages: this.#captureRequest !== this.#submittedCaptureRequest,
         captureRequest:
           this.#captureRequest !== this.#submittedCaptureRequest ? this.#captureRequest : null,
+        waveImpulses: Object.freeze(
+          this.#paused ||
+            (this.#state.status === 'initializing' && this.#state.allocation === 'initial-1x1')
+            ? []
+            : this.#waveImpulses.filter(
+                (impulse) =>
+                  impulse.timeSeconds <=
+                  (native
+                    ? (this.#nativeSourceTimeSeconds ?? this.#timeSeconds)
+                    : this.#timeSeconds),
+              ),
+        ),
         ...(this.#queryBinding &&
         this.#nativeSourceStep !== undefined &&
         this.#queryRegion &&
@@ -806,6 +875,10 @@ export class WaterOceanPatch {
     if (reservation) reservation.submitted = true;
     issued.captureStages = applied.captureStages;
     issued.reset = applied.reset;
+    if (frame.waveImpulses?.length) {
+      const consumed = new Set(frame.waveImpulses.map((impulse) => impulse.sequence));
+      this.#waveImpulses = this.#waveImpulses.filter((impulse) => !consumed.has(impulse.sequence));
+    }
     if (this.#pending === frame) this.#pending = undefined;
     return ok(undefined);
   }
@@ -897,11 +970,9 @@ export class WaterOceanPatch {
           'a submitted World OceanPatch completion in its current device generation',
         ),
       );
-    if (
-      (issued.captureStages && frame.captureRequest === this.#captureRequest) ||
-      frame.queryFeedback
-    )
-      issued.completion = Object.freeze({ ...completion });
+    if (frame.queryFeedback) issued.completion = Object.freeze({ ...completion });
+    if (issued.captureStages && frame.captureRequest === this.#captureRequest)
+      issued.stageCompletion = Object.freeze({ ...completion });
     if (frame.sequence <= this.#completedSequence) return ok(undefined);
     this.#completedSequence = frame.sequence;
     this.#completion = Object.freeze({ ...completion });
@@ -962,7 +1033,7 @@ export class WaterOceanPatch {
       );
     if (!issued?.captureStages || frame.captureRequest !== this.#captureRequest)
       return ok(undefined);
-    const completion = issued.completion;
+    const completion = issued.stageCompletion;
     if (
       frame.generation !== this.#generation ||
       !completion ||
@@ -979,7 +1050,7 @@ export class WaterOceanPatch {
           'readbacks paired with the exact World OceanPatch completion',
         ),
       );
-    delete issued.completion;
+    delete issued.stageCompletion;
     if (readbacks.length === 0)
       return this.unavailableReadbacks(frame, { reason: 'no-feature-texture-observations' });
     this.#readbackError = undefined;
@@ -1084,6 +1155,7 @@ export class WaterOceanPatch {
         : {}),
       submittedSequence: this.#submittedSequence,
       completedSequence: this.#completedSequence,
+      pendingWaveImpulses: this.#waveImpulses.length,
       events: Object.freeze([...this.#events]),
       ...(this.#completion ? { completion: this.#completion } : {}),
       ...(this.#readbackError ? { readbackError: this.#readbackError } : {}),
@@ -1108,6 +1180,7 @@ export class WaterOceanPatch {
     this.#queryWorldBounds = undefined;
   }
   private clearPending(): void {
+    this.#waveImpulses = [];
     this.#queryLifecycle++;
     this.#pending = undefined;
     this.#submittedCaptureRequest = this.#captureRequest;

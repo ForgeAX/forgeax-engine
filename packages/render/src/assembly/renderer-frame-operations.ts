@@ -1,11 +1,11 @@
 import type { World } from '@forgeax/engine-ecs';
-import { err, ok, RhiError } from '@forgeax/engine-rhi';
+import { ok, RhiError } from '@forgeax/engine-rhi';
 import { isStripTopology } from '@forgeax/engine-types';
 import { type RenderError, RendererContractFailureError } from '../errors/render';
 import { materialVertexConstants } from '../material-stage-constants';
 import { buildPipelineForMaterialShader } from '../pipeline-builder';
 import { type PublishedRenderFrameInput, RenderPublicationError } from '../publication/contract';
-import type { FrameReceipt, RenderFrameInput } from '../render-contract';
+import type { RenderFrameInput } from '../render-contract';
 import { retireAfterSubmission } from '../world/submission-systems';
 import { sceneFreeFrameInputError, unattachedFrameLeaseError } from './draw-frame-input';
 import { buildPipelineColorFormats } from './material-shader-policy';
@@ -13,7 +13,6 @@ import { completeFrameFailure } from './renderer-frame-transaction';
 import { HDR_COLOR_ATTACHMENT_FORMAT } from './webgpu-ready-contract';
 import { derivedPhysicsFrameError, dynamicGeometryFrameError } from './webgpu-renderer-guards';
 import { projectReceiptColorObservations } from './webgpu-renderer-observation';
-import type { ObservationCaptureRead } from './webgpu-renderer-observation-owner';
 
 export function runCompileMaterialPipeline(
   cacheKey: string,
@@ -332,61 +331,4 @@ export function runDeliverFeatureSourceCompletion(
   } else if (readCaptures === undefined) {
     observationCaptureOwner.completeFeatureTextureReadbackObservation?.(receipt.frameId);
   }
-}
-
-export function runRegisterObservationReads(
-  disposeObservationCaptures: (
-    captures: readonly import('../render-contract').RenderPipelineObservationCapture[],
-  ) => import('../errors/render').RendererContractFailureError | undefined,
-  readObservationCapture: (
-    capture: import('../render-contract').RenderPipelineObservationCapture,
-  ) => Promise<
-    import('../render-contract').RenderResult<
-      Uint8Array<ArrayBufferLike>,
-      import('../errors/render').RenderError
-    >
-  >,
-  observationCaptureOwner: import('../render-contract').RenderPipelineObservationCaptureOwner,
-  receiptObservationBuffers: Map<
-    import('../render-contract').FrameReceipt,
-    readonly import('../render-contract').RenderPipelineObservationCapture[]
-  >,
-  receiptObservationCaptures: WeakMap<
-    import('../render-contract').FrameReceipt,
-    import('./webgpu-renderer-observation-owner').ObservationCaptureRead
-  >,
-  receipt: FrameReceipt,
-  captureFrame: Readonly<{
-    captures: readonly import('../render-contract').RenderPipelineObservationCapture[];
-    graphGenerations: readonly number[];
-  }>,
-  completed: FrameReceipt['completed'],
-): ObservationCaptureRead {
-  const { captures, graphGenerations } = captureFrame;
-  const performRead: ObservationCaptureRead = async () => {
-    try {
-      const completion = await completed;
-      if (!completion.ok) {
-        const cleanupFailure = disposeObservationCaptures(captures);
-        return cleanupFailure === undefined ? completion : err(cleanupFailure);
-      }
-      const read = [];
-      for (const capture of captures) {
-        const bytes = await readObservationCapture(capture);
-        if (!bytes.ok) {
-          const cleanupFailure = disposeObservationCaptures(captures);
-          return cleanupFailure === undefined ? bytes : err(cleanupFailure);
-        }
-        read.push({ capture, bytes: bytes.value });
-      }
-      return ok({ captures: read, graphGenerations });
-    } finally {
-      observationCaptureOwner.completeFeatureTextureReadbackObservation?.(receipt.frameId);
-    }
-  };
-  let pendingRead: ReturnType<ObservationCaptureRead> | undefined;
-  const captureRead: ObservationCaptureRead = () => (pendingRead ??= performRead());
-  receiptObservationBuffers.set(receipt, captures);
-  receiptObservationCaptures.set(receipt, captureRead);
-  return captureRead;
 }

@@ -9,6 +9,13 @@
 * { box-sizing: border-box; }
 html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
 #scene { display: block; width: 100%; height: 100%; outline: none; touch-action: none; }
+.exhibit-heading { position: fixed; top: 24px; right: 78px; display: grid; gap: 7px; max-width: calc(100vw - 460px); color: #edf4ed; text-align: right; pointer-events: none; text-shadow: 0 2px 8px #16312b66; }
+.exhibit-heading span { color: #b9d5cd; font-size: 10px; letter-spacing: 1.5px; }
+.exhibit-heading strong { font-size: 24px; font-weight: 600; }
+.exhibit-heading small { font-size: 11px; color: #d4e5df; }
+.exhibit-legend { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%); display: flex; gap: 8px; pointer-events: none; }
+.exhibit-legend span { padding: 10px 15px; border: 1px solid #c1a16d77; border-radius: 5px; background: #122c2ad9; color: #f2dec2; font-size: 11px; white-space: nowrap; }
+.panel-hidden .exhibit-heading { max-width: calc(100vw - 110px); }
 
 .inspector {
   position: fixed;
@@ -90,6 +97,11 @@ h1 { margin: 7px 0 0; font-size: 21px; line-height: 1.2; font-weight: 650; }
 .panel-hidden .inspector { display: none; }
 
 @media (max-width: 600px) {
+  .exhibit-heading { top: 18px; left: 18px; right: 70px; max-width: none; text-align: left; }
+  .exhibit-heading strong { font-size: 18px; }
+  .exhibit-heading small { display: none; }
+  .exhibit-legend { bottom: 12px; width: calc(100vw - 24px); display: grid; grid-template-columns: 1fr 1fr; }
+  .exhibit-legend span { padding: 7px 10px; font-size: 10px; }
   .inspector { top: 58px; left: 10px; width: min(352px, calc(100vw - 20px)); max-height: calc(100vh - 68px); padding: 13px; }
   .panel-toggle { top: 10px; right: 10px; }
   .summary { margin: 9px 0 11px; }

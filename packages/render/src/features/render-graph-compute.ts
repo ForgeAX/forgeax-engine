@@ -39,7 +39,9 @@ class RenderFeatureGraphTargetUnavailableError extends Error {
     scope: string | undefined,
     target: RenderFeatureComputeTarget,
   ) {
-    const identity = isRenderFeatureTextureReference(target)
+    const identity: Readonly<Record<string, string | number>> = isRenderFeatureTextureReference(
+      target,
+    )
       ? {
           kind: target.kind,
           featureIdentity: target.featureIdentity,

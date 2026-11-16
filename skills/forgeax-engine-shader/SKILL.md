@@ -5,6 +5,18 @@ description: ForgeAX WGSL composition, reflection, and cooked shader contracts. 
 
 # forgeax-engine-shader
 
+Optional River `transitionContinuity` uses the accepted end-spline position and
+actual current-generation Ocean coverage adjacency. Author finite meter reach
+and blend width; the complete shared triangle is closed inside the inner reach
+and upstream height is retained outside support. Source flow/depth remain
+native/query-owned. WaterMesh v8 keeps a 96-byte record and adds a `WCN1` numeric
+support offset in byte 92; vertex and fragment share its original-grid policy.
+Use `material-pack-cooker/6` to recook, retaining durable `material-cook/5`.
+GPU traversal, independent Baked depth, custom deformation and independent
+advanced displacement are outside this initial continuity contract. See the
+[owning Water contract](../../packages/water/README.md#optional-terminal-surface-continuity)
+and execute the nearest production Dawn gate before claiming pixels accepted.
+
 ## Contract index
 
 Water uses the root-owned `water-deformation/1` declaration and canonical
@@ -25,7 +37,7 @@ does not prune fragment reads or waves. `waterDynamicBoundsClip` lowers to
 `WATER_DYNAMIC_BOUNDS_CLIP` with default false, independently of mapping/Info.
 Its stock consumer uses post-WPO fragment position and the generation-qualified
 Body row's `dynamicBoundsCenterExtentXZ`, without requiring an Info texture.
-Absent bounds bypass clipping. Use the compiler's `material-pack-cooker/5` producer to
+Absent bounds bypass clipping. Use the compiler's `material-pack-cooker/6` producer to
 invalidate older derived bytes; the durable publication stays `material-cook/5`.
 `WATER_TRANSITION_AVAILABLE` derives from disabled ordinary waves plus an enabled
 transition. Its default deformation requires the authored `f32` wave-mask speed
@@ -44,13 +56,10 @@ dimensionless, with `physicalIor` independent. The ordinary inherited
 independently of `specular`. Water SSR hit motion must match the exact opaque
 depth texel within its FP16 log-depth precision before replacing matrix
 reprojection; the coarse traced ray depth is not a layer identity.
-Stock default Water deformation applies the tile schema v7 flat-far boundary
-mask to current/previous positions and normals. Only emitted same-owner,
-same-generation far geometry at the same mean height grants a side bit. The
-boundary smoothly approaches the mean plane over `max(4 m, 2 * maxWaveHeightM)`;
-the fragment Gerstner normal uses the same spatial weight. Unmasked tiles are
-exact no-ops, and transitions/custom deformation retain their existing output.
-This continuity mechanism is ForgeAX policy; it does not establish UE parity.
+Stock Water keeps near-wave current/previous deformation and fragment normals
+at far boundaries. The retained versioned adjacency bits do not automatically
+flatten the surface to a mean plane. Preserve the far material's independent
+wave switches and saved height authority; do not infer UE numeric parity.
 The connected foam branch's
 graph-owned texture and distinct clamp/wrap samplers follow the existing medium physical tail; only an
 actually declared branch admits and binds it. It is not an authored texture

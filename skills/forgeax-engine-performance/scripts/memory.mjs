@@ -4,20 +4,31 @@ import { Session } from 'node:inspector/promises';
 import { isAbsolute, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
+import { loadEchartsRuntime } from './echarts_runtime.mjs';
 import { loadHeapSymbols, selectedHeap } from './heap_profile.mjs';
 import { loadJson, pointer, requireFact, runCli } from './lib.mjs';
+import { decodeMemoryModel, encodeMemoryModel } from './memory_codec.mjs';
 import {
   allocationMemoryModel,
   defaultMemoryNode,
   inspectMemory,
+  memoryMetric,
+  rankMemory,
   snapshotMemoryModel,
 } from './memory_model.mjs';
 import { memoryHtml, memorySvg, memoryTreemapSvg } from './memory_view.mjs';
-import { decodeMemoryModel, encodeMemoryModel } from './memory_codec.mjs';
 
 export async function reportMemory(
   inputPath,
-  { outDir, profilePointer = '', symbolsPath, captureMetadata } = {},
+  {
+    outDir,
+    profilePointer = '',
+    symbolsPath,
+    captureMetadata,
+    metric,
+    htmlViewer = 'svg',
+    echartsJs,
+  } = {},
 ) {
   requireFact(outDir, 'Require a new output directory');
   requireFact(
@@ -27,6 +38,8 @@ export async function reportMemory(
     )),
     'Output directory already exists',
   );
+  requireFact(['svg', 'echarts'].includes(htmlViewer), 'html-viewer must be svg or echarts');
+  const runtime = htmlViewer === 'echarts' ? await loadEchartsRuntime(echartsJs) : null;
   const input = await loadJson(inputPath);
   let value = pointer(input.value, profilePointer);
   let model;
@@ -40,10 +53,11 @@ export async function reportMemory(
     model = allocationMemoryModel(selected.profile, { metadata: selected.metadata, symbols });
   }
   model.producerOk = value.ok ?? model.producerOk ?? null;
+  model.metric = memoryMetric(model, metric).name;
   inspectMemory(model);
   model.initialNodeId = defaultMemoryNode(model);
   model.initialSelection =
-    'Skip wrapper prefixes only while one child carries at least 99.5% of bytes; Root retains the entire capture';
+    'Skip wrapper prefixes only while one child carries at least 99.5% of the selected metric; Root retains the entire capture';
   if (model.input) model.inputs = [...(model.inputs ?? []), model.input];
   if (captureMetadata) model.captureMetadata = captureMetadata;
   model.input = { path: resolve(inputPath), sha256: input.sha256, profilePointer };
@@ -53,7 +67,7 @@ export async function reportMemory(
   input.value = null;
   value = null;
   const serialized = JSON.stringify(encodeMemoryModel(model, { consume: true }));
-  const html = memoryHtml(model, inspectMemory.toString(), serialized);
+  const html = memoryHtml(model, inspectMemory.toString(), serialized, { runtime });
   await mkdir(outDir);
   for (const [name, body] of [
     ['memory.json', serialized],
@@ -70,6 +84,8 @@ export async function reportMemory(
         captureMetadata: model.captureMetadata ?? null,
         summary: model.summary,
         countLabel: model.countLabel,
+        metric: model.metric,
+        viewer: runtime ? { name: 'echarts', runtime: runtime.receipt } : { name: 'svg' },
         metadata: model.metadata ?? null,
         producerOk: model.producerOk,
         interpretation: model.interpretation,
@@ -86,6 +102,7 @@ export async function captureMemory({
   outDir,
   samplingInterval = 32768,
   mode = 'allocations',
+  metric = 'bytes',
 }) {
   requireFact(
     isAbsolute(modulePath) && isAbsolute(outDir),
@@ -99,6 +116,7 @@ export async function captureMemory({
     ['allocations', 'objects', 'both'].includes(mode),
     'Capture mode must be allocations, objects or both',
   );
+  memoryMetric({}, metric);
   const sampleAllocations = mode !== 'objects',
     snapshot = mode !== 'allocations';
   await mkdir(outDir);
@@ -169,11 +187,13 @@ export async function captureMemory({
     if (sampleAllocations)
       report.allocation = await reportMemory(join(outDir, 'allocation.json'), {
         outDir: join(outDir, 'allocations'),
+        metric,
         captureMetadata: { node: report.node, v8: report.v8, workload: modulePath, mode },
       });
     if (snapshot)
       report.snapshot = await reportMemory(join(outDir, 'objects.heapsnapshot'), {
         outDir: join(outDir, 'objects'),
+        metric,
         captureMetadata: { node: report.node, v8: report.v8, workload: modulePath, mode },
       });
     report.phaseOrder = [
@@ -233,11 +253,16 @@ runCli(import.meta.url, async () => {
       module: { type: 'string' },
       'interval-bytes': { type: 'string', default: '32768' },
       mode: { type: 'string', default: 'allocations' },
+      metric: { type: 'string' },
+      'html-viewer': { type: 'string', default: 'svg' },
+      'echarts-js': { type: 'string' },
+      by: { type: 'string', default: 'self' },
+      query: { type: 'string', default: '' },
     },
   });
   if (!command || command === '--help' || values.help) {
     process.stdout.write(
-      'Memory explorer\n  memory.mjs report INPUT --out-dir NEW_DIRECTORY [--profile-pointer /profiles/0/heap] [--symbols AUTHENTICATED_SYMBOLS]\n  memory.mjs inspect memory.json [--node ID] [--limit 100 --offset 0]\n  memory.mjs capture --module ABS_WORKLOAD_MODULE --out-dir NEW_ABSOLUTE_DIRECTORY [--interval-bytes 32768] [--mode allocations|objects|both]\nReport accepts V8 sampled allocation profiles, V8 heap snapshots or normalized memory JSON. Generates memory.json, offline memory.html, treemap memory.svg, folder memory-folders.svg and summary.json. Capture samples an owned Node workload (default function); full object snapshot is explicit and intrusive. No forced GC. Statistical samples are not every allocation; snapshot folder bytes are shallow, not dominator retention.\n',
+      'Memory explorer\n  memory.mjs report INPUT --out-dir NEW_DIRECTORY [--profile-pointer /profiles/0/heap] [--symbols AUTHENTICATED_SYMBOLS] [--metric bytes|count] [--html-viewer svg|echarts --echarts-js LOCAL_RUNTIME]\n  memory.mjs inspect memory.json [--node ID] [--limit 100 --offset 0] [--metric bytes|count]\n  memory.mjs rank memory.json [--metric bytes|count] [--by self|total] [--query NAME] [--limit 100 --offset 0]\n  memory.mjs capture --module ABS_WORKLOAD_MODULE --out-dir NEW_ABSOLUTE_DIRECTORY [--interval-bytes 32768] [--mode allocations|objects|both] [--metric bytes|count]\nReport accepts V8 sampled allocation profiles, V8 heap snapshots or normalized memory JSON. Generates memory.json, offline memory.html, treemap memory.svg, folder memory-folders.svg and summary.json. Capture samples an owned Node workload (default function); full object snapshot is explicit and intrusive. No forced GC. ECharts is an opt-in offline viewer; provide its local runtime and adjacent package LICENSE/NOTICE. Count sorts and sizes visuals by recorded samples or captured V8 nodes; byte sampling is size-biased, not an allocation event census. Statistical samples are not every allocation; snapshot folder bytes are shallow, not dominator retention.\n',
     );
     return;
   }
@@ -248,10 +273,23 @@ runCli(import.meta.url, async () => {
       outDir: values['out-dir'],
       profilePointer: values['profile-pointer'],
       symbolsPath: values.symbols,
+      htmlViewer: values['html-viewer'],
+      echartsJs: values['echarts-js'],
+      metric: values.metric,
     });
   } else if (command === 'inspect') {
     requireFact(positionals.length === 1, 'Require normalized memory JSON');
     result = inspectMemory(decodeMemoryModel((await loadJson(positionals[0])).value), values.node, {
+      offset: Number(values.offset),
+      metric: values.metric,
+      limit: Number(values.limit),
+    });
+  } else if (command === 'rank') {
+    requireFact(positionals.length === 1, 'Require normalized memory JSON');
+    result = rankMemory(decodeMemoryModel((await loadJson(positionals[0])).value), {
+      metric: values.metric,
+      by: values.by,
+      query: values.query,
       offset: Number(values.offset),
       limit: Number(values.limit),
     });
@@ -265,6 +303,7 @@ runCli(import.meta.url, async () => {
       outDir: values['out-dir'],
       samplingInterval: Number(values['interval-bytes']),
       mode: values.mode,
+      metric: values.metric,
     });
   } else throw Error('Unknown memory command: ' + command);
   process.stdout.write(JSON.stringify(result) + '\n');

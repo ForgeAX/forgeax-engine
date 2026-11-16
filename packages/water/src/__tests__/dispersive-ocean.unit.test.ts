@@ -79,11 +79,117 @@ const create = (oceanPatchConfig: WaterDispersiveOceanConfig = config) =>
   }).unwrap();
 const liveConfig = (ocean: WaterOceanPatch) =>
   ocean.recipe.asset.oceanPatchConfig as WaterDispersiveOceanConfig;
+
+it('projects a positive physical impulse radius below one cell without changing its momentum input', () => {
+  const ocean = create();
+  ocean.update(1 / 60).unwrap();
+  ocean.bindNativeSourceTime({}, 0, 0).unwrap();
+  const initial = ocean.frame();
+  assert(initial);
+  ocean.submitted(initial).unwrap();
+  ocean.allocated(1, 0);
+  const input = {
+    positionXZ: [1, 2] as const,
+    radiusM: 0.12,
+    velocityImpulseMps: 3,
+    timeSeconds: 0,
+  };
+  expect(ocean.enqueueWaveImpulse(input).ok).toBe(true);
+  expect(ocean.frame()?.waveImpulses?.[0]).toMatchObject(input);
+  for (const radiusM of [0, -1, Number.MIN_VALUE, Number.POSITIVE_INFINITY])
+    expect(ocean.enqueueWaveImpulse({ ...input, radiusM }).ok).toBe(false);
+});
+
+it('holds detached wave impulses through discarded frames and consumes only submitted impulses', () => {
+  const ocean = create();
+  const native = {};
+  ocean.update(1 / 60).unwrap();
+  ocean.bindNativeSourceTime(native, 1, 60).unwrap();
+  const initial = ocean.frame();
+  assert(initial);
+  ocean.submitted(initial).unwrap();
+  ocean.allocated(1, 0);
+  const positionXZ: [number, number] = [1, 2];
+  ocean
+    .enqueueWaveImpulse({ positionXZ, radiusM: 0.6, velocityImpulseMps: 2, timeSeconds: 1 })
+    .unwrap();
+  positionXZ[0] = 7;
+  const held = ocean.frame();
+  assert(held);
+  expect(held.waveImpulses?.[0]?.positionXZ).toEqual([1, 2]);
+  ocean
+    .enqueueWaveImpulse({ positionXZ: [3, 2], radiusM: 1, velocityImpulseMps: -1, timeSeconds: 1 })
+    .unwrap();
+  expect(held.waveImpulses).toHaveLength(1);
+  ocean.discarded(held);
+  const retry = ocean.frame();
+  assert(retry);
+  expect(retry.waveImpulses).toHaveLength(2);
+  ocean.submitted(retry).unwrap();
+  expect(ocean.frame()?.waveImpulses).toHaveLength(0);
+  ocean
+    .enqueueWaveImpulse({ positionXZ: [0, 0], radiusM: 1, velocityImpulseMps: 1, timeSeconds: 2 })
+    .unwrap();
+  expect(ocean.frame()?.waveImpulses).toHaveLength(0);
+  ocean.reset();
+  expect(ocean.inspect().pendingWaveImpulses).toBe(0);
+});
 const queryBinding = (bodyGeneration = 1) => ({
   worldIdentity: 'world',
   bodyGuid: 'body',
   bodyGeneration,
   maximumAgeSeconds: 0.2,
+});
+it('releases an unretained query reservation when a new impulse replaces its pending frame', () => {
+  const ocean = create();
+  const native = {};
+  ocean.configureQueryFeedback(queryBinding());
+  ocean.update(1 / 60).unwrap();
+  ocean.bindNativeSourceTime(native, 1, 60).unwrap();
+  ocean.allocated(1, 0);
+  for (let index = 0; index < 5; index++) {
+    ocean.requestQueryRegion('body', 1, [[0, 0, 0]]);
+    expect(ocean.frame()?.queryFeedback).toBeDefined();
+    expect(ocean.inspect().queryFeedback.inFlight).toBe(1);
+    ocean
+      .enqueueWaveImpulse({ positionXZ: [0, 0], radiusM: 1, velocityImpulseMps: 1, timeSeconds: 1 })
+      .unwrap();
+    expect(ocean.inspect().queryFeedback.inFlight).toBe(0);
+  }
+  ocean.setPaused(true);
+  expect(ocean.frame()?.waveImpulses).toHaveLength(0);
+  expect(ocean.inspect().pendingWaveImpulses).toBe(5);
+  ocean.setPaused(false);
+  expect(ocean.frame()?.waveImpulses).toHaveLength(5);
+  ocean.setEnabled(false);
+  expect(ocean.inspect().pendingWaveImpulses).toBe(0);
+  expect(
+    ocean.enqueueWaveImpulse({
+      positionXZ: [0, 0],
+      radiusM: 1,
+      velocityImpulseMps: 1,
+      timeSeconds: 1,
+    }).ok,
+  ).toBe(false);
+});
+it('queues impulses across the bootstrap allocation until the resolved field is requested', () => {
+  const ocean = create();
+  ocean.update(1 / 60).unwrap();
+  ocean.bindNativeSourceTime({}, 1, 60).unwrap();
+  ocean
+    .enqueueWaveImpulse({ positionXZ: [0, 0], radiusM: 1, velocityImpulseMps: 1, timeSeconds: 1 })
+    .unwrap();
+  const bootstrap = ocean.frame();
+  assert(bootstrap);
+  expect(bootstrap.waveImpulses).toHaveLength(0);
+  ocean.submitted(bootstrap).unwrap();
+  expect(ocean.inspect().pendingWaveImpulses).toBe(1);
+  ocean.allocated(1, 0);
+  const resolved = ocean.frame();
+  assert(resolved);
+  expect(resolved.waveImpulses).toHaveLength(1);
+  ocean.submitted(resolved).unwrap();
+  expect(ocean.inspect().pendingWaveImpulses).toBe(0);
 });
 const issueQueryFrame = (ocean: WaterOceanPatch, native: object, step = 60) => {
   ocean.update(1 / 60).unwrap();
@@ -1097,4 +1203,61 @@ it('keeps submitted query readback reservations until a late retired readback is
     state: { status: 'retired' },
     queryFeedback: { inFlight: 0 },
   });
+});
+
+it.each([
+  true,
+  false,
+])('accepts exact-frame query and stage pixels independently, queryFirst=%s', (queryFirst) => {
+  const ocean = create(),
+    native = {};
+  ocean.configureQueryFeedback({
+    worldIdentity: 'world',
+    bodyGuid: 'body',
+    bodyGeneration: 1,
+    maximumAgeSeconds: 0.2,
+  });
+  ocean.requestQueryRegion('body', 1, [[0, 0, 0]]);
+  ocean.requestStageCapture();
+  ocean.update(1 / 60).unwrap();
+  ocean.bindNativeSourceTime(native, 1, 60).unwrap();
+  const frame = ocean.frame();
+  assert(frame?.queryFeedback);
+  ocean.submitted(frame).unwrap();
+  const completion = { frameId: 1, deviceGeneration: 0, graphGeneration: 1 };
+  ocean.completed(frame, completion, 32, true).unwrap();
+  const query = () =>
+    ocean
+      .acceptQueryReadback(frame, {
+        width: 32,
+        height: 32,
+        bytesPerRow: 128,
+        bytes: new Uint8Array(4096),
+        completion,
+      })
+      .unwrap();
+  const stage = () =>
+    ocean
+      .acceptReadbacks(frame, [
+        {
+          name: 'normal',
+          format: 'rgba32float',
+          width: 1,
+          height: 1,
+          bytesPerRow: 256,
+          bytes: new Uint8Array(256),
+          completion,
+        },
+      ])
+      .unwrap();
+  if (queryFirst) {
+    query();
+    stage();
+  } else {
+    stage();
+    query();
+  }
+  expect(ocean.inspect().queryFeedback.completed).toBe(1);
+  expect(ocean.textureReadbacks()).toHaveLength(1);
+  expect(ocean.acceptQueryReadback(frame, undefined).ok).toBe(false);
 });

@@ -21,6 +21,7 @@ import {
 import {
   createWaterMeshLayoutReceipt,
   isWaterBakedSourceAvailable,
+  isWaterMeshContinuityPayloadValid,
   isWaterMeshLayoutReceiptValid,
   requireWaterValue,
   WATER_MESH_INSTANCE_LAYOUT,
@@ -91,7 +92,8 @@ function validateWaterMeshInstanceDraw(draw: WaterMeshInstanceDrawUpload): void 
     !Number.isInteger(draw.zoneGeneration) ||
     draw.bytes.byteLength === 0 ||
     draw.bytes.byteLength % WATER_MESH_INSTANCE_STRIDE_BYTES !== 0 ||
-    !isWaterMeshLayoutReceiptValid(draw.layout, draw.bytes, draw.coverageBytes)
+    !isWaterMeshLayoutReceiptValid(draw.layout, draw.bytes, draw.coverageBytes) ||
+    !isWaterMeshContinuityPayloadValid(draw.bytes, draw.coverageBytes)
   )
     throw new RangeError(
       `WaterMesh draw ${draw.drawKey} has a stale or invalid instance layout receipt`,
@@ -229,6 +231,11 @@ function resolveTransitionWaveWrites(
       throw new RangeError(
         `WaterMesh draw ${draw.drawKey} transition record ${instanceIndex} does not match its generation-qualified target`,
       );
+    const support =
+      data.getUint32(
+        recordOffset + WATER_MESH_INSTANCE_LAYOUT.offsets.flatFarBoundaryMask,
+        true,
+      ) >>> 4;
     if (target === undefined) continue;
     const bodyIndex = plan.bodyIndices.get(target.bodyGuid);
     const body = bodyIndex === undefined ? undefined : plan.bodyData[bodyIndex];
@@ -240,6 +247,23 @@ function resolveTransitionWaveWrites(
       throw new RangeError(
         `WaterMesh draw ${draw.drawKey} transition height does not match target ${target.bodyGuid}`,
       );
+    if (support !== 0) {
+      const sourceIndex = plan.bodyIndices.get(draw.bodyGuid);
+      const source = sourceIndex === undefined ? undefined : plan.bodyData[sourceIndex];
+      const a = source?.heightSource,
+        b = body.heightSource;
+      if (
+        a === undefined ||
+        a.kind !== b.kind ||
+        a.kind === 'baked' ||
+        (a.kind === 'fixed' && a.fixedDepthM !== b.fixedDepthM) ||
+        (a.kind === 'water-info' &&
+          (b.kind !== 'water-info' || a.zoneIndex !== b.zoneIndex || a.slice !== b.slice))
+      )
+        throw new RangeError(
+          `WaterMesh draw ${draw.drawKey} continuity requires one shared source depth authority for its target`,
+        );
+    }
     writes.push({ instanceIndex, bodyIndex });
   }
   return writes;
@@ -658,14 +682,22 @@ export function waterMaterialFrameBindingResources(input: {
     ...(input.waterInfoTextureView === undefined
       ? {}
       : {
-          waterInfoContentFrameGeneration: requireWaterValue(input.waterInfoContentFrameGeneration),
-          waterInfoContentGraphResourceVersion: requireWaterValue(
-            input.waterInfoContentGraphResourceVersion,
-          ),
-          waterInfoTargetName: requireWaterValue(input.waterInfoTargetName),
-          waterInfoFormat: requireWaterValue(input.waterInfoFormat),
+          ...(input.waterInfoContentFrameGeneration === undefined
+            ? {}
+            : { waterInfoContentFrameGeneration: input.waterInfoContentFrameGeneration }),
+          ...(input.waterInfoContentGraphResourceVersion === undefined
+            ? {}
+            : { waterInfoContentGraphResourceVersion: input.waterInfoContentGraphResourceVersion }),
+          ...(input.waterInfoTargetName === undefined
+            ? {}
+            : { waterInfoTargetName: input.waterInfoTargetName }),
+          ...(input.waterInfoFormat === undefined
+            ? {}
+            : { waterInfoFormat: input.waterInfoFormat }),
           waterInfoTextureView: input.waterInfoTextureView,
-          waterInfoSampler: requireWaterValue(input.waterInfoSampler),
+          ...(input.waterInfoSampler === undefined
+            ? {}
+            : { waterInfoSampler: input.waterInfoSampler }),
         }),
     bodyTargetNames: input.bodyTargetNames,
     bodyTargetFormats: input.bodyTargetFormats,
@@ -937,13 +969,17 @@ export function waterMaterialFrameBindGroupEntries(
             binding: binding(2),
             resource: { kind: 'textureView' as const, value: bindings.waterInfoTextureView },
           },
-          {
-            binding: binding(3),
-            resource: {
-              kind: 'sampler' as const,
-              value: requireWaterValue(bindings.waterInfoSampler),
-            },
-          },
+          ...(bindings.waterInfoSampler === undefined
+            ? []
+            : [
+                {
+                  binding: binding(3),
+                  resource: {
+                    kind: 'sampler' as const,
+                    value: requireWaterValue(bindings.waterInfoSampler),
+                  },
+                },
+              ]),
           {
             binding: binding(4),
             resource: {
@@ -1052,7 +1088,8 @@ export function createWaterMaterialFrameBindings(
       resources.bakedSamplesBuffer === undefined ||
       (resources.waterInfoTextureView !== undefined &&
         (!Number.isSafeInteger(resources.waterInfoContentFrameGeneration) ||
-          requireWaterValue(resources.waterInfoContentFrameGeneration) < 0 ||
+          resources.waterInfoContentFrameGeneration === undefined ||
+          resources.waterInfoContentFrameGeneration < 0 ||
           !resources.waterInfoContentGraphResourceVersion ||
           !resources.waterInfoTargetName ||
           resources.waterInfoSampler === undefined ||
@@ -1202,15 +1239,25 @@ export function waterMaterialDrawBinding(
   }>,
   drawKey?: string,
 ): Result<WaterMaterialDrawBinding, WaterMaterialBindingError> {
+  // Retained and current targets may share an unchanged Body. Its draw key
+  // identifies the complete cohort, including generation-qualified transitions.
+  const bodyBindings =
+    'bodyIndices' in bindings
+      ? []
+      : [...bindings.values()].filter(
+          (candidate) =>
+            candidate.bodyIndices.has(bodyGuid) &&
+            candidate.bodyTargetNames.get(bodyGuid) === candidate.waterInfoTargetName,
+        );
   const frameBindings =
     'bodyIndices' in bindings
       ? bindings
       : expected.targetName === undefined
-        ? [...bindings.values()].find(
-            (candidate) =>
-              candidate.bodyIndices.has(bodyGuid) &&
-              candidate.bodyTargetNames.get(bodyGuid) === candidate.waterInfoTargetName,
-          )
+        ? ((drawKey === undefined
+            ? bodyBindings[0]
+            : bodyBindings.find((candidate) =>
+                candidate.waterMeshInstanceDynamicOffsets?.has(drawKey),
+              )) ?? bodyBindings[0])
         : bindings.get(expected.targetName);
   if (frameBindings === undefined)
     return err({

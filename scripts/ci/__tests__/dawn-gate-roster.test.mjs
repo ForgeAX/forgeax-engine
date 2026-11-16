@@ -1127,11 +1127,17 @@ test('native tail placement retains independent headroom across the later cohort
 
 test('completed cohorts distribute complete native tails before ordinary backfill', () => {
   const laneOf = (id) => DAWN_GATE_SHARDS.findIndex((lane) => lane.includes(id));
-  assert.deepEqual(DAWN_GATE_SHARDS[3], ['ordinary-4', 'gi-5', 'gi-3', 'compact-2', 'gi-2']);
-  for (const id of ['shadow-fields', 'heavy-1', 'heavy-2', 'nested-discard']) {
+  assert.deepEqual(DAWN_GATE_SHARDS[3], [
+    'ordinary-4',
+    'modeling-show',
+    'compact-2',
+    'feature-depth',
+    'gi-1',
+  ]);
+  for (const id of ['shadow-fields', 'heavy-2', 'nested-discard']) {
     assert.equal(laneOf(id), 0, `${id} moves to the measured lane-one headroom`);
   }
-  for (const id of ['compact-3', 'gi-6', 'renderer']) {
+  for (const id of ['compact-3', 'gi-6', 'renderer', 'heavy-1', 'gi-3']) {
     assert.equal(laneOf(id), 1, `${id} moves to the measured lane-two headroom`);
   }
   assert.equal(laneOf('compact-1'), 0, 'run 42443025201 exchanges complete compact owners');
@@ -1140,20 +1146,24 @@ test('completed cohorts distribute complete native tails before ordinary backfil
     0,
     'run 43744332755 places the complete regression owner on lane one',
   );
-  assert.equal(laneOf('gi-1'), 0, 'complete GI owners use measured first-lane headroom');
+  assert.equal(laneOf('gi-1'), 3, 'run 43851698763 uses fourth-lane headroom');
   assert.equal(laneOf('gi-4'), 1, 'complete GI owners use measured second-lane headroom');
   assert.equal(laneOf('compact-2'), 3, 'the fourth lane absorbs the complete compact owner');
-  assert.equal(laneOf('gi-5'), 3, 'GI-5 reserves ordinary-file headroom in lane four');
+  assert.equal(
+    laneOf('gi-5'),
+    0,
+    'run 43904183011 exchanges complete GI-5 and Modeling Show owners',
+  );
   assert.equal(
     laneOf('surface-pipelines'),
-    0,
+    1,
     'run 43532825859 spreads the retained cold-owner reserves across measured work',
   );
 });
 
 test('run 42835598738 moves complete full-profile depth owners off the saturated second lane', () => {
   const laneOf = (id) => DAWN_GATE_SHARDS.findIndex((lane) => lane.includes(id));
-  assert.equal(laneOf('feature-depth'), 2);
+  assert.equal(laneOf('feature-depth'), 3);
   assert.equal(laneOf('vfx-depth'), 2);
   assert.ok(!DAWN_GATE_SHARDS[1].includes('feature-depth'));
   assert.ok(!DAWN_GATE_SHARDS[1].includes('vfx-depth'));
@@ -1161,10 +1171,10 @@ test('run 42835598738 moves complete full-profile depth owners off the saturated
 
 test('run 42929802533 moves the complete S6 capture off the overloaded first Dawn lane', () => {
   const laneOf = (id) => DAWN_GATE_SHARDS.findIndex((lane) => lane.includes(id));
-  assert.equal(laneOf('gi-2'), 3, 'run 43718751716 moves the complete owner to lane four');
+  assert.equal(laneOf('gi-2'), 2, 'run 43851698763 uses third-lane headroom');
   assert.equal(laneOf('transmission'), 2, 'run 42786967820 moves the complete owner to lane three');
-  assert.equal(laneOf('gi-3'), 3);
-  assert.equal(laneOf('gi-1'), 0);
+  assert.equal(laneOf('gi-3'), 1);
+  assert.equal(laneOf('gi-1'), 3);
   assert.equal(laneOf('modeling-s6'), 2);
   assert.equal(laneOf('gi-4'), 1);
   assert.notEqual(laneOf('gi-4'), laneOf('gi-5'));
@@ -1229,6 +1239,68 @@ test('measured heavy ordinary files spread without extra owners', (t) => {
       nativeOwners: DAWN_GATE_GROUPS.length,
       uniqueNativeOwners: new Set(DAWN_GATE_SHARDS.flat()).size,
       heavyFiles: heavy.map((file) => [file, locations.get(file)]),
+    }),
+  );
+});
+
+test('run 43851698763 retains complete work and exposes its infeasible forecast', (t) => {
+  const snapshot = JSON.parse(
+    readFileSync(new URL('./fixtures/dawn-completed-43851698763.json', import.meta.url), 'utf8'),
+  );
+  const timings = readDawnTimings();
+  assert.deepEqual(
+    [timings.latestRun, timings.previousRun, ...timings.replayRuns].find(
+      (row) => row.runId === snapshot.runId,
+    ),
+    snapshot,
+  );
+  assert.equal(snapshot.complete, false);
+  assert.equal(Object.keys(snapshot.files).length, 403);
+  assert.equal(Object.keys(snapshot.owners).length, 19);
+  assert.equal(snapshot.executionPolicy.ordinaryWorkers, 2);
+  assert.equal(snapshot.ordinaryReceipts.length, 4);
+  const work = Object.values(snapshot.files).reduce((sum, seconds) => sum + seconds, 0);
+  const elapsed = snapshot.ordinaryReceipts.reduce((sum, row) => sum + row.processWallSeconds, 0);
+  assert.ok(Math.abs(work - 2 * elapsed) < 0.001, 'both complete worker slots remain charged');
+  for (const id of [...snapshot.interruptedOwners, ...snapshot.unstartedOwners]) {
+    assert.ok(!Object.hasOwn(snapshot.owners, id), `${id} did not complete`);
+    assert.ok(snapshot.reservedOwners[id] > 0, `${id} retains its full forecast`);
+  }
+  for (const id of ['feature-depth', 'vfx-depth']) {
+    assert.ok(!Object.hasOwn(snapshot.owners, id), `${id} ran only its PR subset`);
+    assert.ok(snapshot.reservedOwners[id] > snapshot.partialOwnerReceipts[id].processWallSeconds);
+  }
+  const largest = Math.max(...Object.values(snapshot.files));
+  const native = Object.values({ ...snapshot.reservedOwners, ...snapshot.owners }).reduce(
+    (sum, seconds) => sum + seconds,
+    0,
+  );
+  const total = work / 2 + 4 * (largest / 2 + 60) + native;
+  assert.ok(
+    total > 4 * 2194,
+    'infeasible measured/reserved work must never be relabeled as fitting',
+  );
+  const predictions = DAWN_GATE_SHARDS.map((ids, lane) => {
+    const ordinary = historicalDawnPartitions(snapshot)[lane].reduce(
+      (sum, { moduleId }) => sum + snapshot.files[relative(root, moduleId).replaceAll('\\', '/')],
+      0,
+    );
+    const owners = ids
+      .filter((id) => !id.startsWith('ordinary-'))
+      .reduce((sum, id) => sum + (snapshot.owners[id] ?? snapshot.reservedOwners[id]), 0);
+    return ordinary / 2 + largest / 2 + 60 + owners;
+  });
+  assert.ok(Math.abs(predictions.reduce((sum, seconds) => sum + seconds, 0) - total) < 0.001);
+  assert.ok(
+    Math.max(...predictions) - Math.min(...predictions) < 60,
+    'complete-owner placement balances the new measured/reserved work without dropping it',
+  );
+  t.diagnostic(
+    JSON.stringify({
+      runId: snapshot.runId,
+      qualification: 'infeasible-forecast',
+      total,
+      predictions,
     }),
   );
 });

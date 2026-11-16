@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>水域 R7 · 浅水与海面</title></head>
+<head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230d343d'/%3E%3Cpath d='M5 12q5-5 11 0t11 0M5 20q5-5 11 0t11 0' fill='none' stroke='%2386ded0' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E"/><title>水域 R7 · 浅水与海面</title></head>
 <body>
   <canvas id="scene" tabindex="0" aria-label="三维水域"></canvas>
   <header class="topbar">
@@ -17,11 +17,12 @@
       <div class="section-heading"><h2>交互与移动</h2><button id="reset-shallow" class="icon-button small" title="重置浅水" aria-label="重置浅水">↺</button></div>
       <div class="control-row"><label for="shallow-enabled">浅水模拟</label><input id="shallow-enabled" type="checkbox" checked/></div>
       <div class="control-row"><label for="pawn-contact">水面接触</label><input id="pawn-contact" type="checkbox" checked/></div>
-      <div class="control-row"><label for="pawn-motion">移动碰撞体</label><input id="pawn-motion" type="checkbox" checked/></div>
+      <div class="control-row"><label for="pawn-motion">运动学轨迹试件</label><input id="pawn-motion" type="checkbox" checked/></div>
       <div class="control-row"><label for="patch-follow">移动模拟区域</label><input id="patch-follow" type="checkbox" checked/></div>
       <div class="control-row"><label for="ndc-enabled">瞬时碰撞注入</label><input id="ndc-enabled" type="checkbox" checked/></div>
       <label class="range-label" for="impact-radius">碰撞半径 <output id="radius-value">1.2 m</output></label><input id="impact-radius" type="range" min="0.5" max="2.5" step="0.1" value="1.2"/>
-      <button id="impact" class="primary command">投入碰撞体</button>
+      <button id="impact" class="primary command">投放原生动态球</button>
+      <p class="hint">动态球使用真实刚体、球形碰撞和浮力；旋转与重叠试件保持运动学，用于水波源采样。重置恢复轨迹试件。</p>
     </section>
     <section class="panel-section mode-panel" data-panel="shallow">
       <h2>刚体碰撞</h2>

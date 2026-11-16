@@ -6,6 +6,10 @@ export default defineProject({
   test: {
     name: '@forgeax/water-r8-integration-acceptance',
     environment: 'node',
-    include: ['assets/__tests__/*.unit.test.ts', 'src/__tests__/*.unit.test.ts'],
+    include: [
+      'assets/__tests__/*.unit.test.ts',
+      'assets/__tests__/*.integration.test.ts',
+      'src/__tests__/*.unit.test.ts',
+    ],
   },
 });

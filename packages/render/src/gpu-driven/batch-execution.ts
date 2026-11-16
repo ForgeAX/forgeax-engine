@@ -134,6 +134,24 @@ function needsDirectRoute(material: MaterialSnapshot, pass: BatchPass): boolean 
   );
 }
 
+/** Preserve the Pass's logical identity when selecting a physical specialization. */
+function projectBatchArtifact(
+  artifact: MaterialShaderArtifact,
+  pass: BatchPass,
+): MaterialShaderArtifact {
+  return {
+    ...artifact,
+    ...(pass.sceneIndexProgramKey === undefined
+      ? {}
+      : {
+          material: pass.shaderId,
+          specializationKey: pass.sceneIndexProgramKey,
+        }),
+    ...(pass.vertexEntry === undefined ? {} : { vertexEntry: pass.vertexEntry }),
+    ...(pass.fragmentEntry === undefined ? {} : { fragmentEntry: pass.fragmentEntry }),
+  };
+}
+
 /** This join cannot inspect candidates, slots or a representative entity. */
 export function prepareBatchExecution(
   geometry: BatchGeometry,
@@ -176,18 +194,10 @@ export function prepareBatchExecution(
     );
   }
   const receipt = artifact.receipt;
-  // A specialization has a physical program key and the Pass's logical material identity.
-  const selected: MaterialShaderArtifact = {
-    ...artifact,
-    ...(pass.sceneIndexProgramKey === undefined
-      ? {}
-      : {
-          material: pass.shaderId,
-          specializationKey: pass.sceneIndexProgramKey,
-        }),
-    ...(pass.vertexEntry === undefined ? {} : { vertexEntry: pass.vertexEntry }),
-    ...(pass.fragmentEntry === undefined ? {} : { fragmentEntry: pass.fragmentEntry }),
-  };
+  // Water frame resources and deformation are bound by the specialized direct
+  // recorder. A scene-index vertex entry alone does not admit that resource ABI.
+  if (receipt.systemInputs?.water === 'water-frame/3') return direct();
+  const selected = projectBatchArtifact(artifact, pass);
   const sourceInputs = geometry.receipt.vertexInputs;
   // UV aliases reuse bytes inside the uploaded stride (Geometry owns the alias choice).
   const layout =

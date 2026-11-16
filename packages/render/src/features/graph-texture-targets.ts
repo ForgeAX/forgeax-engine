@@ -255,7 +255,13 @@ export function graphTextureTargetResolver(
           handle.format === target.format &&
           resolved.scope === featureScopeKey({ view: target.viewIdentity }),
       );
-      return matches.length === 1 ? matches[0]?.[1] : undefined;
+      const first = matches[0]?.[1];
+      return first !== undefined &&
+        matches.every(
+          ([, resolved]) => resolved.texture === first.texture && resolved.view === first.view,
+        )
+        ? first
+        : undefined;
     }
     if (typeof target === 'object' && isRenderFeatureGraphTextureTarget(target)) {
       const resolved = state.targets.get(target);
@@ -365,4 +371,23 @@ function collectGraphicsAttachmentTargets(
   if (isRenderFeatureGraphTextureTarget(depth)) result.set(depth, scope ?? '');
   for (const target of pass.graphics?.sampledTargets ?? [])
     if (isRenderFeatureGraphTextureTarget(target)) result.set(target, scope ?? '');
+}
+
+/** Equal logical aliases resolve to the same physical view. */
+export function scopedGraphTextureTarget(
+  state: RenderFeatureGraphTextureTargets,
+  name: string,
+  viewIdentity: string,
+) {
+  const scope = featureScopeKey({ view: viewIdentity });
+  const matches = [...state.targets].filter(
+    ([target, resolved]) => target.name === name && resolved.scope === scope,
+  );
+  const first = matches[0];
+  return first !== undefined &&
+    matches.every(
+      ([, resolved]) => resolved.texture === first[1].texture && resolved.view === first[1].view,
+    )
+    ? first
+    : undefined;
 }

@@ -1,3 +1,5 @@
+import { setFlagsFromString } from 'node:v8';
+import { runInNewContext } from 'node:vm';
 import { type PhysicsWorld, PhysicsWorldResource } from '@forgeax/engine-physics';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { ok } from '@forgeax/engine-types';
@@ -36,17 +38,21 @@ import {
   rollbackGraphCandidate,
 } from '../typed-frame-graph';
 
-async function harness() {
+async function harness(retainBuildBinding = false) {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   let failBuild = false;
   const activePipeline: RenderPipeline = {
-    build: ({ graph }) => {
+    build: ({ graph, getSharedGraphTextureBinding }) => {
       if (failBuild) return { ok: false, error: { code: 'injected-build-failure' } } as never;
       const buffer = graph.createBuffer('purity-bytes', { size: 16 });
       if (!buffer.ok) return buffer;
       return graph.addCopyPass('purity-seed', {
         accesses: [{ resource: buffer.value, usage: 'copy-dst' }],
-        encode: () => undefined,
+        encode: retainBuildBinding
+          ? () => {
+              getSharedGraphTextureBinding?.('unused');
+            }
+          : () => undefined,
       });
     },
   };
@@ -130,6 +136,31 @@ it('never retains a single-sample graph for an unqualified WebGL2 MSAA request',
   const input = h.input();
   const outcome = compileViewGraph({ ...input, camera: { ...input.camera, antialias: 'msaa' } });
   expect(outcome.kind).toBe('rejected');
+});
+
+it('releases retired view graphs while current passes retain their build bindings', async () => {
+  setFlagsFromString('--expose-gc');
+  const gc = runInNewContext('gc') as () => void;
+  const h = await harness(true);
+  const released = (() => {
+    h.compile();
+    h.accept();
+    const graph = h.frameState.compiledFrameGraph?.graph;
+    if (graph === undefined) throw new Error('Missing initial view graph');
+    return new WeakRef(graph);
+  })();
+  for (let frame = 0; frame < 8; frame++) {
+    h.compile(frame + 2);
+    h.accept();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  for (let attempt = 0; attempt < 10 && released.deref() !== undefined; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    gc();
+  }
+  expect(h.frameState.compiledFrameGraph?.graph).toBeDefined();
+  expect(h.frameState.retiredCompiledFrameGraphs.size).toBe(0);
+  expect(released.deref()).toBeUndefined();
 });
 
 /** Each fixture prepares the state its final compile observes and returns that compile's width. */

@@ -160,21 +160,20 @@ export const DAWN_ISOLATED_TEST_FILES = DAWN_ISOLATED_GROUPS.flatMap(({ files })
 // Independent long capture journeys occupy separate lanes; one slow runner
 // must not amplify both Modeling captures before the same ordinary backfill.
 export const DAWN_GATE_SHARDS = Object.freeze([
-  Object.freeze([
+  [
     'ordinary-1',
     'compact-1',
     'rect-source',
     'shadow-fields',
-    'heavy-1',
     'heavy-2',
     'nested-discard',
-    'surface-pipelines',
-    'gi-1',
+    'gi-5',
     'direct-light',
-  ]),
-  Object.freeze([
+  ],
+  [
     'ordinary-2',
-    'modeling-show',
+    'surface-pipelines',
+    'heavy-1',
     'heavy-3',
     'heavy-4',
     'shadow-quality',
@@ -184,9 +183,13 @@ export const DAWN_GATE_SHARDS = Object.freeze([
     'renderer',
     'gi-4',
     'screen-probe',
-  ]),
-  Object.freeze(['ordinary-3', 'modeling-s6', 'transmission', 'vfx-depth', 'feature-depth']),
-  Object.freeze(['ordinary-4', 'gi-5', 'gi-3', 'compact-2', 'gi-2']),
+    'gi-3',
+  ],
+  ['ordinary-3', 'modeling-s6', 'transmission', 'vfx-depth', 'gi-2'],
+  // Run 43904183011 completed ordinary-1 but interrupted its fixed tail at
+  // forty minutes. Exchange these complete owners before ordinary backfill;
+  // preserve all cases, native lifetimes, workers and historical replay bounds.
+  ['ordinary-4', 'modeling-show', 'compact-2', 'feature-depth', 'gi-1'],
 ]);
 
 export const DAWN_GATE_GROUPS = [

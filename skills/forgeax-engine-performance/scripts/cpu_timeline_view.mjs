@@ -1,3 +1,33 @@
+export function cpuTimelineIntervalSummary(track, startMs, endMs, cursor = { index: 0 }) {
+  const categories = {},
+    self = new Map();
+  let sampledMs = 0,
+    sampleCount = 0;
+  while (cursor.index < track.samples.length && track.samples[cursor.index].endMs <= startMs)
+    cursor.index++;
+  for (let at = cursor.index; at < track.samples.length; at++) {
+    const sample = track.samples[at];
+    if (sample.startMs >= endMs) break;
+    const ms = Math.max(0, Math.min(endMs, sample.endMs) - Math.max(startMs, sample.startMs));
+    if (ms === 0) continue;
+    sampledMs += ms;
+    sampleCount++;
+    categories[sample.category] = (categories[sample.category] ?? 0) + ms;
+    self.set(sample.nodeId, (self.get(sample.nodeId) ?? 0) + ms);
+  }
+  return {
+    targetId: track.target.targetId,
+    sampledMs,
+    unobservedMs: Math.max(0, endMs - startMs - sampledMs),
+    sampleCount,
+    categories,
+    topSelf: [...self]
+      .map(([nodeId, sampledSelfMs]) => ({ nodeId, sampledSelfMs }))
+      .sort((a, b) => b.sampledSelfMs - a.sampledSelfMs)
+      .slice(0, 10),
+  };
+}
+
 // Pure rendering shared by the Node SVG exporter and the embedded offline viewer.
 export function cpuTimelineSampleDensity(track, fromMs, toMs) {
   const samples = track.samples.filter((s) => s.endMs > fromMs && s.endMs <= toMs);
@@ -42,27 +72,24 @@ export function cpuTimelineFunctionRows(model, fromMs, toMs) {
   });
 }
 
-function validateCpuTimelineViewport(model, width, fromMs, toMs) {
+function validateCpuTimelineRange(model, fromMs, toMs) {
   if (
-    !(
-      Number.isSafeInteger(width) &&
-      width >= 800 &&
-      width <= 16000 &&
-      Number.isFinite(fromMs) &&
-      Number.isFinite(toMs) &&
-      fromMs >= model.startMs &&
-      toMs <= model.endMs &&
-      toMs > fromMs
-    )
+    !Number.isFinite(fromMs) ||
+    !Number.isFinite(toMs) ||
+    fromMs < model.startMs ||
+    toMs > model.endMs ||
+    toMs <= fromMs
   )
-    throw new Error('Require width 800..16000 and an increasing range inside the capture');
+    throw Error('Require an increasing range inside the capture');
 }
 
 export function cpuTimelineSvg(
   model,
-  { width = 2400, fromMs = model.startMs, toMs = model.endMs, search = '' } = {},
+  { width = 2400, fromMs = model.startMs, toMs = model.endMs } = {},
 ) {
-  validateCpuTimelineViewport(model, width, fromMs, toMs);
+  if (!Number.isSafeInteger(width) || width < 800 || width > 16000)
+    throw Error('Require width 800..16000');
+  validateCpuTimelineRange(model, fromMs, toMs);
   const escape = (value) =>
     String(value)
       .replaceAll('&', '&amp;')
@@ -94,15 +121,15 @@ export function cpuTimelineSvg(
   const height = y + 56;
   const text = (tx, ty, value, extra = '') =>
     `<text x="${tx}" y="${ty}" ${extra}>${escape(value)}</text>`;
-  const rect = (start, end, ry, rh, fill, title, extra = '', label = '') => {
+  const rect = (start, end, ry, rh, fill, title, label = '') => {
     const a = Math.max(start, fromMs),
       b = Math.min(end, toMs);
     if (b <= a) return '';
     const w = (b - a) * scale;
-    return `<g ${extra}><title>${escape(title)}</title><rect x="${x(a)}" y="${ry}" width="${w}" height="${rh}" fill="${fill}" rx="2"/>${w > 45 ? text(x(a) + 5, ry + 14, label.slice(0, Math.floor((w - 10) / 6.8)), 'fill="#fff" font-size="11"') : ''}</g>`;
+    return `<g><title>${escape(title)}</title><rect x="${x(a)}" y="${ry}" width="${w}" height="${rh}" fill="${fill}" rx="2"/>${w > 45 ? text(x(a) + 5, ry + 14, label.slice(0, Math.floor((w - 10) / 6.8)), 'fill="#fff" font-size="11"') : ''}</g>`;
   };
   rows.push(
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="CPU sampling timeline"><style>text{pointer-events:none;font-family:ui-monospace,monospace;fill:#becbdd;font-size:12px}.muted{fill:#8194aa}g[data-node],g[data-frame]{cursor:pointer}g[data-frame]:hover rect{stroke:#fff;stroke-width:2}</style><rect width="100%" height="100%" fill="#0c1421"/>`,
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="CPU sampling timeline"><style>text{pointer-events:none;font-family:ui-monospace,monospace;fill:#becbdd;font-size:12px}.muted{fill:#8194aa}</style><rect width="100%" height="100%" fill="#0c1421"/>`,
   );
   rows.push(
     text(24, 34, 'CPU / SAMPLING TIMELINE', 'font-size="20" font-weight="700" fill="#f2f6ff"'),
@@ -139,7 +166,7 @@ export function cpuTimelineSvg(
   }
   rows.push(text(24, 166, 'COMPLETION GAP'));
   rows.push(text(24, 184, 'receipt to receipt', 'class="muted" font-size="10"'));
-  model.frameIntervals.forEach((frame, index) => {
+  model.frameIntervals.forEach((frame) => {
     const fill =
       frame.coverage !== 'complete' || frame.missingIntermediateReceipts > 0
         ? '#9e7154'
@@ -152,14 +179,13 @@ export function cpuTimelineSvg(
         36,
         fill,
         `Completion #${frame.current.frameId}: ${frame.completionGapMs.toFixed(3)} ms; ${frame.coverage}; missing receipts ${frame.missingIntermediateReceipts}; ${frame.current.worldIdentity}/${frame.current.deviceGeneration}`,
-        `data-frame="${index}"`,
         `#${frame.current.frameId} | ${frame.completionGapMs.toFixed(2)} ms`,
       ),
     );
   });
   if (!model.frameIntervals.length)
     rows.push(text(left + 8, 173, 'No aligned completion receipts supplied', 'class="muted"'));
-  const paintTrackSlices = (track, top, trackIndex) => {
+  const paintTrackSlices = (track, top) => {
     const nodes = new Map(track.nodes.map((n) => [n.nodeId, n]));
     for (const slice of track.slices) {
       if (slice.endMs <= fromMs || slice.startMs >= toMs) continue;
@@ -169,22 +195,12 @@ export function cpuTimelineSvg(
         ? `${node.source.file}:${node.source.line}:${node.source.column}`
         : `${node.url}:${node.lineNumber + 1}:${node.columnNumber + 1}`;
       const title = `${name}\nCaptured function: ${node.functionName || '(anonymous)'}\n${slice.startMs.toFixed(3)} - ${slice.endMs.toFixed(3)} ms (${(slice.endMs - slice.startMs).toFixed(3)} ms sampled estimate)\nSource: ${location}\nGenerated: ${node.url}:${node.lineNumber + 1}:${node.columnNumber + 1}\nTarget ${track.target.targetId}`;
-      const match = !search || `${name} ${location}`.toLowerCase().includes(search.toLowerCase());
       rows.push(
-        rect(
-          slice.startMs,
-          slice.endMs,
-          top + 7 + slice.depth * 21,
-          19,
-          color(name),
-          title,
-          `data-track="${trackIndex}" data-node="${slice.nodeId}" data-start="${slice.startMs}" data-end="${slice.endMs}"${match ? '' : ' opacity="0.15"'}`,
-          name,
-        ),
+        rect(slice.startMs, slice.endMs, top + 7 + slice.depth * 21, 19, color(name), title, name),
       );
     }
   };
-  for (const [trackIndex, { track, y: top, height: rh }] of trackLayouts.entries()) {
+  for (const { track, y: top, height: rh } of trackLayouts) {
     rows.push(
       `<rect x="${left}" y="${top}" width="${right - left}" height="${rh}" fill="#152135" opacity="0.65"/>`,
     );
@@ -209,7 +225,7 @@ export function cpuTimelineSvg(
         'class="muted" font-size="10"',
       ),
     );
-    paintTrackSlices(track, top, trackIndex);
+    paintTrackSlices(track, top);
   }
   rows.push(
     text(
@@ -231,7 +247,7 @@ export function cpuTimelineSvg(
   return rows.join('');
 }
 
-export function mountCpuTimeline(initial, initialView = {}) {
+export function mountCpuInspector(initial, initialView = {}) {
   document.head.insertAdjacentHTML(
     'beforeend',
     `<style>
@@ -241,23 +257,21 @@ export function mountCpuTimeline(initial, initialView = {}) {
     .tag{color:#7be0cf;font:11px ui-monospace,monospace;letter-spacing:2px;margin-bottom:9px}
     nav{display:flex;gap:9px;flex-wrap:wrap;align-items:center;padding:16px 30px;background:#111e30}
     button,.file{border:1px solid #38506e;background:#1a3049;color:#edf7ff;padding:8px 12px;border-radius:6px;cursor:pointer;font:inherit}
-    button:hover,.file:hover{background:#274865}input{background:#091424;border:1px solid #3a506d;color:#eff6ff;border-radius:5px;padding:8px;font:inherit}
-    input[type=number]{width:115px}input[type=search]{width:220px}#load{display:none}#status{padding:10px 30px;color:#9fb6d2;font:12px ui-monospace,monospace}
-    #chart{overflow:auto;margin:0 20px;border:1px solid #2b3e59;border-radius:9px}#chart svg{display:block}
+    button:hover,.file:hover{background:#274865}input,select{background:#091424;border:1px solid #3a506d;color:#eff6ff;border-radius:5px;padding:8px;font:inherit}
+    input[type=number]{width:115px}#load{display:none}#status{padding:10px 30px;color:#9fb6d2;font:12px ui-monospace,monospace}
     section{margin:20px 30px 35px}h2{font-size:16px}table{border-collapse:collapse;width:100%;font:12px ui-monospace,monospace}
     th,td{text-align:left;padding:11px;border-bottom:1px solid #27384e}th{color:#9bb6d3}#error{color:#ffab9f;margin:0 30px}small{color:#90a7c3}
   </style>`,
   );
-  document.body.innerHTML = `<header><div class="tag">FORGEAX / OFFLINE PROFILING</div><h1>CPU sampling timeline</h1><p>Read the same capture as frame intervals, parallel JS targets and time-ordered call stacks.</p><small>Sampling estimates and completion receipts. Native threads, scheduling states and exact function scopes need separate sources.</small></header>
+  document.body.innerHTML = `<header><div class="tag">FORGEAX / OFFLINE PROFILING</div><h1>CPU sampling inspector</h1><p>Aggregate call trees, function contexts and completion facts from the captured timeline.</p><small>Sampling estimates and completion receipts. Native threads, scheduling states and exact function scopes need separate sources.</small></header>
     <nav><label class="file">Open timeline JSON<input type="file" id="load" accept=".json"></label>
     <label>From <input id="from" type="number" step="any" aria-label="From milliseconds"></label>
     <label>To <input id="to" type="number" step="any" aria-label="To milliseconds"></label>
-    <button id="apply">Apply range</button><button id="reset">Full capture</button><button id="zoom">Zoom in 2x</button>
-    <input id="search" type="search" placeholder="Find function or source" aria-label="Find function or source">
-    <button id="svg">Export SVG</button><button id="png">Export PNG</button></nav>
-    <div id="status"></div><p id="error" role="alert"></p><main id="chart"></main>
-    <section><h2 id="selection">Select a completion interval above</h2><p>Sample weights below estimate activity within that interval. They are not exclusive execution time for that frame.</p><div id="detail"></div><pre id="frame-facts" style="white-space:pre-wrap"></pre></section>
-    <section><h2>Aggregated call tree</h2><button id="topdown">Top-down</button><button id="bottomup">Bottom-up self costs</button><button id="tree-svg">Export call-tree SVG</button><p id="tree-note"></p><div id="call-trees"></div></section><section><h2>Functions in the visible interval</h2><p>Self and inclusive values are sampled estimates. Each row identifies one call-tree context; recursive levels remain separate. Click a stack segment for its source and callers.</p><pre id="function-detail" style="white-space:pre-wrap"></pre><div id="functions"></div></section>`;
+    <button id="apply">Apply range</button><button id="reset">Full capture</button>
+    <label>Completion <select id="completion"><option value="">Choose interval</option></select></label></nav>
+    <div id="status"></div><p id="error" role="alert"></p>
+    <section><h2 id="selection">Select a completion interval</h2><p>Sample weights below estimate activity within that interval. They are not exclusive execution time for that frame.</p><div id="detail"></div><pre id="frame-facts" style="white-space:pre-wrap"></pre></section>
+    <section><h2>Aggregated call tree</h2><button id="topdown">Top-down</button><button id="bottomup">Bottom-up self costs</button><button id="tree-svg">Export call-tree SVG</button><p id="tree-note"></p><div id="call-trees"></div></section><section><h2>Functions in the visible interval</h2><p>Self and inclusive values are sampled estimates. Each row identifies one call-tree context; recursive levels remain separate. Click a function row for its source and callers.</p><pre id="function-detail" style="white-space:pre-wrap"></pre><div id="functions"></div></section>`;
   const treeStyle = document.createElement('style');
   treeStyle.textContent =
     '#call-trees details details{margin-left:18px;border-left:1px solid #29415b;padding-left:8px}#call-trees summary{font:12px/26px ui-monospace,monospace;cursor:pointer}#call-trees summary:hover{background:#1d3046}.tree-row{display:inline-grid;grid-template-columns:minmax(260px,1fr) 150px 150px 110px;width:calc(100% - 26px)}.tree-row span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}';
@@ -266,16 +280,12 @@ export function mountCpuTimeline(initial, initialView = {}) {
   let model,
     fromMs,
     toMs,
-    svg,
     treeDirection = 'top-down';
-  const width = () => Math.max(1200, Math.min(2400, window.innerWidth - 42));
   const render = () => {
-    svg = cpuTimelineSvg(model, { width: width(), fromMs, toMs, search: el('search').value });
-    el('chart').innerHTML = svg;
     el('from').value = fromMs;
     el('to').value = toMs;
     el('status').textContent =
-      `${model.completeness} | ${model.tracks.length} captured JS targets | not sampled: ${(model.captureScope?.unsampledTargets ?? []).map((t) => t.title || t.targetId).join(', ') || 'none declared'} | ${model.frameIntervals.length} completion intervals | ${model.identity.game ?? model.identity.rawSha256 ?? 'no input digest'} | click an interval to inspect`;
+      `${model.completeness} | ${model.tracks.length} captured JS targets | not sampled: ${(model.captureScope?.unsampledTargets ?? []).map((t) => t.title || t.targetId).join(', ') || 'none declared'} | ${model.frameIntervals.length} completion intervals | ${model.identity.game ?? model.identity.rawSha256 ?? 'no input digest'}`;
     el('error').textContent = '';
     el('function-detail').textContent = '';
     const trees = cpuTimelineCallTrees(model, fromMs, toMs, { direction: treeDirection });
@@ -414,6 +424,12 @@ export function mountCpuTimeline(initial, initialView = {}) {
       2,
     );
   };
+  const clearCompletion = () => {
+    el('completion').value = '';
+    el('detail').replaceChildren();
+    el('frame-facts').textContent = '';
+    el('selection').textContent = 'Select a completion interval';
+  };
   const accept = (next, range = next?.initialView ?? {}) => {
     if (
       next?.schemaVersion !== 1 ||
@@ -422,13 +438,23 @@ export function mountCpuTimeline(initial, initialView = {}) {
       !Array.isArray(next.frameIntervals)
     )
       throw new Error('Open a normalized timeline.json produced by cpu.mjs report');
-    cpuTimelineSvg(next, { width: width(), fromMs: range.fromMs, toMs: range.toMs }); // Keep the current model if admission/rendering fails.
+    const start = range.fromMs ?? next.startMs,
+      end = range.toMs ?? next.endMs;
+    // Validate the actual inspector projections before replacing a usable document.
+    cpuTimelineCallTrees(next, start, end);
+    cpuTimelineFunctionRows(next, start, end);
     model = next;
     fromMs = range.fromMs ?? model.startMs;
     toMs = range.toMs ?? model.endMs;
-    el('detail').replaceChildren();
-    el('frame-facts').textContent = '';
-    el('selection').textContent = 'Select a completion interval above';
+    el('completion').replaceChildren(new Option('Choose interval', ''));
+    for (const [index, frame] of model.frameIntervals.entries())
+      el('completion').append(
+        new Option(
+          '#' + frame.current.frameId + ' · ' + frame.completionGapMs.toFixed(3) + ' ms',
+          String(index),
+        ),
+      );
+    clearCompletion();
     render();
   };
   const guard =
@@ -468,33 +494,24 @@ export function mountCpuTimeline(initial, initialView = {}) {
   el('apply').onclick = guard(() => {
     const nextFrom = Number(el('from').value),
       nextTo = Number(el('to').value);
-    cpuTimelineSvg(model, { width: width(), fromMs: nextFrom, toMs: nextTo });
+    validateCpuTimelineRange(model, nextFrom, nextTo);
+    clearCompletion();
     fromMs = nextFrom;
     toMs = nextTo;
     render();
   });
   el('reset').onclick = guard(() => {
+    clearCompletion();
     fromMs = model.startMs;
     toMs = model.endMs;
     render();
   });
-  el('zoom').onclick = guard(() => {
-    const span = (toMs - fromMs) / 4;
-    fromMs += span;
-    toMs -= span;
-    render();
-  });
-  el('search').oninput = guard(render);
-  window.addEventListener('resize', guard(render));
-  el('chart').onclick = guard((event) => {
-    const segment = event.target.closest('[data-node]');
-    if (segment) {
-      const track = model.tracks[Number(segment.getAttribute('data-track'))];
-      showFunction(track, Number(segment.getAttribute('data-node')));
+  el('completion').onchange = guard(() => {
+    const index = el('completion').value;
+    if (index === '') {
+      clearCompletion();
       return;
     }
-    const index = event.target.closest('[data-frame]')?.getAttribute('data-frame');
-    if (index === undefined || index === null) return;
     const frame = model.frameIntervals[Number(index)];
     fromMs = frame.startMs;
     toMs = frame.endMs;
@@ -558,33 +575,6 @@ export function mountCpuTimeline(initial, initialView = {}) {
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
-  el('svg').onclick = guard(() =>
-    download(new Blob([svg], { type: 'image/svg+xml' }), 'cpu-timeline.svg'),
-  );
-  el('png').onclick = guard(async () => {
-    const url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
-    try {
-      const image = new Image();
-      image.src = url;
-      await image.decode();
-      if (image.width * image.height > 64000000 || image.height > 16000)
-        throw new Error('PNG is too large; narrow the range or export SVG');
-      const canvas = document.createElement('canvas');
-      canvas.width = image.width * 2;
-      canvas.height = image.height * 2;
-      if (canvas.width * canvas.height > 64000000 || canvas.height > 16000) {
-        canvas.width = image.width;
-        canvas.height = image.height;
-      }
-      const context = canvas.getContext('2d');
-      context.drawImage(image, 0, 0, canvas.width, canvas.height);
-      const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
-      if (!blob) throw new Error('PNG encoding failed; export SVG instead');
-      download(blob, 'cpu-timeline.png');
-    } finally {
-      URL.revokeObjectURL(url);
-    }
-  });
   accept(
     initial,
     initialView.fromMs !== undefined || initialView.toMs !== undefined

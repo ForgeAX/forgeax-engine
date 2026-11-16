@@ -1,9 +1,29 @@
 {
-  "name": "@forgeax/water-r4-buoyancy-foam", "version": "0.0.0", "private": true,
-  "type": "module", "license": "Apache-2.0",
-  "scripts": { "dev": "node ../../../scripts/vite-app.mjs dev --host 127.0.0.1", "build": "node ../../../scripts/vite-app.mjs build", "typecheck": "tsc --noEmit" },
-  "dependencies": { "@forgeax/apps-shared": "workspace:*", "@forgeax/engine": "workspace:*" },
-  "devDependencies": { "@forgeax/engine-devkit": "workspace:*", "@forgeax/engine-image": "workspace:*", "@forgeax/engine-shader-compiler": "workspace:*", "@forgeax/engine-vite-plugin-pack": "workspace:*", "@forgeax/engine-vite-plugin-rhi-debug": "workspace:*", "@forgeax/engine-vite-plugin-shader": "workspace:*", "@webgpu/types": "^0.1.74", "typescript": "6.0.3", "vite": "8.3.5" },
+  "name": "@forgeax/water-r4-buoyancy-foam",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "scripts": {
+    "dev": "node ../../../scripts/vite-app.mjs dev --host 127.0.0.1",
+    "build": "node ../../../scripts/vite-app.mjs build",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@forgeax/apps-shared": "workspace:*",
+    "@forgeax/engine": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/engine-devkit": "workspace:*",
+    "@forgeax/engine-image": "workspace:*",
+    "@forgeax/engine-shader-compiler": "workspace:*",
+    "@forgeax/engine-vite-plugin-pack": "workspace:*",
+    "@forgeax/engine-vite-plugin-rhi-debug": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@webgpu/types": "^0.1.74",
+    "typescript": "6.0.3",
+    "vite": "8.3.5"
+  },
   "forgeax": {
     "metrics": {
       "bundle-size": {
@@ -28,5 +48,6 @@
         "reason": "This maintained Water demo has no spike report."
       }
     }
-  }
+  },
+  "description": "R4 \u00b7 Buoyancy harbor"
 }

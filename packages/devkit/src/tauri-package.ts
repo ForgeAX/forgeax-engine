@@ -159,11 +159,8 @@ async function buildTauriPackages(
     ],
     project,
   );
-  await run(
-    process.execPath,
-    [resolve(project, 'scripts/build.mjs'), '--platform', platform],
-    project,
-  );
+  // Mobile IDE callbacks reconstruct their CLI from the package manager environment.
+  await run('npm', ['run', `build:${platform}`], project);
   const bundleRoot =
     platform === 'android'
       ? resolve(project, 'src-tauri/gen/android/app/build/outputs')

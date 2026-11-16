@@ -27,7 +27,10 @@ import {
   waterWaveDepthAttenuation,
 } from '../index.js';
 import { buildWaterPackOutputs } from '../pack-cook.js';
-import { buildWaterZoneMeshViewForRenderer } from '../system-internal.js';
+import {
+  acceptWaterMeshViewForRenderer,
+  buildWaterZoneMeshViewForRenderer,
+} from '../system-internal.js';
 import {
   cookWaterAsset,
   validateWaterAsset,
@@ -127,6 +130,45 @@ const mountWindowOcean = async (system: WaterSystem) => {
 };
 
 describe('water R2 mesh, WaterInfo, waves, and body query', () => {
+  it('retains terminal policy through source cook and the actual accepted Body snapshot without altering native query fields', async () => {
+    const policy = {
+      target: 'ocean' as const,
+      endpoint: 'end' as const,
+      reachM: 24,
+      blendWidthM: 4,
+    };
+    const source = { ...river(), transitionContinuity: policy };
+    const cooked = cookWaterAsset(source).unwrap();
+    expect(cooked).toMatchObject({ transitionContinuity: policy });
+    const packed = (
+      await buildWaterPackOutputs(
+        { body: source },
+        { packageId: definePackageId('019a0000-0000-7000-8000-000000000509') },
+      )
+    ).unwrap();
+    const system = new WaterSystem(
+      () => undefined,
+      () => [],
+    );
+    const snapshot = system.mountBody(guid('7'), 'policy', packed.body).unwrap();
+    expect(snapshot.asset.transitionContinuity).toEqual(policy);
+    expect(Object.isFrozen(snapshot.asset.transitionContinuity)).toBe(true);
+    expect(snapshot.asset.spline.points[0]).toMatchObject({
+      positionM: [0, 2, 0],
+      velocityMPerSec: 2,
+      depthM: 3,
+    });
+    const current = system.snapshots()[0];
+    expect(current?.asset.transitionContinuity).toEqual(policy);
+    const invalid = [
+      { ...source, type: 'lake' },
+      { ...source, transitionContinuity: { ...policy, reachM: 4 } },
+      { ...source, transitionContinuity: { ...policy, target: 'lake' } },
+      { ...source, transitionContinuity: { ...policy, endpoint: 'start' } },
+      { ...source, transitionContinuity: { ...policy, gain: 2 } },
+    ];
+    for (const value of invalid) expect(validateWaterAsset(value).ok).toBe(false);
+  });
   it('admits and cooks an explicit Ocean view-window far boundary only with its complete source inputs', () => {
     const source = oceanWindowZone();
     expect(validateWaterAsset(source).ok).toBe(true);
@@ -385,9 +427,9 @@ describe('water R2 mesh, WaterInfo, waves, and body query', () => {
       ).toBe(true);
   });
   it.each([
-    ['joined', true, [0, 0], 15],
+    ['joined', true, [0, 0], 0],
     ['no-far', false, [0, 0], 0],
-    ['sliding', true, [4, 0], 12],
+    ['sliding', true, [4, 0], 0],
   ] as const)('publishes only emitted flat far adjacency for %s near bounds', (_name, far, shift, expected) => {
     const result = buildWaterMeshView(
       {
@@ -403,7 +445,6 @@ describe('water R2 mesh, WaterInfo, waves, and body query', () => {
               far: {
                 extentM: [32, 32] as const,
                 materialKey: 'far',
-                oceanHeight: 'mean' as const,
                 innerBoundsXZ: { minM: [-8, -8] as const, maxM: [8, 8] as const },
               },
             }
@@ -481,7 +522,7 @@ describe('water R2 mesh, WaterInfo, waves, and body query', () => {
         tessellationFactor: 3,
         lodScale: 1,
         nearMesh: 'gpu',
-        far: { extentM: [32, 32], materialKey: 'far', oceanHeight: 'mean' },
+        far: { extentM: [32, 32], materialKey: 'far' },
         bodies: [
           {
             guid: 'sea',
@@ -500,7 +541,7 @@ describe('water R2 mesh, WaterInfo, waves, and body query', () => {
       { viewId: 'main', observerM: [0, 4, 0] },
     ).unwrap();
     const bounds = { minM: [-8, -8] as const, maxM: [8, 8] as const };
-    const mask = (tiles = receipt.instances, owner = 'sea', generation = 2, height = 2) =>
+    const mask = (tiles = receipt.instances, owner = 'sea', generation = 2, height = 1.5) =>
       waterMesh.waterMeshFlatFarBoundaryMask(tiles, owner, generation, height, bounds);
     expect(mask()).toBe(15);
     expect(mask([], 'sea')).toBe(0);
@@ -897,6 +938,23 @@ describe('water R2 mesh, WaterInfo, waves, and body query', () => {
     expect(water.acceptWaterMeshView(zoneGuid, 'camera:a', accepted.publicationGeneration)).toBe(
       true,
     );
+    // A completed frame must accept its exact submitted candidate even when
+    // camera movement prepared a newer view while its GPU work was in flight.
+    const submitted = buildWaterZoneMeshViewForRenderer(water, zoneGuid, 1, zone, {
+      viewId: 'camera:a',
+      observerM: [1, 4, 0],
+    }).unwrap();
+    const prepared = buildWaterZoneMeshViewForRenderer(water, zoneGuid, 1, zone, {
+      viewId: 'camera:a',
+      observerM: [2, 4, 0],
+    }).unwrap();
+    expect(acceptWaterMeshViewForRenderer(water, submitted)).toBe(true);
+    expect(water.waterMeshCandidateViews('camera:a')[0]?.publicationGeneration).toBe(
+      prepared.publicationGeneration,
+    );
+    expect(acceptWaterMeshViewForRenderer(otherWorldWater, submitted)).toBe(false);
+    expect(acceptWaterMeshViewForRenderer(water, prepared)).toBe(true);
+    expect(acceptWaterMeshViewForRenderer(water, submitted)).toBe(false);
     water.buildZoneMeshView(zoneGuid, 1, zone, view('camera:b')).unwrap();
     otherWorldWater.buildZoneMeshView(zoneGuid, 1, zone, view('camera:a')).unwrap();
 
@@ -904,7 +962,7 @@ describe('water R2 mesh, WaterInfo, waves, and body query', () => {
     liveZone = { ...zone, tileSizeM: 0 };
     expect(water.buildZoneMeshView(zoneGuid, 2, liveZone, view('camera:a')).ok).toBe(false);
     expect(water.zoneMeshView(zoneGuid, 'camera:a')?.publicationGeneration).toBe(
-      accepted.publicationGeneration,
+      prepared.publicationGeneration,
     );
     expect(water.waterMeshOwnerRoster('camera:a')).toHaveLength(1);
     const ownerRosterScopes: string[] = [];
@@ -921,6 +979,7 @@ describe('water R2 mesh, WaterInfo, waves, and body query', () => {
     expect(water.waterMeshCandidateViews('camera:b')).toEqual([]);
     expect(water.zoneMeshView(zoneGuid, 'camera:a')).toBeDefined();
     water.retireWaterMeshZone(zoneGuid);
+    expect(acceptWaterMeshViewForRenderer(water, prepared)).toBe(false);
     expect(water.zoneMeshView(zoneGuid, 'camera:a')).toBeUndefined();
     expect(water.waterMeshOwnerRoster('camera:a')).toEqual([]);
     expect(otherWorldWater.waterMeshCandidateViews('camera:a')).toHaveLength(1);
@@ -928,6 +987,16 @@ describe('water R2 mesh, WaterInfo, waves, and body query', () => {
     liveZone = zone;
     const next = water.buildZoneMeshView(zoneGuid, 2, zone, view('camera:a')).unwrap();
     expect(water.acceptWaterMeshView(zoneGuid, 'camera:a', next.publicationGeneration)).toBe(true);
+    water.retireWaterMeshView('camera:a');
+    const restored = buildWaterZoneMeshViewForRenderer(
+      water,
+      zoneGuid,
+      2,
+      zone,
+      view('camera:a'),
+    ).unwrap();
+    expect(acceptWaterMeshViewForRenderer(water, next)).toBe(false);
+    expect(acceptWaterMeshViewForRenderer(water, restored)).toBe(true);
     water.observeWaterMeshViewDevice('camera:a', 3);
     water.observeWaterMeshViewDevice('camera:a', 4);
     expect(water.zoneMeshView(zoneGuid, 'camera:a')).toBeUndefined();
@@ -1235,7 +1304,7 @@ describe('water R2 mesh, WaterInfo, waves, and body query', () => {
       ),
     ).toBe(true);
     expect(result.value.instances.some((tile) => tile.coverageRings?.length)).toBe(true);
-    expect(result.value.layout).toMatchObject({ schemaVersion: 7, strideBytes: 96 });
+    expect(result.value.layout).toMatchObject({ schemaVersion: 8, strideBytes: 96 });
     expect(result.value.layout.coverageByteLength).toBeGreaterThan(0);
     const tileWords = new DataView(
       result.value.instanceBytes.buffer,
@@ -1538,7 +1607,7 @@ describe('water R2 mesh, WaterInfo, waves, and body query', () => {
     );
     expect(recordView.getFloat32(tileIndex * 96 + 80, true)).toBe(16);
     expect(recordView.getFloat32(tileIndex * 96 + 84, true)).toBe(16);
-    expect(result.value.layout).toMatchObject({ schemaVersion: 7, strideBytes: 96 });
+    expect(result.value.layout).toMatchObject({ schemaVersion: 8, strideBytes: 96 });
   });
 
   it('selects partial priority/transition owners, morphs by water height, and emits eight far instances', () => {

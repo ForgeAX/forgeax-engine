@@ -268,6 +268,20 @@ Tauri packaging requires a new output directory (`--output`, default
 macOS, Xcode/XcodeGen and signing; Android needs JDK and Android SDK/NDK.
 `--prepare-only` seals and exports the project without native tools. Generated
 `pnpm build:<platform>` scripts initialize mobile targets and forward Tauri flags.
+Use these package-manager scripts for mobile builds; direct Node invocation loses
+the generated IDE callback entry. Windows/Android use the packaged Host's exact
+loopback origin; retain its IPC scope and Android loopback-only network policy.
+Android's document uses the registered native `forgeax.localhost:<port>` origin;
+keep it aligned with the real Worker listener. Test cold restarts and startup
+state as well as frame progress; an error overlay can coexist with a live Renderer.
+Separate ForgeAX export/build work from platform-tool setup and human consent.
+Account login, signing credentials, phone trust/Developer Mode and initial keychain
+prompts remain operator prerequisites; configured platform tools can automate
+later signing and deployment. ADB testing and ordinary APK installation differ;
+iOS developer testing and App Store/TestFlight installation differ. Describe
+agent-assisted installation/shortcut setup separately from engine capability.
+See the platform setup guide.
+Check Android ELF and APK alignment for 16 KB pages before device acceptance.
 Native packages are under `artifacts/`; the result distinguishes prepared/built
 and leaves runtime acceptance `not-run`. Run the packaged desktop smoke separately
 (60 completed frames and Host cleanup); Android/iOS require device acceptance.

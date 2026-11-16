@@ -1,5 +1,5 @@
 export const tauriBuildScript = `import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 const root = resolve(import.meta.dirname, '..');
@@ -19,6 +19,14 @@ run(['icon', 'icon.svg']);
 if (selected === 'android' || selected === 'ios') {
   const generated = selected === 'android' ? 'android' : 'apple';
   if (!existsSync(resolve(root, 'src-tauri/gen', generated))) run([selected, 'init', '--ci']);
+  if (selected === 'android') {
+    const main = resolve(root, 'src-tauri/gen/android/app/src/main');
+    mkdirSync(resolve(main, 'res/xml'), { recursive: true });
+    copyFileSync(resolve(root, 'src-tauri/android/loopback-network.xml'), resolve(main, 'res/xml/forgeax_loopback.xml'));
+    const manifest = resolve(main, 'AndroidManifest.xml');
+    const xml = readFileSync(manifest, 'utf8');
+    if (!xml.includes('android:networkSecurityConfig=')) writeFileSync(manifest, xml.replace('<application', '<application android:networkSecurityConfig="@xml/forgeax_loopback"'));
+  }
   run([selected, 'build', '--ci', ...(selected === 'android' ? ['--apk', '--aab'] : []), ...args]);
 } else {
   const bundles = { macos: 'app,dmg', windows: 'nsis,msi', linux: 'appimage,deb,rpm' }[selected];
@@ -76,6 +84,9 @@ console.log(JSON.stringify({ executable, reportDir, completed: report.completed,
 export const tauriLibrarySource = String.raw`use std::path::PathBuf;
 use std::sync::{atomic::{AtomicBool, Ordering}, Mutex};
 use tauri::Manager;
+
+#[cfg(any(target_os = "windows", target_os = "android"))]
+mod asset_server;
 
 struct HostState {
     report_dir: Option<PathBuf>,
@@ -200,7 +211,7 @@ const SMOKE: &str = r#"(() => {
     if (!window.__TAURI__?.core) return;
     permissionProbe ??= window.__TAURI__.core.invoke('plugin:window|set_title', { label: 'main', title: 'Unauthorized title' })
       .then(() => errors.push('undeclared native window permission was admitted'), error => { permissionDenied = String(error); });
-    const observation = globalThis.__forgeaxGameInspection?.renderer();
+    const observation = globalThis.__forgeaxGameInspection?.renderer?.();
     const completed = observation?.execution?.frame?.completed ?? 0;
     if (document.documentElement.dataset.forgeaxInput === 'open' && enteredAt === undefined) enteredAt = completed;
     const presented = enteredAt === undefined ? 0 : completed - enteredAt;
@@ -245,7 +256,12 @@ pub fn run() {
         .map(|pair| PathBuf::from(&pair[1])).unwrap_or_else(|| PathBuf::from("report")));
     let probe = if smoke { args.windows(2).find(|pair| pair[0] == "--smoke-probe")
         .map(|pair| std::fs::read_to_string(&pair[1]).expect("Smoke probe could not be read")) } else { None };
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(target_os = "android")]
+    let builder = builder.register_uri_scheme_protocol(asset_server::PROTOCOL, |context, request| {
+        asset_server::protocol_response(context.app_handle(), request)
+    });
+    builder
         .manage(HostState { report_dir, report: Mutex::new(serde_json::json!({ "phase": "launching" })), closing: AtomicBool::new(false) })
         .invoke_handler(tauri::generate_handler![smoke_report, finish_close, request_close])
         .on_page_load(move |window, payload| {
@@ -265,7 +281,11 @@ pub fn run() {
         .setup(move |app| {
             save(&app.state::<HostState>())?;
             let title = app.config().product_name.clone().unwrap_or_else(|| "ForgeAX".into());
-            let mut builder = tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))
+            #[cfg(any(target_os = "windows", target_os = "android"))]
+            let url = asset_server::start(app)?;
+            #[cfg(not(any(target_os = "windows", target_os = "android")))]
+            let url = tauri::WebviewUrl::App("index.html".into());
+            let mut builder = tauri::WebviewWindowBuilder::new(app, "main", url)
                 .title(title).inner_size(1280.0, 800.0);
             if let Some(source) = &probe { builder = builder.initialization_script(source); }
             if smoke { builder = builder.initialization_script(SMOKE); }
@@ -291,6 +311,10 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("Tauri WebView Host failed")
         .run(|app, event| {
+            #[cfg(any(target_os = "windows", target_os = "android"))]
+            if matches!(event, tauri::RunEvent::Exit) {
+                if let Some(server) = app.try_state::<asset_server::ResourceServer>() { server.stop(); }
+            }
             #[cfg(desktop)]
             if let tauri::RunEvent::ExitRequested { code: None, api, .. } = event {
                 api.prevent_exit();

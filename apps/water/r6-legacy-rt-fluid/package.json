@@ -9,7 +9,10 @@
     "build": "node ../../../scripts/vite-app.mjs build",
     "typecheck": "tsc --noEmit"
   },
-  "dependencies": { "@forgeax/apps-shared": "workspace:*", "@forgeax/engine": "workspace:*" },
+  "dependencies": {
+    "@forgeax/apps-shared": "workspace:*",
+    "@forgeax/engine": "workspace:*"
+  },
   "devDependencies": {
     "@forgeax/engine-devkit": "workspace:*",
     "@forgeax/engine-image": "workspace:*",
@@ -45,5 +48,6 @@
         "reason": "This maintained Water demo has no spike report."
       }
     }
-  }
+  },
+  "description": "R6 \u00b7 Local fluid basins"
 }

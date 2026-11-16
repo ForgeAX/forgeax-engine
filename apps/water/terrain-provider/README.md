@@ -14,3 +14,8 @@ and it does not claim that the R2 WaterInfo render target has consumed the
 input.
 
 Run with `pnpm --filter @forgeax/water-terrain-provider dev`.
+
+The project declares `@forgeax/engine/content` as its asset library. The Vite
+adapter scans those source roots and registers the standard image importer so
+the River material's inherited Content parent and textures belong to the same
+production worklist as the planned Terrain outputs.

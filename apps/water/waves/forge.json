@@ -1,0 +1,8 @@
+{
+  "id": "water-waves",
+  "name": "Water Waves",
+  "schemaVersion": "3.0.0",
+  "roots": {},
+  "assetRoots": ["assets"],
+  "assetLibraries": ["@forgeax/engine/content"]
+}

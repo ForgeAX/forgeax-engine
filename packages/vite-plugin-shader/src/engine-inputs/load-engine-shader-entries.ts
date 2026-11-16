@@ -462,6 +462,7 @@ const CLOUD_DETAIL: bool = ${detail};
     'forgeax_material::oit': readSource('oit.wgsl'),
     'forgeax_material::surface_v1': readSource('surface_v1.wgsl'),
     'forgeax_material::water_waves': readSource('water-waves.wgsl'),
+    'forgeax_material::water_transition_continuity': readSource('water-transition-continuity.wgsl'),
     'forgeax_material::water_deformation_v1': Promise.resolve(waterDeformationAbiSource()),
     'forgeax_material::water_deformation_default': readSource('water-deformation-default.wgsl'),
     'forgeax_material::water_deformation_input': readSource('water-deformation-input.wgsl'),

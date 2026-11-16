@@ -12,6 +12,7 @@ type WaterSystemInternalAccess = Readonly<{
   ) => Result<WaterZoneMeshPublication, WaterError>;
   zoneMeshView: (zoneGuid: string, viewId: string) => WaterZoneMeshPublication | undefined;
   waterMeshCandidateViews: (viewId: string) => readonly WaterZoneMeshPublication[];
+  acceptWaterMeshView: (candidate: WaterZoneMeshPublication) => boolean;
 }>;
 
 const accesses = new WeakMap<WaterSystem, WaterSystemInternalAccess>();
@@ -55,4 +56,12 @@ export function waterMeshCandidateViewsForRenderer(
   viewId: string,
 ): readonly WaterZoneMeshPublication[] {
   return accessFor(system).waterMeshCandidateViews(viewId);
+}
+
+/** Complete the exact scene-owned candidate retained by a submitted frame. */
+export function acceptWaterMeshViewForRenderer(
+  system: WaterSystem,
+  candidate: WaterZoneMeshPublication,
+): boolean {
+  return accessFor(system).acceptWaterMeshView(candidate);
 }

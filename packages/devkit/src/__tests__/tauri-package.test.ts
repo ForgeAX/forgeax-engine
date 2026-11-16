@@ -125,11 +125,16 @@ it('installs the native CLI in production environments and retains only delivera
       queueMicrotask(async () => {
         try {
           expect(options.env.CARGO_TARGET_DIR).toBe(resolve(options.cwd, 'src-tauri/target'));
-          if (command === 'npm') {
+          if (args[0] === 'install') {
+            expect(command).toBe('npm');
             expect(args).toContain('--include=dev');
             expect(args).toContain('--include=optional');
             await mkdir(resolve(options.cwd, 'node_modules'), { recursive: true });
           } else {
+            // Mobile IDE callbacks must inherit a package manager CLI entry.
+            expect(command).toBe('npm');
+            expect(args[0]).toBe('run');
+            expect(args[1]).toMatch(/^build:(windows|macos|linux)$/);
             const bundles = resolve(options.cwd, 'src-tauri/target/release/bundle/dmg');
             await mkdir(bundles, { recursive: true });
             await writeFile(resolve(bundles, 'Fixture.dmg'), 'native-package');

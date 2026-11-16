@@ -1,5 +1,6 @@
 import { mat4 } from '@forgeax/engine-math';
 import type { WaterDispersiveOceanConfig } from '@forgeax/engine-types';
+import type { WaterOceanPatchFrame } from '@forgeax/engine-water';
 import { expect, it } from 'vitest';
 import type {
   RenderFeaturePassDeclaration,
@@ -57,6 +58,103 @@ const OUTPUTS = {
   mapping: 'test-mapping',
 };
 const RADIUS = 0.31;
+
+it('evolves a localized zero-volume momentum impulse into outward gravity waves without replaying it', async () => {
+  const gpu = await dispersiveGpuFixture();
+  const config = { ...CONFIG, fftResolution: 64, domainLengthM: 16 };
+  try {
+    const run = async (
+      dt: number,
+      reset: boolean,
+      impulses?: WaterOceanPatchFrame['waveImpulses'],
+    ) => {
+      const frame = work(config, [], reset, dt, undefined, undefined, { waveImpulses: impulses });
+      await gpu.run(frame.resources, frame.passes);
+      return gpu.read('test-wake-state');
+    };
+    await run(0, true);
+    const start = await run(0, false, [
+      { sequence: 1, positionXZ: [0, 0], radiusM: 0.6, velocityImpulseMps: 3, timeSeconds: 0 },
+    ]);
+    const sum = (values: Float32Array, laneIndex: number) =>
+      values.reduce((total, value, index) => total + (index % 4 === laneIndex ? value : 0), 0);
+    expect(Math.abs(sum(start, 0))).toBeLessThan(0.00001);
+    expect(Math.abs(sum(start, 1))).toBeLessThan(0.0001);
+    expect(start.some((value, index) => index % 4 === 1 && value > 0.1)).toBe(true);
+    let state = start;
+    for (let step = 0; step < 30; step++) state = await run(1 / 60, false);
+    expect(Math.abs(sum(state, 0))).toBeLessThan(0.0001);
+    expect(state.some((value, index) => index % 4 === 0 && value > 0.02)).toBe(true);
+    expect(state.some((value, index) => index % 4 === 0 && value < -0.1)).toBe(true);
+    const held = await run(0, false);
+    const maxError = held.reduce(
+      (maximum, value, index) => Math.max(maximum, Math.abs(value - (state[index] ?? 0))),
+      0,
+    );
+    expect(maxError).toBeLessThan(0.00001);
+  } finally {
+    gpu.dispose();
+  }
+});
+it('projects subcell physical impulses onto the same resolved gravity modes at coarse and fine resolutions', async () => {
+  const gpu = await dispersiveGpuFixture();
+  const radiusM = 0.72,
+    velocityImpulseMps = 3,
+    age = 0.25,
+    lengthM = 64;
+  try {
+    for (const resolution of [32, 64]) {
+      const config = {
+        ...CONFIG,
+        fftResolution: resolution,
+        domainLengthM: lengthM,
+        waveDampingPerSecond: 0,
+      };
+      const frame = work(config, [], true, age, undefined, undefined, {
+        waveImpulses: [
+          { sequence: 1, positionXZ: [0, 0], radiusM, velocityImpulseMps, timeSeconds: 0 },
+        ],
+      });
+      await gpu.run(frame.resources, frame.passes);
+      const field = await gpu.read('test-wake-state');
+      expect(Array.from(field).every(Number.isFinite)).toBe(true);
+      expect(Math.abs(field.reduce((sum, v, i) => sum + (i % 4 === 0 ? v : 0), 0))).toBeLessThan(
+        1e-5,
+      );
+      for (const [modeX, modeZ] of [
+        [1, 0],
+        [2, 1],
+        [3, -2],
+      ] as const) {
+        const k = (Math.hypot(modeX, modeZ) * 2 * Math.PI) / lengthM;
+        const omega = Math.sqrt(9.81 * k * Math.tanh(k * config.referenceDepthM));
+        const expected =
+          (((velocityImpulseMps *
+            Math.PI *
+            radiusM ** 4 *
+            k ** 2 *
+            Math.exp(-0.5 * radiusM ** 2 * k ** 2)) /
+            lengthM ** 2) *
+            Math.sin(omega * age)) /
+          omega;
+        let real = 0,
+          imaginary = 0;
+        for (let z = 0; z < resolution; z++)
+          for (let x = 0; x < resolution; x++) {
+            const phase = (-2 * Math.PI * (modeX * x + modeZ * z)) / resolution;
+            const height = field[(z * resolution + x) * 4] ?? 0;
+            real += height * Math.cos(phase);
+            imaginary += height * Math.sin(phase);
+          }
+        const actual = Math.hypot(real, imaginary) / resolution ** 2;
+        expect(Math.abs(actual - expected) / expected).toBeLessThan(0.0001);
+      }
+    }
+  } finally {
+    gpu.dispose();
+  }
+});
+
 function spheres(
   centers: readonly (readonly [number, number, number])[],
 ): AdvancedCollisionSnapshot {
@@ -105,6 +203,7 @@ function work(
     captureStages?: boolean;
     reseedSource?: boolean;
     bodyGeneration?: number;
+    waveImpulses?: WaterOceanPatchFrame['waveImpulses'];
   } = {},
 ) {
   const resources: RenderFeatureResourceDeclaration[] = [];
@@ -184,6 +283,7 @@ function work(
       captureRequest: null,
       noiseRevision: null,
       captureStages: options.captureStages ?? false,
+      ...(options.waveImpulses === undefined ? {} : { waveImpulses: options.waveImpulses }),
     },
   };
   appendDispersiveOcean(input, resources, passes);

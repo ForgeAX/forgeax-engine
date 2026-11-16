@@ -8,7 +8,53 @@ The default `coast64` instance uses tessellation factor 6 (64 quads per edge).
 256-quad reference instance through the normal completed configuration transaction.
 Both retain Q0 optical features; visual and performance evidence must name the
 mesh instance, viewport, DPR and GPU adapter. A coast64 result does not establish
-reference256 performance. The current target is at least 60 completed frames/s.
+reference256 performance. Frame rates depend on the accepted workload and device;
+the control panel displays completed frames rather than assuming a target rate.
+
+## Scene controls
+
+The primary Chinese control panel groups visible phenomena into nine dimensions:
+quality, sea appearance, wind and waves, foam and wakes, hull and probes, driving,
+entry spray, weather and lighting, and camera framing. Each control uses the
+existing material, Water recipe, Scene component or native Physics admission
+owner. The original showcase can also be served on a chosen port, for example
+`pnpm --filter @forgeax/water-r8-integration-acceptance dev -- --host 0.0.0.0 --port 8092`.
+
+Sea tint reads the active material's normalized scattering color. Clarity is
+five-meter transmittance, mapped exponentially to absorption and scattering.
+Visible surface and far materials keep their own admitted switches; unsupported
+effects explain their disabled controls. SSR controls cannot enable a branch
+that deliberately removes SSR. Four workload presets remain separate from
+rendering branches and retain completed configuration admission and rollback.
+
+Foam controls describe surface coverage, crest and shoreline thresholds,
+emission and decay. Decay time means seconds to five percent with no new source;
+zero foam decay means permanent coverage. Contact-history decay is a read-only
+creation parameter because its owner has no live setter. Airborne droplets have
+separate burst count, capacity, size, spread, opacity and lifetime. The count
+edits the unique time-zero reservation burst, preserving later bursts; reserved
+edge water remains invisible until its collision-derived shedding phase. Custom
+continuous or looping schedules remain in Advanced. Entry response scales the
+native normal-speed and sphere-radius response within its bounded tuning range. Launch and spray controls
+apply to the next launch or entry, while residual-wave controls affect the solver.
+
+Wind strength scales physical wave amplitude. Wavelength and direction rebuild
+the deterministic spectrum; material detail speed changes texture motion only.
+Native hull mass and inertia wait for a completed Physics step. Requested values
+stay visible while pending, then show the accepted native value, including
+fractional readbacks. Owner rejection restores accepted values and allows a new
+edit. Sun orientation controls direct lighting only; the baked sky image retains
+its authored sun direction.
+
+Sliders preview locally and commit on release. Continuous number inputs accept
+fractional values; discrete resolutions use supported choices. Closed dimensions
+and hidden panels do no periodic full asset reads unless an edit awaits admission.
+A demanded refresh shares one detached observation per owner form; Advanced
+retains complete fields and immutable facts without a second runtime registry.
+Diagnostic inspection is requested by expanded diagnostics, configuration
+transactions or explicit profiling. Acceptance records completed hardware frames,
+actual field readbacks and owner errors; changed rendering and effect paths require
+fresh runtime evidence in addition to source checks.
 
 The Ocean uses a 2048 m local wave window with 2048-pixel WaterInfo and an
 explicit view-window far boundary. Its flat ring extends 4096 m beyond that
@@ -17,11 +63,11 @@ finite supported camera domain, with world-space wave phases across recenters.
 
 > [!IMPORTANT]
 > Implementation, completed hardware frames and paired reference equivalence
-> are separate gates. Visual parity, recovered 60-frame stability and acceptable
-> Q0 performance have not passed. Q3's CPU mesh with type-default Water family
+> are separate gates. Paired visual parity, device-recovery stability and the
+> performance comparisons remain unverified. Q3's CPU mesh with type-default Water family
 > materials and Q4's saved flat appearance adapter are selectable through completed configuration
 > transactions; their paired reference comparisons remain unvalidated. R7 Bake/FFT
-> remain unavailable.
+> are available in the separate dedicated R7 application.
 > Current local simulation composition does not establish UE-R0 fidelity.
 
 Q1 reduces authored mesh and WaterInfo parameters. Q2 disables SSR. R1 selects
@@ -39,18 +85,44 @@ Contact and local-wave foam use the authored `COAST_FOAM_DECAY_PER_SECOND`
 value in `src/identity.ts`. At 1.8/s, unrefreshed coverage retains approximately
 5% after 1.7 seconds; active waves can still produce new foam. This is scene
 appearance configuration, independent of buoyancy and source transport.
-Local waves use `waveDampingPerSecond: 0.5`: their free amplitude falls to 5%
-in approximately 6 seconds. They emit foam only above slope 0.1. The Engine
+Local waves use `waveDampingPerSecond: 0.45`: their free amplitude falls to 5%
+in approximately 6.7 seconds. They emit foam only above slope 0.015. The Engine
 owns this elapsed-time dissipation for visible and buoyancy fields; this recipe
 only tunes its rate. Background Gerstner waves remain continuously forced, with
 independent crest compression minimum 0.04 and range 0.1.
-The local recipe sets `entryWaveMultiplier: 4` for an exaggerated falling-object
-diagnostic. The same amplified wave field drives external buoyancy queries;
-the ship's sailing transport and native cannonball size/mass retain their values.
-This setting does not establish physical entry-wave amplitude fidelity.
-The scene uses `surfaceTransportMultiplier: 2` to strengthen the bow/side sailing
-wave source at the existing 6 m/s ship-speed target. This artistic gain does not
-extend free-wave or foam decay and does not alter the independent entry gain.
+The local recipe sets `entryWaveMultiplier: 1` and `surfaceTransportMultiplier: 1`.
+The same native wave field drives external buoyancy queries. Entry authoring
+also supplies a generic `OceanPatch.enqueueWaveImpulse` from actual sphere
+radius and normal incident speed. Local momentum evolves in the same finite-depth
+field with the background waves unchanged. An unresolved footprint spreads to
+one native cell with velocity reduced to preserve its deep-water energy budget.
+The caller chooses that budget; Engine owns propagation and submission lifecycle.
+Disabled local simulation retains ordinary airborne entry presentation. A fully
+submerged ball is hidden while its ordinary native physics remains active.
+Iron balls carry no `WaterPontoonSet` or `WaterContactProbeSet`; ship pontoons and
+probes remain unchanged. Entry detection samples the surface on completed native
+steps until the first entry, then uses the recorded surface height to hide the
+ball when its current native top passes below it. It stays hidden without further
+water queries. Recording entry removes `WaterShallowCollider`, ending water actor
+gathering without removing the ordinary Physics `RigidBody` or `Collider`.
+Submitted wave impulses retain their independent propagation and
+source-receiver exclusion. `readEntryState()` derives `buoyancyParticipant`,
+`contactProbeParticipant`, `shallowColliderParticipant` and `nativeEntryArmed` from existing components and the
+recorded entry without sampling water.
+The airborne effect starts with an indexed thin crown rooted at the native sphere perimeter.
+Its irregular rim stretches into ligaments; fine droplets detach from that same
+mesh rim with its current position and tangent velocity. A narrow sealed tongue
+appears later, after a radius/normal-speed cavity-collapse delay. All three
+emitters share the same Parameters/Custom ABI and one authored motion module.
+The two apps derive rise, spread, size and duration from the same native collision;
+normal entry speed bounds the airborne energy and sphere radius supplies its
+gravity scale. The Pack carries the explicit module catalog, including a rim
+table derived from the actual crown geometry. This is an authored sheet and
+ballistic breakup approximation, not a resolved fluid simulation. Native water
+waves retain the separate Water solver owner.
+A paused canonical player requests preparation before the first launch. First-use
+frame gaps and peak appearance remain runtime acceptance checks; these settings
+alone do not establish physical fidelity.
 The loaded ship adds 50% of its original design mass as low keel ballast via
 `COAST_SHIP_ADDITIONAL_BALLAST_RATIO` in `assets/ship-rig.ts`. Its mass, COM and
 full inertia tensor derive from those elements. The original hull buoyancy
@@ -59,10 +131,11 @@ instead of increasing the same hull's buoyancy coefficient. Initial/reset height
 derives from the loaded hydrostatic equilibrium; contact probes follow that
 waterline. Native buoyancy still evolves the actual pose after initialization.
 The loaded recipe uses ascent damping 24,000 N/(m/s) and water angular drag 2/s.
-The user accepted stationary behavior, sailing wake and foam decay as the current
-archive checkpoint. External entry response, wind-motion calibration and foam
-appearance remain deferred; FPS work is paused. This checkpoint does not qualify
-the independent reference, device-recovery or performance gates below.
+The previous archive checkpoint covered stationary behavior, sailing wake and
+foam decay. The current demo adds runtime quality selection, manual navigation
+and entry-response inspection. Those controls do not qualify the independent
+reference, device-recovery or performance gates below; completed-frame evidence
+must identify the selected workload and active configuration.
 Optional R6 is authored and disabled by default.
 Both retain their independent owner acceptance gates. The dispersive OceanPatch
 now admits completed local height/normal samples through the Water query owner
@@ -133,3 +206,37 @@ Relevant owners are [Water](../../../packages/water/README.md),
 [Runtime](../../../packages/runtime/README.md),
 [Render](../../../packages/render/README.md) and
 [RHI Debug](../../../packages/rhi-debug/README.md).
+
+The runtime form selects four workload presets independently of implementation
+branches, then reports custom when edited. WASD/arrows apply native inertial
+thrust and rudder torque; Space boosts thrust. The coast recipe accepts a full
+native source interval up to two seconds for slow presentation/capture frames.
+Longer gaps remain explicit owner refusals; no source time is clamped or silently
+dropped. Particle retirement follows its presentation simulation clock.
+
+The four presets change real mesh, WaterInfo, wave, pontoon and local simulation
+workloads. The form reads accepted owner state after configuration completion;
+editing a workload marks it custom. Native mass edits retain fractional values
+and update the focused field when the solver accepts the publication. Invalid
+inputs display the owner error and restore the last accepted value. Read-only
+identities and cooked facts remain visible separately from editable parameters.
+
+Collapsed runtime sections perform no periodic full asset reads. Opening a
+section reads one coherent accepted observation for all fields; pending native
+edits continue refreshing until commit or rejection. Profile and RHI capture are
+explicit diagnostics. Compare ordinary completed-frame windows separately from
+sampled or captured windows with identical camera, viewport and workload.
+
+Entry spray retains the translucent water-sphere renderer. Its particle alpha
+owns opacity; the authored soft-particle fade is in normalized reverse-Z depth
+units, as specified by the VFX owner, rather than metres. The independent R8
+entry experiment on port 5388 also exposes the v2 visual-normal FFT, native
+residual query policy, pause and reset. It is a separate scene from this showcase.
+
+The shared entry effect attaches its crown and tongue to the current water
+surface using ordinary parameter patches and Water queries during the effect
+lifetime. This effect attachment is independent of the iron ball, which remains
+without buoyancy, probes or post-entry water queries. Released droplets retain
+their GPU position and velocity instead of following later attachment patches.
+The physical impulse footprint is the sphere radius times 1.2; the spectral
+producer projects that supplied footprint without widening it to a grid cell.

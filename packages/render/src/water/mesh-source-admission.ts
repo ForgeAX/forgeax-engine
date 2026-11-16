@@ -52,9 +52,9 @@ export function isOwnedWaterMaterialOwner(
 }
 
 /**
- * Seal this exact finalized roster and capture its complete owned Water
- * closure. Source associations must already be immutable from their producer;
- * writable/custom source objects stay on the live admission path.
+ * Capture this finalized roster's complete owned Water closure without changing
+ * its draw-owner rows or addresses. Source associations must already be immutable
+ * from their producer; writable/custom sources stay on the live admission path.
  */
 export function finalizeWaterMaterialAdmissionDraws(
   rows: readonly Pick<ValidatedRenderable, 'renderableIndex' | 'source'>[],
@@ -62,21 +62,16 @@ export function finalizeWaterMaterialAdmissionDraws(
   const draws: WaterMaterialAdmissionDraw[] = [];
   const uploads: WaterMeshInstanceDrawUpload[] = [];
   try {
-    Object.freeze(rows);
     for (const row of rows) {
       const readSealedWaterMaterialRow = () => {
-        const sourceDescriptor = lockOwnDataProperty(row, 'source');
-        const indexDescriptor = lockOwnDataProperty(row, 'renderableIndex');
+        const sourceDescriptor = Object.getOwnPropertyDescriptor(row, 'source');
+        const indexDescriptor = Object.getOwnPropertyDescriptor(row, 'renderableIndex');
         if (
           sourceDescriptor === undefined ||
           !('value' in sourceDescriptor) ||
           indexDescriptor === undefined ||
           !('value' in indexDescriptor) ||
-          !Number.isSafeInteger(indexDescriptor.value) ||
-          sourceDescriptor.writable !== false ||
-          sourceDescriptor.configurable !== false ||
-          indexDescriptor.writable !== false ||
-          indexDescriptor.configurable !== false
+          !Number.isSafeInteger(indexDescriptor.value)
         )
           return undefined;
         const source = sourceDescriptor.value as RenderableSnapshot;

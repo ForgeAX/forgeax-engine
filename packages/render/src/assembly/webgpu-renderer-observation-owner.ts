@@ -106,6 +106,13 @@ export interface RendererObservationCaptureOwner {
   readonly readObservationCapture: (
     capture: RenderPipelineObservationCapture,
   ) => Promise<RenderResult<Uint8Array, RenderError>>;
+  readonly registerReceiptReads: (
+    receipt: FrameReceipt,
+    captureFrame: Readonly<{
+      captures: readonly RenderPipelineObservationCapture[];
+      graphGenerations: readonly number[];
+    }>,
+  ) => ObservationCaptureRead;
   readonly disposeReceiptObservationCaptures: () => RendererContractFailureError | undefined;
   readonly discardFrame: (
     frameNumber: number | undefined,
@@ -529,6 +536,43 @@ export function createRendererObservationCaptureOwner(
     FrameReceipt,
     readonly RenderPipelineObservationCapture[]
   >();
+  const registerReceiptReads: RendererObservationCaptureOwner['registerReceiptReads'] = (
+    receipt,
+    { captures, graphGenerations },
+  ) => {
+    const performRead: ObservationCaptureRead = async () => {
+      let unreadExplicitCapture = false;
+      try {
+        const completion = await receipt.completed;
+        if (!completion.ok) {
+          const failure = disposeOwnedObservationCaptures(captures);
+          return failure === undefined ? completion : err(failure);
+        }
+        const read = [];
+        for (const capture of captures) {
+          const bytes = await readObservationCapture(capture);
+          if (!bytes.ok) {
+            const failure = disposeOwnedObservationCaptures(captures);
+            return failure === undefined ? bytes : err(failure);
+          }
+          read.push({ capture, bytes: bytes.value });
+        }
+        unreadExplicitCapture = captures.some((capture) => capture.featureTexture === undefined);
+        return ok({ captures: read, graphGenerations });
+      } finally {
+        // Failed cleanup remains owned by failedObservationCaptures. Completed
+        // automatic feature receipts release their roots. Explicit captures
+        // retain bounded admission credit until the receipt is observed.
+        if (!unreadExplicitCapture) receiptObservationBuffers.delete(receipt);
+        observationCaptureOwner.completeFeatureTextureReadbackObservation(receipt.frameId);
+      }
+    };
+    let pendingRead: ReturnType<ObservationCaptureRead> | undefined;
+    const read: ObservationCaptureRead = () => (pendingRead ??= performRead());
+    receiptObservationBuffers.set(receipt, captures);
+    receiptObservationCaptures.set(receipt, read);
+    return read;
+  };
   const owner: RendererObservationCaptureOwner = {
     observationCaptureOwner,
     stats,
@@ -541,6 +585,7 @@ export function createRendererObservationCaptureOwner(
     disposeObservationCaptures,
     disposeOwnedObservationCaptures,
     readObservationCapture,
+    registerReceiptReads,
     disposeReceiptObservationCaptures: () => {
       let firstFailure: RendererContractFailureError | undefined;
       for (const [receipt, captures] of receiptObservationBuffers) {

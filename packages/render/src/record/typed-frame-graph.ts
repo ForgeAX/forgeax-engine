@@ -14,9 +14,8 @@ import { isMultisampleAntialias, isTemporalAntialias } from '../components/camer
 import { projectedDecalTopology } from '../decals/graph';
 
 import { captureEditorAssistanceView } from '../features/editor-assistance/feature';
-
+import { scopedGraphTextureTarget } from '../features/graph-texture-targets';
 import { chromaticAberrationActive, outputLensEffectsActive } from '../features/lens-effects';
-
 import { isOutlinePostProcess } from '../features/outline/shaders';
 
 import { importSharedGraphTextures } from '../features/shared-graph-textures';
@@ -2079,6 +2078,30 @@ function diffuseGiContribution(
   return {};
 }
 
+/** Retained import readers must not capture a view compilation's previous graph. */
+function readSharedFeatureGraph(frame: RenderPipelineFrame) {
+  return (frame as _InternalRenderPipelineContext).sharedFeatureGraph;
+}
+
+/** Compilation is transient; none of its resource-reuse inputs enter pass callback scopes. */
+function compileViewGraphResources(
+  builder: RenderGraphBuilder<RenderPipelineFrame>,
+  device: RenderSystemInternals['device'],
+  width: number,
+  height: number,
+  previous: InstalledFrameGraph | null,
+  profileSession: RecorderSession | undefined,
+) {
+  const options = {
+    device,
+    surfaceSize: { width, height },
+    reuseResourcesFrom: previous?.graph,
+  };
+  return profileSession === undefined
+    ? builder.compile(options)
+    : runProfiledRenderPhase(profileSession, 'graph/compile', () => builder.compile(options));
+}
+
 function installedFrameGraphOf(
   builder: RenderGraphBuilder<RenderPipelineFrame>,
   graph: CompiledRenderGraph<RenderPipelineFrame>,
@@ -2619,7 +2642,8 @@ function compileViewGraphStagesOwned(
     const shadowCameraCull = shadowCameraCullOf(internals, frameState, topology, cubeCaptureState);
     const viewIdentity = renderFeatureViewIdentity(graphCamera);
     const fluid = sharedPublication?.waterFluid.get(viewIdentity);
-    const installed = frameState.compiledFrameGraph;
+    // The prior graph is a transient resource-reuse input. Retained build
+    // callbacks share this lexical scope, so never store that graph here.
     const matchViewFrameGraph = () => {
       let key: string;
       let existing: ExistingFrameGraph;
@@ -2693,7 +2717,7 @@ function compileViewGraphStagesOwned(
       builder,
       sharedPublication,
       featureProjection.graphTextures,
-      (frame) => (frame as _InternalRenderPipelineContext).sharedFeatureGraph,
+      readSharedFeatureGraph,
     );
     for (const pass of sharedPublication?.passes ?? []) featureProjection.projected.add(pass);
     const transientSlots = new Map<string, { complete: boolean; names: Set<string> }>();
@@ -2795,32 +2819,23 @@ function compileViewGraphStagesOwned(
             surfaceSize: { width: surfaceWidth, height: surfaceHeight },
             reportError: (error) => reportRenderFeatureGraphError(internals, error),
           }),
-          getFeatureGraphTextureView: (name, viewIdentity) => {
-            const scope = featureScopeKey({ view: viewIdentity });
-            const matches = [...featureProjection.graphTextures.targets].filter(
-              ([target, resolved]) => target.name === name && resolved.scope === scope,
-            );
-            const match = matches[0];
-            return matches.length === 1 && match !== undefined ? match[1].view : undefined;
-          },
+          getFeatureGraphTextureView: (name, viewIdentity) =>
+            scopedGraphTextureTarget(featureProjection.graphTextures, name, viewIdentity)?.[1].view,
           getFeatureGraphTextureFormat: (name, viewIdentity) => {
-            const scope = featureScopeKey({ view: viewIdentity });
-            const matches = [...featureProjection.graphTextures.targets].filter(
-              ([target, resolved]) => target.name === name && resolved.scope === scope,
+            const match = scopedGraphTextureTarget(
+              featureProjection.graphTextures,
+              name,
+              viewIdentity,
             );
-            const match = matches[0];
-            return matches.length === 1 && match !== undefined
-              ? (match[0].view?.format ?? match[0].format)
-              : undefined;
+            return match === undefined ? undefined : (match[0].view?.format ?? match[0].format);
           },
           getFeatureGraphTextureBinding: (name, viewIdentity) => {
-            const scope = featureScopeKey({ view: viewIdentity });
-            const matches = [...featureProjection.graphTextures.targets].filter(
-              ([target, resolved]) => target.name === name && resolved.scope === scope,
+            const match = scopedGraphTextureTarget(
+              featureProjection.graphTextures,
+              name,
+              viewIdentity,
             );
-            if (matches.length !== 1) return undefined;
-            const match = matches[0];
-            if (!match) return undefined;
+            if (match === undefined) return undefined;
             const [target, resolved] = match;
             const format = target.view?.format ?? target.format;
             return format === undefined ? undefined : { view: resolved.view, format };
@@ -2984,26 +2999,22 @@ function compileViewGraphStagesOwned(
     if (captureTargetFailure !== undefined) return captureTargetFailure;
     metrics.compileAttempts += 1;
     metrics.buildCpuMs += graphClockMs() - buildStarted;
-    metrics.compileCause = { installedTopologyKey: installed?.topologyKey, key };
+    metrics.compileCause = {
+      installedTopologyKey: frameState.compiledFrameGraph?.topologyKey,
+      key,
+    };
     const compileStarted = graphClockMs();
     const compileViewGraphCandidate = () => {
       let compiled: ReturnType<typeof builder.compile>;
       try {
-        if (profileSession === undefined) {
-          compiled = builder.compile({
-            device: internals.device,
-            surfaceSize: { width: surfaceWidth, height: surfaceHeight },
-            reuseResourcesFrom: installed?.graph,
-          });
-        } else {
-          compiled = runProfiledRenderPhase(profileSession, 'graph/compile', () =>
-            builder.compile({
-              device: internals.device,
-              surfaceSize: { width: surfaceWidth, height: surfaceHeight },
-              reuseResourcesFrom: installed?.graph,
-            }),
-          );
-        }
+        compiled = compileViewGraphResources(
+          builder,
+          internals.device,
+          surfaceWidth,
+          surfaceHeight,
+          frameState.compiledFrameGraph,
+          profileSession,
+        );
       } finally {
         metrics.compileCpuMs += graphClockMs() - compileStarted;
       }
@@ -3074,7 +3085,8 @@ function compileViewGraphStagesOwned(
         compiled.value,
         key,
         frameState.graphGeneration + 1,
-        topologyCandidate?.preparedResourceKey ?? installed?.preparedResourceKey,
+        topologyCandidate?.preparedResourceKey ??
+          frameState.compiledFrameGraph?.preparedResourceKey,
         stockRecording,
         prepareGpuDrivenPipelines,
         directionalShadowViewCount,

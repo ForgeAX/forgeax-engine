@@ -1791,6 +1791,10 @@ Inspection is neither a hardware-completion nor a pixel/presentation proof.
 Ordinary Render Worker frames await their existing receipt observation promise.
 Feature texture completion carries frame, device and graph identity fields;
 the returned receipt owns credit and retirement, including host completion holds.
+Cooperative completion wrappers retain the submitted frame, device generation,
+graph generation and backend identity. Feature-texture completion matches those
+facts rather than the wrapper object's reference; a different submitted receipt
+still rejects completion.
 Timing or snapshot observations join that barrier when enabled. Retirement may
 drain only the current physical completion after the prior FIFO prefix has
 already completed successfully; early observation/prefix failures still drain

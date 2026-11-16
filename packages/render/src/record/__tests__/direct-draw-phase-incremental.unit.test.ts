@@ -163,7 +163,10 @@ it('retains sealed published rows while readdressing only changed members', () =
     select: (binding: GpuDrivenBatchBinding) => materials.get(binding.material)?.snapshot,
   });
   const first = drawn(phase, input());
-  finalizeWaterMaterialAdmissionDraws(first.rows);
+  // A borrowed producer can seal a published row. Water admission only
+  // captures owned Water closures; it does not seal ordinary draw addresses.
+  for (const row of first.rows) Object.freeze(row);
+  expect(finalizeWaterMaterialAdmissionDraws(first.rows)).toBeUndefined();
   expect(Object.getOwnPropertyDescriptor(first.rows[0], 'renderableIndex')?.writable).toBe(false);
   const work = { ...phase.work };
   const bins = { ...phase.binWork };
@@ -835,6 +838,44 @@ it('replaces the consumed dispatch key when compact indices move to a new offset
   expect([...shifted.materialPasses.keys()]).toEqual([100, 101, 102, 103]);
   for (let index = 0; index < 4; index++)
     expect(shifted.materialPasses.get(index + 100)).toBe(first.materialPasses.get(index));
+});
+
+it('owns editable addresses and overlays when an LOD projection returns frozen rows', () => {
+  const f = fixture(2, 0);
+  const phase = new DirectDrawPhase();
+  const borrowed: ReturnType<DirectDrawInput['lod']>[number][] = [];
+  const input: DirectDrawInput = {
+    ...f.input(),
+    lod: (rows) =>
+      rows.map((row) => {
+        const frozen = Object.freeze({ ...row });
+        borrowed.push(frozen);
+        return frozen;
+      }),
+  };
+  phase.queue(input);
+  const output = phase.emit(20);
+  expect(output.rows.map((row) => row.renderableIndex)).toEqual([20, 21]);
+  expect(borrowed.map((row) => row.renderableIndex)).toEqual([0, 0]);
+  expect(output.rows.every((row) => !Object.isFrozen(row))).toBe(true);
+});
+
+it('keeps ordinary phase publications detached after Water admission observes the finalized roster', () => {
+  const f = fixture(2, 0);
+  const phase = new DirectDrawPhase();
+  phase.queue(f.input());
+  const first = phase.emit();
+  const rows = first.rows;
+  expect(finalizeWaterMaterialAdmissionDraws(rows)).toBeUndefined();
+  const shifted = phase.emit(20);
+  expect(shifted.rows.map((row) => row.renderableIndex)).toEqual([20, 21]);
+  expect(shifted.rows[0]).not.toBe(rows[0]);
+  expect(rows.map((row) => row.renderableIndex)).toEqual([0, 1]);
+  expect(shifted.rows[0]?.source).toBe(rows[0]?.source);
+  expect(phase.emit(20)).toBe(shifted);
+  expect(Object.getOwnPropertyDescriptor(rows[0], 'source')?.writable).toBe(true);
+  expect(Object.getOwnPropertyDescriptor(rows[0], 'renderableIndex')?.writable).toBe(true);
+  expect(Object.isFrozen(rows)).toBe(false);
 });
 
 it('reprojects a changed temporal mode even when the emitted dispatch is retained', () => {

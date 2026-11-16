@@ -99,6 +99,41 @@ function countPropagation(name: keyof TransformPropagationTrace, amount = 1): vo
   if (trace !== undefined) trace[name] += amount;
 }
 
+/**
+ * Parent-first visit order of the last dense run. A later dense run over the
+ * same roots and the same structure epoch replays it instead of walking.
+ */
+interface VisitOrder {
+  valid: boolean;
+  structure: number;
+  rootKey: number[];
+  binding: number[];
+  row: number[];
+  parent: number[];
+  parentBinding: number[];
+  parentRow: number[];
+  root: number[];
+  flags: Uint8Array;
+  /** binding, row, parent, parentBinding, parentRow, root per entry, packed once sealed. */
+  packed: Int32Array;
+}
+
+function newVisitOrder(): VisitOrder {
+  return {
+    valid: false,
+    structure: -1,
+    rootKey: [],
+    binding: [],
+    row: [],
+    parent: [],
+    parentBinding: [],
+    parentRow: [],
+    root: [],
+    flags: new Uint8Array(0),
+    packed: new Int32Array(0),
+  };
+}
+
 interface Scratch {
   world: World;
   /** DFS stack: entity, binding (hierarchy index, or -1 - index for a root's flat binding), row, changed. */
@@ -106,6 +141,7 @@ interface Scratch {
   hierarchyStackBindings: Int32Array;
   hierarchyStackRows: Int32Array;
   hierarchyStackChanged: Uint8Array;
+  hierarchyStackOrder: Int32Array;
   hierarchyChildCursor: DerivedRangeCursor;
   hierarchyTouched: number[];
   flatCursor: DerivedRangeCursor;
@@ -157,6 +193,11 @@ interface Scratch {
   addedSpans: SpanItem[];
   /** This run flagged only the roots; every listed child is entered. */
   dense: boolean;
+  order: VisitOrder;
+  /** Structure epoch seen by the previous dense check. */
+  lastStructure: number;
+  /** A hierarchy error was reported; the cheap replay path could hide its repeats. */
+  broken: boolean;
   flatQuery?: FlatQuery;
   flatAddedQuery?: FlatQuery;
   hierarchyQuery?: HierarchyQuery;
@@ -316,6 +357,7 @@ function scratchFor(world: World): Scratch {
     hierarchyStackBindings: new Int32Array(64),
     hierarchyStackRows: new Int32Array(64),
     hierarchyStackChanged: new Uint8Array(64),
+    hierarchyStackOrder: new Int32Array(64),
     hierarchyChildCursor: { bindingIndex: -1, row: -1 },
     hierarchyTouched: [],
     flatCursor: { bindingIndex: -1, row: -1 },
@@ -342,6 +384,9 @@ function scratchFor(world: World): Scratch {
     parentSpans: [],
     addedSpans: [],
     dense: false,
+    order: newVisitOrder(),
+    lastStructure: -1,
+    broken: false,
     markOrphans: { value: 0 },
     removedTransforms: { value: 0 },
     removedGlobals: { value: 0 },
@@ -760,6 +805,8 @@ function childTreeChanged(scratch: Scratch, since: number): boolean {
 /** Share of the hierarchy's rows that must have changed to flag only the roots. */
 const DENSE_NUMERATOR = 1;
 const DENSE_DENOMINATOR = 2;
+/** With a stable structure the order is recorded or replayed from this share (1/20). */
+const REPLAY_DENOMINATOR = 20;
 
 type SpanItem =
   ReturnType<ReturnType<Query<readonly []>['spans']>['unwrap']> extends Iterable<infer Item>
@@ -793,16 +840,28 @@ function denseRun(
   parentSpans: SpanList,
   addedSpans: SpanList,
 ): boolean {
-  if (scratch.detachedSlots.length > 0 || scratch.lostPairs.length > 0) return false;
-  if (scratch.editedGlobals.length > 0 || scratch.seeds.length > 0) return false;
-  if (listRows(parentSpans) > 0 || listRows(addedSpans) > 0) {
+  // Any of these can move a row under another parent without advancing the
+  // structure epoch, so the recorded order no longer describes the tree.
+  const reshaped =
+    scratch.detachedSlots.length > 0 ||
+    scratch.lostPairs.length > 0 ||
+    scratch.editedGlobals.length > 0 ||
+    scratch.seeds.length > 0 ||
+    listRows(parentSpans) > 0 ||
+    listRows(addedSpans) > 0;
+  if (reshaped) {
+    scratch.order.valid = false;
     scratch.treeRows = 0;
     return false;
   }
   // The member count only steers the choice, so a stale one is safe: it is
   // recounted whenever the changed rows could reach half of it.
-  if (scratch.treeRows > 0 && listRows(transformSpans) * DENSE_DENOMINATOR < scratch.treeRows)
-    return false;
+  const structure = scratch.world.getStructureEpoch();
+  const stable = scratch.lastStructure === structure;
+  scratch.lastStructure = structure;
+  const cached = scratch.order.valid && scratch.order.structure === structure;
+  const share = (cached || stable) && !scratch.broken ? REPLAY_DENOMINATOR : DENSE_DENOMINATOR;
+  if (scratch.treeRows > 0 && listRows(transformSpans) * share < scratch.treeRows) return false;
   const tables = scratch.treeTables;
   tables.length = 0;
   let members = 0;
@@ -818,7 +877,7 @@ function denseRun(
   let dirty = 0;
   for (const span of transformSpans) if (tables.includes(span.tableId)) dirty += span.length;
   if (dirty === 0) return false;
-  return dirty * DENSE_DENOMINATOR >= members * DENSE_NUMERATOR;
+  return dirty * share >= members * DENSE_NUMERATOR;
 }
 
 /**
@@ -1105,6 +1164,125 @@ function growHierarchyStack(scratch: Scratch, needed: number): void {
   scratch.hierarchyStackBindings = bindings;
   scratch.hierarchyStackRows = rows;
   scratch.hierarchyStackChanged = changed;
+  const order = new Int32Array(capacity);
+  order.set(scratch.hierarchyStackOrder);
+  scratch.hierarchyStackOrder = order;
+}
+
+function resetOrder(order: VisitOrder): void {
+  order.valid = false;
+  order.binding.length = 0;
+  order.row.length = 0;
+  order.parent.length = 0;
+  order.parentBinding.length = 0;
+  order.parentRow.length = 0;
+  order.root.length = 0;
+}
+
+/** Appends one visited row and returns its position, the children's parent index. */
+function recordVisit(
+  order: VisitOrder,
+  bindingIndex: number,
+  row: number,
+  parent: number,
+  parentBinding: number,
+  parentRow: number,
+  root: number,
+): number {
+  const at = order.binding.length;
+  order.binding.push(bindingIndex);
+  order.row.push(row);
+  order.parent.push(parent);
+  order.parentBinding.push(parentBinding);
+  order.parentRow.push(parentRow);
+  order.root.push(root);
+  return at;
+}
+
+function sealOrder(order: VisitOrder, structure: number, rootRows: readonly number[]): void {
+  if (order.valid || order.binding.length === 0) return;
+  order.valid = true;
+  order.structure = structure;
+  order.rootKey = rootRows.slice();
+  const count = order.binding.length;
+  if (order.flags.length < count) order.flags = new Uint8Array(count);
+  const packed = new Int32Array(count * 6);
+  for (let at = 0; at < count; at++) {
+    const base = at * 6;
+    packed[base] = order.binding[at] as number;
+    packed[base + 1] = order.row[at] as number;
+    packed[base + 2] = order.parent[at] as number;
+    packed[base + 3] = order.parentBinding[at] as number;
+    packed[base + 4] = order.parentRow[at] as number;
+    packed[base + 5] = order.root[at] as number;
+  }
+  order.packed = packed;
+}
+
+function canReplay(order: VisitOrder, structure: number, rootRows: readonly number[]): boolean {
+  return order.valid && order.structure === structure && sameRoots(order, rootRows);
+}
+
+/** A row's own Transform, ChildOf, Children or GlobalTransform changed since `since`. */
+function ownRowChanged(columns: EntityLookup['columns'], row: number, since: number): boolean {
+  // An absent column reads undefined, which never compares greater.
+  return (
+    (columns.changed[3]?.epochs[row] as number) > since ||
+    (columns.changed[1]?.epochs[row] as number) > since ||
+    (columns.changed[4]?.epochs[row] as number) > since ||
+    (columns.added[4]?.[row] as number) > since
+  );
+}
+
+function sameRoots(order: VisitOrder, rootRows: readonly number[]): boolean {
+  const key = order.rootKey;
+  if (key.length !== rootRows.length) return false;
+  for (let index = 0; index < key.length; index++) if (key[index] !== rootRows[index]) return false;
+  return true;
+}
+
+/** Re-derive every cached row in parent-first order; the walk is not repeated. */
+function replayOrder(
+  scratch: Scratch,
+  bindings: readonly HierarchyBinding[],
+  transformBindings: readonly TransformBinding[],
+  touched: number[],
+  since: number,
+  rootChanged: (entity: EntityHandle) => boolean,
+): void {
+  const order = scratch.order;
+  const rootKey = order.rootKey;
+  const rootFlags = new Uint8Array(rootKey.length / 3);
+  for (let at = 0; at < rootFlags.length; at++)
+    rootFlags[at] = Number(rootChanged(rootKey[at * 3] as EntityHandle));
+  const flags = order.flags;
+  const lookup = scratch.treeLookup;
+  const packed = order.packed;
+  for (let at = 0, base = 0; base < packed.length; at++, base += 6) {
+    const bindingIndex = packed[base] as number;
+    const binding = bindings[bindingIndex] as HierarchyBinding;
+    const row = packed[base + 1] as number;
+    const parent = packed[base + 2] as number;
+    const parentChanged =
+      parent >= 0 ? flags[parent] === 1 : rootFlags[packed[base + 5] as number] === 1;
+    let recompute = parentChanged;
+    if (!recompute && lookup.at(binding.tableId, row)) {
+      recompute = ownRowChanged(lookup.columns, row, since);
+    }
+    flags[at] = Number(recompute);
+    countPropagation('hierarchyEdgesVisited');
+    if (!recompute) continue;
+    const encoded = packed[base + 3] as number;
+    const parentBinding = encoded >= 0 ? bindings[encoded] : transformBindings[-1 - encoded];
+    composeBindingRow(
+      binding,
+      row,
+      worldColumn(parentBinding as TransformBinding | HierarchyBinding),
+      packed[base + 4] as number,
+      touched,
+      bindingIndex,
+    );
+  }
 }
 
 /**
@@ -1151,7 +1329,15 @@ function propagateParentTransforms(
   const touched = scratch.hierarchyTouched;
   touched.length = 0;
   let firstError: SceneError | undefined;
+  const visit = scratch.order;
+  const structure = world.getStructureEpoch();
+  const recording = scratch.dense;
   const published = hierarchyWriter.writeRows(touched, () => {
+    if (recording && canReplay(visit, structure, rootRows)) {
+      replayOrder(scratch, bindings, transformBindings, touched, since, rootChanged);
+      return;
+    }
+    resetOrder(visit);
     for (let located = 0; located < rootRows.length; located += 3) {
       const root = rootRows[located] as EntityHandle;
       const rootBinding = transformBindings[rootRows[located + 1] as number];
@@ -1163,6 +1349,7 @@ function propagateParentTransforms(
       scratch.hierarchyStackBindings[0] = -1 - (rootRows[located + 1] as number);
       scratch.hierarchyStackRows[0] = rootRow;
       scratch.hierarchyStackChanged[0] = Number(rootChanged(root));
+      scratch.hierarchyStackOrder[0] = -1;
       let depth = 1;
       while (depth > 0) {
         depth -= 1;
@@ -1173,6 +1360,7 @@ function propagateParentTransforms(
         ) as TransformBinding | HierarchyBinding;
         const parentRow = scratch.hierarchyStackRows[depth] as number;
         const ownChanged = scratch.hierarchyStackChanged[depth] === 1;
+        const parentOrder = scratch.hierarchyStackOrder[depth] as number;
         const count = readChildren(scratch, parentBinding.tableId, parentRow);
         if (count === 0) continue;
         const parentWorld = worldColumn(parentBinding);
@@ -1182,6 +1370,7 @@ function propagateParentTransforms(
         const stackBindings = scratch.hierarchyStackBindings;
         const stackRows = scratch.hierarchyStackRows;
         const stackChanged = scratch.hierarchyStackChanged;
+        const stackOrder = scratch.hierarchyStackOrder;
         const parentChanged =
           ownChanged || (parentGlobalChanged?.epochs[scratch.childrenLookup.row] as number) > since;
         const children = scratch.childrenWords;
@@ -1200,12 +1389,7 @@ function propagateParentTransforms(
           // epochs matter only when the parent did not change.
           let ownChange = false;
           if (!parentChanged) {
-            // An absent column reads undefined, which never compares greater.
-            ownChange =
-              (columns.changed[3]?.epochs[row] as number) > since ||
-              (columns.changed[1]?.epochs[row] as number) > since ||
-              (columns.changed[4]?.epochs[row] as number) > since ||
-              (columns.added[4]?.[row] as number) > since;
+            ownChange = ownRowChanged(columns, row, since);
             if (!ownChange && !childTreeChanged(scratch, since)) continue;
           }
           if (scratch.treeLookup.columns.fields[0]?.view[row] !== parent) {
@@ -1215,6 +1399,16 @@ function propagateParentTransforms(
           const recompute = parentChanged || ownChange;
           if (recompute)
             composeBindingRow(binding, row, parentWorld, parentRow, touched, bindingIndex);
+          if (recording)
+            stackOrder[depth] = recordVisit(
+              visit,
+              bindingIndex,
+              row,
+              parentOrder,
+              encoded,
+              parentRow,
+              located / 3,
+            );
           if (columns.changed[2] === undefined) continue;
           stackEntities[depth] = child;
           stackBindings[depth] = bindingIndex;
@@ -1228,6 +1422,7 @@ function propagateParentTransforms(
   if (!published.ok)
     firstError = noteHierarchyError(firstError, derivedWriteError(published.error, -1));
   else countPublishedRows(touched, published.value);
+  if (recording && firstError === undefined) sealOrder(visit, structure, rootRows);
   touched.length = 0;
   return firstError === undefined ? ok(undefined) : err(firstError);
 }
@@ -1296,6 +1491,10 @@ export function propagateTransforms(world: World): Result<void, SceneError> {
   finishRun(world, scratch);
   const walked = scratch.walkError;
   scratch.walkError = undefined;
+  if (walked !== undefined || !hierarchy.ok) {
+    scratch.broken = true;
+    scratch.order.valid = false;
+  }
   if (!hierarchy.ok)
     return err(
       walked === undefined ? hierarchy.error : noteHierarchyError(walked, hierarchy.error),

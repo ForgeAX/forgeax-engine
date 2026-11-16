@@ -9,6 +9,9 @@ storage. Transport encoding remains specific to the Worker path.
 
 Feature source capture retains exact asset versions with the extracted input;
 planning resolves those captured versions before consulting the live asset scope.
+The shared fluid graph uploads its plan-validated impulse noise payload directly
+with the source scope; a disposed extraction snapshot is not a live exact-version
+lookup token.
 An optional feature-owned `source` adapter supplies detached publication data and
 source acknowledgments. WaterInfo uses its existing v6 DTO through this adapter;
 renderer frame identity never crosses the Worker boundary. Builtin producers have
@@ -54,6 +57,11 @@ World, Zone, Body, view and device generations. Only a successful submission
 commits static raster reuse. Changed sources, device recovery and view retirement
 rebuild or retire the graph-owned products through ordinary queue fences.
 
+During a source revision, retained and current WaterInfo target cohorts can
+contain the same unchanged Body. WaterMesh material binding selects the cohort
+with the accepted draw key, so that its instance range and all transition Body
+rows belong to one target. Missing ranges and stale generations remain errors.
+
 The Params storage ABI contains seven fixed `vec4<u32>` records followed by one
 `vec4<u32>` mip descriptor per level; it has no fixed nine-mip or 256-grid cap.
 Power-of-two dimensions, u32 node/tile counts and the actual storage, buffer,
@@ -69,8 +77,13 @@ diagnostics. WaterInfo input wire v6 transfers detached GPU source arrays,
 same-owner flat-far boundary masks and each accepted Body's WaveSet readiness,
 and rejects older versions. The mask derives from the selected far receipt's
 actual geometry at the same mean height; sliding near bounds alone do not prove
-adjacency. Tile schema v7 stores the four side bits at byte 92 of the existing
-96-byte record. An explicitly
+adjacency. Tile schema v8 stores the four side bits at byte 92 of the existing
+96-byte record. Its upper 28 bits optionally address a v1 `WCN1` numeric
+continuity block in the existing coverage payload. Draw admission validates its
+range, grid count and finite [0,1] weights before packing. Actual frame upload
+retains the source/target generations and shared depth authority; old uploaded
+frames remain detached. CPU terminal continuity is optional and GPU traversal
+rejects that opt-in until it owns equivalent support. An explicitly
 pending dependency preserves GPU intent and holds the complete frame at source
 planning without native work or source feedback. Ready sources require their
 exact same-frame WaveParam rows; missing, failed and incompatible inputs fail.
@@ -94,6 +107,15 @@ volume is not an entry source, and zero horizontal velocity emits no wave during
 passive heave or roll. Initial immersion is not frozen. Geometry and velocity are
 sampled from the same committed native body snapshot.
 Source birth contributes entry volume without reseeding unrelated sources.
+Queued `OceanPatch.enqueueWaveImpulse` inputs add the analytic Fourier transform
+of a localized Laplacian Gaussian to vertical velocity, with exactly zero DC.
+The same finite-depth dispersion and damping evolve its height and normals;
+background Gerstner and the independent visual FFT remain separate additive
+inputs. Native timestamps age delayed impulses before insertion. Accepted
+generation/sequence history prevents duplicate insertion across overlapping
+published frames, and submission commits that history. Receiver-qualified
+fields omit their own receiver's impulses. Render supplies this generic wave
+operation; authored callers choose footprint and momentum budgets.
 The recipe's `entryWaveMultiplier` defaults to 1 and scales only the projected
 full-displacement change. Visual and receiver-excluded planes use the same
 multiplier; the facing-boundary transport term remains independent. Initialization
@@ -1197,6 +1219,14 @@ unselected variants in the Shader decode cache.
 Prepared material and View-only depth programs share one View/scene-depth ABI
 descriptor in `assembly/material-shader-policy`. Renderer derives its admitted
 Atmosphere flag and retains ownership of native layouts and generation caches.
+View-only depth recording binds exactly that descriptor's entries. Its View
+uniform uses the selected buffer offset directly; it does not supply dynamic
+offsets or inherit the Standard material's additional bindings.
+`render-standard-material-and-scene-depth` retains the full Standard View ABI
+and dynamic offsets. Its sampled depth view is created only on an existing
+View bind-group cache miss; the cache follows the device scope, immutable
+pipeline/layout accessor and all current physical lighting/depth resources.
+View uploads and fog offset changes reuse the bound resources.
 
 An unused malformed Standard variant therefore fails when selected, rather than
 at initialization. Synchronous creation failures use the existing structured
@@ -2485,7 +2515,9 @@ is only meaningful with its own observation, never with the current scene.
 nonzero source ranges. Background and MASK-discarded fragments remain invalid.
 
 At most four unread frame observations are admitted. Read their receipts before
-arming more; reads consume the captured copy once. Resize and later scene edits
+arming more; observing the receipt releases its admission credit. Automatic
+feature completion may retire physical readbacks first, while explicit captures
+retain their bounded credit and detached bytes until observed. Resize and later scene edits
 do not reinterpret earlier copies. Armed receipts expose `observationDomains`,
 the domains actually captured by that submission. A preparation barrier can
 report an empty list; a pending partial frame can contain fewer domains than
@@ -4235,7 +4267,7 @@ AP lookup protects the planet silhouette using the actual angular texel footprin
 
 Each Feature scope owns one work and resource namespace. Mode 0 merges its shadow, fogged trace, initialization, reconstruction and composition into that view work. A work may declare `submission: 'atomic'`: every declared pass must actually encode before the Renderer finishes or submits the physical frame. Disabled or omitted producers reject the whole frame, including any staged TAA history, so producer metadata and the shared texture ring cannot advance independently. Attachment-only initialization is an explicit raster clear with no sampled reads; a drawless load is rejected.
 
-Atomic work preserves compute pass boundaries so a physical encode receipt cannot hide a skipped logical child; ordinary work retains compute coalescing. Cloud display modes 3 and 4 show physical transmittance and the existing opacity contour after reconstruction, including clear-sky results. Reference-material modes 1 and 2 conditionally add a separate 1x1 GPU probe at the requested full-resolution ray, with the same captured material inputs. Its C4/count results never overwrite cloud history; absent probe work allocates no probe targets. Materials without that conservative diagnostic contract report `mode0.diagnostic.status: 'unsupported'` for modes 1/2 while retaining normal rendering.
+Atomic work preserves compute pass boundaries so a physical encode receipt cannot hide a skipped logical child; ordinary work retains compute coalescing. The Host's accepted execution preserves the declared `submission` policy with its frozen passes and scope; name lookup does not change that policy. Cloud display modes 3 and 4 show physical transmittance and the existing opacity contour after reconstruction, including clear-sky results. Reference-material modes 1 and 2 conditionally add a separate 1x1 GPU probe at the requested full-resolution ray, with the same captured material inputs. Its C4/count results never overwrite cloud history; absent probe work allocates no probe targets. Materials without that conservative diagnostic contract report `mode0.diagnostic.status: 'unsupported'` for modes 1/2 while retaining normal rendering.
 
 Transparent geometry remains depth-read-only unless its authored render state
 explicitly enables `depthWriteEnabled`; this keeps ordinary alpha smoke from
@@ -8078,6 +8110,15 @@ Scene-local simulation identity. Composition indices route current-frame assets
 and Body rows only, so World reorder/removal cannot transfer another World's
 history. Source acknowledgments advance strictly by source frame number within
 each device generation, including equal-time frames with zero solver steps.
+
+The builtin Fluid feature reads readiness from its actual WaterInfo producer
+before planning a `water-info` terrain simulation. Only an exact same-frame,
+device, view, World and Body generation row admits work. A missing row with a
+live dependency request returns `pendingSource` and retains queued impulses;
+missing, failed or incompatible sources return their original structured
+diagnostic. Retained history from another frame does not authorize a new plan.
+Shared graph compilation still validates the physical texture closure and
+reports graph errors. Constant-depth simulations retain their independent path.
 
 Declared capabilities gate each nonempty work plan. Recovery retires prepared
 resources and allows a fresh plan to be evaluated against the replacement

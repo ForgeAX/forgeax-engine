@@ -22,7 +22,10 @@ import {
   waterMaterialFrameBindingResources,
 } from '../wave-material';
 
-it('keeps a retained transition cohort intact when an unchanged owner moves to a new WaterInfo epoch', async () => {
+it.each([
+  'river geometry',
+  'ocean material',
+] as const)('keeps retained transition draws intact after an %s revision', async (revision) => {
   const packageId = definePackageId('019a0000-0000-7000-8000-000000000889');
   const guid = (key: string) => AssetGuid.format(AssetGuid.derive(packageId, key));
   const zoneGuid = guid('zone');
@@ -221,39 +224,47 @@ it('keeps a retained transition cohort intact when an unchanged owner moves to a
   const riverKey = waterBodyOwnerKey(world.identity, 'river', river.sceneGeneration, 1);
   const mesh = water.zoneMeshView(zoneGuid, 'view');
   if (mesh === undefined) throw new Error('initial mesh was not accepted on completion');
-  const draws = mesh.receipt.buckets
-    .flatMap((bucket) => bucket.ownerDraws)
-    .map((draw) => ({
-      drawKey: draw.drawKey,
-      bodyGuid: waterBodyOwnerKey(world.identity, draw.ownerGuid, draw.ownerGeneration, 1),
-      bodyGeneration: draw.ownerGeneration,
-      zoneGeneration: 1,
-      viewIdentity: 'view',
-      bytes: draw.instanceBytes,
-      coverageBytes: draw.coverageBytes,
-      layout: draw.layout,
-      transitionTargets: draw.instances.flatMap((instance, instanceIndex) =>
-        instance.transitionBodyGuid === undefined || instance.transitionBodyGeneration === undefined
-          ? []
-          : [
-              {
-                instanceIndex,
-                bodyGuid: waterBodyOwnerKey(
-                  world.identity,
-                  instance.transitionBodyGuid,
-                  instance.transitionBodyGeneration,
-                  1,
-                ),
-                bodyGeneration: instance.transitionBodyGeneration,
-                zoneGeneration: 1,
-              },
-            ],
-      ),
-    }));
+  const drawUploads = (receipt: typeof mesh.receipt) =>
+    receipt.buckets
+      .flatMap((bucket) => bucket.ownerDraws)
+      .map((draw) => ({
+        drawKey: draw.drawKey,
+        bodyGuid: waterBodyOwnerKey(world.identity, draw.ownerGuid, draw.ownerGeneration, 1),
+        bodyGeneration: draw.ownerGeneration,
+        zoneGeneration: 1,
+        viewIdentity: 'view',
+        bytes: draw.instanceBytes,
+        coverageBytes: draw.coverageBytes,
+        layout: draw.layout,
+        transitionTargets: draw.instances.flatMap((instance, instanceIndex) =>
+          instance.transitionBodyGuid === undefined ||
+          instance.transitionBodyGeneration === undefined
+            ? []
+            : [
+                {
+                  instanceIndex,
+                  bodyGuid: waterBodyOwnerKey(
+                    world.identity,
+                    instance.transitionBodyGuid,
+                    instance.transitionBodyGeneration,
+                    1,
+                  ),
+                  bodyGeneration: instance.transitionBodyGeneration,
+                  zoneGeneration: 1,
+                },
+              ],
+        ),
+      }));
+  const draws = drawUploads(mesh.receipt);
   expect(
     draws.some((draw) => draw.bodyGuid === riverKey && draw.transitionTargets.length > 0),
   ).toBe(true);
-  const assertDrawable = (publication: WaterInfoFramePublication, frameNumber: number) => {
+  const assertDrawable = (
+    publication: WaterInfoFramePublication,
+    frameNumber: number,
+    materialDraws = draws,
+    expectedTarget = previousName,
+  ) => {
     const bindings = new Map<string, WaterMaterialFrameBindings>();
     for (const snapshot of waterInfoMaterialBindingSnapshots(publication).unwrap()) {
       const target = snapshot.targets[0];
@@ -261,7 +272,7 @@ it('keeps a retained transition cohort intact when an unchanged owner moves to a
       const upload = buildWaterMaterialFrameUpload(
         snapshot.waveUploadPlan,
         new Map([...snapshot.rows].map(([key, row]) => [key, row.descriptor])),
-        draws.filter(
+        materialDraws.filter(
           (draw) =>
             snapshot.rows.has(draw.bodyGuid) &&
             draw.transitionTargets.every((peer) => snapshot.rows.has(peer.bodyGuid)),
@@ -296,7 +307,7 @@ it('keeps a retained transition cohort intact when an unchanged owner moves to a
         bindGroup: 10 as never,
       });
     }
-    for (const draw of draws) {
+    for (const draw of materialDraws) {
       const binding = waterMaterialDrawBinding(
         bindings,
         draw.bodyGuid,
@@ -309,9 +320,37 @@ it('keeps a retained transition cohort intact when an unchanged owner moves to a
         },
         draw.drawKey,
       ).unwrap();
-      expect(binding.frameBindings.waterInfoTargetName).toBe(previousName);
+      if (expectedTarget !== undefined)
+        expect(binding.frameBindings.waterInfoTargetName).toBe(expectedTarget);
     }
   };
+  if (revision === 'ocean material') {
+    const revisedOcean = water.mountBody('ocean', '2', packed.ocean as WaterBodyAsset).unwrap();
+    water
+      .acceptOutput('ocean', 'geometry', revisedOcean.outputGenerations.geometry, {
+        generation: 2,
+        digest: 'ocean-material-revised',
+      })
+      .unwrap();
+    const revisedFrame = extract(2);
+    const revisedPublication = revisedFrame.views[0]?.publication;
+    if (revisedPublication === undefined) throw new Error('revised publication missing');
+    expect(revisedPublication.rows.get(riverKey)?.targetName).not.toBe(previousName);
+    expect(
+      revisedPublication.bindingSnapshots?.some((snapshot) => snapshot.rows.has(riverKey)),
+    ).toBe(true);
+    assertDrawable(revisedPublication, 2);
+    const live = water.waterMeshCandidateViews('view')[0];
+    if (live === undefined) throw new Error('material revision candidate missing');
+    assertDrawable(
+      revisedPublication,
+      2,
+      drawUploads(live.receipt),
+      revisedPublication.targets.find((target) => target.write)?.targetName,
+    );
+    feature.onFrameAborted?.(revisedFrame);
+    return;
+  }
   const revised = water.mountBody('river', '2', packed['river-edited'] as WaterBodyAsset).unwrap();
   water
     .acceptOutput('river', 'geometry', revised.outputGenerations.geometry, {

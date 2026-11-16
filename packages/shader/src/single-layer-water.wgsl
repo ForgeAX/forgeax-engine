@@ -1,10 +1,16 @@
 #define_import_path forgeax::single-layer-water
+#if MATERIAL_WATER_DEFORMATION_AVAILABLE == true
+#import forgeax_material::water_transition_continuity::{waterMeshTransitionContinuity}
+#endif
 #pragma material_slot surface
 #pragma material_slot deformation
 #import forgeax_material::slot::surface::{evaluate_surface}
+#if MATERIAL_WATER_DEFORMATION_AVAILABLE == true
 #import forgeax_material::slot::deformation::{deform_water_vertex}
+#import forgeax_material::water_deformation_input::{waterDeformationInput, waterVertexFlowMPerSec}
+#endif
 #import forgeax_material::water_fluid::{waterFluidSample}
-#import forgeax_material::water_deformation_input::{waterDeformationInput, waterVertexFlowXZ, waterVertexFlowMPerSec, waterMeshFarContinuity}
+#import forgeax_material::water_deformation_input::{waterVertexFlowXZ}
 #import forgeax_material::single_layer_water_surface_v1::{SingleLayerWaterSurfaceInput, SingleLayerWaterSurfaceData}
 #import forgeax_material::water_waves::{waterMeshTileVertex, waterMeshCoverageContains, waterDynamicBoundsContains, waterBodyData, waterMaterialDrawData, waterMeshWavePhaseAt, waterMeshInstanceTransformIndex}
 #import forgeax_view::common::{view, transformNormal, meshReceivesShadows}
@@ -124,35 +130,47 @@ fn waterVertex(vertex: WaterVertexInput, index: u32, shadow: bool) -> WaterVerte
   color = vertex.color;
 #endif
   let flow = waterVertexFlowXZ(color, currentMatrix);
+  var currentPosition = current;
+  var previousPosition = previous;
+  var currentNormal = normal;
+  var waterMask = 1.0;
+  var bodyIndex = tile.bodyIndex;
+#if MATERIAL_WATER_DEFORMATION_AVAILABLE == true
   let deformationInput = waterDeformationInput(tile.bodyIndex, tile.waveBodyIndex, current, previous, normal,
     view.cameraPos, tile.waveRelativeXZ, select(0u, 1u, tile.far), waterVertexFlowMPerSec(flow));
-  var deformation = waterMeshFarContinuity(deformationInput, deform_water_vertex(deformationInput), index);
+  var deformation = waterMeshTransitionContinuity(deformationInput, deform_water_vertex(deformationInput), index, vertex.position.xz);
+  currentPosition = deformation.currentPositionM;
+  previousPosition = deformation.previousPositionM;
+  currentNormal = deformation.currentNormalYUp;
+  waterMask = deformation.waterMask;
+  bodyIndex = deformation.bodyRenderIndex;
+#endif
 #if WATER_FLUID_SIMULATION == true
-  let fluid = waterFluidSample(deformation.bodyRenderIndex, deformation.currentPositionM.xz, 0u);
-  let fluidPrevious = waterFluidSample(deformation.bodyRenderIndex, deformation.previousPositionM.xz, 4u);
+  let fluid = waterFluidSample(bodyIndex, currentPosition.xz, 0u);
+  let fluidPrevious = waterFluidSample(bodyIndex, previousPosition.xz, 4u);
   let fluidScale = material.fluidDisplacementMultiplier * material.showFluidSimulation;
-  deformation.currentPositionM.y += clamp(fluid.b * fluidScale, -material.maximumFluidDisplacementM, material.maximumFluidDisplacementM);
-  deformation.previousPositionM.y += clamp(fluidPrevious.b * fluidScale, -material.maximumFluidDisplacementM, material.maximumFluidDisplacementM);
+  currentPosition.y += clamp(fluid.b * fluidScale, -material.maximumFluidDisplacementM, material.maximumFluidDisplacementM);
+  previousPosition.y += clamp(fluidPrevious.b * fluidScale, -material.maximumFluidDisplacementM, material.maximumFluidDisplacementM);
 #endif
   var output: WaterVertexOutput;
-  output.clip = view.worldViewProj * vec4<f32>(deformation.currentPositionM, 1.0);
-  if (shadow) { output.clip = projectShadowPosition(vec4<f32>(deformation.currentPositionM, 1.0), deformation.currentNormalYUp); }
+  output.clip = view.worldViewProj * vec4<f32>(currentPosition, 1.0);
+  if (shadow) { output.clip = projectShadowPosition(vec4<f32>(currentPosition, 1.0), currentNormal); }
   output.positionOS = vertex.position;
-  output.positionWS = deformation.currentPositionM;
-  output.normalWS = deformation.currentNormalYUp;
+  output.positionWS = currentPosition;
+  output.normalWS = currentNormal;
   output.originalNormalWS = normal;
   output.originalPositionWS = current;
   output.uv = vertex.uv;
-  output.currentClip = view.temporalCurrentViewProj * vec4<f32>(deformation.currentPositionM, 1.0);
-  output.previousClip = view.temporalPreviousViewProj * vec4<f32>(deformation.previousPositionM, 1.0);
+  output.currentClip = view.temporalCurrentViewProj * vec4<f32>(currentPosition, 1.0);
+  output.previousClip = view.temporalPreviousViewProj * vec4<f32>(previousPosition, 1.0);
   output.coverageXZ = tile.coverageXZ;
   output.instanceIndex = index;
   output.materialIndex = materialIndex;
 #ifdef VERTEX_COLOR_AVAILABLE
   output.color = color;
 #endif
-  output.maskAndVertexFlow = vec3<f32>(deformation.waterMask, flow);
-  output.bodyIndex = deformation.bodyRenderIndex;
+  output.maskAndVertexFlow = vec3<f32>(waterMask, flow);
+  output.bodyIndex = bodyIndex;
   output.tangentWS = vec4<f32>(normalize((currentMatrix * vec4<f32>(vertex.tangent.xyz, 0.0)).xyz), vertex.tangent.w);
   output.lighting = lighting;
   return output;

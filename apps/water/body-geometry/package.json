@@ -28,7 +28,8 @@
     "@forgeax/engine-pack": "workspace:*",
     "@webgpu/types": "^0.1.74",
     "typescript": "6.0.3",
-    "vite": "8.3.5"
+    "vite": "8.3.5",
+    "@forgeax/engine-shader-compiler": "workspace:*"
   },
   "forgeax": {
     "metrics": {
@@ -53,6 +54,10 @@
         "enabled": false,
         "reason": "This maintained Water demo has no spike report."
       }
+    },
+    "gallery": {
+      "visible": false
     }
-  }
+  },
+  "description": "R1 \u00b7 Body geometry and TerrainProvider observatory"
 }

@@ -58,5 +58,6 @@
         "reason": "This maintained Water demo has no spike report."
       }
     }
-  }
+  },
+  "description": "R1 TerrainProvider scene assets owned by body-geometry"
 }

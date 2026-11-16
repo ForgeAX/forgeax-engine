@@ -1,0 +1,96 @@
+.water-runtime-panel {
+  padding: 14px 0;
+  border-top: 1px solid #8dcaba30;
+}
+.water-runtime-panel details {
+  border-top: 1px solid #88adad25;
+  padding: 10px 0;
+}
+.water-runtime-panel summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: inherit;
+}
+.water-runtime-panel label {
+  display: grid;
+  gap: 6px;
+  margin: 11px 0;
+  overflow-wrap: anywhere;
+}
+.water-runtime-panel textarea {
+  width: 100%;
+  background: #0b2028;
+  color: #d0e6e4;
+  border: 1px solid #80a2a350;
+  border-radius: 5px;
+  padding: 7px;
+  font: 11px / 1.5 monospace;
+}
+.water-runtime-panel pre {
+  max-height: 280px;
+  overflow: auto;
+  font-size: 10px;
+  white-space: pre-wrap;
+}
+.water-stage-nav {
+  position: fixed;
+  bottom: 15px;
+  left: 20px;
+  z-index: 8;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-width: calc(100vw - 360px);
+  padding: 7px;
+  border-radius: 8px;
+  border: 1px solid #9ac3ba40;
+  background: #102830e8;
+  backdrop-filter: blur(12px);
+}
+.water-stage-nav a {
+  color: #d1e7e3;
+  padding: 5px 8px;
+  text-decoration: none;
+  border-radius: 4px;
+  font: 11px system-ui;
+}
+.water-stage-nav a[aria-current] {
+  background: #3e8973;
+  color: white;
+}
+.water-stage-nav a:hover {
+  background: #284f55;
+}
+@media (max-width: 760px) {
+  .water-stage-nav {
+    bottom: 7px;
+    left: 8px;
+    max-width: calc(100vw - 16px);
+  }
+}
+
+.water-scene-nav {
+  position: fixed;
+  left: 18px;
+  bottom: 18px;
+  z-index: 9;
+  display: flex;
+  gap: 7px;
+  padding: 8px;
+  background: #102b30e8;
+  border: 1px solid #8bb8ac40;
+  border-radius: 9px;
+}
+.water-scene-nav a {
+  color: #d6eae2;
+  text-decoration: none;
+  padding: 7px;
+  border-radius: 5px;
+  font: 12px system-ui;
+}
+.water-scene-nav a[aria-current] {
+  background: #36725f;
+}
+.water-stage-nav:has(+ .water-scene-nav) {
+  bottom: 70px;
+}

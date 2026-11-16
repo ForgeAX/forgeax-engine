@@ -100,13 +100,13 @@ export async function createMaterialPanel(input: {
     })),
   );
   const extra = (
-      [
-        ['standard-surface', '标准表面'],
-        ['medium-surface', '单层介质'],
-        ['custom-baked', '自定义 · 烘焙流场'],
-        ['custom-baked-underwater', '自定义水下 · 烘焙流场'],
-      ] as const
-    ).map(([key, label]) => ({ label, guid: input.guid(`material/${key}`) }));
+    [
+      ['standard-surface', '标准表面'],
+      ['medium-surface', '单层介质'],
+      ['custom-baked', '自定义 · 烘焙流场'],
+      ['custom-baked-underwater', '自定义水下 · 烘焙流场'],
+    ] as const
+  ).map(([key, label]) => ({ label, guid: input.guid(`material/${key}`) }));
   const all = [...materials, ...independent, ...clear];
   const textures = await Promise.all(
     (['normal', 'river-normal'] as const).map(async (key) => ({
@@ -120,8 +120,7 @@ export async function createMaterialPanel(input: {
   );
   const choice = node<HTMLSelectElement>('material-choice');
   const appearance = node<HTMLSelectElement>('water-appearance');
-  for (const material of [...all, ...extra])
-    choice.add(new Option(material.label, material.guid));
+  for (const material of [...all, ...extra]) choice.add(new Option(material.label, material.guid));
   const slot = node<HTMLSelectElement>('material-slot');
   const controls = node<HTMLFieldSetElement>('material-controls');
   const status = node('material-action');
@@ -375,7 +374,8 @@ export async function createMaterialPanel(input: {
         'criticalAngleDot',
       ]) {
         const name = material === undefined ? undefined : editedName(key, material);
-        const field = material === undefined || name === undefined ? undefined : value(material, name);
+        const field =
+          material === undefined || name === undefined ? undefined : value(material, name);
         for (const control of document.querySelectorAll<HTMLInputElement>(
           `[data-material-value="${key}"]`,
         )) {

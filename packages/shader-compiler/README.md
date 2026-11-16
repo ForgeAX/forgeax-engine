@@ -185,8 +185,13 @@ Material publications use `material-cook/5`: one validated root contract and a
 complete program set selected by Pass and compiler context. Pack and Native
 cookers share the publication builder. Independent modules retain independent
 WGSL; shared modules reuse code while entry choices remain pipeline facts.
+Program identity includes the immutable parameter schema, including color-space
+projections. Equal WGSL and bindings do not permit sharing incompatible CPU
+parameter encodings. Parameter defaults remain material values and do not split
+program identity. Raster variants use producer fingerprint `material-raster-variants/6`
+to retire products created before this identity boundary.
 
-The Pack cooker producer identity is `material-pack-cooker/5`. It invalidates
+The Pack cooker producer identity is `material-pack-cooker/6`. It invalidates
 older derived products without changing the durable `material-cook/5` wire
 schema; source, canonical deformation layout and compiler fingerprints still
 participate in the normal identity. Re-cook affected Water publications.

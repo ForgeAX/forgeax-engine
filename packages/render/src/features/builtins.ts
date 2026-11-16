@@ -33,13 +33,17 @@ export function withBuiltinRenderFeatures(
   const features = [...requested];
   if (!features.some((feature) => feature.identity === CLOUD_LAYER_FEATURE_IDENTITY))
     features.push(createMode0CloudFeature(recordCloudAdoption) as RenderFeature<unknown>);
-  if (!features.some((feature) => feature.identity === WATER_FLUID_FEATURE_IDENTITY))
-    features.unshift(createWaterFluidFeature() as RenderFeature<unknown>);
   let waterInfo = features.find((feature) => feature.identity === WATER_INFO_FEATURE_IDENTITY);
   if (waterInfo === undefined) {
     waterInfo = createWaterInfoFeature() as RenderFeature<unknown>;
     features.unshift(waterInfo);
   }
+  if (!features.some((feature) => feature.identity === WATER_FLUID_FEATURE_IDENTITY))
+    features.splice(
+      features.indexOf(waterInfo) + 1,
+      0,
+      createWaterFluidFeature({}, waterInfo) as RenderFeature<unknown>,
+    );
   if (!features.some((feature) => feature.identity === WATER_ADVANCED_FEATURE_IDENTITY))
     features.splice(
       features.indexOf(waterInfo) + 1,

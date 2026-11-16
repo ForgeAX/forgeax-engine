@@ -116,7 +116,7 @@ export class AssetGraph<
     });
   }
 
-  load(guid: string, signal = new AbortController().signal): Promise<GraphResult<P>> {
+  load(guid: string, signal = new AbortController().signal, scope?: S): Promise<GraphResult<P>> {
     const canonicalGuid = guid.toLowerCase();
     if (this.disposed) return Promise.resolve(err(disposed()));
     if (signal.aborted) return Promise.resolve(err(cancelled(canonicalGuid)));
@@ -139,7 +139,9 @@ export class AssetGraph<
     const ticketEpoch = this.epoch;
     const current = () => this.requests.get(canonicalGuid) === request;
     const request = Promise.resolve()
-      .then(() => this.loadClosure(canonicalGuid, this.lifetime.signal, ticketEpoch, current))
+      .then(() =>
+        this.loadClosure(canonicalGuid, this.lifetime.signal, ticketEpoch, current, scope),
+      )
       .finally(() => {
         if (this.requests.get(canonicalGuid) === request) this.requests.delete(canonicalGuid);
         this.publish();
@@ -227,10 +229,10 @@ export class AssetGraph<
     signal: AbortSignal,
     ticketEpoch: number,
     current: () => boolean,
+    scope = this.openScope(),
   ): Promise<GraphResult<P>> {
     const values = new Map<string, P>();
     const seen = new Map<string, number>();
-    const scope = this.openScope();
     const result = await this.visit(root, signal, seen, values, ticketEpoch, current, scope);
     if (this.disposed) return err(disposed());
     if (!current()) return err(superseded(root, ticketEpoch));

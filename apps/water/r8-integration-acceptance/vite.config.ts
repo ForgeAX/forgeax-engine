@@ -1,18 +1,19 @@
 import { relative, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { AssetGuid } from '@forgeax/engine/pack/source';
+import { createStandaloneRuntimeAssetBinding } from '@forgeax/engine/types';
+import { createParticleCodeNativeCookerFromRoots } from '@forgeax/engine/vfx-compiler';
 import { assetLibrarySourceIdentity, readProjectFacts } from '@forgeax/engine-devkit';
 import { imageImporter } from '@forgeax/engine-image/image-importer';
 import { createMaterialPackCooker } from '@forgeax/engine-shader-compiler';
-import { createParticleCodeNativeCookerFromRoots } from '@forgeax/engine/vfx-compiler';
-import { AssetGuid } from '@forgeax/engine/pack/source';
 import { pluginPack } from '@forgeax/engine-vite-plugin-pack';
 import { vitePluginRhiDebug } from '@forgeax/engine-vite-plugin-rhi-debug';
 import { forgeaxShader } from '@forgeax/engine-vite-plugin-shader';
-import { createStandaloneRuntimeAssetBinding } from '@forgeax/engine/types';
 import { defineConfig } from 'vite';
-import { WATER_R8_PACKAGE, WATER_R8_SCOPE } from './src/identity';
 import { WATER_ENTRY_SPLASH_MATERIAL_PARTICLE_INPUTS } from './assets/vfx/water-entry-splash-material-inputs';
+import { WATER_R8_PACKAGE, WATER_R8_SCOPE } from './src/identity';
 
-const here = import.meta.dirname,
+const here = fileURLToPath(new URL('.', import.meta.url)),
   root = resolve(here, '../../..');
 export default defineConfig(async ({ command }) => {
   const result = await readProjectFacts(here);

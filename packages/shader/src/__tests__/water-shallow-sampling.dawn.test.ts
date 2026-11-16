@@ -1,7 +1,10 @@
 import { readFileSync } from 'node:fs';
 import { expect, it } from 'vitest';
 
-it('samples additive shallow normals and foam continuously without crossing frame-atlas rows', async () => {
+it.each([
+  false,
+  true,
+])('samples shallow normals and foam continuously without crossing frame-atlas rows (additive=%s)', async (additive) => {
   const adapter = await navigator.gpu.requestAdapter();
   if (adapter === null) throw new Error('Shallow sampling requires a real GPU adapter');
   const device = await adapter.requestDevice();
@@ -37,7 +40,7 @@ it('samples additive shallow normals and foam continuously without crossing fram
           },
           defines: {
             WATER_SHALLOW_SIMULATION: true,
-            WATER_SHALLOW_ADDITIVE: true,
+            WATER_SHALLOW_ADDITIVE: additive,
             WATER_OCEAN_PATCH: false,
           },
         },
@@ -124,12 +127,8 @@ it('samples additive shallow normals and foam continuously without crossing fram
     expect(result[18]).toBeCloseTo(0, 5);
     readback.unmap();
   } finally {
-    textures.forEach((texture) => {
-      texture.destroy();
-    });
-    buffers.forEach((buffer) => {
-      buffer.destroy();
-    });
+    for (const texture of textures) texture.destroy();
+    for (const buffer of buffers) buffer.destroy();
     device.destroy();
   }
 });

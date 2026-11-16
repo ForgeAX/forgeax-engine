@@ -1,4 +1,3 @@
-import { WATER_SYSTEM_RESOURCE } from '@forgeax/engine/runtime';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import {
   configureRuntimeAssetCatalog,
@@ -28,6 +27,7 @@ import {
 } from '@forgeax/engine/render';
 import {
   WATER_SCENE_STATUS_RESOURCE,
+  WATER_SYSTEM_RESOURCE,
   type WaterSceneStatus,
   waterSceneMeshView,
   waterSceneSnapshot,
@@ -41,11 +41,16 @@ import {
 import { Terrain } from '@forgeax/engine/terrain';
 import { type AssetHandle, err, ok } from '@forgeax/engine/types';
 import type { WaterSystem } from '@forgeax/engine/water';
-import { type CameraPose, createCameraControls } from './camera-controls';
+import { type CameraPose, createWaterCameraControls } from '../../camera-controls';
+import { dressWaterStage, stageRuntimePanel } from '../../presentation';
+import { requireDemoValue } from '../../runtime-input';
+import { arrangeWaterSettings, waterQualityControl } from '../../settings-panel';
+import { waterStageNavigation } from '../../stage-catalog';
 import { WATER_R3_PACKAGE } from './identity';
 import { createMaterialPanel } from './material-panel';
 import { createSceneControls } from './scene-controls';
 import './style.css';
+import '../../settings-panel.css';
 
 const element = <T extends HTMLElement>(selector: string): T => {
   const node = document.querySelector<T>(selector);
@@ -96,8 +101,8 @@ async function main() {
     ...SSR_SETTINGS,
     waterTemporal: WaterSsrTemporalValue[waterTemporalMode.value as WaterSsrTemporal],
   });
-  const app = (
-    await createApp(
+  const createStageApp = () =>
+    createApp(
       canvas,
       {
         plugins: [physics3d],
@@ -110,8 +115,8 @@ async function main() {
         ...forgeaxBundlerAdapter(),
         importTransport: createRuntimeAssetImportTransport(runtimeBinding),
       },
-    )
-  ).unwrap();
+    );
+  const app = (await createStageApp()).unwrap();
   const assets = app.assets;
   if (!assets) throw new Error('Asset registry unavailable');
   configureRuntimeAssetCatalog(assets, runtimeBinding);
@@ -159,17 +164,32 @@ async function main() {
     spawn('box', 'white', [-14 + i * 2.8, -4.05, 0], [0.045, 0.025, 28]);
     spawn('box', 'white', [0, -4.05, -14 + i * 2.8], [28, 0.025, 0.045]);
   }
-  spawn('box', 'pier', [15, 0.6, 2], [4, 0.4, 24]);
+  for (let j = 0; j < 48; j++) spawn('box', 'pier', [15, 0.6, -9.75 + j * 0.5], [4, 0.25, 0.44]);
+  for (const side of [-1, 1]) {
+    spawn('box', 'mirror', [15 + side * 1.8, 1.65, 2], [0.07, 0.07, 24]);
+    for (let j = 0; j < 7; j++)
+      spawn('box', 'pier', [15 + side * 1.8, 1.15, -9 + j * 3.6], [0.14, 1.2, 0.14]);
+  }
   for (const x of [13.6, 16.4])
     for (const z of [-7, 0, 9]) spawn('box', 'stone', [x, -1.7, z], [0.35, 4.4, 0.35]);
   for (let i = 0; i < 5; i++) {
     const x = -8 + i * 3.7;
+    spawn('box', 'stone', [x, -0.6, -7 - (i % 2)], [2.15, 0.7, 2.15]);
+    for (const side of [-1, 1])
+      spawn('box', 'mirror', [x + side * 0.83, 1.2, -7 - (i % 2)], [0.1, 6.2, 0.28]);
     spawn(
       'box',
       required(['red', 'yellow', 'white', 'teal', 'red'][i]),
       [x, 1.2, -7 - (i % 2)],
-      [1.5, 6, 1.5],
+      [1.5, 6, 0.12],
     );
+    // Retain optical calibration faces, with a substantial instrument frame and divided backing.
+    for (const y of [-1.5, 0, 1.5, 3, 4.1]) {
+      spawn('box', 'stone', [x, y, -7 - (i % 2) - 0.13], [1.65, 0.08, 0.12]);
+      spawn('box', 'mirror', [x + 0.56, y + 0.12, -7 - (i % 2) + 0.075], [0.22, 0.035, 0.02]);
+    }
+    spawn('box', 'stone', [x, 4.28, -7 - (i % 2)], [2, 0.24, 0.5]);
+    spawn('box', 'pier', [x, -1.8, -7 - (i % 2)], [2.1, 0.18, 2.1]);
     spawn(
       'sphere',
       required(['yellow', 'red', 'teal', 'white', 'yellow'][i]),
@@ -335,7 +355,7 @@ async function main() {
     for (const button of document.querySelectorAll<HTMLButtonElement>('[data-view]'))
       button.setAttribute('aria-pressed', String(button.dataset.view === selectedView));
   };
-  const cameraControls = createCameraControls({
+  const cameraControls = createWaterCameraControls({
     app,
     canvas,
     readPose: () => pose,
@@ -503,22 +523,25 @@ async function main() {
     animate = (event.currentTarget as HTMLInputElement).checked;
   });
   world
-    .addSystem(Update, defineSystem({
-      name: 'waterR3SceneAnimation',
-      queries: [],
-      fn: () => {
-        if (!animate) return;
-        const delta = world.getResource(Time).delta;
-        if (delta === 0) return;
-        time += delta;
-        world
-          .set(moving, Transform, {
-            pos: [1 + Math.sin(time * 0.45) * 3, 1.6, -2],
-            quat: [0, Math.sin(time * 0.2), 0, Math.cos(time * 0.2)],
-          })
-          .unwrap();
-      },
-    }))
+    .addSystem(
+      Update,
+      defineSystem({
+        name: 'waterR3SceneAnimation',
+        queries: [],
+        fn: () => {
+          if (!animate) return;
+          const delta = world.getResource(Time).delta;
+          if (delta === 0) return;
+          time += delta;
+          world
+            .set(moving, Transform, {
+              pos: [1 + Math.sin(time * 0.45) * 3, 1.6, -2],
+              quat: [0, Math.sin(time * 0.2), 0, Math.cos(time * 0.2)],
+            })
+            .unwrap();
+        },
+      }),
+    )
     .unwrap();
   const readState = () => {
     const water = world.getResource<WaterSystem>(WATER_SYSTEM_RESOURCE);
@@ -683,6 +706,71 @@ async function main() {
     materialPanel.dispose();
     void app.dispose();
   });
+  await dressWaterStage(app, [0, 0, 0], 1);
+  stageRuntimePanel(
+    app,
+    requireDemoValue(document.getElementById('controls-panel'), 'accepted authored scene member'),
+    'R3',
+  );
+  const materialControls = element<HTMLFieldSetElement>('#material-controls');
+  const binding = document.createElement('details');
+  const bindingTitle = document.createElement('summary');
+  bindingTitle.textContent = '高级 · 资产、颜色通道与材质分支';
+  binding.append(bindingTitle);
+  const appearance = element<HTMLSelectElement>('#water-appearance');
+  const appearanceLabel = materialControls.querySelector<HTMLElement>('[for=water-appearance]');
+  const primary = new Set<Element>([appearance, appearanceLabel ?? appearance]);
+  for (const id of ['roughness', 'normal', 'refraction-strength', 'bottom-refraction']) {
+    primary.add(element(`#${id}`));
+    const label = materialControls.querySelector(`[for=${id}]`);
+    if (label) primary.add(label);
+  }
+  for (const child of [...materialControls.children])
+    if (!primary.has(child)) binding.append(child);
+  materialControls.append(binding);
+  const quality = waterQualityControl((level) => {
+    for (const [id, on] of [
+      ['ssr', level > 0],
+      ['taa', level > 0],
+      ['scale', level === 0],
+    ] as const) {
+      const control = element<HTMLInputElement>(`#${id}`);
+      if (control.checked !== on) {
+        control.checked = on;
+        control.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+    }
+    const source = assets.read(zoneHandle).unwrap();
+    const resolution = [256, 512, 1024, 2048][level] ?? 512;
+    assets
+      .replace(zoneHandle, {
+        ...source,
+        tessellationFactor: [3, 4, 5, 6][level] ?? 4,
+        waterInfo: {
+          ...source.waterInfo,
+          resolution: { widthPx: resolution, heightPx: resolution },
+        },
+      })
+      .unwrap();
+  }, 1);
+  const sections = [...panel.querySelectorAll<HTMLElement>(':scope > section')];
+  arrangeWaterSettings({
+    panel,
+    hero: panel.querySelector<HTMLElement>('.panel-heading') ?? undefined,
+    title: '反射与水下',
+    description: '从湖畔走到水线，再潜入水下。观察倒影、折射与水色随视角和水深的变化。',
+    dimensions: [
+      { title: '展示场景', elements: sections.slice(0, 1), open: true },
+      { title: '相机与水线', elements: sections.slice(1, 2), open: true },
+      { title: '水色与折射', elements: sections.slice(2, 3) },
+      { title: '画质与动画', elements: [quality, ...sections.slice(4, 5)] },
+      {
+        title: '高级 · 水体选择与观测',
+        elements: [...sections.slice(3, 4), ...sections.slice(5, 6)],
+      },
+    ],
+  });
+  waterStageNavigation('R3');
   app.start().unwrap();
   mountScenario();
   applyCamera();

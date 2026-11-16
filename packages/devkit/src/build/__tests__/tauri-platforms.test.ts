@@ -20,6 +20,11 @@ it.each([
     await mkdir(resolve(root, 'scripts'));
     await mkdir(resolve(root, 'node_modules/@tauri-apps/cli'), { recursive: true });
     await writeFile(resolve(root, 'scripts/build.mjs'), tauriBuildScript);
+    await mkdir(resolve(root, 'src-tauri/android'), { recursive: true });
+    await writeFile(
+      resolve(root, 'src-tauri/android/loopback-network.xml'),
+      '<network-security-config />',
+    );
     await writeFile(
       resolve(root, 'host.mjs'),
       `Object.defineProperty(process, 'platform', { value: ${JSON.stringify(host)} });`,
@@ -31,7 +36,13 @@ it.each([
       const args = process.argv.slice(2);
       if (process.env.CI !== 'true') process.exit(11);
       fs.appendFileSync('calls.jsonl', JSON.stringify(args) + '\\n');
-      if (args[1] === 'init') fs.mkdirSync('src-tauri/gen/' + (args[0] === 'ios' ? 'apple' : 'android'), { recursive: true });
+      if (args[1] === 'init') {
+        fs.mkdirSync('src-tauri/gen/' + (args[0] === 'ios' ? 'apple' : 'android'), { recursive: true });
+        if (args[0] === 'android') {
+          fs.mkdirSync('src-tauri/gen/android/app/src/main', { recursive: true });
+          fs.writeFileSync('src-tauri/gen/android/app/src/main/AndroidManifest.xml', '<manifest><application /></manifest>');
+        }
+      }
       if (process.env.FAIL_BUILD === 'true' && args.includes('build')) process.exit(9);
     `,
     );
@@ -51,6 +62,20 @@ it.each([
       .split('\n')
       .map((line) => JSON.parse(line));
     expect(calls[0]).toEqual(['icon', 'icon.svg']);
+    if (platform === 'android') {
+      expect(
+        await readFile(
+          resolve(root, 'src-tauri/gen/android/app/src/main/AndroidManifest.xml'),
+          'utf8',
+        ),
+      ).toContain('android:networkSecurityConfig="@xml/forgeax_loopback"');
+      expect(
+        await readFile(
+          resolve(root, 'src-tauri/gen/android/app/src/main/res/xml/forgeax_loopback.xml'),
+          'utf8',
+        ),
+      ).toBe('<network-security-config />');
+    }
     expect(calls).toContainEqual([...expected, '--config', '{"bundle":{"active":true}}']);
     expect(calls.at(-1)).toEqual(expected);
     expect(calls.filter((call) => call[1] === 'init')).toHaveLength(

@@ -111,7 +111,7 @@ fn waterMeshTileIsFar(instanceIndex: u32) -> bool {
 
 fn waterMeshFarBoundaryWeight(instanceIndex: u32, bodyIndex: u32, waveBodyIndex: u32, worldXZ: vec2<f32>) -> f32 {
   if (waterMeshTileWords[15u] == 0u || waterMeshTileIsFar(instanceIndex)) { return 1.0; }
-  let mask = waterMeshTileWords[waterMeshTileWordOffset(instanceIndex) + 23u];
+  let mask = waterMeshTileWords[waterMeshTileWordOffset(instanceIndex) + 23u] & 15u;
   if (mask == 0u) { return 1.0; }
   let bounds = waterBodyData[bodyIndex].dynamicBoundsCenterExtentXZ;
   if (any(bounds.zw <= vec2<f32>(0.0))) { return 1.0; }

@@ -56,6 +56,11 @@ export interface AssetLoadOptions {
   readonly signal?: AbortSignal;
 }
 
+interface SourceLoadOptions extends AssetLoadOptions {
+  readonly refresh?: boolean;
+  readonly readScope?: PackScope;
+}
+
 type AssetSourceSnapshot = AssetGraphSnapshot & {
   readonly scopeId: string;
   readonly realm: string;
@@ -91,6 +96,7 @@ export interface AdoptedAssetSource {
 export interface AssetSource {
   readonly catalog: CatalogReplica;
   readonly catalogSource: CatalogSource;
+  openLoadScope(): PackScope;
   readPack(
     row: CatalogEntry,
     signal: AbortSignal,
@@ -121,12 +127,12 @@ export interface AssetSource {
   load<K extends BuiltinAssetKind>(
     guid: string,
     kind: K,
-    options?: AssetLoadOptions & { readonly refresh?: boolean },
+    options?: SourceLoadOptions,
   ): Promise<Result<BuiltinAssetPayload<K>, AssetLoadError>>;
   load<P, K extends string>(
     guid: string,
     kind: AssetKind<P, K>,
-    options?: AssetLoadOptions & { readonly refresh?: boolean },
+    options?: SourceLoadOptions,
   ): Promise<Result<P, AssetLoadError>>;
   entry(guid: string): SourceEntry | undefined;
   checkCurrent(guid: string): Result<void, AssetLoadError>;
@@ -311,7 +317,7 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
       ...publication,
       scopeId: session.scopeId,
     };
-    const packKey = `${row.packageUrl}\u0000${tuple.generation}\u0000${tuple.digest}\u0000${tuple.outputSetDigest}`;
+    const packKey = `${row.packageUrl}\u0000${tuple.scopeId}\u0000${tuple.generation}\u0000${tuple.digest}\u0000${tuple.outputSetDigest}`;
     let opened = scope.get(packKey);
     if (opened === undefined) {
       opened = openPack(row.packageUrl, tuple, signal, fetcher);
@@ -449,6 +455,7 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
   const registry: AssetSource = {
     catalog: session,
     catalogSource: options.catalog,
+    openLoadScope: () => new Map(),
     readPack: (row, signal, fetcher = sourceFetcher(row.packageUrl)) => {
       const validated = validateRuntimeRow(row);
       return validated.ok
@@ -561,7 +568,7 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
     load: (async (
       guid: string,
       kind: BuiltinAssetKind | AssetKind<unknown, string>,
-      loadOptions: AssetLoadOptions & { readonly refresh?: boolean } = {},
+      loadOptions: SourceLoadOptions = {},
     ): Promise<Result<unknown, AssetLoadError>> => {
       if (!isValidAssetGuidString(guid)) return err(invalidGuid(guid));
       if (loadOptions.signal?.aborted) return err(assetLoadCancelled(guid));
@@ -581,7 +588,7 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
           graph.invalidate(guid);
           return before;
         }
-        const result = await graph.load(guid, loadOptions.signal);
+        const result = await graph.load(guid, loadOptions.signal, loadOptions.readScope);
         if (!result.ok) return result;
         const current = checkCurrent(guid, result.value.publication);
         if (!current.ok) return current;

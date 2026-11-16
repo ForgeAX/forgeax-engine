@@ -2,11 +2,13 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
+import { cpuPerfettoHtml, perfettoUiUrl } from './cpu_perfetto_view.mjs';
 import { cpuProfileGraph } from './cpu_profile.mjs';
 import { cpuSampleTimeline } from './cpu_timeline.mjs';
 import {
   cpuCallTreeSvg,
   cpuTimelineCallTrees,
+  cpuTimelineIntervalSummary,
   cpuTimelineSampleDensity,
   cpuTimelineSvg,
 } from './cpu_timeline_view.mjs';
@@ -48,36 +50,6 @@ function stackSlices(samples, graph) {
     }
   }
   return slices;
-}
-
-function summarizeInterval(track, startMs, endMs, cursor) {
-  const categories = {},
-    self = new Map();
-  let sampledMs = 0,
-    sampleCount = 0;
-  while (cursor.index < track.samples.length && track.samples[cursor.index].endMs <= startMs)
-    cursor.index++;
-  for (let at = cursor.index; at < track.samples.length; at++) {
-    const sample = track.samples[at];
-    if (sample.startMs >= endMs) break;
-    const ms = Math.max(0, Math.min(endMs, sample.endMs) - Math.max(startMs, sample.startMs));
-    if (ms === 0) continue;
-    sampledMs += ms;
-    sampleCount++;
-    categories[sample.category] = (categories[sample.category] ?? 0) + ms;
-    self.set(sample.nodeId, (self.get(sample.nodeId) ?? 0) + ms);
-  }
-  return {
-    targetId: track.target.targetId,
-    sampledMs,
-    unobservedMs: Math.max(0, endMs - startMs - sampledMs),
-    sampleCount,
-    categories,
-    topSelf: [...self]
-      .map(([nodeId, sampledSelfMs]) => ({ nodeId, sampledSelfMs }))
-      .sort((a, b) => b.sampledSelfMs - a.sampledSelfMs)
-      .slice(0, 10),
-  };
 }
 
 function captureCompletionReceipts(frames) {
@@ -180,7 +152,7 @@ function associateCpuCompletions(frames, admitted, tracks, originUs, endUs) {
             coverage: startMs === previous.atMs && endMs === atMs ? 'complete' : 'partial',
             missingIntermediateReceipts: current.frameId - previous.frameId - 1,
             threads: tracks.map((track, index) =>
-              summarizeInterval(track, startMs, endMs, cursors[index]),
+              cpuTimelineIntervalSummary(track, startMs, endMs, cursors[index]),
             ),
           });
       }
@@ -268,7 +240,7 @@ export function buildCpuTimeline(raw, { report, frames, maps, rawSha256 } = {}) 
         sourceMap,
       ),
     };
-    track.summary = summarizeInterval(track, 0, (endUs - originUs) / 1000, { index: 0 });
+    track.summary = cpuTimelineIntervalSummary(track, 0, (endUs - originUs) / 1000, { index: 0 });
     track.sampling = {
       ...cpuTimelineSampleDensity(track, 0, (endUs - originUs) / 1000),
       samplesPerSecond: track.samples.length / ((endUs - originUs) / 1000000),
@@ -318,8 +290,15 @@ export function buildCpuTimeline(raw, { report, frames, maps, rawSha256 } = {}) 
 
 export function cpuTimelineTrace(model) {
   const traceEvents = [];
+  const pid = model.tracks.length + 2;
   const metadata = (tid, name) =>
-    traceEvents.push({ ph: 'M', name: 'thread_name', pid: 1, tid, args: { name } });
+    traceEvents.push({ ph: 'M', name: 'thread_name', pid, tid, args: { name } });
+  traceEvents.push({
+    ph: 'M',
+    name: 'process_name',
+    pid,
+    args: { name: 'CPU sampled JS targets' },
+  });
   metadata(1, 'Completion intervals (not execution scopes)');
   for (const [name, ms] of [
     ['Capture start', model.startMs],
@@ -327,10 +306,10 @@ export function cpuTimelineTrace(model) {
   ])
     traceEvents.push({
       ph: 'i',
-      s: 'g',
+      s: 't',
       cat: 'capture-boundary',
       name,
-      pid: 1,
+      pid,
       tid: 1,
       ts: ms * 1000,
     });
@@ -339,7 +318,7 @@ export function cpuTimelineTrace(model) {
       ph: 'X',
       cat: 'completion-interval',
       name: `Completion #${frame.current.frameId}`,
-      pid: 1,
+      pid,
       tid: 1,
       ts: frame.startMs * 1000,
       dur: (frame.endMs - frame.startMs) * 1000,
@@ -359,7 +338,7 @@ export function cpuTimelineTrace(model) {
         ph: 'X',
         cat: 'sampled-stack-estimate',
         name: node.source?.functionName || node.functionName || '(anonymous)',
-        pid: 1,
+        pid,
         tid,
         ts: slice.startMs * 1000,
         dur: (slice.endMs - slice.startMs) * 1000,
@@ -388,9 +367,9 @@ export function cpuTimelineTrace(model) {
   };
 }
 
-export function cpuTimelineHtml(model, viewSource, initialView = {}) {
+export function cpuInspectorHtml(model, viewSource, initialView = {}) {
   const json = JSON.stringify(model).replaceAll('<', '\\u003c');
-  return `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CPU sampling timeline</title><body><script type="module">${viewSource.replaceAll('export function ', 'function ')}\nmountCpuTimeline(${json}, ${JSON.stringify(initialView)});</script></body></html>`;
+  return `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CPU sampling inspector</title><body><script type="module">${viewSource.replaceAll('export function ', 'function ')}\nmountCpuInspector(${json}, ${JSON.stringify(initialView)});</script></body></html>`;
 }
 
 export function defaultCpuView(model) {
@@ -427,6 +406,7 @@ export const CPU_REPORT_OPTIONS = {
   width: { type: 'string', default: '2400' },
   'from-ms': { type: 'string' },
   'to-ms': { type: 'string' },
+  'perfetto-ui': { type: 'string' },
 };
 
 export async function renderCpuTimeline(
@@ -440,7 +420,7 @@ export async function renderCpuTimeline(
   });
   if (values.help) {
     process.stdout.write(
-      'Usage: node cpu.mjs report PROFILE.json --out-dir NEW_DIRECTORY [--report REPORT.json --frames FRAMES.json [--maps MAPS.json]] [--width 2400] [--from-ms N --to-ms N]\nWrites timeline.json, analysis.json, timeline.html, timeline.svg, call-tree.svg, call-trees.json and timeline.trace.json exclusively. CPU totals and same-capture gap analysis are integrated. Single .cpuprofile or an existing same-capture profiles envelope. HTML can open other normalized timeline.json files offline and export the visible SVG/PNG. Numeric ranges are milliseconds relative to the common capture origin; they select the static SVG and initial HTML viewport. HTML can return to the full capture and JSON retains all data. Multi-target/frame association uses analyze_cpu_windows admission, including clock anchors. Missing/partial evidence remains explicit; no on-CPU, frame execution or performance acceptance is inferred.\n',
+      'Usage: node cpu.mjs report PROFILE.json --out-dir NEW_DIRECTORY [--report REPORT.json --frames FRAMES.json [--maps MAPS.json]] [--width 2400] [--from-ms N --to-ms N] [--perfetto-ui HTTP_UI_BASE]\nWrites timeline.json, analysis.json, timeline.html, timeline.svg, call-tree.svg, call-trees.json and timeline.trace.json exclusively. CPU totals and same-capture gap analysis are integrated. Single .cpuprofile or an existing same-capture profiles envelope. timeline.html uses the pinned Perfetto UI over HTTP; run cpu.mjs serve REPORT_DIRECTORY. --perfetto-ui selects a self-hosted build. Initial hosted UI loading needs network; trace data is passed locally to its browser frame with sharing disabled. timeline-inspector.html provides offline call trees, completion/function details and call-tree SVG export. Numeric ranges are milliseconds relative to the common capture origin; they select the static SVG and initial HTML viewport. HTML can return to the full capture and JSON retains all data. Multi-target/frame association uses analyze_cpu_windows admission, including clock anchors. Missing/partial evidence remains explicit; no on-CPU, frame execution or performance acceptance is inferred.\n',
     );
     return;
   }
@@ -450,13 +430,23 @@ export async function renderCpuTimeline(
   );
   const loaded = await Promise.all(paths.map(loadJson));
   let at = 1;
-  const model = buildCpuTimeline(loaded[0].value, {
-    rawSha256: loaded[0].sha256,
-    report: values.report ? loaded[at++].value : undefined,
-    frames: values.frames ? loaded[at++].value : undefined,
-    maps: values.maps ? loaded[at++].value : generatedMaps,
-  });
-  model.inputs = paths.map((path, index) => ({ path, sha256: loaded[index].sha256 }));
+  const normalized = loaded[0].value.kind === 'sampled-cpu-timeline';
+  requireFact(
+    !normalized || (loaded[0].value.schemaVersion === 1 && paths.length === 1 && !generatedMaps),
+    'Normalized timeline owns its capture metadata; do not supply report/frames/maps',
+  );
+  const model = normalized
+    ? loaded[0].value
+    : buildCpuTimeline(loaded[0].value, {
+        rawSha256: loaded[0].sha256,
+        report: values.report ? loaded[at++].value : undefined,
+        frames: values.frames ? loaded[at++].value : undefined,
+        maps: values.maps ? loaded[at++].value : generatedMaps,
+      });
+  model.inputs = [
+    ...(model.inputs ?? []),
+    ...paths.map((path, index) => ({ path, sha256: loaded[index].sha256 })),
+  ];
   model.command = args;
   if (generatedMaps) model.nameRecovery = generatedMaps.nameRecovery;
   model.initialView = defaultCpuView(model);
@@ -476,6 +466,8 @@ export async function renderCpuTimeline(
         : Number(values['to-ms']),
   };
   const svg = cpuTimelineSvg(model, options); // Validate output range before creating any files.
+  const ui = perfettoUiUrl(values['perfetto-ui']);
+  const trace = cpuTimelineTrace(model);
   const source = await readFile(new URL('./cpu_timeline_view.mjs', import.meta.url), 'utf8');
   await mkdir(values['out-dir']); // No existing directory or input can be overwritten.
   for (const [name, body] of [
@@ -496,7 +488,15 @@ export async function renderCpuTimeline(
         windows: model.windowAnalysis,
       }),
     ],
-    ['timeline.html', cpuTimelineHtml(model, source, options)],
+    [
+      'timeline.html',
+      cpuPerfettoHtml(model, trace, {
+        ...options,
+        ui,
+        converterSource: cpuTimelineTrace.toString(),
+      }),
+    ],
+    ['timeline-inspector.html', cpuInspectorHtml(model, source, options)],
     ['timeline.svg', svg],
     ['call-tree.svg', cpuCallTreeSvg(model, options)],
     [
@@ -511,7 +511,7 @@ export async function renderCpuTimeline(
         }),
       }),
     ],
-    ['timeline.trace.json', JSON.stringify(cpuTimelineTrace(model))],
+    ['timeline.trace.json', JSON.stringify(trace)],
   ])
     await writeFile(join(values['out-dir'], name), body, { flag: 'wx' });
   if (!quiet)

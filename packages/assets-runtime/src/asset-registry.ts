@@ -213,6 +213,12 @@ export interface AssetReloadOptions extends AssetLoadOptions {
   readonly conflict: 'reject' | 'overwrite';
 }
 
+export interface AssetBatchLoadOptions extends AssetLoadOptions {
+  /** Observe completed reads or yield to the host. Grants stay batch-owned
+   * until success; throwing or cancelling here rolls back every admitted grant. */
+  readonly onProgress?: (completed: number, total: number) => void | Promise<void>;
+}
+
 interface SourceAdoption {
   readonly started: number;
   readonly conflict: AssetReloadOptions['conflict'];
@@ -1371,6 +1377,60 @@ export class AssetRegistry implements AssetReferenceOwner {
       return await this.loadSource(source, key, kind, expectedKind, options);
     } finally {
       finishLoadWork();
+    }
+  }
+
+  /** Load a finite roster serially, sharing Pack verification only until this
+   * operation settles. Each returned entry owns one grant, including duplicates.
+   * Failure releases every earlier grant and admits no further read. */
+  loadMany<K extends BuiltinAssetKind>(
+    guids: readonly (AssetGuid | string)[],
+    kind: K,
+    options?: AssetBatchLoadOptions,
+  ): Promise<Result<AssetHandle<K>[], RuntimeAssetError>>;
+  loadMany<P, K extends string>(
+    guids: readonly (AssetGuid | string)[],
+    kind: AssetKind<P, K>,
+    options?: AssetBatchLoadOptions,
+  ): Promise<Result<AssetHandle<K, P>[], RuntimeAssetError>>;
+  async loadMany(
+    guids: readonly (AssetGuid | string)[],
+    kind: BuiltinAssetKind | AssetKind<unknown, string>,
+    options: AssetBatchLoadOptions = {},
+  ): Promise<Result<AssetHandle[], RuntimeAssetError>> {
+    const source = this.#source;
+    const readScope = source?.openLoadScope();
+    const scoped = { ...options, readScope };
+    const handles: AssetHandle[] = [];
+    const sourceChanged = () =>
+      err(
+        new AssetError({
+          code: 'asset-write-conflict',
+          expected: 'the same asset source until batch completion',
+          hint: 'load again from the current source',
+        }),
+      );
+    let completed = false;
+    try {
+      for (const guid of guids) {
+        if (this.#source !== source) return sourceChanged();
+        const result =
+          typeof kind === 'string'
+            ? await this.load(guid, kind, scoped)
+            : await this.load(guid, kind, scoped);
+        if (!result.ok) return result;
+        handles.push(result.value);
+        if (!options.signal?.aborted && options.onProgress)
+          await options.onProgress(handles.length, guids.length);
+        if (options.signal?.aborted)
+          return err(assetLoadCancelled(typeof guid === 'string' ? guid : AssetGuid.format(guid)));
+        if (this.#source !== source) return sourceChanged();
+      }
+      completed = true;
+      return ok(handles);
+    } finally {
+      readScope?.clear();
+      if (!completed) for (const handle of handles.reverse()) this.release(handle);
     }
   }
 

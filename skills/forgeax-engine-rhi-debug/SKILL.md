@@ -46,6 +46,12 @@ a ready sibling cannot write a partial picture while another native PSO is
 pending. Route that violation to Render graph seal and physical frame submit,
 retaining the actual tape and the original Browser readiness bound.
 
+For resource byte/count distribution and captured pipeline/usage graphs, use the
+[performance GPU workbench](../forgeax-engine-performance/SKILL.md#gpu-capture-workbench)
+on this same tape. Requested GPU resource inspection can capture a frame even
+when its image is correct. The standalone viewer keeps resource IDs and `workIndex`,
+exports images/HTML/AI JSON, and needs no replay device for structural inspection.
+
 ## Diagnose and prove the repair
 
 1. Reproduce the symptom in its actual browser/backend and scene state. Preserve

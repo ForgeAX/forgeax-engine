@@ -787,9 +787,38 @@ runtime acceptance explicitly `not-run`. Tauri-only flags reject other formats.
 | Android | `pnpm build:android` | APK, AAB | JDK 17+, Android SDK/NDK |
 | iOS | `pnpm build:ios` | IPA | macOS/Xcode/XcodeGen, signing/provisioning |
 
+Packaging automates the web closure, native project generation, native-builder
+invocation and artifact collection. System toolchains, account login, signing
+identities and physical-device confirmations remain platform preparation. Agent
+assistance with that setup, app installation or desktop shortcuts is separate
+from the exporter. The generated README includes the platform responsibility
+matrix and distinguishes local developer testing from ordinary app installation.
+
+Android USB/ADB testing needs USB debugging and device authorization; ordinary
+APK installation follows the device's installer and verification policy instead.
+iOS development testing needs an Apple team/provisioning and phone Developer Mode;
+App Store/TestFlight users do not need those developer settings. A free Personal
+Team supports personal-device tests, with seven-day provisioning, rather than
+store distribution. Read the platform setup and delivery guide
+for the engine/toolchain/human boundary and acceptance steps.
+
+Windows and Android reserve an OS-assigned IPv4 loopback port for Tauri's embedded
+assets so nested Workers reach a real HTTP listener. Windows uses that listener
+for the page too. Android uses `forgeax.localhost:<port>` with a registered native
+protocol for the document;
+this preserves one Tauri initialization while nested Workers reach the real
+loopback listener. The native protocol validates the bound port and reads the
+URI path independently of that port. The native Host
+keeps the listener for its process lifetime and scopes IPC to the `main` WebView
+and that exact origin. Android permits cleartext only for the loopback address/domain;
+its native library is linked for 16 KB memory pages. Windows MSI localization
+keeps Unicode application names. Generated application versions start at `0.0.1`.
+
 Mobile projects share `src/lib.rs` with the desktop executable and expose Tauri's
 mobile entry point. Mobile scripts initialize their target once; extra arguments
-are forwarded to the pinned Tauri CLI. Set `JAVA_HOME`, `ANDROID_HOME`, `NDK_HOME`
+are forwarded to the pinned Tauri CLI. Run mobile builds through the generated
+package-manager scripts so IDE callbacks retain their CLI entry. Set
+`JAVA_HOME`, `ANDROID_HOME`, `NDK_HOME`
 for Android; configure a Gradle release keystore for signed Android distribution.
 iOS uses `APPLE_DEVELOPMENT_TEAM` and Xcode provisioning. Signing material stays
 outside generated source. Desktop cross-host builds fail with the prepare-only
@@ -802,7 +831,7 @@ the actual installed executable in `FORGEAX_TAURI_EXECUTABLE` and separate
 qualification. The smoke waits for the startup overlay to leave, then observes
 60 additional completed frames, records command-permission rejection, and waits
 for Host disposal before exit. A locked or hidden desktop is not a visual pass.
-The native bridge is scoped to the local `main` WebView and has only three
+The native bridge is scoped to the packaged `main` WebView and has only three
 application commands for close and opt-in evidence. No filesystem or shell
 plugin is enabled. Runtime UiAsset styles use the declared inline-style policy;
 only Tauri's automatic `style-src` nonce injection is disabled, so a nonce on the

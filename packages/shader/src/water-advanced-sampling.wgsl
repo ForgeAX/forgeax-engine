@@ -47,11 +47,7 @@ fn shallowPreviousGrid(uv: vec2<f32>) -> vec4<f32> { return shallowSampleGrid(uv
 fn shallowSampleNormal(uv: vec2<f32>, row: i32) -> vec3<f32> {
   let atlas = vec2<i32>(textureDimensions(waterShallowNormalTexture));
   let dimensions = vec2<i32>(atlas.x,atlas.y/2);
-  #if WATER_SHALLOW_ADDITIVE == true
   let sample = shallowSampleCells(waterShallowNormalTexture,uv,dimensions,vec2<i32>(0,row*dimensions.y));
-  #else
-  let sample = textureLoad(waterShallowNormalTexture, clamp(vec2<i32>(floor(uv * vec2<f32>(dimensions))),vec2<i32>(0),dimensions-1)+vec2<i32>(0,row*dimensions.y),0);
-  #endif
   let settings=textureLoad(waterShallowMappingTexture,vec2<i32>(1,row),0);
   let up = select(sqrt(max(0.0,1.0-dot(sample.xy,sample.xy))),sample.z,settings.y>0.5);
   let horizontal = shallowRotate(sample.xy,settings.x);
@@ -76,11 +72,7 @@ fn shallowComposeNormal(uv: vec2<f32>, row: i32, residualM: f32, baseNormal: vec
 }
 fn shallowFoam(uv: vec2<f32>) -> f32 {
   let dimensions=vec2<i32>(textureDimensions(waterShallowFoamTexture));
-  #if WATER_SHALLOW_ADDITIVE == true
   return shallowSampleCells(waterShallowFoamTexture,uv,dimensions,vec2<i32>(0)).r;
-  #else
-  return textureLoad(waterShallowFoamTexture,clamp(vec2<i32>(round(uv*vec2<f32>(dimensions-1))),vec2<i32>(0),dimensions-1),0).r;
-  #endif
 }
 #endif
 

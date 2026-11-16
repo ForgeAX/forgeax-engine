@@ -5,9 +5,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { allocationMemoryModel, inspectMemory, snapshotMemoryModel } from '../memory_model.mjs';
-import { memoryHtml, memoryTreemapRects, memoryTreemapSvg } from '../memory_view.mjs';
-import { encodeMemoryModel, decodeMemoryModel } from '../memory_codec.mjs';
+import { decodeMemoryModel, encodeMemoryModel } from '../memory_codec.mjs';
+import {
+  allocationMemoryModel,
+  defaultMemoryNode,
+  inspectMemory,
+  rankMemory,
+  snapshotMemoryModel,
+} from '../memory_model.mjs';
+import { memoryHtml, memorySvg, memoryTreemapRects, memoryTreemapSvg } from '../memory_view.mjs';
 
 const frame = (name) => ({
   functionName: name,
@@ -231,4 +237,119 @@ test('aggregated treemap tails carry a concrete folder-page offset', () => {
   const svg = memoryTreemapSvg(allocationMemoryModel(raw));
   assert(svg.includes('data-memory-offset="39"'));
   assert(!svg.includes('data-memory-offset="undefined"'));
+});
+
+function countWitness() {
+  const raw = allocation();
+  raw.head.children = [
+    { id: 2, callFrame: frame('fewLarge'), selfSize: 10000, children: [] },
+    { id: 3, callFrame: frame('manySmall'), selfSize: 8, children: [] },
+  ];
+  raw.samples = [
+    { nodeId: 2, size: 10000, ordinal: 1 },
+    ...Array.from({ length: 20 }, (_, i) => ({ nodeId: 3, size: 8, ordinal: i + 2 })),
+    ...Array.from({ length: 3 }, (_, i) => ({ nodeId: 99, size: 8, ordinal: i + 22 })),
+  ];
+  return allocationMemoryModel(raw);
+}
+
+test('count inspection sorts before pagination without mutating byte order or losing unresolved samples', () => {
+  const model = countWitness(),
+    before = structuredClone(model);
+  const page = inspectMemory(model, 'root', { metric: 'count', limit: 2 });
+  assert.equal(page.metric, 'count');
+  assert.equal(page.metricLabel, 'recorded allocation samples');
+  assert.deepEqual(
+    page.children.map((n) => n.id),
+    ['allocation:3', 'unresolved'],
+  );
+  assert.equal(page.node.totalCount, 24);
+  assert.equal(
+    inspectMemory(model, 'root', { metric: 'count', offset: 2, limit: 2 }).children[0].id,
+    'allocation:2',
+  );
+  assert.deepEqual(model, before);
+  assert.equal(inspectMemory(model).children[0].id, 'allocation:2');
+  assert.throws(() => inspectMemory(model, 'root', { metric: 'estimated-objects' }), /metric/);
+});
+
+test('count treemap gives zero-byte recorded samples positive area and conserves selected count', () => {
+  const model = countWitness();
+  const svg = memoryTreemapSvg(model, 'root', { metric: 'count', depth: 1 });
+  assert(svg.includes('area = recorded allocation samples'));
+  assert(svg.includes('data-memory-node="unresolved"'));
+  assert(svg.includes('manySmall'));
+  assert(
+    svg.indexOf('data-memory-node="allocation:3"') < svg.indexOf('data-memory-node="allocation:2"'),
+  );
+  assert(!memoryTreemapSvg(model, 'root', { depth: 1 }).includes('data-memory-node="unresolved"'));
+  const folders = memorySvg(model, 'root', { metric: 'count' });
+  assert(folders.includes('83.3%'));
+  assert(folders.includes('Unresolved sample owners'));
+  assert(!folders.includes('SUBTREE BYTES /'));
+  const snapshotModel = snapshotMemoryModel(snapshot());
+  assert(memoryTreemapSvg(snapshotModel, 'root', { metric: 'count' }).includes('object:1'));
+});
+
+test('count defaults retain count-only branches and compact snapshot reload preserves the selected metric', () => {
+  const model = allocationMemoryModel(allocation());
+  assert.notEqual(defaultMemoryNode(model), 'root');
+  assert.equal(defaultMemoryNode(model, { metric: 'count' }), 'root');
+  model.metric = 'count';
+  assert.equal(inspectMemory(model).metric, 'count');
+  const snapshotModel = snapshotMemoryModel(snapshot());
+  snapshotModel.metric = 'count';
+  const decoded = decodeMemoryModel(encodeMemoryModel(snapshotModel));
+  assert.equal(inspectMemory(decoded).metric, 'count');
+  assert.equal(inspectMemory(decoded).node.totalCount, 3);
+});
+
+test('report and inspect CLI preserve count selection and raw count conservation', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'memory-count-'));
+  try {
+    const input = join(directory, 'memory.json'),
+      out = join(directory, 'report');
+    await writeFile(input, JSON.stringify(countWitness()));
+    const cli = fileURLToPath(new URL('../memory.mjs', import.meta.url));
+    const report = spawnSync(
+      process.execPath,
+      [cli, 'report', input, '--out-dir', out, '--metric', 'count'],
+      { encoding: 'utf8' },
+    );
+    assert.equal(report.status, 0, report.stderr);
+    const saved = JSON.parse(await readFile(join(out, 'memory.json'), 'utf8'));
+    assert.equal(saved.metric, 'count');
+    assert.equal(saved.summary.totalCount, 24);
+    assert.equal(saved.summary.totalBytes, 10008);
+    assert(
+      (await readFile(join(out, 'memory.svg'), 'utf8')).includes(
+        'area = recorded allocation samples',
+      ),
+    );
+    const inspect = spawnSync(
+      process.execPath,
+      [cli, 'inspect', join(out, 'memory.json'), '--metric', 'bytes', '--limit', '1'],
+      { encoding: 'utf8' },
+    );
+    assert.equal(inspect.status, 0, inspect.stderr);
+    assert.equal(JSON.parse(inspect.stdout).children[0].id, 'allocation:2');
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('global count hotspots provide bounded AI rows and distinguish self from overlapping totals', () => {
+  const model = countWitness();
+  const ranked = rankMemory(model, { metric: 'count', limit: 2 });
+  assert.deepEqual(
+    ranked.rows.map((n) => n.id),
+    ['allocation:3', 'unresolved'],
+  );
+  assert.equal(ranked.total, 3);
+  assert(ranked.rows.every((n) => n.children === undefined));
+  const match = rankMemory(model, { metric: 'count', query: 'fewLarge', by: 'total' });
+  assert.equal(match.rows.length, 1);
+  assert.equal(match.rows[0].totalCount, 1);
+  assert.throws(() => rankMemory(model, { by: 'frequency' }), /self or total/);
+  assert.throws(() => rankMemory(model, { limit: 1001 }), /bounds/);
 });

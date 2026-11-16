@@ -24,7 +24,6 @@ import {
   runDrawRequestError,
   runDrawWorldError,
   runMeshBodyPublished,
-  runRegisterObservationReads,
   runRetirePreviousWaterFrames,
 } from './renderer-frame-operations';
 import { prepareWaterFrameBindingCohorts as prepareWaterFrameBindingCohortsImpl } from './water-frame-cohorts';
@@ -58,13 +57,7 @@ import type {
   ShaderModule,
   TextureView,
 } from '@forgeax/engine-rhi';
-import {
-  err,
-  ok,
-  PIPELINE_LIBRARY_LIMITS,
-  probeMultisampleRenderCapability,
-  RhiError,
-} from '@forgeax/engine-rhi';
+import { err, ok, probeMultisampleRenderCapability, RhiError } from '@forgeax/engine-rhi';
 import type { PipelineGroup2Contract } from '@forgeax/engine-shader';
 import {
   type MaterialShaderEntry,
@@ -317,6 +310,8 @@ import {
   projectRecoveryEvidenceInspection,
   projectRendererInspectionState,
   projectRendererOutputFields,
+  projectRendererOutputInspectionFromSurface,
+  projectRendererPipelineLibraryInspection,
   projectRenderViewInspection,
 } from './renderer-inspection';
 import {
@@ -348,7 +343,6 @@ import {
 import {
   beginObservationFrame,
   createRendererObservationCaptureOwner,
-  type ObservationCaptureRead,
   submittedFramePresentation,
 } from './webgpu-renderer-observation-owner';
 import { CLIP_POSITION_COLOR_VERTEX_BUFFERS } from './webgpu-vertex-layouts';
@@ -2386,11 +2380,8 @@ async function makeWebGPURenderer(
   const {
     observationCaptureOwner,
     stats: observationStats,
-    receiptObservationCaptures,
     receiptObservationBuffers,
-    disposeObservationCaptures,
     disposeOwnedObservationCaptures,
-    readObservationCapture,
     disposeReceiptObservationCaptures,
   } = observationOwner;
   Object.assign(internals, { observationCaptureOwner });
@@ -2964,7 +2955,9 @@ async function makeWebGPURenderer(
       draws: captureMaterialDraws(cameraViews.lastLodObservationCapture),
     };
     const readCaptures =
-      captures.length > 0 ? registerObservationReads(receipt, captureFrame, completed) : undefined;
+      captures.length > 0
+        ? observationOwner.registerReceiptReads(receipt, captureFrame)
+        : undefined;
     const deliverFeatureSourceCompletion = () => {
       return runDeliverFeatureSourceCompletion(
         onFeatureSourceCompleted,
@@ -2999,23 +2992,7 @@ async function makeWebGPURenderer(
     timingObservationStore?.register(receipt, gpuPassTimingSource());
     return receipt;
   };
-  const registerObservationReads = (
-    receipt: FrameReceipt,
-    captureFrame: ReturnType<typeof observationCaptureOwner.consume>,
-    completed: FrameReceipt['completed'],
-  ): ObservationCaptureRead => {
-    return runRegisterObservationReads(
-      disposeObservationCaptures,
-      readObservationCapture,
-      observationCaptureOwner,
-      receiptObservationBuffers,
-      receiptObservationCaptures,
-      receipt,
-      captureFrame,
-      completed,
-    );
-  };
-  /** The current frame's pass-timing observation, or its unavailable/failed reason. */
+
   const gpuPassTimingSource = (): (() => Promise<GpuPassTimingObservation>) | undefined => {
     const passTimingCapture = uiOnlyFrame ? undefined : internals.gpuPassTimingCapture;
     if (passTimingCapture !== undefined)
@@ -3183,24 +3160,6 @@ async function makeWebGPURenderer(
             materialShadersSamplePointShadows(getShader().materialShaderManifestEntries()),
           )
         : undefined;
-      const inspectLibraryFields = () => ({
-        ...(library === undefined || !want('pipelineLibrary', 'pipelineLibraryCollecting')
-          ? {}
-          : {
-              pipelineLibrary: library.inspect(options),
-              pipelineLibraryCollecting: pipelineLibraryCollection?.device === internals.device,
-            }),
-        ...(backgroundPipelineLibraryState === undefined ? {} : { backgroundPipelineLibraryState }),
-        ...(exported?.ok === true
-          ? {
-              pipelineLibraryManifest: exported.value,
-              pipelineLibraryPolicy: {
-                ...PIPELINE_LIBRARY_LIMITS,
-                ...options?.pipelineLibraryLimits,
-              },
-            }
-          : {}),
-      });
       const generation = activeDeviceScope.generation;
       const inspectDeviceFields = () => ({
         ...(want('profile') ? { profile: selectedProfile() } : {}),
@@ -3230,6 +3189,7 @@ async function makeWebGPURenderer(
               health.reason === 'alive' && !disposed
                 ? (view) => cloudAdoption.read(view, generation)
                 : undefined,
+              fields,
             )
           : {}),
         ...projectRenderViewInspection(inspected, deviceLost, fields),
@@ -3243,11 +3203,17 @@ async function makeWebGPURenderer(
       });
       const inspection = {
         ...(want('debugOverlay') ? debugOverlayInspectionField(renderWorld) : {}),
-        ...inspectLibraryFields(),
+        ...projectRendererPipelineLibraryInspection(
+          library,
+          options,
+          () => pipelineLibraryCollection?.device === internals.device,
+          backgroundPipelineLibraryState,
+          exported,
+        ),
         state,
         ...(want('views') ? { views: cameraViews.inspect() } : {}),
-        recovery: recoveryInspection,
-        surface: surfaceReleased ? 'released' : 'available',
+        ...(want('recovery') ? { recovery: recoveryInspection } : {}),
+        ...(want('surface') ? { surface: surfaceReleased ? 'released' : 'available' } : {}),
         ...inspectDeviceFields(),
         ...(pointShadow === undefined ? {} : { pointShadow: Object.freeze({ ...pointShadow }) }),
         ...(want('perFramePassNames')
@@ -3265,14 +3231,17 @@ async function makeWebGPURenderer(
           : {}),
         ...(want('output', 'observation')
           ? projectRendererOutputFields({
-              graph: deviceLost ? undefined : viewGraphInfo(inspected),
-              surfaceReleased,
-              pipelineState,
+              outputInspection: projectRendererOutputInspectionFromSurface({
+                graph: deviceLost ? undefined : viewGraphInfo(inspected),
+                surfaceReleased,
+                pipelineState,
+                rgba16floatRenderable: internals.device.caps.rgba16floatRenderable,
+                colorSpace: internals.outputColorSpace.report,
+                autoExposure: viewAutoExposure(inspected),
+                standardLut: viewStandardLut(inspected),
+                presentationProof: internals.context?.presentationProof,
+              }),
               rgba16floatRenderable: internals.device.caps.rgba16floatRenderable,
-              colorSpace: internals.outputColorSpace.report,
-              autoExposure: viewAutoExposure(inspected),
-              standardLut: viewStandardLut(inspected),
-              presentationProof: internals.context?.presentationProof,
               frameId,
               antialias: inspected.frameState.lastSuccessfulCameraAntialias,
               resourceStats: observationStats,

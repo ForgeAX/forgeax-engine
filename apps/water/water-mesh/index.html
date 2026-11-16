@@ -1,12 +1,13 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="theme-color" content="#edf3ef"><title>水面网格 | ForgeAX</title></head>
-<body><canvas id="scene" aria-label="实时水面网格场景"></canvas>
-  <button id="panel-toggle" class="panel-toggle" type="button" aria-expanded="true" title="隐藏面板">面板</button>
-  <aside class="inspector"><header><div><span class="eyebrow">FORGEAX / WATER R2</span><h1>水面网格</h1></div><span id="render-state">启动中</span></header>
-    <nav class="tabs"><button type="button" data-mode="ocean" aria-pressed="true">海洋</button><button type="button" data-mode="river">河流</button><button type="button" data-mode="lake">湖泊</button><button type="button" data-mode="island">岛屿</button></nav>
-    <label class="toggle"><input id="edge-toggle" type="checkbox"><span>显示瓦片与 LOD 边界</span></label>
-    <section class="camera-controls"><h2>相机视角</h2><label>距离 <output id="camera-distance-value">104 m</output><input id="camera-distance" type="range" min="24" max="180" step="1" value="104"></label><label>高度 <output id="camera-height-value">8 m</output><input id="camera-height" type="range" min="3" max="105" step="1" value="8"></label></section>
-    <div class="metrics"><div><span>当前水体</span><strong id="mode-readout">海洋</strong></div><div><span>近场瓦片</span><strong id="tiles">—</strong></div><div><span>远场实例</span><strong id="far">—</strong></div><div><span>LOD 范围</span><strong id="lod-range">—</strong></div><div><span>树深度</span><strong id="depth">—</strong></div><div><span>布局摘要</span><strong id="digest">—</strong></div></div>
-    <details class="tile-details"><summary>当前瓦片</summary><div id="roster" class="roster"></div></details>
-    <p id="status" role="status">等待水面网格提交</p></aside>
-  <script type="module" src="/src/main.ts"></script></body></html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#102833"><title>海岛水系 · R0–R2 | ForgeAX</title><link rel="icon" href="data:,"></head>
+<body><canvas id="scene" tabindex="0" aria-label="海岛、高地湖泊、河谷与入海口" aria-describedby="navigation-hint"></canvas><button id="panel-toggle" type="button" aria-label="显示或隐藏控制面板">调控</button>
+<section id="navigation-hint" aria-label="自由漫游操作"><strong id="navigation-speed">点击画面开始漫游 · 30.0 m/s</strong><p>左 / 右键拖动环视 · WASD / 方向键移动<br>E / 空格 / PageUp 上升 · Q / PageDown 下降<br>Shift 加速 · 滚轮调速 · Esc 返回面板<br>鼠标自由移动，点击面板即停止漫游</p></section>
+<aside id="controls-panel"><header><span class="eyebrow">FORGEAX · WATER WORLD</span><h1>海岛水系</h1><p>从高地湖泊，沿河谷抵达海洋。</p><span id="render-state">准备场景</span></header>
+<nav class="views" aria-label="水系相机"><button data-view="overview" aria-pressed="true">全岛</button><button data-view="lake">高地湖</button><button data-view="river">河谷</button><button data-view="mouth">入海口</button><button data-view="ocean">海面</button></nav>
+<div class="body-picker"><label for="body-select">调控对象</label><select id="body-select"></select></div>
+<section id="dimension-sea"></section><section id="dimension-water"></section><section id="dimension-waves"></section>
+<section id="dimension-mesh"><label class="toggle"><input id="wire-toggle" type="checkbox"> 水面瓦片 / LOD 边界</label></section>
+<details class="dimension" id="dimension-lifecycle"><summary>场景、区域与地形</summary><p>这些操作改变同一场景里的真实绑定；不创建替代水面。</p><div class="actions"><button id="zone-toggle">解绑 / 重新绑定 Zone</button><button id="body-toggle">卸载 / 挂载选中 Body</button><button id="body-retire">销毁并重新创建 Body 实例</button></div><label for="terrain-select">地形源</label><select id="terrain-select"><option value="a">A · 原始河谷</option><option value="b">B · 河岸抬升</option></select><label class="toggle"><input id="provider-toggle" type="checkbox" checked> TerrainProvider 查询深度</label><label for="river-width">河宽比例（重烹制真实几何）</label><input id="river-width" type="range" min=".5" max="2" step=".05" value="1"></details>
+<section id="dimension-query"><label class="toggle"><input id="fixture-toggle" type="checkbox"> 作者查询网格夹具（非 GPU Bake）</label><label class="toggle"><input id="exclusion-toggle" type="checkbox"> 排除海面探针附近查询</label><p>三根金色浮杆有原生刚体、碰撞体及浮力探针；查询位置可以独立移动。</p></section>
+<details id="query-facts"><summary>查询实际输出与来源</summary><pre id="query-output"></pre></details>
+<section id="dimension-view"></section><details id="advanced"><summary>高级 · 完整运行时对象</summary><p>数据来自当前 Asset / Scene owner。烹制身份和只读事实保留在这里。</p></details><p id="status" role="status">等待场景接纳</p><footer>R0 生命周期 · R1 几何 / 地形 · R2 网格 / WaterInfo / 查询 / Gerstner</footer></aside><script type="module" src="/src/main.ts"></script></body></html>

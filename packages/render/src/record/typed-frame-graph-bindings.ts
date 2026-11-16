@@ -20,7 +20,6 @@ import {
   type Result,
   type TextureAsset,
 } from '@forgeax/engine-types';
-import { requireWaterValue } from '@forgeax/engine-water/internal';
 import {
   type AtmosphereViews,
   atmosphereBindings,
@@ -298,13 +297,20 @@ export function resolveTargetBindings(
       const views = new Map<string, TextureView>();
       for (const [name, target] of waterInfoTargets ?? [])
         views.set(name, input.resources.textureView(target.view).unwrap());
+      const [viewX, viewY, viewZ] = frame.camera.position;
+      if (viewX === undefined || viewY === undefined || viewZ === undefined)
+        throw new RenderFeatureStageFailedError(
+          'water-frame-system-input',
+          -1,
+          'record',
+          'next-frame',
+          {
+            reason: 'view-origin-unavailable',
+          },
+        );
       const bindings = frame.runtime.getWaterMaterialFrameBindings?.({
         ...expected,
-        viewOriginM: [
-          requireWaterValue(frame.camera.position[0]),
-          requireWaterValue(frame.camera.position[1]),
-          requireWaterValue(frame.camera.position[2]),
-        ],
+        viewOriginM: [viewX, viewY, viewZ],
         waterInfoTextureViews: views,
         waterMeshDraws: [],
       });
@@ -458,7 +464,10 @@ export function resolveTargetBindings(
             featurePostProcessEntries,
           );
     }
-    if (input.binding.bindingContract === 'view-and-scene-depth') {
+    if (
+      input.binding.bindingContract === 'view-and-scene-depth' ||
+      input.binding.bindingContract === 'render-material-and-scene-depth'
+    ) {
       return resolveViewDepthBindings(
         input,
         frame,
@@ -470,10 +479,7 @@ export function resolveTargetBindings(
         cloudShadow,
       );
     }
-    if (
-      input.binding.bindingContract === 'render-material-and-scene-depth' ||
-      input.binding.bindingContract === 'render-standard-material-and-scene-depth'
-    ) {
+    if (input.binding.bindingContract === 'render-standard-material-and-scene-depth') {
       return resolveStandardViewDepthBindings(
         input,
         frame,
@@ -947,7 +953,7 @@ function resolveStandardViewDepthBindings(
   if (texture !== undefined && !texture.ok) throw texture.error;
   const getLayout = pipeline.getBindGroupLayout;
   const layout = getLayout?.call(pipeline, 0);
-  if (layout === undefined) {
+  if (getLayout === undefined || layout === undefined) {
     // Preserve depth-view failure reporting even for a pipeline that cannot
     // supply this layout; this branch never publishes a cached binding.
     if (texture !== undefined) {
@@ -959,12 +965,6 @@ function resolveStandardViewDepthBindings(
     }
     return undefined;
   }
-  const depthView =
-    texture === undefined
-      ? frame.pipelineState.shadowFallbackTextureView
-      : frame.runtime.device
-          .createTextureView(texture.value as Texture, { aspect: 'depth-only', dimension: '2d' })
-          .unwrap();
   const viewBindGroup = buildViewBindGroup(
     frame.runtime as RenderSystemInternals,
     frame.frameState,
@@ -973,10 +973,13 @@ function resolveStandardViewDepthBindings(
     {
       atmosphere: atmosphereViews,
       directionalShadow,
-      spotShadow: frame.frameState.frameOutputs.spotShadowView ?? undefined,
       cloudShadow,
+      spotShadow: frame.frameState.frameOutputs.spotShadowView ?? undefined,
       viewBindGroupLayout: layout,
-      sceneDepth: depthView,
+      viewLayoutIdentity: [pipeline, getLayout],
+      ...(texture === undefined
+        ? { sceneDepth: frame.pipelineState.shadowFallbackTextureView }
+        : { sceneDepthTexture: texture.value as Texture }),
     },
   );
   return viewBindGroup === null

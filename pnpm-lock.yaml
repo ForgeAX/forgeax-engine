@@ -12482,6 +12482,9 @@ importers:
       '@forgeax/engine-scene':
         specifier: workspace:*
         version: link:../../../packages/scene
+      '@forgeax/engine-shader-compiler':
+        specifier: workspace:*
+        version: link:../../../packages/shader-compiler
       '@forgeax/engine-types':
         specifier: workspace:*
         version: link:../../../packages/types
@@ -12561,6 +12564,43 @@ importers:
       pngjs:
         specifier: ^7.0.0
         version: 7.0.0
+      typescript:
+        specifier: 6.0.3
+        version: 6.0.3
+      vite:
+        specifier: 8.3.5
+        version: 8.3.5(@types/node@20.19.43)(esbuild@0.28.2)(jiti@1.21.7)(tsx@4.20.6)(yaml@2.9.1)
+
+  apps/water/r0-scene-foundation:
+    dependencies:
+      '@forgeax/apps-shared':
+        specifier: workspace:*
+        version: link:../../shared
+      '@forgeax/engine':
+        specifier: workspace:*
+        version: link:../../../packages/engine
+    devDependencies:
+      '@forgeax/engine-devkit':
+        specifier: workspace:*
+        version: link:../../../packages/devkit
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
+      '@forgeax/engine-shader-compiler':
+        specifier: workspace:*
+        version: link:../../../packages/shader-compiler
+      '@forgeax/engine-vite-plugin-pack':
+        specifier: workspace:*
+        version: link:../../../packages/vite-plugin-pack
+      '@forgeax/engine-vite-plugin-rhi-debug':
+        specifier: workspace:*
+        version: link:../../../packages/vite-plugin-rhi-debug
+      '@forgeax/engine-vite-plugin-shader':
+        specifier: workspace:*
+        version: link:../../../packages/vite-plugin-shader
+      '@webgpu/types':
+        specifier: ^0.1.74
+        version: 0.1.74
       typescript:
         specifier: 6.0.3
         version: 6.0.3
@@ -12717,6 +12757,43 @@ importers:
         version: 8.3.5(@types/node@20.19.43)(esbuild@0.28.2)(jiti@1.21.7)(tsx@4.20.6)(yaml@2.9.1)
 
   apps/water/r7-advanced-shallow-bake-fft:
+    dependencies:
+      '@forgeax/apps-shared':
+        specifier: workspace:*
+        version: link:../../shared
+      '@forgeax/engine':
+        specifier: workspace:*
+        version: link:../../../packages/engine
+    devDependencies:
+      '@forgeax/engine-devkit':
+        specifier: workspace:*
+        version: link:../../../packages/devkit
+      '@forgeax/engine-image':
+        specifier: workspace:*
+        version: link:../../../packages/image
+      '@forgeax/engine-shader-compiler':
+        specifier: workspace:*
+        version: link:../../../packages/shader-compiler
+      '@forgeax/engine-vite-plugin-pack':
+        specifier: workspace:*
+        version: link:../../../packages/vite-plugin-pack
+      '@forgeax/engine-vite-plugin-rhi-debug':
+        specifier: workspace:*
+        version: link:../../../packages/vite-plugin-rhi-debug
+      '@forgeax/engine-vite-plugin-shader':
+        specifier: workspace:*
+        version: link:../../../packages/vite-plugin-shader
+      '@webgpu/types':
+        specifier: ^0.1.74
+        version: 0.1.74
+      typescript:
+        specifier: 6.0.3
+        version: 6.0.3
+      vite:
+        specifier: 8.3.5
+        version: 8.3.5(@types/node@20.19.43)(esbuild@0.28.2)(jiti@1.21.7)(tsx@4.20.6)(yaml@2.9.1)
+
+  apps/water/r8-entry-experiment:
     dependencies:
       '@forgeax/apps-shared':
         specifier: workspace:*

@@ -1,5 +1,8 @@
-import { inspectMemory } from './memory_model.mjs';
+import { gzipSync } from 'node:zlib';
+import { projectMemoryTree, mountMemoryEcharts } from './echarts_memory.mjs';
+import { mountSvgControls, zoomPlotBox } from './plot_interaction.mjs';
 import { decodeMemoryModel, encodeMemoryModel } from './memory_codec.mjs';
+import { inspectMemory, memoryMetric } from './memory_model.mjs';
 
 export function memoryBytes(n) {
   for (const [unit, scale] of [
@@ -10,8 +13,13 @@ export function memoryBytes(n) {
     if (n >= scale) return (n / scale).toFixed(2) + ' ' + unit;
   return n + ' B';
 }
-export function memorySvg(model, nodeId = model.rootId, { width = 1800, limit = 24 } = {}) {
-  const detail = inspectMemory(model, nodeId, { limit }),
+export function memoryValue(value, metric) {
+  return metric === 'bytes' ? memoryBytes(value) : value.toLocaleString('en-US');
+}
+
+export function memorySvg(model, nodeId = model.rootId, { width = 1800, limit = 24, metric } = {}) {
+  const selected = memoryMetric(model, metric);
+  const detail = inspectMemory(model, nodeId, { limit, metric: selected.name }),
     node = detail.node;
   const escape = (v) =>
     String(v)
@@ -20,7 +28,7 @@ export function memorySvg(model, nodeId = model.rootId, { width = 1800, limit = 
       .replaceAll('>', '&gt;')
       .replaceAll('"', '&quot;');
   const rows = [
-    ...(node.selfBytes
+    ...(node[selected.self]
       ? [
           {
             ...node,
@@ -35,7 +43,7 @@ export function memorySvg(model, nodeId = model.rootId, { width = 1800, limit = 
   const height = 275 + Math.max(1, rows.length) * 43;
   const text = (x, y, s, extra = '') => `<text x="${x}" y="${y}" ${extra}>${escape(s)}</text>`;
   const svg = [
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="Memory hierarchy"><style>text{font:13px ui-monospace,monospace;fill:#dce8f7}</style><rect width="100%" height="100%" fill="#0c1421"/>`,
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="Memory hierarchy"><style>g[data-memory-node]{cursor:pointer}g[data-memory-node]:hover>rect{stroke:#fff;stroke-width:2}text{font:13px ui-monospace,monospace;fill:#dce8f7}</style><rect width="100%" height="100%" fill="#0c1421"/>`,
     text(28, 35, 'MEMORY / HIERARCHY', 'font-size="21" font-weight="700"'),
     text(
       28,
@@ -59,9 +67,11 @@ export function memorySvg(model, nodeId = model.rootId, { width = 1800, limit = 
     text(
       28,
       119,
-      model.mode === 'sampled-allocation-stack'
-        ? 'Estimated allocation bytes; recorded samples are not all allocations or exact object counts.'
-        : 'Snapshot shallow bytes grouped by type/name/id; folder totals are not retained dominator sizes.',
+      selected.name === 'count'
+        ? selected.interpretation
+        : model.mode === 'sampled-allocation-stack'
+          ? 'Estimated allocation bytes; recorded samples are not all allocations or exact object counts.'
+          : 'Snapshot shallow bytes grouped by type/name/id; folder totals are not retained dominator sizes.',
     ),
     text(
       28,
@@ -69,19 +79,23 @@ export function memorySvg(model, nodeId = model.rootId, { width = 1800, limit = 
       `Showing ${detail.children.length}/${detail.childCount} children; full hierarchy and records remain in JSON/HTML.`,
     ),
     text(28, 175, 'NAME'),
-    text(width * 0.35, 175, 'SUBTREE BYTES / SHARE OF SELECTED NODE'),
+    text(
+      width * 0.35,
+      175,
+      'SUBTREE ' + selected.label.toUpperCase() + ' / SHARE OF SELECTED NODE',
+    ),
   ];
   rows.forEach((r, i) => {
     const y = 195 + i * 43,
-      share = node.totalBytes ? r.totalBytes / node.totalBytes : 0;
+      share = node[selected.total] ? r[selected.total] / node[selected.total] : 0;
     svg.push(
-      `<g><title>${escape(r.label + ' | ' + r.totalBytes + ' bytes | ' + r.totalCount + ' ' + model.countLabel)}</title>`,
+      `<g data-memory-node="${escape(r.id)}" tabindex="0" role="button" aria-label="${escape(r.label)}"><title>${escape(r.label + ' | ' + r.totalBytes + ' bytes | ' + r.totalCount + ' ' + model.countLabel)}</title>`,
       text(28, y + 18, r.label.slice(0, Math.floor((width * 0.34 - 40) / 8))),
       `<rect x="${width * 0.35}" y="${y}" width="${Math.max(0, Math.min(1, share)) * (width * 0.52)}" height="25" rx="3" fill="${r.type === 'group' ? '#4d76a9' : '#39a9a4'}"/>`,
       text(
         width * 0.88,
         y + 18,
-        memoryBytes(r.totalBytes) + ' / ' + (share * 100).toFixed(1) + '%',
+        memoryValue(r[selected.total], selected.name) + ' / ' + (share * 100).toFixed(1) + '%',
       ),
       '</g>',
     );
@@ -102,25 +116,45 @@ export function memorySvg(model, nodeId = model.rootId, { width = 1800, limit = 
   return svg.join('');
 }
 
-export function mountMemoryExplorer(initial) {
+export function mountMemoryExplorer(initial, plotFactory = null) {
   const style = document.createElement('style');
   style.textContent =
-    'body{margin:0;background:#0c1421;color:#dce8f7;font:14px/1.5 system-ui}header,section,nav{padding:18px 28px}header{background:#132238}h1{margin:0}button,input{font:inherit;background:#20344e;color:#e6f2ff;border:1px solid #42617f;padding:7px 10px;border-radius:5px;margin:3px}button{cursor:pointer}table{width:100%;border-collapse:collapse}th,td{text-align:left;border-bottom:1px solid #273d55;padding:8px}tbody tr{cursor:pointer}tbody tr:hover{background:#1c3048}small{color:#9ab3ca}pre{white-space:pre-wrap;max-height:350px;overflow:auto;background:#122136;padding:14px}#chart svg{width:100%;height:auto}#crumbs button{color:#7adbcf}#error{color:#ffac94}.bar{height:7px;background:#3aa7a5;max-width:100%}';
+    'body{margin:0;background:#0c1421;color:#dce8f7;font:14px/1.5 system-ui}header,section,nav{padding:18px 28px}header{background:#132238}h1{margin:0}button,input,select{font:inherit;background:#20344e;color:#e6f2ff;border:1px solid #42617f;padding:7px 10px;border-radius:5px;margin:3px}button{cursor:pointer}table{width:100%;border-collapse:collapse}th,td{text-align:left;border-bottom:1px solid #273d55;padding:8px}tbody tr{cursor:pointer}tbody tr:hover{background:#1c3048}small{color:#9ab3ca}pre{white-space:pre-wrap;max-height:350px;overflow:auto;background:#122136;padding:14px}#chart svg{width:100%;height:auto}#crumbs button{color:#7adbcf}#error{color:#ffac94}.bar{height:7px;background:#3aa7a5;max-width:100%}';
   document.head.append(style);
   document.body.innerHTML =
-    '<header><h1>Memory explorer</h1><p id="status"></p><small id="interpretation"></small></header><nav><label>Open normalized memory JSON <input type="file" id="load" accept=".json"></label><button id="root">Root</button><button id="up">Up</button><input id="search" placeholder="Find function, source, type or object id"><button id="blocks">Blocks</button><button id="folders">Folders</button><button id="svg">Export SVG</button><button id="png">Export PNG</button><div id="crumbs"></div><p id="error"></p></nav><section id="chart"></section><section><h2 id="heading"></h2><p id="counts"></p><button id="previous">Previous page</button><button id="next">Next page</button><table><thead><tr><th>Name</th><th>Subtree bytes</th><th>Self bytes</th><th id="count-label"></th></tr></thead><tbody id="rows"></tbody></table><h3>Selected node</h3><pre id="selected"></pre><h3>Recorded allocation samples</h3><button id="detail-previous">Previous details</button><button id="detail-next">Next details</button><small id="detail-page"></small><pre id="records"></pre><h3>Object references (outgoing / incoming)</h3><small>Raw graph edges, not dominator retention. Weak edges do not keep a target alive.</small><div id="refs"></div></section>';
+    '<header><h1>Memory explorer</h1><p id="status"></p><small id="interpretation"></small><p id="metric-note"></p></header><nav><label>Open normalized memory JSON <input type="file" id="load" accept=".json"></label><label>Measure <select id="metric"><option value="bytes">Size (bytes)</option><option value="count">Count</option></select></label><button id="back">Back</button><button id="root">Root</button><button id="up">Up</button><input id="search" placeholder="Find function, source, type or object id"><label>Depth <select id="depth"><option>1</option><option>2</option><option selected>3</option><option>4</option><option>6</option><option>8</option></select></label><button id="blocks">Blocks</button><button id="folders">Folders</button><button id="svg">Export SVG</button><button id="png">Export PNG</button><div id="crumbs"></div><p id="error"></p></nav><section id="chart"></section><section><h2 id="heading"></h2><p id="counts"></p><button id="previous">Previous page</button><button id="next">Next page</button><table><thead><tr><th>Name</th><th id="total-label"></th><th id="self-label"></th><th>Other measure (subtree)</th></tr></thead><tbody id="rows"></tbody></table><h3>Selected node</h3><pre id="selected"></pre><h3>Recorded allocation samples</h3><button id="detail-previous">Previous details</button><button id="detail-next">Next details</button><small id="detail-page"></small><pre id="records"></pre><h3>Object references (outgoing / incoming)</h3><small>Raw graph edges, not dominator retention. Weak edges do not keep a target alive.</small><div id="refs"></div></section>';
   const el = (id) => document.getElementById(id);
   let model,
     current,
+    nodeIndex,
     offset = 0,
     detailOffset = 0,
     matches = null,
-    view = 'blocks';
+    view = 'blocks',
+    metric = 'bytes';
   const currentSvg = () =>
-    view === 'blocks'
-      ? memoryTreemapSvg(model, current)
-      : memorySvg(model, current, { width: 1800 });
+    view === 'blocks' && plot
+      ? plot.svg()
+      : view === 'blocks'
+        ? memoryTreemapSvg(model, current, { metric, depth: Number(el('depth').value) })
+        : memorySvg(model, current, { width: 1800, metric });
   const pageSize = 100;
+  const navigation = [];
+  const controls = mountSvgControls(el('chart'), {
+    selector: '[data-memory-node]',
+    describe: (element) => {
+      const n = nodeIndex.get(element.dataset.memoryNode);
+      if (!n) return '';
+      const path = [];
+      for (let p = n; p; p = nodeIndex.get(p.parentId)) path.unshift(p.label);
+      const location = n.source
+        ? `${n.source.file}:${n.source.line}:${n.source.column}`
+        : n.callFrame?.url
+          ? `${n.callFrame.url}:${n.callFrame.lineNumber + 1}`
+          : `not available (${n.id})`;
+      return `${n.label}\nSelf: ${n.selfCount} ${model.countLabel} · ${memoryBytes(n.selfBytes)}\nTotal: ${n.totalCount} ${model.countLabel} · ${memoryBytes(n.totalBytes)}\nPath: ${path.join(' / ')}\nSource: ${location}`;
+    },
+  });
   const guard =
     (fn) =>
     async (...args) => {
@@ -131,7 +165,13 @@ export function mountMemoryExplorer(initial) {
         el('error').textContent = e.message;
       }
     };
+  const remember = () => {
+    if (!current) return;
+    navigation.push({ current, offset, detailOffset, view, matches, query: el('search').value });
+    if (navigation.length > 100) navigation.shift();
+  };
   const jump = (id) => {
+    if (current && id !== current) remember();
     current = id;
     offset = 0;
     detailOffset = 0;
@@ -139,8 +179,25 @@ export function mountMemoryExplorer(initial) {
     el('search').value = '';
     render();
   };
+  const chooseNode = (id, pageOffset) => {
+    if (pageOffset === undefined) return jump(id);
+    remember();
+    current = id;
+    offset = pageOffset;
+    detailOffset = 0;
+    matches = null;
+    view = 'folders';
+    el('search').value = '';
+    render();
+  };
+  const plot = plotFactory?.(el('chart'), {
+    node: (id) => nodeIndex.get(id),
+    select: chooseNode,
+    redraw: () => render(),
+  });
   const render = () => {
-    const detail = inspectMemory(model, current, { offset, limit: pageSize }),
+    const selected = memoryMetric(model, metric);
+    const detail = inspectMemory(model, current, { offset, limit: pageSize, metric }),
       node = detail.node;
     el('status').textContent =
       model.mode +
@@ -153,8 +210,19 @@ export function mountMemoryExplorer(initial) {
       (model.summary.orphanSamples
         ? ` | Unresolved owners: ${model.summary.orphanSamples} sample records / ${memoryBytes(model.summary.orphanSampleBytes)} reported sample bytes (separate budget)`
         : '');
+    el('metric').value = metric;
+    el('metric').options[1].textContent = 'Count (' + model.countLabel + ')';
     el('interpretation').textContent = model.interpretation.join(' ');
-    el('chart').innerHTML = currentSvg();
+    el('metric-note').textContent = selected.interpretation;
+    controls.setEnabled(!plot || view !== 'blocks');
+    if (plot && view === 'blocks') {
+      plot.render(model, current, { metric, depth: Number(el('depth').value) });
+    } else {
+      plot?.hide();
+      el('chart').innerHTML = currentSvg();
+      controls.reset();
+    }
+    el('back').disabled = navigation.length === 0;
     el('crumbs').replaceChildren();
     for (const part of detail.path) {
       const b = document.createElement('button');
@@ -164,14 +232,18 @@ export function mountMemoryExplorer(initial) {
     }
     el('heading').textContent = node.label;
     el('selected').textContent = JSON.stringify(node, null, 2);
-    const extra = inspectMemory(model, current, { offset: detailOffset, limit: pageSize });
+    const extra =
+      offset === detailOffset
+        ? detail
+        : inspectMemory(model, current, { offset: detailOffset, limit: pageSize, metric });
     el('records').textContent = JSON.stringify(extra.records, null, 2);
     const detailTotal = Math.max(extra.records.total, extra.outgoing.total, extra.incoming.total);
     el('detail-page').textContent =
       ` Detail offset ${detailOffset}, up to ${pageSize} rows per section`;
     el('detail-previous').disabled = detailOffset === 0;
     el('detail-next').disabled = detailOffset + pageSize >= detailTotal;
-    el('count-label').textContent = model.countLabel;
+    el('total-label').textContent = 'Subtree ' + selected.label;
+    el('self-label').textContent = 'Self ' + selected.label;
     const list = matches ? matches.slice(offset, offset + pageSize) : detail.children,
       total = matches ? matches.length : detail.childCount;
     el('counts').textContent =
@@ -187,9 +259,11 @@ export function mountMemoryExplorer(initial) {
       tr.title = title;
       for (const text of [
         child.label,
-        memoryBytes(child.totalBytes),
-        memoryBytes(child.selfBytes),
-        child.totalCount,
+        memoryValue(child[selected.total], metric),
+        memoryValue(child[selected.self], metric),
+        metric === 'bytes'
+          ? child.totalCount + ' ' + model.countLabel
+          : memoryBytes(child.totalBytes),
       ]) {
         const td = document.createElement('td');
         td.textContent = String(text);
@@ -221,11 +295,20 @@ export function mountMemoryExplorer(initial) {
     next = decodeMemoryModel(next);
     inspectMemory(next);
     model = next;
+    nodeIndex = new Map(model.nodes.map((n) => [n.id, n]));
+    navigation.length = 0;
+    current = null;
+    metric = memoryMetric(model).name;
     let node = next.nodes.find((n) => n.id === next.rootId);
-    for (let i = 0; i < 12 && node.selfBytes === 0 && node.children.length === 1; i++)
+    for (
+      let i = 0;
+      i < 12 && node[memoryMetric(model, metric).self] === 0 && node.children.length === 1;
+      i++
+    )
       node = next.nodes.find((n) => n.id === node.children[0]);
     jump(next.initialNodeId ?? node.id);
   };
+  el('depth').onchange = () => render();
   el('blocks').onclick = () => {
     view = 'blocks';
     render();
@@ -237,15 +320,17 @@ export function mountMemoryExplorer(initial) {
   el('chart').onclick = (e) => {
     const group = e.target.closest('g[data-memory-node]');
     if (!group) return;
-    if (group.dataset.memoryOffset !== undefined) {
-      current = group.dataset.memoryNode;
-      offset = Number(group.dataset.memoryOffset);
-      detailOffset = 0;
-      matches = null;
-      view = 'folders';
-      el('search').value = '';
-      render();
-    } else jump(group.dataset.memoryNode);
+    chooseNode(
+      group.dataset.memoryNode,
+      group.dataset.memoryOffset === undefined ? undefined : Number(group.dataset.memoryOffset),
+    );
+  };
+  el('back').onclick = () => {
+    const state = navigation.pop();
+    if (!state) return;
+    ({ current, offset, detailOffset, view, matches } = state);
+    el('search').value = state.query;
+    render();
   };
   el('root').onclick = () => jump(model.rootId);
   el('up').onclick = () => {
@@ -268,7 +353,7 @@ export function mountMemoryExplorer(initial) {
     detailOffset += pageSize;
     render();
   };
-  el('search').oninput = () => {
+  const search = () => {
     const query = el('search').value.toLowerCase();
     matches = query
       ? model.nodes
@@ -277,10 +362,20 @@ export function mountMemoryExplorer(initial) {
               .toLowerCase()
               .includes(query),
           )
-          .sort((a, b) => b.totalBytes - a.totalBytes)
+          .sort(
+            (a, b) =>
+              b[memoryMetric(model, metric).total] - a[memoryMetric(model, metric).total] ||
+              a.id.localeCompare(b.id),
+          )
       : null;
     offset = 0;
     render();
+  };
+  el('search').oninput = search;
+  el('metric').onchange = () => {
+    metric = memoryMetric(model, el('metric').value).name;
+    model.metric = metric;
+    search();
   };
   el('load').onchange = guard(async (e) => {
     if (e.target.files[0]) accept(JSON.parse(await e.target.files[0].text()));
@@ -294,7 +389,7 @@ export function mountMemoryExplorer(initial) {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
   el('svg').onclick = () =>
-    download(new Blob([currentSvg()], { type: 'image/svg+xml' }), 'memory.svg');
+    download(new Blob([currentSvg()], { type: 'image/svg+xml' }), 'memory-' + metric + '.svg');
   el('png').onclick = guard(async () => {
     const svg = currentSvg(),
       url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
@@ -308,7 +403,7 @@ export function mountMemoryExplorer(initial) {
       canvas.getContext('2d').drawImage(image, 0, 0);
       const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
       if (!blob) throw Error('PNG encoding failed');
-      download(blob, 'memory.png');
+      download(blob, 'memory-' + metric + '.png');
     } finally {
       URL.revokeObjectURL(url);
     }
@@ -316,9 +411,15 @@ export function mountMemoryExplorer(initial) {
   accept(initial);
 }
 
-export function memoryHtml(model, inspectSource, serialized) {
-  const data = (serialized ?? JSON.stringify(encodeMemoryModel(model))).replaceAll('<', '\\u003c');
-  return `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Memory explorer</title><body><script id="memory-data" type="application/json">${data}</script><script type="module">function requireFact(ok,message){if(!ok)throw Error(message);}\n${inspectSource}\n${decodeMemoryModel.toString()}\n${memoryBytes.toString()}\n${memorySvg.toString()}\n${memoryTreemapRects.toString()}\n${memoryTreemapSvg.toString()}\n${mountMemoryExplorer.toString()}\nconst payload=document.getElementById('memory-data');let initial=JSON.parse(payload.textContent);payload.textContent='';payload.remove();mountMemoryExplorer(initial);initial=null;</script></body></html>`;
+export function memoryHtml(
+  model,
+  inspectSource,
+  serialized,
+  { runtime, compress = Boolean(runtime) } = {},
+) {
+  const json = serialized ?? JSON.stringify(encodeMemoryModel(model));
+  const data = compress ? gzipSync(json).toString('base64') : json.replaceAll('<', '\\u003c');
+  return `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Memory explorer</title><body>${runtime ? `<script src="${runtime.dataUrl}"></script><script type="text/plain" id="echarts-notices">${runtime.notices.replaceAll('<', '&lt;')}</script>` : ''}<script id="memory-data" type="application/json" data-encoding="${compress ? 'gzip-base64' : 'json'}">${data}</script><script type="module">function requireFact(ok,message){if(!ok)throw Error(message);}\n${zoomPlotBox.toString()}\n${mountSvgControls.toString()}\n${memoryMetric.toString()}\n${inspectSource}\n${decodeMemoryModel.toString()}\n${memoryBytes.toString()}\n${memoryValue.toString()}\n${memorySvg.toString()}\n${memoryTreemapRects.toString()}\n${memoryTreemapSvg.toString()}\n${projectMemoryTree.toString()}\n${mountMemoryEcharts.toString()}\n${mountMemoryExplorer.toString()}\nconst payload=document.getElementById('memory-data');let initial=payload.dataset.encoding==='gzip-base64' ? await new Response(new Blob([Uint8Array.from(atob(payload.textContent),c=>c.charCodeAt(0))]).stream().pipeThrough(new DecompressionStream('gzip'))).json() : JSON.parse(payload.textContent);payload.textContent='';payload.remove();mountMemoryExplorer(initial${runtime ? ', mountMemoryEcharts' : ''});initial=null;</script></body></html>`;
 }
 
 /** Squarified layout: positive weights partition the supplied area without inventing mass. */
@@ -390,11 +491,12 @@ export function memoryTreemapRects(items, width, height) {
 export function memoryTreemapSvg(
   model,
   nodeId = model.rootId,
-  { width = 1800, height = 1000, depth = 3 } = {},
+  { width = 1800, height = 1000, depth = 3, metric } = {},
 ) {
+  const measure = memoryMetric(model, metric);
   const byId = new Map(model.nodes.map((n) => [n.id, n])),
     selected = byId.get(nodeId),
-    detail = inspectMemory(model, nodeId, { limit: 1 });
+    detail = inspectMemory(model, nodeId, { limit: 1, metric: measure.name });
   const escape = (v) =>
     String(v)
       .replaceAll('&', '&amp;')
@@ -410,13 +512,15 @@ export function memoryTreemapSvg(
   };
   let clipIndex = 0;
   const svg = [
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="Memory treemap"><style>text{pointer-events:none;font:13px ui-monospace,monospace;fill:#eef5ff}g[data-memory-node]{cursor:pointer}g[data-memory-node]:hover>rect{stroke:#fff;stroke-width:2}</style><rect width="100%" height="100%" fill="#0c1421"/>`,
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="Memory treemap"><style>text{pointer-events:none;font:13px ui-monospace,monospace;fill:#eef5ff}g[data-memory-node]{cursor:pointer}g[data-memory-node]:focus>rect{stroke:#fff;stroke-width:2}g[data-memory-node]:hover>rect{stroke:#fff;stroke-width:2}</style><rect width="100%" height="100%" fill="#0c1421"/>`,
     text(25, 34, 'MEMORY / TREEMAP', 'font-size="21" font-weight="700"'),
     text(
       25,
       62,
       model.mode +
-        ' | area = subtree bytes | ' +
+        ' | area = ' +
+        measure.label +
+        ' | ' +
         memoryBytes(selected.totalBytes) +
         ' | ' +
         selected.totalCount +
@@ -440,10 +544,15 @@ export function memoryTreemapSvg(
   const draw = (node, x, y, w, h, level) => {
     let children = node.children
       .map((id) => byId.get(id))
-      .filter((n) => n.totalBytes > 0)
-      .map((n) => ({ node: n, label: n.label, weight: n.totalBytes }));
-    if (node.selfBytes > 0)
-      children.unshift({ node, label: 'Self: ' + node.label, weight: node.selfBytes, self: true });
+      .filter((n) => n[measure.total] > 0)
+      .map((n) => ({ node: n, label: n.label, weight: n[measure.total] }));
+    if (node[measure.self] > 0)
+      children.unshift({
+        node,
+        label: 'Self: ' + node.label,
+        weight: node[measure.self],
+        self: true,
+      });
     children.sort((a, b) => b.weight - a.weight);
     if (children.length > 40) {
       const tail = children.slice(39);
@@ -466,7 +575,7 @@ export function memoryTreemapSvg(
         cw = Math.max(0, cell.width - 1),
         ch = Math.max(0, cell.height - 1);
       svg.push(
-        `<g data-memory-node="${escape(n.id)}"${cell.aggregate ? ` data-memory-offset="${cell.offset}"` : ''}><title>${escape(cell.label + ' | ' + memoryBytes(cell.weight) + ' | ' + n.id + (cell.aggregate ? ' | aggregated display; all children retained in data' : ''))}</title><rect x="${xx}" y="${yy}" width="${cw}" height="${ch}" fill="${color(n.id + (cell.self ? 'self' : ''))}" stroke="#0c1421"/>`,
+        `<g data-memory-node="${escape(n.id)}" tabindex="0" role="button" aria-label="${escape(cell.label)}"${cell.aggregate ? ` data-memory-offset="${cell.offset}"` : ''}><title>${escape(cell.label + ' | ' + memoryValue(cell.weight, measure.name) + ' ' + measure.label + ' | ' + n.id + (cell.aggregate ? ' | aggregated display; all children retained in data' : ''))}</title><rect x="${xx}" y="${yy}" width="${cw}" height="${ch}" fill="${color(n.id + (cell.self ? 'self' : ''))}" stroke="#0c1421"/>`,
       );
       const clip = 'memory-cell-' + clipIndex++;
       svg.push(
@@ -486,7 +595,7 @@ export function memoryTreemapSvg(
           text(
             xx + 5,
             yy + 31,
-            memoryBytes(cell.weight),
+            memoryValue(cell.weight, measure.name) + (measure.name === 'count' ? ' count' : ''),
             `font-size="11" clip-path="url(#${clip})"`,
           ),
         );
@@ -495,10 +604,16 @@ export function memoryTreemapSvg(
       svg.push('</g>');
     }
   };
-  if (selected.totalBytes > 0) draw(selected, 22, 140, width - 44, height - 193, 1);
+  if (selected[measure.total] > 0) draw(selected, 22, 140, width - 44, height - 193, 1);
   else
     svg.push(
-      text(25, 175, 'This node has no byte area; counts and children remain available in folders.'),
+      text(
+        25,
+        175,
+        'This node has no ' +
+          measure.label +
+          ' area; the other metric and children remain available in folders.',
+      ),
     );
   svg.push(
     text(

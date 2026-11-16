@@ -11,7 +11,7 @@ import {
   cpuTimelineSampleDensity,
   cpuTimelineSvg,
 } from '../cpu_timeline_view.mjs';
-import { buildCpuTimeline, cpuTimelineHtml, cpuTimelineTrace } from '../render_cpu_timeline.mjs';
+import { buildCpuTimeline, cpuInspectorHtml, cpuTimelineTrace } from '../render_cpu_timeline.mjs';
 
 const callFrame = (functionName) => ({
   functionName,
@@ -168,7 +168,7 @@ test('SVG/HTML escape source names and trace preserves estimated slice durations
   assert(svg.startsWith('<svg '));
   assert(svg.endsWith('</svg>'));
   assert(!svg.includes('<script>'));
-  const html = cpuTimelineHtml(model, 'export function mountCpuTimeline() {}');
+  const html = cpuInspectorHtml(model, 'export function mountCpuInspector() {}');
   assert(!html.includes('</script><script>unsafe'));
   assert(html.includes('\\u003c/script>'));
   const trace = cpuTimelineTrace(model);

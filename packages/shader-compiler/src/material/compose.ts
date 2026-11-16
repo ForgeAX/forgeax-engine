@@ -1196,7 +1196,7 @@ export function composeSurfaceSource(
   };
   const { dynamicInputSource, dynamicInputModule, parameterSource } = prepareSurfaceInputSources();
   const imports: Record<string, string> = {};
-  const deformationAbi = deformation === undefined ? undefined : waterDeformationAbiSource();
+  let deformationAbi = deformation === undefined ? undefined : waterDeformationAbiSource();
   if (deformationAbi !== undefined)
     imports['forgeax_material::water_deformation_v1'] = deformationAbi;
   const createClosureSources = () => {
@@ -1248,8 +1248,12 @@ export function composeSurfaceSource(
         if (module === 'forgeax_material::slot::deformation' && deformation === undefined) continue;
         if (module === 'forgeax_material::water_deformation_input' && deformation === undefined)
           continue;
-        if (module === 'forgeax_material::water_deformation_v1' && deformationAbi !== undefined)
+        if (module === 'forgeax_material::water_deformation_v1') {
+          deformationAbi ??= waterDeformationAbiSource();
+          imports[module] = deformationAbi;
+          closureSources[module] = deformationAbi;
           continue;
+        }
         const skipInlinedModule = () => {
           if (
             module === request.templateModule ||

@@ -31,6 +31,7 @@ export { defineAssetKind } from './asset-kind.js';
 // ─── AssetRegistry + Asset / MeshAsset type aliases ─────────────────────────
 export type {
   Asset,
+  AssetBatchLoadOptions,
   AssetRegistryOptions,
   AssetReloadOptions,
   CatalogReconcileError,

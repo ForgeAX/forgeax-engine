@@ -525,11 +525,13 @@ function raster<Frame extends WaterFluidRasterFrame>(
 function infoRow(
   publication: WaterInfoFramePublication | undefined,
   worldIndex: number,
+  worldIdentity: string,
   frame: WaterFluidFrame,
 ): WaterInfoDescriptorRow | undefined {
   return [...(publication?.rows.values() ?? [])].find(
     (row) =>
       row.worldId === worldIndex &&
+      row.worldIdentity === worldIdentity &&
       row.bodyGuid === frame.instance.bodyGuid &&
       row.bodyGeneration === frame.instance.bodyGeneration &&
       row.deviceGeneration === frame.deviceGeneration,
@@ -599,48 +601,64 @@ function simulate(
     const value = rt.get(name);
     return value === undefined ? invalid(`${label} target ${name}`).unwrap() : value;
   };
-  const row = infoRow(publication, worldIndex, frame);
+  const row = infoRow(publication, worldIndex, entry.worldIdentity, frame);
   const captureFluidWaveInputs = () => {
     const waveBody = publication?.waveBodies.find(
       (body) =>
+        body.worldIdentity === entry.worldIdentity &&
         body.worldId === worldIndex &&
         body.bodyGuid === frame.instance.bodyGuid &&
         body.bodyGeneration === frame.instance.bodyGeneration,
     );
+    if (
+      row !== undefined &&
+      (row.worldIdentity !== entry.worldIdentity ||
+        row.frameGeneration !== render.frameNumber ||
+        publication?.viewIdentity !== render.waterInfoViewIdentity ||
+        publication?.frameGeneration !== render.frameNumber ||
+        publication?.deviceGeneration !== render.deviceGeneration)
+    )
+      return invalid(`${id} WaterInfo closure`);
     if (recipe.foamEnabled && (waveBody === undefined || waveBody.waveSet.waves.length > 32))
       return invalid(`${id} legacy wave input (at most 32 waves)`);
-    const waveHeight =
-      recipe.solverMode === 'shallow'
-        ? undefined
-        : target(graph, `${label}-wave-shallow-black`, CLEAR_DESCRIPTOR, [1, 1]);
-    if (waveHeight !== undefined) {
-      if (!waveHeight.ok) return waveHeight;
-      rt.set('wave-shallow-black', waveHeight.value);
-    }
-    const waveValues = new Float32Array(Math.max(4, (waveBody?.waveSet.waves.length ?? 0) * 8));
-    waveBody?.waveSet.waves.forEach((wave, index) => {
-      waveValues.set(
-        [
-          ...wave.directionXZ,
-          wave.amplitudeM,
-          wave.wavelengthM,
-          wave.steepness,
-          wave.kPerM,
-          wave.omegaPerSec,
-          wave.gpuQ,
-        ],
-        index * 8,
-      );
-    });
-    const waveInputs = recipe.foamEnabled
-      ? upload(graph, `${label}-legacy-waves`, waveValues)
-      : undefined;
-    if (waveInputs !== undefined && !waveInputs.ok) return waveInputs;
+    const uploadLegacyWaveInputs = () => {
+      const waveHeight =
+        recipe.solverMode === 'shallow'
+          ? undefined
+          : target(graph, `${label}-wave-shallow-black`, CLEAR_DESCRIPTOR, [1, 1]);
+      if (waveHeight !== undefined) {
+        if (!waveHeight.ok) return waveHeight;
+        rt.set('wave-shallow-black', waveHeight.value);
+      }
+      const waveValues = new Float32Array(Math.max(4, (waveBody?.waveSet.waves.length ?? 0) * 8));
+      waveBody?.waveSet.waves.forEach((wave, index) => {
+        waveValues.set(
+          [
+            ...wave.directionXZ,
+            wave.amplitudeM,
+            wave.wavelengthM,
+            wave.steepness,
+            wave.kPerM,
+            wave.omegaPerSec,
+            wave.gpuQ,
+          ],
+          index * 8,
+        );
+      });
+      const waveInputs = recipe.foamEnabled
+        ? upload(graph, `${label}-legacy-waves`, waveValues)
+        : undefined;
+      if (waveInputs !== undefined && !waveInputs.ok) return waveInputs;
+      return ok(waveInputs);
+    };
+    const uploaded = uploadLegacyWaveInputs();
+    if (!uploaded.ok) return uploaded;
+    const waveInputs = uploaded.value;
     const terrain =
       recipe.terrainMode === 'water-info' && row !== undefined
         ? context.getFeatureGraphTextureBinding?.(
             row.targetName,
-            context.viewIdentity ?? 'camera:0',
+            render.waterInfoViewIdentity ?? context.viewIdentity ?? 'camera:0',
           )?.view
         : undefined;
     if (recipe.terrainMode === 'water-info' && terrain === undefined)

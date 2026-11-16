@@ -99,6 +99,7 @@ describe('stock Water advanced producer material contracts', () => {
       staticSwitches: {
         ...sourceRoot.staticSwitches,
         waterVisualNormalDetail: true,
+        waterShallowSimulation: true,
         waterFoam: false,
         waterOceanFoam: false,
         waterNormalTexture: false,
@@ -117,6 +118,9 @@ describe('stock Water advanced producer material contracts', () => {
     if (forward === undefined || shadow === undefined)
       throw new Error('missing Water forward/shadow compile');
     expect(forward.parameters.map(({ name }) => name)).toContain('NormalDetailTex');
+    // Native local foam uses the shallow output independently of legacy Ocean/static foam maps.
+    expect(forward.parameters.map(({ name }) => name)).toContain('waterShallowFoamTexture');
+    expect(forward.parameters.map(({ name }) => name)).toContain('foamScatteringPerM');
     const texture = forward.compile.reflection.boundGlobals.find(
       ({ name }) => name?.startsWith('NormalDetailTexX_') === true,
     );

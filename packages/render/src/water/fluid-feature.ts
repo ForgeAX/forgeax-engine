@@ -13,8 +13,11 @@ import {
   type WaterSplashWakeEvent,
   type WaterSystem,
   type WaterVisualContactState,
+  type WaterWaveUploadBody,
+  waterBodyOwnerKey,
 } from '@forgeax/engine-water';
 import { RenderFeatureStageFailedError } from '../errors/render';
+import type { RenderFeaturePlan, RenderFeaturePlanContext } from '../features/plan';
 import { captureFeatureSourceAssetVersion } from '../features/source';
 import type { RenderFeature } from '../features/types';
 import { worldRenderResources } from '../publication/resource-scope';
@@ -37,6 +40,11 @@ import {
   waterFluidFoamOwnerKey,
   waterFluidFoamRootKey,
 } from './fluid-foam';
+import { waterInfoFramePublicationForRenderer } from './water-info-feature';
+import type {
+  WaterInfoDescriptorRow,
+  WaterInfoFramePublication,
+} from './water-info-publication-work';
 
 export const WATER_FLUID_FEATURE_IDENTITY = 'water-fluid-simulation';
 type FluidSourceBlocker = {
@@ -144,6 +152,105 @@ export interface WaterFluidFeatureOptions {
   readonly contactFoam?: WaterFluidFoamOptions;
 }
 
+function fluidWaterInfoRowMatches(
+  row: WaterInfoDescriptorRow,
+  target: WaterInfoFramePublication['targets'][number] | undefined,
+  entry: WaterFluidFeatureFrame['simulations'][number],
+  body: WaterWaveUploadBody,
+  frameGeneration: number,
+  deviceGeneration: number,
+): boolean {
+  return !(
+    row.worldIdentity !== entry.worldIdentity ||
+    row.worldId !== entry.worldIndex ||
+    row.bodyGuid !== body.bodyGuid ||
+    row.bodyGeneration !== body.bodyGeneration ||
+    row.zoneGeneration !== body.zoneGeneration ||
+    row.frameGeneration !== frameGeneration ||
+    row.deviceGeneration !== deviceGeneration ||
+    target === undefined ||
+    row.slice < 0 ||
+    row.slice >= target.layers
+  );
+}
+
+function fluidWaterInfoReadiness(
+  owner: object,
+  data: WaterFluidFeatureFrame,
+  context: RenderFeaturePlanContext,
+) {
+  const viewIdentity = context.views.find((view) => view.render)?.identity;
+  const frameGeneration = context.frame.frameNumber;
+  const deviceGeneration = context.deviceGeneration ?? 0;
+  const publication =
+    viewIdentity === undefined
+      ? undefined
+      : waterInfoFramePublicationForRenderer(
+          owner,
+          viewIdentity,
+          frameGeneration,
+          deviceGeneration,
+        );
+  let pending: RenderFeaturePlan['pendingSource'];
+  for (const entry of data.simulations) {
+    if (entry.frame.instance.recipe.terrainMode !== 'water-info') continue;
+    const reference = {
+      worldIndex: entry.worldIndex,
+      worldIdentity: entry.worldIdentity,
+      bodyGuid: entry.frame.instance.bodyGuid,
+      bodyGeneration: entry.frame.instance.bodyGeneration,
+      viewIdentity,
+      frameGeneration,
+      deviceGeneration,
+    };
+    const fail = (detail?: unknown) =>
+      err(
+        new RenderFeatureStageFailedError(WATER_FLUID_FEATURE_IDENTITY, -1, 'plan', 'next-frame', {
+          expected:
+            'the exact same-frame, same-World WaterInfo closure for the accepted fluid Body generation',
+          ...reference,
+          detail,
+        }),
+      );
+    if (
+      publication === undefined ||
+      publication.viewIdentity !== viewIdentity ||
+      publication.frameGeneration !== frameGeneration ||
+      publication.deviceGeneration !== deviceGeneration
+    )
+      return fail();
+    const body = publication.waveBodies.find(
+      (body) =>
+        body.worldIdentity === entry.worldIdentity &&
+        body.worldId === entry.worldIndex &&
+        body.bodyGuid === reference.bodyGuid &&
+        body.bodyGeneration === reference.bodyGeneration,
+    );
+    if (body === undefined) return fail();
+    const key = waterBodyOwnerKey(
+      entry.worldIdentity,
+      body.bodyGuid,
+      body.bodyGeneration,
+      body.zoneGeneration,
+    );
+    const row = publication.rows.get(key);
+    if (row === undefined) {
+      const availability = publication.waterInfoAvailability.get(key);
+      if (availability?.kind === 'pending') {
+        pending ??= { resource: availability.guid, reason: 'asset-dependency-pending' };
+        continue;
+      }
+      return fail(availability);
+    }
+    const target = publication.targets.find(
+      (target) => target.targetName === row.targetName && target.targetFormat === row.targetFormat,
+    );
+    if (!fluidWaterInfoRowMatches(row, target, entry, body, frameGeneration, deviceGeneration))
+      return fail();
+  }
+  return ok(pending);
+}
+
 function contactEvent(worldIdentity: string, event: WaterSplashWakeEvent): WaterFluidFoamEvent {
   const vector = (value: readonly [number, number, number]) =>
     Object.freeze([...value] as [number, number, number]);
@@ -169,6 +276,7 @@ function contactEvent(worldIdentity: string, event: WaterSplashWakeEvent): Water
 /** The feature holds source acknowledgments; Standard owns the WaterInfo-dependent graph. */
 export function createWaterFluidFeature(
   options: WaterFluidFeatureOptions = {},
+  waterInfoFeature?: object,
 ): RenderFeature<WaterFluidFeatureFrame> {
   const inactiveSourceData: WaterFluidFeatureFrame = Object.freeze({
     kind: 'forgeax-water-fluid-frame',
@@ -577,6 +685,11 @@ export function createWaterFluidFeature(
           pendingSource: { resource: pending.guid, reason: 'asset-dependency-pending' },
           work: [],
         });
+      if (waterInfoFeature !== undefined) {
+        const readiness = fluidWaterInfoReadiness(waterInfoFeature, data, context);
+        if (!readiness.ok) return readiness;
+        if (readiness.value !== undefined) return ok({ pendingSource: readiness.value, work: [] });
+      }
       const validateFluidDeviceLimits = () => {
         if (data.simulations.length > 0) {
           const dimension = context.limits?.maxTextureDimension2D ?? 8192;

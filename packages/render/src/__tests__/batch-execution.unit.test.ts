@@ -41,6 +41,14 @@ const material: MaterialSnapshot = {
   passes: [],
 };
 
+it('keeps Water frame inputs on the specialized direct recording contract', () => {
+  const resolve = () => ({
+    ...artifact,
+    receipt: { ...receipt, systemInputs: { water: 'water-frame/3' as const } },
+  });
+  expect(prepareBatchExecution(geometry, material, pass, resolve).unwrap().route).toBe('direct');
+});
+
 it('prepares one shared geometry and material version without entity inputs', () => {
   const resolve = vi.fn(() => artifact);
   const accepted = prepareBatchExecution(geometry, material, pass, resolve).unwrap();

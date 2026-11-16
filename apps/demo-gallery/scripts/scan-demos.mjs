@@ -78,7 +78,7 @@ export function scanDemos(appsDir) {
       return false;
     }
 
-    if (typeof pkg.scripts?.dev !== 'string') return false;
+    if (typeof pkg.scripts?.dev !== 'string' || pkg.forgeax?.gallery?.visible === false) return false;
 
     const route = relative(appsDir, dir).split('\\').join('/');
     const resolvedCategory = route.split('/')[0] || category || 'other';

@@ -89,6 +89,15 @@ substitute for the complete failed Linux shard and strict coverage merge.
 
 ## PR CI repair workflow
 
+For a visibility-extraction performance timeout, retain the completed profile,
+all 101 samples, populations, ratio assertion and original sixty-second deadline.
+Run the complete Render ratio suite through the maintained CPU-affinity owner;
+compare interval CPU-pressure records before attributing the timeout to runtime
+code. A local pass does not replace final-head Linux execution.
+
+For `lint:internal` V8 heap exhaustion near 2 GiB, retain the primary step's
+explicit 4 GiB old-space budget and the full scan, rules and diagnostics.
+
 For `sdk-seed` failing to import `yaml` during source dependency export, reproduce
 the clean-checkout module resolution. Prepare pinned pnpm/npm and run the existing
 frozen workspace install before that complete acceptance owner, once. Preserve
@@ -251,6 +260,16 @@ uncached topological build. Retain exact-pin and provenance validation, the
 Bun-owned dependency tree, every runtime probe and the repair reuse guard.
 
 ## Other troubleshooting routes
+
+For Bevy SSAO on/off pixel equality, inspect each receipt's presentation before
+changing shading. A completed preparation submission has no scene picture.
+Use the maintained ready-frame driver for sixty pictures per variant, preserving
+the World during retries, both pixel thresholds and the failure images/observations.
+
+For SDK source-export contracts failing to import `yaml` on a clean runner,
+install the declared workspace before the complete contract roster. Preserve
+every source policy test and use the SDK shader-artifact workflow-order gate;
+a warm local dependency tree does not prove clean-runner preparation.
 
 For SDK source Host disconnection, read the retained backend log before changing
 transport. A shared shader inventory failure in an external temporary project
@@ -2407,6 +2426,12 @@ complete ordinary processes and conserve their elapsed time. An interrupted
 multi-phase owner keeps its full forecast even when an early phase passed; add
 no partial timing sample. Reserve its complete journey before ordinary backfill
 and balance complete owners across the existing lanes.
+If a new complete-child forecast exceeds all four windows, retain it as
+infeasible and prioritize every feasible historical window before minimizing its
+overload. An impossible cohort must not trade away earlier headroom or suppress
+their bounded first-wave search. Keep partial PR depth receipts separate from
+full-owner forecasts. Only final-head native execution can qualify that candidate;
+passing historical placement is insufficient.
 Require local red/green placement replay and relevant final-candidate `ci:focus`
 checks before publication. Required Linux native owners execute in final-head PR CI.
 

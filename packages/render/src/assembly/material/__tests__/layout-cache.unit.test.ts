@@ -63,7 +63,14 @@ function setup() {
         limits: {},
       }) as never,
     getShader: () => shader as never,
-    viewAndSceneDepthLayoutEntries: () => [],
+    viewAndSceneDepthLayoutEntries: () => [
+      { binding: 0, visibility: 3, buffer: { type: 'uniform' } },
+      {
+        binding: 1,
+        visibility: 3,
+        texture: { sampleType: 'depth', viewDimension: '2d', multisampled: false },
+      },
+    ],
     reportError: (error) => {
       throw error;
     },
@@ -191,6 +198,11 @@ it('selects resource meaning from the receipt even when source names suggest ano
   owner.setBindings('render-material-and-scene-depth');
   owner.cache.getOrBuildPreparedMaterialPipelineLayout('game::effect');
   expect(owner.createBindGroupLayout.mock.calls[0]?.[0].label).toContain('view-depth');
+  expect(
+    owner.createBindGroupLayout.mock.calls[0]?.[0].entries.map(
+      (entry: GPUBindGroupLayoutEntry) => entry.binding,
+    ),
+  ).toEqual([0, 1]);
   expect(owner.createPipelineLayout).toHaveBeenCalledTimes(2);
 });
 
@@ -199,7 +211,8 @@ it('keeps the complete Standard material prefix for explicit Standard particle s
   owner.setBindings('render-standard-material-and-scene-depth');
   owner.setSchema([]);
   owner.cache.getOrBuildPerShaderMaterialLayout('game::water-sphere', undefined, 'pbr', true);
-  const entries = owner.createBindGroupLayout.mock.calls[0]?.[0].entries ?? [];
+  const entries: readonly GPUBindGroupLayoutEntry[] =
+    owner.createBindGroupLayout.mock.calls[0]?.[0].entries ?? [];
   expect(entries.find((entry) => entry.binding === 0)).toMatchObject({
     binding: 0,
     buffer: { type: 'uniform', hasDynamicOffset: true },
@@ -325,7 +338,9 @@ it('projects the medium layout from canonical entry reads while retaining foam a
   owner.cache.getOrBuildPerShaderMaterialLayout('sha256:water', undefined, 'pbr', true);
   const entries = owner.createBindGroupLayout.mock.calls[0]?.[0]
     .entries as GPUBindGroupLayoutEntry[];
-  expect(entries.map((entry) => entry.binding).sort((a, b) => a - b)).toEqual(readBindings);
+  expect(
+    entries.map((entry: GPUBindGroupLayoutEntry) => entry.binding).sort((a, b) => a - b),
+  ).toEqual(readBindings);
   expect(
     entries.filter((entry) => entry.sampler !== undefined).map((entry) => entry.binding),
   ).toEqual([1, 16, 18, 31, 33]);

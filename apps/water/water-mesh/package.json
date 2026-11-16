@@ -57,5 +57,6 @@
         "reason": "This maintained Water demo has no spike report."
       }
     }
-  }
+  },
+  "description": "R0\u2013R2 \u00b7 Island watershed, Scene lifecycle, authored geometry, Terrain, WaterMesh, WaterInfo and queries"
 }

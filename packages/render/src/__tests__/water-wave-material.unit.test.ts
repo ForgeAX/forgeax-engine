@@ -221,6 +221,40 @@ describe('WaterInfo submission frame alignment', () => {
 });
 
 describe('Water shadow record admission reuse', () => {
+  it('keeps captured Water addresses and owners until the next frame requalifies live rows', () => {
+    const f = waterRecordCacheFixture();
+    try {
+      const waterRow = f.rows[0];
+      if (!waterRow) throw new Error('Expected accepted Water row');
+      const ordinary = {
+        renderableIndex: 1,
+        source: ownWaterMaterialAdmissionSource({}) as typeof waterRow.source,
+      };
+      f.rows.push(ordinary);
+      const closure = finalizeWaterMaterialAdmissionDraws(f.rows);
+      const context = mutableWaterRecordContext(f, f.rows, closure);
+      const first = waterMaterialRecordContext(context, f.waterFrame);
+      waterRow.renderableIndex = 9;
+      waterRow.source = ownWaterMaterialAdmissionSource({
+        waterOwner: ownWaterMaterialOwner({
+          ...f.owner,
+          guid: bodyB,
+          generation: 7,
+        }),
+      }) as typeof waterRow.source;
+      f.rows.reverse();
+      expect(waterMaterialRecordContext(context, f.waterFrame)).toBe(first);
+      expect(closure?.draws).toEqual([{ renderableIndex: 0, owner: f.owner }]);
+      f.runtime.rendererFrameNumber = 10;
+      const next = waterMaterialRecordContext(context, f.waterFrame);
+      expect(next).not.toBe(first);
+      expect(next.validatedOrdered).toEqual([ordinary]);
+      expect(closure?.draws).toEqual([{ renderableIndex: 0, owner: f.owner }]);
+    } finally {
+      f.dispose();
+    }
+  });
+
   it('resolves current graph views and invokes renderer callbacks on every pass while reusing admission', () => {
     const f = waterRecordCacheFixture();
     try {
@@ -374,6 +408,8 @@ describe('Water shadow record admission reuse', () => {
       const ownerRows = [{ renderableIndex: 0, source: ownerSource }] as const;
       const ownerClosure = finalizeWaterMaterialAdmissionDraws(ownerRows);
       expect(ownerClosure).toBeUndefined();
+      expect(Object.getOwnPropertyDescriptor(ownerRows[0], 'source')?.writable).toBe(true);
+      expect(Object.getOwnPropertyDescriptor(ownerRows[0], 'renderableIndex')?.writable).toBe(true);
       expect(Object.getOwnPropertyDescriptor(ownerSource, 'waterOwner')?.writable).toBe(true);
       const ownerContext = mutableWaterRecordContext(f, ownerRows, ownerClosure);
       waterMaterialRecordContext(ownerContext, f.waterFrame);
@@ -420,6 +456,34 @@ describe('Water shadow record admission reuse', () => {
   });
 });
 
+it('captures immutable Water closure facts without sealing the mutable draw owner addresses', () => {
+  const owner = ownWaterMaterialOwner({
+    guid: bodyA,
+    generation: 4,
+    worldIdentity: 'water-test-world',
+    zoneGuid: 'zone-a',
+    zoneGeneration: 2,
+    targetFormat: 'rgba32float',
+  });
+  const source = ownWaterMaterialAdmissionSource({
+    waterOwner: owner,
+  }) as _InternalRenderPipelineContext['validatedOrdered'][number]['source'];
+  const row = { renderableIndex: 3, source };
+  const rows = [row];
+  const first = finalizeWaterMaterialAdmissionDraws(rows);
+  expect(first?.draws).toEqual([{ renderableIndex: 3, owner }]);
+  row.renderableIndex = 9;
+  const second = finalizeWaterMaterialAdmissionDraws(rows);
+  expect(second?.draws).toEqual([{ renderableIndex: 9, owner }]);
+  expect(first?.draws[0]?.renderableIndex).toBe(3);
+  expect(Object.isFrozen(first)).toBe(true);
+  expect(Object.isFrozen(first?.draws)).toBe(true);
+  expect(Object.isFrozen(first?.draws[0])).toBe(true);
+  expect(Object.isFrozen(first?.uploads)).toBe(true);
+  expect(Object.isFrozen(rows)).toBe(false);
+  expect(Object.getOwnPropertyDescriptor(row, 'source')?.writable).toBe(true);
+});
+
 function waterRecordCacheFixture() {
   const targetName = 'water-info:record-cache';
   const owner = ownWaterMaterialOwner({
@@ -433,7 +497,7 @@ function waterRecordCacheFixture() {
   const source = ownWaterMaterialAdmissionSource({
     waterOwner: owner,
   }) as _InternalRenderPipelineContext['validatedOrdered'][number]['source'];
-  const rows = [{ renderableIndex: 0, source }] as const;
+  const rows = [{ renderableIndex: 0, source }];
   const drawClosure = finalizeWaterMaterialAdmissionDraws(rows);
   const camera = { entityKey: 1, position: [0, 0, 5] as [number, number, number] };
   const graphView = {};
@@ -534,6 +598,7 @@ function waterRecordCacheFixture() {
   return {
     targetName,
     owner,
+    rows,
     context,
     runtime,
     camera,

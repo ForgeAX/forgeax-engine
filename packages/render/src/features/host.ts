@@ -171,6 +171,51 @@ export function hasSubmissionSensitiveFeatures(
   return plans.some((plan) => submissionSensitivePlans.has(plan));
 }
 
+/** Name routes belong to this exact Host projection, never to borrowed execution records. */
+class AcceptedRenderFeatureExecution implements RenderFeaturePlanExecution {
+  readonly submission?: 'atomic';
+  readonly scope: string;
+  readonly featureIdentity: string;
+  readonly order: number;
+  readonly placement?: import('./types').RenderFeaturePlacement;
+  readonly materialTextureTargets: readonly RenderFeatureTargetHandle[];
+  readonly passes: readonly RenderFeaturePlanExecutionPass[];
+  #passesByName: Map<string, RenderFeaturePlanExecutionPass> | undefined;
+
+  constructor(execution: RenderFeaturePlanExecution, scope: string) {
+    if (execution.submission !== undefined) this.submission = execution.submission;
+    this.scope = scope;
+    this.featureIdentity = execution.featureIdentity;
+    this.order = execution.order;
+    if (execution.placement !== undefined) this.placement = execution.placement;
+    this.materialTextureTargets = Object.freeze([...(execution.materialTextureTargets ?? [])]);
+    this.passes = execution.passes;
+    for (const pass of this.passes) Object.freeze(pass);
+    Object.freeze(this);
+  }
+
+  static find(
+    execution: RenderFeaturePlanExecution,
+    name: string,
+  ): RenderFeaturePlanExecutionPass | undefined {
+    if (!(#passesByName in execution)) return execution.passes.find((pass) => pass.name === name);
+    if (execution.#passesByName === undefined) {
+      const passes = new Map<string, RenderFeaturePlanExecutionPass>();
+      for (const pass of execution.passes) if (!passes.has(pass.name)) passes.set(pass.name, pass);
+      execution.#passesByName = passes;
+    }
+    return execution.#passesByName.get(name);
+  }
+}
+
+/** Use fixed Host routes or the ordinary live read for custom/borrowed executions. */
+export function findRenderFeatureExecutionPass(
+  execution: RenderFeaturePlanExecution,
+  name: string,
+): RenderFeaturePlanExecutionPass | undefined {
+  return AcceptedRenderFeatureExecution.find(execution, name);
+}
+
 const preparedResourceKeyPlans = new WeakSet<RenderFeaturePlannedFrame>();
 
 /** Physical imports that cannot be retained by a graph across this plan replacement. */
@@ -3125,29 +3170,30 @@ class FeatureFramePreparation {
       projected.value.passes.length !== projectionPlan.passes.length
     )
       return;
-    const scopeKey = featureScopeKey(scope);
-    const createProjectedExecution = () => {
-      const execution: RenderFeaturePlanExecution = {
-        ...projected.value,
-        scope: scopeKey,
-        materialTextureTargets: targetRoster.projected.filter(
-          (target) => isRenderFeatureGraphTextureTarget(target) && target.materialSource === true,
-        ),
-        ...((row.work.placement ?? this.feature.placement) === undefined
-          ? {}
-          : { placement: row.work.placement ?? this.feature.placement }),
-      };
-      return execution;
+    const publishProjectedWork = () => {
+      const scopeKey = featureScopeKey(scope);
+      const execution = new AcceptedRenderFeatureExecution(
+        {
+          ...projected.value,
+          materialTextureTargets: targetRoster.projected.filter(
+            (target) => isRenderFeatureGraphTextureTarget(target) && target.materialSource === true,
+          ),
+          ...((row.work.placement ?? this.feature.placement) === undefined
+            ? {}
+            : { placement: row.work.placement ?? this.feature.placement }),
+        },
+        scopeKey,
+      );
+      const planned = this.plannedFrame(row, projectionPlan, execution, scopeKey);
+      this.projections.push({
+        planned,
+        projected: execution,
+        result,
+        effects,
+        requiresGraphRebuild: this.requiresGraphRebuild(row, projectionPlan, execution, resolver),
+      });
     };
-    const execution = createProjectedExecution();
-    const planned = this.plannedFrame(row, projectionPlan, execution, scopeKey);
-    this.projections.push({
-      planned,
-      projected: execution,
-      result,
-      effects,
-      requiresGraphRebuild: this.requiresGraphRebuild(row, projectionPlan, execution, resolver),
-    });
+    publishProjectedWork();
   }
 
   private batchDepthPlan(

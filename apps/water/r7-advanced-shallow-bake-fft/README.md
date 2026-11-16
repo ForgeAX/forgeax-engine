@@ -4,6 +4,13 @@ Run `pnpm dev` and open <http://127.0.0.1:5387/>. The Chinese demo uses ordinary
 Pack assets and the standard single-layer-water depth/reflection path. The
 three scenes share one Renderer and its normal completion receipts.
 
+An illuminated laboratory floor connects the shallow, River Bake and Ocean
+stations. The architecture is supporting presentation; the station views keep
+the actual Water output and selectable collision fixtures visible.
+Textured Terrain beds retain the authored depth and calibration grid. Station
+framing keeps the basin rim, physical gauges and active water surface together;
+the shallow, real River Bake and independent FFT operations remain unchanged.
+
 The shallow controls select saved collision recipes and real native rotating
 box/capsule, empty-aggregate bounds, nonuniform distance-field and overlapping
 fixtures. Rotation changes ordinary Scene poses while centers remain fixed.
@@ -12,6 +19,13 @@ group keeps native boxes at world Y `4`, `2.5` and `7 m` for the nonzero-height
 selector case. A fourth thin box sits above Y `4 m` with a positive surface gap
 of `3/16` of the loaded recipe's cell size, separating a plane from a cell-thick
 selector. Automatic NDC impacts have a separate control.
+
+The yellow trajectory specimen has an admitted kinematic sphere collider.
+“投放原生动态球” hands it to the native dynamic solver with CCD and buoyancy,
+launches from 7 m above the water, and derives its entry impulse from the
+completed native crossing. The basin floor is a native static collider.
+Reset restores the trajectory specimen. Runtime facts distinguish this body
+from the intentionally kinematic rotation, overlap and source-selection fixtures.
 
 ## Authored Configuration
 
@@ -84,3 +98,9 @@ Acceptance is registered before the first demo run:
 Use `window.__waterR7` for state, operation receipts, query samples and completed
 stage readbacks. Capture Tape through the existing RHI debug plugin. Store raw
 evidence outside this checkout; never add a reports directory.
+
+The floating settings panel groups interaction, observation and quality by
+visible purpose; full Engine parameters are an explicit advanced inspector.
+Shared navigation uses WASD/arrows, drag look, E/Q or Space/Page keys, Shift and
+wheel travel speed without pointer capture or pointer lock. Panel focus releases
+acquired input. Four quality choices edit the accepted Water source configuration.

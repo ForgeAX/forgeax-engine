@@ -290,6 +290,7 @@ function reloadChanges(
       'surfaceMaterialGuid',
       'riverToLakeTransitionMaterialGuid',
       'riverToOceanTransitionMaterialGuid',
+      'transitionContinuity',
       'lodMaterialGuid',
       'fixedWaterDepthM',
     ]) ||
@@ -602,6 +603,8 @@ export class WaterSystem {
   readonly #zoneMeshCandidates = new Map<string, WaterZoneMeshPublication>();
   readonly #zoneViewWindows = new Map<string, WaterZoneViewWindow>();
   readonly #zoneMeshBuildInputs = new WeakMap<WaterZoneMeshPublication, string>();
+  readonly #meshViewEpochs = new Map<string, number>();
+  readonly #meshCandidateEpochs = new WeakMap<WaterZoneMeshPublication, number>();
   readonly #acceptedMeshOwners = new Map<string, AcceptedMeshOwner>();
   readonly #meshViewDevices = new Map<string, number>();
   #waterMeshPublicationGeneration = 0;
@@ -623,6 +626,7 @@ export class WaterSystem {
           this.#buildZoneMeshView(zoneGuid, zoneGeneration, zone, view),
         zoneMeshView: (zoneGuid, viewId) => this.#zoneMeshView(zoneGuid, viewId),
         waterMeshCandidateViews: (viewId) => this.#waterMeshCandidateViews(viewId),
+        acceptWaterMeshView: (candidate) => this.#acceptWaterMeshView(candidate),
       }),
     );
   }
@@ -1888,27 +1892,43 @@ export class WaterSystem {
           'WaterMesh Body transforms with a world-horizontal surface (translation, yaw and scale; no pitch or roll)',
         hint: 'remove Body pitch/roll before publishing the flat-XZ WaterMesh surface',
       });
-    const worldMatrix = liveZone.worldMatrixM ?? IDENTITY_MATRIX;
-    if (!waterMeshZoneTransformSupported(worldMatrix))
-      return err({
-        code: 'invalid-source',
-        expected:
-          'an axis-aligned WaterZone transform with equal nonzero X/Z scale supported by the square WaterMesh tile ABI',
-        hint: 'remove Zone rotation/pitch/roll and use uniform horizontal scale before building WaterMesh tiles',
-      });
-    const zoneCorners = [
-      [-zone.extentM.spanXM / 2, 0, -zone.extentM.spanZM / 2],
-      [zone.extentM.spanXM / 2, 0, -zone.extentM.spanZM / 2],
-      [zone.extentM.spanXM / 2, 0, zone.extentM.spanZM / 2],
-      [-zone.extentM.spanXM / 2, 0, zone.extentM.spanZM / 2],
-    ].map((point) => transformPoint(worldMatrix, point as [number, number, number]));
-    const minX = Math.min(...zoneCorners.map((point) => point[0])),
-      maxX = Math.max(...zoneCorners.map((point) => point[0]));
-    const minZ = Math.min(...zoneCorners.map((point) => point[2])),
-      maxZ = Math.max(...zoneCorners.map((point) => point[2]));
-    const originXZ: Vec2 = [minX, minZ];
-    const extentX = maxX - minX,
-      extentZ = maxZ - minZ;
+    const projectZoneDomain = (): Result<
+      {
+        worldMatrix: readonly number[];
+        originXZ: Vec2;
+        extentX: number;
+        extentZ: number;
+        maxX: number;
+        maxZ: number;
+      },
+      WaterError
+    > => {
+      const worldMatrix = liveZone.worldMatrixM ?? IDENTITY_MATRIX;
+      if (!waterMeshZoneTransformSupported(worldMatrix))
+        return err({
+          code: 'invalid-source',
+          expected:
+            'an axis-aligned WaterZone transform with equal nonzero X/Z scale supported by the square WaterMesh tile ABI',
+          hint: 'remove Zone rotation/pitch/roll and use uniform horizontal scale before building WaterMesh tiles',
+        });
+      const zoneCorners = [
+        [-zone.extentM.spanXM / 2, 0, -zone.extentM.spanZM / 2],
+        [zone.extentM.spanXM / 2, 0, -zone.extentM.spanZM / 2],
+        [zone.extentM.spanXM / 2, 0, zone.extentM.spanZM / 2],
+        [-zone.extentM.spanXM / 2, 0, zone.extentM.spanZM / 2],
+      ].map((point) => transformPoint(worldMatrix, point as [number, number, number]));
+      const minX = Math.min(...zoneCorners.map((point) => point[0])),
+        maxX = Math.max(...zoneCorners.map((point) => point[0]));
+      const minZ = Math.min(...zoneCorners.map((point) => point[2])),
+        maxZ = Math.max(...zoneCorners.map((point) => point[2]));
+      const originXZ: Vec2 = [minX, minZ];
+      const extentX = maxX - minX,
+        extentZ = maxZ - minZ;
+      return ok({ worldMatrix, originXZ, extentX, extentZ, maxX, maxZ });
+    };
+    const zoneDomain = projectZoneDomain();
+    if (!zoneDomain.ok) return zoneDomain;
+    const { worldMatrix, originXZ, extentX, extentZ, maxX, maxZ } = zoneDomain.value;
     const bodies: WaterMeshBodyInput[] = snapshots.map((snapshot) => {
       const asset = snapshot.asset;
       const bodyMatrix = snapshot.worldMatrixM;
@@ -2009,6 +2029,20 @@ export class WaterSystem {
         materialKey: asset.surfaceMaterialGuid,
         waveOriginXZ: waterBodyWaveOriginXZ(snapshot),
         ...(Object.keys(transitionMaterials).length > 0 ? { transitionMaterials } : {}),
+        ...(asset.transitionContinuity === undefined
+          ? {}
+          : {
+              transitionContinuity: {
+                centerXZ: ((): Vec2 => {
+                  const endpoint = asset.spline.points[asset.spline.points.length - 1];
+                  const terminal = requireWaterValue(endpoint);
+                  const p = transformPoint(bodyMatrix, terminal.positionM);
+                  return [p[0], p[2]];
+                })(),
+                reachM: asset.transitionContinuity.reachM,
+                blendWidthM: asset.transitionContinuity.blendWidthM,
+              },
+            }),
         baseHeightM,
         maxWaveHeightM: asset.maxWaveHeightM,
         worldYBounds,
@@ -2128,7 +2162,6 @@ export class WaterSystem {
             ...(zone.farMaterialGuid ? { materialKey: zone.farMaterialGuid } : {}),
             ...(farOwner ? { ownerGuid: farOwner.guid } : {}),
             ...(farWaterLevelM === undefined ? {} : { waterLevelM: farWaterLevelM }),
-            ...(followsViewWindow ? { oceanHeight: 'mean' as const } : {}),
           }
         : undefined;
 
@@ -2225,7 +2258,8 @@ export class WaterSystem {
       current: true,
       receipt: built.value,
     });
-    if (buildInputs !== undefined) this.#zoneMeshBuildInputs.set(publication, buildInputs);
+    this.#zoneMeshBuildInputs.set(publication, buildInputs ?? digest);
+    this.#meshCandidateEpochs.set(publication, this.#meshViewEpochs.get(view.viewId) ?? 0);
     this.#zoneMeshCandidates.set(key, publication);
     return ok(publication);
   }
@@ -2276,6 +2310,7 @@ export class WaterSystem {
   }
   /** Retire a view's CPU proxy state when its camera or renderer device ends. */
   retireWaterMeshView(viewId: string): void {
+    this.#meshViewEpochs.set(viewId, (this.#meshViewEpochs.get(viewId) ?? 0) + 1);
     for (const [key, window] of this.#zoneViewWindows)
       if (window.viewId === viewId) this.#zoneViewWindows.delete(key);
     for (const [key, publication] of this.#zoneMeshViews)
@@ -2316,9 +2351,20 @@ export class WaterSystem {
   acceptWaterMeshView(zoneGuid: string, viewId: string, publicationGeneration: number): boolean {
     const key = JSON.stringify([zoneGuid, viewId]);
     const candidate = this.#zoneMeshCandidates.get(key);
+    return candidate?.publicationGeneration === publicationGeneration
+      ? this.#acceptWaterMeshView(candidate)
+      : false;
+  }
+  #acceptWaterMeshView(candidate: WaterZoneMeshPublication): boolean {
+    const { zoneGuid, viewId } = candidate;
+    const key = JSON.stringify([zoneGuid, viewId]);
+    const committed = this.#zoneMeshViews.get(key);
     if (
-      !candidate ||
-      candidate.publicationGeneration !== publicationGeneration ||
+      !this.#zoneMeshBuildInputs.has(candidate) ||
+      this.#meshCandidateEpochs.get(candidate) !== (this.#meshViewEpochs.get(viewId) ?? 0) ||
+      (!committed && !this.#zoneMeshCandidates.has(key)) ||
+      (committed !== undefined &&
+        committed.publicationGeneration > candidate.publicationGeneration) ||
       this.resolveZone(zoneGuid)?.generation !== candidate.zoneGeneration ||
       !Object.entries(candidate.sourceGenerations).every(([guid, generation]) => {
         const body = this.snapshot(guid);
@@ -2354,7 +2400,7 @@ export class WaterSystem {
       if (!accepted.ok) return false;
     }
     this.#zoneMeshViews.set(key, candidate);
-    this.#zoneMeshCandidates.delete(key);
+    if (this.#zoneMeshCandidates.get(key) === candidate) this.#zoneMeshCandidates.delete(key);
     for (const guid of Object.keys(candidate.sourceGenerations))
       this.#acceptedMeshOwners.set(JSON.stringify([viewId, guid]), {
         viewId,
@@ -3914,6 +3960,9 @@ function freezeBody(asset: WaterBodyAsset): WaterBodyAsset {
       : {}),
     ...(asset.oceanCenterM ? { oceanCenterM: Object.freeze<Vec2>([...asset.oceanCenterM]) } : {}),
     flags: Object.freeze({ ...asset.flags }),
+    ...(asset.transitionContinuity
+      ? { transitionContinuity: Object.freeze({ ...asset.transitionContinuity }) }
+      : {}),
     queryFootprint: Object.freeze(
       asset.queryFootprint.map((point) => Object.freeze([...point]) as typeof point),
     ),

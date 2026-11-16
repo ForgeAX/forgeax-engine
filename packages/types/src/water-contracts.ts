@@ -122,6 +122,13 @@ export type WaterBodySource = {
   readonly customMeshOverrideGuid?: string;
   readonly riverToLakeTransitionMaterialGuid?: string;
   readonly riverToOceanTransitionMaterialGuid?: string;
+  /** Optional rendered terminal join; native query height/depth/flow are unchanged. */
+  readonly transitionContinuity?: Readonly<{
+    target: 'ocean';
+    endpoint: 'end';
+    reachM: number;
+    blendWidthM: number;
+  }>;
   readonly waterInfoMaterialGuid?: string;
   /** Material for generated River/Lake/Ocean static meshes; omission uses surfaceMaterialGuid. */
   readonly lodMaterialGuid?: string;

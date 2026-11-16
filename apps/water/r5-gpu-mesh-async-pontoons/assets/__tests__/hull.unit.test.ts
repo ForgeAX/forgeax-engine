@@ -1,21 +1,43 @@
 import { expect, it } from 'vitest';
-import { hull } from '../estuary.pack';
+import { harborHull } from '../../../harbor-assets';
 
-it('authors an outward closed hull for ordinary back-face culling', () => {
-  const mesh = hull();
+it('authors a detailed outward keel with finite textured vertices at the admitted craft dimensions', () => {
+  const mesh = harborHull(4.6, 1.84);
   const positions = mesh.attributes.position as Float32Array;
-  const indices = mesh.indices!;
-  const center = [0, 0, 0];
-  for (let i = 0; i < positions.length; i++) center[i % 3]! += positions[i]! / (positions.length / 3);
-  let signedVolume = 0;
-  for (let i = 0; i < indices.length; i += 3) {
-    const points = [indices[i]!, indices[i + 1]!, indices[i + 2]!].map(index => Array.from(positions.subarray(index * 3, index * 3 + 3)));
-    const [a, b, c] = points as [number[], number[], number[]];
-    const ab = b.map((value, axis) => value - a[axis]!), ac = c.map((value, axis) => value - a[axis]!);
-    const normal = [ab[1]! * ac[2]! - ab[2]! * ac[1]!, ab[2]! * ac[0]! - ab[0]! * ac[2]!, ab[0]! * ac[1]! - ab[1]! * ac[0]!];
-    const outward = a.map((value, axis) => (value + b[axis]! + c[axis]!) / 3 - center[axis]!);
-    expect(normal.reduce((sum, value, axis) => sum + value * outward[axis]!, 0), `triangle ${i / 3}`).toBeGreaterThan(0);
-    signedVolume += a[0]! * (b[1]! * c[2]! - b[2]! * c[1]!) + a[1]! * (b[2]! * c[0]! - b[0]! * c[2]!) + a[2]! * (b[0]! * c[1]! - b[1]! * c[0]!);
+  const uv = mesh.attributes.uv as Float32Array;
+  const indices = mesh.indices;
+  if (indices === undefined) throw new Error('The authored hull requires indexed triangles');
+  expect(positions.length / 3).toBeGreaterThan(300);
+  expect(uv.length).toBe((positions.length / 3) * 2);
+  expect(Array.from(positions).every(Number.isFinite)).toBe(true);
+  expect(Math.min(...Array.from(positions).filter((_value, index) => index % 3 === 0))).toBeCloseTo(
+    -2.3,
+  );
+  expect(Math.max(...Array.from(positions).filter((_value, index) => index % 3 === 0))).toBeCloseTo(
+    2.3,
+  );
+  let keelTriangles = 0;
+  for (let index = 0; index < indices.length; index += 3) {
+    const [ai, bi, ci] = Array.from(indices.slice(index, index + 3));
+    if (ai === undefined || bi === undefined || ci === undefined)
+      throw new Error('Incomplete hull triangle');
+    const point = (vertex: number) => {
+      const [x, y, z] = Array.from(positions.slice(vertex * 3, vertex * 3 + 3));
+      if (x === undefined || y === undefined || z === undefined)
+        throw new Error('Missing hull position');
+      return { x, y, z };
+    };
+    const a = point(ai),
+      b = point(bi),
+      c = point(ci);
+    const normalY = (b.z - a.z) * (c.x - a.x) - (b.x - a.x) * (c.z - a.z);
+    if (
+      Math.max(Math.abs(a.z), Math.abs(b.z), Math.abs(c.z)) < 0.25 &&
+      Math.max(a.y, b.y, c.y) < -0.2
+    ) {
+      expect(normalY).toBeLessThan(0);
+      keelTriangles++;
+    }
   }
-  expect(signedVolume / 6).toBeCloseTo(4.66736, 5);
+  expect(keelTriangles).toBeGreaterThan(10);
 });

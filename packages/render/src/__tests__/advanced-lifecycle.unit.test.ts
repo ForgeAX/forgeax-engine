@@ -24,6 +24,7 @@ import {
 } from '../publication/record';
 import type { FrameReceipt } from '../render-contract';
 import { createWaterAdvancedFeature } from '../water/advanced-feature';
+import { dispersiveQueryPrefix } from '../water/dispersive-ocean';
 import {
   ADVANCED_RECIPE,
   advancedPhysicsFixture,
@@ -78,7 +79,7 @@ async function publishedOceanFixture() {
   return { ...fixture, ocean: fixture.water.requestOceanPatch(recipe).unwrap() };
 }
 
-async function publishedDispersiveFixture() {
+async function publishedDispersiveFixture(maximumIntervalSeconds = 0.2) {
   const fixture = await advancedWaterFixture({ kind: 'disabled' });
   fixture.water.removeAdvancedSimulation(fixture.simulation);
   const nativeClock = {
@@ -124,7 +125,7 @@ async function publishedDispersiveFixture() {
             fieldStepM: 0.1,
             maximumFieldSamplesPerColumn: 128,
           },
-          maximumIntervalSeconds: 0.2,
+          maximumIntervalSeconds,
           boundary: { kind: 'periodic' },
           foam: { slopeThreshold: 0.1, emissionPerSecond: 1, decayPerSecond: 0.1 },
           normalRtFormat: 'rgba32float',
@@ -559,6 +560,256 @@ it.each([
   }
 });
 
+it('keeps an entry impulse in the visual and external receiver fields while excluding its own force field', async () => {
+  const fixture = await publishedDispersiveFixture();
+  const feature = createWaterAdvancedFeature({});
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const context = {
+    caps: {
+      ...device.caps,
+      compute: true,
+      storageBuffer: true,
+      storageTexture: true,
+      rgba16floatStorage: true,
+      rgba32floatStorage: true,
+    },
+    limits: { maxTextureDimension2D: 8192 },
+    frame: { frameNumber: 1 },
+    generation: 1,
+    deviceGeneration: 0,
+    views: [],
+  };
+  const plan = (frameNumber: number) => {
+    fixture.nativeClock.simulationTimeSeconds = frameNumber / 60;
+    fixture.nativeClock.completedStep = frameNumber;
+    fixture.ocean.update(1 / 60).unwrap();
+    const data = feature.extract({ ...fixture.context, frameNumber }).unwrap();
+    const value = feature.plan(data, context).unwrap();
+    return { data, value };
+  };
+  const submit = (frame: ReturnType<typeof plan>) => {
+    const submission: RenderFeatureSubmission = {
+      works: frame.value.work.map((work) => ({
+        scope: work.scope,
+        passes: work.passes.map((pass) => ({
+          name: pass.name,
+          ...(pass.kind === 'compute' ? { resolvedGpuComputeDispatchCount: 1 } : {}),
+        })),
+      })),
+    };
+    feature.onFrameSubmitted?.(frame.data, submission);
+    feature.onSourceFrameSubmitted?.(frame.data, frame.value.sourceFeedback, submission);
+  };
+  try {
+    submit(plan(1));
+    submit(plan(2));
+    fixture.ocean.configureQueryFeedback({
+      worldIdentity: fixture.world.identity,
+      bodyGuid: 'body',
+      bodyGeneration: 1,
+      maximumAgeSeconds: 0.2,
+    });
+    fixture.ocean.requestQueryRegion('body', 1, [[0, 0, 0]], { entity: 11, generation: 1 });
+    fixture.ocean.requestQueryRegion('body', 1, [[0, 0, 0]], { entity: 12, generation: 1 });
+    fixture.ocean
+      .enqueueWaveImpulse({
+        positionXZ: [0, 0],
+        radiusM: 2,
+        velocityImpulseMps: 1,
+        timeSeconds: 3 / 60,
+        sourceReceiver: { entity: 11, generation: 1 },
+      })
+      .unwrap();
+    const frame = plan(3);
+    const inputs = frame.value.work
+      .flatMap((work) => work.resources)
+      .filter((resource) => resource.kind === 'buffer' && resource.name.endsWith('-wave-impulses'));
+    const nonzero = inputs.filter(
+      (resource) =>
+        resource.kind === 'buffer' &&
+        resource.data instanceof Float32Array &&
+        resource.data[3] === 1,
+    );
+    expect(nonzero).toHaveLength(2);
+    const prefix = waterOceanPatchOutputNames(ADVANCED_RECIPE, fixture.world.identity).prefix;
+    const externalPrefix = dispersiveQueryPrefix(prefix, { entity: 12, generation: 1 });
+    const ownPrefix = dispersiveQueryPrefix(prefix, { entity: 11, generation: 1 });
+    expect(nonzero.some((resource) => resource.name === `${externalPrefix}-wave-impulses`)).toBe(
+      true,
+    );
+    expect(nonzero.some((resource) => resource.name === `${ownPrefix}-wave-impulses`)).toBe(false);
+    submit(frame);
+    fixture.ocean.requestQueryRegion('body', 1, [[0, 0, 0]], { entity: 12, generation: 1 });
+    expect(
+      plan(4)
+        .value.work.flatMap((work) => work.passes)
+        .some(
+          (pass) => pass.name.startsWith(externalPrefix) && pass.name.endsWith('-advance-wave'),
+        ),
+    ).toBe(true);
+  } finally {
+    fixture.assets.dispose();
+  }
+});
+
+it('inserts each localized impulse once across overlapping publication flights and retries', async () => {
+  const fixture = await publishedDispersiveFixture();
+  const { ocean, world, assets, nativeClock } = fixture;
+  world
+    .spawn(
+      { component: Transform, data: {} },
+      { component: Camera, data: perspective({ fov: 1, aspect: 1 }) },
+    )
+    .unwrap();
+  const source = createWaterAdvancedFeature({}),
+    gpu = createWaterAdvancedFeature({});
+  const identity = { source: 'ocean-three-flight', epoch: 1 };
+  const publisher = createRenderPublisher(
+    world,
+    assets,
+    identity,
+    undefined,
+    [source],
+    undefined,
+    undefined,
+    3,
+  );
+  const receiver = new RenderPublicationReceiver(identity);
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const context = {
+    caps: {
+      ...device.caps,
+      compute: true,
+      storageBuffer: true,
+      storageTexture: true,
+      rgba16floatStorage: true,
+      rgba32floatStorage: true,
+    },
+    limits: { maxTextureDimension2D: 8192 },
+    frame: { frameNumber: 1 },
+    generation: 1,
+    deviceGeneration: 7,
+    views: [],
+  };
+  const publish = (time: number) => {
+    nativeClock.simulationTimeSeconds = time;
+    nativeClock.completedStep = Math.round(time * 60);
+    ocean.update(1 / 60).unwrap();
+    const candidate = publisher.prepare(time).unwrap();
+    const packet = structuredClone(candidate.packet, {
+      transfer: [
+        ...renderPublicationTransfers(candidate.message),
+        ...renderPublicationAssetTransfers(candidate.message),
+      ],
+    });
+    candidate.accept();
+    const received = receiver.accept(encodeRenderPublication(packet)).unwrap();
+    const data = received.packet.features.find((row) => row.identity === source.identity)
+      ?.data as Parameters<typeof gpu.plan>[0];
+    expect(data.oceans).toHaveLength(1);
+    return { packet, data };
+  };
+  const plan = (flight: ReturnType<typeof publish>) => {
+    const planned = gpu.plan(flight.data, context).unwrap();
+    const submission: RenderFeatureSubmission = {
+      works: planned.work.map((work) => ({
+        scope: work.scope,
+        passes: work.passes.map((pass) => ({
+          name: pass.name,
+          ...(pass.kind === 'compute' ? { resolvedGpuComputeDispatchCount: 1 } : {}),
+        })),
+      })),
+    };
+    return { ...flight, planned, submission };
+  };
+  const ack = (flight: ReturnType<typeof plan>) => {
+    gpu.onFrameSubmitted?.(flight.data, flight.submission);
+    publisher
+      .acknowledgeFeatures(flight.packet.revision, [
+        {
+          identity: source.identity,
+          feedback: structuredClone(flight.planned.sourceFeedback),
+          submission: structuredClone(flight.submission),
+        },
+      ])
+      .unwrap();
+  };
+  const impulseCounts = (flight: ReturnType<typeof plan>) =>
+    flight.planned.work
+      .flatMap((work) => work.resources)
+      .filter((resource) => resource.kind === 'buffer' && resource.name.endsWith('-wave-impulses'))
+      .map((resource) =>
+        resource.kind === 'buffer'
+          ? resource.data instanceof Float32Array
+            ? Array.from(resource.data)
+            : []
+          : [],
+      );
+  try {
+    const initial = plan(publish(0.05));
+    ack(initial);
+    publisher
+      .completeFeatures(initial.packet.revision, {
+        frameId: 1,
+        deviceGeneration: 7,
+        graphGeneration: 1,
+      })
+      .unwrap();
+    publisher
+      .recycle(
+        initial.packet.revision,
+        renderPublicationTransfers(encodeRenderPublication(initial.packet)),
+      )
+      .unwrap();
+    const resized = plan(publish(0.1));
+    ack(resized);
+    publisher
+      .completeFeatures(resized.packet.revision, {
+        frameId: 2,
+        deviceGeneration: 7,
+        graphGeneration: 1,
+      })
+      .unwrap();
+    publisher
+      .recycle(
+        resized.packet.revision,
+        renderPublicationTransfers(encodeRenderPublication(resized.packet)),
+      )
+      .unwrap();
+    ocean
+      .enqueueWaveImpulse({
+        positionXZ: [0, 0],
+        radiusM: 2,
+        velocityImpulseMps: 1,
+        timeSeconds: 0.15,
+      })
+      .unwrap();
+    const first = plan(publish(0.15));
+    const overlapping = publish(0.2);
+    expect(first.data.oceans[0]?.frame?.waveImpulses).toHaveLength(1);
+    expect(overlapping.data.oceans[0]?.frame?.waveImpulses).toHaveLength(1);
+    expect(impulseCounts(first).some((values) => values[3] === 1)).toBe(true);
+    const partial = {
+      works: first.submission.works.map((work) => ({
+        ...work,
+        passes: work.passes.filter((pass) => !pass.name.endsWith('-advance-wave')),
+      })),
+    };
+    gpu.onFrameSubmitted?.(first.data, partial);
+    expect(impulseCounts(plan(first)).some((values) => values[3] === 1)).toBe(true);
+    ack(plan(first));
+    expect(ocean.inspect().pendingWaveImpulses).toBe(0);
+    const next = plan(overlapping);
+    expect(impulseCounts(next).every((values) => values.every((value) => value === 0))).toBe(true);
+    ack(next);
+    expect(
+      impulseCounts(plan(overlapping)).every((values) => values.every((value) => value === 0)),
+    ).toBe(true);
+  } finally {
+    assets.dispose();
+  }
+});
+
 it('preserves Ocean requests across three real publication flights and predecessor acknowledgments', async () => {
   const fixture = await publishedDispersiveFixture();
   const { ocean, world, assets, nativeClock } = fixture;
@@ -964,6 +1215,16 @@ describe('advanced water owner replacement', () => {
               error: {
                 code: 'water-advanced-invalid-input',
                 expected: expect.stringContaining('full native source interval'),
+                detail: {
+                  cause: {
+                    deltaSeconds: 31 / 60 - 5 / 60,
+                    currentTimeSeconds: 31 / 60,
+                    priorTimeSeconds: 5 / 60,
+                    currentNativeStep: 31,
+                    priorNativeStep: 5,
+                    captureRequested: false,
+                  },
+                },
               },
             },
           ],
@@ -1116,6 +1377,106 @@ describe('advanced water owner replacement', () => {
     expect(longGap.value.sourceFeedback).toMatchObject({
       oceans: [{ error: { code: 'water-advanced-invalid-input' } }],
     });
+    fixture.assets.dispose();
+  });
+
+  it('accepts the full authored slow native interval and refuses its excess without clamping', async () => {
+    const fixture = await publishedDispersiveFixture(2);
+    const feature = createWaterAdvancedFeature({});
+    const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+    const context = {
+      caps: {
+        ...device.caps,
+        compute: true,
+        storageBuffer: true,
+        storageTexture: true,
+        rgba16floatStorage: true,
+        rgba32floatStorage: true,
+      },
+      limits: { maxTextureDimension2D: 8192 },
+      frame: { frameNumber: 1 },
+      generation: 1,
+      deviceGeneration: 0,
+      views: [],
+    };
+    const plan = (timeSeconds: number, frameNumber: number) => {
+      fixture.nativeClock.simulationTimeSeconds = timeSeconds;
+      fixture.nativeClock.completedStep = Math.round(timeSeconds * 60);
+      fixture.ocean.update(1 / 60).unwrap();
+      const data = feature.extract({ ...fixture.context, frameNumber }).unwrap();
+      return { data, value: feature.plan(data, context).unwrap() };
+    };
+    const submit = (planned: ReturnType<typeof plan>) => {
+      const submission: RenderFeatureSubmission = {
+        works: planned.value.work.map((work) => ({
+          scope: work.scope,
+          passes: work.passes.map((pass) => ({
+            name: pass.name,
+            ...(pass.kind === 'compute' ? { resolvedGpuComputeDispatchCount: 1 } : {}),
+          })),
+        })),
+      };
+      feature.onFrameSubmitted?.(planned.data, submission);
+      feature.onSourceFrameSubmitted?.(planned.data, planned.value.sourceFeedback, submission);
+    };
+    submit(plan(0.05, 1));
+    submit(plan(0.1, 2));
+    const slow = plan(1.1, 3);
+    expect(
+      (slow.value.sourceFeedback as { oceans: { error?: unknown }[] }).oceans[0]?.error,
+    ).toBeUndefined();
+    expect(
+      slow.value.work.flatMap((work) => work.passes).some((pass) => pass.name.includes('advance')),
+    ).toBe(true);
+    submit(slow);
+    const excess = plan(3.2, 4);
+    expect(excess.value.sourceFeedback).toMatchObject({
+      oceans: [{ error: { code: 'water-advanced-invalid-input' } }],
+    });
+    fixture.assets.dispose();
+  });
+
+  it('keeps independent shallow view scopes when several scenes share the renderer', async () => {
+    const fixture = await advancedWaterFixture({ kind: 'disabled' });
+    const feature = createWaterAdvancedFeature({});
+    fixture.update(1);
+    const data = feature.extract({ ...fixture.context, frameNumber: 1 }).unwrap();
+    const row = data.rows[0];
+    if (row === undefined) throw new Error('Expected a submitted shallow source');
+    const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+    const planned = feature
+      .plan(
+        {
+          ...data,
+          rows: [
+            { ...row, key: 'first-view', viewIdentity: 'camera:first' },
+            { ...row, key: 'second-view', viewIdentity: 'camera:second' },
+          ],
+        },
+        {
+          caps: {
+            ...device.caps,
+            compute: true,
+            storageBuffer: true,
+            storageTexture: true,
+            rgba16floatStorage: true,
+            rgba32floatStorage: true,
+          },
+          limits: { maxTextureDimension2D: 8192 },
+          frame: { frameNumber: 1 },
+          generation: 1,
+          deviceGeneration: 0,
+          views: [],
+        },
+      )
+      .unwrap();
+    expect(planned.work.map((work) => work.scope)).toEqual([
+      { view: 'camera:first' },
+      { view: 'camera:second' },
+    ]);
+    expect(planned.work.every((work) => work.resources.length > 0 && work.passes.length > 0)).toBe(
+      true,
+    );
     fixture.assets.dispose();
   });
 

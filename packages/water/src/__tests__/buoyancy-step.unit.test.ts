@@ -761,6 +761,30 @@ describe('synchronous buoyancy owner', () => {
   });
 
   it.each([
+    4, 8, 16, 32,
+  ])('preserves flat-water hull support capacity for %i calibrated weighted points', async (count) => {
+    const f = await fixture();
+    const supports = Array.from({ length: count }, (_, index) => ({
+      ...pontoon(
+        [-6 + (Math.floor(index / 2) * 12) / (count / 2 - 1), -0.9, index % 2 === 0 ? -1.6 : 1.6],
+        index,
+      ),
+      radiusM: 1.5,
+    }));
+    const result = f.step({
+      pontoons: supports,
+      dynamics: { ...dynamics, massKg: 13066.65 },
+      settings: { ...f.input.settings, buoyancyCoefficientNPerM3: 9810, maxBuoyantForceN: 300000 },
+    });
+    expect(result.coefficientSolve.diagnostics).toEqual([]);
+    expect(result.pontoons.reduce((sum, trace) => sum + trace.coefficient, 0)).toBeCloseTo(1, 10);
+    const force = result.pontoons.reduce((sum, trace) => sum + trace.buoyancyForceN[1], 0);
+    expect(force).toBeCloseTo(sphericalCapVolumeM3(1.5, 2.4) * 9810, 6);
+    expect(force / (13066.65 * 9.81)).toBeGreaterThan(0.9);
+    expect(force / (13066.65 * 9.81)).toBeLessThan(1.1);
+  });
+
+  it.each([
     1, 4, 16,
   ])('computes complete numerical traces and native requests for %i supports', async (count) => {
     const f = await fixture();

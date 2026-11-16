@@ -4,7 +4,11 @@
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
-  "scripts": { "dev": "node ../../../scripts/vite-app.mjs dev --host 127.0.0.1", "build": "node ../../../scripts/vite-app.mjs build", "typecheck": "tsc --noEmit" },
+  "scripts": {
+    "dev": "node ../../../scripts/vite-app.mjs dev --host 127.0.0.1",
+    "build": "node ../../../scripts/vite-app.mjs build",
+    "typecheck": "tsc --noEmit"
+  },
   "dependencies": {
     "@forgeax/apps-shared": "workspace:*",
     "@forgeax/engine": "workspace:*",
@@ -50,5 +54,6 @@
         "reason": "This maintained Water demo has no spike report."
       }
     }
-  }
+  },
+  "description": "R2 waves scene module owned by water-mesh"
 }

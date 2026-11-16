@@ -76,13 +76,20 @@ it.each([
         /* @vite-ignore */ new URL('../../../shader-compiler/dist/index.mjs', import.meta.url).href
       );
       const imports = Object.fromEntries(
-        ['water-waves', 'water-fluid', 'water-advanced-sampling', 'tbn'].map((name) => {
+        [
+          'water-waves',
+          'water-fluid',
+          'water-advanced-sampling',
+          'water-transition-continuity',
+          'tbn',
+        ].map((name) => {
           const source = readFileSync(new URL(`../${name}.wgsl`, import.meta.url), 'utf8');
           const path = /^#define_import_path\s+(\S+)/m.exec(source)?.[1];
           if (path === undefined) throw new Error(`Missing production module identity: ${name}`);
           return [path, source];
         }),
       );
+      imports['forgeax_material::water_deformation_v1'] = compiler.waterDeformationAbiSource();
       const parameters = projectMaterialParameterSchema(
         WATER_SURFACE_PARAMETERS,
         'shallow-foam',

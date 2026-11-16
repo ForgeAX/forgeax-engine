@@ -111,6 +111,7 @@ it('advances entry deltas and continuous transport rates through shallow cancell
         params[31] = 1;
         resources.push(
           buffer('params', params),
+          buffer('impulses', new Float32Array(8)),
           program('advance', dispersiveOceanShader('rgba32float'), 'advance', [
             read(0),
             write(1, 'rgba32float'),
@@ -118,6 +119,7 @@ it('advances entry deltas and continuous transport rates through shallow cancell
             read(3),
             read(6),
             write(7, 'rgba32float'),
+            storage(20),
           ]),
         );
         compute(
@@ -133,6 +135,7 @@ it('advances entry deltas and continuous transport rates through shallow cancell
             { binding: 3, resource: 'source-view' },
             { binding: 6, resource: 'old-source-view' },
             { binding: 7, resource: 'next-source-view' },
+            { binding: 20, resource: 'impulses' },
           ],
           n,
           n,

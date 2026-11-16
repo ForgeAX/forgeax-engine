@@ -4,6 +4,8 @@ import { rhi } from '@forgeax/engine-rhi-null';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { assert, expect, it, vi } from 'vitest';
 import { createRenderer, exposeRenderer } from '../assembly/factory';
+import * as featureInspection from '../assembly/renderer-feature-inspection';
+import * as inspection from '../assembly/renderer-inspection';
 import { Camera, MeshFilter, MeshRenderer, Visibility, VisibilityStateValue } from '../components';
 import { Materials } from '../materials';
 import * as views from '../view-inspection';
@@ -55,6 +57,11 @@ it('selects status before source inventories while preserving an explicit full d
     vi.spyOn(views, 'viewRenderScene'),
     vi.spyOn(views, 'viewInstanceCollections'),
     vi.spyOn(views, 'viewMeshMaterialBindings'),
+    vi.spyOn(views, 'viewRecoveryEvidence'),
+    vi.spyOn(views, 'viewFeatureGraph'),
+    vi.spyOn(views, 'viewTemporal'),
+    vi.spyOn(inspection, 'projectRendererOutputInspectionFromSurface'),
+    vi.spyOn(featureInspection, 'projectRendererFeatureInspection'),
   ] as const;
   try {
     let ready = false;
@@ -97,6 +104,8 @@ it('selects status before source inventories while preserving an explicit full d
     expect(full.meshMaterialBindings).toHaveLength(1);
     expect(full.iblBinding).toBeUndefined();
     for (const spy of spies) expect(spy).toHaveBeenCalledOnce();
+    const explicitFull = renderer.inspect({ fields: Object.keys(full) as (keyof typeof full)[] });
+    expect(explicitFull).toEqual(full);
     const owner = spies[0]?.mock.calls[0]?.[0];
     expect(owner).toBeDefined();
     if (owner === undefined) throw new Error('Missing actual view owner');

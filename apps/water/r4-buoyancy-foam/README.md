@@ -1,36 +1,27 @@
-# Water R4 Buoyancy Harbor
+# Boat Sailing — R4 / R5
 
-Saved Scene carrier for the synchronous [Water buoyancy contract](../../../packages/water/README.md),
-specified-body CPU particle queries and actual renderer foam-input inspection.
+R4 is the primary entry for the combined native boat demonstration. Port 5384
+and the R5 URL on port 5385 load the same R5-authored scene, controls and physics
+implementation. R4 retains its harbor assets and native regression fixtures;
+they are not a second running product.
 
-```powershell
-pnpm build:engine
+```sh
 pnpm --filter @forgeax/water-r4-buoyancy-foam dev
 ```
 
-Open `http://127.0.0.1:5384/`. The Chinese controls edit the real
-`WaterPontoonSet`, Water assets, colliders and exclusion volume. Launch presets
-perform one explicit native pose/velocity reset; subsequent movement comes
-from Physics. The event particle consumer samples the event's exact Water body
-and generation after its source physics step completes.
+Observe calm floating, head-on waves, an airborne return and offset cargo.
+Startup selects Head-on waves, enabling the authored Ocean wave field and
+scene-depth shoreline foam. Calm remains the explicit no-wave comparison.
+Motor/rudder forces and cargo torque run at the existing native fixed boundary.
+Worker async and synchronous buoyancy are settings in this same experience;
+GPU/CPU selects the actual WaterMesh path. Both `window.__waterR4` and
+`window.__waterR5` reference the same evidence object.
 
-The saved Lake and Ocean sensors extend 2 m above the source plane; the River
-uses its cooked spline-mesh height. The panel and exported accepted descriptors
-show the exact extents. Ordinary static Terrain receives shore contacts.
-The wave switch retains the Cooked body's conservative height envelope.
+The running scene has no white-sphere splash or foam particles. Lake/Ocean
+materials use the Showcase porous foam texture author and ordinary Water
+contact, crest and scene-depth foam inputs. Material foam is rendered on the
+water; hidden pontoon debug geometry remains an explicit advanced control.
 
-`window.__waterR4.readState()` exposes accepted bodies, native dynamics, the
-latest complete step, actual system/particle query requests and renderer inspection.
-The numeric particle offset moves the query marker from the committed native
-system position. River metadata varies from 2 to 8 m, making the instance and
-particle depth branches observable. The panel records source tick and query flags.
-Per-point checkboxes edit the saved enabled mask and expose first-solve/cache hits.
-`exportTrace()` retains 240 complete steps and explicitly counts retired steps;
-particle sample retention has its own count. The visible export command emits
-the same facts. GPU particle DI returns its structured unsupported result.
-
-> [!NOTE]
-> Set `FORGEAX_RHI_CAPTURE_ROOT` to a directory outside this checkout before
-> starting Vite when persisting a capture through its recorder transport.
-> Numerical traces and Browser/RHI artifacts are independent evidence. Engine
-> source/asset adaptation does not establish UE pixel or numerical parity.
+See the [shared experience](../r5-gpu-mesh-async-pontoons/README.md) and
+[Water contract](../../../packages/water/README.md). Browser visibility and
+rendered foam require the main thread's actual browser acceptance.

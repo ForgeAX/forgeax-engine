@@ -1,5 +1,6 @@
 import type { CompiledRenderGraphInfo } from '@forgeax/engine-render-graph';
 import {
+  PIPELINE_LIBRARY_LIMITS,
   type RhiCanvasSurfacePresentationProof,
   type RhiDevice,
   RhiError,
@@ -485,17 +486,13 @@ export function projectRendererInspectionState(
 
 /** Output and observation fields for one frame, projected from the surface and graph state. */
 export function projectRendererOutputFields(
-  input: Parameters<typeof projectRendererOutputInspectionFromSurface>[0] & {
-    readonly frameId: number;
-    readonly antialias: CameraSnapshot['antialias'] | undefined;
-    readonly resourceStats: NonNullable<RenderInspection['observation']['resourceStats']>;
-  },
+  input: Omit<Parameters<typeof projectRendererOutputObservationInspection>[0], 'observationId'>,
 ) {
   return projectRendererOutputObservationInspection({
     observationId: `${STANDARD_OUTPUT_TRANSFORM_FEATURE_ID}:frame-${input.frameId}`,
     frameId: input.frameId,
     antialias: input.antialias,
-    outputInspection: projectRendererOutputInspectionFromSurface(input),
+    outputInspection: input.outputInspection,
     rgba16floatRenderable: input.rgba16floatRenderable,
     resourceStats: input.resourceStats,
   });
@@ -537,4 +534,32 @@ export function exportPipelineLibraryForInspection(
     });
   if (exported.ok === false) throw exported.error;
   return exported;
+}
+
+export function projectRendererPipelineLibraryInspection(
+  library: RhiDevice['pipelineLibrary'],
+  options: RenderInspectionOptions | undefined,
+  collecting: () => boolean,
+  backgroundPipelineLibraryState: RenderInspection['backgroundPipelineLibraryState'],
+  exported: ReturnType<typeof exportPipelineLibraryForInspection>,
+) {
+  return {
+    ...(library === undefined ||
+    !inspectionSelects(options?.fields, 'pipelineLibrary', 'pipelineLibraryCollecting')
+      ? {}
+      : {
+          pipelineLibrary: library.inspect(options),
+          pipelineLibraryCollecting: collecting(),
+        }),
+    ...(backgroundPipelineLibraryState === undefined ? {} : { backgroundPipelineLibraryState }),
+    ...(exported?.ok === true
+      ? {
+          pipelineLibraryManifest: exported.value,
+          pipelineLibraryPolicy: {
+            ...PIPELINE_LIBRARY_LIMITS,
+            ...options?.pipelineLibraryLimits,
+          },
+        }
+      : {}),
+  };
 }

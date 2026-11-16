@@ -77,7 +77,7 @@ export function planDawnShards(
     partitionFiles(files, root, bins, weights, true, rotation);
     const candidate = refineDawnShards(bins, root, ordinaryWorkers);
     if (!best || improvesDawnScore(candidate.score, best.score)) best = candidate;
-    if (best.score[0] === 0 || !candidate.totalFits) break;
+    if (best.score[0] === 0 || !candidate.hasFittingCohorts) break;
   }
   if (!best) throw new Error('Dawn has no configured placement lanes');
   return best.partitions;
@@ -97,9 +97,14 @@ type DawnRefinement =
 // Keep the five-second shader-profile producer and a one-second planning
 // margin inside the existing replay window. Runtime deadlines stay unchanged.
 const dawnReplaySeconds = 2_200 - 5 - 1;
-function dawnLoadScore(values: number[][]): number[] {
+function dawnLoadScore(values: number[][], fitting: readonly boolean[]): number[] {
+  const overload: [number, number] = [0, 0];
+  for (const [sample, row] of values.entries()) {
+    for (const value of row)
+      overload[fitting[sample] ? 0 : 1] += Math.max(0, value - dawnReplaySeconds) ** 2;
+  }
   return [
-    values.flat().reduce((sum, value) => sum + Math.max(0, value - dawnReplaySeconds) ** 2, 0),
+    ...overload,
     Math.max(...values.flat()),
     values.flat().reduce((sum, value) => sum + value * value, 0),
   ];
@@ -108,23 +113,27 @@ function dawnLoadScore(values: number[][]): number[] {
 // Score a proposed two-lane transfer without allocating a copied load matrix.
 function shiftedDawnScore(
   loads: number[][],
+  fitting: readonly boolean[],
   costs: DawnCostVectors,
   left: number,
   right: number,
   first: TestSpecification,
-  second?: TestSpecification,
-  maximumOverload = Number.POSITIVE_INFINITY,
+  second: TestSpecification | undefined,
+  maximumOverloads: readonly number[],
 ): number[] {
-  let overload = 0;
+  const overload: [number, number] = [0, 0];
   let peak = 0;
   let squares = 0;
   const firstCosts = costs.get(first);
   const secondCosts = second ? costs.get(second) : undefined;
   if (!firstCosts) throw new Error('Dawn transfer has no complete cost vector');
   // Overflow contributions are nonnegative. A transfer already worse on the
-  // latest cohort cannot improve the complete objective; retain the original
-  // scoring order for every candidate that survives this lower bound.
-  const latest = loads.length - 1;
+  // newest highest-priority cohort cannot improve the complete objective.
+  // If none can fit, their overload is the first nonconstant score. Retain the
+  // original scoring order for candidates that survive this lower bound.
+  const newestFitting = fitting.lastIndexOf(true);
+  const latest = newestFitting < 0 ? loads.length - 1 : newestFitting;
+  const maximumOverload = maximumOverloads[newestFitting < 0 ? 1 : 0] ?? Number.POSITIVE_INFINITY;
   if (latest >= 0) {
     const delta = (secondCosts?.[latest] ?? 0) - firstCosts[latest];
     let lowerBound = 0;
@@ -133,19 +142,19 @@ function shiftedDawnScore(
       lowerBound += Math.max(0, value - dawnReplaySeconds) ** 2;
     }
     if (lowerBound > maximumOverload + 1e-6) {
-      return [Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY];
+      return Array(4).fill(Number.POSITIVE_INFINITY);
     }
   }
   for (let sample = 0; sample < loads.length; sample++) {
     const delta = (secondCosts?.[sample] ?? 0) - firstCosts[sample];
     for (let lane = 0; lane < loads[sample].length; lane++) {
       const value = loads[sample][lane] + (lane === left ? delta : lane === right ? -delta : 0);
-      overload += Math.max(0, value - dawnReplaySeconds) ** 2;
+      overload[fitting[sample] ? 0 : 1] += Math.max(0, value - dawnReplaySeconds) ** 2;
       peak = Math.max(peak, value);
       squares += value * value;
     }
   }
-  return [overload, peak, squares];
+  return [...overload, peak, squares];
 }
 
 function improvesDawnScore(left: number[], right: number[]): boolean {
@@ -166,13 +175,14 @@ function fitsDawnCapacity(values: number[], capacity: number, largest: number): 
 function findDawnRelocation(
   bins: DawnBin[],
   loads: number[][],
+  fitting: readonly boolean[],
   firstWave: ReadonlySet<TestSpecification>,
   reserve: DawnCost,
   costs: DawnCostVectors,
   capacity: number,
   largest: number,
 ): DawnRelocation | undefined {
-  let best = dawnLoadScore(loads);
+  let best = dawnLoadScore(loads, fitting);
   let selected: DawnRelocation | undefined;
   for (let from = 0; from < bins.length; from++) {
     for (let index = 0; index < bins[from].files.length; index++) {
@@ -185,7 +195,7 @@ function findDawnRelocation(
             bin.seconds + (lane === to ? reserve(file) : lane === from ? -reserve(file) : 0),
         );
         if (!fitsDawnCapacity(retained, capacity, largest)) continue;
-        const next = shiftedDawnScore(loads, costs, from, to, file, undefined, best[0]);
+        const next = shiftedDawnScore(loads, fitting, costs, from, to, file, undefined, best);
         if (improvesDawnScore(next, best)) {
           best = next;
           selected = { kind: 'move', from, to, index, score: next };
@@ -237,7 +247,7 @@ function refineDawnShards(
   bins: { files: TestSpecification[]; seconds: number }[],
   root: string,
   ordinaryWorkers: DawnOrdinaryWorkers,
-): { partitions: TestSpecification[][]; score: number[]; totalFits: boolean } {
+): { partitions: TestSpecification[][]; score: number[]; hasFittingCohorts: boolean } {
   const snapshots: readonly DawnTimingSnapshot[] = [
     timings.previousRun,
     ...timings.replayRuns,
@@ -288,9 +298,10 @@ function refineDawnShards(
   const costVectors = new Map(
     [...paths.keys()].map((file) => [file, costs.map((cost) => cost(file))] as const),
   );
-  // A cohort larger than all four windows cannot fit any permutation. Keep
-  // its forecasts and best placement, without repeating an impossible search.
-  const totalFits = loads.every(
+  // An over-capacity cohort cannot qualify through placement alone. Preserve
+  // its complete forecasts and minimize its overload after the feasible replay
+  // windows; an impossible lower bound must not sacrifice an older safety gate.
+  const fitting = loads.map(
     (row) =>
       row.reduce((sum, seconds) => sum + seconds, 0) <= dawnReplaySeconds * row.length + 1e-6,
   );
@@ -301,13 +312,14 @@ function refineDawnShards(
     let selected: DawnRefinement | undefined = findDawnRelocation(
       bins,
       loads,
+      fitting,
       firstWave,
       reserve,
       costVectors,
       capacity,
       largest,
     );
-    let best = selected?.score ?? dawnLoadScore(loads);
+    let best = selected?.score ?? dawnLoadScore(loads, fitting);
     for (let left = 0; left < bins.length; left += 1) {
       for (let right = left + 1; right < bins.length; right += 1) {
         for (let a = 0; a < bins[left].files.length; a += 1) {
@@ -320,7 +332,16 @@ function refineDawnShards(
               (bin, lane) => bin.seconds + (lane === left ? delta : lane === right ? -delta : 0),
             );
             if (!fitsDawnCapacity(retained, capacity, largest)) continue;
-            const next = shiftedDawnScore(loads, costVectors, left, right, first, second, best[0]);
+            const next = shiftedDawnScore(
+              loads,
+              fitting,
+              costVectors,
+              left,
+              right,
+              first,
+              second,
+              best,
+            );
             if (improvesDawnScore(next, best)) {
               best = next;
               selected = { kind: 'swap', left, right, a, b, score: next };
@@ -332,7 +353,11 @@ function refineDawnShards(
     if (!selected) break;
     applyDawnRefinement(selected, bins, loads, reserve, costs);
   }
-  return { partitions: bins.map((bin) => bin.files), score: dawnLoadScore(loads), totalFits };
+  return {
+    partitions: bins.map((bin) => bin.files),
+    score: dawnLoadScore(loads, fitting),
+    hasFittingCohorts: fitting.some(Boolean),
+  };
 }
 
 function partitionFiles(

@@ -39,6 +39,15 @@ existing asset owner. See the [Water entry](../../packages/water/README.md#advan
 
 ## Procedural content
 
+For a finite same-kind startup roster, use `assets.loadMany(guids, kind, { signal })`.
+It preserves serial asset admission while sharing Pack verification within that
+operation; the read scope ends on success, failure or cancellation. Own each
+returned handle grant, including duplicate entries. Keep ordinary `load` for
+independent reads. Use the awaited `onProgress(completed, total)` option for
+bounded host task yields during long cached rosters; keep the read scope open
+while publication and cancellation messages advance. Do not add a global document cache or raise decode concurrency
+to compensate for repeatedly parsing one Pack.
+
 Choose the owner by when the content is known, not by how it is computed:
 
 | Known | Owner | Reference | Change |

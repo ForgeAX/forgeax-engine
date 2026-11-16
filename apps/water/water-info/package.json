@@ -56,5 +56,6 @@
         "reason": "This maintained Water demo has no spike report."
       }
     }
-  }
+  },
+  "description": "R2 info scene module owned by water-mesh"
 }

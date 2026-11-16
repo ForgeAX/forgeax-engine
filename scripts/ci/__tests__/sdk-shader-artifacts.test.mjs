@@ -22,6 +22,17 @@ import {
 import { coreBaseShaderDirectory } from '../restore-core-shader-inputs.mjs';
 import { sdkShaderArtifacts } from '../sdk-shader-artifacts.mjs';
 
+test('SDK source export contracts run after their declared dependencies are installed', () => {
+  const workflow = parse(readFileSync('.github/workflows/sdk-pr-preflight.yml', 'utf8'));
+  const steps = workflow.jobs['build-sdk'].steps;
+  const install = steps.findIndex((step) => step.name === 'Install dependencies');
+  const contracts = steps.findIndex((step) => step.name === 'Verify source dependency export');
+  assert.ok(install >= 0 && contracts > install);
+  assert.match(steps[install].run, /prepare-pnpm-workspace\.mjs --install/);
+  assert.match(steps[contracts].run, /repository-public-policy\.test\.mjs/);
+  assert.match(steps[contracts].run, /sdk-shader-artifacts\.test\.mjs/);
+});
+
 test('SDK seed waits for same-head core and point publications outside its original execution budget', () => {
   const w = parse(readFileSync('.github/workflows/sdk-pr-preflight.yml', 'utf8'));
   const p = w.jobs['shader-producer-inputs'],

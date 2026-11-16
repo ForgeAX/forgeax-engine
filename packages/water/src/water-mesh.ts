@@ -17,6 +17,10 @@ import {
   MAX_WATER_MESH_TESSELLATION_FACTOR,
   MAX_WATER_MESH_TREE_NODES,
 } from './water-mesh-budget.js';
+import {
+  buildWaterMeshContinuity,
+  type WaterMeshContinuitySupport,
+} from './water-mesh-continuity.js';
 import { WATER_WAVE_LWC_TILE_LENGTH_M } from './waves.js';
 
 export type { WaterMeshLayoutReceipt } from './water-mesh-abi.js';
@@ -33,6 +37,7 @@ export type WaterMeshBodyInput = Readonly<{
   affectsWaterMesh: boolean;
   priority: number;
   materialKey: string;
+  transitionContinuity?: Readonly<{ centerXZ: Vec2; reachM: number; blendWidthM: number }>;
   transitionTo?: 'lake' | 'ocean';
   transitionMaterialKey?: string;
   transitionMaterials?: Readonly<Partial<Record<'lake' | 'ocean', string>>>;
@@ -65,7 +70,6 @@ export type WaterMeshBuildInput = Readonly<{
     ownerGuid?: string;
     waterLevelM?: number;
     /** Opt-in local view windows join their waves to the Ocean mean plane. */
-    oceanHeight?: 'mean';
   }>;
   bodies: readonly WaterMeshBodyInput[];
 }>;
@@ -123,6 +127,7 @@ export type WaterMeshTileInstance = Readonly<{
   far: boolean;
   /** Accepted near bounds adjoining an emitted same-owner flat far ring: -X,+X,-Z,+Z. */
   flatFarBoundaryMask: number;
+  continuitySupport?: WaterMeshContinuitySupport;
 }>;
 export type WaterMeshBucket = Readonly<{
   materialKey: string;
@@ -860,12 +865,6 @@ export function waterMeshGridTemplate(
   const mesh = meshFromInterleaved(new Float32Array(floats), new Uint32Array(indices));
   return mesh.ok ? ok({ mesh: mesh.value, vertexCount, indexCount }) : mesh;
 }
-function floatWord(value: number): number {
-  const bytes = new ArrayBuffer(4);
-  const view = new DataView(bytes);
-  view.setFloat32(0, value, true);
-  return view.getUint32(0, true);
-}
 function serialize(
   instances: readonly WaterMeshTileInstance[],
   materialKeys: readonly string[],
@@ -875,9 +874,25 @@ function serialize(
   coverageBytes: Uint8Array;
   receipt: WaterMeshLayoutReceipt;
 } {
+  let coverageWordCount = 0;
+  for (const item of instances) {
+    const rings = item.far ? undefined : item.coverageRings;
+    if (!rings?.length) continue;
+    coverageWordCount += 1 + rings.length;
+    for (const ring of rings) coverageWordCount += ring.length * 2;
+  }
+  for (const item of instances)
+    if (item.continuitySupport) coverageWordCount += 2 + item.continuitySupport.weights.length;
+  if (
+    !Number.isSafeInteger(coverageWordCount) ||
+    instances.length * 24 + coverageWordCount > 0x0fff_ffff
+  )
+    throw new RangeError('WaterMesh continuity support exceeds the versioned 28-bit word window');
   const bytes = new Uint8Array(instances.length * WATER_MESH_INSTANCE_STRIDE_BYTES),
     data = new DataView(bytes.buffer),
-    coverageWords: number[] = [];
+    coverageBytes = new Uint8Array(coverageWordCount * 4),
+    coverageView = new DataView(coverageBytes.buffer);
+  let coverageWord = 0;
   const offsets = WATER_MESH_INSTANCE_LAYOUT.offsets;
   const materialIndex = new Map(materialKeys.map((key, index) => [key, index])),
     densityIndex = new Map(densityKeys.map((key, index) => [key, index]));
@@ -917,19 +932,32 @@ function serialize(
     if (rings?.length) {
       data.setUint32(
         offset + offsets.coverageWordOffset,
-        instances.length * (WATER_MESH_INSTANCE_STRIDE_BYTES / 4) + coverageWords.length,
+        instances.length * (WATER_MESH_INSTANCE_STRIDE_BYTES / 4) + coverageWord,
         true,
       );
       data.setUint32(offset + offsets.coverageRingCount, rings.length, true);
-      coverageWords.push(rings.length, ...rings.map((ring) => ring.length));
+      coverageView.setUint32(coverageWord++ * 4, rings.length, true);
+      for (const ring of rings) coverageView.setUint32(coverageWord++ * 4, ring.length, true);
       for (const ring of rings)
-        for (const point of ring) coverageWords.push(floatWord(point[0]), floatWord(point[1]));
+        for (const point of ring) {
+          coverageView.setFloat32(coverageWord++ * 4, point[0], true);
+          coverageView.setFloat32(coverageWord++ * 4, point[1], true);
+        }
     }
-  });
-  const coverageBytes = new Uint8Array(coverageWords.length * 4),
-    coverageView = new DataView(coverageBytes.buffer);
-  coverageWords.forEach((word, index) => {
-    coverageView.setUint32(index * 4, word, true);
+    const support = item.continuitySupport;
+    if (support) {
+      const wordOffset = instances.length * (WATER_MESH_INSTANCE_STRIDE_BYTES / 4) + coverageWord;
+      const packedSupport = (wordOffset * 16) | item.flatFarBoundaryMask;
+      if (packedSupport >>> 0 === 0x57474d31)
+        throw new RangeError(
+          'WaterMesh support offset collides with the reserved GPU header marker',
+        );
+      data.setUint32(offset + offsets.flatFarBoundaryMask, packedSupport, true);
+      coverageView.setUint32(coverageWord++ * 4, 0x57434e31, true);
+      coverageView.setUint32(coverageWord++ * 4, support.weights.length, true);
+      for (const weight of support.weights)
+        coverageView.setFloat32(coverageWord++ * 4, weight, true);
+    }
   });
   return {
     bytes,
@@ -976,7 +1004,17 @@ function invalidWaterMeshBodyGeometry(body: WaterMeshBodyInput): boolean {
   );
 }
 function invalidWaterMeshBody(body: WaterMeshBodyInput): boolean {
-  return invalidWaterMeshBodyIdentity(body) || invalidWaterMeshBodyGeometry(body);
+  return (
+    invalidWaterMeshBodyIdentity(body) ||
+    invalidWaterMeshBodyGeometry(body) ||
+    (body.transitionContinuity !== undefined &&
+      (body.type !== 'river' ||
+        !finite2(body.transitionContinuity.centerXZ) ||
+        !Number.isFinite(body.transitionContinuity.reachM) ||
+        !Number.isFinite(body.transitionContinuity.blendWidthM) ||
+        body.transitionContinuity.blendWidthM <= 0 ||
+        body.transitionContinuity.reachM <= body.transitionContinuity.blendWidthM))
+  );
 }
 function invalidWaterMeshDimensions(input: WaterMeshBuildInput, view: WaterMeshViewInput): boolean {
   return (
@@ -1002,7 +1040,6 @@ function invalidWaterMeshFarInput(input: WaterMeshBuildInput): boolean {
         input.far.extentM.some((value) => value <= 0) ||
         (input.far.ownerGuid === undefined) !== (input.far.waterLevelM === undefined) ||
         (input.far.waterLevelM !== undefined && !Number.isFinite(input.far.waterLevelM)) ||
-        (input.far.oceanHeight !== undefined && input.far.oceanHeight !== 'mean') ||
         (input.far.ownerGuid !== undefined && input.far.ownerGuid.length === 0)),
   );
 }
@@ -1090,6 +1127,11 @@ export function buildWaterMeshView(
   if (!domain.ok) return domain;
   const { lodScaleM, halfTilesX, halfTilesZ, dimension, treeDepth } = domain.value;
   const active = input.bodies.filter((body) => body.visible && body.affectsWaterMesh);
+  if (input.nearMesh === 'gpu' && active.some((body) => body.transitionContinuity !== undefined))
+    return fail(
+      'terminal continuity support from the CPU WaterMesh producer; GPU traversal does not publish this optional payload',
+      input.nearMesh,
+    );
   const renderIndices = new Map(
     [...new Set(active.map((body) => body.guid))].sort().map((guid, index) => [guid, index + 1]),
   );
@@ -1341,9 +1383,7 @@ export function buildWaterMeshView(
                   yMinM: input.far.waterLevelM,
                   yMaxM: input.far.waterLevelM,
                 })
-              : sea && input.far.oceanHeight === 'mean'
-                ? Object.freeze({ ...instance, waterYM: sea.baseHeightM })
-                : instance,
+              : instance,
           );
           farInstanceCount++;
         }
@@ -1355,25 +1395,10 @@ export function buildWaterMeshView(
   const farResult = appendFarMesh();
   if (!farResult.ok) return farResult;
   const farInstanceCount = farResult.value;
-  const applyFarBoundaryMasks = (): void => {
-    const farInstances = selected.filter((tile) => tile.far);
-    const nearBounds = view.waterInfoBoundsXZ ?? { minM: zoneBounds.min, maxM: zoneBounds.max };
-    for (let index = 0; index < selected.length; index++) {
-      const tile = requireWaterValue(selected[index]);
-      if (tile.far || tile.transitionBodyGuid !== undefined) continue;
-      selected[index] = Object.freeze({
-        ...tile,
-        flatFarBoundaryMask: waterMeshFlatFarBoundaryMask(
-          farInstances,
-          tile.ownerGuid,
-          tile.ownerGeneration,
-          tile.waterYM,
-          nearBounds,
-        ),
-      });
-    }
-  };
-  applyFarBoundaryMasks();
+  const continuity = buildWaterMeshContinuity(selected, active);
+  if (!continuity.ok) return continuity;
+  for (let index = 0; index < selected.length; index++)
+    selected[index] = requireWaterValue(continuity.value[index]);
   const prepareTemplateGroups = () => {
     const grouped = new Map<string, WaterMeshTileInstance[]>();
     for (const instance of selected) {

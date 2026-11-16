@@ -127,6 +127,7 @@ export function allocationMemoryModel(profile, { metadata = null, symbols = new 
   };
   model.interpretation = [
     'Statistical allocation call stacks. Every recorded sample has a path; this is not every real allocation or object.',
+    'Count measures recorded samples, not estimated allocation events. Byte-based sampling favors larger allocations; counts cannot establish ordinary allocation frequency across different object sizes.',
     'Tree bytes sum V8 node selfSize once. Recorded sample-size totals are separate and may differ; unresolved sample bytes are not silently added twice.',
     'Collected-object flags and sampling interval determine the population. Unknown metadata stays unknown. This does not establish live heap, retained sizes, GC pauses, native/GPU totals or ordinary performance.',
   ];
@@ -257,7 +258,30 @@ export function snapshotMemoryModel(snapshot) {
   return model;
 }
 
-export function inspectMemory(model, id = model.rootId, { offset = 0, limit = 100 } = {}) {
+export function memoryMetric(model, metric = model.metric ?? 'bytes') {
+  requireFact(metric === 'bytes' || metric === 'count', 'Memory metric must be bytes or count');
+  return metric === 'bytes'
+    ? {
+        name: metric,
+        total: 'totalBytes',
+        self: 'selfBytes',
+        label: 'bytes',
+        interpretation:
+          'Size and count are independent measures; byte totals do not establish object counts.',
+      }
+    : {
+        name: metric,
+        total: 'totalCount',
+        self: 'selfCount',
+        label: model.countLabel,
+        interpretation:
+          model.mode === 'sampled-allocation-stack'
+            ? 'Recorded samples only. Byte-based sampling favors larger allocations; this is not an unbiased allocation-event count or rate.'
+            : 'Captured V8 nodes, including strings, VM/internal and native nodes; not logical application objects or allocation history.',
+      };
+}
+
+export function inspectMemory(model, id = model.rootId, { offset = 0, limit = 100, metric } = {}) {
   requireFact(
     model?.kind === 'memory-explorer' && model.schemaVersion === 1,
     'Require normalized memory explorer JSON',
@@ -270,6 +294,7 @@ export function inspectMemory(model, id = model.rootId, { offset = 0, limit = 10
       limit <= 1000,
     'Invalid memory page bounds',
   );
+  const selected = memoryMetric(model, metric);
   const byId = new Map(model.nodes.map((n) => [n.id, n])),
     node = byId.get(id);
   requireFact(node, 'Unknown memory node');
@@ -283,13 +308,23 @@ export function inspectMemory(model, id = model.rootId, { offset = 0, limit = 10
   const outgoing = model.references.filter((r) => r[0] === id),
     incoming = model.references.filter((r) => r[1] === id);
   const records = model.records.filter((r) => r.nodeId === id);
+  const children = [...node.children].sort(
+    (a, b) =>
+      byId.get(b)[selected.total] - byId.get(a)[selected.total] ||
+      byId.get(b).totalBytes - byId.get(a).totalBytes ||
+      byId.get(b).totalCount - byId.get(a).totalCount ||
+      a.localeCompare(b),
+  );
   return {
+    metric: selected.name,
+    metricLabel: selected.label,
+    metricInterpretation: selected.interpretation,
     path,
-    node: { ...node, children: node.children.slice(offset, offset + limit) },
+    node: { ...node, children: children.slice(offset, offset + limit) },
     childCount: node.children.length,
     offset,
     limit,
-    children: node.children.slice(offset, offset + limit).map((k) => {
+    children: children.slice(offset, offset + limit).map((k) => {
       const { children, ...summary } = byId.get(k);
       return { ...summary, childCount: children.length };
     }),
@@ -303,15 +338,59 @@ export function inspectMemory(model, id = model.rootId, { offset = 0, limit = 10
   };
 }
 
-export function defaultMemoryNode(model) {
+export function defaultMemoryNode(model, { metric } = {}) {
+  const selected = memoryMetric(model, metric);
   const byId = new Map(model.nodes.map((n) => [n.id, n]));
   let node = byId.get(model.rootId);
   for (let i = 0; i < 20; i++) {
     const child = node.children
       .map((id) => byId.get(id))
-      .sort((a, b) => b.totalBytes - a.totalBytes)[0];
-    if (!child || !node.totalBytes || child.totalBytes / node.totalBytes < 0.995) break;
+      .sort((a, b) => b[selected.total] - a[selected.total])[0];
+    if (!child || !node[selected.total] || child[selected.total] / node[selected.total] < 0.995)
+      break;
     node = child;
   }
   return node.id;
+}
+
+/** Bounded global hotspots; inclusive ancestors and descendants may overlap. */
+export function rankMemory(
+  model,
+  { metric, by = 'self', query = '', offset = 0, limit = 100 } = {},
+) {
+  const detail = inspectMemory(model, model.rootId, { metric, offset, limit });
+  requireFact(by === 'self' || by === 'total', 'Memory rank must use self or total');
+  requireFact(typeof query === 'string', 'Memory query must be text');
+  const selected = memoryMetric(model, metric),
+    field = selected[by],
+    needle = query.toLowerCase();
+  const ranked = model.nodes
+    .filter(
+      (n) =>
+        n.id !== model.rootId &&
+        n[field] > 0 &&
+        (n.label + ' ' + n.id + ' ' + JSON.stringify(n.source ?? n.callFrame ?? ''))
+          .toLowerCase()
+          .includes(needle),
+    )
+    .sort((a, b) => b[field] - a[field] || a.id.localeCompare(b.id));
+  return {
+    metric: selected.name,
+    metricLabel: selected.label,
+    metricInterpretation: selected.interpretation,
+    by,
+    query,
+    offset,
+    limit,
+    total: ranked.length,
+    rows: ranked
+      .slice(offset, offset + limit)
+      .map(({ children, ...node }) => ({ ...node, childCount: children.length })),
+    summary: detail.summary,
+    mode: detail.mode,
+    interpretation: [
+      ...detail.interpretation,
+      'Inclusive totals can overlap ancestor and descendant rows. Do not sum ranked subtree totals. Use inspect with a row id for its full path and raw records.',
+    ],
+  };
 }

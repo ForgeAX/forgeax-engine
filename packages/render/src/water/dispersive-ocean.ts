@@ -249,6 +249,28 @@ export function appendDispersiveOcean(
     config.waveDampingPerSecond ?? 0.35,
     config.surfaceTransportMultiplier ?? 1,
   ]);
+  const uploadWaveImpulses = () => {
+    const impulses = frame.waveImpulses ?? [];
+    base[19] = impulses.length;
+    const impulseValues = new Float32Array(Math.max(1, impulses.length) * 8);
+    impulses.forEach((impulse, index) => {
+      impulseValues.set(
+        [
+          impulse.positionXZ[0] - config.centerXZ[0],
+          impulse.positionXZ[1] - config.centerXZ[1],
+          impulse.radiusM,
+          impulse.velocityImpulseMps,
+          Math.max(0, frame.timeSeconds - impulse.timeSeconds),
+          0,
+          0,
+          0,
+        ],
+        index * 8,
+      );
+    });
+    resources.push(buffer(`${prefix}-wave-impulses`, impulseValues));
+  };
+  uploadWaveImpulses();
   const params = `${prefix}-params`;
   resources.push(
     ...dispersiveStateResources(prefix, size, input.generation),
@@ -309,6 +331,7 @@ export function appendDispersiveOcean(
       read(3),
       read(6),
       write(7, 'rgba32float'),
+      storage(20),
     ],
     publish: [
       read(0),
@@ -466,6 +489,7 @@ export function appendDispersiveOcean(
     [3, `${prefix}-${accumulation}-view`],
     [6, `${prefix}-source-state-view`],
     [7, `${prefix}-source-b-next-view`],
+    [20, `${prefix}-wave-impulses`],
   ]);
   capture('advanced-wave', `${prefix}-${evolved}`);
   const nextSource = `${prefix}-source-b-next`;

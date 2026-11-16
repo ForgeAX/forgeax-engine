@@ -29,7 +29,6 @@ function camera(): CameraSnapshot {
   world[15] = 1;
   return {
     entityKey: 1,
-    worldId: 0,
     historyVersion: 0,
     position: vec3.create(0, 0, 5),
     world,

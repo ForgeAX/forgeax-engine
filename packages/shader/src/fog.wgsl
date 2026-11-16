@@ -1,5 +1,5 @@
 #define_import_path forgeax_view::fog
-#import forgeax_view::common::{View}
+#import forgeax_view::common::{View, view_atmosphere_aerial_enabled}
 #import forgeax_view::atmosphere::{view_atmosphere, view_solar_transmittance, view_distant_sky_light}
 
 struct FogViewParams {
@@ -61,7 +61,7 @@ fn height_fog_with_source(v: View, worldPos: vec3<f32>, source:vec3<f32>) -> Fog
 fn height_fog(v:View, worldPos:vec3<f32>)->FogSample {
   if v.fogHeightOpacity.y==0.0 {return FogSample(vec3<f32>(0.0),1.0);}
   var source=v.fogColorDensity.xyz;
-  if v.atmosphereControl.w>0.5 {
+  if view_atmosphere_aerial_enabled(v) {
     // A fixed source preserves the analytic height integral. Ground solar
     // extinction is sampled once, independent of the segment midpoint.
     let ground=v.atmosphere.originRadius.xyz*1000.0+vec3<f32>(0.0,1.0,0.0);

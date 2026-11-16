@@ -1,3 +1,4 @@
+import { PhysicsWorld2DResource } from '@forgeax/engine-physics';
 import { World } from '@forgeax/engine-ecs';
 import {
   Collider,
@@ -55,7 +56,7 @@ test.each([
     )
     .unwrap();
   const physics = createRapier2DPhysicsWorld(rapier);
-  world.insertResource('PhysicsWorld', physics);
+  world.insertResource(PhysicsWorld2DResource, physics);
   registerPropagateTransforms(world);
   registerPhysicsSystems2D(world);
   try {

@@ -33,9 +33,7 @@ import { addFirstPersonSystem } from '../../../../shared/src/learn-render-first-
 import { captureCanvasPixels } from '@forgeax/apps-shared/canvas-capture';
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 
-
 // 2. example glue
-
 
 // Three cubes in a row — minimal geometry, no textures, just standard PBR.
 // The View UBO (784B std140, @group(0)@binding(0)) carries camera + light
@@ -167,11 +165,7 @@ function installCaptureHook(app: App, world: App['world'], canvas: HTMLCanvasEle
   const lease = attached.value;
   win.__captureAdvancedGlslUbo = async (): Promise<Uint8Array> => {
     world.update(1 / 60).unwrap();
-    const frame = renderer.draw({
-      leases: [lease],
-      camera: { lease },
-      environment: { lease },
-    });
+    const frame = renderer.draw({ source: lease });
     if (!frame.ok) throw frame.error;
     const observed = await renderer.observe(frame.value, { include: ['draws'] });
     if (!observed.ok) throw observed.error;

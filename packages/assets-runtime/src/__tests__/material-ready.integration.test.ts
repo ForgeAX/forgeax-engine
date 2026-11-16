@@ -404,7 +404,7 @@ describe('material runtime readiness', () => {
     const artifacts = Object.fromEntries(
       record.programs.map(({ artifact }) => [
         artifact.path,
-        { bytes: new TextEncoder().encode('tampered') },
+        { bytes: new TextEncoder().encode('tampered'), digest: `sha256:${'0'.repeat(64)}` },
       ]),
     );
     expect(await load({ ...publication, artifacts })).toMatchObject({
@@ -544,6 +544,7 @@ describe('material runtime readiness', () => {
     const program = record.programs[0];
     if (program === undefined || program.selections[0] === undefined)
       throw new Error('material fixture program is missing');
+    const { address: _address, ...undirected } = program.selections[0];
     const projection = projectMaterialRecord({
       ...record,
       programs: [
@@ -551,7 +552,7 @@ describe('material runtime readiness', () => {
           ...program,
           selections: [
             {
-              ...program.selections[0],
+              ...undirected,
               entry: 'vs_main',
               abi: {
                 directEntry: 'vs_main',

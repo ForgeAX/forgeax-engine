@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
+  createMaterialProgramArtifactReceipt,
   LIGHT_TEXTURE_RESAMPLE_COMPUTE_IDENTIFIER,
   LIGHT_TEXTURE_RESAMPLE_FRAGMENT_IDENTIFIER,
 } from '@forgeax/engine-shader';
@@ -52,7 +53,24 @@ const engineMaterialIdentifiers = [
   'forgeax::default-shadow-caster',
   'forgeax::default-unlit',
   ...resamplingPrograms.map(({ identifier }) => identifier),
+  'forgeax::water-info-raster-water',
+  'forgeax::water-info-raster-ground',
+  'forgeax::water-info-raster-dilation',
+  'forgeax::water-mesh-raster',
+  'forgeax::water-mesh-precise',
+  'forgeax::water-mesh-precise-msaa',
 ];
+
+const waterInfoIdentifiers = new Set([
+  'forgeax::water-info-raster-water',
+  'forgeax::water-info-raster-ground',
+  'forgeax::water-info-raster-dilation',
+  'forgeax::water-mesh-raster',
+]);
+const waterInfoReceipt = {
+  ...createMaterialProgramArtifactReceipt({ schema: [], directEntry: 'vs_main', vertexInputs: [] }),
+  bindings: 'group-0' as const,
+};
 
 const materialShaders = engineMaterialIdentifiers.map((identifier, index) => {
   const program = resamplingPrograms.find((candidate) => candidate.identifier === identifier);
@@ -66,6 +84,7 @@ const materialShaders = engineMaterialIdentifiers.map((identifier, index) => {
     composedWgsl: `// ${identifier}`,
     paramSchema: '[]',
     variants: [],
+    ...(waterInfoIdentifiers.has(identifier) ? { receipt: waterInfoReceipt } : {}),
   };
 });
 
@@ -93,7 +112,18 @@ const resamplingEntries = resamplingPrograms.map((program) => {
   };
 });
 
-const sharedEntries = [sharedEntry, ...resamplingEntries];
+const waterEntries = materialShaders
+  .filter((row) => row.identifier.startsWith('forgeax::water-'))
+  .map((row) => ({
+    hash: row.hash,
+    identifier: row.identifier,
+    wgsl: row.composedWgsl,
+    bindings: '[]',
+    compilerProfile: row.compilerProfile,
+    reflection: row.reflection,
+    entryPoints: row.entryPoints,
+  }));
+const sharedEntries = [sharedEntry, ...resamplingEntries, ...waterEntries];
 
 describe('vite-plugin-shader public engine input surface', () => {
   it('keeps the plugin front door without a version mirror', () => {
@@ -308,7 +338,7 @@ describe('vite-plugin-shader public engine input surface', () => {
       const previous = process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST;
       process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST = manifestPath;
       try {
-        const manifest = await buildEngineShaderManifest();
+        const manifest = await buildEngineShaderManifest({ workspaceRoot: root });
         expect(manifest.schemaVersion).toBe('1.0.0');
         expect(manifest.entries).toEqual([
           {
@@ -321,6 +351,11 @@ describe('vite-plugin-shader public engine input surface', () => {
             glsl: '',
             sourceDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
           })),
+          ...waterEntries.map((entry) => ({
+            ...entry,
+            glsl: '',
+            sourceDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+          })),
         ]);
         expect(manifest.materialShaders.map((entry) => entry.identifier)).toEqual([
           'forgeax::default-standard-pbr',
@@ -329,6 +364,12 @@ describe('vite-plugin-shader public engine input surface', () => {
           'forgeax::default-unlit',
           LIGHT_TEXTURE_RESAMPLE_COMPUTE_IDENTIFIER,
           LIGHT_TEXTURE_RESAMPLE_FRAGMENT_IDENTIFIER,
+          'forgeax::water-info-raster-water',
+          'forgeax::water-info-raster-ground',
+          'forgeax::water-info-raster-dilation',
+          'forgeax::water-mesh-raster',
+          'forgeax::water-mesh-precise',
+          'forgeax::water-mesh-precise-msaa',
         ]);
         for (const entry of manifest.materialShaders) {
           expect(entry.hash).toMatch(/^[a-f0-9]{8}$/);
@@ -352,6 +393,7 @@ describe('vite-plugin-shader public engine input surface', () => {
           expect(material?.entryPoints).toEqual(program.entryPoints);
         }
         const authored = await buildEngineShaderManifest({
+          workspaceRoot: root,
           materialPackages: [
             resolve(import.meta.dirname, '../../../../apps/hello/ssr/src/ssr-reflection.pack.json'),
           ],
@@ -363,9 +405,10 @@ describe('vite-plugin-shader public engine input surface', () => {
         );
         expect(custom?.composedWgsl).toContain('textureSample');
         expect(custom?.variants.length).toBeGreaterThan(0);
-        expect(manifest.materialShaders).toHaveLength(6);
+        expect(manifest.materialShaders).toHaveLength(12);
         await expect(
           buildEngineShaderManifest({
+            workspaceRoot: root,
             materialPackages: [join(root, 'missing.pack.json')],
           }),
         ).rejects.toThrow('missing.pack.json');

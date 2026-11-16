@@ -45,6 +45,7 @@
     "@forgeax/engine-shader": "workspace:*",
     "@forgeax/engine-types": "workspace:*",
     "@forgeax/engine-ui": "workspace:*",
+    "@forgeax/engine-water": "workspace:*",
     "@webgpu/types": "^0.1.74",
     "@forgeax/engine-math": "workspace:*",
     "@forgeax/engine-skinning": "workspace:*",

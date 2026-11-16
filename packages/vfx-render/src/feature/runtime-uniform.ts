@@ -2,6 +2,7 @@ import type { MaterialAsset } from '@forgeax/engine-types';
 import {
   isParticleTopologyRenderer,
   type ParticleRendererSourceV3,
+  type ParticleWaterGridEmissionSource,
   type VfxGpuTickIntent,
 } from '@forgeax/engine-vfx';
 import type { ParticleRenderCamera } from './camera.js';
@@ -9,6 +10,7 @@ import { eventInputCapacity } from './event-resources.js';
 
 /** Byte size of the per-dispatch runtime uniform shared by simulation and projection. */
 export const RUNTIME_BYTES = 80 * 4;
+export const WATER_GRID_EMISSION_BYTES = 992;
 
 type ParticleRenderer = ParticleRendererSourceV3;
 type RuntimeIntent = Pick<
@@ -84,6 +86,64 @@ function writeTime(words: Uint32Array, floats: Float32Array, intent: RuntimeInte
   words[77] = time.whole;
   floats[78] = world.fract;
   words[79] = world.whole;
+}
+
+/** The fixed binding-21 uniform projection for one authored Water-grid emitter. */
+export function waterGridEmissionData(emission: ParticleWaterGridEmissionSource): Uint8Array {
+  const bytes = new Uint8Array(WATER_GRID_EMISSION_BYTES);
+  const words = new Uint32Array(bytes.buffer);
+  const floats = new Float32Array(bytes.buffer);
+  words.set(
+    [
+      emission.scanCellCapacity,
+      emission.maxParticlesPerFrame,
+      emission.particle.alphaCurveSamples.length,
+      emission.particle.sizeCurveSamples.length,
+    ],
+    0,
+  );
+  floats.set(
+    [
+      emission.minimumWaterDepthM,
+      emission.minimumEmissionAmount,
+      emission.globalEmissionMultiplier,
+      emission.maximumEmissionPerCell,
+      emission.depthRestrictionRangeM[0],
+      emission.depthRestrictionRangeM[1],
+      emission.speedRestrictionRangeMPerSec[0],
+      emission.speedRestrictionRangeMPerSec[1],
+      emission.criteria.curvature.range[0],
+      emission.criteria.curvature.range[1],
+      emission.criteria.curvature.multiplier,
+      0,
+      emission.criteria.vorticity.range[0],
+      emission.criteria.vorticity.range[1],
+      emission.criteria.vorticity.multiplier,
+      0,
+      emission.criteria.flowSpeed.range[0],
+      emission.criteria.flowSpeed.range[1],
+      emission.criteria.flowSpeed.multiplier,
+      0,
+      emission.criteria.velocityOffsetDepthDifference.range[0],
+      emission.criteria.velocityOffsetDepthDifference.range[1],
+      emission.criteria.velocityOffsetDepthDifference.multiplier,
+      0,
+      emission.particle.normalSpeedMPerSec,
+      emission.particle.randomSpeedMPerSec,
+      emission.particle.lifetimeSeconds,
+      emission.particle.uniformSizeMultiplier,
+      emission.particle.initialSizeRangeM[0],
+      emission.particle.initialSizeRangeM[1],
+      0,
+      0,
+      ...emission.particle.accelerationMPerSec2,
+      0,
+    ],
+    4,
+  );
+  floats.set(emission.particle.alphaCurveSamples, 40);
+  floats.set(emission.particle.sizeCurveSamples, 148);
+  return bytes;
 }
 
 export function runtimeData(

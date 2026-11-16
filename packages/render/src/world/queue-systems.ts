@@ -1,10 +1,17 @@
-import { defineComponent, type EntityHandle, type World } from '@forgeax/engine-ecs';
+import {
+  defineComponent,
+  defineResource,
+  defineSystem,
+  type EntityHandle,
+  type World,
+} from '@forgeax/engine-ecs';
 import type { RecorderSession } from '@forgeax/engine-profiler';
 import type { FrameCacheCounters } from '../inspection-types';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import { runProfiledRenderPhase } from '../record/render-context';
 import type { CameraSnapshot } from '../render-contract';
 import type { DispatchList } from '../render-system-extract';
+import { RenderPhaseSortOrder } from '../system-order';
 import { TransparentSortCache, type TransparentSortRows } from '../systems/transparent-dispatch';
 import { RenderQueue } from './render-world';
 import { requireViewField } from './view-field';
@@ -82,28 +89,28 @@ export function viewPhaseInspection(
 export function registerQueueSystems(world: World): void {
   if (world.hasResource(QueueSystems)) return;
   world.insertResource(QueueSystems, true);
-  world
-    .addSystem(RenderQueue, {
-      commands: 'none',
-      name: RENDER_PHASE_SORT_SYSTEM,
-      queries: [{ read: [ViewPhases] }],
-      fn: (world, [views]) => {
-        views.forEach((row) => {
-          const entity = row.entity;
+  const systemToken1 = defineSystem({
+    sets: [RenderPhaseSortOrder],
+    commands: 'none',
+    name: RENDER_PHASE_SORT_SYSTEM,
+    queries: [{ read: [ViewPhases] }],
+    fn: (world, [views]) => {
+      views.forEach((row) => {
+        const entity = row.entity;
 
-          const queue = world
-            .resolveUniqueRef<ViewPhaseQueue>(requireViewField(world, entity, ViewPhases, 'state'))
-            .unwrap();
-          const input = queue.staged;
-          if (input === undefined) return;
-          queue.staged = undefined;
-          queue.ordered = runProfiledRenderPhase(input.profile, 'sort', () =>
-            queue.transparent.sort(input.dispatch, input.scope, input.cameras, input.rows),
-          );
-        });
-      },
-    })
-    .unwrap();
+        const queue = world
+          .resolveUniqueRef<ViewPhaseQueue>(requireViewField(world, entity, ViewPhases, 'state'))
+          .unwrap();
+        const input = queue.staged;
+        if (input === undefined) return;
+        queue.staged = undefined;
+        queue.ordered = runProfiledRenderPhase(input.profile, 'sort', () =>
+          queue.transparent.sort(input.dispatch, input.scope, input.cameras, input.rows),
+        );
+      });
+    },
+  });
+  world.addSystem(RenderQueue, systemToken1).unwrap();
 }
 
-const QueueSystems = Object.freeze({ name: 'QueueSystems' });
+const QueueSystems = defineResource<boolean>('QueueSystems');

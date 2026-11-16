@@ -3,6 +3,7 @@
 import { spawn } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { prepareWaterContent } from '../packages/content/scripts/prepare-water-content.mjs';
 import {
   cachePath,
   hashFiles,
@@ -17,6 +18,7 @@ import {
   workspacePackages,
   writeReceipt,
 } from './build-task-cache.mjs';
+import { prepareAssetsCheckout } from './ci/prepare-assets-checkout.mjs';
 import { buildPackageSelection } from './lib/build-package-selection.mjs';
 import { pnpmCommand } from './lib/pnpm-command.mjs';
 import { runnerResources, workspaceConcurrency } from './lib/runner-resources.mjs';
@@ -35,7 +37,25 @@ const dependencies = new Map(
     ]),
   ]),
 );
-const packages = buildPackageSelection(allPackages, dependencies, process.argv.slice(2));
+const selectionArgs = [];
+let assetsSourceRoot;
+for (let index = 2; index < process.argv.length; index++) {
+  const arg = process.argv[index];
+  if (arg === '--assets-source-root') {
+    if (assetsSourceRoot !== undefined || !process.argv[index + 1])
+      throw new Error('--assets-source-root requires one directory');
+    assetsSourceRoot = resolve(process.argv[++index]);
+  } else selectionArgs.push(arg);
+}
+const packages = buildPackageSelection(allPackages, dependencies, selectionArgs);
+if (assetsSourceRoot !== undefined) {
+  prepareAssetsCheckout(root, { sourceRoot: assetsSourceRoot });
+  // Authored resource bytes enter the existing package fingerprint before cache lookup.
+  await prepareWaterContent({
+    repositoryRoot: root,
+    sourceRoot: resolve(assetsSourceRoot, 'water'),
+  });
+}
 const { cpus, memoryBytes } = runnerResources();
 const concurrency = Number(
   process.env.FORGEAX_PACKAGE_BUILD_CONCURRENCY ??
@@ -54,6 +74,8 @@ function runPackage(pkg) {
       packageRunner === 'bun'
         ? ['run', '--filter', pkg.manifest.name, 'build']
         : ['--filter', pkg.manifest.name, 'run', 'build'];
+    if (assetsSourceRoot !== undefined && pkg.manifest.name === '@forgeax/engine-content')
+      args.push('--source-root', resolve(assetsSourceRoot, 'water'));
     const [command, ...prefix] = packageRunner === 'pnpm' ? pnpmCommand() : [packageRunner];
     const child = spawn(command, [...prefix, ...args], {
       cwd: root,

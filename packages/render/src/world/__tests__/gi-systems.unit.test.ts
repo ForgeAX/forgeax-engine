@@ -1,4 +1,7 @@
+import { defineSystem, World } from '@forgeax/engine-ecs';
 import { describe, expect, it } from 'vitest';
+import { registeredSystem } from '../../__tests__/registered-system.fixture';
+import { worldRenderResources } from '../../publication/resource-scope';
 import { consumeViewDiffuseGi, type FrameDiffuseGi } from '../../record/frame-diffuse-gi';
 import type { RenderFrameState } from '../../record/frame-snapshot';
 import { frameSubmissionHooks } from '../../record/frame-submission';
@@ -7,6 +10,12 @@ import type { CameraSnapshot } from '../../render-contract';
 import type { ExtractedFrame } from '../../render-system-extract';
 import { RenderScene } from '../../scene/render-scene';
 import { type ProjectedRows, projectedRows } from '../../scene/row-projection';
+import {
+  RenderCascadeFitOrder,
+  ViewReflectionProbesOrder,
+  VisibleSurfaceRowsOrder,
+} from '../../system-order';
+
 import { RENDER_CAPTURE_GRAPH_RETIRE_SYSTEM } from '../capture-graph-systems';
 import {
   RENDER_DISPLAY_COMMIT_SYSTEM,
@@ -173,7 +182,9 @@ describe('GI submission systems', () => {
   it('advances no GI history once the commit system is removed', () => {
     const world = createRenderWorld();
     registerGiSystems(world);
-    world.removeSystem(RenderCommit, GI_SUBMISSION_COMMIT_SYSTEM).unwrap();
+    world
+      .removeSystem(RenderCommit, registeredSystem(world, RenderCommit, 'gi-submission-commit'))
+      .unwrap();
     const log: string[] = [];
     frame(world, log, 'accepted');
     expect(log.filter((entry) => entry.endsWith('.commit'))).toEqual([]);
@@ -182,7 +193,9 @@ describe('GI submission systems', () => {
   it('leaves a rejected placement candidate unretired once the cleanup system is removed', () => {
     const world = createRenderWorld();
     registerGiSystems(world);
-    world.removeSystem(RenderCleanup, GI_SUBMISSION_CLEANUP_SYSTEM).unwrap();
+    world
+      .removeSystem(RenderCleanup, registeredSystem(world, RenderCleanup, 'gi-submission-cleanup'))
+      .unwrap();
     const log: string[] = [];
     frame(world, log, 'rejected');
     expect(log).not.toContain('placement.abort');
@@ -279,7 +292,9 @@ describe('visible-surface-rows system', () => {
       retained: () => rowsOf(new RenderScene()),
       maxRecords: () => 1024,
     });
-    world.removeSystem(RenderPrepare, VISIBLE_SURFACE_ROWS_SYSTEM).unwrap();
+    world
+      .removeSystem(RenderPrepare, registeredSystem(world, RenderPrepare, 'visible-surface-rows'))
+      .unwrap();
     beginRenderFrame(world, 1);
     expect(visibleSurfaceOf(world)?.projection).toBeUndefined();
     endRenderFrame(world);
@@ -289,7 +304,7 @@ describe('visible-surface-rows system', () => {
 });
 
 describe('view-diffuse-gi system', () => {
-  const opts = { cameraOwner: 0, resourceOwner: 0 } as const;
+  const opts = {} as const;
   const lights = { directional: [], point: [], spot: [], rect: [] } as unknown as ViewLights;
 
   interface Setup {
@@ -306,20 +321,23 @@ describe('view-diffuse-gi system', () => {
     canvas = { width: 8, height: 8 },
   }: Setup = {}) {
     const world = createRenderWorld();
-    world.insertResource(
-      RenderViewInput,
-      new RenderViewFrameSource({ canvas: { width: 8, height: 8 } }),
-    );
+    const viewSource = new RenderViewFrameSource({ canvas: { width: 8, height: 8 } });
+    const sourceWorld = new World();
+    viewSource.stage([], [], sourceWorld, opts, undefined, undefined);
+    world.insertResource(RenderViewInput, viewSource);
     const order: string[] = [];
     // Registered first so only `after` can order GI behind its inputs.
     registerViewDiffuseGiSystem(world);
-    for (const name of [
-      RENDER_CASCADE_FIT_SYSTEM,
-      VISIBLE_SURFACE_ROWS_SYSTEM,
-      VIEW_REFLECTION_PROBES_SYSTEM,
-    ])
+    for (const [name, phase] of [
+      [RENDER_CASCADE_FIT_SYSTEM, RenderCascadeFitOrder],
+      [VISIBLE_SURFACE_ROWS_SYSTEM, VisibleSurfaceRowsOrder],
+      [VIEW_REFLECTION_PROBES_SYSTEM, ViewReflectionProbesOrder],
+    ] as const)
       world
-        .addSystem(RenderPrepare, { name, queries: [], fn: () => void order.push(name) })
+        .addSystem(
+          RenderPrepare,
+          defineSystem({ name, sets: [phase], queries: [], fn: () => void order.push(name) }),
+        )
         .unwrap();
     const recorder = {
       prepareViewFrame: () => {
@@ -368,13 +386,12 @@ describe('view-diffuse-gi system', () => {
         })
         .unwrap();
     }
-    world
-      .addSystem(RenderExtract, {
-        name: RENDER_VIEW_RECORDERS_SYSTEM,
-        queries: [],
-        fn: (world) => stageViewFrame(world, staged, opts, mode),
-      })
-      .unwrap();
+    const systemToken1 = defineSystem({
+      name: RENDER_VIEW_RECORDERS_SYSTEM,
+      queries: [],
+      fn: (world) => stageViewFrame(world, staged, opts, mode),
+    });
+    world.addSystem(RenderExtract, systemToken1).unwrap();
     return { world, order, staged, held, frameState };
   }
 
@@ -394,7 +411,9 @@ describe('view-diffuse-gi system', () => {
     expect(viewDiffuseGiOf(world, held)).toBeUndefined();
     endRenderFrame(world);
     // The stored GI is this frame's only; recording reads it once.
-    world.removeSystem(RenderPrepare, VIEW_DIFFUSE_GI_SYSTEM).unwrap();
+    world
+      .removeSystem(RenderPrepare, registeredSystem(world, RenderPrepare, 'view-diffuse-gi'))
+      .unwrap();
     beginRenderFrame(world, 2);
     expect(viewDiffuseGiOf(world, staged)).toBeUndefined();
     endRenderFrame(world);
@@ -425,7 +444,7 @@ describe('view-diffuse-gi system', () => {
         internals,
         {} as RenderFrameState,
         {} as never,
-        [],
+        worldRenderResources(new World()),
         {} as CameraSnapshot,
       ),
     ).toThrow(/visible-surface/);
@@ -456,7 +475,7 @@ describe('view-diffuse-gi system', () => {
         internals,
         {} as RenderFrameState,
         {} as never,
-        [],
+        worldRenderResources(new World()),
         {} as CameraSnapshot,
       );
     beginRenderFrame(world, 1);
@@ -484,7 +503,7 @@ describe('view-diffuse-gi system', () => {
         internals,
         {} as RenderFrameState,
         {} as never,
-        [],
+        worldRenderResources(new World()),
         {} as CameraSnapshot,
       ),
     ).toThrow(/view-diffuse-gi/);

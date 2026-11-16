@@ -68,7 +68,7 @@ async function residualFrameCounts(count: number): Promise<FrameCounts> {
     if (moved === undefined) throw new Error('missing residual row');
     world.set(moved, Transform, { pos: [frame % 3, -2, 0] }).unwrap();
     world.update(1 / 60).unwrap();
-    const drawn = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
+    const drawn = renderer.draw({ source: lease });
     expect(drawn.ok, JSON.stringify(errors)).toBe(true);
   };
   // Settle asynchronous pipeline preparation before counting a steady frame.

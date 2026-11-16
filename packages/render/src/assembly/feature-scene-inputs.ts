@@ -65,8 +65,7 @@ export function createFeatureSceneInputs(
       | { view: TextureView; target?: RenderFeatureTargetHandle }
       | { buffer: Buffer; size: number } {
       if (resource.kind === 'scene-sdf') {
-        if (source === undefined)
-          throw new SceneSdfUnavailableError({ reason: 'missing-source', world: resource.world });
+        if (source === undefined) throw new SceneSdfUnavailableError({ reason: 'missing-source' });
         return sdf.prepare(identity, resource, source);
       }
       if (resource.kind === 'scene-noise') {

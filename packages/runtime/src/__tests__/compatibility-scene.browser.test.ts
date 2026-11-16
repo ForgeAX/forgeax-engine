@@ -502,9 +502,16 @@ async function scene(library?: PipelineLibraryManifest, fallback = false) {
       const capture = frame === 29 || frame === 59;
       const receipt = await drawReadyFrame(
         renderer,
-        { leases: [lease], camera: { lease }, environment: { lease } },
+        { source: lease },
         capture ? ['linear-ldr'] : undefined,
-        library !== undefined && frame === 0 ? { preparationCompleted: initialization } : undefined,
+        // Native cold PSOs share the existing scene-startup budget; later pictures
+        // retain the ordinary preparation and GPU stage bounds.
+        frame === 0
+          ? {
+              timeoutMs: 90_000,
+              ...(library === undefined ? {} : { preparationCompleted: initialization }),
+            }
+          : undefined,
       );
       completedFrames++;
       if (capture) {

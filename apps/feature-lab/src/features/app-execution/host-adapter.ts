@@ -1,5 +1,5 @@
 import { AssetRegistry } from '@forgeax/engine/assets-runtime';
-import { Time, Update } from '@forgeax/engine/ecs';
+import { defineSystem, Time, Update } from '@forgeax/engine/ecs';
 import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { CheckList, defineFeature } from '../../lab/feature';
 import { spawnMesh, spawnStage, standard } from '../../lab/stage';
@@ -28,7 +28,7 @@ export default defineFeature({
       if (event.kind === 'frame-submitted') submitted += 1;
     });
     const samples: { submitted: number; delta: number; elapsed: number; max: number }[] = [];
-    world.addSystem(Update, {
+    const systemToken1 = defineSystem({
       name: 'fl-host-adapter-sample',
       queries: [],
       fn: (world) => {
@@ -41,6 +41,7 @@ export default defineFeature({
         });
       },
     });
+    world.addSystem(Update, systemToken1);
     return {
       async checks() {
         samples.length = 0;

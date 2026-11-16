@@ -20,7 +20,9 @@ import './style.css';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 
 
-function value<T>(result: { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: unknown }): T { if (!result.ok) throw result.error; return result.value; }
+function value<T>(result:
+    | { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: unknown },
+): T { if (!result.ok) throw result.error; return result.value; }
 function difference(a: Uint8Array, b: Uint8Array): number {
   if (a.length !== b.length) throw new Error(`readback length mismatch ${a.length}/${b.length}`);
   let changed = 0; for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) changed++;
@@ -45,7 +47,9 @@ async function run() {
   const scaleId = parameters.get('scale');
   const onlyId = parameters.get('only');
   const frameIndices = meshIoFrameIndices(scaleId === null && parameters.get('ci-samples') === '1');
-  const selectedFixtures = scaleId === null ? fixtures.filter(row => !row.id.startsWith('scale-') && (onlyId === null || row.id === onlyId)) : fixtures.filter(row => row.id === scaleId);
+  const selectedFixtures = scaleId === null ? fixtures.filter(
+          (row) => !row.id.startsWith('scale-') && (onlyId === null || row.id === onlyId),
+        ) : fixtures.filter((row) => row.id === scaleId);
   if (selectedFixtures.length === 0) throw new Error('unknown scale fixture');
   for (const fixture of selectedFixtures) {
     const panel = document.createElement('article');
@@ -77,7 +81,7 @@ async function run() {
         for (let i = 0; i < pixels.data.length; i += 4) {
           for (let channel = 0; channel < 3; channel++) {
             const linear = Math.min(1, Math.max(0, halfFloat.f16ToF32(words.getUint16((i + channel) * 2, true))));
-            pixels.data[i + channel] = Math.round((linearChannelToSrgb(linear)) * 255);
+            pixels.data[i + channel] = Math.round(linearChannelToSrgb(linear) * 255);
           }
           pixels.data[i + 3] = 255;
         }
@@ -125,16 +129,17 @@ if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its
       if (fixture.animationGuid !== undefined) {
         const clip=(await host.assets.load(fixture.animationGuid, 'animation-clip')).unwrap();
         animationPlayer=anchor;world.addComponent(anchor,{component:AnimationPlayer,data:{clips:[clip],times:[0],weights:[1],speeds:[0],paused:true,looping:false}}).unwrap();
-        bindAnimationTargets(world,anchor,[...world.query({with:[AnimationTargetId]}).unwrap()].map(row=>row.entity)).unwrap();
+        bindAnimationTargets(world,anchor,[...world.query({with:[AnimationTargetId]}).unwrap()].map((row) =>row.entity),
+        ).unwrap();
       }
       for (const row of world.query({with:[Camera]}).unwrap()) world.set(row.entity,Camera,{antialias:0,bloom:0,tonemap:0}).unwrap();
     }
     const loadMs = performance.now() - loadStart;
-    const request = { leases: [lease], camera: { lease }, environment: { lease } };
+    const request = { source: lease };
     const timings = [];
     const rawTimings: unknown[] = [];
     for (const frame of frameIndices) {
-      const time=2*(frame+.371)/MESH_IO_LOGICAL_FRAMES;
+      const time= (2*(frame+ 0.371))/MESH_IO_LOGICAL_FRAMES;
       if (animationPlayer !== undefined) world.set(animationPlayer,AnimationPlayer,{times:[time]}).unwrap();
       world.update(1 / 60).unwrap();
       if (animationPlayer !== undefined) for (const row of world.query({with:[AnimationTargetId,Transform]}).unwrap()) {

@@ -361,4 +361,71 @@ describe('RenderGraph access history public contracts', () => {
       usage: 'copy-src',
     });
   });
+
+  it('tracks resolve-target content independently from a discarded multisample source', async () => {
+    const graphWithRead = (read: 'resolve-target' | 'multisample-source') => {
+      const graph = new RenderGraphBuilder<Frame>();
+      const multisample = graph
+        .createTexture('multisample-color', {
+          format: 'rgba8unorm',
+          size: { width: 16, height: 16 },
+          sampleCount: 4,
+        })
+        .unwrap();
+      const resolved = graph
+        .createTexture('resolved-color', {
+          format: 'rgba8unorm',
+          size: { width: 16, height: 16 },
+        })
+        .unwrap();
+      const multisampleView = graph.view(multisample).unwrap();
+      const resolvedView = graph.view(resolved).unwrap();
+      graph
+        .addRasterPass('resolve-discarded-multisample', {
+          accesses: [
+            { resource: multisampleView, usage: 'color-attachment' },
+            { resource: resolvedView, usage: 'color-attachment' },
+          ],
+          colorAttachments: [
+            {
+              view: multisampleView,
+              resolveTarget: resolvedView,
+              loadOp: 'clear',
+              storeOp: 'discard',
+            },
+          ],
+          encode: () => undefined,
+        })
+        .unwrap();
+      graph
+        .addCopyPass(`read-${read}`, {
+          accesses: [
+            {
+              resource: read === 'resolve-target' ? resolvedView : multisampleView,
+              usage: 'copy-src',
+            },
+          ],
+          encode: () => undefined,
+        })
+        .unwrap();
+      return graph;
+    };
+
+    const resolved = await compile(graphWithRead('resolve-target'));
+    expect(resolved.result.ok).toBe(true);
+    if (resolved.result.ok) await resolved.result.value.retire();
+
+    const source = await compile(graphWithRead('multisample-source'));
+    expect(source.result.ok).toBe(false);
+    if (source.result.ok) {
+      await source.result.value.retire();
+      throw new Error('Expected discarded multisample source to remain uninitialized');
+    }
+    expect(source.result.error.code).toBe('uninitialized-read');
+    expect(source.result.error.detail).toEqual({
+      passName: 'read-multisample-source',
+      resourceLabel: 'multisample-color',
+      usage: 'copy-src',
+    });
+  });
 });

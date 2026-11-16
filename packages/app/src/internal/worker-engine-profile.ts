@@ -3,6 +3,7 @@ import { type AudioBackend, audioBackendPlugin } from '@forgeax/engine-audio';
 import { type InputBackend, inputBackendPlugin } from '@forgeax/engine-input';
 import type { Plugin } from '@forgeax/engine-plugin';
 import { renderComponentsPlugin } from '@forgeax/engine-render';
+import { waterScenePlugin } from '@forgeax/engine-runtime';
 import { scenePlugin } from '@forgeax/engine-scene';
 import { statePlugin } from '@forgeax/engine-state';
 import { inputPlugin } from '../input-plugin';
@@ -32,6 +33,7 @@ export function workerEngineProfile(options: WorkerEngineProfileOptions): Plugin
     inputBackendPlugin(options.input),
     audioBackendPlugin(options.audio),
     scenePlugin(),
+    waterScenePlugin(),
     animationPlugin(options.animation),
     statePlugin(),
     inputPlugin(),

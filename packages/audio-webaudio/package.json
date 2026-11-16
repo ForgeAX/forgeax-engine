@@ -30,8 +30,7 @@
     "build": "tsup",
     "test": "vitest run",
     "test:browser": "vitest run --config vitest.browser.config.ts",
-    "typecheck": "tsc -b",
-    "bench": "node bench/run.mjs"
+    "typecheck": "tsc -b"
   },
   "dependencies": {
     "@forgeax/engine-audio": "workspace:*",

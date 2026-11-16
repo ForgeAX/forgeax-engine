@@ -17,6 +17,7 @@ import {
   deriveAnimationTargetId,
   subscribeAnimationDiagnostics,
 } from '../index';
+import { AdvanceAnimationPlayer } from '../systems/advance-animation-player';
 
 const lowerId = deriveAnimationTargetId(['Rig', 'Lower']);
 const upperId = deriveAnimationTargetId(['Rig', 'Upper']);
@@ -245,7 +246,7 @@ describe('reusable target masks on the ordinary AnimationPlayer path', () => {
           defineSystem({
             name: 'testCodeAnimationControl',
             queries: [],
-            before: ['advanceAnimationPlayer'],
+            before: [AdvanceAnimationPlayer],
             fn() {
               space.sample(weights, speed).unwrap();
               world

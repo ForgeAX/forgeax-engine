@@ -8,12 +8,13 @@ import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { createNativeWindow, installNavigatorGpu, nativeWgpuVersion } from '../dist/index.mjs';
+import { readShaderManifestText } from '../../../scripts/lib/shader-manifest.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const output = resolve(process.env.NATIVE_WINDOW_EVIDENCE ?? 'artifacts/native-window');
 await mkdir(output, { recursive: true });
 const manifestPath = resolve(root, 'apps/hello/triangle/dist/shaders/manifest.json');
-const shaderManifestUrl = `data:application/json,${encodeURIComponent(await readFile(manifestPath, 'utf8'))}`;
+const shaderManifestUrl = `data:application/json,${encodeURIComponent(readShaderManifestText(manifestPath))}`;
 const window = createNativeWindow({ title: 'ForgeAX native TypeScript World', width: 640, height: 360 }).unwrap();
 installNavigatorGpu(window.gpu).unwrap();
 const { createRenderer } = await import('@forgeax/engine-runtime');
@@ -50,7 +51,7 @@ try {
     window.requestRedraw().unwrap();
     report.events.push(...window.pollEvents().unwrap());
     world.update(1 / 60).unwrap();
-    const receipt = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }).unwrap();
+    const receipt = renderer.draw({ source: lease }).unwrap();
     const completed = await receipt.completed;
     completed.unwrap();
     lastReceipt = receipt;

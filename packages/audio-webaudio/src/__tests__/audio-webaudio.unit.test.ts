@@ -21,6 +21,7 @@
 // source as ancestorTitles[0]. Top-level imports merged + deduped.
 
 import { AUDIO_ENGINE_RESOURCE_KEY, type AudioBackend } from '@forgeax/engine-audio';
+import { defineResource } from '@forgeax/engine-ecs';
 import { ImporterRegistry, type RunImportMeta, runImport } from '@forgeax/engine-import';
 import { mat4, quat, vec3 } from '@forgeax/engine-math';
 import type { ImportContext, ImportSubAsset } from '@forgeax/engine-types';
@@ -61,8 +62,9 @@ function makeMockAudioParam(initialValue: number): AudioParam {
 {
   // --- from app-injection.test.ts ---
   describe('App injection both forms (AC-14)', () => {
-    it('AUDIO_ENGINE_RESOURCE_KEY is the string "AudioEngine"', () => {
-      expect(AUDIO_ENGINE_RESOURCE_KEY).toBe('AudioEngine');
+    it('AUDIO_ENGINE_RESOURCE_KEY has stable identity independent of its label', () => {
+      expect(AUDIO_ENGINE_RESOURCE_KEY.name).toBe('AudioEngine');
+      expect(AUDIO_ENGINE_RESOURCE_KEY).not.toBe(defineResource<AudioBackend>('AudioEngine'));
     });
 
     it('AudioBackend interface is importable (type-level check)', () => {
@@ -71,10 +73,9 @@ function makeMockAudioParam(initialValue: number): AudioParam {
       expect(backend).toBeUndefined();
     });
 
-    it('AUDIO_ENGINE_RESOURCE_KEY is a const (typeof yields literal)', () => {
-      // Type-level: the key is const 'AudioEngine', not just string.
-      const key: typeof AUDIO_ENGINE_RESOURCE_KEY = 'AudioEngine';
-      expect(key).toBe('AudioEngine');
+    it('AUDIO_ENGINE_RESOURCE_KEY preserves the backend resource type', () => {
+      const key: typeof AUDIO_ENGINE_RESOURCE_KEY = AUDIO_ENGINE_RESOURCE_KEY;
+      expect(key.name).toBe('AudioEngine');
     });
 
     it('no Resource registered when audio option is omitted (contract)', () => {
@@ -83,7 +84,7 @@ function makeMockAudioParam(initialValue: number): AudioParam {
       // wiring code in packages/app.
       //
       // Unit-level verification: the resource key exists and is valid.
-      // Integration verification (browser test): World.getResource('AudioEngine')
+      // Integration verification (browser test): World.getResource(AUDIO_ENGINE_RESOURCE_KEY)
       // returns undefined when audio is not injected.
       expect(AUDIO_ENGINE_RESOURCE_KEY).toBeTruthy();
     });

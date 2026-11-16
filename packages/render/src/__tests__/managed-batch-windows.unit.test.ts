@@ -49,7 +49,6 @@ it('recycles retired windows through churn without moving a surviving command', 
           mesh: undefined,
           meshContentEpoch: undefined,
         })),
-        undefined,
       ),
     );
   };

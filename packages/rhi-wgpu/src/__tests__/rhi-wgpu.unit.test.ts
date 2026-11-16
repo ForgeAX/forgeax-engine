@@ -899,21 +899,23 @@ function setNavigatorGpu(gpu: unknown): void {
       });
 
       it('passes the wasm Extent3d object to the rgba16float capability probe', () => {
-        let descriptor: Record<string, unknown> | undefined;
+        const descriptors: Record<string, unknown>[] = [];
         const r = makeRhiDevice(
           mockRawDevice({
             createTexture: (value) => {
-              descriptor = value as Record<string, unknown>;
+              descriptors.push(value as Record<string, unknown>);
               return { destroy: () => {} };
             },
           }),
         );
 
         expect(r.device.caps.rgba16floatRenderable).toBe(true);
+        expect(descriptors).toHaveLength(4);
+        const descriptor = descriptors[0];
         expect(descriptor).toMatchObject({
           label: 'forgeax-caps-probe-rgba16float-renderable',
           format: 'rgba16float',
-          usage: 16,
+          usage: 20,
           size: { width: 1, height: 1, depthOrArrayLayers: 1 },
         });
         expect(Array.isArray((descriptor as { size?: unknown }).size)).toBe(false);
@@ -1056,7 +1058,7 @@ function setNavigatorGpu(gpu: unknown): void {
         if (!result.ok) expect(result.error.code).toBe('rhi-descriptor-invalid');
       });
 
-      it('m1-1-b: caps.rg11b10ufloatRenderable is false when feature absent (no createTexture call)', () => {
+      it('m1-1-b: caps.rg11b10ufloatRenderable is false when feature absent (no format probe)', () => {
         let createTextureCalls = 0;
         const raw = mockRawDevice({
           features: [],
@@ -1068,7 +1070,7 @@ function setNavigatorGpu(gpu: unknown): void {
         const r = makeRhiDevice(raw);
 
         expect(r.device.caps.rg11b10ufloatRenderable).toBe(false);
-        expect(createTextureCalls).toBe(1);
+        expect(createTextureCalls).toBe(4);
       });
 
       it('m1-1-b: caps.float32Filterable is false when feature absent (no createBindGroupLayout call)', () => {
@@ -1096,7 +1098,7 @@ function setNavigatorGpu(gpu: unknown): void {
         expect(r.device.caps.rgba16floatRenderable).toBe(false);
       });
 
-      it('D-2.1: rgba16float texture destroy called on probe success path', () => {
+      it('D-2.1: each float texture probe destroys its texture on success', () => {
         const destroyLog: string[] = [];
         const raw = mockRawDevice({
           createTexture: (desc) => {
@@ -1111,7 +1113,7 @@ function setNavigatorGpu(gpu: unknown): void {
 
         const r = makeRhiDevice(raw);
         expect(r.device.caps.rgba16floatRenderable).toBe(true);
-        expect(destroyLog).toEqual(['rgba16float']);
+        expect(destroyLog).toEqual(['rgba16float', 'rgba32float', 'rgba16float', 'rgba32float']);
       });
 
       it('D-2.1: caps probes use wasm extent objects and destroy probe textures', () => {
@@ -1130,7 +1132,10 @@ function setNavigatorGpu(gpu: unknown): void {
 
         expect(r.device.caps.rgba16floatRenderable).toBe(true);
         expect(r.device.caps.rg11b10ufloatRenderable).toBe(true);
-        expect(descriptors).toHaveLength(2);
+        expect(descriptors).toHaveLength(5);
+        expect(descriptors.map((descriptor) => (descriptor as { usage: number }).usage)).toEqual([
+          20, 20, 12, 12, 16,
+        ]);
         for (const descriptor of descriptors) {
           expect(descriptor).toEqual(
             expect.objectContaining({
@@ -1138,7 +1143,13 @@ function setNavigatorGpu(gpu: unknown): void {
             }),
           );
         }
-        expect(destroyLog).toEqual(['rgba16float', 'rg11b10ufloat']);
+        expect(destroyLog).toEqual([
+          'rgba16float',
+          'rgba32float',
+          'rgba16float',
+          'rgba32float',
+          'rg11b10ufloat',
+        ]);
       });
 
       it('D-2.2: createTexture projects public descriptors into strict wasm shape', () => {

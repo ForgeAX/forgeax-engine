@@ -1,7 +1,4 @@
-import type {
-  PreparedGraphicsResolvedResource,
-  PreparedGraphicsResolvedSnapshot,
-} from '../prepare/prepared-graphics-resolver';
+import type { PreparedGraphicsResolvedSnapshot } from '../prepare/prepared-graphics-resolver';
 import { sceneDataTargetOwner } from '../temporal/scene-data';
 import type { RenderFeaturePlanExecution, RenderFeaturePlanExecutionPass } from './host';
 import type {
@@ -15,6 +12,7 @@ import type {
   RenderFeatureGraphicsPassDescriptor,
   RenderFeaturePreparedRef,
 } from './prepared-graphics';
+import type { RenderFeatureTargetHandle } from './targets';
 
 function sameOrdered<T>(
   left: readonly T[] | undefined,
@@ -32,25 +30,23 @@ function sameTarget(left: RenderFeatureComputeTarget, right: RenderFeatureComput
   if (typeof left === 'string' || typeof right === 'string') return left === right;
   if (left.kind !== right.kind) return false;
   if (left.kind === 'scene-data' && right.kind === 'scene-data') {
-    const leftOwner = sceneDataTargetOwner(left);
-    const rightOwner = sceneDataTargetOwner(right);
-    return (
-      leftOwner !== undefined &&
-      rightOwner !== undefined &&
-      leftOwner.featureIdentity === rightOwner.featureIdentity &&
-      leftOwner.planIdentity === rightOwner.planIdentity &&
-      leftOwner.generation === rightOwner.generation &&
-      left.schema === right.schema &&
-      left.access === right.access &&
-      left.format === right.format &&
-      left.sampleCount === right.sampleCount &&
-      left.extent === right.extent
-    );
+    return sameSceneDataTarget(left, right);
   }
+  if (left.kind === 'feature-texture' && right.kind === 'feature-texture')
+    return (
+      left.featureIdentity === right.featureIdentity &&
+      left.name === right.name &&
+      left.viewIdentity === right.viewIdentity &&
+      left.format === right.format
+    );
+  if (left.kind === 'graph-texture' && right.kind === 'graph-texture')
+    return sameGraphTextureTarget(left, right);
   // Pipeline targets are semantic handles, recreated for each extracted view.
   return (
     left.kind !== 'scene-data' &&
+    left.kind !== 'feature-texture' &&
     right.kind !== 'scene-data' &&
+    right.kind !== 'feature-texture' &&
     left.name === right.name &&
     left.format === right.format &&
     left.sampleCount === right.sampleCount
@@ -198,20 +194,40 @@ function sameResolvedReference(
   }
   if (a.kind === 'bindings' && b.kind === 'bindings') {
     if (a.fogComposition !== b.fogComposition) return false;
-    const buffers = (value: Extract<PreparedGraphicsResolvedResource, { kind: 'bindings' }>) =>
-      value.descriptor?.values.storageBuffers;
-    const namesA = buffers(a),
-      namesB = buffers(b);
-    if (namesA === undefined || namesB === undefined) return namesA === namesB;
-    if (!Array.isArray(namesA) || !Array.isArray(namesB)) return false;
-    return sameOrdered(
-      namesA,
-      namesB,
-      (nameA, nameB) =>
-        typeof nameA === 'string' &&
-        nameA === nameB &&
-        sameBuffer(left.resolveGpuResource?.(nameA), right.resolveGpuResource?.(nameA)),
-    );
+    const storageA = a.descriptor?.values.bufferBindings;
+    const storageB = b.descriptor?.values.bufferBindings;
+    if (storageA === undefined || storageB === undefined) {
+      if (storageA !== storageB) return false;
+    } else if (
+      !sameOrdered(
+        storageA,
+        storageB,
+        (entryA, entryB) =>
+          entryA.binding === entryB.binding &&
+          entryA.resource === entryB.resource &&
+          entryA.access === entryB.access &&
+          sameBuffer(
+            left.resolveGpuResource?.(entryA.resource),
+            right.resolveGpuResource?.(entryB.resource),
+          ),
+      )
+    ) {
+      return false;
+    }
+    return (['storageBuffers', 'uniformBuffers'] as const).every((field) => {
+      const namesA = a.descriptor?.values[field];
+      const namesB = b.descriptor?.values[field];
+      if (namesA === undefined || namesB === undefined) return namesA === namesB;
+      if (!Array.isArray(namesA) || !Array.isArray(namesB)) return false;
+      return sameOrdered(
+        namesA,
+        namesB,
+        (nameA, nameB) =>
+          typeof nameA === 'string' &&
+          nameA === nameB &&
+          sameBuffer(left.resolveGpuResource?.(nameA), right.resolveGpuResource?.(nameA)),
+      );
+    });
   }
   return (
     (a.kind === 'vertex-data' || a.kind === 'index-data') &&
@@ -253,11 +269,11 @@ function sameResolvedGraphics(
   return true;
 }
 
-function samePass(
+function samePassIdentityAndPresence(
   left: RenderFeaturePlanExecutionPass,
   right: RenderFeaturePlanExecutionPass,
 ): boolean {
-  if (
+  return !(
     left.featureIdentity !== right.featureIdentity ||
     left.order !== right.order ||
     left.name !== right.name ||
@@ -268,21 +284,32 @@ function samePass(
     (left.gpuCompute === undefined) !== (right.gpuCompute === undefined) ||
     (left.resolvedGpuCompute === undefined) !== (right.resolvedGpuCompute === undefined) ||
     (left.resolvedGpuCopies === undefined) !== (right.resolvedGpuCopies === undefined)
-  )
-    return false;
+  );
+}
+
+function samePassGraphicsState(
+  left: RenderFeaturePlanExecutionPass['graphicsState'],
+  right: RenderFeaturePlanExecutionPass['graphicsState'],
+): boolean {
+  return (
+    left === undefined ||
+    right === undefined ||
+    (left.generation === right.generation && left.capabilityAvailable === right.capabilityAvailable)
+  );
+}
+
+function samePass(
+  left: RenderFeaturePlanExecutionPass,
+  right: RenderFeaturePlanExecutionPass,
+): boolean {
+  if (!samePassIdentityAndPresence(left, right)) return false;
   if (
     left.graphics !== undefined &&
     right.graphics !== undefined &&
     !sameGraphics(left.graphics, right.graphics)
   )
     return false;
-  if (
-    left.graphicsState !== undefined &&
-    right.graphicsState !== undefined &&
-    (left.graphicsState.generation !== right.graphicsState.generation ||
-      left.graphicsState.capabilityAvailable !== right.graphicsState.capabilityAvailable)
-  )
-    return false;
+  if (!samePassGraphicsState(left.graphicsState, right.graphicsState)) return false;
   if (
     left.resolvedGraphics !== undefined &&
     right.resolvedGraphics !== undefined &&
@@ -303,15 +330,22 @@ function samePass(
       !sameResolvedCompute(left.resolvedGpuCompute, right.resolvedGpuCompute))
   )
     return false;
-  return sameOrdered(
-    left.resolvedGpuCopies,
-    right.resolvedGpuCopies,
-    (a, b) =>
-      sameBuffer(a.source, b.source) &&
-      sameBuffer(a.destination, b.destination) &&
-      a.sourceOffset === b.sourceOffset &&
-      a.destinationOffset === b.destinationOffset &&
-      a.size === b.size,
+  return (
+    sameOrdered(
+      left.textureReadbacks,
+      right.textureReadbacks,
+      (a, b) => a.name === b.name && sameTarget(a.target, b.target),
+    ) &&
+    sameOrdered(
+      left.resolvedGpuCopies,
+      right.resolvedGpuCopies,
+      (a, b) =>
+        sameBuffer(a.source, b.source) &&
+        sameBuffer(a.destination, b.destination) &&
+        a.sourceOffset === b.sourceOffset &&
+        a.destinationOffset === b.destinationOffset &&
+        a.size === b.size,
+    )
   );
 }
 
@@ -329,6 +363,40 @@ export function sameRenderFeatureNativeExecutionTopology(
     left.featureIdentity === right.featureIdentity &&
     left.order === right.order &&
     left.placement === right.placement &&
+    sameOrdered(left.materialTextureTargets, right.materialTextureTargets, sameTarget) &&
     sameOrdered(left.passes, right.passes, samePass)
+  );
+}
+
+function sameSceneDataTarget(
+  left: Extract<RenderFeatureComputeTarget, { kind: 'scene-data' }>,
+  right: Extract<RenderFeatureComputeTarget, { kind: 'scene-data' }>,
+): boolean {
+  const leftOwner = sceneDataTargetOwner(left);
+  const rightOwner = sceneDataTargetOwner(right);
+  return (
+    leftOwner !== undefined &&
+    rightOwner !== undefined &&
+    leftOwner.featureIdentity === rightOwner.featureIdentity &&
+    leftOwner.planIdentity === rightOwner.planIdentity &&
+    leftOwner.generation === rightOwner.generation &&
+    left.schema === right.schema &&
+    left.access === right.access &&
+    left.format === right.format &&
+    left.sampleCount === right.sampleCount &&
+    left.extent === right.extent
+  );
+}
+
+function sameGraphTextureTarget(
+  left: RenderFeatureTargetHandle,
+  right: RenderFeatureTargetHandle,
+): boolean {
+  return (
+    left.name === right.name &&
+    left.allocationKey === right.allocationKey &&
+    left.allocationScope === right.allocationScope &&
+    JSON.stringify(left.descriptor) === JSON.stringify(right.descriptor) &&
+    JSON.stringify(left.view) === JSON.stringify(right.view)
   );
 }

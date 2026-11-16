@@ -134,16 +134,12 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     // a stable cleared frame regardless of when they snapshot.
     const tick = (): void => {
       world.update().unwrap();
-      const drawn = renderer.draw({
-        leases: [worldAttachment1.value],
-        camera: { lease: worldAttachment1.value },
-        environment: { lease: worldAttachment1.value },
-      });
+      const drawn = renderer.draw({ source: worldAttachment1.value });
       if (!drawn.ok) {
         console.error('[learn-render 1.1 hello-window] draw failed:', drawn.error);
         return;
       }
-      requestAnimationFrame(tick);
+    requestAnimationFrame(tick);
     };
     requestAnimationFrame(tick);
     // Capture hook used by the M5 bench-screenshot recorder and any
@@ -156,11 +152,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     const win = window as unknown as { __captureHelloWindow?: CaptureHook };
     win.__captureHelloWindow = async (): Promise<Uint8Array> => {
       world.update().unwrap();
-      renderer.draw({
-        leases: [worldAttachment1.value],
-        camera: { lease: worldAttachment1.value },
-        environment: { lease: worldAttachment1.value },
-      });
+      renderer.draw({ source: worldAttachment1.value });
       const r = await captureCanvasPixels(target);
       if (!r.ok) throw new Error(`[learn-render 1.1 hello-window] canvas capture failed: ${r.error.hint}`);
       return r.value;

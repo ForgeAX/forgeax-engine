@@ -5,7 +5,6 @@ import {
   ParticleEffectPlayer,
   VFX_GPU_RUNTIME_RESOURCE_KEY,
   type VfxGpuEffectAsset,
-  type VfxGpuRuntime,
   type VfxGpuTickIntent,
   vfxGpuRuntimePlugin,
 } from '@forgeax/engine-vfx';
@@ -60,6 +59,32 @@ async function cookedTick(input: unknown): Promise<VfxTickFixture> {
 }
 
 describe('GPU VFX public host', () => {
+  it('keeps submitted observations independent for renderer instances of the same host', () => {
+    const host = createRuntimeHost({ camera: { read: () => undefined } });
+    const first = host.feature;
+    const second = host.createRenderFeature();
+    expect(host.feature).toBe(first);
+    expect(second).not.toBe(first);
+    const submit = (feature: typeof first, frameNumber: number) => {
+      const frame = feature.extract({ world: new World(), views: [], frameNumber }).unwrap();
+      feature
+        .plan(frame, {
+          targets: [],
+          views: [],
+          caps: {},
+          generation: 1,
+          frame: { frameNumber },
+        } as never)
+        .unwrap();
+      feature.onFrameSubmitted?.(frame);
+    };
+    submit(second, 8);
+    expect(second.inspect().frameNumber).toBe(8);
+    expect(first.inspect().frameNumber).toBe(-1);
+    submit(first, 2);
+    expect(first.inspect().frameNumber).toBe(2);
+    expect(second.inspect().frameNumber).toBe(8);
+  });
   it('owns loader and Update attachment without exposing simulation internals', async () => {
     const assets = new AssetRegistry();
     const world = new World({ assets });
@@ -84,6 +109,7 @@ describe('GPU VFX public host', () => {
       'forgeax::vfx-render.particles.mesh-unlit',
       'forgeax::vfx-render.particles.mesh-inputs-unlit',
       ...Object.values(PARTICLE_INPUT_SHADER_IDENTIFIERS),
+      'forgeax::vfx-render.particles.billboard-water-sphere',
     ]);
     expect(await host.detachWorld({ world })).toMatchObject({
       ok: true,
@@ -129,14 +155,14 @@ describe('GPU VFX public host', () => {
     expect(await host.attachWorld({ world, assets })).toMatchObject({ ok: true });
 
     const beforeFirstPlayback = host.feature.plan(
-      { worlds: [], frameNumber: 0 } as never,
+      { source: undefined, frameNumber: 0 } as never,
       { targets: [], caps: {}, frame: { frameNumber: 0 }, generation: 1 } as never,
     );
     expect(beforeFirstPlayback).toMatchObject({
       ok: true,
       value: { work: [{ scope: 'frame', resources: [], passes: [] }] },
     });
-    host.feature.onFrameSubmitted?.({ worlds: [], frameNumber: 0 } as never);
+    host.feature.onFrameSubmitted?.({ source: undefined, frameNumber: 0 } as never);
     expect(host.feature.inspect()).toMatchObject({ frameNumber: 0, dispatches: 0 });
 
     const intent = await cookedTick({
@@ -186,24 +212,22 @@ describe('GPU VFX public host', () => {
     } as unknown as VfxTickFixture);
     const planned = host.feature.plan(
       {
-        worlds: [
-          {
-            world,
-            runtime: {
-              isEmitterSessionEnabled: () => true,
-              setEmitterCameraVisibility: () => {},
-              markEventDispatched: () => {},
-              commit: () => {},
-            },
-            camera: {
-              position: new Float32Array(3),
-              right: new Float32Array([1, 0, 0]),
-              up: new Float32Array([0, 1, 0]),
-              viewProjection: new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]),
-            },
-            intents: [intent],
+        source: {
+          world,
+          runtime: {
+            isEmitterSessionEnabled: () => true,
+            setEmitterCameraVisibility: () => {},
+            markEventDispatched: () => {},
+            commit: () => {},
           },
-        ],
+          camera: {
+            position: new Float32Array(3),
+            right: new Float32Array([1, 0, 0]),
+            up: new Float32Array([0, 1, 0]),
+            viewProjection: new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]),
+          },
+          intents: [intent],
+        },
         frameNumber: 1,
       } as never,
       {
@@ -256,7 +280,7 @@ describe('GPU VFX public host', () => {
         ]),
       );
     }
-    host.feature.onFrameSubmitted?.({ worlds: [], frameNumber: 1 } as never);
+    host.feature.onFrameSubmitted?.({ source: undefined, frameNumber: 1 } as never);
     expect(host.feature.inspect()).toMatchObject({
       frameNumber: 1,
       dispatches: expect.any(Number),
@@ -267,7 +291,7 @@ describe('GPU VFX public host', () => {
     expect(host.feature.inspect().indirectDraws).toBeGreaterThan(0);
     expect(host.feature.inspect().subjectOutputs).toBeGreaterThan(0);
     const emptyPlan = host.feature.plan(
-      { worlds: [], frameNumber: 2 } as never,
+      { source: undefined, frameNumber: 2 } as never,
       {
         targets: [],
         caps: {},
@@ -285,7 +309,7 @@ describe('GPU VFX public host', () => {
         work: [{ scope: 'frame', passes: [], resources: [] }],
       },
     });
-    host.feature.onFrameSubmitted?.({ worlds: [], frameNumber: 2 } as never);
+    host.feature.onFrameSubmitted?.({ source: undefined, frameNumber: 2 } as never);
     expect(host.feature.inspect()).toEqual({
       frameNumber: 2,
       dispatches: 0,
@@ -305,14 +329,14 @@ describe('GPU VFX public host', () => {
       viewProjection: new Float32Array(16),
     };
     const host = createVfxRuntimeHost({ camera: { read: () => selectedView } });
+
     expect(await host.attachWorld({ world, assets })).toMatchObject({ ok: true });
     const featureHost = createRenderFeatureHost([host.feature]).unwrap();
     const open = featureHost.beginFrame([
       {
         identity: 'main',
         render: true,
-        worlds: [world],
-        owner: 0,
+        world: world,
         frameNumber: 2,
         selectedView,
         caps: { compute: false, indirectDrawing: false } as RenderFeatureFrameInput['caps'],
@@ -371,9 +395,7 @@ describe('GPU VFX public host', () => {
       }),
     ).toMatchObject({ ok: true, value: { state: 'disabled', generation: 1 } });
     expect(
-      world
-        .getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY)
-        .isEmitterSessionEnabled(player, 'sparks'),
+      world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY).isEmitterSessionEnabled(player, 'sparks'),
     ).toBe(false);
     expect(acquired.value.replay({ player })).toMatchObject({
       ok: true,
@@ -407,6 +429,79 @@ describe('GPU VFX public host', () => {
       },
     });
     expect(host.acquireControl(world)).toMatchObject({ ok: true, value: { generation: 2 } });
+  });
+
+  it('patches a render-prepared paused player on its first active update with the time-zero burst', async () => {
+    const assets = new AssetRegistry();
+    const world = new World({ assets });
+    const host = createVfxRuntimeHost({ camera: { read: () => undefined } });
+    await host.attachWorld({ world, assets });
+    const effect = runtimeAssetRegistry(world.assets)
+      .create(
+        runtimeEffectFixture(
+          world,
+          await cookedEffectFixture({
+            program: {
+              emitters: [
+                {
+                  id: 'water-entry',
+                  capacity: 8,
+                  schedule: { rate: 0, bursts: [{ time: 0, count: 3 }] },
+                  renderers: [],
+                  reflection: {
+                    layout: {
+                      parameters: {
+                        fields: [{ name: 'strength', type: 'f32', defaultValue: 1 }],
+                      },
+                      custom: { fields: [] },
+                    },
+                  },
+                },
+              ],
+            },
+          }),
+        ),
+      )
+      .unwrap();
+    const player = world
+      .spawn({
+        component: ParticleEffectPlayer,
+        data: { effect, playing: false, preparePipelines: true, seed: 9, timeScale: 1 },
+      })
+      .unwrap();
+    const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+
+    try {
+      runtime.forEachEmitterSource(world, () => {});
+      expect(runtime.hasPlayer(player)).toBe(true);
+      expect(runtime.getInstance(player)).toBeUndefined();
+      expect(runtime.snapshot()).toEqual([]);
+
+      const control = host.acquireControl(world).unwrap();
+      expect(control.patchPlayerParameters({ player, values: { strength: 0.75 } })).toMatchObject({
+        ok: true,
+        value: { pendingPatchCount: 1 },
+      });
+      expect(runtime.snapshot()).toEqual([]);
+
+      world.set(player, ParticleEffectPlayer, { playing: true }).unwrap();
+      world.update(1 / 60).unwrap();
+      expect(runtime.snapshot()[0]).toMatchObject({
+        reset: true,
+        phaseTick: 0,
+        spawnCount: 3,
+        instancePatchCount: 1,
+        delta: 1 / 60,
+        replayInput: { values: { strength: 0.75 } },
+      });
+
+      world.update(1 / 60).unwrap();
+      expect(runtime.snapshot()[1]).toMatchObject({ reset: false, phaseTick: 1, spawnCount: 0 });
+    } finally {
+      world.despawn(player).unwrap();
+      await host.detachWorld({ world });
+      runtimeAssetRegistry(world.assets).release(effect).unwrap();
+    }
   });
 
   it('declares every pending emitter program in one feature plan', async () => {
@@ -521,18 +616,16 @@ describe('GPU VFX public host', () => {
     };
     const planned = feature.plan(
       {
-        worlds: [
-          {
-            world,
-            runtime,
-            camera,
-            intents: [
-              await intent('first'),
-              await intent('second', secondPlayer),
-              { ...(await intent('first')), reset: false, sequence: 3 },
-            ],
-          },
-        ],
+        source: {
+          world,
+          runtime,
+          camera,
+          intents: [
+            await intent('first'),
+            await intent('second', secondPlayer),
+            { ...(await intent('first')), reset: false, sequence: 3 },
+          ],
+        },
         frameNumber: 1,
       } as never,
       { targets: [], caps: {}, frame: { frameNumber: 1 }, generation: 1 } as never,
@@ -583,14 +676,12 @@ describe('GPU VFX public host', () => {
     expect(committed).toBe(0);
     expect(dispatchedEvents).toBe(0);
     feature.onFrameSubmitted?.({
-      worlds: [
-        {
-          world,
-          runtime,
-          camera,
-          intents: [],
-        },
-      ],
+      source: {
+        world,
+        runtime,
+        camera,
+        intents: [],
+      },
       frameNumber: 1,
     } as never);
     // Submission consumes the ledger captured by plan, not the declarative
@@ -601,14 +692,12 @@ describe('GPU VFX public host', () => {
 
     const warm = feature.plan(
       {
-        worlds: [
-          {
-            world,
-            runtime,
-            camera,
-            intents: [{ ...(await intent('first')), reset: false, sequence: 4 }],
-          },
-        ],
+        source: {
+          world,
+          runtime,
+          camera,
+          intents: [{ ...(await intent('first')), reset: false, sequence: 4 }],
+        },
         frameNumber: 2,
       } as never,
       { targets: [], caps: {}, frame: { frameNumber: 2 }, generation: 1 } as never,
@@ -626,18 +715,16 @@ describe('GPU VFX public host', () => {
     );
     expect(warmParticles).toBeDefined();
     expect(warmParticles).not.toHaveProperty('data');
-    feature.onFrameSubmitted?.({ worlds: [], frameNumber: 2 } as never);
+    feature.onFrameSubmitted?.({ source: undefined, frameNumber: 2 } as never);
 
     const reset = feature.plan(
       {
-        worlds: [
-          {
-            world,
-            runtime,
-            camera,
-            intents: [{ ...(await intent('first')), reset: true, sequence: 5 }],
-          },
-        ],
+        source: {
+          world,
+          runtime,
+          camera,
+          intents: [{ ...(await intent('first')), reset: true, sequence: 5 }],
+        },
         frameNumber: 3,
       } as never,
       { targets: [], caps: {}, frame: { frameNumber: 3 }, generation: 1 } as never,
@@ -650,52 +737,48 @@ describe('GPU VFX public host', () => {
             resource.kind === 'compute-program' && resource.program.wgsl.endsWith('// first'),
         ),
       ).toBe(true);
-    feature.onFrameSubmitted?.({ worlds: [], frameNumber: 3 } as never);
+    feature.onFrameSubmitted?.({ source: undefined, frameNumber: 3 } as never);
 
     const projectedFirst = feature.plan(
       {
-        worlds: [
-          {
-            world,
-            runtime,
-            camera,
-            intents: [
-              await intent('projected', player, [
-                { kind: 'billboard', material: 'particle-material' },
-              ]),
-            ],
-          },
-        ],
+        source: {
+          world,
+          runtime,
+          camera,
+          intents: [
+            await intent('projected', player, [
+              { kind: 'billboard', material: 'particle-material' },
+            ]),
+          ],
+        },
         frameNumber: 4,
       } as never,
       { targets: [], caps: {}, frame: { frameNumber: 4 }, generation: 1 } as never,
     );
-    feature.onFrameSubmitted?.({ worlds: [], frameNumber: 4 } as never);
+    feature.onFrameSubmitted?.({ source: undefined, frameNumber: 4 } as never);
     const projectedSecond = feature.plan(
       {
-        worlds: [
-          {
-            world,
-            runtime,
-            camera,
-            intents: [
-              {
-                ...(await intent('projected', player, [
-                  { kind: 'billboard', material: 'particle-material' },
-                ])),
-                reset: false,
-                sequence: 2,
-              },
-              {
-                ...(await intent('projected', player, [
-                  { kind: 'billboard', material: 'particle-material' },
-                ])),
-                reset: false,
-                sequence: 3,
-              },
-            ],
-          },
-        ],
+        source: {
+          world,
+          runtime,
+          camera,
+          intents: [
+            {
+              ...(await intent('projected', player, [
+                { kind: 'billboard', material: 'particle-material' },
+              ])),
+              reset: false,
+              sequence: 2,
+            },
+            {
+              ...(await intent('projected', player, [
+                { kind: 'billboard', material: 'particle-material' },
+              ])),
+              reset: false,
+              sequence: 3,
+            },
+          ],
+        },
         frameNumber: 5,
       } as never,
       { targets: [], caps: {}, frame: { frameNumber: 5 }, generation: 1 } as never,
@@ -804,7 +887,7 @@ describe('GPU VFX public host', () => {
     const context = { targets: [], caps: {}, frame: { frameNumber: 1 }, generation: 1 } as never;
     const frame = (intents: readonly VfxTickFixture[], frameNumber: number) =>
       ({
-        worlds: [{ world, runtime, camera, intents }],
+        source: { world, runtime, camera, intents },
         frameNumber,
       }) as never;
 
@@ -927,14 +1010,12 @@ describe('GPU VFX public host', () => {
     ];
     const frame = (frameNumber: number) =>
       ({
-        worlds: [
-          {
-            world,
-            runtime,
-            camera,
-            intents: fixtureIntents,
-          },
-        ],
+        source: {
+          world,
+          runtime,
+          camera,
+          intents: fixtureIntents,
+        },
         frameNumber,
       }) as never;
     const context = { targets: [], caps: {}, frame: { frameNumber: 1 }, generation: 1 } as never;
@@ -1082,24 +1163,18 @@ describe('GPU VFX public host', () => {
     const context = { targets: [], caps: {}, frame: { frameNumber: 1 }, generation: 1 } as never;
     const frame = (
       frameNumber: number,
-      entries: readonly { world: World; runtime: typeof runtime; intents: VfxTickFixture[] }[],
-    ) =>
-      ({
-        worlds: entries.map((entry) => ({ ...entry, camera })),
-        frameNumber,
-      }) as never;
+      entry?: { world: World; runtime: typeof runtime; intents: VfxTickFixture[] },
+    ) => ({ source: entry === undefined ? undefined : { ...entry, camera }, frameNumber }) as never;
 
     const first = feature.plan(
-      frame(1, [
-        {
-          world,
-          runtime,
-          intents: [
-            await makeIntent(player, 'ordered', 1, false),
-            await makeIntent(player, 'ordered', 2, true),
-          ],
-        },
-      ]),
+      frame(1, {
+        world,
+        runtime,
+        intents: [
+          await makeIntent(player, 'ordered', 1, false),
+          await makeIntent(player, 'ordered', 2, true),
+        ],
+      }),
       context,
     );
     expect(first.ok).toBe(true);
@@ -1121,19 +1196,17 @@ describe('GPU VFX public host', () => {
       (resource) => resource.kind === 'buffer' && resource.name.endsWith('.particles'),
     );
     expect(resetParticles).not.toHaveProperty('data');
-    feature.onFrameAborted?.(frame(1, [{ world, runtime, intents: [] }]));
+    feature.onFrameAborted?.(frame(1, { world, runtime, intents: [] }));
 
     const retry = feature.plan(
-      frame(1, [
-        {
-          world,
-          runtime,
-          intents: [
-            await makeIntent(player, 'ordered', 1, false),
-            await makeIntent(player, 'ordered', 2, true),
-          ],
-        },
-      ]),
+      frame(1, {
+        world,
+        runtime,
+        intents: [
+          await makeIntent(player, 'ordered', 1, false),
+          await makeIntent(player, 'ordered', 2, true),
+        ],
+      }),
       context,
     );
     expect(retry.ok).toBe(true);
@@ -1148,14 +1221,14 @@ describe('GPU VFX public host', () => {
     );
     expect(retryResetParticles).not.toHaveProperty('data');
     expect(planPasses(retry.value)).toEqual(planPasses(first.value));
-    feature.onFrameSubmitted?.(frame(1, [{ world, runtime, intents: [] }]));
+    feature.onFrameSubmitted?.(frame(1, { world, runtime, intents: [] }));
     expect(runtime.commits).toEqual([[1, 2]]);
 
     // A reset blocked by render consumption must stay deferred.  It must not
     // clear accepted storage or leak a fake GPU state into a later tick.
     runtime.enabled = false;
     const skipped = feature.plan(
-      frame(2, [{ world, runtime, intents: [await makeIntent(player, 'ordered', 3, true)] }]),
+      frame(2, { world, runtime, intents: [await makeIntent(player, 'ordered', 3, true)] }),
       context,
     );
     expect(skipped).toMatchObject({
@@ -1167,11 +1240,11 @@ describe('GPU VFX public host', () => {
         ],
       },
     });
-    feature.onFrameSubmitted?.(frame(2, [{ world, runtime, intents: [] }]));
+    feature.onFrameSubmitted?.(frame(2, { world, runtime, intents: [] }));
     expect(runtime.commits).toEqual([[1, 2]]);
     runtime.enabled = true;
     const afterSkipped = feature.plan(
-      frame(3, [{ world, runtime, intents: [await makeIntent(player, 'ordered', 4, false)] }]),
+      frame(3, { world, runtime, intents: [await makeIntent(player, 'ordered', 4, false)] }),
       context,
     );
     expect(afterSkipped.ok).toBe(true);
@@ -1182,7 +1255,7 @@ describe('GPU VFX public host', () => {
           resource.kind === 'compute-program' && resource.program.wgsl.endsWith('// ordered'),
       ),
     ).toBe(true);
-    feature.onFrameSubmitted?.(frame(3, [{ world, runtime, intents: [] }]));
+    feature.onFrameSubmitted?.(frame(3, { world, runtime, intents: [] }));
 
     // Two deferred resets reuse storage but each initializes in command order
     // when the provider becomes available.
@@ -1191,10 +1264,7 @@ describe('GPU VFX public host', () => {
       await makeIntent(player, 'ordered', 5, true, true),
       await makeIntent(player, 'ordered', 6, true, true),
     ];
-    const deferred = feature.plan(
-      frame(4, [{ world, runtime, intents: deferredIntents }]),
-      context,
-    );
+    const deferred = feature.plan(frame(4, { world, runtime, intents: deferredIntents }), context);
     expect(deferred).toMatchObject({
       ok: true,
       value: {
@@ -1204,10 +1274,10 @@ describe('GPU VFX public host', () => {
         ],
       },
     });
-    feature.onFrameSubmitted?.(frame(4, [{ world, runtime, intents: [] }]));
+    feature.onFrameSubmitted?.(frame(4, { world, runtime, intents: [] }));
     dataReady = true;
     const resumedDeferred = feature.plan(
-      frame(5, [{ world, runtime, intents: deferredIntents }]),
+      frame(5, { world, runtime, intents: deferredIntents }),
       context,
     );
     expect(resumedDeferred.ok).toBe(true);
@@ -1227,17 +1297,15 @@ describe('GPU VFX public host', () => {
         (resource) => resource.kind === 'buffer' && resource.name.endsWith('.particles'),
       ),
     ).toEqual([expect.objectContaining({ name: resetParticles?.name })]);
-    feature.onFrameSubmitted?.(frame(5, [{ world, runtime, intents: [] }]));
+    feature.onFrameSubmitted?.(frame(5, { world, runtime, intents: [] }));
 
     // The other World starts at the same local sequence with independent storage.
     const other = feature.plan(
-      frame(4, [
-        {
-          world: otherWorld,
-          runtime: otherRuntime,
-          intents: [await makeIntent(otherPlayer, 'ordered', 1, true)],
-        },
-      ]),
+      frame(4, {
+        world: otherWorld,
+        runtime: otherRuntime,
+        intents: [await makeIntent(otherPlayer, 'ordered', 1, true)],
+      }),
       context,
     );
     expect(other.ok).toBe(true);
@@ -1253,13 +1321,11 @@ describe('GPU VFX public host', () => {
     // but its GPU resource identity must not collide with the old attachment.
     const replacementRuntime = makeRuntime();
     const replacement = feature.plan(
-      frame(6, [
-        {
-          world,
-          runtime: replacementRuntime,
-          intents: [await makeIntent(player, 'ordered', 1, true)],
-        },
-      ]),
+      frame(6, {
+        world,
+        runtime: replacementRuntime,
+        intents: [await makeIntent(player, 'ordered', 1, true)],
+      }),
       context,
     );
     expect(replacement.ok).toBe(true);
@@ -1362,7 +1428,7 @@ describe('GPU VFX public host', () => {
       playerConsumption: { isEnabled: () => consumptionEnabled },
     });
     const frame = (frameNumber: number) =>
-      ({ worlds: [{ world, runtime, camera, intents: [intent] }], frameNumber }) as never;
+      ({ source: { world, runtime, camera, intents: [intent] }, frameNumber }) as never;
 
     const paused = feature.plan(frame(1), {
       targets: [],
@@ -1375,7 +1441,7 @@ describe('GPU VFX public host', () => {
       expect(planPasses(paused.value)).toHaveLength(0);
       expect(paused.value.work.find((work) => work.scope === 'frame')?.passes).toEqual([]);
     }
-    feature.onFrameSubmitted?.({ worlds: [], frameNumber: 1 } as never);
+    feature.onFrameSubmitted?.({ source: undefined, frameNumber: 1 } as never);
     expect(commits).toEqual([]);
 
     consumptionEnabled = true;
@@ -1391,7 +1457,7 @@ describe('GPU VFX public host', () => {
         planResources(resumed.value).some((resource) => resource.kind === 'compute-program'),
       ).toBe(true);
     }
-    feature.onFrameSubmitted?.({ worlds: [], frameNumber: 2 } as never);
+    feature.onFrameSubmitted?.({ source: undefined, frameNumber: 2 } as never);
     expect(commits).toEqual([{ sequence: [1], published: [1] }]);
   });
 
@@ -1487,17 +1553,15 @@ describe('GPU VFX public host', () => {
     });
     const planned = feature.plan(
       {
-        worlds: [
-          {
-            world,
-            runtime,
-            camera,
-            intents: [
-              await intent(pausedPlayer, 'paused', 1, true),
-              await intent(healthyPlayer, 'healthy', 2, true),
-            ],
-          },
-        ],
+        source: {
+          world,
+          runtime,
+          camera,
+          intents: [
+            await intent(pausedPlayer, 'paused', 1, true),
+            await intent(healthyPlayer, 'healthy', 2, true),
+          ],
+        },
         frameNumber: 1,
       } as never,
       { targets: [], caps: {}, frame: { frameNumber: 1 }, generation: 1 } as never,
@@ -1577,9 +1641,9 @@ describe('GPU VFX public host', () => {
         data: { effect: handle, playing: true, seed: 1, timeScale: 1 },
       })
       .unwrap();
-    const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+    const runtime = world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY);
     const extract = (frameNumber: number) => {
-      const result = host.feature.extract?.({ worlds: [world], frameNumber } as never);
+      const result = host.feature.extract?.({ world: world, frameNumber } as never);
       expect(result?.ok).toBe(true);
       if (result === undefined || !result.ok) throw new Error('VFX extraction failed');
       return result.value;
@@ -1592,7 +1656,7 @@ describe('GPU VFX public host', () => {
         generation: 1,
       } as never);
     const submit = (frameNumber: number) =>
-      host.feature.onFrameSubmitted?.({ worlds: [], frameNumber } as never);
+      host.feature.onFrameSubmitted?.({ source: undefined, frameNumber } as never);
 
     world.update(1 / 60).unwrap();
     const first = plan(1);
@@ -1735,9 +1799,12 @@ describe('GPU VFX public host', () => {
     const feature = gpuParticleRenderFeature({ camera: { read: () => camera } });
     const planned = feature.plan(
       {
-        worlds: [
-          { world, runtime, camera, intents: [await intent(1, true), await intent(2, false)] },
-        ],
+        source: {
+          world,
+          runtime,
+          camera,
+          intents: [await intent(1, true), await intent(2, false)],
+        },
         frameNumber: 1,
       } as never,
       { targets: [], caps: {}, frame: { frameNumber: 1 }, generation: 1 } as never,
@@ -1887,10 +1954,10 @@ describe('GPU VFX public host', () => {
       })
       .unwrap();
     await createWorldContext(world, [vfxGpuRuntimePlugin()]);
-    const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+    const runtime = world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY);
     const feature = gpuParticleRenderFeature({ camera: { read: () => camera } });
     const extract = (frameNumber: number) => {
-      const result = feature.extract?.({ worlds: [world], frameNumber } as never);
+      const result = feature.extract?.({ world: world, frameNumber } as never);
       expect(result?.ok).toBe(true);
       if (result === undefined || !result.ok) throw new Error('VFX extraction failed');
       return result.value;
@@ -1914,7 +1981,7 @@ describe('GPU VFX public host', () => {
         ],
       },
     });
-    feature.onFrameSubmitted?.({ worlds: [], frameNumber: 1 } as never);
+    feature.onFrameSubmitted?.({ source: undefined, frameNumber: 1 } as never);
     // The reset was discovered after the VFX update while the emitter was
     // culled, so it remains queued rather than being acknowledged as a fake
     // GPU state.
@@ -1927,10 +1994,10 @@ describe('GPU VFX public host', () => {
     // The submitted Renderer view feedback is the sole visibility authority.
     // The reset discovered while hidden remains queued until this re-entry;
     // visibility refresh must not consume it as a skipped state.
-    expect(visibleWithoutTick.worlds[0]?.intents.length).toBeGreaterThan(0);
+    expect(visibleWithoutTick.source?.intents.length).toBeGreaterThan(0);
     const reentry = plan(2);
     expect(reentry?.ok).toBe(true);
-    feature.onFrameSubmitted?.({ worlds: [], frameNumber: 2 } as never);
+    feature.onFrameSubmitted?.({ source: undefined, frameNumber: 2 } as never);
     expect(runtime.inspectPlayer(player)?.emitters[0]).toMatchObject({ cameraVisible: true });
     world.update(1 / 60).unwrap();
     const resumed = plan(3);
@@ -1977,7 +2044,7 @@ describe('GPU VFX public host', () => {
     await createWorldContext(world, [vfxGpuRuntimePlugin()]);
     const feature = gpuParticleRenderFeature({ camera: { read: () => camera } });
     const extract = (frameNumber: number) =>
-      feature.extract({ worlds: [world], frameNumber } as never).unwrap();
+      feature.extract({ world: world, frameNumber } as never).unwrap();
     const plan = (frame: ReturnType<typeof extract>) =>
       feature
         .plan(frame, {
@@ -1993,15 +2060,17 @@ describe('GPU VFX public host', () => {
     feature.onFrameSubmitted?.(initial);
     world.update(1 / 60).unwrap();
     const next = extract(2);
-    expect(next.worlds[0]?.retained).toHaveLength(2);
+    expect(next.source?.retained).toHaveLength(2);
+    const source = next.source;
+    if (source === undefined) throw new Error('Missing accepted VFX source');
     const queued = (emitter: string, frameNumber: number) =>
       plan({
         ...next,
         frameNumber,
-        worlds: next.worlds.map((entry) => ({
-          ...entry,
-          intents: entry.intents.filter((intent) => intent.emitter.id === emitter),
-        })),
+        source: {
+          ...source,
+          intents: source.intents.filter((intent) => intent.emitter.id === emitter),
+        },
       });
     const first = queued('first', 2);
     const second = queued('second', 3);
@@ -2082,10 +2151,10 @@ describe('GPU VFX public host', () => {
       })
       .unwrap();
     await createWorldContext(world, [vfxGpuRuntimePlugin()]);
-    const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+    const runtime = world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY);
     const feature = gpuParticleRenderFeature({ camera: { read: () => camera } });
     const extract = (frameNumber: number) => {
-      const result = feature.extract?.({ worlds: [world], frameNumber } as never);
+      const result = feature.extract?.({ world: world, frameNumber } as never);
       expect(result?.ok).toBe(true);
       if (result === undefined || !result.ok) throw new Error('VFX extraction failed');
       return result.value;
@@ -2098,7 +2167,7 @@ describe('GPU VFX public host', () => {
         generation: 1,
       } as never);
     const submit = (frameNumber: number) =>
-      feature.onFrameSubmitted?.({ worlds: [], frameNumber } as never);
+      feature.onFrameSubmitted?.({ source: undefined, frameNumber } as never);
 
     world.update(1 / 60).unwrap();
     const first = plan(1);
@@ -2229,13 +2298,13 @@ describe('GPU VFX public host', () => {
       })
       .unwrap();
     await createWorldContext(world, [vfxGpuRuntimePlugin()]);
-    const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+    const runtime = world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY);
     const feature = gpuParticleRenderFeature({
       camera: { read: () => camera },
       playerConsumption: { isEnabled: (_currentWorld, player) => player !== pausedPlayer },
     });
     const frame = (frameNumber: number) => {
-      const extracted = feature.extract?.({ worlds: [world], frameNumber } as never);
+      const extracted = feature.extract?.({ world: world, frameNumber } as never);
       expect(extracted?.ok).toBe(true);
       if (extracted === undefined || !extracted.ok) throw new Error('VFX extraction failed');
       const planned = feature.plan?.(extracted.value, {
@@ -2245,7 +2314,7 @@ describe('GPU VFX public host', () => {
         generation: 1,
       } as never);
       expect(planned?.ok).toBe(true);
-      feature.onFrameSubmitted?.({ worlds: [], frameNumber } as never);
+      feature.onFrameSubmitted?.({ source: undefined, frameNumber } as never);
     };
 
     // The paused player's first reset is a real deferred intent.  Keep

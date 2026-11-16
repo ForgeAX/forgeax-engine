@@ -1,4 +1,4 @@
-import { internJson } from '@forgeax/engine-types';
+import { freezeJson } from '@forgeax/engine-types';
 import { bench, describe } from 'vitest';
 import type { RenderFeaturePlannedFrame, RenderFeatureWorkPlan } from '../src/features/plan';
 import { captureMaterialSnapshot, MaterialResource } from '../src/material-resource';
@@ -35,7 +35,7 @@ function standardSnapshot(handle: number, module: string): MaterialSnapshot {
   return captureMaterialSnapshot({
     ...defaultMaterialSnapshot(),
     materialHandle: handle,
-    passes: internJson([
+    passes: freezeJson([
       { name: 'forward', program: { module }, renderState: { tags: { LightMode: 'Forward' } } },
       {
         name: 'shadow',
@@ -43,12 +43,12 @@ function standardSnapshot(handle: number, module: string): MaterialSnapshot {
         renderState: { tags: { LightMode: 'ShadowCaster' } },
       },
     ]),
-    materialProgramKeys: internJson({ forward: programKey, shadow: `${programKey}:shadow` }),
-    materialEntryPoints: internJson({
-      forward: [{ name: 'fs_ao_input', stage: 'fragment', bindings: [] }],
+    materialProgramKeys: freezeJson({ forward: programKey, shadow: `${programKey}:shadow` }),
+    materialProgramInputs: freezeJson({
+      forward: { entryPoints: [{ name: 'fs_ao_input', stage: 'fragment', bindings: [] }] },
     }),
-    materialContext: internJson({ geometry: 'mesh', vertexColor: false }),
-    materialPublication: internJson({
+    materialContext: freezeJson({ geometry: 'mesh', vertexColor: false }),
+    materialPublication: freezeJson({
       identity: {
         materialGuid: `material/${handle}`,
         publicationGeneration: 1,

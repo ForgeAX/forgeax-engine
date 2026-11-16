@@ -11,7 +11,7 @@ it('reads a staged view through its live scalar handle without a component snaps
   const world = new World();
   const state: ViewFrameState = {
     frame: 0,
-    opts: { cameraOwner: 0, resourceOwner: 0 },
+    opts: {},
     mode: true,
     publication: undefined,
     result: undefined,

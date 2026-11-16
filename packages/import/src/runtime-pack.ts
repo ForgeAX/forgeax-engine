@@ -151,6 +151,8 @@ function publicationReceipt(state: RuntimePackPublicationState): RuntimePackPubl
   });
 }
 
+class RuntimePackCommitInterrupted extends Error {}
+
 export interface RuntimePackExecution {
   readonly instance: PackInstanceJson;
   readonly request: number;
@@ -501,6 +503,7 @@ export class RuntimePackProducer {
   private readonly snapshots = new Map<string, RuntimePackPinnedAsset>();
   private readonly admissions = new Map<string, AbortController>();
   private closed = false;
+  private mutationRevision = 0;
   private request = 0;
   private readonly catalogRoot = PackageId.format(PackageId.random());
   private catalogRevision = 0;
@@ -1120,26 +1123,30 @@ export class RuntimePackProducer {
       throw new TypeError('runtime Pack producer is disposed');
     const key = publicationKey(state.content);
     const before = this.published.get(key);
-    if (recipe && 'fixed' in recipe)
-      for (const [guid, pin] of collectRuntimePackDependencies(
-        recipe.dependencies,
-        recipe.dependencies.keys(),
-      )) {
-        const current = this.currentRow(guid);
-        if (!current || !matchesPinnedPublication(current, pin))
-          throw new TypeError(`fixed reference is not consumer-current ${guid}`);
+    const validateCommitDependencyEvidence = () => {
+      if (recipe && 'fixed' in recipe)
+        for (const [guid, pin] of collectRuntimePackDependencies(
+          recipe.dependencies,
+          recipe.dependencies.keys(),
+        )) {
+          const current = this.currentRow(guid);
+          if (!current || !matchesPinnedPublication(current, pin))
+            throw new TypeError(`fixed reference is not consumer-current ${guid}`);
+        }
+      for (const evidence of state.publication?.publication.externalEvidence ?? []) {
+        if (evidence.usage === 'content') continue;
+        const row = this.currentRow(evidence.guid);
+        const actual = row?.publication?.outputs.find((output) => output.guid === evidence.guid);
+        if (
+          !actual ||
+          (evidence.digest !== undefined && actual.digest !== evidence.digest) ||
+          (evidence.generation !== undefined &&
+            row?.publication?.generation !== evidence.generation)
+        )
+          throw new TypeError(`referenced dependency is not consumer-current ${evidence.guid}`);
       }
-    for (const evidence of state.publication?.publication.externalEvidence ?? []) {
-      if (evidence.usage === 'content') continue;
-      const row = this.currentRow(evidence.guid);
-      const actual = row?.publication?.outputs.find((output) => output.guid === evidence.guid);
-      if (
-        !actual ||
-        (evidence.digest !== undefined && actual.digest !== evidence.digest) ||
-        (evidence.generation !== undefined && row?.publication?.generation !== evidence.generation)
-      )
-        throw new TypeError(`referenced dependency is not consumer-current ${evidence.guid}`);
-    }
+    };
+    validateCommitDependencyEvidence();
     // Prepare all potentially failing clones and evidence before the first public mutation.
     const snapshots = [...candidate.decoded].map(([guid, asset]) => {
       const publication = state.publication;
@@ -1164,7 +1171,14 @@ export class RuntimePackProducer {
       );
       if (collision) throw new TypeError(`GUID collision ${row.guid}`);
     }
+    const mutationRevision = this.mutationRevision;
     this.options.onCommit?.(state);
+    // A synchronous realm callback may withdraw or dispose this prepared candidate.
+    if (this.mutationRevision !== mutationRevision) {
+      if (state.status === 'withdrawn') return;
+      throw new RuntimePackCommitInterrupted('publication withdrawn or disposed during commit');
+    }
+    this.mutationRevision++;
     if (state.status === 'withdrawn') this.published.delete(key);
     else this.published.set(key, state);
     for (const row of before?.rows ?? []) this.snapshots.delete(row.guid);
@@ -1201,11 +1215,20 @@ export class RuntimePackProducer {
   ): Promise<Result<RuntimePackPublicationReceipt, RuntimePackError>> {
     return this.admitContent(input, undefined, undefined, signal);
   }
+  /** Atomically replace direct data after checking the caller's accepted publication. */
+  async replace(
+    input: RuntimePackContent,
+    expected: Pick<AssetPublicationEnvelope, 'generation' | 'digest'>,
+    signal?: AbortSignal,
+  ): Promise<Result<RuntimePackPublicationReceipt, RuntimePackError>> {
+    return this.admitContent(input, undefined, undefined, signal, expected);
+  }
   private async admitContent(
     input: RuntimePackContent,
     recovery?: (guid: string, digest: string) => Promise<RuntimePackPinnedAsset>,
     expectedOutputs?: readonly AssetPublicationOutput[],
     signal?: AbortSignal,
+    replacement?: Pick<AssetPublicationEnvelope, 'generation' | 'digest'>,
   ): Promise<Result<RuntimePackPublicationReceipt, RuntimePackError>> {
     let id = '';
     try {
@@ -1220,34 +1243,59 @@ export class RuntimePackProducer {
       if (this.closed || lifetime.signal.aborted || signal?.aborted)
         return err(failure('runtime-pack-cancelled', id, 'admission cancelled while hashing'));
       const previous = this.packs.get(id);
-      if (previous && !recovery)
+      const previousPublication = this.published.get(id)?.publication?.publication;
+      if (
+        replacement &&
+        (!previous ||
+          isGenerator(content.source) ||
+          isGenerator(previous.content.source) ||
+          previousPublication?.generation !== replacement.generation ||
+          previousPublication.digest !== replacement.digest)
+      )
+        return err(
+          failure(
+            'runtime-pack-conflict',
+            id,
+            'replacement requires the exact current direct-data publication generation and digest',
+          ),
+        );
+      if (previous && !recovery && !replacement)
         return previous.digest === digest
           ? ok(this.currentPublication(id))
           : err(failure('runtime-pack-conflict', id, 'same identity has different content'));
       if (this.executions.has(id))
         return err(failure('runtime-pack-conflict', id, 'identity belongs to an instance'));
-      for (const [name, program] of Object.entries(content.programs ?? {})) {
-        if (!name) throw new TypeError('program identity is empty');
-        verifyPackProgram(program.artifact).unwrap();
-        for (const [specifier, identity] of Object.entries(program.artifact.imports ?? {}))
-          if (this.options.imports?.[specifier]?.identity !== identity)
-            throw new TypeError(`host dependency mismatch ${specifier}`);
-        const installed = this.programs.get(name);
-        if (installed && fingerprint(installed) !== fingerprint(program))
-          return err(failure('runtime-pack-conflict', id, `program ${name}`));
-      }
-      if (isGenerator(content.source)) {
-        const source = content.source;
-        generatorDefinition(source, () => ok({}));
-        if (!source.runtime || !content.programs?.[source.program])
-          throw new TypeError('generator requires runtime capability and a local program artifact');
-        const declared = [...source.runtime.dependencies].sort();
-        if (
-          JSON.stringify(declared) !==
-          JSON.stringify(Object.keys(content.dependencies ?? {}).sort())
-        )
-          throw new TypeError('complete runtime dependency versions are required');
-      }
+      const validateAdmissionPrograms = () => {
+        for (const [name, program] of Object.entries(content.programs ?? {})) {
+          if (!name) throw new TypeError('program identity is empty');
+          verifyPackProgram(program.artifact).unwrap();
+          for (const [specifier, identity] of Object.entries(program.artifact.imports ?? {}))
+            if (this.options.imports?.[specifier]?.identity !== identity)
+              throw new TypeError(`host dependency mismatch ${specifier}`);
+          const installed = this.programs.get(name);
+          if (installed && fingerprint(installed) !== fingerprint(program))
+            return err(failure('runtime-pack-conflict', id, `program ${name}`));
+        }
+        if (isGenerator(content.source)) {
+          const source = content.source;
+          generatorDefinition(source, () => ok({}));
+          if (!source.runtime || !content.programs?.[source.program])
+            throw new TypeError(
+              'generator requires runtime capability and a local program artifact',
+            );
+          const declared = [...source.runtime.dependencies].sort();
+          if (
+            JSON.stringify(declared) !==
+            JSON.stringify(Object.keys(content.dependencies ?? {}).sort())
+          )
+            throw new TypeError('complete runtime dependency versions are required');
+        }
+
+        return undefined;
+      };
+      const validateAdmissionProgramsFailure = validateAdmissionPrograms();
+      if (validateAdmissionProgramsFailure !== undefined) return validateAdmissionProgramsFailure;
+
       const dependencies = await this.readDependencies(
         content.dependencies ?? {},
         recovery,
@@ -1267,7 +1315,15 @@ export class RuntimePackProducer {
         return err(
           failure('runtime-pack-cancelled', id, 'admission cancelled during dependency recovery'),
         );
-      if (retained)
+      if (replacement && retained !== previous)
+        return err(
+          failure(
+            'runtime-pack-conflict',
+            id,
+            'publication changed during replacement preparation',
+          ),
+        );
+      if (retained && !replacement)
         return matches(retained)
           ? ok(this.currentPublication(id))
           : err(
@@ -1280,33 +1336,52 @@ export class RuntimePackProducer {
       const candidate = await this.candidate(content, digest, dependencies, hash);
       if (expectedOutputs)
         assertOutputSet(candidate.state.publication?.publication.outputs ?? [], expectedOutputs);
-      const internal = new Set(candidate.state.rows.map((row) => row.guid));
-      for (const asset of candidate.state.publication?.pack.assets ?? []) {
-        for (const ref of asset.refs)
-          if (!internal.has(ref) && !dependencies.has(ref))
-            throw new TypeError(`undeclared reference ${ref}`);
-        if (asset.kind === 'plugin') {
-          const program = (asset.payload as { program: string }).program;
-          if (!content.programs?.[program])
-            throw new TypeError(`missing plugin program ${program}`);
+      const validateCandidateReferences = () => {
+        const internal = new Set(candidate.state.rows.map((row) => row.guid));
+        for (const asset of candidate.state.publication?.pack.assets ?? []) {
+          for (const ref of asset.refs)
+            if (!internal.has(ref) && !dependencies.has(ref))
+              throw new TypeError(`undeclared reference ${ref}`);
+          if (asset.kind === 'plugin') {
+            const program = (asset.payload as { program: string }).program;
+            if (!content.programs?.[program])
+              throw new TypeError(`missing plugin program ${program}`);
+          }
         }
-      }
-      if (this.closed || lifetime.signal.aborted || signal?.aborted)
-        return err(
-          failure('runtime-pack-cancelled', id, 'admission withdrawn, disposed or cancelled'),
-        );
-      if (this.executions.has(id))
-        return err(failure('runtime-pack-conflict', id, 'concurrent instance claimed identity'));
-      const raced = this.packs.get(id);
-      if (raced)
-        return matches(raced)
-          ? ok(this.currentPublication(id))
-          : err(failure('runtime-pack-conflict', id, 'concurrent admission differs'));
-      for (const [name, program] of Object.entries(content.programs ?? {})) {
-        const installed = this.programs.get(name);
-        if (installed && fingerprint(installed) !== fingerprint(program))
-          return err(failure('runtime-pack-conflict', id, `concurrent program ${name}`));
-      }
+      };
+      validateCandidateReferences();
+
+      const validateAdmissionCommit = () => {
+        if (this.closed || lifetime.signal.aborted || signal?.aborted)
+          return err(
+            failure('runtime-pack-cancelled', id, 'admission withdrawn, disposed or cancelled'),
+          );
+        if (this.executions.has(id))
+          return err(failure('runtime-pack-conflict', id, 'concurrent instance claimed identity'));
+        const raced = this.packs.get(id);
+        if (replacement && raced !== previous)
+          return err(
+            failure(
+              'runtime-pack-conflict',
+              id,
+              'publication changed during replacement validation',
+            ),
+          );
+        if (raced && !replacement)
+          return matches(raced)
+            ? ok(this.currentPublication(id))
+            : err(failure('runtime-pack-conflict', id, 'concurrent admission differs'));
+        for (const [name, program] of Object.entries(content.programs ?? {})) {
+          const installed = this.programs.get(name);
+          if (installed && fingerprint(installed) !== fingerprint(program))
+            return err(failure('runtime-pack-conflict', id, `concurrent program ${name}`));
+        }
+
+        return undefined;
+      };
+      const validateAdmissionCommitFailure = validateAdmissionCommit();
+      if (validateAdmissionCommitFailure !== undefined) return validateAdmissionCommitFailure;
+
       const reply = publicationReceipt(candidate.state);
       this.commit(
         candidate,
@@ -1320,7 +1395,13 @@ export class RuntimePackProducer {
       return ok(reply);
     } catch (cause) {
       return err(
-        failure(signal?.aborted ? 'runtime-pack-cancelled' : 'runtime-pack-invalid', id, cause),
+        failure(
+          signal?.aborted || cause instanceof RuntimePackCommitInterrupted
+            ? 'runtime-pack-cancelled'
+            : 'runtime-pack-invalid',
+          id,
+          cause,
+        ),
       );
     }
   }
@@ -1348,14 +1429,21 @@ export class RuntimePackProducer {
       const owner = this.packs.get(instance.parent);
       if (!owner || !isGenerator(owner.content.source))
         throw new TypeError('parent must be an admitted ScriptablePack anchor');
-      if (old && old.instance.parent !== instance.parent)
-        return err(failure('runtime-pack-conflict', id, 'instance parent cannot change'));
-      this.executions.set(id, {
-        instance,
-        request,
-        status: 'pending',
-        ...(old?.lastKnownGood === undefined ? {} : { lastKnownGood: old.lastKnownGood }),
-      });
+      const beginInstanceGeneration = () => {
+        if (old && old.instance.parent !== instance.parent)
+          return err(failure('runtime-pack-conflict', id, 'instance parent cannot change'));
+        this.executions.set(id, {
+          instance,
+          request,
+          status: 'pending',
+          ...(old?.lastKnownGood === undefined ? {} : { lastKnownGood: old.lastKnownGood }),
+        });
+
+        return undefined;
+      };
+      const beginInstanceGenerationFailure = beginInstanceGeneration();
+      if (beginInstanceGenerationFailure !== undefined) return beginInstanceGenerationFailure;
+
       const cancelled = () =>
         this.closed ||
         this.packs.get(instance.parent) !== owner ||
@@ -1486,6 +1574,8 @@ export class RuntimePackProducer {
       if (cachedContent) this.options.cache?.set(key, cachedContent);
       return ok(reply);
     } catch (cause) {
+      if (cause instanceof RuntimePackCommitInterrupted)
+        return this.cancelled(id, request, cause.message);
       const error = failure('runtime-pack-execution-failed', id, cause);
       const current = this.executions.get(id);
       if (current?.request === request && current.status !== 'withdrawn')
@@ -1515,6 +1605,7 @@ export class RuntimePackProducer {
     };
   }
   withdraw(packageId: string): void {
+    this.mutationRevision++;
     this.admissions.get(packageId)?.abort();
     this.admissions.delete(packageId);
     const pack = this.packs.get(packageId);
@@ -1950,6 +2041,7 @@ export class RuntimePackProducer {
   }
   dispose(): void {
     if (this.closed) return;
+    this.mutationRevision++;
     this.closed = true;
     for (const controller of this.admissions.values()) controller.abort();
     const failures: unknown[] = [];

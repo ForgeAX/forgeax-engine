@@ -1,7 +1,10 @@
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { defineSystem, type SystemOrderReference, World } from '@forgeax/engine-ecs';
+import { createRenderReadLease } from '@forgeax/engine-ecs/projection';
 import { describe, expect, it, vi } from 'vitest';
 import type { ExtractedFrame } from '../../render-system-extract';
 import type { SceneAdvance, SceneComposition, SceneStage } from '../../scene/scene-composition';
+import { RenderScenePublishOrder } from '../../system-order';
 import {
   beginRenderFrame,
   createRenderWorld,
@@ -10,7 +13,6 @@ import {
 } from '../render-world';
 import { RenderSceneRowStore } from '../scene-row-store';
 import {
-  RENDER_SCENE_PUBLISH_SYSTEM,
   type RenderSceneAdoption,
   RenderSceneDelta,
   RenderSceneRows,
@@ -44,31 +46,40 @@ function fixture() {
   } as unknown as SceneComposition;
   const world = createRenderWorld();
   const source = registerSceneSystem(world, composition, {} as AssetRegistry);
+  const sourceWorld = new World();
+  const sourceLease = createRenderReadLease(sourceWorld);
   const failures = new Map<string, unknown>();
-  const addStep = (name: string, before: readonly string[], after: readonly string[]) =>
-    world
-      .addSystem(RenderPrepare, {
-        name,
-        queries: [],
-        before: [...before],
-        after: [...after],
-        fn: sceneRowStep(world, (stage) => {
-          const cause = failures.get(name);
-          if (cause !== undefined) throw cause;
-          calls.push(`${name}:${(stage as unknown as { id: number }).id}`);
-        }),
-      })
-      .unwrap();
-  addStep('adopt', [RENDER_SCENE_PUBLISH_SYSTEM], []);
-  addStep('plan', [RENDER_SCENE_PUBLISH_SYSTEM], ['adopt']);
+  const addStep = (
+    name: string,
+    before: readonly SystemOrderReference[],
+    after: readonly SystemOrderReference[],
+  ) => {
+    const system = defineSystem({
+      name,
+      queries: [],
+      before: [...before],
+      after: [...after],
+      fn: sceneRowStep(world, (stage) => {
+        const cause = failures.get(name);
+        if (cause !== undefined) throw cause;
+        calls.push(`${name}:${(stage as unknown as { id: number }).id}`);
+      }),
+    });
+    world.addSystem(RenderPrepare, system).unwrap();
+    return system;
+  };
+  const adopt = addStep('adopt', [RenderScenePublishOrder], []);
+  addStep('plan', [RenderScenePublishOrder], [adopt]);
   const frame = (index: number, staged: boolean): RenderSceneAdoption => {
     if (staged) {
       source.staged = true;
+      source.world = sourceWorld;
+      source.lease = sourceLease;
       source.buildCandidateFrame = () => ({}) as ExtractedFrame;
     }
     beginRenderFrame(world, index);
     endRenderFrame(world);
-    return { ...world.getResource<RenderSceneAdoption>(RenderSceneDelta) };
+    return { ...world.getResource(RenderSceneDelta) };
   };
   return { world, calls, failures, frame, publishStage, invalidate, stages };
 }
@@ -76,9 +87,7 @@ function fixture() {
 describe('RenderSceneRows row store', () => {
   it('is one Render World resource every row step consumes in schedule order', () => {
     const f = fixture();
-    expect(f.world.getResource<RenderSceneRowStore>(RenderSceneRows)).toBeInstanceOf(
-      RenderSceneRowStore,
-    );
+    expect(f.world.getResource(RenderSceneRows)).toBeInstanceOf(RenderSceneRowStore);
     f.frame(1, true);
     f.frame(2, true);
     expect(f.calls).toEqual(['adopt:1', 'plan:1', 'publish:1', 'adopt:2', 'plan:2', 'publish:2']);

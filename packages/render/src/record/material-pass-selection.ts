@@ -6,6 +6,7 @@ import { standardTransmissionValue } from '../transmission/projection';
 
 export type MaterialRecordMode =
   | 'opaque'
+  | 'opaque-depth'
   | 'opaque-fogged'
   | 'opaque-unfogged'
   | 'transmission'
@@ -15,29 +16,47 @@ export type MaterialRecordMode =
   | 'oit-accumulate'
   | 'oit-residual'
   | 'single-layer-medium-nearest-layer'
-  | 'single-layer-medium-color';
+  | 'single-layer-medium-color'
+  | 'water-prepass'
+  | 'water-color'
+  | 'water-shadow'
+  | 'water-velocity';
+
+export function isWaterMaterial(material: MaterialSnapshot): boolean {
+  return material.surfaceModel === 'single-layer-water';
+}
+
+export function isSurfaceRecordMode(mode: MaterialRecordMode | undefined): boolean {
+  return (
+    mode === 'single-layer-medium-nearest-layer' ||
+    mode === 'single-layer-medium-color' ||
+    mode === 'water-prepass' ||
+    mode === 'water-color' ||
+    mode === 'water-shadow' ||
+    mode === 'water-velocity'
+  );
+}
 
 export function isMediumMaterial(material: MaterialSnapshot): boolean {
   return (
     material.surfaceModel === 'single-layer-medium' ||
+    material.surfaceModel === 'single-layer-water' ||
     material.materialShaderId === 'forgeax::single-layer-medium'
   );
 }
 
 export function matchesRecordMode(material: MaterialSnapshot, mode: MaterialRecordMode): boolean {
   const medium = isMediumMaterial(material);
+  if (
+    mode === 'water-prepass' ||
+    mode === 'water-color' ||
+    mode === 'water-shadow' ||
+    mode === 'water-velocity'
+  )
+    return isWaterMaterial(material);
   if (mode === 'single-layer-medium-nearest-layer' || mode === 'single-layer-medium-color')
-    return medium;
-  const transmission = (standardTransmissionValue(material) ?? 0) > 0;
-  if (mode === 'translucent' || mode === 'translucent-before-transmission')
-    return (transmission || material.transparent === true) && !medium;
-  if (mode === 'transmission') return transmission;
-  if (mode === 'transparent' || mode === 'oit-accumulate' || mode === 'oit-residual')
-    return material.transparent === true && !transmission && !medium;
-  const opaque = !transmission && material.transparent !== true && !medium;
-  if (mode === 'opaque-fogged') return opaque && material.renderState?.fog !== false;
-  if (mode === 'opaque-unfogged') return opaque && material.renderState?.fog === false;
-  return opaque;
+    return medium && !isWaterMaterial(material);
+  return matchesOrdinaryRecordMode(material, mode, medium);
 }
 
 /** Select one shared material before expanding any of its draw members. */
@@ -48,8 +67,7 @@ export function materialMatchesPass(
   excludeSelector: PassSelector | undefined,
 ): boolean {
   if (mode !== undefined && !matchesRecordMode(material.snapshot, mode)) return false;
-  if (mode === 'single-layer-medium-nearest-layer' || mode === 'single-layer-medium-color')
-    return true;
+  if (isSurfaceRecordMode(mode)) return true;
   if (selector !== undefined) {
     let selected = false;
     for (const pass of material.passes) {
@@ -79,4 +97,21 @@ export function drawMaterial(
   const material = slot === undefined ? undefined : c.materialSlots[slot];
   if (material === undefined) throw new Error('Draw has no fixed submitted material slot');
   return material;
+}
+
+function matchesOrdinaryRecordMode(
+  material: MaterialSnapshot,
+  mode: MaterialRecordMode,
+  medium: boolean,
+): boolean {
+  const transmission = (standardTransmissionValue(material) ?? 0) > 0;
+  if (mode === 'translucent' || mode === 'translucent-before-transmission')
+    return (transmission || material.transparent === true) && !medium;
+  if (mode === 'transmission') return transmission;
+  if (mode === 'transparent' || mode === 'oit-accumulate' || mode === 'oit-residual')
+    return material.transparent === true && !transmission && !medium;
+  const opaque = !transmission && material.transparent !== true && !medium;
+  if (mode === 'opaque-fogged') return opaque && material.renderState?.fog !== false;
+  if (mode === 'opaque-unfogged') return opaque && material.renderState?.fog === false;
+  return opaque;
 }

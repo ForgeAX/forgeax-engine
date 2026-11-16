@@ -77,11 +77,7 @@ it.each([
         )
         .unwrap();
     }
-    const input = {
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    };
+    const input = { source: attached.value };
     for (let frame = 0; frame < FRAMES; frame++) {
       expect(world.update().ok).toBe(true);
       created.mockClear();

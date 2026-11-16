@@ -1,10 +1,39 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  appendFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { collectViewBackendDiagnostics } from '../view-backend-diagnostics.mjs';
+import {
+  collectViewBackendDiagnostics,
+  streamViewBackendTimings,
+} from '../view-backend-diagnostics.mjs';
+
+test('streams Pack commit and late ready timings once across cleanup snapshots', () => {
+  const root = mkdtempSync(join(tmpdir(), 'view-backend-timing-'));
+  const file = join(root, 'backend.log');
+  const commit = '[forgeax.pack-commit.timing] {"stage":"http-compression","elapsedMs":27}';
+  const ready = '[forgeax.workspace.timing] {"stage":"target-url-published","totalMs":60472}';
+  const lines = [];
+  try {
+    writeFileSync(file, `ordinary output\n${commit}\n${ready.slice(0, 20)}`);
+    const afterLine = streamViewBackendTimings(file, 0, (line) => lines.push(line));
+    assert.deepEqual(lines, [commit]);
+    appendFileSync(file, `${ready.slice(20)}\n`);
+    const finalLine = streamViewBackendTimings(file, afterLine, (line) => lines.push(line));
+    streamViewBackendTimings(file, finalLine, (line) => lines.push(line));
+    assert.deepEqual(lines, [commit, ready]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test('retains the failed probe daemon stderr without unrelated sessions or credentials', () => {
   const root = mkdtempSync(join(tmpdir(), 'view-backend-diagnostics-'));

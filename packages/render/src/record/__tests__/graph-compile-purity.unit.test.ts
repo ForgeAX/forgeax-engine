@@ -1,10 +1,28 @@
+import { type PhysicsWorld, PhysicsWorldResource } from '@forgeax/engine-physics';
 import { rhi } from '@forgeax/engine-rhi-null';
+import { ok } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
+import { advancedWaterFixture } from '../../__tests__/advanced-water-fixture';
+import {
+  abortFeatureFrame,
+  prepareFeatureFrame,
+  submitFeatureFrame,
+} from '../../__tests__/feature-frame-driver';
 import { compileAndAdoptViewGraph } from '../../__tests__/graph-compile.fixture';
+import { compileSharedFeatureGraph } from '../../assembly/feature-frame-graph';
 import { DeviceScope } from '../../device/device-scope';
+import {
+  createRenderFeatureHost,
+  type RenderFeatureFrameResult,
+  type RenderFeatureHost,
+} from '../../features/host';
+import { createRenderFeatureGpuWorkOwner } from '../../features/prepared-gpu-work';
+import type { RenderFeature } from '../../features/types';
 import { RhiErrorListenerRegistry } from '../../lifecycle';
 import type { RenderPipeline } from '../../render-pipeline';
 import { createTemporalFrameTransaction, TemporalViewHistory } from '../../temporal/frame';
+import { createWaterAdvancedFeature } from '../../water/advanced-feature';
+import { createWaterFluidFeature, type WaterFluidFeatureFrame } from '../../water/fluid-feature';
 import type { ViewLights } from '../../world/render-lights';
 import type { RenderFrameState } from '../frame-snapshot';
 import { makeZeroCameraFallbackSnapshot } from '../frame-snapshot';
@@ -309,6 +327,250 @@ describe('compileViewGraph purity', () => {
 });
 
 describe('adoptViewGraph parity', () => {
+  it('keeps shared Advanced execution independent of view topology across hold, rejection and live work', async () => {
+    const h = await harness();
+    const source = await advancedWaterFixture();
+    const collisionQueries: Pick<
+      PhysicsWorld,
+      'getCommittedColliderPrimitives' | 'intersectsCommittedBodyObb'
+    > = {
+      getCommittedColliderPrimitives: (entity) =>
+        ok({
+          entity,
+          generation: 0,
+          completedStep: 0,
+          motionDiscontinuity: 0,
+          positionM: [0, 0, 0],
+          rotation: [0, 0, 0, 1],
+          scale: [1, 1, 1],
+          centerOfMassM: [0, 0, 0],
+          linearVelocityMps: [0, 0, 0],
+          angularVelocityRadps: [0, 0, 0],
+          rawAggregateCount: 0,
+          elements: [],
+        }),
+      intersectsCommittedBodyObb: () => ok(false),
+    };
+    source.world.insertResource(PhysicsWorldResource, collisionQueries as PhysicsWorld);
+    source.world.update(1 / 60).unwrap();
+    const shader = (
+      await rhi.createShaderModule(h.internals.device, { code: 'synthetic' })
+    ).unwrap();
+    const gpu = createRenderFeatureGpuWorkOwner({
+      getDevice: () => h.internals.device,
+      getShaderModuleFactory: () => ({ createShaderModule: () => ok(shader) }),
+    });
+    const advanced = createWaterAdvancedFeature({});
+    const host = createRenderFeatureHost([advanced]).unwrap();
+    let viewSubmissions = 0;
+    const viewFeature: RenderFeature<undefined> = {
+      identity: 'view-copy-control',
+      extract: () => ok(undefined),
+      plan: () =>
+        ok({
+          work: [
+            {
+              scope: { view: 'camera:0' },
+              resources: [
+                {
+                  kind: 'buffer',
+                  name: 'from',
+                  size: 16,
+                  usage: ['copy-src'],
+                  data: new Uint32Array([1, 2, 3, 4]),
+                },
+                { kind: 'buffer', name: 'to', size: 16, usage: ['storage'] },
+              ],
+              passes: [
+                {
+                  kind: 'copy',
+                  name: 'view-copy',
+                  copies: [{ source: 'from', destination: 'to', size: 16 }],
+                },
+              ],
+            },
+          ],
+        }),
+      onFrameSubmitted: () => {
+        viewSubmissions++;
+      },
+    };
+    Object.assign(h.internals, {
+      featureHost: host,
+      canvas: { width: 16, height: 16 },
+      immediateShaderModuleFactory: { createShaderModule: () => ok(shader) },
+    });
+    const sharedGraphs: NonNullable<ReturnType<typeof compileSharedFeatureGraph>>[] = [];
+    const viewGraphs = new Set<NonNullable<RenderFrameState['compiledFrameGraph']>['graph']>();
+    const passCounts = new Set<number>();
+    let previous: NonNullable<ReturnType<typeof compileSharedFeatureGraph>> | undefined;
+    try {
+      for (let frameNumber = 1; frameNumber <= 5; frameNumber++) {
+        if (frameNumber !== 2) source.update(frameNumber);
+        if (frameNumber === 4) host.install(viewFeature).unwrap();
+        const batch = prepareFeatureFrame(host, [
+          {
+            identity: 'camera:0',
+            render: true,
+            world: source.world,
+            frameNumber,
+            generation: 0,
+            deviceGeneration: 0,
+            caps: {
+              ...h.internals.device.caps,
+              compute: true,
+              storageBuffer: true,
+              storageTexture: true,
+              rgba16floatStorage: true,
+              rgba32floatStorage: true,
+            },
+            limits: { maxTextureDimension2D: 8192 },
+            gpuWork: gpu,
+          },
+        ]);
+        try {
+          expect(batch.frame.errors).toEqual([]);
+          const view = batch.views.get('camera:0');
+          if (view === undefined) throw new Error('missing view');
+          expect(view.errors).toEqual([]);
+          const shared = compileSharedFeatureGraph(
+            h.internals,
+            batch.frame,
+            [],
+            batch.views,
+            previous,
+          );
+          if (shared === undefined) throw new Error('missing Advanced graph');
+          sharedGraphs.push(shared);
+          passCounts.add(shared.inspect().passes.length);
+          h.frameState.frameNumber = frameNumber;
+          const input = {
+            ...h.input(),
+            featurePlan: {
+              candidate: {
+                plans: view.plans,
+                fullscreenEffects: view.fullscreenEffects,
+                ...(view.requiresPreparedResourceKey
+                  ? { preparedResourceKey: `frame-${frameNumber}` }
+                  : {}),
+              },
+            },
+          };
+          expect(compileViewGraph(input).kind, `frame ${frameNumber}`).toBe(
+            frameNumber === 1 || frameNumber >= 4 ? 'compiled' : 'reused',
+          );
+          const graph = compileAndAdoptViewGraph(input);
+          if (graph === null) throw new Error('missing view graph');
+          viewGraphs.add(graph);
+          const encoder = h.internals.device.createCommandEncoder().unwrap();
+          shared.execute({ encoder, runtime: h.internals }).unwrap();
+          if (frameNumber === 2) {
+            shared.discardExecution();
+            abortFeatureFrame(host);
+          } else {
+            h.internals.device.queue.submit([encoder.finish().unwrap()]).unwrap();
+            shared.commitExecution();
+            submitFeatureFrame(host);
+            h.accept();
+            previous = shared;
+          }
+        } finally {
+          for (const resources of batch.preparedResourceBatches) resources.release().unwrap();
+        }
+      }
+      expect(passCounts.size).toBeGreaterThan(1);
+      expect(viewSubmissions).toBe(2);
+    } finally {
+      for (const graph of [...sharedGraphs, ...viewGraphs]) await graph.retire();
+      host.dispose().unwrap();
+      gpu.dispose().unwrap();
+    }
+  });
+
+  it('reuses advancing Fluid payloads and recompiles changed shared texture shape', async () => {
+    const h = await harness();
+    const hosts: RenderFeatureHost[] = [];
+    const graphs = new Set<NonNullable<ReturnType<typeof compileSharedFeatureGraph>>>();
+    const makeSource = (resolution: number) => {
+      const feature = createWaterFluidFeature({
+        contactFoam: { resolution, decayPerSecond: 1, strengthPerMps: 1 },
+      });
+      const host = createRenderFeatureHost([feature]).unwrap();
+      hosts.push(host);
+      Object.assign(h.internals, { featureHost: host, canvas: { width: 16, height: 16 } });
+      const material = {
+        worldIdentity: 'world',
+        bodyGuid: 'ocean',
+        bodyGeneration: 1,
+        materialHandle: 1,
+        mapping: { kind: 'mapped' as const, centerXZ: [0, 0] as const, extentM: 16 },
+      };
+      return (
+        frameNumber: number,
+        previous?: NonNullable<ReturnType<typeof compileSharedFeatureGraph>>,
+      ) => {
+        const data: WaterFluidFeatureFrame = {
+          kind: 'forgeax-water-fluid-frame',
+          sourceFrame: frameNumber,
+          simulations: [],
+          sourceBlockers: [],
+          inspection: [],
+          contactFoamBodies: [material],
+          contactFoam: {
+            worldTimes: [{ worldIdentity: 'world', timeSeconds: frameNumber / 60 }],
+            materials: [material],
+            roots: [],
+            events: [],
+          },
+        };
+        feature
+          .plan(data, {
+            frame: { frameNumber },
+            caps: h.internals.device.caps,
+            views: [
+              { identity: 'camera:0', render: true, frame: { waterFoamMaterials: [material] } },
+            ],
+          } as unknown as Parameters<NonNullable<typeof feature.plan>>[1])
+          .unwrap();
+        const result = {
+          plans: [],
+          errors: [],
+          preparationPending: false,
+        } as unknown as RenderFeatureFrameResult;
+        const shared = compileSharedFeatureGraph(
+          h.internals,
+          result,
+          [],
+          new Map([['camera:0', result]]),
+          previous,
+        );
+        if (shared === undefined) throw new Error('missing Fluid graph');
+        graphs.add(shared);
+        h.frameState.frameNumber = frameNumber;
+        return shared;
+      };
+    };
+    try {
+      const advance = makeSource(16);
+      const firstShared = advance(1);
+      const first = h.compile();
+      h.accept();
+      advance(2, firstShared);
+      expect(compileViewGraph(h.input()).kind).toBe('reused');
+      expect(h.compile()).toBe(first);
+      expect(h.frameState.graphGeneration).toBe(1);
+      makeSource(32)(3);
+      expect(compileViewGraph(h.input()).kind).toBe('compiled');
+      expect(h.compile()).not.toBe(first);
+      expect(h.frameState.graphGeneration).toBe(2);
+    } finally {
+      const installed = h.frameState.compiledFrameGraph?.graph;
+      if (installed !== undefined) await installed.retire();
+      for (const graph of graphs) await graph.retire();
+      for (const host of hosts) host.dispose().unwrap();
+    }
+  });
+
   for (const [kind, prepare] of Object.entries(fixtures)) {
     it(`${kind} matches the in-place compile golden`, async () => {
       const h = await harness();

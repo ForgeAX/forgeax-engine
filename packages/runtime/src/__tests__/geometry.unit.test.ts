@@ -1,3 +1,4 @@
+import { waterInfoShaderFixture } from '../../../render/src/__tests__/shader-manifest-fixture';
 // Consolidated by feat-20260609-test-pool-startup-reduction-merge-tiny-test-files
 // biome-ignore-all lint/complexity/noUselessLoneBlockStatements: block-scope isolation between merged source files (consolidation paradigm)
 //
@@ -75,7 +76,7 @@ import { prepareExtractContext } from '../../../render/src/render-system-extract
 import { extractFrame } from '../../../render/src/render-system-extract-tail';
 import { makeMockShaderRegistry } from './helpers/mock-shader-registry';
 import { standardMaterialShaderVariants } from './helpers/standard-material-manifest';
-import { drawWithOwners } from './renderer-test-utils';
+import { drawWorld } from './renderer-test-utils';
 
 function meshAttributes(vertices: Float32Array) {
   const attributes = unpackInterleavedVertexAttributes(
@@ -132,7 +133,7 @@ function drawPublished(renderer: RendererType, world: WorldType) {
   const attached = renderer.attach(world);
   if (!attached.ok) throw attached.error;
   world.update().unwrap();
-  return drawWithOwners(renderer, world);
+  return drawWorld(renderer, world);
 }
 
 {
@@ -803,6 +804,7 @@ function drawPublished(renderer: RendererType, world: WorldType) {
     firstInstanceIndirect: false,
     storageBuffer: true,
     storageTexture: false,
+    depthTextureLoad: true,
     rgba16floatRenderable: true,
     rg11b10ufloatRenderable: false,
     float32Filterable: false,
@@ -818,7 +820,11 @@ function drawPublished(renderer: RendererType, world: WorldType) {
   function makeMockDevice(probe: BufferProbe): any {
     const okShim = ok;
     return {
-      limits: { maxTextureDimension2D: 16384, maxTextureArrayLayers: 2048 },
+      limits: {
+        maxTextureDimension2D: 16384,
+        maxTextureArrayLayers: 2048,
+        maxStorageBuffersPerShaderStage: 8,
+      },
       createSampler: () => ok({}),
       // biome-ignore lint/suspicious/noExplicitAny: descriptor shim
       createBuffer: (desc: any) => {
@@ -1986,7 +1992,7 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       __mockTag: 'gpu-device',
       lost,
       features: new Set(),
-      limits: {},
+      limits: { maxStorageBuffersPerShaderStage: 8 },
       queue: {
         submit: () => undefined,
         onSubmittedWorkDone: () => Promise.resolve(undefined),
@@ -2047,6 +2053,7 @@ function drawPublished(renderer: RendererType, world: WorldType) {
     });
     const manifest = {
       entries: [
+        ...waterInfoShaderFixture.entries,
         { hash: 'pbr00000', wgsl: '/* pbr stub - calls f_schlick( */', glsl: '', bindings: '' },
         { hash: 'unlit000', wgsl: '/* unlit stub */', glsl: '', bindings: '' },
         {
@@ -2057,6 +2064,7 @@ function drawPublished(renderer: RendererType, world: WorldType) {
         },
       ],
       materialShaders: [
+        ...waterInfoShaderFixture.materialShaders,
         materialShaderStub('forgeax::default-standard-pbr'),
         materialShaderStub('forgeax::default-unlit'),
       ],

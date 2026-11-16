@@ -1056,9 +1056,11 @@ describe('SDK verifier template contract', () => {
       source.indexOf('const before ='),
       source.indexOf("page.keyboard.down('KeyW')"),
     );
-    expect(interaction).toContain("const canvas = page.locator('canvas').first();");
+    expect(interaction).toContain("const canvas = resources.page.locator('canvas').first();");
     expect(interaction).toMatch(/const canvasBox = await [^\n]*canvas\.boundingBox\(\)/);
-    expect(interaction).toMatch(/await [^\n]*page\.mouse\.click\(centerX, centerY\)/);
+    expect(interaction).toMatch(
+      /await sdkStage\('selectedBrowser.pointerClick',\s*\(\) =>\s*resources\.page\.mouse\.click\(centerX, centerY\)/,
+    );
   });
 
   it('waits for the game-3d guide mount before taking the gameplay baseline', async () => {
@@ -1126,7 +1128,7 @@ describe('SDK verifier template contract', () => {
       "if (!import.meta.env.DEV) return { running: false, error: 'the time scale runs only on a development host' };",
     );
     expect(source).toMatch(
-      /if \(\(import\.meta\.env\.DEV \|\| cpuProfileRequested[^\n]*\) && !workerExecution\) exposeGameInspection\(app as App\);/,
+      /if \(\(import\.meta\.env\.DEV \|\| cpuProfileRequested[^\n]*\) && !workerExecution\) exposeGameInspection\(app as App, \(\) => !pageHidden\);/,
     );
   });
 
@@ -1137,7 +1139,7 @@ describe('SDK verifier template contract', () => {
       source.indexOf('const movementDelta ='),
     );
     expect(journey).toContain('const movementDeadline = Date.now() + 120_000');
-    expect(journey).toContain('readSelectedPlayerProjection(page, movementDeadline)');
+    expect(journey).toContain('readSelectedPlayerProjection(resources.page, movementDeadline)');
     expect(journey).toContain('candidate.position[2] < before.position[2] - 0.01');
     expect(journey).toContain('candidate.fixedTick > before.fixedTick');
     expect(journey).toContain('sdk-selected-third-person-movement-timeout');
@@ -1220,16 +1222,26 @@ describe('SDK verifier template contract', () => {
     expect(promotionWorkflow).not.toContain('pnpm sdk:verify');
   });
 
-  it('uses semantic movement and renderer health without a lavapipe screenshot', async () => {
+  it('uses semantic movement for acceptance and keeps RHI screenshots on timeout diagnostics', async () => {
     const source = await readFile(join(repositoryRoot, 'scripts/forgeax/verify-sdk.mjs'), 'utf8');
     const browserCheck = source.slice(
       source.indexOf('async function verifyProjectBrowser'),
-      source.indexOf('const selectedTemplateEvidence ='),
+      source.indexOf('async function frameTimeoutDiagnostics'),
+    );
+    const timeoutDiagnostics = source.slice(
+      source.indexOf('async function frameTimeoutDiagnostics'),
+      source.indexOf('async function preserveFrameFailureEvidence'),
+    );
+    const failureEvidence = source.slice(
+      source.indexOf('async function preserveFrameFailureEvidence'),
+      source.indexOf('async function createProjectPage'),
     );
     expect(browserCheck).toContain('movementDistance');
     expect(browserCheck).toContain("renderer?.state !== 'alive'");
     expect(browserCheck).not.toContain('page.screenshot');
     expect(browserCheck).not.toContain('toDataURL');
+    expect(timeoutDiagnostics).toContain('await preserveFrameFailureEvidence(page, phase)');
+    expect(failureEvidence).toContain('page.screenshot');
   });
 });
 

@@ -178,6 +178,9 @@ export class RhiNullDevice implements RhiDevice {
       storageTexture: true,
       depthTextureLoad: true,
       rgba16floatRenderable: true,
+      rgba32floatRenderable: true,
+      rgba16floatStorage: true,
+      rgba32floatStorage: true,
       rg11b10ufloatRenderable: true,
       float32Filterable: true,
       textureImport: true,
@@ -401,7 +404,13 @@ export class RhiNullDevice implements RhiDevice {
 }
 
 /** Structural capacity for eight attachments of up to 16 bytes per sample. */
-export const NULL_LIMITS = { maxColorAttachmentBytesPerSample: 128 } as const;
+export const NULL_LIMITS = {
+  maxBindingsPerBindGroup: 1000,
+  maxStorageBuffersPerShaderStage: 8,
+  maxUniformBuffersPerShaderStage: 12,
+  maxSampledTexturesPerShaderStage: 16,
+  maxColorAttachmentBytesPerSample: 128,
+} as const;
 
 const TEXTURE_BINDING = 0x04;
 

@@ -9,8 +9,8 @@ type FrameData = {
 
 const feature = {
   identity: 'test.runtime-public-surface',
-  extract({ owner }) {
-    return ok<FrameData>({ visibleCount: owner });
+  extract({ world }) {
+    return ok<FrameData>({ visibleCount: world.inspect().entityCount });
   },
   plan(data: FrameData) {
     const count: number = data.visibleCount;

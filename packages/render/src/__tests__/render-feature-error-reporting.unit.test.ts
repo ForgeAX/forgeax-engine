@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { type RenderError, RenderFeatureStageFailedError } from '../errors/render.js';
+import {
+  type RenderError,
+  RenderFeaturePreparationFailedError,
+  RenderFeatureStageFailedError,
+} from '../errors/render.js';
 import {
   PENDING_RENDER_FEATURE_ERROR_REPORT_INTERVAL_FRAMES,
   type PendingRenderFeatureErrorReport,
@@ -40,5 +44,44 @@ describe('changed render-feature failures', () => {
     reportPendingRenderFeatureErrors([failure('cycle')], 4, lastReportedFrame, registry);
     expect(reported).toHaveLength(2);
     expect(lastReportedFrame.size).toBe(1);
+  });
+
+  it('keeps retryable GPU program warmup silent and reports permanent preparation failures', () => {
+    const lastReportedFrame = new Map<string, PendingRenderFeatureErrorReport>();
+    const reported: RenderError[] = [];
+    const registry = { fire: (error: RenderError) => reported.push(error) };
+    const pending = new RenderFeaturePreparationFailedError(
+      'warmup',
+      0,
+      'prepare-gpu-program',
+      'pipeline',
+      'program',
+      'registry module pending',
+      'next-frame',
+    );
+    const compileFailure = new RenderFeaturePreparationFailedError(
+      'warmup',
+      0,
+      'prepare-gpu-program',
+      'pipeline',
+      'program',
+      'shader-compile-failed',
+      'renderer-recover',
+    );
+    const unavailable = new RenderFeaturePreparationFailedError(
+      'warmup',
+      0,
+      'prepare-gpu-program',
+      'pipeline',
+      'program',
+      'rhi-not-available: retired device',
+      'renderer-recover',
+    );
+
+    reportPendingRenderFeatureErrors([pending], 1, lastReportedFrame, registry);
+    expect(reported).toEqual([]);
+    reportPendingRenderFeatureErrors([compileFailure], 2, lastReportedFrame, registry);
+    reportPendingRenderFeatureErrors([unavailable], 3, lastReportedFrame, registry);
+    expect(reported).toEqual([compileFailure, unavailable]);
   });
 });

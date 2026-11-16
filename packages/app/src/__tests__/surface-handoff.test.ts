@@ -1,4 +1,4 @@
-import { Update, World } from '@forgeax/engine-ecs';
+import { defineSystem, Update, World } from '@forgeax/engine-ecs';
 import type { FrameReceipt, Renderer } from '@forgeax/engine-render';
 import { ok } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
@@ -124,15 +124,14 @@ describe('createApp presentation surface handoff', () => {
       const world = new World();
       let app: App | undefined;
       let handoff: Promise<unknown> | undefined;
-      world
-        .addSystem(Update, {
-          name: 'request-surface-handoff',
-          queries: [],
-          fn: () => {
-            if (app !== undefined) handoff = app.releaseSurfacePreserveWorld();
-          },
-        })
-        .unwrap();
+      const systemToken1 = defineSystem({
+        name: 'request-surface-handoff',
+        queries: [],
+        fn: () => {
+          if (app !== undefined) handoff = app.releaseSurfacePreserveWorld();
+        },
+      });
+      world.addSystem(Update, systemToken1).unwrap();
 
       const result = await createApp({
         platform: testPlatform(),

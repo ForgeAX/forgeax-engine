@@ -1,11 +1,13 @@
+import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
+import { defineSystem, Update, type World } from '@forgeax/engine-ecs';
 import { createApp } from '@forgeax/engine-app/browser';
-import { createProfiler, buildProfileModel, validateProfileCapture } from '@forgeax/engine-profiler';
-import {
-  Update,
-  World,
-} from '@forgeax/engine-ecs';
+
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
-import { Transform } from '@forgeax/engine-scene';
+import {
+  buildProfileModel,
+  createProfiler,
+  validateProfileCapture,
+} from '@forgeax/engine-profiler';
 import {
   Camera,
   DEFAULT_STANDARD_PROFILE,
@@ -13,27 +15,25 @@ import {
   MeshFilter,
   MeshRenderer,
   PointLight,
+  perspective,
   SpotLight,
   TONEMAP_ACES_FILMIC,
-  perspective,
 } from '@forgeax/engine-render';
-import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
+import { Transform } from '@forgeax/engine-scene';
 import {
-  PERF_WORKLOAD_SEED,
+  cubePositions,
   DIRECTIONAL_LIGHT_CAST_SHADOW,
   DIRECTIONAL_LIGHT_COLOR,
   DIRECTIONAL_LIGHT_DIRECTION,
   DIRECTIONAL_LIGHT_INTENSITY,
-  type WorkloadOptions,
-  cubePositions,
   mulberry32,
+  PERF_WORKLOAD_SEED,
   parseWorkloadOptions,
   positionsChecksum,
+  type WorkloadOptions,
   workloadFingerprint,
   yawQuaternion,
 } from './workload';
-
-
 
 const PROFILE_FRAME_LIMIT = 180;
 const PROFILE_EVENT_LIMIT = 8192;
@@ -42,7 +42,11 @@ const FIXED_DELTA_SECONDS = 1 / 60;
 
 function errorText(error: unknown): string {
   if (typeof error !== 'object' || error === null) return String(error);
-  const record = error as { readonly code?: unknown; readonly hint?: unknown; readonly message?: unknown };
+  const record = error as {
+    readonly code?: unknown;
+    readonly hint?: unknown;
+    readonly message?: unknown;
+  };
   return `${String(record.code ?? 'unknown')}: ${String(record.hint ?? record.message ?? error)}`;
 }
 
@@ -53,7 +57,12 @@ function errorDetailText(error: unknown): string {
   try {
     return `; detail: ${JSON.stringify(detail, (_key, value: unknown) => {
       if (typeof value !== 'object' || value === null) return value;
-      const record = value as { readonly code?: unknown; readonly expected?: unknown; readonly hint?: unknown; readonly detail?: unknown };
+      const record = value as {
+        readonly code?: unknown;
+        readonly expected?: unknown;
+        readonly hint?: unknown;
+        readonly detail?: unknown;
+      };
       if (record.code !== undefined || record.expected !== undefined || record.hint !== undefined) {
         return {
           code: record.code,
@@ -127,7 +136,9 @@ async function bootstrap(target: HTMLCanvasElement, options: WorkloadOptions): P
   const bootstrapStart = performance.now();
   const profilerAllocations = { profilerEventObjectAllocations: 0 };
   const profilingEnabled = params.get('profile') !== '0';
-  const profiler = profilingEnabled ? createProfiler({ allocationReport: profilerAllocations }) : undefined;
+  const profiler = profilingEnabled
+    ? createProfiler({ allocationReport: profilerAllocations })
+    : undefined;
   const appResult = await createApp(
     target,
     {
@@ -147,7 +158,7 @@ async function bootstrap(target: HTMLCanvasElement, options: WorkloadOptions): P
   const app = appResult.value;
   const assets = app.assets;
   if (assets === undefined) throw new Error('App asset service is unavailable');
-const demoPrimitive = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+  const demoPrimitive = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
   const errors: PerfEvidence['appRendererErrors'] = [];
   app.onError((error) => {
     const record = {
@@ -157,17 +168,19 @@ const demoPrimitive = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap
     errors.push(record);
     console.error(`[perf-10k-cubes-lights] engine error ${record.code}: ${record.hint}`);
   });
-  const materialHandle = assets.create({
-    kind: 'material',
-    passes: [
-      {
-        name: 'Forward',
-        program: { module: 'forgeax::default-standard-pbr' },
-        renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
-      },
-    ],
-    values: { baseColor: [0.34, 0.48, 0.72], metallic: 0.05, roughness: 0.58 },
-  }).unwrap();
+  const materialHandle = assets
+    .create({
+      kind: 'material',
+      passes: [
+        {
+          name: 'Forward',
+          program: { module: 'forgeax::default-standard-pbr' },
+          renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
+        },
+      ],
+      values: { baseColor: [0.34, 0.48, 0.72], metallic: 0.05, roughness: 0.58 },
+    })
+    .unwrap();
   const positions = cubePositions(options);
   for (let index = 0; index < options.cubeCount; index++) {
     const base = index * 3;
@@ -204,38 +217,50 @@ const demoPrimitive = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap
     const x = -18 + lightRandom() * 36;
     const y = -10 + lightRandom() * 20;
     const z = -18 + lightRandom() * 36;
-    app.world.spawn(
-      { component: Transform, data: { pos: [x, y, z], quat: [0, 0, 0, 1] } },
-      {
-        component: PointLight,
-        data: {
-          color: [0.55 + lightRandom() * 0.45, 0.55 + lightRandom() * 0.45, 0.55 + lightRandom() * 0.45],
-          intensity: 1.5 + lightRandom() * 1.5,
-          range: 12,
+    app.world
+      .spawn(
+        { component: Transform, data: { pos: [x, y, z], quat: [0, 0, 0, 1] } },
+        {
+          component: PointLight,
+          data: {
+            color: [
+              0.55 + lightRandom() * 0.45,
+              0.55 + lightRandom() * 0.45,
+              0.55 + lightRandom() * 0.45,
+            ],
+            intensity: 1.5 + lightRandom() * 1.5,
+            range: 12,
+          },
         },
-      },
-    ).unwrap();
+      )
+      .unwrap();
   }
   for (let index = 0; index < options.spotLightCount; index++) {
     const x = -18 + lightRandom() * 36;
     const y = -10 + lightRandom() * 20;
     const z = -18 + lightRandom() * 36;
     const length = Math.hypot(x, y, z) || 1;
-    app.world.spawn(
-      { component: Transform, data: { pos: [x, y, z], quat: [0, 0, 0, 1] } },
-      {
-        component: SpotLight,
-        data: {
-          direction: [-x / length, -y / length, -z / length],
-          color: [0.65 + lightRandom() * 0.35, 0.65 + lightRandom() * 0.35, 0.65 + lightRandom() * 0.35],
-          intensity: 2 + lightRandom() * 2,
-          range: 16,
-          innerConeDeg: 20,
-          outerConeDeg: 40,
-          castShadow: false,
+    app.world
+      .spawn(
+        { component: Transform, data: { pos: [x, y, z], quat: [0, 0, 0, 1] } },
+        {
+          component: SpotLight,
+          data: {
+            direction: [-x / length, -y / length, -z / length],
+            color: [
+              0.65 + lightRandom() * 0.35,
+              0.65 + lightRandom() * 0.35,
+              0.65 + lightRandom() * 0.35,
+            ],
+            intensity: 2 + lightRandom() * 2,
+            range: 16,
+            innerConeDeg: 20,
+            outerConeDeg: 40,
+            castShadow: false,
+          },
         },
-      },
-    ).unwrap();
+      )
+      .unwrap();
   }
 
   app.world
@@ -274,15 +299,17 @@ const demoPrimitive = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap
     rendererInspection: null,
   };
   Object.assign(globalThis, { __forgeaxPerf: evidence });
-  const capture = profiler?.startCapture({ frameLimit: profileFrameLimit, eventLimit: PROFILE_EVENT_LIMIT });
+  const capture = profiler?.startCapture({
+    frameLimit: profileFrameLimit,
+    eventLimit: PROFILE_EVENT_LIMIT,
+  });
   if (capture !== undefined && !capture.ok) {
     console.error(`[perf-10k-cubes-lights] profiler ${errorText(capture.error)}`);
     return;
   }
   let elapsed = 0;
   let lastFrameAt: number | undefined;
-  app.world
-    .addSystem(Update, {
+  const systemToken1 = defineSystem({
       name: 'perf-10k-cubes-rotate',
       queries: [{ write: [Transform], with: [MeshFilter, MeshRenderer] }],
       fn: (_world, results) => {
@@ -319,7 +346,7 @@ const demoPrimitive = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap
         const latest = profiler?.latestCapture();
         if (latest !== undefined) {
           evidence.profileCapture = latest;
-          const model = buildProfileModel(latest);
+          const model = buildProfileModel(latest, { orderEvidence: 'recorder-closure' });
           evidence.profileSummary = model.ok
             ? { summary: model.value.summary, phases: model.value.phases }
             : model.error;
@@ -338,17 +365,20 @@ const demoPrimitive = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap
           };
         }
       },
-    })
+    });
+app.world
+    .addSystem(Update, systemToken1)
     .unwrap();
-  app.world
-    .addSystem(Update, {
+  const systemToken2 = defineSystem({
       name: 'perf-center-camera-rotate',
       queries: [{ write: [Transform], with: [Camera] }],
       fn: (_world, results) => {
         const quaternion = yawQuaternion(evidence.cameraRotationRadians);
         for (const row of results[0] ?? []) row.mut(Transform).quat.set(quaternion);
       },
-    })
+    });
+app.world
+    .addSystem(Update, systemToken2)
     .unwrap();
   const started = app.start();
   if (!started.ok) {
@@ -404,7 +434,8 @@ function inspectSpawnedWorld(
       direction,
       color,
       intensity: directional?.intensity ?? 0,
-      shadowCasterCount: directionalRows.filter((row) => row.get(DirectionalLight).castShadow).length,
+      shadowCasterCount: directionalRows.filter((row) => row.get(DirectionalLight).castShadow)
+        .length,
     },
     meshHandleMatches,
     materialHandleMatches,
@@ -414,5 +445,9 @@ function inspectSpawnedWorld(
 
 export function profileArtifactIsComplete(value: unknown): boolean {
   const result = validateProfileCapture(value);
-  return result.ok && result.value.completeness.status === 'complete' && result.value.completeness.droppedEventCount === 0;
+  return (
+    result.ok &&
+    result.value.completeness.status === 'complete' &&
+    result.value.completeness.droppedEventCount === 0
+  );
 }

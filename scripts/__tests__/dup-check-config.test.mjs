@@ -53,7 +53,8 @@ test('nested duplication config excludes WASM payloads and archived evidence', a
   const root = await fixture(t, {
     'packages/sample/current.ts': source,
     'packages/wgpu-wasm/pkg/generated.ts': source,
-    'scripts/dev-verify/wave1-rendering/evidence/previous-run/historical.ts': source,
+    // Archived measurements live outside the repository source scan roots.
+    'archived-evidence/previous-run/historical.ts': source,
   });
   const result = spawnSync(process.execPath, ['scripts/dup-check.mjs'], {
     cwd: root,

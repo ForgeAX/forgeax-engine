@@ -20,6 +20,21 @@ import { standardDisplacementRadius } from '../standard-displacement-bounds';
 type Reason = SceneSdfUnavailableError['detail']['reason'];
 type AttachedField = NonNullable<MeshAsset['distanceField']>;
 
+/** Shared collision-field authority for scene queries and explicit producer subsets. */
+export function isGeometricCollisionField(field: AttachedField): field is AttachedField & {
+  readonly policy: Exclude<AttachedField['policy'], { readonly kind: 'sampled-visibility' }>;
+} {
+  return (
+    field.policy.kind !== 'sampled-visibility' &&
+    validateMeshDistanceField(field).ok &&
+    field.artifact?.integrity.algorithm === 'sha256' &&
+    /^sha256:[0-9a-f]{64}$/.test(field.artifact.integrity.digest) &&
+    field.artifact.assetCodec.name === MESH_GEOMETRIC_DISTANCE_FIELD_CODEC.name &&
+    field.artifact.assetCodec.version === MESH_GEOMETRIC_DISTANCE_FIELD_CODEC.version &&
+    field.artifact.assetCodec.profile === MESH_GEOMETRIC_DISTANCE_FIELD_CODEC.profile
+  );
+}
+
 /** One World row's collision contribution, or the first reason it cannot contribute. */
 type CollisionRow =
   | {
@@ -37,10 +52,9 @@ function admitCollisionRow(
   slot: RenderSceneSlot,
   rows: ProjectedRows,
   scope: RenderResourceScope,
-  world: number,
   read: ReadAsset,
 ): CollisionRow | undefined {
-  if (slot.worldId !== world || slot.snapshot.authorVisible === false) return undefined;
+  if (slot.snapshot.authorVisible === false) return undefined;
   const source = slot.snapshot;
   if (source.glyph !== undefined) return undefined;
   const failure = (reason: Reason): CollisionRow => ({
@@ -60,7 +74,7 @@ function admitCollisionRow(
   const resolved = scope.resolveAsset<MeshAsset>(source.assetHandle);
   if (!resolved.ok || resolved.value.kind !== 'mesh') return failure('missing-source');
   const mesh = resolved.value;
-  const geometry = rows.meshes.get(slot.worldId, source.assetHandle);
+  const geometry = rows.meshes.get(source.assetHandle);
   const bindings =
     geometry === undefined
       ? source
@@ -73,16 +87,7 @@ function admitCollisionRow(
   }
   const field = mesh.distanceField;
   if (field === undefined) return failure('missing-field');
-  if (
-    field.policy.kind === 'sampled-visibility' ||
-    !validateMeshDistanceField(field).ok ||
-    field.artifact?.integrity.algorithm !== 'sha256' ||
-    !/^sha256:[0-9a-f]{64}$/.test(field.artifact.integrity.digest) ||
-    field.artifact.assetCodec.name !== MESH_GEOMETRIC_DISTANCE_FIELD_CODEC.name ||
-    field.artifact.assetCodec.version !== MESH_GEOMETRIC_DISTANCE_FIELD_CODEC.version ||
-    field.artifact.assetCodec.profile !== MESH_GEOMETRIC_DISTANCE_FIELD_CODEC.profile
-  )
-    return failure('invalid-field');
+  if (!isGeometricCollisionField(field)) return failure('invalid-field');
   if (
     mesh.morphTargets !== undefined ||
     mesh.morphWeights !== undefined ||
@@ -135,12 +140,9 @@ function admitCollisionRow(
 export class CollisionSceneRows {
   readonly #rows: RowProjection<CollisionRow>;
 
-  constructor(
-    readonly scope: RenderResourceScope,
-    private readonly world: number,
-  ) {
+  constructor(readonly scope: RenderResourceScope) {
     this.#rows = new RowProjection((slot, rows, read) =>
-      admitCollisionRow(slot, rows, scope, world, read),
+      admitCollisionRow(slot, rows, scope, read),
     );
   }
 
@@ -156,11 +158,9 @@ export class CollisionSceneRows {
 
   /** O(contributing rows): fail on the first row in slot order, as a complete projection would. */
   project(descriptor: RenderFeatureSceneSdfDescriptor) {
-    const world = this.world;
     function fail(reason: Reason, entity?: number): never {
       throw new SceneSdfUnavailableError({
         reason,
-        world,
         ...(entity === undefined ? {} : { entity }),
       });
     }
@@ -216,14 +216,13 @@ export class CollisionSceneRows {
  * Visibility fields cannot supply a geometric collision error bound. */
 export function projectCollisionScene(
   slots: FrameList<RenderSceneSlot>,
-  scopes: readonly RenderResourceScope[],
-  world: number,
+  sourceScope: RenderResourceScope,
   descriptor: RenderFeatureSceneSdfDescriptor,
   frame: { readonly materials: MaterialFrame; readonly meshes: MeshFrame },
 ) {
-  const scope = scopes[world];
-  if (scope === undefined) throw new SceneSdfUnavailableError({ reason: 'missing-source', world });
-  const rows = new CollisionSceneRows(scope, world);
+  const scope = sourceScope;
+  if (scope === undefined) throw new SceneSdfUnavailableError({ reason: 'missing-source' });
+  const rows = new CollisionSceneRows(scope);
   rows.sync({ identity: {}, slots, ...frame });
   return rows.project(descriptor);
 }

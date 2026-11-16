@@ -7,6 +7,35 @@ import { geometryRenderStateForPass } from '../record/main-pass-geometry';
 import { geometryRenderStateForTopology } from '../record/main-pass-material';
 
 describe('derived render states', () => {
+  it('accepts equal depth only when the graph primed the main opaque surface', () => {
+    const authored: MaterialRenderState = {
+      cullMode: 'front',
+      depthWriteEnabled: true,
+      depthCompare: 'less',
+      depthBias: 2,
+    };
+    const after = geometryRenderStateForPass(
+      authored,
+      'deferred',
+      false,
+      undefined,
+      'fs_gbuffer',
+      true,
+    );
+    expect(after).toEqual({ ...authored, depthCompare: 'less-equal' });
+    expect(
+      geometryRenderStateForPass(authored, 'deferred', false, undefined, 'fs_gbuffer', true),
+    ).toBe(after);
+    expect(geometryRenderStateForPass(authored, 'deferred')).toBe(authored);
+    expect(
+      geometryRenderStateForPass(undefined, 'forward', false, undefined, undefined, true),
+    ).toEqual({ depthCompare: 'less-equal' });
+    const always: MaterialRenderState = { depthCompare: 'always', depthWriteEnabled: false };
+    expect(geometryRenderStateForPass(always, 'forward', false, undefined, undefined, true)).toBe(
+      always,
+    );
+  });
+
   it('signs frozen plain data while continuing to observe nested mutable state and getters', () => {
     const frozen = Object.freeze({
       blend: Object.freeze({ color: Object.freeze({ operation: 'add' }) }),

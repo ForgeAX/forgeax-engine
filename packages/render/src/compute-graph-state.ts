@@ -13,11 +13,12 @@ import type {
   ShaderModule,
   TextureView,
 } from '@forgeax/engine-rhi';
-import { RhiError } from '@forgeax/engine-rhi';
+import { type ComputePipelineDescriptor, err, type Result, RhiError } from '@forgeax/engine-rhi';
 import { type ShaderSource, shaderSourceDescriptor } from '@forgeax/engine-types';
 import { getOrCreateFromChain } from './record/mesh-ssbo';
 import type { _InternalRenderPipelineContext } from './record/render-context';
 import type { RenderPipelineFrame } from './render-pipeline';
+import { markPipelinePreparationPending } from './render-system-presentation';
 
 /** One lazily built renderer-owned compute program plus its bind-group cache. */
 export interface ComputeState {
@@ -25,6 +26,90 @@ export interface ComputeState {
   readonly pipeline: ComputePipeline;
   readonly layout: BindGroupLayout;
   readonly bindGroups: WeakMap<object, unknown>;
+}
+
+/** One actual graph stage prepares and records through the same program state. */
+export function createComputeStatePreparation(
+  source: (frame: RenderGraphFrame) => string | ShaderSource | undefined,
+  label: string,
+  entries: readonly unknown[],
+  entryPoint: string,
+) {
+  let current:
+    | {
+        readonly device: RhiDevice;
+        readonly source: string | ShaderSource;
+        readonly layout: BindGroupLayout;
+        result?: Result<ComputePipeline, RhiError>;
+        state?: ComputeState;
+      }
+    | undefined;
+  return (frame: RenderGraphFrame): ComputeState | undefined => {
+    const selected = source(frame);
+    if (selected === undefined) return undefined;
+    const runtime = (frame as RenderPipelineFrame).runtime;
+    if (current === undefined || current.device !== runtime.device || current.source !== selected) {
+      const factory = runtime.shaderModuleFactory;
+      if (factory === undefined) throw computePipelineError(`${label} shader module`);
+      const module = factory.createShaderModule(shaderSourceDescriptor(selected, label));
+      if (!module.ok) throw module.error;
+      const prepared = computeStateDescriptor(
+        runtime.device,
+        module.value,
+        label,
+        entries,
+        entryPoint,
+      );
+      const flight = {
+        device: runtime.device,
+        source: selected,
+        layout: prepared.layout,
+      } as NonNullable<typeof current>;
+      current = flight;
+      const create = runtime.device.createComputePipelineAsync;
+      const result =
+        create === undefined
+          ? runtime.device.createComputePipeline(prepared.descriptor)
+          : create.call(runtime.device, prepared.descriptor);
+      if (result instanceof Promise) {
+        // The backend's existing pendingRuntimeCompilation owns the receipt signal.
+        result.then(
+          (result) => {
+            flight.result = result;
+          },
+          (cause: unknown) => {
+            flight.result = err(
+              cause instanceof RhiError
+                ? cause
+                : new RhiError({
+                    code: 'webgpu-runtime-error',
+                    expected: `${label} native compilation completes`,
+                    hint: String(cause),
+                  }),
+            );
+          },
+        );
+      } else flight.result = result;
+    }
+    if (current.result === undefined) {
+      markPipelinePreparationPending((frame as _InternalRenderPipelineContext).frameState, {
+        code: 'scene-pipeline-preparation',
+      });
+      return undefined;
+    }
+    if (!current.result.ok) {
+      const error = current.result.error;
+      current = undefined;
+      throw error;
+    }
+    current.state ??= {
+      label,
+      pipeline: current.result.value,
+      layout: current.layout,
+      bindGroups: new WeakMap(),
+    };
+    return current.state;
+  };
 }
 
 type ComputeBinding =
@@ -76,6 +161,19 @@ export function createComputeStateForModule(
   entries: readonly unknown[],
   entryPoint: string,
 ): ComputeState {
+  const prepared = computeStateDescriptor(device, module, label, entries, entryPoint);
+  const pipeline = device.createComputePipeline(prepared.descriptor);
+  if (!pipeline.ok) throw pipeline.error;
+  return { label, pipeline: pipeline.value, layout: prepared.layout, bindGroups: new WeakMap() };
+}
+
+function computeStateDescriptor(
+  device: RhiDevice,
+  module: ShaderModule,
+  label: string,
+  entries: readonly unknown[],
+  entryPoint: string,
+): { readonly layout: BindGroupLayout; readonly descriptor: ComputePipelineDescriptor } {
   const layout = device.createBindGroupLayout({
     label: `${label}.bind-group-layout`,
     entries: entries as never,
@@ -86,13 +184,10 @@ export function createComputeStateForModule(
     bindGroupLayouts: [layout.value],
   });
   if (!pipelineLayout.ok) throw pipelineLayout.error;
-  const pipeline = device.createComputePipeline({
-    label,
-    layout: pipelineLayout.value,
-    compute: { module, entryPoint },
-  });
-  if (!pipeline.ok) throw pipeline.error;
-  return { label, pipeline: pipeline.value, layout: layout.value, bindGroups: new WeakMap() };
+  return {
+    layout: layout.value,
+    descriptor: { label, layout: pipelineLayout.value, compute: { module, entryPoint } },
+  };
 }
 
 export function computeBindGroup(

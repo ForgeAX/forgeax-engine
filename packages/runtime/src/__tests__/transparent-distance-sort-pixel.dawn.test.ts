@@ -201,11 +201,7 @@ describe('transparent distance sort (dawn)', () => {
 
     const frame = async () => {
       world.update(1 / 60).unwrap();
-      const drawn = await drawReady(renderer, {
-        leases: [attachment.value],
-        camera: { lease: attachment.value },
-        environment: { lease: attachment.value },
-      });
+      const drawn = await drawReady(renderer, { source: attachment.value });
       expect(drawn.ok).toBe(true);
       await device.queue.onSubmittedWorkDone();
       if (renderTarget === undefined) throw new Error('renderTarget not configured');

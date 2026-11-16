@@ -40,6 +40,7 @@
     "materialPrograms": {
       "billboard.wgsl": { "bindings": "view-and-scene-depth", "sceneDepth": "before-pass" },
       "billboard-inputs.wgsl": { "bindings": "view-and-scene-depth", "sceneDepth": "before-pass" },
+      "billboard-water-sphere.wgsl": { "bindings": "render-standard-material-and-scene-depth", "sceneDepth": "before-pass" },
       "mesh.wgsl": { "bindings": "render-material" },
       "mesh-inputs.wgsl": { "bindings": "render-material" },
       "mesh-unlit.wgsl": { "bindings": "render-material" },

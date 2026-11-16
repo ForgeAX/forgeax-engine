@@ -56,9 +56,7 @@ it.each([
   expect(plan(terrainRows(root, 3)).validatedOrdered.map((row) => row.meshSlot)).toEqual([0, 1, 2]);
   const next = terrainSource(root.source, 1);
   if (update === 'apply')
-    scene.apply([
-      { kind: 'update', worldId: next.worldId, entityKey: next.entityKey, snapshot: next },
-    ]);
+    scene.apply([{ kind: 'update', entityKey: next.entityKey, snapshot: next }]);
   else scene.reset([ordinary.source, next]);
   expect(
     plan([ordinary, ...terrainRows(root, 1)]).validatedOrdered.map((row) => row.meshSlot),
@@ -74,9 +72,7 @@ it.each([undefined, 0])('reclaims terrain ranges when its next shape is %s', (co
     buildDispatchPlan(internals, draws, [], [], [], undefined, false, undefined, scene);
   plan(terrainRows(root, 3));
   const next = count === undefined ? root.source : terrainSource(root.source, count);
-  scene.apply([
-    { kind: 'update', worldId: next.worldId, entityKey: next.entityKey, snapshot: next },
-  ]);
+  scene.apply([{ kind: 'update', entityKey: next.entityKey, snapshot: next }]);
   expect(
     plan([ordinary, ...(count === undefined ? [root] : [])]).validatedOrdered.map(
       (row) => row.meshSlot,
@@ -92,9 +88,7 @@ it('reclaims ordinary addresses before a source becomes terrain', () => {
     buildDispatchPlan(internals, draws, [], [], [], undefined, false, undefined, scene);
   plan([root]);
   const next = terrainSource(root.source, 3);
-  scene.apply([
-    { kind: 'update', worldId: next.worldId, entityKey: next.entityKey, snapshot: next },
-  ]);
+  scene.apply([{ kind: 'update', entityKey: next.entityKey, snapshot: next }]);
   expect(plan(terrainRows(root, 3)).validatedOrdered.map((row) => row.meshSlot)).toEqual([0, 1, 2]);
 });
 
@@ -135,7 +129,6 @@ it('recovers below the address budget after an oversized candidate loses its sou
   scene.apply(
     rows.slice(1).map(({ source }) => ({
       kind: 'remove',
-      worldId: source.worldId,
       entityKey: source.entityKey,
     })),
   );
@@ -176,7 +169,7 @@ it.each([
 
 it('keeps source, terrain and folded addresses disjoint through scene growth', () => {
   const owner = new MeshDrawSlots();
-  const root = { slot: 4, generation: 2, worldId: 0, entityKey: 19 };
+  const root = { slot: 4, generation: 2, entityKey: 19 };
   const source = owner.index(root, 'source');
   const folded = owner.index(root, 'folded');
   const sections = Array.from({ length: 4 }, (_, section) =>
@@ -241,15 +234,15 @@ it('retires exact source allocations on remove, recreate and reset without a cac
   const bSlot = scene.meshDrawSlot(b);
   const aFolded = scene.meshDrawSlot(a, true);
   expect(aSlot).not.toBe(aFolded);
-  scene.apply([{ kind: 'remove', worldId: a.worldId, entityKey: a.entityKey }]);
+  scene.apply([{ kind: 'remove', entityKey: a.entityKey }]);
   expect(() => scene.meshDrawSlot(a)).toThrow('retained Scene');
   expect(scene.meshDrawSlot(b)).toBe(bSlot);
   const c = { ...a, entityKey: a.entityKey + 2 };
-  scene.apply([{ kind: 'update', worldId: c.worldId, entityKey: c.entityKey, snapshot: c }]);
+  scene.apply([{ kind: 'update', entityKey: c.entityKey, snapshot: c }]);
   expect(scene.meshDrawSlot(c)).toBe(aSlot);
   scene.reset([b]);
   expect(scene.meshDrawSlot(b)).toBe(bSlot);
-  scene.apply([{ kind: 'update', worldId: c.worldId, entityKey: c.entityKey, snapshot: c }]);
+  scene.apply([{ kind: 'update', entityKey: c.entityKey, snapshot: c }]);
   expect(scene.meshDrawSlot(c)).toBe(aSlot);
   expect(scene.meshDrawCapacity).toBe(3);
 });
@@ -311,17 +304,15 @@ it('addresses only actual native children and reuses capacity while streaming ac
     expect(scene.meshDrawSlot(next)).toBe(scene.meshDrawSlot(next));
     expect(scene.meshDrawCapacity).toBe(2);
   }
-  scene.apply([{ kind: 'remove', worldId: root.worldId, entityKey: root.entityKey }]);
-  scene.apply([
-    { kind: 'update', worldId: root.worldId, entityKey: root.entityKey, snapshot: root },
-  ]);
+  scene.apply([{ kind: 'remove', entityKey: root.entityKey }]);
+  scene.apply([{ kind: 'update', entityKey: root.entityKey, snapshot: root }]);
   expect(scene.meshDrawSlot(root)).toBe(0);
 });
 
 it('retains a quiet native roster without rebuilding per-draw hash membership', () => {
   const owner = new MeshDrawSlots();
   const draws = Array.from({ length: 512 }, (_, slot) => ({
-    record: { slot, generation: 0, worldId: 0, entityKey: slot },
+    record: { slot, generation: 0, entityKey: slot },
     key: `native:${slot % 3}`,
   }));
   const addresses = draws.map(({ record, key }) => owner.index(record, { key }));
@@ -351,7 +342,7 @@ it('retains a quiet native roster without rebuilding per-draw hash membership', 
 
 it('keeps source addresses intact when native-roster traversal fails before retirement', () => {
   const owner = new MeshDrawSlots();
-  const record = { slot: 0, generation: 0, worldId: 0, entityKey: 0 };
+  const record = { slot: 0, generation: 0, entityKey: 0 };
   const source = owner.index(record, 'source');
   const native = owner.index(record, { key: 'native' });
   function* failed() {
@@ -371,7 +362,7 @@ it('applies native membership changes without enumerating a quiet admitted roste
   const owner = new MeshDrawSlots();
   const roster = new NativeDrawRosterOwner();
   const draws = Array.from({ length: 512 }, (_, slot) => ({
-    record: { slot, generation: 0, worldId: 0, entityKey: slot },
+    record: { slot, generation: 0, entityKey: slot },
     key: `native:${slot % 3}`,
   }));
   const initial = roster.capture(draws);
@@ -396,7 +387,7 @@ it('applies native membership changes without enumerating a quiet admitted roste
 
 it('does not publish partial native membership after a failed traversal', () => {
   const roster = new NativeDrawRosterOwner();
-  const first = { record: { slot: 0, generation: 0, worldId: 0, entityKey: 0 }, key: 'first' };
+  const first = { record: { slot: 0, generation: 0, entityKey: 0 }, key: 'first' };
   const initial = roster.capture([first]);
   function* failed() {
     yield { ...first, key: 'second' };
@@ -410,7 +401,7 @@ it('does not publish partial native membership after a failed traversal', () => 
 it('retires independently allocated capture addresses while native membership stays unchanged', () => {
   const owner = new MeshDrawSlots();
   const roster = new NativeDrawRosterOwner();
-  const record = { slot: 0, generation: 0, worldId: 0, entityKey: 0 };
+  const record = { slot: 0, generation: 0, entityKey: 0 };
   const frame = roster.capture([{ record, key: 'native' }]);
   owner.beginFrame(frame);
   const native = owner.index(record, { key: 'native' });
@@ -425,8 +416,8 @@ it('retires independently allocated capture addresses while native membership st
 
 it('keeps duplicate outputs, reorder and held membership independent across repeated edits', () => {
   const owner = new NativeDrawRosterOwner();
-  const a = { record: { slot: 0, generation: 0, worldId: 0, entityKey: 0 }, key: 'a' };
-  const b = { record: { slot: 1, generation: 0, worldId: 0, entityKey: 1 }, key: 'b' };
+  const a = { record: { slot: 0, generation: 0, entityKey: 0 }, key: 'a' };
+  const b = { record: { slot: 1, generation: 0, entityKey: 1 }, key: 'b' };
   const held = owner.capture([a, b, a]);
   expect(owner.capture([b, a])).toBe(held);
   expect(owner.capture([a, b])).toBe(held);
@@ -451,7 +442,7 @@ it('keeps duplicate outputs, reorder and held membership independent across repe
 it('bounds native ledgers through quiet spikes, shrink, failed candidates and clear', () => {
   const owner = new NativeDrawRosterOwner();
   const draws = Array.from({ length: 64 }, (_, slot) => ({
-    record: { slot, generation: 0, worldId: 0, entityKey: slot, snapshot: {} },
+    record: { slot, generation: 0, entityKey: slot, snapshot: {} },
     key: 'native',
   }));
   const held = owner.capture(draws);

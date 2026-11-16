@@ -84,7 +84,6 @@ describe('PlanarReflection renderer-owned target', () => {
     });
   });
 
-  // NaN never reaches extraction: the ECS write rejects it.
   it.each([0, -0.5, Number.POSITIVE_INFINITY])('rejects resolutionScale %s', (bad) => {
     const world = ownedPlanarWorld({ resolutionScale: bad });
     expect(() => selectCameraRoles(world)).toThrow(

@@ -1,7 +1,7 @@
 import { type ClusterBinScratch, createClusterBinScratch } from '../../cluster-binner';
 import type { StandardClusterLayout } from './layout';
 import type { StandardLightFrame, StandardLocalLightInput } from './light-frame';
-import { deriveStandardMembership } from './membership';
+import { deriveStandardMembership, standardClusterBinnedLightCount } from './membership';
 
 const NO_LIGHT_VALUES = new Float64Array(0);
 
@@ -68,6 +68,7 @@ export class StandardClusterMembershipOwner {
       !this.result?.ok ||
       this.result.value.scratch !== scratch ||
       this.count !== frame.local.length ||
+      this.result.value.membershipLightCount !== standardClusterBinnedLightCount(frame.local) ||
       this.x !== layout.grid.x ||
       this.y !== layout.grid.y ||
       this.z !== layout.grid.z ||

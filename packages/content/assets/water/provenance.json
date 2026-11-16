@@ -1,0 +1,58 @@
+{
+  "source": "Unreal Engine 5.8.1",
+  "copyright": "Copyright Epic Games, Inc. All rights reserved.",
+  "license": "https://www.unrealengine.com/en-US/eula/unreal",
+  "independentRedistributionPermission": "unverified",
+  "files": [
+    { "file": "T_Water_TilingNormal_With_Height_02_Softened.png", "assetPath": "/Water/Textures/Normals/T_Water_TilingNormal_With_Height_02_Softened", "sha256": "97023d75c548a167d13ce4245d7d3637887ea686f4477782d1bd7b772da76fba" },
+    { "file": "RiverFlowmap_Diffuse.png", "assetPath": "/Water/Textures/Flowmaps/RiverFlowmap_Diffuse", "sha256": "20d753f56d91a2a8fe3864fd0f960ff96def68425bbd98870d2f9fdb86a118b2" },
+    { "file": "RiverFlowmap_Normal.png", "assetPath": "/Water/Textures/Flowmaps/RiverFlowmap_Normal", "sha256": "75698f3979985ef65852b2b4a791891a3352f2a2555738d4516a4b5af019a425" },
+    { "file": "T_WaterFlow_01_Foam_Tiled.png", "assetPath": "/Water/Textures/Foam/T_WaterFlow_01_Foam_Tiled", "sha256": "68ab36b2dd9a1ea62c19cfa1b98d4ab421684a6c2e2e196da7f9a627cafa3db5" },
+    { "file": "T_WaterFlow_01_Foam_Tiled_N.png", "assetPath": "/Water/Textures/Foam/T_WaterFlow_01_Foam_Tiled_N", "sha256": "99a5848b1b6ebb1a50ff311031a659843c5f70c500028a59dd6356e730fa1b89" },
+    { "file": "LowResBlurredNoise.png", "assetPath": "/Engine/Functions/Engine_MaterialFunctions02/ExampleContent/Textures/LowResBlurredNoise", "sha256": "0487b2e217a762988e1055624c6805c2095a1d469a05f319b3845ea38d0070df" },
+    {
+      "file": "T_Noise01.png",
+      "assetPath": "/Engine/MaterialTemplates/Textures/T_Noise01",
+      "sha256": "ddd2739dff8f6320484b4bcd443f34bce6269a6299bd0aef32b1c5902c1b281d",
+      "sourceUassetSha256": "98bd8719af83853741e2cbd9a9b7c0c4948ff74682fd46cdaeb194fba9718c3d",
+      "recovery": "Offline embedded SourceArt PNG at uasset offset 0x283B through IEND; PNG verification passed; no UE runtime launched",
+      "sourceExtent": [256, 256],
+      "sourceRgbaSha256": "f772cc13d0f252cb8875c8145ae840737dda1071ba3dc9d2cbd41fa33385a3f9",
+      "sourceProperties": { "SRGB": true, "bUseLegacyGamma": true, "AdjustBrightnessCurve": 1.2, "MipGenSettings": "TMGS_Sharpen4", "LODBias": -1, "CompressionSettings": "TC_Default", "Filter": "TF_Default", "AddressX": "TA_Wrap", "AddressY": "TA_Wrap" },
+      "runtime": "impulse-noise.pack.ts verifies raw grayscale bytes, applies Pow22 source decode and HSV Value exponent 1.2, builds the legacy 8x8 Sharpen4 chain from a separate 2x2 average pyramid with wrapped taps, then packs nine native sRGB RGBA8 mips",
+      "nativeSampling": "Uncompressed sRGB; repeat U/V, linear min/mag and nearest mip selection. The admitted square grid and scalar-radius brush have an isotropic UV footprint, preserving the installed World AnisotropicPoint result without an unsupported anisotropy-plus-point-mip WebGPU sampler. Native World group LOD bias is zero; asset -1 clamps to zero discarded top mips, so all nine levels remain. No extra shader sample bias.",
+      "materialDefaults": "Color / FromTextureAsset / MipValueMode None. Local UV0 * NoiseTiling(1) plus T(0) * PanSpeed(0.5); connected scalar inputs override Panner inline defaults.",
+      "parity": "Known source color/mip/sampler semantics are retained for the admitted brush footprint. Exact UE platform compression and runtime sampled-R pixels are not verified."
+    },
+    {
+      "file": "T_VolumeNoiseShape128.slices.png",
+      "assetPath": "/Engine/EngineSky/VolumetricClouds/T_VolumeNoiseShape128",
+      "sha256": "955ae6f20295c4ba8864934899c652b7a720e994eeb1af3bb7c34151bddbc691",
+      "officialExport": "AssetExportTask DDS",
+      "sourceDdsSha256": "bdcc090f399193bdeafe2df92785ba8a50552815abb46893f9db131278ec54b1",
+      "sourceFormat": "DXGI_FORMAT_B8G8R8A8_UNORM (87), TEXTURE3D (4)",
+      "sourceExtent": [128, 128, 128],
+      "sourceMipCount": 1,
+      "sourceMip0BgraSha256": "1625417c60cf9e1a713c423428e411fe08c297532d5a0c3ba1ad00f3296e48f0",
+      "atlasExtent": [1024, 2048],
+      "atlasMapping": "slice z -> tile (z % 8, floor(z / 8)); voxel (x,y) within tile; BGRA explicitly exchanged to RGBA",
+      "atlasRgbaSha256": "e171190f5b1b80bde5837b97cf29625bc44aee1b472614777ac043f817889359",
+      "runtime": "volume-noise.pack.ts reads the verified linear/no-mip/uncompressed atlas by GUID and repacks native RGBA8 128x128x128, one mip; all source B/G/R bytes are equal and alpha is 255",
+      "runtimeMip0RgbaSha256": "1625417c60cf9e1a713c423428e411fe08c297532d5a0c3ba1ad00f3296e48f0"
+    }
+  ],
+  "runtimeProducers": ["FoamRT", "WaterDistanceField"],
+  "foamRenderTarget": {
+    "source": "/Water/FluidSimulation/WaveFoam/FoamRT",
+    "extent": [512, 512],
+    "format": "RTF_RGBA16F",
+    "linear": true,
+    "addressModeU": "wrap",
+    "addressModeV": "wrap",
+    "mips": false,
+    "uav": false,
+    "clearValue": [0, 0, 0, 1],
+    "evidence": "UE asset defaults plus TextureRenderTarget2D.cpp resource initialization; runtime pixels remain a GPU acceptance gate",
+    "r3Owner": "Water SLW RenderGraph no-simulation initialization; no static Content replacement"
+  }
+}

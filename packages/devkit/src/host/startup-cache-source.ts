@@ -1,4 +1,5 @@
 import { withCombinedSignal } from '@forgeax/engine-platform';
+import { DEFAULT_LOAD_PROGRESS_LABELS } from '@forgeax/engine-types';
 import type { HostVersions } from './versions.js';
 
 export interface StartupCacheIdentity extends HostVersions {
@@ -22,7 +23,10 @@ export function startupEntrySource(identity?: StartupCacheIdentity, entry = './m
 
 /** Inline browser startup policy: it must exist before any Engine module loads.
  * CacheStorage stays with its owner; the Host never enumerates/deletes origin data. */
-export function startupCacheSource(identity?: StartupCacheIdentity): string {
+export function startupCacheSource(
+  identity?: StartupCacheIdentity,
+  labels: Readonly<{ game: string; engine: string }> = DEFAULT_LOAD_PROGRESS_LABELS.host,
+): string {
   if (identity === undefined) return 'undefined';
   const { version, ...facts } = identity;
   return `(() => {
@@ -31,6 +35,7 @@ export function startupCacheSource(identity?: StartupCacheIdentity): string {
     if (host !== undefined || !gamePage || query.has('forgeaxWorkspace') ||
         !/^https?:$/.test(globalThis.location?.protocol ?? '')) return undefined;
     const identity = ${JSON.stringify(facts).replaceAll('<', '\\u003c')};
+    const versionLabels = ${JSON.stringify({ game: labels.game, engine: labels.engine }).replaceAll('<', '\\u003c')};
     const version = ${JSON.stringify(version)};
     const protocol = 'forgeax-startup-cache/1';
     const retryKey = 'forgeax-startup-retry';
@@ -110,7 +115,7 @@ export function startupCacheSource(identity?: StartupCacheIdentity): string {
         if (complete || recovering) return {status: 'disabled'};
         recovering = true;
         if (retried) return {status: 'exhausted', previous: read('sessionStorage', key + '/failure')};
-        write('sessionStorage', key + '/failure', 'Game ' + identity.game + ' | Engine ' + identity.engine + '\\n' + details.slice(0, 12000));
+        write('sessionStorage', key + '/failure', versionLabels.game + ' ' + identity.game + ' | ' + versionLabels.engine + ' ' + identity.engine + '\\n' + details.slice(0, 12000));
         onRetry?.();
         try {
           await updateController();

@@ -4,7 +4,6 @@ export * from './barrel-distortion';
 export * from './camera';
 export { CameraView, type CameraViewData } from './camera-view';
 export { CapsuleShadow } from './capsule-shadow';
-export * from './cloud-layer';
 export * from './cube-camera';
 export * from './depth-of-field';
 export * from './directional-light';

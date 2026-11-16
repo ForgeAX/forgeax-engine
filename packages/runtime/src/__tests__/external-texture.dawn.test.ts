@@ -155,14 +155,7 @@ it('imports a caller GPUTexture on Dawn, binds it into texture_external, and rep
     const draw = async (count: number) => {
       for (let i = 0; i < count; i++) {
         world.update(1 / 60).unwrap();
-        const receipt = renderValue(
-          renderer.draw({
-            leases: [lease],
-            camera: { lease },
-            environment: { lease },
-            geometryLane: 'direct',
-          }),
-        );
+        const receipt = renderValue(renderer.draw({ source: lease, geometryLane: 'direct' }));
         renderValue(await receipt.completed);
       }
     };

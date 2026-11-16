@@ -18,36 +18,38 @@ export async function readUiFrame(
   height = width,
 ) {
   const lease = world === null ? null : value(renderer.attach(world));
-  if (renderer.requestObservation === undefined) throw new Error('observation unavailable');
-  value(renderer.requestObservation(['final-display']));
-  world?.update(1 / 60).unwrap();
-  const receipt = value(
-    renderer.draw({
-      ...(lease === null
-        ? { leases: [] as const, camera: null, environment: null }
-        : { leases: [lease], camera: { lease }, environment: { lease } }),
-      sampleTimeSeconds: 1,
-    }),
-  );
-  value(await receipt.completed);
-  const observation = value(
-    await renderer.observe(receipt, { include: ['final-display'] }),
-  ).observations?.find((item) => item.domain === 'final-display');
-  if (observation?.domain !== 'final-display') throw new Error('Final UI image was not captured');
-  expect(observation.metadata.width).toBe(width);
-  expect(observation.metadata.height).toBe(height);
-  const rgba = new Uint8Array(width * height * 4);
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const src = y * observation.metadata.bytesPerRow + x * 4;
-      const dst = (y * width + x) * 4;
-      rgba.set(observation.bytes.subarray(src, src + 4), dst);
-      if (observation.metadata.format?.startsWith('bgra')) {
-        [rgba[dst], rgba[dst + 2]] = [rgba[dst + 2] ?? 0, rgba[dst] ?? 0];
+  try {
+    if (renderer.requestObservation === undefined) throw new Error('observation unavailable');
+    value(renderer.requestObservation(['final-display']));
+    world?.update(1 / 60).unwrap();
+    const receipt = value(
+      renderer.draw({
+        source: lease,
+        sampleTimeSeconds: 1,
+      }),
+    );
+    value(await receipt.completed);
+    const observation = value(
+      await renderer.observe(receipt, { include: ['final-display'] }),
+    ).observations?.find((item) => item.domain === 'final-display');
+    if (observation?.domain !== 'final-display') throw new Error('Final UI image was not captured');
+    expect(observation.metadata.width).toBe(width);
+    expect(observation.metadata.height).toBe(height);
+    const rgba = new Uint8Array(width * height * 4);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const src = y * observation.metadata.bytesPerRow + x * 4;
+        const dst = (y * width + x) * 4;
+        rgba.set(observation.bytes.subarray(src, src + 4), dst);
+        if (observation.metadata.format?.startsWith('bgra')) {
+          [rgba[dst], rgba[dst + 2]] = [rgba[dst + 2] ?? 0, rgba[dst] ?? 0];
+        }
       }
     }
+    return { receipt, rgba };
+  } finally {
+    lease?.dispose();
   }
-  return { receipt, rgba };
 }
 
 export function uiPixels(): Uint8Array {
@@ -164,6 +166,8 @@ export async function verifyCpuUiComposition(
     const retained = await readUiFrame(renderer, scene.world);
     expect(equalBytes(retained.rgba, after.rgba)).toBe(true);
     expect(errors).toEqual([]);
+    scene.dispose();
+    scene = undefined;
     // Retiring a failed scene keeps Fatal/Reload on the same live surface,
     // without carrying the last submitted scene's display context.
     const retired = await readUiFrame(renderer, null);

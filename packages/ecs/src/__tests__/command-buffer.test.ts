@@ -6,6 +6,7 @@ import { Entity } from '../entity';
 import type { EntityHandle } from '../entity-handle';
 import { CommandFailedError, SharedKernelFailureError, SystemFailedError } from '../errors';
 import { defineRelationship } from '../relationship-index';
+import { defineSystem } from '../schedule';
 import { Update } from '../schedule-token';
 import { World } from '../world';
 import { worldInternal } from '../world-internal';
@@ -61,16 +62,15 @@ describe('CommandBuffer terminal lifecycle', () => {
 
   it('poisons the World on a system exception after command staging', () => {
     const world = new World();
-    world
-      .addSystem(Update, {
-        name: 'throws-after-stage',
-        queries: [],
-        fn: (_world, _queries, commands) => {
-          commands.despawn(1 as never);
-          throw new Error('system failure');
-        },
-      })
-      .unwrap();
+    const systemToken1 = defineSystem({
+      name: 'throws-after-stage',
+      queries: [],
+      fn: (_world, _queries, commands) => {
+        commands.despawn(1 as never);
+        throw new Error('system failure');
+      },
+    });
+    world.addSystem(Update, systemToken1).unwrap();
     const result = world.update(0);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toBeInstanceOf(SystemFailedError);
@@ -140,16 +140,15 @@ describe('CommandBuffer terminal lifecycle', () => {
   it('bumps a cancelled pending reservation so a later entity cannot alias its handle', () => {
     const world = new World();
     let pending: EntityHandle | undefined;
-    world
-      .addSystem(Update, {
-        name: 'pending-abort',
-        queries: [],
-        fn: (_world, _queries, commands) => {
-          pending = commands.spawn({ component: CommandPosition, data: { x: 4 } });
-          throw new Error('abort pending');
-        },
-      })
-      .unwrap();
+    const systemToken2 = defineSystem({
+      name: 'pending-abort',
+      queries: [],
+      fn: (_world, _queries, commands) => {
+        pending = commands.spawn({ component: CommandPosition, data: { x: 4 } });
+        throw new Error('abort pending');
+      },
+    });
+    world.addSystem(Update, systemToken2).unwrap();
 
     const failed = world.update();
     expect(failed.ok).toBe(false);

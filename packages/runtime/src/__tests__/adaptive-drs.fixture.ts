@@ -80,11 +80,7 @@ export async function verifyAdaptiveDrs(
   const draw = async (observation?: readonly 'final-display'[]) => {
     propagateTransforms(world);
     world.update(1 / 60).unwrap();
-    const receipt = await drawReadyFrame(
-      renderer,
-      { leases: [lease], camera: { lease }, environment: { lease } },
-      observation,
-    );
+    const receipt = await drawReadyFrame(renderer, { source: lease }, observation);
     expect(receipt.presentation, JSON.stringify(receipt.presentationPendingReason)).toBe('ready');
     frames++;
     // Internal scale changes must preserve output-sized temporal history.

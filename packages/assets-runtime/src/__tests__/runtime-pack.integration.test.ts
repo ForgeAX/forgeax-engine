@@ -106,6 +106,58 @@ function outputGuid(packageId: string) {
   return AssetGuid.format(AssetGuid.derive(definePackageId(packageId), 'box'));
 }
 
+it('loads a selected output while a sibling requires a decoder owned by another realm', async () => {
+  const source = producer();
+  const assets = createAssetSource({
+    scopeId: 'test-runtime',
+    catalog: source.catalog,
+    fetcher: source.fetch,
+    decoders: new DecoderRegistry(),
+  });
+  assets.installDecoder(meshAssetContribution.kind, meshAssetContribution.decoder);
+  const program = preparePackProgram({
+    entry: 'behavior.js',
+    export: 'default',
+    modules: { 'behavior.js': 'export default { apply() {} };' },
+  }).unwrap();
+  const programs = { 'project:behavior.js#default': { artifact: program } };
+  const module = { specifier: './behavior.js' };
+  try {
+    const dependency = (
+      await prepareRuntimePackContent(id, { behavior: { kind: 'plugin', module } }, { programs })
+    ).unwrap();
+    const published = (await source.admit(dependency)).unwrap();
+    const external = defined(defined(published.publication).outputs[0]);
+    const combined = (
+      await prepareRuntimePackContent(
+        other,
+        {
+          box: createBoxGeometry(1, 2, 3).unwrap(),
+          behavior: { kind: 'plugin', module, config: { required: { $asset: external.guid } } },
+        },
+        { programs, dependencies: { [external.guid]: external.digest } },
+      )
+    ).unwrap();
+    const publication = defined((await source.admit(combined)).unwrap().publication);
+    expect(publication.externalEvidence).toContainEqual({
+      guid: external.guid,
+      digest: external.digest,
+      usage: 'both',
+    });
+    expect(defined(publication.outputs.find((output) => output.sourceKey === 'box')).refs).toEqual(
+      [],
+    );
+    expect(await assets.load(external.guid, 'plugin')).toMatchObject({
+      ok: false,
+      error: { code: 'asset-decoder-missing' },
+    });
+    expect(await assets.load(outputGuid(other), 'mesh')).toMatchObject({ ok: true });
+  } finally {
+    assets.dispose();
+    source.dispose();
+  }
+});
+
 it('publishes regenerated content immediately while keeping receipts stable across restore', async () => {
   const source = producer(new Map());
   const assets = reader(source);

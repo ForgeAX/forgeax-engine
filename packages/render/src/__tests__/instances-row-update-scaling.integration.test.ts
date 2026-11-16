@@ -5,7 +5,6 @@ function difference(after: InstanceRowWork, before: InstanceRowWork): InstanceRo
   return {
     projectionRows: after.projectionRows - before.projectionRows,
     fullProjections: after.fullProjections - before.fullProjections,
-    boundsNodeVisits: after.boundsNodeVisits - before.boundsNodeVisits,
     boundsDerives: after.boundsDerives - before.boundsDerives,
     gpuSceneRows: after.gpuSceneRows - before.gpuSceneRows,
     uploadBytes: after.uploadBytes - before.uploadBytes,
@@ -16,8 +15,8 @@ function difference(after: InstanceRowWork, before: InstanceRowWork): InstanceRo
 function measureOneRowMove(count: number): InstanceRowWork {
   const harness = createInstanceRowHarness(count);
   try {
-    // Warm-up establishes the projection back buffer, the bounds hierarchy
-    // and the GPU Scene resident revision.
+    // Warm-up establishes the projection back buffer and the GPU Scene
+    // resident revision.
     for (let step = 0; step < 4; step += 1) harness.move(7, step);
     const before = harness.work();
     harness.move(count - 3, 42);
@@ -28,18 +27,16 @@ function measureOneRowMove(count: number): InstanceRowWork {
 }
 
 describe('Instances one-row move scaling', () => {
-  it('costs the same CPU work and upload bytes at 1k and 64k instances', () => {
+  it('costs the same projection work and upload bytes at 1k and 64k instances', () => {
     const small = measureOneRowMove(1024);
     const large = measureOneRowMove(65536);
     expect(small.fullProjections).toBe(0);
-    expect(small.boundsDerives).toBe(0);
+    // The union bounds re-fold once per revision, like a CalcBounds over all instances.
+    expect(small.boundsDerives).toBe(1);
     expect(small.projectionRows).toBeLessThanOrEqual(4);
     expect(small.gpuSceneRows).toBe(1);
     expect(small.uploadBytes).toBeGreaterThan(0);
-    // The hierarchy is one level deeper at 64k; every other counter is flat.
-    expect(large).toEqual({ ...small, boundsNodeVisits: large.boundsNodeVisits });
-    expect(large.boundsNodeVisits).toBeLessThanOrEqual(1 + 16 * 4);
-    expect(small.boundsNodeVisits).toBeLessThanOrEqual(1 + 16 * 3);
+    expect(large).toEqual(small);
   });
 
   it('keeps a whole-column World.set rewrite on the full path', () => {

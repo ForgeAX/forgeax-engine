@@ -18,10 +18,11 @@
 // collected, the run ends) -- each draw is gated by a live world.get so a stale
 // handle is skipped rather than throwing.
 
-import type { EntityHandle, SystemHandle, World } from '@forgeax/engine-ecs';
+import type { EntityHandle, System, World } from '@forgeax/engine-ecs';
 import { defineSystem } from '@forgeax/engine-ecs';
 import { vec3 } from '@forgeax/engine-math';
 import { Transform } from '@forgeax/engine-scene';
+import { GuardianAiOrder } from '../system-order';
 
 // Overlay colours (RGB; debug-draw fills alpha=1).
 const PLAYER_COLOR = [0, 1, 0] as const;
@@ -77,10 +78,10 @@ export function createDebugOverlaySystem(
   app: DebugApp,
   targets: OverlayTargets,
   enabled: boolean,
-): SystemHandle<readonly []> {
+): System<readonly []> {
   return defineSystem({
     name: 'debug-overlay',
-    after: ['guardian-ai'],
+    after: [GuardianAiOrder],
     queries: [],
     fn: (world: World) => {
       if (!enabled) return;

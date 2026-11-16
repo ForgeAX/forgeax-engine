@@ -105,6 +105,7 @@ import type { ViewGraphCompileRequest } from '../world/view-graph-input';
 export interface SharedWorkRequest {
   readonly kind: 'shared-work';
   readonly internals: RenderSystemInternals;
+  readonly sourceScope: RenderResourceScope;
   /** Whether `render-capture-schedule` routed the frame's Feature scene inputs to this view. */
   readonly sceneInputs: boolean;
 }
@@ -477,7 +478,11 @@ class RecordingHarness {
     const outcome = featureFrameOutcome(renderWorldFor(first.internals));
     if (outcome?.kind !== 'sealed')
       throw new Error('Renderer shared work requires the Feature batch RenderPrepare sealed');
-    stageSharedFeatureGraph(this.world, first.internals);
+    stageSharedFeatureGraph(
+      this.world,
+      first.internals,
+      this.sharedRequests.map(({ request }) => request.sourceScope),
+    );
     return outcome.batch;
   }
 
@@ -725,17 +730,10 @@ export function* prepareFrameRecording(
   skylightCount: number,
   skybox: SkyboxSnapshot | undefined,
   postProcessParams: ReadonlyMap<string, Uint8Array>,
-  // feat-20260709-editor-world-partition ENGINE-fix-round2 (defect 2): the
-  // full worlds[] list passed to `renderer.draw`, indexed by
-  // RenderableSnapshot.worldId so the record stage resolves each renderable's
-  // mesh + material textures against the world it was extracted from (mirroring
-  // the per-world extract stage). Optional + defaulting to `[world]` keeps the
-  // pre-split single-world identity path (worldId always 0) byte-for-byte and
-  // the existing unit-test callers (which pass a single mock world) valid.
-  worlds: readonly RenderResourceScope[] = [world],
+  sourceScope: RenderResourceScope = world,
   profilePhase?: RecordProfileRunner,
   gpuDriven?: GpuDrivenRecordInput,
-  renderReadLeases?: readonly RenderReadLease[],
+  renderReadLease?: RenderReadLease,
   cubeCapture?: CubeCaptureFrameInput,
   environmentSignature = '',
   fogSignature = '',
@@ -743,7 +741,6 @@ export function* prepareFrameRecording(
   volumetricFog?: ExtractedVolumetricFog,
   timingCapture?: GpuTimingCapture,
   shadowCasterProjection?: PersistentShadowCasterProjection,
-  shadowCasterWorldKeys?: readonly number[],
   onRenderableDraw?: (
     entry: Pick<ValidatedRenderable, 'source'>,
     submeshIndex?: number,
@@ -774,10 +771,10 @@ export function* prepareFrameRecording(
     skylightCount,
     skybox,
     postProcessParams,
-    worlds,
+    sourceScope,
     profilePhase,
     gpuDriven,
-    renderReadLeases,
+    renderReadLease,
     cubeCapture,
     environmentSignature,
     fogSignature,
@@ -785,7 +782,6 @@ export function* prepareFrameRecording(
     volumetricFog,
     timingCapture,
     shadowCasterProjection,
-    shadowCasterWorldKeys,
     onRenderableDraw,
     analyticFog,
     sampleTimeSeconds,

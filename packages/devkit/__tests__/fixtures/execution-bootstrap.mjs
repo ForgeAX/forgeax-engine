@@ -1,5 +1,5 @@
 import { scenePublicationFenceFromCatalog } from '@forgeax/engine/assets-runtime';
-import { Update } from '@forgeax/engine/ecs';
+import { Update, defineSystem } from '@forgeax/engine/ecs';
 import { preparePackProgram } from '@forgeax/engine/pack/runtime';
 import {
   AssetGuid,
@@ -89,16 +89,16 @@ export default async function bootstrap(data) {
             .spawn({ component: Transform, data: { pos: [12, 3, 1] } })
             .unwrap();
           let gameTicks = 0;
-          const game = {
+          const game = defineSystem({
             name: 'unrelated-gameplay',
             queries: [],
             fn() {
               gameTicks++;
             },
-          };
+          });
           ctx.effect(() => {
             world.addSystem(Update, game).unwrap();
-            return () => world.removeSystem(Update, game.name).unwrap();
+            return () => world.removeSystem(Update, game).unwrap();
           });
           ctx.effect(() =>
             renderer.subscribe((event) => {
@@ -172,7 +172,7 @@ export default async function bootstrap(data) {
                     behavior: { kind: 'plugin', module: { specifier: './${behavior}' }, toolContract: { schemaVersion: '1.0.0', commands: [{ id: 'worker.generated', title: 'Generated', summary: '', realm: 'engine', executor: values.broken ? './missing.js' : './${executor}', exportName: 'run' }] } }
                   } };
                 }`,
-                [behavior]: `import { Update } from '@forgeax/engine/ecs';
+                [behavior]: `import { Update, defineSystem } from '@forgeax/engine/ecs';
                 import { registerAssetTools } from '@forgeax/engine/plugin';
                 import { state } from './shared.js';
                 globalThis.workerPluginEvaluated = true;
@@ -180,9 +180,9 @@ export default async function bootstrap(data) {
                   ctx.effect(() => registerAssetTools(ctx));
                   ctx.effect(() => {
                     state.active++; globalThis.workerPluginActive = state.active;
-                    const system = { name: 'generated-runtime-behavior', queries: [], fn() { globalThis.workerPluginTicks = (globalThis.workerPluginTicks ?? 0) + 1; } };
+                    const system = defineSystem({ name: 'generated-runtime-behavior', queries: [], fn() { globalThis.workerPluginTicks = (globalThis.workerPluginTicks ?? 0) + 1; } });
                     ctx.world.addSystem(Update, system).unwrap();
-                    return () => { ctx.world.removeSystem(Update, system.name).unwrap(); state.active--; globalThis.workerPluginActive = state.active; };
+                    return () => { ctx.world.removeSystem(Update, system).unwrap(); state.active--; globalThis.workerPluginActive = state.active; };
                   });
                 } };`,
                 [executor]: `import { state } from './shared.js'; globalThis.workerExecutorEvaluated = true;

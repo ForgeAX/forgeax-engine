@@ -37,7 +37,6 @@ describe('ReflectionProbe steady-state performance contract', () => {
     const projection = new ReflectionProbeProjection();
     const facts = [
       {
-        worldId: 0,
         entityKey: 3,
         center: [0, 0, 0] as const,
         halfExtents: [2, 2, 2] as const,
@@ -48,8 +47,8 @@ describe('ReflectionProbe steady-state performance contract', () => {
       },
     ];
     const scene = primitiveRows([
-      { worldId: 0, entityKey: 8, center: [0, 0, 0] },
-      { worldId: 0, entityKey: 9, center: [3, 0, 0] },
+      { entityKey: 8, center: [0, 0, 0] },
+      { entityKey: 9, center: [3, 0, 0] },
     ]);
     const first = projection.update({ facts, revision: 1 }, scene.rows(), scene.centerOf);
     const second = projection.update({ facts, revision: 1 }, scene.rows(), scene.centerOf);

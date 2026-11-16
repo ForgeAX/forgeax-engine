@@ -9,6 +9,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { bindNativeWindow, installNavigatorGpu } from '../../../../rhi-wgpu-native/dist/index.mjs';
+import { readShaderManifestText } from '../../../../../scripts/lib/shader-manifest.mjs';
 
 const addonPath = resolve(process.env.NATIVE_TAURI_ADDON ?? new URL(`./native/tauri-native-host.${process.platform}-${process.arch}.node`, import.meta.url).pathname);
 const addon = createRequire(import.meta.url)(addonPath);
@@ -21,7 +22,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..');
 const output = resolve(process.env.NATIVE_WINDOW_EVIDENCE ?? 'artifacts/native-window');
 await mkdir(output, { recursive: true });
 const manifestPath = resolve(root, 'apps/hello/triangle/dist/shaders/manifest.json');
-const shaderManifestUrl = `data:application/json,${encodeURIComponent(await readFile(manifestPath, 'utf8'))}`;
+const shaderManifestUrl = `data:application/json,${encodeURIComponent(readShaderManifestText(manifestPath))}`;
 const { host, window } = createWindow({ title: 'ForgeAX native TypeScript World', width: 640, height: 360 });
 assert.throws(() => host.takeNativeWindow(), /already borrowed/);
 installNavigatorGpu(window.gpu).unwrap();
@@ -93,7 +94,7 @@ try {
     window.requestRedraw().unwrap();
     pump();
     world.update(1 / 60).unwrap();
-    const receipt = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }).unwrap();
+    const receipt = renderer.draw({ source: lease }).unwrap();
     const completed = await receipt.completed;
     completed.unwrap();
     lastReceipt = receipt;
@@ -101,9 +102,10 @@ try {
       display: window.facts().unwrap() });
   }
   await draw();
-  await until(() => uiMessages.some(message => message.kind === 'ready'));
+  await until(() => uiMessages.some((message) => message.kind === 'ready'));
   await checkpoint('ui-ready');
-  await until(() => actions === 1 && uiMessages.some(message => message.kind === 'state-applied'));
+  await until(() => actions === 1 && uiMessages.some((message) => message.kind === 'state-applied'),
+  );
   await draw();
   await checkpoint('ui-action-native-moved');
   report.uiMessages = uiMessages;

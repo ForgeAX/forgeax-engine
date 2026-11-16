@@ -6,8 +6,10 @@ import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import { ShaderRegistry } from '@forgeax/engine-shader';
 import type { MaterialAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
+import { registeredSystem } from '../../__tests__/registered-system.fixture';
+import { dependencyNames } from '../../__tests__/schedule-graph.fixture';
 import { Camera, MeshFilter, MeshRenderer } from '../../components';
-import { extractFrames } from '../../render-system-extract-tail';
+import { extractSource } from '../../render-system-extract-tail';
 import { SceneComposition } from '../../scene/scene-composition';
 import {
   RENDER_BATCH_PLAN_SYSTEM,
@@ -65,21 +67,22 @@ function fixture(disabled?: string) {
   const renderWorld = createRenderWorld();
   const source = registerSceneSystem(renderWorld, composition, assets);
   registerMaterialSystems(renderWorld);
-  if (disabled !== undefined) renderWorld.removeSystem(RenderPrepare, disabled).unwrap();
+  if (disabled !== undefined)
+    renderWorld
+      .removeSystem(RenderPrepare, registeredSystem(renderWorld, RenderPrepare, disabled))
+      .unwrap();
   const lease = createRenderReadLease(world);
-  const owner = { cameraOwner: 0, resourceOwner: 0 };
   let frame = 0;
   const step = (): RenderSceneAdoption => {
     world.update(1 / 60).unwrap();
     Object.assign(source, {
       staged: true,
-      worlds: [world],
-      owner,
-      leases: [lease],
+      world: world,
+      lease: lease,
       buildCandidateFrame: (
         request: Parameters<NonNullable<typeof source.buildCandidateFrame>>[0],
       ) =>
-        extractFrames([world], owner, assets, composition.materialSnapshotCacheStore(), {
+        extractSource(world, assets, composition.materialSnapshotCacheStore(), {
           cull: 'none',
           retainHidden: true,
           renderables: request,
@@ -87,7 +90,7 @@ function fixture(disabled?: string) {
     });
     beginRenderFrame(renderWorld, ++frame);
     endRenderFrame(renderWorld);
-    const adoption = renderWorld.getResource<RenderSceneAdoption>(RenderSceneDelta);
+    const adoption = renderWorld.getResource(RenderSceneDelta);
     if (adoption.failure !== undefined) throw adoption.failure;
     return { ...adoption };
   };
@@ -121,7 +124,7 @@ describe('material RenderPrepare systems', () => {
         [RENDER_MATERIAL_PASSES_SYSTEM, RENDER_SCENE_PUBLISH_SYSTEM],
         [RENDER_BATCH_PLAN_SYSTEM, RENDER_SCENE_PUBLISH_SYSTEM],
       ])
-        expect(prepare?.dependencies).toContainEqual(edge);
+        expect(dependencyNames(prepare)).toContainEqual(edge);
     } finally {
       f.dispose();
     }

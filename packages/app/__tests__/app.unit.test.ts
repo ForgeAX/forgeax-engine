@@ -827,10 +827,7 @@ import { LoadGameError, type LoadGameErrorCode } from '../src/load-game-errors';
         expect(callOrder).toEqual(['attach', 'update', 'draw']);
         expect(drawCalls).toHaveLength(1);
         const request = drawCalls[0];
-        expect(request?.leases).toHaveLength(1);
-        expect(request?.leases[0]?.worldIdentity).toBe(world.identity);
-        expect(request?.camera.lease).toBe(request?.leases[0]);
-        expect(request?.environment.lease).toBe(request?.leases[0]);
+        expect(request?.source?.worldIdentity).toBe(world.identity);
       });
     });
 
@@ -1023,7 +1020,7 @@ import { LoadGameError, type LoadGameErrorCode } from '../src/load-game-errors';
         ];
         world.insertResource(INPUT_MAP_KEY, map);
         expect(world.hasResource(INPUT_MAP_KEY)).toBe(true);
-        const retrieved = world.getResource<readonly ActionConfig[]>(INPUT_MAP_KEY);
+        const retrieved = world.getResource(INPUT_MAP_KEY);
         expect(retrieved).toBe(map);
       });
 

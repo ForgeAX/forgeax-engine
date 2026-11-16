@@ -112,17 +112,12 @@ async function fixture() {
       receipt: { ...original.receipt, identity: { ...original.receipt.identity, artifactDigest } },
     };
   });
-  const owners = [
-    new AssetRegistry({ shaderRegistry: renderer.assetRegistry.shaderRegistry }),
-    new AssetRegistry({ shaderRegistry: renderer.assetRegistry.shaderRegistry }),
-  ] as const;
-  const worlds = [new World({ assets: owners[0] }), new World({ assets: owners[1] })] as const;
-  const leases = worlds.map((world) => {
-    registerPropagateTransforms(world);
-    const lease = renderer.attach(world);
-    if (!lease.ok) throw lease.error;
-    return lease.value;
-  });
+  const assets = new AssetRegistry({ shaderRegistry: renderer.assetRegistry.shaderRegistry });
+  const world = new World({ assets });
+  registerPropagateTransforms(world);
+  const leaseAttachment = renderer.attach(world);
+  if (!leaseAttachment.ok) throw leaseAttachment.error;
+  const lease = leaseAttachment.value;
   // Null swapchain handles have no readable texture descriptor. Use a real
   // Renderer-owned public target; no fabricated tape/resource metadata.
   const target = renderer.createRenderTarget({
@@ -136,8 +131,8 @@ async function fixture() {
     readback: false,
   });
   if (!target.ok) throw target.error;
-  const targetGrant = worlds[0].allocSharedRef('RenderTarget', target.value);
-  worlds[0]
+  const targetGrant = world.allocSharedRef('RenderTarget', target.value);
+  world
     .spawn(
       { component: Transform, data: { pos: [0, 0, 4] } },
       {
@@ -155,9 +150,6 @@ async function fixture() {
     )
     .unwrap();
   for (const [index, record] of records.entries()) {
-    const assets = owners[index];
-    const world = worlds[index];
-    if (assets === undefined || world === undefined) throw new Error('missing fixture World');
     const loaded = (await loadMaterialFixture(assets, record)).unwrap();
     const grant = loaded.handle;
     expect(loaded.projection?.materialGuid).toBe(record.guid);
@@ -174,14 +166,7 @@ async function fixture() {
       .unwrap();
     world.update().unwrap();
   }
-  const cameraLease = leases[0];
-  if (cameraLease === undefined) throw new Error('missing actual camera lease');
-  const input = {
-    leases,
-    camera: { lease: cameraLease },
-    environment: { lease: cameraLease },
-    geometryLane: 'direct' as const,
-  };
+  const input = { source: lease, geometryLane: 'direct' as const };
   const submitted = new Set<(receipt: FrameReceipt) => void>();
   let last: FrameReceipt | undefined;
   const draw = () => {
@@ -205,12 +190,10 @@ async function fixture() {
     if (!rendererDisposed.ok) failures.push(rendererDisposed.error);
     const recorderDisposed = await attachment.dispose();
     if (!recorderDisposed.ok) failures.push(recorderDisposed.error);
-    worlds[0].sharedRefs.release(targetGrant);
-    for (const world of worlds) {
-      const cleared = world.despawnAll();
-      if (!cleared.ok) failures.push(cleared.error);
-    }
-    for (const assets of owners) assets.dispose();
+    world.sharedRefs.release(targetGrant);
+    const cleared = world.despawnAll();
+    if (!cleared.ok) failures.push(cleared.error);
+    assets.dispose();
     vi.restoreAllMocks();
     if (failures.length > 0) throw new AggregateError(failures, 'fixture cleanup failed');
   };
@@ -231,8 +214,7 @@ async function fixture() {
   const capture = createRhiCapture(attachment);
   bindRhiCaptureFrameDriver(capture, {
     getState: () => 'paused',
-    pause: () => ok(undefined),
-    resume: () => ok(undefined),
+    suspendScheduling: () => ok(() => ok(undefined)),
     stepFrame: () => {
       draw();
       return ok(undefined);
@@ -249,8 +231,8 @@ async function fixture() {
     attachment,
     capture,
     records,
-    worlds,
-    leases,
+    world,
+    lease,
     input,
     draw,
     get receipt() {
@@ -268,7 +250,7 @@ describe('real material publication to submitted tape lineage', () => {
       const lookups = vi.spyOn(ShaderRegistry.prototype, 'materialShaderManifestEntry');
       const builds = vi.spyOn(RhiNullDevice.prototype, 'createRenderPipeline');
       for (let frame = 0; frame < 3; frame++) {
-        for (const world of f.worlds) world.update().unwrap();
+        f.world.update().unwrap();
         expect(f.draw().ok).toBe(true);
       }
       expect(f.receipt).toBeDefined();
@@ -284,7 +266,7 @@ describe('real material publication to submitted tape lineage', () => {
     }
   });
 
-  it('keeps two same-source program/World identities through actual draw and App capture', async () => {
+  it('keeps two same-source program identities through actual draw and App capture', async () => {
     const f = await fixture();
     try {
       const captured = await f.capture.captureFrame({ seed: { maxResourceBytes: 0 } });
@@ -301,9 +283,7 @@ describe('real material publication to submitted tape lineage', () => {
       if (observed.value.draws?.status !== 'complete')
         throw new Error('missing complete direct lineage');
       const rows = observed.value.draws.draws;
-      expect(new Set(rows.map((row) => row.worldIdentity))).toEqual(
-        new Set(f.worlds.map((world) => world.identity)),
-      );
+      expect(new Set(rows.map((row) => row.worldIdentity))).toEqual(new Set([f.world.identity]));
       expect(new Set(rows.map((row) => row.program.specializationKey))).toEqual(
         new Set(
           f.records.flatMap((record) =>
@@ -352,7 +332,7 @@ describe('real material publication to submitted tape lineage', () => {
       });
       expect(() => f.draw()).toThrow();
       expect(f.receipt).toBe(old);
-      f.renderer.detachScene(f.worlds[1]);
+      f.renderer.detachScene(f.world);
       const observed = await f.renderer.observe(old, { include: ['draws'] });
       expect(observed.ok).toBe(true);
       if (!observed.ok) throw observed.error;

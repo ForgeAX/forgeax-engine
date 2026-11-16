@@ -91,7 +91,6 @@ async function fixture(mergedSources = false) {
     const transforms = new Float32Array(8 * 16);
     for (let ordinal = 0; ordinal < 8; ordinal++) transforms.set(matrix, ordinal * 16);
     const prepared = preparedPbrSnapshot({
-      worldId: 0,
       entityKey: index + 1,
       assetHandle: Number(mergedSources ? defined(handles[0]) : handle),
       transform: { world: matrix },
@@ -124,7 +123,6 @@ async function fixture(mergedSources = false) {
   const delta = projection.apply(
     snapshots.map((snapshot) => ({
       kind: 'update' as const,
-      worldId: snapshot.worldId,
       entityKey: snapshot.entityKey,
       snapshot,
     })),
@@ -674,7 +672,6 @@ describe('GPU-driven resident mesh epochs on native Dawn', () => {
       const delta = f.projection.apply([
         {
           kind: 'update',
-          worldId: source.worldId,
           entityKey: source.entityKey,
           snapshot: lodSource,
         },
@@ -740,7 +737,7 @@ describe('GPU-driven resident mesh epochs on native Dawn', () => {
     } finally {
       f.close();
     }
-  }, 30_000);
+  }, 30000);
 });
 
 describe('incremental filtered contributions on native Dawn', () => {
@@ -839,16 +836,14 @@ describe('incremental filtered contributions on native Dawn', () => {
           archVersion: 2,
         },
       };
-      publish([
-        { kind: 'update', worldId: first.worldId, entityKey: first.entityKey, snapshot: reduced },
-      ]);
+      publish([{ kind: 'update', entityKey: first.entityKey, snapshot: reduced }]);
       const edited = await witness();
       expect(edited.commands.filter((_, index) => index % 2 === 1).reduce((a, b) => a + b, 0)).toBe(
         12,
       );
       // Changing effective binding values in the same mutable Map splits and rejoins groups.
       bindings = new Map(bindings);
-      bindings.set(`${first.worldId}:${first.entityKey}`, 'distinct-current-binding');
+      bindings.set(`${first.entityKey}`, 'distinct-current-binding');
       await witness();
       expect(f.production.inspect().batchCount).toBe(2);
       bindings = new Map();
@@ -899,13 +894,11 @@ describe('incremental filtered contributions on native Dawn', () => {
       expect(countShadowSources()).toBe(0);
       expect(claims.value).toBeDefined();
       claimFrame._abortResourceReplacement?.();
-      publish([{ kind: 'remove', worldId: first.worldId, entityKey: first.entityKey }]);
+      publish([{ kind: 'remove', entityKey: first.entityKey }]);
       expect(
         (await witness()).commands.filter((_, index) => index % 2 === 1).reduce((a, b) => a + b, 0),
       ).toBe(8);
-      publish([
-        { kind: 'update', worldId: first.worldId, entityKey: first.entityKey, snapshot: first },
-      ]);
+      publish([{ kind: 'update', entityKey: first.entityKey, snapshot: first }]);
       const reinserted = await witness();
       expect(reinserted.value).toEqual(initial.value);
       expect(
@@ -945,7 +938,7 @@ describe('incremental filtered contributions on native Dawn', () => {
       reference.dispose();
       f.close();
     }
-  }, 30_000);
+  }, 30000);
 });
 
 it('reuses one compiled raster across binding order, unused keys and live split/rejoin with native readback', async () => {
@@ -955,9 +948,7 @@ it('reuses one compiled raster across binding order, unused keys and live split/
   f.native.pushErrorScope('validation');
   try {
     const firstSource = defined(f.snapshots[0]);
-    const bindings = new Map<string, string>([
-      [`${firstSource.worldId}:${firstSource.entityKey}`, 'split-binding'],
-    ]);
+    const bindings = new Map<string, string>([[`${firstSource.entityKey}`, 'split-binding']]);
     const signatures: string[] = [];
     let baseline: number[] | undefined;
     for (let sequence = 0; sequence < 6; sequence++) {
@@ -965,7 +956,7 @@ it('reuses one compiled raster across binding order, unused keys and live split/
       if (sequence === 2) bindings.clear();
       if (sequence === 3) {
         bindings.set('99:9999:12345', 'changed-unused');
-        bindings.set(`${firstSource.worldId}:${firstSource.entityKey}`, 'split-again');
+        bindings.set(`${firstSource.entityKey}`, 'split-again');
       }
       if (sequence === 4) bindings.delete('99:9999:12345');
       if (sequence === 5) bindings.clear();
@@ -1010,7 +1001,7 @@ it('reuses one compiled raster across binding order, unused keys and live split/
       f.close();
     }
   }
-}, 30_000);
+}, 30000);
 
 it('retains main pipelines and shadow depth across unique receipt churn and local program edits for 60 native frames', async () => {
   const f = await fixture();
@@ -1042,7 +1033,6 @@ it('retains main pipelines and shadow depth across unique receipt churn and loca
   const delta = f.projection.apply(
     rows.map((snapshot) => ({
       kind: 'update' as const,
-      worldId: 0,
       entityKey: snapshot.entityKey,
       snapshot,
     })),
@@ -1340,4 +1330,4 @@ it('retains main pipelines and shadow depth across unique receipt churn and loca
     f.device.destroyBuffer(readback).unwrap();
     f.close();
   }
-}, 60_000);
+}, 60000);

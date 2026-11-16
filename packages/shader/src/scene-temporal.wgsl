@@ -49,6 +49,21 @@ fn sceneViewZ(clip : vec4<f32>, temporalProjection : vec4<f32>) -> f32 {
   );
 }
 
+// The same signed view Z read back from the fragment's @builtin(position),
+// as UE SvPositionToScreenPosition (Common.ush:1530-1542) reads SceneDepth
+// from SvPosition.w instead of an interpolant. Fragment position.w is
+// 1/clip.w and position.z is NDC depth, so perspective -clip.w and the
+// screen-linear orthographic depth both come back without a varying.
+fn sceneFragmentViewZ(position : vec4<f32>, temporalProjection : vec4<f32>) -> f32 {
+  let orthographicViewZ = -(temporalProjection.y -
+    position.z * (temporalProjection.y - temporalProjection.x));
+  return select(
+    -1.0 / position.w,
+    orthographicViewZ,
+    temporalProjection.z >= 0.5,
+  );
+}
+
 fn sceneTemporalViewDepth(clip : vec4<f32>, temporalProjection : vec4<f32>) -> f32 {
   return log2(1.0 + max(-sceneViewZ(clip, temporalProjection), 0.0));
 }

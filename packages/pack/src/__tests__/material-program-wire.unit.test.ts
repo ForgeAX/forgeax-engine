@@ -29,7 +29,7 @@ function fixture() {
           kind: 'material',
           values: { roughness: 0.2 },
           cooked: {
-            schemaVersion: 'material-cook/4',
+            schemaVersion: 'material-cook/5',
             materialGuid: 'material-a',
             receipt: { sourceRevision: 'a' },
             programs: [structuredClone(program)],
@@ -45,7 +45,7 @@ function fixture() {
           kind: 'material',
           values: { roughness: 0.8 },
           cooked: {
-            schemaVersion: 'material-cook/4',
+            schemaVersion: 'material-cook/5',
             materialGuid: 'material-b',
             receipt: { sourceRevision: 'b' },
             programs: [structuredClone(program)],

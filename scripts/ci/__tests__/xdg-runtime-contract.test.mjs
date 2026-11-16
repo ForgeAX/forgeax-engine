@@ -28,7 +28,6 @@ const workflowJobs = new Map([
     ],
   ],
   ['.github/workflows/nightly.yml', ['smoke-browser-dawn']],
-  ['.github/workflows/gpu-pass-timing-real-gpu.yml', ['gpu-pass-timing-benchmark']],
   ['.github/workflows/native-ray-query.yml', ['native-ray-query-contract', 'native-node-gi']],
   ['.github/workflows/sdk-pr-preflight.yml', ['build-sdk']],
   ['.github/workflows/sdk-release-candidate.yml', ['consumers', 'collision']],

@@ -1,3 +1,4 @@
+import { defineSystem } from "@forgeax/engine-ecs";
 import { Disabled, FixedUpdate, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import { CollidingEntities } from '@forgeax/engine-physics';
 import { inState } from '@forgeax/engine-state';
@@ -66,8 +67,8 @@ export type ProjectileImpactSystemContext = {
   readonly onOutcome: (source: EntityHandle, outcome: ProjectileImpactOutcome, shielded: boolean) => void;
   readonly onImpact?: (source: EntityHandle, projectile: EntityHandle, position: readonly [number, number, number], outcome: ProjectileImpactOutcome, impactScale: number, presentationVariant: number) => void;
   readonly onTargetResolved: (target: EntityHandle, source: EntityHandle) => void;
-  readonly after: readonly string[];
-  readonly before: readonly string[];
+  readonly after: readonly import('@forgeax/engine/ecs').SystemOrderReference[];
+  readonly before: readonly import('@forgeax/engine/ecs').SystemOrderReference[];
 };
 
 function classifyContact(ctx: ProjectileImpactSystemContext, entity: EntityHandle): ProjectileContactKind {
@@ -82,7 +83,7 @@ function classifyContact(ctx: ProjectileImpactSystemContext, entity: EntityHandl
 
 /** Resolve every real contact through one deterministic consumption owner. */
 export function installProjectileImpactSystem(ctx: ProjectileImpactSystemContext): void {
-  ctx.world.addSystem(FixedUpdate, {
+  const systemToken1 = defineSystem({
     name: 'game-projectile-impact',
     runIf: inState(GameState, 'Play'),
     after: [...ctx.after],
@@ -126,5 +127,6 @@ export function installProjectileImpactSystem(ctx: ProjectileImpactSystemContext
         ctx.consume(projectileEntity);
       }
     },
-  }).unwrap();
+  });
+ctx.world.addSystem(FixedUpdate, systemToken1).unwrap();
 }

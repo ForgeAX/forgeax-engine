@@ -10,6 +10,31 @@ function packageArtifacts(name: string): string[] {
 }
 
 describe('engine declaration graph', () => {
+  it('includes Water in the cold declaration graph', () => {
+    const config = JSON.parse(readFileSync(resolve(engineRoot, 'tsconfig.json'), 'utf8')) as {
+      references?: Array<{ path?: string }>;
+    };
+    expect(config.references?.map((reference) => reference.path)).toContain('./packages/water');
+  });
+
+  it.each([
+    'assets-runtime',
+    'content',
+    'import',
+    'render',
+    'runtime',
+  ])('builds Water before cold %s declarations', (name) => {
+    const directory = resolve(engineRoot, 'packages', name);
+    const manifest = JSON.parse(readFileSync(resolve(directory, 'package.json'), 'utf8'));
+    const config = JSON.parse(readFileSync(resolve(directory, 'tsconfig.json'), 'utf8')) as {
+      references?: Array<{ path: string }>;
+    };
+    expect(manifest.dependencies['@forgeax/engine-water']).toBe('workspace:*');
+    expect(config.references?.map((reference) => resolve(directory, reference.path))).toContain(
+      resolve(engineRoot, 'packages/water'),
+    );
+  });
+
   it('declares the NPC project in the root composite graph', () => {
     const config = JSON.parse(readFileSync(resolve(engineRoot, 'tsconfig.json'), 'utf8')) as {
       references?: Array<{ path?: string }>;

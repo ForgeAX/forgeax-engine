@@ -92,7 +92,7 @@ describe('direct light snapshot buffer layout', () => {
 describe('DirectLightSlot ABI', () => {
   it('locks the six-row 96-byte host contract and closed kind values', () => {
     const layout = STANDARD_CLUSTER_TEST_ABI.directLightSlot;
-    expect(layout.capacity).toBe(256);
+    expect(layout.capacity).toBe(1024);
     expect(layout.byteSize).toBe(96);
     expect(layout.rowByteOffsets).toEqual([0, 16, 32, 48, 64, 80]);
     expect(layout.metadataByteOffset).toBe(64);

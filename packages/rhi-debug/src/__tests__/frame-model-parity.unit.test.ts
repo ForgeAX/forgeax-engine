@@ -457,8 +457,8 @@ describe('FrameModel canonical projection', () => {
           cmdHandleId: 'encoder:1',
           desc: {
             colorAttachments: [
-              { view: {}, depthSlice: 3, loadOp: 'clear', storeOp: 'store' },
-              { view: {}, loadOp: 'clear', storeOp: 'store' },
+              { depthSlice: 3, loadOp: 'clear', storeOp: 'store' },
+              { loadOp: 'clear', storeOp: 'store' },
             ],
           },
           colorAttachmentViewHandleIds: ['view:volume', 'view:plain'],

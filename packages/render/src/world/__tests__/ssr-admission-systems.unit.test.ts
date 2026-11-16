@@ -1,9 +1,11 @@
 import type { EntityHandle } from '@forgeax/engine-ecs';
 import { describe, expect, it } from 'vitest';
+import { registeredSystem } from '../../__tests__/registered-system.fixture';
 import type { RenderSystemInternals } from '../../record/render-context';
 import type { RenderableSnapshot } from '../../render-system-extract';
 import { MaterialFrame } from '../../scene/material-dispatch';
 import type { SsrDependenciesInspection } from '../../ssr/admission';
+
 import {
   type PassPlanInput,
   registerPassPlanSystems,
@@ -132,7 +134,10 @@ describe('render-ssr-admission system', () => {
 
   it('leaves the recorded view without admission once the system is removed', () => {
     const { world, view, internals } = setup();
-    expect(world.removeSystem(RenderQueue, RENDER_SSR_ADMISSION_SYSTEM).ok).toBe(true);
+    expect(
+      world.removeSystem(RenderQueue, registeredSystem(world, RenderQueue, 'render-ssr-admission'))
+        .ok,
+    ).toBe(true);
     stage(world, view, input());
     expect(world.run(RenderQueue).ok).toBe(true);
     expect(viewSsrAdmissionOf(world, view)).toBeUndefined();

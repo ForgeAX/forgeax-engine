@@ -55,14 +55,24 @@ import { createMaterialResidencyObserver } from './render-system-residency';
 import { type SsrSpatialAdmission, zeroSsrAdmissionWork } from './ssr/admission';
 import { projectSsrSpatialInspection } from './ssr/inspection';
 import { inspectTemporal, type TemporalInspection } from './temporal/inspection';
+import { inspectWaterFoamDraw } from './water/foam-inspection';
 import { inspectSettledDirectionalShadow } from './world/directional-shadow-inspection';
-import { inspectSharedFeatureGraphs } from './world/feature-graph-systems';
+import {
+  inspectSharedFeatureGraphs,
+  sharedFeatureGraphInspection,
+} from './world/feature-graph-systems';
 import { viewPhaseInspection } from './world/queue-systems';
 import { viewRecordHistory } from './world/record-history';
 import { resolveViewSsrDependencies } from './world/reflection-systems';
 import { viewLightsOf } from './world/render-lights';
+import { ViewSubmission } from './world/render-views';
 import { renderWorldFor } from './world/render-world';
 import { viewTransmissionInspection } from './world/transmission-systems';
+import type {
+  MaterialSlotDrawReceiptFact,
+  WaterBakedDrawReceiptFact,
+} from './world/view-draw-receipt';
+import { viewDrawReceipt } from './world/view-draw-receipt';
 import { viewFrameOf, viewFrameScopes } from './world/view-frame-systems';
 import { viewPointsLines } from './world/view-points-lines';
 import { recordContext } from './world/view-record-context';
@@ -380,6 +390,41 @@ export function viewDirectionalShadow(owner: ViewSettlementOwner): DirectionalSh
 }
 
 /** Mesh-slot provenance, diagnostics and residency of the view's staged frame. */
+export interface MaterialSlotDrawReceiptQuery {
+  readonly worldIdentity: string | undefined;
+  readonly entityKey: number;
+  readonly materialSlot: number;
+  readonly submeshIndices: readonly number[];
+  readonly materialHandle: number;
+  readonly frameId: number | undefined;
+  readonly deviceGeneration: number;
+  readonly graphGeneration: number | undefined;
+}
+
+/** Return only a receipt for the exact entity, slot, material, and accepted draw. */
+export function findMaterialSlotDrawReceipt(
+  draws: readonly MaterialSlotDrawReceiptFact[],
+  query: MaterialSlotDrawReceiptQuery,
+): MaterialSlotDrawReceiptFact | undefined {
+  if (
+    query.worldIdentity === undefined ||
+    query.frameId === undefined ||
+    query.graphGeneration === undefined
+  )
+    return undefined;
+  return draws.find(
+    (draw) =>
+      draw.worldIdentity === query.worldIdentity &&
+      draw.entityKey === query.entityKey &&
+      draw.materialSlot === query.materialSlot &&
+      query.submeshIndices.includes(draw.submeshIndex) &&
+      draw.materialHandle === query.materialHandle &&
+      draw.frameId === query.frameId &&
+      draw.deviceGeneration === query.deviceGeneration &&
+      draw.graphGeneration === query.graphGeneration,
+  );
+}
+
 export function viewMeshMaterialBindings(
   owner: ViewSettlementOwner,
 ): readonly MeshMaterialBindingObservation[] {
@@ -388,23 +433,125 @@ export function viewMeshMaterialBindings(
   const renderWorld = renderWorldFor(internals);
   const staged = viewFrameOf(renderWorld, internals.viewEntity);
   if (staged?.result?.ok !== true) return [];
-  const worlds = viewFrameScopes(renderWorld, staged).scopes;
-  const materials = owner.scene.shadowCasterProjection()?.content.materials;
+  const scope = viewFrameScopes(renderWorld, staged).source;
+  const graph = viewGraphInfo(owner);
+  const shared = sharedFeatureGraphInspection(renderWorld);
+  const drawReceipt = viewDrawReceipt(renderWorld, internals.viewEntity);
+  const waterBakedDraws = drawReceipt?.waterBakedDraws ?? Object.freeze([]);
+  const viewSubmission =
+    internals.viewEntity !== undefined &&
+    renderWorld.hasComponent(internals.viewEntity, ViewSubmission)
+      ? renderWorld.get(internals.viewEntity, ViewSubmission).unwrap()
+      : undefined;
+  const acceptedFrame = acceptedViewInspectionFrame(viewSubmission, staged.frame, waterBakedDraws);
+  const receiptMatchesAcceptedFrame = acceptedFrame !== undefined;
+  const inspectionFrameId = staged.frame;
+  const submitted = receiptMatchesAcceptedFrame;
+  const descriptorOf = owner.frameState.compiledFrameGraph?.waterFluidBodyDescriptor;
+  const sceneContent = owner.scene.shadowCasterProjection()?.content;
+  const materials = sceneContent?.materials;
+  const meshes = sceneContent?.meshes;
   // Scene-owned draws read the version the shadow/Scene frame accepted.
   // Generated view draws capture their material at their producer from the
   // resource's current snapshot; inspect the same one.
   const snapshotOf = (material: MaterialResource) =>
     materials?.get(material)?.snapshot ?? material.snapshot;
   return staged.result.value.renderables.map((renderable) => {
-    const materialWorld = worlds[renderable.worldId];
+    const materialWorld = scope;
     return projectMeshMaterialBindingObservation({
-      worldId: renderable.worldId,
+      waterFoamInputs: renderable.materials.map((material, materialSlot) => {
+        const draw = waterBakedDraws.find(
+          (fact) => fact.entityKey === renderable.entityKey && fact.materialSlot === materialSlot,
+        );
+        const descriptor =
+          renderable.waterOwner === undefined ? undefined : descriptorOf?.(renderable.waterOwner);
+        const viewIdentity =
+          renderable.waterOwner?.viewIdentity ?? renderable.waterMeshTiles?.viewIdentity;
+        const drawKey = renderable.waterOwner?.drawKey ?? renderable.waterMeshTiles?.drawKey;
+        const ownerWorldIdentity =
+          renderable.waterOwner?.worldIdentity ?? renderable.waterMeshTiles?.worldIdentity;
+        const graphGeneration =
+          (receiptMatchesAcceptedFrame ? draw?.graphGeneration : undefined) ?? graph?.generation;
+        const deviceGeneration =
+          (receiptMatchesAcceptedFrame ? draw?.deviceGeneration : undefined) ??
+          (receiptMatchesAcceptedFrame ? descriptor?.deviceGeneration : undefined) ??
+          recordContext(internals).deviceScope.generation;
+        return inspectWaterFoamDraw(
+          snapshotOf(material),
+          internals,
+          graph,
+          owner.frameState.graphGeneration,
+          {
+            frameId: inspectionFrameId,
+            deviceGeneration,
+            ...(graphGeneration === undefined ? {} : { graphGeneration }),
+            ...(viewIdentity === undefined ? {} : { viewIdentity }),
+            ...(drawKey === undefined ? {} : { drawKey }),
+            ...(ownerWorldIdentity === undefined ? {} : { ownerWorldIdentity }),
+            ...(materialWorld?.identity === undefined
+              ? {}
+              : { materialWorldIdentity: materialWorld.identity }),
+            entityKey: renderable.entityKey,
+            materialSlot,
+            submitted,
+            descriptor,
+            shared,
+            waterBakedDraws,
+            ...(drawReceipt?.waterBakedUnavailableReason === undefined
+              ? {}
+              : { waterBakedUnavailableReason: drawReceipt.waterBakedUnavailableReason }),
+          },
+        );
+      }),
+      worldId: 0,
       ...(materialWorld === undefined ? {} : { worldIdentity: materialWorld.identity }),
       entityKey: renderable.entityKey,
-      bindings: renderable.materials.map((material, slotIndex) => ({
-        handle: snapshotOf(material).materialHandle ?? 0,
-        source: renderable.materialBindingSources[slotIndex] ?? 'engine-default',
-      })),
+      bindings: renderable.materials.map((material, slotIndex) => {
+        const snapshot = snapshotOf(material),
+          handle = snapshot.materialHandle ?? 0,
+          sceneSubmeshIndices =
+            meshes
+              ?.get(renderable.assetHandle)
+              ?.submeshes.flatMap((submesh, submeshIndex) =>
+                submesh.materialSlot === slotIndex ? [submeshIndex] : [],
+              ) ?? [],
+          submeshIndices =
+            sceneSubmeshIndices.length > 0
+              ? sceneSubmeshIndices
+              : (drawReceipt?.materialDraws
+                  .filter(
+                    (draw) =>
+                      draw.entityKey === renderable.entityKey && draw.materialSlot === slotIndex,
+                  )
+                  .map((draw) => draw.submeshIndex) ?? []),
+          materialDraw =
+            receiptMatchesAcceptedFrame && drawReceipt !== undefined
+              ? findMaterialSlotDrawReceipt(drawReceipt.materialDraws, {
+                  worldIdentity: materialWorld?.identity,
+                  entityKey: renderable.entityKey,
+                  materialSlot: slotIndex,
+                  submeshIndices,
+                  materialHandle: handle,
+                  frameId: acceptedFrame,
+                  deviceGeneration: recordContext(internals).deviceScope.generation,
+                  graphGeneration: graph?.generation,
+                })
+              : undefined;
+        return {
+          handle,
+          source: renderable.materialBindingSources[slotIndex] ?? 'engine-default',
+          ...(materialDraw === undefined
+            ? {}
+            : {
+                sourceRevision: materialDraw.sourceRevision,
+                drawReceipt: {
+                  frameId: materialDraw.frameId,
+                  deviceGeneration: materialDraw.deviceGeneration,
+                  graphGeneration: materialDraw.graphGeneration,
+                },
+              }),
+        };
+      }),
       diagnostics: renderable.materialBindingDiagnostics ?? [],
       residency: renderable.materials.map((material) => {
         const snapshot = snapshotOf(material);
@@ -412,6 +559,17 @@ export function viewMeshMaterialBindings(
       }),
     });
   });
+}
+
+/** Use this view's last accepted scene attempt and its own retained draw receipts. */
+export function acceptedViewInspectionFrame(
+  submission: Readonly<{ accepted: boolean; scene: boolean; attempt: number }> | undefined,
+  stagedFrame: number,
+  waterBakedDraws: readonly WaterBakedDrawReceiptFact[],
+): number | undefined {
+  if (submission?.accepted !== true || !submission.scene || submission.attempt !== stagedFrame)
+    return undefined;
+  return waterBakedDraws.every((draw) => draw.frameId === stagedFrame) ? stagedFrame : undefined;
 }
 
 /** Graph, residency and submission facts of the view's production owners. */
@@ -422,7 +580,7 @@ export function viewRecoveryEvidence(owner: ViewSettlementOwner): RecoveryProduc
     producerRoots: createRendererProducerRootMatrix(),
     graph: Object.freeze({
       ready: graph !== undefined,
-      generation: owner.frameState.graphGeneration,
+      generation: graph?.generation ?? 0,
       passCount: graph?.passes.length ?? 0,
       resourceCount: graph?.resources.length ?? 0,
     }),

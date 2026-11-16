@@ -5,9 +5,11 @@
 // Scene: 4 geometric shapes (triangle, cube, quad, sphere) spread horizontally under a
 // slant directional light — the same scene as hello/fxaa, ported to the bevy-app convention.
 
+import { InputFrameStartScan } from "@forgeax/engine-input";
+import { defineSystem } from "@forgeax/engine-ecs";
 import { createApp } from '@forgeax/engine-app/browser';
 import { Update } from '@forgeax/engine-ecs';
-import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine-input';
+import { INPUT_SNAPSHOT_RESOURCE_KEY } from '@forgeax/engine-input';
 import { Camera } from '@forgeax/engine-render';
 import { ANTIALIAS_MODES, ANTIALIAS_NAMES, buildAntiAliasingWorld } from './anti-aliasing';
 
@@ -31,12 +33,12 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
 
   const scene = buildAntiAliasingWorld(world, target.width / target.height);
   const camEntity = scene.camera;
-  world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'aa-cycle',
-    after: ['input-frame-start-scan'],
+    after: [InputFrameStartScan],
     queries: [],
     fn: () => {
-      const snap = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+      const snap = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
       if (!snap) return;
       for (let i = 0; i < ANTIALIAS_MODES.length; i += 1) {
         if (!snap.keyboard.down(String(i + 1))) continue;
@@ -48,6 +50,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       }
     },
   });
+world.addSystem(Update, systemToken1);
 
   const started = app.start();
   if (!started.ok) {

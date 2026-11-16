@@ -9,7 +9,7 @@ import {
 } from '@forgeax/engine-ecs';
 import { CharacterController } from '@forgeax/engine-physics';
 import type { Plugin } from '@forgeax/engine-plugin';
-import { PROPAGATE_TRANSFORMS_FIXED_SYSTEM, scenePlugin, Transform } from '@forgeax/engine-scene';
+import { PropagateTransformsFixed, scenePlugin, Transform } from '@forgeax/engine-scene';
 import { err, type Result } from '@forgeax/engine-types';
 import { invalidInput, type NavigationError } from './errors';
 import { NAVIGATION_MAX_NODES } from './graph';
@@ -57,11 +57,10 @@ export function setNavigationPath(
   });
 }
 
-export const NAVIGATION_FOLLOW_SYSTEM = 'navigation/follow-path';
 /** Kinematic integration, not collision or avoidance. Custom motors consume paths directly. */
 export const navigationFollowSystem = defineSystem({
-  name: NAVIGATION_FOLLOW_SYSTEM,
-  before: [PROPAGATE_TRANSFORMS_FIXED_SYSTEM],
+  name: 'navigation/follow-path',
+  before: [PropagateTransformsFixed],
   queries: [{ write: [NavigationAgent, Transform], without: [CharacterController] }],
   fn(world, [agents]) {
     const delta = world.getResource(FixedTime).delta;
@@ -155,7 +154,7 @@ export function navigationPlugin(): Plugin {
         const added = ctx.world.addSystem(FixedUpdate, navigationFollowSystem);
         if (!added.ok) throw added.error;
         return () => {
-          ctx.world.removeSystem(FixedUpdate, NAVIGATION_FOLLOW_SYSTEM);
+          ctx.world.removeSystem(FixedUpdate, navigationFollowSystem);
         };
       }, 'navigation/follow');
     },

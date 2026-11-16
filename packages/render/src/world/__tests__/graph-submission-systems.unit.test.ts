@@ -1,18 +1,14 @@
 import { World } from '@forgeax/engine-ecs';
 import { describe, expect, it, vi } from 'vitest';
+import { registeredSystem } from '../../__tests__/registered-system.fixture';
 import type { RenderFrameState } from '../../record/frame-snapshot';
 import type { RenderSystemInternals } from '../../record/render-context';
 import {
   type DisplaySubmission,
-  RENDER_DISPLAY_COMMIT_SYSTEM,
   registerDisplaySubmissionSystems,
 } from '../display-submission-systems';
 import { giSubmissionsOf, registerGiSystems } from '../gi-systems';
-import {
-  type GraphSubmission,
-  RENDER_GRAPH_SUBMISSION_COMMIT_SYSTEM,
-  registerGraphSubmissionSystems,
-} from '../graph-submission-systems';
+import { type GraphSubmission, registerGraphSubmissionSystems } from '../graph-submission-systems';
 import { ViewRecorder, ViewSubmission } from '../render-views';
 import {
   beginRenderFrame,
@@ -27,10 +23,12 @@ function fixture(accepted: boolean) {
   registerGraphSubmissionSystems(world);
   registerDisplaySubmissionSystems(world);
   const timing = { markSubmitted: vi.fn(), discard: vi.fn() };
+  const content = { commitExecution: vi.fn(), discardExecution: vi.fn() };
   const passTiming = { abort: vi.fn() };
   const gi = {};
   const graph: GraphSubmission = {
     frame: 3,
+    graph: content,
     timing: timing as never,
     passTiming: passTiming as never,
     gi: gi as never,
@@ -82,6 +80,7 @@ function fixture(accepted: boolean) {
   return {
     world,
     timing,
+    content,
     passTiming,
     graph,
     display,
@@ -100,6 +99,8 @@ describe('graph and display submission systems', () => {
     expect(f.resolution.commit).not.toHaveBeenCalled();
     expect(f.world.run(RenderCommit).ok).toBe(true);
     expect(f.timing.markSubmitted).toHaveBeenCalledTimes(1);
+    expect(f.content.commitExecution).toHaveBeenCalledTimes(1);
+    expect(f.content.discardExecution).not.toHaveBeenCalled();
     expect(f.resolution.commit).toHaveBeenCalledWith(f.display.extent, expect.any(Function));
     expect(f.resolution.commit.mock.calls[0]?.[1]()).toBe(7);
     expect(f.internals.markRenderTargetSubmitted).toHaveBeenCalledWith('target', 'layer');
@@ -126,6 +127,8 @@ describe('graph and display submission systems', () => {
     expect(f.passTiming.abort).toHaveBeenCalledExactlyOnceWith({ code: stage });
     expect(f.timing.discard).toHaveBeenCalledTimes(1);
     expect(f.timing.markSubmitted).not.toHaveBeenCalled();
+    expect(f.content.commitExecution).not.toHaveBeenCalled();
+    expect(f.content.discardExecution).toHaveBeenCalledTimes(1);
     expect(f.resolution.commit).not.toHaveBeenCalled();
     expect(f.frameState.lastSuccessfulBarrelDistortion).toBeUndefined();
     expect(f.internals.markRenderTargetSubmitted).not.toHaveBeenCalled();
@@ -134,7 +137,12 @@ describe('graph and display submission systems', () => {
 
   it('cannot publish timing or GI when its commit system is removed', () => {
     const f = fixture(true);
-    f.world.removeSystem(RenderCommit, RENDER_GRAPH_SUBMISSION_COMMIT_SYSTEM).unwrap();
+    f.world
+      .removeSystem(
+        RenderCommit,
+        registeredSystem(f.world, RenderCommit, 'render-graph-submission-commit'),
+      )
+      .unwrap();
     endRenderFrame(f.world);
     expect(f.timing.markSubmitted).not.toHaveBeenCalled();
     expect(f.timing.discard).toHaveBeenCalledTimes(1);
@@ -143,7 +151,9 @@ describe('graph and display submission systems', () => {
 
   it('cannot advance display history when its commit system is removed', () => {
     const f = fixture(true);
-    f.world.removeSystem(RenderCommit, RENDER_DISPLAY_COMMIT_SYSTEM).unwrap();
+    f.world
+      .removeSystem(RenderCommit, registeredSystem(f.world, RenderCommit, 'render-display-commit'))
+      .unwrap();
     endRenderFrame(f.world);
     expect(f.resolution.commit).not.toHaveBeenCalled();
     expect(f.frameState.lastSuccessfulBarrelDistortion).toBeUndefined();

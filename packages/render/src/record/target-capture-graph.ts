@@ -69,6 +69,7 @@ export function materialSamplesTarget(
 ): boolean {
   for (const source of material.textureSources?.values() ?? []) {
     if (
+      source.source !== 'feature' &&
       !isCanvasTextureSource(source) &&
       !isExternalTextureSource(source) &&
       resolveRenderTargetMaterialSource(source)?.target === target

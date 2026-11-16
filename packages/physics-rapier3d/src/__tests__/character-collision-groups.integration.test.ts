@@ -1,15 +1,17 @@
-import { FixedUpdate, World } from '@forgeax/engine-ecs';
+import { defineSystem, FixedUpdate, World } from '@forgeax/engine-ecs';
 import { vec3 } from '@forgeax/engine-math';
 import {
   CharacterController,
   Collider,
   ColliderShapeValue,
+  PhysicsWorldResource,
   RigidBody,
   RigidBodyTypeValue,
   registerPhysicsComponents,
 } from '@forgeax/engine-physics';
 import { GlobalTransform, registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect, it } from 'vitest';
+import { PhysicsStepSimulation, PhysicsSyncBackend } from '../physics-sync';
 import { registerPhysicsSystems } from '../physics-sync.js';
 import { createRapier3DPhysicsWorld } from '../rapier-physics-world-3d.js';
 import { loadRapier3D } from '../wasm-loader.js';
@@ -22,7 +24,7 @@ async function movePastObstacle(groups: number, sensor: boolean, capsule: boolea
   world.components.register(GlobalTransform).unwrap();
   registerPhysicsComponents(world);
   const physics = createRapier3DPhysicsWorld(rapier);
-  world.insertResource('PhysicsWorld', physics);
+  world.insertResource(PhysicsWorldResource, physics);
   const releaseScene = registerPropagateTransforms(world);
   const releasePhysics = registerPhysicsSystems(world);
   const character = world
@@ -64,23 +66,22 @@ async function movePastObstacle(groups: number, sensor: boolean, capsule: boolea
   // Admit both colliders and update Rapier's query pipeline before the tested sweep.
   world.update(1 / 30).unwrap();
   let moved: number | undefined;
-  world
-    .addSystem(FixedUpdate, {
-      name: 'test-character-collision-groups',
-      queries: [],
-      after: ['physicsSyncBackend'],
-      before: ['physicsStepSimulation'],
-      fn() {
-        if (moved === undefined) moved = physics.moveAndSlide(character, vec3.create(2, 0, 0))[0];
-      },
-    })
-    .unwrap();
+  const systemToken1 = defineSystem({
+    name: 'test-character-collision-groups',
+    queries: [],
+    after: [PhysicsSyncBackend],
+    before: [PhysicsStepSimulation],
+    fn() {
+      if (moved === undefined) moved = physics.moveAndSlide(character, vec3.create(2, 0, 0))[0];
+    },
+  });
+  world.addSystem(FixedUpdate, systemToken1).unwrap();
   try {
     world.update(1 / 30).unwrap();
     if (moved === undefined) throw new Error('Native KCC sweep system did not execute');
     return moved;
   } finally {
-    world.removeSystem(FixedUpdate, 'test-character-collision-groups').unwrap();
+    world.removeSystem(FixedUpdate, systemToken1).unwrap();
     releasePhysics();
     releaseScene();
     physics.dispose();

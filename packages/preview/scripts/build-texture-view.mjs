@@ -11,9 +11,10 @@ for (const [dimension, guid] of Object.entries({
 })) {
   const name = dimension.replaceAll('-', '_');
   const load = dimension === '2d' ? 'textureLoad(sourceTexture, p, mip)'
-    : dimension === '2d-array' ? 'textureLoad(sourceTexture, p, i32(material.display.y), mip)'
-    : 'textureLoad(sourceTexture, vec3<i32>(p, i32(material.display.y)), mip)';
-  await writeFile(new URL(`${dimension}.wgsl`, output), source.replaceAll('__DIMENSION__', name).replace('__LOAD__', load));
+    : dimension === '2d-array' ? 'textureLoad(sourceTexture, p, layer, mip)'
+    : 'textureLoad(sourceTexture, vec3<i32>(p, layer), mip)';
+  const depth = dimension === '3d' ? 'f32(textureDimensions(sourceTexture, mip).z)' : dimension === '2d-array' ? 'f32(textureNumLayers(sourceTexture))' : '1.0';
+  await writeFile(new URL(`${dimension}.wgsl`, output), source.replaceAll('__DIMENSION__', name).replace('__LOAD__', load).replace('__DEPTH__', depth));
   const pack = { schemaVersion: '1.0.0', kind: 'internal-text-package', assets: [{
     guid, kind: 'material', sourceKey: `${dimension}.wgsl`,
     payload: createTextureViewMaterial(dimension), refs: [],

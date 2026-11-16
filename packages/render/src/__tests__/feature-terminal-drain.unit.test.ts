@@ -1,3 +1,4 @@
+import { World } from '@forgeax/engine-ecs';
 import type { RhiError } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { ok } from '@forgeax/engine-types';
@@ -78,8 +79,7 @@ it.each([
       {
         identity: 'view',
         render: true,
-        worlds: [],
-        owner: 0,
+        world: new World(),
         frameNumber: ++frameNumber,
         caps: device.caps,
         gpuWork,
@@ -189,8 +189,7 @@ it('never repeats accepted source acknowledgements after terminal callback failu
     {
       identity: 'view',
       render: true,
-      worlds: [],
-      owner: 0,
+      world: new World(),
       frameNumber: 1,
       caps: device.caps,
     },
@@ -255,8 +254,7 @@ it.each([
       {
         identity: 'view',
         render: true,
-        worlds: [],
-        owner: 0,
+        world: new World(),
         frameNumber: 1,
         caps: device.caps,
         gpuWork,

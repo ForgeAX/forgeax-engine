@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { PhysicsWorldResource as ecsPhysicsWorldResource } from '@forgeax/engine-physics';
+import { defineSystem } from "@forgeax/engine-ecs";
 import { createSmokePlatform } from '../../../../scripts/smoke-platform.mjs';
 // hello-physics headless smoke.
 //
@@ -20,12 +22,12 @@ import { createSmokePlatform } from '../../../../scripts/smoke-platform.mjs';
 // createApp resolves after the WASM module is loaded, so PhysicsWorld is
 // populated before the first app frame. If the WASM fails to load within
 // the timeout, the smoke FAILs (non-vacuous PASS).
-
 import { setTimeout as delay } from 'node:timers/promises';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { emitSmokeReceipt } from '../../../shared/scripts/smoke-receipt.mjs';
+import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 
 const SMOKE_DURATION_MS = Number.parseInt(process.env.SMOKE_DURATION_MS ?? '5000', 10);
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
@@ -151,7 +153,8 @@ const {
 
 const here = dirname(fileURLToPath(import.meta.url));
 const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MANIFEST_PATH, 'utf8'))}`;
+const MANIFEST_URL = URL.createObjectURL(new Blob([readShaderManifestText(MANIFEST_PATH)], { type: 'application/json' }));
+process.once('exit', () => URL.revokeObjectURL(MANIFEST_URL));
 
 const appResult = await createApp(mockCanvas, { platform: createSmokePlatform(mockCanvas),
   plugins: [physics3d],
@@ -209,7 +212,7 @@ app.onError((err) => onErrorEvents.push({ code: err.code, hint: err.hint }));
 
 
 const observations = [];
-const observerInstall = app.world.addSystem(Update, {
+const systemToken1 = defineSystem({
   name: 'm25-physics-frame-observer',
   queries: [],
   after: [FixedUpdate],
@@ -217,7 +220,7 @@ const observerInstall = app.world.addSystem(Update, {
     const time = world.getResource(Time);
     const fixed = world.getResource(FixedTime);
     const transform = world.get(sphereEntity, Transform);
-    const physics = world.hasResource('PhysicsWorld') ? world.getResource('PhysicsWorld') : undefined;
+    const physics = world.hasResource(ecsPhysicsWorldResource) ? world.getResource(ecsPhysicsWorldResource) : undefined;
     const collisions = world.get(sphereEntity, CollidingEntities);
     observations.push({
       timeDelta: time.delta,
@@ -235,6 +238,7 @@ const observerInstall = app.world.addSystem(Update, {
     });
   },
 });
+const observerInstall = app.world.addSystem(Update, systemToken1);
 if (!observerInstall.ok) {
   originalConsoleError(`[smoke] FAIL - M25 observer install failed: ${observerInstall.error.code}`);
   process.exit(1);
@@ -301,7 +305,7 @@ async function driveFrame(deltaMs) {
 
 await driveFrame(frameDeltaMs);
 const baseline = await driveFrame(frameDeltaMs);
-const physicsWorld = app.world.hasResource('PhysicsWorld') ? app.world.getResource('PhysicsWorld') : undefined;
+const physicsWorld = app.world.hasResource(ecsPhysicsWorldResource) ? app.world.getResource(ecsPhysicsWorldResource) : undefined;
 if (physicsWorld !== undefined) physicsWorld.teleport(sphereEntity, [0, 5, 0]);
 const oversizedDelta = await driveFrame(5_000);
 const healthyRecovery = await driveFrame(frameDeltaMs);
@@ -316,7 +320,7 @@ while (totalFrames < SMOKE_MIN_FRAMES) {
 globalThis.performance.now = realPerformanceNow;
 await delay(2000);
 
-const hasPhysicsWorld = app.world.hasResource('PhysicsWorld') === true;
+const hasPhysicsWorld = app.world.hasResource(ecsPhysicsWorldResource) === true;
 console.log(`[smoke] frames observed=${totalFrames}, PhysicsWorld=${hasPhysicsWorld}`);
 
 const finalTransform = app.world.get(sphereEntity, Transform);

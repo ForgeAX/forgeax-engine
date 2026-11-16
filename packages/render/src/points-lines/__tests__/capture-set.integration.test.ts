@@ -6,7 +6,7 @@ import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import { ShaderRegistry } from '@forgeax/engine-shader';
 import { expect, it, vi } from 'vitest';
 import { Camera, MeshFilter, MeshRenderer, Points } from '../../components';
-import { extractFrames } from '../../render-system-extract-tail';
+import { extractSource } from '../../render-system-extract-tail';
 import { PersistentRenderScene } from '../../scene/render-scene';
 import { StandardPointsLinesOwner } from '../standard-owner';
 
@@ -48,20 +48,19 @@ it('prepares a Points row the main camera culled, which a capture pass still dra
     .unwrap();
   const lease = createRenderReadLease(world);
   const scene = new PersistentRenderScene();
-  const owner = { cameraOwner: 0, resourceOwner: 0 };
+
   try {
     world.update(1 / 60).unwrap();
     const culled = scene.extractComposition(
-      [world],
-      owner,
+      world,
       assets,
       (request) =>
-        extractFrames([world], owner, assets, scene.materialSnapshotCacheStore(), {
+        extractSource(world, assets, scene.materialSnapshotCacheStore(), {
           cull: 'none',
           retainHidden: true,
           renderables: request,
         }),
-      [lease],
+      lease,
     );
     // The main camera's cull dropped the row from its own frame ...
     expect(culled.renderables).toHaveLength(0);

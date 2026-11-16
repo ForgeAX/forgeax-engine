@@ -74,8 +74,7 @@ export class RasterGraphIdentity {
       raw.add(batch.classKey);
       recording.add(batch.recordingClassKey);
     }
-    // Class sets are compared unsorted: the common frame republishes the same
-    // classes, and only a replaced publication needs the sorted arrays.
+    // Membership is the contract; neither projection observes class order.
     const sameRaw = sameRawClasses(old, raw);
     // A stock-recorder graph projects classes first seen after compilation
     // from the live frame (residency-owned meshes are bound outside the
@@ -89,7 +88,7 @@ export class RasterGraphIdentity {
     if (sameResources && covered) {
       builtRecording = old.builtRecording;
     } else {
-      recordingClasses = [...recording].sort();
+      recordingClasses = [...recording];
       builtRecording = sameResources
         ? new Set([...old.builtRecording, ...recordingClasses])
         : new Set(recordingClasses);
@@ -103,8 +102,8 @@ export class RasterGraphIdentity {
       old.skinBindings = skinBindings;
       return old;
     }
-    const rawClasses = [...raw].sort();
-    recordingClasses ??= [...recording].sort();
+    const rawClasses = [...raw];
+    recordingClasses ??= [...recording];
     this.current = {
       source,
       sceneIdentity,

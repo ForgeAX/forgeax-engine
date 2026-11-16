@@ -44,9 +44,7 @@ export async function verifyForwardContactShadow(
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
     return drawReadyFrame(renderer, {
-      leases: [lease.value],
-      camera: { lease: lease.value },
-      environment: { lease: lease.value },
+      source: lease.value,
     });
   };
   const sample = async (name: string, length: number) => {

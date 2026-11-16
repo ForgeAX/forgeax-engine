@@ -1,9 +1,12 @@
 import type {
   DerivedPhysicsAdmissionGuard,
   DerivedPhysicsAdmissionState,
+  DerivedShapeInput,
 } from '@forgeax/engine-physics';
 import { err, ok } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
+import { copyDerivedShapeInputs } from '../derived-admission-preflight.js';
+import type { DerivedBodyRecord } from '../derived-candidate-records.js';
 import { derivedAdmissionFixture as fixture } from './fixtures/derived-admission.js';
 
 function first<T>(rows: readonly T[]): T {
@@ -249,7 +252,11 @@ it('keeps an unchanged collision-isolation policy independent of the resident en
   const entities = (physics as unknown as { entityMap: Map<number, unknown> }).entityMap;
   const traversal = vi.spyOn(entities, Symbol.iterator);
   try {
-    physics.step(1 / 60);
+    // Completed sensor rosters intentionally inspect residents at fixed-step
+    // publication. This assertion belongs to the collision-isolation owner.
+    (
+      physics as unknown as { preparePairIsolation(refreshContacts: boolean): void }
+    ).preparePairIsolation(true);
     expect(traversal).not.toHaveBeenCalled();
   } finally {
     traversal.mockRestore();
@@ -279,4 +286,55 @@ it('preserves explicit Native sleep on a new body without an isolation policy ch
   } finally {
     physics.dispose();
   }
+});
+
+it('copies convex pieces and trimesh vertex/index buffers independently', () => {
+  const convexPiece = Float32Array.of(0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1);
+  const vertices = Float32Array.of(0, 0, 0, 1, 0, 0, 0, 1, 0);
+  const indices = Uint32Array.of(0, 1, 2);
+  const shapes = [
+    {
+      kind: 'convex-compound',
+      id: 'convex',
+      revision: 1,
+      pieces: [convexPiece],
+      origin: [0, 0, 0] as const,
+      rotation: [0, 0, 0, 1] as const,
+    },
+    {
+      kind: 'trimesh',
+      id: 'trimesh',
+      revision: 2,
+      vertices,
+      indices,
+      origin: [1, 2, 3] as const,
+      rotation: [0, 0, 0, 1] as const,
+    },
+  ] satisfies DerivedShapeInput[];
+  const body = {
+    entity: 1,
+    sourceKey: 'water:test',
+    generation: 1,
+    revision: 2,
+    bodyType: undefined,
+    velocityPolicy: undefined,
+    candidateId: 'candidate',
+    inputDigest: 'digest',
+    shapes: shapes.map((input, colliderHandle) => ({ input, colliderHandle })),
+    massProperties: undefined,
+    constraints: [],
+  } satisfies DerivedBodyRecord;
+
+  const copied = copyDerivedShapeInputs(body);
+  convexPiece[0] = 9;
+  vertices[0] = 8;
+  indices[0] = 2;
+
+  expect(copied[0]?.kind).toBe('convex-compound');
+  expect(copied[0]?.kind === 'convex-compound' ? copied[0].pieces[0]?.[0] : undefined).toBe(0);
+  expect(copied[1]?.kind).toBe('trimesh');
+  expect(copied[1]?.kind === 'trimesh' ? Array.from(copied[1].vertices) : []).toEqual([
+    0, 0, 0, 1, 0, 0, 0, 1, 0,
+  ]);
+  expect(copied[1]?.kind === 'trimesh' ? Array.from(copied[1].indices) : []).toEqual([0, 1, 2]);
 });

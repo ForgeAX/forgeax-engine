@@ -7,7 +7,7 @@ import { Instances } from '../components/instances';
 import { DynamicGeometryError } from '../dynamic-geometry';
 import { renderMaterialContext } from '../extract/material-context';
 import type { RenderableSnapshot } from '../render-system-extract';
-import { extractFrames } from '../render-system-extract-tail';
+import { extractSource } from '../render-system-extract-tail';
 import { candidateSkinBindingValid, readCandidateSkinBinding } from './candidate-skin-binding';
 import type { MeshPipelinePreparation } from './contract';
 import { publicationMaterialProgramKeys } from './programs';
@@ -74,11 +74,11 @@ export function captureMeshPipelinePreparation(input: {
       return invalid('candidate Skin layout, Skeleton or live joint membership is unavailable');
     if (skin !== undefined && input.world.hasComponent(input.entity as EntityHandle, Instances))
       return invalid('Skin and expanded instance geometry require distinct owners');
-    const frame = extractFrames([input.world], 0, input.assets, undefined, {
+    const frame = extractSource(input.world, input.assets, undefined, {
       ...renderMaterialContext(input.capabilities, input.limits),
       cull: 'none',
       retainHidden: true,
-      renderables: { kind: 'partial', entitiesByWorld: [new Set([input.entity])] },
+      renderables: { kind: 'partial', entities: new Set([input.entity]) },
       preparationMesh: input,
     });
     const row = frame.renderables.find((row) => row.entityKey === input.entity);
@@ -120,7 +120,6 @@ export function captureMeshPipelinePreparation(input: {
       }
     }
     const {
-      worldId: _worldId,
       entityKey: _entityKey,
       transform,
       gpuDrivenDraws: _gpuDraws,

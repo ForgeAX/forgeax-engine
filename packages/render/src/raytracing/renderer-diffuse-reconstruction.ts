@@ -50,7 +50,6 @@ export function prepareRendererDiffuseReconstruction(
     },
     prepare(view: TemporalView, previousView: TemporalView | undefined, camera: CameraSnapshot) {
       const projection = JSON.stringify([
-        camera.worldId,
         camera.entityKey,
         camera.projection,
         camera.near,

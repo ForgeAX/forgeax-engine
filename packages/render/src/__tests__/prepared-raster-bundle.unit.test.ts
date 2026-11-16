@@ -38,6 +38,7 @@ function fixture() {
     index: {},
     indirect: {},
     materialOffset: 256,
+    viewOffset: 0,
     meshOffsets: [0],
     indexFormat: 'uint16',
     indirectOffset: 60,
@@ -80,6 +81,7 @@ describe('private streaming prepared raster recording', () => {
   it.each([
     'pipeline',
     'view',
+    'viewOffset',
     'material',
     'mesh',
     'vertex',
@@ -109,6 +111,14 @@ describe('private streaming prepared raster recording', () => {
     const recording = f.cache.begin(f.pass('main', f.descriptor), f.device, f.counters);
     recording.push({ ...f.bindings, [field]: replacement });
     expect(recording.finish()).not.toBe(previous);
+  });
+  it('records and retains the selected View uniform slot', () => {
+    const f = fixture();
+    const unjittered = { ...f.bindings, viewOffset: 1280 };
+    const first = f.resolve(unjittered);
+    expect(f.trace).toContainEqual(['setBindGroup', 0, f.bindings.view, [1280, 0]]);
+    expect(f.resolve({ ...unjittered })).toBe(first);
+    expect(f.resolve({ ...unjittered, viewOffset: 0 })).not.toBe(first);
   });
   it('reuses a bundle across fresh caller lists without exposing its physical snapshots', () => {
     const f = fixture();

@@ -34,7 +34,7 @@ describe('material-inheritance-demo structure', () => {
     expect(rows).toHaveLength(2);
     expect(rows.some((asset: { guid?: string }) => asset.guid === ROOT_MATERIAL_GUID)).toBe(true);
     expect(rows.some((asset: { guid?: string }) => asset.guid === DERIVED_MATERIAL_GUID)).toBe(true);
-    expect(rows.every((asset: { payload?: { cooked?: { schemaVersion?: string } } }) => asset.payload?.cooked?.schemaVersion === 'material-cook/4')).toBe(true);
+    expect(rows.every((asset: { payload?: { cooked?: { schemaVersion?: string } } }) => asset.payload?.cooked?.schemaVersion === 'material-cook/5')).toBe(true);
     expect(shader).toMatch(/sin\(/);
     expect(shader).toMatch(/time/);
   });

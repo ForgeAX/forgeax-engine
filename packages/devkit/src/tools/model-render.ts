@@ -60,7 +60,6 @@ import {
   type MeshAsset,
   type TextureAsset,
 } from '@forgeax/engine-types';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { nodeGpu } from '../node-gpu.js';
 import {
   drawGrid,
@@ -945,6 +944,7 @@ async function renderStates(
   const { width, height } = set;
   const target = offscreenTarget(width, height);
   const { requestAdapterFrom, rhi } = await import('@forgeax/engine-rhi-webgpu');
+  const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
   const manifest = await buildEngineShaderManifest();
   const manifestText = JSON.stringify(manifest);
   // The Renderer asks the explicit GPU for its adapter; keep the info of that very request.
@@ -1035,12 +1035,7 @@ async function renderStates(
         .unwrap();
       const draw = async () => {
         world.update(1 / 60).unwrap();
-        for (let i = 0; i < 2; i++)
-          await drawReady(renderer, {
-            leases: [lease],
-            camera: { lease },
-            environment: { lease },
-          } as never);
+        for (let i = 0; i < 2; i++) await drawReady(renderer, { source: lease } as never);
         return target.read();
       };
       const background = await draw();

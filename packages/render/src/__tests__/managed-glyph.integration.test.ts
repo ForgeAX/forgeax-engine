@@ -11,7 +11,7 @@ import { GlyphText } from '../components/glyph-text';
 import { createRenderPublisher } from '../publication/publisher';
 import { RenderPublicationReceiver } from '../publication/receiver';
 import { encodeRenderPublication, renderPublicationTransfers } from '../publication/record';
-import { extractFrames } from '../render-system-extract-tail';
+import { extractSource } from '../render-system-extract-tail';
 import { PersistentRenderScene } from '../scene/render-scene';
 import { SceneComposition } from '../scene/scene-composition';
 
@@ -66,7 +66,10 @@ it.each([
     })
     .unwrap();
   const camera = world
-    .spawn({ component: Transform, data: { pos: [0, 0, 5] } }, { component: Camera, data: {} })
+    .spawn(
+      { component: Transform, data: { pos: [0, 0, 5] } },
+      { component: Camera, data: { fov: 1, aspect: 1, near: 0.1, far: 100 } },
+    )
     .unwrap();
   const labels = Array.from({ length: 128 }, () =>
     world
@@ -85,7 +88,6 @@ it.each([
     shared === undefined
       ? new PersistentRenderScene({ assets })
       : new PersistentRenderScene({}, shared);
-  const owner = { cameraOwner: 0, resourceOwner: 0 };
   const identity = { source: 'glyph-test', epoch: 1 };
   const publisher = createRenderPublisher(world, assets, identity);
   const receiver = new RenderPublicationReceiver(identity);
@@ -107,20 +109,18 @@ it.each([
       return result;
     }
     return scene.extractComposition(
-      [world],
-      owner,
+      world,
       assets,
       (request) => {
-        if (typeof request === 'object')
-          for (const entities of request.entitiesByWorld) extractions += entities?.size ?? 0;
+        if (typeof request === 'object') extractions += request.entities.size;
         else if (request === 'full') extractions += labels.length;
-        return extractFrames([world], owner, assets, scene.materialSnapshotCacheStore(), {
+        return extractSource(world, assets, scene.materialSnapshotCacheStore(), {
           cull: 'none',
           retainHidden: true,
           renderables: request,
         });
       },
-      [lease],
+      lease,
     );
   };
   try {

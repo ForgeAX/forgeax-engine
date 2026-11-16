@@ -3,8 +3,12 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { runInNewContext } from 'node:vm';
 import { preview } from 'vite';
-import { waitForPreview } from '../../../apps/hello/multithreaded-execution/scripts/preview-readiness.mjs';
+import {
+  executionSmokeReady,
+  waitForPreview,
+} from '../../../apps/hello/multithreaded-execution/scripts/preview-readiness.mjs';
 
 test('shader-only transfer fails with its missing executable path, then a complete app serves', async () => {
   const root = mkdtempSync(join(tmpdir(), 'multithread-preview-'));
@@ -124,4 +128,30 @@ test('preview reports no response, aborts the pending request, then recovers fro
     await server.close();
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('shared smoke waits for its published dispatch while preserving other tier readiness', () => {
+  let report = null;
+  const scope = {
+    tier: 'shared',
+    __forgeaxExecutionReady: true,
+    // Real-time App state may advance before the UI publishes its next snapshot.
+    __forgeaxExecutionReport: () => ({ kernelDispatch: { usedShared: true } }),
+    document: { querySelector: () => ({ textContent: JSON.stringify(report) }) },
+  };
+  const ready = (tier) => runInNewContext(`(${executionSmokeReady})(tier)`, { ...scope, tier });
+  assert.equal(ready('shared'), false);
+  assert.equal(ready('auto'), false);
+  report = { kernelDispatch: { usedShared: false, reason: 'forced-inline' } };
+  assert.equal(ready('shared'), false);
+  assert.equal(ready('auto'), false);
+  for (const tier of ['main-serial', 'engine-worker', 'render-worker']) {
+    assert.equal(ready(tier), true);
+  }
+  report = { kernelDispatch: { usedShared: true, dispatched: 18, completed: 18 } };
+  assert.equal(ready('shared'), true);
+  assert.equal(ready('auto'), true);
+  scope.__forgeaxExecutionReady = false;
+  assert.equal(ready('shared'), false);
+  assert.equal(ready('engine-worker'), false);
 });

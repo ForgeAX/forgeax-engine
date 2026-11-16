@@ -101,6 +101,3 @@ not a crash.
 The right-hand panel loops the same Pack-loaded clip. Pause retains decoded
 progress and the filter graph; resume recreates only the one-shot native source.
 The spectrum tap follows source filters and volume, before spatial/bus mixing.
-
-See [native signal/performance and RHI validation](../../../packages/audio-webaudio/bench/README.md)
-for reproducer commands, pinned Three.js/UE references and evidence boundaries.

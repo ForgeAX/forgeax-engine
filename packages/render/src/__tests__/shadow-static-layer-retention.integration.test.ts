@@ -172,7 +172,7 @@ function frame(
     .inspect()
     .views.map(
       (view) =>
-        `${view.identity.terrainReceiver === undefined ? (view.identity.layer ?? 'final') : `terrain-${view.identity.terrainReceiver.worldId}-${view.identity.terrainReceiver.entityKey}`}:${'invalidationReason' in view ? view.invalidationReason : 'hit'}`,
+        `${view.identity.terrainReceiver === undefined ? (view.identity.layer ?? 'final') : `terrain-${view.identity.terrainReceiver.entityKey}`}:${'invalidationReason' in view ? view.invalidationReason : 'hit'}`,
     );
 }
 
@@ -189,10 +189,10 @@ function expectFullCopies(operations: readonly string[], producerName = 'shadowC
   const producer = operations.indexOf(`raster:${producerName}`);
   expect(producer).toBeGreaterThanOrEqual(0);
   for (const copy of expected) expect(operations.indexOf(copy)).toBeGreaterThan(producer);
-  expect(operations.indexOf('raster:shadowCascade0.terrain-0-7')).toBeGreaterThan(
+  expect(operations.indexOf('raster:shadowCascade0.terrain-7')).toBeGreaterThan(
     operations.indexOf(expected[1] ?? 'missing-copy'),
   );
-  expect(operations.indexOf('raster:shadowCascade0.terrain-1-7')).toBeGreaterThan(
+  expect(operations.indexOf('raster:shadowCascade0.terrain-8')).toBeGreaterThan(
     operations.indexOf(expected[2] ?? 'missing-copy'),
   );
 }
@@ -310,10 +310,7 @@ describe('static shadow layer retention', () => {
   it('fully copies every Terrain family after a partial static producer update', async () => {
     const device = await nullDevice();
     const staticLayers = new ShadowDepthLayers(device);
-    const compiled = compile(device, staticLayers, undefined, [
-      { worldId: 0, entityKey: 7 },
-      { worldId: 1, entityKey: 7 },
-    ]);
+    const compiled = compile(device, staticLayers, undefined, [{ entityKey: 7 }, { entityKey: 8 }]);
     frame(device, compiled, staticLayers);
     const partialPool: typeof hitPool = {
       ...hitPool,
@@ -326,8 +323,8 @@ describe('static shadow layer retention', () => {
     expect(frame(device, compiled, staticLayers, 'submit', operations, partialPool)).toEqual([
       'static:content-changed',
       'final:content-changed',
-      'terrain-0-7:content-changed',
-      'terrain-1-7:content-changed',
+      'terrain-7:content-changed',
+      'terrain-8:content-changed',
     ]);
     expect(operations).not.toContain('raster:shadowCascade0.static');
     expectFullCopies(operations, 'shadowCascade0.static-partial');
@@ -335,8 +332,8 @@ describe('static shadow layer retention', () => {
     expect(frame(device, compiled, staticLayers, 'submit', operations)).toEqual([
       'static:hit',
       'final:hit',
-      'terrain-0-7:hit',
-      'terrain-1-7:hit',
+      'terrain-7:hit',
+      'terrain-8:hit',
     ]);
     expect(operations.filter((op) => op.startsWith('copy:'))).toEqual([]);
     (await compiled.retire()).unwrap();
@@ -346,7 +343,7 @@ describe('static shadow layer retention', () => {
   it('omits the static layer, its producer and copies when a light disables the static cache', async () => {
     const device = await nullDevice();
     const staticLayers = new ShadowDepthLayers(device);
-    const receivers = [{ worldId: 0, entityKey: 7 }];
+    const receivers = [{ entityKey: 7 }];
     const labels = (operations: readonly string[]) =>
       operations.filter((op) => op.startsWith('raster:shadowCascade') || op.startsWith('copy:'));
     // Default topology keeps the static producer and its Terrain copy.
@@ -366,18 +363,18 @@ describe('static shadow layer retention', () => {
     const operations: string[] = [];
     expect(frame(device, single, staticLayers, 'submit', operations, singlePool)).toEqual([
       'final:graph-compiled',
-      'terrain-0-7:graph-compiled',
+      'terrain-7:graph-compiled',
     ]);
     expect(labels(operations)).toEqual([
       'raster:shadowCascade0',
-      'raster:shadowCascade0.terrain-0-7',
+      'raster:shadowCascade0.terrain-7',
     ]);
     operations.length = 0;
     // A retained final view hits; its Terrain family does not re-raster for
     // want of a static view.
     expect(frame(device, single, staticLayers, 'submit', operations, singlePool)).toEqual([
       'final:hit',
-      'terrain-0-7:hit',
+      'terrain-7:hit',
     ]);
     expect(labels(operations)).toEqual([]);
     (await single.retire()).unwrap();
@@ -387,16 +384,13 @@ describe('static shadow layer retention', () => {
   it('recomposes every Terrain family after an aborted static-layer submit even when the logical GPU pool hits', async () => {
     const device = await nullDevice();
     const staticLayers = new ShadowDepthLayers(device);
-    const compiled = compile(device, staticLayers, undefined, [
-      { worldId: 0, entityKey: 7 },
-      { worldId: 1, entityKey: 7 },
-    ]);
+    const compiled = compile(device, staticLayers, undefined, [{ entityKey: 7 }, { entityKey: 8 }]);
     const operations: string[] = [];
     expect(frame(device, compiled, staticLayers, 'abort', operations)).toEqual([
       'static:graph-compiled',
       'final:graph-compiled',
-      'terrain-0-7:graph-compiled',
-      'terrain-1-7:graph-compiled',
+      'terrain-7:graph-compiled',
+      'terrain-8:graph-compiled',
     ]);
     expectFullCopies(operations);
     operations.length = 0;
@@ -405,16 +399,16 @@ describe('static shadow layer retention', () => {
     expect(frame(device, compiled, staticLayers, 'submit', operations)).toEqual([
       'static:graph-compiled',
       'final:static-layer-changed',
-      'terrain-0-7:static-layer-changed',
-      'terrain-1-7:static-layer-changed',
+      'terrain-7:static-layer-changed',
+      'terrain-8:static-layer-changed',
     ]);
     expectFullCopies(operations);
     operations.length = 0;
     expect(frame(device, compiled, staticLayers, 'submit', operations)).toEqual([
       'static:hit',
       'final:hit',
-      'terrain-0-7:hit',
-      'terrain-1-7:hit',
+      'terrain-7:hit',
+      'terrain-8:hit',
     ]);
     expect(operations.filter((op) => op.startsWith('copy:'))).toEqual([]);
     (await compiled.retire()).unwrap();
@@ -456,19 +450,34 @@ describe('static shadow layer retention', () => {
     ).toEqual(['static:merged-static-layer', 'final:view-changed']);
     expect(scheduled(operations)).toEqual(['raster:spot-shadow-0.single']);
     operations.length = 0;
-    // A view that holds still briefly keeps one pass: rebuilding the
+    // A view that holds still briefly keeps the merged depth: rebuilding the
     // skipped layer would add a static raster and a copy for a light that
-    // is likely to move again.
+    // is likely to move again, and the final layer already holds both.
     for (let settled = 1; settled < MERGED_STATIC_HYSTERESIS_FRAMES; settled++) {
-      frame(device, compiled, staticLayers, 'submit', operations);
-      expect(scheduled(operations)).toEqual(['raster:spot-shadow-0.single']);
+      expect(frame(device, compiled, staticLayers, 'submit', operations)).toEqual([
+        'static:merged-static-layer',
+        'final:hit',
+      ]);
+      expect(scheduled(operations)).toEqual([]);
       operations.length = 0;
     }
-    // Once the view has held still for the whole window the stale layer
-    // rebuilds and the split resumes.
+    // Past the window a view whose own content holds still keeps the merged
+    // depth; nothing reads the split it would rebuild.
     expect(frame(device, compiled, staticLayers, 'submit', operations)).toEqual([
       'static:merged-static-layer',
-      'final:static-layer-changed',
+      'final:hit',
+    ]);
+    expect(scheduled(operations)).toEqual([]);
+    // The first dynamic change on the settled view rebuilds the stale layer
+    // and the split resumes.
+    const dynamicPool: typeof hitPool = {
+      ...hitPool,
+      invalidationReason: (identity) =>
+        identity.layer === 'static' ? undefined : 'content-changed',
+    };
+    expect(frame(device, compiled, staticLayers, 'submit', operations, dynamicPool)).toEqual([
+      'static:merged-static-layer',
+      'final:content-changed',
     ]);
     expect(scheduled(operations)).toEqual([
       'raster:spot-shadow-0.static',
@@ -481,12 +490,7 @@ describe('static shadow layer retention', () => {
       'final:hit',
     ]);
     expect(scheduled(operations)).toEqual([]);
-    // A dynamic-only change on a stable view keeps reusing the static layer.
-    const dynamicPool: typeof hitPool = {
-      ...hitPool,
-      invalidationReason: (identity) =>
-        identity.layer === 'static' ? undefined : 'content-changed',
-    };
+    // Later dynamic-only changes on a stable view keep reusing the static layer.
     expect(frame(device, compiled, staticLayers, 'submit', operations, dynamicPool)).toEqual([
       'static:hit',
       'final:content-changed',
@@ -521,10 +525,9 @@ describe('static shadow layer retention', () => {
       expect(staticLayers.retained('spot-shadow-static', 0)).toBe(false);
     }
     operations.length = 0;
-    expect(frame(device, compiled, staticLayers, 'submit', operations)).toEqual([
-      'static:merged-static-layer',
-      'final:static-layer-changed',
-    ]);
+    expect(
+      frame(device, compiled, staticLayers, 'submit', operations, missPool('content-changed')),
+    ).toEqual(['static:merged-static-layer', 'final:content-changed']);
     expect(staticLayers.retained('spot-shadow-static', 0)).toBe(true);
     (await compiled.retire()).unwrap();
     staticLayers.dispose();
@@ -533,10 +536,7 @@ describe('static shadow layer retention', () => {
   it('keeps the static producer for a moving cascade whose layer Terrain families copy', async () => {
     const device = await nullDevice();
     const staticLayers = new ShadowDepthLayers(device);
-    const compiled = compile(device, staticLayers, undefined, [
-      { worldId: 0, entityKey: 7 },
-      { worldId: 1, entityKey: 7 },
-    ]);
+    const compiled = compile(device, staticLayers, undefined, [{ entityKey: 7 }, { entityKey: 8 }]);
     frame(device, compiled, staticLayers);
     const operations: string[] = [];
     expect(
@@ -544,8 +544,8 @@ describe('static shadow layer retention', () => {
     ).toEqual([
       'static:view-changed',
       'final:view-changed',
-      'terrain-0-7:view-changed',
-      'terrain-1-7:view-changed',
+      'terrain-7:view-changed',
+      'terrain-8:view-changed',
     ]);
     expect(operations).not.toContain('raster:shadowCascade0.single');
     expectFullCopies(operations);
@@ -623,6 +623,57 @@ describe('static shadow layer retention', () => {
     expect(layers.view('spot-shadow-static', 0)).toBe(layer);
     (await second.retire()).unwrap();
     layers.dispose();
+  });
+
+  it('retains the active spot prefix across graph recompiles and replaces only changed views', async () => {
+    const device = await nullDevice();
+    const layers = new ShadowDepthLayers(device);
+    const sample = (spotCount: number, mapSize = 32, width = 64) => {
+      const graph = new RenderGraphBuilder<RenderPipelineFrame>();
+      const base = spotTopology(mapSize);
+      const shadows = addTypedShadowPasses(
+        graph,
+        { ...base, shadow: { ...base.shadow, spotCount } },
+        { depthLayers: layers },
+      ).unwrap();
+      let sampled: import('@forgeax/engine-rhi').TextureView | undefined;
+      graph
+        .addComputePass('sample-active-spot-prefix', {
+          accesses: [{ resource: shadows.spot.view, usage: 'sampled-read' }],
+          encodeDirect: (_pass, _frame, resources) => {
+            sampled = resources.textureView(shadows.spot.view).unwrap();
+          },
+        })
+        .unwrap();
+      const compiled = Object.assign(
+        graph.compile({ device, surfaceSize: { width, height: 64 } }).unwrap(),
+        {
+          preparationDemand: shadowPipelinePreparationDemand(graph),
+          pointTexture: undefined,
+        },
+      );
+      frame(device, compiled, layers);
+      if (sampled === undefined) throw new Error('spot prefix was not sampled');
+      return { compiled, sampled };
+    };
+    try {
+      const first = sample(1);
+      (await first.compiled.retire()).unwrap();
+      const resized = sample(1, 32, 128);
+      expect(resized.sampled).toBe(first.sampled);
+      (await resized.compiled.retire()).unwrap();
+      const expanded = sample(2);
+      expect(expanded.sampled).not.toBe(first.sampled);
+      (await expanded.compiled.retire()).unwrap();
+      const restored = sample(1);
+      expect(restored.sampled).toBe(first.sampled);
+      (await restored.compiled.retire()).unwrap();
+      const replaced = sample(1, 64);
+      expect(replaced.sampled).not.toBe(first.sampled);
+      (await replaced.compiled.retire()).unwrap();
+    } finally {
+      layers.dispose();
+    }
   });
 
   it('retries failed views and preserves old allocation on replacement failure', async () => {
@@ -775,14 +826,14 @@ it.each([
 it('keeps preparation conservative when a Terrain family re-records a logical view', async () => {
   const device = await nullDevice();
   const staticLayers = new ShadowDepthLayers(device);
-  const compiled = compile(device, staticLayers, undefined, [{ worldId: 0, entityKey: 7 }]);
+  const compiled = compile(device, staticLayers, undefined, [{ entityKey: 7 }]);
   try {
     expect(compiled.preparationDemand).toBeUndefined();
     frame(device, compiled, staticLayers);
     expect(frame(device, compiled, staticLayers)).toEqual([
       'static:hit',
       'final:hit',
-      'terrain-0-7:hit',
+      'terrain-7:hit',
     ]);
   } finally {
     (await compiled.retire()).unwrap();

@@ -53,7 +53,6 @@ it('grows distinct material storage and reconstructs its bytes on a replacement 
     });
     const updates = sources.map((snapshot) => ({
       kind: 'update' as const,
-      worldId: 0,
       entityKey: snapshot.entityKey,
       snapshot,
     }));

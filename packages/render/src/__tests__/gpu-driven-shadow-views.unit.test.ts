@@ -79,7 +79,6 @@ function snapshot(entityKey: number): RenderableSnapshot {
     material,
     materials: [material],
     materialBindingSources: ['engine-default'],
-    worldId: 0,
     entityKey,
     gpuDrivenDraws: [
       {
@@ -106,7 +105,6 @@ function placed(entityKey: number, x: number): RenderableSnapshot {
 function updateSnapshot(value: RenderableSnapshot) {
   return {
     kind: 'update' as const,
-    worldId: value.worldId,
     entityKey: value.entityKey,
     snapshot: value,
   };
@@ -464,7 +462,9 @@ describe('GPU-driven shadow view owner contract', () => {
       index: number;
       face?: number;
       layer?: 'static';
-      terrainReceiver?: { worldId: number; entityKey: number };
+      terrainReceiver?: {
+        entityKey: number;
+      };
     } = { kind: 'directional', index: 0 };
     const base = shadowViewIdentityKey(identity);
     expect(shadowViewIdentityKey(identity)).toBe(base);
@@ -472,11 +472,11 @@ describe('GPU-driven shadow view owner contract', () => {
     expect(shadowViewIdentityKey(identity)).not.toBe(base);
     delete identity.layer;
     expect(shadowViewIdentityKey(identity)).toBe(base);
-    identity.terrainReceiver = { worldId: 1, entityKey: 2 };
+    identity.terrainReceiver = { entityKey: 2 };
     const terrain = shadowViewIdentityKey(identity);
     identity.terrainReceiver.entityKey = 3;
     expect(shadowViewIdentityKey(identity)).not.toBe(terrain);
-    identity.terrainReceiver.worldId = 2;
+    identity.terrainReceiver.entityKey = 2 ** 32 + 3;
     expect(shadowViewIdentityKey(identity)).toBe(shadowViewIdentityKey({ ...identity }));
     identity.face = 5;
     identity.index = 99;
@@ -1031,10 +1031,7 @@ describe('GPU-driven shadow view owner contract', () => {
               value.geometryAddress ??
               (value.binding === undefined
                 ? 0
-                : (f.input.scene.geometryIndexForResource(
-                    value.binding.worldId,
-                    value.binding.assetHandle,
-                  ) ?? 0)),
+                : (f.input.scene.geometryIndexForResource(value.binding.assetHandle) ?? 0)),
             candidates: [...value.candidates],
             ...(value.members === undefined ? {} : { members: [...value.members] }),
           })),
@@ -1369,11 +1366,17 @@ describe('GPU-driven shadow view owner contract', () => {
       const movedWorld = mat4.identity(mat4.create());
       movedWorld[12] = 0.01 + (projection.slotAt(0)?.snapshot.transform.world[12] ?? 0);
       sceneAvailability.scene
-        .sync(projection.apply([{ kind: 'update', worldId: 0, entityKey: 1, world: movedWorld }]))
+        .sync(projection.apply([{ kind: 'update', entityKey: 1, world: movedWorld }]))
         .unwrap();
       const contentInvalidated = updateShadowView(pool, input).unwrap();
       expect(contentInvalidated.cache).toBe('invalidated');
       expect(pool.invalidationReason(identity)).toBe('content-changed');
+      expect(
+        pool.inspect().find((view) => view.identity.kind === identity.kind)?.preparation,
+      ).toMatchObject({
+        materialContentMisses: 0,
+        sceneBoundsMisses: 1,
+      });
       pool._commitResourceReplacement();
       const membershipChanged = updateShadowView(pool, {
         ...input,
@@ -1710,7 +1713,7 @@ describe('GPU-driven shadow view owner contract', () => {
     const sourcePlan = topology.query(topology.sourcePlan(), undefined);
     const moved = new Float32Array(mat4.identity(mat4.create()));
     moved[12] = 4;
-    const delta = projection.apply([{ kind: 'update', worldId: 0, entityKey: 1, world: moved }]);
+    const delta = projection.apply([{ kind: 'update', entityKey: 1, world: moved }]);
     expect(topology.apply(delta)).toBe(false);
     expect(topology.query(topology.sourcePlan(), undefined)).toBe(sourcePlan);
     expect(topology.query(topology.sourcePlan(), undefined).batches.at(0)).toBe(

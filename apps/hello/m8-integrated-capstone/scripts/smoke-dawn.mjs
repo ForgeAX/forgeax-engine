@@ -1,9 +1,10 @@
 #!/usr/bin/env node
+import { defineSystem } from "@forgeax/engine-ecs";
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { createSmokePlatform } from '../../../../scripts/smoke-platform.mjs';
-import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..', '..', '..', '..');
@@ -45,7 +46,7 @@ const { createApp } = await import('@forgeax/engine-app/browser');
 const { buildCapstoneScene } = await import(resolve(root, 'apps/hello/m8-integrated-capstone/src/scene.ts'));
 const { physics3d } = await import('@forgeax/engine-physics');
 const manifestPath = resolve(root, 'apps/hello/m8-integrated-capstone/dist/shaders/manifest.json');
-const manifestUrl = URL.createObjectURL(new Blob([readFileSync(manifestPath)], { type: 'application/json' }));
+const manifestUrl = URL.createObjectURL(new Blob([readShaderManifestText(manifestPath)], { type: 'application/json' }));
 process.once('exit', () => URL.revokeObjectURL(manifestUrl));
 const result = await createApp(canvas, { platform: createSmokePlatform(canvas),  plugins: [physics3d] }, { shaderManifestUrl: manifestUrl });
 if (!result.ok) throw new Error(`M8 Dawn createApp failed: ${result.error.code}`);
@@ -53,7 +54,8 @@ const app = result.value;
 const scene = buildCapstoneScene(app.world);
 const fixedTicks = { value: 0 };
 const { FixedUpdate } = await import('@forgeax/engine-ecs');
-app.world.addSystem(FixedUpdate, { name: 'm8-dawn-fixed-oracle', queries: [], fn: () => { fixedTicks.value += 1; } }).unwrap();
+const systemToken1 = defineSystem({ name: 'm8-dawn-fixed-oracle', queries: [], fn: () => { fixedTicks.value += 1; } });
+app.world.addSystem(FixedUpdate, systemToken1).unwrap();
 const errors = [];
 app.onError((error) => errors.push({ code: error.code, hint: error.hint, detail: error.detail }));
 const started = app.start();

@@ -117,3 +117,13 @@ diff --git a/src/dawn/native/d3d12/PhysicalDeviceD3D12.cpp b/src/dawn/native/d3d
 +                           gpu_info::IsMicrosoftWARP(GetVendorId(), GetDeviceId()));
 +
      // By default use the maximum shader-visible heap size allowed.
+diff --git a/src/dawn/node/CMakeLists.txt b/src/dawn/node/CMakeLists.txt
+--- a/src/dawn/node/CMakeLists.txt
++++ b/src/dawn/node/CMakeLists.txt
+@@ -163,5 +163,6 @@ if (WIN32)
+         COMMAND "${LIB_EXE}"
+                 "/DEF:${NAPI_SYMBOLS_DEF}"
++                "/MACHINE:X64"
+                 "/OUT:${NAPI_SYMBOLS_LIB}"
+         DEPENDS "${NAPI_SYMBOLS_DEF}"
+         OUTPUT  "${NAPI_SYMBOLS_LIB}"

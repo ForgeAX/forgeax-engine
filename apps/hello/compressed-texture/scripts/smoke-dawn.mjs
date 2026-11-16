@@ -129,7 +129,7 @@ const { Transform } = await import('@forgeax/engine-scene');
 
 const here = dirname(fileURLToPath(import.meta.url));
 const distShaders = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(distShaders, 'utf8'))}`;
+const MANIFEST_URL = `data:application/octet-stream;base64,${readFileSync(distShaders).toString('base64')}`;
 
 let renderer;
 let assets;
@@ -321,11 +321,7 @@ let totalFrames = 0;
 const pixelReads = [];
 for (let i = 0; i < TARGET_FRAMES; i++) {
   world.update().unwrap();
-  await drawReadyFrame(renderer, {
-    leases: [worldAttachment1.value],
-    camera: { lease: worldAttachment1.value },
-    environment: { lease: worldAttachment1.value },
-  });
+  await drawReadyFrame(renderer, { source: worldAttachment1.value });
   totalFrames++;
 }
 const frameWall = Math.round(performance.now() - start);

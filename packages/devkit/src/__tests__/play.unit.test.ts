@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { resolve } from 'node:path';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
 import type { ToolExecutionContext } from '@forgeax/engine-tool-runtime';
 import type { Page } from 'playwright';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -546,6 +546,45 @@ describe('play result shaping', () => {
     expect(playFailureError(passing)).toBeUndefined();
   });
 
+  it('reports native project paths with POSIX separators without changing the detailed report', () => {
+    const root = resolve('/game');
+    const passing = report({
+      root,
+      report: resolve(root, 'artifacts/play/playthrough/play.json'),
+      screenshots: [
+        {
+          name: 'final',
+          path: resolve(root, 'artifacts/play/playthrough/final.png'),
+          rendered: true,
+          digest: 'sha256:final',
+        },
+      ],
+    });
+    expect(playResultValue(passing, false)).toMatchObject({
+      report: 'artifacts/play/playthrough/play.json',
+      screenshots: ['artifacts/play/playthrough/final.png'],
+    });
+    expect(playResultValue(passing, true)).toBe(passing);
+  });
+
+  it('retains absolute paths outside the project instead of presenting them as project-relative', () => {
+    const root = resolve('/game');
+    const outside = resolve(root, '../other/play.json');
+    const passing = report({ root, report: outside, screenshots: [] });
+    expect(playResultValue(passing, false)).toMatchObject({ report: outside });
+    if (process.platform === 'win32') {
+      const otherDrive = `${root[0]?.toUpperCase() === 'C' ? 'D' : 'C'}:\\other\\play.json`;
+      expect(
+        playResultValue(report({ root, report: otherDrive, screenshots: [] }), false),
+      ).toMatchObject({
+        report: otherDrive,
+      });
+    }
+    expect(playResultValue(report({ root, report: root, screenshots: [] }), false)).toMatchObject({
+      report: '',
+    });
+  });
+
   it('shapes a step failure with its step, action, screenshot, state and first browser error', () => {
     const failed = report({
       passed: false,
@@ -617,14 +656,17 @@ describe('play result shaping', () => {
   });
 
   it('keys the output directory by script path under artifacts/play', () => {
-    expect(playOutputDir('/game', '/game/scripts/playthrough.mjs')).toBe(
-      '/game/artifacts/play/scripts/playthrough',
+    const root = resolve('/game');
+    expect(playOutputDir(root, resolve(root, 'scripts/playthrough.mjs'))).toBe(
+      resolve(root, 'artifacts/play/scripts/playthrough'),
     );
-    expect(playOutputDir('/game', '/game/tests/playthrough.ts')).toBe(
-      '/game/artifacts/play/tests/playthrough',
+    expect(playOutputDir(root, resolve(root, 'tests/playthrough.ts'))).toBe(
+      resolve(root, 'artifacts/play/tests/playthrough'),
     );
-    expect(playOutputDir('/game', '/elsewhere/playthrough.mjs')).toMatch(
-      /^\/game\/artifacts\/play\/external\/playthrough-[0-9a-f]{8}$/,
+    const external = playOutputDir(root, resolve('/elsewhere/playthrough.mjs'));
+    expect(isAbsolute(external)).toBe(true);
+    expect(relative(root, external).split(sep).join('/')).toMatch(
+      /^artifacts\/play\/external\/playthrough-[0-9a-f]{8}$/,
     );
   });
 

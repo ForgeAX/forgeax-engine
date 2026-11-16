@@ -1,8 +1,23 @@
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import {
+  attachRecorder,
+  buildFrameModel,
+  decodeTape,
+  openReplay,
+  replayDeviceRequest,
+} from '@forgeax/engine-rhi-debug';
 import * as gpu from '@forgeax/engine-rhi-webgpu';
-import { numMipLevels, type TextureAsset } from '@forgeax/engine-types';
+import { numMipLevels, ok, type TextureAsset } from '@forgeax/engine-types';
 import { assert, expect, it } from 'vitest';
 import { GpuResidencyCache } from '../device/gpu-residency';
+import { nativeAdapterFixture, nativeDeviceFixture } from './native-device-fixture';
+import {
+  prepareDerivedTextureGeneratorPrograms,
+  prepareTextureGeneratorPrograms,
+} from './texture-generators.commands';
+import { sampledSrgbPixel, verifyGpuTextureGeneration } from './texture-generators.gpu-fixture';
 
 it.each([
   { name: 'sRGB mid-gray', format: 'rgba8unorm-srgb', width: 2, values: [188], expected: 188 },
@@ -87,3 +102,125 @@ it.each([
     raw.destroy();
   }
 });
+
+it('generates, samples 60 completed frames and replays generated and resident GPU textures', async () => {
+  const provider = await nativeAdapterFixture();
+  const recorder = attachRecorder({
+    ...gpu,
+    rhi: { ...gpu.rhi, requestAdapter: async () => ok(provider.adapter) },
+  }).unwrap();
+  const device = (
+    await (await recorder.backend.rhi.requestAdapter()).unwrap().requestDevice()
+  ).unwrap();
+  let raw = provider.native;
+  raw.pushErrorScope('validation');
+  try {
+    await verifyGpuTextureGeneration(
+      device,
+      (_device, descriptor) => recorder.backend.createShaderModule(device, descriptor),
+      await prepareTextureGeneratorPrograms(),
+      await prepareDerivedTextureGeneratorPrograms(),
+      {
+        observe: async (phase, submit) => {
+          const capture = recorder.captureFrame({ snapshotTimeoutMs: 10_000 });
+          (await recorder.frameBoundary()).unwrap();
+          await submit();
+          (await recorder.frameBoundary()).unwrap();
+          const encoded = (await capture).unwrap();
+          const evidenceDirectory = process.env.FORGEAX_GPU_TEXTURE_EVIDENCE_DIR;
+          if (evidenceDirectory) {
+            mkdirSync(evidenceDirectory, { recursive: true });
+            writeFileSync(resolve(evidenceDirectory, `${phase}.rhitape`), encoded.bytes);
+          }
+          const tape = decodeTape(encoded.bytes).unwrap();
+          const model = buildFrameModel(tape);
+          const last = model.works.at(-1);
+          assert(last);
+          const replayProvider = await nativeAdapterFixture();
+          const adapter = replayProvider.adapter;
+          const replayDevice = (
+            await adapter.requestDevice(replayDeviceRequest(tape, adapter.features, adapter.limits))
+          ).unwrap();
+          const replayRaw = replayProvider.native;
+          replayRaw.pushErrorScope('validation');
+          const replay = (
+            await openReplay(tape, {
+              device: replayDevice,
+              createShaderModule: gpu.createShaderModule,
+            })
+          ).unwrap();
+          try {
+            if (phase === 'generation') {
+              const paint = model.works.find((work) =>
+                work.pipeline.shaders.some((shader) => shader.entryPoint === 'paint'),
+              );
+              assert(paint);
+              const output = paint.attachments?.colorViewHandleIds[0];
+              assert(output);
+              const descriptor = model.resources.find(
+                (resource) => resource.resourceId === output,
+              )?.descriptor;
+              assert(descriptor && typeof descriptor === 'object' && !Array.isArray(descriptor));
+              assert(
+                'sourceHandleId' in descriptor && typeof descriptor.sourceHandleId === 'string',
+              );
+              const mip = (
+                await replay.readResourceAtWork(descriptor.sourceHandleId, last.workIndex, {
+                  mipLevel: 4,
+                  arrayLayer: 0,
+                })
+              ).unwrap();
+              for (const channel of mip.bytes.subarray(0, 3))
+                expect(Math.abs(channel - 188)).toBeLessThanOrEqual(1);
+            } else {
+              expect(model.works).toHaveLength(1);
+              const result = (await replay.inspectWork(last.workIndex, ['pixels'])).unwrap();
+              assert(result.attachment);
+              const binding = last.bindings.find(
+                (binding) => binding.groupIndex === 0 && binding.binding === 0,
+              );
+              assert(binding?.resourceId);
+              const view = model.resources.find(
+                (resource) => resource.resourceId === binding.resourceId,
+              )?.descriptor;
+              assert(view && typeof view === 'object' && !Array.isArray(view));
+              assert('sourceHandleId' in view && typeof view.sourceHandleId === 'string');
+              const mip = (
+                await replay.readResourceAtWork(view.sourceHandleId, last.workIndex, {
+                  mipLevel: 4,
+                  arrayLayer: 0,
+                })
+              ).unwrap();
+              for (const channel of mip.bytes.subarray(0, 3))
+                expect(Math.abs(channel - 188)).toBeLessThanOrEqual(1);
+              expect(Array.from(result.attachment.bytes.subarray(0, 4))).toEqual(
+                sampledSrgbPixel(mip.bytes.subarray(0, 4)),
+              );
+            }
+            expect(await replayRaw.popErrorScope()).toBeNull();
+          } finally {
+            (await replay.dispose()).unwrap();
+            replayRaw.destroy();
+          }
+        },
+        async recreateDevice() {
+          expect(await raw.popErrorScope()).toBeNull();
+          recorder.deviceLost();
+          raw.destroy();
+          expect((await raw.lost).reason).toBe('destroyed');
+          const { device: replacement, native: replacementNative } = await nativeDeviceFixture();
+          raw = replacementNative;
+          raw.pushErrorScope('validation');
+          return {
+            device: replacement,
+            factory: (_device, descriptor) => gpu.createShaderModule(replacement, descriptor),
+          };
+        },
+      },
+    );
+    expect(await raw.popErrorScope()).toBeNull();
+  } finally {
+    (await recorder.dispose()).unwrap();
+    raw.destroy();
+  }
+}, 60_000);

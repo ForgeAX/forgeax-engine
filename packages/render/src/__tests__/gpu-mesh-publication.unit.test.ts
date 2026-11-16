@@ -35,8 +35,8 @@ it.each([
   const windows = new MeshBatchProjection();
   const actualQuery = vi.spyOn(windows, 'query');
   const mesh = createPrimitiveMesh('cube').unwrap();
-  const accepted = new MeshFrame().with(original.worldId, original.assetHandle as number, mesh);
-  const edited = accepted.with(original.worldId, original.assetHandle as number, {
+  const accepted = new MeshFrame().with(original.assetHandle as number, mesh);
+  const edited = accepted.with(original.assetHandle as number, {
     ...mesh,
     aabb: new Float32Array([-2, -2, -2, 2, 2, 2]),
   });
@@ -53,7 +53,7 @@ it.each([
   const queriedReads = reads.mock.calls.length;
   expect(windows.query(source, edited)).toBe(before);
   expect(reads).toHaveBeenCalledTimes(queriedReads);
-  topology.apply(scene.apply([{ kind: 'remove', worldId: original.worldId, entityKey: 1 }]));
+  topology.apply(scene.apply([{ kind: 'remove', entityKey: 1 }]));
   const removed = topology.sourcePlan();
   expect(actualQuery).toHaveBeenCalledTimes(2);
   expect(reads).toHaveBeenCalledTimes(queriedReads);
@@ -78,14 +78,14 @@ it('uses the accepted Mesh material query for execution after a default-slot edi
   topology.rebuild(scene.slotsSnapshot());
   const source = topology.sourcePlan();
   const mesh = createPrimitiveMesh('cube').unwrap();
-  const before = new MeshFrame().with(original.worldId, original.assetHandle as number, mesh);
+  const before = new MeshFrame().with(original.assetHandle as number, mesh);
   const windows = new MeshBatchProjection();
   const previous = windows.query(source, before);
-  const edited = before.with(original.worldId, original.assetHandle as number, {
+  const edited = before.with(original.assetHandle as number, {
     ...mesh,
     materialSlots: [{ slotName: 'surface', defaultMaterial: 105 as never }],
   });
-  const geometry = edited.get(original.worldId, original.assetHandle);
+  const geometry = edited.get(original.assetHandle);
   const slot = scene.slotsSnapshot().at(0);
   if (geometry === undefined || slot === undefined) throw new Error('missing accepted mesh');
   const pending: Parameters<typeof prepareMeshMaterialBindings>[4] = [];
@@ -139,7 +139,7 @@ it.each([
   if (firstSlot === undefined) throw new Error('missing first slot');
   dispatch.bind(firstSlot.slot, firstSlot.snapshot);
   const mesh = createPrimitiveMesh('cube').unwrap();
-  const meshes = new MeshFrame().with(original.worldId, original.assetHandle as number, {
+  const meshes = new MeshFrame().with(original.assetHandle as number, {
     ...mesh,
     materialSlots: [{ slotName: 'surface', defaultMaterial: 105 as never }],
   });
@@ -158,7 +158,6 @@ it.each([
   const delta = scene.apply([
     {
       kind: 'update',
-      worldId: original.worldId,
       entityKey: original.entityKey + 1,
       snapshot: {
         ...next,

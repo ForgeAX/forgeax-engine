@@ -2,7 +2,7 @@ import { createProfiler, type ProfileFrameToken } from '@forgeax/engine-profiler
 import { describe, expect, it } from 'vitest';
 
 import {
-  type DrawOwnerOptions,
+  type DrawOptions,
   RENDER_PHASE_CATALOG,
   RENDER_RECORD_PHASE_CATALOG,
   type RenderPhase,
@@ -10,13 +10,28 @@ import {
 
 const RENDER_PHASES: readonly RenderPhase[] = [
   'extract',
+  'extract/resource-frame',
+  'extract-schedule',
+  'stage-inputs',
+  'post-prepare',
+  'prepare',
+  'queue',
+  'queue-resume',
   'bind-groups',
   'features',
   'sort',
+  'record-schedule',
+  'commit-schedule',
+  'cleanup-schedule',
   'record',
   'submission/presentation',
   'submission/finish',
   'submission/submit',
+  'submission/receipt-issue',
+  'graph/key-match',
+  'graph/build',
+  'graph/compile',
+  'finally-cleanup',
   ...RENDER_RECORD_PHASE_CATALOG,
 ];
 
@@ -33,9 +48,7 @@ describe('Render profiler token and skip contract', () => {
       captureId: 'capture-0001',
       frameId: 3,
     };
-    const options: DrawOwnerOptions = {
-      cameraOwner: 0,
-      resourceOwner: 0,
+    const options: DrawOptions = {
       profileFrame: token,
     };
     expect(options).toMatchObject({ profileFrame: token });

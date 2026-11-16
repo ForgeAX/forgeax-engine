@@ -1,3 +1,4 @@
+import { defineSystem } from "@forgeax/engine-ecs";
 import { Update } from '@forgeax/engine-ecs';
 // Standard clustered-lighting 256-light demo
 // (feat-20260608-cluster-lighting / M7 / w25).
@@ -236,7 +237,7 @@ const primitiveCube = app.assets.create(createPrimitiveMesh('cube').unwrap()).un
   // frame. The orbit is small (radius 0.5) so the rough pixel pattern
   // stays close to the smoke baseline (deterministic readback target).
   let elapsed = 0;
-  world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'standard-light-orbit',
     queries: [],
     fn: () => {
@@ -262,6 +263,7 @@ const primitiveCube = app.assets.create(createPrimitiveMesh('cube').unwrap()).un
       }
     },
   });
+world.addSystem(Update, systemToken1);
 
   // Step 9: arm the rAF loop.
   const startRes = app.start();

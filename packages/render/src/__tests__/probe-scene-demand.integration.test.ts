@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { LightProbe, MeshFilter, MeshRenderer } from '../components';
 import { SINGLE_LAYER_MEDIUM_SURFACE_EXAMPLE } from '../examples/single-layer-medium-surface';
 import { Materials } from '../materials';
-import { extractFrames } from '../render-system-extract-tail';
+import { extractSource } from '../render-system-extract-tail';
 import {
   type PersistentRenderCandidateRequest,
   PersistentRenderScene,
@@ -37,24 +37,15 @@ function fixture() {
   const lease = createRenderReadLease(world);
   const scene = new PersistentRenderScene({ assets });
   const build = (request: PersistentRenderCandidateRequest) => {
-    const frame = extractFrames(
-      [world],
-      { cameraOwner: 0, resourceOwner: 0 },
-      assets,
-      scene.materialSnapshotCacheStore(),
-      { cull: 'none', renderables: request },
-    );
+    const frame = extractSource(world, assets, scene.materialSnapshotCacheStore(), {
+      cull: 'none',
+      renderables: request,
+    });
     return frame;
   };
   const draw = () => {
     propagateTransforms(world).unwrap();
-    return scene.extractComposition(
-      [world],
-      { cameraOwner: 0, resourceOwner: 0 },
-      testAssets(world),
-      build,
-      [lease],
-    );
+    return scene.extractComposition(world, testAssets(world), build, lease);
   };
   const setMedium = (entity: typeof surface, enabled: boolean) => {
     world.set(entity, MeshRenderer, { materials: enabled ? [mediumMaterial] : [] }).unwrap();

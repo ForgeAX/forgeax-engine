@@ -159,11 +159,7 @@ export async function verifyDecals(
   const draw = async (observe = false) => {
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
-    return drawReadyFrame(
-      renderer,
-      { leases: [lease], camera: { lease }, environment: { lease } },
-      observe ? ['linear-hdr'] : undefined,
-    );
+    return drawReadyFrame(renderer, { source: lease }, observe ? ['linear-hdr'] : undefined);
   };
   const observe = async (name: string) => {
     const receipt = await draw(true);
@@ -390,11 +386,7 @@ export async function verifyDecals(
     );
     value(renderer.setProfile(activeProfile));
     if (renderPath === 'deferred') {
-      expectDeferredMsaaRejected(renderer, {
-        leases: [lease],
-        camera: { lease },
-        environment: { lease },
-      });
+      expectDeferredMsaaRejected(renderer, { source: lease });
     }
     world.set(camera, Camera, { antialias: 0 }).unwrap();
     expect(delta(patch(await observe('gpu-recovered'), 64, 64), patch(on, 64, 64))).toBeLessThan(

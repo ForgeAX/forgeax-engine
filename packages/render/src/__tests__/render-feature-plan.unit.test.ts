@@ -1,9 +1,16 @@
-import { ok } from '@forgeax/engine-types';
-import { describe, expect, it, vi } from 'vitest';
-import { createRenderFeatureHost } from '../features/host';
+import { World } from '@forgeax/engine-ecs';
+import { err, ok } from '@forgeax/engine-types';
+import { assert, describe, expect, it, vi } from 'vitest';
+import { RenderFeaturePreparationFailedError } from '../errors/render';
+import {
+  createRenderFeatureHost,
+  getRenderFeaturePlanExecutionProjection,
+  hasSubmissionSensitiveFeatures,
+} from '../features/host';
 import {
   cloneRenderFeaturePlanSignatureSnapshot,
   deriveRenderFeaturePassAccess,
+  deriveRenderFeaturePlanAccess,
   type RenderFeatureWorkPlan,
   rememberRenderFeaturePlanSignature,
   renderFeaturePlanSignature,
@@ -11,9 +18,140 @@ import {
   renderFeaturePlanSignatureSnapshotEquals,
   validateRenderFeaturePlan,
 } from '../features/plan';
+import { createRenderFeatureTarget } from '../features/targets';
 import type { RenderFeature } from '../features/types';
+import { createWaterInfoFeature, inspectWaterInfoPublications } from '../water/water-info-feature';
 import { submitFeatureFrame } from './feature-frame-driver';
 import { runSingleViewFeatureFrame } from './single-view-feature-fixture';
+
+function requiredFixtureValue<T>(value: T | null | undefined): T {
+  if (value === undefined || value === null) throw new Error('Required fixture value is missing');
+  return value;
+}
+
+describe('submission-sensitive declared feature work', () => {
+  it('keeps inactive WaterInfo with no publication or GPU work replayable', () => {
+    const feature = createWaterInfoFeature();
+    const host = createRenderFeatureHost([feature]).unwrap();
+    try {
+      const result = runSingleViewFeatureFrame(host, {
+        world: new World(),
+        frameNumber: 1,
+        caps: {
+          compute: true,
+          storageBuffer: true,
+          storageTexture: true,
+          rgba16floatRenderable: true,
+          rgba16floatStorage: true,
+        } as never,
+        frame: {
+          view: {
+            identity: 'main',
+            width: 64,
+            height: 64,
+            cameraRevision: 0,
+            deviceGeneration: 1,
+            cameraPosition: [0, 4, 0],
+          },
+        },
+      });
+      expect(result.errors).toEqual([]);
+      expect(result.preparationPending).not.toBe(true);
+      expect(result.plans).toHaveLength(1);
+      expect(inspectWaterInfoPublications(feature, 1)).toEqual([]);
+      for (const planned of result.plans) {
+        expect(planned.plan.resources).toEqual([]);
+        expect(getRenderFeaturePlanExecutionProjection(planned)?.passes).toEqual([]);
+      }
+      expect(hasSubmissionSensitiveFeatures(result.plans)).toBe(false);
+    } finally {
+      host.dispose();
+    }
+  });
+
+  it.each([
+    { intent: 'none', sensitive: false },
+    { intent: 'source-feedback', sensitive: true },
+    { intent: 'clear-pass', sensitive: true },
+  ] as const)('preserves the $intent submission authority', ({ intent, sensitive }) => {
+    const feature: RenderFeature<undefined> = {
+      identity: 'synthetic.submission-authority',
+      extract: () => ok(undefined),
+      plan: () =>
+        ok({
+          ...(intent === 'source-feedback' ? { sourceFeedback: { generation: 1 } } : {}),
+          work: [
+            {
+              scope: { view: 'main' },
+              resources: [],
+              passes:
+                intent === 'clear-pass'
+                  ? [
+                      {
+                        kind: 'raster' as const,
+                        name: 'clear-color',
+                        colorAttachments: [
+                          { target: 'color', loadOp: 'clear' as const, storeOp: 'store' as const },
+                        ],
+                        draws: [],
+                      },
+                    ]
+                  : [],
+            },
+          ],
+        }),
+      onFrameSubmitted: () => {},
+    };
+    const host = createRenderFeatureHost([feature]).unwrap();
+    try {
+      const result = runSingleViewFeatureFrame(host, {
+        world: new World(),
+        frameNumber: 1,
+        caps: {} as never,
+        targets: [
+          createRenderFeatureTarget({ kind: 'scene-color', format: 'rgba8unorm', sampleCount: 1 }),
+        ],
+      });
+      expect(result.errors).toEqual([]);
+      expect(result.plans).toHaveLength(1);
+      const planned = requiredFixtureValue(result.plans[0]);
+      expect(getRenderFeaturePlanExecutionProjection(planned)?.passes).toHaveLength(
+        intent === 'clear-pass' ? 1 : 0,
+      );
+      expect(hasSubmissionSensitiveFeatures(result.plans)).toBe(sensitive);
+    } finally {
+      host.dispose();
+    }
+  });
+
+  it('keeps a real pending source unrecorded and preparation blocked', () => {
+    const feature: RenderFeature<undefined> = {
+      identity: 'synthetic.pending-submission-authority',
+      extract: () => ok(undefined),
+      plan: () =>
+        ok({ pendingSource: { resource: 'water-mesh', reason: 'publication-pending' }, work: [] }),
+      onFrameSubmitted: () => {},
+    };
+    const host = createRenderFeatureHost([feature]).unwrap();
+    try {
+      const result = runSingleViewFeatureFrame(host, {
+        world: new World(),
+        frameNumber: 1,
+        caps: {} as never,
+      });
+      expect(result.errors).toEqual([]);
+      expect(result.plans).toEqual([]);
+      expect(result.preparationPending).toBe(true);
+      expect(result.preparationPendingReason).toMatchObject({
+        featureIdentity: feature.identity,
+        resource: 'water-mesh',
+        reason: 'publication-pending',
+      });
+    } finally {
+      host.dispose();
+    }
+  });
+});
 
 const plan = (data = new Uint32Array([1, 2, 3, 4])) =>
   ({
@@ -185,6 +323,158 @@ describe('RenderFeature plan authority', () => {
       { resource: 'particles', usage: 'vertex-read' },
       { resource: 'indirect', usage: 'indirect-read' },
     ]);
+  });
+
+  it('derives complete ordered plan access while keeping borrowed inputs live between calls', () => {
+    const source = plan();
+    const raster = source.passes[1];
+    if (raster?.kind !== 'raster') throw new Error('Missing raster fixture');
+    const draw = raster.draws[0];
+    assert(draw);
+    let sampledTarget = 'sampled-color';
+    const value: RenderFeatureWorkPlan = {
+      resources: [
+        ...source.resources.filter((resource) => resource.kind !== 'compute-program'),
+        {
+          kind: 'compute-program',
+          name: 'simulate-program',
+          program: {
+            wgsl: '@compute @workgroup_size(1) fn simulate() {}',
+            entryPoints: ['simulate'],
+            bindings: [
+              {
+                entries: [
+                  { binding: 0, visibility: 4, buffer: { type: 'storage' } },
+                  { binding: 1, visibility: 4, buffer: { type: 'uniform' } },
+                  { binding: 2, visibility: 4, texture: {} },
+                  {
+                    binding: 3,
+                    visibility: 4,
+                    storageTexture: { access: 'write-only', format: 'rgba32float' },
+                  },
+                  {
+                    binding: 4,
+                    visibility: 4,
+                    storageTexture: { access: 'read-only', format: 'rgba32float' },
+                  },
+                  {
+                    binding: 5,
+                    visibility: 4,
+                    storageTexture: { access: 'read-write', format: 'rgba32float' },
+                  },
+                ],
+              },
+            ],
+          },
+        },
+        {
+          kind: 'compute-bindings',
+          name: 'texture-bindings',
+          program: 'simulate-program',
+          entries: [2, 3, 4, 5].map((binding) => ({ binding, resource: `texture-${binding}` })),
+        },
+        {
+          kind: 'prepared-gpu-resource',
+          name: 'texture-2',
+          resource: { kind: 'texture-view', value: undefined },
+          get logicalTarget() {
+            return sampledTarget;
+          },
+        },
+        ...[3, 4, 5].map((binding) => ({
+          kind: 'prepared-gpu-resource' as const,
+          name: `texture-${binding}`,
+          resource: { kind: 'texture-view' as const, value: undefined },
+          logicalTarget: `target-${binding}`,
+        })),
+        { kind: 'index-data', name: 'indices', format: 'uint32', buffer: 'index-buffer' },
+      ],
+      passes: [
+        {
+          kind: 'compute',
+          name: 'simulate',
+          program: 'simulate-program',
+          bindings: 'simulate-bindings',
+          dispatches: [
+            {
+              kind: 'direct',
+              entryPoint: 'simulate',
+              bindings: 'simulate-bindings',
+              workgroups: [1],
+            },
+            {
+              kind: 'direct',
+              entryPoint: 'simulate',
+              bindings: 'texture-bindings',
+              workgroups: [0],
+            },
+            {
+              kind: 'indirect',
+              entryPoint: 'simulate',
+              bindings: 'texture-bindings',
+              resource: 'indirect',
+            },
+          ],
+        },
+        {
+          kind: 'copy',
+          name: 'copy',
+          textureReadbacks: [{ name: 'readback', target: 'readback-color' }],
+          copies: [{ source: 'particles', destination: 'copied-particles', size: 16 }],
+        },
+        {
+          ...raster,
+          depthStencilAttachment: { target: 'depth', depthLoadOp: 'load', depthStoreOp: 'store' },
+          sampledTargets: ['depth', 'sampled-color'],
+          draws: [
+            {
+              ...draw,
+              indexData: { resource: 'indices' },
+              draw: { kind: 'draw-indexed-indirect', resource: 'indirect' },
+            },
+          ],
+        },
+        { kind: 'shadow-caster', name: 'shadow', draws: raster.draws },
+        {
+          kind: 'raster',
+          name: 'depth-writer',
+          colorAttachments: [],
+          draws: [],
+          depthStencilAttachment: { target: 'depth', depthLoadOp: 'clear', depthStoreOp: 'store' },
+        },
+      ],
+    };
+    const first = deriveRenderFeaturePlanAccess(value);
+    expect(first).toEqual([
+      { resource: 'particles', usage: 'storage-read-write' },
+      { resource: 'params', usage: 'uniform-read' },
+      { resource: 'sampled-color', usage: 'sampled-read' },
+      { resource: 'target-3', usage: 'storage-write' },
+      { resource: 'target-4', usage: 'storage-read' },
+      { resource: 'target-5', usage: 'sampled-storage-read-write' },
+      { resource: 'indirect', usage: 'indirect-read' },
+      { resource: 'readback-color', usage: 'copy-src' },
+      { resource: 'particles', usage: 'copy-src' },
+      { resource: 'copied-particles', usage: 'copy-dst' },
+      { resource: 'color', usage: 'color-attachment' },
+      { resource: 'depth', usage: 'depth-stencil-read' },
+      { resource: 'depth', usage: 'sampled-read' },
+      { resource: 'sampled-color', usage: 'sampled-read' },
+      { resource: 'particles', usage: 'vertex-read' },
+      { resource: 'index-buffer', usage: 'index-read' },
+      { resource: 'indirect', usage: 'indirect-read' },
+      { resource: 'particles', usage: 'vertex-read' },
+      { resource: 'indirect', usage: 'indirect-read' },
+      { resource: 'depth', usage: 'depth-stencil-write' },
+    ]);
+    expect(first).toEqual(
+      value.passes.flatMap((pass) => deriveRenderFeaturePassAccess(value, pass)),
+    );
+    expect(Object.isFrozen(first)).toBe(true);
+    sampledTarget = 'next-color';
+    const next = deriveRenderFeaturePlanAccess(value);
+    expect(next[2]).toEqual({ resource: 'next-color', usage: 'sampled-read' });
+    expect(first[2]).toEqual({ resource: 'sampled-color', usage: 'sampled-read' });
   });
 
   it('keeps buffer uploads out of the stable topology signature', () => {
@@ -491,8 +781,7 @@ describe('RenderFeature plan authority', () => {
     } as never;
 
     const result = runSingleViewFeatureFrame(host.value, {
-      worlds: [],
-      owner: 0,
+      world: new World(),
       frameNumber: 1,
       generation: 1,
       caps: {} as never,
@@ -522,6 +811,288 @@ describe('RenderFeature plan authority', () => {
     expect(validateRenderFeaturePlan('synthetic.invalid', invalid).ok).toBe(false);
   });
 
+  it('accepts clear-only raster passes but rejects empty load-only and shadow passes', () => {
+    const targets = [
+      { name: 'color', kind: 'color', format: 'rgba8unorm', sampleCount: 1 },
+    ] as const;
+    const clearOnly: RenderFeatureWorkPlan = {
+      resources: [],
+      passes: [
+        {
+          kind: 'raster',
+          name: 'clear-color',
+          colorAttachments: [{ target: 'color', loadOp: 'clear', storeOp: 'store' }],
+          draws: [],
+        },
+      ],
+    };
+    const loadOnly: RenderFeatureWorkPlan = {
+      resources: [],
+      passes: [
+        {
+          kind: 'raster',
+          name: 'load-color',
+          colorAttachments: [{ target: 'color', loadOp: 'load', storeOp: 'store' }],
+          draws: [],
+        },
+      ],
+    };
+    const emptyShadow: RenderFeatureWorkPlan = {
+      resources: [],
+      passes: [{ kind: 'shadow-caster', name: 'empty-shadow', draws: [] }],
+    };
+    const missingClearTarget: RenderFeatureWorkPlan = {
+      resources: [],
+      passes: [
+        {
+          kind: 'raster',
+          name: 'clear-missing-target',
+          colorAttachments: [{ target: 'missing', loadOp: 'clear', storeOp: 'store' }],
+          draws: [],
+        },
+      ],
+    };
+
+    expect(validateRenderFeaturePlan('clear-only', clearOnly, targets).ok).toBe(true);
+    expect(validateRenderFeaturePlan('load-only', loadOnly, targets).ok).toBe(false);
+    expect(validateRenderFeaturePlan('empty-shadow', emptyShadow, targets).ok).toBe(false);
+    expect(validateRenderFeaturePlan('missing-target', missingClearTarget, targets).ok).toBe(false);
+  });
+
+  it('projects a clear-only raster pass without graphics pipelines or bindings', () => {
+    const feature: RenderFeature<undefined> = {
+      identity: 'synthetic.clear-only',
+      extract: () => ok(undefined),
+      plan: () =>
+        ok({
+          work: [
+            {
+              scope: { view: 'main' },
+              resources: [],
+              passes: [
+                {
+                  kind: 'raster',
+                  name: 'clear-color',
+                  colorAttachments: [{ target: 'color', loadOp: 'clear', storeOp: 'store' }],
+                  draws: [],
+                },
+              ],
+            },
+          ],
+        }),
+    };
+    const host = createRenderFeatureHost([feature]).unwrap();
+    try {
+      const result = runSingleViewFeatureFrame(host, {
+        world: new World(),
+        frameNumber: 1,
+        caps: {} as never,
+        targets: [
+          createRenderFeatureTarget({ kind: 'scene-color', format: 'rgba8unorm', sampleCount: 1 }),
+        ],
+      });
+
+      expect(result.errors).toEqual([]);
+      expect(result.plans).toHaveLength(1);
+      const planned = result.plans[0];
+      expect(planned).toBeDefined();
+      const projected = getRenderFeaturePlanExecutionProjection(requiredFixtureValue(planned));
+      expect(projected?.passes).toHaveLength(1);
+      expect(projected?.passes[0]?.graphics).toMatchObject({
+        draws: [],
+        attachments: { colors: [{ loadOp: 'clear', storeOp: 'store' }] },
+      });
+    } finally {
+      host.dispose();
+    }
+  });
+
+  it('resolves a prepared texture view through its graph-texture alias', () => {
+    let preparedTarget: unknown;
+    const feature: RenderFeature<undefined> = {
+      identity: 'synthetic.graph-texture-view',
+      extract: () => ok(undefined),
+      plan: () =>
+        ok({
+          work: [
+            {
+              scope: { view: 'main' },
+              resources: [
+                {
+                  kind: 'graph-texture',
+                  name: 'water-output',
+                  allocationKey: 'water-output',
+                  descriptor: {
+                    format: 'rgba16float',
+                    size: { width: 16, height: 16, depthOrArrayLayers: 1 },
+                    sampleCount: 1,
+                    dimension: '2d',
+                    usage: 1,
+                  },
+                  view: { dimension: '2d-array', arrayLayerCount: 1 },
+                },
+                {
+                  kind: 'prepared-gpu-resource',
+                  name: 'water-output-view',
+                  resource: { kind: 'texture-view', value: undefined },
+                  logicalTarget: 'water-output',
+                },
+              ],
+              passes: [],
+            },
+          ],
+        }),
+    };
+    const host = createRenderFeatureHost([feature]).unwrap();
+    const gpuWork = {
+      beginFeature: () => ({
+        prepareTextureView: (_name: string, _view: unknown, target: unknown) => {
+          preparedTarget = target;
+          return ok({ generation: 0 });
+        },
+        retainResources: () => {},
+        changedResourceNames: new Set<string>(),
+        commitFrame: () => [],
+        abortFrame: () => ok(undefined),
+      }),
+    } as never;
+    try {
+      const result = runSingleViewFeatureFrame(host, {
+        world: new World(),
+        frameNumber: 1,
+        generation: 0,
+        caps: {} as never,
+        gpuWork,
+      });
+
+      expect(result.errors).toEqual([]);
+      expect(result.plans).toHaveLength(1);
+      expect(preparedTarget).toMatchObject({ kind: 'graph-texture', name: 'water-output' });
+    } finally {
+      host.dispose();
+    }
+  });
+
+  it('retries registry-pending compute preparation next frame while keeping compile failures visible', () => {
+    let preparationError: RenderFeaturePreparationFailedError | undefined =
+      new RenderFeaturePreparationFailedError(
+        'synthetic.registry-pending',
+        0,
+        'prepare-gpu-program',
+        'pipeline',
+        'simulate-program',
+        'registry module is still pending',
+        'next-frame',
+      );
+    const feature: RenderFeature<undefined> = {
+      identity: 'synthetic.registry-pending',
+      extract: () => ok(undefined),
+      plan: () =>
+        ok({
+          work: [
+            {
+              scope: { view: 'main' },
+              resources: [
+                {
+                  kind: 'compute-program',
+                  name: 'simulate-program',
+                  program: {
+                    wgsl: '@compute @workgroup_size(1) fn main() {}',
+                    entryPoints: ['main'],
+                  },
+                },
+              ],
+              passes: [],
+            },
+          ],
+        }),
+    };
+    const host = createRenderFeatureHost([feature]).unwrap();
+    const gpuWork = {
+      beginFeature: () => ({
+        prepareProgram: () =>
+          preparationError === undefined ? ok({ generation: 1 }) : err(preparationError),
+        retainResources: () => {},
+        commitFrame: () => [],
+        abortFrame: () => ok(undefined),
+        changedResourceNames: new Set(),
+      }),
+    } as never;
+    const input = {
+      world: new World(),
+      generation: 1,
+      caps: {} as never,
+      gpuWork,
+    };
+    try {
+      const pending = runSingleViewFeatureFrame(host, { ...input, frameNumber: 1 });
+      expect(pending.preparationPending).toBe(true);
+      expect(pending.errors).toEqual([]);
+      expect(host.diagnostics()).toMatchObject([
+        { identity: feature.identity, status: 'active', latestError: undefined },
+      ]);
+      expect(pending.preparationPendingReason).toMatchObject({
+        featureIdentity: feature.identity,
+        reason: 'registry module is still pending',
+      });
+
+      preparationError = undefined;
+      const ready = runSingleViewFeatureFrame(host, { ...input, frameNumber: 2 });
+      expect(ready.preparationPending).not.toBe(true);
+      expect(ready.errors).toEqual([]);
+      expect(host.diagnostics()).toMatchObject([
+        { identity: feature.identity, status: 'active', latestError: undefined },
+      ]);
+
+      preparationError = new RenderFeaturePreparationFailedError(
+        feature.identity,
+        0,
+        'prepare-gpu-program',
+        'pipeline',
+        'simulate-program',
+        'shader-compile-failed: invalid workgroup declaration',
+        'renderer-recover',
+      );
+      const failed = runSingleViewFeatureFrame(host, { ...input, frameNumber: 3 });
+      expect(failed.preparationPending).not.toBe(true);
+      expect(failed.errors).toEqual([preparationError]);
+      expect(host.diagnostics()).toMatchObject([
+        {
+          identity: feature.identity,
+          status: 'failed',
+          latestError: {
+            code: 'render-feature-preparation-failed',
+            detail: { reason: 'shader-compile-failed: invalid workgroup declaration' },
+          },
+        },
+      ]);
+
+      preparationError = new RenderFeaturePreparationFailedError(
+        feature.identity,
+        0,
+        'prepare-gpu-program',
+        'pipeline',
+        'simulate-program',
+        'rhi-not-available: retired adapter',
+        'renderer-recover',
+      );
+      const unavailable = runSingleViewFeatureFrame(host, { ...input, frameNumber: 4 });
+      expect(unavailable.preparationPending).not.toBe(true);
+      expect(unavailable.errors).toEqual([preparationError]);
+      expect(host.diagnostics()).toMatchObject([
+        {
+          identity: feature.identity,
+          status: 'failed',
+          latestError: {
+            detail: { reason: 'rhi-not-available: retired adapter' },
+          },
+        },
+      ]);
+    } finally {
+      host.dispose();
+    }
+  });
+
   it('never invokes legacy producer callbacks', () => {
     const prepare = vi.fn();
     const contribute = vi.fn();
@@ -538,8 +1109,7 @@ describe('RenderFeature plan authority', () => {
     if (!host.ok) return;
 
     const result = runSingleViewFeatureFrame(host.value, {
-      worlds: [],
-      owner: 0,
+      world: new World(),
       frameNumber: 1,
       caps: {} as never,
     });

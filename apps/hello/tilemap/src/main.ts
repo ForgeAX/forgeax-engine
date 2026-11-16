@@ -11,7 +11,7 @@ async function main() {
   const attached=renderer.attach(world);if(!attached.ok)throw attached.error;
  const lease=attached.value,scene=buildTilemapScene(world,assets);
   let frame=0;
-  const draw=()=>{if(++frame===120)scene.edit();world.update(1/60).unwrap();const result=renderer.draw({leases:[lease],camera:{lease},environment:{lease}});if(!result.ok)throw result.error;requestAnimationFrame(draw);};
+  const draw=()=>{if(++frame===120)scene.edit();world.update(1/60).unwrap();const result=renderer.draw({ source: lease });if(!result.ok)throw result.error;requestAnimationFrame(draw);};
   requestAnimationFrame(draw);
 }
 void main();

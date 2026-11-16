@@ -1,11 +1,15 @@
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { FixedTime, type World } from '@forgeax/engine-ecs';
+import { serveTaskClient } from '@forgeax/engine-platform';
 import {
   createDynamicGeometryLifecycle,
   createRenderPublisher,
   DynamicGeometryError,
+  type FeatureTextureObservation,
+  type FeatureTextureReadbackResult,
   type GpuPassTimingObservation,
   type RenderFeature,
+  type RenderFeatureCompletion,
   type RenderInspection,
   type RenderPublicationTargetOwner,
   type RenderSceneBounds,
@@ -16,13 +20,13 @@ import {
   captureMeshPipelinePreparation,
   createDynamicGeometrySourceHost,
 } from '@forgeax/engine-render/internal';
-import { ownPipelineLibrary } from '@forgeax/engine-rhi';
+import { ownPipelineLibrary, textureReadbackLayout } from '@forgeax/engine-rhi';
 import {
   type CaptureFrameOptions,
   createRhiDebugError,
   tapeArtifact,
 } from '@forgeax/engine-rhi-debug';
-import { err, ok } from '@forgeax/engine-types';
+import { err, ok, type TaskExecutor, textureFormatBlock } from '@forgeax/engine-types';
 import { type RhiCapture, toArtifact, uploadRhiTape } from '../internal/rhi-capture';
 import { forwardGpuStub } from './gpu-stub';
 import {
@@ -32,6 +36,7 @@ import {
   type RetainedExecutionInit,
   renderPipelineCapacityOf,
 } from './protocol';
+import { forwardRenderBackend } from './render-backend';
 import {
   MESH_RESIDENCY_REQUEST_LIMIT,
   type RenderWorkerInput,
@@ -45,7 +50,7 @@ import type {
   ExecutionRendererInspectionOptions,
   ExecutionRendererInspectionResult,
 } from './types';
-import { workerError } from './worker-error';
+import { serializableDetail, workerError } from './worker-error';
 import { shutdownWorker } from './worker-shutdown';
 
 type CaptureResult = Awaited<ReturnType<RhiCapture['captureFrame']>>;
@@ -58,6 +63,26 @@ type OneShotResult<K extends 'geometry' | 'hdr'> = K extends 'geometry'
   : ExecutionHdrObservationResult;
 type RenderReadyHostMessage = Extract<EngineToHostMessage, { readonly kind: 'render-ready' }>;
 
+function validWorkerIdentity(value: unknown): boolean {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as { source?: unknown }).source === 'string' &&
+    Number.isSafeInteger((value as { epoch?: unknown }).epoch)
+  );
+}
+
+function validWorkerFrame(value: unknown, kind: 'frame-submitted' | 'frame-complete'): boolean {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    (value as { kind?: unknown }).kind === kind &&
+    typeof (value as { worldIdentity?: unknown }).worldIdentity === 'string' &&
+    Number.isSafeInteger((value as { frameId?: unknown }).frameId) &&
+    Number.isSafeInteger((value as { deviceGeneration?: unknown }).deviceGeneration)
+  );
+}
+
 function renderReadyLimits(
   limits: Extract<RenderWorkerOutput, { readonly kind: 'ready' }>['limits'],
 ): Pick<RenderReadyHostMessage, 'limits' | 'maxTextureDimension2D'> {
@@ -69,6 +94,110 @@ function renderReadyLimits(
       : { limits: { maxStorageBuffersPerShaderStage } }),
     ...(maxTextureDimension2D === undefined ? {} : { maxTextureDimension2D }),
   };
+}
+
+function featureTextureReadbackResult(
+  values: unknown,
+  error: unknown,
+  completion: RenderFeatureCompletion,
+  featureIdentities: readonly string[],
+): FeatureTextureReadbackResult | undefined {
+  const readFeatureTextureFailure = (error: unknown): FeatureTextureReadbackResult | undefined => {
+    if (
+      typeof error !== 'object' ||
+      error === null ||
+      typeof (error as { code?: unknown }).code !== 'string' ||
+      typeof (error as { expected?: unknown }).expected !== 'string' ||
+      typeof (error as { hint?: unknown }).hint !== 'string' ||
+      (values !== undefined && (!Array.isArray(values) || values.length > 0))
+    )
+      return undefined;
+    const row = error as { code: string; expected: string; hint: string; detail?: unknown };
+    return {
+      ok: false,
+      error: {
+        code: row.code,
+        expected: row.expected,
+        hint: row.hint,
+        ...(row.detail === undefined ? {} : { detail: row.detail }),
+      },
+    };
+  };
+  if (error !== undefined) return readFeatureTextureFailure(error);
+  if (values === undefined) return { ok: true, value: [] };
+  if (!Array.isArray(values)) return undefined;
+  const invalidTextureFrameMetadata = (metadata: FeatureTextureObservation['metadata']) =>
+    !Number.isSafeInteger(metadata.frameId) ||
+    metadata.frameId < 0 ||
+    metadata.frameId !== completion.frameId ||
+    !Number.isSafeInteger(metadata.deviceGeneration) ||
+    metadata.deviceGeneration < 0 ||
+    metadata.deviceGeneration !== completion.deviceGeneration ||
+    !Number.isSafeInteger(metadata.graphGeneration) ||
+    metadata.graphGeneration < 0 ||
+    completion.graphGeneration === undefined ||
+    metadata.graphGeneration !== completion.graphGeneration;
+  const invalidTextureReadbackMetadata = (metadata: FeatureTextureObservation['metadata']) =>
+    !Number.isSafeInteger(metadata.textureIdentity) ||
+    metadata.textureIdentity < 0 ||
+    !Number.isSafeInteger(metadata.readbackIdentity) ||
+    metadata.readbackIdentity < 0 ||
+    !Number.isSafeInteger(metadata.width) ||
+    metadata.width <= 0 ||
+    !Number.isSafeInteger(metadata.height) ||
+    metadata.height <= 0 ||
+    !Number.isSafeInteger(metadata.bytesPerRow) ||
+    !Number.isSafeInteger(metadata.footprint.resourceCount) ||
+    metadata.footprint.resourceCount < 0 ||
+    !Number.isSafeInteger(metadata.footprint.bindGroupCount) ||
+    metadata.footprint.bindGroupCount < 0;
+  const accepted = new Set(featureIdentities);
+  const invalidFeatureTextureRow = (row: Partial<FeatureTextureObservation>) =>
+    row.domain !== 'feature-texture' ||
+    typeof row.featureIdentity !== 'string' ||
+    !accepted.has(row.featureIdentity) ||
+    (row.viewIdentity !== undefined &&
+      (typeof row.viewIdentity !== 'string' || row.viewIdentity.length === 0)) ||
+    typeof row.name !== 'string' ||
+    row.name.length === 0 ||
+    typeof row.targetName !== 'string' ||
+    row.targetName.length === 0;
+  const seen = new Set<string>();
+  const observations: FeatureTextureObservation[] = [];
+  for (const value of values) {
+    if (typeof value !== 'object' || value === null) return undefined;
+    const row = value as Partial<FeatureTextureObservation>;
+    const metadata = row.metadata;
+    if (
+      invalidFeatureTextureRow(row) ||
+      !(row.bytes instanceof Uint8Array) ||
+      metadata === undefined ||
+      metadata.footprint === undefined ||
+      invalidTextureFrameMetadata(metadata) ||
+      invalidTextureReadbackMetadata(metadata)
+    )
+      return undefined;
+    let layout: ReturnType<typeof textureReadbackLayout>;
+    try {
+      layout = textureReadbackLayout(
+        metadata.width,
+        metadata.height,
+        textureFormatBlock(metadata.format),
+      );
+    } catch {
+      return undefined;
+    }
+    const key = `${row.featureIdentity}\u0000${row.viewIdentity ?? 'frame'}\u0000${row.name}`;
+    if (
+      seen.has(key) ||
+      metadata.bytesPerRow !== layout.bytesPerRow ||
+      row.bytes.byteLength !== layout.byteLength
+    )
+      return undefined;
+    seen.add(key);
+    observations.push(row as FeatureTextureObservation);
+  }
+  return { ok: true, value: observations };
 }
 
 /** Sealed publications bounded by the same finite capacity as Host admission. */
@@ -142,7 +271,16 @@ export class SourceRenderWorker {
   private captureCandidatePipelines:
     | Parameters<typeof createDynamicGeometrySourceHost>[0]['capturePipelinePreparation']
     | undefined;
-  private readonly publishedFrames = new Map<number, { frameId: number; fixedStep: number }>();
+  private readonly publishedFrames = new Map<
+    number,
+    {
+      readonly frameId: number;
+      readonly fixedStep: number;
+      readonly deviceGeneration?: number;
+      readonly graphGeneration?: number;
+      readonly featureIdentities?: readonly string[];
+    }
+  >();
   private capacityWaiters: (() => void)[] = [];
   private readonly meshResidency: SourceMeshResidency;
   readonly dynamicGeometry: ReturnType<typeof createDynamicGeometrySourceHost>;
@@ -153,6 +291,7 @@ export class SourceRenderWorker {
     private readonly post: (message: EngineToHostMessage, transfer?: Transferable[]) => void,
     private readonly features: readonly RenderFeature<unknown>[] = [],
     private readonly targets?: RenderPublicationTargetOwner,
+    private readonly tasks?: TaskExecutor,
   ) {
     this.publicationCapacity = renderPipelineCapacityOf(init.diagnostics?.renderPipelineCapacity);
     this.meshResidency = new SourceMeshResidency(world, () => {
@@ -334,163 +473,291 @@ export class SourceRenderWorker {
           return;
         }
         if (!acceptsSceneMessages()) return;
-        if (
-          message.kind === 'geometry-observation-result' ||
-          message.kind === 'hdr-observation-result'
-        ) {
-          this.receiveOneShotResult(message, epoch);
-          return;
-        }
-        if (message.kind === 'inspect-result') {
+        const validateSceneMessage = () => {
           if (
-            message.identity.source === this.source &&
-            message.identity.epoch === epoch &&
-            message.worldIdentity === this.world.identity
-          )
-            this.inspectionRequests.get(message.requestId)?.finish(message.result);
-          return;
-        }
-        if (message.kind === 'terrain-height-result') {
-          this.terrainRequests
-            .get(message.requestId)
-            ?.finish(message.result.ok ? ok(message.result.value) : err(message.result.error));
-          return;
-        }
-        if (message.kind === 'bounds-result') {
-          this.boundsRequests.get(message.requestId)?.finish(message.bounds);
-          return;
-        }
-        if (message.kind === 'capture-result') {
-          if (this.captureRequest?.id === message.requestId)
-            this.captureRequest.finish(
-              message.result.ok
-                ? ok(
-                    toArtifact(
-                      tapeArtifact([message.result.value.bytes]),
-                      message.result.value.submittedFrame,
-                    ),
-                  )
-                : err(message.result.error),
+            (message.kind === 'geometry-observation-result' ||
+              message.kind === 'inspect-result' ||
+              message.kind === 'renderer-error' ||
+              message.kind === 'submitted' ||
+              message.kind === 'completed') &&
+            !validWorkerIdentity(message.identity)
+          ) {
+            failure(
+              {
+                code: 'render-worker-protocol-invalid',
+                expected: 'Render Worker messages carrying a valid source and epoch identity',
+                hint: 'repair the Render Worker message producer and retry the frame',
+                detail: { kind: message.kind },
+              },
+              undefined,
+              false,
             );
-          return;
-        }
-        if (message.kind === 'renderer-error') {
-          if (
-            this.disposed ||
-            message.identity.source !== this.source ||
-            message.identity.epoch !== epoch
-          )
-            return;
-          if (!ready) {
-            failure(message.error, undefined, false);
-            return;
+            return false;
           }
-          this.post({
-            kind: 'render-error',
-            identity: message.identity,
-            worldIdentity: this.world.identity,
-            error: message.error,
-            ...(message.renderer === undefined ? {} : { renderer: message.renderer }),
-          });
-          return;
-        }
-        if (message.kind === 'failed') {
-          failure(message.error, message);
-          return;
-        }
-        if (message.kind === 'ready') {
-          if (ready) return;
-          clearTimeout(this.deadline);
-          this.deviceGeneration = message.deviceGeneration;
-          this.captureCandidatePipelines = (input) => {
-            const captured = captureMeshPipelinePreparation({
-              ...input,
-              assets: this.assets,
-              capabilities: message.capabilities,
-              ...(message.limits === undefined ? {} : { limits: message.limits }),
-            });
-            if (!captured.ok) return captured;
-            return ok({
-              ...captured.value,
-              programs:
-                this.publisher?.unpublishedPrograms(captured.value.programs) ??
-                captured.value.programs,
-            });
-          };
-          this.publisher = createRenderPublisher(
-            this.world,
-            this.assets,
-            {
-              source: this.source,
-              epoch,
-            },
-            message.capabilities,
-            this.features,
-            this.targets,
-            message.limits,
-            this.publicationCapacity,
-            (handle, revision) => this.meshResidency.holdsPrepared(handle, revision),
-            (handle) => this.dynamicGeometry.pendingMeshPreparation(this.world, handle),
-          );
-          ready = true;
-          this.inspectionReady = true;
-          this.resolveReady?.();
-          this.resolveReady = undefined;
-          this.post({
-            kind: 'render-ready',
-            epoch,
-            capabilities: {
-              backendKind: message.capabilities.backendKind,
-              compute: message.capabilities.compute,
-              storageBuffer: message.capabilities.storageBuffer,
-            },
-            ...renderReadyLimits(message.limits),
-          });
-          resolve();
-        } else if (message.kind === 'submitted') {
-          try {
-            const accepted = this.publisher?.acknowledgeFeatures(
-              message.revision,
-              message.features,
+          if (
+            message.kind === 'submitted' &&
+            (!Number.isSafeInteger(message.revision) ||
+              message.revision < 0 ||
+              !validWorkerFrame(message.frame, 'frame-submitted'))
+          ) {
+            failure(
+              {
+                code: 'render-worker-protocol-invalid',
+                expected: 'a submitted frame identity and non-negative revision',
+                hint: 'repair the Render Worker submitted receipt and retry the frame',
+                detail: { kind: message.kind },
+              },
+              undefined,
+              false,
             );
-            if (accepted?.ok !== true) {
+            return false;
+          }
+          if (
+            message.kind === 'completed' &&
+            (!Number.isSafeInteger(message.revision) ||
+              message.revision < 0 ||
+              !validWorkerFrame(message.frame, 'frame-complete') ||
+              typeof message.completion !== 'object' ||
+              message.completion === null ||
+              !Array.isArray(message.buffers))
+          ) {
+            failure(
+              {
+                code: 'render-worker-protocol-invalid',
+                expected:
+                  'a completed source frame, actual Renderer receipt and returned publication storage',
+                hint: 'repair the Render Worker completion notice and retry the frame',
+                detail: { kind: message.kind },
+              },
+              undefined,
+              false,
+            );
+            return false;
+          }
+
+          return true;
+        };
+        if (!validateSceneMessage()) return;
+        const receiveSceneResult = () => {
+          if (
+            message.kind === 'geometry-observation-result' ||
+            message.kind === 'hdr-observation-result'
+          ) {
+            this.receiveOneShotResult(message, epoch);
+            return true;
+          }
+          if (message.kind === 'inspect-result') {
+            if (
+              message.identity.source === this.source &&
+              message.identity.epoch === epoch &&
+              message.worldIdentity === this.world.identity
+            )
+              this.inspectionRequests.get(message.requestId)?.finish(message.result);
+            return true;
+          }
+          if (message.kind === 'terrain-height-result') {
+            this.terrainRequests
+              .get(message.requestId)
+              ?.finish(message.result.ok ? ok(message.result.value) : err(message.result.error));
+            return true;
+          }
+          if (message.kind === 'bounds-result') {
+            this.boundsRequests.get(message.requestId)?.finish(message.bounds);
+            return true;
+          }
+          if (message.kind === 'capture-result') {
+            if (this.captureRequest?.id === message.requestId)
+              this.captureRequest.finish(
+                message.result.ok
+                  ? ok(
+                      toArtifact(
+                        tapeArtifact([message.result.value.bytes]),
+                        message.result.value.submittedFrame,
+                      ),
+                    )
+                  : err(message.result.error),
+              );
+            return true;
+          }
+          if (message.kind === 'renderer-error') {
+            if (
+              this.disposed ||
+              message.identity.source !== this.source ||
+              message.identity.epoch !== epoch
+            )
+              return true;
+            if (!ready) {
+              failure(message.error, undefined, false);
+              return true;
+            }
+            this.post({
+              kind: 'render-error',
+              identity: message.identity,
+              worldIdentity: this.world.identity,
+              error: message.error,
+              ...(message.renderer === undefined ? {} : { renderer: message.renderer }),
+            });
+            return true;
+          }
+          if (message.kind === 'failed') {
+            failure(message.error, message);
+            return true;
+          }
+
+          return false;
+        };
+        if (receiveSceneResult()) return;
+        if (message.kind === 'ready') {
+          const acceptReady = () => {
+            if (ready) return;
+            clearTimeout(this.deadline);
+            this.deviceGeneration = message.deviceGeneration;
+            this.captureCandidatePipelines = (input) => {
+              const captured = captureMeshPipelinePreparation({
+                ...input,
+                assets: this.assets,
+                capabilities: message.capabilities,
+                ...(message.limits === undefined ? {} : { limits: message.limits }),
+              });
+              if (!captured.ok) return captured;
+              return ok({
+                ...captured.value,
+                programs:
+                  this.publisher?.unpublishedPrograms(captured.value.programs) ??
+                  captured.value.programs,
+              });
+            };
+            this.publisher = createRenderPublisher(
+              this.world,
+              this.assets,
+              {
+                source: this.source,
+                epoch,
+              },
+              message.capabilities,
+              this.features,
+              this.targets,
+              message.limits,
+              this.publicationCapacity,
+              (handle, revision) => this.meshResidency.holdsPrepared(handle, revision),
+              (handle) => this.dynamicGeometry.pendingMeshPreparation(this.world, handle),
+            );
+            ready = true;
+            this.inspectionReady = true;
+            this.resolveReady?.();
+            this.resolveReady = undefined;
+            this.post({
+              kind: 'render-ready',
+              epoch,
+              capabilities: {
+                backendKind: message.capabilities.backendKind,
+                compute: message.capabilities.compute,
+                storageBuffer: message.capabilities.storageBuffer,
+              },
+              ...renderReadyLimits(message.limits),
+            });
+            resolve();
+          };
+          acceptReady();
+        } else if (message.kind === 'submitted') {
+          const acceptSubmitted = () => {
+            if (message.identity.source !== this.source || message.identity.epoch !== epoch) return;
+            const submitted = this.publishedFrames.get(message.revision);
+            if (
+              submitted === undefined ||
+              submitted.frameId !== message.frame.frameId ||
+              message.frame.worldIdentity !== this.world.identity
+            ) {
               failure(
-                accepted?.error ?? new Error('Invalid feature acknowledgment'),
+                new Error('Feature acknowledgment differs from its submitted source frame'),
                 undefined,
                 false,
               );
               return;
             }
-          } catch (cause) {
-            failure(cause, undefined, false);
-            return;
-          }
+            try {
+              const accepted = this.publisher?.acknowledgeFeatures(
+                message.revision,
+                message.features,
+              );
+              if (accepted?.ok !== true) {
+                failure(
+                  accepted?.error ?? new Error('Invalid feature acknowledgment'),
+                  undefined,
+                  false,
+                );
+                return;
+              }
+              this.publishedFrames.set(message.revision, {
+                ...submitted,
+                deviceGeneration: message.frame.deviceGeneration,
+                ...(message.frame.graphGeneration === undefined
+                  ? {}
+                  : { graphGeneration: message.frame.graphGeneration }),
+                featureIdentities: message.features.map((feature) => feature.identity),
+              });
+            } catch (cause) {
+              failure(cause, undefined, false);
+              return;
+            }
+          };
+          acceptSubmitted();
         } else if (message.kind === 'gpu-pass-timing') {
           this.receiveGpuPassTiming(message);
         } else if (message.kind === 'completed') {
-          clearTimeout(this.deadline);
-          const submitted = this.publishedFrames.get(message.revision);
-          const recycled = this.publisher?.recycle(message.revision, message.buffers);
-          if (recycled?.ok !== true) {
-            failure(
-              recycled?.error ?? new Error('Invalid Render Worker buffer return'),
-              undefined,
-              false,
-            );
-            return;
-          }
-          this.publishedFrames.delete(message.revision);
-          this.releaseCapacityWaiters();
-          const proof = message.meshConsumption;
-          if (proof !== undefined) {
+          const completeSourceFrame = () => {
+            if (message.identity.source !== this.source || message.identity.epoch !== epoch) return;
+            const submitted = this.publishedFrames.get(message.revision);
+            const invalidCompletedIdentity = (submitted: {
+              readonly deviceGeneration?: number;
+              readonly graphGeneration?: number;
+            }) =>
+              message.completion.deviceGeneration !== this.deviceGeneration ||
+              (submitted.deviceGeneration !== undefined &&
+                message.completion.deviceGeneration !== submitted.deviceGeneration) ||
+              message.completion.deviceGeneration !== message.frame.deviceGeneration ||
+              (submitted.graphGeneration !== undefined &&
+                message.completion.graphGeneration !== submitted.graphGeneration) ||
+              (message.frame.graphGeneration !== undefined &&
+                message.frame.graphGeneration !== message.completion.graphGeneration) ||
+              message.buffers.length !== 1 ||
+              !(message.buffers[0] instanceof ArrayBuffer);
             if (
               submitted === undefined ||
               submitted.frameId !== message.frame.frameId ||
-              submitted.fixedStep !== proof.sourceFixedStep ||
-              proof.deviceGeneration !== this.deviceGeneration ||
-              proof.deviceGeneration !== message.frame.deviceGeneration ||
-              !Number.isSafeInteger(proof.frameId)
+              message.frame.worldIdentity !== this.world.identity ||
+              invalidCompletedIdentity(submitted)
             ) {
+              failure(
+                new Error('Feature completion differs from its submitted source frame'),
+                undefined,
+                false,
+              );
+              return;
+            }
+            const featureReadbacks = featureTextureReadbackResult(
+              message.featureTextureReadbacks,
+              message.featureTextureReadbackError,
+              message.completion,
+              submitted.featureIdentities ?? [],
+            );
+            if (featureReadbacks === undefined) {
+              failure(
+                new Error('Feature texture readbacks differ from their completed receipt'),
+                undefined,
+                false,
+              );
+              return;
+            }
+            const proof = message.meshConsumption;
+            const invalidMeshCompletion = () =>
+              proof !== undefined &&
+              (submitted.fixedStep !== proof.sourceFixedStep ||
+                proof.deviceGeneration !== this.deviceGeneration ||
+                proof.deviceGeneration !== message.frame.deviceGeneration ||
+                !Number.isSafeInteger(proof.frameId) ||
+                proof.frameId !== message.completion.frameId);
+            if (invalidMeshCompletion()) {
               failure(
                 new Error('Mesh completion differs from its submitted publication'),
                 undefined,
@@ -498,25 +765,63 @@ export class SourceRenderWorker {
               );
               return;
             }
-            this.meshResidency.complete(proof);
-            if (message.frame.presentation === 'ready')
-              this.dynamicGeometry.publishDynamicGeometry(
-                Object.freeze({
-                  frameId: proof.frameId,
-                  deviceGeneration: proof.deviceGeneration,
-                }),
-                [this.world],
-                proof.sourceFixedStep,
-              );
-          }
-          this.replacementsWithoutFrame = 0;
-          if (
-            message.frame.presentation === 'ready' &&
-            (this.latestCompletedTerrainFrame === undefined ||
-              message.frame.frameId > this.latestCompletedTerrainFrame)
-          )
-            this.latestCompletedTerrainFrame = message.frame.frameId;
-          if (this.publisher?.inspect().inFlight) this.armFrameDeadline();
+            const retireCompletedPublication = () => {
+              try {
+                const completed = this.publisher?.completeFeatures(
+                  message.revision,
+                  message.completion,
+                  featureReadbacks,
+                );
+                if (completed?.ok !== true) {
+                  failure(
+                    completed?.error ?? new Error('Invalid feature completion'),
+                    undefined,
+                    false,
+                  );
+                  return false;
+                }
+              } catch (cause) {
+                failure(cause, undefined, false);
+                return false;
+              }
+              clearTimeout(this.deadline);
+              const recycled = this.publisher?.recycle(message.revision, message.buffers);
+              if (recycled?.ok !== true) {
+                failure(
+                  recycled?.error ?? new Error('Invalid Render Worker buffer return'),
+                  undefined,
+                  false,
+                );
+                return false;
+              }
+
+              return true;
+            };
+            if (!retireCompletedPublication()) return;
+            this.publishedFrames.delete(message.revision);
+            this.releaseCapacityWaiters();
+            if (proof !== undefined) {
+              this.meshResidency.complete(proof);
+              if (message.frame.presentation === 'ready')
+                this.dynamicGeometry.publishDynamicGeometry(
+                  Object.freeze({
+                    frameId: proof.frameId,
+                    deviceGeneration: proof.deviceGeneration,
+                  }),
+                  this.world,
+                  proof.sourceFixedStep,
+                );
+            }
+            this.replacementsWithoutFrame = 0;
+            if (
+              message.frame.presentation === 'ready' &&
+              (this.latestCompletedTerrainFrame === undefined ||
+                message.frame.frameId > this.latestCompletedTerrainFrame)
+            )
+              this.latestCompletedTerrainFrame = message.frame.frameId;
+            if (this.publisher?.inspect().inFlight) this.armFrameDeadline();
+          };
+          completeSourceFrame();
         }
       };
       if (preloadFailure?.kind === 'module') {
@@ -527,10 +832,12 @@ export class SourceRenderWorker {
       // Render notices go straight to the Host; the Host port precedes the session's first notice.
       const hostChannel = new MessageChannel();
       this.post({ kind: 'render-host-port', epoch, port: hostChannel.port2 }, [hostChannel.port2]);
+      const taskPort = this.openTaskPort();
       worker.postMessage(
         {
           kind: 'init',
           hostPort: hostChannel.port1,
+          ...taskPort.fields,
           worldIdentity: this.world.identity,
           ...(this.init.diagnostics?.rhiCapture === true ? { rhiCapture: true } : {}),
           ...forwardGpuStub(this.init),
@@ -555,15 +862,28 @@ export class SourceRenderWorker {
             : { renderTaskYield: this.init.diagnostics.renderTaskYield }),
           renderPipelineCapacity: this.publicationCapacity,
           ...this.takeStartupPipelineLibrary(),
+          ...(this.init.backgroundPipelineLibraryConcurrency === undefined
+            ? {}
+            : {
+                backgroundPipelineLibraryConcurrency:
+                  this.init.backgroundPipelineLibraryConcurrency,
+              }),
           ...(this.init.outputColorSpace === undefined
             ? {}
             : { outputColorSpace: this.init.outputColorSpace }),
+          ...forwardRenderBackend(this.init),
           ...(this.init.dynamicGeometryMeshBudgetBytes === undefined
             ? {}
             : { dynamicGeometryMeshBudgetBytes: this.init.dynamicGeometryMeshBudgetBytes }),
           ...(this.init.assetBudgetBytes === undefined
             ? {}
             : { assetBudgetBytes: this.init.assetBudgetBytes }),
+          ...(this.init.featureTextureReadbackBudgetBytes === undefined
+            ? {}
+            : { featureTextureReadbackBudgetBytes: this.init.featureTextureReadbackBudgetBytes }),
+          ...(this.init.textureMipSkip === undefined
+            ? {}
+            : { textureMipSkip: this.init.textureMipSkip }),
           ...(this.init.loadProgressScope === undefined
             ? {}
             : { loadProgressScope: this.init.loadProgressScope }),
@@ -578,7 +898,7 @@ export class SourceRenderWorker {
             : { shaderManifestUrl: this.init.shaderManifestUrl }),
           ...(this.init.build === undefined ? {} : { build: this.init.build }),
         } satisfies RenderWorkerInput,
-        [canvas, hostChannel.port1],
+        [canvas, hostChannel.port1, ...taskPort.transfer],
       );
       // The same failure owner handles a GPU queue that never completes.
       const frameDeadlineMs = renderFrameDeadlineMs(this.init.frameTimeoutMs);
@@ -589,6 +909,20 @@ export class SourceRenderWorker {
     });
   }
   private armFrameDeadline: () => void = () => {};
+  /** Ends the session's task port; its unfinished tasks are cancelled. */
+  private releaseTaskPort: (() => void) | undefined;
+  /** The Render Worker submits background work through this realm's dispatcher. */
+  private openTaskPort(): {
+    readonly fields: { readonly taskPort?: MessagePort };
+    readonly transfer: readonly Transferable[];
+  } {
+    this.releaseTaskPort?.();
+    this.releaseTaskPort = undefined;
+    if (this.tasks === undefined) return { fields: {}, transfer: [] };
+    const channel = new MessageChannel();
+    this.releaseTaskPort = serveTaskClient(channel.port2, this.tasks);
+    return { fields: { taskPort: channel.port1 }, transfer: [channel.port1] };
+  }
   private startupPipelineLibrary: ExecutionInitMessage['pipelineLibrary'];
   private startupBackgroundPipelineLibrary: ExecutionInitMessage['backgroundPipelineLibrary'];
   private takeStartupPipelineLibrary(): Pick<
@@ -650,7 +984,14 @@ export class SourceRenderWorker {
     if (geometryFault !== undefined) throw geometryFault;
     const wasIdle = !publisher.inspect().inFlight;
     const candidate = publisher
-      .prepare(sampleTimeSeconds, frame.temporalReset === true, frame)
+      .prepare(sampleTimeSeconds, frame.temporalReset === true, {
+        frameId: frame.frameId,
+        waterMeshViewFacts: {
+          version: 1,
+          canvasExtent: { width: frame.canvasWidth, height: frame.canvasHeight },
+          maxRenderShortSide: 0,
+        },
+      })
       .unwrap();
     const sourceFixedStep = this.world.getResource(FixedTime).tick;
     this.publishedFrames.set(candidate.packet.revision, {
@@ -768,6 +1109,10 @@ export class SourceRenderWorker {
         finish(unavailable(String(cause)));
       }
     });
+  }
+  /** Ask the Render Worker to release its completed read caches. */
+  trimReadCache(): void {
+    this.worker?.postMessage({ kind: 'memory-pressure' } satisfies RenderWorkerInput);
   }
   bounds(entity: number): Promise<RenderSceneBounds | undefined> {
     const worker = this.worker;
@@ -935,6 +1280,9 @@ export class SourceRenderWorker {
           ...(options.pipelineLibraryLimits === undefined
             ? {}
             : { pipelineLibraryLimits: options.pipelineLibraryLimits }),
+          ...(options.pipelineLibraryRequestedOnly === undefined
+            ? {}
+            : { pipelineLibraryRequestedOnly: options.pipelineLibraryRequestedOnly }),
           ...(options.runtimeRequests === undefined
             ? {}
             : { runtimeRequests: options.runtimeRequests }),
@@ -1076,6 +1424,8 @@ export class SourceRenderWorker {
     this.latestCompletedTerrainFrame = undefined;
     this.publisher?.dispose();
     this.publisher = undefined;
+    this.releaseTaskPort?.();
+    this.releaseTaskPort = undefined;
   }
   dispose(): Promise<void> {
     if (this.disposal !== undefined) return this.disposal;
@@ -1093,25 +1443,47 @@ export class SourceRenderWorker {
     const worker = this.worker;
     this.disposal = (async () => {
       let failure: unknown;
+      const traceDisposal = (stage: 'mesh-release' | 'retirement' | 'child-ack' | 'clear') => {
+        console.warn(
+          JSON.stringify({
+            kind: 'render-worker-disposal',
+            owner: 'source',
+            stage,
+            source: this.source,
+            epoch: this.epoch,
+            worldIdentity: this.world.identity,
+          }),
+        );
+      };
       try {
         // Keep mesh ACK delivery live until all receiver release fences finish.
         try {
-          if (retirement === undefined) await this.meshResidency.dispose();
-          else (await retirement).unwrap();
+          if (retirement === undefined) {
+            traceDisposal('mesh-release');
+            await this.meshResidency.dispose();
+          } else {
+            traceDisposal('retirement');
+            (await retirement).unwrap();
+          }
         } catch (cause) {
+          console.error('[render-worker-disposal-failed]', serializableDetail(cause));
           failure = cause;
         }
         // Fence late frame/capture messages before waiting for the dedicated ACK.
         this.worker = undefined;
         if (worker !== undefined && retirement === undefined) {
           try {
-            if (this.initializationSent) (await shutdownWorker(worker)).unwrap();
-            else worker.terminate();
+            if (this.initializationSent) {
+              traceDisposal('child-ack');
+              (await shutdownWorker(worker)).unwrap();
+            } else worker.terminate();
           } catch (cause) {
+            console.error('[render-worker-disposal-failed]', serializableDetail(cause));
             failure ??= cause;
           }
         }
       } finally {
+        traceDisposal('clear');
         this.clear();
       }
       if (failure !== undefined) throw failure;

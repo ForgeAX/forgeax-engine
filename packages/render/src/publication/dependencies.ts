@@ -1,4 +1,25 @@
-import type { ExtractedFrame, RenderableSnapshot } from '../render-system-extract';
+import type {
+  ExtractedFrame,
+  MaterialSnapshot,
+  RenderableSnapshot,
+} from '../render-system-extract';
+
+/** Asset handles bound by one material, independent of its renderable's geometry. */
+export function materialSnapshotDependencies(material: MaterialSnapshot): number[] {
+  const handles = new Set<number>();
+  for (const handle of [
+    material.materialHandle,
+    material.baseColorTexture,
+    material.metallicRoughnessTexture,
+    material.normalTexture,
+    material.emissiveTexture,
+    material.occlusionTexture,
+  ])
+    if (handle) handles.add(handle);
+  for (const handle of material.textureHandles?.values() ?? []) handles.add(handle);
+  for (const handle of material.samplerHandles?.values() ?? []) handles.add(handle);
+  return [...handles];
+}
 
 /** One asset closure for source publication and receiver admission. */
 export function publicationDependencies(
@@ -12,27 +33,20 @@ export function publicationDependencies(
     | 'tilemap'
     | 'skinBinding'
   >,
+  exactVersionAvailable?: (handle: number, revision: number) => boolean,
 ): number[] {
   if (row.glyph !== undefined) return [row.glyph.font];
   if (row.tilemap !== undefined) return [row.tilemap.tileset];
   if (row.terrain !== undefined) return [row.terrain.handle];
-  const handles = new Set<number>([row.assetHandle as number]);
+  const handles = new Set<number>(row.assetHandle === undefined ? [] : [row.assetHandle]);
   if (row.skinBinding !== undefined) handles.add(row.skinBinding.skeleton);
-  for (const override of row.materialOverrides ?? [])
-    if (override?.snapshot.materialHandle) handles.add(override.snapshot.materialHandle);
-  for (const material of row.materials) {
-    for (const handle of [
-      material.snapshot.materialHandle,
-      material.snapshot.baseColorTexture,
-      material.snapshot.metallicRoughnessTexture,
-      material.snapshot.normalTexture,
-      material.snapshot.emissiveTexture,
-      material.snapshot.occlusionTexture,
-    ]) {
-      if (handle) handles.add(handle as number);
+  for (const material of [...row.materials, ...(row.materialOverrides ?? [])]) {
+    if (material === undefined) continue;
+    for (const handle of materialSnapshotDependencies(material.snapshot)) {
+      const fixed = material.snapshot.sourceAssets?.assets.find((asset) => asset.handle === handle);
+      if (fixed === undefined || exactVersionAvailable?.(handle, fixed.revision) !== true)
+        handles.add(handle);
     }
-    for (const handle of material.snapshot.textureHandles?.values() ?? []) handles.add(handle);
-    for (const handle of material.snapshot.samplerHandles?.values() ?? []) handles.add(handle);
   }
   return [...handles];
 }
@@ -48,6 +62,7 @@ export function publicationFrameDependencies(
     | 'lights'
     | 'volumetricFog'
     | 'projectedDecals'
+    | 'cloudLayer'
   >,
 ): number[] {
   const handles = new Set<number>();
@@ -59,6 +74,8 @@ export function publicationFrameDependencies(
     for (const handle of decal.material.samplerHandles?.values() ?? []) add(handle);
     for (const handle of decal.material.textureHandles?.values() ?? []) add(handle);
   }
+  if (frame.cloudLayer?.status === 'sampled')
+    for (const texture of frame.cloudLayer.textures) add(texture.handle);
   add(frame.skylight?.equirectHandle);
   add(frame.skybox?.equirectHandle);
   for (const camera of [...frame.cameras, ...frame.auxiliaryCameras]) add(camera.output?.colorLut);

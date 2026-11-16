@@ -7,7 +7,7 @@ import { RhiNullCommandEncoder, RhiNullDevice, RhiNullQueue } from '@forgeax/eng
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import { Instances, MeshFilter, MeshRenderer } from '../components';
 import { InstanceProjectionStore } from '../instances';
-import { extractFrames } from '../render-system-extract-tail';
+import { extractSource } from '../render-system-extract-tail';
 import {
   type PersistentRenderCandidateRequest,
   PersistentRenderScene,
@@ -48,7 +48,6 @@ function grid(count: number): Float32Array {
 export interface InstanceRowWork {
   readonly projectionRows: number;
   readonly fullProjections: number;
-  readonly boundsNodeVisits: number;
   readonly boundsDerives: number;
   readonly gpuSceneRows: number;
   readonly uploadBytes: number;
@@ -103,9 +102,8 @@ export function createInstanceRowHarness(count: number): InstanceRowHarness {
   const instanceCollections = new InstanceProjectionStore();
   const scene = new PersistentRenderScene({ getDevice: () => device, instanceCollections });
   const lease = createRenderReadLease(world);
-  const owner = { cameraOwner: 0, resourceOwner: 0 } as const;
   const build = (request: PersistentRenderCandidateRequest) =>
-    extractFrames([world], owner, assets, scene.materialSnapshotCacheStore(), {
+    extractSource(world, assets, scene.materialSnapshotCacheStore(), {
       cull: 'none',
       retainHidden: true,
       renderables: request,
@@ -113,10 +111,10 @@ export function createInstanceRowHarness(count: number): InstanceRowHarness {
     });
   const extract = () => {
     world.update(0).unwrap();
-    scene.extractComposition([world], owner, assets, build, [lease]);
+    scene.extractComposition(world, assets, build, lease);
   };
   const matrix = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 3, 0, 1]);
-  scene.extractComposition([world], owner, assets, build, [lease]);
+  scene.extractComposition(world, assets, build, lease);
   return {
     move(row, x) {
       matrix[12] = x;
@@ -135,7 +133,6 @@ export function createInstanceRowHarness(count: number): InstanceRowHarness {
       return {
         projectionRows: projection.rows,
         fullProjections: projection.fullProjections,
-        boundsNodeVisits: bounds?.nodeVisits ?? 0,
         boundsDerives: bounds?.derives ?? 0,
         gpuSceneRows: gpu?.instanceRowsVisited ?? 0,
         uploadBytes: queue.bytes,

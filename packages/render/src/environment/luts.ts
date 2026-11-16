@@ -1,5 +1,6 @@
 import type {
   GraphBuffer,
+  GraphTexture,
   GraphTextureView,
   RenderGraphBuilder,
   RenderGraphError,
@@ -11,6 +12,7 @@ import {
   type Sampler,
 } from '@forgeax/engine-rhi';
 import { ok, type Result, shaderSourceDescriptor } from '@forgeax/engine-types';
+import { AtmosphereLutPass } from '../record/gpu-pass-timing/sky-pass-names';
 import type { _InternalRenderPipelineContext } from '../record/render-context';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
 import type { RenderPipelineFrame } from '../render-pipeline';
@@ -30,6 +32,10 @@ export interface GraphAtmosphereTables {
   readonly captureSky: GraphTextureView;
 }
 interface GraphAtmosphereCommon extends GraphAtmosphereTables {
+  readonly cloudSources?: {
+    readonly transmittance: { readonly texture: GraphTexture; readonly view: GraphTextureView };
+    readonly distantSkyLight: { readonly texture: GraphTexture; readonly view: GraphTextureView };
+  };
   readonly visibility: AtmosphereVisibility;
   readonly distantSkyLight: GraphTextureView;
 }
@@ -89,7 +95,10 @@ export function addAtmosphereLuts(
       { format: 'rgba16float', size: { width, height }, usage: 0x0c },
       (frame) => atmosphereStorage(frame)[name],
     );
-    return texture.ok ? graph.view(texture.value, { dimension: '2d' }) : texture;
+    if (!texture.ok) return texture;
+    const view = graph.view(texture.value, { dimension: '2d' });
+    if (!view.ok) return view;
+    return ok({ texture: texture.value, view: view.value });
   };
   const transmittance = table('transmittance', 256, 64);
   if (!transmittance.ok) return transmittance;
@@ -136,43 +145,43 @@ export function addAtmosphereLuts(
   for (const stage of [
     {
       name: 'transmittance',
-      target: transmittance.value,
+      target: transmittance.value.view,
       inputs: [],
       groups: [32, 8, 1],
       shared: true,
     },
     {
       name: 'multiple_scattering',
-      target: multiple.value,
-      inputs: [transmittance.value],
+      target: multiple.value.view,
+      inputs: [transmittance.value.view],
       groups: [4, 4, 1],
       shared: true,
     },
     {
       name: 'distant_sky_light',
-      target: distant.value,
-      inputs: [transmittance.value, multiple.value],
+      target: distant.value.view,
+      inputs: [transmittance.value.view, multiple.value.view],
       groups: [1, 1, 1],
       shared: false,
     },
     {
       name: 'capture_sky_view',
-      target: captureSky.value,
-      inputs: [transmittance.value, multiple.value],
+      target: captureSky.value.view,
+      inputs: [transmittance.value.view, multiple.value.view],
       groups: [24, 26, 1],
       shared: false,
     },
     {
       name: 'sky_view',
       target: skyView.value,
-      inputs: [transmittance.value, multiple.value],
+      inputs: [transmittance.value.view, multiple.value.view],
       groups: [24, 26, 1],
       shared: false,
     },
     {
       name: 'aerial_perspective',
       target: aerialView.value,
-      inputs: [transmittance.value, multiple.value],
+      inputs: [transmittance.value.view, multiple.value.view],
       groups: [8, 8, 8],
       shared: false,
     },
@@ -209,7 +218,7 @@ export function addAtmosphereLuts(
       stage.name === 'capture_sky_view' || stage.name === 'distant_sky_light'
         ? captureParameters
         : view.value;
-    const pass = graph.addComputePass(`atmosphere-${stage.name.replaceAll('_', '-')}`, {
+    const pass = graph.addComputePass(AtmosphereLutPass[stage.name], {
       accesses: [
         ...atmosphereVisibilityAccesses(localVisibility),
         { resource: parameters, usage: 'uniform-read' },
@@ -392,12 +401,13 @@ export function addAtmosphereLuts(
   }
   return ok({
     execution: 'compute-volume',
+    cloudSources: { transmittance: transmittance.value, distantSkyLight: distant.value },
     visibility,
-    transmittance: transmittance.value,
-    multipleScattering: multiple.value,
+    transmittance: transmittance.value.view,
+    multipleScattering: multiple.value.view,
     skyView: skyView.value,
-    captureSky: captureSky.value,
-    distantSkyLight: distant.value,
+    captureSky: captureSky.value.view,
+    distantSkyLight: distant.value.view,
     aerialPerspective: aerialView.value,
     aerialTransmittance: extinctionView.value,
   });

@@ -1,10 +1,10 @@
-import { DirectionalLight } from '../components/directional-light';
 // GPU-driven lane preparation for one display frame: producer artifacts,
 // the GPU owner's prepare request, its shadow view roster, and the direct
 // shadow rows that remain CPU-recorded beside it.
 
 import type { Buffer } from '@forgeax/engine-rhi';
 import { requiresProbeBlendRecord } from '../assembly/material/artifact-probe-blend';
+import { DirectionalLight } from '../components/directional-light';
 import { directionalShadowFilterRadiusTexels } from '../components/directional-shadow-filter';
 import type { MeshGpuHandles } from '../device/gpu-residency';
 import type { GpuDrivenBatchBinding } from '../gpu-driven/batch-topology';
@@ -23,6 +23,7 @@ import {
   shadowCameraCullDilation,
   shadowViewIdentityKey,
 } from '../gpu-driven/shadow-views';
+import type { MaterialResource } from '../material-resource';
 import type { StandardTopologyInputValue } from '../pipeline/standard-lighting/topology';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import type { VisibleSurfaceProjection } from '../raytracing/visible-surface';
@@ -101,23 +102,36 @@ export function collectFrameGpuDrivenArtifacts(
 
 export function collectGpuShadowMaterials(
   internals: RenderSystemInternals,
-  worlds: readonly RenderResourceScope[],
+  sourceScope: RenderResourceScope,
   batchExecutions: CollectedMaterialArtifacts['batchExecutions'],
   meshes: ReadonlyMap<GpuDrivenBatchBinding, MeshGpuHandles>,
   shadowMaterials: ShadowMaterialContent,
   meshReads: ShadowMeshInput | undefined,
+  casterMaterials?: ReadonlySet<MaterialResource>,
 ): void {
   for (const binding of batchExecutions.keys()) {
     const execution = batchExecutions.get(binding);
     if (execution === undefined || execution.shadow.route === 'none') continue;
-    const scope = worlds[binding.worldId];
-    if (scope !== undefined)
+    // A batch whose members all opt out of casting rasters nothing; its
+    // material edits cannot invalidate retained shadow depth.
+    if (casterMaterials !== undefined && !casterMaterials.has(binding.material)) continue;
+    const scope = sourceScope;
+    if (scope !== undefined) {
       shadowMaterials.add(
         binding.material,
         execution.shadow.material,
         scope,
         internals.preparedMaterialTexture,
+        0,
       );
+      if (binding.rowGroup !== undefined)
+        shadowMaterials.addRows(
+          binding.rowGroup.rows.keys(),
+          scope,
+          internals.preparedMaterialTexture,
+          0,
+        );
+    }
     const mesh = meshes.get(binding);
     meshReads?.reads.add(mesh?.changeToken);
   }
@@ -276,7 +290,7 @@ function pushShadowViewRequest(
     targetSize,
     graphGeneration,
     ...(cameraCull === undefined ? {} : { cameraCull }),
-    ...(identity.kind === 'directional' && lights.directionalCsmConfig?.staticShadowCache === false
+    ...(identity.kind === 'directional' && lights.directionalCsmConfig?.staticShadowCache !== true
       ? { staticLayer: false as const }
       : {}),
   });
@@ -411,7 +425,7 @@ export interface DirectShadowInputs {
   readonly scene: PersistentGpuDrivenState;
   readonly phases: ViewDrawPhases;
   readonly meshes: ReadonlyMap<GpuDrivenBatchBinding, MeshGpuHandles>;
-  readonly worlds: readonly RenderResourceScope[];
+  readonly sourceScope: RenderResourceScope;
   readonly materials: MaterialFrame;
   readonly prepareSources: PrepareSources;
   readonly viewDraws: FrameList<RenderableSnapshot> | undefined;
@@ -434,7 +448,7 @@ function shadowRows(
     selection,
     select,
     meshes: inputs.meshes,
-    worlds: inputs.worlds,
+    sourceScope: inputs.sourceScope,
     shadow: true,
     materials: inputs.materials,
     prepareUnbatched: inputs.prepareSources,
@@ -485,7 +499,7 @@ export function validateDirectShadowRows(inputs: DirectShadowInputs): DirectShad
 
 export function collectDirectShadowMaterials(
   internals: RenderSystemInternals,
-  worlds: readonly RenderResourceScope[],
+  sourceScope: RenderResourceScope,
   rows: readonly ValidatedRenderable[] | undefined,
   materials: MaterialFrame,
   shadowMaterials: ShadowMaterialContent,
@@ -493,7 +507,7 @@ export function collectDirectShadowMaterials(
 ): void {
   for (const row of rows ?? []) {
     meshReads?.reads.add(row.mesh.changeToken);
-    const scope = worlds[row.source.worldId ?? 0];
+    const scope = sourceScope;
     if (scope === undefined) continue;
     for (const index of row.submeshIndices ?? row.mesh.submeshes.keys()) {
       const submesh = row.mesh.submeshes[index];
@@ -501,7 +515,13 @@ export function collectDirectShadowMaterials(
       const resource = row.source.materials[submesh.materialSlot] ?? row.source.material;
       const accepted = materials.get(resource);
       if (accepted !== undefined)
-        shadowMaterials.add(resource, accepted.snapshot, scope, internals.preparedMaterialTexture);
+        shadowMaterials.add(
+          resource,
+          accepted.snapshot,
+          scope,
+          internals.preparedMaterialTexture,
+          0,
+        );
     }
   }
 }

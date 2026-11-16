@@ -128,7 +128,6 @@ function snapshot(
     material: resource,
     materials: [resource],
     materialBindingSources: ['engine-default'],
-    worldId: 0,
     entityKey,
     gpuDrivenDraws: [
       {
@@ -167,7 +166,6 @@ function snapshot(
 function updateSnapshot(value: RenderableSnapshot) {
   return {
     kind: 'update' as const,
-    worldId: value.worldId,
     entityKey: value.entityKey,
     snapshot: value,
   };
@@ -176,7 +174,6 @@ function updateInstances(value: RenderableSnapshot) {
   if (value.instances === undefined) throw new Error('expected Instances payload');
   return {
     kind: 'update' as const,
-    worldId: value.worldId,
     entityKey: value.entityKey,
     instances: value.instances,
   };
@@ -283,7 +280,7 @@ describe('PBR prepared GPU-driven batch topology', () => {
     const world = new Float32Array(b.transform.world);
     world[0] = -1;
     world[4] = 0.35;
-    const mirrored = projection.apply([{ kind: 'update', worldId: 0, entityKey: 2, world }]);
+    const mirrored = projection.apply([{ kind: 'update', entityKey: 2, world }]);
     expect(mirrored.contentUpdatedSlots).toHaveLength(1);
     topology.apply(mirrored);
     expect(topology.query(topology.sourcePlan(), undefined).batches).toHaveLength(2);
@@ -295,12 +292,12 @@ describe('PBR prepared GPU-driven batch topology', () => {
       ).size,
     ).toBe(2);
     world[12] = 1;
-    const translated = projection.apply([{ kind: 'update', worldId: 0, entityKey: 2, world }]);
+    const translated = projection.apply([{ kind: 'update', entityKey: 2, world }]);
     expect(translated.contentUpdatedSlots).toHaveLength(0);
     topology.apply(translated);
     expect(topology.query(topology.sourcePlan(), undefined).batches).toHaveLength(2);
     world[0] = 1;
-    topology.apply(projection.apply([{ kind: 'update', worldId: 0, entityKey: 2, world }]));
+    topology.apply(projection.apply([{ kind: 'update', entityKey: 2, world }]));
     expect(topology.query(topology.sourcePlan(), undefined).batches).toHaveLength(1);
     expect(a.material.snapshot.renderState).toBeUndefined();
     expect(b.material.snapshot.renderState).toBeUndefined();
@@ -314,7 +311,7 @@ describe('PBR prepared GPU-driven batch topology', () => {
     const topology = new BatchTopology();
     topology.rebuild(projection.slotsSnapshot());
     const original = topology.query(topology.sourcePlan(), undefined);
-    const remove = projection.apply([{ kind: 'remove', worldId: 0, entityKey: 1 }]);
+    const remove = projection.apply([{ kind: 'remove', entityKey: 1 }]);
     topology.apply(remove);
     const afterRemoval = topology.query(topology.sourcePlan(), undefined);
     expect([...afterRemoval.batches]).toEqual(original.batches.slice(1));
@@ -365,7 +362,7 @@ describe('PBR prepared GPU-driven batch topology', () => {
       projection.apply(
         values
           .slice(0, 63)
-          .map((value) => ({ kind: 'remove' as const, worldId: 0, entityKey: value.entityKey })),
+          .map((value) => ({ kind: 'remove' as const, entityKey: value.entityKey })),
       ),
     );
     const compact = topology.query(topology.sourcePlan(), undefined);
@@ -463,7 +460,6 @@ describe('PBR prepared GPU-driven batch topology', () => {
     const numeric = projection.apply([
       {
         kind: 'update',
-        worldId: 0,
         entityKey: 1,
         world: snapshot(1, prepared()).transform.world,
       },
@@ -746,7 +742,7 @@ it('looks up an instanced batch once per draw while preserving candidate order a
   expect(plan.batches.at(0)?.candidates.map((row) => row.instanceOrdinal)).toEqual(
     Array.from({ length: 1024 }, (_, i) => i),
   );
-  topology.apply(projection.apply([{ kind: 'remove', worldId: 0, entityKey: 100 }]));
+  topology.apply(projection.apply([{ kind: 'remove', entityKey: 100 }]));
   expect(topology.query(topology.sourcePlan(), undefined).candidateCount).toBe(0);
 });
 it.each([
@@ -762,7 +758,7 @@ it.each([
   topology.rebuild(projection.slotsSnapshot());
   const before = topology.query(topology.sourcePlan(), undefined);
   const removed = Math.floor(count / 2) + 1;
-  const delta = projection.apply([{ kind: 'remove', worldId: 0, entityKey: removed }]);
+  const delta = projection.apply([{ kind: 'remove', entityKey: removed }]);
   const groups = (
     topology as unknown as {
       batches: Map<unknown, unknown>;
@@ -787,9 +783,7 @@ it.each([1000, 10000])('removes one member without copying the other %i group me
   const topology = new BatchTopology();
   topology.rebuild(projection.slotsSnapshot());
   const before = topology.query(topology.sourcePlan(), undefined);
-  const delta = projection.apply([
-    { kind: 'remove', worldId: 0, entityKey: Math.floor(count / 2) + 1 },
-  ]);
+  const delta = projection.apply([{ kind: 'remove', entityKey: Math.floor(count / 2) + 1 }]);
   const sort = vi.spyOn(Array.prototype, 'sort').mockImplementation(() => {
     throw new Error('whole retained group sort');
   });
@@ -817,7 +811,6 @@ it('preserves the surviving physical execution window when unrelated batches ret
     projection.apply(
       values.slice(0, 63).map((value) => ({
         kind: 'remove' as const,
-        worldId: 0,
         entityKey: value.entityKey,
       })),
     ),
@@ -1052,9 +1045,7 @@ describe('bounded tree publication reads', () => {
     expect(observed.nodes).toBe(count); // Cold full traversal authenticates the counter.
     const survivor = required(before.batches.at(-1));
     observed.reset();
-    topology.apply(
-      scene.apply([{ kind: 'remove', worldId: 0, entityKey: Math.floor(count / 2) + 1 }]),
-    );
+    topology.apply(scene.apply([{ kind: 'remove', entityKey: Math.floor(count / 2) + 1 }]));
     topology.sourcePlan();
     expect(observed.nodes).toBeGreaterThan(0);
     expect(observed.nodes).toBeLessThan(128);
@@ -1100,9 +1091,7 @@ describe('bounded tree publication reads', () => {
     expect(observed.nodes).toBe(group.members.root?.size);
     expect(observed.nodes).toBeLessThanOrEqual(Math.ceil(count / 32));
     observed.reset();
-    topology.apply(
-      scene.apply([{ kind: 'remove', worldId: 0, entityKey: Math.floor(count / 2) + 1 }]),
-    );
+    topology.apply(scene.apply([{ kind: 'remove', entityKey: Math.floor(count / 2) + 1 }]));
     const after = topology.query(topology.sourcePlan(), undefined);
     const visited = observed.nodes,
       reads = observed.reads;

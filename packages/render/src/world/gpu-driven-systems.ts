@@ -1,4 +1,4 @@
-import { defineComponent, type EntityHandle, type World } from '@forgeax/engine-ecs';
+import { defineComponent, defineSystem, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import type { RhiError } from '@forgeax/engine-rhi';
 import type { GpuDrivenPreparationError } from '../errors/gpu-driven';
 import type { PreparedGpuDrivenFrame } from '../gpu-driven/production-raster';
@@ -8,19 +8,17 @@ import {
   type FrameGpuDrivenInput,
   type FrameGpuDrivenSources,
 } from '../record/frame-gpu-driven-input';
+import { activeRenderProfileSession } from '../record/profile-session';
 import type { RenderSystemInternals } from '../record/render-context';
 import { runProfiledRenderPhase, runRecordProfilePhase } from '../record/render-context';
 import { querySceneExecution } from '../record/resident-meshes';
 import { gpuDrivenPipelineLane } from '../record/view-pipeline-demand';
 import type { PersistentGpuDrivenState } from '../scene/render-scene';
+import { RenderGpuDrivenPrepareOrder, RenderSsrAdmissionOrder } from '../system-order';
 import type { GpuDrivenRasterLane } from './gpu-driven-raster-systems';
 import { type ViewPassPlanQueue, ViewPassPlans } from './pass-plan-systems';
 import { RenderQueue, renderSubmission, renderWorldFor } from './render-world';
-import {
-  RENDER_SSR_ADMISSION_SYSTEM,
-  ViewSsrAdmission,
-  viewSsrAdmissionOf,
-} from './ssr-admission-systems';
+import { ViewSsrAdmission, viewSsrAdmissionOf } from './ssr-admission-systems';
 import { ViewStandardLighting, viewStandardLightingOf } from './standard-lighting-systems';
 import { readViewField, requireViewField } from './view-field';
 
@@ -165,7 +163,7 @@ function prepareViewGpuDriven(
     const prepared =
       request === undefined
         ? undefined
-        : runProfiledRenderPhase(sources.internals.profiler?.activeSession(), 'record', () =>
+        : runProfiledRenderPhase(activeRenderProfileSession(sources.internals), 'record', () =>
             runRecordProfilePhase(sources.profilePhase, 'record/gpu-driven-prepare', () =>
               sources.gpuDriven.owner.prepare(request),
             ),
@@ -346,57 +344,57 @@ export function consumeRecordingGpuDriven(
  * never throws.
  */
 export function registerGpuDrivenPrepareSystem(world: World): void {
-  world
-    .addSystem(RenderQueue, {
-      commands: 'none',
-      name: RENDER_GPU_DRIVEN_PREPARE_SYSTEM,
-      after: [RENDER_SSR_ADMISSION_SYSTEM],
-      queries: [
-        {
-          read: [ViewPassPlans, ViewSsrAdmission],
-          optional: [ViewStandardLighting, ViewGpuDrivenPrepareInput, ViewGpuDriven],
-        },
-      ],
-      fn: (world, [views]) => {
-        const frame = renderSubmission(world).frame;
-        const first: { entity: EntityHandle; state: ViewGpuDrivenState }[] = [];
-
-        views.forEach((row) => {
-          const entity = row.entity;
-
-          if (viewSsrAdmissionOf(world, entity) === undefined) return;
-          const stored = readViewField(world, entity, ViewGpuDriven, 'state');
-          const previous =
-            stored === undefined
-              ? undefined
-              : world.resolveUniqueRef<ViewGpuDrivenState>(stored).unwrap();
-          if (previous?.frame === frame) return;
-          const staged = world
-            .resolveUniqueRef<ViewPassPlanQueue>(
-              requireViewField(world, entity, ViewPassPlans, 'state'),
-            )
-            .unwrap().staged;
-          const outcome = prepareViewGpuDriven(
-            world,
-            entity,
-            selectViewGpuDriven(world, entity, staged?.gpuDrivenScene),
-          );
-          if (previous === undefined) {
-            first.push({ entity: entity, state: { frame, outcome } });
-            return;
-          }
-          previous.frame = frame;
-          previous.outcome = outcome;
-        });
-        // A view's first selection attaches its component after the iteration.
-        for (const { entity, state } of first)
-          world
-            .addComponent(entity, {
-              component: ViewGpuDriven,
-              data: { state: world.allocUniqueRef('ViewGpuDriven', state) },
-            })
-            .unwrap();
+  const systemToken1 = defineSystem({
+    sets: [RenderGpuDrivenPrepareOrder],
+    commands: 'none',
+    name: RENDER_GPU_DRIVEN_PREPARE_SYSTEM,
+    after: [RenderSsrAdmissionOrder],
+    queries: [
+      {
+        read: [ViewPassPlans, ViewSsrAdmission],
+        optional: [ViewStandardLighting, ViewGpuDrivenPrepareInput, ViewGpuDriven],
       },
-    })
-    .unwrap();
+    ],
+    fn: (world, [views]) => {
+      const frame = renderSubmission(world).frame;
+      const first: { entity: EntityHandle; state: ViewGpuDrivenState }[] = [];
+
+      views.forEach((row) => {
+        const entity = row.entity;
+
+        if (viewSsrAdmissionOf(world, entity) === undefined) return;
+        const stored = readViewField(world, entity, ViewGpuDriven, 'state');
+        const previous =
+          stored === undefined
+            ? undefined
+            : world.resolveUniqueRef<ViewGpuDrivenState>(stored).unwrap();
+        if (previous?.frame === frame) return;
+        const staged = world
+          .resolveUniqueRef<ViewPassPlanQueue>(
+            requireViewField(world, entity, ViewPassPlans, 'state'),
+          )
+          .unwrap().staged;
+        const outcome = prepareViewGpuDriven(
+          world,
+          entity,
+          selectViewGpuDriven(world, entity, staged?.gpuDrivenScene),
+        );
+        if (previous === undefined) {
+          first.push({ entity: entity, state: { frame, outcome } });
+          return;
+        }
+        previous.frame = frame;
+        previous.outcome = outcome;
+      });
+      // A view's first selection attaches its component after the iteration.
+      for (const { entity, state } of first)
+        world
+          .addComponent(entity, {
+            component: ViewGpuDriven,
+            data: { state: world.allocUniqueRef('ViewGpuDriven', state) },
+          })
+          .unwrap();
+    },
+  });
+  world.addSystem(RenderQueue, systemToken1).unwrap();
 }

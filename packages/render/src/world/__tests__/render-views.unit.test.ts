@@ -1,5 +1,6 @@
 import { readComponentMutationEpoch } from '@forgeax/engine-ecs/projection';
 import { describe, expect, it, vi } from 'vitest';
+import { viewSourceFixture } from '../../__tests__/view-source.fixture';
 import type { CameraSnapshot } from '../../render-contract';
 import type { RenderTarget } from '../../targets/contracts';
 import {
@@ -42,16 +43,19 @@ function fixture() {
     maxRenderShortSide = 0,
   ) => {
     assertViewCameras(cameras, maxRenderShortSide > 0);
-    world.insertResource(RenderViewInput, {
-      cameras,
-      captures,
-      maxRenderShortSide,
-      primary: false,
-      primaryCamera: undefined,
-      canvas: { width: 64, height: 64 },
-      attachment: () => 'world-a',
-      targetExtent: () => ({ width: 32, height: 16 }),
-    });
+    world.insertResource(
+      RenderViewInput,
+      viewSourceFixture({
+        cameras,
+        captures,
+        maxRenderShortSide,
+        primary: false,
+        primaryCamera: undefined,
+        canvas: { width: 64, height: 64 },
+        attachment: 'world-a',
+        targetExtent: () => ({ width: 32, height: 16 }),
+      }),
+    );
     beginRenderFrame(world, ++frame);
     endRenderFrame(world);
   };

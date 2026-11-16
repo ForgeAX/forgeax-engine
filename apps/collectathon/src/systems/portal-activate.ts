@@ -23,7 +23,7 @@
 // CollidingEntities + state token.
 
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
-import type { EntityHandle, SystemHandle, World } from '@forgeax/engine-ecs';
+import type { EntityHandle, System, World } from '@forgeax/engine-ecs';
 import { defineSystem } from '@forgeax/engine-ecs';
 import { CollidingEntities } from '@forgeax/engine-physics';
 import { MeshRenderer } from '@forgeax/engine-render';
@@ -32,6 +32,7 @@ import { setNextState } from '@forgeax/engine-state';
 import { Portal, PortalState } from '../components';
 import { allCollected, GAME_PROGRESS_KEY, type GameProgress } from '../resources';
 import { activePortalMaterial } from '../spawn/spawn-portal';
+import { CoreCollectOrder, PortalActivateOrder } from '../system-order';
 
 /** Activate the Portal iff every Core is collected (the win gate). */
 export function shouldActivatePortal(progress: GameProgress): boolean {
@@ -55,10 +56,11 @@ export function createPortalSystem(
   player: EntityHandle,
   portal: EntityHandle,
   gameState: StateToken,
-): SystemHandle<readonly []> {
+): System<readonly []> {
   return defineSystem({
+    sets: [PortalActivateOrder],
     name: 'portal-activate',
-    after: ['core-collect'],
+    after: [CoreCollectOrder],
     queries: [],
     fn: (world: World) => {
       if (!world.hasResource(GAME_PROGRESS_KEY)) return;
@@ -68,7 +70,7 @@ export function createPortalSystem(
       let active = stateRes.value.active === true;
 
       if (!active) {
-        const progress = world.getResource<GameProgress>(GAME_PROGRESS_KEY);
+        const progress = world.getResource(GAME_PROGRESS_KEY);
         if (shouldActivatePortal(progress)) {
           activatePortal(world, portal);
           active = true;

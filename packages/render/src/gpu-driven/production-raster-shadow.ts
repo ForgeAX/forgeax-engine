@@ -91,7 +91,6 @@ export interface ShadowBatchFacts {
   readonly shadowRenderState: MaterialRenderState | undefined;
   readonly shadowEntry: BatchPass;
   readonly material: MaterialSnapshot;
-  readonly worldId: number;
 }
 
 type ChannelScene = Pick<GpuScene, 'contentCursor' | 'changedSlotsSince'>;
@@ -321,7 +320,6 @@ export function sameShadowBatchProjection(
     previous.deformation === facts.deformation &&
     previous.visibleBindGroups.length === batchLodLevelCount(batch) &&
     previous.material === facts.material &&
-    previous.worldId === facts.worldId &&
     previous.shadowVertexEntry === facts.shadowEntry.vertexEntry &&
     previous.shadowFragmentEntry === facts.shadowEntry.fragmentEntry &&
     sameRenderState(previous.shadowRenderState, facts.shadowRenderState) &&
@@ -374,7 +372,6 @@ export function createShadowBatchProjection(
       ? {}
       : { shadowFragmentEntry: shadowEntry.fragmentEntry }),
     material: facts.material,
-    worldId: facts.worldId,
     vertexColorAvailable: facts.mesh.layoutProjection.attributes.some(
       (attribute) => attribute.key === 'color',
     ),

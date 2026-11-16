@@ -582,9 +582,7 @@ describe('Standard Surface runtime Browser WebGPU provenance', () => {
       world.update(1 / 60).unwrap();
       armLaneObservation(renderer, frame);
       const receipt = await drawReadyFrame(renderer, {
-        leases: [attached.value],
-        camera: { lease: attached.value },
-        environment: { lease: attached.value },
+        source: attached.value,
         ...(frame < 10 || (frame >= 20 && frame < 30) ? { geometryLane: 'direct' as const } : {}),
       });
       finalReceipt = receipt;
@@ -811,6 +809,7 @@ describe('Standard Surface runtime Browser WebGPU provenance', () => {
     expect(records).toHaveLength(6);
     assertSurfacePixelFalsification(records);
     expect(records.every((record) => record.backend === 'webgpu')).toBe(true);
+    attached.value.dispose();
     await verifyAppLifecycle();
     await verifyAppLifecycle(true);
     // biome-ignore lint/suspicious/noConsole: runtime provenance is the test artifact.

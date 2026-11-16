@@ -1,6 +1,7 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { validateCookedMaterialRecord } from '@forgeax/engine-pack/material-cook';
 import { standardSurfaceParameters } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import { createMaterialPackCooker } from '../material/pack-cooker.js';
@@ -47,5 +48,28 @@ ${body}`,
     expect(Object.keys(cooked.artifacts).length).toBeGreaterThan(0);
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+}, 30_000);
+
+it('cooks the Standard masked-depth entry through the native producer', async () => {
+  const draft = await createMaterialPackCooker([], { profile: 'webgpu-storage' }).cook({
+    guid: 'standard-lean-masked-depth',
+    source: {
+      kind: 'material',
+      passes: [
+        {
+          name: 'Depth',
+          program: { module: 'forgeax_material::standard', fragmentEntry: 'fs_depth_masked' },
+        },
+      ],
+    },
+  });
+  const record = validateCookedMaterialRecord(
+    (draft.payload as { cooked: unknown }).cooked,
+  ).unwrap();
+  expect(record.programs.length).toBeGreaterThan(0);
+  expect(record.resolved.passes[0]?.program.fragmentEntry).toBe('fs_depth_masked');
+  for (const program of record.programs) {
+    expect(program.artifact.bytes.byteLength).toBeGreaterThan(0);
   }
 }, 30_000);

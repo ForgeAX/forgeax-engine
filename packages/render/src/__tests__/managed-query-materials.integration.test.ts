@@ -16,7 +16,7 @@ import { MeshFilter, MeshRenderer } from '../components';
 import { Materials } from '../materials';
 import { projectRayScene } from '../raytracing/scene-projection';
 import { projectVisibleSurfaces } from '../raytracing/visible-surface';
-import { extractFrames } from '../render-system-extract-tail';
+import { extractSource } from '../render-system-extract-tail';
 import { PersistentRenderScene } from '../scene/render-scene';
 
 async function fixture() {
@@ -62,15 +62,14 @@ async function fixture() {
   const draw = () => {
     world.update(0).unwrap();
     scene.extractComposition(
-      [world],
-      { cameraOwner: 0, resourceOwner: 0 },
+      world,
       assets,
       (request) =>
-        extractFrames([world], 0, assets, caches, {
+        extractSource(world, assets, caches, {
           cull: 'none',
           renderables: request,
         }),
-      [lease],
+      lease,
     );
     const retained = scene.compositionRetainedScene();
     assert(retained);
@@ -79,8 +78,7 @@ async function fixture() {
   const collision = (frame: ReturnType<typeof draw>) =>
     projectCollisionScene(
       frame.slots,
-      frame.worlds,
-      0,
+      frame.source,
       {
         origin: [-2, -2, -2],
         dimensions: [5, 5, 5],
@@ -113,7 +111,7 @@ it('projects current Mesh defaults and fixed material values without replacing r
     const project = (frame: typeof before) =>
       projectRayScene(
         frame.slots,
-        frame.worlds,
+        frame.source,
         projectVisibleSurfaces(frame.slots, 16).unwrap(),
         frame,
       );
@@ -203,9 +201,9 @@ it('keeps incremental collision rows equal to a cold projection through Mesh def
       maxFieldBytes: 1024 * 1024,
     };
     const first = f.draw();
-    const scope = first.worlds[0];
+    const scope = first.source;
     assert(scope);
-    const rows = new CollisionSceneRows(scope, 0);
+    const rows = new CollisionSceneRows(scope);
     const revision = rows.sync(first);
     expect(rows.project(descriptor).instances).toHaveLength(1);
     // An unchanged composition revision reads no row.

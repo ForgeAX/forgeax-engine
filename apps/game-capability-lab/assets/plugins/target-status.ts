@@ -1,3 +1,4 @@
+import { defineSystem } from "@forgeax/engine-ecs";
 import { Disabled, Update, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import { Name } from '@forgeax/engine-scene';
 import type { HudHandle } from './hud';
@@ -18,7 +19,7 @@ export type TargetStatusContext = {
 
 /** Project the authored primary target into one legible, reset-safe HUD cue. */
 export function installTargetStatusSystem(ctx: TargetStatusContext): void {
-  ctx.world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'game-target-status',
     queries: [],
     fn: () => {
@@ -40,5 +41,6 @@ export function installTargetStatusSystem(ctx: TargetStatusContext): void {
         : `TARGET · ${targetName} · ${current}/${max} HP · +${points}${precisionSuffix}`;
       ctx.hud.setTargetStatus(status, state);
     },
-  }).unwrap();
+  });
+ctx.world.addSystem(Update, systemToken1).unwrap();
 }

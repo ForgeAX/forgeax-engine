@@ -35,6 +35,9 @@ interface ReadyPerPassResourceInputs {
   readonly ssaoClusterPackBgl: PerPassResources['ssaoClusterPackBgl'];
   readonly gtaoComputePipeline?: PerPassResources['gtaoComputePipeline'];
   readonly gtaoComputeBgl?: PerPassResources['gtaoComputeBgl'];
+  readonly ssaoDepthCalcPipeline?: PerPassResources['ssaoDepthCalcPipeline'];
+  readonly ssaoDepthBlurPipeline?: PerPassResources['ssaoDepthBlurPipeline'];
+  readonly ssaoDepthBgl?: PerPassResources['ssaoDepthBgl'];
 }
 
 /** Creates the mutable per-pass slots owned by one prepared device generation. */
@@ -80,6 +83,9 @@ export function createReadyPerPassResources(input: ReadyPerPassResourceInputs): 
       ? {}
       : { gtaoComputePipeline: input.gtaoComputePipeline }),
     ...(input.gtaoComputeBgl === undefined ? {} : { gtaoComputeBgl: input.gtaoComputeBgl }),
+    ssaoDepthCalcPipeline: input.ssaoDepthCalcPipeline ?? null,
+    ssaoDepthBlurPipeline: input.ssaoDepthBlurPipeline ?? null,
+    ssaoDepthBgl: input.ssaoDepthBgl ?? null,
     ssaoFilteringSampler: null,
     ssaoDepthSampler: null,
     ssaoFallbackRawView: null,

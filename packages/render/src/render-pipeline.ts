@@ -240,7 +240,7 @@ export interface RenderPipelineTopology {
   readonly extent?: RenderExtent;
   readonly camera: Pick<
     RenderPipelineContext['camera'],
-    'tonemap' | 'antialias' | 'bloom' | 'bloomIntensity' | 'dynamicResolution'
+    'postProcessing' | 'tonemap' | 'antialias' | 'bloom' | 'bloomIntensity' | 'dynamicResolution'
   > & {
     /** Shape-only DoF admission; optical values remain per-frame UBO data. */
     readonly depthOfField?:
@@ -258,6 +258,8 @@ export interface RenderPipelineTopology {
     readonly chromaticAberration?: boolean | undefined;
     readonly lensFlare?: boolean | undefined;
     readonly outline?: boolean | undefined;
+    readonly editorAssistance?: boolean | undefined;
+    readonly editorOutline?: boolean | undefined;
   };
   /** Frame-stable Standard output policy; no raw RHI handles enter topology. */
   readonly output?: {
@@ -360,6 +362,10 @@ export interface RenderPipelineTopology {
   readonly transmissionDemand?: TransmissionDemand | undefined;
   /** Whether the extracted frame contains a single-layer medium Surface. */
   readonly singleLayerMedium?: boolean | undefined;
+  readonly water?: true | undefined;
+  readonly waterView?:
+    | { readonly kind: 'available'; readonly underwater: boolean }
+    | { readonly kind: 'unavailable' };
   /** An opaque material sets `renderState.fog: false`; the forward lane draws it after fog. */
   readonly unfoggedOpaque?: true | undefined;
   /**
@@ -382,6 +388,7 @@ export function resolveOutputDither(
 }
 
 export interface RenderPipelineFrame extends RenderPipelineContext, RenderGraphFrame {
+  readonly editorAssistance?: import('./features/editor-assistance/feature').EditorAssistanceViewPresentation;
   readonly probePlacement?: import('./raytracing/renderer-probe-placement').PreparedProbePlacement;
 }
 
@@ -515,6 +522,7 @@ export interface RenderPipelineGpuDrivenProjection {
     coverageOnly?: boolean,
     sampleCount?: 1 | 4,
     seededDepth?: boolean,
+    opaqueDepthPrimed?: boolean,
   ) => void;
   /** @internal Poll the registered real PSOs before any graph pass is encoded. */
   readonly preparePipelines?: (
@@ -541,6 +549,8 @@ export interface RenderPipelineGpuDrivenProjection {
     phase?: GpuDrivenDrawPhase,
     /** The loaded depth is the exact prepass raster (see seededDepthRenderState). */
     seededDepth?: boolean,
+    /** Main View slot shared with the pass's direct geometry. */
+    viewOffset?: number,
   ): void;
   /**
    * Present when the projection reserved two-phase occlusion. The caller adds
@@ -593,6 +603,8 @@ export interface GpuDrivenStandardPbrFrameResources {
   /** The current pass selects material membership and attachment formats. */
   selectedMaterialSlots?: ReadonlySet<number>;
   colorFormats?: readonly TextureFormat[];
+  /** Pass-local depth compare policy shared by direct and scene-index draws. */
+  opaqueDepthPrimed?: boolean;
   bundleDescriptor?: RenderBundleEncoderDescriptor;
   /** Exact producer-owned numeric Material table consumed by scene-index PBR. */
   readonly sceneMaterialBuffer: Buffer;
@@ -611,7 +623,6 @@ export interface GpuDrivenStandardPbrFrameResources {
    * publishing a bind group; record never derives a frame-row address.
    */
   readonly surfaceDirectInstances?: (input: {
-    readonly worldId: number;
     readonly entityKey: number;
     readonly drawItemIndex: number;
     readonly instanceCount: number;
@@ -648,7 +659,19 @@ export interface GpuDrivenStandardPbrFrameResources {
 }
 
 export interface RenderPipelineBuildContext<FrameCtx extends RenderPipelineFrame> {
+  /** Shared producer payload selected for this recording; resource shape is compiled separately. */
+  readonly waterFluid?: {
+    readonly publication: import('./water/fluid-graph').WaterFluidMaterialPublication;
+    readonly read: (
+      frame: FrameCtx,
+    ) => import('./water/fluid-graph').WaterFluidMaterialPublication | undefined;
+  };
+  readonly getSharedGraphTextureBinding?: (
+    name: string,
+  ) => { readonly view: GraphTextureView; readonly format: TextureFormat } | undefined;
   readonly graph: RenderGraphBuilder<FrameCtx>;
+  /** Stable identity of the camera/view whose per-view resources are projected into this graph. */
+  readonly viewIdentity?: string | undefined;
   /** Prepared Renderer transport; this callback only declares work in the same graph. */
   readonly contributeProbePlacement?: (
     targets: import('./raytracing/probe-placement-graph').ProbePlacementTargets,
@@ -721,6 +744,18 @@ export interface RenderPipelineBuildContext<FrameCtx extends RenderPipelineFrame
     readonly outputSurface: RenderPipelineTarget;
     readonly params: GraphBuffer;
   };
+  /** Water history stores reflected RGB and fallback-suppression alpha together. */
+  readonly waterSsr?: {
+    readonly inputParams: GraphBuffer;
+    readonly temporal?: Omit<
+      NonNullable<RenderPipelineBuildContext<FrameCtx>['ssrHistory']>,
+      'previousSurface' | 'outputSurface'
+    >;
+  };
+  /** Existing TAA scene color is a hit-color source, separate from reflected RGBA history. */
+  readonly ssrSceneColorHistory?: RenderPipelineTarget;
+  /** No-TAA HDR snapshot written after DoF and before Motion Blur/Bloom/output. */
+  readonly ssrSceneColorOutput?: RenderPipelineTarget;
   /** Renderer-owned, prewarmed encoder for one graph mip level. */
   readonly encodeTransmissionMip?: (input: {
     readonly pass: RhiRenderPassEncoder;
@@ -749,34 +784,68 @@ export interface RenderPipelineBuildContext<FrameCtx extends RenderPipelineFrame
   /** Renderer-owned static shadow layers the graph imports instead of allocating. */
   readonly gpuDrivenShadowDepthLayers?: ShadowDepthLayers;
   readonly shadowDepthLayers?: ShadowDepthLayers;
+  /** Resolve a named feature-owned graph texture after its scene producer is projected. */
+  getFeatureGraphTextureView?(name: string, viewIdentity: string): GraphTextureView | undefined;
+  /** Resolve the storage format paired with a view-scoped feature texture. */
+  getFeatureGraphTextureFormat?(name: string, viewIdentity: string): TextureFormat | undefined;
+  /** Resolve a feature texture's scoped view and format as one consumer binding. */
+  getFeatureGraphTextureBinding?(
+    name: string,
+    viewIdentity: string,
+  ): Readonly<{ view: GraphTextureView; format: TextureFormat }> | undefined;
+  /** Resolve all scoped feature graph textures whose names share a stable prefix. */
+  getFeatureGraphTextureBindings?(
+    prefix: string,
+    viewIdentity: string,
+    materialSourcesOnly?: boolean,
+  ): ReadonlyMap<string, Readonly<{ view: GraphTextureView; format: TextureFormat }>>;
+  /** Graph-owned storage and indirect inputs consumed by native Water draws. */
+  getWaterMeshGraphAccesses?(): readonly GraphAccess[];
   contributeFeatures(input: {
     readonly targets: readonly RenderPipelineFeatureTarget[];
     readonly semanticTargets?: readonly RenderPipelineTarget[] | undefined;
     readonly namedTargets?: Readonly<Record<string, RenderPipelineTarget>> | undefined;
     readonly standardSurfaceAccesses?: readonly GraphAccess[] | undefined;
     readonly placement?: RenderFeaturePlacement | undefined;
+    /** Paired with same-draw TAA depth; absent contributions use the raster View. */
+    readonly postProcessView?: 'unjittered' | undefined;
     /** Project only these identities at this ordered stage. */
     readonly include?: readonly string[] | undefined;
     /** Keep these identities for a later ordered stage. */
     readonly exclude?: readonly string[] | undefined;
     readonly passNames?: readonly string[] | undefined;
     readonly atmosphere?: import('./environment/luts').GraphAtmosphere | undefined;
+    readonly waterInfoTargets?:
+      | import('./pipeline/standard-build-context').WaterInfoGraphTargets
+      | undefined;
   }): Result<void, RenderPipelineBuildError>;
   /** Prepare feature-owned shadow draws and their early compute producers once. */
   contributeShadowFeatures?(): Result<
     import('./features/render-graph-raster').RenderFeatureShadowDraws<FrameCtx> | undefined,
     RenderPipelineBuildError
   >;
-  /** Add capture producers before scene consumers; return the optional planar sampled view. */
+  /**
+   * Add capture producers before scene consumers; return the optional planar
+   * sampled view. The planar mirror records on this view's `shadows`.
+   */
   contributeCubeCaptures?(
-    environmentCube?: import('./environment/ibl').GraphEnvironment,
+    environmentCube: import('./environment/ibl').GraphEnvironment | undefined,
+    shadows: import('./typed-shadow-passes').TypedShadowTargets,
   ): Result<GraphTextureView | undefined, RenderPipelineBuildError>;
   /** Whether a producer-owned feature is installed for this graph build. */
   hasFeature?(identity: string): boolean;
   /** Whether a producer-owned feature has executable work at this graph build. */
-  hasFeatureWork?(identity: string, placement?: RenderFeaturePlacement): boolean;
+  hasFeatureWork?(
+    identity?: string,
+    placement?: RenderFeaturePlacement,
+    sceneInput?: 'depth',
+  ): boolean;
   /** Whether a producer-owned feature has a resolved raster pass this frame. */
-  hasFeatureRasterWork?(identity: string, placement?: RenderFeaturePlacement): boolean;
+  hasFeatureRasterWork?(
+    identity: string,
+    placement?: RenderFeaturePlacement,
+    passName?: string,
+  ): boolean;
 }
 
 /** Project the six CloudLayer history attachments into feature target aliases. */

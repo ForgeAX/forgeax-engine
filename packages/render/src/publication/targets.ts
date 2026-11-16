@@ -61,6 +61,7 @@ export function publicationTargetSources(
   for (const { value: material } of materials) {
     for (const source of material.textureSources?.values() ?? []) {
       if (
+        source.source === 'feature' ||
         isCanvasTextureSource(source) ||
         isExternalTextureSource(source) ||
         sources.has(renderTextureSourceKey(source))

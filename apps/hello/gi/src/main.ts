@@ -1,3 +1,4 @@
+import { defineSystem } from "@forgeax/engine-ecs";
 import { encodeBase64 } from '@forgeax/engine/types';
 import { halfFloat } from '@forgeax/engine/math';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
@@ -188,8 +189,7 @@ function applyState() {
   return result;
 }
 
-world
-  .addSystem(Update, {
+const systemToken1 = defineSystem({
     name: 'hello-gi-camera-path',
     queries: [],
     fn: (world) => {
@@ -197,7 +197,9 @@ world
       const t = 0.5 - 0.5 * Math.cos(world.getResource(Time).elapsed * 0.35);
       controls.setCamera(cameraOnPath(sceneData.camera, sceneData.cameraAlt, t));
     },
-  })
+  });
+world
+  .addSystem(Update, systemToken1)
   .unwrap();
 
 function bindSelect(

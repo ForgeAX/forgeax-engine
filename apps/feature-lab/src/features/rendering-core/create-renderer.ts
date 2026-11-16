@@ -50,11 +50,7 @@ export default defineFeature({
         checks.ok('attach ok', lease.ok, lease.ok ? undefined : lease.error.code);
         if (lease.ok) {
           own.update(1 / 60);
-          const drawn = renderer.draw({
-            leases: [lease.value],
-            camera: { lease: lease.value },
-            environment: { lease: lease.value },
-          });
+          const drawn = renderer.draw({ source: lease.value });
           checks.ok('draw returned a receipt', drawn.ok, drawn.ok ? undefined : drawn.error.code);
           if (drawn.ok) {
             const completed = await drawn.value.completed;

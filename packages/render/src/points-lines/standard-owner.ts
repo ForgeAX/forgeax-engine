@@ -60,10 +60,8 @@ export type PointsLinesFrameOutcome =
   | { readonly ok: false; readonly cause: unknown };
 
 /** The identity a prepared row is taken by. */
-export function pointsLinesRowKey(
-  source: Pick<RenderableSnapshot, 'worldId' | 'entityKey'>,
-): string {
-  return `${source.worldId}:${source.entityKey}`;
+export function pointsLinesRowKey(source: Pick<RenderableSnapshot, 'entityKey'>): string {
+  return `${source.entityKey}`;
 }
 
 /**
@@ -95,7 +93,7 @@ export class StandardPointsLinesOwner {
    */
   prepareFrame(
     rows: FrameList<RenderableSnapshot>,
-    scopeOf: (worldId: number) => RenderResourceScope,
+    scopeOf: () => RenderResourceScope,
     clustered: boolean,
   ): PointsLinesFrameOutcome {
     try {
@@ -107,7 +105,7 @@ export class StandardPointsLinesOwner {
         // Every retained row is prepared: the camera cull is a draw-time predicate, and a
         // capture pass admits rows without it.
         if (points === undefined) continue;
-        const world = scopeOf(source.worldId);
+        const world = scopeOf();
         const mesh = renderAssetRevision(world, points.meshHandle) ?? 0;
         const material = renderAssetRevision(world, points.materialHandle) ?? 0;
         prepared.set(pointsLinesRowKey(source), {
@@ -162,7 +160,7 @@ export class StandardPointsLinesOwner {
       meshGeneration: renderAssetRevision(entry.world, source.meshHandle) ?? 0,
       materialGeneration: renderAssetRevision(entry.world, source.materialHandle) ?? 0,
     };
-    const key = `${snapshot.worldId}:${snapshot.entityKey}`;
+    const key = `${snapshot.entityKey}`;
     const backend = this.backend(runtime);
     const lane = backend === 'wgpu-webgl2' ? 'cpu-webgl2' : clustered ? 'clustered' : 'direct';
     const meshResult = entry.world.resolveAsset<MeshAsset>(
@@ -378,7 +376,7 @@ export class StandardPointsLinesOwner {
     error: PointsLinesSourceError,
   ): void {
     inspections.set(
-      `${snapshot.worldId}:${snapshot.entityKey}`,
+      `${snapshot.entityKey}`,
       inspectPointsLines({
         snapshot,
         topology: snapshot.component === 'Points' ? 'point-list' : 'line-list',

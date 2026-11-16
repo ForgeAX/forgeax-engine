@@ -776,7 +776,6 @@ function captureBinding(raw: GpuDrivenBatchBinding): GpuDrivenBatchBinding {
 function captureLeafBinding(raw: GpuDrivenBatchBinding): GpuDrivenBatchBinding {
   const binding = { ...raw };
   return Object.freeze({
-    worldId: binding.worldId,
     assetHandle: binding.assetHandle,
     drawItemIndex: binding.drawItemIndex,
     material: binding.material,

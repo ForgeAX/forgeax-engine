@@ -5,7 +5,7 @@ import {
 import {
   Collider,
   ColliderShapeValue,
-  type PhysicsWorld,
+  PhysicsWorldResource,
   RigidBody,
   RigidBodyTypeValue,
 } from '@forgeax/engine/physics';
@@ -78,7 +78,7 @@ export default defineFeature({
       binding.setPhysicsWeight(weight).unwrap();
       return { rig, binding, weight };
     });
-    const physics = world.getResource<PhysicsWorld>('PhysicsWorld');
+    const physics = world.getResource(PhysicsWorldResource);
     const fullWeight = bindings.find((entry) => entry.weight === 1);
     if (!fullWeight) throw new Error('authored weight-one rig missing');
     let enabled = true;

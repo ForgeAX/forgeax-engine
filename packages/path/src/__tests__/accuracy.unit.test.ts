@@ -1,8 +1,8 @@
 import { mat4 } from '@forgeax/engine-math';
 import { expect, it } from 'vitest';
-// @ts-expect-error Independent JS numerical oracle deliberately lives outside runtime source.
-import { arcOracle } from '../../bench/oracle.mjs';
 import { preparePath } from '../index';
+// @ts-expect-error Independent JS numerical oracle deliberately stays untyped and outside runtime source.
+import { arcOracle } from './arc-oracle.mjs';
 import { definition } from './fixture';
 
 it.each([

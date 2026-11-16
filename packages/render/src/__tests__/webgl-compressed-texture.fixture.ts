@@ -15,7 +15,7 @@ const COMPRESSION_FEATURES = [
 ] as const;
 
 /** Actual devices grant one advertised family at a time; caps are never replaced. */
-export async function verifyWebGlCompressedTextures() {
+export async function verifyWebGlCompressedTextures(textureMipSkip?: number) {
   const rows: {
     feature: string;
     encoding: string;
@@ -33,7 +33,7 @@ export async function verifyWebGlCompressedTextures() {
     const device = (
       await actual.requestDevice({ requiredFeatures: feature ? [feature] : [] })
     ).unwrap();
-    const store = new GpuResidencyCache();
+    const store = new GpuResidencyCache(undefined, { textureMipSkip });
     store.configureGpuDevice(device, undefined, device.caps);
     try {
       if (device.caps.backendKind !== 'wgpu-webgl2') throw new Error('Actual WebGL2 required');
@@ -50,6 +50,7 @@ export async function verifyWebGlCompressedTextures() {
           format: 'rgba8unorm-srgb',
           colorSpace: 'srgb',
           mips: { kind: 'packed', levelCount: 5 },
+          skippableMips: textureMipSkip !== undefined,
         };
         const handle = assets.create(texture).unwrap();
         const scope = worldRenderResources(world);
@@ -70,7 +71,8 @@ export async function verifyWebGlCompressedTextures() {
         const gpu = store._getTextureGpuTexture(handle, scope);
         if (!gpu) throw new Error('Missing physical GPU texture');
         let maxError = 0;
-        for (let mip = 0; mip < 5; mip++) {
+        const levels = derived.mips.kind === 'packed' ? derived.mips.levelCount : 1;
+        for (let mip = 0; mip < levels; mip++) {
           const bytes = await readbackTexture(device, derived, gpu, wgpu.createShaderModule, mip);
           const expected = [180, 90, 45, 173];
           for (let i = 0; i < bytes.length; i++)
@@ -86,7 +88,7 @@ export async function verifyWebGlCompressedTextures() {
           format: derived.format,
           bytes: derived.data.byteLength,
           maxError,
-          mips: 5,
+          mips: levels,
         });
       }
       await device.queue.onSubmittedWorkDone();

@@ -50,7 +50,11 @@ export default class ModelingFilePhaseReporter {
 }
 
 // A separate parent prefix makes immediate evidence distinct from the unchanged close-time replay.
-export function createModelingFilePhaseStream(progress) {
+export function createModelingFilePhaseStream(
+  progress,
+  prefix = modelingFilePhasePrefix,
+  livePrefix = '[vitest-modeling-file-phase-live] ',
+) {
   let tail = Buffer.alloc(0);
   let stopped = false;
   let rows = 0;
@@ -63,18 +67,13 @@ export function createModelingFilePhaseStream(progress) {
       for (let end = bytes.indexOf(10); end >= 0; end = bytes.indexOf(10, start)) {
         const line = bytes.subarray(start, end).toString('utf8');
         start = end + 1;
-        if (
-          !truncated &&
-          line.startsWith(modelingFilePhasePrefix) &&
-          line.length <= 1024 &&
-          rows < 4096
-        ) {
+        if (!truncated && line.startsWith(prefix) && line.length <= 1024 && rows < 4096) {
           process.stderr.write(
-            `[vitest-modeling-file-phase-live] ${JSON.stringify({
+            `${livePrefix}${JSON.stringify({
               groupIndex: progress.groupIndex,
               total: progress.total,
               label: progress.label.slice(0, 256),
-              record: line.slice(modelingFilePhasePrefix.length),
+              record: line.slice(prefix.length),
             })}\n`,
           );
           rows += 1;

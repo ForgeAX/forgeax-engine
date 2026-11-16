@@ -3,7 +3,11 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { runnerResources, shaderCompileWorkers } from '../lib/runner-resources.mjs';
+import {
+  runnerResources,
+  shaderCompileWorkers,
+  shaderSourceCompileWorkers,
+} from '../lib/runner-resources.mjs';
 import { runBrowserCommand } from './run-browser-gate-with-retry.mjs';
 import { selectDawnGroups } from './run-dawn-gate.mjs';
 import {
@@ -19,6 +23,7 @@ import {
 import {
   allProjectNames,
   buildGroupArgs,
+  coverageGroupEnvironment,
   coverageGroupMaxWorkers,
   coverageGroups,
 } from './run-split-vitest-coverage.mjs';
@@ -107,6 +112,21 @@ function compatibilityFocusPlan(selector) {
   };
 }
 
+function coverageFocusEnvironment(group, resources, maxWorkers) {
+  const workers = group.sourceCompilation
+    ? shaderSourceCompileWorkers(resources, process.env.FORGEAX_SHADER_COMPILE_WORKERS)
+    : shaderCompileWorkers(
+        resources,
+        process.env.FORGEAX_SHADER_COMPILE_WORKERS,
+        (group.files.length > 0 ? 1 : 2) * maxWorkers,
+      );
+  const environment =
+    group.sourceCompilation && process.env.NODE_OPTIONS !== undefined
+      ? { NODE_OPTIONS: process.env.NODE_OPTIONS }
+      : {};
+  return coverageGroupEnvironment(group, resources, workers, environment);
+}
+
 export function focusPlan(
   kind,
   selector,
@@ -127,15 +147,7 @@ export function focusPlan(
       2,
     );
     return {
-      env: {
-        FORGEAX_SHADER_COMPILE_WORKERS: String(
-          shaderCompileWorkers(
-            resources,
-            process.env.FORGEAX_SHADER_COMPILE_WORKERS,
-            (selected[0].files.length > 0 ? 1 : 2) * maxWorkers,
-          ),
-        ),
-      },
+      env: coverageFocusEnvironment(selected[0], resources, maxWorkers),
       gpuLease: selected[0].gpuLease,
       args: [
         ...buildGroupArgs({
@@ -220,7 +232,14 @@ export async function main(argv = process.argv.slice(2)) {
     const arg = argv[i];
     if (arg === '--dry-run') options.dryRun = true;
     else if (
-      ['--kind', '--select', '--frames', '--shard-index', '--shard-count'].includes(arg) &&
+      [
+        '--kind',
+        '--select',
+        '--frames',
+        '--shard-index',
+        '--shard-count',
+        '--assets-source-root',
+      ].includes(arg) &&
       argv[i + 1]
     )
       options[arg.slice(2)] = argv[++i];
@@ -275,7 +294,13 @@ export async function main(argv = process.argv.slice(2)) {
     // Every invocation checks them; no unchecked --skip-build path can use old dist.
     for (const owner of ['wgpu-wasm', 'fbx', 'codec'])
       await run([`packages/${owner}/scripts/ensure-wasm.mjs`]);
-    await run(['scripts/build.mjs', '--engine']);
+    await run([
+      'scripts/build.mjs',
+      '--engine',
+      ...(options['assets-source-root'] === undefined
+        ? []
+        : ['--assets-source-root', resolve(options['assets-source-root'])]),
+    ]);
     if (options.kind === 'compatibility')
       await run([
         'scripts/forgeax/prepare-shader-release-inputs.mjs',

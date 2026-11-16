@@ -311,11 +311,7 @@ describe('bug-20260611 stencil-outline pixel-presence (dawn)', () => {
     if (!attachment.ok) throw attachment.error;
     for (let frame = 0; frame < 4; frame++) {
       world.update(1 / 60).unwrap();
-      await drawReadyFrame(renderer, {
-        leases: [attachment.value],
-        camera: { lease: attachment.value },
-        environment: { lease: attachment.value },
-      });
+      await drawReadyFrame(renderer, { source: attachment.value });
       await device.queue.onSubmittedWorkDone();
       if (renderTarget === undefined) throw new Error('renderTarget not configured');
 

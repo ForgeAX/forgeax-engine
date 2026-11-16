@@ -27,7 +27,6 @@ function mesh(topology: 'point-list' | 'line-list', count: number): MeshAsset {
 
 function snapshot(component: 'Points' | 'Lines' | undefined) {
   return createPointsLinesSnapshot({
-    worldId: 1,
     entityKey: 7,
     component,
     meshHandle: 11,

@@ -22,7 +22,7 @@ it('retires a resized UI image through the Render World submission lifecycle', a
   );
   try {
     const frame = async () => {
-      const drawn = renderer.draw({ leases: [], camera: null, environment: null });
+      const drawn = renderer.draw({ source: null });
       if (!drawn.ok) throw drawn.error;
       if (drawn.value !== undefined) {
         const completed = await drawn.value.completed;
@@ -54,7 +54,7 @@ it('rejects the frame with the published draw contract error and records the out
     },
   );
   try {
-    const drawn = renderer.draw({ leases: [], camera: null, environment: null });
+    const drawn = renderer.draw({ source: null });
     expect(drawn.ok).toBe(false);
     if (drawn.ok) return;
     // The frame entry surfaces the same RendererContractFailureError('draw') as before.

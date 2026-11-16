@@ -31,6 +31,7 @@
     "@forgeax/engine-geometry": "workspace:*"
   },
   "devDependencies": {
+    "@forgeax/engine-devkit": "workspace:*",
     "@forgeax/engine-shader-compiler": "workspace:*",
     "@forgeax/engine-vite-plugin-shader": "workspace:*",
     "@webgpu/types": "^0.1.74",

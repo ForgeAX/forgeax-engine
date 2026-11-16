@@ -85,10 +85,9 @@ describe('Instances renderer-derived union bounds', () => {
     expect(reused).not.toBe(first);
   });
 
-  it('does not alias equal entity keys from different worlds in one composite scene', () => {
+  it('keeps identical entity handles isolated between independent Renderer caches', () => {
     const cache = new InstanceBoundsCache();
     const first = cache.get({
-      worldId: 1,
       entityKey: 7,
       meshGeneration: 1,
       transformGeneration: 1,
@@ -97,8 +96,7 @@ describe('Instances renderer-derived union bounds', () => {
       entityWorld,
       transforms: new Float32Array(IDENTITY),
     });
-    const second = cache.get({
-      worldId: 2,
+    const second = new InstanceBoundsCache().get({
       entityKey: 7,
       meshGeneration: 1,
       transformGeneration: 1,
@@ -167,159 +165,6 @@ describe('Instances renderer-derived union bounds', () => {
       misses: 2,
       derives: 2,
       invalidations: 1,
-      rowUpdates: 0,
-      nodeVisits: 4,
-    });
-  });
-
-  describe('collection row hierarchy', () => {
-    function grid(count: number): Float32Array {
-      const transforms = new Float32Array(count * 16);
-      for (let row = 0; row < count; row += 1) {
-        transforms.set(
-          translated((row % 97) * 3, Math.floor(row / 97) * 2, (row * 7) % 11),
-          row * 16,
-        );
-      }
-      return transforms;
-    }
-
-    function collectionInput(
-      transforms: Float32Array,
-      revision: number,
-      dirtyRows?: { start: number; end: number }[],
-    ) {
-      return {
-        entityKey: 3,
-        meshGeneration: 1,
-        transformGeneration: 1,
-        matrixGeneration: revision,
-        meshAabb,
-        entityWorld: translated(1, 2, 3),
-        transforms,
-        collectionId: 5,
-        revision,
-        ...(dirtyRows === undefined ? {} : { dirtyRows }),
-      };
-    }
-
-    function expectSameBounds(
-      actual: Float32Array | undefined,
-      expected: Float32Array | undefined,
-    ) {
-      expect(actual === undefined).toBe(expected === undefined);
-      if (actual === undefined || expected === undefined) return;
-      expect(Array.from(actual, (value) => value + 0)).toEqual(
-        Array.from(expected, (value) => value + 0),
-      );
-    }
-
-    it('matches the linear fold after every dirty-row revision and touches only dirty chains', () => {
-      const cache = new InstanceBoundsCache();
-      const count = 4099;
-      const transforms = grid(count);
-      expectSameBounds(
-        cache.get(collectionInput(transforms, 1)),
-        deriveInstancesUnionBounds({ meshAabb, entityWorld: translated(1, 2, 3), transforms }),
-      );
-      const afterBuild = cache.inspect().nodeVisits;
-      let seed = 17;
-      for (let revision = 2; revision < 40; revision += 1) {
-        seed = (seed * 1103515245 + 12345) & 0x7fffffff;
-        const row = seed % count;
-        transforms.set(translated((seed % 1000) - 500, (seed % 37) - 200, seed % 5), row * 16);
-        const dirtyRows = [{ start: row, end: row + 1 }];
-        const before = cache.inspect().nodeVisits;
-        expectSameBounds(
-          cache.get(collectionInput(transforms, revision, dirtyRows)),
-          deriveInstancesUnionBounds({ meshAabb, entityWorld: translated(1, 2, 3), transforms }),
-        );
-        // One row plus at most one 16-child refresh per hierarchy level.
-        expect(cache.inspect().nodeVisits - before).toBeLessThanOrEqual(1 + 16 * 4);
-      }
-      expect(cache.inspect().rowUpdates).toBe(38);
-      expect(cache.inspect().derives).toBe(1);
-      expect(afterBuild).toBeGreaterThan(count);
-    });
-
-    it('reports old and new boxes of the moved rows for change consumers', () => {
-      const cache = new InstanceBoundsCache();
-      const transforms = grid(64);
-      cache.get(collectionInput(transforms, 1));
-      expect(cache.rowChange(3)).toBeUndefined();
-      transforms.set(translated(500, 0, 0), 10 * 16);
-      cache.get(collectionInput(transforms, 2, [{ start: 10, end: 11 }]));
-      const change = cache.rowChange(3);
-      expect(change?.revision).toBe(2);
-      expect(change?.count).toBe(1);
-      // Old row 10 sat at x = 30 (+1 entity offset); the new row at x = 500.
-      expect(Array.from(change?.boxes ?? [])).toEqual([30, 1, 6, 32, 3, 8, 500, 1, 2, 502, 3, 4]);
-    });
-
-    it('rebuilds when the retained revision is not exactly one behind or ranges are unknown', () => {
-      const cache = new InstanceBoundsCache();
-      const transforms = grid(32);
-      cache.get(collectionInput(transforms, 1));
-      transforms.set(translated(-90, 0, 0), 0);
-      cache.get(collectionInput(transforms, 3, [{ start: 0, end: 1 }]));
-      expect(cache.inspect()).toMatchObject({ derives: 2, rowUpdates: 0 });
-      transforms.set(translated(-95, 0, 0), 0);
-      expectSameBounds(
-        cache.get(collectionInput(transforms, 4)),
-        deriveInstancesUnionBounds({ meshAabb, entityWorld: translated(1, 2, 3), transforms }),
-      );
-      expect(cache.inspect()).toMatchObject({ derives: 3, rowUpdates: 0 });
-      expect(cache.rowChange(3)).toBeUndefined();
-    });
-
-    it('re-derives a moving same-size collection in place and still matches the linear fold', () => {
-      const cache = new InstanceBoundsCache();
-      const transforms = grid(300);
-      let seed = 3;
-      for (let revision = 1; revision < 12; revision += 1) {
-        // Whole-collection motion without dirty-row proof: a full derive per revision.
-        for (let row = 0; row < 300; row += 1) {
-          seed = (seed * 1103515245 + 12345) & 0x7fffffff;
-          transforms.set(translated((seed % 900) - 450, (seed % 31) - 15, seed % 7), row * 16);
-        }
-        if (revision === 6) transforms[7 * 16 + 13] = Number.NaN;
-        if (revision === 7) transforms.set(translated(0, 0, 0), 7 * 16);
-        expectSameBounds(
-          cache.get(collectionInput(transforms, revision)),
-          revision === 6
-            ? undefined
-            : deriveInstancesUnionBounds({
-                meshAabb,
-                entityWorld: translated(1, 2, 3),
-                transforms,
-              }),
-        );
-      }
-      expect(cache.inspect().derives).toBe(11);
-      // A resize gets a fresh hierarchy.
-      expectSameBounds(
-        cache.get(collectionInput(grid(17), 12)),
-        deriveInstancesUnionBounds({
-          meshAabb,
-          entityWorld: translated(1, 2, 3),
-          transforms: grid(17),
-        }),
-      );
-    });
-
-    it('returns no-cull while any row is non-finite and recovers when the row is repaired', () => {
-      const cache = new InstanceBoundsCache();
-      const transforms = grid(40);
-      cache.get(collectionInput(transforms, 1));
-      transforms[20 * 16] = Number.NaN;
-      expect(cache.get(collectionInput(transforms, 2, [{ start: 20, end: 21 }]))).toBeUndefined();
-      expect(cache.rowChange(3)).toBeUndefined();
-      transforms.set(translated(1, 1, 1), 20 * 16);
-      expectSameBounds(
-        cache.get(collectionInput(transforms, 3, [{ start: 20, end: 21 }])),
-        deriveInstancesUnionBounds({ meshAabb, entityWorld: translated(1, 2, 3), transforms }),
-      );
-      expect(cache.inspect().rowUpdates).toBe(2);
     });
   });
 
@@ -329,53 +174,7 @@ describe('Instances renderer-derived union bounds', () => {
   });
 });
 
-it('evaluates shared mesh edits at the affine root without reading 32768 instance transforms', () => {
-  const cache = new InstanceBoundsCache();
-  const transforms = new Float32Array(32768 * 16);
-  for (let row = 0; row < 32768; row++) transforms.set(translated(100 + row, row % 7, 0), row * 16);
-  const input = {
-    entityKey: 10,
-    meshGeneration: 1,
-    transformGeneration: 1,
-    matrixGeneration: 1,
-    meshAabb,
-    entityWorld,
-    transforms,
-    collectionId: 1,
-    revision: 1,
-  };
-  cache.get(input);
-  const before = cache.inspect();
-  const guarded = new Proxy(transforms, {
-    get(target, key) {
-      if (typeof key === 'string' && /^\d+$/.test(key))
-        throw new Error('instance traversal during mesh adoption');
-      return Reflect.get(target, key, target);
-    },
-  });
-  const changed = cache.get({
-    ...input,
-    meshGeneration: 2,
-    meshAabb: new Float32Array([-110, -2, -3, 1, 2, 3]),
-    transforms: guarded,
-  });
-  expect(changed).toEqual(new Float32Array([-10, -2, -3, 32868, 8, 3]));
-  expect(cache.inspect().nodeVisits).toBe(before.nodeVisits);
-  expect(cache.inspect().derives).toBe(before.derives);
-  expect(cache.rowChange(10)).toBeUndefined();
-  const moved = cache.get({
-    ...input,
-    meshGeneration: 2,
-    transformGeneration: 2,
-    meshAabb: new Float32Array([-110, -2, -3, 1, 2, 3]),
-    entityWorld: translated(10),
-    transforms: guarded,
-  });
-  expect(moved?.[0]).toBe(0);
-  expect(cache.inspect().nodeVisits).toBe(before.nodeVisits);
-});
-
-it('encloses exact bounds under mixed negative scale and shear before and after mesh edits', () => {
+it('re-derives exact bounds under mixed negative scale and shear on every mesh edit', () => {
   const cache = new InstanceBoundsCache();
   const transforms = new Float32Array(64 * 16);
   for (let row = 0; row < 64; row++) {
@@ -399,12 +198,8 @@ it('encloses exact bounds under mixed negative scale and shear before and after 
       transforms,
     });
     const exact = deriveInstancesUnionBounds({ meshAabb: mesh, entityWorld: world, transforms });
-    expect(actual).toBeDefined();
     expect(exact).toBeDefined();
-    for (let axis = 0; axis < 3; axis++) {
-      expect(actual?.[axis]).toBeLessThanOrEqual(exact?.[axis] ?? -Infinity);
-      expect(actual?.[axis + 3]).toBeGreaterThanOrEqual(exact?.[axis + 3] ?? Infinity);
-    }
+    expect(actual).toEqual(exact);
   }
-  expect(cache.inspect().derives).toBe(1);
+  expect(cache.inspect().derives).toBe(10);
 });

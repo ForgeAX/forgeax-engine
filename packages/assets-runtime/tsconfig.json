@@ -59,6 +59,9 @@
     },
     {
       "path": "../terrain"
+    },
+    {
+      "path": "../water"
     }
   ],
   "exclude": [

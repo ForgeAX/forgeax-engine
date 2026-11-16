@@ -1571,6 +1571,42 @@ fn used() {
     );
 }
 
+#[test]
+fn override_with_folded_access_into_const_compose() {
+    // `w.y` and `w.x` fold to the components of the constant `w`, which an
+    // earlier `Emit` already covered. Rewriting the second `Emit` must not
+    // reach back over `w` and emit it twice.
+    override_test(
+        "
+@compute @workgroup_size(64)
+fn used() {
+    let w = vec2<f32>(0.95f, 0.3f);
+    let a = vec2<f32>(-(w.y), w.x);
+    _ = dot(a, w) + f32(ov);
+}
+",
+        None,
+    );
+}
+
+#[test]
+fn override_with_folded_access_into_const_compose_in_branch() {
+    override_test(
+        "
+@compute @workgroup_size(64)
+fn used(@builtin(local_invocation_index) i: u32) {
+    var t = 0.0;
+    if i > 3u {
+        let c = vec2<f32>(4.5f, -13f);
+        t = c.x * f32(i) + c.y;
+    }
+    _ = t + f32(ov);
+}
+",
+        None,
+    );
+}
+
 /// Expects parsing `input` to succeed and its validation to fail with error equal to `snapshot`.
 #[track_caller]
 fn check_wgsl_validation_error_message(input: &str, snapshot: &str) {

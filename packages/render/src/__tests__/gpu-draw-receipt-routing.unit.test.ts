@@ -7,19 +7,18 @@ import { worldRenderResources } from '../publication/resource-scope';
 import { DynamicGeometryReceipt } from '../record/dynamic-geometry-receipt';
 import { emitGpuDrivenDrawReceipts } from '../record/gpu-draw-receipts';
 import { defaultMaterialSnapshot } from '../render-system-extract';
-import { PersistentRenderScene, RenderScene } from '../scene/render-scene';
+import { RenderScene } from '../scene/render-scene';
 import { receiptSelection, receiptRow as row } from './gpu-draw-selection-fixture';
 
 describe('GPU draw receipt routing', () => {
   it('queries a shadow view selection by slot generation without building entity claims', () => {
-    const original = row(0).source;
+    const original = row().source;
     const scene = new RenderScene();
     const topology = new BatchTopology();
     topology.apply(
       scene.apply(
-        Array.from({ length: 10_000 }, (_, entityKey) => ({
+        Array.from({ length: 10000 }, (_, entityKey) => ({
           kind: 'update' as const,
-          worldId: 0,
           entityKey,
           snapshot: { ...original, entityKey },
         })),
@@ -61,8 +60,8 @@ describe('GPU draw receipt routing', () => {
   ] as const)('combines %s and %s draws for only the submitted mesh', (first, second, expected) => {
     const world = new World();
     const bindings = new DynamicGeometryReceipt();
-    const original = row(0);
-    const consume = bindings.onRenderableDraw([world].map(worldRenderResources));
+    const original = row();
+    const consume = bindings.onRenderableDraw(worldRenderResources(world));
     consume(original, first);
     consume(original, second);
     consume(original, first);
@@ -70,7 +69,7 @@ describe('GPU draw receipt routing', () => {
     expect(bindings.recordStageLane(worldRenderResources(world), 42, 9)).toBe(expected);
 
     // A replacement mesh owns a fresh lane even within this frame.
-    const consumeReplacement = bindings.onRenderableDraw([world].map(worldRenderResources));
+    const consumeReplacement = bindings.onRenderableDraw(worldRenderResources(world));
     consumeReplacement(original, first);
     consumeReplacement(original, second);
     const replacement = { source: { ...original.source, assetHandle: 10 } };
@@ -78,33 +77,25 @@ describe('GPU draw receipt routing', () => {
     bindings.commit();
     expect(bindings.recordStageLane(worldRenderResources(world), 42, 9)).toBeUndefined();
     expect(bindings.recordStageLane(worldRenderResources(world), 42, 10)).toBe(second);
-    bindings.onRenderableDraw([world].map(worldRenderResources))(original, first);
+    bindings.onRenderableDraw(worldRenderResources(world))(original, first);
     bindings.clear();
     expect(bindings.recordStageLane(worldRenderResources(world), 42, 9)).toBeUndefined();
     expect(bindings.recordStageLane(worldRenderResources(world), 42, 10)).toBeUndefined();
   });
 
-  it('keeps submitted submeshes and geometry consumption with their stable World after reordering', () => {
+  it('keeps submitted submeshes and geometry consumption with the current source', () => {
     const first = new World();
     const second = new World();
-    const scene = new PersistentRenderScene();
-    const originalKeys = scene.visibilityWorldKeysFor([first, second].map(worldRenderResources));
-    const worlds = [second, first];
-    const worldKeys = scene.visibilityWorldKeysFor(worlds.map(worldRenderResources));
-    expect(worldKeys).toEqual([originalKeys[1], originalKeys[0]]);
     const bindings = new DynamicGeometryReceipt();
-    const consume = bindings.onRenderableDraw(worlds.map(worldRenderResources));
+    const consume = bindings.onRenderableDraw(worldRenderResources(second));
     const receipts: { world: string; submesh: number; lane: string; ready: boolean }[] = [];
-    const rows = [row(0), row(1)];
+    const rows = [row()];
     emitGpuDrivenDrawReceipts(
       rows.map((row) => row.source),
-      receiptSelection(
-        rows,
-        (batch) => batch.binding?.worldId === 0 && batch.binding.drawItemIndex === 7,
-      ),
+      receiptSelection(rows, (batch) => batch.binding?.drawItemIndex === 7),
       (drawn, submesh, receipt) => {
         receipts.push({
-          world: worlds[drawn.source.worldId]?.identity ?? '',
+          world: second.identity,
           submesh,
           lane: receipt.lane,
           ready: receipt.ready,
@@ -120,7 +111,7 @@ describe('GPU draw receipt routing', () => {
   });
 
   it('uses source submesh indices and exact material resources while retaining the ordinal fallback', () => {
-    const entry = row(0);
+    const entry = row();
     const first = entry.source.gpuDrivenDraws?.[0];
     if (first === undefined) throw new Error('missing draw');
     const { drawItemIndex: _drawItemIndex, ...compactDraw } = first;
@@ -142,8 +133,8 @@ describe('GPU draw receipt routing', () => {
   it('keeps failed submission geometry unconsumed', () => {
     const world = new World();
     const bindings = new DynamicGeometryReceipt();
-    const consume = bindings.onRenderableDraw([world].map(worldRenderResources));
-    const rows = [row(0)];
+    const consume = bindings.onRenderableDraw(worldRenderResources(world));
+    const rows = [row()];
     emitGpuDrivenDrawReceipts(
       rows.map((row) => row.source),
       receiptSelection(rows, (batch) => batch.binding?.drawItemIndex === 2),

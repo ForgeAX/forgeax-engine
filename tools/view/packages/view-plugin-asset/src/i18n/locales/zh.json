@@ -1,8 +1,36 @@
 {
   "asset": {
     "empty": "打开资产",
+    "searchParameters": "搜索参数",
+    "overridden": "实例覆盖",
+    "parametersTruncated": "仅显示前 256 个参数。",
+    "programFacts": "Cook 程序与静态变体",
+    "programFactsScope": "显示 Registry 解析的静态选择；实际帧采用情况见 Renderer 观察。",
+    "programFactsUnavailable": "当前 Engine 检查未提供程序身份与声明依赖。",
+    "factUnavailable": "不可用",
+    "cookIdentity": "Cook 身份",
+    "densityKernelIdentity": "密度内核",
+    "programIdentity": "程序身份",
+    "programDigest": "程序摘要",
+    "compilerIdentity": "编译器身份",
+    "staticValues": "静态值",
+    "resolvedVariant": "解析变体",
+    "variant": "变体",
+    "selected": "已选择",
+    "notSelected": "未选择",
+    "rendererProgramDigest": "渲染程序摘要",
+    "noProgramVariants": "没有已 Cook 的着色器变体。",
+    "declaredDependencies": "声明资产依赖",
+    "declaredDependenciesScope": "显示材质声明与实例引用；这些事实不证明 GPU 采样或当前帧绑定。",
+    "materialDeclaration": "材质声明",
+    "instanceDeclaration": "实例声明",
+    "noDeclaredDependencies": "没有声明资产依赖。",
+    "dependenciesTruncated": "仅显示前 512 项声明依赖。",
     "unavailable": "资产检查不可用",
     "inspectFailed": "Engine asset.inspect 没有返回该 GUID 的事实。",
-    "facts": "资产事实"
+    "facts": "资产事实",
+    "loading": "正在读取资产身份...",
+    "copyGuid": "复制 GUID",
+    "cloudParametersUnavailable": "材质参数与效果预览暂不支持"
   }
 }

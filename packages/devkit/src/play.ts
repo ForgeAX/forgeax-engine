@@ -1418,7 +1418,7 @@ export const PLAY_COMPACT_BYTES = 900;
 
 function relativeTo(root: string, path: string): string {
   const value = relative(root, path);
-  return value.startsWith('..') ? path : value;
+  return value.startsWith('..') || isAbsolute(value) ? path : value.split(sep).join('/');
 }
 
 /** Drops optional keys, in order, until the JSON form fits `maxBytes`. */

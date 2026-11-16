@@ -61,7 +61,9 @@ const browser = await chromium.launch({
 const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
 await page.context().grantPermissions(['clipboard-read', 'clipboard-write']).catch(() => {});
 const errors = [];
+let failed = false;
 page.on('pageerror', e => { errors.push(e.message); console.error('PAGE', e.message); });
+page.on('crash', () => { errors.push('Modeling page crashed'); console.error('PAGE Modeling page crashed'); });
 await page.addInitScript(() => { try { localStorage.setItem('forgeax.view.locale', 'en'); } catch {} });
 const panel = page.locator('[data-forgeax-view-surface="modeling"]');
 const shot = async (name) => { await page.screenshot({ path: join(output, name) }); return name; };
@@ -139,7 +141,10 @@ try {
  const spoke = (k, r = 0.165) => [r * Math.sin((k * 2 * Math.PI) / 5), spokeFront, r * Math.cos((k * 2 * Math.PI) / 5)];
 
  // Step 2: five clicks (Shift adds) on the five spoke fronts.
- for (let k = 0; k < 5; k++) await click(spoke(k), k === 0 ? [] : ['Shift']);
+ for (let k = 0; k < 5; k++) {
+  await click(spoke(k), k === 0 ? [] : ['Shift']);
+  await page.waitForFunction(count => document.querySelector('.fx-model-view > .fx-model-note')?.textContent?.includes(`${count} picks.`), k + 1, { timeout: 30000 });
+ }
  await waitReport(null);
  const fronts = await reportFacts();
  await page.waitForFunction(e => document.querySelector(`.fx-model-image img[data-rendered*="|top|${e}|"]`), fronts.expression, { timeout: 300000 });
@@ -238,10 +243,15 @@ try {
  assert.deepEqual(errors, [], 'the page reports no uncaught errors');
  await writeFile(join(output, 'journey.json'), JSON.stringify({ ...journey, passed: true }, null, 2));
 } catch (error) {
+ failed = true;
  await page.screenshot({ path: join(output, 'failure.png') }).catch(() => {});
+ await page.content().then(html => writeFile(join(output, 'failure.html'), html)).catch(() => {});
  await writeFile(join(output, 'journey.json'), JSON.stringify({ ...journey, passed: false, error: String(error.stack), errors }, null, 2));
  throw error;
 } finally {
  await client.close(); await browser.close();
- if (process.env.FORGEAX_MODELING_VIEW_KEEP !== '1') await command('backend', 'stop');
+ if (process.env.FORGEAX_MODELING_VIEW_KEEP !== '1') {
+  try { await command('backend', 'stop'); }
+  catch (error) { if (!failed) throw error; console.error('Modeling backend cleanup failed:', String(error)); }
+ }
 }

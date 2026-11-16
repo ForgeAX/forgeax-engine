@@ -80,6 +80,29 @@ it.each([
   }
 });
 
+it('looks up texture-backed instance slots by the source entity', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const module = (await rhi.createShaderModule(device, { code: CPU_SETUP_SHADER })).unwrap();
+  const f = cpuSetupFixture(device, module);
+  f.add({ entity: 37, instances: 2, submeshes: 1 });
+  const lookup = vi.fn(() => undefined);
+  Object.assign(f.c, {
+    gpuDrivenScene: {},
+    gpuDrivenSceneSlotForEntity: lookup,
+  });
+  Object.assign(f.c.pipelineState, { sceneDirectPipelineLayout: {} });
+  const pass = device.createCommandEncoder().unwrap().beginRenderPass({ colorAttachments: [] });
+  try {
+    f.record(pass);
+    expect(lookup).toHaveBeenCalledExactlyOnceWith(37);
+    expect(f.receipts.map((receipt) => receipt.entity)).toEqual([37]);
+    expect(f.errors).toEqual([]);
+  } finally {
+    pass.end();
+    f.dispose();
+  }
+});
+
 it.each([
   true,
   false,

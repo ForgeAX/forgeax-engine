@@ -1,4 +1,5 @@
 import { derive } from '@forgeax/engine-types';
+import { materialLeanInputs } from '../material-lean-inputs';
 import type { MaterialResource } from '../material-resource';
 import { isCanonicalStandardPbrMaterialShader } from '../pbr-pipeline';
 import type { MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
@@ -75,6 +76,7 @@ function materialBatchRoute(snapshot: MaterialSnapshot): readonly (boolean | nul
     Number(values?.alphaCutoff ?? 0) > 0,
     Number(values?.alphaHash ?? 0) > 0.5,
     values?.transmission === undefined ? null : Number(values.transmission) > 0,
+    materialLeanInputs(values, snapshot.standardTextureMask, snapshot.textureCoordinates),
   ];
 }
 

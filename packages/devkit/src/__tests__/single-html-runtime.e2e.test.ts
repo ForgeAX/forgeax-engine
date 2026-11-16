@@ -253,9 +253,10 @@ document.documentElement.dataset.forgeaxGameReady = 'true';
       await Promise.all([
         writeFile(resolve(dist, 'index.html'), '<!doctype html><html><body></body></html>'),
         writeFile(resolve(dist, 'data.json'), data),
+        writeFile(resolve(dist, 'alias.json'), data),
         writeFile(
           resolve(dist, 'worker.js'),
-          "const text = await (await fetch(new URL('./data.json', import.meta.url))).text();\npostMessage({ kind: 'worker-data', length: text.length, last: JSON.parse(text).at(-1).index });\n",
+          "const text = await (await fetch(new URL('./alias.json', import.meta.url))).text();\npostMessage({ kind: 'worker-data', length: text.length, last: JSON.parse(text).at(-1).index });\n",
         ),
         writeFile(resolve(dist, 'forgeax-dist.json'), '{}\n'),
       ]);
@@ -272,6 +273,7 @@ document.documentElement.dataset.forgeaxGameReady = 'true';
         runtime: { packIndexUrl: 'data.json', shaderManifestUrl: 'data.json' },
         artifacts: [
           artifact('data.json', 'application/json', data.byteLength),
+          artifact('alias.json', 'text/plain', data.byteLength),
           artifact('worker.js', 'text/javascript', 200),
         ],
       };
@@ -280,7 +282,10 @@ document.documentElement.dataset.forgeaxGameReady = 'true';
         output,
         manifest,
         bundle: {
-          entrySource: `const text = await (await fetch('./data.json')).text();
+          entrySource: `/* ${'compressible-entry-source '.repeat(20_000)} */
+const entrySentinel = '</script>$&';
+document.documentElement.dataset.entrySentinel = entrySentinel;
+const text = await (await fetch('./data.json')).text();
 document.documentElement.dataset.pageData = String(text.length);
 const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
 worker.onmessage = (event) => { document.documentElement.dataset.workerData = JSON.stringify(event.data); };`,
@@ -292,8 +297,8 @@ worker.onmessage = (event) => { document.documentElement.dataset.workerData = JS
       const html = await readFile(output, 'utf8');
       // Stored compressed: the page is far smaller than the base64 of the raw JSON.
       expect(packaged.value.html.bytes).toBeLessThan(data.byteLength / 4);
-      expect(html).toContain(
-        '"path":"data.json","mime":"application/json","index":0,"encoding":"gzip"',
+      expect(html).toMatch(
+        /"path":"data\.json","mime":"application\/json","index":\d+,"encoding":"gzip"/,
       );
 
       const executablePath = browserExecutable();
@@ -318,9 +323,11 @@ worker.onmessage = (event) => { document.documentElement.dataset.workerData = JS
         );
         const seen = await page.evaluate(() => ({
           page: document.documentElement.dataset.pageData,
+          entrySentinel: document.documentElement.dataset.entrySentinel,
           worker: document.documentElement.dataset.workerData,
         }));
         expect(seen.page).toBe(String(data.byteLength));
+        expect(seen.entrySentinel).toBe('</script>$&');
         expect(JSON.parse(seen.worker ?? '{}')).toEqual({
           kind: 'worker-data',
           length: data.byteLength,
@@ -394,6 +401,14 @@ worker.onmessage = (event) => { document.documentElement.dataset.workerData = JS
         chromiumSandbox: true,
       });
       const page = await browser.newPage({ serviceWorkers: 'block' });
+      await page.addInitScript(`{
+        const nativeAtob = globalThis.atob.bind(globalThis);
+        globalThis.__decodedBase64Lengths = [];
+        globalThis.atob = (text) => {
+          globalThis.__decodedBase64Lengths.push(text.length);
+          return nativeAtob(text);
+        };
+      }`);
       const requests: string[] = [];
       const failed: string[] = [];
       const consoleErrors: string[] = [];
@@ -409,7 +424,9 @@ worker.onmessage = (event) => { document.documentElement.dataset.workerData = JS
       try {
         await page.goto(pathToFileURL(output).href, { waitUntil: 'load', timeout: 120_000 });
         await page.waitForFunction(
-          () => document.documentElement.dataset.forgeaxSingleHtmlReady === 'true',
+          () =>
+            document.documentElement.dataset.forgeaxSingleHtmlReady === 'true' &&
+            document.documentElement.dataset.largeRuntimeEntry === 'true',
           undefined,
           { timeout: 15_000 },
         );
@@ -424,10 +441,15 @@ worker.onmessage = (event) => { document.documentElement.dataset.workerData = JS
         expect(witness.entry).toBe('true');
         expect(witness.singleHtml).toMatchObject({
           ready: true,
-          resourceHits: 0,
+          resourceHits: 1,
           resourceMisses: [],
           externalRequests: [],
         });
+        const decodedLengths = await page.evaluate<readonly number[]>(
+          'globalThis.__decodedBase64Lengths',
+        );
+        expect(decodedLengths).toHaveLength(1);
+        expect(decodedLengths[0]).toBeLessThan(1024);
         expect(requests.filter((url) => /^https?:/i.test(url))).toEqual([]);
         expect(requests.filter((url) => /^file:/i.test(url))).toEqual([pathToFileURL(output).href]);
         expect(failed).toEqual([]);

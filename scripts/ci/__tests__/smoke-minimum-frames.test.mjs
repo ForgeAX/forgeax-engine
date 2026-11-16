@@ -37,11 +37,7 @@ test('scene acceptance keeps the same lease through preparation and GPU completi
   assert.equal(receipt.frameId, 2);
   assert.equal(completed, 2);
   assert.equal(requests.length, 2);
-  for (const request of requests) {
-    assert.deepEqual(request.leases, [scene]);
-    assert.equal(request.camera.lease, scene);
-    assert.equal(request.environment.lease, scene);
-  }
+  for (const request of requests) assert.deepEqual(request, { source: scene });
 });
 
 const head = '0123456789abcdef0123456789abcdef01234567';
@@ -421,7 +417,7 @@ test('repaired owners derive their loop budgets and preserve independent samplin
   }
   assert.match(
     source('hello/entity-visibility'),
-    /runVisibilityDawnSmoke\(\{ frames: Math\.max\(60, Number\.parseInt\(process\.env\.SMOKE_MIN_FRAMES/,
+    /runVisibilityDawnSmoke\(\{\s*frames: Math\.max\(60, Number\.parseInt\(process\.env\.SMOKE_MIN_FRAMES/,
   );
   assert.match(source('hello/boss-lightning'), /frameLimit = benchmarkMode \? 90 : TARGET_FRAMES/);
   assert.match(source('hello/bloom'), /const SMOKE_MIN_FRAMES = 60;/);

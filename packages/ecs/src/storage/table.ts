@@ -2,16 +2,15 @@ import {
   bufferFieldByteLength,
   type Component,
   type ComponentId,
+  componentDefinition,
   componentId,
-  componentSchema,
   fieldTypeToMetaKey,
-  isManagedBufferField,
-  parseManagedArraySchema,
   type ScalarFieldType,
   TYPE_METADATA,
 } from '../component';
-import { Entity, foldEssentials } from '../entity';
+import { Entity } from '../entity';
 import type { EntityHandle } from '../entity-handle';
+import { archetypeKey } from './archetype';
 import { PROJECTION_BLOCK_SIZE } from './change-detection';
 import { arrayCountColumnName, type Column, createColumn, growColumn } from './column';
 
@@ -30,17 +29,13 @@ export interface Table {
   readonly key: string;
   readonly components: ReadonlyArray<Component>;
   storage: Map<ComponentId, TableComponentStorage>;
-  /** The essential `Entity.self` column (replaced with the others on growth). */
+  /** The `Entity.self` column (replaced with the others on growth). */
   entities: Column;
   size: number;
   capacity: number;
   version: number;
   membership: Float64Array;
   readonly activeDirectories: readonly Set<Table>[];
-}
-
-export function tableKey(componentIds: ReadonlyArray<ComponentId>): string {
-  return [...foldEssentials(componentIds)].sort((a, b) => a - b).join('+');
 }
 
 export function canonicalComponents(components: ReadonlyArray<Component>): Component[] {
@@ -61,9 +56,13 @@ export function createTable(
   const storage = new Map<ComponentId, TableComponentStorage>();
   for (const component of sortedComponents) {
     const fields = new Map<string, Column>();
-    for (const [fieldName, fieldType] of Object.entries(componentSchema(component))) {
-      const arrayMeta = parseManagedArraySchema(fieldType);
-      if (arrayMeta !== null && arrayMeta.length !== undefined) {
+    const definition = componentDefinition(component);
+    for (const fieldName of definition.fieldNames) {
+      const field = definition.fields[fieldName];
+      if (field === undefined) continue;
+      const fieldType = field.type;
+      const arrayMeta = field.arrayMeta;
+      if (arrayMeta !== undefined && arrayMeta.length !== undefined) {
         const metaKey = fieldTypeToMetaKey(arrayMeta.elementType);
         const scalarType: ScalarFieldType | null =
           metaKey === null ? null : (TYPE_METADATA[metaKey]?.storage ?? null);
@@ -72,7 +71,7 @@ export function createTable(
         }
         continue;
       }
-      if (isManagedBufferField(fieldType) && fieldType !== 'buffer') {
+      if (definition.plan.fields[fieldName]?.kind === 'fixed-buffer') {
         fields.set(
           fieldName,
           createColumn('u8', capacity, bufferFieldByteLength(fieldType), shared),
@@ -85,7 +84,7 @@ export function createTable(
       if (scalarType === null) continue;
       const column = createColumn(scalarType, capacity, 1, shared);
       fields.set(fieldName, column);
-      if (arrayMeta !== null && arrayMeta.length === undefined) {
+      if (arrayMeta !== undefined && arrayMeta.length === undefined) {
         column.countField = arrayCountColumnName(fieldName);
         fields.set(column.countField, createColumn('u32', capacity, 1, shared));
       }
@@ -100,7 +99,7 @@ export function createTable(
   if (entities === undefined) throw new Error('Table has no Entity.self column.');
   return {
     id,
-    key: tableKey(sortedComponents.map((component) => componentId(component))),
+    key: archetypeKey(sortedComponents.map((component) => componentId(component))),
     components: sortedComponents,
     storage,
     entities,

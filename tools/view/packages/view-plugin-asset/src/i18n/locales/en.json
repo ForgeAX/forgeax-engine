@@ -1,8 +1,36 @@
 {
   "asset": {
     "empty": "Open an asset",
+    "searchParameters": "Search parameters",
+    "overridden": "Instance override",
+    "parametersTruncated": "Only the first 256 parameters are shown.",
+    "programFacts": "Cooked program and variants",
+    "programFactsScope": "Registry-resolved static choices; rendered-frame adoption is reported by the Renderer observation.",
+    "programFactsUnavailable": "Program identities and declared dependencies are unavailable from this Engine inspection.",
+    "factUnavailable": "Unavailable",
+    "cookIdentity": "Cook identity",
+    "densityKernelIdentity": "Density kernel",
+    "programIdentity": "Program identity",
+    "programDigest": "Program digest",
+    "compilerIdentity": "Compiler identity",
+    "staticValues": "Static values",
+    "resolvedVariant": "Resolved variant",
+    "variant": "Variant",
+    "selected": "Selected",
+    "notSelected": "Not selected",
+    "rendererProgramDigest": "Renderer program digest",
+    "noProgramVariants": "No cooked shader variants.",
+    "declaredDependencies": "Declared asset dependencies",
+    "declaredDependenciesScope": "Material declarations and instance references; these do not prove GPU sampling or current frame bindings.",
+    "materialDeclaration": "Material declaration",
+    "instanceDeclaration": "Instance declaration",
+    "noDeclaredDependencies": "No declared asset dependencies.",
+    "dependenciesTruncated": "Only the first 512 declared dependencies are shown.",
     "unavailable": "Asset inspection unavailable",
     "inspectFailed": "Engine asset.inspect did not return facts for this GUID.",
-    "facts": "Asset facts"
+    "facts": "Asset facts",
+    "loading": "Loading asset identity...",
+    "copyGuid": "Copy GUID",
+    "cloudParametersUnavailable": "Material parameters and effect preview unavailable"
   }
 }

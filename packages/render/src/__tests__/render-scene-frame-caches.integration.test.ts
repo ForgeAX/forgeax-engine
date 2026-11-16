@@ -10,7 +10,7 @@ import { Camera, MeshFilter, MeshRenderer, MotionBlur } from '../components';
 import { InstanceProjectionStore } from '../instances';
 import { worldRenderResources } from '../publication/resource-scope';
 import type { ExtractedFrame } from '../render-system-extract';
-import { extractFrames } from '../render-system-extract-tail';
+import { extractSource } from '../render-system-extract-tail';
 import {
   type PersistentRenderCandidateRequest,
   PersistentRenderScene,
@@ -64,20 +64,18 @@ describe('PersistentRenderScene frame caches', () => {
     }
     const scene = new PersistentRenderScene({ assets });
     const lease = createRenderReadLease(world);
-    const owner = { cameraOwner: 0, resourceOwner: 0 };
     const draw = () => {
       world.update(1 / 60).unwrap();
       return scene.extractComposition(
-        [world],
-        owner,
+        world,
         assets,
         (request) =>
-          extractFrames([world], owner, assets, scene.materialSnapshotCacheStore(), {
+          extractSource(world, assets, scene.materialSnapshotCacheStore(), {
             cull: 'none',
             retainHidden: true,
             renderables: request,
           }),
-        [lease],
+        lease,
       );
     };
     const replacement = assets
@@ -156,20 +154,18 @@ describe('PersistentRenderScene frame caches', () => {
     const scene = new PersistentRenderScene({ assets, instanceCollections });
     const lease = createRenderReadLease(world);
     const materialCaches = scene.materialSnapshotCacheStore();
-    const owner = { cameraOwner: 0, resourceOwner: 0 };
     const draw = (): ExtractedFrame =>
       scene.extractComposition(
-        [world],
-        owner,
+        world,
         assets,
         (request: PersistentRenderCandidateRequest) =>
-          extractFrames([world], owner, assets, materialCaches, {
+          extractSource(world, assets, materialCaches, {
             cull: 'none',
             retainHidden: true,
             renderables: request,
             instanceCollections,
           }),
-        [lease],
+        lease,
       );
     const frame = (
       angle: number,
@@ -185,7 +181,7 @@ describe('PersistentRenderScene frame caches', () => {
       const extracted = draw();
       const visible = extracted.renderables.filter((row) => row.authorVisible !== false);
       scene.projectVisibility(
-        [world].map(worldRenderResources),
+        worldRenderResources(world),
         extracted.renderables,
         extracted.dispatch,
       );

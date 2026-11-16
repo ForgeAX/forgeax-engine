@@ -2,9 +2,9 @@
 import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 
-import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 
 const frames = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const here = fileURLToPath(new URL('.', import.meta.url));
@@ -65,7 +65,7 @@ const { Transform } = await import('@forgeax/engine-scene');
 const { createRenderer } = await import('@forgeax/engine-runtime');
 const { buildPhysicsFixedWorld, installPhysicsFixedSystems, readPhysicsFixedState } = await import(resolve(here, '..', 'src', 'physics-fixed-loop.ts'));
 const manifestPath = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const manifestUrl = `data:application/json,${encodeURIComponent(readFileSync(manifestPath, 'utf8'))}`;
+const manifestUrl = `data:application/json,${encodeURIComponent(readShaderManifestText(manifestPath))}`;
 const hostResult = await constructRuntimeRendererHost(mockCanvas, {}, { shaderManifestUrl: manifestUrl });
 if (!hostResult.ok) throw hostResult.error;
 const { renderer, assets: smokeAssets } = hostResult.value;

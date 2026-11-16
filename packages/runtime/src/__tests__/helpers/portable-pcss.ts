@@ -120,7 +120,7 @@ export async function verifyPortablePcss(
   const draw = async () => {
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
-    return drawReadyFrame(renderer, { leases: [lease], camera: { lease }, environment: { lease } });
+    return drawReadyFrame(renderer, { source: lease });
   };
   const receipts: unknown[] = [];
   const sample = async (name: string, filter: 'pcf1' | 'pcssMedium' | 'pcssHigh' | undefined) => {

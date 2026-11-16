@@ -1,3 +1,5 @@
+import { InputFrameStartScan } from "@forgeax/engine-input";
+import { defineSystem } from "@forgeax/engine-ecs";
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtimeBinding } from '@forgeax/apps-shared/asset-runtime-config';
 import { Time, Update } from '@forgeax/engine-ecs';
@@ -26,9 +28,8 @@ import { Time, Update } from '@forgeax/engine-ecs';
 //      4-method `InputSnapshot` Resource (keyboard.down(key) /
 //      keyboard.up(key) / mouse.movementDelta / mouse.button(0|1|2))
 //      plus `mouse.wheelDelta` (sign-discrete notch per frame).
-//   2. **dt** -> the system fn body reads `world.getResource<Time
-//      Resource>('Time')?.dt` per tick (engine-app frame-loop SSOT,
-//      plan-strategy D-1).
+//   2. **dt** -> the system fn body reads `world.getResource(Time).delta`
+//      per tick from the engine frame-loop clock.
 //   3. **camera Transform + Camera.fov** -> per-tick the first-person
 //      system accumulates yaw/pitch from `mouse.movementDelta`,
 //      clamps pitch at +/-89 deg, reconstructs forward via spherical
@@ -56,12 +57,7 @@ import { Time, Update } from '@forgeax/engine-ecs';
 import { createApp } from '@forgeax/engine-app/browser';
 import type { App, CanvasAppError } from '@forgeax/engine-app';
 import { World } from '@forgeax/engine-ecs';
-import {
-  INPUT_SNAPSHOT_RESOURCE_KEY,
-  type InputBackend,
-  type InputBackendSample,
-  type InputSnapshot,
-} from '@forgeax/engine-input';
+import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputBackend, type InputBackendSample } from '@forgeax/engine-input';
 import { quat, vec3 } from '@forgeax/engine-math';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 
@@ -362,12 +358,12 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   const rightTmp = vec3.create();
   const FORWARD_LOCAL: Readonly<[number, number, number]> = [0, 0, -1];
   const RIGHT_LOCAL: Readonly<[number, number, number]> = [1, 0, 0];
-  world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'learn-render-camera-first-person',
-    after: ['input-frame-start-scan'],
+    after: [InputFrameStartScan],
     queries: [{ write: [Transform], with: [Camera] }] as const,
     fn: (world, queryResults) => {
-      const snap = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+      const snap = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
       if (snap === undefined) return;
       // AC-13 type-narrowing probes: verify GamepadButtonIndex (0|1|...|16)
       // and GamepadAxisIndex (0|1|2|3) literal unions narrow correctly at the
@@ -429,21 +425,23 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       lastTickIndex += 1;
     },
   });
+world.addSystem(Update, systemToken1);
 
   // Scroll-wheel FoV zoom system.
   const scrollAcc = createScrollFovAccumulator();
-  world.addSystem(Update, {
+  const systemToken2 = defineSystem({
     name: 'learn-render-camera-scroll-fov',
-    after: ['input-frame-start-scan'],
+    after: [InputFrameStartScan],
     queries: [{ write: [Camera] }] as const,
     fn: (world, queryResults) => {
-      const snap = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+      const snap = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
       if (snap === undefined) return;
       scrollAcc.apply(snap.mouse.wheelDelta);
       const fovRad = scrollAcc.fovRad;
       for (const row of queryResults[0]) row.mut(Camera).fov = fovRad;
     },
   });
+world.addSystem(Update, systemToken2);
 
   installCaptureHooks(target, world, () => ({
     yaw,

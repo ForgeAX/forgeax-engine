@@ -1,3 +1,4 @@
+import { World } from '@forgeax/engine-ecs';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { ok } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
@@ -38,8 +39,7 @@ describe('held view resource ownership', () => {
         host,
         views.map((view) => ({
           ...view,
-          worlds: [],
-          owner: 0,
+          world: new World(),
           frameNumber: 1,
           generation: 0,
           caps: device.caps,

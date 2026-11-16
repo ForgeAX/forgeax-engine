@@ -158,9 +158,7 @@ it.each([
   const draw = async () => {
     propagateTransforms(world);
     world.update(1 / 60).unwrap();
-    const receipt = value(
-      renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
-    );
+    const receipt = value(renderer.draw({ source: lease }));
     value(await receipt.completed);
     if (errors.length > 0) throw errors[0];
     return receipt;

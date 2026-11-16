@@ -35,8 +35,11 @@ import {
   type ExecutionFaultMessage,
   type ExecutionFrameMessage,
   FrameCreditLedger,
+  forwardPipelineLibraries,
+  forwardResourceBudgets,
   renderPipelineCapacityOf,
 } from './protocol';
+import { forwardRenderBackend } from './render-backend';
 import { createExecutionReport, executionAudioReport } from './report';
 import type {
   ExecutionCapabilities,
@@ -44,17 +47,6 @@ import type {
   ExecutionReport,
   ExecutionSelection,
 } from './types';
-
-function forwardPipelineLibraries(
-  options: CreateAppOptions,
-): Pick<CreateAppOptions, 'pipelineLibrary' | 'backgroundPipelineLibrary'> {
-  return {
-    ...(options.pipelineLibrary === undefined ? {} : { pipelineLibrary: options.pipelineLibrary }),
-    ...(options.backgroundPipelineLibrary === undefined
-      ? {}
-      : { backgroundPipelineLibrary: options.backgroundPipelineLibrary }),
-  };
-}
 
 export interface CreateWorkerExecutionAppOptions {
   readonly canvas: HTMLCanvasElement;
@@ -166,7 +158,7 @@ export async function createWorkerExecutionApp(
   const endWorkerBoot = beginLoadTimeline('boot', 'engine-worker');
   try {
     resetBrowserFrameProgress(canvas);
-    started = await startEngineWorker({
+    const workerStartOptions = () => ({
       canvas: canvas,
       bootstrapUrl,
       ...(executionOptions.bootstrapData === undefined
@@ -192,16 +184,18 @@ export async function createWorkerExecutionApp(
       ...(options.appOptions.outputColorSpace === undefined
         ? {}
         : { outputColorSpace: options.appOptions.outputColorSpace }),
-      ...(options.appOptions.dynamicGeometryMeshBudgetBytes === undefined
+      ...forwardRenderBackend(options.appOptions),
+      ...forwardResourceBudgets(options.appOptions),
+      ...(executionOptions.featureTextureReadbackBudgetBytes === undefined
         ? {}
-        : { dynamicGeometryMeshBudgetBytes: options.appOptions.dynamicGeometryMeshBudgetBytes }),
-      ...(options.appOptions.assetBudgetBytes === undefined
-        ? {}
-        : { assetBudgetBytes: options.appOptions.assetBudgetBytes }),
+        : {
+            featureTextureReadbackBudgetBytes: executionOptions.featureTextureReadbackBudgetBytes,
+          }),
       timeoutMs: startupTimeoutMs,
       frameTimeoutMs,
       workers: options.selection,
     });
+    started = await startEngineWorker(workerStartOptions());
   } catch (cause) {
     releaseAfterFailure(cause, () => platform.dispose());
     throw cause;
@@ -276,24 +270,28 @@ export async function createWorkerExecutionApp(
   } catch {
     // Minimal test hosts may intentionally expose only the physical backend.
   }
-  const input: InputBackend = options.appOptions.input ??
-    (inputHandle === undefined
-      ? undefined
-      : typeof compositeFactory === 'function'
-        ? compositeFactory(physicalInput)
-        : physicalInput) ?? {
-      sample: () => ({
-        downKeys: new Set(),
-        upKeys: new Set(),
-        buttons: [false, false, false],
-        movementX: 0,
-        movementY: 0,
-        wheelDelta: 0,
-        focused: true,
-        pointerLocked: false,
-      }),
-      detach: () => {},
-    };
+  const resolveHostInput = () => {
+    const input: InputBackend = options.appOptions.input ??
+      (inputHandle === undefined
+        ? undefined
+        : typeof compositeFactory === 'function'
+          ? compositeFactory(physicalInput)
+          : physicalInput) ?? {
+        sample: () => ({
+          downKeys: new Set(),
+          upKeys: new Set(),
+          buttons: [false, false, false],
+          movementX: 0,
+          movementY: 0,
+          wheelDelta: 0,
+          focused: true,
+          pointerLocked: false,
+        }),
+        detach: () => {},
+      };
+    return input;
+  };
+  const input = resolveHostInput();
 
   // The Worker owns its own synthetic-input state.  A bridge disconnect can
   // therefore revoke that state without closing the browser or terminating
@@ -896,6 +894,13 @@ export async function createWorkerExecutionApp(
       } else if (resumeAfterHostShow && state === 'paused') resumeFrames();
     } else if (event.kind === 'display') display = event.display;
     else if (event.kind === 'surface-lost') failPlatform(event.cause);
+    else if (event.kind === 'memory-pressure') {
+      try {
+        session.post({ kind: 'memory-pressure' });
+      } catch {
+        // A terminal session holds no read caches.
+      }
+    }
   };
   const subscribePlatform = (): void => {
     if (syncCanvas !== undefined) {

@@ -1,4 +1,8 @@
-import { isShaderEntryPointReads, type ShaderEntryPointReads } from './runtime-contracts.js';
+import {
+  type BindGroupLayoutDescriptor,
+  isShaderEntryPointReads,
+  type ShaderEntryPointReads,
+} from './runtime-contracts.js';
 /**
  * Producer-published material program facts shared by Pack and runtime
  * rendering.  This is deliberately a data-only contract: it describes the
@@ -8,6 +12,11 @@ import { isShaderEntryPointReads, type ShaderEntryPointReads } from './runtime-c
  */
 
 import { MATERIAL_RESOURCE_KINDS, type MaterialResourceKind } from './derive-paramschema.js';
+import type { MaterialColorOutput } from './material/asset.js';
+import {
+  isMaterialDeformationProgramAbi,
+  type MaterialDeformationProgramAbi,
+} from './material/deformation.js';
 import {
   deriveMaterialDynamicInputLayout,
   isMaterialSurfaceModel,
@@ -28,9 +37,62 @@ export type MaterialProgramBindingContract =
   | 'view-and-scene-depth'
   | 'render-material-with-scene-depth'
   | 'render-material-and-scene-depth'
+  | 'render-standard-material-and-scene-depth'
+  | 'post-process'
   | 'render-material';
 
 export type MaterialSceneDepth = 'read-only' | 'before-pass';
+
+/** Group 1 retains the ordinary material schema; group 0 belongs to this pass. */
+export const MATERIAL_POST_PROCESS_SCENE_INPUTS = Object.freeze({
+  view: 0,
+  color: 1,
+  depth: 2,
+  passInputs: 3,
+});
+export const MATERIAL_POST_PROCESS_SCENE_LAYOUT = Object.freeze({
+  entries: Object.freeze([
+    {
+      binding: MATERIAL_POST_PROCESS_SCENE_INPUTS.view,
+      visibility: 3,
+      buffer: { type: 'uniform' as const },
+    },
+    {
+      binding: MATERIAL_POST_PROCESS_SCENE_INPUTS.color,
+      visibility: 2,
+      texture: { sampleType: 'float' as const, viewDimension: '2d' as const },
+    },
+    {
+      binding: MATERIAL_POST_PROCESS_SCENE_INPUTS.depth,
+      visibility: 2,
+      texture: { sampleType: 'depth' as const, viewDimension: '2d' as const },
+    },
+    {
+      binding: MATERIAL_POST_PROCESS_SCENE_INPUTS.passInputs,
+      visibility: 2,
+      buffer: { type: 'uniform' as const, minBindingSize: 16 },
+    },
+  ]),
+}) satisfies BindGroupLayoutDescriptor;
+
+export interface MaterialPostProcessContract {
+  readonly placement: 'after-tonemap';
+  readonly input: 'current-output';
+  readonly output: 'current-output';
+}
+
+export function isMaterialPostProcessContract(
+  value: unknown,
+): value is MaterialPostProcessContract {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const contract = value as Record<string, unknown>;
+  return (
+    Object.keys(contract).length === 3 &&
+    contract.placement === 'after-tonemap' &&
+    contract.input === 'current-output' &&
+    contract.output === 'current-output'
+  );
+}
 
 export function isMaterialProgramBindingContract(
   value: unknown,
@@ -44,6 +106,8 @@ export function isMaterialProgramBindingContract(
       'view-and-scene-depth',
       'render-material-with-scene-depth',
       'render-material-and-scene-depth',
+      'render-standard-material-and-scene-depth',
+      'post-process',
       'render-material',
     ].includes(value)
   );
@@ -63,7 +127,38 @@ export interface MaterialProgramVertexInput {
   readonly format: string;
 }
 
-export type MaterialSurfacePassKind = 'nearest-layer' | 'color';
+export type MaterialSurfacePassKind = 'nearest-layer' | 'color' | 'depth' | 'shadow' | 'velocity';
+
+/** The versioned Water template owns these outputs in WGSL location order. */
+export const SINGLE_LAYER_WATER_PASS_OUTPUTS: Readonly<
+  Record<Exclude<MaterialSurfacePassKind, 'nearest-layer'>, readonly MaterialColorOutput[]>
+> = Object.freeze({
+  depth: Object.freeze([
+    { name: 'normalRoughness', format: 'rgba32uint' as const },
+    { name: 'coverage', format: 'rgba16float' as const },
+    { name: 'temporal', format: 'rgba16float' as const },
+  ]),
+  color: Object.freeze([
+    { name: 'color', format: 'rgba16float' as const },
+    { name: 'captureSky', format: 'rgba16float' as const },
+    { name: 'reflectionWeight', format: 'rgba16float' as const },
+  ]),
+  shadow: Object.freeze([]),
+  velocity: Object.freeze([{ name: 'temporal', format: 'rgba16float' as const }]),
+});
+
+/** Compiler-certified engine resources, independent of Surface deformation. */
+export interface MaterialProgramSystemInputs {
+  readonly water: 'water-frame/3';
+}
+
+export function isMaterialProgramSystemInputs(
+  value: unknown,
+): value is MaterialProgramSystemInputs {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const inputs = value as Record<string, unknown>;
+  return Object.keys(inputs).length === 1 && inputs.water === 'water-frame/3';
+}
 
 /** Ordered Surface passes each model's program publishes. */
 export const MATERIAL_SURFACE_MODEL_PASSES: Readonly<
@@ -71,6 +166,7 @@ export const MATERIAL_SURFACE_MODEL_PASSES: Readonly<
 > = Object.freeze({
   standard: Object.freeze(['color'] as const),
   'single-layer-medium': Object.freeze(['nearest-layer', 'color'] as const),
+  'single-layer-water': Object.freeze(['depth', 'color', 'shadow', 'velocity'] as const),
 });
 
 /** Producer-owned model facts shared by the direct and scene-index entries. */
@@ -80,6 +176,7 @@ export interface MaterialSurfaceProgramAbi {
   readonly inputAbi: string;
   readonly outputAbi: string;
   readonly passes: readonly MaterialSurfacePassKind[];
+  readonly deformation?: MaterialDeformationProgramAbi;
   readonly dynamicInput?: {
     readonly layout: MaterialDynamicInputLayout;
     readonly group: number;
@@ -99,8 +196,10 @@ export interface MaterialProgramAbi {
   readonly entryPoints?: readonly ShaderEntryPointReads[];
   /** Omitted selects the ordinary Render material interface. Never inferred from WGSL text. */
   readonly bindings?: MaterialProgramBindingContract;
+  readonly systemInputs?: MaterialProgramSystemInputs;
   /** Explicit attachment read or independent snapshot of depth before this pass. */
   readonly sceneDepth?: MaterialSceneDepth;
+  readonly postProcess?: MaterialPostProcessContract;
   readonly directEntry: string;
   /** Absent for a program that only has a direct entry. */
   readonly sceneIndexEntry?: string;
@@ -124,6 +223,17 @@ export interface MaterialProgramAbi {
   readonly generation: number;
   /** Optional imported Surface model projection. Standard keeps this absent. */
   readonly surface?: MaterialSurfaceProgramAbi;
+}
+
+export function isCurrentOutputPostProcessAbi(
+  abi: MaterialProgramAbi | undefined,
+): abi is MaterialProgramAbi {
+  return (
+    abi?.bindings === 'post-process' &&
+    abi.vertexInputs.length === 0 &&
+    abi.sceneDepth === 'before-pass' &&
+    isMaterialPostProcessContract(abi.postProcess)
+  );
 }
 
 function isDynamicInputLayout(value: unknown): value is MaterialDynamicInputLayout {
@@ -240,26 +350,37 @@ export function isMaterialSurfaceProgramAbi(value: unknown): value is MaterialSu
   )
     return false;
   const passes = surface.passes as unknown[];
+  if (
+    surface.model === 'single-layer-water' &&
+    (surface.inputAbi !== 'SingleLayerWaterSurfaceInput' ||
+      surface.outputAbi !== 'SingleLayerWaterSurfaceData')
+  )
+    return false;
+  if (surface.deformation !== undefined && !isMaterialDeformationProgramAbi(surface.deformation))
+    return false;
   const expectedPasses = MATERIAL_SURFACE_MODEL_PASSES[surface.model];
   if (
     passes.length !== expectedPasses.length ||
     passes.some((pass, index) => pass !== expectedPasses[index])
   )
     return false;
-  if (surface.dynamicInput === undefined) return true;
-  if (surface.dynamicInput === null || typeof surface.dynamicInput !== 'object') return false;
-  const dynamic = surface.dynamicInput as Record<string, unknown>;
-  if (
-    isDynamicInputLayout(dynamic.layout) &&
-    dynamic.group === 3 &&
-    dynamic.binding === 3 &&
-    dynamic.readOnly === true &&
-    typeof dynamic.accessor === 'string' &&
-    dynamic.accessor === `read_${(dynamic.layout as { name: string }).name}`
-  ) {
-    return true;
-  }
-  return false;
+  const validDynamicInput = () => {
+    if (surface.dynamicInput === undefined) return true;
+    if (surface.dynamicInput === null || typeof surface.dynamicInput !== 'object') return false;
+    const dynamic = surface.dynamicInput as Record<string, unknown>;
+    if (
+      isDynamicInputLayout(dynamic.layout) &&
+      dynamic.group === 3 &&
+      dynamic.binding === 3 &&
+      dynamic.readOnly === true &&
+      typeof dynamic.accessor === 'string' &&
+      dynamic.accessor === `read_${(dynamic.layout as { name: string }).name}`
+    ) {
+      return true;
+    }
+    return false;
+  };
+  return validDynamicInput();
 }
 
 /**
@@ -339,18 +460,22 @@ export function isMaterialProgramAbi(value: unknown): value is MaterialProgramAb
       }),
     ).size === resources.length;
   const validSurface = abi.surface === undefined || isMaterialSurfaceProgramAbi(abi.surface);
-  const validShape =
+  const validProgramIdentity = () =>
     (abi.positionBounds === undefined || abi.positionBounds === 'standard-input') &&
     (abi.entryPoints === undefined || isShaderEntryPointReads(abi.entryPoints)) &&
     (abi.bindings === undefined || isMaterialProgramBindingContract(abi.bindings)) &&
+    (abi.systemInputs === undefined || isMaterialProgramSystemInputs(abi.systemInputs)) &&
     (abi.sceneDepth === undefined ||
       abi.sceneDepth === 'read-only' ||
       abi.sceneDepth === 'before-pass') &&
+    (abi.postProcess === undefined || isMaterialPostProcessContract(abi.postProcess)) &&
+    (abi.bindings === 'post-process') === (abi.postProcess !== undefined) &&
     typeof abi.directEntry === 'string' &&
     abi.directEntry.length > 0 &&
     (abi.sceneIndexEntry === undefined ||
       (typeof abi.sceneIndexEntry === 'string' && abi.sceneIndexEntry.length > 0)) &&
-    validRow(row) &&
+    validRow(row);
+  const validProgramResources = () =>
     validResources(abi.resourceSlots) &&
     Array.isArray(abi.uvSets) &&
     (abi.uvSets as unknown[]).every(
@@ -365,7 +490,8 @@ export function isMaterialProgramAbi(value: unknown): value is MaterialProgramAb
     abi.alphaMask !== null &&
     typeof abi.alphaMask === 'object' &&
     typeof (abi.alphaMask as { cutoff?: unknown }).cutoff === 'string' &&
-    typeof (abi.alphaMask as { source?: unknown }).source === 'string' &&
+    typeof (abi.alphaMask as { source?: unknown }).source === 'string';
+  const validProgramReflection = () =>
     reflection !== null &&
     typeof reflection === 'object' &&
     typeof (reflection as { layoutIdentity?: unknown }).layoutIdentity === 'string' &&
@@ -378,6 +504,7 @@ export function isMaterialProgramAbi(value: unknown): value is MaterialProgramAb
     typeof generation === 'number' &&
     generation >= 1 &&
     validSurface;
+  const validShape = validProgramIdentity() && validProgramResources() && validProgramReflection();
   if (!validShape) return false;
   const topResources = JSON.stringify(abi.resourceSlots);
   const reflectionResources = JSON.stringify(

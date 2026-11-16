@@ -141,11 +141,7 @@ it('renders overlapping local fog, independently removes owners, and retires the
     const draw = async () => {
       world.update(1 / 60).unwrap();
       propagateTransforms(world).unwrap();
-      await drawReadyFrame(renderer, {
-        leases: [lease],
-        camera: { lease },
-        environment: { lease },
-      });
+      await drawReadyFrame(renderer, { source: lease });
     };
     for (let index = 0; index < 12; index++) await draw();
     expect(renderer.inspect().volumetricFog?.ownerCount).toBe(9);

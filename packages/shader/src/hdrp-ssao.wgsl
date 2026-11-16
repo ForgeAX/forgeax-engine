@@ -1,5 +1,6 @@
 // Screen-space AO: view-space hemisphere sampling and bilateral filtering.
-// Both passes consume the same current-frame depth and world normals.
+// Both passes consume the same current-frame depth and world normals, or, for a
+// depth-only prepass, depth alone (the *_depth entries).
 
 #define_import_path forgeax_hdrp::ssao
 #import forgeax_pbr::gbuffer::{loadStandardNormalRoughness}
@@ -112,16 +113,54 @@ fn gtaoRotation(pixel: vec2<i32>, height: i32) -> f32 {
   return atan2(tangent.y, tangent.x);
 }
 
-fn gtaoVisibility(uv: vec2<f32>) -> f32 {
+// Depth and reconstructed position must refer to the SAME full-res texel.
+// Half-res fragment UVs lie between texel centers, particularly at odd extents.
+fn gtaoPixel(uv: vec2<f32>) -> vec2<i32> {
   let dimensions = vec2<i32>(textureDimensions(hdr_depth));
-  // Depth and reconstructed position must refer to the SAME full-res texel.
-  // Half-res fragment UVs lie between texel centers, particularly at odd extents.
-  let pixel = clamp(vec2<i32>(uv * vec2<f32>(dimensions)), vec2<i32>(0), dimensions - 1);
-  let centerUv = (vec2<f32>(pixel) + 0.5) / vec2<f32>(dimensions);
+  return clamp(vec2<i32>(uv * vec2<f32>(dimensions)), vec2<i32>(0), dimensions - 1);
+}
+
+fn gtaoTexelUv(pixel: vec2<i32>) -> vec2<f32> {
+  return (vec2<f32>(pixel) + 0.5) / vec2<f32>(textureDimensions(hdr_depth));
+}
+
+fn gtaoVisibility(uv: vec2<f32>) -> f32 {
+  let pixel = gtaoPixel(uv);
   let depth = textureLoad(hdr_depth, pixel, 0);
   if (depth <= 0.0) { return 1.0; }
-  let position = aoViewPosition(centerUv, depth);
-  let normal = normalize((ssao_uniform.view * vec4<f32>(ssaoNormal(centerUv), 0.0)).xyz);
+  let normal = normalize((ssao_uniform.view * vec4<f32>(ssaoNormal(gtaoTexelUv(pixel)), 0.0)).xyz);
+  return gtaoVisibilityAt(pixel, depth, normal);
+}
+
+// One view-space position delta along a screen axis (UE ReconstructNormalFromDepthBuffer):
+// take the neighbor whose depth step is smaller, so a silhouette never bends the
+// plane. Sky or off-screen neighbors are never taken.
+fn ssaoAxisDelta(pixel: vec2<i32>, axis: vec2<i32>, center: vec3<f32>, fallback: vec3<f32>) -> vec3<f32> {
+  let dimensions = vec2<i32>(textureDimensions(hdr_depth));
+  let minus = pixel - axis;
+  let plus = pixel + axis;
+  let minusDepth = select(0.0, textureLoad(hdr_depth, clamp(minus, vec2<i32>(0), dimensions - 1), 0), all(minus >= vec2<i32>(0)) && all(minus < dimensions));
+  let plusDepth = select(0.0, textureLoad(hdr_depth, clamp(plus, vec2<i32>(0), dimensions - 1), 0), all(plus >= vec2<i32>(0)) && all(plus < dimensions));
+  if (minusDepth <= 0.0 && plusDepth <= 0.0) { return fallback; }
+  let toMinus = center - aoViewPosition(gtaoTexelUv(minus), max(minusDepth, 1e-30));
+  let toPlus = aoViewPosition(gtaoTexelUv(plus), max(plusDepth, 1e-30)) - center;
+  if (minusDepth <= 0.0) { return toPlus; }
+  if (plusDepth <= 0.0) { return toMinus; }
+  return select(toPlus, toMinus, abs(toMinus.z) < abs(toPlus.z));
+}
+
+// View-space normal from depth alone, for prepasses that write no normal target.
+fn ssaoReconstructedViewNormal(pixel: vec2<i32>, depth: f32) -> vec3<f32> {
+  let center = aoViewPosition(gtaoTexelUv(pixel), depth);
+  let right = ssaoAxisDelta(pixel, vec2<i32>(1, 0), center, vec3<f32>(1.0, 0.0, 0.0));
+  let down = ssaoAxisDelta(pixel, vec2<i32>(0, 1), center, vec3<f32>(0.0, -1.0, 0.0));
+  // Screen y grows downward; cross(down, right) faces the camera (+z in view space).
+  return normalize(cross(down, right));
+}
+
+fn gtaoVisibilityAt(pixel: vec2<i32>, depth: f32, normal: vec3<f32>) -> f32 {
+  let dimensions = vec2<i32>(textureDimensions(hdr_depth));
+  let position = aoViewPosition(gtaoTexelUv(pixel), depth);
   // Orthographic view rays are parallel. normalize(-position) is wrong here.
   let perspective = abs(ssao_uniform.projection[3][3]) < 0.5;
   let viewDir = select(vec3<f32>(0.0, 0.0, 1.0), normalize(-position), perspective);
@@ -151,7 +190,10 @@ fn gtaoVisibility(uv: vec2<f32>) -> f32 {
     let projected = normal - axis * dot(normal, axis);
     let projectedLength = length(projected);
     if (projectedLength < 0.00001) { continue; }
-    let n = atan2(dot(projected, tangent), dot(projected, viewDir));
+    // A normal along the view ray gives sin(n) = -0; SwiftShader's atan2(-0, x > 0)
+    // returns pi, which flips the slice. Fold it to +0 so n is 0 on every backend.
+    let sinN = dot(projected, tangent);
+    let n = atan2(select(sinN, 0.0, sinN == 0.0), dot(projected, viewDir));
     let low = vec2<f32>(cos(n + 1.57079632679), cos(n - 1.57079632679));
     var horizons = low;
     for (var step = 0u; step < steps; step++) {
@@ -198,22 +240,21 @@ fn hemisphereVisibility(in : SsaoVsOut) -> f32 {
   let depth = ssaoDepth(in.uv);
   // NDC reconstruction: screen-space xy in [-1,1], depth in [0,1].
   if (depth <= 0.0) { return 1.0; }
+  // Read and decode the packed world-space normal, then rotate it to view space.
+  let viewNormal = normalize((ssao_uniform.view * vec4<f32>(ssaoNormal(in.uv), 0.0)).xyz);
+  return hemisphereVisibilityAt(in, depth, viewNormal, vec2<f32>(textureDimensions(gbuffer_normal, 0)));
+}
+
+fn hemisphereVisibilityAt(in : SsaoVsOut, depth: f32, viewNormal: vec3<f32>, screenDim: vec2<f32>) -> f32 {
   let ndc = vec4<f32>(in.uv * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0), depth, 1.0);
   // Transform NDC -> view via inverse projection.
   var viewPosH = ssao_uniform.inverseProjection * ndc;
   viewPosH = viewPosH / viewPosH.w;
   let viewPos = viewPosH.xyz;
 
-  // Read and decode the packed world-space normal.
-  let worldNormal = ssaoNormal(in.uv);
-
-  // Rotate world normal to view-space.
-  let viewNormal = normalize((ssao_uniform.view * vec4<f32>(worldNormal, 0.0)).xyz);
-
   // Read noise for per-pixel TBN rotation.
   // Actually: scale factor is screenDim / noiseDim. Use the selected AO target extent.
   // The noise texture is 4x4 and tiled via REPEAT sampling.
-  let screenDim = vec2<f32>(textureDimensions(gbuffer_normal, 0));
   let noiseUV = in.uv * screenDim / 8.0;
   let randomVec = normalize(textureSampleLevel(ssao_noise_texture, ssao_noise_sampler, noiseUV, 0).xyz);
 
@@ -299,6 +340,84 @@ fn fs_ssao_calc(in : SsaoVsOut) -> @location(0) vec4<f32> {
   if (ssao_uniform.intensityPad.x == 0.0) { visibility = 1.0; }
   else { visibility = pow(visibility, ssao_uniform.intensityPad.x); }
   return vec4<f32>(visibility, encodeSsaoNormal(ssaoNormal(in.uv)), 1.0);
+}
+
+// ── depth-only prepass: normals reconstructed from depth ───────────────────
+// Neither entry reads gbuffer_normal, so their layout omits binding 4.
+
+fn ssaoIntensity(visibility: f32) -> f32 {
+  // Explicit zero strength is identity, including fully occluded samples.
+  if (ssao_uniform.intensityPad.x == 0.0) { return 1.0; }
+  return pow(visibility, ssao_uniform.intensityPad.x);
+}
+
+// Like fs_ssao_calc, gb carries the world normal the visibility used.
+@fragment
+fn fs_ssao_calc_depth(in : SsaoVsOut) -> @location(0) vec4<f32> {
+  let pixel = gtaoPixel(in.uv);
+  let depth = textureLoad(hdr_depth, pixel, 0);
+  if (depth <= 0.0) { return vec4<f32>(1.0, 0.5, 0.5, 1.0); }
+  let normal = ssaoReconstructedViewNormal(pixel, depth);
+  // The view rotation is orthonormal: its transpose maps view back to world.
+  let view = ssao_uniform.view;
+  let worldNormal = transpose(mat3x3<f32>(view[0].xyz, view[1].xyz, view[2].xyz)) * normal;
+  var visibility: f32;
+  if (ssao_uniform.algorithmPad.x > 0.5) {
+    visibility = gtaoVisibilityAt(pixel, depth, normal);
+  } else {
+    let screenDim = vec2<f32>(textureDimensions(hdr_depth));
+    visibility = hemisphereVisibilityAt(in, ssaoDepth(in.uv), normal, screenDim);
+  }
+  return vec4<f32>(ssaoIntensity(visibility), encodeSsaoNormal(worldNormal), 1.0);
+}
+
+// GTAO spatial filter (UE GTAOSpatialFilterCS, r.GTAO.FilterWidth=5): 5x5 taps
+// weighted only by their distance to the center's depth plane. Reverse-Z device
+// depth is affine in screen space, so the plane extrapolates exactly across flat
+// surfaces and a foreground contact shadow never spreads onto a background edge.
+// Taps outside the screen or on the sky are skipped instead of clamped.
+fn ssaoBlurDepth(pixel: vec2<i32>, size: vec2<i32>) -> f32 {
+  return ssaoDepth((vec2<f32>(pixel) + 0.5) / vec2<f32>(size));
+}
+
+// Per-texel depth slope along one axis, taken from the side whose linear
+// extrapolation lands closer to the center (keeps the plane off silhouettes).
+fn ssaoBlurSlope(pixel: vec2<i32>, axis: vec2<i32>, size: vec2<i32>, z: f32) -> f32 {
+  let m2 = ssaoBlurDepth(pixel - 2 * axis, size);
+  let m1 = ssaoBlurDepth(pixel - axis, size);
+  let p1 = ssaoBlurDepth(pixel + axis, size);
+  let p2 = ssaoBlurDepth(pixel + 2 * axis, size);
+  return select(p2 - p1, m1 - m2, abs(2.0 * m1 - m2 - z) < abs(2.0 * p1 - p2 - z));
+}
+
+@fragment
+fn fs_ssao_blur_depth(in: SsaoVsOut) -> @location(0) f32 {
+  let size = vec2<i32>(textureDimensions(ssaoRaw));
+  let pixel = clamp(vec2<i32>(in.position.xy), vec2<i32>(0), size - 1);
+  let z = ssaoBlurDepth(pixel, size);
+  if (z <= 0.0) { return 1.0; }
+  let slope = vec2<f32>(
+    ssaoBlurSlope(pixel, vec2<i32>(1, 0), size, z),
+    ssaoBlurSlope(pixel, vec2<i32>(0, 1), size, z),
+  );
+  // UE scales device-depth error by 20000 at its 10 cm near plane; device depth
+  // is ~near/distance, so the same view-space tolerance is 2000 / near (metres).
+  let tolerance = 2000.0 / max(ssao_uniform.projection[3].z, 1e-4);
+  var total = 0.0;
+  var weight = 0.0;
+  for (var y = -2; y <= 2; y++) {
+    for (var x = -2; x <= 2; x++) {
+      let tap = pixel + vec2<i32>(x, y);
+      if (any(tap < vec2<i32>(0)) || any(tap >= size)) { continue; }
+      let d = ssaoBlurDepth(tap, size);
+      if (d <= 0.0) { continue; }
+      let plane = z + slope.x * f32(x) + slope.y * f32(y);
+      let w = 1.0 - saturate(abs(plane - d) * tolerance);
+      total += textureLoad(ssaoRaw, tap, 0).r * w;
+      weight += w;
+    }
+  }
+  return total / max(weight, 0.00001);
 }
 
 // Symmetric depth/normal-aware filter. Never spread a foreground contact

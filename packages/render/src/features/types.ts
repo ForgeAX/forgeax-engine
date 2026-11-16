@@ -4,7 +4,13 @@ import type { RhiCaps } from '@forgeax/engine-rhi';
 import type { Asset, Result } from '@forgeax/engine-types';
 import type { RenderError, RenderFeatureErrorDescriptor } from '../errors/render';
 import type { VisibilitySnapshot } from '../extract/visibility';
-import type { CameraSnapshot } from '../render-contract';
+import type {
+  CameraSnapshot,
+  FeatureTextureReadbackResult,
+  FrameDomainObservation,
+  FrameReceipt,
+  RenderResult,
+} from '../render-contract';
 import type { RenderFeaturePlan, RenderFeaturePlanContext } from './plan';
 import type { RenderFeatureCapabilityKey } from './vocabulary';
 
@@ -44,8 +50,22 @@ export type {
   RenderFeatureStage,
 } from './vocabulary';
 
+/** Opaque static bytes seeded by the physical owner once per allocation version. */
+export interface RenderFeatureGpuBufferInitialization {
+  readonly version: string;
+  readonly byteLength: number;
+  /** Fill a host-owned byte view for one physical buffer initialization. */
+  copyInto(target: Uint8Array): boolean;
+}
+
 /** Closed lifecycle states exposed by the feature host. */
 export type RenderFeatureStatus = 'active' | 'failed' | 'disabled' | 'disposed';
+
+/** Actual Renderer receipt facts delivered after the published frame completes. */
+export type RenderFeatureCompletion = Pick<
+  FrameReceipt,
+  'frameId' | 'deviceGeneration' | 'graphGeneration'
+>;
 
 /**
  * Graph placement for a producer-owned feature.
@@ -56,7 +76,7 @@ export type RenderFeatureStatus = 'active' | 'failed' | 'disabled' | 'disposed';
  * lets the Standard owner place atmospheric transport without adding a
  * second renderer or a feature-specific side channel.
  */
-export type RenderFeaturePlacement = 'scene' | 'post';
+export type RenderFeaturePlacement = 'scene' | 'after-depth' | 'after-tonemap' | 'post';
 
 /**
  * Shader preparation policy for feature-owned GPU programs.
@@ -68,13 +88,6 @@ export type RenderFeaturePlacement = 'scene' | 'post';
  * the validation boundary for that mode.
  */
 export type RenderFeatureShaderModuleMode = 'validated' | 'immediate';
-
-/** One World-local visibility snapshot prepared for the current frame batch. */
-export interface RenderFeatureWorldVisibilitySnapshot {
-  readonly world: World;
-  readonly snapshot: VisibilitySnapshot;
-}
-
 /** Renderer-owned view facts shared by feature extraction and temporal owners. */
 export interface RenderFeatureViewContext {
   readonly identity: string;
@@ -93,25 +106,34 @@ export interface RenderFeatureViewContext {
 /** Normal frame projection consumed by feature owners at extract time. */
 export interface RenderFeatureFrameContext {
   readonly cloudLayer?: import('../cloud/extract').ExtractedCloudLayer;
+  /** Selected sun facts from the same View owner that writes the cloud View binding. */
+  readonly cloudSun?: Pick<
+    import('../render-system-extract').DirectionalLightSnapshot,
+    'direction' | 'intensity'
+  > &
+    Partial<Pick<import('../render-system-extract').DirectionalLightSnapshot, 'color'>>;
   readonly view?: RenderFeatureViewContext;
+  /** Captured selected atmosphere parameters; excludes continuous camera/sun motion. */
+  readonly aerialPerspectiveIdentity?: string;
+  readonly waterFoamMaterials?: readonly import('../water/fluid-foam').WaterFluidFoamMaterial[];
 }
 
 /** A producer's structured report for one hidden render candidate. */
 export interface RenderFeatureHiddenEntityReport {
-  readonly world: World;
   readonly entity: EntityHandle;
 }
 
 export interface RenderFeatureExtractView {
   readonly identity: string;
   readonly render: boolean;
+  /** Recorder allocation domain and whether its graph resources can be retained. */
+  readonly graphResources?: RenderFeatureGraphResourceState;
   readonly frameSize?: { readonly width: number; readonly height: number };
   readonly frame?: RenderFeatureFrameContext;
-  readonly motionBlur?: import('./motion-blur/motion-blur-feature').MotionBlurFeatureInput;
   /**
    * Renderer-selected display camera for this frame. Features that affect the
    * display must derive their active plan from this snapshot instead of
-   * scanning every Camera in the composed worlds.
+   * scanning every Camera in the source World.
    */
   readonly selectedCamera?: CameraSnapshot;
   /** Derived matrices and basis for the selected view; never rescan World camera state. */
@@ -123,9 +145,14 @@ export interface RenderFeatureExtractView {
   };
 }
 
+export interface RenderFeatureGraphResourceState {
+  /** Equality-only identity; ordinary graph recompilation preserves this owner. */
+  readonly owner: object;
+  readonly retained: boolean;
+}
+
 export interface RenderFeatureExtractContext {
-  readonly worlds: readonly World[];
-  readonly owner: number;
+  readonly world: World;
   readonly frameNumber: number;
   /**
    * Identity of the receiving render session for a cross-worker publication. It
@@ -137,8 +164,14 @@ export interface RenderFeatureExtractContext {
   readonly caps?: Readonly<RhiCaps>;
   /** Exact receiving renderer domain, when extraction runs after device admission. */
   readonly materialContext?: RenderFeaturePlanContext['materialContext'];
-  readonly visibilitySnapshots?: readonly RenderFeatureWorldVisibilitySnapshot[];
+  readonly visibilitySnapshot?: VisibilitySnapshot | undefined;
   readonly reportHiddenEntity?: (report: RenderFeatureHiddenEntityReport) => void;
+  /** Record a recoverable source retry while allowing a retained frame to proceed. */
+  readonly reportError?: (error: RenderError) => void;
+  /** @internal Open a producer-declared nested CPU work scope on the active Render World. */
+  readonly beginProfileWork?: (
+    work: string,
+  ) => import('@forgeax/engine-ecs').ScheduleWorkScope | undefined;
   /**
    * A publication producer may replace an exactly matching captured payload
    * with its existing asset handle. An undefined result keeps the feature's
@@ -146,15 +179,12 @@ export interface RenderFeatureExtractContext {
    * Declare accepted handles through assetDependencies and resolve them in plan.
    */
   /** Capture a held exact version for in-flight work. The source asset identity stays unchanged. */
-  readonly referenceAssetVersion?: (
-    sourceWorldIndex: number,
-    version: { readonly handle: number; readonly revision: number; readonly value: Asset },
-  ) => void;
-  readonly referenceAsset?: (
-    sourceWorldIndex: number,
-    identity: string | number,
-    captured: Asset,
-  ) => number | undefined;
+  readonly referenceAssetVersion?: (version: {
+    readonly handle: number;
+    readonly revision: number;
+    readonly value: Asset;
+  }) => void;
+  readonly referenceAsset?: (identity: string | number, captured: Asset) => number | undefined;
 }
 
 /**
@@ -169,10 +199,20 @@ export interface RenderFeatureSubmission {
       readonly name: string;
       readonly shadowCaster?: true;
       readonly graphics?: { readonly draws: readonly { readonly kind: string }[] };
+      /** Clone-safe count of resolved GPU dispatches for source acknowledgments. */
+      readonly resolvedGpuComputeDispatchCount?: number;
       /** Resolved commands exclude validated zero-work direct dispatches. */
       readonly resolvedGpuCompute?: { readonly dispatches: readonly unknown[] };
     }[];
   }[];
+}
+
+/** Exact compiled graph-pass identities a feature may admit for one current view scope. */
+export interface RenderFeatureProfileGraphPass {
+  readonly view: string;
+  /** Physical compiled name, including any feature-scope prefix. */
+  readonly name: string;
+  readonly kind: 'raster' | 'compute' | 'copy';
 }
 
 /**
@@ -185,6 +225,8 @@ export interface RenderFeatureSubmission {
  */
 export interface RenderFeature<FrameData> {
   readonly identity: string;
+  /** Canonical immutable idle value. Source extract returns this exact value to omit its wire row. */
+  readonly inactiveSourceData?: FrameData;
   /**
    * Which capture faces (planar reflection, reflection probe, cube capture)
    * this Feature records into. Omitted means `display-only`; scene-content
@@ -192,6 +234,12 @@ export interface RenderFeature<FrameData> {
    * of captured faces, so opt out when a Feature is not visible in reflections.
    */
   readonly capture?: import('../capture/feature-policy').RenderFeatureCapturePolicy;
+  /** @internal Nested work names emitted through `beginProfileWork` during producer callbacks. */
+  readonly profileWorkNames?: readonly string[];
+  /** @internal Exact physical shared-graph identities that remain reachable but may not execute this frame. */
+  readonly profileGraphPasses?: (
+    viewScopes: readonly string[],
+  ) => readonly RenderFeatureProfileGraphPass[];
   /** Optional graph placement; omitted features retain the historical post stage. */
   readonly placement?: RenderFeaturePlacement;
   /**
@@ -219,6 +267,8 @@ export interface RenderFeature<FrameData> {
     readonly source: string;
   }[];
   extract(context: RenderFeatureExtractContext): Result<FrameData, RenderError>;
+  /** Detached publication codec and source acknowledgments for a renderer-owned producer. */
+  readonly source?: RenderFeature<unknown>;
   /** GUID closures or exact immutable handles consumed by the declarative plan. */
   assetDependencies?(data: FrameData): readonly (string | number)[];
   /**
@@ -235,12 +285,29 @@ export interface RenderFeature<FrameData> {
    * extracted frame and never during declarative planning.
    */
   onFrameSubmitted?(data: FrameData, submission?: RenderFeatureSubmission): void;
+  /** The existing receipt owner maps declared copies once, after GPU completion. */
+  onFrameReceipt?(
+    receipt: FrameReceipt,
+    observations: Promise<RenderResult<readonly FrameDomainObservation[], RenderError>>,
+  ): void;
   /**
    * Consume source-owned intents after submission; feedback must be structured-cloneable.
    * A sealed successor may have been extracted before this acknowledgment. Ordered
    * intent producers must identify already-submitted work instead of replaying it.
    */
-  onSourceFrameSubmitted?(data: FrameData, feedback: unknown): void;
+  onSourceFrameSubmitted?(
+    data: FrameData,
+    feedback: unknown,
+    submission?: RenderFeatureSubmission,
+  ): void;
+  /** Complete the exact submitted source publication before its storage is recycled. */
+  onSourceFrameCompleted?(
+    data: FrameData,
+    completion: RenderFeatureCompletion,
+    feedback: unknown,
+    submission?: RenderFeatureSubmission,
+    readbacks?: FeatureTextureReadbackResult,
+  ): void;
   /**
    * The source publication that carried this extracted frame was discarded before
    * it was sent; producers that publish state once can mark it unsent again.

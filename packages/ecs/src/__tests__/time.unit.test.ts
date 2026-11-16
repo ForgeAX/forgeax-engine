@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { defineSystem } from '../schedule';
 import { FixedUpdate, Update } from '../schedule-token';
 import { FixedTime, Time } from '../time';
 import { World } from '../world';
@@ -7,7 +8,8 @@ describe('World time resources', () => {
   it('runs all three 60 Hz catch-up ticks without rounding away the last tick', () => {
     const world = new World();
     let runs = 0;
-    world.addSystem(FixedUpdate, { name: 'fixed', queries: [], fn: () => runs++ });
+    const systemToken1 = defineSystem({ name: 'fixed', queries: [], fn: () => runs++ });
+    world.addSystem(FixedUpdate, systemToken1);
     expect(world.update(3 / 60).ok).toBe(true);
     expect(runs).toBe(3);
     expect(world.getResource(FixedTime)).toMatchObject({ tick: 3, overstep: 0 });
@@ -36,7 +38,8 @@ describe('World time resources', () => {
   it('treats an omitted delta as zero while still running Update', () => {
     const world = new World();
     let updates = 0;
-    world.addSystem(Update, { name: 'update', queries: [], fn: () => updates++ });
+    const systemToken2 = defineSystem({ name: 'update', queries: [], fn: () => updates++ });
+    world.addSystem(Update, systemToken2);
 
     expect(world.update().ok).toBe(true);
     expect(world.getResource(Time)).toMatchObject({ delta: 0, elapsed: 0 });
@@ -73,8 +76,10 @@ describe('World time resources', () => {
   it('uses the clamped Time delta as the fixed accumulator input', () => {
     const world = new World();
     let fixedRuns = 0;
-    world.addSystem(Update, { name: 'observe-time', queries: [], fn: () => {} });
-    world.addSystem(FixedUpdate, { name: 'fixed', queries: [], fn: () => fixedRuns++ });
+    const systemToken3 = defineSystem({ name: 'observe-time', queries: [], fn: () => {} });
+    world.addSystem(Update, systemToken3);
+    const systemToken4 = defineSystem({ name: 'fixed', queries: [], fn: () => fixedRuns++ });
+    world.addSystem(FixedUpdate, systemToken4);
 
     expect(world.update(5).ok).toBe(true);
     const time = world.getResource(Time);
@@ -116,17 +121,17 @@ describe('World time resources', () => {
   }) => {
     const world = new World();
     let observed = { ...world.getResource(FixedTime) };
-    if (!empty) world.addSystem(FixedUpdate, { name: 'fixed', queries: [], fn: () => {} }).unwrap();
-    world
-      .addSystem(Update, {
-        name: 'after-fixed',
-        after: [FixedUpdate],
-        queries: [],
-        fn: () => {
-          observed = { ...world.getResource(FixedTime) };
-        },
-      })
-      .unwrap();
+    const systemToken5 = defineSystem({ name: 'fixed', queries: [], fn: () => {} });
+    if (!empty) world.addSystem(FixedUpdate, systemToken5).unwrap();
+    const systemToken6 = defineSystem({
+      name: 'after-fixed',
+      after: [FixedUpdate],
+      queries: [],
+      fn: () => {
+        observed = { ...world.getResource(FixedTime) };
+      },
+    });
+    world.addSystem(Update, systemToken6).unwrap();
 
     world.update(1 / 240).unwrap();
     world.update(delta).unwrap();
@@ -152,11 +157,12 @@ describe('merged fixed catch-up', () => {
   it('runs one FixedUpdate pass with the owed steps as its delta and restores the base step', () => {
     const world = new World({ time: policy });
     const seen: number[] = [];
-    world.addSystem(FixedUpdate, {
+    const systemToken7 = defineSystem({
       name: 'fixed',
       queries: [],
       fn: (world) => void seen.push(world.getResource(FixedTime).delta),
     });
+    world.addSystem(FixedUpdate, systemToken7);
     expect(world.update(0.05).ok).toBe(true);
     expect(world.update(0.11).ok).toBe(true);
     expect(seen.map((value) => Math.round(value * 1000))).toEqual([50, 100]);
@@ -171,13 +177,14 @@ describe('merged fixed catch-up', () => {
   it('keeps the step cap and drops whole overflow steps exactly like substeps', () => {
     const world = new World({ time: policy });
     let simulated = 0;
-    world.addSystem(FixedUpdate, {
+    const systemToken8 = defineSystem({
       name: 'fixed',
       queries: [],
       fn: (world) => {
         simulated += world.getResource(FixedTime).delta;
       },
     });
+    world.addSystem(FixedUpdate, systemToken8);
     // 0.15 s owes three steps; two are simulated in one pass and one is dropped.
     expect(world.update(0.15).ok).toBe(true);
     expect(simulated).toBeCloseTo(0.1, 9);
@@ -189,11 +196,12 @@ describe('merged fixed catch-up', () => {
     const { fixedCatchUp: _merged, ...substeps } = policy;
     const world = new World({ time: substeps });
     const seen: number[] = [];
-    world.addSystem(FixedUpdate, {
+    const systemToken9 = defineSystem({
       name: 'fixed',
       queries: [],
       fn: (world) => void seen.push(world.getResource(FixedTime).delta),
     });
+    world.addSystem(FixedUpdate, systemToken9);
     expect(world.update(0.1).ok).toBe(true);
     expect(seen).toEqual([0.05, 0.05]);
     expect(world.getResource(FixedTime)).toMatchObject({ catchUp: 'substeps', tick: 2 });

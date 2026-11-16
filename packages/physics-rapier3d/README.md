@@ -16,8 +16,25 @@ The default plugin owns only Rapier3D. Its module dependency is static;
 WASM initializes lazily during activation. The shared physics contract imports no backend.
 
 Pinned Rapier 0.35.1 / WASM backend for the realm-neutral [Physics contract](../physics/README.md).
+
+Ordinary fixed dynamics, full completed-step sensor rosters and generation-fenced
+world-point force/torque implement the shared fixed dynamics contract. Forces use
+Rapier `addForceAtPoint`/`addTorque`; after the native solve their shared user
+force/torque accumulators are reset. Completed rosters publish after ECS
+writeback/collision synchronization and survive the following pre-solve sync.
 Install `physics3d` in the World; game code consumes the optional
 `PhysicsWorld` capabilities rather than retaining Rapier objects.
+
+The optional solver participant uses a real module Worker. Rapier snapshots,
+body-generation/handle projections, pair-isolation policy and detached task bytes
+travel to that Worker; it runs the participant before native integration and
+returns the resulting snapshot, collision events and bytes. The backend adopts
+that snapshot before the suspended fixed schedule resumes. Read APIs retain the
+last complete native state during the solve; native-write Results refuse pending
+work without touching native objects. Entity/joint retirement and source-reader
+acknowledgement stay owned by this backend. A source or body replacement cannot
+adopt an older generation's output. No Rapier handle escapes through the public
+[solver participant contract](../physics/README.md#solver-participants).
 
 | Boundary | Owner behavior |
 |:--|:--|
@@ -81,6 +98,13 @@ and real postshot producer evidence.
 frozen shape ID array. Repeated reads retain identity until a new fixed-step
 publication replaces it; retained older revisions remain unchanged. Reads still
 refuse during paired admission and return no publication when recovery is required.
+`getDerivedCollisionReceipt(entity)` returns the detached convex-compound shapes
+for that exact accepted publication. The Physics owner caches one deep-frozen
+receipt per accepted body record, so repeated Scene overlap reads reuse identity
+without copying unrelated world bodies or rebuilding large vertex buffers. A
+replacement keeps the old receipt through failed admission and switches only when
+the candidate publishes at a fixed step; entity retirement removes the live
+receipt while already retained receipts remain stable.
 Terrain has an ordinary native collider owner independent of derived candidates.
 Its persistent ECS projection handles actual lifecycle and pose work; shared
 Mesh/Terrain assets replace immutable native geometry roots at fixed sync.
@@ -188,13 +212,7 @@ parented bodies read GlobalTransform. Pose sync borrows only the required local
 TRS arrays or the parented world matrix, without materializing a component row.
 Unchanged rows remain outside the ECS projection's work set. Writeback compares
 only borrowed position/rotation arrays; changed poses still use World.set and publish ordinary
-component change evidence. Run `node packages/physics-rapier3d/bench/pose-only-sync.mjs` after building
-to measure sync and real fixed-step costs separately for a moving primitive scene.
-Add `--dynamic` for 2,304 dynamic cuboids with native pose writeback. This spaced
-CPU workload isolates synchronization; it does not measure a dense pile's solver
-cost or browser FPS. `node packages/physics-rapier3d/bench/writeback.mjs` measures
-the complete ECS physics schedule with native writeback and reports a final-pose
-digest for equivalent-work comparisons.
+component change evidence.
 
 ## Patched WASM delivery
 

@@ -182,8 +182,19 @@ describe('direct punctual lighting shader contract', () => {
     expect(punctual).toContain('select(-normal, normal, dot(normal, toLight) >= 0.0)');
     expect(shared).toContain('if (any(transmission > vec3<f32>(0.0)))');
     expect(shared).toContain(
-      'sampleIblDiffuse(-normal, rotation, irradianceMap, irradianceSampler)',
+      'let backIrradiance = sampleSkylightDiffuse(sky, -normal, irradianceMap, irradianceSampler);',
     );
+    const diffuseOwner = shared.slice(
+      shared.indexOf('fn sampleSkylightDiffuse('),
+      shared.indexOf('fn sampleSkylightRadiance('),
+    );
+    expect(diffuseOwner).toContain(
+      'let rotation = select(sky.rotation, sky.diffuseRotation, probe);',
+    );
+    expect(diffuseOwner).toContain(
+      'return sampleIblDiffuse(normal, rotation, irradianceMap, irradianceSampler)',
+    );
+    expect(diffuseOwner).toContain('* skylightHemisphereScale(sky, scale, normal);');
     expect(pbr).toContain('#ifdef DIFFUSE_TRANSMISSION_AVAILABLE');
     expect(pbr).toContain('diffuseAlbedo = diffuseAlbedo * (1.0 - diffuseTransmissionFactor);');
     expect(pbr).toMatch(/directionalShadowNormal = select\(receiverNormal, -receiverNormal,/);

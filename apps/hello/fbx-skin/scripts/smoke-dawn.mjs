@@ -63,6 +63,7 @@ import { dirname, resolve } from 'node:path';
 import { readFileSync } from 'node:fs';
 import { emitSmokeReceipt } from '../../../shared/scripts/smoke-receipt.mjs';
 import { teardownDawnInstance } from '../../../../scripts/lib/dawn-teardown.mjs';
+import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 
 // CI and local acceptance both retain 60 completed frames. Longer diagnostic
 // runs preserve the same palette-distinctness and FALSIFY gates.
@@ -127,18 +128,18 @@ try {
 Object.defineProperty(globalThis.navigator, 'gpu', { value: gpu, configurable: true, writable: true });
 gpu.getPreferredCanvasFormat = () => 'rgba8unorm';
 
-// Capture the raw GPUDevice createRenderer ends up using so the readback runs on
-// the same device (mirror of fbx-cube smoke). Also intercept device.queue.
-// writeBuffer for the shared Skin inputs (`gpu-scene-shared-inputs` joint rows
-// or CPU-recorded `skin-task-data`) and hash each payload: a moving
-// pose produces distinct hashes and a frozen pose repeats one hash. This is the
-// DETERMINISTIC animation-motion signal (mirror of apps/hello/skin smoke-dawn
-// m4-4). A whole-frame pixel diff is NOT usable as the motion gate here: the
-// dawn render path has a ~1200px frame-to-frame nondeterminism floor even with
-// zero state change, which would swamp a per-sample colour delta. The pixel
-// readback below is kept only as a coarse "the humanoid actually renders
-// non-black" proof (AGENTS.md LO 5.1 black-screen lesson).
-const skinPaletteWrites = [];
+  // Capture the raw GPUDevice createRenderer ends up using so the readback runs on
+  // the same device (mirror of fbx-cube smoke). Also intercept device.queue.
+  // writeBuffer for the shared Skin inputs (`gpu-scene-shared-inputs` joint rows
+  // or CPU-recorded `skin-task-data`) and hash each payload: a moving
+  // pose produces distinct hashes and a frozen pose repeats one hash. This is the
+  // DETERMINISTIC animation-motion signal (mirror of apps/hello/skin smoke-dawn
+  // m4-4). A whole-frame pixel diff is NOT usable as the motion gate here: the
+  // dawn render path has a ~1200px frame-to-frame nondeterminism floor even with
+  // zero state change, which would swamp a per-sample colour delta. The pixel
+  // readback below is kept only as a coarse "the humanoid actually renders
+  // non-black" proof (AGENTS.md LO 5.1 black-screen lesson).
+  const skinPaletteWrites = [];
 const fnv1a32 = (bytes, start, end) => {
   let h = 0x811c9dc5;
   for (let i = start; i < end; i++) {
@@ -220,12 +221,12 @@ const mockCanvas = {
   removeEventListener() {},
 };
 
-// --- 3. In-memory import of humanoid.fbx + cook an in-memory pack ---
-// Import the FBX in-memory (mirror of fbx-cube). The importer honours the GUID
-// import-stable iron law: it only emits sub-assets declared in ctx.subAssets[],
-// read from the meta sidecar (SSOT) so this smoke exercises the same declared-
-// GUID set as the dev server / build pre-import.
-const { fbxImporter } = await import('@forgeax/engine-fbx');
+  // --- 3. In-memory import of humanoid.fbx + cook an in-memory pack ---
+  // Import the FBX in-memory (mirror of fbx-cube). The importer honours the GUID
+  // import-stable iron law: it only emits sub-assets declared in ctx.subAssets[],
+  // read from the meta sidecar (SSOT) so this smoke exercises the same declared-
+  // GUID set as the dev server / build pre-import.
+  const { fbxImporter } = await import('@forgeax/engine-fbx');
 const HUMANOID_META = JSON.parse(readFileSync(`${HUMANOID_FBX}.meta.json`, 'utf8'));
 let imported;
 try {
@@ -242,9 +243,9 @@ try {
   throw new Error(`[smoke] FAIL - fbxImporter.import threw: ${code}`);
 }
 
-// Use the same import-to-wire projection and finalizer as Vite. Importer POD
-// stays available to import consumers; the package carries only one Mesh source.
-if (!imported.ok) {
+  // Use the same import-to-wire projection and finalizer as Vite. Importer POD
+  // stays available to import consumers; the package carries only one Mesh source.
+  if (!imported.ok) {
   throw new Error(`[smoke] FAIL - fbxImporter failed: ${imported.error.code}`);
 }
 
@@ -266,7 +267,8 @@ const { AssetGuid } = await import('@forgeax/engine-pack/guid');
 const MANIFEST_PATH = resolve(DIST_DIR, 'shaders', 'manifest.json');
 let MANIFEST_URL = '';
 try {
-  MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MANIFEST_PATH, 'utf8'))}`;
+  MANIFEST_URL = URL.createObjectURL(new Blob([readShaderManifestText(MANIFEST_PATH)], { type: 'application/json' }));
+  process.once('exit', () => URL.revokeObjectURL(MANIFEST_URL));
 } catch {}
 
 let assets;
@@ -328,16 +330,16 @@ const clipRes = await assets.load(clipGuidRes.value, 'animation-clip');
 if (!clipRes.ok) { throw new Error(`[smoke] FAIL - load(clip): ${clipRes.error.code}`); }
 const clipHandle = clipRes.value;
 
-// FALSIFY=static: pause the player so world.update(1 / 60).unwrap() cannot advance time; the
-// joint palette is re-uploaded with the same t=0 pose every frame, so the
-// distinct-hash count collapses to 1 and the "pose animates" gate trips.
-world.addComponent(sceneRoot, {
+  // FALSIFY=static: pause the player so world.update(1 / 60).unwrap() cannot advance time; the
+  // joint palette is re-uploaded with the same t=0 pose every frame, so the
+  // distinct-hash count collapses to 1 and the "pose animates" gate trips.
+  world.addComponent(sceneRoot, {
   component: AnimationPlayer,
   data: {
-    // feat-20260713 M1 / w8: variable N-slot SoA. Single active slot -- all
-    // four parallel columns written length-synced at length 1 (D-5, no tail
-    // pad; speeds no longer defaults to [1,1,1,1] per D-6).
-    clips: [clipHandle],
+      // feat-20260713 M1 / w8: variable N-slot SoA. Single active slot -- all
+      // four parallel columns written length-synced at length 1 (D-5, no tail
+      // pad; speeds no longer defaults to [1,1,1,1] per D-6).
+      clips: [clipHandle],
     times: new Float64Array([0]),
     weights: new Float32Array([1]),
     speeds: new Float32Array([1]),
@@ -369,18 +371,14 @@ renderer.subscribe((event) => {
 const device = sharedDevice;
 if (!device) { throw new Error('[smoke] FAIL - no shared device captured'); }
 
-// --- 6. Render loop: drive the animation, collect per-frame Skin input hashes ---
-// Each world.update(1 / 60).unwrap() ticks advanceAnimationPlayer (moves joints), then
-// renderer.draw uploads the changed joints (hashed by the writeBuffer hook).
-// Only completed, presented frames count; cold pipeline preparation retries.
-const preparationDeadline = performance.now() + 60_000;
+  // --- 6. Render loop: drive the animation, collect per-frame Skin input hashes ---
+  // Each world.update(1 / 60).unwrap() ticks advanceAnimationPlayer (moves joints), then
+  // renderer.draw uploads the changed joints (hashed by the writeBuffer hook).
+  // Only completed, presented frames count; cold pipeline preparation retries.
+  const preparationDeadline = performance.now() + 60_000;
 while (framesObserved < SMOKE_MIN_FRAMES) {
   world.update(1 / 60).unwrap();
-  const r = renderer.draw({
-    leases: [worldAttachment1.value],
-    camera: { lease: worldAttachment1.value },
-    environment: { lease: worldAttachment1.value },
-  });
+  const r = renderer.draw({ source: worldAttachment1.value });
   if (!r.ok) {
     errors.push(r.error?.code ?? 'unknown');
     framesObserved++;
@@ -408,15 +406,16 @@ const failures = [];
 if (!sharedDevice) failures.push('(a) Dawn device was not created by the host-owned Standard pipeline');
 if (framesObserved < SMOKE_MIN_FRAMES) failures.push(`(b) frames=${framesObserved} < ${SMOKE_MIN_FRAMES}`);
 if (errors.length > 0) failures.push(`(c) errors=${errors.join(',')}`);
-// (d) the skinned-draw path must run: Skin input uploads mean the pbr-skin
-// mesh was submitted (defect-B: with skin attrs missing this draw was skipped
-// with material-skin-attr-missing, so no joints were uploaded).
-if (skinPaletteWrites.length < PALETTE_MIN_DISTINCT) {
+  // (d) the skinned-draw path must run: Skin input uploads mean the pbr-skin
+  // mesh was submitted (defect-B: with skin attrs missing this draw was skipped
+  // with material-skin-attr-missing, so no joints were uploaded).
+  if (skinPaletteWrites.length < PALETTE_MIN_DISTINCT) {
   failures.push(`(d) skin-input write count=${skinPaletteWrites.length} < ${PALETTE_MIN_DISTINCT} (skinned draw path not exercised; skin attrs dropped?)`);
 } else if (distinctPaletteHashes < PALETTE_MIN_DISTINCT) {
-  // (e) AC-19: the joint inputs must take on >=3 distinct values -- the pose
-  // animates. FALSIFY=static freezes the joints and uploads nothing.
-  failures.push(`(e) pose did not animate: distinct Skin input hashes=${distinctPaletteHashes} < ${PALETTE_MIN_DISTINCT} (joints frozen at one pose)`);
+    // (e) AC-19: the joint inputs must take on >=3 distinct values -- the pose
+    // animates. FALSIFY=static freezes the joints and uploads nothing.
+    failures.push(`(e) pose did not animate: distinct Skin input hashes=${distinctPaletteHashes} < ${PALETTE_MIN_DISTINCT} (joints frozen at one pose)`,
+    );
 }
 
 if (failures.length > 0) {

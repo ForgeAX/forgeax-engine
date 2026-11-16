@@ -19,6 +19,7 @@ import type {
   FrameObservationDomain,
   RenderDebugOverlay,
   RendererOptions,
+  RenderPassCpuIdentityCapture,
   RenderPipelineObservationCaptureOwner,
   SsrShaderSources,
   VolumetricFogShaderSources,
@@ -81,4 +82,5 @@ export interface WebGPURendererInternals {
   observationCaptureDomains?: readonly FrameObservationDomain[] | undefined;
   observationFrameId?: number | undefined;
   observationGraphGeneration?: number | undefined;
+  renderPassCpuIdentityCapture?: RenderPassCpuIdentityCapture | undefined;
 }

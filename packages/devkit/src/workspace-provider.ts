@@ -4,6 +4,7 @@ import {
   ENGINE_WORKSPACE_COMMAND_TOPIC,
   type EngineWorkspaceAsset,
   type EngineWorkspaceCameraInput,
+  type EngineWorkspaceEntityInspection,
   type EngineWorkspacePlay,
   type EngineWorkspacePreview,
   type EngineWorkspaceProject,
@@ -28,6 +29,7 @@ import type { DevKitHostBinding } from './host-binding.js';
 import { readProjectFacts } from './project.js';
 import type { ProjectFacts } from './types.js';
 import { createWorkspacePackAuthoring } from './workspace-pack-authoring.js';
+import type { WorkspacePackCookPlugin } from './workspace-pack-cook.js';
 
 const DEFAULT_WIDTH = 1280;
 const DEFAULT_HEIGHT = 720;
@@ -717,6 +719,13 @@ export function createDevKitWorkspaceProvider(
       authoring = createWorkspacePackAuthoring({
         root: facts.value.root,
         sourceRoots: facts.value.assetRoots,
+        prepareContent: async (input) => {
+          const cooker = server?.config.plugins.find(
+            (entry) => entry.name === 'forgeax:workspace-pack-cook',
+          ) as WorkspacePackCookPlugin | undefined;
+          if (!cooker) throw new Error('The project draft cooker is unavailable');
+          return cooker.prepareContent(input);
+        },
         publishSource: async (sourcePath) => {
           const pack = server?.config.plugins.find((entry) => entry.name === 'forgeax:pack') as
             | import('@forgeax/engine-vite-plugin-pack').PluginPack
@@ -1150,7 +1159,10 @@ export function createDevKitWorkspaceProvider(
           waiter.reject(cause);
         }
       }
-      return result;
+      const response = await result;
+      if (operation === 'entity.inspect')
+        assertCurrentBrowser(handshake as WorkspaceReadyResult, operation);
+      return response;
     };
 
     const closePreview = async (preview: EngineWorkspacePreview): Promise<void> => {
@@ -1489,6 +1501,14 @@ export function createDevKitWorkspaceProvider(
             return command('target.control', previewInput(input), input.signal);
           },
           tools: {
+            assistance(input) {
+              assertPreviewOpen();
+              return command('target.assistance', {
+                ...input,
+                targetId: previewTargetId,
+                previewOwner,
+              });
+            },
             pick(input) {
               assertPreviewOpen();
               return command('target.pick', { ...input, targetId: previewTargetId, previewOwner });
@@ -1509,20 +1529,23 @@ export function createDevKitWorkspaceProvider(
                 previewOwner,
               });
             },
-            inspect(input) {
+            async inspect({ entityId, signal }) {
               assertPreviewOpen();
-              return command('entity.inspect', {
-                ...input,
-                targetId: previewTargetId,
-                previewOwner,
-              });
+              const result = await command<EngineWorkspaceEntityInspection>(
+                'entity.inspect',
+                { entityId, targetId: previewTargetId, previewOwner },
+                signal,
+              );
+              throwIfAborted(signal);
+              assertPreviewOpen();
+              return result;
             },
             focus(input) {
               assertPreviewOpen();
               return command('entity.focus', { ...input, targetId: previewTargetId, previewOwner });
             },
           },
-          ...(previewAsset?.kind === 'texture' || previewAsset?.kind === 'equirect'
+          ...(texturePreviewKind(previewAsset?.kind)
             ? {
                 texture: {
                   get: () => {
@@ -1907,4 +1930,13 @@ export function createDevKitWorkspaceProvider(
       }
     },
   });
+}
+
+function texturePreviewKind(kind: string | undefined): boolean {
+  return (
+    kind === 'texture' ||
+    kind === 'gpu-texture' ||
+    kind === 'equirect' ||
+    kind === 'texture-generator'
+  );
 }

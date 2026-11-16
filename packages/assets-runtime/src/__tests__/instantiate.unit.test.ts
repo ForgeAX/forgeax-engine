@@ -447,7 +447,6 @@ describe('AssetRegistry.instantiate', () => {
       u8: 1,
       bool: true,
       enum: 2,
-      ref: 7,
     } as const;
     const schema: ComponentSchema = {};
     const values: Record<string, unknown> = {};

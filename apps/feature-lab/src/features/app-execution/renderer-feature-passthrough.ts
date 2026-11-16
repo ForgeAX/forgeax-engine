@@ -12,7 +12,7 @@ const trace = {
   aborted: 0,
   lastFrame: -1,
   views: 0,
-  worlds: 0,
+  sourceIdentity: undefined as string | undefined,
   order: [] as string[],
 };
 
@@ -24,7 +24,7 @@ function probeFeature(identity: string): RenderFeature<number> {
         trace.extracts += 1;
         trace.lastFrame = context.frameNumber;
         trace.views = context.views.length;
-        trace.worlds = context.worlds.length;
+        trace.sourceIdentity = context.world.identity;
       }
       if (trace.order.length < 4) trace.order.push(identity);
       return ok(context.frameNumber);
@@ -89,7 +89,7 @@ export default defineFeature({
           'fl-passthrough-b',
         ]);
         c.ok('extract sees at least one view', trace.views >= 1, `views=${trace.views}`);
-        c.equal('extract sees the single App World', trace.worlds, 1);
+        c.equal('extract sees the single App World', trace.sourceIdentity, world.identity);
         c.ok('frameNumber advances', trace.lastFrame > 0, `frame=${trace.lastFrame}`);
         c.equal('no dispatch error', app.lastError?.code ?? null, null);
         return c.items;

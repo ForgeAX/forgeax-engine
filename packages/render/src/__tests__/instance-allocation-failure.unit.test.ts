@@ -33,7 +33,6 @@ it('refuses an instance draw when allocation fails instead of drawing the identi
       } as unknown as Parameters<typeof resolveGeometryInstanceBuffer>[0],
       {
         source: {
-          worldId: 0,
           entityKey: 1,
           instances: {
             transforms: new Float32Array(32),
@@ -81,9 +80,7 @@ it('retains the prepared identity draw when a rigid row has no probe binding', a
     frameState: { instanceBuffers: new Map() },
     bindGroupCounts: { createBindGroup: 0, keys: [] },
   } as unknown as Parameters<typeof resolveGeometryInstanceBuffer>[0];
-  const row = { source: { worldId: 0, entityKey: 1 } } as Parameters<
-    typeof resolveGeometryInstanceBuffer
-  >[1];
+  const row = { source: { entityKey: 1 } } as Parameters<typeof resolveGeometryInstanceBuffer>[1];
   try {
     expect(resolveGeometryInstanceBuffer(context, row, identity, false)).toBe(identity);
   } finally {

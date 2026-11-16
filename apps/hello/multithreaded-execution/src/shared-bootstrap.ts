@@ -1,7 +1,10 @@
+import { ExecutionParticleKernelOrder } from "./system-order";
+import { InputFrameStartScan } from "@forgeax/engine-input";
+import { Update, defineSystem } from "@forgeax/engine-ecs";
 import type { ExecutionBootstrapEntry, ExecutionBootstrapValue } from '@forgeax/engine-app';
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
-import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine-input';
+import { INPUT_SNAPSHOT_RESOURCE_KEY } from '@forgeax/engine-input';
 import { Camera, DirectionalLight, Materials, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
 import { createExecutionKernel, ExecutionParticle } from './shared-kernel';
@@ -39,6 +42,7 @@ const bootstrap: ExecutionBootstrapEntry = (data) => ({
           port?.postMessage({ ...message, worldIdentity: world.identity });
         };
 
+        const kernel = createExecutionKernel(faultArmed ? faultKernelUrl : normalKernelUrl);
         if (telemetry) {
           const registerNamedCleanup = (name: string): void => {
             post({ kind: 'cleanup-registered', name });
@@ -47,13 +51,13 @@ const bootstrap: ExecutionBootstrapEntry = (data) => ({
           registerNamedCleanup('input-observer');
           registerNamedCleanup('render-session');
           ctx.effect(() => {
-            const system = {
+            const system = defineSystem({
               name: 'execution-host-input-observer',
-              before: ['execution-particle-kernel'],
-              after: ['input-frame-start-scan'],
+              before: [ExecutionParticleKernelOrder],
+              after: [InputFrameStartScan],
               queries: [],
-              fn(currentWorld: World) {
-                const snapshot = currentWorld.getResource<InputSnapshot>(
+              fn(world: World) {
+                const snapshot = world.getResource(
                   INPUT_SNAPSHOT_RESOURCE_KEY,
                 );
                 const keyMDown = snapshot.keyboard.downCode('KeyM');
@@ -65,9 +69,9 @@ const bootstrap: ExecutionBootstrapEntry = (data) => ({
                   keyMJustPressed: snapshot.keyboard.justPressedCode('KeyM'),
                 });
                 if (faultRequested && !faultArmed && (keyMDown || mousePrimaryDown)) {
-                  const replaced = currentWorld.replaceSystem(
-                    currentWorld.scheduleToken('Update'),
-                    'execution-particle-kernel',
+                  const replaced = world.replaceSystem(
+                    Update,
+                    kernel,
                     createExecutionKernel(faultKernelUrl),
                   );
                   if (!replaced.ok) throw replaced.error;
@@ -76,17 +80,17 @@ const bootstrap: ExecutionBootstrapEntry = (data) => ({
                   post({ kind: 'fault-armed' });
                 }
               },
-            };
-            world.addSystem(world.scheduleToken('Update'), system).unwrap();
+            });
+            world.addSystem(Update, system).unwrap();
             return () => {
-              world.removeSystem(world.scheduleToken('Update'), system.name);
+              world.removeSystem(Update, system);
             };
           }, 'demo/input-observer');
         }
 
         const spawned: EntityHandle[] = [];
         ctx.effect(() => () => {
-          world.removeSystem(world.scheduleToken('Update'), 'execution-particle-kernel');
+          world.removeSystem(Update, kernel);
           for (const entity of spawned.reverse()) world.despawn(entity);
         }, 'demo/execution-world');
         if (telemetry) {
@@ -134,8 +138,7 @@ const bootstrap: ExecutionBootstrapEntry = (data) => ({
               .unwrap(),
           );
         }
-        const kernel = createExecutionKernel(faultArmed ? faultKernelUrl : normalKernelUrl);
-        world.addSystem(world.scheduleToken('Update'), kernel).unwrap();
+        world.addSystem(Update, kernel).unwrap();
         if (!faultRequested || faultArmed) shouldFault = false;
       },
     },

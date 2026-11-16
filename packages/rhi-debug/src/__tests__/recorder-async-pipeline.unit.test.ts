@@ -78,6 +78,8 @@ it('preserves the optional pipeline library owner and its outcomes', async () =>
   expect(device.pipelineLibrary).toBe(pipelineLibrary);
   expect(device.pipelineLibrary?.inspect()).toBe(inspection);
   expect(device.pipelineLibrary?.export()).toBe(exported);
+  expect(device.pipelineLibrary?.export(undefined, { requestedOnly: true })).toBe(exported);
+  expect(pipelineLibrary.export).toHaveBeenLastCalledWith(undefined, { requestedOnly: true });
   expect(await device.pipelineLibrary?.prepare(manifest)).toBe(prepared);
   expect(await device.pipelineLibrary?.prepare(manifest)).toBe(preparationFailure);
   expect(prepare).toHaveBeenNthCalledWith(1, manifest);

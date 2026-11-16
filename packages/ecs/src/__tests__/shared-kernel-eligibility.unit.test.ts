@@ -68,10 +68,11 @@ describe('SharedKernel eligibility', () => {
         run: integrate,
       });
 
-    world.addSystem(Update, kernel('direct')).unwrap();
+    const systemToken1 = kernel('direct');
+    world.addSystem(Update, systemToken1).unwrap();
     const Batch = defineSystemSet({ name: 'shared-kernel-batch' });
     world.addSystems(Update, Batch, [kernel('batch')]).unwrap();
-    world.replaceSystem(Update, 'direct', kernel('replacement')).unwrap();
+    world.replaceSystem(Update, systemToken1, kernel('replacement')).unwrap();
 
     expect(warmed).toEqual(['direct', 'batch', 'replacement']);
   });

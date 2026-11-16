@@ -41,7 +41,6 @@ function fixture(count: number, primary = covered, secondary = residual) {
       scene.apply(
         sources.map((snapshot) => ({
           kind: 'update' as const,
-          worldId: 0,
           entityKey: snapshot.entityKey,
           snapshot,
         })),
@@ -66,7 +65,7 @@ function fixture(count: number, primary = covered, secondary = residual) {
 }
 
 it('keeps the residual set from diffs: steady syncs and covered members cost nothing', () => {
-  const f = fixture(10_000);
+  const f = fixture(10000);
   const selection = f.select(covered);
   f.sync(selection);
   expect(f.entities()).toEqual([10_000, 10_001, 10_002, 10_003, 10_004, 10_005, 10_006, 10_007]);
@@ -87,7 +86,7 @@ it('keeps the residual set from diffs: steady syncs and covered members cost not
   f.write([source(20_000, residual, false)]);
   f.sync(f.select(covered));
   expect(f.entities()).toContain(20_000);
-  f.topology.apply(f.scene.apply([{ kind: 'remove', worldId: 0, entityKey: 20_000 }]));
+  f.topology.apply(f.scene.apply([{ kind: 'remove', entityKey: 20000 }]));
   f.sync(f.select(covered));
   expect(f.entities()).not.toContain(20_000);
 });
@@ -241,22 +240,22 @@ it('invalidates residual bounds for consumed Mesh versions and ignores unrelated
   const material = new MaterialResource({ ...defaultMaterialSnapshot(78), immutableValues: true });
   const f = cullFixture(16, material, material);
   const mesh = createPrimitiveMesh('cube').unwrap();
-  let meshes = new MeshFrame().with(0, 9, mesh);
+  let meshes = new MeshFrame().with(9, mesh);
   f.view.cull(f.current({ meshes }));
   const bounds = vi.spyOn(f.scene, 'writeCullingWorldBoundsAt');
   try {
-    meshes = meshes.with(0, 99, mesh);
+    meshes = meshes.with(99, mesh);
     f.view.cull(f.current({ meshes }));
     expect(bounds).not.toHaveBeenCalled();
-    meshes = meshes.with(0, 9, mesh);
+    meshes = meshes.with(9, mesh);
     f.view.cull(f.current({ meshes }));
     expect(bounds).toHaveBeenCalledTimes(24);
     bounds.mockClear();
-    meshes = meshes.without(0, 9);
+    meshes = meshes.without(9);
     f.view.cull(f.current({ meshes }));
     expect(bounds).toHaveBeenCalledTimes(24);
     bounds.mockClear();
-    meshes = meshes.with(0, 9, mesh);
+    meshes = meshes.with(9, mesh);
     f.view.cull(f.current({ meshes }));
     expect(bounds).toHaveBeenCalledTimes(24);
   } finally {
@@ -297,7 +296,7 @@ it('tests an edited outside row even when the prior residual envelope is enclose
 it('retains complete tests for borrowed material values across camera and Mesh changes', () => {
   const f = cullFixture(16);
   const mesh = createPrimitiveMesh('cube').unwrap();
-  const meshes = new MeshFrame().with(0, 9, mesh);
+  const meshes = new MeshFrame().with(9, mesh);
   const current = (x: number, geometry = meshes) => {
     const input = f.current({ meshes: geometry });
     return { ...input, frame: { ...input.frame, cameras: [enclosingCamera(x)] } };
@@ -309,7 +308,7 @@ it('retains complete tests for borrowed material values across camera and Mesh c
     f.view.cull(current(0.1));
     expect(bounds).toHaveBeenCalledTimes(24);
     bounds.mockClear();
-    f.view.cull(current(0.1, meshes.with(0, 99, mesh)));
+    f.view.cull(current(0.1, meshes.with(99, mesh)));
     expect(bounds).toHaveBeenCalledTimes(24);
   } finally {
     bounds.mockRestore();
@@ -441,7 +440,7 @@ it('removes and reuses residual slots without retaining the removed row visibili
   expect(old.frame.cameraVisible?.(hidden)).toBe(false);
   const bounds = vi.spyOn(f.scene, 'writeCullingWorldBoundsAt');
   try {
-    f.topology.apply(f.scene.apply([{ kind: 'remove', worldId: 0, entityKey: 1 }]));
+    f.topology.apply(f.scene.apply([{ kind: 'remove', entityKey: 1 }]));
     const removed = f.view.cull(frame());
     expect(bounds).not.toHaveBeenCalled();
     expect(removed.frame.cameraAdmission?.hidden.size).toBe(0);
@@ -556,8 +555,7 @@ it('matches a cold camera cull through row, availability, coverage and camera ch
   for (let step = 0; step < 120; step++) {
     state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
     const entity = state % 16;
-    if (step % 11 === 0)
-      f.topology.apply(f.scene.apply([{ kind: 'remove', worldId: 0, entityKey: entity }]));
+    if (step % 11 === 0) f.topology.apply(f.scene.apply([{ kind: 'remove', entityKey: entity }]));
     else {
       const base = source(entity, covered);
       const { localAabb, ...withoutBounds } = base;
@@ -618,7 +616,7 @@ it.each([
   if (old?.residualSkin === undefined) throw new Error('Missing producer-owned sparse Skin query');
   expect([...old.residualSkin()].map((row) => row.entityKey)).toEqual([skin.entityKey]);
   expect(resolved).toBe(1);
-  const slot = f.scene.slotsSnapshot().identitySlot(0, skin.entityKey);
+  const slot = f.scene.slotsSnapshot().identitySlot(skin.entityKey);
   if (slot === undefined) throw new Error('Missing Skin slot');
   input.shared.unavailableSlots = input.shared.unavailableSlots.with(slot);
   const current = f.view.cull(input).frame.gpuOwned;
@@ -714,7 +712,29 @@ it('rejudges borrowed selection routes after an in-place binding-domain edit', (
   const binding = { ...seed.binding };
   f.sync(new GpuDrawSelection([{ ...seed, binding }]));
   expect(f.entities()).not.toContain(0);
-  binding.worldId = 1;
+  binding.assetHandle += 1;
   f.sync(new GpuDrawSelection([{ ...seed, binding }]));
   expect(f.entities()).toContain(0);
+});
+
+it('keeps a multi-submesh Skin source residual when only its first execution is GPU-owned', () => {
+  const scene = new RenderScene();
+  const topology = new BatchTopology();
+  const row = { ...receiptRow().source, skinBinding: { skeleton: 7, joints: [19] } };
+  topology.apply(scene.apply([{ kind: 'update', entityKey: row.entityKey, snapshot: row }]));
+  const sourcePlan = topology.sourcePlan();
+  const executions = topology.query(sourcePlan, undefined).batches;
+  expect(executions.length).toBe(2);
+  const partial = GpuDrawSelection.fixed(
+    executions.filter((batch) => batch.key.drawItemIndex === 2),
+  );
+  expect(partial.ownsAll(row)).toBe(false);
+  const roster = new ResidualRoster();
+  const slot = scene.slotsSnapshot().identitySlot(row.entityKey);
+  expect(slot).toBeDefined();
+  expect([...roster.sync(sourcePlan, topology.unbatchedSlots, partial)]).toEqual([slot]);
+  expect([
+    ...roster.sync(sourcePlan, topology.unbatchedSlots, GpuDrawSelection.fixed(executions)),
+  ]).toEqual([]);
+  expect([...roster.sync(sourcePlan, topology.unbatchedSlots, partial)]).toEqual([slot]);
 });

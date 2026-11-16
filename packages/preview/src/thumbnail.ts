@@ -4,6 +4,7 @@ import type { CatalogEntry } from '@forgeax/engine-types';
 export const THUMBNAIL_PREVIEW = {
   size: 128,
   background: 'transparent',
+  textureChannels: [true, true, true, true],
   lighting: 'neutral',
   antialias: 0,
   bloom: 0,

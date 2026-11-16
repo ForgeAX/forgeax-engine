@@ -134,7 +134,6 @@ async function fixture(
     deformation: skinned ? ('skin' as const) : ('rigid' as const),
   };
   const snapshot: RenderableSnapshot = {
-    worldId: 0,
     ...(skinned ? { skinBinding: { skeleton: 7, joints: [19] } } : {}),
     entityKey: 0,
     assetHandle: 3,
@@ -157,7 +156,6 @@ async function fixture(
   const delta = projection.apply(
     Array.from({ length: count }, (_, entityKey) => ({
       kind: 'update' as const,
-      worldId: 0,
       entityKey,
       snapshot: {
         ...snapshot,
@@ -179,7 +177,7 @@ async function fixture(
   }));
   const skinFrames = new SkinFrames(skinInputs);
   skinInputs.apply(delta);
-  skinInputs.joint(0, 19, mat4.identity(mat4.create()));
+  skinInputs.joint(19, mat4.identity(mat4.create()));
   const skinFrame = skinFrames.prepareFrame(projection.slotsSnapshot());
   const slots = projection.slotsSnapshot();
   const topology = new BatchTopology();
@@ -692,7 +690,7 @@ it('invalidates final direct depth on material edits without revisiting geometry
 it('requires a shared GPU geometry address only for GPU executions', async () => {
   const f = await fixture(1, true);
   try {
-    const meshFrame = new MeshFrame().with(0, 3, createBoxGeometry(1, 1, 1).unwrap());
+    const meshFrame = new MeshFrame().with(3, createBoxGeometry(1, 1, 1).unwrap());
     f.setMeshes(meshFrame);
     expect(f.prepare()).toBeUndefined();
     // The same missing address remains an error once a Pass selects the GPU lane.

@@ -18,7 +18,7 @@ export async function runAtmosphereTables(
   values.set([0, -0.6, 0.8], 16);
   values.set([100000, 100000, 100000], 20);
   values.set([0, 1, 0], 24);
-  writeAtmosphereUniform(values, 292, earthAtmosphere, 96000);
+  writeAtmosphereUniform(values, 292, earthAtmosphere);
   device.queue.writeBuffer(uniform, 0, values).unwrap();
   const module = factory({ code: source }).unwrap();
   const sampler = device.createSampler({ minFilter: 'linear', magFilter: 'linear' }).unwrap();

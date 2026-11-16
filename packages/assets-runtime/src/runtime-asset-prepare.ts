@@ -14,8 +14,10 @@ import {
   type Result,
   resolveMaterialAsset,
   selectMaterialStaticContract,
+  validateTextureGenerator,
 } from '@forgeax/engine-types';
 import { copyAssetData } from './internal/asset-data';
+import { prepareGpuTextureAsset } from './loaders/gpu-texture.js';
 import { prepareAssetPayload } from './prepare-payload';
 
 /** Source inheritance is resolved once, before content enters the runtime owner. */
@@ -35,6 +37,10 @@ export function prepareRuntimeAsset(
         }),
       );
   }
+  if (prepared.ok && prepared.value.kind === 'texture-generator')
+    return validateTextureGenerator(prepared.value);
+  if (prepared.ok && prepared.value.kind === 'gpu-texture')
+    return prepareGpuTextureAsset(prepared.value, source);
   if (prepared.ok && prepared.value.kind === 'texture')
     return prepareRuntimeTexture(prepared.value);
 
@@ -96,7 +102,7 @@ export function linkRuntimeMaterial(
   const fields = new Set(textureFields);
   for (const parameter of material.parameters ?? [])
     if (isMaterialTextureParameterType(parameter.type)) fields.add(parameter.name);
-  const reference = <K extends 'texture' | 'video' | 'sampler'>(
+  const reference = <K extends 'texture' | 'gpu-texture' | 'video' | 'sampler'>(
     input: unknown,
     kinds: readonly K[],
   ): Result<AssetHandle<K>, AssetError> => {
@@ -142,7 +148,7 @@ export function linkRuntimeMaterial(
         token.owner.length === 0 ||
         !Number.isSafeInteger(token.id) ||
         token.id <= 0 ||
-        !['target', 'canvas', 'external'].includes(token.source) ||
+        !['target', 'canvas', 'external', 'feature'].includes(token.source) ||
         Object.keys(token).some((key) => !['kind', 'owner', 'id', 'source'].includes(key))
       )
         return err(
@@ -164,7 +170,7 @@ export function linkRuntimeMaterial(
       };
     } else if (typeof value === 'object' && !Array.isArray(value) && 'texture' in value) {
       fields.add(name);
-      const texture = reference(value.texture, ['texture', 'video']);
+      const texture = reference(value.texture, ['texture', 'gpu-texture', 'video']);
       if (!texture.ok) return texture;
       const sampler =
         value.sampler === undefined ? undefined : reference(value.sampler, ['sampler']);
@@ -184,7 +190,7 @@ export function linkRuntimeMaterial(
             hint: 'supply a runtime texture reference or a texture binding descriptor',
           }),
         );
-      const texture = reference(value, ['texture', 'video']);
+      const texture = reference(value, ['texture', 'gpu-texture', 'video']);
       if (!texture.ok) return texture;
       values[name] = texture.value;
     }

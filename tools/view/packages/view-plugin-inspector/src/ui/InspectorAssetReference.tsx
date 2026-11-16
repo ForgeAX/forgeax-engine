@@ -31,7 +31,7 @@ export function InspectorAssetReference({ reference, openAsset, browseAsset, inl
   ].filter(([, value]) => value !== undefined && value !== '');
   return <div className={`insp-resource${inline ? ' insp-resource--inline' : ''}`}>
     <div data-testid="insp-resource-reference">
-      <AssetReferenceField value={value} labels={{
+      <AssetReferenceField value={value} readOnly labels={{
         none: t('inspector.assetRef.none'), missing: t('inspector.assetRef.missing'), open: t('inspector.openResource'),
         openUnavailable: t('inspector.assetRef.openUnavailable'), readOnly: t('inspector.assetRef.readOnly'),
         identityUnavailable: t('inspector.resourceIdentityUnavailable'),
@@ -44,7 +44,7 @@ export function InspectorAssetReference({ reference, openAsset, browseAsset, inl
         thumbnail={canOpen ? { state: !thumbnail || thumbnail.state === 'queued' || thumbnail.state === 'cooking'
           ? 'loading' : thumbnail.state, src: thumbnail?.dataUrl, hint: thumbnail?.error?.hint } : undefined}
         onOpen={canOpen && reference.guid ? () => openAsset(reference.guid!) : undefined}
-        onBrowse={canOpen && reference.guid && browseAsset ? () => browseAsset(reference.guid!) : undefined} />
+        onReveal={canOpen && reference.guid && browseAsset ? () => browseAsset(reference.guid!) : undefined} />
     </div>
     {!reference.guid && reference.handle !== 0 && reference.rawValue !== '' && reference.rawValue !== null
       ? <Text as="div" tone="muted" className="insp-resource-warning" role="status">{t('inspector.resourceIdentityUnavailable')}</Text> : null}

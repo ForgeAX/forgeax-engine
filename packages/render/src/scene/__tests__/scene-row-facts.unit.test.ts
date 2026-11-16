@@ -8,7 +8,6 @@ import { setSceneRow } from './scene-row-writes';
 type MeshState = 'absent' | 'lods' | 'plain';
 
 interface Row {
-  readonly worldId: number;
   readonly entityKey: number;
   readonly assetHandle: number;
   readonly lods: boolean;
@@ -21,7 +20,6 @@ interface Row {
 
 function slotOf(slot: number, row: Row): RenderSceneSlot {
   const snapshot = {
-    worldId: row.worldId,
     entityKey: row.entityKey,
     assetHandle: row.assetHandle,
     ...(row.lods ? { lods: [{}] } : {}),
@@ -35,17 +33,16 @@ function slotOf(slot: number, row: Row): RenderSceneSlot {
     slot,
     generation: 0,
     version: 0,
-    worldId: row.worldId,
     entityKey: row.entityKey,
     snapshot,
   };
 }
 
 // The draw projection reads a resident Mesh's levels for override-carrying rows, else its own.
-function reference(rows: Map<number, Row>, meshes: Map<string, MeshState>): number {
+function reference(rows: Map<number, Row>, meshes: Map<number, MeshState>): number {
   let count = 0;
   for (const row of rows.values()) {
-    const mesh = meshes.get(`${row.worldId}:${row.assetHandle}`) ?? 'absent';
+    const mesh = meshes.get(row.assetHandle) ?? 'absent';
     const viaMesh = !row.terrain && row.overrides && mesh !== 'absent';
     if (viaMesh ? mesh === 'lods' : row.lods) count++;
   }
@@ -55,7 +52,7 @@ function reference(rows: Map<number, Row>, meshes: Map<string, MeshState>): numb
 it('maintains the LOD candidate count and sparse indexes equal to full recomputation', () => {
   const slots = new SceneSlots();
   const rows = new Map<number, Row>();
-  const meshes = new Map<string, MeshState>();
+  const meshes = new Map<number, MeshState>();
   let seed = 12345;
   const random = (n: number) => {
     seed = (seed * 1103515245 + 12345) & 0x7fffffff;
@@ -66,7 +63,6 @@ it('maintains the LOD candidate count and sparse indexes equal to full recomputa
     if (action < 3) {
       const slot = random(200);
       const row: Row = {
-        worldId: random(2),
         entityKey: slot,
         assetHandle: random(4),
         lods: random(2) === 0,
@@ -83,11 +79,10 @@ it('maintains the LOD candidate count and sparse indexes equal to full recomputa
       rows.delete(slot);
       setSceneRow(slots, slot, undefined);
     } else {
-      const worldId = random(2);
       const handle = random(4);
       const state = (['absent', 'lods', 'plain'] as const)[random(3)] as MeshState;
-      meshes.set(`${worldId}:${handle}`, state);
-      slots.setMeshLods(worldId, handle, state === 'absent' ? undefined : state === 'lods');
+      meshes.set(handle, state);
+      slots.setMeshLods(handle, state === 'absent' ? undefined : state === 'lods');
     }
     if (step % 97 === 0) {
       expect(slots.lodCandidateCount).toBe(reference(rows, meshes));
@@ -117,7 +112,6 @@ it('reads retained row facts through projections and falls back to walking plain
     slots,
     0,
     slotOf(0, {
-      worldId: 0,
       entityKey: 1,
       assetHandle: 1,
       lods: true,
@@ -130,7 +124,6 @@ it('reads retained row facts through projections and falls back to walking plain
     slots,
     1,
     slotOf(1, {
-      worldId: 0,
       entityKey: 2,
       assetHandle: 1,
       lods: false,
@@ -160,7 +153,6 @@ it('reads retained row facts through projections and falls back to walking plain
 it.each([16, 4096])('edits a sparse index without sorting its %i retained members', (count) => {
   const slots = new SceneSlots();
   const row: Row = {
-    worldId: 0,
     entityKey: 0,
     assetHandle: 1,
     lods: false,
@@ -193,7 +185,6 @@ it.each([16, 4096])('edits a sparse index without sorting its %i retained member
 it('captures sparse membership on its exact row root across later edits and clear', () => {
   const slots = new SceneSlots();
   const row: Row = {
-    worldId: 0,
     entityKey: 0,
     assetHandle: 1,
     lods: false,

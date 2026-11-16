@@ -165,6 +165,8 @@ export async function verifyClippingPlanes(
         intensity: 1,
         castShadow: true,
         mapSize: testQuality.shadowMapSize,
+        // This fixture exercises retained static shadow depth, which is opt-in.
+        staticShadowCache: true,
       },
     })
     .unwrap();
@@ -179,12 +181,7 @@ export async function verifyClippingPlanes(
     propagateTransforms(world).unwrap();
     const receipt = await drawReadyFrame(
       renderer,
-      {
-        leases: [lease],
-        camera: { lease },
-        environment: { lease },
-        ...(direct ? { geometryLane: 'direct' as const } : {}),
-      },
+      { source: lease, ...(direct ? { geometryLane: 'direct' as const } : {}) },
       observe ? ['linear-hdr'] : undefined,
     );
     return receipt;

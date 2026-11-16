@@ -268,9 +268,9 @@ describe('skin parented double transform (AC-01)', () => {
     const buggyNormal = /meshes\[0\]\.normalMatrix\s*\*\s*skinNormal3x3/;
     expect(src).not.toMatch(buggyNormal);
 
-    // Post-M1 spec-correct form: world position is skinnedLocal directly.
-    // Match `out.worldPos = skinnedLocal.xyz` (line 198 post-M1).
-    const specCorrectWorldPos = /out\.worldPos\s*=\s*skinnedLocal\.xyz/;
+    // Post-M1 spec-correct form: the clip position projects skinnedLocal
+    // directly; the fragment rebuilds world position from that clip position.
+    const specCorrectWorldPos = /out\.clip\s*=\s*view\.worldViewProj\s*\*\s*skinnedLocal;/;
     expect(src).toMatch(specCorrectWorldPos);
 
     // Post-M1 spec-correct normal: only skinNormal3x3 * in.normal (no instanceLocal /

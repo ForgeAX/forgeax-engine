@@ -1,3 +1,4 @@
+import { defineSystem } from "@forgeax/engine-ecs";
 import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtimeBinding } from '@forgeax/apps-shared/asset-runtime-config';
 import { createApp } from '@forgeax/engine-app/browser';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
@@ -30,11 +31,12 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   if (!hdr.ok) { console.error('[bevy-rotate-environment-map] HDR load failed:', hdr.error.code); return; }
   const equirect = hdr.value;
   const scene = buildEnvironmentWorld(app.world, equirect, target.width / Math.max(target.height, 1));
-  app.world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'rotate-skybox-and-environment-map',
     queries: [],
-    fn: (world) => stepEnvironmentRotation(world, scene, world.hasResource('Time') ? world.getResource<{ elapsed: number }>(Time).elapsed : 0),
+    fn: (world) => stepEnvironmentRotation(world, scene, world.hasResource(Time) ? world.getResource(Time).elapsed : 0),
   });
+app.world.addSystem(Update, systemToken1);
   app.onError((error) => console.error('[bevy-rotate-environment-map] app error:', error.code, error.hint));
   const started = app.start();
   if (!started.ok) console.error('[bevy-rotate-environment-map] app.start failed:', started.error);

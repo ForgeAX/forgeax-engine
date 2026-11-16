@@ -1,7 +1,6 @@
 import { World } from '@forgeax/engine-ecs';
 import { Transform } from '@forgeax/engine-scene';
 import { describe, expect, it } from 'vitest';
-import { withBuiltinRenderFeatures } from '../assembly/render-feature-post-processes';
 import { Camera } from '../components';
 import { LENS_FLARE_GHOST_COUNT, LensFlare, resolveLensFlare } from '../components/lens-flare';
 import { createRenderFeatureHost } from '../features/host';
@@ -102,14 +101,13 @@ describe('camera LensFlare', () => {
   });
 
   it('creates no resources for disabled cameras and packs one shared parameter layout', () => {
-    const host = createRenderFeatureHost(withBuiltinRenderFeatures([])).unwrap();
+    const host = createRenderFeatureHost([]).unwrap();
     try {
       const frame = prepareFeatureFrame(host, [
         {
           identity: 'main',
           render: true,
-          worlds: [new World()],
-          owner: 0,
+          world: new World(),
           frameNumber: 1,
           caps: { rgba16floatRenderable: true } as never,
         },

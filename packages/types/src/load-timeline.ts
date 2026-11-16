@@ -1,7 +1,7 @@
 /**
  * Default-on, bounded load timeline shared by every Engine realm.
  *
- * Each realm (page, Engine Worker, Render Worker, kernel Worker) appends
+ * Each realm (page, Engine Worker, Render Worker, pool Worker) appends
  * records to its own fixed-capacity buffer. Recording is a timestamp read and
  * one small object push; nothing is posted, cloned or logged until a consumer
  * calls {@link collectLoadTimeline}. Collection pulls every live realm's buffer

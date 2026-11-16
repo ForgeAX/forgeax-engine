@@ -67,12 +67,12 @@ describe('Standard CPU membership allocation', () => {
     expect(independent.clusterGrid).toEqual(first.clusterGrid);
   });
 
-  it('grows scratch for a changed grid and recovers after a complete overflow failure', () => {
+  it('grows scratch for a changed grid and recovers after a capped overflow frame', () => {
     const scratch = createClusterBinScratch();
     const frame = makeFrame([coveringLight()]);
     const first = prepareStandardLighting(frame, undefined, scratch).unwrap();
     const previous = first.clusterGrid.slice();
-    const overflow = prepareStandardLighting(
+    const capped = prepareStandardLighting(
       {
         ...frame,
         local: Array.from({ length: 32 }, () => coveringLight()),
@@ -81,8 +81,8 @@ describe('Standard CPU membership allocation', () => {
       undefined,
       scratch,
     );
-    expect(overflow.ok).toBe(false);
-    if (!overflow.ok) expect(overflow.error.code).toBe('standard-cluster-index-overflow');
+    expect(capped.ok).toBe(true);
+    if (capped.ok) expect(capped.value.clusterEntryCapK).toBe(31);
     const recovered = prepareStandardLighting(frame, undefined, scratch).unwrap();
     expect(recovered.clusterGrid).toEqual(first.clusterGrid);
     expect(recovered.lightIndexList).toEqual(first.lightIndexList);
@@ -152,17 +152,27 @@ describe('Standard CPU membership allocation', () => {
     }
   });
 
-  it('preserves the declared-capacity overflow instead of admitting a truncated list', () => {
+  it('keeps the first K entries of every cluster when the index list overflows', () => {
+    // 32 covering lights x 33792 clusters = 1_081_344 entries > 1_048_576.
+    // K = floor(1_048_576 / 33792) = 31.
     const result = prepareStandardLighting({
       ...makeFrame(Array.from({ length: 32 }, () => coveringLight())),
       grid: { x: 32, y: 32, z: 33 },
     });
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
 
-    expect(result.error.code).toBe('standard-cluster-index-overflow');
-    if (result.error.code !== 'standard-cluster-index-overflow') return;
-    expect(result.error.detail).toEqual({ actual: 1_081_344, capacity: 1_048_576 });
+    const { layout, clusterGrid, lightIndexList } = result.value;
+    expect(result.value.clusterEntryCapK).toBe(31);
+    expect(result.value.membershipEntryCount).toBe(31 * layout.clusterCount);
+    expect(result.value.droppedClusterEntries).toBe(1_081_344 - 31 * layout.clusterCount);
+    const firstK = Array.from({ length: 31 }, (_, index) => index);
+    for (const cluster of [0, 1, layout.clusterCount - 1]) {
+      const offset = clusterGrid[cluster * 2] ?? -1;
+      expect(offset).toBe(cluster * 31);
+      expect(clusterGrid[cluster * 2 + 1]).toBe(31);
+      expect(Array.from(lightIndexList.subarray(offset, offset + 31))).toEqual(firstK);
+    }
   });
 
   it('materializes the light index list on first read, equal to the eager CPU writer', () => {

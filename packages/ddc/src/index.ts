@@ -1,5 +1,6 @@
 export {
   type BuildDdcInput,
+  defaultBuildCacheRoot,
   resolveDdcRoot,
   semanticBuildKey,
 } from './build-cache.js';

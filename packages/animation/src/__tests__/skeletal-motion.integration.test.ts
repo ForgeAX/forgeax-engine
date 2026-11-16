@@ -1,7 +1,9 @@
+import { SkeletalMotionResource } from '@forgeax/engine-animation';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { runtimeAssetRegistry } from '@forgeax/engine-assets-runtime/internal';
 import {
   createWorldContext,
+  defineSystem,
   type EntityHandle,
   FixedTime,
   FixedUpdate,
@@ -12,6 +14,7 @@ import {
   ColliderShapeValue,
   ManagedPhysicsError,
   type PhysicsWorld,
+  PhysicsWorldResource,
   RigidBody,
   RigidBodyTypeValue,
 } from '@forgeax/engine-physics';
@@ -33,12 +36,13 @@ import {
 } from '../index';
 import {
   bindSkeletalMotion,
-  CAPTURE_SKELETAL_MOTION_BASE,
   type SkeletalMotionDefinition,
   type SpringBoneChain,
   skeletalMotionPlugin,
   skeletalMotionWriterEntities,
 } from '../skeletal-motion';
+import { SkeletalMotionCapture } from '../system-order';
+import { AdvanceAnimationPlayer } from '../systems/advance-animation-player';
 
 async function fixture(physical = false, installMotion = true) {
   const world = new World({
@@ -217,7 +221,7 @@ describe('managed skeletal motion through World schedules', () => {
       const targets = physical.bones.map((bone) => bone.target);
       original.simulate(targets).unwrap();
       f.world.update(1 / 60).unwrap();
-      const physics = f.world.getResource<PhysicsWorld>('PhysicsWorld');
+      const physics = f.world.getResource(PhysicsWorldResource);
       const readMotion = physics.getBodyMotion,
         impulse = physics.applyBodyImpulse;
       const oldBody = original.bodyEntities[0];
@@ -340,7 +344,7 @@ describe('managed skeletal motion through World schedules', () => {
         .unwrap();
       const binding = bindSkeletalMotion(f.world, f.player, f.rig).unwrap();
       for (let i = 0; i < 3; i++) f.world.update(1 / 60).unwrap();
-      const physics = f.world.getResource<PhysicsWorld>('PhysicsWorld');
+      const physics = f.world.getResource(PhysicsWorldResource);
       const readMotion = physics.getBodyMotion?.bind(physics);
       if (!readMotion) throw new Error('managed body motion capability missing');
       const previous = readMotion(binding.bodyEntities[0] as EntityHandle).unwrap();
@@ -434,7 +438,7 @@ describe('managed skeletal motion through World schedules', () => {
       ).toBeLessThan(3);
       first.dispose();
       f.world.update(1 / 60).unwrap();
-      const physics = f.world.getResource<PhysicsWorld>('PhysicsWorld');
+      const physics = f.world.getResource(PhysicsWorldResource);
       expect(physics.getBodyCount()).toBe(2);
       expect(physics.getJointCount?.()).toBe(1);
       second.dispose();
@@ -522,7 +526,7 @@ describe('managed skeletal motion through World schedules', () => {
   it('retains backend failure recovery and rejects controls on the retired binding', async () => {
     const f = await fixture(true);
     try {
-      const physics = f.world.getResource<PhysicsWorld>('PhysicsWorld');
+      const physics = f.world.getResource(PhysicsWorldResource);
       const create = physics.createManagedJoints;
       if (!create) throw new Error('ordinary joint capability missing');
       physics.createManagedJoints = () =>
@@ -681,7 +685,7 @@ describe('managed skeletal motion through World schedules', () => {
     try {
       const binding = bindSkeletalMotion(f.world, f.player, f.rig).unwrap();
       f.world.update(1 / 60).unwrap();
-      const physics = f.world.getResource<PhysicsWorld>('PhysicsWorld');
+      const physics = f.world.getResource(PhysicsWorldResource);
       expect(physics.getJointCount?.()).toBe(1);
       f.world.set(f.joints[1] as EntityHandle, ChildOf, { parent: f.player }).unwrap();
       f.world.update(1 / 60).unwrap();
@@ -807,15 +811,14 @@ describe('managed skeletal motion through World schedules', () => {
           masks: [mask],
         })
         .unwrap();
-      f.world
-        .addSystem(FixedUpdate, {
-          name: 'motion-test-retarget',
-          queries: [],
-          after: ['advanceAnimationPlayer'],
-          before: [CAPTURE_SKELETAL_MOTION_BASE],
-          fn: () => retarget.retarget().unwrap(),
-        })
-        .unwrap();
+      const systemToken1 = defineSystem({
+        name: 'motion-test-retarget',
+        queries: [],
+        after: [AdvanceAnimationPlayer],
+        before: [SkeletalMotionCapture],
+        fn: () => retarget.retarget().unwrap(),
+      });
+      f.world.addSystem(FixedUpdate, systemToken1).unwrap();
       const binding = bindSkeletalMotion(f.world, f.player, f.spring).unwrap();
       binding.setSpringWeight(0, 0).unwrap();
       for (let i = 0; i < 30; i++) f.world.update(1 / 60).unwrap();
@@ -868,17 +871,16 @@ describe('managed skeletal motion through World schedules', () => {
         maxIterations: 64,
         tolerance: 1e-4,
       }).unwrap();
-      f.world
-        .addSystem(FixedUpdate, {
-          name: 'motion-test-ik',
-          queries: [],
-          after: ['advanceAnimationPlayer'],
-          before: [CAPTURE_SKELETAL_MOTION_BASE],
-          fn: () => {
-            solver.solve([3, 7, -1]).unwrap();
-          },
-        })
-        .unwrap();
+      const systemToken2 = defineSystem({
+        name: 'motion-test-ik',
+        queries: [],
+        after: [AdvanceAnimationPlayer],
+        before: [SkeletalMotionCapture],
+        fn: () => {
+          solver.solve([3, 7, -1]).unwrap();
+        },
+      });
+      f.world.addSystem(FixedUpdate, systemToken2).unwrap();
       const binding = bindSkeletalMotion(f.world, f.player, f.spring).unwrap();
       binding.setSpringWeight(0, 0).unwrap();
       for (let i = 0; i < 6; i++) f.world.update(1 / 60).unwrap();
@@ -902,7 +904,7 @@ describe('managed skeletal motion through World schedules', () => {
   it('rejects a physical spring tail and unrepresentable scaled body mass before any allocation', async () => {
     const f = await fixture(true);
     try {
-      const physics = f.world.getResource<PhysicsWorld>('PhysicsWorld');
+      const physics = f.world.getResource(PhysicsWorldResource);
       const bone = f.rig.physical?.bones[0];
       if (!bone) throw new Error('fixture bone missing');
       expect(
@@ -932,10 +934,10 @@ describe('managed skeletal motion through World schedules', () => {
     try {
       const pending = f.context.plugin(skeletalMotionPlugin({ physics: true }));
       expect(bindSkeletalMotion(f.world, f.player, f.rig).ok).toBe(false);
-      expect(f.world.hasResource('SkeletalMotion')).toBe(false);
+      expect(f.world.hasResource(SkeletalMotionResource)).toBe(false);
       await pending.dispose();
       (await startNativePlugin(f.context, physics3d)).unwrap();
-      expect(f.world.hasResource('SkeletalMotion')).toBe(false);
+      expect(f.world.hasResource(SkeletalMotionResource)).toBe(false);
       (await startNativePlugin(f.context, skeletalMotionPlugin({ physics: true }))).unwrap();
       const binding = bindSkeletalMotion(f.world, f.player, f.rig).unwrap();
       f.world.update(1 / 60).unwrap();
@@ -952,7 +954,7 @@ describe('managed skeletal motion through World schedules', () => {
       binding.simulate(f.ids.slice(0, 2)).unwrap();
       f.world.update(1 / 60).unwrap();
       expect(binding.failure).toBeUndefined();
-      const physics = f.world.getResource<PhysicsWorld>('PhysicsWorld');
+      const physics = f.world.getResource(PhysicsWorldResource);
       expect(physics.getJointCount?.()).toBe(1);
       const bodies = binding.bodyEntities;
       const start = physics.getBodyMotion?.(bodies[0] as number).unwrap().position[1] as number;
@@ -1032,9 +1034,9 @@ describe('managed skeletal motion through World schedules', () => {
       expect(h[13]).toBeCloseTo((root[13] as number) + 0.25 * (root[5] as number), 4);
       binding.simulate([f.ids[1] as AnimationTargetIdValue]).unwrap();
       f.world.update(1 / 60).unwrap();
-      const getBodyMotion = f.world.getResource<PhysicsWorld>('PhysicsWorld').getBodyMotion;
+      const getBodyMotion = f.world.getResource(PhysicsWorldResource).getBodyMotion;
       if (getBodyMotion === undefined) throw new Error('Rapier motion capability missing');
-      const physics = f.world.getResource<PhysicsWorld>('PhysicsWorld');
+      const physics = f.world.getResource(PhysicsWorldResource);
       const body = getBodyMotion.call(physics, binding.bodyEntities[1] as number).unwrap();
       const child = f.world.get(f.joints[1] as EntityHandle, GlobalTransform).unwrap().world;
       expect((child[12] as number) + 0.5 * (child[0] as number)).toBeCloseTo(body.position[0], 4);

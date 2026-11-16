@@ -7,7 +7,9 @@ import {
   type VfxDataInterfaceRequirement,
   type VfxDataInterfaceResolution,
   type VfxDataInterfaceResource,
+  type VfxDataInterfaceTextureView,
   type VfxDataInterfaceToken,
+  type VfxWaterSurfaceIdentity,
 } from '@forgeax/engine-vfx';
 
 export type { VfxDataInterfaceProvider } from '@forgeax/engine-vfx';
@@ -16,6 +18,17 @@ export interface VfxDataInterfaceAvailabilitySource {
   readonly available: (generation: number) => boolean;
   readonly sampleCount?: 1 | 4;
   readonly resource?: (generation: number) => VfxDataInterfaceResource['resource'] | undefined;
+}
+
+export interface VfxWaterSurfaceAvailabilitySource {
+  readonly available: (generation: number) => boolean;
+  readonly surface: (generation: number) =>
+    | {
+        readonly identity: VfxWaterSurfaceIdentity;
+        readonly grid: VfxDataInterfaceTextureView;
+        readonly solverNormal: VfxDataInterfaceTextureView;
+      }
+    | undefined;
 }
 
 export interface VfxDataInterfaceRegistry {
@@ -98,6 +111,47 @@ export function createSceneDepthProvider(
   source: VfxDataInterfaceAvailabilitySource,
 ): VfxDataInterfaceProvider<'scene-depth'> {
   return availableProvider('vfx:scene-depth', 'scene-depth', 'sampled-depth', source);
+}
+
+/** One provider atomically binds the Water grid and its matching solver-normal view. */
+export function createWaterSurfaceProvider(
+  source: VfxWaterSurfaceAvailabilitySource,
+): VfxDataInterfaceProvider<'water-surface'> {
+  return {
+    id: 'vfx:water-surface-provider',
+    token: 'vfx:water-surface',
+    kind: 'water-surface',
+    bindingType: 'sampled-float-pair',
+    provide(generation) {
+      if (!source.available(generation))
+        return err({
+          code: 'vfx-data-interface-missing',
+          expected: 'an available paired Water grid + solver-normal source',
+          hint: `make the complete Water source pair available for host generation ${generation}`,
+          detail: { token: 'vfx:water-surface', providerId: 'vfx:water-surface-provider' },
+        });
+      const surface = source.surface(generation);
+      if (surface === undefined)
+        return err({
+          code: 'vfx-data-interface-missing',
+          expected: 'one complete generation-qualified Water grid + solver-normal pair',
+          hint: 'publish both Water texture views from the same accepted frame and lineage',
+          detail: { token: 'vfx:water-surface', providerId: 'vfx:water-surface-provider' },
+        });
+      return ok({
+        token: 'vfx:water-surface',
+        kind: 'water-surface',
+        bindingType: 'sampled-float-pair',
+        generation,
+        resource: { kind: 'texture-view', value: surface.grid.value },
+        waterSurface: surface.identity,
+        textureViewPair: {
+          grid: surface.grid,
+          solverNormal: surface.solverNormal,
+        },
+      });
+    },
+  };
 }
 
 export function createVfxDataInterfaceRegistry(

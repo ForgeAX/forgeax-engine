@@ -6,51 +6,49 @@ import type { RenderFeature } from '../features/types';
 import { runSingleViewFeatureFrame } from './single-view-feature-fixture';
 
 describe('render feature visibility report deduplication', () => {
-  it('deduplicates a built-in and feature report by World identity and entity', () => {
+  it('deduplicates a built-in and feature report by source entity handle', () => {
     const world = new World();
     const feature: RenderFeature<{ readonly count: number }> = {
       identity: 'synthetic.visibility-report',
       extract: (context) => {
-        context.reportHiddenEntity?.({ world, entity: 3 as never });
-        return ok({ count: context.worlds.length });
+        context.reportHiddenEntity?.({ entity: 3 as never });
+        return ok({ count: context.world.inspect().entityCount });
       },
       plan: () => ok({ work: [{ scope: { view: 'main' }, resources: [], passes: [] }] }),
     };
     const host = createRenderFeatureHost([feature]).unwrap();
 
     const result = runSingleViewFeatureFrame(host, {
-      worlds: [world],
-      owner: 0,
+      world: world,
       frameNumber: 1,
       caps: {} as never,
-      hiddenEntityReports: [{ world, entity: 3 as never }],
+      hiddenEntityReports: [{ entity: 3 as never }],
     });
 
-    expect(result.hiddenEntityReports).toEqual([{ world, entity: 3 }]);
+    expect(result.hiddenEntityReports).toEqual([{ entity: 3 }]);
   });
 
-  it('keeps equal entity handles from different Worlds as separate reports', () => {
+  it('keeps source entity generations as separate reports', () => {
     const first = new World();
-    const second = new World();
     const feature: RenderFeature<{ readonly count: number }> = {
-      identity: 'synthetic.visibility-worlds',
+      identity: 'synthetic.visibility-generations',
       extract: (context) => {
-        context.reportHiddenEntity?.({ world: first, entity: 1 as never });
-        context.reportHiddenEntity?.({ world: second, entity: 1 as never });
-        return ok({ count: context.worlds.length });
+        context.reportHiddenEntity?.({ entity: 1 as never });
+        context.reportHiddenEntity?.({ entity: 1048577 as never });
+        return ok({ count: context.world.inspect().entityCount });
       },
       plan: () => ok({ work: [{ scope: { view: 'main' }, resources: [], passes: [] }] }),
     };
     const host = createRenderFeatureHost([feature]).unwrap();
     const result = runSingleViewFeatureFrame(host, {
-      worlds: [first, second],
-      owner: 0,
+      world: first,
       frameNumber: 1,
       caps: {} as never,
     });
 
     expect(result.hiddenEntityReports).toHaveLength(2);
-    expect(result.hiddenEntityReports[0]?.world).toBe(first);
-    expect(result.hiddenEntityReports[1]?.world).toBe(second);
+    expect(result.hiddenEntityReports[0]?.entity).toBe(1);
+
+    expect(result.hiddenEntityReports[1]?.entity).toBe(1048577);
   });
 });

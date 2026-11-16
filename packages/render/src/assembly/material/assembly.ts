@@ -111,6 +111,8 @@ export interface MaterialShaderArtifactRequest {
    * select the ALPHA_MASK variant; opaque ones compile a discard-free program.
    */
   readonly alphaMask?: boolean;
+  /** GPU-driven batch admission for the compile-time STANDARD_LEAN_INPUTS axis. */
+  readonly leanInputs?: boolean;
   readonly variantSet?: string;
   /** Submission address requested by the consumer; GPU-driven uses scene-index. */
   readonly address?: MaterialProgramAddress;
@@ -186,6 +188,29 @@ function selectedMaterialShaderEntry(
   };
 }
 
+// General inputs are the default lane; only a lean GPU-driven batch narrows
+// them. Lean is a preference: a lane whose rules force the general inputs
+// (visible surface, LOD cross-fade) keeps the general row.
+function withLeanInputs<Variant extends MaterialShaderManifestEntry['variants'][number]>(
+  entry: Pick<MaterialShaderManifestEntry, 'variants'>,
+  candidates: Variant[],
+  options: MaterialShaderArtifactRequest,
+): Variant[] {
+  const leanInputs =
+    options.leanInputs ??
+    (options.variantSet?.includes('STANDARD_LEAN_INPUTS=') === true ? undefined : false);
+  if (
+    leanInputs === undefined ||
+    !entry.variants.some((variant) => Object.hasOwn(variant.defines, 'STANDARD_LEAN_INPUTS'))
+  ) {
+    return candidates;
+  }
+  const lean = candidates.filter((variant) => variant.defines.STANDARD_LEAN_INPUTS === leanInputs);
+  return lean.length > 0 || !leanInputs
+    ? lean
+    : candidates.filter((variant) => variant.defines.STANDARD_LEAN_INPUTS === false);
+}
+
 function selectPublishedVariant(
   entry: Pick<MaterialShaderManifestEntry, 'variants'>,
   options: MaterialShaderArtifactRequest,
@@ -212,6 +237,14 @@ function selectPublishedVariant(
     ['PROBE_BLEND_AVAILABLE', options.probeBlend],
     ['REFLECTION_FALLBACK_AVAILABLE', options.reflectionFallback],
     ['VISIBLE_SURFACE_AVAILABLE', options.visibleSurface ?? false],
+    [
+      'WATER_WAVES_AVAILABLE',
+      options.variantSet?.includes('WATER_WAVES_AVAILABLE=') === true ? undefined : false,
+    ],
+    [
+      'WATER_INFO_RGBA16',
+      options.variantSet?.includes('WATER_INFO_RGBA16=') === true ? undefined : false,
+    ],
     // Opaque is the default lane; only an alpha-cutout request reaches discard.
     // An explicit variant set that names the axis keeps its own value.
     [
@@ -226,6 +259,11 @@ function selectPublishedVariant(
     // Indirect batches address scene instance rows through visibleItems. The explicit
     // variant bypasses that lookup and must not win a lexical ranking tie.
     ['GPU_DRIVEN_SCENE_INDEX_EXPLICIT', options.address === undefined ? undefined : false],
+    // Scene-table direct draws are requested by name; any other draw packs its instances.
+    [
+      'GPU_SCENE_DIRECT',
+      options.variantSet?.includes('GPU_SCENE_DIRECT=') === true ? undefined : false,
+    ],
   ] as const) {
     if (
       requested !== undefined &&
@@ -234,6 +272,7 @@ function selectPublishedVariant(
       withColor = withColor.filter((variant) => variant.defines[axis] === requested);
     }
   }
+  withColor = withLeanInputs(entry, withColor, options);
   if (options.variantSet === undefined) {
     // Coverage-only is an explicit temporal producer variant. Ordinary
     // material publication must stay on the color-producing shader.
@@ -301,7 +340,8 @@ function materialArtifactRequestFlags(options: MaterialShaderArtifactRequest): n
     (optionalBooleanKey(options.probeBlend) << 4) |
     (optionalBooleanKey(options.reflectionFallback) << 6) |
     (optionalBooleanKey(options.visibleSurface) << 8) |
-    (optionalBooleanKey(options.alphaMask) << 16)
+    (optionalBooleanKey(options.alphaMask) << 16) |
+    (optionalBooleanKey(options.leanInputs) << 18)
   );
 }
 

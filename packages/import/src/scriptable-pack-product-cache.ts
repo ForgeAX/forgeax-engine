@@ -41,6 +41,9 @@ async function contentDependencyFailure(
   | undefined
 > {
   for (const row of product.externalEvidence) {
+    // Reference-only rows carry identity, not observed content. The completed
+    // worklist validates their current GUID closure before publication.
+    if (row.usage === 'reference') continue;
     const actual = await resolve?.(row.guid);
     if (actual !== row.digest)
       return {
@@ -90,7 +93,7 @@ function nativeFreeProduct(product: ScriptablePackBuildProduct): boolean {
       typeof output.kind === 'string' &&
       isScriptablePackAssetKind(output.kind) &&
       !('execution' in output) &&
-      !(output.kind === 'material' && Array.isArray(output.passes)) &&
+      output.kind !== 'material' &&
       outputs.get(AssetGuid.format(guid)) === output.kind
     );
   });
@@ -522,11 +525,13 @@ export async function createScriptablePackProductCache(options: {
   const cookerIdentity = [...cookerIdentities].sort(([left], [right]) => left.localeCompare(right));
   const productKinds = (product: ScriptablePackBuildProduct): readonly string[] =>
     [...new Set(product.product.assets.map((asset) => asset.kind))].sort();
-  // Content reads are admitted with their observed digest; reference-only rows
-  // carry no bytes to validate and keep the product uncacheable.
+  // Reference identity is validated by the completed worklist. Only actual
+  // content reads require an observed digest before product reuse.
   const cacheable = (product: ScriptablePackBuildProduct): boolean =>
     product.externalEvidence.every(
-      (row) => row.usage !== 'reference' && typeof row.digest === 'string',
+      (row) =>
+        AssetGuid.parse(row.guid).ok &&
+        (row.usage === 'reference' || typeof row.digest === 'string'),
     ) &&
     product.product.assets.every(
       (asset) =>
@@ -776,9 +781,9 @@ export async function createScriptablePackProductCache(options: {
         outputs: product.product.assets.flatMap((asset) =>
           typeof asset.guid === 'string' ? [asset.guid.toLowerCase()] : [],
         ),
-        reads: product.externalEvidence.flatMap((row) =>
-          typeof row.guid === 'string' ? [row.guid.toLowerCase()] : [],
-        ),
+        reads: product.externalEvidence
+          .filter((row) => row.usage !== 'reference')
+          .map((row) => row.guid.toLowerCase()),
       };
       const { key, guid } = identity(subject, CACHE_SCHEMA, dependencies);
       const entry = {

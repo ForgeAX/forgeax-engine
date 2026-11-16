@@ -40,7 +40,9 @@ import {
   isMaterialTextureParameterType,
   MATERIAL_TEXTURE_SLOTS,
   ok,
+  validateTextureGenerator,
 } from '@forgeax/engine-types';
+import { cookWaterAsset, validateWaterRuntimeAsset } from '@forgeax/engine-water';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import { packMeshBin } from './mesh-bin.js';
@@ -72,8 +74,10 @@ function describeProducerFailure(reason: unknown): string {
     const parts = ['sourceKey', 'expected', 'actual', 'recovery'].flatMap((key) =>
       typeof fields[key] === 'string' ? [`${key}: ${fields[key]}`] : [],
     );
-    const hint = fields.code === 'mesh-bin-payload-invalid' ? `; ${MESH_BIN_FIX_HINT}` : '';
-    return `${String(fields.code)} (${parts.join('; ')})${hint}`;
+    const hint = typeof fields.hint === 'string' ? `; hint: ${fields.hint}` : '';
+    const detail = fields.detail === undefined ? '' : `; detail: ${JSON.stringify(fields.detail)}`;
+    const meshHint = fields.code === 'mesh-bin-payload-invalid' ? `; ${MESH_BIN_FIX_HINT}` : '';
+    return `${String(fields.code)} (${parts.join('; ')}${hint}${meshHint}${detail})`;
   }
   return String(reason);
 }
@@ -391,6 +395,22 @@ function textureProduct(input: AssetOutputInput): AssetOutputProduct {
   };
 }
 
+function gpuTextureProduct(input: AssetOutputInput): AssetOutputProduct {
+  if (input.asset.kind !== 'gpu-texture') throw new TypeError('expected GpuTextureAsset');
+  const { source } = input.asset;
+  if ('data' in input.asset || 'encoding' in input.asset)
+    throw new TypeError('GPU texture assets cannot contain CPU pixels');
+  if (source.kind !== 'generated' || typeof source.output !== 'string')
+    throw new TypeError('expected a named generator output');
+  const guid = AssetGuid.parse(source.generator);
+  if (!guid.ok) throw guid.error;
+  return {
+    payload: { kind: 'gpu-texture', source },
+    refs: [{ guid: source.generator }],
+    artifacts: {},
+  };
+}
+
 function ordinaryPodProduct(input: AssetOutputInput): AssetOutputProduct {
   const asset = input.asset;
   switch (asset.kind) {
@@ -417,22 +437,25 @@ function ordinaryPodProduct(input: AssetOutputInput): AssetOutputProduct {
       return { payload: sampler, refs: [], artifacts: { body: jsonArtifact(sampler) } };
     }
     case 'font': {
-      const font = asset as FontAsset;
-      if (typeof font.atlas === 'number' || typeof font.sampler === 'number')
-        throw new TypeError('Font Pack output requires source GUIDs, not runtime asset handles');
-      const atlas = ref(font.atlas, 'atlas');
-      const sampler = ref(font.sampler, 'sampler');
-      return {
-        payload: {
-          kind: font.kind,
-          glyphs: font.glyphs,
-          common: font.common,
-          atlasGuid: atlas.guid,
-          samplerGuid: sampler.guid,
-        },
-        refs: [atlas, sampler],
-        artifacts: { body: jsonArtifact(font) },
+      const fontProduct = () => {
+        const font = asset as FontAsset;
+        if (typeof font.atlas === 'number' || typeof font.sampler === 'number')
+          throw new TypeError('Font Pack output requires source GUIDs, not runtime asset handles');
+        const atlas = ref(font.atlas, 'atlas');
+        const sampler = ref(font.sampler, 'sampler');
+        return {
+          payload: {
+            kind: font.kind,
+            glyphs: font.glyphs,
+            common: font.common,
+            atlasGuid: atlas.guid,
+            samplerGuid: sampler.guid,
+          },
+          refs: [atlas, sampler],
+          artifacts: { body: jsonArtifact(font) },
+        };
       };
+      return fontProduct();
     }
     case 'render-pipeline': {
       const pipeline = asset as RenderPipelineAsset;
@@ -446,61 +469,70 @@ function ordinaryPodProduct(input: AssetOutputInput): AssetOutputProduct {
       return { payload: asset, refs: [], artifacts: { body: jsonArtifact(asset) } };
     }
     case 'terrain': {
-      const terrain = asset as TerrainAsset;
-      const dependencies = [
-        ...terrain.grids,
-        ...terrain.layers.flatMap((layer) =>
-          layer.blend === 'height' ? [layer.material, layer.height] : [layer.material],
-        ),
-        ...terrain.sections.flatMap((section) => [
-          section.heightTexture,
-          section.weightTexture,
-          section.material,
-        ]),
-      ];
-      const refs = [...new Set(dependencies)].map((guid) => {
-        if (typeof guid !== 'string')
-          throw new TypeError('Pack terrain outputs require source GUIDs, not runtime handles');
-        const parsed = AssetGuid.parse(guid);
-        if (!parsed.ok) throw parsed.error;
-        return ref(parsed.value, 'terrain');
-      });
-      const body = {
-        ...terrain,
-        heights: Array.from(terrain.heights),
-        weights: Array.from(terrain.weights),
+      const terrainProduct = () => {
+        const terrain = asset as TerrainAsset;
+        const dependencies = [
+          ...terrain.grids,
+          ...terrain.layers.flatMap((layer) =>
+            layer.blend === 'height' ? [layer.material, layer.height] : [layer.material],
+          ),
+          ...terrain.sections.flatMap((section) => [
+            section.heightTexture,
+            section.weightTexture,
+            section.material,
+          ]),
+        ];
+        const refs = [...new Set(dependencies)].map((guid) => {
+          if (typeof guid !== 'string')
+            throw new TypeError('Pack terrain outputs require source GUIDs, not runtime handles');
+          const parsed = AssetGuid.parse(guid);
+          if (!parsed.ok) throw parsed.error;
+          return ref(parsed.value, 'terrain');
+        });
+        const body = {
+          ...terrain,
+          heights: Array.from(terrain.heights),
+          weights: Array.from(terrain.weights),
+        };
+        return { payload: terrain, refs, artifacts: { body: jsonArtifact(body) } };
       };
-      return { payload: terrain, refs, artifacts: { body: jsonArtifact(body) } };
+      return terrainProduct();
     }
     case 'tileset': {
-      const tileset = asset as TilesetAsset;
-      const refs = tileset.atlases.map((atlas, index) => {
-        if (typeof atlas === 'number')
-          throw new Error(
-            'Pack Tileset atlases require source GUIDs; runtime handles cannot be persisted',
-          );
-        const parsed = typeof atlas === 'string' ? AssetGuid.parse(atlas) : ok(atlas);
-        if (!parsed.ok) throw parsed.error;
-        return ref(parsed.value, 'atlases', index);
-      });
-      return {
-        payload: { ...tileset, atlases: refs.map((_entry, index) => index) },
-        refs,
-        artifacts: { body: jsonArtifact(tileset) },
+      const tilesetProduct = () => {
+        const tileset = asset as TilesetAsset;
+        const refs = tileset.atlases.map((atlas, index) => {
+          if (typeof atlas === 'number')
+            throw new Error(
+              'Pack Tileset atlases require source GUIDs; runtime handles cannot be persisted',
+            );
+          const parsed = typeof atlas === 'string' ? AssetGuid.parse(atlas) : ok(atlas);
+          if (!parsed.ok) throw parsed.error;
+          return ref(parsed.value, 'atlases', index);
+        });
+        return {
+          payload: { ...tileset, atlases: refs.map((_entry, index) => index) },
+          refs,
+          artifacts: { body: jsonArtifact(tileset) },
+        };
       };
+      return tilesetProduct();
     }
     case 'video': {
-      const video = asset as VideoAsset;
-      try {
-        const url = new URL(video.url);
-        if (url.protocol !== 'http:' && url.protocol !== 'https:')
-          throw new Error('unsupported URL scheme');
-      } catch (error) {
-        throw new TypeError(
-          `video URL is invalid: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-      return { payload: video, refs: [], artifacts: {} };
+      const videoProduct = () => {
+        const video = asset as VideoAsset;
+        try {
+          const url = new URL(video.url);
+          if (url.protocol !== 'http:' && url.protocol !== 'https:')
+            throw new Error('unsupported URL scheme');
+        } catch (error) {
+          throw new TypeError(
+            `video URL is invalid: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+        return { payload: video, refs: [], artifacts: {} };
+      };
+      return videoProduct();
     }
     case 'skeleton': {
       const skeleton = asset as SkeletonAsset;
@@ -521,49 +553,55 @@ function ordinaryPodProduct(input: AssetOutputInput): AssetOutputProduct {
       };
     }
     case 'animation-clip': {
-      const clip = asset as AnimationClip;
-      const refs: AssetRef[] = [];
-      for (const [index, key] of (clip.events ?? []).entries()) {
-        if (key.action.kind === 'method' || key.action.clip === null) continue;
-        const guid = AssetGuid.parse(key.action.clip);
-        if (!guid.ok) throw guid.error;
-        refs.push(ref(guid.value, 'events', index));
-      }
-      const samples = encodeAnimationClipSamples(clip as unknown as Record<string, unknown>);
-      // Pack projection replaces the inline arrays with windows into this artifact.
-      return {
-        payload: clip,
-        refs,
-        artifacts:
-          samples === undefined
-            ? {}
-            : {
-                [ANIMATION_CLIP_SAMPLES_ARTIFACT]: {
-                  mediaType: 'application/octet-stream',
-                  bytes: samples.bytes,
+      const animationClipProduct = () => {
+        const clip = asset as AnimationClip;
+        const refs: AssetRef[] = [];
+        for (const [index, key] of (clip.events ?? []).entries()) {
+          if (key.action.kind === 'method' || key.action.clip === null) continue;
+          const guid = AssetGuid.parse(key.action.clip);
+          if (!guid.ok) throw guid.error;
+          refs.push(ref(guid.value, 'events', index));
+        }
+        const samples = encodeAnimationClipSamples(clip as unknown as Record<string, unknown>);
+        // Pack projection replaces the inline arrays with windows into this artifact.
+        return {
+          payload: clip,
+          refs,
+          artifacts:
+            samples === undefined
+              ? {}
+              : {
+                  [ANIMATION_CLIP_SAMPLES_ARTIFACT]: {
+                    mediaType: 'application/octet-stream',
+                    bytes: samples.bytes,
+                  },
                 },
-              },
+        };
       };
+      return animationClipProduct();
     }
     case 'animation-graph': {
-      const graph = asset as AnimationGraph;
-      const refs: AssetRef[] = [];
-      const nodes = graph.nodes.map((node, index) => {
-        if (node.type !== 'clip') return node;
-        if (typeof node.clip !== 'string')
-          throw new TypeError(
-            'Pack animation graphs require source GUIDs; resolve runtime clip references before persistence',
-          );
-        const parsed = AssetGuid.parse(node.clip);
-        if (!parsed.ok) throw parsed.error;
-        const referenceIndex = refs.push(ref(parsed.value, 'nodes', index)) - 1;
-        return { ...node, clip: referenceIndex };
-      });
-      return {
-        payload: { kind: graph.kind, root: graph.root, nodes },
-        refs,
-        artifacts: { body: jsonArtifact(graph) },
+      const animationGraphProduct = () => {
+        const graph = asset as AnimationGraph;
+        const refs: AssetRef[] = [];
+        const nodes = graph.nodes.map((node, index) => {
+          if (node.type !== 'clip') return node;
+          if (typeof node.clip !== 'string')
+            throw new TypeError(
+              'Pack animation graphs require source GUIDs; resolve runtime clip references before persistence',
+            );
+          const parsed = AssetGuid.parse(node.clip);
+          if (!parsed.ok) throw parsed.error;
+          const referenceIndex = refs.push(ref(parsed.value, 'nodes', index)) - 1;
+          return { ...node, clip: referenceIndex };
+        });
+        return {
+          payload: { kind: graph.kind, root: graph.root, nodes },
+          refs,
+          artifacts: { body: jsonArtifact(graph) },
+        };
       };
+      return animationGraphProduct();
     }
     case 'audio': {
       const audio = asset as AudioClipAsset;
@@ -587,53 +625,8 @@ function ordinaryPodProduct(input: AssetOutputInput): AssetOutputProduct {
         },
       };
     }
-    case 'particle-effect': {
-      const effect = asset as ParticleEffectAsset;
-      const cooked = particleProgramArtifact(effect);
-      const refs = new Set<string>();
-      for (const emitter of cooked.program.emitters) {
-        for (const field of emitter.forceFields ?? [])
-          if (field.kind === 'vector') {
-            if (typeof field.texture === 'number')
-              throw new TypeError('Pack vector fields require source texture GUIDs');
-            refs.add(formatGuid(field.texture));
-          }
-        for (const renderer of emitter.renderers) {
-          if (!('material' in renderer) || typeof renderer.material !== 'string') {
-            throw new Error(`Particle emitter '${emitter.id}' requires a renderer Material GUID`);
-          }
-          refs.add(formatGuid(renderer.material));
-          if ('kind' in renderer && renderer.kind === 'mesh') {
-            const mesh = 'mesh' in renderer ? renderer.mesh : undefined;
-            if (typeof mesh === 'string') {
-              refs.add(formatGuid(mesh));
-            } else if (
-              mesh === null ||
-              typeof mesh !== 'object' ||
-              Array.isArray(mesh) ||
-              !('source' in mesh) ||
-              mesh.source !== 'player' ||
-              Object.keys(mesh).length !== 1
-            ) {
-              throw new Error(
-                `Particle emitter '${emitter.id}' requires a renderer Mesh GUID or Player source`,
-              );
-            }
-          }
-        }
-      }
-      return {
-        payload: { ...effect, programFingerprint: cooked.fingerprint, program: cooked.program },
-        refs: [...refs].sort().map((guid) => ({ guid })),
-        artifacts: {
-          'particle-effect/program.json': {
-            mediaType: 'application/json',
-            assetCodec: { name: 'forgeax-vfx-program', version: effect.program.format },
-            bytes: cooked.bytes,
-          },
-        },
-      };
-    }
+    case 'particle-effect':
+      return particleEffectProduct(input);
     case 'ies-profile': {
       const profile = asset as IesProfileAsset;
       return {
@@ -648,6 +641,79 @@ function ordinaryPodProduct(input: AssetOutputInput): AssetOutputProduct {
         },
       };
     }
+    case 'water-body':
+    case 'water-zone':
+    case 'water-wave-set':
+    case 'water-brush-recipe':
+    case 'water-simulation-recipe': {
+      const waterProduct = () => {
+        const runtime = validateWaterRuntimeAsset(asset);
+        const cooked = runtime.ok ? runtime : cookWaterAsset(asset);
+        const valid = cooked;
+        if (!valid.ok) throw new TypeError(valid.error.expected);
+        const refs: AssetRef[] = [];
+        const add = (guid: string | undefined, field: string, index?: number) => {
+          if (guid === undefined) return;
+          const parsed = AssetGuid.parse(guid);
+          if (!parsed.ok) throw parsed.error;
+          refs.push(ref(parsed.value, field, index));
+        };
+        if (asset.kind === 'water-body') {
+          add(asset.surfaceMaterialGuid, 'surfaceMaterialGuid');
+          add(asset.zoneGuid, 'zoneGuid');
+          add(asset.waveSetGuid, 'waveSetGuid');
+          add(asset.customMeshOverrideGuid, 'customMeshOverrideGuid');
+          add(asset.collision.meshGuid, 'collision.meshGuid');
+          add(asset.visibleMeshGuid, 'visibleMeshGuid');
+          add(asset.waterInfoMeshGuid, 'waterInfoMeshGuid');
+          add(asset.dilatedWaterInfoMeshGuid, 'dilatedWaterInfoMeshGuid');
+          add(asset.brushShapeMeshGuid, 'brushShapeMeshGuid');
+          add(asset.collisionMeshGuid, 'collisionMeshGuid');
+          asset.riverSegmentMeshGuids?.forEach((guid, index) => {
+            add(guid, 'riverSegmentMeshGuids', index);
+          });
+          add(asset.riverToLakeTransitionMaterialGuid, 'riverToLakeTransitionMaterialGuid');
+          add(asset.riverToOceanTransitionMaterialGuid, 'riverToOceanTransitionMaterialGuid');
+          add(asset.waterInfoMaterialGuid, 'waterInfoMaterialGuid');
+          add(asset.lodMaterialGuid, 'lodMaterialGuid');
+          add(asset.underwaterPostProcessMaterialGuid, 'underwaterPostProcessMaterialGuid');
+        } else if (asset.kind === 'water-zone') {
+          add(asset.farMaterialGuid, 'farMaterialGuid');
+        } else if (asset.kind === 'water-brush-recipe') {
+          add(asset.baseTerrainGuid, 'baseTerrainGuid');
+          asset.sourceBodyGuids.forEach((guid, index) => {
+            add(guid, 'sourceBodyGuids', index);
+          });
+          asset.curves.forEach((guid, index) => {
+            add(guid, 'curves', index);
+          });
+          asset.textures.forEach((guid, index) => {
+            add(guid, 'textures', index);
+          });
+        } else if (asset.kind === 'water-simulation-recipe') {
+          asset.materialGuids.forEach((guid, index) => {
+            add(guid, 'materialGuids', index);
+          });
+          asset.textureGuids.forEach((guid, index) => {
+            add(guid, 'textureGuids', index);
+          });
+          if (asset.system === 'fluid-simulation') add(asset.impulseNoiseGuid, 'impulseNoiseGuid');
+          if (asset.system === 'water-advanced') {
+            asset.shallowStageConfig?.materialGuids.forEach((guid, index) => {
+              add(guid, 'shallowStageConfig.materialGuids', index);
+            });
+            if (asset.riverBakeConfig)
+              add(asset.riverBakeConfig.sourceBodyGuid, 'riverBakeConfig.sourceBodyGuid');
+            if (asset.oceanPatchConfig?.algorithm === 'ue-5.8.1-niagara-fft')
+              add(asset.oceanPatchConfig.noiseTextureGuid, 'oceanPatchConfig.noiseTextureGuid');
+          }
+        }
+        return { payload: valid.value, refs, artifacts: { body: jsonArtifact(valid.value) } };
+      };
+      return waterProduct();
+    }
+    case 'gpu-texture':
+    case 'texture-generator':
     case 'material':
     case 'mesh':
     case 'scene':
@@ -666,7 +732,7 @@ export const meshAssetDataProducer = meshProducer('mesh-data/2', meshDataProduct
 export const meshAssetOutputProducer = meshProducer('mesh-binary/7', meshProduct);
 export const textureAssetOutputProducer = createSafeProducer(
   'texture',
-  'texture-pack/2',
+  'texture-pack/3',
   textureProduct,
 );
 
@@ -690,8 +756,10 @@ export function createAssetOutputProducerRegistry(
   registry.register(materialAssetOutputProducer);
   registry.register(meshAssetOutputProducer);
   registry.register(textureAssetOutputProducer);
+  registry.register(createSafeProducer('gpu-texture', 'gpu-texture/1', gpuTextureProduct));
   registry.register(createSceneAssetOutputProducer(sceneComponents));
   registry.register(particleEffectProducer());
+  registry.register(textureGeneratorProducer());
   for (const kind of [
     'equirect',
     'sampler',
@@ -716,6 +784,15 @@ export function createAssetOutputProducerRegistry(
       ),
     );
   }
+  for (const kind of [
+    'water-body',
+    'water-zone',
+    'water-wave-set',
+    'water-brush-recipe',
+    'water-simulation-recipe',
+  ] as const) {
+    registry.register(createSafeProducer(kind, 'water-runtime/1', ordinaryPodProduct));
+  }
   return registry;
 }
 
@@ -737,7 +814,7 @@ function particleEffectProducer(): AssetOutputProducer {
             guid: input.guid,
             source,
           });
-          if (!cooked.ok) throw new TypeError(cooked.error.hint);
+          if (!cooked.ok) throw cooked.error;
           if (cooked.value.guid.toLowerCase() !== input.guid.toLowerCase())
             throw new TypeError('Particle Native Cook must preserve the derived AssetGuid');
           const effect = cooked.value.payload as ParticleEffectAsset;
@@ -785,6 +862,114 @@ function meshProducer(
           return err(producerError(input, error));
         }
       })();
+    },
+  };
+}
+
+function textureGeneratorProducer(): AssetOutputProducer {
+  const prepared = createSafeProducer(
+    'texture-generator',
+    'texture-generator/1',
+    textureGeneratorProduct,
+  );
+  return {
+    ...prepared,
+    async produce(input) {
+      if (input.asset.kind !== 'texture-generator') return prepared.produce(input);
+      if (input.asset.programs !== undefined) return prepared.produce(input);
+      try {
+        if (input.cookers === undefined)
+          throw new TypeError(
+            'GPU generator shader programs require build-time preparation; reuse a prepared generator for runtime changes',
+          );
+        const cooked = (
+          await input.cookers.runDraft('texture-generator', {
+            guid: input.guid,
+            source: input.asset,
+          })
+        ).unwrap();
+        if (cooked.guid.toLowerCase() !== input.guid.toLowerCase())
+          throw new TypeError('Generator Cook must preserve its derived GUID');
+        const product = await prepared.produce({
+          ...input,
+          asset: cooked.payload as import('@forgeax/engine-types').TextureGeneratorAsset,
+        });
+        return product.ok
+          ? ok({
+              ...product.value,
+              inputFingerprint: cooked.inputFingerprint,
+              ...(cooked.sourceDependencies === undefined
+                ? {}
+                : { sourceDependencies: cooked.sourceDependencies }),
+            })
+          : product;
+      } catch (cause) {
+        return err(producerError(input, cause));
+      }
+    },
+  };
+}
+
+function textureGeneratorProduct(input: AssetOutputInput): AssetOutputProduct {
+  const generator = validateTextureGenerator(input.asset, true).unwrap();
+  const { programs, ...payload } = generator;
+  return {
+    payload: payload as typeof generator,
+    refs: [...new Set(Object.values(generator.inputs))].map((guid) => ({ guid })),
+    artifacts: {
+      programs: {
+        mediaType: 'application/json',
+        assetCodec: { name: 'forgeax-texture-generator-programs', version: '1' },
+        bytes: new TextEncoder().encode(canonicalJson(programs)),
+      },
+    },
+  };
+}
+
+function particleEffectProduct(input: AssetOutputInput): AssetOutputProduct {
+  const effect = input.asset as ParticleEffectAsset;
+  const cooked = particleProgramArtifact(effect);
+  const refs = new Set<string>();
+  for (const emitter of cooked.program.emitters) {
+    for (const field of emitter.forceFields ?? [])
+      if (field.kind === 'vector') {
+        if (typeof field.texture === 'number')
+          throw new TypeError('Pack vector fields require source texture GUIDs');
+        refs.add(formatGuid(field.texture));
+      }
+    for (const renderer of emitter.renderers) {
+      if (!('material' in renderer) || typeof renderer.material !== 'string') {
+        throw new Error(`Particle emitter '${emitter.id}' requires a renderer Material GUID`);
+      }
+      refs.add(formatGuid(renderer.material));
+      if ('kind' in renderer && renderer.kind === 'mesh') {
+        const mesh = 'mesh' in renderer ? renderer.mesh : undefined;
+        if (typeof mesh === 'string') {
+          refs.add(formatGuid(mesh));
+        } else if (
+          mesh === null ||
+          typeof mesh !== 'object' ||
+          Array.isArray(mesh) ||
+          !('source' in mesh) ||
+          mesh.source !== 'player' ||
+          Object.keys(mesh).length !== 1
+        ) {
+          throw new Error(
+            `Particle emitter '${emitter.id}' requires a renderer Mesh GUID or Player source`,
+          );
+        }
+      }
+    }
+  }
+  return {
+    payload: { ...effect, programFingerprint: cooked.fingerprint, program: cooked.program },
+    refs: [...refs].sort().map((guid) => ({ guid })),
+    artifacts: {
+      'particle-effect/program.json': {
+        mediaType: 'application/json',
+        assetCodec: { name: 'forgeax-vfx-program', version: effect.program.format },
+        bytes: cooked.bytes,
+      },
     },
   };
 }

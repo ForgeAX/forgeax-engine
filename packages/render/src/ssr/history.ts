@@ -19,10 +19,17 @@ import {
 import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_UNIFORM } from '../gpu-usage';
 import { MAX_RENDER_FRAMES_IN_FLIGHT } from '../publication/frame-limits';
 import type { TemporalFrameStage } from '../temporal/frame-coordinator';
+import {
+  fullSsrColorViewport,
+  isSsrColorViewport,
+  type SsrColorViewport,
+} from './scene-color-input';
 
 export const SSR_HISTORY_FORMAT = 'rgba16float' as const;
 /** Current accepted state plus the publisher's four supported in-flight writes. */
 export const SSR_HISTORY_SLOT_COUNT = MAX_RENDER_FRAMES_IN_FLIGHT + 1;
+export const WATER_SSR_PARAMS_BYTES = 96;
+export type SsrHistoryProfile = 'opaque' | 'single-layer-water';
 export type SsrHistoryResetReason =
   | 'first-enable'
   | 'resize'
@@ -41,13 +48,21 @@ export type SsrHistoryState =
   | 'retired'
   | 'disposed';
 
-export interface SsrHistorySlot {
+interface SsrHistoryColorSlot {
   readonly texture: Texture;
   readonly view: TextureView;
-  readonly surfaceTexture: Texture;
-  readonly surfaceView: TextureView;
 }
+export type SsrHistorySlot = SsrHistoryColorSlot &
+  (
+    | {
+        readonly profile: 'opaque';
+        readonly surfaceTexture: Texture;
+        readonly surfaceView: TextureView;
+      }
+    | { readonly profile: 'single-layer-water' }
+  );
 export interface SsrHistoryResources {
+  readonly profile: SsrHistoryProfile;
   readonly width: number;
   readonly height: number;
   readonly traceWidth: number;
@@ -57,6 +72,7 @@ export interface SsrHistoryResources {
   readonly slots: readonly SsrHistorySlot[];
   /** One renderer-owned parameter block shared by the temporal resolve. */
   readonly paramsBuffer: Buffer;
+  waterParamsBuffer?: Buffer;
   readonly childScope: DeviceScope;
 }
 export interface SsrHistoryCandidate {
@@ -65,8 +81,12 @@ export interface SsrHistoryCandidate {
   readonly readSlot: number | null;
   readonly writeSlot: number;
   readonly historyValid: boolean;
+  readonly previousResources: SsrHistoryResources;
+  readonly viewport: SsrColorViewport;
+  readonly previousViewport: SsrColorViewport;
 }
 export interface SsrHistoryInspection {
+  readonly profile: SsrHistoryProfile;
   readonly state: SsrHistoryState;
   readonly width: number;
   readonly height: number;
@@ -118,11 +138,12 @@ function createResources(
   scope: DeviceScope,
   width: number,
   height: number,
+  profile: SsrHistoryProfile,
 ): Result<SsrHistoryResources, RhiError> {
   const traceWidth = Math.max(1, Math.floor(width));
   const traceHeight = Math.max(1, Math.floor(height));
   const descriptor: TextureDescriptor = {
-    label: 'ssr-history-rgba16float',
+    label: `${profile === 'single-layer-water' ? 'water-' : ''}ssr-history-rgba16float`,
     size: { width: traceWidth, height: traceHeight, depthOrArrayLayers: 1 },
     format: SSR_HISTORY_FORMAT,
     usage: device.caps.storageTexture
@@ -134,12 +155,12 @@ function createResources(
     viewFormats: undefined,
     textureBindingViewDimension: undefined,
   };
-  const childScope = scope.createChild(`${scope.owner}:ssr-history`);
+  const childScope = scope.createChild(`${scope.owner}:${profile}:ssr-history`);
   const slots: SsrHistorySlot[] = [];
   for (let index = 0; index < SSR_HISTORY_SLOT_COUNT; index++) {
     const texture = device.createTexture({
       ...descriptor,
-      label: `ssr-history-rgba16float-${index}`,
+      label: `${descriptor.label}-${index}`,
     });
     if (!texture.ok) {
       childScope.abandon();
@@ -149,7 +170,7 @@ function createResources(
       device.destroyTexture(value);
     });
     const view = device.createTextureView(texture.value, {
-      label: `ssr-history-rgba16float-${index}.view`,
+      label: `${descriptor.label}-${index}.view`,
       dimension: '2d',
       baseMipLevel: 0,
       mipLevelCount: 1,
@@ -159,6 +180,10 @@ function createResources(
     if (!view.ok) {
       childScope.abandon();
       return view;
+    }
+    if (profile === 'single-layer-water') {
+      slots.push({ profile, texture: texture.value, view: view.value });
+      continue;
     }
     const surfaceTexture = device.createTexture({
       ...descriptor,
@@ -178,6 +203,7 @@ function createResources(
       return surfaceView;
     }
     slots.push({
+      profile,
       texture: texture.value,
       view: view.value,
       surfaceTexture: surfaceTexture.value,
@@ -203,11 +229,12 @@ function createResources(
     return cleared;
   }
   return ok({
+    profile,
     width,
     height,
     traceWidth,
     traceHeight,
-    bytes: traceWidth * traceHeight * 12 * SSR_HISTORY_SLOT_COUNT,
+    bytes: traceWidth * traceHeight * (profile === 'opaque' ? 12 : 8) * SSR_HISTORY_SLOT_COUNT,
     descriptor,
     slots: Object.freeze(slots),
     paramsBuffer: params.value,
@@ -240,6 +267,8 @@ export class SsrHistoryOwner {
   >();
   private valid = false;
   private acceptedSource: object | undefined;
+  private acceptedResources: SsrHistoryResources | undefined;
+  private acceptedViewport: SsrColorViewport | undefined;
   private state: SsrHistoryState = 'first-frame';
   private resetReason: SsrHistoryResetReason | undefined = 'first-enable';
   private lastFailure: TemporalFrameStage | undefined;
@@ -248,6 +277,7 @@ export class SsrHistoryOwner {
   private constructor(
     private readonly device: RhiDevice,
     private readonly scope: DeviceScope,
+    readonly profile: SsrHistoryProfile,
     resources: SsrHistoryResources,
   ) {
     this.activeResources = resources;
@@ -258,12 +288,14 @@ export class SsrHistoryOwner {
     readonly scope: DeviceScope;
     readonly width: number;
     readonly height: number;
+    readonly profile?: SsrHistoryProfile;
   }): Result<SsrHistoryOwner, RhiError> {
     const width = positiveDimension(input.width, 'width');
     const height = positiveDimension(input.height, 'height');
-    const resources = createResources(input.device, input.scope, width, height);
+    const profile = input.profile ?? 'opaque';
+    const resources = createResources(input.device, input.scope, width, height, profile);
     return resources.ok
-      ? ok(new SsrHistoryOwner(input.device, input.scope, resources.value))
+      ? ok(new SsrHistoryOwner(input.device, input.scope, profile, resources.value))
       : resources;
   }
 
@@ -277,6 +309,23 @@ export class SsrHistoryOwner {
     return this.activeResources;
   }
 
+  /** Trace parameters remain available when Water has no dedicated temporal resolve. */
+  getWaterInputParamsBuffer(): Result<Buffer, RhiError> {
+    const resources = this.resources;
+    if (resources.waterParamsBuffer !== undefined) return ok(resources.waterParamsBuffer);
+    const created = this.device.createBuffer({
+      label: 'water-ssr-input-params',
+      size: WATER_SSR_PARAMS_BYTES,
+      usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
+    });
+    if (!created.ok) return created;
+    resources.childScope._adopt('buffer', created.value, (value) => {
+      this.device.destroyBuffer(value);
+    });
+    resources.waterParamsBuffer = created.value;
+    return created;
+  }
+
   private nextWriteSlot(): number {
     const occupied = new Set<number>();
     if (this.valid) occupied.add(this.readIndex);
@@ -288,12 +337,20 @@ export class SsrHistoryOwner {
     return this.activeResources?.slots.findIndex((_, index) => !occupied.has(index)) ?? -1;
   }
 
-  beginFrame(source?: {
-    readonly current: object;
-    readonly previous: object | undefined;
-  }): Result<SsrHistoryCandidate, SsrHistoryError> {
+  get previousResources(): SsrHistoryResources {
+    return this.activeCandidate?.previousResources ?? this.acceptedResources ?? this.resources;
+  }
+
+  beginFrame(
+    source?: {
+      readonly current: object;
+      readonly previous: object | undefined;
+    },
+    viewport?: SsrColorViewport,
+  ): Result<SsrHistoryCandidate, SsrHistoryError> {
     if (
       this.activeResources === undefined ||
+      this.state === 'retiring' ||
       this.state === 'retired' ||
       this.state === 'disposed'
     ) {
@@ -330,16 +387,35 @@ export class SsrHistoryOwner {
       this.resetReason === undefined &&
       (source === undefined ||
         (source.previous !== undefined && source.previous === this.acceptedSource));
-    const candidate = Object.freeze({
-      ...(source === undefined ? {} : { source: source.current }),
-      readSlot: historyValid ? this.readIndex : null,
-      writeSlot,
-      historyValid,
-    }) as SsrHistoryCandidate;
-    this.activeCandidate = candidate;
-    this.state = this.valid ? 'stable' : this.state === 'aborted' ? 'aborted' : 'first-frame';
-    this.lastFailure = undefined;
-    return ok(candidate);
+    const nextViewport = Object.freeze({
+      ...(viewport ?? fullSsrColorViewport(this.resources.width, this.resources.height)),
+    });
+    if (!isSsrColorViewport(nextViewport))
+      return err(
+        failure(
+          'ssr-history-unavailable',
+          'a valid SSR color viewport',
+          'use a viewport inside its history allocation',
+        ),
+      );
+    const publishHistoryCandidate = () => {
+      const candidate: SsrHistoryCandidate = Object.freeze({
+        ...(source === undefined ? {} : { source: source.current }),
+        readSlot: historyValid ? this.readIndex : null,
+        writeSlot,
+        historyValid,
+        previousResources: historyValid
+          ? (this.acceptedResources ?? this.resources)
+          : this.resources,
+        viewport: nextViewport,
+        previousViewport: historyValid ? (this.acceptedViewport ?? nextViewport) : nextViewport,
+      });
+      this.activeCandidate = candidate;
+      this.state = this.valid ? 'stable' : this.state === 'aborted' ? 'aborted' : 'first-frame';
+      this.lastFailure = undefined;
+      return ok(candidate);
+    };
+    return publishHistoryCandidate();
   }
 
   /** Accepted submit releases the encoder candidate, but only completion publishes history. */
@@ -367,6 +443,8 @@ export class SsrHistoryOwner {
         this.acceptedSerial = record.serial;
         this.readIndex = candidate.writeSlot;
         this.acceptedSource = candidate.source;
+        this.acceptedResources = record.resources;
+        this.acceptedViewport = candidate.viewport;
         this.valid = true;
         this.state = 'stable';
         this.resetReason = undefined;
@@ -393,6 +471,8 @@ export class SsrHistoryOwner {
     }
     this.readIndex = candidate.writeSlot;
     this.acceptedSource = candidate.source;
+    this.acceptedResources = this.resources;
+    this.acceptedViewport = candidate.viewport;
     this.valid = true;
     this.activeCandidate = undefined;
     this.state = 'stable';
@@ -413,6 +493,9 @@ export class SsrHistoryOwner {
     this.activeCandidate = undefined;
     this.valid = false;
     this.readIndex = 0;
+    this.acceptedResources = undefined;
+    this.acceptedViewport = undefined;
+    this.acceptedSource = undefined;
     this.resetReason = reason;
     this.lastFailure = undefined;
     this.resetCount += 1;
@@ -425,6 +508,7 @@ export class SsrHistoryOwner {
       this.scope,
       positiveDimension(width, 'width'),
       positiveDimension(height, 'height'),
+      this.profile,
     );
     if (!next.ok) return next;
     if (this.activeResources !== undefined) this.retiringResources.add(this.activeResources);
@@ -433,6 +517,9 @@ export class SsrHistoryOwner {
     this.activeCandidate = undefined;
     this.valid = false;
     this.readIndex = 0;
+    this.acceptedResources = undefined;
+    this.acceptedViewport = undefined;
+    this.acceptedSource = undefined;
     this.resetReason = 'resize';
     this.lastFailure = undefined;
     this.resetCount += 1;
@@ -440,15 +527,9 @@ export class SsrHistoryOwner {
     return ok(undefined);
   }
 
-  /** Retire pending allocations after the queue's already-submitted work. */
-  retireAfterFence(queue: RhiQueue, onFailure: (cause: unknown) => void): void {
+  /** Release replaced allocations only after their final consuming submission. */
+  retireReplacedAfterFence(queue: RhiQueue, onFailure: (cause: unknown) => void): void {
     if (this.retirementFencePending) return;
-    if (this.retiringResources.size === 0 && this.activeResources !== undefined) {
-      this.retiringResources.add(this.activeResources);
-      this.activeCandidate = undefined;
-      this.valid = false;
-      this.state = 'retiring';
-    }
     const pending = [...this.retiringResources];
     for (const resources of pending) resources.childScope.beginRetire();
     if (pending.length === 0) return;
@@ -460,14 +541,18 @@ export class SsrHistoryOwner {
         resources.childScope.retire();
         if (this.activeResources === resources) this.activeResources = undefined;
       }
-      if (this.activeResources === undefined && this.retiringResources.size === 0) {
+      if (
+        this.state !== 'disposed' &&
+        this.activeResources === undefined &&
+        this.retiringResources.size === 0
+      ) {
         this.state = 'retired';
       }
       // A second resize may have added the then-active resources while this
       // fence was pending. Chain another fence so every retired generation is
       // eventually drained without making the record stage own a retirement
       // ledger.
-      if (this.retiringResources.size > 0) this.retireAfterFence(queue, onFailure);
+      if (this.retiringResources.size > 0) this.retireReplacedAfterFence(queue, onFailure);
     };
     void queue.onSubmittedWorkDone().then(finish, (cause) => {
       onFailure(cause);
@@ -475,9 +560,23 @@ export class SsrHistoryOwner {
     });
   }
 
+  retireAfterFence(queue: RhiQueue, onFailure: (cause: unknown) => void): void {
+    if (this.activeResources !== undefined) this.retiringResources.add(this.activeResources);
+    for (const record of this.submitted.values()) this.retiringResources.add(record.resources);
+    this.activeCandidate = undefined;
+    this.epoch++;
+    this.valid = false;
+    this.acceptedResources = undefined;
+    this.state = 'retiring';
+    this.retireReplacedAfterFence(queue, onFailure);
+  }
+
   retire(): void {
     this.retirementFencePending = false;
     this.activeCandidate = undefined;
+    this.epoch++;
+    for (const record of this.submitted.values()) this.retiringResources.add(record.resources);
+    this.submitted.clear();
     if (this.activeResources !== undefined) {
       this.activeResources.childScope.retire();
       this.activeResources = undefined;
@@ -485,6 +584,8 @@ export class SsrHistoryOwner {
     for (const resources of this.retiringResources) resources.childScope.retire();
     this.retiringResources.clear();
     this.valid = false;
+    this.acceptedResources = undefined;
+    this.acceptedViewport = undefined;
     this.state = 'retired';
   }
 
@@ -498,6 +599,7 @@ export class SsrHistoryOwner {
     const active = this.activeResources;
     const available = this.activeCandidate?.writeSlot ?? this.nextWriteSlot();
     return Object.freeze({
+      profile: this.profile,
       state: this.state,
       width: active?.width ?? 0,
       height: active?.height ?? 0,
@@ -533,6 +635,7 @@ export function createSsrHistoryOwner(input: {
   readonly scope: DeviceScope;
   readonly width: number;
   readonly height: number;
+  readonly profile?: SsrHistoryProfile;
 }): Result<SsrHistoryOwner, RhiError> {
   return SsrHistoryOwner.create(input);
 }

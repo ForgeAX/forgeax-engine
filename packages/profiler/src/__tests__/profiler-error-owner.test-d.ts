@@ -6,6 +6,7 @@ type ExpectedProfilerErrorCode =
   | 'capture-already-active'
   | 'profiler-not-enabled'
   | 'phase-catalog-conflict'
+  | 'phase-catalog-provider-failed'
   | 'profile-source-failed'
   | 'profile-sink-failed'
   | 'capture-state-invalid';
@@ -41,6 +42,12 @@ test('narrows every detail payload by exhaustive code switch', () => {
           readonly actual: readonly string[];
         }>();
         return `${error.detail.source}:${error.detail.expected.join(',')}:${error.detail.actual.join(',')}`;
+      case 'phase-catalog-provider-failed':
+        expectTypeOf(error.detail).toEqualTypeOf<{
+          readonly source: 'app' | 'render';
+          readonly message: string;
+        }>();
+        return `${error.detail.source}:${error.detail.message}`;
       case 'profile-source-failed':
         expectTypeOf(error.detail).toEqualTypeOf<{
           readonly source: string;

@@ -4,7 +4,7 @@ import {
   ok,
   type ParamSchemaEntry,
   type SamplerAsset,
-  type TextureAsset,
+  type SampledTextureAsset as TextureAsset,
 } from '@forgeax/engine-types';
 import type { GpuResidencyCache, TextureResidencyReceipt } from '../device/gpu-residency';
 import type { ResidencyLease } from '../device/residency-lifetime';
@@ -21,7 +21,7 @@ export function prepareSurfaceMaterialTextures(
   world: RenderResourceScope,
   snapshot: MaterialSnapshot,
   prepareTexture?: (
-    handle: AssetHandle<'texture'>,
+    handle: AssetHandle<'texture' | 'gpu-texture'>,
     asset: TextureAsset,
   ) => ReturnType<GpuResidencyCache['prepareTextureResidencyForGraph']>,
 ) {

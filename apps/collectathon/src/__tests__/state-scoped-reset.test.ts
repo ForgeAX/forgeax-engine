@@ -23,13 +23,7 @@ import {
 } from '@forgeax/engine-state';
 import { describe, expect, it } from 'vitest';
 
-import {
-  createGameProgress,
-  GAME_PROGRESS_KEY,
-  type GameProgress,
-  INITIAL_HEALTH,
-  resetProgress,
-} from '../resources';
+import { createGameProgress, GAME_PROGRESS_KEY, INITIAL_HEALTH, resetProgress } from '../resources';
 
 // A GameState shaped like main.ts's (Title / Play / Win / Lose). defineState
 // self-registers globally; a uniquely-named token avoids cross-test collisions.
@@ -72,7 +66,7 @@ describe('resetProgress (Title OnEnter scoreboard reset, AC-11)', () => {
 
     resetProgress(world, 12);
 
-    const fresh = world.getResource<GameProgress>(GAME_PROGRESS_KEY);
+    const fresh = world.getResource(GAME_PROGRESS_KEY);
     expect(fresh.score).toBe(0);
     expect(fresh.health).toBe(INITIAL_HEALTH);
     expect(fresh.elapsed).toBe(0);
@@ -87,7 +81,7 @@ describe('resetProgress (Title OnEnter scoreboard reset, AC-11)', () => {
 
     resetProgress(world, 5);
 
-    const fresh = world.getResource<GameProgress>(GAME_PROGRESS_KEY);
+    const fresh = world.getResource(GAME_PROGRESS_KEY);
     expect(fresh).not.toBe(stale);
     expect(fresh.health).toBe(INITIAL_HEALTH);
   });
@@ -95,7 +89,7 @@ describe('resetProgress (Title OnEnter scoreboard reset, AC-11)', () => {
   it('works when no prior GameProgress exists (first Title entry)', () => {
     const world = makeWorld();
     resetProgress(world, 3);
-    const fresh = world.getResource<GameProgress>(GAME_PROGRESS_KEY);
+    const fresh = world.getResource(GAME_PROGRESS_KEY);
     expect(fresh.score).toBe(0);
     expect(fresh.total).toBe(3);
   });
@@ -149,7 +143,7 @@ describe('Play -> Title -> Play replay leaves no leftover entities (AC-11)', () 
     expect(run1.some((e) => world.get(e, Scoped).ok)).toBe(false);
 
     // And the scoreboard is fresh for run 2.
-    const progress = world.getResource<GameProgress>(GAME_PROGRESS_KEY);
+    const progress = world.getResource(GAME_PROGRESS_KEY);
     expect(progress.score).toBe(0);
     expect(progress.health).toBe(INITIAL_HEALTH);
   });

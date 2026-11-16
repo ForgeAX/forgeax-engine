@@ -1,6 +1,7 @@
+import { defineSystem } from "@forgeax/engine-ecs";
 import { createApp } from '@forgeax/engine-app/browser';
 import { Update } from '@forgeax/engine-ecs';
-import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine-input';
+import { INPUT_SNAPSHOT_RESOURCE_KEY } from '@forgeax/engine-input';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import {
   buildRandomSamplingWorld,
@@ -19,11 +20,11 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
 
   let mode: 'interior' | 'boundary' = 'interior';
 
-  app.world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'random-sampling',
     queries: [],
     fn: (world) => {
-      const snapshot = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+      const snapshot = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
       const { spawn, toggleMode } = stepRandomSampling(snapshot);
       if (toggleMode) {
         mode = mode === 'interior' ? 'boundary' : 'interior';
@@ -33,6 +34,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       }
     },
   });
+app.world.addSystem(Update, systemToken1);
 
   const started = app.start();
   if (!started.ok) {

@@ -358,17 +358,18 @@ async function mintSpriteAssets(world, layout) {
       world.assets.create({
         kind: 'material',
         passes: [
-          // feat-20260626-sprite-transparent-collapse M3 — post M1/M2
-          // SSOT: `renderState.blend` drives LDR split + premultiplied-
-          // alpha blend pipeline (preset `SPRITE_PREMULTIPLIED_ALPHA_BLEND`).
-          { name: 'Forward', program: { module: 'forgeax::sprite' }, renderState: { ...spritePassRenderState, tags: { LightMode: 'Forward' }, queue: 3000 } },
+            // feat-20260626-sprite-transparent-collapse M3 — post M1/M2
+            // SSOT: `renderState.blend` drives LDR split + premultiplied-
+            // alpha blend pipeline (preset `SPRITE_PREMULTIPLIED_ALPHA_BLEND`).
+            { name: 'Forward', program: { module: 'forgeax::sprite' }, renderState: { ...spritePassRenderState, tags: { LightMode: 'Forward' }, queue: 3000 },
+            },
         ],
         parameters: SPRITE_PARAMETERS,
         values: {
-          // feat-20260625 M3 / w11 (D-4): UBO-aligned field names. layout.pivot
-          // [px, py] folds into pivotAndSize.xy; .zw is the unused legacy size
-          // slot kept for std140 byte stability (sprite.wgsl ignores it).
-          colorTint: SPRITE_COLOR_TINTS[i],
+            // feat-20260625 M3 / w11 (D-4): UBO-aligned field names. layout.pivot
+            // [px, py] folds into pivotAndSize.xy; .zw is the unused legacy size
+            // slot kept for std140 byte stability (sprite.wgsl ignores it).
+            colorTint: SPRITE_COLOR_TINTS[i],
           baseColorTexture: textureHandle,
           region: [0, 0, 1, 1],
           pivotAndSize: [layout.pivot[0], layout.pivot[1], 1, 1],
@@ -394,6 +395,7 @@ const primitiveQuad = sceneAssets.create(createPrimitiveMesh('quad').unwrap()).u
 
   const worldAttachment1 = renderer.attach(world);
   if (!worldAttachment1.ok) throw worldAttachment1.error;
+  try {
   const mint = await mintSpriteAssets(world, layout);
   if (!mint.ok) {
     failures.push(`case ${scene}/${tonemap}: synthetic texture upload: ${mint.error.code}`);
@@ -463,11 +465,7 @@ const primitiveQuad = sceneAssets.create(createPrimitiveMesh('quad').unwrap()).u
   let framesObserved = 0;
   for (let i = 0; i < TARGET_FRAMES; i++) {
     world.update().unwrap();
-    await drawReadyFrame(renderer, {
-      leases: [worldAttachment1.value],
-      camera: { lease: worldAttachment1.value },
-      environment: { lease: worldAttachment1.value },
-    });
+    await drawReadyFrame(renderer, { source: worldAttachment1.value });
     framesObserved++;
   }
 
@@ -589,6 +587,9 @@ const primitiveQuad = sceneAssets.create(createPrimitiveMesh('quad').unwrap()).u
       `case ${scene}/${tonemap}: reference PNG drift ${exceedCount} px > eps=${SMOKE_PIXEL_THRESHOLD} (max=${maxDelta.toFixed(4)})`,
     );
   }
+} finally {
+    worldAttachment1.value.dispose();
+  }
 }
 
 // ── 9-slice structural section (feat-20260527-sprite-nineslice / M5 / w22) ──
@@ -688,9 +689,9 @@ const primitiveNineSliceQuad = sceneAssets.create(createPrimitiveMesh('nine-slic
     ],
     parameters: SPRITE_PARAMETERS,
     values: {
-      // feat-20260625 M3/w11 (D-4): UBO-aligned. slicesAndMode merges legacy
-      // slices[4] (LTRB) + sliceMode (mode>=0 stretch, <0 tile) into vec4.
-      colorTint: [1, 1, 1, 1],
+        // feat-20260625 M3/w11 (D-4): UBO-aligned. slicesAndMode merges legacy
+        // slices[4] (LTRB) + sliceMode (mode>=0 stretch, <0 tile) into vec4.
+        colorTint: [1, 1, 1, 1],
       baseColorTexture: { texture: ninesliceTextureHandle, sampler: clampSamplerHandle },
       region: [0, 0, 1, 1],
       pivotAndSize: [0.5, 0.5, 1, 1],
@@ -749,11 +750,7 @@ const primitiveNineSliceQuad = sceneAssets.create(createPrimitiveMesh('nine-slic
     );
     for (let i = 0; i < ninesliceFrames; i++) {
       world.update().unwrap();
-      await drawReadyFrame(renderer, {
-        leases: [ninesliceAttachment.value],
-        camera: { lease: ninesliceAttachment.value },
-        environment: { lease: ninesliceAttachment.value },
-      });
+      await drawReadyFrame(renderer, { source: ninesliceAttachment.value });
     }
     await sharedDevice?.queue.onSubmittedWorkDone();
   const ninesliceMetricsAfter = ninesliceMetrics?.snapshot() ?? {};

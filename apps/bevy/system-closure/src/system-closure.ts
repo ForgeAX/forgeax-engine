@@ -1,3 +1,4 @@
+import { defineResource } from '@forgeax/engine-ecs';
 // Reproduction of Bevy's ecs/system_closure example.
 //
 // Bevy registers ordinary closures, closures with persistent local state, and
@@ -6,6 +7,7 @@
 // the closure owns only the state it intentionally captures.
 
 
+import { defineSystem } from "@forgeax/engine-ecs";
 import { Time, Update, World, defineComponent, type EntityHandle } from '@forgeax/engine-ecs';
 import { Camera, Materials, MeshFilter, MeshRenderer, orthographic } from '@forgeax/engine-render';
 
@@ -15,7 +17,7 @@ import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 
 
-export const SYSTEM_CLOSURE_STATE = 'bevySystemClosureState';
+export const SYSTEM_CLOSURE_STATE = defineResource<unknown>("bevySystemClosureState");
 
 const TRACK_WIDTH = 520;
 const SIMPLE_START = -TRACK_WIDTH / 2;
@@ -108,23 +110,25 @@ export function buildSystemClosureWorld(world: World): SystemClosureState {
   const outsideVariable = 7;
   let persistentValue = 0;
 
-  world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'system-closure-clock',
     queries: [],
     fn: (world) => {
       state.elapsed += world.getResource(Time).delta;
     },
-  }).unwrap();
+  });
+world.addSystem(Update, systemToken1).unwrap();
 
   const simpleClosure = (): void => {
     state.simpleRuns += 1;
     setX(world, simpleEntity, trackX(SIMPLE_START, state.elapsed * 1.6));
   };
-  world.addSystem(Update, {
+  const systemToken2 = defineSystem({
     name: 'system-closure-simple',
     queries: [],
     fn: simpleClosure,
-  }).unwrap();
+  });
+world.addSystem(Update, systemToken2).unwrap();
 
   const statefulClosure = (): void => {
     persistentValue += 1;
@@ -132,22 +136,24 @@ export function buildSystemClosureWorld(world: World): SystemClosureState {
     state.statefulValue = persistentValue;
     setX(world, statefulEntity, trackX(STATEFUL_START, persistentValue * 0.08));
   };
-  world.addSystem(Update, {
+  const systemToken3 = defineSystem({
     name: 'system-closure-stateful',
     queries: [],
     fn: statefulClosure,
-  }).unwrap();
+  });
+world.addSystem(Update, systemToken3).unwrap();
 
   const capturedClosure = (): void => {
     state.capturedRuns += 1;
     state.capturedValue = outsideVariable + state.elapsed;
     setX(world, capturedEntity, trackX(CAPTURED_START, state.capturedValue * 0.5));
   };
-  world.addSystem(Update, {
+  const systemToken4 = defineSystem({
     name: 'system-closure-captured',
     queries: [],
     fn: capturedClosure,
-  }).unwrap();
+  });
+world.addSystem(Update, systemToken4).unwrap();
 
   return state;
 }

@@ -19,6 +19,11 @@ export interface LiveRasterBatch {
   /** Complete LOD windows, retained independently for the two visible regions. */
   visibleBindGroups: { early?: readonly BindGroup[]; late?: readonly BindGroup[] } | undefined;
   readonly bundles: PreparedRasterBundleCache;
+  /**
+   * Stable while every input a recorded command reads is unchanged; candidate
+   * membership and counts are GPU-culled data and never replace it.
+   */
+  readonly command: object;
 }
 
 export interface LiveRasterCache {
@@ -81,24 +86,10 @@ export function projectLiveRaster(
     }
     const previous =
       retained?.batch.generation === prepared.batch.generation ? retained : undefined;
-    const batch = prepared.batch;
-    const deformation = batch.prepared?.identity.deformation ?? 'rigid';
-    // Bindings describe physical windows, independent of their current
-    // candidates/material. Reuse the previous ordered slot only when both
-    // LOD phases still address exactly the same resources and ranges.
-    // The late base is the view's allocated capacity, fixed per buffer.
     const visibleBindGroups =
       previous !== undefined &&
-      cached?.visibleBuffer === visibleBuffer &&
-      (deformation === 'skin'
-        ? cached.skinBindings === skinBindings
-        : cached.rigidBindings === rigidBindings) &&
-      (previous.batch.prepared?.identity.deformation ?? 'rigid') === deformation &&
-      previous.batch.visibleBase === batch.visibleBase &&
-      (previous.batch.visibleAllocationCapacity ?? previous.batch.visibleCapacity) ===
-        (batch.visibleAllocationCapacity ?? batch.visibleCapacity) &&
-      batchLevelStride(previous.batch) === batchLevelStride(batch) &&
-      batchLodLevelCount(previous.batch) === batchLodLevelCount(batch)
+      sameWindowBindings(cached, visibleBuffer, rigidBindings, skinBindings, prepared.batch) &&
+      sameWindows(previous.batch, prepared.batch)
         ? previous.visibleBindGroups
         : undefined;
     value.push({
@@ -107,10 +98,16 @@ export function projectLiveRaster(
       classKey: prepared.rasterClassKey,
       recordingClassKey: prepared.recordingRasterClassKey,
       mesh: prepared.mesh,
-      meshBinding: meshBindings.forMesh(prepared.mesh),
+      meshBinding: meshBindings.forMesh(prepared.mesh, cached?.meshBindings),
       materialBindingClass: prepared.materialBindingClass,
       visibleBindGroups,
       bundles: previous?.bundles ?? new PreparedRasterBundleCache(),
+      command:
+        previous !== undefined &&
+        visibleBindGroups !== undefined &&
+        sameCommandInputs(previous, prepared)
+          ? previous.command
+          : {},
     });
   }
   return {
@@ -121,4 +118,58 @@ export function projectLiveRaster(
     value: Object.freeze(value),
     meshBindings,
   };
+}
+
+/** Whether a row records the same draw commands as the retained live batch of its id. */
+function sameCommandInputs(previous: LiveRasterBatch, prepared: PreparedBatch): boolean {
+  const left = previous.batch;
+  const right = prepared.batch;
+  return (
+    previous.classKey === prepared.rasterClassKey &&
+    previous.recordingClassKey === prepared.recordingRasterClassKey &&
+    previous.materialBindingClass === prepared.materialBindingClass &&
+    previous.mesh === prepared.mesh &&
+    left.key.drawKind === right.key.drawKind &&
+    left.key.topology === right.key.topology &&
+    left.key.materialPass === right.key.materialPass &&
+    left.key.materialSlot === right.key.materialSlot &&
+    left.binding?.material === right.binding?.material &&
+    left.indirectOffset === right.indirectOffset &&
+    (left.visibleCapacity === 0) === (right.visibleCapacity === 0) &&
+    (left.lod?.coverages.length ?? 0) === (right.lod?.coverages.length ?? 0)
+  );
+}
+
+/** Whether the batch's visible-window adapter is physically unchanged. */
+function sameWindowBindings(
+  cached: LiveRasterCache | undefined,
+  visibleBuffer: Buffer,
+  rigidBindings: object,
+  skinBindings: object | undefined,
+  batch: GpuDrivenBatch,
+): boolean {
+  return (
+    cached?.visibleBuffer === visibleBuffer &&
+    (batch.prepared?.identity.deformation === 'skin'
+      ? cached.skinBindings === skinBindings
+      : cached.rigidBindings === rigidBindings)
+  );
+}
+
+/**
+ * Bindings describe physical windows, independent of their current
+ * candidates/material. Reuse the previous ordered slot only when both LOD
+ * phases still address exactly the same resources and ranges. The late base
+ * is the view's allocated capacity, fixed per buffer.
+ */
+function sameWindows(previous: GpuDrivenBatch, batch: GpuDrivenBatch): boolean {
+  return (
+    (previous.prepared?.identity.deformation ?? 'rigid') ===
+      (batch.prepared?.identity.deformation ?? 'rigid') &&
+    previous.visibleBase === batch.visibleBase &&
+    (previous.visibleAllocationCapacity ?? previous.visibleCapacity) ===
+      (batch.visibleAllocationCapacity ?? batch.visibleCapacity) &&
+    batchLevelStride(previous) === batchLevelStride(batch) &&
+    batchLodLevelCount(previous) === batchLodLevelCount(batch)
+  );
 }

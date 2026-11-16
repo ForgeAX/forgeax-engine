@@ -235,7 +235,7 @@ let framesObserved = 0;
 let firstCollectionInspection;
 for (let i = 0; i < TARGET_FRAMES; i++) {
   world.update().unwrap();
-  const r = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
+  const r = renderer.draw({ source: lease });
   if (!r.ok) {
     console.error(`[smoke] draw frame ${i} error: ${r.error.code}`);
   } else {
@@ -335,7 +335,8 @@ const SAMPLE_POINTS = [
 const centerPixel = readRgba(SAMPLE_POINTS[4].sx, SAMPLE_POINTS[4].sy);
 const BACKGROUND_REF = centerPixel;
 
-console.log(`[smoke] backgroundRef (NDC center)=${JSON.stringify(BACKGROUND_REF.map(v => Number(v.toFixed(4))))}`);
+console.log(`[smoke] backgroundRef (NDC center)=${JSON.stringify(BACKGROUND_REF.map((v) => Number(v.toFixed(4))))}`,
+);
 
 // Visibility threshold: a pixel is "lit" if its distance from the background
 // reference exceeds this. The background is ~(0.25,0.25,0.31) and bright
@@ -408,7 +409,7 @@ if (firstCollectionInspection === undefined || (firstCollectionInspection.upload
 // A FALSIFY run that PASSES would mean the gate cannot discriminate,
 // i.e. it is a false green (same failure family as
 // dawn-smoke-loose-threshold-masks-browser-black).
-const boundaryVisible = sampleResults.slice(0, 4).filter(s => s.visible).length;
+const boundaryVisible = sampleResults.slice(0, 4).filter((s) => s.visible).length;
 const MIN_BOUNDARY_VISIBLE = 3;
 
 if (boundaryVisible < MIN_BOUNDARY_VISIBLE) {

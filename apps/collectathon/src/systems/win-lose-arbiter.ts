@@ -20,14 +20,14 @@
 // Win request is harmless -- same target state -- but the arbiter is the SSOT for
 // the mutual-exclusion guarantee.)
 
-import type { EntityHandle, SystemHandle, World } from '@forgeax/engine-ecs';
+import type { EntityHandle, System, World } from '@forgeax/engine-ecs';
 import { defineSystem } from '@forgeax/engine-ecs';
 import { CollidingEntities } from '@forgeax/engine-physics';
 import type { StateToken } from '@forgeax/engine-state';
 import { setNextState } from '@forgeax/engine-state';
-
 import { Portal, PortalState } from '../components';
-import { GAME_PROGRESS_KEY, type GameProgress } from '../resources';
+import { GAME_PROGRESS_KEY } from '../resources';
+import { GuardianHitOrder, PortalActivateOrder } from '../system-order';
 
 export interface ArbiterInput {
   readonly health: number;
@@ -66,14 +66,14 @@ export function createArbiterSystem(
   player: EntityHandle,
   portal: EntityHandle,
   gameState: StateToken,
-): SystemHandle<readonly []> {
+): System<readonly []> {
   return defineSystem({
     name: 'win-lose-arbiter',
-    after: ['portal-activate', 'guardian-hit'],
+    after: [PortalActivateOrder, GuardianHitOrder],
     queries: [],
     fn: (world: World) => {
       if (!world.hasResource(GAME_PROGRESS_KEY)) return;
-      const progress = world.getResource<GameProgress>(GAME_PROGRESS_KEY);
+      const progress = world.getResource(GAME_PROGRESS_KEY);
 
       const verdict = arbitrate({
         health: progress.health,

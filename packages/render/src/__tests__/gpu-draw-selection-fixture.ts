@@ -6,10 +6,9 @@ import { MaterialResource } from '../material-resource';
 import { defaultMaterialSnapshot, type RenderableSnapshot } from '../render-system-extract';
 import { RenderScene } from '../scene/render-scene';
 
-export function receiptRow(worldId = 0) {
+export function receiptRow() {
   const material = new MaterialResource(defaultMaterialSnapshot(17));
   const source: RenderableSnapshot = {
-    worldId,
     entityKey: 42,
     assetHandle: 9,
     transform: { world: mat4.identity(mat4.create()) },
@@ -57,7 +56,6 @@ export function receiptSelection(
     scene.apply(
       rows.map(({ source }) => ({
         kind: 'update' as const,
-        worldId: source.worldId,
         entityKey: source.entityKey,
         snapshot: source,
       })),

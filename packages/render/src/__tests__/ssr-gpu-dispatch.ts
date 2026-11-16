@@ -14,6 +14,8 @@ import {
   GPU_BUFFER_USAGE_UNIFORM,
 } from '../gpu-usage';
 import { RhiErrorListenerRegistry } from '../lifecycle';
+import type { _InternalRenderPipelineContext } from '../record/render-context';
+import { scenePipelinePreparations } from '../record/scene-pipeline-preparation';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
 import type { DepthPyramidShaderSources, SsrShaderSources } from '../render-contract';
 import type { RenderPipelineFrame } from '../render-pipeline';
@@ -298,7 +300,12 @@ export function admittedSsrSpatial() {
       projection: 'perspective',
       near: 0.1,
       far: 100,
-      screenSpaceReflection: { maxDistance: 40, thickness: 0.2, maxRoughness: 0.6 },
+      screenSpaceReflection: {
+        waterTemporal: 0,
+        maxDistance: 40,
+        thickness: 0.2,
+        maxRoughness: 0.6,
+      },
     },
     environment: {
       lane: 'deferred',
@@ -329,6 +336,36 @@ function runtimeFor(device: RhiDevice, createModule: typeof createShaderModuleIm
     ),
     errorRegistry,
   };
+}
+
+type SsrDispatchFrame = RenderPipelineFrame & {
+  readonly frameState: {
+    pipelinePreparationPending: boolean;
+    pipelinePreparationPendingReason?: import('../render-contract').FramePresentationPendingReason;
+  };
+};
+
+/** Direct fixtures obey the compiled graph's utility preparation and native Result barrier. */
+export async function prepareSsrGpuDispatch(
+  graph: RenderGraphBuilder<RenderPipelineFrame>,
+  frame: SsrDispatchFrame,
+): Promise<void> {
+  const prepare = () => {
+    frame.frameState.pipelinePreparationPending = false;
+    delete frame.frameState.pipelinePreparationPendingReason;
+    for (const program of scenePipelinePreparations(graph))
+      if (program.kind === 'utility') program(frame as _InternalRenderPipelineContext, new Map());
+  };
+  prepare();
+  if (!frame.frameState.pipelinePreparationPending) return;
+  const completion = frame.runtime.device.pipelineLibrary?.pendingRuntimeCompilation?.();
+  if (completion === undefined)
+    throw new Error('SSR graph preparation is pending without a native compilation receipt');
+  const result = await completion;
+  if (!result.ok) throw result.error;
+  prepare();
+  if (frame.frameState.pipelinePreparationPending)
+    throw new Error('SSR graph preparation remained pending after its native compilation receipt');
 }
 
 function seedSceneSource(options: SsrGpuDispatchOptions) {
@@ -815,6 +852,7 @@ export async function runSsrGpuDispatch(
     view,
     depthPyramid: pyramid,
     temporal: {
+      profile: 'opaque',
       previousHistory: previousHistory.view,
       outputHistory: outputHistory.view,
       previousSurface: previousSurface.view,
@@ -1011,7 +1049,9 @@ export async function runSsrGpuDispatch(
       ssrShaders: shaders,
       depthPyramidShaders: shaders,
       bindGroupCounts,
-    } as unknown as RenderPipelineFrame;
+      frameState: { pipelinePreparationPending: false },
+    } as unknown as SsrDispatchFrame;
+    await prepareSsrGpuDispatch(graph, frame);
     const executed = compiled.execute(frame);
     if (!executed.ok) throw new Error(JSON.stringify(executed.error));
     if (frameIndex === 1) bindGroupCounts.createBindGroup = 0;

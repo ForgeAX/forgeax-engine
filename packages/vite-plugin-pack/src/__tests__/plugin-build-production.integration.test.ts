@@ -577,7 +577,7 @@ export default definePack({
           programFingerprint: 'sha256:direct-cooked',
           emitters: [],
           program: {
-            format: 'forgeax-vfx-program-4',
+            format: 'forgeax-vfx-program-5',
             fingerprint: 'sha256:direct-cooked',
             emitters: [],
           },

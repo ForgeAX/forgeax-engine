@@ -9,9 +9,10 @@ import type {
   Result,
 } from '@forgeax/engine-types';
 import { err, ok } from '@forgeax/engine-types';
+import { freezeRuntimePayload } from './immutable-payload.js';
 import { packEnvelopeIssue } from './pack-envelope.js';
+import { readPackJson } from './pack-json.js';
 import { readPackage } from './package-read.js';
-import { readRetainedPackJson } from './retained-pack-json.js';
 import { assetLoadCancelled, waitForAsset } from './wait-for-asset.js';
 
 interface PackReaderOptions {
@@ -29,20 +30,6 @@ function invalid(guid: string, reason: string): Result<never, AssetLoadError> {
   });
 }
 
-/** Freeze an owned value; never pass a mutable retained Pack to this helper. */
-export function freezePackValue<T>(value: T): T {
-  if (
-    value !== null &&
-    typeof value === 'object' &&
-    !ArrayBuffer.isView(value) &&
-    !Object.isFrozen(value)
-  ) {
-    Object.freeze(value);
-    for (const child of Object.values(value as Record<string, unknown>)) freezePackValue(child);
-  }
-  return value;
-}
-
 function sameTuple(left: AssetPublicationTuple, right: AssetPublicationTuple): boolean {
   return (
     left.scopeId === right.scopeId &&
@@ -53,22 +40,14 @@ function sameTuple(left: AssetPublicationTuple, right: AssetPublicationTuple): b
 }
 
 /**
- * A verified Pack is a read cache, not an owner fact: decoders copy what they
- * keep and shared immutable facts are retained by their own consumers. Sibling
- * reads of one load burst reuse the held document; once no read has arrived for
- * this window the documents are only weakly held, so a later read reuses a live
- * document or fetches and verifies the same tuple again.
+ * One fetch per tuple at a time: concurrent readers of the same Pack share the
+ * in-flight request. Settled results are not retained here; asset-source owns
+ * the per-guid asset cache and the material program table owns program bytes.
  */
-const HOLD_AFTER_LAST_READ_MS = 2_000;
-
 export class PackReader {
   private readonly fetcher: PackageFetcher | undefined;
   private readonly lifetime = new AbortController();
-  private readonly held = new Map<string, VerifiedPack>();
-  private readonly released = new Map<string, WeakRef<VerifiedPack>>();
   private readonly pending = new Map<string, Promise<Result<VerifiedPack, AssetLoadError>>>();
-  private lastRead = 0;
-  private releaseTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(options: PackReaderOptions = {}) {
     // An injected fetcher is an explicit transport lease and is fixed for the
@@ -85,26 +64,16 @@ export class PackReader {
   ): Promise<Result<VerifiedPack, AssetLoadError>> {
     if (signal.aborted || this.lifetime.signal.aborted) return err(assetLoadCancelled(packageUrl));
     const key = this.key(packageUrl, expected);
-    this.touch();
-    const cached = this.held.get(key) ?? this.released.get(key)?.deref();
-    if (cached !== undefined) {
-      this.held.set(key, cached);
-      return ok(cached);
-    }
     let request = this.pending.get(key);
     if (request === undefined) {
-      const current = this.fetchAndVerify(packageUrl, expected, this.lifetime.signal, fetcher).then(
-        (result) => {
-          if (this.pending.get(key) === current) {
-            this.pending.delete(key);
-            if (result.ok) {
-              this.held.set(key, result.value);
-              this.touch();
-            }
-          }
-          return result;
-        },
-      );
+      const current = this.fetchAndVerify(
+        packageUrl,
+        expected,
+        this.lifetime.signal,
+        fetcher,
+      ).finally(() => {
+        if (this.pending.get(key) === current) this.pending.delete(key);
+      });
       this.pending.set(key, current);
       request = current;
     }
@@ -116,44 +85,6 @@ export class PackReader {
   dispose(): void {
     this.lifetime.abort();
     this.pending.clear();
-    clearTimeout(this.releaseTimer);
-    this.releaseTimer = undefined;
-    this.held.clear();
-    this.released.clear();
-  }
-
-  /** Demote every held document to a weak reference now, e.g. under host memory pressure. */
-  trim(): void {
-    clearTimeout(this.releaseTimer);
-    this.releaseTimer = undefined;
-    this.release();
-  }
-
-  private touch(): void {
-    // Without WeakRef a released document could not be reused, so keep the
-    // original strong cache rather than re-reading every later Pack request.
-    if (typeof WeakRef !== 'function') return;
-    this.lastRead = Date.now();
-    if (this.releaseTimer === undefined) this.scheduleRelease(HOLD_AFTER_LAST_READ_MS);
-  }
-
-  private scheduleRelease(delay: number): void {
-    const timer = setTimeout(() => {
-      this.releaseTimer = undefined;
-      const idle = Date.now() - this.lastRead;
-      if (idle < HOLD_AFTER_LAST_READ_MS) this.scheduleRelease(HOLD_AFTER_LAST_READ_MS - idle);
-      else this.release();
-    }, delay);
-    (timer as { unref?: () => void }).unref?.();
-    this.releaseTimer = timer;
-  }
-
-  private release(): void {
-    if (typeof WeakRef !== 'function') return;
-    for (const [key, pack] of this.released)
-      if (pack.deref() === undefined) this.released.delete(key);
-    for (const [key, pack] of this.held) this.released.set(key, new WeakRef(pack));
-    this.held.clear();
   }
 
   private async fetchAndVerify(
@@ -163,7 +94,7 @@ export class PackReader {
     boundFetcher?: PackageFetcher,
   ): Promise<Result<VerifiedPack, AssetLoadError>> {
     const fetcher = boundFetcher ?? this.fetcher ?? globalThis.fetch.bind(globalThis);
-    const read = await readPackage(fetcher, packageUrl, readRetainedPackJson, { signal });
+    const read = await readPackage(fetcher, packageUrl, readPackJson, { signal });
     if (!read.ok) {
       if (read.error.malformed) return invalid(packageUrl, 'invalid JSON');
       if (signal.aborted) return err(assetLoadCancelled(packageUrl));
@@ -174,25 +105,26 @@ export class PackReader {
         detail: { guid: packageUrl, packageUrl },
       });
     }
-    const value = read.value;
-    const verified = this.verify(value, expected);
-    if (!verified.ok && verified.error.code === 'asset-package-invalid') {
-      return invalid(packageUrl, verified.error.detail.reason);
+    // readPackJson has already decoded the material program table.
+    const checked = validatePackEnvelope(read.value, expected);
+    if (!checked.ok && checked.error.code === 'asset-package-invalid') {
+      return invalid(packageUrl, checked.error.detail.reason);
     }
-    return verified;
+    if (!checked.ok) return checked;
+    return ok(freezeRuntimePayload(read.value as VerifiedPack));
   }
 
   private key(packageUrl: string, tuple: AssetPublicationTuple): string {
     return `${packageUrl}\u0000${tuple.scopeId}\u0000${tuple.generation}\u0000${tuple.digest}\u0000${tuple.outputSetDigest}`;
   }
 
+  /** Verify a raw document from a caller that did not decode it (publication capture and validation). */
   verify(value: unknown, expected: AssetPublicationTuple): Result<VerifiedPack, AssetLoadError> {
     const decoded = decodeMaterialProgramWire(value);
     if (!decoded.ok) return invalid('', 'invalid material program table');
-    value = decoded.value;
-    const checked = validatePackEnvelope(value, expected);
+    const checked = validatePackEnvelope(decoded.value, expected);
     if (!checked.ok) return checked;
-    return ok(freezePackValue(value as VerifiedPack));
+    return ok(freezeRuntimePayload(decoded.value as VerifiedPack));
   }
 }
 

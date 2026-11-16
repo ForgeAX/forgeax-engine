@@ -2,6 +2,7 @@ import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { FixedTime, World } from '@forgeax/engine-ecs';
 import { createBoxGeometry, createMeshBuilder } from '@forgeax/engine-geometry';
 import { equirectContribution } from '@forgeax/engine-image';
+import { renderGraphCompileCount } from '@forgeax/engine-render-graph';
 import {
   type RenderPipelineDescriptor,
   type RhiDevice,
@@ -364,7 +365,7 @@ async function fixture(
         ? { publication: encodeRenderPublication(packet) }
         : lease === undefined
           ? undefined
-          : { leases: [lease], camera: { lease }, environment: { lease } };
+          : { source: lease };
     if (request === undefined) throw new Error('missing frame owner');
     const drawn = renderer.draw(pointShadow ? { ...request, geometryLane: 'direct' } : request);
     if (!drawn.ok)
@@ -758,6 +759,7 @@ it('retains the accepted picture while a real equirect producer is pending', asy
 
 it('keeps preparation-barrier production state identical with Cluster conformance off or on', async () => {
   const run = async (conformanceEnabled: boolean) => {
+    const compilationStart = renderGraphCompileCount();
     const f = await fixture('color', false, false, false, false, [], standardPipeline);
     let releaseFence: (() => void) | undefined;
     try {
@@ -817,7 +819,14 @@ it('keeps preparation-barrier production state identical with Cluster conformanc
       if (conformanceEnabled) expect(f.host.clusterWorkObservationForConformance()).toBeDefined();
       else expect(f.host.clusterWorkObservationForConformance()).toBeUndefined();
       ready.recycle();
-      return after;
+      // Graph generations are realm-wide compile identities. Independent Renderer
+      // runs must advance by the same amount, while the barrier above compares
+      // each run's unchanged absolute generation and complete production state.
+      return {
+        ...after,
+        graph: { ...after.graph, generation: after.graph.generation - compilationStart },
+        compiledGraphs: renderGraphCompileCount() - compilationStart,
+      };
     } finally {
       releaseFence?.();
       f.release();
@@ -1405,7 +1414,7 @@ it.each([
           selector: COLOR_PASS_SELECTOR,
           selection: 'camera-outline',
           // An arbitrary callback still takes precedence over the declared recipe.
-          selectEntities: (frame) => ({ worldId: frame.camera.worldId ?? 0, entities: [] }),
+          selectEntities: () => ({ entities: [] }),
         }).unwrap();
       }
       if (result.ok && kind === 'capture')

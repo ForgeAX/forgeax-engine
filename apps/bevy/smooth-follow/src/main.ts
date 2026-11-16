@@ -17,6 +17,7 @@
 // The World + step math live in the shared src/smooth-follow.ts (SSOT for this app
 // AND the dawn smoke), so the two never drift.
 
+import { defineSystem } from "@forgeax/engine-ecs";
 import { createApp } from '@forgeax/engine-app/browser';
 import { Time, Update } from '@forgeax/engine-ecs';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
@@ -47,22 +48,24 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
 
   // Bevy: `.add_systems(Update, (move_target, move_follower).chain())` — target moves
   // first, then the follower damps toward the target's NEW position, both off Time.delta.
-  app.world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'move-target',
     queries: [],
     fn: (world) => {
-      const dt = world.hasResource('Time') ? world.getResource(Time).delta : 0;
+      const dt = world.hasResource(Time) ? world.getResource(Time).delta : 0;
       stepTarget(world, dt);
     },
   });
-  app.world.addSystem(Update, {
+app.world.addSystem(Update, systemToken1);
+  const systemToken2 = defineSystem({
     name: 'move-follower',
     queries: [],
     fn: (world) => {
-      const dt = world.hasResource('Time') ? world.getResource(Time).delta : 0;
+      const dt = world.hasResource(Time) ? world.getResource(Time).delta : 0;
       stepFollower(world, dt);
     },
   });
+app.world.addSystem(Update, systemToken2);
 
   const started = app.start();
   if (!started.ok) console.error('[bevy-smooth-follow] app.start failed:', started.error);

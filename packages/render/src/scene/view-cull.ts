@@ -238,11 +238,11 @@ export class ViewCull {
       residualSet: (selection) => residualOf(selection).set,
       residualSlots: recordsOf,
       displays(row) {
-        const slot = slots.identitySlot(row.worldId, row.entityKey);
+        const slot = slots.identitySlot(row.entityKey);
         return slot !== undefined && dispatch.displays(slot);
       },
-      row(worldId, entity) {
-        const slot = slots.identitySlot(worldId, entity);
+      row(entity) {
+        const slot = slots.identitySlot(entity);
         return slot === undefined ? undefined : rowAt(slot);
       },
       slots,

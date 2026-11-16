@@ -1,5 +1,6 @@
 import type { RhiDevice } from '@forgeax/engine-rhi';
 import { describe, expect, it } from 'vitest';
+import { registeredSystem } from '../../__tests__/registered-system.fixture';
 import type { CubeCaptureFrameInput } from '../../record/frame';
 import type { RenderSystemInternals } from '../../record/render-context';
 import { MaterialFrame } from '../../scene/material-dispatch';
@@ -109,7 +110,12 @@ describe('render-subsurface-admission system', () => {
 
   it('fails the recording naming the system once it is removed', () => {
     const { world, view, internals } = setup();
-    expect(world.removeSystem(RenderQueue, RENDER_SUBSURFACE_ADMISSION_SYSTEM).ok).toBe(true);
+    expect(
+      world.removeSystem(
+        RenderQueue,
+        registeredSystem(world, RenderQueue, 'render-subsurface-admission'),
+      ).ok,
+    ).toBe(true);
     viewPassPlanQueue(world, view).stage(staged(subsurface()));
     expect(world.run(RenderQueue).ok).toBe(true);
     expect(viewSubsurfaceAdmissionOf(world, view)).toBeUndefined();

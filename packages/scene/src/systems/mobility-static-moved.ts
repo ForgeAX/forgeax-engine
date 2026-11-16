@@ -1,4 +1,10 @@
-import { type EntityHandle, type Query, Update, type World } from '@forgeax/engine-ecs';
+import {
+  defineSystem,
+  type EntityHandle,
+  type Query,
+  Update,
+  type World,
+} from '@forgeax/engine-ecs';
 import { Mobility, MobilityKindValue } from '../components/mobility';
 import { Transform } from '../components/transform';
 import { emitMobilityDiagnostic } from '../mobility-diagnostics';
@@ -50,15 +56,14 @@ function detectMobilityStaticMoved(world: World): void {
 }
 
 export function registerMobilityStaticMoved(world: World): () => void {
-  world
-    .addSystem(Update, {
-      name: MOBILITY_STATIC_MOVED_SYSTEM,
-      queries: [],
-      fn: detectMobilityStaticMoved,
-    })
-    .unwrap();
+  const systemToken1 = defineSystem({
+    name: MOBILITY_STATIC_MOVED_SYSTEM,
+    queries: [],
+    fn: detectMobilityStaticMoved,
+  });
+  world.addSystem(Update, systemToken1).unwrap();
   return () => {
-    world.removeSystem(Update, MOBILITY_STATIC_MOVED_SYSTEM);
+    world.removeSystem(Update, systemToken1);
     QUERIES.delete(world);
   };
 }

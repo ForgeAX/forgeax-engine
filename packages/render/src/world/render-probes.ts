@@ -17,7 +17,7 @@ export interface ProbeRoster {
 const EMPTY: ProbeRoster = Object.freeze({ facts: Object.freeze([]), revision: 0 });
 
 function keyOf(fact: ReflectionProbeFact): string {
-  return `${fact.worldId}:${fact.entityKey}`;
+  return `${fact.entityKey}`;
 }
 
 /**
@@ -87,7 +87,7 @@ export class RenderProbes {
           .unwrap(),
       );
     }
-    facts.sort((a, b) => a.worldId - b.worldId || a.entityKey - b.entityKey);
+    facts.sort((a, b) => a.entityKey - b.entityKey);
     this.roster = Object.freeze({
       facts: Object.freeze(facts),
       revision: this.roster.revision + 1,

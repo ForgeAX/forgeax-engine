@@ -38,7 +38,7 @@ export function shadowMeshInputCurrent(input: ShadowMeshInput): boolean {
 /** One result of the real shadow query; quiet frames borrow its leases as a root. */
 export function shadowMeshReadsForQuery(
   cached: DirectionalShadowCache | null,
-  worlds: readonly RenderResourceScope[],
+  sourceScope: RenderResourceScope,
   casters: PersistentShadowCasterProjection,
   changes: MeshChanges,
 ): ShadowMeshInput {
@@ -50,8 +50,7 @@ export function shadowMeshReadsForQuery(
     cached.casterContent.dispatchRevision === casters.content.dispatchRevision &&
     cached.casterContent.publicationSource?.resources ===
       casters.content.publicationSource?.resources &&
-    cached.worlds.length === worlds.length &&
-    cached.worlds.every((world, i) => world === worlds[i])
+    cached.sourceScope === sourceScope
   ) {
     const change = changes.query(cached.meshEpoch, old.generation, old.tokens);
     if (change !== 'invalidated') return { reads: old.retain(), epoch: changes.epoch, change };
@@ -74,36 +73,26 @@ function readWorldState(lease: RenderReadLease): DirectionalShadowWorldState {
 
 function sameWorldState(
   cached: DirectionalShadowCache,
-  worlds: readonly RenderResourceScope[],
-  leases: readonly RenderReadLease[] | undefined,
+  sourceScope: RenderResourceScope,
+  lease: RenderReadLease | undefined,
 ): boolean {
-  if (leases === undefined || leases.length !== worlds.length) return false;
-  if (cached.worlds.length !== worlds.length || cached.worldStateTokens.length !== leases.length) {
+  const state = cached.worldStateToken;
+  if (
+    lease === undefined ||
+    state === undefined ||
+    cached.sourceScope !== sourceScope ||
+    state.worldIdentity !== lease.worldIdentity
+  )
+    return false;
+  try {
+    const changes = lease.readChanges(state.version);
+    return (
+      changes.version.structureEpoch === state.version.structureEpoch &&
+      changes.world.changedComponentIds.length === 0
+    );
+  } catch {
     return false;
   }
-  for (let index = 0; index < worlds.length; index += 1) {
-    const world = worlds[index];
-    const lease = leases[index];
-    if (world === undefined || lease === undefined || cached.worlds[index] !== world) return false;
-    const cachedState = cached.worldStateTokens[index];
-    if (cachedState === undefined) return false;
-    if (cachedState.worldIdentity !== lease.worldIdentity) return false;
-    let changes: ReturnType<RenderReadLease['readChanges']>;
-    try {
-      changes = lease.readChanges(cachedState.version);
-    } catch {
-      // Treat malformed or foreign version evidence as stale and rebuild the
-      // atlas rather than reaching through RenderResourceScope for a second mutation clock.
-      return false;
-    }
-    if (
-      changes.version.structureEpoch !== cachedState.version.structureEpoch ||
-      changes.world.changedComponentIds.length !== 0
-    ) {
-      return false;
-    }
-  }
-  return true;
 }
 
 const deformingCasterMemo = new WeakMap<FrameList<RenderableSnapshot>, boolean>();
@@ -126,8 +115,8 @@ function hasDeformingCaster(renderables: FrameList<RenderableSnapshot>): boolean
  */
 function sameCasterContent(
   cached: DirectionalShadowCache,
-  worlds: readonly RenderResourceScope[],
-  leases: readonly RenderReadLease[] | undefined,
+  sourceScope: RenderResourceScope,
+  lease: RenderReadLease | undefined,
   casters: PersistentShadowCasterProjection | undefined,
   publicationSource?: import('../scene/render-scene').ShadowPublicationSource,
 ): boolean {
@@ -139,23 +128,13 @@ function sameCasterContent(
     previous.sceneRevision !== casters.content.sceneRevision ||
     previous.dispatchRevision !== casters.content.dispatchRevision ||
     !sameShadowMaterialFrames(previous.materials, casters.content.materials) ||
-    cached.worlds.length !== worlds.length
-  ) {
+    cached.sourceScope !== sourceScope
+  )
     return false;
-  }
-  for (let index = 0; index < worlds.length; index += 1) {
-    if (cached.worlds[index] !== worlds[index]) return false;
-  }
   if (publicationSource !== undefined) {
     if (previous.publicationSource?.resources !== publicationSource.resources) return false;
-    return !hasDeformingCaster(casters.renderables);
-  }
-  if (leases === undefined || leases.length !== worlds.length) return false;
-  for (let index = 0; index < worlds.length; index += 1) {
-    if (cached.worldStateTokens[index]?.worldIdentity !== leases[index]?.worldIdentity) {
-      return false;
-    }
-  }
+  } else if (lease === undefined || cached.worldStateToken?.worldIdentity !== lease.worldIdentity)
+    return false;
   return !hasDeformingCaster(casters.renderables);
 }
 
@@ -226,8 +205,8 @@ function sameDirectionalShadowQuality(
 export function prepareDirectionalShadowCache(
   internals: RenderSystemInternals,
   frameState: RenderFrameState,
-  worlds: readonly RenderResourceScope[],
-  leases: readonly RenderReadLease[] | undefined,
+  sourceScope: RenderResourceScope,
+  lease: RenderReadLease | undefined,
   lights: ViewLights,
   shadowMapSize: number | undefined,
   mesh: ShadowMeshInput | undefined,
@@ -263,22 +242,22 @@ export function prepareDirectionalShadowCache(
 
   const cached = frameState.directionalShadowCache;
 
-  const hasReadLeases = leases !== undefined && leases.length === worlds.length;
+  const hasReadLease = lease !== undefined;
   const publicationSource =
     lights.directionalCsmConfig?.staggerCascades === true
-      ? currentDirectionalShadowPublication(worlds, casters, cached)
+      ? currentDirectionalShadowPublication(sourceScope, casters, cached)
       : undefined;
-  if (!hasReadLeases && publicationSource === undefined) {
+  if (!hasReadLease && publicationSource === undefined) {
     // No current source witness: avoid preparing a token that cannot be retained.
     return { miss: 'uncached', next: null };
   }
   const meshReads = mesh.reads;
   const cadenceSource =
     lights.directionalCsmConfig?.staggerCascades === true &&
-    (hasReadLeases || publicationSource !== undefined)
+    (hasReadLease || publicationSource !== undefined)
       ? {
-          worlds,
-          worldStateTokens: hasReadLeases ? leases.map(readWorldState) : [],
+          sourceScope,
+          worldStateToken: lease === undefined ? undefined : readWorldState(lease),
           shadowMaterials,
           meshReads,
           lodSelection,
@@ -320,8 +299,8 @@ export function prepareDirectionalShadowCache(
               cached.lodSelection !== lodSelection ||
               !sameTerrainShadowContent(cached.casterContent, casters?.content) ||
               !(
-                sameWorldState(cached, worlds, leases) ||
-                sameCasterContent(cached, worlds, leases, casters, publicationSource)
+                sameWorldState(cached, sourceScope, lease) ||
+                sameCasterContent(cached, sourceScope, lease, casters, publicationSource)
               )
             ? 'content-changed'
             : !sameLightViewProj(cached, lightViewProj)
@@ -337,13 +316,14 @@ export function prepareDirectionalShadowCache(
           : null,
     };
 
-  const worldStateTokens = cadenceSource?.worldStateTokens ?? leases?.map(readWorldState) ?? [];
+  const worldStateToken =
+    cadenceSource?.worldStateToken ?? (lease === undefined ? undefined : readWorldState(lease));
 
   return {
     miss,
     next: {
-      worlds: worlds.slice(),
-      worldStateTokens: worldStateTokens as DirectionalShadowWorldState[],
+      sourceScope,
+      worldStateToken,
       shadowMaterials,
       pipelineHandle: frameState.installedPipelineHandle,
       graphTopologyKey: frameState.compiledFrameGraph.topologyKey,

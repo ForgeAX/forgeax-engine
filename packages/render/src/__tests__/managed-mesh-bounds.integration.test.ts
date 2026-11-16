@@ -10,7 +10,7 @@ import { Materials } from '../materials';
 import { createRenderPublisher } from '../publication/publisher';
 import { RenderPublicationReceiver } from '../publication/receiver';
 import { encodeRenderPublication, renderPublicationTransfers } from '../publication/record';
-import { extractFrames } from '../render-system-extract-tail';
+import { extractSource } from '../render-system-extract-tail';
 import { PersistentRenderScene } from '../scene/render-scene';
 
 const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
@@ -61,20 +61,18 @@ it.each([
       return frame;
     }
     return scene.extractComposition(
-      [world],
-      { cameraOwner: 0, resourceOwner: 0 },
+      world,
       assets,
       (request) => {
         if (request === 'full') work += 1000;
-        else if (typeof request === 'object')
-          for (const entities of request.entitiesByWorld) work += entities?.size ?? 0;
-        return extractFrames([world], 0, assets, caches, {
+        else if (typeof request === 'object') work += request.entities.size;
+        return extractSource(world, assets, caches, {
           cull: 'none',
           retainHidden: true,
           renderables: request,
         });
       },
-      [lease],
+      lease,
     );
   };
   try {
@@ -82,7 +80,7 @@ it.each([
     const before = scene.shadowCasterProjection();
     const original = before?.renderables.at(0);
     assert(original);
-    const originalSlot = scene.compositionSlot(0, original.entityKey);
+    const originalSlot = scene.compositionSlot(original.entityKey);
     assert(originalSlot);
     work = 0;
     const topologyBefore = scene.inspect().topology;
@@ -99,7 +97,7 @@ it.each([
     expect(topologyAfter.contentPatches).toBe(topologyBefore.contentPatches + 1);
     // Draw facts capture a new Mesh root; author records keep their physical address.
     expect(scene.shadowCasterProjection()?.renderables).not.toBe(before?.renderables);
-    expect(scene.compositionSlot(0, original.entityKey)).toBe(originalSlot);
+    expect(scene.compositionSlot(original.entityKey)).toBe(originalSlot);
     expect(before?.renderables.at(0)).toBe(original);
     expect(original.localAabb?.[0]).toBeGreaterThan(-1);
     expect(scene.shadowCasterProjection()?.renderables.at(0)?.localAabb?.[0]).toBe(-100);

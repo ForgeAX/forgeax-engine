@@ -298,12 +298,7 @@ async function fixture(storageBuffer: boolean, published = false) {
     if (request !== undefined) result = renderer.draw(request);
     else {
       if (lease === undefined) throw new Error('Missing local Source read lease');
-      result = renderer.draw({
-        leases: [lease],
-        camera: { lease },
-        environment: { lease },
-        geometryLane: 'direct',
-      });
+      result = renderer.draw({ source: lease, geometryLane: 'direct' });
     }
     if (!result.ok)
       throw new Error(

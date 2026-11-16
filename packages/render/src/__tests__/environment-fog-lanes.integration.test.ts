@@ -6,7 +6,7 @@ import { Fog } from '../components/fog';
 import { DeviceScope } from '../device/device-scope';
 import { selectEnvironment, viewFogIsActive } from '../environment/frame';
 import { EnvironmentLifecycle } from '../environment/lifecycle';
-import { extractFrames } from '../render-system-extract-tail';
+import { extractSource } from '../render-system-extract-tail';
 import { earthAtmosphere } from './atmosphere-fixture';
 
 const frame = selectEnvironment({
@@ -73,7 +73,7 @@ describe('Environment and Fog frame contract', () => {
       })
       .unwrap();
 
-    const extracted = extractFrames([world], 0);
+    const extracted = extractSource(world);
     expect(extracted.environment).toBeDefined();
     if (extracted.environment === undefined) throw new Error('expected extracted environment');
     expect(extracted.environment.source.kind).toBe('atmosphere');
@@ -104,7 +104,7 @@ describe('Environment and Fog frame contract', () => {
       })
       .unwrap();
 
-    const first = extractFrames([world], 0);
+    const first = extractSource(world);
     expect(first.fog?.entityKey).toBe(fogEntity);
     expect(first.fog?.color[0]).toBeCloseTo(0.15);
     expect(first.fog?.color[1]).toBeCloseTo(0.25);
@@ -121,7 +121,7 @@ describe('Environment and Fog frame contract', () => {
         maxOpacity: 0.2,
       })
       .unwrap();
-    const changed = extractFrames([world], 0);
+    const changed = extractSource(world);
     expect(changed.fog?.density).toBeCloseTo(0.01);
     expect(changed.fog?.color[0]).toBeCloseTo(0.6);
     expect(changed.fog?.color[1]).toBeCloseTo(0.5);
@@ -161,7 +161,7 @@ describe('Environment and Fog frame contract', () => {
       .unwrap();
     const lifecycle = new EnvironmentLifecycle(DeviceScope.create(5, 'environment-render-path'));
 
-    const initial = extractFrames([world], 0);
+    const initial = extractSource(world);
     expect(initial.environmentReady).toBe(true);
     expect(initial.environment).toBeDefined();
     if (initial.environment === undefined) throw new Error('expected initial environment');
@@ -172,12 +172,12 @@ describe('Environment and Fog frame contract', () => {
     const beforeInvalid = lifecycle.inspect();
 
     world.set(atmosphereEntity, Atmosphere, { mieScattering: -1 }).unwrap();
-    const invalid = extractFrames([world], 0);
+    const invalid = extractSource(world);
     expect(invalid.environmentReady).toBe(false);
     expect(lifecycle.inspect()).toEqual(beforeInvalid);
 
     world.set(atmosphereEntity, Atmosphere, { mieScattering: 8e-6 }).unwrap();
-    const corrected = extractFrames([world], 0);
+    const corrected = extractSource(world);
     expect(corrected.environmentReady).toBe(true);
     expect(corrected.environment).toBeDefined();
     if (corrected.environment === undefined) throw new Error('expected corrected environment');

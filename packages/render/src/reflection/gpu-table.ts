@@ -3,7 +3,6 @@ import type { Buffer, Sampler, TextureView } from '@forgeax/engine-rhi';
 export interface ReflectionProbeTableRow {
   readonly primitiveKey?: string;
   readonly index: number;
-  readonly worldId: number;
   readonly entityKey: number;
   readonly center: readonly [number, number, number];
   readonly halfExtents: readonly [number, number, number];

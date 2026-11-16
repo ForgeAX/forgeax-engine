@@ -32,6 +32,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { readFileSync } from 'node:fs';
 import { emitSmokeReceipt } from '../../../shared/scripts/smoke-receipt.mjs';
+import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 
 const SMOKE_MIN_FRAMES = Math.max(60, Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10));
 const SMOKE_PIXEL_THRESHOLD = Number.parseFloat(process.env.SMOKE_PIXEL_THRESHOLD ?? '0.05');
@@ -134,8 +135,9 @@ const { fbxImporter } = await import('@forgeax/engine-fbx');
 
 const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
 const MANIFEST_URL = manifestExists(MANIFEST_PATH)
-  ? `data:application/json,${encodeURIComponent(readFileSync(MANIFEST_PATH, 'utf8'))}`
+  ? URL.createObjectURL(new Blob([readShaderManifestText(MANIFEST_PATH)], { type: 'application/json' }))
   : '';
+process.once('exit', () => URL.revokeObjectURL(MANIFEST_URL));
 
 function manifestExists(p) {
   try {
@@ -233,11 +235,7 @@ renderer.subscribe((event) => {
 let framesObserved = 0;
 for (let i = 0; i < SMOKE_MIN_FRAMES; i++) {
   world.update().unwrap();
-  await drawReadyFrame(renderer, {
-    leases: [worldAttachment1.value],
-    camera: { lease: worldAttachment1.value },
-    environment: { lease: worldAttachment1.value },
-  });
+  await drawReadyFrame(renderer, { source: worldAttachment1.value });
   framesObserved++;
 }
 

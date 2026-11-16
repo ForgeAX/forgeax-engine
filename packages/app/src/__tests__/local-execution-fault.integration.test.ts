@@ -1,4 +1,4 @@
-import { createWorldContext, Update, World } from '@forgeax/engine-ecs';
+import { createWorldContext, defineSystem, Update, World } from '@forgeax/engine-ecs';
 import type { Renderer } from '@forgeax/engine-render';
 import { ok } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
@@ -67,15 +67,14 @@ describe('local App execution fault projection', () => {
       code: 'fixture-update-failed',
       detail: { callback: () => undefined },
     });
-    app.world
-      .addSystem(Update, {
-        name: 'local-faulting-update',
-        queries: [],
-        fn() {
-          if (fail) throw cause;
-        },
-      })
-      .unwrap();
+    const systemToken1 = defineSystem({
+      name: 'local-faulting-update',
+      queries: [],
+      fn() {
+        if (fail) throw cause;
+      },
+    });
+    app.world.addSystem(Update, systemToken1).unwrap();
     const observed: ExecutionReport[] = [];
     app.onError(() => observed.push(app.execution.report()));
     try {

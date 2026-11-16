@@ -94,6 +94,24 @@ describe('RHI-debug browser backend selection', () => {
     expect(launch.args).not.toContain('--disable-gpu-compositing');
   });
 
+  it('uses the maintained explicit Windows native policy while preserving software CI by default', () => {
+    const launch = resolveBrowserWebGpuLaunch({
+      platform: 'win32', backend: 'auto', gpu: 'native', ci: true,
+    });
+    expect(launch.selectedBackend).toBe('native');
+    expect(launch.comparisonMode).toBe('browser-native-vs-dawn-default');
+    expect(launch.args.some((flag) => /swiftshader|enable-features=Vulkan/.test(flag))).toBe(false);
+    expect(launch.args).toContain('--enable-unsafe-webgpu');
+    expect(launch.args).not.toContain('--disable-gpu-watchdog');
+    expect(resolveBrowserWebGpuLaunch({ platform: 'win32', backend: 'auto', gpu: 'software', ci: true }).args)
+      .toContain('--use-webgpu-adapter=swiftshader');
+  });
+
+  it('rejects a native request combined with an explicit software backend', () => {
+    expect(() => resolveBrowserWebGpuLaunch({ platform: 'win32', backend: 'swiftshader-vulkan', gpu: 'native' }))
+      .toThrow('native requires the auto backend');
+  });
+
   it('rejects an unsupported explicit Metal request instead of falling back', () => {
     expect(() => resolveBrowserWebGpuLaunch({ platform: 'linux', backend: 'metal' })).toThrow(
       'refusing an implicit backend fallback',

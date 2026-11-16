@@ -6,7 +6,7 @@ import { MeshFilter } from '../components/mesh-filter';
 import { MeshRenderer } from '../components/mesh-renderer';
 import { Visibility, VisibilityStateValue } from '../components/visibility';
 import { Materials } from '../materials';
-import { extractFrames } from '../render-system-extract-tail';
+import { extractSource } from '../render-system-extract-tail';
 import { testAssets } from './helpers/runtime-assets';
 
 afterEach(() => {
@@ -43,7 +43,7 @@ describe('visibility resource short circuit', () => {
     );
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.code).toBe('asset-reference-invalid');
-    expect(extractFrames([world], 0, assets).renderables).toEqual([]);
+    expect(extractSource(world, assets).renderables).toEqual([]);
     expect(errors).toEqual([]);
   });
 
@@ -72,12 +72,11 @@ describe('visibility resource short circuit', () => {
         { component: Visibility, data: { state: VisibilityStateValue.hidden } },
       )
       .unwrap();
-
-    extractFrames([world], 0, assets);
+    extractSource(world, assets);
     expect(errors).toEqual([]);
 
     world.set(entity, Visibility, { state: VisibilityStateValue.visible }).unwrap();
-    extractFrames([world], 0, assets);
+    extractSource(world, assets);
     expect(errors.map((error) => error.code)).toContain('mesh-renderer-material-override-overflow');
   });
 });

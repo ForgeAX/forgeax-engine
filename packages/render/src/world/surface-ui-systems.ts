@@ -1,15 +1,13 @@
 import type { World } from '@forgeax/engine-ecs';
+import { defineSystem } from '@forgeax/engine-ecs';
 import type { RhiCommandEncoder } from '@forgeax/engine-rhi';
 import { RendererContractFailureError } from '../errors/render';
 import { encodeFrameObservationCapture } from '../record/observation-capture';
 import type { RenderSystemInternals } from '../record/render-context';
-import {
-  RENDER_ENCODER_OPEN_SYSTEM,
-  RenderRecordInput,
-  type RenderRecordInputState,
-} from './record-systems';
+import { RenderEncoderOpenOrder, RenderViewOutputsOrder } from '../system-order';
+import { RenderRecordInput } from './record-systems';
 import { RenderPrepare, RenderRecord, renderSubmission } from './render-world';
-import { RenderSurfaceUiInput, type SurfaceUiInput, surfaceUi } from './surface-ui';
+import { RenderSurfaceUiInput, surfaceUi } from './surface-ui';
 
 export const RENDER_SURFACE_UI_ENCODE_SYSTEM = 'render-surface-ui-encode';
 
@@ -19,7 +17,7 @@ export const RENDER_SURFACE_UI_PRESENT_PREPARE_SYSTEM = 'render-surface-ui-prese
 function prepareSurfaceUi(world: World): void {
   const ui = surfaceUi(world);
   if (ui === undefined || !world.hasResource(RenderSurfaceUiInput)) return;
-  const input = world.getResource<SurfaceUiInput>(RenderSurfaceUiInput);
+  const input = world.getResource(RenderSurfaceUiInput);
   try {
     ui.outcome = ui.owner.prepare(
       input.frame,
@@ -53,30 +51,28 @@ export function requirePreparedSurfaceUi(world: World, frame: number): void {
 }
 
 export function registerSurfaceUiSystems(world: World): void {
-  world
-    .addSystem(RenderPrepare, {
-      commands: 'none',
-      name: RENDER_SURFACE_UI_PREPARE_SYSTEM,
-      before: ['render-view-outputs'],
-      queries: [],
-      fn: (world) => prepareSurfaceUi(world),
-    })
-    .unwrap();
-  world
-    .addSystem(RenderRecord, {
-      commands: 'none',
-      name: RENDER_SURFACE_UI_PRESENT_PREPARE_SYSTEM,
-      before: [RENDER_ENCODER_OPEN_SYSTEM],
-      queries: [],
-      fn: (world) => {
-        // Scene frames require their Prepare product; this is solely the scene-free UI route.
-        if (renderSubmission(world).open || !world.hasResource(RenderRecordInput)) return;
-        const input = world.getResource<RenderRecordInputState>(RenderRecordInput);
-        if (surfaceUi(world) !== undefined && input.rendererInternals !== undefined)
-          prepareSurfaceUi(world);
-      },
-    })
-    .unwrap();
+  const systemToken1 = defineSystem({
+    commands: 'none',
+    name: RENDER_SURFACE_UI_PREPARE_SYSTEM,
+    before: [RenderViewOutputsOrder],
+    queries: [],
+    fn: (world) => prepareSurfaceUi(world),
+  });
+  world.addSystem(RenderPrepare, systemToken1).unwrap();
+  const systemToken2 = defineSystem({
+    commands: 'none',
+    name: RENDER_SURFACE_UI_PRESENT_PREPARE_SYSTEM,
+    before: [RenderEncoderOpenOrder],
+    queries: [],
+    fn: (world) => {
+      // Scene frames require their Prepare product; this is solely the scene-free UI route.
+      if (renderSubmission(world).open || !world.hasResource(RenderRecordInput)) return;
+      const input = world.getResource(RenderRecordInput);
+      if (surfaceUi(world) !== undefined && input.rendererInternals !== undefined)
+        prepareSurfaceUi(world);
+    },
+  });
+  world.addSystem(RenderRecord, systemToken2).unwrap();
 }
 
 /** Encode the World-owned screen UI and final-display observation in the shared encoder. */
@@ -97,6 +93,7 @@ export function encodeSurfaceUi(
   if (!output.ok) throw output.error;
   const encoded = ui.owner.encode(frame, encoder, output.value, !sceneOutputEncoded);
   if (encoded.kind === 'failed') throw new RendererContractFailureError('draw', encoded.detail);
+  internals.observationCaptureOwner?.recordGraph(frame, ui.owner.generation);
   internals.framePassNames?.push('screen-ui-composite');
   if (ui.owner.output !== undefined) internals.framePassNames?.push('screen-ui-present');
   encodeFrameObservationCapture(

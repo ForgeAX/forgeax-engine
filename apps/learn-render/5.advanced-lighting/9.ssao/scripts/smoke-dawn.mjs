@@ -89,11 +89,7 @@ async function drawSubmittedFrames(app, count) {
   let receipt;
   for (let i = 0; i < count; i++) {
     app.world.update(1 / 60).unwrap();
-    const frame = app.renderer.draw({
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
+    const frame = app.renderer.draw({ source: attached.value });
     if (!frame.ok) throw frame.error;
     const completed = await frame.value.completed;
     if (!completed.ok) throw completed.error;

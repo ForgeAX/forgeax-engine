@@ -70,7 +70,6 @@ describe('PlanarReflection normal distortion', () => {
     expect(Array.from(encodePlanarReflectionUniform(undefined))).toEqual(new Array(24).fill(0));
   });
 
-  // NaN never reaches extraction: the ECS write rejects it (ComponentNumericValueInvalidError).
   it.each([-0.1, Number.POSITIVE_INFINITY])('rejects distortion %s', (bad) => {
     const world = planarWorld(bad);
     expect(() => selectCameraRoles(world)).toThrow(

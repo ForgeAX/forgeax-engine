@@ -212,7 +212,7 @@ export function furnaceMetrics(image: Float32Array) {
   };
 }
 
-type Lease = import('@forgeax/engine-render').RenderFrameInput['leases'][number];
+type Lease = import('@forgeax/engine-render').RenderReadLease;
 
 async function drawUntilIblActive(
   renderer: Renderer,
@@ -224,9 +224,7 @@ async function drawUntilIblActive(
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
     if (observeHdr) unwrap(renderer.requestObservation?.(['linear-hdr']));
-    const receipt = unwrap(
-      renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
-    );
+    const receipt = unwrap(renderer.draw({ source: lease }));
     unwrap(await receipt.completed);
     const binding = renderer.inspect().iblBinding;
     const active =

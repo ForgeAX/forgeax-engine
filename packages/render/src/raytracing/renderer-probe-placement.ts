@@ -86,7 +86,7 @@ export interface ProbePlacementInspection {
 interface PlacementMaterialContext {
   readonly internals: RenderSystemInternals;
   readonly world: RenderResourceScope;
-  readonly worlds: readonly RenderResourceScope[];
+  readonly sourceScope: RenderResourceScope;
   /** Rows with admitted visible surfaces, from the same frame's projection. */
   readonly surfaces: ReadonlyMap<number, number>;
 }
@@ -94,14 +94,14 @@ interface PlacementMaterialContext {
 /** True when one row's admitted surface draws lack a native lit Standard material. */
 function unqualifiedPlacementMaterials(
   slot: RenderSceneSlot,
-  { internals, world, worlds, surfaces }: PlacementMaterialContext,
+  { internals, world, sourceScope, surfaces }: PlacementMaterialContext,
   read: ReadAsset,
 ): true | undefined {
   if (!surfaces.has(slot.slot)) return undefined;
   for (const draw of slot.snapshot.gpuDrivenDraws ?? []) {
     if (draw.count === 0) continue;
     const material = slot.snapshot.materials[draw.materialSlot]?.snapshot;
-    const scope = worlds[slot.worldId] ?? world;
+    const scope = sourceScope ?? world;
     const handle = material?.materialHandle ?? (0 as AssetHandle<'material'>);
     read(scope, handle);
     const asset = scope.resolveAsset<MaterialAsset>(handle);
@@ -245,7 +245,7 @@ export class RendererProbePlacement {
     ]);
     // The roster follows row changes in O(changes); the region rebuilds only
     // when a field input changed. A failed projection surfaces through preparation.
-    this.#fields.update(retained, source.worlds, profile, runtime.assets);
+    this.#fields.update(retained, source.sourceScope, profile, runtime.assets);
     const refs = probeGlobalSourceReferences(source, this.#fields.revision);
     if (
       key !== this.#regionKey ||
@@ -307,8 +307,7 @@ export class RendererProbePlacement {
       before === undefined ||
       before.internals !== context.internals ||
       before.world !== context.world ||
-      before.worlds.length !== context.worlds.length ||
-      before.worlds.some((world, index) => world !== context.worlds[index])
+      before.sourceScope !== context.sourceScope
     )
       this.#unqualified.reset();
     this.#materialContext = context;

@@ -17,7 +17,7 @@ function mapPrograms(
       if (!record(asset) || asset.kind !== 'material' || !record(asset.payload)) return asset;
       const payload = asset.payload;
       const field =
-        payload.schemaVersion === 'material-cook/4'
+        payload.schemaVersion === 'material-cook/5'
           ? undefined
           : payload.cooked !== undefined
             ? 'cooked'
@@ -25,7 +25,7 @@ function mapPrograms(
       const cooked = field === undefined ? payload : payload[field];
       if (
         !record(cooked) ||
-        cooked.schemaVersion !== 'material-cook/4' ||
+        cooked.schemaVersion !== 'material-cook/5' ||
         !Array.isArray(cooked.programs)
       )
         return asset;

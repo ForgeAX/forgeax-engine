@@ -107,12 +107,12 @@ function hoistableCreates(
 ): Set<RhiCallEvent> {
   // Only prefix creations can move into bootstrap. Later-frame resources
   // must keep their create event at its original position in the stream.
-  const prefix = new Set<RhiCallEvent>();
+  const bootstrapIds = new Set(bootstrapEvents.flatMap(createdHandles));
+  const hoistable = new Set<RhiCallEvent>();
   for (const event of events) {
     if (event.kind === 'frameMark') break;
-    prefix.add(event);
+    if (createdHandles(event).some((handleId) => bootstrapIds.has(handleId))) hoistable.add(event);
   }
-  const hoistable = new Set(bootstrapEvents.filter((event) => prefix.has(event)));
   let built = false;
   for (const event of events) {
     if (event.kind === 'buildAccelerationStructures') built = true;

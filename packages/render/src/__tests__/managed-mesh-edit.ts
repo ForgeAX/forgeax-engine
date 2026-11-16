@@ -11,7 +11,7 @@ export function editResidentMesh(
   store: GpuResidencyCache,
   handle: AssetHandle<'mesh'>,
   edit: () => void,
-  scope: RenderResourceScope | number = 0,
+  scope?: RenderResourceScope,
 ) {
   const observer = assets.observe().unwrap();
   try {

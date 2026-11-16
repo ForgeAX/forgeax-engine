@@ -1,15 +1,17 @@
-import { FixedUpdate, World } from '@forgeax/engine-ecs';
+import { defineSystem, FixedUpdate, World } from '@forgeax/engine-ecs';
 import { vec2 } from '@forgeax/engine-math';
 import {
   CharacterController,
   Collider,
   ColliderShapeValue,
+  PhysicsWorld2DResource,
   RigidBody,
   RigidBodyTypeValue,
   registerPhysicsComponents,
 } from '@forgeax/engine-physics';
 import { GlobalTransform, registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect, it } from 'vitest';
+import { PhysicsStepSimulation2D, PhysicsSyncBackend2D } from '../rapier-physics-world-2d';
 import {
   createRapier2DPhysicsWorld,
   registerPhysicsSystems2D,
@@ -27,7 +29,7 @@ it.each([
   world.components.register(GlobalTransform).unwrap();
   registerPhysicsComponents(world);
   const physics = createRapier2DPhysicsWorld(rapier);
-  world.insertResource('PhysicsWorld', physics);
+  world.insertResource(PhysicsWorld2DResource, physics);
   const releaseScene = registerPropagateTransforms(world);
   const releasePhysics = registerPhysicsSystems2D(world);
   const character = world
@@ -60,17 +62,16 @@ it.each([
       },
     )
     .unwrap();
-  world
-    .addSystem(FixedUpdate, {
-      name: 'test-push',
-      after: ['physicsSyncBackend2D'],
-      before: ['physicsStepSimulation2D'],
-      queries: [],
-      fn() {
-        physics.moveAndSlide(character, vec2.create(2 / 60, 0));
-      },
-    })
-    .unwrap();
+  const systemToken1 = defineSystem({
+    name: 'test-push',
+    after: [PhysicsSyncBackend2D],
+    before: [PhysicsStepSimulation2D],
+    queries: [],
+    fn() {
+      physics.moveAndSlide(character, vec2.create(2 / 60, 0));
+    },
+  });
+  world.addSystem(FixedUpdate, systemToken1).unwrap();
   try {
     for (let frame = 0; frame < 120; frame++) world.update(1 / 60).unwrap();
     const crateX = world.get(crate, Transform).unwrap().pos[0];
@@ -78,7 +79,7 @@ it.each([
     else expect(crateX).toBeGreaterThan(0.5);
     expect(world.get(character, Transform).unwrap().pos[0]).toBeGreaterThan(0);
   } finally {
-    world.removeSystem(FixedUpdate, 'test-push').unwrap();
+    world.removeSystem(FixedUpdate, systemToken1).unwrap();
     releasePhysics();
     releaseScene();
     physics.dispose();

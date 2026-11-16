@@ -44,14 +44,13 @@ function bindingAt(plan: SubmissionPlan, index = 0): GpuDrivenBatchBinding {
   return binding;
 }
 
-function snapshot(worldId: number, entityKey: number, assetHandle: number): RenderableSnapshot {
-  return { ...gpuSnapshot(entityKey, assetHandle), worldId };
+function snapshot(entityKey: number, assetHandle: number): RenderableSnapshot {
+  return { ...gpuSnapshot(entityKey, assetHandle) };
 }
 
 function updateSnapshot(value: RenderableSnapshot) {
   return {
     kind: 'update' as const,
-    worldId: value.worldId,
     entityKey: value.entityKey,
     snapshot: value,
   };
@@ -112,8 +111,8 @@ async function productionFixture() {
   const projection = new RenderScene();
   const assetHandle = 2048;
   const delta = projection.apply([
-    updateSnapshot(preparedPbrSnapshot(snapshot(0, 11, assetHandle))),
-    updateSnapshot(preparedPbrSnapshot(snapshot(1, 22, assetHandle))),
+    updateSnapshot(preparedPbrSnapshot(snapshot(11, assetHandle))),
+    updateSnapshot(preparedPbrSnapshot(snapshot(22, assetHandle + 1))),
   ]);
   const availability = GpuScene.create(device, 2).unwrap();
   if (availability.status !== 'available') throw new Error('GPU Scene unavailable');
@@ -175,23 +174,18 @@ describe('GPU-driven mesh world identity', () => {
     const state = {
       scene: {},
       plan: {
-        batches: [
-          { binding: { worldId: 0, assetHandle: 2048 } },
-          { binding: { worldId: 1, assetHandle: 2048 } },
-        ],
+        batches: [{ binding: { assetHandle: 2048 } }, { binding: { assetHandle: 2048 } }],
       },
-      worldKeys: [101, 202],
     } as unknown as PersistentGpuDrivenState;
 
-    const result = gpuDrivenMeshesForFrame(
-      internals,
-      [worldA, worldB].map(worldRenderResources),
-      state,
-    );
+    const first = gpuDrivenMeshesForFrame(internals, worldRenderResources(worldA), state);
+    const second = gpuDrivenMeshesForFrame(internals, worldRenderResources(worldB), state);
 
     expect(getMeshGpuHandles).toHaveBeenCalledTimes(2);
-    expect(result.get(bindingAt(state.plan, 0))).toBe(meshA);
-    expect(result.get(bindingAt(state.plan, 1))).toBe(meshB);
+    for (const index of [0, 1]) {
+      expect(first.get(bindingAt(state.plan, index))).toBe(meshA);
+      expect(second.get(bindingAt(state.plan, index))).toBe(meshB);
+    }
   });
 
   it('refreshes shared residency when the World source changes at the same residency epoch', () => {
@@ -216,15 +210,11 @@ describe('GPU-driven mesh world identity', () => {
     } as unknown as RenderSystemInternals;
     const state = {
       scene: {},
-      plan: { batches: [{ binding: { worldId: 0, assetHandle: 2048 } }] },
+      plan: { batches: [{ binding: { assetHandle: 2048 } }] },
     } as unknown as PersistentGpuDrivenState;
 
-    const first = gpuDrivenMeshesForFrame(internals, [worldA].map(worldRenderResources), state);
-    const afterSourceEdit = gpuDrivenMeshesForFrame(
-      internals,
-      [worldB].map(worldRenderResources),
-      state,
-    );
+    const first = gpuDrivenMeshesForFrame(internals, worldRenderResources(worldA), state);
+    const afterSourceEdit = gpuDrivenMeshesForFrame(internals, worldRenderResources(worldB), state);
 
     expect(first.get(bindingAt(state.plan, 0))).toBe(meshA);
     expect(afterSourceEdit.get(bindingAt(state.plan, 0))).toBe(meshB);
@@ -289,23 +279,22 @@ describe('GPU-driven mesh world identity', () => {
       material: source.material,
       geometry,
       drawItemIndex: 0,
-      worldId: 0,
       assetHandle: rootHandle,
       lods: (root.lods ?? []).map((lod) => lod.mesh),
     };
     const state = { plan: { batches: [{ binding }] } } as unknown as PersistentGpuDrivenState;
 
     try {
-      const beforeLowest = gpuDrivenMeshesForFrame(internals, [world], state).get(binding);
+      const beforeLowest = gpuDrivenMeshesForFrame(internals, world, state).get(binding);
       expect(beforeLowest?.lodRanges).toHaveLength(3);
       expect(beforeLowest?.lodRanges?.[readyLevel]?.[0]).toMatchObject({ count: 3 });
       expect(beforeLowest?.lodRanges?.[3 - readyLevel]).toEqual([]);
       expect(beforeLowest?.vboBytes).toBe(root.vertices.byteLength + middle.vertices.byteLength);
-      expect(gpuDrivenMeshesForFrame(internals, [world], state).get(binding)).toBe(beforeLowest);
+      expect(gpuDrivenMeshesForFrame(internals, world, state).get(binding)).toBe(beforeLowest);
 
       assetsByGuid.set(middleGuid, middle);
       assetsByGuid.set(lowestGuid, lowest);
-      const afterLowest = gpuDrivenMeshesForFrame(internals, [world], state).get(binding);
+      const afterLowest = gpuDrivenMeshesForFrame(internals, world, state).get(binding);
 
       expect(afterLowest).toBeDefined();
       expect(afterLowest).not.toBe(beforeLowest);
@@ -318,7 +307,7 @@ describe('GPU-driven mesh world identity', () => {
     }
   });
 
-  it('projects distinct final raster mesh resources for two Worlds sharing one handle', async () => {
+  it('projects distinct final raster mesh resources for distinct Mesh handles in one source', async () => {
     const fixture = await productionFixture();
     const slots = fixture.projection.slotsSnapshot();
     const first = slots.at(0);

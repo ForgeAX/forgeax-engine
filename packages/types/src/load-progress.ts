@@ -509,6 +509,32 @@ export function readLoadProgress(): LoadProgressSnapshot | undefined {
   };
 }
 
+/** Host-owned text surrounding Engine diagnostics; original causes stay unchanged. */
+interface HostPageLabels {
+  readonly game: string;
+  readonly engine: string;
+  readonly completedFramesPerSecond: string;
+  readonly startupFailed: string;
+  readonly runtimeFailed: string;
+  readonly startupFailureTitle: string;
+  readonly runtimeFailureTitle: string;
+  readonly diagnostics: string;
+  readonly copyDiagnostics: string;
+  readonly diagnosticsCopied: string;
+  readonly diagnosticsCopyFailed: string;
+  readonly javascriptRequired: string;
+  readonly rendererDiagnosis: string;
+  readonly cacheRefreshing: string;
+  readonly cacheRetried: string;
+  readonly firstFailure: string;
+  readonly cacheRecoveryFailed: string;
+  readonly unknownStructuredFailure: string;
+  readonly unserializableStructuredFailure: string;
+  readonly unknownStartupFailure: string;
+  readonly diagnosticNodeLimit: string;
+  readonly circularDiagnostic: string;
+}
+
 /** Text shown for a snapshot. `{seconds}` in `elapsed` is replaced by whole seconds. */
 export interface LoadProgressLabels {
   /** BCP 47 language of the labels. */
@@ -518,13 +544,17 @@ export interface LoadProgressLabels {
   readonly elapsed: string;
   readonly slow: string;
   readonly reload: string;
+  /** Optional Host text overrides, also used before any game module loads. */
+  readonly host?: Partial<HostPageLabels>;
 }
 
 export type LoadProgressLabelInput = Partial<Omit<LoadProgressLabels, 'phases'>> & {
   readonly phases?: Readonly<Record<string, string>>;
 };
 
-export const DEFAULT_LOAD_PROGRESS_LABELS: LoadProgressLabels = Object.freeze({
+export const DEFAULT_LOAD_PROGRESS_LABELS: LoadProgressLabels & {
+  readonly host: HostPageLabels;
+} = Object.freeze({
   lang: 'en',
   phases: Object.freeze({
     'engine-code': 'Downloading engine code',
@@ -539,15 +569,44 @@ export const DEFAULT_LOAD_PROGRESS_LABELS: LoadProgressLabels = Object.freeze({
   elapsed: '{seconds} s',
   slow: 'Still loading. You can keep waiting or reload.',
   reload: 'Reload',
+  host: Object.freeze({
+    game: 'Game',
+    engine: 'Engine',
+    completedFramesPerSecond: 'Completed game frames per second',
+    startupFailed: 'Unable to start the game.',
+    runtimeFailed: 'The game stopped because execution failed.',
+    startupFailureTitle: 'ForgeAX game failed to start.',
+    runtimeFailureTitle: 'ForgeAX game stopped.',
+    diagnostics: 'Diagnostics',
+    copyDiagnostics: 'Copy diagnostics',
+    diagnosticsCopied: 'Diagnostics copied.',
+    diagnosticsCopyFailed: 'Could not copy diagnostics.',
+    javascriptRequired:
+      'JavaScript is required to start this game. Please enable JavaScript and reload.',
+    rendererDiagnosis:
+      'Renderer diagnosis: ForgeAX supports browser WebGPU and a wgpu/WebGL2 fallback. This failure alone does not prove that WebGPU is unsupported; use the structured code, hint, and nested backend causes above.',
+    cacheRefreshing: 'Refreshing cached startup resources and retrying once…',
+    cacheRetried: 'Automatic startup cache recovery was attempted once.',
+    firstFailure: 'First failure:',
+    cacheRecoveryFailed: 'Startup cache recovery failed:',
+    unknownStructuredFailure: 'Unknown structured startup failure',
+    unserializableStructuredFailure: 'Unserializable structured startup failure',
+    unknownStartupFailure: 'Unknown startup failure',
+    diagnosticNodeLimit: '[diagnostic node limit]',
+    circularDiagnostic: '[circular]',
+  }),
 });
 
 /** English defaults overlaid with App-supplied labels. */
-export function resolveLoadProgressLabels(input?: LoadProgressLabelInput): LoadProgressLabels {
+export function resolveLoadProgressLabels(input?: LoadProgressLabelInput): LoadProgressLabels & {
+  readonly host: HostPageLabels;
+} {
   if (input === undefined) return DEFAULT_LOAD_PROGRESS_LABELS;
   return {
     ...DEFAULT_LOAD_PROGRESS_LABELS,
     ...input,
     phases: { ...DEFAULT_LOAD_PROGRESS_LABELS.phases, ...input.phases },
+    host: { ...DEFAULT_LOAD_PROGRESS_LABELS.host, ...input.host },
   };
 }
 

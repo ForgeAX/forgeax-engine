@@ -21,6 +21,7 @@ import {
   packagedProfilePublication,
 } from '../../../packages/vite-plugin-shader/dist/packaged-profiles.mjs';
 import { engineShaderSourceDigest } from '../../../packages/vite-plugin-shader/dist/source-digest.mjs';
+import { runnerResources, shaderCompileWorkers } from '../../lib/runner-resources.mjs';
 import {
   sharedShaderInputFingerprint,
   sharedShaderReceipt,
@@ -42,6 +43,46 @@ const publication = (marker) =>
 const packaged = (output) => decodePackagedProfiles(readFileSync(join(output, 'profiles.json.gz')));
 const profileMarker = (output, name) =>
   packagedProfilePublication(packaged(output), name)?.fragments[0];
+
+test('compatibility restores the core base profile with identical cache and input authority', () => {
+  const core = parse(readFileSync('.github/workflows/ci.yml', 'utf8')).jobs['core-build'];
+  const compatibility = parse(readFileSync('.github/workflows/webgpu-compatibility.yml', 'utf8'))
+    .jobs.compatibility;
+  assert.equal(compatibility.env.SHADER_OUTPUT, core.env.SHADER_OUTPUT);
+  assert.equal(compatibility.env.SHADER_POINT_SHADOWS, core.env.SHADER_POINT_SHADOWS);
+  const fingerprint = compatibility.steps.find((step) => step.id === 'shader-inputs');
+  assert.match(fingerprint.run, /build-shared-inputs\.mjs --no-point-shadows --fingerprint/);
+  const restore = compatibility.steps.find((step) => step.id === 'shader-cache');
+  const coreRestore = core.steps.find((step) => step.id === 'shader-cache');
+  assert.equal(restore.uses, coreRestore.uses);
+  assert.equal(restore.with.path, coreRestore.with.path);
+  assert.equal(restore.with.key, coreRestore.with.key);
+  assert.equal(restore['timeout-minutes'], 1);
+  assert.equal(restore['continue-on-error'], true);
+  const preparation = compatibility.steps.find((step) =>
+    step.name?.startsWith('Prepare the source-verified shader publication'),
+  );
+  assert.equal(preparation['timeout-minutes'], 10);
+  assert.match(preparation.run, /prepare-shader-release-inputs\.mjs --build --profile base-ssao/);
+  assert.match(preparation.run, /--input packages\/vite-plugin-shader\/dist\/engine-inputs\/ci/);
+  const save = compatibility.steps.find((step) => step.uses === 'actions/cache/save@v5');
+  assert.equal(save.with.path, restore.with.path);
+  assert.equal(save.with.key, restore.with.key);
+  assert.match(save.if, /steps\.shader-cache\.outcome == 'success'/);
+  assert.match(save.if, /steps\.shader-cache\.outputs\.cache-hit != 'true'/);
+  assert.equal(save['timeout-minutes'], 1);
+  assert.equal(save['continue-on-error'], true);
+  for (const step of [fingerprint, restore, preparation, save]) {
+    assert.match(step.if, /steps\.ci-repair\.outputs\.reused != 'true'/);
+    assert.match(step.if, /matrix\.carrier == 'stable' \|\| matrix\.carrier == 'webkit'/);
+  }
+  const gpu = compatibility.steps.find((step) =>
+    step.name?.startsWith('Run actual GPU compatibility'),
+  );
+  assert.ok(compatibility.steps.indexOf(restore) < compatibility.steps.indexOf(preparation));
+  assert.ok(compatibility.steps.indexOf(preparation) < compatibility.steps.indexOf(save));
+  assert.ok(compatibility.steps.indexOf(save) < compatibility.steps.indexOf(gpu));
+});
 
 test('workflow stance permits bounded cache transport but rejects test and job overrides', () => {
   const root = mkdtempSync(join(tmpdir(), 'forgeax-cache-stance-'));
@@ -160,10 +201,16 @@ test('point-shadow Smoke prepares its verified profile on the same sole owner', 
   const profileStep = parse(workflow).jobs['smoke-fleet'].steps.find(
     (candidate) => candidate.name === 'Prepare point-shadow smoke shader profile',
   );
-  assert.equal(profileStep.if, "steps.ci-repair.outputs.reused != 'true' && (matrix.group == 0)");
+
   assert.match(step, /prepare-shader-release-inputs\.mjs --build --profile point-ssao/);
   assert.match(step, /--shared-input-manifest "\$FORGEAX_SHARED_APP_INPUTS_MANIFEST"/);
   assert.doesNotMatch(step, /FORGEAX_ENGINE_SHADER_SOURCE_BUILD/);
+  const roster = fleet.indexOf('- name: Run authoritative Dawn roster shard');
+  assert.ok(preparation < roster, 'point profile is prepared before any roster consumer');
+  assert.equal(
+    profileStep.if,
+    "steps.ci-repair.outputs.reused != 'true' && (matrix.group == 0 || matrix.group == 1)",
+  );
 });
 
 test('Editor prerequisite prepares the default shader profile before recording engine dist', () => {
@@ -184,6 +231,8 @@ test('profile CLI reuses transferred bytes and rebuilds missing, stale or corrup
     for (const file of [
       script,
       'scripts/lib/shared-build-cache.mjs',
+      'scripts/lib/runner-resources.mjs',
+      'scripts/lib/shader-source-budget.mjs',
       'scripts/build-task-cache.mjs',
       'packages/vite-plugin-shader/dist/source-digest.mjs',
       'packages/vite-plugin-shader/dist/packaged-profiles.mjs',
@@ -217,8 +266,17 @@ test('profile CLI reuses transferred bytes and rebuilds missing, stale or corrup
       import { mkdirSync, writeFileSync } from 'node:fs';
       import { resolve } from 'node:path';
       import { getHeapStatistics } from 'node:v8';
-      if (getHeapStatistics().heap_size_limit < 4096 * 1024 * 1024) {
-        throw new Error('Source shader publication requires its 4 GiB parent heap');
+      import { runnerResources, shaderProducerHeapSize } from './lib/runner-resources.mjs';
+      const heapMiB = shaderProducerHeapSize(runnerResources());
+      if (!process.execArgv.includes('--max-old-space-size=' + heapMiB) ||
+          getHeapStatistics().heap_size_limit < heapMiB * 1024 * 1024) {
+        throw new Error('Source shader publication requires its runner-sized heap');
+      }
+      const workers = Number(process.env.FORGEAX_SHADER_COMPILE_WORKERS);
+      if (!Number.isInteger(workers) || workers < 1 || workers > 4 ||
+          (process.env.FORGEAX_TEST_EXPECTED_SHADER_WORKERS &&
+           workers !== Number(process.env.FORGEAX_TEST_EXPECTED_SHADER_WORKERS))) {
+        throw new Error('Release shader publication requires its bounded compiler pool');
       }
       const out = process.argv[process.argv.indexOf('--out') + 1];
       mkdirSync(resolve(out, 'shaders'), { recursive: true });
@@ -306,6 +364,17 @@ test('profile CLI reuses transferred bytes and rebuilds missing, stale or corrup
       mutate();
       assert.match(invoke(), /SOURCE_BUILD_CALLED/);
       assert.equal(profileMarker(output, 'point-ssao'), 'sourceBuild');
+    }
+    for (const requested of ['1', '2', '64']) {
+      const expected = Math.min(4, shaderCompileWorkers(runnerResources(), requested));
+      assert.match(
+        invoke({
+          FORGEAX_BUILD_NO_TASK_CACHE: '1',
+          FORGEAX_SHADER_COMPILE_WORKERS: requested,
+          FORGEAX_TEST_EXPECTED_SHADER_WORKERS: String(expected),
+        }),
+        /SOURCE_BUILD_CALLED/,
+      );
     }
     // Restored SDK profile inputs have no local task-cache receipt and may
     // arrive on a different checkout path. Reuse their existing transfer receipt.

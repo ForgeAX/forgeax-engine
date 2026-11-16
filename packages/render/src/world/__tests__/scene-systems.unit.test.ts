@@ -1,4 +1,6 @@
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { World } from '@forgeax/engine-ecs';
+import { createRenderReadLease } from '@forgeax/engine-ecs/projection';
 import { describe, expect, it, vi } from 'vitest';
 import type { PreparedRenderPublication } from '../../publication/receiver';
 import type { ExtractedFrame } from '../../render-system-extract';
@@ -13,8 +15,6 @@ import {
   INSTANCE_COLLECTIONS_SYSTEM,
   RENDER_SCENE_SYSTEM,
   RenderLightInput,
-  type RenderLightSource,
-  type RenderSceneAdoption,
   RenderSceneDelta,
   registerSceneSystem,
   SKIN_INPUTS_SYSTEM,
@@ -30,6 +30,7 @@ function scene() {
   const adoptInstanceCollections = vi.fn();
   const discardAdoption = vi.fn();
   const world = createRenderWorld();
+  const added = vi.spyOn(world, 'addSystem');
   const source = registerSceneSystem(
     world,
     {
@@ -41,11 +42,26 @@ function scene() {
     } as unknown as SceneComposition,
     {} as AssetRegistry,
   );
-  const adoption = () => world.getResource<RenderSceneAdoption>(RenderSceneDelta);
-  const roster = () => world.getResource<RenderLightSource>(RenderLightInput).roster;
+  const systems = new Map(added.mock.calls.map(([, system]) => [system.name, system]));
+  added.mockRestore();
+  const system = (name: string) => {
+    const value = systems.get(name);
+    if (value === undefined) throw new Error(`Missing fixture system: ${name}`);
+    return value;
+  };
+  const sourceWorld = new World();
+  source.world = sourceWorld;
+  const stage = () => {
+    source.staged = true;
+    source.lease = createRenderReadLease(sourceWorld);
+  };
+  const adoption = () => world.getResource(RenderSceneDelta);
+  const roster = () => world.getResource(RenderLightInput).roster;
   return {
     world,
     source,
+    system,
+    stage,
     consume,
     extract,
     adoptSkinInputs,
@@ -57,11 +73,11 @@ function scene() {
 }
 
 describe('render-scene system', () => {
-  it('runs in RenderExtract and adopts the staged Worlds once per frame', () => {
+  it('runs in RenderExtract and adopts the staged source once per frame', () => {
     const s = scene();
     const extract = s.world.scheduleData().find((schedule) => schedule.name === 'RenderExtract');
     expect(extract?.systems.map((system) => system.name)).toContain(RENDER_SCENE_SYSTEM);
-    s.source.staged = true;
+    s.stage();
     s.source.buildCandidateFrame = () => ({}) as ExtractedFrame;
     beginRenderFrame(s.world, 1);
     endRenderFrame(s.world);
@@ -77,7 +93,7 @@ describe('render-scene system', () => {
   it('adopts a staged publication and its light roster', () => {
     const s = scene();
     const publication = { frame: { lights } } as unknown as PreparedRenderPublication;
-    s.source.staged = true;
+    s.stage();
     s.source.publication = publication;
     beginRenderFrame(s.world, 1);
     expect(s.consume).toHaveBeenCalledWith(publication);
@@ -91,7 +107,7 @@ describe('render-scene system', () => {
     s.consume.mockImplementation(() => {
       throw cause;
     });
-    s.source.staged = true;
+    s.stage();
     s.source.publication = { frame: { lights } } as unknown as PreparedRenderPublication;
     expect(() => beginRenderFrame(s.world, 1)).not.toThrow();
     expect(s.adoption()).toEqual({ advance: undefined, failure: cause });
@@ -99,8 +115,8 @@ describe('render-scene system', () => {
 
   it('leaves the frame without an adoption once the system is removed', () => {
     const s = scene();
-    s.world.removeSystem(RenderExtract, RENDER_SCENE_SYSTEM).unwrap();
-    s.source.staged = true;
+    s.world.removeSystem(RenderExtract, s.system('render-scene')).unwrap();
+    s.stage();
     s.source.buildCandidateFrame = () => ({}) as ExtractedFrame;
     beginRenderFrame(s.world, 1);
     expect(s.extract).not.toHaveBeenCalled();
@@ -110,7 +126,7 @@ describe('render-scene system', () => {
 
 describe('skin-inputs and instance-collections systems', () => {
   const stage = (s: ReturnType<typeof scene>) => {
-    s.source.staged = true;
+    s.stage();
     s.source.buildCandidateFrame = () => ({}) as ExtractedFrame;
   };
 
@@ -141,8 +157,8 @@ describe('skin-inputs and instance-collections systems', () => {
 
   it('adopt nothing once removed', () => {
     const s = scene();
-    s.world.removeSystem(RenderExtract, SKIN_INPUTS_SYSTEM).unwrap();
-    s.world.removeSystem(RenderExtract, INSTANCE_COLLECTIONS_SYSTEM).unwrap();
+    s.world.removeSystem(RenderExtract, s.system('skin-inputs')).unwrap();
+    s.world.removeSystem(RenderExtract, s.system('instance-collections')).unwrap();
     stage(s);
     beginRenderFrame(s.world, 1);
     expect(s.adoptSkinInputs).not.toHaveBeenCalled();
@@ -154,7 +170,7 @@ describe('skin-inputs and instance-collections systems', () => {
     s.consume.mockImplementation(() => {
       throw new Error('retired');
     });
-    s.source.staged = true;
+    s.stage();
     s.source.publication = { frame: { lights } } as unknown as PreparedRenderPublication;
     beginRenderFrame(s.world, 1);
     expect(s.adoptSkinInputs).not.toHaveBeenCalled();

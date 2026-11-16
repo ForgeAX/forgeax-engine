@@ -5,10 +5,10 @@ import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErr
 // bevy-states headless dawn smoke — structural-only.
 // Verifies webgpu backend, no RHI errors, and state transitions.
 
-import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const WIDTH = 160;
@@ -86,7 +86,7 @@ const { Transform } = await import('@forgeax/engine-scene');
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MANIFEST_PATH, 'utf8'))}`;
+const MANIFEST_URL = `data:application/json,${encodeURIComponent(readShaderManifestText(MANIFEST_PATH))}`;
 
 let renderer;
 try {

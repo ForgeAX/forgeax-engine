@@ -1,4 +1,3 @@
-import { worldEntityKey } from '../record/frame-snapshot';
 import type { RenderableSnapshot } from '../render-system-extract';
 import { type FrameList, FrameListBase, type SparseRowKind } from './frame-list';
 import { FrameSet } from './frame-set';
@@ -19,8 +18,8 @@ const POSE_ROWS = 1 << POSE_SHIFT;
 const POSE_CHUNKS = PAGE_SIZE / POSE_ROWS;
 const poseChunk = (lane: number) => lane >>> POSE_SHIFT;
 const poseOffset = (lane: number) => (lane & (POSE_ROWS - 1)) * POSE;
-/** Cold per-lane identity: worldId, entityKey and generation. Versions follow poses. */
-const IDS = 3;
+/** Cold per-lane identity: entityKey and generation. Versions follow poses. */
+const IDS = 2;
 const validSlot = (slot: number) =>
   Number.isSafeInteger(slot) && slot >= 0 && slot < Number.MAX_SAFE_INTEGER;
 
@@ -89,18 +88,16 @@ export class RowViews {
     }
     let view = views[lane];
     if (view?.version === version) return view;
-    const worldId = ids[at] as number;
-    const entityKey = ids[at + 1] as number;
+    const entityKey = ids[at] as number;
     const offset = poseOffset(lane);
     const poses = page.poses[poseChunk(lane)] as Float32Array;
     const world = poses.subarray(offset, offset + POSE);
     view = {
       slot,
-      generation: ids[at + 2] as number,
+      generation: ids[at + 1] as number,
       version,
-      worldId,
       entityKey,
-      snapshot: { ...content, worldId, entityKey, transform: { world } } as RenderableSnapshot,
+      snapshot: { ...content, entityKey, transform: { world } } as RenderableSnapshot,
     };
     views[lane] = view;
     return view;
@@ -165,12 +162,12 @@ export class SceneSlotFrame extends FrameListBase<RenderSceneSlot> {
     return this.sparse?.[kind];
   }
 
-  identitySlot(worldId: number, entity: number): number | undefined {
-    return this.identities.get(worldId, entity);
+  identitySlot(entity: number): number | undefined {
+    return this.identities.get(entity);
   }
 
-  readonly lookup = (worldId: number, entity: number): RenderSceneSlot | undefined => {
-    const slot = this.identitySlot(worldId, entity);
+  readonly lookup = (entity: number): RenderSceneSlot | undefined => {
+    const slot = this.identitySlot(entity);
     return slot === undefined ? undefined : this.slotAt(slot);
   };
 
@@ -232,10 +229,24 @@ export class SceneSlotFrame extends FrameListBase<RenderSceneSlot> {
     );
   }
 
+  /** Read cold columns by physical slot without deriving its frame rank or full row. */
+  readContentSlot<T>(
+    slot: number,
+    read: (content: RowContent, entityKey: number, slot: number) => T,
+  ): T | undefined {
+    if (!validSlot(slot)) return undefined;
+    const page = this.pageAt(Math.floor(slot / PAGE_SIZE));
+    const lane = slot & PAGE_MASK;
+    const content = page?.contents[lane];
+    return content === undefined || page === undefined
+      ? undefined
+      : read(content, page.ids[lane * IDS] as number, slot);
+  }
+
   /** Read cold columns at a frame rank without creating a pose window or full row. */
   readContentAt<T>(
     index: number,
-    read: (content: RowContent, worldId: number, entityKey: number, slot: number) => T,
+    read: (content: RowContent, entityKey: number, slot: number) => T,
   ): T | undefined {
     index = Math.trunc(index) || 0;
     if (index < 0) index += this.length;
@@ -280,7 +291,6 @@ export class SceneSlotFrame extends FrameListBase<RenderSceneSlot> {
       return read(
         node.value.contents[lane] as RowContent,
         node.value.ids[ids] as number,
-        node.value.ids[ids + 1] as number,
         node.key * PAGE_SIZE + lane,
       );
     }
@@ -364,12 +374,7 @@ const sceneSlotFrameAt = SceneSlotFrame.prototype.at;
 
 class LodCandidates {
   total = 0;
-  private readonly buckets = new Map<string, LodBucket>();
-
-  private static key(worldId: number, handle: number): string {
-    return `${worldId}:${handle}`;
-  }
-
+  private readonly buckets = new Map<number, LodBucket>();
   private static contribution(bucket: LodBucket): number {
     return bucket.mesh === 'absent'
       ? bucket.withSourceLods
@@ -378,7 +383,7 @@ class LodCandidates {
         : 0;
   }
 
-  slot(worldId: number, snapshot: RowContent, sign: 1 | -1): void {
+  slot(snapshot: RowContent, sign: 1 | -1): void {
     const hasLods = (snapshot.lods?.length ?? 0) > 0 ? 1 : 0;
     if (
       snapshot.terrain !== undefined ||
@@ -388,7 +393,7 @@ class LodCandidates {
       this.total += sign * hasLods;
       return;
     }
-    const key = LodCandidates.key(worldId, snapshot.assetHandle);
+    const key = snapshot.assetHandle;
     let bucket = this.buckets.get(key);
     if (bucket === undefined) {
       bucket = { instances: 0, withSourceLods: 0, mesh: 'absent' };
@@ -401,8 +406,8 @@ class LodCandidates {
     if (bucket.instances === 0 && bucket.mesh === 'absent') this.buckets.delete(key);
   }
 
-  mesh(worldId: number, handle: number, lods: boolean | undefined): void {
-    const key = LodCandidates.key(worldId, handle);
+  mesh(handle: number, lods: boolean | undefined): void {
+    const key = handle;
     const state: MeshLodState = lods === undefined ? 'absent' : lods ? 'lods' : 'plain';
     let bucket = this.buckets.get(key);
     if (bucket === undefined) {
@@ -447,7 +452,6 @@ class SlotIndex {
 
 /** One row write: identity, shared content and a pose read from `pose` at `offset`. */
 export interface SceneRowWrite {
-  readonly worldId: number;
   readonly entityKey: number;
   readonly generation: number;
   readonly content: RowContent;
@@ -533,8 +537,8 @@ export class SceneSlots {
   }
 
   /** `undefined` reports the shared Mesh as not resident in the draw frame. */
-  setMeshLods(worldId: number, handle: number, lods: boolean | undefined): void {
-    this.lods.mesh(worldId, handle, lods);
+  setMeshLods(handle: number, lods: boolean | undefined): void {
+    this.lods.mesh(handle, lods);
   }
 
   clearMeshLods(): void {
@@ -558,13 +562,13 @@ export class SceneSlots {
     return this.live;
   }
 
-  lookup(worldId: number, entity: number): RenderSceneSlot | undefined {
-    const slot = this.identities.get(worldId, entity);
+  lookup(entity: number): RenderSceneSlot | undefined {
+    const slot = this.identities.get(entity);
     return slot === undefined ? undefined : this.get(slot);
   }
 
-  slotOf(worldId: number, entity: number): number | undefined {
-    return this.identities.get(worldId, entity);
+  slotOf(entity: number): number | undefined {
+    return this.identities.get(entity);
   }
 
   private page(slot: number): Page | undefined {
@@ -676,17 +680,12 @@ export class SceneSlots {
     return this.versions;
   }
 
-  private account(
-    slot: number,
-    worldId: number,
-    content: RowContent | undefined,
-    sign: 1 | -1,
-  ): void {
+  private account(slot: number, content: RowContent | undefined, sign: 1 | -1): void {
     if (content === undefined) return;
     if (content.terrain !== undefined) this.terrainCount += sign;
     if (content.glyph !== undefined) this.glyphCount += sign;
     if (content.tilemap !== undefined) this.tilemapCount += sign;
-    this.lods.slot(worldId, content, sign);
+    this.lods.slot(content, sign);
     if (sign === 1) {
       this.terrainSlots.set(slot, content.terrain !== undefined);
       this.capsuleSlots.set(slot, content.capsuleShadowRequested === true);
@@ -706,33 +705,30 @@ export class SceneSlots {
     const ids = page.ids;
     let change: RowChange = 'enter';
     if (previous !== undefined) {
-      const worldId = ids[at] as number;
-      const entityKey = ids[at + 1] as number;
-      this.account(slot, worldId, previous, -1);
-      if (worldId !== row.worldId || entityKey !== row.entityKey) {
-        if (this.identities.get(worldId, entityKey) === slot)
-          this.identities.delete(worldId, entityKey);
-        this.identities.set(row.worldId, row.entityKey, slot);
-        this.logChange(slot, 'leave', ids[at + 2] as number);
+      const entityKey = ids[at] as number;
+      this.account(slot, previous, -1);
+      if (entityKey !== row.entityKey) {
+        if (this.identities.get(entityKey) === slot) this.identities.delete(entityKey);
+        this.identities.set(row.entityKey, slot);
+        this.logChange(slot, 'leave', ids[at + 1] as number);
       } else change = 'update';
     } else {
       page.count++;
       this.live++;
-      this.identities.set(row.worldId, row.entityKey, slot);
+      this.identities.set(row.entityKey, slot);
     }
     this.logChange(slot, change, row.generation);
-    if (change !== 'update' || previous !== row.content || ids[at + 2] !== row.generation)
+    if (change !== 'update' || previous !== row.content || ids[at + 1] !== row.generation)
       this.contentEpoch = Object.freeze({});
     page.contents[lane] = row.content;
-    ids[at] = row.worldId;
-    ids[at + 1] = row.entityKey;
-    ids[at + 2] = row.generation;
+    ids[at] = row.entityKey;
+    ids[at + 1] = row.generation;
     page.versions[lane] = this.nextVersion();
     const offset = row.poseOffset ?? 0;
     const poses = page.poses[poseChunk(lane)] as Float32Array;
     const base = poseOffset(lane);
     for (let index = 0; index < POSE; index++) poses[base + index] = row.pose[offset + index] ?? 0;
-    this.account(slot, row.worldId, row.content, 1);
+    this.account(slot, row.content, 1);
     this.highWater = Math.max(this.highWater, slot + 1);
     if (slot >= this.generations.length) {
       let capacity = this.generations.length;
@@ -752,7 +748,7 @@ export class SceneSlots {
     if (page.contents[lane] === undefined)
       throw new RangeError('A pose write requires a live Scene row');
     page.versions[lane] = this.nextVersion();
-    this.logChange(slot, 'update', page.ids[lane * IDS + 2] as number);
+    this.logChange(slot, 'update', page.ids[lane * IDS + 1] as number);
     const poses = page.poses[poseChunk(lane)] as Float32Array;
     const base = poseOffset(lane);
     for (let index = 0; index < POSE; index++) poses[base + index] = pose[offset + index] ?? 0;
@@ -768,17 +764,15 @@ export class SceneSlots {
     const page = this.writable(slot, true);
     const lane = slot & PAGE_MASK;
     const at = lane * IDS;
-    const worldId = page.ids[at] as number;
-    const entityKey = page.ids[at + 1] as number;
-    this.account(slot, worldId, page.contents[lane], -1);
+    const entityKey = page.ids[at] as number;
+    this.account(slot, page.contents[lane], -1);
     this.terrainSlots.set(slot, false);
     this.capsuleSlots.set(slot, false);
     this.pointsLinesSlots.set(slot, false);
     this.skinSlots.set(slot, false);
     this.rasterSlots.set(slot, false);
-    if (this.identities.get(worldId, entityKey) === slot)
-      this.identities.delete(worldId, entityKey);
-    this.logChange(slot, 'leave', page.ids[at + 2] as number);
+    if (this.identities.get(entityKey) === slot) this.identities.delete(entityKey);
+    this.logChange(slot, 'leave', page.ids[at + 1] as number);
     this.contentEpoch = Object.freeze({});
     page.contents[lane] = undefined;
     this.views.remove(page, slot);
@@ -857,56 +851,26 @@ export class SceneSlots {
     };
   }
 }
-
-/**
- * The stable entity keys of one identity roster, read from its fixed root
- * without materializing any row. `worldKeys[worldId]` routes a World; a
- * worldId past the list keys as itself.
- */
+/** Stable entity keys read from a captured roster without materializing rows. */
 export class SlotIdentityKeys implements ReadonlySet<number> {
-  private readonly worldIds = new Map<number, number>();
   private readonly identities: IdentityMap;
-  constructor(
-    private readonly roster: SceneSlotFrame,
-    private readonly worldKeys: readonly number[],
-  ) {
+  constructor(private readonly roster: SceneSlotFrame) {
     this.identities = roster.identities;
-    for (const [worldId, key] of worldKeys.entries())
-      if (!this.worldIds.has(key)) this.worldIds.set(key, worldId);
   }
   get size(): number {
     return this.identities.size;
   }
-  private keyOf(worldId: number): number {
-    return this.worldKeys[worldId] ?? worldId;
-  }
-  /**
-   * Visit the slot of every identity that entered or left since `previous`,
-   * read from the roster's row-change log in O(changes). `false` (nothing
-   * visited) when the World routing differs or the log cannot answer, so
-   * every key may have changed.
-   */
+  /** Visit membership changes when both captures belong to the same row journal. */
   changesSince(previous: SlotIdentityKeys, visit: (slot: number) => void): boolean {
-    if (
-      previous.worldKeys.length !== this.worldKeys.length ||
-      previous.worldKeys.some((key, index) => key !== this.worldKeys[index])
-    )
-      return false;
     return this.roster.changesSince(previous.roster, (slot, kind) => {
       if (kind !== 'update') visit(slot);
     });
   }
-  /** One identity-root descent; no key index is built. */
-  has(key: number): boolean {
-    const worldKey = Math.floor(key / 4294967296);
-    const entity = key - worldKey * 4294967296;
-    const routed = this.worldIds.get(worldKey);
-    if (routed !== undefined && this.identities.has(routed, entity)) return true;
-    return worldKey >= this.worldKeys.length && this.identities.has(worldKey, entity);
+  has(entity: number): boolean {
+    return this.identities.has(entity);
   }
   *values(): SetIterator<number> {
-    for (const [worldId, entity] of this.identities.entries())
-      yield worldEntityKey(this.keyOf(worldId), entity);
+    for (const [entity] of this.identities.entries()) yield entity;
   }
   keys(): SetIterator<number> {
     return this.values();

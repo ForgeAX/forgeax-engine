@@ -1,5 +1,6 @@
 import { setFlagsFromString } from 'node:v8';
 import { runInNewContext } from 'node:vm';
+import { World } from '@forgeax/engine-ecs';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { ok } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
@@ -63,8 +64,7 @@ it('reuses compute accesses for unchanged items and releases them with their bin
   const run = () => {
     frameNumber += 1;
     const frame = runSingleViewFeatureFrame(host, {
-      worlds: [],
-      owner: 0,
+      world: new World(),
       frameNumber,
       caps: device.caps,
       gpuWork: gpu,

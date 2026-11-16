@@ -94,12 +94,12 @@ function invalid(expected: string): RhiError {
  */
 export class SkinSceneInputs {
   private readonly inputs: SkinInputs;
-  private readonly sources = new Map<number, Source>();
+  private sourceValue: Source | undefined;
   private failed = false;
   private disposed = false;
   constructor(
     arena: GpuInputArena,
-    private resolve: ((worldId: number, handle: number) => SkeletonAsset | undefined) | undefined,
+    private resolve: ((handle: number) => SkeletonAsset | undefined) | undefined,
   ) {
     this.inputs = new SkinInputs(arena);
   }
@@ -108,27 +108,27 @@ export class SkinSceneInputs {
   }
   /** No source binds a Skin; a view without submitted history then records none. */
   get empty(): boolean {
-    return this.sources.size === 0;
+    return this.sourceValue === undefined;
   }
-  private source(worldId: number): Source {
-    let source = this.sources.get(worldId);
+  private source(): Source {
+    let source = this.sourceValue;
     if (source !== undefined) return source;
     const slot = this.inputs.source();
     source = { slot, skeletons: new Map(), joints: new Map(), first: new Set(), bindings: 0 };
     try {
-      this.sources.set(worldId, source);
+      this.sourceValue = source;
     } catch (cause) {
       this.inputs.remove(slot);
       throw cause;
     }
     return source;
   }
-  private skeleton(source: Source, worldId: number, handle: number): Skeleton {
+  private skeleton(source: Source, handle: number): Skeleton {
     const current = source.skeletons.get(handle);
     if (current !== undefined) return current;
     const slot = this.inputs.reserveSkeleton();
     try {
-      const definition = admissible(this.resolve?.(worldId, handle));
+      const definition = admissible(this.resolve?.(handle));
       if (definition !== undefined)
         this.inputs.updateSkeleton(
           slot,
@@ -150,7 +150,6 @@ export class SkinSceneInputs {
    */
   binding(
     slot: number,
-    worldId: number,
     before: SkinBindingInput | undefined,
     after: SkinBindingInput | undefined,
   ): void {
@@ -158,20 +157,18 @@ export class SkinSceneInputs {
     if (before === after) return;
     try {
       if (after === undefined) this.inputs.unbind(slot);
-      else this.acquireBinding(slot, worldId, after);
-      if (before !== undefined) this.releaseBinding(worldId, before);
+      else this.acquireBinding(slot, after);
+      if (before !== undefined) this.releaseBinding(before);
     } catch (cause) {
       this.failed = true;
       throw cause;
     }
   }
-  private acquireBinding(slot: number, worldId: number, after: SkinBindingInput): void {
-    if (!Number.isSafeInteger(worldId) || worldId < 0 || worldId > 0xffffffff)
-      throw invalid('a u32 source World identity');
+  private acquireBinding(slot: number, after: SkinBindingInput): void {
     if (!Number.isSafeInteger(after.skeleton) || after.skeleton <= 0 || after.skeleton > 0xffffffff)
       throw invalid('a nonzero u32 Skeleton handle');
-    const source = this.source(worldId),
-      next = this.skeleton(source, worldId, after.skeleton);
+    const source = this.source(),
+      next = this.skeleton(source, after.skeleton);
     this.inputs.bind(slot, source.slot, next.slot, after.joints);
     next.references++;
     for (const joint of after.joints) {
@@ -185,8 +182,8 @@ export class SkinSceneInputs {
   /** Release static references only. The caller already replaced/retired the
    * Binding row; this must never unbind a new identity reusing that Scene slot.
    */
-  private releaseBinding(worldId: number, before: SkinBindingInput): void {
-    const source = this.sources.get(worldId),
+  private releaseBinding(before: SkinBindingInput): void {
+    const source = this.sourceValue,
       previous = source?.skeletons.get(before.skeleton);
     if (
       source === undefined ||
@@ -209,7 +206,7 @@ export class SkinSceneInputs {
       } else source.joints.set(joint, count - 1);
     }
     if (--source.bindings === 0) {
-      this.sources.delete(worldId);
+      this.sourceValue = undefined;
       this.inputs.remove(source.slot);
     }
   }
@@ -238,31 +235,31 @@ export class SkinSceneInputs {
 
       for (const created of delta.createdSlots)
         if (created.snapshot.skinBinding !== undefined)
-          this.acquireBinding(created.slot, created.worldId, created.snapshot.skinBinding);
+          this.acquireBinding(created.slot, created.snapshot.skinBinding);
       for (const recreated of delta.recreatedSlots)
         if (recreated.snapshot.skinBinding !== undefined)
-          this.acquireBinding(recreated.slot, recreated.worldId, recreated.snapshot.skinBinding);
+          this.acquireBinding(recreated.slot, recreated.snapshot.skinBinding);
       for (const updated of delta.contentUpdatedSlots) {
         const after = updated.snapshot.skinBinding;
         if (
           after !== undefined &&
           this.previousRecord(delta, updated).snapshot.skinBinding !== after
         )
-          this.acquireBinding(updated.slot, updated.worldId, after);
+          this.acquireBinding(updated.slot, after);
       }
 
       for (const removed of delta.removedSlots) {
         const previous = removed.snapshot.skinBinding;
-        if (previous !== undefined) this.releaseBinding(removed.worldId, previous);
+        if (previous !== undefined) this.releaseBinding(previous);
       }
       for (const recreated of delta.recreatedSlots) {
         const previous = this.previousRecord(delta, recreated).snapshot.skinBinding;
-        if (previous !== undefined) this.releaseBinding(recreated.worldId, previous);
+        if (previous !== undefined) this.releaseBinding(previous);
       }
       for (const updated of delta.contentUpdatedSlots) {
         const previous = this.previousRecord(delta, updated).snapshot.skinBinding;
         if (previous !== undefined && previous !== updated.snapshot.skinBinding)
-          this.releaseBinding(updated.worldId, previous);
+          this.releaseBinding(previous);
       }
     } catch (cause) {
       this.failed = true;
@@ -271,19 +268,15 @@ export class SkinSceneInputs {
   }
   private previousRecord(delta: RenderSceneApplyResult, record: RenderSceneSlot): RenderSceneSlot {
     const previous = delta.previous.get(record);
-    if (
-      previous === undefined ||
-      previous.worldId !== record.worldId ||
-      previous.entityKey !== record.entityKey
-    )
+    if (previous === undefined || previous.entityKey !== record.entityKey)
       throw invalid('the carried prior record of this accepted Skin edit');
     return previous;
   }
 
   /** Asset change evidence updates one shared definition, including removal. */
-  skeletonChanged(worldId: number, handle: number, changed: SkeletonAsset | undefined): void {
+  skeletonChanged(handle: number, changed: SkeletonAsset | undefined): void {
     this.healthy();
-    const skeleton = this.sources.get(worldId)?.skeletons.get(handle);
+    const skeleton = this.sourceValue?.skeletons.get(handle);
     if (skeleton === undefined) return;
     const definition = admissible(changed);
     try {
@@ -300,20 +293,20 @@ export class SkinSceneInputs {
       throw cause;
     }
   }
-  hasJoint(worldId: number, entity: number): boolean {
+  hasJoint(entity: number): boolean {
     this.healthy();
-    return this.sources.get(worldId)?.joints.has(entity) ?? false;
+    return this.sourceValue?.joints.has(entity) ?? false;
   }
   /** Borrowed first-reference work, sampled once after the known Binding edits.
    * Each successful joint admission drains only its own pending identity.
    */
-  firstJoints(worldId: number): ReadonlySet<number> | undefined {
+  firstJoints(): ReadonlySet<number> | undefined {
     this.healthy();
-    return this.sources.get(worldId)?.first;
+    return this.sourceValue?.first;
   }
-  joint(worldId: number, entity: number, matrix: Mat4 | undefined): void {
+  joint(entity: number, matrix: Mat4 | undefined): void {
     this.healthy();
-    const source = this.sources.get(worldId);
+    const source = this.sourceValue;
     if (source === undefined || !source.joints.has(entity)) return;
     try {
       if (matrix === undefined) this.inputs.removeJoint(source.slot, entity);
@@ -332,7 +325,7 @@ export class SkinSceneInputs {
     if (this.disposed) return;
     this.disposed = true;
     this.resolve = undefined;
-    this.sources.clear();
+    this.sourceValue = undefined;
     this.inputs.dispose();
   }
 }

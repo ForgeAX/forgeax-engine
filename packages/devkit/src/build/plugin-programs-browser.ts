@@ -257,11 +257,16 @@ export class BrowserPluginProgramArchive {
         memberships.set(id, roots);
       }
     this.hostGroups.clear();
-    for (const [id, roots] of memberships)
+    for (const [id, roots] of memberships) {
+      // Vite may inline the HTML facade into this group. Keep its page name
+      // so platform hosts can identify the entry without renaming shared code.
+      const page = roots.length === 1 && entries.has(roots[0] ?? '') ? roots[0] : undefined;
+      const name = page?.endsWith('.html') ? posix.basename(page, '.html') : 'engine';
       this.hostGroups.set(
         id,
-        `engine-${createHash('sha256').update(JSON.stringify(roots)).digest('hex').slice(0, 16)}`,
+        `${name}-${createHash('sha256').update(JSON.stringify(roots)).digest('hex').slice(0, 16)}`,
       );
+    }
   }
 
   groupedOutput(output: Rolldown.OutputOptions): Rolldown.OutputOptions {

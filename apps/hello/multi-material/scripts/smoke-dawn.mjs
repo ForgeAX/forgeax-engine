@@ -39,13 +39,13 @@
 //   - `[hello-multi-material] backend=webgpu`
 //   - `[smoke] colorReadback={"red":<N>,"cyan":<N>,"totalPixels":<N>,"frames":<N>}`
 //   - `[smoke] PASS` / `[smoke] FAIL`
-
 import { createMeshBuilder } from '@forgeax/engine-geometry';
-import { readFileSync } from 'node:fs';
+
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { emitSmokeReceipt } from '../../../shared/scripts/smoke-receipt.mjs';
+import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 
 // feat-20260615-ci-smoke-time-budget: 800x600 → 200x150 (lavapipe fragment-bound)
 const WIDTH = 200;
@@ -152,7 +152,8 @@ const { Transform } = await import('@forgeax/engine-scene');
 const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
 let MANIFEST_URL;
 try {
-  MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MANIFEST_PATH, 'utf8'))}`;
+  MANIFEST_URL = URL.createObjectURL(new Blob([readShaderManifestText(MANIFEST_PATH)], { type: 'application/json' }));
+  process.once('exit', () => URL.revokeObjectURL(MANIFEST_URL));
 } catch (err) {
   console.error(
     `[smoke] FAIL - missing built manifest at ${MANIFEST_PATH}: ` +
@@ -268,11 +269,7 @@ const world = new World({ assets });
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const lease = worldAttachment1.value;
-const drawFrame = () => drawReadyFrame(renderer, {
-  leases: [lease],
-  camera: { lease },
-  environment: { lease },
-});
+const drawFrame = () => drawReadyFrame(renderer, { source: lease });
 const meshHandle = assets.create(buildMultiPrimMesh(defaultMaterials)).unwrap();
 
 function mintUnlit(rgb) {

@@ -10,9 +10,10 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { decodeCatalogWire } from '@forgeax/engine-pack';
 import { decodeMaterialProgramWire } from '@forgeax/engine-pack/runtime';
+import { readShaderManifestText } from '../lib/shader-manifest.mjs';
 import { appShardRoster } from './app-build-roster.mjs';
 import { projectAppShaderManifest, readSharedShaderManifest } from './app-shader-manifest.mjs';
 import { readRoster, resolveRunnableEntries } from './run-dawn-smoke-roster.mjs';
@@ -137,7 +138,7 @@ function packClosureInventory(root, app, packGuids) {
     const assets = packFile?.assets?.filter((asset) => asset?.guid === guid) ?? [];
     if (assets.length !== 1)
       failArtifact('ci-app-shard-pack-guid-missing', { app, guid, matchCount: assets.length });
-    paths.add(`apps/${app}/dist/${relative(distDir, packagePath)}`);
+    paths.add(`apps/${app}/dist/${relative(distDir, packagePath).replaceAll(sep, '/')}`);
     const asset = assets[0];
     for (const ref of asset.refs ?? []) {
       if (typeof ref === 'string' && !reachable.has(ref)) {
@@ -155,7 +156,7 @@ function packClosureInventory(root, app, packGuids) {
         app,
         guid,
       });
-      paths.add(`apps/${app}/dist/${relative(distDir, artifactFile)}`);
+      paths.add(`apps/${app}/dist/${relative(distDir, artifactFile).replaceAll(sep, '/')}`);
     }
   }
   return [...paths].sort();
@@ -192,7 +193,7 @@ function copyShardArtifacts(root, outputDir, report, sharedShaderManifest) {
     const destination = join(outputDir, 'artifacts', relative);
     mkdirSync(dirname(destination), { recursive: true });
     if (sharedShaderManifest !== null && relative.endsWith('/dist/shaders/manifest.json')) {
-      const appManifest = JSON.parse(readFileSync(source, 'utf8'));
+      const appManifest = JSON.parse(readShaderManifestText(source));
       const projected = projectAppShaderManifest(appManifest, sharedShaderManifest, source);
       writeFileSync(destination, `${JSON.stringify(projected, null, 2)}\n`);
     } else {
@@ -391,7 +392,7 @@ if (!options.dryRun && buildApps.length > 0) {
     {
       cwd: root,
       stdio: 'inherit',
-      shell: process.platform === 'win32',
+      shell: false,
     },
   );
   if (result.status !== 0) process.exit(result.status ?? 1);

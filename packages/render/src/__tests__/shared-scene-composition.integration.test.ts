@@ -103,7 +103,7 @@ it.each(
   const publisher = published
     ? createRenderPublisher(world, assets, source, undefined, [], targetOwner)
     : undefined;
-  const extract = vi.spyOn(extraction, 'extractFrames');
+  const extract = vi.spyOn(extraction, 'extractSource');
   const query = vi.spyOn(MaterialDispatch.prototype, 'query');
   const draw = async () => {
     const candidate = publisher?.prepare(0).unwrap();
@@ -120,13 +120,13 @@ it.each(
     if (publication !== undefined) request = { publication };
     else {
       if (lease === undefined) throw new Error('local scene needs an attached World lease');
-      request = { leases: [lease], camera: { lease }, environment: { lease } };
+      request = { source: lease };
     }
     const frame = renderer.draw(request);
     if (!frame.ok) throw frame.error;
     expect((await frame.value.completed).ok).toBe(true);
     expect(query).toHaveBeenCalledTimes(1);
-    return extract.mock.calls.filter((call) => call[4]?.renderables !== 'none').length;
+    return extract.mock.calls.filter((call) => call[3]?.renderables !== 'none').length;
   };
   try {
     expect(await draw()).toBe(published ? 0 : 1);

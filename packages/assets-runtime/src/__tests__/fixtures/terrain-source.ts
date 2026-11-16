@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { AssetRegistry, terrainContribution } from '@forgeax/engine-assets-runtime';
+import { terrainContribution } from '@forgeax/engine-assets-runtime';
 import { meshAssetContribution } from '@forgeax/engine-geometry';
 import { textureContribution } from '@forgeax/engine-image';
 import { packMeshBin } from '@forgeax/engine-import';
@@ -7,9 +7,13 @@ import { AssetGuid } from '@forgeax/engine-pack/guid';
 import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
 import { materialContribution, samplerContribution } from '@forgeax/engine-render';
 import { type Asset, type CatalogDelta, type CatalogEntry, ok } from '@forgeax/engine-types';
+import { AssetRegistry } from '../../asset-registry';
 
 /** Source fixtures serialize ordinary GUID closures through the actual Catalog transport. */
-export function terrainSourceFixture(guid: (key: string) => string) {
+export function terrainSourceFixture(
+  guid: (key: string) => string,
+  additionalReferences: Readonly<Record<string, readonly string[]>> = {},
+) {
   let rows: CatalogEntry[] = [];
   let revision = 0;
   const bodies = new Map<string, string | Uint8Array>();
@@ -43,7 +47,7 @@ export function terrainSourceFixture(guid: (key: string) => string) {
     const packageUrl = `https://terrain.invalid/${sourceRevision}/pack.json`;
     const artifacts = new Map<string, Uint8Array>();
     const packAssets = Object.entries(values).map(([key, asset]) => {
-      const refs = sourceReferences(asset);
+      const refs = [...new Set([...sourceReferences(asset), ...(additionalReferences[key] ?? [])])];
       if (asset.kind !== 'mesh')
         return { guid: guid(key), kind: asset.kind, refs, payload: asset, artifacts: {} };
       const bytes = packMeshBin(asset, guid(key), refs).unwrap();

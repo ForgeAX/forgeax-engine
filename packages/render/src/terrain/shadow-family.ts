@@ -1,12 +1,10 @@
 import { RhiError } from '@forgeax/engine-rhi';
 import { err, ok, type Result } from '@forgeax/engine-types';
-import { worldEntityKey } from '../record/frame-snapshot';
 import type { RenderPipelineTopology } from '../render-pipeline';
 import type { RenderableSnapshot } from '../render-system-extract';
 import { type FrameList, sparseRowsOf } from '../scene/frame-list';
 
 export interface TerrainShadowReceiver {
-  readonly worldId: number;
   readonly entityKey: number;
 }
 
@@ -17,14 +15,11 @@ export function terrainShadowReceivers(
   const roots = new Map<number, TerrainShadowReceiver>();
   for (const source of sparseRowsOf(sources, 'terrain')) {
     if (source.terrain === undefined || source.authorVisible === false) continue;
-    roots.set(worldEntityKey(source.worldId, source.entityKey), {
-      worldId: source.worldId,
+    roots.set(source.entityKey, {
       entityKey: source.entityKey,
     });
   }
-  return [...roots.values()].sort(
-    (a, b) => worldEntityKey(a.worldId, a.entityKey) - worldEntityKey(b.worldId, b.entityKey),
-  );
+  return [...roots.values()].sort((a, b) => a.entityKey - b.entityKey);
 }
 
 type DirectionalTopology = RenderPipelineTopology['shadow']['directional'];
@@ -66,7 +61,7 @@ export function terrainShadowLayoutMatches(
     roots.length === oldRoots.length &&
     roots.every((root, index) => {
       const old = oldRoots[index];
-      return old?.worldId === root.worldId && old.entityKey === root.entityKey;
+      return old !== undefined && old.entityKey === root.entityKey;
     })
   );
 }

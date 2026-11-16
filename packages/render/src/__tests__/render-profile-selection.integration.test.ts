@@ -47,7 +47,7 @@ describe('automatic Standard path at the Renderer boundary', () => {
       for (const antialias of [ANTIALIAS_NONE, ANTIALIAS_TAA, ANTIALIAS_NONE]) {
         world.set(camera, Camera, { antialias }).unwrap();
         world.update().unwrap();
-        const drawn = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
+        const drawn = renderer.draw({ source: lease });
         expect(drawn.ok).toBe(true);
         if (!drawn.ok) throw drawn.error;
         const frame = drawn.value;

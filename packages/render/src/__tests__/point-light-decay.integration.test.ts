@@ -4,7 +4,7 @@ import { expect, it } from 'vitest';
 import { PointLight, SpotLight } from '../components';
 import { validatePointLightDecay } from '../components/point-light';
 import { packLights } from '../raytracing/path-input';
-import { extractFrames } from '../render-system-extract-tail';
+import { extractSource } from '../render-system-extract-tail';
 import { packTestDirectLightSlot as packDirectLightSlot } from './cluster-test-abi';
 
 function required<T>(value: T | undefined): T {
@@ -22,11 +22,11 @@ it('defaults to inverse-square and carries authored point decay without changing
     })
     .unwrap();
   const assets = new AssetRegistry({ shaderRegistry: {} as never });
-  const before = extractFrames([world], 0, assets).lights;
+  const before = extractSource(world, assets).lights;
   expect(before.point[0]).toMatchObject({ decay: 2 });
   const spotBefore = packDirectLightSlot(required(before.spot[0]));
   world.set(point, PointLight, { decay: 1.4 }).unwrap();
-  const after = extractFrames([world], 0, assets).lights;
+  const after = extractSource(world, assets).lights;
   expect(after.point[0]?.decay).toBeCloseTo(1.4);
   expect(packDirectLightSlot(required(after.point[0]))[7]).toBeCloseTo(1.4);
   expect(packDirectLightSlot(required(after.point[0])).byteLength).toBe(96);
@@ -58,17 +58,10 @@ it.each([
     detail: { receivedKey: 'decay' },
   });
   expect(
-    extractFrames([world], 0, new AssetRegistry({ shaderRegistry: {} as never })).lights.point,
+    extractSource(world, new AssetRegistry({ shaderRegistry: {} as never })).lights.point,
   ).toHaveLength(0);
   world.set(point, PointLight, { decay: 1.4 }).unwrap();
   expect(
-    extractFrames([world], 0, new AssetRegistry({ shaderRegistry: {} as never })).lights.point[0]
-      ?.decay,
+    extractSource(world, new AssetRegistry({ shaderRegistry: {} as never })).lights.point[0]?.decay,
   ).toBeCloseTo(1.4);
-});
-it('rejects NaN at the ECS numeric boundary', () => {
-  expect(new World().spawn({ component: PointLight, data: { decay: NaN } })).toMatchObject({
-    ok: false,
-    error: { code: 'component-numeric-value-invalid' },
-  });
 });

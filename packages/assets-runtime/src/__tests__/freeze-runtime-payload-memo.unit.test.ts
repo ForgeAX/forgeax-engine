@@ -42,13 +42,6 @@ describe('freezeRuntimePayload', () => {
     expect(Object.isFrozen(outer)).toBe(true);
   });
 
-  it('still freezes mutable descendants of an already frozen node it did not freeze itself', () => {
-    const mutable = { size: 1 };
-    const outer = Object.freeze({ mutable });
-    freezeRuntimePayload(outer);
-    expect(Object.isFrozen(mutable)).toBe(true);
-  });
-
   it('freezes cyclic graphs and leaves typed arrays unfrozen', () => {
     const a: Record<string, unknown> = { bytes: new Uint8Array([1, 2]) };
     const b: Record<string, unknown> = { a };

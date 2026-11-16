@@ -7,6 +7,39 @@ import test from 'node:test';
 import { artifactUploadPaths } from '../artifact-upload-paths.mjs';
 import { resolvedUploadViolations } from '../check-no-reports.mjs';
 
+test('View failures upload Modeling pictures and journey without the generated project', async () => {
+  const { parse } = await import('yaml');
+  const workflow = parse(readFileSync('.github/workflows/ci.yml', 'utf8'));
+  const upload = workflow.jobs['view-integration-shards'].steps.find((step) =>
+    step.with?.name?.startsWith('failure-view-integration-evidence-'),
+  );
+  assert.ok(upload, 'the maintained View failure upload must exist');
+  const root = mkdtempSync(join(tmpdir(), 'forgeax-modeling-evidence-'));
+  try {
+    const files = ['failure.png', 'journey.json', 'failure.html', 'project/package.json'];
+    for (const file of files) {
+      const target = join(root, 'artifacts/modeling-view', file);
+      mkdirSync(dirname(target), { recursive: true });
+      writeFileSync(target, 'evidence');
+    }
+    const { create } = await import('@actions/glob');
+    const selected = await (
+      await create(
+        upload.with.path
+          .split('\n')
+          .filter(Boolean)
+          .map((path) => join(root, path))
+          .join('\n'),
+      )
+    ).glob();
+    for (const file of files.slice(0, 3))
+      assert.ok(selected.includes(join(root, 'artifacts/modeling-view', file)), file);
+    assert.ok(!selected.includes(join(root, 'artifacts/modeling-view/project/package.json')));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('ordinary uploads preserve their original path without requiring a Git checkout', () => {
   const path = 'artifacts/native/\nartifacts/reports/raw.json\n';
   assert.equal(artifactUploadPaths({ path }), path);

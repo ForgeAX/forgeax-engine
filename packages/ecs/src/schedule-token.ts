@@ -1,58 +1,25 @@
-/**
- * Nominal label for one of the World-owned schedules.
- *
- * Worlds expose the built-in tokens below. A token is both a registration
- * scope and, for FixedUpdate, the intrinsic Update ordering anchor.
- */
+/** Schedule identity is independent of its diagnostic label. */
+const SCHEDULE_ID = Symbol.for('forgeax.ecs.schedule.identity');
 export interface ScheduleToken {
+  readonly [SCHEDULE_ID]: true;
   readonly name: string;
 }
 
-export type ScheduleName = 'Update' | 'FixedUpdate';
-
-function createScheduleToken(name: ScheduleName): ScheduleToken {
-  // The Engine Worker loads its runtime and an execution bootstrap as separate
-  // Vite bundles. Keep the two built-in tokens physically shared across those
-  // bundles so a plugin's `Update` reference still addresses the owning World
-  // schedule instead of becoming an accidental cross-scope edge.
-  const registry = globalThis as typeof globalThis & {
-    readonly [key: symbol]: ScheduleToken | undefined;
-  };
-  const key = Symbol.for(`forgeax.ecs.schedule-token.${name}`);
-  const existing = registry[key];
-  if (existing !== undefined) return existing;
-  const token = Object.freeze({ name });
-  Object.defineProperty(registry, key, {
-    configurable: false,
-    enumerable: false,
-    value: token,
-    writable: false,
-  });
-  return token;
-}
-
-/** Variable-rate World schedule. */
-export const Update = createScheduleToken('Update');
-/** Fixed-rate World schedule and the intrinsic Update ordering anchor. */
-export const FixedUpdate = createScheduleToken('FixedUpdate');
-const domainSchedules = new WeakSet<object>();
-
-/**
- * Explicitly run schedule for one domain (for example a renderer's frame
- * phases). It never advances World time; `world.run(token)` executes it.
- */
 export function defineSchedule(name: string): ScheduleToken {
-  if (name === 'Update' || name === 'FixedUpdate' || name.length === 0)
-    throw new RangeError(`Schedule name '${name}' is reserved or empty`);
-  const token = Object.freeze({ name });
-  domainSchedules.add(token);
-  return token;
+  if (name.length === 0) throw new RangeError('A schedule requires a diagnostic name');
+  return Object.freeze({ name, [SCHEDULE_ID]: true as const });
 }
 
-export function isDomainSchedule(value: unknown): value is ScheduleToken {
-  return typeof value === 'object' && value !== null && domainSchedules.has(value);
-}
+export const Update = defineSchedule('Update');
+export const FixedUpdate = defineSchedule('FixedUpdate');
 
 export function isScheduleToken(value: unknown): value is ScheduleToken {
-  return value === Update || value === FixedUpdate || isDomainSchedule(value);
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    (value as Partial<ScheduleToken>)[SCHEDULE_ID] === true
+  );
+}
+export function isDomainSchedule(value: unknown): value is ScheduleToken {
+  return isScheduleToken(value) && value !== Update && value !== FixedUpdate;
 }

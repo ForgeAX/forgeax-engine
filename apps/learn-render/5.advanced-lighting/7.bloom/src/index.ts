@@ -1,6 +1,8 @@
+import { InputFrameStartScan } from "@forgeax/engine-input";
+import { defineSystem } from "@forgeax/engine/ecs";
 import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtimeBinding } from '@forgeax/apps-shared/asset-runtime-config';
 import { Update } from '@forgeax/engine/ecs';
-import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine/input';
+import { INPUT_SNAPSHOT_RESOURCE_KEY } from '@forgeax/engine/input';
 // apps/learn-render/5.advanced-lighting/7.bloom/src/index.ts
 // LearnOpenGL section 5.7 - Bloom.
 //
@@ -57,10 +59,7 @@ import {
 } from '../../../../shared/src/learn-render-test-lifecycle';
 import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 
-
 // 2. example-specific glue
-
-
 
 // Texture GUIDs from forgeax-engine-assets/learn-opengl/textures/
 //   wood.png       GUID 019e3969-1d48-7c3b-ac24-6d68f457065f
@@ -367,12 +366,12 @@ const primitiveCube = app.assets.create(createPrimitiveMesh('cube').unwrap()).un
   // literal ' ' (NOT 'Space', which is ev.code).
   let prevSpace = false;
   let currentBloom: number = BLOOM_ENABLED;
-  world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'learn-render-5.7-bloom-space-toggle',
-    after: ['input-frame-start-scan'],
+    after: [InputFrameStartScan],
     queries: [],
     fn: () => {
-      const snap = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+      const snap = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
       if (snap === undefined) return;
       const cur = snap.keyboard.down(' ');
       if (cur && !prevSpace) {
@@ -388,6 +387,7 @@ const primitiveCube = app.assets.create(createPrimitiveMesh('cube').unwrap()).un
       prevSpace = cur;
     },
   });
+world.addSystem(Update, systemToken1);
 
   const startRes = app.start();
   if (!startRes.ok) {
@@ -429,7 +429,7 @@ function installCaptureHook(app: App, world: App['world']): void {
     if (armed === undefined) throw new Error('[learn-render 5.7 bloom] final-display observation unavailable');
     if (!armed.ok) throw armed.error;
     world.update(1 / 60).unwrap();
-    const frame = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
+    const frame = renderer.draw({ source: lease });
     if (!frame.ok) throw frame.error;
     const observed = await renderer.observe(frame.value, {
       include: ['linear-hdr', 'linear-ldr', 'final-display'],

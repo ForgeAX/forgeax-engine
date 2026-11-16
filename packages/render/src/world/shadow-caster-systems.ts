@@ -1,4 +1,4 @@
-import { defineComponent, type EntityHandle, type World } from '@forgeax/engine-ecs';
+import { defineComponent, defineSystem, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import type { GpuDrawSelection } from '../gpu-driven/draw-selection';
 import { hasShadowViewDemand } from '../record/frame-targets';
 import type { RenderSystemInternals } from '../record/render-context';
@@ -6,7 +6,8 @@ import { shadowViewContains } from '../record/shadow-culling';
 import type { ExtractedFrame, RenderableSnapshot } from '../render-system-extract';
 import { type FrameList, sparseRowsOf } from '../scene/frame-list';
 import type { PersistentShadowCasterProjection } from '../scene/render-scene';
-import { RENDER_CASCADE_FIT_SYSTEM } from './light-systems';
+import { RenderCascadeFitOrder, RenderViewFrameOrder } from '../system-order';
+
 import {
   shadowViewCasterChannels,
   ViewCascadeFit,
@@ -16,7 +17,7 @@ import {
 import { ViewRecorder } from './render-views';
 import { RenderPrepare, renderSubmission } from './render-world';
 import { readViewField, requireViewField } from './view-field';
-import { RENDER_VIEW_FRAME_SYSTEM, ViewFrame, type ViewFrameState } from './view-frame-systems';
+import { ViewFrame, type ViewFrameState } from './view-frame-systems';
 import { recordContext } from './view-record-context';
 import { ownerOf, type ViewSettlementOwner } from './view-settlement';
 
@@ -160,58 +161,57 @@ export function projectSkinShadowCasters(
  * frame before any CPU palette is composed.
  */
 export function registerShadowCasterSystem(world: World): void {
-  world
-    .addSystem(RenderPrepare, {
-      commands: 'none',
-      name: RENDER_SHADOW_CASTERS_SYSTEM,
-      after: [RENDER_VIEW_FRAME_SYSTEM, RENDER_CASCADE_FIT_SYSTEM],
-      queries: [{ read: [ViewRecorder, ViewFrame], optional: [ViewCascadeFit, ViewShadowCasters] }],
-      fn: (world, [rows]) => {
-        const frame = renderSubmission(world).frame;
-        const first: { entity: EntityHandle; state: ViewShadowCastersState }[] = [];
+  const systemToken1 = defineSystem({
+    commands: 'none',
+    name: RENDER_SHADOW_CASTERS_SYSTEM,
+    after: [RenderViewFrameOrder, RenderCascadeFitOrder],
+    queries: [{ read: [ViewRecorder, ViewFrame], optional: [ViewCascadeFit, ViewShadowCasters] }],
+    fn: (world, [rows]) => {
+      const frame = renderSubmission(world).frame;
+      const first: { entity: EntityHandle; state: ViewShadowCastersState }[] = [];
 
-        rows.forEach((row) => {
-          const entity = row.entity;
+      rows.forEach((row) => {
+        const entity = row.entity;
 
-          const view = world
-            .resolveUniqueRef<ViewFrameState>(requireViewField(world, entity, ViewFrame, 'state'))
-            .unwrap();
-          if (view.frame !== frame || view.mode === false || view.result?.ok !== true) return;
-          const lights = viewLightsOf(world, entity);
-          if (lights === undefined || !hasShadowViewDemand(lights)) return;
-          const source = shadowCasterSource(
-            ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state')),
-            view.result.value,
-          );
-          if (source === undefined) return;
-          const slot = readViewField(world, entity, ViewShadowCasters, 'state');
-          const state =
-            slot === undefined
-              ? {
-                  frame,
-                  skin: [],
-                  source,
-                  lights,
-                  projected: false,
-                  owner: undefined,
-                  capture: false,
-                }
-              : world.resolveUniqueRef<ViewShadowCastersState>(slot).unwrap();
-          state.frame = frame;
-          state.source = source;
-          state.lights = lights;
-          state.projected = false;
-          if (slot === undefined) first.push({ entity: entity, state });
-        });
-        // A view's first projection attaches its component after the iteration.
-        for (const { entity, state } of first)
-          world
-            .addComponent(entity, {
-              component: ViewShadowCasters,
-              data: { state: world.allocUniqueRef('ViewShadowCasters', state) },
-            })
-            .unwrap();
-      },
-    })
-    .unwrap();
+        const view = world
+          .resolveUniqueRef<ViewFrameState>(requireViewField(world, entity, ViewFrame, 'state'))
+          .unwrap();
+        if (view.frame !== frame || view.mode === false || view.result?.ok !== true) return;
+        const lights = viewLightsOf(world, entity);
+        if (lights === undefined || !hasShadowViewDemand(lights)) return;
+        const source = shadowCasterSource(
+          ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state')),
+          view.result.value,
+        );
+        if (source === undefined) return;
+        const slot = readViewField(world, entity, ViewShadowCasters, 'state');
+        const state =
+          slot === undefined
+            ? {
+                frame,
+                skin: [],
+                source,
+                lights,
+                projected: false,
+                owner: undefined,
+                capture: false,
+              }
+            : world.resolveUniqueRef<ViewShadowCastersState>(slot).unwrap();
+        state.frame = frame;
+        state.source = source;
+        state.lights = lights;
+        state.projected = false;
+        if (slot === undefined) first.push({ entity: entity, state });
+      });
+      // A view's first projection attaches its component after the iteration.
+      for (const { entity, state } of first)
+        world
+          .addComponent(entity, {
+            component: ViewShadowCasters,
+            data: { state: world.allocUniqueRef('ViewShadowCasters', state) },
+          })
+          .unwrap();
+    },
+  });
+  world.addSystem(RenderPrepare, systemToken1).unwrap();
 }

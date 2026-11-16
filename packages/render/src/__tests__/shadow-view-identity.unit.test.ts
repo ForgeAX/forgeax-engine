@@ -10,7 +10,7 @@ it('keeps owned logical identities and static children detached and stable', () 
   const source = {
     kind: 'directional' as const,
     index: 2,
-    terrainReceiver: { worldId: 1, entityKey: 7 },
+    terrainReceiver: { entityKey: 7 },
   };
   const owned = captureShadowViewIdentity(source);
   const child = staticShadowViewIdentity(owned);
@@ -22,15 +22,15 @@ it('keeps owned logical identities and static children detached and stable', () 
   expect(captureShadowViewIdentity(owned)).toBe(owned);
   expect(staticShadowViewIdentity(owned)).toBe(child);
   expect(staticShadowViewIdentity(child)).toBe(child);
-  expect(child.terrainReceiver).toEqual({ worldId: 1, entityKey: 7 });
+  expect(child.terrainReceiver).toEqual({ entityKey: 7 });
   expect(Object.isFrozen(child.terrainReceiver)).toBe(true);
-  expect(shadowViewIdentityKey(child)).toBe('directional:2::static:terrain:1:7');
+  expect(shadowViewIdentityKey(child)).toBe('directional:2::static:terrain:7');
 });
 
 it('observes borrowed getters, nested mutation and spread fields on every read', () => {
   let index = 0;
   let reads = 0;
-  const terrainReceiver = { worldId: 2, entityKey: 3 };
+  const terrainReceiver = { entityKey: 3 };
   const source = Object.freeze({
     kind: 'spot' as const,
     get index() {
@@ -40,10 +40,10 @@ it('observes borrowed getters, nested mutation and spread fields on every read',
     terrainReceiver,
     extra: 9,
   });
-  expect(shadowViewIdentityKey(source)).toBe('spot:0::terrain:2:3');
+  expect(shadowViewIdentityKey(source)).toBe('spot:0::terrain:3');
   index = 1;
   terrainReceiver.entityKey = 4;
-  expect(shadowViewIdentityKey(source)).toBe('spot:1::terrain:2:4');
+  expect(shadowViewIdentityKey(source)).toBe('spot:1::terrain:4');
   const first = staticShadowViewIdentity(source);
   const second = staticShadowViewIdentity(source);
   expect(first).not.toBe(second);

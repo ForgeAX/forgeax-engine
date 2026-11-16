@@ -1,3 +1,6 @@
+import { defineResource } from '@forgeax/engine-ecs';
+import { StateSet } from "@forgeax/engine-state";
+import { defineSystem } from "@forgeax/engine-ecs";
 import {
   FixedTime,
   FixedUpdate,
@@ -15,7 +18,7 @@ import {
 import type { Context } from '@forgeax/engine-plugin';
 
 export const GameState = defineState('GameDefaultPhase', ['Play', 'Victory', 'Defeat', 'Reset'] as const);
-export const GAMEPLAY_STATE_WITNESS_KEY = 'gameDefaultStateWitness';
+export const GAMEPLAY_STATE_WITNESS_KEY = defineResource<GameplayStateWitness>("gameDefaultStateWitness");
 
 export type GameplayPhase = 'Play' | 'Victory' | 'Defeat' | 'Reset';
 
@@ -63,7 +66,7 @@ export function installGameplayState(ctx: GameplayStateContext): GameplayStateHa
     };
   }, 'game-default/state-witness');
 
-  const witness = (): GameplayStateWitness => ctx.world.getResource<GameplayStateWitness>(GAMEPLAY_STATE_WITNESS_KEY);
+  const witness = (): GameplayStateWitness => ctx.world.getResource(GAMEPLAY_STATE_WITNESS_KEY);
   const patchWitness = (patch: Partial<GameplayStateWitness>): void => {
     ctx.world.insertResource(GAMEPLAY_STATE_WITNESS_KEY, { ...witness(), ...patch });
   };
@@ -101,10 +104,10 @@ export function installGameplayState(ctx: GameplayStateContext): GameplayStateHa
   }, 'game-default/state-hooks');
 
   ctx.context.effect(() => {
-    ctx.world.addSystem(Update, {
+    const systemToken1 = defineSystem({
       name: 'game-state-witness',
       queries: [],
-      after: ['transitionStates'],
+      after: [StateSet],
       before: [FixedUpdate],
       fn: () => {
         const current = getState(ctx.world, GameState);
@@ -113,8 +116,9 @@ export function installGameplayState(ctx: GameplayStateContext): GameplayStateHa
           phase: current.ok && (current.value === 'Play' || current.value === 'Victory' || current.value === 'Defeat' || current.value === 'Reset') ? current.value : 'unknown',
         });
       },
-    }).unwrap();
-    ctx.world.addSystem(FixedUpdate, {
+    });
+ctx.world.addSystem(Update, systemToken1).unwrap();
+    const systemToken2 = defineSystem({
       name: 'game-fixed-simulation',
       queries: [],
       runIf: inState(GameState, 'Play'),
@@ -123,10 +127,11 @@ export function installGameplayState(ctx: GameplayStateContext): GameplayStateHa
         const current = witness();
         patchWitness({ fixedTicks: fixed.tick, simulationSeconds: current.simulationSeconds + fixed.delta });
       },
-    }).unwrap();
+    });
+ctx.world.addSystem(FixedUpdate, systemToken2).unwrap();
     return () => {
-      ctx.world.removeSystem(FixedUpdate, 'game-fixed-simulation');
-      ctx.world.removeSystem(Update, 'game-state-witness');
+      ctx.world.removeSystem(FixedUpdate, systemToken2);
+      ctx.world.removeSystem(Update, systemToken1);
     };
   }, 'game-default/state-systems');
 

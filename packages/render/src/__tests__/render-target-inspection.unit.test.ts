@@ -39,17 +39,16 @@ describe('bounded render-target inspection', () => {
     const snapshot = projection.update({ facts: [], revision: 0 }, undefined, () => undefined);
     expect(snapshot.scannedPrimitives).toBe(0);
     expect(snapshot.selected.size).toBe(0);
-    expect(projection.selection(1, 2)).toEqual({ kind: 'skylight' });
+    expect(projection.selection(2)).toEqual({ kind: 'skylight' });
   });
 
   it('uses a closed identity for selected probes and Skylight fallback', () => {
     const selected: ReflectionProbeSelectionInspection = {
       kind: 'probe',
-      worldId: 2,
       entityKey: 7,
     };
     const fallback: ReflectionProbeSelectionInspection = { kind: 'skylight' };
-    expect(selected).toEqual({ kind: 'probe', worldId: 2, entityKey: 7 });
+    expect(selected).toEqual({ kind: 'probe', entityKey: 7 });
     expect(fallback).toEqual({ kind: 'skylight' });
   });
 });

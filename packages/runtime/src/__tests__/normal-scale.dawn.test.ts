@@ -77,11 +77,7 @@ it('renders two-axis normalScale zero as a flat normal and one as the authored p
       world.set(receiver, MeshRenderer, { materials: [material(scale)] }).unwrap();
       for (let frame = 0; frame < testQuality.staticFrames; frame += 1) {
         world.update().unwrap();
-        await drawReadyFrame(fixture.renderer, {
-          leases: [lease],
-          camera: { lease },
-          environment: { lease },
-        });
+        await drawReadyFrame(fixture.renderer, { source: lease });
       }
       const pixels = await readBarrelPixels(fixture.device, fixture.renderTarget, 64, 64);
       const offset = pixelOffset(32, 32, 64);

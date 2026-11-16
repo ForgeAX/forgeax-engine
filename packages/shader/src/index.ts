@@ -104,6 +104,8 @@ export {
   STANDARD_TRIPLANAR_PROJECTION_BIT,
   type StandardPhysicalTextureField,
   type StandardSharedTransmissionHost,
+  standardLeanInputDefines,
+  standardLeanInputMaskCompatible,
   standardMaskHasBit,
   standardParallaxSelectable,
   standardPhysicalTextureFields,
@@ -139,6 +141,7 @@ export {
   VARIANT_PERMUTATION_RULES,
   type VariantPermutationRule,
   violatedVariantPermutationRules,
+  withSupportedLeanInputs,
 } from './variant-permutation-rules.js';
 
 export const BUILTIN_MATERIAL_MODULES = {
@@ -292,7 +295,6 @@ export function createBuiltinMaterialAsset(kind: BuiltinMaterialKind): MaterialA
  */
 export const TONEMAP_LUMINANCE_EPSILON = 1e-5;
 
-export * from './cloud-programs';
 export { manifestShaderSource } from './manifest-publication';
 export { materialShaderSource } from './manifest-publication.js';
 export {
@@ -312,8 +314,11 @@ export {
   rayMaterialNeedsCoverage,
 } from './material/ray-program';
 export { declaredMaterialVertexInputs } from './material/vertex-inputs.js';
+export {
+  TEXTURE_GENERATOR_VERTEX_ENTRY,
+  TEXTURE_GENERATOR_VERTEX_SOURCE,
+} from './texture-generator-source.js';
 export { TONEMAP_PARAMS_LAYOUT, TONEMAP_SHADER_MODE } from './tonemap.js';
-
 /** Renderer-owned TSR analysis and reconstruction programs. */
 export {
   TSR_ANALYZE_FRAGMENT_WGSL,

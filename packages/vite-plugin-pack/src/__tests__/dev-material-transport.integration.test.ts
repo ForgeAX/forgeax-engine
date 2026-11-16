@@ -2,7 +2,11 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { decodeCatalogWire, serializeCookedMaterialRecord } from '@forgeax/engine-pack';
+import {
+  decodeCatalogWire,
+  decodeMaterialProgramWire,
+  serializeCookedMaterialRecord,
+} from '@forgeax/engine-pack';
 import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
 import type { MaterialAsset, RuntimeAssetBinding } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
@@ -122,7 +126,8 @@ export default definePack({ schemaVersion: '2.0.0', packageId: definePackageId('
     const publicationBefore = JSON.stringify(entry.publication);
     const served = await fetch(new URL(entry.packageUrl, base));
     expect(served.status).toBe(200);
-    const pack = await served.json();
+    // Shared program ABIs travel interned; the document under test is the decoded Pack.
+    const pack = decodeMaterialProgramWire(await served.json()).unwrap();
     expect(pack).toMatchObject({
       scopeId: accepted.scopeId,
       generation: entry.publication.generation,

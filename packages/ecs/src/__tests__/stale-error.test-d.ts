@@ -1,4 +1,6 @@
+import type { AssetErrorCode } from '@forgeax/engine-types';
 import type { MemoryErrorCode } from '../memory-types';
+import { defineSystem } from '../schedule';
 import { Update } from '../schedule-token';
 // AC-L5 stale-error compile-assertion vehicle.
 //
@@ -119,7 +121,7 @@ describe('[w6] AC-L5 — world.addSystem<const Qs> method signature shape (simpl
     const Position = defineComponent('Position', { x: { type: 'f32' }, y: { type: 'f32' } });
 
     const world = new World();
-    const ret = world.addSystem(Update, {
+    const systemToken1 = defineSystem({
       name: 'ac-l5-shape-probe',
       queries: [{ read: [Position] }],
       fn: (_world, queryResults, commands) => {
@@ -130,6 +132,7 @@ describe('[w6] AC-L5 — world.addSystem<const Qs> method signature shape (simpl
         expectTypeOf(commands).toEqualTypeOf<CommandBuffer>();
       },
     });
+    const ret = world.addSystem(Update, systemToken1);
 
     // Class-method `addSystem` reports a structured schedule-scope result.
     expectTypeOf(ret.ok).toEqualTypeOf<boolean>();
@@ -144,58 +147,53 @@ describe('[w3] Entity codec type contract', () => {
   });
 });
 
-// w13: EcsErrorCode exhaustion test-d — store-level type completeness gate.
-// Verifies the closed union includes 'shared-ref-stale' and 'unique-ref-stale'
-// so that any exhaustive switch without these codes triggers TS never error.
-// Distinct from w19 (resolveAssetHandle real consumption path, AC-10).
-describe('[w13] EcsErrorCode union completeness — stale codes present', () => {
-  it('exhaustive switch over EcsErrorCode must include shared-ref-stale', () => {
-    // If shared-ref-stale is NOT in the union, this switch block would
-    // still compile because the type level never would not trigger —
-    // this test-d proves the code IS in the union.
-    const assertExhaustive = (code: Exclude<EcsErrorCode, MemoryErrorCode>): string => {
-      switch (code) {
-        case 'stale-entity':
-        case 'component-already-present':
-        case 'component-not-present':
-        case 'cyclic-dependency':
-        case 'resource-not-found':
-        case 'system-before-unknown':
-        case 'unique-ref-released':
-        case 'unique-ref-double-release':
-        case 'unique-ref-stale':
-        case 'shared-ref-released':
-        case 'shared-ref-double-release':
-        case 'shared-ref-payload-invalid':
-        case 'shared-ref-stale':
-        case 'managed-buffer-out-of-bounds':
-        case 'managed-buffer-shrink-not-supported':
-        case 'fixed-size-mismatch':
-        case 'managed-array-invalid-value':
-        case 'array-range-out-of-bounds':
-        case 'relationship-self-cycle':
-        case 'relationship-detach-mismatch':
-        case 'remove-essential-component':
-        case 'spawn-data-unknown-field':
-        // feat-20260713-mount-override-component-add-and-shared-ref-round M2 / w9
-        case 'shared-field-invalid-value':
-        // feat-20260714-bevy-style-system-sets M1 / w3
-        case 'system-set-not-registered':
-        case 'time-delta-invalid':
-        case 'time-config-invalid':
-        case 'schedule-scope-mismatch':
-        case 'component-field-invalid-value':
-        case 'component-numeric-value-invalid':
-        case 'derived-write-active':
-        case 'shared-kernel-ineligible':
-        case 'shared-kernel-failed':
-        case 'world-poisoned':
-        case 'command-failed':
-        case 'system-failed':
-          return code;
-      }
-    };
-    expectTypeOf(assertExhaustive).toBeFunction();
+// Exact type equality detects missing and unexpected codes without runtime dispatch.
+describe('EcsErrorCode union completeness', () => {
+  it('the complete closed error-code union includes stale codes', () => {
+    const codes = [
+      'component-not-defined',
+      'change-epoch-exhausted',
+      'derived-range-out-of-bounds',
+      'relationship-mirror-component-not-registered',
+      'relationship-mirror-field-type-mismatch',
+      'stale-entity',
+      'component-already-present',
+      'component-not-present',
+      'cyclic-dependency',
+      'resource-not-found',
+      'system-before-unknown',
+      'unique-ref-released',
+      'unique-ref-double-release',
+      'unique-ref-stale',
+      'shared-ref-released',
+      'shared-ref-double-release',
+      'shared-ref-payload-invalid',
+      'shared-ref-stale',
+      'managed-buffer-out-of-bounds',
+      'managed-buffer-shrink-not-supported',
+      'fixed-size-mismatch',
+      'managed-array-invalid-value',
+      'array-range-out-of-bounds',
+      'relationship-self-cycle',
+      'relationship-detach-mismatch',
+      'remove-essential-component',
+      'spawn-data-unknown-field',
+      'shared-field-invalid-value',
+      'system-set-not-registered',
+      'time-delta-invalid',
+      'time-config-invalid',
+      'schedule-scope-mismatch',
+      'component-field-invalid-value',
+      'derived-write-active',
+      'shared-kernel-ineligible',
+      'shared-kernel-failed',
+      'world-poisoned',
+      'command-failed',
+      'system-failed',
+    ] as const;
+    expectTypeOf<(typeof codes)[number]>().toEqualTypeOf<
+      Exclude<EcsErrorCode, MemoryErrorCode | AssetErrorCode>
+    >();
   });
 
   it('shared-ref-stale is assignable to EcsErrorCode', () => {

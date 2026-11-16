@@ -27,6 +27,11 @@ export type BuiltinAssetKindToken<K extends BuiltinAssetKind> = AssetKind<
 export interface AssetArtifactReader {
   /** Admit a validated descriptor without reading its streaming body. */
   locate?(descriptor: ArtifactDescriptor): string | undefined;
+  /**
+   * The session's resident bytes for a program module, filled once per digest.
+   * Readers that must observe their storage, such as admission, leave it out.
+   */
+  program?(descriptor: ArtifactDescriptor): Promise<Result<Uint8Array, AssetLoadError>>;
   read(descriptor: ArtifactDescriptor): Promise<Result<Uint8Array, AssetLoadError>>;
 }
 

@@ -74,7 +74,7 @@ export interface LodCameraEvidence {
   readonly viewKey: string;
   readonly eye?: string;
   readonly attachmentId: string;
-  readonly lodRows: number;
+  readonly lodSamples: number;
   readonly viewGeneration: number;
   readonly graphGeneration: number;
   readonly count: LodCountEvidence;
@@ -95,7 +95,7 @@ export interface HiddenAcceptanceEvidence {
   readonly submit: Pick<LodSubmitIdentity, 'frameId' | 'deviceGeneration'>;
   readonly attachmentId: string;
   readonly attribution: Readonly<Record<string, unknown>>;
-  readonly cameraViews: readonly Omit<LodCameraEvidence, 'count' | 'lodRows' | 'lodHistogram'>[];
+  readonly cameraViews: readonly Omit<LodCameraEvidence, 'count' | 'lodSamples' | 'lodHistogram'>[];
   readonly draws: { readonly status: 'complete'; readonly draws: readonly [] };
   readonly lodObservation: Readonly<Record<string, unknown>>;
 }

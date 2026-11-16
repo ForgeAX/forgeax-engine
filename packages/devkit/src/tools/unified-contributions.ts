@@ -327,6 +327,7 @@ const commandSchemas: Readonly<Record<string, ToolJsonSchema>> = {
         temporaryBytes: { type: 'integer', minimum: 1 },
         entries: { type: 'integer', minimum: 1 },
       }),
+      requestedOnly: boolean,
     },
     ['revision'],
   ),
@@ -1091,6 +1092,7 @@ export function createUnifiedCommandContributions(
                   Parameters<typeof exportPipelineLibrary>[1]['limits']
                 >,
               }),
+          ...(args.requestedOnly === true ? { requestedOnly: true } : {}),
         });
       },
       'host',

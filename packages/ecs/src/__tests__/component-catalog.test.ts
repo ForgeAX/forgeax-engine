@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { defineComponent } from '../component';
 import { readComponentMutationEpoch } from '../projection';
+import { defineSystem } from '../schedule';
 import { Update } from '../schedule-token';
 import { World } from '../world';
 
@@ -31,18 +32,17 @@ describe('World ComponentCatalog', () => {
     if (!entityFailure.ok) expect(entityFailure.error.code).toBe('component-in-use');
 
     world.despawn(entity).unwrap();
-    world
-      .addSystem(Update, {
-        name: 'world-catalog-reader',
-        queries: [{ read: [Marker] }],
-        fn: () => undefined,
-      })
-      .unwrap();
+    const systemToken1 = defineSystem({
+      name: 'world-catalog-reader',
+      queries: [{ read: [Marker] }],
+      fn: () => undefined,
+    });
+    world.addSystem(Update, systemToken1).unwrap();
     const systemFailure = lease.dispose();
     expect(systemFailure.ok).toBe(false);
     if (!systemFailure.ok) expect(systemFailure.error.code).toBe('component-in-use');
 
-    world.removeSystem(Update, 'world-catalog-reader').unwrap();
+    world.removeSystem(Update, systemToken1).unwrap();
     expect(lease.dispose().ok).toBe(true);
     expect(world.components.resolve(Marker.name)).toBeUndefined();
   });

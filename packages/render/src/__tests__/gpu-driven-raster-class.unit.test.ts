@@ -48,7 +48,6 @@ import { compileAndAdoptViewGraph } from './graph-compile.fixture';
 function updateSnapshot(value: RenderableSnapshot) {
   return {
     kind: 'update' as const,
-    worldId: value.worldId,
     entityKey: value.entityKey,
     snapshot: value,
   };
@@ -57,11 +56,13 @@ function updateSnapshot(value: RenderableSnapshot) {
 it('selects the typed AO input pipeline for material-normal rasterization', () => {
   const pipelineFor = vi.fn();
   const aoInputPipelineFor = vi.fn();
+  const aoInputMsaaPipelineFor = vi.fn();
   const batch = {
-    pipelines: { pipelineFor, aoInputPipelineFor },
+    pipelines: { pipelineFor, aoInputPipelineFor, aoInputMsaaPipelineFor },
   } as unknown as ProjectedRasterClass;
 
   expect(selectRasterPipeline(batch, 'fs_ao_input', false)).toBe(aoInputPipelineFor);
+  expect(selectRasterPipeline(batch, 'fs_ao_input_msaa', false)).toBe(aoInputMsaaPipelineFor);
 });
 
 it('preserves the explicit Forward screen entry and the prepared Cluster authority', () => {
@@ -162,10 +163,7 @@ it.each([
   const topology = new BatchTopology();
   const availability = GpuScene.create(device, 4).unwrap();
   if (availability.status !== 'available') throw Error('GPU scene unavailable');
-  const rows = [
-    preparedPbrFixture(snapshot(1, 3)),
-    { ...preparedPbrFixture(snapshot(2, 5)), worldId: 1 },
-  ];
+  const rows = [preparedPbrFixture(snapshot(1, 3)), { ...preparedPbrFixture(snapshot(2, 5)) }];
   const delta = projection.apply(rows.map(updateSnapshot));
   topology.apply(delta);
   availability.scene.sync(delta).unwrap();
@@ -495,8 +493,9 @@ it.each([
   try {
     const first = compile();
     if (first === null) throw Error('missing compiled graph');
-    const firstInfo = first.inspect();
     encode(first).unwrap();
+    // Imports acquire their physical allocation identity on the first submission.
+    const firstInfo = first.inspect();
     expect(bound.mock.calls.some(([index, value]) => index === 1 && value === materialGroupA)).toBe(
       true,
     );
@@ -590,7 +589,7 @@ it('separates physical layouts, specializations and selected programs after reso
       },
       () => selected,
     ).unwrap();
-    const rows = prepareBatchRows(batch, { mesh: resident, worldKeys: undefined, execution });
+    const rows = prepareBatchRows(batch, { mesh: resident, execution });
     const key = rows.fact?.rasterClassKey;
     if (key === undefined) throw Error('missing prepared raster class');
     return key;
@@ -1137,5 +1136,45 @@ it('retains shared mesh residency when replacement grows the shared GPU input bu
     production.dispose();
     availability.scene.dispose();
     store.destroyAll();
+  }
+});
+
+it('omits side-effect-free no-output Unlit recording without changing GPU ownership', async () => {
+  const { rasterClassFor } = await import('../gpu-driven/production-raster-classes');
+  const cls = {
+    artifact: { material: 'forgeax::default-unlit', pass: 'forward' },
+    renderState: { colorWriteMask: 0, depthWriteEnabled: false },
+  } as unknown as ProjectedRasterClass;
+  const live = {
+    classKey: 'test',
+    recordingClassKey: 'test',
+    batch: { visibleCapacity: 1, batchId: 0, key: {} },
+  } as unknown as import('../gpu-driven/live-raster').LiveRasterBatch;
+  const classes = new Map([['test', cls]]);
+  expect(rasterClassFor(classes, true, live)).toBeUndefined();
+  // Raw/custom recording remains observable; this does not remove source membership.
+  expect(rasterClassFor(classes, false, live)).toBe(cls);
+  expect(rasterClassFor(classes, true, live, undefined, undefined, true)).toBe(cls);
+  expect(rasterClassFor(classes, true, live, undefined, 'fs_custom')).toBe(cls);
+  expect(live.batch.visibleCapacity).toBe(1);
+  for (const state of [
+    undefined,
+    { colorWriteMask: 0 },
+    { colorWriteMask: 15, depthWriteEnabled: false },
+    { colorWriteMask: 0, depthWriteEnabled: true },
+    { colorWriteMask: 0, depthWriteEnabled: false, stencil: {} },
+    { colorWriteMask: 0, depthWriteEnabled: false, outputs: [] },
+  ]) {
+    const visible = { ...cls, renderState: state } as ProjectedRasterClass;
+    expect(rasterClassFor(new Map([['test', visible]]), true, live)).toBe(visible);
+  }
+  for (const artifact of [
+    { material: 'game::custom', pass: 'forward' },
+    { material: 'forgeax::default-unlit', pass: 'shadow' },
+    { material: 'forgeax::default-unlit', pass: 'forward', fragmentEntry: 'fs_custom' },
+    { material: 'forgeax::default-unlit', pass: 'forward', vertexEntry: 'vs_custom' },
+  ]) {
+    const other = { ...cls, artifact } as unknown as ProjectedRasterClass;
+    expect(rasterClassFor(new Map([['test', other]]), true, live)).toBe(other);
   }
 });

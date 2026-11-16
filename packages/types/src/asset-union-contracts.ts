@@ -1,3 +1,5 @@
+import type { TextureGeneratorAsset } from './texture/generator.js';
+import type { GpuTextureAsset } from './texture/gpu-asset.js';
 // Asset union and tileset contracts.
 
 import type { AnimationClip, AnimationGraph } from './animation-contracts.js';
@@ -15,6 +17,13 @@ import type { SceneAsset } from './scene-contracts.js';
 import type { TerrainAsset } from './terrain.js';
 import type { TextureAsset } from './texture/asset.js';
 import type { ParticleEffectAsset } from './vfx.js';
+import type {
+  WaterBodyAsset,
+  WaterBrushRecipeAsset,
+  WaterSimulationRecipeAsset,
+  WaterWaveSetAsset,
+  WaterZoneAsset,
+} from './water-contracts.js';
 
 // === RenderPipelineAsset POD shape =============================================
 //
@@ -155,6 +164,8 @@ export type Asset =
   | PluginAsset
   | MeshAsset
   | TextureAsset
+  | GpuTextureAsset
+  | TextureGeneratorAsset
   | EquirectAsset
   | SamplerAsset
   | MaterialAsset
@@ -179,7 +190,12 @@ export type Asset =
   | VideoAsset
   | ParticleEffectAsset
   | TerrainAsset
-  | NavigationMeshAsset;
+  | NavigationMeshAsset
+  | WaterBodyAsset
+  | WaterZoneAsset
+  | WaterWaveSetAsset
+  | WaterBrushRecipeAsset
+  | WaterSimulationRecipeAsset;
 
 /** Optional per-tile collision source in normalized cell coordinates. Runtime physics
  * consumption is not installed by the Tileset render owner. */

@@ -11,37 +11,24 @@
 //
 // Public surface:
 //   bin(lights, view, proj, grid, near, far, clusterGrid, lightIndexList, capacity)
-//     -> Result<writtenLightIndexCount, ClusterBinError>
-//
+//     -> Result<writtenLightIndexCount, never>
 //
 // Constraints:
-//   D-3: pure function + Result<number, ClusterBinError> + out param + no throw
+//   D-3: pure function + Result + out param + no throw
 //   D-8: spot uses sphere proxy (radius=range)
 //   D-binner: CPU main thread, no GPU compute / worker
 //   OOS-4: cone-AABB tight culling deferred
-//   AGENTS.md conventions: structured errors, never throw for expected failures
 //
-// Capacity: max 65536 light index list entries (hard cap, AC-24).
+// Capacity: when the requested entries exceed `capacity`, every cluster keeps
+// at most K entries, K the largest value whose sum of min(count, K) fits
+// (water-filling), and the lowest light indices survive. The frame is never
+// rejected; the scratch reports K and the dropped entries.
 // Grid: {x,y,z} each in [1, 64] integers (validated at install time).
 
 import { type Mat4, type Vec3, vec3 } from '@forgeax/engine-math';
-import { err, ok, type Result } from '@forgeax/engine-rhi';
+import { ok, type Result } from '@forgeax/engine-rhi';
 
 // ── types ──────────────────────────────────────────────────────────────────
-
-type ClusterBinErrorCode = 'index-overflow';
-
-export interface ClusterBinError {
-  readonly code: ClusterBinErrorCode;
-  readonly expected: string;
-  readonly hint: string;
-  readonly detail: IndexOverflowDetail;
-}
-
-interface IndexOverflowDetail {
-  readonly actual: number;
-  readonly capacity: number;
-}
 
 /**
  * View-space NDC axis-aligned bounding box.
@@ -83,6 +70,10 @@ export interface ClusterBinScratch {
   clusterDeltas: Int32Array;
   aabbOutput: ClusterAabb;
   boundsOutput: MutableClusterBounds;
+  /** Per-cluster entry cap of the last `bin`, or `undefined` when every entry fit. */
+  clusterEntryCapK: number | undefined;
+  /** Entries the last `bin` dropped under `clusterEntryCapK`. */
+  droppedClusterEntries: number;
 }
 
 /**
@@ -128,7 +119,32 @@ export function createClusterBinScratch(): ClusterBinScratch {
       min: { x: 0, y: 0, z: 0 },
       max: { x: 0, y: 0, z: 0 },
     },
+    clusterEntryCapK: undefined,
+    droppedClusterEntries: 0,
   };
+}
+
+/**
+ * Water-filling cap: the largest K with sum(min(counts[i], K)) <= capacity.
+ * Callers only ask when the uncapped sum exceeds `capacity`.
+ */
+export function clusterEntryCapK(
+  counts: ArrayLike<number>,
+  clusterCount: number,
+  capacity: number,
+): number {
+  let high = 0;
+  for (let index = 0; index < clusterCount; index++) high = Math.max(high, counts[index] ?? 0);
+  let low = 0;
+  while (low < high) {
+    const k = low + Math.ceil((high - low) / 2);
+    let total = 0;
+    for (let index = 0; index < clusterCount && total <= capacity; index++)
+      total += Math.min(counts[index] ?? 0, k);
+    if (total <= capacity) low = k;
+    else high = k - 1;
+  }
+  return low;
 }
 
 function ensureScratchCapacity(
@@ -1038,11 +1054,11 @@ export function calculateSphereClusterBounds(
  * @param clusterGrid — caller-owned Uint32Array, length = grid.x * grid.y * grid.z * 2.
  *   Format: [offset, count] pairs. offset = start index in lightIndexList; count = number of lights.
  * @param lightIndexList — caller-owned Uint32Array for light index storage.
- * @param capacity — max entries in lightIndexList (hard cap, typically 65536).
+ * @param capacity — max entries in lightIndexList; over it each cluster keeps its first K.
  * @param scratch — optional per-render-system typed scratch reused across frames.
  *
- * @returns `ok(written light-index entry count)` on success; `err(ClusterBinError)` with code
- *   'index-overflow' on overflow. The count lets the upload owner avoid copying unused capacity.
+ * @returns `ok(written light-index entry count)`, never above `capacity`. The count lets the
+ *   upload owner avoid copying unused capacity.
  */
 /** The common ordered index kernel; profiling and ordinary paths share these writes. */
 function writeClusterLight(
@@ -1063,6 +1079,33 @@ function writeClusterLight(
       for (let cx = minX; cx <= maxX; cx++) {
         const clusterIdx = cz * gridY * gridX + cy * gridX + cx;
         const cursor = clusterCursors[clusterIdx] ?? 0;
+        lightIndexList[cursor] = lightIdx;
+        clusterCursors[clusterIdx] = cursor + 1;
+      }
+    }
+  }
+}
+
+/**
+ * The capped variant: `clusterEnds[i]` is one past cluster i's reserved run,
+ * so a cluster stops accepting lights once its K entries are written.
+ */
+function writeCappedClusterLight(
+  lightIdx: number,
+  bounds: Int32Array,
+  at: number,
+  gridX: number,
+  gridY: number,
+  clusterCursors: Uint32Array,
+  clusterEnds: Uint32Array,
+  lightIndexList: Uint32Array,
+): void {
+  for (let cz = bounds[at + 2] ?? 0; cz <= (bounds[at + 5] ?? -1); cz++) {
+    for (let cy = bounds[at + 1] ?? 0; cy <= (bounds[at + 4] ?? -1); cy++) {
+      for (let cx = bounds[at] ?? 0; cx <= (bounds[at + 3] ?? -1); cx++) {
+        const clusterIdx = cz * gridY * gridX + cy * gridX + cx;
+        const cursor = clusterCursors[clusterIdx] ?? 0;
+        if (cursor >= (clusterEnds[clusterIdx] ?? 0)) continue;
         lightIndexList[cursor] = lightIdx;
         clusterCursors[clusterIdx] = cursor + 1;
       }
@@ -1099,13 +1142,15 @@ function writeClusterMembership(
 }
 
 let gridCursorScratch = new Uint32Array(0);
+let gridEndScratch = new Uint32Array(0);
 
 /**
  * Write the cluster-major light index list that `bin(..., { writeMembership:
  * false })` reserved: `clusterGrid` holds each cluster's [offset, count] run
  * and `lightBounds` the per-light cluster boxes from the same call. The result
- * equals the list `bin` writes with membership enabled. Cursor scratch is
- * module-owned because the writer is synchronous.
+ * equals the list `bin` writes with membership enabled; `capped` (the call set
+ * `clusterEntryCapK`) keeps each cluster's first entries within its run. Cursor
+ * scratch is module-owned because the writer is synchronous.
  */
 export function writeClusterMembershipFromGrid(
   lightCount: number,
@@ -1113,12 +1158,35 @@ export function writeClusterMembershipFromGrid(
   grid: { readonly x: number; readonly y: number; readonly z: number },
   clusterGrid: Uint32Array,
   lightIndexList: Uint32Array,
+  capped = false,
 ): void {
   const clusterCount = grid.x * grid.y * grid.z;
   if (gridCursorScratch.length < clusterCount) gridCursorScratch = new Uint32Array(clusterCount);
   const cursors = gridCursorScratch;
   for (let ci = 0; ci < clusterCount; ci++) cursors[ci] = clusterGrid[ci * 2] ?? 0;
-  writeClusterMembership(lightCount, lightBounds, grid.x, grid.y, cursors, lightIndexList);
+  if (!capped) {
+    writeClusterMembership(lightCount, lightBounds, grid.x, grid.y, cursors, lightIndexList);
+    return;
+  }
+  if (gridEndScratch.length < clusterCount) gridEndScratch = new Uint32Array(clusterCount);
+  const ends = gridEndScratch;
+  for (let ci = 0; ci < clusterCount; ci++) {
+    ends[ci] = (clusterGrid[ci * 2] ?? 0) + (clusterGrid[ci * 2 + 1] ?? 0);
+  }
+  for (let lightIdx = 0; lightIdx < lightCount; lightIdx++) {
+    const at = lightIdx * 6;
+    if ((lightBounds[at] ?? -1) < 0) continue;
+    writeCappedClusterLight(
+      lightIdx,
+      lightBounds,
+      at,
+      grid.x,
+      grid.y,
+      cursors,
+      ends,
+      lightIndexList,
+    );
+  }
 }
 
 export function bin(
@@ -1134,7 +1202,7 @@ export function bin(
   scratch?: ClusterBinScratch,
   profile?: ClusterBinProfileRunner,
   options: ClusterBinOptions = {},
-): Result<number, ClusterBinError> {
+): Result<number, never> {
   const gridX = grid.x;
   const gridY = grid.y;
   const gridZ = grid.z;
@@ -1263,14 +1331,10 @@ export function bin(
     });
   });
 
-  if (attemptedTotal > capacity) {
-    return err({
-      code: 'index-overflow',
-      expected: `writeCount <= ${capacity}`,
-      hint: `light index list overflow: needed ${attemptedTotal} entries, capacity ${capacity}; reduce lights, shrink grid, or shrink ranges (overrun = ${attemptedTotal - capacity})`,
-      detail: { actual: attemptedTotal, capacity },
-    });
-  }
+  // Over capacity every cluster keeps its first K entries (lowest light
+  // indices); within capacity K is unbounded and the output is unchanged.
+  const capK =
+    attemptedTotal > capacity ? clusterEntryCapK(clusterCounts, clusterCount, capacity) : undefined;
 
   // Reserve one contiguous output run per cluster. The second light-major pass
   // below preserves each cluster's original light ordering without allocating
@@ -1279,13 +1343,39 @@ export function bin(
     let reserved = 0;
     for (let ci = 0; ci < clusterCount; ci++) {
       const base = ci * 2;
+      const count =
+        capK === undefined ? (clusterCounts[ci] ?? 0) : Math.min(clusterCounts[ci] ?? 0, capK);
       clusterGrid[base] = reserved;
-      clusterGrid[base + 1] = clusterCounts[ci] ?? 0;
+      clusterGrid[base + 1] = count;
       clusterCursors[ci] = reserved;
-      reserved += clusterCounts[ci] ?? 0;
+      reserved += count;
+      // The capped writer reads cluster ends from the counts it no longer needs.
+      if (capK !== undefined) clusterCounts[ci] = reserved;
     }
     return reserved;
   });
+  binScratch.clusterEntryCapK = capK;
+  binScratch.droppedClusterEntries = attemptedTotal - writeCount;
+
+  if (capK !== undefined && options.writeMembership !== false) {
+    runClusterBinProfilePhase(profile, 'light-index-write', () => {
+      for (let lightIdx = 0; lightIdx < lights.length; lightIdx++) {
+        const at = lightIdx * 6;
+        if ((lightBounds[at] ?? -1) < 0) continue;
+        writeCappedClusterLight(
+          lightIdx,
+          lightBounds,
+          at,
+          gridX,
+          gridY,
+          clusterCursors,
+          clusterCounts,
+          lightIndexList,
+        );
+      }
+    });
+    return ok(writeCount);
+  }
 
   if (options.writeMembership !== false && profile === undefined) {
     writeClusterMembership(

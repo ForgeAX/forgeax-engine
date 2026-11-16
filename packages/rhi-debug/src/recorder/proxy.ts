@@ -23,6 +23,13 @@ export interface RecordableBackend {
   readonly createShaderModule: CreateShaderModuleFn;
   /** Optional synchronous factory retained for render's first-use path. */
   readonly createShaderModuleImmediate?: CreateShaderModuleImmediateFn;
+  readonly translateErrorEventToRhiError?: (event: unknown) => {
+    readonly ok: false;
+    readonly error: RhiError;
+  };
+  /** @internal Backend-owned raw identity for native canvas admission. */
+  readonly _internal_getRawDevice?: (device: RhiDevice) => unknown | undefined;
+  readonly disposeDevice?: (device: RhiDevice) => void;
 }
 
 export interface RecorderBackend extends RecordableBackend {
@@ -43,6 +50,26 @@ export function createRecorderProxy(backend: RecordableBackend): RecorderProxy {
     originalCreateShaderModuleImmediate === undefined
       ? undefined
       : wrapCreateShaderModuleImmediate(originalCreateShaderModuleImmediate, recorder);
+  const deviceServices: Pick<
+    RecordableBackend,
+    'translateErrorEventToRhiError' | '_internal_getRawDevice' | 'disposeDevice'
+  > = {
+    ...(backend.translateErrorEventToRhiError === undefined
+      ? {}
+      : { translateErrorEventToRhiError: backend.translateErrorEventToRhiError }),
+    ...(backend._internal_getRawDevice === undefined
+      ? {}
+      : {
+          _internal_getRawDevice: (device: RhiDevice) =>
+            backend._internal_getRawDevice?.(recorderDeviceIdentity(device) ?? device),
+        }),
+    ...(backend.disposeDevice === undefined
+      ? {}
+      : {
+          disposeDevice: (device: RhiDevice) =>
+            backend.disposeDevice?.(recorderDeviceIdentity(device) ?? device),
+        }),
+  };
   const acquireCanvasContext = backend.rhi.acquireCanvasContext;
   const surfaceDevice = (device: RhiDevice): RhiDevice | undefined => {
     const raw = recorderDeviceIdentity(device);
@@ -55,10 +82,12 @@ export function createRecorderProxy(backend: RecordableBackend): RecorderProxy {
   // Keep the standalone shader factory enumerable on that value so the
   // renderer can preserve the complete typed backend pack after capture
   // attachment; the public RhiInstance contract remains unchanged.
-  const rhi: RecordableBackend['rhi'] & {
-    readonly createShaderModule: CreateShaderModuleFn;
-    readonly createShaderModuleImmediate?: CreateShaderModuleImmediateFn;
-  } = {
+  const rhi: RecordableBackend['rhi'] &
+    typeof deviceServices & {
+      readonly createShaderModule: CreateShaderModuleFn;
+      readonly createShaderModuleImmediate?: CreateShaderModuleImmediateFn;
+    } = {
+    ...deviceServices,
     requestAdapter: recorder.requestAdapter.bind(recorder),
     createShaderModule: wrappedCreateShaderModule,
     ...(wrappedCreateShaderModuleImmediate === undefined
@@ -114,6 +143,7 @@ export function createRecorderProxy(backend: RecordableBackend): RecorderProxy {
         }),
   };
   const wrappedBackend: RecorderBackend = {
+    ...deviceServices,
     rhi,
     createShaderModule: wrappedCreateShaderModule,
     ...(wrappedCreateShaderModuleImmediate === undefined

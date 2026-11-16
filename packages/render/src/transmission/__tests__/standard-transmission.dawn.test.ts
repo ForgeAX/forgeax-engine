@@ -203,6 +203,7 @@ async function createTransmissionHost(testCase: TransmissionCase) {
   return {
     ...host.value,
     device,
+    renderPath: undefined as TransmissionCase['renderPath'],
     get configuredDevice() {
       return configuredDevice;
     },
@@ -237,14 +238,19 @@ afterEach(async () => {
 });
 
 function selectTransmissionProfile(
-  renderer: TransmissionHost['renderer'],
+  host: TransmissionHost,
   renderPath: TransmissionCase['renderPath'],
 ): void {
-  const selected = renderer.setProfile({
+  const next = renderPath ?? DEFAULT_STANDARD_PROFILE.renderPath;
+  // The first sample explicitly installs its profile. Only later samples with
+  // the same accepted path retain this test's ready host and graph epoch.
+  if (host.renderPath === next) return;
+  const selected = host.renderer.setProfile({
     ...DEFAULT_STANDARD_PROFILE,
-    renderPath: renderPath ?? DEFAULT_STANDARD_PROFILE.renderPath,
+    renderPath: next,
   });
   if (!selected.ok) throw selected.error;
+  host.renderPath = next;
 }
 
 async function renderCase(
@@ -265,7 +271,7 @@ async function renderCase(
   }
   const fixture = await pending;
   const { renderer, device } = fixture;
-  selectTransmissionProfile(renderer, testCase.renderPath);
+  selectTransmissionProfile(fixture, testCase.renderPath);
   let lease: ReturnType<typeof renderer.attach> | undefined;
   const errors: { readonly code: string; readonly detail?: unknown }[] = [];
   const unsubscribe = renderer.subscribe((event) => {
@@ -425,11 +431,7 @@ async function renderCase(
     for (let frame = 0; frame < frameCount; frame += 1) {
       if (frame > 0) world.update(1 / 60).unwrap();
       const drawn = await completeReadyFrame(() => {
-        const submitted = renderer.draw({
-          leases: [activeLease],
-          camera: { lease: activeLease },
-          environment: { lease: activeLease },
-        });
+        const submitted = renderer.draw({ source: activeLease });
         if (!submitted.ok) throw submitted.error;
         return submitted.value;
       });

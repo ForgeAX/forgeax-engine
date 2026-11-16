@@ -165,7 +165,9 @@ export default definePack({
         kind: 'plugin',
         module: { specifier: './vase.pack.ts', export: 'vase' },
         config: {
-          material: { $asset: guidText(assetGuid(PACKAGE_IDS.materials, 'material/painted')) },
+          material: {
+            $asset: guidText(assetGuid(PACKAGE_IDS.materials, 'material/standard-root')),
+          },
         },
       },
     }),

@@ -24,7 +24,6 @@ function mesh(): MeshAsset {
 
 function snapshot(viewport = { width: 320, height: 200, dpr: 1 }) {
   return createPointsLinesSnapshot({
-    worldId: 2,
     entityKey: 7,
     component: 'Lines',
     meshHandle: 9,
@@ -65,7 +64,6 @@ describe('Points/Lines inspection and recovery integration', () => {
       const json = JSON.parse(JSON.stringify(inspection)) as typeof inspection;
       expect(json).toMatchObject({
         entityKey: 7,
-        worldId: 2,
         topology: 'line-list',
         lane,
         segmentCount: 2,

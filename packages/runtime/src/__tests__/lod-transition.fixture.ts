@@ -136,11 +136,7 @@ export async function verifyLodTransition(
     propagateTransforms(world).unwrap();
     const pending = capture ? options.recorder?.captureFrame() : undefined;
     if (pending && options.recorder) (await options.recorder.frameBoundary()).unwrap();
-    const drawn = await drawReadyFrame(
-      renderer,
-      { leases: [lease], camera: { lease }, environment: { lease } },
-      ['linear-hdr'],
-    );
+    const drawn = await drawReadyFrame(renderer, { source: lease }, ['linear-hdr']);
     frames++;
     if (pending && options.recorder) (await options.recorder.frameBoundary()).unwrap();
     const observation = value(

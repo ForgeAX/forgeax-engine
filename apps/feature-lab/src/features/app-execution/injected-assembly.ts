@@ -1,6 +1,6 @@
 import { createApp } from '@forgeax/engine/app';
 import { AssetRegistry } from '@forgeax/engine/assets-runtime';
-import { FixedTime, FixedUpdate, Update, World } from '@forgeax/engine/ecs';
+import { defineSystem, FixedTime, FixedUpdate, Update, World } from '@forgeax/engine/ecs';
 import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { createBrowserPlatform } from '@forgeax/engine/platform-browser';
 import type { Plugin } from '@forgeax/engine/plugin';
@@ -62,20 +62,22 @@ async function probe() {
   const hostWorld = new World({ time: { fixedDeltaSeconds: 1 / 120, maxStepsPerUpdate: 8 } });
   let updates = 0;
   let fixedSeen = 0;
-  hostWorld.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'fl-injected-count',
     queries: [],
     fn: () => {
       updates += 1;
     },
   });
-  hostWorld.addSystem(FixedUpdate, {
+  hostWorld.addSystem(Update, systemToken1);
+  const systemToken2 = defineSystem({
     name: 'fl-injected-fixed',
     queries: [],
     fn: (world) => {
       fixedSeen = world.getResource(FixedTime).delta;
     },
   });
+  hostWorld.addSystem(FixedUpdate, systemToken2);
   const events = { applied: 0, disposed: 0 };
   const plugin: Plugin = {
     name: 'fl-injected-plugin',

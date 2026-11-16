@@ -606,8 +606,7 @@ describe('feat-20260619 M3: auto-register audioTickSystem', () => {
   });
 
   // w14: AC-13 — auto-registered audioTickSystem can resolve both
-  // AUDIO_ENGINE_RESOURCE_KEY and ASSET_REGISTRY_RESOURCE_KEY on the
-  // first frame (no exception, no silent skip due to missing resources).
+  // AUDIO_ENGINE_RESOURCE_KEY and the World asset owner on the first frame.
   describe('w14: AC-13 registration timing — first-frame resolution', () => {
     it('audioTickSystem resolves resources on first frame without error', async () => {
       const OriginalAudioContext = globalThis.AudioContext;

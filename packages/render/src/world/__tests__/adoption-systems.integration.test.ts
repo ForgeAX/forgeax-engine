@@ -6,9 +6,10 @@ import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import { Skin } from '@forgeax/engine-skinning';
 import { describe, expect, it } from 'vitest';
 import { testAssets } from '../../__tests__/helpers/runtime-assets';
+import { registeredSystem } from '../../__tests__/registered-system.fixture';
 import { Instances, MeshFilter, MeshRenderer } from '../../components';
 import { InstanceProjectionStore } from '../../instances';
-import { extractFrames } from '../../render-system-extract-tail';
+import { extractSource } from '../../render-system-extract-tail';
 import {
   type PersistentRenderCandidateRequest,
   PersistentRenderScene,
@@ -23,13 +24,10 @@ import {
 } from '../render-world';
 import {
   INSTANCE_COLLECTIONS_SYSTEM,
-  type RenderSceneAdoption,
   RenderSceneDelta,
   registerSceneSystem,
   SKIN_INPUTS_SYSTEM,
 } from '../scene-systems';
-
-const owner = { cameraOwner: 0, resourceOwner: 0 } as const;
 
 function fixture(kind: 'skin' | 'instances') {
   const world = new World({ assets: new AssetRegistry() });
@@ -75,7 +73,7 @@ function fixture(kind: 'skin' | 'instances') {
   registerMaterialSystems(renderWorld);
   const lease = createRenderReadLease(world);
   const build = (request: PersistentRenderCandidateRequest) =>
-    extractFrames([world], owner, assets, scene.materialSnapshotCacheStore(), {
+    extractSource(world, assets, scene.materialSnapshotCacheStore(), {
       cull: 'none',
       retainHidden: true,
       renderables: request,
@@ -88,16 +86,11 @@ function fixture(kind: 'skin' | 'instances') {
     scene,
     run() {
       source.staged = true;
-      source.worlds = [world];
-      source.owner = owner;
-      source.leases = [lease];
+      source.world = world;
+      source.lease = lease;
       source.buildCandidateFrame = build;
       beginRenderFrame(renderWorld, ++frame);
-      scene.followAdoption(
-        renderWorld.getResource<RenderSceneAdoption>(RenderSceneDelta),
-        build,
-        world,
-      );
+      scene.followAdoption(renderWorld.getResource(RenderSceneDelta), build);
       endRenderFrame(renderWorld);
     },
     dispose() {
@@ -129,7 +122,9 @@ describe('skin-inputs system', () => {
   it('leaves the scene without Skin inputs once removed', () => {
     const f = fixture('skin');
     try {
-      f.renderWorld.removeSystem(RenderExtract, SKIN_INPUTS_SYSTEM).unwrap();
+      f.renderWorld
+        .removeSystem(RenderExtract, registeredSystem(f.renderWorld, RenderExtract, 'skin-inputs'))
+        .unwrap();
       f.run();
       expect(f.scene.skinRecordingFrame()).toBeUndefined();
     } finally {
@@ -153,7 +148,12 @@ describe('instance-collections system', () => {
   it('accepts no collection once removed', () => {
     const f = fixture('instances');
     try {
-      f.renderWorld.removeSystem(RenderExtract, INSTANCE_COLLECTIONS_SYSTEM).unwrap();
+      f.renderWorld
+        .removeSystem(
+          RenderExtract,
+          registeredSystem(f.renderWorld, RenderExtract, 'instance-collections'),
+        )
+        .unwrap();
       f.run();
       expect(f.collections._inspections(0)).toHaveLength(0);
     } finally {

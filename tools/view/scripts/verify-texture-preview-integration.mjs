@@ -154,6 +154,25 @@ try {
  for (const [key,color] of [['array',[0,0,srgb(230/255)]],['volume',[0,srgb(220/255),0]]]) {
    const item=await open(`texture/${key}`);
    assert.equal(item.info.depth,2);
+   if (key === 'volume') {
+     assert.equal(item.info.dimension, '3d');
+     assert.equal(item.info.options.projection, 'atlas');
+     const canvas = item.panel.locator(
+       `canvas[data-forgeax-asset-preview="${item.args.targetId}"]`,
+     );
+     await canvas.waitFor({ state: 'visible' });
+     const projection = item.panel.getByLabel('View', { exact: true });
+     assert.equal(await projection.inputValue(), 'atlas');
+     const sliceZero = [200, 80, 20].map((value) => srgb(value / 255));
+     const atlas = await capture(item.args, 'volume-atlas');
+     // The two 64 × 64 slices are side by side; sample the same cell in each tile.
+     near(chartPixel(atlas, 0.28125, 0.5625, 2), sliceZero, 'volume atlas slice 0');
+     near(chartPixel(atlas, 0.78125, 0.5625, 2), color, 'volume atlas slice 1');
+     await projection.selectOption({ label: 'Slice' });
+     await waitOptions(item.args, { projection: 'flat', layer: 0 });
+     assert.equal(await item.panel.getByLabel('Slice', { exact: true }).inputValue(), '0');
+     near(chartPixel(await capture(item.args, 'volume-slice-0')), sliceZero, 'volume slice 0');
+   }
    await item.panel.getByLabel('Slice',{exact:true}).fill('1');
    await waitOptions(item.args,{layer:1});
    near(chartPixel(await capture(item.args,key)),color,`${key} slice 1`);

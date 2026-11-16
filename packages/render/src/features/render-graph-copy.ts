@@ -5,8 +5,11 @@ import type {
   RenderGraphFrame,
 } from '@forgeax/engine-render-graph';
 import { ok } from '@forgeax/engine-types';
+import { encodeFrameObservationCapture } from '../record/observation-capture';
+import type { RenderPipelineFrame } from '../render-pipeline';
 import { currentRenderFeaturePass } from './frame-execution';
 import type { RenderFeaturePlanExecutionPass } from './host';
+import type { RenderFeatureGraphTargetResolver } from './render-graph-raster';
 import {
   importRenderFeatureGraphBuffer,
   type RenderFeatureGraphBufferState,
@@ -18,6 +21,8 @@ export function projectRenderFeatureCopies<FrameCtx extends RenderGraphFrame>(
   state: RenderFeatureGraphBufferState,
   pass: RenderFeaturePlanExecutionPass,
   scope?: string,
+  graphName = pass.name,
+  resolveTarget?: RenderFeatureGraphTargetResolver,
 ) {
   const copies = pass.resolvedGpuCopies;
   if (copies === undefined) return ok(undefined);
@@ -49,13 +54,17 @@ export function projectRenderFeatureCopies<FrameCtx extends RenderGraphFrame>(
       accesses.push({ resource: destination.value, usage: 'copy-dst' });
     }
   }
-  return builder.addCopyPass(pass.name, {
+  for (const readback of pass.textureReadbacks ?? []) {
+    const target = resolveTarget?.(readback.target);
+    if (target !== undefined) accesses.push({ resource: target.view, usage: 'copy-src' });
+  }
+  return builder.addCopyPass(graphName, {
     accesses,
     executeIf: (frame) =>
       currentRenderFeaturePass(frame, pass.featureIdentity, pass.name, scope)?.enabled ??
       pass.enabled ??
       true,
-    encodeDirect: (encoder, frame, _graphresources) => {
+    encodeDirect: (encoder, frame, graphresources) => {
       const current =
         currentRenderFeaturePass(frame, pass.featureIdentity, pass.name, scope)
           ?.resolvedGpuCopies ?? copies;
@@ -68,6 +77,35 @@ export function projectRenderFeatureCopies<FrameCtx extends RenderGraphFrame>(
           copy.destinationOffset,
           copy.size,
         );
+      }
+      const active =
+        currentRenderFeaturePass(frame, pass.featureIdentity, pass.name, scope) ?? pass;
+      for (const readback of active.textureReadbacks ?? []) {
+        const target = resolveTarget?.(readback.target);
+        const descriptor = readback.target.descriptor;
+        const targetName = readback.target.name;
+        if (target === undefined || descriptor === undefined || targetName === undefined)
+          throw new Error('A declared feature readback requires its current named graph texture');
+        const pipeline = frame as unknown as RenderPipelineFrame;
+        const resource = graphresources.texture(target.texture).unwrap();
+        const graphGeneration = pipeline.runtime.observationGraphGeneration;
+        if (graphGeneration === undefined)
+          throw new Error('A feature readback requires its current execution graph identity');
+        encodeFrameObservationCapture(pipeline.runtime, encoder, {
+          texture: resource,
+          format: descriptor.format,
+          domain: 'feature-texture',
+          featureTexture: {
+            featureIdentity: pass.featureIdentity,
+            name: readback.name,
+            targetName,
+            viewIdentity: readback.target.allocationScope ?? scope ?? 'frame',
+          },
+          width: descriptor.size.width,
+          height: descriptor.size.height,
+          frameNumber: pipeline.runtime.observationFrameId ?? 0,
+          graphGeneration,
+        });
       }
     },
   });

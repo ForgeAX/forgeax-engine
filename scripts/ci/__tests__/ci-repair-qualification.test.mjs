@@ -11,7 +11,7 @@ import {
   collectRepairArtifactSources,
 } from '../ci-repair-artifacts.mjs';
 import {
-  ciRepairQualification,
+  ciRepairQualification as qualifyRepair,
   repairArtifactSuites,
   repairComparison,
   repairDeclaration,
@@ -24,6 +24,116 @@ const oldSha = 'a'.repeat(40),
   newSha = 'b'.repeat(40),
   originalSha = 'c'.repeat(40);
 const root = fileURLToPath(new URL('../../../', import.meta.url));
+const coverageOptions = {
+  readCoverageFiles: async () => ['packages/render/src/frame.ts'],
+  coverageChanges: async () => [],
+};
+const ciRepairQualification = (input, api, options) =>
+  qualifyRepair(input, api, { ...coverageOptions, ...options });
+
+test('a completed manual baseline requires independent association with this PR', async () => {
+  const f = fixture();
+  Object.assign(f.run, {
+    event: 'workflow_dispatch',
+    repository: { full_name: repository },
+    pull_requests: [],
+  });
+  f.extra.set(`repos/${repository}/commits/${oldSha}/pulls`, [f.pr]);
+  const result = await ciRepairQualification(f.input, f.api);
+  assert.equal(result.reused, true);
+  assert.equal(result.sourceRunId, 11);
+  assert.equal(result.sourceJobId, 22);
+  assert.equal(result.sourceSha, oldSha);
+});
+
+test('manual baselines fail closed without matching repository, branch and PR association', async () => {
+  for (const change of [
+    'repository',
+    'head-repository',
+    'branch',
+    'association',
+    'association-repository',
+    'association-branch',
+    'before-pr',
+    'invalid-date',
+    'pending',
+    'transport',
+  ]) {
+    const f = fixture();
+    Object.assign(f.run, {
+      event: 'workflow_dispatch',
+      repository: { full_name: repository },
+      pull_requests: [],
+    });
+    f.extra.set(
+      `repos/${repository}/commits/${oldSha}/pulls`,
+      change === 'association' ? [] : [f.pr],
+    );
+    if (change === 'repository') f.run.repository.full_name = 'other/engine';
+    if (change === 'head-repository') f.run.head_repository.full_name = 'other/engine';
+    if (change === 'branch') f.run.head_branch = 'other';
+    if (change === 'association-repository' || change === 'association-branch')
+      f.extra.set(`repos/${repository}/commits/${oldSha}/pulls`, [
+        {
+          ...f.pr,
+          head: {
+            ...f.pr.head,
+            ...(change === 'association-repository'
+              ? { repo: { full_name: 'other/engine' } }
+              : { ref: 'other' }),
+          },
+        },
+      ]);
+    if (change === 'before-pr') f.run.created_at = '2026-10-31T00:00:00Z';
+    if (change === 'invalid-date') f.run.created_at = 'invalid';
+    if (change === 'pending') f.run.status = 'in_progress';
+    const api =
+      change === 'transport'
+        ? async (endpoint) => {
+            if (endpoint.endsWith('/pulls')) throw new Error('association unavailable');
+            return f.api(endpoint);
+          }
+        : f.api;
+    assert.equal((await ciRepairQualification(f.input, api)).reused, false, change);
+  }
+});
+
+test('a manual anchor selects a qualified SDK peer at the exact original source', async () => {
+  const f = fixture();
+  Object.assign(f.run, {
+    event: 'workflow_dispatch',
+    repository: { full_name: repository },
+    pull_requests: [],
+  });
+  f.extra.set(`repos/${repository}/commits/${oldSha}/pulls`, [f.pr]);
+  const peer = {
+    ...f.run,
+    id: 12,
+    path: '.github/workflows/sdk-pr-preflight.yml',
+    conclusion: 'success',
+  };
+  const job = { ...f.job, run_id: 12, name: 'sdk-consumer-source' };
+  f.extra.set(
+    `repos/${repository}/actions/workflows/sdk-pr-preflight.yml/runs?event=pull_request&head_sha=${oldSha}&status=completed&per_page=100`,
+    { workflow_runs: [] },
+  );
+  f.extra.set(
+    `repos/${repository}/actions/workflows/sdk-pr-preflight.yml/runs?event=workflow_dispatch&head_sha=${oldSha}&status=completed&per_page=100`,
+    { workflow_runs: [peer] },
+  );
+  f.extra.set(`repos/${repository}/actions/runs/12/jobs?filter=latest&per_page=100&page=1`, {
+    total_count: 1,
+    jobs: [job],
+  });
+  const result = await ciRepairQualification(
+    { ...f.input, workflow: 'sdk-pr-preflight.yml', jobKey: 'consumers', checkName: job.name },
+    f.api,
+  );
+  assert.equal(result.reused, true);
+  assert.equal(result.sourceRunId, 12);
+  assert.equal(result.sourceSha, oldSha);
+});
+
 function fixture() {
   const pr = {
     number: 4960,
@@ -72,6 +182,19 @@ function fixture() {
   const api = async (endpoint) => {
     calls.push(endpoint);
     if (extra.has(endpoint)) return extra.get(endpoint);
+    const coverageArtifacts = /\/runs\/(5|10|11)\/artifacts\?/.exec(endpoint);
+    if (coverageArtifacts) {
+      const id = Number(coverageArtifacts[1]);
+      const artifacts = [0, 1, 2, 3].map((shard) => ({
+        id: 70 + shard,
+        name: `coverage-shard-${shard}`,
+        expired: false,
+        size_in_bytes: 100,
+        digest: `sha256:${'d'.repeat(64)}`,
+        workflow_run: { id, head_sha: id === 11 ? oldSha : originalSha },
+      }));
+      return { total_count: artifacts.length, artifacts };
+    }
     if (endpoint === `repos/${repository}/actions/runs/11`) return run;
     if (endpoint === `repos/${repository}/compare/${oldSha}...${newSha}`) return comparison;
     if (endpoint.startsWith(`repos/${repository}/actions/runs/11/jobs?`))
@@ -220,6 +343,45 @@ test('the captured upstream-only coverage failure inherits one complete historic
   }
 });
 
+function blockedCoverageRestorationFixture() {
+  const f = blockedCoverageFixture();
+  const ci = parse(readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8'));
+  const owner = ci.jobs['coverage-pnpm'].steps.find((step) =>
+    step.run?.includes('ci-repair-artifacts.mjs --coverage'),
+  );
+  assert.ok(owner, 'the maintained coverage artifact restoration owner is required');
+  const restoration = { name: owner.name, status: 'completed', conclusion: 'skipped' };
+  f.jobs.find((job) => job.name === 'coverage-pnpm').steps.push(restoration);
+  return { ...f, restoration };
+}
+
+test('the current skipped coverage restoration preserves the complete historical suite', async () => {
+  for (const [jobKey, checkName] of [
+    ['coverage-pnpm', 'coverage-pnpm'],
+    ['coverage-pnpm-shard', 'coverage-pnpm-shard-1'],
+  ]) {
+    const f = blockedCoverageRestorationFixture();
+    f.input.jobKey = jobKey;
+    f.input.checkName = checkName;
+    const result = await ciRepairQualification(f.input, f.api);
+    assert.equal(result.reused, true);
+    assert.equal(result.selectedSuiteRunId, f.prior.id);
+    assert.equal(result.sourceJobId, f.priorJobs.find((job) => job.name === checkName).id);
+    assert.deepEqual(result.blockedRunIds, [11]);
+  }
+});
+
+test('executed, incomplete or duplicated coverage restoration cannot become upstream-only reuse', async () => {
+  for (const outcome of ['success', 'failure', 'cancelled', 'incomplete', 'duplicate']) {
+    const f = blockedCoverageRestorationFixture();
+    if (outcome === 'incomplete') f.restoration.status = 'in_progress';
+    else if (outcome === 'duplicate')
+      f.jobs.find((job) => job.name === 'coverage-pnpm').steps.push({ ...f.restoration });
+    else f.restoration.conclusion = outcome;
+    assert.equal((await ciRepairQualification(f.input, f.api)).reused, false, outcome);
+  }
+});
+
 test('coverage checkout or merge execution and missing historical suite members cannot become reuse', async () => {
   for (const outcome of ['checkout', 'merge', 'missing-member', 'actual-child-failure']) {
     const f = blockedCoverageFixture();
@@ -259,6 +421,11 @@ test('ambiguous fresh-work declarations fail closed to normal execution', async 
     'CI-Repair-Rerun:',
     'CI-Repair-Rerun: one\nCI-Repair-Rerun: two',
     'CI-Repair-Rerun: one,,two',
+    'CI-Repair-Rerun: ["unfinished"',
+    'CI-Repair-Rerun: []',
+    'CI-Repair-Rerun: ["one", 2]',
+    'CI-Repair-Rerun: [""]',
+    'CI-Repair-Rerun: ["one", "one"]',
   ]) {
     const f = fixture();
     f.pr.body += `\n${directive}`;
@@ -267,6 +434,24 @@ test('ambiguous fresh-work declarations fail closed to normal execution', async 
       reason: 'repair-rerun-invalid',
     });
   }
+});
+
+test('JSON fresh-work declarations match comma-bearing job names and retain unrelated successes', async () => {
+  const name = 'Native Node GI on wgpu Ray Query (Lavapipe, gather)';
+  const fresh = fixture();
+  fresh.input.checkName = name;
+  fresh.pr.body += `\nCI-Repair-Rerun: ${JSON.stringify([name])}`;
+  assert.deepEqual(await ciRepairQualification(fresh.input, fresh.api), {
+    reused: false,
+    reason: 'new-work-declared',
+  });
+  const retained = fixture();
+  retained.pr.body += `\nCI-Repair-Rerun: ${JSON.stringify([name])}`;
+  const result = await ciRepairQualification(retained.input, retained.api);
+  assert.equal(result.reused, true);
+  assert.equal(result.sourceRunId, 11);
+  assert.equal(result.sourceJobId, 22);
+  assert.equal(result.sourceSha, oldSha);
 });
 
 test('repair requires exactly one explicit numeric run or same-repository URL', () => {
@@ -445,6 +630,59 @@ test('a passed coverage shard survives failed peers and aggregate', async () => 
   assert.equal((await ciRepairQualification(f.input, f.api)).reused, true);
 });
 
+test('coverage admission refuses changed covered source before writing a reuse marker', async () => {
+  const f = fixture();
+  f.input.jobKey = 'coverage-pnpm-shard';
+  f.input.checkName = f.job.name = 'coverage-pnpm-shard-1';
+  const options = {
+    readCoverageFiles: async (_repository, artifact) => {
+      assert.equal(artifact.workflow_run.head_sha, oldSha);
+      return ['packages/render/src/scene/material-shadow-content.ts'];
+    },
+    coverageChanges: async (source, target) => {
+      assert.equal(source, oldSha);
+      assert.equal(target, newSha);
+      return ['packages/render/src/scene/material-shadow-content.ts'];
+    },
+  };
+  const refused = await ciRepairQualification(f.input, f.api, options);
+  assert.equal(refused.reused, false);
+  assert.equal(refused.reason, 'coverage-repair-inputs-changed');
+  assert.match(refused.detail, /material-shadow-content.ts/);
+  const unchanged = await ciRepairQualification(f.input, f.api, {
+    ...options,
+    coverageChanges: async () => ['scripts/ci/ci-repair-qualification.mjs'],
+  });
+  assert.equal(unchanged.reused, true);
+  assert.equal(unchanged.sourceSha, oldSha);
+});
+
+test('coverage admission uses original execution source and fails closed on missing evidence', async () => {
+  const f = fixture();
+  f.input.jobKey = 'coverage-pnpm-shard';
+  f.input.checkName = f.job.name = 'coverage-pnpm-shard-2';
+  inherit(f);
+  const result = await ciRepairQualification(f.input, f.api, {
+    readCoverageFiles: async (_repository, artifact) => {
+      assert.equal(artifact.workflow_run.head_sha, originalSha);
+      return ['packages/modeling/src/mesh.ts'];
+    },
+    coverageChanges: async (source) => {
+      assert.equal(source, originalSha);
+      return ['packages/modeling'];
+    },
+  });
+  assert.equal(result.reused, false);
+  assert.equal(result.reason, 'coverage-repair-inputs-changed');
+  const missing = await ciRepairQualification(f.input, f.api, {
+    readCoverageFiles: async () => {
+      throw new Error('missing original artifact');
+    },
+  });
+  assert.equal(missing.reused, false);
+  assert.equal(missing.reason, 'coverage-inputs-unqualified');
+});
+
 test('a declared fresh consumer rebuilds every provider even after a fully green suite', async () => {
   for (const directive of ['coverage-pnpm', 'coverage-pnpm-shard-0, coverage-pnpm']) {
     const f = fixture();
@@ -558,39 +796,6 @@ test('compatibility repair reuses only the exact successful carrier at the CI an
   }
 });
 
-test('math bench reuses an exact successful peer and keeps unqualified evidence fresh', async () => {
-  for (const outcome of ['success', 'failure', 'missing', 'wrong-name', 'foreign', 'older-pr']) {
-    const f = fixture();
-    f.input.workflow = 'bench.yml';
-    f.input.jobKey = 'bench';
-    f.input.checkName = 'math bench (informational only)';
-    const peer = { ...f.run, id: 12, path: '.github/workflows/bench.yml' };
-    const job = { ...f.job, run_id: 12, name: f.input.checkName };
-    if (outcome === 'failure') job.conclusion = 'failure';
-    if (outcome === 'wrong-name') job.name = 'another math check';
-    if (outcome === 'foreign') peer.head_repository = { full_name: 'another/engine' };
-    if (outcome === 'older-pr') {
-      peer.pull_requests = [];
-      peer.created_at = '2026-10-01T00:00:00Z';
-    }
-    f.extra.set(
-      `repos/${repository}/actions/workflows/bench.yml/runs?event=pull_request&head_sha=${oldSha}&status=completed&per_page=100`,
-      { workflow_runs: [peer] },
-    );
-    f.extra.set(`repos/${repository}/actions/runs/12/jobs?filter=latest&per_page=100&page=1`, {
-      total_count: outcome === 'missing' ? 0 : 1,
-      jobs: outcome === 'missing' ? [] : [job],
-    });
-    const result = await ciRepairQualification(f.input, f.api);
-    assert.equal(result.reused, outcome === 'success', outcome);
-    if (outcome === 'success') {
-      assert.equal(result.sourceRunId, peer.id);
-      assert.equal(result.sourceJobId, job.id);
-      assert.equal(result.sourceSha, oldSha);
-    }
-  }
-});
-
 test('SDK repair reuses each successful consumer even when a peer or aggregate failed', async () => {
   const f = fixture();
   f.input.workflow = 'sdk-pr-preflight.yml';
@@ -599,17 +804,64 @@ test('SDK repair reuses each successful consumer even when a peer or aggregate f
   const run = { ...f.run, id: 12, path: '.github/workflows/sdk-pr-preflight.yml' };
   const job = { ...f.job, run_id: 12, name: f.input.checkName };
   const aggregate = { ...job, id: 23, name: 'sdk-build', conclusion: 'failure' };
+  const passed = [
+    job,
+    { ...job, id: 24, name: 'sdk-consumer-project' },
+    { ...job, id: 25, name: 'sdk-consumer-npm-js' },
+  ];
+  const jobs = [
+    ...passed,
+    { ...job, id: 26, name: 'sdk-consumer-npm-diagnostics', conclusion: 'failure' },
+    aggregate,
+  ];
   f.extra.set(
     `repos/${repository}/actions/workflows/sdk-pr-preflight.yml/runs?event=pull_request&head_sha=${oldSha}&status=completed&per_page=100`,
     { workflow_runs: [run] },
   );
   f.extra.set(`repos/${repository}/actions/runs/12/jobs?filter=latest&per_page=100&page=1`, {
-    total_count: 2,
-    jobs: [job, aggregate],
+    total_count: jobs.length,
+    jobs,
   });
   assert.equal((await ciRepairQualification(f.input, f.api)).sourceRunId, 12);
   aggregate.conclusion = 'success';
   assert.equal((await ciRepairQualification(f.input, f.api)).sourceRunId, 12);
+  const originalBody = f.pr.body;
+  for (const directive of [
+    'sdk-build',
+    'sdk-consumer-npm-diagnostics, sdk-build',
+    JSON.stringify(['sdk-consumer-npm-diagnostics', 'sdk-build']),
+  ]) {
+    f.pr.body = `${originalBody}\nCI-Repair-Rerun: ${directive}`;
+    for (const consumer of passed) {
+      const retained = await ciRepairQualification({ ...f.input, checkName: consumer.name }, f.api);
+      assert.equal(retained.reused, true);
+      assert.equal(retained.sourceRunId, 12);
+      assert.equal(retained.sourceJobId, consumer.id);
+      assert.equal(retained.sourceSha, oldSha);
+    }
+    assert.deepEqual(
+      await ciRepairQualification(
+        { ...f.input, jobKey: 'aggregate', checkName: 'sdk-build' },
+        f.api,
+      ),
+      { reused: false, reason: 'new-work-declared' },
+    );
+    if (directive.includes('sdk-consumer-npm-diagnostics'))
+      assert.deepEqual(
+        await ciRepairQualification(
+          { ...f.input, checkName: 'sdk-consumer-npm-diagnostics' },
+          f.api,
+        ),
+        { reused: false, reason: 'new-work-declared' },
+      );
+  }
+  f.pr.body = originalBody;
+  run.head_sha = originalSha;
+  assert.equal(
+    (await ciRepairQualification(f.input, f.api)).reason,
+    'workflow-baseline-missing',
+    'a peer from the same PR must still match the exact anchor commit',
+  );
   f.input.jobKey = 'build-sdk';
   assert.equal(
     (await ciRepairQualification(f.input, f.api)).reason,
@@ -755,6 +1007,11 @@ test('all integrated consumers preserve checkout, explicit provenance and step g
     for (const id of ids) {
       const job = workflow.jobs[id];
       assert.ok(job, `${file}:${id}`);
+      const permissions = job.permissions ?? workflow.permissions;
+      assert.ok(
+        ['read', 'write'].includes(permissions?.['pull-requests']),
+        `${file}:${id} must independently verify commit-to-PR association`,
+      );
       if (metricProducers.includes(id)) {
         const values = Object.entries(job.outputs)
           .filter(([key]) => key !== 'metric_suite_reused')
@@ -976,6 +1233,7 @@ test('coverage restoration selects original successful artifacts and the current
     [0, 1, 2, 3].map((i) => `coverage-pnpm-shard-${i}`),
     (name) => name.replace('coverage-pnpm-shard-', 'coverage-shard-'),
     api,
+    coverageOptions,
   );
   assert.equal(rows.filter((x) => x.source.reused).length, 3);
   assert.equal(rows.find((x) => !x.source.reused).checkName, 'coverage-pnpm-shard-0');
@@ -986,6 +1244,7 @@ test('coverage restoration selects original successful artifacts and the current
       [0, 1, 2, 3].map((i) => `coverage-pnpm-shard-${i}`),
       (name) => name.replace('coverage-pnpm-shard-', 'coverage-shard-'),
       api,
+      coverageOptions,
     ),
   );
 });

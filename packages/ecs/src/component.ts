@@ -31,28 +31,6 @@ import type { ManagedColumnReader } from './storage/column';
 // index.ts; this re-export is only reached through `@forgeax/engine-ecs/internal`.
 export { componentDefinition } from './component-schema';
 
-// ────────────────────────────────────────────────────────────────────────────
-// Field types — schema vocab keywords (AC-01).
-//
-// Two-tier vocabulary:
-//
-//   1. Legacy scalar set: 11 keywords backed by TypedArray storage. Concrete
-//      TypedArray constructors derive byte widths and TYPE_METADATA rows.
-//
-//   2. Schema-vocab keywords: 7 template-literal patterns expressing
-//      ECS-managed types whose storage is owned by separate subsystems:
-//        * `buffer:<bytes>`     — fixed-byte managed Uint8Array, stored by BufferPool
-//        * `ref<T>`             — managed Handle<T,'unique'>, released by UniqueRefStore
-//        * `shared<T>`          — rc-tracked Handle<T,'shared'>, lifecycle owned by SharedRefStore
-//        * `entity`             — Entity reference (Entity | null)
-//        * `string`             — utf-8 string payload, allocated as a managed handle via UniqueRefStore
-//        * `array<T,N>`         — fixed-capacity typed view; elements inline in stride-N column (feat-20260602)
-//        * `array<T>`           — variable-capacity typed view over BufferPool slot bytes
-//
-// The retired `array<entity>` predecessor (closed out by this feat) is no
-// longer a valid schema field type — the union has narrowed it out.
-// ────────────────────────────────────────────────────────────────────────────
-
 /** Native constructors own scalar conversion and byte width. */
 const VIEW_CTORS = {
   f32: Float32Array,
@@ -65,7 +43,6 @@ const VIEW_CTORS = {
   u8: Uint8Array,
   bool: Uint8Array,
   enum: Uint32Array,
-  ref: Uint32Array,
 } as const;
 
 /** Numeric scalar field types backed by TypedArray storage. */
@@ -77,16 +54,9 @@ export type ScalarFieldType = keyof typeof VIEW_CTORS;
  * `shared\<X\>` template with a non-empty tag; reference / buffer / nested
  * array element types are forbidden (OOS-08 / OOS-03).
  *
- * feat-20260614 M5 / w23: the historical `handle\<X\>` element family was
- * deleted in favor of `shared\<X\>` (rc-tracked, lifecycle owned by
- * SharedRefStore). The `MANAGED_ARRAY_ELEMENT_TYPES` Set remains
- * static-scalar + entity only (D-8); dynamic `shared\<X\>` templates are
- * validated by `isValidArrayElementType` at parse time.
- *
  * Legal: every member of `ScalarFieldType` plus `entity` plus
- * `shared\<X\>` (non-empty tag). The `ref` legacy scalar keyword (a u32
- * column placeholder) is in the whitelist; the parametric `unique<T>` /
- * `shared<T>` scalars are rejected as array element types by AC-03.
+ * `shared\<X\>` and `asset\<kind\>` with non-empty tags. Unique handles
+ * cannot be array elements.
  */
 export type ManagedArrayElementType =
   | ScalarFieldType
@@ -95,15 +65,13 @@ export type ManagedArrayElementType =
   | `asset<${string}>`;
 
 /**
- * Schema-vocab keywords beyond the legacy scalar tier (AC-01).
+ * Schema-vocab keywords beyond the scalar tier (AC-01).
  *
  * Each pattern is a template-literal type so a literal schema like
  * `{ mat: 'unique<MaterialAsset>' }` types the value as
  * `Handle<'MaterialAsset','unique'>` end-to-end. Runtime acceptance is
  * gated by the internal `isSchemaVocabKeyword` check — the SSOT for parser fail-fast.
  *
- * The legacy `'buffer:<N>'` literal is retired one-cut by
- * feat-20260515-buffer-array-vocab-collapse w4: replaced by the
  * angle-bracket generic shapes `'buffer'` (variable byte slot) and
  * `'buffer<N>'` (fixed byte slot). With `'array<T>'` / `'array<T, N>'` they
  * form a 4-keyword closed surface across two orthogonal axes (element-type
@@ -122,7 +90,7 @@ export type SchemaVocabKeyword =
 
 /**
  * Closed union of every keyword `defineComponent` accepts for a schema field.
- * Combines the legacy scalar tier with the schema-vocab tier.
+ * Combines the scalar tier with the schema-vocab tier.
  *
  * `ComponentSchema` is keyed against this union; `defineComponent` rejects
  * any field value not satisfying it (compile-time) or matching it
@@ -154,26 +122,26 @@ export type FieldShapeKind =
 /**
  * Normalize any field-type keyword to its TYPE_METADATA key.
  *
- * The 11 legacy scalars round-trip their own key. The 6 vocab families normalize
+ * The 10 scalars round-trip their own key. The 6 vocab families normalize
  * their parametric shapes to the family key:
- *   - `unique<T>` / `shared<T>` — strip `<T>`    → `'ref'` / `'shared'`
+ *   - `unique<T>` / `shared<T>` — strip `<T>`    → `'unique'` / `'shared'`
  *   - `buffer<N>`             — strip `<N>`       → `'buffer'`
  *   - `array<T>` / `array<T,N>` — strip `<...>`   → `'array'`
  *   - `entity` / `string` / `buffer` are identity.
  *
  * Returns `null` for an unrecognised keyword so callers can skip column
- * allocation (same semantics as the retired `storageFieldType`).
+ * allocation.
  */
 export function fieldTypeToMetaKey(fieldType: string): string | null {
   if (fieldType === 'entity' || fieldType === 'string' || fieldType === 'buffer') {
     return fieldType;
   }
-  if (fieldType.startsWith('unique<') && fieldType.endsWith('>')) return 'ref';
+  if (fieldType.startsWith('unique<') && fieldType.endsWith('>')) return 'unique';
   if (fieldType.startsWith('asset<') && fieldType.endsWith('>')) return 'asset';
   if (fieldType.startsWith('shared<') && fieldType.endsWith('>')) return 'shared';
   if (fieldType.startsWith('buffer<') && fieldType.endsWith('>')) return 'buffer';
   if (fieldType.startsWith('array<') && fieldType.endsWith('>')) return 'array';
-  // Legacy scalar — the 11 types are keys in TYPE_METADATA.
+  // Scalar — the 10 types are keys in TYPE_METADATA.
   if (Object.hasOwn(TYPE_METADATA, fieldType)) return fieldType;
   return null;
 }
@@ -186,8 +154,7 @@ export function fieldTypeToMetaKey(fieldType: string): string | null {
  *
  * Naming note (D-6 whitelist): `managed = ECS-tracked`. The prefix here is
  * about column-side lifecycle ownership (the ECS releases the slot on
- * despawn / overwrite), not the retired `'managed' | 'unmanaged'` Handle
- * brand. Both `'unique<T>'` and `'shared<T>'` schema fields satisfy
+ * despawn / overwrite). Both `'unique<T>'` and `'shared<T>'` schema fields satisfy
  * `isManagedField` because both are ECS-tracked; the dispatcher in
  * `releaseManagedFieldOnRow` picks the right store per field type.
  */
@@ -293,7 +260,7 @@ export function parseManagedArraySchema(
   const commaIdx = inner.indexOf(',');
   if (commaIdx === -1) {
     // Variable-capacity: inner must be a bare element-type keyword or
-    // handle<X> template.
+    // asset<kind> template.
     if (!isValidArrayElementType(inner)) return null;
     return { elementType: inner as ManagedArrayElementType, length: undefined };
   }
@@ -360,7 +327,7 @@ export function isSchemaVocabKeyword(s: string): s is SchemaVocabKeyword {
 /**
  * Maps each field-type keyword to the JS value type read/written by it.
  *
- * Tier-1 (legacy scalars) widens to `boolean | number`; tier-2 (schema-vocab)
+ * Tier-1 (scalars) widens to `boolean | number`; tier-2 (schema-vocab)
  * resolves to the corresponding handle / entity / buffer / array / string
  * shape via the `infer T` template-literal extraction pattern. Conditional
  * types resolve top-down --- the `'string'` arm sits BEFORE the array<...> /
@@ -460,13 +427,13 @@ export type FieldInputType<T extends SchemaFieldType> = T extends 'buffer' | `bu
  *    `'array<T,N>'` -> the T-typed array). Direct index assignment is
  *    fine -- the column owns the bytes.
  *
- * 2. `shared\<X\>` (rc-tracked AssetRegistry reference) -- the column carries
+ * 2. `shared\<X\>` (reference-counted shared value) -- the column carries
  *    a u32 handle id; SharedRefStore owns the rc lifecycle. The bundle
  *    entry is a `ManagedColumnReader<T>` (D-4 / D-7) -- read-only, walk
  *    via `.get(i)`. Consumers route through `assets.get(handle)` to
  *    materialise the asset payload.
  *
- * 3. The 4 managed-vocab keywords -- `'string'` / `` `ref<T>` `` / variable
+ * 3. The 4 managed-vocab keywords -- `'string'` / `` `unique<T>` `` / variable
  *    `'buffer'` / variable `` `array<T>` `` -- the column carries a u32 slot
  *    id; the payload lives in `UniqueRefStore` / `BufferPool`. The bundle
  *    entry is a `ManagedColumnReader<T>` (D-4 / D-7) -- read-only by
@@ -504,27 +471,6 @@ export type TypedArrayFor<T extends SchemaFieldType> = T extends
                     ? ManagedColumnReader<T>
                     : never;
 
-/**
- * Relationship metadata (feat-20260531 M2 / plan-strategy D-5). Declares this
- * component as the holder side of a Bevy-style bidirectional relationship: the
- * holder carries a single `entity` field (the target), and the engine mirrors
- * the reverse reference into `mirror`.`field` (an `array<entity>` on the target
- * entity) at add / remove / despawn time.
- *
- * - `mirror` — the mirror component's string NAME (not a type reference, so
- *   `engine-ecs` never imports the mirror component type; AC-29). The mirror
- *   component is a derived runtime view rebuilt by the relationship owner, so
- *   it MUST declare `transient: true` — otherwise scene collect serializes it
- *   and `instantiateScene` double-writes (serialized copy + owner rebuild).
- * - `field` — the `array<entity>` field on the mirror component that holds the
- *   reverse list. Validated to be exactly `'array<entity>'` at `defineComponent` time.
- * - `exclusive` — when `true`, re-adding the holder component with a new target
- *   auto-reparents (clears the old mirror entry, then appends the new one)
- *   instead of returning `ComponentAlreadyPresentError` (AC-12).
- * - `linkedSpawn` — when `true`, despawning the target recursively despawns the
- *   holders in its mirror list. Default `false` (D-1): despawn only prunes the
- *   mirror entry, the holder entity survives.
- */
 /** A schema is a record of field-name → field-type keyword. */
 export type ComponentSchema = Record<string, SchemaFieldType>;
 
@@ -617,8 +563,7 @@ declare const __componentBrand: unique symbol;
  * and the schema-shape `S` as a phantom brand so `world.get(e, Comp)` can
  * return `Result<ShapeOf<S>, EcsError>` precisely.
  *
- * The `N` parameter defaults to `string` to keep existing single-parameter
- * `Component<S>` annotations source-compatible. When inferred from a
+ * When inferred from a
  * `defineComponent('Position', ...)` call, `N` is the literal `'Position'`,
  * which lets query row/span mapped types resolve `{ [K in N]: ... }` to a
  * concrete keyed object instead of a degraded index signature (KD-1).
@@ -644,8 +589,8 @@ export interface Component<N extends string = string, S extends ComponentSchema 
  * - `storage` — the column-storage scalar type this field routes to (every
  *   vocab family stores a u32 slot id / handle).
  * - `isScalar` — member of the 11 concrete scalar types
- *   (`f32`/`f64`/`i32`/`u32`/`i16`/`u16`/`i8`/`u8`/`bool`/`enum`/`ref`).
- * - `isManaged` — routed through `UniqueRefStore` (string / ref<T>).
+ *   (`f32`/`f64`/`i32`/`u32`/`i16`/`u16`/`i8`/`u8`/`bool`/`enum`).
+ * - `isManaged` — routed through `UniqueRefStore` (string / unique<T>).
  * - `isBuffer` — a `buffer` / `buffer<N>` managed-byte slot.
  * - `isEntityRef` — the single-entity `entity` reference keyword.
  * - `isArray` — an `array<T>` / `array<T,N>` keyword.
@@ -675,9 +620,7 @@ function scalarRow(t: ScalarFieldType): TypeMetadataRow {
     viewCtor: VIEW_CTORS[t],
     storage: t,
     isScalar: true,
-    // The scalar `ref` shares its key with the vocab `ref<T>` family; mark
-    // it as managed so the single row covers both.
-    isManaged: t === 'ref',
+    isManaged: false,
     isBuffer: false,
     isEntityRef: false,
     isArray: false,
@@ -685,13 +628,10 @@ function scalarRow(t: ScalarFieldType): TypeMetadataRow {
 }
 
 /**
- * Global per-type metadata table. Keyed by concrete scalar type (11) plus
- * vocab family (6 — `entity` / `string` / `buffer` / `ref` / `handle` /
- * `array`). The `ref` key is shared by the legacy scalar and the vocab family
- * (see header). Every vocab family stores a u32 slot id / handle.
- *
- * Built once at module load; frozen so downstream consumers (column.ts /
- * archetype.ts / world.ts, migrated M2) read a stable single source.
+ * Physical scalar storage and broad field-family traits. `unique<T>` maps
+ * to the `unique` key; `asset<T>` and `shared<T>` both store u32
+ * references, but use different lifetime owners. Exact lifecycle dispatch
+ * comes from the component's definition-time FieldPlan, not these flags.
  */
 export const TYPE_METADATA: Readonly<Record<string, TypeMetadataRow>> = Object.freeze({
   f32: scalarRow('f32'),
@@ -704,7 +644,7 @@ export const TYPE_METADATA: Readonly<Record<string, TypeMetadataRow>> = Object.f
   u8: scalarRow('u8'),
   bool: scalarRow('bool'),
   enum: scalarRow('enum'),
-  ref: scalarRow('ref'),
+  unique: { ...scalarRow('u32'), isScalar: false, isManaged: true },
   entity: { ...scalarRow('u32'), isScalar: false, isEntityRef: true },
   string: { ...scalarRow('u32'), isScalar: false, isManaged: true },
   buffer: { ...scalarRow('u32'), isScalar: false, isBuffer: true },
@@ -732,11 +672,8 @@ export interface ArrayMeta {
 }
 
 /**
- * Input field-descriptor object (D-A3). The second `defineComponent` argument
- * may declare each field either as a bare type keyword (legacy flat form,
- * still accepted through M2; migrated repo-wide in M3) or as a descriptor
- * object aggregating `type` + `default` + semantic `shape` + field-level
- * `meta`.
+ * The second `defineComponent` argument declares each field as a type keyword
+ * or a descriptor with `type`, `default`, semantic `shape`, and field-level `meta`.
  *
  * - `type` — the schema field-type keyword (a parametrized string such as
  *   `'array<f32,3>'` / `'unique<MaterialAsset>'` is used verbatim, D-A2).
@@ -805,7 +742,7 @@ export interface FieldReflection {
 }
 
 /**
- * One input field-spec value: either the bare type keyword (legacy flat form)
+ * One input field-spec value: either the bare type keyword (bare keyword form)
  * or a field-descriptor object. Accepting both keeps the ~44 flat-string
  * call-sites + ~55 test files green through M1/M2 while the field-descriptor
  * form is migrated in repo-wide in M3 (D-A7 / D-A8 shrink the migration
@@ -908,13 +845,11 @@ function deriveFieldPlan(field: FieldReflection): FieldPlan {
     const fixed = arrayMeta.length !== undefined;
     return Object.freeze({
       kind: fixed ? 'fixed-array' : 'array',
-      numeric: NUMERIC_SCALARS.has(element),
       releases: !fixed || reference,
     });
   }
-  const plan = (kind: FieldKind, releases = false, numeric = false): FieldPlan =>
-    Object.freeze({ kind, numeric, releases });
-  if (NUMERIC_SCALARS.has(type)) return plan('number', false, true);
+  const plan = (kind: FieldKind, releases = false): FieldPlan => Object.freeze({ kind, releases });
+  if (NUMERIC_SCALARS.has(type)) return plan('number');
   if (type === 'bool') return plan('bool');
   if (type === 'entity') return plan('entity');
   if (type === 'string') return plan('string', true);
@@ -922,7 +857,7 @@ function deriveFieldPlan(field: FieldReflection): FieldPlan {
   if (type.startsWith('buffer<')) return plan('fixed-buffer');
   if (type.startsWith('shared<')) return plan('shared', true);
   if (type.startsWith('asset<')) return plan('asset', true);
-  // `ref` and `unique<T>` share the UniqueRefStore row.
+  // The remaining validated family is an exclusively owned unique handle.
   return plan('unique', true);
 }
 
@@ -941,12 +876,12 @@ function deriveFieldPlan(field: FieldReflection): FieldPlan {
  * downstream (for example QueryRow and QuerySpan projections). At runtime `name` is a plain
  * string.
  *
- * Schema-field validation accepts both the legacy scalar tier
- * (`ScalarFieldType`, 11 keywords) and the schema-vocab tier
+ * Schema-field validation accepts both the scalar tier
+ * (`ScalarFieldType`, 10 keywords) and the schema-vocab tier
  * (`SchemaVocabKeyword`, 8 patterns including `array<T,N>` / `array<T>` /
  * `buffer` / `buffer<N>`). Mismatched values raise
  * `SchemaUnsupportedFieldError`. Illegal `array<...>` element types
- * (e.g. `array<ref<X>>`) raise `ManagedArrayElementTypeNotAllowedError`
+ * (e.g. `array<unique<X>>`) raise `ManagedArrayElementTypeNotAllowedError`
  * (AC-03 runtime fail-safe).
  *
  * Relationship roles are declared through `defineRelationship`; component
@@ -988,7 +923,7 @@ export function defineComponent<const N extends string, const S extends FieldsIn
     // normalized keyword.
     let arrayMeta: ArrayMeta | undefined;
     if (TYPE_METADATA[fieldType]?.isScalar === true) {
-      // legacy scalar — ok
+      // scalar — ok
     } else if (fieldType === 'string') {
       // string vocab — ok
     } else if (fieldType.startsWith('array<') && fieldType.endsWith('>')) {
@@ -1051,8 +986,7 @@ export function defineComponent<const N extends string, const S extends FieldsIn
   const id = name === 'Entity' ? 0 : ownerRegistry.nextId++;
 
   // Derived defaults projection (D-A8): pure from `fields[k].default`.
-  // No longer merged with a removed `options.defaults` input — strict single-entry
-  // means the only way to set a layer-2 default is through the field descriptor.
+  // Each field descriptor is the authority for its default.
   const frozenDefaults =
     Object.keys(collectedDefaults).length === 0
       ? undefined

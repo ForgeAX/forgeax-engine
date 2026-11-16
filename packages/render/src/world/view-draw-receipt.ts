@@ -1,36 +1,349 @@
-import { defineComponent, type EntityHandle, type World } from '@forgeax/engine-ecs';
+import { defineComponent, defineSystem, type EntityHandle, type World } from '@forgeax/engine-ecs';
+import { materialProgramContextKey } from '@forgeax/engine-pack';
 import type { Handle } from '@forgeax/engine-types';
+import {
+  snapshotWaterBakedQueryLineage,
+  WATER_BAKED_DESCRIPTOR_STRIDE_BYTES,
+} from '@forgeax/engine-water';
+import { MAX_INSPECTION_SAMPLES, MAX_RECEIPT_OBSERVATION_BYTES } from '../observation-budget';
 import { DynamicGeometryReceipt } from '../record/dynamic-geometry-receipt';
-import { worldEntityKey } from '../record/frame-snapshot';
-import type { createPresentationDraws } from '../render-system-presentation';
-import { projectDisplayRenderables } from '../render-system-presentation';
+import {
+  type createPresentationDraws,
+  projectDisplayRenderables,
+} from '../render-system-presentation';
+import {
+  DynamicGeometryCommitOrder,
+  DynamicGeometryResetOrder,
+  RenderRecordCommitOrder,
+  RenderViewFrameOrder,
+  TerrainReceiptCommitOrder,
+  TerrainReceiptDiscardOrder,
+  ViewTerrainCandidateOrder,
+} from '../system-order';
+
 import { captureSubmittedTerrain, type SubmittedTerrainSection } from '../terrain/submitted.js';
 import { ViewRecorder, ViewSubmission, viewAccepted } from './render-views';
 import { RenderCleanup, RenderCommit, RenderPrepare, renderSubmission } from './render-world';
-import { RENDER_RECORD_COMMIT_SYSTEM } from './submission-systems';
+
 import { requireViewField } from './view-field';
-import {
-  RENDER_VIEW_FRAME_SYSTEM,
-  stagedViewInputs,
-  ViewFrame,
-  type ViewFrameState,
-} from './view-frame-systems';
-import { ownerOf, type ViewSettlementOwner } from './view-settlement';
+import { stagedViewInputs, ViewFrame, type ViewFrameState } from './view-frame-systems';
 
 /** The terrain sections a view's frame could draw, with the world keys their draws are named by. */
 export interface TerrainCandidate {
   readonly sections: readonly SubmittedTerrainSection[];
-  readonly worldKeys: readonly number[];
+}
+
+/** Immutable Baked source rows used by one submitted Water material draw. */
+export interface WaterBakedSourceDrawReceipt {
+  readonly worldIdentity: string;
+  readonly bodyIndex: number;
+  readonly bodyGuid: string;
+  readonly bodyGeneration: number;
+  readonly zoneGeneration: number;
+  readonly descriptorRange: readonly [number, number];
+  readonly sampleRange: readonly [number, number];
+  readonly binding: Readonly<{
+    readonly drawDataRowOffset: number;
+    readonly descriptorBufferIdentity: number;
+    readonly descriptorBufferByteLength: number;
+    readonly sampleBufferIdentity: number;
+    readonly sampleBufferByteLength: number;
+    readonly complete: boolean;
+    readonly viewIdentity: string;
+    readonly frameGeneration: number;
+    readonly deviceGeneration: number;
+  }>;
+  readonly lineage?: import('@forgeax/engine-water').WaterBakedQueryLineage;
+}
+
+export interface WaterBakedDrawBindingReceipt {
+  readonly viewIdentity: string;
+  readonly frameGeneration: number;
+  readonly deviceGeneration: number;
+  readonly drawDataBufferIdentity: number;
+  readonly drawDataDynamicOffset: number;
+  readonly waterInfoDynamicOffset?: number;
+  readonly waterMeshInstanceDynamicOffset: number;
+  readonly waterMeshInstanceBufferIdentity: number;
+  readonly waterMeshInstanceBufferByteLength: number;
+  readonly waterMeshInstanceRange: readonly [number, number];
+  readonly bakedDescriptorBufferIdentity: number;
+  readonly bakedSamplesBufferIdentity: number;
+}
+
+/** Actual Water draw identity captured after its draw command was submitted. */
+export interface WaterBakedDrawReceiptFact {
+  readonly entityKey: number;
+  readonly submeshIndex: number;
+  readonly materialSlot: number;
+  readonly viewIdentity: string;
+  readonly frameId: number;
+  readonly deviceGeneration: number;
+  readonly graphGeneration: number;
+  readonly drawKey: string;
+  readonly ownerWorldIdentity: string;
+  readonly materialWorldIdentity?: string;
+  readonly drawBinding?: WaterBakedDrawBindingReceipt;
+  readonly materialIdentity: Readonly<{
+    readonly materialGuid: string;
+    readonly publicationGeneration: number;
+    readonly specializationKey?: string;
+    readonly artifactHash?: string;
+    readonly programKey?: string;
+  }>;
+  readonly programIdentity?: Readonly<{
+    readonly pass: string;
+    readonly context: import('@forgeax/engine-pack').MaterialCookProgramContext;
+    readonly address: 'direct';
+    readonly specializationKey: string;
+    readonly artifactHash: string;
+  }>;
+  readonly sourceBodyIndices: readonly number[];
+  readonly sources?: readonly WaterBakedSourceDrawReceipt[];
+  readonly availability?:
+    | Readonly<{ status: 'complete' }>
+    | Readonly<{
+        status: 'unavailable';
+        reason: WaterBakedDrawUnavailableReason;
+      }>;
+}
+
+/** Exact material source revision consumed by one actual submitted mesh draw. */
+export interface MaterialSlotDrawReceiptFact {
+  readonly worldIdentity: string;
+  readonly entityKey: number;
+  readonly submeshIndex: number;
+  readonly materialSlot: number;
+  readonly materialHandle: number;
+  readonly sourceRevision: number;
+  readonly frameId: number;
+  readonly deviceGeneration: number;
+  readonly graphGeneration: number;
+}
+
+const WATER_BAKED_DRAW_UNAVAILABLE_REASONS = [
+  'view-identity-missing',
+  'view-mismatch',
+  'frame-mismatch',
+  'device-generation-mismatch',
+  'graph-generation-mismatch',
+  'draw-identity-missing',
+  'material-identity-missing',
+  'source-identity-incomplete',
+  'source-lineage-unavailable',
+] as const;
+type WaterBakedDrawUnavailableReason = (typeof WATER_BAKED_DRAW_UNAVAILABLE_REASONS)[number];
+
+type WaterBakedDrawExpected = Readonly<{
+  readonly viewIdentity?: string;
+  readonly deviceGeneration?: number;
+  readonly graphGeneration?: number;
+}>;
+
+function waterBakedDrawUnavailableReason(
+  frame: number,
+  draw: WaterBakedDrawReceiptFact,
+  expected: WaterBakedDrawExpected,
+): WaterBakedDrawUnavailableReason | undefined {
+  if (expected.viewIdentity === undefined) return 'view-identity-missing';
+  if (draw.viewIdentity !== expected.viewIdentity) return 'view-mismatch';
+  if (draw.frameId !== frame) return 'frame-mismatch';
+  if (
+    expected.deviceGeneration === undefined ||
+    draw.deviceGeneration !== expected.deviceGeneration
+  )
+    return 'device-generation-mismatch';
+  if (expected.graphGeneration === undefined || draw.graphGeneration !== expected.graphGeneration)
+    return 'graph-generation-mismatch';
+  if (draw.drawKey.length === 0) return 'draw-identity-missing';
+  const binding = draw.drawBinding;
+  const invalidBakedMeshInstanceRange = (binding: WaterBakedDrawBindingReceipt) =>
+    binding.waterMeshInstanceDynamicOffset !== binding.waterMeshInstanceRange[0] ||
+    !Number.isSafeInteger(binding.waterMeshInstanceBufferByteLength) ||
+    binding.waterMeshInstanceBufferByteLength <= 0 ||
+    (binding.waterInfoDynamicOffset !== undefined &&
+      (!Number.isSafeInteger(binding.waterInfoDynamicOffset) ||
+        binding.waterInfoDynamicOffset < 0)) ||
+    binding.waterMeshInstanceRange[0] < 0 ||
+    binding.waterMeshInstanceRange[1] <= binding.waterMeshInstanceRange[0] ||
+    binding.waterMeshInstanceRange[1] > binding.waterMeshInstanceBufferByteLength;
+  const invalidBakedBufferIdentities = (binding: WaterBakedDrawBindingReceipt) =>
+    !Number.isSafeInteger(binding.drawDataBufferIdentity) ||
+    binding.drawDataBufferIdentity <= 0 ||
+    !Number.isSafeInteger(binding.waterMeshInstanceBufferIdentity) ||
+    binding.waterMeshInstanceBufferIdentity <= 0 ||
+    !Number.isSafeInteger(binding.bakedDescriptorBufferIdentity) ||
+    binding.bakedDescriptorBufferIdentity <= 0 ||
+    !Number.isSafeInteger(binding.bakedSamplesBufferIdentity) ||
+    binding.bakedSamplesBufferIdentity <= 0;
+  if (
+    binding === undefined ||
+    binding.viewIdentity !== draw.viewIdentity ||
+    binding.frameGeneration !== draw.frameId ||
+    binding.deviceGeneration !== draw.deviceGeneration ||
+    !Number.isSafeInteger(binding.drawDataDynamicOffset) ||
+    binding.drawDataDynamicOffset < 0 ||
+    invalidBakedMeshInstanceRange(binding) ||
+    invalidBakedBufferIdentities(binding)
+  )
+    return 'source-identity-incomplete';
+  const invalidBakedMaterialIdentity = () =>
+    draw.materialIdentity.materialGuid.length === 0 ||
+    !Number.isSafeInteger(draw.materialIdentity.publicationGeneration) ||
+    draw.materialIdentity.publicationGeneration < 0 ||
+    draw.materialIdentity.specializationKey === undefined ||
+    draw.materialIdentity.artifactHash === undefined ||
+    draw.materialIdentity.programKey === undefined ||
+    draw.programIdentity === undefined ||
+    draw.programIdentity.pass.length === 0 ||
+    draw.programIdentity.address !== 'direct' ||
+    draw.programIdentity.specializationKey !== draw.materialIdentity.programKey ||
+    draw.programIdentity.artifactHash.length === 0;
+  if (invalidBakedMaterialIdentity()) return 'material-identity-missing';
+  const validateBakedDrawSources = (binding: WaterBakedDrawBindingReceipt) => {
+    const sources = draw.sources;
+    const invalidBakedSourceRanges = (source: WaterBakedSourceDrawReceipt) =>
+      source.sampleRange[0] < 0 ||
+      source.sampleRange[1] <= source.sampleRange[0] ||
+      source.sampleRange[0] % 16 !== 0 ||
+      source.sampleRange[1] % 16 !== 0 ||
+      source.sampleRange[1] > source.binding.sampleBufferByteLength ||
+      source.descriptorRange[1] > source.binding.descriptorBufferByteLength;
+    const invalidBakedSourceBufferIdentities = (
+      source: WaterBakedSourceDrawReceipt,
+      binding: WaterBakedDrawBindingReceipt,
+    ) =>
+      !Number.isSafeInteger(source.binding.drawDataRowOffset) ||
+      source.binding.drawDataRowOffset < 0 ||
+      source.binding.complete !== true ||
+      source.binding.descriptorBufferIdentity !== binding.bakedDescriptorBufferIdentity ||
+      source.binding.sampleBufferIdentity !== binding.bakedSamplesBufferIdentity ||
+      !Number.isSafeInteger(source.binding.descriptorBufferIdentity) ||
+      source.binding.descriptorBufferIdentity <= 0 ||
+      !Number.isSafeInteger(source.binding.sampleBufferIdentity) ||
+      source.binding.sampleBufferIdentity <= 0;
+    if (
+      draw.sourceBodyIndices.length === 0 ||
+      draw.ownerWorldIdentity.length === 0 ||
+      draw.materialWorldIdentity === undefined ||
+      draw.materialWorldIdentity.length === 0 ||
+      !draw.sourceBodyIndices.every((index) => Number.isSafeInteger(index) && index >= 0) ||
+      new Set(draw.sourceBodyIndices).size !== draw.sourceBodyIndices.length ||
+      sources === undefined ||
+      sources.length !== draw.sourceBodyIndices.length ||
+      sources.some(
+        (source, index) =>
+          source === undefined ||
+          source.bodyIndex !== draw.sourceBodyIndices[index] ||
+          source.worldIdentity.length === 0 ||
+          source.worldIdentity !== draw.ownerWorldIdentity ||
+          source.bodyGuid.length === 0 ||
+          !Number.isSafeInteger(source.bodyGeneration) ||
+          source.bodyGeneration < 0 ||
+          !Number.isSafeInteger(source.zoneGeneration) ||
+          source.zoneGeneration < 0 ||
+          source.descriptorRange[0] < 0 ||
+          source.descriptorRange[1] <= source.descriptorRange[0] ||
+          source.descriptorRange[1] - source.descriptorRange[0] !==
+            WATER_BAKED_DESCRIPTOR_STRIDE_BYTES ||
+          invalidBakedSourceRanges(source) ||
+          invalidBakedSourceBufferIdentities(source, binding) ||
+          source.binding.viewIdentity !== draw.viewIdentity ||
+          source.binding.frameGeneration !== draw.frameId ||
+          source.binding.deviceGeneration !== draw.deviceGeneration,
+      )
+    )
+      return 'source-identity-incomplete';
+    if (sources[0]?.binding.drawDataRowOffset !== binding.drawDataDynamicOffset)
+      return 'source-identity-incomplete';
+    if (
+      sources.some((source) => {
+        const lineage = snapshotWaterBakedQueryLineage(source.lineage);
+        return lineage === undefined || lineage.textureRevision === undefined;
+      })
+    )
+      return 'source-lineage-unavailable';
+    return undefined;
+  };
+  return validateBakedDrawSources(binding);
+}
+
+function freezeWaterBakedDraw(draw: WaterBakedDrawReceiptFact): WaterBakedDrawReceiptFact {
+  return Object.freeze({
+    ...draw,
+    materialIdentity: Object.freeze({ ...draw.materialIdentity }),
+    sourceBodyIndices: Object.freeze([...draw.sourceBodyIndices]),
+    ...(draw.programIdentity === undefined
+      ? {}
+      : {
+          programIdentity: Object.freeze({
+            ...draw.programIdentity,
+            context: Object.freeze({ ...draw.programIdentity.context }),
+          }),
+        }),
+    ...(draw.drawBinding === undefined
+      ? {}
+      : {
+          drawBinding: Object.freeze({
+            ...draw.drawBinding,
+            waterMeshInstanceRange: Object.freeze([
+              ...draw.drawBinding.waterMeshInstanceRange,
+            ]) as readonly [number, number],
+          }),
+        }),
+    ...(draw.availability === undefined
+      ? {}
+      : { availability: Object.freeze({ ...draw.availability }) }),
+    ...(draw.sources === undefined
+      ? {}
+      : {
+          sources: Object.freeze(
+            draw.sources.map((source) => {
+              const lineage = snapshotWaterBakedQueryLineage(source.lineage);
+              return Object.freeze({
+                worldIdentity: source.worldIdentity,
+                bodyIndex: source.bodyIndex,
+                bodyGuid: source.bodyGuid,
+                bodyGeneration: source.bodyGeneration,
+                zoneGeneration: source.zoneGeneration,
+                descriptorRange: Object.freeze([...source.descriptorRange]) as readonly [
+                  number,
+                  number,
+                ],
+                sampleRange: Object.freeze([...source.sampleRange]) as readonly [number, number],
+                binding: Object.freeze({ ...source.binding }),
+                ...(lineage === undefined ? {} : { lineage }),
+              });
+            }),
+          ),
+        }),
+  });
+}
+
+/** Same per-slot draw closure across submeshes can share one receipt. */
+export function waterBakedDrawClosureKey(draw: WaterBakedDrawReceiptFact): string {
+  const { submeshIndex, programIdentity, ...closure } = draw;
+  void submeshIndex;
+  return JSON.stringify({
+    ...closure,
+    ...(programIdentity === undefined
+      ? {}
+      : {
+          programIdentity: {
+            pass: programIdentity.pass,
+            contextKey: materialProgramContextKey(programIdentity.context),
+            address: programIdentity.address,
+            specializationKey: programIdentity.specializationKey,
+            artifactHash: programIdentity.artifactHash,
+          },
+        }),
+  });
 }
 
 /** Capture the staged view's terrain sections; never throws, undefined on failure. */
-function captureTerrain(
-  world: World,
-  staged: ViewFrameState,
-  owner: ViewSettlementOwner,
-): TerrainCandidate | undefined {
+function captureTerrain(world: World, staged: ViewFrameState): TerrainCandidate | undefined {
   try {
-    const { frame, cameras, scopes } = stagedViewInputs(world, staged);
+    const { frame, cameras, source: resourceWorld } = stagedViewInputs(world, staged);
     // A GPU-owned frame derives its display rows from the submitted selection and a
     // cameraless frame draws nothing: neither carries terrain.
     const drawn = cameras.length === 0 || frame.gpuOwned !== undefined;
@@ -40,9 +353,8 @@ function captureTerrain(
         ? []
         : captureSubmittedTerrain(
             projectDisplayRenderables(frame.renderables, frame.dispatch),
-            scopes,
+            resourceWorld,
           ),
-      worldKeys: owner.scene.visibilityWorldKeysFor(scopes),
     };
   } catch {
     return undefined;
@@ -52,8 +364,27 @@ function captureTerrain(
 /** What one view's submitted frame published: dynamic-geometry draws and terrain sections. */
 export class ViewDrawReceipt {
   readonly dynamicGeometry = new DynamicGeometryReceipt();
+  /** Material closures consumed by the last accepted attempt's actual draws. */
+  materialDraws: readonly MaterialSlotDrawReceiptFact[] = [];
   /** The terrain sections the last accepted attempt actually drew. */
   terrain: readonly SubmittedTerrainSection[] = [];
+  /** The Water Baked sources used by the last accepted attempt's actual draws. */
+  waterBakedDraws: readonly WaterBakedDrawReceiptFact[] = [];
+  waterBakedUnavailableReason: 'snapshot-too-large' | undefined;
+  private waterBakedStage:
+    | {
+        readonly frame: number;
+        readonly draws: WaterBakedDrawReceiptFact[];
+        overflow: boolean;
+      }
+    | undefined;
+  private materialDrawStage:
+    | {
+        readonly frame: number;
+        readonly draws: MaterialSlotDrawReceiptFact[];
+        overflow: boolean;
+      }
+    | undefined;
   private terrainStage:
     | {
         readonly frame: number;
@@ -79,18 +410,139 @@ export class ViewDrawReceipt {
     this.terrainStage = undefined;
     const presented = stage?.presented;
     if (stage?.frame !== frame || stage.candidate === undefined || presented === undefined) return;
-    const { sections, worldKeys } = stage.candidate;
+    const { sections } = stage.candidate;
     this.terrain = sections.filter((section) =>
-      presented.hasTerrain(
-        worldEntityKey(worldKeys[section.worldId] ?? section.worldId, section.entity),
-        section.section,
-      ),
+      presented.hasTerrain(section.entity, section.section),
     );
   }
 
   /** A rejected attempt publishes nothing; the previous receipt is kept. */
   discardTerrain(): void {
     this.terrainStage = undefined;
+  }
+
+  /** Capture immutable source facts from one actual Water draw callback. */
+  stageWaterBakedDraw(
+    frame: number,
+    draw: WaterBakedDrawReceiptFact,
+    expected?: WaterBakedDrawExpected,
+  ): void {
+    if (this.waterBakedStage?.frame !== frame)
+      this.waterBakedStage = { frame, draws: [], overflow: false };
+    const stage = this.waterBakedStage;
+    if (stage.overflow) return;
+    const reason =
+      expected === undefined ? undefined : waterBakedDrawUnavailableReason(frame, draw, expected);
+    const frozen = freezeWaterBakedDraw(
+      reason === undefined
+        ? expected === undefined
+          ? draw
+          : { ...draw, availability: { status: 'complete' } }
+        : { ...draw, availability: { status: 'unavailable', reason } },
+    );
+    const signature = waterBakedDrawClosureKey(frozen);
+    if (stage.draws.some((previous) => waterBakedDrawClosureKey(previous) === signature)) return;
+    if (
+      stage.draws.length >= MAX_INSPECTION_SAMPLES ||
+      new TextEncoder().encode(JSON.stringify([...stage.draws, frozen])).byteLength >
+        MAX_RECEIPT_OBSERVATION_BYTES
+    ) {
+      stage.draws.length = 0;
+      stage.overflow = true;
+      return;
+    }
+    stage.draws.push(frozen);
+  }
+
+  /** Promote only this accepted attempt's draws; an accepted empty frame clears the old receipt. */
+  commitWaterBakedDraws(frame: number): void {
+    const stage = this.waterBakedStage;
+    this.waterBakedStage = undefined;
+    const acceptedStage = stage?.frame === frame ? stage : undefined;
+    this.waterBakedDraws = Object.freeze(
+      acceptedStage?.overflow ? [] : [...(acceptedStage?.draws ?? [])],
+    );
+    this.waterBakedUnavailableReason = acceptedStage?.overflow ? 'snapshot-too-large' : undefined;
+  }
+
+  /** Rejected attempts publish nothing and clear the previous attempt's draw receipt. */
+  discardWaterBakedDraws(): void {
+    this.waterBakedStage = undefined;
+    this.waterBakedDraws = Object.freeze([]);
+    this.waterBakedUnavailableReason = undefined;
+  }
+
+  /** Capture the accepted material closure from one actual slot draw callback. */
+  stageMaterialDraw(frame: number, draw: MaterialSlotDrawReceiptFact): void {
+    if (
+      draw.frameId !== frame ||
+      draw.worldIdentity.length === 0 ||
+      !Number.isSafeInteger(draw.entityKey) ||
+      !Number.isSafeInteger(draw.submeshIndex) ||
+      !Number.isSafeInteger(draw.materialSlot) ||
+      draw.materialSlot < 0 ||
+      !Number.isSafeInteger(draw.materialHandle) ||
+      draw.materialHandle <= 0 ||
+      !Number.isSafeInteger(draw.sourceRevision) ||
+      draw.sourceRevision < 0 ||
+      !Number.isSafeInteger(draw.deviceGeneration) ||
+      draw.deviceGeneration < 0 ||
+      !Number.isSafeInteger(draw.graphGeneration) ||
+      draw.graphGeneration < 0
+    )
+      return;
+    if (this.materialDrawStage?.frame !== frame)
+      this.materialDrawStage = { frame, draws: [], overflow: false };
+    const stage = this.materialDrawStage;
+    if (stage.overflow) return;
+    const frozen = Object.freeze({ ...draw });
+    const signature = JSON.stringify([
+      frozen.worldIdentity,
+      frozen.entityKey,
+      frozen.submeshIndex,
+      frozen.materialSlot,
+      frozen.materialHandle,
+      frozen.sourceRevision,
+    ]);
+    if (
+      stage.draws.some(
+        (previous) =>
+          JSON.stringify([
+            previous.worldIdentity,
+            previous.entityKey,
+            previous.submeshIndex,
+            previous.materialSlot,
+            previous.materialHandle,
+            previous.sourceRevision,
+          ]) === signature,
+      )
+    )
+      return;
+    if (
+      stage.draws.length >= MAX_INSPECTION_SAMPLES ||
+      new TextEncoder().encode(JSON.stringify([...stage.draws, frozen])).byteLength >
+        MAX_RECEIPT_OBSERVATION_BYTES
+    ) {
+      stage.draws.length = 0;
+      stage.overflow = true;
+      return;
+    }
+    stage.draws.push(frozen);
+  }
+
+  /** Promote only this accepted attempt's material draws; accepted-empty clears stale facts. */
+  commitMaterialDraws(frame: number): void {
+    const stage = this.materialDrawStage;
+    this.materialDrawStage = undefined;
+    this.materialDraws = Object.freeze(
+      stage?.frame === frame && !stage.overflow ? [...stage.draws] : [],
+    );
+  }
+
+  /** Rejected attempts publish no material draws and clear stale attempt state. */
+  discardMaterialDraws(): void {
+    this.materialDrawStage = undefined;
+    this.materialDraws = Object.freeze([]);
   }
 }
 
@@ -128,117 +580,151 @@ export function viewDrawReceipt(
  */
 export function registerViewDrawSystems(world: World): void {
   world
-    .addSystem(RenderCommit, {
-      commands: 'none',
-      name: DYNAMIC_GEOMETRY_COMMIT_SYSTEM,
-      queries: [{ read: [ViewSubmission, ViewDraws] }],
-      fn: (world, [views]) => {
-        const frame = renderSubmission(world).frame;
+    .addSystem(
+      RenderCommit,
+      defineSystem({
+        sets: [DynamicGeometryCommitOrder],
+        commands: 'none',
+        name: DYNAMIC_GEOMETRY_COMMIT_SYSTEM,
+        queries: [{ read: [ViewSubmission, ViewDraws] }],
+        fn: (world, [views]) => {
+          const frame = renderSubmission(world).frame;
 
-        views.forEach((row) => {
-          const entity = row.entity;
+          views.forEach((row) => {
+            const entity = row.entity;
 
-          if (
-            !requireViewField(world, entity, ViewSubmission, 'accepted') ||
-            requireViewField(world, entity, ViewSubmission, 'attempt') !== frame
-          )
-            return;
-          draws(
-            world,
-            requireViewField(world, entity, ViewDraws, 'state'),
-          ).dynamicGeometry.commit();
-        });
-      },
-    })
-    .unwrap();
-  world
-    .addSystem(RenderPrepare, {
-      commands: 'none',
-      name: VIEW_TERRAIN_CANDIDATE_SYSTEM,
-      after: [RENDER_VIEW_FRAME_SYSTEM],
-      queries: [{ read: [ViewRecorder, ViewFrame, ViewDraws] }],
-      fn: (world, [views]) => {
-        const frame = renderSubmission(world).frame;
-
-        views.forEach((row) => {
-          const entity = row.entity;
-
-          const staged = world
-            .resolveUniqueRef<ViewFrameState>(requireViewField(world, entity, ViewFrame, 'state'))
-            .unwrap();
-          // A held view records nothing; a failed frame is its recording's recovery.
-          if (staged.frame !== frame || staged.result?.ok !== true || staged.mode === false) return;
-          draws(world, requireViewField(world, entity, ViewDraws, 'state')).stageTerrainCandidate(
-            frame,
-            captureTerrain(
+            if (
+              !requireViewField(world, entity, ViewSubmission, 'accepted') ||
+              requireViewField(world, entity, ViewSubmission, 'attempt') !== frame
+            )
+              return;
+            draws(
               world,
-              staged,
-              ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state')),
-            ),
-          );
-        });
-      },
-    })
+              requireViewField(world, entity, ViewDraws, 'state'),
+            ).dynamicGeometry.commit();
+            draws(world, requireViewField(world, entity, ViewDraws, 'state')).commitWaterBakedDraws(
+              frame,
+            );
+            draws(world, requireViewField(world, entity, ViewDraws, 'state')).commitMaterialDraws(
+              frame,
+            );
+          });
+        },
+      }),
+    )
     .unwrap();
   world
-    .addSystem(RenderCommit, {
-      commands: 'none',
-      name: TERRAIN_COMMIT_SYSTEM,
-      queries: [{ read: [ViewSubmission, ViewDraws] }],
-      after: [RENDER_RECORD_COMMIT_SYSTEM],
-      fn: (world, [views]) => {
-        const frame = renderSubmission(world).frame;
+    .addSystem(
+      RenderPrepare,
+      defineSystem({
+        sets: [ViewTerrainCandidateOrder],
+        commands: 'none',
+        name: VIEW_TERRAIN_CANDIDATE_SYSTEM,
+        after: [RenderViewFrameOrder],
+        queries: [{ read: [ViewRecorder, ViewFrame, ViewDraws] }],
+        fn: (world, [views]) => {
+          const frame = renderSubmission(world).frame;
 
-        views.forEach((row) => {
-          const entity = row.entity;
+          views.forEach((row) => {
+            const entity = row.entity;
 
-          if (!viewAccepted(world, entity)) return;
-          draws(world, requireViewField(world, entity, ViewDraws, 'state')).commitTerrain(frame);
-        });
-      },
-    })
+            const staged = world
+              .resolveUniqueRef<ViewFrameState>(requireViewField(world, entity, ViewFrame, 'state'))
+              .unwrap();
+            // A held view records nothing; a failed frame is its recording's recovery.
+            if (staged.frame !== frame || staged.result?.ok !== true || staged.mode === false)
+              return;
+            draws(world, requireViewField(world, entity, ViewDraws, 'state')).stageTerrainCandidate(
+              frame,
+              captureTerrain(world, staged),
+            );
+          });
+        },
+      }),
+    )
     .unwrap();
   world
-    .addSystem(RenderCleanup, {
-      commands: 'none',
-      name: TERRAIN_DISCARD_SYSTEM,
-      queries: [{ read: [ViewSubmission, ViewDraws] }],
-      fn: (world, [views]) => {
-        const frame = renderSubmission(world).frame;
+    .addSystem(
+      RenderCommit,
+      defineSystem({
+        sets: [TerrainReceiptCommitOrder],
+        commands: 'none',
+        name: TERRAIN_COMMIT_SYSTEM,
+        queries: [{ read: [ViewSubmission, ViewDraws] }],
+        after: [RenderRecordCommitOrder],
+        fn: (world, [views]) => {
+          const frame = renderSubmission(world).frame;
 
-        views.forEach((row) => {
-          const entity = row.entity;
+          views.forEach((row) => {
+            const entity = row.entity;
 
-          if (
-            requireViewField(world, entity, ViewSubmission, 'accepted') ||
-            requireViewField(world, entity, ViewSubmission, 'attempt') !== frame
-          )
-            return;
-          draws(world, requireViewField(world, entity, ViewDraws, 'state')).discardTerrain();
-        });
-      },
-    })
+            if (!viewAccepted(world, entity)) return;
+            draws(world, requireViewField(world, entity, ViewDraws, 'state')).commitTerrain(frame);
+          });
+        },
+      }),
+    )
     .unwrap();
   world
-    .addSystem(RenderCleanup, {
-      commands: 'none',
-      name: DYNAMIC_GEOMETRY_RESET_SYSTEM,
-      queries: [{ read: [ViewSubmission, ViewDraws] }],
-      fn: (world, [views]) => {
-        const frame = renderSubmission(world).frame;
+    .addSystem(
+      RenderCleanup,
+      defineSystem({
+        sets: [TerrainReceiptDiscardOrder],
+        commands: 'none',
+        name: TERRAIN_DISCARD_SYSTEM,
+        queries: [{ read: [ViewSubmission, ViewDraws] }],
+        fn: (world, [views]) => {
+          const frame = renderSubmission(world).frame;
 
-        views.forEach((row) => {
-          const entity = row.entity;
+          views.forEach((row) => {
+            const entity = row.entity;
 
-          if (
-            requireViewField(world, entity, ViewSubmission, 'accepted') ||
-            requireViewField(world, entity, ViewSubmission, 'attempt') !== frame
-          )
-            return;
-          draws(world, requireViewField(world, entity, ViewDraws, 'state')).dynamicGeometry.clear();
-        });
-      },
-    })
+            if (
+              requireViewField(world, entity, ViewSubmission, 'accepted') ||
+              requireViewField(world, entity, ViewSubmission, 'attempt') !== frame
+            )
+              return;
+            draws(world, requireViewField(world, entity, ViewDraws, 'state')).discardTerrain();
+          });
+        },
+      }),
+    )
+    .unwrap();
+  world
+    .addSystem(
+      RenderCleanup,
+      defineSystem({
+        sets: [DynamicGeometryResetOrder],
+        commands: 'none',
+        name: DYNAMIC_GEOMETRY_RESET_SYSTEM,
+        queries: [{ read: [ViewSubmission, ViewDraws] }],
+        fn: (world, [views]) => {
+          const frame = renderSubmission(world).frame;
+
+          views.forEach((row) => {
+            const entity = row.entity;
+
+            if (
+              requireViewField(world, entity, ViewSubmission, 'accepted') ||
+              requireViewField(world, entity, ViewSubmission, 'attempt') !== frame
+            )
+              return;
+            draws(
+              world,
+              requireViewField(world, entity, ViewDraws, 'state'),
+            ).dynamicGeometry.clear();
+            draws(
+              world,
+              requireViewField(world, entity, ViewDraws, 'state'),
+            ).discardWaterBakedDraws();
+            draws(
+              world,
+              requireViewField(world, entity, ViewDraws, 'state'),
+            ).discardMaterialDraws();
+          });
+        },
+      }),
+    )
     .unwrap();
 }
 

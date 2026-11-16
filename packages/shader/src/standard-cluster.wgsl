@@ -43,17 +43,19 @@ struct ClusterUniform {
   // No-storage Cluster texture addressing: slot texels, grid word offset,
   // index-list word offset, and physical texture width.
   texture      : vec4<u32>,
-  // Producer-owned Cluster grid offset/count pair stride in u32 words.
+  // x/y: producer-owned grid offset/count pair stride and count-word offset
+  // (u32 words); z: screen-data base word; w: additional DirectionalLights in
+  // slots [grid.w, grid.w + w), shaded outside the grid.
   cluster_layout : vec4<u32>,
 };
 
 #ifdef STORAGE_BUFFER_AVAILABLE
-@group(2) @binding(3) var<storage, read> light_data      : array<DirectLightSlot, 256>;
+@group(2) @binding(3) var<storage, read> light_data      : array<DirectLightSlot, 1024>;
 @group(2) @binding(4) var<storage, read> cluster_grid     : array<u32>;
 @group(2) @binding(5) var<storage, read> light_index_list : array<u32>;
 #else
 // The CPU membership producer packs the same bytes into one rgba32uint texture:
-// 256 light records, then grid offset/count pairs, then the complete index list.
+// 1024 light records, then grid offset/count pairs, then the complete index list.
 #import forgeax_standard::cluster_texture_data::{cluster_data_texture, load_cluster_texel}
 
 fn load_cluster_word(word: u32) -> u32 {
@@ -445,7 +447,15 @@ fn evaluateStandardClusterLights(
   directDfgLut: texture_2d<f32>, directDfgSampler: sampler,
 #endif
 ) -> vec3<f32> {
-  if (cluster_uniform.grid.w == 0u) {
+  // Binned point/spot/rect lights occupy slots [0, N); additional
+  // DirectionalLights follow in [N, N + D) and are looped outside the grid.
+  let binned_count = cluster_uniform.grid.w;
+#ifdef LEAN_LIGHTING
+  let directional_count = 0u;
+#else
+  let directional_count = cluster_uniform.cluster_layout.w;
+#endif
+  if (binned_count == 0u && directional_count == 0u) {
     return vec3<f32>(0.0);
   }
   let gx = cluster_uniform.grid.x;
@@ -474,15 +484,17 @@ fn evaluateStandardClusterLights(
   let grid_offset = cluster_linear * cluster_uniform.cluster_layout.x;
 #ifdef STORAGE_BUFFER_AVAILABLE
   let list_offset = cluster_grid[grid_offset];
-  let list_count = cluster_grid[grid_offset + cluster_uniform.cluster_layout.y];
+  let list_count = select(
+    0u, cluster_grid[grid_offset + cluster_uniform.cluster_layout.y], binned_count != 0u,
+  );
 #else
   let list_offset = load_cluster_word(cluster_uniform.texture.y + grid_offset);
-  let list_count = load_cluster_word(
+  let list_count = select(0u, load_cluster_word(
     cluster_uniform.texture.y + grid_offset + cluster_uniform.cluster_layout.y,
-  );
+  ), binned_count != 0u);
   let list_word_offset = cluster_uniform.texture.z;
 #endif
-  if (list_count == 0u) {
+  if (list_count == 0u && directional_count == 0u) {
     return total_radiance;
   }
   // Per-pixel view terms of the direct multi-scatter lobe (nDotV, the view
@@ -510,6 +522,25 @@ fn evaluateStandardClusterLights(
 #endif
     );
   }
+#ifndef LEAN_LIGHTING
+  for (var d = 0u; d < directional_count; d = d + 1u) {
+#ifdef STORAGE_BUFFER_AVAILABLE
+    let light = light_data[binned_count + d];
+#else
+    let light = load_cluster_light(binned_count + d);
+#endif
+    if (!lightingChannelsMatch(light.channels.x, receiver_channels)) { continue; }
+    total_radiance += evaluate_cluster_light(
+      light, world_pos, normal, view_dir, base_color, metallic, alpha_sq, f0,
+      transmission, flat_2d, receive_shadows,
+      pixel, ms,
+    useDirectDfgLut,
+#ifdef DIRECT_DFG_LUT_AVAILABLE
+    directDfgLut, directDfgSampler,
+#endif
+    );
+  }
+#endif
   return total_radiance;
 }
 

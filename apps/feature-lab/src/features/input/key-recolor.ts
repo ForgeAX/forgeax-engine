@@ -1,7 +1,7 @@
 import { AssetRegistry } from '@forgeax/engine/assets-runtime';
-import { Update } from '@forgeax/engine/ecs';
+import { defineSystem, Update } from '@forgeax/engine/ecs';
 import { createPrimitiveMesh } from '@forgeax/engine/geometry';
-import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine/input';
+import { INPUT_SNAPSHOT_RESOURCE_KEY } from '@forgeax/engine/input';
 import { MeshRenderer } from '@forgeax/engine/render';
 import { CheckList, defineFeature } from '../../lab/feature';
 import { spawnMesh, spawnStage, standard } from '../../lab/stage';
@@ -26,13 +26,14 @@ export default defineFeature({
     const cube = spawnMesh(world, stageCube, red, { pos: [0, 0.8, 0], scale: [1.6, 1.6, 1.6] });
     let held = false;
     let shown = false;
-    world.addSystem(Update, {
+    const systemToken1 = defineSystem({
       name: 'fl-key-recolor',
       queries: [],
       fn: (world) => {
-        held = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY).keyboard.down('k');
+        held = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY).keyboard.down('k');
       },
     });
+    world.addSystem(Update, systemToken1);
     app.renderer.subscribe((event) => {
       if (event.kind !== 'frame-submitted' || held === shown) return;
       shown = held;

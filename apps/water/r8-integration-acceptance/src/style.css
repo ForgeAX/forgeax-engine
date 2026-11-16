@@ -1,0 +1,365 @@
+@import url("https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600&display=swap");
+:root {
+  font-family: "Noto Sans SC", system-ui, sans-serif;
+  color: #e9f0ef;
+  background: #183a40;
+  font-size: 12px;
+  color-scheme: dark;
+  font-synthesis: none;
+  letter-spacing: 0;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  overflow: hidden;
+}
+button,
+input,
+select {
+  font: inherit;
+}
+button {
+  cursor: pointer;
+}
+#scene {
+  display: block;
+  width: 100vw;
+  height: 100dvh;
+  outline: none;
+  touch-action: none;
+}
+.identity {
+  position: fixed;
+  left: 28px;
+  top: 27px;
+  display: flex;
+  align-items: baseline;
+  gap: 15px;
+  pointer-events: none;
+  text-shadow: 0 1px 8px #10282b66;
+}
+.brand {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+h1 {
+  font-size: 25px;
+  font-weight: 500;
+  margin: 0;
+}
+.edition {
+  font-size: 12px;
+  color: #edf5f2bb;
+}
+.telemetry {
+  position: fixed;
+  bottom: 21px;
+  left: 28px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 11px;
+  text-shadow: 0 1px 4px #000;
+}
+.telemetry i {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #a6ddd0;
+}
+#controls-panel {
+  position: fixed;
+  top: 22px;
+  right: 22px;
+  width: 284px;
+  max-height: calc(100dvh - 44px);
+  overflow-y: auto;
+  background: #142024ed;
+  border: 1px solid #ffffff19;
+  border-radius: 6px;
+  box-shadow: 0 5px 24px #0002;
+  scrollbar-width: thin;
+  backdrop-filter: blur(12px);
+}
+#controls-panel[hidden] {
+  display: none;
+}
+.panel-head {
+  padding: 15px 15px 13px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid #ffffff16;
+}
+.panel-head strong {
+  font-size: 13px;
+  font-weight: 500;
+}
+.panel-head span {
+  font-size: 10px;
+  color: #83cdbb;
+}
+section {
+  padding: 13px 15px 14px;
+  border-bottom: 1px solid #ffffff14;
+}
+h2 {
+  font-size: 10px;
+  font-weight: 500;
+  color: #8fa4a8;
+  margin: 0 0 11px;
+}
+label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 31px;
+  color: #b5c5c6;
+}
+label select {
+  margin-left: auto;
+  max-width: 178px;
+  width: 164px;
+}
+select {
+  background: #ffffff09;
+  border: 1px solid #ffffff13;
+  border-radius: 3px;
+  color: #e4eceb;
+  padding: 5px 7px;
+  min-width: 0;
+}
+option {
+  background: #1c2c30;
+}
+input[type="range"] {
+  width: 112px;
+  margin-left: auto;
+  accent-color: #76cdb6;
+}
+input[type="color"] {
+  width: 31px;
+  height: 21px;
+  padding: 0;
+  border: 0;
+  border-radius: 2px;
+  margin-left: auto;
+  background: none;
+}
+output {
+  margin-left: auto;
+  font-size: 10px;
+  color: #d5e2e0;
+}
+button {
+  background: #ffffff07;
+  color: #c9d7d7;
+  border: 1px solid #ffffff16;
+  border-radius: 3px;
+  padding: 6px 9px;
+  min-height: 29px;
+  transition:
+    background 0.15s,
+    border 0.15s;
+}
+button:hover {
+  background: #ffffff12;
+  border-color: #ffffff35;
+}
+button:disabled {
+  opacity: 0.4;
+  cursor: wait;
+}
+.segmented {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 0 0 10px;
+  gap: 0;
+}
+.segmented button {
+  border-radius: 0;
+  font-size: 11px;
+  padding: 6px 3px;
+  border-right: 0;
+}
+.segmented button:first-child {
+  border-radius: 3px 0 0 3px;
+}
+.segmented button:last-child {
+  border-right: 1px solid #ffffff16;
+  border-radius: 0 3px 3px 0;
+}
+.segmented button[aria-pressed="true"] {
+  background: #78c4ad25;
+  color: #a2e9d0;
+  border-color: #7ec9b04d;
+}
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 7px;
+}
+.row button {
+  font-size: 11px;
+}
+.toggle {
+  justify-content: flex-start;
+  min-height: 28px;
+  gap: 7px;
+  font-size: 11px;
+}
+.toggle input {
+  accent-color: #7acdb5;
+  margin: 0;
+}
+.facts {
+  margin-top: 10px;
+}
+.facts > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  line-height: 24px;
+  font-size: 10px;
+}
+.facts span {
+  color: #81999e;
+}
+.facts b {
+  font-weight: 400;
+  color: #a1d4c4;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+.status-line {
+  font-size: 10px;
+  color: #879fa4;
+  margin: 7px 0 0;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+details {
+  padding: 0 15px;
+  border-bottom: 1px solid #ffffff14;
+}
+summary {
+  font-size: 11px;
+  color: #b3c8ca;
+  cursor: pointer;
+  padding: 12px 0;
+  list-style-position: outside;
+  margin-left: 9px;
+}
+.fault-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px;
+  padding-bottom: 14px;
+}
+.fault-grid button {
+  font-size: 10px;
+  padding: 6px 3px;
+  white-space: normal;
+}
+pre {
+  font:
+    10px / 1.6 ui-monospace,
+    monospace;
+  max-height: 230px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: #8faaa9;
+}
+.panel-footer {
+  padding: 11px 15px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.panel-footer button {
+  font-size: 10px;
+}
+.panel-footer span {
+  margin-left: auto;
+  color: #738f94;
+  font-size: 9px;
+}
+.icon-button {
+  width: 31px;
+  height: 31px;
+  padding: 0;
+  font-size: 15px;
+}
+.panel-toggle {
+  position: fixed;
+  right: 319px;
+  top: 22px;
+  background: #142024df;
+  border-radius: 4px;
+}
+body.panel-closed .panel-toggle {
+  right: 22px;
+}
+#message {
+  position: fixed;
+  bottom: 23px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: calc(100vw - 40px);
+  padding: 10px 16px;
+  background: #142024ef;
+  border: 1px solid #c3a65d66;
+  border-radius: 4px;
+  color: #e6dca7;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 700px) {
+  .identity {
+    left: 18px;
+    top: 19px;
+    gap: 10px;
+  }
+  .edition {
+    display: none;
+  }
+  h1 {
+    font-size: 21px;
+  }
+  #controls-panel {
+    top: 66px;
+    right: 12px;
+    width: 258px;
+    max-height: calc(100dvh - 126px);
+  }
+  .panel-toggle {
+    right: 12px;
+    top: 18px;
+  }
+  .telemetry {
+    bottom: 19px;
+    left: 18px;
+    max-width: calc(100vw - 36px);
+  }
+  .panel-head {
+    padding: 12px 14px;
+  }
+  section {
+    padding: 11px 14px;
+  }
+  label select {
+    width: 151px;
+    max-width: 151px;
+  }
+  #message {
+    bottom: 49px;
+  }
+  body:not(.panel-closed) .identity {
+    max-width: calc(100vw - 60px);
+  }
+}

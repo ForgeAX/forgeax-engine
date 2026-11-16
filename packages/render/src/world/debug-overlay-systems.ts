@@ -1,6 +1,13 @@
-import { defineComponent, type EntityHandle, type World } from '@forgeax/engine-ecs';
+import {
+  defineComponent,
+  defineResource,
+  defineSystem,
+  type EntityHandle,
+  type World,
+} from '@forgeax/engine-ecs';
 import type { Mat4 } from '@forgeax/engine-math';
 import type { BindGroup, RhiRenderPassEncoder, TextureFormat } from '@forgeax/engine-rhi';
+import type { DeviceScope } from '../device/device-scope';
 import { DebugOverlayFailedError } from '../errors/render';
 import type { GpuBuffer } from '../gpu-resource';
 import type { RenderSystemInternals } from '../record/render-context';
@@ -10,18 +17,23 @@ import type {
   DebugOverlayOutcome,
   RenderDebugOverlay,
 } from '../render-contract';
+import {
+  RenderDebugOverlayDiscardOrder,
+  RenderDebugOverlayPrepareOrder,
+  RenderViewFrameOrder,
+} from '../system-order';
 import { type DebugOverlayHost, DebugOverlayResidency } from './debug-overlay-residency';
 import { ViewRecorder, ViewSubmission } from './render-views';
 import { RenderCleanup, RenderPrepare, renderSubmission } from './render-world';
 import { readViewField, requireViewField } from './view-field';
-import { RENDER_VIEW_FRAME_SYSTEM, ViewFrame, type ViewFrameState } from './view-frame-systems';
+import { ViewFrame, type ViewFrameState } from './view-frame-systems';
 import { recordContext } from './view-record-context';
 import { ownerOf } from './view-settlement';
 
 export const RENDER_DEBUG_OVERLAY_PREPARE_SYSTEM = 'render-debug-overlay-prepare';
 export const RENDER_DEBUG_OVERLAY_DISCARD_SYSTEM = 'render-debug-overlay-discard';
 
-export const DebugOverlayHolder = Object.freeze({ name: 'DebugOverlayHolder' });
+export const DebugOverlayHolder = defineResource<DebugOverlayHolderState>('DebugOverlayHolder');
 
 /** The Renderer's overlay state: its GPU residency and latest frame outcome. The source is `internals.debugOverlay`. */
 export interface DebugOverlayHolderState {
@@ -36,7 +48,9 @@ export interface DebugOverlayHolderState {
 interface ViewDebugOverlayState {
   frame: number;
   outcome: DebugOverlayOutcome;
-  binding: { readonly uniform: GpuBuffer; readonly bindGroup: BindGroup } | undefined;
+  binding:
+    | { readonly scope: DeviceScope; readonly uniform: GpuBuffer; readonly bindGroup: BindGroup }
+    | undefined;
 }
 
 /** A recording view's prepared overlay outcome; written only by `render-debug-overlay-prepare`. */
@@ -55,7 +69,7 @@ export function debugOverlayHolderOf(
 function hostOf(internals: RenderSystemInternals): DebugOverlayHost {
   return {
     device: internals.device,
-    scope: recordContext(internals).deviceScope,
+    scope: internals.deviceScope,
     shaderModules: internals.immediateShaderModuleFactory ?? internals.shaderModuleFactory,
   };
 }
@@ -147,110 +161,126 @@ export function registerDebugOverlaySystems(world: World): void {
   };
   world.insertResource(DebugOverlayHolder, holder);
   world
-    .addSystem(RenderPrepare, {
-      commands: 'none',
-      name: RENDER_DEBUG_OVERLAY_PREPARE_SYSTEM,
-      after: [RENDER_VIEW_FRAME_SYSTEM],
-      queries: [{ read: [ViewRecorder, ViewFrame], optional: [ViewDebugOverlay] }],
-      fn: (world, [rows]) => {
-        const frame = renderSubmission(world).frame;
-        holder.failing.clear();
-        const staged: {
-          entity: EntityHandle;
-          internals: RenderSystemInternals;
-          existing: ViewDebugOverlayState | undefined;
-        }[] = [];
+    .addSystem(
+      RenderPrepare,
+      defineSystem({
+        sets: [RenderDebugOverlayPrepareOrder],
+        commands: 'none',
+        name: RENDER_DEBUG_OVERLAY_PREPARE_SYSTEM,
+        after: [RenderViewFrameOrder],
+        queries: [{ read: [ViewRecorder, ViewFrame], optional: [ViewDebugOverlay] }],
+        fn: (world, [rows]) => {
+          const frame = renderSubmission(world).frame;
+          holder.failing.clear();
+          const staged: {
+            entity: EntityHandle;
+            internals: RenderSystemInternals;
+            existing: ViewDebugOverlayState | undefined;
+          }[] = [];
 
-        rows.forEach((row) => {
-          const entity = row.entity;
+          rows.forEach((row) => {
+            const entity = row.entity;
 
-          const view = world
-            .resolveUniqueRef<ViewFrameState>(requireViewField(world, entity, ViewFrame, 'state'))
-            .unwrap();
-          if (view.frame !== frame || view.result?.ok !== true || view.mode !== true) return;
-          staged.push({
-            entity: entity,
-            internals: ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state'))
-              .internals,
-            existing: viewStateOf(world, entity),
+            const view = world
+              .resolveUniqueRef<ViewFrameState>(requireViewField(world, entity, ViewFrame, 'state'))
+              .unwrap();
+            if (view.frame !== frame || view.result?.ok !== true || view.mode !== true) return;
+            staged.push({
+              entity: entity,
+              internals: ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state'))
+                .internals,
+              existing: viewStateOf(world, entity),
+            });
           });
-        });
-        const outcome = prepareFrame(holder, staged[0]?.internals, frame);
-        if (
-          staged.length > 0 &&
-          (staged[0]?.internals.debugOverlay !== undefined || holder.outcome !== undefined)
-        )
-          holder.outcome = outcome;
-        const first: { entity: EntityHandle; state: ViewDebugOverlayState }[] = [];
-        for (const { entity, internals, existing } of staged) {
-          let viewOutcome = outcome;
-          let binding: ViewDebugOverlayState['binding'];
-          if (outcome.kind === 'staged') {
-            binding = existing?.binding;
-            if (binding === undefined) {
-              const created = holder.residency.viewBinding(
-                hostOf(internals),
-                internals.debugOverlay?.shader as NonNullable<
-                  typeof internals.debugOverlay
-                >['shader'],
-                recordContext(internals).deviceScope,
-              );
-              if (created.ok) binding = created.value;
-              else
-                viewOutcome = { kind: 'failed', frame, code: created.code, cause: created.cause };
+          const outcome = prepareFrame(holder, staged[0]?.internals, frame);
+          if (
+            staged.length > 0 &&
+            (staged[0]?.internals.debugOverlay !== undefined || holder.outcome !== undefined)
+          )
+            holder.outcome = outcome;
+          const first: { entity: EntityHandle; state: ViewDebugOverlayState }[] = [];
+          for (const { entity, internals, existing } of staged) {
+            let viewOutcome = outcome;
+            const state: ViewDebugOverlayState = existing ?? { frame, outcome, binding: undefined };
+            const scope = recordContext(internals).deviceScope;
+            let binding = state.binding;
+            if (
+              binding?.scope !== scope ||
+              !scope.isAlive() ||
+              binding.uniform.device !== internals.device
+            )
+              binding = undefined;
+            if (outcome.kind === 'staged') {
+              if (binding === undefined) {
+                const created = holder.residency.viewBinding(
+                  hostOf(internals),
+                  internals.debugOverlay?.shader as NonNullable<
+                    typeof internals.debugOverlay
+                  >['shader'],
+                  scope,
+                );
+                if (created.ok) {
+                  binding = { ...created.value, scope };
+                  scope._adopt('listener', binding, (owned) => {
+                    if (state.binding === owned) state.binding = undefined;
+                  });
+                } else
+                  viewOutcome = { kind: 'failed', frame, code: created.code, cause: created.cause };
+              }
             }
+            if (viewOutcome.kind === 'failed')
+              reportFailure(holder, internals, viewOutcome.code, viewOutcome.cause);
+            state.frame = frame;
+            state.outcome = viewOutcome;
+            state.binding = binding;
+            if (existing === undefined) first.push({ entity, state });
           }
-          if (viewOutcome.kind === 'failed')
-            reportFailure(holder, internals, viewOutcome.code, viewOutcome.cause);
-          if (existing === undefined) {
-            first.push({ entity, state: { frame, outcome: viewOutcome, binding } });
-            continue;
-          }
-          existing.frame = frame;
-          existing.outcome = viewOutcome;
-          existing.binding = binding;
-        }
-        for (const { entity, state } of first)
-          world
-            .addComponent(entity, {
-              component: ViewDebugOverlay,
-              data: { state: world.allocUniqueRef('ViewDebugOverlay', state) },
-            })
-            .unwrap();
-        // A failure code stops being reported only after a frame without it.
-        for (const code of [...holder.reported])
-          if (!holder.failing.has(code)) holder.reported.delete(code);
-      },
-    })
+          for (const { entity, state } of first)
+            world
+              .addComponent(entity, {
+                component: ViewDebugOverlay,
+                data: { state: world.allocUniqueRef('ViewDebugOverlay', state) },
+              })
+              .unwrap();
+          // A failure code stops being reported only after a frame without it.
+          for (const code of [...holder.reported])
+            if (!holder.failing.has(code)) holder.reported.delete(code);
+        },
+      }),
+    )
     .unwrap();
   world
-    .addSystem(RenderCleanup, {
-      commands: 'none',
-      name: RENDER_DEBUG_OVERLAY_DISCARD_SYSTEM,
-      queries: [{ read: [ViewDebugOverlay], optional: [ViewSubmission] }],
-      fn: (world, [views]) => {
-        const frame = renderSubmission(world).frame;
+    .addSystem(
+      RenderCleanup,
+      defineSystem({
+        sets: [RenderDebugOverlayDiscardOrder],
+        commands: 'none',
+        name: RENDER_DEBUG_OVERLAY_DISCARD_SYSTEM,
+        queries: [{ read: [ViewDebugOverlay], optional: [ViewSubmission] }],
+        fn: (world, [views]) => {
+          const frame = renderSubmission(world).frame;
 
-        views.forEach((row) => {
-          const entity = row.entity;
+          views.forEach((row) => {
+            const entity = row.entity;
 
-          if (
-            readViewField(world, entity, ViewSubmission, 'accepted') === true &&
-            requireViewField(world, entity, ViewSubmission, 'attempt') === frame
-          )
-            return;
-          // A view that did not draw this frame leaves no staged outcome behind.
-          const state = world
-            .resolveUniqueRef<ViewDebugOverlayState>(
-              requireViewField(world, entity, ViewDebugOverlay, 'state'),
+            if (
+              readViewField(world, entity, ViewSubmission, 'accepted') === true &&
+              requireViewField(world, entity, ViewSubmission, 'attempt') === frame
             )
-            .unwrap();
-          if (state.outcome.kind === 'staged') state.outcome = { kind: 'none', frame };
-        });
-        if (!renderSubmission(world).accepted && holder.outcome?.kind === 'staged')
-          holder.outcome = { kind: 'none', frame };
-      },
-    })
+              return;
+            // A view that did not draw this frame leaves no staged outcome behind.
+            const state = world
+              .resolveUniqueRef<ViewDebugOverlayState>(
+                requireViewField(world, entity, ViewDebugOverlay, 'state'),
+              )
+              .unwrap();
+            if (state.outcome.kind === 'staged') state.outcome = { kind: 'none', frame };
+          });
+          if (!renderSubmission(world).accepted && holder.outcome?.kind === 'staged')
+            holder.outcome = { kind: 'none', frame };
+        },
+      }),
+    )
     .unwrap();
 }
 
@@ -307,8 +337,6 @@ export function encodeDebugOverlay(
     state.binding.uniform.handle,
     0,
     new Float32Array(viewProj),
-    0,
-    64,
   );
   if (!written.ok) {
     skip('overlay-upload-failed', written.error);

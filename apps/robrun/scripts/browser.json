@@ -1,0 +1,12 @@
+{
+  "browser": {
+    "browserName": "chromium",
+    "launchOptions": {
+      "channel": "chrome",
+      "headless": false,
+      "chromiumSandbox": true,
+      "args": ["--disable-features=MacAppCodeSignClone"]
+    },
+    "contextOptions": { "viewport": { "width": 1440, "height": 900 }, "deviceScaleFactor": 1 }
+  }
+}

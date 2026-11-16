@@ -1017,6 +1017,7 @@ describe('doctorCommand', () => {
   it.each([
     'workspace:*',
     'file:../../engine',
+    'link:../../engine',
   ])('still requires an explicit Engine binding for %s', async (specifier) => {
     const { sdk } = await localDoctorFixture();
     await rm(resolve(sdk.template, '.forgeax', 'engine-binding.json'));
@@ -1028,6 +1029,46 @@ describe('doctorCommand', () => {
     expect(await doctorCommand({ root: sdk.template })).toMatchObject({
       ok: false,
       error: { code: 'project-local-dependency', detail: { dependencies: ['@forgeax/engine'] } },
+    });
+  });
+
+  it.each([
+    false,
+    true,
+  ])('requires a binding for an Engine source link (override: %s)', async (override) => {
+    const sdk = await sdkFixture(false);
+    const source = resolve(await writeLocalEngine(sdk.root, '0.0.0'), 'packages/engine');
+    const name = '@forgeax/engine';
+    const specifier = `link:${source}`;
+    const overrides = override ? { overrides: { [name]: specifier } } : {};
+    const manifest = {
+      name: 'game',
+      version: '0.0.0',
+      dependencies: { [name]: override ? '0.4.18' : specifier },
+    };
+    await writeFile(resolve(sdk.template, 'package.json'), JSON.stringify(manifest));
+    await writeFile(
+      resolve(sdk.template, 'pnpm-workspace.yaml'),
+      JSON.stringify({ packages: [], ...overrides }),
+    );
+    await writeFile(
+      resolve(sdk.template, 'pnpm-lock.yaml'),
+      JSON.stringify({
+        lockfileVersion: '9.0',
+        ...overrides,
+        importers: {
+          '.': { dependencies: { [name]: { specifier, version: specifier } } },
+        },
+      }),
+    );
+    const installed = resolve(sdk.template, 'node_modules', name);
+    await mkdir(dirname(installed), { recursive: true });
+    await symlink(source, installed, 'junction');
+    await writeWorkspaceInstallState(sdk.template, [sdk.template], []);
+
+    expect(await doctorCommand({ root: sdk.template })).toMatchObject({
+      ok: false,
+      error: { code: 'project-local-dependency' },
     });
   });
 

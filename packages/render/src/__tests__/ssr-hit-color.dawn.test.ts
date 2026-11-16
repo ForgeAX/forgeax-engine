@@ -46,6 +46,10 @@ it.each([
       imports: {
         'forgeax_view::common': readFileSync(resolve('packages/shader/src/common.wgsl'), 'utf8'),
         'forgeax_pbr::gbuffer': gbufferSource,
+        forgeax_scene_temporal: readFileSync(
+          resolve('packages/shader/src/scene-temporal.wgsl'),
+          'utf8',
+        ),
         'forgeax_depth_pyramid::sample': readFileSync(
           resolve('packages/shader/src/depth-pyramid-sample.wgsl'),
           'utf8',

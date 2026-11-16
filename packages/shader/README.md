@@ -11,6 +11,20 @@ texture. Both preserve the same optical integration budget, distant illumination
 and surface transport. The explicit background-only option remains separate;
 runtime selects a published plan without compiling or rewriting shader source.
 See the [render contract](../render/README.md#atmosphere-and-aerial-perspective).
+The advanced Water material mapping distinguishes full shallow fields from
+residual-only fields. The latter contribute height, normals and foam while
+preserving the ordinary Terrain depth and Body flow. Frame-atlas sampling uses
+the producer's cell-center convention and clamps within each current/previous
+half before interpolation. See the [Water entry](../water/README.md#advanced-simulation-entry).
+Residual-only and shared contact foam are bounded surface coverage. Their
+opacity and scattering retain the authored foam texture and do not enter the
+legacy height power, boost or threshold. They compose with the ordinary foam
+response by maximum; contact capture does not mask an independent local-wave field.
+
+Display and cube rays retain atmospheric scattering up to a planet intersection.
+Ground reflection belongs to `atmosphere_multiple_scattering_texel`; the display
+background adds no Lambertian planet surface. Keep the default ground albedo
+independent of authored terrain materials and Skylight tint.
 
 ## Public shader input boundary
 
@@ -213,6 +227,11 @@ actual reflected binding contract. Receipt generation 4 separates this shape
 from the old redundant metadata and requires re-cooking consumers.
 
 ## LOD coverage ABI
+
+Rigid Standard keeps at most fifteen user varyings beside `front_facing`.
+Water alone carries coverage/grid coordinates and derives NDC from its
+interpolated world position; ordinary variants retain interpolated NDC.
+The final object-basis element shares world position's fourth lane.
 
 Scene-index vertex stages use `@builtin(instance_index)` only to address the
 bound visible-item buffer. It may include the indirect first-instance offset;
@@ -437,7 +456,7 @@ flag does not change shadow casting, bind-group layouts or material values.
 When storage buffers are unavailable, the same 96-byte light records, grid
 offset/count pairs and complete membership list use one `rgba32uint` texture at
 `@group(2) @binding(3)`. Its width is 1024 texels; four consecutive words form
-each texel, with the 256 light records preceding the grid and index list.
+each texel, with the 1024 light records preceding the grid and index list.
 `@group(2) @binding(6)` holds six `vec4` rows in the 96-byte Cluster uniform.
 When AO is active, a row-aligned visibility region
 is appended after the complete Cluster payload, with its base word, logical

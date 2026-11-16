@@ -1,33 +1,32 @@
 import { err, ok } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { defineComponent, defineSchedule, FixedUpdate, Update, World } from '../index';
+import { defineSystem } from '../schedule';
 
 describe('World frame memory lifetime', () => {
   it('preserves allocations across systems and fixed ticks, then reuses warm backing', () => {
     const world = new World();
     const views: Uint32Array[] = [];
-    world
-      .addSystem(FixedUpdate, {
-        name: 'fixed-scratch',
-        queries: [],
-        fn: (world) => {
-          const view = world.frameArena.alloc(Uint32Array, 16).unwrap();
-          view.fill(views.length + 1);
-          views.push(view);
-        },
-      })
-      .unwrap();
-    world
-      .addSystem(Update, {
-        name: 'check-scratch',
-        after: [FixedUpdate],
-        queries: [],
-        fn: (world) => {
-          for (let i = 0; i < views.length; i++) expect(views[i]?.[0]).toBe(i + 1);
-          expect(world.frameArena.alloc(Float64Array, 8).unwrap().byteOffset % 8).toBe(0);
-        },
-      })
-      .unwrap();
+    const systemToken1 = defineSystem({
+      name: 'fixed-scratch',
+      queries: [],
+      fn: (world) => {
+        const view = world.frameArena.alloc(Uint32Array, 16).unwrap();
+        view.fill(views.length + 1);
+        views.push(view);
+      },
+    });
+    world.addSystem(FixedUpdate, systemToken1).unwrap();
+    const systemToken2 = defineSystem({
+      name: 'check-scratch',
+      after: [FixedUpdate],
+      queries: [],
+      fn: (world) => {
+        for (let i = 0; i < views.length; i++) expect(views[i]?.[0]).toBe(i + 1);
+        expect(world.frameArena.alloc(Float64Array, 8).unwrap().byteOffset % 8).toBe(0);
+      },
+    });
+    world.addSystem(Update, systemToken2).unwrap();
     world.update(3 / 60).unwrap();
     expect(views).toHaveLength(3);
     expect(world.frameArena.isActive).toBe(false);
@@ -41,17 +40,16 @@ describe('World frame memory lifetime', () => {
     const Values = defineComponent('ArenaCommandValues', { values: 'array<u32>' });
     const world = new World();
     let frame = 0;
-    world
-      .addSystem(Update, {
-        name: 'spawn-from-arena',
-        queries: [],
-        fn: (world, _, commands) => {
-          const values = world.frameArena.alloc(Uint32Array, 2).unwrap();
-          values.fill(++frame);
-          commands.spawn({ component: Values, data: { values } });
-        },
-      })
-      .unwrap();
+    const systemToken3 = defineSystem({
+      name: 'spawn-from-arena',
+      queries: [],
+      fn: (world, _, commands) => {
+        const values = world.frameArena.alloc(Uint32Array, 2).unwrap();
+        values.fill(++frame);
+        commands.spawn({ component: Values, data: { values } });
+      },
+    });
+    world.addSystem(Update, systemToken3).unwrap();
     world.update().unwrap();
     world.update().unwrap();
     const values: number[][] = [];
@@ -67,26 +65,24 @@ describe('World frame memory lifetime', () => {
     const first = defineSchedule('ArenaFirst');
     const second = defineSchedule('ArenaSecond');
     let prior: Uint8Array;
-    world
-      .addSystem(first, {
-        name: 'first',
-        queries: [],
-        fn: (world) => {
-          prior = world.frameArena.alloc(Uint8Array, 50000).unwrap();
-          prior.fill(81);
-        },
-      })
-      .unwrap();
-    world
-      .addSystem(second, {
-        name: 'second',
-        queries: [],
-        fn: (world) => {
-          world.frameArena.alloc(Float64Array, 20000).unwrap().fill(3);
-          expect(prior[49999]).toBe(81);
-        },
-      })
-      .unwrap();
+    const systemToken4 = defineSystem({
+      name: 'first',
+      queries: [],
+      fn: (world) => {
+        prior = world.frameArena.alloc(Uint8Array, 50000).unwrap();
+        prior.fill(81);
+      },
+    });
+    world.addSystem(first, systemToken4).unwrap();
+    const systemToken5 = defineSystem({
+      name: 'second',
+      queries: [],
+      fn: (world) => {
+        world.frameArena.alloc(Float64Array, 20000).unwrap().fill(3);
+        expect(prior[49999]).toBe(81);
+      },
+    });
+    world.addSystem(second, systemToken5).unwrap();
     world
       .withFrameArena(() => {
         world.run(first).unwrap();
@@ -98,34 +94,32 @@ describe('World frame memory lifetime', () => {
   });
   it('closes on a system exception and preserves World poisoning', () => {
     const world = new World();
-    world
-      .addSystem(Update, {
-        name: 'fail',
-        queries: [],
-        fn: (world) => {
-          world.frameArena.alloc(Uint8Array, 4).unwrap();
-          throw new Error('failure');
-        },
-      })
-      .unwrap();
+    const systemToken6 = defineSystem({
+      name: 'fail',
+      queries: [],
+      fn: (world) => {
+        world.frameArena.alloc(Uint8Array, 4).unwrap();
+        throw new Error('failure');
+      },
+    });
+    world.addSystem(Update, systemToken6).unwrap();
     expect(world.update().ok).toBe(false);
     expect(world.memoryStats().arena.active).toBe(false);
     expect(world.execution.health).toBe('poisoned');
   });
   it('rejects reentrant simulation update without resetting active scratch', () => {
     const world = new World();
-    world
-      .addSystem(Update, {
-        name: 'nested',
-        queries: [],
-        fn: (world) => {
-          const bytes = world.frameArena.alloc(Uint8Array, 1).unwrap();
-          bytes[0] = 7;
-          expect(world.update().ok).toBe(false);
-          expect(bytes[0]).toBe(7);
-        },
-      })
-      .unwrap();
+    const systemToken7 = defineSystem({
+      name: 'nested',
+      queries: [],
+      fn: (world) => {
+        const bytes = world.frameArena.alloc(Uint8Array, 1).unwrap();
+        bytes[0] = 7;
+        expect(world.update().ok).toBe(false);
+        expect(bytes[0]).toBe(7);
+      },
+    });
+    world.addSystem(Update, systemToken7).unwrap();
     world.update().unwrap();
   });
   it('checks budgets and integer layout before changing arena usage', () => {
@@ -230,24 +224,23 @@ describe('World frame memory lifetime', () => {
     });
     const completions: Promise<void>[] = [];
     let invocations = 0;
-    world
-      .addSystem(Update, {
-        name: 'suspended-scratch-reader',
-        queries: [],
-        fn: (world, _queries, commands) => {
-          invocations++;
-          commands.spawn({ component: Marker, data: {} });
-          const bytes = world.frameArena.alloc(Uint8Array, 8).unwrap();
-          bytes.fill(43);
-          const completion = suspended.then(() => {
-            expect(bytes[0]).toBe(43);
-            expect(world.frameArena.alloc(Uint8Array, 1).ok).toBe(false);
-          });
-          completions.push(completion);
-          return completion;
-        },
-      })
-      .unwrap();
+    const systemToken8 = defineSystem({
+      name: 'suspended-scratch-reader',
+      queries: [],
+      fn: (world, _queries, commands) => {
+        invocations++;
+        commands.spawn({ component: Marker, data: {} });
+        const bytes = world.frameArena.alloc(Uint8Array, 8).unwrap();
+        bytes.fill(43);
+        const completion = suspended.then(() => {
+          expect(bytes[0]).toBe(43);
+          expect(world.frameArena.alloc(Uint8Array, 1).ok).toBe(false);
+        });
+        completions.push(completion);
+        return completion;
+      },
+    });
+    world.addSystem(Update, systemToken8).unwrap();
     const first = world.update();
     const following = world.update();
     resume();
@@ -270,7 +263,8 @@ describe('World frame memory lifetime', () => {
       world.frameArena.alloc(Uint8Array, 1).unwrap();
       yield;
     }
-    world.addSystem(Update, { name: 'generator', queries: [], fn: suspended }).unwrap();
+    const systemToken9 = defineSystem({ name: 'generator', queries: [], fn: suspended });
+    world.addSystem(Update, systemToken9).unwrap();
     expect(world.update().ok).toBe(false);
     expect(world.execution.health).toBe('poisoned');
     expect(world.memoryStats().arena.backingAllocations).toBe(0);

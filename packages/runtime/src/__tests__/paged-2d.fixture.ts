@@ -224,11 +224,7 @@ export async function verifyPaged2d(
       world.update(1 / 60).unwrap();
       const capture = frame % 20 === 19 || frame === 20 ? recorder.captureFrame() : undefined;
       if (capture) (await recorder.frameBoundary()).unwrap();
-      const receipt = await drawReadyFrame(
-        renderer,
-        { leases: [lease], camera: { lease }, environment: { lease } },
-        ['linear-hdr'],
-      );
+      const receipt = await drawReadyFrame(renderer, { source: lease }, ['linear-hdr']);
       if (capture) (await recorder.frameBoundary()).unwrap();
       const observation = renderValue(
         await renderer.observe(receipt, { include: ['linear-hdr'] }),

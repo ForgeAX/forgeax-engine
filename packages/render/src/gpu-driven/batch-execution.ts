@@ -14,6 +14,7 @@ import {
 import type { MeshGpuHandles } from '../device/gpu-residency';
 import { GpuDrivenPreparationError } from '../errors/gpu-driven';
 import { materialAlphaMask } from '../material-alpha-mask';
+import { materialLeanInputs } from '../material-lean-inputs';
 import { supportsGpuShadowRenderState } from '../material-render-state';
 import { isCanonicalStandardPbrMaterialShader, SHADOW_CASTER_SHADER_ID } from '../pbr-pipeline';
 import type { MaterialSnapshot } from '../render-system-extract';
@@ -85,6 +86,8 @@ export type BatchArtifactResolver = (
     readonly address: 'scene-index';
     /** Compile-time alpha-test lane; opaque programs contain no discard. */
     readonly alphaMask: boolean;
+    /** UV0-only, tangent- and basis-free vertex inputs (STANDARD_LEAN_INPUTS). */
+    readonly leanInputs: boolean;
   },
 ) => MaterialShaderArtifact | undefined;
 
@@ -152,6 +155,11 @@ export function prepareBatchExecution(
     pass: pass.kind,
     address: 'scene-index',
     alphaMask: materialAlphaMask(material.paramSnapshot),
+    leanInputs: materialLeanInputs(
+      material.paramSnapshot,
+      material.standardTextureMask,
+      material.textureCoordinates,
+    ),
   });
   if (artifact?.receipt?.sceneIndexEntry === undefined) {
     if (!required) return direct();

@@ -8,7 +8,6 @@ import {
   particleEffectContribution,
   prepareVfxGpuEffect,
   VFX_GPU_RUNTIME_RESOURCE_KEY,
-  type VfxGpuRuntime,
   vfxGpuRuntimePlugin,
 } from '@forgeax/engine-vfx';
 import { cookParticleCodeEffect } from '@forgeax/engine-vfx-compiler';
@@ -107,7 +106,7 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){(*p).age+=ctx.de
     world.spawn({ component: ParticleEffectPlayer, data: { effect: handle, seed } }).unwrap(),
   );
   const context = await createWorldContext(world, [vfxGpuRuntimePlugin()]);
-  const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+  const runtime = world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY);
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const shader = (await rhi.createShaderModule(device, { code: 'structural' })).unwrap();
   const gpu = createRenderFeatureGpuWorkOwner({
@@ -117,18 +116,30 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){(*p).age+=ctx.de
   let current = camera();
   const raw = gpuParticleRenderFeature({ camera: { read: () => current } });
   let work: readonly RenderFeatureWork[] = [];
+  const resolved: number[] = [];
+  /** Optional replacement object for the exact effect version the planner resolves. */
+  let replacement: object | undefined;
   const feature = {
     ...raw,
     plan(source: Parameters<typeof raw.plan>[0], input: Parameters<typeof raw.plan>[1]) {
-      const planned = raw.plan(source, input);
+      const planned = raw.plan(source, {
+        ...input,
+        resolveAsset: (asset, revision) => {
+          resolved.push(Number(asset));
+          // The Host resolves captured versions before its current-scope reader.
+          // Observe and replace that exact result at the planning seam.
+          const result = input.resolveAsset?.(asset, revision);
+          if (result === undefined) throw new Error('Missing feature asset resolver');
+          return Number(asset) === Number(handle) && replacement !== undefined && result.ok
+            ? ok(replacement as typeof result.value)
+            : result;
+        },
+      });
       if (planned.ok) work = planned.value.work;
       return planned;
     },
   };
   const host = createRenderFeatureHost([feature]).unwrap();
-  const resolved: number[] = [];
-  /** Optional replacement object for the effect version the resolver returns. */
-  let replacement: object | undefined;
   let frameNumber = 0;
   const frame = (options: { camera?: Camera; generation?: number } = {}) => {
     current = options.camera ?? current;
@@ -138,20 +149,12 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){(*p).age+=ctx.de
       {
         identity: 'main',
         render: true,
-        worlds: [world],
-        owner: 0,
+        world: world,
         frameNumber: ++frameNumber,
         generation: options.generation ?? 0,
         caps: device.caps,
         gpuWork: gpu,
         selectedView: current,
-        resolveAsset: (_index, asset, revision) => {
-          resolved.push(Number(asset));
-          const result = runtimeAssets(world.assets).resolveAsset(asset, revision);
-          return Number(asset) === Number(handle) && replacement !== undefined && result.ok
-            ? ok(replacement as typeof result.value)
-            : result;
-        },
       },
     ]);
     expect(batch.frame.errors).toEqual([]);

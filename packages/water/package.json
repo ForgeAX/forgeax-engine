@@ -1,0 +1,73 @@
+{
+  "name": "@forgeax/engine-water",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs"
+    },
+    "./internal": {
+      "types": "./dist/internal.d.ts",
+      "import": "./dist/internal.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "!src/**/__tests__/**",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run --config vitest.config.ts",
+    "bench:json": "vitest bench --run --config vitest.config.ts --outputJson bench-result.json"
+  },
+  "dependencies": {
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*",
+    "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-pack": "workspace:*",
+    "@forgeax/engine-physics": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "cdt2d": "1.0.0",
+    "clipper2-ts": "2.0.1-18"
+  },
+  "devDependencies": {
+    "tsup": "9.0.0",
+    "vitest": "4.1.12"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": true,
+        "path": "dist/index.mjs",
+        "compression": "gzip"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "Water is a library package with no runtime canvas."
+      },
+      "bench": {
+        "enabled": true,
+        "suite": "Water linear nearest-query owner (88 probes × 32 closed segments)"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm test",
+        "cwd": "packages/water"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "This maintained Water library has no spike report."
+      }
+    }
+  }
+}

@@ -1,3 +1,4 @@
+import { defineResource } from '@forgeax/engine-ecs';
 import { defineAssetKind } from '@forgeax/engine-assets-runtime';
 import { AudioListener } from '@forgeax/engine-audio';
 import type { GameHost } from '@forgeax/engine-app';
@@ -16,6 +17,8 @@ import { installChromaticAberration, type ChromaticAberrationHandle } from './ch
 import { installRenderSettingsSystems } from './systems/render-settings';
 import type { LoadedScene } from './scene-runtime';
 import { PERSPECTIVE_FOV_INITIAL } from './camera-zoom';
+const resource1 = defineResource<unknown>("gameDefaultSettings");
+
 
 export const TOP_DOWN_Y = 13;
 export const TOP_DOWN_OFFSET_Z = 9;
@@ -160,7 +163,7 @@ export async function createCameraController(args: CameraControllerArgs): Promis
   context.effect(() => () => hud.dispose(), 'game-default/hud');
   if (hud.error) throw hud.error;
 
-  world.insertResource('gameDefaultSettings', settingsState);
+  world.insertResource(resource1, settingsState);
   if (uiHost) {
     settings = mountSettings(settingsAsset, uiHost, settingsState, canvas, settingsLoad.ok ? undefined : settingsLoad.error);
     if (settings.error) throw settings.error;

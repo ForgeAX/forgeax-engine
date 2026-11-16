@@ -193,11 +193,7 @@ export async function verifyAlphaHash(
     const pending = capture ? options.recorder?.captureFrame() : undefined;
     if (pending !== undefined && options.recorder !== undefined)
       (await options.recorder.frameBoundary()).unwrap();
-    const frame = await drawReadyFrame(
-      renderer,
-      { leases: [lease], camera: { lease }, environment: { lease } },
-      [domain],
-    );
+    const frame = await drawReadyFrame(renderer, { source: lease }, [domain]);
     completedFrames++;
     if (pending !== undefined && options.recorder !== undefined)
       (await options.recorder.frameBoundary()).unwrap();

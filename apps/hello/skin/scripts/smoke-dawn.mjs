@@ -21,6 +21,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { readFileSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
+import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 
 const SMOKE_DURATION_MS = Number.parseInt(process.env.SMOKE_DURATION_MS ?? '5000', 10);
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
@@ -104,8 +105,9 @@ let sharedDevice;
 // task scratch (`skin-task-data`). Intercept device.queue.writeBuffer for both
 // labels and hash the payload bytes: animated joints must produce >=3 writes
 // with >=2 distinct payloads. The post-loop stability probe pauses all three
-// players, proves two unchanged frames upload no shared Skin input, then
-// resumes one frame and proves the changed joints are uploaded. FALSIFY
+// players and counts only shared-input writes; per-draw task scratch is
+// reported separately because the CPU record path writes it for every
+// demanded draw. FALSIFY
 // anchor: freeze the published joint matrices -> distinctness collapses and
 // the resumed frame uploads nothing -> probe red.
 const SKIN_INPUT_LABELS = new Set(['gpu-scene-shared-inputs', 'skin-task-data']);
@@ -120,8 +122,7 @@ const fnv1a32Dawn = (bytes, start, end) => {
 };
 const originalAmbientRequestAdapter = globalThis.navigator.gpu.requestAdapter.bind(
   globalThis.navigator.gpu,
-);
-globalThis.navigator.gpu.requestAdapter = async (opts) => {
+); globalThis.navigator.gpu.requestAdapter = async (opts) => {
   const rawAdapter = await originalAmbientRequestAdapter(opts);
   if (rawAdapter === null) return rawAdapter;
   const originalRequestDevice = rawAdapter.requestDevice.bind(rawAdapter);
@@ -134,12 +135,14 @@ globalThis.navigator.gpu.requestAdapter = async (opts) => {
     try {
       const origCB = dev.createBuffer.bind(dev);
       const paletteIndex = new WeakMap();
+      const paletteLabel = new WeakMap();
       let paletteBufferCount = 0;
       dev.createBuffer = (cdesc) => {
         const buf = origCB(cdesc);
         try {
           if (SKIN_INPUT_LABELS.has(cdesc.label ?? '')) {
             paletteIndex.set(buf, paletteBufferCount++);
+            paletteLabel.set(buf, cdesc.label ?? '');
           }
         } catch (_e) {}
         return buf;
@@ -162,7 +165,10 @@ globalThis.navigator.gpu.requestAdapter = async (opts) => {
               const fullHash = fnv1a32Dawn(u8, 0, totalLen);
               const headEnd = Math.min(64, totalLen);
               const firstMat4Hash = fnv1a32Dawn(u8, 0, headEnd);
-              skinPaletteWritesDawn.push({ offset, byteLength: totalLen, fullHash, firstMat4Hash });
+              skinPaletteWritesDawn.push({
+                bufferLabel: paletteLabel.get(buffer),
+                offset, byteLength: totalLen, fullHash, firstMat4Hash,
+              });
             }
           }
         } catch (_e) {}
@@ -233,7 +239,10 @@ const { gltfDocToSceneAsset, meshIrToMeshAsset, parseGlb, toMaterialAsset } = aw
 );
 
 const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MANIFEST_PATH, 'utf8'))}`;
+const MANIFEST_URL = URL.createObjectURL(
+  new Blob([readShaderManifestText(MANIFEST_PATH)], { type: 'application/json' }),
+);
+process.once('exit', () => URL.revokeObjectURL(MANIFEST_URL));
 
 let renderer;
 try {
@@ -279,7 +288,7 @@ const assets = hostAssets;
 const world = new World({ assets });
 const worldContext = await createWorldContext(world, [renderComponentsPlugin(), scenePlugin(), animationPlugin(), skinningPlugin()]);
 const lease = renderer.attach(world).unwrap();
-const drawFrame = () => renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
+const drawFrame = () => renderer.draw({ source: lease });
 useBuiltAssetSource(assets, resolve(here, '..', 'dist'));
 const surveyHandle = (await assets.load(surveyGuid, 'animation-clip')).unwrap();
 const walkHandle = (await assets.load(walkGuid, 'animation-clip')).unwrap();
@@ -676,7 +685,13 @@ for (const instance of perInstance) {
 await renderM22Frame();
 const stablePaletteStart = skinPaletteWritesDawn.length;
 await renderM22Frames(2);
-const stablePaletteWrites = skinPaletteWritesDawn.length - stablePaletteStart;
+const stableWrites = skinPaletteWritesDawn.slice(stablePaletteStart);
+const stablePaletteWrites = stableWrites.filter(
+  (write) => write.bufferLabel === 'gpu-scene-shared-inputs',
+).length;
+const stableTaskScratchWrites = stableWrites.filter(
+  (write) => write.bufferLabel === 'skin-task-data',
+).length;
 for (const instance of perInstance) {
   const resumed = world.set(instance.root, AnimationPlayer, { paused: false });
   if (!resumed.ok) throw resumed.error;
@@ -693,7 +708,7 @@ for (let i = 0; i < 3; i++) {
 const dirtyPaletteWrites = Math.min(...dirtyFrameWrites);
 const dirtyHashes = new Set(skinPaletteWritesDawn.slice(dirtyPaletteStart).map((w) => w.fullHash));
 console.log(
-  `[smoke] skin-input-stability stableWriteBufferDelta=${stablePaletteWrites} dirtyFrameWrites=${JSON.stringify(dirtyFrameWrites)} dirtyDistinctHashes=${dirtyHashes.size}`,
+  `[smoke] skin-input-stability stableWriteBufferDelta=${stablePaletteWrites} taskScratchWriteBufferDelta=${stableTaskScratchWrites} dirtyFrameWrites=${JSON.stringify(dirtyFrameWrites)} dirtyDistinctHashes=${dirtyHashes.size}`,
 );
 
 if (!renderTarget) {

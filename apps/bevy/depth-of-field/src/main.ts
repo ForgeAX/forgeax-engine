@@ -1,7 +1,9 @@
+import { InputFrameStartScan } from "@forgeax/engine-input";
+import { defineSystem } from "@forgeax/engine-ecs";
 import { createFullscreenRenderFeature } from '@forgeax/engine-app';
 import { createApp } from '@forgeax/engine-app/browser';
 import { Update } from '@forgeax/engine-ecs';
-import { FRAME_START_SCAN_SYSTEM_NAME, INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine-input';
+import { INPUT_SNAPSHOT_RESOURCE_KEY } from '@forgeax/engine-input';
 import { PostProcessParams } from '@forgeax/engine-render';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import dofShader from './depth-of-field.wgsl';
@@ -32,12 +34,12 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
 
   const state = { mode: initial.mode, focalDistance: initial.focalDistance, aperture: initial.aperture, meshCount: scene.meshCount, effect: DEPTH_OF_FIELD_ID };
   let spaceWasDown = false;
-  app.world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'depth-of-field-controls',
-    after: [FRAME_START_SCAN_SYSTEM_NAME],
+    after: [InputFrameStartScan],
     queries: [],
     fn: (world) => {
-      const input = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+      const input = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
       const spaceDown = input.keyboard.down(' ');
       if (spaceDown && !spaceWasDown) state.mode = state.mode === DOF_MODE_OFF ? DOF_MODE_GAUSSIAN : state.mode === DOF_MODE_GAUSSIAN ? DOF_MODE_BOKEH : DOF_MODE_OFF;
       spaceWasDown = spaceDown;
@@ -48,6 +50,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       world.set(paramsEntity, PostProcessParams, { data: packDofParams(state.focalDistance, state.aperture, state.mode) });
     },
   });
+app.world.addSystem(Update, systemToken1);
   app.onError((error) => console.error('[bevy-depth-of-field] app error:', error.code, error.hint));
   const started = app.start();
   if (!started.ok) {

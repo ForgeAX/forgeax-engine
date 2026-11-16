@@ -259,7 +259,7 @@ export function temporalDrawSnapshot(
 ): RenderableSnapshot {
   // Hidden authored rows keep their source identity but own no accepted draw materials.
   if (snapshot.authorVisible === false) return snapshot;
-  const slot = current.lookup(snapshot.worldId, snapshot.entityKey);
+  const slot = current.lookup(snapshot.entityKey);
   if (slot === undefined) return snapshot;
   const submitted = history.at(slot.slot, current);
   const wasVisible =
@@ -377,10 +377,6 @@ export function createTemporalSnapshot(
     previousInstances:
       seedCurrent || submittedRecycled ? slot.snapshot.instances : previous.instances,
   };
-}
-
-export function identityKey(worldId: number, entityKey: number): string {
-  return `${worldId}:${entityKey}`;
 }
 
 /**

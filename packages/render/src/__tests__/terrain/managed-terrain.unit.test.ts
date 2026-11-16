@@ -81,7 +81,7 @@ it.each([
   const rows: RenderableSnapshot[] = [];
   const dispatch: DispatchEntry[] = [];
   try {
-    extractTerrainSources(world, assets, undefined, 1, rows, dispatch);
+    extractTerrainSources(world, assets, undefined, rows, dispatch);
     expect(rows).toHaveLength(1);
     expect(rows[0]?.terrain?.handle).toBe(handle);
     const layerHandle = runtimeAssetReference(assets, guid('layer')) as AssetHandle<'material'>;

@@ -7,7 +7,7 @@ import {
   ImporterRegistry,
   produceBuildAssets,
 } from '@forgeax/engine-import';
-import { serializeCookedMaterialRecord } from '@forgeax/engine-pack';
+import { decodeMaterialProgramWire, serializeCookedMaterialRecord } from '@forgeax/engine-pack';
 import { planAssetBundles } from '../../../../devkit/src/delivery-bundles';
 import { materialRecordFixture } from './material-publication.js';
 
@@ -110,7 +110,8 @@ export async function materialProductionFixture(external = true, record = materi
     entry,
     firstProgram,
     files,
-    pack: JSON.parse(emitted),
+    // biome-ignore lint/suspicious/noExplicitAny: the emitted Pack stays untyped JSON, as JSON.parse.
+    pack: decodeMaterialProgramWire(JSON.parse(emitted)).unwrap() as any,
     emitted,
   };
 }

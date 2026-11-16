@@ -224,12 +224,7 @@ it.each([
               ? { publication: packet }
               : lease === undefined
                 ? undefined
-                : {
-                    leases: [lease],
-                    camera: { lease },
-                    environment: { lease },
-                    geometryLane: 'direct' as const,
-                  };
+                : { source: lease, geometryLane: 'direct' as const };
           if (input === undefined) throw new Error('Missing draw source');
           const receipt = renderValue(renderer.draw(input));
           renderValue(await receipt.completed);
@@ -648,14 +643,7 @@ it('minifies a Canvas checker in linear light and falsifies a base-level-only vi
       const lease = renderValue(renderer.attach(world));
       const drawFrame = async () => {
         world.update(1 / 60).unwrap();
-        const receipt = renderValue(
-          renderer.draw({
-            leases: [lease],
-            camera: { lease },
-            environment: { lease },
-            geometryLane: 'direct',
-          }),
-        );
+        const receipt = renderValue(renderer.draw({ source: lease, geometryLane: 'direct' }));
         renderValue(await receipt.completed);
       };
       const read = async () => {

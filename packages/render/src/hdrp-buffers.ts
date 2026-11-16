@@ -7,6 +7,7 @@ import type { SkinTaskBinding } from './record/skin-tasks';
 
 import type {
   BindGroup,
+  BindGroupEntry,
   BindGroupLayout,
   BindGroupLayoutDescriptor,
   Buffer,
@@ -439,7 +440,7 @@ function retireHdrpBuffers(runtime: RenderSystemRuntime, buffers: HdrpBuffers): 
  *   [0] gridX  u32 (cast in shader)
  *   [1] gridY  u32
  *   [2] gridZ  u32
- *   [3] lightCount u32 (vec4 alignment; capped by the reflected slot array)
+ *   [3] lightCount u32: lights binned into the grid (capped by the reflected slot array)
  *   [4] near   f32
  *   [5] far    f32
  *   [6] logFarOverNear  f32
@@ -450,8 +451,8 @@ function retireHdrpBuffers(runtime: RenderSystemRuntime, buffers: HdrpBuffers): 
  * [8..11] AO base word, width, height and packed row words (u32)
  * [12] direct AO strength (f32; zero unless the selected AO config enables it)
  * [16..19] physical texture address facts
- * [20] grid pair stride in u32 words; [21] count-word offset
- * [22..23] reserved
+ * [20] grid pair stride in u32 words; [21] count-word offset; [22] screen
+ * base word; [23] additional DirectionalLights in slots [lightCount, lightCount + n)
  *
  * Note: u32 values written into a Float32Array view are bit-pattern correct
  * because writeBuffer copies raw bytes; the WGSL `var<uniform>` declares the
@@ -464,6 +465,11 @@ export function packClusterUniform(input: {
   readonly far: number;
   readonly ssaoIntensity?: number;
   readonly lightCount?: number;
+  /**
+   * Additional DirectionalLights stored after the binned lights. The shader
+   * loops them outside the grid.
+   */
+  readonly directionalLightCount?: number;
   readonly aoLayout?: {
     readonly baseWord: number;
     readonly width: number;
@@ -495,6 +501,7 @@ export function packClusterUniform(input: {
     far,
     ssaoIntensity = 0,
     lightCount = 0,
+    directionalLightCount = 0,
     aoLayout,
     directLightingStrength = 0,
     screen,
@@ -516,7 +523,14 @@ export function packClusterUniform(input: {
   setU32('grid', 0, grid.x);
   setU32('grid', 1, grid.y);
   setU32('grid', 2, grid.z);
-  setU32('grid', 3, Math.min(Math.max(lightCount, 0), reflectedAbi.directLightSlot.capacity));
+  const slotCapacity = reflectedAbi.directLightSlot.capacity;
+  const binnedLights = Math.min(Math.max(lightCount, 0), slotCapacity);
+  setU32('grid', 3, binnedLights);
+  setU32(
+    'cluster_layout',
+    3,
+    Math.min(Math.max(directionalLightCount, 0), slotCapacity - binnedLights),
+  );
   setF32('near_far_log', 0, near);
   setF32('near_far_log', 1, far);
   // logFarOverNear: log(far/near) used by the shader for log-z slice mapping.
@@ -712,6 +726,46 @@ export function createHdrpUnifiedBindGroup(
         },
       },
       ...standardLightingEntries(hdrpBuffers, ssaoTexView, ssaoSampler),
+    ],
+  });
+  if (!result.ok) {
+    runtime.errorRegistry.fire(result.error);
+    return null;
+  }
+  return result.value;
+}
+
+/** Build a clustered group(2) with additional material-frame entries. */
+export function createHdrpUnifiedBindGroupWithExtraEntries(
+  runtime: RenderSystemRuntime,
+  hdrpBuffers: HdrpBuffers,
+  layout: BindGroupLayout,
+  meshStorageBuffer: Buffer,
+  extraEntries: readonly BindGroupEntry[],
+  ssaoOptions: SsaoBindOptions = { enabled: false },
+  meshBindingBytes = runtime.device.caps.storageBuffer
+    ? MESH_PER_ENTITY_STRIDE
+    : MESH_UBO_FULL_ARRAY_BYTES,
+): BindGroup | null {
+  const fallback = getOrCreateSsaoFallbackTexture(runtime);
+  if (fallback === null) return null;
+  const result = runtime.device.createBindGroup({
+    label: 'hdrp-water-unified-bg-group2',
+    layout,
+    entries: [
+      {
+        binding: 0,
+        resource: {
+          kind: 'buffer',
+          value: { buffer: meshStorageBuffer, offset: 0, size: meshBindingBytes },
+        },
+      },
+      ...standardLightingEntries(
+        hdrpBuffers,
+        ssaoOptions.enabled ? ssaoOptions.ssaoBlurredView : fallback.view,
+        fallback.sampler,
+      ),
+      ...extraEntries,
     ],
   });
   if (!result.ok) {

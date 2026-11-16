@@ -76,7 +76,7 @@ try {
       '--disable-dawn-features=disallow_unsafe_apis,tiered_adapter_limits',
     ],
   };
-  browser = await chromium.launch({ ...(browserLaunchOptions), chromiumSandbox: true });
+  browser = await chromium.launch({ ...browserLaunchOptions, chromiumSandbox: true });
   const page = await browser.newPage({ viewport: { width: viewportWidth, height: viewportHeight } });
   cdp = await page.context().newCDPSession(page);
   page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));
@@ -321,11 +321,10 @@ try {
       return {
         cases: [caseResult],
         resource: {
-          owner: advanced.state.resourceOwner,
           revision: advanced.state.revision,
           reactive: advanced.state.changedFrom !== undefined,
           accumulation: advanced.state.changedFrom === undefined && frame > 0,
-          ownerChanged: advanced.state.ownerChanged,
+          environmentChanged: advanced.state.environmentChanged,
           target: { width: readback.width, height: readback.height },
           ...(advanced.recovery === undefined ? {} : { recovery: advanced.recovery }),
         },
@@ -342,7 +341,7 @@ try {
 
   if (screenshot === undefined) await captureActiveScreenshot('disabled', undefined);
 } catch (caught) {
-  failure = caught instanceof Error ? caught.stack ?? caught.message : String(caught);
+  failure = caught instanceof Error ? (caught.stack ?? caught.message) : String(caught);
 } finally {
   if (browser !== undefined) {
     await Promise.race([browser.close(), delay(5_000)]).catch(() => undefined);
@@ -371,7 +370,7 @@ const evidence = {
   status: failure === undefined && trace?.verdict === 'pass' ? 'pass' : failure === undefined ? 'fail' : 'unavailable',
   frameIdentity: { first: 0, last: Math.max(0, (trace?.frames ?? 1) - 1), sequenceSha256: createHash('sha256').update((trace?.phaseTrace ?? []).join('|')).digest('hex') },
   visualEvidence: (trace?.visualEvidence ?? []).map((entry, index) => ({ id: `fog-${entry.phase ?? index}`, png: pairScreenshots.get(entry.phase)?.path ?? screenshotPath, observed: JSON.stringify(entry.observed ?? []), verdict: entry.verdict ?? 'fail', confidence: entry.confidence ?? 'low' })),
-  falsify: ['uniform', 'height', 'owner-switch', 'recovery'].map((id) => ({ id, result: trace?.cases?.some((entry) => entry.caseId === id && entry.verdict === 'pass') ? 'pass' : 'fail' })),
+  falsify: ['uniform', 'height', 'environment-replace', 'recovery'].map((id) => ({ id, result: trace?.cases?.some((entry) => entry.caseId === id && entry.verdict === 'pass') ? 'pass' : 'fail' })),
   screenshot,
   pairScreenshots: Array.from(pairScreenshots.values()),
   errors,

@@ -1,4 +1,4 @@
-import { defineComponent, type EntityHandle, type World } from '@forgeax/engine-ecs';
+import { defineComponent, defineSystem, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import { setDerivedComponent } from '@forgeax/engine-ecs/projection';
 import { settleClusterWorkConformanceFrame } from '../record/cluster-work-conformance';
 import type { ViewGraphCompileOutcome } from '../record/graph-adoption';
@@ -11,11 +11,17 @@ import {
   settleFeatureGraphState,
 } from '../record/typed-frame-graph';
 import { recordFailureError } from '../render-system-record-attempt';
+import {
+  RenderEncoderOpenOrder,
+  RenderGraphCompileOrder,
+  RenderGraphCompileReleaseOrder,
+  RenderGraphSettleOrder,
+} from '../system-order';
 import { ViewFeaturePlans, viewFeaturePlanOf } from './feature-plan-systems';
 import { ViewDiffuseGi } from './gi-systems';
 import { ViewGpuDriven } from './gpu-driven-systems';
 import { ViewPassPlans } from './pass-plan-systems';
-import { RENDER_ENCODER_OPEN_SYSTEM, renderFrameEncoder } from './record-systems';
+import { renderFrameEncoder } from './record-systems';
 import { ViewCascadeFit } from './render-lights';
 import { ViewRecorder, ViewSubmission, viewAccepted } from './render-views';
 import { RenderCleanup, RenderCommit, RenderRecord, renderSubmission } from './render-world';
@@ -192,132 +198,129 @@ function settleViewGraph(
  * outcome its recording rethrows, a thrown settle the view's `failed` settlement.
  */
 export function registerGraphSystems(world: World): void {
-  world
-    .addSystem(RenderCommit, {
-      commands: 'none',
-      name: RENDER_GRAPH_SETTLE_SYSTEM,
-      // Every later commit reads the settled graph and generation.
-      before: [RenderCommit],
-      queries: [{ read: [ViewRecorder, ViewSubmission], optional: [ViewGraphCandidate] }],
-      fn: (world, [rows]) => {
-        const frame = renderSubmission(world).frame;
-        const first: { entity: EntityHandle; slot: ViewGraphCandidateSlot }[] = [];
+  const systemToken1 = defineSystem({
+    sets: [RenderGraphSettleOrder],
+    commands: 'none',
+    name: RENDER_GRAPH_SETTLE_SYSTEM,
+    // Every later commit reads the settled graph and generation.
+    before: [RenderCommit],
+    queries: [{ read: [ViewRecorder, ViewSubmission], optional: [ViewGraphCandidate] }],
+    fn: (world, [rows]) => {
+      const frame = renderSubmission(world).frame;
+      const first: { entity: EntityHandle; slot: ViewGraphCandidateSlot }[] = [];
 
-        rows.forEach((row) => {
-          const entity = row.entity;
+      rows.forEach((row) => {
+        const entity = row.entity;
 
-          if (requireViewField(world, entity, ViewSubmission, 'attempt') !== frame) return;
-          const settled = settleViewGraph(
+        if (requireViewField(world, entity, ViewSubmission, 'attempt') !== frame) return;
+        const settled = settleViewGraph(
+          ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state')),
+          frame,
+          viewAccepted(world, entity) && requireViewField(world, entity, ViewSubmission, 'scene'),
+          renderSubmission(world).completion !== undefined,
+        );
+        const stored = readViewField(world, entity, ViewGraphCandidate, 'state');
+        if (stored !== undefined) {
+          world.resolveUniqueRef<ViewGraphCandidateSlot>(stored).unwrap().settled = settled;
+          return;
+        }
+        const slot = new ViewGraphCandidateSlot();
+        slot.settled = settled;
+        first.push({ entity: entity, slot });
+      });
+      // A view's first settlement attaches its candidate component after the iteration.
+      for (const { entity, slot } of first)
+        world
+          .addComponent(entity, {
+            component: ViewGraphCandidate,
+            data: { state: world.allocUniqueRef('ViewGraphCandidate', slot) },
+          })
+          .unwrap();
+    },
+  });
+  world.addSystem(RenderCommit, systemToken1).unwrap();
+  const systemToken2 = defineSystem({
+    sets: [RenderGraphCompileOrder],
+    commands: 'none',
+    name: RENDER_GRAPH_COMPILE_SYSTEM,
+    after: [RenderEncoderOpenOrder],
+    queries: [
+      {
+        write: [ViewGraphCandidate],
+        read: [ViewRecorder],
+        optional: [
+          ViewStandardLighting,
+          ViewTopologyInputs,
+          ViewSsrAdmission,
+          ViewDiffuseGi,
+          ViewGpuDriven,
+          ViewFeaturePlans,
+          ViewPassPlans,
+          ViewSubsurfaceAdmission,
+          ViewCascadeFit,
+        ],
+      },
+    ],
+    // Only a submission whose encoder opened records the compiled graphs.
+    runIf: (renderWorld) => renderFrameEncoder(renderWorld).kind === 'open',
+    fn: (world, [rows]) => {
+      const frame = renderSubmission(world).frame;
+
+      rows.forEach((row) => {
+        const entity = row.entity;
+
+        setDerivedComponent(world, entity, ViewGraphCandidate, EMPTY_VIEW_STATE_UPDATE).unwrap();
+        const slot = world
+          .resolveUniqueRef<ViewGraphCandidateSlot>(
+            requireViewField(world, entity, ViewGraphCandidate, 'state'),
+          )
+          .unwrap();
+        if (slot.frame !== frame || slot.staged === undefined || slot.outcome !== undefined) return;
+        try {
+          const input = readViewGraphInput(
+            world,
+            entity,
             ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state')),
-            frame,
-            viewAccepted(world, entity) && requireViewField(world, entity, ViewSubmission, 'scene'),
-            renderSubmission(world).completion !== undefined,
+            slot.staged,
           );
-          const stored = readViewField(world, entity, ViewGraphCandidate, 'state');
-          if (stored !== undefined) {
-            world.resolveUniqueRef<ViewGraphCandidateSlot>(stored).unwrap().settled = settled;
-            return;
-          }
-          const slot = new ViewGraphCandidateSlot();
-          slot.settled = settled;
-          first.push({ entity: entity, slot });
-        });
-        // A view's first settlement attaches its candidate component after the iteration.
-        for (const { entity, slot } of first)
-          world
-            .addComponent(entity, {
-              component: ViewGraphCandidate,
-              data: { state: world.allocUniqueRef('ViewGraphCandidate', slot) },
-            })
-            .unwrap();
-      },
-    })
-    .unwrap();
-  world
-    .addSystem(RenderRecord, {
-      commands: 'none',
-      name: RENDER_GRAPH_COMPILE_SYSTEM,
-      after: [RENDER_ENCODER_OPEN_SYSTEM],
-      queries: [
-        {
-          write: [ViewGraphCandidate],
-          read: [ViewRecorder],
-          optional: [
-            ViewStandardLighting,
-            ViewTopologyInputs,
-            ViewSsrAdmission,
-            ViewDiffuseGi,
-            ViewGpuDriven,
-            ViewFeaturePlans,
-            ViewPassPlans,
-            ViewSubsurfaceAdmission,
-            ViewCascadeFit,
-          ],
-        },
-      ],
-      // Only a submission whose encoder opened records the compiled graphs.
-      runIf: (renderWorld) => renderFrameEncoder(renderWorld).kind === 'open',
-      fn: (world, [rows]) => {
-        const frame = renderSubmission(world).frame;
+          slot.outcome = input.ok
+            ? compileViewGraph(input.value)
+            : { kind: 'failed', frame, cause: input.error };
+        } catch (cause) {
+          slot.outcome = { kind: 'failed', frame, cause };
+        }
+      });
+    },
+  });
+  world.addSystem(RenderRecord, systemToken2).unwrap();
+  const systemToken3 = defineSystem({
+    sets: [RenderGraphCompileReleaseOrder],
+    commands: 'none',
+    name: RENDER_GRAPH_COMPILE_RELEASE_SYSTEM,
+    queries: [{ write: [ViewGraphCandidate], read: [ViewRecorder], optional: [ViewFeaturePlans] }],
+    fn: (world, [rows]) => {
+      const frame = renderSubmission(world).frame;
 
-        rows.forEach((row) => {
-          const entity = row.entity;
+      rows.forEach((row) => {
+        const entity = row.entity;
 
-          setDerivedComponent(world, entity, ViewGraphCandidate, EMPTY_VIEW_STATE_UPDATE).unwrap();
-          const slot = world
-            .resolveUniqueRef<ViewGraphCandidateSlot>(
-              requireViewField(world, entity, ViewGraphCandidate, 'state'),
-            )
-            .unwrap();
-          if (slot.frame !== frame || slot.staged === undefined || slot.outcome !== undefined)
-            return;
-          try {
-            const input = readViewGraphInput(
-              world,
-              entity,
-              ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state')),
-              slot.staged,
-            );
-            slot.outcome = input.ok
-              ? compileViewGraph(input.value)
-              : { kind: 'failed', frame, cause: input.error };
-          } catch (cause) {
-            slot.outcome = { kind: 'failed', frame, cause };
-          }
-        });
-      },
-    })
-    .unwrap();
-  world
-    .addSystem(RenderCleanup, {
-      commands: 'none',
-      name: RENDER_GRAPH_COMPILE_RELEASE_SYSTEM,
-      queries: [
-        { write: [ViewGraphCandidate], read: [ViewRecorder], optional: [ViewFeaturePlans] },
-      ],
-      fn: (world, [rows]) => {
-        const frame = renderSubmission(world).frame;
-
-        rows.forEach((row) => {
-          const entity = row.entity;
-
-          setDerivedComponent(world, entity, ViewGraphCandidate, EMPTY_VIEW_STATE_UPDATE).unwrap();
-          const slot = world
-            .resolveUniqueRef<ViewGraphCandidateSlot>(
-              requireViewField(world, entity, ViewGraphCandidate, 'state'),
-            )
-            .unwrap();
-          const staged = slot.staged;
-          const outcome = slot.take(frame);
-          if (staged === undefined) return;
-          // No recording adopted the candidate: retire its fresh graph and
-          // release the Feature plan it consumed, as an untaken plan is released.
-          const owner = ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state'));
-          if (outcome?.kind === 'compiled') retire(owner.frameState, outcome.graph);
-          const feature = viewFeaturePlanOf(world, entity);
-          if (feature?.kind === 'planned') feature.plan.candidate?.onAbandoned?.();
-        });
-      },
-    })
-    .unwrap();
+        setDerivedComponent(world, entity, ViewGraphCandidate, EMPTY_VIEW_STATE_UPDATE).unwrap();
+        const slot = world
+          .resolveUniqueRef<ViewGraphCandidateSlot>(
+            requireViewField(world, entity, ViewGraphCandidate, 'state'),
+          )
+          .unwrap();
+        const staged = slot.staged;
+        const outcome = slot.take(frame);
+        if (staged === undefined) return;
+        // No recording adopted the candidate: retire its fresh graph and
+        // release the Feature plan it consumed, as an untaken plan is released.
+        const owner = ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state'));
+        if (outcome?.kind === 'compiled') retire(owner.frameState, outcome.graph);
+        const feature = viewFeaturePlanOf(world, entity);
+        if (feature?.kind === 'planned') feature.plan.candidate?.onAbandoned?.();
+      });
+    },
+  });
+  world.addSystem(RenderCleanup, systemToken3).unwrap();
 }

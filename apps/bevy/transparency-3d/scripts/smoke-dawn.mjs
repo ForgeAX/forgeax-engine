@@ -7,10 +7,10 @@ import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErr
 // Dawn smoke for Bevy's 3d/transparency_3d example.
 // The smoke renders the same shared World as the browser app, captures early and late
 // frames, and proves that elapsed-time alpha changes the pixels rather than only the ECS.
-
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 
 
 const WIDTH = testQuality.viewport.width;
@@ -86,7 +86,7 @@ const { World } = await import('@forgeax/engine-ecs');
 const { registerPropagateTransforms } = await import('@forgeax/engine-scene');
 const { createRenderer } = await import('@forgeax/engine-runtime');
 const { buildTransparencyWorld, stepTransparencyAlpha } = await import(resolve(root, 'src', 'transparency-3d.ts'));
-const manifest = readFileSync(resolve(root, 'dist', 'shaders', 'manifest.json'), 'utf8');
+const manifest = readShaderManifestText(resolve(root, 'dist', 'shaders', 'manifest.json'));
 const manifestUrl = `data:application/json,${encodeURIComponent(manifest)}`;
 
 let renderer;

@@ -114,6 +114,7 @@ export type PackAuthoringErrorCode =
   | 'pack-parameter-invalid'
   | 'pack-content-dependency-stalled'
   | 'pack-output-reference-missing'
+  | 'pack-output-reference-kind-invalid'
   | 'pack-output-reference-conflict'
   | 'pack-output-not-materialized'
   | 'asset-not-ready'

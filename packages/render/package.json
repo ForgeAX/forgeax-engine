@@ -12,13 +12,21 @@
     "./authoring": { "types": "./dist/authoring.d.ts", "import": "./dist/authoring.mjs" },
     "./internal": { "types": "./dist/internal.d.ts", "import": "./dist/internal.mjs" },
     "./internal/temporal": { "types": "./dist/temporal/index.d.ts", "import": "./dist/temporal/index.mjs" },
+    "./tasks": { "types": "./dist/tasks.d.ts", "import": "./dist/tasks.mjs" },
     "./package.json": "./package.json",
     "./internal/construct-renderer": {
       "types": "./dist/construct-renderer.d.ts",
       "import": "./dist/construct-renderer.mjs"
     }
   },
-  "files": ["dist", "src", "!src/**/__tests__/**", "README.md", "LICENSE", "NOTICE"],
+  "files": [
+    "dist",
+    "src",
+    "!src/**/__tests__/**",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
   "scripts": {
     "build": "tsup",
     "test": "vitest run",
@@ -27,6 +35,7 @@
   },
   "dependencies": {
     "@forgeax/engine-terrain": "workspace:*",
+    "@forgeax/engine-water": "workspace:*",
     "@forgeax/engine-codec": "workspace:*",
     "@forgeax/engine-assets-runtime": "workspace:*",
     "@forgeax/engine-audio-webaudio": "workspace:*",
@@ -36,6 +45,8 @@
     "@forgeax/engine-graphics-extras": "workspace:*",
     "@forgeax/engine-math": "workspace:*",
     "@forgeax/engine-pack": "workspace:^",
+    "@forgeax/engine-platform": "workspace:*",
+    "@forgeax/engine-physics": "workspace:*",
     "@forgeax/engine-plugin": "workspace:*",
     "@forgeax/engine-render-graph": "workspace:*",
     "@forgeax/engine-rhi": "workspace:*",
@@ -52,18 +63,39 @@
     "@forgeax/engine-rhi-debug": "workspace:*",
     "@forgeax/engine-vite-plugin-shader": "workspace:*",
     "@forgeax/engine-rhi-null": "workspace:*",
-    "@forgeax/engine-rhi-webgpu": "workspace:*"
+    "@forgeax/engine-rhi-webgpu": "workspace:*",
+    "@forgeax/engine-shader-compiler": "workspace:*",
+    "@forgeax/engine-physics-rapier3d": "workspace:*"
   },
-  "forgeax": { "metrics": {
-    "bundle-size": { "enabled": true, "path": "dist/index.mjs", "compression": "gzip", "expected": 10000 },
-    "fps": { "enabled": false, "reason": "render package has no host loop" },
-    "bench": {
-      "enabled": true,
-      "reportPath": "bench-result.json",
-      "suite": "@forgeax/engine-render",
-      "baseline": { "source": "inline", "threshold": 15000000 }
-    },
-    "gate": { "enabled": true, "reason": "render boundary checks" },
-    "spike-report": { "enabled": false, "reason": "not a spike package" }
-  } }
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": true,
+        "path": "dist/index.mjs",
+        "compression": "gzip",
+        "expected": 10000
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "render package has no host loop"
+      },
+      "bench": {
+        "enabled": true,
+        "reportPath": "bench-result.json",
+        "suite": "@forgeax/engine-render",
+        "baseline": {
+          "source": "inline",
+          "threshold": 15000000
+        }
+      },
+      "gate": {
+        "enabled": true,
+        "reason": "render boundary checks"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike package"
+      }
+    }
+  }
 }

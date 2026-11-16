@@ -103,7 +103,7 @@ it('refreshes hot composition recency and evicts validation beyond its aggregate
   expect(validation).toHaveBeenCalledTimes(validations + 1);
 });
 
-it('shares concurrent real composition and validation and keeps every result independently mutable', async () => {
+it('shares concurrent real composition and validation without exposing shared results to edits', async () => {
   const compose = vi.spyOn(naga, 'composeShader');
   const validation = vi.spyOn(compiler, 'compileShaderProgram');
   const compile = createShaderProgramCompiler();
@@ -114,11 +114,11 @@ it('shares concurrent real composition and validation and keeps every result ind
   const first = firstResult.unwrap();
   const second = secondResult.unwrap();
   expect(second).toEqual(first);
-  expect(second).not.toBe(first);
+  // The shared validated program is read-only; caller-owned fields stay independent.
+  for (const result of [first, second])
+    expect(() => Object.assign(result.reflection, { consumerMutation: true })).toThrow(TypeError);
   first.deps.push('consumer-mutation');
-  Object.assign(first.reflection, { consumerMutation: true });
   expect(second.deps).not.toContain('consumer-mutation');
-  expect(second.reflection).not.toHaveProperty('consumerMutation');
   expect(compose).toHaveBeenCalledTimes(1);
   expect(validation).toHaveBeenCalledTimes(1);
 });
@@ -181,13 +181,15 @@ it('shares composition across entry selections while validating every selected e
   expect(compose).toHaveBeenCalledTimes(1);
 });
 
-it('reuses composition without sharing mutable results or material state', async () => {
+it('reuses composition while keeping cached results read-only', async () => {
   const underlying = vi.spyOn(naga, 'composeShader');
   const compile = createShaderProgramCompiler();
   const first = (await compile(source, options)).unwrap();
   const expected = structuredClone(first);
-  first.deps.push('consumer-mutation');
-  Object.assign(first.reflection, { consumerMutation: true });
+  try {
+    first.deps.push('consumer-mutation');
+    Object.assign(first.reflection, { consumerMutation: true });
+  } catch {}
   const second = (await compile(source, options)).unwrap();
   expect(second).toEqual(expected);
   expect(underlying).toHaveBeenCalledTimes(1);

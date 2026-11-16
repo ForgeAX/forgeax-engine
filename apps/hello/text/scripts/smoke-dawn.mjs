@@ -11,6 +11,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
 
 
@@ -137,7 +138,10 @@ const TEXT_SCENES = [
 
 const here = dirname(fileURLToPath(import.meta.url));
 const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MANIFEST_PATH, 'utf8'))}`;
+const MANIFEST_URL = URL.createObjectURL(
+  new Blob([readShaderManifestText(MANIFEST_PATH)], { type: 'application/json' }),
+);
+process.once('exit', () => URL.revokeObjectURL(MANIFEST_URL));
 
 const constructed = await constructRuntimeRendererHost(mockCanvas, {}, { shaderManifestUrl: MANIFEST_URL });
 if (!constructed.ok) throw constructed.error;
@@ -147,7 +151,7 @@ console.log(`[hello-text] backend=${renderer.inspect().capabilities.backendKind}
 const world = new World({ assets });
 const lease = renderer.attach(world).unwrap();
 const onErrorEvents = [];
-renderer.subscribe(event => { if (event.kind === 'error') onErrorEvents.push({code:event.error.code,hint:event.error.hint}); });
+renderer.subscribe((event) => { if (event.kind === 'error') onErrorEvents.push({code:event.error.code,hint:event.error.hint}); });
 
 // An absent Font binding intentionally produces no text pixels.
 let fontHandle;
@@ -196,7 +200,7 @@ let pendingReason;
 const loopStarted = performance.now();
 while (totalFrames < SMOKE_MIN_FRAMES && performance.now() - loopStarted < READY_DEADLINE_MS) {
   world.update(1/60).unwrap();
-  const draw = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }).unwrap();
+  const draw = renderer.draw({ source: lease }).unwrap();
   (await draw.completed).unwrap();
   if (draw.presentation === 'ready') {
     totalFrames++;
@@ -229,7 +233,9 @@ if (totalFrames < SMOKE_MIN_FRAMES) {
 }
 
 // GlyphText remains native authoring state; the Renderer owns its derived geometry.
-if (textEntities.some(entity => world.hasComponent(entity, MeshFilter) || world.hasComponent(entity, MeshRenderer)))
+if (textEntities.some(
+    (entity) => world.hasComponent(entity, MeshFilter) || world.hasComponent(entity, MeshRenderer),
+  ))
   failures.push('(e) GlyphText unexpectedly introduced derived Mesh components');
 
 // (g) AC-19 visible-text pixel readback (gated by TEXT_SMOKE_REQUIRE_VISIBLE).

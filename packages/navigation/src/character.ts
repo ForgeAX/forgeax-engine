@@ -1,5 +1,6 @@
 import {
   defineComponent,
+  defineResource,
   defineSystem,
   type EcsError,
   type EntityHandle,
@@ -12,7 +13,9 @@ import {
   CharacterController,
   Collider,
   ColliderShapeValue,
-  type PhysicsWorld,
+  PhysicsSimulation,
+  PhysicsSync,
+  PhysicsWorldResource,
   physicsComponentsPlugin,
   RigidBody,
   RigidBodyTypeValue,
@@ -41,8 +44,7 @@ export const NavigationCharacter = defineComponent(
   },
   { requires: [NavigationAgent, RigidBody, Collider, CharacterController] },
 );
-const SURFACE = 'NavigationMesh';
-export const NAVIGATION_CHARACTER_SYSTEM = 'navigation/character';
+const SURFACE = defineResource<NavigationSurface>('NavigationMesh');
 /** Replace one World's active surface. Existing routes fail closed on the next fixed step. */
 export function setNavigationMesh(
   world: World,
@@ -50,7 +52,7 @@ export function setNavigationMesh(
 ): Result<void, NavigationError | AssetError> {
   if (!world.hasResource(SURFACE))
     return err(invalidInput('NavigationMesh', undefined, 'Install navigationCharacterPlugin'));
-  return world.getResource<NavigationSurface>(SURFACE).replace(mesh);
+  return world.getResource(SURFACE).replace(mesh);
 }
 /** Synchronous query/assignment: no late callback can revive an old entity or route. */
 export function setNavigationTarget(
@@ -78,7 +80,7 @@ export function setNavigationTarget(
     );
   const height =
     2 * (radius + collider.halfHeight * Math.hypot(m[4] as number, m[5] as number, m[6] as number));
-  const binding = world.getResource<NavigationSurface>(SURFACE);
+  const binding = world.getResource(SURFACE);
   const current = binding.current();
   if (!current.ok) return current;
   const mesh = current.value;
@@ -201,9 +203,9 @@ export function navigationCharacterPlugin(
         };
       }, 'navigation/mesh');
       const system = defineSystem({
-        name: NAVIGATION_CHARACTER_SYSTEM,
-        after: ['physicsSyncBackend'],
-        before: ['physicsStepSimulation'],
+        name: 'navigation/character',
+        after: [PhysicsSync],
+        before: [PhysicsSimulation],
         queries: [
           {
             read: [GlobalTransform, Collider, RigidBody, CharacterController],
@@ -211,9 +213,9 @@ export function navigationCharacterPlugin(
           },
         ],
         fn(world, [query]) {
-          if (!world.hasResource('PhysicsWorld') || !world.hasResource(SURFACE)) return;
-          const binding = world.getResource<NavigationSurface>(SURFACE);
-          const physics = world.getResource<PhysicsWorld>('PhysicsWorld'),
+          if (!world.hasResource(PhysicsWorldResource) || !world.hasResource(SURFACE)) return;
+          const binding = world.getResource(SURFACE);
+          const physics = world.getResource(PhysicsWorldResource),
             surface = binding.current().unwrap(),
             dt = world.getResource(FixedTime).delta,
             gravityY = physics.getGravity()[1] as number;
@@ -504,7 +506,7 @@ export function navigationCharacterPlugin(
       });
       ctx.effect(() => {
         world.addSystem(FixedUpdate, system).unwrap();
-        return () => world.removeSystem(FixedUpdate, NAVIGATION_CHARACTER_SYSTEM);
+        return () => world.removeSystem(FixedUpdate, system);
       }, 'navigation/character-motor');
     },
   };

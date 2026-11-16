@@ -41,7 +41,6 @@ function snapshot(entityKey: number): RenderableSnapshot {
     material,
     materials: [material],
     materialBindingSources: ['engine-default'],
-    worldId: 0,
     entityKey,
     gpuDrivenDraws: [
       {
@@ -66,7 +65,6 @@ function snapshot(entityKey: number): RenderableSnapshot {
 function updateSnapshot(value: RenderableSnapshot) {
   return {
     kind: 'update' as const,
-    worldId: value.worldId,
     entityKey: value.entityKey,
     snapshot: value,
   };
@@ -76,7 +74,6 @@ function preparedFrame(view: GpuDrivenView): PreparedGpuDrivenFrame {
   const signature = `view-generation:${view.inspect().resourceGeneration}`;
   return {
     topologySignature: () => signature,
-    worldKeys: [],
     materialBindings: [],
     shadowDirectRequired: false,
     selection: EMPTY_GPU_DRAW_SELECTION,
@@ -115,6 +112,102 @@ function acceptFrame(internals: object): void {
 }
 
 describe('GpuDrivenView graph projection', () => {
+  it.each([
+    false,
+    true,
+  ])('rolls back new member leases after acquisition failure (cleanup fails: %s)', async (cleanupFails) => {
+    const adapter = (await rhi.requestAdapter()).unwrap();
+    const device = (await adapter.requestDevice()).unwrap();
+    const shader = (await rhi.createShaderModule(device, { code: 'synthetic' })).unwrap();
+    const projection = new RenderScene();
+    const available = GpuScene.create(device, 2).unwrap();
+    if (available.status !== 'available') throw new Error('missing structural GPU Scene');
+    const scene = available.scene;
+    const topology = new BatchTopology();
+    const view = GpuDrivenView.create({
+      device,
+      shaderModuleFactory: { createShaderModule: () => ok(shader) },
+    }).unwrap();
+    const planes = frustum.fromViewProjection(frustum.create(), mat4.identity(mat4.create()));
+    const first = snapshot(1);
+    const releases: ReturnType<typeof vi.fn>[] = [];
+    let rejectCleanup = true;
+    const acquire = scene.inputs.holdMembers.bind(scene.inputs);
+    const holds = vi.spyOn(scene.inputs, 'holdMembers').mockImplementation((members) => {
+      const release = vi.fn(acquire(members));
+      releases.push(release);
+      return release;
+    });
+    try {
+      scene.sync(projection.apply([updateSnapshot(first)])).unwrap();
+      topology.rebuild(projection.slotsSnapshot());
+      updateGpuView(view, topology.query(topology.sourcePlan(), undefined), scene, planes).unwrap();
+      expect(releases).toHaveLength(1);
+      const prior = releases[0];
+      const secondSource = snapshot(2);
+      const second = {
+        ...secondSource,
+        assetHandle: 4,
+        gpuDrivenDraws: (secondSource.gpuDrivenDraws ?? []).map((draw) => ({
+          ...draw,
+          count: 18,
+          geometry: {
+            ...draw.geometry,
+            receipt: { ...draw.geometry.receipt, identity: 'other-cube' },
+            draw: { ...draw.geometry.draw, count: 18 },
+          },
+        })),
+      };
+      scene.sync(projection.apply([updateSnapshot(second)])).unwrap();
+      topology.rebuild(projection.slotsSnapshot());
+      const cause = new Error('second acquisition failed');
+      const cleanup = new Error('rollback release failed');
+      holds
+        .mockImplementationOnce((members) => {
+          const release = acquire(members);
+          const rollback = vi.fn(() => {
+            release();
+            if (cleanupFails && rejectCleanup) throw cleanup;
+          });
+          releases.push(rollback);
+          return rollback;
+        })
+        .mockImplementationOnce(() => {
+          throw cause;
+        });
+      let failure: unknown;
+      try {
+        updateGpuView(
+          view,
+          topology.query(topology.sourcePlan(), undefined),
+          scene,
+          planes,
+        ).unwrap();
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toBeDefined();
+      expect(releases).toHaveLength(2);
+      expect(
+        releases[1],
+        failure instanceof Error ? failure.stack : String(failure),
+      ).toHaveBeenCalledTimes(1);
+      expect(prior).not.toHaveBeenCalled();
+      if (cleanupFails) {
+        expect(failure).toBeInstanceOf(AggregateError);
+        expect((failure as AggregateError).errors).toEqual([cause, cleanup]);
+        expect((failure as AggregateError).cause).toBe(cause);
+      } else expect(failure).toBe(cause);
+      view.dispose();
+      expect(prior).toHaveBeenCalledTimes(1);
+    } finally {
+      rejectCleanup = false;
+      holds.mockRestore();
+      view.dispose();
+      scene.dispose();
+    }
+  });
+
   it('keeps receiver rows optional, updates stable addresses, and reseeds them after overflow', async () => {
     const adapter = (await rhi.requestAdapter()).unwrap();
     const device = (await adapter.requestDevice()).unwrap();
@@ -245,7 +338,6 @@ describe('GpuDrivenView graph projection', () => {
     if (first === null) return;
     const prepared: PreparedGpuDrivenFrame = {
       topologySignature: () => 'stable-gpu-driven-test',
-      worldKeys: [],
       materialBindings: [],
       shadowDirectRequired: false,
       selection: EMPTY_GPU_DRAW_SELECTION,

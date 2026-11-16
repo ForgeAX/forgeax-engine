@@ -1,3 +1,5 @@
+import { StateSet } from "@forgeax/engine-state";
+import { defineSystem } from "@forgeax/engine-ecs";
 import { FixedUpdate, Time, Update, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import { Camera } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
@@ -15,7 +17,7 @@ export type PresentationSystemsContext = {
   readonly debugAxes: DebugAxesHandle;
   readonly animatedMaterial: AnimatedMaterialTarget | undefined;
   readonly assetEvidenceMode: boolean;
-  readonly materialElapsedOriginKey: string;
+  readonly materialElapsedOriginKey: import('@forgeax/engine/ecs').Resource<number>;
   readonly initX: number;
   readonly initZ: number;
   readonly topDownY: number;
@@ -25,7 +27,7 @@ export type PresentationSystemsContext = {
 
 /** Keeps authored motion/debug/reset camera concerns out of bootstrap assembly. */
 export function installPresentationSystems(ctx: PresentationSystemsContext): void {
-  ctx.world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'game-rotating-targets',
     runIf: inState(GameState, 'Play'),
     after: [FixedUpdate],
@@ -33,33 +35,36 @@ export function installPresentationSystems(ctx: PresentationSystemsContext): voi
     fn: () => {
       if (!ctx.assetEvidenceMode) stepRotatingTargets(ctx.world, ctx.world.getResource(Time).delta);
       if (ctx.animatedMaterial !== undefined && !ctx.assetEvidenceMode) {
-        const elapsed = ctx.world.getResource(Time).elapsed - ctx.world.getResource<number>(ctx.materialElapsedOriginKey);
+        const elapsed = ctx.world.getResource(Time).elapsed - ctx.world.getResource(ctx.materialElapsedOriginKey);
         stepAnimatedMaterial(ctx.world, ctx.animatedMaterial, elapsed);
       }
     },
-  }).unwrap();
-  ctx.world.addSystem(Update, {
+  });
+ctx.world.addSystem(Update, systemToken1).unwrap();
+  const systemToken2 = defineSystem({
     name: 'game-debug-axes',
     runIf: inState(GameState, 'Play'),
-    after: ['game-rotating-targets'],
+    after: [systemToken1],
     queries: [],
     fn: () => ctx.debugAxes.draw(),
-  }).unwrap();
-  ctx.world.addSystem(Update, {
+  });
+ctx.world.addSystem(Update, systemToken2).unwrap();
+  const systemToken3 = defineSystem({
     name: 'game-reset-camera',
     runIf: inState(GameState, 'Reset'),
     queries: [],
-    after: ['transitionStates'],
+    after: [StateSet],
     before: [FixedUpdate],
     fn: () => {
       ctx.world.set(ctx.camera, Transform, { pos: [ctx.initX, ctx.topDownY, ctx.initZ + ctx.topDownOffsetZ], quat: ctx.topQuaternion });
       ctx.world.set(ctx.camera, CameraRig, { followX: ctx.initX, followZ: ctx.initZ + ctx.topDownOffsetZ, panX: ctx.initX, panZ: ctx.initZ + ctx.topDownOffsetZ });
       ctx.world.set(ctx.camera, Camera, { projection: 0 });
     },
-  }).unwrap();
+  });
+ctx.world.addSystem(Update, systemToken3).unwrap();
 }
 
-export function resetPresentationMaterial(world: World, key: string, animatedMaterial: AnimatedMaterialTarget | undefined): void {
+export function resetPresentationMaterial(world: World, key: import('@forgeax/engine/ecs').Resource<number>, animatedMaterial: AnimatedMaterialTarget | undefined): void {
   world.insertResource(key, world.getResource(Time).elapsed);
   if (animatedMaterial !== undefined) resetAnimatedMaterial(world, animatedMaterial);
 }

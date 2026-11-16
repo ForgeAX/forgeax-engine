@@ -1,3 +1,5 @@
+import { GameLookOrder, GamePickShootOrder } from "../../src/system-order";
+import { InputFrameStartScan } from "@forgeax/engine-input";
 import { defineSystem, Update, type World } from '@forgeax/engine-ecs';
 import type { InputSnapshot } from '@forgeax/engine-input';
 
@@ -12,7 +14,7 @@ export function installGameplayLifecycle(ctx: GameplayLifecycleContext): void {
   ctx.world.addSystem(Update, defineSystem({
     name: 'game-reset',
     queries: [] as const,
-    after: ['input-frame-start-scan', 'game-look', 'game-pick-shoot'],
+    after: [InputFrameStartScan, GameLookOrder, GamePickShootOrder],
     fn: () => {
       if (ctx.readInput().action('reset').justPressed()) ctx.requestReset();
     },

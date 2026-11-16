@@ -224,7 +224,7 @@ export async function fullAtmosphereCases(backend: 'webgpu' | 'wgpu-webgl2') {
       errors.push(event.error);
       if (errors.length <= 3) console.error('[full-atmosphere-error]', JSON.stringify(event.error));
     });
-    const request = { leases: [lease], camera: { lease }, environment: { lease } };
+    const request = { source: lease, camera: { entityKey: camera } };
     const draw = async (observe = false) => {
       world.update(1 / 60).unwrap();
       propagateTransforms(world).unwrap();

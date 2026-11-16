@@ -4,6 +4,7 @@
 
 import type {
   BindGroupLayout,
+  BindGroupLayoutEntry,
   ComputePipeline,
   PipelineLayout,
   RenderPipeline,
@@ -269,6 +270,9 @@ export type FullscreenPassResources = Pick<
 > & {
   readonly gtaoComputePipeline: ComputePipeline | null;
   readonly gtaoComputeBgl: BindGroupLayout | null;
+  readonly ssaoDepthCalcPipeline: RenderPipeline | null;
+  readonly ssaoDepthBlurPipeline: RenderPipeline | null;
+  readonly ssaoDepthBgl: BindGroupLayout | null;
 };
 
 export function emptyFullscreenPassResources(): FullscreenPassResources {
@@ -288,6 +292,9 @@ export function emptyFullscreenPassResources(): FullscreenPassResources {
     ssaoClusterPackBgl: null,
     gtaoComputePipeline: null,
     gtaoComputeBgl: null,
+    ssaoDepthCalcPipeline: null,
+    ssaoDepthBlurPipeline: null,
+    ssaoDepthBgl: null,
   };
 }
 
@@ -500,6 +507,49 @@ function createSkyboxPassResources(
   };
 }
 
+/** hdrp-ssao.wgsl @group(0); binding 4 is the prepass normal. */
+const SSAO_BGL_ENTRIES: readonly BindGroupLayoutEntry[] = [
+  { binding: 0, visibility: GPU_SHADER_STAGE_FRAGMENT, buffer: { type: 'uniform' } },
+  { binding: 1, visibility: GPU_SHADER_STAGE_FRAGMENT, buffer: { type: 'uniform' } },
+  {
+    binding: 2,
+    visibility: GPU_SHADER_STAGE_FRAGMENT,
+    texture: { sampleType: 'unfilterable-float', viewDimension: '2d' },
+  },
+  {
+    binding: 3,
+    visibility: GPU_SHADER_STAGE_FRAGMENT,
+    sampler: { type: 'non-filtering' },
+  },
+  {
+    binding: 4,
+    visibility: GPU_SHADER_STAGE_FRAGMENT,
+    texture: { sampleType: 'uint', viewDimension: '2d' },
+  },
+  {
+    binding: 5,
+    visibility: GPU_SHADER_STAGE_FRAGMENT,
+    texture: { sampleType: 'depth', viewDimension: '2d' },
+  },
+  {
+    binding: 6,
+    visibility: GPU_SHADER_STAGE_FRAGMENT,
+    sampler: { type: 'non-filtering' },
+  },
+  {
+    binding: 7,
+    visibility: GPU_SHADER_STAGE_FRAGMENT,
+    texture: { sampleType: 'unfilterable-float', viewDimension: '2d' },
+  },
+  {
+    binding: 8,
+    visibility: GPU_SHADER_STAGE_FRAGMENT,
+    // Shared with binding 3 (one sampler resource); both entries must
+    // declare the same sampler-type kind.
+    sampler: { type: 'non-filtering' },
+  },
+];
+
 /**
  * SSAO calculation and bilateral blur share the hdrp-ssao.wgsl layout and
  * module; distinct synthetic shader IDs keep their entry points in separate
@@ -518,53 +568,12 @@ function createSsaoPassResources(
   | 'ssaoBgl'
   | 'ssaoClusterPackPipeline'
   | 'ssaoClusterPackBgl'
+  | 'ssaoDepthCalcPipeline'
+  | 'ssaoDepthBlurPipeline'
+  | 'ssaoDepthBgl'
 > {
   const bindGroupLayout = runShimSyncStep(
-    () =>
-      device.createBindGroupLayout({
-        label: 'ssao-bgl',
-        entries: [
-          { binding: 0, visibility: GPU_SHADER_STAGE_FRAGMENT, buffer: { type: 'uniform' } },
-          { binding: 1, visibility: GPU_SHADER_STAGE_FRAGMENT, buffer: { type: 'uniform' } },
-          {
-            binding: 2,
-            visibility: GPU_SHADER_STAGE_FRAGMENT,
-            texture: { sampleType: 'unfilterable-float', viewDimension: '2d' },
-          },
-          {
-            binding: 3,
-            visibility: GPU_SHADER_STAGE_FRAGMENT,
-            sampler: { type: 'non-filtering' },
-          },
-          {
-            binding: 4,
-            visibility: GPU_SHADER_STAGE_FRAGMENT,
-            texture: { sampleType: 'uint', viewDimension: '2d' },
-          },
-          {
-            binding: 5,
-            visibility: GPU_SHADER_STAGE_FRAGMENT,
-            texture: { sampleType: 'depth', viewDimension: '2d' },
-          },
-          {
-            binding: 6,
-            visibility: GPU_SHADER_STAGE_FRAGMENT,
-            sampler: { type: 'non-filtering' },
-          },
-          {
-            binding: 7,
-            visibility: GPU_SHADER_STAGE_FRAGMENT,
-            texture: { sampleType: 'unfilterable-float', viewDimension: '2d' },
-          },
-          {
-            binding: 8,
-            visibility: GPU_SHADER_STAGE_FRAGMENT,
-            // Shared with binding 3 (one sampler resource); both entries must
-            // declare the same sampler-type kind.
-            sampler: { type: 'non-filtering' },
-          },
-        ],
-      }),
+    () => device.createBindGroupLayout({ label: 'ssao-bgl', entries: SSAO_BGL_ENTRIES }),
     'webgpu-runtime-error',
     'createBindGroupLayout(ssao) succeeded',
     'check device.limits.maxBindGroupsPerPipelineLayout',
@@ -596,6 +605,7 @@ function createSsaoPassResources(
     { ...baseModules, fragmentEntryPoint: 'fs_ssao_blur' },
     'createRenderPipeline (ssao-blur fullscreen) failed; inspect gpuMessage',
   );
+  const depth = createSsaoDepthPipelines(device, provider, cache, ssaoModule);
   const packBglResult = device.createBindGroupLayout({
     label: 'ssao-cluster-pack-bgl',
     entries: [
@@ -629,6 +639,56 @@ function createSsaoPassResources(
     ssaoBgl: bindGroupLayout.value,
     ssaoClusterPackPipeline: packPipeline,
     ssaoClusterPackBgl: packBgl,
+    ...depth,
+  };
+}
+
+/**
+ * Depth-only prepass AO: the *_depth entries reconstruct normals from depth and
+ * never declare gbuffer_normal, so their layout omits binding 4.
+ */
+function createSsaoDepthPipelines(
+  device: RhiDevice,
+  provider: PipelineDeviceProvider,
+  cache: PipelineCache,
+  ssaoModule: NonNullable<EngineShaderModules['ssao']>,
+): Pick<
+  FullscreenPassResources,
+  'ssaoDepthCalcPipeline' | 'ssaoDepthBlurPipeline' | 'ssaoDepthBgl'
+> {
+  const bindGroupLayout = device.createBindGroupLayout({
+    label: 'ssao-depth-bgl',
+    entries: SSAO_BGL_ENTRIES.filter((entry) => entry.binding !== 4),
+  });
+  if (!bindGroupLayout.ok) throw bindGroupLayout.error;
+  const modules = {
+    vertex: ssaoModule,
+    fragment: ssaoModule,
+    vertexEntryPoint: 'vs_ssao',
+    layout: createSinglePipelineLayout(
+      device,
+      'ssao-depth-pl',
+      bindGroupLayout.value,
+      'createPipelineLayout(ssao-depth) succeeded',
+      'verify the depth-only SSAO layout matches the *_depth entries',
+    ),
+  };
+  return {
+    ssaoDepthCalcPipeline: buildPipelineOrThrow(
+      fullscreenPipelineSpec('forgeax::post::ssao-calc-depth', 'post-process', 'rgba8unorm', 1),
+      provider,
+      cache,
+      { ...modules, fragmentEntryPoint: 'fs_ssao_calc_depth' },
+      'createRenderPipeline (ssao-calc-depth fullscreen) failed; inspect gpuMessage',
+    ),
+    ssaoDepthBlurPipeline: buildPipelineOrThrow(
+      fullscreenPipelineSpec('forgeax::post::ssao-blur-depth', 'post-process', 'r8unorm', 1),
+      provider,
+      cache,
+      { ...modules, fragmentEntryPoint: 'fs_ssao_blur_depth' },
+      'createRenderPipeline (ssao-blur-depth fullscreen) failed; inspect gpuMessage',
+    ),
+    ssaoDepthBgl: bindGroupLayout.value,
   };
 }
 
@@ -710,5 +770,8 @@ export function createFullscreenPassResources(
     ssaoClusterPackBgl: ssao.ssaoClusterPackBgl,
     gtaoComputePipeline: gtaoCompute.gtaoComputePipeline,
     gtaoComputeBgl: gtaoCompute.gtaoComputeBgl,
+    ssaoDepthCalcPipeline: ssao.ssaoDepthCalcPipeline,
+    ssaoDepthBlurPipeline: ssao.ssaoDepthBlurPipeline,
+    ssaoDepthBgl: ssao.ssaoDepthBgl,
   };
 }

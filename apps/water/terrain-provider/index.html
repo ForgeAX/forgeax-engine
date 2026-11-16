@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#edf1eb" />
+  <link rel="icon" href="data:," />
+  <title>Terrain Provider | ForgeAX</title>
+</head>
+<body>
+  <canvas id="scene" aria-label="预制河道地形与水体场景"></canvas>
+  <button id="panel-toggle" class="panel-toggle" type="button" aria-expanded="true" title="隐藏面板">面板</button>
+  <aside class="inspector" aria-label="Terrain provider 状态">
+    <header>
+      <div><span class="eyebrow">FORGEAX / WATER + TERRAIN</span><h1>河道地形</h1></div>
+      <span id="render-state" class="render-state">正在启动</span>
+    </header>
+    <section class="plan-controls" aria-label="预制地形方案">
+      <h2>Terrain 版本</h2>
+      <div class="segmented" role="group" aria-label="切换预制 Terrain 版本">
+        <button type="button" data-revision="a" aria-pressed="true">方案 A</button>
+        <button type="button" data-revision="b" aria-pressed="false">方案 B</button>
+      </div>
+      <label class="provider-toggle"><input id="provider-enabled" type="checkbox" checked /><span>Zone Terrain provider</span></label>
+    </section>
+    <section class="snapshot" aria-label="Zone ground 输入状态">
+      <div class="snapshot-heading"><h2>Zone ground</h2><span id="availability" class="availability">等待</span></div>
+      <dl>
+        <div><dt>generation</dt><dd id="generation">—</dd></div>
+        <div><dt>输入状态</dt><dd id="dirty-state">—</dd></div>
+        <div><dt>Zone</dt><dd id="zone-guid">—</dd></div>
+        <div><dt>Terrain provider</dt><dd id="provider-guid">—</dd></div>
+        <div><dt>Asset version</dt><dd id="provider-version">—</dd></div>
+        <div><dt>bounds XZ</dt><dd id="provider-bounds">—</dd></div>
+        <div><dt>WaterInfo 几何</dt><dd id="water-info-geometry">等待几何 receipt</dd></div>
+      </dl>
+    </section>
+    <p id="status" class="status" role="status">正在加载预制资源…</p>
+  </aside>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

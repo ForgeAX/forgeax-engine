@@ -4,9 +4,11 @@
 // PageUp/PageDown move the light rig. The scene lives in scene.mjs so the Dawn
 // smoke falsifies exactly this composition.
 
+import { InputFrameStartScan } from "@forgeax/engine-input";
+import { defineSystem } from "@forgeax/engine-ecs";
 import { createApp } from '@forgeax/engine-app/browser';
 import { Update } from '@forgeax/engine-ecs';
-import { FRAME_START_SCAN_SYSTEM_NAME, INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine-input';
+import { INPUT_SNAPSHOT_RESOURCE_KEY } from '@forgeax/engine-input';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import {
   adjustBias, BIAS_DEFAULTS, cycleFilter, describe, moveLight, setBiases, spawnBiasesScene, toggleLight,
@@ -43,12 +45,12 @@ async function bootstrap(target: HTMLCanvasElement, status: HTMLPreElement): Pro
   const scene = spawnBiasesScene(app.world, target.width / Math.max(target.height, 1));
   status.textContent = describe(app.world, scene);
 
-  app.world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'bevy-shadow-biases-keys',
-    after: [FRAME_START_SCAN_SYSTEM_NAME],
+    after: [InputFrameStartScan],
     queries: [],
     fn: (world) => {
-      const keyboard = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY)?.keyboard;
+      const keyboard = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY)?.keyboard;
       if (keyboard === undefined) return;
       let changed = false;
       for (const [code, light, field, sign] of BIAS_KEYS) {
@@ -64,6 +66,7 @@ async function bootstrap(target: HTMLCanvasElement, status: HTMLPreElement): Pro
       if (changed) status.textContent = describe(world, scene);
     },
   });
+app.world.addSystem(Update, systemToken1);
 
   const started = app.start();
   if (!started.ok) console.error('[bevy-shadow-biases] app.start() failed:', started.error);

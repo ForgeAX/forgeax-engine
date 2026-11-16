@@ -12,7 +12,6 @@ import { jpegTextureSnapshot, toggleJpegTextureSwap } from './jpeg-texture-swap'
 import type { VideoTexturePanel } from './video-texture-panel';
 import { spriteAtlasSnapshot, type SpriteAtlasLoop } from './sprite-atlas-loop';
 import { targetProfileSnapshot, type TargetProfileLoop } from './target-profile-loop';
-import type { MultiWorldOverlay } from './multi-world-overlay';
 import type { WorldScoreTextHandle } from './world-score-text';
 import type { FbxSkinnedTarget } from './fbx-skinned-target';
 import type { GameplayVfx } from './gameplay-vfx';
@@ -35,7 +34,7 @@ import type {
   SentinelIdentityResolution,
 } from './sentinel-authorship';
 import type { SentinelRangedThreat } from './sentinel-ranged-threat';
-import { GAME_DEFAULT_COMMAND_COUNTERS, type GameplayCommandCounters } from './resources/gameplay';
+import { GAME_DEFAULT_COMMAND_COUNTERS } from './resources/gameplay';
 import { Projectile, projectileAllegianceFromValue } from './components/gameplay';
 import type { LightingModeHandle } from './lighting-mode';
 import type { ResonanceForge } from './resonance-forge';
@@ -62,7 +61,6 @@ export type GameplayProjectionContext = {
   readonly applyTargetProfile: () => AssetLabActionResult;
   readonly applyFbxCompanion: () => AssetLabActionResult;
   readonly spriteAtlasLoop: SpriteAtlasLoop | undefined;
-  readonly multiWorldOverlay: MultiWorldOverlay | undefined;
   readonly worldScoreText: WorldScoreTextHandle | undefined;
   readonly fbxSkinnedTarget: FbxSkinnedTarget | undefined;
   readonly vfxHitLoop: GameplayVfx;
@@ -93,7 +91,6 @@ export type GameplayProjectionContext = {
 };
 
 const EMPTY_VIDEO_TEXTURE = { available: false, active: 'original', swaps: 0, hitReactions: 0, lastHitPlayhead: null, guid: null, name: null, kind: null, url: null } as const;
-const EMPTY_MULTI_WORLD = { enabled: false, worldCount: 1, entityCount: 0, cameraOwner: 0, resourceOwner: 0 } as const;
 const EMPTY_WORLD_SCORE_TEXT = { available: false, baked: false, active: false, text: '', age: 0, position: [0, 0, 0], fontSource: 'legacy-pack', fontGuid: null, fontSize: 0, color: [1, 1, 1, 1], toggles: 0 } as const;
 const EMPTY_FBX_SKINNED_TARGET = { available: false, root: null, skinEntity: null, clipGuid: null, jointCount: 0, position: [0, 0, 0], scale: [1, 1, 1], worldMatrix: [], animationTime: 0, hitPulses: 0, companionActive: false, targetEntity: null } as const;
 const EMPTY_ATTACK_PRESENTATION: AttackPresentationSnapshot = { available: false, charging: false, chargeProgress: 0, chargePower: 1, shotsFired: 0, trailStarts: 0, impactBursts: 0, misses: 0, overchargeShots: 0, overchargeImpacts: 0, activeTrails: 0, lastImpactScale: 1, lastVariant: 'normal' };
@@ -156,7 +153,6 @@ export function installGameplayProjection(args: GameplayProjectionContext): void
           targetProfile: targetProfileSnapshot(args.targetProfile),
           targetRelay: args.targetRelay.snapshot(),
           spriteAtlas: spriteAtlasSnapshot(args.spriteAtlasLoop),
-          multiWorld: args.multiWorldOverlay?.snapshot() ?? EMPTY_MULTI_WORLD,
           worldScoreText: args.worldScoreText?.snapshot() ?? EMPTY_WORLD_SCORE_TEXT,
           fbxSkinnedTarget: args.fbxSkinnedTarget?.snapshot() ?? EMPTY_FBX_SKINNED_TARGET,
           vfxHit: args.vfxHitLoop.snapshot(),
@@ -234,7 +230,7 @@ export function installGameplayProjection(args: GameplayProjectionContext): void
             playerActive: projectileRows.filter((row) => row.allegiance === 'player').length,
             hostileActive: projectileRows.filter((row) => row.allegiance === 'hostile').length,
             entries: projectileRows,
-            ...args.world.getResource<GameplayCommandCounters>(GAME_DEFAULT_COMMAND_COUNTERS),
+            ...args.world.getResource(GAME_DEFAULT_COMMAND_COUNTERS),
           },
         });
       },
@@ -361,17 +357,6 @@ export function installGameplayProjection(args: GameplayProjectionContext): void
       title: 'Toggle TTF font plugin',
       description: 'Switch the same pooled hit-score GlyphText between the legacy baked pack and the licensed TTF font importer output.',
       run: () => asProjection({ fontSource: args.worldScoreText?.toggleFontSource() ?? 'legacy-pack', ...(args.worldScoreText?.snapshot() ?? {}) }),
-    }),
-    projection.registerAction({
-      id: 'game-default.toggle-multi-world',
-      title: 'Toggle secondary world',
-      description: 'Enable or disable two beacon entities rendered from a secondary World using the primary camera and lights.',
-      run: () => {
-        if (args.multiWorldOverlay === undefined) return asProjection({ enabled: false, available: false });
-        const nextEnabled = !args.multiWorldOverlay.snapshot().enabled;
-        args.multiWorldOverlay.setEnabled(nextEnabled);
-        return asProjection({ enabled: nextEnabled, available: true });
-      },
     }),
     projection.registerAction({
       id: 'game-default.toggle-lighting-mode',

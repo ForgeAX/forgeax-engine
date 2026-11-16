@@ -7,6 +7,7 @@ import {
 } from '../execution/shared-kernel';
 import { createStateProjection } from '../projection/state-projection';
 import type { QuerySpan } from '../query/query';
+import { defineSystem } from '../schedule';
 import { Update } from '../schedule-token';
 import { World } from '../world';
 
@@ -62,6 +63,8 @@ function runCase(
   const projection = createStateProjection(world, [Position]);
   projection.read().accept();
 
+  const firstOrder: import('../schedule').SystemOrderReference[] = [];
+  const secondOrder: import('../schedule').SystemOrderReference[] = [];
   const first = defineSharedKernel(import.meta.url, {
     name: `${kind}-first`,
     minimumRows: 1,
@@ -69,7 +72,7 @@ function runCase(
       kind === 'read-read' || kind === 'read-write' ? { read: [Position] } : { write: [Position] },
     ],
     run: kind === 'read-read' || kind === 'read-write' ? readPosition : incrementPosition,
-    before: kind === 'structure' ? ['structure'] : [`${kind}-second`],
+    before: firstOrder,
   });
   const second = defineSharedKernel(import.meta.url, {
     name: `${kind}-second`,
@@ -81,22 +84,24 @@ function runCase(
         : kind === 'read-write'
           ? incrementPosition
           : doublePosition,
-    ...(kind === 'structure' ? { after: ['structure'] } : {}),
+    after: secondOrder,
   });
   world.addSystem(Update, first).unwrap();
   if (kind === 'structure') {
-    world
-      .addSystem(Update, {
-        name: 'structure',
-        queries: [],
-        before: [second.name],
-        fn: (_world, _queries, commands) => {
-          trace.push('structure');
-          commands.spawn({ component: StructuralMarker, data: {} });
-        },
-      })
-      .unwrap();
+    const systemToken1 = defineSystem({
+      name: 'structure',
+      queries: [],
+      before: [second],
+      fn: (_world, _queries, commands) => {
+        trace.push('structure');
+        commands.spawn({ component: StructuralMarker, data: {} });
+      },
+    });
+    firstOrder.push(systemToken1);
+    secondOrder.push(systemToken1);
+    world.addSystem(Update, systemToken1).unwrap();
   }
+  if (kind !== 'structure') firstOrder.push(second);
   world.addSystem(Update, second).unwrap();
 
   world.update(0).unwrap();

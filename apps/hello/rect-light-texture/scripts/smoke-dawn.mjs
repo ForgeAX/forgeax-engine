@@ -22,8 +22,7 @@ import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs'
 // SMOKE_PERF_ROUNDS=<n> additionally alternates warmed uniform/textured blocks
 // and reports median GPU-complete frame time (diagnostic; never gated).
 // SMOKE_SIZE=<w>x<h> overrides the 256x160 target.
-
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -36,6 +35,7 @@ import {
   populateRectLightTextureWorld,
   projectToPixel,
 } from '../src/scene.ts';
+import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const [WIDTH, HEIGHT] = (process.env.SMOKE_SIZE ?? '256x160').split('x').map(Number);
@@ -130,11 +130,11 @@ const { World } = await import('@forgeax/engine-ecs');
 const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/internal/renderer-host');
 const { DEFAULT_STANDARD_PROFILE } = await import('@forgeax/engine-render');
 
-const manifest = readFileSync(resolve(here, '..', 'dist', 'shaders', 'manifest.json'), 'utf8');
+const manifest = readShaderManifestText(resolve(here, '..', 'dist', 'shaders', 'manifest.json'));
 const constructed = await constructRuntimeRendererHost(
   mockCanvas,
   { standardProfile: DEFAULT_STANDARD_PROFILE },
-  { shaderManifestUrl: `data:application/json,${encodeURIComponent(manifest)}` },
+  { shaderManifestUrl: `data:application/octet-stream;base64,${manifest.toString('base64')}` },
 ).catch((err) => fail(`renderer host threw: ${err instanceof Error ? err.message : String(err)}`));
 gpu.requestAdapter = originalRequestAdapter;
 if (!constructed.ok) fail(`renderer host: ${constructed.error.code} - ${constructed.error.hint}`);
@@ -283,7 +283,7 @@ async function renderPhase(index, source, frames) {
   let firstFrameDispatches = 0;
   for (let frame = 0; frame < frames; frame++) {
     world.update().unwrap();
-    latestReceipt = await drawReadyFrame(renderer, { leases: [lease], camera: { lease }, environment: { lease } });
+    latestReceipt = await drawReadyFrame(renderer, { source: lease });
     totalFrames++;
     if (frame === 0) {
       // The switch frame carries any slice rebuild; steady frames follow.
@@ -331,7 +331,7 @@ for (const [offset, source] of [...compressed.keys()].entries()) {
 async function drawBlock(frames) {
   for (let frame = 0; frame < frames; frame++) {
     world.update().unwrap();
-    latestReceipt = await drawReadyFrame(renderer, { leases: [lease], camera: { lease }, environment: { lease } });
+    latestReceipt = await drawReadyFrame(renderer, { source: lease });
     totalFrames++;
   }
   await sharedDevice.queue.onSubmittedWorkDone();

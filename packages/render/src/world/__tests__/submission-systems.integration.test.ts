@@ -11,16 +11,14 @@ import {
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { expect, it, onTestFinished, vi } from 'vitest';
+import { registeredSystem } from '../../__tests__/registered-system.fixture';
 import { renderLifecycleManifestUrl } from '../../__tests__/shader-manifest-fixture';
 import { Camera, perspective } from '../../components/camera';
 import { CameraView } from '../../components/camera-view';
 import { constructRendererHost } from '../../construct-renderer';
+
 import * as renderWorlds from '../render-world';
 import { RenderCleanup, RenderCommit } from '../render-world';
-import {
-  RENDER_RECORD_COMMIT_SYSTEM,
-  RENDER_SUBMISSION_RETIRE_SYSTEM,
-} from '../submission-systems';
 
 vi.mock('../render-world', async (actual) => {
   const module = await actual<typeof import('../render-world')>();
@@ -135,7 +133,7 @@ async function setup() {
     for (const device of adapter.devices) device.gated.open();
     await renderer.dispose();
   });
-  const request = { leases: [lease], camera: { lease }, environment: { lease } };
+  const request = { source: lease };
   const device = () => adapter.devices.at(-1) as LosableDevice;
   const submitted = () => renderer.inspect().recoveryEvidence.submissions.count;
   /** Issue a frame; its completion settles once the device's gate opens. */
@@ -163,7 +161,9 @@ it('a failed queue submit never advances the submission count or view history', 
   expect(await issue()).toBe(true);
   expect(submitted()).toBe(before + 1);
   // The count is the render-record-commit system's product.
-  renderWorld.removeSystem(RenderCommit, RENDER_RECORD_COMMIT_SYSTEM).unwrap();
+  renderWorld
+    .removeSystem(RenderCommit, registeredSystem(renderWorld, RenderCommit, 'render-record-commit'))
+    .unwrap();
   expect(await issue()).toBe(true);
   expect(submitted()).toBe(before + 1);
 });
@@ -173,7 +173,13 @@ it.each([
   false,
 ])('a view retired with its frame in flight releases its output after that completion (system: %s)', async (system) => {
   const { renderWorld, world, cameras, device, issue } = await setup();
-  if (!system) renderWorld.removeSystem(RenderCleanup, RENDER_SUBMISSION_RETIRE_SYSTEM).unwrap();
+  if (!system)
+    renderWorld
+      .removeSystem(
+        RenderCleanup,
+        registeredSystem(renderWorld, RenderCleanup, 'render-submission-retire'),
+      )
+      .unwrap();
   expect(await issue()).toBe(true);
   const outputs = [...device().outputs.values()];
   expect(outputs.length).toBeGreaterThanOrEqual(2);

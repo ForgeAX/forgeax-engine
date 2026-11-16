@@ -175,13 +175,12 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){vfx_apply_force_
   const fields = () =>
     host.feature
       .extract({
-        worlds: [world],
-        owner: 0,
+        world: world,
         views: [{ identity: 'main', render: true }],
         frameNumber: ++frameNumber,
       })
       .unwrap()
-      .worlds[0]?.intents.at(-1)?.forceFields;
+      .source?.intents.at(-1)?.forceFields;
   try {
     world.update(1 / 60).unwrap();
     const first = fields();

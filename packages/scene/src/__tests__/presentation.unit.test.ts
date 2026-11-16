@@ -1,5 +1,6 @@
 import {
   createWorldContext,
+  defineSystem,
   type EntityHandle,
   FixedTime,
   FixedUpdate,
@@ -18,6 +19,7 @@ import {
   Transform,
   TransformInterpolation,
 } from '../index';
+import { PropagateTransforms, PropagateTransformsFixed } from '../systems/propagate-transforms';
 
 function x(world: World, entity: EntityHandle): number {
   const matrix = readPresentationWorldMatrix(world, entity);
@@ -39,18 +41,17 @@ describe('fixed-step transform presentation', () => {
         { component: ChildOf, data: { parent: root } },
       )
       .unwrap();
-    world
-      .addSystem(FixedUpdate, {
-        name: 'physics-like-writeback',
-        after: ['propagateTransformsFixed'],
-        queries: [],
-        fn: () => {
-          world
-            .set(root, Transform, { pos: [world.getResource(FixedTime).tick / 10, 0, 0] })
-            .unwrap();
-        },
-      })
-      .unwrap();
+    const systemToken1 = defineSystem({
+      name: 'physics-like-writeback',
+      after: [PropagateTransformsFixed],
+      queries: [],
+      fn: () => {
+        world
+          .set(root, Transform, { pos: [world.getResource(FixedTime).tick / 10, 0, 0] })
+          .unwrap();
+      },
+    });
+    world.addSystem(FixedUpdate, systemToken1).unwrap();
     try {
       world.update(2 / 60).unwrap();
       let previous = x(world, root);
@@ -85,20 +86,19 @@ it('captures the final two catch-up ticks and retires presentation changes on st
     .spawn({ component: Transform, data: {} }, { component: TransformInterpolation, data: {} })
     .unwrap();
   let moving = true;
-  world
-    .addSystem(FixedUpdate, {
-      name: 'move',
-      queries: [],
-      fn: () => {
-        if (moving)
-          world
-            .set(entity, Transform, {
-              pos: [(world.get(entity, Transform).unwrap().pos[0] ?? 0) + 1, 0, 0],
-            })
-            .unwrap();
-      },
-    })
-    .unwrap();
+  const systemToken2 = defineSystem({
+    name: 'move',
+    queries: [],
+    fn: () => {
+      if (moving)
+        world
+          .set(entity, Transform, {
+            pos: [(world.get(entity, Transform).unwrap().pos[0] ?? 0) + 1, 0, 0],
+          })
+          .unwrap();
+    },
+  });
+  world.addSystem(FixedUpdate, systemToken2).unwrap();
   try {
     world.update(3 / 60).unwrap();
     expect(x(world, entity)).toBeCloseTo(2);
@@ -168,24 +168,22 @@ it('keeps variable-rate child animation on the interpolated parent', async () =>
       { component: ChildOf, data: { parent: root } },
     )
     .unwrap();
-  world
-    .addSystem(FixedUpdate, {
-      name: 'move',
-      queries: [],
-      fn: () =>
-        world.set(root, Transform, { pos: [world.getResource(FixedTime).tick, 0, 0] }).unwrap(),
-    })
-    .unwrap();
-  world
-    .addSystem(Update, {
-      name: 'animate',
-      after: [FixedUpdate],
-      before: ['propagateTransforms'],
-      queries: [],
-      fn: () =>
-        world.set(child, Transform, { pos: [world.getResource(Time).elapsed, 0, 0] }).unwrap(),
-    })
-    .unwrap();
+  const systemToken3 = defineSystem({
+    name: 'move',
+    queries: [],
+    fn: () =>
+      world.set(root, Transform, { pos: [world.getResource(FixedTime).tick, 0, 0] }).unwrap(),
+  });
+  world.addSystem(FixedUpdate, systemToken3).unwrap();
+  const systemToken4 = defineSystem({
+    name: 'animate',
+    after: [FixedUpdate],
+    before: [PropagateTransforms],
+    queries: [],
+    fn: () =>
+      world.set(child, Transform, { pos: [world.getResource(Time).elapsed, 0, 0] }).unwrap(),
+  });
+  world.addSystem(Update, systemToken4).unwrap();
   try {
     world.update(2 / 60).unwrap();
     for (const dt of [1 / 240, 1 / 120, 3 / 60, 1 / 30, 1 / 60]) {
@@ -204,18 +202,17 @@ it('snaps teleports, reparenting and capped catch-up instead of blending unrelat
     .spawn({ component: Transform, data: {} }, { component: TransformInterpolation, data: {} })
     .unwrap();
   const parent = world.spawn({ component: Transform, data: { pos: [10, 0, 0] } }).unwrap();
-  world
-    .addSystem(FixedUpdate, {
-      name: 'move',
-      queries: [],
-      fn: () =>
-        world
-          .set(root, Transform, {
-            pos: [(world.get(root, Transform).unwrap().pos[0] ?? 0) + 1, 0, 0],
-          })
-          .unwrap(),
-    })
-    .unwrap();
+  const systemToken5 = defineSystem({
+    name: 'move',
+    queries: [],
+    fn: () =>
+      world
+        .set(root, Transform, {
+          pos: [(world.get(root, Transform).unwrap().pos[0] ?? 0) + 1, 0, 0],
+        })
+        .unwrap(),
+  });
+  world.addSystem(FixedUpdate, systemToken5).unwrap();
   try {
     world.update(2 / 60).unwrap();
     world.set(root, Transform, { pos: [30, 0, 0] }).unwrap();

@@ -30,10 +30,16 @@ beforeAll(async () => {
   const owner = resolve(import.meta.dirname, '../..');
   temporary = await mkdtemp(resolve(tmpdir(), 'forgeax-wechat-encoding-'));
   // Use the package's actual publication config, without writing shared dist.
-  await promisify(execFile)('pnpm', ['exec', 'tsup', '--out-dir', temporary, '--silent'], {
-    cwd: owner,
-    maxBuffer: 1024 * 1024,
-  });
+  await promisify(execFile)(
+    process.execPath,
+    [
+      resolve(owner, '../../node_modules/tsup/dist/cli-default.js'),
+      '--out-dir',
+      temporary,
+      '--silent',
+    ],
+    { cwd: owner, maxBuffer: 1024 * 1024 },
+  );
   // The first entry must execute before any Engine chunks and native globals.
   const standards = await readFile(resolve(temporary, 'standards.mjs'), 'utf8');
   const standalone = createContext({ setTimeout, clearTimeout });

@@ -19,6 +19,7 @@ import {
   type ShadowMaterialContent,
   sameShadowMaterialFrames,
 } from '../scene/material-shadow-content';
+import type { PersistentGpuDrivenState } from '../scene/render-scene';
 import { ShadowDepthLayers } from '../shadow-depth-layers';
 import { captureBatchLod } from './batch-execution';
 import { MemberCandidates } from './batch-members';
@@ -67,6 +68,8 @@ export interface ShadowViewUpdateInput {
   /** Final depth includes direct casters; fixed shared root covers even non-GPU geometry. */
   readonly directMaterials?: import('../scene/material-dispatch').MaterialFrame;
   readonly shadowMaterials?: ShadowMaterialContent;
+  /** Current fixed source rows resolve every selected row-material member. */
+  readonly materialSource?: Pick<PersistentGpuDrivenState, 'slotAt'>;
   readonly identity: ShadowViewIdentity;
   readonly casterChannels?: number | undefined;
   readonly sourcePlan: SubmissionPlan;
@@ -188,6 +191,8 @@ export interface ShadowPreparationCounters extends ShadowLayerWork {
   cacheHits: number;
   cacheRebuilds: number;
   cacheRebuildReasons: Partial<Record<ShadowViewInvalidationReason, number>>;
+  materialContentMisses: number;
+  sceneBoundsMisses: number;
   planComparisons: number;
   batchChecks: number;
   candidateScans: number;
@@ -414,9 +419,7 @@ function captureExecution(source: SubmissionPlan, scene: GpuScene): SubmissionPl
         (binding === undefined ? 0 : (scene.materialIndexForResource(binding.material) ?? 0)),
       geometryAddress:
         batch.geometryAddress ??
-        (binding === undefined
-          ? 0
-          : (scene.geometryIndexForResource(binding.worldId, binding.assetHandle) ?? 0)),
+        (binding === undefined ? 0 : (scene.geometryIndexForResource(binding.assetHandle) ?? 0)),
       ...(batch.prepared === undefined
         ? {}
         : {
@@ -565,7 +568,6 @@ function sameBinding(a: GpuDrivenBatch['binding'], b: GpuDrivenBatch['binding'])
   return (
     a !== undefined &&
     b !== undefined &&
-    a.worldId === b.worldId &&
     a.assetHandle === b.assetHandle &&
     a.material === b.material &&
     a.drawItemIndex === b.drawItemIndex &&
@@ -646,7 +648,6 @@ function compareShadowExecution(a: SubmissionPlan, b: SubmissionPlan): boolean {
       left.batchId !== right.batchId ||
       left.geometryAddress !== right.geometryAddress ||
       left.binding?.geometry !== right.binding?.geometry ||
-      left.binding?.worldId !== right.binding?.worldId ||
       left.binding?.assetHandle !== right.binding?.assetHandle ||
       !sameLod(left.lod, right.lod)
     )
@@ -1048,11 +1049,21 @@ function sameViewResources(previous: ShadowViewRecord, scene: GpuScene): boolean
 /** Asset changes have no geometric dirty boxes; they require a full static redraw. */
 function sameShadowContent(previous: ShadowViewRecord, input: ShadowViewUpdateInput): boolean {
   return (
-    sameShadowMaterialFrames(previous.directMaterials, input.directMaterials) &&
+    (input.shadowMaterials?.sameMaterialFrames(previous.directMaterials, input.directMaterials) ??
+      sameShadowMaterialFrames(previous.directMaterials, input.directMaterials)) &&
     (input.shadowMaterials === undefined
       ? previous.shadowMaterials === undefined
       : input.shadowMaterials.same(previous.shadowMaterials))
   );
+}
+
+function selectedShadowMaterials(
+  input: ShadowViewUpdateInput,
+  plan: SubmissionPlan,
+): ShadowMaterialContent | undefined {
+  return input.identity.layer === 'static' && input.materialSource !== undefined
+    ? input.shadowMaterials?.select(plan, input.materialSource)
+    : input.shadowMaterials;
 }
 
 function passNames(identity: ShadowViewIdentity): readonly string[] {
@@ -1189,6 +1200,8 @@ function countRebuild(
     cacheHits: 0,
     cacheRebuilds: 0,
     cacheRebuildReasons: {},
+    materialContentMisses: 0,
+    sceneBoundsMisses: 0,
     layerSlotVisits: 0,
     layerBatchSelections: 0,
     layerBatchPatches: 0,
@@ -1263,9 +1276,13 @@ export class ShadowViewStatePool {
     this.activeKeys.add(key);
     this.retiring.delete(key);
     const retainedContent = previous?.contentCursor;
+    const selection = this.selectPlan(previous, input, fixedSource, candidates);
+    if (fixedSource && input.shadowMaterials !== undefined) {
+      const shadowMaterials = selectedShadowMaterials(input, selection.plan);
+      if (shadowMaterials !== undefined) input = { ...input, shadowMaterials };
+    }
     let invalidationReason =
       this.structureInvalidationReason(previous, input) ?? planesChangedReason(previous, input);
-    const selection = this.selectPlan(previous, input, fixedSource, candidates);
     if (selection.executionChanged) invalidationReason ??= 'content-changed';
     invalidationReason ??= this.retainedInvalidationReason(
       previous,
@@ -1339,7 +1356,7 @@ export class ShadowViewStatePool {
     const sameDepthExecution =
       previous !== undefined &&
       executionPlan !== undefined &&
-      input.shadowMaterials?.same(previous.shadowMaterials) === true &&
+      selectedShadowMaterials(input, executionPlan)?.same(previous.shadowMaterials) === true &&
       sameShadowExecution(previous.submission.plan, executionPlan);
     const executionChanged =
       executionPlan !== undefined &&
@@ -1587,8 +1604,14 @@ export class ShadowViewStatePool {
       return 'graph-compiled';
     }
     if (!sameMatrix(previous.matrix, input.matrix)) return 'view-changed';
-    if (!sameShadowContent(previous, input)) return 'content-changed';
-    if (!this.sceneChangesMissView(previous, input)) return 'content-changed';
+    if (!sameShadowContent(previous, input)) {
+      previous.preparation.materialContentMisses++;
+      return 'content-changed';
+    }
+    if (!this.sceneChangesMissView(previous, input)) {
+      previous.preparation.sceneBoundsMisses++;
+      return 'content-changed';
+    }
     return undefined;
   }
 
@@ -1612,7 +1635,7 @@ export class ShadowViewStatePool {
   private sceneChangesMissView(previous: ShadowViewRecord, input: ShadowViewUpdateInput): boolean {
     const current = input.scene.contentCursor;
     if (previous.contentCursor === current) return true;
-    if (input.scene.changedSlotsSince(previous.contentCursor)?.length === 0) {
+    if (!input.scene.hasChangedSlotsSince(previous.contentCursor)) {
       previous.contentCursor = current;
       return true;
     }

@@ -1,5 +1,4 @@
 export {
-  NAVIGATION_FOLLOW_SYSTEM,
   NavigationAgent,
   NavigationAgentStatus,
   navigationFollowSystem,
@@ -14,7 +13,6 @@ export {
   solveNavigationAvoidance,
 } from './avoidance';
 export {
-  NAVIGATION_CHARACTER_SYSTEM,
   NavigationCharacter,
   navigationCharacterPlugin,
   setNavigationMesh,

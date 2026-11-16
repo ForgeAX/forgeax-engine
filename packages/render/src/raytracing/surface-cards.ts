@@ -253,7 +253,7 @@ export async function createSurfaceCapture(
         material.program.contract !== rayMaterialContract(material.asset)
       )
         return rayReferenceFailure('card material identity/context is stale or mismatched');
-      const admitted = admitRayMaterial(material.asset, String(material.id));
+      const admitted = admitRayMaterial(material.asset, String(material.id), 'card-capture');
       if (!admitted.ok) return admitted;
       if (
         material.program.paramSchema.some((p) => p.type === 'texture2d') &&

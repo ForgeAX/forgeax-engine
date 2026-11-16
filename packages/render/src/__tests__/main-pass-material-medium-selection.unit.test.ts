@@ -1,6 +1,10 @@
 import { World } from '@forgeax/engine-ecs';
-import { STANDARD_PIPELINE_PARAM_SCHEMA } from '@forgeax/engine-shader';
-import { describe, expect, it } from 'vitest';
+import {
+  createMaterialShaderProgram,
+  STANDARD_PIPELINE_PARAM_SCHEMA,
+} from '@forgeax/engine-shader';
+import { derive, err, ok } from '@forgeax/engine-types';
+import { describe, expect, it, vi } from 'vitest';
 import {
   buildPerSubmeshMaterialBg,
   type PerSubmeshMaterialBgDeps,
@@ -35,10 +39,31 @@ function dependencies(
     },
     ...(options.selectedShader === SHA_MEDIUM_SHADER
       ? {
-          getMaterialShaderArtifact: (shaderId: string) =>
-            shaderId === SHA_MEDIUM_SHADER
-              ? ({ receipt: { surface: { model: 'single-layer-medium' } } } as never)
-              : undefined,
+          shaderRegistry: {
+            findMaterialArtifact: (shaderId: string) =>
+              shaderId !== SHA_MEDIUM_SHADER
+                ? err(new Error('Unknown selected shader'))
+                : ok({
+                    paramSchema: [],
+                    receipt: { surface: { model: 'single-layer-medium' } },
+                    program: createMaterialShaderProgram(
+                      `
+                  @group(1) @binding(${derive([]).userRegionBindingEnd + 9}) var rawDepth: texture_2d<f32>;
+                  @fragment fn fs_main() -> @location(0) vec4<f32> {
+                    return textureLoad(rawDepth, vec2<i32>(0), 0);
+                  }
+                `,
+                      [
+                        {
+                          name: 'fs_main',
+                          stage: 'fragment',
+                          bindings: [{ group: 1, binding: derive([]).userRegionBindingEnd + 9 }],
+                        },
+                      ],
+                    ),
+                  }),
+            materialShaderManifestEntry: () => undefined,
+          },
         }
       : {}),
   };
@@ -122,7 +147,7 @@ describe('main-pass Surface material selection', () => {
     expect(deps.materialBgAssemblyCache.values().next().value).toBe(accepted);
   });
 
-  it('keeps accepted bindings isolated across compound namespace boundaries', () => {
+  it('keeps accepted bindings isolated between independent Renderer caches', () => {
     const deps = dependencies();
     const scope = (identity: string) =>
       ({ identity }) as unknown as PerSubmeshMaterialBgDeps['world'];
@@ -138,9 +163,13 @@ describe('main-pass Surface material selection', () => {
       materialShaderId: '1:s',
       paramSnapshot: { roughness: 0.9 },
     };
+    const other = dependencies();
     buildPerSubmeshMaterialBg(deps, first as never, 4, scope('w:7'));
-    buildPerSubmeshMaterialBg(deps, second as never, 4, scope('w'));
-    const entries = [...deps.materialBgAssemblyCache.values()];
+    buildPerSubmeshMaterialBg(other, second as never, 4, scope('w'));
+    const entries = [
+      ...deps.materialBgAssemblyCache.values(),
+      ...other.materialBgAssemblyCache.values(),
+    ];
     expect(entries).toHaveLength(2);
     expect(entries.map((entry) => entry.material)).toEqual([first, second]);
     deps.materialBgAssemblyCache.clear();
@@ -168,10 +197,21 @@ describe('main-pass Surface material selection', () => {
         };
       },
     });
+    const findArtifact = vi.fn(() =>
+      ok({
+        receipt: {
+          get surface() {
+            events.push('artifact');
+            return undefined;
+          },
+        },
+        program: createMaterialShaderProgram(''),
+      }),
+    );
     Object.assign(deps.runtime, {
-      getMaterialShaderArtifact: () => {
-        events.push('artifact');
-        return undefined;
+      shaderRegistry: {
+        findMaterialArtifact: findArtifact,
+        materialShaderManifestEntry: () => undefined,
       },
       getParamSchema: () => {
         events.push('schema');
@@ -192,12 +232,17 @@ describe('main-pass Surface material selection', () => {
     };
     const first = buildPerSubmeshMaterialBg(deps, material as never, 4, world);
     events.length = 0;
+    findArtifact.mockClear();
     expect(buildPerSubmeshMaterialBg(deps, material as never, 4, world)).toBe(first);
     // One recording resolves a shader's surface model once; a new recording asks again.
     expect(events).toEqual(['resolve', 'handle', 'probe', 'scope', 'schema', 'layout']);
+    // Water fluid admission still reads the registry on every recording.
+    expect(findArtifact).toHaveBeenCalledExactlyOnceWith('test');
     events.length = 0;
+    findArtifact.mockClear();
     expect(buildPerSubmeshMaterialBg({ ...deps }, material as never, 4, world)).toBe(first);
     expect(events).toEqual(['resolve', 'handle', 'probe', 'scope', 'artifact', 'schema', 'layout']);
+    expect(findArtifact).toHaveBeenCalledTimes(2);
     expect(deps.bindGroupEntries).toHaveLength(1);
   });
 

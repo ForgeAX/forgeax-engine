@@ -1,9 +1,12 @@
-import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { EngineContent } from '@forgeax/engine-content';
 import { createServer, type ViteDevServer } from 'vite';
 import { afterEach, describe, expect, it } from 'vitest';
+import {
+  createLiveSyncProjectDirectory,
+  prepareLiveSyncSharedInputs,
+} from '../../scripts/live-sync-inputs.mjs';
 import { createViteConfig } from '../host.js';
 import { readProjectFacts } from '../project.js';
 import { allocateLoopbackPort } from '../tools/browser-host.js';
@@ -18,8 +21,21 @@ afterEach(async () => {
 
 /** A project with the workspace Engine installed and one bare-name library under node_modules. */
 async function project(assetLibraries?: readonly string[]): Promise<string> {
-  const root = await mkdtemp(resolve(tmpdir(), 'forgeax-asset-libraries-'));
-  roots.push(root);
+  const sourceRoot = resolve(import.meta.dirname, '../../../..');
+  const manifestPath = process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST;
+  const { root, temporaryRoot } = await createLiveSyncProjectDirectory(
+    'forgeax-asset-libraries-',
+    sourceRoot,
+    manifestPath,
+  );
+  roots.push(temporaryRoot);
+  if (manifestPath)
+    await prepareLiveSyncSharedInputs({
+      sourceRoot,
+      projectRoot: root,
+      temporaryRoot,
+      manifestPath,
+    });
   const kit = resolve(root, 'node_modules/studio-kit');
   await mkdir(resolve(root, 'assets'), { recursive: true });
   await mkdir(resolve(kit, 'kit'), { recursive: true });

@@ -129,12 +129,7 @@ it('retains native Frame Mesh dependencies and advances unrelated-change cursors
     const lease = attached.value;
     const draw = async () => {
       world.update(1 / 60).unwrap();
-      return drawReadyFrame(renderer, {
-        leases: [lease],
-        camera: { lease },
-        environment: { lease },
-        geometryLane: 'direct',
-      });
+      return drawReadyFrame(renderer, { source: lease, geometryLane: 'direct' });
     };
     await draw();
     assert(device);

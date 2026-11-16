@@ -8,6 +8,7 @@ import type { Result } from '@forgeax/engine-types';
 import type { Component, ComponentSchema } from './component';
 import { componentId } from './component';
 import { fillComponentDefaults, validateComponentDataKeys } from './component-default-fallback';
+import { componentDefinition } from './component-schema';
 import { Entity } from './entity';
 import { ENTITY_NULL_RAW, type EntityHandle, entityGeneration, entityIndex } from './entity-handle';
 import {
@@ -18,7 +19,7 @@ import {
   ComponentNotPresentError,
   RelationshipSelfCycleError,
   RelationshipTargetReadonlyError,
-  RemoveEssentialComponentError,
+  RemoveEntityComponentError,
   StaleEntityError,
   SystemFailedError,
 } from './errors';
@@ -254,6 +255,37 @@ export function createCommandBuffer(
   scheduleName = '<unknown-schedule>',
 ): CommandBufferImpl {
   return new CommandBufferState(world, systemName, scheduleName);
+}
+
+/** Fixed-step suspension outlives the query and frame-arena views that staged these values. */
+export function detachCommandBufferPayloads(buffer: CommandBufferImpl): void {
+  if (buffer._queueLength === 0) return;
+  const detach = (input: ComponentData): ComponentData => {
+    const data = fillComponentDefaults(input.component, input.data);
+    for (const [name, plan] of Object.entries(componentDefinition(input.component).plan.fields)) {
+      const value = data[name];
+      if (
+        (plan.kind === 'array' ||
+          plan.kind === 'fixed-array' ||
+          plan.kind === 'buffer' ||
+          plan.kind === 'fixed-buffer') &&
+        value !== null &&
+        typeof value === 'object' &&
+        'length' in value &&
+        typeof value.length === 'number'
+      ) {
+        data[name] =
+          plan.kind === 'buffer' || plan.kind === 'fixed-buffer'
+            ? Uint8Array.from(value as ArrayLike<number>)
+            : Array.from(value as ArrayLike<unknown>);
+      }
+    }
+    return { component: input.component, data } as ComponentData;
+  };
+  for (const command of buffer._queue) {
+    if (command.type === 'spawn') command.componentDatas = command.componentDatas.map(detach);
+    else if (command.type === 'addComponent') command.componentData = detach(command.componentData);
+  }
 }
 
 function commandFailure(
@@ -532,13 +564,8 @@ function preflightCommands(buffer: CommandBufferImpl, world: WorldForCommands): 
             new RelationshipTargetReadonlyError(command.component.name, 'removeComponent'),
           );
         }
-        if (componentId(command.component) === 0) {
-          throw commandFailure(
-            buffer,
-            index,
-            command.type,
-            new RemoveEssentialComponentError(command.component.name),
-          );
+        if (componentId(command.component) === componentId(Entity)) {
+          throw commandFailure(buffer, index, command.type, new RemoveEntityComponentError());
         }
         const shadow = shadowFor(command.entity);
         if (shadow.dead) {

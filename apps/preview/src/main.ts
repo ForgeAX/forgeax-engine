@@ -353,7 +353,7 @@ async function startPreview(app: App, previewRun: PreviewUiRun): Promise<void> {
         const capture = previewProfiler.latestCapture();
         if (capture === undefined) return;
         window.clearInterval(poll);
-        const model = buildProfileModel(capture);
+        const model = buildProfileModel(capture, { orderEvidence: 'recorder-closure' });
         if (!model.ok) {
           console.warn(`[preview] profiler model failed: ${model.error.code}`);
           return;

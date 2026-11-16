@@ -27,12 +27,21 @@ import { describe, expectTypeOf, it } from 'vitest';
 import type { AssetRuntimeAssemblyError } from '../assets-runtime-assembly';
 import { createApp as createBrowserApp } from '../browser';
 import { type App, type AppError, createApp } from '../index';
+import type { CreateAppOptions } from '../types';
 
 describe('createApp double-SSOT entry signatures (w2 acceptanceCheck)', () => {
   it('canvas form returns the App boundary error union', () => {
     const canvas = null as unknown as HTMLCanvasElement;
     const ret = createBrowserApp(canvas);
     expectTypeOf(ret).toEqualTypeOf<
+      Promise<Result<App, AppError | RhiError | EngineEnvironmentError | AssetRuntimeAssemblyError>>
+    >();
+  });
+
+  it('forwards explicit feature-texture readback budgets through the local App surface', () => {
+    const options: CreateAppOptions = { featureTextureReadbackBudgetBytes: 1024 };
+    const canvas = null as unknown as HTMLCanvasElement;
+    expectTypeOf(createBrowserApp(canvas, options)).toEqualTypeOf<
       Promise<Result<App, AppError | RhiError | EngineEnvironmentError | AssetRuntimeAssemblyError>>
     >();
   });

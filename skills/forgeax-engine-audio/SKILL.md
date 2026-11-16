@@ -43,7 +43,7 @@ app.world.spawn({
   },
 }).unwrap();
 
-const backend = app.world.getResource<AudioBackend>(AUDIO_ENGINE_RESOURCE_KEY);
+const backend = app.world.getResource(AUDIO_ENGINE_RESOURCE_KEY);
 backend.setBusVolume('music', 0.3);
 app.start().unwrap();
 ```

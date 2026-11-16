@@ -117,7 +117,7 @@ const demoDirs = findDemoDirs();
 const violations = [];
 
 for (const dir of demoDirs) {
-  const relative = dir.slice(repoRoot.length + 1); // e.g. apps/learn-render/1.getting-started/1.hello-window/src
+  const relative = dir.slice(repoRoot.length + 1).replaceAll('\\', '/'); // e.g. apps/learn-render/1.getting-started/1.hello-window/src
 
   // Convert the src dir to the demo root (strip trailing "/src")
   const demoRoot = relative.replace(/\/src$/, '');

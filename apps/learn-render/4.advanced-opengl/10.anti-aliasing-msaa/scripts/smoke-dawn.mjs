@@ -39,10 +39,10 @@ import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.m
 // Charter P3 explicit failure: on fail, output structured diagnostic with actual
 // diffCount vs threshold so AI users can self-diagnose.
 
-import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { readShaderManifestText } from '../../../../../scripts/lib/shader-manifest.mjs';
 
 const WIDTH = 800;
 const HEIGHT = 600;
@@ -151,7 +151,7 @@ const { Transform } = await import('@forgeax/engine-scene');
 const { createPrimitiveMesh } = await import('@forgeax/engine-geometry');
 
 const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MANIFEST_PATH, 'utf8'))}`;
+const MANIFEST_URL = `data:application/json,${encodeURIComponent(readShaderManifestText(MANIFEST_PATH))}`;
 
 let renderer;
 try {
@@ -316,11 +316,7 @@ let framesObserved = 0;
 async function renderPass(world, lease) {
   for (let frame = 0; frame < SMOKE_MIN_FRAMES; frame += 1) {
     world.update(1 / 60).unwrap();
-    await drawReadyFrame(renderer, {
-      leases: [lease],
-      camera: { lease },
-      environment: { lease },
-    });
+    await drawReadyFrame(renderer, { source: lease });
     framesObserved += 1;
   }
   await device.queue.onSubmittedWorkDone();

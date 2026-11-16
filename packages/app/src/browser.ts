@@ -17,6 +17,7 @@ import {
   type RenderAblation,
   type Renderer,
 } from '@forgeax/engine-render';
+import { assertTextureMipSkip } from '@forgeax/engine-render/internal';
 import type { RendererHostAssembly } from '@forgeax/engine-render/internal/construct-renderer';
 import { ownPipelineLibrary } from '@forgeax/engine-rhi';
 import type { CaptureFrameOptions, RecorderAttachment } from '@forgeax/engine-rhi-debug';
@@ -126,6 +127,12 @@ function rhiDebugHostPlugin(dispose: () => void): Plugin {
   };
 }
 
+/** Programmer configuration: reject before any realm creates an AssetRegistry or Renderer. */
+function validateResourceBudgets(opts: CreateAppOptions | undefined): void {
+  if (opts?.assetBudgetBytes !== undefined) validateAssetBudgetBytes(opts.assetBudgetBytes);
+  if (opts?.textureMipSkip !== undefined) assertTextureMipSkip(opts.textureMipSkip);
+}
+
 /**
  * createApp(canvas, opts?, bundler?) -- canvas thin wrapper SSOT (per
  * plan-strategy D-5). Resolves with Result.ok(app) on success; failure routes
@@ -188,7 +195,7 @@ export async function createApp(
   // configures its swap chain; the same helper runs before each frame so a CSS
   // resize remains visible to both rendering and camera policy.
   // Programmer configuration: reject before any realm creates an AssetRegistry.
-  if (opts?.assetBudgetBytes !== undefined) validateAssetBudgetBytes(opts.assetBudgetBytes);
+  validateResourceBudgets(opts);
   // Before capability probing and backend selection, so every ambient WebGPU
   // reader in this realm observes the same stub.
   installCarriedGpuStub(opts);
@@ -367,8 +374,10 @@ export async function createApp(
     geometryLane: opts?.execution?.diagnostics?.geometryLane,
     onFrameSubmitted: (event) =>
       publishBrowserFrameSubmitted(canvas, { ...event, worldIdentity: world.identity }),
-    onFrameCompleted: (event) =>
-      publishBrowserFrameCompleted(canvas, { ...event, worldIdentity: world.identity }),
+    onFrameCompleted: (event) => {
+      publishBrowserFrameCompleted(canvas, { ...event, worldIdentity: world.identity });
+      opts?.onFrameCompleted?.(event);
+    },
     inputBackend,
     wireOnLockErrorDispatch:
       inputHandle === undefined
@@ -379,7 +388,7 @@ export async function createApp(
     audioBackend,
     silenceUnhandledErrors: opts?.silenceUnhandledErrors,
     // M2 / D-3: canvas form forwards the host-supplied draw-source pull.
-    drawSource: opts?.drawSource,
+    sceneAdmission: opts?.sceneAdmission,
     profiler: opts?.profiler,
     rhiCapture,
     debugDraw,
@@ -461,7 +470,7 @@ function realmBoundExecutionOptionError(
     ['shadowWorkload', opts.shadowWorkload],
     ['ssrIdentity', opts.ssrIdentity],
     ['captureReflectionFallbackReadback', opts.captureReflectionFallbackReadback],
-    ['drawSource', opts.drawSource],
+    ['sceneAdmission', opts.sceneAdmission],
     ['bundler.importTransport', bundler?.importTransport],
     ['bundler.readShaderManifest', bundler?.readShaderManifest],
   ] as const;
@@ -639,7 +648,11 @@ async function prepareLocalExecution(
     AppError
   >
 > {
-  const prepared = await prepareBootstrapEntry(bootstrapUrl, execution.bootstrapData);
+  const prepared = await prepareBootstrapEntry(
+    bootstrapUrl,
+    execution.bootstrapData,
+    execution.localBootstrap,
+  );
   if (!prepared.ok) return err(prepared.error);
   const options = withLocalExecutionDiagnostics(opts, execution);
   const runtimeBinding = options.execution?.assetCatalog?.runtimeBinding;
@@ -674,33 +687,55 @@ function rendererOptionsFor(
   if (opts?.standardProfile !== undefined) {
     Object.assign(rendererOpts, { standardProfile: opts.standardProfile });
   }
-  if (opts?.pipelineLibrary !== undefined)
-    Object.assign(rendererOpts, { pipelineLibrary: opts.pipelineLibrary });
-  if (opts?.backgroundPipelineLibrary !== undefined)
-    Object.assign(rendererOpts, { backgroundPipelineLibrary: opts.backgroundPipelineLibrary });
-  if (opts?.outputColorSpace !== undefined) {
-    Object.assign(rendererOpts, { outputColorSpace: opts.outputColorSpace });
-  }
-  if (opts?.dynamicGeometryMeshBudgetBytes !== undefined) {
-    Object.assign(rendererOpts, {
-      dynamicGeometryMeshBudgetBytes: opts.dynamicGeometryMeshBudgetBytes,
-    });
-  }
-  if (opts?.assetBudgetBytes !== undefined) {
-    Object.assign(rendererOpts, { assetBudgetBytes: opts.assetBudgetBytes });
-  }
-  if (opts?.rhiInstrumentation !== undefined) {
-    Object.assign(rendererOpts, { rhiInstrumentation: opts.rhiInstrumentation });
-  }
-  if (opts?.shadowWorkload === true) Object.assign(rendererOpts, { shadowWorkload: true });
-  if (opts?.gpuPassTiming !== undefined) {
-    Object.assign(rendererOpts, { gpuPassTiming: opts.gpuPassTiming });
-  }
-  if (opts?.captureReflectionFallbackReadback !== undefined) {
-    Object.assign(rendererOpts, {
-      captureReflectionFallbackReadback: opts.captureReflectionFallbackReadback,
-    });
-  }
+  const forwardRendererPolicies = (
+    opts: CreateAppOptions | undefined,
+    rendererOpts: import('@forgeax/engine-render').RendererOptions,
+  ) => {
+    if (opts?.pipelineLibrary !== undefined)
+      Object.assign(rendererOpts, { pipelineLibrary: opts.pipelineLibrary });
+    if (opts?.backgroundPipelineLibrary !== undefined)
+      Object.assign(rendererOpts, { backgroundPipelineLibrary: opts.backgroundPipelineLibrary });
+    if (opts?.backgroundPipelineLibraryConcurrency !== undefined) {
+      Object.assign(rendererOpts, {
+        backgroundPipelineLibraryConcurrency: opts.backgroundPipelineLibraryConcurrency,
+      });
+    }
+    if (opts?.outputColorSpace !== undefined) {
+      Object.assign(rendererOpts, { outputColorSpace: opts.outputColorSpace });
+    }
+    if (opts?.renderBackend !== undefined) {
+      Object.assign(rendererOpts, { renderBackend: opts.renderBackend });
+    }
+    if (opts?.dynamicGeometryMeshBudgetBytes !== undefined) {
+      Object.assign(rendererOpts, {
+        dynamicGeometryMeshBudgetBytes: opts.dynamicGeometryMeshBudgetBytes,
+      });
+    }
+    if (opts?.featureTextureReadbackBudgetBytes !== undefined) {
+      Object.assign(rendererOpts, {
+        featureTextureReadbackBudgetBytes: opts.featureTextureReadbackBudgetBytes,
+      });
+    }
+    if (opts?.assetBudgetBytes !== undefined) {
+      Object.assign(rendererOpts, { assetBudgetBytes: opts.assetBudgetBytes });
+    }
+    if (opts?.textureMipSkip !== undefined) {
+      Object.assign(rendererOpts, { textureMipSkip: opts.textureMipSkip });
+    }
+    if (opts?.rhiInstrumentation !== undefined) {
+      Object.assign(rendererOpts, { rhiInstrumentation: opts.rhiInstrumentation });
+    }
+    if (opts?.shadowWorkload === true) Object.assign(rendererOpts, { shadowWorkload: true });
+    if (opts?.gpuPassTiming !== undefined) {
+      Object.assign(rendererOpts, { gpuPassTiming: opts.gpuPassTiming });
+    }
+    if (opts?.captureReflectionFallbackReadback !== undefined) {
+      Object.assign(rendererOpts, {
+        captureReflectionFallbackReadback: opts.captureReflectionFallbackReadback,
+      });
+    }
+  };
+  forwardRendererPolicies(opts, rendererOpts);
   const ssrIdentity = preparedExecutionBootstrap?.ssrIdentity ?? opts?.ssrIdentity;
   if (ssrIdentity !== undefined) {
     Object.assign(rendererOpts, { ssrIdentity });

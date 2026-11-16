@@ -27,7 +27,7 @@
       },
       "fps": {
         "enabled": false,
-        "reason": "fps no-regression covered by hello-cube / hello-room / hello-app gates that run the default zero-overhead path; sprite transparent-bucket cost is gated by render bench (packages/render/bench/transparent-sort.bench.ts) instead"
+        "reason": "fps no-regression covered by hello-cube / hello-room / hello-app gates that run the default zero-overhead path"
       },
       "bench": {
         "enabled": false,

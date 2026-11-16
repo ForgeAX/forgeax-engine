@@ -15,14 +15,13 @@ function fixture(count = 128) {
     [...entities].map((entityKey) => {
       worlds.set(pose, entityKey * 16);
       const snapshot: RenderableSnapshot = {
-        worldId: 0,
         entityKey,
         transform: { world: pose },
         material,
         materials: [material],
         materialBindingSources: ['engine-default'],
       };
-      return { kind: 'update', worldId: 0, entityKey, snapshot };
+      return { kind: 'update', entityKey, snapshot };
     }),
     [],
     true,
@@ -45,15 +44,14 @@ it('matches ordinary merging for offsets, duplicates, parity, missing rows and h
   last[65 * 16 + 12] = 7;
   const spans: WorldTransformSpan[] = [
     {
-      worldId: 0,
       entities: actual.entities,
       worlds: first,
       rows: [...Array<number>(65).fill(2), 65, 2],
     },
-    { worldId: 0, entities: actual.entities, worlds: last, rows: [2, 65] },
-    { worldId: 0, entities: Uint32Array.of(999, 999), worlds: new Float32Array(32) },
+    { entities: actual.entities, worlds: last, rows: [2, 65] },
+    { entities: Uint32Array.of(999, 999), worlds: new Float32Array(32) },
   ];
-  const result = actual.rows.applyOwnedTransforms(spans, world);
+  const result = actual.rows.apply([], spans, true, world);
   const expected = oracle.rows.apply([], spans, true);
   expect(result.updated).toBe(expected.updated);
   expect(result.ignoredLateUpdates).toBe(2);
@@ -80,14 +78,16 @@ it('denies a later chunk before any write and retries a smaller update on the sa
   const revision = f.rows.revision;
   for (let row = 0; row < 65; row++) f.worlds[row * 16 + 12] = 8;
   expect(() =>
-    f.rows.applyOwnedTransforms([{ worldId: 0, entities: f.entities, worlds: f.worlds }], world),
+    f.rows.apply([], [{ entities: f.entities, worlds: f.worlds }], true, world),
   ).toThrow();
   expect(world.withFrameArena(() => ok(true)).unwrap()).toBe(true);
   expect(f.rows.capture()).toBe(before);
   expect(f.rows.revision).toBe(revision);
   expect(world.memoryStats().arena.active).toBe(false);
-  const delta = f.rows.applyOwnedTransforms(
-    [{ worldId: 0, entities: f.entities, worlds: f.worlds, rows: [0, 64] }],
+  const delta = f.rows.apply(
+    [],
+    [{ entities: f.entities, worlds: f.worlds, rows: [0, 64] }],
+    true,
     world,
   );
   expect(delta.updated).toBe(2);
@@ -101,29 +101,22 @@ it('reuses arena backing through twenty dense and smaller-demand cycles without 
   let backing = 0;
   for (let cycle = 0; cycle < 20; cycle++) {
     for (let row = 0; row < 1024; row++) f.worlds[row * 16 + 12] = cycle + 1;
-    const delta = f.rows.applyOwnedTransforms(
-      [{ worldId: 0, entities: f.entities, worlds: f.worlds }],
-      world,
-    );
+    const delta = f.rows.apply([], [{ entities: f.entities, worlds: f.worlds }], true, world);
     expect(delta.updated).toBe(1024);
     const held = delta.updatedSlots[0];
     assert(held);
     if (cycle === 0) backing = world.memoryStats().arena.backingAllocations;
     expect(world.memoryStats().arena.backingAllocations).toBe(backing);
     f.worlds[12] = cycle + 101;
-    f.rows.applyOwnedTransforms(
-      [{ worldId: 0, entities: f.entities, worlds: f.worlds, rows: [0] }],
-      world,
-    );
+    f.rows.apply([], [{ entities: f.entities, worlds: f.worlds, rows: [0] }], true, world);
     expect(held.snapshot.transform.world[12]).toBe(cycle + 1);
     expect(world.memoryStats().arena.usedBytes).toBe(0);
   }
   const root = f.rows.capture();
   const requests = world.memoryStats().arena.requests;
-  expect(
-    f.rows.applyOwnedTransforms([{ worldId: 0, entities: f.entities, worlds: f.worlds }], world)
-      .updated,
-  ).toBe(0);
+  expect(f.rows.apply([], [{ entities: f.entities, worlds: f.worlds }], true, world).updated).toBe(
+    0,
+  );
   expect(f.rows.capture()).toBe(root);
   expect(world.memoryStats().arena.requests).toBe(requests);
 });
@@ -134,15 +127,11 @@ it('rejects overlapping admission before overwriting shared staging and keeps or
   let attempts = 0;
   const spans: WorldTransformSpan[] = [
     {
-      worldId: 0,
       entities: f.entities,
       get worlds() {
         attempts++;
         expect(() =>
-          f.rows.applyOwnedTransforms(
-            [{ worldId: 0, entities: f.entities, worlds: f.worlds }],
-            world,
-          ),
+          f.rows.apply([], [{ entities: f.entities, worlds: f.worlds }], true, world),
         ).toThrow('reenter');
         return f.worlds;
       },
@@ -152,10 +141,9 @@ it('rejects overlapping admission before overwriting shared staging and keeps or
   expect(f.rows.apply([], spans, true).updated).toBe(1);
   expect(attempts).toBe(128);
   f.worlds[12] = 11;
-  expect(
-    f.rows.applyOwnedTransforms([{ worldId: 0, entities: f.entities, worlds: f.worlds }], world)
-      .updated,
-  ).toBe(1);
+  expect(f.rows.apply([], [{ entities: f.entities, worlds: f.worlds }], true, world).updated).toBe(
+    1,
+  );
   expect(f.rows.capture().slotAt(0)?.snapshot.transform.world[12]).toBe(11);
 });
 
@@ -163,11 +151,11 @@ it('preserves strict NaN changes and tiny admission without requesting arena cap
   const f = fixture();
   const world = new World();
   f.worlds[12] = Number.NaN;
-  const span = { worldId: 0, entities: f.entities, worlds: f.worlds };
-  expect(f.rows.applyOwnedTransforms([span], world).updated).toBe(1);
-  expect(f.rows.applyOwnedTransforms([span], world).updated).toBe(1);
+  const span = { entities: f.entities, worlds: f.worlds };
+  expect(f.rows.apply([], [span], true, world).updated).toBe(1);
+  expect(f.rows.apply([], [span], true, world).updated).toBe(1);
   const requests = world.memoryStats().arena.requests;
   f.worlds[16 + 12] = 3;
-  expect(f.rows.applyOwnedTransforms([{ ...span, rows: [1] }], world).updated).toBe(1);
+  expect(f.rows.apply([], [{ ...span, rows: [1] }], true, world).updated).toBe(1);
   expect(world.memoryStats().arena.requests).toBe(requests);
 });

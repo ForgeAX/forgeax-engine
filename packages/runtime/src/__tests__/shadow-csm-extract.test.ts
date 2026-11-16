@@ -171,7 +171,7 @@ describe('LightRoster interface (M2 castShadow gate)', () => {
   });
 
   describe('staticShadowCache', () => {
-    it('defaults on and surfaces only an explicit opt-out on the CSM config', () => {
+    it('defaults off and surfaces only an explicit opt-in on the CSM config', () => {
       const world = makeWorld(true);
       expect(
         extractFrame(world, prepareExtractContext(world)).lights.directionalCsmConfig,
@@ -180,10 +180,10 @@ describe('LightRoster interface (M2 castShadow gate)', () => {
         (row) => row.entity,
       );
       if (light === undefined) throw new Error('expected a directional light');
-      world.set(light, DirectionalLight, { staticShadowCache: false }).unwrap();
-      const disabled = extractFrame(world, prepareExtractContext(world));
-      expect(disabled.lights.directionalCsmConfig?.staticShadowCache).toBe(false);
-      expect(cascadesOf(disabled)?.lightViewProj).toBeDefined();
+      world.set(light, DirectionalLight, { staticShadowCache: true }).unwrap();
+      const enabled = extractFrame(world, prepareExtractContext(world));
+      expect(enabled.lights.directionalCsmConfig?.staticShadowCache).toBe(true);
+      expect(cascadesOf(enabled)?.lightViewProj).toBeDefined();
     });
   });
 

@@ -130,6 +130,26 @@ function saturate(f: ReturnType<typeof fixture>) {
 }
 
 describe('a Host frame blocked by receipt credit', () => {
+  it('does not admit credit-return work while snapshot scheduling is suspended', async () => {
+    const f = fixture();
+    saturate(f);
+    const release = f.loop.suspendScheduling().unwrap();
+    expect(f.pending.size).toBe(0);
+    f.at(5051);
+    f.receipt(0).settle();
+    await flush();
+    expect(f.starts).toEqual([16, 32]);
+    expect(f.pending.size).toBe(0);
+    release().unwrap();
+    release().unwrap();
+    expect(f.pending.size).toBe(1);
+    f.pump();
+    expect(f.starts).toEqual([16, 32, 5067]);
+    expect(f.pending.size).toBe(1);
+    expect(f.loop.inspect().highWater).toBe(2);
+    f.loop.stop().unwrap();
+  });
+
   it('resumes the blocked frame when its real credit returns, without waiting for the next Host callback', async () => {
     const f = fixture();
     saturate(f);

@@ -77,7 +77,7 @@ it('retains reference diffuse allocations on a row refit and fences stale frame 
     bindings: 1,
   });
   const surfaces = new VisibleSurfaceRows();
-  const worlds = [worldRenderResources(source.world)];
+  const sourceScope = worldRenderResources(source.world);
   const sampler = device.createSampler({}).unwrap();
   let revision = 0;
   const prepare = () => {
@@ -88,14 +88,14 @@ it('retains reference diffuse allocations on a row refit and fences stale frame 
       slots,
       materials,
       meshes,
-      worlds,
+      sourceScope,
       isCurrent: () => true,
       isSourceCurrent: () => true,
     };
     renderer.prepare({
       runtime,
       scene: { scene, slots, retained } as unknown as PersistentGpuDrivenState,
-      worlds,
+      sourceScope,
       sampler,
       lights: [],
       profile,

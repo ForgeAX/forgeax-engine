@@ -198,8 +198,7 @@ async function fixture(programSource: 'raw' | 'loaded' = 'raw') {
   let frameNumber = 0;
   const extract = () =>
     host.feature.extract({
-      worlds: [world],
-      owner: 0,
+      world: world,
       views: [{ identity: 'main', render: true }],
       frameNumber: ++frameNumber,
     });
@@ -208,7 +207,7 @@ async function fixture(programSource: 'raw' | 'loaded' = 'raw') {
       frame,
       singleViewContext({
         targets,
-        resolveAsset: (_index, handle, revision) =>
+        resolveAsset: (handle, revision) =>
           runtimeAssets(world.assets).resolveAsset(handle, revision),
         caps: {} as never,
         frame: { frameNumber },
@@ -261,7 +260,7 @@ it.each([
   const f = await fixture(programSource);
   try {
     const first = f.extract().unwrap();
-    const intent = first.worlds[0]?.intents[0];
+    const intent = first.source?.intents[0];
     if (intent === undefined) throw new Error('Expected the first fixture intent');
     expect(intent).not.toHaveProperty('inline');
     expect(intent.emitter).toEqual({

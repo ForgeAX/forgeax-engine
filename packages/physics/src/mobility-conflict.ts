@@ -1,8 +1,12 @@
-import { type EntityHandle, type Query, Update, type World } from '@forgeax/engine-ecs';
+import {
+  defineSystem,
+  type EntityHandle,
+  type Query,
+  Update,
+  type World,
+} from '@forgeax/engine-ecs';
 import { emitMobilityDiagnostic, Mobility, MobilityKindValue } from '@forgeax/engine-scene';
 import { RigidBody, RigidBodyTypeValue, rigidBodyTypeFromF32 } from './components.js';
-
-export const MOBILITY_PHYSICS_CONFLICT_SYSTEM = 'mobilityPhysicsConflict' as const;
 
 interface ConflictQueries {
   readonly mobilityChanged: Query;
@@ -57,15 +61,14 @@ export function detectMobilityPhysicsConflict(world: World): void {
 
 /** Install the Mobility/RigidBody consistency check for one World. */
 export function registerMobilityPhysicsConflict(world: World): () => void {
-  world
-    .addSystem(Update, {
-      name: MOBILITY_PHYSICS_CONFLICT_SYSTEM,
-      queries: [],
-      fn: detectMobilityPhysicsConflict,
-    })
-    .unwrap();
+  const systemToken1 = defineSystem({
+    name: 'mobilityPhysicsConflict',
+    queries: [],
+    fn: detectMobilityPhysicsConflict,
+  });
+  world.addSystem(Update, systemToken1).unwrap();
   return () => {
-    world.removeSystem(Update, MOBILITY_PHYSICS_CONFLICT_SYSTEM);
+    world.removeSystem(Update, systemToken1);
     QUERIES.delete(world);
   };
 }

@@ -6,11 +6,11 @@ import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErr
 // bevy-tonemapping headless dawn smoke (pixel falsifier + structural gate).
 // Strategy: render one shared HDR sphere field through all seven Camera tone-map
 // modes; the modes must produce materially different readbacks.
-
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 
 
 const SMOKE_DURATION_MS = Number.parseInt(process.env.SMOKE_DURATION_MS ?? '5000', 10);
@@ -94,7 +94,7 @@ const { TONEMAP_MODES, TONEMAP_NAMES, buildTonemappingWorld } = await import(res
 
 const here = dirname(fileURLToPath(import.meta.url));
 const manifestPath = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const manifestUrl = `data:application/json,${encodeURIComponent(readFileSync(manifestPath, 'utf8'))}`;
+const manifestUrl = `data:application/json,${encodeURIComponent(readShaderManifestText(manifestPath))}`;
 
 let renderer;
 try {

@@ -1,5 +1,6 @@
 import {
   createWorldContext,
+  defineSystem,
   type EntityHandle,
   FixedTime,
   FixedUpdate,
@@ -24,31 +25,35 @@ it('captures a moving fixed pose once while preserving the final stop settlement
     .spawn({ component: Transform, data: {} }, { component: TransformInterpolation, data: {} })
     .unwrap();
   let moving = true;
-  world
-    .addSystem(FixedUpdate, {
-      name: 'capture-copy-source',
-      queries: [],
-      fn: () => {
-        if (moving)
-          world.set(actor, Transform, { pos: [world.getResource(FixedTime).tick, 0, 0] }).unwrap();
-      },
-    })
-    .unwrap();
+  const systemToken1 = defineSystem({
+    name: 'capture-copy-source',
+    queries: [],
+    fn: () => {
+      if (moving)
+        world.set(actor, Transform, { pos: [world.getResource(FixedTime).tick, 0, 0] }).unwrap();
+    },
+  });
+  world.addSystem(FixedUpdate, systemToken1).unwrap();
   const internal = (
     world as unknown as Record<
       symbol,
       {
         getSchedules(): ReadonlyMap<
           unknown,
-          { systems: Map<string, { descriptor: SystemDescriptor }> }
+          {
+            systems: Map<
+              import('@forgeax/engine-ecs').SystemToken,
+              { descriptor: SystemDescriptor }
+            >;
+          }
         >;
       }
     >
   )[Symbol.for('forgeax.ecs.worldInternal')];
   if (internal === undefined) throw new Error('Expected the World schedule owner');
   const capture = Array.from(internal.getSchedules().values())
-    .map((schedule) => schedule.systems.get('captureTransformCurrent'))
-    .find((record) => record !== undefined);
+    .flatMap((schedule) => [...schedule.systems])
+    .find(([system]) => system.name === 'captureTransformCurrent')?.[1];
   if (capture === undefined) throw new Error('Expected the Scene capture owner');
   const descriptor = capture.descriptor;
   let copies = 0;
@@ -98,9 +103,12 @@ it('captures first movement after idle, settles stops and preserves source lifec
     .unwrap();
   const parent = world.spawn({ component: Transform, data: { pos: [100, 0, 0] } }).unwrap();
   let write: (() => void) | undefined;
-  world
-    .addSystem(FixedUpdate, { name: 'source-owner-write', queries: [], fn: () => write?.() })
-    .unwrap();
+  const systemToken2 = defineSystem({
+    name: 'source-owner-write',
+    queries: [],
+    fn: () => write?.(),
+  });
+  world.addSystem(FixedUpdate, systemToken2).unwrap();
   const x = (entity: EntityHandle) => {
     const value = readPresentationWorldMatrix(world, entity)?.[12];
     if (value === undefined) throw new Error('Expected a current presentation matrix');
@@ -200,18 +208,17 @@ it('keeps interpolated motion continuous across a merged fixed catch-up', async 
     )
     .unwrap();
   // Constant 10 units/s, integrated with whatever step FixedUpdate receives.
-  world
-    .addSystem(FixedUpdate, {
-      name: 'constant-velocity',
-      queries: [],
-      fn: (world) => {
-        const x = world.get(body, Transform).unwrap().pos[0] ?? 0;
-        world
-          .set(body, Transform, { pos: [x + 10 * world.getResource(FixedTime).delta, 0, 0] })
-          .unwrap();
-      },
-    })
-    .unwrap();
+  const systemToken3 = defineSystem({
+    name: 'constant-velocity',
+    queries: [],
+    fn: (world) => {
+      const x = world.get(body, Transform).unwrap().pos[0] ?? 0;
+      world
+        .set(body, Transform, { pos: [x + 10 * world.getResource(FixedTime).delta, 0, 0] })
+        .unwrap();
+    },
+  });
+  world.addSystem(FixedUpdate, systemToken3).unwrap();
   let elapsed = 0;
   const frame = (seconds: number) => {
     world.update(seconds).unwrap();

@@ -2,6 +2,25 @@ import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+const workspaceTimingPrefixes = [
+  '[forgeax.workspace.timing]',
+  '[forgeax.vite-config.timing]',
+  '[forgeax.pack-startup.timing]',
+  '[forgeax.authored-pack.timing]',
+  '[forgeax.pack-commit.timing]',
+];
+
+export function streamViewBackendTimings(file, afterLine = 0, write = console.error) {
+  const lines = readFileSync(file, 'utf8').split('\n');
+  // Leave an incomplete final line for the next snapshot of the daemon log.
+  const completeLines = lines.length - 1;
+  for (let index = afterLine; index < completeLines; index++) {
+    const line = lines[index];
+    if (workspaceTimingPrefixes.some((prefix) => line.includes(prefix))) write(line);
+  }
+  return completeLines;
+}
+
 export function collectViewBackendDiagnostics({
   probePid,
   startedAt,

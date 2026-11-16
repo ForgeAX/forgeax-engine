@@ -1,7 +1,8 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import {
+  createMaterialProgramArtifactReceipt,
   expandShaderManifestPublication,
   LIGHT_TEXTURE_RESAMPLE_COMPUTE_IDENTIFIER,
   LIGHT_TEXTURE_RESAMPLE_FRAGMENT_IDENTIFIER,
@@ -45,7 +46,27 @@ const engineIdentifiers = [
   'forgeax::default-shadow-caster',
   'forgeax::default-unlit',
   ...resampling.map(({ identifier }) => identifier),
+  'forgeax::water-info-raster-water',
+  'forgeax::water-info-raster-ground',
+  'forgeax::water-info-raster-dilation',
+  'forgeax::water-mesh-raster',
+  'forgeax::water-mesh-precise',
+  'forgeax::water-mesh-precise-msaa',
 ];
+const waterInfoIdentifiers = new Set([
+  'forgeax::water-info-raster-water',
+  'forgeax::water-info-raster-ground',
+  'forgeax::water-info-raster-dilation',
+  'forgeax::water-mesh-raster',
+]);
+const waterInfoReceipt = {
+  ...createMaterialProgramArtifactReceipt({
+    schema: [],
+    directEntry: 'vs_main',
+    vertexInputs: [],
+  }),
+  bindings: 'group-0' as const,
+};
 const entries = engineIdentifiers.map((identifier, index) => {
   const helper = resampling.find((entry) => entry.identifier === identifier);
   return {
@@ -70,6 +91,7 @@ const materialShaders = entries.map((entry) => ({
   composedWgsl: wgsl,
   paramSchema: '[]',
   variants: [],
+  ...(waterInfoIdentifiers.has(entry.identifier) ? { receipt: waterInfoReceipt } : {}),
 }));
 
 function writePayload(value: unknown): void {
@@ -115,7 +137,7 @@ it('serializes admitted shared blocks without expanding and splitting every mate
     return Reflect.apply(split, this, [separator, limit]) as string[];
   });
   try {
-    const manifest = await buildEngineShaderManifest();
+    const manifest = await buildEngineShaderManifest({ workspaceRoot: root });
     const wire = JSON.parse(JSON.stringify(manifest));
     expect(wire).toEqual({
       ...publication,
@@ -126,7 +148,9 @@ it('serializes admitted shared blocks without expanding and splitting every mate
     // stale cache hit or bypass the source digest check.
     publication.fragments[0] += 'corrupt';
     writePayload(publication);
-    await expect(buildEngineShaderManifest()).rejects.toThrow('digest mismatch');
+    await expect(buildEngineShaderManifest({ workspaceRoot: root })).rejects.toThrow(
+      'digest mismatch',
+    );
   } finally {
     spy.mockRestore();
   }
@@ -152,7 +176,9 @@ it('rejects shared engine profiles whose variant artifacts lack their own reflec
   writePayload(publishShaderManifest(entries, materialShadersWithIncompleteVariant));
   vi.stubEnv('FORGEAX_SHARED_APP_INPUTS_MANIFEST', manifestPath);
   const { buildEngineShaderManifest } = await import('../index.js');
-  await expect(buildEngineShaderManifest()).rejects.toThrow('shared input is incomplete or stale');
+  await expect(buildEngineShaderManifest({ workspaceRoot: root })).rejects.toThrow(
+    'shared input is incomplete or stale',
+  );
 });
 
 it('loads exact shared shader bytes in Node without a browser Crypto global', async () => {
@@ -167,7 +193,7 @@ it('loads exact shared shader bytes in Node without a browser Crypto global', as
     if (separator === '' && result === wgsl) composed.push(result);
     return result;
   });
-  const loaded = await loadSharedEngineShaderManifest(manifestPath);
+  const loaded = await loadSharedEngineShaderManifest(manifestPath, root);
   const expected = expandShaderManifestPublication(publishShaderManifest(entries, materialShaders))
     .manifest as { entries: unknown[]; materialShaders: unknown[] };
   expect(composed).toEqual([]);
@@ -183,19 +209,80 @@ it('rejects changed source bytes under an unchanged source digest', async () => 
   const publication = publishShaderManifest(entries, materialShaders);
   publication.fragments[0] += ' ';
   writePayload(publication);
-  await expect(loadSharedEngineShaderManifest(manifestPath)).rejects.toThrow('digest mismatch');
+  await expect(loadSharedEngineShaderManifest(manifestPath, root)).rejects.toThrow(
+    'digest mismatch',
+  );
 });
 
 it('rejects unused source digests before accepting the shared publication', async () => {
   const publication = publishShaderManifest(entries, materialShaders);
   publication.sources['0'.repeat(64)] = [0];
   writePayload(publication);
-  await expect(loadSharedEngineShaderManifest(manifestPath)).rejects.toThrow('missing or unused');
+  await expect(loadSharedEngineShaderManifest(manifestPath, root)).rejects.toThrow(
+    'missing or unused',
+  );
 });
 
 it('retains the producer inventory gate before loading shader rows', async () => {
   rmSync(join(root, 'shared/shaders.json'));
-  await expect(loadSharedEngineShaderManifest(manifestPath)).rejects.toThrow(
+  await expect(loadSharedEngineShaderManifest(manifestPath, root)).rejects.toThrow(
     'inventory is missing',
   );
+});
+
+it.each([
+  '.',
+  'shared-build-inputs',
+  'cache/nested/profile',
+  '../external/profile',
+])('resolves repository-relative inventory at %s from the consumer project context', async (outputDirectory) => {
+  const fixture = mkdtempSync(join(tmpdir(), 'shared-root-authority-'));
+  const repository = join(fixture, 'checkout');
+  const output = join(repository, outputDirectory);
+  const payloadPath = join(output, 'shaders/manifest.json');
+  const transferPath = join(output, 'manifest.json');
+  const payload = relative(repository, payloadPath).replaceAll('\\', '/');
+  try {
+    mkdirSync(repository, { recursive: true });
+    writeFileSync(join(repository, 'pnpm-workspace.yaml'), 'packages: []\n');
+    const nestedProject = join(repository, 'apps/hello/fixture');
+    mkdirSync(nestedProject, { recursive: true });
+    mkdirSync(dirname(payloadPath), { recursive: true });
+    writeFileSync(payloadPath, JSON.stringify(publishShaderManifest(entries, materialShaders)));
+    writeFileSync(
+      transferPath,
+      JSON.stringify({
+        schemaVersion: 2,
+        producer: 'repo-build-inputs',
+        inputFingerprint: 'explicit-root-fixture',
+        inventory: [payload],
+        payload: { engineShaderManifest: payload },
+      }),
+    );
+    const loaded = await loadSharedEngineShaderManifest(transferPath, repository);
+    expect(loaded.publication).toEqual(publishShaderManifest(entries, materialShaders));
+    vi.stubEnv('FORGEAX_SHARED_APP_INPUTS_MANIFEST', transferPath);
+    const { buildEngineShaderManifest } = await import('../index.js');
+    const cwd = vi.spyOn(process, 'cwd').mockReturnValue(nestedProject);
+    try {
+      const built = await buildEngineShaderManifest();
+      expect(JSON.parse(JSON.stringify(built))).toEqual({
+        ...loaded.publication,
+        entries: loaded.publication.entries.map((entry) => ({ ...entry, glsl: '' })),
+      });
+    } finally {
+      cwd.mockRestore();
+    }
+    const wrongProject = join(fixture, 'other/checkout');
+    mkdirSync(wrongProject, { recursive: true });
+    await expect(loadSharedEngineShaderManifest(transferPath, wrongProject)).rejects.toThrow(
+      'inventory is missing',
+    );
+    rmSync(payloadPath);
+    await expect(loadSharedEngineShaderManifest(transferPath, repository)).rejects.toThrow(
+      'inventory is missing',
+    );
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
 });

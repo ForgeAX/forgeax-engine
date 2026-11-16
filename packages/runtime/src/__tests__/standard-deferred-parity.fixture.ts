@@ -213,12 +213,7 @@ export async function verifyStandardDeferredParity(
         (await options.recorder.frameBoundary()).unwrap();
       const frame = await drawReadyFrame(
         renderer,
-        {
-          leases: [lease],
-          camera: { lease },
-          environment: { lease },
-          ...(direct ? { geometryLane: 'direct' as const } : {}),
-        },
+        { source: lease, ...(direct ? { geometryLane: 'direct' as const } : {}) },
         index === testQuality.staticFrames - 1 ? ['linear-hdr'] : undefined,
       );
       if (capture !== undefined && options.recorder !== undefined) {

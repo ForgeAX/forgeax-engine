@@ -4,8 +4,11 @@ import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_UNIFORM } from '../gpu-usag
 import type { RenderResourceScope } from '../publication/resource-scope';
 import type { SpotLightProjectorFrameContext, VolumetricFogFrameContext } from '../render-contract';
 import type { ExtractedVolumetricFog } from '../render-system-extract';
+import { volumetricFogSamplingLane } from '../volume/component';
 import { VOLUMETRIC_FOG_PARAMS_BYTES } from '../volume/resources';
 import type { ViewLights } from '../world/render-lights';
+import { recordContext } from '../world/view-record-context';
+import { clusterLocalLights } from './cluster-local-lights';
 import type { RenderFrameState, VolumetricFogParamsState } from './frame-snapshot';
 import type { RenderSystemInternals } from './render-context';
 
@@ -62,12 +65,14 @@ export function stageVolumetricFogParams(
  * by the graph.  This is deliberately a pull operation: a missing/stale
  * handle or failed upload produces a structured error and leaves the graph
  * candidate disabled for this frame rather than binding a synthetic density.
+ * Only an authored `uniform` medium binds the renderer's unit volume: its
+ * density is constant by declaration, not substituted for a missing source.
  */
 function prepareVolumetricFogMember(
   internals: RenderSystemInternals,
   frameState: RenderFrameState,
   world: RenderResourceScope,
-  worlds: readonly RenderResourceScope[],
+  sourceScope: RenderResourceScope,
   fog: ExtractedVolumetricFog | undefined,
   lights: ViewLights,
   volumeCapability: boolean,
@@ -79,8 +84,8 @@ function prepareVolumetricFogMember(
     !volumeCapability ||
     fog?.status !== 'available' ||
     fog.fog === undefined ||
-    fog.densityHandle === undefined ||
-    fog.densityAsset === undefined ||
+    (fog.fog.sampling !== 'uniform' &&
+      (fog.densityHandle === undefined || fog.densityAsset === undefined)) ||
     (fog.lightKind === 'spot'
       ? lights.spot.find((light) => light.entity === fog.lightEntity) === undefined
       : fog.lightKind === 'point'
@@ -89,31 +94,12 @@ function prepareVolumetricFogMember(
   ) {
     return undefined;
   }
-  const ownerWorld = worlds[fog.worldId ?? 0] ?? world;
-  const resident = internals.gpuStore.ensureResident(
-    fog.densityHandle,
-    fog.densityAsset,
-    ownerWorld,
-  );
-  if (!resident.ok || !('texture' in resident.value)) {
-    if (!resident.ok) {
-      internals.errorRegistry.fire(
-        resident.error instanceof RhiError
-          ? resident.error
-          : new RhiError({
-              code: 'webgpu-runtime-error',
-              expected: 'volumetric density residency to resolve a GPU texture',
-              hint: 'repair the authored TextureAsset payload and retry the next frame',
-              detail: { error: resident.error },
-            }),
-      );
-    }
-    return undefined;
-  }
+  const density = residentVolumeDensity(internals, sourceScope ?? world, fog);
+  if (density === undefined) return undefined;
   const params = new Float32Array(36);
   params.set(fog.fog.bounds.min, 0);
   params.set(fog.fog.bounds.max, 4);
-  params[7] = fog.fog.sampling === 'density-albedo' ? 2 : fog.fog.sampling === 'density' ? 1 : 0;
+  params[7] = volumetricFogSamplingLane(fog.fog.sampling);
   params.set(fog.fog.extinction, 8);
   params.set(fog.fog.albedo, 12);
   params.set(fog.fog.emission, 16);
@@ -134,18 +120,21 @@ function prepareVolumetricFogMember(
   params.set(lightDirection, 20);
   // Reserved padding: render frame identity must not move volume samples.
   params[23] = 0;
+  // Slots address the Cluster's admitted lights; a light dropped over the
+  // limit has no slot and the volume treats it as unselected.
+  const cluster = clusterLocalLights(internals, lights).kept;
   const selectedPointIndex =
     selectedPoint === undefined
       ? -1
-      : lights.point.findIndex((light) => light.entity === selectedPoint.entity);
+      : cluster.point.findIndex((light) => light.entity === selectedPoint.entity);
   const selectedSpotIndex =
     selectedSpot === undefined
       ? -1
-      : lights.spot.findIndex((light) => light.entity === selectedSpot.entity);
+      : cluster.spot.findIndex((light) => light.entity === selectedSpot.entity);
   // Cluster light_data is one point/spot/rect array. Point slots are emitted
   // first, so volume stores the global slot rather than a per-kind array index.
   const selectedSpotClusterIndex =
-    selectedSpotIndex < 0 ? -1 : lights.point.length + selectedSpotIndex;
+    selectedSpotIndex < 0 ? -1 : cluster.point.length + selectedSpotIndex;
   params.set(lightColor, 24);
   params[19] = selectedPointIndex;
   params[27] = selectedSpotClusterIndex;
@@ -166,10 +155,8 @@ function prepareVolumetricFogMember(
   // RenderResourceScope elapsed time is the sole authored-medium clock.
   params[32] = fog.worldTimeSeconds ?? 0;
   return {
-    densityTexture: resident.value.texture.handle,
-    densityView: resident.value.view,
+    ...density,
     params,
-    densityGeneration: resident.value.receipt.generation,
     historyReadSlot: null,
     historyWriteSlot: 0,
     historyValid: false,
@@ -183,11 +170,57 @@ function prepareVolumetricFogMember(
   };
 }
 
+/** The bound density volume: the authored TextureAsset, or the unit volume for `uniform`. */
+function residentVolumeDensity(
+  internals: RenderSystemInternals,
+  ownerWorld: RenderResourceScope,
+  fog: ExtractedVolumetricFog,
+):
+  | Pick<VolumetricFogFrameContext, 'densityTexture' | 'densityView' | 'densityGeneration'>
+  | undefined {
+  if (fog.fog?.sampling === 'uniform') {
+    const state = recordContext(internals).getPipelineState();
+    if (state?.defaultWhite3dTexture === undefined || state.defaultWhite3dTextureView === undefined)
+      return undefined;
+    return {
+      densityTexture: state.defaultWhite3dTexture,
+      densityView: state.defaultWhite3dTextureView,
+      densityGeneration: 0,
+    };
+  }
+  if (fog.densityHandle === undefined || fog.densityAsset === undefined) return undefined;
+  const resident = internals.gpuStore.ensureResident(
+    fog.densityHandle,
+    fog.densityAsset,
+    ownerWorld,
+  );
+  if (!resident.ok || !('texture' in resident.value)) {
+    if (!resident.ok) {
+      internals.errorRegistry.fire(
+        resident.error instanceof RhiError
+          ? resident.error
+          : new RhiError({
+              code: 'webgpu-runtime-error',
+              expected: 'volumetric density residency to resolve a GPU texture',
+              hint: 'repair the authored TextureAsset payload and retry the next frame',
+              detail: { error: resident.error },
+            }),
+      );
+    }
+    return undefined;
+  }
+  return {
+    densityTexture: resident.value.texture.handle,
+    densityView: resident.value.view,
+    densityGeneration: resident.value.receipt.generation,
+  };
+}
+
 export function prepareVolumetricFogFrame(
   internals: RenderSystemInternals,
   frameState: RenderFrameState,
   world: RenderResourceScope,
-  worlds: readonly RenderResourceScope[],
+  sourceScope: RenderResourceScope,
   fog: ExtractedVolumetricFog | undefined,
   lights: ViewLights,
   volumeCapability: boolean,
@@ -201,8 +234,8 @@ export function prepareVolumetricFogFrame(
       internals,
       frameState,
       world,
-      worlds,
-      { ...source, worldId: fog.worldId ?? 0 },
+      sourceScope,
+      { ...source },
       lights,
       volumeCapability,
       projector,

@@ -194,17 +194,29 @@ function sdkRepairFixture() {
 }
 
 test('SDK repair reads original artifacts of qualified passed checks and the fresh failed consumer', async () => {
-  const f = sdkRepairFixture();
-  const collected = await collectSdkRepairReports(f.context, f.api, f.readArtifact);
-  const result = aggregateSdkConsumers(
-    collected.reports,
-    f.context.targetSha,
-    `0.0.0-pr.${f.context.targetSha}`,
-    collected.sources,
-  );
-  assert.equal(result.executions.filter((x) => x.reused).length, 3);
-  assert.equal(result.executions.find((x) => !x.reused).checkName, 'sdk-consumer-project');
-  assert.equal(collected.reports.find((x) => x.group === 'source').engineCommit, head);
+  for (const directive of [
+    '',
+    'sdk-consumer-project, sdk-build',
+    JSON.stringify(['sdk-consumer-project', 'sdk-build']),
+  ]) {
+    const f = sdkRepairFixture();
+    if (directive) f.context.pr.body += `\nCI-Repair-Rerun: ${directive}`;
+    const collected = await collectSdkRepairReports(f.context, f.api, f.readArtifact);
+    const result = aggregateSdkConsumers(
+      collected.reports,
+      f.context.targetSha,
+      `0.0.0-pr.${f.context.targetSha}`,
+      collected.sources,
+    );
+    const retained = result.executions.filter((x) => x.reused);
+    assert.equal(retained.length, 3);
+    assert.ok(retained.every((x) => x.sourceSha === head && x.sourceRunId === 12));
+    const fresh = result.executions.find((x) => !x.reused);
+    assert.equal(fresh.checkName, 'sdk-consumer-project');
+    assert.equal(fresh.sourceSha, f.context.targetSha);
+    assert.equal(fresh.sourceRunId, 99);
+    assert.equal(collected.reports.find((x) => x.group === 'source').engineCommit, head);
+  }
 });
 
 test('SDK repair fails closed on missing identity, foreign artifacts, failed peers and false reuse markers', async () => {
@@ -231,9 +243,12 @@ test('SDK repair fails closed on missing identity, foreign artifacts, failed pee
       f.context.targetSha = '0'.repeat(40);
     },
   ]) {
-    const f = sdkRepairFixture();
-    mutate(f);
-    await assert.rejects(collectSdkRepairReports(f.context, f.api, f.readArtifact));
+    for (const directive of ['', 'sdk-consumer-project, sdk-build']) {
+      const f = sdkRepairFixture();
+      if (directive) f.context.pr.body += `\nCI-Repair-Rerun: ${directive}`;
+      mutate(f);
+      await assert.rejects(collectSdkRepairReports(f.context, f.api, f.readArtifact));
+    }
   }
 });
 
@@ -535,6 +550,7 @@ test('public source View consumes the independently rebuilt source manifest', as
   assert.equal(commands.length, 1);
   const { options } = commands[0];
   assert.equal(options.cwd, '/fresh-source');
+  assert.equal(options.backendEvidenceDirectory, resolve('/sealed/view-source/backend'));
   assert.equal(options.env.EXISTING_SOURCE_OPTION, 'retained');
   assert.equal(options.env.FORGEAX_VIEW_ENGINE_SOURCE_ROOT, '/fresh-source');
   assert.equal(
@@ -703,8 +719,13 @@ test('the real installed View and npm schedulers conserve complete chains and fu
          for (const key of ['NODE_PATH', 'FORGEAX_SHARED_APP_INPUTS_MANIFEST', 'FORGEAX_LOCAL_ENGINE', 'FORGEAX_RUNTIME_PACK_DIRECT'])
            assert.equal(process.env[key], undefined, key);
          assert.equal(process.env.FORGEAX_ENGINE_CHECKOUT, process.cwd());
-         for (const name of ['reduce-test-project.mjs', 'render-quality.json'])
-           assert.ok(readFileSync(resolve(process.cwd(), 'scripts/test', name)).length > 0);
+         assert.deepEqual(
+           JSON.parse(readFileSync(resolve(process.cwd(), 'scripts/ci/browser-launch.json'), 'utf8')),
+           ${JSON.stringify(JSON.parse(readFileSync('scripts/ci/browser-launch.json', 'utf8')))},
+         );
+         if (process.env.FORGEAX_BROWSER_CI_LIGHTWEIGHT === '1')
+           for (const name of ['reduce-test-project.mjs', 'render-quality.json'])
+             assert.ok(readFileSync(resolve(process.cwd(), 'scripts/test', name)).length > 0);
          appendFileSync(process.env.FORGEAX_TEST_RECEIPT, 'game3d-installed\\n');`,
       );
       const diagnostic = resolve(root, 'tools/view/scripts');
@@ -775,6 +796,25 @@ test('the real installed View and npm schedulers conserve complete chains and fu
         );
       } else await verifySdkViewRuntime(group === 'all' ? options : { ...options, group });
       observed[group] = readFileSync(receipt, 'utf8').trim().split('\n');
+      if (group === 'game3d') {
+        const launch = resolve(root, 'scripts/ci/browser-launch.json');
+        rmSync(launch);
+        rmSync(resolve(root, 'scripts/test'), { recursive: true });
+        const full = {
+          ...options,
+          group,
+          env: {
+            ...options.env,
+            FORGEAX_BROWSER_CI_LIGHTWEIGHT: '0',
+            FORGEAX_TEST_RECEIPT: resolve(root, 'full-receipt'),
+          },
+        };
+        assert.deepEqual(await verifySdkViewRuntime(full), ['game3d-installed']);
+        assert.equal(readFileSync(resolve(root, 'full-receipt'), 'utf8'), 'game3d-installed\n');
+        writeFileSync(launch, 'foreign launch policy');
+        await assert.rejects(verifySdkViewRuntime(full), /sdk-view-helper-collision/);
+        assert.equal(readFileSync(launch, 'utf8'), 'foreign launch policy');
+      }
       await assert.rejects(verifySdkViewRuntime({ ...options, group: 'missing' }), /unknown-group/);
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -928,6 +968,10 @@ for (const failureAt of ['page readiness', 'player read']) {
       source.indexOf('  async function verifyProjectBrowser('),
       source.indexOf('  async function waitForProjectPackCatalog('),
     );
+    const startupDeclaration = source.slice(
+      source.indexOf('  async function startSelectedProjectBrowser('),
+      source.indexOf('  async function launchSelectedBrowser('),
+    );
     const cause = new Error('player read stalled');
     const calls = [];
     const page = { evaluate: async () => ({ canvas: { width: 320, height: 180 } }) };
@@ -965,7 +1009,7 @@ for (const failureAt of ['page readiness', 'player read']) {
     };
     const verify = new Function(
       ...Object.keys(deps),
-      `${declaration} return verifyProjectBrowser;`,
+      `${declaration}\n${startupDeclaration}\nreturn verifyProjectBrowser;`,
     )(...Object.values(deps));
     await assert.rejects(verify('/fixture', 'scope'), (error) => {
       assert.equal(error.cause, cause);

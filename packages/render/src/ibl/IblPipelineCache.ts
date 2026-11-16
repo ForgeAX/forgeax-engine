@@ -59,7 +59,6 @@ import { createIblKernelCache, type IblKernelCache } from './kernel-cache';
 export {
   createIblKernelCache,
   type IblKernelCache,
-  resetIblKernelCaches,
 } from './kernel-cache';
 
 import { GPU_SHADER_STAGE_FRAGMENT, GPU_SHADER_STAGE_VERTEX } from '../gpu-stage';

@@ -48,9 +48,16 @@ for (const [owner, command] of [
       job.steps.find((candidate) => candidate.name === name),
     );
     assert.equal(remove.run.trim(), 'rm -rf packages/ui-blitz/pkg');
-    assert.equal(download.uses, 'actions/download-artifact@v4');
-    assert.equal(download.with.name, `\${{ needs.native-inputs.outputs.ui-artifact-name }}`);
-    assert.equal(download.with.path, 'packages/ui-blitz/pkg');
+    assert.match(download.run, /download-artifact-with-retry\.mjs/);
+    assert.match(
+      download.run,
+      /--artifact-pattern "\$\{\{ needs\.native-inputs\.outputs\.ui-artifact-name \}\}"/,
+    );
+    assert.match(
+      download.run,
+      /--expected-count 1 --merge-multiple --path packages\/ui-blitz\/pkg/,
+    );
+    assert.equal(download.env.GITHUB_TOKEN, `\${{ github.token }}`);
     assert.equal(verify.run.trim(), 'node packages/ui-blitz/scripts/verify-current.mjs');
   });
 }
@@ -87,7 +94,7 @@ test('WebGPU portable scene producers verify the UI input before their package c
     "steps.ci-repair.outputs.reused != 'true' && (matrix.carrier == 'stable' || matrix.carrier == 'webkit')",
   );
   assert.equal(step.with['cache-scope'], 'self-hosted-ubuntu-linux-x64');
-  assert.equal(step.env.GH_TOKEN, '${{ secrets.GHA }}');
+  assert.equal(step.env.GH_TOKEN, `\${{ secrets.GHA }}`);
 });
 
 function shellStep(name) {

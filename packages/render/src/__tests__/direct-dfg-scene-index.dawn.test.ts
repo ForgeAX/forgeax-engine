@@ -126,7 +126,13 @@ it.each([
                 const buffer =
                   resourceBuffers.get(`${groupIndex}:${entry.binding}`) ??
                   makeBuffer(
-                    32768,
+                    Math.max(
+                      32768,
+                      entry.buffer.minBindingSize ?? 0,
+                      compiled.reflection.boundGlobals.find(
+                        (value) => value.group === groupIndex && value.binding === entry.binding,
+                      )?.typeDescriptor?.byteSize ?? 0,
+                    ),
                     GPUBufferUsage.UNIFORM | GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
                   );
                 resourceBuffers.set(`${groupIndex}:${entry.binding}`, buffer);
@@ -506,6 +512,8 @@ it.each([
         readback.unmap();
         results.shadowDepth = [samples as number[]];
       }
+      const validationError = await device.popErrorScope();
+      expect(validationError, validationError?.message).toBeNull();
       const original = results['fs_opaque/false'];
       const swapped = results['fs_opaque/true'];
       if (!original || !swapped) throw new Error('Missing Forward readback');
@@ -517,7 +525,6 @@ it.each([
       expect
         .soft(Math.abs((original[0]?.[0] ?? NaN) - (original[1]?.[0] ?? NaN)))
         .toBeGreaterThan(0.001);
-      expect(await device.popErrorScope()).toBeNull();
       process.stdout.write(`${JSON.stringify({ geometry, transmission, results })}\n`);
     } finally {
       for (const buffer of buffers) buffer.destroy();

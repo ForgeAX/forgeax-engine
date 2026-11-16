@@ -8,7 +8,7 @@ import {
   DIRECT_LIGHT_SLOT_PCF_SHIFT,
   DirectLightSlotKind,
 } from '../light-buffer-layout';
-import { extractFrames } from '../render-system-extract-tail';
+import { extractSource } from '../render-system-extract-tail';
 import { packTestDirectLightSlot as packDirectLightSlot } from './cluster-test-abi';
 
 it('publishes live PointLightShadow filter changes to both shadow and lighting consumers', () => {
@@ -24,7 +24,7 @@ it('publishes live PointLightShadow filter changes to both shadow and lighting c
   const assets = new AssetRegistry({} as never);
   for (const pcfKernelSize of [3, 5, 1, 3]) {
     world.set(entity, PointLightShadow, { pcfKernelSize }).unwrap();
-    const lights = extractFrames([world], 0, assets).lights;
+    const lights = extractSource(world, assets).lights;
     expect(lights.pointShadow?.[0]?.pcfKernelSize).toBe(pcfKernelSize);
     const point = lights.point[0];
     if (point === undefined) throw new Error('PointLight extraction missing');

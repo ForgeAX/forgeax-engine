@@ -47,7 +47,6 @@ export function acceptedMaterialSnapshot(
             ...(source === undefined
               ? {}
               : {
-                  worldId: source.worldId,
                   entityKey: source.entityKey,
                   meshHandle: source.assetHandle,
                   primaryMaterial: source.material === material,
@@ -63,7 +62,7 @@ export function acceptedMaterialSnapshot(
 }
 
 const PAGE_SIZE = 64;
-const IDS = 2;
+const IDS = 1;
 type Tuple = readonly MaterialResource[];
 
 /** Fixed numeric identities and shared material tuples; no object or scope per row. */
@@ -131,9 +130,7 @@ export class MaterialRelationFrame extends FrameListBase<Tuple> {
         const next = right?.materials[lane];
         if (
           previous !== next ||
-          (previous !== undefined &&
-            (left?.identities[lane * IDS] !== right?.identities[lane * IDS] ||
-              left?.identities[lane * IDS + 1] !== right?.identities[lane * IDS + 1]))
+          (previous !== undefined && left?.identities[lane * IDS] !== right?.identities[lane * IDS])
         )
           visit(key * PAGE_SIZE + lane, previous, next);
       }
@@ -213,14 +210,12 @@ export class MaterialRelations {
     const lane = index % PAGE_SIZE;
     if (
       this.page?.materials[lane] === tuple &&
-      this.page.identities[lane * IDS] === source.worldId &&
-      this.page.identities[lane * IDS + 1] === source.entityKey
+      this.page.identities[lane * IDS] === source.entityKey
     )
       return;
     const page = this.editPage(key, this.page);
     page.materials[lane] = tuple;
-    page.identities[lane * IDS] = source.worldId;
-    page.identities[lane * IDS + 1] = source.entityKey;
+    page.identities[lane * IDS] = source.entityKey;
     this.page = page;
   }
 

@@ -189,8 +189,8 @@ export function materialPipelineRequestFacts(
   /** Reused lookup storage; a stored request must keep its own copy. */
   facts: Fact[] = [],
 ): Fact[] {
-  facts.length = 22;
-  for (let index = 0; index < 22; index++) facts[index] = args[index];
+  facts.length = 24;
+  for (let index = 0; index < 24; index++) facts[index] = args[index];
   facts[2] = renderStateHash(args[2]);
   facts[7] =
     args[13]?.digest ??

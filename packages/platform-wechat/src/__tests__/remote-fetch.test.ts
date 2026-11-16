@@ -27,9 +27,9 @@ function complete<T>(
 }
 
 async function fixture(maxBytes = 4096) {
-  const root = await fs.mkdtemp(join(tmpdir(), 'forgeax-download-'));
+  const root = (await fs.mkdtemp(join(tmpdir(), 'forgeax-download-'))).replaceAll('\\', '/');
   cleanup.push(() => fs.rm(root, { recursive: true, force: true }));
-  const cacheDirectory = join(root, 'cache');
+  const cacheDirectory = `${root}/cache`;
   const files: WechatCacheFiles = {
     readFile: (options) =>
       complete(

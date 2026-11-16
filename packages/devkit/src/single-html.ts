@@ -1,18 +1,29 @@
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { gzipSync } from 'node:zlib';
 import { type DefaultTreeAdapterTypes, parse } from 'parse5';
 import ts from 'typescript';
-import { type Plugin, parseAst, Visitor, build as viteBuild } from 'vite';
+import { type ESTree, type Plugin, parseAst, Visitor, build as viteBuild } from 'vite';
 import { type DistArtifact, type DistManifest, mediaType } from './dist.js';
 import { createEngineWorkspaceResolverForProject } from './host.js';
 import type { CommandError, CommandResult } from './types.js';
 
 const SINGLE_HTML_FORMAT = 'forgeax-single-html-game' as const;
 const GENERATED_PREFIX = '__forgeax-bundle/';
+const ENTRY_RESOURCE_PATH = `${GENERATED_PREFIX}entry.mjs`;
 
 export interface SingleHtmlBundleArtifact {
   readonly path: string;
@@ -336,7 +347,7 @@ function inlineCss(
   return { ok: true, value: applyReplacements(css, replacements) };
 }
 
-function collectEntrySource(html: string): CommandResult<string> {
+function collectEntrySource(html: string, distRoot: string): CommandResult<string> {
   const entries = scanHtmlElements(html).filter((element) => isModuleScript(element));
   const external = entries.filter((element) => attributeValue(element, 'src') !== undefined);
   const inline = entries.filter((element) => attributeValue(element, 'src') === undefined);
@@ -347,13 +358,34 @@ function collectEntrySource(html: string): CommandResult<string> {
       'Rebuild the game with a module entry in its generated host.',
     );
   }
-  if (external.length > 1 || inline.length > 1) {
+  if (inline.length > 1 || (inline.length > 0 && external.length > 0)) {
     return errorResult(
       'single-html-entry-ambiguous',
-      'production index.html to contain exactly one module entry',
-      'Converge the generated host to one ForgeAX module entry before packaging.',
+      'production index.html to contain local module entries or one inline entry',
+      'Keep inline startup code in one entry, or use ordered local production modules.',
       { external: external.length, inline: inline.length },
     );
+  }
+  if (external.length > 1) {
+    const imports: string[] = [];
+    for (const element of external) {
+      const src = attributeValue(element, 'src');
+      const path =
+        src === undefined || /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(src)
+          ? undefined
+          : normalizePath(src);
+      if (path === undefined) {
+        return errorResult(
+          'single-html-entry-external',
+          'every module entry to be a project-local dist artifact',
+          'Rebuild the generated host with local production modules.',
+          { src: src ?? null },
+        );
+      }
+      imports.push(`import ${JSON.stringify(resolve(distRoot, path))};`);
+    }
+    // A single module graph preserves document order and evaluates shared dependencies once.
+    return { ok: true, value: imports.join('\n') };
   }
   const element = external[0] ?? inline[0];
   if (element === undefined) throw new Error('single-html entry selection was unexpectedly empty');
@@ -808,6 +840,19 @@ async function closeStaticJavaScriptGraphs(
         base: './',
         logLevel: 'error',
         plugins: [
+          ...(['raw', 'generated'] as const).map((namespace) =>
+            prebuiltWorkerPlugin(
+              resolve(graphRoot, namespace),
+              (path) => {
+                if (!artifactIndex.generated.has(path))
+                  throw new Error(
+                    `single-html Worker entry is outside the prepared closure: ${path}`,
+                  );
+                return `forgeax-resource:///${GENERATED_PREFIX}${path}`;
+              },
+              false,
+            ),
+          ),
           staticGraphResolverPlugin(graphRoot, artifactIndex),
           staticGraphImporterPlugin(graphRoot, artifactIndex),
           singleHtmlBundlePlugin(candidateNamespace),
@@ -953,13 +998,107 @@ function singleHtmlBundlePlugin(namespace?: StaticGraphNamespace): Plugin {
   return plugin;
 }
 
+/** Production Worker entries are already emitted; close their module graphs without rediscovering nested Workers. */
+function prebuiltWorkerPlugin(
+  distRoot: string,
+  workerUrl: (path: string) => string,
+  rewriteImports = true,
+): Plugin {
+  return {
+    name: 'forgeax-single-html-prebuilt-workers',
+    enforce: 'pre',
+    transform(code, id) {
+      const importer = relative(distRoot, id.split(/[?#]/, 1)[0] ?? id)
+        .split(sep)
+        .join('/');
+      if (importer.startsWith('../') || !isJavaScriptOutputAsset(importer)) return null;
+      let program: SingleHtmlProgram;
+      try {
+        program = parseAst(code);
+      } catch {
+        return null;
+      }
+      const replacements: Replacement[] = [];
+      new Visitor({
+        CallExpression(node) {
+          if (!rewriteImports) return;
+          const callee = node.callee;
+          if (
+            callee.type !== 'MemberExpression' ||
+            callee.computed ||
+            callee.object.type !== 'Identifier' ||
+            callee.object.name !== 'globalThis' ||
+            callee.property.type !== 'Identifier' ||
+            callee.property.name !== '__forgeaxImport'
+          )
+            return;
+          const source = node.arguments[0];
+          const specifier =
+            source?.type === 'Literal'
+              ? source.value
+              : source?.type === 'TemplateLiteral' && source.expressions.length === 0
+                ? source.quasis[0]?.value.cooked
+                : undefined;
+          if (typeof specifier !== 'string' || !/^(?:\.\/|\.\.\/)/.test(specifier)) return;
+          const path = resourcePath(specifier, importer);
+          if (path !== undefined && source !== undefined)
+            replacements.push({
+              start: source.start,
+              end: source.end,
+              value: JSON.stringify(`forgeax-resource:///${path}`),
+            });
+        },
+        NewExpression(node) {
+          if (
+            node.callee.type !== 'Identifier' ||
+            !['Worker', 'SharedWorker'].includes(node.callee.name)
+          )
+            return;
+          const argument = node.arguments[0];
+          if (argument === undefined) return;
+          const url = workerUrlExpression(argument);
+          if (url === undefined) return;
+          const source = url.arguments[0],
+            base = url.arguments[1];
+          const specifier =
+            source?.type === 'TemplateLiteral' && source.expressions.length === 0
+              ? source.quasis[0]?.value.cooked
+              : source?.type === 'Literal'
+                ? source.value
+                : undefined;
+          if (typeof specifier !== 'string' || /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(specifier))
+            return;
+          if (
+            base?.type !== 'MemberExpression' ||
+            base.computed ||
+            base.property.type !== 'Identifier' ||
+            base.property.name !== 'url' ||
+            base.object.type !== 'MetaProperty' ||
+            base.object.meta.name !== 'import' ||
+            base.object.property.name !== 'meta'
+          )
+            return;
+          const path = resourcePath(specifier, importer);
+          if (path === undefined) return;
+          replacements.push({
+            start: argument.start,
+            end: argument.end,
+            value: JSON.stringify(workerUrl(path)),
+          });
+        },
+      }).visit(program);
+      return replacements.length === 0 ? null : applyReplacements(code, replacements);
+    },
+  };
+}
+
 export async function bundleSingleHtmlEntry(
   distRootInput: string,
   indexHtml: string,
   projectRoot?: string,
 ): Promise<CommandResult<SingleHtmlBundle>> {
-  const distRoot = resolve(distRootInput);
-  const selected = collectEntrySource(indexHtml);
+  const distRoot = await realpath(resolve(distRootInput));
+  const selected = collectEntrySource(indexHtml, distRoot);
   if (!selected.ok) return selected;
   const source = selected.value;
   const entryPath = normalizePath(source);
@@ -985,37 +1124,50 @@ export async function bundleSingleHtmlEntry(
       projectRoot === undefined
         ? undefined
         : await createEngineWorkspaceResolverForProject(projectRoot);
-    await viteBuild({
-      configFile: false,
-      root: distRoot,
-      base: './',
-      logLevel: 'error',
-      plugins: [singleHtmlBundlePlugin(), ...(resolver === undefined ? [] : [resolver])],
-      // Worker entries that import shared chunks cannot bundle as the default IIFE.
-      worker: { format: 'es' },
-      experimental: {
-        renderBuiltUrl: (filename: string) => `forgeax-resource:///${GENERATED_PREFIX}${filename}`,
-      },
-      build: {
-        outDir: outputRoot,
-        emptyOutDir: true,
-        target: 'esnext',
-        minify: false,
-        sourcemap: false,
-        assetsInlineLimit: 0,
-        modulePreload: false,
-        rolldownOptions: {
-          input: inputPath,
-          output: {
-            codeSplitting: false,
-            entryFileNames: 'entry.mjs',
-            chunkFileNames: 'assets/[name]-[hash].mjs',
-            assetFileNames: 'assets/[name]-[hash][extname]',
-          },
-          experimental: { nativeMagicString: true },
+    const workers = new Map<string, string>();
+    const bundleEntry = (input: string, entryFileNames: string, emptyOutDir: boolean) =>
+      viteBuild({
+        configFile: false,
+        root: distRoot,
+        base: './',
+        logLevel: 'error',
+        plugins: [
+          prebuiltWorkerPlugin(distRoot, (path) => {
+            workers.set(path, resolve(distRoot, path));
+            return `forgeax-resource:///${GENERATED_PREFIX}${path}`;
+          }),
+          singleHtmlBundlePlugin(),
+          ...(resolver === undefined ? [] : [resolver]),
+        ],
+        // Worker entries that import shared chunks cannot bundle as the default IIFE.
+        worker: { format: 'es' },
+        experimental: {
+          renderBuiltUrl: (filename: string) =>
+            `forgeax-resource:///${GENERATED_PREFIX}${filename}`,
         },
-      },
-    });
+        build: {
+          outDir: outputRoot,
+          emptyOutDir,
+          target: 'esnext',
+          minify: false,
+          sourcemap: false,
+          assetsInlineLimit: 0,
+          modulePreload: false,
+          rolldownOptions: {
+            input,
+            output: {
+              codeSplitting: false,
+              entryFileNames,
+              chunkFileNames: 'assets/[name]-[hash].mjs',
+              assetFileNames: 'assets/[name]-[hash][extname]',
+            },
+            experimental: { nativeMagicString: true },
+          },
+        },
+      });
+    await bundleEntry(inputPath, 'entry.mjs', true);
+    // Map iteration includes newly discovered nested entries and visits each source path once.
+    for (const [path, input] of workers) await bundleEntry(input, path, false);
     const paths = (await filesUnder(outputRoot)).map((path) =>
       relative(outputRoot, path).split(sep).join('/'),
     );
@@ -1086,7 +1238,7 @@ const sourcePath=String(init.sourcePath??'');
 const bootstrapURL=String(init.bootstrapURL??'');
 const normalize=(value)=>{try{return decodeURIComponent(String(value).split(/[?#]/,1)[0]).replaceAll('\\\\','/').replace(/^\\/+/, '');}catch{return undefined;}};
 const withoutBundle=(value)=>String(value).replace(/^__forgeax-bundle\\//,'');
-const resolveInput=(value)=>{try{const raw=String(value);if(raw.startsWith('__forgeax-bundle/'))return {kind:'resource',path:withoutBundle(raw),url:new nativeURL('forgeax-resource:///'+withoutBundle(raw))};const url=value instanceof nativeURL?value:new nativeURL(raw,'https://forgeax.invalid/'+sourcePath);if(url.protocol==='data:'||url.protocol==='blob:')return {kind:'native',url};if((url.protocol==='http:'||url.protocol==='https:')&&/^[a-z][a-z0-9+.-]*:/i.test(raw))return {kind:'external',url};const path=normalize(url.pathname);return path===undefined?{kind:'missing',url}:{kind:'resource',path:withoutBundle(path),url};}catch{return {kind:'missing'};}};
+const resolveInput=(value)=>{try{const raw=String(value);if(raw.startsWith('__forgeax-bundle/'))return {kind:'resource',path:raw,url:new nativeURL('forgeax-resource:///'+raw)};const url=value instanceof nativeURL?value:new nativeURL(raw,'https://forgeax.invalid/'+sourcePath);if(url.protocol==='data:'||url.protocol==='blob:')return {kind:'native',url};if((url.protocol==='http:'||url.protocol==='https:')&&/^[a-z][a-z0-9+.-]*:/i.test(raw))return {kind:'external',url};const path=normalize(url.pathname);return path===undefined?{kind:'missing',url}:{kind:'resource',path,url};}catch{return {kind:'missing'};}};
 const resourceURL=(value)=>{try{const url=new nativeURL(String(value),'https://forgeax.invalid/'+sourcePath);if(url.protocol!=='http:'&&url.protocol!=='https:')return url;const path=normalize(url.pathname);return path===undefined?url:new nativeURL('forgeax-resource:///'+withoutBundle(path));}catch{return new nativeURL(String(value),'https://forgeax.invalid/'+sourcePath);}};
 class ForgeaxURL extends nativeURL{constructor(input,base){if(base!==undefined&&/^(?:blob:|data:)/i.test(String(base))&&!/^[a-z][a-z0-9+.-]*:/i.test(String(input))){super(resourceURL(input));return;}super(input,base);}}
 globalThis.URL=ForgeaxURL;
@@ -1120,7 +1272,30 @@ function runtimeBootstrap(): string {
   const decode = async (entry) => { const body = bodyOf(entry); return body instanceof Uint8Array ? body : new Uint8Array(await new Response(body).arrayBuffer()); };
   const normalize = (value) => { try { return decodeURIComponent(String(value).split(/[?#]/, 1)[0]).replaceAll('\\\\', '/').replace(/^\\/+/, ''); } catch { return undefined; } };
   const withoutBundle = (value) => String(value).replace(/^__forgeax-bundle\\//, '');
-  const lookup = (input) => { let url; try { url = input instanceof nativeURL ? input : new nativeURL(String(input), document.baseURI); } catch { return undefined; } if (url.protocol === 'data:' || url.protocol === 'blob:') return undefined; const path = normalize(url.pathname); if (path === undefined) return undefined; const normalized = withoutBundle(path); const exact = entries.find((entry) => entry.path === path || withoutBundle(entry.path) === normalized); if (exact !== undefined) return exact; const suffix = entries.filter((entry) => normalized.endsWith('/' + withoutBundle(entry.path))); if (suffix.length === 1) return suffix[0]; const name = normalized.slice(normalized.lastIndexOf('/') + 1); const matches = entries.filter((entry) => withoutBundle(entry.path).slice(withoutBundle(entry.path).lastIndexOf('/') + 1) === name); return matches.length === 1 ? matches[0] : undefined; };
+  const lookup = (input) => {
+    const raw = normalize(input);
+    const direct = entries.find((entry) => entry.path === raw);
+    if (direct !== undefined) return direct;
+    if (raw?.startsWith('__forgeax-bundle/')) {
+      const original = entries.find((entry) => entry.path === withoutBundle(raw));
+      if (original !== undefined) return original;
+    }
+    let url; try { url = input instanceof nativeURL ? input : new nativeURL(String(input), document.baseURI); } catch { return undefined; }
+    if (url.protocol === 'data:' || url.protocol === 'blob:') return undefined;
+    const path = normalize(url.pathname); if (path === undefined) return undefined;
+    const exact = entries.find((entry) => entry.path === path); if (exact !== undefined) return exact;
+    const normalized = withoutBundle(path);
+    if (normalized !== path) {
+      const original = entries.find((entry) => entry.path === normalized); if (original !== undefined) return original;
+    }
+    const suffix = entries.filter((entry) => path.endsWith('/' + entry.path));
+    const longest = suffix.reduce((length, entry) => Math.max(length, entry.path.length), 0);
+    const qualified = suffix.filter((entry) => entry.path.length === longest);
+    if (qualified.length === 1) return qualified[0];
+    const name = normalized.slice(normalized.lastIndexOf('/') + 1);
+    const matches = entries.filter((entry) => entry.path.slice(entry.path.lastIndexOf('/') + 1) === name);
+    return matches.length === 1 ? matches[0] : undefined;
+  };
   const resourceMisses = [];
   const externalRequests = [];
   let resourceHits = 0;
@@ -1174,7 +1349,12 @@ function buildHtml(
   bundle: SingleHtmlBundle,
 ): CommandResult<{ readonly html: string; readonly embeddedAssets: number }> {
   const resources = new Map<string, SingleHtmlBundleArtifact>();
-  for (const resource of [...distArtifacts, ...bundle.artifacts]) {
+  const entryResource: SingleHtmlBundleArtifact = {
+    path: ENTRY_RESOURCE_PATH,
+    bytes: Buffer.from(bundle.entrySource),
+    mediaType: 'text/javascript',
+  };
+  for (const resource of [...distArtifacts, ...bundle.artifacts, entryResource]) {
     if (resources.has(resource.path)) {
       return errorResult(
         'single-html-asset-duplicate',
@@ -1289,32 +1469,50 @@ function buildHtml(
   const orderedResources = [...resources.values()].sort((left, right) =>
     left.path.localeCompare(right.path),
   );
-  // Resources that shrink are stored gzip-compressed and decoded in the page through
-  // DecompressionStream: Pack meshes, JSON and shader manifests compress several-fold.
-  const stored = orderedResources.map((resource) => {
-    const compressed = gzipSync(resource.bytes, { level: 9 });
-    return compressed.byteLength < resource.bytes.byteLength * 0.9
-      ? { bytes: compressed, encoding: 'gzip' as const }
-      : { bytes: resource.bytes, encoding: undefined };
-  });
+  // Paths and media types remain independent; identical bytes share one stored body.
+  const stored: { readonly bytes: Uint8Array; readonly encoding?: 'gzip' }[] = [];
+  const contentIndices = new Map<string, number>();
   const assetManifestSource = JSON.stringify(
-    orderedResources.map((resource, index) => ({
-      path: resource.path,
-      mime: resource.mediaType,
-      index,
-      ...(stored[index]?.encoding === undefined ? {} : { encoding: stored[index].encoding }),
-    })),
+    orderedResources.map((resource) => {
+      const digest = createHash('sha256').update(resource.bytes).digest('hex');
+      let index = contentIndices.get(digest);
+      if (index === undefined) {
+        index = stored.length;
+        const compressed = gzipSync(resource.bytes, { level: 9 });
+        stored.push(
+          compressed.byteLength < resource.bytes.byteLength * 0.9
+            ? { bytes: compressed, encoding: 'gzip' }
+            : { bytes: resource.bytes },
+        );
+        contentIndices.set(digest, index);
+      }
+      const encoding = stored[index]?.encoding;
+      return {
+        path: resource.path,
+        mime: resource.mediaType,
+        index,
+        ...(encoding === undefined ? {} : { encoding }),
+      };
+    }),
   );
   const assetManifestNode = `<script type="application/json" id="forgeax-asset-payload" data-forgeax-asset-payload>${safeScriptText(assetManifestSource)}</script>`;
-  const assetDataNodes = orderedResources
+  const assetDataNodes = stored
     .map(
-      (_resource, index) =>
-        `<script type="application/octet-stream" data-forgeax-asset-index="${index}">${Buffer.from(stored[index]?.bytes ?? new Uint8Array()).toString('base64')}</script>`,
+      (resource, index) =>
+        `<script type="application/octet-stream" data-forgeax-asset-index="${index}">${Buffer.from(resource.bytes).toString('base64')}</script>`,
     )
     .join('');
   const assetNode = `${assetManifestNode}${assetDataNodes}`;
   const bootstrap = `<script type="application/javascript">${safeScriptText(runtimeBootstrap())}</script>`;
-  const entry = `<script type="module">${safeScriptText(bundle.entrySource)}</script>`;
+  // An inline module keeps document-relative import.meta.url semantics. Its source
+  // uses the same compressed resource delivery as the rest of the offline closure.
+  const entry = `<script type="module">
+const entrySource = await (await fetch(${JSON.stringify(`forgeax-resource:///${ENTRY_RESOURCE_PATH}`)})).text();
+const entry = document.createElement('script');
+entry.type = 'module';
+entry.textContent = entrySource;
+document.body.append(entry);
+</script>`;
   const withResources = applyReplacements(indexHtml, replacements);
   const body = `${assetNode}${bootstrap}${entry}`;
   const html = withResources.includes('</body>')
@@ -1333,7 +1531,9 @@ export async function writeSingleHtml(
   const temporaryChecksum = `${checksumPath}.partial-${process.pid}`;
   let staticGraphRoot: string | undefined;
   try {
-    staticGraphRoot = await mkdtemp(resolve(tmpdir(), 'forgeax-single-html-static-'));
+    staticGraphRoot = await realpath(
+      await mkdtemp(resolve(tmpdir(), 'forgeax-single-html-static-')),
+    );
     const indexHtml = await readFile(resolve(distRoot, 'index.html'), 'utf8');
     const resources = await distResources(distRoot, options.manifest);
     const closed = await closeStaticJavaScriptGraphs(staticGraphRoot, [
@@ -1410,4 +1610,23 @@ export function packageOutputError(
     `Use a ${expectedSuffix} output path for ${format}.`,
     { output, format },
   );
+}
+
+function workerUrlExpression(
+  argument: ESTree.Expression | ESTree.SpreadElement,
+): ESTree.NewExpression | undefined {
+  const url =
+    argument?.type === 'MemberExpression' &&
+    !argument.computed &&
+    argument.property.type === 'Identifier' &&
+    argument.property.name === 'href'
+      ? argument.object
+      : argument;
+  if (
+    url?.type !== 'NewExpression' ||
+    url.callee.type !== 'Identifier' ||
+    url.callee.name !== 'URL'
+  )
+    return undefined;
+  return url;
 }

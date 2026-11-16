@@ -1,4 +1,4 @@
-import { validateCookedMaterialRecord } from '@forgeax/engine-pack';
+import { checkMaterialProgramSetDigest, validateCookedMaterialRecord } from '@forgeax/engine-pack';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import type { NativeCookerRegistry } from '@forgeax/engine-pack/native-cooker';
 import type {
@@ -97,6 +97,45 @@ function materialSource(asset: ImportedAsset<unknown>): MaterialAsset {
 }
 
 /** The source-package owner applies the same injected cooker used for authored Packs. */
+type MaterialDraftRegistry = Pick<NativeCookerRegistry, 'get' | 'runDraft'>;
+
+// Material cooks are independent: start them together so a parallel cooker
+// fills its workers, then admit each draft in asset order.
+function startMaterialDrafts(
+  materialAssets: readonly ImportedAsset[],
+  table: Readonly<Record<string, MaterialAsset>>,
+  declarations: ReadonlyMap<string, { readonly sourceKey?: string }>,
+  meta: RunImportMeta,
+  registry: MaterialDraftRegistry,
+): Map<string, ReturnType<MaterialDraftRegistry['runDraft']>> {
+  const drafts = new Map<string, ReturnType<MaterialDraftRegistry['runDraft']>>();
+  for (const asset of materialAssets) {
+    const source = table[asset.guid];
+    const sourceKey = declarations.get(asset.guid)?.sourceKey;
+    if (source === undefined || 'cooked' in source || sourceKey === undefined) continue;
+    drafts.set(
+      asset.guid,
+      registry.runDraft('material', {
+        guid: asset.guid,
+        source,
+        table,
+        sourcePath: meta.source,
+        sourceKey,
+        refs: asset.refs.map((ref) => ref.guid),
+      }),
+    );
+  }
+  return drafts;
+}
+
+function checkExistingCook(guid: string, cooked: unknown): void {
+  const checked = validateCookedMaterialRecord(cooked);
+  if (!checked.ok || !checkMaterialProgramSetDigest(checked.value).ok)
+    failure(guid, 'invalid existing material cook record');
+  if (checked.value.guid.toLowerCase() !== guid.toLowerCase())
+    failure(guid, 'existing material cook record belongs to another GUID');
+}
+
 export async function cookImportedMaterials(
   product: ImportProduct,
   meta: RunImportMeta,
@@ -111,6 +150,7 @@ export async function cookImportedMaterials(
   const assets: ImportedAsset[] = [];
   const dependencies = new Set(product.sourceDependencies);
   const fingerprints: string[] = [];
+  const drafts = startMaterialDrafts(materialAssets, table, declarations, meta, registry);
   for (const asset of product.assets) {
     if (asset.kind !== 'material') {
       assets.push(asset);
@@ -119,24 +159,15 @@ export async function cookImportedMaterials(
     const source = table[asset.guid];
     if (source === undefined) return failure(asset.guid, 'missing material source');
     if ('cooked' in source) {
-      const checked = validateCookedMaterialRecord(source.cooked);
-      if (!checked.ok) return failure(asset.guid, 'invalid existing material cook record');
-      if (checked.value.guid.toLowerCase() !== asset.guid.toLowerCase())
-        return failure(asset.guid, 'existing material cook record belongs to another GUID');
+      checkExistingCook(asset.guid, source.cooked);
       assets.push(asset);
       continue;
     }
     const sourceKey = declarations.get(asset.guid)?.sourceKey;
     if (sourceKey === undefined)
       return failure(asset.guid, 'declare the material sourceKey in Meta before cooking');
-    const draft = await registry.runDraft('material', {
-      guid: asset.guid,
-      source,
-      table,
-      sourcePath: meta.source,
-      sourceKey,
-      refs: asset.refs.map((ref) => ref.guid),
-    });
+    const draft = await drafts.get(asset.guid);
+    if (draft === undefined) return failure(asset.guid, 'material cook was not started');
     if (!draft.ok) return failure(asset.guid, JSON.stringify(draft.error));
     if (draft.value.guid.toLowerCase() !== asset.guid.toLowerCase())
       return failure(asset.guid, 'material cooker changed its declared GUID');
@@ -147,9 +178,8 @@ export async function cookImportedMaterials(
       draft.value.payload.kind !== 'material'
     )
       return failure(asset.guid, 'material cooker did not return a MaterialAsset');
-    const record = validateCookedMaterialRecord(
-      (draft.value.payload as { cooked?: unknown }).cooked,
-    );
+    const cooked = (draft.value.payload as { cooked?: unknown }).cooked;
+    const record = validateCookedMaterialRecord(cooked);
     if (!record.ok || record.value.guid.toLowerCase() !== asset.guid.toLowerCase())
       return failure(asset.guid, 'material cooker did not publish a valid record for this GUID');
     const projected = await materialAssetOutputProducer.produce({

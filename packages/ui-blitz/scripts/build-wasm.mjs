@@ -12,6 +12,9 @@ const engine = resolve(root, '../..');
 const fork = join(engine, 'third_party/blitz');
 const cargo = process.env.CARGO ?? 'cargo';
 const bindgen = process.env.WASM_BINDGEN ?? 'wasm-bindgen';
+// Proc-macros link for the host even when the delivered target is WASM.
+const rustToolchain =
+  process.platform === 'win32' ? '1.99.0-x86_64-pc-windows-msvc' : '1.99.0';
 const run = (command, args, options = {}) =>
   execFileSync(command, args, { cwd: root, encoding: 'utf8', ...options });
 // The release recipe belongs to the hashed source, not per-process overrides.
@@ -35,7 +38,7 @@ if (run(bindgen, ['--version']).trim() !== 'wasm-bindgen 0.2.129') {
 run(
   cargo,
   [
-    '+1.99.0',
+    `+${rustToolchain}`,
     'build',
     '--locked',
     '--release',
@@ -85,7 +88,7 @@ try {
   await writeFile(join(pkg, 'ui-native.mjs'), derived);
   await writeFile(join(pkg, 'ui-native.d.mts'), nativeDeclarations);
   const metadata = JSON.parse(
-    run(cargo, ['+1.99.0', 'metadata', '--locked', '--format-version', '1']),
+    run(cargo, [`+${rustToolchain}`, 'metadata', '--locked', '--format-version', '1']),
   );
   const resolved = metadata.resolve.nodes
     .map((node) => ({ id: node.id, features: node.features }))
@@ -111,7 +114,8 @@ try {
     upstreamBase: '74fe1abf090732524c86d96e6cdb6f95d8f8d6dc',
     forkRevision,
     forkDirty,
-    rust: run(cargo, ['+1.99.0', '--version']).trim(),
+    rust: run(cargo, [`+${rustToolchain}`, '--version']).trim(),
+    rustToolchain,
     wasmBindgen: '0.2.129',
     paint: 'vello_gpu@0.3.0/portable; anyrender_vello_cpu@0.18.0/reference',
     profile: 'release',

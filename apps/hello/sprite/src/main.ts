@@ -1,3 +1,5 @@
+import { InputFrameStartScan } from "@forgeax/engine-input";
+import { defineSystem } from "@forgeax/engine-ecs";
 import type { AssetHandle } from '@forgeax/engine-types';
 import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtimeBinding } from '@forgeax/apps-shared/asset-runtime-config';
 import { Update } from '@forgeax/engine-ecs';
@@ -88,7 +90,7 @@ import { Update } from '@forgeax/engine-ecs';
 import type { App, CanvasAppError } from '@forgeax/engine-app';
 import { createApp } from '@forgeax/engine-app/browser';
 import type { World } from '@forgeax/engine-ecs';
-import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine-input';
+import { INPUT_SNAPSHOT_RESOURCE_KEY } from '@forgeax/engine-input';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 
 import { Transform } from '@forgeax/engine-scene';
@@ -314,12 +316,12 @@ const primitiveQuad = assets.create(createPrimitiveMesh('quad').unwrap()).unwrap
   // The system runs after the engine-input frame-start scan so the
   // edges are fresh; charter P4 consistent abstraction -- same
   // Read the frame-start snapshot owned by the Input package.
-  world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'hello-sprite-scene-switcher',
-    after: ['input-frame-start-scan'],
+    after: [InputFrameStartScan],
     queries: [],
     fn: () => {
-      const snap = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+      const snap = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
       // up-edge ('1' / '2') is one-frame-deep so a sustained key press
       // does not flicker. mouse-wheel notch is sign-discrete (D-5):
       // positive = scroll down = scene-A (layer-z), negative = scroll
@@ -341,6 +343,7 @@ const primitiveQuad = assets.create(createPrimitiveMesh('quad').unwrap()).unwrap
       }
     },
   });
+world.addSystem(Update, systemToken1);
 
   // Final wire: arm the rAF loop. createApp's frame-loop tracks the
   // World update cadence via Time + dispatches to RenderSystem each

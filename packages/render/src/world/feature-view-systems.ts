@@ -1,18 +1,32 @@
-import type { EntityHandle, World } from '@forgeax/engine-ecs';
+import {
+  beginScheduleWork,
+  defineSystem,
+  type EntityHandle,
+  hasScheduleRunObservers,
+  type World,
+} from '@forgeax/engine-ecs';
 import { err } from '@forgeax/engine-rhi';
-import { createCloudFeatureFrameContext, createCloudFeatureView } from '../cloud/frame-context';
+import { type AssetHandle, ok, type TextureAsset } from '@forgeax/engine-types';
+import type { ExtractedCloudLayer } from '../cloud/extract';
+import {
+  createCloudFeatureFrameContext,
+  createCloudFeatureView,
+} from '../cloud/reconstruction/frame-context';
 import {
   RenderFeatureInputUnavailableError,
   type RenderFeatureInputUnavailableReason,
 } from '../errors/render';
-import type { RenderFeatureFrameInput } from '../features/host';
+import type { RenderFeatureFrameInput, RenderFeatureHost } from '../features/host';
 import type { MotionBlurFeatureInput } from '../features/motion-blur/motion-blur-feature';
 import { planMotionBlurFrame } from '../features/motion-blur/motion-blur-runtime';
 import { createPreparedResolver } from '../features/prepared-resolver';
+import { featureUsesSurfaceData } from '../features/surface-data-usage';
 import { renderFeatureViewIdentity } from '../features/view';
 import type { SkylightBindGroupResources } from '../ibl/skylight-bind-group';
 import type { MaterialResource } from '../material-resource';
+import type { StandardProfile } from '../pipeline/standard-profile';
 import { type RenderResourceScope, renderTime } from '../publication/resource-scope';
+import { resolveFrameMaterials } from '../record/frame-admission';
 import { resolveMaterialSkylight } from '../record/main-pass-material';
 import type { PipelineState } from '../record/render-context';
 import type { CameraSnapshot } from '../render-contract';
@@ -28,8 +42,20 @@ import {
   unimplementedPublishedFeature,
 } from '../render-system-record-attempt';
 import type { FrameList } from '../scene/frame-list';
-import { type DispatchList, isCapturedDispatch } from '../scene/material-dispatch';
+import {
+  type DispatchList,
+  dispatchPassWork,
+  isCapturedDispatch,
+} from '../scene/material-dispatch';
 import { sceneSurfaceRowsOf } from '../scene/render-scene-view';
+import {
+  RenderFeatureViewsOrder,
+  RenderMotionBlurPlanOrder,
+  RenderStandardLightingOrder,
+  RenderViewTopologyOrder,
+  ViewDiffuseGiOrder,
+} from '../system-order';
+import { DEFERRED_PASS_SELECTOR, FORWARD_PASS_SELECTOR, matchPass } from '../systems/pass-selector';
 import type { StandardSceneSurfaceAdmission } from '../temporal/scene-data';
 import {
   createStandardSceneSurfaceAdmission,
@@ -40,6 +66,7 @@ import {
   standardSceneDataContributorFromColumns,
   standardSceneSurfaceContributorBaseline,
 } from '../temporal/standard-scene-data-admission';
+import { captureWaterFluidFoamMaterials } from '../water/fluid-foam';
 import {
   RENDER_FEATURE_VIEWS_SYSTEM,
   RENDER_MOTION_BLUR_PLAN_SYSTEM,
@@ -49,13 +76,13 @@ import {
   type ViewFeatureInputState,
   viewFeatureInputOf,
 } from './feature-systems';
+import { viewDiffuseGiOf } from './gi-systems';
 import { viewRecordHistory } from './record-history';
+import { viewLightsOf } from './render-lights';
 import { ViewRecorder } from './render-views';
-import { RenderPrepare, renderSubmission } from './render-world';
-import {
-  RENDER_STANDARD_LIGHTING_SYSTEM,
-  viewStandardLightingOf,
-} from './standard-lighting-systems';
+import { RenderPrepare, renderSubmission, renderWorldFor } from './render-world';
+import { RenderSceneDelta } from './scene-systems';
+import { viewStandardLightingOf } from './standard-lighting-systems';
 import { readViewField, requireViewField } from './view-field';
 import {
   type StagedViewInputs,
@@ -65,6 +92,7 @@ import {
 } from './view-frame-systems';
 import { recordContext } from './view-record-context';
 import { ownerOf, type ViewSettlementOwner } from './view-settlement';
+import { viewTopologyOf } from './view-topology-systems';
 
 /** A view's motion blur plan, or the unexpected cause its recording rethrows. */
 export type ViewMotionBlurOutcome =
@@ -145,6 +173,25 @@ function deriveViewFeatureInput(
 type SceneDataHeader = Omit<StandardSceneDataAdmissionInput, 'contributors'>;
 type SceneDataRows = NonNullable<ReturnType<typeof sceneSurfaceRowsOf>>;
 
+/** Whether the stock view or any feature may consume Standard surface schemas. */
+export function needsSceneSurfaceAdmission(
+  profile: Pick<StandardProfile, 'renderPath' | 'ssao'> | undefined,
+  standardPipeline: boolean,
+  installedSsao: boolean | undefined,
+  host: Pick<RenderFeatureHost, 'features'> | undefined,
+  conformanceTrace = false,
+): boolean {
+  return (
+    !standardPipeline ||
+    profile?.renderPath !== 'forward' ||
+    profile.ssao !== false ||
+    installedSsao === true ||
+    conformanceTrace ||
+    host === undefined ||
+    host.features.some(featureUsesSurfaceData)
+  );
+}
+
 /**
  * Everything one complete contributor walk read. A later frame whose inputs
  * are these exact values derives the same admission, so it keeps the walk's
@@ -202,57 +249,71 @@ function prepareFeatureFrameInput(
   const { internals, frameState } = owner;
   const pipelineState = recordContext(internals).getPipelineState();
   const { frame } = view;
+  const topology = viewTopologyOf(world, entity);
+  const cloudLayer = topology?.kind === 'planned' ? topology.topology.cloudLayer : undefined;
   const camera = view.cameras[0];
-  const projection = owner.scene.projectVisibility(
-    view.scopes,
-    frame.renderables,
-    frame.dispatch,
-    frame.gpuOwned?.slots,
-  );
   const profile = frameState.cameraStandardProfile ?? internals.standardProfile;
-  const header: SceneDataHeader = {
-    viewIdentity: featureViewIdentity(view.mode, camera),
-    generation: recordContext(internals).featureHost?.preparedGeneration ?? 0,
-    deviceGeneration: recordContext(internals).deviceScope.generation,
-    standardPipeline: frameState.activePipeline === recordContext(internals).standardPipeline,
-    cameraAvailable: camera !== undefined,
-    lane:
-      internals.device.caps.backendKind === 'wgpu-webgl2'
-        ? 'cpu-webgl2'
-        : internals.device.caps.storageBuffer
-          ? 'clustered'
-          : 'direct',
-    renderPath:
-      frameState.activePipeline === recordContext(internals).standardPipeline
-        ? profile?.renderPath
-        : undefined,
-  };
-  const lane = profile?.renderPath === 'deferred' ? 'deferred' : 'forward';
-  const rows = sceneSurfaceRowsOf(projection.renderables, projection.renderables.at);
-  const admitted = frameState.standardSceneSurfaceAdmission;
-  const walk = admitted === undefined ? undefined : sceneDataWalks.get(admitted);
+  const context = recordContext(internals);
   if (
-    walk === undefined ||
-    rows === undefined ||
-    !repeatsSceneDataWalk(walk, header, lane, projection.dispatch, rows)
-  )
-    frameState.standardSceneSurfaceAdmission = walkSceneDataContributors(
-      header,
-      lane,
-      projection.renderables,
-      projection.dispatch,
-      rows,
-      admitted,
+    needsSceneSurfaceAdmission(
+      profile,
+      frameState.activePipeline === context.standardPipeline,
+      frameState.installedPipelineConfig?.ssao?.enabled,
+      context.featureHost,
+      context.featureGraphConformanceTrace !== undefined,
+    )
+  ) {
+    const projection = owner.scene.projectVisibility(
+      view.source,
+      frame.renderables,
+      frame.dispatch,
+      frame.gpuOwned?.slots,
     );
-  const skylight = resolveFeatureSkylight(owner, pipelineState, frame, view.resourceWorld);
+    const header: SceneDataHeader = {
+      viewIdentity: featureViewIdentity(view.mode, camera),
+      generation: recordContext(internals).featureHost?.preparedGeneration ?? 0,
+      deviceGeneration: recordContext(internals).deviceScope.generation,
+      standardPipeline: frameState.activePipeline === recordContext(internals).standardPipeline,
+      cameraAvailable: camera !== undefined,
+      lane:
+        internals.device.caps.backendKind === 'wgpu-webgl2'
+          ? 'cpu-webgl2'
+          : internals.device.caps.storageBuffer
+            ? 'clustered'
+            : 'direct',
+      renderPath:
+        frameState.activePipeline === recordContext(internals).standardPipeline
+          ? profile?.renderPath
+          : undefined,
+    };
+    const lane = profile?.renderPath === 'deferred' ? 'deferred' : 'forward';
+    const rows = sceneSurfaceRowsOf(projection.renderables, projection.renderables.at);
+    const admitted = frameState.standardSceneSurfaceAdmission;
+    const walk = admitted === undefined ? undefined : sceneDataWalks.get(admitted);
+    if (
+      walk === undefined ||
+      rows === undefined ||
+      !repeatsSceneDataWalk(walk, header, lane, projection.dispatch, rows)
+    )
+      frameState.standardSceneSurfaceAdmission = walkSceneDataContributors(
+        header,
+        lane,
+        projection.renderables,
+        projection.dispatch,
+        rows,
+        admitted,
+      );
+  } else {
+    // Never expose a proof from a prior consuming frame after demand disappears.
+    frameState.standardSceneSurfaceAdmission = undefined;
+  }
+  const skylight = resolveFeatureSkylight(owner, pipelineState, frame, view.source);
   if (recordContext(internals).featureHost === undefined) return { input: undefined, skylight };
   const generation = recordContext(internals).deviceScope.generation;
-  const cameraOwner = view.composition.owners.cameraOwner;
   const lastGeneration = viewRecordHistory(world, entity)?.lastGeneration;
   const featureView = createCloudFeatureView(
     camera,
-    view.scopes,
-    cameraOwner,
+    view.source,
     recordContext(internals).canvas.width,
     recordContext(internals).canvas.height,
     generation,
@@ -260,15 +321,41 @@ function prepareFeatureFrameInput(
     lastGeneration !== undefined && lastGeneration !== generation,
   );
   const identity = featureViewIdentity(view.mode, camera);
-  const targets = resolveFeatureTargets(internals, pipelineState, camera, frame.cloudLayer);
+  const materialProjection = owner.scene.shadowCasterProjection();
+  const { materials } = resolveFrameMaterials(
+    materialProjection,
+    materialProjection?.renderables ?? frame.renderables,
+  );
+  const targets = resolveFeatureTargets(
+    internals,
+    pipelineState,
+    camera,
+    cloudLayer,
+    materials.hasWater || frameState.candidatePipelinePreparations?.materials.hasWater === true,
+  );
+  const gi = viewDiffuseGiOf(world, entity);
+  const extent = gi?.ok === true ? gi.value.renderExtent : undefined;
   return {
-    input: featureFrameInput(owner, view, camera, targets, featureView, identity),
+    input: {
+      ...featureFrameInput(
+        world,
+        owner,
+        view,
+        camera,
+        targets,
+        featureView,
+        identity,
+        viewLightsOf(world, entity)?.directional,
+        cloudLayer,
+      ),
+      ...(extent === undefined ? {} : { renderExtent: extent }),
+    },
     skylight,
   };
 }
 
 /** Judge every dispatched row; a walk over captured roots is remembered with what it read. */
-function walkSceneDataContributors(
+export function walkSceneDataContributors(
   header: SceneDataHeader,
   lane: 'forward' | 'deferred',
   renderables: FrameList<RenderableSnapshot>,
@@ -301,9 +388,8 @@ function walkSceneDataContributors(
     materials.push(material);
     snapshots.push(material.snapshot);
   };
-  let entry: DispatchEntry | undefined;
+  let entry: Parameters<typeof standardSceneDataContributorFromColumns>[3] | undefined;
   const judge = (
-    worldId: number,
     entityKey: number,
     content: Parameters<typeof standardSceneDataContributorFromColumns>[0],
     carried: Parameters<typeof standardSceneDataContributorFromColumns>[1],
@@ -316,18 +402,37 @@ function walkSceneDataContributors(
     return standardSceneDataContributorFromColumns(
       content,
       carried,
-      worldId,
       entityKey,
-      entry as DispatchEntry,
+      entry as Parameters<typeof standardSceneDataContributorFromColumns>[3],
       lane,
       previousContributors?.[contributors.length],
     );
   };
-  dispatch.forEach((value) => {
+  const consume = (value: DispatchEntry) => {
     entry = value;
     const contributor = rows.read(value.renderableIndex, judge);
     if (contributor !== undefined) contributors.push(contributor);
-  });
+  };
+  const shared = isCapturedDispatch(dispatch) ? dispatchPassWork(dispatch) : undefined;
+  if (shared === undefined) dispatch.forEach(consume);
+  else
+    for (const work of shared.work) {
+      // Pass tags select the surface lane before expanding any members. A
+      // ShadowCaster cannot contribute camera normals. Deferred still judges
+      // Forward-only surfaces through the ordinary per-row material predicate.
+      if (
+        !matchPass(work.pass.tags, FORWARD_PASS_SELECTOR) &&
+        !(lane === 'deferred' && matchPass(work.pass.tags, DEFERRED_PASS_SELECTOR))
+      )
+        continue;
+      if (shared.source === rows.source && work.slots !== undefined) {
+        entry = work.pass;
+        for (const slot of work.slots()) {
+          const contributor = rows.readSlot(slot, judge);
+          if (contributor !== undefined) contributors.push(contributor);
+        }
+      } else for (const value of work.entries()) consume(value);
+    }
   const admitted = createStandardSceneSurfaceAdmission(admission, previous);
   if (isCapturedDispatch(dispatch))
     sceneDataWalks.set(admitted, { header, lane, dispatch, rows, materials, snapshots });
@@ -345,11 +450,10 @@ export function standardSceneDataContributorAt(
   const index = dispatch.renderableIndex;
   const columns = sceneSurfaceRowsOf(renderables, at);
   if (columns !== undefined)
-    return columns.read(index, (worldId, entityKey, content, materials) =>
+    return columns.read(index, (entityKey, content, materials) =>
       standardSceneDataContributorFromColumns(
         content,
         materials,
-        worldId,
         entityKey,
         dispatch,
         lane,
@@ -392,7 +496,7 @@ function planViewMotionBlur(
   if (staged.result?.ok !== true) return undefined;
   const view = stagedViewInputs(world, staged);
   const camera = view.cameras[0];
-  const cameraScope = view.scopes[view.composition.owners.cameraOwner] as RenderResourceScope;
+  const cameraScope = view.source as RenderResourceScope;
   const opts = staged.opts;
   const environment = view.frame.environment;
   let fallbackDelta = 0;
@@ -421,25 +525,73 @@ function planViewMotionBlur(
 }
 
 function featureFrameInput(
+  renderWorld: World,
   { internals, frameState, scene, preparedResolver }: ViewSettlementOwner,
   view: FeatureInputView,
   camera: CameraSnapshot | undefined,
   targets: ReturnType<typeof resolveFeatureTargets>,
   featureView: ReturnType<typeof createCloudFeatureView>,
   identity: string,
+  cloudSun: Parameters<typeof createCloudFeatureFrameContext>[3],
+  cloudLayer: ExtractedCloudLayer | undefined,
 ): RenderFeatureFrameInput {
-  const { publication, scopes, frame } = view;
+  const { publication, source, frame } = view;
   const sceneInputs = recordContext(internals).featureSceneInputs;
+  const sourceFeatures =
+    publication === undefined && renderWorld.hasResource(RenderSceneDelta)
+      ? renderWorld.getResource(RenderSceneDelta).featureSources
+      : undefined;
   const featureGraphConformanceTrace = recordContext(internals).featureGraphConformanceTrace;
+  const profileWorld = renderWorldFor(internals);
+  const beginProfileWork = hasScheduleRunObservers(profileWorld)
+    ? (work: string) => beginScheduleWork(profileWorld, work)
+    : undefined;
   return {
+    ...(beginProfileWork === undefined ? {} : { beginProfileWork }),
     identity,
     render: view.mode === true,
-    worlds: view.composition.worlds,
-    resolveAsset: (index, handle, revision) => {
-      const source = scopes[index];
+    graphResources: {
+      owner: frameState.graphResourceOwner,
+      retained: frameState.compiledFrameGraph !== null,
+    },
+    world: view.world,
+    ...(sourceFeatures === undefined ? {} : { sourceFeatures }),
+    resolveAsset: (handle, revision) => {
       return source === undefined
-        ? err(new Error(`Missing feature asset source ${index}`))
+        ? err(new Error('Missing feature asset source'))
         : source.resolveAsset(handle, revision);
+    },
+    resolveResidentTextureView: (_index, guid, revision) => {
+      const handle = source?.handleForGuid(guid);
+      if (source === undefined || handle === undefined)
+        return err(new Error(`Missing Renderer texture source ${guid}`));
+      const texture = source.resolveAsset(handle, revision);
+      if (!texture.ok || texture.value.kind !== 'texture')
+        return err(
+          new Error(`Renderer texture source ${guid} is unavailable at revision ${revision}`),
+        );
+      const resident = internals.gpuStore.ensureTextureRevisionResident(
+        handle as AssetHandle<'texture'>,
+        texture.value as TextureAsset,
+        source,
+        revision,
+      );
+      if (!resident.ok) return resident;
+      return ok({
+        view: resident.value.view,
+        retain: () => {
+          const lease = internals.gpuStore.retainTextureRevisionResidency(
+            handle as AssetHandle<'texture'>,
+            revision,
+            source,
+          );
+          if (lease === undefined)
+            throw new Error(`Renderer texture source ${guid} has no revision lease`);
+          return (evict = false) => {
+            void lease.release(evict);
+          };
+        },
+      });
     },
     ...(publication === undefined
       ? {}
@@ -449,14 +601,13 @@ function featureFrameInput(
             ? {}
             : { onFeatureSourceSubmitted: publication.onFeatureSourceSubmitted }),
         }),
-    owner: view.composition.owners.resourceOwner,
     frameNumber: internals.rendererFrameNumber ?? frameState.frameNumber,
     ...featureCameraSelection(camera),
     frameSize: {
       width: recordContext(internals).canvas.width,
       height: recordContext(internals).canvas.height,
     },
-    visibilitySnapshots: frame.featureVisibilitySnapshots,
+    visibilitySnapshot: frame.visibilitySnapshot,
     hiddenEntityReports: frame.hiddenEntityReports,
     targets,
     generation: recordContext(internals).featureHost?.preparedGeneration ?? 0,
@@ -472,12 +623,19 @@ function featureFrameInput(
       (internals.standardProfile?.featureReadOnlyDepthBatchDiagnostic ??
         internals.standardProfile?.featureReadOnlyDepthBatching) === true,
     limits: internals.device.limits,
-    frame: createCloudFeatureFrameContext(frame.cloudLayer, featureView),
+    frame: {
+      ...createCloudFeatureFrameContext(cloudLayer, featureView, frame.environment, cloudSun),
+      waterFoamMaterials: captureWaterFluidFoamMaterials(
+        frame.renderables,
+        identity,
+        frame.dispatch,
+      ),
+    },
     ...(internals.getMaterialShaderBindingContract === undefined
       ? {}
       : { materialShaderBindingContract: internals.getMaterialShaderBindingContract }),
     createPreparedGraphicsResolver: (input) =>
-      createPreparedResolver(preparedResolver, input, scopes),
+      createPreparedResolver(preparedResolver, input, source as RenderResourceScope),
     gpuWork: preparedResolver.gpuWork,
     sceneResources:
       sceneInputs === undefined
@@ -486,7 +644,7 @@ function featureFrameInput(
             prepare: (identity, resource) =>
               sceneInputs.prepare(identity, resource, {
                 retained: scene.compositionRetainedScene(),
-                scopes,
+                sourceScope: view.source,
               }),
             abortFeature: (identity) => sceneInputs.abortFeature(identity),
             begin: (frameNumber) => sceneInputs.begin(frameNumber),
@@ -520,84 +678,84 @@ function guardedMotionBlur(plan: () => MotionBlurFeatureInput | undefined): View
  * plans each prepared view's motion blur. A failure is stored, never thrown.
  */
 export function registerFeatureViewsSystem(world: World): void {
-  world
-    .addSystem(RenderPrepare, {
-      commands: 'none',
-      name: RENDER_FEATURE_VIEWS_SYSTEM,
-      after: [RENDER_STANDARD_LIGHTING_SYSTEM],
-      queries: [{ read: [ViewRecorder, ViewFrame], optional: [ViewFeatureInput] }],
-      fn: (world, [rows]) => {
-        const frame = renderSubmission(world).frame;
-        const first: { entity: EntityHandle; state: ViewFeatureInputState }[] = [];
+  const systemToken1 = defineSystem({
+    sets: [RenderFeatureViewsOrder],
+    commands: 'none',
+    name: RENDER_FEATURE_VIEWS_SYSTEM,
+    after: [RenderStandardLightingOrder, RenderViewTopologyOrder, ViewDiffuseGiOrder],
+    queries: [{ read: [ViewRecorder, ViewFrame], optional: [ViewFeatureInput] }],
+    fn: (world, [rows]) => {
+      const frame = renderSubmission(world).frame;
+      const first: { entity: EntityHandle; state: ViewFeatureInputState }[] = [];
 
-        rows.forEach((row) => {
-          const entity = row.entity;
+      rows.forEach((row) => {
+        const entity = row.entity;
 
-          const staged = world
-            .resolveUniqueRef<ViewFrameState>(requireViewField(world, entity, ViewFrame, 'state'))
-            .unwrap();
-          if (staged.frame !== frame) return;
-          const outcome = guardedFeatureInput(() =>
-            deriveViewFeatureInput(
-              world,
-              entity,
-              staged,
-              ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state')),
-            ),
-          );
-          const stored = readViewField(world, entity, ViewFeatureInput, 'state');
-          if (stored === undefined) {
-            first.push({ entity: entity, state: { frame, outcome, motionBlur: undefined } });
-            return;
-          }
-          const state = world.resolveUniqueRef<ViewFeatureInputState>(stored).unwrap();
-          state.frame = frame;
-          state.outcome = outcome;
-        });
-        // A view's first input attaches its component after the iteration.
-        for (const { entity, state } of first)
-          world
-            .addComponent(entity, {
-              component: ViewFeatureInput,
-              data: { state: world.allocUniqueRef('ViewFeatureInput', state) },
-            })
-            .unwrap();
-      },
-    })
-    .unwrap();
-  world
-    .addSystem(RenderPrepare, {
-      commands: 'none',
-      name: RENDER_MOTION_BLUR_PLAN_SYSTEM,
-      after: [RENDER_FEATURE_VIEWS_SYSTEM],
-      queries: [{ read: [ViewRecorder, ViewFrame, ViewFeatureInput] }],
-      fn: (world, [rows]) => {
-        const frame = renderSubmission(world).frame;
+        const staged = world
+          .resolveUniqueRef<ViewFrameState>(requireViewField(world, entity, ViewFrame, 'state'))
+          .unwrap();
+        if (staged.frame !== frame) return;
+        const outcome = guardedFeatureInput(() =>
+          deriveViewFeatureInput(
+            world,
+            entity,
+            staged,
+            ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state')),
+          ),
+        );
+        const stored = readViewField(world, entity, ViewFeatureInput, 'state');
+        if (stored === undefined) {
+          first.push({ entity: entity, state: { frame, outcome, motionBlur: undefined } });
+          return;
+        }
+        const state = world.resolveUniqueRef<ViewFeatureInputState>(stored).unwrap();
+        state.frame = frame;
+        state.outcome = outcome;
+      });
+      // A view's first input attaches its component after the iteration.
+      for (const { entity, state } of first)
+        world
+          .addComponent(entity, {
+            component: ViewFeatureInput,
+            data: { state: world.allocUniqueRef('ViewFeatureInput', state) },
+          })
+          .unwrap();
+    },
+  });
+  world.addSystem(RenderPrepare, systemToken1).unwrap();
+  const systemToken2 = defineSystem({
+    sets: [RenderMotionBlurPlanOrder],
+    commands: 'none',
+    name: RENDER_MOTION_BLUR_PLAN_SYSTEM,
+    after: [systemToken1],
+    queries: [{ read: [ViewRecorder, ViewFrame, ViewFeatureInput] }],
+    fn: (world, [rows]) => {
+      const frame = renderSubmission(world).frame;
 
-        rows.forEach((row) => {
-          const entity = row.entity;
+      rows.forEach((row) => {
+        const entity = row.entity;
 
-          const state = world
-            .resolveUniqueRef<ViewFeatureInputState>(
-              requireViewField(world, entity, ViewFeatureInput, 'state'),
-            )
-            .unwrap();
-          if (state.frame !== frame || state.outcome.kind !== 'prepared') return;
-          if (state.outcome.value.input === undefined) return;
-          const staged = world
-            .resolveUniqueRef<ViewFrameState>(requireViewField(world, entity, ViewFrame, 'state'))
-            .unwrap();
-          const planned = guardedMotionBlur(() =>
-            planViewMotionBlur(
-              world,
-              staged,
-              ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state')),
-            ),
-          );
-          if (planned.kind === 'failed') state.outcome = planned;
-          else state.motionBlur = { frame, input: planned.input };
-        });
-      },
-    })
-    .unwrap();
+        const state = world
+          .resolveUniqueRef<ViewFeatureInputState>(
+            requireViewField(world, entity, ViewFeatureInput, 'state'),
+          )
+          .unwrap();
+        if (state.frame !== frame || state.outcome.kind !== 'prepared') return;
+        if (state.outcome.value.input === undefined) return;
+        const staged = world
+          .resolveUniqueRef<ViewFrameState>(requireViewField(world, entity, ViewFrame, 'state'))
+          .unwrap();
+        const planned = guardedMotionBlur(() =>
+          planViewMotionBlur(
+            world,
+            staged,
+            ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state')),
+          ),
+        );
+        if (planned.kind === 'failed') state.outcome = planned;
+        else state.motionBlur = { frame, input: planned.input };
+      });
+    },
+  });
+  world.addSystem(RenderPrepare, systemToken2).unwrap();
 }

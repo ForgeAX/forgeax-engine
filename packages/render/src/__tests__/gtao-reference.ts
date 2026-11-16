@@ -374,6 +374,11 @@ function octDecode8(xByte: number, yByte: number): GtaoVec3 {
   return normalize([x + (x >= 0 ? -fold : fold), y + (y >= 0 ? -fold : fold), z]);
 }
 
+/** Inverse of the SSAO raw target's octahedral gb encoding, from normalized channels. */
+export function decodeSsaoRawNormal(x: number, y: number): GtaoVec3 {
+  return octDecode8(x * 255, y * 255);
+}
+
 function quantizeUnorm8(value: number): number {
   return Math.round(Math.max(0, Math.min(1, value)) * 255);
 }
@@ -588,6 +593,117 @@ export function computeGtaoRawReference(
     }
   }
   return { width: config.outputWidth, height: config.outputHeight, rgba };
+}
+
+/**
+ * Replace material normals with normals reconstructed from neighbouring depth, as a
+ * prepass without a normal target leaves them: per axis the neighbour delta with the
+ * smaller view-Z step, the other side when one neighbour is background.
+ */
+export function depthReconstructedNormalField(field: GtaoSurfaceField): GtaoSurfaceField {
+  const at = (x: number, y: number) =>
+    x < 0 || y < 0 || x >= field.width || y >= field.height
+      ? undefined
+      : field.positions[y * field.width + x];
+  const axisDelta = (
+    x: number,
+    y: number,
+    dx: number,
+    dy: number,
+    center: GtaoVec3,
+    fallback: GtaoVec3,
+  ): GtaoVec3 => {
+    const minus = at(x - dx, y - dy);
+    const plus = at(x + dx, y + dy);
+    if (minus === undefined && plus === undefined) return fallback;
+    if (minus === undefined) return subtract(plus as GtaoVec3, center);
+    const toMinus = subtract(center, minus);
+    if (plus === undefined) return toMinus;
+    const toPlus = subtract(plus, center);
+    return Math.abs(toMinus[2]) < Math.abs(toPlus[2]) ? toMinus : toPlus;
+  };
+  const worldNormals = field.positions.map((center, index) => {
+    if (center === undefined) return undefined;
+    const x = index % field.width;
+    const y = Math.floor(index / field.width);
+    const right = axisDelta(x, y, 1, 0, center, [1, 0, 0]);
+    const down = axisDelta(x, y, 0, 1, center, [0, -1, 0]);
+    const viewNormal = normalize(cross(down, right));
+    const m = field.view;
+    // Transpose of the orthonormal view rotation maps view back to world.
+    return normalize([
+      m[0] * viewNormal[0] + m[1] * viewNormal[1] + m[2] * viewNormal[2],
+      m[4] * viewNormal[0] + m[5] * viewNormal[1] + m[6] * viewNormal[2],
+      m[8] * viewNormal[0] + m[9] * viewNormal[1] + m[10] * viewNormal[2],
+    ]);
+  });
+  return { ...field, worldNormals };
+}
+
+/**
+ * 5x5 filter of the depth-reconstructed AO path: taps are weighted only by their
+ * distance to the centre's Reverse-Z depth plane, with the per-axis slope taken
+ * from the side whose extrapolation lands closer to the centre.
+ */
+export function filterGtaoDepthPlaneReference(
+  field: GtaoSurfaceField,
+  raw: GtaoRawReference,
+): Uint8Array {
+  const depthAt = (x: number, y: number): number => {
+    const position = field.positions[y * field.width + x];
+    return position === undefined ? 0 : reverseZDeviceDepth(field.projection, position);
+  };
+  const blurDepth = (x: number, y: number): number => {
+    const pixel = samplePixel(
+      (x + 0.5) / raw.width,
+      (y + 0.5) / raw.height,
+      field.width,
+      field.height,
+    );
+    if (pixel === undefined) {
+      const cx = clamp(Math.floor(((x + 0.5) / raw.width) * field.width), 0, field.width - 1);
+      const cy = clamp(Math.floor(((y + 0.5) / raw.height) * field.height), 0, field.height - 1);
+      return depthAt(cx, cy);
+    }
+    return depthAt(pixel[0], pixel[1]);
+  };
+  const slope = (x: number, y: number, dx: number, dy: number, z: number): number => {
+    const m2 = blurDepth(x - 2 * dx, y - 2 * dy);
+    const m1 = blurDepth(x - dx, y - dy);
+    const p1 = blurDepth(x + dx, y + dy);
+    const p2 = blurDepth(x + 2 * dx, y + 2 * dy);
+    return Math.abs(2 * m1 - m2 - z) < Math.abs(2 * p1 - p2 - z) ? m1 - m2 : p2 - p1;
+  };
+  const tolerance = 2000 / Math.max(field.projection.matrix[14] ?? 0, 1e-4);
+  const result = new Uint8Array(raw.width * raw.height);
+  for (let y = 0; y < raw.height; y += 1) {
+    for (let x = 0; x < raw.width; x += 1) {
+      const z = blurDepth(x, y);
+      if (z <= 0) {
+        result[y * raw.width + x] = 255;
+        continue;
+      }
+      const slopeX = slope(x, y, 1, 0, z);
+      const slopeY = slope(x, y, 0, 1, z);
+      let total = 0;
+      let weightSum = 0;
+      for (let oy = -2; oy <= 2; oy += 1) {
+        for (let ox = -2; ox <= 2; ox += 1) {
+          const tx = x + ox;
+          const ty = y + oy;
+          if (tx < 0 || ty < 0 || tx >= raw.width || ty >= raw.height) continue;
+          const d = blurDepth(tx, ty);
+          if (d <= 0) continue;
+          const plane = z + slopeX * ox + slopeY * oy;
+          const weight = 1 - clamp(Math.abs(plane - d) * tolerance, 0, 1);
+          total += ((raw.rgba[(ty * raw.width + tx) * 4] ?? 255) / 255) * weight;
+          weightSum += weight;
+        }
+      }
+      result[y * raw.width + x] = quantizeUnorm8(total / Math.max(weightSum, 1e-5));
+    }
+  }
+  return result;
 }
 
 function viewZAtUv(field: GtaoSurfaceField, uvX: number, uvY: number): number | undefined {

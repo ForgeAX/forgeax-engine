@@ -1,3 +1,4 @@
+import { defineSystem } from "@forgeax/engine-ecs";
 import { Update, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import {
   BLOOM_ENABLED,
@@ -182,14 +183,15 @@ export function installLightingModeProjection(args: {
     appliedMode = mode;
   };
 
-  args.world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'game-lighting-mode-projection',
     queries: [],
     fn: () => {
       const mode = readMode();
       if (mode !== appliedMode) project(mode);
     },
-  }).unwrap();
+  });
+args.world.addSystem(Update, systemToken1).unwrap();
 
   const set = (mode: LightingModeName): void => {
     args.world.set(args.camera, LightingMode, { mode: modeValue(mode) });

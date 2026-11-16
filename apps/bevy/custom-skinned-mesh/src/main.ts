@@ -1,3 +1,4 @@
+import { defineSystem } from "@forgeax/engine-ecs";
 import { createApp } from '@forgeax/engine-app/browser';
 import { Time, Update, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import { quat } from '@forgeax/engine-math';
@@ -107,7 +108,7 @@ if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its
   world.spawn({ component: DirectionalLight, data: { direction: [-0.4, -0.8, -0.6], color: [1, 1, 1], intensity: 3, castShadow: false } });
 
   let elapsed = 0;
-  world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'custom-skinned-mesh-joint-animation',
     queries: [],
     fn: (world) => {
@@ -117,7 +118,8 @@ if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its
         world.set(rig.upper, Transform, { quat: quat.fromAxisAngle(quat.create(), [0, 0, 1], angle) });
       }
     },
-  }).unwrap();
+  });
+world.addSystem(Update, systemToken1).unwrap();
   return rigs;
 }
 

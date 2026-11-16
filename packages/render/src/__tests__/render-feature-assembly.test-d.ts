@@ -12,8 +12,8 @@ type OverlayFrame = {
 
 const boundsFeature = {
   identity: 'test.bounds',
-  extract({ owner }) {
-    return ok({ visibleCount: owner });
+  extract({ world }) {
+    return ok({ visibleCount: world.inspect().entityCount });
   },
   plan(data: BoundsFrame, context: RenderFeaturePlanContext) {
     const count: number = data.visibleCount;

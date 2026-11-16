@@ -1,14 +1,25 @@
 import { probeVideoHighPerfUpload } from '@forgeax/engine-graphics-extras';
-import type { GraphResourceResolver } from '@forgeax/engine-render-graph';
+import type { GraphResourceResolver, GraphTextureView } from '@forgeax/engine-render-graph';
 import {
   type BindGroup,
+  type Buffer,
   type RenderBundleEncoderDescriptor,
   RhiError,
   type RhiRenderPassEncoder,
   type TextureView,
 } from '@forgeax/engine-rhi';
-import { err, ok, type PassKind, type PassSelector } from '@forgeax/engine-types';
+import {
+  err,
+  type MaterialSurfacePassKind,
+  ok,
+  type PassKind,
+  type PassSelector,
+} from '@forgeax/engine-types';
+import { waterBodyOwnerKey } from '@forgeax/engine-water';
 import { meshSsboBuffer, meshSsboByteOffset } from '../assembly/mesh-ssbo-grow';
+import { GpuDrivenPreparationError } from '../errors/gpu-driven';
+import { RendererContractFailureError } from '../errors/render';
+import { renderFeatureViewIdentity } from '../features/view';
 import {
   createHdrpSkinUnifiedBindGroup,
   createHdrpUnifiedBindGroup,
@@ -37,6 +48,13 @@ import {
   FORWARD_PASS_SELECTOR,
   matchPass,
 } from '../systems/pass-selector';
+import {
+  isOwnedWaterMeshAdmissionUploadClosure,
+  type WaterMaterialAdmissionDraw,
+  type WaterMaterialAdmissionDrawClosure,
+  waterMeshAdmissionUpload,
+} from '../water/mesh-source-admission';
+import { type WaterMaterialFrameBindings, waterMaterialDrawBinding } from '../water/wave-material';
 import { recordContext } from '../world/view-record-context';
 import { FirstEntryMap } from './first-entry-map';
 import { materialSlotsByClass } from './fold-buckets';
@@ -55,6 +73,7 @@ import {
 } from './main-pass-material';
 import { recordSpritePass } from './main-pass-sprite-draws';
 import {
+  isSurfaceRecordMode,
   type MaterialRecordMode,
   matchesRecordMode,
   materialMatchesPass,
@@ -67,7 +86,10 @@ import {
   rememberBindGroup,
 } from './mesh-ssbo';
 import { reflectionProbeMaterial } from './reflection-probe-material';
-import type { _InternalRenderPipelineContext } from './render-context';
+import type {
+  _InternalRenderPipelineContext,
+  WaterMaterialRecordCacheCandidate,
+} from './render-context';
 import { MATERIAL_PER_ENTITY_STRIDE, MATERIAL_UNIFORM_BYTES } from './render-context';
 import { buildMatchedMaterialHandlesByRenderable, filterDispatchBySelector } from './shadow-pass';
 import { SingleMaterialHandleSet } from './single-material-handle-set';
@@ -76,6 +98,7 @@ import { selectForwardFragmentEntry } from './standard-opaque-entry';
 
 /** Chain key standing in for the SSAO view when group(2) binds the fallback. */
 const NO_SSAO_VIEW = {};
+
 /** Compose a variant from the current binding facts. */
 export function gpuDrivenMeshVariantKey(bytes: number): string {
   return `gpu-driven-hdrp:${bytes}`;
@@ -87,13 +110,15 @@ export function gpuDrivenSkinVariantKey(task: SkinTaskBinding, bytes: number): s
 
 export type MainPassOptions = {
   readonly bundleDescriptor?: RenderBundleEncoderDescriptor;
-  readonly selection?: { readonly worldId: number; readonly entities: readonly number[] };
+  readonly selection?: { readonly entities: readonly number[] };
   readonly colorFormats?: readonly GPUTextureFormat[];
   readonly passKind?: PassKind;
   readonly recordMode?: MaterialRecordMode;
   readonly gpuDrivenFilter?: RenderPipelineGpuDrivenFilter;
   /** Write transparent fragment depth for depth-bounded medium transport. */
   readonly transparentDepthWrite?: boolean;
+  /** This pass shades the main opaque prepass's exact depth projection. */
+  readonly opaqueDepthPrimed?: boolean;
   /** Exclude material/pass pairs already consumed by an earlier graph lane. */
   readonly excludeSelector?: PassSelector;
   readonly transmissionBackdropView?: TextureView | null;
@@ -103,6 +128,17 @@ export type MainPassOptions = {
   readonly surfaceNearestLayerView?: TextureView | null;
   /** Nearest-layer depth produced by the preceding medium pass. */
   readonly surfaceNearestDepthView?: TextureView | null;
+  /** Sampled FoamRT resolved from the Water graph for this pass. */
+  readonly surfaceFoamSimulationView?: TextureView | null;
+  readonly surfaceFluidSimulation?: { readonly fields: TextureView; readonly descriptors: Buffer };
+  /** Graph-owned WaterInfo arrays sampled by water materials in this pass. */
+  readonly waterFrame?: {
+    readonly resources: GraphResourceResolver;
+    readonly targets: ReadonlyMap<
+      string,
+      Readonly<{ view: GraphTextureView; format: import('@forgeax/engine-rhi').TextureFormat }>
+    >;
+  };
   /** Surface shader fragment entry selected by the typed pass owner. */
   readonly fragmentEntryPoint?: string;
   /** Select the material temporal entry's binary coverage output. */
@@ -252,6 +288,7 @@ export function prepareMainPassPipelineDemand(
   if (!hasMainPassPipelinePreparation(c, selector, options.recordMode, options.excludeSelector))
     return;
   const mode = options.recordMode;
+  const surfacePass = surfacePassForRecordMode(mode);
   const blended = mode === 'transparent' || mode === 'oit-accumulate' || mode === 'oit-residual';
   prepareGeometryPipelineRequests(
     {
@@ -270,6 +307,9 @@ export function prepareMainPassPipelineDemand(
       viewBindGroupDynamicOffset: c.viewBindGroupDynamicOffset ?? 0,
       transparentDepthWrite: options.transparentDepthWrite ?? false,
       seededDepth: options.seededDepth === true,
+      depthPrepass: mode === 'opaque-depth',
+      opaqueDepthPrimed: options.opaqueDepthPrimed ?? false,
+      ...(surfacePass === undefined ? {} : { surfacePass }),
       oit: oitPhaseForRecordMode(mode),
       ...(options.fragmentEntryPoint === undefined
         ? {}
@@ -318,6 +358,7 @@ function stockSelectorIndex(selector: PassSelector | undefined): number {
 function recordModeIndex(mode: MainPassRecordMode): number {
   if (mode === undefined) return 0;
   if (mode === 'opaque') return 1;
+  if (mode === 'opaque-depth') return 8;
   if (mode === 'transmission') return 2;
   if (mode === 'transparent' || mode === 'oit-accumulate' || mode === 'oit-residual') return 3;
   if (mode === 'translucent' || mode === 'translucent-before-transmission') return 5;
@@ -415,8 +456,7 @@ export function matchedMaterialsForRecordMode(
   mode: MaterialRecordMode | undefined,
 ): ReadonlyMap<number, ReadonlySet<number>> | null {
   if (mode === undefined) return matchedMaterials;
-  const surfaceMode =
-    mode === 'single-layer-medium-nearest-layer' || mode === 'single-layer-medium-color';
+  const surfaceMode = isSurfaceRecordMode(mode);
   const filtered = new Map<number, ReadonlySet<number>>();
   if (mode === 'transmission' && matchedMaterials === null) return filtered;
   const singletons = new FirstEntryMap<number, SingleMaterialHandleSet>();
@@ -561,12 +601,19 @@ export function encodeMainPass(
   // offsets is a GPU validation error that fails the whole frame.
   if (viewBindGroup !== null) pass.setBindGroup(0, viewBindGroup, [viewBindGroupDynamicOffset, 0]);
 
-  const recordContext = mainPassRecordContext(c, recordMode);
+  const waterAdmission = resolveWaterMaterialFrameBindings(c, options, matchedMaterials).admission;
+  if (waterAdmission === undefined) throw new Error('Water material admission returned no result');
+  const recordMaterials = excludeWaterMeshRowsFromMaterialSelection(
+    c,
+    matchedMaterials,
+    waterAdmission.excludedRenderableIndices,
+  );
+  const recordContext = mainPassRecordContext(c, recordMode, waterAdmission);
   const recordGeometry = (): void => {
     recordGeometryDraws(
       recordContext,
       pass,
-      matchedMaterials,
+      recordMaterials,
       c.materialSlotIndices,
       c.msaaActive ? 4 : 1,
       meshGroup2,
@@ -583,8 +630,12 @@ export function encodeMainPass(
       (preparedPass, material) =>
         matchPass(preparedPass.tags, passSelector) &&
         (recordMode === undefined || matchesRecordMode(material, recordMode)),
-      (entry, index) => preparationSubmeshExcluded(entry, index, options?.excludeSelector),
+      (entry, index) =>
+        waterAdmission.excludedRenderableIndices.has(entry.renderableIndex) ||
+        preparationSubmeshExcluded(entry, index, options?.excludeSelector),
       options?.seededDepth === true,
+      recordMode === 'opaque-depth',
+      options?.opaqueDepthPrimed ?? false,
     );
   };
   // The late occlusion pass only adds GPU items the HZB revealed; the CPU
@@ -617,7 +668,9 @@ function assertRecordModeBackdrop(
     recordMode === 'transmission' ||
     recordMode === 'translucent' ||
     recordMode === 'single-layer-medium-nearest-layer' ||
-    recordMode === 'single-layer-medium-color'
+    recordMode === 'single-layer-medium-color' ||
+    recordMode === 'water-prepass' ||
+    recordMode === 'water-color'
   )
     throw new RhiError({
       code: 'webgpu-runtime-error',
@@ -840,8 +893,7 @@ function selectEntityMaterials(
   let nextIndex = 0;
   for (const entry of c.validatedOrdered) {
     const index = nextIndex++;
-    if (entry.source.worldId !== selection.worldId || !entities.has(entry.source.entityKey))
-      continue;
+    if (!entities.has(entry.source.entityKey)) continue;
     const handles = matchedMaterials?.get(entry.renderableIndex);
     if (matchedMaterials !== null && handles === undefined) continue;
     selected.set(
@@ -890,8 +942,69 @@ function mainPassColorFormats(
 function mainPassRecordContext(
   c: _InternalRenderPipelineContext,
   recordMode: MaterialRecordMode | undefined,
+  waterAdmission: WaterMaterialAdmission,
 ): _InternalRenderPipelineContext {
-  if (recordMode === undefined) return c;
+  const resolveWaterMaterialDrawBinding = !waterAdmission.hasWaterMeshDraws
+    ? c.resolveWaterMaterialDrawBinding
+    : (source: import('../render-system-extract').RenderableSnapshot) => {
+        const owner = source.waterOwner;
+        const waterBindings = waterAdmission.bindings;
+        if (owner === undefined || waterBindings === undefined) return undefined;
+        const bodyKey = waterBodyOwnerKey(
+          owner.worldIdentity,
+          owner.guid,
+          owner.generation,
+          owner.zoneGeneration,
+        );
+        const resolved = waterMaterialDrawBinding(
+          waterBindings,
+          bodyKey,
+          {
+            viewIdentity: renderFeatureViewIdentity(c.camera),
+            zoneGeneration: owner.zoneGeneration,
+            deviceGeneration: c.runtime.deviceGeneration ?? 0,
+            frameGeneration: waterAdmission.frameGeneration,
+            bodyGeneration: owner.generation,
+          },
+          owner.drawKey ?? source.waterMeshTiles?.drawKey,
+        );
+        if (!resolved.ok) {
+          if (resolved.error.code === 'water-material-binding-missing')
+            throw new GpuDrivenPreparationError('resource-not-ready', {
+              reason: 'material-resource-missing',
+              owner: 'material',
+              expected: `submitted generation-qualified WaterInfo/wave closure for ${bodyKey}`,
+              recovery: 'retry-same-draw',
+            });
+          throw new GpuDrivenPreparationError('stale-generation', {
+            reason: 'generation-stale',
+            owner: 'generation',
+            expected: resolved.error.expected,
+            actual: JSON.stringify(resolved.error.detail) ?? 'unknown',
+            recovery: 'rebuild-generation',
+          });
+        }
+        const actualFormat = resolved.value.frameBindings.bodyTargetFormats.get(bodyKey);
+        if (
+          actualFormat !== undefined &&
+          owner.targetFormat !== undefined &&
+          actualFormat !== owner.targetFormat
+        )
+          throw new GpuDrivenPreparationError('stale-generation', {
+            reason: 'generation-stale',
+            owner: 'generation',
+            expected: `WaterInfo target format ${owner.targetFormat} for ${bodyKey}`,
+            actual: actualFormat ?? 'missing',
+            recovery: 'rebuild-generation',
+          });
+        return resolved.value;
+      };
+  if (
+    recordMode === undefined &&
+    resolveWaterMaterialDrawBinding === c.resolveWaterMaterialDrawBinding
+  )
+    return c;
+  if (recordMode === undefined) return { ...c, resolveWaterMaterialDrawBinding };
   const blendedRecordMode =
     recordMode === 'transparent' ||
     recordMode === 'translucent' ||
@@ -901,20 +1014,553 @@ function mainPassRecordContext(
   const translucentFog =
     blendedRecordMode && (c.viewBindGroupDynamicOffset ?? 0) === 0 && c.viewFog !== false;
   const splitLdrSprite = blendedRecordMode ? false : c.splitLdrSprite;
-  if ((c.translucentFog === true) === translucentFog && c.splitLdrSprite === splitLdrSprite)
+  if (
+    (c.translucentFog === true) === translucentFog &&
+    c.splitLdrSprite === splitLdrSprite &&
+    resolveWaterMaterialDrawBinding === c.resolveWaterMaterialDrawBinding
+  )
     return c;
   return {
     ...c,
+    resolveWaterMaterialDrawBinding,
     translucentFog,
     splitLdrSprite,
   };
 }
 
+/** Shadow and color share one WaterInfo publication and resource admission. */
+export function waterMaterialRecordContext(
+  c: _InternalRenderPipelineContext,
+  waterFrame: MainPassOptions['waterFrame'],
+): _InternalRenderPipelineContext {
+  const cacheOwnerCandidate = c.waterMaterialRecordCache;
+  const currentRendererFrame = c.runtime.rendererFrameNumber;
+  const resolveWaterRecordFrame = () => {
+    const frameGeneration =
+      currentRendererFrame !== undefined &&
+      Number.isSafeInteger(currentRendererFrame) &&
+      currentRendererFrame > 0
+        ? currentRendererFrame
+        : undefined;
+    return frameGeneration;
+  };
+  const frameGeneration = resolveWaterRecordFrame();
+  const resolveWaterRecordCacheOwner = () => {
+    const cacheOwner =
+      cacheOwnerCandidate !== undefined &&
+      cacheOwnerCandidate.drawClosure !== undefined &&
+      frameGeneration !== undefined &&
+      cacheOwnerCandidate.validatedOrdered === c.validatedOrdered &&
+      cacheOwnerCandidate.frameGeneration === frameGeneration
+        ? cacheOwnerCandidate
+        : undefined;
+    return cacheOwner;
+  };
+  const cacheOwner = resolveWaterRecordCacheOwner();
+  const viewIdentity = renderFeatureViewIdentity(c.camera);
+  const deviceGeneration = c.runtime.deviceGeneration ?? 0;
+  const captureWaterRecordOrigin = () => {
+    const x = c.camera.position[0] ?? 0;
+    const y = c.camera.position[1] ?? 0;
+    const z = c.camera.position[2] ?? 0;
+    return { x, y, z };
+  };
+  const { x, y, z } = captureWaterRecordOrigin();
+  const previous = cacheOwner?.candidate;
+  const sameOwnedFrame =
+    previous !== undefined &&
+    previous.inputContext === c &&
+    previous.validatedOrdered === c.validatedOrdered &&
+    previous.drawClosure === cacheOwner?.drawClosure &&
+    previous.frameGeneration === frameGeneration &&
+    previous.viewIdentity === viewIdentity &&
+    previous.deviceGeneration === deviceGeneration &&
+    previous.pipelineState === c.pipelineState &&
+    previous.viewOrigin[0] === x &&
+    previous.viewOrigin[1] === y &&
+    previous.viewOrigin[2] === z &&
+    previous.publicationResolver === c.runtime.getWaterMaterialFramePublication &&
+    previous.bindingResolver === c.runtime.getWaterMaterialFrameBindings;
+
+  if (sameOwnedFrame && previous.drawClosure.draws.length === 0) return previous.context;
+
+  const drawClosure = cacheOwner?.drawClosure;
+  const cacheEmptyWaterContext = () => {
+    if (
+      drawClosure?.draws.length === 0 &&
+      cacheOwner !== undefined &&
+      frameGeneration !== undefined
+    ) {
+      const context = c;
+      cacheOwner.candidate = Object.freeze({
+        context,
+        inputContext: c,
+        validatedOrdered: c.validatedOrdered,
+        drawClosure,
+        frameGeneration,
+        viewIdentity,
+        deviceGeneration,
+        pipelineState: c.pipelineState,
+        viewOrigin: Object.freeze([x, y, z]) as readonly [number, number, number],
+        waterTargets: undefined,
+        graphTargets: undefined,
+        textureViews: undefined,
+        publication: undefined,
+        publicationResolver: c.runtime.getWaterMaterialFramePublication,
+        bindingResolver: c.runtime.getWaterMaterialFrameBindings,
+        bindings: undefined,
+      });
+      return context;
+    }
+
+    return undefined;
+  };
+  const emptyContext = cacheEmptyWaterContext();
+  if (emptyContext !== undefined) return emptyContext;
+  const resolveWaterRecordBindings = () => {
+    const resolution = resolveWaterMaterialFrameBindings(
+      c,
+      waterFrame === undefined ? undefined : { waterFrame },
+      null,
+      drawClosure === undefined
+        ? undefined
+        : {
+            drawClosure,
+            frameGeneration: frameGeneration ?? requireWaterRendererFrameNumber(c.runtime),
+            viewIdentity,
+            deviceGeneration,
+            viewOrigin:
+              sameOwnedFrame && previous !== undefined ? previous.viewOrigin : ([x, y, z] as const),
+            ...(sameOwnedFrame && previous !== undefined ? { previous } : {}),
+          },
+    );
+    return resolution;
+  };
+  const resolution = resolveWaterRecordBindings();
+  if (resolution.cachedContext !== undefined) return resolution.cachedContext;
+  const admission = resolution.admission;
+  if (admission === undefined) throw new Error('Water material admission returned no result');
+  const context = mainPassRecordContext(c, undefined, admission);
+  const selectWaterRecordContext = () => {
+    const recordContext =
+      admission.excludedRenderableIndices.size === 0
+        ? context
+        : {
+            ...context,
+            validatedOrdered: context.validatedOrdered.filter(
+              (entry) => !admission.excludedRenderableIndices.has(entry.renderableIndex),
+            ),
+          };
+    return recordContext;
+  };
+  const recordContext = selectWaterRecordContext();
+  const cacheAdmittedWaterContext = () => {
+    if (
+      cacheOwner !== undefined &&
+      resolution.cacheFacts !== undefined &&
+      admission.excludedRenderableIndices.size === 0
+    )
+      cacheOwner.candidate = Object.freeze({ ...resolution.cacheFacts, context: recordContext });
+    else if (cacheOwner !== undefined) cacheOwner.candidate = undefined;
+  };
+  cacheAdmittedWaterContext();
+  return recordContext;
+}
+
+type WaterMaterialAdmission =
+  | Readonly<{
+      readonly excludedRenderableIndices: ReadonlySet<number>;
+      readonly hasWaterMeshDraws: false;
+    }>
+  | Readonly<{
+      readonly bindings?: ReadonlyMap<string, WaterMaterialFrameBindings>;
+      readonly excludedRenderableIndices: ReadonlySet<number>;
+      readonly frameGeneration: number;
+      readonly hasWaterMeshDraws: true;
+    }>;
+
+/** Renderer frame IDs key both WaterInfo publication and the consuming draw. */
+export function requireWaterRendererFrameNumber(runtime: {
+  readonly rendererFrameNumber?: number | undefined;
+}): number {
+  const frameNumber = runtime.rendererFrameNumber;
+  if (frameNumber === undefined || !Number.isSafeInteger(frameNumber) || frameNumber < 1)
+    throw new RendererContractFailureError(
+      'draw',
+      `WaterInfo admission requires a positive Renderer submission frame ID; actual ${frameNumber ?? 'missing'}`,
+    );
+  return frameNumber;
+}
+
+/** Missing same-frame rows exclude only their WaterMesh owners; stale rows stay fatal. */
+export function admitWaterMeshDraws(
+  draws: readonly WaterMaterialAdmissionDraw[],
+  bindings: ReadonlyMap<string, WaterMaterialFrameBindings> | undefined,
+  expected: Readonly<{
+    viewIdentity: string;
+    deviceGeneration: number;
+    frameGeneration: number;
+  }>,
+  drawOwnersAlreadyValidated = false,
+): ReadonlySet<number> {
+  const excluded = new Set<number>();
+  for (const draw of draws) {
+    if (!drawOwnersAlreadyValidated) assertCurrentWaterMeshDraw(draw, expected.viewIdentity);
+    if (bindings === undefined) {
+      excluded.add(draw.renderableIndex);
+      continue;
+    }
+    const bodyKey = waterBodyOwnerKey(
+      draw.owner.worldIdentity,
+      draw.owner.guid,
+      draw.owner.generation,
+      draw.owner.zoneGeneration,
+    );
+    const bodyKeys = [
+      bodyKey,
+      ...(draw.tiles?.transitionTargets ?? []).map((target) =>
+        waterBodyOwnerKey(
+          draw.tiles?.worldIdentity ?? draw.owner.worldIdentity,
+          target.bodyGuid,
+          target.bodyGeneration,
+          draw.owner.zoneGeneration,
+        ),
+      ),
+    ];
+    if (
+      bodyKeys.some((key) => !waterBodyPublicationPresent(bindings, key, draw.tiles !== undefined))
+    ) {
+      excluded.add(draw.renderableIndex);
+      continue;
+    }
+    const resolved = waterMaterialDrawBinding(
+      bindings,
+      bodyKey,
+      {
+        viewIdentity: expected.viewIdentity,
+        zoneGeneration: draw.owner.zoneGeneration,
+        deviceGeneration: expected.deviceGeneration,
+        frameGeneration: expected.frameGeneration,
+        bodyGeneration: draw.owner.generation,
+      },
+      draw.owner.drawKey ?? draw.tiles?.drawKey,
+    );
+    if (!resolved.ok) {
+      if (resolved.error.code === 'water-material-binding-missing') {
+        throw new GpuDrivenPreparationError('resource-not-ready', {
+          reason: 'material-resource-missing',
+          owner: 'material',
+          expected: resolved.error.expected,
+          actual: JSON.stringify(resolved.error.detail) ?? 'unknown',
+          recovery: 'retry-same-draw',
+        });
+      }
+      throw new GpuDrivenPreparationError('stale-generation', {
+        reason: 'generation-stale',
+        owner: 'generation',
+        expected: resolved.error.expected,
+        actual: JSON.stringify(resolved.error.detail) ?? 'unknown',
+        recovery: 'rebuild-generation',
+      });
+    }
+    const actualFormat = resolved.value.frameBindings.bodyTargetFormats.get(bodyKey);
+    if (
+      actualFormat !== undefined &&
+      draw.owner.targetFormat !== undefined &&
+      actualFormat !== draw.owner.targetFormat
+    )
+      throw new GpuDrivenPreparationError('stale-generation', {
+        reason: 'generation-stale',
+        owner: 'generation',
+        expected: `WaterInfo target format ${draw.owner.targetFormat} for ${bodyKey}`,
+        actual: actualFormat ?? 'missing',
+        recovery: 'rebuild-generation',
+      });
+  }
+  return excluded;
+}
+
+function waterBodyPublicationPresent(
+  bindings: ReadonlyMap<string, WaterMaterialFrameBindings>,
+  bodyKey: string,
+  requiresWaterInfo: boolean,
+): boolean {
+  return [...bindings.values()].some((frame) => {
+    const targetName = frame.bodyTargetNames.get(bodyKey);
+    return (
+      (targetName !== undefined && bindings.has(targetName)) ||
+      (!requiresWaterInfo && frame.bodyIndices.has(bodyKey))
+    );
+  });
+}
+
+function assertCurrentWaterMeshDraw(draw: WaterMaterialAdmissionDraw, viewIdentity: string): void {
+  const { owner, tiles } = draw;
+  if (owner.viewIdentity !== undefined && owner.viewIdentity !== viewIdentity)
+    throw new GpuDrivenPreparationError('stale-generation', {
+      reason: 'generation-stale',
+      owner: 'generation',
+      expected: `WaterMesh owner view ${viewIdentity}`,
+      actual: owner.viewIdentity,
+      recovery: 'rebuild-generation',
+    });
+  if (tiles === undefined) return;
+  const ownerBodyKey = waterBodyOwnerKey(
+    owner.worldIdentity,
+    owner.guid,
+    owner.generation,
+    owner.zoneGeneration,
+  );
+  const tilesBodyKey = waterBodyOwnerKey(
+    tiles.worldIdentity,
+    tiles.bodyGuid,
+    tiles.bodyGeneration,
+    tiles.zoneGeneration,
+  );
+  if (
+    ownerBodyKey !== tilesBodyKey ||
+    tiles.viewIdentity !== owner.viewIdentity ||
+    (owner.drawKey !== undefined && owner.drawKey !== tiles.drawKey)
+  )
+    throw new GpuDrivenPreparationError('stale-generation', {
+      reason: 'generation-stale',
+      owner: 'generation',
+      expected: `WaterMesh tile closure matching owner ${ownerBodyKey}/${owner.drawKey ?? tiles.drawKey}`,
+      actual: `${tilesBodyKey}/${tiles.drawKey}@${tiles.viewIdentity}`,
+      recovery: 'rebuild-generation',
+    });
+}
+
+export function excludeWaterMeshRowsFromMaterialSelection(
+  c: _InternalRenderPipelineContext,
+  selected: MainPassMaterialSelection,
+  excludedRenderableIndices: ReadonlySet<number>,
+): MainPassMaterialSelection {
+  if (excludedRenderableIndices.size === 0) return selected;
+  const admitted = new Map<number, ReadonlySet<number>>();
+  let row = 0;
+  for (const entry of c.validatedOrdered) {
+    const currentRow = row++;
+    if (excludedRenderableIndices.has(entry.renderableIndex)) continue;
+    const selectedHandles = selected?.get(entry.renderableIndex);
+    if (selected !== null && selectedHandles === undefined) continue;
+    admitted.set(
+      entry.renderableIndex,
+      selectedHandles ??
+        new Set(
+          (c.materialSlotIndices.at(currentRow) ?? []).map(
+            (slot) => c.materialSlots[slot]?.materialHandle ?? 0,
+          ),
+        ),
+    );
+  }
+  return admitted;
+}
+
+/** @internal */
+export function selectedWaterMeshAdmissionDraws<
+  TDraw extends Pick<WaterMaterialAdmissionDraw, 'renderableIndex'>,
+>(draws: readonly TDraw[], selectedMaterials: MainPassMaterialSelection): readonly TDraw[] {
+  return selectedMaterials === null
+    ? draws
+    : draws.filter((draw) => selectedMaterials.has(draw.renderableIndex));
+}
+
+type WaterMaterialCacheFacts = Omit<WaterMaterialRecordCacheCandidate, 'context'>;
+
+interface WaterMaterialFrameResolution {
+  readonly admission?: WaterMaterialAdmission;
+  readonly cachedContext?: _InternalRenderPipelineContext;
+  readonly cacheFacts?: WaterMaterialCacheFacts;
+}
+
+interface WaterMaterialFrameCacheInput {
+  readonly drawClosure: WaterMaterialAdmissionDrawClosure;
+  readonly frameGeneration: number;
+  readonly viewIdentity: string;
+  readonly deviceGeneration: number;
+  readonly viewOrigin: readonly [number, number, number];
+  readonly previous?: WaterMaterialRecordCacheCandidate;
+}
+
+function sameTextureViews(
+  previous: ReadonlyMap<string, TextureView> | undefined,
+  current: ReadonlyMap<string, TextureView>,
+): boolean {
+  if (previous === undefined || previous.size !== current.size) return false;
+  for (const [name, view] of current) if (previous.get(name) !== view) return false;
+  return true;
+}
+
+type WaterFrameTargets = NonNullable<MainPassOptions['waterFrame']>['targets'];
+
+function sameGraphTargetViews(
+  previous: ReadonlyMap<string, GraphTextureView> | undefined,
+  current: WaterFrameTargets | undefined,
+): boolean {
+  if (previous === undefined) return current === undefined;
+  if (current === undefined || previous.size !== current.size) return false;
+  for (const [name, target] of current) if (previous.get(name) !== target.view) return false;
+  return true;
+}
+
+function resolveWaterMaterialFrameBindings(
+  c: _InternalRenderPipelineContext,
+  options: MainPassOptions | undefined,
+  selectedMaterials: MainPassMaterialSelection,
+  cache?: WaterMaterialFrameCacheInput,
+): WaterMaterialFrameResolution {
+  const viewIdentity = cache?.viewIdentity ?? renderFeatureViewIdentity(c.camera);
+  const collectAllWaterDraws = () => {
+    const allWaterDraws =
+      cache?.drawClosure.draws ??
+      c.validatedOrdered.flatMap((entry) => {
+        const owner = entry.source.waterOwner;
+        if (owner === undefined) return [];
+        const tiles = entry.source.waterMeshTiles;
+        return [
+          Object.freeze({
+            renderableIndex: entry.renderableIndex,
+            owner,
+            ...(tiles === undefined ? {} : { tiles }),
+          }),
+        ];
+      });
+    return allWaterDraws;
+  };
+  const allWaterDraws = collectAllWaterDraws();
+  const waterDraws = selectedWaterMeshAdmissionDraws(allWaterDraws, selectedMaterials);
+  if (waterDraws.length === 0)
+    return {
+      admission: { excludedRenderableIndices: new Set<number>(), hasWaterMeshDraws: false },
+    };
+  const ownersAlreadyValidated = cache?.previous !== undefined;
+  if (!ownersAlreadyValidated)
+    for (const draw of waterDraws) assertCurrentWaterMeshDraw(draw, viewIdentity);
+
+  const expected = {
+    viewIdentity,
+    deviceGeneration: cache?.deviceGeneration ?? c.runtime.deviceGeneration ?? 0,
+    frameGeneration: cache?.frameGeneration ?? requireWaterRendererFrameNumber(c.runtime),
+  } as const;
+  const waterFrame = options?.waterFrame;
+  const waterInfoTextureViews = new Map<string, TextureView>();
+  const collectWaterInfoTextureViews = () => {
+    if (waterFrame !== undefined) {
+      for (const [targetName, target] of waterFrame.targets) {
+        const view = waterFrame.resources.textureView(target.view);
+        if (!view.ok) throw view.error;
+        waterInfoTextureViews.set(targetName, view.value);
+      }
+    }
+  };
+  collectWaterInfoTextureViews();
+  const captureWaterMaterialBindingInputs = () => {
+    const viewOriginM =
+      cache?.viewOrigin ??
+      ([c.camera.position[0] ?? 0, c.camera.position[1] ?? 0, c.camera.position[2] ?? 0] as const);
+    const publication =
+      cache === undefined
+        ? undefined
+        : c.runtime.getWaterMaterialFramePublication?.(
+            expected.viewIdentity,
+            expected.frameGeneration,
+            expected.deviceGeneration,
+          );
+    const waterMeshDraws =
+      cache !== undefined && selectedMaterials === null
+        ? cache.drawClosure.uploads
+        : waterDraws.flatMap(({ tiles }) =>
+            tiles === undefined ? [] : [waterMeshAdmissionUpload(tiles)],
+          );
+    return { viewOriginM, publication, waterMeshDraws };
+  };
+  const { viewOriginM, publication, waterMeshDraws } = captureWaterMaterialBindingInputs();
+  const resolveWaterBindings = () => {
+    const bindings = c.runtime.getWaterMaterialFrameBindings?.({
+      waterInfoTextureViews,
+      ...(publication === undefined ? {} : { waterInfoPublication: publication }),
+      viewOriginM,
+      ...expected,
+      waterMeshDraws,
+      ...(cache === undefined || selectedMaterials !== null
+        ? {}
+        : {
+            waterMeshDrawsOwned: isOwnedWaterMeshAdmissionUploadClosure(cache.drawClosure.uploads),
+          }),
+    });
+    return bindings;
+  };
+  const bindings = resolveWaterBindings();
+
+  const previous = cache?.previous;
+  const reuseWaterMaterialContext = () => {
+    if (
+      previous !== undefined &&
+      previous.publication === publication &&
+      previous.bindings === bindings &&
+      previous.waterTargets === waterFrame?.targets &&
+      previous.publicationResolver === c.runtime.getWaterMaterialFramePublication &&
+      previous.bindingResolver === c.runtime.getWaterMaterialFrameBindings &&
+      sameGraphTargetViews(previous.graphTargets, waterFrame?.targets) &&
+      sameTextureViews(previous.textureViews, waterInfoTextureViews)
+    )
+      return { cachedContext: previous.context };
+    return undefined;
+  };
+  const reuseWaterMaterialContextResult = reuseWaterMaterialContext();
+  if (reuseWaterMaterialContextResult !== undefined) return reuseWaterMaterialContextResult;
+
+  const excludedRenderableIndices = admitWaterMeshDraws(waterDraws, bindings, expected, true);
+  const admission: WaterMaterialAdmission = {
+    ...(bindings === undefined ? {} : { bindings }),
+    excludedRenderableIndices,
+    frameGeneration: expected.frameGeneration,
+    hasWaterMeshDraws: true,
+  };
+  if (
+    cache === undefined ||
+    publication === undefined ||
+    bindings === undefined ||
+    excludedRenderableIndices.size !== 0
+  )
+    return { admission };
+
+  const graphTargets =
+    waterFrame === undefined
+      ? undefined
+      : new Map([...waterFrame.targets].map(([name, target]) => [name, target.view] as const));
+  return {
+    admission,
+    cacheFacts: {
+      inputContext: c,
+      validatedOrdered: c.validatedOrdered,
+      drawClosure: cache.drawClosure,
+      frameGeneration: expected.frameGeneration,
+      viewIdentity: expected.viewIdentity,
+      deviceGeneration: expected.deviceGeneration,
+      pipelineState: c.pipelineState,
+      viewOrigin: viewOriginM,
+      waterTargets: waterFrame?.targets,
+      graphTargets,
+      textureViews: new Map(waterInfoTextureViews),
+      publication,
+      publicationResolver: c.runtime.getWaterMaterialFramePublication,
+      bindingResolver: c.runtime.getWaterMaterialFrameBindings,
+      bindings,
+    },
+  };
+}
+
 function surfacePassForRecordMode(
   mode: MaterialRecordMode | undefined,
-): 'nearest-layer' | 'color' | undefined {
+): MaterialSurfacePassKind | undefined {
   if (mode === 'single-layer-medium-nearest-layer') return 'nearest-layer';
-  return mode === 'single-layer-medium-color' ? 'color' : undefined;
+  if (mode === 'single-layer-medium-color' || mode === 'water-color') return 'color';
+  if (mode === 'water-prepass') return 'depth';
+  if (mode === 'water-shadow') return 'shadow';
+  if (mode === 'water-velocity') return 'velocity';
+  return undefined;
 }
 
 function oitPhaseForRecordMode(
@@ -1089,9 +1735,6 @@ function createPerSubmeshMaterialBgDeps(
   hasProbeBindings: boolean,
 ): PerSubmeshMaterialBgDeps {
   const { runtime, world, frameState } = c;
-  const worldIndices = hasProbeBindings
-    ? new Map((c.resourceScopes ?? [world]).map((scope, index) => [scope, index] as const))
-    : undefined;
   const sceneMaterialBuffer =
     c.gpuDrivenStandardPbrFrameResources?.sceneMaterialBuffer ?? c.gpuDrivenSceneMaterialBuffer;
   return {
@@ -1103,17 +1746,19 @@ function createPerSubmeshMaterialBgDeps(
     videoHighPerfAvailable: probeVideoHighPerfUpload(runtime.device),
     skylightResources,
     resolveRenderTargetTextureSource: runtime.resolveRenderTargetTextureSource,
-    resolveReflectionProbeResources: (materialWorld, entityKey, resourceClass) => {
+    resolveFeatureTextureSource: (name) => {
+      const graphFrame = options?.waterFrame;
+      const target = graphFrame?.targets.get(name);
+      if (target === undefined || graphFrame === undefined) return undefined;
+      const resolved = graphFrame.resources.textureView(target.view);
+      if (!resolved.ok) throw resolved.error;
+      return resolved.value;
+    },
+    resolveReflectionProbeResources: (_materialWorld, entityKey, resourceClass) => {
       const reflectionProbes = c.reflectionProbes;
       return reflectionProbes === undefined || !hasProbeBindings
         ? undefined
-        : reflectionProbeMaterial(
-            reflectionProbes,
-            skylightResources,
-            resourceClass,
-            worldIndices?.get(materialWorld),
-            entityKey,
-          );
+        : reflectionProbeMaterial(reflectionProbes, skylightResources, resourceClass, entityKey);
     },
     ...(c.planarReflectionView === undefined
       ? {}
@@ -1136,16 +1781,22 @@ function surfaceMediumViews(
   | 'surfaceRawDepthView'
   | 'surfaceNearestLayerView'
   | 'surfaceNearestDepthView'
+  | 'surfaceFoamSimulationView'
+  | 'surfaceFluidSimulation'
 > {
   const transmissionBackdropView = options?.transmissionBackdropView;
   const surfaceRawDepthView = options?.surfaceRawDepthView;
   const surfaceNearestLayerView = options?.surfaceNearestLayerView;
   const surfaceNearestDepthView = options?.surfaceNearestDepthView;
+  const surfaceFoamSimulationView = options?.surfaceFoamSimulationView;
+  const surfaceFluidSimulation = options?.surfaceFluidSimulation;
   return {
     ...(transmissionBackdropView === undefined ? {} : { transmissionBackdropView }),
     ...(surfaceRawDepthView === undefined ? {} : { surfaceRawDepthView }),
     ...(surfaceNearestLayerView === undefined ? {} : { surfaceNearestLayerView }),
     ...(surfaceNearestDepthView === undefined ? {} : { surfaceNearestDepthView }),
+    ...(surfaceFoamSimulationView === undefined ? {} : { surfaceFoamSimulationView }),
+    ...(surfaceFluidSimulation === undefined ? {} : { surfaceFluidSimulation }),
   };
 }
 
@@ -1158,6 +1809,7 @@ function publishGpuDrivenMaterialSlots(
   selectedGpuMaterialSlots: ReadonlySet<number> | undefined,
 ): void {
   resources.colorFormats = colorFormats;
+  resources.opaqueDepthPrimed = options.opaqueDepthPrimed ?? false;
   if (options.bundleDescriptor === undefined) delete resources.bundleDescriptor;
   else resources.bundleDescriptor = options.bundleDescriptor;
   if (selectedGpuMaterialSlots === undefined) delete resources.selectedMaterialSlots;
@@ -1168,8 +1820,8 @@ function publishGpuDrivenMaterialSlots(
     c.materialBindingSlots ?? materialSlotsByClass(c.materialBindings);
 }
 
-/** Prepare a batch's exact physical material binding only when it is recorded. */
-function publishMaterialBindingPreparer(
+/** @internal Prepare a batch's exact physical material binding only when it is recorded. */
+export function publishMaterialBindingPreparer(
   c: _InternalRenderPipelineContext,
   resources: GpuDrivenStandardPbrFrameResources,
   selectedGpuMaterialSlots: ReadonlySet<number> | undefined,
@@ -1182,8 +1834,33 @@ function publishMaterialBindingPreparer(
     if (material === undefined || binding === undefined) return undefined;
     if (selectedGpuMaterialSlots !== undefined && !selectedGpuMaterialSlots.has(slot))
       return undefined;
+    // The accepted direct/scene pair already owns the indirect program. Its
+    // group1 projection must also own this binding; direct and scene modules
+    // can read different resources even when their parameter schema is equal.
+    let materialShaderId = material.materialShaderId;
+    const scenePrograms = material.materialSceneIndexProgramKeys;
+    if (scenePrograms !== undefined) {
+      materialShaderId = undefined;
+      for (const name in scenePrograms) {
+        const program = scenePrograms[name];
+        if (
+          program?.pass === 'forward' &&
+          material.materialProgramKeys?.[name] === material.materialShaderId
+        ) {
+          materialShaderId = program.specializationKey;
+          break;
+        }
+      }
+      if (materialShaderId === undefined) return undefined;
+    }
     return {
-      group: resolveMaterialBindGroup(slot, material, binding.entityKey, binding.world ?? world),
+      group: resolveMaterialBindGroup(
+        slot,
+        material,
+        binding.entityKey,
+        binding.world ?? world,
+        materialShaderId,
+      ),
       byteOffset: meshSsboByteOffset(
         pipelineState.materialUniformBuffer,
         materialUniformSlot(runtime, material) * MATERIAL_PER_ENTITY_STRIDE,
@@ -1223,19 +1900,17 @@ function encodeGpuDrivenBatches(
     gpuDriven.resources,
     c.gpuDrivenStandardPbrFrameResources,
     options.gpuDrivenFilter,
-    // Indirect draws bind the base View slot (offset 0) and carry only opaque
-    // queues, so outside atmosphere captures their forward entry skips the
-    // translucent fog chain exactly like direct draws.
     selectForwardFragmentEntry({
       passKind,
       fragmentEntry: options.fragmentEntryPoint,
       oitAccumulate: options.recordMode === 'oit-accumulate',
-      viewOffset: 0,
+      viewOffset: c.viewBindGroupDynamicOffset ?? 0,
       atmosphereCapture: c.capturedAtmosphere !== undefined,
     }),
     options.coverageOnly ?? false,
     gpuDriven.phase ?? 'all',
     options.seededDepth === true,
+    c.viewBindGroupDynamicOffset ?? 0,
   );
 }
 
@@ -1286,6 +1961,7 @@ export function hasSsrSceneInputs(
     readonly materialFrame: import('../scene/material-dispatch').MaterialFrame;
   },
   renderPath: 'forward' | 'deferred',
+  pairedMsaaSurface = false,
 ): boolean {
   const read = (resource: import('../material-resource').MaterialResource) => {
     const material = c.materialFrame?.get(resource)?.snapshot;
@@ -1293,7 +1969,7 @@ export function hasSsrSceneInputs(
       throw new Error('SSR admission requires the accepted material frame');
     return material;
   };
-  if (renderPath === 'forward')
+  if (renderPath === 'forward' && !pairedMsaaSurface)
     return (
       c.renderables.length > 0 &&
       c.renderables.every((source) =>
@@ -1302,7 +1978,10 @@ export function hasSsrSceneInputs(
         ),
       )
     );
-  const selected = buildMatchedMaterialHandlesByRenderable(c.dispatch, DEFERRED_PASS_SELECTOR);
+  const selected = buildMatchedMaterialHandlesByRenderable(
+    c.dispatch,
+    pairedMsaaSurface ? FORWARD_PASS_SELECTOR : DEFERRED_PASS_SELECTOR,
+  );
   if (selected === null) return false;
   let receivers = 0;
   let nextIndex = 0;

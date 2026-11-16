@@ -1,7 +1,3 @@
-import type { MaterialSurfacePassKind } from '@forgeax/engine-types';
-import type { GBufferOrderDiagnosticInspection } from './gpu-driven/gbuffer-order-diagnostic';
-import type { ShadowCasterClassInspection } from './gpu-driven/shadow-caster-classes';
-import type { ShadowViewInspection } from './gpu-driven/shadow-views';
 /**
  * Renderer-owned inspection PODs. Keeping these projections free of renderer
  * implementation imports prevents the observation contract from reopening the
@@ -9,6 +5,7 @@ import type { ShadowViewInspection } from './gpu-driven/shadow-views';
  */
 
 import type { RenderGraphResourceAllocationInspection } from '@forgeax/engine-render-graph';
+import type { MaterialSurfacePassKind } from '@forgeax/engine-types';
 import { type BarrelDistortionMapping, freezeBarrelDistortionMapping } from './barrel-distortion';
 import type { DirectionalShadowFilterLabel } from './components/directional-shadow-filter';
 import type {
@@ -16,16 +13,18 @@ import type {
   GpuDrivenPreparationErrorDetail,
 } from './errors/gpu-driven';
 import type { DepthOfFieldRequestFailure } from './features/depth-of-field/depth-of-field-params';
+import type { GBufferOrderDiagnosticInspection } from './gpu-driven/gbuffer-order-diagnostic';
+import type { ShadowCasterClassInspection } from './gpu-driven/shadow-caster-classes';
+import type { ShadowViewInspection } from './gpu-driven/shadow-views';
 import type { PointsLinesInspection } from './points-lines/inspection';
 import type { SsrAdmissionIdentity } from './ssr/identity';
 import type { SsrSpatialInspection } from './ssr/inspection';
 import type { SurfaceGpuIndirectParameters } from './surface/submission-observation';
 
 export type {
+  LodOcclusionAttribution,
   LodOcclusionInspection,
   LodOcclusionInspectionRow,
-  LodOcclusionWorldAttribution,
-  LodOcclusionWorldInspection,
 } from './scene/visibility/inspection';
 
 export type LodOcclusionReceiptViewState = 'rendered' | 'held';
@@ -56,7 +55,7 @@ export type LodOcclusionReceiptUnavailableReason =
   | 'camera-generation-mismatch'
   | 'graph-generation-mismatch'
   | 'lod-readback-unavailable'
-  | 'world-attribution-unavailable'
+  | 'source-attribution-unavailable'
   | 'unsupported-lod-lane'
   | 'snapshot-too-large';
 
@@ -863,7 +862,7 @@ export interface ShadowRasterInspection {
 }
 
 export type ReflectionProbeSelectionInspection =
-  | { readonly kind: 'probe'; readonly worldId: number; readonly entityKey: number }
+  | { readonly kind: 'probe'; readonly entityKey: number }
   | { readonly kind: 'skylight' };
 
 export type ReflectionFallbackSource = 'probe' | 'skylight' | 'neutral';
@@ -947,7 +946,6 @@ export interface ReflectionFallbackInspection {
 export interface ReflectionProbeInspection {
   readonly workBudgetPerFrame?: number;
   readonly updates?: readonly {
-    readonly worldId: number;
     readonly entityKey: number;
     readonly intent: 'once' | 'on-change' | 'continuous';
     readonly activeGeneration: number;
@@ -1102,15 +1100,12 @@ export interface PersistentRenderSceneInspection {
     readonly misses: number;
     readonly derives: number;
     readonly invalidations: number;
-    readonly rowUpdates: number;
-    readonly nodeVisits: number;
   };
   /** Numeric probe ownership facts; no GPU handles or object graph references. */
   readonly probeBlend?: ProbeBlendInspection;
   readonly topology: BatchTopologyInspection;
   readonly gpu:
     | { readonly status: 'inactive' }
-    | { readonly status: 'unsupported'; readonly reason: 'storage-buffer-unavailable' }
     | ({ readonly status: 'resident' } & GpuSceneInspection)
     | { readonly status: 'rebuild-pending' }
     | { readonly status: 'error' };

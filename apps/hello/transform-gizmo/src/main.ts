@@ -1,3 +1,4 @@
+import { defineSystem } from "@forgeax/engine-ecs";
 import { createApp } from '@forgeax/engine-app/browser';
 import { Update } from '@forgeax/engine-ecs';
 import type { GizmoMode, GizmoSpace } from '@forgeax/engine-interaction';
@@ -53,8 +54,9 @@ const sync = () => {
       ? `${scene.gizmo.hovered} handle · drag to ${scene.gizmo.options.mode}`
       : 'Drag an axis, plane or center handle';
 };
+const systemToken1 = defineSystem({ name: 'transform-gizmo-presentation', queries: [], fn: sync });
 app.world
-  .addSystem(Update, { name: 'transform-gizmo-presentation', queries: [], fn: sync })
+  .addSystem(Update, systemToken1)
   .unwrap();
 const coordinates = (e: PointerEvent): [number, number] => {
   const rect = canvas.getBoundingClientRect();

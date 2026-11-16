@@ -146,12 +146,7 @@ it('renders a cooked transmission material at a 16 sampled-texture limit', {
     const lease = renderValue(renderer.attach(world));
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
-    for (let i = 0; i < 4; i++)
-      await drawReadyFrame(renderer, {
-        leases: [lease],
-        camera: { lease },
-        environment: { lease },
-      });
+    for (let i = 0; i < 4; i++) await drawReadyFrame(renderer, { source: lease });
     expect(observed?.limits.maxSampledTexturesPerShaderStage).toBe(16);
     expect(errors).toEqual([]);
     expect(nativeErrors).toEqual([]);

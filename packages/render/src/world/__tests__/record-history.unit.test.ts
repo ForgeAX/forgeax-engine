@@ -1,6 +1,9 @@
 import { World } from '@forgeax/engine-ecs';
 import { describe, expect, it, vi } from 'vitest';
+import { registeredSystem } from '../../__tests__/registered-system.fixture';
+import { viewSourceFixture } from '../../__tests__/view-source.fixture';
 import type { CameraSnapshot } from '../../render-contract';
+
 import { adoptViewRecordHistory, viewRecordHistory } from '../record-history';
 import { RenderViewInput, RenderViews, recordViewSubmission, ViewRecorder } from '../render-views';
 import {
@@ -30,16 +33,22 @@ function setup(removed = false) {
   const world = new World();
   registerSubmissionSystems(world);
   const views = new RenderViews(world);
-  if (removed) world.removeSystem(RenderCommit, RENDER_RECORD_COMMIT_SYSTEM).unwrap();
-  world.insertResource(RenderViewInput, {
-    cameras: [camera],
-    captures: [],
-    primary: false,
-    primaryCamera: undefined,
-    canvas: { width: 64, height: 64 },
-    attachment: () => 'w',
-    targetExtent: () => undefined,
-  });
+  if (removed)
+    world
+      .removeSystem(RenderCommit, registeredSystem(world, RenderCommit, 'render-record-commit'))
+      .unwrap();
+  world.insertResource(
+    RenderViewInput,
+    viewSourceFixture({
+      cameras: [camera],
+      captures: [],
+      primary: false,
+      primaryCamera: undefined,
+      canvas: { width: 64, height: 64 },
+      attachment: 'w',
+      targetExtent: () => undefined,
+    }),
+  );
   beginRenderFrame(world, 1);
   const entity = views.ordered[0] as NonNullable<(typeof views.ordered)[0]>;
   adoptViewRecordHistory(world, entity);

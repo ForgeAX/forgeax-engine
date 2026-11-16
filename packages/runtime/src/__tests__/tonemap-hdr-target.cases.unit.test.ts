@@ -2,6 +2,8 @@
 // biome-ignore-all lint/complexity/noUselessLoneBlockStatements: source test block isolation
 import type { Renderer as RendererType } from '@forgeax/engine-render';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { waterInfoShaderFixture } from '../../../render/src/__tests__/shader-manifest-fixture';
+import { NULL_LIMITS } from '../../../rhi-null/src/device';
 import { standardMaterialShaderVariants } from './helpers/standard-material-manifest';
 
 afterEach(() => vi.restoreAllMocks());
@@ -77,6 +79,7 @@ afterEach(() => vi.restoreAllMocks());
       // limits object describes a downlevel device and correctly selects the
       // rgba fallback instead.
       limits: {
+        ...NULL_LIMITS,
         maxStorageBuffersPerShaderStage: 8,
       },
       queue: {
@@ -184,6 +187,7 @@ afterEach(() => vi.restoreAllMocks());
     });
     const manifest = {
       entries: [
+        ...waterInfoShaderFixture.entries,
         {
           hash: 'pbr00000',
           wgsl: pbrSource,
@@ -204,6 +208,7 @@ afterEach(() => vi.restoreAllMocks());
         },
       ],
       materialShaders: [
+        ...waterInfoShaderFixture.materialShaders,
         materialShaderStub('forgeax::default-standard-pbr'),
         materialShaderStub('forgeax::default-unlit'),
       ],
@@ -247,6 +252,7 @@ afterEach(() => vi.restoreAllMocks());
         {},
         { shaderManifestUrl: buildManifestDataUrl(uvSetCount) },
       );
+      if (!result.ok) throw result.error;
       expect(result.ok).toBe(true);
       result.unwrap();
 
@@ -294,6 +300,7 @@ afterEach(() => vi.restoreAllMocks());
         {},
         { shaderManifestUrl: buildManifestDataUrl() },
       );
+      if (!result.ok) throw result.error;
       expect(result.ok).toBe(true);
       result.unwrap();
 
@@ -345,6 +352,7 @@ afterEach(() => vi.restoreAllMocks());
         {},
         { shaderManifestUrl: buildManifestDataUrl() },
       );
+      if (!result.ok) throw result.error;
       expect(result.ok).toBe(true);
       result.unwrap();
 

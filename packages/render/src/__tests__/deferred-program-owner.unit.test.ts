@@ -9,6 +9,7 @@ import { MaterialResource } from '../material-resource';
 import { addStandardDeferredLighting } from '../pipeline/standard-deferred-lighting';
 import { buildPerFrameBindGroups, buildViewBindGroup } from '../record/frame-lighting';
 import { prepareMaterialSkylight } from '../record/main-pass-material';
+import { scenePipelinePreparations } from '../record/scene-pipeline-preparation';
 import type { RenderPipelineFrame } from '../render-pipeline';
 
 vi.mock('../record/frame-lighting', () => ({
@@ -35,10 +36,7 @@ async function fixture() {
   vi.mocked(buildPerFrameBindGroups).mockReturnValue({ viewBindGroup: group } as ReturnType<
     typeof buildPerFrameBindGroups
   >);
-  vi.mocked(buildViewBindGroup).mockImplementation(
-    (runtime, state, pipeline, counts, targets) =>
-      buildPerFrameBindGroups(runtime, state, pipeline, true, counts, targets).viewBindGroup,
-  );
+  vi.mocked(buildViewBindGroup).mockImplementation(() => group);
   vi.mocked(prepareMaterialSkylight).mockReturnValue({
     skylightResources: {
       irradianceView: view,
@@ -131,10 +129,17 @@ async function fixture() {
     }).unwrap();
     const encode = raster.mock.calls.find(([name]) => name === 'lighting')?.[1].encodeDirect;
     expect(encode).toBeDefined();
-    return () => {
+    const render = () => {
       encode?.(context.pass, context.frame, context.resources);
       return vi.mocked(context.pass.setPipeline).mock.calls.at(-1)?.[0];
     };
+    return Object.assign(render, {
+      prepare: () => {
+        for (const prepare of scenePipelinePreparations(graph)) {
+          prepare(context.frame as never, new Map());
+        }
+      },
+    });
   };
   return {
     device,
@@ -149,6 +154,40 @@ async function fixture() {
     },
   };
 }
+
+it('prepares the exact deferred PSO before encode and preserves its native completion barrier', async () => {
+  const f = await fixture();
+  let finish!: (value: ReturnType<typeof f.device.createRenderPipeline>) => void;
+  const create = vi.fn(
+    (_descriptor: Parameters<typeof f.device.createRenderPipeline>[0]) =>
+      new Promise<ReturnType<typeof f.device.createRenderPipeline>>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  Object.assign(f.device, { createRenderPipelineAsync: create });
+  try {
+    const render = f.build({ reflection: true });
+    render.prepare();
+    expect(create).toHaveBeenCalledOnce();
+    expect(f.makePipeline).not.toHaveBeenCalled();
+    expect(f.frame.frameState).toMatchObject({ pipelinePreparationPending: true });
+    expect(render()).toBeUndefined();
+    expect(f.context.pass.draw).not.toHaveBeenCalled();
+    const descriptor = create.mock.calls[0]?.[0];
+    if (descriptor === undefined) throw new Error('Missing exact deferred descriptor');
+    const pipeline = f.device.createRenderPipeline(descriptor);
+    f.makePipeline.mockClear();
+    finish(pipeline);
+    await Promise.resolve();
+    Object.assign(f.frame.frameState, { pipelinePreparationPending: false });
+    render.prepare();
+    expect(render()).toBe(pipeline.unwrap());
+    expect(f.makePipeline).not.toHaveBeenCalled();
+    expect(create).toHaveBeenCalledOnce();
+  } finally {
+    f.dispose();
+  }
+});
 
 it('retains only immutable lighting programs across graph/extent changes and rebinds graph resources', async () => {
   const f = await fixture();
@@ -166,6 +205,71 @@ it('retains only immutable lighting programs across graph/extent changes and reb
     expect(next[2]).not.toBe(groups[2]);
     expect(next[3]).not.toBe(groups[3]);
     expect(f.context.pass.draw).toHaveBeenCalledTimes(2);
+  } finally {
+    f.dispose();
+  }
+});
+
+it('rejects failed native completion and retries without accepting a partial deferred program', async () => {
+  const f = await fixture();
+  const failure = new RhiError({
+    code: 'shader-compile-failed',
+    expected: 'native deferred fixture',
+    hint: 'rejected program',
+  });
+  const create = vi
+    .fn()
+    .mockRejectedValueOnce(failure)
+    .mockImplementation((descriptor: Parameters<typeof f.device.createRenderPipeline>[0]) =>
+      f.device.createRenderPipeline(descriptor),
+    );
+  Object.assign(f.device, { createRenderPipelineAsync: create });
+  try {
+    const render = f.build();
+    render.prepare();
+    expect(render()).toBeUndefined();
+    await Promise.resolve();
+    expect(render.prepare).toThrow(RhiError);
+    expect(f.context.pass.draw).not.toHaveBeenCalled();
+    Object.assign(f.frame.frameState, { pipelinePreparationPending: false });
+    render.prepare();
+    expect(render()).toBeDefined();
+    expect(f.context.pass.draw).toHaveBeenCalledOnce();
+    expect(create).toHaveBeenCalledTimes(2);
+  } finally {
+    f.dispose();
+  }
+});
+
+it('never accepts an old pending source as the current deferred program', async () => {
+  const f = await fixture();
+  const completions: (() => void)[] = [];
+  const pipelines: ReturnType<typeof f.device.createRenderPipeline>[] = [];
+  const create = vi.fn(
+    (descriptor: Parameters<typeof f.device.createRenderPipeline>[0]) =>
+      new Promise<ReturnType<typeof f.device.createRenderPipeline>>((resolve) => {
+        completions.push(() => {
+          const pipeline = f.device.createRenderPipeline(descriptor);
+          pipelines.push(pipeline);
+          resolve(pipeline);
+        });
+      }),
+  );
+  Object.assign(f.device, { createRenderPipelineAsync: create });
+  try {
+    const render = f.build();
+    render.prepare();
+    f.frame.runtime.standardSceneShaders.deferred.unclustered = 'replacement';
+    render.prepare();
+    completions[0]?.();
+    await Promise.resolve();
+    expect(render()).toBeUndefined();
+    expect(f.context.pass.draw).not.toHaveBeenCalled();
+    completions[1]?.();
+    await Promise.resolve();
+    render.prepare();
+    expect(render()).toBe(pipelines[1]?.unwrap());
+    expect(create).toHaveBeenCalledTimes(2);
   } finally {
     f.dispose();
   }

@@ -27,8 +27,10 @@ it.each([
     rhiInstrumentation: {
       deviceLost: () =>
         new Promise((resolve) => {
-          signalLoss = () =>
+          signalLoss = () => {
+            recorder.deviceLost();
             resolve({ reason: 'unknown', message: 'host-injected sky IBL recovery' });
+          };
         }),
       resolveSurfaceDevice: (device) =>
         ok(recorder.backend.unwrapDeviceForSurface(device).unwrap()),

@@ -14,6 +14,25 @@ const asset: TextureAsset = {
   mips: { kind: 'none' },
 };
 
+it('refreshes dimensions and byte counts after a generated texture replaces the retained handle', () => {
+  const assets = new AssetRegistry();
+  const world = new World({ assets });
+  const source = assets.create(asset).unwrap();
+  const preview = createTextureWorkspacePreview(world, assets, source);
+  assets
+    .replace(source, {
+      ...asset,
+      shape: { viewDimension: '2d', extent: { width: 4, height: 4 } },
+      data: new Uint8Array(64),
+    })
+    .unwrap();
+  preview.refreshContent();
+  expect(preview.texture.get()).toMatchObject({ width: 4, height: 4, sourceBytes: 64 });
+  expect(preview.binding.textureHandle).toBe(source);
+  preview.close();
+  assets.release(source).unwrap();
+});
+
 it('updates the existing material, rejects invalid settings, and releases its own asset grants', async () => {
   const assets = new AssetRegistry();
   const world = new World({ assets });

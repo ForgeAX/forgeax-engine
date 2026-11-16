@@ -104,6 +104,35 @@ test('SDK resource closure is an explicit public allowlist', () => {
       packageRoot: 'assets/canonical-kit',
       files: ['cook-receipt.json', 'sky.hdr', 'sky.hdr.meta.json'],
     },
+    {
+      id: 'content-water',
+      package: '@forgeax/engine-content',
+      sourceRoot: 'packages/content/assets/water',
+      packageRoot: 'assets/water',
+      files: [
+        'impulse-noise.pack.ts',
+        'volume-noise.pack.ts',
+        'materials.pack.ts',
+        'LICENSE.water.txt',
+        'provenance.json',
+        'LowResBlurredNoise.png',
+        'LowResBlurredNoise.png.meta.json',
+        'RiverFlowmap_Diffuse.png',
+        'RiverFlowmap_Diffuse.png.meta.json',
+        'RiverFlowmap_Normal.png',
+        'RiverFlowmap_Normal.png.meta.json',
+        'T_Noise01.png',
+        'T_Noise01.png.meta.json',
+        'T_VolumeNoiseShape128.slices.png',
+        'T_VolumeNoiseShape128.slices.png.meta.json',
+        'T_WaterFlow_01_Foam_Tiled.png',
+        'T_WaterFlow_01_Foam_Tiled.png.meta.json',
+        'T_WaterFlow_01_Foam_Tiled_N.png',
+        'T_WaterFlow_01_Foam_Tiled_N.png.meta.json',
+        'T_Water_TilingNormal_With_Height_02_Softened.png',
+        'T_Water_TilingNormal_With_Height_02_Softened.png.meta.json',
+      ],
+    },
   ]);
   assert.deepEqual(sdkResourceManifest(), SDK_RESOURCE_ALLOWLIST);
   for (const resource of SDK_RESOURCE_ALLOWLIST) {
@@ -183,6 +212,16 @@ test('SDK source schema admits every expanded maintained dependency', async () =
 test('SDK templates need no contributor-only resource closure', () => {
   assert.deepEqual(SDK_TEMPLATE_RESOURCE_ALLOWLIST, []);
   assert.deepEqual(sdkTemplateResourceManifest(), []);
+});
+
+test('SDK templates mount asset libraries provided by the packaged Engine', async () => {
+  for (const { sourceRoot } of SDK_TEMPLATES) {
+    const template = new URL(`../../${sourceRoot}/`, import.meta.url);
+    const project = JSON.parse(await readFile(new URL('forge.json', template), 'utf8'));
+    const manifest = JSON.parse(await readFile(new URL('package.json', template), 'utf8'));
+    assert.deepEqual(Object.keys(manifest.dependencies), ['@forgeax/engine'], sourceRoot);
+    assert.deepEqual(project.assetLibraries, ['@forgeax/engine/content'], sourceRoot);
+  }
 });
 
 test('SDK manifest admits a pack-only template set with no copied resources', async () => {

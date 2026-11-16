@@ -10,6 +10,7 @@ expectTypeOf<ScreenSpaceReflectionData>().toEqualTypeOf<{
   readonly maxDistance: number;
   readonly thickness: number;
   readonly maxRoughness: number;
+  readonly waterTemporal: number;
 }>();
 expectTypeOf(ScreenSpaceReflection).toHaveProperty('fields');
 expectTypeOf<SsrSpatialUnavailableReason>().toEqualTypeOf<

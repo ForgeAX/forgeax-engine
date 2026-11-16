@@ -4,7 +4,7 @@ import type { RhiDevice } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { ok } from '@forgeax/engine-types';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
-import { CLOUD_LAYER_FEATURE_IDENTITY } from '../cloud/feature';
+import { CLOUD_LAYER_FEATURE_IDENTITY } from '../cloud/contracts';
 import { createRenderSurfaceError, type RenderSurfaceExpectedError } from '../errors/render';
 import { BARREL_DISTORTION_POST_PROCESS_ID } from '../features/barrel-distortion';
 import { prepareStandardLighting } from '../pipeline/standard-lighting/prepare';
@@ -13,11 +13,16 @@ import { createStandardOutputPlan } from '../pipeline/standard-output/graph';
 import { standardPipeline } from '../pipeline/standard-pipeline';
 import {
   DEFAULT_STANDARD_PROFILE,
+  STANDARD_MAX_LIGHT_COUNT,
   STANDARD_PIPELINE_ID,
   type StandardProfile,
 } from '../pipeline/standard-profile';
 import type { FrameObservationDomain } from '../render-contract';
-import type { RenderPipelineFrame, RenderPipelineTopology } from '../render-pipeline';
+import type {
+  RenderPipelineBuildContext,
+  RenderPipelineFrame,
+  RenderPipelineTopology,
+} from '../render-pipeline';
 import { admitSsrSpatial } from '../ssr/admission';
 import {
   SUBSURFACE_ATTACHMENT_BYTES,
@@ -153,6 +158,8 @@ async function build(
   cloudShadowResolution?: number,
   localLights = true,
   postSceneWriter = false,
+  contributeDiffuseGi?: RenderPipelineBuildContext<RenderPipelineFrame>['contributeDiffuseGi'],
+  cloudShadowProducer = true,
 ) {
   const graph = new RenderGraphBuilder<RenderPipelineFrame>();
   const resolvedTopology = topology(profile, overrides);
@@ -237,6 +244,7 @@ async function build(
       },
       encodeTransmissionMip: ({ pass }) => pass.draw(3, 1, 0, 0),
       capabilities: { rgba16floatRenderable: true },
+      ...(contributeDiffuseGi === undefined ? {} : { contributeDiffuseGi }),
       projectGpuDriven: () =>
         ok(
           lateOcclusion
@@ -258,7 +266,9 @@ async function build(
         ? {}
         : {
             cloudShadowResolution,
-            hasFeatureRasterWork: (identity: string) => identity === CLOUD_LAYER_FEATURE_IDENTITY,
+            hasFeatureRasterWork: (identity: string, _placement?: string, passName?: string) =>
+              identity === CLOUD_LAYER_FEATURE_IDENTITY &&
+              (cloudShadowProducer || passName !== 'cloud-layer-shadow-filter'),
           }),
       contributeFeatures: ({ targets, placement, namedTargets = {}, include, passNames }) => {
         if (postSceneWriter && placement !== 'scene' && Object.keys(namedTargets).length === 0) {
@@ -270,25 +280,46 @@ async function build(
             encode: () => undefined,
           });
         }
-        // Stand-in CloudLayer producers: the shadow before opaque receivers and
-        // the composite into the lane's cloud scene target.
+        // Graph-only BSM and Mode 0 outputs preserve the production placement contract.
+        if (
+          cloudShadowProducer &&
+          cloudShadowResolution !== undefined &&
+          passNames?.includes('cloud-layer-shadow')
+        ) {
+          expect(passNames).toEqual(['cloud-layer-shadow', 'cloud-layer-shadow-filter']);
+          const raw = namedTargets['cloud-shadow-raw'];
+          if (raw === undefined) throw new Error('Missing raw BSM target');
+          const traced = graph.addRasterPass('test-cloud-layer-shadow-raw', {
+            accesses: [{ resource: raw.view, usage: 'color-attachment' }],
+            colorAttachments: [{ view: raw.view, loadOp: 'clear', storeOp: 'store' }],
+            encode: () => undefined,
+          });
+          if (!traced.ok) return traced;
+        }
         const cloudOutput = passNames?.includes('cloud-layer-shadow')
-          ? namedTargets['cloud-shadow']
+          ? cloudShadowProducer
+            ? namedTargets['cloud-shadow']
+            : undefined
           : passNames?.includes('cloud-layer-resolve')
             ? namedTargets['motion-output']
             : undefined;
         if (cloudOutput !== undefined) {
-          const cloudInput = namedTargets['motion-input'];
-          return graph.addRasterPass(`test-${passNames?.[passNames.length - 1]}`, {
-            accesses: [
-              { resource: cloudOutput.view, usage: 'color-attachment' },
-              ...(cloudInput === undefined
-                ? []
-                : [{ resource: cloudInput.view, usage: 'sampled-read' as const }]),
-            ],
-            colorAttachments: [{ view: cloudOutput.view, loadOp: 'clear', storeOp: 'store' }],
-            encode: () => undefined,
-          });
+          const cloudInput = passNames?.includes('cloud-layer-shadow')
+            ? namedTargets['cloud-shadow-raw']
+            : namedTargets['motion-input'];
+          return graph.addRasterPass(
+            `test-${passNames?.includes('cloud-layer-shadow') ? 'cloud-layer-shadow' : passNames?.[passNames.length - 1]}`,
+            {
+              accesses: [
+                { resource: cloudOutput.view, usage: 'color-attachment' },
+                ...(cloudInput === undefined
+                  ? []
+                  : [{ resource: cloudInput.view, usage: 'sampled-read' as const }]),
+              ],
+              colorAttachments: [{ view: cloudOutput.view, loadOp: 'clear', storeOp: 'store' }],
+              encode: () => undefined,
+            },
+          );
         }
         if (include?.includes(BARREL_DISTORTION_POST_PROCESS_ID) !== true) {
           return ok(undefined);
@@ -308,13 +339,28 @@ async function build(
     resolvedTopology,
   );
   if (!built.ok) return built;
-  return graph.compile({
+  const compiled = graph.compile({
     device,
     surfaceSize: {
       width: resolvedTopology.surface.width,
       height: resolvedTopology.surface.height,
     },
   });
+  if (compiled.ok && cloudShadowResolution !== undefined && cloudShadowProducer) {
+    const resources = compiled.value.inspect().resources;
+    expect(resources.find((resource) => resource.label === 'cloud-layer-shadow-raw')).toMatchObject(
+      { descriptor: { size: { width: cloudShadowResolution, height: cloudShadowResolution } } },
+    );
+    expect(resources.find((resource) => resource.label === 'cloud-layer-shadow')).toMatchObject({
+      descriptor: {
+        size: {
+          width: Math.ceil(cloudShadowResolution / 2),
+          height: Math.ceil(cloudShadowResolution / 2),
+        },
+      },
+    });
+  }
+  return compiled;
 }
 
 function importedTaaHistory(graph: RenderGraphBuilder<RenderPipelineFrame>) {
@@ -425,6 +471,70 @@ describe('visible-surface graph admission', () => {
         resource: 'visible-surface',
         usage: 'color-attachment',
       });
+    } finally {
+      (await result.value.retire()).unwrap();
+    }
+  });
+
+  it('runs field diffuse GI without visible surfaces on a device lacking primitive-index', async () => {
+    const received: { identity: boolean; motion: string }[] = [];
+    const result = await build(
+      {
+        ...profile,
+        ibl: false,
+        visibleSurface: false,
+        diffuseGi: {
+          gather: 'irradiance-field',
+          maxDistance: 100,
+          environment: [0, 0, 0],
+          field: {
+            region: {
+              grid: {
+                origin: [-4, -4, -4],
+                dimensions: [33, 33, 33],
+                spacing: 0.25,
+                maxDistance: 2,
+                coverageDistance: 1,
+              },
+              maxInstances: 64,
+              maxFieldBytes: 16 * 1024 * 1024,
+            },
+            probeSpacing: 1,
+            raysPerProbe: 64,
+            probeBudget: 32,
+            hysteresis: 0.9,
+            cards: { resolution: 32, maxCaptureBytes: 8 * 1024 * 1024, budget: 64 },
+            resolution: 'half',
+            radiosity: true,
+          },
+        },
+      },
+      {
+        lane: { ...lane, primitiveIndex: false, maxColorAttachments: 6 },
+        camera: { antialias: 'none', bloom: 'off' },
+      },
+      undefined,
+      false,
+      undefined,
+      true,
+      false,
+      (targets) => {
+        received.push({
+          identity: targets.identity !== undefined,
+          motion: targets.motion.texture === undefined ? '' : 'standard-scene-temporal',
+        });
+        return ok(undefined);
+      },
+    );
+    expect(result.ok, result.ok ? '' : JSON.stringify(result.error)).toBe(true);
+    if (!result.ok) return;
+    try {
+      const info = result.value.inspect();
+      expect(info.resources.some((resource) => resource.label === 'visible-surface')).toBe(false);
+      expect(info.resources).toContainEqual(
+        expect.objectContaining({ label: 'standard-scene-temporal' }),
+      );
+      expect(received).toEqual([{ identity: false, motion: 'standard-scene-temporal' }]);
     } finally {
       (await result.value.retire()).unwrap();
     }
@@ -775,10 +885,11 @@ describe('forgeax::standard graph', () => {
     expect(names).not.toContain('standard-output-encoding');
   });
 
-  it('does not admit an unsupported four-light budget', async () => {
-    const profile = { ...DEFAULT_STANDARD_PROFILE, lightCount: 4 } as unknown as StandardProfile;
-    const result = await build(profile);
-    expect(result.ok).toBe(false);
+  it('admits any integer light budget up to the slot array and rejects the rest', async () => {
+    for (const lightCount of [4, STANDARD_MAX_LIGHT_COUNT])
+      expect((await build({ ...DEFAULT_STANDARD_PROFILE, lightCount })).ok).toBe(true);
+    for (const lightCount of [0, STANDARD_MAX_LIGHT_COUNT + 1, 4.5])
+      expect((await build({ ...DEFAULT_STANDARD_PROFILE, lightCount })).ok).toBe(false);
   });
 
   it('accounts for admitted LUT bindings without adding work to the zero-strength path', () => {
@@ -899,6 +1010,7 @@ describe('forgeax::standard graph', () => {
             near: 0.1,
             far: 100,
             screenSpaceReflection: {
+              waterTemporal: 0,
               maxDistance: 40,
               thickness: 0.2,
               maxRoughness: 0.6,
@@ -1509,6 +1621,160 @@ describe('forgeax::standard graph', () => {
     }
   });
 
+  it.each([
+    'forward',
+    'deferred',
+  ] as const)('only exposes written cloud shadow targets to the %s atmosphere', async (renderPath) => {
+    for (const producer of [false, true]) {
+      const compiled = (
+        await build(
+          { ...DEFAULT_STANDARD_PROFILE, renderPath },
+          { atmosphere: true },
+          undefined,
+          false,
+          64,
+          true,
+          false,
+          undefined,
+          producer,
+        )
+      )
+        .unwrap()
+        .inspect();
+      const names = compiled.passes.map((pass) => pass.name);
+      expect(names).toContain('atmosphere-sky-view');
+      expect(compiled.resources.some((resource) => resource.label === 'cloud-layer-shadow')).toBe(
+        producer,
+      );
+      if (producer) {
+        expect(names.indexOf('test-cloud-layer-shadow')).toBeLessThan(
+          names.indexOf('atmosphere-sky-view'),
+        );
+      }
+    }
+  });
+
+  it.each([
+    { route: 'without clouds', cloudShadowResolution: undefined },
+    { route: 'with clouds', cloudShadowResolution: 16 },
+  ])('composites Forward opaque aerial perspective once $route', async ({
+    cloudShadowResolution,
+  }) => {
+    const passes = (
+      await build(
+        { ...DEFAULT_STANDARD_PROFILE, renderPath: 'forward' },
+        { atmosphere: true, analyticFog: true },
+        undefined,
+        false,
+        cloudShadowResolution,
+      )
+    )
+      .unwrap()
+      .inspect().passes;
+    const names = passes.map((pass) => pass.name);
+    const compositions = passes.filter((pass) => pass.name === 'atmosphere-opaque-composition');
+    expect(compositions).toHaveLength(1);
+    expect(compositions[0]?.accesses).toEqual(
+      expect.arrayContaining([
+        { resource: 'atmosphere-aerial-perspective', usage: 'sampled-read' },
+        { resource: 'atmosphere-aerial-transmittance', usage: 'sampled-read' },
+        { resource: 'scene-depth', usage: 'sampled-read' },
+        { resource: 'scene-color', usage: 'color-attachment' },
+      ]),
+    );
+    expect(names).not.toContain('analytic-fog');
+    const composition = names.indexOf('atmosphere-opaque-composition');
+    expect(composition).toBeGreaterThan(names.indexOf('main'));
+    expect(composition).toBeLessThan(names.indexOf('transparent'));
+    if (cloudShadowResolution !== undefined) {
+      expect(composition).toBeLessThan(names.indexOf('test-cloud-layer-resolve'));
+    } else {
+      expect(names).not.toContain('test-cloud-layer-resolve');
+    }
+  });
+
+  it('keeps standalone analytic fog for Forward without full Atmosphere', async () => {
+    const passes = (
+      await build({ ...DEFAULT_STANDARD_PROFILE, renderPath: 'forward' }, { analyticFog: true })
+    )
+      .unwrap()
+      .inspect().passes;
+    const names = passes.map((pass) => pass.name);
+    expect(names.filter((name) => name === 'analytic-fog')).toHaveLength(1);
+    expect(names).not.toContain('atmosphere-opaque-composition');
+  });
+
+  it('feeds the produced Forward cloud shadow to full Atmosphere before opaque shading', async () => {
+    const graph = (
+      await build(
+        { ...DEFAULT_STANDARD_PROFILE, renderPath: 'forward' },
+        { atmosphere: true },
+        undefined,
+        false,
+        16,
+      )
+    )
+      .unwrap()
+      .inspect();
+    const passes = graph.passes;
+    const names = passes.map((pass) => pass.name);
+    const producer = names.indexOf('test-cloud-layer-shadow');
+    expect(producer).toBeGreaterThanOrEqual(0);
+    expect(passes[producer]?.accesses).toContainEqual({
+      resource: 'cloud-layer-shadow',
+      usage: 'color-attachment',
+    });
+    expect(
+      graph.resources.find((resource) => resource.label === 'cloud-layer-shadow')?.format,
+    ).toBe('rgba32float');
+    for (const name of [
+      'atmosphere-sky-view',
+      'atmosphere-aerial-perspective',
+      'atmosphere-background',
+      'atmosphere-opaque-composition',
+    ]) {
+      const receiver = names.indexOf(name);
+      expect(passes[receiver]?.accesses, name).toContainEqual({
+        resource: 'cloud-layer-shadow',
+        usage: 'sampled-read',
+      });
+      expect(receiver, name).toBeGreaterThan(producer);
+    }
+    expect(names.indexOf('atmosphere-background')).toBeLessThan(names.indexOf('main'));
+  });
+
+  it.each([
+    { route: 'full Atmosphere without clouds', backgroundOnly: false, resolution: undefined },
+    { route: 'background-only Atmosphere with clouds', backgroundOnly: true, resolution: 16 },
+  ])('keeps $route independent of cloud shadow visibility', async ({
+    backgroundOnly,
+    resolution,
+  }) => {
+    const passes = (
+      await build(
+        { ...DEFAULT_STANDARD_PROFILE, renderPath: 'forward' },
+        { atmosphere: true, atmosphereBackgroundOnly: backgroundOnly },
+        undefined,
+        false,
+        resolution,
+      )
+    )
+      .unwrap()
+      .inspect().passes;
+    const names = passes.map((pass) => pass.name);
+    const background = names.indexOf('atmosphere-background');
+    expect(background).toBeGreaterThanOrEqual(0);
+    expect(background).toBeLessThan(names.indexOf('main'));
+    expect(names.includes('test-cloud-layer-shadow')).toBe(backgroundOnly);
+    expect(names.includes('atmosphere-aerial-perspective')).toBe(!backgroundOnly);
+    for (const pass of passes.filter((entry) => entry.name.startsWith('atmosphere-'))) {
+      expect(pass.accesses, pass.name).not.toContainEqual({
+        resource: 'cloud-layer-shadow',
+        usage: 'sampled-read',
+      });
+    }
+  });
+
   it('binds the cloud shadow to every forward-lit receiver pass on both render paths', async () => {
     for (const renderPath of ['forward', 'deferred'] as const) {
       const result = await build(
@@ -1529,6 +1795,10 @@ describe('forgeax::standard graph', () => {
       expect(result.ok).toBe(true);
       if (!result.ok) continue;
       const passes = result.value.inspect().passes;
+      const names = passes.map((pass) => pass.name);
+      expect(names).not.toContain('cloud-layer-density-cache');
+      expect(names).toContain('test-cloud-layer-shadow');
+      expect(names).toContain('test-cloud-layer-resolve');
       const receivers = [
         renderPath === 'forward' ? 'main' : 'forward',
         'transmission-forward',
@@ -1541,7 +1811,11 @@ describe('forgeax::standard graph', () => {
           resource: 'cloud-layer-shadow',
           usage: 'sampled-read',
         });
+        expect(names.indexOf('test-cloud-layer-shadow')).toBeLessThan(names.indexOf(name));
       }
+      expect(names.indexOf(renderPath === 'forward' ? 'main' : 'forward')).toBeLessThan(
+        names.indexOf('test-cloud-layer-resolve'),
+      );
     }
   });
 

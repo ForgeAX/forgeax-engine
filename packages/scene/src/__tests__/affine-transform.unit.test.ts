@@ -1,4 +1,4 @@
-import { createWorldContext, FixedUpdate, World } from '@forgeax/engine-ecs';
+import { createWorldContext, defineSystem, FixedUpdate, World } from '@forgeax/engine-ecs';
 import { expect, it } from 'vitest';
 import {
   ChildOf,
@@ -39,15 +39,14 @@ it('samples shear with the fixed pose without changing the simulation matrix', a
     const entity = world
       .spawn({ component: Transform, data: {} }, { component: TransformInterpolation, data: {} })
       .unwrap();
-    world
-      .addSystem(FixedUpdate, {
-        name: 'author-shear',
-        queries: [],
-        fn: () => {
-          world.set(entity, Transform, { shear: [2, 0, 0] }).unwrap();
-        },
-      })
-      .unwrap();
+    const systemToken1 = defineSystem({
+      name: 'author-shear',
+      queries: [],
+      fn: () => {
+        world.set(entity, Transform, { shear: [2, 0, 0] }).unwrap();
+      },
+    });
+    world.addSystem(FixedUpdate, systemToken1).unwrap();
     world.update(1.5 / 60).unwrap();
     expect(world.get(entity, GlobalTransform).unwrap().world[4]).toBe(2);
     expect(readPresentationWorldMatrix(world, entity)?.[4]).toBeCloseTo(1);

@@ -1,5 +1,5 @@
 import { World } from '@forgeax/engine-ecs';
-import type { Renderer } from '@forgeax/engine-render';
+import type { RenderReadLease } from '@forgeax/engine-render';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { describe, expect, it } from 'vitest';
 import { constructRendererHost } from '../../../render/src/construct-renderer';
@@ -12,8 +12,8 @@ function canvas(): HTMLCanvasElement {
 
 const manifest = `data:application/json,${encodeURIComponent(JSON.stringify({ entries: [] }))}`;
 
-function frameRequest(lease: Parameters<Renderer['draw']>[0]['leases'][number]) {
-  return { leases: [lease], camera: { lease }, environment: { lease } };
+function frameRequest(lease: RenderReadLease) {
+  return { source: lease };
 }
 
 describe('runtime renderer host assembly', () => {

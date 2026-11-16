@@ -1,3 +1,4 @@
+import { ResourceInvalidValueError } from '../errors/component-validation';
 // @forgeax/engine-render - PointLight (omnidirectional point-light parameters).
 //
 // Schema: color array<f32,3> + intensity f32 + range f32 (feat-20260709 M2:
@@ -26,7 +27,7 @@
 // SpotLight; `range` semantics aligned with KHR_lights_punctual).
 
 import { defineComponent } from '@forgeax/engine-ecs';
-import { ResourceInvalidValueError } from '../errors/ecs-validation';
+
 import { LIGHTING_CHANNELS_DEFAULT } from './lighting-channels';
 
 /** Point distance exponent; validation precedes the f32 GPU projection. */

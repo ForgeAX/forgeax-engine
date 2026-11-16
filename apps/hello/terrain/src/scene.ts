@@ -1,3 +1,5 @@
+import { TerrainWalkerResource } from './ecs-resources.ts';
+
 import type { App } from '@forgeax/engine-app';
 import { createSphereGeometry } from '@forgeax/engine-geometry';
 import { quat } from '@forgeax/engine-math';
@@ -18,6 +20,8 @@ import {
 import { Transform } from '@forgeax/engine-scene';
 import { Terrain, terrainHeight } from '@forgeax/engine-terrain';
 import { terrainGuid } from './identity.ts';
+
+
 export async function buildTerrainWorld(
   app: Pick<App, 'assets' | 'world'>,
   rootGuid = terrainGuid,
@@ -77,6 +81,6 @@ export async function buildTerrainWorld(
   assets.release(mesh).unwrap();
   assets.release(material).unwrap();
   const walker = walkerResult.unwrap();
-  app.world.insertResource('TerrainWalker', { entity: walker, speed: 0, updates: 0 });
+  app.world.insertResource(TerrainWalkerResource, { entity: walker, speed: 0, updates: 0 });
   return { terrain, camera, walker };
 }

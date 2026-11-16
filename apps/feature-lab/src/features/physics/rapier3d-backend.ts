@@ -4,11 +4,11 @@ import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import {
   Collider,
   ColliderShapeValue,
+  PhysicsWorldResource,
   RigidBody,
   RigidBodyTypeValue,
 } from '@forgeax/engine/physics';
-import type { RapierPhysicsWorld3D } from '@forgeax/engine/physics-rapier3d';
-import physics3d from '@forgeax/engine/physics-rapier3d';
+import physics3d, { RapierPhysicsWorld3D } from '@forgeax/engine/physics-rapier3d';
 import { defineFeature } from '../../lab/feature';
 import { spawnCamera, spawnMesh, spawnSun, standard } from '../../lab/stage';
 import { waitForPhysicsWorld, waitUntil } from './support/live';
@@ -45,11 +45,12 @@ export default defineFeature({
 
     const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
 
-    const { physics, waitedFrames } = await waitForPhysicsWorld<RapierPhysicsWorld3D>(
+    const { physics, waitedFrames } = await waitForPhysicsWorld(
       world,
       frames,
+      PhysicsWorldResource,
     );
-    if (physics === undefined)
+    if (!(physics instanceof RapierPhysicsWorld3D))
       throw new Error('PhysicsWorld resource never appeared (Rapier 3D WASM did not load)');
     hud.status(`Rapier 3D ready after ${waitedFrames} frames`);
     spawnCamera(world, { eye: [0, 2.8, 10], target: [0, 2.4, 0] });

@@ -80,7 +80,6 @@ function fixture(count = 1) {
   const rows = Array.from({ length: count }, (_, index) => {
     const source: RenderableSnapshot = {
       entityKey: index,
-      worldId: 0,
       assetHandle: 1,
       transform: { world: new Float32Array(16) },
       localAabb: new Float32Array([-1, -1, -1, 1, 1, 1]),
@@ -119,7 +118,6 @@ function fixture(count = 1) {
       slot: index,
       generation: 1,
       version: 0,
-      worldId: 0,
       entityKey: index,
       snapshot: row.source,
     });
@@ -140,7 +138,6 @@ function fixture(count = 1) {
       slot: index,
       generation: 1,
       version: 0,
-      worldId: 0,
       entityKey: index,
       snapshot: row.source,
     })),
@@ -549,7 +546,6 @@ it('keeps geometry membership while Forward switches between transparent and opa
       slot: index,
       generation: 1,
       version: 0,
-      worldId: 0,
       entityKey: index,
       snapshot: row.source,
     })),

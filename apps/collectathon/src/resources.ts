@@ -1,3 +1,4 @@
+import { defineResource } from '@forgeax/engine-ecs';
 // apps/collectathon -- GameProgress: the single authoritative carrier for the
 // gameplay scoreboard (AC-18, plan-strategy D-1 SSOT).
 //
@@ -10,14 +11,11 @@
 // AC-18 single-writer review anchor grep-able (write call sites are named, not
 // scattered `progress.score =` assignments across systems).
 //
-// GameProgress is a plain string-keyed World resource (no defineResource
-// registration -- the engine's resource store is a key->value map). main.ts adds
-// it in the OnEnter('Play') callback via world.insertResource('GameProgress',
-// createGameProgress(coreCount)); systems read it via
-// world.getResource<GameProgress>('GameProgress').
+// GAME_PROGRESS_KEY owns the typed World resource identity. Each Play entry
+// inserts fresh progress; systems read it with world.getResource(GAME_PROGRESS_KEY).
 
 /** Resource key under which GameProgress is stored in the World. */
-export const GAME_PROGRESS_KEY = 'GameProgress';
+export const GAME_PROGRESS_KEY = defineResource<GameProgress>('GameProgress');
 
 /** Starting health (hearts) for a fresh run (plan-strategy: 3 hits to Lose). */
 export const INITIAL_HEALTH = 3;
@@ -86,7 +84,7 @@ export function resetProgress(world: import('@forgeax/engine-ecs').World, total:
  * signal, not persistent scoreboard state). One writer (core-collect), one
  * reader (pickup-text) -- grep-able AC-18 SSOT single-writer shape.
  */
-export const PICKUP_SIGNAL_KEY = 'CollectathonPickupSignal';
+export const PICKUP_SIGNAL_KEY = defineResource<PickupSignal[]>('CollectathonPickupSignal');
 
 /** A pickup signal carrying the world position where a Core was collected. */
 export interface PickupSignal {

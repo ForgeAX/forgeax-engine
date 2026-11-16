@@ -12,6 +12,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { spawnSync } from 'node:child_process';
 
 import { emitSmokeReceipt } from '../../../shared/scripts/smoke-receipt.mjs';
+import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const appRoot = resolve(here, '..');
@@ -49,7 +50,7 @@ function fail(message) {
 const entryName = readdirSync(resolve(distRoot, 'assets')).find((name) => /^main-.*\.js$/u.test(name));
 if (entryName === undefined) fail('dist entry missing; run the app build first');
 const entryPath = resolve(distRoot, 'assets', entryName);
-const manifestBody = readFileSync(resolve(distRoot, 'shaders', 'manifest.json'), 'utf8');
+const manifestBody = readShaderManifestText(resolve(distRoot, 'shaders', 'manifest.json'));
 
 let create;
 let globals;

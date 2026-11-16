@@ -1,7 +1,7 @@
 // m3-profile-rejection-test — portable value validation / profile boundary tests.
 //
 // Validates that the shared kernel rejects fully-transient component selections
-// and non-portable field types (unique/shared/legacy refs) with structured errors
+// and non-portable field types (unique/shared references) with structured errors
 // while portable entity fields are accepted. No network metadata in schemas.
 
 import { describe, expect, it } from 'vitest';
@@ -52,10 +52,6 @@ const SharedArrayRef = defineComponent('TestSharedArrayRef', {
   assets: { type: 'array<shared<SomeAsset>>' },
 });
 
-const LegacyRef = defineComponent('TestLegacyRef', {
-  node: { type: 'ref' },
-});
-
 const MixedPortable = defineComponent('TestMixedPortable', {
   health: { type: 'u32', default: 100 },
   asset: { type: 'shared<SomeAsset>' },
@@ -102,10 +98,6 @@ describe('m3 — portable value validation: non-portable field type rejection', 
 
   it('(b) shared<T> field type is not portable', () => {
     expect(isFieldPortable('shared<SomeAsset>')).toBe(false);
-  });
-
-  it('(c) legacy `ref` field type is not portable', () => {
-    expect(isFieldPortable('ref')).toBe(false);
   });
 
   it('(d) numeric scalar (f32) is portable', () => {
@@ -181,15 +173,6 @@ describe('m3 — portable value validation: validateProfileComponents rejects no
     expect(result.errors[0]?.code).toBe('field-not-portable');
     expect(result.errors[0]?.component).toBe('TestSharedArrayRef');
     expect(result.errors[0]?.field).toBe('assets');
-  });
-
-  it('(d) component with legacy `ref` field is rejected', () => {
-    const result = validateProfileComponents([LegacyRef as Component]);
-    expect(result.valid).toBe(false);
-    expect(result.errors.length).toBe(1);
-    expect(result.errors[0]?.code).toBe('field-not-portable');
-    expect(result.errors[0]?.component).toBe('TestLegacyRef');
-    expect(result.errors[0]?.field).toBe('node');
   });
 
   it('(e) component with mixed portable and non-portable fields is rejected', () => {

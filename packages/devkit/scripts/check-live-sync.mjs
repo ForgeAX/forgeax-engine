@@ -4,7 +4,6 @@ import { execFile } from 'node:child_process';
 import {
   cp,
   mkdir,
-  mkdtemp,
   readFile,
   readdir,
   rename,
@@ -12,17 +11,17 @@ import {
   symlink,
   writeFile,
 } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { reduceTestProject } from '../../../scripts/test/reduce-test-project.mjs';
+import { createLiveSyncProjectDirectory, prepareLiveSyncSharedInputs } from './live-sync-inputs.mjs';
 
 const exec = promisify(execFile);
 const source = resolve(
   process.argv[2] ?? fileURLToPath(new URL('../../../templates/game-3d', import.meta.url)),
 );
-const root = await mkdtemp(join(tmpdir(), 'forgeax-live-sync-'));
+const {root, temporaryRoot} = await createLiveSyncProjectDirectory('forgeax-live-sync-', fileURLToPath(new URL('../../../', import.meta.url)), process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST);
 const cli = fileURLToPath(new URL('../dist/cli.mjs', import.meta.url));
 const ignored = new Set(['node_modules', '.forgeax', '.git', 'artifacts', 'dist']);
 await cp(source, root, {
@@ -54,6 +53,16 @@ if (process.argv.includes('--__forgeax-live-daemon')) {
 );
 const env = {
   ...process.env,
+  ...(process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST
+    ? {
+        FORGEAX_SHARED_APP_INPUTS_MANIFEST: await prepareLiveSyncSharedInputs({
+          sourceRoot: fileURLToPath(new URL('../../../', import.meta.url)),
+          projectRoot: root,
+          temporaryRoot,
+          manifestPath: process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST,
+        }),
+      }
+    : {}),
   NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${pathToFileURL(hook).href}`,
   ...(process.env.FORGEAX_BROWSER_CI_LIGHTWEIGHT === '1'
     ? { FORGEAX_DEV_PACK_READINESS: 'on-demand' }

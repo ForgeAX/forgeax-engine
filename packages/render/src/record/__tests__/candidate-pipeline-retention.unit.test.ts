@@ -83,3 +83,64 @@ it('does not pin the preparing frame or graph through a prepared candidate that 
   result.value.release();
   expect(result.value.isCurrent()).toBe(false);
 });
+
+it('excludes explicit utility programs from candidate raster matching without accepting unknown material demand', async () => {
+  const utility = Object.assign(
+    vi.fn(() => false),
+    { kind: 'utility' as const },
+  );
+  const material = vi.fn(() => true);
+  const graph = { scenePipelinePreparations: [utility, material] };
+  const readDemand = vi.fn(() => undefined);
+  const owner = new CandidatePipelinePreparationOwner(() => graph as never, readDemand);
+  const input = {
+    preparation: {
+      entity: 1,
+      transform: new Float32Array(16),
+      materials: [{ id: 1, value: { renderState: {} } }],
+      template: { snapshot: { material: 1, materials: [1] }, dispatch: [] },
+    },
+    mesh: { submeshes: [{ materialSlot: 0 }] },
+    asset: {},
+    isCurrent: () => true,
+  } as never;
+  const pending = owner.prepare(input);
+  expect(owner.inspect().unsupportedGraph).toBe(1);
+  expect(readDemand).not.toHaveBeenCalled();
+  owner.process({ frameState: {}, runtime: {} } as _InternalRenderPipelineContext, false);
+  const result = await pending;
+  expect(result.ok).toBe(true);
+  expect(material).toHaveBeenCalledOnce();
+  expect(utility).toHaveBeenCalledOnce();
+  if (result.ok) result.value.release();
+  owner.dispose();
+});
+
+it('does not treat a utility-only graph as a candidate material raster authority', async () => {
+  const utility = Object.assign(
+    vi.fn(() => true),
+    { kind: 'utility' as const },
+  );
+  const graph = { scenePipelinePreparations: [utility] };
+  const readDemand = vi.fn(() => undefined);
+  const owner = new CandidatePipelinePreparationOwner(() => graph as never, readDemand);
+  const input = {
+    preparation: {
+      entity: 1,
+      transform: new Float32Array(16),
+      materials: [{ id: 1, value: { renderState: {} } }],
+      template: { snapshot: { material: 1, materials: [1] }, dispatch: [] },
+    },
+    mesh: { submeshes: [{ materialSlot: 0 }] },
+    asset: {},
+    isCurrent: () => true,
+  } as never;
+  const pending = owner.prepare(input);
+  expect(owner.inspect().unsupportedGraph).toBe(0);
+  expect(readDemand).toHaveBeenCalledOnce();
+  owner.process({ frameState: {}, runtime: {} } as _InternalRenderPipelineContext, false);
+  const result = await pending;
+  expect(result.ok).toBe(false);
+  expect(utility).not.toHaveBeenCalled();
+  owner.dispose();
+});

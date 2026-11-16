@@ -1,3 +1,4 @@
+import { defineSystem } from "@forgeax/engine-ecs";
 import type { AssetHandle } from '@forgeax/engine-types';
 import { Disabled, FixedUpdate, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import { MeshRenderer } from '@forgeax/engine-render';
@@ -15,7 +16,7 @@ import { GameState } from './gameplay-state';
 import type { ProjectileImpactOutcome } from './projectile-impact';
 import type { ProjectilePresentation } from './projectile-presentation';
 import type { SentinelEncounterReadiness } from './sentinel-authorship';
-import { GAME_DEFAULT_GAMEPLAY_CONFIG, type GameplayConfig } from './resources/gameplay';
+import { GAME_DEFAULT_GAMEPLAY_CONFIG } from './resources/gameplay';
 import { spawnSharedProjectile } from './systems/projectile-simulation';
 import type { GameplayVfx } from './gameplay-vfx';
 
@@ -190,7 +191,7 @@ export function createSentinelRangedThreat(args: {
     if (target === args.entity && args.world.get(target, Disabled).ok) cleanupHostileProjectiles();
   };
   const installSystem = (): void => {
-    args.world.addSystem(FixedUpdate, {
+    const systemToken1 = defineSystem({
       name: 'game-sentinel-cadence',
       runIf: inState(GameState, 'Play'),
       queries: [],
@@ -205,7 +206,7 @@ export function createSentinelRangedThreat(args: {
           playerTransform.value.pos[2] ?? 0,
         ];
         const previous = readCadence();
-        const config = args.world.getResource<GameplayConfig>(GAME_DEFAULT_GAMEPLAY_CONFIG);
+        const config = args.world.getResource(GAME_DEFAULT_GAMEPLAY_CONFIG);
         const next = advanceSentinelCadence(previous, {
           collected: args.extraction?.snapshot().collected ?? 0,
           playerChest,
@@ -250,7 +251,8 @@ export function createSentinelRangedThreat(args: {
         args.vfx?.attachFlight(projectile);
         args.onSpawn();
       },
-    }).unwrap();
+    });
+args.world.addSystem(FixedUpdate, systemToken1).unwrap();
   };
   const snapshot = (): SentinelSnapshot => {
     const current = args.world.get(args.entity, Sentinel);

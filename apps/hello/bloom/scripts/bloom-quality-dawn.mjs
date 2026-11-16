@@ -20,11 +20,12 @@ import { fileURLToPath } from 'node:url';
 import { PNG } from 'pngjs';
 import { readShaderManifestPublication } from '@forgeax/engine-shader';
 import { teardownDawnInstance } from '../../../../scripts/lib/dawn-teardown.mjs';
+import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const appRoot = resolve(here, '..');
 const repoRoot = resolve(appRoot, '..', '..', '..');
-const evidenceDir = resolve(appRoot, 'evidence');
+const evidenceDir = resolve(process.env.SMOKE_EVIDENCE_DIR ?? resolve(appRoot, 'evidence'));
 const manifestPath = resolve(appRoot, 'dist', 'shaders', 'manifest.json');
 const sourceRevision = execFileSync('git', ['rev-parse', 'HEAD'], {
   cwd: repoRoot,
@@ -49,7 +50,7 @@ const UPSAMPLE_PARAMS_BYTES = 5 * UPSAMPLE_PARAMS_STRIDE;
 const COMPOSITE_PARAMS_BYTES = 16;
 const MOTION_FRAMES = 60;
 
-const manifest = await readShaderManifestPublication(JSON.parse(readFileSync(manifestPath, 'utf8')));
+const manifest = await readShaderManifestPublication(JSON.parse(readShaderManifestText(manifestPath)));
 const downEntry = manifest.entries.find((entry) => entry.wgsl.includes('BloomHorizontalParams'));
 const upEntry = manifest.entries.find((entry) => entry.wgsl.includes('BloomVerticalParams'));
 const compositeEntry = manifest.entries.find((entry) => entry.wgsl.includes('BloomCompositeParams'));
@@ -622,12 +623,12 @@ try {
     if (radius === 0.3) {
       const path = resolve(evidenceDir, 'quality-white-radius-0.3.png');
       writeDisplayPng(path, result.composited, result.width, result.height);
-      evidence.visual.files.push('apps/hello/bloom/evidence/quality-white-radius-0.3.png');
+      evidence.visual.files.push(path);
     }
     if (radius === 0.9) {
       const path = resolve(evidenceDir, 'quality-white-radius-0.9.png');
       writeDisplayPng(path, result.composited, result.width, result.height);
-      evidence.visual.files.push('apps/hello/bloom/evidence/quality-white-radius-0.9.png');
+      evidence.visual.files.push(path);
     }
   }
   const matchedContribution = Math.min(...radial.map((entry) => entry.total));
@@ -759,11 +760,11 @@ try {
   const rgbResult = await visualRunner.run(pointValues(129, 97, 64, 48, [8, 1.5, 0.35]), { radius: 0.7 });
   const rgbPath = resolve(evidenceDir, 'quality-rgb-point.png');
   writeDisplayPng(rgbPath, rgbResult.composited, 129, 97);
-  evidence.visual.files.push('apps/hello/bloom/evidence/quality-rgb-point.png');
+  evidence.visual.files.push(rgbPath);
   const crossResult = await visualRunner.run(crossValues(129, 97), { radius: 0.7 });
   const crossPath = resolve(evidenceDir, 'quality-cross.png');
   writeDisplayPng(crossPath, crossResult.composited, 129, 97);
-  evidence.visual.files.push('apps/hello/bloom/evidence/quality-cross.png');
+  evidence.visual.files.push(crossPath);
 
   const motionRunner = await createRunner(512, 512);
   runners.push(motionRunner);
@@ -794,7 +795,7 @@ try {
     if (motionVisualFrames.has(frame)) {
       const name = `quality-motion-${frame.toString().padStart(3, '0')}.png`;
       writeDisplayPng(resolve(evidenceDir, name), result.composited, motionRunner.width, motionRunner.height);
-      const relative = `apps/hello/bloom/evidence/${name}`;
+      const relative = resolve(evidenceDir, name);
       evidence.visual.files.push(relative);
       motionVisualFiles.push(relative);
     }

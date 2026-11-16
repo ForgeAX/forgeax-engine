@@ -188,12 +188,7 @@ export async function verifyAdvancedModeling(
         propagateTransforms(world).unwrap();
         const receipt = await drawReadyFrame(
           renderer,
-          {
-            leases: [lease],
-            camera: { lease },
-            environment: { lease },
-            geometryLane: 'direct',
-          },
+          { source: lease, geometryLane: 'direct' },
           observation,
         );
         expect(receipt.presentation, JSON.stringify(receipt.presentationPendingReason)).toBe(

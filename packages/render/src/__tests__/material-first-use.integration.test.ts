@@ -107,12 +107,7 @@ it.each([
     world.update().unwrap();
     const errors: unknown[] = [];
     renderer.onError((error) => errors.push(error));
-    const draw = () =>
-      renderer.draw({
-        leases: [attached],
-        camera: { lease: attached },
-        environment: { lease: attached },
-      });
+    const draw = () => renderer.draw({ source: attached });
     indexedDraws.mockClear();
     expect(draw().ok).toBe(true);
     expect(indexedDraws).toHaveBeenCalled();
@@ -363,12 +358,7 @@ it.each([
       indexedDraws.mockClear();
       boundPipelines.mockClear();
       // RhiNull verifies module selection and recording; Dawn owns binding and pixel acceptance.
-      const draw = renderer.draw({
-        leases: [attached],
-        camera: { lease: attached },
-        environment: { lease: attached },
-        geometryLane: 'direct',
-      });
+      const draw = renderer.draw({ source: attached, geometryLane: 'direct' });
       if (!draw.ok) throw new Error(JSON.stringify(draw.error));
       expect(productionPrepare.mock.results.at(-1)?.value).toMatchObject({
         ok: true,

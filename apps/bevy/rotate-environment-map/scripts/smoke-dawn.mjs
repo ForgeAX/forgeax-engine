@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { defineSystem } from "@forgeax/engine-ecs";
 import { encodePng } from '@forgeax/engine-image/png';
 import { createSmokePlatform } from '../../../../scripts/smoke-platform.mjs';
 import { decodeCatalogWire } from '@forgeax/engine-pack';
@@ -91,7 +92,8 @@ if (!hdr.ok) { console.error(`[smoke] HDR load failed: ${hdr.error.code}`); proc
 const equirect = hdr.value;
 const scene = buildEnvironmentWorld(app.world, equirect, width / height);
 let latestAngle = 0;
-app.world.addSystem(Update, { name: 'smoke-rotate-environment', queries: [], fn: (world) => { latestAngle = stepEnvironmentRotation(world, scene, world.getResource(Time).elapsed); } });
+const systemToken1 = defineSystem({ name: 'smoke-rotate-environment', queries: [], fn: (world) => { latestAngle = stepEnvironmentRotation(world, scene, world.getResource(Time).elapsed); } });
+app.world.addSystem(Update, systemToken1);
 const frameStartTimestamp = performance.now();
 let callbacks = 0;
 const frames = await runSmokeAppFrames(app, () => {

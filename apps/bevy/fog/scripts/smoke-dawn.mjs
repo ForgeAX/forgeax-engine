@@ -190,14 +190,6 @@ const recordError = (error) => {
 app.onError(recordError);
 
 const world = app.world;
-const { createPublicationAssets } = await import('@forgeax/engine-runtime/internal/renderer-host');
-const resourceWorld = new World({ assets: await createPublicationAssets({ shaderManifestUrl: manifestUrl }) });
-let resourceOwner = 0;
-app.setDrawSource(() => ({
-  worlds: [world, resourceWorld],
-  cameraOwner: 0,
-  resourceOwner,
-}));
 const densityExtent = 64;
 const densityData = new Uint8Array(densityExtent * densityExtent * densityExtent);
 densityData.fill(96);
@@ -213,7 +205,6 @@ const densityAsset = {
   data: densityData,
 };
 const densityHandle = world.assets.create(densityAsset).unwrap();
-const resourceDensityHandle = resourceWorld.assets.create(densityAsset).unwrap();
 const ground = world.assets.create(Materials.standard({ baseColor: fogScene.materials.ground, roughness: 0.92 })).unwrap();
 const tick = world.assets.create(Materials.standard({ baseColor: fogScene.materials.tick, roughness: 0.88 })).unwrap();
 const gate = world.assets.create(Materials.standard({ baseColor: fogScene.materials.gate, roughness: 0.72 })).unwrap();
@@ -261,17 +252,6 @@ const primaryLight = world.spawn(
     },
   },
 ).unwrap();
-const resourceLight = resourceWorld.spawn(
-  { component: Transform, data: { pos: fogScene.lighting.position } },
-  {
-    component: PointLight,
-    data: {
-      color: fogScene.lighting.color,
-      intensity: fogScene.lighting.intensity,
-      range: fogScene.lighting.range,
-    },
-  },
-).unwrap();
 const cameraPosition = fogScene.camera.position;
 const cameraTarget = fogScene.camera.target;
 const camera = world.spawn(
@@ -297,7 +277,6 @@ const camera = world.spawn(
 let fogEntity;
 let revision = 0;
 let previousPhase;
-let fogOwnerWorld = world;
 let activeFogData;
 const volumeBounds = { min: [-18, -1, -72], max: [18, 12, 1] };
 const volumeParameters = {
@@ -310,10 +289,9 @@ const volumeParameters = {
   ] },
 };
 function volumeData(data) {
-  const ownerIsResource = fogOwnerWorld === resourceWorld;
   return {
-    light: ownerIsResource ? resourceLight : primaryLight,
-    density: ownerIsResource ? resourceDensityHandle : densityHandle,
+    light: primaryLight,
+    density: densityHandle,
     boundsMin: data.boundsMin,
     boundsMax: volumeBounds.max,
     extinction: data.extinction,
@@ -324,7 +302,8 @@ function volumeData(data) {
   };
 }
 function attachFog(data) {
-  fogEntity = fogOwnerWorld.spawn({
+  fogEntity = world
+    .spawn({
     component: VolumetricFog,
     data: volumeData(data),
   }).unwrap();
@@ -338,34 +317,17 @@ function updateFog(data) {
     attachFog(data);
     return;
   }
-  fogOwnerWorld.set(fogEntity, VolumetricFog, volumeData(data)).unwrap();
+  world.set(fogEntity, VolumetricFog, volumeData(data)).unwrap();
   revision += 1;
 }
 
 function detachFog() {
   if (fogEntity !== undefined) {
-    fogOwnerWorld.despawn(fogEntity).unwrap();
+    world.despawn(fogEntity).unwrap();
     fogEntity = undefined;
     activeFogData = undefined;
     revision += 1;
   }
-}
-
-function switchFogOwner(nextWorld) {
-  if (nextWorld === fogOwnerWorld) return false;
-  if (fogEntity !== undefined) {
-    fogOwnerWorld.despawn(fogEntity).unwrap();
-    fogEntity = undefined;
-  }
-  fogOwnerWorld = nextWorld;
-  if (activeFogData !== undefined) {
-    fogEntity = fogOwnerWorld.spawn({
-      component: VolumetricFog,
-      data: volumeData(activeFogData),
-    }).unwrap();
-  }
-  revision += 1;
-  return true;
 }
 
 function resizeTarget(nextWidth, nextHeight) {
@@ -377,10 +339,10 @@ function resizeTarget(nextWidth, nextHeight) {
 }
 
 function applyPhase(phase) {
-  if (phase === previousPhase) return { changedFrom: undefined, ownerChanged: false };
+  if (phase === previousPhase) return { changedFrom: undefined, environmentChanged: false };
   const oldPhase = previousPhase;
   previousPhase = phase;
-  let ownerChanged = false;
+  let environmentChanged = false;
   switch (phase) {
     case 'disabled':
       detachFog();
@@ -404,10 +366,13 @@ function applyPhase(phase) {
       world.set(camera, Transform, { pos: [3, 7.5, 14] }).unwrap();
       revision += 1;
       break;
-    case 'owner-switch':
-      ownerChanged = switchFogOwner(resourceWorld);
-      if (ownerChanged) resourceOwner = 1;
-      if (!ownerChanged) revision += 1;
+    case 'environment-replace':
+      {
+        const data = activeFogData ?? volumeParameters.height;
+        detachFog();
+        attachFog(data);
+        environmentChanged = true;
+}
       break;
     case 'resize':
       resizeTarget(256, 144);
@@ -419,7 +384,7 @@ function applyPhase(phase) {
     default:
       throw new Error('unknown Fog phase ' + phase);
   }
-  return { changedFrom: oldPhase, ownerChanged };
+  return { changedFrom: oldPhase, environmentChanged };
 }
 
 async function readbackCenter() {
@@ -607,11 +572,10 @@ const trace = await runFogLifecycle({
     return {
       cases: [caseResult],
       resource: {
-        owner: resourceOwner,
         revision,
         reactive: advanced.phaseState.changedFrom !== undefined,
         accumulation: advanced.phaseState.changedFrom === undefined,
-        ownerChanged: advanced.phaseState.ownerChanged,
+        environmentChanged: advanced.phaseState.environmentChanged,
         target: { width: sample.width, height: sample.height },
         ...(advanced.recovery === undefined ? {} : { recovery: advanced.recovery }),
       },
@@ -644,7 +608,7 @@ const evidence = {
   status: trace.verdict === 'pass' ? 'pass' : 'fail',
   frameIdentity: { first: 0, last: Math.max(0, trace.frames - 1), sequenceSha256: createHash('sha256').update(trace.phaseTrace.join('|')).digest('hex') },
   visualEvidence: (trace.visualEvidence ?? []).map((entry, index) => ({ id: `fog-${entry.phase ?? index}`, png: pairScreenshots.get(entry.phase)?.path ?? resolve(pairEvidenceDir, 'missing.png'), observed: JSON.stringify(entry.observed ?? []), verdict: entry.verdict ?? 'fail', confidence: entry.confidence ?? 'low' })),
-  falsify: ['uniform', 'height', 'owner-switch', 'recovery'].map((id) => ({ id, result: trace.cases.some((entry) => entry.caseId === id && entry.verdict === 'pass') ? 'pass' : 'fail' })),
+  falsify: ['uniform', 'height', 'environment-replace', 'recovery'].map((id) => ({ id, result: trace.cases.some((entry) => entry.caseId === id && entry.verdict === 'pass') ? 'pass' : 'fail' })),
   errors: errors.map((error) => error.code ?? String(error)),
   recoveryErrors: recoveryErrors.map((error) => error.code ?? String(error)),
   pairScreenshots: Array.from(pairScreenshots.values()),

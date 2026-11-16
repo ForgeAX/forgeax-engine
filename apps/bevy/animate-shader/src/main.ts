@@ -1,3 +1,5 @@
+import { Time } from '@forgeax/engine-ecs';
+import { defineSystem } from "@forgeax/engine-ecs";
 import { createApp } from '@forgeax/engine-app/browser';
 import { Update } from '@forgeax/engine-ecs';
 import { quat } from '@forgeax/engine-math';
@@ -50,16 +52,17 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     data: { direction: [0.5, -1, -0.5], color: [1, 1, 1], intensity: 1, castShadow: false },
   });
 
-  app.world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'animate-shader-time',
     queries: [],
     fn: (world) => {
-      const time = world.hasResource('Time')
-        ? world.getResource<{ elapsed: number }>('Time').elapsed
+      const time = world.hasResource(Time)
+        ? world.getResource(Time).elapsed
         : 0;
       assets.update(material, { values: { time } }).unwrap();
     },
   });
+app.world.addSystem(Update, systemToken1);
   app.onError((error) => console.error('[bevy-animate-shader] app error:', error.code, error.hint));
   const started = app.start();
   if (!started.ok) console.error('[bevy-animate-shader] app.start failed:', started.error);

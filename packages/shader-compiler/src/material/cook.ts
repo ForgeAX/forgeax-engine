@@ -28,11 +28,15 @@ import {
   type MaterialError,
   type MaterialParameterProjection,
   type MaterialTable,
+  materialPassLightMode,
   ok,
   resolveMaterialAsset,
+  SINGLE_LAYER_WATER_PASS_OUTPUTS,
   selectMaterialStaticContract,
   standardPhysicalTextureFields,
   validateMaterialOutputs,
+  waterDeformationInputLayout,
+  waterDeformationInputLayoutHash,
 } from '@forgeax/engine-types';
 import { compareMaterialBindings } from '../compare-param-schema.js';
 import { type CompileOptions, type CompileResult, compileShader } from '../compile.js';
@@ -50,14 +54,14 @@ import {
   lowerStandardPhysicalBindings,
   standardStaticSwitchDefines,
 } from './lower-standard-contract.js';
-import { validateMaterialProgramBindings } from './resource-contract.js';
+import { materialSystemInputs, validateMaterialProgramBindings } from './resource-contract.js';
 import { lowerSceneMaterialAddresses } from './scene-material-address.js';
 import type { MaterialSourceCatalog, MaterialSourceRecord } from './source-catalog.js';
 import { deriveSurfaceShadowPasses } from './surface-shadow';
 import { terrainProgramSource } from './terrain-program.js';
 import {
   DEFAULT_MATERIAL_VARIANT_CONTEXT,
-  lowerMaterialVariantContext,
+  lowerMaterialProgramVariantContext,
   type MaterialVariantContext,
 } from './variant-context.js';
 
@@ -137,12 +141,29 @@ function surfaceProgramAbi(
     model: declaration.model,
     module: declaration.module,
     inputAbi:
-      declaration.model === 'single-layer-medium'
-        ? 'SingleLayerMediumSurfaceInput'
-        : 'SurfaceInput',
+      declaration.model === 'single-layer-water'
+        ? 'SingleLayerWaterSurfaceInput'
+        : declaration.model === 'single-layer-medium'
+          ? 'SingleLayerMediumSurfaceInput'
+          : 'SurfaceInput',
     outputAbi:
-      declaration.model === 'single-layer-medium' ? 'SingleLayerMediumSurfaceData' : 'SurfaceData',
+      declaration.model === 'single-layer-water'
+        ? 'SingleLayerWaterSurfaceData'
+        : declaration.model === 'single-layer-medium'
+          ? 'SingleLayerMediumSurfaceData'
+          : 'SurfaceData',
     passes: MATERIAL_SURFACE_MODEL_PASSES[declaration.model],
+    ...(declaration.deformation === undefined
+      ? {}
+      : {
+          deformation: {
+            ...declaration.deformation,
+            inputLayout: waterDeformationInputLayout(),
+            inputLayoutHash: waterDeformationInputLayoutHash(),
+            outputAbi: 'WaterDeformationOutput' as const,
+            variants: ['color', 'depth', 'shadow', 'velocity'] as const,
+          },
+        }),
     ...(layout === undefined
       ? {}
       : {
@@ -907,7 +928,9 @@ export async function cookMaterialAsset(
       ...standardStaticSwitchDefines(resolvedAsset.staticSwitches, passes),
     },
     materialHasSceneIndex: materialDeclaresSceneIndex(passes ?? [], request.sources),
-    mediumSurface: resolved.value.asset.surface?.model === 'single-layer-medium',
+    mediumSurface:
+      resolved.value.asset.surface?.model === 'single-layer-medium' ||
+      resolved.value.asset.surface?.model === 'single-layer-water',
   };
   const cooked: MaterialCookedPass[] = [];
   for (const pass of unit.passes) {
@@ -926,8 +949,7 @@ function passVariantContext(
   request: MaterialCookRequest,
   pass: MaterialPass,
 ): MaterialVariantContext {
-  const tags = pass.renderState?.tags as Readonly<Record<string, unknown>> | undefined;
-  const lightMode = tags?.LightMode ?? pass.name;
+  const lightMode = materialPassLightMode(pass) ?? pass.name;
   return materialProgramContextForPass(
     request.context ?? DEFAULT_MATERIAL_VARIANT_CONTEXT,
     String(lightMode),
@@ -941,7 +963,9 @@ function classifyPassTemplate(
   sourceRecord: MaterialSourceRecord,
 ): MaterialPassCook {
   const standardTemplate = isStandardRootModule(pass.program.module);
-  const mediumSurfaceTemplate = pass.program.module === 'forgeax::single-layer-medium';
+  const mediumSurfaceTemplate =
+    pass.program.module === 'forgeax::single-layer-medium' ||
+    pass.program.module === 'forgeax::single-layer-water';
   const shadowTemplate = pass.program.module === DEFAULT_SHADOW_CASTER;
   const standardSurfaceTemplate =
     standardTemplate ||
@@ -995,6 +1019,46 @@ async function cookMaterialPass(
   compile: typeof compileShader,
 ): Promise<Result<MaterialCookedPass, MaterialCookError>> {
   const context = passVariantContext(unit.request, pass);
+  const validatePassSelection = () => {
+    if (
+      unit.asset.surface?.deformation !== undefined &&
+      context.geometry === 'skinned' &&
+      (pass.program.module === 'forgeax::single-layer-water' ||
+        pass.program.module === 'forgeax::single-layer-medium')
+    ) {
+      return err(
+        new ShaderError({
+          code: 'shader-compile-failed',
+          expected: 'rigid or instanced geometry for the selected Water deformation template',
+          message: `material ${unit.request.material} pass ${pass.name} selects a Water template without Skin inputs`,
+          hint: 'use the Standard Skin template with the shared deformation slot or author a Skin-aware vertex template',
+        }),
+      );
+    }
+    if (
+      (materialPassLightMode(pass) === 'PostProcess') !==
+        (pass.program.bindings === 'post-process') ||
+      (pass.program.bindings === 'post-process' &&
+        (unit.asset.surface !== undefined ||
+          pass.outputs?.length !== 1 ||
+          pass.outputs[0]?.format !== 'rgba16float'))
+    ) {
+      return err(
+        new ShaderError({
+          code: 'shader-compile-failed',
+          expected:
+            'an explicit PostProcess tag with the post-process binding contract and one current-output RGBA16float output',
+          message: `material ${unit.request.material} pass ${pass.name} has incompatible post-process declarations`,
+          hint: 'author the fullscreen material as an independent root and use a child for value/static overrides',
+        }),
+      );
+    }
+
+    return undefined;
+  };
+  const validatePassSelectionFailure = validatePassSelection();
+  if (validatePassSelectionFailure !== undefined) return validatePassSelectionFailure;
+
   const sourceRecord = unit.request.sources.get(pass.program.module);
   if (!sourceRecord.ok) return err(sourceRecord.error);
   const templateResources = templateResourceNames(sourceRecord.value.source);
@@ -1021,6 +1085,43 @@ async function cookMaterialPass(
     );
   }
   const compileDefines = passCompileDefines(cook, composed.value.surfaceModule);
+  const validateWaterTransitionSelection = () => {
+    if (
+      unit.asset.surface?.deformation?.module === 'forgeax_material::water_deformation_default' &&
+      compileDefines.WATER_TRANSITION_AVAILABLE === true
+    ) {
+      const required = ['waveVelocityMaskThresholdMPerSec'];
+      if (!compileDefines.WATER_USE_FIXED_VELOCITY && !compileDefines.WATER_USE_BAKED_SIMULATION)
+        required.push('maximumFlowVelocityMPerSec');
+      for (const parameter of required) {
+        const type = unit.derived.parameterTypes.get(parameter);
+        if (type === 'f32') continue;
+        const error = createMaterialError('material-derived-interface-mismatch', {
+          code: 'material-derived-interface-mismatch',
+          stage: 'cook',
+          material: unit.request.material,
+          pass: pass.name,
+          module: unit.asset.surface.deformation.module,
+          layoutIdentity: unit.derived.layoutIdentity,
+          parameter,
+          expected: { member: parameter, type: 'f32' },
+          actual: { member: parameter, type: type ?? 'missing' },
+          action: 'recook',
+        });
+        return err({
+          ...error,
+          expected: `${parameter}: f32 for the selected default Water transition deformation`,
+          hint: `declare ${parameter}: f32 in the root material contract and recook`,
+        });
+      }
+    }
+
+    return undefined;
+  };
+  const validateWaterTransitionSelectionFailure = validateWaterTransitionSelection();
+  if (validateWaterTransitionSelectionFailure !== undefined)
+    return validateWaterTransitionSelectionFailure;
+
   const sceneEntry = prepareSceneIndexEntry(
     cook,
     entry.value,
@@ -1031,7 +1132,7 @@ async function cookMaterialPass(
   if (!sceneEntry.ok) return sceneEntry;
   const compiled = await compile(entry.value.loweredSource, {
     id: `${pass.program.module}::${pass.name}`,
-    renderEntries: passRenderEntries(pass, pass.program.vertexEntry ?? 'vs_main', fragmentEntry),
+    renderEntries: passRenderEntries(cook, pass.program.vertexEntry ?? 'vs_main', fragmentEntry),
     imports: entry.value.compileImports,
     defines: compileDefines,
   });
@@ -1060,20 +1161,69 @@ async function cookMaterialPass(
     if (!sceneResult.ok) return sceneResult;
     sceneCompiled = sceneResult.value;
   }
-  const checked = checkPassInterface(
-    cook,
-    entry.value,
-    compiled.value,
-    sceneCompiled !== undefined,
-  );
-  if (!checked.ok) return checked;
-  const abi = publishPassAbi(cook, composed.value, entry.value, compiled.value, sceneCompiled);
-  if (!abi.ok) return abi;
-  const bindingFailure = validateMaterialProgramBindings(pass.program, compiled.value.bindings);
-  if (bindingFailure !== undefined) return err(bindingFailure);
-  return ok(
-    cookedPassRecord(cook, composed.value, entry.value, compiled.value, sceneCompiled, abi.value),
-  );
+  const publishCompiledPass = () => {
+    const checked = checkPassInterface(
+      cook,
+      entry.value,
+      compiled.value,
+      sceneCompiled !== undefined,
+    );
+    if (!checked.ok) return checked;
+    const abi = publishPassAbi(cook, composed.value, entry.value, compiled.value, sceneCompiled);
+    if (!abi.ok) return abi;
+    const systemInputs = materialSystemInputs(
+      unit.request.sources,
+      composed.value.sourceClosure,
+      compiled.value.bindings,
+    );
+    if (!systemInputs.ok) return systemInputs;
+    const bindingFailure = validateMaterialProgramBindings(
+      pass.program,
+      compiled.value.bindings,
+      systemInputs.value,
+    );
+    if (bindingFailure !== undefined) return err(bindingFailure);
+    const validatePostProcessEntry = () => {
+      if (pass.program.bindings === 'post-process') {
+        const vertex = compiled.value.reflection.entryPoints?.find(
+          (entry) => entry.stage === 'vertex' && entry.name === abi.value.directEntry,
+        );
+        const fragment = compiled.value.reflection.entryPoints?.find(
+          (entry) => entry.stage === 'fragment' && entry.name === fragmentEntry,
+        );
+        if (
+          abi.value.vertexInputs.length !== 0 ||
+          vertex === undefined ||
+          fragment === undefined ||
+          ![1, 2, 3].every((binding) =>
+            fragment.bindings.some((read) => read.group === 0 && read.binding === binding),
+          )
+        ) {
+          return err(
+            new ShaderError({
+              code: 'shader-compile-failed',
+              expected:
+                'a reflected fullscreen vertex entry and fragment reads of scene color, depth and pass inputs',
+              message: `material ${unit.request.material} pass ${pass.name} does not consume its fullscreen ABI`,
+              hint: 'remove vertex attributes and consume the declared post-process input resources, then re-cook',
+            }),
+          );
+        }
+      }
+
+      return undefined;
+    };
+    const validatePostProcessEntryFailure = validatePostProcessEntry();
+    if (validatePostProcessEntryFailure !== undefined) return validatePostProcessEntryFailure;
+
+    return ok(
+      cookedPassRecord(cook, composed.value, entry.value, compiled.value, sceneCompiled, {
+        ...abi.value,
+        ...(systemInputs.value === undefined ? {} : { systemInputs: systemInputs.value }),
+      }),
+    );
+  };
+  return publishCompiledPass();
 }
 
 function cookedPassRecord(
@@ -1104,6 +1254,7 @@ function cookedPassRecord(
         : { entryPoints: compiled.reflection.entryPoints }),
       ...(pass.program.bindings === undefined ? {} : { bindings: pass.program.bindings }),
       ...(pass.program.sceneDepth === undefined ? {} : { sceneDepth: pass.program.sceneDepth }),
+      ...(pass.program.postProcess === undefined ? {} : { postProcess: pass.program.postProcess }),
     },
     ...(composed.readsVertexColor === undefined
       ? {}
@@ -1139,13 +1290,17 @@ function prepareSceneIndexEntry(
 function surfaceCompositionSelection(
   cook: MaterialPassCook,
   dynamicInput: MaterialDynamicInputLayout | undefined,
-): Pick<SurfaceCompositionRequest, 'surfaceModule' | 'surfaceModel' | 'dynamicInput'> {
+): Pick<
+  SurfaceCompositionRequest,
+  'surfaceModule' | 'surfaceModel' | 'dynamicInput' | 'deformation'
+> {
   const surface = cook.unit.asset.surface;
   const selectedSurfaceModule = cook.pass.program.moduleSlots?.surface ?? surface?.module;
   return {
     ...(selectedSurfaceModule === undefined ? {} : { surfaceModule: selectedSurfaceModule }),
     ...(surface?.model === undefined ? {} : { surfaceModel: surface.model }),
     ...(dynamicInput === undefined ? {} : { dynamicInput }),
+    ...(surface?.deformation === undefined ? {} : { deformation: surface.deformation }),
   };
 }
 
@@ -1274,7 +1429,14 @@ function prepareDirectEntry(
       cook.unit.generatedModule,
       generatedModuleForEntry.value,
       loweredSource,
-      importsForEntry,
+      cook.unit.mediumSurface
+        ? Object.fromEntries(
+            Object.entries(importsForEntry).map(([module, source]) => [
+              module,
+              lowerMediumPhysicalBindings(source, cook.unit.schema),
+            ]),
+          )
+        : importsForEntry,
       usesInlineGeneratedModule,
     ),
   });
@@ -1317,14 +1479,50 @@ function sceneIndexParameterModule(
 
 /** Standard-family templates relocate their physical bindings unless a medium Surface owns them. */
 function lowerTemplateEntryBindings(cook: MaterialPassCook, source: string): string {
+  if (cook.unit.mediumSurface) return lowerMediumPhysicalBindings(source, cook.unit.schema);
   const module = cook.pass.program.module;
   const standardFamily =
     cook.standardTemplate ||
     module === 'forgeax_material::standard' ||
     module === 'forgeax_material::pbr-skin' ||
     module === DEFAULT_SHADOW_CASTER;
-  if (!standardFamily || cook.unit.mediumSurface) return source;
+  if (!standardFamily) return source;
   return lowerStandardPhysicalBindings(source, cook.unit.schema);
+}
+
+/** Relocate only renderer-owned resources; authored texture slots retain derive(schema). */
+function lowerMediumPhysicalBindings(source: string, schema: readonly ParamSchemaEntry[]): string {
+  const start = derive(schema).userRegionBindingEnd;
+  const names = [
+    'mediumIrradianceMap',
+    'mediumIrradianceSampler',
+    'mediumPrefilterMap',
+    'mediumPrefilterSampler',
+    'mediumBrdfLut',
+    'mediumSkylight',
+    'surfaceBackdropSampler',
+    'surfaceBackdropTexture',
+    'surfaceRawDepthSampler',
+    'surfaceRawDepthTexture',
+    'surfaceNearestLayerSampler',
+    'surfaceNearestLayerTexture',
+    'surfaceNearestDepthSampler',
+    'surfaceNearestDepthTexture',
+    'planarReflectionTexture',
+    'planarReflection',
+    'surfaceFoamSimulationSampler',
+    'surfaceFoamSimulationTexture',
+    'surfaceFoamHeightSampler',
+    'waterFluidFields',
+    'waterFluidDescriptors',
+  ];
+  return source.replace(
+    /(@group\(1\)\s*@binding\()\d+(\)\s+var(?:<[^>]+>)?\s+([A-Za-z_]\w*)\b)/g,
+    (declaration, prefix: string, suffix: string, name: string) => {
+      const index = names.indexOf(name);
+      return index < 0 ? declaration : `${prefix}${start + index}${suffix}`;
+    },
+  );
 }
 
 function entryImports(
@@ -1358,16 +1556,29 @@ function defaultFragmentEntry(context: MaterialVariantContext): string | undefin
 }
 
 function passRenderEntries(
-  pass: MaterialPass,
+  cook: MaterialPassCook,
   vertex: string,
   fragment: string | undefined,
 ): NonNullable<CompileOptions['renderEntries']> {
+  const { pass } = cook;
+  const waterOutputPass =
+    cook.unit.asset.surface?.model === 'single-layer-water'
+      ? fragment === 'fs_water_prepass'
+        ? 'depth'
+        : fragment === 'fs_water_velocity'
+          ? 'velocity'
+          : fragment === 'fs_water_shadow'
+            ? 'shadow'
+            : fragment === 'fs_water_color' || fragment === 'fs_main'
+              ? 'color'
+              : undefined
+      : undefined;
+  const outputs =
+    waterOutputPass === undefined ? pass.outputs : SINGLE_LAYER_WATER_PASS_OUTPUTS[waterOutputPass];
   return {
     vertex,
     ...(fragment === undefined ? {} : { fragment }),
-    ...(pass.outputs === undefined
-      ? {}
-      : { colorFormats: pass.outputs.map((output) => output.format) }),
+    ...(outputs === undefined ? {} : { colorFormats: outputs.map((output) => output.format) }),
   };
 }
 
@@ -1407,6 +1618,56 @@ function passCompileDefines(
   const { unit, context } = cook;
   const parameterNames = new Set(unit.schema.map((entry) => entry.name));
   const stockSurface = surfaceModule === 'forgeax_material::default_standard_surface';
+  const waterHeightMappingDefines = () => ({
+    WATER_BAKED_HEIGHT_DEPTH_AVAILABLE:
+      unit.asset.staticSwitches?.waterBakedSimulation === true &&
+      (unit.asset.staticSwitches?.waterFixedHeight !== true ||
+        unit.asset.staticSwitches?.waterFixedDepth !== true),
+    WATER_HEIGHT_MAPPING_AVAILABLE:
+      (unit.asset.staticSwitches?.waterVertexMapping ?? true) &&
+      ((unit.asset.staticSwitches?.waterInfo ?? true) ||
+        unit.asset.staticSwitches?.waterBakedSimulation === true ||
+        unit.asset.staticSwitches?.waterFixedHeight === true),
+  });
+  const waterGeometryDefines = () => ({
+    MATERIAL_WATER_DEFORMATION_AVAILABLE: unit.asset.surface?.deformation !== undefined,
+    WATER_DEFAULT_DEFORMATION_AVAILABLE:
+      unit.asset.surface?.deformation?.module === 'forgeax_material::water_deformation_default',
+    WATER_SHADOW_PASS: context.pass === 'shadow',
+    WATER_ENABLE_WAVES: unit.asset.staticSwitches?.waterWaves ?? true,
+    WATER_VERTEX_FLOW_AVAILABLE: parameterNames.has('maximumFlowVelocityMPerSec'),
+    WATER_TRANSITION_AVAILABLE:
+      !(unit.asset.staticSwitches?.waterWaves ?? true) &&
+      (unit.asset.staticSwitches?.waterTransitionLake === true ||
+        unit.asset.staticSwitches?.waterTransitionOcean === true),
+    WATER_USE_INFO: unit.asset.staticSwitches?.waterInfo ?? true,
+    WATER_USE_BAKED_SIMULATION: unit.asset.staticSwitches?.waterBakedSimulation ?? false,
+    WATER_SHALLOW_SIMULATION: unit.asset.staticSwitches?.waterShallowSimulation ?? false,
+    WATER_SHALLOW_ADDITIVE: unit.asset.staticSwitches?.waterShallowAdditive ?? false,
+    WATER_OCEAN_PATCH: unit.asset.staticSwitches?.waterOceanPatch ?? false,
+    WATER_VISUAL_NORMAL_DETAIL: unit.asset.staticSwitches?.waterVisualNormalDetail ?? false,
+    WATER_OCEAN_ADVECTION_THREE_PHASE:
+      unit.asset.staticSwitches?.waterOceanAdvectionThreePhase ?? false,
+    WATER_OCEAN_DISPLACEMENT: unit.asset.staticSwitches?.waterOceanDisplacement ?? false,
+    WATER_USE_FIXED_VELOCITY: unit.asset.staticSwitches?.waterFixedVelocity ?? false,
+    WATER_USE_FIXED_HEIGHT: unit.asset.staticSwitches?.waterFixedHeight ?? false,
+    WATER_USE_FIXED_DEPTH: unit.asset.staticSwitches?.waterFixedDepth ?? false,
+    ...waterHeightMappingDefines(),
+  });
+  const waterSurfaceDefines = () => ({
+    WATER_DYNAMIC_BOUNDS_CLIP: unit.asset.staticSwitches?.waterDynamicBoundsClip ?? false,
+    WATER_USE_FLOWMAP: unit.asset.staticSwitches?.waterFlowmap ?? true,
+    WATER_USE_NORMAL_TEXTURE: unit.asset.staticSwitches?.waterNormalTexture ?? true,
+    WATER_USE_FOAM: unit.asset.staticSwitches?.waterFoam ?? true,
+    WATER_USE_REFRACTION: unit.asset.staticSwitches?.waterRefraction ?? true,
+    WATER_USE_REFLECTIONS: unit.asset.staticSwitches?.waterReflections ?? true,
+    WATER_USE_SSR: unit.asset.staticSwitches?.waterSsr ?? true,
+    WATER_RIVER: unit.asset.staticSwitches?.waterRiver ?? false,
+    WATER_OCEAN_FOAM: unit.asset.staticSwitches?.waterOceanFoam ?? false,
+    WATER_FLUID_SIMULATION: unit.asset.staticSwitches?.waterFluidSimulation ?? false,
+    WATER_TRANSITION_LAKE: unit.asset.staticSwitches?.waterTransitionLake ?? false,
+    WATER_TRANSITION_OCEAN: unit.asset.staticSwitches?.waterTransitionOcean ?? false,
+  });
   return {
     ALPHA_HASH_DISABLED: !parameterNames.has('alphaHash'),
     ALPHA_CLIPPING_DISABLED: !parameterNames.has('alphaCutoff'),
@@ -1418,7 +1679,9 @@ function passCompileDefines(
       (parameterNames.has('alphaCutoff') || parameterNames.has('alphaHash')),
     ...stockSurfaceInputDefines(stockSurface, unit.schema, context),
     STANDARD_STOCK_SURFACE_AVAILABLE: stockSurface,
-    ...lowerMaterialVariantContext(context),
+    ...waterGeometryDefines(),
+    ...waterSurfaceDefines(),
+    ...lowerMaterialProgramVariantContext(context, cook.pass.program.bindings),
     ...unit.contractDefines,
     // The uniform fallback has the portable sampled-texture budget. Its
     // Standard layout drops the dedicated transmission resources, so the
@@ -1476,12 +1739,23 @@ function composeSceneSurfaceEntry(
   // unresolved in the scene entry.
   return ok({
     source: lowerSceneSurfaceSource(cook.unit, sceneComposed.value),
-    imports: sceneComposed.value.imports,
+    imports: cook.unit.mediumSurface
+      ? Object.fromEntries(
+          Object.entries(sceneComposed.value.imports).map(([module, source]) => [
+            module,
+            lowerMediumPhysicalBindings(source, schema),
+          ]),
+        )
+      : sceneComposed.value.imports,
   });
 }
 
 function lowerSceneSurfaceSource(unit: MaterialCookUnit, composed: SurfaceComposition): string {
-  if (unit.mediumSurface) return lowerSingleLayerMediumSceneMaterial(composed.source, unit.schema);
+  if (unit.mediumSurface)
+    return lowerMediumPhysicalBindings(
+      lowerSingleLayerMediumSceneMaterial(composed.source, unit.schema),
+      unit.schema,
+    );
   let source = lowerStandardPhysicalBindings(composed.source, unit.schema);
   if (composed.surfaceModule !== 'forgeax_material::default_standard_surface') {
     source = adaptCustomSurfaceForSceneIndex(source);
@@ -1504,7 +1778,7 @@ async function compileSceneIndexEntry(
     lowerSceneMaterialAddresses(sceneEntry.source, sceneRowStride),
     {
       id: `${cook.pass.program.module}::${cook.pass.name}::scene-index`,
-      renderEntries: passRenderEntries(cook.pass, 'vs_scene_index', fragmentEntry),
+      renderEntries: passRenderEntries(cook, 'vs_scene_index', fragmentEntry),
       imports: Object.fromEntries(
         Object.entries(sceneEntry.imports).map(([module, source]) => [
           module,
@@ -1663,7 +1937,8 @@ function provesStandardPositionBounds(
   return (
     composed.engineTemplateInputs &&
     sourceRecord.provenance === 'engine' &&
-    sourceRecord.slots.every((slot) => slot === 'surface') &&
+    cook.unit.asset.surface?.deformation === undefined &&
+    sourceRecord.slots.every((slot) => slot === 'surface' || slot === 'deformation') &&
     (context.geometry === 'mesh' || context.geometry === 'skinned') &&
     STANDARD_POSITION_ENTRIES[sourceRecord.moduleId]?.includes(directEntry) === true
   );

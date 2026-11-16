@@ -21,6 +21,12 @@ owns the canonical WGSL entry and import closure; `shared-engine-inputs.ts`
 owns packaged dev/prod manifest projection. Both paths feed the same plugin
 manifest owner and the same `SHADER_MANIFEST_PATH` constant.
 
+Shared inventory paths belong to their producer workspace. Hosts serving a
+project outside that workspace pass `workspaceRoot` to `forgeaxShader`; Vite's
+project root then cannot replace the producer root during config resolution.
+DevKit supplies its existing Engine workspace authority. Missing inventory and
+invalid publications still fail admission.
+
 The ray query, transport, raster-receiver and diffuse-composite entries use this same loader in
 both standalone and Vite builds. Their traversal module and imports live in
 `packages/shader/src`; test-side string insertion is not a publication path.
@@ -32,6 +38,11 @@ Custom materials use the same source/import/cook path and do not trigger another
 engine-wide compile when that projection is available. Missing/stale profiles and
 explicit source validation retain the complete source producer. Result arrays
 are independent of the base manifest.
+
+Complete cold-source manifest tests share a 900-second case budget, including
+the direct-DFG fit/LUT assertion. They retain independent source production,
+every admitted variant and native validation. This is a test execution budget,
+not a performance SLA or permission to extend the enclosing CI job.
 
 Source compilation keeps the complete variant roster, but projects each variant's
 source and import catalog only when a compiler slot starts that job. The worker
@@ -112,6 +123,12 @@ single-worker build: one compilation completes before the next starts. The
 default pool reserves one available CPU. Both default and explicitly requested
 pools are capped at 16 compiler workers, since each owns a Naga/WASM instance.
 Both the standalone builder and Vite retain the complete ordered variant roster.
+The repository source producer sizes its V8 heap from runner memory, retaining
+the existing 4 GiB minimum and six GiB reserve, using at most half the available
+memory above that minimum, and capping the heap at 24 GiB. Packaged release-profile
+compilation defaults to two workers and caps explicit requests at four, within
+the same CPU and memory limits. Both complete profiles still require verified
+compiler, source and profile identity before reuse.
 Each batch in the single-worker path owns the same bounded program compiler as
 each Worker. Reuse ends at the batch boundary; changed entry and reflection
 options still pass their own validation.

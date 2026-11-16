@@ -14,6 +14,8 @@ export type MaterialCompileJob = {
   readonly defines: Record<string, boolean> | undefined;
   readonly file: EngineShaderFile;
   readonly options: CompileOptions;
+  /** Project variant inputs only when this job receives a compiler slot. */
+  readonly prepare?: () => Pick<MaterialCompileJob, 'file' | 'options'>;
 };
 
 export type MaterialCompileResult = Awaited<ReturnType<typeof compileShader>>;
@@ -152,14 +154,17 @@ export async function compileMaterialSources(
     const compileShader = createShaderProgramCompiler();
     const results: MaterialCompileResult[] = [];
     for (const job of jobs) {
+      const input = job.prepare?.() ?? job;
       const prepared = lowerEngineSurfaceEntry(
-        job.file,
-        job.options.imports ?? {},
+        input.file,
+        input.options.imports ?? {},
         fallbackImports,
-        job.options.defines,
+        input.options.defines,
       );
       results.push(
-        retain(await compileShader(prepared.source, { ...job.options, imports: prepared.imports })),
+        retain(
+          await compileShader(prepared.source, { ...input.options, imports: prepared.imports }),
+        ),
       );
     }
     return results;
@@ -182,8 +187,10 @@ export async function compileMaterialSources(
   let nextJob = 0;
   const tasks = workers.map(async (worker) => {
     for (let jobIndex = nextJob++; jobIndex < jobs.length; jobIndex = nextJob++) {
+      const job = jobs[jobIndex] as MaterialCompileJob;
+      const input = job.prepare?.() ?? job;
       results[jobIndex] = retain(
-        await runShaderCompileWorkerJob(worker, jobIndex, jobs[jobIndex] as MaterialCompileJob),
+        await runShaderCompileWorkerJob(worker, jobIndex, { ...job, ...input }),
       );
     }
   });

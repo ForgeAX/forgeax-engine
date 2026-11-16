@@ -1,9 +1,12 @@
+import { TerrainWalkerResource } from './ecs-resources.ts';
+import { PhysicsWorldResource } from '@forgeax/engine-physics';
+
 /// <reference types="vite/client" />
 import { createCatalogHotSubscription, createCatalogSource } from '@forgeax/engine-assets-runtime';
 import { runtimeBinding } from '@forgeax/apps-shared/asset-runtime-config';
 import { createApp } from '@forgeax/engine-app/browser';
 import { vec3 } from '@forgeax/engine-math';
-import { type PhysicsWorld } from '@forgeax/engine-physics';
+
 import physics3d from '@forgeax/engine-physics-rapier3d';
 import { captureCanvasPixels } from '@forgeax/apps-shared/canvas-capture';
 import { replayCapturedFrameInBrowser } from '@forgeax/apps-shared/rhi-debug-browser-replay';
@@ -20,6 +23,8 @@ import { installTerrainWalker } from './walker.ts';
 import { terrainReloadPolicy } from './reload-policy.ts';
 import { startTerrainWorkerProbe } from './worker-probe.ts';
 import { installTerrainHmrProbe } from './hmr-probe.ts';
+
+
 function value<T>(
   result:
     | { readonly ok: true; readonly value: T }
@@ -86,7 +91,7 @@ if (app.assets === undefined) throw new Error('This scene requires the App asset
       rejections.push({
         error,
         gate: window.__terrainGate?.(),
-        walker: { ...(app.world.getResource('TerrainWalker') as object) },
+        walker: { ...(app.world.getResource(TerrainWalkerResource) as object) },
         position: Array.from(app.world.get(subjects.walker, Transform).unwrap().pos),
       });
       return;
@@ -144,8 +149,7 @@ if (app.assets === undefined) throw new Error('This scene requires the App asset
     while (completed < 60 && performance.now() < deadline) {
       app.world.update(1 / 60).unwrap();
       receipt = value(
-        app.renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
-      );
+        app.renderer.draw({ source: lease }));
       value(await receipt.completed);
       if (receipt.presentation === 'ready') completed++;
       else await new Promise((resolve) => setTimeout(resolve, 0));
@@ -153,13 +157,12 @@ if (app.assets === undefined) throw new Error('This scene requires the App asset
     if (completed !== 60)
       throw new Error('terrain did not complete 60 ready frames within 60 seconds');
     const query = await querySubmittedTerrainHeight(receipt!, {
-      worldId: 0,
       entity: subjects.terrain,
       x: 62,
       z: 62,
     });
     const hit = app.world
-      .getResource<PhysicsWorld>('PhysicsWorld')
+      .getResource(PhysicsWorldResource)
       .raycast(vec3.create(62, 50, 62), vec3.create(0, -1, 0), 100);
     if (!query.ok || hit === undefined)
       throw new Error('terrain render and collision queries must be available');
@@ -212,12 +215,10 @@ if (app.assets === undefined) throw new Error('This scene requires the App asset
     app.stop().unwrap();
     app.world.update(1 / 60).unwrap();
     const receipt = value(
-      app.renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
-    );
+      app.renderer.draw({ source: lease }));
     value(await receipt.completed);
     window.__terrainReceipt = receipt;
     window.__terrainQuery = await querySubmittedTerrainHeight(receipt, {
-      worldId: 0,
       entity: subjects.terrain,
       x: 62,
       z: 62,

@@ -193,9 +193,11 @@ An injected import transport can request a declared unpublished output. Runtime
 writes do not invoke Import, Cook, DDC or a filesystem save.
 
 A source read verifies the complete Pack tuple, artifact lengths and SHA-256,
-then invokes installed domain decoders. New dependencies and content become
-visible together. A failed read, stale publication or decoder failure cannot
-replace the previously accepted runtime closure.
+then invokes installed domain decoders. The runtime graph follows the selected
+output's declared references. Publication evidence records versions and digests
+for the complete package. New dependencies and content become visible together.
+A failed read, stale publication or decoder failure cannot replace the previously
+accepted runtime closure.
 
 ## Domain preparation
 
@@ -583,3 +585,13 @@ submitting, and its owner finishes or discards the same transaction.
 Catalog revision windows use Types’ `checkCatalogRevisionContinuity` for the same
 root membership, monotonicity and single-step rules in Pack production and Runtime
 replica admission. Shape validation and replica row/scope checks remain separate.
+
+## Runtime GPU texture assets
+
+`GpuTextureAsset` has the independent `gpu-texture` kind and references a named
+`texture-generator` output. Its decoder derives shape, format, color space and mip
+policy from that generator, retaining the dependency through normal preparation.
+Generator edits adopt all loaded output descriptors atomically. Neither pixels nor
+RHI objects enter Registry content. `TextureAsset`, the `texture` kind and existing
+CPU image consumers retain their byte-backed contract. Renderer owns generation,
+mips, sampling, device recovery and the accepted GPU allocation lifetime.

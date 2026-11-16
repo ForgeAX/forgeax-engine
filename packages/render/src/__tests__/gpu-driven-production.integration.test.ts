@@ -56,11 +56,7 @@ import { MaterialResource } from '../material-resource';
 import { Materials } from '../materials';
 import { createRenderPublisher } from '../publication/publisher';
 import { encodeRenderPublication, renderPublicationTransfers } from '../publication/record';
-import {
-  makeZeroCameraFallbackSnapshot,
-  type RenderFrameState,
-  worldEntityKey,
-} from '../record/frame-snapshot';
+import { makeZeroCameraFallbackSnapshot, type RenderFrameState } from '../record/frame-snapshot';
 import * as gpuDrawReceipts from '../record/gpu-draw-receipts';
 import * as mainPass from '../record/main-pass';
 import type { PipelineState, RenderSystemInternals } from '../record/render-context';
@@ -73,6 +69,7 @@ import { ReadonlyDynamicInputPage } from '../surface/dynamic-input';
 import { createTemporalFrameTransaction, TemporalViewHistory } from '../temporal/frame';
 import type { ViewLights } from '../world/render-lights';
 import { publishRenderSubmission, renderWorldFor } from '../world/render-world';
+import { drawWorld } from './draw-world';
 import { executeCompiledFrameGraph } from './frame-recording-driver';
 import {
   admitGpuFixture,
@@ -83,7 +80,11 @@ import {
   updateSnapshot,
 } from './gpu-driven-production-fixture';
 import { compileAndAdoptViewGraph } from './graph-compile.fixture';
-import { renderLifecycleManifestUrl, standardPbrFixtureVariants } from './shader-manifest-fixture';
+import {
+  renderLifecycleManifestUrl,
+  standardPbrFixtureVariants,
+  waterInfoShaderFixture,
+} from './shader-manifest-fixture';
 
 const STANDARD_PBR_RECEIPT = createStandardPbrArtifactReceipt();
 
@@ -97,20 +98,13 @@ function acceptFrame(internals: object): void {
   });
 }
 
-function readyAssemblyDraw(
-  renderer: Awaited<ReturnType<typeof constructRenderer>>,
-  worlds: readonly World[],
-) {
-  const leases = worlds.map((world) => {
-    const attached = renderer.attach(world);
-    expect(attached.ok).toBe(true);
-    if (!attached.ok) throw attached.error;
-    return attached.value;
-  });
-  const lease = leases[0];
-  if (lease === undefined) throw new Error('A scene needs its camera World');
+function readyAssemblyDraw(renderer: Awaited<ReturnType<typeof constructRenderer>>, world: World) {
+  const attached = renderer.attach(world);
+  expect(attached.ok).toBe(true);
+  if (!attached.ok) throw attached.error;
+  const source = attached.value;
   const facade = exposeRenderer(renderer);
-  return () => drawReadyFrame(facade, { leases, camera: { lease }, environment: { lease } });
+  return () => drawReadyFrame(facade, { source });
 }
 
 describe('GPU-driven scene-index mesh address selection', () => {
@@ -275,6 +269,7 @@ function manifestDataUrl(
         { hash: 'pbr00000', wgsl: pbrWgsl, glsl: '', bindings: '' },
         { hash: 'unlit000', wgsl: unlitWgsl, glsl: '', bindings: '' },
         { hash: 'tonemap0', wgsl: tonemapWgsl, glsl: '', bindings: '' },
+        ...waterInfoShaderFixture.entries,
       ],
       materialShaders: [
         materialShader(
@@ -288,6 +283,7 @@ function manifestDataUrl(
           ],
         ),
         materialShader('forgeax::default-unlit', DEFAULT_UNLIT_PARAM_SCHEMA, unlitWgsl),
+        ...waterInfoShaderFixture.materialShaders,
       ],
     }),
   )}`;
@@ -380,7 +376,7 @@ describe('GPU-driven production projection', () => {
         )
         .unwrap();
       world.update(1 / 60).unwrap();
-      const input = { leases: [lease], camera: { lease }, environment: { lease } };
+      const input = { source: lease };
       if (path === 'hit') {
         const drawn = renderer.draw(input);
         if (!drawn.ok) throw drawn.error;
@@ -546,7 +542,7 @@ describe('GPU-driven production projection', () => {
         )
         .unwrap();
       world.update(1 / 60).unwrap();
-      const input = { leases: [lease], camera: { lease }, environment: { lease } };
+      const input = { source: lease };
       const frame = async () => {
         executed.length = 0;
         const drawn = renderer.draw(input);
@@ -1059,8 +1055,7 @@ describe('GPU-driven production projection', () => {
             [1, lodGpuMesh],
           ]),
           viewBindGroupLayout: viewLayout,
-
-          activeEntityKeys: new Set([worldEntityKey(0, 1)]),
+          activeEntityKeys: new Set([1]),
           activeEntityRevision: 1,
         }),
       )
@@ -1106,8 +1101,7 @@ describe('GPU-driven production projection', () => {
             [1, lodGpuMesh],
           ]),
           viewBindGroupLayout: viewLayout,
-
-          activeEntityKeys: new Set([worldEntityKey(0, 1)]),
+          activeEntityKeys: new Set([1]),
           activeEntityRevision: 1,
         }),
       )
@@ -1161,8 +1155,7 @@ describe('GPU-driven production projection', () => {
             [1, lodGpuMesh],
           ]),
           viewBindGroupLayout: viewLayout,
-
-          activeEntityKeys: new Set([worldEntityKey(0, 1)]),
+          activeEntityKeys: new Set([1]),
           activeEntityRevision: 3,
         }),
       )
@@ -1240,7 +1233,7 @@ describe('GPU-driven production projection', () => {
       .prepare(
         admitGpuFixture({
           ...input,
-          activeEntityKeys: new Set([worldEntityKey(0, 1)]),
+          activeEntityKeys: new Set([1]),
           activeEntityRevision: 2,
         }),
       )
@@ -1699,7 +1692,7 @@ describe('GPU-driven production projection', () => {
             plan: topology.query(topology.sourcePlan(), undefined),
             slots: projection.slotsSnapshot(),
             slotAt: projection.slotAt,
-            worldIdentities: ['world-a'],
+            sourceIdentity: 'world-a',
           },
           camera: makeZeroCameraFallbackSnapshot(),
           meshBySlot: new Map([[0, surfaceMesh]]),
@@ -1781,7 +1774,7 @@ describe('GPU-driven production projection', () => {
             plan: topology.query(topology.sourcePlan(), undefined),
             slots: projection.slotsSnapshot(),
             slotAt: projection.slotAt,
-            worldIdentities: ['world-a'],
+            sourceIdentity: 'world-a',
           },
           camera: makeZeroCameraFallbackSnapshot(),
           meshBySlot: new Map([[0, surfaceMesh]]),
@@ -1820,7 +1813,7 @@ describe('GPU-driven production projection', () => {
             plan: topology.query(topology.sourcePlan(), undefined),
             slots: projection.slotsSnapshot(),
             slotAt: projection.slotAt,
-            worldIdentities: ['world-a'],
+            sourceIdentity: 'world-a',
           },
           camera: makeZeroCameraFallbackSnapshot(),
           meshBySlot: new Map([[0, surfaceMesh]]),
@@ -1857,7 +1850,7 @@ describe('GPU-driven production projection', () => {
           plan: topology.query(topology.sourcePlan(), undefined),
           slots: projection.slotsSnapshot(),
           slotAt: projection.slotAt,
-          worldIdentities: ['world-a'],
+          sourceIdentity: 'world-a',
         },
         camera: makeZeroCameraFallbackSnapshot(),
         meshBySlot: new Map([[0, surfaceMesh]]),
@@ -1884,7 +1877,7 @@ describe('GPU-driven production projection', () => {
           plan: topology.query(topology.sourcePlan(), undefined),
           slots: projection.slotsSnapshot(),
           slotAt: projection.slotAt,
-          worldIdentities: ['world-a'],
+          sourceIdentity: 'world-a',
         },
         camera: makeZeroCameraFallbackSnapshot(),
         meshBySlot: new Map([[0, surfaceMesh]]),
@@ -1906,7 +1899,7 @@ describe('GPU-driven production projection', () => {
     availability.scene.dispose();
   });
 
-  it('keeps GPU batches World-homogeneous for same-submit counter attribution', async () => {
+  it('merges compatible rows from the single source for same-submit counter attribution', async () => {
     const adapter = (await rhi.requestAdapter()).unwrap();
     const device = (await adapter.requestDevice()).unwrap() as RhiNullDevice;
     const shader = (await rhi.createShaderModule(device, { code: 'synthetic' })).unwrap();
@@ -1918,7 +1911,7 @@ describe('GPU-driven production projection', () => {
     const pbrInputs = standardPbrInputs(device, shader, viewLayout);
     const projection = new RenderScene();
     const first = preparedPbrFixture(snapshot(1, 3));
-    const second = { ...preparedPbrFixture(snapshot(2, 3)), worldId: 1 };
+    const second = { ...preparedPbrFixture(snapshot(2, 3)) };
     const delta = projection.apply([updateSnapshot(first), updateSnapshot(second)]);
     const availability = GpuScene.create(device, 2).unwrap();
     expect(availability.status).toBe('available');
@@ -1949,7 +1942,11 @@ describe('GPU-driven production projection', () => {
       )
       .unwrap();
     expect(prepared).toBeDefined();
-    expect(production.inspect()).toMatchObject({ batchCount: 2, indirectDrawCount: 2 });
+    expect(production.inspect()).toMatchObject({
+      batchCount: 1,
+      indirectDrawCount: 1,
+    });
+    expect(topology.query(topology.sourcePlan(), undefined).candidateCount).toBe(2);
     production.dispose();
     availability.scene.dispose();
   });
@@ -2517,7 +2514,7 @@ describe('GPU-driven production projection', () => {
     const firstDraw = first.gpuDrivenDraws?.[0];
     expect(firstDraw).toBeDefined();
     if (firstDraw === undefined) return;
-    const second = { ...preparedPbrFixture(snapshot(2, 4)), worldId: 1 };
+    const second = { ...preparedPbrFixture(snapshot(2, 4)) };
     const secondDraw = second.gpuDrivenDraws?.[0];
     expect(secondDraw).toBeDefined();
     if (secondDraw === undefined) return;
@@ -2787,8 +2784,7 @@ describe('GPU-driven production projection', () => {
           camera: movedCamera,
           meshBySlot: meshes,
           viewBindGroupLayout: viewLayout,
-
-          activeEntityKeys: new Set([worldEntityKey(0, 1)]),
+          activeEntityKeys: new Set([1]),
           activeEntityRevision: 1,
         }),
       )
@@ -2810,7 +2806,7 @@ describe('GPU-driven production projection', () => {
           meshBySlot: meshes,
           viewBindGroupLayout: viewLayout,
 
-          activeEntityKeys: new Set([worldEntityKey(1, 2)]),
+          activeEntityKeys: new Set([2]),
           activeEntityRevision: 2,
         }),
       )
@@ -2942,7 +2938,7 @@ describe('GPU-driven production projection', () => {
       const assets = renderer.assetRegistry;
       const world = new World({ assets });
       const cube = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
-      const draw = readyAssemblyDraw(renderer, [world]);
+      const draw = readyAssemblyDraw(renderer, world);
       world
         .spawn(
           { component: Transform, data: { pos: [0, 0, 5] } },
@@ -3013,11 +3009,12 @@ describe('GPU-driven production projection', () => {
     );
     const pipelines = vi.spyOn(renderer.device, 'createRenderPipeline');
     try {
-      expect((await renderer.initialization).ok).toBe(true);
+      const initialized = await renderer.initialization;
+      expect(initialized, JSON.stringify(initialized)).toMatchObject({ ok: true });
       const assets = renderer.assetRegistry;
       const world = new World({ assets });
       const cube = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
-      const draw = readyAssemblyDraw(renderer, [world]);
+      const draw = readyAssemblyDraw(renderer, world);
       world
         .spawn(
           { component: Transform, data: { pos: [0, 0, 5] } },
@@ -3105,7 +3102,7 @@ describe('GPU-driven production projection', () => {
     const assets = renderer.assetRegistry;
     const world = new World({ assets });
     const cube = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
-    const draw = readyAssemblyDraw(renderer, [world]);
+    const draw = readyAssemblyDraw(renderer, world);
     world
       .spawn(
         { component: Transform, data: { pos: [0, 0, 5] } },
@@ -3164,7 +3161,7 @@ describe('GPU-driven production projection', () => {
     await renderer.dispose();
   });
 
-  it('keeps a stable multi-World composition resident and patches one World transform', async () => {
+  it('keeps a stable source composition resident and patches one transform', async () => {
     const canvas = {
       width: 1,
       height: 1,
@@ -3178,12 +3175,11 @@ describe('GPU-driven production projection', () => {
       { shaderManifestUrl: manifestDataUrl() },
     );
     expect((await renderer.initialization).ok).toBe(true);
-    const cameraWorld = new World({ assets: new AssetRegistry() });
     const assets = new AssetRegistry();
     const sceneWorld = new World({ assets });
     const cube = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
-    const draw = readyAssemblyDraw(renderer, [cameraWorld, sceneWorld]);
-    cameraWorld
+    const draw = readyAssemblyDraw(renderer, sceneWorld);
+    sceneWorld
       .spawn(
         { component: Transform, data: { pos: [0, 0, 5] } },
         { component: Camera, data: { fov: Math.PI / 4, aspect: 1, near: 0.1, far: 100 } },
@@ -3198,7 +3194,6 @@ describe('GPU-driven production projection', () => {
       .unwrap();
 
     for (let frame = 0; frame < 4; frame += 1) {
-      cameraWorld.update(1 / 60).unwrap();
       sceneWorld.update(1 / 60).unwrap();
       await draw();
     }
@@ -3211,7 +3206,6 @@ describe('GPU-driven production projection', () => {
     });
 
     sceneWorld.set(rendered, Transform, { pos: [1, 0, 0] }).unwrap();
-    cameraWorld.update(1 / 60).unwrap();
     sceneWorld.update(1 / 60).unwrap();
     await draw();
     expect(renderer.renderScene).toMatchObject({
@@ -3263,7 +3257,7 @@ describe('GPU-driven production projection', () => {
     const projectVisibility = vi.spyOn(PersistentRenderScene.prototype, 'projectVisibility');
     try {
       world.update(1 / 60).unwrap();
-      expect(renderer.draw([world], { cameraOwner: 0, resourceOwner: 0 }).ok).toBe(true);
+      expect(drawWorld(renderer, world).ok).toBe(true);
       const warmProjectCalls = projectVisibility.mock.calls.length;
       const before = renderer.inspect().renderScene;
 
@@ -3271,7 +3265,7 @@ describe('GPU-driven production projection', () => {
       world.set(lamp, PointLight, { intensity: 3, range: 8 }).unwrap();
       propagateTransforms(world).unwrap();
       world.update(1 / 60).unwrap();
-      expect(renderer.draw([world], { cameraOwner: 0, resourceOwner: 0 }).ok).toBe(true);
+      expect(drawWorld(renderer, world).ok).toBe(true);
 
       expect(projectVisibility.mock.calls.length).toBeGreaterThan(warmProjectCalls);
       const after = renderer.inspect().renderScene;
@@ -3356,7 +3350,7 @@ describe('GPU-driven early GBuffer ordering diagnostic command contract', () => 
           .unwrap();
       for (let frame = 0; frame < 4; frame++) {
         world.update(1 / 60).unwrap();
-        const result = renderer.draw([world], { cameraOwner: 0, resourceOwner: 0 });
+        const result = drawWorld(renderer, world);
         if (!result.ok) throw result.error;
         await result.value?.completed;
       }

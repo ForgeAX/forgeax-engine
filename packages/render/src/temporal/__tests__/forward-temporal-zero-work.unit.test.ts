@@ -38,6 +38,8 @@ it.each([
         depthLoadOp: 'clear',
         depthStoreOp: 'store',
         depthClearValue: 0,
+        stencilLoadOp: 'clear',
+        stencilStoreOp: 'store',
       },
       encode: () => undefined,
     })

@@ -176,9 +176,9 @@ function observeNested(world: World, extraction: Extraction<unknown>): void {
  * - routed errors: an extraction that reported a failure reports it again.
  */
 export class EnvironmentGate<T, M extends object = object> {
-  private readonly extractions = new WeakMap<World, Extraction<T>>();
+  private extraction: { readonly world: World; readonly entry: Extraction<T> } | undefined;
   private merged:
-    | { readonly parts: readonly T[]; readonly key: string; readonly value: M }
+    | { readonly part: T | undefined; readonly key: string; readonly value: M }
     | undefined;
   /** Set by the owner before a frame: any asset content changed since the last frame. */
   assetsChanged = true;
@@ -191,7 +191,7 @@ export class EnvironmentGate<T, M extends object = object> {
     key: string,
     extract: (routedError: () => void) => { readonly value: T; readonly timeDependent: boolean },
   ): T {
-    const previous = this.extractions.get(world);
+    const previous = this.extraction?.world === world ? this.extraction.entry : undefined;
     if (previous !== undefined && this.current(world, key, previous)) {
       observeNested(world, previous);
       return previous.value;
@@ -244,38 +244,22 @@ export class EnvironmentGate<T, M extends object = object> {
       globals,
       inputs,
     };
-    this.extractions.set(world, extraction);
+    this.extraction = { world, entry: extraction };
     observeNested(world, extraction);
     return result.value;
   }
 
-  /**
-   * The frame entries merged from `worlds`' extractions; rebuilt only when one
-   * World's extraction changed, the merge key changed, or the last merge
-   * routed an error. A rebuilt entry equal to its predecessor keeps the
-   * predecessor's identity, so a camera edit leaves the lights entry as it was.
-   */
-  merge(worlds: readonly World[], key: string, build: (routedError: () => void) => M): M {
+  /** Retain finalized light entries while the accepted environment extraction stays current. */
+  finalize(world: World, key: string, build: (routedError: () => void) => M): M {
+    const part = this.extraction?.world === world ? this.extraction.entry.value : undefined;
     const merged = this.merged;
-    let matched = merged !== undefined && merged.key === key;
-    let count = 0;
-    for (const world of worlds) {
-      const extraction = this.extractions.get(world);
-      if (extraction === undefined) continue;
-      if (merged?.parts[count++] !== extraction.value) matched = false;
-    }
-    if (matched && count === merged?.parts.length) return merged.value;
-    const parts: T[] = [];
-    for (const world of worlds) {
-      const extraction = this.extractions.get(world);
-      if (extraction !== undefined) parts.push(extraction.value);
-    }
+    if (merged !== undefined && merged.key === key && merged.part === part) return merged.value;
     let routed = false;
     const built = build(() => {
       routed = true;
     });
     const value = merged === undefined ? built : retainEqualEntries(merged.value, built);
-    this.merged = routed ? undefined : { parts, key, value };
+    this.merged = routed ? undefined : { part, key, value };
     return value;
   }
 

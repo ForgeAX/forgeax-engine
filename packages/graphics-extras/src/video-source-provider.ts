@@ -1,7 +1,8 @@
 import type { EntityHandle } from '@forgeax/engine-ecs';
+import { defineResource } from '@forgeax/engine-ecs';
 import type { AssetHandle } from '@forgeax/engine-types';
 
-export const VIDEO_SOURCE_PROVIDER_KEY = 'VideoSourceProvider' as const;
+export const VIDEO_SOURCE_PROVIDER_KEY = defineResource<VideoSourceProvider>('VideoSourceProvider');
 
 /** Host owns decoding and lifetime. Renderer samples the current source without closing it. */
 export interface VideoSourceProvider {

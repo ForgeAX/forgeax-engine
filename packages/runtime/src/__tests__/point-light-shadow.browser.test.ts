@@ -217,7 +217,7 @@ describe('M0 cube_array comparison sampler (browser)', () => {
 const browserReady = typeof navigator !== 'undefined' && navigator.gpu !== undefined;
 const REAL_CANVAS_SIZE = 96;
 
-function spawnPointShadowScene(world: World, withShadow: boolean): void {
+function spawnPointShadowScene(world: World, withShadow: boolean) {
   const material = testAssets(world)
     .create(
       Materials.standard({
@@ -270,7 +270,7 @@ function spawnPointShadowScene(world: World, withShadow: boolean): void {
     })
     .unwrap();
   const point = [1.8, 2.6, 2.2] as const;
-  world
+  const pointLight = world
     .spawn(
       { component: Transform, data: { pos: point } },
       { component: PointLight, data: { color: [1, 0.72, 0.4], intensity: 22, range: 12 } },
@@ -284,6 +284,7 @@ function spawnPointShadowScene(world: World, withShadow: boolean): void {
   // fixture. Publish world-space matrices before extract so the pixel proof
   // exercises the actual caster/receiver scene instead of the clear colour.
   propagateTransforms(world).unwrap();
+  return pointLight;
 }
 
 async function waitForPresentedPixels(canvas: HTMLCanvasElement): Promise<Uint8Array> {
@@ -365,18 +366,14 @@ it.skipIf(!browserReady)(
         if (event.kind === 'error') errors.push(event.error.code);
       });
 
-      const shadowWorld = new World();
-      spawnPointShadowScene(shadowWorld, true);
-      const shadowAttachment = renderer.attach(shadowWorld);
+      const world = new World();
+      const pointLight = spawnPointShadowScene(world, true);
+      const shadowAttachment = renderer.attach(world);
       expect(shadowAttachment.ok).toBe(true);
       if (!shadowAttachment.ok) throw shadowAttachment.error;
       for (let frame = 0; frame < 6; frame += 1) {
-        shadowWorld.update(1 / 60).unwrap();
-        await drawReadyFrame(renderer, {
-          leases: [shadowAttachment.value],
-          camera: { lease: shadowAttachment.value },
-          environment: { lease: shadowAttachment.value },
-        });
+        world.update(1 / 60).unwrap();
+        await drawReadyFrame(renderer, { source: shadowAttachment.value });
       }
       const shadowPixels = await waitForPresentedPixels(canvas);
       const shadowInspection = renderer.inspect();
@@ -387,18 +384,10 @@ it.skipIf(!browserReady)(
         shadowInspection.perFramePassNames.filter((name) => /^point-shadow-\d+-\d+$/.test(name)),
       ).toHaveLength(6);
 
-      const noShadowWorld = new World();
-      spawnPointShadowScene(noShadowWorld, false);
-      const noShadowAttachment = renderer.attach(noShadowWorld);
-      expect(noShadowAttachment.ok).toBe(true);
-      if (!noShadowAttachment.ok) throw noShadowAttachment.error;
+      world.removeComponent(pointLight, PointLightShadow).unwrap();
       for (let frame = 0; frame < 6; frame += 1) {
-        noShadowWorld.update(1 / 60).unwrap();
-        await drawReadyFrame(renderer, {
-          leases: [noShadowAttachment.value],
-          camera: { lease: noShadowAttachment.value },
-          environment: { lease: noShadowAttachment.value },
-        });
+        world.update(1 / 60).unwrap();
+        await drawReadyFrame(renderer, { source: shadowAttachment.value });
       }
       const noShadowPixels = await waitForPresentedPixels(canvas);
       const noShadowInspection = renderer.inspect();

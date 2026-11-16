@@ -50,7 +50,6 @@ it('prepares paused storage and actual NullRHI kernels without a tick, dispatch,
     )
     .unwrap().program.fingerprint;
   const entry = {
-    sourceWorldIndex: 0,
     worldId: 0,
     runtimeId: 0,
     renderGeneration: 0,
@@ -81,18 +80,18 @@ it('prepares paused storage and actual NullRHI kernels without a tick, dispatch,
   const frame = (number: number, generation = 0) =>
     feature
       .plan(
-        { worlds: [entry], frameNumber: number } as never,
+        { source: entry, frameNumber: number } as never,
         {
           generation,
           caps: {},
           targets: [],
-          resolveAsset: (_index: number, handle: number, revision: number) =>
+          resolveAsset: (handle: number, revision: number) =>
             runtimeAssets(world.assets).resolveAsset(handle, revision),
         } as never,
       )
       .unwrap();
   expect(
-    feature.requiresPreparation?.(structuredClone({ worlds: [entry], frameNumber: 1 }) as never),
+    feature.requiresPreparation?.(structuredClone({ source: entry, frameNumber: 1 }) as never),
   ).toBe(true);
   const prepared = frame(1);
   expect(entry.intents).toEqual([]);

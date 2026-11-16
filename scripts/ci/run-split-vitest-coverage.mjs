@@ -150,6 +150,17 @@ const isolatedCoverageFileSets = [
     weight: 30,
   },
   {
+    // Run 43758622089 crossed this unchanged 30 s admission bound while the
+    // broad Runtime child overlapped Modeling. Keep the whole Null-RHI case
+    // with the existing serial CPU contracts; no source cooking or GPU lease.
+    project: '@forgeax/engine-runtime',
+    files: ['packages/runtime/src/__tests__/gtao-deferred-admission.integration.test.ts'],
+    batch: 'source-contracts',
+    batchReceiptLabel:
+      '@forgeax/engine-app,@forgeax/engine-codec,@forgeax/engine-three:packages/app/__tests__/builtin-systems.test.ts,packages/codec/scripts/__tests__/fetch-basis.test.mjs,packages/three/src/__tests__/api-audit.test.ts',
+    weight: 30,
+  },
+  {
     // Run 41345505497 crossed the unchanged 60 s mip/gutter oracle beside
     // another coverage child. Preserve all three 1024-square bakes exclusively.
     project: '@forgeax/engine-modeling',
@@ -182,12 +193,13 @@ const isolatedCoverageFileSets = [
       'packages/devkit/src/__tests__/execution-bootstrap-cache.integration.test.ts',
       'packages/devkit/src/__tests__/asset-libraries.integration.test.ts',
     ],
-    // Run 43693841655 crossed the mounted Content oracle's unchanged 120 s
+    // Runs 43693841655 and 43706568773 crossed the mounted Content oracle's unchanged 120 s
     // bound beside another instrumented child. Keep the whole file with the
     // existing cold owner; reserve its full budget without relabeling prior
     // bootstrap observations as evidence for this expanded child.
     receiptLabel: 'packages/devkit/src/__tests__/execution-bootstrap-cache.integration.test.ts',
     weight: 75,
+
     reservationWeight: 195,
   },
   {
@@ -708,8 +720,10 @@ function coalesceCoverageBatches(groups) {
       if (!combined.projects.includes(project)) combined.projects.push(project);
     combined.files.push(...group.files);
     combined.reservationWeight += group.weight;
-    combined.label =
-      entry.receiptLabel ?? `${combined.projects.join(',')}:${combined.files.join(',')}`;
+    const receiptProjects = entry.receiptLabel?.split(':')[0].split(',');
+    combined.label = receiptProjects?.every((project) => combined.projects.includes(project))
+      ? entry.receiptLabel
+      : `${combined.projects.join(',')}:${combined.files.join(',')}`;
   }
   return result;
 }

@@ -71,7 +71,7 @@ import {
 import { publicationFrameDependencies, renderableAssetRoots } from './dependencies';
 import { MAX_RENDER_FRAMES_IN_FLIGHT } from './frame-limits';
 import { EntityMaterialLists } from './material-lists';
-import { PublishedMaterialProjections } from './material-projections';
+import { PublishedMaterialProjections, ReceivingMaterialProjections } from './material-projections';
 import { beginSourcePreparation, type SourcePreparationObservation } from './observation';
 import { publicationMaterialProgramKeys } from './programs';
 import {
@@ -283,6 +283,7 @@ export function createRenderPublisher(
   let acceptedWaterMeshSourceState: WaterMeshSourceState | undefined;
   const publishedPrograms = new Set<string>();
   const publishedMaterialProjections = new PublishedMaterialProjections();
+  const receivingMaterialProjections = new ReceivingMaterialProjections();
   // An accepted projection is an immutable program contract: a reload installs
   // a new object, which is also what the residency identity compares. One
   // frozen detached copy serves every row and packet, so copied materials do
@@ -1532,10 +1533,14 @@ export function createRenderPublisher(
       for (const [handle, value] of assetRows) {
         if (value.kind !== 'material') continue;
         const material = runtimeAssets(world.assets).resolveAsset(handle).unwrap();
-        const projection =
+        const projection = receivingMaterialProjections.project(
           material.kind === 'material'
             ? assets.getMaterialProjectionForPayload(material)
-            : undefined;
+            : undefined,
+          capabilities === undefined
+            ? undefined
+            : renderMaterialContext(capabilities, limits).materialContext,
+        );
         materialProjections.set(handle, projection);
         if (projection !== undefined) {
           for (const pass of projection.passes)

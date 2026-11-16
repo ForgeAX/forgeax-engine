@@ -30,9 +30,11 @@ export function transformMeshVertex(
   positions: Float32Array,
   index: number,
   matrix: mat4.Mat4Like,
+  offset = 0,
+  stride = 3,
 ): void {
-  out[0] = positions[index * 3] as number;
-  out[1] = positions[index * 3 + 1] as number;
-  out[2] = positions[index * 3 + 2] as number;
+  out[0] = positions[offset + index * stride] as number;
+  out[1] = positions[offset + index * stride + 1] as number;
+  out[2] = positions[offset + index * stride + 2] as number;
   mat4.transformPoint(out, matrix, out);
 }

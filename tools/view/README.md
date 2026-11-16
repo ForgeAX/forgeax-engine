@@ -524,6 +524,13 @@ and repeated sampling. SDK/template inputs remain immutable.
 | Browser viewport | 1000x700 | Runtime 1440x1000; Game 3D 1440x900 |
 | Game 3D directional shadow map | 256, three authored cascades | Authored template: 1024, three cascades |
 
+The diagnostic-pages Scene journey separates cold pipeline/asset readiness from
+its completed-picture window. Each phase is bounded by 90 seconds (180 seconds
+maximum together): first require an actual visible ready picture, then require
+sixty actual ready completed frames in total. `scene-target.json` records both
+`readiness.wait` and `readiness.steadyWait`; no viewport, authored scene, backend,
+pixel assertion, or steady-picture deadline is reduced.
+
 Game 3D changes only the directional shadow map on its disposable project copy.
 It reads the public template directly, without importing contributor-only Engine
 scripts. All three authored cascades, local lights, geometry, entity identities,

@@ -1,8 +1,14 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { World } from '@forgeax/engine-ecs';
+import { createBoxGeometry, withVertexColors } from '@forgeax/engine-geometry';
 import { mat4 } from '@forgeax/engine-math';
+import type { MeshAsset } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import type { RenderFeaturePlanView } from '../../plan';
 import { projectEditorAssistance } from '../projection';
 import type { EditorAssistanceSourceFrame } from '../source';
+import { extractEditorAssistance } from '../source';
+import { editorAssistance } from '../state';
 
 function source(): EditorAssistanceSourceFrame {
   return {
@@ -80,5 +86,68 @@ it('clips helper triangles to the submitted frustum and preserves their depth po
   for (let i = 0; i < (frame?.occluded.length ?? 0); i += 8) {
     const values = frame?.occluded as Float32Array;
     expect(Math.abs(values[i] as number)).toBeLessThanOrEqual(values[i + 3] as number);
+  }
+});
+
+it.each([
+  'triangles',
+  'lines',
+] as const)('projects admitted packed %s with the same positions, tint and depth as the author source', (kind) => {
+  const box = createBoxGeometry(1, 1, 1).unwrap();
+  const colors = new Float32Array(((box.attributes.position as Float32Array).length / 3) * 4);
+  for (let index = 0; index < colors.length; index++) colors[index] = ((index % 4) + 1) / 4;
+  const author: MeshAsset =
+    kind === 'triangles'
+      ? withVertexColors(box, colors).unwrap()
+      : {
+          kind: 'mesh',
+          vertices: Float32Array.of(-0.5, 0, 0.5, 1, 0, 0, 1, 0.5, 0.25, 0.5, 0, 1, 0, 1),
+          attributes: {
+            position: Float32Array.of(-0.5, 0, 0.5, 0.5, 0.25, 0.5),
+            color: Float32Array.of(1, 0, 0, 1, 0, 1, 0, 1),
+          },
+          submeshes: [
+            {
+              indexOffset: 0,
+              indexCount: 0,
+              vertexCount: 2,
+              topology: 'line-list',
+              materialSlot: 0,
+            },
+          ],
+          materialSlots: [{ slotName: 'overlay' }],
+        };
+  const assets = new AssetRegistry(),
+    world = new World({ assets });
+  try {
+    const handle = assets.create(author).unwrap(),
+      state = editorAssistance(world);
+    state.configure({ enabled: true }).unwrap();
+    state
+      .contribute({}, [
+        {
+          kind: 'mesh',
+          mesh: handle,
+          transform: Array.from(mat4.identity(mat4.create())),
+          color: [0.5, 0.75, 1, 1],
+          depth: 'occluded',
+        },
+      ])
+      .unwrap();
+    const captured = extractEditorAssistance({ world, frameNumber: 1, views: [] });
+    if (captured === undefined) throw new Error('Missing admitted overlay source');
+    expect(captured.meshes[0]?.value?.attributeStorage).toBe('interleaved');
+    expect(captured.meshes[0]?.value?.attributes.position).toHaveLength(0);
+    const original = projectEditorAssistance(
+      { ...captured, meshes: captured.meshes.map((mesh) => ({ ...mesh, value: author })) },
+      view(400, 200),
+      {},
+    );
+    const admitted = projectEditorAssistance(captured, view(400, 200), {});
+    expect(original?.occluded.length).toBeGreaterThan(0);
+    expect(admitted).toEqual(original);
+    expect(captured.meshes[0]?.value?.attributes.position).toHaveLength(0);
+  } finally {
+    assets.dispose();
   }
 });

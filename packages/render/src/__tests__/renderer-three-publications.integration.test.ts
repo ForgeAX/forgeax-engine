@@ -1,7 +1,7 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { World } from '@forgeax/engine-ecs';
-import { createBoxGeometry } from '@forgeax/engine-geometry';
+import { createBoxGeometry, meshAttributeChannels } from '@forgeax/engine-geometry';
 import type { Buffer } from '@forgeax/engine-rhi';
 import {
   RhiNullDevice,
@@ -170,9 +170,11 @@ it.each([
         transfer: renderPublicationTransfers(candidate.message),
       });
       candidate.accept();
-      expect(packet.assets.find(({ handle }) => handle === mesh.meshHandle)?.value).toEqual(
-        mesh.mesh,
-      );
+      const published = packet.assets.find(({ handle }) => handle === mesh.meshHandle)?.value;
+      if (published?.kind !== 'mesh') throw new Error('Missing published mesh');
+      const { attributeStorage, ...fields } = published;
+      expect(attributeStorage).toBe('interleaved');
+      expect({ ...fields, attributes: meshAttributeChannels(published) }).toEqual(mesh.mesh);
       return packet;
     });
     expect(publisher.inspect().inFlightCount).toBe(capacity);

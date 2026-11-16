@@ -15,7 +15,12 @@ import {
 } from '@forgeax/engine-types';
 import { admitsMeshCardLayout, validateMeshCardLayout } from './mesh-card-artifact';
 import { validateMeshCollisionAttachment } from './mesh-collision';
-import { deriveVertexLayoutProjection, elementView } from './vertex-attribute-layout.js';
+import { copyMeshAttribute, interleavedMeshFiniteFailure } from './mesh-storage';
+import {
+  deriveVertexLayoutProjection,
+  elementView,
+  type VertexLayoutProjection,
+} from './vertex-attribute-layout.js';
 
 const nativeLittleEndian = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
 
@@ -50,7 +55,8 @@ function asAttributeMap(value: unknown): VertexAttributeMap {
 }
 
 function jsonValue(value: unknown): unknown {
-  if (value instanceof Float32Array || value instanceof Uint16Array) return Array.from(value);
+  if (value instanceof Float32Array || value instanceof Uint16Array || value instanceof Uint32Array)
+    return Array.from(value);
   if (Array.isArray(value)) return value.map(jsonValue);
   if (value !== null && typeof value === 'object') {
     return Object.fromEntries(
@@ -210,6 +216,12 @@ function validateMeshInterleaving(
       continue;
     }
     const source = new Uint32Array(value.buffer, value.byteOffset, value.byteLength / 4);
+    if (attribute.format === 'uint32') {
+      for (let i = 0; i < source.length; i++)
+        if (source[i] !== floats[attribute.offset / 4 + (i * projection.arrayStride) / 4])
+          throw new TypeError('inconsistent tangentFrame interleaving');
+      continue;
+    }
     const failure = floatChannelFailure(
       floats,
       source,
@@ -307,6 +319,85 @@ function sameShortChannel(
   return true;
 }
 
+/** Runtime declarations carry layout only; validate their packed float lanes once. */
+function validateInterleavedStorage(
+  vertices: Float32Array,
+  attributes: VertexAttributeMap,
+  projection: VertexLayoutProjection,
+): void {
+  for (const attribute of projection.attributes) {
+    const value = attributes[attribute.key];
+    const short = attribute.format === 'uint16x4';
+    if (
+      value === undefined ||
+      !(
+        value instanceof Float32Array ||
+        value instanceof Uint16Array ||
+        value instanceof Uint32Array
+      ) ||
+      value.length !== 0 ||
+      value.buffer.byteLength !== 0 ||
+      (short
+        ? !(value instanceof Uint16Array)
+        : attribute.format === 'uint32'
+          ? !(value instanceof Uint32Array)
+          : !(value instanceof Float32Array))
+    )
+      throw new TypeError(
+        `interleaved ${attribute.key} requires an empty canonical layout declaration`,
+      );
+  }
+  // Integer skin lanes can contain float NaN bit patterns.
+  const nonfinite = interleavedMeshFiniteFailure(vertices, projection);
+  if (nonfinite !== undefined) throw new TypeError(`non-finite ${nonfinite}`);
+}
+
+/** Authored channels must cover every vertex before packed-row parity is checked. */
+function validateAuthoredCardinality(
+  attributes: VertexAttributeMap,
+  projection: VertexLayoutProjection,
+  vertexCount: number,
+  sourceKey: string,
+): Result<void, MeshBinEncodeError> {
+  for (const attribute of projection.attributes) {
+    const value = elementView(attributes[attribute.key], attribute.format);
+    const components = attribute.byteLength / (attribute.format === 'uint16x4' ? 2 : 4);
+    if (
+      value === undefined ||
+      (!(value instanceof Float32Array) &&
+        !(value instanceof Uint16Array) &&
+        !(value instanceof Uint32Array)) ||
+      (attribute.format === 'uint16x4'
+        ? !(value instanceof Uint16Array)
+        : attribute.format === 'uint32'
+          ? !(value instanceof Uint32Array)
+          : !(value instanceof Float32Array)) ||
+      value.length !== vertexCount * components
+    )
+      return err(
+        failure(
+          sourceKey,
+          `${attribute.key} cardinality=${vertexCount * components}`,
+          `${attribute.key} cardinality=${value?.byteLength ?? 'missing'}`,
+        ),
+      );
+  }
+  return ok(undefined);
+}
+
+function isInterleavedStorage(storage: MeshAsset['attributeStorage']): boolean {
+  if (storage !== undefined && storage !== 'interleaved')
+    throw new TypeError('unsupported mesh attribute storage');
+  return storage === 'interleaved';
+}
+
+function hasConflictingDirectionChannels(attributes: VertexAttributeMap): boolean {
+  return (
+    attributes.tangentFrame !== undefined &&
+    (attributes.normal !== undefined || attributes.tangent !== undefined)
+  );
+}
+
 /** Canonical mesh validation shared by file encoding and runtime preparation. */
 export function prepareMeshData(
   payload: MeshPayloadIn,
@@ -329,6 +420,14 @@ export function prepareMeshData(
       );
     }
     const attributes = asAttributeMap(payload.attributes);
+    if (hasConflictingDirectionChannels(attributes))
+      return err(
+        failure(
+          sourceKey,
+          'one canonical tangent-frame representation',
+          'packed and float direction channels coexist',
+        ),
+      );
     const projection = deriveVertexLayoutProjection(attributes);
     if (projection.attributes.length === 0 || projection.arrayStride === 0) {
       return err(
@@ -354,27 +453,19 @@ export function prepareMeshData(
         ),
       );
     }
-    for (const attribute of projection.attributes) {
-      const value = elementView(attributes[attribute.key], attribute.format);
-      const components = attribute.byteLength / (attribute.format === 'uint16x4' ? 2 : 4);
-      if (
-        value === undefined ||
-        (!(value instanceof Float32Array) && !(value instanceof Uint16Array)) ||
-        (attribute.format === 'uint16x4'
-          ? !(value instanceof Uint16Array)
-          : !(value instanceof Float32Array)) ||
-        value.length !== vertexCount * components
-      ) {
-        return err(
-          failure(
-            sourceKey,
-            `${attribute.key} cardinality=${vertexCount * components}`,
-            `${attribute.key} cardinality=${value?.byteLength ?? 'missing'}`,
-          ),
-        );
-      }
+    const interleaved = isInterleavedStorage(payload.attributeStorage);
+    if (interleaved) {
+      validateInterleavedStorage(vertices, attributes, projection);
+    } else {
+      const cardinality = validateAuthoredCardinality(
+        attributes,
+        projection,
+        vertexCount,
+        sourceKey,
+      );
+      if (!cardinality.ok) return cardinality;
+      validateMeshInterleaving(vertices, attributes, projection);
     }
-    validateMeshInterleaving(vertices, attributes, projection);
     const vertexBytes = vertexCount * projection.arrayStride;
     const indexCount = indices?.length ?? 0;
     const indexWidth = indices === undefined || indexCount === 0 ? 0 : indices.BYTES_PER_ELEMENT;
@@ -448,6 +539,41 @@ export function prepareMeshData(
   }
 }
 
+function writeMeshVertexBody(
+  payload: MeshPayloadIn,
+  prepared: PreparedMeshData,
+  interleaved: Uint8Array,
+): void {
+  const { vertexBytes, projection, attributes, vertexCount } = prepared;
+  if (nativeLittleEndian) {
+    // Preparation proved every lane finite and bit-identical to attributes.
+    // The canonical layout is packed, so the existing interleaving is the wire body.
+    const vertices = payload.vertices as Float32Array;
+    interleaved.set(new Uint8Array(vertices.buffer, vertices.byteOffset, vertexBytes));
+  } else {
+    const view = new DataView(interleaved.buffer, interleaved.byteOffset, vertexBytes);
+    for (const attribute of projection.attributes) {
+      const value =
+        payload.attributeStorage === 'interleaved'
+          ? copyMeshAttribute(payload as MeshAsset, attribute.key)
+          : elementView(attributes[attribute.key], attribute.format);
+      if (value === undefined) throw new TypeError(`invalid ${attribute.key} storage`);
+      const short = attribute.format === 'uint16x4';
+      const width = short ? 2 : 4;
+      const components = attribute.byteLength / width;
+      for (let vertex = 0; vertex < vertexCount; vertex++) {
+        for (let component = 0; component < components; component++) {
+          const offset = vertex * projection.arrayStride + attribute.offset + component * width;
+          const scalar = value[vertex * components + component] as number;
+          if (attribute.format === 'uint32') view.setUint32(offset, scalar, true);
+          else if (short) view.setUint16(offset, scalar, true);
+          else view.setFloat32(offset, scalar, true);
+        }
+      }
+    }
+  }
+}
+
 /** Encode canonical v5 bytes; published v4 assets remain readable. */
 export function packMeshBin(
   payload: MeshPayloadIn,
@@ -481,7 +607,7 @@ export function packMeshBin(
     const metadata = refsMeta(payload, refs, morphTargetMasks);
     const meta = new TextEncoder().encode(JSON.stringify(metadata));
     const header: MeshBinHeader = {
-      version: 5,
+      version: attributes.tangentFrame === undefined ? 5 : 6,
       projectionVersion: projection.schemaVersion,
       mask: projection.mask,
       digest: projection.digest,
@@ -501,29 +627,7 @@ export function packMeshBin(
     const out = new Uint8Array(total);
     writeMeshBinHeader(header, out);
     const interleaved = out.subarray(MESH_BIN_HEADER_BYTES, MESH_BIN_HEADER_BYTES + vertexBytes);
-    if (nativeLittleEndian) {
-      // Preparation proved every lane finite and bit-identical to attributes.
-      // The canonical layout is packed, so the existing interleaving is the wire body.
-      const vertices = payload.vertices as Float32Array;
-      interleaved.set(new Uint8Array(vertices.buffer, vertices.byteOffset, vertexBytes));
-    } else {
-      const view = new DataView(interleaved.buffer, interleaved.byteOffset, vertexBytes);
-      for (const attribute of projection.attributes) {
-        const value = elementView(attributes[attribute.key], attribute.format);
-        if (value === undefined) throw new TypeError(`invalid ${attribute.key} storage`);
-        const short = attribute.format === 'uint16x4';
-        const width = short ? 2 : 4;
-        const components = attribute.byteLength / width;
-        for (let vertex = 0; vertex < vertexCount; vertex++) {
-          for (let component = 0; component < components; component++) {
-            const offset = vertex * projection.arrayStride + attribute.offset + component * width;
-            const scalar = value[vertex * components + component] as number;
-            if (short) view.setUint16(offset, scalar, true);
-            else view.setFloat32(offset, scalar, true);
-          }
-        }
-      }
-    }
+    writeMeshVertexBody(payload, prepared.value, interleaved);
     let offset = MESH_BIN_HEADER_BYTES + vertexBytes;
     const target = new DataView(out.buffer);
     for (const values of streams) {

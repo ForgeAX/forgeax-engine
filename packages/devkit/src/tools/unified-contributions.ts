@@ -113,7 +113,9 @@ const commandSchemas: Readonly<Record<string, ToolJsonSchema>> = {
   'project.package': schema({
     ...root,
     output: string,
-    format: string,
+    format: { type: 'string', enum: ['web-zip', 'single-html', 'tauri'] },
+    platform: { type: 'string', enum: ['windows', 'macos', 'linux', 'android', 'ios'] },
+    prepareOnly: boolean,
     compress: boolean,
     json: boolean,
   }),

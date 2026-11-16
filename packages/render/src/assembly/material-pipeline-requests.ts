@@ -30,6 +30,7 @@ import {
   findStandardPbrEntry,
   isSharedLayoutMaterialShader,
   materialPipelineArtifactRequest,
+  materialPipelineKeyVertexEntry,
   resolveMaterialPipelineShaderId,
 } from './material/pipeline-helpers';
 import {
@@ -436,7 +437,12 @@ export function runBuildMaterialShaderPipeline(
         ? null
         : (renderState?.outputs?.[0]?.format ?? (isHdr ? 'rgba16float' : ldrColorFormat));
     additionalColorFormats ??= renderState?.outputs?.slice(1).map((output) => output.format);
-    const resolvedVertexEntry = vertexEntry ?? vertexEntryPoint;
+    const resolvedVertexEntry = materialPipelineKeyVertexEntry(
+      layoutKindOverride,
+      vertexEntryPoint,
+      vertexEntry,
+      vertexLayoutProjection,
+    );
     const spec: PipelineSpec = {
       shader: materialPipelineShaderSpec(
         pipelineShaderId,

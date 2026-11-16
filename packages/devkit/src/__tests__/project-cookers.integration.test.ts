@@ -1,5 +1,6 @@
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { Serializer } from 'node:v8';
 import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
 import { DEFAULT_STANDARD_PROFILE } from '@forgeax/engine-render';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -415,6 +416,20 @@ describe('native build root process', () => {
 });
 
 describe('build environment deadlines', () => {
+  it('honors the project startup budget while loading a module beyond the default plugin deadline', async () => {
+    const facts = await fixture(`
+      await new Promise(resolve => setTimeout(resolve, 31_000));
+      export default { provide: ['devkitAppOptions'], apply(ctx) {
+        ctx.provide('devkitAppOptions', { renderPipelineCapacity: 2 });
+      } };
+    `);
+    const session = await loadProjectCookers(facts, [], {}, { startupTimeoutMs: 90_000 });
+    sessions.push(session);
+    expect(session.appOptions.renderPipelineCapacity).toBe(2);
+    await session.dispose();
+    expect(await readdir(resolve(facts.root, '.forgeax/build'))).toEqual([]);
+  }, 120_000);
+
   it.each([
     'startup',
     'cook',
@@ -521,3 +536,66 @@ it('discovers projects beneath an ancestor cache while ignoring their own genera
   const inventory = await discoverPluginAssets(facts);
   expect([...inventory.assets.keys()]).toEqual([guid]);
 });
+
+describe('native build root typed-array IPC', () => {
+  it('preserves typed-array buffers and offsets across the isolated cooker', async () => {
+    const facts = await fixture(`export default { inject: ['nativeCookers'], apply(ctx) {
+      ctx.effect(() => ctx.nativeCookers.register({ key: 'buffer-layout',
+        cook(input) { const { backing, first, second } = input.source;
+          return { guid: input.guid, payload: { backing, first, second, separate: new Float32Array([5, 6]) }, refs: [], artifacts: {}, inputFingerprint: 'buffers/1' };
+        }
+      }));
+    } };`);
+    const session = await loadProjectCookers(facts, []);
+    sessions.push(session);
+    const cooker = session.cookers.find((entry) => entry.key === 'buffer-layout');
+    if (cooker === undefined) throw new Error('buffer-layout cooker missing');
+    const backing = new ArrayBuffer(64);
+    const first = new Float32Array(backing, 8, 4);
+    const second = new Uint8Array(backing, 12, 8);
+    first.set([1, 2, 3, 4]);
+    const encoded: Buffer[] = [];
+    for (const padding of ['', 'different request alignment']) {
+      const result = await cooker.cook({ guid, source: { padding, backing, first, second } });
+      const payload = result.payload as {
+        backing: ArrayBuffer;
+        first: Float32Array;
+        second: Uint8Array;
+        separate: Float32Array;
+      };
+      expect(payload.first.byteOffset).toBe(8);
+      expect(payload.second.byteOffset).toBe(12);
+      expect(payload.first.buffer).toBe(payload.backing);
+      expect(payload.second.buffer).toBe(payload.backing);
+      expect(payload.backing.byteLength).toBe(64);
+      expect([...payload.first]).toEqual([1, 2, 3, 4]);
+      expect(payload.separate.byteOffset).toBe(0);
+      expect(payload.separate.buffer.byteLength).toBe(8);
+      expect(payload.separate.buffer).not.toBe(payload.backing);
+      expect([...payload.separate]).toEqual([5, 6]);
+      const serializer = new Serializer();
+      serializer.writeHeader();
+      serializer.writeValue(payload);
+      encoded.push(serializer.releaseBuffer());
+    }
+    expect(encoded[0]).toEqual(encoded[1]);
+    expect(first.buffer).toBe(backing);
+    expect(first.byteOffset).toBe(8);
+  }, 30_000);
+});
+
+it('retires an isolated cooker that sends an invalid build packet', async () => {
+  const facts = await fixture(`export default { inject: ['nativeCookers'], apply(ctx) {
+    ctx.effect(() => ctx.nativeCookers.register({ key: 'invalid-packet',
+      cook() { process.send(new Uint8Array([1, 2, 3])); return new Promise(() => {}); }
+    }));
+  } };`);
+  const session = await loadProjectCookers(facts, [], {}, { operationTimeoutMs: 1000 });
+  sessions.push(session);
+  const cooker = session.cookers.find((entry) => entry.key === 'invalid-packet');
+  if (cooker === undefined) throw new Error('invalid-packet cooker missing');
+  await expect(cooker.cook({ guid })).rejects.toThrow(/deserialize|serialized|version/i);
+  await expect(cooker.cook({ guid })).rejects.toThrow('build process is unavailable');
+  await session.dispose();
+  expect(await readdir(resolve(facts.root, '.forgeax/build'))).toEqual([]);
+}, 30_000);

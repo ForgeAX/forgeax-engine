@@ -1,9 +1,7 @@
-import { err } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { componentSchema, defineComponent } from '../component';
 import { componentDefinition } from '../component-schema';
 import { entityIndex } from '../entity-handle';
-import { ManagedBufferOutOfBoundsError } from '../errors';
 import { getDerivedWriter } from '../internal';
 import { defineRelationship, RelationshipIndex, relationshipRole } from '../relationship-index';
 import { World } from '../world';
@@ -233,8 +231,8 @@ describe('relationship index', () => {
     const world = new World();
     const target = world.spawn().unwrap();
     const source = world.spawn().unwrap();
-    const pool = world[worldInternal].getBufferPool();
-    const originalAlloc = pool.alloc;
+    const arrays = world[worldInternal].getArrayStore();
+    const originalAlloc = arrays.alloc;
     const beforeMutation = world[worldInternal].getMutationEpoch();
     const beforeStructure = world[worldInternal].getStructureEpoch();
     const beforeRelationship = world[worldRead].getRelationshipEpoch(pair.source);
@@ -247,10 +245,7 @@ describe('relationship index', () => {
       return identities;
     };
     const beforeEvidence = pending();
-    Object.defineProperty(pool, 'alloc', {
-      configurable: true,
-      value: () => err(new ManagedBufferOutOfBoundsError(4, 0)),
-    });
+    Object.defineProperty(arrays, 'alloc', { configurable: true, value: () => false });
     try {
       const result = world.addComponent(source, { component: pair.source, data: { target } });
       expect(result.ok).toBe(false);
@@ -261,10 +256,10 @@ describe('relationship index', () => {
       expect(world[worldInternal].getMutationEpoch()).toBe(beforeMutation);
       expect(world[worldInternal].getStructureEpoch()).toBe(beforeStructure);
       expect(world[worldRead].getRelationshipEpoch(pair.source)).toBe(beforeRelationship);
-      expect(pool._liveCount()).toBe(0);
+      expect(arrays.stats().liveArrays).toBe(0);
       expect(pending()).toEqual(beforeEvidence);
     } finally {
-      Object.defineProperty(pool, 'alloc', { configurable: true, value: originalAlloc });
+      Object.defineProperty(arrays, 'alloc', { configurable: true, value: originalAlloc });
     }
     const unrelated = world.spawn().unwrap();
     expect(pending()).toEqual([entityIndex(unrelated)]);

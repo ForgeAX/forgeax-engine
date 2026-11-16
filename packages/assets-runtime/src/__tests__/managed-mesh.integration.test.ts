@@ -1,6 +1,8 @@
 import {
+  copyMeshAttribute,
   createBoxGeometry,
   deriveVertexLayoutProjection,
+  meshAttributeChannels,
   packMeshBin,
   prepareMeshData,
 } from '@forgeax/engine-geometry';
@@ -179,15 +181,18 @@ it('publishes channel edits with matching interleaving, conservative bounds and 
   const handle = assets.create(createBoxGeometry(2, 2, 2).unwrap()).unwrap();
   const snapshot = assets.snapshot(handle).unwrap();
   const mesh = assets.read(handle).unwrap();
-  const positions = mesh.attributes.position as Float32Array;
+  const attributes = meshAttributeChannels(mesh);
+  const positions = attributes.position as Float32Array;
   for (let i = 0; i < positions.length; i += 3) positions[i] = (positions[i] ?? 0) + 10;
-  assets.update(handle, { attributes: mesh.attributes }).unwrap();
+  assets.update(handle, { attributes }).unwrap();
   const current = assets.read(handle).unwrap();
   expect(prepareMeshData(current, 'test').ok).toBe(true);
-  expect((current.attributes.position as Float32Array)[0]).toBe(positions[0]);
+  expect((copyMeshAttribute(current, 'position') as Float32Array)[0]).toBe(positions[0]);
   expect(current.aabb?.[3]).toBe(11);
   positions.fill(999);
-  expect((assets.read(handle).unwrap().attributes.position as Float32Array)[0]).not.toBe(999);
+  expect((copyMeshAttribute(assets.read(handle).unwrap(), 'position') as Float32Array)[0]).not.toBe(
+    999,
+  );
   expect(snapshot.read<MeshAsset>(handle).unwrap().aabb?.[3]).toBe(1);
   expect(snapshot.matchesCurrent()).toBe(false);
   snapshot.dispose();
@@ -204,14 +209,14 @@ it('derives canonical channels from complete interleaved edits and rejects contr
   mesh.vertices[position.offset / 4] = 5;
   assets.update(handle, { vertices: mesh.vertices }).unwrap();
   const current = assets.read(handle).unwrap();
-  expect((current.attributes.position as Float32Array)[0]).toBe(5);
+  expect((copyMeshAttribute(current, 'position') as Float32Array)[0]).toBe(5);
   expect(prepareMeshData(current, 'test').ok).toBe(true);
   const observer = assets.observe().unwrap();
   expect(assets.update(handle, { vertices: mesh.vertices, attributes: mesh.attributes }).ok).toBe(
     false,
   );
   expect(observer.read().unwrap().changes).toHaveLength(0);
-  expect((assets.read(handle).unwrap().attributes.position as Float32Array)[0]).toBe(5);
+  expect((copyMeshAttribute(assets.read(handle).unwrap(), 'position') as Float32Array)[0]).toBe(5);
   current.vertices[position.offset / 4] = Infinity;
   expect(assets.replace(handle, current).ok).toBe(false);
   expect(assets.create(current).ok).toBe(false);
@@ -239,7 +244,9 @@ it('commits attribute and interleaved ranges at one revision without changing un
   expect(current.attributes).toBe(attributes);
   expect(current.attributes.position).toBe(positions);
   expect(current.attributes.normal).toBe(normals);
-  expect((positions as Float32Array).slice(3, 9)).toEqual(Float32Array.of(4, 5, 6, 7, 8, 9));
+  expect(copyMeshAttribute(current, 'position')?.slice(3, 9)).toEqual(
+    Float32Array.of(4, 5, 6, 7, 8, 9),
+  );
   expect(current.aabb).toEqual(Float32Array.of(-1, -1, -1, 7, 8, 9));
   expect(prepareMeshData(current, 'range').ok).toBe(true);
   expect(records.version(handle).unwrap()).toBe(before + 1);
@@ -250,7 +257,6 @@ it('commits attribute and interleaved ranges at one revision without changing un
   expect(changes).toHaveLength(1);
   const layout = deriveVertexLayoutProjection(attributes);
   expect(changes[0]?.ranges).toEqual([
-    { path: ['attributes', 'position'], byteOffset: 12, byteLength: 24 },
     {
       path: ['vertices'],
       byteOffset: layout.arrayStride,
@@ -342,13 +348,12 @@ it('preserves ArrayBuffer channel storage through validation and range writes', 
     .writeRange(handle, { attribute: 'position', first: 0, values: Float32Array.of(5, 6, 7) })
     .unwrap();
   const current = assets.read(handle).unwrap();
-  expect(current.attributes.position).toBeInstanceOf(ArrayBuffer);
-  expect(new Float32Array(current.attributes.position as ArrayBuffer).slice(0, 3)).toEqual(
-    Float32Array.of(5, 6, 7),
+  expect(current.attributeStorage).toBe('interleaved');
+  expect(current.attributes.position?.byteLength).toBe(0);
+  expect(copyMeshAttribute(current, 'position')?.slice(0, 3)).toEqual(Float32Array.of(5, 6, 7));
+  expect(copyMeshAttribute(snapshot.read<MeshAsset>(handle).unwrap(), 'position')).toEqual(
+    source.attributes.position,
   );
-  expect(
-    new Float32Array(snapshot.read<MeshAsset>(handle).unwrap().attributes.position as ArrayBuffer),
-  ).toEqual(source.attributes.position);
   snapshot.dispose();
   assets.dispose();
 });
@@ -377,16 +382,18 @@ it('commits interleaved rows, indices and attribute ranges of one mesh at one re
   const current = records.borrow<MeshAsset>(handle).unwrap();
   expect(records.version(handle).unwrap()).toBe(before + 1);
   expect(current.vertices.slice(floats, 3 * floats)).toEqual(rows);
-  expect((current.attributes.position as Float32Array)[3]).toBe(3);
+  expect((copyMeshAttribute(current, 'position') as Float32Array)[3]).toBe(3);
   expect(Array.from(current.indices?.slice(0, 3) ?? [])).toEqual([1, 1, 1]);
-  expect(Array.from((current.attributes.normal as Float32Array).slice(0, 3))).toEqual([0, 1, 0]);
+  expect(Array.from((copyMeshAttribute(current, 'normal') as Float32Array).slice(0, 3))).toEqual([
+    0, 1, 0,
+  ]);
   expect(current.aabb?.[3]).toBe(3);
   expect(prepareMeshData(current, 'range').ok).toBe(true);
   const changes = observer.read().unwrap().changes;
   expect(changes).toHaveLength(1);
   expect(changes[0]?.fields).toEqual(['aabb']);
   expect(changes[0]?.ranges.map((range) => range.path.join('.'))).toEqual(
-    expect.arrayContaining(['vertices', 'indices', 'attributes.position', 'attributes.normal']),
+    expect.arrayContaining(['vertices', 'indices']),
   );
   // One invalid member refuses the whole list without changing any byte.
   const refused = assets.writeRange(handle, [

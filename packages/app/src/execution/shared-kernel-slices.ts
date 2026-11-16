@@ -45,6 +45,8 @@ export function spanFromBinding(kernel: LoadedKernel, binding: SharedSpanBinding
   return {
     entities: binding.entities,
     length: binding.length,
+    tableId: -1,
+    rowStart: 0,
     get(component) {
       const fields = binding.read[query.read?.indexOf(component) ?? -1];
       if (fields === undefined)

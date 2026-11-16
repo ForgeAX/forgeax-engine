@@ -38,9 +38,12 @@ export function projectJoints(mesh: SkinnedMesh) {
       rotation = quat.create(),
       scale = vec3.create(),
       shear = vec3.create();
-    if (!mat4.decomposeAffine(pos, rotation, scale, shear, matrix.elements))
+    if (
+      !mat4.decomposeAffine(pos, rotation, scale, shear, matrix.elements) ||
+      shear.some((value) => Math.abs(value) > 1e-5)
+    )
       return invalid('SkinnedMesh joint world transform', mesh.uuid).unwrap();
-    return { pos, quat: rotation, scale, shear };
+    return { pos, quat: rotation, scale };
   });
 }
 

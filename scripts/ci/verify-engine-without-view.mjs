@@ -4,7 +4,10 @@ import { cp, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, resolve } from 'node:path';
 import { SDK_SOURCE_GIT_DEPENDENCIES, SDK_SOURCE_WASM } from '../forgeax/sdk-lib.mjs';
-import { prepareEngineWithoutViewContent } from './engine-without-view-source.mjs';
+import {
+  engineWithoutViewBuildEnvironment,
+  prepareEngineWithoutViewContent,
+} from './engine-without-view-source.mjs';
 import { runViewSourceCommand } from './view-source-command.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
@@ -77,7 +80,11 @@ try {
       await mkdir(dirname(destination), { recursive: true });
       await cp(resolve(root, owner, file), destination);
     }
-  await prepareEngineWithoutViewContent({ repositoryRoot: root, sourceRoot: scratch });
+  await prepareEngineWithoutViewContent({
+    repositoryRoot: root,
+    sourceRoot: scratch,
+    sharedInputsRoot: resolve(root, 'shared-app-inputs'),
+  });
   console.error(
     JSON.stringify({
       kind: 'view-source-projection',
@@ -97,7 +104,10 @@ try {
       cwd: scratch,
       encoding: 'utf8',
       maxBuffer: 64 * 1024 * 1024,
-      env: { ...process.env, FORGEAX_SKIP_HARNESS_SYNC: '1' },
+      env: {
+        ...(name === 'build:engine' ? engineWithoutViewBuildEnvironment(process.env) : process.env),
+        FORGEAX_SKIP_HARNESS_SYNC: '1',
+      },
     });
     result.stages.push({ name, milliseconds: performance.now() - start, exitCode: run.status });
     await mkdir(output, { recursive: true });

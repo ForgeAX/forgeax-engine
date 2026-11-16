@@ -62,7 +62,7 @@ binds one ordinary dynamic root body to relative centers or live descendant
 sockets. Physics owns mass, COM, inertia, native point forces and the last
 completed sensor roster; Water owns candidate queries and the synchronous
 source formulas. Presentation matrices never supply a force application point.
-Relative anchors retain signed scale and shear. Socket world centers include the
+Relative anchors retain signed scale. Socket world centers include the
 descendant hierarchy, while coefficient inputs use the immediate-parent-local
 socket position. The root itself is not a descendant socket.
 An enabled participant without Physics reports `buoyancy-physics-unsupported`.

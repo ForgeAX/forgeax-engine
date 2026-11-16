@@ -84,6 +84,106 @@ export async function decompressZstd(bytes: Uint8Array): Promise<CodecResult<Uin
   }
 }
 
+/** A verified transport can retain compressed storage without pinning decoded output. */
+export interface RetainedZstdBytes {
+  readonly byteLength: number;
+  readonly storedByteLength: number;
+  /** Shared identity for counting a compressed group once, without exposing its bytes. */
+  readonly storageIdentity: object;
+  read(): Uint8Array;
+}
+
+interface DecodedWindow extends RetainedZstdBytes {
+  slice(bytes: Uint8Array, offset: number): DecodedWindow;
+}
+
+// Entry-point bundles may contain separate module instances in one realm.
+const retainedKey = Symbol.for('forgeax.codec.retained-zstd-windows');
+const retainedRealm = globalThis as typeof globalThis & { [key: symbol]: unknown };
+if (retainedRealm[retainedKey] === undefined)
+  retainedRealm[retainedKey] = new WeakMap<Uint8Array, DecodedWindow>();
+const retained = retainedRealm[retainedKey] as WeakMap<Uint8Array, DecodedWindow>;
+
+/** Private transport provenance, not proof of an artifact's digest or ABI. */
+export function retainedZstdBytes(bytes: Uint8Array): RetainedZstdBytes | undefined {
+  return retained.get(bytes);
+}
+
+/**
+ * Carry provenance to an exact independent copy or member window. Comparing
+ * content keeps an arbitrary caller from associating other bytes with a frame.
+ * Each independent copy has its own weak view; it never borrows caller storage.
+ */
+export function copyRetainedZstdBytes(source: Uint8Array, copy: Uint8Array, offset = 0): void {
+  const window = retained.get(source);
+  if (window === undefined) return;
+  if (!Number.isSafeInteger(offset) || offset < 0 || offset + copy.length > source.length) return;
+  for (let i = 0; i < copy.length; i++) if (source[offset + i] !== copy[i]) return;
+  retained.set(copy, window.slice(copy, offset));
+}
+
+/**
+ * Decode and retain the already-compressed delivery frame. Initial decode and
+ * all consumer integrity checks are unchanged. A cold synchronous read restores
+ * these same bytes with the initialized decoder, never compression or network IO.
+ */
+export async function decompressRetainedZstd(bytes: Uint8Array): Promise<CodecResult<Uint8Array>> {
+  if (typeof WeakRef !== 'function') return decompressZstd(bytes);
+  // Capture before awaiting: transport publishers still own their input.
+  const encoded = new Uint8Array(bytes);
+  let decompress: ZstdDecompress;
+  try {
+    decompress = await getDecompressor();
+  } catch {
+    return codecError('codec-init-failed', { stage: 'dynamic-import-fzstd' });
+  }
+  let decoded: Uint8Array;
+  try {
+    decoded = decompress(encoded);
+  } catch {
+    return codecError('decompression-failed', {
+      reason: 'zstd decompression failed: corrupt or invalid compressed data',
+    });
+  }
+  if (encoded.byteLength >= decoded.byteLength) return { ok: true, value: decoded };
+  // Keep the initialized synchronous decoder and compressed frame, not decoded.
+  const length = decoded.byteLength;
+  const identity = Object.freeze({});
+  let group = new WeakRef(decoded);
+  function readGroup(): Uint8Array {
+    let value = group.deref();
+    if (value === undefined) {
+      value = decompress(encoded);
+      if (value.byteLength !== length) throw new Error('retained zstd decoded length changed');
+      group = new WeakRef(value);
+    }
+    return value;
+  }
+  function window(view: Uint8Array, offset: number): DecodedWindow {
+    let live = new WeakRef(view);
+    const byteLength = view.byteLength;
+    return Object.freeze({
+      byteLength,
+      storedByteLength: encoded.byteLength,
+      storageIdentity: identity,
+      read() {
+        let value = live.deref();
+        if (value === undefined) {
+          value = readGroup().slice(offset, offset + byteLength);
+          live = new WeakRef(value);
+          retained.set(value, this);
+        }
+        return value;
+      },
+      slice(copy: Uint8Array, relativeOffset: number) {
+        return window(copy, offset + relativeOffset);
+      },
+    });
+  }
+  retained.set(decoded, window(decoded, 0));
+  return { ok: true, value: decoded };
+}
+
 // Native hosts may install text encoders after loading shared module chunks.
 let utf8: TextDecoder | undefined;
 

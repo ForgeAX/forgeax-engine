@@ -414,6 +414,7 @@ const CLOUD_DETAIL: bool = ${detail};
     'forgeax_pbr::ibl_sampling': readSource('ibl-sampling.wgsl'),
     'forgeax_pbr::pmrem': readSource('ibl-pmrem.wgsl'),
     'forgeax_pbr::tbn': readSource('tbn.wgsl'),
+    'forgeax_geometry::tangent_frame32': readSource('tangent-frame32.wgsl'),
     'forgeax_pbr::lighting_directional': readSource('lighting-directional.wgsl'),
     'forgeax_pbr::lighting_punctual': readSource('lighting-punctual.wgsl'),
     'forgeax_pbr::lighting_spot_modifiers': readSource('lighting-spot-modifiers.wgsl'),

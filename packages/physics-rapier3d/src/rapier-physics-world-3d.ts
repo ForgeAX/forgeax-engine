@@ -986,8 +986,7 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
     if (state === undefined) {
       const context = this.moveContext;
       return (
-        context !== undefined &&
-        context.world.hasComponent(authored, RigidBody) &&
+        context?.world.hasComponent(authored, RigidBody) === true &&
         context.world.hasComponent(authored, context.transform) &&
         !context.world.hasComponent(authored, Disabled)
       );
@@ -3937,14 +3936,8 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
       pos: ArrayLike<number>;
       quat: ArrayLike<number>;
       scale: ArrayLike<number>;
-      shear: ArrayLike<number>;
     };
-    return JSON.stringify([
-      Array.from(value.pos),
-      Array.from(value.quat),
-      Array.from(value.scale),
-      Array.from(value.shear),
-    ]);
+    return JSON.stringify([Array.from(value.pos), Array.from(value.quat), Array.from(value.scale)]);
   }
 
   removeEntity(entity: number): void {

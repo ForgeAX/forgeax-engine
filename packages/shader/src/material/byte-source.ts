@@ -1,3 +1,4 @@
+import { copyRetainedZstdBytes, retainedZstdBytes } from '@forgeax/engine-codec';
 import { ShaderSource } from '@forgeax/engine-types';
 import type { MaterialShaderProgram } from './program.js';
 
@@ -14,7 +15,17 @@ export interface MaterialByteSource {
 
 /** One private copy at admission: the caller's buffer may be reused after it is handed over. */
 export function ownMaterialByteSource(bytes: Uint8Array, digest: string): MaterialByteSource {
-  return { bytes: new Uint8Array(bytes), digest };
+  const copy = new Uint8Array(bytes);
+  copyRetainedZstdBytes(bytes, copy);
+  const storage = retainedZstdBytes(copy);
+  return storage === undefined
+    ? { bytes: copy, digest }
+    : {
+        get bytes() {
+          return storage.read();
+        },
+        digest,
+      };
 }
 
 export function readMaterialByteSource(owner: MaterialByteSource): ShaderSource {

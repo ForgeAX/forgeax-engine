@@ -1,3 +1,4 @@
+import { meshAttributeWindow } from '@forgeax/engine-geometry';
 import { err, ok } from '@forgeax/engine-types';
 import type { OutlineSnapshot } from '../../components/outline';
 import { RenderFeaturePreparationFailedError } from '../../errors/render';
@@ -171,8 +172,8 @@ export function createEditorAssistanceFeature(): EditorAssistanceRenderFeature {
             return sourceFailure(String(mesh.handle), 'missing-version');
           const asset = resolveEditorAssistanceMesh(mesh, context);
           if (asset === undefined) return sourceFailure(String(mesh.handle), 'unavailable-mesh');
-          const position = asset.attributes.position;
-          if (!(position instanceof Float32Array) && !(position instanceof ArrayBuffer))
+          const position = meshAttributeWindow(asset, 'position');
+          if (!(position?.data instanceof Float32Array))
             return sourceFailure(String(mesh.handle), 'unsupported-position-format');
         }
         const work: RenderFeatureWork[] = [],

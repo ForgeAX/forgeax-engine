@@ -118,7 +118,7 @@ export interface SkinAsset {
  * (`POSITION -> position` / `TEXCOORD_0 -> uv` / `JOINTS_0 -> skinIndex` /
  * `WEIGHTS_0 -> skinWeight`) so the runtime key space remains lowercase.
  *
- * All 14 keys are optional; a mesh with only `position` (static unlit) is
+ * All 15 keys are optional; a mesh with only `position` (static unlit) is
  * valid. Values accept the three common binary shapes:
  * `ArrayBuffer | Float32Array | Uint16Array` (extend only via minor add per
  * the closed-union evolution contract).
@@ -151,13 +151,21 @@ export interface VertexAttributeMap {
   uv7?: ArrayBuffer | Float32Array | Uint16Array;
   /** Optional per-vertex linear RGBA color, exactly four finite floats per vertex. */
   color?: Float32Array;
+  /** Orthonormal normal/tangent frame: oct11x2 + diamond9 + handedness.
+   * Mutually exclusive with the normal and tangent channels. */
+  tangentFrame?: Uint32Array;
 }
 
 /** Closed storage vocabulary used by the geometry pack boundary. */
-export type VertexAttributeStorage = 'array-buffer' | 'float32' | 'uint16' | 'other';
+export type VertexAttributeStorage = 'array-buffer' | 'float32' | 'uint16' | 'uint32' | 'other';
 
 /** Lossless detail for one rejected canonical vertex attribute pack. */
 export type VertexAttributePackDetail =
+  | {
+      readonly field: 'tangentFrame';
+      readonly reason: 'attribute-conflict';
+      readonly actualKeys: readonly string[];
+    }
   | {
       readonly field: 'vertexCount';
       readonly reason: 'vertex-count-invalid';
@@ -171,7 +179,7 @@ export type VertexAttributePackDetail =
   | {
       readonly field: keyof VertexAttributeMap;
       readonly reason: 'attribute-storage-invalid';
-      readonly expectedStorage: 'float32' | 'uint16';
+      readonly expectedStorage: 'float32' | 'uint16' | 'uint32';
       readonly actualStorage: VertexAttributeStorage;
     }
   | {

@@ -60,7 +60,10 @@ fn evaluate_surface(input: SurfaceInput) -> SurfaceData {
             keys.add(artifact.specializationKey);
             expect(artifact).toBeDefined();
             const wgsl = new TextDecoder().decode(artifact?.artifact.bytes);
-            expect(/@location\(14\)/.test(wgsl)).toBe(color);
+            // Packed tangent words also use location 14, with a uint32 input.
+            // Color still requires its float input and interpolated vec4 output.
+            expect(/@location\(13\)\s+color\s*:\s*vec4<f32>/.test(wgsl)).toBe(color);
+            expect(/@location\(14\)\s+color\s*:\s*vec4<f32>/.test(wgsl)).toBe(color);
           }
           expect(keys.size).toBe(2);
         }

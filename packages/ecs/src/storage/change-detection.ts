@@ -6,6 +6,13 @@ import { type EntityHandle, entityIndex } from '../entity-handle';
 
 import { archetypeComponentIndex } from './archetype';
 import type { ArchetypeGraph } from './archetype-graph';
+import {
+  type ChangeColumn,
+  createChangeColumn,
+  growChangeColumn,
+  moveChange,
+  stampChange,
+} from './change-column';
 import type { EntityRecords } from './entity-records';
 
 export const PROJECTION_BLOCK_SIZE = 256;
@@ -17,6 +24,8 @@ export interface SparseTagSet {
   sparse: Int32Array;
   dense: Uint32Array;
   added: Float64Array;
+  /** Last write per dense index; a tag's presence write moves it like `added`. */
+  changed: ChangeColumn;
   size: number;
 }
 
@@ -28,6 +37,7 @@ function createSparseTagSet(component: Component): SparseTagSet {
     sparse,
     dense: new Uint32Array(INITIAL_SPARSE_CAPACITY),
     added: new Float64Array(INITIAL_SPARSE_CAPACITY),
+    changed: createChangeColumn(INITIAL_SPARSE_CAPACITY),
     size: 0,
   };
 }
@@ -51,6 +61,7 @@ function insertSparseTag(set: SparseTagSet, entity: EntityHandle, epoch: number)
   const denseIndex = set.size;
   set.dense[denseIndex] = entity as number;
   set.added[denseIndex] = epoch;
+  set.changed.epochs[denseIndex] = 0;
   set.sparse[entityIndex(entity)] = denseIndex;
   set.size += 1;
   return denseIndex;
@@ -65,6 +76,7 @@ export function removeSparseTag(set: SparseTagSet, entity: EntityHandle): boolea
     const movedEntity = set.dense[lastIndex] as EntityHandle;
     set.dense[denseIndex] = movedEntity as number;
     set.added[denseIndex] = set.added[lastIndex] ?? 0;
+    moveChange(set.changed, denseIndex, lastIndex);
     set.sparse[entityIndex(movedEntity)] = denseIndex;
   }
   set.size = lastIndex;
@@ -90,6 +102,7 @@ function growSparseDense(set: SparseTagSet, targetCapacity: number): void {
   const added = new Float64Array(capacity);
   added.set(set.added);
   set.added = added;
+  set.changed = growChangeColumn(set.changed, capacity);
 }
 
 export interface ChangeTicks {
@@ -114,8 +127,63 @@ export function readComponentAdded(
   if (archetype === undefined) return undefined;
   const added = graph.tables[archetype.tableId]?.storage.get(componentId)?.added;
   if (added === undefined) return undefined;
-  const tableRow = archetype.rows[records.archetypeRow[slot] as number] ?? -1;
-  return added[tableRow] ?? 0;
+  return added[records.tableRow[slot] ?? -1] ?? 0;
+}
+
+/**
+ * Changed epoch from the table column of a dense component, or undefined for a
+ * sparse component or a slot without a table row.
+ */
+/** Sparse tag dense index of a live slot, or -1 when the tag is absent. */
+function sparseTagSlotIndex(set: SparseTagSet, slot: number): number {
+  const denseIndex = set.sparse[slot] ?? -1;
+  return denseIndex >= 0 && entityIndex(set.dense[denseIndex] as EntityHandle) === slot
+    ? denseIndex
+    : -1;
+}
+
+/**
+ * Last write epoch of a live slot's component: its table row for a dense
+ * component, its tag entry for a sparse one; undefined when neither holds it.
+ */
+export function readComponentChanged(
+  graph: ArchetypeGraph,
+  records: EntityRecords,
+  slot: number,
+  componentId: number,
+): number | undefined {
+  const sparseSet = graph.sparseTags.get(componentId);
+  if (sparseSet !== undefined) {
+    const denseIndex = sparseTagSlotIndex(sparseSet, slot);
+    return denseIndex < 0 ? undefined : (sparseSet.changed.epochs[denseIndex] ?? 0);
+  }
+  const archetype = graph.archetypes[records.archetypeId[slot] as number];
+  if (archetype === undefined) return undefined;
+  const changed = graph.tables[archetype.tableId]?.storage.get(componentId)?.changed;
+  if (changed === undefined) return undefined;
+  return changed.epochs[records.tableRow[slot] ?? -1] ?? 0;
+}
+
+/** Stamp a live slot's component write epoch in its table row or tag entry. */
+export function writeComponentChanged(
+  graph: ArchetypeGraph,
+  records: EntityRecords,
+  slot: number,
+  componentId: number,
+  epoch: number,
+): void {
+  const sparseSet = graph.sparseTags.get(componentId);
+  if (sparseSet !== undefined) {
+    const denseIndex = sparseTagSlotIndex(sparseSet, slot);
+    if (denseIndex >= 0) stampChange(sparseSet.changed, denseIndex, epoch);
+    return;
+  }
+  const archetype = graph.archetypes[records.archetypeId[slot] as number];
+  if (archetype === undefined) return;
+  const changed = graph.tables[archetype.tableId]?.storage.get(componentId)?.changed;
+  if (changed === undefined) return;
+  const row = records.tableRow[slot] ?? -1;
+  if (row >= 0) stampChange(changed, row, epoch);
 }
 
 export function markComponentsAdded(
@@ -128,7 +196,7 @@ export function markComponentsAdded(
 ): void {
   const archetype = graph.archetypes[records.archetypeId[slot] as number];
   const table = archetype === undefined ? undefined : graph.tables[archetype.tableId];
-  const tableRow = archetype?.rows[records.archetypeRow[slot] as number] ?? -1;
+  const tableRow = archetype === undefined ? -1 : (records.tableRow[slot] ?? -1);
   for (let index = 0; index < componentIds.length; index++) {
     const componentId = componentIds[index] as number;
     const component =

@@ -4,6 +4,7 @@ import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { relative, resolve } from 'node:path';
 import test from 'node:test';
+import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { artifact, filesUnder, SDK_SOURCE_WASM } from '../sdk-lib.mjs';
 import {
@@ -206,6 +207,51 @@ test('SDK archives the Engine gitlink revision, including licenses, without remo
     await readFile(resolve(destination, dependency, 'wgpu/src/lib.rs'), 'utf8'),
     'pub const VERSION: u32 = 1;\n',
   );
+});
+
+test('exact PR history retains ancestry and exported bytes without unrelated branch commits', async (t) => {
+  const { root, destination, engineCommit: baseline } = await fixture(t);
+  await writeFile(resolve(root, 'engine.txt'), 'engine revision 2\n');
+  const selected = await commit(root, 'selected PR revision');
+  await git(root, 'checkout', '-qb', 'unrelated-work');
+  await writeFile(resolve(root, 'engine.txt'), 'unrelated work\n');
+  const unrelated = await commit(root, 'unrelated branch revision');
+  await git(root, 'checkout', '--detach', selected);
+  const shallow = resolve(root, '../shallow');
+  await git(root, 'clone', '--depth=1', '--no-tags', pathToFileURL(root).href, shallow);
+  assert.equal(await git(shallow, 'rev-parse', '--is-shallow-repository'), 'true');
+  assert.equal(await git(shallow, 'rev-list', '--count', 'HEAD'), '1');
+  assert.equal(await git(shallow, 'rev-parse', 'HEAD'), selected);
+  await assert.rejects(git(shallow, 'merge-base', '--is-ancestor', baseline, 'HEAD'));
+  const workflow = await readFile(resolve('.github/workflows/sdk-pr-preflight.yml'), 'utf8');
+  const step = workflow.split('- name: Prepare exact PR source ancestry\n')[1];
+  assert.ok(step, 'PR SDK seed must prepare its selected history before capability validation');
+  const command = step
+    .split('\n      - ')[0]
+    .split('run: |\n')[1]
+    .split('\n')
+    .map((line) => line.slice(10))
+    .join('\n');
+  await execFileAsync('bash', ['-e', '-c', command], {
+    cwd: shallow,
+    env: { ...process.env, GIT_ALLOW_PROTOCOL: 'file', SDK_SOURCE_SHA: selected },
+  });
+  assert.equal(await git(shallow, 'rev-parse', '--is-shallow-repository'), 'false');
+  assert.equal(await git(shallow, 'merge-base', '--is-ancestor', baseline, 'HEAD'), '');
+  await assert.rejects(git(shallow, 'cat-file', '-e', unrelated));
+  assert.equal(await git(shallow, 'rev-parse', 'HEAD'), selected);
+  await git(shallow, 'submodule', 'update', '--init');
+  const expected = await archiveEngineSource({ root, destination, commit: selected });
+  const actualDestination = `${destination}-shallow`;
+  const actual = await archiveEngineSource({
+    root: shallow,
+    destination: actualDestination,
+    commit: selected,
+  });
+  assert.deepEqual(actual, expected);
+  const inventory = async (directory) =>
+    Promise.all((await filesUnder(directory)).map((path) => artifact(directory, path)));
+  assert.deepEqual(await inventory(actualDestination), await inventory(destination));
 });
 
 test('SDK export fails when the pinned dependency has not been initialized', async (t) => {

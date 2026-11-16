@@ -682,7 +682,7 @@ export function renderApiReference({ domains = DOMAINS } = {}) {
     files[apiDomainFile(id)] = `${[
       `# ${title}`,
       '',
-      `${generated} Directory: [api-index.md](../${API_INDEX_FILE}).`,
+      `> Source-generated. [API index](../${API_INDEX_FILE}).`,
       ...(notes.length === 0 ? [] : ['', '## Gotchas', '', ...notes]),
       '',
       body.join('\n\n'),

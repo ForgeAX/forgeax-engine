@@ -83,6 +83,11 @@ export interface MeshAsset {
   /** Opt-in build-time collision product; source mesh GUID and lifecycle remain authoritative. */
   readonly collision?: MeshCollision;
   readonly vertices: Float32Array;
+  /** Runtime storage keeps only interleaved rows. Attribute values then declare
+   * layout with empty canonical typed arrays; use geometry's attribute windows
+   * for zero-copy CPU access or copyMeshAttribute for an explicit owned channel.
+   * Omitted on authoring inputs that carry complete matching channels. */
+  readonly attributeStorage?: 'interleaved' | undefined;
   /**
    * Index buffer. Optional: vertex-only meshes (point-list / line-list with no
    * shared vertices) omit it, and the engine takes a non-indexed draw path

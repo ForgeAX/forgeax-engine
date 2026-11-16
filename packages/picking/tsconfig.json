@@ -22,6 +22,9 @@
       "path": "../ecs"
     },
     {
+      "path": "../geometry"
+    },
+    {
       "path": "../math"
     },
     {

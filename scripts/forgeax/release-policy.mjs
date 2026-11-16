@@ -47,6 +47,24 @@ export function assertSuccessfulCandidateRun(run, expectedRunId) {
     throw new Error('release-candidate-run-not-successful');
 }
 
+/** Repair publication transport without rebuilding an already published Candidate. */
+export function publicationController(candidateController, requested = '', root = process.cwd()) {
+  const selected = requested || candidateController;
+  if (!/^[0-9a-f]{40}$/.test(candidateController ?? '') || !/^[0-9a-f]{40}$/.test(selected))
+    throw new Error('release-publication-controller-sha-invalid');
+  if (requested) {
+    try {
+      execFileSync('git', ['merge-base', '--is-ancestor', selected, 'origin/main'], {
+        cwd: root,
+        stdio: 'pipe',
+      });
+    } catch {
+      throw new Error('release-publication-controller-not-on-main');
+    }
+  }
+  return selected;
+}
+
 /** Continue the published development line, at least one minor beyond stable. */
 export function developmentVersion(stable, currentNext, source) {
   if (releasePolicy(stable).channel !== 'stable' || !/^[0-9a-f]{40}$/.test(source)) {

@@ -408,3 +408,61 @@ test('SDK startup retains the fresh failed page for caller diagnostics and clean
   ]);
   assert.deepEqual(probe.cleanup, ['browser 1', 'diagnostics 2', 'page 2', 'browser 2', 'server']);
 });
+
+async function selectedPageCloser(timeoutMs = 50) {
+  const source = await readFile(new URL('../verify-sdk.mjs', import.meta.url), 'utf8');
+  const declaration = source.slice(
+    source.indexOf('  async function closeSelectedPage('),
+    source.indexOf('  /**', source.indexOf('  async function closeSelectedPage(')),
+  );
+  return runInNewContext(`(() => { ${declaration}; return closeSelectedPage; })()`, {
+    CLEANUP_TIMEOUT_MS: timeoutMs,
+    sleep: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+  });
+}
+
+test('SDK gameplay releases its pointer lock before closing the page', async () => {
+  const close = await selectedPageCloser();
+  let locked = true;
+  let nativeClose = false;
+  const document = {
+    get pointerLockElement() {
+      return locked ? {} : null;
+    },
+    exitPointerLock() {
+      queueMicrotask(() => {
+        locked = false;
+      });
+    },
+  };
+  await close({
+    isClosed: () => false,
+    evaluate: async (action) => runInNewContext(`(${action})()`, { document }),
+    waitForFunction: async (read) => {
+      assert.equal(runInNewContext(`(${read})()`, { document }), true);
+    },
+    close: async () => {
+      assert.equal(locked, false, 'Closing a pointer-locked game stalls the native context');
+      nativeClose = true;
+    },
+  });
+  assert.equal(nativeClose, true);
+});
+
+test('a pointer lock that cannot retire keeps the original page cleanup deadline', async () => {
+  const close = await selectedPageCloser(5);
+  let nativeClose = false;
+  const document = { pointerLockElement: {}, exitPointerLock() {} };
+  await assert.rejects(
+    close({
+      isClosed: () => false,
+      evaluate: async (action) => runInNewContext(`(${action})()`, { document }),
+      waitForFunction: () => new Promise(() => {}),
+      close: async () => {
+        nativeClose = true;
+      },
+    }),
+    /page cleanup incomplete after 5ms/,
+  );
+  assert.equal(nativeClose, false);
+});

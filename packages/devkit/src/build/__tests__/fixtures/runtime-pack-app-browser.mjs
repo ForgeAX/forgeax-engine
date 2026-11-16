@@ -7,6 +7,7 @@ import {
   createCatalogSource,
   scenePublicationFenceFromCatalog,
 } from '@forgeax/engine/assets-runtime';
+import { copyMeshAttribute } from '@forgeax/engine/geometry';
 import { preparePackProgram } from '@forgeax/engine/pack/runtime';
 import {
   AssetGuid,
@@ -213,14 +214,15 @@ export function inspect() {
   const sky = [...world.iterDescendants(root)].find((entity) =>
     world.hasComponent(entity, Skylight),
   );
-  const xs = Array.from(mesh.attributes.position).filter((_, index) => index % 3 === 0);
+  const positions = copyMeshAttribute(mesh, 'position');
+  const xs = Array.from(positions).filter((_, index) => index % 3 === 0);
   return {
     width: Math.max(...xs) - Math.min(...xs),
     position: Array.from(world.get(member, Transform).unwrap().pos),
     ambientColor: Array.from(world.get(sky, Skylight).unwrap().color),
-    positions: Array.from(mesh.attributes.position),
+    positions: Array.from(positions),
     indices: Array.from(mesh.indices),
-    typed: mesh.attributes.position instanceof Float32Array && ArrayBuffer.isView(mesh.indices),
+    typed: positions instanceof Float32Array && ArrayBuffer.isView(mesh.indices),
     assets: app.assets.inspect().assets.length,
     rows: runtime.producer.rows(),
   };

@@ -84,7 +84,8 @@ describe('transform component versions', () => {
     world.set(root, Transform, { pos: [5, 0, 0] }).unwrap();
     world.set(root, Transform, { pos: [1, 0, 0] }).unwrap();
     propagateTransforms(world).unwrap();
-    expect(changedEntities(changes)).toEqual([root]);
+    // A rewritten Transform recomputes its subtree even when the value ends where it began.
+    expect([...changedEntities(changes)].sort()).toEqual([root, child].sort());
     expect(world.get(child, GlobalTransform).unwrap().world[12]).toBeCloseTo(3);
 
     world.set(root, Transform, { pos: [5, 0, 0] }).unwrap();

@@ -60,3 +60,33 @@ flowchart LR
 The existing `sdk-release-candidate.yml` and `sdk-release-promote.yml` workflows remain available for all channels and as a development fallback. They accept only Candidates produced by GitHub Actions. A local Candidate has `origin: local` and is rejected by GitHub Promotion; use `pnpm sdk:release:local -- --stage promote` to resume it.
 
 The two routes share the Candidate schema, immutable artifact checks, npm publisher, release finalizer and source-exporter. Candidate schema `3.0.0` remains readable for existing workflow artifacts; new workflow and local Candidates use `4.0.0` with explicit origin metadata.
+
+## Repairing publication after immutable bytes exist
+
+Keep the original successful Candidate, SDK version, source SHA, ZIP and npm
+integrities. Never rebuild that version to repair a publication controller:
+its npm identities and GitHub assets may already be immutable. Registry-only
+failures use the existing Promotion's failed-job retry after it finishes.
+
+A reviewed publication-controller repair may instead start a new Promotion of
+the **same sealed Candidate**, with an explicit `publication_controller_sha`.
+That full SHA must be an ancestor of private Main; unmerged refs and abbreviated
+SHAs are rejected. The default remains the original Candidate controller.
+The override selects publication code only: source identity and every payload
+still come from the original seal, and all publication gates run again.
+
+```bash
+gh workflow run sdk-release-promote.yml --ref main \
+  -f candidate_run_id=<original-successful-candidate> \
+  -f publication_controller_sha=<reviewed-main-controller-sha> \
+  -f public_preflight_runner=engine-sdk-fullscene
+```
+
+The optional qualified carrier runs only the CPU source preflight through the
+shared task gate. Register and qualify it first. Mirroring stays on heavy and
+holds no shared-host CPU lease while waiting for remote CI. Public source has
+one complete PR build per snapshot, a sixty-minute cold-build ceiling, and the
+same frozen install, Engine build and setup dry-run. The publisher waits up to
+seventy minutes including queueing; these ceilings are not execution targets.
+Projection branches include the admitted Git tree so a repaired CI projection
+never rewrites a previous branch for the same sealed release.

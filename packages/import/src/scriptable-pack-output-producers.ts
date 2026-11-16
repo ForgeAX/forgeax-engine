@@ -53,6 +53,7 @@ import {
   AssetOutputProducerRegistry,
   type AssetOutputProduct,
 } from './scriptable-pack.js';
+import { portableKtx2Product } from './scriptable-pack-basis-texture.js';
 
 function producerError(input: AssetOutputInput, reason: unknown): ImportError {
   return new ImportError({
@@ -730,11 +731,27 @@ export const materialAssetOutputProducer = createSafeProducer(
 export const meshAssetDataProducer = meshProducer('mesh-data/2', meshDataProduct);
 
 export const meshAssetOutputProducer = meshProducer('mesh-binary/7', meshProduct);
-export const textureAssetOutputProducer = createSafeProducer(
+const nativeTextureAssetOutputProducer = createSafeProducer(
   'texture',
   'texture-pack/3',
   textureProduct,
 );
+export const textureAssetOutputProducer: AssetOutputProducer = {
+  kind: 'texture',
+  version: 'texture-pack/3',
+  produce(input) {
+    const texture = input.asset;
+    if (
+      texture.kind !== 'texture' ||
+      texture.encoding !== 'ktx2' ||
+      texture.format === 'bc5-rg-unorm'
+    )
+      return nativeTextureAssetOutputProducer.produce(input);
+    return portableKtx2Product(texture).then(ok, (error: unknown) =>
+      err(producerError(input, error)),
+    );
+  },
+};
 
 export function createSceneAssetOutputProducer(
   sceneComponents: readonly ScriptablePackSceneComponent[] = [],

@@ -10,7 +10,7 @@ export {
 } from './components/mobility';
 export { MorphWeights } from './components/morph-weights';
 export { Name } from './components/name';
-export { GlobalTransform, Transform } from './components/transform';
+export { GlobalTransform, Transform, TransformTreeChanged } from './components/transform';
 export {
   WaterBodyInstance,
   WaterContactProbeSet,

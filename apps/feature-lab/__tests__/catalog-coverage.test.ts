@@ -83,6 +83,7 @@ const GATE_PROVED_ROWS = new Set([
   // Native PCM output and real bounded Range responses use the owning HTTP fixture.
   'Long audio windows',
   // Packaging, SDK and release.
+  'Tauri platform packaging',
   'Single-HTML offline delivery',
   'Player Asset Bundles',
   'Asset/format producers',

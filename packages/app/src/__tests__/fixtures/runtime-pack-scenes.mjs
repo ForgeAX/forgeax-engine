@@ -7,7 +7,11 @@ import {
 } from '@forgeax/engine-assets-runtime';
 import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { createWorldContext, World } from '@forgeax/engine-ecs';
-import { createBoxGeometry, meshAssetContribution } from '@forgeax/engine-geometry';
+import {
+  copyMeshAttribute,
+  createBoxGeometry,
+  meshAssetContribution,
+} from '@forgeax/engine-geometry';
 import { prepareRuntimePackAnchor, RuntimePackProducer } from '@forgeax/engine-import';
 import { preparePackProgram } from '@forgeax/engine-pack/runtime';
 import {
@@ -113,7 +117,7 @@ async function consumer() {
       );
       assert(meshEntity);
       const handle = world.get(meshEntity, MeshFilter).unwrap().assetHandle;
-      const positions = assets.read(handle).unwrap().attributes.position;
+      const positions = copyMeshAttribute(assets.read(handle).unwrap(), 'position');
       const xs = Array.from(positions).filter((_, index) => index % 3 === 0);
       return Math.max(...xs) - Math.min(...xs);
     },

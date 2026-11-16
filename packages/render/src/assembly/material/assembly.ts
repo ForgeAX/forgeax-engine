@@ -99,6 +99,7 @@ export function assembleStandardPbrArtifact(
 export interface MaterialShaderArtifactRequest {
   /** Geometry-owned COLOR_0 fact used to select the matching published variant. */
   readonly vertexColorAvailable?: boolean;
+  readonly tangentFrame32?: boolean;
   /** Deformation lane used to select a skin-compatible shadow variant. */
   readonly deformation?: 'rigid' | 'skin';
   readonly clustered?: boolean;
@@ -141,8 +142,20 @@ function assemblePublishedArtifact(
   options: MaterialShaderArtifactRequest,
   reflectedUvSetCount?: number,
 ): MaterialShaderArtifact | undefined {
-  const receipt = shaderEntry.receipt;
+  let receipt = shaderEntry.receipt;
   if (receipt === undefined) return undefined;
+  if (options.tangentFrame32) {
+    const packed = receipt.tangentFrame32;
+    if (packed === undefined) return undefined;
+    receipt = {
+      ...receipt,
+      directEntry: packed.directEntry,
+      ...(packed.sceneIndexEntry === undefined ? {} : { sceneIndexEntry: packed.sceneIndexEntry }),
+      vertexInputs: packed.vertexInputs,
+      receiptIdentity: `${receipt.receiptIdentity}/tangent-frame32`,
+      reflection: { ...receipt.reflection, vertexInputs: packed.vertexInputs },
+    };
+  }
   if (options.vertexColorAvailable === false && receiptHasVertexColor(receipt)) {
     return undefined;
   }
@@ -341,7 +354,8 @@ function materialArtifactRequestFlags(options: MaterialShaderArtifactRequest): n
     (optionalBooleanKey(options.reflectionFallback) << 6) |
     (optionalBooleanKey(options.visibleSurface) << 8) |
     (optionalBooleanKey(options.alphaMask) << 16) |
-    (optionalBooleanKey(options.leanInputs) << 18)
+    (optionalBooleanKey(options.leanInputs) << 18) |
+    (optionalBooleanKey(options.tangentFrame32) << 20)
   );
 }
 

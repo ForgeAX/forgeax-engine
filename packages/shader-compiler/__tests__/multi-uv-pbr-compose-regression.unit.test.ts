@@ -34,6 +34,7 @@ function loadEngineImports(): Record<string, string> {
   const srcDir = join(import.meta.dirname, '..', '..', 'shader', 'src');
   const read = (name: string) => readFileSync(join(srcDir, name), 'utf8');
   return {
+    'forgeax_geometry::tangent_frame32': read('tangent-frame32.wgsl'),
     'forgeax_material::displacement': read('standard-displacement.wgsl'),
     'forgeax_material::texture_coordinates': read('texture-coordinates.wgsl'),
     'forgeax_material::terrain_vertex': read('terrain-vertex.wgsl'),

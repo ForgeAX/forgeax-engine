@@ -112,6 +112,11 @@ export interface DerivedRangeWriter<R extends Component, C extends Component> {
   /** Locate a live entity in its bound table and return its physical row. */
   locateEntity(entity: EntityHandle, cursor: DerivedRangeCursor): boolean;
   /**
+   * Binding index of a matched table, or -1. Rosters are current after
+   * reading `bindings` and stay fixed for the duration of `writeRows`.
+   */
+  bindingOfTable(tableId: number): number;
+  /**
    * Publish distinct producer-known (bindingIndex, row) pairs and return the
    * emitted range count. The producer owns uniqueness; no clean mask is read.
    */
@@ -205,6 +210,7 @@ export function createDerivedRangeWriter<R extends Component, C extends Componen
   const bindingTables: Table[] = [];
   const bindings: DerivedColumnBinding<R, C>[] = [];
   const bindingByTable = new Map<number, number>();
+  const bindingByTableId: number[] = [];
   const runStartBuffers: Int32Array[] = [];
   const runCountBuffers: Int32Array[] = [];
   const changedCounts: number[] = [];
@@ -228,6 +234,7 @@ export function createDerivedRangeWriter<R extends Component, C extends Componen
       bindingTables.push(table);
       bindings.push(binding);
       bindingByTable.set(table.id, index);
+      bindingByTableId[table.id] = index;
     }
   };
   const prepareRunBuffers = (index: number, rows: number): void => {
@@ -254,14 +261,17 @@ export function createDerivedRangeWriter<R extends Component, C extends Componen
       const records = world[worldInternal].getRecords();
       const slot = (entity as unknown as number) & 0x00ffffff;
       if (records.archetypeId[slot] !== archetype.id) return false;
-      const row = archetype.rows[records.archetypeRow[slot] as number];
+      const row = records.tableRow[slot] as number;
       const binding = bindings[bindingIndex];
-      if (binding === undefined || row === undefined || row < 0 || row >= binding.rowCapacity) {
+      if (binding === undefined || row < 0 || row >= binding.rowCapacity) {
         return false;
       }
       cursor.bindingIndex = bindingIndex;
       cursor.row = row;
       return true;
+    },
+    bindingOfTable(tableId) {
+      return bindingByTableId[tableId] ?? -1;
     },
     writeRows(rows, produce) {
       if (!world[worldInternal].beginDerivedWrite()) return err(new DerivedWriteActiveError());
@@ -279,24 +289,25 @@ export function createDerivedRangeWriter<R extends Component, C extends Componen
           // The producer already guarantees distinct pairs. Count only that
           // actual work, so a completely changed table emits one range without
           // sorting its rows or rediscovering them through a full mask.
+          const outputId = componentOwner.componentId(component);
           for (let index = 0; index < rows.length; index += 2) {
             const bindingIndex = rows[index] ?? -1;
             const row = rows[index + 1] ?? -1;
             const binding = bindings[bindingIndex];
-            const table = bindingTables[bindingIndex];
             if (
-              !Number.isSafeInteger(bindingIndex) ||
-              !Number.isSafeInteger(row) ||
-              bindingIndex < 0 ||
-              row < 0 ||
               binding === undefined ||
-              table === undefined ||
-              row >= binding.rowCapacity ||
-              !table.storage.has(componentOwner.componentId(component))
+              !Number.isSafeInteger(row) ||
+              row < 0 ||
+              row >= binding.rowCapacity
             )
               throw new DerivedRangeOutOfBoundsError(row, 1, binding?.rowCapacity ?? 0);
             const count = changedCounts[bindingIndex] ?? 0;
-            if (count === 0) touchedBindings.push(bindingIndex);
+            if (count === 0) {
+              // Membership is a property of the table, so one check per binding.
+              if (bindingTables[bindingIndex]?.storage.has(outputId) !== true)
+                throw new DerivedRangeOutOfBoundsError(row, 1, binding.rowCapacity);
+              touchedBindings.push(bindingIndex);
+            }
             changedCounts[bindingIndex] = count + 1;
           }
           const epoch = world[worldInternal].nextMutationEpoch();
@@ -328,7 +339,7 @@ export function createDerivedRangeWriter<R extends Component, C extends Componen
             }
             world[worldInternal].publishDerivedRange(
               bindingTables[bindingIndex] as Table,
-              componentOwner.componentId(component),
+              outputId,
               start,
               count,
               epoch,

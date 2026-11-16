@@ -27,6 +27,7 @@ import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import type { World as WorldType } from '@forgeax/engine-ecs';
 import { World } from '@forgeax/engine-ecs';
+import { copyMeshAttribute } from '@forgeax/engine-geometry';
 import type { RenderError, Renderer as RendererType } from '@forgeax/engine-render';
 import type { PipelineLayout, RenderPipeline, RhiDevice, ShaderModule } from '@forgeax/engine-rhi';
 import { rhi as nullRhi } from '@forgeax/engine-rhi-null';
@@ -1682,7 +1683,7 @@ function drawPublished(renderer: RendererType, world: WorldType) {
           previous = entry;
           expect(runtimeAssets(f.assets).inspect().assets).toBe(initial.assets);
           expect(runtimeAssets(f.assets).inspect().bytes).toBe(initial.bytes);
-          const position = f.assets.read(f.handle).unwrap().attributes.position;
+          const position = copyMeshAttribute(f.assets.read(f.handle).unwrap(), 'position');
           if (!(position instanceof Float32Array)) throw new Error('position channel missing');
           expect(position[0]).toBe(frame + 1);
         }

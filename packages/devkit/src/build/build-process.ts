@@ -24,6 +24,7 @@ import {
 } from '@forgeax/engine-types';
 import { validateStartupUi } from '../host/startup-ui.js';
 import type { DevKitAppOptions, DevKitDeliveryOptions } from '../plugin-build.js';
+import { decodeBuildMessage, encodeBuildMessage } from './build-process-wire.js';
 
 /** Only serializable requests and producer outputs cross this process boundary. */
 export type BuildProcessRequest =
@@ -34,6 +35,7 @@ export type BuildProcessRequest =
       readonly root: string;
       readonly definitions: readonly PluginAssetDefinition[];
       readonly sessionId: string;
+      readonly startupTimeoutMs: number;
       /** Project build DDC root backing each cooker's `context.cache`. */
       readonly buildCacheRoot?: string;
     }
@@ -124,7 +126,9 @@ function callParent(
   return new Promise((resolve, reject) => {
     const callback = ++callbackSequence;
     callbacks.set(callback, { resolve, reject });
-    process.send?.({ callback, request, operation, args } satisfies BuildCallbackRequest);
+    process.send?.(
+      encodeBuildMessage({ callback, request, operation, args } satisfies BuildCallbackRequest),
+    );
   });
 }
 
@@ -355,7 +359,9 @@ async function execute(request: BuildProcessRequest): Promise<unknown> {
         },
       });
       await foundation.await();
-      const result = await startPluginAsset(context, request.root);
+      const result = await startPluginAsset(context, request.root, {
+        timeoutMs: request.startupTimeoutMs,
+      });
       if (!result.ok) throw result.error;
       root = result.value;
       return {
@@ -472,7 +478,8 @@ function serializableError(error: unknown): unknown {
   }
 }
 
-process.on('message', (request: BuildProcessRequest | BuildCallbackResponse) => {
+process.on('message', (packet: Uint8Array) => {
+  const request = decodeBuildMessage(packet) as BuildProcessRequest | BuildCallbackResponse;
   if ('callback' in request) {
     const pending = callbacks.get(request.callback);
     callbacks.delete(request.callback);
@@ -482,9 +489,13 @@ process.on('message', (request: BuildProcessRequest | BuildCallbackResponse) => 
   }
   const respond = async () => {
     try {
-      process.send?.({ id: request.id, ok: true, value: await execute(request) });
+      process.send?.(
+        encodeBuildMessage({ id: request.id, ok: true, value: await execute(request) }),
+      );
     } catch (cause) {
-      process.send?.({ id: request.id, ok: false, error: serializableError(cause) });
+      process.send?.(
+        encodeBuildMessage({ id: request.id, ok: false, error: serializableError(cause) }),
+      );
     }
   };
   // An importer may invoke the registry's own decoder through its injected context.

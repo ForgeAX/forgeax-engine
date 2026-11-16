@@ -1,6 +1,7 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import type { EntityHandle } from '@forgeax/engine-ecs';
+import { copyMeshAttribute } from '@forgeax/engine-geometry';
 import {
   MeshFilter,
   MeshRenderer,
@@ -49,9 +50,45 @@ import {
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { installDefaultAssetDecoders } from '../../../runtime/src/asset-contributions';
 import { cameraData } from '../camera';
+import { lineStyle } from '../lines';
 import { prepareMaterialPrograms } from '../material-programs';
 import { SceneProjection } from '../scene';
 import { featureCases } from './features.fixture';
+
+it('keeps affine dashed-line admission exact after runtime mesh adoption', () => {
+  const positions = Float32Array.of(0, 0, 0, 3, 4, 0, 3, 4, 12);
+  const geometry = new ThreeCore.BufferGeometry().setAttribute(
+    'position',
+    new Float32BufferAttribute(positions, 3),
+  );
+  const material = new ThreeCore.LineDashedMaterial({ scale: 2, dashSize: 4, gapSize: 2 });
+  const line = new ThreeCore.Line(geometry, material);
+  line.computeLineDistances();
+  const author: MeshAsset = {
+    kind: 'mesh',
+    vertices: positions,
+    attributes: { position: positions },
+    indices: Uint16Array.of(0, 1, 2),
+    materialSlots: [{ slotName: 'line' }],
+    submeshes: [
+      { indexOffset: 0, indexCount: 3, vertexCount: 3, materialSlot: 0, topology: 'line-strip' },
+    ],
+  };
+  const assets = new AssetRegistry();
+  try {
+    const handle = assets.create(author).unwrap(),
+      packed = assets.read(handle).unwrap();
+    expect(packed.attributes.position).toHaveLength(0);
+    expect(lineStyle(line, author, [material])).toEqual({ dashSize: 2, gapSize: 1, dashOffset: 0 });
+    expect(lineStyle(line, packed, [material])).toEqual(lineStyle(line, author, [material]));
+    geometry.getAttribute('lineDistance').setX(2, 18);
+    expect(() => lineStyle(line, packed, [material])).toThrow('arbitrary endpoint distances');
+  } finally {
+    assets.dispose();
+    geometry.dispose();
+    material.dispose();
+  }
+});
 
 describe('Three source to native World', () => {
   const featureAssets = new AssetRegistry();
@@ -93,7 +130,7 @@ describe('Three source to native World', () => {
             .unwrap().assetHandle;
           if (handle === 0) continue;
           const mesh = runtimeAssets(assets).borrow<MeshAsset>(handle).unwrap();
-          const position = mesh.attributes.position as Float32Array;
+          const position = copyMeshAttribute(mesh, 'position') as Float32Array;
           expect(position.length).toBeGreaterThan(0);
           expect(Array.from(position).every(Number.isFinite)).toBe(true);
           for (const index of mesh.indices as Uint16Array | Uint32Array)
@@ -179,7 +216,7 @@ describe('Three source to native World', () => {
     const handle = () => f.projection.world.get(f.entity(), MeshFilter).unwrap().assetHandle;
     const accepted = handle();
     const mesh = runtimeAssets(f.assets).borrow<MeshAsset>(accepted).unwrap();
-    const normals = mesh.attributes.normal as Float32Array;
+    const normals = copyMeshAttribute(mesh, 'normal') as Float32Array;
     expect(Array.from(normals)).toEqual(
       Array.from({ length: normals.length }, (_, i) => (i % 3 === 1 ? 1 : 0)),
     );
@@ -350,7 +387,7 @@ describe('Three source to native World', () => {
   it('preserves manual affine matrices and frozen world matrices', () => {
     const f = fixture();
     f.mesh.matrixAutoUpdate = false;
-    f.mesh.matrix.copy(new Matrix4().set(1, 0.5, 0.2, 2, 0, 1, -0.3, 1, 0, 0, -2, 0, 0, 0, 0, 1));
+    f.mesh.matrix.copy(new Matrix4().set(1, 0, 0, 2, 0, 1.5, 0, 1, 0, 0, -2, 0, 0, 0, 0, 1));
     f.sync();
     const read = () => [...f.projection.world.get(f.entity(), GlobalTransform).unwrap().world];
     f.mesh.matrixWorld.elements.forEach((value, index) => {
@@ -364,6 +401,13 @@ describe('Three source to native World', () => {
     f.mesh.matrixWorld.makeTranslation(3, 4, 5);
     f.sync();
     expect(read().slice(12, 15)).toEqual([3, 4, 5]);
+  });
+
+  it('rejects a source matrix with shear that Transform cannot represent', () => {
+    const f = fixture();
+    f.mesh.matrixAutoUpdate = false;
+    f.mesh.matrix.makeShear(0, 0, 0.5, 0, 0, 0);
+    expect(f.sync).toThrow('with shear is not representable');
   });
 
   it('renders an Object3D root and preserves an externally parented camera cache', () => {
@@ -668,26 +712,26 @@ describe('Three source to native World', () => {
         .read(f.projection.world.get(f.entity(mesh), MeshFilter).unwrap().assetHandle)
         .unwrap() as MeshAsset;
     f.sync();
-    expect(meshData(f.mesh).attributes.color).toBeUndefined();
-    expect(meshData(other).attributes.color?.[0]).toBe(0.25);
+    expect(copyMeshAttribute(meshData(f.mesh), 'color')).toBeUndefined();
+    expect(copyMeshAttribute(meshData(other), 'color')?.[0]).toBe(0.25);
     f.mesh.material = [colored, f.material];
     geometry.clearGroups();
     geometry.addGroup(0, 3, 0);
     geometry.addGroup(0, 3, 1);
     f.sync();
     const projected = meshData(f.mesh);
-    expect(projected.attributes.color?.length).toBe(count * 8);
-    expect(projected.attributes.color?.[count * 4]).toBe(1);
+    expect(copyMeshAttribute(projected, 'color')?.length).toBe(count * 8);
+    expect(copyMeshAttribute(projected, 'color')?.[count * 4]).toBe(1);
     expect(projected.indices?.[3]).toBe((projected.indices?.[0] ?? 0) + count);
     colors.setX(0, 0.75);
     colors.needsUpdate = true;
     f.sync();
-    expect(meshData(other).attributes.color?.[0]).toBe(0.75);
-    expect(meshData(f.mesh).attributes.color?.[0]).toBe(0.75);
+    expect(copyMeshAttribute(meshData(other), 'color')?.[0]).toBe(0.75);
+    expect(copyMeshAttribute(meshData(f.mesh), 'color')?.[0]).toBe(0.75);
     expect(geometry.getAttribute('position').count).toBe(count);
     geometry.deleteAttribute('color');
     f.sync();
-    expect(meshData(other).attributes.color).toBeUndefined();
+    expect(copyMeshAttribute(meshData(other), 'color')).toBeUndefined();
     colored.dispose();
   });
 

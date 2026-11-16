@@ -62,6 +62,47 @@ describe('runtime asset reads', () => {
 });
 
 describe('prepared material content', () => {
+  it('resolves source children from the authored parent after its runtime contract is selected', async () => {
+    const assets = new AssetRegistry();
+    publishRuntimeAssets(assets, [
+      {
+        guid: parentGuid,
+        asset: mat({
+          passes: [{ name: 'main', program: { module: 'forgeax_material::standard' } }],
+          parameters: [
+            { name: 'baseColor', type: 'color', default: [1, 1, 1, 1] },
+            { name: 'displacementBias', type: 'f32', default: 0 },
+          ],
+          values: { displacementBias: 0 },
+        }),
+      },
+      {
+        guid: otherGuid,
+        asset: {
+          kind: 'material',
+          parent: parentGuid as never,
+          values: { baseColor: [0.2, 0.3, 0.4, 1], displacementBias: 0 },
+        },
+        refs: [parentGuid],
+      },
+    ]);
+    try {
+      const parent = (await assets.load(parentGuid, 'material')).unwrap();
+      expect(
+        assets
+          .read(parent)
+          .unwrap()
+          .parameters?.map((parameter) => parameter.name),
+      ).toEqual(['baseColor']);
+      const loaded = await assets.load(otherGuid, 'material');
+      expect(loaded.ok, JSON.stringify(loaded)).toBe(true);
+      if (!loaded.ok) throw loaded.error;
+      expect(assets.read(loaded.value).unwrap().values).toEqual({ baseColor: [0.2, 0.3, 0.4, 1] });
+    } finally {
+      assets.dispose();
+    }
+  });
+
   it('removes disabled defaults and values before runtime admission', () => {
     const selected = prepareRuntimeAsset(
       mat({

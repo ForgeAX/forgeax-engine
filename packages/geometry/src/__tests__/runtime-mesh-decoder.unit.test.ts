@@ -12,6 +12,7 @@ import { createBoxGeometry } from '../box';
 import { withMeshAabb } from '../mesh-aabb';
 import { buildMeshCollision } from '../mesh-collision';
 import { packMeshBin } from '../mesh-data';
+import { copyMeshAttribute, interleavedMesh, meshAttributeChannels } from '../mesh-storage';
 import { packInterleavedVertexAttributes } from '../vertex-attribute-layout';
 
 async function digest(bytes: Uint8Array) {
@@ -66,6 +67,21 @@ const meshBody = (bytes: Uint8Array) => ({
 });
 
 describe('Geometry runtime decoder', () => {
+  it('re-admits serialized packed geometry without restoring expanded attribute storage', async () => {
+    const source = createBoxGeometry(1, 2, 3).unwrap();
+    const json = JSON.parse(
+      JSON.stringify(interleavedMesh(source), (_key, value) =>
+        ArrayBuffer.isView(value) ? Array.from(value as Uint8Array) : value,
+      ),
+    );
+    const restored = (await decode(json)).unwrap();
+    expect(restored.attributeStorage).toBe('interleaved');
+    expect(restored.vertices).toEqual(source.vertices);
+    expect(copyMeshAttribute(restored, 'position')).toEqual(source.attributes.position);
+    expect(Object.values(restored.attributes).every((value) => value.length === 0)).toBe(true);
+    expect((await decode({ ...json, attributeStorage: 'unknown' })).ok).toBe(false);
+  });
+
   it('decodes JSON geometry without a second runtime loader and rejects procedural tokens', async () => {
     expect(await decode({ geometry: 'procedural-cube' })).toMatchObject({
       ok: false,
@@ -81,7 +97,9 @@ describe('Geometry runtime decoder', () => {
     const restored = (await decode(json)).unwrap();
     expect(restored.vertices).toEqual(source.vertices);
     expect(Array.from(restored.indices ?? [])).toEqual(Array.from(source.indices ?? []));
-    expect(restored.attributes).toEqual(source.attributes);
+    expect(restored.attributeStorage).toBe('interleaved');
+    expect(Object.values(restored.attributes).every((value) => value.byteLength === 0)).toBe(true);
+    expect(meshAttributeChannels(restored)).toEqual(source.attributes);
     expect(restored.submeshes).toEqual(source.submeshes);
   });
 
@@ -158,7 +176,9 @@ describe('Geometry runtime decoder', () => {
     );
     const loaded = (await decode(skinJson)).unwrap();
     expect(loaded.attributes.skinIndex).toBeInstanceOf(Uint16Array);
-    expect(loaded.attributes.skinWeight).toEqual(new Float32Array(json.attributes.skinWeight));
+    expect(copyMeshAttribute(loaded, 'skinWeight')).toEqual(
+      new Float32Array(json.attributes.skinWeight),
+    );
   });
 
   it('preserves a single point as equal minimum and maximum bounds', async () => {
@@ -203,7 +223,7 @@ describe('Geometry runtime decoder', () => {
       lods: mesh.lods,
       lodHysteresis: 0.2,
     });
-    expect(loaded.attributes).toEqual(mesh.attributes);
+    expect(meshAttributeChannels(loaded)).toEqual(mesh.attributes);
     expect((await decode({}, meshBody(binary), [])).ok).toBe(false);
     const json = JSON.parse(
       JSON.stringify({ ...mesh, lods: [{ mesh: lodGuid, screenCoverage: 0.5 }] }, (_key, value) =>
@@ -211,7 +231,10 @@ describe('Geometry runtime decoder', () => {
       ),
     );
     const restored = (await decode(json)).unwrap();
-    expect({ ...restored, indices: undefined }).toEqual({ ...mesh, indices: undefined });
+    expect({ ...restored, indices: undefined }).toEqual({
+      ...interleavedMesh(mesh),
+      indices: undefined,
+    });
     expect(Array.from(restored.indices ?? [])).toEqual(Array.from(mesh.indices ?? []));
     expect((await decode({ ...mesh, collision: { positions: [], indices: [] } })).ok).toBe(false);
   });

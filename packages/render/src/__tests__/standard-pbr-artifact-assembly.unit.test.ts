@@ -874,3 +874,53 @@ describe('Standard PBR artifact assembly', () => {
     expect(resolve()).not.toBe(second);
   });
 });
+
+it('selects one compiler-published packed input receipt without expanding geometry or changing resource bindings', () => {
+  const registry = new ShaderRegistry({ manifestUrl: undefined }),
+    base = createStandardPbrArtifactReceipt();
+  const vertexInputs = [
+    ...base.vertexInputs.filter(
+      (input) => input.semantic !== 'normal' && input.semantic !== 'tangent',
+    ),
+    { semantic: 'tangentFrame', location: 14, format: 'uint32' },
+  ];
+  registry.installMaterialArtifact('game::packed', {
+    source,
+    paramSchema: [],
+    receipt: {
+      ...base,
+      tangentFrame32: {
+        directEntry: 'vs_main_packed',
+        sceneIndexEntry: 'vs_scene_index_packed',
+        vertexInputs,
+      },
+    },
+  });
+  const ordinary = resolveMaterialShaderArtifact('game::packed', registry, {
+    address: 'scene-index',
+  });
+  const packed = resolveMaterialShaderArtifact('game::packed', registry, {
+    address: 'scene-index',
+    tangentFrame32: true,
+  });
+  expect(packed?.vertexEntry).toBe('vs_scene_index_packed');
+  expect(packed?.receipt?.vertexInputs).toEqual(vertexInputs);
+  expect(packed?.program).toBe(ordinary?.program);
+  expect(packed?.receipt?.materialRow).toBe(ordinary?.receipt?.materialRow);
+  expect(packed?.receipt?.receiptIdentity).not.toBe(ordinary?.receipt?.receiptIdentity);
+  expect(
+    resolveMaterialShaderArtifact('game::packed', registry, {
+      address: 'scene-index',
+      tangentFrame32: true,
+    }),
+  ).toBe(packed);
+  const { tangentFrame32: _packed, ...legacyReceipt } = base;
+  registry.installMaterialArtifact('game::ordinary', {
+    source,
+    paramSchema: [],
+    receipt: legacyReceipt,
+  });
+  expect(
+    resolveMaterialShaderArtifact('game::ordinary', registry, { tangentFrame32: true }),
+  ).toBeUndefined();
+});

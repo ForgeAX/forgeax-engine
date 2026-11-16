@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { runInNewContext } from 'node:vm';
 import { brotliCompressSync, brotliDecompressSync } from 'node:zlib';
 import { AssetRegistry, createCatalogSource } from '@forgeax/engine-assets-runtime';
-import { meshAssetContribution } from '@forgeax/engine-geometry';
+import { copyMeshAttribute, meshAssetContribution } from '@forgeax/engine-geometry';
 import { decodeCatalogWire } from '@forgeax/engine-pack';
 import { createWechatPackageFetcher } from '@forgeax/engine-platform-wechat';
 import type { PackIndexEntry, PackV2 } from '@forgeax/engine-types';
@@ -174,9 +174,13 @@ export default {
       };
       const a = await load('first');
       for (const key of ['second', 'another']) {
-        expect(a.attributes.position).toEqual((await load(key)).attributes.position);
+        expect(copyMeshAttribute(a, 'position')).toEqual(
+          copyMeshAttribute(await load(key), 'position'),
+        );
       }
-      expect(a.attributes.position).not.toEqual((await load('different')).attributes.position);
+      expect(copyMeshAttribute(a, 'position')).not.toEqual(
+        copyMeshAttribute(await load('different'), 'position'),
+      );
       expect(reads).toContain(delivered.path);
       expect(reads).toContain((await publishedDescriptorFor('different')).path);
     } finally {

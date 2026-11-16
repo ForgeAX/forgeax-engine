@@ -1,4 +1,43 @@
 import type { MaterialRenderProjection } from '@forgeax/engine-assets-runtime';
+import type { MaterialCookRasterContext } from '@forgeax/engine-pack/material-cook';
+
+/** Project immutable Cook facts to one receiver, without changing source Ready. */
+export class ReceivingMaterialProjections {
+  readonly #projections = new WeakMap<
+    MaterialRenderProjection,
+    { readonly domain: string; readonly projection: MaterialRenderProjection }
+  >();
+
+  project(
+    source: MaterialRenderProjection | undefined,
+    context: MaterialCookRasterContext | undefined,
+  ): MaterialRenderProjection | undefined {
+    if (source === undefined || context === undefined) return source;
+    const domain = `${context.backend}/${context.capability}`;
+    const known = this.#projections.get(source);
+    if (known?.domain === domain) return known.projection;
+    const passes = source.passes.map((pass) => ({
+      ...pass,
+      programs: pass.programs.filter(
+        ({ context: candidate }) =>
+          candidate.backend === context.backend &&
+          // Ray programs have their own storage context. Keep their complete
+          // closure, plus every raster pipeline/geometry/address in this tier.
+          (candidate.pipeline === 'ray' || candidate.capability === context.capability),
+      ),
+    }));
+    // An unusual custom Cook set may have no matching receiver tier. Preserve
+    // its original contract and existing admission error, rather than silently
+    // dropping a pass or inventing a fallback program.
+    const projection =
+      passes.some((pass) => pass.programs.length === 0) ||
+      passes.every((pass, index) => pass.programs.length === source.passes[index]?.programs.length)
+        ? source
+        : { ...source, passes };
+    this.#projections.set(source, { domain, projection });
+    return projection;
+  }
+}
 
 interface ProjectionRow {
   readonly materialProjection?: MaterialRenderProjection | null;

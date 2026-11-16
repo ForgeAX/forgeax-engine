@@ -168,7 +168,14 @@ export function pickTriangleWithScreenRay(world: World, screen: ScreenRay): Tria
       continue;
     }
 
-    const { positions, bounds, worldSpace } = pose;
+    const {
+      positions,
+      bounds,
+      worldSpace,
+      offset = 0,
+      stride = 3,
+      count = positions.length / 3,
+    } = pose;
     for (let instanceIndex = 0; instanceIndex < instanceCount; instanceIndex += 1) {
       const drawWorld = drawWorldMatrix(
         entityWorldMatrix as unknown as mat4.Mat4Like,
@@ -185,13 +192,13 @@ export function pickTriangleWithScreenRay(world: World, screen: ScreenRay): Tria
       let triangleIndex = 0;
       let submeshIndex = 0;
       const indices = mesh.indices;
-      const maxVertex = Math.floor(positions.length / 3) - 1;
+      const maxVertex = count - 1;
       const test = (i0: number, i1: number, i2: number, index: number): void => {
         if (i0 < 0 || i1 < 0 || i2 < 0 || i0 > maxVertex || i1 > maxVertex || i2 > maxVertex)
           return;
-        transformMeshVertex(worldA, positions, i0, drawWorld);
-        transformMeshVertex(worldB, positions, i1, drawWorld);
-        transformMeshVertex(worldC, positions, i2, drawWorld);
+        transformMeshVertex(worldA, positions, i0, drawWorld, offset, stride);
+        transformMeshVertex(worldB, positions, i1, drawWorld, offset, stride);
+        transformMeshVertex(worldC, positions, i2, drawWorld, offset, stride);
         const hit = ray.rayTriangleIntersects(origin, worldA, worldB, worldC);
         if (!hit.hit) return;
         // The local ray origin is stored in the first three slots; construct the

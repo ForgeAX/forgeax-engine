@@ -67,8 +67,11 @@ one initialized module per realm. Concurrent first calls share the same promise.
 Failed Host instantiation or factory initialization rejects with
 `Error('codec-init-failed', { cause })` and clears the attempt for an explicit retry;
 the asynchronous Emscripten success callback cannot leave the owning caller hung.
-The first successful initialization fixes that realm's module. With the default
-condition and no Host, browser/Node URL loading remains lazy.
+Active callers and open files keep the initialized module alive. The idle instance
+and resolved promise are weakly cached, allowing its linear memory to collect.
+The compiled WASM module and successful native Host recipe remain available, so a
+later request reuses compilation where supported and preserves path-based loading.
+With the default condition and no Host, browser/Node URL loading remains lazy.
 
 After `pnpm -C packages/codec build`, run
 `node --test scripts/forgeax/__tests__/basis-native.test.mjs` from the repository
@@ -112,7 +115,7 @@ exists; it runs `fetch-basis.mjs` and `build-wasm.mjs` and requires `emcc`.
 | `parseKtx2` | `(bytes: Uint8Array) => CodecResult<Ktx2Parsed>` | Parse a KTX2 2.0 container (12B magic validation). Returns header, index, level index, DFD, KV metadata, and SGD descriptor -- all five parts per AC-03. Does **not** interpret block-compressed payload content (OOS-6, Loop 2). Pure synchronous parsing; no codec initialization. |
 | `ktx2LevelsToRGBA` | `(parsed: Ktx2Parsed, level?: number) => Promise<CodecResult<Uint8Array>>` | Extract RGBA bytes from a parsed KTX2 container. Handles scheme=0 (uncompressed, pass-through) and scheme=2 (zstd supercompression, reuses `decompressZstd` per AC-04). The optional `level` parameter selects a mip level (default: 0). Returns the level's RGBA bytes as a flat `Uint8Array`. |
 | `selectTranscodeTarget` | `(dfdModel: number, srgb: boolean, channels: number, caps: TranscodeCaps) => GPUTextureFormat \| null` | Pure-function priority chain (node-safe, zero DOM): given a DFD color model, srgb flag, channel count, and device caps, returns the best native block format. The chain is LDR RGBA: `ASTC4x4 -> BC7 -> ETC2 -> RGBA8` (with srgb variants); single-channel R: `BC4 -> EAC-R11 -> R8`; two-channel RG: `BC5 -> EAC-RG11 -> RG8`; HDR: `BC6H -> rgba16float`. BC-first rule: when BC and ETC2/ASTC coexist, the chain selects BC (D-4 Mesa guard). Input `TranscodeCaps { bc, etc2, astc }` is a local struct -- codec never imports from rhi. Returns non-null (no-cap fallback to rgba8unorm/rgba16float). |
-| `initBasisTranscoder` | `(host?: BasisWasmHost) => Promise<BasisTranscoderModule>` | Lazy-init singleton per realm. First call loads the complete Emscripten factory and initializes Basis; native Hosts supply path-based instantiation before first texture use. Subsequent calls return the cached instance; rejected attempts can retry. |
+| `initBasisTranscoder` | `(host?: BasisWasmHost) => Promise<BasisTranscoderModule>` | Lazy-init singleton per realm. First call loads the complete Emscripten factory and initializes Basis; native Hosts supply path-based instantiation before first texture use. Concurrent callers share initialization; live instances are reused. Idle instances may collect and are reinstantiated from the cached compiled module/Host recipe; rejected attempts can retry. |
 | `transcodeKtx2` | `(parsed: Ktx2Parsed, targetFormat: GPUTextureFormat) => Promise<CodecResult<TranscodedMips>>` | Transcode a scheme=1 (BasisLZ) KTX2 payload to a native block format. Iterates every mip level through the transcoder, returning `TranscodedMips { format, mips: { data, width, height }[] }`. Calls init on first use. |
 
 Zstd decoding uses one synchronous streaming session per call and verifies frame

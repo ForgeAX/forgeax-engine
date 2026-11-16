@@ -251,7 +251,7 @@ async function verifyRenderFrames(
     return frame;
   };
   f.mesh.matrixAutoUpdate = false;
-  f.mesh.matrix.set(1, 0.35, 0.2, 0.1, 0, 0.8, -0.2, 0, 0, 0, 1, 0, 0, 0, 0, 1);
+  f.mesh.matrix.set(1, 0, 0, 0.1, 0, 0.8, 0, 0, 0, 0, 1.3, 0, 0, 0, 0, 1);
   const affine = await coreFrame('manual-affine');
   expect(equalBytes(displayPixels(affine), baseline)).toBe(false);
   const normals = new THREE.MeshStandardMaterial({ color: 0x80b090, roughness: 1 });

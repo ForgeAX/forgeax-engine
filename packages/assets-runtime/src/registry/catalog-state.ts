@@ -436,6 +436,13 @@ export class CatalogReplica {
     this.pendingBeforeBaseline = [];
     this.pendingDuringReconcile = undefined;
     this.listeners.clear();
+    // Held runtime content can keep its retired source for provenance. That
+    // source no longer serves reads, so it must not pin the entire directory.
+    // Previously returned immutable snapshots remain independently valid.
+    this.entries.clear();
+    this.currentSnapshot = undefined;
+    this.diagnostics = [];
+    this.reconcilePromise = undefined;
   }
 
   async start(): Promise<SnapshotResult> {

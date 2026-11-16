@@ -1612,6 +1612,13 @@ export class AssetRegistry implements AssetReferenceOwner {
     return this.#source?.entry(guid.toLowerCase())?.value as Asset | undefined;
   }
 
+  private adoptionSource(guid: string, kind: Asset['kind']): Asset | undefined {
+    // Source material children inherit the authored contract. An already
+    // admitted parent has pruned inactive fields and is not that authority.
+    // Derived device descriptors still resolve their current runtime inputs.
+    return kind === 'material' ? this.preparedSource(guid) : this.runtimeSource(guid);
+  }
+
   private adoptSource(
     key: string,
     visiting: Set<string>,
@@ -1795,6 +1802,7 @@ export class AssetRegistry implements AssetReferenceOwner {
           [...dependencies],
           staged,
           existing as AssetHandle<BuiltinAssetKind> | undefined,
+          (guid) => this.adoptionSource(guid, content.kind),
         );
     visiting.delete(key);
     if (!created.ok) return created;

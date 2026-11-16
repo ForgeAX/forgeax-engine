@@ -765,11 +765,36 @@ table admits packaged `.program.mjs` source with runtime parameters against the
 normal RuntimePack identities. It does not compile new JavaScript in the player.
 
 `forgeax project build --target tauri` embeds the ordinary browser distribution
-under `web/` and generates the desktop project under `src-tauri/`. It keeps the
+under `web/` and generates the desktop/mobile project under `src-tauri/`. It keeps the
 browser platform and WebView GPU backend. The native window waits for the existing
 frontend Host to dispose before closing; its smoke reads App's actual completed
 frame count. The distribution manifest verifies the WebView entry, native
 configuration and the complete resource closure.
+
+Use `forgeax project package --format tauri --platform windows|macos|linux|android|ios`
+to build native installers into a new `release/<id>-tauri-<platform>/artifacts/` directory.
+`--output` selects a new directory; existing output is preserved. `--prepare-only` exports
+the sealed WebView project for another host without invoking npm, Rust or native tools.
+Native packaging installs the pinned Tauri CLI in temporary project storage, preserves
+Cargo.lock and removes compiler caches. The command reports `prepared` or `built`, with
+runtime acceptance explicitly `not-run`. Tauri-only flags reject other formats.
+
+| Platform | Generated script | Packages | Required build environment |
+|:--|:--|:--|:--|
+| Windows | `pnpm build:windows` | NSIS EXE, MSI | Windows/MSVC/WebView2 |
+| macOS | `pnpm build:macos` | APP, DMG | macOS/Xcode |
+| Linux | `pnpm build:linux` | AppImage, DEB, RPM | Linux/WebKitGTK 4.1 |
+| Android | `pnpm build:android` | APK, AAB | JDK 17+, Android SDK/NDK |
+| iOS | `pnpm build:ios` | IPA | macOS/Xcode/XcodeGen, signing/provisioning |
+
+Mobile projects share `src/lib.rs` with the desktop executable and expose Tauri's
+mobile entry point. Mobile scripts initialize their target once; extra arguments
+are forwarded to the pinned Tauri CLI. Set `JAVA_HOME`, `ANDROID_HOME`, `NDK_HOME`
+for Android; configure a Gradle release keystore for signed Android distribution.
+iOS uses `APPLE_DEVELOPMENT_TEAM` and Xcode provisioning. Signing material stays
+outside generated source. Desktop cross-host builds fail with the prepare-only
+recovery. See [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) and
+[distribution](https://v2.tauri.app/distribute/) for target toolchains and signing.
 
 Run `pnpm install && pnpm build` in that generated output on the target desktop.
 `pnpm smoke` launches the packaged macOS `.app`; other operating systems require
@@ -868,6 +893,13 @@ Program relocation and Engine dependency isolation inspect the same edges,
 while authoring-source validation remains a separate TypeScript operation.
 
 A build root is a native Plugin installed in an isolated Node process. It registers `ctx.nativeCookers` and `ctx.importers` through effects. Original producer functions remain in that process; typed IPC carries requests and bytes. Import `@forgeax/engine/devkit/plugin-build` for the build Context type augmentation. Duplicate keys, blocked bootstrap content reads, startup failures and cleanup residuals reject preparation. Each IPC operation has a deadline that terminates the build process when exceeded (default 60 s); a cooker that declares `timeoutMs` gets that bound for its own cooks instead, so a long native build (a modeling rig job) can run longer without raising every other operation's deadline. A cooker that declares `concurrency: 'parallel'` keeps that declaration across the process boundary: its cooks overlap in the build process (other operations stay in arrival order), and the Pack build may then admit several Packs at once.
+
+The private build protocol sends explicit V8 Serializer bytes through Node IPC.
+Requests, importer callbacks and results preserve ArrayBuffer identity, shared
+views, offsets and extents in both directions. Advanced IPC by itself rehomes
+views into message storage; those incidental layouts must not enter cooked
+product or SDK byte identity. Process isolation and operation deadlines remain
+owned by the existing build session.
 
 Build roots may also provide `ctx.devkitAppOptions`, a `DevKitAppOptions` data
 object projected into generated dev/build hosts before `createApp`. It accepts

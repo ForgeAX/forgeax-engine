@@ -6,7 +6,11 @@ import {
   runtimeAssets,
 } from '@forgeax/engine-assets-runtime/internal';
 import { createWorldContext, World } from '@forgeax/engine-ecs';
-import { createBoxGeometry } from '@forgeax/engine-geometry';
+import {
+  createBoxGeometry,
+  interleavedMesh,
+  meshAttributeChannels,
+} from '@forgeax/engine-geometry';
 import { serializeCookedMaterialRecord } from '@forgeax/engine-pack';
 import { MeshFilter } from '@forgeax/engine-render';
 import { ShaderRegistry } from '@forgeax/engine-shader';
@@ -1689,7 +1693,10 @@ it('publishes a stock VFX mesh once through asset residency across steady frames
     discarded.discard();
     const third = f.publish();
     expect(third.packet.assets.filter((row) => row.value.kind === 'mesh')).toHaveLength(1);
-    expect(third.resources.lookupAsset(f.meshGuid)).toEqual(replacement);
+    const published = third.resources.lookupAsset<MeshAsset>(f.meshGuid);
+    expect(published).toEqual(interleavedMesh(replacement));
+    expect(meshAttributeChannels(required(published))).toEqual(replacement.attributes);
+    expect(meshAttributeChannels(required(published)).position?.length).toBeGreaterThan(0);
     expect(third.geometry[0]?.data).not.toEqual(first.geometry[0]?.data);
     expect(f.mesh.vertices.byteLength).toBeGreaterThan(0);
     expect(replacement.vertices.byteLength).toBeGreaterThan(0);

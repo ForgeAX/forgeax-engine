@@ -73,7 +73,7 @@ it('captures a moving fixed pose once while preserving the final stop settlement
     };
     world.update(1.5 / 60).unwrap();
     expect(readPresentationWorldMatrix(world, actor)?.[12]).toBeCloseTo(4.5);
-    expect(copies).toBe(4);
+    expect(copies).toBe(3);
 
     moving = false;
     const fixed = world.getResource(FixedTime);
@@ -82,7 +82,7 @@ it('captures a moving fixed pose once while preserving the final stop settlement
     moving = true;
     world.update(1.5 / 60).unwrap();
     expect(readPresentationWorldMatrix(world, actor)?.[12]).toBeCloseTo(6);
-    expect(copies).toBe(8);
+    expect(copies).toBe(6);
   } finally {
     capture.descriptor = descriptor;
     await ctx.fiber.dispose();

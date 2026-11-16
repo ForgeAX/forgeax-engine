@@ -36,6 +36,7 @@ export function prepareRuntimeAsset(
           hint: 'supply complete finite mesh channels and matching interleaved vertices',
         }),
       );
+    return ok(interleavedMesh(prepared.value));
   }
   if (prepared.ok && prepared.value.kind === 'texture-generator')
     return validateTextureGenerator(prepared.value);
@@ -198,4 +199,4 @@ export function linkRuntimeMaterial(
   return ok({ value: { ...material, values }, dependencies: [...dependencies], textures: fields });
 }
 
-import { prepareMeshData } from '@forgeax/engine-geometry';
+import { interleavedMesh, prepareMeshData } from '@forgeax/engine-geometry';

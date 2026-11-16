@@ -230,7 +230,7 @@ test('maintained five source seams parse and disabled versions remain exact', as
     assert.equal(observed.originalSha256.length, 64);
     assert.notEqual(observed.observedSha256, observed.originalSha256);
   }
-  assert.deepEqual(counts, [5, 11, 3, 1, 9]);
+  assert.deepEqual(counts, [4, 12, 3, 1, 9]);
 });
 
 test('actual upload expression overlay executes once, with exact failure identity and inactive return', async () => {

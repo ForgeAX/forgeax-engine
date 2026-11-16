@@ -24,6 +24,7 @@ import {
 } from '../ibl/skylight-bind-group';
 import { type MaterialSourceSnapshot, materialSourceScope } from '../material-source';
 import {
+  buildPbrMaterialUserRegionEntries,
   isCanonicalStandardPbrMaterialShader,
   isStandardPbrMaterialShader,
   omittedStandardMaterialBindings,
@@ -236,18 +237,17 @@ export function preparedMaterialBindings(
     );
     const derived = derive(schema);
     const fields = [...derived.textureFieldNames];
-    let payload: Uint8Array | undefined;
-    if (derived.uboLayout.totalBytes > 0) {
-      payload = new Uint8Array(Math.max(16, derived.uboLayout.totalBytes));
-      writePreparedMaterialUbo(
-        payload,
-        schema,
-        values as Readonly<Record<string, number | readonly number[]>>,
-      );
-    }
-    return { schema, values, derived, fields, payload };
+    // Match the PBR layout's reserved dynamic UBO, including an empty schema.
+    const userRegion = buildPbrMaterialUserRegionEntries(schema);
+    const payload = new Uint8Array(Math.max(16, derived.uboLayout.totalBytes));
+    writePreparedMaterialUbo(
+      payload,
+      schema,
+      values as Readonly<Record<string, number | readonly number[]>>,
+    );
+    return { schema, values, userRegion, fields, payload };
   };
-  const { schema, values, derived, fields, payload } = prepareMaterialParameterPayload();
+  const { schema, values, userRegion, fields, payload } = prepareMaterialParameterPayload();
   const resolvePreparedMaterialTextureResources = () => {
     const textureResources: Array<{
       sampler: import('@forgeax/engine-rhi').Sampler;
@@ -288,8 +288,8 @@ export function preparedMaterialBindings(
   const entries: BindGroupEntry[] = [];
   let textureIndex = 0;
   const assemblePreparedMaterialSchemaEntries = () => {
-    for (let index = 0; index < derived.bglEntries.length; index += 1) {
-      const expected = derived.bglEntries[index];
+    for (let index = 0; index < userRegion.length; index += 1) {
+      const expected = userRegion[index];
       if (expected?.buffer?.type === 'uniform' && payload !== undefined) {
         entries.push({
           binding: expected.binding,
@@ -303,7 +303,7 @@ export function preparedMaterialBindings(
       const textureResource = textureResources[textureIndex];
       if (
         expected?.sampler?.type === 'filtering' &&
-        derived.bglEntries[index + 1]?.texture !== undefined &&
+        userRegion[index + 1]?.texture !== undefined &&
         textureResource !== undefined
       ) {
         entries.push({

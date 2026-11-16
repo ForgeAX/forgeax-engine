@@ -1,4 +1,8 @@
-import { createBoxGeometry, meshAssetContribution } from '@forgeax/engine-geometry';
+import {
+  copyMeshAttribute,
+  createBoxGeometry,
+  meshAssetContribution,
+} from '@forgeax/engine-geometry';
 import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
 import {
   type CatalogDelta,
@@ -74,7 +78,7 @@ describe('explicit producer source and content transport', () => {
     });
     const handle = (await registry.load(guid, 'mesh')).unwrap();
     const loaded = registry.read(handle).unwrap();
-    expect(loaded.attributes.position).toEqual(original.attributes.position);
+    expect(copyMeshAttribute(loaded, 'position')).toEqual(copyMeshAttribute(original, 'position'));
     expect(loaded.indices).toEqual(original.indices);
     expect(loaded.aabb).toEqual(original.aabb);
     expect(fetcher).toHaveBeenCalledTimes(2);

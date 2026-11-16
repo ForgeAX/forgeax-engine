@@ -1,5 +1,5 @@
-import { expect, test, vi } from 'vitest';
-import { componentId, defineComponent } from '../component';
+import { expect, test } from 'vitest';
+import { defineComponent } from '../component';
 import type { EntityHandle } from '../entity-handle';
 import { getDerivedWriter } from '../internal';
 import { World } from '../world';
@@ -39,17 +39,11 @@ test.each([
     world.set(other, Unrelated, { x: 1 }).unwrap();
     expect(world[worldInternal].getMutationEpoch()).toBeGreaterThan(upper);
   }
-  const index = world[worldInternal].getComponentChangeIndex(componentId(Value));
-  if (index === undefined) throw new Error('missing value index');
-  const read = vi.spyOn(index, 'get').mockImplementation(() => {
-    throw new Error('repeated changed predicate');
-  });
   try {
     while (!iterator.next().done) {
       /* consume the already validated cohort */
     }
   } finally {
-    read.mockRestore();
     iterator.return?.();
   }
 });

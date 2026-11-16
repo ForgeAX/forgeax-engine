@@ -6,6 +6,7 @@
   "cascadeCount": 1,
   "reflectionResolution": 16,
   "subsurfaceQuality": "low",
+  "proceduralTextureResolution": 512,
   "irradianceRaysPerProbe": 32,
   "geometry": {
     "sphereWidth": 16,

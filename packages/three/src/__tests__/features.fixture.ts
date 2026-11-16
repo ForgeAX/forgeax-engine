@@ -548,7 +548,7 @@ export function featureCases(THREE: typeof ThreeCore & { ClippingGroup: typeof C
       root.add(tip);
       mesh.add(root);
       mesh.bind(new THREE.Skeleton([root, tip]));
-      mesh.scale.set(1.2, 0.8, 1.3);
+      mesh.scale.set(1.2, 1.2, 1.2);
       scene.add(mesh);
       const sun = new THREE.DirectionalLight(0xffffff, 3);
       sun.position.set(2, 3, 5);

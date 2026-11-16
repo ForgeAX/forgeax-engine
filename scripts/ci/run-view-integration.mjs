@@ -59,20 +59,20 @@ const steps = [
   ['contracts', 'node', ['scripts/ci/verify-view-export-falsifier.mjs']],
   ['contracts', 'node', ['scripts/ci/verify-view-panels-falsifier.mjs']],
   [
-    'diagnostics',
+    'diagnostic-pages',
     'node',
     ['tools/view/scripts/verify-diagnostic-pages-integration.mjs'],
     ...(process.env.CI === 'true' ? [{ FORGEAX_BROWSER_CI_LIGHTWEIGHT: '1' }] : []),
   ],
-  ['diagnostics', 'node', ['tools/view/scripts/verify-texture-preview-integration.mjs']],
+  ['diagnostic-texture', 'node', ['tools/view/scripts/verify-texture-preview-integration.mjs']],
   [
-    'diagnostics',
+    'diagnostic-gpu-2d',
     'node',
     ['tools/view/scripts/verify-gpu-texture-preview.mjs'],
     { FORGEAX_EVIDENCE_DIR: resolve(root, 'artifacts/view-integration/gpu-texture-2d') },
   ],
   [
-    'diagnostics',
+    'diagnostic-gpu-array',
     'node',
     ['tools/view/scripts/verify-gpu-texture-preview.mjs'],
     {
@@ -80,8 +80,12 @@ const steps = [
       FORGEAX_EVIDENCE_DIR: resolve(root, 'artifacts/view-integration/gpu-texture-array'),
     },
   ],
-  ['diagnostics', 'node', ['tools/view/scripts/verify-pack-authoring-integration.mjs']],
-  ['diagnostics', 'node', ['tools/view/scripts/verify-pack-save-reopen-integration.mjs']],
+  [
+    'diagnostic-pack-authoring',
+    'node',
+    ['tools/view/scripts/verify-pack-authoring-integration.mjs'],
+  ],
+  ['diagnostic-pack-save', 'node', ['tools/view/scripts/verify-pack-save-reopen-integration.mjs']],
   ['engine-only', 'node', ['scripts/ci/verify-engine-without-view.mjs']],
 ];
 if (!candidate)
@@ -144,15 +148,22 @@ for (const language of ['js', 'ts'])
 steps.push(['modeling', 'node', ['tools/view-plugins/integration/verify-modeling.mjs']]);
 const groups = [...new Set(steps.map(([owner]) => owner).filter((owner) => owner !== 'prepare'))];
 // Keep complete owners and each language's live/cold chain on four processes.
-// Run 42955764870 hit the 30-minute cap after Plugin (782 s) and both runtime
-// chains (JS 95 s, TS 187 s) shared a lane with Modeling. Balance the complete
-// owners against the retained 42130885413 replay; keep Modeling last after the
-// diagnostic replay so no later browser journey inherits its GPU work.
+// Run 43746993655 completed all six diagnostic probes but exhausted the 30-minute
+// cap during Modeling. Split the measured probes across existing lanes and keep
+// the RHI page replay first, with Modeling last on its lane.
 const shards = [
-  ['contracts', 'plugin', 'runtime-js', 'runtime-ts'],
-  ['lifecycle', 'workspace', 'engine-only'],
-  ['game3d'],
-  ['diagnostics', 'modeling'],
+  [
+    'contracts',
+    'plugin',
+    'runtime-js',
+    'runtime-ts',
+    'diagnostic-gpu-2d',
+    'diagnostic-pack-save',
+    'lifecycle',
+  ],
+  ['engine-only', 'workspace', 'diagnostic-gpu-array'],
+  ['game3d', 'diagnostic-texture'],
+  ['diagnostic-pages', 'diagnostic-pack-authoring', 'modeling'],
 ];
 if (process.argv.includes('--list-shards')) {
   console.log(JSON.stringify(shards.map((_, index) => index)));
@@ -178,6 +189,10 @@ const selected = steps.filter(
     owner === 'prepare' ||
     (shard !== undefined ? shards[shard].includes(owner) : group === undefined || owner === group),
 );
+if (shard !== undefined) {
+  const ownerOrder = new Map(shards[shard].map((owner, index) => [owner, index]));
+  selected.sort(([left], [right]) => (ownerOrder.get(left) ?? -1) - (ownerOrder.get(right) ?? -1));
+}
 if (process.argv.includes('--dry-run')) {
   console.log(JSON.stringify(selected));
   process.exit(0);

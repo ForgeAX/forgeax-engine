@@ -4,7 +4,7 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
-import { meshAssetContribution, packMeshBin } from '@forgeax/engine-geometry';
+import { copyMeshAttribute, meshAssetContribution, packMeshBin } from '@forgeax/engine-geometry';
 import {
   finalizeImportProducts,
   ImporterRegistry,
@@ -248,6 +248,9 @@ describe('optional mesh distance field publication through actual HTTP Catalog',
       expect(mesh.distanceField).toMatchObject({ artifact });
       expect(packMeshBin(mesh, GUID).ok).toBe(false);
       const firstValues = mesh.distanceField?.values;
+      const firstPositions = copyMeshAttribute(mesh, 'position');
+      if (firstPositions === undefined || firstPositions.length === 0)
+        throw new Error('expected loaded mesh positions');
       for (const producer of [meshAssetDataProducer, meshAssetOutputProducer]) {
         const exported = await producer.produce({ guid: GUID, sourceKey: 'mesh:0', asset: mesh });
         if (!exported.ok) throw exported.error;
@@ -257,7 +260,7 @@ describe('optional mesh distance field publication through actual HTTP Catalog',
         const loaded = await f.mesh();
         expect(loaded.distanceField?.values).toEqual(firstValues);
         expect(loaded.distanceField).toMatchObject({ artifact });
-        expect(loaded.attributes.position).toEqual(mesh.attributes.position);
+        expect(copyMeshAttribute(loaded, 'position')).toEqual(firstPositions);
       }
       const warm = await f.publish(source.asset);
       expect(warm.result.ok).toBe(true);

@@ -205,13 +205,31 @@ it('loads exact shared shader bytes in Node without a browser Crypto global', as
   expect(loaded.publication).toEqual(publishShaderManifest(entries, materialShaders));
 });
 
+it('shares live immutable admission while keeping consumer collections independent', async () => {
+  const first = await loadSharedEngineShaderManifest(manifestPath, root);
+  const next = await loadSharedEngineShaderManifest(manifestPath, root);
+  expect(next.publication).toBe(first.publication);
+  expect(next.entries).not.toBe(first.entries);
+  expect(next.entries[0]).toBe(first.entries[0]);
+  expect(Object.isFrozen(first.entries[0])).toBe(true);
+  expect(Object.isFrozen(first.publication)).toBe(true);
+  first.entries.splice(0);
+  expect(next.entries.length).toBeGreaterThan(0);
+  rmSync(join(root, 'shared/shaders.json'));
+  await expect(loadSharedEngineShaderManifest(manifestPath, root)).rejects.toThrow(
+    'inventory is missing',
+  );
+});
+
 it('rejects changed source bytes under an unchanged source digest', async () => {
+  const previous = await loadSharedEngineShaderManifest(manifestPath, root);
   const publication = publishShaderManifest(entries, materialShaders);
   publication.fragments[0] += ' ';
   writePayload(publication);
   await expect(loadSharedEngineShaderManifest(manifestPath, root)).rejects.toThrow(
     'digest mismatch',
   );
+  expect(Object.isFrozen(previous.publication)).toBe(true);
 });
 
 it('rejects unused source digests before accepting the shared publication', async () => {

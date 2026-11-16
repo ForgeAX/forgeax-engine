@@ -16,13 +16,12 @@ import type { AssetHandle, Handle } from '@forgeax/engine-types';
 import { describe, expectTypeOf, it } from 'vitest';
 
 describe('w7 type-level - 5 component schemas yield exact data shapes via ShapeOf', () => {
-  it('Transform data shape has 4 local affine inline-array fields', () => {
+  it('Transform data shape has 3 local TRS inline-array fields', () => {
     type Data = ShapeOf<SchemaOf<typeof Transform>>;
-    expectTypeOf<keyof Data>().toEqualTypeOf<'pos' | 'quat' | 'scale' | 'shear'>();
+    expectTypeOf<keyof Data>().toEqualTypeOf<'pos' | 'quat' | 'scale'>();
     expectTypeOf<Data['pos']>().toEqualTypeOf<Float32Array>();
     expectTypeOf<Data['quat']>().toEqualTypeOf<Float32Array>();
     expectTypeOf<Data['scale']>().toEqualTypeOf<Float32Array>();
-    expectTypeOf<Data['shear']>().toEqualTypeOf<Float32Array>();
     type GlobalData = ShapeOf<SchemaOf<typeof GlobalTransform>>;
     expectTypeOf<keyof GlobalData>().toEqualTypeOf<'world' | 'presentation'>();
     expectTypeOf<GlobalData['world']>().toEqualTypeOf<Float32Array>();
@@ -34,7 +33,6 @@ describe('w7 type-level - 5 component schemas yield exact data shapes via ShapeO
     expectTypeOf<Input['pos']>().toEqualTypeOf<Float32Array | readonly number[]>();
     expectTypeOf<Input['quat']>().toEqualTypeOf<Float32Array | readonly number[]>();
     expectTypeOf<Input['scale']>().toEqualTypeOf<Float32Array | readonly number[]>();
-    expectTypeOf<Input['shear']>().toEqualTypeOf<Float32Array | readonly number[]>();
   });
 
   it("MeshFilter data shape has 1 AssetHandle<'mesh'> field (assetHandle; M5 / w19)", () => {

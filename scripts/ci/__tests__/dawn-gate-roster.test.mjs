@@ -53,13 +53,33 @@ const shippingPartitions = planDawnShards(nativeSpecifications, root, 2);
 
 function historicalDawnPartitions(snapshot) {
   const admittedFiles = { ...snapshot.reservedFiles, ...snapshot.files };
-  const specifications = nativeSpecifications.filter(({ moduleId }) =>
-    Object.hasOwn(admittedFiles, relative(root, moduleId).replaceAll('\\', '/')),
+  // Replay the actual current CI placement with this cohort's original costs.
+  // Filter unobserved later files without replanning the historical subset.
+  return shippingPartitions.map((partition) =>
+    partition.filter(({ moduleId }) =>
+      Object.hasOwn(admittedFiles, relative(root, moduleId).replaceAll('\\', '/')),
+    ),
   );
-  // New files keep their current CI placement, without being charged as work
-  // completed by an older cohort that never discovered them.
-  return planDawnShards(specifications, root, 2);
 }
+
+test('historical receipt files retain their current physical CI lanes', () => {
+  const currentLane = new Map(
+    shippingPartitions.flatMap((partition, lane) =>
+      partition.map(({ moduleId }) => [moduleId, lane]),
+    ),
+  );
+  const timings = readDawnTimings();
+  for (const snapshot of [timings.latestRun, timings.previousRun, ...timings.replayRuns]) {
+    for (const [lane, partition] of historicalDawnPartitions(snapshot).entries()) {
+      for (const specification of partition)
+        assert.equal(
+          currentLane.get(specification.moduleId),
+          lane,
+          `${snapshot.runId}: ${specification.moduleId}`,
+        );
+    }
+  }
+});
 
 function dawnPolicy(vitest) {
   const project = vitest.projects.find((project) => project.name === 'dawn');
@@ -565,7 +585,7 @@ test('ordinary backfill honors native-owner placement reserves without losing fi
   assert.ok(
     loads[mostReserved] - nativeLoads[mostReserved] <
       loads[leastReserved] - nativeLoads[leastReserved],
-    'ordinary backfill must compensate for unequal complete native-owner reserves',
+    `ordinary backfill must compensate for unequal complete native-owner reserves; native=${nativeLoads.join(', ')} total=${loads.join(', ')}`,
   );
   assert.ok(
     Math.max(...loads) - Math.min(...loads) <= largest + 1e-6,
@@ -594,6 +614,27 @@ test('the largest ordinary files start on distinct native lanes before backfill'
     ),
   );
   assert.ok(lanes.every((lane) => lane >= 0));
+  assert.equal(new Set(lanes).size, DAWN_GATE_SHARDS.length);
+});
+
+test('later discoveries retain conservative capacity without entering old measured windows', () => {
+  const timings = readDawnTimings();
+  const fallback = Math.max(...Object.values(timings.planningFiles));
+  const added = {
+    moduleId: resolve(root, 'packages/render/src/__tests__/unmeasured-discovery.dawn.test.ts'),
+    project: nativeSpecifications[0].project,
+  };
+  const files = [...nativeSpecifications, added];
+  const partitions = planDawnShards(files, root, 2);
+  assert.equal(partitions.flat().length, files.length);
+  assert.equal(new Set(partitions.flat().map((file) => file.moduleId)).size, files.length);
+  const cost = (file) =>
+    timings.planningFiles[relative(root, file.moduleId).replaceAll('\\', '/')] ?? fallback;
+  const firstWave = [...files]
+    .sort((left, right) => cost(right) - cost(left) || left.moduleId.localeCompare(right.moduleId))
+    .slice(0, DAWN_GATE_SHARDS.length);
+  assert.ok(firstWave.includes(added), 'an unmeasured file retains the largest capacity forecast');
+  const lanes = firstWave.map((file) => partitions.findIndex((row) => row.includes(file)));
   assert.equal(new Set(lanes).size, DAWN_GATE_SHARDS.length);
 });
 
@@ -723,6 +764,18 @@ test('historical missing-file forecasts stay frozen when later measurements grow
 });
 
 for (const receipt of [
+  {
+    runId: 43744332755,
+    fileCount: 401,
+    ownerCount: 25,
+    missing: ['gi-3', 'screen-probe'],
+  },
+  {
+    runId: 43718751716,
+    fileCount: 390,
+    ownerCount: 23,
+    missing: ['transmission', 'gi-1', 'gi-2', 'gi-4'],
+  },
   {
     runId: 43693841655,
     fileCount: 390,
@@ -1011,11 +1064,19 @@ test('later native measurements preserve older uncompleted-owner reservations', 
 });
 
 test('long native capture journeys start before ordinary backfill', () => {
-  for (const id of ['modeling-s6', 'modeling-show', 'gi-5', 'surface-pipelines', 'direct-light']) {
+  for (const id of [
+    'modeling-s6',
+    'modeling-show',
+    'gi-5',
+    'surface-pipelines',
+    'direct-light',
+    'transmission',
+  ]) {
     const lane = DAWN_GATE_SHARDS.findIndex((owners) => owners.includes(id));
     const group = DAWN_GATE_GROUPS.find((candidate) => candidate.id === id);
     assert.ok(
-      group.placementReserveSeconds >= (id === 'direct-light' ? 219.011 : 600),
+      group.placementReserveSeconds >=
+        (id === 'direct-light' ? 219.011 : id === 'transmission' ? 294.878 : 600),
       'retain measured capture headroom without changing the case deadline',
     );
     const selected = selectDawnShard(`${lane + 1}/4`);
@@ -1039,27 +1100,34 @@ test('long native capture journeys start before ordinary backfill', () => {
   );
 });
 
+test('run 43718751716 fits fixed native owners before assigning ordinary files', () => {
+  const snapshot = JSON.parse(
+    readFileSync(new URL('./fixtures/dawn-completed-43718751716.json', import.meta.url), 'utf8'),
+  );
+  const nativeSeconds = DAWN_GATE_SHARDS.map((ids) =>
+    ids
+      .filter((id) => !id.startsWith('ordinary-'))
+      .reduce((sum, id) => sum + (snapshot.owners[id] ?? snapshot.reservedOwners[id] ?? 0), 0),
+  );
+  assert.ok(Math.max(...nativeSeconds) <= 2_200, 'fixed owners must leave ordinary-file capacity');
+  assert.equal(snapshot.owners.transmission, undefined, 'an interrupted owner is not measured');
+  assert.equal(snapshot.reservedOwners.transmission, 294.878, 'retain its prior complete forecast');
+});
+
 test('native tail placement retains independent headroom across the later cohorts', () => {
   const fourthLane = DAWN_GATE_SHARDS[3];
   for (const id of ['modeling-s6', 'transmission']) {
     assert.ok(!fourthLane.includes(id), `${id} must use capacity outside the measured slow lane`);
   }
   assert.ok(
-    fourthLane.includes('screen-probe'),
-    'the complete owner uses the 2026-11-10 fourth-lane headroom',
+    DAWN_GATE_SHARDS[1].includes('screen-probe'),
+    'the complete owner uses the 43744332755 second-lane headroom',
   );
 });
 
-test('run 42156059037 timeouts reserve the fourth lane before ordinary backfill', () => {
+test('completed cohorts distribute complete native tails before ordinary backfill', () => {
   const laneOf = (id) => DAWN_GATE_SHARDS.findIndex((lane) => lane.includes(id));
-  assert.deepEqual(DAWN_GATE_SHARDS[3], [
-    'ordinary-4',
-    'vfx-depth',
-    'gi-5',
-    'gi-3',
-    'screen-probe',
-    'feature-depth',
-  ]);
+  assert.deepEqual(DAWN_GATE_SHARDS[3], ['ordinary-4', 'gi-5', 'gi-3', 'compact-2', 'gi-2']);
   for (const id of ['shadow-fields', 'heavy-1', 'heavy-2', 'nested-discard']) {
     assert.equal(laneOf(id), 0, `${id} moves to the measured lane-one headroom`);
   }
@@ -1067,9 +1135,14 @@ test('run 42156059037 timeouts reserve the fourth lane before ordinary backfill'
     assert.equal(laneOf(id), 1, `${id} moves to the measured lane-two headroom`);
   }
   assert.equal(laneOf('compact-1'), 0, 'run 42443025201 exchanges complete compact owners');
-  for (const id of ['compact-2', 'direct-light']) {
-    assert.equal(laneOf(id), 2, `${id} stays with the reduced third-lane workload`);
-  }
+  assert.equal(
+    laneOf('direct-light'),
+    0,
+    'run 43744332755 places the complete regression owner on lane one',
+  );
+  assert.equal(laneOf('gi-1'), 0, 'complete GI owners use measured first-lane headroom');
+  assert.equal(laneOf('gi-4'), 1, 'complete GI owners use measured second-lane headroom');
+  assert.equal(laneOf('compact-2'), 3, 'the fourth lane absorbs the complete compact owner');
   assert.equal(laneOf('gi-5'), 3, 'GI-5 reserves ordinary-file headroom in lane four');
   assert.equal(
     laneOf('surface-pipelines'),
@@ -1080,20 +1153,20 @@ test('run 42156059037 timeouts reserve the fourth lane before ordinary backfill'
 
 test('run 42835598738 moves complete full-profile depth owners off the saturated second lane', () => {
   const laneOf = (id) => DAWN_GATE_SHARDS.findIndex((lane) => lane.includes(id));
-  assert.equal(laneOf('feature-depth'), 3);
-  assert.equal(laneOf('vfx-depth'), 3);
+  assert.equal(laneOf('feature-depth'), 2);
+  assert.equal(laneOf('vfx-depth'), 2);
   assert.ok(!DAWN_GATE_SHARDS[1].includes('feature-depth'));
   assert.ok(!DAWN_GATE_SHARDS[1].includes('vfx-depth'));
 });
 
 test('run 42929802533 moves the complete S6 capture off the overloaded first Dawn lane', () => {
   const laneOf = (id) => DAWN_GATE_SHARDS.findIndex((lane) => lane.includes(id));
-  assert.equal(laneOf('gi-2'), 2, 'run 42786967820 moves the complete owner to lane three');
+  assert.equal(laneOf('gi-2'), 3, 'run 43718751716 moves the complete owner to lane four');
   assert.equal(laneOf('transmission'), 2, 'run 42786967820 moves the complete owner to lane three');
   assert.equal(laneOf('gi-3'), 3);
-  assert.equal(laneOf('gi-1'), 2);
+  assert.equal(laneOf('gi-1'), 0);
   assert.equal(laneOf('modeling-s6'), 2);
-  assert.equal(laneOf('gi-4'), 0, 'run 43704488189 moves the complete GI-4 group to lane one');
+  assert.equal(laneOf('gi-4'), 1);
   assert.notEqual(laneOf('gi-4'), laneOf('gi-5'));
 });
 

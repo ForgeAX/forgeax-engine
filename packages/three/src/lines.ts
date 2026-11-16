@@ -1,6 +1,59 @@
+import { type MeshAttributeWindow, meshAttributeWindow } from '@forgeax/engine-geometry';
 import type { MeshAsset } from '@forgeax/engine-types';
 import { type Line, LineDashedMaterial, type Material } from 'three/src/Three.Core.js';
 import { invalid, unsupported } from './errors';
+
+function segmentLength(position: MeshAttributeWindow, a: number, b: number) {
+  const start = position.offset + a * position.stride,
+    finish = position.offset + b * position.stride;
+  return Math.hypot(
+    (position.data[finish] ?? 0) - (position.data[start] ?? 0),
+    (position.data[finish + 1] ?? 0) - (position.data[start + 1] ?? 0),
+    (position.data[finish + 2] ?? 0) - (position.data[start + 2] ?? 0),
+  );
+}
+
+/** Validate source distances against native cumulative lengths without material policy. */
+function affineLineRate(
+  line: Line,
+  mesh: MeshAsset,
+  submesh: MeshAsset['submeshes'][number],
+  scale: number,
+) {
+  const positions = meshAttributeWindow(mesh, 'position');
+  if (positions === undefined || !(positions.data instanceof Float32Array))
+    return invalid('Line geometry position channel', line.uuid).unwrap();
+  const attribute = line.geometry.getAttribute('lineDistance');
+  const indices = mesh.indices as Uint16Array | Uint32Array;
+  const first = submesh.indexOffset,
+    end = first + submesh.indexCount;
+  const strip = submesh.topology === 'line-strip';
+  const phase = attribute.getX(indices[first] ?? 0) * scale;
+  let distance = 0,
+    slope: number | undefined;
+  for (let cursor = first; cursor + 1 < end; cursor += strip ? 1 : 2) {
+    const a = indices[cursor] ?? 0,
+      b = indices[cursor + 1] ?? 0;
+    const length = segmentLength(positions, a, b);
+    const startValue = attribute.getX(a) * scale,
+      endValue = attribute.getX(b) * scale;
+    if (length > 0 && slope === undefined) slope = (endValue - startValue) / length;
+    const rate = slope ?? 0;
+    if (
+      !Number.isFinite(startValue) ||
+      !Number.isFinite(endValue) ||
+      Math.abs(startValue - phase - rate * distance) > 1e-5 * Math.max(1, Math.abs(startValue)) ||
+      Math.abs(endValue - phase - rate * (distance + length)) >
+        1e-5 * Math.max(1, Math.abs(endValue))
+    )
+      return unsupported(
+        'LineDashedMaterial requires affine cumulative lineDistance; arbitrary endpoint distances need native input',
+        line.uuid,
+      ).unwrap();
+    distance += length;
+  }
+  return { phase, rate: slope ?? 0 };
+}
 
 /** Native expansion computes cumulative local arc length, independently per submesh. */
 export function lineStyle(line: Line, mesh: MeshAsset, materials: readonly Material[]) {
@@ -17,40 +70,7 @@ export function lineStyle(line: Line, mesh: MeshAsset, materials: readonly Mater
         material.gapSize < 0
       )
         return invalid('LineDashedMaterial scale/dashSize/gapSize', material.uuid).unwrap();
-      const positions = mesh.attributes.position as Float32Array;
-      const indices = mesh.indices as Uint16Array | Uint32Array;
-      const first = submesh.indexOffset,
-        end = first + submesh.indexCount;
-      const strip = submesh.topology === 'line-strip';
-      const phase = attribute.getX(indices[first] ?? 0) * material.scale;
-      let distance = 0,
-        slope: number | undefined;
-      for (let cursor = first; cursor + 1 < end; cursor += strip ? 1 : 2) {
-        const a = indices[cursor] ?? 0,
-          b = indices[cursor + 1] ?? 0;
-        const length = Math.hypot(
-          ...[0, 1, 2].map(
-            (axis) => (positions[b * 3 + axis] ?? 0) - (positions[a * 3 + axis] ?? 0),
-          ),
-        );
-        const startValue = attribute.getX(a) * material.scale,
-          endValue = attribute.getX(b) * material.scale;
-        if (length > 0 && slope === undefined) slope = (endValue - startValue) / length;
-        const rate = slope ?? 0;
-        if (
-          ![startValue, endValue].every(Number.isFinite) ||
-          Math.abs(startValue - phase - rate * distance) >
-            1e-5 * Math.max(1, Math.abs(startValue)) ||
-          Math.abs(endValue - phase - rate * (distance + length)) >
-            1e-5 * Math.max(1, Math.abs(endValue))
-        )
-          return unsupported(
-            'LineDashedMaterial requires affine cumulative lineDistance; arbitrary endpoint distances need native input',
-            line.uuid,
-          ).unwrap();
-        distance += length;
-      }
-      const rate = slope ?? 0;
+      const { phase, rate } = affineLineRate(line, mesh, submesh, material.scale);
       if (rate === 0) {
         const period = material.dashSize + material.gapSize;
         if (((phase % period) + period) % period > material.dashSize) return null;

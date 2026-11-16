@@ -61,4 +61,11 @@ export type {
 } from './transcode.js';
 export { selectTranscodeTarget } from './transcode.js';
 export type { BasisWasmHost } from './wasm/basis-types.js';
-export { decodeDocumentText, decompressZstd } from './zstd.js';
+export type { RetainedZstdBytes } from './zstd.js';
+export {
+  copyRetainedZstdBytes,
+  decodeDocumentText,
+  decompressRetainedZstd,
+  decompressZstd,
+  retainedZstdBytes,
+} from './zstd.js';

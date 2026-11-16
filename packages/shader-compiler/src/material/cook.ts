@@ -383,6 +383,8 @@ function vertexInputFormat(type: string): string | undefined {
   switch (type.replace(/\s+/g, '')) {
     case 'f32':
       return 'float32';
+    case 'u32':
+      return 'uint32';
     case 'vec2<f32>':
       return 'float32x2';
     case 'vec3<f32>':
@@ -417,6 +419,7 @@ function canonicalVertexInputFormat(semantic: string, type: string): string | un
 }
 
 const CANONICAL_VERTEX_SEMANTICS: Readonly<Record<number, string>> = Object.freeze({
+  14: 'tangentFrame',
   0: 'position',
   1: 'normal',
   2: 'uv',
@@ -1851,6 +1854,36 @@ function passAbiKind(cook: MaterialPassCook, hasSceneIndexEntry: boolean): Mater
   return hasSceneIndexEntry ? 'custom-scene' : 'direct';
 }
 
+function withPackedTangentFrameAbi(
+  receipt: MaterialProgramAbi,
+  directEntry: string,
+  compiled: CompileResult,
+  sceneCompiled: CompileResult | undefined,
+): MaterialProgramAbi {
+  const packedDirect = `${directEntry}_packed`;
+  const packedInputs = materialVertexInputs(compiled.wgsl, packedDirect);
+  if (packedInputs.some((input) => input.semantic === 'tangentFrame')) {
+    const packedScene = sceneCompiled === undefined ? undefined : 'vs_scene_index_packed';
+    if (
+      sceneCompiled !== undefined &&
+      !sameVertexInputs(
+        packedInputs,
+        materialVertexInputs(sceneCompiled.wgsl, packedScene as string),
+      )
+    )
+      throw new Error('packed direct and scene-index vertex inputs differ');
+    return {
+      ...receipt,
+      tangentFrame32: {
+        directEntry: packedDirect,
+        ...(packedScene === undefined ? {} : { sceneIndexEntry: packedScene }),
+        vertexInputs: packedInputs,
+      },
+    };
+  }
+  return receipt;
+}
+
 function publishPassAbi(
   cook: MaterialPassCook,
   composed: ComposedPassSource,
@@ -1884,25 +1917,24 @@ function publishPassAbi(
       throw new Error('single-layer medium material must publish a Surface ABI');
     const skin = validateSkinVertexResources(vertexInputs.value, compiled, cook.context);
     if (!skin.ok) return skin;
-    return ok(
-      createMaterialProgramArtifactReceipt({
-        ...(provesStandardPositionBounds(cook, composed, directEntry)
-          ? { positionBounds: 'standard-input' as const }
-          : {}),
-        schema: cook.unit.schema,
-        directEntry,
-        vertexInputs: vertexInputs.value,
-        ...(sceneCompiled === undefined
-          ? {}
-          : { sceneIndexEntry: 'vs_scene_index', rowStride: cook.unit.sceneRowStride }),
-        ...(abiKind === 'standard' &&
-        cook.unit.schema.some((parameter) => parameter.name === 'alphaCutoff') &&
-        composed.surfaceModule !== 'forgeax_material::opaque_surface'
-          ? { alphaMask: { cutoff: 'alphaCutoff', source: 'baseColor.a' } }
-          : {}),
-        ...(publishedSurface === undefined ? {} : { surface: publishedSurface }),
-      }),
-    );
+    const receipt = createMaterialProgramArtifactReceipt({
+      ...(provesStandardPositionBounds(cook, composed, directEntry)
+        ? { positionBounds: 'standard-input' as const }
+        : {}),
+      schema: cook.unit.schema,
+      directEntry,
+      vertexInputs: vertexInputs.value,
+      ...(sceneCompiled === undefined
+        ? {}
+        : { sceneIndexEntry: 'vs_scene_index', rowStride: cook.unit.sceneRowStride }),
+      ...(abiKind === 'standard' &&
+      cook.unit.schema.some((parameter) => parameter.name === 'alphaCutoff') &&
+      composed.surfaceModule !== 'forgeax_material::opaque_surface'
+        ? { alphaMask: { cutoff: 'alphaCutoff', source: 'baseColor.a' } }
+        : {}),
+      ...(publishedSurface === undefined ? {} : { surface: publishedSurface }),
+    });
+    return ok(withPackedTangentFrameAbi(receipt, directEntry, compiled, sceneCompiled));
   } catch (error) {
     return sceneAbiFailure(abiKind, error);
   }

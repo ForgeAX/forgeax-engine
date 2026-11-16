@@ -1,4 +1,5 @@
 import { publishGltfFixture } from './source-fixture';
+import { copyMeshAttribute } from '@forgeax/engine-geometry';
 import { Materials } from '@forgeax/engine-render';
 import type { AssetHandle } from '@forgeax/engine-types';
 // The browser transports a complete native publication through JSON, loads its
@@ -236,7 +237,7 @@ describe('hello-gltf w27 - loadByGuid<SceneAsset> spine + AC-07 + AC-15', () => 
     > = await reg.load(meshGuid, 'mesh');
     expect(meshRes.ok).toBe(true);
     if (meshRes.ok) {
-      expect(reg.read(meshRes.value).unwrap().attributes.position).toEqual(
+      expect(copyMeshAttribute(reg.read(meshRes.value).unwrap(), 'position')).toEqual(
         meshPod.attributes.position,
       );
     }

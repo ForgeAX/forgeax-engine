@@ -40,12 +40,52 @@ const prepare = runInNewContext(
 );
 const template = resolve('templates/game-3d');
 const viewIntegration = resolve('scripts/ci/run-view-integration.mjs');
-const viewPlan = (...args) =>
+const viewPlanForCI = (ci, ...args) =>
   JSON.parse(
     execFileSync(process.execPath, [viewIntegration, '--candidate', ...args], {
       encoding: 'utf8',
+      env: { ...process.env, CI: ci },
     }),
   );
+const viewPlan = (...args) => viewPlanForCI('false', ...args);
+test('repartitioning retains every original View command, input and capability flag', async () => {
+  const original = JSON.parse(
+    await readFile(
+      new URL('./fixtures/view-probe-population-c65c03331d.json', import.meta.url),
+      'utf8',
+    ),
+  );
+  // Main 0e8c042 adds the cloud Preview program contract to this complete owner.
+  // Retain the preceding population and require its new contract as well.
+  const appContracts = original.commands.find(({ args }) =>
+    args.includes('tools/forgeax-mcp/__tests__/app/program-host.test.mjs'),
+  );
+  assert.ok(appContracts);
+  appContracts.args.push('tools/forgeax-mcp/__tests__/app/preview-program.test.mjs');
+  appContracts.args.sort();
+  const actual = viewPlan('--dry-run').map(([, command, args, env = {}]) => ({
+    command,
+    args: args.includes('tools/forgeax-mcp/__tests__/app/program-host.test.mjs')
+      ? [...args].sort()
+      : args,
+    env,
+  }));
+  const portable = JSON.parse(JSON.stringify(actual).replaceAll(resolve('.'), '<root>'));
+  assert.deepEqual(
+    portable.map(JSON.stringify).sort(),
+    original.commands.map(JSON.stringify).sort(),
+  );
+});
+test('CI retains the complete View plan and its diagnostic-page capability flag', () => {
+  const local = viewPlan('--dry-run');
+  const diagnostic = local.find(([, , args]) =>
+    args.includes('tools/view/scripts/verify-diagnostic-pages-integration.mjs'),
+  );
+  assert.ok(diagnostic);
+  assert.equal(diagnostic.length, 3);
+  diagnostic.push({ FORGEAX_BROWSER_CI_LIGHTWEIGHT: '1' });
+  assert.deepEqual(viewPlanForCI('true', '--dry-run'), local);
+});
 test('complete View owner receipts retain setup headroom inside four original jobs', async () => {
   const receipts = [
     JSON.parse(
@@ -57,10 +97,18 @@ test('complete View owner receipts retain setup headroom inside four original jo
     JSON.parse(
       await readFile(new URL('./fixtures/view-partial-42955764870.json', import.meta.url), 'utf8'),
     ),
+    JSON.parse(
+      await readFile(new URL('./fixtures/view-partial-43737218283.json', import.meta.url), 'utf8'),
+    ),
+    JSON.parse(
+      await readFile(new URL('./fixtures/view-partial-43746993655.json', import.meta.url), 'utf8'),
+    ),
   ];
-  const [complete, partial] = receipts;
+  const [complete, partial, shardEvidence, diagnosticEvidence] = receipts;
   assert.equal(Object.hasOwn(complete.completedOwnerSeconds, 'modeling'), false);
   assert.deepEqual(partial.uncompletedOwners, ['modeling']);
+  assert.deepEqual(shardEvidence.uncompletedOwners, ['diagnostics', 'modeling']);
+  assert.deepEqual(diagnosticEvidence.uncompletedOwners, ['modeling']);
   const full = viewPlan('--dry-run').filter(([owner]) => owner !== 'prepare');
   const shards = Array.from({ length: 4 }, (_value, index) =>
     viewPlan('--shard', String(index), '--dry-run').filter(([owner]) => owner !== 'prepare'),
@@ -72,8 +120,8 @@ test('complete View owner receipts retain setup headroom inside four original jo
     assert.ok(
       receipts.some(
         (receipt) =>
-          Object.hasOwn(receipt.completedOwnerSeconds, owner) ||
-          Object.hasOwn(receipt.retainedOwnerSeconds, owner),
+          Object.hasOwn(receipt.completedOwnerSeconds ?? {}, owner) ||
+          Object.hasOwn(receipt.retainedOwnerSeconds ?? {}, owner),
       ),
       `complete owner requires a measured or retained forecast: ${owner}`,
     );
@@ -97,7 +145,7 @@ test('complete View owner receipts retain setup headroom inside four original jo
   );
 });
 
-test('the RHI diagnostic runs first while Modeling keeps its complete GPU owner', () => {
+test('measured diagnostic owners share the original four jobs and Modeling runs last', () => {
   const shards = Array.from({ length: 4 }, (_value, index) =>
     viewPlan('--shard', String(index), '--dry-run'),
   );
@@ -106,20 +154,33 @@ test('the RHI diagnostic runs first while Modeling keeps its complete GPU owner'
       steps.filter(([, , args]) => args[0] === file).map(([owner]) => ({ owner, shard })),
     );
   assert.deepEqual(groupOwner('tools/view/scripts/verify-diagnostic-pages-integration.mjs'), [
-    { owner: 'diagnostics', shard: 3 },
+    { owner: 'diagnostic-pages', shard: 3 },
+  ]);
+  assert.deepEqual(groupOwner('tools/view/scripts/verify-texture-preview-integration.mjs'), [
+    { owner: 'diagnostic-texture', shard: 2 },
+  ]);
+  assert.deepEqual(groupOwner('tools/view/scripts/verify-gpu-texture-preview.mjs'), [
+    { owner: 'diagnostic-gpu-2d', shard: 0 },
+    { owner: 'diagnostic-gpu-array', shard: 1 },
+  ]);
+  assert.deepEqual(groupOwner('tools/view/scripts/verify-pack-authoring-integration.mjs'), [
+    { owner: 'diagnostic-pack-authoring', shard: 3 },
+  ]);
+  assert.deepEqual(groupOwner('tools/view/scripts/verify-pack-save-reopen-integration.mjs'), [
+    { owner: 'diagnostic-pack-save', shard: 0 },
   ]);
   assert.deepEqual(groupOwner('tools/view-plugins/integration/verify-modeling.mjs'), [
     { owner: 'modeling', shard: 3 },
   ]);
   assert.equal(
-    shards[3].filter(([owner]) => owner === 'diagnostics')[0][2][0],
+    shards[3].filter(([owner]) => owner.startsWith('diagnostic-'))[0][2][0],
     'tools/view/scripts/verify-diagnostic-pages-integration.mjs',
     'the live RHI replay must start before the other GPU diagnostic owners',
   );
   assert.deepEqual(
     shards[2].filter(([owner]) => owner !== 'prepare').map(([owner]) => owner),
-    ['game3d', 'game3d'],
-    'the complete Game 3D chain stays contiguous',
+    ['game3d', 'game3d', 'diagnostic-texture'],
+    'the complete Game 3D chain stays contiguous before texture preview',
   );
   assert.equal(
     shards[3].at(-1)[0],
@@ -307,6 +368,15 @@ for (const lightweight of [false, true])
                   `resolution: ${Math.min(128, quality.reflectionResolution)},`,
                 ),
             );
+          } else if (lightweight && path === 'player/character.pack.ts') {
+            expected = Buffer.from(
+              bytes
+                .toString()
+                .replace(
+                  'default: CONVOY_DEFAULT_RESOLUTION,',
+                  `default: Math.min(CONVOY_DEFAULT_RESOLUTION, ${quality.proceduralTextureResolution}),`,
+                ),
+            );
           } else if (lightweight && path === 'geometry.pack.ts') {
             expected = Buffer.from(
               bytes
@@ -328,9 +398,39 @@ for (const lightweight of [false, true])
     }
   });
 
-test('View diagnostic retains sixty ready frames and the original ninety-second admission', () => {
-  assert.match(source, /__diagnosticReadyCompletedFrames\[identity\]>=60/);
-  assert.match(source, /\},undefined,\{timeout:90000\}\)/);
+test('View diagnostic retains bounded cold readiness and sixty actual ready frames', async () => {
+  const begin = source.indexOf(' const waitForReadyPictures=');
+  const end = source.indexOf('\n const sceneCompletedFrames=', begin);
+  assert.ok(begin >= 0 && end > begin);
+  const events = [];
+  const context = {
+    __forgeaxGameInspection: { renderer: () => ({ execution: { world: { identity: 'scene' } } }) },
+    __diagnosticReadyCompletedFrames: { scene: 0 },
+    __diagnosticReadiness: {},
+    performance: { now: () => 42 },
+    page: {
+      async waitForFunction(predicate, minimum, options) {
+        events.push({ minimum, timeout: options.timeout });
+        context.__diagnosticReadyCompletedFrames.scene = minimum - 1;
+        assert.equal(predicate(minimum), false, 'an incomplete picture window is rejected');
+        context.__diagnosticReadyCompletedFrames.scene = minimum;
+        assert.equal(predicate(minimum), true);
+      },
+      async evaluate(callback) {
+        events.push('steady-start');
+        callback();
+      },
+    },
+  };
+  await runInNewContext(`(async () => {${source.slice(begin, end)}})()`, context);
+  assert.deepEqual(events, [
+    { minimum: 1, timeout: 90000 },
+    'steady-start',
+    { minimum: 60, timeout: 90000 },
+  ]);
+  assert.deepEqual(JSON.parse(JSON.stringify(context.__diagnosticReadiness)), {
+    steadyWait: { identity: 'scene', milliseconds: 42, ready: 1 },
+  });
   assert.match(source, /await assertAuthoredSky/);
   assert.match(
     source,

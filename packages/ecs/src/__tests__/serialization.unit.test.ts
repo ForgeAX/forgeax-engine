@@ -797,7 +797,9 @@ import { handleNumeric } from './utils/handle-numeric';
               for (const { fields: fieldCols } of table.storage.values()) {
                 const col = fieldCols.get(fieldName);
                 if (col !== undefined && fieldCols.has(fieldName)) {
-                  return col.view[row] as number;
+                  // Array location identity: block and byte offset (pages are 64 KiB).
+                  const base = row * col.arity;
+                  return (col.view[base] as number) * 0x10000 + (col.view[base + 1] as number);
                 }
               }
             }
@@ -809,7 +811,7 @@ import { handleNumeric } from './utils/handle-numeric';
   }
 
   // ---------------------------------------------------------------------------
-  // Helper -- the BufferPool's live (alloc'd, not-yet-released) slot count.
+  // Helper -- the world's live (stored, not-yet-released) array count.
   // feat-20260602: fixed `array<T,N>` stores its elements INLINE in the
   // archetype column, so it never allocs / releases a pool slot. The three
   // release paths assert `_liveCount() === 0` end-to-end for the fixed shape
@@ -818,7 +820,7 @@ import { handleNumeric } from './utils/handle-numeric';
   // ---------------------------------------------------------------------------
 
   function liveCount(world: World): number {
-    return (world as unknown as { bufferPool: { _liveCount(): number } }).bufferPool._liveCount();
+    return world.memoryStats().arrays.liveArrays;
   }
 
   // ---------------------------------------------------------------------------

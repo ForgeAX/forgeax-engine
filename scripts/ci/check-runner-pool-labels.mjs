@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 
 export const SELF_HOSTED_LABEL = 'self-hosted';
 export const POOL_LABELS = Object.freeze(['standard', 'heavy']);
-export const SELF_HOSTED_CAPABILITY_LABELS = Object.freeze(['gpu']);
+export const SELF_HOSTED_CAPABILITY_LABELS = Object.freeze(['gpu', 'engine-sdk-fullscene']);
 
 const HOSTED_LABEL_PATTERN = /^(?:ubuntu|windows|macos)(?:-[a-z0-9][a-z0-9.-]*)?$/;
 
@@ -105,8 +105,72 @@ function selectorError(file, line, job, message) {
   return `${file}:${line}: job ${job}: ${message}`;
 }
 
+/** Only a parenthesized condition may choose between two complete literal label arrays. */
+function conditionalRunnerLabels(value) {
+  const prefix = value.match(/^\$\{\{\s*fromJSON\(\s*(?=\()/);
+  if (!prefix) return null;
+  const argument = value.slice(prefix[0].length);
+  let depth = 0;
+  let quote = null;
+  for (let index = 0; index < argument.length; index++) {
+    const character = argument[index];
+    if (quote) {
+      if (character === quote && argument[index + 1] === quote) index++;
+      else if (character === quote) quote = null;
+      continue;
+    }
+    if (character === "'" || character === '"') quote = character;
+    else if (character === '(') depth++;
+    else if (character === ')' && --depth === 0) {
+      const branches = argument
+        .slice(index + 1)
+        .match(/^\s*&&\s*'(\[[^']*\])'\s*\|\|\s*'(\[[^']*\])'\s*\)\s*\}\}$/);
+      if (!branches) return [];
+      try {
+        const labels = branches.slice(1).map((branch) => JSON.parse(branch));
+        return labels.every(
+          (branch) => Array.isArray(branch) && branch.every((label) => typeof label === 'string'),
+        )
+          ? labels
+          : [];
+      } catch {
+        return [];
+      }
+    }
+  }
+  return [];
+}
+
+function classifyConditionalRunnerBranches(branches) {
+  const selectors = branches.map((labels) =>
+    classifyRunnerSelector(`\${{ fromJSON('${JSON.stringify(labels)}') }}`),
+  );
+  if (
+    selectors.length !== 2 ||
+    selectors.some(
+      (selector) =>
+        selector.kind !== 'self-hosted' ||
+        !['Linux', 'X64'].every((label) => selector.labels.includes(label)),
+    )
+  )
+    return {
+      kind: 'error',
+      message:
+        'conditional runner branches must each declare complete qualified self-hosted Linux X64 labels',
+    };
+  const pools = new Set(selectors.map((selector) => selector.pool));
+  return {
+    kind: 'self-hosted',
+    labels: [...new Set(selectors.flatMap((selector) => selector.labels))],
+    pool: pools.size === 1 ? selectors[0].pool : null,
+    capabilities: [...new Set(selectors.flatMap((selector) => selector.capabilities))],
+  };
+}
+
 export function classifyRunnerSelector(value, runnerValues = []) {
   const trimmed = value.trim();
+  const branches = conditionalRunnerLabels(trimmed);
+  if (branches !== null) return classifyConditionalRunnerBranches(branches);
 
   if (/fromJSON\(\s*matrix\.runner\s*\)/.test(trimmed)) {
     const entries = runnerValues.map(parseRunnerValue).filter((entry) => entry.length > 0);
@@ -152,6 +216,10 @@ export function classifyRunnerSelector(value, runnerValues = []) {
       : { kind: 'error', message: `unsupported dynamic runner labels: ${labels.join(', ')}` };
   }
 
+  return classifyStaticRunnerSelector(trimmed);
+}
+
+function classifyStaticRunnerSelector(trimmed) {
   const labels = parseStaticRunnerLabels(trimmed);
   if (!labels) return { kind: 'error', message: `cannot statically classify runs-on: ${trimmed}` };
 

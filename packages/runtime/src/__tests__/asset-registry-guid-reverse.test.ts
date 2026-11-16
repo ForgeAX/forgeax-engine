@@ -1,6 +1,6 @@
 import { SceneCollectAssetGuidUnresolvedError } from '@forgeax/engine-assets-runtime';
 import { type EntityHandle, World } from '@forgeax/engine-ecs';
-import { createBoxGeometry } from '@forgeax/engine-geometry';
+import { copyMeshAttribute, createBoxGeometry } from '@forgeax/engine-geometry';
 import { MeshFilter, MeshRenderer, SceneInstance } from '@forgeax/engine-render';
 import { worldGetSceneAssetForInstance } from '@forgeax/engine-scene';
 import type { AnimationClip, AssetHandle, SceneAsset } from '@forgeax/engine-types';
@@ -129,9 +129,11 @@ describe('managed asset provenance during Scene collection', () => {
       (await assets.reload(mesh, { conflict: 'reject' })).unwrap();
       const current = assets.read(mesh).unwrap();
       expect(current.materialSlots).toEqual([{ slotName: 'Recooked' }]);
-      expect(current.attributes.position).toEqual(changed.attributes.position);
-      expect(old.attributes.position).toEqual(initial.attributes.position);
-      expect(current.attributes.position).not.toEqual(old.attributes.position);
+      expect(copyMeshAttribute(current, 'position')).toEqual(changed.attributes.position);
+      expect(copyMeshAttribute(old, 'position')).toEqual(initial.attributes.position);
+      expect(copyMeshAttribute(current, 'position')).not.toEqual(
+        copyMeshAttribute(old, 'position'),
+      );
       expect((await assets.load(MESH, 'mesh')).unwrap()).toBe(mesh);
       expect(assets.guidOf(mesh)).toBe(MESH);
       const scene = assets

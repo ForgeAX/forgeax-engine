@@ -16,6 +16,17 @@ import { test } from 'node:test';
 const git = (cwd, ...args) =>
   execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 
+test('PR SDK seed fetches only the exact head within its original deadline', () => {
+  const workflow = readFileSync(resolve('.github/workflows/sdk-pr-preflight.yml'), 'utf8');
+  const seed = workflow.split('\n  build-sdk:\n')[1].split('\n  consumers:\n')[0];
+  const checkout = seed.split('uses: actions/checkout@v5')[1].split('\n      - ')[0];
+  assert.match(seed, /timeout-minutes: 30\n/);
+  assert.match(checkout, /ref: \$\{\{ github.event.pull_request.head.sha \|\| github.sha \}\}/);
+  assert.match(checkout, /fetch-depth: 1\n/);
+  assert.match(checkout, /submodules: false\n/);
+  assert.match(seed, /git fetch --no-tags --unshallow origin "\$SDK_SOURCE_SHA"/);
+});
+
 test('Candidate absorbs standalone workspace sources before every recursive checkout', () => {
   const workflow = readFileSync(resolve('.github/workflows/sdk-release-candidate.yml'), 'utf8');
   const commands = [

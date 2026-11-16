@@ -1,4 +1,8 @@
-import { decompressZstd } from '@forgeax/engine-codec';
+import {
+  copyRetainedZstdBytes,
+  decompressRetainedZstd,
+  decompressZstd,
+} from '@forgeax/engine-codec';
 import { validateArtifactPath } from '@forgeax/engine-pack/artifact-path';
 import {
   decodedArtifactRangeIssue,
@@ -100,7 +104,9 @@ export async function decodeArtifactTransport(
       ),
     );
   }
-  const decoded = await decompressZstd(bytes);
+  const decoded = await (request.descriptor.mediaType === 'text/wgsl'
+    ? decompressRetainedZstd(bytes)
+    : decompressZstd(bytes));
   if (!decoded.ok) {
     return err(
       failure(
@@ -130,7 +136,10 @@ export async function finishArtifactBytes(
         selected.error,
       ),
     );
-  return verifyArtifactBytes(selected.value, request);
+  const verified = await verifyArtifactBytes(selected.value, request);
+  if (verified.ok && selected.value !== bytes)
+    copyRetainedZstdBytes(bytes, verified.value, request.descriptor.decodedRange?.offset ?? 0);
+  return verified;
 }
 
 export async function verifyArtifactBytes(

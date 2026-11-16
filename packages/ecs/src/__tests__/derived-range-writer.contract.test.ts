@@ -8,6 +8,7 @@ import {
   endDerivedRangeAllocationTrace,
 } from '../query/derived-range-writer';
 import type { Query } from '../query/query';
+import { readComponentChanged } from '../storage/change-detection';
 import { World } from '../world';
 import { worldInternal } from '../world-internal';
 
@@ -248,8 +249,14 @@ describe('package-internal derived range writer contract', () => {
     expect(candidate.scannedRows).toBe(2);
     expect(candidate.checkedBlocks).toBe(0);
 
-    const index = world[worldInternal].getComponentChangeIndex(componentId(Value));
-    const epochs = Float64Array.from({ length: 4 }, (_, slot) => index?.get(slot) ?? 0);
+    const changedAt = (slot: number) =>
+      readComponentChanged(
+        world[worldInternal].getGraph(),
+        world[worldInternal].getRecords(),
+        slot,
+        componentId(Value),
+      ) ?? 0;
+    const epochs = Float64Array.from({ length: 4 }, (_, slot) => changedAt(slot));
     expect(epochs?.slice(0, 4)).toEqual(new Float64Array([1, beforeEpoch + 1, beforeEpoch + 1, 4]));
   });
 
@@ -302,8 +309,14 @@ describe('package-internal derived range writer contract', () => {
     const values: number[] = [];
     for (const row of world.query({ read: [Value] }).unwrap()) values.push(row.get(Value).value);
     expect(values).toEqual([0, 11, 2, 13]);
-    const index = world[worldInternal].getComponentChangeIndex(componentId(Value));
-    const epochs = Float64Array.from({ length: 4 }, (_, slot) => index?.get(slot) ?? 0);
+    const changedAt = (slot: number) =>
+      readComponentChanged(
+        world[worldInternal].getGraph(),
+        world[worldInternal].getRecords(),
+        slot,
+        componentId(Value),
+      ) ?? 0;
+    const epochs = Float64Array.from({ length: 4 }, (_, slot) => changedAt(slot));
     expect(epochs?.[1]).toBe(beforeEpoch + 1);
     expect(epochs?.[3]).toBe(beforeEpoch + 1);
   });
@@ -374,8 +387,14 @@ describe('package-internal derived range writer contract', () => {
       expect(world.execution.health).toBe('healthy');
       expect(world[worldInternal].getMutationEpoch()).toBe(beforeEpoch);
       expect(world.get(firstEntity, Value).unwrap().value).toBe(0);
-      const index = world[worldInternal].getComponentChangeIndex(componentId(Value));
-      const epochs = Float64Array.from({ length: 4 }, (_, slot) => index?.get(slot) ?? 0);
+      const changedAt = (slot: number) =>
+        readComponentChanged(
+          world[worldInternal].getGraph(),
+          world[worldInternal].getRecords(),
+          slot,
+          componentId(Value),
+        ) ?? 0;
+      const epochs = Float64Array.from({ length: 4 }, (_, slot) => changedAt(slot));
       expect(epochs?.slice(0, 4)).toEqual(new Float64Array([1, 2, 3, 4]));
     } finally {
       Object.defineProperty(world[worldInternal], 'nextMutationEpoch', {
@@ -428,8 +447,14 @@ describe('package-internal derived range writer contract', () => {
     expect(world.execution.health).toBe('poisoned');
     expect(world[worldInternal].getMutationEpoch()).toBe(beforeEpoch);
     expect(world.get(firstEntity, Value).unwrap().value).toBe(10);
-    const index = world[worldInternal].getComponentChangeIndex(componentId(Value));
-    const epochs = Float64Array.from({ length: 4 }, (_, slot) => index?.get(slot) ?? 0);
+    const changedAt = (slot: number) =>
+      readComponentChanged(
+        world[worldInternal].getGraph(),
+        world[worldInternal].getRecords(),
+        slot,
+        componentId(Value),
+      ) ?? 0;
+    const epochs = Float64Array.from({ length: 4 }, (_, slot) => changedAt(slot));
     expect(epochs?.slice(0, 4)).toEqual(new Float64Array([1, 2, 3, 4]));
     expect(
       writer.probeAndCommitRange(

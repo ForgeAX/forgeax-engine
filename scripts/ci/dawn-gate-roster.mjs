@@ -76,6 +76,10 @@ export const DAWN_ISOLATED_GROUPS = [
   },
   {
     id: 'transmission',
+    // Run 43718751716 reached this complete owner after minute 34 and lost
+    // its final partition at the unchanged 40-minute gate. Start its retained
+    // complete-owner forecast before ordinary backfill; no deadline changes.
+    placementReserveSeconds: 294.878,
     files: ['packages/render/src/transmission/__tests__/standard-transmission.dawn.test.ts'],
   },
   ...DAWN_HEAVY_TEST_PARTITIONS.map((files, index) => ({
@@ -165,7 +169,8 @@ export const DAWN_GATE_SHARDS = Object.freeze([
     'heavy-2',
     'nested-discard',
     'surface-pipelines',
-    'gi-4',
+    'gi-1',
+    'direct-light',
   ]),
   Object.freeze([
     'ordinary-2',
@@ -177,17 +182,11 @@ export const DAWN_GATE_SHARDS = Object.freeze([
     'compact-3',
     'gi-6',
     'renderer',
+    'gi-4',
+    'screen-probe',
   ]),
-  Object.freeze([
-    'ordinary-3',
-    'modeling-s6',
-    'compact-2',
-    'direct-light',
-    'gi-1',
-    'transmission',
-    'gi-2',
-  ]),
-  Object.freeze(['ordinary-4', 'vfx-depth', 'gi-5', 'gi-3', 'screen-probe', 'feature-depth']),
+  Object.freeze(['ordinary-3', 'modeling-s6', 'transmission', 'vfx-depth', 'feature-depth']),
+  Object.freeze(['ordinary-4', 'gi-5', 'gi-3', 'compact-2', 'gi-2']),
 ]);
 
 export const DAWN_GATE_GROUPS = [

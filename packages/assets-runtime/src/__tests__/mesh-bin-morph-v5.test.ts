@@ -183,7 +183,7 @@ for (const [name, decode] of Object.entries(readers))
       new DataView(bytes.buffer, bytes.byteOffset).setFloat32(116, value, true);
       expect(decode(bytes)).toBeUndefined();
     });
-    it.each([2, 3, 6])('rejects unsupported wire version %i', (version) => {
+    it.each([2, 3, 7])('rejects unsupported wire version %i', (version) => {
       const bytes = fixture();
       new DataView(bytes.buffer, bytes.byteOffset).setUint32(0, version, true);
       expect(decode(bytes)).toBeUndefined();

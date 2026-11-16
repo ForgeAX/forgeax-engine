@@ -1,3 +1,8 @@
+import {
+  createBoxGeometry,
+  meshAttributeWindow,
+  packMeshTangentFrame32,
+} from '@forgeax/engine-geometry';
 import type { MeshAsset } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import { createDynamicGeometryLifecycle } from '../dynamic-geometry.js';
@@ -72,6 +77,21 @@ it('retains borrowed vertex observations and native detached-buffer rejection', 
     expect(reads).toBe(3);
     expect(lifecycle.inspect().prepared).toBe(0);
     expect(lifecycle.inspect().meshBytes).toBe(0);
+  } finally {
+    lifecycle.dispose();
+  }
+});
+
+it('admits packed unsigned direction words while rejecting nonfinite floating attributes', () => {
+  const source = packMeshTangentFrame32(createBoxGeometry(1, 1, 1).unwrap()).unwrap(),
+    frame = meshAttributeWindow(source, 'tangentFrame');
+  if (!frame) throw new Error('missing packed frame');
+  frame.data[frame.offset] = 0x7fc00000;
+  const lifecycle = createDynamicGeometryLifecycle();
+  try {
+    expect(lifecycle.prepare({ world: {}, mesh: source, revision: 1 }, 1).ok).toBe(true);
+    source.vertices[0] = NaN;
+    expect(lifecycle.prepare({ world: {}, mesh: source, revision: 2 }, 1).ok).toBe(false);
   } finally {
     lifecycle.dispose();
   }

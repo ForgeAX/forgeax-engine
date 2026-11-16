@@ -229,7 +229,6 @@ import {
   viewBarrelDistortion,
   viewGraphInfo,
   viewMeshMaterialBindings,
-  viewRecoveryEvidence,
   viewRenderScene,
   viewStandardLut,
 } from '../view-inspection';
@@ -257,6 +256,7 @@ import {
   lodObservationCaptureFailure,
 } from './lod-observation';
 import {
+  hasPackedTangentFrame,
   isEngineOwnedMaterialShader,
   resolveMaterialPipelineGroup2Contract,
   resolveMaterialPipelineVertexEntry,
@@ -312,9 +312,11 @@ import {
   wrapDisposeError,
 } from './renderer-helpers';
 import {
+  exportPipelineLibraryForInspection,
+  inspectionSelects,
+  projectRecoveryEvidenceInspection,
   projectRendererInspectionState,
-  projectRendererOutputInspectionFromSurface,
-  projectRendererOutputObservationInspection,
+  projectRendererOutputFields,
   projectRenderViewInspection,
 } from './renderer-inspection';
 import {
@@ -1449,6 +1451,7 @@ async function makeWebGPURenderer(
       layoutKindOverride,
       vertexEntryPoint,
       vertexEntry,
+      hasPackedTangentFrame(vertexLayoutProjection),
     );
     const ctx = buildPipelineContext(
       variantSet,
@@ -3162,21 +3165,11 @@ async function makeWebGPURenderer(
     inspect(options): RenderInspection {
       const library = internals.device.pipelineLibrary;
       updatePipelineLibraryCollection(options?.pipelineLibraryCollection);
-      const exported =
-        options?.pipelineLibrary === true
-          ? library?.export(
-              options?.pipelineLibraryLimits,
-              options?.pipelineLibraryRequestedOnly === true ? { requestedOnly: true } : undefined,
-            )
-          : undefined;
-      if (options?.pipelineLibrary === true && exported === undefined)
-        throw new RhiError({
-          code: 'feature-not-enabled',
-          expected: 'backend pipeline library support',
-          hint: 'select WebGPU for pipeline recipe collection',
-        });
-      if (exported?.ok === false) throw exported.error;
+      const exported = exportPipelineLibraryForInspection(library, options);
       const inspected = cameraViews.currentOwner;
+      const fields = options?.fields;
+      const want = (...names: readonly (keyof RenderInspection)[]) =>
+        inspectionSelects(fields, ...names);
       const health = internals.healthRegistry.getLastSnapshot();
       const deviceLost = health.reason === 'device-lost';
       const state = projectRendererInspectionState(
@@ -3184,34 +3177,14 @@ async function makeWebGPURenderer(
         deviceLost,
         health.reason === 'internal-fault' || (!readySettled && ui === undefined),
       );
-      const graph = deviceLost ? undefined : viewGraphInfo(inspected);
-      const barrelDistortion = inspectBarrelDistortion(
-        disposed,
-        deviceLost,
-        surfaceReleased,
-        frameId,
-        activeDeviceScope.generation,
-        viewBarrelDistortion(inspected),
-      );
-      const observationId = `${STANDARD_OUTPUT_TRANSFORM_FEATURE_ID}:frame-${frameId}`;
-      const outputInspection = projectRendererOutputInspectionFromSurface({
-        graph,
-        surfaceReleased,
-        pipelineState,
-        rgba16floatRenderable: internals.device.caps.rgba16floatRenderable,
-        colorSpace: internals.outputColorSpace.report,
-        autoExposure: viewAutoExposure(inspected),
-        standardLut: viewStandardLut(inspected),
-        presentationProof: internals.context?.presentationProof,
-      });
-      const recoveryEvidence = viewRecoveryEvidence(inspected);
-      const pointShadow = projectPointShadowInspection(
-        inspected.frameState.submittedInspection?.pointShadow,
-        materialShadersSamplePointShadows(getShader().materialShaderManifestEntries()),
-      );
-      const inspection = {
-        ...debugOverlayInspectionField(renderWorld),
-        ...(library === undefined
+      const pointShadow = want('pointShadow')
+        ? projectPointShadowInspection(
+            inspected.frameState.submittedInspection?.pointShadow,
+            materialShadersSamplePointShadows(getShader().materialShaderManifestEntries()),
+          )
+        : undefined;
+      const inspectLibraryFields = () => ({
+        ...(library === undefined || !want('pipelineLibrary', 'pipelineLibraryCollecting')
           ? {}
           : {
               pipelineLibrary: library.inspect(options),
@@ -3227,55 +3200,84 @@ async function makeWebGPURenderer(
               },
             }
           : {}),
+      });
+      const generation = activeDeviceScope.generation;
+      const inspectDeviceFields = () => ({
+        ...(want('profile') ? { profile: selectedProfile() } : {}),
+        ...(want('capabilities', 'limits', 'deviceInfo')
+          ? inspectDeviceCapabilities(internals.device, generation, want('deviceInfo'))
+          : {}),
+        ...(want('frame')
+          ? {
+              frame: inspectFrameCompletionContinuations(frameId, generation, frameContinuations),
+            }
+          : {}),
+        ...(want('barrelDistortion')
+          ? {
+              barrelDistortion: inspectBarrelDistortion(
+                disposed,
+                deviceLost,
+                surfaceReleased,
+                frameId,
+                generation,
+                viewBarrelDistortion(inspected),
+              ),
+            }
+          : {}),
+        ...(want('features', 'featureDiagnostics', 'featureHost', 'cloudLayer')
+          ? projectRendererFeatureInspection(
+              internals.featureHost,
+              health.reason === 'alive' && !disposed
+                ? (view) => cloudAdoption.read(view, generation)
+                : undefined,
+            )
+          : {}),
+        ...projectRenderViewInspection(inspected, deviceLost, fields),
+        ...(want('dynamicGeometry') ? { dynamicGeometry: dynamicGeometry.inspect() } : {}),
+        ...(want('textureGeneration')
+          ? { textureGeneration: gpuStore.inspectTextureGenerators() }
+          : {}),
+        ...(want('extendedLighting')
+          ? { extendedLighting: projectExtendedLightingInspection(extendedLightingState) }
+          : {}),
+      });
+      const inspection = {
+        ...(want('debugOverlay') ? debugOverlayInspectionField(renderWorld) : {}),
+        ...inspectLibraryFields(),
         state,
-        ...(options?.fields?.some((field) => field === 'views') === false
-          ? {}
-          : { views: cameraViews.inspect() }),
+        ...(want('views') ? { views: cameraViews.inspect() } : {}),
         recovery: recoveryInspection,
         surface: surfaceReleased ? 'released' : 'available',
-        profile: selectedProfile(),
-        ...inspectDeviceCapabilities(
-          internals.device,
-          activeDeviceScope.generation,
-          options?.fields === undefined || options.fields.some((field) => field === 'deviceInfo'),
-        ),
-        frame: inspectFrameCompletionContinuations(
-          frameId,
-          activeDeviceScope.generation,
-          frameContinuations,
-        ),
-        barrelDistortion,
-        ...projectRendererFeatureInspection(
-          internals.featureHost,
-          health.reason === 'alive' && !disposed
-            ? (view) => cloudAdoption.read(view, activeDeviceScope.generation)
-            : undefined,
-        ),
-        ...projectRenderViewInspection(inspected, deviceLost, options?.fields),
-        dynamicGeometry: dynamicGeometry.inspect(),
-        textureGeneration: gpuStore.inspectTextureGenerators(),
-        extendedLighting: projectExtendedLightingInspection(extendedLightingState),
+        ...inspectDeviceFields(),
         ...(pointShadow === undefined ? {} : { pointShadow: Object.freeze({ ...pointShadow }) }),
-        perFramePassNames: Object.freeze([...cameraViews.perFramePassNames]),
-        recoveryEvidence: Object.freeze({
-          ...recoveryEvidence,
-          graph: deviceLost
-            ? { ready: false, generation: 0, passCount: 0, resourceCount: 0 }
-            : recoveryEvidence.graph,
-          producerRoots: Object.freeze([...recoveryEvidence.producerRoots]),
-          receipts: Object.freeze({
-            count: frameId,
-            lastGeneration: latestReceipt?.deviceGeneration,
-          }),
-        }),
-        ...projectRendererOutputObservationInspection({
-          observationId,
-          frameId,
-          antialias: inspected.frameState.lastSuccessfulCameraAntialias,
-          outputInspection,
-          rgba16floatRenderable: internals.device.caps.rgba16floatRenderable,
-          resourceStats: observationStats,
-        }),
+        ...(want('perFramePassNames')
+          ? { perFramePassNames: Object.freeze([...cameraViews.perFramePassNames]) }
+          : {}),
+        ...(want('recoveryEvidence')
+          ? {
+              recoveryEvidence: projectRecoveryEvidenceInspection(
+                inspected,
+                deviceLost,
+                frameId,
+                latestReceipt?.deviceGeneration,
+              ),
+            }
+          : {}),
+        ...(want('output', 'observation')
+          ? projectRendererOutputFields({
+              graph: deviceLost ? undefined : viewGraphInfo(inspected),
+              surfaceReleased,
+              pipelineState,
+              rgba16floatRenderable: internals.device.caps.rgba16floatRenderable,
+              colorSpace: internals.outputColorSpace.report,
+              autoExposure: viewAutoExposure(inspected),
+              standardLut: viewStandardLut(inspected),
+              presentationProof: internals.context?.presentationProof,
+              frameId,
+              antialias: inspected.frameState.lastSuccessfulCameraAntialias,
+              resourceStats: observationStats,
+            })
+          : {}),
       } as RenderInspection;
       return Object.freeze(
         options?.fields === undefined

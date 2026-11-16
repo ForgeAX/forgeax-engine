@@ -94,6 +94,17 @@ export {
   meshMaterialSlotsFromTopology,
   meshMaterialSlotsToTopology,
 } from './mesh-material-slots';
+export {
+  copyMeshAttribute,
+  interleavedMesh,
+  interleavedMeshFiniteFailure,
+  type MeshAttributeKey,
+  type MeshAttributeWindow,
+  meshAttributeChannels,
+  meshAttributeLayout,
+  meshAttributeWindow,
+} from './mesh-storage';
+export { packMeshTangentFrame32 } from './pack-tangent-frame32';
 export { createPlaneGeometry } from './plane';
 export {
   createDodecahedronGeometry,
@@ -111,6 +122,7 @@ export {
 export { createProfileSweepGeometry, type ProfileSweepOptions } from './profile-sweep';
 export { createSphereGeometry } from './sphere';
 export { computeTangentVec4, writeNormalPlaneTangent } from './tangent';
+export { decodeTangentFrame32, encodeTangentFrame32 } from './tangent-frame32';
 export {
   createTeapotGeometry,
   type TeapotMeshAsset,

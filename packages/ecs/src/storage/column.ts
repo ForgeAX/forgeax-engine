@@ -4,18 +4,12 @@
 // This enables independent per-column transfer() expansion and
 // supports dynamic column add/remove during archetype migration.
 //
-// `array<T>` (variable-capacity) fields take TWO columns in archetype layout
-// (D-3): the primary u32 column carries the BufferPool slot id; a sidecar
-// column carries the live element count, named `<fieldName>:count` and
-// keyed by `arrayCountColumnName(fieldName)`. `array<T,N>` (fixed-capacity)
-// fields (feat-20260602) take a SINGLE inline stride-N column (arity = N) --
-// no BufferPool slot id, no sidecar count column. The elements live
-// contiguously per row. `buffer<N>` likewise takes a single stride-N u8
-// column. Variable `buffer` still uses a u32 BufferPool slot id column.
-// Capacity is never stored as an independent column: for variable-capacity
-// fields it is derived from `BufferPool.view(slotId).byteLength /
-// elementBytes`; for fixed-capacity fields the schema-declared N is the
-// capacity.
+// Variable `array<T>` and `buffer` fields take one arity-3 u32 column holding
+// the whole location `[block, byteOffset, count]` in the World's ArrayStore
+// (`storage/array-store.ts`); capacity follows from the block. `array<T,N>`
+// (fixed-capacity) fields take a single inline stride-N column (arity = N)
+// with the elements contiguous per row; `buffer<N>` likewise takes a single
+// stride-N u8 column.
 
 import { type ScalarFieldType, TYPE_METADATA, type TypedArrayFor } from '../component';
 
@@ -28,10 +22,10 @@ import { type ScalarFieldType, TYPE_METADATA, type TypedArrayFor } from '../comp
  * Read-only access shape for the 4 managed-vocab column keywords --
  * `'string'` / `` `unique<T>` `` / variable `'buffer'` / variable `` `array<T>` ``.
  *
- * The column carries u32 slot ids (`UniqueRefStore` / `BufferPool`); direct
- * index assignment would corrupt the slot table. The reader exposes
- * `.length` + `.get(i): number` so consumers can walk row indices and
- * retrieve slot ids, then route through the public dispatch (`world.set`,
+ * The column carries u32 handles (`UniqueRefStore` ids, or the arity-3
+ * `[block, byteOffset, count]` array locations); direct index assignment
+ * would corrupt the backing store. The reader exposes `.length` +
+ * `.get(i): number` so consumers can walk the raw words, then route through the public dispatch (`world.set`,
  * `world.push`, `world.allocUniqueRef`, etc.) for any mutation.
  *
  * Phantom brand `__managed` (D-7 / requirements-decisions q2): the
@@ -48,18 +42,6 @@ export interface ManagedColumnReader<T extends string> {
   readonly length: number;
   get(i: number): number;
   readonly __managed: T;
-}
-
-/**
- * Sidecar column name for the live `count` of an `array<T>` (variable-
- * capacity) field. Format `<fieldName>:count` keeps the suffix outside the
- * legal user-facing schema name space (the colon is forbidden in user
- * field names by convention) so the archetype Map can carry both columns
- * under one `Map<fieldName, Column>` keyed namespace without collision
- * (D-3 double-column allocation in M1 / w7).
- */
-export function arrayCountColumnName(fieldName: string): string {
-  return `${fieldName}:count`;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -101,8 +83,6 @@ export interface Column {
    * Transient view contract section.
    */
   arity: number;
-  /** Variable-array sidecar key, derived once with this table's field layout. */
-  countField?: string;
 }
 
 /**

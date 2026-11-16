@@ -131,23 +131,29 @@ carries this description instead of independent
 WGSL, identity and optional binding-decision fields. Synthetic producers use
 `createMaterialShaderProgram()` when constructing an artifact, never while drawing.
 
-Cooked material programs use `installMaterialArtifactBytes()`. Admission verifies
-UTF-8 byte digests, retains read-only artifact views, admits schemas and ABI/read metadata,
-and rejects same-key conflicts without decoding WGSL. `materialArtifactDeclaration()`
-inspects this declaration without preparing it. The first `materialArtifact()` or
-`findMaterialArtifact()` lookup verifies a private snapshot against its digest, decodes that selected source and performs the same
-source analysis and sampled-texture/schema checks as direct registration. A source
-failure remains an explicit error on first use; no failed program becomes ready.
-Caller mutation of retained bytes fails closed before source preparation. Repeated
-lookups reuse the immutable result. Unselected variants retain the existing bytes and
-metadata only. Direct `installMaterialArtifact()` stays eager for authored source.
+Cooked material programs use `installMaterialArtifactBytes()`. Container readers
+own byte integrity validation; the Material loader closes the publication tuple
+and complete program set. Shader admission takes one private byte snapshot and
+admits schemas and ABI/read metadata, rejecting same-key conflicts without
+preparing WGSL. Later reuse of the caller's input buffer cannot change that
+snapshot. `materialArtifactDeclaration()` inspects the declaration without
+preparing it. First `materialArtifact()` / `findMaterialArtifact()` lookup decodes
+that source and performs the same source analysis and sampled-texture/schema
+checks as direct registration. A failed source never becomes ready. Direct
+`installMaterialArtifact()` stays eager for authored source.
 
-Selected sources retain their complete decoded WGSL without runtime fragmentation.
-Byte owners
-weakly share pure CPU sources and descriptions across registries;
-registry adoption and device recovery preserve pending declarations without creating
-GPU objects. This does not defer artifact loading, decompression or digest validation,
-reduce delivered variants, or change the existing GPU pipeline compilation policy.
+An owned WGSL snapshot delivered in a compressed frame may retain its exact
+private frame with weak decoded views. A cold synchronous byte read restores the
+member window with the initialized decoder. Copy provenance requires exact bytes;
+it does not authorize or skip container, tuple or ABI admission, and there is no
+realm-wide digest admission ledger. Held private views remain stable; forks and
+device recovery share the existing CPU owners. Selected sources retain complete
+decoded WGSL without runtime fragmentation. Initial decode and complete source
+admission stay eager; all variants and GPU compilation policy remain. There is no
+runtime compression, network read or per-frame decode added by this storage.
+`MaterialArtifactRegistry.inspect()` reads logical lengths without restoring
+programs. `storageStats()` deduplicates retained compressed-frame instances and
+reports a storage recipe budget, not live RAM.
 
 `shaderSource()` admits material, utility and VFX text into the same CPU owner.
 `MaterialShaderProgram.sourceReference` retains immutable source text; `.source`

@@ -82,6 +82,7 @@ export function resolveMaterialPipelineVertexEntry(
   layoutKind: LayoutKind | undefined,
   vertexEntryPoint: string | undefined,
   authoredVertexEntry: string | undefined,
+  tangentFrame32 = false,
 ): string | undefined {
   const sceneIndex =
     layoutKind === 'gpu-driven-pbr' ||
@@ -91,8 +92,29 @@ export function resolveMaterialPipelineVertexEntry(
   // Scene-index is a renderer submission ABI. An authored/direct entry may
   // accompany the artifact for diagnostics, but it must not replace the
   // receipt entry when the GPU-driven layout is selected.
-  return sceneIndex
+  const entry = sceneIndex
     ? (vertexEntryPoint ?? authoredVertexEntry)
+    : (authoredVertexEntry ?? vertexEntryPoint);
+  // An omitted entry belongs to the pipeline builder's pass-specific default
+  // (for example vs_temporal), including its packed-layout adaptation.
+  return tangentFrame32 && entry !== undefined && !entry.endsWith('_packed')
+    ? `${entry}_packed`
+    : entry;
+}
+
+export function hasPackedTangentFrame(projection: VertexLayoutProjection | undefined): boolean {
+  return ((projection?.mask ?? 0) & (1 << 14)) !== 0;
+}
+
+/** The cache key preserves authored priority for ordinary layouts. */
+export function materialPipelineKeyVertexEntry(
+  layoutKind: LayoutKind | undefined,
+  vertexEntryPoint: string | undefined,
+  authoredVertexEntry: string | undefined,
+  projection: VertexLayoutProjection | undefined,
+): string | undefined {
+  return hasPackedTangentFrame(projection)
+    ? resolveMaterialPipelineVertexEntry(layoutKind, vertexEntryPoint, authoredVertexEntry, true)
     : (authoredVertexEntry ?? vertexEntryPoint);
 }
 

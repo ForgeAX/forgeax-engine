@@ -13,6 +13,7 @@
   "scripts": { "build": "tsup", "test": "vitest run" },
   "dependencies": {
     "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*",
     "@forgeax/engine-plugin": "workspace:*",
     "@forgeax/engine-types": "workspace:*"
   },

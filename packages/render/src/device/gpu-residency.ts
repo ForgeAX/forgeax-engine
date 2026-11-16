@@ -2,6 +2,10 @@ import type { AssetChange } from '@forgeax/engine-assets-runtime/internal';
 import type { Asset, AssetHandle, GpuTextureAsset, TaskExecutor } from '@forgeax/engine-types';
 import { compareBufferBytes } from '../buffer-bytes';
 import type { IblPrecomputeOutput } from '../ibl/IblPipelineCache';
+import {
+  type MeshBufferVersion,
+  publishedMeshBufferVersion,
+} from '../publication/mesh-buffer-ownership';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import { renderAssetRevision } from '../publication/resource-scope';
 import { type RecordProfileRunner, runRecordProfilePhase } from '../record/render-context';
@@ -568,7 +572,13 @@ type SharedMeshAllocation = {
   bytes: Uint32Array;
   owners: number;
   key: string;
+  source?: { readonly version: MeshBufferVersion; readonly generation: number } | undefined;
 };
+
+function meshComparisonSource(words: Uint32Array): SharedMeshAllocation['source'] {
+  const version = publishedMeshBufferVersion(words.buffer);
+  return version === undefined ? undefined : { version, generation: version.generation };
+}
 
 interface TextureProjection {
   encode(encoder: () => RhiCommandEncoder): { complete(submitted: boolean): void } | undefined;
@@ -999,6 +1009,15 @@ export class GpuResidencyCache {
   }
   private sharedMeshBuffer(key: string, words: Uint32Array): SharedMeshAllocation | undefined {
     const cached = this.sharedMeshBuffers.get(key);
+    // A publication range write may have changed a borrowed comparison source
+    // before GPU adoption. Never compare new CPU bytes with an old GPU image.
+    if (
+      cached?.source !== undefined &&
+      cached.source.version.generation !== cached.source.generation
+    ) {
+      this.unshareMeshBuffer(cached.buffer);
+      return undefined;
+    }
     // Hashes only select candidates; byte equality is the sharing contract.
     if (cached === undefined || cached.buffer.isDestroyed || cached.bytes.length !== words.length)
       return undefined;
@@ -1028,6 +1047,7 @@ export class GpuResidencyCache {
     if (this.sharedMeshBuffers.get(record.key) === record)
       this.sharedMeshBuffers.delete(record.key);
     record.bytes = EMPTY_MESH_COMPARISON_WORDS;
+    record.source = undefined;
   }
   private releaseMeshBuffer(buffer: GpuBuffer): void {
     const record = this.meshBufferOwners.get(buffer);
@@ -1989,6 +2009,20 @@ export class GpuResidencyCache {
     return ok(prepared);
   }
 
+  /** A surviving GPU generation can no longer lend CPU bytes changed by its producer. */
+  private retireChangedMeshComparisons(entry: MeshGpuHandles, ranges: AssetChange['ranges']): void {
+    for (const range of ranges) {
+      const buffer = range.path[0] === 'vertices' ? entry.vertexBuffer : entry.indexBuffer;
+      const allocation = buffer === null ? undefined : this.meshBufferOwners.get(buffer);
+      if (
+        buffer !== null &&
+        allocation?.source !== undefined &&
+        allocation.source.version.generation !== allocation.source.generation
+      )
+        this.unshareMeshBuffer(buffer);
+    }
+  }
+
   /** Adopt only this asset's explicit ranges; no mesh users participate in invalidation. */
   adoptMeshChange(
     change: AssetChange,
@@ -2022,6 +2056,9 @@ export class GpuResidencyCache {
         range.path.length === 1 && (range.path[0] === 'vertices' || range.path[0] === 'indices'),
     );
     if (ranges.length === 0) return ok(undefined);
+    // Retire comparison borrows even when a shared or leased GPU generation
+    // survives the edit. Its other readers still own the old physical bytes.
+    this.retireChangedMeshComparisons(entry, ranges);
     const device = this.gpuDevice;
     if (
       device === undefined ||
@@ -3569,6 +3606,12 @@ export class GpuResidencyCache {
       indices === undefined
         ? undefined
         : runRecordProfilePhase(profilePhase, 'record/validation/residency/index-pack', () => {
+            if (
+              indices.byteLength === indexBytes &&
+              indices.byteOffset % 4 === 0 &&
+              publishedMeshBufferVersion(indices.buffer) !== undefined
+            )
+              return new Uint32Array(indices.buffer, indices.byteOffset, indexBytes / 4);
             const words = new Uint32Array(indexBytes / 4);
             new Uint8Array(words.buffer).set(
               new Uint8Array(indices.buffer, indices.byteOffset, indexBytesUnpadded),
@@ -3672,10 +3715,14 @@ export class GpuResidencyCache {
         bytes: runRecordProfilePhase(
           profilePhase,
           'record/validation/residency/ownership-copy',
-          () => new Uint32Array(vertexWords),
+          () =>
+            publishedMeshBufferVersion(vertexWords.buffer) === undefined
+              ? new Uint32Array(vertexWords)
+              : vertexWords,
         ),
         owners: 0,
         key: vertexKey,
+        source: meshComparisonSource(vertexWords),
       },
     );
     const indexBuffer =
@@ -3687,6 +3734,7 @@ export class GpuResidencyCache {
               bytes: indexWords,
               owners: 0,
               key: indexKey,
+              source: meshComparisonSource(indexWords),
             },
           );
     let changeToken: MeshChangeToken | undefined;

@@ -52,7 +52,7 @@ export const vfxMeshLightingCommands = {
           'Node-host cook invocation wall durations including async waits. Browser RPC delay and unrelated event-loop work are not exclusive compiler CPU time.',
       },
       qualification:
-        'The original browser gate failed. Any following diagnostic frame is not acceptance.',
+        'The original browser gate failed. This evidence retains the original operation; it is not a passing acceptance result.',
     };
     if (tape !== undefined) {
       if (tape.length > 4 * Math.ceil(VFX_DIAGNOSTIC_TAPE_BYTES / 3))
@@ -62,7 +62,7 @@ export const vfxMeshLightingCommands = {
         throw new Error('VFX diagnostic tape exceeds 64MiB');
       if (bytes.toString('base64') !== tape)
         throw new Error('Invalid VFX diagnostic tape encoding');
-      await writeFile(resolve(evidence, 'following-frame.rhitape'), bytes);
+      await writeFile(resolve(evidence, 'original-operation.rhitape'), bytes);
       receipt.tape = {
         bytes: bytes.byteLength,
         sha256: createHash('sha256').update(bytes).digest('hex'),

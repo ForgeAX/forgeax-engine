@@ -109,6 +109,8 @@ function makeMockAudioParam(initialValue: number): AudioParam {
         stop: vi.fn(),
         setVolume: vi.fn(),
         setPlaybackRate: vi.fn(),
+        setGlobalPlaybackRate: vi.fn(),
+        setBusLowPass: vi.fn(),
         setPaused: vi.fn(),
         seek: vi.fn(),
         setBusVolume: vi.fn(),

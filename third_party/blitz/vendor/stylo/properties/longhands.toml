@@ -132,9 +132,9 @@ affects = "layout"
 type = "ColorOrAuto"
 initial = "generics::color::ColorOrAuto::Auto"
 struct = "inherited_ui"
-engine = "gecko"
 spec = "https://drafts.csswg.org/css-ui-4/#widget-accent"
 ignored_when_colors_disabled = true
+servo_restyle_damage = "repaint"
 affects = "paint"
 
 [align-content]
@@ -1675,10 +1675,10 @@ affects = "layout"
 type = "SVGPaintOrder"
 initial = "computed::SVGPaintOrder::normal()"
 struct = "inherited_svg"
-engine = "gecko"
 animation_type = "discrete"
 spec = "https://svgwg.org/svg2-draft/painting.html#PaintOrder"
 affects = "paint"
+servo_restyle_damage = "repaint"
 
 [-moz-context-properties]
 type = "MozContextProperties"
@@ -2519,19 +2519,19 @@ affects = "paint"
 type = "Color"
 initial = "computed_value::T::currentcolor()"
 struct = "inherited_text"
-engine = "gecko"
 ignored_when_colors_disabled = true
 spec = "https://compat.spec.whatwg.org/#the-webkit-text-stroke-color"
 affects = "paint"
+servo_restyle_damage = "repaint"
 
 [-webkit-text-stroke-width]
 type = "LineWidth"
 initial = "app_units::Au(0)"
 struct = "inherited_text"
-engine = "gecko"
 spec = "https://compat.spec.whatwg.org/#the-webkit-text-stroke-width"
 animation_type = "discrete"
 affects = "overflow"
+servo_restyle_damage = "repaint"
 
 [forced-color-adjust]
 type = "ForcedColorAdjust"

@@ -9,6 +9,7 @@
 #pragma variant_axis CLUSTER_FORWARD_AVAILABLE
 #pragma variant_axis EXTENDED_LIGHTING_AVAILABLE
 #pragma variant_axis PROJECTOR_AVAILABLE
+#pragma variant_axis LEAN_LIGHTING
 
 // Retain the full declared material ABI in reflection, including inactive inputs.
 fn materialInterfaceWitness() { materialTextureFilteringWitness(); }

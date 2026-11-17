@@ -44,10 +44,11 @@ describe('w7 type-level - 5 component schemas yield exact data shapes via ShapeO
   it('MeshRenderer data shape carries materials, lighting and pipeline preparation', () => {
     type Data = ShapeOf<SchemaOf<typeof MeshRenderer>>;
     expectTypeOf<keyof Data>().toEqualTypeOf<
-      'materials' | 'lightingChannels' | 'preparePipelines'
+      'materials' | 'lightingChannels' | 'preparePipelines' | 'renderLayers'
     >();
     expectTypeOf<Data['materials']>().toEqualTypeOf<readonly AssetHandle<'material'>[]>();
     expectTypeOf<Data['lightingChannels']>().toEqualTypeOf<number>();
+    expectTypeOf<Data['renderLayers']>().toEqualTypeOf<number>();
     expectTypeOf<Data['preparePipelines']>().toEqualTypeOf<boolean>();
   });
 
@@ -72,6 +73,7 @@ describe('w7 type-level - 5 component schemas yield exact data shapes via ShapeO
   it('Camera data shape includes output exposure and color-grading fields', () => {
     type Data = ShapeOf<SchemaOf<typeof Camera>>;
     expectTypeOf<keyof Data>().toEqualTypeOf<
+      | 'cullMask'
       | 'taaFlickering'
       | 'fov'
       | 'aspect'
@@ -109,6 +111,7 @@ describe('w7 type-level - 5 component schemas yield exact data shapes via ShapeO
       | 'postProcessing'
     >();
     expectTypeOf<Data['fov']>().toEqualTypeOf<number>();
+    expectTypeOf<Data['cullMask']>().toEqualTypeOf<number>();
     expectTypeOf<Data['far']>().toEqualTypeOf<number>();
     expectTypeOf<Data['projection']>().toEqualTypeOf<number>();
     expectTypeOf<Data['projectionOffset']>().toEqualTypeOf<Float32Array>();
@@ -207,7 +210,7 @@ describe('w7 type-level - component name literal types are preserved', () => {
     // `switch (mat.shadingModel)` in the canonical dispatch site.
     expectTypeOf<typeof MeshRenderer.name>().toEqualTypeOf<'MeshRenderer'>();
     expectTypeOf<keyof SchemaOf<typeof MeshRenderer>>().toEqualTypeOf<
-      'materials' | 'lightingChannels' | 'preparePipelines'
+      'materials' | 'lightingChannels' | 'preparePipelines' | 'renderLayers'
     >();
   });
 

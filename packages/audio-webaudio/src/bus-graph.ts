@@ -16,7 +16,21 @@ interface BusNodes {
   readonly fader: GainNode;
   readonly effects: readonly AudioNode[];
   readonly sends: readonly GainNode[];
+  readonly lowPass: Map<string, BiquadFilterNode>;
 }
+type LowPassControl = { readonly cutoffHz: number; readonly q: number };
+function validLowPass(filter: LowPassControl | null): boolean {
+  return (
+    filter === null ||
+    (Number.isFinite(filter.cutoffHz) &&
+      filter.cutoffHz >= 20 &&
+      filter.cutoffHz <= 24000 &&
+      Number.isFinite(filter.q) &&
+      filter.q >= 0 &&
+      filter.q <= 30)
+  );
+}
+
 interface BusState {
   readonly definition: AudioBus;
   volume?: number;
@@ -24,6 +38,7 @@ interface BusState {
   effect?: { build: (ctx: BaseAudioContext) => readonly AudioNode[]; wet: number };
   sendGains?: Map<string, number>;
   nodes?: BusNodes;
+  lowPass?: Map<string, { readonly cutoffHz: number; readonly q: number }>;
 }
 
 function failure(reason: string): Result<never, AudioError> {
@@ -48,6 +63,76 @@ export class BusGraph {
   }
   has(id: string): boolean {
     return this.buses.has(id);
+  }
+  setLowPass(
+    id: string,
+    owner: string,
+    filter: { readonly cutoffHz: number; readonly q: number } | null,
+  ): Result<void, AudioError> {
+    const bus = this.buses.get(id);
+    if (!bus || !owner || owner.length > 128 || !validLowPass(filter))
+      return failure('invalid owned bus low-pass control');
+    bus.lowPass ??= new Map();
+    const controls = bus.lowPass;
+    if (filter !== null && !controls.has(owner) && controls.size >= 32)
+      return failure('at most 32 owned low-pass filters per bus');
+    const existing = bus.nodes?.lowPass.get(owner);
+    if (filter !== null && existing) {
+      controls.set(owner, { ...filter });
+      const now = this.ctx?.currentTime ?? 0;
+      existing.frequency.setTargetAtTime(
+        Math.min(filter.cutoffHz, (this.ctx?.sampleRate ?? 48000) / 2),
+        now,
+        0.01,
+      );
+      existing.Q.setTargetAtTime(filter.q, now, 0.01);
+      return ok(undefined);
+    }
+    // Build the new node before touching the audible chain. Controls also work
+    // before the lazy context exists and survive accepted graph replacement.
+    let added: BiquadFilterNode | undefined;
+    if (filter !== null && this.ctx) {
+      try {
+        added = this.ctx.createBiquadFilter();
+        added.type = 'lowpass';
+        added.frequency.value = Math.min(filter.cutoffHz, this.ctx.sampleRate / 2);
+        added.Q.value = filter.q;
+      } catch (cause) {
+        return failure(String(cause));
+      }
+    }
+    if (filter === null) controls.delete(owner);
+    else controls.set(owner, { ...filter });
+    this.rewireLowPass(bus, owner, filter, added);
+    return ok(undefined);
+  }
+  private rewireLowPass(
+    bus: BusState,
+    owner: string,
+    filter: LowPassControl | null,
+    added: BiquadFilterNode | undefined,
+  ): void {
+    const nodes = bus.nodes;
+    if (nodes) {
+      for (const node of nodes.lowPass.values()) node.disconnect();
+      nodes.mix.disconnect();
+      if (filter === null) nodes.lowPass.delete(owner);
+      else if (added) nodes.lowPass.set(owner, added);
+      let tail: AudioNode = nodes.mix;
+      for (const node of nodes.lowPass.values()) {
+        tail.connect(node);
+        tail = node;
+      }
+      tail.connect(nodes.fader);
+      // Pre-fader sends share the mix tap and must be reattached after rewiring.
+      (bus.definition.sends ?? []).forEach((send, index) => {
+        if (send.tap === 'pre-fader') {
+          const sendNode = nodes.sends[index];
+          if (!sendNode) throw new Error('Audio bus send graph is incomplete');
+          nodes.mix.connect(sendNode);
+        }
+      });
+    }
   }
   input(id: string): GainNode | undefined {
     return this.buses.get(id)?.nodes?.input;
@@ -83,6 +168,7 @@ export class BusGraph {
         ...(previous?.muted === undefined ? {} : { muted: previous.muted }),
         ...(previous?.effect ? { effect: previous.effect } : {}),
         ...(previous?.sendGains ? { sendGains: new Map(previous.sendGains) } : {}),
+        ...(previous?.lowPass ? { lowPass: new Map(previous.lowPass) } : {}),
       });
     }
     if (retained.some((id) => !candidate.has(id)))
@@ -251,6 +337,7 @@ export class BusGraph {
     yield nodes.fader;
     yield* nodes.effects;
     yield* nodes.sends;
+    yield* nodes.lowPass.values();
   }
   private disconnect(buses: Map<string, BusState>): void {
     for (const bus of buses.values()) {
@@ -258,48 +345,62 @@ export class BusGraph {
       delete bus.nodes;
     }
   }
+  private buildBus(bus: BusState, ctx: BaseAudioContext, owned: Set<AudioNode>): void {
+    const input = ctx.createGain(),
+      dry = ctx.createGain(),
+      wet = ctx.createGain(),
+      mix = ctx.createGain(),
+      fader = ctx.createGain();
+    const lowPass = new Map<string, BiquadFilterNode>();
+    bus.nodes = { input, dry, wet, mix, fader, effects: [], sends: [], lowPass };
+    const effects = [...(bus.effect?.build(ctx) ?? [])];
+    if (
+      effects.length > 32 ||
+      new Set(effects).size !== effects.length ||
+      effects.some(
+        (node) =>
+          node.context !== ctx ||
+          node.numberOfInputs < 1 ||
+          node.numberOfOutputs < 1 ||
+          owned.has(node) ||
+          this.owns(node),
+      )
+    )
+      throw new Error('effects must be at most 32 exclusive input/output nodes');
+    for (const node of effects) owned.add(node);
+    const sends = (bus.definition.sends ?? []).map(() => ctx.createGain());
+    bus.nodes = { input, dry, wet, mix, fader, effects, sends, lowPass };
+    const amount = effects.length ? (bus.effect?.wet ?? 1) : 0;
+    dry.gain.value = 1 - amount;
+    wet.gain.value = amount;
+    mix.gain.value = (bus.muted ?? bus.definition.muted ?? false) ? 0 : 1;
+    fader.gain.value = bus.volume ?? bus.definition.volume ?? 1;
+    input.connect(dry);
+    dry.connect(mix);
+    if (effects[0]) {
+      input.connect(effects[0]);
+      effects.forEach((node, index) => {
+        node.connect(effects[index + 1] ?? wet);
+      });
+      wet.connect(mix);
+    }
+    let tail: AudioNode = mix;
+    for (const [owner, filter] of bus.lowPass ?? []) {
+      const node = ctx.createBiquadFilter();
+      node.type = 'lowpass';
+      node.frequency.value = Math.min(filter.cutoffHz, ctx.sampleRate / 2);
+      node.Q.value = filter.q;
+      lowPass.set(owner, node);
+      tail.connect(node);
+      tail = node;
+    }
+    tail.connect(fader);
+  }
   private build(buses: Map<string, BusState>, ctx: BaseAudioContext): Result<void, AudioError> {
     const owned = new Set<AudioNode>();
     try {
       for (const bus of buses.values()) {
-        const input = ctx.createGain(),
-          dry = ctx.createGain(),
-          wet = ctx.createGain(),
-          mix = ctx.createGain(),
-          fader = ctx.createGain();
-        bus.nodes = { input, dry, wet, mix, fader, effects: [], sends: [] };
-        const effects = [...(bus.effect?.build(ctx) ?? [])];
-        if (
-          effects.length > 32 ||
-          new Set(effects).size !== effects.length ||
-          effects.some(
-            (node) =>
-              node.context !== ctx ||
-              node.numberOfInputs < 1 ||
-              node.numberOfOutputs < 1 ||
-              owned.has(node) ||
-              this.owns(node),
-          )
-        )
-          throw new Error('effects must be at most 32 exclusive input/output nodes');
-        for (const node of effects) owned.add(node);
-        const sends = (bus.definition.sends ?? []).map(() => ctx.createGain());
-        bus.nodes = { input, dry, wet, mix, fader, effects, sends };
-        const amount = effects.length ? (bus.effect?.wet ?? 1) : 0;
-        dry.gain.value = 1 - amount;
-        wet.gain.value = amount;
-        mix.gain.value = (bus.muted ?? bus.definition.muted ?? false) ? 0 : 1;
-        fader.gain.value = bus.volume ?? bus.definition.volume ?? 1;
-        input.connect(dry);
-        dry.connect(mix);
-        if (effects[0]) {
-          input.connect(effects[0]);
-          effects.forEach((node, index) => {
-            node.connect(effects[index + 1] ?? wet);
-          });
-          wet.connect(mix);
-        }
-        mix.connect(fader);
+        this.buildBus(bus, ctx, owned);
       }
       const nodesOf = (id: string): BusNodes => {
         const nodes = buses.get(id)?.nodes;

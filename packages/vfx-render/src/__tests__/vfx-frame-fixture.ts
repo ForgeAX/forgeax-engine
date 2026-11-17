@@ -182,6 +182,7 @@ export function withVfxFrameSubmission(
               if (key === 'effectVersion')
                 return (effect: VfxGpuEffectAsset) => fixtureVersion(state.current.world, effect);
               if (key === 'forEachEmitterSource') return () => {};
+              if (key === 'recoveryCaptureRequirements') return () => undefined;
               if (key === 'lastCommittedEmitter') return () => undefined;
               return value;
             },

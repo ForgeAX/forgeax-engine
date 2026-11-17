@@ -111,6 +111,7 @@ import {
   loadSharedEngineShaderManifest,
   projectOptionalEngineEntries,
   projectShaderManifestEntries,
+  projectShaderManifestInput,
   type ShaderManifestInput,
 } from './shared-engine-inputs.js';
 import { toRollupLog } from './wrap.js';
@@ -238,7 +239,7 @@ async function loadSharedEngineManifestForBuilder(
   return serializeAsPublication(
     {
       schemaVersion: '1.0.0',
-      entries: shared.entries.map((entry) => ({ ...entry, glsl: '' })),
+      entries: shared.entries.map((entry) => projectShaderManifestInput(entry, { glsl: '' })),
       materialShaders: shared.materialShaders,
     },
     {
@@ -2291,7 +2292,10 @@ export function forgeaxShader(options: ForgeAXShaderOptions = {}): ForgeAXShader
 
     const shared = await loadSharedEngineShaderManifest(manifestPath, workspaceRoot);
     for (const entry of projectOptionalEngineEntries(shared.entries, wantHdrpSsao)) {
-      state.entries.set(`shared:${entry.hash}`, { ...entry, uvSetCount: entry.uvSetCount ?? 0 });
+      state.entries.set(
+        `shared:${entry.hash}`,
+        projectShaderManifestInput(entry, { uvSetCount: entry.uvSetCount ?? 0 }),
+      );
       sharedEngineEntryKeys.add(`shared:${entry.hash}`);
     }
     for (const entry of shared.materialShaders) {

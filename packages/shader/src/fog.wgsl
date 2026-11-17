@@ -67,6 +67,9 @@ fn height_fog(v:View, worldPos:vec3<f32>)->FogSample {
     let ground=v.atmosphere.originRadius.xyz*1000.0+vec3<f32>(0.0,1.0,0.0);
     source+=view_distant_sky_light(v)+view_solar_transmittance(v,ground)*v.lightColor/(4.0*3.14159265359);
   }
+  // Godot 4.6.2 analytic sun scatter: renderer_rd scene_forward_clustered.glsl L1044-1053.
+  let towards=worldPos-v.cameraPos;let ray=towards/max(length(towards),0.00001);
+  source+=v.lightColor*pow(max(dot(ray,normalize(-v.lightDir)),0.0),8.0)*max(v.fogSky.y,0.0);
   return height_fog_with_source(v,worldPos,source);
 }
 

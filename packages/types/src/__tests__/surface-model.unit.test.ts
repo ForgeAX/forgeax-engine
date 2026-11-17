@@ -4,6 +4,10 @@ import {
   isMaterialSurfaceDeclaration,
   type MaterialDynamicInputSchema,
 } from '../material/index.js';
+import {
+  isMaterialSurfaceProgramAbi,
+  MATERIAL_SURFACE_MODEL_PASSES,
+} from '../material-program-abi.js';
 
 const schema: MaterialDynamicInputSchema = {
   name: 'waterEvents',
@@ -85,5 +89,27 @@ it('lays out every dynamic field type and rejects inherited object keys', () => 
         fields: [{ name: 'bad', type: type as never }],
       }),
     ).toMatchObject({ ok: false, error: { code: 'invalid-field', field: 'fields[0].type' } });
+  }
+});
+
+describe('Surface ABI version admission', () => {
+  for (const model of ['standard', 'single-layer-water', 'single-layer-medium'] as const) {
+    it(`admits only implemented ${model} versions at declaration and receipt boundaries`, () => {
+      const declaration = { model, module: 'game::surface' };
+      const receipt = {
+        ...declaration,
+        inputAbi: model === 'single-layer-water' ? 'SingleLayerWaterSurfaceInput' : 'SurfaceInput',
+        outputAbi: model === 'single-layer-water' ? 'SingleLayerWaterSurfaceData' : 'SurfaceData',
+        passes: MATERIAL_SURFACE_MODEL_PASSES[model],
+      };
+      for (const abiVersion of [undefined, 1, 2, 0, 3, 99, '2', null, NaN]) {
+        const expected =
+          abiVersion === undefined ||
+          abiVersion === 1 ||
+          (abiVersion === 2 && model === 'single-layer-medium');
+        expect(isMaterialSurfaceDeclaration({ ...declaration, abiVersion })).toBe(expected);
+        expect(isMaterialSurfaceProgramAbi({ ...receipt, abiVersion })).toBe(expected);
+      }
+    });
   }
 });

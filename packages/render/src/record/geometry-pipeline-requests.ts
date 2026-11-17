@@ -272,12 +272,12 @@ export function geometryRenderStateForPass(
 }
 
 /**
- * The one-cascade Vogel receiver is a per-frame shadow-config fact: forward
- * Standard colour draws select the source-level simple receiver. Masked and
+ * Receiver shape and modifier-free lighting are independent per-frame facts:
+ * forward Standard colour draws select each source-level axis. Masked and
  * visible-surface variants keep the general receiver, matching the rows the
  * publication keeps.
  */
-function withDirectionalShadowSimpleVariant(
+function withFrameLightingVariant(
   variantSet: string | undefined,
   frameSimple: boolean | undefined,
   leanLighting: boolean | undefined,
@@ -286,7 +286,7 @@ function withDirectionalShadowSimpleVariant(
   materialShaderId: string,
 ): string | undefined {
   if (
-    frameSimple !== true ||
+    (frameSimple !== true && leanLighting !== true) ||
     passKind === 'deferred' ||
     coverageOnly ||
     materialShaderId !== 'forgeax::default-standard-pbr' ||
@@ -294,7 +294,7 @@ function withDirectionalShadowSimpleVariant(
     (variantSet ?? '').includes('VISIBLE_SURFACE_AVAILABLE=true')
   )
     return variantSet;
-  return `${variantSet ? `${variantSet}+` : ''}DIRECTIONAL_SHADOW_SIMPLE=true+LEAN_LIGHTING=${leanLighting === true}`;
+  return `${variantSet ? `${variantSet}+` : ''}DIRECTIONAL_SHADOW_SIMPLE=${frameSimple === true}+LEAN_LIGHTING=${leanLighting === true}`;
 }
 
 function temporalPassState(base: GeometryRenderState, coverageOnly: boolean): GeometryRenderState {
@@ -587,10 +587,11 @@ export function createGeometryPipelineRequests(
   let additionalColorFormats: readonly GPUTextureFormat[] | undefined;
   let additionalColorFormatsKey: string | undefined;
   // The simple receiver is an optimization of the general one; the general
-  // row draws every frame correctly. Each resolve records whether it asked for
-  // the simple row so a pending simple build can fall back for that draw.
+  // row draws every frame correctly. A pending receiver or lighting
+  // specialization falls back to that full program for the current draw.
   let frameSimple = c.directionalShadowSimple;
-  let simpleRequested = false;
+  let frameLean = c.leanLighting;
+  let specializationRequested = false;
   const resolveMaterialPipeline = (
     materialShaderId: string,
     renderState: MaterialSnapshot['renderState'],
@@ -619,15 +620,15 @@ export function createGeometryPipelineRequests(
       !c.visibleSurface || skinnedVisibleSurface
         ? baseVariantSet
         : `${baseVariantSet ? `${baseVariantSet}+` : ''}VISIBLE_SURFACE_AVAILABLE=true`;
-    const pipelineVariantSet = withDirectionalShadowSimpleVariant(
+    const pipelineVariantSet = withFrameLightingVariant(
       generalVariantSet,
       frameSimple,
-      c.leanLighting,
+      frameLean,
       passKind,
       coverageOnly,
       materialShaderId,
     );
-    simpleRequested = pipelineVariantSet !== generalVariantSet;
+    specializationRequested = pipelineVariantSet !== generalVariantSet;
     // Deferred targets follow the graph's ordered GBuffer contract, including
     // an admitted temporal-v1 attachment. Forward fallback remains an extra
     // output only for its Standard producer; other forward shaders keep their
@@ -785,12 +786,14 @@ export function createGeometryPipelineRequests(
    */
   const resolveMaterialPipelineOrGeneral: typeof resolveMaterialPipeline = (...args) => {
     const handle = resolveMaterialPipeline(...args);
-    if (handle !== null || !simpleRequested) return handle;
+    if (handle !== null || !specializationRequested) return handle;
     frameSimple = false;
+    frameLean = false;
     try {
       return resolveMaterialPipeline(...args);
     } finally {
       frameSimple = c.directionalShadowSimple;
+      frameLean = c.leanLighting;
     }
   };
 

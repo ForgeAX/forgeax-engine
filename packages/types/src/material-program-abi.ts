@@ -19,6 +19,7 @@ import {
 } from './material/deformation.js';
 import {
   deriveMaterialDynamicInputLayout,
+  isMaterialSurfaceAbiVersion,
   isMaterialSurfaceModel,
   type MaterialDynamicFieldType,
   type MaterialDynamicInputLayout,
@@ -171,6 +172,7 @@ export const MATERIAL_SURFACE_MODEL_PASSES: Readonly<
 
 /** Producer-owned model facts shared by the direct and scene-index entries. */
 export interface MaterialSurfaceProgramAbi {
+  readonly abiVersion?: 1 | 2;
   readonly model: MaterialSurfaceModel;
   readonly module: string;
   readonly inputAbi: string;
@@ -349,6 +351,7 @@ export function isMaterialSurfaceProgramAbi(value: unknown): value is MaterialSu
   const surface = value as Record<string, unknown>;
   if (
     !isMaterialSurfaceModel(surface.model) ||
+    !isMaterialSurfaceAbiVersion(surface.model, surface.abiVersion) ||
     typeof surface.module !== 'string' ||
     !SURFACE_MODULE_RE.test(surface.module) ||
     typeof surface.inputAbi !== 'string' ||

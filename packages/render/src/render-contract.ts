@@ -191,6 +191,7 @@ export interface ResolvedViewCamera {
 }
 
 export interface CameraSnapshot {
+  readonly cullMask?: number;
   readonly projectedDecals?: readonly import('./decals/extract').ProjectedDecalSnapshot[];
   /** Public world-space per-view clipping; captures carry their own detached value. */
   readonly clipping?: import('@forgeax/engine-types').ClippingOptions;

@@ -765,6 +765,12 @@ test('historical missing-file forecasts stay frozen when later measurements grow
 
 for (const receipt of [
   {
+    runId: 43819262879,
+    fileCount: 401,
+    ownerCount: 23,
+    missing: ['heavy-1', 'heavy-2', 'shadow-fields', 'gi-1'],
+  },
+  {
     runId: 43744332755,
     fileCount: 401,
     ownerCount: 25,
@@ -1115,69 +1121,63 @@ test('run 43718751716 fits fixed native owners before assigning ordinary files',
 });
 
 test('native tail placement retains independent headroom across the later cohorts', () => {
-  const fourthLane = DAWN_GATE_SHARDS[3];
+  const failedLane = DAWN_GATE_SHARDS[0];
   for (const id of ['modeling-s6', 'transmission']) {
-    assert.ok(!fourthLane.includes(id), `${id} must use capacity outside the measured slow lane`);
+    assert.ok(!failedLane.includes(id), `${id} must use capacity outside the measured slow lane`);
   }
   assert.ok(
     DAWN_GATE_SHARDS[1].includes('screen-probe'),
-    'the complete owner uses the 43744332755 second-lane headroom',
+    'the complete owner uses retained second-lane headroom after the 43851698763 rebalance',
   );
 });
 
 test('completed cohorts distribute complete native tails before ordinary backfill', () => {
-  const laneOf = (id) => DAWN_GATE_SHARDS.findIndex((lane) => lane.includes(id));
-  assert.deepEqual(DAWN_GATE_SHARDS[3], [
-    'ordinary-4',
-    'modeling-show',
-    'compact-2',
-    'feature-depth',
-    'gi-1',
+  assert.deepEqual(DAWN_GATE_SHARDS, [
+    [
+      'ordinary-1',
+      'compact-1',
+      'modeling-show',
+      'direct-light',
+      'heavy-3',
+      'gi-6',
+      'renderer',
+      'gi-3',
+      'feature-depth',
+    ],
+    [
+      'ordinary-2',
+      'heavy-2',
+      'nested-discard',
+      'surface-pipelines',
+      'heavy-1',
+      'shadow-quality',
+      'specular-aa',
+      'gi-4',
+      'screen-probe',
+      'gi-2',
+    ],
+    ['ordinary-3', 'modeling-s6', 'transmission', 'vfx-depth', 'compact-2'],
+    ['ordinary-4', 'rect-source', 'shadow-fields', 'heavy-4', 'compact-3', 'gi-5', 'gi-1'],
   ]);
-  for (const id of ['shadow-fields', 'heavy-2', 'nested-discard']) {
-    assert.equal(laneOf(id), 0, `${id} moves to the measured lane-one headroom`);
-  }
-  for (const id of ['compact-3', 'gi-6', 'renderer', 'heavy-1', 'gi-3']) {
-    assert.equal(laneOf(id), 1, `${id} moves to the measured lane-two headroom`);
-  }
-  assert.equal(laneOf('compact-1'), 0, 'run 42443025201 exchanges complete compact owners');
-  assert.equal(
-    laneOf('direct-light'),
-    0,
-    'run 43744332755 places the complete regression owner on lane one',
-  );
-  assert.equal(laneOf('gi-1'), 3, 'run 43851698763 uses fourth-lane headroom');
-  assert.equal(laneOf('gi-4'), 1, 'complete GI owners use measured second-lane headroom');
-  assert.equal(laneOf('compact-2'), 3, 'the fourth lane absorbs the complete compact owner');
-  assert.equal(
-    laneOf('gi-5'),
-    0,
-    'run 43904183011 exchanges complete GI-5 and Modeling Show owners',
-  );
-  assert.equal(
-    laneOf('surface-pipelines'),
-    1,
-    'run 43532825859 spreads the retained cold-owner reserves across measured work',
-  );
 });
 
-test('run 42835598738 moves complete full-profile depth owners off the saturated second lane', () => {
+test('retained full-profile depth owners use independent complete native lifetimes', () => {
   const laneOf = (id) => DAWN_GATE_SHARDS.findIndex((lane) => lane.includes(id));
-  assert.equal(laneOf('feature-depth'), 3);
+  assert.equal(laneOf('feature-depth'), 0);
   assert.equal(laneOf('vfx-depth'), 2);
-  assert.ok(!DAWN_GATE_SHARDS[1].includes('feature-depth'));
-  assert.ok(!DAWN_GATE_SHARDS[1].includes('vfx-depth'));
+  assert.notEqual(laneOf('feature-depth'), laneOf('vfx-depth'));
 });
 
-test('run 42929802533 moves the complete S6 capture off the overloaded first Dawn lane', () => {
+test('the complete S6 capture stays off the overloaded first Dawn lane', () => {
   const laneOf = (id) => DAWN_GATE_SHARDS.findIndex((lane) => lane.includes(id));
-  assert.equal(laneOf('gi-2'), 2, 'run 43851698763 uses third-lane headroom');
+  assert.equal(laneOf('gi-2'), 1, 'retained cohorts use second-lane headroom');
   assert.equal(laneOf('transmission'), 2, 'run 42786967820 moves the complete owner to lane three');
-  assert.equal(laneOf('gi-3'), 1);
+  assert.equal(laneOf('gi-3'), 0);
   assert.equal(laneOf('gi-1'), 3);
   assert.equal(laneOf('modeling-s6'), 2);
   assert.equal(laneOf('gi-4'), 1);
   assert.notEqual(laneOf('gi-4'), laneOf('gi-5'));
+  assert.notEqual(laneOf('modeling-s6'), laneOf('modeling-show'));
 });
 
 test('run 42247651279 leaves ordinary-file headroom on the fourth lane', () => {
@@ -1303,4 +1303,39 @@ test('run 43851698763 retains complete work and exposes its infeasible forecast'
       predictions,
     }),
   );
+});
+
+test('run 43819262879 retains all completed work and positive unfinished-owner forecasts', () => {
+  const snapshot = JSON.parse(
+    readFileSync(new URL('./fixtures/dawn-completed-43819262879.json', import.meta.url), 'utf8'),
+  );
+  const timings = readDawnTimings();
+  const retained = [timings.latestRun, timings.previousRun, ...timings.replayRuns].find(
+    (row) => row.runId === snapshot.runId,
+  );
+  assert.ok(retained);
+  assert.deepEqual(retained.files, snapshot.files);
+  assert.deepEqual(retained.owners, snapshot.owners);
+  assert.deepEqual(snapshot.interruptedOwners, ['heavy-1']);
+  assert.deepEqual(snapshot.unstartedOwners, ['heavy-2', 'shadow-fields', 'gi-1']);
+  assert.deepEqual(snapshot.reservedOwners, {
+    'heavy-1': 77.11,
+    'heavy-2': 52.202,
+    'shadow-fields': 207.672,
+    'gi-1': 241.472,
+  });
+  assert.equal(snapshot.complete, false);
+  assert.equal(snapshot.ordinaryReceipts.length, 4);
+  assert.equal(
+    snapshot.ordinaryReceipts.reduce((n, row) => n + row.fileCount, 0),
+    401,
+  );
+  assert.equal(Object.keys(snapshot.owners).length, 23);
+  for (const id of ['heavy-1', 'heavy-2', 'shadow-fields', 'gi-1']) {
+    assert.equal(Object.hasOwn(snapshot.owners, id), false);
+    assert.ok(snapshot.reservedOwners[id] > 0);
+    assert.ok(snapshot.reservedOwners[id] <= timings.owners[id]);
+  }
+  assert.equal(snapshot.owners['direct-light'], (106221 + 179992 + 166090 + 98729) / 1000);
+  assert.equal(snapshot.owners['surface-pipelines'], 421.326);
 });

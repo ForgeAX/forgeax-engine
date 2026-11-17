@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { AssetGuid, PackageId } from '../guid.js';
 import { createFileSystemPackAuthoringGateway } from '../pack-authoring-node.js';
+import { installPackProjectDependencies } from './support/pack-project-dependencies.js';
 
 const DIRECT_PACKAGE = '01900000-0000-7000-8000-000000000070';
 const CLONE_PACKAGE = '01900000-0000-7000-8000-000000000071';
@@ -27,6 +28,7 @@ describe('Pack authoring gateway', () => {
   it('inspects parameter declarations without scanning siblings or executing user code', async () => {
     const root = await mkdtemp(join(tmpdir(), 'forgeax-pack-parameters-'));
     roots.push(root);
+    await installPackProjectDependencies(root);
     const source = `throw new Error('inspection must not execute this module');
 export default definePack({
   schemaVersion: '2.0.0', packageId: definePackageId('${SOURCE_PACKAGE}'),
@@ -109,6 +111,7 @@ export default definePack({
   it('keeps healthy read queries and source diagnostics when a sibling is malformed', async () => {
     const root = await mkdtemp(join(tmpdir(), 'forgeax-pack-gateway-partial-'));
     roots.push(root);
+    await installPackProjectDependencies(root);
     await writeFile(
       join(root, 'good.pack.json'),
       JSON.stringify({
@@ -177,6 +180,7 @@ export default definePack({
   it('writes guid-less direct JSON, derives identity, and makes mutations idempotent', async () => {
     const root = await mkdtemp(join(tmpdir(), 'forgeax-pack-gateway-direct-'));
     roots.push(root);
+    await installPackProjectDependencies(root);
     const gateway = createFileSystemPackAuthoringGateway({ gameRoot: root });
     const operation = {
       operation: 'asset.source.create' as const,
@@ -266,6 +270,7 @@ export default definePack({
   it('keeps source inspection as identity and returns only the selected direct payload', async () => {
     const root = await mkdtemp(join(tmpdir(), 'forgeax-pack-gateway-inspect-output-'));
     roots.push(root);
+    await installPackProjectDependencies(root);
     const gateway = createFileSystemPackAuthoringGateway({ gameRoot: root });
     const created = await gateway.execute({
       operation: 'asset.source.create',
@@ -311,6 +316,7 @@ export default definePack({
   it('creates ScriptablePack source and Pack instance documents with CAS-protected value edits', async () => {
     const root = await mkdtemp(join(tmpdir(), 'forgeax-pack-gateway-instance-'));
     roots.push(root);
+    await installPackProjectDependencies(root);
     const gateway = createFileSystemPackAuthoringGateway({ gameRoot: root });
     const source = await gateway.execute({
       operation: 'asset.source.create',
@@ -412,6 +418,7 @@ export default definePack({
   it('fails closed when the current materialized projection violates derived identity', async () => {
     const root = await mkdtemp(join(tmpdir(), 'forgeax-pack-gateway-projection-'));
     roots.push(root);
+    await installPackProjectDependencies(root);
     const gateway = createFileSystemPackAuthoringGateway({
       gameRoot: root,
       materialized: () => [
@@ -440,6 +447,7 @@ export default definePack({
   it('does not fall back from a missing sourcePath to another package locator', async () => {
     const root = await mkdtemp(join(tmpdir(), 'forgeax-pack-gateway-locator-'));
     roots.push(root);
+    await installPackProjectDependencies(root);
     const gateway = createFileSystemPackAuthoringGateway({ gameRoot: root });
     await gateway.execute({
       operation: 'asset.source.create',
@@ -461,6 +469,7 @@ export default definePack({
   it('converts a broken materialized projection callback into a structured error', async () => {
     const root = await mkdtemp(join(tmpdir(), 'forgeax-pack-gateway-projection-callback-'));
     roots.push(root);
+    await installPackProjectDependencies(root);
     const gateway = createFileSystemPackAuthoringGateway({
       gameRoot: root,
       materialized: () => {
@@ -474,6 +483,7 @@ export default definePack({
   it('accepts references to published assets owned by another producer', async () => {
     const root = await mkdtemp(join(tmpdir(), 'forgeax-pack-gateway-external-ref-'));
     roots.push(root);
+    await installPackProjectDependencies(root);
     const externalGuid = '01900000-0000-7000-8000-000000000099';
     const gateway = createFileSystemPackAuthoringGateway({
       gameRoot: root,
@@ -500,6 +510,7 @@ export default definePack({
 it('inspects the exact source revision used by rebuild conflict checks', async () => {
   const root = await mkdtemp(join(tmpdir(), 'forgeax-inspect-revision-'));
   roots.push(root);
+  await installPackProjectDependencies(root);
   const outputs = [
     {
       packageId: SOURCE_PACKAGE,

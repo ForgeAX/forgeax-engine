@@ -31,6 +31,16 @@ export type DevKitAppOptions = Pick<
   | 'backgroundPipelineLibraryConcurrency'
   | 'time'
 > & {
+  /** Project-owned factories constructed before Renderer in every execution realm.
+   * Each named export returns { features, plugin? }; config is data-only. */
+  readonly renderFeatures?: readonly {
+    readonly id: string;
+    readonly module: string;
+    readonly export: string;
+    readonly config?: Readonly<Record<string, unknown>>;
+  }[];
+  /** Selected feature identities whose managed outputs particles sample. */
+  readonly vfxDependencies?: readonly string[];
   /** Browser drawing-buffer pixels per CSS pixel. Omission keeps App's 1x default.
    * 'device' samples the browser DPR; a device policy can cap that scale explicitly. */
   readonly canvasPixelRatio?: number | 'device' | { readonly mode: 'device'; readonly max: number };

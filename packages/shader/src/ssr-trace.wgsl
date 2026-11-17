@@ -377,61 +377,81 @@ fn traceScreenRay(
   var level = 0u;
   let iterationBudget = select(SSR_TRACE_MAX_HIZ_ITERATIONS, SSR_TRACE_MAX_LINEAR_ITERATIONS,
     maxTraceLevel == 0u);
-  for (var iteration = 0u; iteration < SSR_TRACE_MAX_LINEAR_ITERATIONS; iteration++) {
-    if (t >= endFraction || iteration >= iterationBudget) { break; }
-    let entryFraction = t;
-    let uv = startUv + deltaUv * t;
-    var levelSize = fullSize;
-    if (level > 0u) { levelSize = depthPyramidLevelSize(depthPyramid, level - 1u); }
-    let cell = min(vec2<u32>(clamp(uv, vec2<f32>(0.0), vec2<f32>(1.0)) * vec2<f32>(levelSize)),
-      levelSize - vec2<u32>(1u));
-    let boundaryUv = (vec2<f32>(cell) + select(vec2<f32>(0.0), vec2<f32>(1.0), towardMax)) /
-      vec2<f32>(levelSize);
-    let exitFractions = select(vec2<f32>(endFraction),
-      (boundaryUv - startUv) / select(vec2<f32>(1.0), deltaUv, moving), moving);
-    let exitFraction = clamp(min(exitFractions.x, exitFractions.y), t, endFraction);
-    // Reciprocal depth is linear along the projected segment, so the segment's
-    // depth range is bounded by its endpoints.
-    let entryDepth = 1.0 / mix(inverseStart, inverseEnd, t);
-    let exitDepth = 1.0 / mix(inverseStart, inverseEnd, exitFraction);
-    let rayMin = min(entryDepth, exitDepth);
-    let rayMax = max(entryDepth, exitDepth);
-    let cellCenterUv = (vec2<f32>(cell) + vec2<f32>(0.5)) / vec2<f32>(levelSize);
-    // Closest-depth cells cover their whole integer footprint, so a cell
-    // behind the segment's far end proves no texel in it is crossed.
-    // At full resolution the centre depth is not the texel's depth range (an
-    // oblique plane varies across it), so the exact tests below decide.
-    if (level > 0u && sampleSsrTraceDepth(cellCenterUv, level) > rayMax) {
+  // Keep the full traversal counter across candidate yields. The tangent-plane
+  // validation stays outside the coarse march so native software compilers do
+  // not expand its struct-return control flow inside every traversal step.
+  var iteration = 0u;
+  loop {
+    var entryFraction : f32;
+    var sampleFraction : f32;
+    var exitFraction : f32;
+    var rayMin : f32;
+    var rayMax : f32;
+    var sampleDepth : f32;
+    var sampleUv : vec2<f32>;
+    var pixel : vec2<u32>;
+    var normal : vec3<f32>;
+    var candidateReady = false;
+    for (; iteration < SSR_TRACE_MAX_LINEAR_ITERATIONS; ) {
+      if (t >= endFraction || iteration >= iterationBudget) { break; }
+      iteration += 1u;
+      entryFraction = t;
+      let uv = startUv + deltaUv * t;
+      var levelSize = fullSize;
+      if (level > 0u) { levelSize = depthPyramidLevelSize(depthPyramid, level - 1u); }
+      let cell = min(vec2<u32>(clamp(uv, vec2<f32>(0.0), vec2<f32>(1.0)) * vec2<f32>(levelSize)),
+        levelSize - vec2<u32>(1u));
+      let boundaryUv = (vec2<f32>(cell) + select(vec2<f32>(0.0), vec2<f32>(1.0), towardMax)) /
+        vec2<f32>(levelSize);
+      let exitFractions = select(vec2<f32>(endFraction),
+        (boundaryUv - startUv) / select(vec2<f32>(1.0), deltaUv, moving), moving);
+      exitFraction = clamp(min(exitFractions.x, exitFractions.y), t, endFraction);
+      // Reciprocal depth is linear along the projected segment, so the segment's
+      // depth range is bounded by its endpoints.
+      let entryDepth = 1.0 / mix(inverseStart, inverseEnd, t);
+      let exitDepth = 1.0 / mix(inverseStart, inverseEnd, exitFraction);
+      rayMin = min(entryDepth, exitDepth);
+      rayMax = max(entryDepth, exitDepth);
+      let cellCenterUv = (vec2<f32>(cell) + vec2<f32>(0.5)) / vec2<f32>(levelSize);
+      // Closest-depth cells cover their whole integer footprint, so a cell
+      // behind the segment's far end proves no texel in it is crossed.
+      // At full resolution the centre depth is not the texel's depth range (an
+      // oblique plane varies across it), so the exact tests below decide.
+      if (level > 0u && sampleSsrTraceDepth(cellCenterUv, level) > rayMax) {
+        t = exitFraction + crossEpsilon;
+        level = min(level + 1u, maxTraceLevel);
+        continue;
+      }
+      if (level > 0u) {
+        level -= 1u;
+        continue;
+      }
+      // Full-resolution texel whose depth the segment reaches.
+      pixel = cell;
+      sampleDepth = textureLoad(sceneDepth, vec2<i32>(pixel), 0);
+      sampleUv = cellCenterUv;
+      sampleFraction = clamp(ssrRayFraction(sampleUv, startUv, deltaUv, t, endFraction),
+        entryFraction, exitFraction);
       t = exitFraction + crossEpsilon;
-      level = min(level + 1u, maxTraceLevel);
-      continue;
+      // Climb again after every full-resolution texel so empty space is skipped.
+      level = min(1u, maxTraceLevel);
+      if (sampleDepth <= 0.0 || sampleDepth > 1.0 ||
+          textureLoad(reflectionFallback, vec2<i32>(pixel), 0).a <= 0.5) { continue; }
+      let surfaceViewDepth = linearizeViewDepth(sampleDepth, view.temporalProjection);
+      // Already behind this surface for the whole texel: an occluder thicker
+      // than the authored thickness hides what lies beyond, keep marching.
+      if (rayMin > surfaceViewDepth + thickness) { continue; }
+      // A moving occluder can invalidate yesterday's hit even when its back
+      // face or depth separation rejects today's radiance. Preserve that
+      // evidence on misses; sky and samples beyond the ray interval contribute
+      // nothing. This does not admit the occluder as a reflection source.
+      result.reactivity = max(result.reactivity, ssrSourceReactivity(vec2<i32>(pixel)));
+      normal = loadStandardNormalRoughness(sceneNormal, vec2<i32>(pixel)).xyz;
+      if (dot(normal, -direction) <= 0.0) { continue; }
+      candidateReady = true;
+      break;
     }
-    if (level > 0u) {
-      level -= 1u;
-      continue;
-    }
-    // Full-resolution texel whose depth the segment reaches.
-    let pixel = cell;
-    let sampleDepth = textureLoad(sceneDepth, vec2<i32>(pixel), 0);
-    let sampleUv = cellCenterUv;
-    let sampleFraction = clamp(ssrRayFraction(sampleUv, startUv, deltaUv, t, endFraction),
-      entryFraction, exitFraction);
-    t = exitFraction + crossEpsilon;
-    // Climb again after every full-resolution texel so empty space is skipped.
-    level = min(1u, maxTraceLevel);
-    if (sampleDepth <= 0.0 || sampleDepth > 1.0 ||
-        textureLoad(reflectionFallback, vec2<i32>(pixel), 0).a <= 0.5) { continue; }
-    let surfaceViewDepth = linearizeViewDepth(sampleDepth, view.temporalProjection);
-    // Already behind this surface for the whole texel: an occluder thicker
-    // than the authored thickness hides what lies beyond, keep marching.
-    if (rayMin > surfaceViewDepth + thickness) { continue; }
-    // A moving occluder can invalidate yesterday's hit even when its back
-    // face or depth separation rejects today's radiance. Preserve that
-    // evidence on misses; sky and samples beyond the ray interval contribute
-    // nothing. This does not admit the occluder as a reflection source.
-    result.reactivity = max(result.reactivity, ssrSourceReactivity(vec2<i32>(pixel)));
-    let normal = loadStandardNormalRoughness(sceneNormal, vec2<i32>(pixel)).xyz;
-    if (dot(normal, -direction) <= 0.0) { continue; }
+    if (!candidateReady) { break; }
     // Intersect the texel's tangent plane; accept it when the intersection
     // stays within one texel of the crossed segment.
     let planeHit = ssrRefineHit(origin, direction, rayLength, thickness, fullSize,

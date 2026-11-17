@@ -271,7 +271,12 @@ async function build(
               (cloudShadowProducer || passName !== 'cloud-layer-shadow-filter'),
           }),
       contributeFeatures: ({ targets, placement, namedTargets = {}, include, passNames }) => {
-        if (postSceneWriter && placement !== 'scene' && Object.keys(namedTargets).length === 0) {
+        if (
+          postSceneWriter &&
+          placement !== 'scene' &&
+          placement !== 'environment' &&
+          Object.keys(namedTargets).length === 0
+        ) {
           const color = targets.find((target) => target.kind === 'scene-color');
           if (color === undefined) throw new Error('post scene writer lost its color target');
           return graph.addRasterPass('test-post-scene-writer', {
@@ -296,13 +301,15 @@ async function build(
           });
           if (!traced.ok) return traced;
         }
-        const cloudOutput = passNames?.includes('cloud-layer-shadow')
-          ? cloudShadowProducer
-            ? namedTargets['cloud-shadow']
-            : undefined
-          : passNames?.includes('cloud-layer-resolve')
-            ? namedTargets['motion-output']
-            : undefined;
+        const selectCloudOutput = () =>
+          passNames?.includes('cloud-layer-shadow')
+            ? cloudShadowProducer
+              ? namedTargets['cloud-shadow']
+              : undefined
+            : passNames?.includes('cloud-layer-resolve')
+              ? namedTargets['motion-output']
+              : undefined;
+        const cloudOutput = selectCloudOutput();
         if (cloudOutput !== undefined) {
           const cloudInput = passNames?.includes('cloud-layer-shadow')
             ? namedTargets['cloud-shadow-raw']

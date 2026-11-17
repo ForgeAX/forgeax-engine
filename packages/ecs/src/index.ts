@@ -96,6 +96,7 @@ export {
   Time,
   type TimePolicy,
   type TimeResource,
+  type TimeScaleLease,
   type WorldOptions,
 } from './time';
 /**
@@ -340,7 +341,11 @@ export { ENTITY_MAX_GENERATION, ENTITY_MAX_INDEX, ENTITY_NULL_RAW } from './enti
 // command channel.
 // w9: ECS_MUTATING_METHODS export deleted — sandbox dismantled; mutating-methods.ts removed.
 
-export { ChangeEpochExhaustedError } from './errors';
+export {
+  ChangeEpochExhaustedError,
+  TimeScaleInvalidError,
+  TimeScaleLeaseReleasedError,
+} from './errors';
 export {
   QueryBatchUnavailableError,
   type QueryBatchUnavailableReason,

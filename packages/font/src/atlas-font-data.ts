@@ -30,8 +30,13 @@ export interface BakeAtlas {
  * The bake-time MSDF generator contract. Injected into the bake and import entrypoints so
  * unit tests can supply a mock (real path: `@zappar/msdf-generator`'s `MSDF`).
  */
+export interface FontAtlasOptions {
+  readonly charset?: string;
+  readonly fieldRange?: number;
+}
+
 export interface MsdfGenerator {
-  generateAtlas(ttf: Uint8Array): Promise<BakeAtlas>;
+  generateAtlas(ttf: Uint8Array, options?: FontAtlasOptions): Promise<BakeAtlas>;
   dispose(): Promise<void>;
 }
 

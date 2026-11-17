@@ -17,7 +17,7 @@ describe('DIRECTIONAL_SHADOW_SIMPLE variant axis', () => {
     ).toBe(true);
     expect(
       isSupportedVariantDefines({ DIRECTIONAL_SHADOW_SIMPLE: false, LEAN_LIGHTING: true }),
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it('keeps ProbeBlend on the full-lighting receiver only', () => {

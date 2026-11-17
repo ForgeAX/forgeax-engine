@@ -39,12 +39,27 @@ function waterCoverageGroupsThrough(runId) {
   const ledger = JSON.parse(
     readFileSync(new URL('../coverage-completed-child-seconds.json', import.meta.url), 'utf8'),
   );
-  return coverageGroups(allProjectNames(), 8, {
-    completed: {
-      ...ledger,
-      replayRuns: ledger.replayRuns.filter((run) => run.runId === undefined || run.runId <= runId),
+  const receipt = JSON.parse(
+    readFileSync(new URL(`./fixtures/coverage-completed-${runId}.json`, import.meta.url), 'utf8'),
+  );
+  const admittedProjects = new Set(
+    [...Object.keys(receipt.completedSeconds), ...Object.keys(receipt.reservedSeconds)].flatMap(
+      (label) => label.split(':')[0].split(','),
+    ),
+  );
+  // New Node apps execute today; a completed cohort keeps only its own roster.
+  return coverageGroups(
+    allProjectNames().filter((name) => admittedProjects.has(name)),
+    8,
+    {
+      completed: {
+        ...ledger,
+        replayRuns: ledger.replayRuns.filter(
+          (run) => run.runId === undefined || run.runId <= runId,
+        ),
+      },
     },
-  });
+  );
 }
 
 test('historical coverage replay preserves its roster while current CI includes new projects', () => {
@@ -1275,7 +1290,7 @@ test('complete Render coverage retains admitted workers and limited source headr
 });
 
 test('timed-out lane two admits bounded ordinary workers without moving its complete owners', () => {
-  const groups = coverageGroups(allProjectNames(), 8);
+  const groups = waterCoverageGroupsThrough(43744332755);
   const assignment = assignCoverageShards(groups, 4, { typecheck: false });
   const options = parseArgs(['--max-workers=2', '--modeling-max-workers=2']);
   const resources = { cpus: 8, memoryBytes: 16_000_000_000 };
@@ -3007,5 +3022,38 @@ test('run 42367192490 keeps another completed slow Modeling wave within existing
   assert.deepEqual(
     ledger.replayRuns.find((run) => run.runId === receipt.runId)?.completedSeconds,
     receipt.completedSeconds,
+  );
+});
+
+test('registered Water Node apps share the existing bounded selector without rewriting old children', () => {
+  const apps = [
+    '@forgeax/water-r4-buoyancy-foam',
+    '@forgeax/water-r8-entry-experiment',
+    '@forgeax/water-mesh-demo',
+    '@forgeax/water-r8-integration-acceptance',
+  ];
+  const projects = allProjectNames();
+  const legacy = projects.filter((name) => !apps.includes(name));
+  assert.deepEqual(projects.slice(0, -5), legacy.slice(0, -1));
+  assert.equal(legacy.slice(0, -1).length, 80);
+  assert.deepEqual(projects.slice(-5), [...apps, 'unit']);
+  assert.equal(new Set(projects).size, projects.length);
+  const current = coverageGroups(projects, 8);
+  const preceding = coverageGroups(legacy, 8);
+  const newChild = current.find((group) => apps.every((name) => group.projects.includes(name)));
+  assert.ok(newChild);
+  assert.ok(newChild.weight > 0, 'unmeasured work retains a positive forecast');
+  assert.equal(newChild.observedSeconds, undefined, 'new apps have no completed observation');
+  assert.equal(newChild.replaySeconds, undefined, 'old cohorts never observed the new child');
+  for (const name of apps)
+    assert.equal(current.filter((group) => group.projects.includes(name)).length, 1);
+  for (const original of preceding.filter((group) => group.label !== 'unit'))
+    assert.deepEqual(
+      current.find((group) => group.label === original.label),
+      original,
+    );
+  assert.equal(
+    historicalCoverageGroups().some((group) => group.projects.some((name) => apps.includes(name))),
+    false,
   );
 });

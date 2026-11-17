@@ -512,10 +512,13 @@ it('reprojects the raster graph when modifiers change while the receiver stays s
     expect(full).not.toBe(lean);
     expect(f.prepare(true, false).topologySignature()).toBe(full);
     expect(f.prepare(true, true).topologySignature()).toBe(lean);
-    // A general receiver cannot select a lean row in the publication.
-    expect(f.prepare(false, true).topologySignature()).toBe(
-      f.prepare(false, false).topologySignature(),
-    );
+    // General receivers retain their full shadow algorithms while modifiers
+    // independently select another source program and physical graph.
+    const generalLean = f.prepare(false, true).topologySignature();
+    const generalFull = f.prepare(false, false).topologySignature();
+    expect(generalLean).not.toBe(generalFull);
+    expect(f.prepare(false, true).topologySignature()).toBe(generalLean);
+    expect(f.prepare(false, false).topologySignature()).toBe(generalFull);
   } finally {
     f.close();
   }

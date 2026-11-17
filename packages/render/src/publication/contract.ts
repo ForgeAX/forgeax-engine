@@ -114,6 +114,8 @@ export interface RenderPublication extends RenderPublicationIdentity {
     /** Sent once per accepted declaration; enable state remains per frame. */
     readonly fullscreen?: import('../features/fullscreen').FullscreenRenderFeatureDeclaration;
   }[];
+  /** Current source page, or empty/absent after explicit withdrawal. */
+  readonly surfaceDynamicInputs?: readonly import('../surface/frame-source').PublishedSurfaceDynamicInput[];
   readonly programs: readonly (
     | {
         readonly key: string;

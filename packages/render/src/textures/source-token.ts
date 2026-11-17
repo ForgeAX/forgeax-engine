@@ -2,7 +2,7 @@ import type { RenderTextureSourceToken } from '@forgeax/engine-types';
 
 /** Stable across structured cloning; native state stays with the producer. */
 export function renderTextureSourceKey(source: RenderTextureSourceToken): string {
-  return `${source.owner}:${source.id}`;
+  return `${source.owner}:${source.id}${source.source === 'feature' && source.name !== undefined ? `:${source.name}` : ''}`;
 }
 
 export function isRenderTextureSourceToken(value: unknown): value is RenderTextureSourceToken {
@@ -17,6 +17,8 @@ export function isRenderTextureSourceToken(value: unknown): value is RenderTextu
     (source.source === 'target' ||
       source.source === 'canvas' ||
       source.source === 'external' ||
-      source.source === 'feature')
+      source.source === 'feature') &&
+    (source.name === undefined ||
+      (source.source === 'feature' && typeof source.name === 'string' && source.name.length > 0))
   );
 }

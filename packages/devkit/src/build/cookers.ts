@@ -56,6 +56,8 @@ export async function loadProjectCookers(
     readonly inventory?: PluginSourceInventory;
     /** Build DDC root backing the native cookers' `context.cache`; absent, cooks have no store. */
     readonly buildCacheRoot?: string;
+    /** Project registrations replace these defaults; protected builtin collisions still fail. */
+    readonly defaultCookers?: readonly NativeCooker[];
   } = {},
 ): Promise<ProjectCookers> {
   for (const timeout of [
@@ -66,11 +68,18 @@ export async function loadProjectCookers(
     if (timeout !== undefined && (!Number.isFinite(timeout) || timeout <= 0))
       throw new RangeError('build deadlines must be positive finite milliseconds');
   const startupTimeoutMs = options.startupTimeoutMs ?? 60_000;
+  const withDefaults = (cookers: readonly NativeCooker[]) => {
+    const keys = new Set(cookers.map((cooker) => cooker.key));
+    return [
+      ...cookers,
+      ...(options.defaultCookers ?? []).filter((cooker) => !keys.has(cooker.key)),
+    ];
+  };
   if (!facts.roots.build)
     return {
       appOptions: {},
       delivery: {},
-      cookers: builtins,
+      cookers: withDefaults(builtins),
       importers: [],
       watchFiles: new Set(),
       async dispose() {},
@@ -342,7 +351,7 @@ export async function loadProjectCookers(
       appOptions:
         precompute === undefined ? started.appOptions : await precompute(started.appOptions),
       delivery: started.delivery,
-      cookers: [...builtins, ...remote],
+      cookers: withDefaults([...builtins, ...remote]),
       importers,
       producerIdentity: compiled.producerIdentity,
       watchFiles,

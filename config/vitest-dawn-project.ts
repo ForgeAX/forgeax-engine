@@ -58,6 +58,11 @@ export const dawnProject = defineProject({
       ...(RUNNING_DAWN_ISOLATED ? [] : DAWN_ISOLATED_TEST_FILES),
       ...(RUNNING_DAWN_COMPACT ? [] : DAWN_COMPACT_TEST_FILES),
     ],
-    setupFiles: ['./config/vitest.setup-webgpu.ts'],
+    setupFiles: [
+      './config/vitest.setup-webgpu.ts',
+      ...(process.env.FORGEAX_DAWN_CAPTURE_TEST === undefined
+        ? []
+        : ['./config/vitest.setup-original-frame.ts']),
+    ],
   },
 });

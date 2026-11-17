@@ -182,6 +182,8 @@ describe('EcsErrorCode union completeness', () => {
       'system-set-not-registered',
       'time-delta-invalid',
       'time-config-invalid',
+      'time-scale-invalid',
+      'time-scale-lease-released',
       'schedule-scope-mismatch',
       'component-field-invalid-value',
       'derived-write-active',

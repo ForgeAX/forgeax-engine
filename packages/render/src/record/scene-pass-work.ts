@@ -376,7 +376,7 @@ function queueScenePass(
   phase.queue({
     retainMaterialBindings: inputs.retainMaterialBindings,
     scene: inputs.scene,
-    selection: [request.late],
+    selection: [request.late, request.passKind === 'shadow' ? undefined : eye?.cullMask],
     gpu,
     select: selectDirectPassMaterial(request, materials, gpu),
     meshes: inputs.meshes,
@@ -388,6 +388,7 @@ function queueScenePass(
     viewDraws: request.late ? [] : inputs.viewDraws,
     prepareGeometry: inputs.prepareGeometry,
     visible,
+    ...(request.passKind === 'shadow' ? {} : { cullMask: eye?.cullMask ?? 0xffffffff }),
     admission: admitted ? inputs.cameraAdmission : undefined,
     lod: (lodRows) => inputs.lod(lodRows, request),
     lodCamera: lodCameraTokens(eye),

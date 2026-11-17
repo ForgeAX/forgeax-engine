@@ -30,17 +30,25 @@ export function createCanvasInputBoundary(source: InputBackend): CanvasInputBoun
   let gamePointerLockAllowed = false;
   let previewInputAllowed = true;
   let gameInputAllowed = true;
+  const resetPending = { preview: false, game: false };
   source.setPointerLockAllowed?.(false);
 
-  const empty = (): InputBackendSample => createEmptyInputBackendSample();
+  const empty = (): InputBackendSample => ({ ...createEmptyInputBackendSample(), focused: false });
 
   const clear = (): void => {
+    resetPending.preview = true;
+    resetPending.game = true;
     source.clear?.();
     source.setPointerLockAllowed?.(false);
   };
 
   const routed = (consumer: CanvasInputOwner): InputBackend => ({
-    sample: () => (consumer === active ? source.sample() : empty()),
+    sample: () => {
+      const sample = consumer === active ? source.sample() : empty();
+      if (!resetPending[consumer]) return sample;
+      resetPending[consumer] = false;
+      return { ...sample, focusReset: true };
+    },
     setPointerLockAllowed: (allowed) => {
       if (consumer === 'game') {
         gamePointerLockAllowed = allowed;

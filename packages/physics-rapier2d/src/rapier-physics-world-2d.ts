@@ -40,6 +40,7 @@ import {
   PHYSICS_ERROR_HINTS,
   PhysicsError,
   PhysicsSet,
+  physicsSimulationRunning,
   RigidBody,
   RigidBodyTypeValue,
   registerPhysicsComponents,
@@ -57,6 +58,7 @@ interface Rapier2DKinematicControllerState {
 
 interface PhysicsEntityRecord {
   bodyHandle: number;
+  canSleep?: boolean;
   lockRotation: boolean;
 }
 
@@ -629,6 +631,7 @@ export class RapierPhysicsWorld2D implements PhysicsWorld2D {
       angularDamping: number;
       gravityScale: number;
       ccdEnabled: number;
+      canSleep?: boolean;
       lockRotation?: boolean;
       additionalSolverIterations?: number;
     },
@@ -639,6 +642,10 @@ export class RapierPhysicsWorld2D implements PhysicsWorld2D {
     );
     const existing = this.entityMap.get(entity);
     if (existing) {
+      if (existing.canSleep !== undefined && existing.canSleep !== (rigidBody.canSleep ?? true))
+        throw new TypeError(
+          'RigidBody.canSleep is a creation policy; retire and respawn the body to change it.',
+        );
       const body = this.raw.getRigidBody(existing.bodyHandle);
       if (body.additionalSolverIterations() !== solverIterations)
         body.setAdditionalSolverIterations(solverIterations);
@@ -657,55 +664,64 @@ export class RapierPhysicsWorld2D implements PhysicsWorld2D {
 
     // ── Create RigidBodyDesc (2D) ──
     const rbType = rigidBodyTypeFromF32(rigidBody.type);
-    let body: RapierRigidBody2D;
-    switch (rbType) {
-      case 'dynamic': {
-        // biome-ignore lint/suspicious/noExplicitAny: Rapier RigidBodyDesc
-        const desc = (RAPIER as any).RigidBodyDesc.dynamic()
-          .setTranslation(transform.position.x, transform.position.y)
-          .setRotation(transform.rotation)
-          .setLinearDamping(rigidBody.linearDamping)
-          .setAngularDamping(rigidBody.angularDamping)
-          .setGravityScale(rigidBody.gravityScale);
-        if (rigidBody.mass > 0) {
-          desc.setAdditionalMass(rigidBody.mass);
+    const createNativeBody = () => {
+      let body: RapierRigidBody2D;
+      switch (rbType) {
+        case 'dynamic': {
+          // biome-ignore lint/suspicious/noExplicitAny: Rapier RigidBodyDesc
+          const desc = (RAPIER as any).RigidBodyDesc.dynamic()
+            .setTranslation(transform.position.x, transform.position.y)
+            .setRotation(transform.rotation)
+            .setLinearDamping(rigidBody.linearDamping)
+            .setAngularDamping(rigidBody.angularDamping)
+            .setGravityScale(rigidBody.gravityScale)
+            .setCanSleep(rigidBody.canSleep ?? true);
+          if (rigidBody.mass > 0) {
+            desc.setAdditionalMass(rigidBody.mass);
+          }
+          if (rigidBody.ccdEnabled) {
+            desc.setCcdEnabled(true);
+          }
+          // biome-ignore lint/suspicious/noExplicitAny: Rapier World.createRigidBody
+          body = (this.raw as any).createRigidBody(desc);
+          break;
         }
-        if (rigidBody.ccdEnabled) {
-          desc.setCcdEnabled(true);
+        case 'static': {
+          // biome-ignore lint/suspicious/noExplicitAny: Rapier RigidBodyDesc
+          const desc = (RAPIER as any).RigidBodyDesc.fixed()
+            .setTranslation(transform.position.x, transform.position.y)
+            .setRotation(transform.rotation)
+            .setCanSleep(rigidBody.canSleep ?? true);
+          // biome-ignore lint/suspicious/noExplicitAny: Rapier World.createRigidBody
+          body = (this.raw as any).createRigidBody(desc);
+          break;
         }
-        // biome-ignore lint/suspicious/noExplicitAny: Rapier World.createRigidBody
-        body = (this.raw as any).createRigidBody(desc);
-        break;
-      }
-      case 'static': {
-        // biome-ignore lint/suspicious/noExplicitAny: Rapier RigidBodyDesc
-        const desc = (RAPIER as any).RigidBodyDesc.fixed()
-          .setTranslation(transform.position.x, transform.position.y)
-          .setRotation(transform.rotation);
-        // biome-ignore lint/suspicious/noExplicitAny: Rapier World.createRigidBody
-        body = (this.raw as any).createRigidBody(desc);
-        break;
-      }
-      case 'kinematic': {
-        // biome-ignore lint/suspicious/noExplicitAny: Rapier RigidBodyDesc
-        const desc = (RAPIER as any).RigidBodyDesc.kinematicPositionBased()
-          .setTranslation(transform.position.x, transform.position.y)
-          .setRotation(transform.rotation);
-        // CCD sweeps the collider along its per-step kinematic translation so a
-        // fast mover reliably contacts dynamics instead of tunneling through
-        // them on discrete steps.
-        if (rigidBody.ccdEnabled) {
-          desc.setCcdEnabled(true);
+        case 'kinematic': {
+          // biome-ignore lint/suspicious/noExplicitAny: Rapier RigidBodyDesc
+          const desc = (RAPIER as any).RigidBodyDesc.kinematicPositionBased()
+            .setTranslation(transform.position.x, transform.position.y)
+            .setRotation(transform.rotation)
+            .setCanSleep(rigidBody.canSleep ?? true);
+          // CCD sweeps the collider along its per-step kinematic translation so a
+          // fast mover reliably contacts dynamics instead of tunneling through
+          // them on discrete steps.
+          if (rigidBody.ccdEnabled) {
+            desc.setCcdEnabled(true);
+          }
+          // biome-ignore lint/suspicious/noExplicitAny: Rapier World.createRigidBody
+          body = (this.raw as any).createRigidBody(desc);
+          break;
         }
-        // biome-ignore lint/suspicious/noExplicitAny: Rapier World.createRigidBody
-        body = (this.raw as any).createRigidBody(desc);
-        break;
       }
-    }
 
+      return body;
+    };
+    const body = createNativeBody();
     body.setAdditionalSolverIterations(solverIterations);
     body.userData = entity;
     this.registerBody(entity, body.handle);
+    const createdRecord = this.entityMap.get(entity);
+    if (createdRecord !== undefined) createdRecord.canSleep = rigidBody.canSleep ?? true;
     const record = this.entityMap.get(entity);
     if (record !== undefined) this.syncRotationLock(record, body, Boolean(rigidBody.lockRotation));
 
@@ -1065,6 +1081,7 @@ export const PhysicsSyncBackend2D: System<readonly []> = defineSystem({
       const rbAngularDamping = batch.read(RigidBody, 'angularDamping');
       const rbGravityScale = batch.read(RigidBody, 'gravityScale');
       const rbCcdEnabled = batch.read(RigidBody, 'ccdEnabled');
+      const rbCanSleep = batch.read(RigidBody, 'canSleep');
       const rbLockRotation = batch.read(RigidBody, 'lockRotation');
       const rbAdditionalSolverIterations = batch.read(RigidBody, 'additionalSolverIterations');
       for (let ordinal = 0; ordinal < batch.count; ordinal++) {
@@ -1115,6 +1132,7 @@ export const PhysicsSyncBackend2D: System<readonly []> = defineSystem({
           angularDamping: number;
           gravityScale: number;
           ccdEnabled: number;
+          canSleep?: boolean;
           lockRotation?: boolean;
           additionalSolverIterations?: number;
         } =
@@ -1126,6 +1144,7 @@ export const PhysicsSyncBackend2D: System<readonly []> = defineSystem({
                 angularDamping: rbAngularDamping?.[row] as number,
                 gravityScale: rbGravityScale?.[row] as number,
                 ccdEnabled: rbCcdEnabled?.[row] as number,
+                canSleep: rbCanSleep?.[row] !== 0,
                 lockRotation: rbLockRotation?.[row] === 1,
                 additionalSolverIterations: rbAdditionalSolverIterations?.[row] as number,
               }
@@ -1182,6 +1201,7 @@ export const PhysicsStepSimulation2D: System<readonly []> = defineSystem({
   name: PHYSICS_STEP_SIMULATION_2D,
   queries: [],
   after: [PhysicsSyncBackend2D],
+  runIf: physicsSimulationRunning,
   fn: (world) => {
     let pw: RapierPhysicsWorld2D;
     try {

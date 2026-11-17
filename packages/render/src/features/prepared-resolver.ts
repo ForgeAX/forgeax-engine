@@ -151,6 +151,8 @@ export interface PreparedResolverDeps {
   readonly caches: PreparedResolverCaches;
   readonly builtinPostProcessEntries: ReadonlyMap<string, PostProcessShaderEntry>;
   readonly skylightResources: () => SkylightBindGroupResources | undefined;
+  /** Receiver-owned fact of this View's accepted native lighting projection. */
+  readonly leanLighting?: boolean;
 }
 
 export function createPreparedResolver(
@@ -187,7 +189,7 @@ export function createPreparedResolver(
         (descriptor.shader === 'forgeax::vfx-render.particles.mesh' ||
           descriptor.shader === 'forgeax::vfx-render.particles.mesh-inputs');
       const requestedVariantSet = clusteredParticleMesh
-        ? 'CLUSTER_FORWARD_AVAILABLE=true'
+        ? `CLUSTER_FORWARD_AVAILABLE=true+LEAN_LIGHTING=${deps.leanLighting === true}`
         : undefined;
       // A colorless prepared program is a depth-only pass. Vertex-only
       // shadow programs must use the depth policy; resolving them as

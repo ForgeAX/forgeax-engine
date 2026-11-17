@@ -13,6 +13,7 @@ import {
 } from '../assets.js';
 import { writeDistManifest } from '../dist.js';
 import { DEFAULT_IMPORTERS } from '../importers.js';
+import { installPackAuthorDependencies } from './fixtures/pack-author-dependencies.js';
 
 async function fixture(): Promise<string> {
   const root = await mkdtemp(resolve(tmpdir(), 'forgeax-devkit-assets-'));
@@ -39,6 +40,7 @@ async function scriptablePackFixture(count: number): Promise<string> {
     writeFile(resolve(root, 'package.json'), '{"name":"pack-game"}\n'),
     writeFile(resolve(root, 'main.ts'), 'export async function bootstrap() {}\n'),
   ]);
+  await installPackAuthorDependencies(root, ['pack', 'types']);
   await mkdir(resolve(root, 'assets'));
   await Promise.all(
     Array.from({ length: count }, (_, index) => {

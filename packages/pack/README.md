@@ -2,6 +2,13 @@
 
 ## Authoring diagnostics and discovery
 
+ScriptablePack runtime imports resolve with Node's ESM conditions from the original
+author module, including `@forgeax/engine/geometry` and separate Engine domain packages.
+The relocated Worker imports the resulting canonical file URL. It never borrows
+dependencies from the Pack loader installation; projects and source libraries own
+their imports. Missing-module errors retain the author path and specifier in both
+structured detail and the ordinary error message.
+
 Live generation admits the pure `ReflectionProbe` schema and
 `REFLECTION_PROBE_UPDATE_ON_CHANGE` through both Render import paths. Renderer
 execution factories remain outside the live generation import surface.

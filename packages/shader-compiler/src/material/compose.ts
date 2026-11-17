@@ -89,6 +89,7 @@ export interface SurfaceCompositionRequest {
   readonly generatedParameters?: string;
   /** Selected template contract; omitted keeps the Standard Surface ABI. */
   readonly surfaceModel?: MaterialSurfaceModel;
+  readonly surfaceAbiVersion?: 1 | 2;
   /** Producer-derived page ABI, inlined into the selected Surface closure. */
   readonly dynamicInput?: MaterialDynamicInputLayout;
   readonly deformation?: MaterialDeformationDeclaration;
@@ -677,6 +678,28 @@ const MEDIUM_SURFACE_DATA_FIELDS = [
   ['maxDistanceMeters', 'f32'],
 ] as const;
 
+const MEDIUM_SURFACE_V2_INPUT_FIELDS = [
+  ...MEDIUM_SURFACE_INPUT_FIELDS,
+  ['pixelPosition', 'vec4<f32>'],
+  ['backgroundDistanceMeters', 'f32'],
+  ['backgroundValid', 'bool'],
+] as const;
+const MEDIUM_SURFACE_V2_DATA_FIELDS = [
+  ...MEDIUM_SURFACE_DATA_FIELDS,
+  ['emission', 'vec3<f32>'],
+  ['foamColor', 'vec3<f32>'],
+  ['bodyAlbedo', 'vec3<f32>'],
+  ['bodyDiffuse', 'f32'],
+  ['waveHeight', 'f32'],
+  ['sssStrength', 'f32'],
+  ['glintStrength', 'f32'],
+  ['sunSpecular', 'f32'],
+  ['sunSpecularMax', 'f32'],
+  ['reflectionStrength', 'f32'],
+  ['transmissionEmission', 'vec3<f32>'],
+  ['transmissionTint', 'vec3<f32>'],
+  ['transmissionTintWeight', 'f32'],
+] as const;
 const WATER_SURFACE_INPUT_FIELDS = [
   ...MEDIUM_SURFACE_INPUT_FIELDS,
   ['pixelDepthM', 'f32'],
@@ -730,9 +753,20 @@ function validateSurfaceAbi(
     ? (check('SingleLayerWaterSurfaceInput', WATER_SURFACE_INPUT_FIELDS) ??
       check('SingleLayerWaterSurfaceData', WATER_SURFACE_DATA_FIELDS))
     : medium
-      ? (check('SingleLayerMediumSurfaceInput', MEDIUM_SURFACE_INPUT_FIELDS) ??
-        check('SingleLayerMediumSurfaceData', MEDIUM_SURFACE_DATA_FIELDS))
+      ? (check(
+          'SingleLayerMediumSurfaceInput',
+          request.surfaceAbiVersion === 2
+            ? MEDIUM_SURFACE_V2_INPUT_FIELDS
+            : MEDIUM_SURFACE_INPUT_FIELDS,
+        ) ??
+        check(
+          'SingleLayerMediumSurfaceData',
+          request.surfaceAbiVersion === 2
+            ? MEDIUM_SURFACE_V2_DATA_FIELDS
+            : MEDIUM_SURFACE_DATA_FIELDS,
+        ))
       : (check('SurfaceInput', SURFACE_INPUT_FIELDS) ?? check('SurfaceData', SURFACE_DATA_FIELDS));
+
   if (actual !== undefined) {
     return err(
       createMaterialError('material-surface-abi-mismatch', {
@@ -1059,7 +1093,14 @@ export function composeSurfaceSource(
 ): Result<SurfaceComposition, MaterialError> {
   const template = request.sources.get(request.templateModule);
   if (!template.ok) return err(template.error);
-  let templateSource = template.value.source;
+  let templateSource =
+    request.surfaceAbiVersion === 2
+      ? '#define SURFACE_MEDIUM_V2\n' +
+        template.value.source.replaceAll(
+          'forgeax_material::single_layer_medium_surface_v1',
+          'forgeax_material::single_layer_medium_surface_v2',
+        )
+      : template.value.source;
   templateSource = templateSource.replace(
     /^\s*#pragma\s+material_slot\s+deformation[^\n]*\n?/gm,
     '',
@@ -1148,6 +1189,7 @@ export function composeSurfaceSource(
       deformation.module,
     );
   }
+
   let engineTemplateInputs = template.value.provenance === 'engine';
   const selected = request.sources.resolveSurfaceSlot(
     request.material,
@@ -1170,8 +1212,11 @@ export function composeSurfaceSource(
     request.surfaceModel === 'single-layer-water'
       ? SINGLE_LAYER_WATER_SURFACE_MODULE
       : request.surfaceModel === 'single-layer-medium'
-        ? SINGLE_LAYER_MEDIUM_SURFACE_MODULE
+        ? request.surfaceAbiVersion === 2
+          ? 'forgeax_material::single_layer_medium_surface_v2'
+          : SINGLE_LAYER_MEDIUM_SURFACE_MODULE
         : 'forgeax_material::surface_v1';
+
   const surfaceAbi = request.sources.get(surfaceAbiModule);
   if (!surfaceAbi.ok) return err(surfaceAbi.error);
   const validAbi = validateSurfaceAbi(request, surfaceAbi.value);

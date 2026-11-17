@@ -1,6 +1,7 @@
-import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
 import { afterEach, expect, it } from 'vitest';
 import { STANDARD_SCRIPTABLE_PACK_SCAN_OPTIONS, scanInventory } from '../scanner.js';
@@ -56,6 +57,23 @@ async function scanLoads(
 it('reuses metadata across snapshots only for byte-identical source closures', async () => {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'pack-metadata-cache-')));
   roots.push(root);
+  // Author dependencies belong to the fixture project, never the Pack loader.
+  const modules = join(root, 'node_modules/@forgeax');
+  await mkdir(modules, { recursive: true });
+  const here = dirname(fileURLToPath(import.meta.url));
+  await symlink(resolve(here, '../..'), join(modules, 'engine-pack'), 'junction');
+  await symlink(resolve(here, '../../../types'), join(modules, 'engine-types'), 'junction');
+  await writeFile(
+    join(root, 'package.json'),
+    JSON.stringify({
+      name: 'metadata-cache-fixture',
+      private: true,
+      dependencies: {
+        '@forgeax/engine-pack': 'workspace:*',
+        '@forgeax/engine-types': 'workspace:*',
+      },
+    }),
+  );
   const first = join(root, 'first.pack.ts');
   const second = join(root, 'second.pack.ts');
   const shared = join(root, 'shared.ts');

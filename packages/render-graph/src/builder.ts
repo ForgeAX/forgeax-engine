@@ -265,6 +265,29 @@ function rangesOverlap(
 }
 
 export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
+  private readonly consumerReadGroups = new Map<string, GraphAccess[]>();
+  /** Share the exact graph handle with a later native consumer pass. This is
+   * topology metadata, not a second resource allocation or execution callback. */
+  publishConsumerRead(
+    group: string,
+    resource: GraphBuffer | GraphTextureView,
+    usage: 'vertex-read' | 'sampled-read',
+  ): Result<void, RenderGraphError> {
+    if (this.sealed) return err(this.sealedError());
+    const data = handleData(resource);
+    if (data?.owner !== this.owner) return err(this.foreignHandleError());
+    let reads = this.consumerReadGroups.get(group);
+    if (!reads) {
+      reads = [];
+      this.consumerReadGroups.set(group, reads);
+    }
+    if (!reads.some((read) => read.resource === resource && read.usage === usage))
+      reads.push({ resource, usage } as GraphAccess);
+    return ok(undefined);
+  }
+  consumerReads(group: string): readonly GraphAccess[] {
+    return Object.freeze([...(this.consumerReadGroups.get(group) ?? [])]);
+  }
   private readonly owner = Object.freeze({});
   private readonly labels = new Set<string>();
   private readonly resources = new Map<number, ResourceRecord<FrameCtx>>();

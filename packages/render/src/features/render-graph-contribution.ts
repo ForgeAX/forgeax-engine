@@ -25,6 +25,7 @@ import {
   resolveRenderFeatureDrawBuffers,
 } from './render-graph-raster';
 import { createRenderFeatureGraphBufferState } from './render-graph-resources';
+import { compareRenderFeatureTemporalStage } from './temporal-stage';
 import type { RenderFeaturePlacement } from './types';
 
 export function createRenderFeatureProjectionState() {
@@ -99,6 +100,23 @@ export function projectRenderFeatureShadows<FrameCtx extends RenderGraphFrame>(
 ): Result<RenderFeatureShadowDraws<FrameCtx> | undefined, RenderGraphError | RenderError> {
   if (!executions.some((execution) => execution.passes.some((pass) => pass.shadowCaster)))
     return ok(undefined);
+  const projectShadowTemporalWork = () => {
+    if (
+      executions.some((execution) => execution.passes.some((pass) => pass.temporal !== undefined))
+    ) {
+      const temporal = projectRenderFeaturePlans(builder, executions, {
+        resolveTarget: () => undefined,
+        placement: 'scene',
+        passNames: new Set(),
+        state,
+      });
+      if (!temporal.ok) return temporal;
+    }
+
+    return undefined;
+  };
+  const temporalFailure = projectShadowTemporalWork();
+  if (temporalFailure !== undefined) return temporalFailure;
   const compute = new RenderFeatureComputeGraphProjection(builder, state.buffers);
   const raster = new RenderFeatureRasterGraphProjection(
     builder,
@@ -113,7 +131,7 @@ export function projectRenderFeatureShadows<FrameCtx extends RenderGraphFrame>(
   const deferredWrites = new Set<Buffer>();
   for (const execution of executions) {
     for (let index = 0; index < execution.passes.length; index++) {
-      const pass = execution.passes[index];
+      const pass = pendingProjectionPass(execution.passes[index], state.projected);
       if (pass === undefined) continue;
       const accessed = collectShadowGraphicsAccesses(execution, pass, deferredAccesses);
       if (!accessed.ok) return accessed;
@@ -256,13 +274,65 @@ export function projectRenderFeaturePlans<FrameCtx extends RenderGraphFrame>(
     options.standardSurfaceAccesses,
     options.viewAccesses,
   );
+  // Temporal work from all registered features is admitted together before
+  // constructing SSA versions, so a reused water texture represents tick N
+  // until its consumer has executed, then advances to tick N+1.
+  const projectTemporalWork = () => {
+    if (options.placement === undefined || options.placement === 'scene') {
+      const temporal = executions.flatMap((execution) =>
+        execution.passes.flatMap((pass) =>
+          pass.temporal === undefined || state.projected.has(pass)
+            ? []
+            : [{ execution, pass, stage: pass.temporal }],
+        ),
+      );
+      temporal.sort((a, b) => compareRenderFeatureTemporalStage(a.stage, b.stage));
+      const produced = new Set<string>();
+      for (const { execution, pass, stage } of temporal) {
+        const key = JSON.stringify([stage.timeline, stage.epoch, stage.tick]);
+        if (stage.phase === 'consumer' && !produced.has(key))
+          return err(
+            new RenderFeatureStageFailedError(
+              execution.featureIdentity,
+              execution.order,
+              'plan',
+              'next-frame',
+              new Error('Temporal consumer has no matching producer tick'),
+            ),
+          );
+        if (stage.phase === 'producer') produced.add(key);
+        if (pass.resolvedGpuCopies !== undefined) {
+          const added = projectRenderFeatureCopies(builder, buffers, pass, execution.scope);
+          if (!added.ok) return added;
+        } else if (pass.resolvedGpuCompute !== undefined) {
+          const added = compute.addPasses([pass], execution.scope);
+          if (!added.ok) return added;
+        } else
+          return err(
+            new RenderFeatureStageFailedError(
+              execution.featureIdentity,
+              execution.order,
+              'plan',
+              'next-frame',
+              new Error('Temporal stages require native compute/copy work'),
+            ),
+          );
+        state.projected.add(pass);
+      }
+    }
+
+    return undefined;
+  };
+  const temporalFailure = projectTemporalWork();
+  if (temporalFailure !== undefined) return temporalFailure;
+
   for (const execution of executions) {
     if (!matchesFeaturePlacement(execution, options.placement)) continue;
     for (let index = 0; index < execution.passes.length; index++) {
       const pass = execution.passes[index];
       if (pass === undefined) continue;
-      if (options.passNames !== undefined && !options.passNames.has(pass.name)) continue;
       if (state.projected.has(pass)) continue;
+      if (!selectedProjectionPass(pass, options.passNames)) continue;
       if (pass.shadowCaster)
         return err(
           new RenderFeatureStageFailedError(
@@ -342,4 +412,18 @@ export function projectRenderFeaturePlans<FrameCtx extends RenderGraphFrame>(
     }
   }
   return ok(undefined);
+}
+
+function selectedProjectionPass(
+  pass: RenderFeaturePlanExecutionPass,
+  names: ReadonlySet<string> | undefined,
+): boolean {
+  return names === undefined || names.has(pass.name);
+}
+
+function pendingProjectionPass(
+  pass: RenderFeaturePlanExecutionPass | undefined,
+  projected: ReadonlySet<RenderFeaturePlanExecutionPass>,
+): RenderFeaturePlanExecutionPass | undefined {
+  return pass === undefined || projected.has(pass) ? undefined : pass;
 }

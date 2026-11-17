@@ -367,6 +367,12 @@ fn makeSurfaceInput(input: VsOut, frame: SurfaceFrameFacts, frontFacing: bool) -
   surfaceInput.eventRangeStart = frame.eventRangeStart;
   surfaceInput.eventRangeCount = frame.eventRangeCount;
   surfaceInput.instanceIndex = frame.instanceIndex;
+#ifdef SURFACE_MEDIUM_V2
+  surfaceInput.pixelPosition=input.clipPosition;
+  let raw=sampleRawDepth(input.clipPosition);surfaceInput.backgroundValid=raw>0.0&&frame.backgroundAvailable!=0u;
+  let uv=surfaceUv(surfacePixel(input.clipPosition,textureDimensions(surfaceRawDepthTexture)),textureDimensions(surfaceRawDepthTexture));
+  surfaceInput.backgroundDistanceMeters=select(10000.0,length(reconstructBackgroundWorld(uv,raw)-input.positionWS),surfaceInput.backgroundValid);
+#endif
   return surfaceInput;
 }
 
@@ -760,20 +766,50 @@ fn composeColor(input: SingleLayerMediumSurfaceInput, surface: SingleLayerMedium
   let footprintVariance = dot(normalFootprint, normalFootprint);
   let directLight = directionalShadow * max(dot(orientedNormal, lightDirection), 0.0) * view.lightColor;
   let light = directLight + sampleMediumDiffuse(orientedNormal, pixelPosition, probeIdentity);
-  let transmissionColor = background * transmittance + inScatter * light;
-  let fresnel = fresnelWeight(orientedNormal, viewDirection, ior);
+  var transmissionColor = background * transmittance + inScatter * light;
+#ifdef SURFACE_MEDIUM_V2
+  transmissionColor=mix(transmissionColor+surface.transmissionEmission,surface.transmissionTint,clamp(surface.transmissionTintWeight,0.0,1.0));
+#endif
+  var fresnel = fresnelWeight(orientedNormal, viewDirection, ior);
+#ifdef SURFACE_MEDIUM_V2
+  fresnel*=clamp(surface.reflectionStrength,0.0,1.0);
+#endif
   let reflection = samplePlanarReflection(input.positionWS, orientedPlaneNormal, sampleSkyReflection(orientedNormal, viewDirection, roughness, input.positionWS));
+
   let foam = clamp(surface.foam, 0.0, 1.0);
-  let foamColor = mix(transmissionColor, vec3<f32>(0.9, 0.95, 1.0), foam);
+  var foamTint=vec3<f32>(0.9,0.95,1.0);
+#ifdef SURFACE_MEDIUM_V2
+  let foamLight=sampleMediumDiffuse(orientedNormal,pixelPosition,probeIdentity)+(0.5*max(dot(orientedNormal,lightDirection),0.0)+0.3)*view.lightColor*directionalShadow;
+  foamTint=surface.foamColor*foamLight;
+#endif
+  let foamColor = mix(transmissionColor,foamTint,foam);
   // Fresnel is the sole energy split: the transmitted and reflected terms
   // sum to one even when the sampled background is a sky miss.
+#ifdef SURFACE_MEDIUM_V2
+  let halfVector=normalize(lightDirection+viewDirection);let dotNV=max(dot(orientedNormal,viewDirection),0.00002);
+  let alpha=max(surface.roughness*surface.roughness,0.002);let a2=alpha*alpha;let dotNH=max(dot(orientedNormal,halfVector),0.0);
+  let denominator=1.0+(a2-1.0)*dotNH*dotNH;let distribution=a2/(3.14159265359*denominator*denominator);
+  let f0=pow((ior-1.0)/(ior+1.0),2.0);let schlick=f0+(1.0-f0)*pow(1.0-max(dot(halfVector,viewDirection),0.0),5.0);
+  let spec=distribution*schlick/(4.0*dotNV+0.1);
+  let sparkle=pow(max(dot(reflect(-viewDirection,orientedNormal),lightDirection),0.0),2400.0)*surface.glintStrength;
+  let glint=min((spec+sparkle)*surface.sunSpecular,surface.sunSpecularMax)*(1.0-foam)*view.lightColor*directionalShadow;
+  let nl=dot(orientedNormal,lightDirection);let wrap=0.35+0.65*(0.5+0.5*nl);
+  let sss=max(0.0,surface.waveHeight+1.5)*pow(max(dot(lightDirection,-viewDirection),0.0),4.0)*pow(0.5-0.5*nl,3.0);
+  let nearScatter=0.25*dotNV*dotNV;let bodyDiffuse=(wrap*surface.bodyDiffuse+(sss*surface.sssStrength+nearScatter)*vec3<f32>(0.6,1.5,1.1))
+    *surface.bodyAlbedo*(vec3<f32>(1.0)-transmittance)*(1.0-fresnel)*(1.0-foam)*view.lightColor*directionalShadow;
+  let shaded=foamColor*(1.0-fresnel)+reflection*fresnel+glint+bodyDiffuse+surface.emission*(1.0-foam);
+#else
   let glint = mediumSunGlint(orientedNormal, viewDirection, lightDirection, roughness, footprintVariance)
     * fresnel * view.lightColor * directionalShadow * (1.0 - foam);
   let shaded = foamColor * (1.0 - fresnel) + reflection * fresnel + glint;
+#endif
   // The opaque fog pass already fogged the backdrop at its own depth. Fog the
   // water surface's own light at the water depth and keep that carried
   // backdrop as is, the way translucent_fog_transmission does for glass.
-  let carried = background * transmittance * (1.0 - foam) * (1.0 - fresnel);
+  var carried = background * transmittance * (1.0 - foam) * (1.0 - fresnel);
+#ifdef SURFACE_MEDIUM_V2
+  carried*=1.0-clamp(surface.transmissionTintWeight,0.0,1.0);
+#endif
   let fog = view_fog(view, input.positionWS);
   let waterOpacity = vec3<f32>(1.0) - transmittance * (1.0 - foam) * (1.0 - fresnel);
   let result = (shaded - carried) * fog.transmittance + carried + waterOpacity * fog.inscatter;
@@ -833,3 +869,5 @@ fn fs_main(input: VsOut, @builtin(front_facing) frontFacing: bool) -> @location(
   }
   return composeColor(surfaceInput, surface, frame, frontFacing, input.clipPosition, input.probeIdentity);
 }
+
+

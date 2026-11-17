@@ -1,4 +1,5 @@
 import {
+  clonePhysicsConstraintInput,
   DERIVED_PHYSICS_LIMITS,
   type DerivedPhysicsCandidate,
   type DerivedPhysicsCandidateInput,
@@ -47,7 +48,7 @@ export function runAdmitDerivedShapeCandidates(
   pendingDerivedMutation: (operation: string) => DerivedPhysicsError | undefined,
   assertActive: (operation: string) => void,
   derivedCandidates: Map<string, import('./derived-candidate-records.js').DerivedCandidateRecord>,
-  physicsOwner: {},
+  physicsOwner: object,
   readBackendGeneration: () => number,
   pendingDerivedSources: () => Map<number, DerivedBodySource>,
   admitDerivedShapeCandidateInternal: (
@@ -138,7 +139,7 @@ export function runAdmitDerivedShapeCandidates(
 export function runAdmitDerivedShapeCandidateInternal(
   assertActive: (operation: string) => void,
   derivedCandidates: Map<string, import('./derived-candidate-records.js').DerivedCandidateRecord>,
-  physicsOwner: {},
+  physicsOwner: object,
   readBackendGeneration: () => number,
   derivedPoisonedEntities: Set<number>,
   pendingDerivedSources: () => Map<number, DerivedBodySource>,
@@ -221,7 +222,7 @@ export function runCancelDerivedShapeCandidate(
   pendingDerivedMutation: (operation: string) => DerivedPhysicsError | undefined,
   assertActive: (operation: string) => void,
   derivedCandidates: Map<string, import('./derived-candidate-records.js').DerivedCandidateRecord>,
-  physicsOwner: {},
+  physicsOwner: object,
   derivedBodies: Map<number, import('./derived-candidate-records.js').DerivedBodyRecord>,
   pendingDerivedCandidates: Set<string>,
   removeNativeCollider: (handle: number) => void,
@@ -544,6 +545,10 @@ export function runCreateNativeConstraint(
     native = readRaw().createImpulseJoint(jointData, bodyA, bodyB, true);
     if (input.kind === 'hinge' && input.limits !== undefined)
       native.setLimits(input.limits[0], input.limits[1]);
+    if (input.kind === 'hinge' && input.motor) {
+      native.configureMotorVelocity(input.motor.targetVelocity, input.motor.damping);
+      native.setMotorMaxForce(input.motor.maxForce);
+    }
     return ok({ handle: native.handle });
   } catch (cause) {
     if (native !== undefined) removeNativeConstraint(native.handle);
@@ -707,6 +712,8 @@ export function runStageDerivedRecord(
       body,
       record.input.motion,
       entityMap.get(record.input.entity)?.lockRotation === true,
+      entityMap.get(record.input.entity)?.translationAxes ?? 7,
+      entityMap.get(record.input.entity)?.rotationAxes ?? 7,
     );
   // Retire joints against this committed revision only. Other queued
   // endpoints may still fail and retain their previous joints.
@@ -1043,16 +1050,17 @@ export function runInstallDerivedConstraint(
       ),
     );
   }
+  input = clonePhysicsConstraintInput(input);
   const native = createNativeConstraint(input);
   if (!native.ok) return native;
   if (existing !== undefined) removeNativeConstraint(existing.handle);
-  derivedConstraints.set(input.id, { input: { ...input }, handle: native.value.handle });
+  derivedConstraints.set(input.id, { input, handle: native.value.handle });
   return ok({ id: input.id, revision: input.revision });
 }
 
 function resolveAdmissionCredentials(
   derivedCandidates: Map<string, import('./derived-candidate-records.js').DerivedCandidateRecord>,
-  physicsOwner: {},
+  physicsOwner: object,
   readBackendGeneration: () => number,
   candidates: readonly DerivedPhysicsCandidate[],
   records: DerivedCandidateRecord[],

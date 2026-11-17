@@ -7,6 +7,7 @@ import type { GpuDrawSelection } from '../gpu-driven/draw-selection';
 import type { MaterialResource } from '../material-resource';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import type { CameraSnapshot } from '../render-contract';
+import { cameraAdmitsLayers } from '../render-layers';
 import type {
   CameraAdmission,
   DispatchEntry,
@@ -102,6 +103,8 @@ export interface DirectDrawInput {
     | undefined;
   /** Camera admission; its fixed evidence names every row whose answer may differ. */
   readonly visible?: ((source: RenderableSnapshot) => boolean) | undefined;
+  /** Camera geometry mask; absent for shadow consumers. */
+  readonly cullMask?: number;
   readonly admission?: CameraAdmission | undefined;
   /** Camera-dependent row projection (CPU LOD); a changed `lodCamera` re-projects LOD rows. */
   readonly lod: (rows: readonly ValidatedRenderable[]) => readonly ValidatedRenderable[];
@@ -265,6 +268,13 @@ function equalDistanceTerms(left: Float32Array, right: Float32Array, eye: Float6
   return true;
 }
 
+function sourceVisible(input: DirectDrawInput, source: RenderableSnapshot): boolean {
+  return (
+    (input.cullMask === undefined || cameraAdmitsLayers(input, source)) &&
+    input.visible?.(source) !== false
+  );
+}
+
 /**
  * One view's retained direct (CPU-recorded) draws for one consumer: a binned
  * phase whose members are Scene rows addressed by their entity's GPU row,
@@ -307,6 +317,7 @@ export class DirectDrawPhase {
   private materialPassGroupsEnabled = false;
   private visibility: ((source: RenderableSnapshot) => boolean) | undefined;
   private admission: CameraAdmission | undefined;
+  private cullMask: number | undefined;
   private viewDraws: FrameList<RenderableSnapshot> | undefined;
   private lodCamera: readonly unknown[] = [];
   private geometry: readonly unknown[] = [];
@@ -692,6 +703,10 @@ export class DirectDrawPhase {
   }
 
   private syncAdmission(input: DirectDrawInput, dirty: Set<Member>): void {
+    if (input.cullMask !== this.cullMask) {
+      this.cullMask = input.cullMask;
+      for (const member of this.members.values()) dirty.add(member);
+    }
     const visible = input.visible;
     const admission = input.admission;
     const previousVisible = this.visibility;
@@ -923,12 +938,11 @@ export class DirectDrawPhase {
 
   /** The member's current source, or undefined when it draws nothing in this consumer. */
   private candidate(member: Member, input: DirectDrawInput): RenderableSnapshot | undefined {
-    const visible = input.visible;
     if (member.slot === undefined) {
       const source = member.view;
       if (
         source === undefined ||
-        visible?.(source) === false ||
+        !sourceVisible(input, source) ||
         source.authorVisible === false ||
         (input.shadow && source.shadowCaster === false)
       )
@@ -955,7 +969,7 @@ export class DirectDrawPhase {
     }
     const snapshotAt = scene.drawSnapshotAt ?? invalid('the Scene-owned direct draw projection');
     const source = snapshotAt(member.slot);
-    if (source === undefined || visible?.(source) === false) return undefined;
+    if (source === undefined || !sourceVisible(input, source)) return undefined;
     const selectDirectSourceCandidate = (source: RenderableSnapshot) => {
       if (source.authorVisible === false || (input.shadow && source.shadowCaster === false))
         return undefined;

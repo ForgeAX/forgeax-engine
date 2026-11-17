@@ -340,6 +340,98 @@ function parsePnpmLockfile(bytes: Buffer): PnpmLockfile {
   return lock;
 }
 
+async function readPnpmWorkspace(
+  root: string,
+  lock: PnpmLockfile,
+  modules: PnpmModulesState,
+  proofs: Map<string, SnapshotProof>,
+): Promise<NonNullable<PnpmContext['workspace']>> {
+  let workspaceManifest: unknown;
+  let state: PnpmWorkspaceState;
+  try {
+    const workspacePath = join(root, 'pnpm-workspace.yaml');
+    const workspaceStatePath = join(root, 'node_modules', '.pnpm-workspace-state-v1.json');
+    const [workspaceBytes, workspaceStateBytes] = await Promise.all([
+      readProvenFile(proofs, workspacePath),
+      readProvenFile(proofs, workspaceStatePath),
+    ]);
+    workspaceManifest = parse(workspaceBytes.toString('utf8')) as unknown;
+    state = JSON.parse(workspaceStateBytes.toString('utf8')) as PnpmWorkspaceState;
+  } catch (cause) {
+    if (isDependencySourceChanged(cause)) throw cause;
+    throw dependencyClosureError(
+      'project-pnpm-workspace-state-missing',
+      'pnpm workspace patterns or installed workspace state are unavailable.',
+      {
+        root,
+        reason: cause instanceof Error ? cause.message : String(cause),
+      },
+    );
+  }
+  const configuredPatterns = (workspaceManifest as { readonly packages?: unknown } | null)
+    ?.packages;
+  const patterns = configuredPatterns === undefined ? [] : configuredPatterns;
+  // pnpm 12's native writer may omit this optional setting. Installed
+  // project identities and lock locators remain the workspace authority.
+  const recordedPatterns = state.settings?.workspacePackagePatterns;
+  // A configuration-only workspace has an implicit root package. pnpm 12
+  // records that root as ['.']; explicit package selections remain exact.
+  const implicitRoot =
+    configuredPatterns === undefined &&
+    Array.isArray(recordedPatterns) &&
+    recordedPatterns.length === 1 &&
+    recordedPatterns[0] === '.';
+  if (
+    !Array.isArray(patterns) ||
+    patterns.some((pattern) => typeof pattern !== 'string') ||
+    (recordedPatterns !== undefined &&
+      (!Array.isArray(recordedPatterns) ||
+        (!implicitRoot && JSON.stringify(patterns) !== JSON.stringify(recordedPatterns))))
+  )
+    throw dependencyClosureError(
+      'project-pnpm-workspace-state-stale',
+      'pnpm installed workspace patterns do not match pnpm-workspace.yaml.',
+      {
+        root,
+      },
+    );
+  const configuredOverrides = pnpmOverrides(
+    (workspaceManifest as { readonly overrides?: unknown }).overrides,
+    root,
+  );
+  const lockedOverrides = pnpmOverrides(lock.overrides, root);
+  if (JSON.stringify(configuredOverrides) !== JSON.stringify(lockedOverrides))
+    throw dependencyClosureError(
+      'project-pnpm-overrides-mismatch',
+      'The installing workspace overrides differ from the project lockfile.',
+      { root },
+    );
+  if (Object.keys(configuredOverrides).length > 0) {
+    if (typeof modules.virtualStoreDir !== 'string')
+      throw dependencyClosureError(
+        'project-pnpm-overrides-mismatch',
+        'The overridden dependency graph has no installed virtual-store identity.',
+        { root },
+      );
+    const installedLockBytes = await readProvenFile(
+      proofs,
+      join(resolve(root, modules.virtualStoreDir), 'lock.yaml'),
+    );
+    const installedLock = parsePnpmLockfile(installedLockBytes);
+    if (
+      JSON.stringify(pnpmOverrides(installedLock.overrides, root)) !==
+        JSON.stringify(lockedOverrides) ||
+      JSON.stringify(installedLock.importers) !== JSON.stringify(lock.importers)
+    )
+      throw dependencyClosureError(
+        'project-pnpm-overrides-mismatch',
+        'The installed override graph or importers differ from the project lockfile.',
+        { root },
+      );
+  }
+  return { state, overrides: configuredOverrides };
+}
+
 async function pnpmRoots(packageRoot: string): Promise<{
   readonly root: string | undefined;
   readonly workspaceRoot: string | undefined;
@@ -478,83 +570,7 @@ async function pnpmContext(
 
   let workspace: PnpmContext['workspace'];
   if (workspaceRoot !== undefined) {
-    let workspaceManifest: unknown;
-    let state: PnpmWorkspaceState;
-    try {
-      const workspacePath = join(root, 'pnpm-workspace.yaml');
-      const workspaceStatePath = join(root, 'node_modules', '.pnpm-workspace-state-v1.json');
-      const [workspaceBytes, workspaceStateBytes] = await Promise.all([
-        readProvenFile(proofs, workspacePath),
-        readProvenFile(proofs, workspaceStatePath),
-      ]);
-      workspaceManifest = parse(workspaceBytes.toString('utf8')) as unknown;
-      state = JSON.parse(workspaceStateBytes.toString('utf8')) as PnpmWorkspaceState;
-    } catch (cause) {
-      if (isDependencySourceChanged(cause)) throw cause;
-      throw dependencyClosureError(
-        'project-pnpm-workspace-state-missing',
-        'pnpm workspace patterns or installed workspace state are unavailable.',
-        {
-          root,
-          reason: cause instanceof Error ? cause.message : String(cause),
-        },
-      );
-    }
-    const configuredPatterns = (workspaceManifest as { readonly packages?: unknown } | null)
-      ?.packages;
-    const patterns = configuredPatterns === undefined ? [] : configuredPatterns;
-    // pnpm 12's native writer may omit this optional setting. Installed
-    // project identities and lock locators remain the workspace authority.
-    const recordedPatterns = state.settings?.workspacePackagePatterns;
-    if (
-      !Array.isArray(patterns) ||
-      patterns.some((pattern) => typeof pattern !== 'string') ||
-      (recordedPatterns !== undefined &&
-        (!Array.isArray(recordedPatterns) ||
-          JSON.stringify(patterns) !== JSON.stringify(recordedPatterns)))
-    )
-      throw dependencyClosureError(
-        'project-pnpm-workspace-state-stale',
-        'pnpm installed workspace patterns do not match pnpm-workspace.yaml.',
-        {
-          root,
-        },
-      );
-    const configuredOverrides = pnpmOverrides(
-      (workspaceManifest as { readonly overrides?: unknown }).overrides,
-      root,
-    );
-    const lockedOverrides = pnpmOverrides(lock.overrides, root);
-    if (JSON.stringify(configuredOverrides) !== JSON.stringify(lockedOverrides))
-      throw dependencyClosureError(
-        'project-pnpm-overrides-mismatch',
-        'The installing workspace overrides differ from the project lockfile.',
-        { root },
-      );
-    if (Object.keys(configuredOverrides).length > 0) {
-      if (typeof modules.virtualStoreDir !== 'string')
-        throw dependencyClosureError(
-          'project-pnpm-overrides-mismatch',
-          'The overridden dependency graph has no installed virtual-store identity.',
-          { root },
-        );
-      const installedLockBytes = await readProvenFile(
-        proofs,
-        join(resolve(root, modules.virtualStoreDir), 'lock.yaml'),
-      );
-      const installedLock = parsePnpmLockfile(installedLockBytes);
-      if (
-        JSON.stringify(pnpmOverrides(installedLock.overrides, root)) !==
-          JSON.stringify(lockedOverrides) ||
-        JSON.stringify(installedLock.importers) !== JSON.stringify(lock.importers)
-      )
-        throw dependencyClosureError(
-          'project-pnpm-overrides-mismatch',
-          'The installed override graph or importers differ from the project lockfile.',
-          { root },
-        );
-    }
-    workspace = { state, overrides: configuredOverrides };
+    workspace = await readPnpmWorkspace(root, lock, modules, proofs);
   }
   return {
     root,

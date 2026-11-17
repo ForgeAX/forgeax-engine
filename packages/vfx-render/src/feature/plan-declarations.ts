@@ -1,3 +1,4 @@
+import { isRenderFeatureTextureSource } from '@forgeax/engine-render';
 // Pure sizing, naming and declaration helpers of the GPU particle feature plan.
 
 import type { RenderFeatureWorkPlan } from '@forgeax/engine-render';
@@ -8,7 +9,12 @@ import type {
   VfxDataInterfaceResource,
   VfxWaterSurfaceIdentity,
 } from '@forgeax/engine-vfx';
-import { isParticleTopologyRenderer, VFX_PARTICLE_CORE_STRIDE } from '@forgeax/engine-vfx';
+import {
+  isParticleTopologyRenderer,
+  VFX_GPU_OUTPUT_HEADER_BYTES,
+  VFX_PARTICLE_CORE_STRIDE,
+} from '@forgeax/engine-vfx';
+
 import { RENDER_FEATURE_VERTEX_LAYOUTS } from '../../../render/src/features/prepared-graphics';
 import { coalesceVfxComputePasses, coalesceVfxCopyPasses } from './compute-passes.js';
 import { WORKGROUP_SIZE } from './emitter-program.js';
@@ -99,6 +105,22 @@ export function sharedDataInterfaceResource(
   kind: RendererOwnedDataInterface,
 ): PlanResource | undefined {
   switch (kind) {
+    case 'gpu-events': {
+      if (!entry.eventOutput) return undefined;
+      const size = VFX_GPU_OUTPUT_HEADER_BYTES + entry.eventOutput.capacity * 32,
+        data = new Uint8Array(size),
+        view = new DataView(data.buffer);
+      view.setUint32(4, entry.eventOutput.capacity, true);
+      view.setUint32(8, entry.eventOutput.epoch, true);
+      view.setUint32(12, entry.eventOutput.channels.length, true);
+      entry.eventOutput.channels.forEach((channel, index) => {
+        const offset = 16 + index * 16;
+        view.setUint32(offset + 4, channel.channel, true);
+        view.setUint32(offset + 8, channel.offset, true);
+        view.setUint32(offset + 12, channel.capacity, true);
+      });
+      return { kind: 'buffer', name, size, usage: ['storage', 'copy-src'], data };
+    }
     case 'camera':
       return {
         kind: 'buffer',
@@ -120,6 +142,10 @@ export function sharedDataInterfaceResource(
       };
     case 'noise':
       return { kind: 'scene-noise', name };
+    case 'water-displacement':
+    case 'water-hull':
+    case 'water-config':
+      return undefined;
     case 'scene-sdf': {
       const descriptor = entry.sceneSdf;
       if (descriptor === undefined) return undefined;
@@ -133,6 +159,21 @@ export function preparedDataInterfaceResource(
   name: string,
   prepared: NonNullable<VfxDataInterfaceResource['resource']>,
 ): PlanResource | undefined {
+  if (prepared.kind === 'feature-texture-reference') {
+    if (!isRenderFeatureTextureSource(prepared.value)) return undefined;
+    return { kind: 'feature-texture-reference', name, source: prepared.value };
+  }
+  if (prepared.kind === 'uniform-data') {
+    if (!(prepared.value instanceof Float32Array) || prepared.value.byteLength === 0)
+      return undefined;
+    return {
+      kind: 'buffer',
+      name,
+      size: prepared.value.byteLength,
+      usage: ['uniform'],
+      data: prepared.value,
+    };
+  }
   if (prepared.kind === 'buffer') {
     if (prepared.size === undefined || prepared.size <= 0) return undefined;
     return {

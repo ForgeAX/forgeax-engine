@@ -29,6 +29,44 @@ async function imported(
 
 describe('ordinary UI companion publication', () => {
   it.each([
+    ['mp4', 'video/mp4'],
+    ['webm', 'video/webm'],
+  ])('publishes a %s media URL companion without decoding it', async (extension, mediaType) => {
+    const path = `media/background.${extension}`;
+    const { result, readSibling } = await imported(`<a href="${path}" hidden></a>`);
+    if (!result.ok) throw result.error;
+    const asset = result.value.assets[0];
+    if (!asset) throw new Error('missing media UI asset');
+    expect(readSibling).toHaveBeenCalledWith(path);
+    expect(asset.artifacts[path]).toEqual({
+      delivery: 'stream',
+      mediaType,
+      bytes: Uint8Array.of(1, 2, 3),
+    });
+    expect(result.value.sourceDependencies).toContain(path);
+    const loaded = createUiLoader().load({
+      ...asset,
+      artifacts: Object.fromEntries(
+        Object.entries(asset.artifacts).map(([key, body]) => [
+          key,
+          { descriptor: { mediaType: body.mediaType }, bytes: body.bytes },
+        ]),
+      ),
+    });
+    if (!loaded.ok) throw loaded.error;
+    const mounted = mountUi(loaded.value, { root: document.body, layer: 1 });
+    if (!mounted.ok) throw mounted.error;
+    expect(mounted.value.resourceUrl(path)).toEqual({
+      ok: true,
+      value: `data:${mediaType};base64,AQID`,
+    });
+    mounted.value.dispose();
+    expect(mounted.value.resourceUrl(path)).toMatchObject({
+      ok: false,
+      error: { detail: { reason: 'instance-disposed' } },
+    });
+  });
+  it.each([
     '/project/assets/hud.ui.html',
     'C:\\project\\assets\\hud.ui.html',
   ])('keeps the physical source %s out of its portable payload', async (source) => {

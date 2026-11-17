@@ -12,6 +12,10 @@ export type VfxDataInterfaceResourceKind = NonNullable<
 
 type VfxDataInterfaceBindingTypeByKind = {
   readonly camera: 'uniform';
+  readonly 'gpu-events': 'read-write-storage';
+  readonly 'water-displacement': 'sampled-float-array';
+  readonly 'water-hull': 'sampled-float';
+  readonly 'water-config': 'uniform';
   readonly 'scene-depth': 'sampled-depth';
   readonly noise: 'sampled-float';
   readonly 'scene-sdf': 'read-only-storage';
@@ -38,7 +42,22 @@ export interface VfxDataInterfaceRequirement {
   readonly sampleCount?: 1;
 }
 
+export interface VfxDataInterfaceCaptureContext {
+  readonly frameNumber: number;
+}
+
 export interface VfxDataInterfaceResource {
+  /** Exact temporal producer output, declared by its owner for this submitted frame. */
+  readonly recovery?: {
+    readonly frameNumber: number;
+    readonly version: string;
+    readonly temporal?: {
+      readonly timeline: string;
+      readonly epoch: number;
+      readonly tick: number;
+    };
+    readonly resource: NonNullable<VfxDataInterfaceResource['resource']>;
+  };
   readonly token: VfxDataInterfaceToken;
   readonly kind: VfxDataInterfaceKind;
   readonly bindingType: VfxDataInterfaceBindingType;
@@ -51,7 +70,12 @@ export interface VfxDataInterfaceResource {
    * prepared-resource reference; VFX never inspects a backend handle.
    */
   readonly resource?: {
-    readonly kind: 'buffer' | 'texture-view' | 'sampler';
+    readonly kind:
+      | 'buffer'
+      | 'texture-view'
+      | 'sampler'
+      | 'feature-texture-reference'
+      | 'uniform-data';
     readonly value: unknown;
     /** Required when a provider supplies an external buffer to a compute bind group. */
     readonly size?: number;
@@ -128,12 +152,22 @@ export interface VfxDataInterfaceError {
   readonly detail: VfxDataInterfaceErrorDetail;
 }
 
+export interface VfxDataInterfaceRecoveryLease {
+  release(): void;
+}
+
 export type VfxDataInterfaceProvider<K extends VfxDataInterfaceKind = VfxDataInterfaceKind> = {
   readonly id: string;
   readonly token: `vfx:${K}`;
   readonly kind: K;
   readonly bindingType: VfxDataInterfaceBindingTypeByKind[K];
-  readonly provide: (generation: number) => Result<VfxDataInterfaceResource, VfxDataInterfaceError>;
+  readonly retainRecovery?: (
+    snapshot: NonNullable<VfxDataInterfaceResource['recovery']>,
+  ) => Result<VfxDataInterfaceRecoveryLease, VfxDataInterfaceError>;
+  readonly provide: (
+    generation: number,
+    context?: VfxDataInterfaceCaptureContext,
+  ) => Result<VfxDataInterfaceResource, VfxDataInterfaceError>;
 };
 
 export interface VfxDataInterfaceResolution {
@@ -143,6 +177,12 @@ export interface VfxDataInterfaceResolution {
 
 function expectedResourceKind(kind: VfxDataInterfaceKind): VfxDataInterfaceResourceKind {
   switch (kind) {
+    case 'water-config':
+      return 'uniform-data';
+    case 'water-displacement':
+    case 'water-hull':
+      return 'feature-texture-reference';
+    case 'gpu-events':
     case 'camera':
     case 'scene-sdf':
     case 'force-fields':
@@ -169,6 +209,7 @@ export function resolveVfxDataInterfaces(
   requirements: readonly VfxDataInterfaceRequirement[],
   providers: readonly VfxDataInterfaceProvider[],
   generation: number,
+  context?: VfxDataInterfaceCaptureContext,
 ): Result<VfxDataInterfaceResolution, VfxDataInterfaceError> {
   const byToken = new Map<VfxDataInterfaceToken, VfxDataInterfaceProvider>();
   const indexProviders = (
@@ -232,9 +273,42 @@ export function resolveVfxDataInterfaces(
         ),
       );
     }
-    const provided = provider.provide(generation);
+    const provided = provider.provide(generation, context);
     if (!provided.ok) return provided;
     const resource = provided.value;
+    const validateRecoverySnapshot = () => {
+      if (
+        resource.recovery &&
+        (!Number.isSafeInteger(resource.recovery.frameNumber) ||
+          resource.recovery.frameNumber < 0 ||
+          typeof resource.recovery.version !== 'string' ||
+          resource.recovery.version.length === 0 ||
+          !resource.recovery.resource ||
+          resource.recovery.resource.kind !== resource.resource?.kind ||
+          (resource.recovery.temporal !== undefined &&
+            (typeof resource.recovery.temporal.timeline !== 'string' ||
+              resource.recovery.temporal.timeline.length === 0 ||
+              !Number.isSafeInteger(resource.recovery.temporal.epoch) ||
+              resource.recovery.temporal.epoch < 0 ||
+              !Number.isSafeInteger(resource.recovery.temporal.tick) ||
+              resource.recovery.temporal.tick < 0 ||
+              Object.keys(resource.recovery.temporal).some(
+                (key) => !['timeline', 'epoch', 'tick'].includes(key),
+              ))))
+      )
+        return err(
+          failure(
+            'vfx-data-interface-wrong-type',
+            requirement,
+            'an exact frame/version and same-kind temporal resource',
+            'publish a real producer snapshot instead of a current-resource alias',
+            { providerId: provider.id },
+          ),
+        );
+      return undefined;
+    };
+    const recoveryFailure = validateRecoverySnapshot();
+    if (recoveryFailure !== undefined) return recoveryFailure;
     if (resource.token !== requirement.token || resource.kind !== requirement.kind) {
       return err(
         failure(

@@ -148,22 +148,14 @@ for (const language of ['js', 'ts'])
 steps.push(['modeling', 'node', ['tools/view-plugins/integration/verify-modeling.mjs']]);
 const groups = [...new Set(steps.map(([owner]) => owner).filter((owner) => owner !== 'prepare'))];
 // Keep complete owners and each language's live/cold chain on four processes.
-// Run 43746993655 completed all six diagnostic probes but exhausted the 30-minute
-// cap during Modeling. Split the measured probes across existing lanes and keep
-// the RHI page replay first, with Modeling last on its lane.
+// Retain completed-owner maxima and unfinished-owner forecasts after the
+// lifecycle lane exceeded its cap. Independent save/lifecycle/array probes use
+// the other lanes; RHI page replay stays first and Modeling stays last.
 const shards = [
-  [
-    'contracts',
-    'plugin',
-    'runtime-js',
-    'runtime-ts',
-    'diagnostic-gpu-2d',
-    'diagnostic-pack-save',
-    'lifecycle',
-  ],
-  ['engine-only', 'workspace', 'diagnostic-gpu-array'],
-  ['game3d', 'diagnostic-texture'],
-  ['diagnostic-pages', 'diagnostic-pack-authoring', 'modeling'],
+  ['contracts', 'plugin', 'runtime-js', 'runtime-ts', 'diagnostic-gpu-2d'],
+  ['engine-only', 'workspace', 'lifecycle'],
+  ['game3d', 'diagnostic-texture', 'diagnostic-pack-save'],
+  ['diagnostic-pages', 'diagnostic-pack-authoring', 'diagnostic-gpu-array', 'modeling'],
 ];
 if (process.argv.includes('--list-shards')) {
   console.log(JSON.stringify(shards.map((_, index) => index)));

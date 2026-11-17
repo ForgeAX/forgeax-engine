@@ -56,6 +56,75 @@ test('admits a successful core producer while independent CI jobs are still runn
   });
 });
 
+function failedOnlyRetryFixture() {
+  const f = fixture();
+  f.run.run_attempt = 2;
+  const original = {
+    ...f.job,
+    run_attempt: 1,
+    started_at: '2026-01-01T00:00:00Z',
+    completed_at: '2026-01-01T00:01:00Z',
+  };
+  Object.assign(f.job, original, { id: 44, run_attempt: 2 });
+  const history = [original, f.job];
+  return {
+    ...f,
+    original,
+    history,
+    api: (endpoint) =>
+      endpoint.includes('/jobs?filter=all&')
+        ? { total_count: history.length, jobs: history }
+        : f.api(endpoint),
+  };
+}
+
+test('retains the original core artifact and execution after a failed-only retry', async () => {
+  const f = failedOnlyRetryFixture();
+  const result = await coreShaderArtifact(f.input, f.api);
+  assert.equal(result.sourceJobId, f.original.id);
+  assert.equal(result.artifactId, f.artifact.id);
+  assert.equal(result.artifactName, 'core-build-a1');
+  assert.equal(result.artifactDigest, f.artifact.digest);
+  assert.equal(result.sourceSha, sha);
+});
+
+test('an earlier artifact cannot replace a new or unproven core execution', async () => {
+  for (const change of [
+    (f) => {
+      f.job.started_at = '2026-01-01T00:02:00Z';
+      f.job.completed_at = '2026-01-01T00:03:00Z';
+    },
+    (f) => {
+      f.job.completed_at = '2026-01-01T00:01:01Z';
+    },
+    (f) => {
+      delete f.job.started_at;
+    },
+    (f) => {
+      f.original.conclusion = 'failure';
+    },
+    (f) => {
+      f.original.run_id = 99;
+    },
+    (f) => {
+      f.history.push({ ...f.original, id: 55 });
+    },
+    (f) => {
+      f.artifact.expired = true;
+    },
+    (f) => {
+      f.artifact.workflow_run.head_sha = 'c'.repeat(40);
+    },
+    (f) => {
+      f.artifact.digest = '';
+    },
+  ]) {
+    const f = failedOnlyRetryFixture();
+    change(f);
+    await assert.rejects(coreShaderArtifact(f.input, f.api, { waitMs: 0 }));
+  }
+});
+
 test('waits for the existing producer and never selects the shared point artifact', async () => {
   const f = fixture();
   f.job.status = 'in_progress';

@@ -1,4 +1,4 @@
-import { err, ok, type Result } from '../result.js';
+﻿import { err, ok, type Result } from '../result.js';
 import { WGSL_NUMERIC_LAYOUT } from '../wgsl-numeric-layout.js';
 import {
   isMaterialDeformationDeclaration,
@@ -15,6 +15,16 @@ export type MaterialSurfaceModel = (typeof MATERIAL_SURFACE_MODELS)[number];
 
 export function isMaterialSurfaceModel(value: unknown): value is MaterialSurfaceModel {
   return (MATERIAL_SURFACE_MODELS as readonly unknown[]).includes(value);
+}
+
+/** Only the medium template publishes the extended v2 optical contract. */
+export function isMaterialSurfaceAbiVersion(
+  model: MaterialSurfaceModel,
+  version: unknown,
+): boolean {
+  return (
+    version === undefined || version === 1 || (version === 2 && model === 'single-layer-medium')
+  );
 }
 
 /** Both optical models consume the renderer-owned paired scene/depth resources. */
@@ -279,6 +289,8 @@ export function deriveMaterialDynamicInputLayout(
 
 /** Root-owned model selection and imported Surface module. */
 export interface MaterialSurfaceDeclaration {
+  /** Versioned Engine Surface contract; v2 is single-layer-medium optical facts. */
+  readonly abiVersion?: 1 | 2;
   readonly model: MaterialSurfaceModel;
   readonly module: string;
   readonly dynamicInput?: MaterialDynamicInputSchema;
@@ -291,6 +303,7 @@ export function isMaterialSurfaceDeclaration(value: unknown): value is MaterialS
   const declaration = value as Record<string, unknown>;
   if (
     !isMaterialSurfaceModel(declaration.model) ||
+    !isMaterialSurfaceAbiVersion(declaration.model, declaration.abiVersion) ||
     typeof declaration.module !== 'string' ||
     declaration.module.length === 0
   ) {

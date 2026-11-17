@@ -38,6 +38,7 @@ import type {
   PhysicsSensorOverlaps,
 } from './fixed-dynamics.js';
 import type {
+  BodyMassProperties,
   BodyMotion,
   ManagedJointBinding,
   ManagedJointInput,
@@ -48,6 +49,9 @@ import type {
   PairIsolationInput,
   PairIsolationLease,
 } from './pair-isolation.js';
+import type { PhysicsQueryFailure, ShapeSweepResult } from './shape-query.js';
+import type { ShapeSweepQuery } from './shape-sweep.js';
+import type { SphereSweepQuery, SphereSweepResult } from './sphere-sweep.js';
 
 /**
  * Raycast hit result — returned by `PhysicsWorld.raycast()`.
@@ -62,6 +66,12 @@ export interface RaycastHit {
   point: Vec3;
   normal: Vec3;
   timeOfImpact: number;
+}
+
+/** Native 3D ray filtering, applied before nearest-hit selection. */
+export interface RaycastOptions {
+  /** Exclude all colliders attached to these ECS bodies for this query only. */
+  readonly excludeEntities?: readonly number[];
 }
 
 /** Per-call policy for 3D character movement; the character itself still moves. */
@@ -144,6 +154,10 @@ export interface NativePhysicsStepTiming {
  * systems (syncBackend → stepSimulation → writeback), not by user calls.
  */
 export interface PhysicsWorld {
+  /** Read-only 3D volume sweep over native colliders; never a ray substitute. */
+  sweepSphere?: (input: SphereSweepQuery) => Result<SphereSweepResult, PhysicsQueryFailure>;
+  /** Native oriented primitive sweep, including stationary volume overlap. */
+  sweepShape?: (input: ShapeSweepQuery) => Result<ShapeSweepResult, PhysicsQueryFailure>;
   /**
    * Observe fresh timing facts immediately after each successful native 3D
    * integration. Available only when `profileNativeStepTimings` was enabled
@@ -191,6 +205,13 @@ export interface PhysicsWorld {
   ) => Result<ManagedJointBinding, ManagedPhysicsFailure>;
   /** Detached world-space body evidence; no Rapier object escapes. */
   getBodyMotion?: (entity: number) => Result<BodyMotion, ManagedPhysicsFailure>;
+  /** Detached current native mass, world COM and effective inverse mass/inertia, without waking. */
+  getBodyMassProperties?: (entity: number) => Result<BodyMassProperties, ManagedPhysicsFailure>;
+  /** Detached world-space velocity at a finite world-space point, including angular motion about native COM. */
+  getBodyPointVelocity?: (
+    entity: number,
+    point: PhysicsVector,
+  ) => Result<PhysicsVector, ManagedPhysicsFailure>;
   /** Subscribe to motion invalidation, without allocating detached poses for unchanged bodies.
    * Covers explicit writes, lifecycle/policy changes and completed-step active/final-sleep
    * bodies. Notifications may repeat and do not certify a readable admission boundary:
@@ -237,6 +258,17 @@ export interface PhysicsWorld {
     entity: number,
     impulse: PhysicsVector,
   ) => Result<void, ManagedPhysicsFailure>;
+  /** World-space impulse at a finite world-space point, including native angular response about COM. */
+  applyBodyImpulseAtPoint?: (
+    entity: number,
+    impulse: PhysicsVector,
+    point: PhysicsVector,
+  ) => Result<void, ManagedPhysicsFailure>;
+  /** World-space angular impulse in N m s; wakes a dynamic body without moving its pose. */
+  applyBodyAngularImpulse?: (
+    entity: number,
+    impulse: PhysicsVector,
+  ) => Result<void, ManagedPhysicsFailure>;
   /** Current native solver joint count, including managed and derived joints. */
   getJointCount?: () => number;
   /**
@@ -270,6 +302,7 @@ export interface PhysicsWorld {
     direction: Vec3,
     maxDist: number,
     filterMask?: number,
+    options?: RaycastOptions,
   ): RaycastHit | undefined;
 
   /**
@@ -502,6 +535,16 @@ export interface PhysicsWorld {
     input: PhysicsConstraintInput,
   ) => Result<{ readonly id: string; readonly revision: number }, DerivedPhysicsError>;
   removeDerivedConstraint?: (id: string) => Result<void, DerivedPhysicsError>;
+  /** Controls the currently committed hinge without replacing it; revision fences stale owners. */
+  setDerivedHingeMotor?: (
+    id: string,
+    revision: number,
+    motor: {
+      readonly targetVelocity: number;
+      readonly damping: number;
+      readonly maxForce: number;
+    } | null,
+  ) => Result<void, DerivedPhysicsError>;
 }
 
 /** 2D raycast hit result. */

@@ -9,7 +9,11 @@ export interface PhysicsEntityRecord {
   readonly generation: number;
   motionDiscontinuity: number;
   bodyHandle: number;
+  /** Defined for bodies created through the ECS owner. */
+  canSleep?: boolean;
   lockRotation: boolean;
+  translationAxes: number;
+  rotationAxes: number;
   readonly worldIdentity: World | undefined;
   /** Authored additional mass used to restore automatic derived policy. */
   additionalMass: number;

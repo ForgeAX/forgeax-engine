@@ -25,6 +25,7 @@ import { createViteConfig, devKitDdcRoots, ignoreDevKitCatalogPath } from '../ho
 import { readLiveProjectInputs } from '../live-project-inputs.js';
 import { readProjectFacts } from '../project.js';
 import { generatedPlayerQueries } from './generated-player-queries.js';
+import { generatedRenderFeatures } from './generated-render-features.js';
 
 type PackContext = {
   readonly emitFile: (asset: {
@@ -420,6 +421,7 @@ describe('standalone host', () => {
                   workspaceGame: false,
                   workspaceMode: false,
                   gameVfx: undefined,
+                  gameFeatures: { features: [], plugins: [] },
                   mainAudio: undefined,
                   webAudioPlugin: () => ({}),
                   audioPlugin: () => ({}),
@@ -475,10 +477,12 @@ describe('standalone host', () => {
             );
             const script = (
               await transformWithOxc(
-                bootstrap
-                  .replace(/^import .*;\n/gm, '')
-                  .replace('export default ', '')
-                  .replaceAll('import.meta.env.DEV', 'false'),
+                (await generatedRenderFeatures(config.root)) +
+                  '\n' +
+                  bootstrap
+                    .replace(/^import .*;\n/gm, '')
+                    .replace('export default ', '')
+                    .replaceAll('import.meta.env.DEV', 'false'),
                 'execution-bootstrap.ts',
                 { lang: 'ts' },
               )

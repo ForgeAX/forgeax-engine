@@ -2,8 +2,8 @@ import { execFileSync } from 'node:child_process';
 import { appendFileSync, readFileSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
-import { requestGitHub, runArtifacts, runJobs } from './ci-repair-qualification.mjs';
-import { coreShaderArtifact } from './core-shader-artifact.mjs';
+import { requestGitHub, runJobs } from './ci-repair-qualification.mjs';
+import { coreShaderArtifact, producerArtifact } from './core-shader-artifact.mjs';
 
 /** Select both existing producers from the independently admitted Main run. */
 export async function sdkShaderArtifacts(input, api, options = {}) {
@@ -31,26 +31,12 @@ export async function sdkShaderArtifacts(input, api, options = {}) {
 async function completedSdkShaderArtifacts(input, api, core, run, job) {
   if (job.run_id !== run.id || job.conclusion !== 'success')
     throw new Error('SDK point producer did not succeed');
-  const artifacts = await runArtifacts(api, input.repository, run);
-  const selected =
-    artifacts?.filter((artifact) => artifact.name === `shared-app-inputs-a${run.run_attempt}`) ??
-    [];
-  if (selected.length !== 1) throw new Error('SDK point artifact unavailable');
-  const artifact = selected[0];
-  if (
-    artifact.expired ||
-    artifact.workflow_run?.id !== run.id ||
-    artifact.workflow_run?.head_sha !== input.sha ||
-    !Number.isSafeInteger(artifact.id) ||
-    artifact.id <= 0 ||
-    !/^sha256:[a-f0-9]{64}$/i.test(artifact.digest ?? '')
-  )
-    throw new Error('SDK point artifact source or digest identity invalid');
+  const { artifact, sourceJob } = await producerArtifact(input, api, run, job);
   return {
     core,
     point: {
       sourceRunId: run.id,
-      sourceJobId: job.id,
+      sourceJobId: sourceJob.id,
       sourceSha: input.sha,
       artifactId: artifact.id,
       artifactName: artifact.name,

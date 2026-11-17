@@ -9,6 +9,7 @@ import type { NativeCooker } from '@forgeax/engine-pack/native-cooker';
 import { createStandaloneRuntimeAssetBinding, type Importer } from '@forgeax/engine-types';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createPluginPackInternal as pluginPack } from '../plugin-pack.js';
+import { installPackAuthorDependencies } from './pack-author-dependencies.js';
 
 const GUID = '00000000-0000-4000-8000-000000000003';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -105,6 +106,7 @@ describe('production Pack bundle contract', () => {
     'validates direct plugin references after dynamic outputs exist: present=%s bound=%s',
     async (present, bound) => {
       const project = await mkdtemp(join(tmpdir(), 'forgeax-plugin-reference-build-'));
+      await installPackAuthorDependencies(project);
       roots.push(project);
       const assets = resolve(project, 'assets');
       await mkdir(assets);
@@ -448,6 +450,7 @@ export default definePack({
 
   it('emits ScriptablePack roots and v3 instances as independent production packages', async () => {
     const project = await mkdtemp(join(tmpdir(), 'forgeax-scriptable-pack-build-'));
+    await installPackAuthorDependencies(project);
     roots.push(project);
     const assets = resolve(project, 'assets');
     await mkdir(assets);

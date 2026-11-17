@@ -89,6 +89,58 @@ substitute for the complete failed Linux shard and strict coverage merge.
 
 ## PR CI repair workflow
 
+For Host authoring publication timeouts under V8 coverage, profile the original
+case with the admitted CI publication and existing workspace timing before edits.
+Distinguish private parsed JSON ownership from borrowed public inputs; retaining
+strict eager reflection, reference and source-digest validation is mandatory.
+Compare complete cold-case time and peak memory, not an isolated faster helper.
+Keep the original fifteen-second deadline and all publication/HMR assertions.
+
+For an exclusive source-manifest timeout, compare completed-program progress,
+lowering/compile phases and whole-process CPU/heap observations before selecting a
+repair. `FORGEAX_SHADER_COMPILE_DIAGNOSTICS=1` is bounded build-time telemetry,
+not a passed source build. Retain every family, variant, independent cold producer
+and original deadline. A busy four-worker batch is not evidence of a queue hang.
+
+For an unrecorded Modeling case failure, select its exact path with
+`FORGEAX_DAWN_CAPTURE_TEST` in the Engine Dawn test owner. Instrument the real
+constructor and existing four-argument ready-frame helper through the official
+recorder; do not edit a frozen source submodule or substitute a device. Preserve
+the original error, submissions and preparation/completion deadlines, and report
+unavailable captures explicitly. Representative pipelines cannot qualify the
+original device, descriptor or first draw.
+
+For morph Surface SSR preparation failures, capture the first original SSR
+submission and its native receipt before the failing readiness wait. Preserve
+preparation settlement and pipeline inspection without awaiting another signal
+or drawing a recovery frame. A post-failure tape cannot qualify the original
+pending frame. Keep the original stage, case, frame and pixel bounds.
+
+When the original receipt isolates SSR trace PSO compilation, profile that exact
+native recipe before changing shader math. Keep tangent-plane validation outside
+the inner coarse-march loop while retaining one traversal counter, candidate
+order, failed-candidate resume state and all refinement/coverage checks. Compare
+complete original mesh and skin replay outputs, not only shader byte size or a
+diagnostic ablation. Keep the 64/1024 traversal bounds and original GPU deadlines.
+
+When a cold first-use timeout follows passing pixels, preserve the actual tape
+and separate process startup, native first use, hot replay and cleanup. Keep the
+same device limits, original scenes and deadlines. A successful hot replay does
+not qualify cold startup; a diagnostic source ablation does not qualify the
+original fixture. Existing lighting specialization must follow the accepted
+View facts, published variant domain and complete native cache identities.
+
+For missing Outline pixels, preserve the fixture's bounded `artifacts/outline/dawn/`
+tapes through the existing Dawn lighting/AO/GI failure upload. Inspect its initial
+frame and pipeline demand before shader edits. An unavailable historical upload is
+missing evidence; retain the original pixel thresholds, readiness and replay gates.
+
+For VFX limit-16 GPU completion timeouts, inspect the live receipt and Renderer
+state plus `artifacts/ci-focus/vfx-mesh-lighting/limit16/original-operation.rhitape`
+in the existing Browser failure upload. Capture starts before construction with
+an empty registry (250ms snapshot and 64MiB bounds) and ends on the original draw;
+it neither waits for the failed GPU fence nor submits another frame. Preserve
+explicit capture failure and all original readiness, pixel and replay gates.
 For a visibility-extraction performance timeout, retain the completed profile,
 all 101 samples, populations, ratio assertion and original sixty-second deadline.
 Run the complete Render ratio suite through the maintained CPU-affinity owner;
@@ -122,7 +174,9 @@ fresh within this workflow; it is not a reason to remove the declaration.
 
 When View capability placement changes, rerun all four `view-integration-N`
 checks. Keep complete command populations, live/cold chains, the thirty-minute
-job cap and historical setup reserves. A completed cold-build stage inside a
+job cap and historical setup reserves. After a timed-out parent, record only
+complete owner measurements; retain unfinished owners and their historical
+forecasts when balancing the next placement. A completed cold-build stage inside a
 cancelled parent does not qualify that parent; the new bounded compiler policy
 and every remaining browser owner need fresh runtime evidence. Shared shader
 admission may reuse live immutable facts only after current inventory and payload
@@ -168,6 +222,12 @@ their run/job/source identities, alongside the freshly executed failures. Missin
 or inconsistent provenance remains a failure. Normal SDK/publication acceptance
 still requires the complete same-source byte cohort; never rewrite an inherited
 receipt to the current SHA or SDK version.
+
+After a failed-only retry, shader admission matches a copied successful producer
+to its original execution through complete job history and exact start/end times.
+Keep its original attempt's artifact name, job ID, source SHA and digest. Missing
+or ambiguous history and a new execution without its own artifact remain failures;
+do not rerun a passed producer or relabel an old artifact to repair admission.
 
 For a coverage timeout without an assertion failure, compare interval deltas
 from the affinity owner's pressure samples. Its explicit coverage command
@@ -292,6 +352,13 @@ For pixel-parity startup on Windows, execute the fixture's existing Vite
 JavaScript entry with Node, retaining the owning pnpm fallback and both mandatory
 builds. Preserve native spawn errors and producer exits; CPU transport controls
 do not qualify either Browser capture.
+
+For SDK seed `ERR_MODULE_NOT_FOUND` before production, inspect the exact failed
+Node test's imports and workflow order. Source-export policy regressions use
+workspace dependencies such as `yaml` and run after the seed's existing primary
+workspace install, with pinned sources prepared first. Preserve every test and
+reuse that install; do not add a second unconditional install, stub the import or
+remove the test. See [SDK consumers](../../scripts/ci/README.md#sdk-consumers).
 
 For an SDK PR seed canceled in its cold Engine stage, follow the SDK route and
 inspect live child output. Same-head Main core base and shared point preparation

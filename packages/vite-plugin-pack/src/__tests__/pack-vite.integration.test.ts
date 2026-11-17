@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { AssetRegistry } from '../../../assets-runtime/src/asset-registry.js';
 import { createCatalogSource } from '../../../assets-runtime/src/catalog-source.js';
 import { createPluginPackInternal as pluginPack } from '../plugin-pack.js';
+import { installPackAuthorDependencies } from './pack-author-dependencies.js';
 
 const ROOT_PACKAGE_ID = '019a0000-0000-7000-8000-000000000001';
 const INSTANCE_PACKAGE_ID = '019a0000-0000-7000-8000-000000000002';
@@ -200,6 +201,7 @@ describe('ScriptablePack and Pack development publication', () => {
     const assets = join(root, 'assets');
     await mkdir(assets);
     await writeFile(join(root, 'package.json'), '{"name":"plugin-demand-reload","type":"module"}');
+    await installPackAuthorDependencies(root);
     await writeFile(
       join(assets, 'root.pack.ts'),
       `
@@ -309,6 +311,7 @@ describe('ScriptablePack and Pack development publication', () => {
     const assets = join(root, 'assets');
     await mkdir(assets);
     await writeFile(join(root, 'package.json'), '{"name":"mixed-plugin","type":"module"}');
+    await installPackAuthorDependencies(root);
     await writeFile(join(assets, 'plugin.ts'), 'export default { apply() {} };');
     await writeFile(
       join(assets, 'plugin.pack.json'),
@@ -379,6 +382,7 @@ describe('ScriptablePack and Pack development publication', () => {
 
   it('publishes a root and a v3 instance through the dynamic Catalog path', async () => {
     root = await mkdtemp(join(tmpdir(), 'forgeax-scriptable-pack-vite-'));
+    await installPackAuthorDependencies(root);
     const assets = join(root, 'assets');
     await mkdir(assets);
     await writeFile(

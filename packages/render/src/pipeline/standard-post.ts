@@ -27,6 +27,7 @@ import {
   addMotionBlurPass,
   MOTION_BLUR_FEATURE_IDENTITY,
 } from '../features/motion-blur/motion-blur-feature';
+import { addDistanceOutlinePasses } from '../features/outline/distance-graph';
 import { addOutlinePasses } from '../features/outline/graph';
 import { isOutlinePostProcess } from '../features/outline/shaders';
 import { addSmaaPasses } from '../features/smaa/graph';
@@ -690,6 +691,7 @@ function addPreTemporalEffects(
     if (!output.ok) return output;
     const added = addTypedFullscreenPass(context.graph, {
       name: `scene-effect-${index}`,
+      additionalReads: [{ key: 'chain-source', target: scene }],
       shader,
       input: postInput,
       outputs: [output.value],
@@ -1136,10 +1138,13 @@ function addLinearLdrStages(
       depth,
       route.editorAssistance
         ? {
-            selection: (frame) =>
-              frame.editorAssistance === undefined
-                ? frame.camera.outline
-                : frame.editorAssistance.authoredOutline,
+            selection: (frame) => {
+              const selection =
+                frame.editorAssistance === undefined
+                  ? frame.camera.outline
+                  : frame.editorAssistance.authoredOutline;
+              return selection?.distanceField ? undefined : selection;
+            },
           }
         : {},
       waterInfoTargets,
@@ -1598,7 +1603,16 @@ export function addStandardPost(
   if (!featured.ok) return featured;
   const observed = addSceneObservation(context, route, scene);
   if (!observed.ok) return observed;
-  const lensed = addHdrLensStages(context, topology, route, featured.value);
+  const addSelectionHighlight = () => {
+    let highlighted = featured.value;
+    if (route.features.outline) {
+      const outlined = addDistanceOutlinePasses(context.graph, highlighted, depth);
+      if (!outlined.ok) return outlined;
+      highlighted = outlined.value;
+    }
+    return addHdrLensStages(context, topology, route, highlighted);
+  };
+  const lensed = addSelectionHighlight();
   if (!lensed.ok) return lensed;
   const exposed = addExposureWhiteBalance(
     context,

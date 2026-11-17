@@ -61,7 +61,7 @@ import { derive, getAdmittedParamSchemaInterface } from '@forgeax/engine-types';
 
 import type { GpuResidencyCache } from '../device/gpu-residency';
 import { VideoUploadUnsupportedError } from '../errors/render';
-
+import { isRenderFeatureTextureSource } from '../features/feature-texture-source';
 import {
   assembleMaterialWithSkylightEntries,
   type SkylightBindGroupResources,
@@ -72,7 +72,6 @@ import {
   type TransmissionBindGroupResources,
   type WaterFluidBindGroupResources,
 } from '../ibl/skylight-bind-group';
-
 import { writeMaterialTextureCoordinateRecord } from '../material-texture-coordinates';
 import type { IblBindingEntryInspection } from '../mesh-material-bindings';
 import {
@@ -86,7 +85,6 @@ import {
   sharedMaterialBindingDeclarations,
   standardInputField,
 } from '../pbr-pipeline';
-
 import { deriveTextureUvScale } from '../render-data';
 import type { MaterialSnapshot, SkylightSnapshot } from '../render-system-extract';
 import {
@@ -99,7 +97,6 @@ import {
   type MaterialTextureSource,
 } from '../textures/canvas-texture';
 import { isExternalTextureSource } from '../textures/external-texture';
-
 import type {
   BindGroupCounts,
   MaterialBgAssemblyCacheEntry,
@@ -2062,7 +2059,14 @@ function appendUserRegionPair(
   const preparedTexture = preparedMaterialTexture(assembly, field);
   let resource: RhiBindingResource | undefined;
   let view = fallback;
-  if (runtimeSource?.source === 'feature') {
+  if (isRenderFeatureTextureSource(runtimeSource)) {
+    const current = recordContext(assembly.runtime).sharedFeatureGpuWork?.resolveTexture(
+      runtimeSource.owner,
+      runtimeSource.name,
+    );
+    if (current === undefined) assembly.resident = false;
+    else view = current;
+  } else if (runtimeSource?.source === 'feature') {
     const current = deps.resolveFeatureTextureSource?.(runtimeSource.owner);
     if (current === undefined)
       throw new RhiError({
@@ -2259,6 +2263,15 @@ function physicalFieldView(
   runtimeSource: MaterialTextureSource | undefined,
   fallback: TextureView,
 ): TextureView {
+  if (isRenderFeatureTextureSource(runtimeSource)) {
+    const resolved = recordContext(assembly.runtime).sharedFeatureGpuWork?.resolveTexture(
+      runtimeSource.owner,
+      runtimeSource.name,
+    );
+    if (resolved !== undefined) return resolved;
+    assembly.resident = false;
+    return fallback;
+  }
   if (isExternalTextureSource(runtimeSource)) {
     const resolved = assembly.runtime.externalTextures?.resolve(runtimeSource, false);
     if (resolved?.kind === 'textureView') return resolved.value;
@@ -2434,6 +2447,13 @@ export function resolveMaterialSkylight(
       brdf: imageIbl.brdfLutView,
     };
   }
+  if (skylight?.featureEnvironment) {
+    const source = skylight.featureEnvironment,
+      owner = recordContext(runtime as RenderSystemRuntime).sharedFeatureGpuWork;
+    const irradiance = owner?.resolveTextureCube(source.feature, source.irradiance),
+      prefilter = owner?.resolveTexture(source.feature, source.prefilter);
+    environmentIbl = irradiance && prefilter ? { irradiance, prefilter } : undefined;
+  }
   if (environmentIbl !== undefined && skylight !== undefined && skylight.equirectHandle === 0) {
     activeViews = {
       irr: environmentIbl.irradiance,
@@ -2447,7 +2467,7 @@ export function resolveMaterialSkylight(
   if (
     skylight !== undefined &&
     skylightCount >= 1 &&
-    (skylight.equirectHandle === 0 || activeViews !== undefined)
+    ((skylight.equirectHandle === 0 && !skylight.featureEnvironment) || activeViews !== undefined)
   ) {
     const [cr, cg, cb] = skylight.color;
     const [qx, qy, qz, qw] = skylight.rotation;

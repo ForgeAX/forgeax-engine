@@ -9,6 +9,11 @@ import {
 import { ok } from '@forgeax/engine-types';
 import type { EngineShaderFile } from './load-engine-shader-entries.js';
 import { lowerEngineSurfaceEntry } from './prepare-engine-shader-source.js';
+import {
+  type ShaderCompileDiagnostics,
+  type ShaderCompileTiming,
+  shaderCompileDiagnostics,
+} from './shader-compile-diagnostics.js';
 
 export type MaterialCompileJob = {
   readonly defines: Record<string, boolean> | undefined;
@@ -41,15 +46,26 @@ import('node:worker_threads').then(({ parentPort, workerData }) => {
       parentPort.close();
       return;
     }
+    const startedAt = workerData.diagnostics ? performance.now() : 0;
+    let compileStartedAt;
+    const timing = () => workerData.diagnostics ? {
+      preparationWallMs: (compileStartedAt ?? performance.now()) - startedAt,
+      compileWallMs: compileStartedAt === undefined ? 0 : performance.now() - compileStartedAt,
+    } : undefined;
+    if (workerData.diagnostics) parentPort.postMessage({ id: message.id, phase: 'preparing' });
     try {
       const compileShader = await compilerPromise;
       const { lowerEngineSurfaceEntry } = await preparationPromise;
       const prepared = lowerEngineSurfaceEntry(message.file, message.options.imports ?? {}, workerData.fallbackImports, message.options.defines);
+      if (workerData.diagnostics) {
+        compileStartedAt = performance.now();
+        parentPort.postMessage({ id: message.id, phase: 'compiling', timing: timing() });
+      }
       const result = await compileShader(prepared.source, { ...message.options, imports: prepared.imports });
       if (result.ok) {
         // The public result owns one WGSL body at two fields. Strings are copied by
         // value across isolates, so send it once and restore the alias in the parent.
-        parentPort.postMessage({ id: message.id, result: { ok: true, value: {
+        parentPort.postMessage({ id: message.id, ...(workerData.diagnostics ? { timing: timing() } : {}), result: { ok: true, value: {
           ...result.value, manifestEntry: { ...result.value.manifestEntry, wgsl: '' }
         } } });
         return;
@@ -57,6 +73,7 @@ import('node:worker_threads').then(({ parentPort, workerData }) => {
       const error = result.error;
       parentPort.postMessage({
         id: message.id,
+        ...(workerData.diagnostics ? { timing: timing() } : {}),
         result: {
           ok: false,
           error: {
@@ -73,6 +90,7 @@ import('node:worker_threads').then(({ parentPort, workerData }) => {
     } catch (error) {
       parentPort.postMessage({
         id: message.id,
+        ...(workerData.diagnostics ? { timing: timing() } : {}),
         error: { message: error instanceof Error ? error.message : String(error), ...error },
       });
     }
@@ -82,6 +100,8 @@ import('node:worker_threads').then(({ parentPort, workerData }) => {
 
 interface ShaderCompileWorkerResponse {
   readonly id: number;
+  readonly phase?: 'preparing' | 'compiling';
+  readonly timing?: ShaderCompileTiming;
   readonly result?: MaterialCompileResult;
   readonly error?: { readonly message: string };
 }
@@ -90,11 +110,17 @@ function runShaderCompileWorkerJob(
   worker: Worker,
   id: number,
   job: MaterialCompileJob,
+  diagnostics?: ShaderCompileDiagnostics,
 ): Promise<MaterialCompileResult> {
   return new Promise((resolve, reject) => {
     const onMessage = (message: ShaderCompileWorkerResponse): void => {
       if (message.id !== id) return;
+      if (message.phase !== undefined) {
+        diagnostics?.phase(id, message.phase, message.timing?.preparationWallMs);
+        return;
+      }
       cleanup();
+      diagnostics?.complete(id, message.timing);
       if (message.error !== undefined) {
         reject(Object.assign(new Error(message.error.message), message.error));
         return;
@@ -107,10 +133,12 @@ function runShaderCompileWorkerJob(
     };
     const onError = (error: Error): void => {
       cleanup();
+      diagnostics?.complete(id);
       reject(error);
     };
     const onExit = (code: number): void => {
       cleanup();
+      diagnostics?.complete(id);
       reject(new Error(`shader compile worker exited before returning job ${id}: ${code}`));
     };
     const cleanup = (): void => {
@@ -131,6 +159,22 @@ const MAX_SHADER_COMPILE_WORKERS = 16;
 export async function compileMaterialSources(
   jobs: readonly MaterialCompileJob[],
   fallbackImports: Readonly<Record<string, string>>,
+): Promise<MaterialCompileResult[]> {
+  const diagnostics = shaderCompileDiagnostics(jobs[0]?.file.id ?? '<empty>', jobs.length);
+  let outcome: 'end' | 'error' = 'error';
+  try {
+    const results = await compileMaterialSourceBatch(jobs, fallbackImports, diagnostics);
+    outcome = diagnostics === undefined || results.every((result) => result.ok) ? 'end' : 'error';
+    return results;
+  } finally {
+    diagnostics?.finish(outcome);
+  }
+}
+
+async function compileMaterialSourceBatch(
+  jobs: readonly MaterialCompileJob[],
+  fallbackImports: Readonly<Record<string, string>>,
+  diagnostics?: ShaderCompileDiagnostics,
 ): Promise<MaterialCompileResult[]> {
   const requestedWorkers = Number.parseInt(process.env.FORGEAX_SHADER_COMPILE_WORKERS ?? '', 10);
   const workerCount = Math.min(
@@ -153,7 +197,9 @@ export async function compileMaterialSources(
   if (workerCount <= 1) {
     const compileShader = createShaderProgramCompiler();
     const results: MaterialCompileResult[] = [];
-    for (const job of jobs) {
+    for (const [id, job] of jobs.entries()) {
+      diagnostics?.start(id);
+      const startedAt = diagnostics === undefined ? 0 : performance.now();
       const input = job.prepare?.() ?? job;
       const prepared = lowerEngineSurfaceEntry(
         input.file,
@@ -161,11 +207,18 @@ export async function compileMaterialSources(
         fallbackImports,
         input.options.defines,
       );
+      diagnostics?.prepared(id, performance.now() - startedAt);
+      diagnostics?.phase(id, 'compiling');
+      const compileStartedAt = diagnostics === undefined ? 0 : performance.now();
       results.push(
         retain(
           await compileShader(prepared.source, { ...input.options, imports: prepared.imports }),
         ),
       );
+      diagnostics?.complete(id, {
+        preparationWallMs: 0,
+        compileWallMs: performance.now() - compileStartedAt,
+      });
     }
     return results;
   }
@@ -175,7 +228,10 @@ export async function compileMaterialSources(
     () =>
       new Worker(SHADER_COMPILE_WORKER_SOURCE, {
         eval: true,
-        workerData: { fallbackImports },
+        workerData: {
+          fallbackImports,
+          ...(diagnostics === undefined ? {} : { diagnostics: true }),
+        },
       } as never),
   );
   const results: Array<MaterialCompileResult | undefined> = Array.from(
@@ -188,9 +244,12 @@ export async function compileMaterialSources(
   const tasks = workers.map(async (worker) => {
     for (let jobIndex = nextJob++; jobIndex < jobs.length; jobIndex = nextJob++) {
       const job = jobs[jobIndex] as MaterialCompileJob;
+      diagnostics?.start(jobIndex);
+      const startedAt = diagnostics === undefined ? 0 : performance.now();
       const input = job.prepare?.() ?? job;
+      diagnostics?.prepared(jobIndex, performance.now() - startedAt);
       results[jobIndex] = retain(
-        await runShaderCompileWorkerJob(worker, jobIndex, { ...job, ...input }),
+        await runShaderCompileWorkerJob(worker, jobIndex, { ...job, ...input }, diagnostics),
       );
     }
   });

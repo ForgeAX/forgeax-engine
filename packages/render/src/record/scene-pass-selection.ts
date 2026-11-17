@@ -2,7 +2,12 @@ import type { CameraSnapshot } from '../render-contract';
 import type { ValidatedRenderable } from './frame-snapshot';
 
 /** Closed owner-declared selections that can be re-read without a recorded frame. */
-export type ScenePassSelection = 'camera-outline';
+export type ScenePassSelection =
+  | 'camera-outline'
+  | 'camera-outline-distance'
+  | 'camera-outline-focus'
+  | 'camera-outline-accent'
+  | 'camera-outline-large';
 
 export type ScenePassSelectionCamera = Pick<CameraSnapshot, 'outline'>;
 
@@ -16,7 +21,21 @@ export function resolveScenePassSelection(
 ): EntitySelection {
   switch (selection) {
     case 'camera-outline':
-      return { entities: camera.outline?.entities ?? [] };
+      return { entities: camera.outline?.distanceField ? [] : (camera.outline?.entities ?? []) };
+    case 'camera-outline-distance':
+      return { entities: camera.outline?.distanceField ? (camera.outline.entities ?? []) : [] };
+    case 'camera-outline-focus':
+      return {
+        entities: camera.outline?.distanceField ? (camera.outline.focusedEntities ?? []) : [],
+      };
+    case 'camera-outline-accent':
+      return {
+        entities: camera.outline?.distanceField ? (camera.outline.accentEntities ?? []) : [],
+      };
+    case 'camera-outline-large':
+      return {
+        entities: camera.outline?.distanceField ? (camera.outline.largeEntities ?? []) : [],
+      };
   }
 }
 

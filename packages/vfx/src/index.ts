@@ -62,11 +62,13 @@ export {
 } from './code-source-v3.js';
 export type {
   VfxDataInterfaceBindingType,
+  VfxDataInterfaceCaptureContext,
   VfxDataInterfaceError,
   VfxDataInterfaceErrorDetail,
   VfxDataInterfaceKind,
   VfxDataInterfaceLifetime,
   VfxDataInterfaceProvider,
+  VfxDataInterfaceRecoveryLease,
   VfxDataInterfaceRequirement,
   VfxDataInterfaceResolution,
   VfxDataInterfaceResource,
@@ -96,6 +98,16 @@ export {
   validateVfxForceFields,
   vfxForceFieldFailure,
 } from './force-fields.js';
+export {
+  acquireVfxGpuEventChannel,
+  createVfxGpuEventOutput,
+  VFX_GPU_EVENT_OUTPUT,
+  VFX_GPU_OUTPUT_CHANNELS,
+  VFX_GPU_OUTPUT_HEADER_BYTES,
+  type VfxGpuEventOutput,
+  type VfxGpuOutputChannel,
+  type VfxGpuOutputEvent,
+} from './gpu-event-output';
 export type { VfxGpuAssetError } from './gpu-loader.js';
 export {
   loadVfxGpuEffect,
@@ -115,10 +127,12 @@ export {
   VFX_GPU_PROGRAM_ARTIFACT_KEY,
   VFX_GPU_PROGRAM_FORMAT,
 } from './gpu-program.js';
+export { VfxGpuUpdate } from './gpu-runtime';
 export type {
   VfxGpuEmitterInspectSnapshot,
   VfxGpuEmitterSource,
   VfxGpuPlayerInspectSnapshot,
+  VfxGpuRecoveryContext,
   VfxGpuRuntimeDiagnostic,
   VfxGpuRuntimeOptions,
   VfxGpuTickIntent,
@@ -130,6 +144,11 @@ export {
   VfxGpuRuntime,
   vfxGpuRuntimePlugin,
 } from './gpu-runtime.js';
+export {
+  type GpuSlotAllocatorSource,
+  type GpuSlotAllocatorSourceError,
+  parseGpuSlotAllocatorSource,
+} from './gpu-slot-allocator-source';
 export type {
   VfxChannelCounters,
   VfxChannelInput,
@@ -158,6 +177,11 @@ export {
   vfxParticleCoreField,
 } from './particle-layout.js';
 export type { ParticleEffectPlayerData } from './player.js';
-export { ParticleEffectPlayer, vfxPlayerParameters } from './player.js';
+export { ParticleEffectPlayer, ParticleEffectWorldBounds, vfxPlayerParameters } from './player.js';
 export type { VfxPlayerParametersError } from './player-parameters.js';
 export { validateVfxPlayerParameters } from './player-parameters.js';
+export {
+  exactVfxRecoveryInputs,
+  requiresExactVfxRecovery,
+  type VfxGpuRecoveryError,
+} from './recovery-input-history.js';

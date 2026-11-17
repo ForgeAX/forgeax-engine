@@ -42,7 +42,7 @@ import type {
 } from '@forgeax/engine-types';
 import type { BakeAtlas, MsdfGenerator } from './atlas-font-data.js';
 import { atlasFontData } from './atlas-font-data.js';
-import { generateFontAtlas } from './atlas-generator.js';
+import { generateFontAtlas, resolveFontAtlasOptions } from './atlas-generator.js';
 
 function makeAtlasTexture(atlas: BakeAtlas): TextureAsset {
   return {
@@ -82,6 +82,7 @@ async function importFont(ctx: ImportContext): Promise<ImportResult> {
   const atlas = await generateFontAtlas(
     read.value,
     ctx.importSettings.generatorFactory as (() => Promise<MsdfGenerator>) | undefined,
+    resolveFontAtlasOptions(ctx.importSettings),
   );
 
   const atlasSub = ctx.subAssets.find((s) => s.kind === 'texture');

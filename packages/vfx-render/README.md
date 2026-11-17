@@ -2,6 +2,11 @@
 
 Production RenderFeature and host for persistent GPU particle simulation and indirect billboard, mesh, ribbon, trail, and beam drawing.
 
+Stock lit Mesh programs consume the receiving View's native lighting projection.
+Their prepared graphics resolver selects the same modifier-free lighting axis as
+ordinary geometry; per-view and per-frame variant identity preserves transitions
+back to the full program. Unlit and custom shaders retain their authored variants.
+
 ## Host recipe
 
 ```ts

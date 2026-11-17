@@ -33,7 +33,7 @@ it('pins the published variant row count per engine material and program', async
     if (key === 'forgeax::default-standard-pbr' || key === 'forgeax::default-shadow-caster') {
       const rowsPerWaterLane: Readonly<Record<`${boolean}/${boolean}`, number>> =
         key === 'forgeax::default-standard-pbr'
-          ? { 'false/false': 2448, 'false/true': 288, 'true/false': 2288, 'true/true': 2288 }
+          ? { 'false/false': 2544, 'false/true': 320, 'true/false': 2384, 'true/true': 2384 }
           : { 'false/false': 64, 'false/true': 16, 'true/false': 48, 'true/true': 48 };
       // Water draws retain both formats on storage backends. Inactive ordinary
       // rows omit the unused format; the maintained lean-input lanes retain it.
@@ -48,13 +48,27 @@ it('pins the published variant row count per engine material and program', async
         }
       }
     }
+    if (
+      key === 'forgeax::vfx-render.particles.mesh' ||
+      key === 'forgeax::vfx-render.particles.mesh-inputs'
+    ) {
+      expect(variants.filter((row) => row.LEAN_LIGHTING === false)).toHaveLength(12);
+      const modifierFree = variants.filter((row) => row.LEAN_LIGHTING === true);
+      expect(modifierFree).toHaveLength(8);
+      expect(modifierFree.every((row) => row.STORAGE_BUFFER_AVAILABLE === true)).toBe(true);
+    }
+    if (key === 'forgeax::standard-terrain' || key === 'forgeax::standard-terrain-ids') {
+      const added = variants.filter((row) => !row.DIRECTIONAL_SHADOW_SIMPLE && row.LEAN_LIGHTING);
+      expect(added).toHaveLength(16);
+      expect(variants.filter((row) => !added.includes(row))).toHaveLength(128);
+    }
   }
   const total = Object.values(rows).reduce((sum, count) => sum + count, 0);
   expect({ total, rows }).toMatchInlineSnapshot(`
     {
       "rows": {
         "forgeax::default-shadow-caster": 176,
-        "forgeax::default-standard-pbr": 7312,
+        "forgeax::default-standard-pbr": 7632,
         "forgeax::default-unlit": 104,
         "forgeax::engine-ray-path-tracer": 2,
         "forgeax::engine-standard-deferred-lighting": 16,
@@ -62,8 +76,8 @@ it('pins the published variant row count per engine material and program', async
         "forgeax::pbr-skin": 864,
         "forgeax::sprite": 12,
         "forgeax::sprite-lit": 12,
-        "forgeax::standard-terrain": 128,
-        "forgeax::standard-terrain-ids": 128,
+        "forgeax::standard-terrain": 144,
+        "forgeax::standard-terrain-ids": 144,
         "forgeax::standard-terrain-ids-shadow": 4,
         "forgeax::standard-terrain-shadow": 4,
         "forgeax::vfx-render.particles.beam": 3,
@@ -71,8 +85,8 @@ it('pins the published variant row count per engine material and program', async
         "forgeax::vfx-render.particles.billboard": 3,
         "forgeax::vfx-render.particles.billboard-inputs": 3,
         "forgeax::vfx-render.particles.billboard-water-sphere": 3,
-        "forgeax::vfx-render.particles.mesh": 12,
-        "forgeax::vfx-render.particles.mesh-inputs": 12,
+        "forgeax::vfx-render.particles.mesh": 20,
+        "forgeax::vfx-render.particles.mesh-inputs": 20,
         "forgeax::vfx-render.particles.mesh-inputs-unlit": 3,
         "forgeax::vfx-render.particles.mesh-shadow": 2,
         "forgeax::vfx-render.particles.mesh-unlit": 3,
@@ -81,7 +95,7 @@ it('pins the published variant row count per engine material and program', async
         "forgeax::vfx-render.particles.trail": 3,
         "forgeax::vfx-render.particles.trail-inputs": 3,
       },
-      "total": 8827,
+      "total": 9195,
     }
   `);
 });

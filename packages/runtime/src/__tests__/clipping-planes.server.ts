@@ -7,9 +7,11 @@ import { createMaterialPackCooker } from '@forgeax/engine-shader-compiler';
 import { createStandaloneRuntimeAssetBinding } from '@forgeax/engine-types';
 import { pluginPack } from '@forgeax/engine-vite-plugin-pack';
 import { createServer } from 'vite';
+import { installPackProject } from './helpers/pack-project';
 
 export async function startClippingPlanesServer() {
   const root = await mkdtemp(join(tmpdir(), 'forgeax-clipping-'));
+  await installPackProject(root, ['pack', 'types']);
   const assets = join(root, 'assets');
   await mkdir(assets);
   const packageId = '019a0000-0000-7000-8000-000000000170';

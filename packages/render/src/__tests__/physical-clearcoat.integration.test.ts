@@ -196,4 +196,36 @@ describe('Standard clearcoat root contract', () => {
     expect(source).toContain('@group(1) @binding(14) var surfaceNearestDepthTexture');
     expect(source).toContain('@group(1) @binding(47) var skylightPrefilterMap: texture_2d<f32>');
   });
+
+  it.each([1, 3])('places medium optical resources after %i authored texture pairs', (count) => {
+    const schema = Array.from({ length: count }, (_, index) => ({
+      name: `normal${index}`,
+      type: 'texture2d' as const,
+    }));
+    const start = derive(schema).userRegionBindingEnd;
+    const descriptor = buildBindGroupLayoutDescriptor(
+      {
+        shader: { id: 'forgeax::single-layer-medium', passKind: 'forward', variantSet: undefined },
+        attachments: { colorFormats: [], depthFormat: undefined, sampleCount: 1 },
+        geometry: { topology: 'triangle-list', vertexLayout: {} },
+        renderState: undefined,
+      },
+      { kind: 'pbr-material-merged', materialParamSchema: schema },
+    );
+    const bindings = descriptor.entries.map((entry) => entry.binding);
+    expect(new Set(bindings).size).toBe(bindings.length);
+    expect(descriptor.entries.find((entry) => entry.binding === 2)?.texture).toMatchObject({
+      viewDimension: '2d',
+    });
+    expect(descriptor.entries.find((entry) => entry.binding === start)?.texture).toMatchObject({
+      viewDimension: 'cube',
+    });
+    expect(descriptor.entries.find((entry) => entry.binding === start + 9)?.texture).toMatchObject({
+      sampleType: 'unfilterable-float',
+      viewDimension: '2d',
+    });
+    expect(descriptor.entries.find((entry) => entry.binding === start + 15)?.buffer).toMatchObject({
+      type: 'uniform',
+    });
+  });
 });

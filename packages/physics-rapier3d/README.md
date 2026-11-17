@@ -1,5 +1,14 @@
 # @forgeax/engine-physics-rapier3d
 
+Native `sweepShape` supports oriented sphere, cuboid, capsule and cylinder volume
+queries. It shares the first-impact contact batch and boundary implementation with
+`sweepSphere`; neither path substitutes rays or a bounding sphere. Moving queries
+can ignore initial overlapping bodies through a native overlap pass and query-local
+exclusions. See [volume query contracts](../physics/README.md).
+`shape-sweep.integration.test.ts` checks actual WASM primitive orientations, hull
+footprints, first-impact batches, truncation, groups/sensors/exclusions and initial
+overlap policy; the sphere and ray suites retain their independent regressions.
+
 ```ts
 import physics3d from '@forgeax/engine/physics-rapier3d';
 
@@ -16,6 +25,18 @@ The default plugin owns only Rapier3D. Its module dependency is static;
 WASM initializes lazily during activation. The shared physics contract imports no backend.
 
 Pinned Rapier 0.35.1 / WASM backend for the realm-neutral [Physics contract](../physics/README.md).
+Native 3D pose interpolation returns exactly zero error for identical current and
+target poses, including rotated offset centers of mass. This exact equality path
+does not impose a velocity threshold on actual kinematic movement.
+Install `physics3d` in the World; game code consumes the optional
+`PhysicsWorld` capabilities rather than retaining Rapier objects.
+
+Current contact queries expose native pre-solve surface-point velocities in
+queried-body order. Sampling walks only the submitted solver graph after
+kinematic interpolation, including recycled contacts and the generic solver
+bucket. Previous submitted observations retire before contact topology changes;
+they are excluded from serialized simulation state and never feed constraints.
+See the [contact query contract](../physics/README.md) for CCD substep scope.
 
 Ordinary fixed dynamics, full completed-step sensor rosters and generation-fenced
 world-point force/torque implement the shared fixed dynamics contract. Forces use
@@ -43,7 +64,7 @@ adopt an older generation's output. No Rapier handle escapes through the public
 | Character supports | Native KCC applies one moving-support friction contribution before shape casting, including the no-hit descending-support path; later contacts share its accumulator. Caller adds input/gravity, never a second platform translation. |
 | Character pushes | Native KCC contact impulses push solid dynamic bodies; sensor filtering remains active. No game-side duplicate push is required. |
 | Native step | Exactly one `FixedTime.delta` step per World fixed iteration; World owns host clock, bounded catch-up and discarded time. |
-| Derived geometry | Convex point sets, heightfields and voxel regions become disabled native geometry, then use the existing atomic prepare/admit/cancel/mass/recovery transaction. The producer owns decomposition; native handles remain private. |
+| Derived geometry | Native cuboids, spheres, capsules and cylinders, convex point sets, heightfields and voxel regions become disabled native geometry, then use the existing atomic prepare/admit/cancel/mass/recovery transaction. The producer owns decomposition; native handles remain private. |
 | Writeback | Awake/overwritten dynamic body poses enter ordinary ECS Transform through the ECS numeric write fence; only changed f32 poses publish rows, and sleeping unchanged bodies avoid redundant writes. |
 | Managed joint group | Fixed joints or `JointData.revoluteWithAxes` hinges with body-local anchors and separate unit axes. All inputs/endpoints validate first; staged handles retire on preparation failure. |
 | Handoff | Detached body motion, explicit world pose/velocity writes and dynamic impulses use structured Results. Pose writes queue ordinary writeback; animation/visual blend stays upstream. |
@@ -353,6 +374,14 @@ continued native solving without synthetic motion or force and requires a new st
 before current contacts can be queried. Callback failures propagate through native
 iteration and `finally` releases temporary pointers, so query overflow never returns
 a partial result.
+
+3D raycast's optional fifth argument is `RaycastOptions`. Its `excludeEntities`
+filters native collider parents by ECS body identity in Rapier's query predicate,
+before nearest-hit selection. Compound colliders are all excluded together;
+collision groups continue to apply. The exclusion list is not retained or applied
+to subsequent queries. `raycast-exclusion.integration.test.ts` checks initial
+overlap, compound bodies, nearest remaining hits, group filters, and restoration
+with real WASM queries.
 
 An optional packed collision-group mask uses the same two-way membership/filter
 test as raycast. It rejects partner colliders before narrow-phase manifold,

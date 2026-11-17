@@ -755,6 +755,48 @@ function preparePlanResources(
   if (failure !== undefined) return err(failure);
   failure = prepareBuffers(slot, byKind('buffer'), gpu, ownerName, maps);
   if (failure !== undefined) return err(failure);
+  const prepareTextures = (): Result<void, RenderError> => {
+    for (const resource of byKind('texture')) {
+      const prepared = gpu?.prepareOwnedTexture(ownerName(resource.name), resource);
+      if (prepared === undefined) return err(planFailure(slot));
+      if (!prepared.ok) return prepared;
+      maps.preparedGpuResources.set(resource.name, {
+        kind: 'texture-view',
+        reference: prepared.value,
+      });
+    }
+    for (const resource of byKind('sampler')) {
+      const prepared = gpu?.prepareOwnedSampler(ownerName(resource.name), resource.descriptor);
+      if (prepared === undefined) return err(planFailure(slot));
+      if (!prepared.ok) return prepared;
+      maps.preparedGpuResources.set(resource.name, { kind: 'sampler', reference: prepared.value });
+    }
+    for (const resource of byKind('feature-texture-reference')) {
+      const prepared = gpu?.prepareFeatureTextureReference(
+        ownerName(resource.name),
+        resource.source,
+      );
+      if (!prepared) return err(planFailure(slot));
+      if (!prepared.ok) return prepared;
+      maps.preparedGpuResources.set(resource.name, {
+        kind: 'texture-view',
+        reference: prepared.value,
+      });
+    }
+    for (const resource of byKind('texture-alias')) {
+      const source = maps.preparedGpuResources.get(resource.resource);
+      if (!gpu || source?.kind !== 'texture-view') return err(planFailure(slot));
+      const prepared = gpu.prepareTextureAlias(ownerName(resource.name), source.reference);
+      if (!prepared.ok) return prepared;
+      maps.preparedGpuResources.set(resource.name, {
+        kind: 'texture-view',
+        reference: prepared.value,
+      });
+    }
+    return ok(undefined);
+  };
+  const texturesReady = prepareTextures();
+  if (!texturesReady.ok) return texturesReady;
   failure = preparePreparedGpuResources(
     slot,
     byKind('prepared-gpu-resource'),
@@ -869,9 +911,15 @@ function planRequiresGpuSession(plan: RenderFeatureWorkPlan): boolean {
   return plan.resources.some(
     (resource) =>
       isRenderFeatureSceneResource(resource) ||
-      ['compute-program', 'buffer', 'prepared-gpu-resource', 'compute-bindings'].includes(
-        resource.kind,
-      ),
+      [
+        'compute-program',
+        'buffer',
+        'texture',
+        'texture-alias',
+        'sampler',
+        'prepared-gpu-resource',
+        'compute-bindings',
+      ].includes(resource.kind),
   );
 }
 
@@ -1233,6 +1281,7 @@ function projectPlanCopyPass(
   }
   return ok({
     enabled: pass.enabled,
+    temporal: pass.temporal,
     featureIdentity: slot.feature.identity,
     order: slot.order,
     name: pass.name,
@@ -1330,6 +1379,7 @@ function projectPlanPasses(
         if (!resolved.ok) return resolved;
         projected.push({
           enabled: pass.enabled,
+          temporal: pass.temporal,
           featureIdentity: slot.feature.identity,
           order: slot.order,
           name: pass.name,
@@ -1416,6 +1466,7 @@ function projectPlanPasses(
     if (resolved !== undefined && !resolved.ok) return resolved;
     projected.push({
       enabled: pass.enabled,
+      temporal: pass.temporal,
       featureIdentity: slot.feature.identity,
       order: slot.order,
       name: pass.name,
@@ -1506,6 +1557,28 @@ class FeatureHostImpl implements RenderFeatureHost {
     readonly world: World,
     private readonly report: FeatureSettlementReporter,
   ) {
+    const ordered: FeatureSlot[] = [],
+      visiting = new Set<string>(),
+      done = new Set<string>();
+    const visit = (slot: FeatureSlot) => {
+      if (done.has(slot.feature.identity)) return;
+      if (visiting.has(slot.feature.identity))
+        throw Error(`RenderFeature dependency cycle: ${slot.feature.identity}`);
+      visiting.add(slot.feature.identity);
+      for (const identity of slot.feature.dependencies ?? []) {
+        const producer = slots.find((row) => row.feature.identity === identity);
+        if (!producer) throw Error(`RenderFeature dependency is missing: ${identity}`);
+        visit(producer);
+      }
+      visiting.delete(slot.feature.identity);
+      done.add(slot.feature.identity);
+      ordered.push(slot);
+    };
+    for (const slot of slots) visit(slot);
+    slots.splice(0, slots.length, ...ordered);
+    slots.forEach((slot, index) => {
+      slot.order = index;
+    });
     bindRenderFeatureFrame(world, this, report);
     for (const slot of slots)
       slot.releaseSystem = addRenderFeatureSystem(
@@ -1624,8 +1697,13 @@ class FeatureHostImpl implements RenderFeatureHost {
   }
 
   prepareFeature(frame: RenderFeatureFrameOpen, identity: string): void {
+    const batch = openBatch(frame, this);
     const slot = findSlot(this.slots, identity);
-    if (slot !== undefined) this.prepareSlot(frame, slot);
+    if (slot === undefined) return;
+    if (batch.requested.has(slot))
+      throw new Error('a Feature joins one Renderer frame at most once');
+    batch.requested.add(slot);
+    this.prepareSlot(frame, slot);
   }
 
   unjoinedFeatures(frame: RenderFeatureFrameOpen): readonly string[] {
@@ -1673,7 +1751,11 @@ class FeatureHostImpl implements RenderFeatureHost {
 
   private prepareSlot(frame: RenderFeatureFrameOpen, slot: FeatureSlot): void {
     const batch = openBatch(frame, this);
-    if (batch.joined.has(slot)) throw new Error('a Feature joins one Renderer frame at most once');
+    if (batch.joined.has(slot)) return;
+    for (const identity of slot.feature.dependencies ?? []) {
+      const producer = findSlot(this.slots, identity);
+      if (producer) this.prepareSlot(frame, producer);
+    }
     batch.joined.add(slot);
     if (!featureRunsThisFrame(slot, batch.input.caps)) {
       releaseFeatureAssetVersionOwners(slot);
@@ -2086,6 +2168,8 @@ function openBatch(frame: RenderFeatureFrameOpen, host: FeatureHostImpl): Featur
 class FeatureFrameBatchBuilder implements RenderFeatureFrameOpen {
   /** Slots that already joined this frame; a slot prepares at most once. */
   readonly joined = new Set<FeatureSlot>();
+  /** Public preparation requests remain unique even when dependencies prejoin. */
+  readonly requested = new Set<FeatureSlot>();
   sealed = false;
   readonly stageEvents: RenderFeatureStageEvent[] = [];
   readonly errors: RenderError[] = [];
@@ -2266,7 +2350,9 @@ class FeatureFrameBatchBuilder implements RenderFeatureFrameOpen {
             preparationPendingFeatureIdentity: this.preparationPendingFeatureIdentity,
             preparationPendingReason: this.preparationPendingReason,
           }),
-      postProcessIdentities: identities,
+      postProcessIdentities: identities.every((identity) => result.fullscreenEffects.has(identity))
+        ? identities
+        : Object.freeze(identities.filter((identity) => result.fullscreenEffects.has(identity))),
       hiddenEntityReports: mergeHiddenEntityReports(
         result.hiddenEntityReports,
         this.featureHiddenEntityReports,
@@ -3397,6 +3483,10 @@ class FeatureFramePreparation {
 
   // Only the standalone factory declares implicit post work; other entries prewarm resources.
   private admitRequiredPostProcesses(): void {
+    for (const projection of this.projections)
+      for (const resource of projection.planned.plan.resources)
+        if (resource.kind === 'fullscreen-program' && resource.chain === true)
+          this.batch.postProcessIdentities.add(resource.name);
     if (this.projections.length === 0) return;
     const declaration = fullscreenRenderFeatureDeclaration(this.feature);
     if (
@@ -3522,6 +3612,18 @@ class FeatureFramePreparation {
     plan: RenderFeaturePlan,
     submission: RenderFeatureSubmission,
   ): void {
+    for (const request of plan.readbacks ?? []) {
+      const read = this.gpu?.readMappedBuffer(request.resource);
+      if (!read) continue;
+      void read.then((result) =>
+        this.feature.onBufferReadback?.(
+          this.source,
+          result.ok
+            ? { tag: request.tag, bytes: result.value }
+            : { tag: request.tag, error: result.error },
+        ),
+      );
+    }
     if (this.input.publishedFeatures?.some((row) => row.identity === this.identity))
       this.input.onFeatureSourceSubmitted?.(this.identity, plan.sourceFeedback, submission);
     else this.feature.onSourceFrameSubmitted?.(this.source, plan.sourceFeedback, submission);

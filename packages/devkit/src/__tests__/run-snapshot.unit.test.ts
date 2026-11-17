@@ -15,6 +15,7 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, sep, win32 } from 'node:path';
+
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { expect, it, vi } from 'vitest';
 import { inspectEngineWorkspace } from '../engine-binding.js';
@@ -531,6 +532,37 @@ it.each([
   }
 });
 
+it('verifies the implicit root workspace recorded by pnpm without admitting package glob drift', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'engine-doctor-implicit-root-'));
+  try {
+    const fixture = await createStrictProject(directory);
+    const statePath = join(fixture.project, 'node_modules/.pnpm-workspace-state-v1.json');
+    const state = JSON.parse(await readFile(statePath, 'utf8'));
+    const binding = { schemaVersion: '1.0.0', path: fixture.engine };
+    await writeFile(join(fixture.project, 'pnpm-workspace.yaml'), 'allowBuilds: {}\n');
+    state.settings.workspacePackagePatterns = ['.'];
+    await writeJson(statePath, state);
+    await expect(
+      inspectRunDependencyClosure(fixture.project, binding, fixture.digest, '11.7.0'),
+    ).resolves.toBeUndefined();
+
+    state.settings.workspacePackagePatterns = ['packages/*'];
+    await writeJson(statePath, state);
+    await expect(
+      inspectRunDependencyClosure(fixture.project, binding, fixture.digest, '11.7.0'),
+    ).rejects.toMatchObject({ code: 'project-pnpm-workspace-state-stale' });
+
+    await writeFile(join(fixture.project, 'pnpm-workspace.yaml'), 'packages: []\n');
+    state.settings.workspacePackagePatterns = ['.'];
+    await writeJson(statePath, state);
+    await expect(
+      inspectRunDependencyClosure(fixture.project, binding, fixture.digest, '11.7.0'),
+    ).rejects.toMatchObject({ code: 'project-pnpm-workspace-state-stale' });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 async function writeNpmAliasLock(
   project: string,
   specifier = 'npm:webgpu@0.4.0',
@@ -766,11 +798,16 @@ it('keeps the generated wgpu binding in the published snapshot despite wasm-pack
       JSON.stringify({ dependencies: { [manifest.name]: '*' } }),
     );
     await writeFile(join(dependency, 'package.json'), JSON.stringify(manifest));
-    await symlink(
-      fileURLToPath(new URL('../../../wgpu-wasm/node_modules', import.meta.url)),
-      join(dependency, 'node_modules'),
-      'junction',
-    );
+    // Rebase the fixture's dependencies rather than relocating pnpm's relative
+    // links under a second Windows junction namespace.
+    for (const name of Object.keys(manifest.dependencies ?? {})) {
+      const installed = await realpath(
+        fileURLToPath(new URL(`../../../wgpu-wasm/node_modules/${name}`, import.meta.url)),
+      );
+      const link = join(dependency, 'node_modules', name);
+      await mkdir(dirname(link), { recursive: true });
+      await symlink(installed, link, 'junction');
+    }
     await writeFile(join(dependency, 'pkg/.gitignore'), '*\n');
     const payload = {
       'package.json': '{"type":"module"}',

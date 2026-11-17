@@ -1,11 +1,13 @@
-import type {
+﻿import type {
   GraphBuffer,
   GraphBufferAccess,
+  GraphTexture,
+  GraphTextureView,
   RenderGraphBuilder,
   RenderGraphError,
   RenderGraphFrame,
 } from '@forgeax/engine-render-graph';
-import type { Buffer } from '@forgeax/engine-rhi';
+import type { Buffer, Texture } from '@forgeax/engine-rhi';
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { type RenderError, RenderFeatureStageFailedError } from '../errors/render';
 import { currentRenderFeaturePass } from './frame-execution';
@@ -95,6 +97,7 @@ export function visitRenderFeatureComputeSequence(
   const bufferOnly = (pass: RenderFeaturePlanExecutionPass): boolean =>
     pass.gpuCompute !== undefined &&
     pass.resolvedGpuCompute !== undefined &&
+    (pass.resolvedGpuCompute.textures?.length ?? 0) === 0 &&
     (pass.resolvedGpuCompute.sampledTargets?.length ?? 0) === 0 &&
     (pass.resolvedGpuCompute.storageTargets?.length ?? 0) === 0;
   for (let start = 0; start < passes.length; ) {
@@ -181,7 +184,13 @@ export function visitRenderFeatureComputeSequence(
   return ok(undefined);
 }
 
+/** One physical identity table per frame graph, shared across producer and consumer projections. */
+const featureGraphTextures = new WeakMap<
+  object,
+  Map<Texture, { texture: GraphTexture; view: GraphTextureView }>
+>();
 export class RenderFeatureComputeGraphProjection<FrameCtx extends RenderGraphFrame> {
+  private readonly ownedTextures: Map<Texture, { texture: GraphTexture; view: GraphTextureView }>;
   private readonly resources: RenderFeatureGraphBufferState;
 
   constructor(
@@ -191,6 +200,12 @@ export class RenderFeatureComputeGraphProjection<FrameCtx extends RenderGraphFra
     private readonly resolveTarget?: RenderFeatureGraphTargetResolver,
     private readonly passNamePrefix = '',
   ) {
+    let textures = featureGraphTextures.get(builder);
+    if (!textures) {
+      textures = new Map();
+      featureGraphTextures.set(builder, textures);
+    }
+    this.ownedTextures = textures;
     this.resources = resources ?? createRenderFeatureGraphBufferState();
   }
 
@@ -230,6 +245,39 @@ export class RenderFeatureComputeGraphProjection<FrameCtx extends RenderGraphFra
     >();
     const sampledTargets = new Set(work.sampledTargets ?? []);
     const storageTargets = new Set(work.storageTargets ?? []);
+    const importOwnedTextureAccesses = () => {
+      for (const logical of logicalPasses)
+        for (const resource of logical.resolvedGpuCompute?.textures ?? []) {
+          let target = this.ownedTextures.get(resource.owned.texture);
+          if (!target) {
+            const texture = this.builder.importTexture(
+              `feature-texture.${this.ownedTextures.size}.${resource.name}`,
+              resource.owned.graph,
+              () => resource.owned.texture,
+            );
+            if (!texture.ok) return texture;
+            const view = this.builder.view(texture.value, {
+              dimension: resource.owned.source.dimension ?? '2d',
+            });
+            if (!view.ok) return view;
+            target = { texture: texture.value, view: view.value };
+            this.ownedTextures.set(resource.owned.texture, target);
+          }
+          accesses.push({ resource: target.view, usage: resource.access });
+          if (resource.owned.source.consumer === 'material') {
+            const published = this.builder.publishConsumerRead(
+              'render-feature.scene',
+              target.view,
+              'sampled-read',
+            );
+            if (!published.ok) return published;
+          }
+        }
+
+      return undefined;
+    };
+    const textureFailure = importOwnedTextureAccesses();
+    if (textureFailure !== undefined) return textureFailure;
     for (const handle of [...sampledTargets, ...storageTargets]) {
       let target = this.resolveTarget?.(handle);
       if (target === undefined)

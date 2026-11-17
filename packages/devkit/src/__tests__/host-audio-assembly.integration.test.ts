@@ -9,6 +9,7 @@ import { gameProjectionSource } from '../host/game-projection-source.js';
 import { createViteConfig } from '../host.js';
 import { readProjectFacts } from '../project.js';
 import { generatedPlayerQueries } from './generated-player-queries.js';
+import { generatedRenderFeatures } from './generated-render-features.js';
 
 it('projects the current Host audio consumer and resolves the native factory on every rebuild', async () => {
   const root = await mkdtemp(resolve(tmpdir(), 'forgeax-host-audio-'));
@@ -58,6 +59,7 @@ it('projects the current Host audio consumer and resolves the native factory on 
     // is covered by worker-execution-stop.test.ts in the App owner.
     const source = `(async () => {
       ${gameProjectionSource}
+      ${await generatedRenderFeatures(config.root)}
       ${generatedPlayerQueries(generated)}
       ${generated.slice(start, end)}
       ${generated.slice(hostStart, hostEnd)}
@@ -181,6 +183,7 @@ it('projects the main-realm audio engine used by the native backend into GameHos
     expect(hostEnd).toBeGreaterThan(hostStart);
     const source = `(async () => {
       ${gameProjectionSource}
+      ${await generatedRenderFeatures(config.root)}
       ${generatedPlayerQueries(generated)}
       ${generated.slice(start, end)}
       publishHost(${generated.slice(hostStart, hostEnd)});

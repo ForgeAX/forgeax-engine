@@ -2,6 +2,39 @@
 
 Physics interface package: ECS component schemas, PhysicsWorld resource shape, error codes, and enum constants. Backend implementations live in `@forgeax/engine-physics-rapier3d` and `@forgeax/engine-physics-rapier2d`.
 
+`PhysicsWorld.sweepSphere(query)` is an optional native 3D volume query returning
+a structured Result. Supply an origin, finite displacement, positive radius and
+positive `maxHits` budget. The result contains unique body entities and detached
+world-space target witnesses/normals at the first impact pose, with displacement
+fractions and an explicit contact-budget truncation flag. It does not enumerate
+farther trajectory contacts. Stationary queries report current overlaps at
+fraction zero. Packed interaction groups, entity exclusions and sensor policy
+are applied by the native query; unowned and retired ECS generations are excluded.
+Queries neither move nor wake bodies. Invalid input, unavailable physics boundaries
+and native failures are distinct failures, never fabricated misses. A live 2D
+backend does not advertise this 3D capability.
+
+`PhysicsWorld.sweepShape(query)` uses the same native contact, filtering and
+boundary contract with an oriented `shape`: sphere, cuboid, capsule or cylinder.
+Supply a unit `rotation` quaternion or omit it for identity. Cuboids use positive
+per-axis half extents. Capsules use a positive radius and nonnegative central
+segment half-height (total height is `2 * (halfHeight + radius)`). Cylinders use
+positive radius and half-height. Capsule/cylinder axes are local Y. Queries use
+these actual primitives; rotation does not become a bounding-sphere approximation.
+
+Both sweep methods accept `initialOverlap: 'ignore'` to omit initially overlapping
+bodies from a moving cast. The backend determines these overlaps natively before
+nearest-hit selection, and the policy lasts only for this query. The default is
+`'report'`; stationary queries always report current overlaps. This permits a hull
+already touching geometry to plan departure without skipping later obstacles.
+The sphere and oriented-primitive paths share one native implementation.
+
+`RigidBody.canSleep` defaults to `true`. Set it to `false` before native body
+creation to disable automatic sleeping in both Rapier backends. It is a creation
+policy: ECS reconciliation rejects changes on an existing ECS-owned body before
+mutating its colliders or dynamics. Retire and respawn the entity to choose a new
+policy. Explicit sleep/wake commands remain separate from automatic sleeping.
+
 ## Fixed Dynamics and Sensor Rosters
 
 The optional 3D `getCommittedBodyDynamics` returns accepted ordinary-body mass,
@@ -194,6 +227,16 @@ Rapier angle; out-of-plane rotation is not represented by Rapier 2D.
 
 ## Ordinary managed joints and body motion
 
+Applications may insert a `PhysicsSimulationControl` POD resource under
+`PHYSICS_SIMULATION_CONTROL_KEY`, with `{ paused: true }`, to suspend automatic
+3D or 2D native stepping. Update `paused` before the backend's step system.
+No resource means normal stepping; a non-boolean value is rejected.
+Authored synchronization, writeback and entity retirement remain active. Body
+momentum and pose are retained without per-body sleep/freeze writes; resuming
+consumes the next fixed interval, not elapsed pause time. Application gameplay
+systems remain responsible for their own pause policy. Explicit manual `step`
+calls are unaffected. The application owns this resource and its lifecycle.
+
 Optional `PhysicsWorld` capabilities support ordinary rigs independently of derived
 geometry publications. Consumers test capability presence; Rapier3D implements them.
 
@@ -202,8 +245,12 @@ geometry publications. Consumers test capability presence; Rapier3D implements t
 | `createManagedJoints(inputs)` | Validate an entire array of at most 256 fixed/hinge joint objects and every body endpoint before native allocation; malformed JSON returns a structured failure. Distinct nonnegative body pairs, finite local anchors, normalized frames/axes, ordered [-π,π] hinge limits and an optional boolean contact flag are required. Default connected-body contacts are disabled. |
 | `ManagedJointBinding.dispose()` | Idempotently retire the owned native constraints without exposing handles. Failed native retirement throws a structured managed failure requiring backend rebuild. |
 | `getBodyMotion(entity)` | Return a detached world-space pose, linear/angular velocity and sleeping state through Result. |
+| `getBodyMassProperties(entity)` | Read detached current native mass, scalar inverse mass, world COM, effective inverse translation mass and row-major world inverse inertia. Effective values include native body type/axis locks; the scalar inverse mass is the physical mass inverse. Does not wake, notify or modify contacts. Missing bodies return structured errors. |
+| `getBodyPointVelocity(entity, point)` | Read detached world-space velocity at a finite world-space point, including native angular motion about the body's COM. Static bodies return zero; missing bodies and invalid points return structured errors. |
 | `setBodyMotion(entity, motion)` | Explicit teleport plus velocities; validates finite Float32 vectors and unit quaternion before mutation and queues ordinary ECS writeback. This is a handoff/reset operation, not visual blending. |
 | `applyBodyImpulse(entity, impulse)` | Existing dynamic body only, world-space linear impulse; wakes the body. Missing/static bodies return structured errors. |
+| `applyBodyImpulseAtPoint(entity, impulse, point)` | Existing dynamic body only, world-space impulse at a finite world-space point. Uses native COM and inertia for angular response, wakes and invalidates contact readiness without teleporting. Missing/nondynamic bodies and invalid vectors fail before mutation. |
+| `applyBodyAngularImpulse(entity, impulse)` | Existing dynamic body only, world-space angular impulse in N m s; wakes the body without changing pose, linear velocity or collider ownership. Invalid vectors and missing/static bodies return structured errors. |
 | `getJointCount()` | Native constraint count for lifecycle evidence; includes other managed or derived constraints. |
 
 `ManagedPhysicsFailure` is the closed discriminated failure union. Group creation
@@ -258,6 +305,8 @@ Backends read a Collider row as `ColliderData` (derived from the schema; `halfEx
 | `gravityScale` | `f32` | `1` | Multiplier for world gravity |
 | `ccdEnabled` | `bool` | `false` | Continuous collision detection |
 | `lockRotation` | `bool` | `false` | Lock all simulated rotation axes (the Z axis in 2D), preserving the current orientation |
+| `translationAxes` | `u32` | `7` | 3D world-axis freedoms: x=1, y=2, z=4; combine bits in [0,7]. Zero locks all translation. |
+| `rotationAxes` | `u32` | `7` | 3D world-axis angular freedoms with the same bits; `lockRotation` overrides these freedoms while enabled. |
 | `additionalSolverIterations` | `u32` | `0` | Integer [0,32]; additional Rapier iterations for the connected contact/joint island. Both backends apply authored changes. Higher precision increases native step cost. |
 
 Rapier3D completes collider and additional-mass initialization during
@@ -272,6 +321,13 @@ still orient the body. Disabling the field restores angular response without
 restoring discarded angular velocity. Ordinary edits and derived shape/body-type
 changes retain the policy. Restore ECS `RigidBody` data before restoring derived
 physics geometry so the same policy also governs restored motion.
+
+Rapier3D applies axis freedoms during ordinary ECS synchronization, including
+authored edits. Newly locked velocity components are cleared; unlocking does not
+restore discarded velocity. Native impulses, contacts, explicit velocity writes
+and derived motion admissions retain the restrictions. Explicit pose handoffs
+can still reposition or orient the body. Masks outside [0,7] are refused before
+native mutation. These per-axis fields currently apply to the 3D backend only.
 
 ### Collider
 
@@ -564,6 +620,13 @@ participant is not a network rollback store, RHI tape, or game replay owner.
 
 ## Derived shape candidates (3D)
 
+An explicit `bodyType` in the committed derived publication takes precedence over
+the base `RigidBody.type` during ECS reconciliation. Ordinary collider, damping,
+gravity or CCD edits do not replace that publication's motion type. Authored pose
+updates follow the effective motion type: Native dynamic bodies retain pose
+ownership, while static and kinematic bodies consume authored transforms.
+Gravity and damping remain stored on non-dynamic bodies for later activation.
+
 A Transform-bearing RigidBody can receive derived shapes without an ordinary
 Collider. Adding, editing, or removing an ordinary Collider preserves committed
 derived shapes on that same body. Prepared native shapes are disabled and
@@ -758,9 +821,31 @@ physics writeback boundary, with `fixedStep`, the native `deltaTime` in seconds,
 and detached `manifolds`. Each manifold names `other`, optional derived `shape`
 and `otherShape`, a world-space `normal` from the queried body toward `other`,
 all world-space solver `points`, and the total current-step `normalImpulse` in
-newton seconds. The impulse is a manifold total: geometric contacts and solver
-points have different cardinalities and must never be zipped or divided evenly.
-Consumers that spatially qualify a load must qualify the whole manifold.
+newton seconds. `normalImpulses` contains the exact native normal impulse of each
+solver point, mapped through its native geometric-contact identity, in the same
+order and length as `points`. Its sum is `normalImpulse`; neither field includes
+friction. Geometric contacts and solver points have different cardinalities and
+must never be zipped or divided evenly. Spatial queries may qualify individual
+normal loads with `normalImpulses`, or the whole manifold with its total.
+
+`preSolveVelocities` has exactly the same solver-contact order and length as
+`points`. Each non-null entry holds world-space `body` and `other` surface-point
+velocities in queried-body order. The native backend captures both sides after
+kinematic interpolation, before constraint response, including angular motion
+about each body's center of mass. This is distinct from `getBodyPointVelocity`,
+which reads current body motion after the solve. Recycled contacts are sampled
+again on every active solve; sleeping contacts have null entries instead of
+replaying old impact velocities. These observations are detached and do not
+change solver inputs or warm-start state. With multiple CCD substeps they
+describe the last submitted substep, not a history or maximum over the host
+frame; callers requiring every substep impact must not infer that history.
+
+For 3D rays, `raycast(origin, direction, maxDist, filterMask?, options?)` accepts
+`options.excludeEntities`, a read-only list of ECS body IDs. The backend excludes
+every attached collider before nearest-hit selection, including when the ray
+starts inside an excluded body. This is per-query filtering; it does not mutate
+collision groups, body activation, or later queries. Empty or omitted exclusions
+preserve the ordinary ray query. A miss still returns `undefined`.
 
 The optional packed 32-bit collision-group mask uses the same two-way matching
 as `raycast`: its high 16 membership bits must intersect the partner collider's
@@ -876,6 +961,21 @@ KCC translation refreshes only the moved body's attached collider world position
 parent-local offsets remain unchanged. Repeated KCC calls retain collision queries
 and actual pose without repeatedly propagating the accumulating whole-body roster.
 
+### Native primitive shape transactions
+
+`PrimitiveShapeInput` joins the existing derived-shape prepare/admit/cancel and
+recovery contract: `cuboid` carries positive `halfExtents`, `sphere` carries a
+positive `radius`, and `capsule` / `cylinder` carry `radius` and Y `halfHeight`.
+Capsule half-height measures the straight segment excluding caps and may be zero;
+cylinder half-height must be positive. Dimensions must survive native f32
+conversion. Local pose, material, sensor and packed group fields have the same
+meaning as other derived shapes. A roster may mix primitives and generated shapes.
+
+The backend uses exact native primitive geometry. Staging leaves queries and mass
+unchanged; ordinary admission applies the roster and mass policy atomically.
+Global automatic density overrides per-shape density when provided. Captures copy
+primitive dimensions and pose for recovery; no native collider handles are public.
+
 ### Compact voxel shapes
 
 `VoxelShapeInput` adds `kind: 'voxels'`, `regions: Int32Array` and
@@ -908,3 +1008,14 @@ unchanged; the roster is not permission to read a partially committed World.
 
 Discover optional operations on the selected backend. Activation and joint reads fail
 for missing/retired owners, during native execution/admission, or after disposal.
+
+## Owned derived hinge velocity motors
+
+PhysicsWorld.setDerivedHingeMotor(id, revision, motor) controls a committed 3D
+hinge in place. The revision must match the current owner. Supply targetVelocity
+in radians/second, non-negative damping and maxForce in N m; null disables the
+motor. Consumers with a per-step impulse budget divide it by their fixed delta.
+Accepted motor parameters belong to the constraint declaration and are applied
+when its native joint is recreated. The Rapier3D backend owns native joint access;
+no native handles escape. This source addition remains unverified until the
+corresponding build, ownership/republication and actual motor trajectory checks.

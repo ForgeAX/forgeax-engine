@@ -1,7 +1,14 @@
 import { defineResource, defineSchedule, type ScheduleToken, World } from '@forgeax/engine-ecs';
+
+export {
+  publishSurfaceDynamicInput,
+  RenderSurfaceDynamicInput,
+  surfaceDynamicInputOf,
+} from '../surface/frame-source';
+
 import type { RecorderSession } from '@forgeax/engine-profiler';
 import { runProfiledRenderPhase } from '../record/render-context';
-import type { SurfaceDynamicInputFrame } from '../surface/dynamic-input';
+
 import { registerCaptureGraphSystems } from './capture-graph-systems';
 import { registerDisplaySubmissionSystems } from './display-submission-systems';
 import { registerEnvironmentSystems } from './environment-systems';
@@ -183,27 +190,6 @@ export function pinRenderProfileSession(
     submission.profileSessionPinned = previousPinned;
     submission.profileSessionPinScopeDepth = previousDepth;
   };
-}
-
-/** World resource key of the published {@link SurfaceDynamicInputFrame}; absent when none is published. */
-export const RenderSurfaceDynamicInput = defineResource<SurfaceDynamicInputFrame>(
-  'RenderSurfaceDynamicInput',
-);
-
-/** Publish (or, with `undefined`, withdraw) the Surface dynamic page every view records with. */
-export function publishSurfaceDynamicInput(
-  world: World,
-  frame: SurfaceDynamicInputFrame | undefined,
-): void {
-  if (frame === undefined) world.removeResource(RenderSurfaceDynamicInput);
-  else world.insertResource<SurfaceDynamicInputFrame>(RenderSurfaceDynamicInput, frame);
-}
-
-/** The Surface dynamic page published for the Render World's views, if any. */
-export function surfaceDynamicInputOf(world: World): SurfaceDynamicInputFrame | undefined {
-  return world.hasResource(RenderSurfaceDynamicInput)
-    ? world.getResource(RenderSurfaceDynamicInput)
-    : undefined;
 }
 
 /** Whether the owner's Render World published an accepted submission for the open frame. */

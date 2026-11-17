@@ -6,6 +6,7 @@ export { CameraView, type CameraViewData } from './components/camera-view';
 export {
   Outline,
   type OutlineData,
+  type OutlineDistanceStyle,
   OutlineOcclusionValue,
   type OutlineSnapshot,
   resolveOutline,
@@ -241,6 +242,7 @@ export {
   validateDynamicResolutionParameters,
 } from './components/dynamic-resolution.js';
 export { Fog, type FogMode, FogModeValue } from './components/fog.js';
+export * from './components/gpu-mesh-vertex-source.js';
 export { Instances, type InstancesData } from './components/instances.js';
 export { Layer } from './components/layer.js';
 export {
@@ -298,6 +300,10 @@ export {
   type ReflectionProbeUpdateIntent,
   reflectionProbeUpdateIntentFromF32,
 } from './components/reflection-probe.js';
+export {
+  RenderFeatureEnvironment,
+  type RenderFeatureEnvironmentSource,
+} from './components/render-feature-environment';
 export { SceneInstance } from './components/scene-instance.js';
 export {
   ScreenSpaceReflection,
@@ -501,6 +507,15 @@ export {
   readEditorAssistance,
 } from './features/editor-assistance/state';
 export type {
+  RenderFeatureSamplerDescriptor,
+  RenderFeatureTextureDescriptor,
+} from './features/feature-texture';
+export {
+  createRenderFeatureTextureSource,
+  isRenderFeatureTextureSource,
+  type RenderFeatureTextureSource,
+} from './features/feature-texture-source';
+export type {
   MotionBlurInvalidParamsDetail,
   MotionBlurParams,
   MotionBlurSampleTier,
@@ -529,6 +544,7 @@ export type {
   RenderFeatureWorkPlan,
   RenderFeatureWorkScope,
 } from './features/plan.js';
+export type { RenderFeatureTemporalStage } from './features/temporal-stage';
 export {
   isRenderFeatureTextureReference,
   type RenderFeatureTextureReference,
@@ -949,7 +965,9 @@ export {
   DynamicInputError,
   type DynamicInputErrorCode,
   type DynamicInputErrorDetail,
+  type DynamicInputPageSnapshot,
   type DynamicInputRange,
+  type DynamicInputRangeSnapshot,
   type DynamicInputResult,
   type DynamicInputUploadReceipt,
   type DynamicInputValue,
@@ -957,6 +975,7 @@ export {
   type SurfaceDynamicInputFrame,
   type SurfaceDynamicInputMemberIdentity,
 } from './surface/dynamic-input.js';
+export { publishSurfaceDynamicInput, surfaceDynamicInputOf } from './surface/frame-source';
 export {
   admitSingleLayerMediumSubmission,
   type SurfaceGpuCapability,

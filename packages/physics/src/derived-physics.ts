@@ -51,6 +51,15 @@ export interface VoxelShapeInput extends DerivedShapeBase {
   readonly regions: Int32Array;
   readonly voxelSize: PhysicsVector;
 }
+/** Exact native primitives in the same local-pose transaction as generated geometry.
+ * Capsule halfHeight is the Y segment's half-length, excluding the rounded caps. */
+export type PrimitiveShapeInput = DerivedShapeBase &
+  (
+    | { readonly kind: 'cuboid'; readonly halfExtents: PhysicsVector }
+    | { readonly kind: 'sphere'; readonly radius: number }
+    | { readonly kind: 'capsule'; readonly radius: number; readonly halfHeight: number }
+    | { readonly kind: 'cylinder'; readonly radius: number; readonly halfHeight: number }
+  );
 /** Static indexed triangle mesh retained as one Rapier trimesh collider. */
 export interface TriangleMeshShapeInput extends DerivedShapeBase {
   readonly kind: 'trimesh';
@@ -61,7 +70,8 @@ export type DerivedShapeInput =
   | ConvexCompoundShapeInput
   | HeightfieldShapeInput
   | VoxelShapeInput
-  | TriangleMeshShapeInput;
+  | TriangleMeshShapeInput
+  | PrimitiveShapeInput;
 export type NormalizedDerivedShapeInput = DerivedShapeInput & {
   readonly origin: PhysicsVector;
   readonly rotation: PhysicsQuaternion;
@@ -142,6 +152,12 @@ export type PhysicsConstraintInput =
       readonly anchorB: PhysicsVector;
       readonly axis: PhysicsVector;
       readonly limits?: readonly [number, number];
+      /** Native velocity motor. maxForce is torque in N m, not a step impulse. */
+      readonly motor?: {
+        readonly targetVelocity: number;
+        readonly damping: number;
+        readonly maxForce: number;
+      };
     };
 
 /** All data needed to prepare one body's derived shape replacement. */
@@ -417,6 +433,21 @@ const SHAPE_BASE_KEYS = [
 const COMPOUND_KEYS = new Set([...SHAPE_BASE_KEYS, 'pieces', 'nativeLayout']);
 const VOXEL_KEYS = new Set([...SHAPE_BASE_KEYS, 'regions', 'voxelSize']);
 const HEIGHTFIELD_KEYS = new Set([...SHAPE_BASE_KEYS, 'rows', 'columns', 'heights', 'scale']);
+function isNativePrimitiveShape(shape: DerivedShapeInput): shape is PrimitiveShapeInput {
+  return (
+    shape.kind === 'cuboid' ||
+    shape.kind === 'sphere' ||
+    shape.kind === 'capsule' ||
+    shape.kind === 'cylinder'
+  );
+}
+
+const PRIMITIVE_KEYS = {
+  cuboid: new Set([...SHAPE_BASE_KEYS, 'halfExtents']),
+  sphere: new Set([...SHAPE_BASE_KEYS, 'radius']),
+  capsule: new Set([...SHAPE_BASE_KEYS, 'radius', 'halfHeight']),
+  cylinder: new Set([...SHAPE_BASE_KEYS, 'radius', 'halfHeight']),
+};
 const TRIMESH_KEYS = new Set([...SHAPE_BASE_KEYS, 'vertices', 'indices']);
 const SOURCE_TRANSFORM_KEYS = new Set(['sceneMatrix']);
 const CANDIDATE_KEYS = new Set([
@@ -550,7 +581,13 @@ function candidateEnvelopeError(
         };
         const triangleFailure = validateTriangleEnvelope(shape);
         if (triangleFailure !== undefined) return triangleFailure;
-      } else return invalid('shape kind is convex-compound, heightfield, voxels or trimesh');
+      } else if (isNativePrimitiveShape(shape)) {
+        if (!declaredKeys(shape, PRIMITIVE_KEYS[shape.kind]))
+          return invalid('primitive fields match their native geometry kind');
+      } else
+        return invalid(
+          'shape kind is a native primitive, convex-compound, heightfield, voxels or trimesh',
+        );
       if (
         samples > DERIVED_PHYSICS_LIMITS.maxHeightfieldSamples ||
         bytes > DERIVED_PHYSICS_LIMITS.maxCandidateBytes
@@ -694,6 +731,94 @@ export function normalizeConvexCompoundShapeInput(
   );
 }
 
+/** Copy native primitive metadata, rejecting dimensions that vanish or overflow in f32. */
+export function normalizePrimitiveShapeInput(
+  input: PrimitiveShapeInput,
+): Result<NormalizedDerivedShapeInput, DerivedPhysicsError> {
+  const invalid = (actual: unknown) =>
+    err(
+      new DerivedPhysicsError(
+        'derived-shape-invalid',
+        'stable primitive identity, finite native dimensions and a valid local pose',
+        'repair primitive dimensions or metadata before preparation',
+        { shapeId: input.id, actual },
+      ),
+    );
+  const envelope = candidateEnvelopeError({
+    entity: 0,
+    revision: 0,
+    sourceKey: 'shape',
+    shapes: [input],
+  });
+  if (!envelope.ok) return envelope;
+  const positive = (n: number) =>
+    Number.isFinite(n) && Number.isFinite(Math.fround(n)) && Math.fround(n) > 0;
+  const nativeFinite = (n: number) => Number.isFinite(n) && Number.isFinite(Math.fround(n));
+  const vector = (
+    values: unknown,
+    count: number,
+    valid: (value: number) => boolean,
+  ): values is number[] =>
+    Array.isArray(values) && values.length === count && Array.from(values).every(valid);
+  if (
+    typeof input.id !== 'string' ||
+    !ID_RE.test(input.id) ||
+    !Number.isSafeInteger(input.revision) ||
+    input.revision < 0
+  )
+    return invalid(input.id);
+  const validateDimensions = () => {
+    if (input.kind === 'cuboid') {
+      if (!vector(input.halfExtents, 3, positive)) return invalid(input.halfExtents);
+    } else {
+      if (!positive(input.radius)) return invalid(input.radius);
+      if (input.kind === 'capsule' || input.kind === 'cylinder') {
+        if (
+          !nativeFinite(input.halfHeight) ||
+          (input.kind === 'capsule' ? input.halfHeight < 0 : !positive(input.halfHeight))
+        )
+          return invalid(input.halfHeight);
+      }
+    }
+    return undefined;
+  };
+  const dimensionFailure = validateDimensions();
+  if (dimensionFailure !== undefined) return dimensionFailure;
+  const origin = input.origin ?? [0, 0, 0],
+    quaternion = input.rotation ?? [0, 0, 0, 1];
+  if (!vector(origin, 3, nativeFinite) || !vector(quaternion, 4, finite)) return invalid(origin);
+  const rotation = normalizedQuaternion([
+    quaternion[0] ?? NaN,
+    quaternion[1] ?? NaN,
+    quaternion[2] ?? NaN,
+    quaternion[3] ?? NaN,
+  ]);
+  if (rotation === undefined) return invalid(quaternion);
+  const validateMetadata = () => {
+    for (const value of [input.friction, input.restitution, input.density])
+      if (value !== undefined && (!nativeFinite(value) || value < 0)) return invalid(value);
+    for (const value of [input.collisionGroups, input.solverGroups])
+      if (value !== undefined && (!Number.isInteger(value) || value < 0 || value > 0xffffffff))
+        return invalid(value);
+    if (input.isSensor !== undefined && typeof input.isSensor !== 'boolean')
+      return invalid(input.isSensor);
+    return undefined;
+  };
+  const metadataFailure = validateMetadata();
+  if (metadataFailure !== undefined) return metadataFailure;
+  return ok(
+    Object.freeze({
+      ...input,
+      ...(input.kind === 'cuboid'
+        ? { halfExtents: Object.freeze([...input.halfExtents]) as PhysicsVector }
+        : {}),
+      origin: Object.freeze([...origin]) as PhysicsVector,
+      rotation: Object.freeze(rotation),
+    }),
+  );
+}
+
+/** Reject holes and malformed matrices before allocating any native collider. */
 export function normalizeTriangleMeshShapeInput(
   input: TriangleMeshShapeInput,
 ): Result<NormalizedDerivedShapeInput, DerivedPhysicsError> {
@@ -1077,7 +1202,9 @@ export function cloneDerivedPhysicsInput(
             ? normalizeVoxelShapeInput(shape)
             : shape.kind === 'trimesh'
               ? normalizeTriangleMeshShapeInput(shape)
-              : normalizeConvexCompoundShapeInput(shape);
+              : shape.kind === 'convex-compound'
+                ? normalizeConvexCompoundShapeInput(shape)
+                : normalizePrimitiveShapeInput(shape);
       if (!normalized.ok) return normalized;
       if (seen.has(normalized.value.id)) {
         return err(
@@ -1245,10 +1372,12 @@ export function estimateDerivedPhysicsInputBytes(input: DerivedPhysicsCandidateI
           ? estimateVoxelShapeBytes(shape)
           : shape.kind === 'trimesh'
             ? shape.vertices.byteLength * 4 + shape.indices.byteLength * 4
-            : shape.pieces.reduce(
-                (bytes, piece) => bytes + piece.byteLength * 4 + 128,
-                shape.nativeLayout === undefined ? 0 : 8 * 256,
-              )),
+            : shape.kind === 'convex-compound'
+              ? shape.pieces.reduce(
+                  (bytes, piece) => bytes + piece.byteLength * 4 + 128,
+                  shape.nativeLayout === undefined ? 0 : 8 * 256,
+                )
+              : 0),
     0,
   );
   return (
@@ -1257,4 +1386,26 @@ export function estimateDerivedPhysicsInputBytes(input: DerivedPhysicsCandidateI
     (input.sourceTransform === undefined ? 0 : 16 * 4) +
     256
   );
+}
+
+/** Immutable owned POD, including nested endpoint, limit and motor facts. */
+export function clonePhysicsConstraintInput(input: PhysicsConstraintInput): PhysicsConstraintInput {
+  const common = {
+    ...input,
+    bodyASource: Object.freeze({ ...input.bodyASource }),
+    bodyBSource: Object.freeze({ ...input.bodyBSource }),
+    anchorA: Object.freeze([input.anchorA[0], input.anchorA[1], input.anchorA[2]] as const),
+    anchorB: Object.freeze([input.anchorB[0], input.anchorB[1], input.anchorB[2]] as const),
+  };
+  if (input.kind === 'spring')
+    return Object.freeze(common as Extract<PhysicsConstraintInput, { kind: 'spring' }>);
+  return Object.freeze({
+    ...common,
+    kind: 'hinge' as const,
+    axis: Object.freeze([input.axis[0], input.axis[1], input.axis[2]] as const),
+    ...(input.limits === undefined
+      ? {}
+      : { limits: Object.freeze([input.limits[0], input.limits[1]] as const) }),
+    ...(input.motor === undefined ? {} : { motor: Object.freeze({ ...input.motor }) }),
+  });
 }

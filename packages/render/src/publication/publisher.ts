@@ -1,4 +1,4 @@
-import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
+﻿import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import {
   runtimeAssetReference,
   runtimeAssetSource,
@@ -14,6 +14,7 @@ import { Visibility, VisibilityStateValue } from '../components/visibility';
 import { EnvironmentFrameGate } from '../extract/environment-frame-gate';
 import { renderMaterialContext } from '../extract/material-context';
 import { withBuiltinRenderFeatures } from '../features/builtins';
+import { isRenderFeatureTextureSource } from '../features/feature-texture-source';
 import { fullscreenRenderFeatureDeclaration } from '../features/fullscreen';
 import {
   isOwnedRenderFeatureProgramData,
@@ -54,6 +55,7 @@ import {
   readRenderSourceChanges,
 } from '../scene/render-source';
 import { registerRenderSourceSystems } from '../scene/source-systems';
+import { captureSurfaceDynamicInput, surfaceDynamicInputOf } from '../surface/frame-source';
 import { getTransparentSortConfig } from '../systems/transparent-sort-config';
 import { renderTargetMaterialSourceIdentity } from '../targets/material-source';
 import { type CanvasTextureSource, isCanvasTextureSource } from '../textures/canvas-texture';
@@ -122,7 +124,7 @@ function publicationKeyValue(key: string, value: unknown): unknown {
     ? key === 'textureSources'
       ? [...value].map(([name, source]) => [
           name,
-          isCanvasTextureSource(source)
+          isRenderFeatureTextureSource(source) || isCanvasTextureSource(source)
             ? renderTextureSourceKey(source)
             : isExternalTextureSource(source)
               ? renderTextureSourceKey(source)
@@ -600,8 +602,11 @@ export function createRenderPublisher(
       const observation = this.observation;
       observation?.phase('extract');
       const extracted = new Set(this.withoutPreparingRenderables());
-      for (const entity of acceptedWaterMeshOwners)
-        if (this.removed.has(entity)) extracted.add(entity);
+      const collectRemovedWaterOwners = () => {
+        for (const entity of acceptedWaterMeshOwners)
+          if (this.removed.has(entity)) extracted.add(entity);
+      };
+      collectRemovedWaterOwners();
       const captureInvalidatedSourceEntities = () => {
         const invalidatedSources = new Set<number>();
         for (const { cache } of caches.values())
@@ -726,6 +731,11 @@ export function createRenderPublisher(
       observation?.fact('preparedAssets', preparedRows.length);
       const columns = this.recordColumns();
       observation?.phase('packet');
+      const surfaceInput = surfaceDynamicInputOf(world);
+      const surfaceDynamicInputs =
+        surfaceInput === undefined
+          ? []
+          : [captureSurfaceDynamicInput(surfaceInput, world.identity).unwrap()];
       const packet: RenderPublication = {
         ...identity,
         materials: publishedMaterials.map(({ id, value }) => ({
@@ -750,6 +760,7 @@ export function createRenderPublisher(
         targets: targetSnapshot(),
         targetSources: publicationTargetSources(referencedMaterials),
         features: featureRows,
+        ...(surfaceDynamicInputs.length ? { surfaceDynamicInputs } : {}),
         assetVersions: this.addedAssetVersions(),
         retiredAssetVersions: this.retiredAssetVersions(),
         programs: [...this.programs.values()],

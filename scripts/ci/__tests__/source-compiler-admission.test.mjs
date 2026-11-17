@@ -32,6 +32,7 @@ test('the original source coverage owner receives parallel compilation and one f
   const original = { NODE_OPTIONS: '--import=probe.mjs --max-old-space-size=4096', KEEP: 'yes' };
   const env = coverageGroupEnvironment(group, resources, 7, original);
   assert.equal(env.FORGEAX_SHADER_COMPILE_WORKERS, '4');
+  assert.equal(env.FORGEAX_SHADER_COMPILE_DIAGNOSTICS, '1');
   assert.equal(
     env.NODE_OPTIONS,
     '--import=probe.mjs --max-old-space-size=4096 --max-old-space-size=7168',
@@ -73,4 +74,16 @@ test('source coverage focus matches the exclusive compiler and heap admission', 
     if (priorNodeOptions === undefined) delete process.env.NODE_OPTIONS;
     else process.env.NODE_OPTIONS = priorNodeOptions;
   }
+});
+
+test('compile progress is scoped to exclusive source children without mutating the parent', () => {
+  const parent = { FORGEAX_SHADER_COMPILE_DIAGNOSTICS: '1', KEEP: 'original' };
+  const ordinary = coverageGroupEnvironment({ sourceCompilation: false }, resources, 2, parent);
+  assert.equal(ordinary.FORGEAX_SHADER_COMPILE_DIAGNOSTICS, undefined);
+  assert.equal(ordinary.KEEP, 'original');
+  assert.equal(parent.FORGEAX_SHADER_COMPILE_DIAGNOSTICS, '1');
+  assert.throws(
+    () => coverageGroupEnvironment({ sourceCompilation: true, files: [] }, resources, 2, parent),
+    /exclusive coverage owner/,
+  );
 });

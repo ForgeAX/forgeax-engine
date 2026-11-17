@@ -31,6 +31,9 @@ test('CI prepares actual native Rapier declarations before a cold package typech
       for (const name of ['native.ts', 'wasm-browser.ts'])
         cpSync(join(repository, owner, 'src', name), join(root, owner, 'src', name));
       if (dimension === '3d') {
+        const nativeTest = join(owner, 'src/__tests__/contact-point-velocity.native.rs');
+        mkdirSync(join(root, owner, 'src/__tests__'), { recursive: true });
+        cpSync(join(repository, nativeTest), join(root, nativeTest));
         for (const directory of ['scripts', 'patches'])
           cpSync(join(repository, owner, directory), join(root, owner, directory), {
             recursive: true,

@@ -10,7 +10,10 @@ import {
 import { MATERIAL_WGSL_PROFILE } from '@forgeax/engine-shader-compiler';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { publishShaderManifest } from '../manifest-publication.js';
-import { loadSharedEngineShaderManifest } from '../shared-engine-inputs.js';
+import {
+  loadSharedEngineShaderManifest,
+  projectShaderManifestInput,
+} from '../shared-engine-inputs.js';
 
 let root: string;
 let manifestPath: string;
@@ -205,6 +208,18 @@ it('loads exact shared shader bytes in Node without a browser Crypto global', as
   expect(loaded.publication).toEqual(publishShaderManifest(entries, materialShaders));
 });
 
+it('owns private parsed reflection facts while rejecting malformed unused reflections eagerly', async () => {
+  const loaded = await loadSharedEngineShaderManifest(manifestPath, root);
+  expect(loaded.entries[0]?.reflection).toBe(loaded.publication.reflections[0]);
+  expect(Object.isFrozen(loaded.publication.reflections[0])).toBe(true);
+  const malformed = publishShaderManifest(entries, materialShaders);
+  malformed.reflections.push({ ...reflection, schemaVersion: 'invalid' });
+  writePayload(malformed);
+  await expect(loadSharedEngineShaderManifest(manifestPath, root)).rejects.toThrow(
+    'Invalid shader manifest publication',
+  );
+});
+
 it('shares live immutable admission while keeping consumer collections independent', async () => {
   const first = await loadSharedEngineShaderManifest(manifestPath, root);
   const next = await loadSharedEngineShaderManifest(manifestPath, root);
@@ -213,12 +228,39 @@ it('shares live immutable admission while keeping consumer collections independe
   expect(next.entries[0]).toBe(first.entries[0]);
   expect(Object.isFrozen(first.entries[0])).toBe(true);
   expect(Object.isFrozen(first.publication)).toBe(true);
+  expect(Object.isFrozen(first.publication.reflections)).toBe(true);
+  expect(Object.isFrozen(first.publication.reflections[0])).toBe(true);
   first.entries.splice(0);
   expect(next.entries.length).toBeGreaterThan(0);
   rmSync(join(root, 'shared/shaders.json'));
   await expect(loadSharedEngineShaderManifest(manifestPath, root)).rejects.toThrow(
     'inventory is missing',
   );
+});
+
+it('projects shared row defaults without reading or replacing its lazy source owner', async () => {
+  let reads = 0;
+  const loaded = await loadSharedEngineShaderManifest(manifestPath, root);
+  const entry = loaded.entries[0];
+  if (entry === undefined) throw new Error('Shared fixture entry is missing');
+  const row = { ...entry };
+  Object.defineProperty(row, 'wgsl', {
+    enumerable: true,
+    get() {
+      reads += 1;
+      return wgsl;
+    },
+  });
+  Object.freeze(row);
+  const projected = projectShaderManifestInput(row, { uvSetCount: 0, glsl: '' });
+  expect(reads).toBe(0);
+  expect(projected.uvSetCount).toBe(0);
+  expect(projected.glsl).toBe('');
+  expect(Object.getOwnPropertyDescriptor(projected, 'wgsl')?.get).toBe(
+    Object.getOwnPropertyDescriptor(row, 'wgsl')?.get,
+  );
+  expect(projected.wgsl).toBe(wgsl);
+  expect(reads).toBe(1);
 });
 
 it('rejects changed source bytes under an unchanged source digest', async () => {

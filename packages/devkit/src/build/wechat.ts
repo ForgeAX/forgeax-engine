@@ -407,6 +407,7 @@ import { createPrograms as enginePrograms } from 'virtual:forgeax/plugin-program
 import { runtimeBinding } from 'virtual:forgeax/pack-runtime';
 import { imports, programHost } from './wechat-programs.ts';
 import { createGameVfx } from './game-vfx';
+import { createGameRenderFeatures } from './game-render-features';
 const value = result => { if (!result.ok) throw result.error; return result.value; };
 let generation = 0;
 let displayCanvas;
@@ -626,10 +627,11 @@ async function boot(identity, reload) {
       : ''
   }
   advance('graphics');
-  const gameVfx = createGameVfx();
+  const gameFeatures = createGameRenderFeatures();
+  const gameVfx = createGameVfx({dependencies:${JSON.stringify(appOptions.vfxDependencies ?? [])},providers:gameFeatures.vfxProviders,providersForWorld:gameFeatures.vfxProvidersForWorld});
   graphics = value(await constructRuntimeRendererHost(canvas, {
     ${rhiDebug ? 'rhi: recorder.backend.rhi, rhiInstrumentation: createRhiInstrumentation(recorder),' : 'rhi,'}
-    features: [gameVfx.feature],
+    features: [gameVfx.feature, ...gameFeatures.features],
     dynamicGeometryMeshBudgetBytes: ${JSON.stringify(appOptions.dynamicGeometryMeshBudgetBytes)},
     textureMipSkip: ${JSON.stringify(appOptions.textureMipSkip)},
     assetBudgetBytes: ${JSON.stringify(appOptions.assetBudgetBytes)},
@@ -653,7 +655,7 @@ async function boot(identity, reload) {
     sceneAdmission: () => game !== undefined && startupError === undefined ? 'scene' : 'ui-only',
     pluginPrograms: enginePrograms('wechat-' + identity, 'engine', identity),
     runtimePacks: { scopeId: runtimeBinding.scopeId, imports, programHost },
-    plugins: [inputBackendPlugin(input), inputPlugin(), audioBackendPlugin(audio), audioPlugin(), canvasAspectPlugin(() => canvas), gameVfx.plugin],
+    plugins: [inputBackendPlugin(input), inputPlugin(), audioBackendPlugin(audio), audioPlugin(), canvasAspectPlugin(() => canvas), gameVfx.plugin, ...gameFeatures.plugins],
     onFrameSubmitted: detail => {
       if (closed || generation !== identity) return;
       ${frameTrace ? 'recordFrameSubmission(detail);' : ''}

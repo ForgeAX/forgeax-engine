@@ -57,6 +57,8 @@ programs; absent cutoffs become zero without a runtime early-return branch.
 
 ## Sampled-texture capability publications
 
+Single-layer medium Surface textures occupy the schema-derived author region. Cook relocates the Engine-owned IBL, paired color/depth and planar-reflection declarations after that region in both direct and scene-index programs, matching Render's material layout. Author textures do not require custom GPU bindings.
+
 The cooker publishes storage-backed minimum, projector, extended-lighting and atmosphere
 View programs alongside uniform fallback, preserving each authored Surface and parameter schema.
 The receiver selects the immutable program against its actual texture limit; a minimum WebGPU

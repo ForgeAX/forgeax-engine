@@ -21,6 +21,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { doctorCommand, initCommand, newCommand } from '../bootstrap-commands.js';
 import { MINIMUM_SUPPORTED_PNPM, pnpmVersionAtLeast } from '../sdk-bootstrap.js';
+import { installPackAuthorDependencies } from './fixtures/pack-author-dependencies.js';
 
 describe('pnpm support range', () => {
   it('accepts current pnpm 12 releases while rejecting older, other-major, and prerelease versions', () => {
@@ -868,6 +869,7 @@ describe('newCommand', () => {
 describe('doctorCommand', () => {
   it('rejects a scene Pack import outside the live generation list with the code play reports', async () => {
     const sdk = await sdkFixture(false);
+    await installPackAuthorDependencies(sdk.template, ['engine']);
     await mkdir(resolve(sdk.template, 'assets'), { recursive: true });
     const source = (component: string) =>
       [

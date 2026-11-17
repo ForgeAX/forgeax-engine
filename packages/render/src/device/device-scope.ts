@@ -103,6 +103,37 @@ export class DeviceScope {
     return ref;
   }
 
+  /** Allocate one synchronous backend resource with generation ownership.
+   * The renderer releases it after its submission fence; scope termination is
+   * the recovery path when that fence can no longer arrive. */
+  allocate<T, E>(
+    kind: DeviceResourceKind,
+    create: () => Result<T, E>,
+    cleanup: (value: T) => Result<void, E>,
+  ): Result<{ readonly reference: ResourceRef<T>; release(): Result<void, E> }, E> {
+    if (!this.isAlive()) throw new Error('Cannot allocate in an inactive DeviceScope.');
+    const created = create();
+    if (!created.ok) return created;
+    let released = false;
+    const reference = this._adopt(kind, created.value, (value) => {
+      if (released) return;
+      const result = cleanup(value);
+      if (!result.ok) throw result.error;
+      released = true;
+    });
+    return ok({
+      reference,
+      release: () => {
+        if (released) return ok(undefined);
+        const result = cleanup(reference.value);
+        if (!result.ok) return result;
+        released = true;
+        this._release(reference);
+        return ok(undefined);
+      },
+    });
+  }
+
   accepts(ref: ResourceRef<unknown>): boolean {
     return (
       this.lifecycleState === 'active' &&

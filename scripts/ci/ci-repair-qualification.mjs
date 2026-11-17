@@ -292,11 +292,12 @@ async function runForWorkflow(api, repository, workflow, anchor, pr) {
   return undefined;
 }
 
-export async function runJobs(api, repository, run) {
+export async function runJobs(api, repository, run, filter = 'latest') {
+  if (filter !== 'latest' && filter !== 'all') throw new Error('invalid job history filter');
   const jobs = [];
   for (let page = 1; page <= 10; page++) {
     const response = await api(
-      `repos/${repository}/actions/runs/${run.id}/jobs?filter=latest&per_page=100&page=${page}`,
+      `repos/${repository}/actions/runs/${run.id}/jobs?filter=${filter}&per_page=100&page=${page}`,
     );
     jobs.push(...response.jobs);
     if (jobs.length >= response.total_count) break;

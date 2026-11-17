@@ -418,7 +418,10 @@ export function worldUpdate(
   }
 
   world[worldInternal].updateRemovedComponents();
-  const measured = Math.min(deltaSeconds, time.maxDeltaSeconds);
+  time.unscaledDelta = deltaSeconds;
+  time.unscaledElapsed += deltaSeconds;
+  time.scale = world[worldInternal].getClockWriter().effectiveScale();
+  const measured = Math.min(deltaSeconds * time.scale, time.maxDeltaSeconds);
   time.delta = measured;
   time.elapsed += measured;
   // Accumulate the measured frame delta. maxDeltaSeconds bounds Time's public

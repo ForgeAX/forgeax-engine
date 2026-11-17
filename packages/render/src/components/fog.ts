@@ -58,6 +58,8 @@ export const Fog = defineComponent(
      * unfogged. Surfaces are unaffected; without an Atmosphere it has no effect.
      */
     skyOpacity: { type: 'f32', default: 1 },
+    /** Forward solar lobe added to analytic fog radiance (pow(cos,8)). */
+    sunScatter: { type: 'f32', default: 0 },
   },
   {
     meta: {

@@ -7,6 +7,7 @@ import { basename, dirname, resolve } from 'node:path';
 import { test } from 'node:test';
 import { promisify } from 'node:util';
 import { runInNewContext } from 'node:vm';
+import { parse } from 'yaml';
 import { verifySdkViewRuntime } from '../sdk-lib.mjs';
 import {
   aggregateSdkConsumers,
@@ -1105,4 +1106,39 @@ test('ZIP Project packaging retains the authored lighting and has no retired red
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('SDK seed runs source-export regressions after its one prepared workspace install', () => {
+  const root = resolve(import.meta.dirname, '../../..');
+  const workflow = parse(
+    readFileSync(resolve(root, '.github/workflows/sdk-pr-preflight.yml'), 'utf8'),
+  );
+  const steps = workflow.jobs['build-sdk'].steps;
+  const installs = steps.flatMap((step, index) =>
+    !step.if && step.run?.includes('node scripts/ci/prepare-pnpm-workspace.mjs --install')
+      ? [index]
+      : [],
+  );
+  assert.equal(installs.length, 1, 'the seed reuses its sole full workspace install');
+  const verify = steps.findIndex((step) => step.name === 'Verify source dependency export');
+  assert.ok(verify > installs[0], 'source-export tests import declared JavaScript dependencies');
+  assert.ok(
+    steps.findIndex((step) => step.name === 'Restore pinned View tool source') < installs[0],
+  );
+  assert.ok(
+    verify < steps.findIndex((step) => step.name === 'Build exact PR SDK and npm tarballs once'),
+  );
+  assert.match(steps[verify].run, /node --test/);
+  for (const testFile of [
+    'sdk-source',
+    'sdk-carrier',
+    'export-repository',
+    'repository-export-policy',
+    'repository-public-policy',
+    'repository-mirror',
+    'repository-mirror-workflow',
+    'sdk-candidate-native-inputs',
+  ])
+    assert.ok(steps[verify].run.includes(`${testFile}.test.mjs`), testFile);
+  assert.ok(steps[verify].run.includes('prepare-source-checkout.test.mjs'));
 });

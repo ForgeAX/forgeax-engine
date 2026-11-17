@@ -34,5 +34,13 @@ export function importRenderFeatureGraphBuffer<FrameCtx extends RenderGraphFrame
   );
   if (!imported.ok) return imported;
   state.handles.set(resource.buffer, imported.value);
+  if ((resource.physicalUsage & 0x20) !== 0) {
+    const published = builder.publishConsumerRead(
+      'render-feature.scene',
+      imported.value,
+      'vertex-read',
+    );
+    if (!published.ok) return published;
+  }
   return imported;
 }

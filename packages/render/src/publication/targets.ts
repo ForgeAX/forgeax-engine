@@ -170,7 +170,11 @@ export class RenderPublicationTargetReceiver {
       if (material.snapshot.textureSources === undefined) return material;
       const textureSources = new Map<string, MaterialTextureSource>(
         [...material.snapshot.textureSources].map(([name, token]) => {
-          if (isCanvasTextureSource(token) || isExternalTextureSource(token))
+          if (
+            token.source === 'feature' ||
+            isCanvasTextureSource(token) ||
+            isExternalTextureSource(token)
+          )
             return [name, token] as const;
           const key = renderTextureSourceKey(token);
           const source = sources.get(key) ?? sources.get(this.originKey(key) ?? key);

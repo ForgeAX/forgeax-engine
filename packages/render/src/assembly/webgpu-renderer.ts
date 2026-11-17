@@ -1,7 +1,10 @@
 import { CloudAdoptionReceipts } from '../cloud/reconstruction/adoption-receipts';
 import { editorAssistancePresentation } from '../features/editor-assistance/feature';
 import { extendedLightingFallbackCandidate } from './extended-lighting-fallback';
-import { prewarmFullscreenFeatureModules } from './fullscreen-feature-preparation';
+import {
+  buildFullscreenFeaturePipeline,
+  prewarmFullscreenFeatureModules,
+} from './fullscreen-feature-preparation';
 import { materialFragmentEntry } from './material-fragment-entry';
 import {
   runBuildMaterialShaderPipeline,
@@ -86,6 +89,7 @@ import {
   projectPointShadowInspection,
 } from '../point-shadow-inspection';
 import { type PublishedRenderFrameInput, RenderPublicationError } from '../publication/contract';
+import { SurfaceDynamicInputReceiver } from '../publication/dynamic-input';
 import { captureMeshPipelinePreparation } from '../publication/mesh-pipeline-preparation';
 import { preparePublicationGeometry } from '../publication/prepare-geometry';
 import { type PreparedRenderPublication, RenderPublicationReceiver } from '../publication/receiver';
@@ -100,6 +104,7 @@ import {
 } from '../record/render-context';
 import { isFrameObservationDomain } from '../render-contract';
 import { registerRenderSourceSystems } from '../scene/source-systems';
+import { captureSurfaceDynamicInput, surfaceDynamicInputOf } from '../surface/frame-source';
 import { createTerrainReceiptOwner } from '../terrain/submitted.js';
 import { prepareVolumePrograms } from '../volume/programs';
 import { isOwnedWaterMeshAdmissionUploadClosure } from '../water/mesh-source-admission';
@@ -205,7 +210,7 @@ import type {
   SsrShaderSources,
   VolumetricFogShaderSources,
 } from '../render-contract';
-import { FXAA_POST_PROCESS_ID, STANDARD_OUTPUT_TRANSFORM_FEATURE_ID } from '../render-contract';
+import { STANDARD_OUTPUT_TRANSFORM_FEATURE_ID } from '../render-contract';
 import {
   attachGpuPassTimingSession,
   createRendererState,
@@ -345,7 +350,6 @@ import {
   createRendererObservationCaptureOwner,
   submittedFramePresentation,
 } from './webgpu-renderer-observation-owner';
-import { CLIP_POSITION_COLOR_VERTEX_BUFFERS } from './webgpu-vertex-layouts';
 
 export * from './webgpu-renderer-exports';
 
@@ -660,6 +664,7 @@ async function makeWebGPURenderer(
   // Published rows are prepared once at acceptance, for every view.
   const publicationInstances =
     internals.options?.publicationSource === undefined ? undefined : new InstanceProjectionStore();
+  const surfaceInputReceiver = new SurfaceDynamicInputReceiver();
   const publicationReceiver =
     internals.options?.publicationSource === undefined || publicationInstances === undefined
       ? undefined
@@ -1813,107 +1818,20 @@ async function makeWebGPURenderer(
     bgl: BindGroupLayout,
     colorFormats: readonly GPUTextureFormat[],
     label: string,
-  ): RenderPipeline | null => {
-    const isFxaaPipeline = label.startsWith(`post-process-${FXAA_POST_PROCESS_ID}-pso-`);
-    const moduleFactory = getShaderModuleAdapter();
-    const moduleResult = moduleFactory.createShaderModule({
-      code: entry.source,
-      label: postProcessShaderModuleLabel(entry.source),
-    });
-    if (!moduleResult.ok) {
-      // 'rhi-not-available' = async compile in flight: caller falls back one frame.
-      // Other codes are real failures: surface through the error registry so AI
-      // users see a structured RhiError instead of a silent black screen (charter P3).
-      if (moduleResult.error.code !== 'rhi-not-available') {
-        internals.errorRegistry.fire(moduleResult.error);
-      }
-      return null;
-    }
-    if (!isFxaaPipeline && entry.usesView !== true && currentEmptyPostProcessBgl() === null) {
-      const bglRes = currentBuildDevice().createBindGroupLayout({ entries: [] });
-      if (!bglRes.ok) {
-        internals.errorRegistry.fire(bglRes.error);
-        return null;
-      }
-      if (candidateBuildState !== undefined) {
-        candidateBuildState.emptyPostProcessBgl = bglRes.value;
-        candidateEmptyPostProcessBgl = bglRes.value;
-      } else {
-        emptyPostProcessBgl = bglRes.value;
-      }
-    }
-    const viewLayout =
-      entry.usesView === true ? currentPipelineState()?.viewBindGroupLayout : undefined;
-    const group0Layout = viewLayout ?? currentEmptyPostProcessBgl();
-    if (group0Layout === null || group0Layout === undefined) {
-      internals.errorRegistry.fire(
-        new Error('fullscreen post-process View layout is unavailable') as never,
-      );
-      return null;
-    }
-    const layoutRes = currentBuildDevice().createPipelineLayout({
-      label: `${label}-layout`,
-      bindGroupLayouts: isFxaaPipeline ? [bgl] : [group0Layout as BindGroupLayout, bgl],
-    });
-    if (!layoutRes.ok) {
-      internals.errorRegistry.fire(layoutRes.error);
-      return null;
-    }
-    const pipelineRes = currentBuildDevice().createRenderPipeline({
-      label,
-      layout: layoutRes.value,
-      vertex: {
-        module: moduleResult.value,
-        entryPoint: 'vs_main',
-        buffers:
-          entry.vertexLayout === 'clip-position-color'
-            ? [...CLIP_POSITION_COLOR_VERTEX_BUFFERS]
-            : [],
+  ): RenderPipeline | null =>
+    buildFullscreenFeaturePipeline(entry, bgl, colorFormats, label, {
+      device: currentBuildDevice(),
+      modules: getShaderModuleAdapter(),
+      errorRegistry: internals.errorRegistry,
+      viewLayout: currentPipelineState()?.viewBindGroupLayout,
+      emptyLayout: currentEmptyPostProcessBgl(),
+      publishEmptyLayout: (layout) => {
+        if (candidateBuildState !== undefined) {
+          candidateBuildState.emptyPostProcessBgl = layout;
+          candidateEmptyPostProcessBgl = layout;
+        } else emptyPostProcessBgl = layout;
       },
-      fragment: {
-        module: moduleResult.value,
-        // The typed graph reuses the composed tonemap module for separate
-        // linear-LDR and final-encoding passes.  Preserve the selected entry
-        // point; forcing fs_main encodes the linear-LDR intermediate a second
-        // time and breaks the Three.js stage contract.
-        entryPoint: entry.fragmentEntryPoint ?? 'fs_main',
-        targets: colorFormats.map((format) => ({
-          format,
-          ...(entry.vertexLayout === undefined
-            ? {}
-            : {
-                blend: {
-                  color: {
-                    operation: 'add' as const,
-                    srcFactor: 'src-alpha' as const,
-                    dstFactor: 'one-minus-src-alpha' as const,
-                  },
-                  alpha: {
-                    operation: 'add' as const,
-                    srcFactor: 'one' as const,
-                    dstFactor: 'one-minus-src-alpha' as const,
-                  },
-                },
-              }),
-        })),
-      },
-      primitive: { topology: 'triangle-list', cullMode: 'none', frontFace: 'ccw' },
-      depthStencil:
-        entry.depthOutput === undefined
-          ? undefined
-          : {
-              format: entry.depthOutput,
-              depthWriteEnabled: true,
-              depthCompare: 'always',
-            },
-      multisample: undefined,
     });
-    if (!pipelineRes.ok) {
-      internals.errorRegistry.fire(pipelineRes.error);
-      return null;
-    }
-    return pipelineRes.value;
-  };
   const renderInternals: RenderSystemInternals = {
     options: internals.options,
     get presentationOutput() {
@@ -2558,7 +2476,8 @@ async function makeWebGPURenderer(
     publicationRequest: PublishedRenderFrameInput | undefined,
     isCurrent: (() => boolean) | undefined,
   ): FramePreparation<Result<void | FrameReceipt, RhiError | RenderError>> {
-    const isFrameRequest = frameRequest !== undefined || publicationRequest !== undefined;
+    const frameInputPresent = () => frameRequest !== undefined || publicationRequest !== undefined;
+    const isFrameRequest = frameInputPresent();
     let publication:
       | {
           readonly publication: PreparedRenderPublication;
@@ -2573,6 +2492,41 @@ async function makeWebGPURenderer(
         receiver: publicationReceiver,
       };
     }
+    const restoreFrameSurfaceInput = () => {
+      const directSurfaceInput = world === undefined ? undefined : surfaceDynamicInputOf(world);
+      const capturedSurfaceInput =
+        directSurfaceInput === undefined
+          ? undefined
+          : captureSurfaceDynamicInput(directSurfaceInput, world?.identity);
+      if (capturedSurfaceInput !== undefined && !capturedSurfaceInput.ok)
+        return err(
+          new RenderPublicationError({
+            reason: 'shape',
+            subject: capturedSurfaceInput.error.message,
+          }),
+        );
+      if (
+        publication !== undefined ||
+        directSurfaceInput !== undefined ||
+        surfaceInputReceiver.active
+      ) {
+        const restored = surfaceInputReceiver.restore(
+          publication === undefined
+            ? capturedSurfaceInput?.value
+            : publication.publication.packet.surfaceDynamicInputs?.[0],
+          activeDeviceScope.generation,
+        );
+        if (!restored.ok)
+          return err(
+            new RenderPublicationError({ reason: 'shape', subject: restored.error.message }),
+          );
+        publishSurfaceDynamicInput(renderWorld, restored.value);
+      }
+
+      return undefined;
+    };
+    const surfaceFailure = restoreFrameSurfaceInput();
+    if (surfaceFailure !== undefined) return surfaceFailure;
     renderTargetHost.beginFrame();
     externalTextureHost.beginFrame();
     const selectFrameTimingRequest = () => {
@@ -3775,6 +3729,7 @@ async function makeWebGPURenderer(
       for (const world of attachedWorlds) dynamicGeometryHost.invalidateDynamicGeometryWorld(world);
       dynamicGeometry.dispose();
       publicationReceiver?.dispose();
+      surfaceInputReceiver.dispose();
       publicationInstances?.dispose();
       for (const continuation of frameContinuations.keys()) {
         continuation.terminate({ code: 'disposed' });

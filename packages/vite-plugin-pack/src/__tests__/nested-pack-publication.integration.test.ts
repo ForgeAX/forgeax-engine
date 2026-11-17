@@ -8,6 +8,7 @@ import { createStandaloneRuntimeAssetBinding, type PackIndexEntry } from '@forge
 import { build, createServer } from 'vite';
 import { expect, it } from 'vitest';
 import { createPluginPackInternal as pluginPack } from '../plugin-pack.js';
+import { installPackAuthorDependencies } from './pack-author-dependencies.js';
 
 it.each([
   'build',
@@ -17,6 +18,7 @@ it.each([
   let server: Awaited<ReturnType<typeof createServer>> | undefined;
   try {
     await writeFile(join(root, 'package.json'), '{"name":"nested-packs","type":"module"}');
+    await installPackAuthorDependencies(root);
     await writeFile(join(root, 'index.html'), '<html><body>Nested Packs</body></html>');
     const packs = [
       { path: 'assets/original/assets/ui.pack.ts', id: '019a0000-0000-7000-8000-000000000021' },

@@ -90,8 +90,16 @@ export interface ParticleEmitterSourceBase {
   readonly bounds: ParticleBoundsSource;
   readonly schedule: {
     readonly rate: number;
-    readonly bursts?: readonly { readonly time: number; readonly count: number }[];
+    readonly bursts?: readonly {
+      readonly time: number;
+      readonly count: number;
+      readonly spreadSeconds?: number;
+    }[];
     readonly loopDuration?: number;
+    /** GPU-only simulation before the first visible state; bounded to 10 s. */
+    readonly warmupSeconds?: number;
+    /** Addressable scheduling jitter in [0,1], independent of render cadence. */
+    readonly randomness?: number;
   };
   readonly program: { readonly module: string };
   readonly channels?: readonly ParticleChannelSource[];

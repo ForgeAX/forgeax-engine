@@ -3,12 +3,10 @@ import { err, ok, type Result } from '@forgeax/engine-types';
 import type { JointData } from '../pkg/rapier.mjs';
 import type { Rapier3DModule } from './wasm-loader.js';
 
-export function validateConstraintInput(
-  input: PhysicsConstraintInput,
-): Result<PhysicsConstraintInput, DerivedPhysicsError> {
-  const finiteVector = (value: readonly number[]): boolean =>
+function validConstraintIdentity(input: PhysicsConstraintInput): boolean {
+  const finiteVector = (value: readonly number[]) =>
     value.length === 3 && value.every(Number.isFinite);
-  if (
+  return !(
     typeof input.id !== 'string' ||
     input.id.trim().length === 0 ||
     !Number.isInteger(input.revision) ||
@@ -18,7 +16,15 @@ export function validateConstraintInput(
     input.bodyA === input.bodyB ||
     !finiteVector(input.anchorA) ||
     !finiteVector(input.anchorB)
-  ) {
+  );
+}
+
+export function validateConstraintInput(
+  input: PhysicsConstraintInput,
+): Result<PhysicsConstraintInput, DerivedPhysicsError> {
+  const finiteVector = (value: readonly number[]): boolean =>
+    value.length === 3 && value.every(Number.isFinite);
+  if (!validConstraintIdentity(input)) {
     return err(
       new DerivedPhysicsError(
         'derived-constraint-invalid',
@@ -59,6 +65,24 @@ export function validateConstraintInput(
         'derived-constraint-invalid',
         'hinge axis is non-zero and optional limits are ordered finite values',
         'normalize the hinge axis and set minLimit <= maxLimit',
+        { constraintId: input.id },
+      ),
+    );
+  }
+  if (
+    input.kind === 'hinge' &&
+    input.motor !== undefined &&
+    (![input.motor.targetVelocity, input.motor.damping, input.motor.maxForce].every(
+      (value) => Number.isFinite(value) && Number.isFinite(Math.fround(value)),
+    ) ||
+      input.motor.damping < 0 ||
+      input.motor.maxForce < 0)
+  ) {
+    return err(
+      new DerivedPhysicsError(
+        'derived-constraint-invalid',
+        'finite hinge motor velocity and non-negative damping/torque',
+        'repair native hinge motor parameters',
         { constraintId: input.id },
       ),
     );

@@ -3,9 +3,11 @@ import { createBoxGeometry } from '@forgeax/engine-geometry';
 import {
   AmbientOcclusion,
   Camera,
+  type FrameReceipt,
   Materials,
   MeshFilter,
   MeshRenderer,
+  type Renderer,
   ScreenSpaceReflection,
   Skylight,
 } from '@forgeax/engine-render';
@@ -22,6 +24,7 @@ import {
 } from '../../../../render/src/__tests__/gtao-reference';
 import { captureForwardGtaoTarget, type ForwardGtaoCaptureHost } from './forward-gtao-capture';
 import { describeForwardGtaoFailure } from './forward-gtao-failure';
+import { observeMorphSubmission, preserveMorphFailure } from './morph-original-frame';
 import {
   attachStandardPbrSkin,
   standardPbrSkinMaterial,
@@ -36,6 +39,7 @@ export async function verifyMorphSurface(
   onState: (name: string, facts: unknown) => Promise<void>,
   skin = false,
   onFailure?: (draw: () => Promise<unknown>, cause: unknown) => Promise<void>,
+  originalSsr?: { begin(): Promise<void>; submitted(receipt: FrameReceipt): void },
 ) {
   const { renderer, assets } = host;
   const debug = host.debugDrawHost as ForwardGtaoCaptureHost &
@@ -110,12 +114,16 @@ export async function verifyMorphSurface(
       { component: MeshRenderer, data: { materials: [gray] } },
     )
     .unwrap();
-  const lease = renderer.attach(world).unwrap();
+  const lease = attachForwardMorphScene(renderer, world);
+  let captureSsr = false;
   const draw = async () => {
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
     try {
-      return await drawReadyFrame(renderer, {
+      const diagnostic = captureSsr ? originalSsr : undefined;
+      captureSsr = false;
+      const submitter = await observeMorphSubmission(renderer, diagnostic);
+      return await drawReadyFrame(submitter, {
         source: lease,
         camera: { entityKey: camera },
       });
@@ -131,8 +139,8 @@ export async function verifyMorphSurface(
     }
   };
   try {
-    renderer.setProfile({ ...renderer.inspect().profile, renderPath: 'forward' }).unwrap();
     for (const ssr of [false, true]) {
+      captureSsr = ssr;
       if (ssr)
         world
           .addComponent(camera, { component: ScreenSpaceReflection, data: { maxDistance: 8 } })
@@ -190,11 +198,22 @@ export async function verifyMorphSurface(
     }
     expect(errors).toEqual([]);
   } catch (cause) {
-    await onFailure?.(draw, cause);
-    throw cause;
+    await preserveMorphFailure(onFailure, draw, cause);
   } finally {
     lease.dispose();
     unsubscribe();
     debug.setClusterWorkObservationForConformance(false);
   }
+}
+
+/** Own native admission and dispose an attached scene if its profile cannot be selected. */
+function attachForwardMorphScene(renderer: Renderer, world: World) {
+  const attached = renderer.attach(world);
+  if (!attached.ok) throw attached.error;
+  const profiled = renderer.setProfile({ ...renderer.inspect().profile, renderPath: 'forward' });
+  if (!profiled.ok) {
+    attached.value.dispose();
+    throw profiled.error;
+  }
+  return attached.value;
 }

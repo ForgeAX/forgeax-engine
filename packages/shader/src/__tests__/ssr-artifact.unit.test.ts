@@ -134,6 +134,30 @@ describe('SSR built-in shader artifacts', () => {
     expect(SOURCES.temporal).toContain('count += 1.0');
   });
 
+  it('retains the full traversal budget while keeping tangent validation outside the march', () => {
+    expect(SOURCES.trace).toContain('SSR_TRACE_MAX_HIZ_ITERATIONS : u32 = 64u;');
+    expect(SOURCES.trace).toContain('SSR_TRACE_MAX_LINEAR_ITERATIONS : u32 = 1024u;');
+    const traversal = SOURCES.trace.slice(
+      SOURCES.trace.indexOf('fn traceScreenRay('),
+      SOURCES.trace.indexOf('fn ssrHitTapAdmitted('),
+    );
+    expect(traversal.match(/var iteration = 0u;/g)).toHaveLength(1);
+    expect(traversal.match(/iteration \+= 1u;/g)).toHaveLength(1);
+    const march = traversal.slice(
+      traversal.indexOf('for (; iteration'),
+      traversal.indexOf('if (!candidateReady)'),
+    );
+    expect(march).toContain('iteration < SSR_TRACE_MAX_LINEAR_ITERATIONS');
+    expect(march).toContain('iteration >= iterationBudget');
+    expect(march).toContain('candidateReady = true;');
+    expect(march).not.toContain('ssrRefineHit(');
+    expect(traversal.slice(traversal.indexOf('if (!candidateReady)'))).toContain(
+      'let planeHit = ssrRefineHit(',
+    );
+    expect(traversal).toContain('refine < SSR_TRACE_MAX_REFINE_STEPS');
+    expect(traversal).toContain('return ssrRefineGeometricHit(');
+  });
+
   it('compiles and reflects every artifact through the build-time compiler', async () => {
     for (const name of Object.keys(SOURCES) as Array<keyof typeof SOURCES>) {
       const value = await compile(name);

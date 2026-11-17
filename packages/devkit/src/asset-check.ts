@@ -7,6 +7,7 @@ import {
   createTextureGeneratorPackCooker,
 } from '@forgeax/engine-shader-compiler';
 import { createParticleCodeNativeCookerFromRoots } from '@forgeax/engine-vfx-compiler';
+import { createDefaultCloudCookers } from './cloud-cookers.js';
 
 /** One authored asset that the real cookers rejected. */
 export interface AssetCheckFailure {
@@ -17,7 +18,7 @@ export interface AssetCheckFailure {
 }
 
 export interface AssetCheckReport {
-  /** Material and particle-effect rows cooked successfully by the real producers. */
+  /** Supported build-only rows cooked successfully by the real producers. */
   readonly checked: number;
   /** Authored `*.pack.ts` sources are evaluated by build only; they are listed, not cooked. */
   readonly skipped: readonly string[];
@@ -52,6 +53,32 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+interface CheckedAssetRow {
+  readonly kind:
+    | 'material'
+    | 'particle-effect'
+    | 'texture-generator'
+    | 'cloud-material'
+    | 'cloud-material-instance';
+  readonly payload?: unknown;
+  readonly refs?: unknown;
+}
+
+/** Select the authored source kinds whose domain producers this check can execute. */
+function isCheckedAssetRow(value: unknown): value is CheckedAssetRow {
+  if (!isRecord(value)) return false;
+  switch (value.kind) {
+    case 'material':
+    case 'particle-effect':
+    case 'texture-generator':
+    case 'cloud-material':
+    case 'cloud-material-instance':
+      return true;
+    default:
+      return false;
+  }
+}
+
 function describeDetail(detail: unknown): string[] {
   if (!isRecord(detail)) return [];
   const facts = Object.entries(detail)
@@ -74,9 +101,8 @@ function messageOf(cause: unknown): string {
 }
 
 /**
- * Offline dry cook of every `*.pack.json` material and particle-effect row under
- * `assetRoots`. It runs the same cookers a build uses (material pack cooker and
- * Program v3 particle cooker), so a wrong parameter type, a bad value form, a
+ * Offline dry cook of supported `*.pack.json` rows under `assetRoots`. It runs
+ * the same domain cookers a build uses, so a wrong parameter type, a bad value form, a
  * missing shader module or an invalid `.vfx.wgsl` fails in seconds instead of
  * after a full dev start. Nothing is written.
  */
@@ -94,6 +120,7 @@ export async function checkProjectAssets(
   let material: ReturnType<typeof createMaterialPackCooker> | undefined;
   let generator: ReturnType<typeof createTextureGeneratorPackCooker> | undefined;
   let particle: ReturnType<typeof createParticleCodeNativeCookerFromRoots> | undefined;
+  const clouds = createDefaultCloudCookers();
   const failures: AssetCheckFailure[] = [];
   let checked = 0;
   for (const path of packs.sort()) {
@@ -108,13 +135,7 @@ export async function checkProjectAssets(
     if (!isRecord(document) || !isRecord(document.assets)) continue;
     const packageId = typeof document.packageId === 'string' ? document.packageId : name;
     for (const [key, row] of Object.entries(document.assets)) {
-      if (
-        !isRecord(row) ||
-        (row.kind !== 'material' &&
-          row.kind !== 'particle-effect' &&
-          row.kind !== 'texture-generator')
-      )
-        continue;
+      if (!isCheckedAssetRow(row)) continue;
       const guid = dryGuid(packageId, key);
       try {
         if (row.kind === 'material') {
@@ -129,9 +150,13 @@ export async function checkProjectAssets(
         } else if (row.kind === 'texture-generator') {
           generator ??= createTextureGeneratorPackCooker(roots);
           await generator.cook({ guid, source: row.payload });
-        } else {
+        } else if (row.kind === 'particle-effect') {
           particle ??= createParticleCodeNativeCookerFromRoots(roots);
           await particle.cook({ guid, source: row.payload });
+        } else {
+          const cloud = clouds.find((cooker) => cooker.key === row.kind);
+          if (cloud === undefined) throw new Error('Missing cloud cooker');
+          await cloud.cook({ guid, source: row.payload, sourcePath: path });
         }
         checked += 1;
       } catch (cause) {

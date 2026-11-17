@@ -236,14 +236,21 @@ describe('main-pass material pipeline cache', () => {
     expect(lookup).toHaveBeenCalledTimes(3);
   });
 
-  it.each([false, true])('preserves lean=%s while the simple receiver builds', (leanLighting) => {
+  it.each([
+    { simpleReceiver: true, leanLighting: false },
+    { simpleReceiver: true, leanLighting: true },
+    { simpleReceiver: false, leanLighting: true },
+  ])('preserves receiver=$simpleReceiver and lean=$leanLighting while its PSO builds', ({
+    simpleReceiver,
+    leanLighting,
+  }) => {
     const general = { pipeline: {} } as MaterialShaderPipelineEntry;
     const simple = { pipeline: {} } as MaterialShaderPipelineEntry;
     let simpleReady = false;
     const lookup = vi
       .fn<NonNullable<PipelineRequestRuntime['getMaterialShaderPipelineEntry']>>()
       .mockImplementation((...args) =>
-        String(args[5]).includes('DIRECTIONAL_SHADOW_SIMPLE=true')
+        /DIRECTIONAL_SHADOW_SIMPLE=true|LEAN_LIGHTING=true/.test(String(args[5]))
           ? simpleReady
             ? simple
             : null
@@ -251,7 +258,7 @@ describe('main-pass material pipeline cache', () => {
       );
     const context = {
       runtime: { getMaterialShaderPipelineEntry: lookup },
-      directionalShadowSimple: true,
+      directionalShadowSimple: simpleReceiver,
       leanLighting,
     } as unknown as GeometryPipelineRequestContext;
     const requests = createGeometryPipelineRequests(context, {
@@ -279,9 +286,10 @@ describe('main-pass material pipeline cache', () => {
     // A frame that just turned simple (e.g. the light stopped casting) is not held.
     expect(resolve()).toBe(general);
     const requested = lookup.mock.calls.map((call) => String(call[5]));
-    expect(requested[0]).toContain('DIRECTIONAL_SHADOW_SIMPLE=true');
+    expect(requested[0]).toContain(`DIRECTIONAL_SHADOW_SIMPLE=${simpleReceiver}`);
     expect(requested[0]).toContain(`LEAN_LIGHTING=${leanLighting}`);
     expect(requested[1]).not.toContain('DIRECTIONAL_SHADOW_SIMPLE=true');
+    expect(requested[1]).not.toContain('LEAN_LIGHTING=true');
     // The fallback is not memoized under the simple key.
     simpleReady = true;
     expect(resolve()).toBe(simple);

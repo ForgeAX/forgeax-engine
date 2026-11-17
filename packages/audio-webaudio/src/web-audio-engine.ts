@@ -55,6 +55,7 @@ export class WebAudioEngine {
   private readonly contextFactory: (() => BaseAudioContext) | undefined;
   private readonly ownsContext: boolean;
   private closed = false;
+  private globalPlaybackRate = 1;
   private musicTap: GainNode | undefined;
   private readonly streamBudget = new StreamBudget();
   private readonly graph = new BusGraph(DEFAULT_AUDIO_BUSES);
@@ -409,7 +410,7 @@ export class WebAudioEngine {
         {
           position: fromPosition,
           paused: opts.paused ?? false,
-          rate: playbackRate,
+          rate: playbackRate * this.globalPlaybackRate,
           loop: opts.loop,
         },
         () => source.filters[0] ?? source.sourceGain,
@@ -430,7 +431,7 @@ export class WebAudioEngine {
     const node = ctx.createBufferSource();
     node.buffer = source.buffer;
     node.loop = source.loop;
-    node.playbackRate.value = source.playbackRate;
+    node.playbackRate.value = source.playbackRate * this.globalPlaybackRate;
     node.connect(source.filters[0] ?? source.sourceGain);
     source.node = node;
     source.startedAt = ctx.currentTime;
@@ -445,7 +446,8 @@ export class WebAudioEngine {
   private advance(source: ActiveSource): void {
     if (!source.node || !this.ctx) return;
     const now = this.ctx.currentTime;
-    source.offset += Math.max(0, now - source.startedAt) * source.playbackRate;
+    source.offset +=
+      Math.max(0, now - source.startedAt) * source.playbackRate * this.globalPlaybackRate;
     if (source.loop && source.buffer && source.buffer.duration > 0)
       source.offset %= source.buffer.duration;
     source.startedAt = now;
@@ -479,16 +481,32 @@ export class WebAudioEngine {
     this.sources.delete(entityId);
   }
 
+  setGlobalPlaybackRate(scale: number): void {
+    if (!Number.isFinite(scale) || scale <= 0 || this.closed || scale === this.globalPlaybackRate)
+      return;
+    // Commit elapsed clip position using the previous multiplier before changing it.
+    for (const source of this.sources.values()) this.advance(source);
+    this.globalPlaybackRate = scale;
+    for (const source of this.sources.values()) {
+      const rate = source.playbackRate * scale;
+      source.stream?.setRate(rate);
+      source.node?.playbackRate.setValueAtTime(rate, this.ctx?.currentTime ?? 0);
+    }
+  }
+
   setPlaybackRate(entityId: number, playbackRate: number): void {
     if (!Number.isFinite(playbackRate) || playbackRate <= 0) return;
     this.patchPending(entityId, { playbackRate });
     const source = this.sources.get(entityId);
     if (!source) return;
-    source.stream?.setRate(playbackRate);
+    source.stream?.setRate(playbackRate * this.globalPlaybackRate);
     this.advance(source);
     source.playbackRate = playbackRate;
     if (source.node)
-      source.node.playbackRate.setValueAtTime(playbackRate, this.ctx?.currentTime ?? 0);
+      source.node.playbackRate.setValueAtTime(
+        playbackRate * this.globalPlaybackRate,
+        this.ctx?.currentTime ?? 0,
+      );
   }
 
   setPaused(entityId: number, paused: boolean): void {
@@ -863,6 +881,15 @@ export class WebAudioEngine {
   setBusWet(bus: string, wet: number): void {
     if (this.retireClosedContext()) return;
     const result = this.graph.setWet(bus, wet);
+    if (!result.ok) this.lastError = result.error;
+  }
+  setBusLowPass(
+    bus: string,
+    owner: string,
+    filter: { readonly cutoffHz: number; readonly q: number } | null,
+  ): void {
+    if (this.retireClosedContext()) return;
+    const result = this.graph.setLowPass(bus, owner, filter);
     if (!result.ok) this.lastError = result.error;
   }
   setBusSendGain(bus: string, target: string, gain: number): void {

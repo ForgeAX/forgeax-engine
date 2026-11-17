@@ -215,8 +215,21 @@ it.each([
         { lang: 'ts' },
       )
     ).code;
+    const featureSource = await readFile(resolve(generated, 'game-render-features.ts'), 'utf8');
+    const featureCode = (
+      await transformWithOxc(
+        featureSource.replace(/^import .*;$/gm, '').replace('export function', 'function'),
+        'game-render-features.ts',
+        { lang: 'ts' },
+      )
+    ).code;
+    const createGameRenderFeatures = runInNewContext(
+      `${featureCode}\ncreateGameRenderFeatures`,
+      {},
+    );
     const bootstrap = runInNewContext(`${bootstrapCode}\nexecutionBootstrap`, {
       createGameVfx,
+      createGameRenderFeatures,
       createRuntimePackOptions: async () => ({}),
       runtimeBinding: { scopeId: 'fixture' },
       createPrograms: () => ({}),
@@ -295,16 +308,19 @@ it.each([
       expect(options.isolateViewGraph).toBe(isolateViewGraph ? true : undefined);
     }
     const singleThreadCall = page.match(
-      /\? (createGameVfx\(\{ isolateViewGraph: isolateVfxViewGraph, instanceArenas: vfxInstanceArenas, nativePlanning: vfxNativePlanning, retainedResources: vfxRetainedResources \}\)) : undefined;/,
+      /\? (createGameVfx\(\{ isolateViewGraph: isolateVfxViewGraph, instanceArenas: vfxInstanceArenas, nativePlanning: vfxNativePlanning, retainedResources: vfxRetainedResources,[^\n]*?\}\)) : undefined;/,
     )?.[1];
     const previewFactory = page.match(/function makeVfxRuntimeHost\(\) \{[\s\S]*?\n\}/)?.[0];
     expect(singleThreadCall).toBeDefined();
+    expect(singleThreadCall).toContain('providers: gameFeatures.vfxProviders');
+    expect(singleThreadCall).toContain('providersForWorld: gameFeatures.vfxProvidersForWorld');
     expect(previewFactory).toBeDefined();
     const pageContext = {
       location: { search },
       URLSearchParams,
       createGameVfx,
       createVfxRuntimeHost: captureRuntimeHost,
+      gameFeatures: createGameRenderFeatures(),
     };
     const singleThread = runInNewContext(`${selection}\n${singleThreadCall}`, { ...pageContext });
     expect(capturedOptions.at(-1)?.instanceArenas).toBe(instanceArenas);
@@ -357,7 +373,7 @@ it.each([
       expect(world.hasResource(VFX_GPU_RUNTIME_RESOURCE_KEY)).toBe(false);
     }
     expect(page).toContain(
-      'createGameVfx({ isolateViewGraph: isolateVfxViewGraph, instanceArenas: vfxInstanceArenas, nativePlanning: vfxNativePlanning, retainedResources: vfxRetainedResources })',
+      'createGameVfx({ isolateViewGraph: isolateVfxViewGraph, instanceArenas: vfxInstanceArenas, nativePlanning: vfxNativePlanning, retainedResources: vfxRetainedResources, dependencies: [], providers: gameFeatures.vfxProviders, providersForWorld: gameFeatures.vfxProvidersForWorld })',
     );
     expect(page).toContain('...(isolateVfxViewGraph ? { isolateViewGraph: true } : {})');
     expect(page).toContain('gameVfx.plugin');

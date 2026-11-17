@@ -42,10 +42,7 @@ import { ParticleEffectPlayer } from '@forgeax/engine-vfx';
 import type { ParticleCodeModuleSet } from '@forgeax/engine-vfx-compiler';
 import { createVfxRuntimeHost } from '@forgeax/engine-vfx-render';
 import { expect, onTestFailed, onTestFinished } from 'vitest';
-import {
-  completeReadyFrame,
-  drawReadyFrame,
-} from '../../../../scripts/test/ready-render-frame.mjs';
+import { completeReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { publishRuntimeAssets } from '../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
 import { loadBackendPack } from '../backend-selection';
@@ -111,6 +108,10 @@ class VfxMeshLightingPhases {
   cleanupStarted = false;
   iblFailureRecorded = false;
   inspectRenderer: (() => unknown) | undefined;
+  originalReceipt: Record<string, unknown> | undefined;
+  originalTape: Uint8Array | undefined;
+  originalCapture: unknown = { status: 'not-armed' };
+  finishOriginalCapture: (() => void) | undefined;
   readonly errors: unknown[] = [];
   private readonly signal: AbortSignal;
   private readonly startedAt = performance.now();
@@ -143,6 +144,38 @@ class VfxMeshLightingPhases {
     timing.elapsedMs += now - this.phaseStartedAt;
     this.failurePhase = next;
     this.phaseStartedAt = now;
+  }
+
+  captureReceipt(receipt: FrameReceipt): void {
+    if (receipt.presentation === 'ready') {
+      this.finishOriginalCapture?.();
+      this.finishOriginalCapture = undefined;
+    }
+    const completed: Record<string, unknown> = { status: 'pending' };
+    const preparation: Record<string, unknown> = {
+      status: receipt.preparationCompleted === undefined ? 'not-published' : 'pending',
+    };
+    this.originalReceipt = {
+      capturedAtMs: performance.now(),
+      frameId: receipt.frameId,
+      deviceGeneration: receipt.deviceGeneration,
+      presentation: receipt.presentation,
+      pendingReason: receipt.presentationPendingReason,
+      completed,
+      preparation,
+    };
+    const settled = (target: Record<string, unknown>, result: unknown) =>
+      Object.assign(target, { status: 'fulfilled', atMs: performance.now(), result });
+    const rejected = (target: Record<string, unknown>, error: unknown) =>
+      Object.assign(target, { status: 'rejected', atMs: performance.now(), error });
+    void receipt.completed.then(
+      (result) => settled(completed, result),
+      (error) => rejected(completed, error),
+    );
+    void receipt.preparationCompleted?.then(
+      (result) => settled(preparation, result),
+      (error) => rejected(preparation, error),
+    );
   }
 
   inspectTimings() {
@@ -410,6 +443,13 @@ export class VfxMeshLightingRig {
     this.env = parts.options.tapePaths ?? {};
   }
 
+  private recordOriginalReceipt(receipt: FrameReceipt): void {
+    // Diagnostics are an explicit optional owner. Ordinary frame driving has
+    // no capture side effects or dependency on diagnostic phase bookkeeping.
+    if (this.options.onIblFailure === undefined) return;
+    this.phases.captureReceipt(receipt);
+  }
+
   async drawFrame(): Promise<Result<FrameReceipt, RenderError>> {
     this.options.signal.throwIfAborted();
     const renderer = this.renderer;
@@ -417,7 +457,14 @@ export class VfxMeshLightingRig {
     if (source === undefined) {
       const lease = this.lease;
       if (lease === undefined) throw new Error('Missing World lease');
-      return ok(await drawReadyFrame(renderer, { source: lease }));
+      return ok(
+        await completeReadyFrame(() => {
+          const draw = renderer.draw({ source: lease });
+          if (!draw.ok) throw draw.error;
+          this.recordOriginalReceipt(draw.value);
+          return draw.value;
+        }),
+      );
     }
     let recycling: Promise<void> | undefined;
     const receipt = await completeReadyFrame(
@@ -445,6 +492,7 @@ export class VfxMeshLightingRig {
             },
           });
           if (!draw.ok) throw draw.error;
+          this.recordOriginalReceipt(draw.value);
           // Expose the preparation signal before waiting for native GPU work.
           // The packet remains owned until this physical receipt completes.
           recycling = draw.value.completed.then(recycle, (error) => {
@@ -1672,21 +1720,31 @@ function recordTimeoutFailures(
 ): void {
   onTestFailed(async () => {
     if (phases.iblFailureRecorded) return;
+    phases.finishOriginalCapture?.();
+    phases.finishOriginalCapture = undefined;
+    await Promise.resolve();
     // Preserve the operation at the original timeout, including a producer
     // failure before Renderer construction or a state observed after cleanup.
-    await onIblFailure({
-      phase: phases.failurePhase,
-      phaseTimings: phases.inspectTimings(),
-      sampleIndex: phases.sampleIndex,
-      sampleState: phases.sampleState,
-      completedFrames: phases.completedFrames,
-      cleanupStarted: phases.cleanupStarted,
-      renderer: phases.inspectRenderer?.() ?? null,
-      events: phases.errors,
-      reason: 'test-failed-or-timed-out',
-      captureUnavailable:
-        'The original frame may still be in flight; no following frame was submitted.',
-    });
+    await onIblFailure(
+      {
+        phase: phases.failurePhase,
+        phaseTimings: phases.inspectTimings(),
+        sampleIndex: phases.sampleIndex,
+        sampleState: phases.sampleState,
+        completedFrames: phases.completedFrames,
+        cleanupStarted: phases.cleanupStarted,
+        renderer: phases.inspectRenderer?.() ?? null,
+        events: phases.errors,
+        reason: 'test-failed-or-timed-out',
+        originalReceipt: JSON.parse(inspect(phases.originalReceipt ?? null)),
+        originalCapture: phases.originalCapture,
+        captureUnavailable:
+          phases.originalTape === undefined
+            ? 'The bounded original capture did not produce a tape; no following frame was submitted.'
+            : undefined,
+      },
+      phases.originalTape,
+    );
   });
 }
 
@@ -1712,6 +1770,8 @@ async function runVfxMeshLighting(options: VfxMeshLightingOptions): Promise<void
   const recording = attachRecorder(backend);
   if (!recording.ok) throw recording.error;
   const recorder = recording.value;
+  if (options.sampledTextureLimit === 16 && options.onIblFailure !== undefined)
+    await armOriginalVfxCapture(recorder, phases, options.signal);
   const surface = new CapturedCanvasSurface(phases.errors);
   phases.enter('renderer-construction');
   const constructed = await constructRuntimeRendererHost(
@@ -1732,7 +1792,10 @@ async function runVfxMeshLighting(options: VfxMeshLightingOptions): Promise<void
       shaderManifestUrl: options.shaderManifestUrl,
     },
   );
-  if (!constructed.ok) throw constructed.error;
+  if (!constructed.ok) {
+    await recorder.dispose();
+    throw constructed.error;
+  }
   const { renderer, assets } = constructed.value;
   world.bindAssets(assets).unwrap();
   phases.inspectRenderer = () => renderer.inspect();
@@ -1770,6 +1833,9 @@ async function runVfxMeshLighting(options: VfxMeshLightingOptions): Promise<void
       ...scene,
     });
     await verifyLightingScenario(rig, backend);
+  } catch (error) {
+    await saveOriginalVfxFailure(options, phases, renderer, error);
+    throw error;
   } finally {
     phases.cleanupStarted = true;
     publisher?.dispose();
@@ -1777,5 +1843,106 @@ async function runVfxMeshLighting(options: VfxMeshLightingOptions): Promise<void
     renderer.dispose();
     surface.target?.destroy();
     await recorder.dispose();
+  }
+}
+
+/** Arm before Renderer construction, when the recorder has no live GPU resources to seed. */
+async function armOriginalVfxCapture(
+  recorder: RecorderAttachment,
+  phases: VfxMeshLightingPhases,
+  signal: AbortSignal,
+): Promise<void> {
+  const byteBudget = 64 * 1024 * 1024;
+  phases.originalCapture = { status: 'arming', snapshotTimeoutMs: 250, byteBudget };
+  const capture = recorder.captureFrame({ signal, snapshotTimeoutMs: 250, byteBudget });
+  void capture.then(
+    (result) => {
+      if (!result.ok) {
+        phases.originalCapture = { status: 'failed', error: result.error };
+        return;
+      }
+      if (result.value.bytes.byteLength > byteBudget) {
+        phases.originalCapture = {
+          status: 'budget-exceeded',
+          bytes: result.value.bytes.byteLength,
+          byteBudget,
+        };
+        return;
+      }
+      phases.originalTape = result.value.bytes;
+      phases.originalCapture = {
+        status: 'captured',
+        bytes: result.value.bytes.byteLength,
+        digest: result.value.digest,
+        scope: 'renderer-construction-through-original-first-ready-submission',
+      };
+    },
+    (error) => {
+      phases.originalCapture = { status: 'failed', error: inspect(error) };
+    },
+  );
+  try {
+    const armed = await recorder.frameBoundary();
+    if (!armed.ok) {
+      phases.originalCapture = { status: 'seed-failed', error: armed.error };
+      return;
+    }
+    phases.originalCapture = { status: 'recording' };
+    phases.finishOriginalCapture = () => {
+      phases.originalCapture = { status: 'encoding-original-submission' };
+      void recorder.frameBoundary().then(
+        (result) => {
+          if (!result.ok) phases.originalCapture = { status: 'close-failed', error: result.error };
+        },
+        (error) => {
+          phases.originalCapture = { status: 'close-failed', error: inspect(error) };
+        },
+      );
+    };
+  } catch (error) {
+    phases.originalCapture = { status: 'seed-failed', error: inspect(error) };
+  }
+}
+
+async function saveOriginalVfxFailure(
+  options: VfxMeshLightingOptions,
+  phases: VfxMeshLightingPhases,
+  renderer: HostRenderer,
+  error: unknown,
+): Promise<void> {
+  if (options.onIblFailure !== undefined && !phases.iblFailureRecorded) {
+    phases.finishOriginalCapture?.();
+    phases.finishOriginalCapture = undefined;
+    // Closing an already-recording boundary encodes CPU events; it never
+    // waits for the submitted GPU work. Deliver that existing microtask only.
+    await Promise.resolve();
+    phases.iblFailureRecorded = true;
+    try {
+      await options.onIblFailure(
+        {
+          phase: phases.failurePhase,
+          phaseTimings: phases.inspectTimings(),
+          sampleIndex: phases.sampleIndex,
+          sampleState: phases.sampleState,
+          completedFrames: phases.completedFrames,
+          cleanupStarted: false,
+          originalReceipt: JSON.parse(inspect(phases.originalReceipt ?? null)),
+          renderer: renderer.inspect(),
+          events: [...phases.errors],
+          reason: inspect(error),
+          originalCapture: phases.originalCapture,
+          captureUnavailable:
+            phases.originalTape === undefined
+              ? 'The bounded original capture did not produce a tape; inspect originalCapture. No following frame was submitted.'
+              : undefined,
+        },
+        phases.originalTape,
+      );
+    } catch (captureError) {
+      phases.errors.push({
+        kind: 'original-failure-evidence-write-failed',
+        error: inspect(captureError),
+      });
+    }
   }
 }

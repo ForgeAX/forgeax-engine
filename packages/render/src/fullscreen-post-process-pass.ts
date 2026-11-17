@@ -87,6 +87,7 @@ export type PostProcessReadSampleType =
  * and binds it at depthTex@3 / depthSampler@4 in the fullscreen bind group.
  */
 export interface PostProcessShaderEntry {
+  readonly chain?: true;
   readonly vertexLayout?: 'clip-position-color';
   readonly depthSampleCount?: 1 | 4;
   /** Composed WGSL source for the fragment stage (post-naga_oil). */

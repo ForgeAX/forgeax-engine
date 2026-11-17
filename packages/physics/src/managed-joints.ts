@@ -35,6 +35,26 @@ export interface BodyMotion {
   readonly sleeping: boolean;
 }
 
+/** Detached native mass response; effective values include current body type and axis locks. */
+export interface BodyMassProperties {
+  readonly mass: number;
+  readonly inverseMass: number;
+  readonly centerOfMass: PhysicsVector;
+  readonly effectiveInverseMass: PhysicsVector;
+  /** Row-major world-space inverse angular inertia, including rotation locks. */
+  readonly inverseInertia: readonly [
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+  ];
+}
+
 interface ManagedPhysicsDetails {
   'managed-joint-invalid': { readonly index: number; readonly reason: string };
   'managed-body-missing': { readonly entity: number };

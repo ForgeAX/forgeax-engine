@@ -1,4 +1,4 @@
-import {
+﻿import {
   type GraphTextureDescriptor,
   type GraphTextureView,
   type RenderGraphBuilder,
@@ -1421,6 +1421,13 @@ export function buildStandardForwardLane(
   reuseAdjacentShadow = false,
 ): ReturnType<RenderPipeline['build']> {
   const graph = context.graph;
+  const environmentFeatures = context.contributeFeatures({
+    targets: [],
+    namedTargets: {},
+    passNames: [],
+    placement: 'environment',
+  });
+  if (!environmentFeatures.ok) return environmentFeatures;
   const prepared = prepareForwardScene(context, topology);
   if (!prepared.ok) return prepared;
   const {

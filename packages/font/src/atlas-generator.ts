@@ -2,7 +2,7 @@ import { Buffer } from 'node:buffer';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { FontError } from '@forgeax/engine-types';
-import type { BakeAtlas, MsdfGenerator } from './atlas-font-data.js';
+import type { BakeAtlas, FontAtlasOptions, MsdfGenerator } from './atlas-font-data.js';
 import { NodeWorkerAdapter } from './node-worker-adapter.js';
 
 /** Default charset baked into the atlas (printable ASCII). */
@@ -16,16 +16,45 @@ const DEFAULT_TEXTURE_SIZE = 1024;
 const DEFAULT_FIELD_RANGE = 4;
 const DEFAULT_FONT_SIZE = 48;
 
+/** Resolve authored bake inputs before acquiring a Worker or native generator. */
+export function resolveFontAtlasOptions(
+  settings: { readonly charset?: unknown; readonly fieldRange?: unknown } = {},
+): Required<FontAtlasOptions> {
+  const charset = settings.charset === undefined ? DEFAULT_CHARSET : settings.charset;
+  const fieldRange = settings.fieldRange === undefined ? DEFAULT_FIELD_RANGE : settings.fieldRange;
+  if (
+    typeof charset !== 'string' ||
+    charset.length === 0 ||
+    [...charset].some((character) => {
+      const codepoint = character.codePointAt(0) ?? -1;
+      return codepoint >= 0xd800 && codepoint <= 0xdfff;
+    }) ||
+    typeof fieldRange !== 'number' ||
+    !Number.isFinite(fieldRange) ||
+    fieldRange <= 0
+  ) {
+    throw new FontError({
+      code: 'bake-failed',
+      expected: 'a non-empty Unicode scalar charset and positive finite fieldRange',
+      hint: 'set font importSettings.charset to the required text and fieldRange to the MSDF distance range',
+      detail: { cause: 'invalid font atlas import settings' },
+    });
+  }
+  return { charset: [...new Set([...charset])].join(''), fieldRange };
+}
+
 /** Both producers acquire, use and release one generator through this owner. */
 export async function generateFontAtlas(
   ttf: Uint8Array,
   generatorFactory: () => Promise<MsdfGenerator> = realGeneratorFactory,
+  settings: FontAtlasOptions = {},
 ): Promise<BakeAtlas> {
+  const options = resolveFontAtlasOptions(settings);
   let atlas: BakeAtlas;
   let generator: MsdfGenerator | undefined;
   try {
     generator = await generatorFactory();
-    atlas = await generator.generateAtlas(ttf);
+    atlas = await generator.generateAtlas(ttf, options);
   } catch (e) {
     throw new FontError({
       code: 'bake-failed',
@@ -72,12 +101,13 @@ async function realGeneratorFactory(): Promise<MsdfGenerator> {
     throw cause;
   }
   return {
-    async generateAtlas(ttf: Uint8Array): Promise<BakeAtlas> {
+    async generateAtlas(ttf: Uint8Array, settings: FontAtlasOptions = {}): Promise<BakeAtlas> {
+      const options = resolveFontAtlasOptions(settings);
       const a = await msdf.generateAtlas({
         font: ttf,
-        charset: DEFAULT_CHARSET,
+        charset: options.charset,
         textureSize: [DEFAULT_TEXTURE_SIZE, DEFAULT_TEXTURE_SIZE],
-        fieldRange: DEFAULT_FIELD_RANGE,
+        fieldRange: options.fieldRange,
         fontSize: DEFAULT_FONT_SIZE,
       });
       return {

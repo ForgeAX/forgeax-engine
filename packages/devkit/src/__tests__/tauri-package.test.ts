@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { expect, it, vi } from 'vitest';
 import { writeTauriProject } from '../build/tauri.js';
@@ -107,7 +107,7 @@ it('collects complete application bundles and installers without intermediate bi
       'game.deb',
       'game.ipa',
       'game.rpm',
-      'macos/Game.app',
+      join('macos', 'Game.app'),
       'setup.exe',
       'setup.msi',
     ]);

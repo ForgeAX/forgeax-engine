@@ -1,3 +1,4 @@
+import { cameraAdmitsLayers } from '../render-layers';
 // @forgeax/engine-runtime - RendererState record stage: frame.
 // Extracted from render-system-record.ts (feat-20260704 M3/w17, pure move).
 
@@ -1620,7 +1621,11 @@ function prepareFrameMaterialReads(input: {
   // Only the manual recorder path lacks native source bindings. Here these
   // rows are actual Direct draw inputs, not a GPU-side validation mirror.
   const manualDraws =
-    nativeScene === undefined ? lodRows(prepareSources(renderables, transparentDispatch)) : [];
+    nativeScene === undefined
+      ? lodRows(prepareSources(renderables, transparentDispatch)).filter((row) =>
+          cameraAdmitsLayers(camera, row.source),
+        )
+      : [];
   return {
     sourceRenderables,
     fixedMaterials,

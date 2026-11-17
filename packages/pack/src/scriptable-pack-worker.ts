@@ -138,17 +138,14 @@ function resolveBareImport(importer: string, specifier: string): string | undefi
     }
   ).resolve;
   if (resolver === undefined) return undefined;
-  // Resolve consumer dependencies from the source file first, then resolve
-  // Engine self-references from this worker's package. A compiled source
-  // closure lives in /tmp, so using only its path makes
-  // @forgeax/engine-pack/source disappear from Node's lookup ancestry.
-  for (const parent of [pathToFileURL(importer).href, import.meta.url]) {
-    try {
-      const resolved = resolver(specifier, parent);
-      if (resolved.startsWith('file:')) return fileURLToPath(resolved);
-    } catch {
-      // Try the loader package before treating the import as unavailable.
-    }
+  // Package ownership follows the original importer, including Engine domain
+  // packages. Relocation must neither borrow the loader's dependencies nor
+  // redirect a domain export into the Pack implementation's dependency graph.
+  try {
+    const resolved = resolver(specifier, pathToFileURL(importer).href);
+    if (resolved.startsWith('file:')) return fileURLToPath(resolved);
+  } catch {
+    // Resolution refusal remains a missing author edge with its original path.
   }
   return undefined;
 }

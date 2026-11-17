@@ -19,19 +19,6 @@ export const DAWN_ISOLATED_GROUPS = [
     ],
   },
   {
-    id: 'surface-pipelines',
-    // Run 42325043736 completed ordinary-4 after 2,058 seconds, leaving
-    // this complete owner too little of the unchanged 40-minute step.
-    // Reserve ten minutes and start it before ordinary backfill; case,
-    // frame and step budgets remain unchanged.
-    placementReserveSeconds: 600,
-    files: [
-      'packages/runtime/src/__tests__/surface-standard-pipeline.dawn.test.ts',
-      'packages/runtime/src/__tests__/standard-deferred-parity.dawn.test.ts',
-      'packages/runtime/src/__tests__/clipping-planes.dawn.test.ts',
-    ],
-  },
-  {
     id: 'renderer',
     files: [
       'packages/runtime/src/__tests__/point-light-shadow.dawn.test.ts',
@@ -61,6 +48,19 @@ export const DAWN_ISOLATED_GROUPS = [
     // ordinary-3. Keep all cues, pixel controls and sixty completed frames
     // in one fresh native lifetime; the scene and readiness budget stay fixed.
     files: ['apps/modeling-show/__tests__/show.dawn.test.ts'],
+  },
+  {
+    id: 'surface-pipelines',
+    // Run 42325043736 completed ordinary-4 after 2,058 seconds, leaving
+    // this complete owner too little of the unchanged 40-minute step.
+    // Reserve ten minutes and start it before ordinary backfill; case,
+    // frame and step budgets remain unchanged.
+    placementReserveSeconds: 600,
+    files: [
+      'packages/runtime/src/__tests__/surface-standard-pipeline.dawn.test.ts',
+      'packages/runtime/src/__tests__/standard-deferred-parity.dawn.test.ts',
+      'packages/runtime/src/__tests__/clipping-planes.dawn.test.ts',
+    ],
   },
   { id: 'vfx-depth', files: [VFX_DEPTH_DAWN_TEST_FILE] },
   {
@@ -160,36 +160,39 @@ export const DAWN_ISOLATED_TEST_FILES = DAWN_ISOLATED_GROUPS.flatMap(({ files })
 // Independent long capture journeys occupy separate lanes; one slow runner
 // must not amplify both Modeling captures before the same ordinary backfill.
 export const DAWN_GATE_SHARDS = Object.freeze([
-  [
+  Object.freeze([
     'ordinary-1',
     'compact-1',
-    'rect-source',
-    'shadow-fields',
-    'heavy-2',
-    'nested-discard',
-    'gi-5',
+    'modeling-show',
     'direct-light',
-  ],
-  [
-    'ordinary-2',
-    'surface-pipelines',
-    'heavy-1',
     'heavy-3',
-    'heavy-4',
-    'shadow-quality',
-    'specular-aa',
-    'compact-3',
     'gi-6',
     'renderer',
+    'gi-3',
+    'feature-depth',
+  ]),
+  Object.freeze([
+    'ordinary-2',
+    'heavy-2',
+    'nested-discard',
+    'surface-pipelines',
+    'heavy-1',
+    'shadow-quality',
+    'specular-aa',
     'gi-4',
     'screen-probe',
-    'gi-3',
-  ],
-  ['ordinary-3', 'modeling-s6', 'transmission', 'vfx-depth', 'gi-2'],
-  // Run 43904183011 completed ordinary-1 but interrupted its fixed tail at
-  // forty minutes. Exchange these complete owners before ordinary backfill;
-  // preserve all cases, native lifetimes, workers and historical replay bounds.
-  ['ordinary-4', 'modeling-show', 'compact-2', 'feature-depth', 'gi-1'],
+    'gi-2',
+  ]),
+  Object.freeze(['ordinary-3', 'modeling-s6', 'transmission', 'vfx-depth', 'compact-2']),
+  Object.freeze([
+    'ordinary-4',
+    'rect-source',
+    'shadow-fields',
+    'heavy-4',
+    'compact-3',
+    'gi-5',
+    'gi-1',
+  ]),
 ]);
 
 export const DAWN_GATE_GROUPS = [

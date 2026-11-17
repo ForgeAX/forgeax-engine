@@ -643,6 +643,7 @@ export interface LightRoster {
  * pipeline; no independent ECS system).
  */
 export interface SkylightSnapshot {
+  readonly featureEnvironment?: import('./components/render-feature-environment').RenderFeatureEnvironmentSource;
   /** Direction-independent diffuse irradiance; independent of IBL color/intensity. */
   readonly ambientIrradiance?: readonly [number, number, number];
   /** Fixed world-space environment capture origin from the Skylight Transform. */
@@ -684,6 +685,7 @@ export interface LightProbeSnapshot {
  * First hit wins per plan-strategy D-6; multi-entity once-warn in record stage.
  */
 export interface SkyboxSnapshot {
+  readonly featureEnvironment?: import('./components/render-feature-environment').RenderFeatureEnvironmentSource;
   readonly equirectHandle: number;
   readonly mode: number;
   /** Environment-space quaternion [x, y, z, w], identity by default. */
@@ -728,6 +730,7 @@ export interface ExtractedVolumetricFog {
 }
 
 export interface RenderableSnapshot {
+  readonly renderLayers?: number;
   /** Generation-bound WaterBody identity used by per-view water material bindings. */
   readonly waterOwner?: Readonly<{
     readonly guid: string;
@@ -794,6 +797,7 @@ export interface RenderableSnapshot {
   readonly nativeDraw?: { readonly key: string };
   /** Fixed renderer-owned layout geometry; it has no asset identity. */
   readonly generatedMesh?: import('@forgeax/engine-types').MeshAsset;
+  readonly gpuVertexSource?: { readonly feature: string; readonly resource: string };
   /** Instance animation UVs, composed with the accepted shared material only when drawn. */
   readonly spriteRegion?: import('./sprite-region').SpriteRegion;
   readonly layer?: number;
@@ -3721,6 +3725,7 @@ export function selectFogFrame(world: World): FogFrame | undefined {
       near: valueNear,
       far: valueFar,
       skyOpacity: valueSkyOpacity,
+      sunScatter: world[worldRead].getFieldValue(row.entity, Fog, 'sunScatter') as number,
     });
   });
   const fogSelection = selectFog(fogCandidates);

@@ -259,14 +259,27 @@ export const VARIANT_PERMUTATION_RULES: readonly VariantPermutationRule[] = [
     when: { CLIPPING_PLANES: true },
     reason: 'discarding draws keep the general receiver (publication budget)',
   },
-  // Lean lighting remains opt-in within the simple receiver domain. A simple
-  // directional receiver can independently keep full extended lighting.
-  {
-    axis: 'LEAN_LIGHTING',
-    value: false,
-    when: { DIRECTIONAL_SHADOW_SIMPLE: false },
-    reason: 'lean lighting is published only on the simple-receiver row',
-  },
+  // Modifier-free lighting and the directional receiver are independent frame
+  // facts. Keep the existing plain storage-forward publication budget for
+  // both general and simple receivers; no filter, PCSS or cascade is removed.
+  ...(
+    [
+      { COVERAGE_ONLY: true },
+      { ALPHA_MASK: true },
+      { VISIBLE_SURFACE_AVAILABLE: true },
+      { TRANSMISSION_AVAILABLE: true },
+      { PROBE_BLEND_AVAILABLE: true },
+      { STORAGE_BUFFER_AVAILABLE: false },
+      { CLIPPING_PLANES: true },
+    ] as const
+  ).map(
+    (when): VariantPermutationRule => ({
+      axis: 'LEAN_LIGHTING',
+      value: false,
+      when,
+      reason: 'lean lighting is published for plain storage-forward draws (publication budget)',
+    }),
+  ),
   // STANDARD_LEAN_INPUTS drops the vertex inputs a material never reads (UV1-7,
   // tangent, object basis, object position), as UE compiles only the
   // interpolators the material translator counts (HLSLMaterialTranslator.cpp

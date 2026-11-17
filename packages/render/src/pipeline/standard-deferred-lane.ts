@@ -1459,6 +1459,13 @@ export function buildStandardDeferredLane(
   const capabilityError = deferredLaneCapabilityError(topology, visibleSurfaceEnabled);
   if (capabilityError !== undefined) return err(capabilityError);
   const graph = context.graph;
+  const environmentFeatures = context.contributeFeatures({
+    targets: [],
+    namedTargets: {},
+    passNames: [],
+    placement: 'environment',
+  });
+  if (!environmentFeatures.ok) return environmentFeatures;
   const surface = importRenderPipelineSurface(graph, topology);
   if (!surface.ok) return surface;
   const internalSize = renderInternalSize(topology);

@@ -34,6 +34,7 @@ export type {
   PhysicsContactManifold,
   PhysicsContactNeighborsSnapshot,
   PhysicsContactNormalFilter,
+  PhysicsContactPointVelocities,
   PhysicsContactSnapshot,
 } from './contact-query.js';
 export type {
@@ -63,16 +64,19 @@ export type {
   PhysicsQuaternion,
   PhysicsVector,
   PhysicsVelocityPolicy,
+  PrimitiveShapeInput,
   TriangleMeshShapeInput,
   VoxelShapeInput,
 } from './derived-physics.js';
 export {
   cloneDerivedPhysicsInput,
+  clonePhysicsConstraintInput,
   DERIVED_PHYSICS_LIMITS,
   DerivedPhysicsError,
   estimateDerivedPhysicsInputBytes,
   normalizeConvexCompoundShapeInput,
   normalizeHeightfieldShapeInput,
+  normalizePrimitiveShapeInput,
   normalizeTriangleMeshShapeInput,
   normalizeVoxelShapeInput,
   preserveCenterOfMassVelocity,
@@ -82,6 +86,7 @@ export type { PhysicsErrorCode, PhysicsErrorDetail } from './errors.js';
 export { PHYSICS_ERROR_HINTS, PhysicsError } from './errors.js';
 export * from './fixed-dynamics.js';
 export type {
+  BodyMassProperties,
   BodyMotion,
   ManagedJointBinding,
   ManagedJointInput,
@@ -110,10 +115,26 @@ export type {
   PhysicsWorld2D,
   RaycastHit,
   RaycastHit2D,
+  RaycastOptions,
   SphereSweepHit,
 } from './physics-world.js';
 export type { PhysicsPluginBackend } from './plugin-factory.js';
 export { definePhysicsPlugin, physicsComponentsPlugin } from './plugin-factory.js';
+export type {
+  PhysicsQueryErrorCode,
+  PhysicsQueryFailure,
+  PhysicsQueryField,
+  PhysicsSweepQuery,
+  ShapeSweepContact,
+  ShapeSweepResult,
+} from './shape-query.js';
+export { PhysicsQueryError, validatePhysicsSweepQuery } from './shape-query.js';
+export type { ShapeSweepQuery, SweepShape } from './shape-sweep.js';
+export { validateShapeSweepQuery } from './shape-sweep.js';
+export {
+  PhysicsSimulationControl,
+  physicsSimulationRunning,
+} from './simulation-control.js';
 export {
   type PhysicsOptions,
   validateAsyncResultsInterpolation,
@@ -129,6 +150,12 @@ export type {
   PhysicsSolverTask,
 } from './solver-participant.js';
 export { PHYSICS_SOLVER_MAX_PAYLOAD_BYTES } from './solver-participant.js';
+export type {
+  SphereSweepContact,
+  SphereSweepQuery,
+  SphereSweepResult,
+} from './sphere-sweep.js';
+export { validateSphereSweepQuery } from './sphere-sweep.js';
 export {
   PhysicsSimulation,
   PhysicsSync,

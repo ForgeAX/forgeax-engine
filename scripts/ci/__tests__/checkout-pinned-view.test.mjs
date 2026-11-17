@@ -148,5 +148,8 @@ test('primary-pnpm type-checks Modeling tests and examples and lints its interna
   assert.ok(job, 'primary-pnpm job exists');
   assert.ok(job.includes('uses: ./.github/actions/prepare-source-checkouts'));
   assert.match(job, /tsc -p packages\/modeling\/tsconfig\.test\.json/);
-  assert.match(job, /run: pnpm lint:internal/);
+  assert.match(
+    job,
+    /node --test scripts\/__tests__\/lint-internal\.test\.mjs scripts\/__tests__\/lint-internal-entry\.test\.mjs\s+pnpm lint:internal/,
+  );
 });

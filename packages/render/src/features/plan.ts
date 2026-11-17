@@ -5,6 +5,15 @@ import { type Asset, type BindGroupLayoutEntry, err, ok, type Result } from '@fo
 import type { RenderError } from '../errors/render';
 import { isSceneDataTarget, type SceneDataTarget } from '../temporal/scene-data';
 import {
+  type RenderFeatureSamplerDescriptor,
+  type RenderFeatureTextureDescriptor,
+  validFeatureTexture,
+} from './feature-texture';
+import {
+  isRenderFeatureTextureSource,
+  type RenderFeatureTextureSource,
+} from './feature-texture-source';
+import {
   isOwnedRenderFeatureProgramData,
   type RenderFeatureGpuBufferUsage,
   type RenderFeatureGpuProgramDescriptor,
@@ -13,6 +22,7 @@ import {
   validRenderFeatureWorkgroups,
 } from './prepared-gpu-work';
 import type { RenderFeaturePipelineDescriptor } from './prepared-graphics';
+import { type RenderFeatureTemporalStage, validRenderFeatureTemporalStage } from './temporal-stage';
 import {
   isRenderFeatureTextureReference,
   type RenderFeatureTextureReference,
@@ -52,6 +62,8 @@ export type RenderFeatureSampledTarget = string | SceneDataTarget | RenderFeatur
 /** A cooked fullscreen shader declaration owned by a RenderFeature plan. */
 export interface RenderFeatureFullscreenProgramDeclaration {
   readonly kind: 'fullscreen-program';
+  /** Admit this scoped declaration into Standard's automatic post chain. */
+  readonly chain?: true;
   /** Inline graphics may consume this canonical clip-space stream instead of vertex_index. */
   readonly vertexLayout?: 'clip-position-color';
   /** Sample count of the declared depth read, independently of the color output. */
@@ -84,6 +96,18 @@ export type RenderFeatureBindingValue =
 
 export type RenderFeatureResourceDeclaration =
   | RenderFeatureFullscreenProgramDeclaration
+  | {
+      readonly kind: 'feature-texture-reference';
+      readonly name: string;
+      readonly source: RenderFeatureTextureSource;
+    }
+  | ({ readonly kind: 'texture'; readonly name: string } & RenderFeatureTextureDescriptor)
+  | {
+      readonly kind: 'sampler';
+      readonly name: string;
+      readonly descriptor: RenderFeatureSamplerDescriptor;
+    }
+  | { readonly kind: 'texture-alias'; readonly name: string; readonly resource: string }
   | {
       /** A graph-owned texture whose storage lifetime is this compiled frame graph. */
       readonly kind: 'graph-texture';
@@ -331,6 +355,7 @@ export type RenderFeaturePassDeclaration = (
       readonly draws: readonly RenderFeatureDrawDeclaration[];
     }
 ) & {
+  readonly temporal?: RenderFeatureTemporalStage;
   /** Frame data: retain the declared resources and ordering while skipping execution. */
   readonly enabled?: boolean | undefined;
 };
@@ -418,18 +443,18 @@ export interface RenderFeatureWork extends RenderFeatureWorkPlan {
 /** The producer declares one frame containing shared simulation and view projections. */
 export type RenderFeaturePlan =
   | {
-      /** An in-flight source dependency blocks preparation without declaring executed work. */
       readonly pendingSource: { readonly resource: string; readonly reason: string };
       readonly work: readonly [];
       readonly native?: never;
       readonly sourceFeedback?: never;
+      readonly readbacks?: never;
     }
   | {
       readonly pendingSource?: never;
-      /** @internal Opaque primary work; ordinary authors continue to declare work. */
       readonly native?: RenderFeatureNativePlanToken;
       readonly work: readonly RenderFeatureWork[];
       readonly sourceFeedback?: unknown;
+      readonly readbacks?: readonly { readonly resource: string; readonly tag: unknown }[];
     };
 
 /** Frozen declaration produced for one feature in one frame. */
@@ -1549,6 +1574,21 @@ function deriveComputePassAccess(
         );
         if (usage !== undefined) accesses.push({ resource: entry.resource, usage });
         const declaration = resources.get(entry.resource);
+        if (declaration?.kind === 'texture') {
+          const layout = layoutEntries.find((candidate) => candidate.binding === entry.binding);
+          const role = layout?.storageTexture?.access;
+          accesses.push({
+            resource: declaration.name,
+            usage:
+              role === 'write-only'
+                ? 'storage-write'
+                : role === 'read-only'
+                  ? 'storage-read'
+                  : role === 'read-write'
+                    ? 'storage-read-write'
+                    : 'sampled-read',
+          });
+        }
         if (
           declaration?.kind === 'prepared-gpu-resource' &&
           declaration.logicalTarget !== undefined
@@ -1598,6 +1638,9 @@ export function validateRenderFeaturePlan(
   for (const pass of plan.passes) {
     if (
       !validName(pass.name) ||
+      (pass.temporal !== undefined &&
+        (!validRenderFeatureTemporalStage(pass.temporal) ||
+          (pass.kind !== 'compute' && pass.kind !== 'copy'))) ||
       passes.has(pass.name) ||
       (pass.enabled !== undefined && typeof pass.enabled !== 'boolean')
     )
@@ -1615,6 +1658,18 @@ function validPlanResource(
   targets: ReadonlySet<string>,
 ): boolean {
   if (!validName(resource.name) || resources.has(resource.name)) return false;
+  if (
+    resource.kind === 'fullscreen-program' &&
+    resource.chain !== undefined &&
+    resource.chain !== true
+  )
+    return false;
+  if (
+    resource.kind === 'feature-texture-reference' &&
+    !isRenderFeatureTextureSource(resource.source)
+  )
+    return false;
+  if (resource.kind === 'texture' && !validFeatureTexture(resource)) return false;
   if (resource.kind === 'graphics-bindings' && !validGraphicsBufferSlots(resource, resources))
     return false;
   if (resource.kind === 'scene-depth' && !validSceneDepthCamera(resource.camera)) return false;
@@ -1739,17 +1794,27 @@ function computeBindingMatchesLayout(
   layout: BindGroupLayoutEntry | undefined,
 ): boolean {
   const validBuffer = resource?.kind === 'buffer' && layout?.buffer !== undefined;
-  const validPrepared =
-    resource?.kind === 'prepared-gpu-resource' &&
-    ((resource.resource.kind === 'buffer' && layout?.buffer !== undefined) ||
-      (resource.resource.kind === 'texture-view' &&
-        (layout?.texture !== undefined || layout?.storageTexture !== undefined)) ||
-      (resource.resource.kind === 'sampler' && layout?.sampler !== undefined));
+  const validPrepared = preparedComputeBindingMatches(resource, layout);
   const validSceneInput =
     (resource?.kind === 'scene-depth' && layout?.texture?.sampleType === 'depth') ||
     (resource?.kind === 'scene-noise' && layout?.texture !== undefined) ||
     (resource?.kind === 'scene-sdf' && layout?.buffer?.type === 'read-only-storage');
-  return validBuffer || validPrepared || validSceneInput;
+  const validFeatureReference =
+    resource?.kind === 'feature-texture-reference' && layout?.texture !== undefined;
+  const validOwnedTexture = ownedComputeTextureMatches(resource, layout);
+  const validOwnedSampler = resource?.kind === 'sampler' && layout?.sampler !== undefined;
+  const validAlias =
+    resource?.kind === 'texture-alias' &&
+    (layout?.texture !== undefined || layout?.storageTexture !== undefined);
+  return (
+    validBuffer ||
+    validPrepared ||
+    validSceneInput ||
+    validFeatureReference ||
+    validOwnedTexture ||
+    validOwnedSampler ||
+    validAlias
+  );
 }
 
 /** Are direct workgroups valid, or does an indirect dispatch name an aligned indirect buffer? */
@@ -2002,4 +2067,28 @@ function appendGraphicsDrawAccesses(
       accesses.push({ resource: draw.draw.resource, usage: 'indirect-read' });
     }
   }
+}
+
+function preparedComputeBindingMatches(
+  resource: RenderFeatureResourceDeclaration | undefined,
+  layout: BindGroupLayoutEntry | undefined,
+): boolean {
+  return (
+    resource?.kind === 'prepared-gpu-resource' &&
+    ((resource.resource.kind === 'buffer' && layout?.buffer !== undefined) ||
+      (resource.resource.kind === 'texture-view' &&
+        (layout?.texture !== undefined || layout?.storageTexture !== undefined)) ||
+      (resource.resource.kind === 'sampler' && layout?.sampler !== undefined))
+  );
+}
+
+function ownedComputeTextureMatches(
+  resource: RenderFeatureResourceDeclaration | undefined,
+  layout: BindGroupLayoutEntry | undefined,
+): boolean {
+  return (
+    resource?.kind === 'texture' &&
+    ((layout?.texture !== undefined && resource.usage.includes('sampled')) ||
+      (layout?.storageTexture !== undefined && resource.usage.includes('storage')))
+  );
 }

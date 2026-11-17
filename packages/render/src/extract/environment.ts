@@ -72,6 +72,7 @@ export interface FogCandidate {
   readonly far: number;
   /** Scale of the fog opacity on background pixels under an Atmosphere, in [0, 1]. */
   readonly skyOpacity: number;
+  readonly sunScatter?: number;
 }
 
 export type EnvironmentSource =
@@ -185,6 +186,8 @@ function validateFogScalars(candidate: FogCandidate): FogParameterIssue | undefi
     };
   }
   if (
+    !Number.isFinite(candidate.sunScatter ?? 0) ||
+    (candidate.sunScatter ?? 0) < 0 ||
     !Number.isFinite(candidate.skyOpacity) ||
     candidate.skyOpacity < 0 ||
     candidate.skyOpacity > 1

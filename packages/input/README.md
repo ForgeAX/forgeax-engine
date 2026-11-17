@@ -7,6 +7,14 @@ lifetime. `ownedInputBackendPlugin(backend, dispose)` is the canvas-App form:
 DOM listener release is an effect of the same provider Fiber. World snapshot
 resources and scan systems remain a separate consumer capability.
 
+`InputSnapshot.focused` publishes the acquired Host focus for this frame;
+`focusReset` reports an acquisition reset since the previous scan, including
+blur/hidden transitions or consumer ownership transfer. A reset remains visible
+even when focus returns before sampling. Cancel held gestures on reset or lost
+focus; do not interpret either as a player release command. Both facts belong to
+the frozen snapshot, so consumers never call `backend.sample()` a second time or
+install gameplay DOM listeners. The neutral snapshot starts unfocused.
+
 `attachBrowserInputBackend(canvas, { uiRoot })` excludes composed UI events
 from gameplay and clears acquired input when an event enters that root. Node
 identity is checked in the root document’s realm, including same-origin iframe

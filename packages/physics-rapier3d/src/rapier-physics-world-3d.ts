@@ -10,6 +10,7 @@ import {
   type World,
 } from '@forgeax/engine-ecs';
 import {
+  type BodyMassProperties,
   type BodyMotion,
   CharacterController,
   type CharacterControllerData,
@@ -18,6 +19,7 @@ import {
   ColliderShapeValue,
   type ColliderSnapshot,
   cloneDerivedPhysicsInput,
+  clonePhysicsConstraintInput,
   createTerrainHeightfieldSync,
   DERIVED_PHYSICS_LIMITS,
   type DerivedBodyTypeCandidateInput,
@@ -33,7 +35,6 @@ import {
   type DerivedPhysicsSourceTransform,
   type DerivedShapeInput,
   type DerivedShapeState,
-  estimateDerivedPhysicsInputBytes,
   finitePhysicsVector,
   type ManagedJointBinding,
   type ManagedJointInput,
@@ -59,21 +60,32 @@ import {
   PhysicsFixedError,
   type PhysicsMassProperties,
   type PhysicsOptions,
+  type PhysicsQuaternion,
+  PhysicsQueryError,
+  type PhysicsQueryFailure,
   type PhysicsSensorOverlap,
   type PhysicsSensorOverlaps,
   type PhysicsSweepError,
+  type PhysicsSweepQuery,
   type PhysicsVector,
   type PhysicsWorld,
   PhysicsWorldResource,
   type RaycastHit,
+  type RaycastOptions,
   RigidBody,
   RigidBodyTypeValue,
+  type ShapeSweepQuery,
+  type ShapeSweepResult,
   type SphereSweepHit,
+  type SphereSweepQuery,
+  type SphereSweepResult,
+  type SweepShape,
   unitPhysicsQuaternion,
   validateAsyncResultsInterpolation,
-  validateMassProperties,
   validateProfileNativeStepTimings,
+  validateShapeSweepQuery,
   validateSolverIterations,
+  validateSphereSweepQuery,
 } from '@forgeax/engine-physics';
 import type { ColliderDesc, Collider as RapierCollider } from '../pkg/rapier.mjs';
 import {
@@ -88,6 +100,7 @@ import {
   changeBodyActivation,
   readBodyConstraintCount,
 } from './body-activation.js';
+import { getBodyMassProperties, getBodyPointVelocity } from './body-mass-query.js';
 import { BodyMotionReadback, type BodyMotionWriteback } from './body-motion-readback.js';
 import { readContactObservation } from './contact-observation.js';
 import {
@@ -123,7 +136,13 @@ import {
   type DerivedShapeRecord,
   derivedShapeHandles,
 } from './derived-candidate-records.js';
+import { validateConstraintInput } from './derived-constraint.js';
 import { restoreDerivedDensities } from './derived-density.js';
+import {
+  type DerivedShapePreparationOwner,
+  prepareDerivedShapeCandidate,
+  prepareDerivedShapeCandidates,
+} from './derived-shape-preparation.js';
 import { GroupedContactEvents } from './grouped-contact-events.js';
 import {
   runAdmitFixedForce,
@@ -144,6 +163,7 @@ import {
   runSweepSphereAll,
   runSynchronizeCharacter,
 } from './native-query-operations.js';
+import { sweepNativeShape } from './shape-sweep-query.js';
 import { SolverParticipants } from './solver-participants.js';
 import { SolverWorkerDriver } from './solver-worker-driver.js';
 // Three-phase pipeline (plan-strategy D-1):
@@ -162,6 +182,7 @@ import { type Vec3, vec3 } from '@forgeax/engine-math';
 
 import { ChildOf } from '@forgeax/engine-scene';
 import { err, ok, type Result, type RigidBodyType, unpackSlot } from '@forgeax/engine-types';
+import { allowedBodyVelocity } from './body-axis-locks.js';
 import { writeNativeBodyMotion } from './body-motion.js';
 import { localPositionForWorld3D, translateAttachedColliders3D } from './body-pose.js';
 import { rapierBodyTypeToString } from './body-type.js';
@@ -185,8 +206,6 @@ import {
   revalidatePendingDerivedCandidates,
 } from './derived-admission-preflight.js';
 import { prepareDerivedBodyTypes } from './derived-body-type.js';
-
-import { stageDerivedColliders } from './derived-collider.js';
 import {
   type IsolatedPair,
   isolationKey,
@@ -203,7 +222,6 @@ import {
   type PhysicsSyncQuery,
   type PhysicsSyncState,
   type PhysicsTransform3D,
-  samePhysicsValue,
 } from './physics-sync-descriptor.js';
 import { SharedCollisionGeometry } from './shared-collision-geometry.js';
 import type { Rapier3DModule } from './wasm-loader.js';
@@ -676,6 +694,7 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
     direction: Vec3,
     maxDist: number,
     filterMask?: number,
+    options?: RaycastOptions,
   ): RaycastHit | undefined {
     return runRaycast(
       (operation) => this.assertCommittedReadable(operation),
@@ -686,6 +705,7 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
       direction,
       maxDist,
       filterMask,
+      options,
     );
   }
 
@@ -1209,7 +1229,59 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
       this.derivedContacts.splice(0, this.derivedContacts.length - 256);
   }
 
-  /** Resolve a Rapier collider handle to its owning ECS entity, or undefined. */
+  private shapeQueryUnavailable(): PhysicsQueryFailure | undefined {
+    if (
+      this.disposed ||
+      this.nativeExecuting ||
+      this.activeDerivedAdmission !== undefined ||
+      this.activeDerivedPreflight ||
+      this.recoveryBlocked()
+    )
+      return new PhysicsQueryError('physics-query-unavailable', {
+        reason: 'queries require a live complete physics boundary',
+      });
+    return undefined;
+  }
+
+  sweepSphere(input: SphereSweepQuery): Result<SphereSweepResult, PhysicsQueryFailure> {
+    const unavailable = this.shapeQueryUnavailable();
+    if (unavailable) return err(unavailable);
+    const valid = validateSphereSweepQuery(input);
+    if (!valid.ok) return valid;
+    return this.sweepNativeShape(input, { kind: 'sphere', radius: input.radius }, [0, 0, 0, 1]);
+  }
+
+  sweepShape(input: ShapeSweepQuery): Result<ShapeSweepResult, PhysicsQueryFailure> {
+    const unavailable = this.shapeQueryUnavailable();
+    if (unavailable) return err(unavailable);
+    const valid = validateShapeSweepQuery(input);
+    if (!valid.ok) return valid;
+    return this.sweepNativeShape(input, input.shape, input.rotation ?? [0, 0, 0, 1]);
+  }
+
+  private sweepNativeShape(
+    input: PhysicsSweepQuery,
+    geometry: SweepShape,
+    orientation: PhysicsQuaternion,
+  ): Result<ShapeSweepResult, PhysicsQueryFailure> {
+    const backend = this;
+    return sweepNativeShape(
+      {
+        get raw() {
+          return backend.raw;
+        },
+        rapierModule: this.rapierModule,
+        entityMap: this.entityMap,
+        get worldIdentity() {
+          return backend.worldIdentity;
+        },
+      },
+      input,
+      geometry,
+      orientation,
+    );
+  }
+
   private colliderHandleToEntity(colliderHandle: number): number | undefined {
     // getCollider(handle).parent() returns the owning RigidBody (compat build),
     // whose userData holds the ECS entity raw value (set in ensureBody).
@@ -1468,92 +1540,7 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
   prepareDerivedShapeCandidates(
     inputs: readonly DerivedPhysicsCandidateInput[],
   ): ReturnType<NonNullable<PhysicsWorld['prepareDerivedShapeCandidates']>> {
-    const pending = this.pendingDerivedMutation('prepareDerivedShapeCandidates');
-    if (pending) return err(pending);
-    this.assertActive('prepareDerivedShapeCandidates');
-    const records: DerivedCandidateRecord[] = [];
-    const batch: DerivedAdmissionBatch = Object.freeze({ records });
-    let complete = false;
-    // Reuse the native execution fence while caller inputs are copied and
-    // disabled colliders are allocated; no partial roster can be observed.
-    this.nativeExecuting = true;
-    try {
-      const count = Array.isArray(inputs) ? inputs.length : 0;
-      if (
-        !Number.isSafeInteger(count) ||
-        count <= 0 ||
-        count > DERIVED_PHYSICS_LIMITS.maxBatchCandidates
-      )
-        return err(
-          new DerivedPhysicsError(
-            'derived-candidate-invalid',
-            `one preparation declares 1 to ${DERIVED_PHYSICS_LIMITS.maxBatchCandidates} bodies`,
-            'submit one bounded complete replacement roster',
-          ),
-        );
-      const entities = new Set<number>();
-      const constraints = new Set<string>();
-      for (let index = 0; index < count; index++) {
-        const input = inputs[index];
-        if (input === undefined)
-          return err(
-            new DerivedPhysicsError(
-              'derived-candidate-invalid',
-              'every declared batch member is present',
-              'submit a complete dense input roster',
-            ),
-          );
-        if (entities.has(input.entity))
-          return err(
-            new DerivedPhysicsError(
-              'derived-candidate-invalid',
-              'one preparation names each body once',
-              'combine each body replacement before preparation',
-              { entity: input.entity },
-            ),
-          );
-        const prepared = this.prepareDerivedShapeCandidateInternal(input, batch);
-        if (!prepared.ok) return prepared;
-        const record = this.derivedCandidates.get(prepared.value.candidateId);
-        if (record === undefined)
-          return err(
-            new DerivedPhysicsError(
-              'derived-candidate-not-found',
-              'the prepared member remains owned by this PhysicsWorld',
-              'prepare the complete group after native ownership is restored',
-            ),
-          );
-        records.push(record);
-        entities.add(record.input.entity);
-        for (const constraint of record.input.constraints ?? []) {
-          if (constraints.has(constraint.id))
-            return err(
-              new DerivedPhysicsError(
-                'derived-candidate-invalid',
-                'one preparation names each constraint update once',
-                'combine constraint updates in the complete roster',
-                { constraintId: constraint.id },
-              ),
-            );
-          constraints.add(constraint.id);
-        }
-      }
-      Object.freeze(records);
-      complete = true;
-      return ok(Object.freeze(records.map((record) => record.token)));
-    } finally {
-      try {
-        if (!complete)
-          for (const record of records) {
-            for (const collider of record.nativeColliders)
-              this.removeNativeCollider(collider.handle);
-            record.state = 'cancelled';
-            this.releaseDerivedCandidate(record.token.candidateId);
-          }
-      } finally {
-        this.nativeExecuting = false;
-      }
-    }
+    return prepareDerivedShapeCandidates(this.shapePreparationOwner(), inputs);
   }
 
   prepareDerivedBodyTypeCandidates(
@@ -1602,244 +1589,68 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
     }
   }
 
+  private shapePreparationOwner(): DerivedShapePreparationOwner {
+    const backend = this;
+    return {
+      get worldIdentity() {
+        return backend.worldIdentity;
+      },
+      entityMap: this.entityMap,
+      derivedPoisonedEntities: this.derivedPoisonedEntities,
+      derivedBodies: this.derivedBodies,
+      pendingDerivedCandidates: this.pendingDerivedCandidates,
+      derivedCandidates: this.derivedCandidates,
+      derivedColliderToShape: this.derivedColliderToShape,
+      get raw() {
+        return backend.raw;
+      },
+      get backendGeneration() {
+        return backend.backendGeneration;
+      },
+      physicsOwner: this.physicsOwner,
+      get nativeExecuting() {
+        return backend.nativeExecuting;
+      },
+      set nativeExecuting(value) {
+        backend.nativeExecuting = value;
+      },
+      get candidateSequence() {
+        return backend.candidateSequence;
+      },
+      set candidateSequence(value) {
+        backend.candidateSequence = value;
+      },
+      get derivedCandidateBytes() {
+        return backend.derivedCandidateBytes;
+      },
+      set derivedCandidateBytes(value) {
+        backend.derivedCandidateBytes = value;
+      },
+      copyInput: (input) => {
+        this.derivedCandidateInputReadDepth++;
+        try {
+          return cloneDerivedPhysicsInput(input);
+        } finally {
+          this.derivedCandidateInputReadDepth--;
+        }
+      },
+      bodyForEntity: (entity) => this.bodyForEntity(entity),
+      pendingDerivedMutation: (operation) => this.pendingDerivedMutation(operation),
+      assertActive: (operation) => this.assertActive(operation),
+      prepareDerivedShapeCandidateInternal: (input, batch) =>
+        this.prepareDerivedShapeCandidateInternal(input, batch),
+      releaseDerivedCandidate: (id) => this.releaseDerivedCandidate(id),
+      removeNativeCollider: (handle) => this.removeNativeCollider(handle),
+      createDerivedCollider: (body, shape, previous, allowGroups, sourceTransform) =>
+        this.createDerivedCollider(body, shape, previous, allowGroups, sourceTransform),
+    };
+  }
+
   private prepareDerivedShapeCandidateInternal(
     input: DerivedPhysicsCandidateInput,
     batch?: DerivedAdmissionBatch,
   ): ReturnType<NonNullable<PhysicsWorld['prepareDerivedShapeCandidate']>> {
-    if (input.worldIdentity !== undefined && input.worldIdentity !== this.worldIdentity) {
-      return err(
-        new DerivedPhysicsError(
-          'derived-world-mismatch',
-          'candidate belongs to the ECS World bound to this PhysicsWorld',
-          'submit the candidate to the PhysicsWorld that owns its entity',
-          { entity: input.entity },
-        ),
-      );
-    }
-    const hasEntityBody = this.entityMap.has(input.entity);
-    const refuseExistingBodyCandidate = () => {
-      if (hasEntityBody) {
-        if (this.derivedPoisonedEntities.has(input.entity)) {
-          return err(
-            new DerivedPhysicsError(
-              'derived-recovery-invalid',
-              'the entity has a recoverable committed native PhysicsWorld state',
-              'rebuild the PhysicsWorld from the last portable snapshot before retrying',
-              { entity: input.entity },
-            ),
-          );
-        }
-        const active = this.derivedBodies.get(input.entity);
-        if (active !== undefined && input.revision <= active.revision) {
-          return err(
-            new DerivedPhysicsError(
-              'derived-candidate-stale',
-              'candidate revision is newer than the committed derived shape revision',
-              'read the latest publication and advance the consumer revision',
-              { entity: input.entity, actual: input.revision, expected: `>${active.revision}` },
-            ),
-          );
-        }
-        const refusePendingBodyCandidate = () => {
-          for (const pendingId of this.pendingDerivedCandidates) {
-            const pending = this.derivedCandidates.get(pendingId);
-            if (pending?.input.entity === input.entity) {
-              return err(
-                new DerivedPhysicsError(
-                  'derived-candidate-pending',
-                  'one body has at most one queued derived-shape candidate',
-                  'cancel or let the current candidate publish before preparing another',
-                  { entity: input.entity, candidateId: pendingId },
-                ),
-              );
-            }
-          }
-          return undefined;
-        };
-        const pendingCandidateFailure = refusePendingBodyCandidate();
-        if (pendingCandidateFailure !== undefined) return pendingCandidateFailure;
-      }
-      return undefined;
-    };
-    const existingBodyFailure = refuseExistingBodyCandidate();
-    if (existingBodyFailure !== undefined) return existingBodyFailure;
-    this.derivedCandidateInputReadDepth++;
-    let copied: ReturnType<typeof cloneDerivedPhysicsInput>;
-    try {
-      copied = cloneDerivedPhysicsInput(input);
-    } finally {
-      this.derivedCandidateInputReadDepth--;
-    }
-    if (!copied.ok) return copied;
-    const activeSource = this.derivedBodies.get(copied.value.entity);
-    if (
-      activeSource?.sourceTransform !== undefined &&
-      copied.value.sourceTransform === undefined &&
-      (copied.value.shapes.length > 0 ||
-        (copied.value.bodyType !== undefined && copied.value.bodyType !== 'static'))
-    )
-      return err(
-        new DerivedPhysicsError(
-          'derived-candidate-invalid',
-          'a source-owned body remains source-owned or is explicitly retired before pose transfer',
-          'publish a complete replacement with a valid source transform, or retire the accepted source',
-          {
-            entity: copied.value.entity,
-            actual: { sourceKey: activeSource.sourceKey, revision: copied.value.revision },
-          },
-        ),
-      );
-    const mass = validateMassProperties(copied.value.massProperties);
-    if (!mass.ok) return mass;
-    if (!hasEntityBody) {
-      return err(
-        new DerivedPhysicsError(
-          'derived-body-not-found',
-          'candidate entity has a committed body in this PhysicsWorld',
-          'wait for physics reconciliation before preparing derived shapes',
-          { entity: input.entity },
-        ),
-      );
-    }
-    const candidateBytes = estimateDerivedPhysicsInputBytes(copied.value);
-    if (this.derivedCandidateBytes + candidateBytes > DERIVED_PHYSICS_LIMITS.maxCandidateBytes) {
-      return err(
-        new DerivedPhysicsError(
-          'derived-candidate-budget-exceeded',
-          `candidate source and native geometry POD fit ${DERIVED_PHYSICS_LIMITS.maxCandidateBytes} bytes`,
-          'publish or cancel another candidate, or reduce the candidate geometry',
-          {
-            entity: input.entity,
-            actual: this.derivedCandidateBytes + candidateBytes,
-            reason:
-              candidateBytes > DERIVED_PHYSICS_LIMITS.maxCandidateBytes ? 'oversized' : 'in-flight',
-          },
-        ),
-      );
-    }
-    const body = this.bodyForEntity(input.entity);
-    if (body === undefined) {
-      return err(
-        new DerivedPhysicsError(
-          'derived-body-not-found',
-          'candidate entity resolves to a live native body',
-          'wait for the next ECS physics sync',
-          { entity: input.entity },
-        ),
-      );
-    }
-    // Recheck the group's preparation credit after potentially reentrant getters.
-    const first = batch?.records[0];
-    const refusePreparationCapacity = () => {
-      if (
-        first === undefined ||
-        this.derivedCandidates.get(first.token.candidateId) !== first ||
-        first.batch !== batch
-      ) {
-        const preparations = new Set(
-          [...this.derivedCandidates.values()].map((record) => record.batch ?? record),
-        );
-        if (
-          (batch === undefined || !preparations.has(batch)) &&
-          preparations.size >= DERIVED_PHYSICS_LIMITS.maxCandidates
-        ) {
-          return err(
-            new DerivedPhysicsError(
-              'derived-candidate-budget-exceeded',
-              `this PhysicsWorld keeps at most ${DERIVED_PHYSICS_LIMITS.maxCandidates} in-flight preparations`,
-              'cancel or publish an existing candidate before preparing another',
-              { entity: input.entity, actual: preparations.size, reason: 'in-flight' },
-            ),
-          );
-        }
-      }
-      return undefined;
-    };
-    const capacityFailure = refusePreparationCapacity();
-    if (capacityFailure !== undefined) return capacityFailure;
-    const candidateInput = Object.freeze({
-      ...copied.value,
-      ...(mass.value === undefined ? {} : { massProperties: mass.value }),
-    });
-    const privateInput = candidateInput; // Admission retains the detached first copy.
-    // Publication checks read entity/revision, not geometry. Keep their public
-    // metadata detached, but copy the already isolated Shape buffers only if
-    // a caller actually inspects them. Admission always owns privateInput.
-    const publicInput = cloneDerivedPhysicsInput({ ...privateInput, shapes: [] });
-    if (!publicInput.ok) return publicInput;
-    let inspectedShapes: DerivedPhysicsCandidateInput['shapes'] | undefined;
-    const tokenInput = Object.freeze({
-      ...publicInput.value,
-      get shapes() {
-        inspectedShapes ??= cloneDerivedPhysicsInput({
-          entity: privateInput.entity,
-          revision: privateInput.revision,
-          sourceKey: privateInput.sourceKey,
-          shapes: privateInput.shapes,
-        }).unwrap().shapes;
-        return inspectedShapes;
-      },
-    });
-    let staged: ReturnType<typeof stageDerivedColliders>;
-    try {
-      const oldBody = this.derivedBodies.get(input.entity);
-      const geometryOwner =
-        oldBody !== undefined &&
-        samePhysicsValue(oldBody.sourceTransform, privateInput.sourceTransform)
-          ? oldBody
-          : undefined;
-      staged = stageDerivedColliders(
-        privateInput.shapes,
-        geometryOwner,
-        (shape, previous) =>
-          this.createDerivedCollider(
-            body,
-            shape,
-            previous,
-            privateInput.bodyType === 'dynamic' && privateInput.massProperties?.mode === 'explicit',
-            privateInput.sourceTransform,
-          ),
-        (handle) =>
-          (!this.derivedColliderToShape.get(handle)?.grouped ||
-            (privateInput.bodyType === 'dynamic' &&
-              privateInput.massProperties?.mode === 'explicit')) &&
-          this.raw.colliders.contains(handle) &&
-          this.raw.getCollider(handle)?.handle === handle &&
-          this.raw.getCollider(handle)?.parent()?.handle === body.handle,
-        (handle) => this.removeNativeCollider(handle),
-      );
-    } catch (cause) {
-      return err(
-        new DerivedPhysicsError(
-          'derived-backend-failed',
-          'Rapier can create every candidate collider while it remains disabled',
-          'reduce the candidate or rebuild the PhysicsWorld after a native failure',
-          { entity: input.entity, reason: cause instanceof Error ? cause.message : String(cause) },
-        ),
-      );
-    }
-    const candidateId = `derived:${this.backendGeneration}:${input.entity}:${++this.candidateSequence}:${input.revision}`;
-    let record: DerivedCandidateRecord;
-    const token: DerivedPhysicsCandidate = Object.freeze({
-      candidateId,
-      generation: this.backendGeneration,
-      owner: this.physicsOwner,
-      input: tokenInput,
-      get state() {
-        return record.state;
-      },
-    });
-    record = {
-      token,
-      ...staged,
-      input: privateInput,
-      bytes: candidateBytes,
-      state: 'ready',
-      ...(batch === undefined ? {} : { batch }),
-    };
-    this.derivedCandidates.set(candidateId, record);
-    this.derivedCandidateBytes += candidateBytes;
-    return ok(token);
+    return prepareDerivedShapeCandidate(this.shapePreparationOwner(), input, batch);
   }
 
   /** Queue a prepared candidate for the next call to `step()`. */
@@ -2479,6 +2290,94 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
     return ok(undefined);
   }
 
+  setDerivedHingeMotor(
+    id: string,
+    revision: number,
+    motor: {
+      readonly targetVelocity: number;
+      readonly damping: number;
+      readonly maxForce: number;
+    } | null,
+  ): ReturnType<NonNullable<PhysicsWorld['setDerivedHingeMotor']>> {
+    this.assertActive('setDerivedHingeMotor');
+    const record = this.derivedConstraints.get(id);
+    if (!record || record.input.kind !== 'hinge')
+      return err(
+        new DerivedPhysicsError(
+          'derived-constraint-not-found',
+          'a live owned hinge',
+          'create the hinge before controlling its motor',
+          { constraintId: id },
+        ),
+      );
+    if (record.input.revision !== revision)
+      return err(
+        new DerivedPhysicsError(
+          'derived-constraint-stale',
+          'the committed constraint revision',
+          'refresh the owning hinge binding',
+          { constraintId: id, actual: revision, expected: String(record.input.revision) },
+        ),
+      );
+    const pendingReplacement = () => {
+      for (const candidate of this.derivedCandidates.values()) {
+        if (candidate.state !== 'ready' && candidate.state !== 'queued') continue;
+        if (
+          candidate.input.entity === record.input.bodyA ||
+          candidate.input.entity === record.input.bodyB ||
+          candidate.input.constraints?.some((constraint) => constraint.id === id)
+        )
+          return err(
+            new DerivedPhysicsError(
+              'derived-candidate-pending',
+              'hinge endpoints have no prepared or queued replacement',
+              'publish or cancel the owning candidate before changing its motor',
+              { constraintId: id },
+            ),
+          );
+      }
+      return undefined;
+    };
+    const pendingFailure = pendingReplacement();
+    if (pendingFailure !== undefined) return pendingFailure;
+    const { motor: previous, ...base } = record.input;
+    const input = { ...base, ...(motor === null ? {} : { motor: { ...motor } }) };
+    const checked = validateConstraintInput(input);
+    if (!checked.ok) return checked;
+    try {
+      const joint = this.raw.getImpulseJoint(record.handle);
+      if (!joint) throw Error('Native hinge is unavailable');
+      joint.configureMotorVelocity(motor?.targetVelocity ?? 0, motor?.damping ?? 0);
+      joint.setMotorMaxForce(motor?.maxForce ?? 0);
+      this.derivedConstraints.set(id, {
+        input: clonePhysicsConstraintInput(input),
+        handle: record.handle,
+      });
+      this.bodyForEntity(input.bodyA)?.wakeUp();
+      this.bodyForEntity(input.bodyB)?.wakeUp();
+      return ok(undefined);
+    } catch (cause) {
+      let reason = cause instanceof Error ? cause.message : String(cause);
+      try {
+        const joint = this.raw.getImpulseJoint(record.handle);
+        if (joint) {
+          joint.configureMotorVelocity(previous?.targetVelocity ?? 0, previous?.damping ?? 0);
+          joint.setMotorMaxForce(previous?.maxForce ?? 0);
+        }
+      } catch (rollback) {
+        reason += `; motor rollback failed: ${String(rollback)}`;
+      }
+      return err(
+        new DerivedPhysicsError(
+          'derived-backend-failed',
+          'native hinge velocity motor control',
+          'inspect the active hinge and backend state',
+          { constraintId: id, reason },
+        ),
+      );
+    }
+  }
+
   createManagedJoints(
     inputs: readonly ManagedJointInput[],
   ): Result<ManagedJointBinding, ManagedPhysicsFailure> {
@@ -2504,6 +2403,23 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
   getBodyMotion(entity: number): Result<BodyMotion, ManagedPhysicsFailure> {
     this.assertCommittedReadable('getBodyMotion');
     return this.motionReadback.read(entity, this.bodyForEntity(entity));
+  }
+
+  getBodyMassProperties(entity: number): Result<BodyMassProperties, ManagedPhysicsFailure> {
+    this.assertActive('getBodyMassProperties');
+    const body = this.bodyForEntity(entity);
+    if (body === undefined) return err(new ManagedPhysicsError('managed-body-missing', { entity }));
+    return getBodyMassProperties(body);
+  }
+
+  getBodyPointVelocity(
+    entity: number,
+    point: PhysicsVector,
+  ): Result<PhysicsVector, ManagedPhysicsFailure> {
+    this.assertActive('getBodyPointVelocity');
+    const body = this.bodyForEntity(entity);
+    if (body === undefined) return err(new ManagedPhysicsError('managed-body-missing', { entity }));
+    return getBodyPointVelocity(body, point);
   }
 
   setBodyMotion(
@@ -2540,7 +2456,14 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
     try {
       this.contactDeltaTime = 0;
       record.motionDiscontinuity++;
-      writeNativeBodyMotion(body, motion, this.entityMap.get(entity)?.lockRotation);
+      const policy = this.entityMap.get(entity);
+      writeNativeBodyMotion(
+        body,
+        motion,
+        policy?.lockRotation,
+        policy?.translationAxes,
+        policy?.rotationAxes,
+      );
       this.motionReadback.enroll(entity, true);
       this.motionReadback.notify(entity);
       return ok(undefined);
@@ -2570,6 +2493,69 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
     try {
       this.contactDeltaTime = 0;
       body.applyImpulse({ x: impulse[0], y: impulse[1], z: impulse[2] }, true);
+      this.motionReadback.notify(entity);
+      return ok(undefined);
+    } catch (cause) {
+      return err(
+        new ManagedPhysicsError('managed-physics-failed', {
+          reason: String(cause),
+          recovery: 'rebuild-required',
+        }),
+      );
+    }
+  }
+
+  applyBodyImpulseAtPoint(
+    entity: number,
+    impulse: PhysicsVector,
+    point: PhysicsVector,
+  ): Result<void, ManagedPhysicsFailure> {
+    this.assertActive('applyBodyImpulseAtPoint');
+    const body = this.bodyForEntity(entity);
+    if (body === undefined) return err(new ManagedPhysicsError('managed-body-missing', { entity }));
+    if (!body.isDynamic() || !finitePhysicsVector(impulse, 3) || !finitePhysicsVector(point, 3))
+      return err(
+        new ManagedPhysicsError('managed-joint-invalid', {
+          index: -1,
+          reason: 'finite impulse, finite world-space point and dynamic body required',
+        }),
+      );
+    try {
+      this.contactDeltaTime = 0;
+      body.applyImpulseAtPoint(
+        { x: impulse[0], y: impulse[1], z: impulse[2] },
+        { x: point[0], y: point[1], z: point[2] },
+        true,
+      );
+      this.motionReadback.notify(entity);
+      return ok(undefined);
+    } catch (cause) {
+      return err(
+        new ManagedPhysicsError('managed-physics-failed', {
+          reason: String(cause),
+          recovery: 'rebuild-required',
+        }),
+      );
+    }
+  }
+
+  applyBodyAngularImpulse(
+    entity: number,
+    impulse: PhysicsVector,
+  ): Result<void, ManagedPhysicsFailure> {
+    this.assertActive('applyBodyAngularImpulse');
+    const body = this.bodyForEntity(entity);
+    if (body === undefined) return err(new ManagedPhysicsError('managed-body-missing', { entity }));
+    if (!body.isDynamic() || !finitePhysicsVector(impulse, 3))
+      return err(
+        new ManagedPhysicsError('managed-joint-invalid', {
+          index: -1,
+          reason: 'finite angular impulse and dynamic body required',
+        }),
+      );
+    try {
+      this.contactDeltaTime = 0;
+      body.applyTorqueImpulse({ x: impulse[0], y: impulse[1], z: impulse[2] }, true);
       this.motionReadback.notify(entity);
       return ok(undefined);
     } catch (cause) {
@@ -2747,7 +2733,7 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
 
   /** Applies the candidate natively and returns the body record it will own once accepted. */
   private stageDerivedRecord(undo: DerivedAdmissionUndo): DerivedBodyRecord {
-    return runStageDerivedRecord(
+    const committed = runStageDerivedRecord(
       this.motionReadback,
       () => this.raw,
       this.derivedColliderToShape,
@@ -2783,6 +2769,17 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
       () => this.backendGeneration,
       undo,
     );
+    const policy = this.entityMap.get(undo.record.input.entity);
+    const body = undo.body;
+    if (policy && body)
+      this.syncBodyAxes(
+        undo.record.input.entity,
+        body,
+        policy.lockRotation,
+        policy.translationAxes,
+        policy.rotationAxes,
+      );
+    return committed;
   }
 
   private stageDerivedConstraints(
@@ -2792,7 +2789,10 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
     for (const constraint of record.input.constraints ?? []) {
       const created = this.createNativeConstraint(constraint);
       if (!created.ok) throw created.error;
-      staged.set(constraint.id, { input: { ...constraint }, handle: created.value.handle });
+      staged.set(constraint.id, {
+        input: clonePhysicsConstraintInput(constraint),
+        handle: created.value.handle,
+      });
     }
   }
 
@@ -3202,7 +3202,7 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
       .filter(
         (constraint) => constraint.input.bodyA === entity || constraint.input.bodyB === entity,
       )
-      .map((constraint) => ({ ...constraint.input }));
+      .map((constraint) => clonePhysicsConstraintInput(constraint.input));
   }
 
   private installDerivedConstraint(
@@ -3580,7 +3580,14 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
       (entity, transform, collider, bodyType) =>
         this.syncAuthoredPose(entity, transform, collider, bodyType),
       (body, additionalMass) => this.restoreAutomaticMass(body, additionalMass),
-      (entity, body, locked) => this.syncRotationLock(entity, body, locked),
+      (entity, body, locked) =>
+        this.syncBodyAxes(
+          entity,
+          body,
+          locked,
+          descriptor.rigidBody.translationAxes ?? 7,
+          descriptor.rigidBody.rotationAxes ?? 7,
+        ),
       (body, previous, automaticAdditionalMass) =>
         this.restoreCommittedMass(body, previous, automaticAdditionalMass),
       entity,
@@ -3605,12 +3612,36 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
     );
   }
 
-  private syncRotationLock(entity: number, body: RapierRigidBody, locked: boolean): void {
+  private syncBodyAxes(
+    entity: number,
+    body: RapierRigidBody,
+    locked: boolean,
+    translationAxes: number,
+    authoredRotationAxes: number,
+  ): void {
     const record = this.entityMap.get(entity);
     if (record === undefined) return;
-    if (record.lockRotation !== locked) body.lockRotations(locked, true);
-    if (locked) body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    const rotationAxes = locked ? 0 : authoredRotationAxes;
+    if (record.translationAxes !== translationAxes)
+      body.setEnabledTranslations(
+        Boolean(translationAxes & 1),
+        Boolean(translationAxes & 2),
+        Boolean(translationAxes & 4),
+        true,
+      );
+    if (record.rotationAxes !== rotationAxes)
+      body.setEnabledRotations(
+        Boolean(rotationAxes & 1),
+        Boolean(rotationAxes & 2),
+        Boolean(rotationAxes & 4),
+        true,
+      );
+    if (translationAxes !== 7)
+      body.setLinvel(allowedBodyVelocity(body.linvel(), translationAxes), true);
+    if (rotationAxes !== 7) body.setAngvel(allowedBodyVelocity(body.angvel(), rotationAxes), true);
     record.lockRotation = locked;
+    record.translationAxes = translationAxes;
+    record.rotationAxes = rotationAxes;
   }
 
   private geometryOwner(): SharedCollisionGeometry {
@@ -3810,7 +3841,10 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
       angularDamping: number;
       gravityScale: number;
       ccdEnabled: number;
+      canSleep?: boolean;
       lockRotation?: boolean;
+      translationAxes?: number;
+      rotationAxes?: number;
       additionalSolverIterations?: number;
     },
     collider: ColliderSnapshot | undefined,
@@ -3823,7 +3857,14 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
       () => this.raw,
       (entity, bodyHandle, additionalMass, authoredDensity) =>
         this.registerBody(entity, bodyHandle, additionalMass, authoredDensity),
-      (entity, body, locked) => this.syncRotationLock(entity, body, locked),
+      (entity, body, locked) =>
+        this.syncBodyAxes(
+          entity,
+          body,
+          locked,
+          rigidBody.translationAxes ?? 7,
+          rigidBody.rotationAxes ?? 7,
+        ),
       (desc, body, collider) => this.createAuthoredCollider(desc, body, collider),
       (collider, entity) => this.syncIsolationCollider(collider, entity),
       (entity) => this.removeEntity(entity),
@@ -3882,6 +3923,8 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
       motionDiscontinuity: 0,
       bodyHandle,
       lockRotation: false,
+      translationAxes: 7,
+      rotationAxes: 7,
       scale: Object.freeze([1, 1, 1]),
       worldIdentity: this.worldIdentity,
       additionalMass: Math.max(0, additionalMass),

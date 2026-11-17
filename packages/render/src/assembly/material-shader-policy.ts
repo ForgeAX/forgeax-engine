@@ -1149,7 +1149,7 @@ export function resolveCachedMaterialShaderVariant(
  * missing its manifest row. Shaders declaring them also declare a capability
  * axis, so the capability gate above already admits them.
  */
-// Lean lighting stays opt-in within the simple receiver domain. Each requested
+// Receiver shape and lean lighting are independent opt-ins. Each requested
 // row is checked independently against the publication rules below.
 const RULE_GATED_OPT_IN_AXES = ['DIRECTIONAL_SHADOW_SIMPLE', 'LEAN_LIGHTING'] as const;
 

@@ -76,7 +76,12 @@ export type RenderFeatureCompletion = Pick<
  * lets the Standard owner place atmospheric transport without adding a
  * second renderer or a feature-specific side channel.
  */
-export type RenderFeaturePlacement = 'scene' | 'after-depth' | 'after-tonemap' | 'post';
+export type RenderFeaturePlacement =
+  | 'environment'
+  | 'scene'
+  | 'after-depth'
+  | 'after-tonemap'
+  | 'post';
 
 /**
  * Shader preparation policy for feature-owned GPU programs.
@@ -138,6 +143,7 @@ export interface RenderFeatureExtractView {
   readonly selectedCamera?: CameraSnapshot;
   /** Derived matrices and basis for the selected view; never rescan World camera state. */
   readonly selectedView?: {
+    readonly cullMask?: number;
     readonly position: Float32Array;
     readonly right: Float32Array;
     readonly up: Float32Array;
@@ -227,6 +233,8 @@ export interface RenderFeature<FrameData> {
   readonly identity: string;
   /** Canonical immutable idle value. Source extract returns this exact value to omit its wire row. */
   readonly inactiveSourceData?: FrameData;
+  /** Native producers must precede this feature in preparation and the frame graph. */
+  readonly dependencies?: readonly string[];
   /**
    * Which capture faces (planar reflection, reflection probe, cube capture)
    * this Feature records into. Omitted means `display-only`; scene-content
@@ -285,6 +293,11 @@ export interface RenderFeature<FrameData> {
    * extracted frame and never during declarative planning.
    */
   onFrameSubmitted?(data: FrameData, submission?: RenderFeatureSubmission): void;
+  /** Detached data only; GPU authority remains exclusively in the host. */
+  onBufferReadback?(
+    data: FrameData,
+    result: { readonly tag: unknown; readonly bytes?: Uint8Array; readonly error?: unknown },
+  ): void;
   /** The existing receipt owner maps declared copies once, after GPU completion. */
   onFrameReceipt?(
     receipt: FrameReceipt,

@@ -38,6 +38,16 @@ function sameDerivedCollider(a: DerivedShapeInput, b: DerivedShapeInput): boolea
     a.solverGroups !== b.solverGroups
   )
     return false;
+  const samePrimitiveGeometry = () => {
+    if (a.kind === 'cuboid' && b.kind === 'cuboid') return same(a.halfExtents, b.halfExtents);
+    if (a.kind === 'sphere' && b.kind === 'sphere') return a.radius === b.radius;
+    if (
+      (a.kind === 'capsule' && b.kind === 'capsule') ||
+      (a.kind === 'cylinder' && b.kind === 'cylinder')
+    )
+      return a.radius === b.radius && a.halfHeight === b.halfHeight;
+    return undefined;
+  };
   const sameGeometry = () => {
     if (a.kind === 'voxels' && b.kind === 'voxels')
       return same(a.voxelSize, b.voxelSize) && same(a.regions, b.regions);
@@ -50,6 +60,8 @@ function sameDerivedCollider(a: DerivedShapeInput, b: DerivedShapeInput): boolea
       );
     if (a.kind === 'trimesh' && b.kind === 'trimesh')
       return same(a.vertices, b.vertices) && same(a.indices, b.indices);
+    const primitive = samePrimitiveGeometry();
+    if (primitive !== undefined) return primitive;
     return (
       a.kind === 'convex-compound' &&
       b.kind === 'convex-compound' &&
@@ -212,7 +224,15 @@ export function createDerivedColliderDesc(
   shape: DerivedShapeInput,
 ): ColliderDesc {
   let geometry: ColliderDesc;
-  if (shape.kind === 'voxels') {
+  if (shape.kind === 'cuboid') {
+    geometry = RAPIER.ColliderDesc.cuboid(...shape.halfExtents);
+  } else if (shape.kind === 'sphere') {
+    geometry = RAPIER.ColliderDesc.ball(shape.radius);
+  } else if (shape.kind === 'capsule') {
+    geometry = RAPIER.ColliderDesc.capsule(shape.halfHeight, shape.radius);
+  } else if (shape.kind === 'cylinder') {
+    geometry = RAPIER.ColliderDesc.cylinder(shape.halfHeight, shape.radius);
+  } else if (shape.kind === 'voxels') {
     geometry = RAPIER.ColliderDesc.voxelRegions(shape.regions, {
       x: shape.voxelSize[0],
       y: shape.voxelSize[1],

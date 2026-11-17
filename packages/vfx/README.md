@@ -108,6 +108,25 @@ enclose the selected geometry, and `submesh` retains its usual meaning.
 Only the material is a static GUID dependency for this source. Do not add
 `MeshRenderer` unless a separate ordinary Scene draw is intended.
 
+`schedule.warmupSeconds` optionally pre-rolls an emitter on the GPU before its
+first visible state. It accepts 0..10 seconds and uses ordinary managed compute
+ticks at no more than 1/60 second per tick. Pre-roll retains the actual cooked
+definition, parameters and device recovery path. It neither advances World time
+nor repeats external channel inputs, and it does not create CPU particles.
+Warmup ticks have a separate bounded reservation from normal pending-frame ticks.
+Effect elapsed time includes this simulation pre-roll; World elapsed time does not.
+
+`schedule.randomness` optionally jitters rate slots by a fraction in [0,1].
+Emission times derive from Player seed, emitter identity and spawn ordinal, so
+crossed counts are independent of frame partition and remain deterministic on
+replay. With randomness zero, the original rate/remainder behavior is unchanged.
+Bursts may declare `spreadSeconds` to distribute their count over a finite window;
+when a loop is declared this window must fit inside one loop. Omitted or zero
+spread preserves an instantaneous burst. Only spawn scheduling runs on the CPU;
+all particle state and motion remain GPU-owned.
+
+## Program v3 data plane
+
 ## Schema v3 authoring data plane
 
 `defineParticleEffectSourceV3` keeps the authoring schema at version 3. Its sole
@@ -394,7 +413,7 @@ responsibility.
 - Cold GPU preparation stalls effect time within the bounded queue. Post-start overflow reports `vfx-intent-queue-overflow`; ticks are not silently discarded.
 - Seed/effect changes and stop-to-play transitions restart the player at an update boundary.
 - `phaseTick` counts effect dispatches, including zero-time admission, and resets to zero on replay or `restart-on-visible`; `tick` is the runtime update count kept for correlation. Each intent records its own `delta` and the cycle's `elapsed` seconds; `initialDelta` retains the first dispatch delta so recovery does not add a simulated interval to an initialized Player.
-- Recovery quantizes variable frame deltas: `buildVfxRecoveryIntents` replays the same dispatch count over the same cycle time, keeping the exact `initialDelta` and splitting the remaining `elapsed` evenly. Dispatch count, cycle time, spawn total and particle IDs match the live cycle; motion integrates over the even steps instead of the recorded frame partition.
+- Ordinary effect recovery quantizes variable frame deltas: `buildVfxRecoveryIntents` replays the same dispatch count over the same cycle time, keeping the exact `initialDelta` and splitting the remaining `elapsed` evenly. Dispatch count, cycle time, spawn total and particle IDs match the live cycle; motion integrates over the even steps instead of the recorded frame partition. Persistent allocator pools instead require the exact submitted author-input history described below.
 - `replay(player)` advances an authored stopped player for exactly one update and never creates a second persistent play-state authority.
 
 `VfxGpuRuntime.inspectPlayers()` and `inspectPlayer(player)` expose stable keyed
@@ -501,3 +520,69 @@ The portable managed field path admits at most eight compute storage bindings. C
 Scalar/vector byte sizes and alignments derive from Types' `WGSL_NUMERIC_LAYOUT`.
 VFX retains its Core field offsets, Custom lane budget, and authored member order;
 the compiler and runtime packers consume the same numeric layout.
+
+### Producer-backed water sampling and GPU output events
+
+World-specific GPU samplers use `createVfxRuntimeHost({providersForWorld})`.
+The source World captures portable feature-texture references and uniform data;
+render workers resolve those references against their own device generation.
+Declare producer ordering with the host's `dependencies` option. Opaque GPU
+views are never transported between realms.
+
+An authored water effect imports
+`forgeax_vfx::data::{water_displacement,water_hull,water_config}` and calls
+`vfx_water_sample(worldPosition)`. Its provider supplies the actual displacement
+array, local hull-wave texture, and a 112-byte uniform describing their world
+mapping. The managed shader inverts horizontal displacement four times and
+returns actual height, finite-difference normal, and local wave vertical velocity.
+
+`createVfxGpuEventOutput(world, capacity).unwrap()` owns a bounded output stream.
+Subscribe to its typed event records and release the subscription/owner on exit;
+`reset()` changes the epoch so queued observations from the previous run cannot
+leak into a new run. Effects import `forgeax_vfx::data::gpu_events` and call
+`vfx_emit_event(channel, position, strength, particleId)`. The return value says
+whether the shared World/frame output budget accepted the event. Only these
+records are asynchronously read back; particle storage remains GPU-only.
+Receipt-bound triple buffering rejects new output when every readback slot is
+busy. Epoch, device generation and ordered sequence checks reject stale records.
+
+`VfxGpuUpdate` is the public Update ordering token for game systems that publish
+Player parameters after physics and before native GPU tick intents are captured.
+
+Persistent visual pools may declare `emitter.pool` with a closed allocator
+configuration. The managed single-invocation allocator runs after initial spawn
+and before authored updates, selects idle slots first and otherwise the largest
+GPU-authored priority, and invokes the declared acquire hook with
+`(ctx, particle, custom, commandIndex, ordinal, physicalSlot)`. Commands are typed
+uniforms; neither allocation nor particle motion is mirrored on the CPU.
+
+Persistent-pool recovery retains complete submitted input cycles, including each
+delta, parameter block, source transform, asset version and producer snapshot.
+`maxRecoveryRecords` (per emitter, default 16384) and
+`maxRecoveryPayloadBytes` (shared unique buffers, default 128 MiB) bound this
+history. Exceeding either budget reports a structured recovery error; a live
+cycle is never silently truncated. A transient pool can start a new cycle after
+all authored lifetimes have expired.
+
+Temporal data-interface providers publish a frame/version recovery resource and
+retain its source checkpoint/tape through `retainRecovery`. The runtime holds
+that lease until the corresponding input history is released. Recovering ticks
+use the captured uniforms and historical resource, never the current producer
+texture. Coupled producer/consumer work uses the render graph's temporal timeline
+to replay each producer tick before its VFX consumer. An unavailable historical
+environment blocks recovery explicitly. Recovery GPU events use an independent
+zero-capacity sink so historical collisions cannot repeat live game effects.
+
+`ParticleEffectWorldBounds` supplies an author-owned world AABB for one Player's
+visibility. Extraction snapshots this component and publishes it across render
+realms; admission, retained rendering and visibility feedback consume the same
+volume. It overrides culling only. Moving an emitter's volume never moves
+world-space GPU particles, changes their simulation coordinates, or requires a
+particle-state readback. Without the component, authored emitter bounds retain
+their existing simulation-space behavior.
+
+### Ordered coupled GPU pools and bounded output contributions
+
+Code-first `pool.control` names an authored `fn(VfxSpawnContext)` called by the managed single-invocation allocator after scheduled initialization/acquire and before update/compaction. A control-only pool declares no command pairs. Managed `vfx_pool_load_particle/custom` and `vfx_pool_store_particle/custom` expose only that emitter's bounded storage; writes maintain the managed alive scratch. Out-of-range reads return zero, writes are rejected. This supports coupled secondary emissions without concurrent per-particle slot mutation or CPU simulation.
+
+`acquireVfxGpuEventChannel(world, channel, capacity)` borrows an existing World output owner through a Result and returns an explicit release/subscribe lease. The one binding-21 buffer reserves disjoint quotas for at most 16 channels (1024 total records). Primary channel 1 retains the original owner's quota. Layout changes advance the output epoch; portable publication, native allocation, three-slot receipt-bound readback and zero-capacity recovery sinks share the same header contract. `vfx_emit_event` appends within its channel quota. An authored single controller may instead call `vfx_write_observation(channel, ordinal, position, strength, id)` to replace a bounded aggregate observation with the latest submitted GPU tick. Consumers observe derived render facts; they must not integrate a CPU particle mirror. Source generation IDs reject reset-era observations. These additions are implemented but not yet validated in the current migration batch.

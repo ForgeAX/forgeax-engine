@@ -210,3 +210,25 @@ export function validateEnumFieldValues<S extends ComponentSchema>(
   }
   return null;
 }
+
+export class TimeScaleInvalidError extends Error {
+  override readonly name = 'TimeScaleInvalidError';
+  readonly code = 'time-scale-invalid' as const;
+  readonly expected = 'a finite scale greater than or equal to 0';
+  readonly hint = 'Pass a finite non-negative scale to World.acquireTimeScale or lease.set.';
+  readonly detail: { readonly received: number };
+  constructor(received: number) {
+    super(`Invalid time scale: ${received}`);
+    this.detail = { received };
+  }
+}
+export class TimeScaleLeaseReleasedError extends Error {
+  override readonly name = 'TimeScaleLeaseReleasedError';
+  readonly code = 'time-scale-lease-released' as const;
+  readonly expected = 'an active time scale lease';
+  readonly hint = 'Acquire a new lease; released contributions cannot be reactivated.';
+  readonly detail = {};
+  constructor() {
+    super('Cannot change a released time scale lease.');
+  }
+}

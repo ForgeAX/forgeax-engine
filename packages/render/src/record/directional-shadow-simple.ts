@@ -30,7 +30,7 @@ export function directionalShadowSimple(
  * modifier lanes: no IES, Cookie or projector spot, no IES point, no rect-area
  * or additional directional slot, no atmosphere solar transmittance and no
  * live cloud shadow (absent, low sun or empty range). The forward Standard
- * pipeline can select LEAN_LIGHTING within the admitted simple-receiver domain.
+ * pipeline can select LEAN_LIGHTING within the admitted plain storage-forward domain.
  * The predicates stay distinct: full lighting keeps every modifier lane while
  * still allowing a simple directional receiver.
  */

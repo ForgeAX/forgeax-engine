@@ -34,7 +34,10 @@ export function addOutlinePasses(
   waterInfoTargets?: WaterInfoGraphTargets,
 ): Result<RenderPipelineTarget, RenderGraphError> {
   const label = (name: string) => name.replace(/^outline/, options.prefix ?? 'outline');
-  const selection = options.selection ?? ((frame: RenderPipelineFrame) => frame.camera.outline);
+  const selection =
+    options.selection ??
+    ((frame: RenderPipelineFrame) =>
+      frame.camera.outline?.distanceField ? undefined : frame.camera.outline);
   const params = (_previous: Uint8Array | undefined, frame: RenderPipelineFrame) =>
     outlineParams(selection(frame));
   const program = (name: string) =>

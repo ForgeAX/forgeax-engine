@@ -75,7 +75,7 @@ export {
   validMusicBpm,
   validMusicScore,
 } from './music';
+export { type AudioPlaybackRateLease, acquireAudioPlaybackRate } from './playback-rate';
 export { audioPlugin } from './plugin-factory';
 export { audioBackendPlugin } from './plugin-service';
-
 export { AudioTickOrder } from './system-order';

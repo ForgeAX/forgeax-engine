@@ -168,6 +168,8 @@ import type {
 import type { FoldDispatchPlan } from './mesh-ssbo';
 
 export interface RenderSystemRuntime {
+  /** Prepared native feature resources available to material and geometry recording. */
+  readonly sharedFeatureGpuWork?: import('../features/prepared-gpu-work').RenderFeatureGpuWorkOwner;
   /** Renderer admission options consumed by typed graph validation. */
   readonly options?: Pick<RendererOptions, 'featureTextureReadbackBudgetBytes'> | undefined;
   /** Renderer submission identity shared by feature extraction and recording. */
@@ -605,7 +607,7 @@ export interface RenderSystemInternals extends RenderSystemRuntime {
   readonly standardProfile?: StandardProfile | undefined;
   readonly standardPipeline: RenderFrameState['activePipeline'];
   readonly featureHost?: RenderFeatureHost | undefined;
-  readonly sharedFeatureGpuWork?: import('../features/prepared-gpu-work').RenderFeatureGpuWorkOwner;
+
   /** Install a detached feature host only at the recovery publication boundary. */
   readonly setFeatureHost?: ((host: RenderFeatureHost) => void) | undefined;
   readonly shaderModuleFactory?: PipelineBuilderShaderModuleFactory;

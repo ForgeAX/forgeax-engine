@@ -8,6 +8,10 @@ import type {
 } from './code-source.js';
 import { type VfxValue, type VfxValueType, vfxValueMatches } from './effect-contract.js';
 import { type VfxForceField, validateVfxForceFields } from './force-fields.js';
+import {
+  type GpuSlotAllocatorSource,
+  parseGpuSlotAllocatorSource,
+} from './gpu-slot-allocator-source';
 import type { VfxParticleCoreAttribute } from './particle-layout.js';
 
 /** Renderer sorting modes in Program v3. Segment topology order is unaffected. */
@@ -155,6 +159,7 @@ export function isParticleTopologyRenderer(
 
 /** The structural emitter with its renderers refined to the v3 renderer vocabulary. */
 export interface ParticleEmitterSourceV3 extends ParticleEmitterSourceBase {
+  readonly pool?: GpuSlotAllocatorSource;
   readonly renderers: readonly ParticleRendererSourceV3[];
   readonly waterGridEmission?: ParticleWaterGridEmissionSource;
   readonly forceFields?: readonly VfxForceField[];
@@ -796,7 +801,13 @@ function emitterScheduleFailure(
   if (!record(schedule) || !finite(schedule.rate) || schedule.rate < 0) {
     return invalid(`${path}.schedule`, 'a non-negative spawn schedule', id);
   }
-  const scheduleExtra = unknownField(schedule, ['rate', 'bursts', 'loopDuration']);
+  const scheduleExtra = unknownField(schedule, [
+    'rate',
+    'bursts',
+    'loopDuration',
+    'warmupSeconds',
+    'randomness',
+  ]);
   if (scheduleExtra !== undefined) {
     return invalid(`${path}.schedule.${scheduleExtra}`, 'a supported schedule field', id);
   }
@@ -810,24 +821,58 @@ function emitterScheduleFailure(
   ) {
     return invalid(`${path}.schedule.bursts`, 'non-negative timed positive bursts', id);
   }
-  if (Array.isArray(schedule.bursts)) {
-    for (const [burstIndex, burst] of schedule.bursts.entries()) {
-      if (!record(burst)) continue;
-      const burstExtra = unknownField(burst, ['time', 'count']);
-      if (burstExtra !== undefined) {
-        return invalid(
-          `${path}.schedule.bursts[${burstIndex}].${burstExtra}`,
-          'a supported burst field',
-          id,
-        );
+  const validateBurstWindows = () => {
+    if (Array.isArray(schedule.bursts)) {
+      for (const [burstIndex, burst] of schedule.bursts.entries()) {
+        if (!record(burst)) continue;
+        const burstExtra = unknownField(burst, ['time', 'count', 'spreadSeconds']);
+        if (burstExtra !== undefined) {
+          return invalid(
+            `${path}.schedule.bursts[${burstIndex}].${burstExtra}`,
+            'a supported burst field',
+            id,
+          );
+        }
+        if (
+          burst.spreadSeconds !== undefined &&
+          (!finite(burst.spreadSeconds) ||
+            burst.spreadSeconds < 0 ||
+            (finite(schedule.loopDuration) && burst.spreadSeconds > schedule.loopDuration))
+        ) {
+          return invalid(
+            `${path}.schedule.bursts[${burstIndex}].spreadSeconds`,
+            'non-negative finite seconds, no longer than an authored loop',
+            id,
+          );
+        }
       }
     }
-  }
+
+    return undefined;
+  };
+  const validateBurstWindowsFailure = validateBurstWindows();
+  if (validateBurstWindowsFailure !== undefined) return validateBurstWindowsFailure;
   if (
     schedule.loopDuration !== undefined &&
     (!finite(schedule.loopDuration) || schedule.loopDuration <= 0)
   ) {
     return invalid(`${path}.schedule.loopDuration`, 'a positive finite duration', id);
+  }
+  if (
+    schedule.warmupSeconds !== undefined &&
+    (!finite(schedule.warmupSeconds) || schedule.warmupSeconds < 0 || schedule.warmupSeconds > 10)
+  ) {
+    return invalid(`${path}.schedule.warmupSeconds`, 'finite seconds in [0,10]', id);
+  }
+  if (
+    schedule.randomness !== undefined &&
+    (!finite(schedule.randomness) || schedule.randomness < 0 || schedule.randomness > 1)
+  ) {
+    return invalid(
+      `${path}.schedule.randomness`,
+      'a finite scheduling jitter fraction in [0,1]',
+      id,
+    );
   }
   return undefined;
 }
@@ -1163,6 +1208,7 @@ function parseEmitter(
     'waterGridEmission',
     'simulationWhenCulled',
     'forceFields',
+    'pool',
   ]);
   if (extra !== undefined) return invalid(`${path}.${extra}`, 'a Program v3 emitter field');
   if (!text(value.id) || ids.has(value.id)) return invalid(`${path}.id`, 'a unique non-empty id');
@@ -1175,6 +1221,10 @@ function parseEmitter(
       runtimeReferences,
     );
     if (!fields.ok) return invalid(fields.error.detail.path, fields.error.expected, id);
+  }
+  if (value.pool !== undefined) {
+    const pool = parseGpuSlotAllocatorSource(value.pool);
+    if (!pool.ok) return invalid(`${path}.${pool.error.path}`, pool.error.expected, id);
   }
   if (!positiveInteger(value.capacity))
     return invalid(`${path}.capacity`, 'a positive integer', id);

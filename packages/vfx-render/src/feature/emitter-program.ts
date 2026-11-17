@@ -106,6 +106,15 @@ export function simulationDispatches(
       entryPoint: 'forgeax_vfx_spawn_main',
       workgroups: [intent.spawnCount === 0 && waterEmission === undefined ? 0 : groups],
     },
+    ...(entries.includes('forgeax_vfx_pool_allocate_main')
+      ? [
+          {
+            kind: 'direct' as const,
+            entryPoint: 'forgeax_vfx_pool_allocate_main',
+            workgroups: [1] as const,
+          },
+        ]
+      : []),
     {
       kind: 'direct',
       entryPoint: fusedUpdate ? 'forgeax_vfx_update_compact_main' : 'forgeax_vfx_update_main',

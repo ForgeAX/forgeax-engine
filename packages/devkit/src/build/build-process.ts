@@ -22,6 +22,8 @@ import {
   ok,
   type PluginAssetDefinition,
 } from '@forgeax/engine-types';
+import { validateRenderFeatureContributions } from '../host/render-feature-contributions.js';
+
 import { validateStartupUi } from '../host/startup-ui.js';
 import type { DevKitAppOptions, DevKitDeliveryOptions } from '../plugin-build.js';
 import { decodeBuildMessage, encodeBuildMessage } from './build-process-wire.js';
@@ -156,6 +158,8 @@ const APP_OPTION_KEYS: ReadonlySet<string> = new Set([
   'backgroundPipelineLibraryConcurrency',
   'time',
   'renderPipelineCapacity',
+  'renderFeatures',
+  'vfxDependencies',
   'renderTaskYield',
   'loadingLabels',
   'startupUi',
@@ -228,26 +232,8 @@ function validateWechatOptions(wechat: DevKitAppOptions['wechat']): void {
   }
 }
 
-/** Admit a closed data-only projection; World and Render retain their policies. */
-function projectAppOptions(value: unknown): DevKitAppOptions {
-  if (value === undefined) return {};
-  if (
-    typeof value !== 'object' ||
-    value === null ||
-    (Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null) ||
-    Reflect.ownKeys(value).some((key) => typeof key !== 'string' || !APP_OPTION_KEYS.has(key))
-  )
-    throw new TypeError('devkitAppOptions must contain only public project App options');
-  const options = copyPackData(value) as DevKitAppOptions;
-  validateCanvasPixelRatio(options.canvasPixelRatio);
-  const capacity = options.renderPipelineCapacity;
-  if (capacity !== undefined && capacity !== 2 && capacity !== 3 && capacity !== 4)
-    throw new TypeError('devkitAppOptions.renderPipelineCapacity must be 2, 3 or 4');
-  validateRenderTaskYield(options.renderTaskYield);
-  validateBackgroundPipelineLibraryConcurrency(options.backgroundPipelineLibraryConcurrency);
-  validateWechatOptions(options.wechat);
-  if (options.time !== undefined) {
-    const time = options.time;
+function validateTimeOptions(time: DevKitAppOptions['time']): void {
+  if (time !== undefined) {
     if (
       typeof time !== 'object' ||
       time === null ||
@@ -265,6 +251,37 @@ function projectAppOptions(value: unknown): DevKitAppOptions {
     )
       throw new TypeError('devkitAppOptions.time must contain positive finite World time options');
   }
+}
+
+/** Admit a closed data-only projection; World and Render retain their policies. */
+function projectAppOptions(value: unknown): DevKitAppOptions {
+  if (value === undefined) return {};
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    (Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null) ||
+    Reflect.ownKeys(value).some((key) => typeof key !== 'string' || !APP_OPTION_KEYS.has(key))
+  )
+    throw new TypeError('devkitAppOptions must contain only public project App options');
+  const options = copyPackData(value) as DevKitAppOptions;
+  validateCanvasPixelRatio(options.canvasPixelRatio);
+  const capacity = options.renderPipelineCapacity;
+  if (capacity !== undefined && capacity !== 2 && capacity !== 3 && capacity !== 4)
+    throw new TypeError('devkitAppOptions.renderPipelineCapacity must be 2, 3 or 4');
+  validateRenderTaskYield(options.renderTaskYield);
+  validateRenderFeatureContributions(options.renderFeatures);
+  if (
+    options.vfxDependencies !== undefined &&
+    (!Array.isArray(options.vfxDependencies) ||
+      options.vfxDependencies.some((value) => typeof value !== 'string' || !value) ||
+      new Set(options.vfxDependencies).size !== options.vfxDependencies.length)
+  )
+    throw new TypeError(
+      'devkitAppOptions.vfxDependencies requires unique selected feature identities',
+    );
+  validateBackgroundPipelineLibraryConcurrency(options.backgroundPipelineLibraryConcurrency);
+  validateWechatOptions(options.wechat);
+  validateTimeOptions(options.time);
   validateLoadingLabels(options.loadingLabels);
   validateStartupUi(options.startupUi);
   validateResourceBudgetOptions(options);

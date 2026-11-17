@@ -413,3 +413,7 @@ See [regional semantics and saved authoring](../audio/README.md#acoustic-regions
 and fixed source mechanisms and acceptance.
 
 If the caller closes a supplied native Context, the next state read or admitted playback/listener/acoustic control retires the old source taps, pending playback controls and bus graph through the existing destroy path. Closed listener access returns `undefined`; playback cannot create another Context. A rebuilt App creates its fresh Host owner explicitly. Native regressions cover both an active regional source at close and disposal while real clip decode is pending.
+
+## Owned global playback speed
+
+`acquireAudioPlaybackRate(backend, scale)` returns an owned lease with `active`, `scale`, `set(scale)` and idempotent `release()`. Finite positive scales are accepted. The minimum active contribution wins; releasing the last contribution restores 1. This composes independent slowdown owners without overwriting per-source pitch. Use an unscaled game clock for recovery. The realm-neutral intent reaches the Host, which applies the multiplier to active and future buffered/streaming voices and synchronized music. Music beat and pending fade timing follow the same speed. Release leases before destroying the audio backend.

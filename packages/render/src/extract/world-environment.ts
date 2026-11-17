@@ -1,4 +1,4 @@
-import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
+﻿import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import type { Component, EntityHandle, SchemaOf, ShapeOf, World } from '@forgeax/engine-ecs';
 import {
   readEntityComponentEpoch,
@@ -35,6 +35,7 @@ import {
 } from '../components/light-helpers';
 import { validateChannelMask } from '../components/lighting-channels';
 import { validatePointLightDecay } from '../components/point-light';
+import { RenderFeatureEnvironment } from '../components/render-feature-environment';
 import { selectEnvironment } from '../environment/frame';
 import { SpawnLightInvalidBoundsError } from '../errors/component-validation';
 import { createLightResourceUnavailable } from '../errors/render';
@@ -1570,7 +1571,9 @@ function joinPointShadowLayers(
  */
 function skylightSnapshotOf(world: World, entity: EntityHandle): SkylightSnapshot {
   const captureWorld = readEnvironmentPose(world, entity);
+  const featureEnvironment = world.get(entity, RenderFeatureEnvironment);
   return {
+    ...(featureEnvironment.ok ? { featureEnvironment: { ...featureEnvironment.value } } : {}),
     ...(captureWorld === undefined
       ? {}
       : {
@@ -1677,9 +1680,11 @@ function extractSkybox(world: World) {
     ) as ShapeOf<SchemaOf<typeof SkyboxBackground>>['equirect'];
     const sMode = world[worldRead].getFieldValue(row.entity, SkyboxBackground, 'mode') as number;
     skyboxCount += 1;
-    if (skybox === undefined && sEquirect !== undefined) {
+    const featureEnvironment = world.get(row.entity, RenderFeatureEnvironment);
+    if (skybox === undefined && (sEquirect !== undefined || featureEnvironment.ok)) {
       skybox = {
-        equirectHandle: Math.round(sEquirect),
+        equirectHandle: sEquirect === undefined ? 0 : Math.round(sEquirect),
+        ...(featureEnvironment.ok ? { featureEnvironment: { ...featureEnvironment.value } } : {}),
         mode: sMode,
         rotation: quaternionOf(world, row.entity, SkyboxBackground),
         // w19: winning entity handle for the multi-SkyboxBackground warn (F-8).

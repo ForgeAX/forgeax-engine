@@ -1,9 +1,11 @@
 import { err, ok, type Result } from '@forgeax/engine-types';
 import {
   resolveVfxDataInterfaces,
+  type VfxDataInterfaceCaptureContext,
   type VfxDataInterfaceError,
   type VfxDataInterfaceKind,
   type VfxDataInterfaceProvider,
+  type VfxDataInterfaceRecoveryLease,
   type VfxDataInterfaceRequirement,
   type VfxDataInterfaceResolution,
   type VfxDataInterfaceResource,
@@ -15,9 +17,17 @@ import {
 export type { VfxDataInterfaceProvider } from '@forgeax/engine-vfx';
 
 export interface VfxDataInterfaceAvailabilitySource {
-  readonly available: (generation: number) => boolean;
+  readonly available: (generation: number, context?: VfxDataInterfaceCaptureContext) => boolean;
   readonly sampleCount?: 1 | 4;
-  readonly resource?: (generation: number) => VfxDataInterfaceResource['resource'] | undefined;
+  readonly resource?: (
+    generation: number,
+    context?: VfxDataInterfaceCaptureContext,
+  ) => VfxDataInterfaceResource['resource'] | undefined;
+  readonly recovery?: (
+    generation: number,
+    context?: VfxDataInterfaceCaptureContext,
+  ) => VfxDataInterfaceResource['recovery'] | undefined;
+  readonly retainRecovery?: VfxDataInterfaceProvider['retainRecovery'];
 }
 
 export interface VfxWaterSurfaceAvailabilitySource {
@@ -40,9 +50,13 @@ export interface VfxDataInterfaceRegistry {
       }
     | undefined;
   register(provider: VfxDataInterfaceProvider): Result<void, VfxDataInterfaceError>;
+  retainRecovery(
+    resource: VfxDataInterfaceResource,
+  ): Result<VfxDataInterfaceRecoveryLease | undefined, VfxDataInterfaceError>;
   resolve(
     requirements: readonly VfxDataInterfaceRequirement[],
     generation: number,
+    context?: VfxDataInterfaceCaptureContext,
   ): Result<VfxDataInterfaceResolution, VfxDataInterfaceError>;
 }
 
@@ -66,8 +80,9 @@ function availableProvider<K extends VfxDataInterfaceKind>(
     token,
     kind,
     bindingType,
-    provide: (generation) => {
-      if (!source.available(generation)) {
+    ...(source.retainRecovery === undefined ? {} : { retainRecovery: source.retainRecovery }),
+    provide: (generation, context) => {
+      if (!source.available(generation, context)) {
         return err({
           code: 'vfx-data-interface-missing',
           expected: `an available ${kind} provider for ${token}`,
@@ -75,7 +90,7 @@ function availableProvider<K extends VfxDataInterfaceKind>(
           detail: { token, providerId: `${token}-provider` },
         });
       }
-      const prepared = source.resource?.(generation);
+      const prepared = source.resource?.(generation, context);
       if (prepared === undefined) {
         return err({
           code: 'vfx-data-interface-missing',
@@ -88,6 +103,7 @@ function availableProvider<K extends VfxDataInterfaceKind>(
           },
         });
       }
+      const recovery = source.recovery?.(generation, context);
       const resource: VfxDataInterfaceResource = {
         token,
         kind,
@@ -95,6 +111,7 @@ function availableProvider<K extends VfxDataInterfaceKind>(
         generation,
         ...(source.sampleCount === undefined ? {} : { sampleCount: source.sampleCount }),
         resource: prepared,
+        ...(recovery === undefined ? {} : { recovery }),
       };
       return ok(resource);
     },
@@ -176,10 +193,25 @@ export function createVfxDataInterfaceRegistry(
       entries.set(provider.token, provider);
       return ok(undefined);
     },
-    resolve(requirements, generation) {
+    retainRecovery(resource) {
+      if (!resource.recovery) return ok(undefined);
+      const provider = entries.get(resource.token);
+      if (!provider?.retainRecovery)
+        return err({
+          code: 'vfx-data-interface-missing',
+          expected: 'a source owner lease for the exact temporal producer version',
+          hint: 'provide retainRecovery and keep the source checkpoint/tape alive until its VFX input history is released',
+          detail: {
+            token: resource.token,
+            ...(provider === undefined ? {} : { providerId: provider.id }),
+          },
+        });
+      return provider.retainRecovery(resource.recovery);
+    },
+    resolve(requirements, generation, context) {
       const result =
         registrationError === undefined
-          ? resolveVfxDataInterfaces(requirements, [...entries.values()], generation)
+          ? resolveVfxDataInterfaces(requirements, [...entries.values()], generation, context)
           : err(registrationError);
       lastSnapshot = Object.freeze({ generation, result });
       return result;

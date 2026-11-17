@@ -1,9 +1,11 @@
+import { fileURLToPath } from 'node:url';
 import { configDefaults, defineProject } from 'vitest/config';
 
 export default defineProject({
-  // The runtime transform also needs the test config. The production config
-  // excludes these files and would send Oxc to the root solution on Windows.
-  tsconfig: './tsconfig.test.json',
+  root: fileURLToPath(new URL('.', import.meta.url)),
+  // Match main's test source configuration while anchoring it to this package.
+  // The production exclusions must not send Oxc to the root solution on Windows.
+  tsconfig: fileURLToPath(new URL('./tsconfig.test.json', import.meta.url)),
   test: {
     environment: 'node',
     name: '@forgeax/engine-render',

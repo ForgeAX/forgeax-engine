@@ -11,6 +11,7 @@ import {
   type MaterialValue,
   materialGuidText,
   ok,
+  type RenderTextureSourceToken,
   type Result,
   resolveMaterialAsset,
   selectMaterialStaticContract,
@@ -89,6 +90,32 @@ export function prepareRuntimeAsset(
   );
 }
 
+function validTextureSourceToken(token: RenderTextureSourceToken): boolean {
+  return !(
+    token === null ||
+    typeof token !== 'object' ||
+    token.kind !== 'render-texture-source' ||
+    typeof token.owner !== 'string' ||
+    token.owner.length === 0 ||
+    !Number.isSafeInteger(token.id) ||
+    token.id <= 0 ||
+    !['target', 'canvas', 'external', 'feature'].includes(token.source) ||
+    (token.source === 'feature' &&
+      token.name !== undefined &&
+      (typeof token.name !== 'string' || token.name.length === 0)) ||
+    Object.keys(token).some(
+      (key) =>
+        ![
+          'kind',
+          'owner',
+          'id',
+          'source',
+          ...(token.source === 'feature' ? ['name'] : []),
+        ].includes(key),
+    )
+  );
+}
+
 /** Resolve authored texture references once; runtime material values contain owner identities. */
 export function linkRuntimeMaterial(
   material: MaterialAsset,
@@ -140,23 +167,12 @@ export function linkRuntimeMaterial(
     if (typeof value === 'object' && !Array.isArray(value) && 'source' in value) {
       fields.add(name);
       const token = value.source;
-      if (
-        'texture' in value ||
-        token === null ||
-        typeof token !== 'object' ||
-        token.kind !== 'render-texture-source' ||
-        typeof token.owner !== 'string' ||
-        token.owner.length === 0 ||
-        !Number.isSafeInteger(token.id) ||
-        token.id <= 0 ||
-        !['target', 'canvas', 'external', 'feature'].includes(token.source) ||
-        Object.keys(token).some((key) => !['kind', 'owner', 'id', 'source'].includes(key))
-      )
+      if ('texture' in value || !validTextureSourceToken(token))
         return err(
           new AssetError({
             code: 'asset-reference-invalid',
             expected: `a native texture source token for material parameter ${name}`,
-            hint: 'pass { source } using a RenderTarget, CanvasTexture or imported texture source',
+            hint: 'pass { source } using a RenderTarget, CanvasTexture, feature texture or imported texture source',
           }),
         );
       const sampler =

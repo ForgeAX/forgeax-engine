@@ -99,6 +99,35 @@ const MAX_PACKED_SIZE = 64 * 1024;
 /** Program v3 allocates reflected external resources after managed event bindings (8/9). */
 const DATA_INTERFACE_DEFINITIONS_V5: readonly VfxDataInterfaceRequirement[] = [
   {
+    token: 'vfx:gpu-events',
+    kind: 'gpu-events',
+    binding: 25,
+    bindingType: 'read-write-storage',
+    lifetime: 'generation',
+  },
+  {
+    token: 'vfx:water-displacement',
+    kind: 'water-displacement',
+    binding: 22,
+    bindingType: 'sampled-float-array',
+    lifetime: 'generation',
+  },
+  {
+    token: 'vfx:water-hull',
+    kind: 'water-hull',
+    binding: 23,
+    bindingType: 'sampled-float',
+    lifetime: 'generation',
+  },
+  {
+    token: 'vfx:water-config',
+    kind: 'water-config',
+    binding: 24,
+    bindingType: 'uniform',
+    lifetime: 'generation',
+  },
+
+  {
     token: 'vfx:scene-sdf',
     kind: 'scene-sdf',
     binding: 15,

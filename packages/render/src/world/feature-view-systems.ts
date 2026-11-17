@@ -26,9 +26,11 @@ import type { SkylightBindGroupResources } from '../ibl/skylight-bind-group';
 import type { MaterialResource } from '../material-resource';
 import type { StandardProfile } from '../pipeline/standard-profile';
 import { type RenderResourceScope, renderTime } from '../publication/resource-scope';
+import { leanLightingFrame } from '../record/directional-shadow-simple';
 import { resolveFrameMaterials } from '../record/frame-admission';
 import { resolveMaterialSkylight } from '../record/main-pass-material';
 import type { PipelineState } from '../record/render-context';
+import { cloudShadowProjectionFor } from '../record/view-topology';
 import type { CameraSnapshot } from '../render-contract';
 import type {
   DispatchEntry,
@@ -335,6 +337,10 @@ function prepareFeatureFrameInput(
   );
   const gi = viewDiffuseGiOf(world, entity);
   const extent = gi?.ok === true ? gi.value.renderExtent : undefined;
+  const lights = viewLightsOf(world, entity);
+  const leanLighting =
+    lights !== undefined &&
+    leanLightingFrame(lights, frame.environment?.source.kind, cloudShadowProjectionFor(cloudLayer));
   return {
     input: {
       ...featureFrameInput(
@@ -345,8 +351,9 @@ function prepareFeatureFrameInput(
         targets,
         featureView,
         identity,
-        viewLightsOf(world, entity)?.directional,
+        lights?.directional,
         cloudLayer,
+        leanLighting,
       ),
       ...(extent === undefined ? {} : { renderExtent: extent }),
     },
@@ -534,6 +541,7 @@ function featureFrameInput(
   identity: string,
   cloudSun: Parameters<typeof createCloudFeatureFrameContext>[3],
   cloudLayer: ExtractedCloudLayer | undefined,
+  leanLighting: boolean,
 ): RenderFeatureFrameInput {
   const { publication, source, frame } = view;
   const sceneInputs = recordContext(internals).featureSceneInputs;
@@ -635,7 +643,11 @@ function featureFrameInput(
       ? {}
       : { materialShaderBindingContract: internals.getMaterialShaderBindingContract }),
     createPreparedGraphicsResolver: (input) =>
-      createPreparedResolver(preparedResolver, input, source as RenderResourceScope),
+      createPreparedResolver(
+        { ...preparedResolver, leanLighting },
+        input,
+        source as RenderResourceScope,
+      ),
     gpuWork: preparedResolver.gpuWork,
     sceneResources:
       sceneInputs === undefined

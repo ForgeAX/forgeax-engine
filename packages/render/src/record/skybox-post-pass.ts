@@ -1,4 +1,4 @@
-import type { ResolveContext } from '@forgeax/engine-render-graph';
+﻿import type { ResolveContext } from '@forgeax/engine-render-graph';
 import { RhiError, type RhiRenderPassEncoder, type TextureView } from '@forgeax/engine-rhi';
 import type { AssetHandle } from '@forgeax/engine-types';
 import { BLOOM_UNIFORM_PARAMS_STRIDE_BYTES } from '../assembly/webgpu-ready-contract';
@@ -7,6 +7,7 @@ import { isFxaaAntialias } from '../components/camera';
 import { buildBeginRenderPassDescriptor } from '../pipeline-spec';
 import { FXAA_POST_PROCESS_ID } from '../render-contract';
 import { resolveOutputDither } from '../render-pipeline';
+import { recordContext } from '../world/view-record-context';
 import type { BloomFrameReceipts } from './frame-snapshot';
 import { getOrCreateFromChain } from './mesh-ssbo';
 import type { _InternalRenderPipelineContext } from './render-context';
@@ -56,10 +57,13 @@ export function encodeSkyboxPass(
   // progress). In that case, degradation to main pass loadOp:'clear'
   // is handled by the passCtx.skyboxActive gate above -- if the
   // cubemap isn't ready, skyboxActive is already false (see w18).
-  const cubemapView = store.getCubemapGpuView(
-    skyboxSnapshot.equirectHandle as AssetHandle<'equirect'>,
-    c.world,
-  );
+  const featureSource = skyboxSnapshot.featureEnvironment;
+  const cubemapView = featureSource
+    ? recordContext(runtime).sharedFeatureGpuWork?.resolveTextureCube(
+        featureSource.feature,
+        featureSource.sky,
+      )
+    : store.getCubemapGpuView(skyboxSnapshot.equirectHandle as AssetHandle<'equirect'>, c.world);
   if (cubemapView === undefined) return;
 
   // Identity-cached skybox BindGroup keyed on the cubemap GpuView. The only

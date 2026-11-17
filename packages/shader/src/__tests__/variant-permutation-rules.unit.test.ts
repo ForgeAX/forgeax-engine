@@ -154,13 +154,32 @@ describe('variant permutation rules', () => {
       });
     expect(row(false, false)).toBe(true);
     expect(row(true, true)).toBe(true);
-    expect(row(false, true)).toBe(false);
+    expect(row(false, true)).toBe(true);
     expect(row(true, false)).toBe(true);
     expect(
       isSupportedVariantKey(
         'DIRECTIONAL_SHADOW_SIMPLE=true+LEAN_LIGHTING=true+TRANSMISSION_AVAILABLE=true',
       ),
     ).toBe(false);
+  });
+
+  it.each([
+    { COVERAGE_ONLY: true },
+    { ALPHA_MASK: true },
+    { VISIBLE_SURFACE_AVAILABLE: true },
+    { TRANSMISSION_AVAILABLE: true },
+    { PROBE_BLEND_AVAILABLE: true },
+    { STORAGE_BUFFER_AVAILABLE: false },
+    { CLIPPING_PLANES: true },
+  ])('keeps the lean publication boundary with either receiver: %o', (boundary) => {
+    for (const simple of [false, true])
+      expect(
+        isSupportedVariantDefines({
+          DIRECTIONAL_SHADOW_SIMPLE: simple,
+          LEAN_LIGHTING: true,
+          ...boundary,
+        }),
+      ).toBe(false);
   });
 
   it('checks a definesKey with the same rules', () => {

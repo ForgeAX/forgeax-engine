@@ -1,4 +1,5 @@
 import { defineProject } from 'vitest/config';
+import { fileURLToPath } from 'node:url';
 
 // Per-package vitest project (K-3 split policy: discovered from root
 // vitest.config.ts via `packages/*` glob, addressable as
@@ -10,6 +11,9 @@ import { defineProject } from 'vitest/config';
 // (compile-time discriminated-union narrowing fixtures) participate in
 // the unit run.
 export default defineProject({
+  root: fileURLToPath(new URL('.', import.meta.url)),
+  // Vite transforms use the shared compiler policy; tsc owns project references.
+  tsconfig: fileURLToPath(new URL('../../tsconfig.base.json', import.meta.url)),
   test: {
     environment: 'node',
     name: '@forgeax/engine-gltf',

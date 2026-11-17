@@ -162,6 +162,12 @@ export interface Capabilities {
  * previous Resource value.
  */
 export interface InputSnapshot {
+  /** Host focus at acquisition. False before a producer is attached. */
+  readonly focused: boolean;
+  /** Acquisition was reset since the previous scan (blur, hidden or ownership
+   * transfer). Retained even if focus returned before this scan. Consumers
+   * cancel held gestures on this fact; it is not a player release edge. */
+  readonly focusReset: boolean;
   /** Keyboard view (held state plus frame edges). */
   readonly keyboard: {
     /**
@@ -663,6 +669,8 @@ export function snapshotFromSample(
   const actionMap = snapshotActionIndex(frozenActions);
 
   const snapshot: InputSnapshot = {
+    focused: sample.focused,
+    focusReset: sample.focusReset === true,
     keyboard: {
       down(key) {
         return heldKeys.has(key);
@@ -761,5 +769,5 @@ export function snapshotFromSample(
  * The underlying 7-field POD sample contract is unchanged (D-9).
  */
 export function createInputSnapshot(): InputSnapshot {
-  return snapshotFromSample(createEmptyInputBackendSample());
+  return snapshotFromSample({ ...createEmptyInputBackendSample(), focused: false });
 }

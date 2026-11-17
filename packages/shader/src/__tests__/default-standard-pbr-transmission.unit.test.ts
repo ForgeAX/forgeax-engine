@@ -137,6 +137,33 @@ describe('default Standard PBR transmission manifest contract', () => {
         ([, defines]) => !defines.WATER_WAVES_AVAILABLE && !defines.WATER_INFO_RGBA16,
       ),
     );
+    // Modifier-free lighting now supports the full directional receiver too.
+    // Retain the complete older oracle independently of these additional rows.
+    const addedFullShadowLean = [...ordinary].filter(
+      ([, defines]) => defines.LEAN_LIGHTING && !defines.DIRECTIONAL_SHADOW_SIMPLE,
+    );
+    const legacyOrdinary = new Map(
+      [...ordinary].filter(
+        ([, defines]) => !defines.LEAN_LIGHTING || defines.DIRECTIONAL_SHADOW_SIMPLE,
+      ),
+    );
+    expect(addedFullShadowLean).toHaveLength(96);
+    expect(addedFullShadowLean.filter(([, defines]) => !defines.STANDARD_LEAN_INPUTS)).toHaveLength(
+      64,
+    );
+    expect(addedFullShadowLean.filter(([, defines]) => defines.STANDARD_LEAN_INPUTS)).toHaveLength(
+      32,
+    );
+    expect(ordinary.size).toBe(legacyOrdinary.size + 96);
+    for (const [, defines] of addedFullShadowLean) {
+      const previousKey = STANDARD_AXES.map(
+        (axis) => `${axis}=${axis === 'DIRECTIONAL_SHADOW_SIMPLE' ? true : defines[axis]}`,
+      ).join('+');
+      expect(legacyOrdinary.get(previousKey)).toEqual({
+        ...defines,
+        DIRECTIONAL_SHADOW_SIMPLE: true,
+      });
+    }
     const actual = new Map(transmissionVariants.map((variant) => [variant.definesKey, variant]));
     expect(transmissionVariants).toHaveLength(expected.size);
     expect(actual.size).toBe(expected.size);
@@ -158,7 +185,7 @@ describe('default Standard PBR transmission manifest contract', () => {
     // lights or atmosphere. Preserve every public choice and its distinct code.
     const programsByEffectiveChoice = new Map<string, string>();
     const choicesByProgram = new Map<string, string>();
-    for (const [key, defines] of ordinary) {
+    for (const [key, defines] of legacyOrdinary) {
       const choice = STANDARD_AXES.map((axis) => `${axis}=${defines[axis]}`).join('+');
       const code = actual.get(key)?.composedWgsl;
       if (code === undefined) throw new Error(`missing supported program ${key}`);
@@ -224,7 +251,7 @@ describe('default Standard PBR transmission manifest contract', () => {
     // states, two vertex-colour and two reflection choices; each projector pair
     // shares code because neither the projector nor cloud map is consumed.
     const noStorageProjectorPairs = 5 * 2 * 2;
-    const noStorageInactiveChoices = [...ordinary.values()].filter(
+    const noStorageInactiveChoices = [...legacyOrdinary.values()].filter(
       (defines) =>
         !defines.STORAGE_BUFFER_AVAILABLE &&
         !defines.CLUSTER_FORWARD_AVAILABLE &&
@@ -234,7 +261,7 @@ describe('default Standard PBR transmission manifest contract', () => {
     expect(choicesByProgram.size).toBe(
       generalRows + leanRows + fullSimpleRows + leanInputRows - noStorageProjectorPairs,
     );
-    const leanChoices = [...ordinary.values()].filter(
+    const leanChoices = [...legacyOrdinary.values()].filter(
       (defines) => defines.LEAN_LIGHTING && !defines.EXTENDED_LIGHTING_AVAILABLE,
     );
     expect(leanChoices).toHaveLength(32 + 2 * leanInputProjectorPairs);
@@ -243,7 +270,7 @@ describe('default Standard PBR transmission manifest contract', () => {
     );
     expect(fullSimple).toHaveLength(128 + fullSimpleLeanInputRows);
     // The new full-lighting receiver rows preserve all previously published choices.
-    expect(ordinary.size - fullSimple.length - leanChoices.length).toBe(
+    expect(legacyOrdinary.size - fullSimple.length - leanChoices.length).toBe(
       2000 + leanInputRows - fullSimpleLeanInputRows - 2 * leanInputProjectorPairs,
     );
     expect(standard.variants.every((variant) => 'TRANSMISSION_AVAILABLE' in variant.defines)).toBe(
@@ -266,7 +293,12 @@ describe('default Standard PBR transmission manifest contract', () => {
             row.WATER_WAVES_AVAILABLE === waves &&
             row.WATER_INFO_RGBA16 === rgba16,
         );
-        expect(leanLane).toHaveLength(leanInputRows);
+        const addedLeanLane = leanLane.filter(
+          (row) => row.LEAN_LIGHTING && !row.DIRECTIONAL_SHADOW_SIMPLE,
+        );
+        expect(addedLeanLane).toHaveLength(32);
+        expect(leanLane.filter((row) => !addedLeanLane.includes(row))).toHaveLength(leanInputRows);
+        expect(leanLane).toHaveLength(leanInputRows + 32);
       }
     }
   });

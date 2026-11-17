@@ -1,4 +1,4 @@
-import { isStandardRootModule } from '@forgeax/engine-pack';
+﻿import { isStandardRootModule } from '@forgeax/engine-pack';
 import { materialProgramContextForPass } from '@forgeax/engine-pack/material-cook';
 import {
   createMaterialProgramArtifactReceipt,
@@ -139,6 +139,7 @@ function surfaceProgramAbi(
   const layout = dynamic?.value;
   return {
     model: declaration.model,
+    ...(declaration.abiVersion === undefined ? {} : { abiVersion: declaration.abiVersion }),
     module: declaration.module,
     inputAbi:
       declaration.model === 'single-layer-water'
@@ -1295,13 +1296,14 @@ function surfaceCompositionSelection(
   dynamicInput: MaterialDynamicInputLayout | undefined,
 ): Pick<
   SurfaceCompositionRequest,
-  'surfaceModule' | 'surfaceModel' | 'dynamicInput' | 'deformation'
+  'surfaceModule' | 'surfaceModel' | 'dynamicInput' | 'deformation' | 'surfaceAbiVersion'
 > {
   const surface = cook.unit.asset.surface;
   const selectedSurfaceModule = cook.pass.program.moduleSlots?.surface ?? surface?.module;
   return {
     ...(selectedSurfaceModule === undefined ? {} : { surfaceModule: selectedSurfaceModule }),
     ...(surface?.model === undefined ? {} : { surfaceModel: surface.model }),
+    ...(surface?.abiVersion === undefined ? {} : { surfaceAbiVersion: surface.abiVersion }),
     ...(dynamicInput === undefined ? {} : { dynamicInput }),
     ...(surface?.deformation === undefined ? {} : { deformation: surface.deformation }),
   };
@@ -1480,9 +1482,10 @@ function sceneIndexParameterModule(
   }
 }
 
-/** Standard-family templates relocate their physical bindings unless a medium Surface owns them. */
+/** Relocate Engine template resources after the effective authored parameter region. */
 function lowerTemplateEntryBindings(cook: MaterialPassCook, source: string): string {
   if (cook.unit.mediumSurface) return lowerMediumPhysicalBindings(source, cook.unit.schema);
+
   const module = cook.pass.program.module;
   const standardFamily =
     cook.standardTemplate ||

@@ -20,6 +20,7 @@ import {
   type PhysicsSweepError,
   type PhysicsVector,
   type RaycastHit,
+  type RaycastOptions,
   RigidBody,
   RigidBodyTypeValue,
   type SphereSweepHit,
@@ -163,6 +164,7 @@ export function runRaycast(
   direction: Vec3,
   maxDist: number,
   filterMask?: number,
+  options?: RaycastOptions,
 ): RaycastHit | undefined {
   assertCommittedReadable('raycast');
   if (recoveryBlocked()) {
@@ -173,6 +175,7 @@ export function runRaycast(
       {},
     );
   }
+  const excluded = options?.excludeEntities ? new Set(options.excludeEntities) : undefined;
   const RAPIER = rapierModule;
   // biome-ignore lint/suspicious/noExplicitAny: Rapier Ray constructor comes from a namespace module
   const RayCtor = (RAPIER as any).Ray as new (
@@ -184,7 +187,21 @@ export function runRaycast(
     { x: direction[0] ?? 0, y: direction[1] ?? 0, z: direction[2] ?? 0 },
   );
   // biome-ignore lint/suspicious/noExplicitAny: Rapier World castRayAndGetNormal
-  const hit = (readRaw() as any).castRayAndGetNormal(ray, maxDist, true, undefined, filterMask) as {
+  const hit = (readRaw() as any).castRayAndGetNormal(
+    ray,
+    maxDist,
+    true,
+    undefined,
+    filterMask,
+    undefined,
+    undefined,
+    excluded
+      ? (collider: RapierCollider) => {
+          const parent = collider.parent();
+          return parent === null || !excluded.has(parent.userData as number);
+        }
+      : undefined,
+  ) as {
     collider: { parent(): { userData: number } | null };
     timeOfImpact: number;
     normal: { x: number; y: number; z: number };

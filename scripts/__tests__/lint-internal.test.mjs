@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import assert from 'node:assert/strict';
+
 // Tests for scripts/lint-internal.mjs.
 //
 // Covers the ts-morph powered checks for D-internal naming/JSDoc coupling.
@@ -19,9 +21,12 @@
 // createSourceFile and invokes the script's `lintProjectSource` helper to
 // assert error counts and human-readable messages.
 
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { describe, it, mock } from 'node:test';
 import { Project, ScriptTarget } from 'ts-morph';
-import { describe, expect, it } from 'vitest';
-import { lintProjectSource } from '../lint-internal.mjs';
+import { lintProjectSource, lintSourcePaths } from '../lint-internal.mjs';
 
 function makeProject() {
   return new Project({
@@ -38,9 +43,9 @@ describe('lint-internal R-internal-B (class member _ prefix without @internal)',
       `export class C { private _foo = 0; method(): number { return this._foo; } }\n`,
     );
     const errors = lintProjectSource(project);
-    expect(errors).toHaveLength(1);
-    expect(errors[0].rule).toBe('R-internal-B');
-    expect(errors[0].name).toBe('_foo');
+    assert.equal(errors.length, 1);
+    assert.equal(errors[0].rule, 'R-internal-B');
+    assert.equal(errors[0].name, '_foo');
   });
 
   it('passes private _foo with /** @internal */', () => {
@@ -50,14 +55,17 @@ describe('lint-internal R-internal-B (class member _ prefix without @internal)',
       `export class C {\n  /** @internal */\n  private _foo = 0;\n}\n`,
     );
     const errors = lintProjectSource(project);
-    expect(errors.filter((e) => e.rule === 'R-internal-B')).toHaveLength(0);
+    assert.equal(errors.filter((e) => e.rule === 'R-internal-B').length, 0);
   });
 
   it('flags protected _bar lacking @internal', () => {
     const project = makeProject();
     project.createSourceFile('c.ts', `export class D { protected _bar = 1; }\n`);
     const errors = lintProjectSource(project);
-    expect(errors.some((e) => e.rule === 'R-internal-B' && e.name === '_bar')).toBe(true);
+    assert.equal(
+      errors.some((e) => e.rule === 'R-internal-B' && e.name === '_bar'),
+      true,
+    );
   });
 });
 
@@ -66,7 +74,10 @@ describe('lint-internal R-internal-C (@internal without _ prefix)', () => {
     const project = makeProject();
     project.createSourceFile('rc1.ts', `export class C {\n  /** @internal */\n  foo = 0;\n}\n`);
     const errors = lintProjectSource(project);
-    expect(errors.some((e) => e.rule === 'R-internal-C' && e.name === 'foo')).toBe(true);
+    assert.equal(
+      errors.some((e) => e.rule === 'R-internal-C' && e.name === 'foo'),
+      true,
+    );
   });
 
   it('passes @internal + _foo (both halves agree)', () => {
@@ -76,7 +87,7 @@ describe('lint-internal R-internal-C (@internal without _ prefix)', () => {
       `export class C {\n  /** @internal */\n  private _foo = 0;\n}\n`,
     );
     const errors = lintProjectSource(project);
-    expect(errors.filter((e) => e.rule === 'R-internal-C')).toHaveLength(0);
+    assert.equal(errors.filter((e) => e.rule === 'R-internal-C').length, 0);
   });
 });
 
@@ -88,7 +99,10 @@ describe('lint-internal R-internal-D (module-level `let _xxx` without @internal)
       `let _instance: number | null = null;\nexport function getInstance() { return _instance; }\n`,
     );
     const errors = lintProjectSource(project);
-    expect(errors.some((e) => e.rule === 'R-internal-D' && e.name === '_instance')).toBe(true);
+    assert.equal(
+      errors.some((e) => e.rule === 'R-internal-D' && e.name === '_instance'),
+      true,
+    );
   });
 
   it('passes top-level `let _instance` with @internal', () => {
@@ -98,7 +112,7 @@ describe('lint-internal R-internal-D (module-level `let _xxx` without @internal)
       `/** @internal */\nlet _instance: number | null = null;\nexport function getInstance() { return _instance; }\n`,
     );
     const errors = lintProjectSource(project);
-    expect(errors.filter((e) => e.rule === 'R-internal-D')).toHaveLength(0);
+    assert.equal(errors.filter((e) => e.rule === 'R-internal-D').length, 0);
   });
 });
 
@@ -107,7 +121,10 @@ describe('lint-internal R-internal-E (interface field _ prefix without @internal
     const project = makeProject();
     project.createSourceFile('e1.ts', `export interface I { _foo: number; }\n`);
     const errors = lintProjectSource(project);
-    expect(errors.some((e) => e.rule === 'R-internal-E' && e.name === '_foo')).toBe(true);
+    assert.equal(
+      errors.some((e) => e.rule === 'R-internal-E' && e.name === '_foo'),
+      true,
+    );
   });
 
   it('passes interface field with field-level /** @internal */', () => {
@@ -117,14 +134,17 @@ describe('lint-internal R-internal-E (interface field _ prefix without @internal
       `export interface I {\n  /** @internal */\n  _foo: number;\n}\n`,
     );
     const errors = lintProjectSource(project);
-    expect(errors.filter((e) => e.rule === 'R-internal-E')).toHaveLength(0);
+    assert.equal(errors.filter((e) => e.rule === 'R-internal-E').length, 0);
   });
 
   it('does NOT cascade from interface-level @internal to its fields (OOS-13)', () => {
     const project = makeProject();
     project.createSourceFile('e3.ts', `/** @internal */\nexport interface I { _foo: number; }\n`);
     const errors = lintProjectSource(project);
-    expect(errors.some((e) => e.rule === 'R-internal-E' && e.name === '_foo')).toBe(true);
+    assert.equal(
+      errors.some((e) => e.rule === 'R-internal-E' && e.name === '_foo'),
+      true,
+    );
   });
 });
 
@@ -136,7 +156,7 @@ describe('lint-internal aggregate behaviour', () => {
       `export class C {\n  /** @internal */\n  private _foo = 0;\n  bar = 1;\n}\nexport interface I {\n  /** @internal */\n  _bar: number;\n  baz: number;\n}\n/** @internal */\nlet _state: number | null = null;\nexport function getState() { return _state; }\n`,
     );
     const errors = lintProjectSource(project);
-    expect(errors).toHaveLength(0);
+    assert.equal(errors.length, 0);
   });
 
   it('aggregates multi-rule errors in one project', () => {
@@ -147,8 +167,63 @@ describe('lint-internal aggregate behaviour', () => {
     );
     const errors = lintProjectSource(project);
     const rules = new Set(errors.map((e) => e.rule));
-    expect(rules.has('R-internal-B')).toBe(true);
-    expect(rules.has('R-internal-D')).toBe(true);
-    expect(rules.has('R-internal-E')).toBe(true);
+    assert.equal(rules.has('R-internal-B'), true);
+    assert.equal(rules.has('R-internal-D'), true);
+    assert.equal(rules.has('R-internal-E'), true);
+  });
+});
+
+describe('lint-internal bounded syntax ownership', () => {
+  it('checks every file and all four rules without retaining trees or resolving imports', () => {
+    const root = mkdtempSync(join(tmpdir(), 'lint-internal-syntax-'));
+    const add = Project.prototype.addSourceFileAtPath;
+    const remove = Project.prototype.removeSourceFile;
+    let added = 0;
+    let removed = 0;
+    const addSpy = mock.method(Project.prototype, 'addSourceFileAtPath', function (path) {
+      assert.equal(this.getSourceFiles().length, 0);
+      const file = add.call(this, path);
+      assert.equal(this.getSourceFiles().length, 1);
+      added++;
+      return file;
+    });
+    const removeSpy = mock.method(Project.prototype, 'removeSourceFile', function (file) {
+      const result = remove.call(this, file);
+      assert.equal(this.getSourceFiles().length, 0);
+      removed++;
+      return result;
+    });
+    try {
+      const paths = [];
+      for (let index = 0; index < 100; index++) {
+        const path = join(root, `${index}.ts`);
+        writeFileSync(
+          path,
+          `import './missing.ts';
+export class C {
+ private _missing=1;
+ /** @internal */
+ plain=2;
+}
+let _state=0;
+export interface I { _field:number; }
+`,
+        );
+        paths.push(path);
+      }
+      const errors = lintSourcePaths(paths);
+      assert.equal(added, 100);
+      assert.equal(removed, 100);
+      assert.equal(errors.length, 400);
+      assert.deepEqual(
+        new Set(errors.map((error) => error.rule)),
+        new Set(['R-internal-B', 'R-internal-C', 'R-internal-D', 'R-internal-E']),
+      );
+      assert.equal(new Set(errors.map((error) => error.file)).size, 100);
+    } finally {
+      addSpy.mock.restore();
+      removeSpy.mock.restore();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

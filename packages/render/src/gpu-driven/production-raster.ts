@@ -56,6 +56,7 @@ import type {
   FramePresentationPendingReason,
   RenderRecordPhase,
 } from '../render-contract';
+import { cameraAdmitsLayers } from '../render-layers';
 import type {
   GpuDrivenDrawPhase,
   GpuDrivenStandardPbrFrameResources,
@@ -394,6 +395,50 @@ interface SubmissionAdmission {
   readonly suppressed?: Uint32Array;
   /** The scene rows `suppressed` was derived from, for patching the next admission. */
   readonly slots: PersistentGpuDrivenState['slots'];
+}
+
+const layerSuppressions = new WeakMap<
+  object,
+  Map<number, { layers: Uint32Array | undefined; combined: WeakMap<Uint32Array, Uint32Array> }>
+>();
+/** Immutable SceneSlotFrame identity retains camera membership independently
+ * of camera pose. A static scene is not scanned again when a camera moves. */
+function mainLayerSuppression(
+  scene: PersistentGpuDrivenState,
+  camera: CameraSnapshot,
+  base: Uint32Array | undefined,
+): Uint32Array | undefined {
+  let masks = layerSuppressions.get(scene.slots);
+  if (!masks) {
+    masks = new Map();
+    layerSuppressions.set(scene.slots, masks);
+  }
+  const mask = camera.cullMask ?? 0xffffffff;
+  let found = masks.get(mask);
+  if (!found) {
+    let layers: Uint32Array | undefined;
+    for (const row of scene.slots) {
+      if (cameraAdmitsLayers(camera, row.snapshot)) continue;
+      layers ??= new Uint32Array(Math.max(1, Math.ceil(scene.scene.rowCapacity / 32)));
+      const word = row.slot >>> 5;
+      layers[word] = (layers[word] ?? 0) | (1 << (row.slot & 31));
+    }
+    found = { layers, combined: new WeakMap() };
+    if (masks.size >= 16) {
+      const oldest = masks.keys().next().value;
+      if (oldest !== undefined) masks.delete(oldest);
+    }
+    masks.set(mask, found);
+  }
+  if (!found.layers) return base;
+  if (!base) return found.layers;
+  let combined = found.combined.get(base);
+  if (!combined) {
+    combined = base.slice();
+    for (const [i, word] of found.layers.entries()) combined[i] = (combined[i] ?? 0) | word;
+    found.combined.set(base, combined);
+  }
+  return combined;
 }
 
 /** The main and shadow filtered plans of one prepared plan, with their admission. */
@@ -1428,6 +1473,9 @@ export class GpuDrivenProduction {
     admission: SubmissionAdmission,
   ): Result<Buffer, RhiError> {
     const surfaceRows = surfaceVisibleRows(filtered.plan, scene, input.visibleSurface);
+    // This bitmap belongs to this camera's main view only. Do not mutate the
+    // scene admission or shadow-view bitmap: another camera still sees the row.
+    const suppressed = mainLayerSuppression(scene, input.camera, admission.suppressed);
     const updated = view.update(
       filtered.plan,
       scene.scene,
@@ -1435,7 +1483,7 @@ export class GpuDrivenProduction {
       activeFrustum(input.camera),
       input.camera,
       0,
-      admission.suppressed,
+      suppressed,
       undefined,
       occlusionCamera(input.camera),
       surfaceRows,
@@ -1647,7 +1695,7 @@ export class GpuDrivenProduction {
       ? `|view-clipping${frame.input.camera.clipping?.caps === true ? '-caps' : ''}`
       : '';
     // Both independent lighting facts are fixed into the projected pipelines.
-    const variantSignature = `${discardSignature}${input.directionalShadowSimple === true ? '|simple' : ''}${input.directionalShadowSimple === true && input.leanLighting === true ? '|lean' : ''}`;
+    const variantSignature = `${discardSignature}${input.directionalShadowSimple === true ? '|simple' : ''}${input.leanLighting === true ? '|lean' : ''}`;
     const signature = `gpu:${getOpaqueResourceIdentity(graphIdentity.raw)}${variantSignature}`;
     const recordingSignature = `gpu:${getOpaqueResourceIdentity(graphIdentity.recording)}${variantSignature}`;
 

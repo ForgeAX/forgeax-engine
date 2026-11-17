@@ -28,6 +28,23 @@ and LOD inspection 4 reject previous formats. IBL kernels are retained by each
 renderer DeviceScope; equal generation numbers do not share mutable cache state.
 These API removals belong to the next breaking SDK release.
 
+Forward Standard draws select receiver shape and modifier-free lighting from
+independent accepted View facts. The published plain storage-forward rows support
+full directional shadows with lean lighting; PCSS, CSM and authored filters retain
+their original algorithms. Direct and GPU-driven requests retain both facts in
+native pipeline and cache identity. Stock lit VFX consumes the same View lighting
+projection; modifiers becoming active select the full lighting program.
+
+### Camera geometry layers
+
+`MeshRenderer.renderLayers` is an unsigned 32-bit membership mask (default `1`).
+`Camera.cullMask` selects intersecting geometry bits (default `0xffffffff`);
+zero selects no geometry. These fields are independent of lighting channels,
+transparent sort layers and shadow participation. Scene snapshots and Worker
+publications preserve them. Each native direct or GPU main view applies its own
+mask without changing shared scene membership or another camera's visibility.
+Render features receive the same mask in `selectedView.cullMask`.
+
 ### Editor assistance
 
 `editorAssistance(world)` lazily installs tool-owned presentation state. It is
@@ -372,6 +389,11 @@ or installation order changes; each frame still owns its event roster. Submissio
 and abort use shared synchronous runners with the exact preparation and accepted
 work passed as arguments. Every finalizer still runs after a sibling failure;
 producer callbacks, frame contexts and native-plan capabilities remain frame-owned.
+
+Native work builders publish the exact plan returned by `finish`. Pass readback
+requests through its `readbacks` option so the Host admits the work scopes and
+readbacks under that same identity. Copying the finished plan loses its native
+publication capability and is rejected before execution.
 
 View entities retain canonical source-World membership and camera/resource roles.
 Frame adoption publishes a changed role through the existing component version;
@@ -2461,6 +2483,21 @@ The page uses the existing instance bind group's free binding and never uses
 skinning's `customDataStart`. Publish the page to the existing Renderer owner
 before drawing:
 `renderer.setSurfaceDynamicInput({ page, ranges, projectionRevision, frameTime })`.
+An App simulation publishes the same input with
+`publishSurfaceDynamicInput(sourceWorld, { page, ranges, projectionRevision, frameTime })`.
+The native Render publication captures bounded records and source addresses for
+the Render Worker. The receiver retains its own page and physical ranges,
+refreshes them for the active device generation, and releases them on withdrawal
+or Renderer disposal. Publish `undefined` to withdraw the source input before
+releasing its page. Each member address must name the publishing World.
+For source publication, `page.capture()` returns detached schema, record bytes and
+content revision. `ReadonlyDynamicInputPage.fromSnapshot(snapshot)` creates an
+independent receiver page; `applySnapshot(snapshot)` updates retained bytes only
+after validating the complete schema, revision and encoded records. The receiver
+owns its device generation, ranges and upload receipts; configure its active
+device generation and reserve its native ranges before consumption. Stale
+snapshots and changed bytes at an unchanged revision return structured errors
+without changing accepted bytes or dirty state.
 Advance `projectionRevision` only when range membership or addresses change;
 record values and World time keep the current revision so stable frames reuse
 the retained validation and consumption projection.
@@ -4187,7 +4224,13 @@ is a loaded `cloud-material` asset; optional `materialInstance` selects cooked
 parameter overrides. The Standard renderer installs the cloud producer and
 owns its shadow projection and per-view history.
 
-Author `CloudMaterialSource` and cook it through `createCloudCookers()` from
+In an SDK project, declare `cloud-material` or `cloud-material-instance` with
+`execution: 'cooked'` and the authored `source` in a ScriptablePack. DevKit supplies
+both cookers in development and production; project asset checks also validate
+authored JSON cloud rows. A program model's WGSL source must remain beside its
+Pack. No project build plugin is required for ordinary cloud cooking.
+
+Custom build hosts can assemble `createCloudCookers()` from
 `@forgeax/engine-render/authoring`. The cooker accepts a uniform medium sample
 or an authored WGSL program with declared parameters and static variants.
 `cloudMaterialDecoder` verifies the cooked identity, program artifacts and
@@ -12226,3 +12269,23 @@ after their last GPU use. `Renderer.inspect().textureGeneration` exposes group
 status, accepted/candidate generation, error and reserved bytes on request.
 The initial scope supports 2D/2D-array color outputs with a 256 MiB reservation
 budget per Renderer; unsupported graphs fail explicitly without CPU generation.
+
+### Camera distance-field outlines
+
+Set `Outline.distanceField` for HDR distance-field compositing before bloom.
+The camera owns separate coverage, focused, accent and large-object entity
+collections. Native coverage passes preserve material cutout/deformation and
+classify each channel against scene depth. JFA+1 propagates exact pixel seeds
+(byte-packed integer coordinates avoid half-float coordinate loss at 4K/8K).
+
+Named distance-field settings control fractional pixel width, opacity, exterior
+glow, accent breathing, focus/large scaling, distance reduction and linear-depth
+occlusion tolerance. Supply world AABBs in `objectBounds` to restrict the
+processing region; up to sixteen `fadeBounds`/`fadeValues` pairs fade objects
+at the nearest seed. Overlapping fade rectangles use their minimum fade.
+The caller supplies the presentation clock in `time`; this does not change
+simulation time. The existing integer-width Outline path remains the default.
+
+### Camera-depth custom Standard Surfaces
+
+`Materials.standard({ surfaceModule, parameters, values, sceneDepth: 'before-pass', ... })` explicitly selects the native view/depth binding contract (`View` at group 0 binding 0, depth at binding 1). `sceneDepth: 'read-only'` selects the read-only attachment version instead. The Surface retains Standard lighting and material inputs. Depth-dependent Surfaces produce only the forward color pass; deferred and shadow derivatives must not sample a camera depth snapshot. Conflicting declared passes are rejected. This declaration travels through normal material cooking and ABI publication; it does not expose a device or private render host.

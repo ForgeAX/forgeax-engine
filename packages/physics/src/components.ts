@@ -103,7 +103,12 @@ export const RigidBody = defineComponent(
     angularDamping: { type: 'f32', default: 0 },
     gravityScale: { type: 'f32', default: 1 },
     ccdEnabled: { type: 'bool', default: false },
+    /** Creation policy. Changing it requires retiring and respawning the body. */
+    canSleep: { type: 'bool', default: true },
     lockRotation: { type: 'bool', default: false },
+    /** World-axis freedoms: x=1, y=2, z=4. Zero locks all; seven enables all. */
+    translationAxes: { type: 'u32', default: 7 },
+    rotationAxes: { type: 'u32', default: 7 },
     additionalSolverIterations: { type: 'u32', default: 0 },
   },
   { requires: [TransformInterpolation] },

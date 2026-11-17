@@ -1132,3 +1132,49 @@ it('does not keep superseded preparations through the current finish method', as
   expect(retired.deref()).toBeUndefined();
   expect(prepareScenePasses([deferred, forward], inputs)).toBe(current);
 });
+
+it('retains quiet layer-filtered work and invalidates it when the camera mask changes', () => {
+  const f = fixture(2);
+  for (const [entityKey, renderLayers] of [
+    [0, 0],
+    [1, 2],
+  ] as const) {
+    const source = f.scene.slot(entityKey)?.snapshot;
+    assert(source);
+    f.topology.apply(
+      f.scene.apply([{ kind: 'update', entityKey, snapshot: { ...source, renderLayers } }]),
+    );
+  }
+  const inputs: Parameters<typeof prepareScenePasses>[1] = {
+    phases: new ViewDrawPhases(),
+    scene: {
+      plan: f.topology.query(f.topology.sourcePlan(), undefined),
+      slotAt: f.scene.slotAt,
+      drawSnapshotAt: f.scene.drawSnapshotAt,
+      unbatchedSlots: new FrameSet(),
+    },
+    materials: f.dispatch.materials(),
+    gpu: f.gpu,
+    meshes: f.meshes,
+    sourceScope: f.world,
+    prepareUnbatched: () => [],
+    viewDraws: [],
+    prepareGeometry: (mesh) => mesh,
+    fold: () => [],
+    lod: (rows) => rows,
+    world: f.world,
+    camera: undefined,
+  };
+  const req = request('Forward', { gpu: false });
+  const all = prepareScenePasses([req], inputs);
+  expect(all.rows.some((row) => row.source.entityKey === 0)).toBe(false);
+  expect(all.rows.some((row) => row.source.entityKey === 1)).toBe(true);
+  expect(prepareScenePasses([req], inputs)).toBe(all);
+  const masked = { ...inputs, camera: { ...makeZeroCameraFallbackSnapshot(), cullMask: 1 } };
+  const selected = prepareScenePasses([req], masked);
+  expect(selected.rows.some((row) => row.source.entityKey === 1)).toBe(false);
+  expect(prepareScenePasses([req], masked)).toBe(selected);
+  const other = prepareScenePasses([req], { ...masked, camera: { ...masked.camera, cullMask: 2 } });
+  expect(other.rows.some((row) => row.source.entityKey === 1)).toBe(true);
+  expect(other.rows.some((row) => row.source.entityKey === 0)).toBe(false);
+});

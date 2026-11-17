@@ -84,6 +84,7 @@ import {
   verifyWechatPackageBudget,
   writeWechatProject,
 } from './build/wechat.js';
+import { createDefaultCloudCookers } from './cloud-cookers.js';
 import { PLAYER_DELIVERY_FILE, prepareDist } from './delivery-dist.js';
 import { type DistManifest, verifyDist, writeDistManifest } from './dist.js';
 import {
@@ -96,6 +97,10 @@ import { filesystemPathRelative, isFilesystemPathWithin } from './filesystem-pat
 import { gameVfxSource } from './game-vfx-source.js';
 import { gameProjectionSource } from './host/game-projection-source.js';
 import { previewBatchEntrySource } from './host/preview-batch-entry-source.js';
+import {
+  gameRenderFeaturesSource,
+  renderFeatureSourceInputs,
+} from './host/render-feature-contributions.js';
 import {
   previewVfxBoundsSource,
   resourcePresentationSource,
@@ -755,9 +760,14 @@ function projectSsrIdentity(
 ): SsrAdmissionIdentity {
   const digest = (value: unknown): string =>
     `sha256:${createHash('sha256').update(JSON.stringify(value)).digest('hex')}`;
-  const inputs = [...inventory.sourceInputs]
-    .map(([path, revision]) => [relative(facts.root, path).split(sep).join('/'), revision] as const)
-    .sort(([left], [right]) => left.localeCompare(right));
+  const inputs = [
+    ...new Map([
+      ...[...inventory.sourceInputs].map(
+        ([path, revision]) => [relative(facts.root, path).split(sep).join('/'), revision] as const,
+      ),
+      ...renderFeatureSourceInputs(facts.root, generation.appOptions.renderFeatures),
+    ]),
+  ].sort(([left], [right]) => left.localeCompare(right));
   const sourceTree = digest(inputs);
   const lockSha256 = digest(
     inputs.filter(([path]) =>
@@ -792,8 +802,10 @@ import { root, createPrograms } from 'virtual:forgeax/plugin-programs/engine';
 import { runtimeBinding } from 'virtual:forgeax/pack-runtime';
 import { createRuntimePackOptions${staticPrograms ? '' : ', createRuntimePackDeliveryClient'} } from './runtime-packs';
 import { createGameVfx } from './game-vfx';
+import { createGameRenderFeatures } from './game-render-features';
 export default async function executionBootstrap(data) {
-const vfx = createGameVfx({ isolateViewGraph: data?.isolateVfxViewGraph === true, instanceArenas: data?.vfxInstanceArenas !== false, nativePlanning: data?.vfxNativePlanning !== false, retainedResources: data?.vfxRetainedResources !== false });
+const gameFeatures = ${JSON.stringify(bootstrapRoot === 'project-bootstrap')} ? createGameRenderFeatures() : {features:[],plugins:[],vfxProviders:[],vfxProvidersForWorld:undefined};
+const vfx = createGameVfx({ isolateViewGraph: data?.isolateVfxViewGraph === true, instanceArenas: data?.vfxInstanceArenas !== false, nativePlanning: data?.vfxNativePlanning !== false, retainedResources: data?.vfxRetainedResources !== false, dependencies: ${JSON.stringify(bootstrapRoot === 'project-bootstrap' ? (appOptions.vfxDependencies ?? []) : [])}, providers: gameFeatures.vfxProviders, providersForWorld: gameFeatures.vfxProvidersForWorld });
 ${staticPrograms ? '' : `let prepareDelivery: ReturnType<typeof createRuntimePackDeliveryClient> = async () => ({ error: 'Runtime Pack page bridge is not ready' });`}
 const bridge = {
   name: 'forgeax:worker-game-host', inject: ['world', 'assets', 'executionBootstrapHost'],
@@ -844,8 +856,8 @@ const bridge = {
     },`
     }
     runtimePacks: { ...runtimePacks, programHost: pluginPrograms.programHost ?? runtimePacks.programHost },
-    features: [vfx.feature],
-    plugins: [audioPlugin(), skinningPlugin(), vfx.plugin, bridge],
+    features: [vfx.feature, ...gameFeatures.features],
+    plugins: [audioPlugin(), skinningPlugin(), vfx.plugin, ...gameFeatures.plugins, bridge],
     pluginPrograms,
     ...(root === null || ${JSON.stringify(bootstrapRoot === 'resource-bootstrap')} ? {} : {
       root: { guid: root },
@@ -892,6 +904,10 @@ function renderTaskYieldSource(value: DevKitAppOptions['renderTaskYield']): stri
   return JSON.stringify(value ?? 'none');
 }
 
+function gameVfxDependencies(options: DevKitAppOptions): readonly string[] {
+  return options.vfxDependencies ?? [];
+}
+
 function hostSource(
   facts: ProjectFacts,
   bootstrapRoot: BootstrapRoot,
@@ -931,6 +947,7 @@ import { textureViewSource } from '@forgeax/engine/preview';
 import { createRuntimePackOptions${deliverySource.importMember} } from './runtime-packs';
 ${deliverySource.importBootstrap}
 import { createGameVfx } from './game-vfx';
+import { createGameRenderFeatures } from './game-render-features';
 import { root as engineRoot, createPrograms as enginePrograms } from 'virtual:forgeax/plugin-programs/engine';
 import { root as hostRoot, rootDescriptor as hostDescriptor, createPrograms as hostPrograms } from 'virtual:forgeax/plugin-programs/frontend';
 import { AssetGuid } from '@forgeax/engine/pack/guid';
@@ -1661,8 +1678,10 @@ const appBootstrapPlugin = {
     }
     const runtimePacks = workerExecution ? undefined : await createRuntimePackOptions(runtimeScopeBinding.scopeId${staticPrograms ? '' : ", undefined, ctx.get('frontendPlatform', false)?.createPackProgramHost"});
     const pluginPrograms = workerExecution ? undefined : enginePrograms(crypto.randomUUID(), 'engine-main', initialAssembly.sessionGeneration, runtimePacks.programHost);
-    const gameVfx = !workerExecution && bootstrapRoot === 'project-bootstrap' && !workspaceMode && resource === undefined && recipeValue === null
-      ? createGameVfx({ isolateViewGraph: isolateVfxViewGraph, instanceArenas: vfxInstanceArenas, nativePlanning: vfxNativePlanning, retainedResources: vfxRetainedResources }) : undefined;
+    const hasGameFeatures = !workerExecution && bootstrapRoot === 'project-bootstrap' && !workspaceMode && resource === undefined && recipeValue === null;
+    const gameFeatures = hasGameFeatures ? createGameRenderFeatures() : {features:[],plugins:[],vfxProviders:[],vfxProvidersForWorld:undefined};
+    const gameVfx = hasGameFeatures
+      ? createGameVfx({ isolateViewGraph: isolateVfxViewGraph, instanceArenas: vfxInstanceArenas, nativePlanning: vfxNativePlanning, retainedResources: vfxRetainedResources, dependencies: ${JSON.stringify(gameVfxDependencies(appOptions))}, providers: gameFeatures.vfxProviders, providersForWorld: gameFeatures.vfxProvidersForWorld }) : undefined;
     let hostAudio: ReturnType<typeof createHostAudioConsumer> | undefined;
     const mainAudio = workerExecution || bootstrapRoot === 'resource-bootstrap' ? undefined : new WebAudioEngine();
     ${
@@ -1750,8 +1769,8 @@ const appBootstrapPlugin = {
             ...(shadowWorkload === undefined ? {} : { shadowWorkload }),
             profiler,
             ...(workspaceGame ? { input: ctx.engineWorkspaceInput.game } : {}),
-            plugins: [${plugins.join(', ')}${plugins.length > 0 ? ', ' : ''}...(workspaceMode ? [physicsComponentsPlugin()] : []), ...(gameVfx === undefined ? [] : [gameVfx.plugin])],
-            ...(workspaceMode ? { features: [ensureVfxRuntimeHost().feature] } : gameVfx === undefined ? {} : { features: [gameVfx.feature] }),
+            plugins: [${plugins.join(', ')}${plugins.length > 0 ? ', ' : ''}...(workspaceMode ? [physicsComponentsPlugin()] : []), ...(gameVfx === undefined ? [] : [gameVfx.plugin]), ...gameFeatures.plugins],
+            ...(workspaceMode ? { features: [ensureVfxRuntimeHost().feature] } : gameVfx === undefined ? {} : { features: [gameVfx.feature, ...gameFeatures.features] }),
             ...(import.meta.env.DEV ? { assetRuntimeBinding: runtimeScopeBinding } : {}),
             ...(pointerLockAllowed === undefined ? {} : { pointerLockAllowed }),
             ...(gpuStub === undefined ? {} : { gpuStub }),
@@ -2800,21 +2819,25 @@ async function captureBuildMaterialSources(
   });
 }
 
-function createBuiltinCookers(
+function createHostCookers(
   roots: readonly string[],
   materialProfile: BuildOptions['materialProfile'] | undefined,
-  sourceSnapshot?: MaterialSourceSnapshot,
+  sourceSnapshot: MaterialSourceSnapshot | undefined,
+  readText: (path: string) => Promise<string>,
 ) {
-  return [
-    createMaterialPackCooker(roots, {
-      ...(materialProfile === undefined ? {} : { profile: materialProfile }),
-      ...(sourceSnapshot === undefined ? {} : { sourceSnapshot }),
-    }),
-    createTextureGeneratorPackCooker(roots, {
-      ...(sourceSnapshot === undefined ? {} : { sourceSnapshot }),
-    }),
-    createParticleCodeNativeCookerFromRoots(roots),
-  ];
+  return {
+    builtinCookers: [
+      createMaterialPackCooker(roots, {
+        ...(materialProfile === undefined ? {} : { profile: materialProfile }),
+        ...(sourceSnapshot === undefined ? {} : { sourceSnapshot }),
+      }),
+      createTextureGeneratorPackCooker(roots, {
+        ...(sourceSnapshot === undefined ? {} : { sourceSnapshot }),
+      }),
+      createParticleCodeNativeCookerFromRoots(roots),
+    ],
+    defaultCookers: createDefaultCloudCookers(sourceSnapshot === undefined ? undefined : readText),
+  };
 }
 
 /** Observes and digests the project's material sources so the snapshot captures them. */
@@ -3263,7 +3286,12 @@ export async function createViteConfig(
       sourceSnapshot,
       facts.root,
     );
-    const builtinCookers = createBuiltinCookers(roots, options.materialProfile, materialSources);
+    const { builtinCookers, defaultCookers } = createHostCookers(
+      roots,
+      options.materialProfile,
+      materialSources,
+      (path) => sourceSnapshot.readText(path),
+    );
     const outputVersions = createStandardAssetOutputProducerRegistry(
       [...scanned.value.declarations.values()].flatMap((declaration) =>
         declaration.format === 'pack.ts'
@@ -3275,7 +3303,7 @@ export async function createViteConfig(
       root: devKitDdcRoots(facts.root).buildCacheRoot,
       identityRoot: facts.root,
       outputVersions,
-      cookers: builtinCookers,
+      cookers: [...builtinCookers, ...defaultCookers],
     });
     // The plugin scan is a superset of the builtins/material scan. Reuse its
     // validated declarations instead of loading every authored Pack twice.
@@ -3300,7 +3328,11 @@ export async function createViteConfig(
         resolve: { alias: consumerAliases, dedupe: engineDedupe(consumerAliases) },
         plugins: engineWorkspacePlugins,
       },
-      { inventory: sourceInventory, buildCacheRoot: devKitDdcRoots(facts.root).buildCacheRoot },
+      {
+        inventory: sourceInventory,
+        buildCacheRoot: devKitDdcRoots(facts.root).buildCacheRoot,
+        defaultCookers,
+      },
     );
     timing('project-cookers');
     disposePreparation = () => cookerSession.dispose();
@@ -3363,6 +3395,10 @@ export async function createViteConfig(
         await runtimePacksModuleSource(facts, sourceInventory, staticPrograms),
       ),
       writeFile(resolve(generated, 'game-vfx.ts'), gameVfxSource),
+      writeFile(
+        resolve(generated, 'game-render-features.ts'),
+        gameRenderFeaturesSource(facts.root, generated, cookerSession.appOptions.renderFeatures),
+      ),
       writeFile(
         resolve(generated, 'execution-bootstrap.ts'),
         executionBootstrapSource(

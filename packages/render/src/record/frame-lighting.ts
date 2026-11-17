@@ -1,3 +1,4 @@
+﻿import { recordContext } from '../world/view-record-context';
 // @forgeax/engine-runtime - RendererState record stage: per-frame lighting.
 // feat-20260704 M5/w31: further-split from frame.ts (AC-05 <=1500 lines/file).
 // Pure leaf helpers invoked once each from recordFrame; behavior verbatim.
@@ -1862,10 +1863,16 @@ export function resolveSkyboxActive(
   // GPU view is not ready. getCubemapGpuView returns undefined if the
   // equirect-to-cube upload has not completed yet.
   if (skybox !== undefined && tonemapActive) {
-    const cubemapView = internals.gpuStore.getCubemapGpuView(
-      skybox.equirectHandle as AssetHandle<'equirect'>,
-      world,
-    );
+    const featureSource = skybox.featureEnvironment;
+    const cubemapView = featureSource
+      ? recordContext(internals).sharedFeatureGpuWork?.resolveTextureCube(
+          featureSource.feature,
+          featureSource.sky,
+        )
+      : internals.gpuStore.getCubemapGpuView(
+          skybox.equirectHandle as AssetHandle<'equirect'>,
+          world,
+        );
     if (cubemapView === undefined) {
       // The skybox reuses the Skylight's equirect handle; the cubemap
       // projection is driven lazily by the single trigger in `driveLazy

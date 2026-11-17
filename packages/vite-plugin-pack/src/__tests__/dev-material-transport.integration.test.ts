@@ -16,12 +16,14 @@ import { runtimeAssets } from '../../../assets-runtime/src/internal/runtime-asse
 import { materialContribution } from '../../../render/src/assets/asset-decoders.js';
 import type { DispatcherHandler } from '../dev/dispatcher.js';
 import { createPluginPackInternal } from '../plugin-pack.js';
+import { installPackAuthorDependencies } from './pack-author-dependencies.js';
 
 it.each([
   'legacy',
   'dynamic',
 ] as const)('omits only external shader bytes in the final served %s DEV Pack and restores the complete material', async (format) => {
   const root = await mkdtemp(join(tmpdir(), 'forgeax-dev-material-transport-'));
+  if (format === 'dynamic') await installPackAuthorDependencies(root);
   const packageId = '019f0000-0000-7000-8000-000000000702';
   const parsedPackage = PackageId.parse(packageId);
   if (!parsedPackage.ok) throw parsedPackage.error;

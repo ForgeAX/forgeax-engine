@@ -5,6 +5,23 @@ Custom build hosts use `readProjectFacts` from the package root and
 selected project's declared build root. The returned session exposes cookers and
 watched source files; its owner disposes it on shutdown or failed startup.
 
+Build roots can select `devkitAppOptions.renderFeatures` as data-only records
+`{ id, module: './assets/feature.ts', export: 'createContribution', config }`.
+The named factory returns `{ features, plugin?, vfxProviders?, vfxProvidersForWorld? }`.
+Host constructs a separate
+contribution before Renderer in each local, execution Worker and Render realm;
+the optional source plugin starts before the game root. Project-relative module
+closures, WGSL and imported data participate in the source admission identity.
+Factories must not return GPU objects shared across Renderers or hide resource
+creation in a World. A source plugin may provide its exact typed installer through
+Context, preserving resource-token identity across compiled Pack boundaries.
+`vfxDependencies` declares selected feature identities whose managed outputs the
+stock particle feature samples; omitted dependencies remain empty. Resource and
+workspace previews do not implicitly install the project's scene features.
+World-specific particle providers receive the attached World at the factory
+boundary; their native data-interface registries remain separate across Worlds,
+exit/reentry and execution realms. No World or GPU object enters frame snapshots.
+
 Project shader hosts pass the containing Engine workspace to the shader plugin
 for repository-relative shared inventory. Temporary project and generated Vite
 roots retain their own source ownership without replacing that producer root.
@@ -55,7 +72,14 @@ For browser/Tauri platform integrations, author an HTML head fragment and pass `
 
 Browser builds keep the `index.html` entry chunk named `assets/index-*.js`, including asynchronous startup. Internal host and Engine groups retain `engine-*` names and their existing module membership. Platform integrations identify the page entry from HTML; no post-build rename or forwarding module is needed.
 
-`forgeax project check` also dry-cooks every authored `*.pack.json` material and particle-effect entry with the real producers, offline and in seconds, so a mistake such as a `texture2d` parameter type fails with the pack, key and owner hint (`project-assets-invalid`) instead of after a full dev start. `*.pack.ts` packs are reported as skipped. `forgeax asset guid <packageId> <key> [--json]` prints the asset GUID derived for a pack key (UUIDv5 over the package id and key), the same value the cook assigns.
+`forgeax project check` also dry-cooks authored `*.pack.json` material, texture-generator, particle-effect, cloud-material and cloud-material-instance entries with the real producers, offline, so a mistake such as a `texture2d` parameter type fails with the pack, key and owner hint (`project-assets-invalid`) instead of after a full dev start. `*.pack.ts` packs are reported as skipped. `forgeax asset guid <packageId> <key> [--json]` prints the asset GUID derived for a pack key (UUIDv5 over the package id and key), the same value the cook assigns.
+
+Dev and build provide cloud cookers by default. A cloud Pack supplies its authored
+source and a sibling WGSL file for a program model; DevKit supplies compiler
+identity, compilation and canonical renderer modules. Build reads captured source
+bytes, and cook products retain WGSL dependencies for ordinary regeneration.
+Explicit project cloud cookers replace these defaults, so specialized existing
+build roots retain their producer. Protected built-in cooker collisions still fail.
 
 Doctor validates the installed dependency closure, package-manager evidence and Engine binding without traversing mutable project output. Starting a run still captures and rechecks the complete project input tree.
 

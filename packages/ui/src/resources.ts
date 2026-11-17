@@ -41,6 +41,8 @@ export function uiResourceMimeType(path: string): string | undefined {
       '.jpeg': 'image/jpeg',
       '.webp': 'image/webp',
       '.svg': 'image/svg+xml',
+      '.mp4': 'video/mp4',
+      '.webm': 'video/webm',
       '.woff2': 'font/woff2',
       '.woff': 'font/woff',
       '.ttf': 'font/ttf',

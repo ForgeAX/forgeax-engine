@@ -246,9 +246,15 @@ importers:
       '@forgeax/engine-profiler':
         specifier: workspace:*
         version: link:packages/profiler
+      '@forgeax/engine-rhi-debug':
+        specifier: workspace:*
+        version: link:packages/rhi-debug
       '@forgeax/engine-rhi-null':
         specifier: workspace:*
         version: link:packages/rhi-null
+      '@forgeax/engine-rhi-webgpu':
+        specifier: workspace:*
+        version: link:packages/rhi-webgpu
       '@forgeax/engine-runtime':
         specifier: workspace:*
         version: link:packages/runtime

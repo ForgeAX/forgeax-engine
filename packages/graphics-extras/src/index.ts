@@ -1,5 +1,12 @@
 // Pure graphics helpers; native GlyphText and Tilemap rendering belong to Render.
 
+export {
+  buildGlyphFamilyMeshAsset,
+  type GlyphFamilyLayout,
+  type GlyphFamilyLayoutOptions,
+  type GlyphFontRun,
+  layoutGlyphFamilyText,
+} from './glyph-family-layout';
 // ─── glyph text layout (feat-20260531-world-space-msdf-text-rendering) ─────
 export {
   type GlyphLayoutResult,

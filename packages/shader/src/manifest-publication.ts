@@ -376,7 +376,11 @@ function assertPublicationShape(
 /** Pure expansion shared by browser admission and synchronous packaged-input loading. */
 export function expandShaderManifestPublication(
   value: unknown,
-  options: { readonly deferReflections?: boolean } = {},
+  options: {
+    readonly deferReflections?: boolean;
+    /** Consume exclusively owned reflection JSON without changing validation timing. */
+    readonly ownedReflections?: boolean;
+  } = {},
 ): {
   readonly manifest: unknown;
   readonly sourceFragments: ReadonlyMap<string, readonly string[]>;
@@ -408,10 +412,10 @@ export function expandShaderManifestPublication(
   const entryPoints = sharePublicationFacts(structuredClone(value.entryPoints));
   freezeTree(entryPoints);
   const deferReflections = options.deferReflections === true;
-  // Owned JSON can share immutable facts immediately without eagerly validating
-  // each reflection. Borrowed input first needs its independent snapshot.
+  // Ownership and validation timing are independent: strict owned JSON still passed
+  // the complete reflection checks above. Borrowed input needs its own snapshot.
   const reflections = sharePublicationFacts(
-    (deferReflections
+    (deferReflections || options.ownedReflections === true
       ? (value.reflections ?? [])
       : structuredClone(value.reflections ?? [])) as unknown[],
   );

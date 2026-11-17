@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { isShaderReflection, type ShaderReflection } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import {
+  expandShaderManifestPublication,
   readOwnedShaderManifestPublication,
   readShaderManifestPublication,
   shaderSourceDigestInput,
@@ -41,7 +42,7 @@ function reflection(uvSetCount = 0) {
     ],
   };
 }
-function publication(reflections: unknown[]) {
+function publication<T>(reflections: T[]) {
   const wgsl = 'fn shared_reflection() {}';
   const digest = createHash('sha256')
     .update(shaderSourceDigestInput([createHash('sha256').update(wgsl).digest()]))
@@ -106,6 +107,72 @@ it('preserves signed zero, omitted properties, order, multiplicity and unusual p
   expect(values[0]?.boundGlobals).toBe(values[1]?.boundGlobals);
 });
 
+it('retains sparse slots, property order and shared descendants during fact admission', async () => {
+  const leaf = { names: ['roughness', 'normal'] };
+  const sparse = new Array<unknown>(3);
+  sparse[1] = undefined;
+  sparse[2] = leaf;
+  const input = [
+    { ...reflection(0), extension: { first: leaf, second: leaf, sparse } },
+    {
+      ...reflection(1),
+      extension: { first: { names: [...leaf.names] }, second: leaf, sparse: [...sparse] },
+    },
+    { ...reflection(2), extension: { second: leaf, first: leaf, sparse } },
+  ];
+  const values = await admit(input);
+  const [first, second, third] = values.map(
+    (row) => row.extension as (typeof input)[0]['extension'],
+  );
+  expect(first?.first).toBe(first?.second);
+  expect(first?.first).toBe(second?.first);
+  expect(first?.sparse).not.toBe(second?.sparse);
+  expect(Object.hasOwn(first?.sparse ?? [], 0)).toBe(false);
+  expect(Object.hasOwn(first?.sparse ?? [], 1)).toBe(true);
+  expect(Object.hasOwn(second?.sparse ?? [], 0)).toBe(true);
+  expect(Object.keys(first ?? {})).toEqual(['first', 'second', 'sparse']);
+  expect(Object.keys(third ?? {})).toEqual(['second', 'first', 'sparse']);
+  expect(first).not.toBe(third);
+  expect(Object.isFrozen(first?.sparse)).toBe(true);
+  expect(Object.isFrozen(first?.first.names)).toBe(true);
+  expect(Object.isFrozen(leaf)).toBe(false);
+});
+
+it('keeps owned null-prototype facts distinct from equal ordinary object facts', async () => {
+  const dictionary = Object.assign(Object.create(null), { field: ['normal'] });
+  const value = publication([
+    { ...reflection(0), extension: dictionary },
+    { ...reflection(1), extension: { field: ['normal'] } },
+    { ...reflection(2), extension: Object.assign(Object.create(null), { field: ['normal'] }) },
+  ]);
+  const accepted = (await readOwnedShaderManifestPublication(value)) as {
+    entries: { reflection: { extension: { field: string[] } } }[];
+  };
+  const [first, second, third] = accepted.entries.map((entry) => entry.reflection.extension);
+  expect(Object.getPrototypeOf(first)).toBeNull();
+  expect(Object.getPrototypeOf(second)).toBe(Object.prototype);
+  expect(first).not.toBe(second);
+  expect(first).toBe(third);
+  expect(first?.field).toBe(second?.field);
+  expect(Object.isFrozen(first)).toBe(true);
+});
+
+it('falls back atomically for cyclic extension data after ordinary fact descendants', async () => {
+  const extension: { label: string; self?: unknown } = { label: 'cycle' };
+  extension.self = extension;
+  const values = await admit([
+    { ...reflection(0), extension },
+    { ...reflection(1), extension: { label: 'ordinary' } },
+  ]);
+  const accepted = values[0]?.extension as typeof extension;
+  expect(accepted).not.toBe(extension);
+  expect(accepted.self).toBe(accepted);
+  expect(Object.isFrozen(accepted)).toBe(true);
+  // A rejected structural-sharing candidate keeps the original detached-copy graph.
+  expect(values[0]?.boundGlobals).not.toBe(values[1]?.boundGlobals);
+  expect(Object.isFrozen(extension)).toBe(false);
+});
+
 it('does not merge non-plain extension values or introduce cross-publication retention', async () => {
   const input = { ...reflection(), extension: new Date(0) };
   const values = await admit([input, { ...reflection(), extension: new Date(0) }]);
@@ -115,6 +182,25 @@ it('does not merge non-plain extension values or introduce cross-publication ret
   const first = await admit([reflection()]);
   const second = await admit([reflection()]);
   expect(second[0]?.boundGlobals).not.toBe(first[0]?.boundGlobals);
+});
+
+it('takes explicit reflection ownership without deferring any reflection validation', () => {
+  const input = publication([reflection(0), reflection(1)]);
+  const expanded = expandShaderManifestPublication(input, { ownedReflections: true }).manifest as {
+    entries: { reflection: ShaderReflection }[];
+  };
+  expect(expanded.entries[0]?.reflection).toBe(input.reflections[0]);
+  expect(expanded.entries[1]?.reflection).toBe(input.reflections[1]);
+  expect(Object.isFrozen(input.reflections)).toBe(true);
+  expect(Object.isFrozen(input.reflections[0]?.boundGlobals)).toBe(true);
+  expect(input.reflections[0]?.boundGlobals).toBe(input.reflections[1]?.boundGlobals);
+
+  const valid = reflection();
+  const invalid = publication([valid, { ...reflection(), schemaVersion: 'invalid' }]);
+  expect(() => expandShaderManifestPublication(invalid, { ownedReflections: true })).toThrow(
+    'Invalid shader manifest publication',
+  );
+  expect(Object.isFrozen(valid.boundGlobals)).toBe(false);
 });
 
 it('shares repeated immutable subtrees for deferred owned reflections while retaining row identity', async () => {

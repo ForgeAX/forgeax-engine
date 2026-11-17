@@ -1,4 +1,4 @@
-import type { AssetRegistry, MaterialRenderProjection } from '@forgeax/engine-assets-runtime';
+﻿import type { AssetRegistry, MaterialRenderProjection } from '@forgeax/engine-assets-runtime';
 import type { AssetChange, AssetReader } from '@forgeax/engine-assets-runtime/internal';
 import type { World } from '@forgeax/engine-ecs';
 import { deriveVertexCount, deriveVertexLayoutProjection } from '@forgeax/engine-geometry';
@@ -30,6 +30,7 @@ import { captureMaterialOverrides } from '../scene/mesh-materials';
 import { ownPose } from '../scene/pose-slab';
 import type { RenderSceneApplyResult, RenderSceneOperation } from '../scene/render-scene-types';
 import { SceneRows, type WorldTransformSpan } from '../scene/scene-rows';
+import { validatePublishedSurfaceDynamicInput } from '../surface/frame-source';
 import { isCanvasTextureSource } from '../textures/canvas-texture';
 import { isExternalTextureSource } from '../textures/external-texture';
 import { isRenderTextureSourceToken, renderTextureSourceKey } from '../textures/source-token';
@@ -202,6 +203,14 @@ function packetColumnsError(packet: RenderPublication): RenderPublicationError |
   if (!numericColumnsValid(packet)) return shapeError('numeric columns');
   if (!publicationListsValid(packet) || !frameMetadataValid(packet))
     return shapeError('frame metadata');
+  if (packet.surfaceDynamicInputs !== undefined) {
+    if (!Array.isArray(packet.surfaceDynamicInputs) || packet.surfaceDynamicInputs.length > 1)
+      return shapeError('one source Surface input page');
+    for (const input of packet.surfaceDynamicInputs) {
+      const valid = validatePublishedSurfaceDynamicInput(input);
+      if (!valid.ok) return shapeError(`Surface input: ${valid.error.message}`);
+    }
+  }
   return undefined;
 }
 
@@ -245,8 +254,7 @@ function frameMetadataValid(packet: RenderPublication): boolean {
     Array.isArray(metadata.lights.pointShadow) &&
     Array.isArray(metadata.lights.spot) &&
     Array.isArray(metadata.lights.rect) &&
-    Number.isFinite(packet.time?.elapsed) &&
-    Number.isFinite(packet.time?.delta)
+    publicationTimeValid(packet.time)
   );
 }
 
@@ -398,6 +406,12 @@ function cameraTargetsError(
   metadata: RenderPublicationMetadata,
   targetTokens: ReadonlySet<object>,
 ): RenderPublicationError | undefined {
+  for (const camera of [...metadata.cameras, ...metadata.auxiliaryCameras])
+    if (
+      camera.cullMask !== undefined &&
+      (!Number.isInteger(camera.cullMask) || camera.cullMask < 0 || camera.cullMask > 0xffffffff)
+    )
+      return shapeError('camera cullMask');
   const unpublished = (camera: { readonly target?: object }) =>
     camera.target !== undefined && !targetTokens.has(camera.target);
   if (
@@ -914,6 +928,8 @@ function templateGeometryError(snapshot: TemplateSnapshot): RenderPublicationErr
 
 /** Layer, preparation and channel facts a template binds to its materials. */
 function templateBindingError(snapshot: TemplateSnapshot): RenderPublicationError | undefined {
+  const gpuError = gpuVertexBindingError(snapshot);
+  if (gpuError !== undefined) return gpuError;
   if (
     (snapshot.layer !== undefined &&
       (!Number.isInteger(snapshot.layer) ||
@@ -924,6 +940,13 @@ function templateBindingError(snapshot: TemplateSnapshot): RenderPublicationErro
     return shapeError('material binding');
   if (snapshot.pipelinePreparation !== undefined && !Array.isArray(snapshot.pipelinePreparation))
     return shapeError('pipeline preparation passes');
+  if (
+    snapshot.renderLayers !== undefined &&
+    (!Number.isInteger(snapshot.renderLayers) ||
+      snapshot.renderLayers < 0 ||
+      snapshot.renderLayers > 0xffffffff)
+  )
+    return shapeError('receiver renderLayers');
   if (
     validateChannelMask(
       snapshot.lightingChannels === undefined
@@ -1236,7 +1259,14 @@ export class RenderPublicationReceiver {
         return acceptedRevision();
       },
       identity: `${identity.source}:${identity.epoch}`,
-      time: { delta: 0, elapsed: 0, maxDeltaSeconds: 0 },
+      time: {
+        delta: 0,
+        elapsed: 0,
+        maxDeltaSeconds: 0,
+        unscaledDelta: 0,
+        unscaledElapsed: 0,
+        scale: 1,
+      },
       transparentSort: { mode: 0, yzAlpha: 1 },
       resolveAsset,
       assetRevision: (handle) => this.assets.get(handle)?.revision,
@@ -2413,4 +2443,37 @@ export class RenderPublicationReceiver {
         this.revision === revision,
     };
   }
+}
+
+function publicationTimeValid(time: RenderPublication['time']): boolean {
+  return (
+    Number.isFinite(time?.elapsed) &&
+    Number.isFinite(time?.delta) &&
+    Number.isFinite(time?.maxDeltaSeconds) &&
+    Number.isFinite(time?.unscaledDelta) &&
+    Number.isFinite(time?.unscaledElapsed) &&
+    Number.isFinite(time?.scale) &&
+    time.delta >= 0 &&
+    time.elapsed >= 0 &&
+    time.maxDeltaSeconds >= 0 &&
+    time.unscaledDelta >= 0 &&
+    time.unscaledElapsed >= 0 &&
+    time.scale >= 0
+  );
+}
+
+function gpuVertexBindingError(snapshot: TemplateSnapshot): RenderPublicationError | undefined {
+  const gpu = snapshot.gpuVertexSource;
+  if (
+    gpu !== undefined &&
+    (gpu === null ||
+      typeof gpu !== 'object' ||
+      typeof gpu.feature !== 'string' ||
+      gpu.feature.length === 0 ||
+      typeof gpu.resource !== 'string' ||
+      gpu.resource.length === 0 ||
+      Object.keys(gpu).some((key) => key !== 'feature' && key !== 'resource'))
+  )
+    return shapeError('GPU mesh vertex source');
+  return undefined;
 }

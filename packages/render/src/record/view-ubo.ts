@@ -389,7 +389,15 @@ function writeClippingLanes(
 /** Fog facts the View lanes carry. */
 type ViewFog = Pick<
   FogFrame,
-  'color' | 'density' | 'heightFalloff' | 'maxOpacity' | 'mode' | 'near' | 'far' | 'skyOpacity'
+  | 'color'
+  | 'density'
+  | 'heightFalloff'
+  | 'maxOpacity'
+  | 'mode'
+  | 'near'
+  | 'far'
+  | 'skyOpacity'
+  | 'sunScatter'
 >;
 
 /**
@@ -417,6 +425,7 @@ function writeFogAndClockLanes(
       288,
     );
     viewPayload[320] = fog.skyOpacity;
+    viewPayload[321] = fog.sunScatter ?? 0;
   }
   // The clock is available even when fog is disabled; no per-material publication.
   const frameTime = Math.fround(frameTimeSeconds ?? 0);

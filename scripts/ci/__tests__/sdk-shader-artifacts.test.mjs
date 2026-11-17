@@ -186,6 +186,52 @@ test('SDK selects successful base and point from one Main run before other jobs 
   assert.equal(result.point.sourceJobId, 23);
 });
 
+test('SDK admits the original base and retried point without rerunning a successful producer', async () => {
+  const f = producerFixture();
+  f.run.run_attempt = 2;
+  const original = {
+    ...f.jobs[0],
+    run_attempt: 1,
+    started_at: '2026-01-01T00:00:00Z',
+    completed_at: '2026-01-01T00:01:00Z',
+  };
+  Object.assign(f.jobs[0], original, { id: 44, run_attempt: 2 });
+  Object.assign(f.jobs[1], { id: 45, run_attempt: 2 });
+  f.artifacts[1].name = 'shared-app-inputs-a2';
+  const api = (endpoint) =>
+    endpoint.includes('/jobs?filter=all&')
+      ? { total_count: 3, jobs: [original, ...f.jobs] }
+      : f.api(endpoint);
+  const result = await sdkShaderArtifacts(f.input, api);
+  assert.equal(result.core.sourceJobId, 22);
+  assert.equal(result.core.artifactName, 'core-build-a1');
+  assert.equal(result.point.sourceJobId, 45);
+  assert.equal(result.point.artifactName, 'shared-app-inputs-a2');
+});
+
+test('SDK retains the original point execution when a later retry only repairs consumers', async () => {
+  const f = producerFixture();
+  f.run.run_attempt = 3;
+  f.artifacts[0].name = 'core-build-a3';
+  f.artifacts[1].name = 'shared-app-inputs-a2';
+  const original = {
+    ...f.jobs[1],
+    id: 45,
+    run_attempt: 2,
+    started_at: '2026-01-01T00:02:00Z',
+    completed_at: '2026-01-01T00:03:00Z',
+  };
+  Object.assign(f.jobs[1], original, { id: 67, run_attempt: 3 });
+  const api = (endpoint) =>
+    endpoint.includes('/jobs?filter=all&')
+      ? { total_count: 3, jobs: [original, ...f.jobs] }
+      : f.api(endpoint);
+  const result = await sdkShaderArtifacts(f.input, api);
+  assert.equal(result.point.sourceJobId, 45);
+  assert.equal(result.point.artifactName, 'shared-app-inputs-a2');
+  assert.equal(result.point.artifactDigest, f.artifacts[1].digest);
+});
+
 test('SDK waits for the existing point producer, preserving the shared total waiting bound', async () => {
   const f = producerFixture();
   f.jobs[1].status = 'in_progress';

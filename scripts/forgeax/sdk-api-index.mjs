@@ -90,10 +90,10 @@ const DOMAINS = [
     ],
     gotchas: [
       'Import from `@forgeax/engine/<facade>` only, never physical `@forgeax/engine-*` packages.',
-      'Use original objects for schedules, systems, sets and resources. Names are diagnostic; resource tokens infer value types.',
+      'Use original objects for schedules, systems, sets and resources. Names are diagnostic; resource tokens infer types.',
       'Expected failures return `Result` (`r.ok ? r.value : r.error`, `.unwrap()` throws): World methods, asset loads, geometry, pack builds.',
       'Math values are branded `Float32Array`s from `vec3.create(x, y, z)` / `quat.create()`; functions write into `out` and return it. Component data takes plain arrays (`{ pos: [0, 1, 0] }`).',
-      'Pack output keys (sourceKeys) must match {{pack/guid PACK_SOURCE_KEY_RE}} (lower case).',
+      'Pack output keys (sourceKeys) must match {{pack/guid PACK_SOURCE_KEY_RE}} (lowercase).',
       "Declare every service a plugin reads in `inject` (`inject: ['world', 'assets', 'gameHost']`); add systems inside `ctx.effect` and `yield` their removal.",
     ],
   },

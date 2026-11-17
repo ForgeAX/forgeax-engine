@@ -20,8 +20,8 @@ interface Voice {
 }
 interface Mix {
   readonly requestId: number;
-  readonly time: number;
-  readonly end: number;
+  time: number;
+  end: number;
   readonly gains: readonly number[];
 }
 export interface MusicOutput {
@@ -52,6 +52,7 @@ export class MusicTransport {
   private receipts: MusicReceipt[] = [];
   private lastRequest = 0;
   private bpm = 0;
+  private playbackScale = 1;
   private anchorTime = 0;
   private anchorBeat = 0;
   private gains: readonly number[] = [];
@@ -212,10 +213,40 @@ export class MusicTransport {
     // floating-point edge while retaining the same admitted integer sample.
     return rounded * rate > sample ? rounded - Number.EPSILON * rounded : rounded;
   }
+  /** Rebase native envelopes and musical clock without discarding scheduled requests. */
+  setGlobalPlaybackRate(scale: number): void {
+    if (!Number.isFinite(scale) || scale <= 0 || scale === this.playbackScale) return;
+    this.poll();
+    const now = this.output()?.context.currentTime ?? 0;
+    const beat = this.beat(now),
+      current = this.gainsAt(now),
+      ratio = this.playbackScale / scale;
+    this.anchorTime = Math.max(now, this.anchorTime);
+    this.anchorBeat = beat;
+    this.playbackScale = scale;
+    this.gains = current;
+    for (const event of this.events) {
+      event.time = this.round(now + Math.max(0, event.time - now) * ratio);
+      event.end = this.round(now + Math.max(0, event.end - now) * ratio);
+      const receipt = this.receipts.find((item) => item.requestId === event.requestId);
+      if (receipt?.status === 'scheduled') this.receipt({ ...receipt, targetTime: event.time });
+    }
+    const score = this.score;
+    if (score)
+      for (const voice of this.voices) {
+        const native = voice.source;
+        const base = (native.loopEnd - native.loopStart) / ((score.loopBeats * 60) / this.bpm);
+        native.playbackRate.setValueAtTime(base * scale, now);
+      }
+    this.automate(now, current);
+  }
+
   private beat(now: number): number {
     if (this.phase === 'paused' || this.phase === 'empty' || this.phase === 'preparing')
       return this.anchorBeat;
-    return this.anchorBeat + (Math.max(0, now - this.anchorTime) * this.bpm) / 60;
+    return (
+      this.anchorBeat + (Math.max(0, now - this.anchorTime) * this.bpm * this.playbackScale) / 60
+    );
   }
   private gainsAt(now: number): readonly number[] {
     let gains = this.gains;
@@ -289,7 +320,8 @@ export class MusicTransport {
       source.loop = true;
       source.loopStart = stem.offsetSeconds;
       source.loopEnd = stem.offsetSeconds + loopSeconds;
-      source.playbackRate.value = loopSeconds / ((score.loopBeats * 60) / this.bpm);
+      source.playbackRate.value =
+        (loopSeconds / ((score.loopBeats * 60) / this.bpm)) * this.playbackScale;
       source.connect(gain);
       gain.connect(native.output);
       source.start(
@@ -366,7 +398,9 @@ export class MusicTransport {
         command.atBeat === undefined
           ? (Math.floor(this.beat(now) / unit) + 1) * unit
           : Math.ceil(command.atBeat / unit) * unit;
-      let time = this.round(this.anchorTime + ((beat - this.anchorBeat) * 60) / this.bpm);
+      let time = this.round(
+        this.anchorTime + ((beat - this.anchorBeat) * 60) / (this.bpm * this.playbackScale),
+      );
       let deferred = false;
       if (time < now + LEAD - 0.5 / (this.output()?.context.sampleRate ?? 48000)) {
         if (command.late === 'reject') {
@@ -378,12 +412,17 @@ export class MusicTransport {
           return;
         }
         beat =
-          Math.ceil((this.anchorBeat + ((now + LEAD - this.anchorTime) * this.bpm) / 60) / unit) *
-          unit;
-        time = this.round(this.anchorTime + ((beat - this.anchorBeat) * 60) / this.bpm);
+          Math.ceil(
+            (this.anchorBeat +
+              ((now + LEAD - this.anchorTime) * this.bpm * this.playbackScale) / 60) /
+              unit,
+          ) * unit;
+        time = this.round(
+          this.anchorTime + ((beat - this.anchorBeat) * 60) / (this.bpm * this.playbackScale),
+        );
         deferred = true;
       }
-      const end = this.round(time + (fade * 60) / this.bpm);
+      const end = this.round(time + (fade * 60) / (this.bpm * this.playbackScale));
       const rate = this.output()?.context.sampleRate ?? 48000;
       if (
         !Number.isSafeInteger(Math.round(time * rate)) ||

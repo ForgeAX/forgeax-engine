@@ -1182,12 +1182,12 @@ it.each([
   'global-sky-gpu',
   'global-sky-outline-idle-gpu',
   'global-sky-outline-selected-gpu',
+  'global-sky-outline-distance-gpu',
   'point-shadow-direct',
 ] as const)('prepares a new mesh from the installed graph and warm PSOs without another record frame (%s)', async (lane) => {
   const f = await fixture('color', true, lane === 'point-shadow-direct');
   const controller = new AbortController();
-  const outline =
-    lane === 'global-sky-outline-idle-gpu' || lane === 'global-sky-outline-selected-gpu';
+  const outline = isOutlineCandidateLane(lane);
   const globalSky = lane === 'global-sky-gpu' || outline;
   const declarations =
     lane === 'global-sky-outline-idle-gpu'
@@ -1244,6 +1244,14 @@ it.each([
           data: {
             entities: [lane === 'global-sky-outline-idle-gpu' ? f.camera : f.entity],
             width: 1,
+            ...(lane === 'global-sky-outline-distance-gpu'
+              ? {
+                  distanceField: true,
+                  focusedEntities: [f.entity],
+                  accentEntities: [f.entity],
+                  largeEntities: [f.entity],
+                }
+              : {}),
           },
         })
         .unwrap();
@@ -2491,3 +2499,11 @@ it.each([
     await f.dispose();
   }
 });
+
+function isOutlineCandidateLane(lane: string): boolean {
+  return (
+    lane === 'global-sky-outline-idle-gpu' ||
+    lane === 'global-sky-outline-selected-gpu' ||
+    lane === 'global-sky-outline-distance-gpu'
+  );
+}

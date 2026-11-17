@@ -24,7 +24,21 @@ it('publishes saved authoring sources without replacing the editing document', a
   );
   const root = await realpath(directory.root);
   const temporaryRoot = await realpath(directory.temporaryRoot);
-  const backend = await createBackendHost();
+  let publications = 0;
+  const backend = await createBackendHost({
+    startupPlugins: [
+      {
+        provide: ['engineWorkspaceCatalog'],
+        apply(ctx) {
+          ctx.provide('engineWorkspaceCatalog', {
+            notePublished() {
+              publications++;
+            },
+          });
+        },
+      },
+    ],
+  });
   let server: ViteDevServer | undefined;
   const source = resolve(root, 'assets/scene.pack.json');
   const authored = (intensity: number) =>
@@ -111,6 +125,7 @@ it('publishes saved authoring sources without replacing the editing document', a
     }) as typeof server.ws.send;
     for (const intensity of [1, 3.2]) {
       const previous = pack.catalogSnapshot().find((row) => row.kind === 'scene')?.revision?.digest;
+      const previousPublications = publications;
       await writeFile(source, authored(intensity));
       await expect(
         lifecycle.hotUpdate.call(
@@ -125,11 +140,15 @@ it('publishes saved authoring sources without replacing the editing document', a
           } as never,
         ),
       ).resolves.toEqual([]);
+      // A temporarily absent row is not a completed publication. Wait for the
+      // actual producer receipt before another write can overlap its scan.
       await expect
-        .poll(() => pack.catalogSnapshot().find((row) => row.kind === 'scene')?.revision?.digest, {
-          timeout: 3000,
-        })
-        .not.toBe(previous);
+        .poll(() => publications, { timeout: 3000 })
+        .toBeGreaterThan(previousPublications);
+      const published = pack.catalogSnapshot().find((row) => row.kind === 'scene')
+        ?.revision?.digest;
+      expect(published).toBeDefined();
+      expect(published).not.toBe(previous);
     }
     expect(consumed).toEqual([source, source]);
     expect(reloads).toEqual([]);
@@ -221,6 +240,10 @@ it('publishes saved authoring sources without replacing the editing document', a
     }
     expect(consumed).toHaveLength(notificationsBeforeFailure);
 
+    // Missing-source read probes can queue unchanged catalog scans. Drain the
+    // producer queue before deleting their input and before server teardown.
+    await pack.rebuildCatalogInPlace([]);
+    const publicationsBeforeDelete = publications;
     await rm(source);
     let deletedReads = 0;
     await expect(
@@ -241,6 +264,10 @@ it('publishes saved authoring sources without replacing the editing document', a
     ).resolves.toEqual([]);
     expect(deletedReads).toBe(0);
     expect(consumed.at(-1)).toBe(source);
+    await expect
+      .poll(() => publications, { timeout: 3000 })
+      .toBeGreaterThan(publicationsBeforeDelete);
+    expect(pack.catalogSnapshot().find((row) => row.kind === 'scene')).toBeUndefined();
   } finally {
     await server?.close();
     await backend.dispose();

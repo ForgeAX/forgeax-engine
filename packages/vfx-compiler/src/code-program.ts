@@ -24,6 +24,8 @@ import {
   type VfxValueType,
 } from '@forgeax/engine-vfx';
 import { VFX_FORCE_FIELDS_WGSL } from './force-fields.js';
+import { GPU_EVENT_OUTPUT_RUNTIME_WGSL } from './gpu-event-output.js';
+import { createGpuSlotAllocatorRuntime, GPU_SLOT_ALLOCATOR_ENTRY } from './gpu-slot-allocator.js';
 import {
   createVfxInstanceComputeProgram,
   VFX_INSTANCE_COMPUTE_COMPILER_SOURCE,
@@ -42,6 +44,7 @@ import {
   type VfxReflectionError,
 } from './reflection.js';
 import { SCENE_SDF_RUNTIME_WGSL } from './scene-sdf.js';
+import { WATER_SURFACE_RUNTIME_WGSL } from './water-surface.js';
 
 // Build-host lifetime, bounded by the shared compiler's 128-entry / 16 MiB budget.
 // Every cook still validates source metadata and derives a fresh artifact.
@@ -160,6 +163,11 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) {
 }`;
 
 const PARTICLE_CODE_DATA_INTERFACE_MODULES: Readonly<Record<string, string>> = {
+  'forgeax_vfx::data::gpu_events': '#define_import_path forgeax_vfx::data::gpu_events\n',
+  'forgeax_vfx::data::water_displacement':
+    '#define_import_path forgeax_vfx::data::water_displacement\n',
+  'forgeax_vfx::data::water_hull': '#define_import_path forgeax_vfx::data::water_hull\n',
+  'forgeax_vfx::data::water_config': '#define_import_path forgeax_vfx::data::water_config\n',
   'forgeax_vfx::data::scene_sdf': '#define_import_path forgeax_vfx::data::scene_sdf\n',
   'forgeax_vfx::data::force_fields': '#define_import_path forgeax_vfx::data::force_fields\n',
   'forgeax_vfx::data::water_surface': '#define_import_path forgeax_vfx::data::water_surface\n',
@@ -955,6 +963,10 @@ function createParticleDataInterfaceRuntimeV3(
 ): string {
   const kinds = new Set(requirements.map((requirement) => requirement.kind));
   return [
+    kinds.has('water-config') && kinds.has('water-hull') && kinds.has('water-displacement')
+      ? WATER_SURFACE_RUNTIME_WGSL
+      : '',
+    kinds.has('gpu-events') ? GPU_EVENT_OUTPUT_RUNTIME_WGSL : '',
     kinds.has('force-fields') ? VFX_FORCE_FIELDS_WGSL : '',
     kinds.has('camera')
       ? '@group(0) @binding(12) var<uniform> forgeax_vfx_camera: mat4x4<f32>;'
@@ -2114,7 +2126,11 @@ async function compileEmitterV3(
           name.endsWith('noise') ||
           name.endsWith('scene_sdf') ||
           name.endsWith('force_fields') ||
-          name.endsWith('water_surface'),
+          name.endsWith('water_surface') ||
+          name.endsWith('water_displacement') ||
+          name.endsWith('water_hull') ||
+          name.endsWith('water_config') ||
+          name.endsWith('gpu_events'),
       ),
     ),
   };
@@ -2140,8 +2156,42 @@ async function compileEmitterV3(
           '    forgeax_vfx_particles[childParticleIndex] = child;',
           `    forgeax_vfx_particles[childParticleIndex] = child;\n    forgeax_vfx_custom[childParticleIndex] = VfxCustom(${custom.fields.map((field) => wgslDefault(field.type)).join(', ')});`,
         );
+  let poolRuntime = '';
+  const validatePoolHooks = () => {
+    if (emitter.pool) {
+      const customFields = layout.value.customLayout?.fields ?? [];
+      const parameterFields = layout.value.parameters.fields;
+      const validState = Object.values(emitter.pool.state).every((name) =>
+        customFields.some((field) => field.name === name && field.type === 'f32'),
+      );
+      const validCommands = emitter.pool.commands.every((command) =>
+        [command.sequence, command.count].every((name) =>
+          parameterFields.some((field) => field.name === name && field.type === 'f32'),
+        ),
+      );
+      const validHooks = [emitter.pool.acquire, emitter.pool.control]
+        .filter((name): name is string => name !== undefined)
+        .every((name) => new RegExp(`\\bfn\\s+${name}\\s*\\(`).test(entryCode));
+      if (!customHook || !validState || !validCommands || !validHooks)
+        return err(
+          compileError(
+            'vfx-shader-invalid',
+            emitter.id,
+            'authored pool hooks, persistent custom f32 state and declared command parameters',
+            'Declare and implement the pool acquire/control hooks and their bounded state',
+            { module: moduleId },
+          ),
+        );
+      poolRuntime = createGpuSlotAllocatorRuntime(emitter.pool, emitter.capacity);
+    }
+
+    return undefined;
+  };
+  const validatePoolHooksFailure = validatePoolHooks();
+  if (validatePoolHooksFailure !== undefined) return validatePoolHooksFailure;
   const compiled = await compileParticleShader(
-    `${managedImports}${authoredEntryCode}\n${managed}\n${createParticleDataInterfaceRuntimeV3(dataInterfaces)}\n${createParticleStageManagedRuntime(stagePlan.value)}\n${eventRuntime}`,
+    `${managedImports}${authoredEntryCode}\n${managed}\n${createParticleDataInterfaceRuntimeV3(dataInterfaces)}\n${createParticleStageManagedRuntime(stagePlan.value)}\n${eventRuntime}\n${poolRuntime}`,
+
     {
       id: `forgeax_vfx_effect_v3::${emitter.id}`,
       imports: imports as Record<string, string>,
@@ -2225,6 +2275,7 @@ async function compileEmitterV3(
       bounds: emitter.bounds,
       renderers: emitter.renderers,
       channels: Object.freeze([...(emitter.channels ?? [])]),
+
       events: Object.freeze([...(emitter.events ?? [])]),
       simulationWhenCulled: emitter.simulationWhenCulled ?? 'continue',
       wgsl: compiled.value.wgsl,
@@ -2235,6 +2286,7 @@ async function compileEmitterV3(
         entryPoints: [
           'forgeax_vfx_spawn_main',
           'forgeax_vfx_update_main',
+          ...(emitter.pool ? [GPU_SLOT_ALLOCATOR_ENTRY] : []),
           'forgeax_vfx_scan_blocks_main',
           'forgeax_vfx_scan_block_offsets_main',
           'forgeax_vfx_add_offsets_main',
@@ -2283,7 +2335,11 @@ async function compileEmitterV3(
     Object.values(module.imports ?? {}).every(
       (source) => !/\bforgeax_vfx_/.test(stripWgslComments(source)),
     );
-  const instanceCompute = instanceIsolated ? createVfxInstanceComputeProgram(program) : undefined;
+  const buildIsolatedInstanceProgram = () =>
+    instanceIsolated && emitter.pool === undefined
+      ? createVfxInstanceComputeProgram(program)
+      : undefined;
+  const instanceCompute = buildIsolatedInstanceProgram();
   if (instanceCompute === undefined) return ok(program);
   const validatedBatch = await compileParticleShader(instanceCompute.wgsl, {
     id: `forgeax_vfx_instance_v1::${emitter.id}`,

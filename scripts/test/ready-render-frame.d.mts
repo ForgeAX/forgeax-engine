@@ -5,7 +5,18 @@ import type {
   RenderWorldLease,
 } from '@forgeax/engine-render';
 
+export interface ReadyFrameSubmissionContext {
+  readonly attempt: number;
+  readonly renderer: Pick<Renderer, 'draw' | 'requestObservation' | 'observe'>;
+  readonly request: RenderFrameInput;
+}
+
 export interface ReadyFrameOptions {
+  readonly beforeSubmit?: (context: ReadyFrameSubmissionContext) => void | Promise<void>;
+  readonly afterSubmit?: (
+    receipt: FrameReceipt,
+    context: ReadyFrameSubmissionContext,
+  ) => void | Promise<void>;
   /** Total settlement budget (default 90 s). Submission, pending/steady GPU and
    * default compilation waits retain 15 s bounds. After signalled pipeline
    * preparation, the first ready GPU completion uses the remaining owner budget. */

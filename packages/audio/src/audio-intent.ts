@@ -42,6 +42,12 @@ export type AudioIntent =
     }
   | { readonly kind: 'set-bus-wet'; readonly bus: string; readonly wet: number }
   | {
+      readonly kind: 'set-bus-low-pass';
+      readonly bus: string;
+      readonly owner: string;
+      readonly filter: { readonly cutoffHz: number; readonly q: number } | null;
+    }
+  | {
       readonly kind: 'set-bus-send-gain';
       readonly bus: string;
       readonly target: string;
@@ -64,6 +70,7 @@ export type AudioIntent =
   | { readonly kind: 'set-bus'; readonly entityId: number; readonly bus: BusName }
   | { readonly kind: 'stop'; readonly entityId: number }
   | { readonly kind: 'seek'; readonly entityId: number; readonly position: number }
+  | { readonly kind: 'set-global-playback-rate'; readonly scale: number }
   | { readonly kind: 'set-playback-rate'; readonly entityId: number; readonly playbackRate: number }
   | { readonly kind: 'set-paused'; readonly entityId: number; readonly paused: boolean }
   | { readonly kind: 'set-volume'; readonly entityId: number; readonly volume: number }
@@ -237,6 +244,13 @@ export function createAudioIntentBackend(options: AudioIntentBackendOptions): Au
     },
     reportError: fail,
     setBusWet: (bus, wet) => emit({ kind: 'set-bus-wet', bus, wet }),
+    setBusLowPass: (bus, owner, filter) =>
+      emit({
+        kind: 'set-bus-low-pass',
+        bus,
+        owner,
+        filter: filter === null ? null : { ...filter },
+      }),
     setBusSendGain: (bus, target, gain) => emit({ kind: 'set-bus-send-gain', bus, target, gain }),
     setAcousticRoutes(entityId, routes) {
       const checked = validateAcousticRoutes(routes);
@@ -321,6 +335,7 @@ export function createAudioIntentBackend(options: AudioIntentBackendOptions): Au
     stop: (entityId) => emit({ kind: 'stop', entityId }),
     seek: (entityId, position) => emit({ kind: 'seek', entityId, position }),
     setVolume: (entityId, volume) => emit({ kind: 'set-volume', entityId, volume }),
+    setGlobalPlaybackRate: (scale) => emit({ kind: 'set-global-playback-rate', scale }),
     setPlaybackRate: (entityId, playbackRate) =>
       emit({ kind: 'set-playback-rate', entityId, playbackRate }),
     setPaused: (entityId, paused) => emit({ kind: 'set-paused', entityId, paused }),

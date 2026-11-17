@@ -9,8 +9,10 @@ import { Camera, orthographic, perspective, type RendererOptions } from '@forgea
 import { ShaderRegistry } from '@forgeax/engine-shader';
 import { VFX_GPU_RUNTIME_RESOURCE_KEY } from '@forgeax/engine-vfx';
 import { createVfxRuntimeHost } from '@forgeax/engine-vfx-render';
+import { transformWithOxc } from 'vite';
 import { describe, expect, it, vi } from 'vitest';
 import { gameVfxSource } from '../../game-vfx-source.js';
+import { gameRenderFeaturesSource } from '../../host/render-feature-contributions.js';
 import type { StartupUiOptions } from '../../host/startup-ui.js';
 import type { ProjectFacts } from '../../types.js';
 import { wechatHostSource } from '../wechat.js';
@@ -39,10 +41,19 @@ async function host(
   const graphicsOptions: RendererOptions[] = [];
   const createGameVfx = vi.fn(
     runInNewContext(
-      `${gameVfxSource.replace(/^import .*;$/gm, '').replace('export function', 'function')}\ncreateGameVfx`,
+      `${(await transformWithOxc(gameVfxSource.replace(/^import .*;$/gm, '').replace('export function', 'function'), 'game-vfx.ts', { lang: 'ts' })).code}\ncreateGameVfx`,
       { createVfxRuntimeHost },
     ),
   );
+  const features = gameRenderFeaturesSource(process.cwd(), process.cwd());
+  const featureCode = (
+    await transformWithOxc(
+      features.replace(/^import .*;$/gm, '').replace('export function', 'function'),
+      'game-render-features.ts',
+      { lang: 'ts' },
+    )
+  ).code;
+  const createGameRenderFeatures = runInNewContext(`${featureCode}\ncreateGameRenderFeatures`, {});
   const captures: { captureFrame(): Promise<unknown>; dispose(): Promise<{ ok: true }> }[] = [];
   const backend = {};
   const nativeRhi = {};
@@ -108,6 +119,7 @@ async function host(
       canvasAspectPlugin,
       inspectPluginFiber,
       createGameVfx,
+      createGameRenderFeatures,
       AbortController,
       console: { info: vi.fn(), error: vi.fn() },
       setTimeout,

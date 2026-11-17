@@ -19,6 +19,8 @@ and execute the nearest production Dawn gate before claiming pixels accepted.
 
 ## Contract index
 
+For a textured single-layer medium Surface, declare textures in the material parameters and sample the generated texture/sampler symbols. The compiler and Render derive the author region and relocate native optical resources together; never copy fixed IBL, backdrop, depth or planar bindings into a game shader.
+
 Water uses the root-owned `water-deformation/1` declaration and canonical
 input layout from Types; cook receipts cover color, depth, shadow and velocity.
 A Surface-only WaterInfo reader can omit deformation. The reflected

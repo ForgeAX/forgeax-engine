@@ -1,4 +1,6 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import {
   ChildOf,
   GlobalTransform,
@@ -7,6 +9,9 @@ import {
 } from '@forgeax/engine-scene';
 import { describe, expect, it, vi } from 'vitest';
 import { Fog } from '../components/fog';
+import { GpuMeshVertexSource } from '../components/gpu-mesh-vertex-source';
+import { MeshFilter } from '../components/mesh-filter';
+import { MeshRenderer } from '../components/mesh-renderer';
 import { Visibility, VisibilityStateValue } from '../components/visibility';
 import { prepareExtractContext } from '../render-system-extract';
 import { extractFrame, extractSource } from '../render-system-extract-tail';
@@ -39,6 +44,41 @@ function makeWorld() {
 }
 
 describe('visibility extract orchestration', () => {
+  it('keeps ordinary meshes out of the optional GPU producer read while publishing an authored producer', () => {
+    const assets = new AssetRegistry();
+    const mesh = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+    const world = new World({ assets });
+    const ordinary = world
+      .spawn(
+        { component: Transform, data: {} },
+        { component: MeshFilter, data: { assetHandle: mesh } },
+        { component: MeshRenderer, data: {} },
+      )
+      .unwrap();
+    const produced = world
+      .spawn(
+        { component: Transform, data: {} },
+        { component: MeshFilter, data: { assetHandle: mesh } },
+        { component: MeshRenderer, data: {} },
+        { component: GpuMeshVertexSource, data: { feature: 'ocean', resource: 'vertices' } },
+      )
+      .unwrap();
+    const reads = vi.spyOn(world, 'get');
+    const frame = extractSource(world);
+    expect(
+      frame.renderables.find((row) => row.entityKey === ordinary)?.gpuVertexSource,
+    ).toBeUndefined();
+    expect(frame.renderables.find((row) => row.entityKey === produced)?.gpuVertexSource).toEqual({
+      feature: 'ocean',
+      resource: 'vertices',
+    });
+    expect(
+      reads.mock.calls
+        .filter(([, component]) => component === GpuMeshVertexSource)
+        .map(([entity]) => entity),
+    ).toEqual([produced]);
+  });
+
   it('selects Fog once from the source and never queries an unrelated World', () => {
     const cameraWorld = new World();
     const resourceWorld = new World();

@@ -7,7 +7,7 @@ import { type FontAsset, FontError } from '@forgeax/engine-types';
 import { atlasFontData, type BakeAtlas, type MsdfGenerator } from './atlas-font-data.js';
 import { generateFontAtlas } from './atlas-generator.js';
 
-export type { BakeAtlas, BakeGlyph, MsdfGenerator } from './atlas-font-data.js';
+export type { BakeAtlas, BakeGlyph, FontAtlasOptions, MsdfGenerator } from './atlas-font-data.js';
 
 /**
  * Bake-time sidecar JSON shape (importer: 'font'). Carries the glyph metrics

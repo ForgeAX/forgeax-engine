@@ -7,6 +7,7 @@ import {
   PhysicsSimulation,
   PhysicsSync,
   PhysicsWritebackPhase,
+  physicsSimulationRunning,
   registerPhysicsComponents,
 } from '@forgeax/engine-physics';
 import { PropagateTransformsFixed, type Transform } from '@forgeax/engine-scene';
@@ -72,6 +73,7 @@ export const PhysicsStepSimulation: System<readonly []> = defineSystem({
   name: PHYSICS_STEP_SIMULATION,
   queries: [],
   after: [PhysicsSyncBackend],
+  runIf: physicsSimulationRunning,
   fn: (world) => {
     let pw: RapierPhysicsWorld3D;
     try {

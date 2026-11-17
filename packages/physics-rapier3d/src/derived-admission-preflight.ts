@@ -152,7 +152,11 @@ export function copyDerivedShapeInputs(body: DerivedBodyRecord) {
                 vertices: new Float32Array(shape.input.vertices),
                 indices: new Uint32Array(shape.input.indices),
               }
-            : { pieces: shape.input.pieces.map((piece) => new Float32Array(piece)) }),
+            : shape.input.kind === 'convex-compound'
+              ? { pieces: shape.input.pieces.map((piece) => new Float32Array(piece)) }
+              : shape.input.kind === 'cuboid'
+                ? { halfExtents: [...shape.input.halfExtents] as PhysicsVector }
+                : {}),
       origin: [...shape.input.origin] as PhysicsVector,
       rotation: [...shape.input.rotation] as PhysicsQuaternion,
     })),

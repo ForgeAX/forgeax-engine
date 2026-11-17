@@ -1,4 +1,4 @@
-import {
+﻿import {
   type GraphAccess,
   type GraphResourceResolver,
   type GraphTextureView,
@@ -206,7 +206,10 @@ export function addTypedSkyboxPass(
   color: RenderPipelineTarget,
 ): Result<void, RenderGraphError> {
   return graph.addRasterPass('skybox', {
-    accesses: [{ resource: color.view, usage: 'color-attachment' }],
+    accesses: [
+      ...graph.consumerReads('render-feature.scene'),
+      { resource: color.view, usage: 'color-attachment' },
+    ],
     colorAttachments: [
       {
         view: color.view,
@@ -445,44 +448,50 @@ export function addTypedScenePass(
   options: TypedScenePassOptions,
 ): Result<void, RenderGraphError> {
   const colorTargets = options.colorTargets ?? (options.color === undefined ? [] : [options.color]);
-  const waterOutputs = ((): readonly MaterialColorOutput[] | undefined => {
-    switch (options.recordMode) {
-      case 'water-prepass':
-        return SINGLE_LAYER_WATER_PASS_OUTPUTS.depth;
-      case 'water-color':
-        return SINGLE_LAYER_WATER_PASS_OUTPUTS.color;
-      case 'water-shadow':
-        return SINGLE_LAYER_WATER_PASS_OUTPUTS.shadow;
-      case 'water-velocity':
-        return SINGLE_LAYER_WATER_PASS_OUTPUTS.velocity;
-      default:
-        return undefined;
-    }
-  })();
-  if (waterOutputs !== undefined) {
-    const mismatch = waterOutputs.findIndex(
-      (output, index) => colorTargets[index]?.format !== output.format,
-    );
-    if (colorTargets.length !== waterOutputs.length || mismatch !== -1) {
-      const location =
-        mismatch === -1 ? Math.min(colorTargets.length, waterOutputs.length) : mismatch;
-      const output = waterOutputs[location];
-      return err(
-        new RenderGraphError({
-          code: 'resource-descriptor-invalid',
-          expected: 'Water scene attachments match the selected model/pass output contract',
-          hint: 'declare the complete Water attachment roster in WGSL location order',
-          detail: {
-            passName: options.name,
-            resourceLabel: output?.name ?? `color[${location}]`,
-            field: `colorAttachments[${location}].format`,
-            expected: output?.format ?? 'no attachment',
-            actual: colorTargets[location]?.format ?? 'missing attachment',
-          },
-        }),
+  const validateWaterAttachments = () => {
+    const waterOutputs = ((): readonly MaterialColorOutput[] | undefined => {
+      switch (options.recordMode) {
+        case 'water-prepass':
+          return SINGLE_LAYER_WATER_PASS_OUTPUTS.depth;
+        case 'water-color':
+          return SINGLE_LAYER_WATER_PASS_OUTPUTS.color;
+        case 'water-shadow':
+          return SINGLE_LAYER_WATER_PASS_OUTPUTS.shadow;
+        case 'water-velocity':
+          return SINGLE_LAYER_WATER_PASS_OUTPUTS.velocity;
+        default:
+          return undefined;
+      }
+    })();
+    if (waterOutputs !== undefined) {
+      const mismatch = waterOutputs.findIndex(
+        (output, index) => colorTargets[index]?.format !== output.format,
       );
+      if (colorTargets.length !== waterOutputs.length || mismatch !== -1) {
+        const location =
+          mismatch === -1 ? Math.min(colorTargets.length, waterOutputs.length) : mismatch;
+        const output = waterOutputs[location];
+        return err(
+          new RenderGraphError({
+            code: 'resource-descriptor-invalid',
+            expected: 'Water scene attachments match the selected model/pass output contract',
+            hint: 'declare the complete Water attachment roster in WGSL location order',
+            detail: {
+              passName: options.name,
+              resourceLabel: output?.name ?? `color[${location}]`,
+              field: `colorAttachments[${location}].format`,
+              expected: output?.format ?? 'no attachment',
+              actual: colorTargets[location]?.format ?? 'missing attachment',
+            },
+          }),
+        );
+      }
     }
-  }
+
+    return undefined;
+  };
+  const attachmentFailure = validateWaterAttachments();
+  if (attachmentFailure !== undefined) return attachmentFailure;
   const request = registerScenePass(graph, {
     selector: options.selector,
     excludeSelector: options.excludeSelector,
@@ -626,6 +635,11 @@ export function addTypedScenePass(
     return result;
   };
   const accesses = typedScenePassAccesses(options, colorTargets);
+  for (const read of graph.consumerReads('render-feature.scene'))
+    if (
+      !accesses.some((access) => access.resource === read.resource && access.usage === read.usage)
+    )
+      accesses.push(read);
   return graph.addRasterPass(options.name, {
     accesses,
     executeIf:

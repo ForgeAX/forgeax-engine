@@ -9,6 +9,7 @@ export const ParticleEffectPlayer = defineComponent('ParticleEffectPlayer', {
   // Keep effect GPU programs and storage ready while paused, without simulation or drawing.
   preparePipelines: { type: 'bool', default: false },
   seed: { type: 'u32', default: 0 },
+  renderLayers: { type: 'f64', default: 1 },
   timeScale: { type: 'f32', default: 1 },
   // JSON object overriding the effect's declared `parameters` for this Player, e.g.
   // '{"origin":[1,2,3],"worldScale":9.5}'. Build it with `vfxPlayerParameters`.
@@ -17,6 +18,14 @@ export const ParticleEffectPlayer = defineComponent('ParticleEffectPlayer', {
 
 /** The serializable fields stored by {@link ParticleEffectPlayer}. */
 export type ParticleEffectPlayerData = ShapeOf<SchemaOf<typeof ParticleEffectPlayer>>;
+
+/** Author-owned world visibility volume, independent of simulation coordinates.
+ * Moving world-space emitters can follow their owner for culling without moving
+ * existing GPU particles or reading particle state back to the CPU. */
+export const ParticleEffectWorldBounds = defineComponent('ParticleEffectWorldBounds', {
+  min: { type: 'array<f32, 3>', default: new Float32Array([-1, -1, -1]) },
+  max: { type: 'array<f32, 3>', default: new Float32Array([1, 1, 1]) },
+});
 
 /**
  * Serialize per-Player parameter overrides for `ParticleEffectPlayer.parameters`.

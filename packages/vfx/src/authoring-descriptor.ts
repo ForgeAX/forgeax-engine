@@ -42,8 +42,14 @@ export interface VfxAuthoringEmitterDescriptor extends VfxAuthoringNodeDescripto
 export interface VfxAuthoringTimelineDescriptor {
   readonly emitterId: string;
   readonly rate: number;
-  readonly bursts: readonly { readonly time: number; readonly count: number }[];
+  readonly bursts: readonly {
+    readonly time: number;
+    readonly count: number;
+    readonly spreadSeconds?: number;
+  }[];
   readonly loopDuration?: number;
+  readonly warmupSeconds?: number;
+  readonly randomness?: number;
 }
 
 export interface VfxAuthoringDependencyDescriptor {
@@ -73,6 +79,8 @@ const V3_CAPABILITIES: readonly VfxAuthoringCapabilityDescriptor[] = Object.free
   Object.freeze({ id: 'wgsl-behavior', state: 'executable' }),
   Object.freeze({ id: 'multi-emitter', state: 'executable' }),
   Object.freeze({ id: 'deterministic-replay', state: 'executable' }),
+  Object.freeze({ id: 'gpu-warmup', state: 'executable' }),
+  Object.freeze({ id: 'deterministic-emission-jitter', state: 'executable' }),
   Object.freeze({ id: 'emitter-visibility', state: 'executable' }),
   Object.freeze({ id: 'runtime-parameters', state: 'executable' }),
   Object.freeze({ id: 'custom-attributes', state: 'executable' }),
@@ -353,6 +361,12 @@ export function describeVfxGpuEffect(effect: VfxGpuEffectAsset): VfxAuthoringDes
           ...(emitter.schedule.loopDuration === undefined
             ? {}
             : { loopDuration: emitter.schedule.loopDuration }),
+          ...(emitter.schedule.warmupSeconds === undefined
+            ? {}
+            : { warmupSeconds: emitter.schedule.warmupSeconds }),
+          ...(emitter.schedule.randomness === undefined
+            ? {}
+            : { randomness: emitter.schedule.randomness }),
         }),
       ),
     ),

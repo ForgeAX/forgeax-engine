@@ -35,9 +35,7 @@ const target = join(resolve(root, process.env.CARGO_TARGET_DIR ?? 'target'), sou
 if (run(bindgen, ['--version']).trim() !== 'wasm-bindgen 0.2.129') {
   throw new Error('UI binding requires wasm-bindgen 0.2.129; requalify any ABI change');
 }
-run(
-  cargo,
-  [
+const cargoArgs = [
     `+${rustToolchain}`,
     'build',
     '--locked',
@@ -46,7 +44,24 @@ run(
     'wasm32-unknown-unknown',
     '--target-dir',
     target,
-  ],
+  ];
+// Rust's bundled GNU driver needs an explicit path for rustc to select its
+// matching self-contained CRT/import libraries when linking host build tools.
+// This is host-only configuration; the WASM target recipe remains unchanged.
+if (process.platform === 'win32') {
+  const adjacentRustup = join(dirname(cargo), 'rustup.exe');
+  const rustc = run(existsSync(adjacentRustup) ? adjacentRustup : 'rustup', [
+    'which', '--toolchain', rustToolchain, 'rustc',
+  ]).trim();
+  if (rustc.includes('-windows-gnu')) {
+    const linker = join(dirname(dirname(rustc)), 'lib/rustlib/x86_64-pc-windows-gnu/bin/self-contained/x86_64-w64-mingw32-gcc.exe');
+    if (!existsSync(linker)) throw new Error('The pinned Windows GNU host linker is missing');
+    cargoArgs.push('--config', `target.x86_64-pc-windows-gnu.linker=${JSON.stringify(linker.replaceAll('\\', '/'))}`);
+  }
+}
+run(
+  cargo,
+  cargoArgs,
   { stdio: 'inherit', env: { ...process.env,
     CARGO_ENCODED_RUSTFLAGS: portableRustFlags(engine, { ...process.env, CARGO_TARGET_DIR: target }),
   } },

@@ -86,30 +86,78 @@ async function completedCoreArtifact(run, input, api) {
   if (job?.status === 'completed') {
     if (job.run_id !== run.id || job.conclusion !== 'success')
       throw new Error(`core producer ${job.id} did not succeed`);
-    const artifacts = await runArtifacts(api, input.repository, run);
-    const selected =
-      artifacts?.filter((artifact) => artifact.name === `core-build-a${run.run_attempt}`) ?? [];
-    if (selected.length !== 1)
-      throw new Error('core artifact unavailable after successful producer');
-    const artifact = selected[0];
-    if (
-      artifact.expired ||
-      artifact.workflow_run?.id !== run.id ||
-      artifact.workflow_run?.head_sha !== input.sha ||
-      !Number.isSafeInteger(artifact.id) ||
-      artifact.id <= 0 ||
-      !/^sha256:[a-f0-9]{64}$/i.test(artifact.digest ?? '')
-    )
-      throw new Error('core artifact source or digest identity invalid');
+    const { artifact, sourceJob } = await producerArtifact(input, api, run, job);
     return {
       sourceRunId: run.id,
-      sourceJobId: job.id,
+      sourceJobId: sourceJob.id,
       sourceSha: input.sha,
       artifactId: artifact.id,
       artifactName: artifact.name,
       artifactDigest: artifact.digest,
     };
   }
+}
+
+/** Resolve copied successful jobs to their actual execution, never an older replacement. */
+async function originalProducerJob(input, api, run, job) {
+  const start = Date.parse(job.started_at);
+  const end = Date.parse(job.completed_at);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return undefined;
+  const history = await runJobs(api, input.repository, run, 'all');
+  const matching = history
+    ?.filter(
+      (previous) =>
+        previous.run_id === run.id &&
+        previous.name === job.name &&
+        previous.status === 'completed' &&
+        previous.conclusion === 'success' &&
+        Number.isSafeInteger(previous.id) &&
+        previous.id > 0 &&
+        Number.isSafeInteger(previous.run_attempt) &&
+        previous.run_attempt > 0 &&
+        previous.run_attempt < run.run_attempt &&
+        previous.started_at === job.started_at &&
+        previous.completed_at === job.completed_at,
+    )
+    .sort((left, right) => left.run_attempt - right.run_attempt);
+  const original = matching?.[0];
+  if (
+    original &&
+    matching.filter((candidate) => candidate.run_attempt === original.run_attempt).length !== 1
+  )
+    throw new Error('ambiguous original shader producer');
+  return original;
+}
+
+/** Keep the original producer, artifact name, source and digest after failed-only retries. */
+export async function producerArtifact(input, api, run, job) {
+  if (job.name !== 'ci-core' && job.name !== 'shared-app-inputs')
+    throw new Error('unknown shader producer');
+  const core = job.name === 'ci-core';
+  const prefix = core ? 'core-build' : 'shared-app-inputs';
+  const label = core ? 'core' : 'SDK point';
+  const artifacts = await runArtifacts(api, input.repository, run);
+  let sourceJob = job;
+  let selected =
+    artifacts?.filter((artifact) => artifact.name === `${prefix}-a${run.run_attempt}`) ?? [];
+  if (selected.length === 0 && run.run_attempt > 1) {
+    sourceJob = await originalProducerJob(input, api, run, job);
+    selected =
+      artifacts?.filter((artifact) => artifact.name === `${prefix}-a${sourceJob?.run_attempt}`) ??
+      [];
+  }
+  if (!sourceJob || selected.length !== 1) throw new Error(`${label} artifact unavailable`);
+  const artifact = selected[0];
+  if (
+    artifact.expired ||
+    artifact.workflow_run?.id !== run.id ||
+    artifact.workflow_run?.head_sha !== input.sha ||
+    !Number.isSafeInteger(artifact.id) ||
+    artifact.id <= 0 ||
+    !/^sha256:[a-f0-9]{64}$/i.test(artifact.digest ?? '')
+  )
+    throw new Error(`${label} artifact source or digest identity invalid`);
+  return { artifact, sourceJob };
 }
 
 async function main() {

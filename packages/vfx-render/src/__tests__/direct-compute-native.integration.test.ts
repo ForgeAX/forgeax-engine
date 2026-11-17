@@ -161,14 +161,15 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>,c:ptr<function,Vf
                 createNativePlan() {
                   const builder = create();
                   const admission = builder.resourceAdmission;
+                  const admit = admission?.admit.bind(admission);
+                  const upload = admission?.upload.bind(admission);
                   return {
                     ...builder,
                     scope: builder.scope,
                     ...(admission === undefined
                       ? {}
                       : {
-                          resourceAdmission: {
-                            ...admission,
+                          resourceAdmission: Object.assign(admission, {
                             admit(scope, resources) {
                               admissions.push({
                                 scope: scope === 'frame' ? 'frame' : scope.view,
@@ -178,16 +179,18 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>,c:ptr<function,Vf
                                     resource.usage.includes('uniform'),
                                 ).length,
                               });
-                              return admission.admit(scope, resources);
+                              if (!admit) throw new Error('Missing native admission');
+                              return admit(scope, resources);
                             },
                             upload(scope, name, offset, data) {
                               uploads.push({
                                 scope: scope === 'frame' ? 'frame' : scope.view,
                                 bytes: data.byteLength,
                               });
-                              admission.upload(scope, name, offset, data);
+                              if (!upload) throw new Error('Missing native upload');
+                              upload(scope, name, offset, data);
                             },
-                          },
+                          } satisfies Pick<typeof admission, 'admit' | 'upload'>),
                         }),
                     finish(next, feedback, options) {
                       work = next;

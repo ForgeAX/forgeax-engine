@@ -6,6 +6,7 @@ import type {
   MaterialPass,
   MaterialRenderState,
   MaterialRootAsset,
+  MaterialSceneDepth,
   MaterialStaticSwitches,
   MaterialValue,
 } from '@forgeax/engine-types';
@@ -706,6 +707,8 @@ export interface DefaultStandardOptions extends StandardOpts {
 
 /** Import-first Standard Surface authoring; the root parameter contract stays caller-owned. */
 export interface CustomStandardSurfaceOptions {
+  /** Explicit camera-depth input; this Surface shades forward only. */
+  readonly sceneDepth?: MaterialSceneDepth;
   readonly staticSwitches?: MaterialStaticSwitches;
   readonly surfaceModule: string;
   readonly parameters: readonly MaterialParameter[];
@@ -1195,6 +1198,7 @@ function standardCustom(opts: CustomStandardSurfaceOptions): MaterialRootAsset {
     );
   const projected = projectStandardSurfacePasses({
     surfaceModule: opts.surfaceModule,
+    ...(opts.sceneDepth === undefined ? {} : { sceneDepth: opts.sceneDepth }),
     values: opts.values,
     ...(opts.alphaClip === undefined ? {} : { alphaClip: opts.alphaClip }),
     ...(opts.renderState === undefined ? {} : { renderState: opts.renderState }),

@@ -376,6 +376,11 @@ declare class RawContactManifold {
     solver_contact_impulse(i: number): number;
     solver_contact_point(bodies: RawRigidBodySet, i: number, scratch_buffer: Float32Array): boolean;
     solver_contact_tangent_velocity(i: number, scratch_buffer: Float32Array): void;
+    /**
+     * The body's own surface-point velocity before the last CCD substep solve.
+     * Missing for contacts not submitted to an active solve; never a live body read.
+     */
+    solver_contact_velocity(i: number, first: boolean, scratch_buffer: Float32Array): boolean;
     subshape1(): number;
     subshape2(): number;
 }
@@ -5040,6 +5045,11 @@ declare class TempContactManifold {
      * the function returns this object instead of creating a new one.
      */
     solverContactPoint(i: number, target?: Vector): Vector | null;
+    /** World-space velocity on the selected body's own contact surface, before
+     * the last CCD substep's solver response. Null without active solver work.
+     * Body order is the native manifold order; contactPair's flip flag still applies.
+     */
+    solverContactVelocity(i: number, first: boolean, target?: Vector): Vector | null;
     solverContactDist(i: number): number;
     /**
      * The friction coefficient applied to this manifold's solver contacts. It is combined

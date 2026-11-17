@@ -1,58 +1,51 @@
 import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
-
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
-
 import type {
   RenderFeaturePlan,
   RenderFeaturePlanContext,
   RenderFeatureSubmission,
 } from '@forgeax/engine-render';
-
 import { MeshFilter } from '@forgeax/engine-render';
-
-import {
-  isOwnedRenderFeatureProgramData,
-  ownRenderFeatureProgramData,
-} from '@forgeax/engine-render/internal';
-
+import { ownRenderFeatureProgramData } from '@forgeax/engine-render/internal';
 import { GlobalTransform } from '@forgeax/engine-scene';
-
 import {
   err,
   type MaterialAsset,
   type MaterialSceneDepth,
   type MeshAsset,
   ok,
-  type Result,
 } from '@forgeax/engine-types';
-
-import type { VfxDataInterfaceTextureView, VfxForceFieldError } from '@forgeax/engine-vfx';
-
+import type { VfxDataInterfaceResource, VfxDataInterfaceTextureView } from '@forgeax/engine-vfx';
 import {
   buildVfxRecoveryIntents,
+  exactVfxRecoveryInputs,
   isParticleTopologyRenderer,
   isVfxFieldTransform,
   ParticleEffectPlayer,
+  ParticleEffectWorldBounds,
+  requiresExactVfxRecovery,
   type VfxGpuTickIntent as SourceVfxGpuTickIntent,
+  VFX_GPU_EVENT_OUTPUT,
+  VFX_GPU_OUTPUT_HEADER_BYTES,
   VFX_GPU_RUNTIME_RESOURCE_KEY,
   VFX_PARTICLE_CORE_STRIDE,
+  type VfxDataInterfaceError,
+  type VfxDataInterfaceRecoveryLease,
   type VfxGpuEffectAsset,
+  type VfxGpuEventOutput,
+  type VfxGpuRecoveryContext,
+  type VfxGpuRecoveryError,
   type VfxGpuRuntime,
 } from '@forgeax/engine-vfx';
-
 import { RenderFeatureStageFailedError } from '../../../render/src/errors/render';
-
 import type { RenderFeatureGpuProgramDescriptor } from '../../../render/src/features/prepared-gpu-work';
-
+import type { VfxDataInterfaceRegistry } from '../host/data-interface-providers.js';
 import {
   compileVfxComputeBatchProgram,
   type VfxComputeBatchProgram,
 } from './batched-compute-program.js';
-
 import type { ParticleRenderCamera } from './camera.js';
-
 import { createVfxDirectComputeFrame } from './direct-compute-frame.js';
-
 import {
   createVfxEmitterProgramOwner,
   emitterComputeProgram,
@@ -62,9 +55,7 @@ import {
   simulationDispatches,
   WORKGROUP_SIZE,
 } from './emitter-program.js';
-
 import { createEmitterVisibility } from './emitter-visibility.js';
-
 import {
   encodeEventBuffer,
   eventCapacity,
@@ -72,15 +63,34 @@ import {
   VFX_EVENT_BYTES,
   VFX_EVENT_INPUT_BYTES,
 } from './event-resources.js';
-
-import { createVfxForceFieldPreparation, type PreparedVfxForceFields } from './force-fields.js';
-
+import { createVfxForceFieldPreparation } from './force-fields.js';
 import {
   emptyVfxFramePlan,
   isEmptyVfxSource,
   vfxFrameAssetDependencies,
   vfxFrameRequiresPreparation,
 } from './frame-admission.js';
+import { createVfxGpuEventReadbacks, type VfxGpuOutputBatch } from './gpu-event-readbacks.js';
+import {
+  type EmitterGroup,
+  type EmitterPreparation,
+  type EmitterStream,
+  type GroupNames,
+  groupNames,
+  type IntentOutcome,
+  type IntentOutcomeState,
+  type PendingEntry,
+  type PlannedIntent,
+  type ProgramRecord,
+  planResolver,
+  type RendererNames,
+  type RuntimeState,
+  rendererNames,
+  type SharedViewProgram,
+  type StreamRecord,
+  type TickNames,
+  tickNames,
+} from './gpu-particle-stream-state.js';
 
 import { submittedObservation, type VfxRenderObservation } from './inspect.js';
 
@@ -92,7 +102,6 @@ import {
   createRecentQueuedIntents,
   createVfxIntentPayloads,
   createVfxIntentPublication,
-  isVfxIntentReference,
   publishQueuedIntents,
   resolveRetainedIntent,
   retainedStreamKey,
@@ -151,7 +160,6 @@ import {
 } from './plan-declarations.js';
 
 import {
-  type BindingValues,
   directProjectionRows,
   directSimulationRanges,
   type GraphicsProgramDescriptor,
@@ -173,7 +181,6 @@ import {
   reorderStreamTickBlocks,
   restoreGroupDeclarationOrder,
   sortGroupDeclarations,
-  type TickPassRange,
 } from './plan-order.js';
 
 import { resolveDataInterfaces, resolveFields } from './provider-resolution.js';
@@ -199,7 +206,7 @@ import { shareVfxGraphicsPrograms, vfxGraphicsProgramKey } from './shared-graphi
 
 import type { VfxValidatedStagePlan } from './stage-plan.js';
 
-import { retainTickCapacity, type TickCapacityState } from './tick-capacity.js';
+import { retainTickCapacity } from './tick-capacity.js';
 
 const IDENTITY_MATRIX = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 
@@ -221,55 +228,31 @@ export {
   type VfxRenderObservation,
 } from './inspect.js';
 
+const worldBoundsFor = (
+  entry: Pick<ExtractedWorld, 'emitterState'>,
+  player: EntityHandle,
+  id: string,
+) => {
+  for (const state of entry.emitterState.values())
+    if (state.player === player && state.emitter.id === id) return state.worldBounds;
+  return undefined;
+};
+type VfxDataInterfaceOwner = Pick<VfxDataInterfaceRegistry, 'resolve'> &
+  Partial<Pick<VfxDataInterfaceRegistry, 'retainRecovery'>>;
+
 export function gpuParticleRenderFeature(
   options: GpuParticleFeatureOptions,
 ): VfxParticleRenderFeature {
+  const gpuEventReadbacks = createVfxGpuEventReadbacks();
+  const eventFeedbacks = new Map<
+    number,
+    { runtimeId: number; batches: readonly VfxGpuOutputBatch[] }[]
+  >();
+  const sourceEventStreams = new Map<number, WeakRef<VfxGpuEventOutput>>();
+  const worldInterfaces = new Map<number, WeakRef<VfxDataInterfaceOwner>>();
+  const interfacesFor = (entry: Pick<ExtractedWorld, 'worldId'>) =>
+    worldInterfaces.get(entry.worldId)?.deref() ?? options.dataInterfaces;
   const packArenas = options.instanceArenas === true ? createVfxInstanceArena() : undefined;
-  type IntentOutcomeState = 'dispatched' | 'skipped' | 'deferred';
-  interface PlannedIntent {
-    readonly intent: VfxGpuTickIntent;
-    readonly localToWorld: Float32Array;
-    readonly stagePlan: VfxValidatedStagePlan;
-    /** Camera projection is optional for `simulationWhenCulled: continue`. */
-    readonly visible: boolean;
-    /** Retained state has no tick simulation/history work this frame. */
-    readonly retained: boolean;
-  }
-  interface EmitterStream {
-    lastGroup: string;
-    /** Only program changes in this plan need command-order reconciliation. */
-    ranges: TickPassRange[] | undefined;
-  }
-  interface EmitterPreparation {
-    readonly forceFields?: Result<PreparedVfxForceFields, VfxForceFieldError>;
-    readonly player: EntityHandle;
-    readonly emitter: VfxGpuTickIntent['emitter'];
-    readonly programFingerprint: string;
-    readonly instanceGeneration: number;
-    readonly localToWorld: Float32Array;
-  }
-  interface EmitterGroup {
-    readonly key: string;
-    readonly record: StreamRecord;
-    readonly program: ProgramRecord;
-    readonly entry: ExtractedWorld;
-    readonly intents: PlannedIntent[];
-    readonly preparation?: EmitterPreparation;
-    readonly stream: EmitterStream;
-  }
-  interface IntentOutcome {
-    readonly intent: VfxGpuTickIntent;
-    readonly state: IntentOutcomeState;
-  }
-  interface PendingEntry {
-    readonly source: ExtractedWorld;
-    readonly generation: number;
-    readonly outcomes: readonly IntentOutcome[];
-    readonly observation: VfxRenderObservation;
-    readonly requiredPasses: readonly string[];
-    /** False when a retained stream was missing, so its device state was not rebuilt. */
-    readonly rebuilt: boolean;
-  }
   const pendingFrames = new Map<
     number,
     {
@@ -280,130 +263,15 @@ export function gpuParticleRenderFeature(
   >();
   const prepareFields = createVfxForceFieldPreparation();
   const uploadedFields = new Map<string, number>();
-  interface RuntimeState {
-    submittedDeviceGeneration: number | undefined;
-    // A sealed successor may precede source ACK. Keep only its live terminal sequences.
-    submitted:
-      | {
-          generation: number;
-          device: number;
-          terminal: Map<number, IntentOutcomeState>;
-        }
-      | undefined;
-    readonly emitters: Map<string, EmitterResourceState>;
-    /** Plan-side resolution owned by this runtime; see `planResolver`. */
-    resolution: ResolutionCache | undefined;
-    /** Interned stream names owned by this runtime; see `streamKeys`. */
-    keys: StreamKeyCache | undefined;
-  }
-  interface EmitterResourceState extends TickCapacityState {
-    readonly id: number;
-    resources?: RetainedEmitterResources;
-    /** Last plan serial that referenced this stream program. */
-    seen: number;
-  }
   /** Names derived from one group prefix. Built once per stream program. */
-  interface GroupNames {
-    readonly particles: string;
-    readonly aliveIndices: string;
-    readonly counters: string;
-    readonly indirect: string;
-    readonly indirectInitial: string;
-    readonly scratch: string;
-    readonly sharedInstances: string;
-    readonly projectionEventInputs: string;
-    readonly custom: string;
-    readonly parameters: string;
-    readonly privateProgram: string;
-    readonly viewPrefix: string;
-    readonly ticks: TickNames[];
-    readonly renderers: RendererNames[];
-  }
-  interface TickNames {
-    readonly prefix: string;
-    readonly runtime: string;
-    readonly eventInputs: string;
-    readonly bindings: string;
-    readonly parameters: string;
-    readonly reset: string;
-    readonly simulate: string;
-    readonly history: {
-      readonly runtime: string;
-      readonly bindings: string;
-      readonly write: string;
-    }[];
-  }
-  interface RendererNames {
-    /** Frame-scope trail history owned by the simulation. */
-    readonly history: string;
-    readonly view: {
-      readonly prefix: string;
-      readonly instances: string;
-      readonly aliveIndices: string;
-      readonly indirect: string;
-      readonly counters: string;
-      readonly history: string;
-      readonly runtime: string;
-      readonly computeBindings: string;
-      readonly copy: string;
-      readonly project: string;
-      readonly graphicsProgram: string;
-      readonly graphicsBindings: string;
-      readonly vertexData: string;
-      readonly shadowProgram: string;
-      readonly shadowBindings: string;
-      readonly shadow: string;
-      readonly raster: string;
-      materialBindings: string | undefined;
-      /** Last graphics program descriptor per view; reused while its inputs match. */
-      readonly graphics: Map<string, ViewGraphicsProgram>;
-      /** Last frozen binding values per view and role; reused while they match. */
-      readonly bindingValues: Map<string, BindingValues>;
-    };
-  }
   /**
    * One renderer view's last graphics program descriptor, with the content
    * key that names the view-shared program declaration (undefined when the
    * render state is not plain data and the declaration stays private).
    */
-  interface ViewGraphicsProgram {
-    readonly descriptor: GraphicsProgramDescriptor;
-    readonly shared: string | undefined;
-  }
   /** One plan view's shared graphics declarations for one program content key. */
-  interface SharedViewProgram {
-    /** Graphics bindings name per scene-depth binding slot (view/light group 0). */
-    readonly bindings: Map<0 | 1 | undefined, string>;
-    /** Material bindings name per source world and material reference (group 1). */
-    readonly materials: Map<ParticleRenderer['material'], string>;
-  }
   /** One player/emitter program group: its plan key and persistent storage owner. */
-  interface ProgramRecord {
-    readonly key: string;
-    readonly resourceKey: string;
-    readonly resource: EmitterResourceState;
-    names?: GroupNames;
-    /** Arena instance per compute-program name; identity-stable for repacking. */
-    readonly instances: Map<string, VfxArenaInstance>;
-  }
   /** One player/emitter stream in one runtime render generation. */
-  interface StreamRecord {
-    readonly player: number;
-    readonly emitterId: string;
-    readonly stateKey: string;
-    readonly baseKey: string;
-    readonly streamKey: string;
-    readonly programs: Map<string, ProgramRecord>;
-    readonly owners: Map<string, string>;
-    /** Last plan serial that referenced this stream. */
-    seen: number;
-  }
-  interface StreamKeyCache {
-    readonly worldId: number;
-    readonly renderGeneration: number;
-    readonly groupPrefix: string;
-    readonly players: Map<number, Map<string, StreamRecord>>;
-  }
   /**
    * Published frames cross a structured-clone boundary, so nothing in them is
    * identity-stable. Resolution is keyed by exact values instead: effect
@@ -412,116 +280,6 @@ export function gpuParticleRenderFeature(
    * within one renderGeneration; device or render generation changes discard
    * the whole cache, and entries absent from a frame retire immediately.
    */
-  interface ResolvedEffect {
-    readonly effect: VfxGpuEffectAsset;
-    readonly emitters: Map<string, VfxGpuTickIntent['emitter']>;
-    seen: number;
-  }
-  interface ResolvedIntent {
-    readonly effect: VfxGpuEffectAsset;
-    readonly intent: VfxGpuTickIntent;
-    seen: number;
-  }
-  interface ResolutionCache {
-    readonly renderGeneration: number;
-    readonly device: number;
-    serial: number;
-    readonly effects: Map<number, Map<number, ResolvedEffect>>;
-    readonly intents: Map<number, ResolvedIntent>;
-  }
-  const planResolver = (
-    state: RuntimeState,
-    renderGeneration: number,
-    context: RenderFeaturePlanContext,
-  ) => {
-    let cache = state.resolution;
-    if (cache?.renderGeneration !== renderGeneration || cache.device !== context.generation) {
-      cache = {
-        renderGeneration,
-        device: context.generation,
-        serial: 0,
-        effects: new Map(),
-        intents: new Map(),
-      };
-      state.resolution = cache;
-    }
-    const serial = ++cache.serial;
-    const { effects, intents } = cache;
-    const effectFor = (reference: PublishedEmitter): ResolvedEffect => {
-      let revisions = effects.get(reference.effect);
-      if (revisions === undefined) {
-        revisions = new Map();
-        effects.set(reference.effect, revisions);
-      }
-      let resolved = revisions.get(reference.revision);
-      // Ask the resolver once per exact version per frame; reuse derived rows
-      // only while it still returns the same immutable effect object.
-      if (resolved?.seen === serial) return resolved;
-      const effect = resolveEffect(reference, context);
-      if (resolved?.effect !== effect) {
-        resolved = { effect, emitters: new Map(), seen: serial };
-        revisions.set(reference.revision, resolved);
-      }
-      resolved.seen = serial;
-      return resolved;
-    };
-    const emitter = (reference: PublishedEmitter): VfxGpuTickIntent['emitter'] => {
-      const resolved = effectFor(reference);
-      let emitter = resolved.emitters.get(reference.id);
-      if (emitter === undefined) {
-        const candidate = resolved.effect.program.emitters.find((row) => row.id === reference.id);
-        if (candidate === undefined) throw new Error(`Missing VFX emitter ${reference.id}`);
-        if (isOwnedRenderFeatureProgramData(resolved.effect)) {
-          immutableEmitters.add(candidate);
-          emitter = candidate;
-        } else emitter = ownEmitter(candidate);
-        resolved.emitters.set(reference.id, emitter);
-      }
-      return emitter;
-    };
-    const intent = (
-      published: PublishedIntent | VfxIntentReference<PublishedIntent>,
-    ): VfxGpuTickIntent | undefined => {
-      const resolved = effectFor(published.emitter);
-      const definition = { effect: resolved.effect, emitter: emitter(published.emitter) };
-      if (definition.effect.program.fingerprint !== published.programFingerprint)
-        throw new Error('VFX intent and exact effect fingerprint differ');
-      // Field inputs carry per-tick texture versions; they keep exact resolution.
-      if (definition.emitter.forceFields !== undefined && !isVfxIntentReference(published))
-        return resolveIntent(published, context, prepareFields);
-      const prior = intents.get(published.sequence);
-      if (
-        prior !== undefined &&
-        prior.effect === definition.effect &&
-        prior.intent.emitter === definition.emitter &&
-        prior.intent.player === published.player &&
-        prior.intent.programFingerprint === published.programFingerprint
-      ) {
-        prior.seen = serial;
-        return prior.intent;
-      }
-      // A payload-free reference needs this receiver's cached copy of its sequence.
-      if (isVfxIntentReference(published)) return undefined;
-      const { forceFields: _input, ...tick } = published;
-      const resolvedIntent: VfxGpuTickIntent = { ...tick, ...definition };
-      intents.set(published.sequence, {
-        effect: definition.effect,
-        intent: resolvedIntent,
-        seen: serial,
-      });
-      return resolvedIntent;
-    };
-    /** Retire every row this frame did not reference. */
-    const finish = () => {
-      for (const [sequence, row] of intents) if (row.seen !== serial) intents.delete(sequence);
-      for (const [handle, revisions] of effects) {
-        for (const [revision, row] of revisions)
-          if (row.seen !== serial) revisions.delete(revision);
-        if (revisions.size === 0) effects.delete(handle);
-      }
-    };
-    return { emitter, intent, finish };
-  };
   const runtimeStates = new Map<number, RuntimeState>();
   const emitterPrograms = createVfxEmitterProgramOwner(
     immutableEmitters,
@@ -714,88 +472,6 @@ export function gpuParticleRenderFeature(
       if (emitters.size === 0) keys.players.delete(player);
     }
   };
-  const groupNames = (program: ProgramRecord): GroupNames => {
-    if (program.names !== undefined) return program.names;
-    const prefix = program.key;
-    program.names = {
-      particles: `${prefix}.particles`,
-      aliveIndices: `${prefix}.alive-indices`,
-      counters: `${prefix}.counters`,
-      indirect: `${prefix}.indirect`,
-      indirectInitial: `${prefix}.indirect-initial`,
-      scratch: `${prefix}.scratch`,
-      sharedInstances: `${prefix}.shared-instances`,
-      projectionEventInputs: `${prefix}.projection-event-inputs`,
-      custom: `${prefix}.custom`,
-      parameters: `${prefix}.parameters`,
-      privateProgram: `${prefix}.compute-program`,
-      viewPrefix: `${prefix}.view`,
-      ticks: [],
-      renderers: [],
-    };
-    return program.names;
-  };
-  const tickNames = (program: ProgramRecord, tick: number, renderers: number): TickNames => {
-    const names = groupNames(program);
-    let row = names.ticks[tick];
-    if (row === undefined) {
-      const prefix = `${program.key}.tick-${tick}`;
-      row = {
-        prefix,
-        runtime: `${prefix}.runtime`,
-        eventInputs: `${prefix}.event-inputs`,
-        bindings: `${prefix}.simulation-bindings`,
-        parameters: `${prefix}.parameters`,
-        reset: `${prefix}.reset`,
-        simulate: `${prefix}.simulate`,
-        history: [],
-      };
-      names.ticks[tick] = row;
-    }
-    for (let index = row.history.length; index < renderers; index++) {
-      const bindings = `${row.prefix}.renderer-${index}.history-bindings`;
-      row.history.push({
-        runtime: `${row.prefix}.renderer-${index}.history-runtime`,
-        bindings,
-        write: `${bindings}.write`,
-      });
-    }
-    return row;
-  };
-  const rendererNames = (program: ProgramRecord, renderer: number): RendererNames => {
-    const names = groupNames(program);
-    let row = names.renderers[renderer];
-    if (row === undefined) {
-      const prefix = `${names.viewPrefix}.renderer-${renderer}`;
-      row = {
-        history: `${program.key}.renderer-${renderer}.history`,
-        view: {
-          prefix,
-          instances: `${prefix}.instances`,
-          aliveIndices: `${prefix}.alive-indices`,
-          indirect: `${prefix}.indirect`,
-          counters: `${prefix}.counters`,
-          history: `${prefix}.history`,
-          runtime: `${prefix}.runtime`,
-          computeBindings: `${prefix}.compute-bindings`,
-          copy: `${prefix}.copy`,
-          project: `${prefix}.project`,
-          graphicsProgram: `${prefix}.graphics-program`,
-          graphicsBindings: `${prefix}.graphics-bindings`,
-          vertexData: `${prefix}.vertex-data`,
-          shadowProgram: `${prefix}.shadow-program`,
-          shadowBindings: `${prefix}.shadow-bindings`,
-          shadow: `${prefix}.shadow`,
-          raster: `${prefix}.raster`,
-          materialBindings: undefined,
-          graphics: new Map(),
-          bindingValues: new Map(),
-        },
-      };
-      names.renderers[renderer] = row;
-    }
-    return row;
-  };
   /** Stable small ids for content keys and string sources of shared declaration names. */
   const internedId = createInterner();
   const sharedProgramNames: string[] = [];
@@ -980,6 +656,7 @@ export function gpuParticleRenderFeature(
   /** Data-interface resources and binding slots of one group. */
   interface GroupDataInterfaces {
     readonly bindings: Record<number, string>;
+    readonly tickBindings?: ReadonlyMap<number, Readonly<Record<number, string>>>;
     /** Slot of the force-field buffer, whose name follows each tick's field revision. */
     readonly fieldBinding: number | undefined;
     readonly resources: PlanResource[];
@@ -1123,14 +800,49 @@ export function gpuParticleRenderFeature(
     }));
     const state = runtimeState(entry.runtimeId);
     const submitted = submittedLedger(state, entry, context.generation);
-    intentPayloads.begin(entry.runtimeId, entry.renderGeneration, entry.intents);
-    const resolver = planResolver(state, entry.renderGeneration, context);
+    intentPayloads.begin(entry.runtimeId, entry.renderGeneration, [
+      ...entry.intents,
+      ...(entry.recovery ?? []).flatMap((row) => row.inputs),
+    ]);
+    const resolver = planResolver(state, entry.renderGeneration, context, prepareFields);
     const keys = streamKeys(state, entry.worldId, entry.renderGeneration, entry.runtimeId);
     const emitterState = resolveEmitterStates(entry, resolver, keys, context);
     const preparationPlayers = preparationPlayerSet(entry.preparationPlayers);
     const retained = new Map<string, RetainedEmitter>();
+    const recovery: NonNullable<ExtractedWorld['recovery']>[number][] = [];
+    const blockedRecovery = new Set<string>();
+    const resolveRecoveryHistories = () => {
+      for (const history of entry.recovery ?? []) {
+        const inputs: VfxGpuTickIntent[] = [];
+        let missing = false;
+        const restore = createQueuedIntentResolution(
+          resolution.missingIntents,
+          entry.runtimeId,
+          (p) => {
+            const full = intentPayloads.resolve(
+              entry.runtimeId,
+              p as PublishedIntent | VfxIntentReference<PublishedIntent>,
+            );
+            return full === undefined ? undefined : resolver.intent(full);
+          },
+        );
+        for (const published of history.inputs) {
+          const restored = restore(published);
+          if (restored) inputs.push(restored);
+          else missing = true;
+        }
+        if (missing && state.submittedDeviceGeneration !== context.generation)
+          blockedRecovery.add(keys.stream(history.player, history.emitterId).stateKey);
+        recovery.push({ player: history.player, emitterId: history.emitterId, inputs });
+      }
+    };
+    resolveRecoveryHistories();
     for (const row of entry.retained) {
-      if (preparationPlayers.has(row.player)) continue;
+      if (
+        preparationPlayers.has(row.player) ||
+        blockedRecovery.has(keys.stream(row.player, row.emitter.id).stateKey)
+      )
+        continue;
       const published = resolveRetainedIntent(
         receivedRetained,
         resolution,
@@ -1147,7 +859,12 @@ export function gpuParticleRenderFeature(
         intent,
         emitter: intent.emitter,
         visible: views.some((view) =>
-          emitterVisible(intent.emitter, view.camera, row.localToWorld),
+          emitterVisible(
+            intent.emitter,
+            view.camera,
+            row.localToWorld,
+            worldBoundsFor({ emitterState }, row.player, intent.emitter.id),
+          ),
         ),
       });
     }
@@ -1158,6 +875,8 @@ export function gpuParticleRenderFeature(
       return full === undefined ? undefined : resolver.intent(full);
     });
     for (const published of entry.intents) {
+      if (blockedRecovery.has(keys.stream(published.player, published.emitter.id).stateKey))
+        continue;
       const terminal = submitted.terminal.get(published.sequence);
       if (terminal === 'skipped' || terminal === 'deferred') continue;
       const intent = queued(published);
@@ -1175,7 +894,12 @@ export function gpuParticleRenderFeature(
             intent,
             localToWorld,
             visible: views.some((view) =>
-              emitterVisible(intent.emitter, view.camera, localToWorld),
+              emitterVisible(
+                intent.emitter,
+                view.camera,
+                localToWorld,
+                worldBoundsFor({ emitterState }, intent.player, intent.emitter.id),
+              ),
             ),
           });
       }
@@ -1183,6 +907,7 @@ export function gpuParticleRenderFeature(
     resolver.finish();
     const resolved: ExtractedWorld = {
       ...entry,
+      recovery,
       meshes,
       camera,
       views,
@@ -1382,14 +1107,20 @@ export function gpuParticleRenderFeature(
     if (source?.enabled === false) return holdIntent(intent, baseKey, blockedEmitters);
     const localToWorld = source?.localToWorld ?? IDENTITY_MATRIX;
     const visible = entry.views.some((view) =>
-      plan.resolution.emitterVisible(intent.emitter, view.camera, localToWorld),
+      plan.resolution.emitterVisible(
+        intent.emitter,
+        view.camera,
+        localToWorld,
+        source?.worldBounds,
+      ),
     );
     if (!visible && intent.emitter.simulationWhenCulled !== 'continue')
       return holdIntent(intent, baseKey, blockedEmitters);
     const requirements = intent.emitter.reflection.dataInterfaces ?? [];
     if (
       requirements.length > 0 &&
-      resolveDataInterfaces(intent, options.dataInterfaces) === undefined
+      resolveDataInterfaces(intent, interfacesFor(entry), entry.portableDataInterfaces) ===
+        undefined
     ) {
       blockedEmitters.add(baseKey);
       return 'deferred';
@@ -1496,7 +1227,23 @@ export function gpuParticleRenderFeature(
       if (!stagePlan.ok) return planFailure();
       const visible =
         retained.visible && (entry.emitterState.get(record.stateKey)?.enabled ?? true);
-      const recoveryIntents = rebuildingDeviceState ? buildVfxRecoveryIntents(retained.intent) : [];
+      let recoveryIntents: readonly VfxGpuTickIntent[] = [];
+      if (rebuildingDeviceState) {
+        const failure = entry.recoveryErrors?.find(
+          (error) =>
+            error.detail.player === retained.player &&
+            error.detail.emitterId === retained.emitter.id,
+        );
+        if (failure) return planFailure(failure);
+        if (requiresExactVfxRecovery(retained.intent)) {
+          const history = entry.recovery?.find(
+            (row) => row.player === retained.player && row.emitterId === retained.emitter.id,
+          );
+          const checked = exactVfxRecoveryInputs(retained.intent, history?.inputs ?? []);
+          if (!checked.ok) return planFailure(checked.error);
+          recoveryIntents = checked.value;
+        } else recoveryIntents = buildVfxRecoveryIntents(retained.intent);
+      }
       const admittedGroup = plan.groups.get(key);
       if (admittedGroup !== undefined) {
         if (recoveryIntents.length > 0 && continuesSession(admittedGroup, retained.intent))
@@ -1891,138 +1638,195 @@ export function gpuParticleRenderFeature(
   ): GroupDataInterfaces | RenderFeatureStageFailedError => {
     const { group, firstIntent } = facts;
     if (facts.emitterFacts.dataInterfaceFree) return NO_DATA_INTERFACES;
-    const bindings: Record<number, string> = {};
-    const resources: PlanResource[] = [];
+    const resources: PlanResource[] = [],
+      tickBindings = new Map<number, Readonly<Record<number, string>>>();
     let fieldBinding: number | undefined;
     const requirements =
       facts.preparedProgram?.requirements ??
       reflectedDataInterfaceRequirements(firstIntent.emitter);
-    if (requirements.length === 0) return { bindings, fieldBinding, resources };
-    const resolved = resolveDataInterfaces(firstIntent, options.dataInterfaces);
-    if (resolved === undefined) return planFailure();
-    for (const requirement of requirements) {
-      if (requirement.kind === 'force-fields') {
-        const planForceFieldRequirementResources = () => {
-          const failure = fieldOwnerFailure(group, firstIntent.emitter);
+    const inputs = group.intents.length ? group.intents.map((row) => row.intent) : [firstIntent];
+    const resolveTickInterfaces = (input: (typeof inputs)[number]) => {
+      const sequence = 'sequence' in input ? input.sequence : -1;
+      const recovering = 'recovering' in input && input.recovering === true;
+      const bindings: Record<number, string> = {};
+      const resolved = resolveDataInterfaces(
+        input,
+        interfacesFor(group.entry),
+        group.entry.portableDataInterfaces,
+      );
+      if (resolved === undefined)
+        return planFailure({
+          code: 'vfx-recovery-environment-unavailable',
+          expected: 'exact producer snapshots for every recovery tick',
+          hint: 'restore the source producer checkpoint/tape before resuming dependent GPU effects',
+          detail: {
+            player: input.player,
+            emitter: input.emitter.id,
+            tick: 'tick' in input ? input.tick : undefined,
+            frame: 'recoveryContext' in input ? input.recoveryContext?.frameNumber : undefined,
+          },
+        });
+      for (const requirement of requirements) {
+        if (requirement.kind === 'force-fields') {
+          const failure = fieldOwnerFailure(group, input.emitter);
           if (failure !== undefined) return failure;
           fieldBinding = requirement.binding;
-          const inputs =
-            group.intents.length > 0
-              ? group.intents.map((planned) => planned.intent)
-              : [firstIntent];
-          for (const input of inputs) {
-            const name = planForceFieldRevision(plan, group.key, input, resources);
-            if (name instanceof RenderFeatureStageFailedError) return name;
-            bindings[requirement.binding] = name;
-          }
-          return undefined;
-        };
-        const forceFieldFailure = planForceFieldRequirementResources();
-        if (forceFieldFailure !== undefined) return forceFieldFailure;
-        continue;
-      }
-      const prepared = resolved.get(requirement.token)?.resource;
-      if (requirement.kind === 'water-surface') {
-        const waterSurface = resolved.get(requirement.token);
-        const identity = waterSurface?.waterSurface;
-        const waterEmission = firstIntent.emitter.waterGridEmission;
-        const validateWaterSurfaceEmissionCapacity = () => {
-          if (
-            requirement.waterEmissionBinding !== undefined &&
-            (waterEmission === undefined ||
-              identity === undefined ||
-              identity.domain.resolution[0] * identity.domain.resolution[1] >
-                waterEmission.scanCellCapacity)
-          )
-            return planFailure();
-          return undefined;
-        };
-        const emissionCapacityFailure = validateWaterSurfaceEmissionCapacity();
-        if (emissionCapacityFailure !== undefined) return emissionCapacityFailure;
-        const resolveWaterSurfaceTexturePair = () => {
-          const sourcePair = waterSurface?.textureViewPair;
-          const resolveTextureView = (view: VfxDataInterfaceTextureView) => {
-            if (view.asset === undefined) return view;
-            const resolvedView = plan.resolution.context.resolveResidentTextureView?.(
-              0,
-              view.asset.guid,
-              view.asset.revision,
-            );
-            if (!resolvedView?.ok) return undefined;
-            return {
-              value: resolvedView.value.view,
-              retainResidency: () => ({ release: resolvedView.value.retain() }),
-              ...(view.logicalTarget === undefined ? {} : { logicalTarget: view.logicalTarget }),
-            };
-          };
-          const grid = sourcePair === undefined ? undefined : resolveTextureView(sourcePair.grid);
-          const solverNormal =
-            sourcePair === undefined ? undefined : resolveTextureView(sourcePair.solverNormal);
-          const textureViewPair =
-            grid === undefined || solverNormal === undefined ? undefined : { grid, solverNormal };
-          const pair = preparedWaterSurfaceResources(
-            `${group.key}.di-water-surface`,
-            textureViewPair,
-            identity,
-          );
-          return pair;
-        };
-        const pair = resolveWaterSurfaceTexturePair();
-        if (
-          pair === undefined ||
-          requirement.solverNormalBinding === undefined ||
-          requirement.domainBinding === undefined ||
-          requirement.solverNormalBinding === requirement.binding ||
-          requirement.domainBinding === requirement.binding ||
-          requirement.domainBinding === requirement.solverNormalBinding
-        )
-          return planFailure();
-        resources.push(...pair);
-        bindings[requirement.binding] = `${group.key}.di-water-surface.grid`;
-        bindings[requirement.solverNormalBinding] = `${group.key}.di-water-surface.solver-normal`;
-        bindings[requirement.domainBinding] = `${group.key}.di-water-surface.domain`;
-        const appendWaterSurfaceEmissionResource = () => {
-          if (requirement.waterEmissionBinding !== undefined) {
-            const waterEmission = firstIntent.emitter.waterGridEmission;
-            if (waterEmission === undefined) return planFailure();
-            const emissionName = `${group.key}.di-water-surface.emission`;
-            resources.push({
+          const name = planForceFieldRevision(plan, group.key, input, resources);
+          if (name instanceof RenderFeatureStageFailedError) return name;
+          bindings[requirement.binding] = name;
+          continue;
+        }
+        if (requirement.kind === 'gpu-events' && recovering) {
+          // Historical observations must neither republish effects nor consume
+          // the current frame's shared output capacity. No particle readback.
+          const name = `vfx.a-${group.entry.runtimeId}.di-gpu-events.recovery-sink`;
+          if (!plan.sharedDataInterfaces.has(name))
+            plan.sharedDataInterfaces.set(name, {
               kind: 'buffer',
-              name: emissionName,
-              size: WATER_GRID_EMISSION_BYTES,
-              usage: ['uniform'],
-              data: waterGridEmissionData(waterEmission),
+              name,
+              size: VFX_GPU_OUTPUT_HEADER_BYTES + 32,
+              usage: ['storage'],
+              data: new Uint8Array(VFX_GPU_OUTPUT_HEADER_BYTES + 32),
             });
-            bindings[requirement.waterEmissionBinding] = emissionName;
-          }
-          return undefined;
-        };
-        const waterEmissionFailure = appendWaterSurfaceEmissionResource();
-        if (waterEmissionFailure !== undefined) return waterEmissionFailure;
-        continue;
-      }
-      if (prepared === undefined) {
-        const name = declareSharedDataInterface(plan, group.entry, requirement.kind);
-        if (name instanceof RenderFeatureStageFailedError) return name;
+          bindings[requirement.binding] = name;
+          continue;
+        }
+        const prepared = resolved.get(requirement.token)?.resource;
+        if (requirement.kind === 'water-surface') {
+          const admitWaterSurface = () => {
+            const waterSurface = resolved.get(requirement.token);
+            const identity = waterSurface?.waterSurface;
+            const waterEmission = input.emitter.waterGridEmission;
+            const validateWaterSurfaceEmissionCapacity = () => {
+              if (
+                requirement.waterEmissionBinding !== undefined &&
+                (waterEmission === undefined ||
+                  identity === undefined ||
+                  identity.domain.resolution[0] * identity.domain.resolution[1] >
+                    waterEmission.scanCellCapacity)
+              )
+                return planFailure();
+              return undefined;
+            };
+            const emissionCapacityFailure = validateWaterSurfaceEmissionCapacity();
+            if (emissionCapacityFailure !== undefined) return emissionCapacityFailure;
+            const resolveWaterSurfaceTexturePair = () => {
+              const sourcePair = waterSurface?.textureViewPair;
+              const resolveTextureView = (view: VfxDataInterfaceTextureView) => {
+                if (view.asset === undefined) return view;
+                const resolvedView = plan.resolution.context.resolveResidentTextureView?.(
+                  0,
+                  view.asset.guid,
+                  view.asset.revision,
+                );
+                if (!resolvedView?.ok) return undefined;
+                return {
+                  value: resolvedView.value.view,
+                  retainResidency: () => ({ release: resolvedView.value.retain() }),
+                  ...(view.logicalTarget === undefined
+                    ? {}
+                    : { logicalTarget: view.logicalTarget }),
+                };
+              };
+              const grid =
+                sourcePair === undefined ? undefined : resolveTextureView(sourcePair.grid);
+              const solverNormal =
+                sourcePair === undefined ? undefined : resolveTextureView(sourcePair.solverNormal);
+              const textureViewPair =
+                grid === undefined || solverNormal === undefined
+                  ? undefined
+                  : { grid, solverNormal };
+              const pair = preparedWaterSurfaceResources(
+                `${group.key}.di-water-surface.tick-${sequence}`,
+                textureViewPair,
+                identity,
+              );
+              return pair;
+            };
+            const pair = resolveWaterSurfaceTexturePair();
+            if (
+              pair === undefined ||
+              requirement.solverNormalBinding === undefined ||
+              requirement.domainBinding === undefined ||
+              requirement.solverNormalBinding === requirement.binding ||
+              requirement.domainBinding === requirement.binding ||
+              requirement.domainBinding === requirement.solverNormalBinding
+            )
+              return planFailure();
+            resources.push(...pair);
+            bindings[requirement.binding] = `${group.key}.di-water-surface.tick-${sequence}.grid`;
+            bindings[requirement.solverNormalBinding] =
+              `${group.key}.di-water-surface.tick-${sequence}.solver-normal`;
+            bindings[requirement.domainBinding] =
+              `${group.key}.di-water-surface.tick-${sequence}.domain`;
+            const appendWaterSurfaceEmissionResource = () => {
+              if (requirement.waterEmissionBinding !== undefined) {
+                const waterEmission = input.emitter.waterGridEmission;
+                if (waterEmission === undefined) return planFailure();
+                const emissionName = `${group.key}.di-water-surface.tick-${sequence}.emission`;
+                resources.push({
+                  kind: 'buffer',
+                  name: emissionName,
+                  size: WATER_GRID_EMISSION_BYTES,
+                  usage: ['uniform'],
+                  data: waterGridEmissionData(waterEmission),
+                });
+                bindings[requirement.waterEmissionBinding] = emissionName;
+              }
+              return undefined;
+            };
+            const waterEmissionFailure = appendWaterSurfaceEmissionResource();
+            if (waterEmissionFailure !== undefined) return waterEmissionFailure;
+            return undefined;
+          };
+          const waterFailure = admitWaterSurface();
+          if (waterFailure !== undefined) return waterFailure;
+          continue;
+        }
+        if (prepared === undefined) {
+          const name = declareSharedDataInterface(plan, group.entry, requirement.kind);
+          if (name instanceof RenderFeatureStageFailedError) return name;
+          bindings[requirement.binding] = name;
+          continue;
+        }
+        const name = `${group.key}.di-${planName(requirement.kind)}.tick-${sequence}`;
+        const resource = preparedDataInterfaceResource(name, prepared);
+        if (resource === undefined) return planFailure();
+        resources.push(resource);
         bindings[requirement.binding] = name;
-        continue;
       }
-      const name = `${group.key}.di-${planName(requirement.kind)}`;
-      const resource = preparedDataInterfaceResource(name, prepared);
-      if (resource === undefined) return planFailure();
-      resources.push(resource);
-      bindings[requirement.binding] = name;
+      tickBindings.set(sequence, bindings);
+
+      return undefined;
+    };
+    for (const input of inputs) {
+      const failure = resolveTickInterfaces(input);
+      if (failure !== undefined) return failure;
     }
-    return { bindings, fieldBinding, resources };
+
+    return {
+      bindings: {
+        ...(tickBindings.get('sequence' in firstIntent ? firstIntent.sequence : -1) ??
+          tickBindings.values().next().value ??
+          {}),
+      },
+      fieldBinding,
+      resources,
+      tickBindings,
+    };
   };
-  /** Data-interface bindings of one tick, with the force-field buffer of its own revision. */
+  /** Each submitted tick keeps its own environment and force-field revision. */
   const tickDataInterfaceBindings = (
     gp: GroupPlan,
-    input: { readonly forceFields?: VfxGpuTickIntent['forceFields'] },
+    input: { readonly sequence?: number; readonly forceFields?: VfxGpuTickIntent['forceFields'] },
   ): Readonly<Record<number, string>> => {
-    const { bindings, fieldBinding } = gp.dataInterfaces;
-    const field = input.forceFields;
-    const name = field?.ok ? fieldBufferName(gp.group.key, field.value.revision) : undefined;
+    const { fieldBinding } = gp.dataInterfaces;
+    const bindings =
+      (input.sequence === undefined
+        ? undefined
+        : gp.dataInterfaces.tickBindings?.get(input.sequence)) ?? gp.dataInterfaces.bindings;
+    const field = input.forceFields,
+      name = field?.ok ? fieldBufferName(gp.group.key, field.value.revision) : undefined;
     return fieldBinding === undefined || name === undefined
       ? bindings
       : { ...bindings, [fieldBinding]: name };
@@ -2492,6 +2296,29 @@ export function gpuParticleRenderFeature(
   // simulating independent q-0/q-1 copies.
   // Tick occupancy is frame data. Retain the recent largest admitted batch's
   // slots so a catch-up or recovery batch does not rebuild the graph.
+  const recoveryTemporalOrder = (intent: VfxGpuTickIntent) => {
+    if (!intent.recovering) return undefined;
+    const points = (intent.recoveryContext?.dataInterfaces ?? []).flatMap((resource) =>
+      resource.recovery?.temporal ? [resource.recovery.temporal] : [],
+    );
+    const first = points[0];
+    if (!first) return undefined;
+    if (
+      points.some(
+        (point) =>
+          point.timeline !== first.timeline ||
+          point.epoch !== first.epoch ||
+          point.tick !== first.tick,
+      )
+    )
+      return planFailure({
+        code: 'vfx-recovery-timeline-conflict',
+        expected: 'one coordinated producer timeline for a recovery compute tick',
+        hint: 'publish the coupled producer snapshots at one native temporal point',
+        detail: { player: intent.player, emitter: intent.emitter.id, tick: intent.tick },
+      });
+    return { ...first, phase: 'consumer' as const };
+  };
   const planTickPasses = (
     plan: FramePlan,
     gp: GroupPlan,
@@ -2529,6 +2356,15 @@ export function gpuParticleRenderFeature(
       });
       const failure = planTrailHistoryWrites(plan, gp, tick, planned, enabled);
       if (failure !== undefined) return failure;
+      const temporal = recoveryTemporalOrder(planned.intent);
+      if (temporal instanceof RenderFeatureStageFailedError) return temporal;
+      if (temporal)
+        for (let index = tickPassStart; index < plan.passes.length; index++) {
+          const pass = plan.passes[index];
+          if (pass === undefined) throw new Error(`Missing VFX temporal pass ${index}`);
+          if (pass.kind === 'compute' || pass.kind === 'copy')
+            plan.passes[index] = { ...pass, temporal };
+        }
       if (enabled)
         group.stream.ranges?.push({
           sequence: planned.intent.sequence,
@@ -3185,6 +3021,10 @@ export function gpuParticleRenderFeature(
     work: ViewWork,
     camera: ParticleRenderCamera,
   ): RenderFeatureStageFailedError | undefined => {
+    // Layers affect this camera's raster admission only. Hidden particles keep
+    // their shared simulation, history, other-view visibility and GPU events.
+    if (((gp.source?.renderLayers ?? 1) & (work.view.selectedView?.cullMask ?? 0xffffffff)) === 0)
+      return undefined;
     const latest = gp.latest;
     const view: GroupView = {
       work,
@@ -3194,7 +3034,12 @@ export function gpuParticleRenderFeature(
       visible:
         gp.renderEnabled &&
         latest !== undefined &&
-        plan.resolution.emitterVisible(latest.intent.emitter, camera, gp.latestTransform) &&
+        plan.resolution.emitterVisible(
+          latest.intent.emitter,
+          camera,
+          gp.latestTransform,
+          worldBoundsFor(gp.group.entry, latest.intent.player, latest.intent.emitter.id),
+        ) &&
         latest.visible,
     };
     for (let rendererIndex = 0; rendererIndex < gp.renderers.length; rendererIndex++) {
@@ -3350,11 +3195,23 @@ export function gpuParticleRenderFeature(
     return {
       runtimeId: entry.runtimeId,
       renderGeneration: entry.renderGeneration,
+      gpuEvents: entry.eventOutput
+        ? gpuEventReadbacks.ready(
+            entry.runtimeId,
+            entry.eventOutput.epoch,
+            plan.resolution.context.generation,
+          )
+        : [],
       visibility: [...entry.emitterState.values()].map((state) => ({
         player: state.player,
         emitter: state.emitter.id,
         visible: entry.views.some((view) =>
-          plan.resolution.emitterVisible(state.emitter, view.camera, state.localToWorld),
+          plan.resolution.emitterVisible(
+            state.emitter,
+            view.camera,
+            state.localToWorld,
+            state.worldBounds,
+          ),
         ),
       })),
       acknowledged: outcomes
@@ -3397,6 +3254,37 @@ export function gpuParticleRenderFeature(
   const publishPlan = (plan: FramePlan): RenderFeaturePlan => {
     const { frame, nativePlan } = plan;
     const { context } = plan.resolution;
+    const publishEventReadbacks = () => {
+      const eventSource = frame.source,
+        eventResource = eventSource ? `vfx.a-${eventSource.runtimeId}.di-gpu-events` : '';
+      const readbacks =
+        eventSource?.eventOutput && plan.sharedDataInterfaces.has(eventResource)
+          ? gpuEventReadbacks.append({
+              frame: frame.frameNumber,
+              runtimeId: eventSource.runtimeId,
+              ...eventSource.eventOutput,
+              generation: context.generation,
+              resource: eventResource,
+              resources: plan.resources,
+              passes: plan.passes,
+            })
+          : [];
+      if (
+        eventSource?.eventOutput &&
+        plan.sharedDataInterfaces.has(eventResource) &&
+        readbacks.length === 0
+      ) {
+        const output = plan.sharedDataInterfaces.get(eventResource);
+        if (output?.kind === 'buffer' && output.data instanceof Uint8Array)
+          new DataView(
+            output.data.buffer,
+            output.data.byteOffset,
+            output.data.byteLength,
+          ).setUint32(4, 0, true);
+      }
+      return readbacks;
+    };
+    const readbacks = publishEventReadbacks();
     const observation = planObservation(frame.frameNumber, [
       plan.passes,
       ...plan.viewWork.map((work) => work.passes),
@@ -3413,6 +3301,10 @@ export function gpuParticleRenderFeature(
       generation: context.generation,
     });
     const feedback = frame.source === undefined ? [] : [sourceFeedback(plan, frame.source)];
+    eventFeedbacks.set(
+      frame.frameNumber,
+      feedback.map((row) => ({ runtimeId: row.runtimeId, batches: row.gpuEvents })),
+    );
     for (const key of receivedRetained.keys())
       if (!plan.resolution.liveRetained.has(key)) receivedRetained.delete(key);
     recentQueued.endFrame();
@@ -3454,12 +3346,12 @@ export function gpuParticleRenderFeature(
       retainBufferLayouts(nextBufferLayouts, row.resources as PlanResource[]);
     spareBufferLayouts = bufferLayouts;
     bufferLayouts = nextBufferLayouts;
-    return nativePlan === undefined
-      ? { work: packed, sourceFeedback: feedback }
-      : nativePlan.finish(packed, feedback, { batchReadOnlyDepthRaster: true });
+    if (nativePlan === undefined) return { work: packed, sourceFeedback: feedback, readbacks };
+    return nativePlan.finish(packed, feedback, { batchReadOnlyDepthRaster: true, readbacks });
   };
   const feature: VfxParticleRenderFeature = {
     identity: IDENTITY,
+    ...(options.dependencies === undefined ? {} : { dependencies: options.dependencies }),
     capture: options.capture ?? 'all',
     // Particles are scene radiance. The post placement runs after the TAA
     // resolve and writes the pre-resolve scene target, which the post chain no
@@ -3483,19 +3375,29 @@ export function gpuParticleRenderFeature(
       // A rejected recovery candidate can outlive the frame that produced it.
       // Keep the producer-owned submission ledger bounded even when a host
       // disappears before it can call onFrameAborted.
-      for (const frameNumber of pendingFrames.keys()) {
-        if (frameNumber + 4 < context.frameNumber) pendingFrames.delete(frameNumber);
-      }
-      sourceRuntimes.clear();
-      // A new receiver session starts with empty caches: adopt and send everything again.
-      if (context.receiverSession !== receiverSession) {
-        receiverSession = context.receiverSession;
-        adoptedRetained.clear();
-        intentPublication.reset();
-      }
+      const resetExtractionSession = () => {
+        for (const frameNumber of pendingFrames.keys()) {
+          if (frameNumber + 4 < context.frameNumber) pendingFrames.delete(frameNumber);
+        }
+        sourceRuntimes.clear();
+        // A new receiver session starts with empty caches: adopt and send everything again.
+        if (context.receiverSession !== receiverSession) {
+          receiverSession = context.receiverSession;
+          adoptedRetained.clear();
+          intentPublication.reset();
+        }
+      };
+      resetExtractionSession();
       let extracted: PublishedWorld | undefined;
       let queuedSessions: Map<string, Set<string>> | undefined;
       const world = context.world;
+      const scopedInterfaces = options.dataInterfacesForWorld?.(world);
+      if (scopedInterfaces) worldInterfaces.set(worldId(world), new WeakRef(scopedInterfaces));
+      const releaseDeadInterfaceOwners = () => {
+        for (const [id, registry] of worldInterfaces)
+          if (!registry.deref()) worldInterfaces.delete(id);
+      };
+      releaseDeadInterfaceOwners();
       const camera = world.hasResource(VFX_GPU_RUNTIME_RESOURCE_KEY)
         ? options.camera.read(world, context.views)
         : undefined;
@@ -3506,10 +3408,41 @@ export function gpuParticleRenderFeature(
           identity: view.identity,
           camera: view.selectedView ?? camera,
         }));
-        const visibleInAnyView = (emitter: VfxGpuTickIntent['emitter'], transform: Float32Array) =>
-          views.some((view) => emitterVisible(emitter, view.camera, transform));
+        const capturedBounds = new Map<
+          EntityHandle,
+          { min: Float32Array; max: Float32Array } | undefined
+        >();
+        const playerBounds = (player: EntityHandle) => {
+          if (!capturedBounds.has(player)) {
+            const bounds = world.get(player, ParticleEffectWorldBounds);
+            capturedBounds.set(
+              player,
+              bounds.ok
+                ? {
+                    min: new Float32Array(bounds.value.min),
+                    max: new Float32Array(bounds.value.max),
+                  }
+                : undefined,
+            );
+          }
+          return capturedBounds.get(player);
+        };
+        const visibleInAnyView = (
+          emitter: VfxGpuTickIntent['emitter'],
+          transform: Float32Array,
+          player: EntityHandle,
+        ) =>
+          views.some((view) =>
+            emitterVisible(emitter, view.camera, transform, playerBounds(player)),
+          );
         const runtime = world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY);
         sourceRuntimes.set(runtimeId(runtime), runtime);
+        const eventOutput = world.hasResource(VFX_GPU_EVENT_OUTPUT)
+          ? world.getResource(VFX_GPU_EVENT_OUTPUT)
+          : undefined;
+        if (eventOutput) sourceEventStreams.set(runtimeId(runtime), new WeakRef(eventOutput));
+        for (const [id, stream] of sourceEventStreams)
+          if (!stream.deref()) sourceEventStreams.delete(id);
         const retained: PublishedWorld['retained'][number][] = [];
         const preparationPlayers = new Set<EntityHandle>();
         const emitterState = new Map<string, PublishedEmitterState>();
@@ -3533,6 +3466,7 @@ export function gpuParticleRenderFeature(
         // Player rows are read once per extracted frame and shared by every
         // emitter of the player: the ECS state cannot change during extract.
         interface PlayerFacts {
+          readonly renderLayers: number;
           readonly preparePipelines: boolean;
           readonly prepareOnly: boolean;
           readonly consumed: boolean;
@@ -3546,6 +3480,7 @@ export function gpuParticleRenderFeature(
           if (facts === undefined) {
             const intent = world.get(player, ParticleEffectPlayer);
             facts = {
+              renderLayers: intent.ok ? intent.value.renderLayers : 1,
               preparePipelines: intent.ok && intent.value.preparePipelines,
               prepareOnly: intent.ok && intent.value.preparePipelines && !intent.value.playing,
               consumed: options.playerConsumption?.isEnabled(world, player) ?? true,
@@ -3590,12 +3525,37 @@ export function gpuParticleRenderFeature(
                 value: texture.value,
               });
         };
+        const portableDataInterfaces = new Map<string, VfxDataInterfaceResource>();
+        const capturePortableInterfaces = (
+          emitter: VfxGpuTickIntent['emitter'],
+          generation: number,
+        ) => {
+          for (const requirement of emitter.reflection.dataInterfaces ?? []) {
+            const key = `${requirement.token}:${generation}`;
+            if (portableDataInterfaces.has(key)) continue;
+            const provided = (scopedInterfaces ?? options.dataInterfaces)?.resolve(
+              [requirement],
+              generation,
+              { frameNumber: context.frameNumber },
+            );
+            if (!provided?.ok) continue;
+            const resource = provided.value.resources.find(
+              (row) => row.token === requirement.token,
+            );
+            if (
+              resource?.resource?.kind === 'feature-texture-reference' ||
+              resource?.resource?.kind === 'uniform-data'
+            )
+              portableDataInterfaces.set(key, resource);
+          }
+        };
         const publishIntent = ({
           effect,
           emitter,
           ...intent
         }: SourceVfxGpuTickIntent): PublishedIntent => {
           publishFields(intent.forceFields);
+          capturePortableInterfaces(emitter, intent.instanceGeneration);
           return { ...intent, ...emitterReference(effect, emitter) };
         };
         const materials = new Map<ParticleRenderer['material'], ExtractedMaterial>();
@@ -3611,11 +3571,15 @@ export function gpuParticleRenderFeature(
           forceFields?: SourceVfxGpuTickIntent['forceFields'],
         ) => {
           publishFields(forceFields);
+          capturePortableInterfaces(emitter, instanceGeneration);
           const facts = factsOf(player);
           const prepareOnly = facts.prepareOnly;
           if (prepareOnly) preparationPlayers.add(player);
+          const worldBounds = playerBounds(player);
           emitterState.set(`${Number(player)}:${emitter.id}`, {
             player,
+            renderLayers: facts.renderLayers,
+            ...(worldBounds === undefined ? {} : { worldBounds }),
             ...emitterReference(effect, emitter),
             ...(forceFields === undefined ? {} : { forceFields }),
             ...(facts.preparePipelines ? { preparePipelines: true } : {}),
@@ -3704,7 +3668,7 @@ export function gpuParticleRenderFeature(
               (intent?.emitter ?? emitter).space === 'world'
                 ? IDENTITY_MATRIX
                 : playerWorld(player);
-            const visible = visibleInAnyView(emitter, localToWorld);
+            const visible = visibleInAnyView(emitter, localToWorld, player);
             captureEmitter(player, emitter, effect, localToWorld, instanceGeneration, forceFields);
             if (intent !== undefined && !preparationPlayers.has(player)) {
               // Retained queued work owns its previous geometry and material leases.
@@ -3748,16 +3712,56 @@ export function gpuParticleRenderFeature(
             intent.emitter,
             intent.effect,
             localToWorld,
-            0,
+            intent.instanceGeneration,
             intent.forceFields,
           );
         }
         if (meshFailure !== undefined) return err(meshFailure);
         const sceneSdf = options.sceneSdf?.read(world);
         queuedSessions ??= new Map();
+        const recovery: NonNullable<PublishedWorld['recovery']>[number][] = [];
+        const recoveryErrors: VfxGpuRecoveryError[] = [];
+        const recoverySessions = queuedSessions;
+        const publishRecoveryHistories = () => {
+          for (const row of retained) {
+            const last = runtime.lastCommittedEmitter(row.player, row.emitter.id);
+            if (!last || !requiresExactVfxRecovery(last)) continue;
+            const captured = runtime.recoveryInputs(row.player, row.emitter.id);
+            if (!captured.ok) {
+              recoveryErrors.push(captured.error);
+              continue;
+            }
+            recovery.push({
+              player: row.player,
+              emitterId: row.emitter.id,
+              inputs: publishQueuedIntents(
+                intentPublication,
+                recoverySessions,
+                `${String(runtimeId(runtime))}:${String(runtime.renderGeneration ?? 0)}`,
+                captured.value,
+                publishIntent,
+                (input) => !input.forceFields,
+                context.frameNumber,
+              ),
+            });
+          }
+        };
+        publishRecoveryHistories();
         extracted = {
           ...(sceneSdf === undefined ? {} : { sceneSdf }),
+          recovery,
+          recoveryErrors,
+          portableDataInterfaces: [...portableDataInterfaces.values()],
           worldId: worldId(world),
+          ...(eventOutput === undefined
+            ? {}
+            : {
+                eventOutput: {
+                  epoch: eventOutput.epoch,
+                  capacity: eventOutput.capacity,
+                  channels: eventOutput.channels,
+                },
+              }),
           runtimeId: runtimeId(runtime),
           renderGeneration: runtime.renderGeneration ?? 0,
           camera,
@@ -3877,6 +3881,9 @@ export function gpuParticleRenderFeature(
         )
           return;
       }
+      for (const row of eventFeedbacks.get(frame.frameNumber) ?? [])
+        gpuEventReadbacks.submitted(row.runtimeId, row.batches);
+      eventFeedbacks.delete(frame.frameNumber);
       const live = new Set(pending.fields);
       for (const name of uploadedFields.keys()) if (!live.has(name)) uploadedFields.delete(name);
       for (const name of pending.fields) uploadedFields.set(name, pending.generation);
@@ -3909,10 +3916,12 @@ export function gpuParticleRenderFeature(
           submission === undefined ? planned : submittedObservation(frame.frameNumber, submission);
       }
     },
+    onBufferReadback: (_frame, result) => gpuEventReadbacks.receive(result),
     onSourceFrameSubmitted: (frame, feedback) => {
       if (!Array.isArray(feedback)) return;
       for (const row of feedback as {
         runtimeId: number;
+        gpuEvents?: readonly VfxGpuOutputBatch[];
         renderGeneration: number;
         acknowledged: number[];
         published: number[];
@@ -3944,15 +3953,65 @@ export function gpuParticleRenderFeature(
             visibility.emitter,
             visibility.visible,
           );
+        const eventStream = sourceEventStreams.get(row.runtimeId)?.deref();
+        if (eventStream)
+          for (const batch of row.gpuEvents ?? [])
+            if (batch.epoch === eventStream.epoch)
+              eventStream.receive(batch.generation, batch.sequence, batch.events);
         const published = new Set(row.published);
         for (const intent of source.intents)
           if (published.has(intent.sequence))
             runtime.markEventDispatched(intent.player, intent.eventCounters);
-        if (row.acknowledged.length > 0) runtime.commit(row.acknowledged, row.published);
+        const commitRecoveryFeedback = () => {
+          if (row.acknowledged.length > 0) {
+            const contexts = new Map<number, VfxGpuRecoveryContext>();
+            const recoveryOwners = new Map<number, readonly VfxDataInterfaceRecoveryLease[]>();
+            const registry = interfacesFor(source);
+            for (const intent of source.intents) {
+              if (!published.has(intent.sequence)) continue;
+              const requirements = runtime.recoveryCaptureRequirements(intent.sequence);
+              if (requirements === undefined) continue;
+              const state = source.emitterState.get(
+                `${String(Number(intent.player))}:${intent.emitter.id}`,
+              );
+              const resources = (source.portableDataInterfaces ?? []).filter(
+                (resource) =>
+                  resource.generation === intent.instanceGeneration &&
+                  requirements.some((requirement) => requirement.token === resource.token),
+              );
+              const owners: VfxDataInterfaceRecoveryLease[] = [];
+              let error: VfxDataInterfaceError | undefined;
+              for (const resource of resources) {
+                if (!resource.recovery) continue;
+                const retained = registry?.retainRecovery?.(resource);
+                if (retained?.ok) {
+                  if (retained.value) owners.push(retained.value);
+                } else
+                  error ??= retained?.error ?? {
+                    code: 'vfx-data-interface-missing',
+                    expected: 'a source owner retaining each exact recovery producer version',
+                    hint: 'keep the producer checkpoint/tape alive for this VFX input cycle',
+                    detail: { token: resource.token },
+                  };
+              }
+              recoveryOwners.set(intent.sequence, owners);
+              contexts.set(intent.sequence, {
+                frameNumber: frame.frameNumber,
+                localToWorld: state?.localToWorld ?? IDENTITY_MATRIX,
+                dataInterfaces: resources,
+                ...(error === undefined ? {} : { error }),
+              });
+            }
+            runtime.commit(row.acknowledged, row.published, contexts, recoveryOwners);
+          }
+        };
+        commitRecoveryFeedback();
       }
     },
     onSourceFrameDiscarded: (frame) => intentPublication.discard(frame.frameNumber),
     onFrameAborted: (frame) => {
+      gpuEventReadbacks.abort(frame.frameNumber);
+      eventFeedbacks.delete(frame.frameNumber);
       pendingFrames.delete(frame.frameNumber);
     },
     inspect: () => lastObservation,
@@ -3971,17 +4030,13 @@ import {
   IDENTITY,
   immutableEmitters,
   isRetainableEmitter,
-  ownEmitter,
   type ParticleRenderer,
-  type PublishedEmitter,
   type PublishedEmitterState,
   type PublishedIntent,
   type PublishedWorld,
   planFailure,
   RESET_ZERO,
   type RetainedEmitter,
-  resolveEffect,
-  resolveIntent,
   type VfxGpuTickIntent,
   type VfxParticleRenderFeature,
 } from './gpu-particle-publication';

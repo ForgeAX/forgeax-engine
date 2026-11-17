@@ -1,25 +1,24 @@
 import type { MaterialRenderProjection } from '@forgeax/engine-assets-runtime';
-
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
-
 import type {
   RenderFeature,
   RenderFeaturePlanContext,
   RenderFeatureSceneSdfDescriptor,
 } from '@forgeax/engine-render';
-
 import {
   isOwnedRenderFeatureProgramData,
   ownRenderFeatureProgramData,
 } from '@forgeax/engine-render/internal';
-
 import type { MaterialAsset, MeshAsset, Result } from '@forgeax/engine-types';
 import type {
   ParticleRendererSourceV3,
   VfxGpuTickIntent as SourceVfxGpuTickIntent,
+  VfxDataInterfaceResource,
   VfxForceFieldError,
   VfxGpuEffectAsset,
   VfxGpuEmitterSource,
+  VfxGpuOutputChannel,
+  VfxGpuRecoveryError,
 } from '@forgeax/engine-vfx';
 
 import { RenderFeatureStageFailedError } from '../../../render/src/errors/render';
@@ -45,6 +44,7 @@ export const IDENTITY = 'forgeax.vfx-render.gpu-particles';
 export type ParticleRenderer = ParticleRendererSourceV3;
 
 export interface GpuParticleFeatureOptions {
+  readonly dependencies?: readonly string[];
   readonly camera: ParticleRenderCameraSource;
   /** Same-build diagnostic A/B. Opt in to validated view-local graph isolation. */
   readonly isolateViewGraph?: boolean;
@@ -64,7 +64,8 @@ export interface GpuParticleFeatureOptions {
   /** Reuse admitted native resources; requires native planning and instance arenas. */
   readonly retainedResources?: boolean;
   readonly sceneSdf?: { read(world: World): RenderFeatureSceneSdfDescriptor | undefined };
-  readonly dataInterfaces?: Pick<VfxDataInterfaceRegistry, 'resolve'>;
+  readonly dataInterfaces?: VfxDataInterfaceOwner;
+  readonly dataInterfacesForWorld?: (world: World) => VfxDataInterfaceOwner;
   readonly material?: ParticleMaterialSource;
   readonly mesh?: {
     read(
@@ -83,6 +84,8 @@ export interface ExtractedMaterial {
 }
 
 export interface ExtractedEmitterState {
+  readonly renderLayers?: number;
+  readonly worldBounds?: { readonly min: Float32Array; readonly max: Float32Array };
   readonly forceFields?: Result<PreparedVfxForceFields, VfxForceFieldError>;
   readonly enabled: boolean;
   readonly preparePipelines?: boolean;
@@ -94,7 +97,23 @@ export interface ExtractedEmitterState {
   readonly emitter: VfxGpuTickIntent['emitter'];
 }
 
+export type VfxDataInterfaceOwner = Pick<VfxDataInterfaceRegistry, 'resolve'> &
+  Partial<Pick<VfxDataInterfaceRegistry, 'retainRecovery'>>;
+
 export interface ExtractedWorld {
+  readonly recovery?: readonly {
+    readonly player: EntityHandle;
+    readonly emitterId: string;
+    readonly inputs: readonly VfxGpuTickIntent[];
+  }[];
+  readonly recoveryErrors?: readonly VfxGpuRecoveryError[];
+  /** Portable producer references/uniforms captured in the source World, including split render realms. */
+  readonly portableDataInterfaces?: readonly VfxDataInterfaceResource[];
+  readonly eventOutput?: {
+    readonly epoch: number;
+    readonly capacity: number;
+    readonly channels: readonly VfxGpuOutputChannel[];
+  };
   readonly sceneSdf?: RenderFeatureSceneSdfDescriptor;
   readonly worldId: number;
   readonly runtimeId: number;
@@ -139,20 +158,22 @@ export type PublishedEmitter = {
   readonly revision: number;
   readonly id: string;
 };
-
 export type PublishedIntent = Omit<SourceVfxGpuTickIntent, 'effect' | 'emitter'> & {
   readonly emitter: PublishedEmitter;
 };
-
 export type PublishedEmitterState = Omit<ExtractedEmitterState, 'emitter' | 'forceFields'> & {
   readonly forceFields?: SourceVfxGpuTickIntent['forceFields'];
   readonly emitter: PublishedEmitter;
 };
-
 export type PublishedWorld = Omit<
   ExtractedWorld,
-  'emitterState' | 'intents' | 'retained' | 'meshes'
+  'emitterState' | 'intents' | 'retained' | 'meshes' | 'recovery'
 > & {
+  readonly recovery?: readonly {
+    readonly player: EntityHandle;
+    readonly emitterId: string;
+    readonly inputs: readonly (PublishedIntent | VfxIntentReference<PublishedIntent>)[];
+  }[];
   readonly meshes: ReadonlyMap<string | number, MeshAsset | number>;
   readonly emitterState: ReadonlyMap<string, PublishedEmitterState>;
   readonly intents: readonly (PublishedIntent | VfxIntentReference<PublishedIntent>)[];
@@ -167,14 +188,12 @@ export type PublishedWorld = Omit<
     readonly intent?: PublishedIntent;
   })[];
 };
-
 interface PublishedFrame {
   readonly source: PublishedWorld | undefined;
   readonly frameNumber: number;
 }
 
 export const immutableEmitters = new WeakSet<object>();
-
 const fixedEmitters = new WeakMap<object, VfxGpuTickIntent['emitter']>();
 
 export function ownEmitter(source: VfxGpuTickIntent['emitter']): VfxGpuTickIntent['emitter'] {
@@ -189,7 +208,6 @@ export function ownEmitter(source: VfxGpuTickIntent['emitter']): VfxGpuTickInten
 
 /** Facts derived only from an immutable emitter program, computed once per program. */
 const eventEmitters = new WeakMap<object, boolean>();
-
 export function emitterHasEvents(emitter: VfxGpuTickIntent['emitter']): boolean {
   const immutable = immutableEmitters.has(emitter);
   const cached = immutable ? eventEmitters.get(emitter) : undefined;
@@ -201,7 +219,6 @@ export function emitterHasEvents(emitter: VfxGpuTickIntent['emitter']): boolean 
   if (immutable) eventEmitters.set(emitter, value);
   return value;
 }
-
 export function resolveEffect(
   reference: PublishedEmitter,
   context: RenderFeaturePlanContext,
@@ -215,7 +232,7 @@ export function resolveEffect(
   return effect;
 }
 
-function resolveEmitter(reference: PublishedEmitter, context: RenderFeaturePlanContext) {
+export function resolveEmitter(reference: PublishedEmitter, context: RenderFeaturePlanContext) {
   const effect = resolveEffect(reference, context);
   const emitter = effect.program.emitters.find((candidate) => candidate.id === reference.id);
   if (emitter === undefined) throw new Error(`Missing VFX emitter ${reference.id}`);

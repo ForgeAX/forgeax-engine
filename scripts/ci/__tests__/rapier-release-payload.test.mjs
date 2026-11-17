@@ -52,6 +52,9 @@ function fixture(t) {
     mkdirSync(join(root, path), { recursive: true });
     cpSync(resolve(path), join(root, path), { recursive: true });
   }
+  const nativeTest = 'packages/physics-rapier3d/src/__tests__/contact-point-velocity.native.rs';
+  mkdirSync(join(root, 'packages/physics-rapier3d/src/__tests__'), { recursive: true });
+  cpSync(resolve(nativeTest), join(root, nativeTest));
   mkdirSync(join(root, 'scripts/forgeax'), { recursive: true });
   cpSync(
     resolve('scripts/forgeax/build-rapier-native.mjs'),

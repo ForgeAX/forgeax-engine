@@ -635,6 +635,8 @@ export function validateCameraBloom(
  *   );
  */
 export const Camera = defineComponent('Camera', {
+  /** Unsigned 32-bit geometry visibility mask; independent of lighting and shadows. */
+  cullMask: { type: 'f64', default: 0xffffffff },
   fov: { type: 'f32' },
   aspect: { type: 'f32' },
   near: { type: 'f32', default: 0.1 },

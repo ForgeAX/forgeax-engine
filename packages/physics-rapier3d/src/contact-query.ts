@@ -5,6 +5,7 @@ import {
   type PhysicsContactManifold,
   type PhysicsContactNeighborsSnapshot,
   type PhysicsContactNormalFilter,
+  type PhysicsContactPointVelocities,
   type PhysicsVector,
 } from '@forgeax/engine-physics';
 import { err, ok, type Result } from '@forgeax/engine-types';
@@ -203,8 +204,29 @@ export function queryContactManifolds(
           if (pointCount === 0) return;
           const normal = vector(manifold.normal());
           const points: PhysicsVector[] = new Array(pointCount);
-          for (let point = 0; point < pointCount; point += 1)
+          const preSolveVelocities: (PhysicsContactPointVelocities | null)[] = new Array(
+            pointCount,
+          );
+          for (let point = 0; point < pointCount; point += 1) {
             points[point] = vector(manifold.solverContactPoint(point));
+            const first = manifold.solverContactVelocity(point, true);
+            // Native accessors reuse scratch storage, so detach the first side before reading the second.
+            const firstVelocity = first === null ? null : vector(first);
+            const second = manifold.solverContactVelocity(point, false);
+            const secondVelocity = second === null ? null : vector(second);
+            if ((firstVelocity === null) !== (secondVelocity === null))
+              throw new ManagedPhysicsError('managed-physics-unavailable', {
+                reason: 'native contact point velocities must publish both sides together',
+              });
+            preSolveVelocities[point] =
+              firstVelocity === null || secondVelocity === null
+                ? null
+                : {
+                    body: flipped ? secondVelocity : firstVelocity,
+                    other: flipped ? firstVelocity : secondVelocity,
+                  };
+          }
+          const normalImpulses: (number | null)[] = new Array(pointCount).fill(null);
           let normalImpulse: number | null = null;
           if (awake) {
             normalImpulse = 0;
@@ -214,6 +236,7 @@ export function queryContactManifolds(
                 throw new ManagedPhysicsError('managed-physics-unavailable', {
                   reason: 'current contact query requires finite nonnegative native impulses',
                 });
+              normalImpulses[contact] = impulse;
               normalImpulse += impulse;
             }
             if (!Number.isFinite(normalImpulse))
@@ -227,6 +250,8 @@ export function queryContactManifolds(
             ...(otherOwner.shape === undefined ? {} : { otherShape: otherOwner.shape }),
             normal: flipped ? [-normal[0], -normal[1], -normal[2]] : normal,
             points,
+            preSolveVelocities,
+            normalImpulses,
             normalImpulse,
           });
         },

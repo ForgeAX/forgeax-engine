@@ -62,6 +62,7 @@ export const planExecutionProjections = new WeakMap<
 >();
 
 export interface RenderFeaturePlanExecutionPass {
+  readonly temporal?: import('./temporal-stage').RenderFeatureTemporalStage | undefined;
   readonly enabled?: boolean | undefined;
   readonly shadowCaster?: true;
   readonly featureIdentity: string;

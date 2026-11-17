@@ -1281,7 +1281,26 @@ export function recordGeometryDraws(
             entityMeshSlot * MESH_PER_ENTITY_STRIDE,
           );
     meshGroup2DynamicOffsets[0] = meshBinding.byteOffset;
-    if (entry.mesh.vertexBuffer !== lastVertexBuffer) {
+    const gpuVertex = entry.source.gpuVertexSource;
+    if (gpuVertex) {
+      const output = recordContext(runtime).sharedFeatureGpuWork?.resolveNamedBuffer(
+        gpuVertex.feature,
+        gpuVertex.resource,
+      );
+      if (!output || output.size < entry.mesh.vboBytes || (output.physicalUsage & 32) === 0) {
+        runtime.errorRegistry.fire(
+          new RhiError({
+            code: 'rhi-not-available',
+            expected:
+              'current feature vertex output matches the actual MeshAsset layout and extent',
+            hint: 'prepare the declared storage/vertex buffer through the native RenderFeature before rendering this mesh',
+          }),
+        );
+        return false;
+      }
+      pass.setVertexBuffer(0, output.buffer);
+      lastVertexBuffer = null;
+    } else if (entry.mesh.vertexBuffer !== lastVertexBuffer) {
       pass.setVertexBuffer(0, entry.mesh.vertexBuffer.handle);
       lastVertexBuffer = entry.mesh.vertexBuffer;
     }

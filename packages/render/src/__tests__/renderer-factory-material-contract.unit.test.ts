@@ -509,20 +509,28 @@ fn cloud_direct_solar_factorX() -> f32 {
   });
 
   it('resolves LEAN_LIGHTING together with the simple receiver', () => {
-    const axes = (simple: boolean, transmission: boolean) => ({
+    const axes = (simple: boolean, transmission: boolean, lean = simple) => ({
       defines: {
         STORAGE_BUFFER_AVAILABLE: true,
         TRANSMISSION_AVAILABLE: transmission,
         DIRECTIONAL_SHADOW_SIMPLE: simple,
-        LEAN_LIGHTING: simple,
+        LEAN_LIGHTING: lean,
       },
     });
-    const variants = [axes(false, false), axes(true, false), axes(false, true)];
+    const variants = [
+      axes(false, false),
+      axes(true, false),
+      axes(false, true),
+      axes(false, false, true),
+    ];
     const resolve = (request: string) =>
       resolveMaterialShaderVariantSet(request, variants, 'webgpu', true);
     const lean = resolve('DIRECTIONAL_SHADOW_SIMPLE=true+LEAN_LIGHTING=true');
     expect(lean).toContain('DIRECTIONAL_SHADOW_SIMPLE=true');
     expect(lean).toContain('LEAN_LIGHTING=true');
+    const fullShadowLean = resolve('DIRECTIONAL_SHADOW_SIMPLE=false+LEAN_LIGHTING=true');
+    expect(fullShadowLean).toContain('DIRECTIONAL_SHADOW_SIMPLE=false');
+    expect(fullShadowLean).toContain('LEAN_LIGHTING=true');
     const general = resolve(
       'DIRECTIONAL_SHADOW_SIMPLE=true+LEAN_LIGHTING=true+TRANSMISSION_AVAILABLE=true',
     );

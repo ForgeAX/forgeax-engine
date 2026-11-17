@@ -1873,13 +1873,17 @@ it('validates every STANDARD_LEAN_INPUTS row and shrinks its vertex output', {
   expect(lean.map((variant) => variant.defines)).toEqual(expectedLean);
   for (const waves of [false, true]) {
     for (const rgba16 of [false, true]) {
-      expect(
-        lean.filter(
-          (variant) =>
-            variant.defines.WATER_WAVES_AVAILABLE === waves &&
-            variant.defines.WATER_INFO_RGBA16 === rgba16,
-        ),
-      ).toHaveLength(288);
+      const lane = lean.filter(
+        (variant) =>
+          variant.defines.WATER_WAVES_AVAILABLE === waves &&
+          variant.defines.WATER_INFO_RGBA16 === rgba16,
+      );
+      expect(lane).toHaveLength(320);
+      const added = lane.filter(
+        ({ defines }) => !defines.DIRECTIONAL_SHADOW_SIMPLE && defines.LEAN_LIGHTING,
+      );
+      expect(added).toHaveLength(32);
+      expect(lane.filter((row) => !added.includes(row))).toHaveLength(288);
     }
   }
 

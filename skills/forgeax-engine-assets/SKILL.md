@@ -183,6 +183,17 @@ specifier) and `project-asset-library-invalid` (package has no
 `assets.create` still produces an unregistered runtime mesh. See the
 [content contract](../../packages/content/README.md).
 
+## Volumetric cloud assets
+
+Use `VolumetricCloudLayer` with a loaded `cloud-material` and optional
+`cloud-material-instance`. In a ScriptablePack, return each cloud output with
+`execution: 'cooked'` and its authored `source`; ordinary DevKit dev/build registers
+the producers and supplies the compiler and renderer modules. A program model's
+WGSL file stays beside its Pack and participates in recooking after edits.
+`project check` dry-cooks authored JSON cloud rows; ScriptablePacks retain their
+normal build validation. Read the [cloud authoring contract](../../packages/render/README.md#volumetric-cloud-authoring-and-transport)
+for uniform samples, program parameters, instances and runtime bounds.
+
 ## Lighting asset route
 
 Use these entry points:

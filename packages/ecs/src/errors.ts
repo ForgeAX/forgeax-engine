@@ -45,6 +45,8 @@ export {
   ScheduleScopeMismatchError,
   TimeConfigInvalidError,
   TimeDeltaInvalidError,
+  TimeScaleInvalidError,
+  TimeScaleLeaseReleasedError,
   validateEnumFieldValues,
 } from './errors/validation-errors';
 

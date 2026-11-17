@@ -1,4 +1,4 @@
-import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
+﻿import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { runtimeAssetRegistry, runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { ENTITY_NULL_RAW, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import {
@@ -67,6 +67,7 @@ import {
   SpriteRegionOverride,
 } from './components';
 import { CAMERA_VIEW_DEFAULTS, cameraViewExtent } from './components/camera-view';
+import { GpuMeshVertexSource } from './components/gpu-mesh-vertex-source';
 import { validateChannelMask } from './components/lighting-channels';
 import { type StereoEye, stereoEyeCameras, stereoEyeViewport } from './components/stereo-camera';
 import { ProjectedDecalInvalidError } from './decals/component';
@@ -1444,7 +1445,9 @@ function extractWaterMeshSources(scope: WorldExtraction): void {
                 ) => {
                   const retainedMaterial = [
                     ...ownerSources.values(),
-                    ...(acceptedInput?.system === water ? (acceptedInput.ownerSources ?? []) : []),
+                    ...(acceptedInput !== undefined && acceptedInput.system === water
+                      ? (acceptedInput.ownerSources ?? [])
+                      : []),
                   ]
                     .flatMap((candidate) => candidate.materials)
                     .find(
@@ -1670,7 +1673,7 @@ function extractWaterMeshSources(scope: WorldExtraction): void {
             { severity: Severity.Error, systemName: 'RenderSystem.extract (water-mesh-material)' },
           );
         const retained =
-          acceptedInput?.system === water
+          acceptedInput !== undefined && acceptedInput.system === water
             ? acceptedInput.ownerSources?.find(
                 (candidate) =>
                   candidate.entityKey === entity &&
@@ -1820,6 +1823,13 @@ function extractMeshRendererRow(
     'lightingChannels',
   ) as number;
   if (!admitChannelMask(scope, validateChannelMask(lightingChannels), 'lighting-channels')) return;
+  const renderLayers = scope.world[worldRead].getFieldValue(
+    entity,
+    MeshRenderer,
+    'renderLayers',
+  ) as number;
+  if (!admitChannelMask(scope, validateChannelMask(renderLayers, 'renderLayers'), 'render-layers'))
+    return;
   const participation = readShadowParticipation(scope.world, entity);
   if (
     participation !== undefined &&
@@ -1830,7 +1840,14 @@ function extractMeshRendererRow(
     )
   )
     return;
-  const read = readMeshRendererRow(scope, entity, skinComponent, lightingChannels, participation);
+  const read = readMeshRendererRow(
+    scope,
+    entity,
+    skinComponent,
+    lightingChannels,
+    renderLayers,
+    participation,
+  );
   if (!read.authorVisible) scope.explicitlyHidden.add(entity);
   if (!read.authorVisible && !scope.context.retainHidden) return;
   // A scalar shared<T> field uses slot 0 as the schema-level unbound
@@ -1857,7 +1874,7 @@ function extractMeshRendererRow(
 function admitChannelMask(
   scope: WorldExtraction,
   error: ReturnType<typeof validateChannelMask>,
-  source: 'lighting-channels' | 'shadow-channels',
+  source: 'lighting-channels' | 'shadow-channels' | 'render-layers',
 ): boolean {
   if (error === null) return true;
   scope.worldInternal._routeError(error, {
@@ -1924,6 +1941,7 @@ function readMeshRendererRow(
   entity: EntityHandle,
   skinComponent: typeof Skin,
   lightingChannels: number,
+  renderLayers: number,
   participation: ReturnType<typeof readShadowParticipation>,
 ) {
   const preparationMesh =
@@ -1944,6 +1962,7 @@ function readMeshRendererRow(
     entity,
     authorVisible: !(isRenderable && scope.visibility?.effective(entity) === 'hidden'),
     lightingChannels,
+    renderLayers,
     preparationMesh,
     preparePipelines:
       preparationMesh !== undefined ||
@@ -2841,7 +2860,17 @@ function composeRenderable(
   transform: TransformSnapshot,
   skinBinding: SkinBindingInput | undefined,
 ): RenderableSnapshot {
+  // Ordinary meshes do not own a GPU producer. Probe membership before the
+  // full component read so absence does not allocate an ECS error per draw.
+  const gpuVertex = scope.world.hasComponent(read.entity, GpuMeshVertexSource)
+    ? scope.world.get(read.entity, GpuMeshVertexSource)
+    : undefined;
   return {
+    ...(gpuVertex?.ok
+      ? {
+          gpuVertexSource: { feature: gpuVertex.value.feature, resource: gpuVertex.value.resource },
+        }
+      : {}),
     ...(read.hasSpriteRegionOverride
       ? {
           spriteRegion: spriteUvRegion(
@@ -2857,6 +2886,7 @@ function composeRenderable(
       ? { shadowCaster: false as const }
       : {}),
     lightingChannels: read.lightingChannels,
+    renderLayers: read.renderLayers,
     assetHandle: Math.round(read.meshHandle ?? 0),
     transform,
     ...(geometry.lods === undefined ? {} : { lods: geometry.lods }),

@@ -28,6 +28,7 @@ import { ClippingPlanes, extractClippingPlanes } from '../components/clipping-pl
 import { DepthOfField } from '../components/depth-of-field';
 import { LensEffects, resolveLensEffects } from '../components/lens-effects';
 import { LensFlare, resolveLensFlare } from '../components/lens-flare';
+import { validateChannelMask } from '../components/lighting-channels';
 import { Outline, resolveOutline } from '../components/outline';
 import { PlanarReflection, PlanarReflectionInvalidError } from '../components/planar-reflection';
 import { resolveStereoCamera, StereoCamera } from '../components/stereo-camera';
@@ -144,6 +145,7 @@ function buildCameraSnapshots(world: World): CameraSnapshot[] {
     const effectColumns: CameraEffectColumns = {};
     const cameraProjectionColumn = batch.read(Camera, 'projection');
     const cameraFovColumn = batch.read(Camera, 'fov');
+    const cameraCullMaskColumn = batch.read(Camera, 'cullMask');
     const cameraNearColumn = batch.read(Camera, 'near');
     const cameraFarColumn = batch.read(Camera, 'far');
     const cameraPostProcessingColumn = batch.read(Camera, 'postProcessing');
@@ -276,7 +278,9 @@ function buildCameraSnapshots(world: World): CameraSnapshot[] {
             });
       // A stereo camera always composes as a view; without CameraView it covers the screen.
       const composedView = cameraView ?? (stereo === undefined ? undefined : CAMERA_VIEW_DEFAULTS);
+      assertCameraCullMask(cameraCullMaskColumn[physicalRow] as number);
       const snapshot: CameraSnapshot = {
+        cullMask: cameraCullMaskColumn[physicalRow] as number,
         entityKey: entity as number,
         ...(composedView === undefined
           ? {}
@@ -613,6 +617,7 @@ function fillCameraOutputInputs(
     };
     const numeric = columns.Outline;
     inputs.Outline = {
+      ...world.get(entity, Outline).unwrap(),
       entities: readRenderArrayView(world, entity, Outline, 'entities') as Uint32Array,
       visibleColor: readRenderArrayView(world, entity, Outline, 'visibleColor') as Float32Array,
       hiddenColor: readRenderArrayView(world, entity, Outline, 'hiddenColor') as Float32Array,
@@ -746,4 +751,9 @@ function resolveCameraLensInputs(inputs: CameraEffectInputs) {
       ? undefined
       : resolveMotionBlurParams(inputs.MotionBlur).unwrap();
   return { lensEffects, lensFlare, outline, motionBlurParams };
+}
+
+function assertCameraCullMask(mask: number): void {
+  const error = validateChannelMask(mask, 'cullMask');
+  if (error) throw error;
 }

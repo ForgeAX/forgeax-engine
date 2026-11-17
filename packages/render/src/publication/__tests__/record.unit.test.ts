@@ -133,7 +133,17 @@ describe('render publication record protocol', () => {
     const s = session(1);
     try {
       const candidate = s.publisher.prepare(0).unwrap();
-      const packet = candidate.packet;
+      const packet = {
+        ...candidate.packet,
+        time: {
+          delta: 0,
+          elapsed: 3,
+          maxDeltaSeconds: 0.1,
+          unscaledDelta: 0.025,
+          unscaledElapsed: 12,
+          scale: 0,
+        },
+      };
       const message = encodeRenderPublication(packet);
       expect(header(message)[0]).toBe(RENDER_PUBLICATION_PROTOCOL);
       const decoded = decodeRenderPublication(message, undefined).unwrap();

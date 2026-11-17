@@ -856,3 +856,17 @@ world.addSystem(Update, Move).unwrap();
 const score: number = world.getResource(Score);
 world.removeSystem(Update, Move).unwrap();
 ```
+
+### Owned global time scale
+
+`world.acquireTimeScale(scale).unwrap()` returns a `TimeScaleLease`. Update it with
+`lease.set(scale)` and release it on cancellation or owner disposal. Finite,
+non-negative scales are accepted. The smallest active contribution wins; a World
+with no contributions runs at 1. Released leases cannot be reactivated.
+
+The scheduler samples contributions at the next `world.update()` boundary. Both
+`Time.delta` and the fixed-step accumulator advance by scaled simulation time;
+the existing simulation catch-up cap still applies. `Time.unscaledDelta` and
+`Time.unscaledElapsed` expose raw host seconds for recovery effects that must
+finish while simulation is slowed or stopped. `Time.scale` is the frame's sampled
+scale. These clock resources remain read-only to callers.

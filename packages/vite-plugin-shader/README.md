@@ -38,6 +38,11 @@ checks and the actual payload digest run on every load, so changed or missing
 bytes cannot reuse admission. Weak publication ownership retires the expanded
 graph when its consumers release it; the lookup does not retain it globally.
 
+The Node loader deep-freezes its private JSON snapshot directly and reuses native
+ABI facts that are already transitively frozen. Reflection validation remains
+complete. Field projections preserve admitted WGSL getters, so default fields do
+not materialize utility source before a consumer needs it.
+
 The ray query, transport, raster-receiver and diffuse-composite entries use this same loader in
 both standalone and Vite builds. Their traversal module and imports live in
 `packages/shader/src`; test-side string insertion is not a publication path.

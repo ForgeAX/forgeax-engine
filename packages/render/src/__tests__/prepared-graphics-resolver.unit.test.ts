@@ -42,6 +42,82 @@ function failure<T>(result: Result<T, unknown>): {
 }
 
 describe('prepared graphics resolver', () => {
+  it.each([
+    ['forgeax::vfx-render.particles.mesh', true],
+    ['forgeax::vfx-render.particles.mesh-inputs', true],
+    ['forgeax::vfx-render.particles.mesh', false],
+    ['forgeax::vfx-render.particles.mesh-inputs', false],
+  ] as const)('selects receiver lighting per View and frame for %s: entry=%s', async (shader, entry) => {
+    const currentDevice = await device();
+    const store = createPreparedGraphicsStore();
+    const transaction = store.beginFrame('resolver.vfx-lighting', 1);
+    const pipeline = transaction
+      .prepare('pipeline', 'mesh', {
+        shader,
+        preparePipelines: true,
+        vertexLayout: 'mesh-instance',
+        colorFormats: ['rgba16float'],
+      })
+      .unwrap();
+    transaction.commit().unwrap();
+    const items = resultMap(store.snapshot('resolver.vfx-lighting').items);
+    const handles = new Map<string | undefined, RenderPipeline>();
+    const prepare = vi.fn(
+      (
+        ...args: Parameters<
+          NonNullable<RenderSystemInternals['prepareMaterialShaderPipelineEntry']>
+        >
+      ) => {
+        const key = args[5];
+        let handle = handles.get(key);
+        if (handle === undefined) {
+          handle = {} as RenderPipeline;
+          handles.set(key, handle);
+        }
+        return entry ? { pipeline: handle } : handle;
+      },
+    );
+    const runtime = {
+      device: currentDevice,
+      [entry ? 'prepareMaterialShaderPipelineEntry' : 'prepareMaterialShaderPipeline']: prepare,
+    } as unknown as RenderSystemInternals;
+    const caches = createPreparedResolverCaches();
+    const selected: RenderPipeline[] = [];
+    for (const leanLighting of [true, false, true]) {
+      const resolver = createPreparedResolver(
+        {
+          runtime,
+          caches,
+          leanLighting,
+          gpuWork: {} as never,
+          builtinPostProcessEntries: new Map(),
+          skylightResources: () => undefined,
+        },
+        {
+          featureIdentity: 'resolver.vfx-lighting',
+          order: 0,
+          generation: 1,
+          transaction,
+          fullscreenEffects: new Map(),
+          lookup: (reference) => items.get(reference),
+        },
+        [],
+      );
+      const resolved = resolver.resolve(pipeline).unwrap();
+      if (resolved.kind !== 'pipeline') throw new Error('Expected native pipeline');
+      selected.push(resolved.handle);
+      expect(resolver.resolve(pipeline).unwrap()).toBe(resolved);
+      resolver.release().unwrap();
+    }
+    expect(prepare.mock.calls.map((call) => call[5])).toEqual([
+      'CLUSTER_FORWARD_AVAILABLE=true+LEAN_LIGHTING=true',
+      'CLUSTER_FORWARD_AVAILABLE=true+LEAN_LIGHTING=false',
+      'CLUSTER_FORWARD_AVAILABLE=true+LEAN_LIGHTING=true',
+    ]);
+    expect(selected[0]).not.toBe(selected[1]);
+    expect(selected[2]).toBe(selected[0]);
+  });
+
   it('preserves a colorless storage fragment stage through the actual prepared pipeline request', async () => {
     const currentDevice = await device();
     const shader = (await rhi.createShaderModule(currentDevice, { code: 'synthetic' })).unwrap();

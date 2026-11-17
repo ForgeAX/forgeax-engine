@@ -3,6 +3,15 @@ import { deriveMaterialDynamicInputLayout, err, ok, type Result } from '@forgeax
 
 export type DynamicInputValue = number | readonly number[];
 
+/** Detached source facts. GPU generations, ranges and upload proofs stay realm-local. */
+export interface DynamicInputPageSnapshot {
+  readonly sourceId: string;
+  readonly pageId: number;
+  readonly schema: MaterialDynamicInputSchema;
+  readonly contentRevision: number;
+  readonly bytes: Uint8Array;
+}
+
 /** Stable public address of one admitted Surface draw member. */
 export interface SurfaceDynamicInputMemberIdentity {
   /** `World.identity`; stable across renderer-local World reordering. */
@@ -26,6 +35,12 @@ export interface DynamicInputRange {
   readonly bufferGeneration: number;
   readonly deviceGeneration: number;
 }
+
+/** Source-owned addresses; the receiver reserves its own physical page ranges. */
+export type DynamicInputRangeSnapshot = Pick<
+  DynamicInputRange,
+  'domain' | 'recordStart' | 'recordCount' | 'instanceIndex' | 'member'
+>;
 
 export interface DynamicInputDirtyRange {
   readonly byteStart: number;
@@ -79,6 +94,8 @@ export interface DynamicInputErrorDetail {
     | 'upload'
     | 'consume'
     | 'reconfigure'
+    | 'capture'
+    | 'restore'
     | 'release';
   readonly field?: string;
   readonly expected: string;
@@ -254,6 +271,134 @@ export class ReadonlyDynamicInputPage {
 
   get contentRevision(): number {
     return this.contentRevisionValue;
+  }
+
+  /** Capture before publication so later producer writes cannot change an in-flight frame. */
+  capture(): DynamicInputResult<DynamicInputPageSnapshot> {
+    const live = this.assertLive('capture');
+    if (!live.ok) return live;
+    return ok({
+      sourceId: this.sourceId,
+      pageId: this.pageId,
+      schema: structuredClone(this.schema),
+      contentRevision: this.contentRevisionValue,
+      bytes: this.bytes.slice(),
+    });
+  }
+
+  /** A receiver owns fresh GPU generations and obtains its own upload receipts. */
+  static fromSnapshot(
+    snapshot: DynamicInputPageSnapshot,
+  ): DynamicInputResult<ReadonlyDynamicInputPage> {
+    const created = ReadonlyDynamicInputPage.create({
+      sourceId: snapshot.sourceId,
+      pageId: snapshot.pageId,
+      schema: structuredClone(snapshot.schema),
+    });
+    if (!created.ok) return created;
+    const applied = created.value.applySnapshot(snapshot);
+    if (!applied.ok) {
+      created.value.release();
+      return applied;
+    }
+    return created;
+  }
+
+  /** Validate the entire candidate before changing retained bytes or dirty/upload state. */
+  applySnapshot(snapshot: DynamicInputPageSnapshot): DynamicInputResult<number> {
+    const live = this.assertLive('restore');
+    if (!live.ok) return live;
+    const layout = deriveMaterialDynamicInputLayout(snapshot.schema);
+    if (
+      snapshot.sourceId !== this.sourceId ||
+      snapshot.pageId !== this.pageId ||
+      !layout.ok ||
+      layout.value.identity !== this.layout.identity ||
+      !(snapshot.bytes instanceof Uint8Array) ||
+      snapshot.bytes.byteLength !== this.bytes.byteLength ||
+      !Number.isSafeInteger(snapshot.contentRevision) ||
+      snapshot.contentRevision < 1
+    ) {
+      return err(
+        invalid(
+          'invalid-schema',
+          'restore',
+          'matching source, page, bounded schema, bytes and positive content revision',
+          snapshot.contentRevision,
+          'snapshot',
+          this,
+        ),
+      );
+    }
+    if (snapshot.contentRevision < this.contentRevisionValue) {
+      return err(
+        invalid(
+          'stale-generation',
+          'restore',
+          'a current or newer source content revision',
+          snapshot.contentRevision,
+          'contentRevision',
+          this,
+        ),
+      );
+    }
+    const validateSnapshotFloats = () => {
+      const view = new DataView(
+        snapshot.bytes.buffer,
+        snapshot.bytes.byteOffset,
+        snapshot.bytes.byteLength,
+      );
+      for (let record = 0; record < this.schema.maxRecords; record++) {
+        for (const field of this.layout.fields) {
+          if (field.type === 'u32') continue;
+          for (let lane = 0; lane < field.size; lane += 4) {
+            if (
+              !Number.isFinite(
+                view.getFloat32(record * this.layout.stride + field.offset + lane, true),
+              )
+            ) {
+              return err(
+                invalid(
+                  'invalid-record',
+                  'restore',
+                  'finite encoded float fields',
+                  record,
+                  field.name,
+                  this,
+                ),
+              );
+            }
+          }
+        }
+      }
+
+      return undefined;
+    };
+    const floatFailure = validateSnapshotFloats();
+    if (floatFailure !== undefined) return floatFailure;
+    const changedRecords: number[] = [];
+    for (let offset = 0; offset < this.bytes.byteLength; offset++) {
+      if (this.bytes[offset] === snapshot.bytes[offset]) continue;
+      if (snapshot.contentRevision === this.contentRevisionValue) {
+        return err(
+          invalid(
+            'invalid-record',
+            'restore',
+            'unchanged bytes for a retained content revision',
+            snapshot.contentRevision,
+            'contentRevision',
+            this,
+          ),
+        );
+      }
+      const recordStart = Math.floor(offset / this.layout.stride) * this.layout.stride;
+      if (changedRecords.at(-1) !== recordStart) changedRecords.push(recordStart);
+    }
+    this.bytes.set(snapshot.bytes);
+    this.contentRevisionValue = snapshot.contentRevision;
+    for (const start of changedRecords)
+      alignRange(this.dirty, start, Math.min(start + this.layout.stride, this.bytes.byteLength));
+    return ok(this.contentRevisionValue);
   }
 
   get bufferGeneration(): number {
@@ -464,6 +609,37 @@ export class ReadonlyDynamicInputPage {
       end: input.recordStart + input.recordCount,
     });
     return ok(range);
+  }
+
+  /** Capture an owned address without carrying a physical range or upload proof. */
+  captureRange(range: DynamicInputRange): DynamicInputResult<DynamicInputRangeSnapshot> {
+    const live = this.assertLive('capture');
+    if (!live.ok) return live;
+    if (
+      !this.ownedRanges.has(range) ||
+      range.sourceId !== this.sourceId ||
+      range.pageId !== this.pageId ||
+      range.bufferGeneration !== this.bufferGenerationValue ||
+      range.deviceGeneration !== this.deviceGenerationValue
+    ) {
+      return err(
+        invalid(
+          'stale-generation',
+          'capture',
+          'an owned range in the current physical generation',
+          range.domain,
+          'range',
+          this,
+        ),
+      );
+    }
+    return ok({
+      domain: range.domain,
+      recordStart: range.recordStart,
+      recordCount: range.recordCount,
+      instanceIndex: range.instanceIndex,
+      member: { ...range.member },
+    });
   }
 
   /** Return detached dirty bytes for the existing resource owner to upload. */

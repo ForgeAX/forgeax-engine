@@ -53,7 +53,10 @@ export interface PhysicsSyncDescriptor {
     readonly angularDamping: number;
     readonly gravityScale: number;
     readonly ccdEnabled: number;
+    readonly canSleep?: boolean;
     readonly lockRotation?: boolean;
+    readonly translationAxes?: number;
+    readonly rotationAxes?: number;
     readonly additionalSolverIterations?: number;
   };
   readonly collider: ColliderSnapshot | undefined;
@@ -164,7 +167,10 @@ function readRigidBodyConfig(
           readonly angularDamping: number;
           readonly gravityScale: number;
           readonly ccdEnabled: number | boolean;
+          readonly canSleep?: boolean;
           readonly lockRotation?: boolean;
+          readonly translationAxes?: number;
+          readonly rotationAxes?: number;
           readonly additionalSolverIterations?: number;
         }
       | undefined;
@@ -176,7 +182,10 @@ function readRigidBodyConfig(
         angularDamping: data.angularDamping,
         gravityScale: data.gravityScale,
         ccdEnabled: Number(data.ccdEnabled),
+        canSleep: data.canSleep === undefined ? true : Boolean(data.canSleep),
         lockRotation: Boolean(data.lockRotation),
+        translationAxes: data.translationAxes ?? 7,
+        rotationAxes: data.rotationAxes ?? 7,
         additionalSolverIterations: data.additionalSolverIterations ?? 0,
       };
   }

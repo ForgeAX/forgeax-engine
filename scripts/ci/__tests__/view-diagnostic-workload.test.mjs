@@ -103,12 +103,18 @@ test('complete View owner receipts retain setup headroom inside four original jo
     JSON.parse(
       await readFile(new URL('./fixtures/view-partial-43746993655.json', import.meta.url), 'utf8'),
     ),
+    JSON.parse(
+      await readFile(new URL('./fixtures/view-partial-43880193250.json', import.meta.url), 'utf8'),
+    ),
   ];
-  const [complete, partial, shardEvidence, diagnosticEvidence] = receipts;
+  const [complete, partial, shardEvidence, diagnosticEvidence, lifecycleEvidence] = receipts;
   assert.equal(Object.hasOwn(complete.completedOwnerSeconds, 'modeling'), false);
   assert.deepEqual(partial.uncompletedOwners, ['modeling']);
   assert.deepEqual(shardEvidence.uncompletedOwners, ['diagnostics', 'modeling']);
   assert.deepEqual(diagnosticEvidence.uncompletedOwners, ['modeling']);
+  assert.equal(lifecycleEvidence.conclusion, 'cancelled');
+  assert.deepEqual(lifecycleEvidence.uncompletedOwners, ['lifecycle']);
+  assert.equal(Object.hasOwn(lifecycleEvidence.completedOwnerSeconds, 'lifecycle'), false);
   const full = viewPlan('--dry-run').filter(([owner]) => owner !== 'prepare');
   const shards = Array.from({ length: 4 }, (_value, index) =>
     viewPlan('--shard', String(index), '--dry-run').filter(([owner]) => owner !== 'prepare'),
@@ -161,14 +167,18 @@ test('measured diagnostic owners share the original four jobs and Modeling runs 
   ]);
   assert.deepEqual(groupOwner('tools/view/scripts/verify-gpu-texture-preview.mjs'), [
     { owner: 'diagnostic-gpu-2d', shard: 0 },
-    { owner: 'diagnostic-gpu-array', shard: 1 },
+    { owner: 'diagnostic-gpu-array', shard: 3 },
   ]);
   assert.deepEqual(groupOwner('tools/view/scripts/verify-pack-authoring-integration.mjs'), [
     { owner: 'diagnostic-pack-authoring', shard: 3 },
   ]);
   assert.deepEqual(groupOwner('tools/view/scripts/verify-pack-save-reopen-integration.mjs'), [
-    { owner: 'diagnostic-pack-save', shard: 0 },
+    { owner: 'diagnostic-pack-save', shard: 2 },
   ]);
+  for (const probe of ['owner-surface-resize', 'page-plugin-lifecycle', 'startup-boundaries'])
+    assert.deepEqual(groupOwner(`tools/view/scripts/verify-${probe}.mjs`), [
+      { owner: 'lifecycle', shard: 1 },
+    ]);
   assert.deepEqual(groupOwner('tools/view-plugins/integration/verify-modeling.mjs'), [
     { owner: 'modeling', shard: 3 },
   ]);
@@ -179,7 +189,7 @@ test('measured diagnostic owners share the original four jobs and Modeling runs 
   );
   assert.deepEqual(
     shards[2].filter(([owner]) => owner !== 'prepare').map(([owner]) => owner),
-    ['game3d', 'game3d', 'diagnostic-texture'],
+    ['game3d', 'game3d', 'diagnostic-texture', 'diagnostic-pack-save'],
     'the complete Game 3D chain stays contiguous before texture preview',
   );
   assert.equal(

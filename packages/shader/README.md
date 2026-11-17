@@ -37,6 +37,11 @@ rendered triangle derivative, evaluated uniformly before selection. There is no
 per-fragment polygon/ring-distance loop and no extra inter-stage location.
 See the [Water policy and limitations](../water/README.md#optional-terminal-surface-continuity).
 
+The bounded plain storage-forward publication domain admits `LEAN_LIGHTING`
+independently of `DIRECTIONAL_SHADOW_SIMPLE`. Lean lighting excludes only modifiers
+proven absent by the accepted View; general receivers preserve every authored
+shadow profile. Runtime selects the published artifact and does not rewrite WGSL.
+
 ## Public shader input boundary
 
 Directional PCSS uses one bounded loop with ordered blocker and comparison
@@ -68,7 +73,10 @@ are published once; direct entries, materials and variants retain their exact
 reader validates every reference and owns one immutable copy per table row.
 After detaching reflection facts, admission shares structurally equal immutable
 subtrees within that publication. The temporary pool is discarded after admission;
-separate publications remain independent. Complete values, own field order,
+separate publications remain independent. Explicit `ownedReflections` transfers a
+fresh private JSON tree without cloning it; full immediate validation remains the
+default, independently of deferred validation. Borrowed inputs retain detached
+snapshots. Complete values, own field order,
 optional absence, array multiplicity and signed zero remain distinct. Non-plain
 or cyclic extension data retains the ordinary detached-copy route. This changes
 neither the wire format nor reference/variant validation.
@@ -1121,6 +1129,11 @@ and `PORTABLE_FRAGMENT` variants. Native barriers/storage declarations never ent
 the fragment module. Fragment variants have distinct publication IDs even when
 they originate in the same source file. Their selected entry bindings and MRT
 outputs remain reflected facts of that exact composed variant.
+SSR traversal keeps one 64/1024-step counter across candidate yields. Tangent-plane
+validation runs outside the inner march to bound native compiler control-flow
+expansion; rejected candidates resume the same ray state. Traversal order, depth
+crossing refinement, geometric fallback and coverage checks remain shared by
+opaque and Water entry points.
 Standard Forward generates the additional unit-radiance reflection response only
 when `REFLECTION_FALLBACK_AVAILABLE` admits the SSR outputs, including clearcoat
 response sampling. Ordinary material variants omit that response work.

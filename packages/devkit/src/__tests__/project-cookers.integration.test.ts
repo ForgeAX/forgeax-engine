@@ -62,6 +62,36 @@ async function fixture(body: string, nested = false, config?: unknown): Promise<
 }
 
 describe('native build root process', () => {
+  it('uses host defaults without a build root and lets explicit project cookers replace them', async () => {
+    const defaults = [
+      {
+        key: 'cloud-material',
+        cook() {
+          throw new Error('default not used');
+        },
+      },
+    ];
+    const facts = await fixture(`export default { inject: ['nativeCookers'], apply(ctx) {
+      ctx.effect(() => ctx.nativeCookers.register({ key: 'cloud-material', cook(input) {
+        return {guid: input.guid, payload: {explicit: true}, refs: [], artifacts: {}, inputFingerprint: 'explicit'};
+      } }));
+    } };`);
+    const plain = await loadProjectCookers(
+      { ...facts, roots: {} },
+      [],
+      {},
+      { defaultCookers: defaults },
+    );
+    sessions.push(plain);
+    expect(plain.cookers).toEqual(defaults);
+    const explicit = await loadProjectCookers(facts, [], {}, { defaultCookers: defaults });
+    sessions.push(explicit);
+    expect(explicit.cookers).toHaveLength(1);
+    expect(await explicit.cookers[0]?.cook({ guid })).toMatchObject({
+      payload: { explicit: true },
+    });
+  }, 30_000);
+
   it('reuses the host inventory without re-evaluating declared plugin producers', async () => {
     const facts = await fixture('export default { apply() {} };');
     const events = resolve(facts.root, 'pack-builds.txt');

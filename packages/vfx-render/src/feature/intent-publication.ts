@@ -15,6 +15,7 @@ const PAYLOAD_KEYS = [
   'canonicalPayload',
   'replayInput',
   'channelInputs',
+  'recoveryContext',
 ] as const;
 type PayloadKey = (typeof PAYLOAD_KEYS)[number];
 
@@ -35,6 +36,7 @@ function referenceOf<T extends { readonly sequence: number }>(intent: T): VfxInt
 
 interface PublishableIntent {
   readonly sequence: number;
+  readonly recoveryContext?: unknown;
   readonly player: number;
   readonly emitter: { readonly id: string };
 }
@@ -48,7 +50,10 @@ export function createVfxIntentPublication() {
   /** Session -> published tick key -> its sequence and the frame that carried the payload. */
   const sent = new Map<
     string,
-    Map<string, { readonly sequence: number; readonly frame: number }>
+    Map<
+      string,
+      { readonly sequence: number; readonly frame: number; readonly payloadVersion: number }
+    >
   >();
   return {
     /** Full payload on first publication; a reference while the receiver may hold it. */
@@ -65,8 +70,9 @@ export function createVfxIntentPublication() {
         sent.set(session, ticks);
       }
       const key = tickKey(intent);
-      if (ticks.has(key)) return referenceOf(intent);
-      ticks.set(key, { sequence: intent.sequence, frame });
+      const version = intent.recoveryContext === undefined ? 0 : 1;
+      if ((ticks.get(key)?.payloadVersion ?? -1) >= version) return referenceOf(intent);
+      ticks.set(key, { sequence: intent.sequence, frame, payloadVersion: version });
       return intent;
     },
     /** The receiver lacked these sequences: send their payloads again. */
@@ -204,6 +210,11 @@ export function createVfxIntentPayloads() {
         const payload: Record<string, unknown> = {};
         for (const field of PAYLOAD_KEYS)
           payload[field] = (intent as Record<string, unknown>)[field];
+        // Submission adds immutable recovery context to an existing sequence.
+        // An older in-flight full row must not erase that committed context.
+        const prior = ticks?.get(key) as Record<string, unknown> | undefined;
+        if (payload.recoveryContext === undefined && prior?.recoveryContext !== undefined)
+          payload.recoveryContext = prior.recoveryContext;
         ticks?.set(key, payload);
         return intent;
       }

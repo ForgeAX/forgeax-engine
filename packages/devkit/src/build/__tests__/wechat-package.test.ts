@@ -58,6 +58,7 @@ it.each([
         gpuShaders: {},
         ui: {},
         gameVfx: { feature: {} },
+        gameFeatures: { features: [] },
         forgeaxBundlerAdapter: () => ({}),
       },
     );

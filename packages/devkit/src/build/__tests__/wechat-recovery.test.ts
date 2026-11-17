@@ -7,9 +7,11 @@ import { runInNewContext } from 'node:vm';
 import { canvasAspectPlugin } from '@forgeax/engine-app';
 import { createScriptablePackSourceSnapshot } from '@forgeax/engine-pack/source-node';
 import type { BlitzUi, BlitzUiOptions } from '@forgeax/engine-ui-blitz';
+import ts from 'typescript';
 import { afterEach, expect, it, vi } from 'vitest';
 import { createVfxRuntimeHost } from '../../../../vfx-render/src/index.js';
 import { gameVfxSource } from '../../game-vfx-source.js';
+import { gameRenderFeaturesSource } from '../../host/render-feature-contributions.js';
 import type { StartupUiOptions } from '../../host/startup-ui.js';
 import { prepareWechatBuild } from '../wechat.js';
 
@@ -166,11 +168,20 @@ async function generatedHost(startupUi: StartupUiOptions = {}) {
     wx[`on${event}`] = (listener: (event?: unknown) => void) => listeners.add(listener);
     wx[`off${event}`] = (listener: (event?: unknown) => void) => listeners.delete(listener);
   }
+  const compilerOptions = { target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.ESNext };
+  const featureCode = ts.transpileModule(
+    gameRenderFeaturesSource(process.cwd(), process.cwd())
+      .replace(/^import .*;$/gm, '')
+      .replace('export function', 'function'),
+    { compilerOptions },
+  ).outputText;
+  const vfxCode = ts.transpileModule(
+    gameVfxSource.replace(/^import .*;$/gm, '').replace('export function', 'function'),
+    { compilerOptions },
+  ).outputText;
   const scope = {
-    createGameVfx: runInNewContext(
-      `${gameVfxSource.replace(/^import .*;$/gm, '').replace('export function', 'function')}\ncreateGameVfx`,
-      { createVfxRuntimeHost },
-    ),
+    createGameRenderFeatures: runInNewContext(`${featureCode}\ncreateGameRenderFeatures`, {}),
+    createGameVfx: runInNewContext(`${vfxCode}\ncreateGameVfx`, { createVfxRuntimeHost }),
     inspectUi,
     AbortController,
     Error,

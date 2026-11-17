@@ -6,6 +6,27 @@ import { parseHtmlAuthoring } from '../html.js';
 
 describe('portable implementation support', () => {
   it.each([
+    '-webkit-text-stroke: 2px black',
+    '-webkit-text-stroke-width: 0.1em',
+    '-webkit-text-stroke-color: currentColor',
+    'paint-order: stroke fill',
+  ])('admits native text outlining %s', (declaration) => {
+    expect(
+      parseCssAuthoring(`span { ${declaration}; }`, 'text.ui.css').diagnostics.filter(
+        (entry) => entry.severity === 'error',
+      ),
+    ).toEqual([]);
+  });
+  it.each([
+    'auto',
+    '#d2a347',
+    'currentColor',
+    'rgb(255, 0, 0)',
+  ])('admits native control accent %s', (value) => {
+    const result = parseCssAuthoring(`input { accent-color: ${value}; }`, 'controls.ui.css');
+    expect(result.diagnostics.filter((entry) => entry.severity === 'error')).toEqual([]);
+  });
+  it.each([
     ['made-up-property: 1', 'unknown-css-property'],
     ['scroll-timeline: --progress block', 'unsupported-css-property'],
     ['display: potato', 'css-invalid-value'],

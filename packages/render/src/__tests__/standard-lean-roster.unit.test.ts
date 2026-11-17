@@ -43,7 +43,12 @@ it('compares every lean row with its exact published general Water format row', 
   const normalized = lean.filter(
     (variant) => !variant.defines.WATER_WAVES_AVAILABLE && variant.defines.WATER_INFO_RGBA16,
   );
-  expect(normalized).toHaveLength(288);
+  expect(normalized).toHaveLength(320);
+  const added = normalized.filter(
+    ({ defines }) => !defines.DIRECTIONAL_SHADOW_SIMPLE && defines.LEAN_LIGHTING,
+  );
+  expect(added).toHaveLength(32);
+  expect(normalized.filter((row) => !added.includes(row))).toHaveLength(288);
   for (const variant of lean) {
     const general = compare(variant, byKey, violatedVariantPermutationRules, expect);
     expect(general.defines).toEqual({
@@ -102,14 +107,16 @@ it('keeps every published lean row and the four maintained Water compile lanes',
   );
   const rows = publishedVariantDefines(source);
   const lean = rows.filter((row) => row.STANDARD_LEAN_INPUTS === true);
-  expect(lean).toHaveLength(4 * 288);
+  expect(lean).toHaveLength(4 * 320);
   for (const waves of [false, true]) {
     for (const rgba16 of [false, true]) {
-      expect(
-        lean.filter(
-          (row) => row.WATER_WAVES_AVAILABLE === waves && row.WATER_INFO_RGBA16 === rgba16,
-        ),
-      ).toHaveLength(288);
+      const lane = lean.filter(
+        (row) => row.WATER_WAVES_AVAILABLE === waves && row.WATER_INFO_RGBA16 === rgba16,
+      );
+      expect(lane).toHaveLength(320);
+      const added = lane.filter((row) => !row.DIRECTIONAL_SHADOW_SIMPLE && row.LEAN_LIGHTING);
+      expect(added).toHaveLength(32);
+      expect(lane.filter((row) => !added.includes(row))).toHaveLength(288);
     }
   }
   expect(

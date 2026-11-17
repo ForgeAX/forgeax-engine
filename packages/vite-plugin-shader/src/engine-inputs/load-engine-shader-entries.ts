@@ -80,23 +80,25 @@ async function resolveEntries<T extends Record<string, unknown>>(
 }
 
 /** The same source bytes used by Standard and the Build-only cloud material probe. */
-export async function loadCloudDensityModules() {
+const readShaderText = (path: string): Promise<string> => readFile(path, 'utf8');
+
+export async function loadCloudDensityModules(readText = readShaderText) {
   const require = createRequire(import.meta.url);
   const srcDir = resolve(dirname(require.resolve('@forgeax/engine-shader/package.json')), 'src');
   const modules = {
     'forgeax_cloud::coordinates': resolve(srcDir, 'cloud/coordinates.wgsl'),
     'forgeax_cloud::medium': resolve(srcDir, 'cloud/medium.wgsl'),
   } as const;
-  const coordinates = await readFile(modules['forgeax_cloud::coordinates'], 'utf8');
-  const medium = await readFile(modules['forgeax_cloud::medium'], 'utf8');
+  const coordinates = await readText(modules['forgeax_cloud::coordinates']);
+  const medium = await readText(modules['forgeax_cloud::medium']);
   const imports = { 'forgeax_cloud::coordinates': coordinates, 'forgeax_cloud::medium': medium };
   const identity = createHash('sha256').update(JSON.stringify(imports)).digest('hex');
   return { imports, identity, sourcePaths: Object.values(modules) };
 }
 
 /** Load canonical Engine shader entries and their import closure. */
-export async function loadCloudRendererModules() {
-  const engine = await loadEngineShaderEntries();
+export async function loadCloudRendererModules(readText = readShaderText) {
+  const engine = await loadEngineShaderEntries(readText);
   const require = createRequire(import.meta.url);
   const srcDir = resolve(dirname(require.resolve('@forgeax/engine-shader/package.json')), 'src');
   const names = await readdir(srcDir);
@@ -113,7 +115,7 @@ export async function loadCloudRendererModules() {
 }
 
 /** Load canonical Engine shader entries and their import closure. */
-export async function loadEngineShaderEntries() {
+export async function loadEngineShaderEntries(readText = readShaderText) {
   const require = createRequire(import.meta.url);
   const packageJsonPath = require.resolve('@forgeax/engine-shader/package.json');
   const srcDir = resolve(dirname(packageJsonPath), 'src');
@@ -121,7 +123,7 @@ export async function loadEngineShaderEntries() {
   const readSource = (fileName: string): Promise<string> => {
     let source = sourceReads.get(fileName);
     if (source === undefined) {
-      source = readFile(resolve(srcDir, fileName), 'utf8');
+      source = readText(resolve(srcDir, fileName));
       sourceReads.set(fileName, source);
     }
     return source;
@@ -142,7 +144,7 @@ export async function loadEngineShaderEntries() {
       ...file,
       id: `${file.id}?portable-fragment`,
     }));
-  const density = loadCloudDensityModules();
+  const density = loadCloudDensityModules(readText);
   const cloudSampled = Promise.all(
     [false, true].map(async (detail) => {
       const { identity } = await density;

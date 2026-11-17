@@ -32,7 +32,10 @@ export interface ShaderManifestInput extends Omit<ManifestEntry, 'glsl'> {
 }
 
 /** Node publications share strict expansion and native source-byte verification. */
-function readNodePublication(value: unknown): {
+function readNodePublication(
+  value: unknown,
+  options: { readonly ownedReflections?: boolean } = {},
+): {
   entries: ShaderManifestInput[];
   materialShaders: MaterialShaderManifestEntry[];
   publication: ShaderManifestPublication;
@@ -45,7 +48,7 @@ function readNodePublication(value: unknown): {
   ) {
     throw new Error('Unsupported shader manifest publication; rebuild shared shader inputs');
   }
-  const expanded = expandShaderManifestPublication(value);
+  const expanded = expandShaderManifestPublication(value, options);
   const fragmentDigests = expanded.fragmentTable.map((fragment) =>
     createHash('sha256').update(fragment).digest(),
   );
@@ -359,7 +362,18 @@ export function projectShaderManifestEntries(
   // `undefined` disappears during JSON serialization, but `glsl` is a required
   // manifest field at the runtime boundary. The empty string is the declared
   // WebGPU-only placeholder and survives serialization.
-  return [...entries.values()].map((entry) => ({ ...entry, glsl: '' }));
+  return [...entries.values()].map((entry) => projectShaderManifestInput(entry, { glsl: '' }));
+}
+
+/** Copy row fields without materializing its admitted, lazy WGSL source. */
+export function projectShaderManifestInput<
+  T extends ShaderManifestInput,
+  F extends { glsl?: ''; uvSetCount?: number },
+>(entry: T, fields: F): T & F {
+  const descriptors: Record<string, PropertyDescriptor> = Object.getOwnPropertyDescriptors(entry);
+  for (const [key, value] of Object.entries(fields))
+    descriptors[key] = { value, enumerable: true, configurable: true, writable: true };
+  return Object.defineProperties({}, descriptors) as T & F;
 }
 
 interface SharedEngineShaderManifest {
@@ -379,12 +393,23 @@ let lastSharedPublication:
   | undefined;
 
 function freezeSharedInput(value: unknown, seen = new WeakSet<object>()): void {
-  if (value === null || typeof value !== 'object' || seen.has(value)) return;
+  // This private walk only receives our JSON snapshot plus native expansion facts.
+  // JSON is unfrozen; expansion owns and transitively freezes its pooled ABI facts.
+  // No externally supplied shallow-frozen tree enters this boundary.
+  if (value === null || typeof value !== 'object' || Object.isFrozen(value) || seen.has(value))
+    return;
   seen.add(value);
   // Expanded WGSL is lazy. Inspect data descriptors without invoking its getters.
   for (const descriptor of Object.values(Object.getOwnPropertyDescriptors(value)))
     if ('value' in descriptor) freezeSharedInput(descriptor.value, seen);
   Object.freeze(value);
+}
+
+/** JSON.parse owns an acyclic data-only tree, so no descriptor snapshot is needed. */
+function freezeJsonPublication(value: unknown): void {
+  if (value === null || typeof value !== 'object' || Object.isFrozen(value)) return;
+  Object.freeze(value);
+  for (const child of Object.values(value)) freezeJsonPublication(child);
 }
 
 export async function loadSharedEngineShaderManifest(
@@ -424,7 +449,10 @@ export async function loadSharedEngineShaderManifest(
       : undefined;
   let input = publication === undefined ? undefined : sharedPublicationInputs.get(publication);
   if (input === undefined) {
-    input = readNodePublication(JSON.parse(bytes));
+    // This parse is private and has no retained container or caller aliases.
+    // Packaged container projections keep the ordinary borrowed snapshot route.
+    input = readNodePublication(JSON.parse(bytes), { ownedReflections: true });
+    freezeJsonPublication(input.publication);
     freezeSharedInput(input);
     sharedPublicationInputs.set(input.publication, input);
     lastSharedPublication = { digest, publication: new WeakRef(input.publication) };

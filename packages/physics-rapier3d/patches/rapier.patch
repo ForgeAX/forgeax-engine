@@ -1903,6 +1903,22 @@ diff --git a/src/dynamics/rigid_body_components.rs b/src/dynamics/rigid_body_com
 index e238425..78eb4ff 100644
 --- a/src/dynamics/rigid_body_components.rs
 +++ b/src/dynamics/rigid_body_components.rs
+@@ -178,6 +178,15 @@
+     pub fn pose_errors(&self, local_com: Vector) -> PdErrors {
++        // Equal targets are exactly stationary. Composing inverse poses can
++        // otherwise manufacture COM velocity from quaternion roundoff.
++        #[cfg(feature = "dim3")]
++        if self.position == self.next_position {
++            return PdErrors {
++                linear: Vector::ZERO,
++                angular: Vector::ZERO,
++            };
++        }
+         let com = self.position * local_com;
+         let shift = Pose::from_translation(com);
+         let dpos = shift.inverse() * self.next_position * self.position.inverse() * shift;
+ 
+         let angular;
 @@ -439,7 +439,7 @@ impl RigidBodyMassProps {
                      if let Some(co_parent) = co.parent {
                          let to_add = co
@@ -2893,10 +2909,10 @@ index 2de2803..48bbae9 100644
          /*
           * Delete the collider from its parent body.
 diff --git a/src/geometry/contact_pair.rs b/src/geometry/contact_pair.rs
-index 6879a80..29df7b6 100644
+index 6879a80..89f77ed 100644
 --- a/src/geometry/contact_pair.rs
 +++ b/src/geometry/contact_pair.rs
-@@ -56,6 +56,10 @@ pub struct ContactData {
+@@ -56,6 +56,15 @@ pub struct ContactData {
      ///
      /// The impulse applied to the second collider's rigid-body is given by `-impulse`.
      pub impulse: Real,
@@ -2904,14 +2920,20 @@ index 6879a80..29df7b6 100644
 +    /// Observation only: never used for restitution, contact persistence or warm-starting.
 +    #[cfg_attr(feature = "serde-serialize", serde(skip))]
 +    pub current_step_impulse: Real,
++    /// World-space point velocities on each body's contact surface, sampled after
++    /// kinematic interpolation and before this CCD substep's constraint solve.
++    /// Observation only; absent without active solver work and excluded from snapshots.
++    #[cfg_attr(feature = "serde-serialize", serde(skip))]
++    pub pre_solve_velocities: Option<[Vector; 2]>,
      /// The friction impulse along the vector orthonormal to the contact normal, applied to the first
      /// collider's rigid-body.
      pub tangent_impulse: TangentImpulse<Real>,
-@@ -90,6 +94,7 @@ impl Default for ContactData {
+@@ -90,6 +99,8 @@ impl Default for ContactData {
      fn default() -> Self {
          Self {
              impulse: 0.0,
 +            current_step_impulse: 0.0,
++            pre_solve_velocities: None,
              tangent_impulse: na::zero(),
              warmstart_impulse: 0.0,
              warmstart_tangent_impulse: na::zero(),
@@ -3841,10 +3863,10 @@ index b1f626c..2cf6e73 100644
 -    outcome
  }
 diff --git a/src/geometry/narrow_phase/solver_graph.rs b/src/geometry/narrow_phase/solver_graph.rs
-index 44315f6..a61449f 100644
+index 44315f6..f5141f2 100644
 --- a/src/geometry/narrow_phase/solver_graph.rs
 +++ b/src/geometry/narrow_phase/solver_graph.rs
-@@ -49,83 +49,57 @@ impl NarrowPhase {
+@@ -49,83 +49,82 @@ impl NarrowPhase {
          }
      }
  
@@ -3887,16 +3909,6 @@ index 44315f6..a61449f 100644
 -                                        | rb.body_type.is_dynamic() as u64;
 -                            }
 -                        }
--                    }
--                });
--            }
--        }
--
--        #[cfg(not(feature = "parallel"))]
--        for handle in islands.active_bodies() {
--            if let Some(rb) = bodies.get(handle) {
--                self.body_qualify_info[handle.into_raw_parts().0 as usize] =
--                    ((rb.ids.active_set_id as u64) << 32) | rb.body_type.is_dynamic() as u64;
 +            if let Some(edge) = self
 +                .contact_graph
 +                .graph
@@ -3909,11 +3921,42 @@ index 44315f6..a61449f 100644
 +                    .get_mut(contact.manifold as usize)
 +                {
 +                    manifold.data.graph_pos = GraphPos::NONE;
++                    for point in &mut manifold.points {
++                        point.data.pre_solve_velocities = None;
+                     }
+-                });
 +                }
              }
          }
 +        self.solver_contact_graph.clear();
 +        self.solver_graph_valid = false;
++    }
+ 
+-        #[cfg(not(feature = "parallel"))]
+-        for handle in islands.active_bodies() {
+-            if let Some(rb) = bodies.get(handle) {
+-                self.body_qualify_info[handle.into_raw_parts().0 as usize] =
+-                    ((rb.ids.active_set_id as u64) << 32) | rb.body_type.is_dynamic() as u64;
++    /// Sample only submitted solver work, including recycled contacts. This is
++    /// outside the parallel solve and never changes constraint or warm-start state.
++    pub(crate) fn capture_pre_solve_point_velocities(&mut self, bodies: &RigidBodySet) {
++        for contact_ref in self.solver_contact_graph.buckets()
++            .flat_map(|(_, refs)| refs)
++            .chain(self.solver_contact_graph.generic())
++        {
++            let manifold = &mut self.contact_graph.graph.edges[contact_ref.edge as usize]
++                .weight.solver_manifolds_mut()[contact_ref.manifold as usize];
++            let (data, points) = (&manifold.data, &mut manifold.points);
++            for contact in &data.solver_contacts {
++                let (p1, p2) = data.solver_contact_world_points(contact, bodies);
++                let velocity = |handle: Option<crate::dynamics::RigidBodyHandle>, point| handle.and_then(|h| bodies.get(h))
++                    .map_or(crate::math::Vector::ZERO, |rb| rb.velocity_at_point(point));
++                points[contact.contact_indices()[0] as usize].data.pre_solve_velocities = Some([
++                    velocity(data.rigid_body1, p1),
++                    velocity(data.rigid_body2, p2),
++                ]);
+             }
+         }
      }
  
 -    /// The manifold's solver-body indices if solver-active (at least one dynamic awake
@@ -3967,7 +4010,7 @@ index 44315f6..a61449f 100644
      pub(crate) fn maintain_solver_contact_graph(
          &mut self,
          islands: &IslandManager,
-@@ -133,32 +107,31 @@ impl NarrowPhase {
+@@ -133,32 +132,31 @@ impl NarrowPhase {
          colliders: &ColliderSet,
          multibody_joints: &MultibodyJointSet,
      ) {
@@ -4018,7 +4061,7 @@ index 44315f6..a61449f 100644
  
              #[cfg(feature = "parallel")]
              {
-@@ -178,7 +151,8 @@ impl NarrowPhase {
+@@ -178,7 +176,8 @@ impl NarrowPhase {
                      .into_par_iter()
                      .map(|c| {
                          let mut counts = alloc::vec![0u32; NUM_BUCKETS_WITH_GENERIC];
@@ -4028,7 +4071,7 @@ index 44315f6..a61449f 100644
                              let hint = hints.get(edge).copied().unwrap_or(0);
                              // SAFETY: each edge read by exactly one chunk.
                              unsafe {
-@@ -226,7 +200,8 @@ impl NarrowPhase {
+@@ -226,7 +225,8 @@ impl NarrowPhase {
                      .into_par_iter()
                      .enumerate()
                      .for_each(|(c, mut cursors)| {
@@ -4038,7 +4081,7 @@ index 44315f6..a61449f 100644
                              let hint = hints.get(edge).copied().unwrap_or(0);
                              // SAFETY: each edge (and thus each manifold and each
                              //         precomputed bucket range) is written by exactly
-@@ -273,7 +248,7 @@ impl NarrowPhase {
+@@ -273,7 +273,7 @@ impl NarrowPhase {
              #[cfg(not(feature = "parallel"))]
              {
                  graph.clear();
@@ -4047,7 +4090,7 @@ index 44315f6..a61449f 100644
                      let hint = hints.get(edge as usize).copied().unwrap_or(0);
                      // SAFETY: single-threaded; each edge visited once; `reconcile_pair`
                      //         never aliases a live reference across a graph mutation.
-@@ -291,32 +266,7 @@ impl NarrowPhase {
+@@ -291,32 +291,7 @@ impl NarrowPhase {
                      };
                  }
              }
@@ -4080,7 +4123,7 @@ index 44315f6..a61449f 100644
          }
  
          // Reconcile the persistent force-event pair list. Maintained incrementally through every
-@@ -343,7 +293,7 @@ impl NarrowPhase {
+@@ -343,7 +318,7 @@ impl NarrowPhase {
                      pos.resize(num_edges, u32::MAX);
                  }
                  for &edge in self
@@ -4089,7 +4132,7 @@ index 44315f6..a61449f 100644
                      .iter()
                      .chain(self.force_event_flagged.iter())
                  {
-@@ -355,7 +305,7 @@ impl NarrowPhase {
+@@ -355,7 +330,7 @@ impl NarrowPhase {
          }
  
          #[cfg(debug_assertions)]
@@ -4098,7 +4141,7 @@ index 44315f6..a61449f 100644
          #[cfg(debug_assertions)]
          self.debug_validate_force_event_pairs(colliders);
      }
-@@ -516,7 +466,7 @@ impl NarrowPhase {
+@@ -516,7 +491,7 @@ impl NarrowPhase {
      #[allow(clippy::too_many_arguments)]
      unsafe fn for_each_desired_manifold(
          edges_ptr: *mut crate::data::graph::Edge<ContactPair>,
@@ -4107,7 +4150,7 @@ index 44315f6..a61449f 100644
          hint: u16,
          edge: u32,
          has_multibodies: bool,
-@@ -575,10 +525,11 @@ impl NarrowPhase {
+@@ -575,10 +550,11 @@ impl NarrowPhase {
      /// buckets just cleared, prior positions ignored (insert-only); else diff against current.
      /// Safety: `edges_ptr` = the contact graph's edge array, no other live borrow (single-threaded).
      #[allow(clippy::too_many_arguments)]
@@ -4120,7 +4163,7 @@ index 44315f6..a61449f 100644
          hint: u16,
          edge: u32,
          full: bool,
-@@ -698,19 +649,6 @@ impl NarrowPhase {
+@@ -698,19 +674,6 @@ impl NarrowPhase {
          }
      }
  
@@ -4140,7 +4183,7 @@ index 44315f6..a61449f 100644
      /// Debug-only shadow validator: recomputes the exact solver-active manifold set and
      /// asserts the persistent graph holds precisely that set in the right buckets —
      /// proves the incremental maintenance stays exact.
-@@ -719,10 +657,11 @@ impl NarrowPhase {
+@@ -719,10 +682,11 @@ impl NarrowPhase {
          &self,
          full_rebuild: bool,
          multibody_joints: &MultibodyJointSet,
@@ -4808,7 +4851,7 @@ index 70edd5b..b6bcae0 100644
                  && local_aabb.mins.is_finite()
                  && local_aabb.maxs.is_finite()
 diff --git a/src/pipeline/physics_pipeline/solve.rs b/src/pipeline/physics_pipeline/solve.rs
-index 228627e..afb2656 100644
+index 228627e..b08e251 100644
 --- a/src/pipeline/physics_pipeline/solve.rs
 +++ b/src/pipeline/physics_pipeline/solve.rs
 @@ -66,14 +66,37 @@ impl PhysicsPipeline {
@@ -4874,6 +4917,14 @@ index 228627e..afb2656 100644
              hooks,
              events,
          );
+@@ -335,6 +362,7 @@ impl PhysicsPipeline {
+         // step's changed contacts. The assemblies consume the buckets directly — nothing
+         // is collected, selected or sorted per step.
+         narrow_phase.maintain_solver_contact_graph(islands, bodies, colliders, multibody_joints);
++        narrow_phase.capture_pre_solve_point_velocities(bodies);
+         if !self.joint_selection_primed {
+             impulse_joints.invalidate_selection_memo();
+             self.joint_selection_primed = true;
 diff --git a/src/pipeline/physics_pipeline/substep.rs b/src/pipeline/physics_pipeline/substep.rs
 index 75b86d0..0db4074 100644
 --- a/src/pipeline/physics_pipeline/substep.rs
@@ -5763,7 +5814,7 @@ index 832b837..691b17e 100644
          return collider;
      }
 diff --git a/typescript/src.ts/geometry/narrow_phase.ts b/typescript/src.ts/geometry/narrow_phase.ts
-index 6163053..efd99ee 100644
+index 6163053..ce551cb 100644
 --- a/typescript/src.ts/geometry/narrow_phase.ts
 +++ b/typescript/src.ts/geometry/narrow_phase.ts
 @@ -1,6 +1,7 @@
@@ -5889,6 +5940,22 @@ index 6163053..efd99ee 100644
 +
      public numSolverContacts(): number {
          return this.raw.num_solver_contacts();
+     }
+@@ -242,6 +297,15 @@ export class TempContactManifold {
+         return exists ? VectorOps.fromBuffer(scratchBuffer, target) : null;
+     }
+ 
++    /** World-space velocity on the selected body's own contact surface, before
++     * the last CCD substep's solver response. Null without active solver work.
++     * Body order is the native manifold order; contactPair's flip flag still applies.
++     */
++    public solverContactVelocity(i: number, first: boolean, target?: Vector): Vector | null {
++        const exists = this.raw.solver_contact_velocity(i, first, scratchBuffer);
++        return exists ? VectorOps.fromBuffer(scratchBuffer, target) : null;
++    }
++
+     public solverContactDist(i: number): number {
+         return this.raw.solver_contact_dist(i);
      }
 diff --git a/typescript/src.ts/geometry/shape.ts b/typescript/src.ts/geometry/shape.ts
 index e74c8e5..b8596ce 100644
@@ -6870,7 +6937,7 @@ index 14e7152..a9a0458 100644
      pub fn new() -> Self {
          RawColliderSet(ColliderSet::new())
 diff --git a/typescript/src/geometry/narrow_phase.rs b/typescript/src/geometry/narrow_phase.rs
-index fc1cc9d..bd9aff5 100644
+index fc1cc9d..ade0917 100644
 --- a/typescript/src/geometry/narrow_phase.rs
 +++ b/typescript/src/geometry/narrow_phase.rs
 @@ -1,4 +1,6 @@
@@ -7067,7 +7134,7 @@ index fc1cc9d..bd9aff5 100644
                  .get(i)
                  .map(|m| RawContactManifold(m as *const ContactManifold))
          }
-@@ -267,6 +404,19 @@ impl RawContactManifold {
+@@ -267,6 +404,45 @@ impl RawContactManifold {
          }
      }
  
@@ -7081,6 +7148,32 @@ index fc1cc9d..bd9aff5 100644
 +                .get(i)
 +                .and_then(|contact| manifold.points.get(contact.contact_indices()[0] as usize))
 +                .map_or(0.0, |contact| contact.data.current_step_impulse)
++        }
++    }
++
++    /// The body's own surface-point velocity before the last CCD substep solve.
++    /// Missing for contacts not submitted to an active solve; never a live body read.
++    pub fn solver_contact_velocity(
++        &self,
++        i: usize,
++        first: bool,
++        scratch_buffer: &js_sys::Float32Array,
++    ) -> bool {
++        unsafe {
++            let manifold = &*self.0;
++            let velocity = manifold.data.solver_contacts.get(i)
++                .and_then(|c| manifold.points.get(c.contact_indices()[0] as usize))
++                .and_then(|c| c.data.pre_solve_velocities)
++                .map(|v| v[if first { 0 } else { 1 }]);
++            if let Some(v) = velocity {
++                scratch_buffer.set_index(0, v.x);
++                scratch_buffer.set_index(1, v.y);
++                #[cfg(feature = "dim3")]
++                scratch_buffer.set_index(2, v.z);
++                true
++            } else {
++                false
++            }
 +        }
 +    }
 +

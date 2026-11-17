@@ -12,6 +12,7 @@ import { DepthOfField } from './components/depth-of-field';
 import { DirectionalLight } from './components/directional-light';
 import { DynamicResolution } from './components/dynamic-resolution';
 import { Fog } from './components/fog';
+import { GpuMeshVertexSource } from './components/gpu-mesh-vertex-source';
 import { Instances } from './components/instances';
 import { Layer } from './components/layer';
 import { LensEffects } from './components/lens-effects';
@@ -29,6 +30,7 @@ import { Points } from './components/points';
 import { PostProcessParams } from './components/post-process-params';
 import { RectAreaLight } from './components/rect-area-light';
 import { ReflectionProbe } from './components/reflection-probe';
+import { RenderFeatureEnvironment } from './components/render-feature-environment';
 import { SceneInstance } from './components/scene-instance';
 import { ScreenSpaceReflection } from './components/screen-space-reflection';
 import { ShadowParticipation } from './components/shadow-participation';
@@ -66,6 +68,7 @@ export const RENDER_COMPONENTS: readonly Component[] = [
   DynamicResolution,
   DepthOfField,
   Fog,
+  GpuMeshVertexSource,
   Instances,
   Layer,
   LightProbe,
@@ -80,6 +83,7 @@ export const RENDER_COMPONENTS: readonly Component[] = [
   PostProcessParams,
   RectAreaLight,
   ReflectionProbe,
+  RenderFeatureEnvironment,
   SceneInstance,
   ScreenSpaceReflection,
   SkyboxBackground,

@@ -1,8 +1,42 @@
 import { describe, expect, it } from 'vitest';
 import { userEvent } from 'vitest/browser';
 import { attachBrowserInputBackend } from '../browser-backend';
+import { createCanvasInputBoundary } from '../canvas-input-boundary';
+import { snapshotFromSample } from '../input-snapshot';
 
 describe('browser edge latch (real Chromium)', () => {
+  it('publishes a browser acquisition reset without a player release command', async () => {
+    const canvas = document.createElement('canvas');
+    canvas.tabIndex = 0;
+    document.body.append(canvas);
+    const handle = attachBrowserInputBackend(canvas, { pointerLockAllowed: () => false });
+    const boundary = createCanvasInputBoundary(handle.backend);
+    boundary.grantGame();
+    try {
+      await userEvent.click(canvas);
+      boundary.game.sample();
+      await userEvent.keyboard('{e>}');
+      const held = snapshotFromSample(boundary.game.sample());
+      expect(held.keyboard.downCode('KeyE')).toBe(true);
+      // Exercise the actual DOM listener; this is not an OS alt-tab claim.
+      window.dispatchEvent(new Event('blur'));
+      const raw = boundary.game.sample();
+      const reset = snapshotFromSample(raw, undefined, held);
+      expect(reset.focused).toBe(raw.focused);
+      expect(reset.focusReset).toBe(true);
+      expect(reset.keyboard.upCode('KeyE')).toBe(false);
+      expect(snapshotFromSample(boundary.game.sample()).focusReset).toBe(false);
+      boundary.revokeGame();
+      const revoked = snapshotFromSample(boundary.game.sample(), undefined, held);
+      expect(revoked.focused).toBe(false);
+      expect(revoked.focusReset).toBe(true);
+      expect(revoked.keyboard.upCode('KeyE')).toBe(false);
+    } finally {
+      await userEvent.keyboard('{/e}');
+      handle();
+      canvas.remove();
+    }
+  });
   it('reads chord button masks and latches both transitions between browser scans', () => {
     const canvas = document.createElement('canvas');
     canvas.tabIndex = 0;

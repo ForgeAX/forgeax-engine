@@ -51,6 +51,7 @@ function bufferResource(resource: RenderFeatureResourceDeclaration): boolean {
 
 function bufferPass(pass: RenderFeaturePlanExecutionPass): boolean {
   if (
+    pass.temporal !== undefined ||
     pass.shadowCaster ||
     pass.graphics !== undefined ||
     pass.graphicsState !== undefined ||

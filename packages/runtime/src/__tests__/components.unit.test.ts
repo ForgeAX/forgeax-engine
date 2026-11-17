@@ -182,14 +182,15 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(MeshRenderer.name).toBe('MeshRenderer');
       expect(componentSchema(MeshRenderer)).toEqual({
         materials: 'array<asset<material>>',
+        renderLayers: 'f64',
         lightingChannels: 'f64',
         preparePipelines: 'bool',
       });
     });
 
-    it('Camera has 35 fields including target, targetLayer, exposure, and color grading columns', () => {
+    it('Camera has 36 fields including target, targetLayer, exposure, and color grading columns', () => {
       expect(Camera.name).toBe('Camera');
-      expect(Object.keys(componentSchema(Camera)).length).toBe(35);
+      expect(Object.keys(componentSchema(Camera)).length).toBe(36);
       expect(componentSchema(Camera).targetLayer).toBe('u32');
       expect(componentSchema(Camera).fov).toBe('f32');
       expect(componentSchema(Camera).aspect).toBe('f32');
@@ -1310,7 +1311,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
   //        refactoring — every field value must stay byte-identical)
   // ────────────────────────────────────────────────────────────────────────────
 
-  describe('camera factory 35-field schema snapshot (w14 AC-07 invariant)', () => {
+  describe('camera factory 36-field schema snapshot (w14 AC-07 invariant)', () => {
     it('perspective({ fov: Math.PI/3, aspect: 16/9 }) — all 20 fields match reference', () => {
       const pod = perspective({ fov: Math.PI / 3, aspect: 16 / 9 });
       // Caller-supplied projection with shared clip defaults
@@ -1413,16 +1414,16 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(pod.tonemap).toBe(TONEMAP_NONE);
     });
 
-    it('perspective + orthographic 34-field payload counts (34 factory Camera values)', () => {
+    it('perspective + orthographic 35-field payload counts (35 factory Camera values)', () => {
       const p = perspective({ fov: Math.PI / 3, aspect: 4 / 3 });
       const o = orthographic({ left: -1, right: 1, bottom: -1, top: 1 });
-      // Both return exactly 34 values (including targetLayer 0): Camera.fields also
+      // Both return exactly 35 values (including targetLayer 0): Camera.fields also
       // includes the optional target reference, which factories intentionally leave unset.
       // The returned values include exposure and color grading columns +
       // autoAspect bool column; feat-20260709 M3 collapsed the 4-scalar
       // clear-color quartet into one inline array<f32,4>).
-      expect(Object.keys(p).length).toBe(34);
-      expect(Object.keys(o).length).toBe(34);
+      expect(Object.keys(p).length).toBe(35);
+      expect(Object.keys(o).length).toBe(35);
     });
   });
 
@@ -1431,7 +1432,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
   // ────────────────────────────────────────────────────────────────────────────
 
   describe('Camera.fields reflection (w14 AC-07 SSOT)', () => {
-    it('Camera.fields has exactly 35 keys matching the Camera column set', () => {
+    it('Camera.fields has exactly 36 keys matching the Camera column set', () => {
       const keys = Object.keys(Camera.fields).sort();
       expect(keys).toEqual([
         'antialias',
@@ -1447,6 +1448,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
         'colorLut',
         'colorLutStrength',
         'compensationEv',
+        'cullMask',
         'exposure',
         'exposureMode',
         'far',
@@ -1487,7 +1489,9 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
                     ? 'u32'
                     : key === 'target'
                       ? 'shared<RenderTarget>'
-                      : 'f32';
+                      : key === 'cullMask'
+                        ? 'f64'
+                        : 'f32';
         expect(Camera.fields[key].type).toBe(expected);
       }
     });
@@ -1560,6 +1564,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
         antialias: 0,
         historyVersion: 0,
         targetLayer: 0,
+        cullMask: 0xffffffff,
         bloom: 0,
         bloomThreshold: -1,
         bloomIntensity: 0.5,
@@ -1787,7 +1792,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(pod.exposure).toBeCloseTo(1.0, 6);
     });
 
-    it('perspective return value has all 34 factory Camera fields', () => {
+    it('perspective return value has all 35 factory Camera fields', () => {
       const pod = perspective({ fov: Math.PI / 3, aspect: 4 / 3 });
       const keys = Object.keys(pod).sort();
       expect(keys).toEqual([
@@ -1804,6 +1809,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
         'colorLut',
         'colorLutStrength',
         'compensationEv',
+        'cullMask',
         'exposure',
         'exposureMode',
         'far',
@@ -1943,6 +1949,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(componentDefinition(MeshRenderer).defaults).toEqual({
         materials: [],
         lightingChannels: 0xffffffff,
+        renderLayers: 1,
         preparePipelines: false,
       });
     });

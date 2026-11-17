@@ -2,9 +2,54 @@ import { describe, expect, it } from 'vitest';
 
 import {
   createEmptyInputBackendSample,
+  createInputSnapshot,
   type InputBackendSample,
   snapshotFromSample,
 } from '../input-snapshot';
+
+describe('snapshot focus lifecycle', () => {
+  it('publishes focused and reset facts without manufacturing a release command', () => {
+    const held = snapshotFromSample({
+      ...createEmptyInputBackendSample(),
+      focused: true,
+      downCodes: new Set(['KeyE']),
+      pressedCodes: new Set(['KeyE']),
+    });
+    const lost = snapshotFromSample(
+      { ...createEmptyInputBackendSample(), focused: false, focusReset: true },
+      undefined,
+      held,
+    );
+    expect(held.focused).toBe(true);
+    expect(held.focusReset).toBe(false);
+    expect(lost.focused).toBe(false);
+    expect(lost.focusReset).toBe(true);
+    expect(lost.keyboard.upCode('KeyE')).toBe(false);
+    const resumed = snapshotFromSample(
+      { ...createEmptyInputBackendSample(), focused: true },
+      undefined,
+      lost,
+    );
+    expect(resumed.focused).toBe(true);
+    expect(resumed.focusReset).toBe(false);
+    expect(lost.focusReset).toBe(true);
+    expect(Object.isFrozen(lost)).toBe(true);
+  });
+  it('retains a reset when focus was regained before the frame was sampled', () => {
+    const snap = snapshotFromSample({
+      ...createEmptyInputBackendSample(),
+      focused: true,
+      focusReset: true,
+    });
+    expect(snap.focused).toBe(true);
+    expect(snap.focusReset).toBe(true);
+  });
+  it('starts unfocused before an input producer is attached', () => {
+    const snap = createInputSnapshot();
+    expect(snap.focused).toBe(false);
+    expect(snap.focusReset).toBe(false);
+  });
+});
 
 function sample(
   downKeys: string[],

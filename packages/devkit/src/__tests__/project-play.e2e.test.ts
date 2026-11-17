@@ -5,8 +5,10 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
 import { afterAll, beforeAll, expect, it, vi } from 'vitest';
+import { assetListCommand } from '../assets.js';
 import { buildCommand } from '../commands.js';
 import { type PlayReport, playCommand } from '../play.js';
+import { installPackAuthorDependencies } from './fixtures/pack-author-dependencies.js';
 
 const PACKAGE = '019fb7ce-2200-7000-8000-000000000000';
 const namespace = PackageId.parse(PACKAGE);
@@ -299,8 +301,9 @@ beforeAll(async () => {
   root = await mkdtemp(resolve(tmpdir(), 'forgeax-project-play-'));
   await cp(resolve(import.meta.dirname, '../../../../templates/empty'), root, {
     recursive: true,
-    filter: (source) => !/(^|\/)(node_modules|dist|\.forgeax)(\/|$)/.test(source),
+    filter: (source) => !/(^|[\\/])(node_modules|dist|\.forgeax)([\\/]|$)/.test(source),
   });
+  await installPackAuthorDependencies(root, ['engine']);
   await mkdir(resolve(root, 'assets/play'), { recursive: true });
   const manifest = JSON.parse(await readFile(resolve(root, 'forge.json'), 'utf8'));
   await Promise.all([
@@ -323,6 +326,17 @@ beforeAll(async () => {
       })}\n`,
     ),
   ]);
+});
+
+it('admits the play Pack from its installed author dependency before browser startup', async () => {
+  const result = await assetListCommand({ root });
+  expect(result, JSON.stringify(result)).toMatchObject({ ok: true });
+  if (!result.ok) throw new Error('Play Pack author admission failed');
+  expect(result.value).toMatchObject({
+    sources: expect.arrayContaining([
+      { packageId: PACKAGE, sourcePath: 'assets/play/play.pack.ts', format: 'pack.ts' },
+    ]),
+  });
 });
 
 afterAll(async () => {

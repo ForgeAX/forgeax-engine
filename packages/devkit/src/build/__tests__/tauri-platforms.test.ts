@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { expect, it } from 'vitest';
 import { tauriBuildScript } from '../tauri-source.js';
@@ -48,7 +49,7 @@ it.each([
     );
     const args = [
       '--import',
-      resolve(root, 'host.mjs'),
+      pathToFileURL(resolve(root, 'host.mjs')).href,
       resolve(root, 'scripts/build.mjs'),
       '--platform',
       platform,
@@ -105,7 +106,7 @@ it('rejects foreign desktop and non-macOS iOS builds before invoking tools', asy
     for (const platform of ['windows', 'ios', 'invalid']) {
       const result = await exec(process.execPath, [
         '--import',
-        resolve(root, 'host.mjs'),
+        pathToFileURL(resolve(root, 'host.mjs')).href,
         resolve(root, 'build.mjs'),
         '--platform',
         platform,

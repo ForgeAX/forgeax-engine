@@ -124,7 +124,7 @@ export function rasterPipelineShapeKey(shape: RasterPipelineShape): string | und
     shape.shaderUvSetCount,
     shape.topology,
     shape.directionalShadowSimple === true,
-    shape.directionalShadowSimple === true && shape.leanLighting === true,
+    shape.leanLighting === true,
     shape.stripIndexFormat ?? '',
     shape.renderState ?? null,
     shape.standardTextureMask ?? -1,
@@ -161,21 +161,23 @@ function fragmentArtifact(
   };
 }
 
-const SIMPLE_OFF = 'DIRECTIONAL_SHADOW_SIMPLE=false';
-
-/** Flip a published definesKey to the source-level one-cascade Vogel receiver. */
-function withDirectionalShadowSimple(
+/** Select independent frame lighting facts only within published rows. */
+function withFrameLighting(
   artifact: MaterialShaderArtifact,
+  simpleReceiver: boolean,
   leanLighting: boolean,
 ): MaterialShaderArtifact {
   const key = artifact.variantSet;
-  if (key === undefined || !key.includes(SIMPLE_OFF)) return artifact;
-  const simple = key
-    .replace(SIMPLE_OFF, 'DIRECTIONAL_SHADOW_SIMPLE=true')
+  if (key === undefined || (!simpleReceiver && !leanLighting)) return artifact;
+  const selected = key
+    .replace(
+      /DIRECTIONAL_SHADOW_SIMPLE=(true|false)/,
+      `DIRECTIONAL_SHADOW_SIMPLE=${simpleReceiver}`,
+    )
     .replace(/LEAN_LIGHTING=(true|false)/, `LEAN_LIGHTING=${leanLighting}`);
   // Only rows the shared permutation rules publish (no mask, visible surface,
-  // transmission, probe blend or no-storage lane) select the simple receiver.
-  return isSupportedVariantKey(simple) ? { ...artifact, variantSet: simple } : artifact;
+  // transmission, probe blend or no-storage lane) select either optimization.
+  return isSupportedVariantKey(selected) ? { ...artifact, variantSet: selected } : artifact;
 }
 
 function shapeRenderState(
@@ -284,14 +286,17 @@ function pipelineForFragment(
       seededDepth,
       opaqueDepthPrimed,
     );
-    selectedArtifact ??=
-      forwardColorPass && shape.directionalShadowSimple === true
-        ? withDirectionalShadowSimple(generalArtifact, shape.leanLighting === true)
-        : generalArtifact;
+    selectedArtifact ??= forwardColorPass
+      ? withFrameLighting(
+          generalArtifact,
+          shape.directionalShadowSimple === true,
+          shape.leanLighting === true,
+        )
+      : generalArtifact;
     const selected = build(selectedArtifact, formats, preparation, sampleCount);
-    // The simple receiver only specializes the general one. While its PSO
-    // builds, the frame draws with the general receiver instead of waiting;
-    // the fallback is not retained, so the simple PSO takes over once ready.
+    // Both specializations preserve the general program's output. While a
+    // specialized PSO builds, the frame draws with that general program;
+    // the fallback is not retained, so the selected PSO takes over once ready.
     if (!selected.ok && selectedArtifact !== generalArtifact) {
       const general = build(generalArtifact, formats, preparation, sampleCount);
       if (general.ok) return shape.rendererRecording ? general : ok(general.value);

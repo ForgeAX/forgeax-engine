@@ -42,6 +42,8 @@ import {
 const stockMaterialProjection = AssetRegistry.prototype.getMaterialProjectionForPayload;
 
 export interface VfxRuntimeHostOptions {
+  /** Explicit producer dependencies for generation-owned data interfaces. */
+  readonly dependencies?: readonly string[];
   /** Opt-in same-build A/B for separately validated view-local particle work. */
   readonly isolateViewGraph?: boolean;
   readonly instanceArenas?: boolean;
@@ -56,6 +58,8 @@ export interface VfxRuntimeHostOptions {
   };
   readonly maxQueuedTicks?: number;
   readonly providers?: readonly VfxDataInterfaceProvider[];
+  /** Per-World producer closures; never share a scene-owned sampler across Worlds. */
+  readonly providersForWorld?: (world: World) => readonly VfxDataInterfaceProvider[];
 }
 
 export interface VfxRuntimeHostError {
@@ -201,6 +205,19 @@ export function createVfxRuntimeHost(options: VfxRuntimeHostOptions): VfxRuntime
   const pausedPlayers = new WeakMap<World, Set<EntityHandle>>();
   let nextGeneration = 1;
   const dataInterfaces = createVfxDataInterfaceRegistry(options.providers);
+  const worldInterfaces = new WeakMap<World, VfxDataInterfaceRegistry>();
+  const interfacesForWorld = (world: World) => {
+    if (!options.providersForWorld) return dataInterfaces;
+    let registry = worldInterfaces.get(world);
+    if (!registry) {
+      registry = createVfxDataInterfaceRegistry([
+        ...(options.providers ?? []),
+        ...options.providersForWorld(world),
+      ]);
+      worldInterfaces.set(world, registry);
+    }
+    return registry;
+  };
   const readRenderAsset = <Kind extends 'material' | 'mesh'>(
     world: World,
     reference: string | AssetHandle<Kind>,
@@ -220,6 +237,7 @@ export function createVfxRuntimeHost(options: VfxRuntimeHostOptions): VfxRuntime
   const createFeature = (registry = dataInterfaces) =>
     gpuParticleRenderFeature({
       camera: options.camera,
+      ...(options.dependencies === undefined ? {} : { dependencies: options.dependencies }),
       ...(options.instanceArenas === undefined ? {} : { instanceArenas: options.instanceArenas }),
       ...(options.nativePlanning === undefined ? {} : { nativePlanning: options.nativePlanning }),
       ...(options.retainedResources === undefined
@@ -230,6 +248,7 @@ export function createVfxRuntimeHost(options: VfxRuntimeHostOptions): VfxRuntime
         : { isolateViewGraph: options.isolateViewGraph }),
       ...(options.sceneSdf === undefined ? {} : { sceneSdf: options.sceneSdf }),
       dataInterfaces: registry,
+      dataInterfacesForWorld: interfacesForWorld,
       material: createHostMaterialSource(
         (world, guid) => readRenderAsset(world, guid, 'material'),
         (world) => {

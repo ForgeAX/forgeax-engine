@@ -1,13 +1,31 @@
 use super::ElementCx;
-use crate::color::{Color, ToColorColor as _};
+use crate::color::{Color, ToColorColor as _, contrast_ratio};
 use anyrender::PaintScene;
 use blitz_dom::local_name;
 use kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Stroke, Vec2};
 use peniko::{Fill, Mix};
 use style::computed_value_flags::ComputedValueFlags;
 use style::dom::TElement as _;
+use style::values::computed::ColorOrAuto;
 
 impl ElementCx<'_, '_> {
+    fn control_accent(&self) -> Color {
+        match self.style.clone_accent_color() {
+            ColorOrAuto::Auto => Color::from_rgba8(0, 117, 255, 255),
+            ColorOrAuto::Color(color) => color
+                .resolve_to_absolute(&self.style.clone_color())
+                .as_srgb_color(),
+        }
+    }
+    fn control_uses_dark_contrast(&self) -> bool {
+        if self.node.attr(local_name!("disabled")).is_some() {
+            return false;
+        }
+        let accent = self.control_accent();
+        let light = contrast_ratio(accent, Color::WHITE);
+        light < 3.0 && light < contrast_ratio(accent, Color::from_rgb8(59, 59, 59))
+    }
+
     pub(super) fn draw_disabled_control_background(
         &self,
         scene: &mut impl PaintScene,
@@ -97,16 +115,36 @@ impl ElementCx<'_, '_> {
             return;
         }
         if let Some(rect) = self.node.number_stepper_rect() {
-            let rect = kurbo::Rect::new(rect.x0 * self.scale, rect.y0 * self.scale, rect.x1 * self.scale, rect.y1 * self.scale);
-            scene.fill(Fill::NonZero, self.transform, Color::from_rgb8(239, 239, 239), None, &rect);
-            for (direction, y) in [(-1.0, rect.y0 + rect.height() / 4.0), (1.0, rect.y1 - rect.height() / 4.0)] {
+            let rect = kurbo::Rect::new(
+                rect.x0 * self.scale,
+                rect.y0 * self.scale,
+                rect.x1 * self.scale,
+                rect.y1 * self.scale,
+            );
+            scene.fill(
+                Fill::NonZero,
+                self.transform,
+                Color::from_rgb8(239, 239, 239),
+                None,
+                &rect,
+            );
+            for (direction, y) in [
+                (-1.0, rect.y0 + rect.height() / 4.0),
+                (1.0, rect.y1 - rect.height() / 4.0),
+            ] {
                 let x = rect.center().x;
                 let mut arrow = BezPath::new();
                 arrow.move_to((x - 4.0 * self.scale, y - direction * 1.5 * self.scale));
                 arrow.line_to((x + 4.0 * self.scale, y - direction * 1.5 * self.scale));
                 arrow.line_to((x, y + direction * 2.5 * self.scale));
                 arrow.close_path();
-                scene.fill(Fill::NonZero, self.transform, Color::from_rgb8(128, 128, 128), None, &arrow);
+                scene.fill(
+                    Fill::NonZero,
+                    self.transform,
+                    Color::from_rgb8(128, 128, 128),
+                    None,
+                    &arrow,
+                );
             }
             return;
         }
@@ -139,7 +177,7 @@ impl ElementCx<'_, '_> {
             let accent = if self.node.attr(local_name!("disabled")).is_some() {
                 Color::from_rgba8(170, 170, 170, 255)
             } else {
-                Color::from_rgba8(0, 117, 255, 255)
+                self.control_accent()
             };
             // The thumb keeps its shared 16px layout/hit box. Painting is
             // inset by half a CSS pixel; the track spans the control itself.
@@ -174,7 +212,11 @@ impl ElementCx<'_, '_> {
             scene.fill(
                 Fill::NonZero,
                 self.transform,
-                Color::from_rgb8(239, 239, 239),
+                if self.control_uses_dark_contrast() {
+                    Color::from_rgb8(59, 59, 59)
+                } else {
+                    Color::from_rgb8(239, 239, 239)
+                },
                 None,
                 &track.to_rounded_rect(rounding),
             );
@@ -222,7 +264,7 @@ impl ElementCx<'_, '_> {
         let accent_color = if disabled {
             Color::from_rgba8(209, 209, 209, 255)
         } else {
-            Color::from_rgba8(0, 117, 255, 255)
+            self.control_accent()
         };
 
         // Native controls paint inside the largest centered square. Borders
@@ -236,14 +278,13 @@ impl ElementCx<'_, '_> {
         let frame = Rect::from_center_size(center, (side, side));
         let radio = type_attr == Some("radio");
         let radius = if radio { side / 2.0 } else { 2.0 * self.scale };
+        let contrast = if self.control_uses_dark_contrast() {
+            Color::from_rgb8(59, 59, 59)
+        } else {
+            Color::WHITE
+        };
         let background = frame.inset(-0.2 * self.scale).to_rounded_rect(radius);
-        scene.fill(
-            Fill::NonZero,
-            self.transform,
-            Color::WHITE,
-            None,
-            &background,
-        );
+        scene.fill(Fill::NonZero, self.transform, contrast, None, &background);
         if radio || !checked {
             let border = if checked {
                 accent_color
@@ -283,7 +324,7 @@ impl ElementCx<'_, '_> {
             scene.stroke(
                 &Stroke::new(side * 0.16),
                 self.transform,
-                Color::WHITE,
+                contrast,
                 None,
                 &tick,
             );
@@ -308,9 +349,19 @@ impl super::BlitzDomPainter<'_, '_> {
         );
         let background = Color::from_rgb8(248, 248, 248);
         scene.fill(Fill::NonZero, transform, background, None, &bounds);
-        scene.stroke(&Stroke::new(self.scale), transform, Color::from_rgb8(128, 128, 128), None, &bounds);
+        scene.stroke(
+            &Stroke::new(self.scale),
+            transform,
+            Color::from_rgb8(128, 128, 128),
+            None,
+            &bounds,
+        );
         let x = popup.arrow_x * self.scale;
-        let y = if popup.above { rect[3] * self.scale } else { 0.0 };
+        let y = if popup.above {
+            rect[3] * self.scale
+        } else {
+            0.0
+        };
         let direction = if popup.above { 1.0 } else { -1.0 };
         let mut arrow = BezPath::new();
         arrow.move_to((x - 8.0 * self.scale, y));
@@ -318,10 +369,30 @@ impl super::BlitzDomPainter<'_, '_> {
         arrow.line_to((x + 8.0 * self.scale, y));
         arrow.close_path();
         scene.fill(Fill::NonZero, transform, background, None, &arrow);
-        let icon = kurbo::Rect::new(8.0 * self.scale, 8.0 * self.scale, 24.0 * self.scale, 24.0 * self.scale);
-        scene.fill(Fill::NonZero, transform, Color::from_rgb8(200, 80, 0), None, &icon);
-        for mark in [kurbo::Rect::new(15.0, 11.0, 17.0, 17.0), kurbo::Rect::new(15.0, 19.0, 17.0, 21.0)] {
-            scene.fill(Fill::NonZero, transform * Affine::scale(self.scale), Color::WHITE, None, &mark);
+        let icon = kurbo::Rect::new(
+            8.0 * self.scale,
+            8.0 * self.scale,
+            24.0 * self.scale,
+            24.0 * self.scale,
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            Color::from_rgb8(200, 80, 0),
+            None,
+            &icon,
+        );
+        for mark in [
+            kurbo::Rect::new(15.0, 11.0, 17.0, 17.0),
+            kurbo::Rect::new(15.0, 19.0, 17.0, 21.0),
+        ] {
+            scene.fill(
+                Fill::NonZero,
+                transform * Affine::scale(self.scale),
+                Color::WHITE,
+                None,
+                &mark,
+            );
         }
         scene.push_clip_layer(Fill::NonZero, transform, &bounds);
         let text_transform = transform * Affine::translate((32.0 * self.scale, 8.0 * self.scale));
@@ -332,12 +403,20 @@ impl super::BlitzDomPainter<'_, '_> {
                 };
                 let run = glyphs.run();
                 scene.draw_glyphs(
-                    run.font(), run.font_size(), true,
-                    bytemuck::cast_slice(run.normalized_coords()), Vec2::ZERO,
-                    Fill::NonZero, &anyrender::Paint::from(Color::BLACK), 1.0,
-                    text_transform, None,
+                    run.font(),
+                    run.font_size(),
+                    true,
+                    bytemuck::cast_slice(run.normalized_coords()),
+                    Vec2::ZERO,
+                    Fill::NonZero,
+                    &anyrender::Paint::from(Color::BLACK),
+                    1.0,
+                    text_transform,
+                    None,
                     glyphs.positioned_glyphs().map(|glyph| anyrender::Glyph {
-                        id: glyph.id as _, x: glyph.x, y: glyph.y,
+                        id: glyph.id as _,
+                        x: glyph.x,
+                        y: glyph.y,
                     }),
                 );
             }

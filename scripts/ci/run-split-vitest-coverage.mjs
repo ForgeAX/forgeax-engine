@@ -643,6 +643,12 @@ export function allProjectNames() {
     '@forgeax/hello-fxaa',
     '@forgeax/hello-physical-material',
     '@forgeax/hello-triangle',
+    // Registered Node app projects share the primary/typecheck and coverage
+    // selector. Keep the legacy eighty-project prefix on its original chunks.
+    '@forgeax/water-r4-buoyancy-foam',
+    '@forgeax/water-r8-entry-experiment',
+    '@forgeax/water-mesh-demo',
+    '@forgeax/water-r8-integration-acceptance',
     'unit',
   ];
 }
@@ -2037,12 +2043,15 @@ export function coverageGroupEnvironment(
   shaderWorkers,
   environment = process.env,
 ) {
+  const childEnvironment = { ...environment };
+  delete childEnvironment.FORGEAX_SHADER_COMPILE_DIAGNOSTICS;
   if (!group.sourceCompilation)
-    return { ...environment, FORGEAX_SHADER_COMPILE_WORKERS: String(shaderWorkers) };
+    return { ...childEnvironment, FORGEAX_SHADER_COMPILE_WORKERS: String(shaderWorkers) };
   if (!isExclusiveCoverageGroup(group))
     throw new Error('Source compilation requires an exclusive coverage owner');
   return {
-    ...environment,
+    ...childEnvironment,
+    FORGEAX_SHADER_COMPILE_DIAGNOSTICS: '1',
     NODE_OPTIONS: [
       environment.NODE_OPTIONS,
       `--max-old-space-size=${shaderProducerHeapSize(resources)}`,

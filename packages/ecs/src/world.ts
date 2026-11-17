@@ -108,6 +108,8 @@ import {
   type SystemSetNotRegisteredError,
   type TimeConfigInvalidError,
   type TimeDeltaInvalidError,
+  type TimeScaleInvalidError,
+  type TimeScaleLeaseReleasedError,
   type UniqueRefDoubleReleaseError,
   type UniqueRefReleasedError,
   type UniqueRefStaleError,
@@ -191,7 +193,14 @@ import {
   removeTableRow,
   type Table,
 } from './storage/table';
-import { createWorldClock, DEFAULT_TIME_POLICY, FixedTime, Time, type WorldOptions } from './time';
+import {
+  createWorldClock,
+  DEFAULT_TIME_POLICY,
+  FixedTime,
+  Time,
+  type TimeScaleLease,
+  type WorldOptions,
+} from './time';
 import { type UniqueRefStore, UniqueRefStore as UniqueRefStoreImpl } from './unique-ref-store';
 import { copyWorldArray } from './world-array-read';
 import {
@@ -232,6 +241,8 @@ import {
  * AI users: switch on `.code` for programmatic branching.
  */
 export type EcsError =
+  | TimeScaleInvalidError
+  | TimeScaleLeaseReleasedError
   | MemoryError
   | AssetError
   | ArrayRangeOutOfBoundsError
@@ -955,6 +966,11 @@ export class World {
    * world.update(); // run all systems + flush commands
    * ```
    */
+  /** Own a global speed contribution, sampled on the next update. */
+  acquireTimeScale(scale = 1): Result<TimeScaleLease, TimeScaleInvalidError> {
+    return this.clock.acquireTimeScale(scale);
+  }
+
   update(
     deltaSeconds = 0,
   ): Result<

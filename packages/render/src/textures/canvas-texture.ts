@@ -56,6 +56,7 @@ export class CanvasTexture {
 }
 
 export type MaterialTextureSource =
+  | import('../features/feature-texture-source').RenderFeatureTextureSource
   | RenderTargetTextureSource
   | CanvasTextureSource
   | ExternalTextureSource

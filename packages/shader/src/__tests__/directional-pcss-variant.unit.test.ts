@@ -53,6 +53,7 @@ describe('directional PCSS receiver variant', () => {
 
   it.each([
     { simple: false, lean: false, probe: false },
+    { simple: false, lean: true, probe: false },
     { simple: true, lean: true, probe: false },
     { simple: true, lean: false, probe: false },
     { simple: true, lean: false, probe: true },

@@ -192,6 +192,8 @@ export interface RenderTextureSourceToken {
   readonly owner: string;
   readonly id: number;
   readonly source: 'target' | 'canvas' | 'external' | 'feature';
+  /** Named generation-owned texture when source is feature. */
+  readonly name?: string;
 }
 
 export type MaterialTextureValue = {

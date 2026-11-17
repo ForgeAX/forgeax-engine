@@ -118,7 +118,7 @@ test('explicitly selected documents must exist and match source generation', () 
     writeApiReference(directory);
     assert.deepEqual(checkApiIndex(directory), []);
     writeFileSync(resolve(directory, 'api/render.md'), '# Stale index');
-    assert.match(checkApiIndex(directory).join('\n'), /api\/render\.md: missing or stale/);
+    assert.match(checkApiIndex(directory).join('\n'), /api[\\/]render\.md: missing or stale/);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

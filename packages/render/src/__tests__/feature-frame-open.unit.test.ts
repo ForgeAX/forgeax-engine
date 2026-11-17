@@ -114,3 +114,22 @@ it('joins a Feature to an open frame at most once and never after the frame is s
     host.dispose();
   }
 });
+
+it('prepares shared dependencies once while rejecting repeated public requests', async () => {
+  const { extracted, feature, input } = await fixture();
+  const host = createRenderFeatureHost([
+    { ...feature('consumer'), dependencies: ['producer'] },
+    feature('producer'),
+  ]).unwrap();
+  try {
+    const frame = host.beginFrame([input(1)]);
+    host.prepareFeature(frame, 'consumer');
+    host.prepareFeature(frame, 'producer');
+    expect(extracted).toEqual(['producer', 'consumer']);
+    expect(() => host.prepareFeature(frame, 'producer')).toThrow('at most once');
+    expect(host.abortFrame(host.finishFrame(frame))).toEqual([]);
+    expect(() => host.prepareFeature(frame, 'unknown')).toThrow('not open');
+  } finally {
+    host.dispose();
+  }
+});

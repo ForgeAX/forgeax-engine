@@ -28,6 +28,7 @@
     "dist",
     "src",
     "!src/**/__tests__/**",
+    "src/__tests__/contact-point-velocity.native.rs",
     "README.md",
     "LICENSE",
     "pkg",

@@ -63,6 +63,7 @@ export function featureCameraSelection(camera: CameraSnapshot | undefined) {
   return {
     selectedCamera: camera,
     selectedView: {
+      cullMask: camera.cullMask ?? 0xffffffff,
       position,
       right,
       up,

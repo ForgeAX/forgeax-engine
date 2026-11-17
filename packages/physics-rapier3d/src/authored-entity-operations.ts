@@ -15,6 +15,7 @@ import {
 } from '@forgeax/engine-physics';
 import type { RigidBodyType } from '@forgeax/engine-types';
 import type { ColliderDesc, Collider as RapierCollider } from '../pkg/rapier.mjs';
+import { validateBodyAxes } from './body-axis-locks.js';
 import { localPositionForWorld3D, translateAttachedColliders3D } from './body-pose.js';
 import { applyKccTuning } from './character-controller-tuning.js';
 import { requireCharacterBody } from './character-motion.js';
@@ -294,8 +295,9 @@ export function runSyncAuthoredEcsMutation(
   if (body === undefined) return descriptor;
   const RAPIER = rapierModule as RapierWorld;
   const committed = derivedBodies.get(entity);
-  const bodyType = rigidBodyTypeFromF32(descriptor.rigidBody.type);
-  if (committed?.sourceTransform !== undefined && bodyType !== 'static') {
+  const requestedBodyType = rigidBodyTypeFromF32(descriptor.rigidBody.type);
+  const bodyType = committed?.bodyType ?? requestedBodyType;
+  if (committed?.sourceTransform !== undefined && requestedBodyType !== 'static') {
     body.setBodyType(RAPIER.RigidBodyType.Fixed, true);
     sourceOwnedTypeRejections.push({
       entity: entity as EntityHandle,
@@ -312,9 +314,17 @@ export function runSyncAuthoredEcsMutation(
       rigidBody: { ...descriptor.rigidBody, type: RigidBodyTypeValue.static },
     };
   }
-  const solverIterations = validateAdditionalSolverIterations(
-    descriptor.rigidBody.additionalSolverIterations ?? 0,
-  );
+  const validateAuthoredDynamics = () => {
+    const sleepPolicy = entityMap.get(entity)?.canSleep;
+    if (sleepPolicy !== undefined && sleepPolicy !== (descriptor.rigidBody.canSleep ?? true))
+      throw new TypeError(
+        'RigidBody.canSleep is a creation policy; retire and respawn the body to change it.',
+      );
+    validateBodyAxes(descriptor.rigidBody.translationAxes ?? 7, 'translationAxes');
+    validateBodyAxes(descriptor.rigidBody.rotationAxes ?? 7, 'rotationAxes');
+    return validateAdditionalSolverIterations(descriptor.rigidBody.additionalSolverIterations ?? 0);
+  };
+  const solverIterations = validateAuthoredDynamics();
   const prepared =
     descriptor.collider === undefined
       ? undefined
@@ -375,6 +385,9 @@ export function runSyncAuthoredEcsMutation(
     }
   };
   synchronizeAuthoredBodyType();
+  body.setGravityScale(descriptor.rigidBody.gravityScale, true);
+  body.setLinearDamping(descriptor.rigidBody.linearDamping);
+  body.setAngularDamping(descriptor.rigidBody.angularDamping);
   body.setAdditionalSolverIterations(solverIterations);
   body.enableCcd(Boolean(descriptor.rigidBody.ccdEnabled));
   syncRotationLock(entity, body, Boolean(descriptor.rigidBody.lockRotation));
@@ -425,11 +438,16 @@ export function runEnsureBody(
     gravityScale: number;
     ccdEnabled: number;
     lockRotation?: boolean;
+    translationAxes?: number;
+    rotationAxes?: number;
+    canSleep?: boolean;
     additionalSolverIterations?: number;
   },
   collider: ColliderSnapshot | undefined,
 ): void {
   assertActive('ensureBody');
+  validateBodyAxes(rigidBody.translationAxes ?? 7, 'translationAxes');
+  validateBodyAxes(rigidBody.rotationAxes ?? 7, 'rotationAxes');
   const solverIterations = validateAdditionalSolverIterations(
     rigidBody.additionalSolverIterations ?? 0,
   );
@@ -439,53 +457,66 @@ export function runEnsureBody(
   const rbType = rigidBodyTypeFromF32(rigidBody.type);
   const prepared =
     collider === undefined ? undefined : authoredColliderDesc(transform, collider, rbType);
-  let body: RapierRigidBody;
-  switch (rbType) {
-    case 'dynamic': {
-      // biome-ignore lint/suspicious/noExplicitAny: Rapier RigidBodyDesc
-      const desc = (RAPIER as any).RigidBodyDesc.dynamic()
-        .setTranslation(transform.position.x, transform.position.y, transform.position.z)
-        .setRotation(transform.rotation)
-        .setLinearDamping(rigidBody.linearDamping)
-        .setAngularDamping(rigidBody.angularDamping)
-        .setGravityScale(rigidBody.gravityScale);
-      if (rigidBody.mass > 0) {
-        desc.setAdditionalMass(rigidBody.mass);
+  const createNativeBody = () => {
+    let body: RapierRigidBody;
+    switch (rbType) {
+      case 'dynamic': {
+        // biome-ignore lint/suspicious/noExplicitAny: Rapier RigidBodyDesc
+        const desc = (RAPIER as any).RigidBodyDesc.dynamic()
+          .setTranslation(transform.position.x, transform.position.y, transform.position.z)
+          .setRotation(transform.rotation)
+          .setLinearDamping(rigidBody.linearDamping)
+          .setAngularDamping(rigidBody.angularDamping)
+          .setGravityScale(rigidBody.gravityScale)
+          .setCanSleep(rigidBody.canSleep ?? true);
+        if (rigidBody.mass > 0) {
+          desc.setAdditionalMass(rigidBody.mass);
+        }
+        if (rigidBody.ccdEnabled) {
+          desc.setCcdEnabled(true);
+        }
+        // biome-ignore lint/suspicious/noExplicitAny: Rapier World.createRigidBody
+        body = (readRaw() as any).createRigidBody(desc);
+        break;
       }
-      if (rigidBody.ccdEnabled) {
-        desc.setCcdEnabled(true);
+      case 'static': {
+        // biome-ignore lint/suspicious/noExplicitAny: Rapier RigidBodyDesc
+        const desc = (RAPIER as any).RigidBodyDesc.fixed()
+          .setTranslation(transform.position.x, transform.position.y, transform.position.z)
+          .setRotation(transform.rotation)
+          .setCanSleep(rigidBody.canSleep ?? true);
+        // biome-ignore lint/suspicious/noExplicitAny: Rapier World.createRigidBody
+        body = (readRaw() as any).createRigidBody(desc);
+        break;
       }
-      // biome-ignore lint/suspicious/noExplicitAny: Rapier World.createRigidBody
-      body = (readRaw() as any).createRigidBody(desc);
-      break;
-    }
-    case 'static': {
-      // biome-ignore lint/suspicious/noExplicitAny: Rapier RigidBodyDesc
-      const desc = (RAPIER as any).RigidBodyDesc.fixed()
-        .setTranslation(transform.position.x, transform.position.y, transform.position.z)
-        .setRotation(transform.rotation);
-      // biome-ignore lint/suspicious/noExplicitAny: Rapier World.createRigidBody
-      body = (readRaw() as any).createRigidBody(desc);
-      break;
-    }
-    case 'kinematic': {
-      // biome-ignore lint/suspicious/noExplicitAny: Rapier RigidBodyDesc
-      const desc = (RAPIER as any).RigidBodyDesc.kinematicPositionBased()
-        .setTranslation(transform.position.x, transform.position.y, transform.position.z)
-        .setRotation(transform.rotation);
-      // CCD sweeps the collider along its per-step kinematic translation so a
-      // fast mover (player, bullet) reliably contacts dynamics instead of
-      // tunneling through them on discrete steps.
-      if (rigidBody.ccdEnabled) {
-        desc.setCcdEnabled(true);
+      case 'kinematic': {
+        // biome-ignore lint/suspicious/noExplicitAny: Rapier RigidBodyDesc
+        const desc = (RAPIER as any).RigidBodyDesc.kinematicPositionBased()
+          .setTranslation(transform.position.x, transform.position.y, transform.position.z)
+          .setRotation(transform.rotation)
+          .setCanSleep(rigidBody.canSleep ?? true);
+        // CCD sweeps the collider along its per-step kinematic translation so a
+        // fast mover (player, bullet) reliably contacts dynamics instead of
+        // tunneling through them on discrete steps.
+        if (rigidBody.ccdEnabled) {
+          desc.setCcdEnabled(true);
+        }
+        // biome-ignore lint/suspicious/noExplicitAny: Rapier World.createRigidBody
+        body = (readRaw() as any).createRigidBody(desc);
+        break;
       }
-      // biome-ignore lint/suspicious/noExplicitAny: Rapier World.createRigidBody
-      body = (readRaw() as any).createRigidBody(desc);
-      break;
+      // No default — rigidBodyTypeFromF32 ensures only 3 arms; TS guards completeness.
     }
-    // No default — rigidBodyTypeFromF32 ensures only 3 arms; TS guards completeness.
-  }
+    return body;
+  };
+  const body = createNativeBody();
   body.setAdditionalSolverIterations(solverIterations);
+  if (rbType !== 'dynamic') {
+    body.setGravityScale(rigidBody.gravityScale, true);
+    body.setLinearDamping(rigidBody.linearDamping);
+    body.setAngularDamping(rigidBody.angularDamping);
+  }
+  body.enableCcd(Boolean(rigidBody.ccdEnabled));
   body.userData = entity;
   registerBody(
     entity,
@@ -493,6 +524,8 @@ export function runEnsureBody(
     rbType === 'dynamic' ? Math.max(0, rigidBody.mass) : 0,
     collider?.density,
   );
+  const createdRecord = entityMap.get(entity);
+  if (createdRecord) createdRecord.canSleep = rigidBody.canSleep ?? true;
   syncRotationLock(entity, body, Boolean(rigidBody.lockRotation));
   if (prepared !== undefined && collider !== undefined) {
     try {
@@ -647,7 +680,8 @@ function reconcileExistingPhysicsEntity(
   const scaledCollider = samePhysicsValue(previous?.transform.scale, descriptor.transform.scale)
     ? undefined
     : descriptor.collider;
-  const bodyType = rigidBodyTypeFromF32(descriptor.rigidBody.type);
+  const bodyType =
+    derivedBodies.get(entity)?.bodyType ?? rigidBodyTypeFromF32(descriptor.rigidBody.type);
   if (bodyType === 'static') {
     if (derivedBodies.get(entity)?.sourceTransform === undefined)
       syncAuthoredPose(entity, descriptor.transform, scaledCollider, 'static');

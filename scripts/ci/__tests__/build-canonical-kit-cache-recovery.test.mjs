@@ -5,52 +5,94 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
 import { pnpmCommand } from '../../lib/pnpm-command.mjs';
+import { runBrowserCommand } from '../run-browser-gate-with-retry.mjs';
 
 const ENGINE_ROOT = resolve(import.meta.dirname, '../..', '..');
 
-function runPackageBuild(stage) {
+async function runPackageBuild(stage) {
   // Every build mode executes the same canonical-kit staging recovery. The
-  // package mode preserves that real path without compiling unrelated shaders.
+  // prepared workspace already has full build evidence; one real leaf exercises
+  // that path without repeating every package compilation.
   const [manager, ...prefix] = pnpmCommand();
-  return spawnSync(manager, [...prefix, 'build:packages'], {
-    cwd: ENGINE_ROOT,
-    env: {
-      ...process.env,
-      FORGEAX_SKIP_HARNESS_SYNC: '1',
-      FORGEAX_CANONICAL_KIT_OUTPUT: stage,
+  return runBrowserCommand(
+    [manager, ...prefix, 'build:packages', '--target=@forgeax/engine-types'],
+    {
+      cwd: ENGINE_ROOT,
+      env: {
+        ...process.env,
+        FORGEAX_SKIP_HARNESS_SYNC: '1',
+        FORGEAX_CANONICAL_KIT_OUTPUT: stage,
+        FORGEAX_BUILD_NO_TASK_CACHE: '0',
+      },
+      label: 'canonical kit cache recovery',
+      timeoutMs: 300000,
     },
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  );
 }
 
-test('engine build recovers canonical-kit staging after package cache hits', () => {
+test('unknown package targets fail before a package runner can start', () => {
+  const result = spawnSync(
+    process.execPath,
+    ['scripts/build.mjs', '--packages-only', '--target=unknown-cache-fixture'],
+    {
+      cwd: ENGINE_ROOT,
+      encoding: 'utf8',
+      timeout: 10000,
+      env: { ...process.env, FORGEAX_PACKAGE_BUILD_RUNNER: 'must-not-start' },
+    },
+  );
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Unknown build target: unknown-cache-fixture/);
+});
+
+test('Engine builds reject partial package selection', () => {
+  const result = spawnSync(
+    process.execPath,
+    ['scripts/build.mjs', '--engine', '--target=@forgeax/engine-types'],
+    {
+      cwd: ENGINE_ROOT,
+      encoding: 'utf8',
+      timeout: 10000,
+      env: { ...process.env, FORGEAX_PACKAGE_BUILD_RUNNER: 'must-not-start' },
+    },
+  );
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /package targets require --packages-only/);
+});
+
+function packageFacts() {
+  const facts = JSON.parse(
+    readFileSync(join(ENGINE_ROOT, 'node_modules/.cache/forgeax-build/package-facts.json'), 'utf8'),
+  ).packages;
+  assert.deepEqual(
+    facts.results.map((item) => item.name),
+    ['@forgeax/engine-types'],
+  );
+  return facts;
+}
+
+test('engine build recovers canonical-kit staging after package cache hits', async () => {
   const stage = mkdtempSync(join(tmpdir(), 'forgeax-canonical-kit-stage-'));
   try {
-    const first = runPackageBuild(stage);
-    assert.equal(
-      first.status,
-      0,
-      `first build failed\nstdout:\n${first.stdout}\nstderr:\n${first.stderr}`,
-    );
+    const first = await runPackageBuild(stage);
+    assert.equal(first.status, 0, `first build failed\n${first.output}`);
+    packageFacts();
     const source = readFileSync(join(stage, 'sky.hdr'));
     const meta = readFileSync(join(stage, 'sky.hdr.meta.json'));
     assert.ok(source.byteLength > 0);
     assert.ok(meta.byteLength > 0);
 
     unlinkSync(join(stage, 'sky.hdr'));
-    const second = runPackageBuild(stage);
-    assert.equal(
-      second.status,
-      0,
-      `recovery build failed\nstdout:\n${second.stdout}\nstderr:\n${second.stderr}`,
-    );
+    const second = await runPackageBuild(stage);
+    assert.equal(second.status, 0, `recovery build failed\n${second.output}`);
+    assert.equal(packageFacts().skipped, 1);
     assert.deepEqual(readFileSync(join(stage, 'sky.hdr')), source);
     assert.deepEqual(readFileSync(join(stage, 'sky.hdr.meta.json')), meta);
 
     writeFileSync(join(stage, 'sky.hdr'), Buffer.alloc(512 * 1024, 1));
-    const stale = runPackageBuild(stage);
-    assert.equal(stale.status, 0, stale.stderr);
+    const stale = await runPackageBuild(stage);
+    assert.equal(stale.status, 0, stale.output);
+    assert.equal(packageFacts().skipped, 1);
     assert.deepEqual(readFileSync(join(stage, 'sky.hdr')), source);
   } finally {
     rmSync(stage, { recursive: true, force: true });

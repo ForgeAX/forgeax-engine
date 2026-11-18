@@ -6,9 +6,9 @@ import {
   assertCoverageInputsUnchanged,
   ciRepairQualification,
   coverageMembers,
+  createGitHubHistoryClient,
   inheritedSource,
   repairDeclaration,
-  requestGitHub,
   runArtifacts,
   runJobs,
 } from './ci-repair-qualification.mjs';
@@ -115,8 +115,7 @@ async function restoreCoverageArtifacts(directory) {
   const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8'));
   const repository = process.env.GITHUB_REPOSITORY;
   const targetSha = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-  const api = (endpoint) =>
-    requestGitHub(endpoint, process.env.GH_TOKEN || process.env.GITHUB_TOKEN);
+  const api = createGitHubHistoryClient(process.env.GH_TOKEN || process.env.GITHUB_TOKEN);
   const rows = await collectRepairArtifactSources(
     {
       eventName: process.env.GITHUB_EVENT_NAME,

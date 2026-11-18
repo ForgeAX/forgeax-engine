@@ -23,6 +23,7 @@ import {
   shaderProducerHeapSize,
   shaderSourceCompileWorkers,
 } from '../lib/runner-resources.mjs';
+import { coreDeferredCoverageFiles } from './core-validation.mjs';
 import completedCoverage from './coverage-completed-child-seconds.json' with { type: 'json' };
 import { withLocalGpuLease } from './local-gpu-lease.mjs';
 import modelingTimings from './modeling-coverage-file-seconds.json' with { type: 'json' };
@@ -109,9 +110,18 @@ const devkitNativeUnitFileSets = [
   },
   {
     project: '@forgeax/engine-devkit',
-    // This fixture uses WebGPU directly, so its child owns GPU admission.
-    files: ['packages/devkit/src/__tests__/scene-bootstrap.e2e.test.ts'],
+    // Both fixtures own a real Browser and backend graph. Run 43863763618
+    // OOM-killed the live-look producer beside ordinary Modeling coverage.
+    // Reuse this exclusive child instead of adding a process. Its successful
+    // look file took 196 s in run 43847849110; reserve 300 s for added startup
+    // and instrumentation without calling the expanded child a measured sample.
+    files: [
+      'packages/devkit/src/__tests__/scene-bootstrap.e2e.test.ts',
+      'packages/devkit/src/__tests__/live-dev-look.e2e.test.ts',
+    ],
+    receiptLabel: 'packages/devkit/src/__tests__/scene-bootstrap.e2e.test.ts',
     weight: 75,
+    reservationWeight: 375,
     gpuLease: true,
   },
 ];
@@ -184,6 +194,7 @@ const isolatedCoverageFileSets = [
     receiptLabel: 'packages/modeling/src/__tests__/subd-crease.unit.test.ts',
     weight: 60,
     reservationWeight: 125,
+    packagesOnly: true,
   },
   {
     // The same run's three-build bootstrap cases reached 15.094/15.061 s.
@@ -192,6 +203,7 @@ const isolatedCoverageFileSets = [
     files: [
       'packages/devkit/src/__tests__/execution-bootstrap-cache.integration.test.ts',
       'packages/devkit/src/__tests__/asset-libraries.integration.test.ts',
+      'packages/devkit/src/__tests__/host-authoring-publication.integration.test.ts',
     ],
     // Runs 43693841655 and 43706568773 crossed the mounted Content oracle's unchanged 120 s
     // bound beside another instrumented child. Keep the whole file with the
@@ -199,8 +211,10 @@ const isolatedCoverageFileSets = [
     // bootstrap observations as evidence for this expanded child.
     receiptLabel: 'packages/devkit/src/__tests__/execution-bootstrap-cache.integration.test.ts',
     weight: 75,
-
-    reservationWeight: 195,
+    // Run 43802933357 crossed authoring publication's unchanged 15 s bound
+    // beside Modeling. Merge its two cases here instead of adding a process;
+    // reserve both case budgets without claiming another timing observation.
+    reservationWeight: 225,
   },
   {
     // Run 41208138238 crossed the unchanged cockpit budget beside another
@@ -637,6 +651,16 @@ function packageProjectNames() {
     .sort();
 }
 
+// These registered Node app projects cook ordinary CPU assets or exercise DOM
+// controls. They consume package outputs, not prepared Engine shader profiles.
+export const packageOnlyNodeAppProjects = Object.freeze([
+  '@forgeax/water-r4-buoyancy-foam',
+  '@forgeax/water-r8-entry-experiment',
+  '@forgeax/water-mesh-demo',
+  '@forgeax/water-r8-integration-acceptance',
+  'unit',
+]);
+
 export function allProjectNames() {
   return [
     ...packageProjectNames(),
@@ -645,11 +669,7 @@ export function allProjectNames() {
     '@forgeax/hello-triangle',
     // Registered Node app projects share the primary/typecheck and coverage
     // selector. Keep the legacy eighty-project prefix on its original chunks.
-    '@forgeax/water-r4-buoyancy-foam',
-    '@forgeax/water-r8-entry-experiment',
-    '@forgeax/water-mesh-demo',
-    '@forgeax/water-r8-integration-acceptance',
-    'unit',
+    ...packageOnlyNodeAppProjects,
   ];
 }
 
@@ -734,28 +754,44 @@ function coalesceCoverageBatches(groups) {
   return result;
 }
 
+function currentCoverageReplays(applicableRuns, currentCohort) {
+  if (!currentCohort) return applicableRuns;
+  if (currentCohort.validationProfile !== 'core') return [currentCohort];
+  // Daily cohorts share one execution profile. A fresh observation may change
+  // the preferred layout, but it cannot erase an earlier daily replay window.
+  return applicableRuns.filter(
+    (run) => run.validationProfile === 'core' && run.requiredProjects?.length,
+  );
+}
+
 // Coverage children are objects so a heavy test file can own its own child
 // while the rest of its project keeps the ordinary project group. `label` is
 // the stable identity the shard merge uses to prove every child ran once.
 export function coverageGroups(
   projects,
   size,
-  { isolateFiles = true, completed = completedCoverage } = {},
+  { isolateFiles = true, completed = completedCoverage, environment = process.env } = {},
 ) {
   // New project workloads must not rewrite a historical replay's file roster
   // or cold-source forecast. Their own qualified partial cohort applies only
   // when that required project is present in discovery.
-  const applicableRuns = completed.replayRuns?.filter((run) =>
-    (run.requiredProjects ?? []).every((project) => projects.includes(project)),
+  const applicableRuns = completed.replayRuns?.filter(
+    (run) =>
+      (run.requiredProjects ?? []).every((project) => projects.includes(project)) &&
+      (run.validationProfile === undefined ||
+        run.validationProfile ===
+          (environment.FORGEAX_CI_CORE_VALIDATION === '1' ? 'core' : 'full')),
   );
   // A changed cold-source partition has no completed historical child with
   // that identity. Use its qualified current roster cohort, keeping older
   // complete-source identities and replay windows on their original roster.
   const currentCohort = applicableRuns?.findLast((run) => run.requiredProjects?.length);
-  const replayRuns = currentCohort ? [currentCohort] : applicableRuns;
+  const replayRuns = currentCoverageReplays(applicableRuns, currentCohort);
   const unitNativeFileSets = isolateFiles ? [] : devkitNativeUnitFileSets;
+  const deferredCoverage = new Set(isolateFiles ? coreDeferredCoverageFiles(environment) : []);
   const fileSets = (isolateFiles ? isolatedCoverageFileSets : unitNativeFileSets)
     .filter(({ project }) => projects.includes(project))
+    .filter(({ files }) => !files.every((file) => deferredCoverage.has(file)))
     .flatMap((group) => {
       if (
         !projects.includes('@forgeax/engine-water') ||
@@ -769,13 +805,20 @@ export function coverageGroups(
       // not completed receipts. Every cold case still compiles the full roster.
       return [
         { ...group, files: group.files.slice(0, 3), weight: 650 },
-        { ...group, files: [group.files[3]], weight: 530 },
+        // These standalone compiler contracts own fresh source production.
+        { ...group, files: [group.files[3]], weight: 530, packagesOnly: true },
         // Run 43703295156 interrupted this full source case after 662 s.
         // Reserve its existing 900 s case budget without inventing a sample.
-        { ...group, files: [group.files[4]], weight: 530, reservationWeight: 900 },
+        {
+          ...group,
+          files: [group.files[4]],
+          weight: 530,
+          reservationWeight: 900,
+          packagesOnly: true,
+        },
       ];
     });
-  const excludes = fileSets.flatMap(({ files }) => files);
+  const excludes = [...fileSets.flatMap(({ files }) => files), ...deferredCoverage];
   const groups = projectGroups(projects, size).flatMap((group) => [
     {
       label: group.join(','),
@@ -783,6 +826,9 @@ export function coverageGroups(
       files: [],
       excludes,
       gpuLease: false,
+      ...(group.every((project) => packageOnlyNodeAppProjects.includes(project))
+        ? { packagesOnly: true }
+        : {}),
       weight: group.reduce((total, project) => total + projectWeight(project), 0),
     },
     ...fileSets
@@ -798,6 +844,7 @@ export function coverageGroups(
           batch,
           batchReceiptLabel,
           sourceCompilation = false,
+          packagesOnly = false,
         }) => ({
           label: `${project}:${receiptLabel ?? files.join(',')}`,
           ...(batch === undefined ? {} : { batch }),
@@ -809,6 +856,7 @@ export function coverageGroups(
           ...(reservationWeight === undefined ? {} : { reservationWeight }),
           gpuLease,
           sourceCompilation,
+          ...(packagesOnly ? { packagesOnly: true } : {}),
         }),
       ),
   ]);
@@ -2508,6 +2556,7 @@ async function main(options) {
             runChildImpl: (args) => {
               // Copy after local GPU admission so the child inherits its held lease.
               const env = coverageGroupEnvironment(group, resources, shaderWorkers);
+              if (options.coverage) env.NODE_DISABLE_COMPILE_CACHE = '1';
               return runBrowserCommandImpl
                 ? runBrowserCommandImpl([process.execPath, ...args], { label, env })
                 : runChild(args, {

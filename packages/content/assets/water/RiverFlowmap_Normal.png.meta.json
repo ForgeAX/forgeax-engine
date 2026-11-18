@@ -1,8 +1,0 @@
-{
-  "schemaVersion": "1.0.0",
-  "kind": "external-asset-package",
-  "importer": "image",
-  "source": "RiverFlowmap_Normal.png",
-  "importSettings": { "colorSpace": "linear", "mipmap": true, "compressionMode": "none" },
-  "subAssets": [{ "guid": "b8287107-941e-5335-a055-34d704d458dd", "sourceIndex": 0, "kind": "texture", "sourceKey": "texture" }]
-}

@@ -32,7 +32,7 @@ import {
 } from './host-adapter-facts.mjs';
 import { createFeatureEvidence } from './required-evidence.mjs';
 import { emitSmokeReceipt } from '../../../shared/scripts/smoke-receipt.mjs';
-import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
+import { processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 const temporalMode = process.argv.includes('--tsr') ? 'tsr' : (process.env.SMOKE_TEMPORAL_MODE ?? 'taa');
 if (!['taa', 'tsr'].includes(temporalMode)) throw new Error('SMOKE_TEMPORAL_MODE must be taa or tsr');
@@ -150,8 +150,8 @@ const nonBlackSampleCount = (samples) =>
   motionSampleNames.filter((name) => sampleEnergy(samples[name]) > 0.01).length;
 
 const shaderManifestPath = resolve(appRoot, 'dist', 'shaders', 'manifest.json');
-const shaderManifest = readShaderManifestText(shaderManifestPath);
-const shaderManifestUrl = `data:application/json,${encodeURIComponent(shaderManifest)}`;
+
+const shaderManifestUrl = processShaderManifestUrl(shaderManifestPath);
 
 // Dawn's adapter.info is intentionally small on several platforms. Native
 // performance admission therefore records an independent host GPU fact and

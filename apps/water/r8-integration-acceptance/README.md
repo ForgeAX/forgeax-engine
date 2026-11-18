@@ -1,4 +1,4 @@
-# Water R8: Coast Integration Acceptance
+# Water: Coast Integration
 
 Run `pnpm --filter @forgeax/water-r8-integration-acceptance dev` and open
 <http://127.0.0.1:8090/>. The server binds on `0.0.0.0:8090`. The saved Pack assembles an Ocean, offshore shallows,
@@ -61,14 +61,9 @@ explicit view-window far boundary. Its flat ring extends 4096 m beyond that
 window; the saved Ocean, query and collision bounds span 16384 m. This is a
 finite supported camera domain, with world-space wave phases across recenters.
 
-> [!IMPORTANT]
-> Implementation, completed hardware frames and paired reference equivalence
-> are separate gates. Paired visual parity, device-recovery stability and the
-> performance comparisons remain unverified. Q3's CPU mesh with type-default Water family
-> materials and Q4's saved flat appearance adapter are selectable through completed configuration
-> transactions; their paired reference comparisons remain unvalidated. R7 Bake/FFT
-> are available in the separate dedicated R7 application.
-> Current local simulation composition does not establish UE-R0 fidelity.
+Q3 selects CPU meshes with type-default Water materials. Q4 selects saved flat
+appearance materials. River baking and spectral FFT are available in the
+[dedicated simulation application](../r7-advanced-shallow-bake-fft/README.md).
 
 Q1 reduces authored mesh and WaterInfo parameters. Q2 disables SSR. R1 selects
 GPU mesh, and R5 selects the existing Worker buoyancy path. A change becomes
@@ -78,8 +73,8 @@ configuration; restoration failures pause the app and remain in the export.
 Q0 composes the opt-in `mode-projected-gravity/1` World OceanPatch's residual
 height/normal/foam with the existing water material. Its fixed world domain and
 native geometry source remain independent of Terrain depth and Body flow.
-The candidate uses a 256 m / 512-cell grid, 16 cubic depth slabs and a uniform
-16 m reference depth; it is not a resolved 1 m/s acceptance configuration.
+The scene uses a 256 m / 512-cell grid, 16 cubic depth slabs and a uniform
+16 m reference depth. Features smaller than those spatial cells are unresolved.
 Select circular or straight sailing through the normal ship controls.
 Contact and local-wave foam use the authored `COAST_FOAM_DECAY_PER_SECOND`
 value in `src/identity.ts`. At 1.8/s, unrefreshed coverage retains approximately
@@ -131,33 +126,18 @@ instead of increasing the same hull's buoyancy coefficient. Initial/reset height
 derives from the loaded hydrostatic equilibrium; contact probes follow that
 waterline. Native buoyancy still evolves the actual pose after initialization.
 The loaded recipe uses ascent damping 24,000 N/(m/s) and water angular drag 2/s.
-The previous archive checkpoint covered stationary behavior, sailing wake and
-foam decay. The current demo adds runtime quality selection, manual navigation
-and entry-response inspection. Those controls do not qualify the independent
-reference, device-recovery or performance gates below; completed-frame evidence
-must identify the selected workload and active configuration.
-Optional R6 is authored and disabled by default.
-Both retain their independent owner acceptance gates. The dispersive OceanPatch
-now admits completed local height/normal samples through the Water query owner
+Local fluid simulation is disabled by default. The dispersive OceanPatch
+admits completed local height/normal samples through the Water query owner
 to ordinary native pontoon forces, fenced by GPU, fixed-step time and Body
-generation. Four zero-wind/current browser controls establish synchronous
-iron-ball causality and feedback-off behavior with native force/integration
-reconstruction and no solid hull contact. Worker consistency, lifecycle and
-production hull-on stopped stability remain required acceptance gates. R6/R7 visual outputs and
-contact-foam history do not establish this live feedback path.
-V-06 remains a separately unverified optional WaterEditor/Terrain tool gate;
-it does not block the required UE-R0 runtime fidelity gates. Render inspection
-reports CPU mesh publication as unvalidated when that Runtime fact is absent,
+generation. Render inspection
+reports CPU mesh publication as unavailable when that Runtime fact is absent,
 so Q3 reports support only after its same-frame Runtime CPU WaterMesh publication
 matches the accepted Zone and Body output generations. Its transaction retains
 the complete WaterInfo compute/storage and optics gates. Q4 selects saved flat
 appearance materials and reports an adapter only after a ready Renderer draws
-one of their expected revisions in the completed frame. Neither mode establishes
-paired UE appearance evidence.
-The accepted coast material switches enable foam, so the report requires V-16.
+one of their expected revisions in the completed frame.
 `foamInputs` exports those material revisions and the submitted draw's static,
-dynamic, Baked and no-simulation FoamRT observations; this is not contact-foam
-appearance or UE comparison evidence.
+dynamic, Baked and no-simulation FoamRT observations.
 
 `window.__waterR8.readState()` exports capability decisions, logical resource
 estimates, source/output generations, queries, fixed/CPU/render timelines and
@@ -168,7 +148,7 @@ previous, retiring and all-generation peak bytes and last-use fences remain
 unknown; it does not measure physical VRAM. The Ocean height fault replaces a
 complete pre-cooked variant through the accepted Asset publication.
 
-The opt-in profile API is separate from `readState()` and its version-1 schema.
+The opt-in profile API is separate from `readState()` and its version-2 schema.
 `window.__waterR8.startProfileCapture()` defaults to the bounded 900-frame
 `normal` preset; pass `'nested'` for the 180-frame nested attribution preset,
 or pass a `{ preset, frameLimit, eventLimit, detail }` object to use bounded
@@ -200,7 +180,7 @@ Use the existing RHI capture/upload capability for a failing frame and retain
 its tape, digest, live screenshot and native receipt. Inspect unseeded resources
 before interpreting replay pixels. Raw evidence belongs outside the checkout.
 The separate Harness QA entry
-records the visual differences, driver failures, hardware and unverified gates.
+records hardware observations and captured frames.
 
 Relevant owners are [Water](../../../packages/water/README.md),
 [Runtime](../../../packages/runtime/README.md),

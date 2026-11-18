@@ -1,5 +1,13 @@
-import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from 'node:fs';
+import { dirname, join, relative, resolve } from 'node:path';
 import { hashFiles, hashText, walkFiles } from '../build-task-cache.mjs';
 
 // One input identity for local and transferred shader outputs. Generated release
@@ -117,4 +125,33 @@ export function reusableSharedShader(root, sharedManifestPath, inputFingerprint,
       `cannot read shared shader input ${sharedManifestPath}: ${error.code ?? error.name}: ${error.message}`,
     );
   }
+}
+
+// Project verified producer bytes with an ordinary path-bound receipt. The
+// consumer revalidates compiler/source/profile and payload digest as usual.
+export function projectSharedShader(root, sourceManifest, destination, inputFingerprint) {
+  let reason;
+  const source = reusableSharedShader(root, sourceManifest, inputFingerprint, (value) => {
+    reason = value;
+  });
+  if (source === null) throw new Error(`shared shader projection rejected: ${reason}`);
+  const shaderPath = resolve(destination, 'shaders/manifest.json');
+  const payloadPath = relative(root, shaderPath).replaceAll('\\', '/');
+  if (payloadPath.startsWith('..') || resolve(root, payloadPath) !== shaderPath)
+    throw new Error('shared shader projection must remain inside the repository');
+  mkdirSync(dirname(shaderPath), { recursive: true });
+  cpSync(source, shaderPath);
+  writeFileSync(
+    resolve(destination, 'manifest.json'),
+    `${JSON.stringify(
+      {
+        schemaVersion: 1,
+        producer: 'shared-app-inputs',
+        shaderBuild: sharedShaderReceipt(root, shaderPath, inputFingerprint),
+        payload: { engineShaderManifest: payloadPath },
+      },
+      null,
+      2,
+    )}\n`,
+  );
 }

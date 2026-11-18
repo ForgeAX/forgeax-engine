@@ -591,7 +591,7 @@ describe('water R0 meters and Pack lifecycle', () => {
       ...body(),
       spline: {
         ...body().spline,
-        interpolationVersion: 'ue-water-spline/1',
+        interpolationVersion: 'water-spline/2',
         points: body().spline.points.map((point) => ({
           ...point,
           rotationQuat: [0, 0, 0, 1] as const,
@@ -633,7 +633,7 @@ describe('water R0 meters and Pack lifecycle', () => {
     (requireWaterValue(mutableBody.spline.points[0]).rotationQuat as number[])[0] = 1;
     (requireWaterValue(mutableBody.spline.points[0]).arriveRotationQuat as number[])[0] = 1;
     (requireWaterValue(mutableBody.spline.points[0]).leaveRotationQuat as number[])[0] = 1;
-    expect(mounted.asset.spline.interpolationVersion).toBe('ue-water-spline/1');
+    expect(mounted.asset.spline.interpolationVersion).toBe('water-spline/2');
     expect(mounted.asset.spline.points[0]?.rotationQuat).toEqual([0, 0, 0, 1]);
     expect(mounted.asset.spline.points[0]?.arriveRotationQuat).toEqual([0, 0, 0, 1]);
     expect(mounted.asset.spline.points[0]?.leaveRotationQuat).toEqual([0, 0, 0, 1]);

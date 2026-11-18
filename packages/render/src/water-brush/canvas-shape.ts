@@ -5,9 +5,9 @@ import { requireWaterValue } from '@forgeax/engine-water/internal';
 import { waterBrushWorldPointToTerrainLocal } from './height-codec.js';
 
 export type WaterBrushCanvasTriangle = Readonly<{
-  /** UE Canvas vertex color order: A red, C green, B blue. */
+  /** Canvas vertex color order: A red, C green, B blue. */
   vertices: readonly [WaterSplineSourcePoint, WaterSplineSourcePoint, WaterSplineSourcePoint];
-  /** Terrain-local XZ position converted to Canvas UV with UE's +0.5 offset. */
+  /** Terrain-local XZ position converted to Canvas UV with a +0.5 offset. */
   canvasLocalXZ: readonly [
     readonly [number, number],
     readonly [number, number],
@@ -24,7 +24,7 @@ function worldPosition(
   return [requireWaterValue(world[0]), requireWaterValue(world[1]), requireWaterValue(world[2])];
 }
 
-/** Build UE DrawCanvasShape triangles and their Landscape-local Canvas positions. */
+/** Build spline fan triangles and their Terrain-local Canvas positions. */
 export function buildWaterBrushCanvasShapeTriangles(
   spline: WaterBrushIslandActor['spline'],
   worldMatrixM: readonly number[],

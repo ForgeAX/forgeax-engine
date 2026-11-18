@@ -22,7 +22,7 @@ import { readShaderManifestPublication } from '@forgeax/engine-shader';
 
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
-import { readShaderManifestText } from '../../../scripts/lib/shader-manifest.mjs';
+import { readShaderManifestText, processShaderManifestUrl } from '../../../scripts/lib/shader-manifest.mjs';
 
 const SMOKE_MIN_FRAMES = 60;
 const SMOKE_PIXEL_THRESHOLD = 0.05;
@@ -196,7 +196,7 @@ const { Transform } = await import('@forgeax/engine-scene');
 const { Camera, DirectionalLight, MeshFilter, MeshRenderer } = await import('@forgeax/engine-render');
 
 const { createPublicationAssets } = await import('@forgeax/engine-runtime/internal/renderer-host');
-const assets = await createPublicationAssets({shaderManifestUrl: `data:application/json,${encodeURIComponent(readShaderManifestText(new URL('../dist/shaders/manifest.json', import.meta.url)))}`});
+const assets = await createPublicationAssets({shaderManifestUrl: processShaderManifestUrl(new URL('../dist/shaders/manifest.json', import.meta.url))});
 const world = new World({assets});
 const DEMO_MATERIAL_SHADER_PATH = 'hello-multi-uv::multi-uv-demo';
 const baseColorTextureHandle = assets.create(solidTexture([255, 128, 64, 255])).unwrap();
@@ -248,7 +248,7 @@ let MANIFEST_URL;
 let manifestParsed;
 try {
   const manifestRaw = readShaderManifestText(MANIFEST_PATH);
-  MANIFEST_URL = `data:application/json,${encodeURIComponent(manifestRaw)}`;
+  MANIFEST_URL = processShaderManifestUrl(MANIFEST_PATH);
   manifestParsed = await readShaderManifestPublication(JSON.parse(manifestRaw));
 } catch {
   console.error('[falsify-smoke] FAIL - manifest.json missing or invalid. Run: pnpm --filter @forgeax/hello-multi-uv build first');

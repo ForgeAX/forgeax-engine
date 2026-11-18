@@ -779,6 +779,7 @@ function addDeferredSsr(
   const history = context.ssrHistory;
   const fallback = targets.reflection.fallback;
   const spatial = addSsrSpatialPasses(context.graph, {
+    quality: topology.standardProfile?.quality?.ssr,
     admission: ssr,
     execution: topology.lane.compute ? 'compute' : 'fragment',
     width: copySize.width,

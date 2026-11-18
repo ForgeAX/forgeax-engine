@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setupGpuShim } from '../../triangle/scripts/smoke-helpers.mjs';
-import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
+import { openShaderManifestPublication } from '../../../../scripts/lib/shader-manifest.mjs';
 
 export const GPU_FRAME_SAMPLES_SCHEMA = 'forgeax::hello-lod-occlusion::gpu-frame-samples::v5';
 export const WARMUP_SUBMITS = 32;
@@ -691,7 +691,7 @@ function parseGuid(AssetGuid, text) {
   return parsed.value;
 }
 
-async function createBenchmarkFixture(exactBuild) {
+async function createBenchmarkFixture(exactBuild, shaderManifestUrl) {
   const appRoot = resolve(here, '..');
   const distRoot = resolve(appRoot, 'dist');
   const packIndexPath = resolve(distRoot, 'pack-index.json');
@@ -720,7 +720,6 @@ async function createBenchmarkFixture(exactBuild) {
     ? await import('@forgeax/engine-profiler')
     : undefined;
   const { scenePlugin, Transform } = await import('@forgeax/engine-scene');
-  const manifest = readShaderManifestText(resolve(distRoot, 'shaders/manifest.json'));
   const profiler = profileApi?.createProfiler();
   const rendererOptions = {
     // Each isolated Renderer snapshots its options at construction. Keep every
@@ -755,7 +754,7 @@ async function createBenchmarkFixture(exactBuild) {
     const constructed = await constructRuntimeRendererHost(canvas,
     rendererOptions,
     {
-    shaderManifestUrl: `data:application/json,${encodeURIComponent(manifest)}`,
+    shaderManifestUrl,
     build: exactBuild,
     });
   if (!constructed.ok) throw new Error(`renderer construction failed: ${constructed.error.code}`);
@@ -1594,6 +1593,15 @@ export function writeUnavailableEvidence(
 }
 
 async function producePerformanceEvidence(exactBuild) {
+  const publication = openShaderManifestPublication(resolve(here, '..', 'dist/shaders/manifest.json'));
+  try {
+    return await producePerformanceEvidenceFromManifest(exactBuild, publication.url);
+  } finally {
+    publication.dispose();
+  }
+}
+
+async function producePerformanceEvidenceFromManifest(exactBuild, shaderManifestUrl) {
   const producerStartedAt = performance.now();
   logProducerPhase('producer', 'start', {
     candidates: BENCHMARK_CANDIDATES,
@@ -1602,7 +1610,7 @@ async function producePerformanceEvidence(exactBuild) {
     warmupSubmits: WARMUP_SUBMITS,
     retainedSamplesPerOrder: RETAINED_SAMPLES_PER_ORDER,
   });
-  const fixture = await createBenchmarkFixture(exactBuild);
+  const fixture = await createBenchmarkFixture(exactBuild, shaderManifestUrl);
   // Calibration and structural falsifiers do not consume GPU timestamps. Keep
   // their renderer submissions on the lightweight path; capture is enabled
   // only for retained CPU observations inside captureCondition().

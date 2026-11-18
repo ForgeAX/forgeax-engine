@@ -42,7 +42,7 @@ import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.m
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { readShaderManifestText } from '../../../../../scripts/lib/shader-manifest.mjs';
+import { processShaderManifestUrl } from '../../../../../scripts/lib/shader-manifest.mjs';
 
 const WIDTH = 800;
 const HEIGHT = 600;
@@ -151,7 +151,7 @@ const { Transform } = await import('@forgeax/engine-scene');
 const { createPrimitiveMesh } = await import('@forgeax/engine-geometry');
 
 const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const MANIFEST_URL = `data:application/json,${encodeURIComponent(readShaderManifestText(MANIFEST_PATH))}`;
+const MANIFEST_URL = processShaderManifestUrl(MANIFEST_PATH);
 
 let renderer;
 try {

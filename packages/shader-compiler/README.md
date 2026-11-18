@@ -55,6 +55,18 @@ retains its authored maps. Custom Surface and shadow overrides are preserved.
 The selected schema derives alpha-clipping availability for Standard and temporal
 programs; absent cutoffs become zero without a runtime early-return branch.
 
+The scoped program compiler supplies its portability normalizer before Naga's
+checked WGSL writeback. This preserves one normalization owner while letting the
+native parse/validate phase consume the exact IR already verified against the
+consumer bytes. Changed inputs retain fresh parsing; every render-entry,
+reflection and buffer-ABI check remains.
+
+Compiler snapshots copy caller containers and deeply freeze their owned output.
+Later snapshots can share descendants certified by this same owner; an arbitrary
+caller-frozen object is still copied. This removes repeated reflection/binding
+copies during result admission while retaining detached caller inputs and the
+existing per-stage byte budgets.
+
 ## Sampled-texture capability publications
 
 Single-layer medium Surface textures occupy the schema-derived author region. Cook relocates the Engine-owned IBL, paired color/depth and planar-reflection declarations after that region in both direct and scene-index programs, matching Render's material layout. Author textures do not require custom GPU bindings.

@@ -41,6 +41,27 @@ const reports = [
   })),
 ];
 
+test('SDK source guards run after the locked workspace dependencies are installed', () => {
+  const workflow = parse(
+    readFileSync(
+      new URL('../../../.github/workflows/sdk-pr-preflight.yml', import.meta.url),
+      'utf8',
+    ),
+  );
+  const steps = workflow.jobs['build-sdk'].steps;
+  const install = steps.findIndex((step) => step.name === 'Install dependencies');
+  const verify = steps.findIndex((step) => step.name === 'Verify source dependency export');
+  assert.ok(
+    install >= 0 && install < verify,
+    'source guards import locked tools such as yaml; a clean seed must install them first',
+  );
+  assert.equal(
+    steps.filter((step) => step.run?.includes('prepare-pnpm-workspace.mjs --install')).length,
+    2,
+    'retain one initial install and the existing post-producer index recovery',
+  );
+});
+
 test('the required SDK aggregate rejects missing, duplicate, failed or mismatched consumers', () => {
   assert.equal(aggregateSdkConsumers(reports, head, version).ok, true);
   assert.throws(() => aggregateSdkConsumers(reports.slice(1), head, version));
@@ -432,6 +453,14 @@ test('archive group selection is explicit while release qualification retains th
   const source = readFileSync(resolve(import.meta.dirname, '../verify-sdk.mjs'), 'utf8');
   assert.match(source, /groupIndex < 0 \? 'all'/);
   assert.match(source, /sdk-verify-unknown-group/);
+  assert.match(source, /profileIndex < 0 \? 'full'/);
+  assert.match(source, /sdk-verify-unknown-profile/);
+  const workflow = readFileSync(
+    resolve(import.meta.dirname, '../../../.github/workflows/sdk-pr-preflight.yml'),
+    'utf8',
+  );
+  assert.match(workflow, /--group.*matrix.group.*--profile core/);
+  assert.match(source, /deferredValidation:\s*profile === 'core'/);
   assert.match(
     source,
     /if\s*\(selected\('source'\)\)\s*\{\s*await sdkStage\('buildSourceSnapshot'/,
@@ -470,15 +499,20 @@ test('public source preparation completes before consumers start and is absent f
   const execute = new (Object.getPrototypeOf(async () => {}).constructor)(
     'context',
     `const { selected, sdkStage, sourceBuildPnpm, consumerReady, verifySdkSourceEdit,
-      sdkRoot, sourceRoot, unpackRoot, sourceEnv, resolve, execFileAsync, process } = context;
+      sdkRoot, sourceRoot, unpackRoot, sourceEnv, resolve, execFileAsync, process, profile } = context;
       ${body}\nconsumerReady();`,
   );
-  for (const group of ['source', 'project']) {
+  for (const [group, profile] of [
+    ['source', 'full'],
+    ['source', 'core'],
+    ['project', 'core'],
+  ]) {
     const commands = [];
     const stages = [];
     let ready = false;
     let release;
     const running = execute({
+      profile,
       selected: (candidate) => candidate === group,
       sdkStage: (label, work) => {
         stages.push(label);
@@ -517,7 +551,7 @@ test('public source preparation completes before consumers start and is absent f
             ['source-edit'],
             ['scripts/clean-build-outputs.mjs'],
             ['build:engine'],
-            ['build:tools'],
+            ...(profile === 'full' ? [['build:tools']] : []),
           ]
         : [],
     );
@@ -531,7 +565,7 @@ test('public source preparation completes before consumers start and is absent f
 test('public source View consumes the independently rebuilt source manifest', async () => {
   const source = readFileSync(resolve(import.meta.dirname, '../verify-sdk.mjs'), 'utf8');
   const start = source.indexOf("await sdkGpuStage('verifyPublicSourceViewTool'");
-  const body = source.slice(start, source.indexOf("\n}\n\nif (selected('project'))", start));
+  const body = source.slice(start, source.indexOf("\n  }\n}\n\nif (selected('project'))", start));
   const execute = new (Object.getPrototypeOf(async () => {}).constructor)(
     'context',
     `const { sdkGpuStage, execFileAsync, process, resolve, dirname, sourceRoot,

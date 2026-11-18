@@ -17,7 +17,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { readShaderManifestText } from '../lib/shader-manifest.mjs';
+import { processShaderManifestUrl } from '../lib/shader-manifest.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -393,7 +393,7 @@ async function compareDemo(demo) {
   const manifestPath = resolve(ENGINE_ROOT, demo.manifestPath);
   let MANIFEST_URL;
   try {
-    MANIFEST_URL = `data:application/json,${encodeURIComponent(readShaderManifestText(manifestPath))}`;
+    MANIFEST_URL = processShaderManifestUrl(manifestPath);
   } catch (err) {
     globalThis.navigator.gpu.requestAdapter = originalAmbientRequestAdapter;
     console.error(`  SKIP - manifest not found at ${manifestPath}: ${err.message}`);

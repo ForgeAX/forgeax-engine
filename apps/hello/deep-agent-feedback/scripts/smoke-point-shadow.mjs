@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { ensureShaderManifestProfile } from '../../../../scripts/lib/shader-manifest.mjs';
 // Point-shadow recipe smoke.
 //
 // This is intentionally a consumer-shaped check, not only a cube-array
@@ -206,6 +207,7 @@ try {
     removeEventListener() {},
   };
 
+  await ensureShaderManifestProfile('point-ssao');
   const [app, ecs, render, scene, runtime, shader, geometry] = await Promise.all([
     import('@forgeax/engine-app'),
     import('@forgeax/engine-ecs'),

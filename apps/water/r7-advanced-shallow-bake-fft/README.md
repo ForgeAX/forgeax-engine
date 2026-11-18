@@ -1,4 +1,4 @@
-# Water R7: Shallow, River Bake And FFT
+# Water: Shallow, River Bake And FFT
 
 Run `pnpm dev` and open <http://127.0.0.1:5387/>. The Chinese demo uses ordinary
 Pack assets and the standard single-layer-water depth/reflection path. The
@@ -32,19 +32,15 @@ from the intentionally kinematic rotation, overlap and source-selection fixtures
 This project explicitly selects `deltaLimit: { kind: 'application-cap',
 maximumDeltaSeconds: 1 / 60 }`, live River simulation and nonzero Foam emission.
 Enabled rigid recipes explicitly author `overlapThicknessCells: 1`; this is
-the Demo's coefficient for full vertical overlap size, not a recovered UE
-effective default. The disabled rigid branch has no thickness parameter.
-These are authored application settings, distinct from `source-default` and the
-audited source parameter defaults. Foam advection, emission and dissipation use
+the coefficient for full vertical overlap size. The disabled rigid branch has
+no thickness parameter. Foam advection, emission and dissipation use
 frame delta; solver substeps retain their recipe's independent timestep path.
 The current Foam contract follows the source's disabled noise branch.
-`normalFoamRange: [0,1]` is also authored explicitly; it is not a recovered UE
-ClampFloat default. Prep Debug writers and the independent River Foam debug
+`normalFoamRange: [0,1]` is authored explicitly. Prep Debug writers and the independent River Foam debug
 writer are disabled in these three appearance scenes.
 `startFadeSeconds: 2` is explicitly authored. WaterBody applies its
 origin-relative smoothstep before each depth substep and retires 15 seconds
-after water contact ends. The value is not a recovered UE caller default.
-The effective UE source timestep cap remains unknown. Selecting `source-default`
+after water contact ends. Selecting `source-default`
 fails recipe creation with `water-advanced-source-parameter-unavailable`; it does
 not simulate a guessed zero cap or indicate a device capability failure.
 
@@ -53,12 +49,6 @@ control selects the separately authored `recipe/ocean-grid` through the World
 owner, whose flat grid extent is `[16,16] m` independently of the FFT normal
 domain. It emits GPU buffers without attaching a visible Scene mesh or applying
 FFT displacement. Changing recipes retires the previous World patch.
-
-> [!IMPORTANT]
-> Engine implementation, fresh local hardware acceptance and paired UE runtime,
-> numeric and pixel equivalence are separate. Local hardware acceptance is
-> recorded in external QA evidence; actual mesh-destruction Tape evidence remains
-> unverified. This project does not establish paired UE equivalence.
 
 ## Visual Acceptance
 
@@ -91,9 +81,6 @@ Acceptance is registered before the first demo run:
   `(N+1)^2` vertices, boundary positions/UVs and the first/last cell triangles.
   Disable/rebuild the patch and change device generation to inspect retention
   and retirement through the existing RHI Debug buffer path.
-- Evidence distinguishes ForgeAX implementation/runtime validation from paired
-  UE visual and numerical equivalence. The demo's authored native RGBA8 noise
-  is identified independently from UE's proprietary texture.
 
 Use `window.__waterR7` for state, operation receipts, query samples and completed
 stage readbacks. Capture Tape through the existing RHI debug plugin. Store raw

@@ -20,6 +20,7 @@ export const DAWN_ISOLATED_GROUPS = [
   },
   {
     id: 'renderer',
+    nativeProcessSlots: 1,
     files: [
       'packages/runtime/src/__tests__/point-light-shadow.dawn.test.ts',
       'packages/runtime/src/__tests__/dawn/instances-uniform-fallback.dawn.test.ts',
@@ -27,12 +28,14 @@ export const DAWN_ISOLATED_GROUPS = [
   },
   {
     id: 'feature-depth',
+    nativeProcessSlots: 1,
     files: ['packages/runtime/src/__tests__/feature-depth-material.dawn.test.ts'],
   },
   {
     // The complete S6 capture journey owns a fresh native parent process;
     // keep both case tests and their original budgets outside ordinary backfill.
     id: 'modeling-s6',
+    nativeProcessSlots: 1,
     // Run 429298 measured a 443-second full-profile capture. Reserve ten
     // minutes so it still starts before ordinary backfill with time for drift.
     placementReserveSeconds: 600,
@@ -40,6 +43,7 @@ export const DAWN_ISOLATED_GROUPS = [
   },
   {
     id: 'modeling-show',
+    nativeProcessSlots: 1,
     // Run 41597394498 reached this full capture journey at minute 36. The
     // retained complete-owner maximum is 187 seconds; preserve ten minutes of
     // startup/capture headroom without starving ordinary work on other lanes.
@@ -51,20 +55,34 @@ export const DAWN_ISOLATED_GROUPS = [
   },
   {
     id: 'surface-pipelines',
+    nativeProcessSlots: 1,
     // Run 42325043736 completed ordinary-4 after 2,058 seconds, leaving
     // this complete owner too little of the unchanged 40-minute step.
-    // Reserve ten minutes and start it before ordinary backfill; case,
-    // frame and step budgets remain unchanged.
-    placementReserveSeconds: 600,
+    // Reserve the existing complete-owner maximum plus both newly serial
+    // planar files before ordinary backfill; case/frame/step bounds remain.
+    placementReserveSeconds: 840,
     files: [
       'packages/runtime/src/__tests__/surface-standard-pipeline.dawn.test.ts',
       'packages/runtime/src/__tests__/standard-deferred-parity.dawn.test.ts',
       'packages/runtime/src/__tests__/clipping-planes.dawn.test.ts',
+      // Full planar capture/replay crossed its unchanged 180-second case
+      // bound in run 43943068121's two-worker ordinary lane. Reuse this
+      // serial Surface owner for both complete planar carriers.
+      'packages/runtime/src/__tests__/planar-reflection.dawn.test.ts',
+      'packages/runtime/src/__tests__/standard-planar-reflection.dawn.test.ts',
     ],
   },
-  { id: 'vfx-depth', files: [VFX_DEPTH_DAWN_TEST_FILE] },
+  {
+    id: 'vfx-depth',
+    nativeProcessSlots: 1,
+    // Runs 44113035424 and 44136739089 interrupted this complete owner.
+    // Retain its historical maximum and ten-minute admission headroom.
+    placementReserveSeconds: 600,
+    files: [VFX_DEPTH_DAWN_TEST_FILE],
+  },
   {
     id: 'nested-discard',
+    nativeProcessSlots: 1,
     // Complete multi-scene pixel coverage needs an independent native lifetime.
     files: ['packages/runtime/src/__tests__/dawn/nested-discard-pixels.dawn.test.ts'],
   },
@@ -72,10 +90,12 @@ export const DAWN_ISOLATED_GROUPS = [
     // This capture/replay owner lost its native worker inside ordinary-4.
     // Keep the complete source-texture proof in one fresh native process.
     id: 'rect-source',
+    nativeProcessSlots: 1,
     files: ['packages/runtime/src/__tests__/rect-light-source-texture.dawn.test.ts'],
   },
   {
     id: 'transmission',
+    nativeProcessSlots: 1,
     // Run 43718751716 reached this complete owner after minute 34 and lost
     // its final partition at the unchanged 40-minute gate. Start its retained
     // complete-owner forecast before ordinary backfill; no deadline changes.
@@ -84,22 +104,29 @@ export const DAWN_ISOLATED_GROUPS = [
   },
   ...DAWN_HEAVY_TEST_PARTITIONS.map((files, index) => ({
     id: `heavy-${index + 1}`,
+    nativeProcessSlots: 1,
     // Recovery sequences retain their module state within one test.
     files,
     isolate: false,
   })),
   {
     id: 'shadow-fields',
+    nativeProcessSlots: 1,
     files: ['packages/runtime/src/__tests__/shadow-fields-observable.dawn.test.ts'],
   },
   {
     id: 'specular-aa',
+    nativeProcessSlots: 1,
     files: ['packages/runtime/src/__tests__/specular-aa.dawn.test.ts'],
   },
   // Global-illumination owners grow together; complete file groups keep them
   // off the discovered ordinary shards and leave room for later GI files.
   {
     id: 'gi-1',
+    nativeProcessSlots: 1,
+    // Run 44152394166 stopped after its first file. Reserve the larger
+    // complete historical owner, never the partial file duration.
+    placementReserveSeconds: 241.472,
     files: [
       'packages/runtime/src/__tests__/renderer-probe-global.dawn.test.ts',
       'packages/render/src/__tests__/raytracing/raster-source.dawn.test.ts',
@@ -107,6 +134,7 @@ export const DAWN_ISOLATED_GROUPS = [
   },
   {
     id: 'gi-2',
+    nativeProcessSlots: 1,
     files: [
       'packages/runtime/src/__tests__/renderer-reflections.dawn.test.ts',
       'packages/runtime/src/__tests__/renderer-probe-placement.dawn.test.ts',
@@ -117,6 +145,7 @@ export const DAWN_ISOLATED_GROUPS = [
   },
   {
     id: 'gi-3',
+    nativeProcessSlots: 1,
     files: [
       'packages/runtime/src/__tests__/renderer-irradiance-field-edit.dawn.test.ts',
       'packages/runtime/src/__tests__/renderer-gi-coverage.dawn.test.ts',
@@ -124,6 +153,7 @@ export const DAWN_ISOLATED_GROUPS = [
   },
   {
     id: 'gi-4',
+    nativeProcessSlots: 1,
     files: [
       'packages/runtime/src/__tests__/renderer-irradiance-field-add.dawn.test.ts',
       'packages/runtime/src/__tests__/renderer-irradiance-field-clipmap.dawn.test.ts',
@@ -132,6 +162,7 @@ export const DAWN_ISOLATED_GROUPS = [
   },
   {
     id: 'gi-5',
+    nativeProcessSlots: 1,
     // Run 42122803571 reached this complete journey at minute 37 and
     // interrupted it at the unchanged step deadline. Reserve ten minutes
     // and admit it before ordinary backfill; the test budgets stay fixed.
@@ -145,10 +176,14 @@ export const DAWN_ISOLATED_GROUPS = [
   },
   {
     id: 'gi-6',
+    nativeProcessSlots: 1,
     files: ['packages/runtime/src/__tests__/renderer-irradiance-field.dawn.test.ts'],
   },
   {
     id: 'screen-probe',
+    nativeProcessSlots: 1,
+    // The same run never reached this owner; retain its complete maximum.
+    placementReserveSeconds: 190.617,
     files: ['packages/runtime/src/__tests__/renderer-screen-probe.dawn.test.ts'],
   },
 ];
@@ -159,39 +194,41 @@ export const DAWN_ISOLATED_TEST_FILES = DAWN_ISOLATED_GROUPS.flatMap(({ files })
 // time using the latest measured costs. Each process keeps its native lifetime.
 // Independent long capture journeys occupy separate lanes; one slow runner
 // must not amplify both Modeling captures before the same ordinary backfill.
+// Run 44039100905 exhausted lanes one and four. Match the current core costs
+// and spread complete native owners and reserved headroom across these lanes;
+// one-pass backfill retains every file without historical layout constraints.
 export const DAWN_GATE_SHARDS = Object.freeze([
-  Object.freeze([
-    'ordinary-1',
-    'compact-1',
-    'modeling-show',
-    'direct-light',
-    'heavy-3',
-    'gi-6',
-    'renderer',
-    'gi-3',
-    'feature-depth',
-  ]),
+  Object.freeze(['ordinary-1', 'direct-light', 'gi-1', 'heavy-4', 'modeling-s6', 'rect-source']),
   Object.freeze([
     'ordinary-2',
-    'heavy-2',
-    'nested-discard',
-    'surface-pipelines',
-    'heavy-1',
-    'shadow-quality',
-    'specular-aa',
+    'compact-2',
     'gi-4',
-    'screen-probe',
-    'gi-2',
+    'gi-6',
+    'heavy-2',
+    'renderer',
+    'shadow-quality',
+    'surface-pipelines',
+    'transmission',
   ]),
-  Object.freeze(['ordinary-3', 'modeling-s6', 'transmission', 'vfx-depth', 'compact-2']),
+  Object.freeze([
+    'ordinary-3',
+    'compact-3',
+    'feature-depth',
+    'gi-2',
+    'heavy-1',
+    'heavy-3',
+    'modeling-show',
+    'nested-discard',
+    'screen-probe',
+  ]),
   Object.freeze([
     'ordinary-4',
-    'rect-source',
-    'shadow-fields',
-    'heavy-4',
-    'compact-3',
+    'compact-1',
+    'gi-3',
     'gi-5',
-    'gi-1',
+    'shadow-fields',
+    'specular-aa',
+    'vfx-depth',
   ]),
 ]);
 
@@ -205,17 +242,32 @@ export const DAWN_GATE_GROUPS = [
   })),
   ...Array.from({ length: 3 }, (_, partition) => ({
     id: `compact-${partition + 1}`,
+    nativeProcessSlots: 1,
     files: DAWN_COMPACT_TEST_FILES.filter((_file, index) => index % 3 === partition),
     env: { FORGEAX_DAWN_COMPACT: '1' },
   })),
   ...DAWN_ISOLATED_GROUPS.map((group) => ({ ...group, env: { FORGEAX_DAWN_ISOLATED: '1' } })),
   {
     id: 'direct-light',
+    nativeProcessSlots: 1,
     // Run 42388664877 reached this complete journey at minute 39. Admit it
     // before ordinary backfill with its retained complete-owner placement forecast;
     // retain every phase and its original native process/test deadlines.
     placementReserveSeconds: 219.011,
     files: [DIRECT_LIGHT_DAWN_TEST_FILE],
     env: {},
+  },
+];
+
+// These files retain one measured logical owner while bounding native lifetimes.
+// The anchor's historical file cost covers the complete eighteen-test family.
+export const DAWN_ORDINARY_FILE_FAMILIES = [
+  {
+    anchor: 'packages/three/src/__tests__/node-inputs.dawn.test.ts',
+    children: [
+      'packages/three/src/__tests__/node-optical-inputs.dawn.test.ts',
+      'packages/three/src/__tests__/node-primitive-inputs.dawn.test.ts',
+    ],
+    additionalProcessReserveSeconds: 40,
   },
 ];

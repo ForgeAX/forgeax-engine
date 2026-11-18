@@ -4,7 +4,7 @@ import { drawReadyFrame } from '../../../scripts/test/ready-render-frame.mjs';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { setupGpuShim } from '../../hello/triangle/scripts/smoke-helpers.mjs';
-import { readShaderManifestText } from '../../../scripts/lib/shader-manifest.mjs';
+import { processShaderManifestUrl } from '../../../scripts/lib/shader-manifest.mjs';
 
 const ROOT = resolve(import.meta.dirname, '..', '..', '..');
 const DIST = resolve(ROOT, 'apps/preview/dist');
@@ -20,11 +20,11 @@ const { Transform, scenePlugin } = await import('../../../packages/scene/dist/in
 const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/internal/renderer-host');
 const { loadVfxGpuEffect, ParticleEffectPlayer, VFX_GPU_RUNTIME_RESOURCE_KEY } = await import('../../../packages/vfx/dist/index.mjs');
 const { createVfxRuntimeHost } = await import('../../../packages/vfx-render/dist/index.mjs');
-const manifest = JSON.parse(readShaderManifestText(resolve(DIST, 'shaders/manifest.json')));
+
 let cameraEntity;
 const camera = { read(currentWorld) { const transform = currentWorld.get(cameraEntity, Transform); const value = currentWorld.get(cameraEntity, Camera); if (!transform.ok || !value.ok) return undefined; return { position: new Float32Array(transform.value.pos), right: new Float32Array([1, 0, 0]), up: new Float32Array([0, 1, 0]), viewProjection: mat4.multiply(mat4.create(), mat4.perspectiveReverseZ(mat4.create(), value.value.fov, value.value.aspect, value.value.near, value.value.far), mat4.lookAt(mat4.create(), transform.value.pos, [0, 0, 0], [0, 1, 0])) }; } };
 const host = createVfxRuntimeHost({ camera });
-const constructed = await constructRuntimeRendererHost(shim.mockCanvas, { features: [host.feature] }, { shaderManifestUrl: `data:application/json,${encodeURIComponent(JSON.stringify(manifest))}` });
+const constructed = await constructRuntimeRendererHost(shim.mockCanvas, { features: [host.feature] }, { shaderManifestUrl: processShaderManifestUrl(resolve(DIST, 'shaders/manifest.json')) });
 if (!constructed.ok) throw constructed.error;
 const { renderer, assets } = constructed.value;
 const world = new World({ assets });

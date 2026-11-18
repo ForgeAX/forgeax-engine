@@ -1,7 +1,6 @@
 import { existsSync } from 'node:fs';
 import { cp, mkdir, symlink, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
-import { prepareWaterContent } from '../../packages/content/scripts/prepare-water-content.mjs';
 import { SDK_RESOURCE_ALLOWLIST } from '../forgeax/sdk-lib.mjs';
 import { runnerResources, shaderSourceCompileWorkers } from '../lib/runner-resources.mjs';
 
@@ -31,10 +30,6 @@ export async function prepareEngineWithoutViewContent({
       await cp(resolve(repositoryRoot, entry.sourceRoot, file), destination);
     }
   }
-  await prepareWaterContent({
-    repositoryRoot: sourceRoot,
-    sourceRoot: resolve(sourceRoot, 'packages/content/assets/water'),
-  });
   if (
     sharedInputsRoot &&
     existsSync(resolve(sharedInputsRoot, 'manifest.json')) &&

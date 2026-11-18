@@ -246,7 +246,7 @@ fn evaluate_surface(input: SingleLayerWaterSurfaceInput) -> SingleLayerWaterSurf
   let dx = dpdx(riverUv) * 1024.0;
   let dy = dpdy(riverUv) * 1024.0;
   let mip = 0.5 * log2(max(max(dot(dx, dx), dot(dy, dy)), 1e-16));
-  // UE takes the effective sampler type from the upstream Normal texture object.
+  // Decode the sampled RG channels as a tangent-space normal.
   let firstNormal = decodeTangentSpaceNormalRg(textureSampleLevel(waterFlowNormalTexture, waterFlowNormalTexture_sampler, firstUv, mip).rg);
   let secondNormal = decodeTangentSpaceNormalRg(textureSampleLevel(waterFlowNormalTexture, waterFlowNormalTexture_sampler, secondUv, mip).rg);
   let riverNormal = mix(secondNormal, firstNormal, phaseWeight);

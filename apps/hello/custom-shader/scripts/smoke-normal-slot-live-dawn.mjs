@@ -8,7 +8,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
+import { processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 const WIDTH = 200;
 const HEIGHT = 150;
@@ -242,7 +242,7 @@ const { Camera, DirectionalLight, MeshFilter, MeshRenderer, perspective } =
   await import('@forgeax/engine-render');
 const { Transform } = await import('@forgeax/engine-scene');
 
-const manifest = `data:application/json,${encodeURIComponent(readShaderManifestText(MANIFEST_PATH))}`;
+const manifest = processShaderManifestUrl(MANIFEST_PATH);
 const constructed = await constructRuntimeRendererHost(mockCanvas, {}, { shaderManifestUrl: manifest });
 assert(constructed.ok, constructed.ok ? undefined : `${constructed.error.code}: ${constructed.error.hint}`);
 const renderer = constructed.value.renderer;

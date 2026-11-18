@@ -6,7 +6,7 @@ import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErr
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
+import { processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 
 const frames = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
@@ -33,7 +33,7 @@ const { SpriteAnimation } = await import('@forgeax/engine-render/authoring');
 const { propagateTransforms } = await import('@forgeax/engine-scene');
 const { animationRegions, buildSpriteSheetWorld, makeSpriteSheetPixels, SHEET_HEIGHT, SHEET_WIDTH, tickSpriteSheet, ANIMATION_FRAME_COUNT, FIRST_ANIMATION_FRAME, LAST_ANIMATION_FRAME } = await import(resolve(here, '..', 'src', 'sprite-sheet.ts'));
 const manifestPath = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const hostResult = await constructRuntimeRendererHost(canvas, {}, { shaderManifestUrl: `data:application/json,${encodeURIComponent(readShaderManifestText(manifestPath))}` });
+const hostResult = await constructRuntimeRendererHost(canvas, {}, { shaderManifestUrl: processShaderManifestUrl(manifestPath) });
 if (!hostResult.ok) throw hostResult.error;
 const { renderer, assets: smokeAssets } = hostResult.value;
 gpu.requestAdapter = originalRequestAdapter;

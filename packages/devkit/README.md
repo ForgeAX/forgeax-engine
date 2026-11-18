@@ -5,6 +5,11 @@ Custom build hosts use `readProjectFacts` from the package root and
 selected project's declared build root. The returned session exposes cookers and
 watched source files; its owner disposes it on shutdown or failed startup.
 
+Detached backends reserve at most one quarter of admitted machine/container
+memory for their V8 heap, capped at 8 GiB. Their build child inherits the same
+budget, leaving room for browsers and native allocations. An explicit caller
+heap limit remains authoritative.
+
 Build roots can select `devkitAppOptions.renderFeatures` as data-only records
 `{ id, module: './assets/feature.ts', export: 'createContribution', config }`.
 The named factory returns `{ features, plugin?, vfxProviders?, vfxProvidersForWorld? }`.
@@ -954,24 +959,26 @@ views into message storage; those incidental layouts must not enter cooked
 product or SDK byte identity. Process isolation and operation deadlines remain
 owned by the existing build session.
 
-Build roots may also provide `ctx.devkitAppOptions`, a `DevKitAppOptions` data
-object projected into generated dev/build hosts before `createApp`. It accepts
-the public `dynamicGeometryMeshBudgetBytes`, `textureMipSkip`, `assetBudgetBytes`, `standardProfile`,
-`pipelineLibrary`, `backgroundPipelineLibrary`, `backgroundPipelineLibraryConcurrency`, and `time` options. DevKit rejects unknown fields, accessors and non-data values;
-Render's shared validators reject invalid byte counts and profiles before host
-preparation, while Engine World owns time-policy validation. Missing configuration
-keeps App's 64 MiB mesh-budget and 4 GiB asset-content-budget defaults. An explicit
-`forgeax-dynamic-mesh-budget-bytes` URL value still takes precedence. The same
-accepted time policy reaches browser main-thread and Worker Worlds; the WeChat
-host supplies it when constructing its World. Accepted options participate in the
-existing generated build identity.
-Configuration stays in the build plugin's Pack payload, with `roots.build`
-selecting that plugin; `forge.json` gains no configuration namespace.
-`standardProfile` initializes the actual Renderer through the generated
-`PreparedExecutionBootstrap.configureRenderer` hook when execution uses Workers,
-including Render Worker recovery. Local and WeChat hosts pass the same profile
-through their existing Renderer options. Source plugins do not need a local
-`ctx.renderer` service to configure rendering.
+Build roots provide `ctx.devkitAppOptions.configuration` as data through a
+configuration plugin. The build root must finish before DevKit validates and
+serializes that definition into the generated Host. Runtime does not load a
+configuration plugin before it knows how to construct the engine; the existing
+`roots.build`, plugin Pack and Context provider remain the project entry.
+
+Use [App engine configuration](../app/README.md#engine-configuration) for domain
+settings, device inheritance and quality groups. Worker and local Hosts pass the
+resolved profile into the Renderer constructor. Generated bootstrap modules no
+longer configure its profile after construction; replacement Render Workers use
+the most recently accepted startup plan. Native WeChat resolves the same model
+before World and graphics construction.
+
+Legacy `dynamicGeometryMeshBudgetBytes`, `textureMipSkip`, `assetBudgetBytes`,
+`standardProfile`, `time`, canvas and pipeline-capacity declarations are converted
+once into configuration inputs by the generated Host. They cannot accompany an
+explicit `configuration`. Pipeline libraries, feature factories, UI and loading
+labels remain separate build/binding inputs. Explicit supported URL diagnostics
+are composed into their configuration domains before startup. Accepted input
+bytes still participate in the existing generated build identity.
 
 ```ts
 import type { DevKitAppOptions } from '@forgeax/engine/devkit/plugin-build';

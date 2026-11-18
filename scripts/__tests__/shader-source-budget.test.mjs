@@ -62,7 +62,7 @@ test('direct source production replaces an inherited small heap before compiler 
         const expected = Number(process.env.FIXTURE_HEAP ?? '8192');
         if (getHeapStatistics().heap_size_limit < expected * 1024 * 1024) throw Error('inherited heap reached compiler');
         if (!process.execArgv.includes('--trace-warnings')) throw Error('lost parent options');
-        if (process.env.FORGEAX_SHADER_COMPILE_WORKERS !== (process.env.FIXTURE_WORKERS ?? '2')) throw Error('unbounded compiler pool');
+        if (process.env.FORGEAX_SHADER_COMPILE_WORKERS !== (process.env.FIXTURE_WORKERS ?? '4')) throw Error('unbounded compiler pool');
         const shaders = join(options.build.outDir, 'shaders');
         mkdirSync(shaders, {recursive: true});
         writeFileSync(join(shaders, 'manifest.json'), '{}');

@@ -1,22 +1,38 @@
 import { AssetGuid } from '@forgeax/engine/pack/source';
 import { err, type MaterialAsset, resolveMaterialAsset } from '@forgeax/engine/types';
 import { validateWaterAsset } from '@forgeax/engine/water';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import {
   LAKE_CENTER,
   lakeOutline,
   lakeShoreDistance,
   RIVER_PATH,
   watershedHeight,
+  WORLD_COLUMNS,
 } from '../../src/watershed';
 import pack from '../water-mesh.pack';
 
+const sampled = vi.hoisted(() => ({ heights: 0 }));
+vi.mock('../../src/watershed', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/watershed')>();
+  return {
+    ...actual,
+    watershedHeight: (...args: Parameters<typeof actual.watershedHeight>) => {
+      sampled.heights += 1;
+      return actual.watershedHeight(...args);
+    },
+  };
+});
+
 it('cooks one connected river and all four domain-valid watershed Body products', async () => {
+  sampled.heights = 0;
   const result = await pack.build({
     packageId: pack.packageId,
     readByGuid: async () => err(new Error('All geometry dependencies belong to this Pack')),
   });
   if (!result.ok) throw new Error(JSON.stringify(result.error));
+  expect(sampled.heights).toBeGreaterThanOrEqual(WORLD_COLUMNS ** 2);
+  expect(sampled.heights).toBeLessThanOrEqual(3 * WORLD_COLUMNS ** 2);
   for (const variant of ['a', 'b']) {
     const terrain = result.value[`terrain/${variant}/terrain`];
     if (terrain?.kind !== 'terrain') throw new Error(`Missing Terrain ${variant}`);
@@ -87,4 +103,4 @@ it('cooks one connected river and all four domain-valid watershed Body products'
     expect(watershedHeight(x, z)).toBeLessThan(LAKE_CENTER[1]);
   }
   for (const [x, y, z] of RIVER_PATH) expect(watershedHeight(x, z)).toBeLessThan(y);
-});
+}, 30_000);

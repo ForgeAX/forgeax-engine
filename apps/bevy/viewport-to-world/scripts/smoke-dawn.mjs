@@ -6,7 +6,7 @@ import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErr
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
+import { processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 
 const WIDTH = testQuality.viewport.width;
@@ -59,7 +59,7 @@ const { buildViewportToWorldWorld, stepViewportToWorld } = await import(
 );
 const manifest = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
 const hostResult = await constructRuntimeRendererHost(mockCanvas, {}, {
-  shaderManifestUrl: `data:application/json,${encodeURIComponent(readShaderManifestText(manifest))}`,
+  shaderManifestUrl: processShaderManifestUrl(manifest),
 });
 if (!hostResult.ok) throw hostResult.error;
 const { renderer, assets: smokeAssets } = hostResult.value;

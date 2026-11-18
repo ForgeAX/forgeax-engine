@@ -1,3 +1,4 @@
+import type { ReadonlyMeshAttributeWindow } from '@forgeax/engine-geometry';
 import type { MeshAsset } from '@forgeax/engine-types';
 import { err, ok, type Result, sha256 } from '@forgeax/engine-types';
 import {
@@ -10,8 +11,11 @@ import {
   waterBodyRenderBounds,
   waterMeshGridTemplate,
 } from '@forgeax/engine-water';
-import { requireWaterValue, waterMeshFlatFarBoundaryMask } from '@forgeax/engine-water/internal';
-import { waterInfoMeshView } from './water-info-producer';
+import {
+  requireWaterValue,
+  waterDependencyMeshView,
+  waterMeshFlatFarBoundaryMask,
+} from '@forgeax/engine-water/internal';
 
 export const WATER_GPU_MESH_FEATURE = 'water-gpu-mesh';
 export const WATER_GPU_HEADER_MAGIC = 0x57474d31;
@@ -220,29 +224,31 @@ export function buildWaterGpuMeshZone(
       if (!references.ok) return references;
       const refs = references.value;
       const vertices: number[] = [];
-      const localPositions: ArrayLike<number>[] = [];
+      const localPositions: ReadonlyMeshAttributeWindow[] = [];
       const captureMeshVertices = () => {
         for (const guid of refs) {
           const dependency = body.dependencies.find(
             (candidate) => candidate.guid === guid && candidate.status === 'valid',
           );
           const mesh =
-            dependency && waterInfoMeshView(dependency.payload, dependency.payloadArrayKinds);
+            dependency && waterDependencyMeshView(dependency.payload, dependency.payloadArrayKinds);
           if (!mesh)
             return fail('version-qualified triangle static mesh dependencies', {
               bodyGuid: body.guid,
               guid,
             });
-          localPositions.push(mesh.attributes.position);
+          const positions = mesh.position;
+          localPositions.push(positions);
           for (const submesh of mesh.submeshes)
             if (submesh.topology === 'triangle-list')
               for (let i = submesh.indexOffset; i < submesh.indexOffset + submesh.indexCount; i++) {
-                const index = requireWaterValue(mesh.indices[i]) * 3;
+                const index =
+                  positions.offset + requireWaterValue(mesh.indices[i]) * positions.stride;
                 const world = point(
                   body.worldMatrixM,
-                  requireWaterValue(mesh.attributes.position[index]),
-                  requireWaterValue(mesh.attributes.position[index + 1]),
-                  requireWaterValue(mesh.attributes.position[index + 2]),
+                  requireWaterValue(positions.data[index]),
+                  requireWaterValue(positions.data[index + 1]),
+                  requireWaterValue(positions.data[index + 2]),
                 );
                 vertices.push(world[0] - origin[0], world[1], world[2] - origin[1]);
               }

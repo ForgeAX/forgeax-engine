@@ -154,8 +154,11 @@ struct SsrCurrentSample {
 // A tap carries confidence-premultiplied color until the footprint is summed.
 fn ssrCurrentTap(pixel : vec2<i32>, expectedDepth : f32, normal : vec3<f32>, footprintWeight : f32) -> SsrCurrentSample {
   if (footprintWeight <= 0.0) { return SsrCurrentSample(vec4<f32>(0.0), 0.0); }
-  let sourceNormal = loadStandardNormalRoughness(currentNormal, pixel).xyz;
-  let sourceDepth = viewDistance(textureLoad(currentDepth, pixel, 0));
+  let fullSize = textureDimensions(currentDepth, 0);
+  let traceSize = textureDimensions(currentTrace, 0);
+  let receiver = min(vec2<i32>((vec2<f32>(pixel) + vec2<f32>(0.5)) * vec2<f32>(fullSize) / vec2<f32>(traceSize)), vec2<i32>(fullSize) - vec2<i32>(1));
+  let sourceNormal = loadStandardNormalRoughness(currentNormal, receiver).xyz;
+  let sourceDepth = viewDistance(textureLoad(currentDepth, receiver, 0));
   if (depthReject(expectedDepth, sourceDepth) || normalReject(normal, sourceNormal)) {
     return SsrCurrentSample(vec4<f32>(0.0), 0.0);
   }
@@ -170,7 +173,7 @@ fn ssrCurrentTap(pixel : vec2<i32>, expectedDepth : f32, normal : vec3<f32>, foo
 }
 
 fn sampleCurrentSsr(uv : vec2<f32>, fullSize : vec2<u32>, expectedDepth : f32, normal : vec3<f32>) -> SsrCurrentSample {
-  let coordinate = ssrLatticeCoordinate(uv, fullSize);
+  let coordinate = ssrLatticeCoordinate(uv, textureDimensions(currentTrace, 0));
   let first = vec2<i32>(floor(coordinate));
   let fraction = fract(coordinate);
   let last = vec2<i32>(textureDimensions(currentTrace, 0)) - vec2<i32>(1);
@@ -319,7 +322,7 @@ fn resolveSsrAt(uv : vec2<f32>, fullSize : vec2<u32>) -> SsrTemporalSample {
   }
   let history = sampleSsrHistory(historyUv, fullSize, previousDepth, normal);
   let size = textureDimensions(currentTrace, 0);
-  let pixel = clamp(vec2<i32>(floor(ssrLatticeCoordinate(currentUv, fullSize) + vec2<f32>(0.5))), vec2<i32>(0), vec2<i32>(size) - vec2<i32>(1));
+  let pixel = clamp(vec2<i32>(floor(currentUv * vec2<f32>(size))), vec2<i32>(0), vec2<i32>(size) - vec2<i32>(1));
   // No current hit means the existing resolver deliberately accepts straight
   // history without color clipping. Do not fetch the unused nine-tap bounds.
   var bounds = NeighborhoodBounds(vec3<f32>(0.0), vec3<f32>(0.0));
@@ -356,7 +359,7 @@ struct SsrTemporalOutput {
 }
 fn evaluateSsrTemporal(globalId : vec3<u32>) -> SsrTemporalOutput {
   var output : SsrTemporalOutput;
-  let size = textureDimensions(currentTrace, 0);
+  let size = textureDimensions(currentDepth, 0);
   if (any(globalId.xy >= size)) { return output; }
   let pixel = vec2<i32>(globalId.xy);
   let fullSize = textureDimensions(currentDepth, 0);
@@ -394,7 +397,7 @@ fn evaluateSsrTemporal(globalId : vec3<u32>) -> SsrTemporalOutput {
 #else
 @compute @workgroup_size(8, 8, 1)
 fn ssr_temporal(@builtin(global_invocation_id) globalId : vec3<u32>) {
-  if (any(globalId.xy >= textureDimensions(currentTrace, 0))) { return; }
+  if (any(globalId.xy >= textureDimensions(currentDepth, 0))) { return; }
   let output = evaluateSsrTemporal(globalId);
   let pixel = vec2<i32>(globalId.xy);
   textureStore(historyOutput, pixel, output.history);

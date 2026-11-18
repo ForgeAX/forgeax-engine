@@ -38,11 +38,11 @@
   "artifacts": {
     "LICENSE": "4c05555705e3efde601fb1252ae48f1d63992af8a8fb8947745b7fa834e8f519",
     "rapier-native.d.mts": "24af2f779a154d792bb1f0a7fb90d4f495b3e63b046d9a476f068e398806c3de",
-    "rapier-native.mjs": "894dac9b78b46d6e1a711b7178720d39fb38ae87128e23b15bd7b923c0ee7c9f",
+    "rapier-native.mjs": "03445485b484baa3f85ece5cf1ba15d40badd4695d40718a017c3ed40cd8367e",
     "rapier-simd.d.mts": "39c971b29a1204ea466e1d0f27de2ef26f2e12f25ffc4e09db8ab2428d817348",
-    "rapier-simd.mjs": "ef5bbe33aae6becb38edab40c5401e3b8fd874fd8e4822072f92d61ce50259b9",
+    "rapier-simd.mjs": "63472bbdbf4440ccc7d370263dcf84ae83c96c0d237041976e6734e1b402ea6b",
     "rapier.d.mts": "891ab1bf30df793b18a8067d6da33686274a3d0dd3b59698085495daaa48e478",
-    "rapier.mjs": "de1247d0e11f02f79d42e1cf44bcf2ddaae3e264b0d1575472f357ffaee59539",
-    "rapier.wasm": "0f64e7604869e1559de9bb7cf3ec61e2482d6dd911767e172da6e3eb494a724b"
+    "rapier.mjs": "f927419608531a7b9c38dfe1b69ef1ab941c167e7e6a5036e6d1a74280d639ed",
+    "rapier.wasm": "c253f437e92dea9e54028b69cd67263186422fb1008506d8ea54b93b164d3adb"
   }
 }

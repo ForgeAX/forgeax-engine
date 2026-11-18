@@ -121,6 +121,50 @@ const loop = (positions: readonly (readonly [number, number])[]) =>
   positions.map(([x, z], inputKey) =>
     point(inputKey, x, z, { arriveTangentM: [0, 0, 0], leaveTangentM: [0, 0, 0] }),
   );
+
+it('reads previous cooked spline labels without invalidating geometry digests or mutating callers', async () => {
+  const source = body('river', [point(0, 0, 0), point(1, 4, 1)]);
+  const current: WaterBodySourceAsset = {
+    ...source,
+    spline: {
+      ...source.spline,
+      interpolationVersion: 'water-spline/2',
+      points: source.spline.points.map((value) => ({
+        ...value,
+        rotationQuat: [0, 0, 0, 1] as const,
+      })),
+    },
+  };
+  const cooked = (
+    await buildWaterPackOutputs(
+      { body: current },
+      {
+        packageId: definePackageId('019a0000-0000-7000-8000-000000000497'),
+      },
+    )
+  ).unwrap().body as WaterBodyAsset;
+  const previous = {
+    ...cooked,
+    spline: { ...cooked.spline, interpolationVersion: 'ue-water-spline/1' },
+  };
+  const before = structuredClone(previous);
+  const checked = validateWaterRuntimeAsset(previous);
+  expect(checked.ok, checked.ok ? '' : JSON.stringify(checked.error)).toBe(true);
+  expect(checked.unwrap()).toEqual(cooked);
+  expect(previous).toEqual(before);
+  expect(validateWaterRuntimeAsset({ ...previous, baseHeightM: previous.baseHeightM + 1 }).ok).toBe(
+    false,
+  );
+  expect(
+    validateWaterRuntimeAsset({
+      ...previous,
+      spline: {
+        ...previous.spline,
+        interpolationVersion: 'water-spline/99',
+      },
+    }).ok,
+  ).toBe(false);
+});
 const areaXZ = (mesh: MeshAsset | undefined) => {
   if (!mesh?.indices) return 0;
   const positions = mesh.attributes.position as Float32Array;
@@ -443,7 +487,7 @@ describe('water R1 body geometry', () => {
     expect(validateWaterRuntimeAsset(malformed).ok).toBe(false);
   });
 
-  it('matches all exported UE RiverMesh BodySetup convex vertices after spline scaling', () => {
+  it('matches all exported RiverMesh BodySetup convex vertices after spline scaling', () => {
     expect(riverMeshBodySetupEvidence).toMatchObject({
       engine: 'UE 5.8.1 CL 56057345',
       units: 'cm',
@@ -1028,7 +1072,7 @@ describe('water R1 body geometry', () => {
     assertWallWinding(withHole.collisionMesh, 1, 1, 3, -1);
   });
 
-  it('cooks UE ShapeDilation as a separate type-specific WaterInfo product', async () => {
+  it('cooks ShapeDilation as a separate type-specific WaterInfo product', async () => {
     const riverSource = {
       ...body('river', [point(0, 0, 0), point(1, 10, 0)], false),
       shapeDilationM: 2,
@@ -1778,7 +1822,7 @@ describe('water R1 body geometry', () => {
     });
   });
 
-  it('uses River tolerance sampling and UE PackFlowData magnitude/angle encoding', () => {
+  it('uses River tolerance sampling and PackFlowData magnitude/angle encoding', () => {
     const river = body(
       'river',
       [
@@ -1803,7 +1847,7 @@ describe('water R1 body geometry', () => {
     }
   });
 
-  it('keeps UE River distance sampling seed points and honors Linear and auto-clamped point modes', () => {
+  it('keeps River distance sampling seed points and honors Linear and auto-clamped point modes', () => {
     const straight = body(
       'river',
       [
@@ -1886,7 +1930,7 @@ describe('water R1 body geometry', () => {
       ...legacy,
       spline: {
         ...legacy.spline,
-        interpolationVersion: 'ue-water-spline/1' as const,
+        interpolationVersion: 'water-spline/2' as const,
         points: defaultCurvePoints.map((splinePoint) => ({
           ...splinePoint,
           rotationQuat: [0, 0, 0, 1] as const,
@@ -1939,7 +1983,7 @@ describe('water R1 body geometry', () => {
       ),
       spline: {
         closed: false,
-        interpolationVersion: 'ue-water-spline/1' as const,
+        interpolationVersion: 'water-spline/2' as const,
         points: [
           point(0, 0, 0, {
             positionM: [0, 0, 0],
@@ -2034,7 +2078,7 @@ describe('water R1 body geometry', () => {
     expect(validateWaterAsset({ ...legacy, shapeDilationM: -0.01 }).ok).toBe(false);
   });
 
-  it('uses resolved UE auto tangents consistently for River geometry, bounds, collision, query volume and insertion', () => {
+  it('uses resolved auto tangents consistently for River geometry, bounds, collision, query volume and insertion', () => {
     const versioned = {
       ...body(
         'river',
@@ -2065,7 +2109,7 @@ describe('water R1 body geometry', () => {
       ),
       spline: {
         closed: false,
-        interpolationVersion: 'ue-water-spline/1' as const,
+        interpolationVersion: 'water-spline/2' as const,
         points: [
           point(0, 0, 0, {
             positionM: [0, 0, 0],
@@ -2127,7 +2171,7 @@ describe('water R1 body geometry', () => {
       ...body('lake', lakePoints),
       spline: {
         closed: true,
-        interpolationVersion: 'ue-water-spline/1' as const,
+        interpolationVersion: 'water-spline/2' as const,
         points: lakePoints,
       },
     };
@@ -2161,7 +2205,7 @@ describe('water R1 body geometry', () => {
     );
   });
 
-  it('matches UE five-point spline length reparameterization on an asymmetric high-curvature segment', () => {
+  it('matches five-point spline length reparameterization on an asymmetric high-curvature segment', () => {
     const curved = body(
       'river',
       [
@@ -2215,7 +2259,7 @@ describe('water R1 body geometry', () => {
   it('inserts mixed-mode V1 spline points using the outgoing segment interpolation mode', () => {
     const linearToCurve = {
       closed: false,
-      interpolationVersion: 'ue-water-spline/1' as const,
+      interpolationVersion: 'water-spline/2' as const,
       points: [
         point(0, 0, 0, {
           positionM: [0, 0, 0],
@@ -2287,7 +2331,7 @@ describe('water R1 body geometry', () => {
     ] as const;
     const customRotation = {
       closed: false,
-      interpolationVersion: 'ue-water-spline/1' as const,
+      interpolationVersion: 'water-spline/2' as const,
       points: [
         point(0, 0, 0, {
           positionM: [0, 0, 0],
@@ -2320,7 +2364,7 @@ describe('water R1 body geometry', () => {
     ).toBe(true);
   });
 
-  it('bakes a nonzero UE spline roll into V1 quaternion keys used by the WaterInfo frame', () => {
+  it('bakes a nonzero spline roll into V1 quaternion keys used by the WaterInfo frame', () => {
     const halfRoll = (15 * Math.PI) / 180;
     const rotationQuat = [Math.sin(halfRoll), 0, 0, Math.cos(halfRoll)] as const;
     const up = [0, Math.cos(2 * halfRoll), Math.sin(2 * halfRoll)] as const;
@@ -2335,7 +2379,7 @@ describe('water R1 body geometry', () => {
       ),
       spline: {
         closed: false,
-        interpolationVersion: 'ue-water-spline/1' as const,
+        interpolationVersion: 'water-spline/2' as const,
         points: [
           point(0, 0, 0, { positionM: [0, 0, 0], interpolationMode: 'linear', rotationQuat, up }),
           point(1, 10, 0, { positionM: [10, 0, 0], interpolationMode: 'linear', rotationQuat, up }),
@@ -2474,7 +2518,7 @@ describe('water R1 body geometry', () => {
     ).toHaveLength(8);
   });
 
-  it('deforms the audited UE RiverMesh vertices and UVs using the X-axis slice transform', () => {
+  it('deforms the audited RiverMesh vertices and UVs using the X-axis slice transform', () => {
     const river = body(
       'river',
       [
@@ -2656,13 +2700,13 @@ describe('water R1 body geometry', () => {
     );
   });
 
-  it('keeps versioned UE auto-tangent spline identity and metadata when duplicating a point', () => {
+  it('keeps versioned auto-tangent spline identity and metadata when duplicating a point', () => {
     const points = [
       point(0, 0, 0, { positionM: [0, 0, 0], rotationQuat: [0, 0, 0, 1] }),
       point(1, 4, 2, { positionM: [4, 1, 2], rotationQuat: [0, 0, 0, 1], widthM: 8, depthM: 5 }),
       point(2, 9, 3, { positionM: [9, 0, 3], rotationQuat: [0, 0, 0, 1] }),
     ];
-    const spline = { closed: false, interpolationVersion: 'ue-water-spline/1' as const, points };
+    const spline = { closed: false, interpolationVersion: 'water-spline/2' as const, points };
     const duplicated = duplicateWaterSplinePointInSpline(spline, 1).unwrap();
     expect(duplicated.map((value) => value.inputKey)).toEqual([0, 1, 2, 3]);
     expect(duplicated[1]).toMatchObject({
@@ -2783,7 +2827,7 @@ describe('water R1 body geometry', () => {
     }
   });
 
-  it('keeps V-03 River samples within the insertion error budget at common curve positions', () => {
+  it('keeps River samples within the insertion error budget at common curve positions', () => {
     const original = body(
       'river',
       [
@@ -3141,7 +3185,7 @@ describe('water R1 body geometry', () => {
     );
   });
 
-  it('covers V-03 midpoint duplicate and delete behavior with common-key diagnostics', () => {
+  it('covers midpoint duplicate and delete behavior with common-key diagnostics', () => {
     const sourcePoints = [
       point(0, 0, 0, { positionM: [0, 2, 0], leaveTangentM: [5, 0, 0], widthM: 2, depthM: 2 }),
       point(1, 5, 1, {

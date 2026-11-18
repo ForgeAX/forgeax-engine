@@ -339,7 +339,7 @@ ${
   }
   if(stageId==13u){let computed=surfaceNormal(index);normal=vec4<f32>(computed,select(clamp(bubbles.x,p[22].y,p[22].z),0.0,p[3].w>0.5));if(p[3].w>0.5){value.x=collision.x+value.y;}}
   if(stageId==14u&&p[3].w<0.5){
-    ${debugWrites('ue-5.8.1-water-body', 'normal')}
+    ${debugWrites('water-body-shallow/2', 'normal')}
   }
   if(stageId==15u){normal=vec4<f32>(surfaceNormal(index),value.x-p[12].z);}
   if(stageId==16u&&dt>0.0){
@@ -364,7 +364,7 @@ ${history === 'retained' ? '@group(0) @binding(16) var previousMapping:texture_2
 @compute @workgroup_size(8,8) fn debugOutput(@builtin(global_invocation_id) id:vec3<u32>){
   let index=vec2<i32>(id.xy);if(any(index>=size())){return;}
   let value=grid(index);let collision=field(index);let at=world(index);var output=vec4<f32>(0.0);
-  ${debugWrites('ue-5.8.1-river', 'output')}
+  ${debugWrites('river-shallow/2', 'output')}
   textureStore(gridOutput,index,output);
 }
 @compute @workgroup_size(8,8) fn foamDebugOutput(@builtin(global_invocation_id) id:vec3<u32>){

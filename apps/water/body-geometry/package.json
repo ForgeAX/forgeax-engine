@@ -34,9 +34,8 @@
   "forgeax": {
     "metrics": {
       "bundle-size": {
-        "enabled": true,
-        "path": "dist",
-        "compression": "gzip"
+        "enabled": false,
+        "reason": "Informational app size has no regression threshold; app input builds and native runtime acceptance remain independently gated."
       },
       "fps": {
         "enabled": true

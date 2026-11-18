@@ -6,7 +6,7 @@ import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErr
 
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
+import { processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 const WIDTH = 200;
 const HEIGHT = 150;
@@ -47,7 +47,7 @@ const { createRenderer } = await import('@forgeax/engine-runtime');
 const { buildAudioWorld } = await import('../src/audio.ts');
 const here = dirname(fileURLToPath(import.meta.url));
 const manifestPath = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const shaderManifestUrl = `data:application/json,${encodeURIComponent(readShaderManifestText(manifestPath))}`;
+const shaderManifestUrl = processShaderManifestUrl(manifestPath);
 const hostResult = await constructRuntimeRendererHost(canvas, {}, { shaderManifestUrl });
 if (!hostResult.ok) throw hostResult.error;
 const { renderer, assets: smokeAssets } = hostResult.value;

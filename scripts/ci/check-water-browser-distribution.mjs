@@ -61,7 +61,7 @@ try {
   }
   assert.deepEqual(await page.evaluate(() => globalThis.__waterDistribution), {
     publicWaterSystem: 'function',
-    internalSchema: 7,
+    internalSchema: 8,
   });
   assert.deepEqual(errors, []);
   console.log(

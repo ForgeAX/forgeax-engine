@@ -1669,9 +1669,10 @@ if (Symbol.dispose) ValidatedModule.prototype[Symbol.dispose] = ValidatedModule.
  * @param {string} entry_source
  * @param {string} imports_json
  * @param {string} defines_json
+ * @param {Function | null} [normalize]
  * @returns {string}
  */
-export function compose_shader(entry_source, imports_json, defines_json) {
+export function compose_shader(entry_source, imports_json, defines_json, normalize) {
     let deferred5_0;
     let deferred5_1;
     try {
@@ -1681,7 +1682,7 @@ export function compose_shader(entry_source, imports_json, defines_json) {
         const len1 = WASM_VECTOR_LEN;
         const ptr2 = passStringToWasm0(defines_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len2 = WASM_VECTOR_LEN;
-        const ret = wasm.compose_shader(ptr0, len0, ptr1, len1, ptr2, len2);
+        const ret = wasm.compose_shader(ptr0, len0, ptr1, len1, ptr2, len2, isLikeNone(normalize) ? 0 : addToExternrefTable0(normalize));
         var ptr4 = ret[0];
         var len4 = ret[1];
         if (ret[3]) {
@@ -3182,18 +3183,18 @@ function __wbg_get_imports() {
             return ret;
         },
         __wbindgen_generic_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 1872, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 1873, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h9a8e4b1067196a8b);
             return ret;
         },
         __wbindgen_generic_0000000000000002: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("Event")], shim_idx: 6, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h851bc48cafc5e696);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__ha492078d2fab50b0);
             return ret;
         },
         __wbindgen_generic_0000000000000003: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 8, ret: RustStruct { name: "RhiWgpuCompletionRequest", unique_crate_identifier: "wgpu-wasm-be790ca1f18a4bd9" }, inner_ret: Some(RustStruct { name: "RhiWgpuCompletionRequest", unique_crate_identifier: "wgpu-wasm-be790ca1f18a4bd9" }) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h0a6a4a55c5991aff);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h92f313c647ae0719);
             return ret;
         },
         __wbindgen_generic_0000000000000004: function(arg0) {
@@ -3262,13 +3263,13 @@ function __wbg_get_imports() {
     };
 }
 
-function wasm_bindgen__convert__closures_____invoke__h0a6a4a55c5991aff(arg0, arg1) {
-    const ret = wasm.wasm_bindgen__convert__closures_____invoke__h0a6a4a55c5991aff(arg0, arg1);
+function wasm_bindgen__convert__closures_____invoke__h92f313c647ae0719(arg0, arg1) {
+    const ret = wasm.wasm_bindgen__convert__closures_____invoke__h92f313c647ae0719(arg0, arg1);
     return RhiWgpuCompletionRequest.__wrap(ret);
 }
 
-function wasm_bindgen__convert__closures_____invoke__h851bc48cafc5e696(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h851bc48cafc5e696(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__ha492078d2fab50b0(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__ha492078d2fab50b0(arg0, arg1, arg2);
 }
 
 function wasm_bindgen__convert__closures_____invoke__h9a8e4b1067196a8b(arg0, arg1, arg2) {

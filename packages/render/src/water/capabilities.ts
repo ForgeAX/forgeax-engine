@@ -291,7 +291,7 @@ export function inspectWaterRenderCapabilities(inspection: RenderInspection) {
         ),
     ) === true;
   return {
-    version: 1 as const,
+    version: 2 as const,
     deviceGeneration: inspection.frame.deviceGeneration,
     frameId: inspection.frame.frameId,
     ready: inspection.state === 'alive',
@@ -318,12 +318,12 @@ export function inspectWaterRenderCapabilities(inspection: RenderInspection) {
     },
     gpuMesh,
     // RenderInspection does not carry Runtime's accepted CPU Water mesh publication.
-    cpuMesh: 'unvalidated' as const,
+    cpuMesh: 'unavailable' as const,
     deferredLighting: deferred,
     fluidSimulation,
     advancedShallow: composedCompute('update-depth'),
     // Durable query-grid admission belongs to WaterSystem, outside graph inspection.
-    riverBake: 'unvalidated' as const,
+    riverBake: 'unavailable' as const,
     oceanFft: composedCompute('radix'),
     passes,
     graphAllocation: inspection.renderGraphGenerationAllocation ?? null,

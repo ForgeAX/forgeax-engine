@@ -139,3 +139,75 @@ test('optional artifact guards provision pinned Node even in aggregate jobs', as
   assert.equal(steps[setup].with['node-version-file'], '.nvmrc');
   assert.equal(steps[setup].with['package-manager-cache'], false);
 });
+
+test('required artifact transport has three same-name attempts with bounded staggered recovery', async () => {
+  const { parse } = await import('yaml');
+  const action = parse(
+    readFileSync('.github/actions/upload-artifact-with-retry/action.yml', 'utf8'),
+  );
+  const uploads = action.runs.steps.filter((step) => step.uses === 'actions/upload-artifact@v6');
+  assert.deepEqual(
+    uploads.map((step) => step.id),
+    ['upload', 'retry_1', 'retry_2'],
+  );
+  for (const [index, step] of uploads.entries()) {
+    assert.equal(step.with.name, uploads[0].with.name);
+    assert.equal(step.with.path, uploads[0].with.path);
+    assert.equal(step.with['include-hidden-files'], uploads[0].with['include-hidden-files']);
+    assert.equal(step.with['compression-level'], uploads[0].with['compression-level']);
+    assert.equal(step.env.ACTIONS_ARTIFACT_UPLOAD_TIMEOUT_MS, '60000');
+    if (index > 0) assert.equal(step.with.overwrite, true);
+  }
+  assert.equal(uploads[2].if, "inputs.required == 'true' && steps.retry_1.outcome == 'failure'");
+  const waits = action.runs.steps.filter((step) => step.name?.startsWith('Back off before retry'));
+  assert.deepEqual(
+    waits.map((step) => step.run.trim()),
+    ['sleep $((15 + RANDOM % 6))', 'sleep $((30 + RANDOM % 11))'],
+  );
+  assert.ok(action.outputs['artifact-id'].value.includes('steps.retry_2.outputs.artifact-id'));
+  const failed = action.runs.steps.find(
+    (step) => step.name === 'Fail after exhausted artifact transfer',
+  );
+  for (const step of uploads)
+    assert.ok(failed.if.includes(`steps.${step.id}.outcome != 'success'`));
+});
+
+test('artifact observation records the actual recovered attempt, including two RPC resets', {
+  skip: process.platform !== 'linux',
+}, async () => {
+  const { parse } = await import('yaml');
+  const action = parse(
+    readFileSync('.github/actions/upload-artifact-with-retry/action.yml', 'utf8'),
+  );
+  const finish = action.runs.steps.find((step) => step.id === 'upload-observation');
+  assert.ok(finish.if.includes("steps.retry_2.outcome == 'success'"));
+  const root = mkdtempSync(join(tmpdir(), 'forgeax-upload-observation-'));
+  try {
+    for (const attempt of [1, 2, 3]) {
+      const output = join(root, `attempt-${attempt}`);
+      const result = spawnSync('bash', ['-euo', 'pipefail', '-c', finish.run], {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          GITHUB_OUTPUT: output,
+          STARTED_AT: new Date(Date.now() - 1000).toISOString(),
+          STARTED_MILLIS: String(Date.now() - 1000),
+          UPLOAD_OUTCOME: attempt === 1 ? 'success' : 'failure',
+          RETRY_1_OUTCOME: attempt === 2 ? 'success' : 'failure',
+          RETRY_2_OUTCOME: attempt === 3 ? 'success' : 'skipped',
+        },
+      });
+      assert.equal(result.status, 0, result.stderr);
+      const facts = Object.fromEntries(
+        readFileSync(output, 'utf8')
+          .trim()
+          .split('\n')
+          .map((line) => line.split('=')),
+      );
+      assert.equal(facts.transfer_attempt, String(attempt));
+      assert.ok(Number(facts.elapsed_seconds) >= 1);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

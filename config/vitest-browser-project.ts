@@ -28,6 +28,7 @@ import {
   createMaterialPackCooker,
   createTextureGeneratorPackCooker,
 } from '../packages/shader-compiler/src/index';
+import { threeNodeInputCommands } from '../packages/three/src/__tests__/node-inputs.commands';
 import { fixedFieldCommands } from '../packages/vfx-render/src/__tests__/force-fields-fixed-ticks.server';
 import { nativeBindingCommands } from '../packages/wgpu-wasm/scripts/__tests__/native-binding.commands.mjs';
 import { productionCspCommands } from '../packages/wgpu-wasm/scripts/__tests__/production-csp.commands.mjs';
@@ -52,6 +53,7 @@ import { createRhiDebugSourceAliases } from './vitest-rhi-debug-source-alias';
 // and loading the rest makes Vite's dependency optimizer exceed the heavy
 // runner heap before a browser test can start.
 const rootDir = fileURLToPath(new URL('..', import.meta.url));
+const coreValidationProfile = JSON.stringify(process.env.FORGEAX_CI_CORE_VALIDATION ?? '0');
 const evidenceSourceSha = execFileSync('git', ['rev-parse', 'HEAD'], {
   cwd: rootDir,
   encoding: 'utf8',
@@ -277,6 +279,10 @@ export function createBrowserProject() {
         // The cloud identity code is also reached by later renderer imports.
         '@forgeax/engine-render > @noble/hashes/sha2.js',
         '@forgeax/engine-render > @noble/hashes/utils.js',
+        // Cold Worker/scene imports must not reload a running Audio transport test.
+        '@forgeax/engine-pack > acorn',
+        '@forgeax/engine-render > @forgeax/engine-water > clipper2-ts',
+        '@forgeax/engine-geometry > earcut',
         ...(parityComparison ? ['ajv/dist/2020.js'] : []),
       ],
       entries: [
@@ -313,6 +319,7 @@ export function createBrowserProject() {
         : {}),
     },
     define: {
+      'import.meta.env.FORGEAX_CI_CORE_VALIDATION': coreValidationProfile,
       'import.meta.env.FORGEAX_BROWSER_GPU': JSON.stringify(
         process.env.FORGEAX_BROWSER_GPU ?? 'software',
       ),
@@ -361,6 +368,7 @@ export function createBrowserProject() {
         ui: false,
         commands: {
           ...nativeBindingCommands,
+          ...threeNodeInputCommands,
           ...textureGeneratorCommands,
           ...productionCspCommands,
           ...fixedFieldCommands,

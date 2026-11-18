@@ -20,6 +20,7 @@
 //   (hasDynamicOffset / minBindingSize defaults written out), and the visibility field
 //   is an integer bitmask (plan-strategy §S-9 / D-R9).
 
+use std::cell::RefCell;
 use std::collections::BTreeSet;
 
 use naga::proc::Layouter;
@@ -44,6 +45,19 @@ mod entry_reads;
 #[wasm_bindgen]
 pub struct ParsedModule {
     module: Module,
+    validated_info: Option<ModuleInfo>,
+}
+
+struct CheckedProgram {
+    source: String,
+    module: Module,
+    info: ModuleInfo,
+}
+
+thread_local! {
+    // One-shot ownership transfer from the checked writer to parse/validate.
+    // Only the exact consumer text can consume this already validated IR.
+    static CHECKED_PROGRAM: RefCell<Option<CheckedProgram>> = RefCell::default();
 }
 
 /// Handle for the `validate` output. Carries both Module and ModuleInfo; passed into
@@ -162,8 +176,18 @@ pub fn specialize_compute_entries(source: &str, entries_json: &str) -> Result<St
 /// `message` / `line_num` / `line_pos`.
 #[wasm_bindgen]
 pub fn parse(source: &str) -> Result<ParsedModule, JsError> {
+    let checked = CHECKED_PROGRAM.with(|slot| slot.borrow_mut().take());
+    if let Some(checked) = checked.filter(|checked| checked.source == source) {
+        return Ok(ParsedModule {
+            module: checked.module,
+            validated_info: Some(checked.info),
+        });
+    }
     match naga::front::wgsl::parse_str(source) {
-        Ok(module) => Ok(ParsedModule { module }),
+        Ok(module) => Ok(ParsedModule {
+            module,
+            validated_info: None,
+        }),
         Err(err) => {
             let loc = err.location(source);
             let summary = err.emit_to_string(source);
@@ -194,14 +218,16 @@ struct ParseErrorPayload {
 /// validator's prose diagnostic (no source position is attached).
 #[wasm_bindgen]
 pub fn validate(parsed: ParsedModule) -> Result<ValidatedModule, JsError> {
-    let mut validator = Validator::new(ValidationFlags::all(), Capabilities::all());
-    match validator.validate(&parsed.module) {
-        Ok(info) => Ok(ValidatedModule {
-            module: parsed.module,
-            info,
-        }),
-        Err(err) => Err(JsError::new(&format!("validate failed: {err}"))),
-    }
+    let info = match parsed.validated_info {
+        Some(info) => info,
+        None => Validator::new(ValidationFlags::all(), Capabilities::all())
+            .validate(&parsed.module)
+            .map_err(|err| JsError::new(&format!("validate failed: {err}")))?,
+    };
+    Ok(ValidatedModule {
+        module: parsed.module,
+        info,
+    })
 }
 
 // === Phase 3: emit_reflection ======================================================
@@ -1005,13 +1031,32 @@ fn reflection_type_descriptor(
 /// compares its normalized projections before and after a parse/validate
 /// round-trip, ignoring compiler-generated names and Naga handle identities.
 pub(crate) fn write_checked_wgsl(module: &Module, info: &ModuleInfo) -> Result<String, String> {
+    write_checked_wgsl_with_transform(module, info, None)
+}
+
+pub(crate) fn write_checked_wgsl_with_transform(
+    module: &Module,
+    info: &ModuleInfo,
+    transform: Option<&js_sys::Function>,
+) -> Result<String, String> {
+    CHECKED_PROGRAM.with(|slot| *slot.borrow_mut() = None);
     let before = buffer_layout_projection(module)?;
     let source =
         naga::back::wgsl::write_string(module, info, naga::back::wgsl::WriterFlags::empty())
             .map_err(|error| format!("WGSL writeback failed: {error}"))?;
+    // Normalize the actual consumer text before its independent parse,
+    // validation and ABI comparison. Arbitrary callbacks cannot bypass them.
+    let source = match transform {
+        Some(transform) => transform
+            .call1(&JsValue::UNDEFINED, &JsValue::from_str(&source))
+            .map_err(|error| format!("WGSL output transform failed: {error:?}"))?
+            .as_string()
+            .ok_or("WGSL output transform must return a source string")?,
+        None => source,
+    };
     let reparsed = naga::front::wgsl::parse_str(&source)
         .map_err(|error| format!("WGSL writer output failed to parse: {error}"))?;
-    let _reparsed_info = Validator::new(ValidationFlags::all(), Capabilities::all())
+    let reparsed_info = Validator::new(ValidationFlags::all(), Capabilities::all())
         .validate(&reparsed)
         .map_err(|error| format!("WGSL writer output failed validation: {error}"))?;
     let after = buffer_layout_projection(&reparsed)?;
@@ -1030,6 +1075,15 @@ pub(crate) fn write_checked_wgsl(module: &Module, info: &ModuleInfo) -> Result<S
                 "WGSL writer changed buffer ABI at group={group} binding={binding}: before={before_json}; after={after_json}"
             ));
         }
+    }
+    if source.len() <= 2 * 1024 * 1024 {
+        CHECKED_PROGRAM.with(|slot| {
+            *slot.borrow_mut() = Some(CheckedProgram {
+                source: source.clone(),
+                module: reparsed,
+                info: reparsed_info,
+            });
+        });
     }
     Ok(source)
 }

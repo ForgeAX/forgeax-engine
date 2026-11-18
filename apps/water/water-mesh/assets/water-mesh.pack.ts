@@ -22,6 +22,7 @@ import {
   WORLD_ORIGIN,
   WORLD_SPACING_M,
   watershedHeight,
+  watershedVariantOffset,
 } from '../src/watershed';
 
 const point = (
@@ -63,6 +64,24 @@ function weatheredRock(variant: number) {
   }
   return createMeshBuilder({ attributes: { position }, indices: sphere.indices }).build().unwrap();
 }
+
+function terrainHeightSampler() {
+  const rows = new Map<number, Map<number, number>>();
+  return (x: number, z: number, variant: number) => {
+    let row = rows.get(z);
+    if (row === undefined) {
+      row = new Map();
+      rows.set(z, row);
+    }
+    let base = row.get(x);
+    if (base === undefined) {
+      base = watershedHeight(x, z);
+      row.set(x, base);
+    }
+    return base + watershedVariantOffset(x, z, variant);
+  };
+}
+
 export default definePack({
   schemaVersion: '2.0.0',
   packageId: WATER_MESH_DEMO_PACKAGE,
@@ -91,12 +110,16 @@ export default definePack({
       }),
     };
     const terrainOutputs: Record<string, unknown> = {};
+    // Both variants share the exact same shoreline and slope sample positions.
+    // Numeric keys preserve the original wx + spacing arithmetic; rounding to
+    // a grid index would silently change some floating-point sample positions.
+    const heightAt = terrainHeightSampler();
     for (const variant of ['a', 'b'] as const) {
       const heights = new Float32Array(WORLD_COLUMNS ** 2),
         weights = new Float32Array(heights.length * 3);
       for (let z = 0; z < WORLD_COLUMNS; z++)
         for (let x = 0; x < WORLD_COLUMNS; x++) {
-          const h = watershedHeight(
+          const h = heightAt(
             WORLD_ORIGIN[0] + x * WORLD_SPACING_M,
             WORLD_ORIGIN[2] + z * WORLD_SPACING_M,
             variant === 'b' ? 1 : 0,
@@ -107,8 +130,8 @@ export default definePack({
             wz = WORLD_ORIGIN[2] + z * WORLD_SPACING_M;
           const slope =
             Math.hypot(
-              watershedHeight(wx + WORLD_SPACING_M, wz, variant === 'b' ? 1 : 0) - h,
-              watershedHeight(wx, wz + WORLD_SPACING_M, variant === 'b' ? 1 : 0) - h,
+              heightAt(wx + WORLD_SPACING_M, wz, variant === 'b' ? 1 : 0) - h,
+              heightAt(wx, wz + WORLD_SPACING_M, variant === 'b' ? 1 : 0) - h,
             ) / WORLD_SPACING_M;
           const patch =
             0.5 +
@@ -262,17 +285,17 @@ export default definePack({
         ...base('ocean'),
         oceanExtentM: [10000, 10000],
         centerOnWaterZone: false,
-        spline: { closed: true, interpolationVersion: 'ue-water-spline/1', points: oceanRing },
+        spline: { closed: true, interpolationVersion: 'water-spline/2', points: oceanRing },
       },
       'body/lake': {
         ...base('lake'),
-        spline: { closed: true, interpolationVersion: 'ue-water-spline/1', points: lakeRing },
+        spline: { closed: true, interpolationVersion: 'water-spline/2', points: lakeRing },
       },
       'body/river': {
         ...base('river'),
         spline: {
           closed: false,
-          interpolationVersion: 'ue-water-spline/1',
+          interpolationVersion: 'water-spline/2',
           points: RIVER_PATH.map((p, i) => {
             const before = RIVER_PATH[Math.max(0, i - 1)] ?? p;
             const after = RIVER_PATH[Math.min(RIVER_PATH.length - 1, i + 1)] ?? p;
@@ -303,7 +326,7 @@ export default definePack({
         zoneGuid: g('zone/main'),
         spline: {
           closed: false,
-          interpolationVersion: 'ue-water-spline/1',
+          interpolationVersion: 'water-spline/2',
           points: [point(0, -5, 0, 0, 2.8), point(1, 5, 0, 0, 2.8)],
         },
         queryFootprint: [

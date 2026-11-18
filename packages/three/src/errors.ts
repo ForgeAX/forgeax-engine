@@ -4,12 +4,14 @@ export type ThreeCompatibilityErrorCode =
   | 'three-unsupported'
   | 'three-migration-required'
   | 'three-invalid-value'
+  | 'three-interop-invalid'
+  | 'three-owner-failed'
   | 'renderer-not-ready'
   | 'renderer-disposed'
   | 'renderer-capture-busy';
 
 export class ThreeCompatibilityError extends Error {
-  readonly expected = 'a supported Three.js r184 input on the Forgeax compatibility renderer';
+  readonly expected = 'a supported Three.js r187 input on the Forgeax compatibility renderer';
   readonly detail: { readonly subject: string; readonly uuid?: string };
 
   constructor(
@@ -17,8 +19,9 @@ export class ThreeCompatibilityError extends Error {
     subject: string,
     readonly hint: string,
     uuid?: string,
+    cause?: unknown,
   ) {
-    super(`${code}: ${subject}. ${hint}`);
+    super(`${code}: ${subject}. ${hint}`, cause === undefined ? undefined : { cause });
     this.name = 'ThreeCompatibilityError';
     this.detail = Object.freeze({ subject, ...(uuid === undefined ? {} : { uuid }) });
   }

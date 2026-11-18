@@ -1,8 +1,0 @@
-{
-  "schemaVersion": "1.0.0",
-  "kind": "external-asset-package",
-  "importer": "image",
-  "source": "T_VolumeNoiseShape128.slices.png",
-  "importSettings": { "colorSpace": "linear", "mipmap": false, "compressionMode": "none" },
-  "subAssets": [{ "guid": "fdec0f15-2a02-5d7e-a343-f7312545e1ad", "sourceIndex": 0, "kind": "texture", "sourceKey": "texture" }]
-}

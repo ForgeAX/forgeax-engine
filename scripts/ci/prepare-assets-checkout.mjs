@@ -3,7 +3,6 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, rmSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { prepareWaterContent } from '../../packages/content/scripts/prepare-water-content.mjs';
 import { hasExpandedSource } from '../lib/source-repository.mjs';
 import { submoduleGitEnvironment } from './submodule-git-environment.mjs';
 
@@ -16,10 +15,9 @@ function verifyExport(sourceRoot, expected, checked, environment) {
   if (actual !== expected)
     throw new Error(`[assets-checkout] export pin mismatch expected=${expected} actual=${actual}`);
   checked(['-C', assetPath, 'cat-file', '-e', `${expected}^{commit}`]);
-  const rows = checked(['-C', assetPath, 'ls-tree', '-r', expected, '--', 'water']).split('\n');
-  if (!rows[0]) throw new Error(`[assets-checkout] pinned Water source missing pin=${expected}`);
+  const rows = checked(['-C', assetPath, 'ls-tree', '-rz', expected]).split('\0').filter(Boolean);
   for (const row of rows) {
-    const entry = row.match(/^100644 blob ([a-f0-9]+)\t(water\/.+)$/);
+    const entry = row.match(/^100(?:644|755) blob ([a-f0-9]+)\t([\s\S]+)$/);
     if (!entry) throw new Error(`[assets-checkout] unsupported exported source: ${row}`);
     const path = resolve(sourceRoot, entry[2]);
     const digest = checked(['-C', assetPath, 'hash-object', '--no-filters', path]);
@@ -134,11 +132,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       );
     const sourceRoot = args[1] === undefined ? undefined : resolve(args[1]);
     const checkout = prepareAssetsCheckout(process.cwd(), { sourceRoot });
-    const waterContent = await prepareWaterContent({
-      repositoryRoot: process.cwd(),
-      ...(sourceRoot === undefined ? {} : { sourceRoot: resolve(sourceRoot, 'water') }),
-    });
-    console.log(JSON.stringify({ ...checkout, waterContent }));
+    console.log(JSON.stringify(checkout));
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;

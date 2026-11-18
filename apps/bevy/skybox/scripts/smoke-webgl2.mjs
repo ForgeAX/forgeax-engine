@@ -1,9 +1,8 @@
 #!/usr/bin/env node
 
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { spawn } from 'node:child_process';
-import { setTimeout as delay } from 'node:timers/promises';
+import { startOwnedServer, stopOwnedServer } from '../../../../scripts/ci/owned-dev-server.mjs';
 import { chromium } from 'playwright';
 import browserLaunch from '../../../../scripts/ci/browser-launch.json' with { type: 'json' };
 
@@ -15,35 +14,17 @@ const ARTIFACT_DIR = resolve(
 );
 mkdirSync(ARTIFACT_DIR, { recursive: true });
 
-const pnpmArgs = ['--filter', '@forgeax/bevy-skybox', 'preview', '--host', '127.0.0.1', '--port', String(PORT)];
-const server = spawn(
-  'pnpm',
-  pnpmArgs,
-  { cwd: ROOT, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] },
-);
-let serverOutput = '';
-server.stdout.on('data', (chunk) => {
-  serverOutput += chunk.toString();
+const stateFile = resolve(ARTIFACT_DIR, 'server-state.json');
+const logFile = resolve(ARTIFACT_DIR, 'server.log');
+const server = await startOwnedServer({
+  command: 'pnpm',
+  args: ['--filter', '@forgeax/bevy-skybox', 'preview', '--host', '127.0.0.1', '--port', '__PORT__', '--strictPort'],
+  cwd: ROOT,
+  requestedPort: PORT,
+  stateFile,
+  logFile,
+  readinessTimeoutMs: 30_000,
 });
-server.stderr.on('data', (chunk) => {
-  serverOutput += chunk.toString();
-});
-
-const serverDeadline = Date.now() + 30_000;
-let serverReady = false;
-while (Date.now() < serverDeadline) {
-  try {
-    const response = await fetch(`http://127.0.0.1:${PORT}/`);
-    if (response.ok) {
-      serverReady = true;
-      break;
-    }
-  } catch {
-    // Vite preview is still starting.
-  }
-  await delay(250);
-}
-if (!serverReady) throw new Error(`Skybox preview did not start: ${serverOutput}`);
 
 const launchOptions = {
   headless: true,
@@ -56,29 +37,30 @@ const launchOptions = {
     '--disable-gpu-driver-bug-workarounds',
   ],
 };
-const browser = await chromium.launch({ ...(launchOptions), chromiumSandbox: true });
-const page = await browser.newPage({ viewport: { width: 320, height: 180 }, deviceScaleFactor: 1 });
-const pageErrors = [];
-const consoleErrors = [];
-const badResponses = [];
-page.on('pageerror', (error) => pageErrors.push(error.message));
-page.on('console', (message) => {
-  if (
-    consoleErrors.length < 20 &&
-    message.type() === 'error' &&
-    !message.text().includes('favicon.ico') &&
-    !message.text().includes('Failed to load resource')
-  ) {
-    consoleErrors.push(message.text());
-  }
-});
-page.on('response', (response) => {
-  if (response.status() >= 400 && !response.url().endsWith('/favicon.ico')) {
-    badResponses.push(`${response.status()} ${response.url()}`);
-  }
-});
+let browser;
 try {
-  await page.goto(`http://127.0.0.1:${PORT}/`, {
+  browser = await chromium.launch({ ...(launchOptions), chromiumSandbox: true });
+  const page = await browser.newPage({ viewport: { width: 320, height: 180 }, deviceScaleFactor: 1 });
+  const pageErrors = [];
+  const consoleErrors = [];
+  const badResponses = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+  page.on('console', (message) => {
+    if (
+      consoleErrors.length < 20 &&
+      message.type() === 'error' &&
+      !message.text().includes('favicon.ico') &&
+      !message.text().includes('Failed to load resource')
+    ) {
+      consoleErrors.push(message.text());
+    }
+  });
+  page.on('response', (response) => {
+    if (response.status() >= 400 && !response.url().endsWith('/favicon.ico')) {
+      badResponses.push(`${response.status()} ${response.url()}`);
+    }
+  });
+  await page.goto(server.url, {
     waitUntil: 'domcontentloaded',
     timeout: 15_000,
   });
@@ -130,7 +112,7 @@ try {
         : null,
     };
   });
-  const report = { probe, pixels, pageErrors, consoleErrors, badResponses, serverOutput };
+  const report = { probe, pixels, pageErrors, consoleErrors, badResponses, serverOutput: readFileSync(logFile, 'utf8') };
   writeFileSync(resolve(ARTIFACT_DIR, 'report.json'), `${JSON.stringify(report, null, 2)}\n`);
 
   const failures = [];
@@ -151,13 +133,9 @@ try {
   );
   console.log(`[skybox-webgl2] artifacts=${ARTIFACT_DIR}`);
 } finally {
-  await browser.close();
-  if (server.pid !== undefined) {
-    try {
-      process.kill(-server.pid, 'SIGTERM');
-    } catch {
-      server.kill('SIGTERM');
-    }
+  try {
+    await browser?.close();
+  } finally {
+    await stopOwnedServer({ stateFile });
   }
-  await delay(300);
 }

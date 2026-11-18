@@ -336,8 +336,11 @@ it.each([
       }
       return resource;
     };
+    // Equal slot tables retain accepted bindings; force an actual Pass-query candidate.
     assets
-      .update(firstMesh, { materialSlots: [{ slotName: 'body', defaultMaterial: first }] })
+      .update(firstMesh, {
+        materialSlots: [{ slotName: 'body', sourceKey: 'query-candidate', defaultMaterial: first }],
+      })
       .unwrap();
     expect(draw).toThrow(
       mutation === 'asset'

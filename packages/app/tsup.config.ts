@@ -8,6 +8,7 @@ export default defineConfig({
   splitting: true,
   entry: {
     index: 'src/index.ts',
+    configuration: 'src/configuration.ts',
     browser: 'src/browser.ts',
     'host-adapter': 'src/host-adapter.ts',
     'engine-worker-runtime': 'src/execution/engine-worker-runtime.ts',

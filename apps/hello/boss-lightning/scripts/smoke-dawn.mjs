@@ -11,7 +11,7 @@ import { emitSmokeReceipt } from '../../../shared/scripts/smoke-receipt.mjs';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
-import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
+import { processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -82,7 +82,7 @@ const sceneDepthResource = () => {
   }
   return { kind: 'texture-view', value: sceneDepthView };
 };
-const manifest = JSON.parse(readShaderManifestText(resolve(distRoot, 'shaders/manifest.json')));
+
 const { createWorldContext, World } = await import('@forgeax/engine-ecs');
 const { mat4 } = await import('@forgeax/engine-math');
 const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/internal/renderer-host');
@@ -134,7 +134,7 @@ const host = createVfxRuntimeHost({
 const constructed = await constructRuntimeRendererHost(
   shim.mockCanvas,
   { features: falsifier === 'strike-only' ? [] : [host.feature] },
-  { shaderManifestUrl: `data:application/json,${encodeURIComponent(JSON.stringify(manifest))}` },
+  { shaderManifestUrl: processShaderManifestUrl(resolve(distRoot, 'shaders/manifest.json')) },
 );
 if (!constructed.ok) throw constructed.error;
 const renderer = constructed.value.renderer;
@@ -366,7 +366,7 @@ if (m35Mode) {
   const createdHealthy = await constructRuntimeRendererHost(
     healthyCanvas,
     { features: [feature] },
-  { shaderManifestUrl: `data:application/json,${encodeURIComponent(JSON.stringify(manifest))}` },
+  { shaderManifestUrl: processShaderManifestUrl(resolve(distRoot, 'shaders/manifest.json')) },
   );
   if (!createdHealthy.ok) throw createdHealthy.error;
   healthyRenderer = createdHealthy.value.renderer;

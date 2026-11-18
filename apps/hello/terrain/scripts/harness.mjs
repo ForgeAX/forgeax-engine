@@ -1,7 +1,7 @@
 import { createSmokePlatform } from '../../../../scripts/smoke-platform.mjs';
 import assert from 'node:assert/strict';
-import { readFileSync, existsSync } from 'node:fs';
-import { resolve, sep } from 'node:path';
+import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { setupGpuShim } from '../../triangle/scripts/smoke-helpers.mjs';
 import { createApp } from '@forgeax/engine-app/browser';
 import physics3d from '@forgeax/engine-physics-rapier3d';
@@ -10,6 +10,7 @@ import { querySubmittedTerrainHeight } from '@forgeax/engine-render';
 import { vec3 } from '@forgeax/engine-math';
 import { buildTerrainWorld } from '../src/scene.ts';
 import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
+import { createDistAssetFetch } from '../../../../scripts/lib/dist-asset-fetch.mjs';
 
 export async function terrainHarness({
   width = 320,
@@ -31,16 +32,7 @@ export async function terrainHarness({
     'complete the app shader producer before GPU acceptance; use a full app build or materialize its CI transport',
   );
   const previousFetch = globalThis.fetch;
-  globalThis.fetch = async (input, init) => {
-    const url = new URL(
-      typeof input === 'string' ? input : input instanceof URL ? input.href : input.url,
-      'http://terrain.test',
-    );
-    if (url.origin !== 'http://terrain.test') return previousFetch(input, init);
-    const path = resolve(dist, `.${url.pathname}`);
-    assert(path.startsWith(dist + sep), 'asset URL must stay inside the emitted build');
-    return existsSync(path) ? new Response(readFileSync(path)) : new Response('', { status: 404 });
-  };
+  globalThis.fetch = createDistAssetFetch(dist, { origin: 'http://terrain.test', nativeFetch: previousFetch });
   const shim = await setupGpuShim({
     width,
     height,

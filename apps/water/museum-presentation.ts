@@ -1,9 +1,20 @@
 import type { App } from '@forgeax/engine/app';
 import type { EntityHandle } from '@forgeax/engine/ecs';
-import { createMeshBuilder } from '@forgeax/engine/geometry';
+import { createMeshBuilder, meshAttributeWindow } from '@forgeax/engine/geometry';
 import { MeshFilter, MeshRenderer, PointLight } from '@forgeax/engine/render';
 import { Transform } from '@forgeax/engine/scene';
+import type { MeshAsset } from '@forgeax/engine/types';
 import { presentationGuid } from './presentation-identity';
+
+function museumSurfaceChannels(box: MeshAsset) {
+  const position = meshAttributeWindow(box, 'position');
+  const normal = meshAttributeWindow(box, 'normal');
+  const uv = meshAttributeWindow(box, 'uv');
+  if (!position || !normal || !uv || position.count === 0
+    || normal.count !== position.count || uv.count !== position.count)
+    throw new Error('Museum architecture requires matching box surface channels');
+  return { position, normal, uv };
+}
 
 /** Ordinary exhibit architecture; it supplies no Water geometry or simulation. */
 export async function dressWaterMuseum(
@@ -15,6 +26,7 @@ export async function dressWaterMuseum(
   if (!assets) throw new Error('Water museum requires the App asset owner');
   const mesh = (await assets.load(presentationGuid('mesh/plank'), 'mesh')).unwrap();
   const box = assets.read(mesh).unwrap();
+  const { position, normal, uv } = museumSurfaceChannels(box);
   const materials = new Map(
     await Promise.all(
       ['limestone', 'plaster', 'ink', 'brass', 'wood', 'lamp'].map(
@@ -36,19 +48,17 @@ export async function dressWaterMuseum(
       batches.set(material, batch);
     }
     const offset = batch.positions.length / 3;
-    const position = box.attributes.position;
-    const normal = box.attributes.normal;
-    const uv = box.attributes.uv;
-    if (!(position instanceof Float32Array) || !(normal instanceof Float32Array) || !(uv instanceof Float32Array))
-      throw new Error('Museum architecture requires canonical box surface channels');
-    for (let vertex = 0; vertex < position.length / 3; vertex++) {
-      const transformedNormal = [0, 1, 2].map((axis) => (normal[vertex * 3 + axis] ?? 0) / (scale[axis] ?? 1));
+    for (let vertex = 0; vertex < position.count; vertex++) {
+      const positionOffset = position.offset + vertex * position.stride;
+      const normalOffset = normal.offset + vertex * normal.stride;
+      const uvOffset = uv.offset + vertex * uv.stride;
+      const transformedNormal = [0, 1, 2].map((axis) => (normal.data[normalOffset + axis] ?? 0) / (scale[axis] ?? 1));
       const magnitude = Math.hypot(...transformedNormal);
       for (let axis = 0; axis < 3; axis++) {
-        batch.positions.push((position[vertex * 3 + axis] ?? 0) * (scale[axis] ?? 1) + (pos[axis] ?? 0));
+        batch.positions.push((position.data[positionOffset + axis] ?? 0) * (scale[axis] ?? 1) + (pos[axis] ?? 0));
         batch.normals.push((transformedNormal[axis] ?? 0) / Math.max(0.00001, magnitude));
       }
-      batch.uv.push(uv[vertex * 2] ?? 0, uv[vertex * 2 + 1] ?? 0);
+      batch.uv.push(uv.data[uvOffset] ?? 0, uv.data[uvOffset + 1] ?? 0);
     }
     for (const index of box.indices ?? []) batch.indices.push(offset + index);
   };

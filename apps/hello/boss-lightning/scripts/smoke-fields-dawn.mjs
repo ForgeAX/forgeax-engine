@@ -30,7 +30,7 @@ import { setupGpuShim } from '../../triangle/scripts/smoke-helpers.mjs';
 import { FIELD_DT, fieldCamera, populateFieldScene } from '../src/field-scene.ts';
 import { distribution, gpuIntervals, trajectory } from './field-oracle.mjs';
 import { isSimulationUpdate, normalizeReadbackRgba } from './smoke-diagnostics.mjs';
-import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
+import { processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 const unwrap = (result) => {
   if (!result.ok) throw result.error;
@@ -55,7 +55,7 @@ globalThis.fetch = async (request) => {
   return originalFetch(request);
 };
 const manifestBytes=readFileSync(resolve(dist,'shaders/manifest.json'));
-const manifest=JSON.parse(readShaderManifestText(resolve(dist,'shaders/manifest.json')));
+
 const diffSha256=await new Promise((resolveHash,reject)=>{
   const hash=createHash('sha256');
   const diff=spawn('git',['diff','HEAD'],{cwd:root,stdio:['ignore','pipe','inherit']});
@@ -303,7 +303,7 @@ const assembly = unwrap(
         ? { rhiInstrumentation: { resolveSurfaceDevice: recorder.backend.unwrapDeviceForSurface } }
         : { gpuPassTiming: {} }),
     },
-    { shaderManifestUrl: `data:application/json,${encodeURIComponent(JSON.stringify(manifest))}` },
+    { shaderManifestUrl: processShaderManifestUrl(resolve(dist,'shaders/manifest.json')) },
   ),
 );
 const { renderer, assets } = assembly;

@@ -16,7 +16,7 @@ import {
 import { RhiErrorListenerRegistry } from '../lifecycle';
 import type { _InternalRenderPipelineContext } from '../record/render-context';
 import { scenePipelinePreparations } from '../record/scene-pipeline-preparation';
-import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
+import { VIEW_UNIFORM_BYTES, writeSsrQualityLanes } from '../record/view-ubo';
 import type { DepthPyramidShaderSources, SsrShaderSources } from '../render-contract';
 import type { RenderPipelineFrame } from '../render-pipeline';
 import { admitSsrSpatial } from '../ssr/admission';
@@ -90,7 +90,20 @@ export interface SsrShaderManifest {
   readonly entries: readonly { readonly wgsl: string }[];
 }
 
+function readTracePixels(
+  range: ArrayBufferLike,
+  bytesPerRow: number,
+  extent: { readonly width: number; readonly height: number },
+): number[] {
+  const words = new Uint16Array(range);
+  const packed: number[] = [];
+  for (let y = 0; y < extent.height; y++)
+    packed.push(...words.slice((y * bytesPerRow) / 2, (y * bytesPerRow) / 2 + extent.width * 4));
+  return packed;
+}
+
 export interface SsrGpuDispatchOptions {
+  readonly quality?: import('../quality').RenderQualityBudgets['ssr'];
   readonly execution?: 'compute' | 'fragment';
   /** Authoring maxDistance written through the shared View UBO. */
   readonly maxDistance?: number;
@@ -599,6 +612,7 @@ export async function runSsrGpuDispatch(
   viewPayload[237] = 0.2;
   viewPayload[238] = 0.6;
   viewPayload[239] = options.enabled === false ? 0 : 1;
+  writeSsrQualityLanes(viewPayload, options.quality);
   const wroteView = device.queue.writeBuffer(viewUniformBuffer, 0, viewPayload);
   if (!wroteView.ok) throw wroteView.error;
   const view = graph
@@ -840,6 +854,7 @@ export async function runSsrGpuDispatch(
   if (!depthPyramid.ok) throw depthPyramid.error;
   const pyramid = depthPyramid.value.pyramid;
   const projected = addSsrSpatialPasses(graph, {
+    quality: options.quality,
     admission: admittedSsrSpatial(),
     execution: options.execution ?? 'compute',
     width: SSR_GPU_PROBE_WIDTH,
@@ -952,8 +967,8 @@ export async function runSsrGpuDispatch(
           rowsPerImage: SSR_GPU_PROBE_HEIGHT,
         },
         {
-          width: SSR_GPU_PROBE_WIDTH,
-          height: SSR_GPU_PROBE_HEIGHT,
+          width: resources.trace.width,
+          height: resources.trace.height,
           depthOrArrayLayers: 1,
         },
       );
@@ -1078,8 +1093,7 @@ export async function runSsrGpuDispatch(
     pixels.push([...readbackWords.slice(0, 4)]);
     mapped.unmap();
     const traceRange = traceMapped.getMappedRange().unwrap();
-    const traceWords = new Uint16Array(traceRange.slice(0, bytesPerRow * SSR_GPU_PROBE_HEIGHT));
-    tracePixels.push([...traceWords]);
+    tracePixels.push(readTracePixels(traceRange, bytesPerRow, resources.trace));
     traceMapped.unmap();
     const pyramidRange = pyramidMapped.getMappedRange().unwrap();
     const pyramidWords = new Float32Array(
@@ -1118,6 +1132,7 @@ export async function runSsrGpuDispatch(
     pixel: pixels[0] ?? [],
     pixels: Object.freeze(pixels),
     tracePixels: Object.freeze(tracePixels),
+    traceExtent: { width: resources.trace.width, height: resources.trace.height },
     pyramidPixels: Object.freeze(pyramidPixels),
     surfacePixels: Object.freeze(surfacePixels),
     passNames: info.passes.map((pass) => pass.name),

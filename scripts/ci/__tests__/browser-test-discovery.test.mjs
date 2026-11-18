@@ -64,11 +64,10 @@ test('Host optimizer discovers the selected owner and preserves the complete ros
 test('actual Browser optimizers resolve runtime, guide, Parity and native Worker dependencies before imports', () => {
   const program = `
     import assert from 'node:assert/strict';
-    import { mkdtempSync } from 'node:fs';
+    import { mkdtempSync, realpathSync } from 'node:fs';
     import { rm } from 'node:fs/promises';
-    import { createRequire } from 'node:module';
     import { tmpdir } from 'node:os';
-    import { join } from 'node:path';
+    import { dirname, join } from 'node:path';
     import { createServer, createLogger, loadConfigFromFile } from 'vite';
     const root = process.cwd();
     const runtime = [
@@ -78,6 +77,12 @@ test('actual Browser optimizers resolve runtime, guide, Parity and native Worker
     const cases = [
       ['packages/runtime/src/__tests__/vfx-mesh-lighting.browser.test.ts',
         'config/vitest.browser.config.ts', runtime],
+      ['packages/audio-webaudio/src/__tests__/source-pose.browser.test.ts',
+        'config/vitest.browser.config.ts', [...runtime,
+          ['packages/pack/package.json', 'acorn'],
+          ['packages/water/package.json', 'clipper2-ts'],
+          ['packages/geometry/package.json', 'earcut'],
+        ]],
       ['packages/ui-blitz/src/__tests__/dom.browser.test.ts',
         'config/vitest.browser.config.ts', [...runtime,
           // The guide fixture owns its channel protocol; it reaches UI, not Pack.
@@ -129,13 +134,11 @@ test('actual Browser optimizers resolve runtime, guide, Parity and native Worker
         const optimizerStartedAt = Date.now();
         await optimizer.run();
         const expected = dependencies.map(([owner, id]) => {
-          const source = createRequire(join(root, owner)).resolve(id).replaceAll('\\\\', '/');
           const name = id.startsWith('@') ? id.split('/').slice(0, 2).join('/') : id.split('/')[0];
-          const marker = '/node_modules/' + name + '/';
-          const packageRoot = source.slice(0, source.lastIndexOf(marker) + marker.length);
-          assert.ok(source.includes(marker), 'installed dependency must have an identifiable package owner');
-          // Browser export conditions may select ESM while Node selects CJS.
-          // Require the same import ID and same actual installed package.
+          // ESM-only browser dependencies need not expose a Node require condition.
+          const packageRoot = realpathSync(join(dirname(join(root, owner)), 'node_modules', name))
+            .replaceAll('\\\\', '/') + '/';
+          // Require the requested import ID from the actual installed package.
           return { id, packageRoot };
         });
         const prepared = expected => Object.values(optimizer.metadata.optimized).some(entry =>
@@ -201,7 +204,7 @@ test('actual Browser optimizers resolve runtime, guide, Parity and native Worker
     timeout: 60_000,
   });
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(JSON.parse(result.stdout).length, 4);
+  assert.equal(JSON.parse(result.stdout).length, 5);
 });
 
 test('closed Browser optimizer cache cleanup retires a late asynchronous publication', () => {

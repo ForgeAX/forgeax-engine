@@ -20,7 +20,7 @@ import { buildFrameModel, decodeTape, readbackTexturePixels } from '@forgeax/eng
 
 import { emitSmokeReceipt, smokeFrameBudget } from '../../../shared/scripts/smoke-receipt.mjs';
 import { physicalMaterialChild, physicalMaterialRoots, withPhysicalMaterialModule } from '../src/material-contract.ts';
-import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
+import { readShaderManifestText, processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const caseInputPath = resolve(here, '..', 'evidence', 'case-input.json');
@@ -208,7 +208,7 @@ const additiveMutantShader = {
 // The expanded manifest repeats every Standard variant's full WGSL and exceeds
 // V8's string limit once URI-encoded, so the mutant stays in the deduplicated
 // publication form and only the clearcoat rows point at new mutated sources.
-const productManifestUrl = `data:application/json,${encodeURIComponent(productManifestBytes)}`;
+const productManifestUrl = processShaderManifestUrl(manifestPath);
 const mutantPublication = await createAdditiveCoatMutantPublication(
   JSON.parse(productManifestBytes), productShader.identifier, productShader.identifier,
 );

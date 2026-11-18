@@ -42,6 +42,8 @@ export function retainBrowserFrameSubmitted(
 }
 
 export interface BrowserFrameSubmitted {
+  readonly presentation?: import('@forgeax/engine-render').FramePresentation;
+  readonly configurationRevision?: number;
   readonly editorAssistance?: import('@forgeax/engine-render').SubmittedEditorAssistanceFrame;
   readonly shadowWorkload?: import('@forgeax/engine-render').ShadowWorkloadObservation;
   readonly frameId: number;
@@ -113,6 +115,7 @@ export interface BrowserFrameSubmitted {
 }
 
 export interface BrowserFrameCompleted {
+  readonly configurationRevision?: number;
   readonly shadowWorkload?: import('@forgeax/engine-render').ShadowWorkloadObservation;
   readonly frameId: number;
   readonly deviceGeneration: number;
@@ -200,6 +203,10 @@ export function publishBrowserFrameSubmitted(
     ...(event.editorAssistance === undefined
       ? {}
       : { editorAssistance: freezeSubmittedEditorAssistanceFrame(event.editorAssistance) }),
+    ...(event.configurationRevision === undefined
+      ? {}
+      : { configurationRevision: event.configurationRevision }),
+    ...(event.presentation === undefined ? {} : { presentation: event.presentation }),
     ...(event.graphGeneration === undefined ? {} : { graphGeneration: event.graphGeneration }),
     ...(event.barrelDistortion === undefined
       ? {}

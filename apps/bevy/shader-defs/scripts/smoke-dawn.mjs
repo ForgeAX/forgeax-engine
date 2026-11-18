@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
+import { readShaderManifestText, processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
@@ -80,7 +80,7 @@ if (!existsSync(manifestPath)) {
   process.exit(1);
 }
 const manifest = JSON.parse(readShaderManifestText(manifestPath));
-const manifestUrl = `data:application/json,${encodeURIComponent(JSON.stringify(manifest))}`;
+const manifestUrl = processShaderManifestUrl(manifestPath);
 const materialPackage = JSON.parse(
   readFileSync(resolve(appRoot, 'src', 'shader-defs.pack.json'), 'utf8'),
 );

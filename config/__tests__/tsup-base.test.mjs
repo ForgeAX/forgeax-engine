@@ -165,3 +165,21 @@ test('chunk cleanup refuses a linked output root and its parent segments', async
   }
   assert.equal(readFileSync(join(root, 'outside/nested/chunk-12345678.mjs'), 'utf8'), 'outside');
 });
+
+test('Water JS production preserves complete tsc declarations and incremental state', (t) => {
+  mkdirSync(fixtureRoot, { recursive: true });
+  const root = mkdtempSync(join(fixtureRoot, 'water-output-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const config = readFileSync(join(repoRoot, 'packages/water/tsup.config.ts'), 'utf8')
+    .replace("import { defineConfig } from 'tsup';", 'const defineConfig = (config) => config;')
+    .replace("'../../config/tsup.base'", JSON.stringify(baseConfig));
+  write(root, 'package.json', '{"type":"module"}');
+  write(root, 'tsup.config.ts', config);
+  write(root, 'src/index.ts', 'export const water = 1;');
+  write(root, 'src/internal.ts', 'export const internal = 2;');
+  const declarations = ['advanced-simulation.d.ts', 'advanced-simulation.d.ts.map', '.tsbuildinfo'];
+  for (const name of declarations) write(root, `dist/${name}`, `preserved:${name}`);
+  build(root);
+  for (const name of declarations)
+    assert.equal(readFileSync(join(root, 'dist', name), 'utf8'), `preserved:${name}`);
+});

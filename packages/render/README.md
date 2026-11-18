@@ -1,5 +1,31 @@
 # `@forgeax/engine-render`
 
+## Quality budgets
+
+App selects presets/device recommendations; Render owns their budget projection
+in [quality.ts](src/quality.ts). Render requirements retain topology, lighting,
+GI method and resource identity. Quality never enables a disabled effect or
+writes back to scene components.
+
+| Group | Consumed work budget |
+|:--|:--|
+| Resolution | Display CameraView scale, composed by minimum with author scale; UI and explicit targets retain their own extent |
+| Shadows | Directional/Spot/Point map ceilings and directional cascades before fitting/allocation |
+| Ambient occlusion | Quality and scale after camera AO authoring |
+| Reflections | Opaque SSR trace density, HiZ/linear iteration and refine limits; full-resolution reconstruction/history |
+| Global illumination | Budgets within the authored gather route; exact remains exact |
+| Volumetrics | Fog depth/tile/kernel and cloud view/shadow sample ceilings |
+| Textures | Eligible GPU mip residency at construction; source downloads and CPU bytes are unchanged |
+| Shading | Existing subsurface diffusion kernel quality; material model is unchanged |
+
+High preserves the author upper bound. Low/medium are bounded work policies,
+not measured device recommendations. Water SSR and probe update policies keep
+their independent contracts. Precise `RenderQualityLimits` can tighten a tier.
+Full-resolution SSR history/resolve storage remains in the memory estimate even
+when trace density halves; trace/reactivity descriptors and dispatch really shrink.
+`FrameReceipt.configurationRevision` is captured from the submitted compiled
+scene graph, and is absent on UI-only output.
+
 Local admission and Worker publication read the same source change candidate.
 The candidate captures membership, hierarchy, content and instance edits;
 validation fences source mutation, discard preserves pending edits, and accept
@@ -19,6 +45,11 @@ one roster in `features/builtins.ts`, and publication source adapters persist fo
 the publisher lifetime. Local capture derives view/device and graph-owner facts
 from the receiving renderer. GPU WaterMesh plans against that frame's WaterInfo
 publication after WaterInfo admission, retaining its view/device/source fences.
+
+Publication program rows retain the full canonical compiler context alongside
+artifact identity and vertex selection. Sharing shader bytes does not merge
+forward/deferred, geometry or pass selections. Repeated identical selections
+reuse their owned immutable row after structural validation.
 
 One Renderer accepts one active source World. Draw with `{ source: lease }`,
 optionally selecting `{ camera: { entityKey } }`, or use `{ source: null }` for
@@ -169,8 +200,7 @@ optional flat grid buffers, submission/completion receipts and retirement.
 material texture value; it retains the producer's current graph target and
 sampler contract. A pending or unavailable producer remains explicit.
 See the [Water API entry](../water/README.md#advanced-simulation-entry) and
-[R7 project](../../apps/water/r7-advanced-shallow-bake-fft/README.md). Stage labels
-or CPU lifecycle tests alone do not establish GPU output or UE equivalence.
+[R7 project](../../apps/water/r7-advanced-shallow-bake-fft/README.md).
 
 Water recipe version 2 adds the visual-only `visualNormalDetailFft` child to
 the mode-projected World OceanPatch. Render reuses that feature's spectrum and
@@ -185,7 +215,7 @@ residual normal/grid/foam/query outputs. See the v2 producer contract.
 
 The WaterBody shallow moving-window profile preserves sampled height and velocity
 and rebuilds depth against the current bed. Bottom-contour change suppression is
-disabled, matching the pinned UE WaterBody configuration; window remapping does
+disabled; window remapping does
 not reset a wet cell to a changed bed height.
 
 Ocean contact FoamRT can consume the current shallow producer's real foam and
@@ -195,7 +225,6 @@ not inject old pixels again. The original view scope and source receipts remain
 authoritative, and each producer executes once across views. The shared history
 keeps released world pixels and decays them after the local window moves away.
 Its local contribution uses the same four-cell edge weight as additive Water.
-This is Engine composition, not a claim of UE moving-window foam parity.
 Per-draw FoamRT inspection requires the uploaded Body row's shared-foam flag,
 reflected material bindings and the submitted producer/import/consumer closure.
 Shared resource names alone do not establish a draw's foam contribution.
@@ -6118,7 +6147,10 @@ underside) in the height instead.
 Render resolves one effective material table per logical mesh slot before
 recording submesh draws. `MeshRenderer.materials[]` is a sparse per-instance
 override vector: a missing entry or `0` inherits the corresponding
-`MeshAsset.materialSlots[]` default. A slot without a declared mesh default
+`MeshAsset.materialSlots[]` default. Renderer admission owns an immutable copy
+of these slot facts. Geometry-only revisions reuse equal slot facts and their
+prepared material bindings; changes to slot names, source keys or defaults
+produce a new version. Later source-array edits cannot change a captured frame. A slot without a declared mesh default
 uses the neutral engine material.
 
 > [!IMPORTANT]
@@ -12289,3 +12321,18 @@ simulation time. The existing integer-width Outline path remains the default.
 ### Camera-depth custom Standard Surfaces
 
 `Materials.standard({ surfaceModule, parameters, values, sceneDepth: 'before-pass', ... })` explicitly selects the native view/depth binding contract (`View` at group 0 binding 0, depth at binding 1). `sceneDepth: 'read-only'` selects the read-only attachment version instead. The Surface retains Standard lighting and material inputs. Depth-dependent Surfaces produce only the forward color pass; deferred and shadow derivatives must not sample a camera depth snapshot. Conflicting declared passes are rejected. This declaration travels through normal material cooking and ABI publication; it does not expose a device or private render host.
+
+### Explicit CPU texture residency
+
+`renderer.prepareTextureResidency(world, textureHandle)` prepares a live
+CPU-backed `TextureAsset` from a World already attached to that renderer. Call it
+on an alive renderer outside frame preparation. It returns a structured
+`TextureResidencyError` on invalid ownership, source content or upload failure.
+It does not discover a scene, compile its pipelines, draw, or wait for a frame.
+The current GPU cache and source revision govern reuse and updates; old borrowed
+allocations drain through their existing leases. Generated mip chains submit
+only that texture's cache-owned blits, retaining its allocation through physical
+queue completion. Sibling projection/generator/mip work remains queued for its
+own consumer. Rejected submits leave mip work available for retry. The caller
+retains the asset; detachment, asset
+retirement and device generation keep their normal ownership boundaries.

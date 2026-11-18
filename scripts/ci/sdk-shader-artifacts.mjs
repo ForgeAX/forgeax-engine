@@ -31,7 +31,31 @@ export async function sdkShaderArtifacts(input, api, options = {}) {
 async function completedSdkShaderArtifacts(input, api, core, run, job) {
   if (job.run_id !== run.id || job.conclusion !== 'success')
     throw new Error('SDK point producer did not succeed');
-  const { artifact, sourceJob } = await producerArtifact(input, api, run, job);
+  const projection = job.steps?.find((step) => step.name === 'Project shared inputs from ci-core');
+  let owner = job;
+  if (projection) {
+    if (projection.conclusion !== 'success')
+      throw new Error('shared input projection did not succeed');
+    const jobs = await runJobs(api, input.repository, run);
+    const owners = jobs?.filter((candidate) => candidate.name === 'ci-core') ?? [];
+    if (
+      owners.length !== 1 ||
+      owners[0].status !== 'completed' ||
+      owners[0].conclusion !== 'success'
+    )
+      throw new Error('combined shader execution unavailable');
+    owner = owners[0];
+  }
+  const { artifact, sourceJob } = await producerArtifact(input, api, run, owner, 'point');
+  if (
+    projection &&
+    (sourceJob.id !== core.sourceJobId ||
+      !sourceJob.steps?.some(
+        (step) =>
+          step.name === 'Upload app-shard shared input projection' && step.conclusion === 'success',
+      ))
+  )
+    throw new Error('combined point artifact execution does not match base');
   return {
     core,
     point: {

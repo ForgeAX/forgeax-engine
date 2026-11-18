@@ -1,4 +1,5 @@
 import { Time, World } from '@forgeax/engine-ecs';
+import { interleavedMesh } from '@forgeax/engine-geometry';
 import { AssetGuid, definePackageId } from '@forgeax/engine-pack/source';
 import {
   ok,
@@ -741,7 +742,7 @@ describe('WaterInfo startup input readiness', () => {
     expect(shader).not.toContain('size.z');
   });
 
-  it('keeps the ground channel on the UE shared water maximum', () => {
+  it('keeps the ground channel on the shared water maximum', () => {
     const shader = waterInfoMergeWgsl('rgba16float');
     expect(shader).toContain('let groundNormalized = normalizeRange(groundY, ranges.z, ranges.y);');
     expect(shader).toContain(
@@ -843,7 +844,10 @@ describe('WaterInfo startup input readiness', () => {
     expect(packed.ok).toBe(true);
     if (!packed.ok) return;
     const outputByGuid = new Map(
-      Object.entries(packed.value).map(([key, asset]) => [guid(key).toLowerCase(), asset]),
+      Object.entries(packed.value).map(([key, asset]) => [
+        guid(key).toLowerCase(),
+        asset.kind === 'mesh' ? interleavedMesh(asset) : asset,
+      ]),
     );
     const dependencyFields = [
       'waterInfoMeshGuid',

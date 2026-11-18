@@ -9,6 +9,7 @@ export * from './brush-terrain.js';
 export * from './buoyancy.js';
 export * from './capability-report.js';
 export * from './contracts.js';
+export * from './default-water-brush-curve.js';
 export * from './fluid-simulation.js';
 export * from './foam-input.js';
 export * from './material-family.js';
@@ -32,7 +33,6 @@ export {
   type WaterBuoyancyState,
 } from './runtime-resources.js';
 export * from './system.js';
-export * from './ue-default-water-brush-curve.js';
 export * from './validate.js';
 export {
   selectWaterView,

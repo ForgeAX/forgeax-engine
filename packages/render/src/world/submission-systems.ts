@@ -345,7 +345,7 @@ function captureWritableRows(
 function commitRecordOutcome(
   { internals, scene }: ViewSettlementOwner,
   history: RecordHistory,
-  { attempt, generation }: StagedRecord,
+  { attempt, generation, configurationRevision }: StagedRecord,
   receipt: ViewDrawReceipt | undefined,
 ): boolean {
   history.submittedFrames += 1;
@@ -355,6 +355,8 @@ function commitRecordOutcome(
   if (outcome === undefined || !attempt.submitted) return false;
   const { presentation, reason } = outcome.presentation;
   history.presentation = presentation;
+  history.configurationRevision =
+    presentation === 'ready' && attempt.sceneSubmitted ? configurationRevision : undefined;
   history.pendingReason =
     presentation === 'pending' && reason !== undefined ? Object.freeze(reason) : undefined;
   history.materialDraws = outcome.draws.drawObservation.commit(presentation === 'ready');

@@ -57,8 +57,8 @@ apps/**/*.tsbuildinfo
 *.cr2
 *.nef
 
-# Source images are owned by the external assets library except the explicitly
-# admitted Water Content producer inputs above. All other
+# Source images are owned by the external assets library. Procedural Content
+# textures are authored as ScriptablePack sources. All
 # rendered baselines, demo source assets, and vendor textures live in the
 # forgeax-engine-assets submodule (smoke-baselines/<demo>/, demo-assets/<demo>/,
 # learn-opengl/, ...). The global *.png / *.jpg blocks above have no

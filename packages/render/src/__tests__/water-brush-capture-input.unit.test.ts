@@ -287,7 +287,7 @@ it('validates Island input from its frozen recipe spline and height offset witho
       source: 'island-spline' as const,
       splineDigest: waterBrushIslandSplineDigest(islandSpline),
       shapeMeshDigest: 'c'.repeat(64),
-      shapeGeneratorVersion: 'ue-canvas-spline/1',
+      shapeGeneratorVersion: 'island-spline-shape/1',
       worldMatrixM: matrix,
       depthVelocityDigest: waterBrushDepthVelocityDigest(islandSpline),
     },

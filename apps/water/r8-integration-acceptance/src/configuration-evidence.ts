@@ -15,6 +15,7 @@ import {
   createWaterCapabilityReport,
   estimateWaterResourceBudget,
   type WaterCapabilitySelection,
+  type WaterCapabilityStatus,
   WaterQueryFlags,
   type WaterSystem,
 } from '@forgeax/engine/water';
@@ -609,7 +610,7 @@ export function waterTelemetry(
     ),
     foamInputs: {
       contactHistory: { decayPerSecond: contactDecayPerSecond },
-      requiredValidation: requiresFoamValidation() ? 'V-16' : null,
+      enabled: requiresFoamValidation(),
       authoredMaterials: materials.map((handle) => ({
         handle,
         revision: readMaterialRevision(handle),
@@ -678,7 +679,7 @@ export function waterComposition(
     identity: `${activeMode}-optics${
       localEnabled
         ? activeMode === 'R7-shallow'
-          ? '+ue-5.8.1-water-body'
+          ? '+water-body-shallow/2'
           : '+mode-projected-gravity/1'
         : ''
     }`,
@@ -701,7 +702,6 @@ export function waterComposition(
       widthsCameraAxisM: materials.map((material) => material.values?.sceneDepthFoamWidthM ?? 0),
       amounts: materials.map((material) => material.values?.sceneDepthFoamAmount ?? 0),
     },
-    parity: 'unvalidated-engine-composition',
   };
 }
 
@@ -743,7 +743,6 @@ export function configurationCapabilityReport(
   selection: WaterCapabilitySelection,
   parameterIdentity: string,
   settings: WaterZoneSnapshot['asset'],
-  foamValidation: boolean,
   solverExecution: WaterBuoyancyState['async']['execution'],
   device: ReturnType<typeof inspectRhiDeviceFacts>,
   renderer: ReturnType<typeof configurationRendererFacts>,
@@ -757,13 +756,25 @@ export function configurationCapabilityReport(
     width: settings.waterInfo.resolution.widthPx,
     height: settings.waterInfo.resolution.heightPx,
     layers: 1,
-    basicDiOrBeachFoam: foamValidation,
     reflectionMode: mode === 'Q2' ? 'disabled' : 'ssr',
     solverExecution: solverExecution === 'worker-solver' ? 'worker-solver' : 'inline-solver',
-    device: device,
+    device: {
+      version: 2,
+      compute: waterObservationStatus(device.compute),
+      storageBuffer: waterObservationStatus(device.storageBuffer),
+      indirectDraw: waterObservationStatus(device.indirectDraw),
+      formats: {
+        rgba16float: waterFormatFacts(device.formats.rgba16float),
+        rgba32float: waterFormatFacts(device.formats.rgba32float),
+        depth32float: {
+          renderSample: waterObservationStatus(device.formats.depth32float.renderSample),
+        },
+        rg16float: { renderSample: waterObservationStatus(device.formats.rg16float.renderSample) },
+      },
+      limits: device.limits,
+    },
     renderer,
     physics: physics,
-    evidence: [],
   });
   return {
     ...report,
@@ -771,11 +782,24 @@ export function configurationCapabilityReport(
       base: selection,
       local: localEnabled
         ? mode === 'R7-shallow'
-          ? 'ue-5.8.1-water-body'
+          ? 'water-body-shallow/2'
           : 'mode-projected-gravity/1'
         : null,
-      comparison: 'unvalidated-composed-coast',
     },
+  };
+}
+
+function waterObservationStatus(
+  status: ReturnType<typeof inspectRhiDeviceFacts>['compute'],
+): WaterCapabilityStatus {
+  return status === 'supported' || status === 'unsupported' ? status : 'unavailable';
+}
+
+function waterFormatFacts(format: ReturnType<typeof inspectRhiDeviceFacts>['formats']['rgba16float']) {
+  return {
+    renderSample: waterObservationStatus(format.renderSample),
+    arrayRenderSample: waterObservationStatus(format.arrayRenderSample),
+    storageSample: waterObservationStatus(format.storageSample),
   };
 }
 

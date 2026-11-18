@@ -744,7 +744,7 @@ export function createR8ProfileCapture(
           closeR8CpuCapture(run, readNativeCompletedStep);
           return;
         }
-        // This is sampled while Rapier is still on the App frame that admitted this step.
+        // Sample within the App frame that admitted this native step.
         const frameToken = run.session.currentFrameToken();
         const associated = frameToken?.captureId === run.captureId ? frameToken : undefined;
         if (associated === undefined) run.nativeUnassociated += 1;

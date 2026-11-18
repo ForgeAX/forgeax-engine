@@ -2,8 +2,8 @@ import type { WaterBrushActorRules, WaterBrushRecipeAsset } from '@forgeax/engin
 import { describe, expect, it } from 'vitest';
 import {
   buildWaterBrushTerrainManifest,
-  UE_DEFAULT_WATER_BRUSH_CURVE_KEY,
   WATER_BRUSH_REQUIRED_SHADER_VERSIONS,
+  WATER_DEFAULT_BRUSH_CURVE_KEY,
   type WaterBrushTerrainManifest,
   waterBrushDepthVelocityDigest,
   waterBrushIslandSplineDigest,
@@ -11,9 +11,9 @@ import {
 import { migrateWaterBrushRecipeV0ToV1 } from '../brush-migration.js';
 import { applyWaterBrushTerrainReadback, selectWaterBrushCacheInput } from '../brush-terrain.js';
 import {
-  UE_DEFAULT_WATER_BRUSH_CURVE_SHA256,
+  WATER_DEFAULT_BRUSH_CURVE_SHA256,
   waterBrushDefaultCurveR16fBytes,
-} from '../ue-default-water-brush-curve.js';
+} from '../default-water-brush-curve.js';
 import { validateWaterAsset } from '../validate.js';
 
 function requiredFixtureValue<T>(value: T | null | undefined): T {
@@ -91,6 +91,43 @@ function islandCaptureProvenance(
 
 const cacheByActor = (manifest: WaterBrushTerrainManifest, id: string) =>
   manifest.actorCaches.find((cache) => cache.actorId === id);
+
+it('normalizes previous saved island spline labels while retaining actor order and caller data', () => {
+  const current = {
+    ...recipe(),
+    orderedActors: recipe().orderedActors.map((actor) =>
+      actor.kind !== 'island'
+        ? actor
+        : {
+            ...actor,
+            spline: {
+              ...actor.spline,
+              interpolationVersion: 'water-spline/2',
+              points: actor.spline.points.map((point) => ({
+                ...point,
+                rotationQuat: [0, 0, 0, 1],
+              })),
+            },
+          },
+    ),
+  };
+  const previous = {
+    ...current,
+    orderedActors: current.orderedActors.map((actor) =>
+      actor.kind !== 'island'
+        ? actor
+        : {
+            ...actor,
+            spline: { ...actor.spline, interpolationVersion: 'ue-water-spline/1' },
+          },
+    ),
+  };
+  const before = structuredClone(previous);
+  const checked = validateWaterAsset(previous);
+  expect(checked.ok, checked.ok ? '' : JSON.stringify(checked.error)).toBe(true);
+  expect(checked.unwrap()).toEqual(current);
+  expect(previous).toEqual(before);
+});
 
 function actorRules(curve?: string, texture?: string): WaterBrushActorRules {
   return {
@@ -310,7 +347,7 @@ const inputs = (
   dependencyDigests: {
     [curveGuid]: curve,
     [textureGuid]: texture,
-    [UE_DEFAULT_WATER_BRUSH_CURVE_KEY]: UE_DEFAULT_WATER_BRUSH_CURVE_SHA256,
+    [WATER_DEFAULT_BRUSH_CURVE_KEY]: WATER_DEFAULT_BRUSH_CURVE_SHA256,
   },
   shaderVersions: {
     capture: '1',
@@ -339,7 +376,7 @@ describe('Water Brush Terrain manifest', () => {
       expect(validateWaterAsset({ ...candidate, orderedActors: [actor] }).ok).toBe(false);
     }
   });
-  it('records explicit pixel-center world mapping and per-actor UE RT/cache layouts', () => {
+  it('records explicit pixel-center world mapping and per-actor RT/cache layouts', () => {
     const manifest = buildWaterBrushTerrainManifest(recipe(), inputs(digestA)).unwrap();
     expect(manifest.pixelCenterMapping.originWorldM).toEqual([0, 0, 0]);
     expect(manifest.pixelCenterMapping.stepWorldXM).toEqual([1, 0, 0]);
@@ -398,7 +435,7 @@ describe('Water Brush Terrain manifest', () => {
     );
     expect(manifest.textures).toContainEqual(
       expect.objectContaining({
-        name: `curve-lut:${UE_DEFAULT_WATER_BRUSH_CURVE_KEY}`,
+        name: `curve-lut:${WATER_DEFAULT_BRUSH_CURVE_KEY}`,
         widthPx: 256,
         heightPx: 1,
         format: 'r16float',
@@ -442,7 +479,7 @@ describe('Water Brush Terrain manifest', () => {
       { layerName: 'water', read: 'weight:water:pong', write: 'weight:water:ping' },
     ]);
     expect(manifest.managerDefaults).toEqual({
-      version: 'UE-5.8.1-WaterBrushManager-CDO-R1',
+      version: 'water-brush-defaults/2',
       canvasSegmentSizeM: 10.24,
       splineMeshExtensionM: 0,
     });
@@ -478,7 +515,7 @@ describe('Water Brush Terrain manifest', () => {
     ).toBe(false);
   });
 
-  it('accepts an explicit curve channel using the verified UE default FloatCurve', () => {
+  it('accepts an explicit curve channel using the built-in default FloatCurve', () => {
     const source = recipe();
     const defaultCurveSource = {
       ...source,
@@ -498,7 +535,7 @@ describe('Water Brush Terrain manifest', () => {
       ...baseInputs,
       dependencyDigests: {
         ...baseInputs.dependencyDigests,
-        [UE_DEFAULT_WATER_BRUSH_CURVE_KEY]: digestB,
+        [WATER_DEFAULT_BRUSH_CURVE_KEY]: digestB,
       },
     });
     expect(changedDefault.ok).toBe(false);
@@ -508,13 +545,13 @@ describe('Water Brush Terrain manifest', () => {
         ...baseInputs,
         dependencyDigests: {
           ...baseInputs.dependencyDigests,
-          [UE_DEFAULT_WATER_BRUSH_CURVE_KEY]: undefined,
+          [WATER_DEFAULT_BRUSH_CURVE_KEY]: undefined,
         },
       }).ok,
     ).toBe(false);
   });
 
-  it('ships the UE 5.8.1 default curve bytes and preserves Islands registration order', () => {
+  it('ships the default curve bytes and preserves Islands registration order', () => {
     const curveBytes = waterBrushDefaultCurveR16fBytes();
     expect(curveBytes.byteLength).toBe(512);
     expect(curveBytes[510]).toBe(0);
@@ -687,7 +724,7 @@ describe('Water Brush Terrain manifest', () => {
       ...baseInputs,
       dependencyDigests: {
         ...baseInputs.dependencyDigests,
-        [UE_DEFAULT_WATER_BRUSH_CURVE_KEY]: digestB,
+        [WATER_DEFAULT_BRUSH_CURVE_KEY]: digestB,
       },
     });
     expect(changedDefaultCurve.ok).toBe(false);
@@ -1197,7 +1234,7 @@ describe('Water Brush Terrain manifest', () => {
       ok: false,
       error: {
         code: 'invalid-source',
-        expected: expect.stringContaining('explicit UE angleDegrees'),
+        expected: expect.stringContaining('explicit angleDegrees'),
       },
     });
     const rejectsChanged = (rules: WaterBrushRecipeAsset['rules']) =>
@@ -1296,7 +1333,7 @@ describe('Water Brush Terrain manifest', () => {
     expect([...output.weights.filter((_, index) => index % 2 === 1)]).toEqual([...water]);
   });
 
-  it('selects UE cache input by raw radius while exposing the actual final ping-pong target', () => {
+  it('selects cache input by raw radius while exposing the actual final ping-pong target', () => {
     for (const enabled of [false, true]) {
       const source = recipe();
       const modified = {

@@ -49,7 +49,7 @@ const river = (): WaterBodySourceAsset => ({
   ],
 });
 
-describe('UE River spline mesh collision in Rapier 3D', () => {
+describe('River spline mesh collision in Rapier 3D', () => {
   it('publishes both segments at a fixed step and contacts the shared endpoint', async () => {
     const module = await loadRapier3D();
     if ('code' in module) throw module;

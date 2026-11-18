@@ -17,7 +17,7 @@ export type WaterZoneViewWindow = Readonly<{
   updateHalfExtentXZ: readonly [number, number];
 }>;
 
-/** The dynamic diameter controls horizontal hysteresis; UE truncates tile ratios before power-of-two rounding. */
+/** The dynamic diameter controls horizontal hysteresis; truncate tile ratios before power-of-two rounding. */
 export function createWaterZoneViewWindow(
   zone: WaterZoneSnapshot,
   viewId: string,

@@ -103,7 +103,7 @@ export default definePack({
           zoneGuid,
           spline: {
             closed: false,
-            interpolationVersion: 'ue-water-spline/1',
+            interpolationVersion: 'water-spline/2',
             points: [-27, -19, -11, -3, 5, 13, 21, 28].map((x, i) => point(i, x)),
           },
           baseHeightM: 0,

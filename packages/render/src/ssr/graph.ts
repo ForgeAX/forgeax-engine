@@ -29,13 +29,11 @@ import {
 } from './resources';
 import { WATER_SSR_DEFAULT_PROFILE } from './water-profile';
 
-const SSR_TRACE_COARSE_STEPS = 48 as const;
-const SSR_TRACE_REFINE_STEPS = 5 as const;
-
 interface SsrTracePlan {
-  readonly resolution: 'full';
-  readonly coarseSteps: typeof SSR_TRACE_COARSE_STEPS;
-  readonly refineSteps: typeof SSR_TRACE_REFINE_STEPS;
+  readonly resolution: 'full' | 'half';
+  readonly hizIterations: number;
+  readonly linearIterations: number;
+  readonly refineSteps: number;
 }
 
 interface WaterSsrTracePlan {
@@ -46,15 +44,19 @@ interface WaterSsrTracePlan {
   readonly profile: typeof WATER_SSR_DEFAULT_PROFILE;
 }
 
-export function buildSsrTracePlan(): SsrTracePlan {
+export function buildSsrTracePlan(
+  budget?: import('../quality').RenderQualityBudgets['ssr'],
+): SsrTracePlan {
   return Object.freeze({
-    resolution: 'full' as const,
-    coarseSteps: SSR_TRACE_COARSE_STEPS,
-    refineSteps: SSR_TRACE_REFINE_STEPS,
+    resolution: budget?.resolutionScale === 0.5 ? 'half' : 'full',
+    hizIterations: budget?.hizIterations ?? 64,
+    linearIterations: budget?.linearIterations ?? 1024,
+    refineSteps: budget?.refineSteps ?? 5,
   });
 }
 
 export interface SsrSpatialGraphInputs {
+  readonly quality?: import('../quality').RenderQualityBudgets['ssr'] | undefined;
   readonly execution?: 'compute' | 'fragment';
   readonly label?: string;
   /** Independent displaced receiver; hit admission still reads the opaque scene. */
@@ -172,6 +174,7 @@ function requiredSsrInputs(input: SsrSpatialGraphInputs) {
 function admitSsrDescriptorCapacity(input: SsrSpatialGraphInputs) {
   const memory = estimateSsrSpatialMemory(input, {
     temporal: input.temporal !== undefined,
+    resolutionScale: input.origin === undefined ? input.quality?.resolutionScale : 1,
     execution: input.execution ?? 'compute',
     forward: input.admission.lane === 'forward' || input.admission.lane === 'cpu-webgl2',
   });
@@ -206,6 +209,33 @@ function resolvedSsrResources(
   };
 }
 
+/** Water keeps its own full-density receiver; opaque SSR uses its declared trace lattice. */
+function createTraceResources<FrameCtx extends RenderGraphFrame>(
+  graph: RenderGraphBuilder<FrameCtx>,
+  input: SsrSpatialGraphInputs,
+  label: string,
+): Result<SsrSpatialResources, RenderGraphError> {
+  return createSsrSpatialResources(
+    graph,
+    { width: input.width, height: input.height },
+    label,
+    input.origin === undefined ? input.quality?.resolutionScale : 1,
+  );
+}
+
+/** The temporal surface stays full-size; trace-only reactivity follows the trace descriptor. */
+function reactivitySurfaceFor(
+  input: SsrSpatialGraphInputs,
+  trace: SsrSpatialResources['trace'],
+): NonNullable<SsrSpatialGraphProjection['reactivitySurface']> {
+  const full = input.temporal?.profile === 'opaque';
+  return {
+    width: full ? Math.max(1, Math.floor(input.width)) : trace.width,
+    height: full ? Math.max(1, Math.floor(input.height)) : trace.height,
+    format: full ? 'rgba8unorm' : 'r32float',
+  };
+}
+
 export function addSsrSpatialPasses<FrameCtx extends RenderGraphFrame>(
   graph: RenderGraphBuilder<FrameCtx>,
   input: SsrSpatialGraphInputs,
@@ -236,14 +266,7 @@ export function addSsrSpatialPasses<FrameCtx extends RenderGraphFrame>(
       depthPyramid.reduction,
     );
 
-  const resources = createSsrSpatialResources(
-    graph,
-    {
-      width: input.width,
-      height: input.height,
-    },
-    label,
-  );
+  const resources = createTraceResources(graph, input, label);
   if (!resources.ok) return resources;
   const { trace, hitReactivity } = resources.value;
   const reactivity = temporal?.profile === 'opaque' ? temporal.outputSurface : hitReactivity;
@@ -325,13 +348,9 @@ export function addSsrSpatialPasses<FrameCtx extends RenderGraphFrame>(
         radiancePyramid,
         Math.max(1, reflectionLevels.length),
       ),
-      trace: buildSsrTracePlan(),
+      trace: buildSsrTracePlan(input.quality),
       reactivity,
-      reactivitySurface: {
-        width: input.width,
-        height: input.height,
-        format: temporal === undefined ? 'r32float' : 'rgba8unorm',
-      },
+      reactivitySurface: reactivitySurfaceFor(input, trace),
     });
   }
   const createSsrComputeEntries = () => {
@@ -713,7 +732,7 @@ export function addSsrSpatialPasses<FrameCtx extends RenderGraphFrame>(
             },
           ]),
         );
-        pass.dispatchWorkgroups(Math.ceil(input.width / 8), Math.ceil(input.height / 8), 1);
+        pass.dispatchWorkgroups(Math.ceil(trace.width / 8), Math.ceil(trace.height / 8), 1);
       },
     );
     return added;
@@ -974,7 +993,7 @@ export function addSsrSpatialPasses<FrameCtx extends RenderGraphFrame>(
     ),
     trace:
       origin === undefined
-        ? buildSsrTracePlan()
+        ? buildSsrTracePlan(input.quality)
         : {
             resolution: 'full',
             algorithm: 'furthest-hzb-screen-ray',
@@ -983,11 +1002,6 @@ export function addSsrSpatialPasses<FrameCtx extends RenderGraphFrame>(
             profile: WATER_SSR_DEFAULT_PROFILE,
           },
     reactivity,
-    reactivitySurface: {
-      width: Math.max(1, Math.floor(input.width)),
-      height: Math.max(1, Math.floor(input.height)),
-      // History surfaces are 8-bit; the trace-only path keeps its r32float hits.
-      format: temporal?.profile === 'opaque' ? 'rgba8unorm' : 'r32float',
-    },
+    reactivitySurface: reactivitySurfaceFor(input, trace),
   });
 }

@@ -1791,6 +1791,8 @@ function frameGraphCacheKey(
   const bakedField = bakedFieldInput(internals, frameState);
   const probePlacement = frameState.probePlacementFrame;
   const input = {
+    configurationRevision: internals.standardProfile?.configurationRevision,
+    quality: internals.standardProfile?.quality,
     topology: topologyIdentity,
     // Internal conformance stage changes the raw GTAO graph node and its storage usage.
     gtaoExecutionOverride: frameState.gtaoExecutionOverride,
@@ -2112,6 +2114,7 @@ function installedFrameGraphOf(
   prepareGpuDrivenPipelines: InstalledFrameGraph['prepareGpuDrivenPipelines'],
   directionalShadowViewCount: number | undefined,
   featureTextureAliases: ReadonlyMap<string, string>,
+  configurationRevision: number | undefined,
 ): InstalledFrameGraph {
   const requiresShadowPipelinePreparation = stockRecording
     ? shadowPipelinePreparationDemand(builder)
@@ -2131,6 +2134,7 @@ function installedFrameGraphOf(
     scenePipelinePreparations: scenePipelinePreparations(builder),
     ...(directionalShadowViewCount === undefined ? {} : { directionalShadowViewCount }),
     graph,
+    configurationRevision,
     topologyKey,
     ...(preparedResourceKey === undefined ? {} : { preparedResourceKey }),
     targets: {
@@ -3099,6 +3103,7 @@ function compileViewGraphStagesOwned(
               : [];
           }),
         ),
+        internals.standardProfile?.configurationRevision,
       ),
       effects: effects({ ...accepted, gpuReplacement: gpuDriven }),
     };

@@ -20,7 +20,7 @@ import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs'
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { emitSmokeReceipt, smokeFrameBudget } from '../../../shared/scripts/smoke-receipt.mjs';
-import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
+import { processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 const SIZE = 128;
 const EPSILON = Number.parseFloat(process.env.SMOKE_PIXEL_THRESHOLD ?? '0.05');
@@ -86,7 +86,7 @@ const { constructRuntimeRendererHost } = await import(
 const { OIT_PROBES, probePixel, probeReference, spawnOitScene } = await import('./oit-scene.mjs');
 
 const manifestPath = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const shaderManifestUrl = `data:application/json,${encodeURIComponent(readShaderManifestText(manifestPath))}`;
+const shaderManifestUrl = processShaderManifestUrl(manifestPath);
 const constructed = await constructRuntimeRendererHost(mockCanvas, {}, { shaderManifestUrl });
 if (!constructed.ok) {
   console.error(`[smoke] FAIL - renderer construction: ${JSON.stringify(constructed.error)}`);

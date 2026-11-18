@@ -286,11 +286,11 @@ describe('standard ScriptablePack output producers', () => {
       'navigation-mesh': 'ordinary-pod/1',
       tileset: 'ordinary-pod/1',
       video: 'ordinary-pod/1',
-      'water-body': 'water-runtime/1',
-      'water-zone': 'water-runtime/1',
-      'water-wave-set': 'water-runtime/1',
-      'water-brush-recipe': 'water-runtime/1',
-      'water-simulation-recipe': 'water-runtime/1',
+      'water-body': 'water-runtime/2',
+      'water-zone': 'water-runtime/2',
+      'water-wave-set': 'water-runtime/2',
+      'water-brush-recipe': 'water-runtime/2',
+      'water-simulation-recipe': 'water-runtime/2',
     });
   });
 

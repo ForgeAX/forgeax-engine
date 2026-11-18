@@ -35,6 +35,7 @@ export interface ExecutionFrameMessage {
 }
 
 export interface ExecutionFrameCompletion {
+  readonly configurationRevision?: number;
   readonly shadowWorkload?: import('@forgeax/engine-render').ShadowWorkloadObservation;
   readonly kind: 'frame-complete';
   readonly worldIdentity: string;
@@ -210,6 +211,8 @@ export class FrameCreditLedger {
 }
 
 export interface ExecutionInitMessage {
+  /** Already resolved Host construction intent; receivers never rematch devices. */
+  readonly startup?: import('../configuration-types').EngineStartupPlan;
   readonly kind: 'init';
   /** App-owned startup policy also bounds Renderer realm creation and replacement. */
   readonly startupTimeoutMs: number | null;
@@ -369,6 +372,7 @@ export interface ExecutionSurfaceResultMessage {
 }
 
 export type HostToEngineMessage =
+  | import('../configuration-apply').ConfigurationApplyRequest
   | ExecutionSurfaceResultMessage
   | ExecutionRenderReplaceMessage
   | ExecutionInitMessage
@@ -415,6 +419,7 @@ export interface ExecutionRenderErrorMessage {
 }
 
 export type EngineToHostMessage =
+  | import('../configuration-apply').ConfigurationApplyResponse
   /** A pool Worker for the Engine Worker's task dispatcher; the page creates it. */
   | { readonly kind: 'task-worker'; readonly workerId: number; readonly port: MessagePort }
   | { readonly kind: 'task-retire'; readonly workerId: number }

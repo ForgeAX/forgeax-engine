@@ -52,8 +52,8 @@ const visualNormalDetailFft = {
   slosh: 0.5,
   normalRtFormat: 'rgba32float' as const,
 };
-const fullNiagaraConfig = {
-  algorithm: 'ue-5.8.1-niagara-fft' as const,
+const fullSpectrumConfig = {
+  algorithm: 'ocean-spectrum-fft/2' as const,
   windAngleDegrees: 45,
   windSpeedMPerSec: 12,
   noiseTextureGuid: visualNoiseGuid,
@@ -236,14 +236,14 @@ it('admits only the closed configuration-version-2 visual FFT mode-projected sha
   expect(
     validateWaterAsset({
       ...valid,
-      oceanPatchConfig: fullNiagaraConfig,
+      oceanPatchConfig: fullSpectrumConfig,
     }).ok,
   ).toBe(false);
   expect(
     validateWaterAsset({
       ...source,
       textureGuids: [visualNoiseGuid],
-      oceanPatchConfig: fullNiagaraConfig,
+      oceanPatchConfig: fullSpectrumConfig,
     }).ok,
   ).toBe(true);
   expect(

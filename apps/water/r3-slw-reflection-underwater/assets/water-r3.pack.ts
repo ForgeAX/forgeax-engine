@@ -124,7 +124,7 @@ export default definePack({
       lodMaterialGuid: guid('material/clear/lake-lod'),
       spline: {
         closed: true,
-        interpolationVersion: 'ue-water-spline/1',
+        interpolationVersion: 'water-spline/2',
         points: [point(0, -22, -22), point(1, 22, -22), point(2, 22, 22), point(3, -22, 22)],
       },
       collision: { type: 'polygon', enabled: true, channelDepthM: 10 },
@@ -136,7 +136,7 @@ export default definePack({
       ...waterMaterialFamilySlots(family, 'river'),
       spline: {
         closed: false,
-        interpolationVersion: 'ue-water-spline/1',
+        interpolationVersion: 'water-spline/2',
         points: [point(0, -22, -9, 28), point(1, 0, 0, 34), point(2, 22, 9, 28)],
       },
       collision: { type: 'river-prism', enabled: true },
@@ -148,7 +148,7 @@ export default definePack({
       ...waterMaterialFamilySlots(family, 'ocean'),
       spline: {
         closed: true,
-        interpolationVersion: 'ue-water-spline/1',
+        interpolationVersion: 'water-spline/2',
         points: [point(0, 60, 60), point(1, 64, 60), point(2, 64, 64), point(3, 60, 64)],
       },
       oceanExtentM: [160, 160],
@@ -167,7 +167,7 @@ export default definePack({
       flags: { affectsWaterInfo: false, affectsWaterMesh: false, affectsLandscape: false },
       spline: {
         closed: false,
-        interpolationVersion: 'ue-water-spline/1',
+        interpolationVersion: 'water-spline/2',
         points: [point(0, -22, 0), point(1, 22, 0)],
       },
       customMeshOverrideGuid: customMeshGuid,

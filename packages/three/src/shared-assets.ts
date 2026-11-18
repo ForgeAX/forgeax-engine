@@ -21,13 +21,18 @@ interface Entry<Payload extends Asset> {
   readonly values: readonly unknown[];
   readonly handle: AssetHandle<Payload['kind']>;
   dirty: boolean;
+  retained: boolean;
+  seen: number;
   readonly invalidate: () => void;
 }
 
 /** Source leases only; the surrounding asset adoption owns content commit and rollback. */
 export class SharedAssets<Source extends object, Payload extends Asset> {
-  private entries = new Map<Source, Map<string, Entry<Payload>>>();
-  private pending: Map<Source, Map<string, Entry<Payload>>> | undefined;
+  private readonly entries = new Map<Source, Map<string, Entry<Payload>>>();
+  /** Only replacements are staged; unchanged resources retain their original entry. */
+  private readonly pending = new Map<Source, Map<string, Entry<Payload>>>();
+  private active = false;
+  private epoch = 0;
 
   constructor(private readonly assets: AssetRegistry) {}
 
@@ -36,14 +41,14 @@ export class SharedAssets<Source extends object, Payload extends Asset> {
     values: readonly unknown[] | undefined,
     variant = '',
   ): { handle: AssetHandle<Payload['kind']>; payload: Payload } | undefined {
-    const entry = this.pending?.get(source)?.get(variant) ?? this.entries.get(source)?.get(variant);
+    const entry = this.pending.get(source)?.get(variant) ?? this.entries.get(source)?.get(variant);
     if (
       entry === undefined ||
       entry.dirty ||
       (values !== undefined && !sameValues(values, entry.values))
     )
       return undefined;
-    if (this.pending !== undefined) this.stage(source, variant, entry);
+    if (this.active) entry.seen = this.epoch;
     return {
       handle: entry.handle,
       payload: runtimeAssets(this.assets).borrow<Payload>(entry.handle).unwrap(),
@@ -56,7 +61,7 @@ export class SharedAssets<Source extends object, Payload extends Asset> {
     payload: Payload,
     variant = '',
   ): { handle: AssetHandle<Payload['kind']>; payload: Payload } {
-    if (this.pending === undefined) throw new Error('resource preparation has not begun');
+    if (!this.active) throw new Error('resource preparation has not begun');
     const committed = this.entries.get(source)?.get(variant);
     const pending = this.pending.get(source)?.get(variant);
     const previous = pending ?? committed;
@@ -71,11 +76,14 @@ export class SharedAssets<Source extends object, Payload extends Asset> {
     )
       this.assets.replace<Payload['kind'], Asset>(handle, payload).unwrap();
     const entry = {
-      values,
+      values: values.slice(),
       handle,
       dirty: false,
+      retained: previous?.retained ?? false,
+      seen: this.epoch,
       invalidate: () => {
         entry.dirty = true;
+        entry.retained = false;
       },
     };
     disposable(source)?.addEventListener('dispose', entry.invalidate);
@@ -89,7 +97,7 @@ export class SharedAssets<Source extends object, Payload extends Asset> {
   }
 
   private stage(source: Source, variant: string, entry: Entry<Payload>): void {
-    if (this.pending === undefined) throw new Error('resource preparation has not begun');
+    if (!this.active) throw new Error('resource preparation has not begun');
     let variants = this.pending.get(source);
     if (variants === undefined) {
       variants = new Map();
@@ -99,33 +107,51 @@ export class SharedAssets<Source extends object, Payload extends Asset> {
   }
 
   begin(): void {
-    if (this.pending !== undefined) throw new Error('resource preparation is already active');
-    this.pending = new Map();
+    if (this.active) throw new Error('resource preparation is already active');
+    this.active = true;
+    this.epoch++;
   }
 
-  commit(): void {
-    if (this.pending === undefined) throw new Error('resource preparation has not begun');
+  /** Explicit init retains a source until dispose; ordinary frame discovery still sweeps unused leases. */
+  retain(source: Source, variant = ''): void {
+    const entry = this.pending.get(source)?.get(variant) ?? this.entries.get(source)?.get(variant);
+    if (entry !== undefined) entry.retained = true;
+  }
+
+  commit(sweep = true): void {
+    if (!this.active) throw new Error('resource preparation has not begun');
     for (const [source, variants] of this.entries) {
       for (const [variant, entry] of variants) {
         const pending = this.pending.get(source)?.get(variant);
-        if (pending !== entry) {
+        if (pending !== undefined || (sweep && !entry.retained && entry.seen !== this.epoch)) {
           disposable(source)?.removeEventListener('dispose', entry.invalidate);
           if (pending?.handle !== entry.handle) this.assets.release(entry.handle).unwrap();
+          variants.delete(variant);
         }
       }
+      if (variants.size === 0) this.entries.delete(source);
     }
-    this.entries = this.pending;
-    this.pending = undefined;
+    for (const [source, variants] of this.pending) {
+      let committed = this.entries.get(source);
+      if (committed === undefined) {
+        committed = new Map();
+        this.entries.set(source, committed);
+      }
+      for (const [variant, entry] of variants) committed.set(variant, entry);
+    }
+    this.pending.clear();
+    this.active = false;
   }
 
   abort(): void {
-    for (const [source, variants] of this.pending ?? []) {
+    for (const [source, variants] of this.pending) {
       for (const [variant, entry] of variants) {
         if (entry !== this.entries.get(source)?.get(variant))
           disposable(source)?.removeEventListener('dispose', entry.invalidate);
       }
     }
-    this.pending = undefined;
+    this.pending.clear();
+    this.active = false;
   }
 
   dispose(): void {

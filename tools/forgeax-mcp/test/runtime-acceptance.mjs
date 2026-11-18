@@ -27,6 +27,7 @@ const server = createServer((_request, response) => {
   response.end('<!doctype html><title>Runtime acceptance Host</title>');
 });
 let browser;
+let phase = 'native-plugin-startup';
 try {
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
@@ -74,6 +75,10 @@ try {
   assert.equal(await page.locator('iframe').getAttribute('sandbox'), 'allow-scripts');
   const documentOrigin = await frame.evaluate(() => globalThis.origin);
   assert.equal(documentOrigin, 'null', 'the sandboxed document must retain its opaque origin');
+  assert.equal(await frame.evaluate(() => {
+    try { void parent.document; return false; } catch { return true; }
+  }), true, 'the opaque document must not read its host DOM');
+  phase = 'runtime-acceptance';
   await frame.waitForFunction(() => document.querySelector('canvas#app')?.forgeaxFrameProgress?.completed?.frameId >= 60);
   await assertNoRuntimeFailure(frame, 'Healthy native document', errors, consoleErrors);
   const positivePng = await frame.locator('canvas#app').evaluate(canvas => canvas.toDataURL());
@@ -103,11 +108,17 @@ try {
   assert.equal(consoleErrors.length, 1);
   await assert.rejects(() => assertNoRuntimeFailure(frame, 'Console failure', errors, consoleErrors),
     /no browser console errors/);
-  const summary = { ok: true, positive, retainedFrameCount: 60, hostOrigin, documentOrigin,
+  const summary = { ok: true, browser: browser.version(), positive, retainedFrameCount: 60, hostOrigin, documentOrigin,
     rejected: ['visible native fatal with empty browser errors', 'hidden retained startup failure', 'black PNG', 'white PNG', 'runtime console error'],
     boundary: 'Actual native child failure in a sandboxed iframe, generated startup DOM and decoded 2D pixels; no GPU qualification' };
   await writeFile(resolve(evidence, 'result.json'), JSON.stringify(summary, null, 2));
   console.log(JSON.stringify(summary));
+} catch (error) {
+  await mkdir(evidence, { recursive: true });
+  await writeFile(resolve(evidence, 'failure.json'), JSON.stringify({
+    ok: false, phase, error: String(error?.stack ?? error).slice(0, 65536),
+  }, null, 2));
+  throw error;
 } finally {
   try {
     await browser?.close();

@@ -322,7 +322,7 @@ export function prepareWaterFluidFrame(
   const impulses: WaterFluidDrawImpulse[] = [];
   appendActiveFluidDrawImpulses(active, impulses);
   const steps: WaterFluidStep[] = [];
-  // UE clears/draws a force snapshot once per Tick; catch-up steps reread it.
+  // Draw one force snapshot per outer frame; catch-up steps reread it.
   for (let index = 0; index < input.recipe.maxStepsPerFrame && accumulator > dt; index++) {
     const next: WaterFluidRoles = Object.freeze({
       ...roles,

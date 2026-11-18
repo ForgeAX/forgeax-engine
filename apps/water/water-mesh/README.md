@@ -19,6 +19,11 @@ The five camera buttons restore their saved views without rebuilding the scene.
 Camera movement consumes the App-installed frozen InputSnapshot in an Update
 system; DOM handlers only manage focus and browser default behavior.
 
+The Terrain producer shares exact coordinate samples within one Pack build
+across both variants and their slope neighbors. Shore bounds reject impossible
+nearest segments before projection; crossing parity stays independent. Both
+full-resolution Terrain closures and all four Water bodies remain authored.
+
 Select an actual Body before changing its water level, conservative wave bound,
 priority or surface optics. Geometry edits prepare and atomically adopt a
 re-cooked Body/Mesh closure under the existing GUIDs. River width uses the same

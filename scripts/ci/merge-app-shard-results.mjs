@@ -35,6 +35,13 @@ const selection = selectionPath
   ? readJson(resolve(selectionPath), 'ci-provenance-merged-missing')
   : null;
 const expectedApps = appShardRoster(root);
+const previewApps = new Set(
+  expectedApps.filter(
+    (app) =>
+      JSON.parse(readFileSync(join(root, 'apps', app, 'package.json'), 'utf8')).forgeax
+        ?.smokeArtifacts?.preview === true,
+  ),
+);
 
 function selectedAttempt(index) {
   const producer = `app-shard-${index}`;
@@ -75,9 +82,18 @@ const inventories = [0, 1, 2].map((index) =>
     'ci-shard-inventory-missing',
   ),
 );
+const expectedProfile = process.env.FORGEAX_CI_CORE_VALIDATION === '1' ? 'core' : 'full';
+for (const report of reports) {
+  if ((report.profile ?? 'full') !== expectedProfile)
+    error('ci-app-shard-profile-mismatch', {
+      shardIndex: report.shardIndex,
+      expected: expectedProfile,
+      actual: report.profile,
+    });
+}
 const seenPaths = new Map();
 const appArtifactPattern =
-  /^apps\/(.+)\/dist\/(?:shaders\/manifest\.json|pack-index\.json|assets\/.+)$/;
+  /^apps\/(.+)\/dist\/(?:shaders\/manifest\.json|pack-index\.json|assets\/.+|index\.html|\.vite\/manifest\.json)$/;
 for (const [index, inventory] of inventories.entries()) {
   if (!Array.isArray(inventory) || inventory.some((path) => typeof path !== 'string'))
     error('ci-shard-inventory-invalid', { shardIndex: index });
@@ -97,6 +113,9 @@ for (const [index, inventory] of inventories.entries()) {
       path.split('/').some((part) => part === '' || part === '.')
     )
       error('ci-shard-inventory-invalid-path', { shardIndex: index, path });
+    const preview = path.match(/^apps\/(.+)\/dist\/(?:index\.html|\.vite\/manifest\.json)$/);
+    if (preview && !previewApps.has(preview[1]))
+      error('ci-shard-inventory-preview-undeclared', { shardIndex: index, path });
     if (seenPaths.has(path))
       error('ci-shard-inventory-path-intersection', { path, shards: [seenPaths.get(path), index] });
     seenPaths.set(path, index);
@@ -106,7 +125,11 @@ for (const [index, inventory] of inventories.entries()) {
   const paths = new Set(inventory);
   for (const path of inventory) {
     const match = path.match(/^apps\/(.+)\/dist\/assets\//);
-    if (match && !paths.has(`apps/${match[1]}/dist/pack-index.json`))
+    if (
+      match &&
+      !paths.has(`apps/${match[1]}/dist/pack-index.json`) &&
+      !paths.has(`apps/${match[1]}/dist/.vite/manifest.json`)
+    )
       error('ci-shard-inventory-pack-closure-missing', {
         shardIndex: index,
         path,

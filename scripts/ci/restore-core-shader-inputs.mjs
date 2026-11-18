@@ -3,12 +3,18 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { reusableSharedShader, sharedShaderInputFingerprint } from '../lib/shared-build-cache.mjs';
+import { prepareBrowserGlueAsset } from '../../packages/wgpu-wasm/scripts/prepare-browser-glue.mjs';
+import { verifyProvenance } from '../../packages/wgpu-wasm/scripts/provenance.mjs';
+import {
+  projectSharedShader,
+  reusableSharedShader,
+  sharedShaderInputFingerprint,
+} from '../lib/shared-build-cache.mjs';
 
 export const coreBaseShaderDirectory =
   'packages/vite-plugin-shader/dist/engine-inputs/ci/base-ssao';
 
-export function restoreCoreBaseShader(root, extracted, { sourceRevision } = {}) {
+function assertCoreSource(root, extracted, { sourceRevision } = {}) {
   if (sourceRevision !== undefined && !/^[a-f0-9]{40}$/.test(sourceRevision))
     throw new Error('core shader inputs require an exact source revision');
   // A verifier-owned projection has no Git metadata. Its parent supplies the
@@ -34,20 +40,48 @@ export function restoreCoreBaseShader(root, extracted, { sourceRevision } = {}) 
   if (inputCheckoutSha !== undefined && inputCheckoutSha !== inputSha)
     throw new Error('core artifact source revision differs from input checkout HEAD');
   if (inputSha !== expectedSha) throw new Error('core payload source SHA mismatch');
+}
+
+/** Native source equality does not imply independently rebuilt bundle-byte equality. */
+export async function restoreCoreCompiler(root, extracted, options) {
+  assertCoreSource(root, extracted, options);
+  const source = join(extracted, 'packages/wgpu-wasm/pkg');
+  await verifyProvenance({ pkgDirectory: source });
+  const target = join(root, 'packages/wgpu-wasm/pkg');
+  rmSync(target, { recursive: true, force: true });
+  cpSync(source, target, { recursive: true });
+  await prepareBrowserGlueAsset(
+    join(target, 'wgpu_wasm.js'),
+    join(root, 'packages/wgpu-wasm/dist/wgpu_wasm_glue.bytes'),
+  );
+}
+
+export function restoreCoreBaseShader(root, extracted, options) {
+  assertCoreSource(root, extracted, options);
   const fingerprint = sharedShaderInputFingerprint(root, { pointShadows: false, hdrpSsao: true });
-  // Verify in the extraction root so the producer's root-relative digest and
-  // payload path remain unchanged. Copy only the existing base profile.
-  const manifest = join(extracted, coreBaseShaderDirectory, 'manifest.json');
-  let reason;
-  if (
-    !reusableSharedShader(extracted, manifest, fingerprint, (value) => {
-      reason = value;
-    })
-  )
-    throw new Error(`core base shader admission failed: ${reason}`);
+  // A prepared checkout can have recovered only the shared transfer. Both
+  // candidates retain independent BASE receipts; POINT cannot satisfy admission.
+  let admitted;
+  const reasons = [];
+  for (const directory of [coreBaseShaderDirectory, 'shared-app-inputs/profiles/base-ssao']) {
+    const manifest = join(extracted, directory, 'manifest.json');
+    if (reusableSharedShader(extracted, manifest, fingerprint, (reason) => reasons.push(reason))) {
+      admitted = directory;
+      break;
+    }
+  }
+  if (admitted === undefined)
+    throw new Error(`core base shader admission failed: ${reasons.join('; ')}`);
+  // Keep the original root-relative receipt while crossing source roots, then
+  // use the maintained projection owner to bind the canonical BASE destination.
+  const staged = join(root, admitted);
+  if (resolve(root) !== resolve(extracted)) {
+    mkdirSync(staged, { recursive: true });
+    cpSync(join(extracted, admitted), staged, { recursive: true });
+  }
   const target = join(root, coreBaseShaderDirectory);
-  mkdirSync(target, { recursive: true });
-  cpSync(join(extracted, coreBaseShaderDirectory), target, { recursive: true });
+  if (admitted !== coreBaseShaderDirectory)
+    projectSharedShader(root, join(staged, 'manifest.json'), target, fingerprint);
   if (!reusableSharedShader(root, join(target, 'manifest.json'), fingerprint))
     throw new Error('restored core base shader receipt failed verification');
 }
@@ -72,6 +106,19 @@ async function main() {
       ],
       { stdio: 'inherit', env: { ...process.env, FORGEAX_ARTIFACT_EXPECTED_SHA: sha } },
     );
+    if (process.argv.includes('--prepare-compiler')) {
+      await restoreCoreCompiler(root, staging);
+      execFileSync(
+        process.execPath,
+        [
+          'scripts/build-packages.mjs',
+          '--target=@forgeax/engine-runtime',
+          '--target=@forgeax/engine-vite-plugin-shader',
+          '--target=@forgeax/engine-rhi-wgpu',
+        ],
+        { cwd: root, stdio: 'inherit' },
+      );
+    }
     restoreCoreBaseShader(root, staging);
     console.log(`[core-shader-inputs] restored verified base artifact=${artifactId} source=${sha}`);
   } finally {

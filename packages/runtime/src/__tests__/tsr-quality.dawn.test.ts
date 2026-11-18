@@ -139,6 +139,11 @@ async function qualityRoute(
   }
 }
 
+// The scale-independent 8x raster integral is measured once; every scale
+// still owns fresh TAAU/TSR histories and all original temporal frames.
+let qualityManifest: Promise<string> | undefined;
+let rasterReference: Promise<QualityRoute> | undefined;
+
 it.each([
   0.5,
   2 / 3,
@@ -148,16 +153,25 @@ it.each([
   timeout: 240_000,
 }, async (scale) => {
   const evidence = output ? `${output}/scale-${scale.toFixed(3)}` : undefined;
-  const manifest = shaderManifestUrl(await buildEngineShaderManifest());
-  const results: QualityRoute[] = [];
+  qualityManifest ??= buildEngineShaderManifest().then(shaderManifestUrl);
+  const manifest = await qualityManifest;
+  rasterReference ??= qualityRoute(
+    manifest,
+    'reference',
+    ANTIALIAS_NONE,
+    1,
+    size * zoom,
+    1,
+    undefined,
+  );
+  const reference = await rasterReference;
+  const results: QualityRoute[] = [reference];
   for (const [name, mode, inputScale, extent, count] of [
-    ['reference', ANTIALIAS_NONE, 1, size * zoom, 1],
     ['taau', ANTIALIAS_TAA, scale, size, 96],
     ['tsr', ANTIALIAS_TSR, scale, size, 96],
   ] as const)
     results.push(await qualityRoute(manifest, name, mode, inputScale, extent, count, evidence));
-  const reference = results[0],
-    taau = results[1],
+  const taau = results[1],
     tsr = results[2];
   if (!reference || !taau || !tsr) throw new Error('missing quality route');
   const metrics = (r: typeof tsr) => ({

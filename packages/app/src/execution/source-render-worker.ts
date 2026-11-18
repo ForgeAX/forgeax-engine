@@ -27,6 +27,8 @@ import {
   tapeArtifact,
 } from '@forgeax/engine-rhi-debug';
 import { err, ok, type TaskExecutor, textureFormatBlock } from '@forgeax/engine-types';
+import { ConfigurationRequests, staleConfiguration } from '../configuration-apply';
+import type { EngineStartupPlan } from '../configuration-types';
 import { type RhiCapture, toArtifact, uploadRhiTape } from '../internal/rhi-capture';
 import { forwardGpuStub } from './gpu-stub';
 import {
@@ -287,13 +289,16 @@ export class SourceRenderWorker {
   constructor(
     private readonly world: World,
     private readonly assets: AssetRegistry,
-    private readonly init: RetainedExecutionInit,
+    private init: RetainedExecutionInit,
     private readonly post: (message: EngineToHostMessage, transfer?: Transferable[]) => void,
     private readonly features: readonly RenderFeature<unknown>[] = [],
     private readonly targets?: RenderPublicationTargetOwner,
     private readonly tasks?: TaskExecutor,
   ) {
-    this.publicationCapacity = renderPipelineCapacityOf(init.diagnostics?.renderPipelineCapacity);
+    this.publicationCapacity = renderPipelineCapacityOf(
+      init.startup?.settings.execution?.renderPipelineCapacity ??
+        init.diagnostics?.renderPipelineCapacity,
+    );
     this.meshResidency = new SourceMeshResidency(world, () => {
       const worker = this.worker,
         epoch = this.epoch,
@@ -468,10 +473,7 @@ export class SourceRenderWorker {
       worker.onmessage = (event: MessageEvent<RenderWorkerOutput>) => {
         if (this.worker !== worker || this.epoch !== epoch) return;
         const message = event.data;
-        if (message.kind === 'mesh-ready' || message.kind === 'mesh-released') {
-          this.meshResidency.receive(message);
-          return;
-        }
+        if (this.receiveResourceControl(message)) return;
         if (!acceptsSceneMessages()) return;
         const validateSceneMessage = () => {
           if (
@@ -828,78 +830,7 @@ export class SourceRenderWorker {
         failure(preloadFailure.cause);
         return;
       }
-      this.initializationSent = true;
-      // Render notices go straight to the Host; the Host port precedes the session's first notice.
-      const hostChannel = new MessageChannel();
-      this.post({ kind: 'render-host-port', epoch, port: hostChannel.port2 }, [hostChannel.port2]);
-      const taskPort = this.openTaskPort();
-      worker.postMessage(
-        {
-          kind: 'init',
-          hostPort: hostChannel.port1,
-          ...taskPort.fields,
-          worldIdentity: this.world.identity,
-          ...(this.init.diagnostics?.rhiCapture === true ? { rhiCapture: true } : {}),
-          ...forwardGpuStub(this.init),
-          ...(this.init.diagnostics?.shadowWorkload === true ? { shadowWorkload: true } : {}),
-          ...(this.init.diagnostics?.gpuPassTiming === undefined
-            ? {}
-            : { gpuPassTiming: this.init.diagnostics.gpuPassTiming }),
-          ...(this.init.diagnostics?.featureReadOnlyDepthBatchDiagnostic === undefined
-            ? {}
-            : {
-                featureReadOnlyDepthBatchDiagnostic:
-                  this.init.diagnostics.featureReadOnlyDepthBatchDiagnostic,
-              }),
-          ...(this.init.diagnostics?.gbufferBatchOrderDiagnostic === undefined
-            ? {}
-            : { gbufferBatchOrderDiagnostic: this.init.diagnostics.gbufferBatchOrderDiagnostic }),
-          ...(this.init.diagnostics?.geometryLane === undefined
-            ? {}
-            : { geometryLane: this.init.diagnostics.geometryLane }),
-          ...(this.init.diagnostics?.renderTaskYield === undefined
-            ? {}
-            : { renderTaskYield: this.init.diagnostics.renderTaskYield }),
-          renderPipelineCapacity: this.publicationCapacity,
-          ...this.takeStartupPipelineLibrary(),
-          ...(this.init.backgroundPipelineLibraryConcurrency === undefined
-            ? {}
-            : {
-                backgroundPipelineLibraryConcurrency:
-                  this.init.backgroundPipelineLibraryConcurrency,
-              }),
-          ...(this.init.outputColorSpace === undefined
-            ? {}
-            : { outputColorSpace: this.init.outputColorSpace }),
-          ...forwardRenderBackend(this.init),
-          ...(this.init.dynamicGeometryMeshBudgetBytes === undefined
-            ? {}
-            : { dynamicGeometryMeshBudgetBytes: this.init.dynamicGeometryMeshBudgetBytes }),
-          ...(this.init.assetBudgetBytes === undefined
-            ? {}
-            : { assetBudgetBytes: this.init.assetBudgetBytes }),
-          ...(this.init.featureTextureReadbackBudgetBytes === undefined
-            ? {}
-            : { featureTextureReadbackBudgetBytes: this.init.featureTextureReadbackBudgetBytes }),
-          ...(this.init.textureMipSkip === undefined
-            ? {}
-            : { textureMipSkip: this.init.textureMipSkip }),
-          ...(this.init.loadProgressScope === undefined
-            ? {}
-            : { loadProgressScope: this.init.loadProgressScope }),
-          bootstrapUrl: this.init.bootstrapUrl,
-          ...(this.init.bootstrapData === undefined
-            ? {}
-            : { bootstrapData: this.init.bootstrapData }),
-          canvas,
-          identity: { source: this.source, epoch },
-          ...(this.init.shaderManifestUrl === undefined
-            ? {}
-            : { shaderManifestUrl: this.init.shaderManifestUrl }),
-          ...(this.init.build === undefined ? {} : { build: this.init.build }),
-        } satisfies RenderWorkerInput,
-        [canvas, hostChannel.port1, ...taskPort.transfer],
-      );
+      this.sendInitialization(worker, canvas, epoch);
       // The same failure owner handles a GPU queue that never completes.
       const frameDeadlineMs = renderFrameDeadlineMs(this.init.frameTimeoutMs);
       this.armFrameDeadline = () => {
@@ -907,6 +838,81 @@ export class SourceRenderWorker {
         this.deadline = setTimeout(() => failure('Render Worker frame timed out'), frameDeadlineMs);
       };
     });
+  }
+  /** Transfers startup constructor inputs once per Render Worker session. */
+  private sendInitialization(worker: Worker, canvas: OffscreenCanvas, epoch: number): void {
+    this.initializationSent = true;
+    // Render notices go straight to the Host; the Host port precedes the session's first notice.
+    const hostChannel = new MessageChannel();
+    this.post({ kind: 'render-host-port', epoch, port: hostChannel.port2 }, [hostChannel.port2]);
+    const taskPort = this.openTaskPort();
+    worker.postMessage(
+      {
+        kind: 'init',
+        hostPort: hostChannel.port1,
+        ...taskPort.fields,
+        worldIdentity: this.world.identity,
+        ...(this.init.diagnostics?.rhiCapture === true ? { rhiCapture: true } : {}),
+        ...forwardGpuStub(this.init),
+        ...(this.init.diagnostics?.shadowWorkload === true ? { shadowWorkload: true } : {}),
+        ...(this.init.diagnostics?.gpuPassTiming === undefined
+          ? {}
+          : { gpuPassTiming: this.init.diagnostics.gpuPassTiming }),
+        ...(this.init.diagnostics?.featureReadOnlyDepthBatchDiagnostic === undefined
+          ? {}
+          : {
+              featureReadOnlyDepthBatchDiagnostic:
+                this.init.diagnostics.featureReadOnlyDepthBatchDiagnostic,
+            }),
+        ...(this.init.diagnostics?.gbufferBatchOrderDiagnostic === undefined
+          ? {}
+          : { gbufferBatchOrderDiagnostic: this.init.diagnostics.gbufferBatchOrderDiagnostic }),
+        ...(this.init.diagnostics?.geometryLane === undefined
+          ? {}
+          : { geometryLane: this.init.diagnostics.geometryLane }),
+        ...(this.init.diagnostics?.renderTaskYield === undefined
+          ? {}
+          : { renderTaskYield: this.init.diagnostics.renderTaskYield }),
+        renderPipelineCapacity: this.publicationCapacity,
+        ...this.takeStartupPipelineLibrary(),
+        ...(this.init.backgroundPipelineLibraryConcurrency === undefined
+          ? {}
+          : {
+              backgroundPipelineLibraryConcurrency: this.init.backgroundPipelineLibraryConcurrency,
+            }),
+        ...(this.init.outputColorSpace === undefined
+          ? {}
+          : { outputColorSpace: this.init.outputColorSpace }),
+        ...forwardRenderBackend(this.init),
+        ...(this.init.dynamicGeometryMeshBudgetBytes === undefined
+          ? {}
+          : { dynamicGeometryMeshBudgetBytes: this.init.dynamicGeometryMeshBudgetBytes }),
+        ...(this.init.assetBudgetBytes === undefined
+          ? {}
+          : { assetBudgetBytes: this.init.assetBudgetBytes }),
+        ...(this.init.featureTextureReadbackBudgetBytes === undefined
+          ? {}
+          : { featureTextureReadbackBudgetBytes: this.init.featureTextureReadbackBudgetBytes }),
+        ...(this.init.textureMipSkip === undefined
+          ? {}
+          : { textureMipSkip: this.init.textureMipSkip }),
+        ...(this.init.loadProgressScope === undefined
+          ? {}
+          : { loadProgressScope: this.init.loadProgressScope }),
+        ...(this.init.startup === undefined ? {} : { startup: this.init.startup }),
+        bootstrapUrl: this.init.bootstrapUrl,
+        ...(this.init.bootstrapData === undefined
+          ? {}
+          : { bootstrapData: this.init.bootstrapData }),
+        canvas,
+        identity: { source: this.source, epoch },
+        ...(this.init.shaderManifestUrl === undefined
+          ? {}
+          : { shaderManifestUrl: this.init.shaderManifestUrl }),
+        ...(this.init.build === undefined ? {} : { build: this.init.build }),
+      } satisfies RenderWorkerInput,
+      [canvas, hostChannel.port1, ...taskPort.transfer],
+    );
   }
   private armFrameDeadline: () => void = () => {};
   /** Ends the session's task port; its unfinished tasks are cancelled. */
@@ -1109,6 +1115,34 @@ export class SourceRenderWorker {
         finish(unavailable(String(cause)));
       }
     });
+  }
+  private receiveResourceControl(message: RenderWorkerOutput): boolean {
+    if (message.kind === 'mesh-ready' || message.kind === 'mesh-released') {
+      this.meshResidency.receive(message);
+      return true;
+    }
+    if (message.kind === 'configuration-result') {
+      this.configurationRequests.receive(message);
+      return true;
+    }
+    return false;
+  }
+  private readonly configurationRequests = new ConfigurationRequests();
+  async applyConfiguration(plan: EngineStartupPlan, previousRevision: number) {
+    const worker = this.worker;
+    const epoch = this.epoch;
+    if (worker === undefined || this.disposed)
+      return err(staleConfiguration('the Render Worker is unavailable'));
+    const result = await this.configurationRequests.request(
+      plan,
+      previousRevision,
+      this.world.identity,
+      (message) => worker.postMessage(message),
+    );
+    if (this.worker !== worker || this.epoch !== epoch)
+      return err(staleConfiguration('the Render Worker was replaced'));
+    if (result.ok) this.init = { ...this.init, startup: plan };
+    return result;
   }
   /** Ask the Render Worker to release its completed read caches. */
   trimReadCache(): void {
@@ -1380,6 +1414,7 @@ export class SourceRenderWorker {
     await this.start(canvas, pipelineLibrary, backgroundPipelineLibrary);
   }
   private clear(): void {
+    this.configurationRequests.invalidate('the Render Worker session ended');
     this.retirement = undefined;
     this.startupPipelineLibrary = undefined;
     this.startupBackgroundPipelineLibrary = undefined;
@@ -1428,6 +1463,7 @@ export class SourceRenderWorker {
     this.releaseTaskPort = undefined;
   }
   dispose(): Promise<void> {
+    this.configurationRequests.dispose();
     if (this.disposal !== undefined) return this.disposal;
     this.disposed = true;
     const retirement = this.retirement;

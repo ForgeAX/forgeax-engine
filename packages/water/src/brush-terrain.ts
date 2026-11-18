@@ -9,7 +9,7 @@ export type WaterBrushTerrainReadback = Readonly<{
   weightsByLayer: Readonly<Record<string, Float32Array>>;
 }>;
 
-/** Pick the RT UE supplies to CacheDistanceField, which can differ from the last RT written. */
+/** Select the distance-field cache input, which can differ from the last target written. */
 export function selectWaterBrushCacheInput<T>(
   actorPass: Pick<WaterBrushActorPassPlan, 'jumpFloodCacheSelectedTarget'>,
   targets: Readonly<{ 'jump-flood-a': T; 'jump-flood-b': T }>,

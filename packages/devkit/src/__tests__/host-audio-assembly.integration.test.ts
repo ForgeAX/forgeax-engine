@@ -2,6 +2,13 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { runInNewContext } from 'node:vm';
+import {
+  EngineConfigurationError,
+  prepareEngineStartup,
+  withEngineSettings,
+} from '@forgeax/engine-app';
+import { createBrowserConfigurationHost } from '@forgeax/engine-app/browser';
+import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
 import { Context } from '@forgeax/engine-plugin';
 import { transformWithOxc } from 'vite';
 import { expect, it } from 'vitest';
@@ -75,6 +82,9 @@ it('projects the current Host audio consumer and resolves the native factory on 
           ctx,
           URL,
           URLSearchParams,
+          EngineConfigurationError,
+          withEngineSettings,
+          createBrowserConfigurationHost,
           location: { search: '' },
           workerExecution: true,
           canvas: {},
@@ -93,9 +103,12 @@ it('projects the current Host audio consumer and resolves the native factory on 
           createHostAudioConsumer,
           createApp: async (
             _canvas: unknown,
-            options: { execution: { createHostAudio?: () => Consumer } },
+            _options: unknown,
+            adapter: { createHostAudio?: () => Consumer },
           ) => {
-            createAudio = options.execution.createHostAudio ?? createHostAudioConsumer;
+            if (adapter.createHostAudio === undefined)
+              throw new Error('Generated Host audio factory is missing');
+            createAudio = adapter.createHostAudio;
             current = createAudio();
             return { ok: true, value: {} };
           },
@@ -153,10 +166,18 @@ it('projects the current Host audio consumer and resolves the native factory on 
 });
 
 it('projects the main-realm audio engine used by the native backend into GameHost', async () => {
-  const { WebAudioEngine, webAudioPlugin } = await import('@forgeax/engine-audio-webaudio');
+  const { createHostAudioConsumer, WebAudioEngine, webAudioPlugin } = await import(
+    '@forgeax/engine-audio-webaudio'
+  );
   const root = await mkdtemp(resolve(tmpdir(), 'forgeax-main-audio-'));
   const context = new Context();
   let host: { audio?: InstanceType<typeof WebAudioEngine> } | undefined;
+  let consumer: ReturnType<typeof createHostAudioConsumer> | undefined;
+  const budget = { maxCachedBytes: 4096, maxCachedSources: 2, maxPendingPlays: 3 };
+  const namespace = '019fb7ce-4200-7000-8000-000000000101';
+  const parsed = PackageId.parse(namespace);
+  if (!parsed.ok) throw parsed.error;
+  const build = AssetGuid.format(AssetGuid.derive(parsed.value, 'plugin/build'));
   try {
     await mkdir(resolve(root, 'assets'));
     await writeFile(resolve(root, 'package.json'), '{"name":"main-audio","type":"module"}');
@@ -166,8 +187,41 @@ it('projects the main-realm audio engine used by the native backend into GameHos
         id: 'main-audio',
         name: 'Main audio',
         schemaVersion: '3.0.0',
-        roots: {},
+        roots: { build },
       }),
+    );
+    await writeFile(
+      resolve(root, 'assets/build.pack.json'),
+      JSON.stringify({
+        schemaVersion: '3.0.0',
+        packageId: namespace,
+        assets: {
+          'plugin/build': {
+            kind: 'plugin',
+            payload: {
+              module: { specifier: './build.ts' },
+              config: {
+                configuration: {
+                  deviceProfile: 'MainAudioDevice',
+                  deviceProfiles: [
+                    {
+                      id: 'MainAudioDevice',
+                      extends: 'Default',
+                      settings: { audio: { host: budget } },
+                    },
+                  ],
+                },
+              },
+            },
+          },
+        },
+      }),
+    );
+    await writeFile(
+      resolve(root, 'assets/build.ts'),
+      `export default {
+      provide: ['devkitAppOptions'], apply(ctx, config) { ctx.provide('devkitAppOptions', config); }
+    };`,
     );
     const facts = await readProjectFacts(root);
     if (!facts.ok) throw facts.error;
@@ -195,9 +249,13 @@ it('projects the main-realm audio engine used by the native backend into GameHos
       ctx: context,
       URL,
       URLSearchParams,
+      EngineConfigurationError,
+      withEngineSettings,
+      createBrowserConfigurationHost,
       location: { search: '' },
       crypto: { randomUUID: () => 'main-audio' },
       workerExecution: false,
+      executionWorkers: null,
       bootstrapRoot: 'project-bootstrap',
       workspaceMode: false,
       workspaceGame: false,
@@ -220,15 +278,30 @@ it('projects the main-realm audio engine used by the native backend into GameHos
       createRuntimePackOptions: async () => ({}),
       enginePrograms: () => ({}),
       createGameVfx: () => undefined,
+      createHostAudioConsumer,
       WebAudioEngine,
       webAudioPlugin,
       audioPlugin: () => ({ name: 'test-audio-systems', apply() {} }),
       skinningPlugin: () => ({ name: 'test-skinning', apply() {} }),
       createApp: async (
         _canvas: unknown,
-        options: { plugins: import('@forgeax/engine-plugin').Plugin[] },
+        options: import('@forgeax/engine-app').CreateAppOptions,
+        adapter: import('@forgeax/engine-app').AppHostAdapter,
       ) => {
-        for (const plugin of options.plugins) await context.plugin(plugin).await();
+        expect(options.execution).toBeUndefined();
+        if (options.configuration === undefined)
+          throw new Error('Generated startup definition is missing');
+        const plan = (
+          await prepareEngineStartup(structuredClone(options.configuration), {
+            readDeviceFacts: () => ({ platform: 'unknown' }),
+          })
+        ).unwrap();
+        expect(plan.settings.audio?.host).toEqual(budget);
+        expect(options.plugins?.map(({ name }) => name)).not.toContain('web-audio');
+        if (adapter.createHostAudio === undefined)
+          throw new Error('Generated Host audio factory is missing');
+        consumer = adapter.createHostAudio(plan.settings.audio?.host);
+        for (const plugin of options.plugins ?? []) await context.plugin(plugin).await();
         return { ok: true, value: {} };
       },
       publishHost: (value: typeof host) => {
@@ -236,18 +309,23 @@ it('projects the main-realm audio engine used by the native backend into GameHos
       },
     });
     expect(host?.audio).toBeInstanceOf(WebAudioEngine);
+    expect(host?.audio).toBe(consumer?.engine);
     const audio = host?.audio;
-    const backend = context.get('audio');
-    if (!audio || !backend) throw new Error('Main Host audio is missing');
+    if (!audio || !consumer) throw new Error('Main Host audio is missing');
     audio
       .configureBuses([
         { id: 'master', parent: null },
         { id: 'game', parent: 'master' },
       ])
       .unwrap();
-    backend.setAcousticRoutes(99, { fallback: 0, buses: [{ bus: 'game', gain: 1 }] });
-    expect(backend.getState().lastError).toBeNull();
+    consumer.consume({
+      kind: 'set-acoustic-routes',
+      entityId: 99,
+      routes: { fallback: 0, buses: [{ bus: 'game', gain: 1 }] },
+    });
+    expect(consumer.state().lastError).toBeNull();
   } finally {
+    consumer?.dispose();
     await context.fiber.dispose();
     await rm(root, { recursive: true, force: true });
   }

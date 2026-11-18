@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dawnOrdinaryWorkers } from '../lib/runner-resources.mjs';
+import { coreValidationFiles } from './core-validation.mjs';
 import { reportDawnEnvironment } from './dawn-environment-diagnostics.mjs';
 import { DAWN_GATE_GROUPS, DAWN_GATE_SHARDS, DAWN_VITEST_CONFIG } from './dawn-gate-roster.mjs';
 import { isRetryableOutput, runBrowserCommand } from './run-browser-gate-with-retry.mjs';
@@ -58,12 +59,102 @@ export function dawnVitestArgs(group, { ordinaryWorkers = 1 } = {}) {
   ];
 }
 
-export function dawnGroupEnvironment(group, environment, ordinaryWorkers) {
+export function dawnNativeConcurrency(environment, ordinaryWorkers) {
+  return ordinaryWorkers === 2 &&
+    environment.FORGEAX_CI_CORE_VALIDATION === '1' &&
+    environment.FORGEAX_DAWN_LIGHTWEIGHT === '1'
+    ? 2
+    : 1;
+}
+
+export function dawnNativeExecutionOrder(groups, forecasts) {
+  const native = groups.filter((group) => group.vitestShard === undefined);
+  const priority = (group) =>
+    Math.max(forecasts.get(group.id) ?? 0, group.placementReserveSeconds ?? 0);
+  return [
+    ...native.slice(0, 2),
+    ...native.slice(2).sort((left, right) => priority(right) - priority(left)),
+    ...groups.filter((group) => group.vitestShard !== undefined),
+  ];
+}
+
+async function dawnCapacityGroups(groups, nativeConcurrency, environment) {
+  if (nativeConcurrency === 1) return groups;
+  const { dawnPlanningOwnerCosts } = await import('../../config/dawn-timings.ts');
+  return dawnNativeExecutionOrder(groups, dawnPlanningOwnerCosts(environment));
+}
+
+// Unmeasured native owners keep both slots. The ordinary invocation already
+// owns two workers, so it starts only after every native process has drained.
+export async function executeDawnGroups(
+  groups,
+  runGroup,
+  { nativeConcurrency = 1, continueOnFailure = false } = {},
+) {
+  if (nativeConcurrency !== 1 && nativeConcurrency !== 2)
+    throw new Error('Dawn native concurrency must be exactly 1 or 2');
+  if (
+    groups.some(
+      (group) =>
+        group.nativeProcessSlots !== undefined &&
+        group.nativeProcessSlots !== 1 &&
+        group.nativeProcessSlots !== 2,
+    )
+  )
+    throw new Error('Dawn native slots must be exactly 1 or 2');
+  const failures = [];
+  const run = async (group) => {
+    try {
+      await runGroup(group);
+    } catch (error) {
+      failures.push({ group: group.id, error });
+    }
+  };
+  const stopped = () => failures.length > 0 && !continueOnFailure;
+  if (nativeConcurrency === 1) {
+    for (const group of groups) {
+      if (stopped()) break;
+      await run(group);
+    }
+    return failures;
+  }
+  const active = new Set();
+  for (const group of groups.filter((entry) => entry.vitestShard === undefined)) {
+    const slots = group.nativeProcessSlots ?? 2;
+    if (slots === 2) {
+      await Promise.all(active);
+      if (stopped()) break;
+      await run(group);
+    } else {
+      if (active.size === 2) await Promise.race(active);
+      if (stopped()) break;
+      const task = run(group).finally(() => active.delete(task));
+      active.add(task);
+    }
+  }
+  await Promise.all(active);
+  for (const group of groups.filter((entry) => entry.vitestShard !== undefined)) {
+    if (stopped()) break;
+    await run(group);
+  }
+  return failures;
+}
+
+export function dawnGroupEnvironment(group, environment, ordinaryWorkers, nativeConcurrency = 1) {
+  const rasterThreads = Number(environment.LP_NUM_THREADS);
   return {
     ...environment,
     ...group.env,
     ...(group.vitestShard !== undefined && ordinaryWorkers === 2
       ? { LP_NUM_THREADS: '4', FORGEAX_SHADER_COMPILE_WORKERS: '1' }
+      : {}),
+    ...(nativeConcurrency === 2 && group.nativeProcessSlots === 1
+      ? {
+          LP_NUM_THREADS: String(
+            Number.isInteger(rasterThreads) && rasterThreads > 0 ? Math.min(4, rasterThreads) : 4,
+          ),
+          FORGEAX_SHADER_COMPILE_WORKERS: '1',
+        }
       : {}),
   };
 }
@@ -91,8 +182,23 @@ export function selectDawnShard(value) {
   }
   const ids = new Set(DAWN_GATE_SHARDS[index - 1]);
   return DAWN_GATE_GROUPS.filter((group) => ids.has(group.id)).sort(
-    (left, right) => (right.placementReserveSeconds ?? 0) - (left.placementReserveSeconds ?? 0),
+    // Long Modeling captures retain first start when a larger reserved native
+    // owner shares their lane; every other reservation still precedes backfill.
+    (left, right) =>
+      Number(right.id.startsWith('modeling-')) - Number(left.id.startsWith('modeling-')) ||
+      (right.placementReserveSeconds ?? 0) - (left.placementReserveSeconds ?? 0),
   );
+}
+
+function dawnExecutionEnvironment(id, environment) {
+  return id === undefined ? environment : { ...environment, FORGEAX_CI_CORE_VALIDATION: '0' };
+}
+
+export function dawnExecutionGroups(id, shard, environment = process.env) {
+  const selectionEnvironment = dawnExecutionEnvironment(id, environment);
+  return selectDawnGroups(id, shard)
+    .map((group) => ({ ...group, files: coreValidationFiles(group.files, selectionEnvironment) }))
+    .filter((group) => group.vitestShard !== undefined || group.files.length > 0);
 }
 
 export async function runDawnGate({ group: selectedGroup, shard, continueOnFailure = false } = {}) {
@@ -111,11 +217,14 @@ export async function runDawnGate({ group: selectedGroup, shard, continueOnFailu
       delete environment[name];
     return environment;
   };
-  const environment = prepareDawnGateEnvironment();
-  const groups = selectDawnGroups(selectedGroup, shard);
+  const environment = dawnExecutionEnvironment(selectedGroup, prepareDawnGateEnvironment());
+  const groups = dawnExecutionGroups(selectedGroup, shard, environment);
   const ordinaryWorkers = groups.some((group) => group.vitestShard !== undefined)
     ? dawnOrdinaryWorkers(environment)
     : 1;
+  const nativeConcurrency = dawnNativeConcurrency(environment, ordinaryWorkers);
+  if (!environmentDiagnostics && nativeConcurrency === 2)
+    reportDawnEnvironment(ROOT, 'start', true);
   if (environment.FORGEAX_SHARED_APP_INPUTS_MANIFEST) {
     const prepared = await runBrowserCommand(
       [
@@ -135,56 +244,74 @@ export async function runDawnGate({ group: selectedGroup, shard, continueOnFailu
     if (prepared.status !== 0)
       throw new Error(`Dawn shader preparation failed; ${prepared.failure}`);
   }
-  const failures = [];
-  for (const group of groups) {
-    console.log(`::group::Dawn ${group.id}`);
-    try {
-      const env = dawnGroupEnvironment(group, environment, ordinaryWorkers);
-      if (Object.hasOwn(DAWN_TEST_PARTITIONS, group.id)) {
-        const status = await runDawnPartitions(group.id, { env });
-        if (status !== 0) {
-          if (!continueOnFailure) return status;
-          throw new Error(`Dawn ${group.id} exited ${status}`);
+  const failures = await executeDawnGroups(
+    await dawnCapacityGroups(groups, nativeConcurrency, environment),
+    async (group) => {
+      const started = performance.now();
+      let status = 0;
+      const env = dawnGroupEnvironment(group, environment, ordinaryWorkers, nativeConcurrency);
+      if (nativeConcurrency === 1) console.log(`::group::Dawn ${group.id}`);
+      else
+        console.log(
+          `[dawn-group-start] ${JSON.stringify({ id: group.id, nativeConcurrency, slots: group.vitestShard === undefined ? (group.nativeProcessSlots ?? 2) : 2, rasterThreads: env.LP_NUM_THREADS ?? null, shaderCompileWorkers: env.FORGEAX_SHADER_COMPILE_WORKERS ?? null })}`,
+        );
+      try {
+        if (Object.hasOwn(DAWN_TEST_PARTITIONS, group.id)) {
+          const status = await runDawnPartitions(group.id, { env });
+          if (status !== 0) {
+            throw Object.assign(new Error(`Dawn ${group.id} exited ${status}`), {
+              exitCode: status,
+            });
+          }
+        } else if (group.id === 'direct-light') {
+          await runDirectLightDawn({ env });
+        } else {
+          const run = () =>
+            runBrowserCommand([process.execPath, ...dawnVitestArgs(group, { ordinaryWorkers })], {
+              cwd: ROOT,
+              env,
+              label: `Dawn ${group.id}`,
+              gpuLease: true,
+              ...(group.isolate === false ? { timeoutMs: 6 * 60_000 } : {}),
+            });
+          let result = await run();
+          if (
+            result.status !== 0 &&
+            !result.cancelled &&
+            group.retryMode &&
+            isRetryableOutput(group.retryMode, result.output)
+          ) {
+            console.warn(
+              `::warning::Dawn ${group.id} matched a retry signature; retrying once in a fresh process`,
+            );
+            result = await run();
+          }
+          if (result.status !== 0) {
+            throw Object.assign(
+              new Error(`Dawn ${group.id} exited ${result.status}; ${result.failure}`),
+              { exitCode: result.status ?? 1 },
+            );
+          }
         }
-      } else if (group.id === 'direct-light') {
-        await runDirectLightDawn({ env });
-      } else {
-        const run = () =>
-          runBrowserCommand([process.execPath, ...dawnVitestArgs(group, { ordinaryWorkers })], {
-            cwd: ROOT,
-            env,
-            label: `Dawn ${group.id}`,
-            gpuLease: true,
-            ...(group.isolate === false ? { timeoutMs: 6 * 60_000 } : {}),
-          });
-        let result = await run();
-        if (
-          result.status !== 0 &&
-          !result.cancelled &&
-          group.retryMode &&
-          isRetryableOutput(group.retryMode, result.output)
-        ) {
-          console.warn(
-            `::warning::Dawn ${group.id} matched a retry signature; retrying once in a fresh process`,
-          );
-          result = await run();
-        }
-        if (result.status !== 0) {
-          if (!continueOnFailure) return result.status;
-          throw new Error(`Dawn ${group.id} exited ${result.status}; ${result.failure}`);
-        }
+      } catch (error) {
+        status = 1;
+        throw error;
+      } finally {
+        if (environmentDiagnostics) reportDawnEnvironment(ROOT, `after:${group.id}`);
+        console.log(
+          `[dawn-group-result] ${JSON.stringify({ id: group.id, status, elapsedMs: performance.now() - started, nativeConcurrency, files: group.files })}`,
+        );
+        if (nativeConcurrency === 1) console.log('::endgroup::');
       }
-    } catch (error) {
-      if (!continueOnFailure) throw error;
-      failures.push({ group: group.id, error: String(error) });
-      console.error(`[dawn-failure-batch] ${JSON.stringify(failures.at(-1))}`);
-    } finally {
-      if (environmentDiagnostics) reportDawnEnvironment(ROOT, `after:${group.id}`);
-      console.log('::endgroup::');
-    }
-  }
+    },
+    { nativeConcurrency, continueOnFailure },
+  );
+  for (const failure of failures)
+    console.error(
+      `[dawn-failure-batch] ${JSON.stringify({ group: failure.group, error: String(failure.error) })}`,
+    );
   const completeDawnGateResult = () => {
-    if (failures.length) return 1;
+    if (failures.length) return continueOnFailure ? 1 : (failures[0].error.exitCode ?? 1);
     console.log(
       `[dawn-gate] ${selectedGroup ? 'DIAGNOSTIC PASS' : 'PASS'} groups=${groups.length}${shard ? ` shard=${shard}` : ''}`,
     );
@@ -205,7 +332,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     else if (process.argv[i] === '--shard' && process.argv[i + 1]) shard = process.argv[++i];
     else throw new Error('usage: run-dawn-gate.mjs [--dry-run] [--group ID | --shard INDEX/TOTAL]');
   }
-  const groups = selectDawnGroups(group, shard);
+  const groups = dawnExecutionGroups(group, shard);
   if (dryRun) {
     validateDawnGateRoster();
     console.log(JSON.stringify(groups));

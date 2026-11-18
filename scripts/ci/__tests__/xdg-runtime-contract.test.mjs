@@ -20,7 +20,6 @@ const workflowJobs = new Map([
       'vitest-browser-shard',
       'shared-inputs-browser',
       'smoke-fleet',
-      'bevy-smoke-fleet',
       'vitest-dawn',
       'webkit-fallback',
       'metrics-validate-browser',

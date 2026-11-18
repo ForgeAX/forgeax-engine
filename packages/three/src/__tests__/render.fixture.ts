@@ -123,7 +123,11 @@ export function comparePixels(actual: Uint8Array, expected: Uint8Array, epsilon 
   return error / actual.length;
 }
 
-export async function verifyReplay(capture: THREE.ThreeFrameCapture, label?: string) {
+export async function verifyReplay(
+  capture: THREE.ThreeFrameCapture,
+  label?: string,
+  extent = { width: SIZE, height: SIZE },
+) {
   const started = performance.now();
   const milestonesMs: Record<string, number> = {};
   // biome-ignore lint/suspicious/noConsole: Preserve bounded native replay phase receipts.
@@ -156,8 +160,8 @@ export async function verifyReplay(capture: THREE.ThreeFrameCapture, label?: str
       const read = (await replay.readResourceAtWork(target, last.workIndex)).unwrap();
       milestonesMs.readback = performance.now() - started;
       const image = readbackImage(read).unwrap();
-      expect(image.width).toBe(SIZE);
-      expect(image.height).toBe(SIZE);
+      expect(image.width).toBe(extent.width);
+      expect(image.height).toBe(extent.height);
       comparePixels(toRgba8(image), displayPixels(capture), 1 / 255);
       const validation = await nativeDevice.popErrorScope();
       expect(validation?.message ?? null).toBeNull();
@@ -580,7 +584,7 @@ async function verifyMaterialMutations(
       try {
         comparePixels(displayPixels(frame), expected);
       } catch (cause) {
-        materialFailures.push(new Error(`${material.type} differs from Three r184`, { cause }));
+        materialFailures.push(new Error(`${material.type} differs from Three r187`, { cause }));
       }
     }
     if (material instanceof THREE.MeshPhysicalMaterial) {
@@ -612,7 +616,7 @@ async function verifyMaterialMutations(
             comparePixels(pixels, reference);
           } catch (cause) {
             materialFailures.push(
-              new Error(`Physical clearcoat ${clearcoat} differs from Three r184`, { cause }),
+              new Error(`Physical clearcoat ${clearcoat} differs from Three r187`, { cause }),
             );
           }
         }

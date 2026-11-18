@@ -2,6 +2,13 @@
 
 Physics interface package: ECS component schemas, PhysicsWorld resource shape, error codes, and enum constants. Backend implementations live in `@forgeax/engine-physics-rapier3d` and `@forgeax/engine-physics-rapier2d`.
 
+Project configuration supplies solver iterations and async result interpolation
+through `settings.simulation.physics`. App inserts `PHYSICS_STARTUP_OPTIONS`
+before activating gameplay plugins, so the selected 2D/3D backend receives those
+inputs before its native World is allocated. Explicit plugin arguments cannot
+conflict with that declaration. Native assembled Hosts insert the same resource
+before installing a physics backend; no live solver patch is implied.
+
 `PhysicsWorld.sweepSphere(query)` is an optional native 3D volume query returning
 a structured Result. Supply an origin, finite displacement, positive radius and
 positive `maxHits` budget. The result contains unique body entities and detached

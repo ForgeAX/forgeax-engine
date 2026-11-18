@@ -38,7 +38,7 @@ export async function advancedWaterFixture(
     materialGuids: [],
     textureGuids: [],
     shallowStageConfig: {
-      stageProfile: 'ue-5.8.1-water-body',
+      stageProfile: 'water-body-shallow/2',
       gridResolution: [8, 8],
       extentM: [8, 12],
       baseHeightM: 2,

@@ -13,6 +13,7 @@ import {
   prepareGclientGit,
   runGclient,
   windowsBuildEnvironment,
+  windowsHostToolchainCMakeArgs,
   windowsNativeBuildProfile,
   verifyWindowsBuildCommands,
 } from '../prepare-native.mjs';
@@ -61,7 +62,7 @@ test('Windows SDK discovery supplies the native Ninja MSVC toolchain', { skip: p
     ].join('\n'),
   );
   writeFileSync(join(source, 'main.cpp'), '#include <d3d12.h>\n#include <dxgi1_4.h>\n#include <span>\n#include <vector>\nint main() { std::vector<int> values{1, 2}; return std::span(values).size() == 2 ? 0 : 1; }\n');
-  const result = spawnSync('cmake', ['-S', source, '-B', build, '-G', 'Visual Studio 17 2022', '-A', 'x64'], {
+  const result = spawnSync('cmake', ['-S', source, '-B', build, '-A', 'x64'], {
     encoding: 'utf8',
     windowsHide: true,
   });
@@ -98,6 +99,10 @@ test('Windows SDK discovery supplies the native Ninja MSVC toolchain', { skip: p
   const overridden = spawnSync('cmake', ['-S', source, '-B', ninja], { env, encoding: 'utf8', windowsHide: true });
   assert.equal(overridden.status, 0, `${overridden.stdout}\n${overridden.stderr}`);
   assert.throws(() => verifyWindowsBuildCommands(ninja), /host-optimization-policy/);
+});
+
+test('Windows host probe lets CMake select an installed Visual Studio generator', () => {
+  assert.deepEqual(windowsHostToolchainCMakeArgs('probe', 'build'), ['-S', 'probe', '-B', 'build', '-A', 'x64']);
 });
 
 test('native Ninja compilation has one CPU-bounded two-job budget', () => {

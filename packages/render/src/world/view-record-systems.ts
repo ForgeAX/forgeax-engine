@@ -386,6 +386,7 @@ function settleAttempt(world: World, entry: Entry, seal: ViewGraphSealState | un
       temporal: false,
     });
     viewRecordHistory(world, entity)?.stage({
+      configurationRevision: owner.frameState.compiledFrameGraph?.configurationRevision,
       frame,
       generation: recordContext(owner.internals).deviceScope.generation,
       attempt,

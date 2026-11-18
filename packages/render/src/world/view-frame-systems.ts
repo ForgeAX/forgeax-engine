@@ -262,6 +262,7 @@ export function stageRenderScene(
   if (!world.hasResource(RenderSceneInput))
     throw new Error('Only the scene composition owner stages the frame scene');
   const source = world.getResource(RenderSceneInput);
+  source.quality = owner.internals.standardProfile?.quality;
   source.staged = true;
   source.publication = publication;
   source.captureFeatures = undefined;

@@ -51,22 +51,55 @@ export function islandOutline(count = 72) {
   });
   return [...outer, ...inner];
 }
-const outline = islandOutline(96);
+const shoreEdges = islandOutline(96).map((a, index, outline) => {
+  const b = outline[(index + outline.length - 1) % outline.length];
+  if (!b) throw new Error('Missing island shore endpoint');
+  const dx = b[0] - a[0],
+    dz = b[1] - a[1];
+  return {
+    x: a[0],
+    z: a[1],
+    endZ: b[1],
+    dx,
+    dz,
+    lengthSquared: dx * dx + dz * dz,
+    minX: Math.min(a[0], b[0]),
+    maxX: Math.max(a[0], b[0]),
+    minZ: Math.min(a[1], b[1]),
+    maxZ: Math.max(a[1], b[1]),
+  };
+});
 function shoreDistance(x: number, z: number) {
   let inside = false,
     distance = Infinity;
-  for (let i = 0, j = outline.length - 1; i < outline.length; j = i++) {
-    const a = outline[i],
-      b = outline[j];
-    if (!a || !b) continue;
-    if (a[1] > z !== b[1] > z && x < ((b[0] - a[0]) * (z - a[1])) / (b[1] - a[1]) + a[0])
+  for (const edge of shoreEdges) {
+    if (edge.z > z !== edge.endZ > z && x < (edge.dx * (z - edge.z)) / edge.dz + edge.x)
       inside = !inside;
-    const dx = b[0] - a[0],
-      dz = b[1] - a[1],
-      t = Math.max(0, Math.min(1, ((x - a[0]) * dx + (z - a[1]) * dz) / (dx * dx + dz * dz)));
-    distance = Math.min(distance, Math.hypot(x - a[0] - t * dx, z - a[1] - t * dz));
+    // The segment's axis-aligned bounds cannot be nearer than the current
+    // winner. Keep crossing parity independent, and retain exact projection
+    // arithmetic for every segment that can still change the distance.
+    if (
+      x < edge.minX - distance ||
+      x > edge.maxX + distance ||
+      z < edge.minZ - distance ||
+      z > edge.maxZ + distance
+    )
+      continue;
+    const t = Math.max(
+      0,
+      Math.min(1, ((x - edge.x) * edge.dx + (z - edge.z) * edge.dz) / edge.lengthSquared),
+    );
+    const px = x - edge.x - t * edge.dx,
+      pz = z - edge.z - t * edge.dz;
+    // Either absolute component bounds the distance from below. Preserve the
+    // exact hypot result and arithmetic for every potentially closer segment.
+    if (Math.abs(px) < distance && Math.abs(pz) < distance)
+      distance = Math.min(distance, Math.hypot(px, pz));
   }
   return { inside, distance };
+}
+export function watershedVariantOffset(x: number, z: number, variant = 0) {
+  return variant ? 0.8 * Math.exp(-((x + 50) ** 2 + (z + 170) ** 2) / 4000) : 0;
 }
 export function watershedHeight(x: number, z: number, variant = 0) {
   const shore = shoreDistance(x, z);
@@ -100,5 +133,5 @@ export function watershedHeight(x: number, z: number, variant = 0) {
       y = a[1] + (b[1] - a[1]) * t;
     if (d < width * 0.5 + 16) h = Math.min(h, y - 2.3 + Math.max(0, d - width * 0.35) * 0.6);
   }
-  return h + (variant ? 0.8 * Math.exp(-((x + 50) ** 2 + (z + 170) ** 2) / 4000) : 0);
+  return h + watershedVariantOffset(x, z, variant);
 }

@@ -41,6 +41,7 @@ paths in `value.onboarding.read`.
 |:--|:--|
 | `@forgeax/engine` | Runtime renderer assembly and the usual game entry |
 | `@forgeax/engine/app` | App and frame-loop assembly |
+| `@forgeax/engine/three/tsl` | Original CPU TSL functions sharing the Three facade constructor family; bounded native inputs follow the Three package contract |
 | `@forgeax/engine/ecs` | ECS world, components, queries, and systems |
 | `@forgeax/engine/<package-directory>` | The matching focused Engine package |
 

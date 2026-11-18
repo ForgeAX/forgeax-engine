@@ -534,6 +534,10 @@
       "form": "test-experimental"
     },
     {
+      "name": "Three.js native interoperation",
+      "form": "test-experimental"
+    },
+    {
       "name": "Mobility",
       "form": "built-in"
     },

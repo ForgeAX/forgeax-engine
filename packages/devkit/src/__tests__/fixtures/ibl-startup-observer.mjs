@@ -2,7 +2,10 @@
 export function observeIblStartup() {
   if (!navigator.gpu || globalThis.__viewIblObserved) return;
   globalThis.__viewIblObserved = true;
+  let emitted = 0;
   const emit = (event) => {
+    if (emitted >= 512) return;
+    emitted++;
     try {
       // biome-ignore lint/suspicious/noConsole: explicit diagnostic transport from the actual Worker.
       console.info(
@@ -16,6 +19,16 @@ export function observeIblStartup() {
     } catch {
       /* Logging cannot reject a native operation's observation branch. */
     }
+  };
+  let executionEvents = 0;
+  globalThis.__forgeaxFramePhaseDiagnostics = {
+    execution: {
+      enabled: true,
+      failures: 0,
+      emit(event) {
+        if (executionEvents++ < 256) emit(event);
+      },
+    },
   };
   const requestAdapter = navigator.gpu.requestAdapter.bind(navigator.gpu);
   emit({ event: 'observer-installed' });
@@ -50,10 +63,22 @@ export function observeIblStartup() {
               for (const name of ['createRenderPipeline', 'createRenderPipelineAsync']) {
                 const original = device[name].bind(device);
                 device[name] = (...args) => {
-                  const label = args[0]?.label;
-                  if (!label?.startsWith('ibl-')) return original(...args);
+                  const descriptor = args[0];
+                  const label = descriptor?.label;
+                  if (!label?.startsWith('ibl-') && !label?.startsWith('pbr-'))
+                    return original(...args);
                   const started = performance.now();
-                  emit({ event: 'pipeline-start', name, label });
+                  emit({
+                    event: 'pipeline-start',
+                    name,
+                    label,
+                    vertexEntry: descriptor.vertex?.entryPoint,
+                    fragmentEntry: descriptor.fragment?.entryPoint,
+                    targets: descriptor.fragment?.targets?.map((target) => target?.format),
+                    depth: descriptor.depthStencil?.format,
+                    samples: descriptor.multisample?.count ?? 1,
+                    topology: descriptor.primitive?.topology,
+                  });
                   const result = original(...args);
                   const settled = () =>
                     emit({

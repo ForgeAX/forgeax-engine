@@ -10,7 +10,7 @@ function requiredFixtureValue<T>(value: T | null | undefined): T {
 
 const identity = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 const affine = [1, 0.5, 0, 0, 0, 2, 0, 0, 0, -0.25, 1, 0, 0, 10, 0, 1];
-const mesh = [0, 1, 0, 4, 2, 4, 0, 2, 4];
+const mesh = { data: [0, 1, 0, 4, 2, 4, 0, 2, 4], offset: 0, stride: 3, components: 3, count: 3 };
 const body = (type: WaterBodyAsset['type']): WaterBodyAsset => ({
   kind: 'water-body',
   type,
@@ -59,7 +59,7 @@ const close = (actual: readonly number[] | undefined, expected: readonly number[
   });
 };
 
-describe('UE component, raster and capture height authorities', () => {
+describe('component, raster and capture height authorities', () => {
   it('keeps the Lake channel and component offset separate from its one total wave envelope', () => {
     const bounds = requiredFixtureValue(waterBodyRenderBounds(body('lake'), identity));
     close(bounds.componentYM, [-3, 2.75]);

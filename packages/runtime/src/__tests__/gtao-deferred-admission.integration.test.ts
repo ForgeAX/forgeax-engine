@@ -75,7 +75,6 @@ it('admits the published Standard Deferred surface when GTAO turns on', async ()
   const admission = vi.spyOn(admissionOwner, 'createStandardSceneSurfaceAdmission');
   const unavailable = vi.spyOn(admissionOwner, 'standardAoSceneDataUnavailable');
   const manifest = await buildEngineShaderManifest();
-  const manifestBytes = JSON.stringify(manifest);
   const host = value(
     await constructRuntimeRendererHost(
       { width: 256, height: 256, getContext: () => null },
@@ -174,7 +173,10 @@ it('admits the published Standard Deferred surface when GTAO turns on', async ()
     throw error;
   } finally {
     const evidence = process.env.FORGEAX_GTAO_ADMISSION_EVIDENCE;
-    if (evidence !== undefined)
+    if (evidence !== undefined) {
+      // Encode the complete publication only when diagnostics are requested.
+      // The real host input already serializes it through shaderManifestUrl.
+      const manifestBytes = JSON.stringify(manifest);
       writeFileSync(
         evidence,
         JSON.stringify(
@@ -201,6 +203,7 @@ it('admits the published Standard Deferred surface when GTAO turns on', async ()
           2,
         ),
       );
+    }
     unsubscribe();
     await renderer.dispose();
     admission.mockRestore();

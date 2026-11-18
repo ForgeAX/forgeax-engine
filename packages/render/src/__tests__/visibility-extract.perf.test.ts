@@ -105,15 +105,22 @@ function measureWorlds(worlds: readonly World[]): number[] {
 
 describe(`visibility extraction performance (10k + RenderScene ${RENDER_SCENE_ENTITY_COUNT / 1_000}k)`, () => {
   it('keeps inherited hierarchy extraction within the 10 percent budget', () => {
-    const flat = buildWorld(false, false);
+    // The ratio gate compares identical hierarchies with and without inherited
+    // visibility. The unrelated flat timing is an optional full-profile diagnostic.
+    const flat = LIGHTWEIGHT_RENDER_SCENE_PERF ? undefined : buildWorld(false, false);
     const hierarchy = buildWorld(false, true);
     const inherited = buildWorld(true, true);
-    const flatMedian = measureWorlds([flat])[0] ?? 0;
-    const [hierarchyMedian = 0, inheritedMedian = 0] = measureWorlds([hierarchy, inherited]);
+    const flatMedian = flat === undefined ? undefined : measureWorlds([flat])[0];
+    const [hierarchySamples = [], inheritedSamples = []] = measureWorldSamples([
+      hierarchy,
+      inherited,
+    ]);
+    const hierarchyMedian = median(hierarchySamples);
+    const inheritedMedian = median(inheritedSamples);
     const overhead = inheritedMedian / Math.max(hierarchyMedian, 0.001) - 1;
     // biome-ignore lint/suspicious/noConsole: retain benchmark profile evidence
     console.info(
-      `[m3-b-performance] flat=${flatMedian.toFixed(3)}ms hierarchy=${hierarchyMedian.toFixed(3)}ms inherited=${inheritedMedian.toFixed(3)}ms overhead=${(overhead * 100).toFixed(2)}% samples=${SAMPLE_COUNT}`,
+      `[m3-b-performance] flat=${flatMedian === undefined ? 'deferred' : `${flatMedian.toFixed(3)}ms`} hierarchy=${hierarchyMedian.toFixed(3)}ms inherited=${inheritedMedian.toFixed(3)}ms overhead=${(overhead * 100).toFixed(2)}% samples=${SAMPLE_COUNT} hierarchyMax=${Math.max(...hierarchySamples).toFixed(3)}ms inheritedMax=${Math.max(...inheritedSamples).toFixed(3)}ms`,
     );
 
     expect(overhead).toBeLessThanOrEqual(0.1);

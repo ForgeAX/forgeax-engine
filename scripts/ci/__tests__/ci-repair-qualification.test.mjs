@@ -11,6 +11,7 @@ import {
   collectRepairArtifactSources,
 } from '../ci-repair-artifacts.mjs';
 import {
+  createGitHubHistoryClient,
   ciRepairQualification as qualifyRepair,
   repairArtifactSuites,
   repairComparison,
@@ -995,6 +996,58 @@ test('fresh current metrics providers keep downstream consumers in the fresh coh
   }
 });
 
+test('the combined Bevy projection always observes its current workers instead of reusing an old projection', async () => {
+  const f = fixture();
+  f.input.jobKey = 'bevy-smoke-fleet';
+  f.input.checkName = 'bevy-smoke-fleet-0';
+  const result = await ciRepairQualification(f.input, () => {
+    assert.fail('a result projection must not request a reusable historical success');
+  });
+  assert.equal(result.reused, false);
+  assert.equal(result.reason, 'artifact-provider-or-aggregate');
+  assert.ok(repairReusableJobs['ci.yml'].includes('smoke-fleet'));
+});
+
+test('a moved Runtime Pack owner requires its complete original View execution', async () => {
+  const names = [
+    'Prepare matching DevKit browser shader profile',
+    'Runtime Pack Worker dev/build JS/TS browser gate',
+  ];
+  for (const state of ['complete', 'missing', 'skipped', 'failed', 'duplicate']) {
+    const f = fixture();
+    f.job.name = 'view-integration-0';
+    Object.assign(f.input, { jobKey: 'view-integration-shards', checkName: f.job.name });
+    f.job.steps = names.map((name) => ({ name, status: 'completed', conclusion: 'success' }));
+    if (state === 'missing') f.job.steps.pop();
+    if (state === 'skipped') f.job.steps[1].conclusion = 'skipped';
+    if (state === 'failed') f.job.steps[1].conclusion = 'failure';
+    if (state === 'duplicate') f.job.steps.push(f.job.steps[1]);
+    const result = await ciRepairQualification(f.input, f.api);
+    assert.equal(result.reused, state === 'complete', state);
+    if (state !== 'complete') assert.equal(result.reason, 'required-execution-step-unqualified');
+  }
+});
+
+test('a moved Project Play owner requires its complete original View execution', async () => {
+  const names = [
+    'Prepare matching DevKit browser shader profile',
+    'DevKit project play browser journeys (uninstrumented)',
+  ];
+  for (const state of ['complete', 'missing', 'skipped', 'failed', 'duplicate']) {
+    const f = fixture();
+    f.job.name = 'view-integration-1';
+    Object.assign(f.input, { jobKey: 'view-integration-shards', checkName: f.job.name });
+    f.job.steps = names.map((name) => ({ name, status: 'completed', conclusion: 'success' }));
+    if (state === 'missing') f.job.steps.pop();
+    if (state === 'skipped') f.job.steps[1].conclusion = 'skipped';
+    if (state === 'failed') f.job.steps[1].conclusion = 'failure';
+    if (state === 'duplicate') f.job.steps.push(f.job.steps[1]);
+    const result = await ciRepairQualification(f.input, f.api);
+    assert.equal(result.reused, state === 'complete', state);
+    if (state !== 'complete') assert.equal(result.reason, 'required-execution-step-unqualified');
+  }
+});
+
 test('all integrated consumers preserve checkout, explicit provenance and step guards', () => {
   for (const [file, ids] of Object.entries(repairReusableJobs)) {
     const workflowPath = join(root, '.github/workflows', file);
@@ -1162,9 +1215,143 @@ test('the built-in API client needs no runner CLI and bounds authenticated reque
   await assert.rejects(requestGitHub('repos/example/engine', ''), /token unavailable/);
   for (const status of [403, 404, 429, 500])
     await assert.rejects(
-      requestGitHub('repos/example/engine', 'test-token', async () => ({ ok: false, status })),
+      requestGitHub('repos/example/engine', 'test-token', async () => ({ ok: false, status }), {
+        sleepFn: async () => {},
+        onRetry: () => {},
+      }),
       /GitHub history unavailable/,
     );
+});
+
+test('history transport recovery retries bounded transient failures and retains permanent failures', async () => {
+  for (const failure of [
+    new TypeError('fetch failed'),
+    Object.assign(new Error('deadline'), { name: 'TimeoutError' }),
+    429,
+    502,
+  ]) {
+    let calls = 0;
+    const delays = [];
+    const value = await requestGitHub(
+      'repos/example/engine/actions/runs/11',
+      'test-token',
+      async () => {
+        if (++calls === 1) {
+          if (failure instanceof Error) throw failure;
+          return { ok: false, status: failure };
+        }
+        return { ok: true, json: async () => ({ id: 11 }) };
+      },
+      { sleepFn: async (delay) => delays.push(delay), onRetry: () => {} },
+    );
+    assert.deepEqual(value, { id: 11 });
+    assert.equal(calls, 2);
+    assert.deepEqual(delays, [failure === 429 ? 60 : 5]);
+  }
+  let calls = 0;
+  await assert.rejects(
+    requestGitHub(
+      'repos/example/engine',
+      'test-token',
+      async () => {
+        calls++;
+        return { ok: false, status: 403 };
+      },
+      { sleepFn: async () => {}, onRetry: () => {} },
+    ),
+    /GitHub history unavailable/,
+  );
+  assert.equal(calls, 1);
+});
+
+test('history throttling honors server backoff without retrying permission failures or an unbounded reset', async () => {
+  for (const headers of [
+    new Headers({ 'retry-after': '42' }),
+    new Headers({
+      'x-ratelimit-remaining': '0',
+      'x-ratelimit-reset': String(Math.floor(Date.now() / 1000) + 40),
+    }),
+  ]) {
+    let calls = 0;
+    const delays = [];
+    assert.deepEqual(
+      await requestGitHub(
+        'repos/example/engine',
+        'test-token',
+        async () => {
+          if (++calls === 1) return { ok: false, status: 403, headers };
+          return { ok: true, json: async () => ({ id: 11 }) };
+        },
+        { sleepFn: async (delay) => delays.push(delay), onRetry: () => {} },
+      ),
+      { id: 11 },
+    );
+    assert.equal(calls, 2);
+    assert.ok(delays[0] >= 39 && delays[0] <= 42);
+  }
+  let calls = 0;
+  await assert.rejects(
+    requestGitHub(
+      'repos/example/engine',
+      'test-token',
+      async () => {
+        calls++;
+        return { ok: false, status: 429, headers: new Headers({ 'retry-after': '3600' }) };
+      },
+      { sleepFn: async () => assert.fail('must not retry early'), onRetry: () => {} },
+    ),
+    /rate limit exceeds recovery bound/,
+  );
+  assert.equal(calls, 1);
+});
+
+test('history body deadlines recover while invalid JSON remains unqualified', async () => {
+  let calls = 0;
+  const value = await requestGitHub(
+    'repos/example/engine',
+    'test-token',
+    async () => ({
+      ok: true,
+      json: async () => {
+        if (++calls === 1)
+          throw Object.assign(new Error('body deadline'), { name: 'TimeoutError' });
+        return { id: 11 };
+      },
+    }),
+    { sleepFn: async () => {}, onRetry: () => {} },
+  );
+  assert.deepEqual(value, { id: 11 });
+  assert.equal(calls, 2);
+  calls = 0;
+  await assert.rejects(
+    requestGitHub(
+      'repos/example/engine',
+      'test-token',
+      async () => ({
+        ok: true,
+        json: async () => {
+          calls++;
+          throw new SyntaxError('invalid JSON');
+        },
+      }),
+      { sleepFn: async () => {}, onRetry: () => {} },
+    ),
+    SyntaxError,
+  );
+  assert.equal(calls, 1);
+});
+
+test('one history client reuses successful inventories without caching a failed query', async () => {
+  let calls = 0;
+  const api = createGitHubHistoryClient('test-token', async () => {
+    calls++;
+    return calls === 1 ? { ok: false, status: 404 } : { ok: true, json: async () => ({ id: 11 }) };
+  });
+  const endpoint = 'repos/example/engine/actions/runs/11';
+  await assert.rejects(api(endpoint), /GitHub history unavailable/);
+  const first = await api(endpoint);
+  assert.strictEqual(await api(endpoint), first);
+  assert.equal(calls, 2);
 });
 
 test('coverage artifact reuse rejects changed covered source, submodule pins and compiler inputs', () => {

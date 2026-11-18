@@ -448,7 +448,7 @@ export function runtimeForm(parent: HTMLElement, title: string, fields: RuntimeF
             current = readRuntimeFormFields(fields);
           } catch (error) {
             if (!retiredRuntimeObject(error)) throw error;
-            section.remove();
+            form.remove();
             controls.length = 0;
             return;
           }
@@ -524,9 +524,10 @@ export function runtimeForm(parent: HTMLElement, title: string, fields: RuntimeF
       }
     },
   };
-  section.addEventListener('toggle', () => {
+  const onSectionToggle = () => {
     if (section.open) form.refresh();
-  });
+  };
+  section.addEventListener('toggle', onSectionToggle);
   const onAncestorToggle = (event: Event) => {
     if (event.target instanceof HTMLDetailsElement && event.target.contains(section))
       form.refresh();
@@ -534,6 +535,7 @@ export function runtimeForm(parent: HTMLElement, title: string, fields: RuntimeF
   document.addEventListener('toggle', onAncestorToggle, true);
   const remove = form.remove;
   form.remove = () => {
+    section.removeEventListener('toggle', onSectionToggle);
     document.removeEventListener('toggle', onAncestorToggle, true);
     remove();
   };

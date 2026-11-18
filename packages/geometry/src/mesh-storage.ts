@@ -47,12 +47,16 @@ export function interleavedMeshFiniteFailure(
 /** A numeric window, resolved once outside a CPU loop. No vertex bytes are copied.
  * Read data[offset + vertex * stride + component]. Offsets and strides are in
  * elements of data, including uint16 skin indices in mixed packed rows. */
-export interface MeshAttributeWindow {
-  readonly data: Float32Array | Uint16Array | Uint32Array;
+export interface ReadonlyMeshAttributeWindow {
+  readonly data: ArrayLike<number>;
   readonly offset: number;
   readonly stride: number;
   readonly components: number;
   readonly count: number;
+}
+
+export interface MeshAttributeWindow extends ReadonlyMeshAttributeWindow {
+  readonly data: Float32Array | Uint16Array | Uint32Array;
 }
 
 /** One empty backing per mesh: transferring a declaration cannot detach another

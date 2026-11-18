@@ -1,8 +1,0 @@
-{
-  "schemaVersion": "1.0.0",
-  "kind": "external-asset-package",
-  "importer": "image",
-  "source": "T_Water_TilingNormal_With_Height_02_Softened.png",
-  "importSettings": { "colorSpace": "linear", "mipmap": true, "compressionMode": "none" },
-  "subAssets": [{ "guid": "0c855c2a-7f29-5e28-b30f-c8669de0202e", "sourceIndex": 0, "kind": "texture", "sourceKey": "texture" }]
-}

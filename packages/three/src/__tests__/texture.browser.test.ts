@@ -7,7 +7,7 @@ import { renderReference } from './webgpu-reference.fixture';
 
 const rendererFor = browserRendererFixture();
 
-it('matches independently authored r184 WebGPU inputs: textures', {
+it('matches independently authored r187 WebGPU inputs: textures', {
   timeout: 120000,
 }, async () => {
   // Each upstream Renderer keeps independent node/material caches while its
@@ -17,7 +17,7 @@ it('matches independently authored r184 WebGPU inputs: textures', {
 
 it.each(
   flatShadingMaterialTypes,
-)('matches independently authored r184 WebGPU inputs: flat shading %s', {
+)('matches independently authored r187 WebGPU inputs: flat shading %s', {
   timeout: 120000,
 }, async (materialType) => {
   await verifyFlatShading(rendererFor(), renderReference, saveBrowserEvidence, materialType);

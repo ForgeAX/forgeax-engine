@@ -24,6 +24,13 @@ and execute the nearest production Dawn gate before claiming pixels accepted.
 ## Water Material Entry
 
 For coast integration, use the [R8 entry](../../apps/water/r8-integration-acceptance/README.md).
+For missing water after Mesh storage changes, inspect actual WaterInfo work and
+the accepted immutable dependency. Runtime attribute arrays are layout declarations;
+Water consumers read canonical position/color windows from the Water snapshot
+owner. Keep the R8 Browser surface gate in ordinary CI: real Pack publication,
+sixty completed frames, current WaterInfo/draw receipts and ocean pixels.
+For shared material publication programs, preserve the complete Pack-owned
+compiler context key; identical artifact bytes do not identify a pipeline selection.
 Capability support does not establish an assembled branch or reference parity.
 Keep Q0, appearance replacements and optional R6 simulation independent; missing
 contact foam does not authorize a replacement mesh or enabling another branch.
@@ -43,13 +50,13 @@ when collision geometry and the full Scene matrix are unchanged. Replacing the
 River with another Water Body kind requires unmounting it, waiting for Native
 source retirement, then mounting the replacement.
 
-For experimental R7 shallow/FFT work, start with the
+For shallow and spectral simulation work, start with the
 [Water owner entry](../../packages/water/README.md#advanced-simulation-entry).
 The opt-in `mode-projected-gravity/1` World OceanPatch uses its `materialGrid`,
 `materialNormal`, `foam` and `mapping` through the additive shallow material
 slots. Its mapping marks residual-only input: preserve Terrain depth and Body
 flow. Its uniform linear-wave depth is not a Terrain sample. Qualify the actual
-domain/grid/slabs/depth/velocity/time configuration independently of UE FFT.
+domain, grid, slabs, depth, velocity and time configuration.
 Select the saved `WaterShallowCollider.dispersiveMotion` source role explicitly:
 full displacement for entry objects, surface transport for floating hull motion.
 Surface transport exports water from the current submerged union's facing boundary
@@ -100,7 +107,7 @@ simulation and one World owns OceanPatch. Bind their output names through
 ordinary Pack recipe/texture outputs before the current Body accepts its query
 grid. A texture preview or stage name does not prove completed GPU bytes;
 use the [R7 project](../../apps/water/r7-advanced-shallow-bake-fft/README.md) for
-the source-default/authored-configuration boundary and separate acceptance gates.
+the built-in defaults, authored configuration and supported simulation inputs.
 Bind shallow `materialGrid`/`materialNormal` frame atlases and 2x2 Mapping
 (current row 0, previous row 1). Atlas halves contain current then previous;
 canonical RTs and stage captures retain their original dimensions. Deformation
@@ -108,7 +115,7 @@ clamps within each frame before its atlas offset. Render owns GPU history
 copies and reset seeding. WaterBody Fade uses explicit `startFadeSeconds` in
 the depth solver; it is not a material fade or a River stage.
 
-For I05 visual detail, use only the `configurationVersion: 2`
+For geometry-driven visual detail, use only the `configurationVersion: 2`
 `mode-projected-gravity/1` recipe with its required closed
 `visualNormalDetailFft` block; include that block's noise GUID in the ordinary
 recipe `textureGuids` closure. Bind the same-World `visualNormal` output to the
@@ -162,8 +169,8 @@ position. Custom deformation normals remain authoritative.
 Custom defaults select fixed height/depth and vertex velocity; fullscreen
 underwater's vertex fallback decodes the actual white post-process VertexColor.
 Ocean foam uses the Content 3D volume and a RenderGraph-owned FoamRT, never a
-static replacement texture. See the Water README for the explicit R3
-no-simulation initialization and its separate GPU/appearance acceptance gates.
+static replacement texture. See the Water README for no-simulation target
+initialization, channel values and resource lifetime.
 
 ## Lighting asset entry points
 
@@ -185,6 +192,127 @@ same GUID, and verify receipt, artifact, and provenance.
 
 > [!IMPORTANT]
 > The visible-object recipe is `MeshFilter` + `MeshRenderer` + `MaterialAsset`. Author one material payload, cook its effective contract, load it by GUID, and allocate the World handle. The recovery route is structured error inspection. Do not create an app-local shader artifact or bypass an engine resource defect in a demo.
+
+## Three source authoring
+
+Use `@forgeax/engine/three` and its public addon subpaths together so CPU geometry,
+skeleton cloning and surface sampling retain one constructor family. The 88 CPU
+addon subpaths also include rounded/parametric/convex/text geometry, Font/STL/PLY/
+XYZ parsing, OBB/Octree/hulls/capsules, noise/curves and SceneUtils; modifiers,
+Decal/Teapot/ParametricFunctions, OBJ/MTL/HDR loaders, OBJ/STL/PLY exporters,
+clip/CCD IK tools, camera/color/geometry utilities, Lut and geometry helpers. They import no
+native renderer or cooked programs. Parsed geometry retains normal material and
+topology admission; Points consume RGB/RGBA colors through the existing native tint stream,
+including normalized attributes and published color edits; Lines still reject
+vertex colors. Lines/Points UV and point-coordinate texture paths remain rejected.
+OBJ/MTL retain CPU Phong materials: choose a supported native material explicitly.
+HDR parse does not install environment/PMREM; modifiers, exporters, IK and clips
+need explicit calls. SimplifyModifier initializes its original embedded CPU WASM
+module on import; await modify(). PLYExporter can return data without a callback. CPU OBB/Octree queries do not create native physics bodies.
+Additional paths include FBX/SVG/BVH/PCD/VTK/MDD/PDB/NRRD, TGA/DDS/KTX/EXR/IES,
+Cube/3DL LUT loaders, NURBS, LoftGeometry, ConvexObjectBreaker, color-space/HSV
+and radix-sort utilities. Convex cut outputs are nullable Mesh references; radix
+sort accepts Uint32Array and caller-owned matching scratch. VTK/NRRD parse byte buffers; VTK needs no path argument
+and retains its deprecated r187 sniff limit. NRRD segmentation is an explicit void
+setter, and parser helpers are private. HSV output uses h/s/v and retains its
+caller-owned target. SVG parsing needs DOMParser. Select supported materials on
+FBX meshes; CPU volume/LUT/IES/BVH data do not install native systems, and convex
+fragments do not create physics bodies. Compression keeps existing device gates. The
+[Three package contract](../../packages/three/README.md) owns the supported
+material inputs and shared-World lifetime; source-backed objects retain their
+source authoring authority. Matcap alpha coverage uses ordinary UVs independently
+of its sphere lookup, through existing native alpha bindings.
+
+Controls also include Arcball/Drag/FirstPerson/Fly/Map/PointerLock/Trackball/Transform;
+Fly/FirstPerson update requires caller delta, and controls must be disposed. Original
+DOM listeners and optional Arcball inertia remain; no Engine frame driver is added.
+Transform gizmos retain native rejection for nonfinite renderOrder; CPU attach/mode
+state does not establish editable native gizmo support. SelectionHelper accepts a
+DOM canvas host; SelectionBox is a CPU query. Collada/AMF/3MF parsing needs DOMParser,
+VOX parse can be undefined with a nullable scene, and AMF converts units to millimeters.
+AnimationPathHelper uses UUID position tracks with optional line/points. GLTFExporter
+texture-free JSON/GLB round trips are verified, not compressed texture export.
+SceneOptimizer explicitly rewrites/disposes source meshes and uses existing CPU
+BatchedMesh expansion; do not infer a GPU batching or FPS improvement.
+
+For r187 canvas state, use `renderer.getCanvasTarget()` as the size/DPR and
+viewport/scissor authority; `setCanvasTarget` accepts another target for that same
+canvas. Keep a full viewport and full or disabled scissor. setRenderTarget(null,
+face, mip) preserves default-framebuffer metadata for state save/restore (face
+0..5, mip nonnegative safe integer); omitted selectors reset to zero. Non-null
+render targets remain unsupported. Framebuffer texture
+objects need a native attachment lease and are rejected as ordinary images.
+StorageTexture/StorageArrayTexture/Storage3DTexture are CPU descriptors only and
+are rejected before pending-image allocation. Explicit NodeLoader registries
+load original node identities; loaded scenes use the same material admission.
+Node/material registries accept constructors without a cast; NodeLoader loads a
+single Node. Preserve IOR through an explicit iorNode for serialized node scenes:
+r187 omits ordinary IOR. The existing IOR=1.5 native transmission pixel gap stays
+unqualified; do not infer general refraction equivalence from the IOR=1 fixtures.
+CPU node authoring preserves original data and identity. Import TSL functions
+from `@forgeax/engine/three/tsl` or the main facade's TSL namespace to keep one
+constructor family. Basic, Lambert, Standard, Physical, line, point and Sprite
+NodeMaterial models project colorNode/opacityNode from original UniformNode or
+ordinary 2D TextureNode leaves through existing native values and bindings.
+Uniform colors accept Color/vec3/vec4, opacity accepts a bounded float; selected
+node inputs replace the corresponding color/map or opacity/alphaMap. Caller value
+updates are read on the next draw. Lambert/Standard/Physical also project uniform
+emissiveNode; Standard/Physical project uniform roughnessNode and metalnessNode.
+Physical additionally projects uniform clearcoat, clearcoat roughness, sheen,
+sheen roughness, specular intensity/color and IOR node inputs. They replace the
+ordinary values and maps, using the same native parameters; see the README for
+numeric bounds. Physical also projects uniform iridescence amount/IOR/absolute
+thickness, transmission, thickness, attenuation distance/color. Transmission
+node presence, including value zero, selects sorted transparency and double
+passes; ordinary values/maps are replaced by the selected inputs.
+SpriteNodeMaterial also accepts uniform positionNode (Vector3), rotationNode
+(finite float) and scaleNode (positive finite Vector2). Source positionNode is
+inherited into scene overrides; override rotation and scale stay selected.
+LineDashedNodeMaterial accepts uniform offsetNode, dashScaleNode, dashSizeNode
+and gapSizeNode through existing lineDistance projection; dashSize > 0 and
+gapSize >= 0, with signed/zero scale. Transform-only edits reuse material assets.
+anisotropyNode remains rejected pending the captured native shading gap.
+Normal/Matcap and unlisted graph fields retain null inputs. No node callbacks, operators, ConstNode, Fn, custom UV/LOD,
+precision override, attachment sampling or runtime graph compilation is supplied.
+Use ordinary color for fixed values. Existing topology and material boundaries
+remain; Physical texture recipes use the effective input selection and may need
+an explicit build-only cook. Reject unsupported inputs before publication.
+
+Exact MaterialReferenceNode / TSL.materialReference leaves can read one direct
+material property with an ASCII identifier name as float, Color/vec3 or vec4, through the same supported surface
+fields, model restrictions, bounds and map replacement as uniforms. With no
+explicit target, the current selected material or instance owns the value; an
+explicit material target replaces that selection. Replace instance properties for
+independent values. Source node caches and NodeFrame are never updated. Sprite
+pose remains UniformNode-only. Paths, arrays, textures, arbitrary reference
+graphs, custom hooks and missing/incompatible values fail before publication.
+Reference JSON hydration is not supplied. CPU Phong/Toon/SSS/Shadow/Volume/Line2
+models, Basic/StandardNodeLibrary, Lighting and NodeMaterialObserver are original
+CPU APIs; they add no native model or renderer subsystem. Unmatched library
+fromMaterial returns null.
+
+Exact ReferenceNode, ReferenceBaseNode and UserDataNode leaves can also read an
+explicit object or userData store with the same direct-property value contract.
+Object/Base read object; UserData reads userData. Replacing the selector or value
+is observed without updating stale node/reference caches. Shared stores share
+parameters; separate material bindings can use separate stores. Native systems
+may maintain these ordinary objects; projection adds no entity mirror or per-object
+material variants. Implicit frame.object / frame.object.userData references remain
+rejected, as do Sprite pose, paths, arrays/buffers/textures and custom hooks.
+GLSLNodeParser, RTTNode, ReflectorNode and ToonOutlinePassNode are original CPU
+parser/descriptor APIs. Their target/view/cache/dispose behavior adds no native
+RTT, reflection or outline execution; the three pass/texture leaves are rejected.
+
+NodeMaterialInstance retains an original shared NodeMaterial definition and
+independent ordinary instance values. Assign a new Color for independent colors;
+initial object values are shared. Edit node inputs on the definition, then mark
+its needsUpdate when changing graph shape; uniform value edits need no new graph.
+Basic/Standard/Sprite/dashed instances use existing native projection and handles.
+Sprite sizeAttenuation is definition-owned; the original instance omits its
+prototype accessor. A distinct instance used as scene override is rejected before coverage projection.
+Physical instances, nested/custom definitions, shader-hook
+changes and arbitrary materialReference graphs remain rejected. CPU environment,
+viewport, pass, shadow and velocity descriptors do not supply their GPU execution.
 
 ## Shadow receiver bias
 

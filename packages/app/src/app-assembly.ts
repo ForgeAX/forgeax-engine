@@ -260,6 +260,8 @@ export interface BuildAppArgs {
   readonly frameInspection?: FrameInspectionRef;
   /** Canvas-form projection of the Renderer frame-submitted event. */
   readonly onFrameSubmitted?: (event: {
+    readonly configurationRevision?: number;
+    readonly presentation?: import('@forgeax/engine-render').FramePresentation;
     readonly editorAssistance?: import('@forgeax/engine-render').SubmittedEditorAssistanceFrame;
     readonly frameId: number;
     readonly deviceGeneration: number;
@@ -389,10 +391,14 @@ export async function buildApp(args: BuildAppArgs): Promise<Result<App, AppError
           : { editorAssistance: receipt.editorAssistance }),
         deviceGeneration: receipt.deviceGeneration,
         ...(receipt.shadowWorkload === undefined ? {} : { shadowWorkload: receipt.shadowWorkload }),
+        ...(receipt.configurationRevision === undefined
+          ? {}
+          : { configurationRevision: receipt.configurationRevision }),
         ...(receipt.graphGeneration === undefined
           ? {}
           : { graphGeneration: receipt.graphGeneration }),
         receipt,
+        presentation: receipt.presentation,
         ...(renderDrawCpuMs === undefined ? {} : { renderDrawCpuMs }),
         ...(receipt.barrelDistortion === undefined
           ? {}
@@ -414,6 +420,9 @@ export async function buildApp(args: BuildAppArgs): Promise<Result<App, AppError
           // A receipt produced by the current Render contract always carries
           // presentation. If a legacy adapter omits it, do not turn an
           // unproven frame into startup success.
+          ...(receipt.configurationRevision === undefined
+            ? {}
+            : { configurationRevision: receipt.configurationRevision }),
           presentation: receipt.presentation ?? 'pending',
           ...(receipt.barrelDistortion === undefined
             ? {}

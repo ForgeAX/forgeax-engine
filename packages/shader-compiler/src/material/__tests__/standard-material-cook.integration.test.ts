@@ -7,7 +7,7 @@ import {
   standardSurfaceParameters,
 } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
-import { createMaterialPackCooker } from '../pack-cooker.js';
+import { captureMaterialSourceSnapshot, createMaterialPackCooker } from '../pack-cooker.js';
 import { projectMaterial } from '../project.js';
 
 const parameters: readonly MaterialParameter[] = standardSurfaceParameters([
@@ -217,7 +217,10 @@ describe('standard material cook integration', { timeout: 30_000 }, () => {
       { name: 'anisotropyStrength', type: 'f32' },
       { name: 'anisotropyRotation', type: 'f32' },
     ];
-    const cooker = createMaterialPackCooker();
+    // Both publications own one immutable source set inside the original cold clock.
+    const cooker = createMaterialPackCooker([], {
+      sourceSnapshot: await captureMaterialSourceSnapshot([]),
+    });
     const cook = async (parameters: readonly MaterialParameter[]) =>
       cooker.cook({
         guid: `anisotropy-${parameters.some((parameter) => parameter.name === 'anisotropyTexture') ? 'map' : 'scalar'}`,
@@ -237,8 +240,11 @@ describe('standard material cook integration', { timeout: 30_000 }, () => {
         },
       });
 
-    const scalar = await cook(baseParameters);
-    const mapped = await cook([...baseParameters, { name: 'anisotropyTexture', type: 'texture' }]);
+    // Independent contracts use the existing process-wide bounded material pool.
+    const [scalar, mapped] = await Promise.all([
+      cook(baseParameters),
+      cook([...baseParameters, { name: 'anisotropyTexture', type: 'texture' }]),
+    ]);
     const scalarArtifact = Object.values(scalar.artifacts)[0];
     const mappedArtifact = Object.values(mapped.artifacts)[0];
     expect(scalarArtifact).toBeDefined();

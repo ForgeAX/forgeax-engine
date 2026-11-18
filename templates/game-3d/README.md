@@ -26,7 +26,6 @@ details, deletion steps, packs, UI realms, lighting, materials and coordinates a
 | `assets/geometry.pack.ts` | Primitive meshes for the level. |
 | `assets/ui/` | HUD and touch controls (frontend realm). |
 | `assets/shared/` | Ids, port messages and math shared by features. |
-| `*/__tests__/` | Key tests per feature. |
 | `scripts/playthrough.mjs`, `scripts/convoy-playthrough.mjs` | `project play` journeys (the second drives transform, driving and reload); PlayContext API in [`api/play.md`](skills/forgeax-engine-sdk/references/api/play.md). |
 
 ## Shortest paths

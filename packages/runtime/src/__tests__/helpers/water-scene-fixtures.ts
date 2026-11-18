@@ -288,7 +288,7 @@ export function riverBakeRecipeAsset(
     materialGuids: [],
     textureGuids: [textureGuid, normalTextureGuid],
     shallowStageConfig: {
-      stageProfile: 'ue-5.8.1-river',
+      stageProfile: 'river-shallow/2',
       gridResolution: [resolution, resolution],
       extentM: [extentM, extentM],
       baseHeightM: 0,

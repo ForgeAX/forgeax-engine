@@ -97,7 +97,7 @@ export interface WaterViewSelectionInput {
   ) => Result<WaterQueryResult, WaterError>;
 }
 
-/** UE WaterSubsystem view selection, expressed in engine meters and Y-up. */
+/** Water view selection in meters and Y-up. */
 export function selectWaterView(
   input: WaterViewSelectionInput,
 ): Result<WaterViewState, WaterViewError> {

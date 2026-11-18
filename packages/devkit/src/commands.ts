@@ -311,7 +311,8 @@ export async function testCommand(
         root: facts.value.root,
         run: true,
         watch: false,
-        passWithNoTests: false,
+        // A game may ship without tests; acceptance is the real play journey.
+        passWithNoTests: true,
         cliExclude: (await installedProjectSkillDirectories(facts.value.root)).map(
           (directory) => `${directory}/**`,
         ),

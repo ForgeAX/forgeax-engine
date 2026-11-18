@@ -51,6 +51,11 @@ Authoring Mesh inputs without `attributeStorage` supply complete finite channels
 
 Use `meshAttributeWindow(mesh, key)` once outside a CPU loop, then read `data[offset + vertex * stride + component]`. It is a zero-copy view, including mixed uint16 skin channels and nonzero byte offsets. Take vertex cardinality from its `count` or `deriveVertexCount`, never from an empty runtime declaration. GPU raster uploads use `vertices` directly. `copyMeshAttribute(mesh, key, output?)` explicitly copies one contiguous channel when an algorithm needs it; `meshAttributeChannels(mesh)` is an uncached cold conversion for authoring algorithms. Retaining either result explicitly retains a second representation. No Proxy or lazy getter participates in numeric access.
 
+`ReadonlyMeshAttributeWindow` carries the same numeric addressing contract over
+read-only array-like storage. Immutable dependency consumers derive offsets from
+`deriveVertexLayoutProjection`, which reads attribute presence independently of
+the backing storage representation.
+
 `packMeshTangentFrame32(validatedMesh)` optionally replaces the normal and tangent channels with one `uint32` at location 14: oct11x2 normal, diamond9 tangent and one orientation bit. A position/UV0/UV1 terrain vertex is 32 bytes instead of 56. Remaining attributes, indices and metadata keep their bits; no expanded direction mirror is retained. Standard rigid, skin, temporal and shadow entries decode on the GPU before transforms. Custom vertex programs must provide their own matching `_packed` entry. `meshAttributeWindow` exposes the physical `tangentFrame` words; use `copyMeshAttribute` for explicit decoded normal/tangent outputs. Mesh binary v6 carries this format; ordinary meshes keep v5 output and v4/v5 remain readable.
 
 `interleavedMesh(validatedMesh)` drops authored channel storage without copying packed rows; `meshAttributeLayout(attributes)` produces canonical empty declarations with one zero-byte backing per mesh. Empty views over nonempty backing storage are rejected; transferring one mesh cannot detach another mesh's declarations. A producer that already owns packed rows can construct the marked form directly and let ordinary asset admission validate it, without first unpacking. Prefer `createMeshBuilder` for authored geometry.

@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
-  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -12,13 +11,12 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import { parse } from 'yaml';
-import { prepareWaterContent } from '../../../packages/content/scripts/prepare-water-content.mjs';
 import { submoduleGitEnvironment } from '../submodule-git-environment.mjs';
 
-test('an exact exported Water source prepares Content without checking out shared dirty assets', async () => {
+test('an exact exported asset tree preserves the shared dirty checkout', () => {
   const root = mkdtempSync(join(tmpdir(), 'forgeax-assets-export-'));
   const env = { ...process.env, GIT_ALLOW_PROTOCOL: 'file', EXPECTED_PRODUCT_SHA: '' };
   const git = (cwd, ...args) => {
@@ -37,27 +35,27 @@ test('an exact exported Water source prepares Content without checking out share
     const remote = join(root, 'remote');
     const parent = join(root, 'parent');
     const exported = join(root, 'export');
-    const original = resolve('packages/content/assets/water');
-    const provenance = JSON.parse(readFileSync(join(original, 'provenance.json'), 'utf8'));
     init(remote);
     init(parent);
-    mkdirSync(join(remote, 'water'), { recursive: true });
-    mkdirSync(join(exported, 'water'), { recursive: true });
-    for (const { file } of provenance.files) {
-      copyFileSync(join(original, file), join(remote, 'water', file));
-      copyFileSync(join(original, file), join(exported, 'water', file));
+    const files = {
+      'README.md': 'Pinned asset library\n',
+      'textures/noise.txt': 'pinned texture source\n',
+      'meshes/cube.txt': 'pinned mesh source\n',
+    };
+    for (const [file, bytes] of Object.entries(files)) {
+      for (const directory of [remote, exported]) {
+        mkdirSync(dirname(resolve(directory, file)), { recursive: true });
+        writeFileSync(join(directory, file), bytes);
+      }
     }
     git(remote, 'add', '.');
-    git(remote, 'commit', '-qm', 'original Water bytes');
+    git(remote, 'commit', '-qm', 'original asset tree');
     const pin = git(remote, 'rev-parse', 'HEAD');
     git(parent, 'submodule', 'add', remote, 'forgeax-engine-assets');
-    const output = join(parent, 'packages/content/assets/water');
-    mkdirSync(output, { recursive: true });
-    copyFileSync(join(original, 'provenance.json'), join(output, 'provenance.json'));
     git(parent, 'add', '.');
-    git(parent, 'commit', '-qm', 'pinned Content source');
+    git(parent, 'commit', '-qm', 'pinned asset source');
     const shared = join(parent, 'forgeax-engine-assets');
-    git(shared, 'rm', '-r', 'water');
+    git(shared, 'rm', '-r', 'textures');
     git(
       shared,
       '-c',
@@ -73,14 +71,14 @@ test('an exact exported Water source prepares Content without checking out share
     writeFileSync(join(shared, 'user-baseline.png'), 'preserved user working bytes');
     const head = git(shared, 'rev-parse', 'HEAD');
     const index = readFileSync(join(git(shared, 'rev-parse', '--absolute-git-dir'), 'index'));
-    await assert.rejects(prepareWaterContent({ repositoryRoot: parent }), { code: 'ENOENT' });
-    // Invoke the real CLI to exercise pin fetch, exported blob admission and Content preparation.
+    // Export admission fetches the pin without changing the active checkout or index.
     const result = spawnSync(
       process.execPath,
       [resolve('scripts/ci/prepare-assets-checkout.mjs'), '--source-root', exported],
       { cwd: parent, env, encoding: 'utf8' },
     );
     assert.equal(result.status, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).expected, pin);
     assert.equal(JSON.parse(result.stdout).actual, pin);
     assert.equal(git(shared, 'rev-parse', 'HEAD'), head);
     assert.deepEqual(
@@ -91,16 +89,18 @@ test('an exact exported Water source prepares Content without checking out share
       readFileSync(join(shared, 'user-baseline.png'), 'utf8'),
       'preserved user working bytes',
     );
-    for (const { file } of provenance.files)
-      assert.deepEqual(readFileSync(join(output, file)), readFileSync(join(original, file)));
-    writeFileSync(join(exported, 'water', provenance.files[0].file), 'changed source');
-    const rejected = spawnSync(
-      process.execPath,
-      [resolve('scripts/ci/prepare-assets-checkout.mjs'), '--source-root', exported],
-      { cwd: parent, env, encoding: 'utf8' },
-    );
-    assert.equal(rejected.status, 1, rejected.stdout);
-    assert.match(rejected.stderr, /exported source mismatch/);
+    assert.equal(existsSync(join(parent, 'packages/content')), false);
+    for (const [file, bytes] of Object.entries(files)) {
+      writeFileSync(join(exported, file), 'changed source');
+      const rejected = spawnSync(
+        process.execPath,
+        [resolve('scripts/ci/prepare-assets-checkout.mjs'), '--source-root', exported],
+        { cwd: parent, env, encoding: 'utf8' },
+      );
+      assert.equal(rejected.status, 1, rejected.stdout);
+      assert.match(rejected.stderr, /exported source mismatch/);
+      writeFileSync(join(exported, file), bytes);
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -192,7 +192,7 @@ test('already-forwarded checkout authorization is propagated once to actual Git 
 });
 
 const script = resolve('scripts/ci/prepare-assets-checkout.mjs');
-test('Native GI hydrates the pinned Water sources before every fresh Engine package build', () => {
+test('Native GI hydrates the pinned asset sources before every fresh Engine package build', () => {
   const workflow = parse(readFileSync(resolve('.github/workflows/native-ray-query.yml'), 'utf8'));
   const job = workflow.jobs['native-node-gi'];
   const steps = job.steps;
@@ -217,7 +217,7 @@ test('Native GI hydrates the pinned Water sources before every fresh Engine pack
   );
 });
 
-test('Bun rebuild hydrates pinned Water before input recovery and its uncached package build', () => {
+test('Bun rebuild hydrates pinned assets before input recovery and its uncached package build', () => {
   const workflow = parse(readFileSync(resolve('.github/workflows/ci.yml'), 'utf8'));
   const steps = workflow.jobs['portability-bun'].steps;
   const checkout = steps.find((step) => step.uses === 'actions/checkout@v5');
@@ -228,7 +228,7 @@ test('Bun rebuild hydrates pinned Water before input recovery and its uncached p
   );
   const recover = steps.findIndex((step) => step.uses === './.github/actions/prepare-ci-inputs');
   const build = steps.findIndex((step) => step.name === 'Bun topological package build');
-  assert.ok(prepare > node, 'fresh Bun builds must prepare the pinned Water source');
+  assert.ok(prepare > node, 'fresh Bun builds must prepare the pinned asset source');
   assert.ok(prepare < recover && prepare < build);
   assert.equal(steps[prepare].if, "steps.ci-repair.outputs.reused != 'true'");
   assert.equal(steps[prepare].if, steps[build].if);
@@ -237,7 +237,7 @@ test('Bun rebuild hydrates pinned Water before input recovery and its uncached p
   assert.equal(steps[build].run, 'node scripts/build-packages.mjs');
 });
 
-test('ci-core prepares exact Water inputs for a clean checkout without submodules before package build', async () => {
+test('ci-core prepares exact asset inputs for a clean checkout without submodules before package build', () => {
   const workflow = readFileSync(resolve('.github/workflows/ci.yml'), 'utf8');
   const job = workflow.split('\n  core-build:\n')[1].split(/\n(?= {2}[a-zA-Z0-9_-]+:\n)/)[0];
   const preparation = job.indexOf('node scripts/ci/prepare-assets-checkout.mjs');
@@ -247,7 +247,7 @@ test('ci-core prepares exact Water inputs for a clean checkout without submodule
       job.indexOf("pnpm --filter './packages/**' -r --workspace-concurrency=4 --if-present build"),
   );
 
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'forgeax-core-water-inputs-')));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'forgeax-core-asset-inputs-')));
   const env = { ...process.env, GIT_ALLOW_PROTOCOL: 'file', EXPECTED_PRODUCT_SHA: '' };
   const git = (cwd, ...args) => {
     const result = spawnSync('git', ['-C', cwd, ...args], { env, encoding: 'utf8' });
@@ -266,27 +266,19 @@ test('ci-core prepares exact Water inputs for a clean checkout without submodule
     const checkout = join(root, 'checkout');
     init(source);
     init(parent);
-    const waterRoot = resolve('packages/content/assets/water');
-    const provenance = JSON.parse(readFileSync(join(waterRoot, 'provenance.json'), 'utf8'));
-    mkdirSync(join(source, 'water'), { recursive: true });
-    for (const { file } of provenance.files)
-      copyFileSync(join(waterRoot, file), join(source, 'water', file));
+    mkdirSync(join(source, 'textures'), { recursive: true });
+    writeFileSync(join(source, '.gitattributes'), '*.txt -text\n');
+    writeFileSync(join(source, 'README.md'), 'Pinned asset library\n');
+    writeFileSync(join(source, 'textures/checker.txt'), 'pinned checker source\n');
     git(source, 'add', '.');
-    git(source, 'commit', '-qm', 'exact Water source');
+    git(source, 'commit', '-qm', 'exact asset source');
     const expected = git(source, 'rev-parse', 'HEAD');
-    const target = join(parent, 'packages/content/assets/water');
-    mkdirSync(target, { recursive: true });
-    for (const file of [
-      'provenance.json',
-      ...provenance.files.map(({ file }) => `${file}.meta.json`),
-    ])
-      copyFileSync(join(waterRoot, file), join(target, file));
     git(parent, 'submodule', 'add', source, 'forgeax-engine-assets');
     git(parent, 'add', '.');
-    git(parent, 'commit', '-qm', 'source with pinned Water inputs');
+    git(parent, 'commit', '-qm', 'source with pinned asset inputs');
     git(root, '-c', 'core.autocrlf=false', 'clone', '--no-recurse-submodules', parent, checkout);
-    const output = join(checkout, 'packages/content/assets/water');
-    await assert.rejects(prepareWaterContent({ repositoryRoot: checkout }), { code: 'ENOENT' });
+    const output = join(checkout, 'forgeax-engine-assets');
+    assert.equal(existsSync(join(output, 'textures/checker.txt')), false);
     const prepared = spawnSync(process.execPath, [script], {
       cwd: checkout,
       env,
@@ -294,17 +286,12 @@ test('ci-core prepares exact Water inputs for a clean checkout without submodule
     });
     assert.equal(prepared.status, 0, prepared.stderr);
     assert.equal(JSON.parse(prepared.stdout).actual, expected);
-    for (const { file } of provenance.files) {
-      assert.deepEqual(readFileSync(join(output, file)), readFileSync(join(waterRoot, file)));
-      assert.deepEqual(
-        readFileSync(join(output, `${file}.meta.json`)),
-        readFileSync(join(waterRoot, `${file}.meta.json`)),
-      );
-    }
-    assert.deepEqual(
-      await prepareWaterContent({ repositoryRoot: checkout }),
-      provenance.files.map(({ file, sha256 }) => ({ file, sha256 })),
+    assert.equal(git(output, 'rev-parse', 'HEAD'), expected);
+    assert.equal(
+      readFileSync(join(output, 'textures/checker.txt'), 'utf8'),
+      'pinned checker source\n',
     );
+    assert.equal(existsSync(join(checkout, 'packages/content')), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -329,9 +316,9 @@ test('CI asset consumers use recoverable hydration', () => {
   }
 });
 
-test('shared producer prepares the pinned submodule after source checkout and before install', () => {
+test('combined Core producer prepares the pinned submodule before install', () => {
   const workflow = readFileSync(resolve('.github/workflows/ci.yml'), 'utf8');
-  const job = workflow.split('\n  shared-app-inputs:\n')[1].split(/\n(?= {2}[a-zA-Z0-9_-]+:\n)/)[0];
+  const job = workflow.split('\n  core-build:\n')[1].split(/\n(?= {2}[a-zA-Z0-9_-]+:\n)/)[0];
   assert.match(
     job,
     /actions\/checkout@v5[\s\S]*?ref: \$\{\{ env.EXPECTED_PRODUCT_SHA \}\}[\s\S]*?submodules: false/,
@@ -385,15 +372,6 @@ test('repairs a broken submodule HEAD using the pinned local object and verifies
     const parent = join(root, 'parent');
     init(source);
     init(parent);
-    const waterRoot = resolve('packages/content/assets/water');
-    const provenance = JSON.parse(readFileSync(join(waterRoot, 'provenance.json'), 'utf8'));
-    const sourceWater = join(source, 'water');
-    const targetWater = join(parent, 'packages/content/assets/water');
-    mkdirSync(sourceWater, { recursive: true });
-    mkdirSync(targetWater, { recursive: true });
-    copyFileSync(join(waterRoot, 'provenance.json'), join(targetWater, 'provenance.json'));
-    for (const { file } of provenance.files)
-      copyFileSync(join(waterRoot, file), join(sourceWater, file));
     writeFileSync(join(source, 'asset.txt'), 'pinned asset bytes\n');
     writeFileSync(join(source, '.gitattributes'), 'asset.txt -text\n');
     git(source, 'add', '.');
@@ -417,10 +395,7 @@ test('repairs a broken submodule HEAD using the pinned local object and verifies
       expected,
       actual: expected,
       repaired: true,
-      waterContent: provenance.files.map(({ file, sha256 }) => ({ file, sha256 })),
     });
-    for (const { file } of provenance.files)
-      assert.deepEqual(readFileSync(join(targetWater, file)), readFileSync(join(waterRoot, file)));
     assert.equal(readFileSync(join(assets, 'asset.txt'), 'utf8'), 'pinned asset bytes\n');
     const healthy = spawnSync(process.execPath, [script], { cwd: parent, env, encoding: 'utf8' });
     assert.equal(healthy.status, 0, healthy.stderr);

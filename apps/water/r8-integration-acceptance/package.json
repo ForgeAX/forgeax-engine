@@ -27,9 +27,8 @@
   "forgeax": {
     "metrics": {
       "bundle-size": {
-        "enabled": true,
-        "path": "dist",
-        "compression": "gzip"
+        "enabled": false,
+        "reason": "Informational app size has no regression threshold; app input builds and native runtime acceptance remain independently gated."
       },
       "fps": {
         "enabled": false,
@@ -41,7 +40,7 @@
       },
       "gate": {
         "enabled": false,
-        "reason": "Owner profile capture is diagnostic; the README leaves reference, recovery and performance acceptance unqualified, with no standalone acceptance gate."
+        "reason": "Owner profile capture exports diagnostics; this app does not declare a standalone metric gate."
       },
       "spike-report": {
         "enabled": false,

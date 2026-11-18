@@ -46,6 +46,12 @@
         "enabled": false,
         "reason": "not a spike app; Bevy example reproduction"
       }
+    },
+    "smokeArtifacts": {
+      "packGuids": [
+        "019e4a26-3c29-7420-af5d-20f2724a16b0",
+        "9cb5f54f-776d-5fde-9c24-8823279b7916"
+      ]
     }
   },
   "dependencies": {

@@ -44,35 +44,43 @@ const packaged = (output) => decodePackagedProfiles(readFileSync(join(output, 'p
 const profileMarker = (output, name) =>
   packagedProfilePublication(packaged(output), name)?.fragments[0];
 
-test('compatibility restores the core base profile with identical cache and input authority', () => {
+test('compatibility adopts the exact Core compiler and BASE before source preparation and GPU admission', () => {
   const core = parse(readFileSync('.github/workflows/ci.yml', 'utf8')).jobs['core-build'];
   const compatibility = parse(readFileSync('.github/workflows/webgpu-compatibility.yml', 'utf8'))
     .jobs.compatibility;
   assert.equal(compatibility.env.SHADER_OUTPUT, core.env.SHADER_OUTPUT);
   assert.equal(compatibility.env.SHADER_POINT_SHADOWS, core.env.SHADER_POINT_SHADOWS);
-  const fingerprint = compatibility.steps.find((step) => step.id === 'shader-inputs');
-  assert.match(fingerprint.run, /build-shared-inputs\.mjs --no-point-shadows --fingerprint/);
-  const restore = compatibility.steps.find((step) => step.id === 'shader-cache');
-  const coreRestore = core.steps.find((step) => step.id === 'shader-cache');
-  assert.equal(restore.uses, coreRestore.uses);
-  assert.equal(restore.with.path, coreRestore.with.path);
-  assert.equal(restore.with.key, coreRestore.with.key);
-  assert.equal(restore['timeout-minutes'], 1);
-  assert.equal(restore['continue-on-error'], true);
+  const restore = compatibility.steps.find((step) =>
+    step.run?.includes('node scripts/ci/restore-core-shader-inputs.mjs'),
+  );
+  assert.ok(restore, 'retain one source-verified Core handoff');
+  assert.match(
+    restore.run,
+    /--artifact-id '\$\{\{ needs\.shader-producer-inputs\.outputs\.artifact_id \}\}'/,
+  );
+  assert.match(restore.run, /--prepare-compiler/);
+  assert.equal(restore['timeout-minutes'], 5);
+  assert.equal(restore['continue-on-error'], undefined);
+  assert.equal(
+    compatibility.steps.filter((step) => /actions\/cache\/(?:save|restore)@/.test(step.uses ?? ''))
+      .length,
+    0,
+    'compatibility uses its admitted Core receipt instead of an independent shader cache',
+  );
+  assert.equal(
+    compatibility.steps.some((step) =>
+      /steps\.shader-(?:cache|inputs)\./.test(JSON.stringify(step)),
+    ),
+    false,
+    'removed producer IDs cannot leave unreachable cache writes behind',
+  );
   const preparation = compatibility.steps.find((step) =>
     step.name?.startsWith('Prepare the source-verified shader publication'),
   );
   assert.equal(preparation['timeout-minutes'], 10);
   assert.match(preparation.run, /prepare-shader-release-inputs\.mjs --build --profile base-ssao/);
   assert.match(preparation.run, /--input packages\/vite-plugin-shader\/dist\/engine-inputs\/ci/);
-  const save = compatibility.steps.find((step) => step.uses === 'actions/cache/save@v5');
-  assert.equal(save.with.path, restore.with.path);
-  assert.equal(save.with.key, restore.with.key);
-  assert.match(save.if, /steps\.shader-cache\.outcome == 'success'/);
-  assert.match(save.if, /steps\.shader-cache\.outputs\.cache-hit != 'true'/);
-  assert.equal(save['timeout-minutes'], 1);
-  assert.equal(save['continue-on-error'], true);
-  for (const step of [fingerprint, restore, preparation, save]) {
+  for (const step of [restore, preparation]) {
     assert.match(step.if, /steps\.ci-repair\.outputs\.reused != 'true'/);
     assert.match(step.if, /matrix\.carrier == 'stable' \|\| matrix\.carrier == 'webkit'/);
   }
@@ -80,8 +88,35 @@ test('compatibility restores the core base profile with identical cache and inpu
     step.name?.startsWith('Run actual GPU compatibility'),
   );
   assert.ok(compatibility.steps.indexOf(restore) < compatibility.steps.indexOf(preparation));
-  assert.ok(compatibility.steps.indexOf(preparation) < compatibility.steps.indexOf(save));
-  assert.ok(compatibility.steps.indexOf(save) < compatibility.steps.indexOf(gpu));
+  assert.ok(compatibility.steps.indexOf(preparation) < compatibility.steps.indexOf(gpu));
+});
+
+test('stock compatibility rejects missing producer identity before expensive preparation', () => {
+  const job = parse(readFileSync('.github/workflows/webgpu-compatibility.yml', 'utf8')).jobs
+    .compatibility;
+  const index = job.steps.findIndex(
+    (step) => step.name === 'Require admitted shaders before preparation',
+  );
+  assert.ok(index >= 0, 'stock carriers need early producer admission');
+  const guard = job.steps[index];
+  assert.match(guard.if, /steps\.ci-repair\.outputs\.reused != 'true'/);
+  assert.match(guard.if, /matrix\.carrier == 'stable' \|\| matrix\.carrier == 'webkit'/);
+  assert.ok(
+    index <
+      job.steps.findIndex((step) => step.uses === './.github/actions/prepare-source-checkouts'),
+  );
+  assert.ok(index < job.steps.findIndex((step) => step.run?.includes('pnpm install')));
+  for (const [identity, expected] of [
+    ['', 1],
+    ['invalid', 1],
+    ['12345', 0],
+  ]) {
+    const result = spawnSync('bash', ['-euo', 'pipefail', '-c', guard.run], {
+      env: { ...process.env, CORE_ARTIFACT_ID: identity },
+      encoding: 'utf8',
+    });
+    assert.equal(result.status, expected, result.stderr);
+  }
 });
 
 test('workflow stance permits bounded cache transport but rejects test and job overrides', () => {
@@ -188,31 +223,25 @@ test('SDK and browser use one profile producer and preserve source-build validat
   assert.match(browser, /'--passWithNoTests=false'/);
 });
 
-test('point-shadow Smoke prepares its verified profile on the same sole owner', () => {
+test('point-shadow consumers own verified profile preparation independent of shard and caller', () => {
   const workflow = readFileSync('.github/workflows/ci.yml', 'utf8');
-  const fleet = workflow.slice(
-    workflow.indexOf('  smoke-fleet:\n'),
-    workflow.indexOf('  smoke-fleet-required-context:\n'),
+  assert.ok(
+    !parse(workflow).jobs['smoke-fleet'].steps.some(
+      (step) => step.name === 'Prepare point-shadow smoke shader profile',
+    ),
   );
-  const preparation = fleet.indexOf('- name: Prepare point-shadow smoke shader profile');
-  const smoke = fleet.indexOf('- name: Hello-learn-render-5.3.2-point-shadows smoke');
-  assert.ok(preparation >= 0 && preparation < smoke);
-  const step = fleet.slice(preparation, smoke);
-  const profileStep = parse(workflow).jobs['smoke-fleet'].steps.find(
-    (candidate) => candidate.name === 'Prepare point-shadow smoke shader profile',
-  );
-
-  assert.match(step, /prepare-shader-release-inputs\.mjs --build --profile point-ssao/);
-  assert.match(step, /--shared-input-manifest "\$FORGEAX_SHARED_APP_INPUTS_MANIFEST"/);
-  assert.doesNotMatch(step, /FORGEAX_ENGINE_SHADER_SOURCE_BUILD/);
-  const roster = fleet.indexOf('- name: Run authoritative Dawn roster shard');
-  assert.ok(preparation < roster, 'point profile is prepared before any roster consumer');
-  assert.equal(
-    profileStep.if,
-    "steps.ci-repair.outputs.reused != 'true' && (matrix.group == 0 || matrix.group == 1)",
-  );
+  for (const file of [
+    'apps/hello/deep-agent-feedback/scripts/smoke-point-shadow.mjs',
+    'apps/hello/gi/scripts/gi-dawn.mjs',
+    'apps/learn-render/5.advanced-lighting/3.2.point-shadows/scripts/smoke.mjs',
+  ]) {
+    const source = readFileSync(file, 'utf8');
+    const prepare = source.indexOf("ensureShaderManifestProfile('point-ssao')");
+    const build = source.indexOf('await shader.buildEngineShaderManifest');
+    const directBuild = source.indexOf('await buildEngineShaderManifest');
+    assert.ok(prepare >= 0 && prepare < (build < 0 ? directBuild : build), file);
+  }
 });
-
 test('Editor prerequisite prepares the default shader profile before recording engine dist', () => {
   const source = readFileSync('scripts/ci/build-editor-prerequisite.mjs', 'utf8');
   const profile = source.indexOf("'scripts/forgeax/prepare-shader-release-inputs.mjs'");
@@ -530,6 +559,40 @@ test('profile CLI reuses transferred bytes and rebuilds missing, stale or corrup
     }
     publishCore();
     assert.match(invokeBase({ FORGEAX_BUILD_NO_TASK_CACHE: '1' }), /SOURCE_BUILD_CALLED/);
+    // A surviving shared transfer retains BASE even when Core was lost.
+    publish();
+    rmSync(join(root, coreDirectory), { recursive: true, force: true });
+    rmSync(input, { recursive: true, force: true });
+    const companion = 'shared-app-inputs/profiles/base-ssao';
+    const companionShader = join(root, companion, 'shaders/manifest.json');
+    const companionManifest = join(root, companion, 'manifest.json');
+    const publishCompanion = () => {
+      write(`${companion}/shaders/manifest.json`, publication('sharedBase'));
+      writeFileSync(
+        companionManifest,
+        JSON.stringify({
+          producer: 'shared-app-inputs',
+          payload: { engineShaderManifest: `${companion}/shaders/manifest.json` },
+          shaderBuild: sharedShaderReceipt(
+            root,
+            companionShader,
+            sharedShaderInputFingerprint(root, { pointShadows: false, hdrpSsao: true }),
+          ),
+        }),
+      );
+    };
+    publishCompanion();
+    assert.match(invokeBase(), /verified shared-profile base-ssao; compile count=0/);
+    assert.equal(profileMarker(output, 'base-ssao'), 'sharedBase');
+    for (const mutate of [
+      () => rmSync(companionManifest),
+      () => writeFileSync(companionShader, '{"corrupt":true}'),
+      () => write('packages/compiler/dist/index.js', 'companion compiler changed'),
+    ]) {
+      publishCompanion();
+      mutate();
+      assert.match(invokeBase(), /SOURCE_BUILD_CALLED/);
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

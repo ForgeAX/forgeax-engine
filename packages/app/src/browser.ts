@@ -8,6 +8,7 @@ import { type AudioBackend, createAudioIntentBackend } from '@forgeax/engine-aud
 import type { DebugDrawSource } from '@forgeax/engine-debug-draw';
 import { createWorldContext, World, worldPlugin } from '@forgeax/engine-ecs';
 import type { InputBackend } from '@forgeax/engine-input';
+import { PHYSICS_STARTUP_OPTIONS } from '@forgeax/engine-physics';
 import type { Platform } from '@forgeax/engine-platform';
 import { createBrowserPlatform } from '@forgeax/engine-platform-browser';
 import type { Context, Fiber, Plugin } from '@forgeax/engine-plugin';
@@ -40,6 +41,13 @@ import {
   publishBrowserFrameSubmitted,
   resetBrowserFrameProgress,
 } from './browser-frame-signal';
+import { applyRenderConfiguration, type ConfiguredExecutionControl } from './configuration-apply';
+import { createEngineConfigurationControl } from './configuration-control';
+import { EngineConfigurationError } from './configuration-error';
+import { type ConfiguredAppOptions, prepareConfiguredApp } from './configuration-host';
+import { createEngineConfigurationStore } from './configuration-store';
+import type { HostDeviceFacts } from './configuration-types';
+import { createAppHostAudio, hostAudioBindingError } from './host-audio';
 
 export type { BrowserFrameProgress } from './browser-frame-signal';
 export type { AppHostAdapter } from './types';
@@ -173,6 +181,91 @@ export async function createApp(
   opts?: CreateAppOptions,
   bundler?: AppHostAdapter,
 ): Promise<Result<App | ExecutionApp, CanvasAppError>> {
+  if (!canvas.isConnected) return createConfiguredBrowserApp(canvas, opts, bundler);
+  const audioBindingFailure = hostAudioBindingError(opts, bundler);
+  if (audioBindingFailure !== undefined) return err(audioBindingFailure);
+  const host =
+    bundler?.configurationHost ??
+    createBrowserConfigurationHost(globalThis.location?.pathname ?? '/');
+  const prepared = await prepareConfiguredApp(opts, host);
+  if (!prepared.ok) return prepared;
+  const startup = prepared.value?.startup;
+  if (startup === undefined || opts?.configuration === undefined)
+    return createConfiguredBrowserApp(canvas, prepared.value, bundler);
+  let app: App | ExecutionApp | undefined;
+  const control = createEngineConfigurationControl(opts.configuration, startup, {
+    ...(host.store === undefined ? {} : { store: host.store }),
+    apply: async (plan) => {
+      const current = app;
+      if (current === undefined)
+        return err(
+          new EngineConfigurationError('configuration-stale', {
+            path: 'configuration',
+            reason: 'App construction is incomplete',
+          }),
+        );
+      const execution = current.execution as Partial<ConfiguredExecutionControl>;
+      if (execution.applyConfiguration !== undefined)
+        return execution.applyConfiguration(plan, control.inspect().applied.revision);
+      return applyRenderConfiguration((current as App).renderer, plan);
+    },
+  });
+  const result = await createConfiguredBrowserApp(
+    canvas,
+    { ...prepared.value, configurationObserver: control.observe },
+    bundler,
+  );
+  if (!result.ok) {
+    control.dispose();
+    return result;
+  }
+  app = result.value;
+  const dispose = app.dispose.bind(app);
+  Object.assign(app, {
+    configuration: control,
+    dispose() {
+      control.dispose();
+      return dispose();
+    },
+  });
+  return result;
+}
+
+/** An explicit stable project identity prevents saved choices leaking between generated projects. */
+export function createBrowserConfigurationHost(
+  projectId: string,
+): import('./configuration-host').EngineConfigurationHost {
+  const key = `forgeax:quality:${projectId}`;
+  return {
+    readDeviceFacts: browserDeviceFacts,
+    store: createEngineConfigurationStore({
+      read: () => globalThis.localStorage?.getItem(key),
+      write: (bytes) => globalThis.localStorage?.setItem(key, bytes),
+    }),
+  };
+}
+
+function browserDeviceFacts(): HostDeviceFacts {
+  const agent = globalThis.navigator?.userAgent ?? '';
+  const platform = /iPhone|iPad|iPod/.test(agent)
+    ? 'ios'
+    : /Android/.test(agent)
+      ? 'android'
+      : /Windows/.test(agent)
+        ? 'windows'
+        : /Macintosh|Mac OS/.test(agent)
+          ? 'macos'
+          : /Linux/.test(agent)
+            ? 'linux'
+            : 'unknown';
+  return { platform, runtime: 'browser' };
+}
+
+async function createConfiguredBrowserApp(
+  canvas: HTMLCanvasElement,
+  opts?: ConfiguredAppOptions,
+  bundler?: AppHostAdapter,
+): Promise<Result<App | ExecutionApp, CanvasAppError>> {
   // Canvas-detached fail-fast guard (AC-08). isConnected returns false when
   // the canvas is not in the document tree, including a freshly created canvas
   // without appendChild. Returning before createRenderer avoids async adapter /
@@ -252,6 +345,8 @@ export async function createApp(
   // The canvas form owns world lifetime, in contrast to the assemble form
   // where the host owns it.
   const world = new World(opts?.time !== undefined ? { time: opts.time } : {});
+  const physics = opts?.startup?.settings.simulation?.physics;
+  if (physics !== undefined) world.insertResource(PHYSICS_STARTUP_OPTIONS, physics);
   const frameInspection = createFrameInspectionRef();
 
   const { handle: inputHandle, backend: inputBackend } = acquireAppInput(canvas, opts);
@@ -291,7 +386,7 @@ export async function createApp(
       debugDraw = value;
     },
     extensions: [
-      ...browserHostServicePlugins(opts),
+      ...browserHostServicePlugins(opts, bundler),
       rhiDebugHostPlugin(cleanupRhiDebugHost),
       ...browserUserPlugins(canvas, renderer, opts, preparedExecutionBootstrap, inputBackend),
       canvasDeviceLimitPlugin(canvas, renderer, opts?.canvasPixelRatio),
@@ -372,9 +467,15 @@ export async function createApp(
     executionControl,
     frameInspection,
     geometryLane: opts?.execution?.diagnostics?.geometryLane,
-    onFrameSubmitted: (event) =>
-      publishBrowserFrameSubmitted(canvas, { ...event, worldIdentity: world.identity }),
+    onFrameSubmitted: (event) => {
+      opts?.configurationObserver?.('submitted', {
+        ...event,
+        ...(event.receipt === undefined ? {} : { presentation: event.receipt.presentation }),
+      });
+      publishBrowserFrameSubmitted(canvas, { ...event, worldIdentity: world.identity });
+    },
     onFrameCompleted: (event) => {
+      opts?.configurationObserver?.('completed', event);
       publishBrowserFrameCompleted(canvas, { ...event, worldIdentity: world.identity });
       opts?.onFrameCompleted?.(event);
     },
@@ -500,7 +601,7 @@ function realmBoundExecutionOptionError(
 /** The selected Engine Worker owns the World; this realm only hosts its canvas. */
 async function startWorkerExecutionApp(
   canvas: HTMLCanvasElement,
-  opts: CreateAppOptions,
+  opts: ConfiguredAppOptions,
   bundler: AppHostAdapter | undefined,
   context: BrowserExecutionContext,
 ): Promise<Result<ExecutionApp, CanvasAppError>> {
@@ -608,11 +709,14 @@ type CreateAppExecution = NonNullable<CreateAppOptions['execution']>;
 /** Normalize the bootstrap, reject realm-bound options and select the execution Workers. */
 async function selectBrowserExecution(
   canvas: HTMLCanvasElement,
-  opts: CreateAppOptions,
+  opts: ConfiguredAppOptions,
   execution: CreateAppExecution,
   bundler: AppHostAdapter | undefined,
 ): Promise<
-  Result<{ readonly bootstrapUrl: string; readonly context: BrowserExecutionContext }, AppError>
+  Result<
+    { readonly bootstrapUrl: string; readonly context: BrowserExecutionContext },
+    CanvasAppError
+  >
 > {
   const normalizedBootstrap = normalizeExecutionBootstrapUrl(execution.bootstrap);
   if (!normalizedBootstrap.ok) return err(normalizedBootstrap.error);
@@ -629,20 +733,27 @@ async function selectBrowserExecution(
     capabilities,
   });
   if (!selected.ok) return err(selected.error);
+  if (!selected.value.engine.enabled && opts.startup?.settings.execution?.taskWorkers !== undefined)
+    return err(
+      new EngineConfigurationError('configuration-domain-unavailable', {
+        path: 'settings.execution.taskWorkers',
+        reason: 'the task dispatcher requires a selected Engine Worker',
+      }),
+    );
   return ok({ bootstrapUrl, context: { capabilities, selection: selected.value } });
 }
 
 /** A selected local realm runs the bootstrap module in this App's own World. */
 async function prepareLocalExecution(
   bootstrapUrl: string,
-  opts: CreateAppOptions,
+  opts: ConfiguredAppOptions,
   execution: CreateAppExecution,
   bundler: AppHostAdapter | undefined,
 ): Promise<
   Result<
     {
       readonly bootstrap: PreparedExecutionBootstrap;
-      readonly options: CreateAppOptions;
+      readonly options: ConfiguredAppOptions;
       readonly bundler: AppHostAdapter | undefined;
     },
     AppError
@@ -652,6 +763,7 @@ async function prepareLocalExecution(
     bootstrapUrl,
     execution.bootstrapData,
     execution.localBootstrap,
+    opts.startup,
   );
   if (!prepared.ok) return err(prepared.error);
   const options = withLocalExecutionDiagnostics(opts, execution);
@@ -670,10 +782,14 @@ async function prepareLocalExecution(
 // and renderer policies are forwarded explicitly. An empty {} keeps
 // createRenderer on its default path.
 function rendererOptionsFor(
-  opts: CreateAppOptions | undefined,
+  opts: ConfiguredAppOptions | undefined,
   preparedExecutionBootstrap: PreparedExecutionBootstrap | undefined,
 ): import('@forgeax/engine-render').RendererOptions {
-  const rendererOpts: import('@forgeax/engine-render').RendererOptions = {};
+  const rendererOpts: import('@forgeax/engine-render').RendererOptions = {
+    ...(opts?.sceneMaxRenderShortSide === undefined
+      ? {}
+      : { maxRenderShortSide: opts.sceneMaxRenderShortSide }),
+  };
   if (opts?.rhi !== undefined) {
     Object.assign(rendererOpts, { rhi: opts.rhi });
   }
@@ -826,7 +942,8 @@ async function constructBrowserRendererHost(
       throw initialized.error;
     }
     const renderer = constructed.value.renderer;
-    await preparedExecutionBootstrap?.configureRenderer?.(renderer);
+    if (rendererOpts.standardProfile?.quality === undefined)
+      await preparedExecutionBootstrap?.configureRenderer?.(renderer);
     refreshCanvasDeviceLimit(canvas, renderer, canvasPixelRatio);
     const host: BrowserRendererHost = {
       renderer,
@@ -944,19 +1061,26 @@ function acquireAppInput(
 }
 
 /** Host-realm services the profile provides before user plugins. */
-function browserHostServicePlugins(opts: CreateAppOptions | undefined): Plugin[] {
+function browserHostServicePlugins(
+  opts: ConfiguredAppOptions | undefined,
+  adapter: AppHostAdapter | undefined,
+): Plugin[] {
   const plugins: Plugin[] = [];
-  const hostAudioFactory = opts?.execution?.createHostAudio;
-  if (hostAudioFactory !== undefined) {
+  if (
+    adapter?.createHostAudio !== undefined ||
+    opts?.execution?.createHostAudio !== undefined ||
+    opts?.startup?.settings.audio !== undefined
+  ) {
     plugins.push({
       name: 'execution-host-audio',
       provide: 'audio',
       apply(ctx: Context) {
-        const consumer = hostAudioFactory();
+        const consumer = createAppHostAudio(opts, adapter);
         ctx.effect(() => () => consumer.dispose(), 'execution/host-audio');
         ctx.provide(
           'audio',
           createAudioIntentBackend({
+            ...opts?.startup?.settings.audio?.publication,
             emit: (intent) => consumer.consume(intent),
             state: () => consumer.state(),
           }),
@@ -981,7 +1105,7 @@ function browserHostServicePlugins(opts: CreateAppOptions | undefined): Plugin[]
 function browserUserPlugins(
   canvas: HTMLCanvasElement,
   renderer: Renderer,
-  opts: CreateAppOptions | undefined,
+  opts: ConfiguredAppOptions | undefined,
   preparedExecutionBootstrap: PreparedExecutionBootstrap | undefined,
   inputBackend: InputBackend | undefined,
 ): readonly Plugin[] {

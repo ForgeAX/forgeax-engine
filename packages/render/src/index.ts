@@ -771,6 +771,21 @@ export {
 } from './publication/record';
 export { RenderPublicationTargetOwner, type RenderTargetAuthoring } from './publication/targets';
 export {
+  applyAmbientOcclusionQuality,
+  RENDERING_REQUIREMENT_KEYS,
+  type RenderingRequirements,
+  type RenderQualityBudgets,
+  type RenderQualityGroups,
+  type RenderQualityLevel,
+  type RenderQualityLimits,
+  renderingRequirementsOf,
+  renderProfileForQuality,
+  renderProfileForRequirements,
+  resolveRenderQualityBudgets,
+  textureMipSkipForQuality,
+  validateRenderQualityLimits,
+} from './quality.js';
+export {
   DIFFUSE_GI_TIER_BUDGETS,
   DIFFUSE_GI_TIERS,
   type DiffuseGiTier,
@@ -1037,6 +1052,7 @@ export {
   querySubmittedTerrainHeight,
   type SubmittedTerrainHeightRequest,
 } from './terrain/submitted.js';
+export { TextureResidencyError, type TextureResidencyFailure } from './texture-residency';
 export { CanvasTexture, type CanvasTextureSource } from './textures/canvas-texture';
 export {
   type ExternalTexture,

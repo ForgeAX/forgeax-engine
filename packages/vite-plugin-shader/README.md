@@ -56,8 +56,9 @@ explicit source validation retain the complete source producer. Result arrays
 are independent of the base manifest.
 
 Complete cold-source manifest tests share a 900-second case budget, including
-the direct-DFG fit/LUT assertion. They retain independent source production,
-every admitted variant and native validation. This is a test execution budget,
+the direct-DFG fit/LUT assertion. The standalone cold source owner checks Cluster ABI, resampling and DFG fit/LUT
+variants from one fresh complete compile. The real Vite publication keeps its
+independent cold build. Every admitted variant and native validation remains. This is a test execution budget,
 not a performance SLA or permission to extend the enclosing CI job.
 
 Source compilation keeps the complete variant roster, but projects each variant's

@@ -14,6 +14,63 @@ const { runtimeForm, runtimeObjectFields } = await import(
   `data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`
 );
 
+for (const removal of ['explicit', 'stale-owner'])
+  test(`${removal} form removal releases queued toggle listeners`, async () => {
+    const dom = new JSDOM('<details open><main></main></details>');
+    const globals = [
+      'window',
+      'Event',
+      'document',
+      'HTMLElement',
+      'HTMLInputElement',
+      'HTMLTextAreaElement',
+      'HTMLSelectElement',
+      'HTMLDetailsElement',
+    ];
+    const previous = new Map(
+      globals.map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]),
+    );
+    for (const key of globals) globalThis[key] = dom.window[key];
+    try {
+      let reads = 0,
+        retired = false;
+      const form = runtimeForm(
+        document.querySelector('main'),
+        'Retired form',
+        runtimeObjectFields(
+          () => {
+            reads++;
+            if (retired) throw Object.assign(new Error('Retired owner'), { code: 'stale-entity' });
+            return { mass: 10 };
+          },
+          () => {},
+        ),
+      );
+      form.section.open = true;
+      if (removal === 'stale-owner') {
+        retired = true;
+        form.refresh();
+      } else form.remove();
+      reads = 0;
+      form.section.dispatchEvent(new dom.window.Event('toggle'));
+      document
+        .querySelector('details')
+        .dispatchEvent(new dom.window.Event('toggle', { bubbles: true }));
+      await new Promise((resolve) => dom.window.setTimeout(resolve, 10));
+      assert.equal(
+        reads,
+        0,
+        'Detached forms must not observe retired owners through pending DOM events',
+      );
+    } finally {
+      dom.window.close();
+      for (const [key, descriptor] of previous) {
+        if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+        else delete globalThis[key];
+      }
+    }
+  });
+
 test('refresh reads one coherent source only when an open or pending form demands it', () => {
   const dom = new JSDOM('<main></main>');
   for (const key of [

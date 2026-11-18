@@ -16,7 +16,7 @@ const samples = [
   [2, -1],
 ] as const;
 
-it('keeps the exposed Power parameter on UE positive-clamped zero-base semantics', async () => {
+it('keeps the exposed Power parameter on positive-clamped zero-base semantics', async () => {
   const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
   if (adapter === null) throw new Error('Water foam Power regression requires a Dawn adapter');
   const identity = {

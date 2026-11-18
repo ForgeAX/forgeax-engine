@@ -119,7 +119,11 @@ export type {
   SphereSweepHit,
 } from './physics-world.js';
 export type { PhysicsPluginBackend } from './plugin-factory.js';
-export { definePhysicsPlugin, physicsComponentsPlugin } from './plugin-factory.js';
+export {
+  definePhysicsPlugin,
+  PHYSICS_STARTUP_OPTIONS,
+  physicsComponentsPlugin,
+} from './plugin-factory.js';
 export type {
   PhysicsQueryErrorCode,
   PhysicsQueryFailure,

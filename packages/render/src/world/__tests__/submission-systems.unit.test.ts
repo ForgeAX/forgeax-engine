@@ -160,6 +160,8 @@ function recordedView(
   >;
   const stage = (input: {
     readonly frame: number;
+    readonly configurationRevision?: number;
+    readonly sceneSubmitted?: boolean;
     readonly accepted: boolean;
     readonly submitted?: boolean;
     readonly cameraCount?: number;
@@ -179,7 +181,7 @@ function recordedView(
         },
       },
       submitted,
-      sceneSubmitted: submitted,
+      sceneSubmitted: input.sceneSubmitted ?? submitted,
       outcome: submitted
         ? {
             frame: {},
@@ -202,6 +204,7 @@ function recordedView(
         temporal: false,
       });
     history.stage({
+      configurationRevision: input.configurationRevision,
       frame: input.frame,
       generation: 7,
       attempt,
@@ -237,6 +240,25 @@ async function shadowRecordedView() {
 }
 
 describe('Render submission lifecycle', () => {
+  it('keeps the last accepted scene revision across rejected candidates and clears it on non-scene output', () => {
+    const f = recordedView();
+    beginRenderFrame(f.world, 1);
+    f.stage({ frame: 1, accepted: true, configurationRevision: 1 });
+    accept(f.world, true);
+    endRenderFrame(f.world);
+    expect(f.history.configurationRevision).toBe(1);
+    beginRenderFrame(f.world, 2);
+    f.stage({ frame: 2, accepted: false, configurationRevision: 2 });
+    accept(f.world, true);
+    endRenderFrame(f.world);
+    expect(f.history.configurationRevision).toBe(1);
+    beginRenderFrame(f.world, 3);
+    f.stage({ frame: 3, accepted: true, sceneSubmitted: false, configurationRevision: 2 });
+    accept(f.world, true);
+    endRenderFrame(f.world);
+    expect(f.history.configurationRevision).toBeUndefined();
+  });
+
   it.each([
     true,
     false,

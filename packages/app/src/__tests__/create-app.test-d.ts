@@ -3,7 +3,7 @@ import { testPlatform } from './platform-fixture';
 //
 // Anchors:
 // - createApp(canvas, opts?) returns
-//   Promise<Result<App, AppError | RhiError | EngineEnvironmentError>>
+//   Promise<Result<App, AppError | RhiError | EngineEnvironmentError | EngineConfigurationError>>
 //   per AC-01 (canvas thin wrapper widens the error union with
 //   EngineEnvironmentError; M2 plugin-system-unify D-7 widens it with
 //   AppError for Cordis activation failures).
@@ -26,15 +26,37 @@ import type { Result } from '@forgeax/engine-types';
 import { describe, expectTypeOf, it } from 'vitest';
 import type { AssetRuntimeAssemblyError } from '../assets-runtime-assembly';
 import { createApp as createBrowserApp } from '../browser';
-import { type App, type AppError, createApp } from '../index';
+import {
+  type App,
+  type AppError,
+  type CanvasAppError,
+  createApp,
+  type EngineConfigurationError,
+  isAppError,
+} from '../index';
 import type { CreateAppOptions } from '../types';
 
 describe('createApp double-SSOT entry signatures (w2 acceptanceCheck)', () => {
+  it('narrows the complete public canvas error union through the App guard', () => {
+    expectTypeOf(isAppError).parameter(0).toEqualTypeOf<CanvasAppError>();
+    const failure = null as unknown as CanvasAppError;
+    if (isAppError(failure)) expectTypeOf(failure).toEqualTypeOf<AppError>();
+    else expectTypeOf(failure).toEqualTypeOf<Exclude<CanvasAppError, AppError>>();
+  });
   it('canvas form returns the App boundary error union', () => {
     const canvas = null as unknown as HTMLCanvasElement;
     const ret = createBrowserApp(canvas);
     expectTypeOf(ret).toEqualTypeOf<
-      Promise<Result<App, AppError | RhiError | EngineEnvironmentError | AssetRuntimeAssemblyError>>
+      Promise<
+        Result<
+          App,
+          | AppError
+          | RhiError
+          | EngineEnvironmentError
+          | EngineConfigurationError
+          | AssetRuntimeAssemblyError
+        >
+      >
     >();
   });
 
@@ -42,7 +64,16 @@ describe('createApp double-SSOT entry signatures (w2 acceptanceCheck)', () => {
     const options: CreateAppOptions = { featureTextureReadbackBudgetBytes: 1024 };
     const canvas = null as unknown as HTMLCanvasElement;
     expectTypeOf(createBrowserApp(canvas, options)).toEqualTypeOf<
-      Promise<Result<App, AppError | RhiError | EngineEnvironmentError | AssetRuntimeAssemblyError>>
+      Promise<
+        Result<
+          App,
+          | AppError
+          | RhiError
+          | EngineEnvironmentError
+          | EngineConfigurationError
+          | AssetRuntimeAssemblyError
+        >
+      >
     >();
   });
 

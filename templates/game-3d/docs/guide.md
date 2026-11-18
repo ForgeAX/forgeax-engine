@@ -20,7 +20,6 @@ can each be deleted as a whole; then remove their GUID references as the table b
 | `assets/geometry.pack.ts` | Primitive meshes for the ground and rusted iron sphere directly ahead of the player, with matching static colliders. The character has multiple submeshes. | Remove unused meshes and their scene entities. |
 | `assets/ui/` | One UiAsset (`guide.ui.html/css`). Engine→UI: `player-hud.ts` shows state posted over `GameHost.port`. Touch: `player-controls.ts` posts virtual stick/button intent, HUD hidden on touch. The screen-centre crosshair is off by default; set `crosshair: true` in the `plugin/host` config of `ui.pack.ts` to show it while the pointer is locked. `forge.json#roots.frontend` holds the GUID of its `plugin/host` output. | Delete it; also remove `roots.frontend` from `forge.json`. |
 | `assets/shared/` | What features share without importing each other: package ids and GUID helpers, port channel names and message types (`player-protocol.ts`), the `game3dPlayer` service type (input, look angles, `teleport` / `onTeleport`), the player rig and third-person math. | Shrink as features go. |
-| `*/__tests__/` | A few key tests per feature; `assets/__tests__/plugin-fixture.ts` is the shared fake. | Deleted with the feature. |
 | `scripts/` | `playthrough.mjs` (`project play` journey; PlayContext API in `skills/forgeax-engine-sdk/references/api/play.md`). | Edit for your game. |
 
 Feature folders import only `shared/` and their own files, so each one can be deleted on its

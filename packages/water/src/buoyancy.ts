@@ -258,7 +258,7 @@ export function sphericalCapVolumeM3(radiusM: number, immersionM: number): numbe
   return (Math.PI / 3) * h * h * (3 * radiusM - h);
 }
 
-/** UE min-variance sprung fractions; aligned supports retain its one-axis branch. */
+/** Minimum-variance sprung fractions with a separate aligned-support branch. */
 function coefficientInputIssue(
   pontoons: readonly WaterPontoon[],
   comM: Vec3,

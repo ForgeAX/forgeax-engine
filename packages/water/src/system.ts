@@ -1475,7 +1475,7 @@ export class WaterSystem {
     });
     return ok(true);
   }
-  /** UE-style full 3D EncompassesPoint check; this does not depend on a Physics receipt. */
+  /** Full 3D body containment, independent of Physics publication. */
   isPointExcluded(guid: string, worldPositionM: readonly number[]): boolean {
     const body = this.#bodies.get(guid);
     return (
@@ -1995,10 +1995,8 @@ export class WaterSystem {
               : [asset.visibleMeshGuid];
         const meshPositions = snapshot.dependencies.flatMap((dependency) => {
           if (dependency.status !== 'valid' || !meshGuids.includes(dependency.guid)) return [];
-          const positions = (
-            dependency.payload as { attributes?: { position?: unknown } } | undefined
-          )?.attributes?.position;
-          return Array.isArray(positions) || positions instanceof Float32Array ? [positions] : [];
+          const mesh = waterDependencyMeshView(dependency.payload, dependency.payloadArrayKinds);
+          return mesh ? [mesh.position] : [];
         });
         const renderBounds = waterBodyRenderBounds(asset, bodyMatrix, meshPositions);
         if (renderBounds)
@@ -4089,3 +4087,5 @@ function readonlySet<T>(source: ReadonlySet<T>): ReadonlySet<T> {
   });
   return facade;
 }
+
+import { waterDependencyMeshView } from './dependency-mesh.js';

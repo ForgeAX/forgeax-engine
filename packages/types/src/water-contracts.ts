@@ -2,7 +2,7 @@ export type WaterVec2 = readonly [number, number];
 export type WaterVec3 = readonly [number, number, number];
 export type WaterQuat = readonly [number, number, number, number];
 
-/** UE synchronous Water buoyancy defaults, derived once into Engine SI units. */
+/** Synchronous water buoyancy defaults in SI units. */
 export const WATER_BUOYANCY_DEFAULTS = Object.freeze({
   buoyancyCoefficientNPerM3: 1000,
   dampingNPerMps: 1000,
@@ -50,7 +50,7 @@ export type WaterSplineSourcePoint = {
 export type WaterSplineMetadataDefaults = Readonly<
   Pick<WaterSplineSourcePoint, 'widthM' | 'depthM' | 'velocityMPerSec' | 'audioIntensity'>
 >;
-export type WaterSplineInterpolationVersion = 'ue-water-spline/1';
+export type WaterSplineInterpolationVersion = 'water-spline/2';
 
 export type WaterFlags = {
   readonly affectsWaterInfo: boolean;
@@ -70,7 +70,7 @@ export const WATER_UNDERWATER_POST_PROCESS_DEFAULTS = Object.freeze({
 export type WaterCollisionSource = {
   readonly type: 'none' | 'river-prism' | 'polygon' | 'custom-mesh';
   readonly enabled: boolean;
-  /** Rapier packed membership/filter groups used by general scene queries. */
+  /** Packed membership/filter groups used by general scene queries. */
   readonly collisionGroups?: number;
   readonly points?: readonly WaterVec2[];
   readonly meshGuid?: string;
@@ -103,12 +103,12 @@ export type WaterBodySource = {
   readonly maxWaveHeightOffsetM?: number;
   /** Curve channel depth for component bounds in local meters, independent of collision depth. Defaults to 0. */
   readonly channelDepthM?: number;
-  /** UE WaterBodyComponent::ShapeDilation in meters; defaults to 40.96 m for the versioned R1 UE 5.8.1 profile. */
+  /** WaterInfo footprint dilation in meters; defaults to 40.96 m. */
   readonly shapeDilationM?: number;
   readonly surfaceMaterialGuid: string;
   readonly flags: WaterFlags;
   readonly collision: WaterCollisionSource;
-  /** R0 debug footprint; not an authoritative Ocean query or collision area and does not encode holes. */
+  /** Debug footprint; Ocean query and collision areas use their cooked geometry products. */
   readonly queryFootprint: readonly WaterVec2[];
   readonly zoneGuid?: string;
   /** Ocean body surface/collision extent in meters; independent of Zone span and transform. */
@@ -206,7 +206,7 @@ export type WaterBodyAsset = WaterBodySource & {
   readonly riverSegmentMeshGuids?: readonly string[];
   readonly visibleMeshGuid?: string;
   readonly waterInfoMeshGuid?: string;
-  /** UE GenerateWaterBodyMesh OutDilatedMesh: River fringe/caps, or Lake/Ocean full offset polygon. */
+  /** WaterInfo dilation mesh: River fringe/caps, or Lake/Ocean full offset polygon. */
   readonly dilatedWaterInfoMeshGuid?: string;
   readonly brushShapeMeshGuid?: string;
   readonly collisionMeshGuid?: string;
@@ -363,7 +363,7 @@ export type WaterBrushBodyActor = Readonly<{
   /** Defaults to bodyGuid when omitted. */
   actorId?: string;
   fullName: string;
-  /** UE EWaterBodyType; `custom` maps to Transition priority (3). */
+  /** Body sorting kind; `custom` uses transition priority (3). */
   bodyType: 'ocean' | 'lake' | 'river' | 'custom';
   bodyGuid: string;
   rules: WaterBrushActorRules;
@@ -476,7 +476,7 @@ export type WaterFluidSimulationSource = {
   }>;
   readonly shallowFoamEnabled: boolean;
   readonly foamEnabled: boolean;
-  /** Version 1 selects the built-in audited kernels; material overrides are unsupported. */
+  /** Version 1 selects the built-in kernels; material overrides are unsupported. */
   readonly materialGuids: readonly [];
   /** Additional texture overrides are unsupported; impulseNoiseGuid is the consumed input. */
   readonly textureGuids: readonly [];
@@ -508,10 +508,10 @@ export interface WaterFluidTargetSource {
   readonly channels: WaterFluidTargetChannels;
   readonly clear: readonly [number, number, number, number];
 }
-export type WaterAdvancedStageProfile = 'ue-5.8.1-water-body' | 'ue-5.8.1-river';
+export type WaterAdvancedStageProfile = 'water-body-shallow/2' | 'river-shallow/2';
 export const WATER_ADVANCED_DEBUG_WRITER_ORDER = {
-  'ue-5.8.1-water-body': ['height-collider-speed', 'normal', 'cell-speed'],
-  'ue-5.8.1-river': ['depth-collider', 'water-info-speed', 'bottom-contour'],
+  'water-body-shallow/2': ['height-collider-speed', 'normal', 'cell-speed'],
+  'river-shallow/2': ['depth-collider', 'water-info-speed', 'bottom-contour'],
 } as const;
 export type WaterAdvancedDebugWriter =
   | { readonly kind: 'height-collider-speed'; readonly speedMultiplier: number }
@@ -671,7 +671,7 @@ type WaterAdvancedSimulationBase = {
     readonly overlapRadiusCells: number;
     readonly overlapVolumeMultiplier: number;
     readonly collisionFalloff: number;
-    /** Explicit configured path; UE caller activation is not established by its kernel. */
+    /** Selects the native collision geometry capture path. */
     readonly rigidMeshCollisions:
       | { readonly kind: 'disabled' }
       | {
@@ -686,9 +686,9 @@ type WaterAdvancedSimulationBase = {
         };
     readonly postSimVelocityBlurRadiusCells: number;
     readonly normalSmoothingRadiusCells: number;
-    /** Explicit author choice; the effective UE ClampFloat bounds are unpaired. */
+    /** Authored minimum and maximum of the normal/foam output range. */
     readonly normalFoamRange: WaterVec2;
-    /** Body Update Depth fade window; the effective UE StartFade caller value is unpaired. */
+    /** Remaining lifetime, in seconds, over which depth-following height fades to its origin. */
     readonly startFadeSeconds: number;
     readonly runLiveSimulation: boolean;
     readonly followPawn: boolean;
@@ -724,7 +724,7 @@ type WaterAdvancedSimulationBase = {
     readonly numSteps: number;
     readonly simSpeed: number;
     readonly timeStepSource: 'frame-delta';
-    /** The effective UE default cap is unpaired; runtime admission requires an authored cap. */
+    /** Running shallow simulations require a positive authored application cap. */
     readonly deltaLimit:
       | { readonly kind: 'source-default' }
       | { readonly kind: 'application-cap'; readonly maximumDeltaSeconds: number };
@@ -739,8 +739,8 @@ type WaterAdvancedSimulationBase = {
   readonly materialGuids: readonly string[];
   readonly textureGuids: readonly string[];
 };
-type WaterNiagaraOceanConfig = Readonly<{
-  readonly algorithm: 'ue-5.8.1-niagara-fft';
+type WaterSpectrumOceanConfig = Readonly<{
+  readonly algorithm: 'ocean-spectrum-fft/2';
   readonly windAngleDegrees: number;
   readonly windSpeedMPerSec: number;
   readonly noiseTextureGuid: string;
@@ -760,11 +760,11 @@ type WaterNiagaraOceanConfig = Readonly<{
   /** Flat centered grid producer only; the source vertex graph has no FFT height input. */
   readonly gridMesh: { readonly extentM: WaterVec2 } | null;
 }>;
-/** Version 1 preserves the residual mode-projected and standalone Niagara FFT contracts. */
+/** Version 1 supports mode-projected residual waves and standalone spectral FFT. */
 export type WaterAdvancedSimulationV1Source = WaterAdvancedSimulationBase &
   Readonly<{
     readonly configurationVersion: 1;
-    readonly oceanPatchConfig?: WaterDispersiveOceanConfig | WaterNiagaraOceanConfig;
+    readonly oceanPatchConfig?: WaterDispersiveOceanConfig | WaterSpectrumOceanConfig;
   }>;
 /** Version 2 opts the mode-projected World owner into its independent visual FFT child. */
 export type WaterAdvancedSimulationV2Source = WaterAdvancedSimulationBase &

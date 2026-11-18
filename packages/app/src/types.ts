@@ -161,6 +161,8 @@ export interface CanvasDrawingBufferSize {
  * default noise, but reachable when the AI user scrolls the type).
  */
 export interface CreateAppOptions extends InputAttachOptions {
+  /** Project configuration, resolved before sizing, worker selection or native construction. */
+  readonly configuration?: import('./configuration-types').EngineConfigurationDefinition;
   /** Host facts and scheduling for local execution. */
   readonly platform?: Platform;
   /** Canvas drawing-buffer pixels per CSS pixel. Omitted: mobile short side 720, desktop 1; explicit values override the default. */
@@ -304,6 +306,12 @@ export interface BrowserRemoteBridgeAdapter {
 
 /** Host facts and optional tooling capabilities accepted by browser createApp. */
 export interface AppHostAdapter extends BundlerOptions {
+  /** Explicit Host facts and user persistence for engine startup configuration. */
+  readonly configurationHost?: import('./configuration-host').EngineConfigurationHost;
+  /** Host-only audio owner, constructed after configuration in every execution placement. */
+  readonly createHostAudio?: (
+    options?: import('@forgeax/engine-audio-webaudio').HostAudioConsumerOptions,
+  ) => import('@forgeax/engine-audio-webaudio').HostAudioConsumer;
   /** Create and attach the optional browser RHI recorder when the host enables it. */
   readonly attachRhiRecorder?: (rendererOptions: RendererOptions) => Promise<RecorderAttachment>;
   /** Optional browser-to-relay bridge supplied by a development host. */
@@ -322,6 +330,8 @@ export interface AppHostAdapter extends BundlerOptions {
  * machine + idempotent transitions land in M2 (plan-strategy section 7).
  */
 export interface App {
+  /** Immutable constructor intent; domain inspection proves actual adoption. */
+  readonly configuration?: import('./configuration-control').EngineConfigurationControl;
   /** Caller-owned Renderer (reference equality with the assemble input). */
   readonly renderer: Renderer;
   /** Host-owned AssetRegistry paired with this App realm, when available. */
@@ -440,6 +450,7 @@ export interface AppStepFrameOptions {
 export type ExecutionApp = Pick<
   App,
   | 'execution'
+  | 'configuration'
   | 'input'
   | 'audio'
   | 'start'
@@ -493,4 +504,7 @@ export type AssembleAppError = AppError | RhiError | AssetRuntimeAssemblyError;
  *
  * The canvas form adds renderer construction failures.
  */
-export type CanvasAppError = AssembleAppError | EngineEnvironmentError;
+export type CanvasAppError =
+  | AssembleAppError
+  | EngineEnvironmentError
+  | import('./configuration-error').EngineConfigurationError;

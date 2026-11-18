@@ -1,14 +1,26 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
 import {
+  projectSharedShader,
+  reusableSharedShader,
   sharedShaderInputFingerprint,
   sharedShaderReceipt,
 } from '../../lib/shared-build-cache.mjs';
+import * as coreInputs from '../restore-core-shader-inputs.mjs';
 import { coreBaseShaderDirectory, restoreCoreBaseShader } from '../restore-core-shader-inputs.mjs';
+import { nativeBundle, nativeFingerprint } from './fixtures/native-compiler.mjs';
 
 function fixture() {
   const directory = mkdtempSync(join(tmpdir(), 'forgeax-core-base-admission-'));
@@ -278,3 +290,124 @@ test('projected source rejects revision, rebuilt compiler, profile and payload d
     }
   }
 });
+
+test('shared companion retains independent BASE identity after Core transfer is lost', () => {
+  const f = fixture();
+  try {
+    restoreCoreBaseShader(f.root, f.extracted);
+    const base = join(f.root, coreBaseShaderDirectory, 'manifest.json');
+    const target = join(f.root, 'shared-app-inputs/profiles/base-ssao');
+    const fingerprint = sharedShaderInputFingerprint(f.root, {
+      pointShadows: false,
+      hdrpSsao: true,
+    });
+    projectSharedShader(f.root, base, target, fingerprint);
+    rmSync(join(f.root, coreBaseShaderDirectory), { recursive: true });
+    const projected = join(target, 'manifest.json');
+    const payload = reusableSharedShader(f.root, projected, fingerprint);
+    assert.equal(readFileSync(payload, 'utf8'), readFileSync(f.shader, 'utf8'));
+    assert.equal(
+      reusableSharedShader(
+        f.root,
+        projected,
+        sharedShaderInputFingerprint(f.root, {
+          pointShadows: true,
+          hdrpSsao: true,
+        }),
+      ),
+      null,
+      'POINT cannot satisfy BASE or vice versa',
+    );
+    const projectedRoot = join(f.directory, 'without-view');
+    cpSync(f.root, projectedRoot, { recursive: true });
+    rmSync(join(projectedRoot, '.git'), { recursive: true });
+    const sourceRevision = execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: f.root,
+      encoding: 'utf8',
+    }).trim();
+    // The real no-View build uses a separate source tree and its rebuilt
+    // compiler; the prepared parent may have lost the Core transfer entirely.
+    restoreCoreBaseShader(projectedRoot, f.root, { sourceRevision });
+    assert.equal(
+      readFileSync(join(projectedRoot, coreBaseShaderDirectory, 'shaders/manifest.json'), 'utf8'),
+      readFileSync(f.shader, 'utf8'),
+    );
+    assert.ok(
+      reusableSharedShader(
+        projectedRoot,
+        join(projectedRoot, coreBaseShaderDirectory, 'manifest.json'),
+        fingerprint,
+      ),
+    );
+    f.write(payload, 'tampered');
+    assert.equal(reusableSharedShader(f.root, projected, fingerprint), null);
+    assert.throws(() => projectSharedShader(f.root, projected, target, fingerprint), /rejected/);
+    assert.throws(() => restoreCoreBaseShader(projectedRoot, f.root, { sourceRevision }));
+  } finally {
+    rmSync(f.directory, { recursive: true, force: true });
+  }
+});
+
+test('Core adoption pairs BASE with exact native bytes from its admitted producer', async () => {
+  const f = fixture();
+  try {
+    const producer = join(f.extracted, 'packages/wgpu-wasm/pkg');
+    const consumer = join(f.root, 'packages/wgpu-wasm/pkg');
+    await nativeBundle(f, producer, 'Core');
+    rmSync(consumer, { recursive: true });
+    cpSync(producer, consumer, { recursive: true });
+    f.manifest.shaderBuild.inputFingerprint = sharedShaderInputFingerprint(f.root, {
+      pointShadows: false,
+      hdrpSsao: true,
+    });
+    f.write(f.receipt, JSON.stringify(f.manifest));
+    await nativeBundle(f, consumer, 'independent same-source build');
+    assert.throws(() => restoreCoreBaseShader(f.root, f.extracted), /identity mismatch/);
+    await coreInputs.restoreCoreCompiler(f.root, f.extracted);
+    restoreCoreBaseShader(f.root, f.extracted);
+    assert.equal(readFileSync(join(consumer, 'wgpu_wasm.js'), 'utf8'), 'Core glue');
+    assert.equal(
+      readFileSync(join(f.root, 'packages/wgpu-wasm/dist/wgpu_wasm_glue.bytes'), 'utf8'),
+      'Core glue',
+    );
+    assert.equal(readFileSync(join(f.root, 'packages/compiler/dist/index.js'), 'utf8'), 'compiler');
+    assert.deepEqual(
+      readFileSync(join(f.root, coreBaseShaderDirectory, 'manifest.json')),
+      readFileSync(f.receipt),
+    );
+  } finally {
+    rmSync(f.directory, { recursive: true, force: true });
+  }
+});
+
+for (const drift of ['wasm', 'glue', 'source', 'revision']) {
+  test(`Core native admission rejects ${drift} drift before publishing`, async () => {
+    const f = fixture();
+    try {
+      const producer = join(f.extracted, 'packages/wgpu-wasm/pkg');
+      await nativeBundle(f, producer, 'Core');
+      if (drift === 'wasm') f.write(join(producer, 'wgpu_wasm_bg.wasm'), 'corrupted');
+      if (drift === 'glue') f.write(join(producer, 'wgpu_wasm.js'), 'corrupted');
+      if (drift === 'source') {
+        const path = join(producer, 'provenance.json');
+        const manifest = JSON.parse(readFileSync(path));
+        manifest.sourceContentKey = `sha256-${'a'.repeat(64)}`;
+        manifest.compilerFingerprint = nativeFingerprint(manifest);
+        f.write(path, JSON.stringify(manifest));
+      }
+      if (drift === 'revision')
+        f.write(
+          join(f.extracted, 'engine-prerequisite-build-manifest.json'),
+          JSON.stringify({ engineSha: 'b'.repeat(40) }),
+        );
+      await assert.rejects(coreInputs.restoreCoreCompiler(f.root, f.extracted));
+      assert.equal(
+        readFileSync(join(f.root, 'packages/wgpu-wasm/pkg/compiler.wasm'), 'utf8'),
+        'naga',
+      );
+      assert.equal(existsSync(join(f.root, 'packages/wgpu-wasm/dist/wgpu_wasm_glue.bytes')), false);
+    } finally {
+      rmSync(f.directory, { recursive: true, force: true });
+    }
+  });
+}

@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { appendFileSync, mkdirSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { restoreCoreCompiler } from './restore-core-shader-inputs.mjs';
 
 const argument = (name) => {
   const index = process.argv.indexOf(name);
@@ -39,5 +40,7 @@ execFileSync(
   ],
   { stdio: 'inherit' },
 );
+// Keep the producer's native bytes; sdk:build still rebuilds all JS from source.
+await restoreCoreCompiler(process.cwd(), join(staging, 'core'));
 appendFileSync(process.env.GITHUB_ENV, `FORGEAX_SDK_SHADER_INPUTS=${staging}\n`);
 console.log(`[sdk-shader-inputs] downloaded original base and point bytes for ${sha}`);

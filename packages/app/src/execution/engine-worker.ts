@@ -344,6 +344,7 @@ export async function startEngineWorker(
       : { outputColorSpace: options.outputColorSpace }),
     ...forwardRenderBackend(options),
     ...forwardResourceBudgets(options),
+    ...(options.startup === undefined ? {} : { startup: options.startup }),
     ...(options.featureTextureReadbackBudgetBytes === undefined
       ? {}
       : { featureTextureReadbackBudgetBytes: options.featureTextureReadbackBudgetBytes }),

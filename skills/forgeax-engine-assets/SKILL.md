@@ -7,30 +7,24 @@ description: >-
 
 # forgeax-engine-assets
 
-## Engine Water Content source preparation
+## Engine Content textures
 
-The contributor repository pins the eight original Water PNGs in
-`forgeax-engine-assets/water`. Content's preparation script verifies every
-file against `packages/content/assets/water/provenance.json` before copying the
-unchanged bytes beside their Meta and Pack sources. The existing CI asset
-preparation and Content package build own this step. The public SDK resource
-closure retains these prepared files, Meta, Pack sources and licensing records;
-its editable source build verifies the sealed copies without a private asset
-checkout. This migration does not change GUIDs, pixels or redistribution status.
+Author procedural textures as ordinary ScriptablePack sources returning
+`TextureAsset` outputs, following Content's checker texture. Fixed seeds and
+source parameters own the pixels; the standard Pack producer owns cooking,
+content identity, caching and publication. Water textures use this same route.
+Publish their Pack sources and imported source modules through the normal
+Content package source closure.
 
-Native Node GI's fresh full package build prepares the same pinned Assets input
-first. Keep this step under the build's repair-reuse guard; missing or modified
-Water bytes fail their original provenance check rather than skipping Content.
-
-For a shared Assets checkout with unrelated edits, export `water/` from the
-exact Engine gitlink outside the checkout. Pass `--assets-source-root <export>`
-to the maintained build or Focus entry. The Assets preparer fetches the exact
-pin and verifies each exported blob; Content's explicit `--source-root` checks
-all eight provenance digests. Preserve the shared HEAD, index and working files.
+Preserve declared GUIDs, dimensions, color spaces, mip policies and sampler
+contracts when editing texture fields. Review generated appearance and decoded
+pixel changes through ordinary Pack cooking. Do not introduce a Water-specific
+prebuild generator, raw-image staging step, SDK resource whitelist or fallback
+asset loader. See the [Content contract](../../packages/content/README.md).
 
 ## River Bake Publication
 
-Experimental R7 River Bake uses `prepareWaterRiverBake` to derive ordinary Pack
+River Bake uses `prepareWaterRiverBake` to derive ordinary Pack
 recipe/texture outputs from a completed current GPU capture. Admit/replace and
 persist the complete Runtime Pack publication before decoding and publishing
 its query grid for the current Body generation. Keep stable source keys/GUIDs,
@@ -157,16 +151,16 @@ The same mount also publishes the ordinary Water root/child material family
 and its texture sources through `EngineContent.water`. Body slot GUIDs come
 from `waterMaterialFamilySlots`; a Zone's far material is a Zone dependency,
 not copied Body state. Read the [Water material entry](../../packages/water/README.md#material-family)
-for the source and binding contracts, and retain the source licensing and
-provenance assets when distributing those textures.
+for the source and binding contracts. Distribute their Pack and helper sources
+under Content's Apache-2.0 license.
 
 Local fluid recipes use the same ordinary closure: `impulseNoiseGuid` is a
 required texture reference, including cold Pack/Catalog loading. Reference
-`EngineContent.water.textures['impulse-noise']` for the audited default producer;
-its Pack owns source-byte admission, gamma/brightness and mip generation.
-Do not sample the raw PNG as its cooked substitute. Content's provenance keeps
-the source EULA and unresolved independent redistribution permission; cooking
-does not resolve that permission. See the [Content contract](../../packages/content/README.md#guids).
+`EngineContent.water.textures['impulse-noise']` for the default producer.
+Its ordinary Pack generates the seeded grayscale field, applies gamma/brightness
+and publishes the complete packed mip chain as a `TextureAsset`. Pixel hashes
+and mip contracts are covered by Content's tests. See the
+[Content contract](../../packages/content/README.md#guids).
 
 Basic meshes (`cube`, `sphere`, `cylinder`, `cone`, `torus`, `capsule`,
 `plane`, `quad`, `nine-slice-quad`, `triangle`), a mipmapped checker

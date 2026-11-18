@@ -3,6 +3,7 @@ import { cp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { chromium } from 'playwright';
 import { runUnifiedCli } from '@forgeax/engine/devkit';
+import { renderModelInCliProcess } from '../../../scripts/ci/modeling-cli-render.mjs';
 import { connectViewWorkspace } from '../../view/dist/modules/workspace/resident.mjs';
 import { writeProofGameAssets } from '../../view/scripts/fixtures/plugin-assets.mjs';
 
@@ -10,7 +11,9 @@ import { writeProofGameAssets } from '../../view/scripts/fixtures/plugin-assets.
 // with previews, human picks (clicks and a box) turned into selectors by model.synthesize
 // with J and stability, highlight renders from the real Engine renderer, and a parameter
 // change through the existing Pack draft while the selector keeps its region.
-// Writes step screenshots, model.render highlight PNGs and journey.json to the output.
+// Writes actual panel screenshots and journey.json; the panel already calls model.render.
+// Repeating every highlight through the CLI adds a second Renderer and shader graph
+// without another oracle. CLI parity remains available through the explicit evidence mode.
 const checkout = resolve(import.meta.dirname, '../../..');
 const root = resolve(process.env.FORGEAX_MODELING_VIEW_PROJECT ?? join(checkout, 'artifacts/modeling-view/project'));
 const output = resolve(process.env.FORGEAX_MODELING_VIEW_OUTPUT ?? join(checkout, 'artifacts/modeling-view'));
@@ -42,7 +45,8 @@ const command = async (...args) => {
  return result.value;
 };
 /** model.render through the CLI: the same contract the panel calls, writing PNGs for evidence. */
-const render = (input) => command('model', 'render', '--input', JSON.stringify({ source, ...input }));
+// Match the public CLI's terminal lifetime instead of retaining its Node GPU in this driver.
+const render = (input) => renderModelInCliProcess(join(checkout, 'packages/engine/dist/bin/forgeax.mjs'), root, { source, ...input });
 const journey = { case: 'C-109', source, steps: [] };
 const record = (step) => { journey.steps.push(step); console.log('STEP', step.n, step.title); };
 
@@ -131,11 +135,6 @@ try {
   }, previous, { timeout: 900000 });
   await idle();
  };
- const highlight = async (name, expression, values = {}, frame) => {
-  const out = await render({ views: ['iso', 'top'], width: 640, height: 640, selector: expression, values, ...(frame ? { frame } : {}) });
-  await cp(join(root, out.sheet.image), join(output, name));
-  return { image: name, selected: out.selected, mesh: out.mesh };
- };
  // Spoke k sits at k * 72 degrees from +Z; its flat front face is at y = width/2 + 12 mm - 30 mm.
  const spokeFront = 0.2413 / 2 + 0.012 - 0.03;
  const spoke = (k, r = 0.165) => [r * Math.sin((k * 2 * Math.PI) / 5), spokeFront, r * Math.cos((k * 2 * Math.PI) / 5)];
@@ -148,7 +147,7 @@ try {
  await waitReport(null);
  const fronts = await reportFacts();
  await page.waitForFunction(e => document.querySelector(`.fx-model-image img[data-rendered*="|top|${e}|"]`), fronts.expression, { timeout: 300000 });
- record({ n: 2, title: 'five clicks on the spoke fronts', picks: { rays: 5 }, ...fronts, view: await shot('step-02-view.png'), render: await highlight('step-02.png', fronts.expression) });
+ record({ n: 2, title: 'five clicks on the spoke fronts', picks: { rays: 5 }, ...fronts, view: await shot('step-02-view.png') });
  assert.match(fronts.summary, /J = 1 /);
 
  // Step 3: the parameter slider writes the draft (asset.source.draft); the selector re-evaluates.
@@ -165,7 +164,7 @@ try {
  await page.waitForFunction(e => document.querySelector(`.fx-model-image img[data-rendered*="|top|${e}|"][data-rendered*="\\"spokes\\":7"]`), fronts.expression, { timeout: 600000 });
  const unsaved = await panel.getByRole('button', { name: 'Save parameters' }).count();
  assert.equal(await readFile(join(root, source), 'utf8'), before, 'the draft edit leaves source bytes unchanged until Save');
- record({ n: 3, title: 'spokes 5 -> 7 through the Pack draft; the selector keeps the spoke fronts', values: { spokes: 7 }, expression: fronts.expression, recheck, draftUnsaved: unsaved === 1, view: await shot('step-03-view.png'), render: await highlight('step-03.png', fronts.expression, { spokes: 7 }) });
+ record({ n: 3, title: 'spokes 5 -> 7 through the Pack draft; the selector keeps the spoke fronts', values: { spokes: 7 }, expression: fronts.expression, recheck, draftUnsaved: unsaved === 1, view: await shot('step-03-view.png') });
  assert.match(recheck, /^7 faces/);
  await slide(5);
  await page.waitForFunction(() => document.querySelector('[data-forgeax-view-surface="modeling"] [data-recheck*="\\"spokes\\":5"]'), undefined, { timeout: 600000 });
@@ -175,7 +174,7 @@ try {
  await click(spoke(1));
  await waitReport(fronts.expression);
  const one = await reportFacts();
- record({ n: 4, title: 'one click on one spoke front', picks: { rays: 1 }, ...one, view: await shot('step-04-view.png'), render: await highlight('step-04.png', one.expression) });
+ record({ n: 4, title: 'one click on one spoke front', picks: { rays: 1 }, ...one, view: await shot('step-04-view.png') });
 
  // Step 5: a box select (Alt: hidden faces too) around lug pocket 0 at the 112 mm pitch circle.
  const [x0, y0] = await at([-0.013, 0.1, 0.056 - 0.013]);
@@ -185,7 +184,7 @@ try {
  await page.keyboard.up('Alt');
  await waitReport(one.expression);
  const lug = await reportFacts();
- record({ n: 5, title: 'box select around lug pocket 0', picks: { boxes: 1, visible: false }, ...lug, view: await shot('step-05-view.png'), render: await highlight('step-05.png', lug.expression, {}, [-0.04, 0.03, 0.02, 0.04, 0.12, 0.1]) });
+ record({ n: 5, title: 'box select around lug pocket 0', picks: { boxes: 1, visible: false }, ...lug, view: await shot('step-05-view.png') });
 
  // Step 6: the reference handed to the AI, and the highlight overlay in a live preview.
  await panel.getByRole('button', { name: 'Copy for AI' }).click();

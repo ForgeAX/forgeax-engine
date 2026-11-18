@@ -9,7 +9,7 @@ export const BASINS = ['ripple', 'shallow'] as const;
 export type Basin = typeof BASINS[number];
 export const BASIN_CENTERS = { ripple: -14, shallow: 14 } as const;
 
-/** Explicit effective sampling policy; UE TF_Default is resolved by its device profile. */
+/** Explicit texture sampling policy. */
 export function fluidRecipe(mode: Basin, resolution = 128, foamEnabled = true,
   terrainMode: WaterFluidSimulationSource['terrainMode'] = mode === 'shallow' ? 'water-info' : 'constant-depth',
   waveFoam = { resolution: 128, gridExtentM: 24 }, wavePreset: 'calm' | 'crests' = 'calm'): WaterFluidSimulationSource & { kind: 'water-simulation-recipe' } {

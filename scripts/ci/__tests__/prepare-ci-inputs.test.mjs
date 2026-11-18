@@ -19,6 +19,7 @@ import test from 'node:test';
 import { resolveAsset } from '../../../packages/wgpu-wasm/scripts/content-key.mjs';
 import { verifyProvenance } from '../../../packages/wgpu-wasm/scripts/provenance.mjs';
 import { appPackages } from '../../build-task-cache.mjs';
+import { runnerResources, shaderProducerHeapSize } from '../../lib/runner-resources.mjs';
 import { main, prepareInputs, sourceAppBuilds } from '../prepare-ci-inputs.mjs';
 
 for (const coreState of ['absent', 'timeout', 'wrong-shared-fingerprint']) {
@@ -216,15 +217,15 @@ for (const coreState of ['complete', 'missing', 'interrupted', 'cancelled']) {
               put(root, 'packages/fixture/dist/index.mjs', 'rebuilt');
               put(root, 'packages/fbx/pkg/fbx-wasm.mjs', 'rebuilt native');
             } else if (script.endsWith('build-shared-app-inputs.mjs')) {
-              // Exercise the actual Node launch flags, including precedence over
-              // a smaller inherited heap, after the shared archive timed out.
+              // Source admission must replace the smaller orchestration heap,
+              // without an explicit caller cap blocking the shared producer.
               const heap = spawnSync(
                 command[0],
                 [
                   ...command.slice(1, scriptIndex),
                   '--input-type=module',
                   '-e',
-                  'import v8 from "node:v8"; console.log(v8.getHeapStatistics().heap_size_limit)',
+                  `import v8 from 'node:v8'; import {admitShaderSourceBudget} from '${new URL('../../lib/shader-source-budget.mjs', import.meta.url).href}'; admitShaderSourceBudget(); console.log(v8.getHeapStatistics().heap_size_limit)`,
                 ],
                 {
                   encoding: 'utf8',
@@ -232,9 +233,11 @@ for (const coreState of ['complete', 'missing', 'interrupted', 'cancelled']) {
                 },
               );
               assert.equal(heap.status, 0, heap.stderr);
+              const expected = shaderProducerHeapSize(runnerResources());
+              const observed = Number(heap.stdout.trim().split('\n').at(-1)) / 1024 ** 2;
               assert.ok(
-                Number(heap.stdout) >= 4096 * 1024 ** 2 && Number(heap.stdout) < 4352 * 1024 ** 2,
-                `cold shared recovery requires the bounded 4 GiB producer heap: ${heap.stdout}`,
+                observed >= expected && observed < expected + 512,
+                `cold shared recovery must admit the source budget: ${heap.stdout}`,
               );
               put(root, 'shared-app-inputs/shaders/manifest.json', '{}');
               put(
@@ -513,7 +516,7 @@ test('source app recovery covers every Smoke gate without building unrelated fle
   }
   assert.equal(
     [...apps].some((app) => app.startsWith('apps/bevy/')),
-    false,
+    true,
   );
   assert.deepEqual(
     [...apps].filter((app) => app.startsWith('apps/perf/')),

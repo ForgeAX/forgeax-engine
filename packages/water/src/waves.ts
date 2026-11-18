@@ -794,7 +794,7 @@ export function buildWaterWaveUploadPlan(
   )
     return err(
       waterError(
-        'valid per-view body snapshots, finite time/LWC inputs, an explicit height source and the UE meter tile length',
+        'valid per-view body snapshots, finite time/LWC inputs, an explicit height source and the configured meter tile length',
         'reconcile body ownership and admit the fixed or same-generation WaterInfo/Baked source before wave upload',
       ),
     );

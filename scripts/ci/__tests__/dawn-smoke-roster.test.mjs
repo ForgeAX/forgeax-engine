@@ -524,16 +524,21 @@ test('aggregate fails closed for missing, duplicate, stale, skipped, and short-f
   );
 });
 
-test('the complete Bloom carrier and evidence move together to Smoke lane 1', () => {
+test('the complete Bloom carrier and evidence use measured headroom on Smoke lane 2', () => {
   const ci = readFileSync('.github/workflows/ci.yml', 'utf8');
   const steps = parse(ci).jobs['smoke-fleet'].steps;
   const carrier = steps.find((step) => step.name === 'Hello-bloom headless smoke (dawn-node)');
   const evidence = steps.find((step) => step.name === 'Upload Hello-bloom smoke evidence');
-  assert.equal(carrier.if, "steps.ci-repair.outputs.reused != 'true' && (matrix.group == 1)");
+  assert.equal(carrier.if, "steps.ci-repair.outputs.reused != 'true' && (matrix.group == 2)");
   assert.equal(
     evidence.if,
-    "steps.ci-repair.outputs.reused != 'true' && (failure() && matrix.group == 1)",
+    "steps.ci-repair.outputs.reused != 'true' && (failure() && matrix.group == 2)",
   );
   assert.match(ci, /pnpm --filter @forgeax\/hello-bloom smoke:all/);
-  assert.deepEqual(ciSmokeShardTailSeconds, [235, 240, 140, 250]);
+  const ssr = steps.find(
+    (step) => step.name === 'Hello-ssr history and device recovery smoke (dawn-node)',
+  );
+  assert.equal(ssr.if, "steps.ci-repair.outputs.reused != 'true' && (matrix.group == 0)");
+  assert.equal(ssr.run, 'pnpm --filter @forgeax/hello-ssr smoke');
+  assert.deepEqual(ciSmokeShardTailSeconds, [705, 905, 925, 675]);
 });

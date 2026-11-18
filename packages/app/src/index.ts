@@ -1,3 +1,15 @@
+export * from './configuration';
+export type {
+  EngineConfigurationControl,
+  EngineConfigurationInspection,
+} from './configuration-control';
+export { createEngineConfigurationControl } from './configuration-control';
+export {
+  type EngineConfigurationHost,
+  prepareEngineStartup,
+  projectEngineStartup,
+} from './configuration-host';
+export { createEngineConfigurationStore } from './configuration-store';
 export type {
   PackDraftField,
   PackDraftReply,

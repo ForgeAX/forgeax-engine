@@ -78,7 +78,9 @@ it.each([
     const skyColorStart = source.indexOf('  let skyColor =', source.indexOf('fn waterColor('));
     const diffuseStart = source.indexOf('  let skyDiffuse =', source.indexOf('fn waterColor('));
     const blockStart = skyColorStart < 0 ? diffuseStart : skyColorStart;
-    const blockEnd = source.indexOf('  // UE converts diffuse indirect', blockStart);
+    const blockEnd = source.indexOf('  let ambient =', blockStart);
+    if (water && (blockStart < 0 || blockEnd <= blockStart))
+      throw new Error('Missing Water Skylight diffuse block');
     const body = water
       ? `fn sampleMediumDiffuse(normal: vec3<f32>, pixel: vec4<f32>, probe: vec2<u32>) -> vec3<f32> {
 ${source.slice(blockStart, blockEnd)}

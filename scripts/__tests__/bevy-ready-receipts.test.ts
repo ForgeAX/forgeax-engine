@@ -1,8 +1,34 @@
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { expect, it, vi } from 'vitest';
 
 const { runSmokeAppFrames } = await import(
   new URL('../../apps/bevy/scripts/renderer-smoke.mjs', import.meta.url).href
 );
+
+it('Bevy scene smoke drivers delegate readiness instead of crediting direct submissions', () => {
+  const root = resolve(import.meta.dirname, '../../apps/bevy');
+  const direct = readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
+    const path = resolve(root, entry.name, 'scripts/smoke-dawn.mjs');
+    if (!entry.isDirectory() || !existsSync(path)) return [];
+    const source = readFileSync(path, 'utf8');
+    if (/\.draw\(\{\s*source:/.test(source)) return [entry.name];
+    return [];
+  });
+  expect(direct).toEqual([]);
+});
+
+it('native Bevy entrypoints avoid percent-encoded Shader publications', () => {
+  const root = resolve(import.meta.dirname, '../../apps/bevy');
+  const encoded = readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
+    const path = resolve(root, entry.name, 'scripts/smoke-dawn.mjs');
+    if (!entry.isDirectory() || !existsSync(path)) return [];
+    return /data:application\/json,\$\{encodeURIComponent/.test(readFileSync(path, 'utf8'))
+      ? [entry.name]
+      : [];
+  });
+  expect(encoded).toEqual([]);
+});
 
 function fixture(receipts: { presentation: string; completed: Promise<unknown> }[][]) {
   let listener: ((event: unknown) => void) | undefined;

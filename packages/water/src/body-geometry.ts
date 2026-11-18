@@ -2,6 +2,7 @@ import {
   buildMeshCollision,
   meshFromInterleaved,
   prepareMeshData,
+  type ReadonlyMeshAttributeWindow,
   withVertexColors,
 } from '@forgeax/engine-geometry';
 import { halfFloat } from '@forgeax/engine-math';
@@ -155,7 +156,7 @@ function dilateBoundary(
     const checked = validateBoundary(result);
     return checked.ok ? ok(result) : checked;
   } catch (detail) {
-    return failure('Clipper2 polygon offset for UE PolygonsOffset ShapeDilation', {
+    return failure('a valid WaterInfo footprint polygon offset', {
       radius,
       detail: String(detail),
     });
@@ -818,7 +819,7 @@ function splineSegmentLength(
   return length * halfParam;
 }
 
-/** UE USplineComponent distance table: ten linear entries over the five-point segment integral. */
+/** Spline distance table: ten linear entries over the five-point segment integral. */
 export function createWaterSplineDistanceSampler(
   spline: WaterBodyAsset['spline'],
   bodyWorldMatrixM?: readonly number[],
@@ -1101,24 +1102,24 @@ export type WaterBodyRenderBounds = Readonly<{
   captureYM: readonly [number, number];
 }>;
 
-/** Component, raster and aggregate capture ranges have distinct UE expansion rules. */
+/** Component, raster and aggregate capture ranges have distinct expansion rules. */
 export function waterBodyRenderBounds(
   body: WaterBodyAsset,
   matrix: readonly number[],
-  staticMeshPositions: readonly ArrayLike<number>[] = [],
+  staticMeshPositions: readonly ReadonlyMeshAttributeWindow[] = [],
 ): WaterBodyRenderBounds | undefined {
   const meshMin = [Infinity, Infinity, Infinity],
     meshMax = [-Infinity, -Infinity, -Infinity];
   for (const positions of staticMeshPositions)
-    for (let i = 0; i < positions.length; i += 3)
+    for (let vertex = 0; vertex < positions.count; vertex++)
       for (let axis = 0; axis < 3; axis++) {
         meshMin[axis] = Math.min(
           requireWaterValue(meshMin[axis]),
-          requireWaterValue(positions[i + axis]),
+          requireWaterValue(positions.data[positions.offset + vertex * positions.stride + axis]),
         );
         meshMax[axis] = Math.max(
           requireWaterValue(meshMax[axis]),
-          requireWaterValue(positions[i + axis]),
+          requireWaterValue(positions.data[positions.offset + vertex * positions.stride + axis]),
         );
       }
   let min = [...meshMin],
@@ -1806,7 +1807,7 @@ function defaultRiverSplineMesh(
     for (let y = 0; y < 3; y++) {
       const lowerStart = x * 4 + y,
         upperStart = (x + 1) * 4 + y;
-      // UE's local X/Y/Z to ForgeAX X/Z/Y basis is mirrored, so reverse each face for +Y normals.
+      // The local X/Z/Y basis conversion is mirrored, so reverse each face for +Y normals.
       indices.push(
         upperStart,
         lowerStart,

@@ -104,7 +104,11 @@ test('catalog-only recovery ignores the inherited consumer manifest and omits se
       ],
       {
         encoding: 'utf8',
-        env: { ...process.env, FORGEAX_SHARED_APP_INPUTS_MANIFEST: join(output, 'manifest.json') },
+        env: {
+          ...process.env,
+          NODE_OPTIONS: '--max-old-space-size=128',
+          FORGEAX_SHARED_APP_INPUTS_MANIFEST: join(output, 'manifest.json'),
+        },
       },
     );
     assert.equal(result.status, 0, result.stderr);

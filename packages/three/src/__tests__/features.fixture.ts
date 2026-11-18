@@ -9,6 +9,99 @@ export function required<T>(value: T | null | undefined): T {
 
 export function featureCases(THREE: typeof ThreeCore & { ClippingGroup: typeof ClippingGroup }) {
   return {
+    'matcap-alpha-uv': (scene) => {
+      scene.background = new THREE.Color(0x203850);
+      const pixels = new Uint8Array([
+        255, 20, 10, 255, 50, 230, 20, 255, 100, 10, 220, 255, 200, 90, 10, 255,
+      ]);
+      const mask = new THREE.DataTexture(pixels, 2, 2);
+      mask.channel = 1;
+      mask.wrapS = mask.wrapT = THREE.RepeatWrapping;
+      mask.offset.set(0.125, 0.25);
+      mask.rotation = 0.2;
+      mask.needsUpdate = true;
+      const geometry = new THREE.SphereGeometry(
+        1.1,
+        testQuality.geometry.sphereWidth,
+        testQuality.geometry.sphereHeight,
+      );
+      geometry.setAttribute('uv1', geometry.getAttribute('uv').clone());
+      const material = new THREE.MeshMatcapMaterial({
+        alphaMap: mask,
+        transparent: true,
+        opacity: 0.7,
+        color: 0xe0b080,
+      });
+      scene.add(new THREE.Mesh(geometry, material));
+      return () => {
+        pixels.set(
+          new Uint8Array([40, 255, 10, 255, 220, 0, 10, 255, 180, 0, 10, 255, 70, 255, 10, 255]),
+        );
+        mask.needsUpdate = true;
+        mask.rotation = -0.35;
+        mask.offset.x = 0.375;
+        material.opacity = 0.9;
+      };
+    },
+    'matcap-alpha-shared': (scene) => {
+      const shared = new THREE.DataTexture(
+        new Uint8Array([255, 20, 40, 0, 190, 50, 20, 0, 30, 200, 80, 0, 80, 40, 220, 0]),
+        2,
+        2,
+      );
+      shared.needsUpdate = true;
+      const material = new THREE.MeshMatcapMaterial({
+        matcap: shared,
+        alphaMap: shared,
+        alphaTest: 0.5,
+      });
+      const mesh = new THREE.Mesh(
+        new THREE.SphereGeometry(
+          1.1,
+          testQuality.geometry.sphereWidth,
+          testQuality.geometry.sphereHeight,
+        ),
+        material,
+      );
+      scene.add(mesh);
+      return () => {
+        material.alphaMap = null;
+        material.needsUpdate = true;
+        shared.dispose();
+        shared.needsUpdate = true;
+      };
+    },
+    'fog-linear': (scene) => {
+      scene.background = new THREE.Color(0x204060);
+      scene.fog = new THREE.Fog(0x204060, 2, 9);
+      scene.add(
+        new THREE.Mesh(
+          new THREE.BoxGeometry(2, 2, 1),
+          new THREE.MeshBasicMaterial({ color: 0xe0a040 }),
+        ),
+      );
+      return () => {
+        scene.fog = null;
+      };
+    },
+    'fog-exp2': (scene) => {
+      scene.background = new THREE.Color(0x204060);
+      const fog = new THREE.FogExp2(0x204060, 0.13);
+      scene.fog = fog;
+      const material = new THREE.MeshBasicMaterial({ color: 0xe0a040 });
+      const opaque = new THREE.Mesh(new THREE.BoxGeometry(1.2, 1.7, 1), material);
+      opaque.position.x = -0.6;
+      const transparent = new THREE.Mesh(
+        new THREE.PlaneGeometry(1.2, 1.7),
+        new THREE.MeshBasicMaterial({ color: 0x80e060, transparent: true, opacity: 0.6 }),
+      );
+      transparent.position.x = 0.7;
+      scene.add(opaque, transparent);
+      return () => {
+        fog.density = 0.25;
+        material.fog = false;
+      };
+    },
     'groups-colors': (scene) => {
       const geometry = new THREE.BoxGeometry(1.8, 1.6, 1);
       geometry.setAttribute(

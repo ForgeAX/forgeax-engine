@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { emitSmokeReceipt, smokeFrameBudget } from '../../../shared/scripts/smoke-receipt.mjs';
 import { createProjector, luminance, openDawnCanvas } from '../../scripts/dawn-readback.mjs';
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from '../../scripts/renderer-smoke.mjs';
-import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
+import { processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 const WIDTH = 200;
 const HEIGHT = 150;
@@ -33,11 +33,11 @@ const { CAMERA_POSITION, CAMERA_TARGET, spawnCasterReceiverScene, toggleLight, t
   await import('../src/scene.mjs');
 
 const here = dirname(fileURLToPath(import.meta.url));
-const manifest = readShaderManifestText(resolve(here, '..', 'dist', 'shaders', 'manifest.json'));
+
 let renderer;
 try {
   const hostResult = await constructRuntimeRendererHost(dawn.canvas, {}, {
-    shaderManifestUrl: `data:application/json,${encodeURIComponent(manifest)}`,
+    shaderManifestUrl: processShaderManifestUrl(resolve(here, '..', 'dist', 'shaders', 'manifest.json')),
   });
 if (!hostResult.ok) throw hostResult.error;
 ({ renderer, assets: smokeAssets } = hostResult.value);

@@ -195,7 +195,6 @@ export async function createMaterialPanel(input: {
           : sameGuid(target.guid, acceptedGuid)
             ? 'accepted-slot'
             : 'pending',
-      materialContent: 'unverified',
     } as const;
   };
   const report = (

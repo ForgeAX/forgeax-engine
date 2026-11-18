@@ -1,8 +1,0 @@
-{
-  "schemaVersion": "1.0.0",
-  "kind": "external-asset-package",
-  "importer": "image",
-  "source": "T_Noise01.png",
-  "importSettings": { "colorSpace": "linear", "mipmap": false, "compressionMode": "none" },
-  "subAssets": [{ "guid": "40328c7d-9ce0-5896-a606-f62cf565717d", "sourceIndex": 0, "kind": "texture", "sourceKey": "texture" }]
-}

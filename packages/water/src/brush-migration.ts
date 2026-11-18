@@ -75,23 +75,23 @@ function legacyRuleError(recipe: WaterBrushRecipeV0): WaterError | undefined {
   });
   if (recipe.rules.falloff.type === 'angle')
     return unrepresentable(
-      'explicit UE angleDegrees for each legacy actor before v1 migration',
+      'explicit angleDegrees for each legacy actor before v1 migration',
       'legacy falloff angle does not store the angle value; author it explicitly rather than migrating a fabricated 0-degree default',
     );
   if (recipe.rules.falloff.type !== 'width')
     return unrepresentable(
       'legacy falloff type width before v1 migration',
-      'legacy falloff type has no actor-level equivalent in UE WaterBrush; author a typed v1 actor rule instead',
+      'legacy falloff type cannot be represented by actor rules; author a typed v1 actor rule',
     );
   if (recipe.rules.falloff.strength !== 1)
     return unrepresentable(
       'legacy falloff strength 1 before v1 migration',
-      'v1 UE falloff has no global strength multiplier; preserve the old recipe or author per-actor settings',
+      'v1 falloff has no global strength multiplier; preserve the old recipe or author per-actor settings',
     );
   if (!['alpha', 'min', 'max', 'additive'].includes(recipe.rules.blend.type))
     return unrepresentable(
       'legacy blend type alpha, min, max or additive',
-      'the legacy blend mode has no actor-level UE equivalent',
+      'the legacy blend mode cannot be represented by actor rules',
     );
   if (recipe.rules.blend.alpha !== 1)
     return unrepresentable(
@@ -110,7 +110,7 @@ function legacyRuleError(recipe: WaterBrushRecipeV0): WaterError | undefined {
   if (recipe.rules.weightRules.blend !== 'add' && recipe.rules.weightRules.blend !== 'additive')
     return unrepresentable(
       'legacy additive weight blend before v1 migration',
-      'UE WaterBrush weight materials use additive composition; replacement cannot be represented by actor weight settings',
+      'WaterBrush weights use additive composition; replacement cannot be represented by actor weight settings',
     );
   return undefined;
 }
@@ -128,7 +128,7 @@ function migrateLegacyActors(
         return err({
           code: 'missing-dependency',
           expected:
-            'resolved Body identity, UE type, full name and GUID for legacy orderedActors sourceKey',
+            'resolved Body identity, kind, full name and GUID for legacy orderedActors sourceKey',
           hint: 'supply the Pack sourceKey-to-Body resolver before migrating',
           detail: actor,
         });
@@ -169,7 +169,7 @@ function migrateLegacyActors(
   return ok(orderedActors);
 }
 
-/** Migrate legacy source-key actors to stable, typed actor records before R1 cooking. */
+/** Migrate legacy source-key actors to stable, typed actor records before cooking. */
 export function migrateWaterBrushRecipeV0ToV1(
   recipe: WaterBrushRecipeV0,
   terrainCapture: WaterBrushTerrainCapture,

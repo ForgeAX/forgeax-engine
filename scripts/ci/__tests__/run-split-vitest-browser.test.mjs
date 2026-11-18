@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -20,6 +21,7 @@ import {
   browserTestFiles,
   ciBrowserShardTailSeconds,
   parseArgs,
+  planBrowserGroups,
 } from '../run-split-vitest-browser.mjs';
 
 test('local failure collection is explicit and retains four balanced complete shards', () => {
@@ -674,7 +676,10 @@ test('floating harness experiments stay outside the Engine browser roster', () =
   }
 });
 
+const dryRunGroupCache = new Map();
+
 function dryRunGroups(groupSize = 8) {
+  if (dryRunGroupCache.has(groupSize)) return structuredClone(dryRunGroupCache.get(groupSize));
   const result = spawnSync(
     process.execPath,
     [
@@ -687,11 +692,13 @@ function dryRunGroups(groupSize = 8) {
     { cwd: process.cwd(), encoding: 'utf8' },
   );
   assert.equal(result.status, 0, result.stderr);
-  return result.stdout
+  const groups = result.stdout
     .trim()
     .split('\n')
     .filter(Boolean)
     .map((line) => line.slice(line.indexOf(': ') + 2).split(', '));
+  dryRunGroupCache.set(groupSize, groups);
+  return structuredClone(groups);
 }
 
 test('browser discovery preserves repository-relative exclusions while retaining Engine owners', () => {
@@ -1260,7 +1267,10 @@ test('serial CI tails are reserved as concurrency-scaled group seconds', () => {
       Math.max(...withTails) - Math.min(...withTails) <= largest,
       `tail-aware lanes are imbalanced: ${withTails}`,
     );
-    assert.ok(groupSeconds[2] < groupSeconds[3]);
+    assert.ok(
+      Math.abs(groupSeconds[2] - groupSeconds[3]) <
+        Math.max(...groups.map((group) => browserGroupWeight(group))) * concurrency,
+    );
   }
 });
 
@@ -1282,7 +1292,7 @@ test('CI tail reservations match the shards that run the serial tails', () => {
     condition('Directional CSM Browser WebGPU smoke (M5 MVD)'),
     "steps.ci-repair.outputs.reused != 'true' && (matrix.shard == 1)",
   );
-  assert.deepEqual(ciBrowserShardTailSeconds, [210, 530, 225, 0]);
+  assert.deepEqual(ciBrowserShardTailSeconds, [210, 180, 0, 0]);
   assert.equal(
     condition('Prepare Dawn device-limit normalization for CSM replay'),
     "steps.ci-repair.outputs.reused != 'true' && (matrix.shard == 1)",
@@ -1292,10 +1302,7 @@ test('CI tail reservations match the shards that run the serial tails', () => {
     "steps.ci-repair.outputs.reused != 'true' && (failure() && matrix.shard == 1)",
   );
   const stepIndex = (name) => steps.findIndex((step) => step.name === name);
-  assert.ok(
-    stepIndex('Runtime Pack Worker dev/build JS/TS browser gate') <
-      stepIndex('Prepare Dawn device-limit normalization for CSM replay'),
-  );
+  assert.equal(stepIndex('Runtime Pack Worker dev/build JS/TS browser gate'), -1);
   assert.ok(
     stepIndex('Prepare Dawn device-limit normalization for CSM replay') <
       stepIndex('Directional CSM Browser WebGPU smoke (M5 MVD)'),
@@ -1308,26 +1315,14 @@ test('CI tail reservations match the shards that run the serial tails', () => {
     condition('Preserve render browser failure evidence'),
     "steps.ci-repair.outputs.reused != 'true' && (failure())",
   );
-  assert.equal(
-    condition('Runtime Pack Worker dev/build JS/TS browser gate'),
-    "steps.ci-repair.outputs.reused != 'true' && (matrix.shard == 1)",
-  );
-  assert.equal(
-    condition('Mesh interchange Catalog and RHI replay browser gate'),
-    "steps.ci-repair.outputs.reused != 'true' && (matrix.shard == 2)",
-  );
+  assert.equal(condition('Runtime Pack Worker dev/build JS/TS browser gate'), undefined);
+  assert.equal(condition('Mesh interchange Catalog and RHI replay browser gate'), undefined);
+  assert.doesNotMatch(job, /test:runtime-browser/);
   assert.match(
-    job,
-    /node scripts\/ci\/run-with-runner-cpu-affinity\.mjs --\s+xvfb-run -a pnpm --filter @forgeax\/engine-devkit test:runtime-browser/,
-  );
-  assert.match(
-    job,
+    ci,
     /node scripts\/ci\/run-with-runner-cpu-affinity\.mjs --\s+xvfb-run -a pnpm --filter @forgeax\/mesh-io-parity verify/,
   );
-  assert.equal(
-    condition('Preserve Runtime Pack Worker evidence'),
-    "steps.ci-repair.outputs.reused != 'true' && (failure() && matrix.shard == 1)",
-  );
+  assert.equal(condition('Preserve Runtime Pack Worker evidence'), undefined);
 });
 
 test('completed Browser cohort retains serial-tail headroom in all four jobs', () => {
@@ -1335,18 +1330,25 @@ test('completed Browser cohort retains serial-tail headroom in all four jobs', (
     readFileSync('scripts/ci/__tests__/fixtures/browser-cost-run-42300870201.json', 'utf8'),
   );
   assert.equal(observed.completeChildren, 147);
-  const groups = dryRunGroups();
+  const recordedFiles = Object.keys(observed.files);
+  const fileWeight = (file) => {
+    const seconds = observed.files[file];
+    assert.ok(Number.isFinite(seconds) && seconds > 0, `missing recorded cost: ${file}`);
+    return seconds;
+  };
+  // Replay this recorded cohort, including retired paths, without newer forecasts.
+  const groups = planBrowserGroups(recordedFiles, 8, { fileWeight });
+  assert.deepEqual(groups.flat().toSorted(), recordedFiles.toSorted());
   const assignment = assignBrowserGroupsToShards(groups, 4, 'balanced', {
     tailSeconds: ciBrowserShardTailSeconds,
     concurrency: 2,
+    fileWeight,
   });
-  const seconds = groups.map((group) =>
-    group.reduce((sum, file) => sum + (observed.files[file] ?? browserGroupWeight([file])), 0),
-  );
+  const seconds = groups.map((group) => browserGroupWeight(group, fileWeight));
   const projected = Array.from({ length: 4 }, (_, shard) => {
     const selected = groups.flatMap((_, index) => (assignment[index] === shard ? [index] : []));
     const lanes = [0, 0];
-    for (const position of browserGroupRunOrder(groups, selected, 2)) {
+    for (const position of browserGroupRunOrder(groups, selected, 2, { fileWeight })) {
       const index = selected[position];
       if (browserGroupRequiresExclusiveRunner(groups[index])) {
         lanes.fill(Math.max(...lanes) + seconds[index]);
@@ -1363,6 +1365,76 @@ test('completed Browser cohort retains serial-tail headroom in all four jobs', (
   );
 });
 
+test('matching core Browser groups use complete child costs without changing group membership', () => {
+  const receipt = JSON.parse(
+    readFileSync('scripts/ci/browser-timing-snapshots/44136739089.json', 'utf8'),
+  );
+  assert.equal(
+    createHash('sha256')
+      .update(readFileSync('scripts/ci/browser-timing-snapshots/44136739089.json'))
+      .digest('hex'),
+    '76653dd3ba00a731f0f6d6b5d0fe3633872bf6bd67ce8a5181821cd5fd1e1939',
+  );
+  assert.equal(receipt.head, '705b99991c12a90481d073c5a36bb3ca9ba364d0');
+  assert.equal(receipt.completeChildren, 149);
+  assert.equal(receipt.fileCount, 408);
+  const names = receipt.groups.flatMap((group) => group.files);
+  assert.equal(new Set(names).size, 408);
+  const core = {
+    FORGEAX_CI_CORE_VALIDATION: '1',
+    FORGEAX_BROWSER_CI_LIGHTWEIGHT: '1',
+    FORGEAX_BROWSER_FIXED_SMOKE: '1',
+  };
+  const full = { FORGEAX_CI_CORE_VALIDATION: '0' };
+  for (const group of receipt.groups) {
+    assert.ok(group.processSeconds >= group.reportedTestSeconds);
+    assert.equal(browserGroupWeight(group.files, undefined, core), group.processSeconds);
+    assert.equal(
+      browserGroupWeight(group.files, undefined, full),
+      group.files.reduce((sum, file) => sum + browserGroupWeight([file], undefined, full), 0),
+    );
+    assert.equal(
+      browserGroupWeight(group.files, () => 3, core),
+      group.files.length * 3,
+    );
+  }
+  const changed = [...receipt.groups[0].files, 'new-owner.browser.test.ts'];
+  assert.equal(
+    browserGroupWeight(changed, undefined, core),
+    browserGroupWeight(changed, undefined, full),
+  );
+  // Reprice the same complete children. Every original process retains its
+  // measured startup/import/cleanup and its serial/exclusive admission policy.
+  const groups = receipt.groups.map((group) => group.files);
+  const shares = new Map(
+    receipt.groups.flatMap((group) =>
+      group.files.map((file) => [file, group.processSeconds / group.files.length]),
+    ),
+  );
+  const fileWeight = (file) => shares.get(file);
+  const assignment = assignBrowserGroupsToShards(groups, 4, 'balanced', {
+    tailSeconds: ciBrowserShardTailSeconds,
+    concurrency: 2,
+    fileWeight,
+  });
+  const loads = Array.from({ length: 4 }, (_, shard) => {
+    const selected = groups.flatMap((_, index) => (assignment[index] === shard ? [index] : []));
+    const slots = [0, 0];
+    for (const position of browserGroupRunOrder(groups, selected, 2, { fileWeight })) {
+      const index = selected[position];
+      const seconds = receipt.groups[index].processSeconds;
+      if (browserGroupRequiresExclusiveRunner(groups[index]))
+        slots.fill(Math.max(...slots) + seconds);
+      else slots[slots[0] <= slots[1] ? 0 : 1] += seconds;
+    }
+    return Math.max(...slots) + ciBrowserShardTailSeconds[shard];
+  });
+  assert.ok(
+    loads.every((seconds) => seconds <= 1680),
+    `complete cohort exceeds 28-minute dispatch target: ${loads}`,
+  );
+});
+
 test('measured file seconds cover the current browser roster and drive group weights', () => {
   const table = JSON.parse(readFileSync('scripts/ci/browser-file-seconds.json', 'utf8'));
   assert.ok(table.sourceRuns.length > 0, 'measured seconds name their source runs');
@@ -1376,7 +1448,33 @@ test('measured file seconds cover the current browser roster and drive group wei
   assert.ok(measured.length >= roster.size * 0.85, 'most of the roster is measured');
   for (const [file, seconds] of Object.entries(table.files)) {
     assert.ok(Number.isFinite(seconds) && seconds > 0, `${file}: ${seconds}`);
-    assert.equal(browserGroupWeight([file]), seconds, `${file} includes startup exactly once`);
+    assert.equal(
+      browserGroupWeight([file], undefined, { FORGEAX_CI_CORE_VALIDATION: '0' }),
+      seconds,
+      `${file} includes startup exactly once`,
+    );
+  }
+});
+
+test('unmeasured Three native journeys cannot fill an eight-file browser process', () => {
+  const measured = JSON.parse(readFileSync('scripts/ci/browser-file-seconds.json', 'utf8')).files;
+  const unmeasured = new Set(
+    browserTestFiles().filter(
+      (file) => file.startsWith('packages/three/src/__tests__/') && !Object.hasOwn(measured, file),
+    ),
+  );
+  for (const size of [1, 8, 24]) {
+    const groups = dryRunGroups(size);
+    assert.deepEqual(
+      groups
+        .flat()
+        .filter((file) => unmeasured.has(file))
+        .toSorted(),
+      [...unmeasured].toSorted(),
+      'every complete owner remains scheduled exactly once',
+    );
+    for (const group of groups)
+      assert.ok(group.filter((file) => unmeasured.has(file)).length <= 2, group.join(','));
   }
 });
 
@@ -1619,4 +1717,23 @@ test('short direct-light bootstrap and native GPU observer own exclusive browser
       [[file]],
     );
   }
+});
+
+test('kernel qualification and deliberate context loss drain neighbors without another process', () => {
+  for (const file of [
+    'packages/render/src/__tests__/portable-kernel-expansion.browser.test.ts',
+    'packages/runtime/src/__tests__/webgl-context-loss.browser.test.ts',
+  ]) {
+    const groups = dryRunGroups(8).filter((group) => group.includes(file));
+    assert.equal(groups.length, 1);
+    assert.ok(groups[0].length > 1, 'retain the existing batch rather than another cold process');
+    assert.equal(browserGroupRequiresExclusiveRunner(groups[0]), true);
+  }
+});
+
+test('Morph cold SSR admission keeps its original process and drains neighboring GPU work', () => {
+  const file = 'packages/runtime/src/__tests__/morph-surface.browser.test.ts';
+  const groups = dryRunGroups(8).filter((group) => group.includes(file));
+  assert.deepEqual(groups, [[file]]);
+  assert.equal(browserGroupRequiresExclusiveRunner(groups[0]), true);
 });

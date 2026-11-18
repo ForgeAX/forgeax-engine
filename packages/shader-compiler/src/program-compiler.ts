@@ -219,7 +219,7 @@ export function createShaderProgramCompiler(): typeof compileShader {
   const compose: typeof composeShader = async (source, imports = {}, defines = {}) => {
     // Preserve the Wasm boundary's boolean check for untyped JavaScript callers.
     if (Object.values(defines).some((value) => typeof value !== 'boolean'))
-      return composeShader(source, imports, defines);
+      return composeShader(source, imports, defines, canonicalizePortableWgsl);
     // Absent names cannot affect composition. Literal matching conservatively keeps
     // names occurring in comments or longer identifiers; prepared branches stay in the key.
     const relevantDefines = referencedDefines(source, imports, defines);
@@ -248,7 +248,9 @@ export function createShaderProgramCompiler(): typeof compileShader {
     counters.compositions++;
     const entry: CachedProgram = {
       kind: 'composition',
-      value: composeShader(source, imports, defines).then(canonicalizePortableWgsl),
+      value: composeShader(source, imports, defines, canonicalizePortableWgsl).then(
+        canonicalizePortableWgsl,
+      ),
       bytes: inputBytes,
     };
     retain(key, entry);

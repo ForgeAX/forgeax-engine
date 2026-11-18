@@ -1,0 +1,777 @@
+{
+  "runId": 44039100905,
+  "head": "1a3f77b6d685325cd30e33f1fd83b08075849595",
+  "complete": false,
+  "scope": "Four complete core-profile ordinary children and completed current-profile native owners. GI-3 and compact-3 were interrupted at the original forty-minute step. Remaining lane-four owners were not started; interrupted owners supply no completion measurement.",
+  "fileCostPolicy": "Reported file test seconds plus an equal share of both completed ordinary worker slots, including skipped files. Native owner costs include every completed child process.",
+  "forecastSourceRunId": 44023395616,
+  "executionPolicy": {
+    "ordinaryWorkers": 2,
+    "rasterThreadsPerProcess": 4,
+    "profile": "pull-request-core-lightweight"
+  },
+  "files": {
+    "apps/hello/boss-lightning/src/__tests__/particle-pixels.dawn.test.ts": 9.13030588235294,
+    "apps/hello/shadow-opt-out/__tests__/shadow-opt-out.dawn.test.ts": 7.784305882352942,
+    "apps/learn-render/1.getting-started/4.textures/src/__tests__/textures-pixel.dawn.test.ts": 11.072946808510636,
+    "apps/learn-render/1.getting-started/7.camera/src/__tests__/camera-input.dawn.test.ts": 5.300979797979801,
+    "apps/learn-render/4.advanced-opengl/1.depth-testing/src/__tests__/depth-viz.dawn.test.ts": 2.624505376344085,
+    "apps/modeling-show/__tests__/mech-gt.record.dawn.test.ts": 7.674305882352941,
+    "apps/parity/color-lighting/cases/ibl/__tests__/ibl.dawn.test.ts": 5.382979797979801,
+    "apps/parity/color-lighting/src/visual/__tests__/auto-exposure-forgeax.dawn.test.ts": 2.2305053763440847,
+    "apps/parity/color-lighting/src/visual/__tests__/auto-exposure-three-r184.dawn.test.ts": 2.2305053763440847,
+    "apps/parity/color-lighting/src/visual/__tests__/vertex-color-forgeax.dawn.test.ts": 7.674305882352941,
+    "apps/parity/color-lighting/src/visual/__tests__/vertex-color-three.dawn.test.ts": 2.5049468085106374,
+    "apps/water/r8-integration-acceptance/assets/__tests__/entry-attachment.dawn.test.ts": 2.810505376344085,
+    "packages/debug-draw/__tests__/pso.dawn.test.ts": 2.374505376344085,
+    "packages/devkit/src/__tests__/rhi-debug-outputs.dawn.test.ts": 8.087305882352942,
+    "packages/devkit/src/__tests__/rhi-debug-read.dawn.test.ts": 6.208979797979801,
+    "packages/devkit/src/tools/__tests__/model-render.dawn.test.ts": 92.36350537634408,
+    "packages/devkit/src/tools/__tests__/model-surface-views.dawn.test.ts": 83.46450537634408,
+    "packages/devkit/src/tools/__tests__/model-views.dawn.test.ts": 234.7039797979798,
+    "packages/import/__tests__/mesh-lod-pack.dawn.test.ts": 22.982505376344083,
+    "packages/modeling/examples/mech-gt/__tests__/s6-closure.case.dawn.test.ts": 8.031505376344086,
+    "packages/modeling/examples/mech-gt/__tests__/s6a.case.dawn.test.ts": 42.66450537634408,
+    "packages/modeling/examples/mech-gt/__tests__/s6b-paint.case.dawn.test.ts": 144.46294680851062,
+    "packages/modeling/examples/mech-gt/__tests__/s6c.case.dawn.test.ts": 155.3715053763441,
+    "packages/modeling/src/__tests__/render.dawn.test.ts": 24.1299797979798,
+    "packages/render/src/__tests__/advanced-rigid-history.dawn.test.ts": 2.3855053763440845,
+    "packages/render/src/__tests__/advanced-shallow-history.dawn.test.ts": 16.276946808510637,
+    "packages/render/src/__tests__/atmosphere-optics.dawn.test.ts": 5.426979797979801,
+    "packages/render/src/__tests__/atmosphere-quality.dawn.test.ts": 3.324505376344085,
+    "packages/render/src/__tests__/atmosphere-ray.dawn.test.ts": 7.862305882352941,
+    "packages/render/src/__tests__/atmosphere-transport.dawn.test.ts": 2.7319468085106373,
+    "packages/render/src/__tests__/auto-exposure.dawn.test.ts": 2.5049468085106374,
+    "packages/render/src/__tests__/barrel-distortion.dawn.test.ts": 7.852305882352941,
+    "packages/render/src/__tests__/controls-workflow.dawn.test.ts": 7.739979797979801,
+    "packages/render/src/__tests__/depth-pyramid-multisampled-seed.dawn.test.ts": 5.756979797979801,
+    "packages/render/src/__tests__/depth-pyramid-odd-reduction.dawn.test.ts": 7.871979797979801,
+    "packages/render/src/__tests__/depth-pyramid-sample.dawn.test.ts": 2.8469468085106375,
+    "packages/render/src/__tests__/direct-dfg-scene-index.dawn.test.ts": 25.560305882352942,
+    "packages/render/src/__tests__/dispersive-ocean.dawn.test.ts": 14.769505376344085,
+    "packages/render/src/__tests__/dispersive-query.dawn.test.ts": 7.931305882352941,
+    "packages/render/src/__tests__/empty-transparency.dawn.test.ts": 57.502979797979805,
+    "packages/render/src/__tests__/feature-depth-input.dawn.test.ts": 7.963305882352941,
+    "packages/render/src/__tests__/feature-draw-visibility.dawn.test.ts": 7.908305882352941,
+    "packages/render/src/__tests__/feature-zero-workgroups.dawn.test.ts": 5.424979797979801,
+    "packages/render/src/__tests__/glyph-geometry-versions.dawn.test.ts": 5.414979797979801,
+    "packages/render/src/__tests__/gpu-driven-first-instance.dawn.test.ts": 7.925979797979801,
+    "packages/render/src/__tests__/gpu-driven-mesh-revisions.dawn.test.ts": 9.171979797979802,
+    "packages/render/src/__tests__/gpu-driven-pbr.dawn.test.ts": 28.265946808510638,
+    "packages/render/src/__tests__/gpu-driven-shadow-views.dawn.test.ts": 4.001505376344085,
+    "packages/render/src/__tests__/gpu-driven-stable-command-addresses.dawn.test.ts": 2.7625053763440848,
+    "packages/render/src/__tests__/gpu-driven-topology-upload-recovery.dawn.test.ts": 8.522305882352942,
+    "packages/render/src/__tests__/gpu-pass-timing-copy.dawn.test.ts": 5.480979797979801,
+    "packages/render/src/__tests__/gpu-scene-material-capacity.dawn.test.ts": 2.4165053763440847,
+    "packages/render/src/__tests__/gpu-ui-lifecycle.dawn.test.ts": 3.4069468085106376,
+    "packages/render/src/__tests__/gpu-ui-parity.dawn.test.ts": 8.6679797979798,
+    "packages/render/src/__tests__/graph-texture-residency.dawn.test.ts": 2.5125053763440848,
+    "packages/render/src/__tests__/gtao-graph.dawn.test.ts": 6.3119797979798005,
+    "packages/render/src/__tests__/gtao-integral.dawn.test.ts": 2.6809468085106376,
+    "packages/render/src/__tests__/ibl-multiscatter-furnace.dawn.test.ts": 3.0009468085106374,
+    "packages/render/src/__tests__/ktx2-basis-gpu-consumer.dawn.test.ts": 3.2275053763440846,
+    "packages/render/src/__tests__/light-texture-resample.dawn.test.ts": 15.945946808510637,
+    "packages/render/src/__tests__/lod-projection.dawn.test.ts": 6.403979797979801,
+    "packages/render/src/__tests__/managed-basis-recovery.dawn.test.ts": 19.49394680851064,
+    "packages/render/src/__tests__/managed-basis-versions.dawn.test.ts": 2.9889468085106374,
+    "packages/render/src/__tests__/managed-glyph.dawn.test.ts": 50.4549797979798,
+    "packages/render/src/__tests__/managed-material-layout.dawn.test.ts": 5.773979797979801,
+    "packages/render/src/__tests__/managed-material-runtime.dawn.test.ts": 37.635505376344085,
+    "packages/render/src/__tests__/managed-material-versions.dawn.test.ts": 2.6879468085106373,
+    "packages/render/src/__tests__/managed-mesh-range.dawn.test.ts": 5.437979797979801,
+    "packages/render/src/__tests__/managed-mesh-structure.dawn.test.ts": 5.936979797979801,
+    "packages/render/src/__tests__/managed-shadow-cache.dawn.test.ts": 5.539979797979801,
+    "packages/render/src/__tests__/managed-terrain-basis-recovery.dawn.test.ts": 47.7929797979798,
+    "packages/render/src/__tests__/managed-terrain.dawn.test.ts": 71.1149797979798,
+    "packages/render/src/__tests__/managed-texture-range.dawn.test.ts": 2.559505376344085,
+    "packages/render/src/__tests__/managed-tilemap.dawn.test.ts": 36.21994680851064,
+    "packages/render/src/__tests__/material-bind-group-layout-owner.dawn.test.ts": 5.424979797979801,
+    "packages/render/src/__tests__/material-raster-demo.dawn.test.ts": 2.635505376344085,
+    "packages/render/src/__tests__/material-raster-state.dawn.test.ts": 3.289505376344085,
+    "packages/render/src/__tests__/material-readiness-projection.dawn.test.ts": 2.4085053763440847,
+    "packages/render/src/__tests__/material-texture-coordinates.dawn.test.ts": 8.205305882352942,
+    "packages/render/src/__tests__/material-uniform-reuse.dawn.test.ts": 7.848305882352942,
+    "packages/render/src/__tests__/material-uniform-versions.dawn.test.ts": 5.459979797979801,
+    "packages/render/src/__tests__/material-vertex-texture.dawn.test.ts": 2.6559468085106372,
+    "packages/render/src/__tests__/motion-blur-compute.dawn.test.ts": 5.534505376344084,
+    "packages/render/src/__tests__/normal-fallback.dawn.test.ts": 2.6679468085106373,
+    "packages/render/src/__tests__/point-shadow-vogel.dawn.test.ts": 2.5855053763440847,
+    "packages/render/src/__tests__/portable-kernel-expansion.dawn.test.ts": 10.274979797979801,
+    "packages/render/src/__tests__/prepared-graphics-admission.dawn.test.ts": 7.894305882352941,
+    "packages/render/src/__tests__/prepared-raster-bundle.dawn.test.ts": 2.4735053763440846,
+    "packages/render/src/__tests__/probe-sh-load.dawn.test.ts": 9.996305882352942,
+    "packages/render/src/__tests__/raytracing/diffuse-reconstruction.dawn.test.ts": 6.326979797979801,
+    "packages/render/src/__tests__/raytracing/global-card-lookup.dawn.test.ts": 9.996979797979801,
+    "packages/render/src/__tests__/raytracing/global-sdf-compose.dawn.test.ts": 2.7519468085106373,
+    "packages/render/src/__tests__/raytracing/global-sdf-gpu-rays.dawn.test.ts": 2.7859468085106376,
+    "packages/render/src/__tests__/raytracing/global-sdf.dawn.test.ts": 4.418946808510637,
+    "packages/render/src/__tests__/raytracing/irradiance-field-angular.dawn.test.ts": 2.5375053763440847,
+    "packages/render/src/__tests__/raytracing/irradiance-field-ray-directions.dawn.test.ts": 2.748946808510637,
+    "packages/render/src/__tests__/raytracing/irradiance-field-sampling.dawn.test.ts": 8.606305882352942,
+    "packages/render/src/__tests__/raytracing/irradiance-field-segment.dawn.test.ts": 2.8109468085106375,
+    "packages/render/src/__tests__/raytracing/irradiance-field-visibility.dawn.test.ts": 3.669505376344085,
+    "packages/render/src/__tests__/raytracing/path-tracer.dawn.test.ts": 51.52750537634408,
+    "packages/render/src/__tests__/raytracing/probe-card-support.dawn.test.ts": 7.916305882352941,
+    "packages/render/src/__tests__/raytracing/probe-placement.dawn.test.ts": 6.438979797979801,
+    "packages/render/src/__tests__/raytracing/probe-rays.dawn.test.ts": 4.488946808510637,
+    "packages/render/src/__tests__/raytracing/query.dawn.test.ts": 8.468305882352942,
+    "packages/render/src/__tests__/raytracing/scene-projection.dawn.test.ts": 2.7219468085106375,
+    "packages/render/src/__tests__/raytracing/screen-probe-card-sampling.dawn.test.ts": 2.5049468085106374,
+    "packages/render/src/__tests__/raytracing/screen-probe-history.dawn.test.ts": 2.6825053763440847,
+    "packages/render/src/__tests__/raytracing/screen-probe-interpolation.dawn.test.ts": 2.930505376344085,
+    "packages/render/src/__tests__/raytracing/screen-probe-order.dawn.test.ts": 3.1789468085106374,
+    "packages/render/src/__tests__/raytracing/screen-probe-radiance-history.dawn.test.ts": 8.462305882352942,
+    "packages/render/src/__tests__/raytracing/screen-probe-ray-sequence.dawn.test.ts": 8.825305882352941,
+    "packages/render/src/__tests__/raytracing/screen-probe-reconstruction.dawn.test.ts": 5.9665053763440845,
+    "packages/render/src/__tests__/raytracing/screen-probe-support.dawn.test.ts": 7.885979797979801,
+    "packages/render/src/__tests__/raytracing/sdf-cards.dawn.test.ts": 17.19230588235294,
+    "packages/render/src/__tests__/raytracing/sdf-visibility.dawn.test.ts": 3.1335053763440848,
+    "packages/render/src/__tests__/raytracing/software-sdf-query.dawn.test.ts": 10.847305882352941,
+    "packages/render/src/__tests__/raytracing/submitted-textures.dawn.test.ts": 16.298505376344085,
+    "packages/render/src/__tests__/raytracing/world-acceleration-support.dawn.test.ts": 7.674305882352941,
+    "packages/render/src/__tests__/reflection-probe-box.dawn.test.ts": 2.3805053763440847,
+    "packages/render/src/__tests__/reflection-probe-orientation.dawn.test.ts": 2.7475053763440846,
+    "packages/render/src/__tests__/render-graph-occlusion-lifecycle.dawn.test.ts": 2.6499468085106375,
+    "packages/render/src/__tests__/render-target-readback-resize.dawn.test.ts": 2.6809468085106376,
+    "packages/render/src/__tests__/reverse-z-reconstruction.dawn.test.ts": 2.9109468085106376,
+    "packages/render/src/__tests__/sampler-residency.dawn.test.ts": 5.494979797979801,
+    "packages/render/src/__tests__/scene-index-identity.dawn.test.ts": 2.547505376344085,
+    "packages/render/src/__tests__/scene-sdf.dawn.test.ts": 3.1049468085106375,
+    "packages/render/src/__tests__/shadow-caster-uniforms.dawn.test.ts": 2.6569468085106376,
+    "packages/render/src/__tests__/shadow-dirty-rect-prepare.dawn.test.ts": 22.71730588235294,
+    "packages/render/src/__tests__/shadow-dispatch-projection.dawn.test.ts": 5.595979797979801,
+    "packages/render/src/__tests__/shadow-index-format.dawn.test.ts": 7.901305882352942,
+    "packages/render/src/__tests__/shadow-partial-cache.dawn.test.ts": 2.415505376344085,
+    "packages/render/src/__tests__/shadow-static-flip.dawn.test.ts": 3.536505376344085,
+    "packages/render/src/__tests__/shadow-vogel.dawn.test.ts": 2.8779468085106377,
+    "packages/render/src/__tests__/shared-input-boundaries.dawn.test.ts": 6.233979797979801,
+    "packages/render/src/__tests__/signature-token-work.dawn.test.ts": 2.410505376344085,
+    "packages/render/src/__tests__/skin-demand.dawn.test.ts": 8.118305882352942,
+    "packages/render/src/__tests__/skin-geometry.dawn.test.ts": 7.885305882352942,
+    "packages/render/src/__tests__/skin-inputs.dawn.test.ts": 3.8515053763440847,
+    "packages/render/src/__tests__/skin-tasks.dawn.test.ts": 7.9143058823529415,
+    "packages/render/src/__tests__/skin-view-demand.dawn.test.ts": 3.829505376344085,
+    "packages/render/src/__tests__/skylight-hemisphere.dawn.test.ts": 8.59230588235294,
+    "packages/render/src/__tests__/specular-environment-scale.dawn.test.ts": 8.243305882352942,
+    "packages/render/src/__tests__/ssao-surface.dawn.test.ts": 9.315946808510638,
+    "packages/render/src/__tests__/ssr-cube-silhouette.dawn.test.ts": 11.196305882352942,
+    "packages/render/src/__tests__/ssr-full-resolution.dawn.test.ts": 3.2889468085106373,
+    "packages/render/src/__tests__/ssr-history-filter.dawn.test.ts": 3.4099468085106377,
+    "packages/render/src/__tests__/ssr-hit-color.dawn.test.ts": 3.0855053763440847,
+    "packages/render/src/__tests__/ssr-receiver-coverage.dawn.test.ts": 12.040305882352941,
+    "packages/render/src/__tests__/ssr-reflection-mip-reducer.dawn.test.ts": 8.660305882352942,
+    "packages/render/src/__tests__/ssr-roughness-mip.dawn.test.ts": 5.834979797979801,
+    "packages/render/src/__tests__/ssr-stable-lattice.dawn.test.ts": 4.761946808510638,
+    "packages/render/src/__tests__/ssr-texel-crossing.dawn.test.ts": 11.127979797979801,
+    "packages/render/src/__tests__/ssr-trace-pyramid-rescue.dawn.test.ts": 5.989946808510638,
+    "packages/render/src/__tests__/standard-gbuffer.dawn.test.ts": 5.498979797979801,
+    "packages/render/src/__tests__/standard-independent-maps.dawn.test.ts": 7.490979797979801,
+    "packages/render/src/__tests__/standard-texture-specialization.dawn.test.ts": 2.8389468085106375,
+    "packages/render/src/__tests__/taa-coverage-edge.dawn.test.ts": 2.7669468085106375,
+    "packages/render/src/__tests__/taa-history-clipping.dawn.test.ts": 8.135305882352942,
+    "packages/render/src/__tests__/taa-neighborhood-equivalence.dawn.test.ts": 13.75330588235294,
+    "packages/render/src/__tests__/terrain-layers.dawn.test.ts": 5.641979797979801,
+    "packages/render/src/__tests__/terrain/directional-receiver-bias.dawn.test.ts": 5.617979797979801,
+    "packages/render/src/__tests__/terrain/height-atlas.dawn.test.ts": 8.45130588235294,
+    "packages/render/src/__tests__/terrain/kernel.dawn.test.ts": 3.5035053763440844,
+    "packages/render/src/__tests__/terrain/layers.dawn.test.ts": 2.9669468085106376,
+    "packages/render/src/__tests__/terrain/receiver-normal.dawn.test.ts": 7.919305882352941,
+    "packages/render/src/__tests__/terrain/shadow-selector.dawn.test.ts": 2.4125053763440847,
+    "packages/render/src/__tests__/texture-array-mips.dawn.test.ts": 3.5099468085106373,
+    "packages/render/src/__tests__/texture-generations.dawn.test.ts": 8.04730588235294,
+    "packages/render/src/__tests__/three-render-behavior.dawn.test.ts": 2.6889468085106376,
+    "packages/render/src/__tests__/tsr-feedback.dawn.test.ts": 10.432946808510637,
+    "packages/render/src/__tests__/tsr-program.dawn.test.ts": 7.9593058823529415,
+    "packages/render/src/__tests__/water-brush-jump-flood.dawn.test.ts": 2.552505376344085,
+    "packages/render/src/__tests__/water-brush-weight-composite.dawn.test.ts": 2.6939468085106375,
+    "packages/render/src/__tests__/white-balance.dawn.test.ts": 2.7919468085106374,
+    "packages/render/src/cloud/__tests__/cloud-analytic.dawn.test.ts": 6.844505376344085,
+    "packages/render/src/cloud/__tests__/cloud-density-parity.dawn.test.ts": 2.459505376344085,
+    "packages/render/src/cloud/__tests__/cloud-layer-framebuffer-y.dawn.test.ts": 7.934305882352941,
+    "packages/render/src/cloud/__tests__/cloud-resolve.dawn.test.ts": 2.7369468085106377,
+    "packages/render/src/cloud/__tests__/cloud-wind-history.dawn.test.ts": 8.241305882352941,
+    "packages/render/src/cloud/authoring/__tests__/cloud-uniform-lighting.dawn.test.ts": 14.626979797979802,
+    "packages/render/src/cloud/lighting/__tests__/cloud-atmosphere-shadow.dawn.test.ts": 2.6185053763440846,
+    "packages/render/src/cloud/lighting/__tests__/cloud-lighting-work.dawn.test.ts": 5.967979797979801,
+    "packages/render/src/cloud/lighting/__tests__/cloud-optics.dawn.test.ts": 2.5735053763440847,
+    "packages/render/src/cloud/lighting/__tests__/cloud-shadow.dawn.test.ts": 2.8175053763440845,
+    "packages/render/src/cloud/reconstruction/__tests__/cloud-aerial.dawn.test.ts": 2.539505376344085,
+    "packages/render/src/cloud/reconstruction/__tests__/cloud-mode0-adapters.dawn.test.ts": 5.967979797979801,
+    "packages/render/src/cloud/reconstruction/__tests__/cloud-mode0-display.dawn.test.ts": 5.861979797979801,
+    "packages/render/src/cloud/reconstruction/__tests__/cloud-mode0-probe.dawn.test.ts": 8.633305882352941,
+    "packages/render/src/cloud/reconstruction/__tests__/cloud-reconstruction.dawn.test.ts": 2.6659468085106375,
+    "packages/render/src/features/__tests__/shared-graph-textures.dawn.test.ts": 2.7059468085106375,
+    "packages/render/src/features/editor-assistance/__tests__/editor-assistance.dawn.test.ts": 28.859505376344085,
+    "packages/render/src/publication/__tests__/shadow-admission.dawn.test.ts": 37.446505376344085,
+    "packages/render/src/record/__tests__/cpu-physical-ranges.dawn.test.ts": 2.8835053763440848,
+    "packages/render/src/record/__tests__/indirect-bundle-retirement.dawn.test.ts": 2.7529468085106377,
+    "packages/render/src/record/__tests__/main-pass-cpu-setup.dawn.test.ts": 8.460305882352941,
+    "packages/render/src/record/__tests__/scene-bundle-retention.dawn.test.ts": 2.9789468085106376,
+    "packages/render/src/water/__tests__/fluid-contact-history.dawn.test.ts": 2.8989468085106376,
+    "packages/render/src/water/__tests__/fluid-normal.dawn.test.ts": 8.588305882352941,
+    "packages/render/src/water/__tests__/gpu-mesh-lod.dawn.test.ts": 8.132305882352941,
+    "packages/render/src/water/__tests__/visual-normal-detail-publish.dawn.test.ts": 2.7449468085106377,
+    "packages/rhi-debug/src/__tests__/cached-depth.dawn.test.ts": 5.666979797979801,
+    "packages/rhi-debug/src/__tests__/integer-readback.dawn.test.ts": 2.7699468085106376,
+    "packages/rhi-debug/src/__tests__/primitive-identity.dawn.test.ts": 7.9513058823529414,
+    "packages/rhi-debug/src/__tests__/raster-pass-label.dawn.test.ts": 2.447505376344085,
+    "packages/rhi-debug/src/__tests__/recorder-pipeline-library.dawn.test.ts": 7.960305882352941,
+    "packages/rhi-debug/src/__tests__/seed-scope.dawn.test.ts": 7.902305882352941,
+    "packages/rhi-debug/src/__tests__/texture-copy-defaults.dawn.test.ts": 5.470979797979801,
+    "packages/rhi-debug/src/__tests__/texture-extent.dawn.test.ts": 2.4175053763440846,
+    "packages/rhi-debug/src/__tests__/timestamp-query-capture.dawn.test.ts": 7.910305882352941,
+    "packages/rhi-debug/src/__tests__/uint4-readback.dawn.test.ts": 2.442505376344085,
+    "packages/rhi-debug/src/__tests__/work-outputs.dawn.test.ts": 8.075305882352941,
+    "packages/rhi-webgpu/src/__tests__/buffer-compatibility.dawn.test.ts": 2.6469468085106374,
+    "packages/rhi-webgpu/src/__tests__/mip-dispatch.dawn.test.ts": 5.423979797979801,
+    "packages/rhi-webgpu/src/__tests__/pipeline-binding-state.dawn.test.ts": 5.413979797979801,
+    "packages/rhi-webgpu/src/__tests__/r32float-capability-generation.integration.test.ts": 2.4295053763440846,
+    "packages/rhi-wgpu-native/src/__tests__/timestamps.dawn.test.ts": 8.155305882352941,
+    "packages/rhi-wgpu/src/__tests__/dawn-rhi-wgpu-integration.dawn.test.ts": 5.185979797979801,
+    "packages/runtime/src/__tests__/adaptive-drs.dawn.test.ts": 72.2639797979798,
+    "packages/runtime/src/__tests__/advanced-modeling.dawn.test.ts": 23.465505376344083,
+    "packages/runtime/src/__tests__/alpha-hash.dawn.test.ts": 186.1499797979798,
+    "packages/runtime/src/__tests__/asset-registry-mesh-pack-payload.dawn.test.ts": 2.399505376344085,
+    "packages/runtime/src/__tests__/barrel-distortion-display-picking.dawn.test.ts": 37.523979797979806,
+    "packages/runtime/src/__tests__/capsule-shadow.dawn.test.ts": 40.918505376344086,
+    "packages/runtime/src/__tests__/clipping-caps.dawn.test.ts": 34.59830588235294,
+    "packages/runtime/src/__tests__/contact-shadow.dawn.test.ts": 15.738946808510637,
+    "packages/runtime/src/__tests__/continuous-lines.dawn.test.ts": 53.65630588235294,
+    "packages/runtime/src/__tests__/cooked-transmission-low-limit.dawn.test.ts": 182.8359797979798,
+    "packages/runtime/src/__tests__/dawn/ibl-compose.dawn.test.ts": 5.505979797979801,
+    "packages/runtime/src/__tests__/dawn/ibl-modules-compose.dawn.test.ts": 5.642979797979801,
+    "packages/runtime/src/__tests__/dawn/ibl-precompute-readback.dawn.test.ts": 3.5879468085106376,
+    "packages/runtime/src/__tests__/dawn/mesh-ssbo-normal-matrix.dawn.test.ts": 5.972979797979801,
+    "packages/runtime/src/__tests__/dawn/mesh-update.dawn.test.ts": 2.7179468085106375,
+    "packages/runtime/src/__tests__/dawn/sprite-nineslice-mesh-bind.dawn.test.ts": 22.91130588235294,
+    "packages/runtime/src/__tests__/dawn/upload-texture.dawn.test.ts": 8.747305882352942,
+    "packages/runtime/src/__tests__/dawn/user-mesh-upload.dawn.test.ts": 5.412979797979801,
+    "packages/runtime/src/__tests__/dawn/zero-manifest-mesh-fail.dawn.test.ts": 8.05330588235294,
+    "packages/runtime/src/__tests__/dawn/zero-manifest-ready.dawn.test.ts": 2.7569468085106372,
+    "packages/runtime/src/__tests__/decals.dawn.test.ts": 42.041979797979806,
+    "packages/runtime/src/__tests__/depth-of-field-output.dawn.test.ts": 39.34430588235294,
+    "packages/runtime/src/__tests__/directional-mesh-changes.dawn.test.ts": 24.276979797979802,
+    "packages/runtime/src/__tests__/displacement-temporal.dawn.test.ts": 62.30830588235294,
+    "packages/runtime/src/__tests__/equirect-bc6h.integration.test.ts": 2.6649468085106376,
+    "packages/runtime/src/__tests__/generated-lod-performance.dawn.test.ts": 2.2305053763440847,
+    "packages/runtime/src/__tests__/gpu-ui-rhi-debug.dawn.test.ts": 41.3619797979798,
+    "packages/runtime/src/__tests__/gpu-ui.dawn.test.ts": 16.115505376344085,
+    "packages/runtime/src/__tests__/gtao-default-plane.dawn.test.ts": 38.093305882352944,
+    "packages/runtime/src/__tests__/gtao-light-composition.dawn.test.ts": 37.8589797979798,
+    "packages/runtime/src/__tests__/ibl-furnace.dawn.test.ts": 35.63194680851064,
+    "packages/runtime/src/__tests__/incremental-lod-residency.dawn.test.ts": 28.39130588235294,
+    "packages/runtime/src/__tests__/lens-effects.dawn.test.ts": 46.8299797979798,
+    "packages/runtime/src/__tests__/lens-flare.dawn.test.ts": 18.82494680851064,
+    "packages/runtime/src/__tests__/lighting-channels-character.dawn.test.ts": 46.76930588235294,
+    "packages/runtime/src/__tests__/lighting-channels-performance.dawn.test.ts": 2.5049468085106374,
+    "packages/runtime/src/__tests__/lighting-channels-shadow.dawn.test.ts": 23.312946808510638,
+    "packages/runtime/src/__tests__/lighting-channels.dawn.test.ts": 280.08930588235296,
+    "packages/runtime/src/__tests__/material-render-state-xray.dawn.test.ts": 41.7159797979798,
+    "packages/runtime/src/__tests__/morph-gpu-lane.dawn.test.ts": 22.79394680851064,
+    "packages/runtime/src/__tests__/multi-camera-vfx-enabled.dawn.test.ts": 51.16130588235294,
+    "packages/runtime/src/__tests__/multi-uv-8set.e2e.dawn.test.ts": 2.3845053763440847,
+    "packages/runtime/src/__tests__/native-shader-labels.dawn.test.ts": 5.185979797979801,
+    "packages/runtime/src/__tests__/normal-bump.dawn.test.ts": 21.017505376344083,
+    "packages/runtime/src/__tests__/normal-scale.dawn.test.ts": 24.2729797979798,
+    "packages/runtime/src/__tests__/oit-capture.dawn.test.ts": 20.792505376344085,
+    "packages/runtime/src/__tests__/oit.dawn.test.ts": 42.82194680851064,
+    "packages/runtime/src/__tests__/outline.dawn.test.ts": 15.711505376344086,
+    "packages/runtime/src/__tests__/paged-2d.dawn.test.ts": 88.3939797979798,
+    "packages/runtime/src/__tests__/propagate-transforms.dawn.test.ts": 5.323979797979801,
+    "packages/runtime/src/__tests__/render-bundle.dawn.test.ts": 2.483505376344085,
+    "packages/runtime/src/__tests__/render-system-fold.dawn.test.ts": 2.6129468085106375,
+    "packages/runtime/src/__tests__/renderer-diffuse.dawn.test.ts": 48.79194680851064,
+    "packages/runtime/src/__tests__/renderer-screen-probe-barriers.dawn.test.ts": 24.881946808510637,
+    "packages/runtime/src/__tests__/reverse-z.dawn.test.ts": 30.892305882352943,
+    "packages/runtime/src/__tests__/rough-environment.dawn.test.ts": 50.048946808510635,
+    "packages/runtime/src/__tests__/row-material-batches.dawn.test.ts": 43.50430588235294,
+    "packages/runtime/src/__tests__/scene-material-capture-recovery.dawn.test.ts": 92.8509797979798,
+    "packages/runtime/src/__tests__/shadow-pcf-receiver-gradient.dawn.test.ts": 3.0179468085106373,
+    "packages/runtime/src/__tests__/shadow-receiver-plane.dawn.test.ts": 64.46550537634408,
+    "packages/runtime/src/__tests__/skin-uniform-history.dawn.test.ts": 8.480505376344084,
+    "packages/runtime/src/__tests__/skylight-response.dawn.test.ts": 22.03194680851064,
+    "packages/runtime/src/__tests__/sprite-boot-variant-limit.dawn.test.ts": 68.6359797979798,
+    "packages/runtime/src/__tests__/standard-displacement.dawn.test.ts": 65.72094680851063,
+    "packages/runtime/src/__tests__/standard-shadow-mode.dawn.test.ts": 11.602505376344084,
+    "packages/runtime/src/__tests__/stereo.dawn.test.ts": 33.68350537634409,
+    "packages/runtime/src/__tests__/surface-cost-budget.dawn.test.ts": 18.456946808510637,
+    "packages/runtime/src/__tests__/taa-maturity-deformation.dawn.test.ts": 2.5049468085106374,
+    "packages/runtime/src/__tests__/taa-maturity-drs.dawn.test.ts": 34.76530588235294,
+    "packages/runtime/src/__tests__/taa-maturity-hotspot.dawn.test.ts": 2.2305053763440847,
+    "packages/runtime/src/__tests__/taa-maturity-load-step.dawn.test.ts": 7.674305882352941,
+    "packages/runtime/src/__tests__/taa-maturity-motion.dawn.test.ts": 2.2305053763440847,
+    "packages/runtime/src/__tests__/taa-maturity-performance.dawn.test.ts": 7.674305882352941,
+    "packages/runtime/src/__tests__/taa-maturity-resources.dawn.test.ts": 7.674305882352941,
+    "packages/runtime/src/__tests__/taa-maturity-rhi.dawn.test.ts": 2.2305053763440847,
+    "packages/runtime/src/__tests__/taa-maturity-surfaces.dawn.test.ts": 2.5049468085106374,
+    "packages/runtime/src/__tests__/taa-maturity-texture.dawn.test.ts": 5.185979797979801,
+    "packages/runtime/src/__tests__/taa-maturity.dawn.test.ts": 7.674305882352941,
+    "packages/runtime/src/__tests__/taau-coverage-lod.dawn.test.ts": 14.146505376344084,
+    "packages/runtime/src/__tests__/translucent-fog-particles.dawn.test.ts": 66.76230588235295,
+    "packages/runtime/src/__tests__/translucent-fog.dawn.test.ts": 44.07130588235294,
+    "packages/runtime/src/__tests__/transparent-distance-sort-pixel.dawn.test.ts": 23.0439797979798,
+    "packages/runtime/src/__tests__/transparent-target-capture.dawn.test.ts": 16.435946808510636,
+    "packages/runtime/src/__tests__/tsr-quality.dawn.test.ts": 277.46897979797984,
+    "packages/runtime/src/__tests__/unlit-scene-index-parity.dawn.test.ts": 30.590979797979802,
+    "packages/runtime/src/__tests__/vertex-color-publication.dawn.test.ts": 28.931505376344084,
+    "packages/runtime/src/__tests__/visible-surface-replay.dawn.test.ts": 33.631946808510634,
+    "packages/shader-compiler/src/material/__tests__/standard-static-shadow.dawn.test.ts": 5.758946808510638,
+    "packages/shader/src/__tests__/diffuse-transmission-lobe.dawn.test.ts": 2.8749468085106376,
+    "packages/shader/src/__tests__/direct-dfg-lut.dawn.test.ts": 3.3945053763440844,
+    "packages/shader/src/__tests__/directional-shadow-receiver.dawn.test.ts": 5.111946808510638,
+    "packages/shader/src/__tests__/ibl-grazing-diffuse.dawn.test.ts": 7.985305882352941,
+    "packages/shader/src/__tests__/ibl-prefilter.dawn.test.ts": 6.534979797979801,
+    "packages/shader/src/__tests__/medium-skylight.dawn.test.ts": 6.3389797979798015,
+    "packages/shader/src/__tests__/point-light-decay.dawn.test.ts": 2.3845053763440847,
+    "packages/shader/src/__tests__/ssao-cluster-pack.dawn.test.ts": 5.445979797979801,
+    "packages/shader/src/__tests__/standard-cluster-empty.dawn.test.ts": 3.3299468085106376,
+    "packages/shader/src/__tests__/standard-receiver-codec.dawn.test.ts": 5.589979797979801,
+    "packages/shader/src/__tests__/standard-varying-budget.dawn.test.ts": 2.7739468085106376,
+    "packages/shader/src/__tests__/unlit-mode-evaluation.dawn.test.ts": 3.8635053763440848,
+    "packages/shader/src/__tests__/water-crest-compression.dawn.test.ts": 5.408979797979801,
+    "packages/shader/src/__tests__/water-foam-power.dawn.test.ts": 5.363979797979801,
+    "packages/shader/src/__tests__/water-info-valid-height.dawn.test.ts": 5.615979797979801,
+    "packages/shader/src/__tests__/water-light-transport.dawn.test.ts": 2.6829468085106374,
+    "packages/shader/src/__tests__/water-optical-inputs.dawn.test.ts": 6.523979797979801,
+    "packages/shader/src/__tests__/water-refraction-normal.dawn.test.ts": 7.878305882352941,
+    "packages/shader/src/__tests__/water-residual-inputs.dawn.test.ts": 2.6185053763440846,
+    "packages/shader/src/__tests__/water-scene-depth-foam.dawn.test.ts": 5.374979797979801,
+    "packages/shader/src/__tests__/water-shallow-deformation.dawn.test.ts": 8.456305882352941,
+    "packages/shader/src/__tests__/water-shallow-foam.dawn.test.ts": 3.660946808510637,
+    "packages/shader/src/__tests__/water-shallow-sampling.dawn.test.ts": 2.652505376344085,
+    "packages/shader/src/__tests__/water-transition-bounds.dawn.test.ts": 12.8599797979798,
+    "packages/shader/src/__tests__/water-transition-continuity.dawn.test.ts": 6.5889797979798015,
+    "packages/shader/src/__tests__/water-underwater-phase.dawn.test.ts": 2.845505376344085,
+    "packages/three/src/__tests__/authoring-addons-render.dawn.test.ts": 17.494946808510637,
+    "packages/three/src/__tests__/bound-reference-inputs.dawn.test.ts": 279.80097979797983,
+    "packages/three/src/__tests__/canvas-target.dawn.test.ts": 18.88394680851064,
+    "packages/three/src/__tests__/cpu-addons-render.dawn.test.ts": 32.420946808510635,
+    "packages/three/src/__tests__/data-addons-render.dawn.test.ts": 17.571505376344085,
+    "packages/three/src/__tests__/eager-texture.dawn.test.ts": 19.17694680851064,
+    "packages/three/src/__tests__/fog.dawn.test.ts": 81.46830588235294,
+    "packages/three/src/__tests__/interop.dawn.test.ts": 45.755946808510636,
+    "packages/three/src/__tests__/matcap-alpha.dawn.test.ts": 41.82497979797981,
+    "packages/three/src/__tests__/material-reference-inputs.dawn.test.ts": 112.77094680851064,
+    "packages/three/src/__tests__/node-family.dawn.test.ts": 231.8949797979798,
+    "packages/three/src/__tests__/node-inputs.dawn.test.ts": 314.47897979797983,
+    "packages/three/src/__tests__/node-material-instance.dawn.test.ts": 211.4919797979798,
+    "packages/three/src/__tests__/node-materials.dawn.test.ts": 21.805505376344083,
+    "packages/three/src/__tests__/node-optical-inputs.dawn.test.ts": 211.0229797979798,
+    "packages/three/src/__tests__/node-primitive-inputs.dawn.test.ts": 169.3659797979798,
+    "packages/three/src/__tests__/opaque-order.dawn.test.ts": 40.44697979797981,
+    "packages/three/src/__tests__/point-colors.dawn.test.ts": 100.26030588235294,
+    "packages/three/src/__tests__/premultiplied-output.dawn.test.ts": 40.05630588235294,
+    "packages/three/src/__tests__/render.dawn.test.ts": 42.35350537634408,
+    "packages/three/src/__tests__/renderer-target-state.dawn.test.ts": 16.805505376344083,
+    "packages/three/src/__tests__/scene-format-addons-render.dawn.test.ts": 108.2479797979798,
+    "packages/three/src/__tests__/texture.dawn.test.ts": 88.4829797979798,
+    "packages/vfx-compiler/src/__tests__/beam-endpoint.dawn.test.ts": 8.193305882352941,
+    "packages/vfx-compiler/src/__tests__/event-capacity.dawn.test.ts": 5.912979797979801,
+    "packages/vfx-compiler/src/__tests__/mesh-sorting.dawn.test.ts": 8.484305882352942,
+    "packages/vfx-compiler/src/__tests__/mesh-transform.dawn.test.ts": 2.9249468085106374,
+    "packages/vfx-compiler/src/__tests__/reflected-storage-layout.dawn.test.ts": 5.401979797979801,
+    "packages/vfx-compiler/src/__tests__/sort-key-working-set.dawn.test.ts": 8.68530588235294,
+    "packages/vfx-compiler/src/__tests__/trail-history.dawn.test.ts": 2.8669468085106375,
+    "packages/vfx-render/src/__tests__/compute-pass-chain.dawn.test.ts": 8.353305882352942,
+    "packages/vfx-render/src/__tests__/force-fields-fixed-ticks.dawn.test.ts": 2.9649468085106374,
+    "packages/vfx-render/src/__tests__/particle-pass-order.dawn.test.ts": 2.407505376344085,
+    "packages/vfx-render/src/__tests__/restart-resources.dawn.test.ts": 6.109979797979801,
+    "packages/vfx-render/src/__tests__/reverse-z-soft-particles.dawn.test.ts": 2.430505376344085,
+    "packages/vfx-render/src/__tests__/small-emitter-compaction.dawn.test.ts": 12.23930588235294,
+    "packages/vite-plugin-shader/src/__tests__/atmosphere-visibility.dawn.test.ts": 8.354305882352941,
+    "packages/vite-plugin-shader/src/__tests__/particle-atmosphere.dawn.test.ts": 7.6229797979798,
+    "packages/vite-plugin-shader/src/__tests__/particle-shadow-surface.dawn.test.ts": 2.657505376344085,
+    "packages/vite-plugin-shader/src/__tests__/particle-standard-surface.dawn.test.ts": 3.213505376344085
+  },
+  "owners": {
+    "compact-1": 264.552,
+    "compact-2": 171.125,
+    "direct-light": 254.949,
+    "feature-depth": 236.695,
+    "gi-2": 186.122,
+    "gi-4": 127.89,
+    "gi-5": 365.052,
+    "gi-6": 63.989,
+    "heavy-1": 38.861,
+    "heavy-2": 36.274,
+    "heavy-3": 73.046,
+    "modeling-s6": 255.631,
+    "modeling-show": 345.059,
+    "nested-discard": 88.172,
+    "renderer": 92.402,
+    "screen-probe": 69.716,
+    "specular-aa": 71.511,
+    "surface-pipelines": 408.107,
+    "transmission": 191.48,
+    "vfx-depth": 175.83
+  },
+  "ordinaryReceipts": [
+    {
+      "id": "ordinary-1",
+      "jobId": 133892071712,
+      "fileCount": 85,
+      "processWallSeconds": 853.299,
+      "reportedTestSeconds": 1054.282,
+      "perFileOverheadSeconds": 7.674305882352941
+    },
+    {
+      "id": "ordinary-2",
+      "jobId": 133892071807,
+      "fileCount": 94,
+      "processWallSeconds": 587.761,
+      "reportedTestSeconds": 940.057,
+      "perFileOverheadSeconds": 2.5049468085106374
+    },
+    {
+      "id": "ordinary-3",
+      "jobId": 133892071801,
+      "fileCount": 93,
+      "processWallSeconds": 588.497,
+      "reportedTestSeconds": 969.557,
+      "perFileOverheadSeconds": 2.2305053763440847
+    },
+    {
+      "id": "ordinary-4",
+      "jobId": 133892071742,
+      "fileCount": 99,
+      "processWallSeconds": 1963.458,
+      "reportedTestSeconds": 3413.504,
+      "perFileOverheadSeconds": 5.185979797979801
+    }
+  ],
+  "ownerReceipts": {
+    "compact-1": {
+      "lane": 1,
+      "files": [
+        "apps/hello/scene-nesting/__tests__/scene-nesting.dawn.test.ts",
+        "packages/render/src/__tests__/gpu-scene-render-graph.dawn.test.ts",
+        "packages/render/src/__tests__/render-graph-hzb.dawn.test.ts",
+        "packages/render/src/transmission/__tests__/transmission-backdrop.dawn.test.ts",
+        "packages/rhi-debug/src/__tests__/batch-readback.dawn.test.ts",
+        "packages/rhi-debug/src/__tests__/recorder-steady-frame.dawn.test.ts",
+        "packages/rhi-webgpu/src/__tests__/dawn-real-gpu.dawn.test.ts",
+        "packages/runtime/__tests__/webgpu-backend.dawn.test.ts",
+        "packages/runtime/src/__tests__/dawn/instances-per-instance-pbr.dawn.test.ts",
+        "packages/runtime/src/__tests__/dawn/per-entity-material-texture-isolation.dawn.test.ts",
+        "packages/runtime/src/__tests__/fullscreen-feature-host.dawn.test.ts",
+        "packages/runtime/src/__tests__/fxaa-pixel-diff.dawn.test.ts",
+        "packages/runtime/src/__tests__/fxaa-zero-overhead.dawn.test.ts",
+        "packages/runtime/src/__tests__/opaque-fog-flag.dawn.test.ts",
+        "packages/runtime/src/__tests__/renderer-device-loss-provider-feasibility.dawn.test.ts",
+        "packages/runtime/src/__tests__/shadow-csm-shader.dawn.test.ts",
+        "packages/runtime/src/__tests__/video-loader-smoke.dawn.test.ts"
+      ],
+      "processes": [
+        {
+          "label": "Dawn compact-1",
+          "elapsedMs": 264552,
+          "status": 0
+        }
+      ]
+    },
+    "compact-2": {
+      "lane": 3,
+      "files": [
+        "apps/hello/entity-visibility/__tests__/visibility.dawn.test.ts",
+        "apps/parity/color-lighting/cases/transparency-post/__tests__/transparency-post.dawn.test.ts",
+        "packages/render/src/__tests__/gpu-driven-view.dawn.test.ts",
+        "packages/render/src/__tests__/gpu-scene.dawn.test.ts",
+        "packages/render/src/__tests__/standard-pipeline.dawn.test.ts",
+        "packages/render/src/__tests__/volumetric-fog-stage-readback.dawn.test.ts",
+        "packages/rhi-debug/src/__tests__/copy-src-usage-validity.dawn.test.ts",
+        "packages/rhi-debug/src/__tests__/replay-session.dawn.test.ts",
+        "packages/rhi-webgpu/src/__tests__/r32float-format-capability.dawn.test.ts",
+        "packages/runtime/src/__tests__/dawn/material-cooked-fixture.dawn.test.ts",
+        "packages/runtime/src/__tests__/dawn/user-handle-mesh-render.dawn.test.ts",
+        "packages/runtime/src/__tests__/fxaa-validation-and-resize.dawn.test.ts",
+        "packages/runtime/src/__tests__/msaa-sprite-pixel-diff.dawn.test.ts",
+        "packages/runtime/src/__tests__/renderer-device-loss-recovery.dawn.test.ts",
+        "packages/runtime/src/__tests__/shadow-csm-ubo.dawn.test.ts",
+        "packages/runtime/src/__tests__/stencil-outline-pixel.dawn.test.ts",
+        "packages/runtime/src/__tests__/video-extract-bindgroup.dawn.test.ts"
+      ],
+      "processes": [
+        {
+          "label": "Dawn compact-2",
+          "elapsedMs": 171125,
+          "status": 0
+        }
+      ]
+    },
+    "direct-light": {
+      "lane": 2,
+      "files": [
+        "apps/parity/color-lighting/cases/direct-light/__tests__/direct-light.dawn.test.ts"
+      ],
+      "processes": [
+        {
+          "label": "Dawn direct-light paired-and-contracts",
+          "elapsedMs": 48749,
+          "status": 0
+        },
+        {
+          "label": "Dawn direct-light real-pixel-falsifiers-1",
+          "elapsedMs": 79984,
+          "status": 0
+        },
+        {
+          "label": "Dawn direct-light real-pixel-falsifiers-2",
+          "elapsedMs": 78009,
+          "status": 0
+        },
+        {
+          "label": "Dawn direct-light projector-surface",
+          "elapsedMs": 48207,
+          "status": 0
+        }
+      ]
+    },
+    "feature-depth": {
+      "lane": 1,
+      "files": ["packages/runtime/src/__tests__/feature-depth-material.dawn.test.ts"],
+      "processes": [
+        {
+          "label": "feature-depth samples depth written|billboard-material",
+          "elapsedMs": 105557,
+          "status": 0
+        },
+        {
+          "label": "feature-depth topology-segment-material|mesh-geometry-material",
+          "elapsedMs": 131138,
+          "status": 0
+        }
+      ]
+    },
+    "gi-2": {
+      "lane": 2,
+      "files": [
+        "packages/render/src/__tests__/raytracing/diffuse-gi.dawn.test.ts",
+        "packages/render/src/__tests__/raytracing/path-buffer.dawn.test.ts",
+        "packages/runtime/src/__tests__/renderer-probe-placement.dawn.test.ts",
+        "packages/runtime/src/__tests__/renderer-radiance-cache.dawn.test.ts",
+        "packages/runtime/src/__tests__/renderer-reflections.dawn.test.ts"
+      ],
+      "processes": [
+        {
+          "label": "Dawn gi-2",
+          "elapsedMs": 186122,
+          "status": 0
+        }
+      ]
+    },
+    "gi-4": {
+      "lane": 2,
+      "files": [
+        "packages/runtime/src/__tests__/renderer-irradiance-field-add.dawn.test.ts",
+        "packages/runtime/src/__tests__/renderer-irradiance-field-clipmap.dawn.test.ts",
+        "packages/runtime/src/__tests__/renderer-reflection-denoise.dawn.test.ts"
+      ],
+      "processes": [
+        {
+          "label": "Dawn gi-4",
+          "elapsedMs": 127890,
+          "status": 0
+        }
+      ]
+    },
+    "gi-5": {
+      "lane": 4,
+      "files": [
+        "packages/render/src/__tests__/raytracing/irradiance-bake.dawn.test.ts",
+        "packages/runtime/src/__tests__/renderer-baked-field.dawn.test.ts",
+        "packages/runtime/src/__tests__/renderer-irradiance-field-multiview.dawn.test.ts",
+        "packages/runtime/src/__tests__/renderer-irradiance-field-residency.dawn.test.ts"
+      ],
+      "processes": [
+        {
+          "label": "Dawn gi-5",
+          "elapsedMs": 365052,
+          "status": 0
+        }
+      ]
+    },
+    "gi-6": {
+      "lane": 2,
+      "files": ["packages/runtime/src/__tests__/renderer-irradiance-field.dawn.test.ts"],
+      "processes": [
+        {
+          "label": "Dawn gi-6",
+          "elapsedMs": 63989,
+          "status": 0
+        }
+      ]
+    },
+    "heavy-1": {
+      "lane": 2,
+      "files": ["packages/runtime/src/__tests__/dawn/material-alpha.dawn.test.ts"],
+      "processes": [
+        {
+          "label": "Dawn heavy-1",
+          "elapsedMs": 38861,
+          "status": 0
+        }
+      ]
+    },
+    "heavy-2": {
+      "lane": 2,
+      "files": ["apps/parity/color-lighting/cases/tone/__tests__/tone-ramp.dawn.test.ts"],
+      "processes": [
+        {
+          "label": "Dawn heavy-2",
+          "elapsedMs": 36274,
+          "status": 0
+        }
+      ]
+    },
+    "heavy-3": {
+      "lane": 1,
+      "files": ["packages/runtime/src/__tests__/fullscreen-post-process-pass.dawn.test.ts"],
+      "processes": [
+        {
+          "label": "Dawn heavy-3",
+          "elapsedMs": 73046,
+          "status": 0
+        }
+      ]
+    },
+    "modeling-s6": {
+      "lane": 3,
+      "files": ["packages/modeling/examples/mech-gt/__tests__/s6.case.dawn.test.ts"],
+      "processes": [
+        {
+          "label": "Dawn modeling-s6",
+          "elapsedMs": 255631,
+          "status": 0
+        }
+      ]
+    },
+    "modeling-show": {
+      "lane": 1,
+      "files": ["apps/modeling-show/__tests__/show.dawn.test.ts"],
+      "processes": [
+        {
+          "label": "Dawn modeling-show",
+          "elapsedMs": 345059,
+          "status": 0
+        }
+      ]
+    },
+    "nested-discard": {
+      "lane": 2,
+      "files": ["packages/runtime/src/__tests__/dawn/nested-discard-pixels.dawn.test.ts"],
+      "processes": [
+        {
+          "label": "Dawn nested-discard",
+          "elapsedMs": 88172,
+          "status": 0
+        }
+      ]
+    },
+    "renderer": {
+      "lane": 1,
+      "files": ["packages/runtime/src/__tests__/dawn/instances-uniform-fallback.dawn.test.ts"],
+      "processes": [
+        {
+          "label": "Dawn renderer",
+          "elapsedMs": 92402,
+          "status": 0
+        }
+      ]
+    },
+    "screen-probe": {
+      "lane": 2,
+      "files": ["packages/runtime/src/__tests__/renderer-screen-probe.dawn.test.ts"],
+      "processes": [
+        {
+          "label": "Dawn screen-probe",
+          "elapsedMs": 69716,
+          "status": 0
+        }
+      ]
+    },
+    "specular-aa": {
+      "lane": 2,
+      "files": ["packages/runtime/src/__tests__/specular-aa.dawn.test.ts"],
+      "processes": [
+        {
+          "label": "Dawn specular-aa",
+          "elapsedMs": 71511,
+          "status": 0
+        }
+      ]
+    },
+    "surface-pipelines": {
+      "lane": 1,
+      "files": [
+        "packages/runtime/src/__tests__/clipping-planes.dawn.test.ts",
+        "packages/runtime/src/__tests__/planar-reflection.dawn.test.ts",
+        "packages/runtime/src/__tests__/standard-deferred-parity.dawn.test.ts",
+        "packages/runtime/src/__tests__/standard-planar-reflection.dawn.test.ts"
+      ],
+      "processes": [
+        {
+          "label": "Dawn surface-pipelines",
+          "elapsedMs": 408107,
+          "status": 0
+        }
+      ]
+    },
+    "transmission": {
+      "lane": 3,
+      "files": ["packages/render/src/transmission/__tests__/standard-transmission.dawn.test.ts"],
+      "processes": [
+        {
+          "label": "transmission completes a 60-frame transmission stream|uses linear HDR observation|samples the backdrop where the refracted ray exits",
+          "elapsedMs": 62360,
+          "status": 0
+        },
+        {
+          "label": "transmission keeps IOR, thickness, and roughness",
+          "elapsedMs": 28472,
+          "status": 0
+        },
+        {
+          "label": "transmission exercises both Standard render paths",
+          "elapsedMs": 26496,
+          "status": 0
+        },
+        {
+          "label": "transmission submits a real clustered local-light frame|refracts through the shared-slot variant|reports and falls back when a split scalar map",
+          "elapsedMs": 74152,
+          "status": 0
+        }
+      ]
+    },
+    "vfx-depth": {
+      "lane": 3,
+      "files": ["packages/runtime/src/__tests__/vfx-depth-material.dawn.test.ts"],
+      "processes": [
+        {
+          "label": "vfx-depth billboard|ribbon",
+          "elapsedMs": 62092,
+          "status": 0
+        },
+        {
+          "label": "vfx-depth trail|beam",
+          "elapsedMs": 63990,
+          "status": 0
+        },
+        {
+          "label": "vfx-depth mesh|Player MeshFilter",
+          "elapsedMs": 49748,
+          "status": 0
+        }
+      ]
+    }
+  },
+  "interruptedOwners": ["gi-3", "compact-3"],
+  "unstartedOwners": ["rect-source", "shadow-fields", "heavy-4", "gi-1"],
+  "reservedOwners": {
+    "gi-3": 181.81,
+    "compact-3": 206.836,
+    "rect-source": 54.915,
+    "shadow-fields": 210.71800000000002,
+    "heavy-4": 44.553,
+    "gi-1": 241.472
+  }
+}

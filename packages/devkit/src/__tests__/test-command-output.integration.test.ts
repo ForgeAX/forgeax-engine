@@ -113,3 +113,37 @@ it('keeps installed skill tests outside the game while retaining adjacent tests 
     await rm(root, { recursive: true, force: true });
   }
 }, 30_000);
+
+it('passes project test when a game ships without test files', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'forgeax-test-empty-'));
+  try {
+    await symlink(
+      fileURLToPath(new URL('../../node_modules', import.meta.url)),
+      join(root, 'node_modules'),
+      'dir',
+    );
+    await writeFile(
+      join(root, 'package.json'),
+      JSON.stringify({ name: 'test-empty', type: 'module' }),
+    );
+    await writeFile(
+      join(root, 'forge.json'),
+      JSON.stringify({ schemaVersion: '3.0.0', id: 'test-empty', name: 'Test empty', roots: {} }),
+    );
+    const result = await promisify(execFile)(
+      process.execPath,
+      [
+        fileURLToPath(new URL('../../dist/cli.mjs', import.meta.url)),
+        'project',
+        'test',
+        '--root',
+        root,
+        '--json',
+      ],
+      { env: { ...process.env, FORGEAX_DISABLE_UPDATE_CHECK: '1' } },
+    );
+    expect(JSON.parse(result.stdout)).toMatchObject({ ok: true, command: 'project test' });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}, 30_000);

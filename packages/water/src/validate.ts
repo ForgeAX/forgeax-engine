@@ -14,6 +14,7 @@ import {
 import { resolveWaterSplinePoints } from './body-spline.js';
 import type { WaterAsset, WaterBodyAsset, WaterBodySourceAsset, WaterError } from './contracts.js';
 import { validWaterFluidConfiguration } from './fluid-simulation.js';
+import { migrateWaterPayload, waterSplineDigestProjection } from './payload-migration.js';
 import { requireWaterValue } from './required-value.js';
 import { MAX_WATER_MESH_TESSELLATION_FACTOR } from './water-mesh-budget.js';
 
@@ -230,7 +231,7 @@ export function waterQueryFootprintDigest(
 ): string {
   const inputs = {
     type: source.type,
-    spline: source.spline,
+    spline: waterSplineDigestProjection(source.spline),
     queryFootprint: source.queryFootprint,
     oceanExtentM: source.oceanExtentM,
     centerOnWaterZone: source.centerOnWaterZone,
@@ -268,7 +269,10 @@ export function waterCollisionDescriptorDigest(
       : never
     : never,
 ): string {
-  const spline = source.type === 'river' || source.type === 'lake' ? source.spline : undefined;
+  const spline =
+    source.type === 'river' || source.type === 'lake'
+      ? waterSplineDigestProjection(source.spline)
+      : undefined;
   const heightOffsetM = source.type === 'ocean' ? source.heightOffsetM : undefined;
   const inputs = {
     type: source.type,
@@ -331,7 +335,9 @@ export function waterRiverBakeGeometryProjectionHash(body: WaterBodyAsset): stri
     closed: body.spline.closed,
     ...(body.spline.interpolationVersion === undefined
       ? {}
-      : { interpolationVersion: body.spline.interpolationVersion }),
+      : {
+          interpolationVersion: waterSplineDigestProjection(body.spline).interpolationVersion,
+        }),
     ...(body.spline.metadataDefaults === undefined
       ? {}
       : {
@@ -525,7 +531,7 @@ export function waterQueryVolumeDigest(
 ): string {
   const inputs = {
     type: source.type,
-    spline: source.spline,
+    spline: waterSplineDigestProjection(source.spline),
     baseHeightM: source.baseHeightM,
     heightOffsetM: source.heightOffsetM,
     maxWaveHeightM: source.maxWaveHeightM,
@@ -586,6 +592,7 @@ function validGeometrySnapshot(asset: WaterValidationRecord): boolean {
   return validGeometrySnapshotDigests(asset, source, query, descriptor);
 }
 export function validateWaterAsset(value: unknown): Result<WaterAsset, WaterError> {
+  value = migrateWaterPayload(value);
   const fail = (expected: string): Result<WaterAsset, WaterError> =>
     err({
       code: 'invalid-source',
@@ -667,7 +674,7 @@ function validAdvancedDebug(
     !closedObject(debug, ['enabled', 'writers', 'foamEmission']) ||
     typeof debug.enabled !== 'boolean' ||
     typeof debug.foamEmission !== 'boolean' ||
-    (profile !== 'ue-5.8.1-river' && debug.foamEmission) ||
+    (profile !== 'river-shallow/2' && debug.foamEmission) ||
     !Array.isArray(debug.writers)
   )
     return false;
@@ -1254,10 +1261,10 @@ function generateSimpleGerstner(
   if (!Number.isInteger(source.seed) || source.seed < -2147483648 || source.seed > 2147483647)
     return err({
       code: 'invalid-source',
-      expected: 'signed 32-bit UE FRandomStream seed',
-      hint: 'use an integer seed in the UE int32 range',
+      expected: 'signed 32-bit deterministic wave seed',
+      hint: 'use an integer seed in [-2147483648, 2147483647]',
     });
-  // Mirrors UE 5.8 UGerstnerWaterWaveGeneratorSimple and FRandomStream: LCG seed,
+  // Deterministic wave generation uses an LCG seed,
   // top-bit float fraction, randomized alpha, wind spread and large-to-small steepness.
   const f32 = Math.fround;
   const randomBits = new Uint32Array(1);
@@ -1603,7 +1610,7 @@ function validateWaterZonePayload(
   const resolution = info?.resolution;
   const hasFarWaterLevel = asset.farWaterLevelM !== undefined;
   const hasFarOwner = asset.farOwnerBodyGuid !== undefined;
-  // The accepted range is derived from ForgeAX template allocation limits, not UE limits.
+  // The accepted range follows template allocation limits.
   function invalidTileSizeMAndTessellationFactorAndLodScaleFields1(): boolean {
     return (
       !extent ||
@@ -1831,7 +1838,7 @@ function validateBodySchema(
       ]) ||
       !closed(asset.spline, ['closed', 'points', 'metadataDefaults', 'interpolationVersion']) ||
       (asset.spline.interpolationVersion !== undefined &&
-        asset.spline.interpolationVersion !== 'ue-water-spline/1') ||
+        asset.spline.interpolationVersion !== 'water-spline/2') ||
       (asset.spline.metadataDefaults !== undefined &&
         (!closed(asset.spline.metadataDefaults, [
           'widthM',
@@ -1903,7 +1910,7 @@ function validateBodySpline(
     !asset.spline ||
     typeof asset.spline.closed !== 'boolean' ||
     (asset.spline.interpolationVersion !== undefined &&
-      asset.spline.interpolationVersion !== 'ue-water-spline/1') ||
+      asset.spline.interpolationVersion !== 'water-spline/2') ||
     !Array.isArray(asset.spline.points) ||
     asset.spline.points.length < 2 ||
     (['river', 'custom'].includes(asset.type) && asset.spline.closed) ||
@@ -1920,7 +1927,7 @@ function validateBodySpline(
       invalidBodySplineMetadata(point)
     )
       return fail(
-        'spline points use supported Water modes, canonical rotation keys for ue-water-spline/1, sequential keys, finite positions, tangents, metadata and degree roll',
+        'spline points use supported Water modes, canonical rotation keys for water-spline/2, sequential keys, finite positions, tangents, metadata and degree roll',
       );
   return undefined;
 }
@@ -2043,7 +2050,7 @@ function validateBodyAssetReferences(
       'valid material/asset GUIDs, nonnegative fixed water depth, wave height and ShapeDilationM, Ocean-only heightOffsetM, complete body flags, collision and non-degenerate simple query polygon',
     );
   if (asset.overlapPriority < -8192 || asset.overlapPriority > 8191)
-    return fail('WaterBody overlapPriority in the UE range [-8192, 8191]');
+    return fail('WaterBody overlapPriority in [-8192, 8191]');
   return undefined;
 }
 
@@ -2537,7 +2544,7 @@ function validBrushSplineOrientation(
   return (
     (point.rotationQuat === undefined ||
       (finiteVec(point.rotationQuat, 4) && Math.hypot(...point.rotationQuat) > 0)) &&
-    (spline.interpolationVersion !== 'ue-water-spline/1' ||
+    (spline.interpolationVersion !== 'water-spline/2' ||
       (point.rotationQuat &&
         ((point.interpolationMode ?? 'curve') !== 'curve-custom-tangent' ||
           (point.arriveRotationQuat && point.leaveRotationQuat)) &&
@@ -2702,7 +2709,7 @@ function validBrushIslandSpline(spline: WaterValidationRecord): boolean {
   return (
     closedObject(spline, ['closed', 'points', 'interpolationVersion']) &&
     (spline.interpolationVersion === undefined ||
-      spline.interpolationVersion === 'ue-water-spline/1') &&
+      spline.interpolationVersion === 'water-spline/2') &&
     spline.closed === true &&
     Array.isArray(spline.points) &&
     spline.points.length >= 3 &&
@@ -2750,7 +2757,7 @@ function validateAdvancedShallowConfiguration(
   if (
     asset.enabledFeatures.includes('shallowFoam') &&
     (!asset.enabledFeatures.includes('shallow') ||
-      asset.shallowStageConfig?.stageProfile !== 'ue-5.8.1-water-body')
+      asset.shallowStageConfig?.stageProfile !== 'water-body-shallow/2')
   )
     return fail('shallowFoam requires the WaterBody shallow stage profile');
   return undefined;
@@ -2780,7 +2787,7 @@ function validateAdvancedRiverBakeConfiguration(
         (v: number, index: number) => v !== asset.shallowStageConfig?.extentM[index],
       ) ||
       !validPolygon(asset.riverBakeConfig.queryFootprint) ||
-      asset.shallowStageConfig?.stageProfile !== 'ue-5.8.1-river' ||
+      asset.shallowStageConfig?.stageProfile !== 'river-shallow/2' ||
       (asset.riverBakeConfig.bakedGrid !== undefined &&
         !validRiverBakedGrid(
           asset.riverBakeConfig.bakedGrid,
@@ -2845,7 +2852,7 @@ function validateAdvancedOceanPatchConfiguration(
         !finite(asset.oceanPatchConfig.windAngleDegrees) ||
         !finite(asset.oceanPatchConfig.windSpeedMPerSec) ||
         !guid(asset.oceanPatchConfig.noiseTextureGuid) ||
-        asset.oceanPatchConfig.algorithm !== 'ue-5.8.1-niagara-fft' ||
+        asset.oceanPatchConfig.algorithm !== 'ocean-spectrum-fft/2' ||
         !Number.isInteger(asset.oceanPatchConfig.fftResolution) ||
         asset.oceanPatchConfig.fftResolution < 8 ||
         asset.oceanPatchConfig.fftResolution > 1024 ||
@@ -2922,7 +2929,8 @@ function invalidAdvancedShallowSchema(
       'beautyEnabled',
       'materialGuids',
       'normalRtFormat',
-    ]) || !['ue-5.8.1-water-body', 'ue-5.8.1-river'].includes(asset.shallowStageConfig.stageProfile)
+    ]) ||
+    !['water-body-shallow/2', 'river-shallow/2'].includes(asset.shallowStageConfig.stageProfile)
   );
 }
 
@@ -3272,7 +3280,7 @@ function invalidBodySplineOrientation(
       (!finiteVec(point.arriveRotationQuat, 4) || Math.hypot(...point.arriveRotationQuat) === 0)) ||
     (point.leaveRotationQuat !== undefined &&
       (!finiteVec(point.leaveRotationQuat, 4) || Math.hypot(...point.leaveRotationQuat) === 0)) ||
-    (asset.spline.interpolationVersion === 'ue-water-spline/1' &&
+    (asset.spline.interpolationVersion === 'water-spline/2' &&
       (!point.rotationQuat ||
         ((point.interpolationMode ?? 'curve') === 'curve-custom-tangent' &&
           (!point.arriveRotationQuat || !point.leaveRotationQuat)) ||

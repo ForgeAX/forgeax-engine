@@ -7,6 +7,10 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import {
+  ArtifactRangesUnavailable,
+  tryDownloadArtifactRanges,
+} from './artifact-range-download.mjs';
 
 export const RETRY_DELAYS_SECONDS = [0, 5, 15];
 // Bound response-header stalls, not the duration of a progressing archive.
@@ -329,10 +333,21 @@ export async function downloadArtifact(
     }, idleTimeoutMs);
   };
   try {
-    const responseResult = await responseFor(
-      `https://api.github.com/repos/${repository}/actions/artifacts/${artifactId}/zip`,
-      requestTimeoutMs,
-    );
+    const archiveUrl = `https://api.github.com/repos/${repository}/actions/artifacts/${artifactId}/zip`;
+    let responseResult = await responseFor(archiveUrl, requestTimeoutMs);
+    try {
+      const bytes = await tryDownloadArtifactRanges({
+        ...responseResult,
+        metadata,
+        destination,
+        requestTimeoutMs,
+        idleTimeoutMs,
+      });
+      if (bytes !== null) return bytes;
+    } catch (error) {
+      if (!(error instanceof ArtifactRangesUnavailable)) throw error;
+      responseResult = await responseFor(archiveUrl, requestTimeoutMs);
+    }
     transferController = responseResult.controller;
     const response = responseResult.response;
     if (!response.body) throw new Error(`artifact ${artifactId} response has no body`);

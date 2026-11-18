@@ -94,6 +94,7 @@ export {
   meshMaterialSlotsFromTopology,
   meshMaterialSlotsToTopology,
 } from './mesh-material-slots';
+export type { ReadonlyMeshAttributeWindow } from './mesh-storage';
 export {
   copyMeshAttribute,
   interleavedMesh,

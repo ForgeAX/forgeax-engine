@@ -17,26 +17,46 @@ import {
   GreaterEqualDepth,
   LessDepth,
   LessEqualDepth,
-  LineBasicMaterial,
+  type LineBasicMaterial,
   Material,
-  MeshBasicMaterial,
-  MeshLambertMaterial,
-  MeshMatcapMaterial,
-  MeshNormalMaterial,
-  MeshPhysicalMaterial,
-  MeshStandardMaterial,
+  type MeshBasicMaterial,
+  type MeshLambertMaterial,
+  type MeshMatcapMaterial,
+  type MeshNormalMaterial,
+  type MeshStandardMaterial,
   NeverDepth,
   NormalBlending,
   NotEqualDepth,
   ObjectSpaceNormalMap,
-  PointsMaterial,
-  SpriteMaterial,
+  type PointsMaterial,
+  type SpriteMaterial,
   type Texture,
   VideoTexture,
 } from 'three/src/Three.Core.js';
 import { projectBlending } from './blending';
 import { defaultMatcap } from './default-matcap';
 import { invalid, migration, unsupported } from './errors';
+import {
+  isBasicMaterial,
+  isLambertMaterial,
+  isLineMaterial,
+  isMatcapMaterial,
+  isNormalMaterial,
+  isPhysicalMaterial,
+  isPointsMaterial,
+  isSpriteMaterial,
+  isStandardMaterial,
+} from './material-kinds';
+import {
+  replacesTexture,
+  surfaceColor,
+  surfaceInput,
+  surfaceRgb,
+  surfaceScalar,
+  surfaceTexture,
+  usesTransmission,
+} from './node-inputs';
+import { admitNodeMaterial } from './node-materials';
 import { projectStencil } from './stencil';
 
 export type SupportedMaterial =
@@ -77,23 +97,46 @@ export const TEXTURE_SLOTS = {
 export function materialTextures(material: SupportedMaterial): (readonly [string, Texture])[] {
   const result: (readonly [string, Texture])[] = [];
   for (const [field, parameter] of Object.entries(TEXTURE_SLOTS)) {
+    if (replacesTexture(material, field)) continue;
     const texture = (material as unknown as Record<string, Texture | null>)[field];
     // WebGPU normal maps take priority over bump maps.
     if (field === 'bumpMap' && 'normalMap' in material && material.normalMap !== null) continue;
     if (texture instanceof VideoTexture) texture.update();
     if (texture != null) result.push([parameter, texture]);
   }
-  if (material instanceof MeshMatcapMaterial && material.matcap === null)
+  const colorTexture = surfaceTexture(material, 'colorNode'),
+    opacityTexture = surfaceTexture(material, 'opacityNode');
+  if (colorTexture !== null) result.push(['baseColorTexture', colorTexture]);
+  if (opacityTexture !== null) result.push(['alphaTexture', opacityTexture]);
+  if (isMatcapMaterial(material) && material.matcap === null)
     result.push(['baseColorTexture', defaultMatcap]);
   return result;
 }
 
-export function validateMaterial(material: Material): Result<SupportedMaterial, Error> {
+function admitMaterialKind(material: Material): Result<SupportedMaterial, Error> {
+  if (
+    material.type === 'NodeMaterialInstance' ||
+    ('isNodeMaterial' in material && material.isNodeMaterial === true)
+  ) {
+    const admitted = admitNodeMaterial(material);
+    if (!admitted.ok) return admitted;
+  }
   if (material.type === 'ShaderMaterial' || material.type === 'RawShaderMaterial')
     return migration(material.type, material.uuid);
   if (
     ![
+      'NodeMaterialInstance',
       'MeshBasicMaterial',
+      'LineBasicNodeMaterial',
+      'LineDashedNodeMaterial',
+      'MeshLambertNodeMaterial',
+      'MeshMatcapNodeMaterial',
+      'MeshNormalNodeMaterial',
+      'PointsNodeMaterial',
+      'SpriteNodeMaterial',
+      'MeshBasicNodeMaterial',
+      'MeshStandardNodeMaterial',
+      'MeshPhysicalNodeMaterial',
       'LineBasicMaterial',
       'LineDashedMaterial',
       'PointsMaterial',
@@ -108,30 +151,29 @@ export function validateMaterial(material: Material): Result<SupportedMaterial, 
     return unsupported(material.type, material.uuid);
   if (material.onBeforeRender !== Material.prototype.onBeforeRender)
     return unsupported('Material.onBeforeRender', material.uuid);
-  const source = material as SupportedMaterial;
-  if ('wireframe' in source && source.wireframe && !(source instanceof MeshBasicMaterial))
+  return ok(material as SupportedMaterial);
+}
+
+export function validateMaterial(material: Material): Result<SupportedMaterial, Error> {
+  const admitted = admitMaterialKind(material);
+  if (!admitted.ok) return admitted;
+  const source = admitted.value;
+  if ('wireframe' in source && source.wireframe && !isBasicMaterial(source))
     return unsupported('Lit wireframe needs native line attributes', source.uuid);
   if (
     ('envMap' in source && source.envMap !== null) ||
     ('lightMap' in source && source.lightMap !== null)
   )
     return unsupported('Material environment/lightmap', source.uuid);
-  if (source instanceof MeshBasicMaterial && source.aoMap !== null)
+  if (isBasicMaterial(source) && source.aoMap !== null)
     return unsupported('MeshBasicMaterial AO map', source.uuid);
-  if (source instanceof MeshMatcapMaterial || source instanceof MeshNormalMaterial) {
-    if (source.normalMap !== null || source.bumpMap !== null || source.displacementMap !== null)
-      return unsupported('Normal/Matcap bump/normal/displacement maps', source.uuid);
-    if (source instanceof MeshMatcapMaterial && (source.map !== null || source.alphaMap !== null))
-      return unsupported('MeshMatcapMaterial color/alpha map', source.uuid);
-  }
-  if (
-    source instanceof MeshPhysicalMaterial &&
-    (source.dispersion !== 0 ||
-      (source.clearcoatNormalMap !== null &&
-        source.clearcoatNormalScale.x !== source.clearcoatNormalScale.y))
-  )
+  if (unsupportedNormalMaps(source))
+    return unsupported('Normal/Matcap bump/normal/displacement maps', source.uuid);
+  if (isMatcapMaterial(source) && source.map !== null)
+    return unsupported('MeshMatcapMaterial color map', source.uuid);
+  if (unsupportedPhysicalOptions(source))
     return unsupported(
-      'MeshPhysicalMaterial dispersion/anisotropic clearcoat normal scale',
+      'MeshPhysicalMaterial dispersion/diffuseRoughness/retroreflectivity/anisotropic clearcoat normal scale',
       source.uuid,
     );
   if (![FrontSide, BackSide, DoubleSide].includes(source.side))
@@ -166,17 +208,38 @@ export function validateMaterial(material: Material): Result<SupportedMaterial, 
   } catch (error) {
     return err(error as Error);
   }
-  return ok(source);
+  return admitted;
+}
+
+function unsupportedNormalMaps(source: SupportedMaterial): boolean {
+  return (
+    (isMatcapMaterial(source) || isNormalMaterial(source)) &&
+    (source.normalMap !== null || source.bumpMap !== null || source.displacementMap !== null)
+  );
+}
+
+function unsupportedPhysicalOptions(source: SupportedMaterial): boolean {
+  return (
+    isPhysicalMaterial(source) &&
+    (source.dispersion !== 0 ||
+      ('diffuseRoughness' in source && source.diffuseRoughness !== 0) ||
+      ('retroreflectivity' in source && source.retroreflectivity !== 0) ||
+      (source.clearcoatNormalMap !== null &&
+        source.clearcoatNormalScale.x !== source.clearcoatNormalScale.y))
+  );
 }
 
 function surfaceValues(material: SupportedMaterial) {
-  const color = 'color' in material ? material.color.toArray() : [1, 1, 1];
+  const attenuationDistance = isPhysicalMaterial(material)
+    ? surfaceScalar(material, 'attenuationDistanceNode', material.attenuationDistance)
+    : Infinity;
   return {
-    baseColor: [...color, material.opacity] as [number, number, number, number],
+    baseColor: surfaceColor(material),
     ...('emissive' in material
       ? {
-          emissive: [material.emissive.r, material.emissive.g, material.emissive.b] as const,
-          emissiveIntensity: material.emissiveIntensity,
+          emissive: surfaceRgb(material, 'emissiveNode', material.emissive),
+          emissiveIntensity:
+            surfaceInput(material, 'emissiveNode') === null ? material.emissiveIntensity : 1,
           normalScale: [material.normalScale.x, material.normalScale.y] as const,
           normalMapSpace:
             material.normalMapType === ObjectSpaceNormalMap
@@ -186,62 +249,60 @@ function surfaceValues(material: SupportedMaterial) {
           occlusionStrength: material.aoMapIntensity,
         }
       : {}),
-    ...(material instanceof MeshStandardMaterial
+    ...(isStandardMaterial(material)
       ? {
-          roughness: material.roughness,
-          metallic: material.metalness,
+          roughness: surfaceScalar(material, 'roughnessNode', material.roughness),
+          metallic: surfaceScalar(material, 'metalnessNode', material.metalness),
           displacementScale: material.displacementScale,
           displacementBias: material.displacementBias,
         }
       : {}),
-    ...(material instanceof MeshPhysicalMaterial
+    ...(isPhysicalMaterial(material)
       ? {
-          clearcoat: material.clearcoat,
-          clearcoatRoughness: material.clearcoatRoughness,
+          clearcoat: surfaceScalar(material, 'clearcoatNode', material.clearcoat),
+          clearcoatRoughness: surfaceScalar(
+            material,
+            'clearcoatRoughnessNode',
+            material.clearcoatRoughness,
+          ),
           clearcoatNormalScale: material.clearcoatNormalScale.x,
           anisotropyStrength: material.anisotropy,
           anisotropyRotation: material.anisotropyRotation,
-          sheenColor: material.sheenColor.toArray().map((value) => value * material.sheen) as [
-            number,
-            number,
-            number,
-          ],
-          sheenRoughness: material.sheenRoughness,
-          iridescence: material.iridescence,
-          iridescenceIor: material.iridescenceIOR,
-          iridescenceThicknessMinimum: material.iridescenceThicknessRange[0],
-          iridescenceThicknessMaximum: material.iridescenceThicknessRange[1],
-          specular: material.specularIntensity,
-          specularColor: [
-            material.specularColor.r,
-            material.specularColor.g,
-            material.specularColor.b,
-          ] as const,
-          transmission: material.transmission,
-          ior: material.ior,
-          thickness: material.thickness,
-          attenuationColor: [
-            material.attenuationColor.r,
-            material.attenuationColor.g,
-            material.attenuationColor.b,
-          ] as const,
+          sheenColor: surfaceRgb(material, 'sheenNode', material.sheenColor, material.sheen),
+          sheenRoughness: surfaceScalar(material, 'sheenRoughnessNode', material.sheenRoughness),
+          iridescence: surfaceScalar(material, 'iridescenceNode', material.iridescence),
+          iridescenceIor: surfaceScalar(material, 'iridescenceIORNode', material.iridescenceIOR),
+          iridescenceThicknessMinimum: surfaceScalar(
+            material,
+            'iridescenceThicknessNode',
+            material.iridescenceThicknessMinimum,
+          ),
+          iridescenceThicknessMaximum: surfaceScalar(
+            material,
+            'iridescenceThicknessNode',
+            material.iridescenceThicknessMaximum,
+          ),
+          specular: surfaceScalar(material, 'specularIntensityNode', material.specularIntensity),
+          specularColor: surfaceRgb(material, 'specularColorNode', material.specularColor),
+          transmission: surfaceScalar(material, 'transmissionNode', material.transmission),
+          ior: surfaceScalar(material, 'iorNode', material.ior),
+          thickness: surfaceScalar(material, 'thicknessNode', material.thickness),
+          attenuationColor: surfaceRgb(material, 'attenuationColorNode', material.attenuationColor),
           // An absent native attenuation distance disables absorption, matching Three's Infinity.
-          ...(material.attenuationDistance === Infinity
-            ? {}
-            : { attenuationDistance: material.attenuationDistance }),
+          ...(attenuationDistance === Infinity ? {} : { attenuationDistance }),
         }
       : {}),
   };
 }
 
-/** r184 WebGPU infers flat shading when the geometry has no normal attribute. */
+/** r187 WebGPU infers flat shading when the geometry has no normal attribute. */
 export function usesFlatShading(material: Material, hasNormal = true): boolean {
   return (
     !(
-      material instanceof MeshBasicMaterial ||
-      material instanceof LineBasicMaterial ||
-      material instanceof PointsMaterial ||
-      material instanceof SpriteMaterial
+      isBasicMaterial(material) ||
+      isLineMaterial(material) ||
+      isPointsMaterial(material) ||
+      isSpriteMaterial(material)
     ) &&
     (!hasNormal || ('flatShading' in material && material.flatShading === true))
   );
@@ -267,6 +328,7 @@ export function materialValues(material: SupportedMaterial): unknown[] {
     material.depthWrite,
     material.depthFunc,
     material.colorWrite,
+    'fog' in material ? material.fog : undefined,
     material.vertexColors,
     material.polygonOffset,
     material.polygonOffsetFactor,
@@ -326,12 +388,9 @@ function projectSurface(
   const values = surfaceValues(material);
   const opts = {
     renderState,
-    queue:
-      material.transparent || ('transmission' in material && Number(material.transmission) > 0)
-        ? 3000
-        : 2000,
+    queue: material.transparent || usesTransmission(material) ? 3000 : 2000,
     alphaCutoff: material.alphaTest,
-    // r184 MaterialNode.OPACITY converts its texture expression to float (red).
+    // r187 MaterialNode.OPACITY converts its texture expression to float (red).
     alphaChannel: 0,
     alphaHash: material.alphaHash,
     shadowAlphaMode: 'texture' as const,
@@ -344,18 +403,15 @@ function projectSurface(
         : 'preserve') as 'opaque' | 'premultiplied' | 'preserve',
   };
   try {
-    if (material instanceof MeshNormalMaterial)
+    if (isNormalMaterial(material))
       return ok(Materials.normal({ ...opts, opacity: material.opacity, encoding: 'display' }));
-    if (material instanceof MeshMatcapMaterial) {
-      if (textures.baseColorTexture === undefined)
-        return unsupported('MeshMatcapMaterial default procedural matcap', material.uuid);
-      return ok(Materials.matcap(textures.baseColorTexture, { ...opts, color: values.baseColor }));
-    }
+    if (isMatcapMaterial(material))
+      return projectMatcap(material, textures, { ...opts, color: values.baseColor });
     if (
-      material instanceof MeshBasicMaterial ||
-      material instanceof LineBasicMaterial ||
-      material instanceof PointsMaterial ||
-      material instanceof SpriteMaterial
+      isBasicMaterial(material) ||
+      isLineMaterial(material) ||
+      isPointsMaterial(material) ||
+      isSpriteMaterial(material)
     )
       return ok(Materials.unlit(values.baseColor, { ...opts, ...textures }));
     const options = {
@@ -363,18 +419,32 @@ function projectSurface(
       flatShading,
       ...opts,
       ...textures,
-      ...(material instanceof MeshPhysicalMaterial
+      ...(isPhysicalMaterial(material)
         ? { staticSwitches: { clearcoat: true, sheen: true, anisotropy: true, iridescence: true } }
         : {}),
     };
     return ok(
-      material instanceof MeshLambertMaterial
-        ? Materials.lambert(options)
-        : Materials.standard(options),
+      isLambertMaterial(material) ? Materials.lambert(options) : Materials.standard(options),
     );
   } catch (cause) {
     return err(cause instanceof Error ? cause : new Error(String(cause)));
   }
+}
+
+/** Matcap keeps its sphere image and independent coverage binding in one native layout. */
+function projectMatcap(
+  source: MeshMatcapMaterial,
+  textures: Readonly<Record<string, MaterialTextureValue>>,
+  options: NonNullable<Parameters<typeof Materials.matcap>[1]>,
+): Result<MaterialAsset, Error> {
+  if (textures.baseColorTexture === undefined)
+    return unsupported('MeshMatcapMaterial default procedural matcap', source.uuid);
+  return ok(
+    Materials.matcap(textures.baseColorTexture, {
+      ...options,
+      ...(textures.alphaTexture === undefined ? {} : { alphaTexture: textures.alphaTexture }),
+    }),
+  );
 }
 
 /** Three owns its shadow-side defaults independently of native caster policy. */
@@ -407,8 +477,8 @@ export function projectMaterial(
       ...(shadow ? { cullMode: shadowCullMode(material, varianceShadow) } : {}),
     };
     if (
-      material instanceof MeshPhysicalMaterial &&
-      material.transmission > 0 &&
+      isPhysicalMaterial(material) &&
+      usesTransmission(material) &&
       material.side === DoubleSide &&
       !material.forceSinglePass &&
       pass.name === 'forward'

@@ -21,7 +21,7 @@ fn rigidProject(primitive:RigidPrimitive,position:vec3<f32>)->RigidProjection {
   let extent=primitive.shape.yzw;let delta=abs(local)-extent;
   var point=clamp(local,-extent,extent);
   let outside=length(max(delta,vec3<f32>(0.0)));
-  // UE local XYZ maps to engine XZY; maximum-axis ties retain UE Z, then Y.
+  // Local XYZ maps to XZY; maximum-axis ties retain Z, then Y.
   var axis=select(1u,2u,delta.z>delta.y);
   if(delta.x>delta.y&&delta.x>delta.z){axis=0u;}
   if(outside==0.0){point[axis]=select(-extent[axis],extent[axis],local[axis]>=0.0);}
@@ -80,7 +80,7 @@ fn rigidCell(position:vec3<f32>,dx:vec2<f32>,depth:f32)->vec4<f32> {
     if(area<=0.00001){area=0.0;}
   }else{
     let falloff=p[23].w;
-    // UE's zero-width smoothstep is undefined; R7 chooses a strict-inside boundary.
+    // Use a strict-inside boundary when the smoothstep width is zero.
     if(falloff>0.0){area=clamp(1.0-smoothstep(-falloff,0.0,center.w),0.0,1.0);}
     else{area=select(0.0,1.0,center.w<0.0);}
     if(area<=0.000001){area=0.0;}

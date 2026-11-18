@@ -122,43 +122,12 @@ test('Codec preparation uses the existing locked source recovery after every acc
   );
 });
 
-test('shared producer selects its build closure without Runtime or native physics packages', () => {
-  const repoRoot = resolve('.');
-  const workflow = readFileSync(join(repoRoot, '.github/workflows/ci.yml'), 'utf8');
-  const job = workflow.split('\n  shared-app-inputs:\n')[1]?.split(/\n {2}\S/)[0];
-  const step = job
-    ?.split('name: Build shared producer plugin dependencies')[1]
-    ?.split('\n      - ')[0];
-  const command = step?.match(/run: >-\n((?: {10}.+(?:\n|$))+)/)?.[1].trim();
-  assert.ok(command, 'the shared producer declares its package build command');
-  const [executable, ...args] = command.split(/\s+/).map((token) => token.replace(/^'|'$/g, ''));
-  assert.equal(executable, 'pnpm');
-  assert.equal(args.pop(), 'build');
-  const selected = spawnSync(executable, [...args, 'list', '--depth', '-1', '--json'], {
-    cwd: repoRoot,
-    encoding: 'utf8',
-    timeout: 30_000,
-    shell: process.platform === 'win32',
-  });
-  assert.equal(selected.status, 0, selected.stderr);
-  const names = JSON.parse(selected.stdout).map((entry) => entry.name);
-  assert.ok(names.includes('@forgeax/engine-codec'), 'Codec remains in the real build closure');
-  assert.deepEqual(
-    names.filter((name) => /^@forgeax\/engine-(runtime|physics-rapier[23]d)$/.test(name)),
-    [],
-    'the empty catalog/shader entry leaves Runtime and both native physics builds to core',
-  );
-});
-
-test('every direct shared producer and native Engine package build prepares Codec first', () => {
+test('Core and native Engine package builds prepare Codec first', () => {
   const ci = readFileSync('.github/workflows/ci.yml', 'utf8');
-  for (const name of ['shared-app-inputs']) {
-    const job = ci.split(`\n  ${name}:\n`)[1]?.split(/\n {2}\S/)[0];
-    assert.ok(job, name);
-    const prepare = job.indexOf('uses: ./.github/actions/prepare-codec-wasm');
-    const build = job.indexOf('name: Build shared producer plugin dependencies');
-    assert.ok(prepare >= 0 && prepare < build, `${name}: Codec inputs precede its build`);
-  }
+  const core = ci.split('\n  core-build:\n')[1]?.split(/\n {2}\S/)[0];
+  assert.ok(core);
+  const preparation = core.indexOf('uses: ./.github/actions/prepare-codec-wasm');
+  assert.ok(preparation >= 0 && preparation < core.indexOf('name: Build package JavaScript once'));
   const native = readFileSync('.github/workflows/native-ray-query.yml', 'utf8');
   const jobs = [...native.matchAll(/^ {2}([\w-]+):\n([\s\S]*?)(?=^ {2}[\w-]+:|$(?![\s\S]))/gm)];
   const builders = jobs.filter(([, , body]) => body.includes('name: Build engine packages'));

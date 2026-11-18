@@ -170,8 +170,8 @@ ${refraction}
     device.queue.submit([encoder.finish()]);
     await readback.mapAsync(GPUMapMode.READ);
     const values = new Float32Array(readback.getMappedRange());
-    // UE 5.8.1 DistortionCommon.ush:14-19 compares the original TBN +Z with
-    // the signed final WorldNormal. MaterialTemplate flips only the latter.
+    // Compare the original TBN +Z with the signed final world normal.
+    // Back-face orientation flips only the latter.
     const expected = [
       [0, 0],
       [0, -0.08220798106948012],

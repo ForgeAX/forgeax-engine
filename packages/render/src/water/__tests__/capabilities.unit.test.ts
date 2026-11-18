@@ -274,7 +274,7 @@ describe('Water graph capability facts', () => {
     expect(inspect().fluidSimulation).toBe(true);
     expect(inspect(6).fluidSimulation).toBe(false);
     expect(inspect(7, 0).fluidSimulation).toBe(false);
-    expect(inspect().riverBake).toBe('unvalidated');
+    expect(inspect().riverBake).toBe('unavailable');
     (await consumer.retire()).unwrap();
     (await producer.retire()).unwrap();
   });
@@ -354,7 +354,7 @@ describe('Water graph capability facts', () => {
     });
     expect(inspect(7).waterInfo).toEqual({ available: true, active: true, execution: 'produced' });
     expect(inspect(7).underwater).toEqual({ available: true, active: true, execution: 'executed' });
-    expect(inspect(7).cpuMesh).toBe('unvalidated');
+    expect(inspect(7).cpuMesh).toBe('unavailable');
     (await consumer.retire()).unwrap();
     (await producer.retire()).unwrap();
   });

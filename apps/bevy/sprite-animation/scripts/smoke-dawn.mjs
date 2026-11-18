@@ -7,7 +7,7 @@ import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErr
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
+import { processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 
 const FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
@@ -33,7 +33,7 @@ const { createRenderer } = await import('@forgeax/engine-runtime');
 const { propagateTransforms } = await import('@forgeax/engine-scene');
 const { tickSpriteAnimation, buildSpriteAnimationWorld, makeAtlasPixels, readAnimationFrames, ATLAS_WIDTH, ATLAS_HEIGHT } = await import(resolve(here, '..', 'src', 'sprite-animation.ts'));
 const manifestPath = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const manifestUrl = `data:application/json,${encodeURIComponent(readShaderManifestText(manifestPath))}`;
+const manifestUrl = processShaderManifestUrl(manifestPath);
 const originalRequestAdapter = gpu.requestAdapter.bind(gpu);
 gpu.requestAdapter = async (options) => { const adapter = await originalRequestAdapter(options); if (!adapter) return adapter; const original = adapter.requestDevice.bind(adapter); adapter.requestDevice = async (descriptor) => { device = await original(descriptor); return device; }; return adapter; };
 const hostResult = await constructRuntimeRendererHost(canvas, {}, { shaderManifestUrl: manifestUrl });

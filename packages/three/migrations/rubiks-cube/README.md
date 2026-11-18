@@ -5,7 +5,7 @@ commit `9c46b0394ea4081e663cae1307c64990e0143e52`, MIT, copyright HichemTech.
 It is a complete interactive application with 27 cubies, grouped six-face
 Lambert materials, CanvasTextures, ambient/directional lights, OrbitControls,
 ray picking, face rotation and solving logic. Its declared Three dependency is
-`^0.160.0`; the independent reference here pins the compatibility target r184.
+`^0.160.0`; the independent reference here pins the compatibility target r187.
 
 The build script verifies the upstream revision and unchanged tracked files.
 It changes the root import to `@forgeax/engine/three` and the OrbitControls barrel
@@ -60,7 +60,7 @@ that the same picked events reach the original handler and reports this inherite
 limitation; it does not patch the game's logic. The project's full solver and every input sequence are not
 exhaustively tested by this gate.
 
-This sample does not establish complete r184 compatibility. See
+This sample does not establish complete r187 compatibility. See
 the package-wide contract for all remaining obligations.
 
 ## Measured result

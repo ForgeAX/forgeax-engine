@@ -15,7 +15,7 @@ import { setupGpuShim } from '../../triangle/scripts/smoke-helpers.mjs';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
-import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
+import { processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 
 const here = resolve(import.meta.dirname);
@@ -85,7 +85,7 @@ globalThis.fetch = async (request) => {
 phase('gpu-shim');
 const shim = await setupGpuShim({ width: WIDTH, height: HEIGHT, rerunCmd: 'pnpm --filter @forgeax/hello-cinder-fall smoke' });
 phase('engine-imports');
-const manifest = JSON.parse(readShaderManifestText(resolve(distRoot, 'shaders/manifest.json')));
+
 const { World } = await import('@forgeax/engine-ecs');
 const { mat4, quat, vec3 } = await import('@forgeax/engine-math');
 const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/internal/renderer-host');
@@ -134,7 +134,7 @@ phase('renderer-construct');
 const constructed = await constructRuntimeRendererHost(
   shim.mockCanvas,
   { features: [host.feature] },
-  { shaderManifestUrl: `data:application/json,${encodeURIComponent(JSON.stringify(manifest))}` },
+  { shaderManifestUrl: processShaderManifestUrl(resolve(distRoot, 'shaders/manifest.json')) },
 );
 if (!constructed.ok) throw constructed.error;
 const { renderer, assets } = constructed.value;

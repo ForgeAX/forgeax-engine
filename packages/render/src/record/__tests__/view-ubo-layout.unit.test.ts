@@ -9,8 +9,8 @@ const commonWgslSrc = readFileSync(
 );
 
 describe('View UBO directional shadow ABI', () => {
-  it('keeps the 1296 B payload inside the 256-aligned 1536 B View slot', () => {
-    expect(viewUboSrc).toMatch(/VIEW_UNIFORM_BYTES\s*=\s*1296/);
+  it('keeps the 1312 B payload inside the 256-aligned 1536 B View slot', () => {
+    expect(viewUboSrc).toMatch(/VIEW_UNIFORM_BYTES\s*=\s*1312/);
     expect(viewUboSrc).toMatch(/VIEW_UNIFORM_SLOT_STRIDE\s*=\s*1536/);
     expect(viewUboSrc).toMatch(/VIEW_PAYLOAD_FLOATS\s*=\s*VIEW_UNIFORM_BYTES \/ 4/);
   });
@@ -37,7 +37,7 @@ describe('View UBO directional shadow ABI', () => {
     expect(viewStruct).toMatch(/ssrParams\s*:\s*vec4<f32>/);
     expect(viewStruct).toMatch(/cloudShadowProjection\s*:\s*vec4<f32>/);
     expect(viewStruct).toMatch(
-      /atmosphereControl\s*:\s*vec4<f32>,\s*\n(?:\s*\/\/.*\n)*\s*fogSky\s*:\s*vec4<f32>,\s*\n\};/,
+      /atmosphereControl\s*:\s*vec4<f32>,\s*\n(?:\s*\/\/.*\n)*\s*fogSky\s*:\s*vec4<f32>,\s*\n(?:\s*\/\/.*\n)*\s*ssrQuality\s*:\s*vec4<f32>,\s*\n\};/,
     );
     expect(viewUboSrc).toMatch(/viewPayload\[320\]\s*=\s*fog\.skyOpacity/);
     expect(viewUboSrc).toMatch(/viewPayload\[236\]\s*=\s*ssr\.maxDistance/);

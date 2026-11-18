@@ -1,3 +1,4 @@
+import { cloudForQuality } from '../quality';
 // The graph-topology inputs of one view that depend on its lights, scene
 // roster and device: shadow map sizes, terrain receivers, the cloud shadow
 // projection, analytic fog activity and the volumetric fog projection. Only
@@ -324,7 +325,10 @@ export function planViewTopology(input: ViewTopologyInput): ViewTopologyOutcome 
       resolveSpotShadowMapSize(internals, lights),
     );
     const cloudLayer = step('cloud-shadow-failed', () =>
-      prepareCloudShadowView(input.cloudLayer, input.camera.position),
+      prepareCloudShadowView(
+        cloudForQuality(input.cloudLayer, internals.standardProfile?.quality),
+        input.camera.position,
+      ),
     );
     const topology: ViewTopology = {
       cloudLayer,

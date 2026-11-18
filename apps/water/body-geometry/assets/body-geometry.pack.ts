@@ -44,7 +44,7 @@ const river = {
   type: 'river' as const,
   spline: {
     closed: false,
-    interpolationVersion: 'ue-water-spline/1' as const,
+    interpolationVersion: 'water-spline/2' as const,
     points: [
       {
         inputKey: 0,
@@ -108,7 +108,7 @@ const lake = {
   type: 'lake' as const,
   spline: {
     closed: true,
-    interpolationVersion: 'ue-water-spline/1' as const,
+    interpolationVersion: 'water-spline/2' as const,
     points: ring([
       [-3.5, -3],
       [3.5, -3],
@@ -134,7 +134,7 @@ const ocean = {
   type: 'ocean' as const,
   spline: {
     closed: true,
-    interpolationVersion: 'ue-water-spline/1' as const,
+    interpolationVersion: 'water-spline/2' as const,
     points: ring([
       [-1, -1],
       [1, -1],

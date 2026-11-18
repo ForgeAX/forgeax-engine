@@ -30,7 +30,7 @@ import type { TemporalView } from '../temporal/view';
 import type { ViewLights } from '../world/render-lights';
 import { computeProjectionMatrix, computeViewMatrix } from './helpers';
 
-export const VIEW_UNIFORM_BYTES = 1296;
+export const VIEW_UNIFORM_BYTES = 1312;
 /** Four Point/Spot lanes each for depth, filtering, viewport and frozen origins. */
 export const SHADOW_PARAMS_BYTES = 16 * 16;
 export const POINTS_LINES_VIEW_BYTES = 176;
@@ -295,6 +295,7 @@ export function writeViewUbo(
   /** Render sample elapsed seconds; the existing fogHeightOpacity.w lane. */
   frameTimeSeconds?: number,
   viewport?: { readonly width: number; readonly height: number },
+  ssrQuality?: import('../quality').RenderQualityBudgets['ssr'],
 ): void {
   // Borrow ordinary staging once; raw getter/queue callback reentry owns an
   // independent invocation and cannot overwrite the caller's pending upload.
@@ -310,6 +311,7 @@ export function writeViewUbo(
     const resolvedTemporal = typeof temporalOrOffset === 'number' ? undefined : temporalOrOffset;
     const viewPayload = scratch.payload;
     viewPayload.fill(0);
+    writeSsrQualityLanes(viewPayload, ssrQuality);
     const projMatrix = computeProjectionMatrix(camera, scratch.projection);
     const viewMatrix = computeViewMatrix(camera, scratch.view);
     // The payload owns its matrix storage. Publish unjittered temporal lanes
@@ -366,6 +368,22 @@ export function writeViewUbo(
   } finally {
     writingViewUbo = previousWriting;
   }
+}
+
+/** Opaque trace scale and traversal limits at [324..327]. */
+export function writeSsrQualityLanes(
+  viewPayload: Float32Array,
+  quality?: import('../quality').RenderQualityBudgets['ssr'],
+): void {
+  viewPayload.set(
+    [
+      quality?.resolutionScale ?? 1,
+      quality?.hizIterations ?? 64,
+      quality?.linearIterations ?? 1024,
+      quality?.refineSteps ?? 5,
+    ],
+    324,
+  );
 }
 
 /** clippingPlanes at [256..279] and clippingControl at [280..283]. */

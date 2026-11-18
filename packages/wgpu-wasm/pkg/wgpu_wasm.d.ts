@@ -447,7 +447,7 @@ export class ValidatedModule {
  * Compose a WGSL shader via naga_oil and serialise the composed naga module
  * back to WGSL text (plan-strategy D-01 Rust-side composer).
  */
-export function compose_shader(entry_source: string, imports_json: string, defines_json: string): string;
+export function compose_shader(entry_source: string, imports_json: string, defines_json: string, normalize?: Function | null): string;
 
 /**
  * `ValidatedModule` + options JSON -> `BindGroupLayoutDescriptor[]` JSON string.
@@ -512,7 +512,7 @@ export interface InitOutput {
     readonly __wbg_rhiwgputexture_free: (a: number, b: number) => void;
     readonly __wbg_rhiwgputextureview_free: (a: number, b: number) => void;
     readonly __wbg_validatedmodule_free: (a: number, b: number) => void;
-    readonly compose_shader: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
+    readonly compose_shader: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
     readonly emit_reflection: (a: number, b: number, c: number) => [number, number, number, number];
     readonly parse: (a: number, b: number) => [number, number, number];
     readonly rhiwgpuadapter_features: (a: number) => any;
@@ -625,8 +625,8 @@ export interface InitOutput {
     readonly validate_render_entries: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__h1312d179d1d9248b: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h9a8e4b1067196a8b: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen__convert__closures_____invoke__h851bc48cafc5e696: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h0a6a4a55c5991aff: (a: number, b: number) => number;
+    readonly wasm_bindgen__convert__closures_____invoke__ha492078d2fab50b0: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h92f313c647ae0719: (a: number, b: number) => number;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;

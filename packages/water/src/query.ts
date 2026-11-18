@@ -594,7 +594,7 @@ export function queryPreparedWaterBodySnapshot(
       return err(
         queryError(
           'invalid-query-flags',
-          'finite position/time/key and only UE Water query flag bits 0..7',
+          'finite position/time/key and only Water query flag bits 0..7',
           'repair the query inputs before requesting a WaterBody sample',
           { flags: input.flags, splineKey: input.splineKey },
         ),

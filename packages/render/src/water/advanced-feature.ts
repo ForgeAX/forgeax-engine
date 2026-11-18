@@ -411,7 +411,7 @@ function parameters(
   row(3, [
     ...previousTransform.centerXZ,
     previousTransform.yawRadians,
-    Number(config.stageProfile === 'ue-5.8.1-river'),
+    Number(config.stageProfile === 'river-shallow/2'),
   ]);
   if (info.status === 'ready') {
     row(4, [...info.centerXZ, ...info.extentM]);
@@ -1536,7 +1536,7 @@ function appendShallowStageOutputs(
       width,
       height,
     );
-  if (task.stage === 'Prep Debug' && config.stageProfile === 'ue-5.8.1-river')
+  if (task.stage === 'Prep Debug' && config.stageProfile === 'river-shallow/2')
     compute(
       resources,
       passes,
@@ -1991,8 +1991,8 @@ function oceanWork(
 ): RenderFeatureWork {
   const { frame, size, noise } = row;
   const config = frame.recipe.asset.oceanPatchConfig;
-  if (config.algorithm !== 'ue-5.8.1-niagara-fft')
-    throw new Error('UE FFT work requires its own recipe variant');
+  if (config.algorithm !== 'ocean-spectrum-fft/2')
+    throw new Error('Spectral FFT work requires its own recipe variant');
   const names = waterOceanPatchOutputNames(frame.recipe.guid, row.worldIdentity),
     prefix = `${names.prefix}-fft`;
   const source = advancedFftShader(config.normalRtFormat);
@@ -2185,7 +2185,7 @@ function shallowSubmitted(row: Row, submission: RenderFeatureSubmission | undefi
         (task.stage !== 'Post Sim' ||
           hasCompute(submission, `${prefix}-shallow-${task.ordinal}-post-sim-output`)) &&
         (task.stage !== 'Prep Debug' ||
-          row.recipe.asset.shallowStageConfig.stageProfile !== 'ue-5.8.1-river' ||
+          row.recipe.asset.shallowStageConfig.stageProfile !== 'river-shallow/2' ||
           hasCompute(submission, `${prefix}-shallow-${task.ordinal}-prep-debug-output`)) &&
         (task.stage !== 'Foam' ||
           !row.recipe.asset.shallowStageConfig.debug.foamEmission ||
@@ -2297,7 +2297,7 @@ function captureOceanRow(
 ): OceanRow {
   const config = ocean.recipe.asset.oceanPatchConfig;
   const noiseGuid =
-    config.algorithm === 'ue-5.8.1-niagara-fft'
+    config.algorithm === 'ocean-spectrum-fft/2'
       ? config.noiseTextureGuid
       : 'visualNormalDetailFft' in config
         ? config.visualNormalDetailFft.noiseTextureGuid
@@ -2313,7 +2313,7 @@ function captureOceanRow(
       ? { revision: captured.value.revision, asset: captured.value.value }
       : undefined;
   const bindOceanSourceRevision = () => {
-    if (config.algorithm === 'ue-5.8.1-niagara-fft')
+    if (config.algorithm === 'ocean-spectrum-fft/2')
       ocean.bindNoiseRevision(noise?.revision ?? null);
     else {
       if ('visualNormalDetailFft' in config)

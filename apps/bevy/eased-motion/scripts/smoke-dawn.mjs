@@ -5,7 +5,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
+import { processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 
 const frames = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
@@ -76,7 +76,7 @@ const {
   createEasedMotionClip,
   readEasedMotionState,
 } = await import(resolve(here, '..', 'src', 'eased-motion.ts'));
-const manifestUrl = `data:application/json,${encodeURIComponent(readShaderManifestText(resolve(here, '..', 'dist', 'shaders', 'manifest.json')))}`;
+const manifestUrl = processShaderManifestUrl(resolve(here, '..', 'dist', 'shaders', 'manifest.json'));
 const hostResult = await constructRuntimeRendererHost(canvas, {}, { shaderManifestUrl: manifestUrl });
 if (!hostResult.ok) throw hostResult.error;
 const { renderer, assets } = hostResult.value;

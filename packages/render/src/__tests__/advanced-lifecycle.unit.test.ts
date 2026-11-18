@@ -56,7 +56,7 @@ async function publishedOceanFixture() {
       materialGuids: [],
       textureGuids: [noiseGuid],
       oceanPatchConfig: {
-        algorithm: 'ue-5.8.1-niagara-fft' as const,
+        algorithm: 'ocean-spectrum-fft/2' as const,
         windAngleDegrees: 180,
         windSpeedMPerSec: 0.55,
         noiseTextureGuid: noiseGuid,
@@ -1939,7 +1939,7 @@ describe('advanced water owner replacement', () => {
         materialGuids: [],
         textureGuids: [noiseGuid],
         oceanPatchConfig: {
-          algorithm: 'ue-5.8.1-niagara-fft' as const,
+          algorithm: 'ocean-spectrum-fft/2' as const,
           windAngleDegrees: 180,
           windSpeedMPerSec: 0.55,
           noiseTextureGuid: noiseGuid,

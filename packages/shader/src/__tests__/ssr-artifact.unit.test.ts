@@ -137,6 +137,7 @@ describe('SSR built-in shader artifacts', () => {
   it('retains the full traversal budget while keeping tangent validation outside the march', () => {
     expect(SOURCES.trace).toContain('SSR_TRACE_MAX_HIZ_ITERATIONS : u32 = 64u;');
     expect(SOURCES.trace).toContain('SSR_TRACE_MAX_LINEAR_ITERATIONS : u32 = 1024u;');
+    expect(SOURCES.trace).toContain('SSR_TRACE_MAX_REFINE_STEPS : u32 = 5u;');
     const traversal = SOURCES.trace.slice(
       SOURCES.trace.indexOf('fn traceScreenRay('),
       SOURCES.trace.indexOf('fn ssrHitTapAdmitted('),
@@ -151,10 +152,13 @@ describe('SSR built-in shader artifacts', () => {
     expect(march).toContain('iteration >= iterationBudget');
     expect(march).toContain('candidateReady = true;');
     expect(march).not.toContain('ssrRefineHit(');
+    expect(march).not.toContain('var refine = 0u;');
     expect(traversal.slice(traversal.indexOf('if (!candidateReady)'))).toContain(
       'let planeHit = ssrRefineHit(',
     );
-    expect(traversal).toContain('refine < SSR_TRACE_MAX_REFINE_STEPS');
+    expect(traversal).toContain(
+      'refine < u32(select(f32(SSR_TRACE_MAX_REFINE_STEPS), view.ssrQuality.w, view.ssrQuality.w > 0.0))',
+    );
     expect(traversal).toContain('return ssrRefineGeometricHit(');
   });
 

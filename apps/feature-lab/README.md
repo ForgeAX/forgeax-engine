@@ -32,7 +32,7 @@ in additional catalog rows.
 
 | Capability | Executable example | Proof |
 |:--|:--|:--|
-| Three.js compatibility | `?f=geometry-scene-animation/three-compatibility`; `pnpm --filter @forgeax/engine-three example` for interactive controls | Lab: 60 completed ready frames and actual green/red material readback; owner Browser/Dawn fixtures compare the bounded r184 surface. |
+| Three.js compatibility | `?f=geometry-scene-animation/three-compatibility`; `pnpm --filter @forgeax/engine-three example` for interactive controls | Lab: 60 completed ready frames and actual green/red material readback; owner Browser/Dawn fixtures compare the bounded r187 surface. |
 | Scene hierarchy | `?f=geometry-scene-animation/scene-hierarchy` | Parent chain plus visible shear/mirrored scale and world-matrix checks. |
 | Perspective / orthographic camera | `?f=cameras-visibility/perspective-camera` or `orthographic-camera` | Existing projection toggle includes shared lens offsets; Three example exposes film/view controls. |
 | Voxel collision and editing | `?f=physics/voxel-collision` | Real Rapier raycasts, holes, mass, prepare/cancel/refuse/admit behavior. |

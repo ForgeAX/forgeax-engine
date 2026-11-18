@@ -14,7 +14,7 @@ function oceanPatchReferences(
   config: NonNullable<WaterAdvancedSimulationSource['oceanPatchConfig']>,
 ): readonly (readonly [string, string])[] {
   switch (config.algorithm) {
-    case 'ue-5.8.1-niagara-fft':
+    case 'ocean-spectrum-fft/2':
       return [[config.noiseTextureGuid, 'texture']];
     case 'mode-projected-gravity/1':
       return [];

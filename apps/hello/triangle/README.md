@@ -52,3 +52,7 @@ needed by both the canonical demo and the template.
 
 The smoke invocation is an SSOT shared with CI and the verification skill:
 `pnpm --filter @forgeax/hello-triangle smoke`.
+
+The unbudgeted software-compositor FPS diagnostic is retired: callback cadence
+does not prove completed Engine frames. The authoritative native smoke retains
+its sixty completed frames and real GPU metrics remain independently required.

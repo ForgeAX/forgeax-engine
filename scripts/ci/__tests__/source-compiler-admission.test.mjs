@@ -14,7 +14,7 @@ const selector =
 const resources = { cpus: 8, memoryBytes: 16_000_000_000 };
 
 test('cold compiler capacity reserves its producer heap before admitting parallel workers', () => {
-  assert.equal(shaderSourceCompileWorkers(resources), 2);
+  assert.equal(shaderSourceCompileWorkers(resources), 4);
   assert.equal(shaderSourceCompileWorkers(resources, '7'), 4);
   assert.equal(shaderSourceCompileWorkers(resources, '1'), 1);
   assert.equal(shaderSourceCompileWorkers({ ...resources, cpus: 2 }, '7'), 1);
@@ -54,7 +54,7 @@ test('source coverage focus matches the exclusive compiler and heap admission', 
     delete process.env.FORGEAX_SHADER_COMPILE_WORKERS;
     delete process.env.NODE_OPTIONS;
     const defaultPlan = focusPlan('coverage', selector, { resources });
-    assert.equal(defaultPlan.env.FORGEAX_SHADER_COMPILE_WORKERS, '2');
+    assert.equal(defaultPlan.env.FORGEAX_SHADER_COMPILE_WORKERS, '4');
     assert.equal(defaultPlan.env.NODE_OPTIONS, '--max-old-space-size=7168');
     assert.ok(defaultPlan.args.includes('--maxWorkers=1'));
     assert.ok(defaultPlan.args.includes('--typecheck.enabled=false'));

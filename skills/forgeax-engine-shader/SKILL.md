@@ -61,7 +61,7 @@ reprojection; the coarse traced ray depth is not a layer identity.
 Stock Water keeps near-wave current/previous deformation and fragment normals
 at far boundaries. The retained versioned adjacency bits do not automatically
 flatten the surface to a mean plane. Preserve the far material's independent
-wave switches and saved height authority; do not infer UE numeric parity.
+wave switches and saved height authority.
 The connected foam branch's
 graph-owned texture and distinct clamp/wrap samplers follow the existing medium physical tail; only an
 actually declared branch admits and binds it. It is not an authored texture

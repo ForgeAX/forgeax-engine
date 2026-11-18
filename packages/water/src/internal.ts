@@ -1,3 +1,4 @@
+export { type WaterDependencyMeshView, waterDependencyMeshView } from './dependency-mesh.js';
 export { requireWaterValue } from './required-value.js';
 export {
   acceptWaterMeshViewForRenderer,

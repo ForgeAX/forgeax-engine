@@ -86,7 +86,7 @@ async function completedCoreArtifact(run, input, api) {
   if (job?.status === 'completed') {
     if (job.run_id !== run.id || job.conclusion !== 'success')
       throw new Error(`core producer ${job.id} did not succeed`);
-    const { artifact, sourceJob } = await producerArtifact(input, api, run, job);
+    const { artifact, sourceJob } = await producerArtifact(input, api, run, job, 'base');
     return {
       sourceRunId: run.id,
       sourceJobId: sourceJob.id,
@@ -130,10 +130,12 @@ async function originalProducerJob(input, api, run, job) {
 }
 
 /** Keep the original producer, artifact name, source and digest after failed-only retries. */
-export async function producerArtifact(input, api, run, job) {
+export async function producerArtifact(input, api, run, job, publication) {
   if (job.name !== 'ci-core' && job.name !== 'shared-app-inputs')
     throw new Error('unknown shader producer');
-  const core = job.name === 'ci-core';
+  if (publication !== 'base' && publication !== 'point')
+    throw new Error('unknown shader publication');
+  const core = publication === 'base';
   const prefix = core ? 'core-build' : 'shared-app-inputs';
   const label = core ? 'core' : 'SDK point';
   const artifacts = await runArtifacts(api, input.repository, run);

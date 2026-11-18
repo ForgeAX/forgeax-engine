@@ -12,6 +12,20 @@ Identify the expensive owner, remove redundant work at its actual change
 frequency, and verify the requested workload. Follow the checkout's
 [delivery and rendering gates](../../AGENTS.md).
 
+Separate compressed publication size from decoded and per-owner transport copies.
+The native LOD carrier shares one owned URL for original plain/zstd bytes across
+independent Renderers, then revokes it after disposal. Preserve the exact shader
+roster and real decoding at every consumer. Keep failed GPU-completion samples;
+lower allocation alone does not prove their recovery.
+
+For CI CPU ratio reproduction, use `pnpm ci:focus --kind performance --select
+ecs-ratios` or `render-ratios`. These retain complete single-worker, uninstrumented
+projects and CI's CPU-admission diagnostics. Distinguish a passing ratio from a
+sampling timeout. Defer only unasserted diagnostic streams in the daily profile;
+preserve every sample in the gated pair, workload size, threshold and case bound.
+The visibility gate keeps 101 paired 10k-entity samples; its flat diagnostic stays
+in full-profile execution. Compare equivalent profiles and retain failed runs.
+
 This Engine entrypoint owns the reusable action rules below. Detailed methods,
 counterexamples and dated measurements stay in the linked Harness references;
 raw captures stay outside source. Integrate later experience into the applicable
@@ -151,6 +165,18 @@ is not an unbiased real allocation-event count or an allocation rate.
 Treemap block area and folder totals use the same selected metric, including
 count-only zero-byte branches. Show exact values and full paths in details;
 rendering aggregation never truncates the AI model.
+
+## Explicit texture preparation
+
+For a known CPU texture, use `renderer.prepareTextureResidency(world, handle)`
+after attaching its World, or `threeRenderer.initTexture(texture)` after Three
+initialization. This uses the same device cache and source revision as drawing;
+keep the asset alive and retain normal update/disposal boundaries. It prepares
+texture storage, not a whole scene's pipelines. Do not issue a hidden render to
+warm a texture. Measure first-use work separately; unchanged versions should
+cause no extra texture upload. Explicit generated-mip preparation submits only
+the selected texture, retains its allocation through queue completion, and keeps
+sibling work on its existing consumer; rejected submits remain retryable.
 
 ## Numeric allocation ownership
 

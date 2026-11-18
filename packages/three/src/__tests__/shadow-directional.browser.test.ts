@@ -4,7 +4,9 @@ import { type AuthoredShadowJourney, createAuthoredShadowJourney } from './shado
 describe.sequential('projects the authored directional shadow and filter', () => {
   let journey: AuthoredShadowJourney;
   beforeAll(() => {
-    journey = createAuthoredShadowJourney('directional');
+    journey = createAuthoredShadowJourney('directional', {
+      coreValidation: import.meta.env.FORGEAX_CI_CORE_VALIDATION === '1',
+    });
   });
   afterAll(async () => journey.dispose(), 120000);
 

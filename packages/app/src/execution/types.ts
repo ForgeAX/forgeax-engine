@@ -1,5 +1,4 @@
 import type { AudioState } from '@forgeax/engine-audio';
-import type { HostAudioConsumer } from '@forgeax/engine-audio-webaudio';
 import type { WorldExecutionHealth } from '@forgeax/engine-ecs/shared';
 import type {
   GpuPassTimingOptions,
@@ -167,8 +166,8 @@ export interface ExecutionReport {
 }
 
 export interface ExecutionOptions {
-  /** Host-only factory, called again after rebuild; never transferred to a Worker. */
-  readonly createHostAudio?: () => HostAudioConsumer;
+  /** @deprecated Use AppHostAdapter.createHostAudio. Removed in 0.7. */
+  readonly createHostAudio?: import('../types').AppHostAdapter['createHostAudio'];
   /** Each omitted worker policy defaults to auto, including render plus kernels. */
   readonly workers?: ExecutionWorkersOptions;
   /** Absolute or import.meta.url-relative URL of an ExecutionBootstrapEntry module. */

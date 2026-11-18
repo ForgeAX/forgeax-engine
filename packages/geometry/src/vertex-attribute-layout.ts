@@ -307,7 +307,9 @@ function fnv1a(input: string): string {
 const layoutsByMask = new Map<number, VertexLayoutProjection>();
 
 /** Derive the one canonical immutable layout projection for a vertex map. */
-export function deriveVertexLayoutProjection(map: VertexAttributeMap): VertexLayoutProjection {
+export function deriveVertexLayoutProjection(
+  map: Readonly<Partial<Record<keyof VertexAttributeMap, unknown>>>,
+): VertexLayoutProjection {
   let mask = 0;
   for (let index = 0; index < CANONICAL_KEYS.length; index += 1) {
     const key = CANONICAL_KEYS[index];

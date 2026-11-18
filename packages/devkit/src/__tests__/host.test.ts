@@ -7,6 +7,10 @@ import {
   assembleAssetRuntime,
   assembleRuntimePacks,
   createRendererInspectionError,
+  EngineConfigurationError,
+  projectEngineStartup,
+  resolveEngineStartup,
+  withEngineSettings,
 } from '@forgeax/engine-app';
 import { AssetRegistry, createCatalogSource } from '@forgeax/engine-assets-runtime';
 import { FixedTime, Time, World } from '@forgeax/engine-ecs';
@@ -53,7 +57,8 @@ type EngineWorkspaceResolverPlugin = {
 
 /** Both placements receive the backend selected by ?forgeax-render-backend=. */
 function assertRenderBackendOverrides(source: string, call: string): void {
-  expect(call.split('...(renderBackend === undefined ? {} : { renderBackend }),')).toHaveLength(3);
+  expect(call).not.toContain('...(renderBackend === undefined ? {} : { renderBackend }),');
+  expect(source).toContain('...(renderBackend === undefined ? {} : { renderBackend })');
   const backendLines = source.match(
     /^const renderBackendValue = .*;\nconst renderBackend = .*;$/m,
   )?.[0];
@@ -207,8 +212,10 @@ describe('standalone host', () => {
             source.indexOf('const result = await createApp('),
             source.indexOf('if (!result.ok) throw result.error;'),
           );
-          expect(call.match(/\banimation,/g)).toHaveLength(2);
-          expect(call.match(/\bdynamicGeometryMeshBudgetBytes,/g)).toHaveLength(2);
+          expect(call.match(/\bconfiguration,/g)).toHaveLength(2);
+          expect(source).toContain('simulation: { animation }');
+          expect(call).not.toMatch(/\bdynamicGeometryMeshBudgetBytes,/g);
+          expect(source).toContain('resources: { dynamicGeometryMeshBudgetBytes }');
           const budgetExpression = source.slice(
             source.indexOf('const dynamicGeometryMeshBudgetBytes ='),
             source.indexOf('const cpuProfileRequested ='),
@@ -224,9 +231,9 @@ describe('standalone host', () => {
               }),
             ).toBe(expected);
           }
-          expect(
-            call.match(/\.\.\.\(textureMipSkip === undefined \? \{\} : \{ textureMipSkip \}\),/g),
-          ).toHaveLength(2);
+          expect(call).not.toContain(
+            '...(textureMipSkip === undefined ? {} : { textureMipSkip }),',
+          );
           assertTextureMipSkipOverrides(source, undefined);
           const identity = /ssrIdentity: (\{[^\n]+\}),/.exec(bootstrap)?.[1];
           expect(identity).toBeDefined();
@@ -350,10 +357,11 @@ describe('standalone host', () => {
               source.indexOf('const result = await createApp('),
               source.indexOf('if (!result.ok) throw result.error;'),
             );
-            expect(call.match(/\bdynamicGeometryMeshBudgetBytes,/g)).toHaveLength(2);
-            expect(
-              call.match(/\.\.\.\(textureMipSkip === undefined \? \{\} : \{ textureMipSkip \}\),/g),
-            ).toHaveLength(2);
+            expect(call).not.toMatch(/\bdynamicGeometryMeshBudgetBytes,/g);
+            expect(source).toContain('resources: { dynamicGeometryMeshBudgetBytes }');
+            expect(call).not.toContain(
+              '...(textureMipSkip === undefined ? {} : { textureMipSkip }),',
+            );
             expect(call.match(/\bpipelineLibrary,/g)).toHaveLength(2);
             expect(
               call.split(
@@ -364,8 +372,8 @@ describe('standalone host', () => {
             expect(call.split('...(gpuStub === undefined ? {} : { gpuStub }),')).toHaveLength(3);
             assertRenderBackendOverrides(source, call);
             // Both execution placements receive the admitted AssetRegistry content budget.
-            expect(call.split(`assetBudgetBytes: ${budget * 16},`)).toHaveLength(3);
-            expect(call.split(`time: ${JSON.stringify(time)},`)).toHaveLength(3);
+            expect(source).toContain(`"assetBudgetBytes":${budget * 16}`);
+            expect(source).toContain(`"time":${JSON.stringify(time)}`);
             // Both placements forward the configured background request count; omission emits nothing.
             expect(call.split('backgroundPipelineLibraryConcurrency: 3,')).toHaveLength(3);
             const appCall = (
@@ -377,11 +385,38 @@ describe('standalone host', () => {
                 { lang: 'ts' },
               )
             ).code;
+            const configurationStart = source.indexOf('const configuration = withEngineSettings(');
+            const configurationSource = source.slice(
+              configurationStart,
+              source.indexOf('\n});', configurationStart) + 4,
+            );
+            const configuration = structuredClone(
+              runInNewContext(`${configurationSource}\nconfiguration`, {
+                withEngineSettings,
+                query: new URLSearchParams(),
+                window: { devicePixelRatio: 3.5 },
+                animation: undefined,
+                executionWorkers: {},
+                renderBackend: undefined,
+                renderPipelineCapacity: 3,
+              }),
+            );
+            const startup = resolveEngineStartup(configuration, { platform: 'unknown' }).unwrap();
+            const projected = projectEngineStartup(startup);
+            expect(projected.assetBudgetBytes).toBe(budget * 16);
+            expect(projected.dynamicGeometryMeshBudgetBytes).toBe(budget);
+            expect(projected.textureMipSkip).toBe(2);
+            expect(projected.standardProfile).toMatchObject(standardProfile);
+            const bootstrapRootSource = source.match(/^const bootstrapRoot = .*;$/m)?.[0];
+            if (bootstrapRootSource === undefined)
+              throw new Error('Host bootstrap root is missing');
             for (const workerExecution of [false, true]) {
               const world = (await runInNewContext(
-                `(async () => { ${appCall} return result; })()`,
+                `(async () => { ${bootstrapRootSource}\n${appCall} return result; })()`,
                 {
                   canvas: {},
+                  configuration,
+                  createBrowserConfigurationHost: () => ({}),
                   window: { devicePixelRatio: 3.5 },
                   document: { querySelector: () => null, baseURI: 'https://game.test/' },
                   URL,
@@ -422,16 +457,15 @@ describe('standalone host', () => {
                   workspaceMode: false,
                   gameVfx: undefined,
                   gameFeatures: { features: [], plugins: [] },
-                  mainAudio: undefined,
-                  webAudioPlugin: () => ({}),
                   audioPlugin: () => ({}),
                   skinningPlugin: () => ({}),
-                  createApp: (
-                    _canvas: unknown,
-                    options: ConstructorParameters<typeof World>[0] & { canvasPixelRatio?: number },
-                  ) => {
-                    expect(options.canvasPixelRatio).toBe(budget === 128 * 1024 * 1024 ? 3.5 : 2);
-                    return new World(options);
+                  createApp: (_canvas: unknown, options: { configuration: unknown }) => {
+                    const plan = resolveEngineStartup(options.configuration, {
+                      platform: 'unknown',
+                    }).unwrap();
+                    const projected = projectEngineStartup(plan);
+                    expect(projected.canvasPixelRatio).toBe(budget === 128 * 1024 * 1024 ? 3.5 : 2);
+                    return new World(projected.time === undefined ? {} : { time: projected.time });
                   },
                 },
               )) as World;
@@ -497,24 +531,11 @@ describe('standalone host', () => {
               crypto: { randomUUID: () => 'test-profile' },
               root: null,
             });
-            let applied: unknown;
-            await prepared.configureRenderer({
-              setProfile(profile: unknown) {
-                applied = profile;
-                return { ok: true };
-              },
-            });
-            expect(applied).toEqual(standardProfile);
-            const failure = new Error('renderer profile rejected');
-            expect(() =>
-              prepared.configureRenderer({
-                setProfile: () => ({ ok: false, error: failure }),
-              }),
-            ).toThrow(failure);
-            expect(call).toContain(`standardProfile: ${JSON.stringify(standardProfile)}`);
-            expect(call.match(/canvasPixelRatio:/g)).toHaveLength(2);
-            expect(call).toContain(
-              `canvasPixelRatio: ${budget === 256 * 1024 * 1024 ? '2' : budget === 128 * 1024 * 1024 ? 'window.devicePixelRatio' : 'Math.min(window.devicePixelRatio || 1, 2)'},`,
+            expect(prepared.configureRenderer).toBeUndefined();
+            expect(call).not.toContain('standardProfile:');
+            expect(call).not.toContain('canvasPixelRatio:');
+            expect(source).toContain(
+              `canvasPixelRatio: ${budget === 256 * 1024 * 1024 ? '2' : budget === 128 * 1024 * 1024 ? 'window.devicePixelRatio' : 'Math.min(window.devicePixelRatio || 1, 2)'}`,
             );
             if (command === 'build') {
               const bootstrap = await readFile(
@@ -1959,6 +1980,9 @@ describe('standalone host', () => {
           gameProjectionDefinitions: new Map(),
           structuredClone,
           createRendererInspectionError,
+          resolveEngineStartup,
+          projectEngineStartup,
+          withEngineSettings,
           console: { warn: vi.fn() },
           ctx: {
             effect: (callback: () => unknown) => {
@@ -2283,6 +2307,8 @@ describe('standalone host', () => {
                 },
                 URLSearchParams,
                 URL,
+                EngineConfigurationError,
+                withEngineSettings,
                 canvas: {},
                 workerExecution,
                 executionWorkers: {},
@@ -2317,6 +2343,10 @@ describe('standalone host', () => {
                 crypto: { randomUUID: () => 'test-engine-context' },
                 bundler: {},
                 forgeaxBundlerAdapter: () => ({}),
+                createBrowserConfigurationHost: (projectId: string) => {
+                  expect(projectId).toBe(facts.value.id);
+                  return {};
+                },
                 createProfiler: () => {
                   profilerAllocations++;
                   return profilingCapability;
@@ -2330,7 +2360,12 @@ describe('standalone host', () => {
               new URLSearchParams(search).get('forgeax-gpu-pass-timing') === '1' ? {} : undefined;
             const expectedShadowWorkload =
               new URLSearchParams(search).get('forgeax-shadow-workload') === '1' ? true : undefined;
-            expect(options.animation).toEqual({ cadence: 'fixed' });
+            const constructorOptions = projectEngineStartup(
+              resolveEngineStartup(structuredClone(options.configuration), {
+                platform: 'unknown',
+              }).unwrap(),
+            );
+            expect(constructorOptions.animation).toEqual({ cadence: 'fixed' });
             if (workerExecution) {
               expect(options.gpuPassTiming).toBeUndefined();
               expect(options.shadowWorkload).toBeUndefined();

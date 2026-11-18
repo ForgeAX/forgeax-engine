@@ -262,7 +262,7 @@ export default definePack({
       centerOnWaterZone: false,
       spline: {
         closed: true,
-        interpolationVersion: 'ue-water-spline/1',
+        interpolationVersion: 'water-spline/2',
         points: Array.from({ length: 32 }, (_, i) => {
           const a = (i * Math.PI) / 16;
           return point(i, -16 + 15 * Math.cos(a), -62 + 8 * Math.sin(a), 0, 12, 4, 0);

@@ -30,7 +30,7 @@ export default definePack({
   schemaVersion: '2.0.0', plugins: true, packageId: id,
   build: () => ok({
     'mesh/box': createBoxGeometry(1, 1, 1).unwrap(),
-    'material/box': Materials.standard({ baseColor: '#e0782c', roughness: 0.6 }),
+    'material/box': Materials.unlit('#e0782c'),
     'plugin/game': { kind: 'plugin', module: { specifier: './game.ts', export: 'game' },
       config: { mesh: ref('mesh/box'), material: ref('material/box') } },
   }),
@@ -43,7 +43,7 @@ import { Update, defineSystem } from '@forgeax/engine/ecs';
 import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine/input';
 import { quat } from '@forgeax/engine/math';
 import type { Plugin } from '@forgeax/engine/plugin';
-import { Camera, DirectionalLight, MeshFilter, MeshRenderer, Skylight } from '@forgeax/engine/render';
+import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine/render';
 import { Transform } from '@forgeax/engine/scene';
 
 export const game: Plugin.Object<{ readonly mesh: string; readonly material: string }> = {
@@ -65,8 +65,6 @@ export const game: Plugin.Object<{ readonly mesh: string; readonly material: str
       const entities = [
         world.spawn({ component: Transform, data: { pos: [0, 0, 4] } },
           { component: Camera, data: { fov: Math.PI / 4, aspect: 16 / 9, near: 0.1, far: 100, clearColor: [0.08, 0.1, 0.14, 1] } }).unwrap(),
-        world.spawn({ component: Skylight, data: { intensity: 0.8, color: [1, 1, 1] } }).unwrap(),
-        world.spawn({ component: DirectionalLight, data: { direction: [-0.5, -1, -0.6], color: [1, 1, 1], intensity: 3 } }).unwrap(),
         world.spawn({ component: Transform, data: { pos: [0, 0, 0], quat: quat.fromEuler(quat.create(), 0.5, 0.7, 0, 'XYZ') } },
           { component: MeshFilter, data: { assetHandle: mesh } },
           { component: MeshRenderer, data: { materials: [material] } }).unwrap(),
@@ -177,19 +175,27 @@ const SESSION_E2E_TIMEOUT_MS = Number(process.env.FORGEAX_PLAY_E2E_TIMEOUT_MS ??
 it(
   'plays in the reloaded page of the running dev owner and leaves the owner running',
   async () => {
+    const began = performance.now();
+    const phase = (name: string) =>
+      process.stderr.write(
+        `[play-session-phase] ${JSON.stringify({ phase: name, elapsedMs: Math.round(performance.now() - began) })}\n`,
+      );
     const options = { root, script: 'scripts/presses.mjs', progress: false, detail: true };
     // A private play first: it starts its own runtime and browser.
+    phase('private-play');
     const cold = await playCommand(options);
     expect(cold, JSON.stringify(cold)).toMatchObject({ ok: true });
     const coldReport = await readReport();
     expect(coldReport.mode).toBe('private');
 
+    phase('absent-session');
     const absent = await playCommand({ ...options, session: true });
     expect(absent).toMatchObject({
       ok: false,
       error: { code: 'play-not-ready', detail: { reason: 'session-unavailable' } },
     });
 
+    phase('start-owner');
     const started = (await startLiveDev(root, { headless: true })) as {
       readonly ok: boolean;
       readonly value: { readonly pid: number };
@@ -200,6 +206,7 @@ it(
     const project = ownerProject(started.value.pid);
     expect(project).toBeDefined();
 
+    phase('session-play');
     const warm = await playCommand({ ...options, session: true });
     expect(warm, JSON.stringify(warm)).toMatchObject({
       ok: true,
@@ -208,6 +215,7 @@ it(
     const warmReport = await readReport();
     // An edited script runs on the next session play, again from a fresh page.
     await writeFile(resolve(root, 'scripts/presses.mjs'), script(3));
+    phase('edited-script-play');
     const edited = await playCommand({ ...options, session: true });
     expect(edited, JSON.stringify(edited)).toMatchObject({
       ok: true,
@@ -221,6 +229,7 @@ it(
       resolve(root, 'assets/play/game.ts'),
       GAME.replace('const state = { presses: 0 };', 'const state = { presses: 0, edition: 2 };'),
     );
+    phase('edited-game-play');
     const rebuilt = await playCommand({ ...options, session: true });
     expect(rebuilt, JSON.stringify(rebuilt)).toMatchObject({
       ok: true,
@@ -230,6 +239,7 @@ it(
     expect(ownerProject(started.value.pid)).not.toBe(project);
     // Both plays reused the owner's browser, and the owner still serves live commands.
     expect(ownerBrowsers(started.value.pid)).toEqual(browsers);
+    phase('owner-look');
     const look = (await liveDevControl(root, 'look', {})) as { readonly ok: boolean };
     expect(look, JSON.stringify(look)).toMatchObject({ ok: true });
     const startup = (report: PlayReport) =>

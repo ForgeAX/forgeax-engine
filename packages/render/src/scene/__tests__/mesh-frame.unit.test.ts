@@ -1,4 +1,5 @@
 import { createBoxGeometry, createPrimitiveMesh } from '@forgeax/engine-geometry';
+import type { AssetGuid } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import { MeshFrame } from '../mesh-frame';
 
@@ -59,4 +60,35 @@ it('keeps many Mesh handles balanced and retains an isolated delta', () => {
   expect(changed).toEqual([8192]);
   expect(after.get(1)).toBe(before.get(1));
   expect(after.get(1)).toBe(before.get(1));
+});
+
+it('owns material slot facts and reuses equal bindings across geometry-only revisions', () => {
+  const slot = { slotName: 'body', sourceKey: 'body-source' };
+  const slots = [slot];
+  const before = new MeshFrame().with(1, { ...BUILTIN_CUBE, materialSlots: slots });
+  const next = before.with(1, {
+    ...BUILTIN_CUBE,
+    aabb: new Float32Array([-2, -1, -1, 2, 1, 1]),
+    materialSlots: [{ slotName: 'body', sourceKey: 'body-source' }],
+  });
+  expect(next.get(1)?.materialSlots).toBe(before.get(1)?.materialSlots);
+  slot.slotName = 'mutated-alias';
+  expect(before.get(1)?.materialSlots[0]?.slotName).toBe('body');
+  const changed = next.with(1, {
+    ...BUILTIN_CUBE,
+    materialSlots: [{ slotName: 'body', sourceKey: 'new-source' }],
+  });
+  expect(changed.get(1)?.materialSlots).not.toBe(next.get(1)?.materialSlots);
+});
+
+it('detaches GUID default bytes and compares their complete values before binding reuse', () => {
+  const guid = new Uint8Array(16).fill(7) as AssetGuid;
+  const slots = [{ slotName: 'body', defaultMaterial: guid }];
+  const before = new MeshFrame().with(1, { ...BUILTIN_CUBE, materialSlots: slots });
+  const equal = before.with(1, { ...BUILTIN_CUBE, materialSlots: slots });
+  expect(equal.get(1)?.materialSlots).toBe(before.get(1)?.materialSlots);
+  guid[0] = 9;
+  expect(before.get(1)?.materialSlots[0]?.defaultMaterial).toEqual(new Uint8Array(16).fill(7));
+  const changed = equal.with(1, { ...BUILTIN_CUBE, materialSlots: slots });
+  expect(changed.get(1)?.materialSlots).not.toBe(equal.get(1)?.materialSlots);
 });

@@ -51,6 +51,7 @@ export function addForwardSsr(
   if (!pyramid.ok) return pyramid;
   const history = context.ssrHistory;
   const spatial = addSsrSpatialPasses(graph, {
+    quality: topology.standardProfile?.quality?.ssr,
     admission: topology.ssr,
     execution,
     ...size,

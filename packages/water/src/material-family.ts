@@ -38,7 +38,7 @@ const numeric = (
   type: MaterialParameter['type'],
   value: MaterialValue,
 ): MaterialParameter => ({ name, type, default: value });
-/** Author-time UE graph evaluation is stored in the Engine's inverse-meter domain. */
+/** Author-time optical values are stored in inverse meters. */
 export const WATER_SURFACE_PARAMETERS: readonly MaterialParameter[] = Object.freeze([
   numeric('absorptionPerM', 'vec3', [1.25, 1 / 12, 1 / 28]),
   numeric('scatteringPerM', 'vec3', [0.05, 0.05, 0.05]),
@@ -161,7 +161,7 @@ export const WATER_UNDERWATER_PARAMETERS: readonly MaterialParameter[] = Object.
   numeric('maximumFlowVelocityMPerSec', 'f32', 10.24),
 ]);
 
-/** Ordinary root/child assets. Textures are consumer-authored Pack references, never UE asset substitutes. */
+/** Ordinary root/child assets with consumer-authored Pack texture references. */
 export function buildWaterMaterialFamily(
   packageId: PackageId,
   prefix = 'material/water',

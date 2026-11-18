@@ -638,6 +638,11 @@ export interface RenderInspectionOptions<
 }
 
 export interface Renderer {
+  /** Prepare one attached CPU-backed TextureAsset without rendering or waiting for a frame. */
+  prepareTextureResidency(
+    world: World,
+    textureHandle: AssetHandle<'texture'>,
+  ): Result<void, import('./texture-residency').TextureResidencyError>;
   /** Await real current-view pipelines for existing mesh-prepared candidate credentials. */
   prepareDynamicGeometryPipelines(
     candidates: readonly DynamicGeometryCandidate[],
@@ -878,6 +883,8 @@ export interface FrameObservationRequest {
  * this exact receipt; a recovery retry must obtain a new one.
  */
 export interface FrameReceipt {
+  /** Revision of the graph that recorded this scene, absent for UI-only submissions. */
+  readonly configurationRevision?: number;
   readonly editorAssistance?: import('./features/editor-assistance/picking').SubmittedEditorAssistanceFrame;
   /** Default-off CPU shadow census captured by this successful submission. */
   readonly shadowWorkload?: ShadowWorkloadObservation;

@@ -6,7 +6,7 @@ import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErr
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
+import { processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 
 const FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
@@ -53,7 +53,7 @@ const { createRenderer } = await import('@forgeax/engine-runtime');
 const { SPRITE_SIZE, buildSpriteWorld, makeSpritePixels } = await import('../src/sprite.ts');
 
 const manifestPath = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const manifestUrl = `data:application/json,${encodeURIComponent(readShaderManifestText(manifestPath))}`;
+const manifestUrl = processShaderManifestUrl(manifestPath);
 const originalRequestAdapter = gpu.requestAdapter.bind(gpu);
 gpu.requestAdapter = async (options) => {
   const adapter = await originalRequestAdapter(options);

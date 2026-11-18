@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { pnpmCommand } from './pnpm-command.mjs';
 import { runnerResources, shaderProducerHeapSize } from './runner-resources.mjs';
 
@@ -10,6 +11,14 @@ const canonicalProjectBuildScript = `FORGEAX_EXECUTION_WORKERS='${localProjectWo
 
 function usesProjectBuild(app) {
   return app.manifest.scripts?.build === canonicalProjectBuildScript;
+}
+
+export function appBuildOutputMode(app, consumerInputs = false) {
+  return consumerInputs &&
+    !usesProjectBuild(app) &&
+    app.manifest.forgeax?.smokeArtifacts?.preview !== true
+    ? 'consumer-inputs'
+    : 'full';
 }
 const budgetedBuildScript = 'node ../../../scripts/vite-app.mjs build';
 
@@ -82,6 +91,12 @@ export function createAppBuildInvocation(options) {
   const { app, appFactsDir, baseEnv = process.env } = options;
   if (!usesProjectBuild(app)) {
     validateCanonicalAppBuild(app);
+    if (options.outputMode === 'consumer-inputs')
+      return createViteInvocation({
+        ...options,
+        viteCliPath: fileURLToPath(new URL('../build-app-inputs.mjs', import.meta.url)),
+        viteArgs: [],
+      });
     return createViteBuildInvocation(options);
   }
   const requireFromApp = createRequire(resolve(app.directory, 'package.json'));

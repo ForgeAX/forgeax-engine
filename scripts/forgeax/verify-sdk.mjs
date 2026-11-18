@@ -50,6 +50,9 @@ const groupIndex = args.indexOf('--group');
 const group = groupIndex < 0 ? 'all' : args[groupIndex + 1];
 if (group !== 'all' && !SDK_ARCHIVE_VERIFY_GROUPS.includes(group))
   throw new Error(`sdk-verify-unknown-group:${group}`);
+const profileIndex = args.indexOf('--profile');
+const profile = profileIndex < 0 ? 'full' : args[profileIndex + 1];
+if (!['core', 'full'].includes(profile)) throw new Error(`sdk-verify-unknown-profile:${profile}`);
 const selected = (owner) => group === 'all' || group === owner;
 let projectEvidence = {};
 let sourceTemplateEvidence;
@@ -423,7 +426,7 @@ if (selected('source')) {
       maxBuffer: 64 * 1024 * 1024,
     });
     await sourceBuildPnpm(['build:engine']);
-    await sourceBuildPnpm(['build:tools']);
+    if (profile === 'full') await sourceBuildPnpm(['build:tools']);
     // Source Preview starts Vite from source; its template journey never reads
     // apps/preview/dist. Keep the clean Engine/tools proof and let both real
     // source consumers use its independently produced shared inputs.
@@ -1817,43 +1820,47 @@ if (selected('source')) {
       `sdk-source-host-gpu-instance-loss-contract:${JSON.stringify(sourceHostGpuInstanceLoss)}`,
     );
   }
-  await sdkStage('preparePublicSourceViewProfile', () =>
-    sourceBuildPnpm([
-      'exec',
-      'node',
-      'scripts/forgeax/prepare-shader-release-inputs.mjs',
-      '--build',
-      '--profile',
-      'base-ssao',
-      '--shared-input-manifest',
-      'shared-build-inputs/manifest.json',
-    ]),
-  );
-  await sdkGpuStage('verifyPublicSourceViewTool', () =>
-    execFileAsync(
-      process.execPath,
-      [resolve(sourceRoot, 'tools/view/scripts/verify-diagnostic-pages-integration.mjs')],
-      {
-        streamOutput: true,
-        backendEvidenceDirectory: resolve(dirname(archive), 'view-source', 'backend'),
-        cwd: sourceRoot,
-        env: {
-          ...sourceEnv,
-          FORGEAX_VIEW_ENGINE_SOURCE_ROOT: sourceRoot,
-          FORGEAX_VIEW_TOOL_PACKAGE: resolve(sourceRoot, 'tools/view'),
-          FORGEAX_VIEW_ENGINE_PACKAGE: resolve(sourceRoot, 'packages/engine'),
-          FORGEAX_VIEW_TEMPLATE_ROOT: resolve(sourceRoot, 'templates/game-3d'),
-          FORGEAX_VIEW_EVIDENCE_ROOT: resolve(dirname(archive), 'view-source'),
-          FORGEAX_SHARED_APP_INPUTS_MANIFEST: resolve(
-            sourceRoot,
-            'shared-build-inputs/manifest.json',
-          ),
-          DEBUG: [sourceEnv.DEBUG, 'pw:browser', 'pw:api'].filter(Boolean).join(','),
+  // PR core already proves source edits through the embedded View Host and
+  // independent cold Engine templates; full/release additionally rebuild View.
+  if (profile === 'full') {
+    await sdkStage('preparePublicSourceViewProfile', () =>
+      sourceBuildPnpm([
+        'exec',
+        'node',
+        'scripts/forgeax/prepare-shader-release-inputs.mjs',
+        '--build',
+        '--profile',
+        'base-ssao',
+        '--shared-input-manifest',
+        'shared-build-inputs/manifest.json',
+      ]),
+    );
+    await sdkGpuStage('verifyPublicSourceViewTool', () =>
+      execFileAsync(
+        process.execPath,
+        [resolve(sourceRoot, 'tools/view/scripts/verify-diagnostic-pages-integration.mjs')],
+        {
+          streamOutput: true,
+          backendEvidenceDirectory: resolve(dirname(archive), 'view-source', 'backend'),
+          cwd: sourceRoot,
+          env: {
+            ...sourceEnv,
+            FORGEAX_VIEW_ENGINE_SOURCE_ROOT: sourceRoot,
+            FORGEAX_VIEW_TOOL_PACKAGE: resolve(sourceRoot, 'tools/view'),
+            FORGEAX_VIEW_ENGINE_PACKAGE: resolve(sourceRoot, 'packages/engine'),
+            FORGEAX_VIEW_TEMPLATE_ROOT: resolve(sourceRoot, 'templates/game-3d'),
+            FORGEAX_VIEW_EVIDENCE_ROOT: resolve(dirname(archive), 'view-source'),
+            FORGEAX_SHARED_APP_INPUTS_MANIFEST: resolve(
+              sourceRoot,
+              'shared-build-inputs/manifest.json',
+            ),
+            DEBUG: [sourceEnv.DEBUG, 'pw:browser', 'pw:api'].filter(Boolean).join(','),
+          },
+          maxBuffer: 64 * 1024 * 1024,
         },
-        maxBuffer: 64 * 1024 * 1024,
-      },
-    ),
-  );
+      ),
+    );
+  }
 }
 
 if (selected('project')) {
@@ -1963,6 +1970,9 @@ await sdkStage('verifyImmutableSdkStore', () =>
 const result = {
   ok: true,
   group,
+  profile,
+  deferredValidation:
+    profile === 'core' && selected('source') ? ['cold-source-view-diagnostics'] : [],
   archive,
   sha256: digest,
   sdkVersion: manifest.sdkVersion,

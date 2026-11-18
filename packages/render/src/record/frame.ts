@@ -2540,6 +2540,7 @@ export function sealFrameGraph(
         recordContext(internals).captureView !== undefined,
         clock.elapsedSeconds,
         { width: targetW, height: targetH },
+        internals.standardProfile?.quality?.ssr,
       );
       if (pipelineState.pointsLinesViewBuffer !== undefined) {
         writePointsLinesViewUbo(

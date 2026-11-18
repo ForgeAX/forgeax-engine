@@ -2,6 +2,21 @@
 
 TypeScript game on `@forgeax/engine`. Read a reference only when its task applies.
 
+## Before writing code: know the engine
+
+Do this once per game, before the first edit under `assets/` (a page, minutes not tens of minutes):
+
+1. Read the [engine overview](skills/forgeax-engine-sdk/ENGINE-OVERVIEW.md) (capabilities, boundaries, gaps),
+   skim the capability catalog and the API index
+   (both become release-local files in the SDK), then the Quick contract of each skill the game touches (frame loop and input: `forgeax-engine-app`;
+   camera, lights, sky and post: `forgeax-engine-render-pipeline`; physics; vfx; audio; modeling).
+2. Write `docs/engine-plan.md`: one row per feature the game needs, as
+   need -> engine capability (skill or API) -> entry point -> limit or gap.
+3. Build every feature on the capability named in its row. Before writing a helper, mesh builder,
+   shader, camera rig, input handler, particle system, collision test or UI widget, look it up in
+   the API index and the catalog. Hand-written code is for confirmed gaps only: mark the row
+   "gap" with what the lookup found, keep the custom part minimal, and add it to `docs/feedback.md`.
+
 ## Rules
 
 - `forge.json#roots` selects the plugin roots (`engine` runs the game, `frontend` owns DOM/UI);

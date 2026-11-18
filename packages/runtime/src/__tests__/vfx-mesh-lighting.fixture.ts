@@ -82,6 +82,7 @@ interface VfxMeshLightingOptions {
   readonly signal: AbortSignal;
   readonly publication?: boolean;
   readonly sampledTextureLimit?: number;
+  readonly coreValidation?: boolean;
   readonly cook: CookMeshLightingFixture;
   readonly tapePaths?: Readonly<Record<string, string | undefined>>;
   readonly saveTape?: (path: string, bytes: Uint8Array) => void;
@@ -1668,6 +1669,10 @@ async function verifyLightingScenario(
     ['point', 0, -1],
     ['spot', 1, 0],
   ] as const) {
+    // The unrestricted publication carrier covers all four point-light faces.
+    // Keep one point face plus spot projection at the portable texture limit;
+    // the distinct depth-latency and replay oracles below still execute.
+    if (rig.options.coreValidation && kind === 'point' && (sideX !== 1 || sideY !== 0)) continue;
     await verifyLocalLightCaster(rig, kind, sideX, sideY);
   }
   const capture = await verifyDepthLatency(rig);

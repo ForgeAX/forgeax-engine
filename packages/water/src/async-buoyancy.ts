@@ -71,7 +71,7 @@ export function encodeWaterSolverSnapshot(
   return { payload: encoder.encode(json), snapshotHash: sha256(json) };
 }
 
-/** Runs in the actual solver worker before Rapier integrates this exact fixed step. */
+/** Runs in the solver worker before native integration of this fixed step. */
 export function processWaterBuoyancySolverTask(
   task: PhysicsSolverTask,
   context: PhysicsSolverStepContext,
@@ -174,7 +174,7 @@ export type WaterAsyncOutputSelection = Readonly<{
   consumed: readonly PhysicsSolverOutput[];
 }>;
 
-/** Bounded latest/next selection. Current state is copied, matching the source-visible UE consumer. */
+/** Bounded latest/next selection with a copied current state. */
 export class WaterAsyncOutputTimeline {
   private readonly pending: PhysicsSolverOutput[] = [];
   private current: PhysicsSolverOutput | undefined;

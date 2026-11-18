@@ -57,16 +57,15 @@ copy accepted current fields before writers, seed previous after initialization,
 and converge held/paused rendered frames. Declare those sampled/storage accesses
 so RenderGraph supplies their RAW/WAR ordering; never advance history on abort.
 The WaterBody shallow profile remaps sampled height/velocity and rebuilds
-nonnegative depth against the current bed. Its pinned UE configuration disables
-bottom-contour change suppression; do not reset wet remapped cells to the bed.
+nonnegative depth against the current bed. Bottom-contour change suppression is disabled; do not reset wet remapped cells to the bed.
 Shallow rigid capture consumes Physics' accepted native primitive snapshot and
 held MeshAsset fields. Reuse the existing submission owner for prior poses and
 use one grid-relative origin before f32 upload. Its end-of-step fraction `1` is
-an Engine policy, independent of solver substeps and unpaired UE runtime timing.
+independent of solver substeps.
 Select complete components through Physics' native OBB query at WaterSystem's
 current `ComputeLocation` surface height and identity rotation. Full Y size is
 the required authored `rigidMeshCollisions.overlapThicknessCells` times the
-actual X-axis cell size; no implicit zero/one or UE effective default is known.
+actual X-axis cell size; no implicit thickness is supplied.
 Pass full side lengths to Physics for its single native half-extent conversion. Preserve
 raw-empty-only held mesh bounds fallback and explicit component-bounds identity;
 filtered-out native geometry never grants fallback. The field scalar is the
@@ -127,8 +126,7 @@ one current publish pass with exact Body/simulation allocation generations.
 Retained, blocked, unsupported and disabled plans must not re-inject old foam.
 Released pixels stay in the existing shared history and decay in world space;
 local material fallback remains active outside its finite capture coverage.
-Preserve the additive four-cell edge weight. This composition is an Engine
-adapter; it does not establish UE moving-window foam equivalence.
+Preserve the additive four-cell edge weight.
 Foam draw inspection reads the installed graph's exact uploaded Body descriptor
 flag and reflected Water bindings. Require same-frame/device producer, imported
 physical allocation and material consumer; a matching label or descriptor alone
@@ -158,8 +156,7 @@ solver; the same Scene component supplies explicit world-space `waveFoamCenterM`
 Its submitted outer-frame history advances independently of fixed callbacks.
 BeachFoam consumes that producer mapping with its existing linear-clamp amount
 and linear-wrap height sampling, without duplicating author inputs in materials.
-Preserve the Wave material's normalized-UV Shallow height sample; native explicit
-domain controls do not establish UE Blueprint coupling or movement equivalence.
+Preserve the Wave material's normalized-UV Shallow height sample.
 
 The shared material field array preserves native texels, dimensions and each
 field's declared nearest/linear and repeat/clamp semantics. Current and previous

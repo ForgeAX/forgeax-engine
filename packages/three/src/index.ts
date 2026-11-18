@@ -1,4 +1,10 @@
+export type { RendererParameters, RenderItem } from 'three/src/renderers/common/Renderer.js';
 export * from './cpu';
 export { ThreeCompatibilityError, type ThreeCompatibilityErrorCode } from './errors';
+export { type MountThreeSceneOptions, mountThreeScene, type ThreeSceneMount } from './interop';
+export type * from './node-types';
+export { createThreePipeline } from './pipeline';
+export { QuadMesh } from './quad-mesh';
 export { type ThreeFrameCapture, WebGPURenderer, type WebGPURendererParameters } from './renderer';
+export type { RendererErrorInfo } from './renderer-events';
 export type { ThreeSourceIdentity } from './scene';

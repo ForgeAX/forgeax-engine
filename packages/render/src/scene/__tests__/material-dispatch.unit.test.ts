@@ -1329,3 +1329,31 @@ it('does not publish a partial dispatch after a rank failure and recovers on the
   rank.mockRestore();
   expect([...frame]).toHaveLength(16);
 });
+
+it('retains resolved culling materials and Passes across equal slots in a geometry revision', async () => {
+  const { createPrimitiveMesh } = await import('@forgeax/engine-geometry');
+  const { MeshFrame } = await import('../mesh-frame');
+  const { cullingDisplacementRadius } = await import('../render-scene-snapshots');
+  const raw = new MaterialResource(material(91)),
+    resolved = new MaterialResource(material(91));
+  const resolve = vi.fn(() => resolved);
+  const owner = new MaterialDispatch(resolve);
+  const base = slot(0, raw);
+  const row = { ...base, snapshot: { ...base.snapshot, assetHandle: 1, materialOverrides: [raw] } };
+  const rows = [row];
+  const mesh = { ...createPrimitiveMesh('cube').unwrap(), materialSlots: [{ slotName: 'body' }] };
+  const before = new MeshFrame().with(1, mesh);
+  owner.bind(0, row.snapshot);
+  owner.adopt(raw);
+  const passes = query(owner, fixedSlots(rows), before);
+  const calls = resolve.mock.calls.length;
+  const next = before.with(1, {
+    ...mesh,
+    materialSlots: [{ slotName: 'body' }],
+    aabb: new Float32Array([-2, -1, -1, 2, 1, 1]),
+  });
+  owner.prepare(next);
+  expect(cullingDisplacementRadius(row.snapshot, next.get(1), owner.materials())).toBe(0);
+  expect(query(owner, fixedSlots(rows), next)).toBe(passes);
+  expect(resolve).toHaveBeenCalledTimes(calls);
+});

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { isShaderReflection, type ShaderReflection } from '@forgeax/engine-types';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import {
   expandShaderManifestPublication,
   readOwnedShaderManifestPublication,
@@ -222,4 +222,25 @@ it('shares repeated immutable subtrees for deferred owned reflections while reta
     publication([{ ...reflection(), schemaVersion: 'invalid' }]),
   )) as typeof result;
   expect(() => malformed.entries[0]?.reflection).toThrow('Invalid shader manifest publication');
+});
+
+it('coalesces duplicate JSON row children before recursively interning their descendants', async () => {
+  const input = JSON.parse(JSON.stringify(publication([reflection(0), reflection(1)])));
+  const redundant = input.reflections[1].boundGlobals;
+  const keys = vi.spyOn(Object, 'keys');
+  try {
+    const result = (await readOwnedShaderManifestPublication(input)) as {
+      entries: { reflection: ShaderReflection }[];
+    };
+    // The safety walk still sees every value; structural interning must not
+    // traverse the second copy after lossless JSON coalescing replaces it.
+    expect(keys.mock.calls.filter(([value]) => value === redundant)).toHaveLength(1);
+    expect(result.entries[0]?.reflection.boundGlobals).toBe(
+      result.entries[1]?.reflection.boundGlobals,
+    );
+    expect(Object.isFrozen(result.entries[0]?.reflection.boundGlobals)).toBe(true);
+    expect(input.reflections[1].boundGlobals).not.toBe(redundant);
+  } finally {
+    keys.mockRestore();
+  }
 });

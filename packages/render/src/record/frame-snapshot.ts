@@ -450,6 +450,7 @@ export interface FrameGraphTargets {
 
 /** A compiled graph together with the topology key and target lookup installed with it. */
 export interface InstalledFrameGraph {
+  readonly configurationRevision?: number | undefined;
   readonly waterFluidBodyDescriptor?: import('../water/fluid-graph').WaterFluidBodyDescriptorReader;
   readonly scenePipelinePreparations?: readonly import('./scene-pipeline-preparation').ScenePipelinePreparation[];
   /** Pure demand from the same graph's retained shadow target/raster owner. */

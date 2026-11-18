@@ -11,6 +11,7 @@ import type {
   InterleavedBufferAttribute,
 } from 'three/src/Three.Core.js';
 import { invalid, unsupported } from './errors';
+import { applyMorphColor } from './morph-color';
 
 const WIDTHS = {
   position: 3,
@@ -98,6 +99,7 @@ export function projectGeometry(
   topology: Topology = 'triangle-list',
   projectedUvs: Readonly<Record<string, Float32Array>> = {},
   wireframe = false,
+  morphColorWeights?: readonly number[],
 ): Result<MeshAsset | undefined, Error> {
   const position = geometry.getAttribute('position');
   if (position === undefined || position.count === 0) return ok(undefined);
@@ -109,6 +111,14 @@ export function projectGeometry(
   const projected = projectVertexAttributes(geometry, useColor, layout);
   if (!projected.ok) return projected;
   const attributes = projected.value;
+  if (morphColorWeights !== undefined) {
+    const colors = applyMorphColor(
+      geometry,
+      attributes.color as Float32Array | undefined,
+      morphColorWeights,
+    );
+    if (!colors.ok) return colors;
+  }
   appendProjectedUvs(attributes, projectedUvs, layout);
   const ranged = projectIndices(geometry, grouped, materials, topology, wireframe, layout);
   if (!ranged.ok) return ranged;
@@ -394,7 +404,7 @@ function projectMorphTargets(
   }));
   for (const [name, targets] of Object.entries(geometry.morphAttributes)) {
     if (targets === undefined || targets.length === 0) continue;
-    // r184 MorphNode only applies position and normal, including on WebGPU.
+    // Native position/normal targets stay on the GPU; r187 color morphs enter vertex bytes above.
     if (name === 'color') continue;
     if (name !== 'position' && name !== 'normal')
       return unsupported(`Morph ${name} requires a native target channel`, geometry.uuid);

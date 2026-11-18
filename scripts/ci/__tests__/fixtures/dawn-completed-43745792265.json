@@ -1,0 +1,17 @@
+{
+  "runId": 43745792265,
+  "forecastSourceRunId": 43704488189,
+  "reservedOwners": {
+    "feature-depth": 105.28,
+    "gi-4": 219.769,
+    "vfx-depth": 169.417,
+    "compact-1": 119.503,
+    "direct-light": 282.604,
+    "heavy-1": 34.42,
+    "heavy-2": 31.998,
+    "nested-discard": 90.174,
+    "rect-source": 23.366,
+    "shadow-fields": 163.745,
+    "transmission": 229.82600000000002
+  }
+}

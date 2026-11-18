@@ -4,13 +4,64 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { parse } from 'yaml';
 import { checkWorkflowText } from '../check-runner-pool-labels.mjs';
-import { focusPlan } from '../run-ci-focus.mjs';
+import { focusBuildArgs, focusPlan } from '../run-ci-focus.mjs';
 import { selectDawnGroups } from '../run-dawn-gate.mjs';
+import { packageOnlyNodeAppProjects } from '../run-split-vitest-coverage.mjs';
+
+test('Water CPU projects retain their complete instrumented child with package preparation', () => {
+  for (const project of packageOnlyNodeAppProjects) {
+    const plan = focusPlan('unit', project);
+    assert.equal(plan.packagesOnly, true);
+    assert.ok(plan.args.includes(project));
+  }
+  const selector = packageOnlyNodeAppProjects.join(',');
+  const plan = focusPlan('coverage', selector);
+  assert.equal(plan.packagesOnly, true);
+  assert.ok(plan.args.includes('--coverage'));
+  for (const project of packageOnlyNodeAppProjects)
+    assert.equal(plan.args[plan.args.indexOf(project) - 1], '--project');
+  assert.ok(plan.args.includes('--maxWorkers=1'));
+  assert.deepEqual(focusBuildArgs(plan), ['scripts/build.mjs', '--packages-only']);
+  assert.notEqual(focusPlan('unit', '@forgeax/engine-runtime').packagesOnly, true);
+});
+
+test('CPU performance focus uses the same complete uninstrumented gates as CI', () => {
+  const workflow = parse(readFileSync('.github/workflows/ci.yml', 'utf8'));
+  for (const [selector, project, name] of [
+    ['ecs-ratios', 'ecs-perf', 'ECS performance ratio gates (uninstrumented)'],
+    ['render-ratios', 'render-perf', 'Render performance ratio gates (uninstrumented)'],
+  ]) {
+    const plan = focusPlan('performance', selector);
+    const step = workflow.jobs['coverage-perf'].steps.find((entry) => entry.name === name);
+    assert.deepEqual(plan.args, [
+      'scripts/ci/run-with-runner-cpu-affinity.mjs',
+      '--',
+      process.execPath,
+      'scripts/ci/run-vitest-projects.mjs',
+      'run',
+      '--maxWorkers=1',
+      `--project=${project}`,
+      '--coverage.enabled=false',
+      '--typecheck.enabled=false',
+      '--passWithNoTests=false',
+    ]);
+    assert.equal(
+      step.run.replace(/\s+/g, ' ').trim(),
+      ['node', ...plan.args.map((arg) => (arg === process.execPath ? 'node' : arg))].join(' '),
+    );
+    assert.deepEqual(plan.env, step.env ?? {});
+    assert.equal(plan.gpuLease, undefined);
+    assert.equal(plan.apps, undefined);
+  }
+});
 
 test('LOD performance focus retains the real producer and separates opt-in profiling', () => {
   const plan = focusPlan('performance', 'hello-lod-occlusion');
   assert.deepEqual(plan.apps, ['apps/hello/lod-occlusion']);
   assert.deepEqual(plan.args, [
+    'scripts/ci/run-with-runner-cpu-affinity.mjs',
+    '--',
+    process.execPath,
     'scripts/ci/run-lod-performance-with-retry.mjs',
     '--',
     'pnpm',
@@ -19,11 +70,38 @@ test('LOD performance focus retains the real producer and separates opt-in profi
     'bench:json',
   ]);
   assert.equal(plan.gpuLease, true);
-  assert.equal(plan.env, undefined);
+  const workflow = parse(readFileSync('.github/workflows/ci.yml', 'utf8'));
+  assert.deepEqual(plan.env, {
+    NODE_OPTIONS:
+      process.env.NODE_OPTIONS ?? workflow.jobs['metrics-validate-runtime'].env.NODE_OPTIONS,
+  });
   const profile = focusPlan('performance', 'hello-lod-occlusion-profile');
   assert.deepEqual(profile.args, plan.args);
-  assert.deepEqual(profile.env, { FORGEAX_LOD_PROFILE: '1' });
+  assert.deepEqual(profile.env, { ...plan.env, FORGEAX_LOD_PROFILE: '1' });
   assert.throws(() => focusPlan('performance', 'unknown'), /performance selector/);
+});
+
+test('cold source Focus uses owner-declared package preparation without cooking unused profiles', () => {
+  for (const file of [
+    'direct-dfg-manifest.integration.test.ts',
+    'surface-manifest.integration.test.ts',
+  ]) {
+    const selector = `packages/vite-plugin-shader/src/__tests__/${file}`;
+    const plan = focusPlan('coverage', selector);
+    assert.equal(plan.packagesOnly, true);
+    assert.ok(plan.args.includes(selector));
+    assert.ok(plan.args.includes('--coverage'));
+    assert.equal(
+      plan.args.filter((arg) => arg.startsWith('--maxWorkers=')).join(),
+      '--maxWorkers=1',
+    );
+    assert.ok(Number(plan.env.FORGEAX_SHADER_COMPILE_WORKERS) >= 1);
+  }
+  const consumer = focusPlan(
+    'coverage',
+    'packages/vite-plugin-shader/src/__tests__/public-surface.unit.test.ts',
+  );
+  assert.notEqual(consumer.packagesOnly, true);
 });
 
 test('focused and full Smoke routes carry 300 through all four shards', () => {
@@ -168,6 +246,83 @@ test('unit focus preserves exact file filtering and rejects command injection or
   assert.throws(() => focusPlan('unknown', selected));
 });
 
+test('compiler unit bootstrap builds packages without precompiling the compiler product', () => {
+  const owner = '@forgeax/engine-shader-compiler';
+  const file =
+    'packages/shader-compiler/src/material/__tests__/standard-material-cook.integration.test.ts';
+  for (const [kind, selector] of [
+    ['unit', owner],
+    ['type', owner],
+    ['unit', file],
+  ]) {
+    const plan = focusPlan(kind, selector);
+    assert.equal(plan.packagesOnly, true);
+    assert.deepEqual(focusBuildArgs(plan), ['scripts/build.mjs', '--packages-only']);
+    assert.ok(plan.args.includes(owner));
+    assert.ok(plan.args.includes('--passWithNoTests=false'));
+  }
+  assert.equal(focusPlan('unit', file).args.at(-1), file);
+  for (const [kind, selector] of [
+    ['unit', '@forgeax/engine-render'],
+    ['view', 'modeling'],
+    ['dawn', 'transmission'],
+    ['compatibility', 'stable'],
+  ]) {
+    assert.notEqual(focusPlan(kind, selector).packagesOnly, true);
+    assert.deepEqual(focusBuildArgs(focusPlan(kind, selector), '/tmp/pinned assets'), [
+      'scripts/build.mjs',
+      '--engine',
+      '--assets-source-root',
+      '/tmp/pinned assets',
+    ]);
+  }
+});
+
+test('fixture-only shader metadata Focus retains exact tests without a cold Engine profile', () => {
+  for (const name of [
+    'manifest-reflection-sharing',
+    'manifest-publication',
+    'shader-registry-publication-sharing',
+    'shader-registry-transaction',
+    'native-manifest',
+    'shader-manifest-transmission',
+  ]) {
+    const file = `packages/shader/src/__tests__/${name}.unit.test.ts`;
+    const plan = focusPlan('unit', file);
+    assert.equal(plan.packagesOnly, true);
+    assert.deepEqual(focusBuildArgs(plan), ['scripts/build.mjs', '--packages-only']);
+    assert.equal(plan.args.at(-1), file);
+    assert.ok(plan.args.includes('@forgeax/engine-shader'));
+    assert.ok(plan.args.includes('--passWithNoTests=false'));
+  }
+  for (const selector of [
+    '@forgeax/engine-shader',
+    'packages/shader/src/__tests__/default-standard-pbr-transmission.unit.test.ts',
+  ]) {
+    assert.notEqual(focusPlan('unit', selector).packagesOnly, true);
+    assert.deepEqual(focusBuildArgs(focusPlan('unit', selector)), [
+      'scripts/build.mjs',
+      '--engine',
+    ]);
+  }
+});
+
+test('CPU Node and Modeling focus retain package builds without a GPU product prerequisite', () => {
+  const node = 'scripts/ci/__tests__/browser-test-discovery.test.mjs';
+  const file = 'packages/modeling/src/__tests__/perf-tiers.unit.test.ts';
+  for (const [kind, selector] of [
+    ['node', node],
+    ['unit', '@forgeax/engine-modeling'],
+    ['type', '@forgeax/engine-modeling'],
+    ['unit', file],
+  ]) {
+    const plan = focusPlan(kind, selector);
+    assert.deepEqual(focusBuildArgs(plan), ['scripts/build.mjs', '--packages-only']);
+  }
+  assert.deepEqual(focusPlan('node', node).args, ['--test', node]);
+  assert.equal(focusPlan('unit', file).args.at(-1), file);
+});
+
 test('compatibility focus retains the complete stable carrier instead of a different Browser profile', () => {
   assert.deepEqual(focusPlan('compatibility', 'stable'), {
     args: ['scripts/ci/run-webgpu-compatibility.mjs'],
@@ -242,8 +397,17 @@ test('Modeling coverage focus mirrors full-job worker and compiler admission', (
   assert.ok(plan.args.includes('--coverage'));
   assert.ok(plan.args.includes('--shard=1/16'));
   assert.equal(plan.env.FORGEAX_SHADER_COMPILE_WORKERS, '1');
+  assert.equal(plan.env.NODE_DISABLE_COMPILE_CACHE, '1');
   const bounded = focusPlan('coverage', selector, { resources: { ...resources, cpus: 4 } });
   assert.ok(bounded.args.includes('--maxWorkers=1'));
+});
+
+test('the complete subdivision and sweep CPU oracle needs no Engine shader preparation', () => {
+  const plan = focusPlan('coverage', 'packages/modeling/src/__tests__/subd-crease.unit.test.ts');
+  assert.equal(plan.packagesOnly, true);
+  assert.ok(plan.args.includes('--coverage'));
+  assert.ok(plan.args.includes('packages/modeling/src/__tests__/subd-crease.unit.test.ts'));
+  assert.ok(plan.args.includes('packages/modeling/src/__tests__/sweep.unit.test.ts'));
 });
 
 test('coverage focus retains the original complete instrumented bootstrap child', () => {
@@ -290,7 +454,7 @@ test('Browser-only producer readiness cannot leak an empty policy into native Fo
 
 test('Node focus executes the complete real Node test file without Vitest discovery', () => {
   const selector = 'scripts/ci/__tests__/rapier-release-payload.test.mjs';
-  assert.deepEqual(focusPlan('node', selector), { args: ['--test', selector] });
+  assert.deepEqual(focusPlan('node', selector), { args: ['--test', selector], packagesOnly: true });
   for (const invalid of [
     '../outside.test.mjs',
     '/tmp/other.test.mjs',
@@ -298,4 +462,29 @@ test('Node focus executes the complete real Node test file without Vitest discov
     'scripts/ci/__tests__/rapier-release-payload.test.mjs;echo',
   ])
     assert.throws(() => focusPlan('node', invalid), /Node test file/);
+});
+
+test('CPU-only Focus preparation validates package receipts without cooking unused Engine shaders', () => {
+  const selector = 'scripts/ci/__tests__/build-app-shard.test.mjs';
+  assert.equal(focusPlan('node', selector).packagesOnly, true);
+  for (const selector of ['ecs-ratios', 'render-ratios'])
+    assert.equal(focusPlan('performance', selector).packagesOnly, true);
+  assert.notEqual(focusPlan('performance', 'hello-lod-occlusion').packagesOnly, true);
+});
+
+test('pure CPU unit owners do not cook unused Engine profiles', () => {
+  for (const selector of [
+    '@forgeax/engine-content',
+    'packages/content/src/__tests__/content.test.ts',
+    '@forgeax/engine-naga',
+    '@forgeax/engine-shader-compiler',
+    'packages/naga/src/__tests__/compose-import-reachability.unit.test.ts',
+    'packages/shader-compiler/src/__tests__/frozen.unit.test.ts',
+  ]) {
+    const plan = focusPlan('unit', selector);
+    assert.equal(plan.packagesOnly, true);
+    assert.ok(plan.args.includes(selector));
+    assert.ok(plan.args.includes('--passWithNoTests=false'));
+  }
+  assert.notEqual(focusPlan('unit', '@forgeax/engine-runtime').packagesOnly, true);
 });

@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-test('the package launcher forwards an admitted Assets export to the Content lifecycle', () => {
+test('the package launcher keeps Content independent of an admitted Assets export', () => {
   const root = mkdtempSync(join(tmpdir(), 'forgeax-content-source-launch-'));
   const env = { ...process.env, GIT_ALLOW_PROTOCOL: 'file', EXPECTED_PRODUCT_SHA: '' };
   const git = (cwd, ...args) => {
@@ -29,17 +29,12 @@ test('the package launcher forwards an admitted Assets export to the Content lif
     git(remote, 'config', 'user.name', 'Source test');
     git(remote, 'config', 'user.email', 'source@example.invalid');
     git(remote, 'config', 'core.autocrlf', 'false');
-    mkdirSync(join(remote, 'water'));
-    const original = join(process.cwd(), 'packages/content/assets/water');
-    const provenance = JSON.parse(readFileSync(join(original, 'provenance.json'), 'utf8'));
-    for (const { file } of provenance.files)
-      writeFileSync(join(remote, 'water', file), readFileSync(join(original, file)));
+    writeFileSync(join(remote, 'asset.txt'), 'Shared Assets export fixture.\n');
     git(remote, 'add', '.');
-    git(remote, 'commit', '-qm', 'original Water sources');
+    git(remote, 'commit', '-qm', 'Assets source fixture');
     git(root, 'submodule', 'add', remote, 'forgeax-engine-assets');
     const pkg = join(root, 'packages/content');
-    mkdirSync(join(pkg, 'assets/water'), { recursive: true });
-    writeFileSync(join(pkg, 'assets/water/provenance.json'), JSON.stringify(provenance));
+    mkdirSync(pkg, { recursive: true });
     writeFileSync(
       join(pkg, 'package.json'),
       JSON.stringify({
@@ -47,7 +42,7 @@ test('the package launcher forwards an admitted Assets export to the Content lif
         scripts: { build: 'node build.mjs' },
       }),
     );
-    // Launcher isolation control; the real Content preparation runs before this child.
+    // Isolate lifecycle arguments from the package's compiler.
     writeFileSync(
       join(pkg, 'build.mjs'),
       "import { mkdirSync, writeFileSync } from 'node:fs'; mkdirSync('dist'); writeFileSync('dist/args', JSON.stringify(process.argv.slice(2)));\n",
@@ -70,14 +65,7 @@ test('the package launcher forwards an admitted Assets export to the Content lif
       },
     );
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-    assert.deepEqual(JSON.parse(readFileSync(join(pkg, 'dist/args'), 'utf8')), [
-      '--source-root',
-      join(remote, 'water'),
-    ]);
-    assert.deepEqual(
-      readFileSync(join(pkg, 'assets/water', provenance.files[0].file)),
-      readFileSync(join(original, provenance.files[0].file)),
-    );
+    assert.deepEqual(JSON.parse(readFileSync(join(pkg, 'dist/args'), 'utf8')), []);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

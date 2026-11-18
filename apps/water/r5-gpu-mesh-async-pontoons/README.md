@@ -64,9 +64,7 @@ existing `rhiCapture` host; a tape supplements the fixed-step traces.
 
 See the [Water](../../../packages/water/README.md),
 [Physics](../../../packages/physics/README.md#solver-participants) and
-[Render](../../../packages/render/README.md#gpu-water-mesh) contracts. Detailed
-validation evidence and UE native numerical/pixel comparison limitations belong
-in the external implementation documentation, not this app entrypoint.
+[Render](../../../packages/render/README.md#gpu-water-mesh) contracts.
 The primary panel groups demonstration presets, hull/load, water conditions,
 quality and camera. The default Ocean craft starts with its root at `y=0 m`;
 Calm selects the Lake craft at that same root height.

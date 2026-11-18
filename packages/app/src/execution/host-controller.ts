@@ -1,4 +1,4 @@
-import { createHostAudioConsumer, type HostAudioConsumer } from '@forgeax/engine-audio-webaudio';
+import type { HostAudioConsumer } from '@forgeax/engine-audio-webaudio';
 import { attachBrowserInputBackend, type InputBackend } from '@forgeax/engine-input';
 import {
   type DisplayFacts,
@@ -13,17 +13,16 @@ import {
   publishBrowserFrameSubmitted,
   resetBrowserFrameProgress,
 } from '../browser-frame-signal';
+import type { ConfiguredExecutionControl } from '../configuration-apply';
+import { ConfigurationRequests, staleConfiguration } from '../configuration-apply';
+import type { ConfiguredAppOptions } from '../configuration-host';
 import { APP_ERROR_HINTS, APP_EXPECTED, AppError, type AppError as AppErrorType } from '../errors';
+import { createAppHostAudio } from '../host-audio';
 import { ErrorFanoutRegistry } from '../internal/error-fanout';
 import { createFramePacer } from '../internal/frame-pacer';
 import { browserInputOptions } from '../internal/input-attach';
-import type { AppStepFrameOptions, BundlerOptions, CanvasDrawingBufferSize } from '../types';
-import {
-  APP_PHASE_CATALOG,
-  type AppDispatchError,
-  type CreateAppOptions,
-  type ExecutionApp,
-} from '../types';
+import type { AppHostAdapter, AppStepFrameOptions, CanvasDrawingBufferSize } from '../types';
+import { APP_PHASE_CATALOG, type AppDispatchError, type ExecutionApp } from '../types';
 import { normalizeExecutionBootstrapUrl } from './bootstrap-url';
 import { cloneExecutionReport } from './control';
 import { emitExecutionDiagnostic, executionDiagnosticSink } from './diagnostic-events';
@@ -41,16 +40,11 @@ import {
 } from './protocol';
 import { forwardRenderBackend } from './render-backend';
 import { createExecutionReport, executionAudioReport } from './report';
-import type {
-  ExecutionCapabilities,
-  ExecutionControl,
-  ExecutionReport,
-  ExecutionSelection,
-} from './types';
+import type { ExecutionCapabilities, ExecutionReport, ExecutionSelection } from './types';
 
 export interface CreateWorkerExecutionAppOptions {
   readonly canvas: HTMLCanvasElement;
-  readonly appOptions: CreateAppOptions;
+  readonly appOptions: ConfiguredAppOptions;
   /** Host-owned resize policy applied before each frame sent to the worker. */
   readonly syncCanvas?: (
     canvas: HTMLCanvasElement,
@@ -62,7 +56,7 @@ export interface CreateWorkerExecutionAppOptions {
    * after device loss starts from that budget again.
    */
   readonly renderDeviceLimit?: (canvas: HTMLCanvasElement, maxTextureDimension2D: number) => void;
-  readonly bundler?: BundlerOptions;
+  readonly bundler?: AppHostAdapter;
   readonly capabilities: ExecutionCapabilities;
   readonly selection: ExecutionSelection;
 }
@@ -186,6 +180,7 @@ export async function createWorkerExecutionApp(
         : { outputColorSpace: options.appOptions.outputColorSpace }),
       ...forwardRenderBackend(options.appOptions),
       ...forwardResourceBudgets(options.appOptions),
+      ...(options.appOptions.startup === undefined ? {} : { startup: options.appOptions.startup }),
       ...(executionOptions.featureTextureReadbackBudgetBytes === undefined
         ? {}
         : {
@@ -207,6 +202,7 @@ export async function createWorkerExecutionApp(
   }
 
   const session: EngineWorkerSession = started.value;
+  const configurationRequests = new ConfigurationRequests();
   const profiler = options.appOptions.profiler;
   const phaseCatalogRegistration = profiler?.registerPhaseCatalog('app', APP_PHASE_CATALOG);
   let releasePhaseCatalog =
@@ -367,14 +363,13 @@ export async function createWorkerExecutionApp(
   const kernelMeasurements = createMeasurementSeries();
   const audioMeasurements = createMeasurementSeries();
   let musicFeedbackMs = 0;
-  const createAudio = executionOptions.createHostAudio ?? createHostAudioConsumer;
   let audio: HostAudioConsumer;
   const rejectedAudioPublications = new Map<
     string,
     import('@forgeax/engine-audio').AudioClipIdentity
   >();
   try {
-    audio = createAudio();
+    audio = createAppHostAudio(options.appOptions, options.bundler);
   } catch (cause) {
     let failureCause = cause;
     try {
@@ -484,6 +479,7 @@ export async function createWorkerExecutionApp(
 
   let disposal: ReturnType<EngineWorkerSession['dispose']> | undefined;
   const disposeSession = () => {
+    configurationRequests.dispose();
     resetBrowserFrameProgress(canvas);
     rebuildResolve?.(err(lifecycleError('app-not-started')));
     rebuildResolve = undefined;
@@ -600,7 +596,8 @@ export async function createWorkerExecutionApp(
   // completes; render back-pressure counts only the pictures still in flight.
   let updateOnlyFrames: number[] = [];
   const renderPipelineCapacity = renderPipelineCapacityOf(
-    executionOptions.diagnostics?.renderPipelineCapacity,
+    options.appOptions.startup?.settings.execution?.renderPipelineCapacity ??
+      executionOptions.diagnostics?.renderPipelineCapacity,
   );
   type AdmissionMessage =
     | Extract<
@@ -1094,6 +1091,7 @@ export async function createWorkerExecutionApp(
         completedFrame: report.render?.completedFrame ?? 0,
       },
     };
+    options.appOptions.configurationObserver?.('submitted', message.frame);
     publishBrowserFrameSubmitted(canvas, message.frame);
   };
   const onRenderComplete = (message: HostMessage<'render-complete'>): void => {
@@ -1111,6 +1109,7 @@ export async function createWorkerExecutionApp(
       },
     };
     traceAdmission('host-ack-accepted', 'render-complete', message);
+    options.appOptions.configurationObserver?.('completed', message.frame);
     publishBrowserFrameCompleted(canvas, {
       ...message.frame,
       deviceGeneration: message.frame.deviceGeneration ?? 0,
@@ -1145,6 +1144,7 @@ export async function createWorkerExecutionApp(
       return;
     }
     clearFrameAdmissionWatchdog(admission);
+    options.appOptions.configurationObserver?.('submitted', message);
     publishBrowserFrameSubmitted(canvas, message);
   };
   const recordRenderRejection = (
@@ -1175,9 +1175,13 @@ export async function createWorkerExecutionApp(
       temporalResetAfterFrame = undefined;
   };
   const publishWorkerFrameCompleted = (message: HostMessage<'frame-complete'>): void => {
+    options.appOptions.configurationObserver?.('completed', message);
     publishBrowserFrameCompleted(canvas, {
       frameId: message.frameId,
       deviceGeneration: message.deviceGeneration ?? 0,
+      ...(message.configurationRevision === undefined
+        ? {}
+        : { configurationRevision: message.configurationRevision }),
       ...(message.shadowWorkload === undefined ? {} : { shadowWorkload: message.shadowWorkload }),
       ...(message.graphGeneration === undefined
         ? {}
@@ -1280,7 +1284,7 @@ export async function createWorkerExecutionApp(
     audio.dispose();
     rejectedAudioPublications.clear();
     try {
-      audio = createAudio();
+      audio = createAppHostAudio(options.appOptions, options.bundler);
       return true;
     } catch (cause) {
       const error = new AppError({
@@ -1381,8 +1385,20 @@ export async function createWorkerExecutionApp(
     pending.reject(cancelled);
     pending.startedReject(cancelled);
   };
+  function receiveHostControl(message: EngineToHostMessage): boolean {
+    switch (message.kind) {
+      case 'configuration-result':
+        configurationRequests.receive(message);
+        return true;
+      case 'surface-request':
+        onSurfaceRequest(message);
+        return true;
+      default:
+        return false;
+    }
+  }
   session.listen((message: EngineToHostMessage) => {
-    if (disposal !== undefined) return;
+    if (disposal !== undefined || receiveHostControl(message)) return;
     switch (message.kind) {
       // Startup readiness and the disposal ACK belong to the Worker session.
       case 'ready':
@@ -1390,9 +1406,6 @@ export async function createWorkerExecutionApp(
         return;
       case 'render-error':
         onRenderError(message);
-        return;
-      case 'surface-request':
-        onSurfaceRequest(message);
         return;
       case 'render-ready':
         onRenderReady(message);
@@ -1494,7 +1507,18 @@ export async function createWorkerExecutionApp(
     return Object.assign(result, { started, cancel });
   };
 
-  const execution: ExecutionControl = {
+  const execution: ConfiguredExecutionControl = {
+    applyConfiguration: async (plan, previousRevision) => {
+      const world = report.world.identity;
+      if (world === null || disposal !== undefined)
+        return err(staleConfiguration('the Engine Worker is unavailable'));
+      const result = await configurationRequests.request(plan, previousRevision, world, (message) =>
+        session.post(message),
+      );
+      return report.world.identity === world
+        ? result
+        : err(staleConfiguration('the World was replaced during configuration'));
+    },
     setFrameRateLimit: (framesPerSecond) => pacer.setLimit(framesPerSecond),
     report: () =>
       cloneExecutionReport({
@@ -1503,6 +1527,7 @@ export async function createWorkerExecutionApp(
         audio: executionAudioReport(audio.state()),
       }),
     rebuild: () => {
+      configurationRequests.invalidate('the World is rebuilding');
       if (rebuildInFlight !== undefined) return rebuildInFlight;
       if (state !== 'faulted' || report.world.identity === null) {
         return Promise.resolve(

@@ -8,15 +8,14 @@ import {
 
 const request = (): WaterCapabilityRequest => ({
   quality: 'Q0',
-  configuration: 'UE-R0',
+  configuration: 'surface',
   parameterIdentity: 'coast-seed-8',
   format: 'rgba16float',
   width: 256,
   height: 128,
   layers: 2,
-  basicDiOrBeachFoam: false,
   device: {
-    version: 1,
+    version: 2,
     compute: 'supported',
     storageBuffer: 'supported',
     indirectDraw: 'supported',
@@ -37,7 +36,7 @@ const request = (): WaterCapabilityRequest => ({
     limits: { maxTextureDimension2D: 8192, maxTextureArrayLayers: 256 },
   },
   renderer: {
-    version: 1,
+    version: 2,
     deviceGeneration: 2,
     frameId: 90,
     ready: true,
@@ -62,83 +61,33 @@ const request = (): WaterCapabilityRequest => ({
     solverParticipant: false,
     solverClock: false,
   },
-  evidence: [],
 });
 
 describe('Water capability combination', () => {
-  it('keeps deferred optional Terrain tooling outside the required R0 fidelity gates', () => {
-    const input = request();
-    const baseline = createWaterCapabilityReport(input);
-    expect(baseline.validation.map((row) => row.id)).not.toContain('V-06');
-    const evidence = baseline.validation
-      .filter((row) => row.id !== 'V-06')
-      .map((row) => ({
-        ...row,
-        configuration: 'UE-R0' as const,
-        parameterIdentity: input.parameterIdentity,
-        comparison: 'matched' as const,
-        artifact: `ue-pair/${row.id}`,
-      }));
-    expect(
-      createWaterCapabilityReport({
-        ...input,
-        evidence: [
-          ...evidence,
-          {
-            id: 'V-06',
-            configuration: 'UE-R0',
-            parameterIdentity: input.parameterIdentity,
-            comparison: 'unvalidated',
-            artifact: 'deferred-editor-tooling',
-          },
-        ],
-      }).fidelity,
-    ).toBe('faithful');
+  it('publishes current configuration support without benchmark or rollout fields', () => {
+    const report = createWaterCapabilityReport(request());
+    expect(report.version).toBe(2);
+    expect(report.implementation).toBe('supported');
+    expect(report).not.toHaveProperty('validation');
+    expect(report).not.toHaveProperty('comparison');
+    expect(report).not.toHaveProperty('fidelity');
   });
-  it('keeps unavailable CPU mesh publication facts unvalidated for Q3', () => {
+  it('keeps unavailable CPU mesh publication facts explicit for Q3', () => {
     const input = request();
     const report = createWaterCapabilityReport({
       ...input,
       quality: 'Q3',
-      renderer: { ...input.renderer, cpuMesh: 'unvalidated' },
+      renderer: { ...input.renderer, cpuMesh: 'unavailable' },
     });
-    expect(report.requirements.find((row) => row.name === 'cpu-mesh')?.status).toBe('unvalidated');
-    expect(report.implementation).toBe('unvalidated');
+    expect(report.requirements.find((row) => row.name === 'cpu-mesh')?.status).toBe('unavailable');
+    expect(report.implementation).toBe('unavailable');
     expect(
       createWaterCapabilityReport({
         ...input,
         quality: 'Q3',
-        renderer: { ...input.renderer, cpuMesh: 'unvalidated', gpuMesh: true },
+        renderer: { ...input.renderer, cpuMesh: 'unavailable', gpuMesh: true },
       }).implementation,
     ).toBe('unsupported');
-  });
-  it('keeps implementation and paired comparison independent', () => {
-    const result = createWaterCapabilityReport(request());
-    expect(result.implementation).toBe('supported');
-    expect(result.comparison).toBe('unvalidated');
-    expect(result.fidelity).toBe('appearance-only');
-    const evidence = result.validation.map((row) => ({
-      ...row,
-      configuration: 'UE-R0' as const,
-      parameterIdentity: 'coast-seed-8',
-      comparison: 'matched' as const,
-      artifact: `ue-pair/${row.id}`,
-    }));
-    expect(createWaterCapabilityReport({ ...request(), evidence }).fidelity).toBe('faithful');
-    expect(
-      createWaterCapabilityReport({
-        ...request(),
-        quality: 'Q1',
-        parameterIdentity: 'coast-q1',
-        evidence,
-      }).comparison,
-    ).toBe('unvalidated');
-    expect(
-      createWaterCapabilityReport({
-        ...request(),
-        evidence: evidence.map((row) => ({ ...row, configuration: 'UE-R2' })),
-      }).comparison,
-    ).toBe('unvalidated');
   });
   it('requires the complete R0 SSR chain and keeps R2 independent', () => {
     const input = request();
@@ -149,7 +98,7 @@ describe('Water capability combination', () => {
         ...input,
         renderer,
         quality: 'Q2',
-        configuration: 'UE-R2',
+        configuration: 'surface-without-ssr',
         reflectionMode: 'disabled',
       }).implementation,
     ).toBe('supported');
@@ -164,7 +113,7 @@ describe('Water capability combination', () => {
       createWaterCapabilityReport({
         ...input,
         quality: null,
-        configuration: 'UE-R1',
+        configuration: 'gpu-mesh',
         subfeature: 'gpu-mesh',
         renderer: { ...input.renderer, gpuMesh: true },
       }).implementation,
@@ -173,7 +122,7 @@ describe('Water capability combination', () => {
       createWaterCapabilityReport({
         ...input,
         quality: null,
-        configuration: 'UE-R5',
+        configuration: 'async-buoyancy',
         subfeature: 'async-buoyancy',
         physics: { ...input.physics, solverParticipant: true, solverClock: true },
         solverExecution: 'worker-solver',
@@ -183,22 +132,22 @@ describe('Water capability combination', () => {
       createWaterCapabilityReport({
         ...input,
         quality: null,
-        configuration: 'UE-R6',
+        configuration: 'fluid-simulation',
         subfeature: 'fluid-simulation',
         renderer: { ...input.renderer, fluidSimulation: true },
-      }).validation.at(-1)?.id,
-    ).toBe('V-12');
+      }).implementation,
+    ).toBe('supported');
     expect(
       createWaterCapabilityReport({
         ...input,
         quality: null,
-        configuration: 'UE-R7',
+        configuration: 'advanced-simulation',
         subfeature: 'ocean-fft',
         renderer: { ...input.renderer, oceanFft: true },
-      }).validation.at(-1)?.id,
-    ).toBe('V-14');
+      }).implementation,
+    ).toBe('supported');
     expect(
-      createWaterCapabilityReport({ ...input, quality: null, configuration: 'UE-R3' })
+      createWaterCapabilityReport({ ...input, quality: 'Q2', configuration: 'surface' } as never)
         .implementation,
     ).toBe('unsupported');
     expect(
@@ -215,18 +164,18 @@ describe('Water capability combination', () => {
           },
         },
       }),
-    ).toMatchObject({ fidelity: 'appearance-only', comparison: 'deviation' });
+    ).toMatchObject({ version: 2, implementation: 'supported' });
     expect(
       createWaterCapabilityReport({ ...input, quality: 'Q4', configuration: null }).implementation,
     ).toBe('unsupported');
     expect(
-      createWaterCapabilityReport({ ...input, configuration: 'UE-R1' } as WaterCapabilityRequest)
+      createWaterCapabilityReport({ ...input, configuration: 'gpu-mesh' } as WaterCapabilityRequest)
         .implementation,
     ).toBe('unsupported');
     const fft = {
       ...input,
       quality: null,
-      configuration: 'UE-R7',
+      configuration: 'advanced-simulation',
       subfeature: 'advanced-shallow',
       renderer: { ...input.renderer, oceanFft: true },
     } as const;
@@ -235,8 +184,8 @@ describe('Water capability combination', () => {
       createWaterCapabilityReport({
         ...fft,
         renderer: { ...fft.renderer, advancedShallow: true },
-      }).validation.at(-1)?.id,
-    ).toBe('V-13');
+      }).implementation,
+    ).toBe('supported');
     expect(
       createWaterCapabilityReport({
         ...fft,
@@ -254,11 +203,11 @@ describe('Water capability combination', () => {
           ...input.device,
           formats: {
             ...input.device.formats,
-            rgba16float: { ...input.device.formats.rgba16float, arrayRenderSample: 'unvalidated' },
+            rgba16float: { ...input.device.formats.rgba16float, arrayRenderSample: 'unavailable' },
           },
         },
       }).implementation,
-    ).toBe('unvalidated');
+    ).toBe('unavailable');
     expect(
       createWaterCapabilityReport({
         ...input,
@@ -282,9 +231,6 @@ describe('Water capability combination', () => {
     expect(createWaterCapabilityReport({ ...input, layers: 257 }).implementation).toBe(
       'unsupported',
     );
-    expect(
-      createWaterCapabilityReport({ ...input, basicDiOrBeachFoam: true }).validation.at(-1)?.id,
-    ).toBe('V-16');
   });
 });
 

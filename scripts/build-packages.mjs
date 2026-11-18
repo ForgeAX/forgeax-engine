@@ -3,7 +3,6 @@
 import { spawn } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { prepareWaterContent } from '../packages/content/scripts/prepare-water-content.mjs';
 import {
   cachePath,
   hashFiles,
@@ -50,11 +49,6 @@ for (let index = 2; index < process.argv.length; index++) {
 const packages = buildPackageSelection(allPackages, dependencies, selectionArgs);
 if (assetsSourceRoot !== undefined) {
   prepareAssetsCheckout(root, { sourceRoot: assetsSourceRoot });
-  // Authored resource bytes enter the existing package fingerprint before cache lookup.
-  await prepareWaterContent({
-    repositoryRoot: root,
-    sourceRoot: resolve(assetsSourceRoot, 'water'),
-  });
 }
 const { cpus, memoryBytes } = runnerResources();
 const concurrency = Number(
@@ -74,8 +68,6 @@ function runPackage(pkg) {
       packageRunner === 'bun'
         ? ['run', '--filter', pkg.manifest.name, 'build']
         : ['--filter', pkg.manifest.name, 'run', 'build'];
-    if (assetsSourceRoot !== undefined && pkg.manifest.name === '@forgeax/engine-content')
-      args.push('--source-root', resolve(assetsSourceRoot, 'water'));
     const [command, ...prefix] = packageRunner === 'pnpm' ? pnpmCommand() : [packageRunner];
     const child = spawn(command, [...prefix, ...args], {
       cwd: root,

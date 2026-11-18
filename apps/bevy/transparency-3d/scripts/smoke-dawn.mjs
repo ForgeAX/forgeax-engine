@@ -10,7 +10,7 @@ import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErr
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
+import { processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 
 const WIDTH = testQuality.viewport.width;
@@ -86,8 +86,8 @@ const { World } = await import('@forgeax/engine-ecs');
 const { registerPropagateTransforms } = await import('@forgeax/engine-scene');
 const { createRenderer } = await import('@forgeax/engine-runtime');
 const { buildTransparencyWorld, stepTransparencyAlpha } = await import(resolve(root, 'src', 'transparency-3d.ts'));
-const manifest = readShaderManifestText(resolve(root, 'dist', 'shaders', 'manifest.json'));
-const manifestUrl = `data:application/json,${encodeURIComponent(manifest)}`;
+
+const manifestUrl = processShaderManifestUrl(resolve(root, 'dist', 'shaders', 'manifest.json'));
 
 let renderer;
 try {

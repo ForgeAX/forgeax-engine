@@ -25,6 +25,7 @@ import {
   writeReceipt,
 } from './build-task-cache.mjs';
 import {
+  appBuildOutputMode,
   createAppBuildInvocation,
   createPrebuildInvocation,
   resolveViteCli,
@@ -41,12 +42,16 @@ const sharedManifestArg = process.argv.indexOf('--shared-input-manifest');
 let sharedInputManifest =
   sharedManifestArg === -1 ? undefined : process.argv[sharedManifestArg + 1];
 const appShardShaderDelta = process.argv.includes('--app-shard-shader-delta');
+const consumerInputs = process.argv.includes('--consumer-inputs');
+if (consumerInputs && !appShardShaderDelta)
+  throw new Error('--consumer-inputs requires the app-shard Shader transfer profile');
 const requestedArgs = process.argv
   .slice(2)
   .filter(
     (argument, index, argv) =>
       argument !== '--shared-input-manifest' &&
       argument !== '--app-shard-shader-delta' &&
+      argument !== '--consumer-inputs' &&
       (index === 0 || argv[index - 1] !== '--shared-input-manifest'),
   );
 
@@ -140,11 +145,13 @@ function transitivePackages(app, packagesByName, packageFingerprints) {
 }
 
 function taskPlan(app, packageFingerprints, packagesByName) {
+  const outputMode = appBuildOutputMode(app, consumerInputs);
   const files = appInputFiles(root, app.directory, app.manifest);
   const inputFingerprint = hashFiles(root, files);
   const packageInputs = transitivePackages(app, packagesByName, packageFingerprints);
   return {
     files,
+    outputMode,
     inputFingerprint: hashText(
       JSON.stringify({
         schemaVersion: 1,
@@ -156,6 +163,12 @@ function taskPlan(app, packageFingerprints, packagesByName) {
         sharedManifest: hashFiles(root, [sharedInputManifest]),
         mode: process.env.NODE_ENV ?? 'production',
         shaderManifestMode: appShardShaderDelta ? 'app-shard-delta' : 'full',
+        outputMode,
+        producerFingerprint: hashFiles(root, [
+          'scripts/build-apps.mjs',
+          'scripts/lib/app-build-launcher.mjs',
+          ...(outputMode === 'consumer-inputs' ? ['scripts/build-app-inputs.mjs'] : []),
+        ]),
       }),
     ),
   };
@@ -228,7 +241,15 @@ function createProcessSampler() {
   };
 }
 
-function runApp(app, className, appFactsDir, viteCliPath, sampler, baseEnv = process.env) {
+function runApp(
+  app,
+  className,
+  appFactsDir,
+  viteCliPath,
+  sampler,
+  baseEnv = process.env,
+  outputMode = 'full',
+) {
   return new Promise((resolveRun) => {
     const startedAt = performance.now();
     const prebuild = createPrebuildInvocation({ app, baseEnv });
@@ -253,6 +274,7 @@ function runApp(app, className, appFactsDir, viteCliPath, sampler, baseEnv = pro
       viteCliPath,
       appFactsDir,
       baseEnv,
+      outputMode,
     });
     const child = spawn(invocation.command, invocation.args, invocation.options);
     const sample = sampler.track(child.pid);
@@ -332,6 +354,7 @@ async function main() {
       path: task.app.relativeDirectory,
       status: 'skipped',
       cacheHit: true,
+      outputMode: task.plan.outputMode,
       className: task.className,
       memoryGB: task.memoryGB,
       durationMs: 0,
@@ -384,6 +407,7 @@ async function main() {
         viteCliPath,
         sampler,
         appBuildEnv,
+        task.plan.outputMode,
       ).then((run) => ({ task, run, factsDir }));
       running.set(task.app.manifest.name, promise);
       console.error(
@@ -418,6 +442,7 @@ async function main() {
       inputFingerprint: task.plan.inputFingerprint,
       sharedInputFingerprint: sharedManifest.inputFingerprint,
       outputInventory: output,
+      outputMode: task.plan.outputMode,
       durationMs: run.durationMs,
       peakRssBytes: run.peakRssBytes,
     });
@@ -425,6 +450,7 @@ async function main() {
       schemaVersion: 1,
       name: task.app.manifest.name,
       className: task.className,
+      outputMode: task.plan.outputMode,
       durationMs: run.durationMs,
       peakRssBytes: run.peakRssBytes,
       updatedAt: new Date().toISOString(),
@@ -439,6 +465,7 @@ async function main() {
       durationMs: run.durationMs,
       peakRssBytes: run.peakRssBytes || null,
       outputBytes: output.totalBytes,
+      outputMode: task.plan.outputMode,
       ...pluginFacts,
     });
   }

@@ -19,6 +19,7 @@ import {
   type InputBackendSample,
   makeCompositeBackend,
 } from '@forgeax/engine-input';
+import { PHYSICS_STARTUP_OPTIONS } from '@forgeax/engine-physics';
 import {
   createTaskPool,
   type TaskPool,
@@ -70,6 +71,13 @@ import {
 } from '@forgeax/engine-types';
 import { type AssetRuntimeAssembly, createAssetRuntimeAssembly } from '../assets-runtime-assembly';
 import { syncCameraAspect } from '../canvas-policy';
+import {
+  applyRenderConfiguration,
+  type ConfigurationApplyRequest,
+  configurationApplyResponse,
+  staleConfiguration,
+} from '../configuration-apply';
+import { freezeConfiguration } from '../configuration-data';
 import { APP_ERROR_HINTS, APP_EXPECTED, AppError } from '../errors';
 import {
   createRhiCapture,
@@ -157,7 +165,7 @@ interface WorkerRealm {
   };
   renderWorker?: SourceRenderWorker;
   publicationTargets?: RenderPublicationTargetOwner;
-  readonly init: RetainedExecutionInit;
+  init: RetainedExecutionInit;
   assetAssembly: AssetRuntimeAssembly | undefined;
   readonly pendingAudioIntents: AudioIntentQueue;
   audioBackend: ReturnType<typeof createAudioIntentBackend> | undefined;
@@ -449,6 +457,9 @@ function realmTaskPool(target: WorkerRealm): TaskPool {
   const startup = target.init.startupTimeoutMs;
   target.taskPool ??= createTaskPool({
     kinds: builtinTaskKinds,
+    ...(target.init.startup?.settings.execution?.taskWorkers === undefined
+      ? {}
+      : { workers: target.init.startup.settings.execution.taskWorkers }),
     workerFactory: taskWorkerFactory,
     ...(startup === null ? {} : { startupTimeoutMs: startup }),
   });
@@ -588,10 +599,13 @@ function postBootstrapFault(error: {
 }
 
 function createRealmWorld(init: ExecutionInitMessage): World {
-  return new World({
+  const world = new World({
     ...(init.time !== undefined ? { time: init.time } : {}),
     storage: init.workers.kernels.enabled ? 'shared' : 'local',
   });
+  const physics = init.startup?.settings.simulation?.physics;
+  if (physics !== undefined) world.insertResource(PHYSICS_STARTUP_OPTIONS, physics);
+  return world;
 }
 
 function createRealmCandidate(init: RetainedExecutionInit, world: World): WorkerRealm {
@@ -623,6 +637,7 @@ function createRealmAudioBackend(
   candidate: WorkerRealm,
 ): ReturnType<typeof createAudioIntentBackend> {
   return createAudioIntentBackend({
+    ...candidate.init.startup?.settings.audio?.publication,
     emit: (intent) => {
       candidate.pendingAudioIntents.push(intent);
     },
@@ -667,6 +682,9 @@ function realmRendererOptions(
       : {
           resolveRecoveryCanvas: (signal: AbortSignal) => requestRecoveryCanvas(candidate, signal),
         }),
+    ...(init.startup?.settings.rendering?.view?.maxRenderShortSide === undefined
+      ? {}
+      : { maxRenderShortSide: init.startup.settings.rendering.view.maxRenderShortSide }),
     ...(prepared.features === undefined ? {} : { features: prepared.features }),
     ...(prepared.ssrIdentity === undefined ? {} : { ssrIdentity: prepared.ssrIdentity }),
     ...(profiler === undefined ? {} : { profiler }),
@@ -686,6 +704,11 @@ function realmRendererOptions(
       : { dynamicGeometryMeshBudgetBytes: init.dynamicGeometryMeshBudgetBytes }),
     ...(init.assetBudgetBytes === undefined ? {} : { assetBudgetBytes: init.assetBudgetBytes }),
     ...(init.textureMipSkip === undefined ? {} : { textureMipSkip: init.textureMipSkip }),
+    ...(init.startup === undefined
+      ? {}
+      : {
+          standardProfile: init.startup.rendering.profile,
+        }),
     ...(init.workers.render.enabled ? {} : { tasks: realmTaskPool(candidate) }),
     ...(init.featureTextureReadbackBudgetBytes === undefined
       ? {}
@@ -982,7 +1005,12 @@ async function createRealm(startup: ExecutionInitMessage): Promise<boolean> {
   // Realm-owned facts exclude the library forwarded to the renderer for this start.
   const { pipelineLibrary, backgroundPipelineLibrary, ...init } = startup;
   const endImport = beginLoadTimeline('boot', 'bootstrap-import');
-  const preparedResult = await prepareBootstrapEntry(init.bootstrapUrl, init.bootstrapData);
+  const preparedResult = await prepareBootstrapEntry(
+    init.bootstrapUrl,
+    init.bootstrapData,
+    undefined,
+    init.startup,
+  );
   endImport();
   if (!preparedResult.ok) {
     postBootstrapFault(preparedResult.error);
@@ -1033,7 +1061,8 @@ async function createRealm(startup: ExecutionInitMessage): Promise<boolean> {
     const endRenderer = beginLoadTimeline('boot', 'renderer');
     const host = await constructRealmRendererHost(init, rendererOptions, bundler);
     candidateRenderer = host?.renderer;
-    if (candidateRenderer !== undefined) await prepared.configureRenderer?.(candidateRenderer);
+    if (candidateRenderer !== undefined && init.startup === undefined)
+      await prepared.configureRenderer?.(candidateRenderer);
     rendererWork();
     endRenderer();
     sceneWork = beginLoadWork('scene');
@@ -1375,10 +1404,14 @@ function postFrameSubmitted(world: World, frameId: number, receipt: FrameReceipt
     worldIdentity: world.identity,
     frameId,
     deviceGeneration: receipt.deviceGeneration,
+    presentation: receipt.presentation,
     ...(receipt.editorAssistance === undefined
       ? {}
       : { editorAssistance: { ...receipt.editorAssistance, frameId: frameId } }),
     ...(receipt.shadowWorkload === undefined ? {} : { shadowWorkload: receipt.shadowWorkload }),
+    ...(receipt.configurationRevision === undefined
+      ? {}
+      : { configurationRevision: receipt.configurationRevision }),
     ...(receipt.graphGeneration === undefined ? {} : { graphGeneration: receipt.graphGeneration }),
     ...(receipt.barrelDistortion === undefined
       ? {}
@@ -1399,10 +1432,14 @@ function postFrameComplete(
     frameId,
     deviceGeneration: receipt.deviceGeneration,
     ...(receipt.shadowWorkload === undefined ? {} : { shadowWorkload: receipt.shadowWorkload }),
+    ...(receipt.configurationRevision === undefined
+      ? {}
+      : { configurationRevision: receipt.configurationRevision }),
     ...(receipt.graphGeneration === undefined ? {} : { graphGeneration: receipt.graphGeneration }),
     ...(receipt.barrelDistortion === undefined
       ? {}
       : { barrelDistortion: receipt.barrelDistortion }),
+
     presentation: receipt.presentation,
     ...(receipt.presentation !== 'pending' || receipt.presentationPendingReason === undefined
       ? {}
@@ -1692,6 +1729,37 @@ function receiveTaskWorkerFailure(message: HostToEngineMessage | FrameRequest): 
   return true;
 }
 
+async function applyRealmConfiguration(message: ConfigurationApplyRequest): Promise<void> {
+  freezeConfiguration(message.plan);
+  const target = realm;
+  const currentRenderer = renderer;
+  const result =
+    target === undefined ||
+    realmTransitions > 0 ||
+    target.world.identity !== message.worldIdentity ||
+    target.init.startup?.revision !== message.previousRevision ||
+    message.plan.revision <= message.previousRevision
+      ? {
+          ok: false as const,
+          error: staleConfiguration('the Engine realm or configuration revision changed'),
+        }
+      : target.renderWorker !== undefined
+        ? await target.renderWorker.applyConfiguration(message.plan, message.previousRevision)
+        : currentRenderer === undefined
+          ? { ok: false as const, error: staleConfiguration('the Renderer is unavailable') }
+          : applyRenderConfiguration(currentRenderer, message.plan);
+  if (result.ok && realm === target && target !== undefined)
+    target.init = { ...target.init, startup: message.plan };
+  scope.postMessage(
+    configurationApplyResponse(
+      message,
+      realm === target
+        ? result
+        : { ok: false, error: staleConfiguration('the World was replaced during configuration') },
+    ),
+  );
+}
+
 scope.onmessage = (event): void => {
   const message = event.data;
   if (receiveWorkerLifecycle(message)) return;
@@ -1723,6 +1791,9 @@ scope.onmessage = (event): void => {
             cause,
           ),
         );
+      return;
+    case 'configuration-apply':
+      void applyRealmConfiguration(message);
       return;
     case 'frame':
       void runFrame(message);

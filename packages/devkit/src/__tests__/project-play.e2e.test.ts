@@ -25,7 +25,7 @@ export default definePack({
   schemaVersion: '2.0.0', plugins: true, packageId: id,
   build: () => ok({
     'mesh/box': createBoxGeometry(1, 1, 1).unwrap(),
-    'material/box': Materials.standard({ baseColor: '#e0782c', roughness: 0.6 }),
+    'material/box': Materials.unlit('#e0782c'),
     'plugin/game': { kind: 'plugin', module: { specifier: './game.ts', export: 'game' },
       config: { mesh: ref('mesh/box'), material: ref('material/box') } },
     'plugin/hud': { kind: 'plugin', module: { specifier: './hud.ts', export: 'hud' } },
@@ -39,7 +39,7 @@ import { Time, Update, defineSystem } from '@forgeax/engine/ecs';
 import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine/input';
 import { quat } from '@forgeax/engine/math';
 import type { Plugin } from '@forgeax/engine/plugin';
-import { Camera, DirectionalLight, MeshFilter, MeshRenderer, Skylight } from '@forgeax/engine/render';
+import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine/render';
 import { Transform } from '@forgeax/engine/scene';
 
 export const game: Plugin.Object<{ readonly mesh: string; readonly material: string }> = {
@@ -62,8 +62,6 @@ export const game: Plugin.Object<{ readonly mesh: string; readonly material: str
       const entities = [
         world.spawn({ component: Transform, data: { pos: [0, 0, 4] } },
           { component: Camera, data: { fov: Math.PI / 4, aspect: 16 / 9, near: 0.1, far: 100, clearColor: [0.08, 0.1, 0.14, 1] } }).unwrap(),
-        world.spawn({ component: Skylight, data: { intensity: 0.8, color: [1, 1, 1] } }).unwrap(),
-        world.spawn({ component: DirectionalLight, data: { direction: [-0.5, -1, -0.6], color: [1, 1, 1], intensity: 3 } }).unwrap(),
         world.spawn({ component: Transform, data: { pos: [0, 0, 0], quat: quat.fromEuler(quat.create(), 0.5, 0.7, 0, 'XYZ') } },
           { component: MeshFilter, data: { assetHandle: mesh } },
           { component: MeshRenderer, data: { materials: [material] } }).unwrap(),

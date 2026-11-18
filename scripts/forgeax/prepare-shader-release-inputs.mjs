@@ -59,7 +59,20 @@ if (process.argv.includes('--build')) {
         hdrpSsao: !profileFlags[profile].includes('--no-hdrp-ssao'),
       });
       const candidates = [
-        ...(sharedIndex >= 0 ? [['shared', resolve(root, process.argv[sharedIndex + 1])]] : []),
+        ...(sharedIndex >= 0
+          ? [
+              ['shared', resolve(root, process.argv[sharedIndex + 1])],
+              [
+                'shared-profile',
+                resolve(
+                  dirname(resolve(root, process.argv[sharedIndex + 1])),
+                  'profiles',
+                  profile,
+                  'manifest.json',
+                ),
+              ],
+            ]
+          : []),
         // Core transfers this producer's ordinary receipt and payload inside
         // engine-dist. A mismatched point input cannot satisfy base admission.
         [

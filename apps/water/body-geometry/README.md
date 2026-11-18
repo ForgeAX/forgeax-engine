@@ -30,11 +30,11 @@ The geometry fixtures use `affectsLandscape: false`. The separate riverbed
 exercises visible prebuilt Terrain input and the Zone's accepted provider
 versions, bounds and generations. It does not paint or reverse Terrain.
 
-Versioned `ue-water-spline/1` fixtures follow UE 5.8 point modes and distance
+Versioned `water-spline/2` fixtures use versioned point modes and distance
 reparameterization. Quaternion keys use normalized XYZW engine-basis rotations;
 legacy Up and Roll must be baked into the quaternion, then `up` is regenerated
 from rotated engine Up and `rollAngle` is set to zero. The spline mesh and its
-collision keep UE's fixed Y-up, zero-roll component frame, while WaterInfo uses
+collision keep a fixed Y-up, zero-roll component frame, while WaterInfo uses
 the quaternion-derived Up vector for its horizontal lateral.
 
 Run with `pnpm --filter @forgeax/water-body-geometry dev`. Drag the scene to

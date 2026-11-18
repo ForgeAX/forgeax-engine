@@ -40,6 +40,14 @@ import {
 } from '@forgeax/engine-runtime/internal/renderer-host';
 import { bindLoadProgressScope } from '@forgeax/engine-types';
 import {
+  applyRenderConfiguration,
+  type ConfigurationApplyRequest,
+  configurationApplyResponse,
+  staleConfiguration,
+} from '../configuration-apply';
+import { freezeConfiguration } from '../configuration-data';
+import type { EngineStartupPlan } from '../configuration-types';
+import {
   createRhiCapture,
   createRhiInstrumentation,
   type RhiCapture,
@@ -101,6 +109,7 @@ let readyAnnounced = false;
 let canvas: OffscreenCanvas | undefined;
 let geometryLane: ExecutionDiagnosticsOptions['geometryLane'];
 let busy = false;
+let currentConfiguration: EngineStartupPlan | undefined;
 // Includes CPU preparation, queued successors, and unretired GPU receipts.
 // Host, Source publisher and this receiver share the same finite capacity.
 let framesInFlight = 0;
@@ -225,6 +234,9 @@ function settleCaptureDraw(
       receipt: {
         frameId: receipt.frameId,
         deviceGeneration: receipt.deviceGeneration,
+        ...(receipt.configurationRevision === undefined
+          ? {}
+          : { configurationRevision: receipt.configurationRevision }),
         ...(receipt.graphGeneration === undefined
           ? {}
           : { graphGeneration: receipt.graphGeneration }),
@@ -497,6 +509,9 @@ async function completeFrame(
         frameId: message.frameId,
         deviceGeneration: receipt.deviceGeneration,
         ...(receipt.shadowWorkload === undefined ? {} : { shadowWorkload: receipt.shadowWorkload }),
+        ...(receipt.configurationRevision === undefined
+          ? {}
+          : { configurationRevision: receipt.configurationRevision }),
         ...(receipt.graphGeneration === undefined
           ? {}
           : { graphGeneration: receipt.graphGeneration }),
@@ -523,6 +538,9 @@ async function completeFrame(
           completion: {
             frameId: receipt.frameId,
             deviceGeneration: receipt.deviceGeneration,
+            ...(receipt.configurationRevision === undefined
+              ? {}
+              : { configurationRevision: receipt.configurationRevision }),
             ...(receipt.graphGeneration === undefined
               ? {}
               : { graphGeneration: receipt.graphGeneration }),
@@ -844,6 +862,24 @@ async function receive(message: RenderWorkerInput): Promise<void> {
   }
 }
 
+function receiveConfiguration(message: ConfigurationApplyRequest): void {
+  freezeConfiguration(message.plan);
+  const result =
+    renderer === undefined ||
+    failed ||
+    shuttingDown ||
+    currentConfiguration?.revision !== message.previousRevision ||
+    message.plan.revision <= message.previousRevision ||
+    inspectionWorldIdentity !== message.worldIdentity
+      ? {
+          ok: false as const,
+          error: staleConfiguration('the Render realm or configuration revision changed'),
+        }
+      : applyRenderConfiguration(renderer, message.plan);
+  if (result.ok) currentConfiguration = message.plan;
+  scope.postMessage(configurationApplyResponse(message, result));
+}
+
 function receiveBounds(message: Extract<RenderWorkerInput, { kind: 'bounds' }>): void {
   scope.postMessage({
     kind: 'bounds-result',
@@ -989,7 +1025,7 @@ function initRendererOptions(
     ...recorderRendererOptions(attachment),
     publicationSource: message.identity,
     ...(taskClient === undefined ? {} : { tasks: taskClient }),
-    maxRenderShortSide: 0,
+    maxRenderShortSide: message.startup?.settings.rendering?.view?.maxRenderShortSide ?? 0,
     ...(message.shadowWorkload === true ? { shadowWorkload: true } : {}),
     ...(message.gpuPassTiming === undefined ? {} : { gpuPassTiming: message.gpuPassTiming }),
     ...(message.pipelineLibrary === undefined ? {} : { pipelineLibrary: message.pipelineLibrary }),
@@ -1013,6 +1049,11 @@ function initRendererOptions(
       ? {}
       : { featureTextureReadbackBudgetBytes: message.featureTextureReadbackBudgetBytes }),
     ...(message.textureMipSkip === undefined ? {} : { textureMipSkip: message.textureMipSkip }),
+    ...(message.startup === undefined
+      ? {}
+      : {
+          standardProfile: message.startup.rendering.profile,
+        }),
     ...(prepared.features === undefined ? {} : { features: prepared.features }),
     ...(prepared.ssrIdentity === undefined ? {} : { ssrIdentity: prepared.ssrIdentity }),
   };
@@ -1171,7 +1212,13 @@ async function receiveInit(message: InitMessage): Promise<void> {
   if (message.loadProgressScope !== undefined) bindLoadProgressScope(message.loadProgressScope);
   installCarriedGpuStub(message);
   adoptInitPolicies(message);
-  const prepared = await prepareBootstrapEntry(message.bootstrapUrl, message.bootstrapData);
+  currentConfiguration = message.startup;
+  const prepared = await prepareBootstrapEntry(
+    message.bootstrapUrl,
+    message.bootstrapData,
+    undefined,
+    message.startup,
+  );
   if (!prepared.ok) throw prepared.error;
   if (message.rhiCapture === true) {
     attachment = await attachWorkerRhiRecorder();
@@ -1193,7 +1240,7 @@ async function receiveInit(message: InitMessage): Promise<void> {
   unsubscribeRenderer = activeRenderer.subscribe(
     createRendererErrorListener(createInitFailureContext(message)),
   );
-  await prepared.value.configureRenderer?.(activeRenderer);
+  if (message.startup === undefined) await prepared.value.configureRenderer?.(activeRenderer);
   applyRendererOrderDiagnostic(
     activeRenderer,
     message.gbufferBatchOrderDiagnostic,
@@ -1378,6 +1425,7 @@ function postSubmitted(
     worldIdentity: message.worldIdentity,
     frameId: message.frameId,
     deviceGeneration: receipt.deviceGeneration,
+    presentation: receipt.presentation,
     ...(drawIntervalMs === undefined ? {} : { renderDrawIntervalMs: drawIntervalMs }),
     renderDrawCpuMs: drawTiming.cpuMs,
     renderAwaitMs: drawTiming.awaitMs,
@@ -1395,6 +1443,9 @@ function postSubmitted(
       ? {}
       : { editorAssistance: { ...receipt.editorAssistance, frameId: message.frameId } }),
     ...(receipt.shadowWorkload === undefined ? {} : { shadowWorkload: receipt.shadowWorkload }),
+    ...(receipt.configurationRevision === undefined
+      ? {}
+      : { configurationRevision: receipt.configurationRevision }),
     ...(receipt.graphGeneration === undefined ? {} : { graphGeneration: receipt.graphGeneration }),
     ...(receipt.barrelDistortion === undefined
       ? {}
@@ -1546,6 +1597,10 @@ let drawing: Promise<void> | undefined;
 const queued: DrawMessage[] = [];
 scope.onmessage = (event) => {
   const message = event.data;
+  if (message.kind === 'configuration-apply') {
+    void drawControls.after(drawControls.cut, async () => receiveConfiguration(message));
+    return;
+  }
   if (message.kind === 'inspect') {
     void receive(message);
     return;

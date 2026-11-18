@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -48,7 +48,12 @@ function validReports() {
   ];
 }
 
-function run(root, reportsDir, selectionPath = null) {
+function run(
+  root,
+  reportsDir,
+  selectionPath = null,
+  env = { ...process.env, FORGEAX_CI_CORE_VALIDATION: '0' },
+) {
   try {
     const stdout = execFileSync(
       process.execPath,
@@ -62,6 +67,7 @@ function run(root, reportsDir, selectionPath = null) {
       ],
       {
         encoding: 'utf8',
+        env,
         stdio: ['pipe', 'pipe', 'pipe'],
       },
     );
@@ -360,6 +366,62 @@ test('accepts the producer-declared field/program closure without inferring arti
       assert.notEqual(invalid.exitCode, 0);
       assert.equal(JSON.parse(invalid.stdout).code, 'ci-shard-inventory-invalid-path');
     }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('app aggregation rejects core/full confusion and accepts one explicitly matched profile', () => {
+  const reports = validReports().map((report) => ({ ...report, profile: 'core' }));
+  const { root, reportsDir } = fixture({
+    reports,
+    inventories: reports.map((report) => paths(report.apps)),
+  });
+  try {
+    const full = run(root, reportsDir, null, { ...process.env, FORGEAX_CI_CORE_VALIDATION: '0' });
+    assert.notEqual(full.exitCode, 0);
+    assert.match(full.stdout, /ci-app-shard-profile-mismatch/);
+    const core = run(root, reportsDir, null, { ...process.env, FORGEAX_CI_CORE_VALIDATION: '1' });
+    assert.equal(core.exitCode, 0, core.stderr || core.stdout);
+    writeFileSync(
+      join(reportsDir, 'coverage-1.json'),
+      JSON.stringify({ ...reports[1], profile: 'full' }),
+    );
+    const mixed = run(root, reportsDir, null, { ...process.env, FORGEAX_CI_CORE_VALIDATION: '1' });
+    assert.notEqual(mixed.exitCode, 0);
+    assert.match(mixed.stdout, /ci-app-shard-profile-mismatch/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('declared preview outputs retain exact producer admission without requiring a Pack catalog for JS', () => {
+  const extra = [
+    'apps/alpha/dist/index.html',
+    'apps/alpha/dist/.vite/manifest.json',
+    'apps/alpha/dist/assets/main.js',
+  ];
+  const reports = validReports();
+  reports[0].artifactInventory.push(...extra);
+  const inventories = reports.map((report) => [...report.artifactInventory]);
+  const { root, reportsDir } = fixture({ reports, inventories });
+  try {
+    const path = join(root, 'apps/alpha/package.json');
+    const pkg = JSON.parse(readFileSync(path, 'utf8'));
+    pkg.forgeax = { smokeArtifacts: { preview: true } };
+    writeFileSync(path, JSON.stringify(pkg));
+    const accepted = run(root, reportsDir);
+    assert.equal(accepted.exitCode, 0, accepted.stderr || accepted.stdout);
+    inventories[0].pop();
+    writeFileSync(join(reportsDir, 'artifact-inventory-0.json'), JSON.stringify(inventories[0]));
+    const missing = run(root, reportsDir);
+    assert.notEqual(missing.exitCode, 0);
+    assert.match(missing.stdout, /ci-shard-inventory-required-file-missing/);
+    delete pkg.forgeax;
+    writeFileSync(path, JSON.stringify(pkg));
+    const undeclared = run(root, reportsDir);
+    assert.notEqual(undeclared.exitCode, 0);
+    assert.match(undeclared.stdout, /ci-shard-inventory-preview-undeclared/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

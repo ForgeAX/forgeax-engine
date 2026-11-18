@@ -15,7 +15,7 @@ import { encodePng } from '@forgeax/engine-image/png';
 import { existsSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
-import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
+import { processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 
 const SMOKE_MIN_FRAMES = 60;
@@ -158,7 +158,7 @@ const { Transform } = await import('@forgeax/engine-scene');
 const { createPrimitiveMesh } = await import('@forgeax/engine-geometry');
 
 const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const MANIFEST_URL = `data:application/json,${encodeURIComponent(readShaderManifestText(MANIFEST_PATH))}`;
+const MANIFEST_URL = processShaderManifestUrl(MANIFEST_PATH);
 const { renderer: forwardRenderer, assets: forwardAssets } = await createStandardRenderer('forward', 'standard-forward-0l');
 const { renderer: deferredRenderer, assets: deferredAssets } = await createStandardRenderer('deferred', 'standard-deferred-0l');
 

@@ -5,6 +5,7 @@ import { Context, type PluginPrograms } from '@forgeax/engine-plugin';
 import { ShaderRegistry } from '@forgeax/engine-shader';
 import { err } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
+import { resolveEngineStartup } from '../configuration';
 import {
   activateExecutionRoot,
   executionBootstrapHostPlugin,
@@ -28,7 +29,26 @@ describe('execution bootstrap isolation', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw result.error;
     expect(result.value.plugins?.[0]).toBe(plugin);
-    expect(entry).toHaveBeenCalledExactlyOnceWith(data);
+    expect(entry).toHaveBeenCalledExactlyOnceWith(data, undefined);
+  });
+
+  it('passes the immutable startup plan to the native entry before plugin activation', async () => {
+    const plan = resolveEngineStartup({}, { platform: 'unknown' }).unwrap();
+    const entry = vi.fn((_data: unknown, startup?: typeof plan) => {
+      expect(startup).toBe(plan);
+      if (startup === undefined) throw new Error('Missing startup plan');
+      expect(Object.isFrozen(startup.settings)).toBe(true);
+      return { plugins: [] };
+    });
+    const data = { value: 7 };
+    const result = await prepareBootstrapEntry(
+      'https://unused.invalid/bootstrap.mjs',
+      data,
+      entry,
+      plan,
+    );
+    expect(result.ok).toBe(true);
+    expect(entry).toHaveBeenCalledExactlyOnceWith(data, plan);
   });
 
   it('provides source geometry before plugin startup without waiting for child readiness', async () => {

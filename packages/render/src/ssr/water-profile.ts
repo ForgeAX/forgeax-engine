@@ -1,5 +1,4 @@
-// UE 5.8 defaults: view SSR quality 50 selects Medium (q2), under CVar cap 3.
-// SSRTReflections.usf's q2 permutation is a non-glossy single ray with 16 steps.
+// The default Water SSR profile uses one non-glossy ray with 16 steps.
 // These parameters are uploaded to WGSL; the shader owns no second default.
 export const WATER_SSR_DEFAULT_PROFILE = Object.freeze({
   quality: 2,

@@ -5,7 +5,7 @@
   "type": "module",
   "license": "Apache-2.0",
   "sideEffects": false,
-  "description": "Three.js r184 object compatibility on the Forgeax renderer.",
+  "description": "Three.js r187 object compatibility on the Forgeax renderer.",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -19,10 +19,358 @@
       "types": "./dist/addons/loaders/GLTFLoader.d.ts",
       "import": "./dist/addons/loaders/GLTFLoader.mjs"
     },
+    "./tsl": {
+      "types": "./dist/tsl.d.ts",
+      "import": "./dist/tsl.mjs"
+    },
     "./package.json": "./package.json",
     "./build": {
       "types": "./dist/build/materials.d.ts",
       "import": "./dist/build/index.mjs"
+    },
+    "./addons/utils/BufferGeometryUtils.js": {
+      "types": "./dist/addons/utils/BufferGeometryUtils.d.ts",
+      "import": "./dist/addons/utils/BufferGeometryUtils.mjs"
+    },
+    "./addons/utils/SkeletonUtils.js": {
+      "types": "./dist/addons/utils/SkeletonUtils.d.ts",
+      "import": "./dist/addons/utils/SkeletonUtils.mjs"
+    },
+    "./addons/math/MeshSurfaceSampler.js": {
+      "types": "./dist/addons/math/MeshSurfaceSampler.d.ts",
+      "import": "./dist/addons/math/MeshSurfaceSampler.mjs"
+    },
+    "./addons/geometries/RoundedBoxGeometry.js": {
+      "types": "./dist/addons/geometries/RoundedBoxGeometry.d.ts",
+      "import": "./dist/addons/geometries/RoundedBoxGeometry.mjs"
+    },
+    "./addons/geometries/ParametricGeometry.js": {
+      "types": "./dist/addons/geometries/ParametricGeometry.d.ts",
+      "import": "./dist/addons/geometries/ParametricGeometry.mjs"
+    },
+    "./addons/geometries/ConvexGeometry.js": {
+      "types": "./dist/addons/geometries/ConvexGeometry.d.ts",
+      "import": "./dist/addons/geometries/ConvexGeometry.mjs"
+    },
+    "./addons/geometries/BoxLineGeometry.js": {
+      "types": "./dist/addons/geometries/BoxLineGeometry.d.ts",
+      "import": "./dist/addons/geometries/BoxLineGeometry.mjs"
+    },
+    "./addons/geometries/TextGeometry.js": {
+      "types": "./dist/addons/geometries/TextGeometry.d.ts",
+      "import": "./dist/addons/geometries/TextGeometry.mjs"
+    },
+    "./addons/loaders/FontLoader.js": {
+      "types": "./dist/addons/loaders/FontLoader.d.ts",
+      "import": "./dist/addons/loaders/FontLoader.mjs"
+    },
+    "./addons/loaders/STLLoader.js": {
+      "types": "./dist/addons/loaders/STLLoader.d.ts",
+      "import": "./dist/addons/loaders/STLLoader.mjs"
+    },
+    "./addons/loaders/PLYLoader.js": {
+      "types": "./dist/addons/loaders/PLYLoader.d.ts",
+      "import": "./dist/addons/loaders/PLYLoader.mjs"
+    },
+    "./addons/loaders/XYZLoader.js": {
+      "types": "./dist/addons/loaders/XYZLoader.d.ts",
+      "import": "./dist/addons/loaders/XYZLoader.mjs"
+    },
+    "./addons/math/OBB.js": {
+      "types": "./dist/addons/math/OBB.d.ts",
+      "import": "./dist/addons/math/OBB.mjs"
+    },
+    "./addons/math/Octree.js": {
+      "types": "./dist/addons/math/Octree.d.ts",
+      "import": "./dist/addons/math/Octree.mjs"
+    },
+    "./addons/math/ConvexHull.js": {
+      "types": "./dist/addons/math/ConvexHull.d.ts",
+      "import": "./dist/addons/math/ConvexHull.mjs"
+    },
+    "./addons/math/ImprovedNoise.js": {
+      "types": "./dist/addons/math/ImprovedNoise.d.ts",
+      "import": "./dist/addons/math/ImprovedNoise.mjs"
+    },
+    "./addons/math/SimplexNoise.js": {
+      "types": "./dist/addons/math/SimplexNoise.d.ts",
+      "import": "./dist/addons/math/SimplexNoise.mjs"
+    },
+    "./addons/math/Capsule.js": {
+      "types": "./dist/addons/math/Capsule.d.ts",
+      "import": "./dist/addons/math/Capsule.mjs"
+    },
+    "./addons/curves/CurveExtras.js": {
+      "types": "./dist/addons/curves/CurveExtras.d.ts",
+      "import": "./dist/addons/curves/CurveExtras.mjs"
+    },
+    "./addons/utils/SceneUtils.js": {
+      "types": "./dist/addons/utils/SceneUtils.d.ts",
+      "import": "./dist/addons/utils/SceneUtils.mjs"
+    },
+    "./addons/modifiers/EdgeSplitModifier.js": {
+      "types": "./dist/addons/modifiers/EdgeSplitModifier.d.ts",
+      "import": "./dist/addons/modifiers/EdgeSplitModifier.mjs"
+    },
+    "./addons/modifiers/SimplifyModifier.js": {
+      "types": "./dist/addons/modifiers/SimplifyModifier.d.ts",
+      "import": "./dist/addons/modifiers/SimplifyModifier.mjs"
+    },
+    "./addons/modifiers/TessellateModifier.js": {
+      "types": "./dist/addons/modifiers/TessellateModifier.d.ts",
+      "import": "./dist/addons/modifiers/TessellateModifier.mjs"
+    },
+    "./addons/geometries/DecalGeometry.js": {
+      "types": "./dist/addons/geometries/DecalGeometry.d.ts",
+      "import": "./dist/addons/geometries/DecalGeometry.mjs"
+    },
+    "./addons/geometries/ParametricFunctions.js": {
+      "types": "./dist/addons/geometries/ParametricFunctions.d.ts",
+      "import": "./dist/addons/geometries/ParametricFunctions.mjs"
+    },
+    "./addons/geometries/TeapotGeometry.js": {
+      "types": "./dist/addons/geometries/TeapotGeometry.d.ts",
+      "import": "./dist/addons/geometries/TeapotGeometry.mjs"
+    },
+    "./addons/exporters/OBJExporter.js": {
+      "types": "./dist/addons/exporters/OBJExporter.d.ts",
+      "import": "./dist/addons/exporters/OBJExporter.mjs"
+    },
+    "./addons/exporters/STLExporter.js": {
+      "types": "./dist/addons/exporters/STLExporter.d.ts",
+      "import": "./dist/addons/exporters/STLExporter.mjs"
+    },
+    "./addons/exporters/PLYExporter.js": {
+      "types": "./dist/addons/exporters/PLYExporter.d.ts",
+      "import": "./dist/addons/exporters/PLYExporter.mjs"
+    },
+    "./addons/loaders/OBJLoader.js": {
+      "types": "./dist/addons/loaders/OBJLoader.d.ts",
+      "import": "./dist/addons/loaders/OBJLoader.mjs"
+    },
+    "./addons/loaders/MTLLoader.js": {
+      "types": "./dist/addons/loaders/MTLLoader.d.ts",
+      "import": "./dist/addons/loaders/MTLLoader.mjs"
+    },
+    "./addons/loaders/HDRLoader.js": {
+      "types": "./dist/addons/loaders/HDRLoader.d.ts",
+      "import": "./dist/addons/loaders/HDRLoader.mjs"
+    },
+    "./addons/animation/AnimationClipCreator.js": {
+      "types": "./dist/addons/animation/AnimationClipCreator.d.ts",
+      "import": "./dist/addons/animation/AnimationClipCreator.mjs"
+    },
+    "./addons/animation/CCDIKSolver.js": {
+      "types": "./dist/addons/animation/CCDIKSolver.d.ts",
+      "import": "./dist/addons/animation/CCDIKSolver.mjs"
+    },
+    "./addons/utils/CameraUtils.js": {
+      "types": "./dist/addons/utils/CameraUtils.d.ts",
+      "import": "./dist/addons/utils/CameraUtils.mjs"
+    },
+    "./addons/utils/ColorUtils.js": {
+      "types": "./dist/addons/utils/ColorUtils.d.ts",
+      "import": "./dist/addons/utils/ColorUtils.mjs"
+    },
+    "./addons/utils/GeometryUtils.js": {
+      "types": "./dist/addons/utils/GeometryUtils.d.ts",
+      "import": "./dist/addons/utils/GeometryUtils.mjs"
+    },
+    "./addons/helpers/VertexNormalsHelper.js": {
+      "types": "./dist/addons/helpers/VertexNormalsHelper.d.ts",
+      "import": "./dist/addons/helpers/VertexNormalsHelper.mjs"
+    },
+    "./addons/helpers/VertexTangentsHelper.js": {
+      "types": "./dist/addons/helpers/VertexTangentsHelper.d.ts",
+      "import": "./dist/addons/helpers/VertexTangentsHelper.mjs"
+    },
+    "./addons/helpers/OctreeHelper.js": {
+      "types": "./dist/addons/helpers/OctreeHelper.d.ts",
+      "import": "./dist/addons/helpers/OctreeHelper.mjs"
+    },
+    "./addons/math/Lut.js": {
+      "types": "./dist/addons/math/Lut.d.ts",
+      "import": "./dist/addons/math/Lut.mjs"
+    },
+    "./addons/loaders/BVHLoader.js": {
+      "types": "./dist/addons/loaders/BVHLoader.d.ts",
+      "import": "./dist/addons/loaders/BVHLoader.mjs"
+    },
+    "./addons/loaders/PCDLoader.js": {
+      "types": "./dist/addons/loaders/PCDLoader.d.ts",
+      "import": "./dist/addons/loaders/PCDLoader.mjs"
+    },
+    "./addons/loaders/VTKLoader.js": {
+      "types": "./dist/addons/loaders/VTKLoader.d.ts",
+      "import": "./dist/addons/loaders/VTKLoader.mjs"
+    },
+    "./addons/loaders/FBXLoader.js": {
+      "types": "./dist/addons/loaders/FBXLoader.d.ts",
+      "import": "./dist/addons/loaders/FBXLoader.mjs"
+    },
+    "./addons/loaders/SVGLoader.js": {
+      "types": "./dist/addons/loaders/SVGLoader.d.ts",
+      "import": "./dist/addons/loaders/SVGLoader.mjs"
+    },
+    "./addons/loaders/TGALoader.js": {
+      "types": "./dist/addons/loaders/TGALoader.d.ts",
+      "import": "./dist/addons/loaders/TGALoader.mjs"
+    },
+    "./addons/loaders/DDSLoader.js": {
+      "types": "./dist/addons/loaders/DDSLoader.d.ts",
+      "import": "./dist/addons/loaders/DDSLoader.mjs"
+    },
+    "./addons/loaders/KTXLoader.js": {
+      "types": "./dist/addons/loaders/KTXLoader.d.ts",
+      "import": "./dist/addons/loaders/KTXLoader.mjs"
+    },
+    "./addons/loaders/EXRLoader.js": {
+      "types": "./dist/addons/loaders/EXRLoader.d.ts",
+      "import": "./dist/addons/loaders/EXRLoader.mjs"
+    },
+    "./addons/loaders/IESLoader.js": {
+      "types": "./dist/addons/loaders/IESLoader.d.ts",
+      "import": "./dist/addons/loaders/IESLoader.mjs"
+    },
+    "./addons/loaders/LUTCubeLoader.js": {
+      "types": "./dist/addons/loaders/LUTCubeLoader.d.ts",
+      "import": "./dist/addons/loaders/LUTCubeLoader.mjs"
+    },
+    "./addons/loaders/LUT3dlLoader.js": {
+      "types": "./dist/addons/loaders/LUT3dlLoader.d.ts",
+      "import": "./dist/addons/loaders/LUT3dlLoader.mjs"
+    },
+    "./addons/loaders/MDDLoader.js": {
+      "types": "./dist/addons/loaders/MDDLoader.d.ts",
+      "import": "./dist/addons/loaders/MDDLoader.mjs"
+    },
+    "./addons/loaders/PDBLoader.js": {
+      "types": "./dist/addons/loaders/PDBLoader.d.ts",
+      "import": "./dist/addons/loaders/PDBLoader.mjs"
+    },
+    "./addons/loaders/NRRDLoader.js": {
+      "types": "./dist/addons/loaders/NRRDLoader.d.ts",
+      "import": "./dist/addons/loaders/NRRDLoader.mjs"
+    },
+    "./addons/curves/NURBSCurve.js": {
+      "types": "./dist/addons/curves/NURBSCurve.d.ts",
+      "import": "./dist/addons/curves/NURBSCurve.mjs"
+    },
+    "./addons/curves/NURBSSurface.js": {
+      "types": "./dist/addons/curves/NURBSSurface.d.ts",
+      "import": "./dist/addons/curves/NURBSSurface.mjs"
+    },
+    "./addons/curves/NURBSVolume.js": {
+      "types": "./dist/addons/curves/NURBSVolume.d.ts",
+      "import": "./dist/addons/curves/NURBSVolume.mjs"
+    },
+    "./addons/curves/NURBSUtils.js": {
+      "types": "./dist/addons/curves/NURBSUtils.d.ts",
+      "import": "./dist/addons/curves/NURBSUtils.mjs"
+    },
+    "./addons/geometries/LoftGeometry.js": {
+      "types": "./dist/addons/geometries/LoftGeometry.d.ts",
+      "import": "./dist/addons/geometries/LoftGeometry.mjs"
+    },
+    "./addons/math/ColorConverter.js": {
+      "types": "./dist/addons/math/ColorConverter.d.ts",
+      "import": "./dist/addons/math/ColorConverter.mjs"
+    },
+    "./addons/math/ColorSpaces.js": {
+      "types": "./dist/addons/math/ColorSpaces.d.ts",
+      "import": "./dist/addons/math/ColorSpaces.mjs"
+    },
+    "./addons/utils/SortUtils.js": {
+      "types": "./dist/addons/utils/SortUtils.d.ts",
+      "import": "./dist/addons/utils/SortUtils.mjs"
+    },
+    "./addons/misc/ConvexObjectBreaker.js": {
+      "types": "./dist/addons/misc/ConvexObjectBreaker.d.ts",
+      "import": "./dist/addons/misc/ConvexObjectBreaker.mjs"
+    },
+    "./addons/controls/ArcballControls.js": {
+      "types": "./dist/addons/controls/ArcballControls.d.ts",
+      "import": "./dist/addons/controls/ArcballControls.mjs"
+    },
+    "./addons/controls/DragControls.js": {
+      "types": "./dist/addons/controls/DragControls.d.ts",
+      "import": "./dist/addons/controls/DragControls.mjs"
+    },
+    "./addons/controls/FirstPersonControls.js": {
+      "types": "./dist/addons/controls/FirstPersonControls.d.ts",
+      "import": "./dist/addons/controls/FirstPersonControls.mjs"
+    },
+    "./addons/controls/FlyControls.js": {
+      "types": "./dist/addons/controls/FlyControls.d.ts",
+      "import": "./dist/addons/controls/FlyControls.mjs"
+    },
+    "./addons/controls/MapControls.js": {
+      "types": "./dist/addons/controls/MapControls.d.ts",
+      "import": "./dist/addons/controls/MapControls.mjs"
+    },
+    "./addons/controls/PointerLockControls.js": {
+      "types": "./dist/addons/controls/PointerLockControls.d.ts",
+      "import": "./dist/addons/controls/PointerLockControls.mjs"
+    },
+    "./addons/controls/TrackballControls.js": {
+      "types": "./dist/addons/controls/TrackballControls.d.ts",
+      "import": "./dist/addons/controls/TrackballControls.mjs"
+    },
+    "./addons/controls/TransformControls.js": {
+      "types": "./dist/addons/controls/TransformControls.d.ts",
+      "import": "./dist/addons/controls/TransformControls.mjs"
+    },
+    "./addons/loaders/ColladaLoader.js": {
+      "types": "./dist/addons/loaders/ColladaLoader.d.ts",
+      "import": "./dist/addons/loaders/ColladaLoader.mjs"
+    },
+    "./addons/loaders/3MFLoader.js": {
+      "types": "./dist/addons/loaders/3MFLoader.d.ts",
+      "import": "./dist/addons/loaders/3MFLoader.mjs"
+    },
+    "./addons/loaders/AMFLoader.js": {
+      "types": "./dist/addons/loaders/AMFLoader.d.ts",
+      "import": "./dist/addons/loaders/AMFLoader.mjs"
+    },
+    "./addons/loaders/VOXLoader.js": {
+      "types": "./dist/addons/loaders/VOXLoader.d.ts",
+      "import": "./dist/addons/loaders/VOXLoader.mjs"
+    },
+    "./addons/loaders/TDSLoader.js": {
+      "types": "./dist/addons/loaders/TDSLoader.d.ts",
+      "import": "./dist/addons/loaders/TDSLoader.mjs"
+    },
+    "./addons/loaders/VRMLLoader.js": {
+      "types": "./dist/addons/loaders/VRMLLoader.d.ts",
+      "import": "./dist/addons/loaders/VRMLLoader.mjs"
+    },
+    "./addons/loaders/GCodeLoader.js": {
+      "types": "./dist/addons/loaders/GCodeLoader.d.ts",
+      "import": "./dist/addons/loaders/GCodeLoader.mjs"
+    },
+    "./addons/loaders/RGBELoader.js": {
+      "types": "./dist/addons/loaders/RGBELoader.d.ts",
+      "import": "./dist/addons/loaders/RGBELoader.mjs"
+    },
+    "./addons/interactive/SelectionBox.js": {
+      "types": "./dist/addons/interactive/SelectionBox.d.ts",
+      "import": "./dist/addons/interactive/SelectionBox.mjs"
+    },
+    "./addons/interactive/SelectionHelper.js": {
+      "types": "./dist/addons/interactive/SelectionHelper.d.ts",
+      "import": "./dist/addons/interactive/SelectionHelper.mjs"
+    },
+    "./addons/helpers/AnimationPathHelper.js": {
+      "types": "./dist/addons/helpers/AnimationPathHelper.d.ts",
+      "import": "./dist/addons/helpers/AnimationPathHelper.mjs"
+    },
+    "./addons/utils/SceneOptimizer.js": {
+      "types": "./dist/addons/utils/SceneOptimizer.d.ts",
+      "import": "./dist/addons/utils/SceneOptimizer.mjs"
+    },
+    "./addons/exporters/GLTFExporter.js": {
+      "types": "./dist/addons/exporters/GLTFExporter.d.ts",
+      "import": "./dist/addons/exporters/GLTFExporter.mjs"
     }
   },
   "main": "./dist/index.mjs",
@@ -50,14 +398,15 @@
     "@forgeax/engine-ecs": "workspace:*",
     "@forgeax/engine-geometry": "workspace:*",
     "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-physics": "workspace:*",
     "@forgeax/engine-render": "workspace:*",
     "@forgeax/engine-rhi-debug": "workspace:*",
     "@forgeax/engine-rhi-webgpu": "workspace:*",
     "@forgeax/engine-runtime": "workspace:*",
     "@forgeax/engine-scene": "workspace:*",
     "@forgeax/engine-types": "workspace:*",
-    "@types/three": "0.184.0",
-    "three": "0.184.0",
+    "@types/three": "0.187.0",
+    "three": "0.187.0",
     "@forgeax/engine-assets-runtime": "workspace:*",
     "@forgeax/engine-skinning": "workspace:*",
     "@forgeax/engine-codec": "workspace:*",

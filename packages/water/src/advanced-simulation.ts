@@ -271,7 +271,7 @@ function appendSimulationStages(
   dt: number,
   add: AppendStage,
 ): void {
-  const river = config.stageProfile === 'ue-5.8.1-river';
+  const river = config.stageProfile === 'river-shallow/2';
   if (river) {
     add('Pre Sim', 0, dt);
     add('River Source and Sink', 0, dt);
@@ -299,7 +299,7 @@ function waterAdvancedStageTasks(
   const config = recipe.shallowStageConfig;
   const substeps = recipe.substepConfig;
   if (!config || !substeps || !recipe.enabledFeatures.includes('shallow')) return [];
-  const river = config.stageProfile === 'ue-5.8.1-river';
+  const river = config.stageProfile === 'river-shallow/2';
   const rows: WaterAdvancedStageTask[] = [];
   const dt =
     Math.min(frameDeltaSeconds / substeps.numSteps, maximumDeltaSeconds) * substeps.simSpeed;
@@ -438,8 +438,7 @@ export class WaterAdvancedSimulation {
     if (limit?.kind !== 'application-cap')
       return err({
         code: 'water-advanced-source-parameter-unavailable',
-        expected:
-          'an explicit application-cap because the effective UE source timestep cap is unpaired',
+        expected: 'an explicit application-cap with a positive maximumDeltaSeconds',
         hint: 'author substepConfig.deltaLimit with kind application-cap and a positive maximumDeltaSeconds',
         detail: {
           recipeGuid: recipe.guid,

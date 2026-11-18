@@ -1,5 +1,11 @@
 # hello-lod-occlusion
 
+The native performance fixture owns one URL for the original sealed shader
+publication. Independent Renderers consume those same bytes without repeated
+JSON expansion and percent encoding at the producer. The URL retires with the
+fixture; device isolation, complete shader closure, retained samples and
+mandatory falsifiers remain unchanged.
+
 This fixture consumes a real `lod-scene.gltf` and its producer-authored
 `lod-scene.gltf.meta.json` sidecar through Vite `pluginPack` and the glTF
 importer. The root node uses standard `MSFT_lod` node relationships; the

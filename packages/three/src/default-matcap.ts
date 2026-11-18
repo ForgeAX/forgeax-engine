@@ -6,7 +6,7 @@ import {
   RGBAFormat,
 } from 'three/src/Three.Core.js';
 
-// r184's procedural matcap is linear in V: mix(0.2, 0.8, uv.y).
+// r187's procedural matcap is linear in V: mix(0.2, 0.8, uv.y).
 // The native matcap UV stays in [0.005, 0.995], inside these texel centers;
 // bilinear sampling reproduces that ramp without changing any native shader.
 const height = 128;

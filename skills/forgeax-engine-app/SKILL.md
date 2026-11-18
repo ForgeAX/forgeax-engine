@@ -14,6 +14,21 @@ on the authored element. Its `onAction` delegation reads `data-ui-action`, not a
 arbitrary `data-action` attribute. Verify real click acknowledgement and visible
 geometry rather than the presence of HTML text.
 
+## Configuration route
+
+Declare project settings in a build configuration plugin providing
+`devkitAppOptions.configuration`; use the [App configuration entry](../../packages/app/README.md#engine-configuration)
+and [game-3d plugin](../../templates/game-3d/assets/project-configuration.ts).
+Keep bootstrap/native bindings outside the data definition. Supply actual Host
+facts and storage through `configurationHost`; do not guess model names.
+Use `app.configuration.setQuality` for preset/group requests and inspect the
+requested/applied plans, constraints, sources and submitted/completed revision.
+A texture-residency change returns `configuration-recreate-required` before any
+hot field applies; retain pending restart intent. A setter ACK or UI-only picture
+is not ready-scene evidence. Do not call `renderer.setProfile` to bypass a managed
+App's configuration. Verify A-to-B-to-A and replacement-realm adoption on actual
+Browser/Worker frames; native assembly must resolve before constructing domains.
+
 ## Render happy path
 
 Supply optional host tools through the App host adapter. Keep environment and

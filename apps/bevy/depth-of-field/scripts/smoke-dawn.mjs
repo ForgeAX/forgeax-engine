@@ -10,7 +10,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
+import { processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -80,7 +80,7 @@ const mockCanvas = {
 };
 
 const manifestPath = resolve(appRoot, 'dist', 'shaders', 'manifest.json');
-const manifestUrl = `data:application/json,${encodeURIComponent(readShaderManifestText(manifestPath))}`;
+const manifestUrl = processShaderManifestUrl(manifestPath);
 const shaderPath = resolve(appRoot, 'src', 'depth-of-field.wgsl');
 const shaderSource = readFileSync(shaderPath, 'utf8');
 const { World } = await import('@forgeax/engine-ecs');

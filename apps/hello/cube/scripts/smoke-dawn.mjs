@@ -38,7 +38,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
-import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
+import { processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
 
 
@@ -186,7 +186,7 @@ const { Name, Transform } = await import('@forgeax/engine-scene');
 // fallback shader so the manifest must carry both entries).
 const here = dirname(fileURLToPath(import.meta.url));
 const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const MANIFEST_URL = `data:application/json,${encodeURIComponent(readShaderManifestText(MANIFEST_PATH))}`;
+const MANIFEST_URL = processShaderManifestUrl(MANIFEST_PATH);
 
 let renderer;
 let assets;

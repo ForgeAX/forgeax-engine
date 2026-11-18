@@ -573,6 +573,10 @@ export async function validateRenderEntries(
  * the three-argument `compileShader(src, { imports, defines, id })` entry lives.
  * Callers of this raw passthrough should `try / catch` the thrown error.
  *
+ * An optional synchronous normalizer runs before checked writeback admission.
+ * Its result is reparsed, validated and checked for complete buffer-ABI equality.
+ * The next exact parse/validate may consume that owned IR once.
+ *
  * Wasm boundary: awaits `ensureReady()` on first call (shared singleton with
  * `@forgeax/engine-rhi-wgpu` + other naga phases); subsequent calls take the
  * cached path.
@@ -581,11 +585,20 @@ export async function composeShader(
   entry: string,
   imports: Record<string, string>,
   defines: Record<string, boolean>,
+  normalize?: (source: string) => string,
 ): Promise<string> {
   const wasm = await ensureReady();
-  const compose = (wasm as { compose_shader: (e: string, i: string, d: string) => string })
-    .compose_shader;
-  return compose(entry, JSON.stringify(imports), JSON.stringify(defines));
+  const compose = (
+    wasm as {
+      compose_shader: (
+        e: string,
+        i: string,
+        d: string,
+        normalize?: (source: string) => string,
+      ) => string;
+    }
+  ).compose_shader;
+  return compose(entry, JSON.stringify(imports), JSON.stringify(defines), normalize);
 }
 
 // === Phase 3: emit_reflection =======================================================

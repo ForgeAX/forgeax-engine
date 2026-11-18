@@ -14,6 +14,7 @@ import { gameVfxSource } from '../../game-vfx-source.js';
 import { gameRenderFeaturesSource } from '../../host/render-feature-contributions.js';
 import type { StartupUiOptions } from '../../host/startup-ui.js';
 import { prepareWechatBuild } from '../wechat.js';
+import { configurationHostScope } from './configuration-host.fixture';
 
 const { inspectUi } = (await import(
   new URL('../../../../ui/src/inspection.ts', import.meta.url).href
@@ -139,6 +140,8 @@ async function generatedHost(startupUi: StartupUiOptions = {}) {
     },
     getPerformance: () => ({ now: () => performance.now() }),
     getDeviceInfo: () => ({ platform: 'devtools' }),
+    getStorageSync: () => '',
+    setStorageSync() {},
     getWindowInfo: () => {
       rejectAt('platform');
       return { windowWidth: 600, windowHeight: 400, pixelRatio: 1 };
@@ -180,6 +183,7 @@ async function generatedHost(startupUi: StartupUiOptions = {}) {
     { compilerOptions },
   ).outputText;
   const scope = {
+    ...configurationHostScope,
     createGameRenderFeatures: runInNewContext(`${featureCode}\ncreateGameRenderFeatures`, {}),
     createGameVfx: runInNewContext(`${vfxCode}\ncreateGameVfx`, { createVfxRuntimeHost }),
     inspectUi,

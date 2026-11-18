@@ -183,17 +183,17 @@ const element = <T extends HTMLElement = HTMLElement>(id: string) => {
   return found as T;
 };
 const selections: Record<Mode, WaterCapabilitySelection> = {
-  Q0: { quality: 'Q0', configuration: 'UE-R0' },
-  Q1: { quality: 'Q1', configuration: 'UE-R0' },
-  Q2: { quality: 'Q2', configuration: 'UE-R2' },
-  Q3: { quality: 'Q3', configuration: 'UE-R0' },
+  Q0: { quality: 'Q0', configuration: 'surface' },
+  Q1: { quality: 'Q1', configuration: 'surface' },
+  Q2: { quality: 'Q2', configuration: 'surface-without-ssr' },
+  Q3: { quality: 'Q3', configuration: 'surface' },
   Q4: { quality: 'Q4', configuration: null },
-  R1: { quality: null, configuration: 'UE-R1', subfeature: 'gpu-mesh' },
-  R5: { quality: null, configuration: 'UE-R5', subfeature: 'async-buoyancy' },
-  R6: { quality: null, configuration: 'UE-R6', subfeature: 'fluid-simulation' },
-  'R7-shallow': { quality: null, configuration: 'UE-R7', subfeature: 'advanced-shallow' },
-  'R7-bake': { quality: null, configuration: 'UE-R7', subfeature: 'river-bake' },
-  'R7-fft': { quality: null, configuration: 'UE-R7', subfeature: 'ocean-fft' },
+  R1: { quality: null, configuration: 'gpu-mesh', subfeature: 'gpu-mesh' },
+  R5: { quality: null, configuration: 'async-buoyancy', subfeature: 'async-buoyancy' },
+  R6: { quality: null, configuration: 'fluid-simulation', subfeature: 'fluid-simulation' },
+  'R7-shallow': { quality: null, configuration: 'advanced-simulation', subfeature: 'advanced-shallow' },
+  'R7-bake': { quality: null, configuration: 'advanced-simulation', subfeature: 'river-bake' },
+  'R7-fft': { quality: null, configuration: 'advanced-simulation', subfeature: 'ocean-fft' },
 };
 const regions: Record<string, Vector> = {
   ship: [0, 3, 0],
@@ -203,24 +203,10 @@ const regions: Record<string, Vector> = {
 };
 const unavailableModes: Partial<Record<Mode, string>> = {
   'R7-bake':
-    'The coast has no completed River Bake product, durable texture publication or query-grid binding. Runtime acceptance remains in r7-advanced-shallow-bake-fft.',
+    'River baking requires a river body, durable texture outputs and a bound query grid. Open the river simulation scene.',
   'R7-fft':
-    'The coast uses mode-projected gravity rather than the UE Niagara FFT recipe. UE FFT acceptance remains in r7-advanced-shallow-bake-fft.',
+    'The coast uses gravity-wave simulation. Open the ocean simulation scene for spectral FFT.',
 };
-const unverifiedFaultPrerequisites = {
-  'shared-curve-revision': {
-    owner: 'WaterBrushRecipe and Terrain cook',
-    prerequisite:
-      'Author a shared elevation-curve reference in a saved Brush recipe, then publish its cooked Terrain closure and compare consumer generations.',
-    status: 'unverified',
-  },
-  'terrain-cook-failure': {
-    owner: 'Asset cook and Terrain publication',
-    prerequisite:
-      'Run an authored Terrain cook candidate, retain its structured rejection and verify that the prior Terrain, query and Physics outputs remain accepted.',
-    status: 'unverified',
-  },
-} as const;
 const json = (_: string, value: unknown): unknown =>
   value instanceof Error
     ? {
@@ -1072,7 +1058,6 @@ async function main() {
         qualityMaterialHandles.Q4.map((handle) => assets.revision(handle).unwrap()),
       ]),
       settings,
-      requiresFoamValidation(),
       async.execution,
       inspectRhiDeviceFacts(inspection.capabilities, inspection.limits ?? {}),
       renderer,
@@ -1094,7 +1079,7 @@ async function main() {
     localRecipe: assets.read(localRecipe).unwrap(),
   });
   const readState = () => ({
-    version: 1,
+    version: 2,
     scene: sceneEvidence(
       sourceKey,
       guid('scene/coast'),
@@ -1131,11 +1116,10 @@ async function main() {
       })),
     },
     localDisturbance: {
-      model: requestedMode === 'R7-shallow' ? 'ue-5.8.1-water-body' : 'mode-projected-gravity/1',
+      model: requestedMode === 'R7-shallow' ? 'water-body-shallow/2' : 'mode-projected-gravity/1',
       composition: 'additive-residual',
       cpuBuoyancyFeedback:
         requestedMode !== 'R7-shallow' && element<HTMLInputElement>('local-water-enabled').checked,
-      feedbackAcceptance: 'unverified',
       config: assets.read(requestedMode === 'R7-shallow' ? r7Recipe : localRecipe).unwrap(),
       enabled: element<HTMLInputElement>('local-water-enabled').checked,
       state: (requestedMode === 'R7-shallow' ? r7Simulation : localSimulation)?.inspect() ?? null,
@@ -1172,7 +1156,6 @@ async function main() {
       COAST_FOAM_DECAY_PER_SECOND,
     ),
     unavailableModes,
-    unverifiedFaultPrerequisites,
     buoyancy: buoyancy(),
     visualContacts: contacts(),
     composition: waterComposition(
@@ -1259,7 +1242,7 @@ async function main() {
       const prerequisite = unavailableModes[mode];
       if (prerequisite) {
         element<HTMLSelectElement>('quality').value = requestedMode;
-        record('configuration-unavailable', { mode, prerequisite, comparison: 'unvalidated' });
+        record('configuration-unavailable', { mode, prerequisite });
         message(prerequisite);
         return;
       }
@@ -1279,7 +1262,6 @@ async function main() {
         record('configuration-unavailable', {
           mode,
           prerequisite: missing,
-          comparison: 'unvalidated',
         });
         message(missing);
         return;
@@ -1308,7 +1290,6 @@ async function main() {
               prerequisite:
                 'CPU WaterMesh source, compute, storage and texture limits must be admitted before the candidate frame',
               device: facts,
-              comparison: 'unvalidated',
             });
             return;
           }
@@ -1612,7 +1593,6 @@ async function main() {
     const capability = capabilities(requestedMode, latest),
       budget = logicalBudget(latest);
     element('implementation').textContent = capability.implementation;
-    element('comparison').textContent = capability.comparison;
     element('requirements').textContent = capability.requirements
       .filter((row) => row.status !== 'supported')
       .map((row) => `${row.owner}.${row.name}: ${row.status}`)
@@ -1620,7 +1600,7 @@ async function main() {
     element('mode-badge').textContent = `${activeMode} 光学${
       element<HTMLInputElement>('local-water-enabled').checked
         ? activeMode === 'R7-shallow'
-          ? ' + R7 浅水'
+          ? ' + 浅水'
           : ' + 色散水波'
         : ''
     }`;
@@ -1642,7 +1622,6 @@ async function main() {
           async: buoyancy().async,
           shipPosition: position(),
           zone: water().zoneSnapshots(),
-          unverifiedFaultPrerequisites,
           producerFaults: { waterInfoCapture: waterInfoProbe.inspect() },
         },
         json,

@@ -3,7 +3,7 @@ import testQuality from '../../../../scripts/test/render-quality.json' with { ty
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
+import { processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 const FRAMES = Math.max(Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10), 60);
 // Keep the original 2.88-second lifecycle horizon while reducing GPU submissions.
@@ -43,7 +43,7 @@ const canvas = {
 };
 const here = dirname(fileURLToPath(import.meta.url));
 const manifest = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const manifestUrl = `data:application/json,${encodeURIComponent(readShaderManifestText(manifest))}`;
+const manifestUrl = processShaderManifestUrl(manifest);
 const originalRequestAdapter = gpu.requestAdapter.bind(gpu);
 gpu.requestAdapter = async (options) => {
   const adapter = await originalRequestAdapter(options);

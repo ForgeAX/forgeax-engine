@@ -23,13 +23,12 @@
         "reason": "vite app bundle (dist/assets) shape is downstream of @forgeax/engine-runtime + @forgeax/engine-rhi-webgpu sizes already tracked at the package level"
       },
       "fps": {
-        "enabled": true,
-        "sampleCount": 5,
-        "frameCount": 120
+        "enabled": false,
+        "reason": "The software-compositor requestAnimationFrame probe has no regression threshold and does not measure completed Engine frames. The independent 60-frame native smoke and actual GPU metrics retain runtime acceptance."
       },
       "bench": {
         "enabled": false,
-        "reason": "fps kind covers per-frame perf for this app; vitest bench focus stays on @forgeax/engine-math"
+        "reason": "Core math benchmarks and actual completed-frame GPU metrics own performance acceptance."
       },
       "gate": {
         "enabled": true,

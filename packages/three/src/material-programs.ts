@@ -7,7 +7,8 @@ import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { decompressZstd } from '@forgeax/engine-codec';
 import { validateCookedMaterialRecord } from '@forgeax/engine-pack';
 import type { AssetHandle, MaterialAsset } from '@forgeax/engine-types';
-import { unsupported } from './errors';
+import { ThreeCompatibilityError } from './errors';
+import { TEXTURE_SLOTS } from './material';
 
 async function registerPrograms(
   assets: AssetRegistry,
@@ -94,10 +95,23 @@ export async function prepareMaterialPrograms(
             required.length) &&
         required.every((name) => program.parameters?.some((parameter) => parameter.name === name)),
     );
-    if (entry === undefined)
-      return unsupported(
-        `Physical texture variant [${required.join(', ')}] needs build-time cookPhysicalMaterials() and forgeax.materialPrograms; a broader recipe would sample absent maps`,
-      ).unwrap();
+    if (entry === undefined) {
+      if (family !== 'physical')
+        throw new ThreeCompatibilityError(
+          'three-owner-failed',
+          `Missing packaged ${family} material program`,
+          'Rebuild or repair the packaged Three material publication; this is not a Physical texture recipe request.',
+        );
+      const slots = Object.entries(TEXTURE_SLOTS)
+        .filter(([slot, parameter]) => slot !== 'matcap' && required.includes(parameter))
+        .map(([slot]) => slot)
+        .sort();
+      throw new ThreeCompatibilityError(
+        'three-unsupported',
+        `Physical texture variant [${required.join(', ')}] needs build-time cookPhysicalMaterials()`,
+        `Cook the exact source slots with cookPhysicalMaterials([${JSON.stringify(slots)}]) and pass its publication through forgeax.materialPrograms. Include the exact set for each add/remove transition; no broader recipe or dropped map is accepted.`,
+      );
+    }
     const { program, projection } = entry;
     const names = new Set(program.parameters?.map((parameter) => parameter.name));
     const values = Object.fromEntries(

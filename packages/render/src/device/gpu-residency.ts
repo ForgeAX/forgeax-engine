@@ -858,8 +858,32 @@ export class GpuResidencyCache {
   }
   private readonly pendingTextureMips = new Map<Texture, MipmapTextureDescriptor>();
 
+  private hasTexturePreparation(selected?: Texture): boolean {
+    if (selected !== undefined) return this.pendingTextureMips.has(selected);
+    return (
+      this.pendingTextureMips.size !== 0 ||
+      this.pendingTextureProjections.size !== 0 ||
+      this.textureGenerators.pending
+    );
+  }
+
+  private takeTextureProjections(onlyMip: boolean) {
+    if (onlyMip) return [];
+    const projections = this.pendingTextureProjections.delete(this.imagePages)
+      ? [this.imagePages, ...this.pendingTextureProjections]
+      : [...this.pendingTextureProjections];
+    this.pendingTextureProjections.clear();
+    return projections;
+  }
+
+  private textureMipEntries(selected?: Texture): [Texture, MipmapTextureDescriptor][] {
+    if (selected === undefined) return [...this.pendingTextureMips];
+    const descriptor = this.pendingTextureMips.get(selected);
+    return descriptor === undefined ? [] : [[selected, descriptor]];
+  }
+
   /** Lazy texture uploads discovered while recording execute before that frame's draws. */
-  prepareTextureMips(): Result<
+  prepareTextureMips(selected?: Texture): Result<
     | {
         readonly buffer: CommandBuffer | undefined;
         complete(submitted: boolean): void;
@@ -867,27 +891,19 @@ export class GpuResidencyCache {
     | undefined,
     RhiError
   > {
-    if (
-      this.pendingTextureMips.size === 0 &&
-      this.pendingTextureProjections.size === 0 &&
-      !this.textureGenerators.pending
-    )
-      return NO_TEXTURE_WORK;
+    if (!this.hasTexturePreparation(selected)) return NO_TEXTURE_WORK;
     const device = this.gpuDevice;
     if (device === undefined) return NO_TEXTURE_WORK;
     const epoch = this.deviceEpoch;
     // Source pages must precede every derived bake even if a retained Terrain
     // binding entered the queue before another view authored new image work.
-    const projections = this.pendingTextureProjections.delete(this.imagePages)
-      ? [this.imagePages, ...this.pendingTextureProjections]
-      : [...this.pendingTextureProjections];
-    this.pendingTextureProjections.clear();
+    const projections = this.takeTextureProjections(selected !== undefined);
     let encoder: RhiCommandEncoder | undefined;
     const commands = () => {
       encoder ??= device.createCommandEncoder({ label: 'texture-mips' }).unwrap();
       return encoder;
     };
-    const entries = [...this.pendingTextureMips];
+    const entries = this.textureMipEntries(selected);
     const releases: (() => void)[] = [];
     const projected: { complete(submitted: boolean): void }[] = [];
     let finished = false;
@@ -932,7 +948,7 @@ export class GpuResidencyCache {
         if (!encoded.ok) throw encoded.error;
         releases.push(encoded.value);
       }
-      if (this.textureGenerators.pending) {
+      if (selected === undefined && this.textureGenerators.pending) {
         const work = this.textureGenerators.encode(commands);
         if (work !== undefined) projected.push(work);
       }
@@ -2945,6 +2961,21 @@ export class GpuResidencyCache {
     if (previous !== undefined && previous.texture !== entry.texture)
       this.retireTextureEntry(cacheKey, previous, namespace);
     return this.textureLifetime(entry).result;
+  }
+
+  /** Explicit eager upload shares draw-time residency, source versions and retirement. */
+  prepareTextureResidency(
+    handle: AssetHandle<'texture'>,
+    pod: TextureAsset,
+    source: RenderResourceScope,
+  ): Result<TextureGpuEntry, RhiError | AssetError | ImageError> {
+    const existing = this.textureGpuHandles.get(Number(handle), this.sourceNamespace(source));
+    if (
+      existing !== undefined &&
+      existing.receipt.sourceRevision !== this.textureSourceRevision(handle, pod, source)
+    )
+      this.invalidateTexture(handle, source);
+    return this.ensureResident(handle, pod, source);
   }
 
   private textureSourceRevision(

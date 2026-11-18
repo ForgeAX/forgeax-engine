@@ -26,10 +26,31 @@ import {
   coverageGroupEnvironment,
   coverageGroupMaxWorkers,
   coverageGroups,
+  packageOnlyNodeAppProjects,
 } from './run-split-vitest-coverage.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const vitest = 'scripts/ci/run-vitest-projects.mjs';
+// Pure CPU owners consume their own inputs and package outputs, not Engine profiles.
+const packageOnlyUnitOwners = new Set([
+  '@forgeax/engine-content',
+  '@forgeax/engine-naga',
+  '@forgeax/engine-shader-compiler',
+  '@forgeax/engine-modeling',
+  ...packageOnlyNodeAppProjects,
+]);
+// These exact CPU fixtures own their complete publication/registry inputs.
+// Other shader tests still consume the prepared Engine profile.
+const packageOnlyUnitFiles = new Set(
+  [
+    'manifest-reflection-sharing',
+    'manifest-publication',
+    'shader-registry-publication-sharing',
+    'shader-registry-transaction',
+    'native-manifest',
+    'shader-manifest-transmission',
+  ].map((name) => `packages/shader/src/__tests__/${name}.unit.test.ts`),
+);
 
 function nodeFocusPlan(selector) {
   if (
@@ -38,7 +59,7 @@ function nodeFocusPlan(selector) {
     !existsSync(join(root, selector))
   )
     throw new Error(`unknown Node test file: ${selector}`);
-  return { args: ['--test', selector] };
+  return { args: ['--test', selector], packagesOnly: true };
 }
 
 function unitFocusPlan(kind, selector) {
@@ -46,6 +67,7 @@ function unitFocusPlan(kind, selector) {
   const projects = allProjectNames();
   if (projects.includes(selector))
     return {
+      ...(packageOnlyUnitOwners.has(selector) ? { packagesOnly: true } : {}),
       args: [
         vitest,
         'run',
@@ -74,6 +96,9 @@ function unitFocusPlan(kind, selector) {
     ? ['--project', owner]
     : ['--project=@forgeax/*', '--project=unit'];
   return {
+    ...(packageOnlyUnitOwners.has(owner) || packageOnlyUnitFiles.has(selector)
+      ? { packagesOnly: true }
+      : {}),
     args: [
       vitest,
       'run',
@@ -87,11 +112,34 @@ function unitFocusPlan(kind, selector) {
 }
 
 function performanceFocusPlan(selector) {
+  if (selector === 'ecs-ratios' || selector === 'render-ratios')
+    return {
+      packagesOnly: true,
+      args: [
+        'scripts/ci/run-with-runner-cpu-affinity.mjs',
+        '--',
+        process.execPath,
+        vitest,
+        'run',
+        '--maxWorkers=1',
+        `--project=${selector === 'ecs-ratios' ? 'ecs-perf' : 'render-perf'}`,
+        '--coverage.enabled=false',
+        '--typecheck.enabled=false',
+        '--passWithNoTests=false',
+      ],
+      env:
+        selector === 'render-ratios'
+          ? { FORGEAX_RENDER_PERF_LIGHTWEIGHT: '1', FORGEAX_CI_CPU_TIME_DIAGNOSTICS: '1' }
+          : {},
+    };
   if (!['hello-lod-occlusion', 'hello-lod-occlusion-profile'].includes(selector))
     throw new Error(`unknown performance selector: ${selector}`);
   return {
     apps: ['apps/hello/lod-occlusion'],
     args: [
+      'scripts/ci/run-with-runner-cpu-affinity.mjs',
+      '--',
+      process.execPath,
       'scripts/ci/run-lod-performance-with-retry.mjs',
       '--',
       'pnpm',
@@ -100,7 +148,10 @@ function performanceFocusPlan(selector) {
       'bench:json',
     ],
     gpuLease: true,
-    ...(selector.endsWith('-profile') ? { env: { FORGEAX_LOD_PROFILE: '1' } } : {}),
+    env: {
+      NODE_OPTIONS: process.env.NODE_OPTIONS ?? '--max-old-space-size=10240',
+      ...(selector.endsWith('-profile') ? { FORGEAX_LOD_PROFILE: '1' } : {}),
+    },
   };
 }
 
@@ -124,7 +175,10 @@ function coverageFocusEnvironment(group, resources, maxWorkers) {
     group.sourceCompilation && process.env.NODE_OPTIONS !== undefined
       ? { NODE_OPTIONS: process.env.NODE_OPTIONS }
       : {};
-  return coverageGroupEnvironment(group, resources, workers, environment);
+  return {
+    ...coverageGroupEnvironment(group, resources, workers, environment),
+    NODE_DISABLE_COMPILE_CACHE: '1',
+  };
 }
 
 export function focusPlan(
@@ -147,6 +201,7 @@ export function focusPlan(
       2,
     );
     return {
+      packagesOnly: selected[0].packagesOnly === true,
       env: coverageFocusEnvironment(selected[0], resources, maxWorkers),
       gpuLease: selected[0].gpuLease,
       args: [
@@ -226,6 +281,15 @@ export function focusPlan(
   throw new Error(`unknown focus kind: ${kind}`);
 }
 
+/** Preparation belongs to the selected owner; every route still uses the semantic build. */
+export function focusBuildArgs(plan, assetsSourceRoot) {
+  return [
+    'scripts/build.mjs',
+    plan.packagesOnly ? '--packages-only' : '--engine',
+    ...(assetsSourceRoot === undefined ? [] : ['--assets-source-root', resolve(assetsSourceRoot)]),
+  ];
+}
+
 export async function main(argv = process.argv.slice(2)) {
   const options = {};
   for (let i = 0; i < argv.length; i++) {
@@ -291,16 +355,11 @@ export async function main(argv = process.argv.slice(2)) {
   let smoke;
   try {
     // Existing semantic build receipts validate changed code and output bytes.
-    // Every invocation checks them; no unchecked --skip-build path can use old dist.
+    // CPU-only Node/performance owners need package outputs, not a shader/asset
+    // publication. Every invocation still validates its real package receipts.
     for (const owner of ['wgpu-wasm', 'fbx', 'codec'])
       await run([`packages/${owner}/scripts/ensure-wasm.mjs`]);
-    await run([
-      'scripts/build.mjs',
-      '--engine',
-      ...(options['assets-source-root'] === undefined
-        ? []
-        : ['--assets-source-root', resolve(options['assets-source-root'])]),
-    ]);
+    await run(focusBuildArgs(plan, options['assets-source-root']));
     if (options.kind === 'compatibility')
       await run([
         'scripts/forgeax/prepare-shader-release-inputs.mjs',
@@ -359,7 +418,7 @@ export async function main(argv = process.argv.slice(2)) {
   } finally {
     writeFileSync(
       output,
-      `${JSON.stringify({ scope: 'diagnostic', head, dirty, kind: options.kind, selector: options.select, status, smoke }, null, 2)}\n`,
+      `${JSON.stringify({ scope: 'diagnostic', head, dirty, kind: options.kind, selector: options.select, buildMode: plan.packagesOnly ? 'packages-only' : 'engine', status, smoke }, null, 2)}\n`,
     );
     console.log(`[ci-focus] ${status}; this selected run does not replace complete PR CI`);
   }

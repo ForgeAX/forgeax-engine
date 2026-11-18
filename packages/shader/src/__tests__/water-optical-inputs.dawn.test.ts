@@ -426,7 +426,7 @@ ${standardEnvironment.slice(standardStart, standardEnd)}
   sky.diffuseRotation = vec4<f32>(0.0, 0.70710678118, 0.0, 0.70710678118);
   let normal = vec3<f32>(0.0, 1.0, 0.0);
   let toCamera = vec3<f32>(0.8, 0.6, 0.0);
-  // UE legacy SLW golden directions at r=0, 0.6, 1. Standard retains its Three direction.
+  // Water golden directions at r=0, 0.6, 1. Standard retains its separate direction.
   let waterDirection = array<vec3<f32>, 3>(vec3<f32>(-0.8, 0.6, 0.0), vec3<f32>(-0.59392, 0.70304, 0.0), normal)[select(index, 1u, probe)];
   let standardGolden = array<vec3<f32>, 3>(vec3<f32>(-0.8, 0.6, 0.0), normalize(vec3<f32>(-0.69632, 0.65184, 0.0)), normal)[select(index, 1u, probe)];
   let weight = select(1.0, array<f32, 3>(1.0, 0.5, 0.0)[index], probe);
@@ -581,7 +581,7 @@ ${solar}
   }
 });
 
-it('SLW bilateral color/depth footprint applies the UE gather bias before valid-only fallback', async () => {
+it('SLW bilateral color/depth footprint applies gather bias before valid-only fallback', async () => {
   const selectionStart = color.indexOf('  let distorted = waterSceneSample');
   const selection = color.slice(selectionStart, color.indexOf('  // Full-quality', selectionStart));
   const clampStart = color.indexOf('  distortedUv = clamp(');

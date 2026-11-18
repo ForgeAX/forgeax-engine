@@ -2,7 +2,7 @@ export function attachDiagnostics(mode) {
   const { renderer, scene, camera } = window.game;
   const panel = document.createElement('aside');
   panel.style.cssText = 'position:fixed;right:12px;bottom:12px;z-index:102;max-width:280px;padding:12px;background:#172333;color:white;border-radius:8px;font:13px/1.5 sans-serif';
-  panel.innerHTML = `<strong>${mode === 'forgeax' ? 'Forgeax migration' : 'Three.js r184 reference'}</strong><br><span id="migration-status">Waiting for frames</span><br><button id="migration-capture">${mode === 'forgeax' ? 'Capture RHI frame' : 'Save reference frame'}</button><div id="migration-artifacts"></div><a href="provenance.json" style="color:#9cddff">Source and migration details</a>`;
+  panel.innerHTML = `<strong>${mode === 'forgeax' ? 'Forgeax migration' : 'Three.js r187 reference'}</strong><br><span id="migration-status">Waiting for frames</span><br><button id="migration-capture">${mode === 'forgeax' ? 'Capture RHI frame' : 'Save reference frame'}</button><div id="migration-artifacts"></div><a href="provenance.json" style="color:#9cddff">Source and migration details</a>`;
   document.body.append(panel);
   const status = panel.querySelector('#migration-status');
   const button = panel.querySelector('#migration-capture');

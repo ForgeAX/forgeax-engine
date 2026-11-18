@@ -150,6 +150,9 @@ export function windowsBuildEnvironment(installation, sdkVersion, base = process
   }
   return environment;
 }
+export function windowsHostToolchainCMakeArgs(probe, output) {
+  return ['-S', probe, '-B', output, '-A', 'x64'];
+}
 export async function prepareNative() {
   if (!['darwin', 'win32'].includes(process.platform)) return;
   const windows = process.platform === 'win32';
@@ -197,7 +200,7 @@ const prepareNativeWindowsHostToolchain = () => {
       "endif()",
       '',
     ].join('\n'));
-    run('cmake', ['-S', probe, '-B', join(probe, 'build'), '-G', 'Visual Studio 17 2022', '-A', 'x64'], cache, process.env);
+    run('cmake', windowsHostToolchainCMakeArgs(probe, join(probe, 'build')), cache, process.env);
     const [sdkRoot, sdkVersion, installation, ninja, compiler] = readFileSync(join(probe, 'build/sdk.txt'), 'utf8').trim().split(/\r?\n/);
     sdk = [sdkRoot, sdkVersion];
     windowsNinja = ninja;

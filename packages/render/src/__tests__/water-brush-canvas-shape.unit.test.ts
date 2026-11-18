@@ -33,7 +33,7 @@ function spline(
   return { closed, points };
 }
 
-it('uses UE fixed A and C/B order with truncated segment count and open endpoint clamping', () => {
+it('uses fixed A and C/B order with truncated segment count and open endpoint clamping', () => {
   const source = spline([point(0, [0, 0, 0], [10, 0, 0]), point(1, [25, 0, 0], [10, 0, 0])]);
   const identity = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1] as const;
   const triangles = buildWaterBrushCanvasShapeTriangles(source, identity, 10, identity);
@@ -57,7 +57,7 @@ it('uses UE fixed A and C/B order with truncated segment count and open endpoint
   );
 });
 
-it('samples curved spline distances from the UE reparameterization table in world scale', () => {
+it('samples curved spline distances from the reparameterization table in world scale', () => {
   const source = spline([point(0, [0, 0, 0], [0, 0, 20]), point(1, [10, 0, 0], [0, 0, -20])]);
   const matrix = [2, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0.5, 0, 0, 0, 0, 1] as const;
   const sampler = createWaterSplineDistanceSampler(source, matrix);

@@ -12,7 +12,8 @@ declare module 'vitest/internal/browser' {
 }
 
 // The publication carrier owns unrestricted Mesh/IBL lighting. This carrier
-// retains the same full fixture at the portable sampled-texture limit.
+// retains lighting, IBL, point/spot shadows and depth replay at the portable limit.
+// Core CI defers redundant point-shadow directions to the unrestricted carrier.
 it('keeps clustered Mesh/IBL lighting valid with exactly 16 sampled textures', async ({
   signal,
 }) => {
@@ -22,6 +23,7 @@ it('keeps clustered Mesh/IBL lighting valid with exactly 16 sampled textures', a
     cook: commands.cookVfxMeshLighting,
     onIblFailure: saveFailure,
     sampledTextureLimit: 16,
+    coreValidation: import.meta.env.FORGEAX_CI_CORE_VALIDATION === '1',
   });
 }, 120_000);
 

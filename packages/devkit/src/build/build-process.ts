@@ -1,4 +1,5 @@
 import { pathToFileURL } from 'node:url';
+import { resolveEngineStartup } from '@forgeax/engine-app/configuration';
 import { validateAssetBudgetBytes } from '@forgeax/engine-assets-runtime';
 import { createNativeCookCache } from '@forgeax/engine-ddc';
 import { ImporterRegistry } from '@forgeax/engine-import';
@@ -148,6 +149,7 @@ const runs = new Map<number, ToolRun<unknown>>();
 
 /** The closed set of public project App option keys. */
 const APP_OPTION_KEYS: ReadonlySet<string> = new Set([
+  'configuration',
   'dynamicGeometryMeshBudgetBytes',
   'textureMipSkip',
   'assetBudgetBytes',
@@ -253,6 +255,28 @@ function validateTimeOptions(time: DevKitAppOptions['time']): void {
   }
 }
 
+function validateEngineConfigurationOption(options: DevKitAppOptions): void {
+  if (options.configuration !== undefined) {
+    for (const key of [
+      'standardProfile',
+      'textureMipSkip',
+      'assetBudgetBytes',
+      'dynamicGeometryMeshBudgetBytes',
+      'time',
+      'canvasPixelRatio',
+      'renderPipelineCapacity',
+      'wechat',
+    ] as const) {
+      if (options[key] !== undefined)
+        throw new TypeError(
+          `devkitAppOptions.${key} conflicts with configuration; declare that policy in its configuration domain`,
+        );
+    }
+    const checked = resolveEngineStartup(options.configuration, { platform: 'unknown' });
+    if (!checked.ok) throw checked.error;
+  }
+}
+
 /** Admit a closed data-only projection; World and Render retain their policies. */
 function projectAppOptions(value: unknown): DevKitAppOptions {
   if (value === undefined) return {};
@@ -264,6 +288,7 @@ function projectAppOptions(value: unknown): DevKitAppOptions {
   )
     throw new TypeError('devkitAppOptions must contain only public project App options');
   const options = copyPackData(value) as DevKitAppOptions;
+  validateEngineConfigurationOption(options);
   validateCanvasPixelRatio(options.canvasPixelRatio);
   const capacity = options.renderPipelineCapacity;
   if (capacity !== undefined && capacity !== 2 && capacity !== 3 && capacity !== 4)

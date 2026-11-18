@@ -4,7 +4,7 @@ import { worldRead } from '@forgeax/engine-ecs/world-read';
 import { type AssetHandle, ok, type RenderPipelineAsset } from '@forgeax/engine-types';
 import { createRendererCaptureOwner } from '../capture/renderer-captures';
 import { Camera } from '../components/camera';
-import { CameraView } from '../components/camera-view';
+import { CAMERA_VIEW_DEFAULTS, CameraView } from '../components/camera-view';
 import { StereoCamera } from '../components/stereo-camera';
 import type { DynamicGeometryRecordStageLane } from '../dynamic-geometry';
 import {
@@ -372,6 +372,21 @@ export function createCameraViews(
     get currentOwner(): ViewSettlementOwner {
       return active() ? (findDisplayRecorder()?.owner ?? primaryOwner) : primaryOwner;
     },
+    /** Held views retain the revision of their last accepted scene, never a newly compiled candidate. */
+    get configurationRevision(): number | undefined {
+      if (!active()) return viewRecordHistory(renderWorld, views.primary)?.configurationRevision;
+      const records = displayRecorders();
+      const revision =
+        records.length === 0
+          ? undefined
+          : viewRecordHistory(renderWorld, records[0]?.entity)?.configurationRevision;
+      return revision !== undefined &&
+        records.every(
+          (view) => viewRecordHistory(renderWorld, view.entity)?.configurationRevision === revision,
+        )
+        ? revision
+        : undefined;
+    },
     get lastLodObservationCapture(): LodObservationCapture | undefined {
       return lodObservationOf(renderWorld).capture;
     },
@@ -576,15 +591,36 @@ export function createCameraViews(
           Math.min(internals.canvas.width, internals.canvas.height) > maxRenderShortSide
             ? maxRenderShortSide
             : 0;
+        const qualityScale = internals.standardProfile?.quality?.resolutionScale ?? 1;
         const cameras =
           publication?.frame.cameras ??
-          ((!declaresViews && cap === 0) || world === undefined
+          ((!declaresViews && cap === 0 && qualityScale === 1) || world === undefined
             ? []
             : selectCameraRoles(world, opts.cameraEntityKey).display);
         const captures = captureCameras(publication, world, opts.cameraEntityKey);
         assertViewCameras(cameras, cap > 0);
         const profileSession = activeRenderProfileSession(internals);
-        viewSource.stage(cameras, captures, world, opts, lease, publication, source?.receiver, cap);
+        const displayCameras =
+          qualityScale === 1
+            ? cameras
+            : cameras.map((camera) => {
+                if (camera.target !== undefined) return camera;
+                const view = camera.view ?? CAMERA_VIEW_DEFAULTS;
+                return {
+                  ...camera,
+                  view: { ...view, resolutionScale: Math.min(view.resolutionScale, qualityScale) },
+                };
+              });
+        viewSource.stage(
+          displayCameras,
+          captures,
+          world,
+          opts,
+          lease,
+          publication,
+          source?.receiver,
+          cap,
+        );
         stageRenderScene(
           renderWorld,
           primaryOwner,

@@ -86,7 +86,7 @@ function validateWaterSimulationReferences(
           ] as const,
         ]
       : []),
-    ...('oceanPatchConfig' in asset && asset.oceanPatchConfig?.algorithm === 'ue-5.8.1-niagara-fft'
+    ...('oceanPatchConfig' in asset && asset.oceanPatchConfig?.algorithm === 'ocean-spectrum-fft/2'
       ? [
           [
             asset.oceanPatchConfig.noiseTextureGuid,
@@ -182,6 +182,7 @@ export function prepareAssetPayload(asset: Asset): Result<Asset, AssetError> {
           hint: valid.error.hint,
         }),
       );
+    asset = valid.value;
   }
   if (asset.kind === 'ies-profile') return prepareRuntimeIesProfile(asset);
   if (asset.kind === 'video' && !isBrowserResolvableVideoUrl(asset.url))

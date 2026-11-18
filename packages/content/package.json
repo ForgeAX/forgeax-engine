@@ -18,13 +18,12 @@
   "files": [
     "dist",
     "src",
-    "scripts",
     "assets",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
-    "build": "node scripts/build.mjs",
+    "build": "tsup",
     "test": "tsc -p tsconfig.assets.json && vitest run"
   },
   "dependencies": {

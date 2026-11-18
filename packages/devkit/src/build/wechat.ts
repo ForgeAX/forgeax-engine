@@ -18,6 +18,7 @@ import { resolveLoadProgressLabels } from '@forgeax/engine-types';
 import type { Plugin } from 'vite';
 import { prepareDist } from '../delivery-dist.js';
 import { collectDistArtifacts } from '../dist.js';
+import { engineConfigurationForAppOptions } from '../host/engine-configuration';
 import { gameProjectionSource } from '../host/game-projection-source.js';
 import { hostStartupDocument, hostStartupScript } from '../host/startup-source.js';
 import { type HostVersions, hostVersions } from '../host/versions.js';
@@ -394,7 +395,10 @@ import { inspectUi } from '@forgeax/engine/ui';
 import { ensureReady, rhi } from '@forgeax/engine/rhi-wgpu';
 import * as nativeWgpu from ${JSON.stringify(resolve(native, 'wgpu-native.mjs'))};
 import { constructRuntimeRendererHost } from '@forgeax/engine/runtime/internal/renderer-host';
-import { createApp, inputPlugin, canvasAspectPlugin } from '@forgeax/engine/app';
+import { ok, err } from '@forgeax/engine/types';
+import { createApp, inputPlugin, canvasAspectPlugin, prepareEngineStartup, projectEngineStartup, createEngineConfigurationControl, createEngineConfigurationStore, EngineConfigurationError } from '@forgeax/engine/app';
+import { PHYSICS_STARTUP_OPTIONS } from '@forgeax/engine/physics';
+import { animationPlugin } from '@forgeax/engine/animation';
 ${rhiDebug ? "import { attachRecorder } from '@forgeax/engine/rhi-debug';\nimport { createRhiCapture, createRhiInstrumentation } from '@forgeax/engine/app';\nimport { createShaderModule, createShaderModuleImmediate } from '@forgeax/engine/rhi-wgpu';" : ''}
 ${cpuProfile ? "import { createProfiler } from '@forgeax/engine/profiler';" : ''}
 import { World } from '@forgeax/engine/ecs';
@@ -580,6 +584,24 @@ async function boot(identity, reload) {
   };
   dispose = stop;
   try {
+  const configurationDefinition = ${JSON.stringify(engineConfigurationForAppOptions(appOptions, 'wechat'))};
+  const preferenceKey = ${JSON.stringify(`forgeax:quality:${facts.id}`)};
+  const configurationStore = createEngineConfigurationStore({
+    read: () => wx.getStorageSync(preferenceKey),
+    write: bytes => wx.setStorageSync(preferenceKey, bytes),
+  });
+  const plan = value(await prepareEngineStartup(configurationDefinition, {
+    readDeviceFacts() {
+      const device = wx.getDeviceInfo?.() ?? {};
+      const platform = device.platform === 'ios' || device.platform === 'android' ? device.platform : 'unknown';
+      return { platform, runtime: 'wechat', ...(typeof device.model === 'string' && device.model ? { model: device.model } : {}) };
+    },
+    store: configurationStore,
+  }));
+  const configured = projectEngineStartup(plan);
+  const unsupportedDomain = plan.settings.audio !== undefined ? 'audio.host/publication' : plan.settings.execution?.taskWorkers !== undefined || Object.values(plan.settings.execution?.workers ?? {}).includes(true) ? 'execution.workers' : configured.renderBackend !== undefined && configured.renderBackend !== 'auto' && configured.renderBackend !== 'webgpu' ? 'rendering.renderBackend' : undefined;
+  if (unsupportedDomain !== undefined) throw new EngineConfigurationError('configuration-domain-unavailable', { path: unsupportedDomain, reason: 'the native WeChat Host does not construct this service or backend' });
+  let configurationControl;
   advance('platform');
   // WeChat's first Canvas is the display surface, even if Platform admission fails.
   displayCanvas ??= wx.createCanvas();
@@ -589,8 +611,8 @@ async function boot(identity, reload) {
   const native = { wx, WXWebAssembly };
   const fetcher = createWechatPackageFetcher(wx, { root: 'payload', baseUrl: 'https://forgeax.package/', encoding: 'br' });
   const display = platform.display().unwrap();
-  canvas.width = Math.max(1, Math.round(display.width * display.pixelRatio));
-  canvas.height = Math.max(1, Math.round(display.height * display.pixelRatio));
+  canvas.width = Math.max(1, Math.round(display.width * (configured.canvasPixelRatio ?? display.pixelRatio)));
+  canvas.height = Math.max(1, Math.round(display.height * (configured.canvasPixelRatio ?? display.pixelRatio)));
   advance('ui-wasm-and-fonts');
   // Cancel pending UI initialization, but retire a live document after its consumers.
   const uiLifetime = new AbortController();
@@ -632,19 +654,22 @@ async function boot(identity, reload) {
   graphics = value(await constructRuntimeRendererHost(canvas, {
     ${rhiDebug ? 'rhi: recorder.backend.rhi, rhiInstrumentation: createRhiInstrumentation(recorder),' : 'rhi,'}
     features: [gameVfx.feature, ...gameFeatures.features],
-    dynamicGeometryMeshBudgetBytes: ${JSON.stringify(appOptions.dynamicGeometryMeshBudgetBytes)},
-    textureMipSkip: ${JSON.stringify(appOptions.textureMipSkip)},
-    assetBudgetBytes: ${JSON.stringify(appOptions.assetBudgetBytes)},
+    dynamicGeometryMeshBudgetBytes: configured.dynamicGeometryMeshBudgetBytes,
+    textureMipSkip: configured.textureMipSkip,
+    assetBudgetBytes: configured.assetBudgetBytes,
     pipelineLibrary: ${JSON.stringify(appOptions.pipelineLibrary)},
     backgroundPipelineLibrary: ${JSON.stringify(appOptions.backgroundPipelineLibrary)},
     backgroundPipelineLibraryConcurrency: ${JSON.stringify(appOptions.backgroundPipelineLibraryConcurrency)},
-    standardProfile: ${JSON.stringify(appOptions.standardProfile)},
-    maxRenderShortSide: ${JSON.stringify(appOptions.wechat?.maxRenderShortSide ?? 720)},
+    standardProfile: configured.standardProfile,
+    maxRenderShortSide: configured.sceneMaxRenderShortSide,
+    outputColorSpace: configured.outputColorSpace,
+    featureTextureReadbackBudgetBytes: configured.featureTextureReadbackBudgetBytes,
     ${cpuProfile ? 'profiler,' : ''}
     ui: { kind: 'sparse-strips', shaders: gpuShaders, paint: time => ui.paintGpu(time) },
   }, { ...forgeaxBundlerAdapter(), shaderManifestUrl: 'https://forgeax.package/shaders/manifest.json', readShaderManifest: async url => (await fetcher(url)).text() }));
   releases.push(() => graphics.renderer.dispose());
-  const world = new World(${appOptions.time === undefined ? '' : JSON.stringify({ time: appOptions.time })});
+  const world = new World({ time: configured.time });
+  if (plan.settings.simulation?.physics !== undefined) world.insertResource(PHYSICS_STARTUP_OPTIONS, plan.settings.simulation.physics);
   let game;
   let gameLoading;
   const catalog = createCatalogSource({ url: 'https://forgeax.package/pack-index.json', fetch: fetcher });
@@ -655,13 +680,15 @@ async function boot(identity, reload) {
     sceneAdmission: () => game !== undefined && startupError === undefined ? 'scene' : 'ui-only',
     pluginPrograms: enginePrograms('wechat-' + identity, 'engine', identity),
     runtimePacks: { scopeId: runtimeBinding.scopeId, imports, programHost },
-    plugins: [inputBackendPlugin(input), inputPlugin(), audioBackendPlugin(audio), audioPlugin(), canvasAspectPlugin(() => canvas), gameVfx.plugin, ...gameFeatures.plugins],
+    plugins: [...(configured.animation === undefined ? [] : [animationPlugin(configured.animation)]), inputBackendPlugin(input), inputPlugin(), audioBackendPlugin(audio), audioPlugin(), canvasAspectPlugin(() => canvas), gameVfx.plugin, ...gameFeatures.plugins],
     onFrameSubmitted: detail => {
+      configurationControl?.observe('submitted', { ...detail, presentation: detail.receipt?.presentation });
       if (closed || generation !== identity) return;
       ${frameTrace ? 'recordFrameSubmission(detail);' : ''}
       startup.submitted(detail);
     },
     onFrameCompleted: detail => {
+      configurationControl?.observe('completed', detail);
       if (closed || generation !== identity) return;
       ${frameTrace ? 'recordFrameCompletion(detail);' : ''}
       completed += 1; lastCompletion = detail;
@@ -672,7 +699,15 @@ async function boot(identity, reload) {
       startup.enter(detail);
     },
   })).unwrap();
-  releases.push(async () => (await app.dispose()).unwrap());
+  configurationControl = createEngineConfigurationControl(configurationDefinition, plan, {
+    store: configurationStore,
+    async apply(next) {
+      const accepted = graphics.renderer.setProfile(projectEngineStartup(next).standardProfile);
+      return accepted.ok ? ok(undefined) : err(new EngineConfigurationError('configuration-invalid', { path: 'rendering', reason: 'Renderer rejected the quality request', cause: accepted.error }));
+    },
+  });
+  Object.assign(app, { configuration: configurationControl });
+  releases.push(async () => { configurationControl.dispose(); (await app.dispose()).unwrap(); });
   startup.bindSession(world.identity);
   releases.push(app.onError(error => {
     // Activation owns its result, including child retirement before rejection.

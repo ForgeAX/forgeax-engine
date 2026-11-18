@@ -1,5 +1,76 @@
 # @forgeax/engine-app
 
+## Engine configuration
+
+Build configuration plugins provide `devkitAppOptions.configuration` through the
+existing build root. See the [game-3d configuration plugin](../../templates/game-3d/assets/project-configuration.ts).
+Generated Hosts resolve device facts and saved quality choices before canvas
+sizing, Worker selection, World, Renderer and audio construction.
+
+| Declaration | Owner and meaning |
+|:--|:--|
+| `settings.presentation` | Host drawing-buffer ratio and output color space |
+| `settings.execution` | Worker policies, task pool size and publication capacity |
+| `settings.assets` | AssetRegistry content capacity per owned Registry |
+| `settings.audio` | Independent Host cache/pending and source publication limits |
+| `settings.simulation` | World time, animation cadence and physics solver inputs |
+| `settings.rendering` | Render requirements, view limits and distinct resource capacities |
+| `quality` | A device recommendation or low/medium/high preset, then explicit group changes |
+| `deviceProfiles` | Single-parent inheritance, explicit matches/priorities and quality ceilings |
+
+```ts
+const result = await createApp(canvas, {
+  configuration: {
+    settings: { rendering: { renderPath: 'deferred' } },
+    quality: { base: { kind: 'device-default' } },
+  },
+}, hostAdapter);
+const app = result.unwrap();
+await app.configuration?.setQuality({
+  base: { kind: 'preset', preset: 'medium' },
+  groups: { textures: 'high' },
+});
+const status = app.configuration?.inspect();
+```
+
+Constructor bindings, bootstrap modules, callbacks and native objects stay in the
+Host. An explicit `configurationHost` supplies facts and optional preference
+storage. Browser defaults read the observable platform without guessing a model,
+and use the URL pathname as the default preference scope. Generated project Hosts
+use `createBrowserConfigurationHost(projectId)` with the stable project identity.
+Built-in Host storage uses `createEngineConfigurationStore` to save versioned
+user intent; unavailable storage or invalid saved data reports a warning and
+uses project defaults. Explicit custom stores retain their error contract.
+WeChat supplies its actual platform/model and project-scoped storage. Its inherited `Default` baseline keeps
+the existing 720 scene short-axis policy, including custom descendants of IOS or
+Android; Browser gets no new DPR or 720 cap.
+
+`resolveEngineStartup` is the pure composition entry. Device settings are merged
+root-to-leaf, then project settings. A saved/project preset replaces device group
+defaults; explicit groups follow. Inherited `maximumQuality` ceilings cannot be
+relaxed by a child. Missing parents, cycles, duplicate definitions, ambiguous
+matches, unknown fields and invalid owner parameters fail before construction.
+`rendering.qualityLimits` retains precise ceilings; it cannot increase a tier's
+work. Definitions, constructor plans and realm copies are immutable.
+
+> [!IMPORTANT]
+> `inspect().applied` means owners accepted the parameters. Match its revision to
+> `rendering.submittedRevision` and `completedRevision` for actual ready scene
+> evidence. Loading/UI-only and old-revision pictures cannot acknowledge a change.
+> Texture mip residency is constructor-only: a request that changes it returns
+> `configuration-recreate-required`, applies no hot fields, exposes `pendingRestart`
+> and saves the next-start choice. Restoring device defaults cancels that request.
+
+For native assembly, call `prepareEngineStartup` and `projectEngineStartup`
+before constructing owned domains; generated WeChat code already does this.
+A borrowed Registry cannot adopt a constructor capacity. Explicit `taskWorkers`
+requires the selected Engine Worker dispatcher. Native WeChat rejects
+Host-audio publication/cache settings and Worker requests that it does not own.
+Legacy App/DevKit scatter fields are mutually exclusive with `configuration`;
+DevKit converts old project declarations in one direction. The mixed
+`settings.rendering.profile` bridge and legacy bootstrap `configureRenderer` are
+deprecated for removal in 0.7. A managed App rejects the late bootstrap hook.
+
 Renderer inspection field selection reaches the Render owner before inventory
 production and structured cloning. Use `execution.inspectRenderer({ fields:
 ['state', 'frame'] })` for status; omission preserves the full detached export.
@@ -695,7 +766,7 @@ execution: { bootstrap, workers: { engine: false } }
 > A canvas or assemble call without `execution.bootstrap` constructs local
 > World/Renderer/plugin objects. Those objects cannot be moved to another realm;
 > this form reports Engine Workers disabled. Use a bootstrap module for auto
-> placement, and move renderer setup into `configureRenderer`.
+> placement, and declare renderer requirements in the build configuration plugin.
 
 Measured responsiveness, baseline costs and recovery evidence are documented in
 Render Worker validation. The
@@ -903,7 +974,7 @@ and camera targets use the same Renderer pipeline in either execution tier.
 Each view keeps private writable state and history; source intents are
 acknowledged once after the shared submission.
 
-Use bootstrap `configureRenderer(renderer)` for pipeline/post-effect setup in
+Use constructor `configuration.settings.rendering` for render requirements in
 the Renderer realm. Source plugins use `executionBootstrapHost.renderTargets`
 for logical target creation, resizing, texture sources and destruction. The
 child owns physical targets and receipt-bound readback. The source has no
@@ -1638,9 +1709,9 @@ disposes only that newly created Fiber. Explicit successful disposal reports
 
 `execution.report().audio.streaming`, when available, carries aggregate encoded/PCM/pending bytes, pending reads and underruns from the existing Host consumer. Main and Engine Worker frame paths share the same closed intents. Pool Workers receive no audio objects. Rebuild replaces the consumer and fences old reads; [the audio owner](../audio-webaudio/README.md#long-audio-through-source-meta-and-guid) defines buffering/control/failure semantics.
 
-`execution.createHostAudio` is the Host-only consumer factory for shared native bus effects. It is used in both selected main and Worker realms, called again on rebuild, and never serialized into Worker initialization. Return a fresh consumer per generation; read [the Host assembly example](../audio-webaudio/README.md#app-host-effect-assembly).
+`AppHostAdapter.createHostAudio` is the Host-only consumer factory for shared native bus effects, including local Apps without an execution bootstrap. App passes the resolved device/project `settings.audio.host` after startup configuration, calls it again on rebuild, and never serializes it into Worker initialization. Return a fresh consumer per generation; read [the Host assembly example](../audio-webaudio/README.md#app-host-effect-assembly). The legacy `execution.createHostAudio` binding is deprecated for removal in 0.7; supplying both bindings fails before construction.
 
-Generated Worker game Hosts expose the current consumer's engine through borrowed
+Generated game Hosts expose the current consumer's engine through borrowed
 `GameHost.audio` and resolve the native `executionHostAudioFactory` service for
 each replacement. A frontend plugin configures the initial engine in place and
 provides a synchronous factory that returns a fresh, configured consumer. Await

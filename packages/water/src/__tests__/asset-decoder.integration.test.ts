@@ -3,6 +3,7 @@ import { ok, type WaterSimulationRecipeAsset } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import { AssetRegistry } from '../../../assets-runtime/src/asset-registry';
 import { createCatalogSource } from '../../../assets-runtime/src/catalog-source';
+import { prepareAssetPayload } from '../../../assets-runtime/src/prepare-payload';
 import { waterSimulationRecipeContribution } from '../asset-decoder';
 
 const guid = '019ffa97-7000-7000-8000-000000000011';
@@ -46,13 +47,13 @@ it('prepares dispersive recipes without inventing an FFT noise texture dependenc
   expect(reference).not.toHaveBeenCalled();
 });
 
-it('retains the UE FFT recipe noise texture dependency', () => {
+it('retains the spectral FFT recipe noise texture dependency across saved-label migration', () => {
   const noise = '019ffa97-7000-7000-8000-000000000013';
   const fft: WaterSimulationRecipeAsset = {
     ...recipe,
     textureGuids: [noise],
     oceanPatchConfig: {
-      algorithm: 'ue-5.8.1-niagara-fft',
+      algorithm: 'ocean-spectrum-fft/2',
       windAngleDegrees: 180,
       windSpeedMPerSec: 0.55,
       noiseTextureGuid: noise,
@@ -78,6 +79,18 @@ it('retains the UE FFT recipe noise texture dependency', () => {
   expect(reference).toHaveBeenCalledTimes(2);
   expect(reference).toHaveBeenNthCalledWith(1, noise, 'texture');
   expect(reference).toHaveBeenNthCalledWith(2, noise, 'texture');
+  const previous = {
+    ...fft,
+    oceanPatchConfig: { ...fft.oceanPatchConfig, algorithm: 'ue-5.8.1-niagara-fft' },
+  };
+  expect(prepareAssetPayload(previous as never).unwrap()).toEqual(fft);
+  reference.mockClear();
+  const migrated = waterSimulationRecipeContribution.decoder.prepare?.(previous, {
+    reference,
+  } as never);
+  expect(migrated).toMatchObject({ ok: true, value: fft });
+  expect(reference).toHaveBeenCalledTimes(2);
+  expect(previous.oceanPatchConfig.algorithm).toBe('ue-5.8.1-niagara-fft');
 });
 
 it('loads and republishes a dependency-free dispersive recipe through a fresh real asset registry', async () => {

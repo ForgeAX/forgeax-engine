@@ -107,7 +107,7 @@ ${advancedStockhamButterflyWgsl()}
 
 import { ADVANCED_GRID_VERTEX_WGSL } from './advanced-grid-mesh';
 
-/** Paired transforms share the UE Stockham indexing; their direction is explicit. */
+/** Forward and inverse transforms share Stockham indexing with an explicit direction. */
 export function advancedStockhamButterflyWgsl(paired = false): string {
   return `
 @compute @workgroup_size(8,8) fn butterfly(@builtin(global_invocation_id) id:vec3<u32>){

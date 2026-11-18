@@ -2,6 +2,8 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { runInNewContext } from 'node:vm';
+import { EngineConfigurationError, withEngineSettings } from '@forgeax/engine-app';
+import { createBrowserConfigurationHost } from '@forgeax/engine-app/browser';
 import { transformWithOxc } from 'vite';
 import { expect, it, vi } from 'vitest';
 import { gameProjectionSource } from '../host/game-projection-source.js';
@@ -78,6 +80,9 @@ it('connects isolated frontend/source ports through the generated App options an
             crypto: globalThis.crypto,
             serveRuntimePackDelivery: () => () => {},
             URLSearchParams,
+            EngineConfigurationError,
+            withEngineSettings,
+            createBrowserConfigurationHost,
             location: { search: '' },
             bootstrapRoot: 'project-bootstrap',
             resource: undefined,

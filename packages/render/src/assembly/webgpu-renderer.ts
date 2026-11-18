@@ -29,6 +29,7 @@ import {
   runMeshBodyPublished,
   runRetirePreviousWaterFrames,
 } from './renderer-frame-operations';
+import { createTextureResidencyPreparer } from './texture-residency';
 import { prepareWaterFrameBindingCohorts as prepareWaterFrameBindingCohortsImpl } from './water-frame-cohorts';
 import {
   runDestroyWaterMaterialFrameEntry,
@@ -2365,46 +2366,39 @@ async function makeWebGPURenderer(
   const drawRequestError = (
     frameRequest: RenderFrameInput | undefined,
     publicationRequest: PublishedRenderFrameInput | undefined,
-  ): RenderError | undefined => {
-    return runDrawRequestError(ui, publicationReceiver, frameRequest, publicationRequest);
-  };
+  ): RenderError | undefined =>
+    runDrawRequestError(ui, publicationReceiver, frameRequest, publicationRequest);
   /** The attached source lease is the sole local frame authority. */
   const drawWorldError = (
     world: World | undefined,
     request: RenderFrameInput | undefined,
-  ): RenderError | undefined => {
-    return runDrawWorldError(dynamicGeometryHost, world, request);
-  };
+  ): RenderError | undefined => runDrawWorldError(dynamicGeometryHost, world, request);
   // feat-20260612-rhi-destroy-renderer-dispose-gpu-lifecycle / M5 / w21
   // (plan-strategy D-1, D-8): post-dispose the renderer is dead. AI users
   // observing `rhi-not-available` know to rebuild the renderer; the same
   // existing closed-union member covers every lifecycle admission below.
-  const drawLifecycleError = (): RhiError | undefined => {
-    return runDrawLifecycleError(
+  const drawLifecycleError = (): RhiError | undefined =>
+    runDrawLifecycleError(
       () => disposed,
       () => surfaceReleased,
       internals,
       drawHealthError,
       drawReadinessError,
     );
-  };
   // Health owns admission for the legacy Host entry as well as the public
   // Renderer. The initiating failure was already reported; do not fire it
   // again for every attempted frame while the Host chooses recovery/rebuild.
-  const drawHealthError = (): RhiError | undefined => {
-    return runDrawHealthError(internals);
-  };
+  const drawHealthError = (): RhiError | undefined => runDrawHealthError(internals);
   // Screen UI may present before scene readiness; otherwise an unsettled or
   // rejected initialization fires onError and skips the frame (charter
   // propositions 4 and 9: explicit failure, the AI user owns the retry).
-  const drawReadinessError = (): RhiError | undefined => {
-    return runDrawReadinessError(
+  const drawReadinessError = (): RhiError | undefined =>
+    runDrawReadinessError(
       ui,
       () => readySettled,
       () => pipelineState,
       internals,
     );
-  };
   function* prepareDraw(
     request: DrawRequest,
     isCurrent?: () => boolean,
@@ -2853,10 +2847,12 @@ async function makeWebGPURenderer(
       receiptFrameId,
       receiptGeneration,
     );
+    const configurationRevision = uiOnlyFrame ? undefined : cameraViews.configurationRevision;
     const createSubmittedFrameReceipt = () => {
       const receipt = Object.freeze({
         ...(editorAssistance === undefined ? {} : { editorAssistance }),
         frameId: receiptFrameId,
+        ...(configurationRevision === undefined ? {} : { configurationRevision }),
         ...(profileFrame === undefined ? {} : { profileFrame }),
         ...(profileFrame === undefined || passIdentityCapture === undefined
           ? {}
@@ -3000,6 +2996,11 @@ async function makeWebGPURenderer(
       return ok(lease);
     },
     ...dynamicGeometryHost,
+    prepareTextureResidency: createTextureResidencyPreparer(
+      attachedWorlds,
+      () => gpuStore,
+      () => internals.device,
+    ),
     preparePublishedMeshResidency: createPublishedMeshResidencyHost({
       assets,
       prepareCandidatePipelines: (input, signal) =>
@@ -3035,6 +3036,19 @@ async function makeWebGPURenderer(
     importTexture: (input) => externalTextureHost.importTexture(input),
     nativeDevice: () => externalTextureHost.nativeDevice(),
     setProfile(profile: RenderProfile): RenderResult<void, RenderError> {
+      if (
+        activeProfile.configurationRevision !== undefined &&
+        profile?.configurationRevision === undefined
+      )
+        return err(
+          new RendererOperationError('frame-input-invalid', {
+            operation: 'set-profile',
+            cause: new RendererContractFailureError(
+              'draw',
+              'Use App.configuration for a managed Renderer; constructor policy cannot bypass its revision',
+            ),
+          }),
+        );
       const invalid = selectProfile.validate(profile, internals.device);
       if (invalid !== undefined) {
         return err(

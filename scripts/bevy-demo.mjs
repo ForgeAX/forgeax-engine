@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 // bevy-demo.mjs — create Bevy demo app shells and derive their CI smoke membership.
 //
 // An app's package.json#forgeax.bevyExample + smokeInvocation is the one per-example
 // spec. It already drives coverage; this command writes that existing contract rather
 // than introducing a second ledger that every demo would need to synchronize.
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -658,16 +658,51 @@ export function bevySmokeApps(root) {
   return validateDemoApps(root).filter((app) => app.dedicated && app.spec.status === 'implemented');
 }
 
-async function commandSmokes(root, dryRun, concurrency, group, groups) {
+// CI calls this only after the shared artifact verifier and manifest expansion.
+// Fail closed on missing app inputs; the normal local command still builds.
+export async function verifyPreparedSmokeInputs(apps) {
+  for (const app of apps) {
+    const shader = join(app.dir, 'dist/shaders/manifest.json');
+    if (!existsSync(shader) || statSync(shader).size === 0)
+      fail('bevy-demo-prepared-shader-missing', shader, 'prepare verified CI app inputs first');
+    const guids = app.pkg.forgeax?.smokeArtifacts?.packGuids ?? [];
+    if (guids.length === 0) continue;
+    const { decodeCatalogWire } = await import('@forgeax/engine-pack');
+    const rows = decodeCatalogWire(
+      readJson(join(app.dir, 'dist/pack-index.json'), 'prepared Pack index'),
+    ).unwrap();
+    for (const guid of guids) {
+      if (!Array.isArray(rows) || !rows.some((row) => row.guid === guid))
+        fail('bevy-demo-prepared-pack-missing', guid, 'restore the app producer Pack closure');
+    }
+  }
+}
+
+async function commandSmokes(root, dryRun, concurrency, group, groups, preparedInputs) {
   const allApps = bevySmokeApps(root);
   const apps = allApps.filter((_, index) => index % groups === group);
   if (dryRun) {
     for (const { pkg } of apps) {
-      process.stdout.write(`[bevy-smoke] pnpm --filter ${pkg.name} build\n`);
+      if (!preparedInputs) process.stdout.write(`[bevy-smoke] pnpm --filter ${pkg.name} build\n`);
       process.stdout.write(`[bevy-smoke] pnpm --filter ${pkg.name} smoke\n`);
     }
   } else {
-    await runSmokeStages(root, apps, concurrency);
+    if (preparedInputs) {
+      execFileSync(
+        process.execPath,
+        [
+          join(root, 'scripts/ci/materialize-app-shader-manifests.mjs'),
+          '--root',
+          root,
+          '--shared-input-manifest',
+          process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST ?? 'shared-app-inputs/manifest.json',
+          ...apps.flatMap((app) => ['--app-root', app.dir]),
+        ],
+        { cwd: root, stdio: 'inherit' },
+      );
+      await verifyPreparedSmokeInputs(apps);
+    }
+    await runSmokeStages(root, apps, concurrency, preparedInputs ? { build: async () => {} } : {});
   }
   process.stdout.write(
     `[ok] ${apps.length}/${allApps.length} implemented Bevy demo smoke entries completed${dryRun ? ' (dry run)' : ''} with concurrency=${concurrency} group=${group}/${groups}\n`,
@@ -678,6 +713,7 @@ async function main() {
   const argv = process.argv.slice(2).filter((argument) => argument !== '--');
   let root = process.cwd();
   let dryRun = false;
+  let preparedInputs = false;
   let concurrency = 1;
   let groupValue = '0';
   let groupsValue = '1';
@@ -688,6 +724,9 @@ async function main() {
         fail('bevy-demo-root-required', '--root has a directory', 'pass --root <repo-root>');
       root = resolve(value);
       argv.splice(i, 2);
+    } else if (argv[i] === '--prepared-inputs') {
+      preparedInputs = true;
+      argv.splice(i, 1);
     } else if (argv[i] === '--dry-run') {
       dryRun = true;
       argv.splice(i, 1);
@@ -722,7 +761,8 @@ async function main() {
   const [command, argument] = argv;
   if (command === 'new') commandNew(root, argument);
   else if (command === 'validate') commandValidate(root);
-  else if (command === 'smokes') await commandSmokes(root, dryRun, concurrency, group, groups);
+  else if (command === 'smokes')
+    await commandSmokes(root, dryRun, concurrency, group, groups, preparedInputs);
   else
     fail(
       'bevy-demo-command-unknown',

@@ -66,8 +66,11 @@ pinned Dawn with
 [`DAWN_USE_BUILT_DXC=ON`](https://github.com/google/dawn/blob/c5d549e250b9225744929ae860b369cb4304a767/CMakeLists.txt),
 retain its native DLL closure and provenance, and pass those same pipelines and
 the original complete gates.
-The Windows producer uses CMake to discover the installed x64 Visual Studio
-and SDK, then imports that installation's official Native Tools environment.
+The Windows producer uses CMake's installed Visual Studio generation with
+`cmake -A x64` to discover the x64 toolchain and SDK, then imports that
+installation's official Native Tools environment. It leaves the generator
+version to CMake so hosted images can move between installed Visual Studio
+generations without pinning the producer to one release.
 Ninja builds with that probe's MSVC compiler and one shared budget of at most two
 compile jobs, respecting `CMAKE_BUILD_PARALLEL_LEVEL` and available CPUs.
 The CMake probe retains the host `ninja.exe` path explicitly, so depot_tools'

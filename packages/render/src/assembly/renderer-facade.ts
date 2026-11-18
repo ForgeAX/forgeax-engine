@@ -1,6 +1,7 @@
 import { ProjectedDecalInvalidError } from '../decals/component';
 import { unavailableGeometry } from '../geometry-observation';
 import { RenderPublicationError } from '../publication/contract';
+import { validateRenderQualityBudgets } from '../quality';
 import {
   freezeDiffuseGi,
   freezeGlobalSdfGrid,
@@ -9,6 +10,7 @@ import {
   validateGlobalSdfRegion,
 } from '../raytracing/irradiance-field-plan';
 import { RAY_REFERENCE_LIMIT } from '../raytracing/scene';
+import { TextureResidencyError } from '../texture-residency';
 
 // Public renderer facade and profile validation.
 // This module narrows the lifetime-heavy host implementation to the stable
@@ -242,6 +244,12 @@ export function exposeRenderer(renderer: RendererHostImplementation): Renderer {
         // its extracted references. Recheck every active preparation owner.
         release: (evict) => afterScheduledPreparation(() => lease.release(evict)),
       });
+    },
+    prepareTextureResidency: (world, textureHandle) => {
+      assertPreparationIdle();
+      if (lifecycle.state() !== 'alive')
+        return err(new TextureResidencyError({ reason: 'renderer-not-alive', textureHandle }));
+      return renderer.prepareTextureResidency(world, textureHandle);
     },
     prepareMeshResidency: (world, meshHandle, observePhase) => {
       assertPreparationIdle();
@@ -648,6 +656,8 @@ function projectRecoveryFailureDetail(
 }
 
 const RENDER_PROFILE_KEYS = new Set([
+  'quality',
+  'configurationRevision',
   'featureReadOnlyDepthBatching',
   'featureReadOnlyDepthBatchDiagnostic',
   'pipelineId',
@@ -666,6 +676,17 @@ const RENDER_PROFILE_KEYS = new Set([
   'postStages',
 ]);
 
+function validateConfigurationProfile(profile: RenderProfile): string | undefined {
+  if (
+    profile.configurationRevision !== undefined &&
+    (!Number.isSafeInteger(profile.configurationRevision) || profile.configurationRevision < 1)
+  )
+    return 'configurationRevision must be a positive safe integer';
+  const qualityFailure = validateRenderQualityBudgets(profile.quality);
+  if (qualityFailure !== undefined) return qualityFailure;
+  return undefined;
+}
+
 export function validateRenderProfile(profile: RenderProfile): string | undefined {
   // Validate automatic author intent against the Deferred feature vocabulary;
   // the owner also validates its concrete device selection before applying it.
@@ -674,6 +695,8 @@ export function validateRenderProfile(profile: RenderProfile): string | undefine
   if (typeof profile !== 'object' || profile === null) return 'RenderProfile must be a POD object';
   const unknownKey = Object.keys(profile).find((key) => !RENDER_PROFILE_KEYS.has(key));
   if (unknownKey !== undefined) return `RenderProfile contains unsupported field '${unknownKey}'`;
+  const configurationFailure = validateConfigurationProfile(profile);
+  if (configurationFailure !== undefined) return configurationFailure;
   let failure = validateStandardPipelineSelection(profile);
   if (failure !== undefined) return failure;
   failure = validateVolumetricFogProfile(profile.volumetricFog);
@@ -878,6 +901,15 @@ function validateSsaoProfile(profile: RenderProfile): string | undefined {
 export function freezeRenderProfile(profile: RenderProfile): RenderProfile {
   return Object.freeze({
     ...profile,
+    ...(profile.quality === undefined
+      ? {}
+      : {
+          quality: Object.freeze({
+            ...profile.quality,
+            ambientOcclusion: Object.freeze({ ...profile.quality.ambientOcclusion }),
+            ssr: Object.freeze({ ...profile.quality.ssr }),
+          }),
+        }),
     ...(profile.gbufferBatchOrderDiagnostic === undefined
       ? {}
       : {

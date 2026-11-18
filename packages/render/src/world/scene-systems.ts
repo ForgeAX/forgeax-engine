@@ -4,6 +4,7 @@ import { defineResource, defineSystem } from '@forgeax/engine-ecs';
 import type { RenderReadLease } from '@forgeax/engine-ecs/projection';
 import type { RenderFeatureSource } from '../features/source';
 import type { PreparedRenderPublication } from '../publication/receiver';
+import { lightsForQuality, type RenderQualityBudgets } from '../quality';
 import type { ReflectionProbeFact } from '../reflection/projection';
 import type { ExtractedFrame, LightRoster } from '../render-system-extract';
 import type {
@@ -31,6 +32,7 @@ export const RENDER_SCENE_PUBLISH_SYSTEM = 'render-scene-publish';
  */
 export interface RenderSceneSource {
   readonly composition: SceneComposition;
+  quality?: RenderQualityBudgets | undefined;
   assets: AssetRegistry | undefined;
   staged: boolean;
   publication: PreparedRenderPublication | undefined;
@@ -54,6 +56,8 @@ export interface RenderSceneAdoption {
 
 /** The frame's camera-independent light roster, adopted with the scene. */
 export interface RenderLightSource {
+  source?: LightRoster | undefined;
+  quality?: RenderQualityBudgets | undefined;
   roster: LightRoster | undefined;
 }
 
@@ -161,7 +165,7 @@ function adoptScene(world: World): void {
       const consumed = source.composition.consume(publication);
       adoption.advance = consumed.advance;
       rows.append(consumed.stage);
-      lights.roster = publication.frame.lights;
+      stageLightRoster(lights, publication.frame.lights, source.quality);
       probes.facts = publication.frame.reflectionProbes ?? NO_PROBES;
     } else if (build !== undefined) {
       if (source.assets === undefined || source.world === undefined || lease === undefined)
@@ -170,7 +174,7 @@ function adoptScene(world: World): void {
       adoption.featureSources = source.captureFeatures?.(adopted.resourceFrame);
       adoption.advance = adopted.advance;
       rows.append(adopted.stage);
-      lights.roster = adopted.resourceFrame.lights;
+      stageLightRoster(lights, adopted.resourceFrame.lights, source.quality);
       probes.facts = adopted.resourceFrame.reflectionProbes ?? NO_PROBES;
     }
   } catch (cause) {
@@ -222,4 +226,16 @@ export function registerAdoptionSystems(world: World, composition: SceneComposit
     },
   });
   world.addSystem(RenderExtract, systemToken4).unwrap();
+}
+
+/** Unchanged immutable lighting facts retain their quality projection without per-frame light copies. */
+function stageLightRoster(
+  target: RenderLightSource,
+  source: LightRoster,
+  quality: RenderQualityBudgets | undefined,
+): void {
+  if (target.source === source && target.quality === quality) return;
+  target.source = source;
+  target.quality = quality;
+  target.roster = lightsForQuality(source, quality);
 }

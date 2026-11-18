@@ -14,7 +14,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
+import { processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 
 const SMOKE_DURATION_MS = Number.parseInt(process.env.SMOKE_DURATION_MS ?? '5000', 10);
@@ -102,7 +102,7 @@ const { BLOOM_DISABLED, BLOOM_ENABLED, Camera } = await import('@forgeax/engine/
 
 const here = dirname(fileURLToPath(import.meta.url));
 const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const MANIFEST_URL = `data:application/json,${encodeURIComponent(readShaderManifestText(MANIFEST_PATH))}`;
+const MANIFEST_URL = processShaderManifestUrl(MANIFEST_PATH);
 
 let renderer;
 try {

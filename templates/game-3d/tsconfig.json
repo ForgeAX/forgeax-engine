@@ -7,7 +7,7 @@
     "skipLibCheck": true,
     "strict": true,
     "noEmit": true,
-    "types": ["node", "vitest/globals"]
+    "types": ["node"]
   },
-  "include": ["assets/**/*.ts", "assets/**/*.d.ts", ".forgeax/generated/**/*.d.ts", "vitest.config.ts"]
+  "include": ["assets/**/*.ts", "assets/**/*.d.ts", ".forgeax/generated/**/*.d.ts"]
 }

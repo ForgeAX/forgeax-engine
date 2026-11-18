@@ -174,7 +174,7 @@ export default definePack({
       ...waterMaterialFamilySlots(family, 'river'),
       spline: {
         closed: false,
-        interpolationVersion: 'ue-water-spline/1',
+        interpolationVersion: 'water-spline/2',
         points: [
           splinePoint(0, -42, -1, 0.09, 10),
           splinePoint(1, -27, -1, 0.07, 11),
@@ -192,7 +192,7 @@ export default definePack({
       ...waterMaterialFamilySlots(family, 'lake'),
       spline: {
         closed: true,
-        interpolationVersion: 'ue-water-spline/1',
+        interpolationVersion: 'water-spline/2',
         points: [
           splinePoint(0, -11, -11),
           splinePoint(1, 15, -13),
@@ -220,7 +220,7 @@ export default definePack({
       centerOnWaterZone: false,
       spline: {
         closed: true,
-        interpolationVersion: 'ue-water-spline/1',
+        interpolationVersion: 'water-spline/2',
         points: [
           splinePoint(0, -90, -90),
           splinePoint(1, 18, -90),

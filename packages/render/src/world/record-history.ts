@@ -13,6 +13,7 @@ import { requireViewField } from './view-field';
 
 /** One record attempt, staged by its recording until `render-record-commit`/`-retire` settle it. */
 export interface StagedRecord {
+  readonly configurationRevision?: number | undefined;
   readonly frame: number;
   readonly generation: number | undefined;
   readonly attempt: RecordAttempt;
@@ -38,6 +39,7 @@ export interface DirectionalShadowOutcome {
 export class RecordHistory {
   submittedFrames = 0;
   lastGeneration: number | undefined;
+  configurationRevision: number | undefined;
   presentation: FramePresentation = 'pending';
   pendingReason: FramePresentationPendingReason | undefined;
   materialDraws: DrawObservation = unavailableDrawObservation('not-captured');
@@ -48,6 +50,7 @@ export class RecordHistory {
   /** A startup attempt starts pending: a later receipt never reuses an old scene's readiness. */
   resetPresentation(): void {
     this.presentation = 'pending';
+    this.configurationRevision = undefined;
     this.pendingReason = undefined;
   }
 

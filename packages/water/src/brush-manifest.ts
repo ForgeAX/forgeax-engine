@@ -9,12 +9,11 @@ import {
   type WaterBrushIslandActor,
 } from '@forgeax/engine-types';
 import type { WaterBrushRecipeAsset, WaterError } from './contracts.js';
+import { WATER_DEFAULT_BRUSH_CURVE_SHA256 } from './default-water-brush-curve.js';
 import { requireWaterValue } from './required-value.js';
-import { UE_DEFAULT_WATER_BRUSH_CURVE_SHA256 } from './ue-default-water-brush-curve.js';
 import { validateWaterAsset } from './validate.js';
 
-export const UE_DEFAULT_WATER_BRUSH_CURVE_KEY =
-  'ue-default:/Water/Curves/FloatCurve.FloatCurve' as const;
+export const WATER_DEFAULT_BRUSH_CURVE_KEY = 'water-default:/elevation-curve/1' as const;
 export const WATER_BRUSH_REQUIRED_SHADER_VERSIONS = [
   'capture',
   'detectEdges',
@@ -82,9 +81,9 @@ export type WaterBrushShaderConstants = Readonly<{
   terracingSmoothnessInput: 'spacingM-blue-channel';
 }>;
 
-/** Versioned UE WaterBrushManager CDO defaults; R1 deliberately exposes no per-recipe overrides. */
+/** Versioned WaterBrush defaults shared by every recipe. */
 export type WaterBrushManagerDefaults = Readonly<{
-  version: 'UE-5.8.1-WaterBrushManager-CDO-R1';
+  version: 'water-brush-defaults/2';
   canvasSegmentSizeM: 10.24;
   splineMeshExtensionM: 0;
 }>;
@@ -153,7 +152,7 @@ export type WaterBrushCaptureProvenance =
   | WaterBrushIslandCaptureProvenance;
 
 export type WaterBrushTerrainManifest = Readonly<{
-  version: 1;
+  version: 2;
   recipeDigest: string;
   baseTerrainDigest: string;
   terrainCapture: WaterBrushRecipeAsset['terrainCapture'];
@@ -183,7 +182,7 @@ export type WaterBrushManifestInputs = Readonly<{
   baseTerrainDigest: string;
   /** Frozen Brush capture projection digest keyed by actor id. Body projection omits shapeDilationM and its derived dilatedWaterInfoMeshGuid. */
   actorInputDigests: Readonly<Record<string, string>>;
-  /** Runtime-resolved identities checked against authored labels before UE ordering is applied. */
+  /** Runtime-resolved identities checked against authored labels before body ordering. */
   actorIdentities: Readonly<Record<string, WaterBrushResolvedActorIdentity>>;
   /** Digests of referenced curve and texture payloads, keyed by GUID. */
   dependencyDigests: Readonly<Record<string, string>>;
@@ -262,8 +261,8 @@ function actorId(actor: WaterBrushRecipeAsset['orderedActors'][number]): string 
 
 function cacheCurveKey(actor: WaterBrushRecipeAsset['orderedActors'][number]): string {
   return typeof actor === 'string'
-    ? UE_DEFAULT_WATER_BRUSH_CURVE_KEY
-    : (actor.rules?.curves.elevationCurveGuid ?? UE_DEFAULT_WATER_BRUSH_CURVE_KEY);
+    ? WATER_DEFAULT_BRUSH_CURVE_KEY
+    : (actor.rules?.curves.elevationCurveGuid ?? WATER_DEFAULT_BRUSH_CURVE_KEY);
 }
 
 function isBodyActor(
@@ -437,7 +436,7 @@ export function buildWaterBrushTerrainManifest(
   if (recipe.actorVersion !== 1 || recipe.orderedActors.some((actor) => typeof actor === 'string'))
     return err(
       invalid(
-        'migrate WaterBrushRecipe v0 actors to typed v1 records before building the R1 manifest',
+        'migrate WaterBrushRecipe v0 actors to typed v1 records before building the manifest',
       ),
     );
   const validateInputs = (): Result<void, WaterError> => {
@@ -460,7 +459,7 @@ export function buildWaterBrushTerrainManifest(
         return err(invalid('typed v1 actor records before constructing Brush pass order', actor));
       const id = actorId(actor);
       if (actorIds.has(id))
-        return err(invalid('globally unique stable actor identifiers before UE sorting', id));
+        return err(invalid('globally unique stable actor identifiers before body sorting', id));
       actorIds.add(id);
       const identity = inputs.actorIdentities[id];
       const invalidActorIdentity = (): boolean =>
@@ -480,7 +479,7 @@ export function buildWaterBrushTerrainManifest(
       if (invalidActorIdentity()) {
         return err(
           invalid(
-            'resolved actor identity and capture provenance (mesh GUID/digest, invertible pose, depth/velocity digest) match the frozen actor before UE sorting',
+            'resolved actor identity and capture provenance (mesh GUID/digest, invertible pose, depth/velocity digest) match the frozen actor before body sorting',
             { actorId: id, authored: actor, resolved: identity },
           ),
         );
@@ -494,7 +493,7 @@ export function buildWaterBrushTerrainManifest(
   const publishedActors = recipe.orderedActors.filter(isPublishedBrushActor);
   const orderedActors = [
     ...publishedActors.filter(isBodyActor).sort(compareBodyActors),
-    // UE gathers islands in registration order without the WaterBody priority sort.
+    // Islands retain registration order independently of the WaterBody priority sort.
     ...publishedActors.filter((actor): actor is WaterBrushIslandActor => actor.kind === 'island'),
   ];
   const normalizedRecipe = { ...recipe, orderedActors };
@@ -551,12 +550,7 @@ export function buildWaterBrushTerrainManifest(
         heightPx,
         format: 'rgba8unorm',
         origin: 'row-0-is-min-z',
-        channels: [
-          'UE packed-height channel R',
-          'UE packed-height channel G',
-          'UE packed-height channel B (unvalidated pin)',
-          'UE packed-height channel A (unvalidated pin)',
-        ],
+        channels: ['packed height R', 'packed height G', 'packed height B', 'packed height A'],
         temporary: true,
       },
       {
@@ -565,12 +559,7 @@ export function buildWaterBrushTerrainManifest(
         heightPx,
         format: 'rgba8unorm',
         origin: 'row-0-is-min-z',
-        channels: [
-          'UE packed-height channel R',
-          'UE packed-height channel G',
-          'UE packed-height channel B (unvalidated pin)',
-          'UE packed-height channel A (unvalidated pin)',
-        ],
+        channels: ['packed height R', 'packed height G', 'packed height B', 'packed height A'],
         temporary: true,
       },
       {
@@ -628,7 +617,7 @@ export function buildWaterBrushTerrainManifest(
   const textures = textureLayout.value;
   const actorPassPlan: WaterBrushActorPassPlan[] = [];
   const managerDefaults: WaterBrushManagerDefaults = Object.freeze({
-    version: 'UE-5.8.1-WaterBrushManager-CDO-R1',
+    version: 'water-brush-defaults/2',
     canvasSegmentSizeM: 10.24,
     splineMeshExtensionM: 0,
   });
@@ -664,10 +653,7 @@ export function buildWaterBrushTerrainManifest(
           heightPx,
           format: 'rg32float',
           origin: 'row-0-is-min-z',
-          channels: [
-            'UE DepthAndShapeRT.R (exact material pin unvalidated)',
-            'UE DepthAndShapeRT.G (exact material pin unvalidated)',
-          ],
+          channels: ['depth and shape R', 'depth and shape G'],
           temporary: true,
         },
         {
@@ -677,10 +663,10 @@ export function buildWaterBrushTerrainManifest(
           format: 'rgba32float',
           origin: 'row-0-is-min-z',
           channels: [
-            'UE WaterDepthAndVelocityRT.R (exact material pin unvalidated)',
-            'UE WaterDepthAndVelocityRT.G (exact material pin unvalidated)',
-            'UE WaterDepthAndVelocityRT.B (exact material pin unvalidated)',
-            'UE WaterDepthAndVelocityRT.A (exact material pin unvalidated)',
+            'water depth and velocity R',
+            'water depth and velocity G',
+            'water depth and velocity B',
+            'water depth and velocity A',
           ],
           temporary: true,
         },
@@ -694,7 +680,7 @@ export function buildWaterBrushTerrainManifest(
             'nearest seed U',
             'nearest seed V',
             'nearest seed Z/height',
-            'current-pixel sign mask from source alpha; UE AlphaComposite needs parity capture',
+            'current-pixel sign mask from source alpha',
           ],
           temporary: true,
         },
@@ -708,7 +694,7 @@ export function buildWaterBrushTerrainManifest(
             'nearest seed U',
             'nearest seed V',
             'nearest seed Z/height',
-            'current-pixel sign mask from source alpha; UE AlphaComposite needs parity capture',
+            'current-pixel sign mask from source alpha',
           ],
           temporary: true,
         },
@@ -722,13 +708,7 @@ export function buildWaterBrushTerrainManifest(
               : 'rgba16float'
             : 'rg16float',
           origin: 'row-0-is-min-z',
-          channels: bodyActor
-            ? [
-                'UE WaterBodyComponent::GetBrushRenderTargetFormat RGBA cache; exact per-channel material outputs remain audited separately',
-              ]
-            : [
-                'UE WaterBodyIslandActor::GetBrushRenderTargetFormat RG cache; per-channel layout unvalidated',
-              ],
+          channels: bodyActor ? ['RGBA body brush cache'] : ['RG island brush cache'],
           temporary: false,
         },
       );
@@ -809,18 +789,14 @@ export function buildWaterBrushTerrainManifest(
       if (!/^[0-9a-f]{64}$/i.test(inputs.dependencyDigests[guid] ?? ''))
         return err(invalid('sha256 digest for every referenced curve/texture payload', guid));
     if (
-      orderedActors.some((actor) => cacheCurveKey(actor) === UE_DEFAULT_WATER_BRUSH_CURVE_KEY) &&
-      inputs.dependencyDigests[UE_DEFAULT_WATER_BRUSH_CURVE_KEY] !==
-        UE_DEFAULT_WATER_BRUSH_CURVE_SHA256
+      orderedActors.some((actor) => cacheCurveKey(actor) === WATER_DEFAULT_BRUSH_CURVE_KEY) &&
+      inputs.dependencyDigests[WATER_DEFAULT_BRUSH_CURVE_KEY] !== WATER_DEFAULT_BRUSH_CURVE_SHA256
     ) {
       return err(
-        invalid(
-          'SHA-256 digest of the shipped UE 5.8.1 default /Water/Curves/FloatCurve.FloatCurve R16F fixture',
-          {
-            expected: UE_DEFAULT_WATER_BRUSH_CURVE_SHA256,
-            actual: inputs.dependencyDigests[UE_DEFAULT_WATER_BRUSH_CURVE_KEY],
-          },
-        ),
+        invalid('SHA-256 digest of the built-in default elevation curve R16F samples', {
+          expected: WATER_DEFAULT_BRUSH_CURVE_SHA256,
+          actual: inputs.dependencyDigests[WATER_DEFAULT_BRUSH_CURVE_KEY],
+        }),
       );
     }
     const actorCaches: WaterBrushActorCacheManifest[] = [];
@@ -961,7 +937,7 @@ export function buildWaterBrushTerrainManifest(
   const recipeDigest = sha256(canonicalJson(normalizedRecipe));
   const cacheKey = sha256(
     canonicalJson({
-      version: 1,
+      version: 2,
       recipeDigest,
       baseTerrainDigest: inputs.baseTerrainDigest,
       capture,
@@ -982,7 +958,7 @@ export function buildWaterBrushTerrainManifest(
   );
   return ok(
     Object.freeze({
-      version: 1,
+      version: 2,
       recipeDigest,
       baseTerrainDigest: inputs.baseTerrainDigest,
       terrainCapture: capture,

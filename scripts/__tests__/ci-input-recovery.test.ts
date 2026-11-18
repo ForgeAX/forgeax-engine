@@ -57,9 +57,9 @@ function recoveryFixture({ staleShared = false, failShard = false, corruptCore =
     const scriptIndex = command.findIndex((argument) => /^(?:scripts|packages)\//.test(argument));
     expect(scriptIndex).toBeGreaterThan(0);
     const args = command.slice(scriptIndex);
-    expect(command.slice(1, scriptIndex)).toEqual(
-      args[0] === 'scripts/ci/build-shared-app-inputs.mjs' ? ['--max-old-space-size=4096'] : [],
-    );
+    // Cold shared compilation admits its own capacity-derived budget; the
+    // orchestration layer must not override that owner with a fixed heap.
+    expect(command.slice(1, scriptIndex)).toEqual([]);
     calls.push(args);
     switch (args[0]) {
       case 'scripts/ci/download-artifact-with-retry.mjs': {
@@ -130,6 +130,7 @@ test('missing app transfer reuses verified core/shared inputs and builds bounded
     expect(args).toContain('--retain-artifact-only');
     expect(option(args, '--skip-build-app')).toBe('learn-render/3.model-loading/1.model-loading');
     expect(args.filter((_, index) => args[index - 1] === '--app').sort()).toEqual([
+      'bevy/sprite',
       'collectathon',
       'hello-multi-uv',
       'hello/multithreaded-execution',
@@ -287,7 +288,11 @@ test('source recovery never prunes app outputs after a failed build', () => {
   expect(readFileSync(join(root, 'apps/alpha/dist/sentinel'), 'utf8')).toBe('keep');
 });
 
-test('scoped shard recovery builds and compacts only selected apps without changing ownership', () => {
+test.each([
+  '0',
+  '1',
+])('scoped shard recovery builds and compacts only selected apps without changing ownership (core=%s)', (profile) => {
+  vi.stubEnv('FORGEAX_CI_CORE_VALIDATION', profile);
   const root = fixture();
   for (const app of ['alpha', 'beta', 'gamma', 'omega']) {
     write(join(root, 'apps', app, 'package.json'), { scripts: { build: 'fixture' } });
@@ -330,8 +335,8 @@ test('scoped shard recovery builds and compacts only selected apps without chang
       .split('\n')
       .map((line) => JSON.parse(line)),
   ).toEqual([
-    ['--app-shard-shader-delta', 'alpha'],
-    ['--app-shard-shader-delta', 'gamma'],
+    ['--app-shard-shader-delta', ...(profile === '1' ? ['--consumer-inputs'] : []), 'alpha'],
+    ['--app-shard-shader-delta', ...(profile === '1' ? ['--consumer-inputs'] : []), 'gamma'],
   ]);
   for (const app of ['alpha', 'gamma']) {
     expect(existsSync(join(root, 'apps', app, 'dist/sentinel'))).toBe(false);

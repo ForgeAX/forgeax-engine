@@ -1,6 +1,6 @@
 import { probeR32FloatRenderCapability } from '@forgeax/engine-rhi';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
-import { expect, it } from 'vitest';
+import { expect, it, onTestFinished } from 'vitest';
 import * as wgpu from '../../../rhi-wgpu/src/index';
 import { readOwnedShaderManifestPublication } from '../../../shader/src/manifest-publication';
 import { weightedLuminanceHistogram } from '../pipeline/standard-output/auto-exposure/oracle';
@@ -57,6 +57,7 @@ it.each([
   const device = (
     await adapter.requestDevice({ requiredFeatures: ['depth32float-stencil8'] })
   ).unwrap();
+  onTestFinished(() => pack.disposeDevice(device));
   expect(device.caps.backendKind).toBe(backend);
   const factory = (descriptor: GPUShaderModuleDescriptor) =>
     pack.createShaderModuleImmediate(device, descriptor);

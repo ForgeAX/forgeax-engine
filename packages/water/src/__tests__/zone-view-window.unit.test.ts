@@ -94,7 +94,7 @@ describe('shared Zone view window', () => {
     expect(window.resolution).toEqual([32, 16]);
   });
 
-  it('truncates positive fractional tile counts before pow2, with UE zero rounding to one half tile', () => {
+  it('truncates positive fractional tile counts before pow2, with zero rounding to one half tile', () => {
     const source = zone();
     const window = (x: number, z: number) =>
       createWaterZoneViewWindow(

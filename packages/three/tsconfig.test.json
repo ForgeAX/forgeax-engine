@@ -5,7 +5,8 @@
     "emitDeclarationOnly": false,
     "types": [
       "@webgpu/types",
-      "node"
+      "node",
+      "vite/client"
     ]
   },
   "include": [

@@ -9,8 +9,7 @@ import type { WebAudioEngine } from '@forgeax/engine-audio-webaudio';
 import type { EntityHandle } from '@forgeax/engine-ecs';
 import type { Plugin } from '@forgeax/engine-plugin';
 import type { Renderer } from '@forgeax/engine-render';
-import type { ExecutionOptions } from './execution/types';
-import type { App, CanvasDrawingBufferSize, ExecutionApp } from './types';
+import type { App, AppHostAdapter, CanvasDrawingBufferSize, ExecutionApp } from './types';
 
 /** JSON-shaped data a game may intentionally project through a host bridge. */
 export type GameProjectionValue =
@@ -142,6 +141,6 @@ declare module '@forgeax/engine-plugin' {
   interface EngineContextServices {
     gameHost?: GameHost;
     /** Host-only native factory, resolved synchronously for each execution generation. */
-    executionHostAudioFactory?: ExecutionOptions['createHostAudio'];
+    executionHostAudioFactory?: AppHostAdapter['createHostAudio'];
   }
 }

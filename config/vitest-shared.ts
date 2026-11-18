@@ -9,6 +9,8 @@ export const sharedVitestConfig = defineConfig({
   root: REPOSITORY_ROOT,
   test: {
     globals: false,
+    // Reuse keyed transforms across children; every file still evaluates in its own realm.
+    experimental: { fsModuleCache: true },
     sequence: { sequencer: DawnSequencer },
     passWithNoTests: true,
     teardownTimeout: 500,

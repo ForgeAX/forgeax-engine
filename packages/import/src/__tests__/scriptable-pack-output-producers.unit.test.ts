@@ -19,6 +19,53 @@ const PARENT_GUID = guid('019ffa97-3000-7000-8000-000000000002');
 const TEXTURE_GUID = guid('019ffa97-3000-7000-8000-000000000003');
 const SAMPLER_GUID = guid('019ffa97-3000-7000-8000-000000000004');
 
+it('normalizes previous Water labels before projecting the FFT noise reference', async () => {
+  const producer = createAssetOutputProducerRegistry().get('water-simulation-recipe');
+  if (!producer) throw new Error('missing Water recipe producer');
+  const noise = AssetGuid.format(TEXTURE_GUID);
+  const source = {
+    kind: 'water-simulation-recipe',
+    system: 'water-advanced',
+    configurationVersion: 1,
+    enabledFeatures: ['oceanPatch'],
+    materialGuids: [],
+    textureGuids: [noise],
+    oceanPatchConfig: {
+      algorithm: 'ue-5.8.1-niagara-fft',
+      noiseTextureGuid: noise,
+      windAngleDegrees: 180,
+      windSpeedMPerSec: 0.55,
+      fftResolution: 128,
+      domainLengthM: 2.5,
+      normalDomainSizeM: 1.5,
+      gravityMPerSec2: 9.8,
+      phillipsAmplitude: 0.0003,
+      windAlignment: 0,
+      timeScale: 2.5,
+      slosh: 1,
+      chopHack: 5,
+      twiddle: 'positive',
+      normalization: 'none',
+      normalRtFormat: 'rgba16float',
+      gridMesh: null,
+    },
+  };
+  const result = await producer.produce({
+    guid: AssetGuid.format(MATERIAL_GUID),
+    sourceKey: 'water/ocean',
+    asset: source as never,
+  });
+  expect(result.ok, result.ok ? '' : JSON.stringify(result.error)).toBe(true);
+  expect(result.unwrap().payload).toMatchObject({
+    oceanPatchConfig: { algorithm: 'ocean-spectrum-fft/2', noiseTextureGuid: noise },
+  });
+  expect(result.unwrap().refs).toContainEqual({
+    guid: noise,
+    sourceField: { fieldName: 'oceanPatchConfig.noiseTextureGuid' },
+  });
+  expect(source.oceanPatchConfig.algorithm).toBe('ue-5.8.1-niagara-fft');
+});
+
 describe('ScriptablePack standard output producers', () => {
   it.each([
     'target',

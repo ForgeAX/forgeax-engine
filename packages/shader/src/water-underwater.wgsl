@@ -45,7 +45,7 @@ struct UnderwaterSelection { surfaceYM: f32, immersionM: f32, blendWeight: f32, 
   let bodyIndex = waterMaterialDrawData.bodyIndex;
   let body = waterBodyData[bodyIndex];
   let heightDepth = waterBodyHeightDepth(bodyIndex, nearPoint.xz, vec3<f32>(0.0));
-  // UE's post-process wrapper supplies white VertexColor before WaterBodyData's vertex decode.
+  // Fullscreen white vertex color decodes to maximum flow at angle 2*pi.
   let vertexFlowAngle = 6.28318530718;
   let vertexFlow = vec2<f32>(cos(vertexFlowAngle), sin(vertexFlowAngle)) * material.maximumFlowVelocityMPerSec;
   let velocity = waterBodyVelocity(bodyIndex, nearPoint.xz, vertexFlow);

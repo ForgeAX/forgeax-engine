@@ -214,6 +214,7 @@ for (const [owner, file, args, env = {}] of selected) {
       stage: [file, ...args].join(' '),
       seconds: (performance.now() - start) / 1000,
       exitCode: result.status,
+      signal: result.signal,
       spawnError: result.error?.message,
       candidate,
       owner,

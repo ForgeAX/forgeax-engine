@@ -1,5 +1,10 @@
 # @forgeax/engine-shader
 
+Publication metadata shares immutable facts within one admission. Lossless JSON
+row children are coalesced before recursive interning; signed zero, sparse arrays,
+optional values and nonstandard prototypes retain the original structural path.
+All source digests and reflection validation remain required.
+
 ## Physical atmosphere tables
 
 `atmosphere-table-kernels.wgsl` owns transmittance, multiple-scattering and Sky

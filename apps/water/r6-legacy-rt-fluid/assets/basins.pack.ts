@@ -132,7 +132,7 @@ export default definePack({
         ],
         spline: {
           closed: true,
-          interpolationVersion: 'ue-water-spline/1',
+          interpolationVersion: 'water-spline/2',
           points: [
             point(0, x - 12, -9),
             point(1, x + 12, -9),

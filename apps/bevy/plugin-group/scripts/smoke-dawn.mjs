@@ -11,7 +11,7 @@ import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErr
 import { resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
+import { processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const WIDTH = 160;
@@ -90,7 +90,7 @@ const { Transform } = await import('@forgeax/engine-scene');
 const { quat } = await import('@forgeax/engine-math');
 const here = fileURLToPath(new URL('.', import.meta.url));
 const manifestPath = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const manifestUrl = `data:application/json,${encodeURIComponent(readShaderManifestText(manifestPath))}`;
+const manifestUrl = processShaderManifestUrl(manifestPath);
 const { createApp } = await import('@forgeax/engine-app');
 const { helloWorldPlugins } = await import(resolve(here, '..', 'src', 'plugin-group.ts'));
 

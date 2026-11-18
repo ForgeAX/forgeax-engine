@@ -24,6 +24,11 @@ const requestedModes = [
 if (requestedModes.length > 1)
   throw new Error(`build modes are mutually exclusive: ${requestedModes.join(', ')}`);
 const mode = requestedModes[0] ?? 'full';
+const packageTargets = process.argv.slice(2).filter((argument) => argument.startsWith('--target='));
+if (packageTargets.length > 0 && mode !== 'packages-only')
+  throw new Error(
+    'package targets require --packages-only; Engine and full builds remain complete',
+  );
 const clean = process.argv.includes('--clean');
 const assetsSourceOption = process.argv.indexOf('--assets-source-root');
 const assetsSourceRoot = assetsSourceOption === -1 ? null : process.argv[assetsSourceOption + 1];
@@ -193,6 +198,7 @@ await runStage(
   process.execPath,
   [
     'scripts/build-packages.mjs',
+    ...packageTargets,
     ...(assetsSourceRoot === null ? [] : ['--assets-source-root', resolve(assetsSourceRoot)]),
   ],
   {

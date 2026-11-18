@@ -78,6 +78,7 @@ export interface SubmittedFeatureReceipt {
 }
 
 export type RenderWorkerInput =
+  | import('../configuration-apply').ConfigurationApplyRequest
   | {
       readonly kind: 'geometry-observe-next';
       readonly requestId: number;
@@ -95,6 +96,7 @@ export type RenderWorkerInput =
   | MeshResidencyRequest
   | (Pick<
       ExecutionInitMessage,
+      | 'startup'
       | 'bootstrapUrl'
       | 'bootstrapData'
       | 'canvas'
@@ -174,6 +176,7 @@ export type RenderWorkerInput =
     }
   | { readonly kind: 'dispose' };
 export type RenderWorkerOutput =
+  | import('../configuration-apply').ConfigurationApplyResponse
   | {
       readonly kind: 'geometry-observation-result';
       readonly requestId: number;

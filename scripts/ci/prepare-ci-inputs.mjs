@@ -381,19 +381,14 @@ export async function main(
           await invoke(['scripts/build.mjs', '--packages-only']);
           if (!needsShared) return;
           if (!sharedRetained)
-            await invoke(
-              [
-                'scripts/ci/build-shared-app-inputs.mjs',
-                '--root',
-                root,
-                '--out',
-                shared,
-                '--catalog-only',
-              ],
-              // Match the normal shader producer. The complete reflected
-              // publication exceeds Node's default 2 GiB parent heap.
-              { nodeArgs: ['--max-old-space-size=4096'] },
-            );
+            await invoke([
+              'scripts/ci/build-shared-app-inputs.mjs',
+              '--root',
+              root,
+              '--out',
+              shared,
+              '--catalog-only',
+            ]);
           // App producers build their own shader manifests from the catalog.
           if (consumer === 'app-shard') return;
         }

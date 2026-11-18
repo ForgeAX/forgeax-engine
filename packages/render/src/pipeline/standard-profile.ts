@@ -206,6 +206,10 @@ export interface StandardProbePlacement {
 }
 
 export interface StandardProfile {
+  /** App configuration revision captured by compiled scene graphs and frame receipts. */
+  readonly configurationRevision?: number;
+  /** Concrete budgets derived from the active engine quality selection. */
+  readonly quality?: import('../quality').RenderQualityBudgets;
   /** Merge ready native view raster passes whose shaders only read depth. */
   readonly featureReadOnlyDepthBatching?: boolean;
   /** Explicit off/on diagnostic override of the production policy. */

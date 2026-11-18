@@ -1,6 +1,6 @@
 # @forgeax/engine-water
 
-Water's R0 owner contains durable water payload admission and per-Scene lifecycle state. ForgeAX Pack sources use meters, XZ-horizontal and +Y-up directly.
+Water contains durable water payload admission and per-Scene lifecycle state. ForgeAX Pack sources use meters, XZ-horizontal and +Y-up directly.
 
 Water owns `WATER_SYSTEM_RESOURCE`, `WATER_BUOYANCY_RESOURCE` and
 `WATER_VISUAL_CONTACTS_RESOURCE`. Runtime installs those exact ECS tokens;
@@ -9,10 +9,16 @@ Their names are diagnostic labels, and a same-named independent token does not
 select or replace Water state. Runtime keeps its scene status token and schedule
 assembly; Physics owns the fixed sync, simulation and completed writeback phases.
 
+Immutable mesh dependencies retain their selected storage and typed-array kind
+metadata. The internal `waterDependencyMeshView` admits triangle ranges and
+exposes position/color windows over that frozen backing. WaterInfo, GPU WaterMesh
+and component bounds share these windows; runtime interleaved layout declarations
+are never treated as populated channels or expanded into channel mirrors.
+
 `createWaterCapabilityReport` combines explicit RHI, Render and Physics facts
-with configuration-qualified comparison evidence. Optional WaterEditor tooling
-V-06 is outside the required UE-R0 runtime gates. An absent accepted CPU mesh
-publication remains `unvalidated`; feature registration cannot establish it.
+for the selected configuration. Report version 2 describes runtime support and
+requirements. An absent CPU mesh publication is `unavailable`; registration does
+not establish a completed mesh publication.
 
 ## Local Fluid Simulation
 
@@ -28,8 +34,7 @@ device identities stay separate; views import their own outputs and the fluid
 solver executes once per renderer frame. Reordering views cannot move retained
 WaterInfo history between graph owners.
 
-`configurationVersion: 1` selects the built-in kernels ported from the audited
-UE 5.8.1 Water material graphs: Ripple, the four Shallow stages, the selected
+`configurationVersion: 1` selects the built-in kernels: Ripple, the four Shallow stages, the selected
 solver's normal pass and optional WaveFoam. The recipe owns their numeric
 parameters and target descriptors. `materialGuids` and `textureGuids` must be
 empty; nonempty overrides fail source admission. `impulseNoiseGuid` is the
@@ -40,8 +45,7 @@ its existing source contract.
 The Scene component's explicit world-space `waveFoamCenterM` can move without
 changing the recipe or resetting the solver. Each submitted outer frame retains
 its current, previous and second-previous WaveFoam centers, independently of
-fixed solver callbacks. These are native ForgeAX author inputs; the installed
-UE Blueprint's coupling, defaults and movement order are not established.
+fixed solver callbacks. These are explicit Scene author inputs.
 The Wave pass retains the material's normalized-UV Shallow height sample.
 Active BeachFoam derives its center, extent, resolution and sampling from the
 same-generation producer tuple, including its independent linear-clamp amount
@@ -159,7 +163,7 @@ enlarge the Body's finite query or collision domain.
 ## Advanced Simulation Entry
 
 An explicit OceanPatch `algorithm: 'mode-projected-gravity/1'` selects the
-experimental geometry-driven linear gravity model. Its saved reference depth,
+geometry-driven linear gravity model. Its saved reference depth,
 world domain, source slabs, native geometry budget and boundary policy are
 required inputs. It shares the World OceanPatch owner, native completed-step
 clock and ordinary submitted output lifecycle. Bind `materialGrid`,
@@ -178,7 +182,6 @@ Outside the original patch, or without the opt-in source, `localResidual` is abs
 The query's `nativePhysics` time/step is independent of the Gerstner scene clock;
 paused wave time does not age a newly completed native observation. Worker
 Snapshot/3 carries the same bounded detached source and lifecycle identity.
-This opt-in implementation does not establish native-force or appearance acceptance.
 Native buoyancy qualifies residual queries with the receiving entity and native
 generation. Render evolves the external-source field separately: the complete
 field remains visible, while a receiver cannot amplify its own source through
@@ -274,18 +277,17 @@ FFT roster is submitted and completed. This output is material data only; it
 does not feed CPU queries, WaterInfo, foam, collision or buoyancy. See the
 v2 producer and lifecycle contract.
 
-Live R6/R7 height, normal and foam fields remain material inputs. Their default
+Live fluid and spectral height, normal and foam fields remain material inputs. Their default
 paths do not feed CPU Body queries or native buoyancy; the explicit
 `mode-projected-gravity/1` query binding described above is the local residual
 exception. Durable River Bake publication remains a separate explicit source.
-See the R8 feedback boundary.
+See the feedback boundary.
 Stage captures report `water-advanced-readback-unavailable` when actual GPU bytes
 are unavailable; River capture/publication errors use
 `water-advanced-bake-unavailable`.
 Published Worker frames deliver completion to the source owner, but feature
 texture bytes remain receiver-local. Worker Stage readbacks and River Bake
-texture publication are pending; capture requests report the structured
-unavailable errors above. Ordinary Worker completion requires no readback.
+texture publication return the structured unavailable errors above. Ordinary Worker completion requires no readback.
 Ocean acknowledgments retain issued frame identity across later extractions.
 Render consumes reset, source reseed and capture revisions only after the complete
 planned work submits; an older acknowledgment cannot consume a newer request.
@@ -297,20 +299,18 @@ receipt and readbacks as history while the owner reports unavailable.
 profile-qualified writers in `WATER_ADVANCED_DEBUG_WRITER_ORDER`, independently
 of author list order. `debug.foamEmission` is the River Foam writer's separate
 gate. Cell-speed and WaterInfo-speed are different inputs. Body state speed
-scaling and `normalFoamRange` are explicit authored values because their
-effective UE caller defaults remain unpaired.
+scaling and `normalFoamRange` are explicit authored values.
 `startFadeSeconds` is also required explicitly. WaterBody multiplies its
 origin-relative height by `smoothstep(0, startFadeSeconds,
 secondsUntilDestroyed)` before each substep's depth solve; River has no Fade
 module. The follow-pawn lifetime is 15 seconds after water contact ends.
 This changes solver height/depth, not material opacity, normals or Foam.
-`deltaLimit: { kind: 'source-default' }` records unresolved source intent and
-fails creation with `water-advanced-source-parameter-unavailable`. An explicit
+`deltaLimit: { kind: 'source-default' }` is unsupported and fails creation with `water-advanced-source-parameter-unavailable`. An explicit
 positive `application-cap` enables the implemented solver; no zero cap is guessed.
 
 Enabled `rigidMeshCollisions` consumes saved `WaterShallowCollider` participants
 and accepted native Physics geometry. `accurate` selects center-soft or four-corner
-area integration; the audited source default is false. The explicit
+area integration; the default is false. The explicit
 `useWaterHeightForCollision` option defaults false in the source; when true it
 only clears overlap volume below `1e-7 m` depth, independently of occupancy.
 Rigid collision runs before NDC impacts. Both retain the source velocity
@@ -325,8 +325,7 @@ uses the patch's full XZ extent, identity rotation and full Y size
 `rigidMeshCollisions.overlapThicknessCells * extentM[0] / gridResolution[0]`
 at that queried surface height. Enabled rigid branches require the finite,
 nonnegative authored thickness coefficient; no implicit zero or one is supplied.
-The audited source expression is coefficient times X-axis cell size; its
-effective UE coefficient default remains unresolved. Physics converts the full
+The overlap size is the coefficient times X-axis cell size. Physics converts the full
 size to native half extents once. Selection retains every accepted filtered
 element of a selected component, including individually nonoverlapping elements.
 Only an originally empty aggregate may use held MeshAsset local bounds. Its
@@ -339,13 +338,10 @@ Render captures committed Physics poses at the accepted step's end. Surface
 velocity differences the same projected primitive point against the previous
 submitted capture, using their elapsed capture time and one common grid origin.
 Abort, reset and native/mesh replacement cannot advance or reuse stale history.
-This is an Engine end-of-step fraction `1` policy; the UE caller selects
-`Engine.System.TimeStepFraction`, whose runtime numeric value remains unpaired.
-Solver substep fractions do not replace that engine variable.
+Capture uses end-of-step fraction `1`, independently of solver substeps.
 
 The Engine Feature explicitly publishes ordinary simulation RTs for its material
-consumer. This is an Engine adapter policy, not evidence that UE's unchecked
-writer call gates are enabled. Body normals use the last Compute Normals writer's
+consumer. Body normals use the last Compute Normals writer's
 RGB normal/A clamped-foam layout; Beauty later replaces A with height. River
 normals use RGB normal/A zero. Debug writers overwrite their source target in
 source order; the River Foam debug writer later replaces SimGridRT with
@@ -364,10 +360,8 @@ deformation frames sample their own mapping and normal, including opposite
 sides of a moving patch boundary. Explicit Ocean displacement combined with
 Gerstner adds their normal offsets as an Engine material adapter policy.
 
-Use the [R7 project](../../apps/water/r7-advanced-shallow-bake-fft/README.md) for
-the authored timestep/foam settings and hardware acceptance route. The APIs are
-implemented and experimental; final local acceptance and paired UE runtime,
-numeric and pixel equivalence are independent evidence gates.
+Use the [simulation project](../../apps/water/r7-advanced-shallow-bake-fft/README.md) for
+the authored timestep and foam settings.
 
 ## Synchronous Buoyancy and Basic DI
 
@@ -377,7 +371,7 @@ pontoon. Relative mode forbids socket references. Socket mode requires one live
 descendant entity per pontoon and interprets anchors as world socket offsets.
 The runtime resolves local socket hierarchy against the current native root
 pose on the fixed timeline, independent of render interpolation. Radii are
-world meters, matching UE. `enabledPontoons` is empty (all enabled) or one 0/1
+world meters. `enabledPontoons` is empty (all enabled) or one 0/1
 per point. Unknown old placeholder fields fail normal Scene schema admission;
 there is no legacy Body selection or nearest-water fallback.
 
@@ -386,9 +380,9 @@ and `physicsStepSimulation`. It consumes the previous completed root sensor
 roster, current accepted dynamics and fixed wave time. Collision/Scene revisions
 must resolve exactly; non-water and stale candidates remain visible in traces.
 Candidate queries use bottom-minus-1 m and select the first maximum immersion.
-UE sprung fractions, speed ramp, signed vertical damping and pre-fraction force
+Sprung fractions, speed ramp, signed vertical damping and pre-fraction force
 cap precede native sphere-center point force. The default relative-center sprung
-calculation intentionally retains UE 5.8.1's double local-COM subtraction.
+calculation subtracts local COM in both relative-center transformations.
 The two-support and aligned-axis branches retain source thresholds in meters,
 double intermediates and float-stored coefficients. A singular one-axis helper
 retains its source fallback and succeeds with `coefficientSolve.diagnostics`, without
@@ -445,7 +439,7 @@ Solver input is `forgeax-water-solver/3`, including local residual query fields;
 decoder rejects output version 1 and inconsistent event/trace identity, time or
 contact geometry before publishing any events.
 See [Physics solver participants](../physics/README.md#solver-participants) and the
-[R5 app](../../apps/water/r5-gpu-mesh-async-pontoons/README.md).
+[async buoyancy app](../../apps/water/r5-gpu-mesh-async-pontoons/README.md).
 
 `queryWaterParticle` implements the basic CPU DI pins with an explicit
 `WaterParticleQueryInstance`. Tick the instance with the system position and exact
@@ -466,16 +460,13 @@ static references/versions, effective switches, reflected FoamRT consumption and
 no-simulation initialization from the accepted material closure and view graph.
 Effective switches come from the resolved material snapshot, including inherited
 values and explicit child overrides. When Baked is enabled, `bakedSource` reports
-`provenance-unavailable` because R2 does not expose its grid binding identity at
-this inspection boundary; it does not fabricate an R7 reference.
-R4 does not implement R6/R7 solvers. Its connected BeachFoam consumer retains
-the real graph-owned `(0,0,0,1)` no-simulation target. Numerical CPU/UE and
-BeachFoam appearance equivalence require their separate paired evidence.
+`provenance-unavailable` when the inspection boundary has no grid binding identity.
+A BeachFoam consumer without simulation uses the graph-owned `(0,0,0,1)` target.
 
 ## Pack input boundary
 
 > [!IMPORTANT]
-> `.pack.ts` water sources are authored in meters, XZ-horizontal and +Y-up. `buildWaterPackOutputs` validates/freezes and emits runtime payloads without unit conversion. The Engine has no UE coordinate/unit import path.
+> `.pack.ts` water sources are authored in meters, XZ-horizontal and +Y-up. `buildWaterPackOutputs` validates/freezes and emits runtime payloads without unit conversion.
 
 | Pack source | Water payload contract |
 |:--|:--|
@@ -484,54 +475,60 @@ BeachFoam appearance equivalence require their separate paired evidence.
 
 Both source forms use the Pack v2 transport envelope. Its transport version is independent from the authoring schema version.
 
+Author spline interpolation as `water-spline/2`, shallow stages as
+`water-body-shallow/2` or `river-shallow/2`, and the standalone spectral algorithm
+as `ocean-spectrum-fft/2`. Admission translates supported earlier saved labels
+without mutating caller data. Existing geometry digest version 1 keeps its
+original projection; unknown labels and modified geometry still fail validation.
+The capability report, its device/renderer facts and Brush Terrain manifest
+publish version 2; the Water Pack producer identity is `water-runtime/2`.
+
 ## Scene and material status
 
 `WaterBodyInstance` and `WaterZoneInstance` are reconciled from live Scene entities. A body snapshot is keyed by Scene entity identity and records its source asset GUID separately, along with the world matrix in meters. Body spline points remain actor-local. A Zone asset GUID may have only one live Zone actor; duplicates are reported as ambiguous and do not bind.
 
 Runtime pairs collision-enable changes on a live source-owned River with the matching Native collision publication. A saved disable stages an empty collision candidate and commits the new Water source only after Native publishes its empty receipt; a failed preparation or admission keeps the accepted River source and collision intact for retry. Re-enabling follows the same pair-before-commit rule. Material-only or source-version reloads retain the accepted Bake and Native receipt when the collision geometry and full Scene matrix are unchanged. To replace a source-owned River with another Water Body kind, remove its `WaterBodyInstance`, wait for Native source retirement, then mount the replacement; a direct kind replacement is refused while the River owns Native collision.
 
-Spline metadata has four independent curve defaults: width `20.48 m`, depth `1.5 m`, velocity `1.28 m/s`, and audio intensity `1`. Authored sources may persist `spline.metadataDefaults`; omitted defaults resolve to these engine defaults. Interior metadata insertion uses UE's stable curve interpolation. Geometry insertion preserves the existing Hermite path by splitting endpoint tangents across each new key span. Append inherits the last point, while fixup fills absent curve values from their corresponding defaults, clamps width/depth to the UE `KINDA_SMALL_NUMBER` floor (`0.000001 m`), and assigns sequential input keys. Changing a default propagates only to points nearly equal to the old default (UE tolerance converted from cm for length curves); nearly equal old/new defaults are a no-op. `migrateLegacyWaterSplineMetadataDefaults(..., '2.0.0')` is the explicit schema-2 migration path: it records the four defaults and repairs the audited legacy width `0.008 m` and zero-depth sentinels. Ordinary source validation does not apply this migration and requires each spline input key to equal its point index.
+Spline metadata has four independent curve defaults: width `20.48 m`, depth `1.5 m`, velocity `1.28 m/s`, and audio intensity `1`. Authored sources may persist `spline.metadataDefaults`; omitted defaults resolve to these engine defaults. Interior metadata insertion uses stable curve interpolation. Geometry insertion preserves the existing Hermite path by splitting endpoint tangents across each new key span. Append inherits the last point, while fixup fills absent curve values from their corresponding defaults, clamps width/depth to a `0.000001 m` floor, and assigns sequential input keys. Changing a default propagates only to points nearly equal to the old default (length-curve tolerance expressed in meters); nearly equal old/new defaults are a no-op. `migrateLegacyWaterSplineMetadataDefaults(..., '2.0.0')` is the explicit schema-2 migration path: it records the four defaults and repairs the legacy width `0.008 m` and zero-depth sentinels. Ordinary source validation does not apply this migration and requires each spline input key to equal its point index.
 
-Spline interpolation has an explicit compatibility boundary. Unversioned legacy sources keep their authored Hermite tangents. `spline.interpolationVersion: 'ue-water-spline/1'` opts into UE Water spline evaluation: supported point modes are `linear`, `curve` (the UE Water default), `curve-clamped`, and `curve-custom-tangent`; absent per-point modes resolve to `curve`. Version 1 sources carry normalized engine-basis XYZW rotation quaternion keys, plus quaternion controls for custom-tangent points. The quaternion is the single orientation authority: the required `up` field must mirror its rotated engine Up axis, and `rollAngle` must be zero because authored Up/Roll have been baked into the quaternion. Contradictory orientation data is rejected. Position auto-tangents, clamping, quaternion squad, and River distance sampling use UE 5.8 rules. River reparameterization uses UE's five-point Legendre-Gauss segment integral, then linearly inverts the ten-step table; the table length and 5 cm adaptive polyline error use the Body world matrix's linear transform when available, while emitted positions remain body-local. Unsupported point modes and incomplete version-1 orientation data are rejected at source validation. Water metadata curves remain linear between keys. River WaterInfo/brush/query uses the evaluated rotation's Up vector to calculate a horizontal lateral; the traditional visible spline mesh and its collision use the component's fixed Y-up, zero-roll frame. River vertex flow angle is body-local and a Scene consumer must add actor yaw before interpreting it in world space. Closed final segments continue to input key `n` before wrapping to the first point.
+Spline interpolation has an explicit compatibility boundary. Unversioned legacy sources keep their authored Hermite tangents. `spline.interpolationVersion: 'water-spline/2'` selects versioned spline evaluation: supported point modes are `linear`, `curve` (the default), `curve-clamped`, and `curve-custom-tangent`; absent per-point modes resolve to `curve`. Versioned sources carry normalized engine-basis XYZW rotation quaternion keys, plus quaternion controls for custom-tangent points. The quaternion is the single orientation authority: the required `up` field must mirror its rotated engine Up axis, and `rollAngle` must be zero because authored Up/Roll have been baked into the quaternion. Contradictory orientation data is rejected. River reparameterization uses five-point Legendre-Gauss segment integral, then linearly inverts the ten-step table; the table length and 5 cm adaptive polyline error use the Body world matrix's linear transform when available, while emitted positions remain body-local. Unsupported point modes and incomplete versioned orientation data are rejected at source validation. Water metadata curves remain linear between keys. River WaterInfo/brush/query uses the evaluated rotation's Up vector to calculate a horizontal lateral; the traditional visible spline mesh and its collision use the component's fixed Y-up, zero-roll frame. River vertex flow angle is body-local and a Scene consumer must add actor yaw before interpreting it in world space. Closed final segments continue to input key `n` before wrapping to the first point.
 
 ## Wave and Query Contracts
 
-`queryWaterBodySnapshot` operates on one accepted Body snapshot. `ComputeDepth` and `ComputeImmersionDepth` imply location; `IncludeWaves` requires a location/normal/depth/immersion companion and `SimpleWaves` requires `IncludeWaves`. The flags are rejected at the ForgeAX entry when these combinations are invalid. A valid wave set on a wave-supporting body adds location and depth; without actual waves, `IncludeWaves` stays set and does not add those fields. River has no Gerstner query waves. Requested/implicit values are listed in the result's `valid` set; exclusion returns an input-height plane with zero immersion/velocity. If `IncludeWaves` is requested, `waveInfo` remains readable with UE's default values, but no wave sample is evaluated; callers must treat water surface data as invalid when excluded.
+`queryWaterBodySnapshot` operates on one accepted Body snapshot. `ComputeDepth` and `ComputeImmersionDepth` imply location; `IncludeWaves` requires a location/normal/depth/immersion companion and `SimpleWaves` requires `IncludeWaves`. The flags are rejected at the ForgeAX entry when these combinations are invalid. A valid wave set on a wave-supporting body adds location and depth; without actual waves, `IncludeWaves` stays set and does not add those fields. River has no Gerstner query waves. Requested/implicit values are listed in the result's `valid` set; exclusion returns an input-height plane with zero immersion/velocity. If `IncludeWaves` is requested, `waveInfo` remains readable with default values, but no wave sample is evaluated; callers must treat water surface data as invalid when excluded.
 
 `WaterSystem.queryBody` accepts query parameters only; caller-supplied `input.baked` is rejected. Baked query data must first be accepted with `publishBakedQueryGrid` for the current mounted Body generation, and the system supplies that published closure internally. Publishing requires `enabled`, `componentValid`, and `dataValid` to be true plus a finite, dimensionally valid grid; a disabled source is not a publishable value. Disable it with `clearBakedQueryGrid(guid, bodyGeneration)`, which removes the source only for the current generation in that owning `WaterSystem` and reports whether a source was present. Missing Bodies and stale generations return structured errors; a stale source is not used by queries for a newer generation. The Scene-local Body owner scopes the source, so no Zone binding is required for a standalone Body query. The standalone `queryWaterBodySnapshot` helper continues to accept explicit baked data for pure algorithm checks.
 
 The admitted query route produces only `WaterQueryBodySnapshot`; it does not construct output statuses, receipts or dirty-set observations. `WaterTerrainQueryResolver` receives this query projection with a newly resolved, detached Zone binding. Full `snapshot()` observations remain independent, and held query projections retain their accepted Body and Zone values after later updates.
 
-CPU full Gerstner evaluation keeps the input XZ fixed for the query and uses UE's two-sample horizontal-displacement zero crossing per wave; the simple path sums only `A*cos(phi)` and leaves the base normal unchanged. CPU horizontal `Q = steepness/k` (meters) and GPU `q = steepness/(A*k)` (unitless) remain distinct. GPU LWC phase uses the 20,971.52 m tile split and UE's 4 m edge blend. WaterMesh tile schema v8 uses a 96-byte record: the 80-byte tile/transition/coverage record adds CPU double-computed observer-relative tile XZ, `maxMorphLod` at byte 88, and `flatFarBoundaryMask` in the low four bits of byte 92 and an optional draw-local continuity word offset in the upper 28 bits. Morph and coverage stay in tile-local meters, and wave phase adds the target-relative tile offset without subtracting large world coordinates. At frame upload, a transition target's generation-qualified WaterBody row replaces its temporary render index. The source Body supplies material height, depth and velocity; the target supplies wave phase, time and wave range. This material split is independent of the R2 tile/base-height and morph selection. Each near tile's body footprint is clipped in tile-local double precision; tile-local meter rings are tested with even-odd fill after LOD morphing, preserving partial leaves and holes without comparing large absolute `f32` positions. River uses its cooked spline query footprint for tile selection and clipping. Custom WaterMesh opt-in projects only triangle-list/triangle-strip triangles from the resolved Cooked override mesh into local XZ and unions those projections into digest-verified rings; query and collision footprints never substitute for that product. Candidate bodies are partitioned in effective-priority order; River transition tiles split into disjoint river-only, river/target intersection, and target-only geometry regions, each with its matching body/material. The layout receipt hashes both fixed records and coverage bytes. Flat-XZ WaterMesh surfaces accept Body translation, yaw and scale, and reject Body pitch/roll because the current tile ABI stores one water Y per tile. Ocean far tiles retain the original owning Ocean `baseHeightM - maxWaveHeightM` placement and its separate conservative wave envelope for culling. View-window selection does not automatically override this saved lower-plane design. They bypass WaterInfo height mapping and Gerstner displacement; the UE asset graph audit verifies effective `Enable Waves=false` and `UseWaterInfoTexture=false` for both `Water_FarMesh` and `HLODWater`, while their `UseFixedZ` setting and final visible far height remain unvalidated. The ForgeAX placement does not establish UE height parity. The near quadtree uses the snapped Zone center and per-axis power-of-two half extents, while the eight far tiles retain the static Zone bounds as their inner edge. A no-Ocean Zone must pair Zone-local `farWaterLevelM` with `farOwnerBodyGuid`; the latter is a deferred source GUID reference that is not a Pack dependency edge because the owning Body points back to its Zone. At publication time it must resolve case-insensitively to exactly one visible, bound, WaterMesh-participating Body instance in the Zone; the Body supplies the render route only, and its height is not used. Each unique WaveSet asset is uploaded once per view and shared by referencing bodies across Worlds; it is limited to 4,096 waves, matching UE's per-asset cap. Distinct WaveSet assets may exceed 4,096 combined, subject to device storage-buffer limits. Upload fails without truncating ranges. Baked samples use strict interior grid coordinates; points outside that interior yield a zero sample. A valid Baked source supplies its selected fields without an additional Terrain query; flat Lake/Ocean surface height and normal remain based on the body plane.
+CPU full Gerstner evaluation keeps the input XZ fixed for the query and uses a two-sample horizontal-displacement zero crossing per wave; the simple path sums only `A*cos(phi)` and leaves the base normal unchanged. CPU horizontal `Q = steepness/k` (meters) and GPU `q = steepness/(A*k)` (unitless) remain distinct. GPU LWC phase uses the 20,971.52 m tile split and a 4 m edge blend. WaterMesh tile schema v8 uses a 96-byte record: the 80-byte tile/transition/coverage record adds CPU double-computed observer-relative tile XZ, `maxMorphLod` at byte 88, and `flatFarBoundaryMask` in the low four bits of byte 92 and an optional draw-local continuity word offset in the upper 28 bits. Morph and coverage stay in tile-local meters, and wave phase adds the target-relative tile offset without subtracting large world coordinates. At frame upload, a transition target's generation-qualified WaterBody row replaces its temporary render index. The source Body supplies material height, depth and velocity; the target supplies wave phase, time and wave range. This material split is independent of the tile/base-height and morph selection. Each near tile's body footprint is clipped in tile-local double precision; tile-local meter rings are tested with even-odd fill after LOD morphing, preserving partial leaves and holes without comparing large absolute `f32` positions. River uses its cooked spline query footprint for tile selection and clipping. Custom WaterMesh opt-in projects only triangle-list/triangle-strip triangles from the resolved Cooked override mesh into local XZ and unions those projections into digest-verified rings; query and collision footprints never substitute for that product. Candidate bodies are partitioned in effective-priority order; River transition tiles split into disjoint river-only, river/target intersection, and target-only geometry regions, each with its matching body/material. The layout receipt hashes both fixed records and coverage bytes. Flat-XZ WaterMesh surfaces accept Body translation, yaw and scale, and reject Body pitch/roll because the current tile ABI stores one water Y per tile. Ocean far tiles retain the original owning Ocean `baseHeightM - maxWaveHeightM` placement and its separate conservative wave envelope for culling. View-window selection does not automatically override this saved lower-plane design. They bypass WaterInfo height mapping and Gerstner displacement. The near quadtree uses the snapped Zone center and per-axis power-of-two half extents, while the eight far tiles retain the static Zone bounds as their inner edge. A no-Ocean Zone must pair Zone-local `farWaterLevelM` with `farOwnerBodyGuid`; the latter is a deferred source GUID reference that is not a Pack dependency edge because the owning Body points back to its Zone. At publication time it must resolve case-insensitively to exactly one visible, bound, WaterMesh-participating Body instance in the Zone; the Body supplies the render route only, and its height is not used. Each unique WaveSet asset is uploaded once per view and shared by referencing bodies across Worlds; it is limited to 4,096 waves. Distinct WaveSet assets may exceed 4,096 combined, subject to device storage-buffer limits. Upload fails without truncating ranges. Baked samples use strict interior grid coordinates; points outside that interior yield a zero sample. A valid Baked source supplies its selected fields without an additional Terrain query; flat Lake/Ocean surface height and normal remain based on the body plane.
 
 Stock Water deformation retains near waves at far boundaries. It does not blend
 current/previous positions or fragment normals toward a mean plane. The existing
 four-bit adjacency metadata remains in the versioned tile payload; it does not
 authorize automatic flattening. Explicit saved no-Ocean levels remain authoritative.
 
-WaterMesh LOD selection uses nearest node AABB distance. `RawLOD = treeDepth - node.depth` denotes spatial tile size, `LogicalLOD` is the first eligible ancestor level at the UE distance threshold, and `DensityDelta = LogicalLOD - RawLOD` selects `max(2, NumQuadsLOD0 >> DensityDelta)` quads per edge. The density is capped at the available grid levels; morphing stops at `maxMorphLod`, the lesser of the spatial tree limit and that density limit. Height morph contributes only to the first selected level. UE's vertex factory evaluates at most two morph stages. ForgeAX continues through the remaining available levels when each preceding factor has reached one, so mixed-LOD edges remain continuous at the valid minimum `lodScale` of 0.5. This extension stores one maximum level per tile, needs no neighbor table, exits as soon as a stage is incomplete, and samples Gerstner waves only after the final morphed XZ is known.
-
-The Gerstner inputs above are source-aligned with UE 5.8.1; the LOD continuation is a ForgeAX extension. ForgeAX desktop frames show rendered waves, but UE numeric and appearance parity remain unvalidated until the V-07/V-10 comparison gates are run.
+WaterMesh LOD selection uses nearest node AABB distance. `RawLOD = treeDepth - node.depth` denotes spatial tile size, `LogicalLOD` is the first eligible ancestor level at the distance threshold, and `DensityDelta = LogicalLOD - RawLOD` selects `max(2, NumQuadsLOD0 >> DensityDelta)` quads per edge. The density is capped at the available grid levels; morphing stops at `maxMorphLod`, the lesser of the spatial tree limit and that density limit. Height morph contributes only to the first selected level. Morphing continues through the remaining available levels when each preceding factor has reached one, so mixed-LOD edges remain continuous at the valid minimum `lodScale` of 0.5. This extension stores one maximum level per tile, needs no neighbor table, exits as soon as a stage is incomplete, and samples Gerstner waves only after the final morphed XZ is known.
 
 > [!IMPORTANT]
 > Rendered WaterInfo is published through versioned graph targets per view, device generation, and format. Extraction prepares generation-qualified rows against a candidate target; only the frame submission callback promotes it. When the source digest, format, dimensions, layer count, and slice assignments are unchanged, the submitted target and its content receipt are reused without rebuilding raster geometry or dispatching raster, merge, blur, finalize, or clear passes; only the graph retention edges remain. An aborted or rejected candidate leaves the prior publication and target mapping active, and the next extraction retries changed source data. Candidate writes use a distinct physical target, while previous target views remain sampled and keep the same storage/sample usage signature through graph replacement. The compiled graph retains matching allocations and retires replaced generations only after their queue fence. Previous rows, wave closures, and targets remain available exactly while the per-view committed WaterMesh proxy roster references their stable World/body/Zone generations; deletion, detach, or proxy retirement drops those references. Retained wave closures continue advancing Time/PrevTime until their proxy is replaced.
 
-WaterInfo `waterYMinM` and `waterYMaxM` come only from bound Bodies with `affectsWaterInfo: true`, using their accepted WaterInfo mesh bounds plus the authored wave extent. Other bound Bodies still receive current WaterInfo descriptor rows and fixed-height wave inputs, but their height and wave bounds do not widen a participating Zone's range. A Zone with bound Bodies but no WaterInfo participants submits an empty-water capture so fixed-height rows are current and prior water/dilation pixels do not survive. Its synthetic `waterYMaxM` is at least the Terrain `groundMax`, which lets ground A round-trip high terrain while B remains zero because there is no water or dilation geometry; without Terrain, the empty interval remains `[0, 0]`. This is a ForgeAX binding strategy for empty targets, not a claim that UE uses a synthetic range. An empty Zone publishes no capture. Ground A keeps UE's shared `waterYMaxM` normalization/decoding formula. When a participating water range lies below `groundYMinM`, the existing UE clamp behavior is retained and its rendered pixel result remains a V-05 validation item. With no Terrain, the ground minimum is `waterYMinM - 30 m`, preserving the fallback ground sentinel. Dirty or unaccepted participant geometry continues to defer the Zone capture and retain its last submitted publication until current geometry is accepted.
+WaterInfo `waterYMinM` and `waterYMaxM` come only from bound Bodies with `affectsWaterInfo: true`, using their accepted WaterInfo mesh bounds plus the authored wave extent. Other bound Bodies still receive current WaterInfo descriptor rows and fixed-height wave inputs, but their height and wave bounds do not widen a participating Zone's range. A Zone with bound Bodies but no WaterInfo participants submits an empty-water capture so fixed-height rows are current and prior water/dilation pixels do not survive. Its synthetic `waterYMaxM` is at least the Terrain `groundMax`, which lets ground A round-trip high terrain while B remains zero because there is no water or dilation geometry; without Terrain, the empty interval remains `[0, 0]`. An empty Zone publishes no capture. Ground A uses the shared `waterYMaxM` normalization and decoding formula. When a participating water range lies below `groundYMinM`, the encoded ground value clamps to its representable range. With no Terrain, the ground minimum is `waterYMinM - 30 m`, preserving the fallback ground sentinel. Dirty or unaccepted participant geometry continues to defer the Zone capture and retain its last submitted publication until current geometry is accepted.
 
 For local tessellation, the view center snaps to the Zone `tileSizeM` in world meters, including the Zone's horizontal transform scale. The same snapped center and transformed Zone extent feed both raster coordinates and the material descriptor; both are part of the source digest. Blur neighborhoods clamp to the image edge, matching clamp-to-edge sampling and preventing out-of-range zero loads from entering the flow average.
 
-The CPU query blends the base normal and the computed full-wave normal with the depth attenuation factor and does not normalize the Lerp result, matching UE 5.8.1 `WaterBodyComponent.cpp:2037-2044`; height attenuation is applied separately at the caller. Lake and Ocean base normals are transformed body Up (`[0, 1, 0]`); River and Custom use evaluated spline Up. The available source-architecture note reports CPU wave evaluation/normalization at `GerstnerWaveEvaluation.cpp:27-140` and attenuation at `:149-154`, but does not include source text for the normal contribution itself. It also reports CPU LWC phase/boundary blending at `GerstnerWaterWaves.cpp:63-79` and 400 cm phase blending in `GerstnerWaveFunctions.ush:303-356`; this establishes aligned intent, while numeric CPU/GPU parity remains unverified.
+The CPU query blends the base normal and the computed full-wave normal with the depth attenuation factor and does not normalize the Lerp result; height attenuation is applied separately at the caller. Lake and Ocean base normals are transformed body Up (`[0, 1, 0]`); River and Custom use evaluated spline Up.
 
-WaterInfo material sampling clamps world-to-UV to the normalized image bounds, then bilinearly reconstructs the four neighboring texels at their centers with clamp-to-edge behavior. This follows UE 5.8.1's `WaterBodyData` call to `HighQualityTextureFiltering` (the audited call leaves cosine UV weighting disabled); integer point loads would change interpolated height/depth at pixel boundaries. Material height, depth and wave attenuation decode raw bilinear B, including empty texels. For GPU vertex height mapping, B=0 is excluded from that interpolation and the remaining B weights are normalized before decoding; an all-zero neighborhood keeps the tile base height. RG/A retain ordinary bilinear filtering. This prevents empty WaterInfo texels from pulling a River shore toward `waterYMinM`. The encoded B=0 sentinel intentionally remains ambiguous with a valid sample exactly at `waterYMinM`: UE's decode treats both as no water and returns ground height minus 2.56 m. The valid-only GPU height interpolation is a ForgeAX repair, while UE material WPO behavior and rendered wave parity remain subject to V-05/V-07 comparison gates.
+WaterInfo material sampling clamps world-to-UV to the normalized image bounds, then bilinearly reconstructs the four neighboring texels at their centers with clamp-to-edge behavior. Cosine UV weighting is disabled. Material height, depth and wave attenuation decode raw bilinear B, including empty texels. For GPU vertex height mapping, B=0 is excluded from that interpolation and the remaining B weights are normalized before decoding; an all-zero neighborhood keeps the tile base height. RG/A retain ordinary bilinear filtering. This prevents empty WaterInfo texels from pulling a River shore toward `waterYMinM`. The encoded B=0 sentinel intentionally remains ambiguous with a valid sample exactly at `waterYMinM`: the decode treats both as no water and returns ground height minus 2.56 m. GPU height interpolation excludes the empty sentinel.
 
 > [!IMPORTANT]
-> Migrating a legacy spline to V1 requires baking its complete rotation (tangent alignment plus authored roll) into each normalized `rotationQuat`, then deriving `up` by rotating engine Up `[0, 1, 0]` by that quaternion and setting `rollAngle` to `0`. For example, a 30 degree roll around engine Forward `[1, 0, 0]` uses quaternion `[sin(15*pi/180), 0, 0, cos(15*pi/180)]` in XYZW order, with `up = [0, cos(30*pi/180), sin(30*pi/180)]`. Do not copy a legacy `up` vector and retain a separate nonzero roll in V1.
+> Migrating an unversioned spline to `water-spline/2` requires baking its complete rotation (tangent alignment plus authored roll) into each normalized `rotationQuat`, then deriving `up` by rotating engine Up `[0, 1, 0]` by that quaternion and setting `rollAngle` to `0`. For example, a 30 degree roll around engine Forward `[1, 0, 0]` uses quaternion `[sin(15*pi/180), 0, 0, cos(15*pi/180)]` in XYZW order, with `up = [0, cos(30*pi/180), sin(30*pi/180)]`. Do not copy an unversioned `up` vector and retain a separate nonzero roll in a versioned spline.
 
-R1 Ocean geometry triangulates only the island AABB extended by `0.01 m` and stitches its annulus to the visible extent with eight welded quads. `oceanExtentM` describes the visible surface; collision uses separate world-axis half extents. `centerOnWaterZone` defaults to `true`. A Zone-bound Ocean in that mode must persist `savedZoneLocationWorldXZ` and provide its frozen Pack `bodyWorldTransformsM[sourceKey]`; Pack inverse-transforms the saved world point and publishes only the derived cooked `oceanCenterM`. When the Zone is unloaded, the saved location remains authoritative. `centerOnWaterZone: false` explicitly selects body-local zero. Source authors cannot provide `oceanCenterM` or `geometryAuthoringWorldMatrixM`.
+Ocean geometry triangulates only the island AABB extended by `0.01 m` and stitches its annulus to the visible extent with eight welded quads. `oceanExtentM` describes the visible surface; collision uses separate world-axis half extents. `centerOnWaterZone` defaults to `true`. A Zone-bound Ocean in that mode must persist `savedZoneLocationWorldXZ` and provide its frozen Pack `bodyWorldTransformsM[sourceKey]`; Pack inverse-transforms the saved world point and publishes only the derived cooked `oceanCenterM`. When the Zone is unloaded, the saved location remains authoritative. `centerOnWaterZone: false` explicitly selects body-local zero. Source authors cannot provide `oceanCenterM` or `geometryAuthoringWorldMatrixM`.
 
 Lake visible bounds and WaterInfo CDT products remain separate; bounds include Hermite curve extrema, not only authored control points. Lake's visible static mesh is cooked as a world XZ AABB at its Pack authoring transform, then inverse-transformed into body-local vertices so Scene applies the full actor transform exactly once. Cooked Lake/Ocean payloads retain `geometryAuthoringWorldMatrixM`. A Scene transform change that would invalidate this world-dependent geometry reports `requires-recook` and keeps the prior accepted transform, mesh, query and Physics state until a new Pack publication arrives. Lake translation remains valid because it translates the already world-aligned local mesh without changing its bounds; rotation, scale or shear requires recooking.
 
-Pack outputs mark this contract with `waterGeometryVersion: 2`; cooked bodies without the field use the explicit legacy path and may omit the dilation GUID. V2 WaterInfo bodies require the undilated mesh and, when ShapeDilation is positive, a separate `dilatedWaterInfoMeshGuid` for UE's `GenerateWaterBodyMesh(..., OutDilatedMesh)` product. River's product contains only the side dilation bands and terminal cap extension, carries no River flow overlay, and derives vertex normals from the emitted triangles; Lake and Ocean products contain the complete polygon after a `ShapeDilationM / 2` offset and CDT. The polygon offset uses Clipper2 Miter joins with a 2.0 limit to mirror the audited `PolygonsOffset` call profile. These are separate assets because UE queues ColorPass and DilationPass independently. Footprint and topology unit fixtures cover straight and tilted River, square and concave Lake, and island Ocean cases. ForgeAX desktop RHI frames verify the WaterInfo GPU path; UE pixel equivalence and exact cap-index comparison remain unvalidated under V-05.
+Pack outputs mark this contract with `waterGeometryVersion: 2`; cooked bodies without the field use the explicit legacy path and may omit the dilation GUID. V2 WaterInfo bodies require the undilated mesh and, when ShapeDilation is positive, a separate `dilatedWaterInfoMeshGuid` for the dilated product. River's product contains only the side dilation bands and terminal cap extension, carries no River flow overlay, and derives vertex normals from the emitted triangles; Lake and Ocean products contain the complete polygon after a `ShapeDilationM / 2` offset and CDT. The polygon offset uses Clipper2 Miter joins with a 2.0 limit for sharp outer corners. The color and dilation passes consume separate assets. Footprint and topology unit fixtures cover straight and tilted River, square and concave Lake, and island Ocean cases.
 
 For V2 dilation admission, the separate dilation GUID requirement applies to River, Lake, and Ocean products. Custom opt-in WaterInfo remains undilated-only and has no dilation GUID.
 
@@ -543,7 +540,7 @@ mounted Engine Content library exposes their GUIDs through
 surface, WaterInfo, LOD and underwater references, plus River transitions.
 Assets Runtime owns inherited parameters, static switches and atomic material
 publication. Zone `farMaterialGuid` uses the same dependency loader and parent
-closure. Reference validity does not establish rendered acceptance.
+closure.
 
 The stock underside graph uses ordinary inherited `criticalAngleDot` (default
 `0.225`) and `refractionBottomAmount` (default `1`) independently of `specular`.
@@ -570,7 +567,6 @@ Body row appends the tuple at byte 112 and preserves every preceding field.
 With WaterInfo enabled it rejects points outside the inclusive bounds; with
 WaterInfo disabled it rejects the strict interior. Both branches retain the
 boundary. Neither mapping nor the material's family name selects this behavior.
-Its submitted-frame and native depth/shadow behavior remain acceptance gates.
 
 A Body surface may use a published Forward Standard, single-layer-medium or
 single-layer-water Surface ABI. Canonical Water deformation and Water system
@@ -613,7 +609,7 @@ fixed choices. Custom surface and Custom underwater disable WaterInfo,
 enable fixed height/depth, and leave fixed velocity disabled; Custom LOD is
 a ForgeAX extension inheriting the Custom surface choices. Every default
 family branch leaves Baked simulation disabled. Underwater's no-Info velocity
-decodes UE's white fullscreen VertexColor: maximum flow magnitude and angle
+decodes white fullscreen vertex color: maximum flow magnitude and angle
 `2*pi`, independent of the Body's fixed velocity.
 
 Root flow defaults are `flowmapDepthBiasM=0.64`,
@@ -646,19 +642,11 @@ dimensionless `refractionPixelNormalStrength` and `refractionDepthBias`;
 Surface and Water deformation ABIs keep their independent authorities.
 
 The connected Ocean foam branch reads static foam/normal textures, genuine
-3D volume noise, and the graph-owned FoamRT. R3 explicitly selects the
+3D volume noise, and the graph-owned FoamRT. A scene without simulation selects the
 `no-simulation` graph input, which initializes a 512x512 linear `rgba16float`
 target to `(0,0,0,1)` before sampled reads with the renderer's linear/repeat
-height sampler and linear/clamp foam-amount sampler. It has one mip and no simulation solver. A future producer supplies
-the same semantic target through the existing graph input and lifetime.
-UE's render-target initialization queues a one-time deferred update; ordinary
-scene rendering drains it and clears the target before material draws. With no
-producer, R is zero. That source contract does not establish GPU readback or
-appearance parity.
-The filters are the Engine's renderer configuration. The native audit records
-FoamRT `TF_DEFAULT`, wrap U/V, no mips, linear storage and the WindowsEditor
-profile's MaxAniso `8`, quality `1`, mip bias `0`; the effective native RHI
-sampler and GPU/appearance parity remain unverified.
+height sampler and linear/clamp foam-amount sampler. It has one mip and no simulation solver. Simulation producers supply the same semantic target through the existing graph input and lifetime.
+The graph initializes the target before material draws. With no producer, R is zero.
 
 SLW reuses the normal-oriented Skylight diffuse input. Volume ambient consumes
 that E/pi input times one quarter before the scattering integral; surface AO
@@ -689,15 +677,10 @@ edges from the stored view state; rendering does not emit gameplay events.
 Visual underwater intent, intersection and audio immersion remain separate
 facts. Source intent survives pending GPU/material preparation.
 
-> [!IMPORTANT]
-> Single Layer Water, underwater and reflection source paths are R3 work.
-> Builds, same-path runtime regressions, browser/Dawn completed-frame smokes
-> and UE paired appearance evidence remain separate acceptance gates.
+Custom sources default `affectsWaterInfo` and `affectsWaterMesh` to false and produce no shared WaterInfo or WaterMesh outputs. As an explicit ForgeAX extension, `affectsWaterInfo: true` with a `customMeshOverride` produces only the undilated WaterInfo mesh. Custom has no dilated mesh product, so it must not publish a dilation GUID or derive dilation from its query/collision footprint. `affectsWaterMesh: true` is also opt-in, requires `customMeshOverrideGuid`, and uses the Cooked override triangle projection as its WaterMesh footprint. A Custom body without a mesh override has no visible water geometry.
 
-UE 5.8.1 Custom bodies report `CanEverAffectWaterInfo()` and `CanEverAffectWaterMesh()` as false. ForgeAX Custom sources therefore default both flags to false and produce no shared WaterInfo or WaterMesh outputs. As an explicit ForgeAX extension, `affectsWaterInfo: true` with a `customMeshOverride` produces only the undilated WaterInfo mesh. Custom has no UE `OutDilatedMesh` or DilationPass product, so it must not publish a dilation GUID or derive dilation from its query/collision footprint. `affectsWaterMesh: true` is also opt-in, requires `customMeshOverrideGuid`, and uses the Cooked override triangle projection as its WaterMesh footprint. A Custom body without a mesh override has no visible water geometry.
+The optional Brush manifest applies priority/name sorting only to Bodies. Island actors follow afterward in the frozen `orderedActors` registration order. Reordering Island registration is a semantic input and changes the recipe digest. The manifest describes capture inputs: water bodies consume a separately planned TerrainProvider and do not automatically sculpt or republish Terrain.
 
-The deferred optional Brush manifest applies UE WaterBody priority/name sorting only to Bodies. Island actors follow afterward in the frozen `orderedActors` registration order, matching `WaterBrushManager::SortWaterBodiesForBrushRender` and `UWaterLandscapeBrush::GetIslands` behavior. Reordering Island registration is a semantic input and changes the recipe digest. This manifest is not an R1 terrain producer: water bodies consume a separately planned TerrainProvider and do not automatically sculpt or republish Terrain.
+For optional Render Brush capture, a Body source is frozen as canonical UTF-8 JSON bytes of its Pack `WaterBodyAsset` payload. The capture owner parses and runtime-validates those bytes and uses that decoded asset as its only Body source. `actorInputDigests[actorId]` is SHA-256 of the canonical capture projection, which omits the composite-only `shapeDilationM` and its derived `dilatedWaterInfoMeshGuid`; `captureProvenance.sourcePayloadDigest` binds the complete Pack JSON bytes. The raw payload digest is excluded from the actor capture cache key, while dilation remains part of the composite input/key. Mesh inputs use exact Pack mesh binary bytes plus the frozen reference table; Geometry decodes the MeshAsset from those bytes before capture.
 
-For the deferred optional Render Brush capture, a Body source is frozen as canonical UTF-8 JSON bytes of its Pack `WaterBodyAsset` payload. The capture owner parses and runtime-validates those bytes and uses that decoded asset as its only Body source. `actorInputDigests[actorId]` is SHA-256 of the canonical capture projection, which omits the composite-only `shapeDilationM` and its derived `dilatedWaterInfoMeshGuid`; `captureProvenance.sourcePayloadDigest` binds the complete Pack JSON bytes. The raw payload digest is excluded from the actor capture cache key, while dilation remains part of the composite input/key. Mesh inputs use exact Pack mesh binary bytes plus the frozen reference table; Geometry decodes the MeshAsset from those bytes before capture.
-
-Cooked Ocean geometry publishes a digest-verified query footprint with island and exclusion holes, independently of collision enablement. Enabled Ocean collision uses its separate finite 3D descriptor and world-axis extents; the Physics candidate subtracts intersecting exclusion volumes as convex differences. Runtime reconciles that accepted collision generation through the ordinary Physics owner. Query, visible surface and collision footprints remain separate products; browser and native paired acceptance are separate gates.
+Cooked Ocean geometry publishes a digest-verified query footprint with island and exclusion holes, independently of collision enablement. Enabled Ocean collision uses its separate finite 3D descriptor and world-axis extents; the Physics candidate subtracts intersecting exclusion volumes as convex differences. Runtime reconciles that accepted collision generation through the ordinary Physics owner. Query, visible surface and collision footprints remain separate products.

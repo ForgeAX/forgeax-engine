@@ -181,7 +181,7 @@ export type WaterExclusionVolumeSnapshot = Readonly<{
 }>;
 export type WaterSnapshotLease = Readonly<{ snapshot: WaterBodySnapshot }>;
 
-/** UE EWaterBodyQueryFlags values; these are independent of render and WaterInfo flags. */
+/** Water query flags, independent of render and WaterInfo flags. */
 export const WaterQueryFlags = Object.freeze({
   None: 0,
   ComputeLocation: 1 << 0,

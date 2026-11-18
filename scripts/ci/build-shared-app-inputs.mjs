@@ -13,15 +13,11 @@ import {
 import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, join, relative, resolve } from 'node:path';
-import { audioImporter } from '@forgeax/engine-audio-webaudio/audio-importer';
-import { gltfImporter } from '@forgeax/engine-gltf';
-import { imageImporter } from '@forgeax/engine-image/image-importer';
-import { pluginPack } from '@forgeax/engine-vite-plugin-pack';
-import { forgeaxShader } from '@forgeax/engine-vite-plugin-shader';
-import { build } from 'vite';
 import { verifyProvenance } from '../../packages/wgpu-wasm/scripts/provenance.mjs';
 import { runnerResources, shaderCompileWorkers } from '../lib/runner-resources.mjs';
+import { admitShaderSourceBudget } from '../lib/shader-source-budget.mjs';
 import {
+  projectSharedShader,
   reusableSharedShader,
   sharedShaderInputFingerprint,
   sharedShaderReceipt,
@@ -48,6 +44,7 @@ Options:
   --asset-root <dir>   LearnOpenGL source root
   --shader-root <dir>  Engine shader source root
   --shader-input-manifest <p> Reuse an explicitly verified shader producer output
+  --base-shader-input-manifest <p> Also transfer the verified BASE profile
   --catalog-only       Emit catalog metadata without serialized asset payload bytes
   --projection-out <d> Also emit a catalog-only projection from the full build
   --github-output <p>  Write the trusted producer fingerprint to this output file
@@ -120,16 +117,6 @@ if (realpathSync(shaderRoot) !== realpathSync(engineShaderRoot)) {
 // read that path after clearing it or substitute an unchecked packaged profile.
 delete process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST;
 process.env.FORGEAX_ENGINE_SHADER_SOURCE_BUILD = '1';
-// Use the repository producer's cgroup CPU bound without raising the shader
-// plugin's existing sixteen-worker ceiling on larger hosts.
-const resources = runnerResources();
-process.env.FORGEAX_SHADER_COMPILE_WORKERS = String(
-  shaderCompileWorkers(resources, process.env.FORGEAX_SHADER_COMPILE_WORKERS),
-);
-console.log(
-  `[shared-build] shader workers=${process.env.FORGEAX_SHADER_COMPILE_WORKERS} cpus=${resources.cpus} containerized=${resources.containerized}`,
-);
-
 rmSync(output, { recursive: true, force: true });
 mkdirSync(output, { recursive: true });
 
@@ -149,6 +136,24 @@ if (preparedShader) {
   process.env.FORGEAX_ENGINE_SHADER_SOURCE_BUILD = '0';
   console.log('[shared-build] verified explicit shader input; compiling only the asset catalog');
 }
+
+// A cold fallback owns the same complete source publication as Core. Admit
+// its heap and bounded workers before loading compiler plugins or native state.
+if (!preparedShader) admitShaderSourceBudget();
+else {
+  process.env.FORGEAX_SHADER_COMPILE_WORKERS = String(
+    shaderCompileWorkers(runnerResources(), process.env.FORGEAX_SHADER_COMPILE_WORKERS),
+  );
+}
+console.log(
+  `[shared-build] shader workers=${process.env.FORGEAX_SHADER_COMPILE_WORKERS} cpus=${runnerResources().cpus}`,
+);
+const { audioImporter } = await import('@forgeax/engine-audio-webaudio/audio-importer');
+const { gltfImporter } = await import('@forgeax/engine-gltf');
+const { imageImporter } = await import('@forgeax/engine-image/image-importer');
+const { pluginPack } = await import('@forgeax/engine-vite-plugin-pack');
+const { forgeaxShader } = await import('@forgeax/engine-vite-plugin-shader');
+const { build } = await import('vite');
 
 await build({
   configFile: false,
@@ -203,6 +208,16 @@ rmSync(staging, { recursive: true, force: true });
 await verifyProvenance();
 cpSync(join(root, 'packages/wgpu-wasm/pkg'), join(output, 'compiler'), { recursive: true });
 
+const baseShaderInput = option('--base-shader-input-manifest', null);
+if (baseShaderInput !== null) {
+  projectSharedShader(
+    root,
+    resolve(root, baseShaderInput),
+    join(output, 'profiles/base-ssao'),
+    sharedShaderInputFingerprint(root, { pointShadows: false, hdrpSsao: true }),
+  );
+}
+
 const inventory = files(output)
   .map((path) => relative(root, path).replaceAll('\\', '/'))
   .sort();
@@ -236,6 +251,14 @@ if (projectionOutput !== null) {
   cpSync(join(output, 'assets', 'catalog.json'), join(projectionOutput, 'assets', 'catalog.json'));
   cpSync(join(output, 'shaders'), join(projectionOutput, 'shaders'), { recursive: true });
   cpSync(join(output, 'compiler'), join(projectionOutput, 'compiler'), { recursive: true });
+  if (baseShaderInput !== null) {
+    projectSharedShader(
+      root,
+      resolve(root, baseShaderInput),
+      join(projectionOutput, 'profiles/base-ssao'),
+      sharedShaderInputFingerprint(root, { pointShadows: false, hdrpSsao: true }),
+    );
+  }
   writeFileSync(
     join(projectionOutput, 'manifest.json'),
     `${JSON.stringify(

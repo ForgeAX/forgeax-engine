@@ -52,7 +52,7 @@ export const coastR7ShallowRecipe = {
   materialGuids: [],
   textureGuids: [],
   shallowStageConfig: {
-    stageProfile: 'ue-5.8.1-water-body',
+    stageProfile: 'water-body-shallow/2',
     gridResolution: [128, 128],
     extentM: [64, 64],
     baseHeightM: 0,

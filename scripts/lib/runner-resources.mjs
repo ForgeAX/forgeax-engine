@@ -94,7 +94,7 @@ export function shaderSourceCompileWorkers(
     4,
     shaderCompileWorkers(
       { ...resources, memoryBytes: Math.max(0, resources.memoryBytes - heapMiB * 1024 ** 2) },
-      requested || '2',
+      requested,
     ),
   );
 }

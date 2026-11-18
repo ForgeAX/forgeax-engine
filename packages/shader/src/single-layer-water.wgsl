@@ -275,7 +275,7 @@ fn waterDeviceDepth(depthM: f32) -> f32 {
   return select(orthographic * near / max(depthM, 1e-30), orthographic, view.temporalProjection.z >= 0.5);
 }
 struct WaterSceneSample { color: vec3<f32>, depthM: f32, valid: bool };
-// UE SingleLayerWaterCommon: one bilateral 2x2 footprint shared by color/depth.
+// Color and depth share one bilateral 2x2 footprint.
 fn waterSceneSample(uv: vec2<f32>, surfaceDepthM: f32, depthGradientM: f32) -> WaterSceneSample {
   let size = vec2<i32>(textureDimensions(surfaceRawDepthTexture));
   let sampleUv = uv + vec2<f32>(0.5 / 256.0) / vec2<f32>(size);
@@ -355,7 +355,7 @@ fn waterColor(input: WaterVertexOutput, surface: SingleLayerWaterSurfaceData, fr
   let phase = select(0.0, (1.0 - k * k) / (12.5663706144 * max(phaseDenominator * phaseDenominator, 1e-8)), dot(refracted, refracted) > 0.0);
   let skyDiffuse = sampleSkylightDiffuse(mediumSkylight, normal, mediumIrradianceMap, mediumIrradianceSampler)
     + mediumSkylight.ambientIrradiance.xyz * 0.3183098861837907;
-  // UE converts diffuse indirect E/pi to illuminance before the 1/(4*pi) phase.
+  // Diffuse indirect E/pi combines with the isotropic 1/(4*pi) phase as one quarter.
   let ambient = skyDiffuse * 0.25;
   var shadow = 1.0;
   if (input.lighting.y != 0u) {
@@ -365,7 +365,7 @@ fn waterColor(input: WaterVertexOutput, surface: SingleLayerWaterSurfaceData, fr
   let scattered = integral * (ambient + volumeSun);
   let envBrdf = waterEnvBrdf(normal, toCamera, ior, roughness);
   let colorScale = mix(vec3<f32>(1.0), max(surface.colorScaleBehindWater, vec3<f32>(0.0)), clamp(distanceM * 2.0, 0.0, 1.0));
-  // Bilateral depth is averaged in view space; UE reconstructs it at this pixel.
+  // Reconstruct the averaged view-space bilateral depth at this pixel.
   let behindWorld = waterWorld(uv, waterDeviceDepth(behind.depthM));
   let lightDistanceM = max(0.0, input.positionWS.y - behindWorld.y);
   let lightTransmittance = exp(-sigmaT * lightDistanceM);
@@ -373,7 +373,7 @@ fn waterColor(input: WaterVertexOutput, surface: SingleLayerWaterSurfaceData, fr
   let volume = scattered * (1.0 - envBrdf) + transmission;
   let baseMaterialCoverageOverWater = clamp(surface.opacity, 0.0, 1.0);
   let waterVisibility = 1.0 - baseMaterialCoverageOverWater;
-  // UE SLW weights surface diffuse by Opacity; specular retains its own F0.
+  // Opacity weights surface diffuse; specular retains its own F0.
   let direct = evaluateStandardDirect(input.positionWS, input.currentClip.xyz / input.currentClip.w,
     -surfaceDepthM, input.clip.xy, normal, toCamera,
     max(surface.baseColor, vec3<f32>(0.0)) * baseMaterialCoverageOverWater, vec3<f32>(0.0),

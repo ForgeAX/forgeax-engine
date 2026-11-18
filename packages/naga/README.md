@@ -2,6 +2,12 @@
 
 > **本包是 `@forgeax/engine-wgpu-wasm` 暴露的 naga raw bindings 之上的 TS-only 薄壳**，对齐三阶段 API（`parse` / `validate` / `emit_reflection`），关注点零业务逻辑。AI 用户（含 agentic AI runtime）可直接 `import { parse, validate, emit_reflection } from '@forgeax/engine-naga'` 复用 WGSL syntax check 能力——内部走 `@forgeax/engine-wgpu-wasm.ensureReady()` singleton 加载物理 wasm（plan-strategy §D-P3 / §D-P4 + research F-4 + charter 命题 1 渐进披露 + 命题 5 一致抽象）。
 
+`composeShader` optionally accepts a synchronous output normalizer. Naga reparses
+and validates that returned WGSL and compares its complete buffer ABI before
+returning it. The next exact `parse`/`validate` can consume this checked IR once;
+changed bytes take the ordinary path. Opaque handle ownership and explicit
+render-entry/reflection admission are unchanged.
+
 ## 形态铁律
 
 - **关注点单一** —— 只做 raw wasm-bindgen 出口的 TS 包装（snake_case naga upstream 原生命名延续）；reflection 字段派生 / 三件套 emit 都在上游 `@forgeax/engine-shader-compiler`。

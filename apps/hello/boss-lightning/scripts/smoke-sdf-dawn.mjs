@@ -41,7 +41,7 @@ import { teardownDawnInstance } from '../../../../scripts/lib/dawn-teardown.mjs'
 
 import { emitSmokeReceipt, smokeFrameBudget } from '../../../shared/scripts/smoke-receipt.mjs';
 import { setupGpuShim } from '../../triangle/scripts/smoke-helpers.mjs';
-import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
+import { processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 import cases from '../src/sdf-cases.json' with { type: 'json' };
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -68,7 +68,7 @@ globalThis.fetch = async (request) => {
   }
   return originalFetch(request);
 };
-const manifest = JSON.parse(readShaderManifestText(resolve(dist, 'shaders/manifest.json')));
+
 const scenario = cases.find((item) => item.id === (process.env.FORGEAX_SDF_CASE ?? 'default'));
 assert(scenario, 'Select a declared SDF case');
 const diagnostic = process.env.FORGEAX_SDF_DIAGNOSTICS === '1';
@@ -726,7 +726,7 @@ async function run(collision, depthOnly = false) {
     });
     const assembly = unwrap(
       await constructRuntimeRendererHost(shim.mockCanvas, rendererHostOptions(host, recorder), {
-        shaderManifestUrl: `data:application/json,${encodeURIComponent(JSON.stringify(manifest))}`,
+        shaderManifestUrl: processShaderManifestUrl(resolve(dist, 'shaders/manifest.json')),
       }),
     );
     const { renderer } = assembly;

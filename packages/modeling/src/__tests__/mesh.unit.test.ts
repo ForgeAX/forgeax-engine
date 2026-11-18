@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { EditMesh, edgeEnds, edgeKey, NONE } from '../mesh';
 
 function quad(mesh: EditMesh): number[] {
@@ -11,6 +11,14 @@ function quad(mesh: EditMesh): number[] {
 }
 
 describe('EditMesh half-edge core', () => {
+  it('reuses the validated half-edges when committing a face', () => {
+    const mesh = new EditMesh();
+    const loop = quad(mesh);
+    const find = vi.spyOn(mesh, 'findHalf');
+    expect(mesh.addFace(loop).ok).toBe(true);
+    expect(find).toHaveBeenCalledTimes(loop.length);
+  });
+
   it('pairs half-edges so twin(h) = h ^ 1 and shares edges between adjacent faces', () => {
     const mesh = new EditMesh();
     const [a, b, c, d] = quad(mesh) as [number, number, number, number];

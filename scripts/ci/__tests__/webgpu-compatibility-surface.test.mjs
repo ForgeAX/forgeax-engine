@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { parse } from 'yaml';
 import { collectSurface, surfaceChanges } from '../check-webgpu-compatibility.mjs';
 
 test('reviews changed descriptors, new bypasses, WGSL and deleted owner inputs', () => {
@@ -57,4 +58,23 @@ test('a partial reviewed snapshot retains every unreviewed change and deletion',
     { file: 'packages/render/src/unreviewed.ts', change: 'removed' },
     { file: 'packages/shader/src/water.wgsl', change: 'changed' },
   ]);
+});
+
+test('compatibility surface review gates shared input production before downstream fanout', () => {
+  const workflow = parse(readFileSync('.github/workflows/ci.yml', 'utf8'));
+  const [coreId, core] = Object.entries(workflow.jobs).find(([, job]) => job.name === 'ci-core');
+  const position = core.steps.findIndex(
+    (step) => step.name === 'WebGPU compatibility surface review',
+  );
+  const install = core.steps.findIndex((step) => step.name === 'Install (frozen)');
+  const build = core.steps.findIndex((step) => step.name === 'Build package JavaScript once');
+  assert.ok(install >= 0 && position > install && build > position);
+  assert.match(core.steps[position].run, /node scripts\/ci\/check-webgpu-compatibility\.mjs/);
+  assert.equal(
+    Object.values(workflow.jobs)
+      .flatMap((job) => job.steps ?? [])
+      .filter((step) => step.name === 'WebGPU compatibility surface review').length,
+    1,
+  );
+  assert.ok(workflow.jobs['primary-pnpm'].needs.includes(coreId));
 });

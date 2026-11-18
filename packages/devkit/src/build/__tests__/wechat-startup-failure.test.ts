@@ -16,6 +16,7 @@ import { gameRenderFeaturesSource } from '../../host/render-feature-contribution
 import type { StartupUiOptions } from '../../host/startup-ui.js';
 import type { ProjectFacts } from '../../types.js';
 import { wechatHostSource } from '../wechat.js';
+import { configurationHostScope } from './configuration-host.fixture';
 
 const primary = {
   code: 'plugin-startup-failed',
@@ -116,6 +117,7 @@ async function host(
   const running = runInNewContext(
     `${source}\n({ start, stop: () => dispose?.(), inspect: () => globalThis.__forgeaxGameInspection.renderer(), inspection: () => globalThis.__forgeaxGameInspection })`,
     {
+      ...configurationHostScope,
       canvasAspectPlugin,
       inspectPluginFiber,
       createGameVfx,
@@ -124,7 +126,7 @@ async function host(
       console: { info: vi.fn(), error: vi.fn() },
       setTimeout,
       clearTimeout,
-      wx: { createCanvas: () => canvas },
+      wx: { createCanvas: () => canvas, getStorageSync: () => '', setStorageSync() {} },
       WXWebAssembly: {},
       createWechatPlatform: () => unwrap(platform),
       createWechatWasmHost: () => unwrap({}),

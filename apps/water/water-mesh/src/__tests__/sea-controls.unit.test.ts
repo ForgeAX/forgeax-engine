@@ -107,11 +107,12 @@ it('keeps a committed 80 m slider edit through the actual runtime form refresh',
     vi.stubGlobal(key, dom.window[key]);
   const assets = new AssetRegistry();
   const handle = assets.create(material()).unwrap();
+  let form: ReturnType<typeof runtimeForm> | undefined;
   try {
     const parent = document.querySelector('main');
     if (!parent) throw new Error('Missing form parent');
     const fields = createSeaControls(assets, () => handle);
-    const form = runtimeForm(parent, 'Sea', fields);
+    form = runtimeForm(parent, 'Sea', fields);
     form.section.open = true;
     form.refresh();
     const input = parent.querySelector<HTMLInputElement>('[data-parameter="clarity"]');
@@ -143,6 +144,7 @@ it('keeps a committed 80 m slider edit through the actual runtime form refresh',
     expect(control(fields, 'clarity').read?.()).toBe(80);
     expect(form.rejection).toBe('');
   } finally {
+    form?.remove();
     assets.dispose();
     dom.window.close();
   }

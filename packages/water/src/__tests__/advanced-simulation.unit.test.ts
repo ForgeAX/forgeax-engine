@@ -34,7 +34,7 @@ function recipe(river = false): Recipe {
     materialGuids: [],
     textureGuids: [NOISE],
     shallowStageConfig: {
-      stageProfile: river ? 'ue-5.8.1-river' : 'ue-5.8.1-water-body',
+      stageProfile: river ? 'river-shallow/2' : 'water-body-shallow/2',
       gridResolution: [8, 8],
       extentM: [8, 12],
       baseHeightM: 2,
@@ -111,7 +111,7 @@ function recipe(river = false): Recipe {
         }
       : {}),
     oceanPatchConfig: {
-      algorithm: 'ue-5.8.1-niagara-fft',
+      algorithm: 'ocean-spectrum-fft/2',
       windAngleDegrees: 180,
       windSpeedMPerSec: 0.55,
       noiseTextureGuid: NOISE,
@@ -138,6 +138,34 @@ function simulation(source = recipe()) {
     { guid: BODY, sourceAssetGuid: BODY, generation: 7 },
   ).unwrap();
 }
+
+it('reads previous saved simulation labels into the current contract without mutating input', () => {
+  for (const river of [false, true]) {
+    const current = recipe(river);
+    const previous = {
+      ...current,
+      shallowStageConfig: {
+        ...current.shallowStageConfig,
+        stageProfile: river ? 'ue-5.8.1-river' : 'ue-5.8.1-water-body',
+      },
+      oceanPatchConfig: { ...current.oceanPatchConfig, algorithm: 'ue-5.8.1-niagara-fft' },
+    };
+    const before = structuredClone(previous);
+    const checked = validateWaterAsset(previous);
+    expect(checked.ok, checked.ok ? '' : JSON.stringify(checked.error)).toBe(true);
+    expect(checked.unwrap()).toEqual(current);
+    expect(previous).toEqual(before);
+    expect(
+      validateWaterAsset({
+        ...previous,
+        oceanPatchConfig: {
+          ...previous.oceanPatchConfig,
+          algorithm: 'ocean-spectrum-fft/99',
+        },
+      }).ok,
+    ).toBe(false);
+  }
+});
 function rigidRecipe(): Recipe {
   const source = recipe();
   return {

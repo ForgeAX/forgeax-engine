@@ -1,5 +1,5 @@
 import { sha256 } from '@noble/hashes/sha2.js';
-const artifact = {"bytes":17072333,"sha256":"cbf6e3f2011482f26535e8dcb69452002f00e01c861d0e02d73758f635f46354"};
+const artifact = {"bytes":17073853,"sha256":"ef8d40053d3c4358b298d5a127dbf12b2317eb175d5026843c60122c2dc8e48f"};
 /* @ts-self-types="./ui_blitz.d.ts" */
 
 export class UiDocument {

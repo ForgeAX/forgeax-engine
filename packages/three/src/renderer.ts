@@ -20,7 +20,9 @@ import {
   type BundlerOptions,
   constructRuntimeRendererHost,
 } from '@forgeax/engine-runtime/internal/renderer-host';
+import CanvasTarget from 'three/src/renderers/common/CanvasTarget.js';
 import type Color4 from 'three/src/renderers/common/Color4.js';
+import type { RenderItem } from 'three/src/renderers/common/Renderer.js';
 import type { WebGPURendererParameters as UpstreamParameters } from 'three/src/renderers/webgpu/WebGPURenderer.js';
 import {
   type BufferGeometry,
@@ -44,16 +46,18 @@ import {
   Texture,
   type ToneMapping,
   UnsignedByteType,
-  type Vector2,
+  Vector2,
   Vector4,
   WebGPUCoordinateSystem,
 } from 'three/src/Three.Core.js';
-import { cameraData } from './camera';
+import { cameraData, writeSceneClearColor } from './camera';
 import { invalid, ThreeCompatibilityError, unsupported } from './errors';
 import { ExternalTextures, isExternalTexture } from './external-textures';
 import { materialTextures, validateMaterial } from './material';
 import { prepareMaterialPrograms } from './material-programs';
-import { threePipeline } from './pipeline';
+import { surfaceInput } from './node-inputs';
+import { createThreePipeline } from './pipeline';
+import { forwardRendererEvents, type RendererCallbacks } from './renderer-events';
 import { SceneProjection, type ThreeSourceIdentity } from './scene';
 
 export interface WebGPURendererParameters extends Omit<UpstreamParameters, 'canvas'> {
@@ -88,6 +92,15 @@ function value<T>(
 /** Three's authoring objects, one Forgeax Renderer, and no upstream GPU renderer. */
 export class WebGPURenderer {
   readonly domElement: HTMLCanvasElement | OffscreenCanvas;
+  onDeviceLost: RendererCallbacks['onDeviceLost'] = (info) => {
+    console.error(`THREE.WebGPURenderer: ${info.message}`, info);
+  };
+  onError: RendererCallbacks['onError'] = (info) => {
+    console.error(`THREE.WebGPURenderer: Uncaptured ${info.api} ${info.type}: ${info.message}`);
+  };
+  private textureInitializationRetries: WeakMap<Texture, number> | undefined;
+  private opaqueSort: ((a: RenderItem, b: RenderItem) => number) | null = null;
+  private transparentSort: ((a: RenderItem, b: RenderItem) => number) | null = null;
   autoClear = true;
   autoClearColor = true;
   autoClearDepth = true;
@@ -95,8 +108,9 @@ export class WebGPURenderer {
   sortObjects = true;
   transparent = true;
   opaque = true;
-  readonly shadowMap: { enabled: boolean; type: ShadowMapType } = {
+  readonly shadowMap: { enabled: boolean; transmitted: boolean; type: ShadowMapType } = {
     enabled: false,
+    transmitted: false,
     type: PCFShadowMap,
   };
   readonly coordinateSystem = WebGPUCoordinateSystem;
@@ -108,6 +122,8 @@ export class WebGPURenderer {
   readonly logarithmicDepthBuffer = false;
   readonly alpha: boolean;
   private sampleCount = 0;
+  private activeCubeFace = 0;
+  private activeMipmapLevel = 0;
   private readonly outputType: typeof HalfFloatType | typeof UnsignedByteType;
   toneMapping: ToneMapping = NoToneMapping;
   toneMappingExposure = 1;
@@ -120,17 +136,15 @@ export class WebGPURenderer {
         projection: SceneProjection;
         lease: RenderWorldLease;
         external: ExternalTextures;
+        unsubscribe: () => void;
       }
     | undefined;
   private disposed = false;
   private disposing: Promise<void> | undefined;
   private captureAbort: AbortController | undefined;
-  private pixelRatio = 1;
-  private readonly viewport = new Vector4();
-  private readonly scissor = new Vector4();
-  private scissorTest = false;
-  private width: number;
-  private height: number;
+  private canvasTarget: CanvasTarget;
+  private readonly canvasSize = new Vector2();
+  private readonly canvasRectangle = new Vector4();
   private readonly clearColorValue = new Color(0);
   private clearAlpha = 1;
   private get antialias(): number {
@@ -180,10 +194,7 @@ export class WebGPURenderer {
     if (parameters.canvas === undefined && typeof document === 'undefined')
       unsupported('WebGPURenderer requires canvas outside a browser').unwrap();
     this.domElement = parameters.canvas ?? document.createElement('canvas');
-    this.width = this.domElement.width;
-    this.height = this.domElement.height;
-    this.viewport.set(0, 0, this.width, this.height);
-    this.scissor.copy(this.viewport);
+    this.canvasTarget = new CanvasTarget(this.domElement);
     this.recorder = attachRecorder(parameters.forgeax?.backend ?? webgpu).unwrap();
     this.initializing = this.initialize(
       parameters.forgeax,
@@ -205,7 +216,7 @@ export class WebGPURenderer {
           this.domElement,
           {
             ...options?.renderer,
-            pipeline: threePipeline(format),
+            pipeline: createThreePipeline(format),
             rhi: this.recorder.backend.rhi,
             rhiInstrumentation: createRhiInstrumentation(this.recorder),
           },
@@ -225,7 +236,8 @@ export class WebGPURenderer {
         await prepareMaterialPrograms(host.assets, options?.materialPrograms),
       );
       const lease = value(native.attach(projection.world));
-      this.runtime = { native, projection, lease, external };
+      const unsubscribe = forwardRendererEvents(native, this);
+      this.runtime = { native, projection, lease, external, unsubscribe };
     } catch (error) {
       try {
         projection?.dispose();
@@ -279,29 +291,89 @@ export class WebGPURenderer {
     return 0;
   }
   getActiveCubeFace(): number {
-    return 0;
+    return this.activeCubeFace;
   }
   getActiveMipmapLevel(): number {
-    return 0;
+    return this.activeMipmapLevel;
+  }
+
+  getCanvasTarget(): CanvasTarget {
+    return this.canvasTarget;
+  }
+
+  setCanvasTarget(target: CanvasTarget): void {
+    this.assertNotCapturing();
+    this.validateCanvasTarget(target);
+    this.applyCanvasExtent(target);
+    this.canvasTarget = target;
+  }
+
+  private fullCanvasRectangle(rectangle: Vector4): boolean {
+    const size = this.canvasTarget.getSize(this.canvasSize);
+    return (
+      rectangle.x === 0 && rectangle.y === 0 && rectangle.z === size.x && rectangle.w === size.y
+    );
+  }
+
+  /** Direct edits to the public target must pass the same admission as renderer setters. */
+  private validateCanvasTarget(target: CanvasTarget): void {
+    if (target.domElement !== this.domElement)
+      unsupported(
+        'CanvasTarget switching to another canvas requires native surface rebinding',
+      ).unwrap();
+    const size = target.getSize(this.canvasSize);
+    const ratio = target.getPixelRatio();
+    if (
+      !Number.isFinite(size.x) ||
+      !Number.isFinite(size.y) ||
+      !Number.isFinite(ratio) ||
+      size.x <= 0 ||
+      size.y <= 0 ||
+      ratio <= 0
+    )
+      invalid('CanvasTarget size/pixelRatio').unwrap();
+    this.validateCanvasViewport(target, size.x, size.y);
+    const scissor = target.getScissor(this.canvasRectangle);
+    if (
+      target.getScissorTest() &&
+      (scissor.x !== 0 || scissor.y !== 0 || scissor.z !== size.x || scissor.w !== size.y)
+    )
+      unsupported('Partial scissor requires native per-draw scissor state').unwrap();
+  }
+
+  private validateCanvasViewport(target: CanvasTarget, width: number, height: number): void {
+    // r187's backend reads this same source-owned viewport for depth bounds.
+    const viewport = (
+      target as CanvasTarget & {
+        _viewport: Vector4 & { minDepth?: number; maxDepth?: number };
+      }
+    )._viewport;
+    if (
+      viewport.x !== 0 ||
+      viewport.y !== 0 ||
+      viewport.z !== width ||
+      viewport.w !== height ||
+      (viewport.minDepth ?? 0) !== 0 ||
+      (viewport.maxDepth ?? 1) !== 1
+    )
+      unsupported('Partial viewport/depth ranges require native per-draw viewport state').unwrap();
+  }
+
+  private applyCanvasExtent(target: CanvasTarget): void {
+    const size = target.getDrawingBufferSize(this.canvasSize);
+    if (this.domElement.width !== size.x) this.domElement.width = size.x;
+    if (this.domElement.height !== size.y) this.domElement.height = size.y;
   }
 
   setSize(width: number, height: number, updateStyle = true): void {
     this.assertNotCapturing();
     if (![width, height].every((dimension) => Number.isFinite(dimension) && dimension > 0))
       invalid('Renderer.setSize').unwrap();
-    this.width = width;
-    this.height = height;
-    this.viewport.set(0, 0, width, height);
-    this.domElement.width = Math.floor(width * this.pixelRatio);
-    this.domElement.height = Math.floor(height * this.pixelRatio);
-    if (updateStyle && 'style' in this.domElement) {
-      this.domElement.style.width = `${width}px`;
-      this.domElement.style.height = `${height}px`;
-    }
+    this.canvasTarget.setSize(width, height, updateStyle && 'style' in this.domElement);
   }
 
   getViewport(target: Vector4): Vector4 {
-    return target.copy(this.viewport);
+    return this.canvasTarget.getViewport(target);
   }
   setViewport(
     x: number | Vector4,
@@ -313,56 +385,50 @@ export class WebGPURenderer {
   ): void {
     this.assertNotCapturing();
     const rectangle = typeof x === 'number' ? new Vector4(x, y, width, height) : x;
-    if (
-      minDepth !== 0 ||
-      maxDepth !== 1 ||
-      !rectangle.equals(new Vector4(0, 0, this.width, this.height))
-    )
+    if (minDepth !== 0 || maxDepth !== 1 || !this.fullCanvasRectangle(rectangle))
       unsupported('Partial viewport/depth ranges require native per-draw viewport state').unwrap();
-    this.viewport.copy(rectangle);
+    this.canvasTarget.setViewport(rectangle);
   }
   getScissor(target: Vector4): Vector4 {
-    return target.copy(this.scissor);
+    return this.canvasTarget.getScissor(target);
   }
   setScissor(x: number | Vector4, y?: number, width?: number, height?: number): void {
     this.assertNotCapturing();
     const rectangle = typeof x === 'number' ? new Vector4(x, y, width, height) : x;
     if (!rectangle.toArray().every(Number.isFinite)) invalid('Renderer.setScissor').unwrap();
-    if (this.scissorTest && !rectangle.equals(new Vector4(0, 0, this.width, this.height)))
+    if (this.getScissorTest() && !this.fullCanvasRectangle(rectangle))
       unsupported('Partial scissor requires native per-draw scissor state').unwrap();
-    this.scissor.copy(rectangle);
+    this.canvasTarget.setScissor(rectangle);
   }
   getScissorTest(): boolean {
-    return this.scissorTest;
+    return this.canvasTarget.getScissorTest();
   }
   setScissorTest(enabled: boolean): void {
     this.assertNotCapturing();
-    if (enabled && !this.scissor.equals(new Vector4(0, 0, this.width, this.height)))
+    if (enabled && !this.fullCanvasRectangle(this.getScissor(this.canvasRectangle)))
       unsupported('Partial scissor requires native per-draw scissor state').unwrap();
-    this.scissorTest = enabled;
+    this.canvasTarget.setScissorTest(enabled);
   }
 
   getSize(target: Vector2): Vector2 {
-    return target.set(this.width, this.height);
+    return this.canvasTarget.getSize(target);
   }
   getDrawingBufferSize(target: Vector2): Vector2 {
-    return target.set(this.domElement.width, this.domElement.height);
+    return this.canvasTarget.getDrawingBufferSize(target);
   }
   setDrawingBufferSize(width: number, height: number, pixelRatio: number): void {
     this.assertNotCapturing();
     if (![width, height, pixelRatio].every((value) => Number.isFinite(value) && value > 0))
       invalid('Renderer.setDrawingBufferSize').unwrap();
-    this.pixelRatio = pixelRatio;
-    this.setSize(width, height, false);
+    this.canvasTarget.setDrawingBufferSize(width, height, pixelRatio);
   }
   getPixelRatio(): number {
-    return this.pixelRatio;
+    return this.canvasTarget.getPixelRatio();
   }
   setPixelRatio(ratio = 1): void {
     this.assertNotCapturing();
     if (!Number.isFinite(ratio) || ratio <= 0) invalid('Renderer.setPixelRatio').unwrap();
-    this.pixelRatio = ratio;
-    this.setSize(this.width, this.height, false);
+    this.canvasTarget.setPixelRatio(ratio);
   }
   setClearColor(color: ColorRepresentation, alpha = 1): void {
     this.assertAlive();
@@ -371,6 +437,7 @@ export class WebGPURenderer {
   }
   getClearColor(target: Color4): Color4;
   getClearColor<T extends Color>(target: T): T;
+  getClearColor(target: Color): Color;
   getClearColor<T extends Color>(target: T): T {
     target.copy(this.clearColorValue);
     if ('a' in target) target.a = this.clearAlpha;
@@ -426,6 +493,8 @@ export class WebGPURenderer {
 
   clear(color = true, depth = true, stencil = true): void {
     this.assertNotCapturing();
+    this.validateCanvasTarget(this.canvasTarget);
+    this.applyCanvasExtent(this.canvasTarget);
     if (!color && (!this.depth || !depth) && (!this.stencil || !stencil)) return;
     if (!color || (this.depth && !depth) || (this.stencil && !stencil))
       unsupported('Partial clears require native attachment load/store control').unwrap();
@@ -553,13 +622,18 @@ export class WebGPURenderer {
       await this.initializing.catch(() => undefined);
       const runtime = this.runtime;
       this.runtime = undefined;
+      runtime?.unsubscribe();
       runtime?.lease.dispose();
       runtime?.projection.dispose();
       runtime?.external.dispose();
       try {
         if (runtime !== undefined) value(await runtime.native.dispose());
       } finally {
-        (await this.recorder.dispose()).unwrap();
+        try {
+          (await this.recorder.dispose()).unwrap();
+        } finally {
+          this.canvasTarget.dispose();
+        }
       }
     })();
     return this.disposing;
@@ -612,10 +686,11 @@ export class WebGPURenderer {
           scene instanceof Scene && material.allowOverride && scene.overrideMaterial !== null
             ? scene.overrideMaterial
             : material;
-        // Overrides inherit coverage from the original material in r184.
+        // Overrides inherit coverage from the original material in r187.
         const textures = materialTextures(validateMaterial(effective).unwrap());
         if (
           effective !== material &&
+          surfaceInput(effective, 'opacityNode') === null &&
           'alphaMap' in material &&
           material.alphaMap instanceof Texture
         )
@@ -632,11 +707,25 @@ export class WebGPURenderer {
 
   async initTextureAsync(texture: Texture): Promise<void> {
     await this.init();
-    if (!isExternalTexture(texture))
-      return unsupported(
-        'initTexture for asset textures requires native eager upload admission',
-      ).unwrap();
-    await this.ready().external.initialize(texture);
+    if (isExternalTexture(texture)) await this.ready().external.initialize(texture);
+    else this.initTexture(texture);
+  }
+
+  initTexture(texture: Texture): void {
+    this.assertNotCapturing();
+    if (isExternalTexture(texture))
+      unsupported('External textures require await initTextureAsync()', texture.uuid).unwrap();
+    const { projection, native } = this.ready();
+    const prepared = projection.prepareTexture(texture);
+    const result = native.prepareTextureResidency(projection.world, prepared.handle);
+    if (!result.ok) {
+      this.textureInitializationRetries ??= new WeakMap();
+      this.textureInitializationRetries.set(texture, texture.version);
+      throw result.error;
+    }
+    const retry = this.textureInitializationRetries?.get(texture) === texture.version;
+    this.textureInitializationRetries?.delete(texture);
+    projection.textureInitialized(texture, prepared.uploaded || retry);
   }
 
   hasFeature(name: string): boolean {
@@ -647,13 +736,75 @@ export class WebGPURenderer {
     return this.hasFeature(name);
   }
 
+  /** Legacy declaration API: waits for physical completion of prior queue work. */
+  async waitForGPU(): Promise<void> {
+    await value(this.ready().native.nativeDevice()).queue.onSubmittedWorkDone();
+  }
+
+  hasCompatibility(name: string): boolean {
+    // Comparison sampling is part of this WebGPU route; unknown hints are never granted.
+    value(this.ready().native.nativeDevice());
+    return name === 'texture-compare';
+  }
+
+  setOpaqueSort(method: ((a: RenderItem, b: RenderItem) => number) | null): void {
+    this.assertNotCapturing();
+    this.opaqueSort = method;
+  }
+
+  setTransparentSort(method: ((a: RenderItem, b: RenderItem) => number) | null): void {
+    this.assertNotCapturing();
+    this.transparentSort = method;
+  }
+
+  resetState(): void {
+    // WebGPU state belongs to individual passes. Native recording binds every pass anew.
+    this.ready();
+  }
+
   getMaxAnisotropy(): number {
     this.ready();
     return 16;
   }
 
-  setRenderTarget(target: null): void {
+  /** Default-state edges used by RendererUtils; GPU overrides remain explicit gaps. */
+  getMRT(): null {
+    return null;
+  }
+  setMRT(
+    value: Parameters<import('three/src/renderers/common/Renderer.js').default['setMRT']>[0],
+  ): this {
+    if (value !== null) unsupported('Renderer.setMRT').unwrap();
+    return this;
+  }
+  getRenderObjectFunction(): null {
+    return null;
+  }
+  setRenderObjectFunction(
+    value: Parameters<
+      import('three/src/renderers/common/Renderer.js').default['setRenderObjectFunction']
+    >[0],
+  ): void {
+    if (value !== null) unsupported('Renderer.setRenderObjectFunction').unwrap();
+  }
+  setRenderTarget(
+    target: import('three/src/Three.Core.js').RenderTarget | null,
+    activeCubeFace = 0,
+    activeMipmapLevel = 0,
+  ): void {
+    this.assertNotCapturing();
     if (target !== null) unsupported('Renderer.setRenderTarget').unwrap();
+    if (
+      !Number.isInteger(activeCubeFace) ||
+      activeCubeFace < 0 ||
+      activeCubeFace > 5 ||
+      !Number.isSafeInteger(activeMipmapLevel) ||
+      activeMipmapLevel < 0
+    )
+      invalid('Renderer.setRenderTarget face/mip selectors').unwrap();
+    // r187 retains these selectors even on the default framebuffer; they do not select a GPU subresource there.
+    this.activeCubeFace = activeCubeFace;
+    this.activeMipmapLevel = activeMipmapLevel;
   }
   getRenderTarget(): null {
     return null;
@@ -684,6 +835,8 @@ export class WebGPURenderer {
 
   private prepare(scene: Object3D, camera: Camera, updated = false) {
     const { projection, native } = this.ready();
+    if (this.shadowMap.transmitted)
+      unsupported('Transmitted-color shadow maps require native colored shadow transport').unwrap();
     if (
       !this.autoClear ||
       !this.autoClearColor ||
@@ -693,8 +846,8 @@ export class WebGPURenderer {
       unsupported('Renderer partial/no-clear rendering').unwrap();
     if (this.outputColorSpace !== SRGBColorSpace && this.outputColorSpace !== 'display-p3')
       unsupported('Renderer.outputColorSpace outside sRGB/Display P3').unwrap();
-    if (this.scissorTest && !this.scissor.equals(new Vector4(0, 0, this.width, this.height)))
-      unsupported('Partial scissor requires native per-draw scissor state').unwrap();
+    this.validateCanvasTarget(this.canvasTarget);
+    this.applyCanvasExtent(this.canvasTarget);
     value(
       native.setOutputColorSpace(this.outputColorSpace === 'display-p3' ? 'display-p3' : 'srgb'),
     );
@@ -704,25 +857,26 @@ export class WebGPURenderer {
       this.toneMapping === NoToneMapping ? LinearToneMapping : this.toneMapping,
       this.toneMapping === NoToneMapping ? 1 : this.toneMappingExposure,
     );
-    const background =
-      scene instanceof Scene && scene.background instanceof Color
-        ? scene.background
-        : this.clearColorValue;
     return projection.sync(
       scene,
       camera,
       {
         ...data,
         antialias: this.antialias,
-        clearColor: new Float32Array([
-          ...background.toArray(),
-          scene instanceof Scene && scene.background instanceof Color ? 1 : this.clearAlpha,
-        ]),
+        clearColor: writeSceneClearColor(
+          new Float32Array(4),
+          scene,
+          this.clearColorValue,
+          this.clearAlpha,
+        ),
       },
       {
         depth: this.depth,
         stencil: this.stencil,
         sortObjects: this.sortObjects,
+        transparentSort: this.transparentSort,
+        opaqueOrder: true,
+        opaqueSort: this.opaqueSort,
         opaque: this.opaque,
         transparent: this.transparent,
         updateMatrices: false,

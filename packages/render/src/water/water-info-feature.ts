@@ -34,6 +34,8 @@ import {
 import {
   acceptWaterMeshViewForRenderer,
   requireWaterValue,
+  type WaterDependencyMeshView,
+  waterDependencyMeshView,
   waterMeshCandidateViewsForRenderer,
   waterZoneMeshViewForRenderer,
 } from '@forgeax/engine-water/internal';
@@ -62,9 +64,7 @@ import {
   appendWaterInfoTerrainTriangles,
   buildWaterInfoTriangleBuffer,
   WATER_INFO_TRIANGLE_STRIDE_FLOATS,
-  type WaterInfoMeshView,
   type WaterInfoTriangleSource,
-  waterInfoMeshView,
 } from './water-info-producer';
 
 const WATER_INFO_PROFILE_WORK = Object.freeze([
@@ -1753,7 +1753,7 @@ const WATER_INFO_CAPTURE_DEFERRED = Symbol('water-info-capture-deferred');
 function bodyMesh(
   snapshot: WaterBodySnapshot,
   field: 'waterInfoMeshGuid' | 'dilatedWaterInfoMeshGuid',
-): { readonly mesh: WaterInfoMeshView; readonly version: string } | undefined {
+): { readonly mesh: WaterDependencyMeshView; readonly version: string } | undefined {
   const guid = snapshot.asset[field];
   if (guid === undefined) return undefined;
   const dependency = snapshot.dependencies.find(
@@ -1762,7 +1762,7 @@ function bodyMesh(
   );
   const mesh =
     dependency?.status === 'valid'
-      ? waterInfoMeshView(dependency.payload, dependency.payloadArrayKinds)
+      ? waterDependencyMeshView(dependency.payload, dependency.payloadArrayKinds)
       : undefined;
   if (mesh === undefined) return undefined;
   return { mesh, version: snapshot.outputReceipts.geometry?.digest ?? snapshot.sourceVersion };
@@ -1770,23 +1770,27 @@ function bodyMesh(
 
 function riverFlowXZByVertex(
   snapshot: WaterBodySnapshot,
-  mesh: WaterInfoMeshView,
+  mesh: WaterDependencyMeshView,
 ): Float32Array | undefined {
   if (snapshot.asset.type !== 'river') return undefined;
-  const positions = mesh.attributes.position;
-  const colors = mesh.attributes.color;
-  if (colors === undefined || colors.length !== (positions.length / 3) * 4) return undefined;
-  const result = new Float32Array((positions.length / 3) * 2);
+  const positions = mesh.position;
+  const colors = mesh.color;
+  if (colors === undefined || colors.count !== positions.count) return undefined;
+  const result = new Float32Array(positions.count * 2);
   const matrix = snapshot.worldMatrixM;
   // River WaterInfo MeshAsset color is the accepted per-vertex flow encoding:
   // R stores speed / 10.24 and G stores the local tangent angle / 2pi.
-  for (let vertex = 0; vertex < positions.length / 3; vertex += 1) {
-    const colorOffset = vertex * 4;
-    if (!Number.isFinite(colors[colorOffset]) || !Number.isFinite(colors[colorOffset + 1]))
+  for (let vertex = 0; vertex < positions.count; vertex += 1) {
+    const colorOffset = colors.offset + vertex * colors.stride;
+    if (
+      !Number.isFinite(colors.data[colorOffset]) ||
+      !Number.isFinite(colors.data[colorOffset + 1])
+    )
       return undefined;
     const speed =
-      Math.max(0, Math.min(1, requireWaterValue(colors[colorOffset]))) * MAX_VELOCITY_M_PER_SEC;
-    const angle = requireWaterValue(colors[colorOffset + 1]) * Math.PI * 2;
+      Math.max(0, Math.min(1, requireWaterValue(colors.data[colorOffset]))) *
+      MAX_VELOCITY_M_PER_SEC;
+    const angle = requireWaterValue(colors.data[colorOffset + 1]) * Math.PI * 2;
     const dx =
       requireWaterValue(matrix[0]) * Math.cos(angle) +
       requireWaterValue(matrix[8]) * Math.sin(angle);
@@ -1804,9 +1808,9 @@ function riverFlowXZByVertex(
 
 function meshWorldYBounds(
   snapshot: WaterBodySnapshot,
-  mesh: WaterInfoMeshView,
+  mesh: WaterDependencyMeshView,
 ): readonly [number, number] | undefined {
-  const positions = mesh.attributes.position;
+  const positions = mesh.position;
   const matrix = snapshot.worldMatrixM;
   const verticalWaveScale = Math.hypot(
     requireWaterValue(matrix[1]),
@@ -1815,11 +1819,12 @@ function meshWorldYBounds(
   );
   let minimum = Number.POSITIVE_INFINITY;
   let maximum = Number.NEGATIVE_INFINITY;
-  for (let offset = 0; offset < positions.length; offset += 3) {
+  for (let vertex = 0; vertex < positions.count; vertex++) {
+    const offset = positions.offset + vertex * positions.stride;
     const y =
-      requireWaterValue(matrix[1]) * requireWaterValue(positions[offset]) +
-      requireWaterValue(matrix[5]) * requireWaterValue(positions[offset + 1]) +
-      requireWaterValue(matrix[9]) * requireWaterValue(positions[offset + 2]) +
+      requireWaterValue(matrix[1]) * requireWaterValue(positions.data[offset]) +
+      requireWaterValue(matrix[5]) * requireWaterValue(positions.data[offset + 1]) +
+      requireWaterValue(matrix[9]) * requireWaterValue(positions.data[offset + 2]) +
       requireWaterValue(matrix[13]);
     minimum = Math.min(minimum, y);
     maximum = Math.max(maximum, y);

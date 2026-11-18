@@ -2,7 +2,8 @@ import { packInterleavedVertexAttributes } from '@forgeax/engine-geometry';
 import { box3 } from '@forgeax/engine-math';
 import type { MeshAsset, VertexAttributeMap } from '@forgeax/engine-types';
 import {
-  BatchedMesh,
+  type BatchedMesh,
+  type BufferGeometry,
   type Camera,
   Color,
   InstancedMesh,
@@ -21,8 +22,10 @@ interface Instance {
   readonly count?: number;
 }
 
-/** r184 source layout. Only source data is read; native Mesh owns GPU storage/draws. */
+/** r187 source layout. Only source data is read; native Mesh owns GPU storage/draws. */
 interface BatchSource {
+  /** @internal Pinned upstream CPU visibility/sort roster, without GPU dispatch. */
+  _updateDrawParameters(camera: Camera, geometry: BufferGeometry, material: Material): void;
   /** @internal Upstream draw roster. */
   _multiDrawCount: number;
   /** @internal Upstream draw offsets. */
@@ -52,17 +55,10 @@ export function instanceGeometryValues(
       mesh.morphTexture?.version,
       mesh.count,
     ];
-  // Reuse the upstream CPU roster, including holes, visibility, sorting and culling.
-  BatchedMesh.prototype.onBeforeRender.call(
-    mesh,
-    undefined as never,
-    undefined as never,
-    camera,
-    mesh.geometry,
-    material,
-    undefined as never,
-  );
+  // r187 defers its WebGPU roster to the drawing pipeline. Native expansion
+  // consumes the upstream CPU roster directly, including holes, sorting and culling.
   const source = mesh as unknown as BatchSource;
+  source._updateDrawParameters(camera, mesh.geometry, material);
   return [
     source._matricesTexture.version,
     source._colorsTexture?.version,

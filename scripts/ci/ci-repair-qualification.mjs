@@ -18,7 +18,6 @@ export const repairReusableJobs = Object.freeze({
     'vitest-browser-shard',
     'shared-inputs-browser',
     'smoke-fleet',
-    'bevy-smoke-fleet',
     'vitest-dawn',
     'portability-bun',
     'webkit-fallback',
@@ -30,6 +29,29 @@ export const repairReusableJobs = Object.freeze({
   'webgpu-compatibility.yml': ['compatibility'],
   'modeling-ci.yml': ['engine-candidate'],
 });
+
+// A successful name from before an owner moved cannot qualify its new work.
+const repairRequiredExecutionSteps = {
+  'ci.yml': {
+    'view-integration-0': [
+      'Prepare matching DevKit browser shader profile',
+      'Runtime Pack Worker dev/build JS/TS browser gate',
+    ],
+    'view-integration-1': [
+      'Prepare matching DevKit browser shader profile',
+      'DevKit project play browser journeys (uninstrumented)',
+    ],
+  },
+};
+
+function repairExecutionIsComplete(workflow, checkName, job) {
+  return (repairRequiredExecutionSteps[workflow]?.[checkName] ?? []).every((name) => {
+    const steps = (job.steps ?? []).filter((step) => step.name === name);
+    return (
+      steps.length === 1 && steps[0].status === 'completed' && steps[0].conclusion === 'success'
+    );
+  });
+}
 
 // SDK repair aggregates validate independently qualified original reports.
 // Coverage and smoke retain their shared-producer artifact requirements.
@@ -45,7 +67,11 @@ export const repairArtifactSuites = Object.freeze({
   'sdk-pr-preflight.yml': { consumers: 'sdk-build', aggregate: 'sdk-build' },
 });
 
-const metricProducers = ['webkit-fallback', 'metrics-validate-browser', 'metrics-validate-runtime'];
+export const metricProducers = [
+  'webkit-fallback',
+  'metrics-validate-browser',
+  'metrics-validate-runtime',
+];
 const metricMembers = [...metricProducers, 'metrics-validate'];
 
 export const coverageMembers = [0, 1, 2, 3].map((shard) => `coverage-pnpm-shard-${shard}`);
@@ -210,7 +236,7 @@ export function repairComparison(comparison) {
   return ['ahead', 'identical'].includes(comparison?.status);
 }
 
-function samePullRequestIdentity(run, pr, repository) {
+export function samePullRequestIdentity(run, pr, repository) {
   if (
     run?.event !== 'pull_request' ||
     !sameRepository(run.head_repository?.full_name, repository) ||
@@ -231,7 +257,7 @@ export function samePullRequest(run, pr, repository) {
 }
 
 /** A manual repair source needs commit association, not just a reused branch name. */
-async function repairSourceBelongsToPr(api, run, pr, repository) {
+export async function repairSourceBelongsToPr(api, run, pr, repository) {
   if (samePullRequest(run, pr, repository)) return true;
   if (
     run?.status !== 'completed' ||
@@ -479,7 +505,7 @@ export async function runArtifacts(api, repository, run) {
   return undefined;
 }
 
-function metricArtifactName(name, job) {
+export function metricArtifactName(name, job) {
   if (name === 'webkit-fallback') return 'chromium-fallback-color-lighting-status';
   if (name === 'metrics-validate-runtime') return 'metrics-report';
   return Number.isSafeInteger(job.run_attempt) && job.run_attempt > 0
@@ -613,6 +639,8 @@ export async function ciRepairQualification(
     return normal('artifact-consumer-needs-fresh-inputs');
   const source = await originalSuccess(api, { ...input, pr }, selected.run, selected.job);
   if (!source) return normal('reuse-provenance-unqualified');
+  if (!repairExecutionIsComplete(workflow, checkName, source.job))
+    return normal('required-execution-step-unqualified');
   const metrics = repairArtifactSuites[workflow]?.[jobKey] === 'metrics-validate';
   if (metrics && !metricProducers.includes(checkName))
     return normal('metrics-check-name-unqualified');
@@ -646,18 +674,86 @@ export async function ciRepairQualification(
   return coverageAdmission(input, source, api, readCoverageFiles, coverageChanges, proof);
 }
 
-export async function requestGitHub(endpoint, token, request = fetch) {
+export async function requestGitHub(endpoint, token, request = fetch, retryOptions = {}) {
   if (!token) throw new Error('GitHub token unavailable');
-  const response = await request(`https://api.github.com/${endpoint}`, {
-    headers: {
-      authorization: `Bearer ${token}`,
-      accept: 'application/vnd.github+json',
-      'x-github-api-version': '2022-11-28',
+  let serverDelay = 0;
+  const sleep =
+    retryOptions.sleepFn ?? ((seconds) => new Promise((done) => setTimeout(done, seconds * 1000)));
+  const result = await retryArtifact(
+    async () => {
+      serverDelay = 0;
+      const signal = AbortSignal.timeout(30_000);
+      try {
+        const response = await request(`https://api.github.com/${endpoint}`, {
+          headers: {
+            authorization: `Bearer ${token}`,
+            accept: 'application/vnd.github+json',
+            'x-github-api-version': '2022-11-28',
+          },
+          signal,
+        });
+        if (!response.ok) {
+          const retryAfter = response.headers?.get('retry-after');
+          const remaining = response.headers?.get('x-ratelimit-remaining');
+          const throttled =
+            response.status === 429 ||
+            (response.status === 403 && (typeof retryAfter === 'string' || remaining === '0'));
+          if (throttled) {
+            const reset = Number(response.headers?.get('x-ratelimit-reset'));
+            serverDelay =
+              retryAfter && /^\d+$/.test(retryAfter)
+                ? Number(retryAfter)
+                : remaining === '0' && reset > 0
+                  ? Math.max(0, Math.ceil(reset - Date.now() / 1000))
+                  : 60;
+            if (serverDelay > 60) {
+              const limited = new Error('GitHub history rate limit exceeds recovery bound');
+              limited.code = 'GITHUB_HISTORY_RATE_LIMIT_BOUND';
+              throw limited;
+            }
+          } else serverDelay = 0;
+          const error = new Error(
+            `GitHub history unavailable: HTTP ${throttled ? 429 : response.status} response`,
+          );
+          error.code = `GITHUB_HISTORY_HTTP_${response.status}`;
+          throw error;
+        }
+        return await response.json();
+      } catch (error) {
+        if (signal.aborted || error?.name === 'TimeoutError') {
+          const deadline = new Error('GitHub history unavailable: HTTP 408 deadline', {
+            cause: error,
+          });
+          deadline.code = 'GITHUB_HISTORY_DEADLINE';
+          throw deadline;
+        }
+        throw error;
+      }
     },
-    signal: AbortSignal.timeout(30_000),
-  });
-  if (!response.ok) throw new Error(`GitHub history unavailable (${response.status})`);
-  return response.json();
+    {
+      onRetry: ({ attempt }) =>
+        console.error(`GitHub history transport retry ${attempt}/3: ${endpoint}`),
+      ...retryOptions,
+      sleepFn: (delay) => sleep(Math.max(delay, serverDelay)),
+    },
+  );
+  return result.value;
+}
+
+// One qualification observes immutable completed history repeatedly. Keep its
+// authenticated inventory local to this invocation, and never retain failures.
+export function createGitHubHistoryClient(token, request = fetch, retryOptions) {
+  const responses = new Map();
+  return async (endpoint) => {
+    if (!responses.has(endpoint)) {
+      const response = requestGitHub(endpoint, token, request, retryOptions).catch((error) => {
+        responses.delete(endpoint);
+        throw error;
+      });
+      responses.set(endpoint, response);
+    }
+    return responses.get(endpoint);
+  };
 }
 
 async function main() {
@@ -668,7 +764,7 @@ async function main() {
     declaredRepair =
       process.env.GITHUB_EVENT_NAME === 'pull_request' &&
       Boolean(repairDeclaration(event.pull_request?.body, process.env.GITHUB_REPOSITORY));
-    const api = (endpoint) => requestGitHub(endpoint, process.env.GH_TOKEN);
+    const api = createGitHubHistoryClient(process.env.GH_TOKEN);
     result = await ciRepairQualification(
       {
         eventName: process.env.GITHUB_EVENT_NAME,
@@ -686,7 +782,11 @@ async function main() {
       },
       api,
     );
-  } catch {
+  } catch (error) {
+    // Keep credentials and response bodies out of diagnostics.
+    const code = error?.code ?? error?.cause?.code;
+    const detail = typeof code === 'string' && /^[A-Z0-9_]+$/.test(code) ? ` (${code})` : '';
+    console.error(`CI repair history unavailable: ${error?.name ?? 'Error'}${detail}`);
     // Missing API access, unavailable history or malformed metadata runs normal CI.
   }
   console.log(JSON.stringify(result));

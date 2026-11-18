@@ -95,6 +95,7 @@ import {
 import { environmentExecutionWorkers } from './execution-workers.js';
 import { filesystemPathRelative, isFilesystemPathWithin } from './filesystem-path.js';
 import { gameVfxSource } from './game-vfx-source.js';
+import { engineConfigurationForAppOptions } from './host/engine-configuration';
 import { gameProjectionSource } from './host/game-projection-source.js';
 import { previewBatchEntrySource } from './host/preview-batch-entry-source.js';
 import {
@@ -847,14 +848,6 @@ const bridge = {
   const pluginPrograms = createPrograms(crypto.randomUUID(), 'engine-worker', ${sessionGeneration}, runtimePacks.programHost);
   return {
     ssrIdentity: ${JSON.stringify(ssrIdentity)},
-    ${
-      appOptions.standardProfile === undefined
-        ? ''
-        : `configureRenderer(renderer) {
-      const result = renderer.setProfile(${JSON.stringify(appOptions.standardProfile)});
-      if (!result.ok) throw result.error;
-    },`
-    }
     runtimePacks: { ...runtimePacks, programHost: pluginPrograms.programHost ?? runtimePacks.programHost },
     features: [vfx.feature, ...gameFeatures.features],
     plugins: [audioPlugin(), skinningPlugin(), vfx.plugin, ...gameFeatures.plugins, bridge],
@@ -930,15 +923,13 @@ function hostSource(
       ? undefined
       : (binding?.frontendAssembly ?? binding?.backend.assembly.current)?.root;
   const plugins =
-    bootstrapRoot === 'resource-bootstrap'
-      ? []
-      : [`webAudioPlugin(mainAudio)`, `audioPlugin()`, `skinningPlugin()`];
+    bootstrapRoot === 'resource-bootstrap' ? [] : [`audioPlugin()`, `skinningPlugin()`];
   const startupTimeout =
     facts.startupTimeoutMs === undefined ? 'null' : JSON.stringify(facts.startupTimeoutMs);
   return `${pipelineLibraryImports(appOptions)}import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { createProfiler } from '@forgeax/engine/profiler';
-import { activateExecutionRoot, addLoadWork, assembleAssetRuntime, beginLoadSession, beginLoadWork, describeLoadProgress, endLoadSession, ENGINE_STARTUP_PHASES, resolveLoadProgressLabels, subscribeLoadProgress, assembleRuntimePacks, captureEngineWorkspaceAssetBinding, createRendererInspectionError, createTextureWorkspacePreview, createWorkspaceMeshDisplay, createWorkspaceMaterialPreview, engineWorkspaceBrowserPlugin, engineWorkspaceInputPlugin, engineWorkspaceResultService, createToolPreviewHost, createToolPreviewRecipe, fitToolPreviewCameraToAabb, gameHostPlugin, loadEngineWorkspaceMaterialSlots, projectEngineWorkspaceAssets, replayToolPreviewCapture, type App } from '@forgeax/engine/app';
-import { createApp, syncCanvasDrawingBuffer } from '@forgeax/engine/app/browser';
+import { activateExecutionRoot, addLoadWork, assembleAssetRuntime, withEngineSettings, EngineConfigurationError, beginLoadSession, beginLoadWork, describeLoadProgress, endLoadSession, ENGINE_STARTUP_PHASES, resolveLoadProgressLabels, subscribeLoadProgress, assembleRuntimePacks, captureEngineWorkspaceAssetBinding, createRendererInspectionError, createTextureWorkspacePreview, createWorkspaceMeshDisplay, createWorkspaceMaterialPreview, engineWorkspaceBrowserPlugin, engineWorkspaceInputPlugin, engineWorkspaceResultService, createToolPreviewHost, createToolPreviewRecipe, fitToolPreviewCameraToAabb, gameHostPlugin, loadEngineWorkspaceMaterialSlots, projectEngineWorkspaceAssets, replayToolPreviewCapture, type App } from '@forgeax/engine/app';
+import { createApp, createBrowserConfigurationHost, syncCanvasDrawingBuffer } from '@forgeax/engine/app/browser';
 import { DEFAULT_WEBGPU_STUB_PROFILE } from '@forgeax/engine/rhi-webgpu';
 import { inspectUi } from '@forgeax/engine/ui';
 import { Context, startNativePlugin } from '@forgeax/engine/plugin';
@@ -961,7 +952,7 @@ import { createBrowserFrontendPlatform, createFrontendPlatformPlugin } from '@fo
 import { createHostAssembly, canonicalHostJson } from '@forgeax/engine/host/protocol';
 import { HOST_ASSEMBLY_SERVICE, HOST_ASSEMBLY_CHANGED_TOPIC } from '@forgeax/engine/host/transport';
 import { audioPlugin } from '@forgeax/engine/audio';
-import { createHostAudioConsumer, WebAudioEngine, webAudioPlugin } from '@forgeax/engine/audio-webaudio';
+import { createHostAudioConsumer } from '@forgeax/engine/audio-webaudio';
 import { physicsComponentsPlugin } from '@forgeax/engine/physics';
 import { skinningPlugin } from '@forgeax/engine/skinning';
 import { createPrimitiveMesh } from '@forgeax/engine/geometry';
@@ -1451,6 +1442,8 @@ async function inspectGameRenderer(app, isCurrent) {
 function exposeGameInspection(app, isLive = () => true) {
   const rendererErrors = trackRendererErrors(app, import.meta.env.DEV);
   const inspection = {
+    configuration: () => app.configuration?.inspect(),
+    setQuality: selection => app.configuration?.setQuality(selection),
     advance: request => advanceGameTime(app, request),
     clock: request => clockGameTime(app, request),
     ui: request => inspectUi(globalThis.__forgeaxGameInspection === inspection && appState.current === app ? document.body : undefined, request),
@@ -1476,6 +1469,7 @@ function exposeGameInspection(app, isLive = () => true) {
         capabilities: inspection.capabilities,
         limits: inspection.limits,
         execution: app.execution.report(),
+        configuration: app.configuration?.inspect(),
         lastError: app.lastError,
         rendererError: rendererErrors.read(),
       };
@@ -1562,6 +1556,20 @@ const rhiCaptureRequested =
 const gpuStub = query.get('forgeax-gpu-stub') === '1' ? DEFAULT_WEBGPU_STUB_PROFILE : undefined;
 const renderBackendValue = query.get('forgeax-render-backend');
 const renderBackend = renderBackendValue === 'auto' || renderBackendValue === 'webgpu' || renderBackendValue === 'webgl2' ? renderBackendValue : undefined;
+if (query.has('forgeax-render-backend') && renderBackend === undefined) throw new EngineConfigurationError('configuration-invalid', { path: 'rendering.renderBackend', reason: 'unknown backend selector' });
+const configuration = withEngineSettings(${JSON.stringify(engineConfigurationForAppOptions(appOptions, 'browser'))}, {
+  ...(animation === undefined ? {} : { simulation: { animation } }),
+  ${appOptions.canvasPixelRatio === undefined ? '' : `presentation: { canvasPixelRatio: ${canvasPixelRatioSource(appOptions.canvasPixelRatio)} },`}
+  rendering: {
+    ...(query.has('forgeax-dynamic-mesh-budget-bytes') ? { resources: { dynamicGeometryMeshBudgetBytes } } : {}),
+    ...(query.has('forgeax-texture-mip-skip') ? { qualityLimits: { textureMipSkip } } : {}),
+    ...(renderBackend === undefined ? {} : { renderBackend }),
+  },
+  execution: {
+    ...(query.has('forgeax-render-pipeline-capacity') ? { renderPipelineCapacity } : {}),
+    ...(executionWorkers === null || Object.keys(executionWorkers).length === 0 ? {} : { workers: executionWorkers }),
+  },
+});
 // A profiler is an inert, bounded capability until a caller starts a capture.
 // Create it in both live execution placements so the persistent CLI can inspect the
 // actual realm; the Worker receives only the structured diagnostics switches.
@@ -1683,7 +1691,6 @@ const appBootstrapPlugin = {
     const gameVfx = hasGameFeatures
       ? createGameVfx({ isolateViewGraph: isolateVfxViewGraph, instanceArenas: vfxInstanceArenas, nativePlanning: vfxNativePlanning, retainedResources: vfxRetainedResources, dependencies: ${JSON.stringify(gameVfxDependencies(appOptions))}, providers: gameFeatures.vfxProviders, providersForWorld: gameFeatures.vfxProvidersForWorld }) : undefined;
     let hostAudio: ReturnType<typeof createHostAudioConsumer> | undefined;
-    const mainAudio = workerExecution || bootstrapRoot === 'resource-bootstrap' ? undefined : new WebAudioEngine();
     ${
       appOptions.pipelineLibrary === undefined
         ? ''
@@ -1701,19 +1708,10 @@ const appBootstrapPlugin = {
       canvas,
       workerExecution
         ? {
+            configuration,
             uiRoot: document.querySelector('#game-ui') ?? document.body,
-            animation,
-            dynamicGeometryMeshBudgetBytes,
-            ${appOptions.canvasPixelRatio === undefined ? '' : `canvasPixelRatio: ${canvasPixelRatioSource(appOptions.canvasPixelRatio)},`}
-            ...(textureMipSkip === undefined ? {} : { textureMipSkip }),
-            ${appOptions.assetBudgetBytes === undefined ? '' : `assetBudgetBytes: ${JSON.stringify(appOptions.assetBudgetBytes)},`}
-            ${appOptions.time === undefined ? '' : `time: ${JSON.stringify(appOptions.time)},`}
             ${pipelineLibraryOptions(appOptions)}
             execution: {
-              createHostAudio: () => {
-                hostAudio = (ctx.get('executionHostAudioFactory') ?? createHostAudioConsumer)();
-                return hostAudio;
-              },
               workers: executionWorkers,
               ${deliverySource.bootstrapOption}
               bootstrapData: ${deliverySource.bootstrapData},
@@ -1747,18 +1745,11 @@ const appBootstrapPlugin = {
             },
             ...(pointerLockAllowed === undefined ? {} : { pointerLockAllowed }),
             ...(gpuStub === undefined ? {} : { gpuStub }),
-            ...(renderBackend === undefined ? {} : { renderBackend }),
           }
         : {
+            configuration,
             uiRoot: document.querySelector('#game-ui') ?? document.body,
-            animation,
-            dynamicGeometryMeshBudgetBytes,
-            ${appOptions.canvasPixelRatio === undefined ? '' : `canvasPixelRatio: ${canvasPixelRatioSource(appOptions.canvasPixelRatio)},`}
-            ...(textureMipSkip === undefined ? {} : { textureMipSkip }),
-            ${appOptions.assetBudgetBytes === undefined ? '' : `assetBudgetBytes: ${JSON.stringify(appOptions.assetBudgetBytes)},`}
-            ${appOptions.time === undefined ? '' : `time: ${JSON.stringify(appOptions.time)},`}
             ${pipelineLibraryOptions(appOptions)}
-            standardProfile: ${JSON.stringify(appOptions.standardProfile)},
             context: ctx.root,
             ${ssrIdentity === undefined ? '' : `ssrIdentity: ${JSON.stringify(ssrIdentity)},`}
             assetCatalog,
@@ -1774,9 +1765,19 @@ const appBootstrapPlugin = {
             ...(import.meta.env.DEV ? { assetRuntimeBinding: runtimeScopeBinding } : {}),
             ...(pointerLockAllowed === undefined ? {} : { pointerLockAllowed }),
             ...(gpuStub === undefined ? {} : { gpuStub }),
-            ...(renderBackend === undefined ? {} : { renderBackend }),
           },
-      workerExecution ? { ...bundler, importTransport: undefined } : bundler,
+      {
+        ...bundler,
+        configurationHost: bundler.configurationHost ?? createBrowserConfigurationHost(${JSON.stringify(facts.id)}),
+        ...(workerExecution || bootstrapRoot !== 'resource-bootstrap' ? {
+          createHostAudio: (options?: Parameters<typeof createHostAudioConsumer>[1]) => {
+            const factory = bundler.createHostAudio ?? ctx.get('executionHostAudioFactory');
+            hostAudio = factory === undefined ? createHostAudioConsumer(undefined, options) : factory(options);
+            return hostAudio;
+          },
+        } : {}),
+        ...(workerExecution ? { importTransport: undefined } : {}),
+      },
     );
     if (!result.ok) throw result.error;
     const app = result.value;
@@ -1831,7 +1832,9 @@ const appBootstrapPlugin = {
           : app.remoteEval('globalThis.__forgeaxGameInspection.' + method + '(' + (id === undefined ? '' : JSON.stringify(id)) + ')');
         const pageReads = () => Array.from(gameProjectionDefinitions.entries()).filter(([, entry]) => entry.kind === 'read').map(([id]) => id);
         const inspection = {
-          advance: request => advanceGameTime(app, request),
+          configuration: () => app.configuration?.inspect(),
+    setQuality: selection => app.configuration?.setQuality(selection),
+    advance: request => advanceGameTime(app, request),
           clock: request => clockGameTime(app, request),
           ui: request => inspectUi(globalThis.__forgeaxGameInspection === inspection && appState.current === app ? document.body : undefined, request),
           list: async () => {
@@ -1865,6 +1868,8 @@ const appBootstrapPlugin = {
           ? releaseLocalInspection?.[method](id)
           : app.remoteEval('globalThis.__forgeaxGameInspection.' + method + '(' + (id === undefined ? '' : JSON.stringify(id)) + ')');
         const releaseInspection = {
+          configuration: () => app.configuration?.inspect(),
+          setQuality: selection => app.configuration?.setQuality(selection),
           list: async () => {
             const source = await releaseSourceRead('list');
             const page = Array.from(gameProjectionDefinitions.entries()).filter(([, entry]) => entry.kind === 'read').map(([id]) => id);
@@ -1982,7 +1987,7 @@ const appBootstrapPlugin = {
           assets,
           canvas,
           renderer: app.renderer,
-          ...(mainAudio === undefined ? {} : { audio: mainAudio }),
+          ...(hostAudio === undefined ? {} : { audio: hostAudio.engine }),
           drawingBufferSize: () => ({ width: canvas.width, height: canvas.height }),
           ...(gameChannel === undefined ? {} : { port: gameChannel.port2, presentationPort: gameChannel.port1 }),
           uiRoot: uiRoot instanceof HTMLElement ? uiRoot : document.body,

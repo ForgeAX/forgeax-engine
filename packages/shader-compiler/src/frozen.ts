@@ -1,3 +1,11 @@
+// Only snapshots certified here may share containers across later snapshots.
+// Object.isFrozen alone does not prove that a caller's descendants are immutable.
+const snapshots = new WeakSet<object>();
+
+function unsupportedPrimitive(value: unknown): boolean {
+  return typeof value === 'function' || typeof value === 'symbol' || typeof value === 'bigint';
+}
+
 /**
  * Detached read-only snapshot of compiler output. Containers are copied once and
  * frozen; strings are immutable and shared. `bytes` charges each distinct string
@@ -15,8 +23,7 @@ export function freezeSnapshot<T>(value: T): { value: T; bytes: number } | undef
       return input;
     }
     if (input === null || typeof input !== 'object') {
-      if (typeof input === 'function' || typeof input === 'symbol' || typeof input === 'bigint')
-        unsupported = true;
+      if (unsupportedPrimitive(input)) unsupported = true;
       return input;
     }
     const prototype = Object.getPrototypeOf(input);
@@ -27,6 +34,12 @@ export function freezeSnapshot<T>(value: T): { value: T; bytes: number } | undef
     }
     seen.add(input);
     containers++;
+    const reusable = snapshots.has(input);
+    if (reusable) {
+      for (const child of Object.values(input)) copy(child);
+      seen.delete(input);
+      return input;
+    }
     const output: Record<string, unknown> | unknown[] = array ? new Array(input.length) : {};
     for (const key of Reflect.ownKeys(input)) {
       const descriptor = Object.getOwnPropertyDescriptor(input, key);
@@ -40,6 +53,7 @@ export function freezeSnapshot<T>(value: T): { value: T; bytes: number } | undef
       if (unsupported) return input;
     }
     seen.delete(input);
+    snapshots.add(output);
     return Object.freeze(output);
   };
   const snapshot = copy(value) as T;

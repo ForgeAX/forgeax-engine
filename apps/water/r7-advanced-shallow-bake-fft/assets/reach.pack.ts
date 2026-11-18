@@ -79,7 +79,7 @@ export default definePack({
       flags: { affectsWaterInfo: true, affectsWaterMesh: true, affectsLandscape: false },
       spline: {
         closed: type !== 'river',
-        interpolationVersion: 'ue-water-spline/1',
+        interpolationVersion: 'water-spline/2',
         points:
           type === 'river'
             ? [point(0, 0, -15, 26), point(1, 0, 15, 26)]
@@ -142,7 +142,7 @@ export default definePack({
         WaterAdvancedSimulationSource['shallowStageConfig']
       >['rigidMeshCollisions'] = river ? { kind: 'disabled' } : rigid('simple'),
     ): NonNullable<WaterAdvancedSimulationSource['shallowStageConfig']> => ({
-      stageProfile: river ? 'ue-5.8.1-river' : 'ue-5.8.1-water-body',
+      stageProfile: river ? 'river-shallow/2' : 'water-body-shallow/2',
       gridResolution: [64, 64],
       extentM: river ? [24, 28] : [20, 20],
       baseHeightM: 0,
@@ -222,7 +222,7 @@ export default definePack({
       textureGuids: [],
     };
     const oceanPatchConfig: NonNullable<WaterAdvancedSimulationSource['oceanPatchConfig']> = {
-      algorithm: 'ue-5.8.1-niagara-fft',
+      algorithm: 'ocean-spectrum-fft/2',
       windAngleDegrees: 180,
       windSpeedMPerSec: 0.55,
       noiseTextureGuid: guid('texture/ocean-phase'),

@@ -10,7 +10,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
+import { processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
@@ -92,7 +92,7 @@ const mockCanvas = {
 
 const here = dirname(fileURLToPath(import.meta.url));
 const manifestPath = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const manifestUrl = `data:application/json,${encodeURIComponent(readShaderManifestText(manifestPath))}`;
+const manifestUrl = processShaderManifestUrl(manifestPath);
 const { World } = await import('@forgeax/engine-ecs');
 const { DEFAULT_STANDARD_PROFILE } = await import('@forgeax/engine-render');
 const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/internal/renderer-host');
@@ -206,7 +206,8 @@ async function runVariant(ssao, label) {
   if (entry === undefined) throw new Error(`${label} render target was not configured`);
   const pixels = await capturePixels(entry);
   attached.value.dispose();
-  renderer.dispose();
+  const disposed = await renderer.dispose();
+  if (!disposed.ok) throw disposed.error;
   return { pixels, errors, drawErrors, framesObserved, observed: observed.value, inspection };
 }
 

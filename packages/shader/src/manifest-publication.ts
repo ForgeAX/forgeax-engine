@@ -513,17 +513,41 @@ interface Fact {
   readonly id: number;
 }
 
+function losslessJsonPrimitive(value: unknown): boolean {
+  return (
+    value === null ||
+    typeof value === 'string' ||
+    typeof value === 'boolean' ||
+    (typeof value === 'number' && Number.isFinite(value) && !Object.is(value, -0))
+  );
+}
+
 /** Only detached plain acyclic data can acquire structural sharing. */
-function plainTree(value: unknown, active: Set<object>, visited: Set<object>): boolean {
-  if (value === null || typeof value !== 'object') return true;
+function plainTree(
+  value: unknown,
+  active: Set<object>,
+  visited: Set<object>,
+  json: { safe: boolean },
+): boolean {
+  if (value === null || typeof value !== 'object') {
+    json.safe &&= losslessJsonPrimitive(value);
+    return true;
+  }
   if (active.has(value)) return false;
   if (visited.has(value)) return true;
   const prototype = Object.getPrototypeOf(value);
   if (!Array.isArray(value) && prototype !== Object.prototype && prototype !== null) return false;
+  if (prototype === null || (Array.isArray(value) && prototype !== Array.prototype))
+    json.safe = false;
   active.add(value);
   const record = value as Record<string, unknown>;
-  for (const field of Object.keys(record))
-    if (!plainTree(record[field], active, visited)) return false;
+  const keys = Object.keys(record);
+  if (
+    Array.isArray(value) &&
+    (keys.length !== value.length || keys.some((field, index) => field !== String(index)))
+  )
+    json.safe = false;
+  for (const field of keys) if (!plainTree(record[field], active, visited, json)) return false;
   active.delete(value);
   visited.add(value);
   return true;
@@ -535,7 +559,9 @@ function plainTree(value: unknown, active: Set<object>, visited: Set<object>): b
  * No pool, key string or caller-owned object escapes with the accepted facts.
  */
 function sharePublicationFacts(rows: unknown[]): unknown[] {
-  if (!plainTree(rows, new Set(), new Set())) return rows;
+  const json = { safe: true };
+  if (!plainTree(rows, new Set(), new Set(), json)) return rows;
+  if (json.safe) coalesceJsonRowChildren(rows);
   const pool = new Map<string, Fact>();
   const primitives = new Map<unknown, Fact>();
   const fields = new Map<string, number>();
@@ -580,4 +606,21 @@ function sharePublicationFacts(rows: unknown[]): unknown[] {
     return fact;
   }
   return intern(rows).value as unknown[];
+}
+
+/** Native JSON keys coalesce large repeated row children before the recursive walk. */
+function coalesceJsonRowChildren(rows: unknown[]): void {
+  const children = new Map<string, object>();
+  for (const row of rows) {
+    if (row === null || typeof row !== 'object') continue;
+    const record = row as Record<string, unknown>;
+    for (const field of Object.keys(record)) {
+      const child = record[field];
+      if (child === null || typeof child !== 'object') continue;
+      const key = JSON.stringify(child);
+      const previous = children.get(key);
+      if (previous === undefined) children.set(key, child);
+      else record[field] = previous;
+    }
+  }
 }

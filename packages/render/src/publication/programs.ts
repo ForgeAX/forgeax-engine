@@ -1,5 +1,8 @@
 import { type AssetRegistry, runtimeMaterialShaderId } from '@forgeax/engine-assets-runtime';
-import { validateMaterialCookProgramContext } from '@forgeax/engine-pack/material-cook';
+import {
+  materialProgramContextKey,
+  validateMaterialCookProgramContext,
+} from '@forgeax/engine-pack/material-cook';
 import {
   type MaterialRuntimeArtifact,
   type MaterialShaderEntry,
@@ -29,7 +32,9 @@ type PublishedMaterialProjectionProgram =
   PublishedMaterialProjection['passes'][number]['programs'][number];
 
 /** Content-independent program row facts: compiler context, address and ABI. */
-function validPublicationProjectionProgram(program: unknown): boolean {
+function validPublicationProjectionProgram(
+  program: unknown,
+): program is PublishedMaterialProjectionProgram {
   if (program === null || typeof program !== 'object') return false;
   const row = program as Record<string, unknown>;
   return (
@@ -102,16 +107,22 @@ function publicationProjectionServesMaterial(
 
 /**
  * One cooked program serves several selections (direct and scene-index) under the
- * same specialization key and digest, so the row's address and entry are part of
- * its identity; otherwise the second selection would resolve to the first's row.
+ * same specialization key and digest. The full compiler context and vertex
+ * selection identify the row independently of its shared artifact bytes.
  */
 function programId(value: PublishedMaterialProjectionProgram): string {
-  return `${value.specializationKey}\u0000${value.artifactHash}\u0000${value.address ?? ''}\u0000${value.entry ?? ''}`;
+  return JSON.stringify([
+    value.specializationKey,
+    value.artifactHash,
+    materialProgramContextKey(value.context),
+    value.address ?? null,
+    value.entry ?? null,
+  ]);
 }
 
 /**
  * The receiver's program table. A cooked program is identified by its
- * specialization key and artifact digest, and the publisher sends each program
+ * specialization key, artifact digest and complete selection context. The publisher sends each program
  * row's content under that identity; the receiver validates and owns a row the
  * first time it sees the id, and every projection after that references the
  * table entry. Projections themselves carry per-material values, so each is
@@ -135,20 +146,16 @@ export class PublicationMaterialProjectionAdmission {
     if (input === null || typeof input !== 'object') return undefined;
     const reused = new Map<object, PublishedMaterialProjectionProgram>();
     const validProgram = (program: unknown): boolean => {
-      if (program === null || typeof program !== 'object') return false;
-      const row = program as PublishedMaterialProjectionProgram;
-      const id =
-        typeof row.specializationKey === 'string' && typeof row.artifactHash === 'string'
-          ? programId(row)
-          : undefined;
-      const known = id === undefined ? undefined : this.#programs.get(id);
+      if (!validPublicationProjectionProgram(program)) return false;
+      const row = program;
+      const id = programId(row);
+      const known = this.#programs.get(id);
       if (known !== undefined) {
         reused.set(program, known);
         return true;
       }
-      if (!validPublicationProjectionProgram(program)) return false;
       const owned = ownRenderFeatureProgramData(row);
-      if (id !== undefined && isOwnedRenderFeatureProgramData(owned)) this.#programs.set(id, owned);
+      if (isOwnedRenderFeatureProgramData(owned)) this.#programs.set(id, owned);
       reused.set(program, owned);
       return true;
     };

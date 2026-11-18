@@ -1,4 +1,5 @@
 import { defineProject } from 'vitest/config';
+import { coreDeferredFiles } from '../scripts/ci/core-validation.mjs';
 import { DAWN_COMPACT_TEST_FILES } from '../scripts/ci/dawn-compact-roster.mjs';
 import {
   DAWN_ISOLATED_TEST_FILES,
@@ -47,6 +48,7 @@ export const dawnProject = defineProject({
       R32FLOAT_CAPABILITY_GENERATION_TEST,
     ],
     exclude: [
+      ...coreDeferredFiles(),
       '**/node_modules/**',
       '**/dist/**',
       '**/artifacts/**',

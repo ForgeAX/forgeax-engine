@@ -1,8 +1,0 @@
-{
-  "schemaVersion": "1.0.0",
-  "kind": "external-asset-package",
-  "importer": "image",
-  "source": "LowResBlurredNoise.png",
-  "importSettings": { "colorSpace": "linear", "mipmap": true, "compressionMode": "none" },
-  "subAssets": [{ "guid": "ffe75b88-edb3-5dba-882f-4aa8d17aba3a", "sourceIndex": 0, "kind": "texture", "sourceKey": "texture" }]
-}

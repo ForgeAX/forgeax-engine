@@ -1,6 +1,5 @@
 import type { TerrainAsset } from '@forgeax/engine-types';
-import type { WaterDependencySnapshot } from '@forgeax/engine-water';
-import { requireWaterValue } from '@forgeax/engine-water/internal';
+import { requireWaterValue, type WaterDependencyMeshView } from '@forgeax/engine-water/internal';
 
 /** Triangle vertices, capture metadata, three interpolated flow values, and alignment padding. */
 export const WATER_INFO_TRIANGLE_STRIDE_FLOATS = 24;
@@ -176,131 +175,8 @@ export function encodeWaterInfoGpuZoneParams(params: WaterInfoGpuZoneParams): Ui
 
 export type WaterInfoTriangleKind = 'water' | 'dilation' | 'ground';
 
-export interface WaterInfoMeshView {
-  readonly kind: 'mesh';
-  readonly attributes: Readonly<{ position: readonly number[]; color?: readonly number[] }>;
-  readonly indices: readonly number[];
-  readonly submeshes: readonly Readonly<{
-    topology: string;
-    indexOffset: number;
-    indexCount: number;
-  }>[];
-}
-
-function frozenFloatSnapshot(value: unknown): value is readonly number[] {
-  return (
-    Array.isArray(value) &&
-    Object.isFrozen(value) &&
-    value.every(
-      (item) =>
-        typeof item === 'number' && Number.isFinite(item) && Number.isFinite(Math.fround(item)),
-    )
-  );
-}
-
-/** Narrows a dependency payload without restoring mutable typed-array storage. */
-export function waterInfoMeshView(
-  value: unknown,
-  arrayKinds: WaterDependencySnapshot['payloadArrayKinds'],
-): WaterInfoMeshView | undefined {
-  if (!value || typeof value !== 'object' || !Object.isFrozen(value)) return undefined;
-  const mesh = value as {
-    kind?: unknown;
-    attributes?: unknown;
-    indices?: unknown;
-    submeshes?: unknown;
-  };
-  if (
-    mesh.kind !== 'mesh' ||
-    !mesh.attributes ||
-    typeof mesh.attributes !== 'object' ||
-    !Object.isFrozen(mesh.attributes) ||
-    !Array.isArray(mesh.submeshes) ||
-    !Object.isFrozen(mesh.submeshes)
-  )
-    return undefined;
-  const attributes = mesh.attributes as { position?: unknown; color?: unknown };
-  const positions = attributes.position;
-  const colors = attributes.color;
-  const indices = mesh.indices;
-  const indexKind = arrayKinds?.indices;
-  const maximumIndex = indexKind === 'uint16' ? 0xffff : indexKind === 'uint32' ? 0xffff_ffff : -1;
-  const validateMeshArrays = (
-    positions: unknown,
-    colors: unknown,
-    indices: unknown,
-    maximumIndex: number,
-    arrayKinds: WaterDependencySnapshot['payloadArrayKinds'],
-  ): boolean => {
-    if (
-      !frozenFloatSnapshot(positions) ||
-      positions.length < 3 ||
-      positions.length % 3 !== 0 ||
-      arrayKinds?.attributes?.position !== 'float32' ||
-      (colors !== undefined && !frozenFloatSnapshot(colors)) ||
-      (colors !== undefined && arrayKinds?.attributes?.color !== 'float32') ||
-      !Array.isArray(indices) ||
-      !Object.isFrozen(indices) ||
-      indices.length === 0 ||
-      maximumIndex < 0 ||
-      !indices.every(
-        (index) =>
-          Number.isSafeInteger(index) &&
-          index >= 0 &&
-          index <= maximumIndex &&
-          index < positions.length / 3,
-      )
-    )
-      return false;
-
-    return true;
-  };
-  if (!validateMeshArrays(positions, colors, indices, maximumIndex, arrayKinds)) return undefined;
-  const validateSubmeshRanges = (
-    submeshes: unknown[],
-    indices: readonly unknown[],
-    positions: readonly number[],
-    colors: readonly number[] | undefined,
-  ) => {
-    let hasTriangles = false;
-    for (const value of submeshes) {
-      if (!value || typeof value !== 'object' || !Object.isFrozen(value)) return false;
-      const submesh = value as { topology?: unknown; indexOffset?: unknown; indexCount?: unknown };
-      if (
-        typeof submesh.topology !== 'string' ||
-        typeof submesh.indexOffset !== 'number' ||
-        typeof submesh.indexCount !== 'number' ||
-        !Number.isSafeInteger(submesh.indexOffset) ||
-        !Number.isSafeInteger(submesh.indexCount) ||
-        submesh.indexOffset < 0 ||
-        submesh.indexCount < 0 ||
-        submesh.indexOffset + submesh.indexCount > indices.length
-      )
-        return false;
-      if (submesh.topology === 'triangle-list') {
-        if (submesh.indexCount % 3 !== 0) return false;
-        hasTriangles ||= submesh.indexCount > 0;
-      }
-    }
-    if (!hasTriangles || (colors !== undefined && colors.length !== (positions.length / 3) * 4))
-      return false;
-
-    return true;
-  };
-  if (
-    !validateSubmeshRanges(
-      mesh.submeshes as unknown[],
-      indices as readonly unknown[],
-      positions as readonly number[],
-      colors as readonly number[] | undefined,
-    )
-  )
-    return undefined;
-  return value as WaterInfoMeshView;
-}
-
 export interface WaterInfoTriangleSource {
-  readonly mesh: WaterInfoMeshView;
+  readonly mesh: WaterDependencyMeshView;
   readonly worldMatrixM: readonly number[];
   readonly kind: WaterInfoTriangleKind;
   readonly velocityXZ?: readonly [number, number];
@@ -342,7 +218,7 @@ export function buildWaterInfoTriangleBuffer(
 ): Float32Array {
   const rows: number[] = [];
   for (const source of sources) {
-    const positions = source.mesh.attributes.position;
+    const positions = source.mesh.position;
     const indices = source.mesh.indices;
     if (source.worldMatrixM.length !== 16) continue;
     for (const submesh of source.mesh.submeshes) {
@@ -355,16 +231,16 @@ export function buildWaterInfoTriangleBuffer(
         let valid = true;
         for (let corner = 0; corner < 3; corner += 1) {
           const vertex = requireWaterValue(indices[index + corner]);
-          const offset = vertex * 3;
-          if (offset + 2 >= positions.length) {
+          const offset = positions.offset + vertex * positions.stride;
+          if (vertex >= positions.count) {
             valid = false;
             break;
           }
           const p = transformPoint(
             source.worldMatrixM,
-            requireWaterValue(positions[offset]),
-            requireWaterValue(positions[offset + 1]),
-            requireWaterValue(positions[offset + 2]),
+            requireWaterValue(positions.data[offset]),
+            requireWaterValue(positions.data[offset + 1]),
+            requireWaterValue(positions.data[offset + 2]),
           );
           if (!p.every(Number.isFinite)) {
             valid = false;

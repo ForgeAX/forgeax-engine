@@ -2307,7 +2307,7 @@ describe('water R2 mesh, WaterInfo, waves, and body query', () => {
             ],
             spline: {
               closed,
-              interpolationVersion: 'ue-water-spline/1',
+              interpolationVersion: 'water-spline/2',
               points: [point(0, 0, 0), point(1, 8, 4), point(2, 3, 8), point(3, -2, 4)].map(
                 (value, index) => ({
                   ...value,

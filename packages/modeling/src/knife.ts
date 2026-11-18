@@ -384,9 +384,8 @@ function knifeAt(
   }
   const sortedVertices = [...scopeVertices].sort((x, y) => x - y);
   const sortedEdges = [...edges.entries()].sort((x, y) => x[0] - y[0]);
-  // Cross-section coordinate of every scope vertex per segment, computed once: a vertex
-  // or an edge can only meet a segment's curtain within its along-range, so both scans
-  // below visit only the vertices whose x falls there (sorted, binary-searched).
+  // Reject vertices outside a curtain before sorting its event candidates. Corner
+  // queries only collect face ids and do not require a sorted full-scope scan.
   // The scan precedes every topology write; all segments share these exact positions.
   const scanPositions = sortedVertices.map((v) => ({ v, point: mesh.position(v) }));
   const segmentScan = segments.map((s) => {
@@ -394,19 +393,8 @@ function knifeAt(
       const [x, r] = to2(s, point);
       return { v, x, r };
     });
-    xs.sort((p, q) => p.x - q.x || p.v - q.v);
     return xs;
   });
-  const lowerBound = (xs: readonly { x: number }[], value: number) => {
-    let lo = 0;
-    let hi = xs.length;
-    while (lo < hi) {
-      const mid = (lo + hi) >> 1;
-      if ((xs[mid] as { x: number }).x < value) lo = mid + 1;
-      else hi = mid;
-    }
-    return lo;
-  };
   const incident = new Map<number, [number, number][]>();
   for (const [, edge] of sortedEdges) {
     for (const v of edge) {
@@ -442,10 +430,8 @@ function knifeAt(
   const slack = maxDiameter + (options.snap ?? maxEdge * 0.01) + tolerance;
   const facesNear = (xs: readonly { v: number; x: number; r: number }[], q: Point2): number[] => {
     const out = new Set<number>();
-    const from = lowerBound(xs, q[0] - slack);
-    const to = lowerBound(xs, q[0] + slack);
-    for (let i = from; i < to; i++) {
-      const { v, r } = xs[i] as { v: number; x: number; r: number };
+    for (const { v, x, r } of xs) {
+      if (x < q[0] - slack || x >= q[0] + slack) continue;
       if (Math.abs(r - q[1]) > slack) continue;
       for (const f of facesOfVertex.get(v) ?? []) out.add(f);
     }
@@ -456,8 +442,11 @@ function knifeAt(
     const xs = segmentScan[k] as { v: number; x: number; r: number }[];
     // Vertices of edges that can cross this curtain lie within one edge length of it.
     const near = xs
-      .slice(lowerBound(xs, -tolerance - maxEdge), lowerBound(xs, reach + maxEdge))
-      .filter(({ r }) => Math.abs(r) <= maxEdge + tolerance);
+      .filter(
+        ({ x, r }) =>
+          x >= -tolerance - maxEdge && x < reach + maxEdge && Math.abs(r) <= maxEdge + tolerance,
+      )
+      .sort((p, q) => p.x - q.x || p.v - q.v);
     const nearEdges = new Map<number, [number, number]>();
     for (const { v } of near) {
       for (const [a, b] of incident.get(v) ?? []) nearEdges.set(edgeKey(a, b), [a, b]);

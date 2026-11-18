@@ -2,8 +2,10 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { runInNewContext } from 'node:vm';
+import { EngineConfigurationError, withEngineSettings } from '@forgeax/engine-app';
+import { createBrowserConfigurationHost } from '@forgeax/engine-app/browser';
 import { forgeaxShader } from '@forgeax/engine-vite-plugin-shader';
-import { build as viteBuild } from 'vite';
+import { transformWithOxc, build as viteBuild } from 'vite';
 import { describe, expect, it } from 'vitest';
 import { createViteConfig } from '../host.js';
 import { readProjectFacts } from '../project.js';
@@ -87,16 +89,19 @@ describe('generated Worker startup URLs', () => {
       const chunk = bundle.output.find((entry) => entry.type === 'chunk');
       if (chunk?.type !== 'chunk') throw new Error('adapter chunk missing');
       const moduleUrl = new URL('assets/main.js', new URL(base, documentUrl)).href;
-      const source = `${chunk.code}\nconst forgeaxBundlerAdapter = Adapter.forgeaxBundlerAdapter;
+      const typedSource =
+        `${chunk.code}\nconst forgeaxBundlerAdapter = Adapter.forgeaxBundlerAdapter;
         (async () => {
           ${generatedPlayerQueries(generated)}
           ${generated.slice(setupStart, setupEnd)}
           ${generated.slice(callStart, callEnd)}
           return { ...result, assetCatalog };
         })()`
-        .replaceAll('import.meta.env.DEV', 'false')
-        .replaceAll('import.meta.hot', 'undefined')
-        .replaceAll('import.meta.url', JSON.stringify(moduleUrl));
+          .replaceAll('import.meta.env.DEV', 'false')
+          .replaceAll('import.meta.hot', 'undefined')
+          .replaceAll('import.meta.url', JSON.stringify(moduleUrl));
+      const source = (await transformWithOxc(typedSource, 'worker-startup-urls.ts', { lang: 'ts' }))
+        .code;
       const executionWorkers = { engine: true, render: true, kernels: false };
       // One generated player and one built adapter serve every query. Changing
       // the lane must not change Worker selection or any startup resource URL.
@@ -109,6 +114,9 @@ describe('generated Worker startup URLs', () => {
         const captured = await runInNewContext(source, {
           URL,
           URLSearchParams,
+          EngineConfigurationError,
+          withEngineSettings,
+          createBrowserConfigurationHost,
           location: new URL(search, documentUrl),
           bootstrapRoot: 'project-bootstrap',
           document: { baseURI: documentUrl, body: {}, querySelector: () => null },

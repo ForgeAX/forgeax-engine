@@ -53,8 +53,6 @@ export const CONTENT_SOURCE_KEYS = Object.freeze({
   defaultMaterial: 'material/default',
   waterMaterial: (name: WaterMaterialFamilyKey) => `material/water/${name}`,
   waterTexture: (name: ContentWaterTextureName) => `texture/water/${name}`,
-  waterVolumeNoiseAtlas: 'texture/water/volume-noise-atlas',
-  waterImpulseNoiseSource: 'texture/water/impulse-noise-source',
   waterSampler: 'sampler/water-repeat',
 });
 

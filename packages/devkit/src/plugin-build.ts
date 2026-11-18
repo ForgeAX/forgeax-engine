@@ -22,6 +22,7 @@ import type { StartupUiOptions } from './host/startup-ui.js';
 /** Serializable project options sampled after the native build root starts. */
 export type DevKitAppOptions = Pick<
   CreateAppOptions,
+  | 'configuration'
   | 'dynamicGeometryMeshBudgetBytes'
   | 'textureMipSkip'
   | 'assetBudgetBytes'

@@ -8,7 +8,7 @@ import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErr
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
+import { processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 const WIDTH = 200, HEIGHT = 150;
 const TARGET_FRAMES = 60;
@@ -54,7 +54,7 @@ const { Transform } = await import('@forgeax/engine-scene');
 const { createBoxGeometry } = await import('@forgeax/engine-geometry');
 
 const here = dirname(fileURLToPath(import.meta.url));
-const MANIFEST = `data:application/json,${encodeURIComponent(readShaderManifestText(resolve(here, '..', 'dist', 'shaders', 'manifest.json')))}`;
+const MANIFEST = processShaderManifestUrl(resolve(here, '..', 'dist', 'shaders', 'manifest.json'));
 
 let renderer;
 try { const hostResult = await constructRuntimeRendererHost(mockCanvas, {}, { shaderManifestUrl: MANIFEST });

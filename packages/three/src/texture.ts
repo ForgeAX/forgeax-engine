@@ -19,6 +19,7 @@ import {
   DepthTexture,
   EquirectangularReflectionMapping,
   FloatType,
+  FramebufferTexture,
   HalfFloatType,
   LinearFilter,
   LinearMipmapLinearFilter,
@@ -75,7 +76,7 @@ export function textureCoordinates(
 }
 
 export function textureValues(texture: Texture): unknown[] {
-  // r184 Textures.updateTexture admits an image only when this version changes.
+  // r187 Textures.updateTexture admits an image only when this version changes.
   // Image assignment and Source.dataReady alone never publish a GPU update.
   return [texture.version];
 }
@@ -138,6 +139,19 @@ export function samplerValues(texture: Texture): unknown[] {
   ];
 }
 
+/** GPU-owned and layered sources need their native lease route, never a loading placeholder. */
+function unsupportedTextureSource(texture: Texture): boolean {
+  return (
+    texture.isRenderTargetTexture ||
+    ('isStorageTexture' in texture && texture.isStorageTexture === true) ||
+    texture instanceof FramebufferTexture ||
+    texture instanceof CubeTexture ||
+    texture instanceof Data3DTexture ||
+    texture instanceof DataArrayTexture ||
+    texture instanceof DepthTexture
+  );
+}
+
 export function validateTexture(
   texture: Texture,
   usage: 'surface' | 'environment' = 'surface',
@@ -149,16 +163,10 @@ export function validateTexture(
         ![UnsignedByteType, HalfFloatType, FloatType].some((type) => texture.type === type)))
   )
     return unsupported('Texture mapping/format/type/premultiplyAlpha', texture.uuid);
-  if (
-    texture.isRenderTargetTexture ||
-    texture instanceof CubeTexture ||
-    texture instanceof Data3DTexture ||
-    texture instanceof DataArrayTexture ||
-    texture instanceof DepthTexture
-  )
+  if (unsupportedTextureSource(texture))
     return unsupported('Texture shape/source kind', texture.uuid);
   if (!Number.isInteger(texture.channel) || texture.channel < 0 || texture.channel > 3)
-    return unsupported('Texture.channel outside r184 UV0-UV3', texture.uuid);
+    return unsupported('Texture.channel outside r187 UV0-UV3', texture.uuid);
   if (![1, 2, 4, 8].includes(texture.unpackAlignment))
     return invalid('Texture.unpackAlignment', texture.uuid);
   if (texture.type !== UnsignedByteType && !(texture instanceof DataTexture))
@@ -352,7 +360,7 @@ export function projectSampler(texture: Texture): Result<SamplerAsset, Error> {
   )
     ? ('nearest' as const)
     : ('linear' as const);
-  // r184 WebGPU converts the minification constant once for both filter modes.
+  // r187 WebGPU converts the minification constant once for both filter modes.
   const anisotropy =
     texture.magFilter === LinearFilter && filter === 'linear' ? texture.anisotropy : 1;
   if (anisotropy > 16) return invalid('Texture.anisotropy exceeds WebGPU maximum 16', texture.uuid);

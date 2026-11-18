@@ -243,6 +243,13 @@ test('compatibility waits for core transfer before its unchanged carrier and pub
   );
   assert.match(restore.run, /needs\.shader-producer-inputs\.outputs\.artifact_id/);
   assert.match(restore.run, /restore-core-shader-inputs\.mjs/);
+  assert.match(restore.run, /--prepare-compiler/);
+  assert.equal(
+    carrier.steps.some((step) => step.uses === './.github/actions/prepare-wgpu-wasm'),
+    false,
+  );
+  const webkit = carrier.steps.find((step) => step.name?.startsWith('Prepare pinned Linux WebKit'));
+  assert.ok(carrier.steps.indexOf(restore) < carrier.steps.indexOf(webkit));
   assert.equal(prepare['timeout-minutes'], 10);
   assert.ok(carrier.steps.indexOf(restore) < carrier.steps.indexOf(prepare));
 });

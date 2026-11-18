@@ -13,6 +13,8 @@ description: >-
 The game-root `AGENTS.md` already gives the hard rules, default commands and routing.
 Reach a first correct edit with this short path, not by reading large skills up front:
 
+0. Capabilities and boundaries: read [the engine overview](ENGINE-OVERVIEW.md) first. It maps
+   each game need to its engine capability and lists what the engine does not do.
 1. Signatures and import paths: the API index before
    searching `node_modules` READMEs or `.d.ts` files.
 2. Effect recipes for an `empty` project: the effects cookbook (~2 KB index: water -> stock `single-layer-medium`, fog/beam -> `beam-pillar`, indoor emissive ->
@@ -129,6 +131,8 @@ again before delivery, open the PNG and answer each question in one sentence; fi
 
 ## First five minutes: understand before authoring
 
+Start with [the engine overview](ENGINE-OVERVIEW.md): it is the quick map of what the engine can and cannot do.
+
 SDK `init` and project `new` return the local `AGENTS.md` and this skill in
 `onboarding.read`. Read those entries, select the requested delivery scope in the
 game's guide, and load only the focused skills/package contracts needed now.
@@ -143,7 +147,8 @@ archive verification does not replace game acceptance.
 > [!IMPORTANT]
 > Available is not enabled. A package in the SDK means the capability can be selected; a game enables it only through its `forge.json`, plugin composition, ECS components, assets, renderer features, or build configuration. Install and register only the capabilities the game uses.
 
-Translate the requested game into a small capability adoption plan before editing:
+Before the first edit, translate the requested game into a capability adoption plan and save it as
+`docs/engine-plan.md` (one block per needed feature, about a page in total):
 
 ```text
 Need: <player-visible or production requirement>
@@ -151,11 +156,17 @@ Use: <one ForgeAX capability and its owner>
 Entry: <focused skill, CLI operation, or package README>
 Proof: <test, asset verification, browser evidence, or package output>
 Defer: <available capabilities not needed now>
+Gap: <what the engine does not cover, and the smallest hand-written part>
 ```
+
+Build each feature on the capability its block names. Writing your own version of a capability the catalog or API
+index lists (meshes, camera rig, input, particles, collision, UI, post effects) is allowed only after a lookup that
+found no match; mark that block `Gap`, keep the custom part minimal and record it in `docs/feedback.md`. Skipping
+the plan to save time is the usual cause of hand-rolled replacements and of capabilities left unused.
 
 | Need | Start with | Proof before claiming it works |
 |:--|:--|:--|
-| Frame loop, execution tier, input, plugin assembly | `forgeax-engine-app`, then `forgeax-engine-ecs` or `forgeax-engine-state` | Unit/system test plus real browser interaction |
+| Frame loop, execution tier, input, plugin assembly | `forgeax-engine-app`, then `forgeax-engine-ecs` or `forgeax-engine-state` | Real browser interaction; add a unit test only when playing cannot reach the case |
 | Scene, imported files, code-first packs, GUID loading | `forgeax-engine-assets`; discover operations through `forgeax-engine-cli` | `asset verify`, build catalog, runtime load by GUID |
 | Code-authored props, hard-surface parts and kit meshes | `forgeax-engine-modeling` | `m.validate()` closed/volume facts, exported MeshAsset, browser pixels |
 | PBR, textures, custom WGSL | `forgeax-engine-material`, then `forgeax-engine-shader` | Shader check, material readiness, browser pixels |
@@ -211,8 +222,14 @@ the separate same-head core base/shared point admission prerequisite. Producer
 waiting precedes the unchanged 30-minute seed budget. Downloads survive the clean
 in runner temporary storage; after rebuilding the compiler, both original
 path-bound publications must pass current source/profile and digest checks.
-Never relabel point as base, copy compiler outputs, rewrite receipts or lengthen
-the seed budget. Follow [SDK consumers](../../scripts/ci/README.md#sdk-consumers).
+Adopt the source-qualified Core native WASM/glue pair from the same existing
+archive before the clean JS rebuild; independent native builds can differ in bytes.
+Keep the derived browser glue paired. Never relabel point as base, copy JS compiler
+outputs, rewrite receipts or lengthen the seed budget. Follow [SDK consumers](../../scripts/ci/README.md#sdk-consumers).
+When seed preparation changes, run its complete source-export contract command.
+The public-policy owner checks source acceptance before Core native adoption and
+provenance before SDK production, using those actual commands rather than a
+retired independent native-build step name.
 
 For a cold SDK heap failure after shader compilation completes, inspect the
 profile-container and declaration children separately. Their own heaps must
@@ -242,9 +259,13 @@ retain every artifact and the SQLite-only mutable-store exclusion. See
 [SDK consumer diagnostics](../../scripts/ci/README.md#sdk-consumers).
 
 For a source-consumer job cancellation, compare complete stage timings first.
-After the independent cold Engine rebuild, Preview and View use that rebuild's
-shared manifest. Preserve the source-edit proof, full Browser journeys and
-integrity checks; duplicate input production does not justify a longer deadline.
+PR archive consumers explicitly use `--profile core`: keep the single-module
+edit through the embedded View Host, independent cold Engine build, both source
+templates and complete integrity checks. The second cold View tool build and
+diagnostic journey are deferred because installed View and the Engine/View
+integration matrix already exercise those routes. Default `--profile full`
+retains the extra source View build/journey for release qualification. Receipts
+name their profile and deferred validation; never label core as full evidence.
 
 If a source consumer with precompiled Rapier unexpectedly requests Rust, compare
 its `SDK_SOURCE_WASM` closure with the complete producer receipt, including the

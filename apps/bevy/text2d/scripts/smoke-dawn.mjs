@@ -14,7 +14,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
+import { processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 
 const framesTarget = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
@@ -92,7 +92,7 @@ const {
 } = await import(resolve(here, '..', 'src', 'text2d.ts'));
 const m34RecoveryMode = process.argv.includes('--m34-recovery');
 const manifestPath = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const manifestUrl = `data:application/json,${encodeURIComponent(readShaderManifestText(manifestPath))}`;
+const manifestUrl = processShaderManifestUrl(manifestPath);
 
 const result = await createApp(mockCanvas, { platform: createSmokePlatform(mockCanvas) }, { shaderManifestUrl: manifestUrl }).catch((error) => {
   console.error(`[smoke] FAIL - createApp threw: ${error instanceof Error ? error.stack ?? error.message : String(error)}`);

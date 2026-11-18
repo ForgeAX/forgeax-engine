@@ -3,7 +3,12 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { autoSmokeConcurrency, runNodeSmoke, runSmokeStages } from '../bevy-demo.mjs';
+import {
+  autoSmokeConcurrency,
+  runNodeSmoke,
+  runSmokeStages,
+  verifyPreparedSmokeInputs,
+} from '../bevy-demo.mjs';
 
 const repoRoot = resolve(__dirname, '..', '..');
 const script = resolve(repoRoot, 'scripts/bevy-demo.mjs');
@@ -34,6 +39,25 @@ afterEach(() => {
 });
 
 describe('bevy-demo.mjs', () => {
+  it('rejects absent prepared input before admitting any native smoke', async () => {
+    const root = tempRoot();
+    const app = {
+      dir: root,
+      pkg: { name: 'test', forgeax: { smokeArtifacts: { packGuids: [] as string[] } } },
+    };
+    await expect(verifyPreparedSmokeInputs([app])).rejects.toThrow(
+      'bevy-demo-prepared-shader-missing',
+    );
+    mkdirSync(join(root, 'dist/shaders'), { recursive: true });
+    writeFileSync(join(root, 'dist/shaders/manifest.json'), '{}');
+    await expect(verifyPreparedSmokeInputs([app])).resolves.toBeUndefined();
+    app.pkg.forgeax = { smokeArtifacts: { packGuids: ['missing-guid'] } };
+    writeFileSync(join(root, 'dist/pack-index.json'), '[]');
+    await expect(verifyPreparedSmokeInputs([app])).rejects.toThrow(
+      'bevy-demo-prepared-pack-missing',
+    );
+  });
+
   it('drains depth-of-field frames while preserving the 60-frame pixel falsifier', () => {
     const source = readFileSync(
       join(repoRoot, 'apps/bevy/depth-of-field/scripts/smoke-dawn.mjs'),

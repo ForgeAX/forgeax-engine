@@ -14,12 +14,48 @@ import {
   Texture,
 } from 'three/src/Three.Core.js';
 import { afterEach, describe, expect, it } from 'vitest';
-import { cookPhysicalMaterials } from '../build/materials';
+import { cookPhysicalMaterials, physicalTextureRecipe } from '../build/materials';
 import { materialTextures, materialValues, projectMaterial, validateMaterial } from '../material';
 import { prepareMaterialPrograms } from '../material-programs';
 import { projectTexture } from '../texture';
 
 describe('Three material projection', () => {
+  it('projects r187 iridescence thickness fields and later direct edits', () => {
+    const material = new MeshPhysicalMaterial({ iridescence: 1 });
+    material.iridescenceThicknessMinimum = 125;
+    material.iridescenceThicknessMaximum = 375;
+    const projected = projectMaterial(material, {}).unwrap();
+    expect(projected.values?.iridescenceThicknessMinimum).toBe(125);
+    expect(projected.values?.iridescenceThicknessMaximum).toBe(375);
+    const before = materialValues(material);
+    material.iridescenceThicknessMinimum = 200;
+    expect(materialValues(material)).not.toEqual(before);
+    expect(projectMaterial(material, {}).unwrap().values?.iridescenceThicknessMinimum).toBe(200);
+  });
+  it('invalidates fog participation edits without requiring needsUpdate', () => {
+    const material = new MeshBasicMaterial();
+    const previous = materialValues(material);
+    material.fog = false;
+    expect(materialValues(material)).not.toEqual(previous);
+    expect(
+      projectMaterial(material, {})
+        .unwrap()
+        .passes?.find((pass) => pass.name === 'forward')?.renderState?.fog,
+    ).toBe(false);
+    material.fog = true;
+    expect(materialValues(material)).toEqual(previous);
+  });
+  it('discovers exact build recipes with the same normal-map priority as the player', () => {
+    const material = new MeshPhysicalMaterial();
+    material.normalMap = new Texture();
+    material.bumpMap = new Texture();
+    material.clearcoatMap = new Texture();
+    expect(physicalTextureRecipe(material)).toEqual(['clearcoatMap', 'normalMap']);
+    material.normalMap = null;
+    expect(physicalTextureRecipe(material)).toEqual(['bumpMap', 'clearcoatMap']);
+    material.bumpMap = material.clearcoatMap = null;
+    expect(physicalTextureRecipe(material)).toEqual([]);
+  });
   const owners: AssetRegistry[] = [];
   afterEach(() => {
     for (const assets of owners.splice(0)) assets.dispose();
@@ -45,6 +81,31 @@ describe('Three material projection', () => {
     expect(
       projectMaterial(source, { baseColorTexture: { texture: handle } }).unwrap().values,
     ).toMatchObject({ shading: 2, baseColorTexture: { texture: handle } });
+  });
+  it('admits Matcap alpha maps through the existing independent coverage slot', () => {
+    const source = new MeshMatcapMaterial({ alphaMap: new Texture(), opacity: 0.6 });
+    expect(validateMaterial(source).ok).toBe(true);
+    const alpha = textureHandle();
+    const matcap = textureHandle();
+    const projected = projectMaterial(source, {
+      baseColorTexture: { texture: matcap },
+      alphaTexture: { texture: alpha },
+    }).unwrap();
+    const baseline = projectMaterial(new MeshMatcapMaterial(), {
+      baseColorTexture: { texture: matcap },
+    }).unwrap();
+    expect(projected.parameters).toEqual(baseline.parameters);
+    expect(projected.passes?.map((pass) => pass.program)).toEqual(
+      baseline.passes?.map((pass) => pass.program),
+    );
+    expect(projected.values).toMatchObject({
+      shading: 2,
+      alphaChannel: 0,
+      alphaTexture: { texture: alpha },
+    });
+    expect(
+      projected.parameters?.filter((parameter) => parameter.type.startsWith('texture')),
+    ).toHaveLength(2);
   });
   it('admits Normal through the native display-encoded output mode', () => {
     const source = new MeshNormalMaterial();

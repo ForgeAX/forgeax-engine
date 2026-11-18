@@ -31,7 +31,7 @@ function valueType(symbol) {
   const location = symbol.valueDeclaration ?? symbol.declarations?.[0];
   return checker.getTypeOfSymbolAtLocation(symbol, location);
 }
-function acceptsCalls(candidate, source) {
+function acceptsCalls(candidate, source, construct = false) {
   // TypeScript intentionally permits bivariant method assignment. A method
   // accepting only Scene can therefore appear assignable to render(Object3D),
   // although an unchanged caller cannot pass Group. Check admitted arguments
@@ -39,7 +39,12 @@ function acceptsCalls(candidate, source) {
   const rest = signature => signature.parameters.at(-1)?.declarations?.some(
     declaration => ts.isParameter(declaration) && declaration.dotDotDotToken !== undefined,
   ) ?? false;
-  return source.getCallSignatures().every(expected => candidate.getCallSignatures().some(actual => {
+  const signatures = type => construct ? type.getConstructSignatures() : type.getCallSignatures();
+  return signatures(source).every(expected => signatures(candidate).some(actual => {
+    // Generic methods need caller-specific instantiation (e.g. Object3D events
+    // carrying polymorphic `this`). Ordinary assignability above checks those;
+    // comparing two unrelated signature type variables rejects valid callers.
+    if (expected.typeParameters?.length && actual.typeParameters?.length) return true;
     if (actual.minArgumentCount > expected.minArgumentCount) return false;
     if (rest(expected) && !rest(actual)) return false;
     return expected.parameters.every((parameter, index) => {
@@ -82,21 +87,27 @@ for (const [name, source] of expected) {
   }
   if (!checker.isTypeAssignableTo(projected, type) || missing.length || incompatible.length)
     mismatches.push({ name, reason: 'incompatible-type', missingMembers: missing, incompatibleMembers: incompatible });
-  if (isClass && !checker.isTypeAssignableTo(valueType(target), valueType(source)))
+  if (isClass && (!checker.isTypeAssignableTo(valueType(target), valueType(source)) ||
+    !acceptsCalls(valueType(target), valueType(source), true)))
     mismatches.push({ name, reason: 'incompatible-constructor-or-static-members' });
 }
 const upstream = await import('three/src/Three.WebGPU.js');
 const facade = await import('../dist/index.mjs');
+// A type-only class export cannot satisfy a runtime constructor import.
+for (const [name] of expected)
+  if (name in upstream && actual.has(name) && !(name in facade))
+    mismatches.push({ name, reason: 'missing-runtime-value' });
 const manifest = JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8'));
 const addonPaths = (await readdir(resolve(upstreamRoot, 'examples/jsm'), { recursive: true }))
   .filter(path => path.endsWith('.js')).map(path => `./addons/${path.replaceAll('\\', '/')}`).sort();
 const report = {
   revision: upstream.REVISION,
   scope: {
-    renderer: 'Three r184 WebGPURenderer / WebGPU',
+    renderer: `Three r${upstream.REVISION} WebGPURenderer / WebGPU`,
     excludedWebGL: Object.keys(upstream).filter(name => /^(WebGL|GLSLNodeBuilder)/.test(name)),
     deferredAddons: true,
-    removedUpstreamRendererMembers: ['waitForGPU'],
+    removedUpstreamRendererMembers: [...publicMembers(checker.getDeclaredTypeOfSymbol(expected.get('WebGPURenderer'))).keys()].filter(name => name === 'waitForGPU' && /has been removed/.test(String(upstream.WebGPURenderer.prototype[name]))),
+    upstreamDeclarationDrift: { init: 'r187 runtime resolves init() with the renderer on initial and repeated calls; the pinned declaration says Promise<void>. Preserve the runtime result and raw mismatch.', StructNode: 'r187 stores structTypeNode and accepts named values as well as arrays; the pinned declaration only admits arrays and omits the source layout reference.', FunctionOverloadingNode: 'r187 stores parametersNodes and function definitions; the pinned declaration calls the field parameterNodes and types definitions as Node arrays. Preserve actual CPU data and raw differences.', EventNode: 'r187 has nine event phases; @types EventNodeType admits only OBJECT and MATERIAL. Preserve actual phase values and raw differences.', MemberNode: 'r187 stores structNode, not the declared node field. Preserve the actual reference and raw differences.', SetNode: 'r187 uses string components; the prior array form is also readable by the implementation. Preserve both actual forms and their raw declaration differences.', NodeFrame: 'The facade adds the real updateAfterNode method; inherited historical bookkeeping declarations have not been exhaustively corrected.', RendererUtils: 'r187 combined state functions take renderer, scene and optional state; @types swaps the save renderer parameter for RendererState and omits the scene parameter on reset/restore. Keep actual calls and raw differences.', getMRT: 'r187 getMRT returns null for the default state; @types declares MRTNode only. The native facade retains null and rejects non-null MRT overrides.', NodeFunctionInput: 'r187 has type/name instance fields and a static isNodeFunctionInput flag; @types omits those fields and places the flag on instances. Preserve the raw differences.', StackTrace: 'r187 runtime calls split() on the input; the declared Error constructor overload fails. The facade admits string/null and includes the real formatting methods.', NodeLoaders: 'r187 instantiates registry constructors and NodeLoader loads one Node, while pinned declarations describe instances and NodeLoaderResult. The facade corrects registries, the load result and inherited fluent this types; raw differences remain visible.', ComputeNode: 'r187 stores mutable count/dispatchSize; setCount and getCount do not exist. The facade omits those declared-only methods.', StorageBufferNode: 'r187 has setAtomic, not setAtmoic, and no bufferObject field; the facade keeps original runtime identity and corrects storage element node references.', TSL: 'compute/computeKernel return the corrected ComputeNode; storage/storageElement preserve actual BufferAttribute inputs, fluent storage types and element references. Original function identities remain unchanged; four pinned declaration differences stay in the raw inventory.', NodeMaterialInstance: 'r187 copies own model data and getter-only node fields while retaining shader methods on nodeMaterial. The facade preserves original constructor/static identity and types copied data plus fluent results; Physical prototype accessors are not copied, and native Physical instances remain rejected.', Sprite: 'The original Sprite constructor accepts a supported Sprite NodeMaterialInstance; the facade adds this call overload without a runtime wrapper. Raw generic fluent-this differences remain visible; strict consumer calls qualify the source methods separately.', ShadowNode: 'r187 shadow constructors default their second argument and expose shadow/shadowMap/depthLayer CPU references. The facade retains original constructors and corrects these declarations without native shadow-node execution.', onError: 'r187 runtime passes { api, type, message, originalEvent }; @types/three declares string. Keep the raw signature mismatch.' },
     note: 'Keep the raw inventory complete. Excluded WebGL, deferred addons and removed upstream APIs do not establish native rendering work.',
   },
   runtimeExports: { expected: Object.keys(upstream).length, missing: Object.keys(upstream).filter(name => !(name in facade)) },

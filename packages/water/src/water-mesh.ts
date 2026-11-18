@@ -1113,7 +1113,7 @@ function prepareWaterMeshDomain(input: WaterMeshBuildInput, view: WaterMeshViewI
     );
   if (input.bodies.some((body) => invalidWaterMeshBody(body)))
     return fail(
-      'generation-bound body geometry, finite WaterMesh rings, waveOriginXZ and integer priority in the UE WaterBody range [-8192, 8191]',
+      'generation-bound body geometry, finite WaterMesh rings, waveOriginXZ and integer priority in the WaterBody range [-8192, 8191]',
       input.bodies,
     );
 

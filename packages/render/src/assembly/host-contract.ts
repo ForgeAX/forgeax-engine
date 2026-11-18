@@ -56,6 +56,7 @@ export interface RendererHostImplementation
     | 'prepareDynamicGeometryCandidates'
     | 'preparePublishedMeshResidency'
     | 'prepareMeshResidency'
+    | 'prepareTextureResidency'
     | 'acceptDynamicGeometry'
     | 'acceptDynamicGeometryCandidates'
     | 'isDynamicGeometryCurrent'

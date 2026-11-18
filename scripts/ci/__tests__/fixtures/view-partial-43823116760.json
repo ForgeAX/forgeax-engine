@@ -1,0 +1,17 @@
+{
+  "runId": 43823116760,
+  "head": "4108c3c9054bd725d4337dfaf2b7b43a2a095c5e",
+  "jobId": 133169913386,
+  "jobConclusion": "cancelled",
+  "completedOwnerSeconds": {
+    "game3d": 1445.811343923
+  },
+  "completedStepSeconds": {
+    "tools/forgeax-mcp/test/app-browser.mjs": 920.775282081,
+    "tools/view/scripts/verify-game3d-workspace.mjs": 525.036061842
+  },
+  "uncompletedOwners": ["diagnostic-texture"],
+  "prepareSeconds": 17.163885769,
+  "setupAndTransferReserveSeconds": 120,
+  "jobBudgetSeconds": 1800
+}

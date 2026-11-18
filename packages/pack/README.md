@@ -2,6 +2,10 @@
 
 ## Authoring diagnostics and discovery
 
+The Node atlas CLI matches files through `glob`, supports extglobs and follows
+directory symlinks. Directories are excluded from image decoding; no matching
+files returns the structured `atlas-empty-input` failure.
+
 ScriptablePack runtime imports resolve with Node's ESM conditions from the original
 author module, including `@forgeax/engine/geometry` and separate Engine domain packages.
 The relocated Worker imports the resulting canonical file URL. It never borrows

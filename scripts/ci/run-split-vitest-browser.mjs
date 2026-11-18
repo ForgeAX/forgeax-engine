@@ -8,6 +8,7 @@ import { readMemoryPressureDiagnostics } from '../lib/runner-resources.mjs';
 import { readBrowserCosts, summarizeBrowserCosts } from './browser-cost-report.mjs';
 import hostFiles from './browser-host-files.json' with { type: 'json' };
 import { browserProcessCacheDir } from './browser-process-cache.mjs';
+import { coreValidationFiles } from './core-validation.mjs';
 import { runBrowserCommand } from './run-browser-gate-with-retry.mjs';
 
 const browserHostFiles = new Set(hostFiles);
@@ -125,6 +126,14 @@ const pixelParityCaptureBrowserFile =
 const dynamicGeometryBrowserFile =
   'packages/runtime/src/__tests__/wave1-dynamic-geometry.browser.test.ts';
 const exclusiveRunnerBrowserFiles = new Set([
+  // Run 43810781689 crossed cold SSR preparation beside another heavy
+  // Renderer owner. The same four cases pass in their existing process alone.
+  'packages/runtime/src/__tests__/morph-surface.browser.test.ts',
+  // Run 43802933357 crossed the kernel's original 15 s case bound beside
+  // another GPU group; deliberate WebGL loss also races device settlement.
+  // Drain neighbors for their existing mixed batches, without a new process.
+  'packages/render/src/__tests__/portable-kernel-expansion.browser.test.ts',
+  'packages/runtime/src/__tests__/webgl-context-loss.browser.test.ts',
   // Run42247651279 exceeded its 60 s case after two volumetric-fog owners.
   // Preserve the complete geometry, physics, shadow and TAA journey alone.
   dynamicGeometryBrowserFile,
@@ -383,6 +392,22 @@ const measuredBrowserSeconds = JSON.parse(
   readFileSync(path.join(scriptDir, 'browser-file-seconds.json'), 'utf8'),
 );
 const measuredBrowserFileSeconds = new Map(Object.entries(measuredBrowserSeconds.files));
+// Dispatch complete matching children without summing unrelated per-file maxima.
+// Group construction and full-profile forecasts retain the original file table.
+const measuredCoreBrowserGroups = new Map();
+for (const run of measuredBrowserSeconds.coreProfile.sourceRuns) {
+  const receipt = JSON.parse(
+    readFileSync(path.join(scriptDir, 'browser-timing-snapshots', `${run}.json`), 'utf8'),
+  );
+  for (const group of receipt.groups) {
+    const key = group.files.join('\n');
+    measuredCoreBrowserGroups.set(
+      key,
+      Math.max(measuredCoreBrowserGroups.get(key) ?? 0, group.processSeconds),
+    );
+  }
+}
+
 const renderWorkerBrowserFile =
   /^packages\/app\/__tests__\/(?:render-worker[a-z-]*|worker-policy|engine-worker-asset-loss)\.browser\.test\.ts$/;
 function estimatedShadowQualitySeconds(file) {
@@ -395,12 +420,8 @@ function estimatedShadowQualitySeconds(file) {
   if (file === 'packages/runtime/src/__tests__/curved-shadow-receiver.browser.test.ts') return 180;
 }
 
-function estimatedBrowserFileSeconds(file) {
-  const shadowQualitySeconds = estimatedShadowQualitySeconds(file);
-  if (shadowQualitySeconds !== undefined) return shadowQualitySeconds;
-  // Full native/reference/replay journeys. These are scheduling estimates;
-  // unknown-file weights grouped them into a 300 s timeout in run 39384469626.
-  if (file === compatibilitySceneBrowserFile) return 90;
+function estimatedThreeBrowserFileSeconds(file) {
+  if (!file.startsWith('packages/three/src/__tests__/')) return undefined;
   if (file === 'packages/three/src/__tests__/output.browser.test.ts') return 100;
   if (file === 'packages/three/src/__tests__/render.browser.test.ts') return 90;
   // r184 comparisons include authored/filter mutations and retained-map replay.
@@ -413,6 +434,19 @@ function estimatedBrowserFileSeconds(file) {
   if (file === 'packages/three/src/__tests__/loading.browser.test.ts') return 60;
   if (file === 'packages/three/src/__tests__/environment.browser.test.ts') return 90;
   if (file === 'packages/three/src/__tests__/transmission-output.browser.test.ts') return 90;
+  // Run 43745792265 overflowed an eight-file native/reference/replay child.
+  // Forecast unmeasured Three owners conservatively; preserve measured receipts.
+  return 60;
+}
+
+function estimatedBrowserFileSeconds(file) {
+  const shadowQualitySeconds = estimatedShadowQualitySeconds(file);
+  if (shadowQualitySeconds !== undefined) return shadowQualitySeconds;
+  // Full native/reference/replay journeys. These are scheduling estimates;
+  // unknown-file weights grouped them into a 300 s timeout in run 39384469626.
+  if (file === compatibilitySceneBrowserFile) return 90;
+  const threeSeconds = estimatedThreeBrowserFileSeconds(file);
+  if (threeSeconds !== undefined) return threeSeconds;
   if (lightingChannelReplayFiles.has(file)) return 240;
   if (lightingChannelBrowserFiles.has(file)) return 100;
   if (file === 'packages/runtime/src/__tests__/volumetric-fog-world-time.browser.test.ts')
@@ -427,11 +461,27 @@ export function browserFileWeight(file) {
   return measuredBrowserFileSeconds.get(file) ?? estimatedBrowserFileSeconds(file);
 }
 
-export function browserGroupWeight(group) {
-  return group.reduce((seconds, file) => seconds + browserFileWeight(file), 0);
+export function browserGroupWeight(
+  group,
+  fileWeight = browserFileWeight,
+  environment = process.env,
+) {
+  const measured =
+    environment.FORGEAX_CI_CORE_VALIDATION === '1' &&
+    environment.FORGEAX_BROWSER_CI_LIGHTWEIGHT === '1' &&
+    environment.FORGEAX_BROWSER_FIXED_SMOKE === '1' &&
+    fileWeight === browserFileWeight
+      ? measuredCoreBrowserGroups.get(group.join('\n'))
+      : undefined;
+  return measured ?? group.reduce((seconds, file) => seconds + fileWeight(file), 0);
 }
 
-export function browserGroupRunOrder(groups, selectedIndexes, concurrency) {
+export function browserGroupRunOrder(
+  groups,
+  selectedIndexes,
+  concurrency,
+  { fileWeight = browserFileWeight } = {},
+) {
   if (concurrency <= 1) return undefined;
   return selectedIndexes
     .map((_index, position) => position)
@@ -439,25 +489,22 @@ export function browserGroupRunOrder(groups, selectedIndexes, concurrency) {
       (left, right) =>
         Number(browserGroupRequiresExclusiveRunner(groups[selectedIndexes[right]])) -
           Number(browserGroupRequiresExclusiveRunner(groups[selectedIndexes[left]])) ||
-        browserGroupWeight(groups[selectedIndexes[right]]) -
-          browserGroupWeight(groups[selectedIndexes[left]]) ||
+        browserGroupWeight(groups[selectedIndexes[right]], fileWeight) -
+          browserGroupWeight(groups[selectedIndexes[left]], fileWeight) ||
         left - right,
     );
 }
 
-// Preserve the unobserved smoke tail's historical forecast. Run 41725978104
-// completed the Runtime Pack Worker and mesh tails in 347 s and 221 s;
-// reserve their rounded-up costs. Interrupted children never lower a forecast.
-// Shard zero retains the completed MSAA, FXAA and reconnect reservation (210 s).
-// Shard 1 owns CSM after Runtime Pack Worker: 350 + 180 s. The uncompleted
-// CSM tail retains its placement estimate, not a timing sample or new deadline.
-export const ciBrowserShardTailSeconds = Object.freeze([210, 530, 225, 0]);
+// Shards zero/one retain MSAA/reconnect and the complete CSM reservation.
+// Runtime Pack Worker shares the existing prepared View shard zero instead.
+// Its required result remains part of the Browser aggregate.
+export const ciBrowserShardTailSeconds = Object.freeze([210, 180, 0, 0]);
 
 export function assignBrowserGroupsToShards(
   groups,
   shardCount,
   strategy = defaultShardStrategy,
-  { tailSeconds = [], concurrency = 1 } = {},
+  { tailSeconds = [], concurrency = 1, fileWeight = browserFileWeight } = {},
 ) {
   if (strategy === 'round-robin') {
     return groups.map((_group, groupIndex) => groupIndex % shardCount);
@@ -470,7 +517,8 @@ export function assignBrowserGroupsToShards(
     .map((group, index) => ({
       index,
       weight:
-        browserGroupWeight(group) * (browserGroupRequiresExclusiveRunner(group) ? concurrency : 1),
+        browserGroupWeight(group, fileWeight) *
+        (browserGroupRequiresExclusiveRunner(group) ? concurrency : 1),
     }))
     .sort((left, right) => right.weight - left.weight || left.index - right.index);
   for (const { index, weight } of ranked) {
@@ -519,12 +567,12 @@ export function browserTestFiles(directory = rootDir, relativeDirectory = '') {
   return files;
 }
 
-function chunk(values, size) {
+function chunk(values, size, fileWeight) {
   const groups = [];
   let group = [];
   let seconds = 0;
   for (const file of values) {
-    const cost = browserFileWeight(file);
+    const cost = fileWeight(file);
     // File count alone can fill a five-minute process with several heavy
     // owners. Use the existing measurements and leave room for host variance.
     if (group.length && (group.length >= size || seconds + cost > browserGroupTimeoutMs / 2000)) {
@@ -539,7 +587,7 @@ function chunk(values, size) {
   return groups;
 }
 
-function planGroups(files, groupSize) {
+export function planBrowserGroups(files, groupSize, { fileWeight = browserFileWeight } = {}) {
   const host = files.filter((file) => browserHostFiles.has(file));
   files = files.filter((file) => !browserHostFiles.has(file));
   const preview = files.filter((file) => file.startsWith('apps/preview/'));
@@ -569,18 +617,20 @@ function planGroups(files, groupSize) {
     ...chunk(
       host.filter((file) => !browserProcessIsolatedFiles.has(file) && isRenderingBrowserFile(file)),
       Math.min(groupSize, renderingGroupSize),
+      fileWeight,
     ),
     ...chunk(
       host.filter(
         (file) => !browserProcessIsolatedFiles.has(file) && !isRenderingBrowserFile(file),
       ),
       groupSize,
+      fileWeight,
     ),
     ...(preview.length > 0 ? [preview] : []),
     ...isolatedGroups,
-    ...chunk(colorLightingCases, colorLightingCaseGroupSize),
-    ...chunk(rendering, Math.min(groupSize, renderingGroupSize)),
-    ...chunk(ordinaryRegular, groupSize),
+    ...chunk(colorLightingCases, colorLightingCaseGroupSize, fileWeight),
+    ...chunk(rendering, Math.min(groupSize, renderingGroupSize), fileWeight),
+    ...chunk(ordinaryRegular, groupSize, fileWeight),
   ];
 }
 
@@ -738,7 +788,12 @@ async function main() {
     files = [...new Set(options.files)];
     console.log('[vitest] DIAGNOSTIC selection; full browser CI is still required');
   }
-  const groups = planGroups(files, options.groupSize);
+  if (!options.files.length) {
+    const completeCount = files.length;
+    files = coreValidationFiles(files);
+    console.error(`[core-validation] Browser retained=${files.length}/${completeCount}`);
+  }
+  const groups = planBrowserGroups(files, options.groupSize);
   if (groups.length === 0) throw new Error('no browser test files were discovered');
   const shardAssignment = assignBrowserGroupsToShards(
     groups,

@@ -13,9 +13,11 @@ import {
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { decodeCatalogWire } from '@forgeax/engine-pack';
 import { decodeMaterialProgramWire } from '@forgeax/engine-pack/runtime';
+import { appPackages } from '../build-task-cache.mjs';
 import { readShaderManifestText } from '../lib/shader-manifest.mjs';
 import { appShardRoster } from './app-build-roster.mjs';
 import { projectAppShaderManifest, readSharedShaderManifest } from './app-shader-manifest.mjs';
+import coreDeferredBuilds from './core-app-build-deferred.json' with { type: 'json' };
 import { readRoster, resolveRunnableEntries } from './run-dawn-smoke-roster.mjs';
 
 function parseArgs(argv) {
@@ -76,7 +78,12 @@ function isWithin(rootPath, candidatePath) {
   return child !== '' && !child.startsWith('..') && !isAbsolute(child);
 }
 
-function safeArtifactPath(_root, distDir, rawPath, { code, app, guid }) {
+function safeArtifactPath(
+  _root,
+  distDir,
+  rawPath,
+  { code, app, guid, unsafeCode = 'ci-app-shard-pack-unsafe-path' },
+) {
   if (typeof rawPath !== 'string' || rawPath.trim() === '' || rawPath.includes('\\'))
     failArtifact(code, { app, guid, path: rawPath });
   const normalized = rawPath.replace(/^\/+/, '');
@@ -88,7 +95,7 @@ function safeArtifactPath(_root, distDir, rawPath, { code, app, guid }) {
     !existsSync(candidate) ||
     !isWithin(distReal, realpathSync(candidate))
   )
-    failArtifact('ci-app-shard-pack-unsafe-path', { app, guid, path: rawPath });
+    failArtifact(unsafeCode, { app, guid, path: rawPath });
   return candidate;
 }
 
@@ -162,28 +169,90 @@ function packClosureInventory(root, app, packGuids) {
   return [...paths].sort();
 }
 
-function rosterPackRequirements(root) {
+function rosterArtifactRequirements(root) {
   const rosterPath = join(root, 'scripts', 'ci', 'dawn-smoke-roster.json');
-  if (!existsSync(rosterPath)) return new Map();
-  const roster = readRoster(rosterPath);
-  const resolved = resolveRunnableEntries({ repoRoot: root, roster });
   const requirements = new Map();
+  const previews = new Set();
+  for (const app of appPackages(root)) {
+    const preview = app.manifest.forgeax?.smokeArtifacts?.preview;
+    if (preview !== undefined && preview !== true)
+      failArtifact('ci-app-shard-preview-requirements-invalid', { app: app.relativeDirectory });
+    if (preview === true)
+      previews.add(relative(join(root, 'apps'), app.directory).replaceAll(sep, '/'));
+    const guids = app.manifest.forgeax?.smokeArtifacts?.packGuids;
+    if (guids === undefined) continue;
+    if (
+      !Array.isArray(guids) ||
+      guids.length === 0 ||
+      guids.some((guid) => typeof guid !== 'string')
+    )
+      failArtifact('ci-app-shard-pack-requirements-invalid', { app: app.relativeDirectory });
+    requirements.set(relative(join(root, 'apps'), app.directory).replaceAll(sep, '/'), guids);
+  }
+  if (!existsSync(rosterPath)) return { packs: requirements, previews };
+  const resolved = resolveRunnableEntries({ repoRoot: root, roster: readRoster(rosterPath) });
   for (const entry of resolved.declared) {
     const app = entry.path.match(/^apps\/(.+)\/package\.json$/)?.[1];
     if (app === undefined) continue;
     const guids = entry.gates.flatMap((gate) => gate.artifactRequirements?.packGuids ?? []);
-    if (guids.length > 0) requirements.set(app, [...new Set(guids)].sort());
+    if (guids.length > 0)
+      requirements.set(app, [...new Set([...(requirements.get(app) ?? []), ...guids])].sort());
   }
-  return requirements;
+  return { packs: requirements, previews };
+}
+
+function previewArtifactInventory(root, app) {
+  const dist = join(root, 'apps', app, 'dist');
+  const paths = new Set(['index.html', '.vite/manifest.json']);
+  const checked = (path) =>
+    safeArtifactPath(root, dist, path, {
+      code: 'ci-app-shard-preview-output-missing',
+      unsafeCode: 'ci-app-shard-preview-unsafe-path',
+      app,
+    });
+  let manifest;
+  try {
+    manifest = JSON.parse(readFileSync(checked('.vite/manifest.json'), 'utf8'));
+    if (manifest === null || Array.isArray(manifest) || typeof manifest !== 'object')
+      throw new Error('Vite manifest must contain output records');
+    if (Object.keys(manifest).length === 0) throw new Error('Vite manifest is empty');
+    for (const entry of Object.values(manifest)) {
+      if (entry === null || typeof entry !== 'object' || typeof entry.file !== 'string')
+        throw new Error('Vite output record must name its file');
+      paths.add(entry.file);
+      for (const field of ['css', 'assets']) {
+        if (entry[field] === undefined) continue;
+        if (!Array.isArray(entry[field]) || entry[field].some((path) => typeof path !== 'string'))
+          throw new Error(`Vite ${field} must name output files`);
+        for (const path of entry[field]) paths.add(path);
+      }
+      for (const field of ['imports', 'dynamicImports']) {
+        if (entry[field] === undefined) continue;
+        if (
+          !Array.isArray(entry[field]) ||
+          entry[field].some((key) => !Object.hasOwn(manifest, key))
+        )
+          throw new Error(`Vite ${field} must reference published records`);
+      }
+    }
+  } catch (error) {
+    failArtifact('ci-app-shard-preview-manifest-invalid', { app, message: error.message });
+  }
+  return [...paths].sort().map((path) => {
+    const file = checked(path);
+    return `apps/${app}/dist/${relative(dist, file).replaceAll(sep, '/')}`;
+  });
 }
 
 function artifactInventory(root, apps) {
-  const requirements = rosterPackRequirements(root);
+  const requirements = rosterArtifactRequirements(root);
   return apps.flatMap((app) => {
     const manifest = `apps/${app}/dist/shaders/manifest.json`;
     const paths = existsSync(join(root, manifest)) ? [manifest] : [];
-    const packGuids = requirements.get(app) ?? [];
-    return packGuids.length > 0 ? [...paths, ...packClosureInventory(root, app, packGuids)] : paths;
+    const packGuids = requirements.packs.get(app) ?? [];
+    if (packGuids.length > 0) paths.push(...packClosureInventory(root, app, packGuids));
+    if (requirements.previews.has(app)) paths.push(...previewArtifactInventory(root, app));
+    return [...new Set(paths)];
   });
 }
 
@@ -321,8 +390,10 @@ const apps = roster.filter(
 );
 // CLI exclusions describe the global roster. Derive their local ownership so
 // additions to the sorted roster cannot strand an exclusion on an old shard.
-const requestedOmissions = [...new Set(options.omitTransferApps)];
-const requestedSkips = [...new Set(options.skipBuildApps)];
+const core = process.env.FORGEAX_CI_CORE_VALIDATION === '1';
+const deferred = core ? coreDeferredBuilds.filter((app) => roster.includes(app)) : [];
+const requestedOmissions = [...new Set([...options.omitTransferApps, ...deferred])];
+const requestedSkips = [...new Set([...options.skipBuildApps, ...deferred])];
 const unknownOmittedTransferApp = requestedOmissions.find((app) => !roster.includes(app));
 if (unknownOmittedTransferApp !== undefined) {
   fail('ci-app-shard-transfer-app-not-in-shard', {
@@ -358,6 +429,7 @@ const shardSizes = Array.from(
   (_, shardIndex) => roster.filter((_, index) => index % options.shardCount === shardIndex).length,
 );
 const report = {
+  profile: core ? 'core' : 'full',
   shardIndex: options.shardIndex,
   shardCount: options.shardCount,
   attempt,
@@ -379,6 +451,15 @@ const sharedShaderManifest =
 
 if (!options.dryRun && buildApps.length > 0) {
   const runner = join(root, 'scripts', 'build-apps.mjs');
+  const summaryPath =
+    options.outputDir === null
+      ? null
+      : join(
+          resolve(options.outputDir),
+          'report',
+          `app-build-${options.shardIndex}-a${attempt}.json`,
+        );
+  if (summaryPath !== null) mkdirSync(dirname(summaryPath), { recursive: true });
   const result = spawnSync(
     process.execPath,
     [
@@ -387,12 +468,17 @@ if (!options.dryRun && buildApps.length > 0) {
         ? []
         : ['--shared-input-manifest', resolve(root, options.sharedInputManifest)]),
       '--app-shard-shader-delta',
+      ...(core ? ['--consumer-inputs'] : []),
       ...buildApps,
     ],
     {
       cwd: root,
       stdio: 'inherit',
       shell: false,
+      env: {
+        ...process.env,
+        ...(summaryPath === null ? {} : { FORGEAX_BUILD_SUMMARY_PATH: summaryPath }),
+      },
     },
   );
   if (result.status !== 0) process.exit(result.status ?? 1);
@@ -400,6 +486,6 @@ if (!options.dryRun && buildApps.length > 0) {
 report.artifactInventory = artifactInventory(root, transferApps);
 if (options.outputDir) writeReport(root, options.outputDir, report, sharedShaderManifest);
 if (options.retainArtifactOnly && !options.dryRun) {
-  retainArtifactOnly(root, resolve(options.outputDir), transferApps);
+  retainArtifactOnly(root, resolve(options.outputDir), apps);
 }
 process.stdout.write(`${JSON.stringify(report)}\n`);

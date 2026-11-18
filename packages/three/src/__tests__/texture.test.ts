@@ -1,6 +1,10 @@
+import Storage3DTexture from 'three/src/renderers/common/Storage3DTexture.js';
+import StorageArrayTexture from 'three/src/renderers/common/StorageArrayTexture.js';
+import StorageTexture from 'three/src/renderers/common/StorageTexture.js';
 import {
   CompressedTexture,
   DataTexture,
+  FramebufferTexture,
   HalfFloatType,
   LinearFilter,
   LinearMipmapLinearFilter,
@@ -23,7 +27,7 @@ import {
   validateTexture,
 } from '../texture';
 
-it('preserves r184 UV matrices through native TRS without modifying image or version', () => {
+it('preserves r187 UV matrices through native TRS without modifying image or version', () => {
   const texture = new DataTexture(new Uint8Array([20, 40, 80, 255]), 1, 1);
   const image = texture.image;
   for (const [sx, sy, angle] of [
@@ -201,4 +205,35 @@ it('retains compressed storage and allocates a complete zero block while pending
   texture.image = { width: 8, height: 4 };
   texture.needsUpdate = true;
   expect(projectTextureUpload(texture, undefined).unwrap().data).toEqual(new Uint8Array(32));
+});
+
+it('rejects framebuffer GPU contents before the ordinary pending-image path', () => {
+  const texture = new FramebufferTexture(8, 8);
+  for (const version of [false, true]) {
+    if (version) texture.needsUpdate = true;
+    const validation = validateTexture(texture);
+    expect(validation.ok).toBe(false);
+    expect(() => validation.unwrap()).toThrow('Texture shape/source kind');
+    expect(() => projectTextureUpload(texture, undefined).unwrap()).toThrow(
+      'Texture shape/source kind',
+    );
+  }
+  texture.dispose();
+});
+
+it.each([
+  StorageTexture,
+  StorageArrayTexture,
+  Storage3DTexture,
+])('rejects %s GPU storage before pending-image allocation', (Type) => {
+  const texture = new Type(8, 8);
+  for (const ready of [false, true]) {
+    texture.source.dataReady = ready;
+    texture.needsUpdate = true;
+    expect(() => validateTexture(texture).unwrap()).toThrow('Texture shape/source kind');
+    expect(() => projectTextureUpload(texture, undefined).unwrap()).toThrow(
+      'Texture shape/source kind',
+    );
+  }
+  texture.dispose();
 });

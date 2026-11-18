@@ -6,5 +6,8 @@ it(
   {
     timeout: 240000,
   },
-  () => verifyAuthoredShadow('spot'),
+  () =>
+    verifyAuthoredShadow('spot', {
+      coreValidation: import.meta.env.FORGEAX_CI_CORE_VALIDATION === '1',
+    }),
 );

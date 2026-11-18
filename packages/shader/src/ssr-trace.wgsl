@@ -375,7 +375,7 @@ fn traceScreenRay(
     (originBoundaryUv - startUv) / select(vec2<f32>(1.0), deltaUv, moving), moving);
   var t = clamp(min(originExits.x, originExits.y) + crossEpsilon, 0.0, endFraction);
   var level = 0u;
-  let iterationBudget = select(SSR_TRACE_MAX_HIZ_ITERATIONS, SSR_TRACE_MAX_LINEAR_ITERATIONS,
+  let iterationBudget = select(u32(select(f32(SSR_TRACE_MAX_HIZ_ITERATIONS), view.ssrQuality.y, view.ssrQuality.y > 0.0)), u32(select(f32(SSR_TRACE_MAX_LINEAR_ITERATIONS), view.ssrQuality.z, view.ssrQuality.z > 0.0)),
     maxTraceLevel == 0u);
   // Keep the full traversal counter across candidate yields. The tangent-plane
   // validation stays outside the coarse march so native software compilers do
@@ -482,7 +482,7 @@ fn traceScreenRay(
   }
   if (!found) { return result; }
   // Depth crossing refinement is intentionally outside the march loop.
-  for (var refine = 0u; refine < SSR_TRACE_MAX_REFINE_STEPS; refine++) {
+  for (var refine = 0u; refine < u32(select(f32(SSR_TRACE_MAX_REFINE_STEPS), view.ssrQuality.w, view.ssrQuality.w > 0.0)); refine++) {
     let middle = (lower + upper) * 0.5;
     let uv = startUv + deltaUv * middle;
     let pixel = min(vec2<u32>(clamp(uv, vec2<f32>(0.0), vec2<f32>(1.0)) *
@@ -860,12 +860,13 @@ fn ssrLuminanceWeight(rgb : vec3<f32>) -> vec3<f32> {
 fn evaluateSsrTrace(globalId : vec3<u32>) -> SsrTraceOutput {
   var output = SsrTraceOutput(vec4<f32>(0.0), 0.0);
   let fullSize = textureDimensions(sceneColor, 0);
-  let traceSize = fullSize;
+  let traceScale = select(1.0, view.ssrQuality.x, view.ssrQuality.x > 0.0);
+  let traceSize = max(vec2<u32>(vec2<f32>(fullSize) * traceScale), vec2<u32>(1u));
   if (globalId.x >= traceSize.x || globalId.y >= traceSize.y) {
     return output;
   }
   output.reactivity = 0.0;
-  let fullPixel = globalId.xy;
+  let fullPixel = min(vec2<u32>((vec2<f32>(globalId.xy) + vec2<f32>(0.5)) * vec2<f32>(fullSize) / vec2<f32>(traceSize)), fullSize - vec2<u32>(1u));
   let coarsestLevel = ssrDepthPyramidLevelCount() - 1u;
   let maxTraceLevel = min(maxSsrTraceLevel(fullSize), coarsestLevel + 1u);
   let coarsestSize = depthPyramidLevelSize(depthPyramid, coarsestLevel);
@@ -967,7 +968,7 @@ fn evaluateSsrTrace(globalId : vec3<u32>) -> SsrTraceOutput {
 #else
 @compute @workgroup_size(8, 8, 1)
 fn ssr_trace(@builtin(global_invocation_id) globalId : vec3<u32>) {
-  if (any(globalId.xy >= textureDimensions(sceneColor, 0))) { return; }
+  if (any(globalId.xy >= textureDimensions(traceOutput))) { return; }
   let output = evaluateSsrTrace(globalId);
   textureStore(traceOutput, vec2<i32>(globalId.xy), output.color);
   textureStore(hitReactivityOutput, vec2<i32>(globalId.xy), vec4<f32>(output.reactivity));

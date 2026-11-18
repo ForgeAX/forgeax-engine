@@ -21,6 +21,7 @@ import {
 } from '../../lib/shared-build-cache.mjs';
 import { coreBaseShaderDirectory } from '../restore-core-shader-inputs.mjs';
 import { sdkShaderArtifacts } from '../sdk-shader-artifacts.mjs';
+import { nativeBundle } from './fixtures/native-compiler.mjs';
 
 test('SDK source export contracts run after their declared dependencies are installed', () => {
   const workflow = parse(readFileSync('.github/workflows/sdk-pr-preflight.yml', 'utf8'));
@@ -46,6 +47,14 @@ test('SDK seed waits for same-head core and point publications outside its origi
   assert.equal(w.jobs.consumers.strategy.matrix.include.length, 2);
   const restore = s.steps.find((x) => x.name === 'Restore admitted SDK shader inputs');
   assert.ok(restore);
+  assert.equal(
+    s.steps.some((step) => step.id === 'wgpu-release'),
+    false,
+  );
+  assert.ok(
+    s.steps.indexOf(restore) <
+      s.steps.findIndex((step) => step.name === 'Verify wgpu-wasm artifact and provenance'),
+  );
   assert.ok(
     s.steps.indexOf(restore) <
       s.steps.findIndex((x) => x.name === 'Build exact PR SDK and npm tarballs once'),
@@ -175,6 +184,96 @@ function producerFixture() {
     api,
   };
 }
+
+test('base and point share one capacity-qualified heavy execution owner', () => {
+  const workflow = parse(readFileSync('.github/workflows/ci.yml', 'utf8'));
+  const core = workflow.jobs['core-build'];
+  const projection = workflow.jobs['shared-app-inputs'];
+  assert.match(core['runs-on'], /heavy/);
+  assert.match(projection['runs-on'], /standard/);
+  assert.equal(projection.needs, 'core-build');
+  assert.ok(
+    core.steps.some((step) => step.run?.includes('verify-runner-pool-capacity.mjs --pool heavy')),
+  );
+  assert.ok(core.steps.some((step) => step.id === 'build-shared-inputs'));
+  assert.ok(core.steps.some((step) => step.id === 'point-shader-inputs'));
+  for (const name of [
+    'Fingerprint point shader inputs',
+    'Verify point shaders or compile from source',
+  ]) {
+    const step = core.steps.find((candidate) => candidate.name === name);
+    assert.equal(typeof step.run, 'string');
+    assert.equal(step.env.SHADER_POINT_SHADOWS, 'true');
+    assert.equal(step.env.SHADER_OUTPUT, 'shared-build-inputs');
+  }
+  assert.ok(core.steps.some((step) => step.id === 'shader-inputs'));
+  assert.ok(
+    !projection.steps.some((step) => step.uses || /node|pnpm|checkout/.test(step.run ?? '')),
+  );
+  assert.equal(
+    projection.outputs.shared_artifact_id,
+    `\${{ needs.core-build.outputs.shared_artifact_id }}`,
+  );
+  assert.equal(core.steps.find((step) => step.id === 'upload-shared-inputs').with.required, 'true');
+});
+
+test('SDK attributes projected point bytes to the real combined Core execution', async () => {
+  const f = producerFixture();
+  f.jobs[0].steps = [{ name: 'Upload app-shard shared input projection', conclusion: 'success' }];
+  f.jobs[1].steps = [{ name: 'Project shared inputs from ci-core', conclusion: 'success' }];
+  const result = await sdkShaderArtifacts(f.input, f.api);
+  assert.equal(result.core.sourceJobId, 22);
+  assert.equal(result.point.sourceJobId, 22);
+  assert.equal(result.point.artifactName, 'shared-app-inputs-a1');
+});
+
+test('SDK rejects a combined projection without successful execution and upload', async () => {
+  for (const change of [
+    (f) => {
+      f.jobs[1].steps[0].conclusion = 'failure';
+    },
+    (f) => {
+      f.jobs[0].steps = [];
+    },
+    (f) => {
+      f.jobs[0].steps[0].conclusion = 'failure';
+    },
+    (f) => {
+      f.jobs[0].conclusion = 'failure';
+    },
+    (f) => {
+      f.artifacts[1].workflow_run.head_sha = 'c'.repeat(40);
+    },
+  ]) {
+    const f = producerFixture();
+    f.jobs[0].steps = [{ name: 'Upload app-shard shared input projection', conclusion: 'success' }];
+    f.jobs[1].steps = [{ name: 'Project shared inputs from ci-core', conclusion: 'success' }];
+    change(f);
+    await assert.rejects(sdkShaderArtifacts(f.input, f.api, { waitMs: 0 }));
+  }
+});
+
+test('combined publications preserve their original Core execution across a consumer retry', async () => {
+  const f = producerFixture();
+  f.run.run_attempt = 2;
+  const original = {
+    ...f.jobs[0],
+    run_attempt: 1,
+    started_at: '2026-01-01T00:00:00Z',
+    completed_at: '2026-01-01T00:01:00Z',
+    steps: [{ name: 'Upload app-shard shared input projection', conclusion: 'success' }],
+  };
+  Object.assign(f.jobs[0], original, { id: 44, run_attempt: 2 });
+  f.jobs[1].steps = [{ name: 'Project shared inputs from ci-core', conclusion: 'success' }];
+  const api = (endpoint) =>
+    endpoint.includes('/jobs?filter=all&')
+      ? { total_count: 3, jobs: [original, ...f.jobs] }
+      : f.api(endpoint);
+  const result = await sdkShaderArtifacts(f.input, api);
+  assert.equal(result.core.sourceJobId, 22);
+  assert.equal(result.point.sourceJobId, 22);
+  assert.equal(result.point.artifactName, 'shared-app-inputs-a1');
+});
 
 test('SDK selects successful base and point from one Main run before other jobs terminate', async () => {
   const f = producerFixture(),
@@ -453,7 +552,7 @@ test('SDK retains base receipt across clean and Engine validates both profiles a
   assert.match(sdk, /shared-app-inputs/);
 });
 
-test('the download entry keeps original artifact paths outside the SDK clean and forwards exact source identity', () => {
+test('the download entry pairs exact Core native bytes and keeps shader paths outside SDK clean', async () => {
   const f = payloadFixture();
   try {
     f.write(
@@ -465,7 +564,12 @@ test('the download entry keeps original artifact paths outside the SDK clean and
       if (process.env.FORGEAX_ARTIFACT_EXPECTED_SHA !== cp.execFileSync('git', ['rev-parse', 'HEAD'], {encoding:'utf8'}).trim()) throw Error('wrong source');
       const id = process.argv[process.argv.indexOf('--artifact-ids') + 1];
       const dest = process.argv[process.argv.indexOf('--path') + 1];
-      if (id === '33') fs.writeFileSync(path.join(dest, 'original-base'), 'base');
+      if (id === '33') {
+        fs.writeFileSync(path.join(dest, 'original-base'), 'base');
+        fs.mkdirSync(path.join(dest, 'packages/wgpu-wasm'), { recursive: true });
+        fs.cpSync(${JSON.stringify(join(f.directory, 'native'))}, path.join(dest, 'packages/wgpu-wasm/pkg'), { recursive: true });
+        fs.writeFileSync(path.join(dest, 'engine-prerequisite-build-manifest.json'), JSON.stringify({ engineSha: process.env.FORGEAX_ARTIFACT_EXPECTED_SHA }));
+      }
       else if (id === '34') fs.writeFileSync(path.join(dest, 'shared-app-inputs.tar.gz'), 'point');
       else throw Error('wrong artifact');
     `,
@@ -482,6 +586,7 @@ test('the download entry keeps original artifact paths outside the SDK clean and
       fs.mkdirSync(path.join(root, dest));
     `,
     );
+    await nativeBundle(f, join(f.directory, 'native'), 'Core');
     const envPath = join(f.directory, 'github-env');
     const script = new URL('../download-sdk-shader-inputs.mjs', import.meta.url);
     execFileSync(
@@ -496,6 +601,14 @@ test('the download entry keeps original artifact paths outside the SDK clean and
     assert.ok(staging.startsWith(f.directory));
     assert.equal(readFileSync(join(staging, 'core/original-base'), 'utf8'), 'base');
     assert.ok(existsSync(join(staging, 'point/shared-app-inputs')));
+    assert.equal(
+      readFileSync(join(f.root, 'packages/wgpu-wasm/pkg/wgpu_wasm.js'), 'utf8'),
+      'Core glue',
+    );
+    assert.equal(
+      readFileSync(join(f.root, 'packages/wgpu-wasm/dist/wgpu_wasm_glue.bytes'), 'utf8'),
+      'Core glue',
+    );
     assert.equal(existsSync(join(f.root, 'shared-app-inputs')), false);
   } finally {
     rmSync(f.directory, { recursive: true, force: true });

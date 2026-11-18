@@ -2,10 +2,26 @@ import { compressZstd } from '@forgeax/engine-codec/encode';
 import { serializeCookedMaterialRecord, validateCookedMaterialRecord } from '@forgeax/engine-pack';
 import { createMaterialPackCooker } from '@forgeax/engine-shader-compiler';
 import { withClipping } from '@forgeax/engine-types';
+import type MeshPhysicalNodeMaterial from 'three/src/materials/nodes/MeshPhysicalNodeMaterial.js';
 import { MeshPhysicalMaterial } from 'three/src/Three.Core.js';
-import { projectMaterial, TEXTURE_SLOTS } from '../material';
+import { materialTextures, projectMaterial, TEXTURE_SLOTS } from '../material';
 
 export type PhysicalTextureSlot = Exclude<keyof typeof TEXTURE_SLOTS, 'matcap'>;
+
+/** Inspect authored map membership at build time, using the player's normal/bump selection. */
+export function physicalTextureRecipe(
+  material: MeshPhysicalMaterial | MeshPhysicalNodeMaterial,
+): readonly PhysicalTextureSlot[] {
+  const parameters = new Set(
+    materialTextures(material as MeshPhysicalMaterial).map(([parameter]) => parameter),
+  );
+  return (Object.keys(TEXTURE_SLOTS) as (keyof typeof TEXTURE_SLOTS)[])
+    .filter(
+      (slot): slot is PhysicalTextureSlot =>
+        slot !== 'matcap' && parameters.has(TEXTURE_SLOTS[slot]),
+    )
+    .sort();
+}
 
 /** Build-time native Cook. Each set is an exact texture-membership variant;
  * numeric Physical values remain editable at runtime. No shader compiler ships

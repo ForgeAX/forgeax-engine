@@ -1,5 +1,16 @@
-import { readFileSync } from 'node:fs';
-import { zstdDecompressSync } from 'node:zlib';
+import { readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { zstdCompressSync, zstdDecompressSync } from 'node:zlib';
+
+/** Publish compact JSON atomically; a failed write preserves the existing input. */
+export function writeArtifactJson(path, value) {
+  const temporary = `${path}.tmp-${process.pid}`;
+  try {
+    writeFileSync(temporary, zstdCompressSync(Buffer.from(JSON.stringify(value))));
+    renameSync(temporary, path);
+  } finally {
+    rmSync(temporary, { force: true });
+  }
+}
 
 // Production artifacts may use a single zstd frame under their .json name.
 export function readArtifactJsonText(path) {

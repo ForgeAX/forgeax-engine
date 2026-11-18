@@ -17,27 +17,33 @@ Audio import produces the source declaration, cook receipt, and Pack v2 clip art
 ### Canvas form (auto-attach)
 
 ```ts
-import { createApp } from '@forgeax/engine-app';
+import { createApp } from '@forgeax/engine-app/browser';
 import { audioPlugin } from '@forgeax/engine-audio';
-import { webAudioPlugin } from '@forgeax/engine-audio-webaudio';
+import { createHostAudioConsumer } from '@forgeax/engine-audio-webaudio';
 
-const app = await createApp(canvas, { plugins: [webAudioPlugin(), audioPlugin()] });
+const result = await createApp(canvas, { plugins: [audioPlugin()] }, {
+  createHostAudio: options => createHostAudioConsumer(undefined, options),
+});
+const app = result.unwrap();
 ```
 
 ### Assemble form (host-managed)
 
 ```ts
 import { AUDIO_ENGINE_RESOURCE_KEY, audioPlugin } from '@forgeax/engine-audio';
+import { createApp } from '@forgeax/engine-app';
 import { createWebAudioBackend } from '@forgeax/engine-audio-webaudio';
 
 // Host pre-injects the backend resource, then passes audioPlugin() to wire the tick system.
 world.insertResource(AUDIO_ENGINE_RESOURCE_KEY, createWebAudioBackend());
 
-const app = await createApp({
+const result = await createApp({
+  platform,
   renderer,
   world,
   plugins: [audioPlugin()],
 });
+const app = result.unwrap();
 ```
 
 ## Asset loading
@@ -319,21 +325,25 @@ The ten-second window timeout, corrupt/oversized body, unsupported Range and byt
 
 ## App Host effect assembly
 
-For execution bootstrap apps, `execution.createHostAudio` returns a fresh `HostAudioConsumer` in the Host realm. Main, Engine Worker and shared tiers use it; rebuild calls it again and disposes the old consumer. Configure one `WebAudioEngine` and its shared bus effects inside that factory, then return `createHostAudioConsumer(engine)`. The bootstrap still installs `audioPlugin()` and publishes ordinary POD graph/source controls. Factory/native objects never enter bootstrap data or Worker messages. A thrown factory reports App plugin activation failure and releases the started owners.
+`AppHostAdapter.createHostAudio` returns a fresh `HostAudioConsumer` in the Host realm. Local Apps without a bootstrap, main execution, Engine Worker and shared tiers use it; rebuild calls it again and disposes the old consumer. App passes the resolved device/project audio budget to the factory. Configure one `WebAudioEngine` and its shared bus effects, then return `createHostAudioConsumer(engine, options)`. Gameplay still installs `audioPlugin()` and publishes ordinary POD graph/source controls. Factory/native objects never enter bootstrap data or Worker messages. A thrown factory reports App plugin activation failure and releases the started owners.
 
 ```ts
-execution: {
-  bootstrap: new URL('./game-bootstrap.ts', import.meta.url),
-  createHostAudio() {
+import { createApp } from '@forgeax/engine-app/browser';
+import { createHostAudioConsumer, WebAudioEngine } from '@forgeax/engine-audio-webaudio';
+
+const created = await createApp(canvas, {
+  execution: { bootstrap: new URL('./game-bootstrap.ts', import.meta.url) },
+}, {
+  createHostAudio(options) {
     const engine = new WebAudioEngine();
     engine.configureBuses([{ id: 'master', parent: null }, { id: 'room', parent: 'master' }]).unwrap();
     engine.setBusEffects('room', context => [context.createBiquadFilter()], 0.5).unwrap();
-    return createHostAudioConsumer(engine);
+    return createHostAudioConsumer(engine, options);
   },
-}
+});
 ```
 
-Use this single provider for execution audio; the main bootstrap must not also install another `webAudioPlugin` provider. For a local app without an execution bootstrap, retain `webAudioPlugin(engine)` in its native Cordis plugins.
+Use this single provider for App-managed audio; do not also install another `webAudioPlugin` provider. Manual local Cordis assembly can still own `webAudioPlugin(engine)` when no App audio policy/factory is supplied. The legacy `execution.createHostAudio` field remains available until 0.7; defining both fields is rejected before construction.
 
 ## Native musical transport
 

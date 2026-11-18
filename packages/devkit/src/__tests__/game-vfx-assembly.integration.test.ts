@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { runInNewContext } from 'node:vm';
+import { EngineConfigurationError, withEngineSettings } from '@forgeax/engine-app';
 import { AssetRegistry, assetsPlugin } from '@forgeax/engine-assets-runtime';
 import { createWorldContext, World } from '@forgeax/engine-ecs';
 import type { Plugin } from '@forgeax/engine-plugin';
@@ -263,15 +264,21 @@ it.each([
     expect(diagnostics).toBeDefined();
     const diagnosticsStart = page.indexOf('const gpuPassTiming =');
     const diagnosticsEnd = page.indexOf('const profiler =', diagnosticsStart);
+    const animationSelection = page.match(/^const animation = .*;$/m)?.[0];
+    const workersSelection = page.match(/^const executionWorkers = .*;$/m)?.[0];
     expect(diagnosticsStart).toBeGreaterThan(0);
     expect(diagnosticsEnd).toBeGreaterThan(diagnosticsStart);
+    expect(animationSelection).toBeDefined();
+    expect(workersSelection).toBeDefined();
     const executionDiagnostics = runInNewContext(
-      `const query = new URLSearchParams(location.search); ${page.slice(diagnosticsStart, diagnosticsEnd)}\n(${diagnostics})`.replaceAll(
+      `const query = new URLSearchParams(location.search); ${animationSelection}\n${workersSelection}\n${page.slice(diagnosticsStart, diagnosticsEnd)}\n(${diagnostics})`.replaceAll(
         'import.meta.env.DEV',
         'false',
       ),
       {
         URLSearchParams,
+        EngineConfigurationError,
+        withEngineSettings,
         location: { search },
       },
     );

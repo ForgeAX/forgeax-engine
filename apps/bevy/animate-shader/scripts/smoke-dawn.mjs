@@ -8,7 +8,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
+import { readShaderManifestText, processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 
 const WIDTH = testQuality.viewport.width;
@@ -65,7 +65,7 @@ const canvas = {
 };
 
 const manifest = JSON.parse(readShaderManifestText(resolve(root, 'dist', 'shaders', 'manifest.json')));
-const manifestUrl = `data:application/json,${encodeURIComponent(JSON.stringify(manifest))}`;
+const manifestUrl = processShaderManifestUrl(resolve(root, 'dist', 'shaders', 'manifest.json'));
 const { World } = await import('@forgeax/engine-ecs');
 const { AssetRegistry } = await import('@forgeax/engine-assets-runtime');
 const { Camera, DirectionalLight, MeshFilter, MeshRenderer } = await import('@forgeax/engine-render');

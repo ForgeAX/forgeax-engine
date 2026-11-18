@@ -53,7 +53,7 @@ function splineMode(
 ): WaterSplineInterpolationMode {
   return (
     point.interpolationMode ??
-    (interpolationVersion === 'ue-water-spline/1' ? 'curve' : 'curve-custom-tangent')
+    (interpolationVersion === 'water-spline/2' ? 'curve' : 'curve-custom-tangent')
   );
 }
 
@@ -212,7 +212,7 @@ function clampedAutoTangent(
   return clamped;
 }
 
-/** Version 1 defaults to UE Water's Curve mode; unversioned legacy Packs retain their authored Hermite tangents. */
+/** Versioned splines default to curve mode; unversioned Packs retain authored Hermite tangents. */
 export function resolveWaterSplinePoints(
   spline: WaterBodyAsset['spline'],
 ): readonly WaterSplinePoint[] {
@@ -280,7 +280,7 @@ export function resolveWaterSplinePoints(
     };
   });
   if (
-    spline.interpolationVersion !== 'ue-water-spline/1' ||
+    spline.interpolationVersion !== 'water-spline/2' ||
     points.some((point) => !point.rotationQuat)
   )
     return positionResolved;
@@ -490,14 +490,14 @@ export function insertWaterSplinePoint(
   );
 }
 
-/** Inserts into a versioned UE spline by sampling its effective curve, then lets auto modes recompute after insertion. */
+/** Insert by sampling the versioned curve, then recompute automatic tangents. */
 export function insertWaterSplinePointInSpline(
   spline: WaterBodyAsset['spline'],
   index: number,
   t: number,
   defaults?: Partial<WaterSplineMetadataDefaults>,
 ): Result<readonly WaterSplinePoint[], AssetError> {
-  if (spline.interpolationVersion !== 'ue-water-spline/1')
+  if (spline.interpolationVersion !== 'water-spline/2')
     return insertWaterSplinePoint(spline.points, index, t, spline.closed, defaults);
   const admission = validateSplineInsertion(spline.points, index, t);
   if (!admission.ok) return admission;
@@ -600,24 +600,24 @@ export function duplicateWaterSplinePoint(
   );
 }
 
-/** Duplicate a point while retaining the spline's versioned UE interpolation contract. */
+/** Duplicate a point while retaining the spline's interpolation contract. */
 export function duplicateWaterSplinePointInSpline(
   spline: WaterBodyAsset['spline'],
   index: number,
 ): Result<readonly WaterSplinePoint[], AssetError> {
   if (
-    spline.interpolationVersion === 'ue-water-spline/1' &&
+    spline.interpolationVersion === 'water-spline/2' &&
     spline.points.some((point) => !point.rotationQuat)
   ) {
     return invalid(
-      'ue-water-spline/1 points with canonical rotation quaternions before duplication',
+      'water-spline/2 points with canonical rotation quaternions before duplication',
       spline.points.map((point) => point.inputKey),
     );
   }
   return duplicateWaterSplinePoint(spline.points, index);
 }
 
-/** Mirrors UE PropagateDefaultValue: only points still carrying the old curve default move. */
+/** Only points still carrying the old curve default follow a default change. */
 export function propagateWaterSplineDefaultValue(
   points: readonly WaterSplinePoint[],
   field: WaterSplineMetadataField,

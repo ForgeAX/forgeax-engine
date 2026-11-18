@@ -10,6 +10,7 @@ import { constants, runInNewContext } from 'node:vm';
 import { installRuntimeVase } from '../../template-probes/game-3d/runtime-vase/install.mjs';
 import { reduceTestProject } from '../../test/reduce-test-project.mjs';
 import quality from '../../test/render-quality.json' with { type: 'json' };
+import { renderModelInCliProcess } from '../modeling-cli-render.mjs';
 
 const viewPin = execFileSync('git', ['ls-files', '--stage', '--', 'tools/view'], {
   encoding: 'utf8',
@@ -541,4 +542,28 @@ test('compact sky gate still rejects uniform blue clear-color fallback', async (
 });
 test('compact sky gate still rejects missing sky', async () => {
   await assert.rejects(checkSky(new Uint8Array(320 * 180 * 4)), /authored blue sky/);
+});
+
+test('Modeling independent renders finish in separate one-shot CLI processes', async () => {
+  const root = await mkdtemp(resolve(tmpdir(), 'modeling cli lifetime-'));
+  try {
+    const cli = resolve(root, 'cli.mjs');
+    await writeFile(
+      cli,
+      `process.stdout.write(JSON.stringify({ ok: true, value: { pid: process.pid, args: process.argv.slice(2) } }) + '\\n');`,
+    );
+    const input = { source: 'assets/wheel-rim.pack.ts', views: ['top'], values: { spokes: 7 } };
+    const first = await renderModelInCliProcess(cli, root, input);
+    const second = await renderModelInCliProcess(cli, root, input);
+    assert.notEqual(first.pid, second.pid);
+    for (const result of [first, second]) {
+      assert.notEqual(result.pid, process.pid);
+      assert.throws(() => process.kill(result.pid, 0), { code: 'ESRCH' });
+      assert.deepEqual(result.args.slice(0, 2), ['model', 'render']);
+      assert.deepEqual(JSON.parse(result.args[result.args.indexOf('--input') + 1]), input);
+      assert.deepEqual(result.args.slice(-4), ['--root', root, '--detail', '--json']);
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

@@ -611,6 +611,7 @@ function stageViewSsrHistory(
     const memory = estimateSsrSpatialMemory(
       { width, height },
       {
+        resolutionScale: internals.standardProfile?.quality?.ssr.resolutionScale,
         execution:
           internals.device.caps.compute && internals.device.caps.storageTexture
             ? 'compute'

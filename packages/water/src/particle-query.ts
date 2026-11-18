@@ -202,7 +202,7 @@ export type WaterParticleQueryResult = Readonly<{
   systemDepth?: WaterParticleSystemDepth;
 }>;
 
-/** Basic GetWaterSurfaceInfo pins. R2 owns all accepted geometry and query mathematics. */
+/** Basic particle surface pins use the accepted Water geometry and query owner. */
 export function queryWaterParticle(
   water: WaterSystem,
   request: WaterParticleQueryRequest,

@@ -12,7 +12,7 @@ import {
 import type { CatalogBuildResult } from '@forgeax/engine-pack/build';
 import type { Importer, PackIndexEntry } from '@forgeax/engine-types';
 import { afterEach, describe, expect, it } from 'vitest';
-import { startMetaImport } from '../dev/meta-import.js';
+import { prepareMetaImport, startMetaImport } from '../dev/meta-import.js';
 
 const GUID = '00000000-0000-4000-8000-000000000001';
 const META_PATH = 'assets/fixture.source.meta.json';
@@ -242,6 +242,31 @@ describe('meta import artifact publication rollback', () => {
     if (root !== undefined) await rm(root, { recursive: true, force: true });
   });
 
+  it('prepares independent real HDR products without publication and consumes the exact source snapshot once', async () => {
+    root = await mkdtemp(join(tmpdir(), 'forgeax-meta-prepared-'));
+    const source = join(root, 'environment.hdr'),
+      metaPath = `${source}.meta.json`;
+    await writeFile(source, tinyHdr(17));
+    const declaration = imageMeta(source),
+      initial = imageContext({ root, declaration, projection: imageCatalogProjection(source) });
+    let reads = 0;
+    const read = initial.context.fsForImport.readSource;
+    initial.context.fsForImport.readSource = async (path) => {
+      reads++;
+      return read(path);
+    };
+    const prepared = await prepareMetaImport(metaPath, declaration, initial.context);
+    expect(reads).toBeGreaterThan(0);
+    const preparedReads = reads;
+    expect(initial.context.metaPackBodies.size).toBe(0);
+    expect(initial.context.devArtifactBodies.size).toBe(0);
+    const result = await startMetaImport(metaPath, initial.context, prepared);
+    expect(result.some((row) => row.guid === IMAGE_GUID)).toBe(true);
+    expect(reads).toBe(preparedReads);
+    expect(initial.context.metaPackBodies.size).toBe(1);
+    for (const body of initial.context.metaPackBodies.values())
+      assertArtifactClosure(body, initial.context.devArtifactBodies);
+  });
   it('keeps the accepted artifact map while a real DDC candidate write fails', async () => {
     root = await mkdtemp(join(tmpdir(), 'forgeax-meta-import-artifact-rollback-'));
     let version = 1;

@@ -65,22 +65,37 @@ describe('alpha test only in the depth prepass (UE r.EarlyZPassOnlyMaterialMaski
     // A cooked custom Surface does not declare the axis.
     expect(maskedInEarlyPassVariantSet('', {}, seeded({}), undefined)).toBe('');
     expect(maskedInEarlyPassVariantSet(undefined, {}, seeded({}), undefined)).toBeUndefined();
-    // LOD cross-fade keeps LOD_DITHER and its bound CLIPPING_PLANES.
+    // LOD cross-fade keeps LOD_DITHER; receiving-view clipping is reselected separately.
     const lod = MASKED.replace('LOD_DITHER=false', 'LOD_DITHER=true');
     expect(maskedInEarlyPassVariantSet(lod, {}, seeded({}), undefined)).toBe(
-      lod.replace('ALPHA_MASK=true', 'ALPHA_MASK=false'),
+      lod
+        .replace('ALPHA_MASK=true', 'ALPHA_MASK=false')
+        .replace('CLIPPING_PLANES=true', 'CLIPPING_PLANES=false'),
     );
   });
 });
 
 describe('GPU-driven seeded raster class', () => {
-  const shapeFor = (variantSet: string, renderState?: MaterialRenderState) => {
+  const shapeFor = (
+    variantSet: string,
+    renderState?: MaterialRenderState,
+    dedicatedDepth = false,
+  ) => {
     const pipeline = vi.fn((..._args: unknown[]) => ok({}));
     // The adapter is opaque here: only the selected artifact and state matter.
     const shape = {
       raster: { pipeline },
+      predepthCovered: renderState?.alphaToCoverageEnabled !== true,
       prepared: { mesh: { layoutProjection: {} }, batch: { key: { topology: 'triangle-list' } } },
-      artifact: { material: 'forgeax::default-standard-pbr', variantSet },
+      artifact: {
+        material: 'forgeax::default-standard-pbr',
+        variantSet,
+        program: {
+          entryPoints: dedicatedDepth
+            ? [{ name: 'fs_depth_masked', stage: 'fragment', bindings: [] }]
+            : [],
+        },
+      },
       deformation: 'rigid',
       format: 'rgba16float',
       sampleCount: 1,
@@ -101,6 +116,7 @@ describe('GPU-driven seeded raster class', () => {
       pipeline.mock.calls.map((call) => ({
         variantSet: (call[7] as MaterialShaderArtifact).variantSet,
         state: call[6] as MaterialRenderState | undefined,
+        fragmentEntry: (call[7] as MaterialShaderArtifact).fragmentEntry,
       }));
     return { pipelines: createRasterPipelines(shape), calls };
   };
@@ -125,7 +141,15 @@ describe('GPU-driven seeded raster class', () => {
     const a2c = shapeFor(MASKED, { alphaToCoverageEnabled: true });
     expect(a2c.pipelines.seededPipelineFor(undefined)(['rgba16float']).ok).toBe(true);
     expect(a2c.calls()[0]?.variantSet).toBe(MASKED);
-    expect(a2c.calls()[0]?.state?.depthCompare).toBe('equal');
+    expect(a2c.calls()[0]?.state?.depthCompare).toBeUndefined();
+    expect(a2c.calls()[0]?.state?.depthWriteEnabled).toBeUndefined();
+  });
+
+  it('selects the normal-producing entry for a primary normal attachment', () => {
+    const { pipelines, calls } = shapeFor(OPAQUE, undefined, true);
+    expect(pipelines.predepthPipelineFor([]).ok).toBe(true);
+    expect(pipelines.predepthPipelineFor(['rgba16float']).ok).toBe(true);
+    expect(calls().map((call) => call.fragmentEntry)).toEqual(['fs_depth_masked', 'fs_ao_input']);
   });
 
   it('keeps an opaque seeded row on less-equal with its simple receiver', () => {

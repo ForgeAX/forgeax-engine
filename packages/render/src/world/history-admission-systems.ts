@@ -176,6 +176,7 @@ function spotRevisionValues(spot: ViewLights['spot'][number] | undefined): numbe
     ...spot.color,
     spot.intensity,
     spot.invRangeSquared,
+    spot.decay ?? 2,
     spot.cosInner,
     spot.cosOuter,
     spot.depthBias ?? 0.005,

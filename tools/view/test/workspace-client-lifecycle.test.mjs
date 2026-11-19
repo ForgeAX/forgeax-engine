@@ -105,11 +105,13 @@ test('View entry activates its client while a cold project open is pending', asy
   owner.register(VIEW_WORKSPACE_SERVICES.call, ({ payload: request }) => {
       calls.push(request.operation);
       if (request.operation === 'tabs.get') return Promise.resolve({ revision: 1 });
+      if (request.operation === 'project.present') return Promise.resolve({ revision: 1, projectDocumentPresentation: 'presenter' });
       if (request.operation === 'project.open') return opening;
       throw new Error(`unexpected operation ${request.operation}`);
   });
   const transport = owner.connect({ kind: 'frontend', sourceId: 'view-frontend' });
   const window = {
+    addEventListener() {}, removeEventListener() {},
     location: { href: 'http://localhost:8000/?project=%2Fgame', assign() {} },
     history: { replaceState() {} },
     performance: { getEntriesByType: () => [{ type: 'navigate' }] },

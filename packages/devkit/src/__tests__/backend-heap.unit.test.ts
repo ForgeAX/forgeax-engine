@@ -1,9 +1,30 @@
+import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
-import { backendHeapEnv } from '../backend-process.js';
+import { backendHeapEnv } from '../backend-heap.js';
 
 const GIB = 1024 ** 3;
 
 describe('backendHeapEnv', () => {
+  it.each([
+    undefined,
+    '--max-old-space-size=2048',
+  ])('applies the shared live project child heap policy and preserves override %s', (override) => {
+    const env = backendHeapEnv({ ...process.env, NODE_OPTIONS: override }, 64 * GIB);
+    const child = spawnSync(
+      process.execPath,
+      [
+        '-e',
+        `console.log(JSON.stringify({options:process.env.NODE_OPTIONS,heap:require('node:v8').getHeapStatistics().heap_size_limit}))`,
+      ],
+      { env, encoding: 'utf8' },
+    );
+    expect(child.status).toBe(0);
+    const observed = JSON.parse(child.stdout) as { options: string; heap: number };
+    const mib = override === undefined ? 8192 : 2048;
+    expect(observed.options).toBe(`--max-old-space-size=${mib}`);
+    expect(observed.heap).toBeGreaterThanOrEqual(mib * 1024 ** 2);
+    expect(observed.heap).toBeLessThan((mib + 512) * 1024 ** 2);
+  });
   it('raises the backend old-space limit to 8 GiB on a large machine', () => {
     expect(backendHeapEnv({}, 64 * GIB).NODE_OPTIONS).toBe('--max-old-space-size=8192');
   });

@@ -1,5 +1,5 @@
 {
-  "contentKey": "07c8277f5084f25e341457bbbf3451a2f488a6f32f577aa120e82c104c72f2d2",
+  "contentKey": "ccd9e53a8fe3a9260877e6c38f46f3a711672d0bcce05becba557839d0f6f6a1",
   "inputHashes": {
     "package.json": "0679c83cfa573475e56f85a3bd07b71b7cbadc3247d5f05894a39e2c997605c6",
     "scripts/source.json": "ec4d75a572b55a07d6aab58f958f8baaa85917f4e6b47b7b2587060947f385e5",
@@ -13,7 +13,7 @@
     "scripts/bindings.Cargo.toml": "d3b9e1a1b306e0d9b5c5c347d741faa164668c7075df04e4b38bb2ce326c24a3",
     "scripts/Cargo.lock": "a3a02072320304550bc1945500aca38f5171feb39b353d89fa2b1daaf60dba8e",
     "../../scripts/lib/rust-build-paths.mjs": "59fc4ccebbfb37947a44a6617073eebd411f3cd80e2aaf736f57d9552de3eb3a",
-    "../../scripts/lib/git-http-environment.mjs": "b15a973b8718776c164a3a880f92d06b6dfc7faee1cfc8e616cf029ab1347758",
+    "../../scripts/lib/git-http-environment.mjs": "4d0ab9df35c176c16a8aa669c027026f17414ca27f1ff503994eeb5166cea768",
     "patches/parry.patch": "ae85f4478702a4b8d6359f9b67f1dce7dcbc023170158b06db5e3b004a56181b",
     "patches/rapier.patch": "73676cbcd555af97ef962338aa80c866f558d45b3296ee1fcd003ad0e7f8fcf6"
   },
@@ -38,11 +38,11 @@
   "artifacts": {
     "LICENSE": "4c05555705e3efde601fb1252ae48f1d63992af8a8fb8947745b7fa834e8f519",
     "rapier-native.d.mts": "24af2f779a154d792bb1f0a7fb90d4f495b3e63b046d9a476f068e398806c3de",
-    "rapier-native.mjs": "03445485b484baa3f85ece5cf1ba15d40badd4695d40718a017c3ed40cd8367e",
+    "rapier-native.mjs": "6890b8064f30de12b773936b5eb00490bed75a0f5395b9ee602d7e8b9f6334d0",
     "rapier-simd.d.mts": "39c971b29a1204ea466e1d0f27de2ef26f2e12f25ffc4e09db8ab2428d817348",
-    "rapier-simd.mjs": "63472bbdbf4440ccc7d370263dcf84ae83c96c0d237041976e6734e1b402ea6b",
+    "rapier-simd.mjs": "0fe044bed08605dd8082463ce0b7540ccaa185c96b401916b723c5f7e89df99a",
     "rapier.d.mts": "891ab1bf30df793b18a8067d6da33686274a3d0dd3b59698085495daaa48e478",
-    "rapier.mjs": "f927419608531a7b9c38dfe1b69ef1ab941c167e7e6a5036e6d1a74280d639ed",
-    "rapier.wasm": "c253f437e92dea9e54028b69cd67263186422fb1008506d8ea54b93b164d3adb"
+    "rapier.mjs": "b74b89a378f0afc68112bc7676813564ee0d619a2edc285ac36d629fcb1728c1",
+    "rapier.wasm": "e8bd35a5caca0e59033eb28333841c6ba9f03c4c2cef59f93dfecfc88497421f"
   }
 }

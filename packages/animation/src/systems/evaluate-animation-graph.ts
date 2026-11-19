@@ -40,7 +40,7 @@ import {
 } from '@forgeax/engine-ecs';
 import { worldRead } from '@forgeax/engine-ecs/world-read';
 import type { AnimationClip, AnimationGraph, AssetHandle } from '@forgeax/engine-types';
-import { err, ok } from '@forgeax/engine-types';
+import { err, ok, toShared } from '@forgeax/engine-types';
 import { resolveAnimationMask } from '../animation-mask';
 import { AnimationPlayer } from '../animation-player';
 import { AnimationBlendError } from '../blend-errors';
@@ -53,21 +53,6 @@ import {
 } from '../playback-interval';
 import { resolveAnimationAsset } from '../resolve-animation-asset';
 import { collectTimelineEvents } from '../timeline';
-
-/**
- * Resolved per-entity graph-mode columns (a `world.get` snapshot). `graph` is the
- * raw shared handle (0 = no graph); the three node-* columns are per-node runtime
- * knobs indexed by graph node index.
- */
-interface PlayerGraphColumns {
-  readonly graph: number;
-  readonly nodeWeights: Float32Array;
-  readonly nodeTimes: Float64Array;
-  readonly nodeSpeeds: Float32Array;
-  readonly nodeMasks: Uint32Array;
-  readonly paused: boolean;
-  readonly looping: boolean;
-}
 
 /** Read `arr[i]` when in range, else the default (missing per-node knobs default). */
 function readAt(arr: ArrayLike<number>, i: number, dflt: number): number {
@@ -124,7 +109,7 @@ function evaluateOneEntity(world: World, entityRaw: number, dt: number): void {
   if (graphRaw === undefined || graphRaw === 0) return;
   const apRes = world.get(entity, AnimationPlayer);
   if (!apRes.ok) return;
-  const ap = apRes.value as unknown as PlayerGraphColumns;
+  const ap = apRes.value;
 
   const graphLookup = runtimeAssets(world.assets).resolveAsset<AnimationGraph>(graphRaw);
   if (!graphLookup.ok) throw graphLookup.error;
@@ -230,7 +215,7 @@ function evaluateOneEntity(world: World, entityRaw: number, dt: number): void {
   const masks =
     ap.nodeMasks.length === 0
       ? []
-      : clipNodeIndices.map((nodeIndex) => ap.nodeMasks[nodeIndex] ?? 0);
+      : clipNodeIndices.map((nodeIndex) => ap.nodeMasks[nodeIndex] ?? toShared<'AnimationMask'>(0));
   for (let k = 0; k < slotCount; k++) {
     // biome-ignore lint/style/noNonNullAssertion: parallel to clipNodeIndices
     const nodeIndex = clipNodeIndices[k]!;

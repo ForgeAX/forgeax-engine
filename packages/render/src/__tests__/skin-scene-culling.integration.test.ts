@@ -10,9 +10,14 @@ import { Camera, MeshFilter, MeshRenderer } from '../components';
 import { GpuInputArena } from '../gpu-input-arena';
 import { MaterialResource } from '../material-resource';
 import { worldRenderResources } from '../publication/resource-scope';
+import { CaptureCull } from '../record/capture-cull';
+import { makeZeroCameraFallbackSnapshot } from '../record/frame-snapshot';
 import { shadowViewContains } from '../record/shadow-culling';
 import { defaultMaterialSnapshot, type RenderableSnapshot } from '../render-system-extract';
 import { extractSource } from '../render-system-extract-tail';
+import { FrameSet } from '../scene/frame-set';
+import { MaterialFrame } from '../scene/material-dispatch';
+import { ProbeBlendSceneProjection } from '../scene/probe-blend';
 import {
   type PersistentRenderCandidateRequest,
   PersistentRenderScene,
@@ -525,5 +530,66 @@ it.each([
     arenaDispose.mockRestore();
     f.lease.dispose();
     f.scene.dispose();
+  }
+});
+
+it('updates a capture admission from fixed Skin inputs without a source-row pose write', () => {
+  const f = fixture();
+  const cull = new CaptureCull();
+  const camera = { ...makeZeroCameraFallbackSnapshot(), captureProjection: matrix() };
+  const materials = new MaterialFrame(undefined).with(f.source.material, undefined, {
+    ...f.source.material.snapshot,
+    immutableValues: true,
+  });
+  const meshes = f.scene.meshFrame();
+  const unavailable = new FrameSet();
+  const probe = new ProbeBlendSceneProjection().recordBufferProjection();
+  const prepare = (skin: ReturnType<typeof f.frames.prepareFrame>) => {
+    const slots = f.scene.slotsSnapshot();
+    return required(
+      cull.prepare(
+        camera,
+        {
+          draws: { slots, meshes, unavailable, probe, temporal: undefined },
+          skin,
+        },
+        materials,
+        (source, out, row) => {
+          const record = row ?? slots.lookup(source.entityKey);
+          return (
+            record !== undefined &&
+            f.scene.writeCullingWorldBoundsAt(record, out, meshes, materials, skin)
+          );
+        },
+      ),
+    );
+  };
+  try {
+    const firstFrame = required(f.frames.prepareFrame(f.scene.slotsSnapshot()));
+    const first = prepare(firstFrame);
+    const version = f.scene.slot(17)?.version;
+    expect(first.visible(f.source)).toBe(true);
+    f.frames.discardFrame();
+    f.skin.joint(19, matrix(8));
+    const nextFrame = required(f.frames.prepareFrame(f.scene.slotsSnapshot()));
+    expect(f.scene.slot(17)?.version).toBe(version);
+    const out = box3.create();
+    expect(
+      f.scene.writeCullingWorldBoundsAt(
+        required(f.scene.slot(17)),
+        out,
+        meshes,
+        materials,
+        nextFrame,
+      ),
+    ).toBe(true);
+    expect(out[0]).toBeGreaterThan(7);
+    expect(prepare(nextFrame).visible(f.source)).toBe(false);
+    expect(first.visible(f.source)).toBe(true);
+    expect(prepare(undefined).visible(f.source)).toBe(true);
+  } finally {
+    f.frames.discardFrame();
+    f.skin.dispose();
+    f.arena.dispose();
   }
 });

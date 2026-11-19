@@ -1510,8 +1510,8 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
       ).toBe(true);
       expect(
         manifest.materialShaders.length,
-        'materialShaders[] must contain exactly 55 named engine shader entries',
-      ).toBe(55);
+        'materialShaders[] must contain exactly 56 named engine shader entries',
+      ).toBe(56);
 
       const diffusion = manifest.materialShaders.find(
         (entry) => entry.identifier === 'forgeax::engine-subsurface-diffusion',
@@ -1670,6 +1670,7 @@ assertSharedTransmissionVariantBindings();
         'forgeax::ssr-compose-fragment',
         'forgeax::ssr-temporal-fragment',
         'forgeax::ssr-trace-fragment',
+        'forgeax::standard-output-v2',
         'forgeax::standard-terrain',
         'forgeax::standard-terrain-ids',
         'forgeax::standard-terrain-ids-shadow',
@@ -1838,6 +1839,7 @@ assertSharedTransmissionVariantBindings();
           'forgeax::ssr-compose-fragment',
           'forgeax::ssr-temporal-fragment',
           'forgeax::ssr-trace-fragment',
+          'forgeax::standard-output-v2',
           'forgeax::standard-terrain',
           'forgeax::standard-terrain-ids',
           'forgeax::standard-terrain-ids-shadow',

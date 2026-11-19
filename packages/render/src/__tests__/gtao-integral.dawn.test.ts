@@ -28,6 +28,19 @@ it('production GTAO slice integral matches independent cosine-weighted numerical
         [0, 0.2, 0.7, 1].map((right) => [n, (n - Math.PI / 2) * left, (n + Math.PI / 2) * right]),
       ),
     )
+    // Keep endpoints inside the normal's open hemisphere while covering
+    // both +/-pi crossings and normals on either side of the view plane.
+    .concat(
+      [-Math.PI, -2.5, -Math.PI / 2, Math.PI / 2, 2.5, Math.PI].flatMap((n) =>
+        [0, 0.2, 0.7, 1].flatMap((left) =>
+          [0, 0.2, 0.7, 1].map((right) => [
+            n,
+            n - Math.PI / 2 + (left * Math.PI) / 2,
+            n + (right * Math.PI) / 2,
+          ]),
+        ),
+      ),
+    )
     .concat(edgeCases.map((value) => [...value]));
   const adapter = await navigator.gpu.requestAdapter();
   if (!adapter) throw new Error('Dawn adapter unavailable');

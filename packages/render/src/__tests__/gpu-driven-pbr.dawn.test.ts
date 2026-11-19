@@ -1878,18 +1878,18 @@ it('validates every STANDARD_LEAN_INPUTS row and shrinks its vertex output', {
           variant.defines.WATER_WAVES_AVAILABLE === waves &&
           variant.defines.WATER_INFO_RGBA16 === rgba16,
       );
-      expect(lane).toHaveLength(320);
+      expect(lane).toHaveLength(640);
       const added = lane.filter(
         ({ defines }) => !defines.DIRECTIONAL_SHADOW_SIMPLE && defines.LEAN_LIGHTING,
       );
       expect(added).toHaveLength(32);
-      expect(lane.filter((row) => !added.includes(row))).toHaveLength(288);
+      expect(lane.filter((row) => !added.includes(row))).toHaveLength(608);
     }
   }
 
   const adapter = await navigator.gpu.requestAdapter();
   if (adapter === null) throw new Error('lean input validation requires a GPU adapter');
-  const device = await adapter.requestDevice();
+  const device = await adapter.requestDevice({ requiredFeatures: ['primitive-index'] });
   const failures: string[] = [];
   const vsOut = (code: string) => /struct VsOut\s*\{([^}]*)\}/.exec(code)?.[1] ?? '';
   for (const variant of lean) {

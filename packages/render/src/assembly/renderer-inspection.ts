@@ -98,7 +98,12 @@ function projectRendererOutputInspection(
 ): RenderOutputInspection {
   const graph = input.graph;
   const outputTransformPass = graph?.passes.find(
-    (pass) => pass.name === 'output-transform' || pass.name === 'present',
+    (pass) =>
+      pass.name === 'output-transform' ||
+      pass.name === 'present' ||
+      pass.name === 'standard-encode' ||
+      pass.name === 'standard-final' ||
+      (pass.name === 'standard-grade' && writesSurface(pass)),
   );
   const surfaceResource = graph?.resources.find(
     (resource) => resource.kind === 'texture' && resource.label === 'surface',
@@ -115,7 +120,7 @@ function projectRendererOutputInspection(
   const intermediate = graph?.resources.find(
     (resource) =>
       resource.kind === 'texture' &&
-      resource.label === 'standard-output-color' &&
+      (resource.label === 'standard-output-color' || resource.label === 'standard-grade-output') &&
       resource.descriptor?.kind === 'texture',
   );
   const standardOutputColor: RenderStandardOutputColorInspection | undefined =
@@ -319,6 +324,14 @@ function projectViewShadowInspection(
   const transmission = want('transmission') ? viewTransmission(inspected) : undefined;
   return {
     ...(want('directionalShadow') ? { directionalShadow: viewDirectionalShadow(inspected) } : {}),
+    ...(!deviceLost && want('viewConfiguration') && submitted?.viewConfiguration !== undefined
+      ? {
+          viewConfiguration: {
+            requested: { ...submitted.viewConfiguration.requested },
+            effective: { ...submitted.viewConfiguration.effective },
+          },
+        }
+      : {}),
     ...(want('shadowRaster') ? { shadowRaster: inspected.frameState.shadowRaster.inspect() } : {}),
     ...(temporalTarget === undefined ? {} : { temporalTarget: Object.freeze(temporalTarget) }),
     ...(motionBlur === undefined ? {} : { motionBlur: Object.freeze(motionBlur) }),

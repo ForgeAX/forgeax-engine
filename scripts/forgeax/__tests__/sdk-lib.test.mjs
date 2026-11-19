@@ -815,7 +815,8 @@ describe('SDK verifier template contract', () => {
     await writeFile(join(template, 'pnpm-lock.yaml'), 'lockfileVersion: 9.0\n');
     await writeFile(join(template, 'pnpm-workspace.yaml'), 'packages: []\n');
 
-    const engineSource = "process.stdout.write('engine-bin-ok\\n');\nexport {};\n";
+    const engineSource =
+      "process.stdout.write('engine-bin-ok\\n'); process.stdout.write(JSON.stringify(process.argv.slice(2))+'\\n');\nexport {};\n";
     const packageManagerScript = join(toolBin, 'fake-pnpm.mjs');
     await writeFile(
       packageManagerScript,
@@ -867,6 +868,15 @@ describe('SDK verifier template contract', () => {
     expect(result.error).toBeUndefined();
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('engine-bin-ok');
+    for (const operation of ['serve', 'ensure', 'status', 'stop']) {
+      const selected = spawnSync(process.execPath, [launcher, 'view', operation], {
+        cwd: sdk,
+        encoding: 'utf8',
+        env: { ...process.env, PATH: toolBin },
+      });
+      expect(selected.status).toBe(0);
+      expect(selected.stdout).toContain(JSON.stringify(['view', operation]));
+    }
     expect(
       await readFile(join(sdk, '.forgeax', 'cli-runtime', 'package-manager-marker'), 'utf8'),
     ).toContain('install');
@@ -942,8 +952,18 @@ describe('SDK verifier template contract', () => {
       join(repositoryRoot, 'packages/devkit/src/importers.ts'),
       'utf8',
     );
-    expect(host).toContain("import { DEFAULT_IMPORTERS } from './importers.js';");
-    expect(host).toContain('importers: [...DEFAULT_IMPORTERS, ...cookerSession.importers]');
+    const importerNames = host
+      .match(/import\s*\{([^}]+)\}\s*from ['"]\.\/importers\.js['"]/s)?.[1]
+      .split(',')
+      .map((name) => name.trim())
+      .sort();
+    expect(importerNames).toEqual(['DEFAULT_IMPORTERS', 'createSessionImporters']);
+    expect(importers).toContain('importers: readonly Importer[] = DEFAULT_IMPORTERS');
+    expect(host).toContain('const importerSession = createSessionImporters();');
+    expect(host).toContain('importers: [...importerSession.importers, ...cookerSession.importers]');
+    expect(host).toContain('await importerSession.dispose();');
+    expect(host).toContain('disposePreparation = disposeSession;');
+    expect(host).toContain('await disposeSession();');
     expect(importers).toContain("import { createUiImporter } from '@forgeax/engine-ui/importer';");
     expect(importers).toContain('  createUiImporter(),');
     const html = await readFile(

@@ -16,8 +16,7 @@ import {
 } from '@forgeax/engine-render';
 import type { EncodedTape, RecorderAttachment } from '@forgeax/engine-rhi-debug';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
-import type { IesProfileAsset } from '@forgeax/engine-types';
-import { toShared } from '@forgeax/engine-types';
+import type { AssetHandle, IesProfileAsset } from '@forgeax/engine-types';
 import { expect } from 'vitest';
 import { completeReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
@@ -274,7 +273,9 @@ export async function verifyLocalIes(
     const steady = await sample('steady', true);
     expect(difference(steady, shaped)).toBeLessThanOrEqual(0.001);
     world.set(light, component, { iesProfile: wide }).unwrap();
-    const wide270 = await sample('wide270', true);
+    // Rotation and profile shape need live pixels. Replay covers upload and
+    // stable binding on the upper/steady pair.
+    const wide270 = await sample('wide270');
     expect(region(wide270, 20, 44) / region(baseline, 20, 44)).toBeGreaterThan(0.98);
     expect(region(wide270, 84, 108) / region(baseline, 84, 108)).toBeGreaterThan(0.98);
     expect(region(baseline, 126, 128)).toBeGreaterThan(0.005);
@@ -285,7 +286,7 @@ export async function verifyLocalIes(
     expect(region(rotated, 20, 44) / region(baseline, 20, 44)).toBeLessThan(0.005);
     expect(region(rotated, 84, 108) / region(baseline, 84, 108)).toBeGreaterThan(0.98);
     world.set(light, component, { iesProfile: polar }).unwrap();
-    const poleOn = await sample('polar-front', true);
+    const poleOn = await sample('polar-front');
     expect(difference(poleOn, baseline)).toBeLessThanOrEqual(0.003);
     if (kind === 'point') {
       world.set(light, Transform, { quat: [0, 0, 0, 1] }).unwrap();
@@ -293,7 +294,7 @@ export async function verifyLocalIes(
       expect(Math.max(...poleOff)).toBeLessThan(0.001);
     }
     world.set(light, Transform, { quat: [0, 1, 0, 0] }).unwrap();
-    world.set(light, component, { iesProfile: toShared<'IesProfileAsset'>(0) }).unwrap();
+    world.set(light, component, { iesProfile: 0 as AssetHandle<'ies-profile'> }).unwrap();
     expect(difference(await sample('removed'), baseline)).toBeLessThanOrEqual(0.003);
     expect(errors).toEqual([]);
     return samples;

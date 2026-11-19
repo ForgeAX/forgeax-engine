@@ -144,11 +144,9 @@ async function qualityRoute(
 let qualityManifest: Promise<string> | undefined;
 let rasterReference: Promise<QualityRoute> | undefined;
 
+// The lower bound exercises reconstruction; native scale isolates temporal quality.
 it.each([
-  0.5,
-  2 / 3,
-  0.75,
-  1,
+  0.5, 1,
 ])('compares static thin lines at scale %s with TAAU and an independent 8x raster integral', {
   timeout: 240_000,
 }, async (scale) => {

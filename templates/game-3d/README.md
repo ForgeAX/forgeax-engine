@@ -34,23 +34,35 @@ details, deletion steps, packs, UI realms, lighting, materials and coordinates a
   (model; the robot is a placeholder for your own hero); or delete `assets/player/` and remove its GUID from `assets/world/world.pack.ts`.
 - **Replace the camera:** edit how `eye` and `look` move in `assets/camera/camera.pack.ts`; or delete `assets/camera/` and
   remove its GUID from `assets/world/world.pack.ts`.
-- **Replace the level:** edit `assets/scene.pack.ts` (keep a collider on every walkable or
-  blocking mesh) and `assets/geometry.pack.ts` / `assets/materials.pack.ts`.
-- After deleting a feature, run `pnpm exec forgeax project check --json` and `pnpm test`.
+- Edit `assets/scene.pack.ts` to replace the level. Keep collision for walkable and blocking
+  surfaces. See [Remove or hide starter content](docs/guide.md#remove-or-hide-starter-content).
+- After deleting a feature, run `project check`, then adapt and run the playthrough against the new scene.
 
 ## Commands
 
 ```bash
 pnpm exec forgeax project check --json
-pnpm test
-pnpm exec forgeax project build --json
-pnpm exec forgeax project preview --json
 pnpm exec forgeax project play scripts/playthrough.mjs --require-ui --json
+pnpm exec forgeax project build --json
+pnpm exec forgeax project play scripts/playthrough.mjs --release --require-ui --json
 ```
 
 While iterating, `project play` takes `--from <step>` for a top-level step with a `setup`.
 `--time-scale` runs game time in lockstep (faster), so tune difficulty and pass/fail in
 real time; final acceptance runs without either.
+
+## Optional View
+
+From this game root, open the View included in the installed Engine:
+
+```sh
+node ./node_modules/@forgeax/engine/tools/view/start.mjs --project .
+```
+
+Keep the terminal open and open the returned URL. The page reports Backend and
+project readiness; the URL alone is not readiness. No global SDK or Engine build
+is needed. Agent guidance: `skills/forgeax-view-start/SKILL.md`, or the copy under
+`node_modules/@forgeax/engine/tools/view/skills/` for older projects.
 
 To look at a scene without playing, list its GUID with `pnpm exec forgeax asset list --type scene --json`
 and render it through its authored camera with

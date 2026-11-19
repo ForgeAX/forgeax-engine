@@ -16,7 +16,7 @@ interface RayDiffuseCompositeInputs {
   readonly depth: TextureView;
   readonly normal: TextureView;
   readonly albedoMetallic: TextureView;
-  readonly f0Occlusion: TextureView;
+  readonly dielectricSpecular: TextureView;
   readonly reflectionResponse?: TextureView;
   readonly view: Extract<RhiBindingResource, { kind: 'buffer' }>['value'];
 }
@@ -103,7 +103,7 @@ export function createRayDiffuseComposite(
               },
             },
           },
-          ...[input.depth, input.normal, input.albedoMetallic, input.f0Occlusion].map(
+          ...[input.depth, input.normal, input.albedoMetallic, input.dielectricSpecular].map(
             (value, i) => ({
               binding: i + 1,
               resource: { kind: 'textureView' as const, value },

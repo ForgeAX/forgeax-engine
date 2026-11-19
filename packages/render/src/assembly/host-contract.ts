@@ -90,6 +90,10 @@ export interface RendererHostImplementation
     readonly lodOcclusion: LodOcclusionInspection | undefined;
     readonly gpuDriven: GpuDrivenProductionInspection;
   };
+  prepareRenderTargetEnvironment(
+    target: Parameters<Renderer['prepareRenderTargetEnvironment']>[0],
+    faces?: readonly FrameReceipt[],
+  ): ReturnType<Renderer['prepareRenderTargetEnvironment']>;
   drawFrame(
     request: RenderFrameInput | PublishedRenderFrameInput,
   ): RenderResult<FrameReceipt, RhiError | RenderError>;

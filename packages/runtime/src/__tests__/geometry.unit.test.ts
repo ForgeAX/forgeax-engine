@@ -1,6 +1,9 @@
-import { waterInfoShaderFixture } from '../../../render/src/__tests__/shader-manifest-fixture';
-// Consolidated by feat-20260609-test-pool-startup-reduction-merge-tiny-test-files
 // biome-ignore-all lint/complexity/noUselessLoneBlockStatements: block-scope isolation between merged source files (consolidation paradigm)
+import {
+  nativeOutputShaderFixture,
+  waterInfoShaderFixture,
+} from '../../../render/src/__tests__/shader-manifest-fixture';
+// Consolidated by feat-20260609-test-pool-startup-reduction-merge-tiny-test-files
 //
 // Source files (N=9):
 //   - packages/runtime/src/__tests__/builder-topology-stripIndexFormat.test.ts
@@ -2019,6 +2022,9 @@ function drawPublished(renderer: RendererType, world: WorldType) {
           setStencilReference: () => undefined,
           setViewport: () => undefined,
           setScissorRect: () => undefined,
+          setBlendConstant: () => undefined,
+          pushDebugGroup: () => undefined,
+          popDebugGroup: () => undefined,
           draw: spies.draw,
           drawIndexed: spies.drawIndexed,
           end: () => undefined,
@@ -2055,6 +2061,7 @@ function drawPublished(renderer: RendererType, world: WorldType) {
     const manifest = {
       entries: [
         ...waterInfoShaderFixture.entries,
+        ...nativeOutputShaderFixture.entries,
         { hash: 'pbr00000', wgsl: '/* pbr stub - calls f_schlick( */', glsl: '', bindings: '' },
         { hash: 'unlit000', wgsl: '/* unlit stub */', glsl: '', bindings: '' },
         {
@@ -2066,6 +2073,7 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       ],
       materialShaders: [
         ...waterInfoShaderFixture.materialShaders,
+        ...nativeOutputShaderFixture.materialShaders,
         materialShaderStub('forgeax::default-standard-pbr'),
         materialShaderStub('forgeax::default-unlit'),
       ],
@@ -2231,7 +2239,7 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       { component: C.Transform, data: cameraTransform() },
     );
     world.spawn(
-      { component: C.DirectionalLight, data: {} },
+      { component: C.DirectionalLight, data: { direction: [0, -1, 0] } },
       { component: C.Transform, data: cameraTransform() },
     );
     world.spawn(

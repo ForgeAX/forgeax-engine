@@ -240,3 +240,53 @@ describe('Render owner decoders', () => {
     expect(await decode(renderPipelineContribution, value)).toMatchObject({ ok: false });
   });
 });
+
+it('preserves scene-color AO through both native pipeline JSON routes', async () => {
+  const value = {
+    kind: 'render-pipeline',
+    pipelineId: 'forgeax::standard',
+    config: {
+      ssao: {
+        enabled: true,
+        algorithm: 'spiral-ssao',
+        application: 'scene-color',
+        sceneColorStrength: 0.95,
+        sampleCount: 12,
+        resolutionScale: 0.5,
+      },
+    },
+  };
+  expect(await decode(renderPipelineContribution, JSON.parse(JSON.stringify(value)))).toMatchObject(
+    { ok: true, value },
+  );
+  expect(await decode(renderPipelineContribution, {}, [], value)).toMatchObject({
+    ok: true,
+    value,
+  });
+  for (const application of ['unknown', 1])
+    expect(
+      await decode(renderPipelineContribution, {
+        ...value,
+        config: { ssao: { ...value.config.ssao, application } },
+      }),
+    ).toMatchObject({ ok: false });
+});
+
+it('normalizes saved output omission to V1 while preserving an explicit V2 JSON contract', async () => {
+  const saved = { kind: 'render-pipeline', pipelineId: 'forgeax::standard' };
+  expect(await decode(renderPipelineContribution, saved)).toMatchObject({
+    ok: true,
+    value: { config: { outputContract: 'standard-output-v1' } },
+  });
+  expect(await decode(renderPipelineContribution, {}, [], saved)).toMatchObject({
+    ok: true,
+    value: { config: { outputContract: 'standard-output-v1' } },
+  });
+  expect(
+    await decode(renderPipelineContribution, {
+      ...saved,
+      config: { outputContract: 'standard-output-v2' },
+    }),
+  ).toMatchObject({ ok: true, value: { config: { outputContract: 'standard-output-v2' } } });
+  expect(saved).not.toHaveProperty('config');
+});

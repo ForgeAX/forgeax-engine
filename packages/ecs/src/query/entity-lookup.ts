@@ -1,12 +1,11 @@
 import { err, ok, type Result } from '@forgeax/engine-types';
-import { type Component, componentDefinition, componentId } from '../component';
+import { type Component, componentId } from '../component';
 import { type EntityHandle, entityGeneration, entityIndex } from '../entity-handle';
 import type { ArrayStore } from '../storage/array-store';
 import { type ChangeColumn, stampChange } from '../storage/change-column';
-import type { Column } from '../storage/column';
+import { type Column, columnArrayLength, copyColumnArray } from '../storage/column';
 import type { Table } from '../storage/table';
 import type { EcsError, World } from '../world';
-import { copyColumnArray } from '../world-array-read';
 import { worldInternal } from '../world-internal';
 import type { WorldRead } from '../world-read';
 
@@ -70,14 +69,10 @@ export function createEntityLookup(
   fields: readonly (readonly [component: number, field: string])[],
 ): EntityLookup {
   const internal = world[worldInternal];
-  const graph = internal.getGraph();
-  const records = internal.getRecords();
-  const arrays = internal.getArrayStore();
+  const graph = internal.graph;
+  const records = internal.records;
+  const arrays = internal.arrayStore;
   const ids = components.map((component) => componentId(component));
-  const metadata = fields.map(
-    ([component, field]) =>
-      componentDefinition(components[component] as Component).fields[field]?.arrayMeta,
-  );
   const cache: (CachedColumns | undefined)[] = [];
   let located: CachedColumns = EMPTY;
 
@@ -106,7 +101,7 @@ export function createEntityLookup(
     get(entity: EntityHandle): boolean {
       const slot = entityIndex(entity);
       if (!records.isLive(slot, entityGeneration(entity))) return false;
-      const table = graph.tables[records.tableId[slot] as number];
+      const table = graph.archetypes[records.archetypeId[slot] as number]?.table;
       const row = records.tableRow[slot] as number;
       if (table === undefined) return false;
       lookup.slot = slot;
@@ -127,16 +122,12 @@ export function createEntityLookup(
       return true;
     },
     arrayLength(field: number): number | undefined {
-      const meta = metadata[field];
-      if (located.fields[field] === undefined || meta === undefined) return undefined;
-      if (meta.length !== undefined) return meta.length;
-      return (located.fields[field]?.view[lookup.row * 3 + 2] as number | undefined) ?? 0;
+      const column = located.fields[field];
+      return column === undefined ? undefined : columnArrayLength(column, lookup.row);
     },
     copyArray(field: number, target: Parameters<WorldRead['copyArray']>[3]): number | undefined {
       const column = located.fields[field];
-      const meta = metadata[field];
-      if (column === undefined || meta === undefined) return undefined;
-      return copyColumnArray(arrays, column, meta, lookup.row, target);
+      return column === undefined ? undefined : copyColumnArray(arrays, column, lookup.row, target);
     },
     markChanged(component: number, epoch: number): boolean {
       const changed = lookup.columns.changed[component];

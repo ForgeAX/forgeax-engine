@@ -6,6 +6,7 @@ import { expect, it } from 'vitest';
 import { Camera } from '../../components/camera';
 import { ReadonlyDynamicInputPage } from '../../surface/dynamic-input';
 import { publishSurfaceDynamicInput } from '../../surface/frame-source';
+import { SurfaceDynamicInputReceiver } from '../dynamic-input';
 import { createRenderPublisher } from '../publisher';
 import { RenderPublicationReceiver } from '../receiver';
 import { renderPublicationTransfers } from '../record';
@@ -17,7 +18,8 @@ it('publishes owned source records, rejects malformed packets atomically and wit
   const world = new World({ assets }),
     identity = { source: 'surface-page-source', epoch: 1 };
   const publisher = createRenderPublisher(world, assets, identity),
-    receiver = new RenderPublicationReceiver(identity);
+    receiver = new RenderPublicationReceiver(identity),
+    surface = new SurfaceDynamicInputReceiver();
   const entity = world
     .spawn(
       { component: Transform, data: {} },
@@ -81,6 +83,16 @@ it('publishes owned source records, rejects malformed packets atomically and wit
     expect(new DataView(input.page.bytes.buffer).getFloat32(0, true)).toBe(1);
     expect(input.ranges?.[0]?.member.worldIdentity).toBe(world.identity);
     expect('deviceGeneration' in input.page).toBe(false);
+    const initial = surface.restore(input, 1).unwrap();
+    const next = surface.restore({ ...input, frameTime: 3 }, 1).unwrap();
+    assert(initial && next && next.ranges?.[0]);
+    expect(next.page).toBe(initial.page);
+    expect(next.ranges).toBe(initial.ranges);
+    expect(next.page.captureRange(next.ranges[0]).ok).toBe(true);
+    const recovered = surface.restore(input, 2).unwrap();
+    assert(recovered?.ranges?.[0]);
+    expect(recovered.ranges).not.toBe(next.ranges);
+    expect(recovered.page.captureRange(recovered.ranges[0]).ok).toBe(true);
     publisher.recycle(accepted.packet.revision, renderPublicationTransfers(message)).unwrap();
     publishSurfaceDynamicInput(world, undefined);
     const cleared = publisher.prepare(1 / 60).unwrap();
@@ -114,6 +126,7 @@ it('publishes owned source records, rejects malformed packets atomically and wit
   } finally {
     publisher.dispose();
     receiver.dispose();
+    surface.dispose();
     page.release().unwrap();
     assets.dispose();
   }

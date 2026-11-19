@@ -1,9 +1,9 @@
 #define_import_path forgeax_ray::irradiance_field
 #import forgeax_view::common::{View, hash32}
 #import forgeax_pbr::ibl_shared::{importanceSampleGGX}
-#import forgeax_pbr::gbuffer::{loadStandardNormalRoughness}
+#import forgeax_pbr::gbuffer::{loadStandardGBufferNormalRoughness, loadStandardGBufferValid}
 #import forgeax_scene_temporal::{unpackSceneTemporalV1}
-#import forgeax_pbr::lighting_attenuation::{evalDistanceAttenuation, evalSpotAttenuation}
+#import forgeax_pbr::lighting_attenuation::{evalDistanceAttenuation, evalSpotAttenuation, decodeSpotDecay}
 #import forgeax_ray::irradiance_field_sample::{sampleIrradianceField, irradianceFieldSpacing, sampleRadianceCacheAt, radianceCacheConeAngle}
 
 // Must match packIrradianceFieldFrame() in render/raytracing/irradiance-field.ts.
@@ -80,7 +80,7 @@ fn cardTexel(i: u32) -> u32 {
       scale = evalDistanceAttenuation(distance * distance, light.directionRange.w, light.radiance.w, 1e-4);
       if (kind == 3u) {
         scale = evalSpotAttenuation(light.positionKind.xyz, light.directionRange.xyz, s.position,
-          light.cone.x, light.cone.y, light.directionRange.w);
+          light.cone.x, light.cone.y, light.directionRange.w, decodeSpotDecay(bitcast<u32>(light.radiance.w)));
       }
     }
     irradiance += light.radiance.xyz * (scale * max(dot(s.normal, incoming), 0.0));
@@ -127,9 +127,9 @@ fn receiverPosition(pixel: vec2u, depth: f32, extent: vec2u) -> vec3f {
   gathered[i] = vec4f(0.0);
   if (any(textureDimensions(gbufferDepth) != extent)) { return; }
   let depth = textureLoad(gbufferDepth, vec2i(pixel), 0);
-  if (!(depth > 0.0 && depth < 1.0)) { return; }
+  if (!(depth > 0.0 && depth < 1.0) || !loadStandardGBufferValid(gbufferNormal, vec2i(pixel))) { return; }
   let position = receiverPosition(pixel, depth, extent);
-  let normal = loadStandardNormalRoughness(gbufferNormal, vec2i(pixel)).xyz;
+  let normal = loadStandardGBufferNormalRoughness(gbufferNormal, vec2i(pixel)).xyz;
   let toView = view.cameraPos - position;
   let value = sampleIrradianceField(position, normal, toView / max(length(toView), 1e-8));
   if (value.w < 0.0) { gathered[i] = value; return; }
@@ -151,9 +151,9 @@ fn receiverPosition(pixel: vec2u, depth: f32, extent: vec2u) -> vec3f {
   if (any(textureDimensions(gbufferDepth) != extent)) { return; }
   let pixel = vec2u(i % extent.x, i / extent.x);
   let depth = textureLoad(gbufferDepth, vec2i(pixel), 0);
-  if (!(depth > 0.0 && depth < 1.0)) { return; }
+  if (!(depth > 0.0 && depth < 1.0) || !loadStandardGBufferValid(gbufferNormal, vec2i(pixel))) { return; }
   let position = receiverPosition(pixel, depth, extent);
-  let normal = loadStandardNormalRoughness(gbufferNormal, vec2i(pixel)).xyz;
+  let normal = loadStandardGBufferNormalRoughness(gbufferNormal, vec2i(pixel)).xyz;
   let size = fieldFrame.gather.xy;
   let spacing = irradianceFieldSpacing();
   let xy = clamp(vec2f(pixel) * 0.5, vec2f(0.0), vec2f(size - vec2u(1u)));
@@ -169,7 +169,8 @@ fn receiverPosition(pixel: vec2u, depth: f32, extent: vec2u) -> vec3f {
     let source = min(g * 2u, extent - vec2u(1u));
     let sourceDepth = textureLoad(gbufferDepth, vec2i(source), 0);
     let sourcePosition = receiverPosition(source, sourceDepth, extent);
-    let sourceNormal = loadStandardNormalRoughness(gbufferNormal, vec2i(source)).xyz;
+    if (!loadStandardGBufferValid(gbufferNormal, vec2i(source))) { continue; }
+    let sourceNormal = loadStandardGBufferNormalRoughness(gbufferNormal, vec2i(source)).xyz;
     let axis = select(vec2f(1.0) - f, f, offset > vec2u(0u));
     let plane = abs(dot(sourcePosition - position, normal)) / (0.25 * spacing);
     let weight = axis.x * axis.y * exp(-plane * plane) * pow(max(dot(sourceNormal, normal), 0.0), 8.0);
@@ -210,9 +211,9 @@ fn reflectionTracedFraction(roughness: f32) -> f32 {
   if (any(textureDimensions(gbufferDepth) != extent)) { return; }
   let pixel = vec2u(i % extent.x, i / extent.x);
   let depth = textureLoad(gbufferDepth, vec2i(pixel), 0);
-  if (!(depth > 0.0 && depth < 1.0)) { return; }
+  if (!(depth > 0.0 && depth < 1.0) || !loadStandardGBufferValid(gbufferNormal, vec2i(pixel))) { return; }
   let position = receiverPosition(pixel, depth, extent);
-  let surface = loadStandardNormalRoughness(gbufferNormal, vec2i(pixel));
+  let surface = loadStandardGBufferNormalRoughness(gbufferNormal, vec2i(pixel));
   let n = surface.xyz;
   let roughness = surface.w;
   let toView = view.cameraPos - position;
@@ -307,7 +308,8 @@ fn reflectionHistoryUv(position: vec3f, distance: f32, surfaceUv: vec2f) -> vec2
   if (current.w != 1.0) { return; }
   let pixel = vec2i(i32(i % extent.x), i32(i / extent.x));
   let position = receiverPosition(vec2u(pixel), textureLoad(gbufferDepth, pixel, 0), extent);
-  let surface = loadStandardNormalRoughness(gbufferNormal, pixel);
+  if (!loadStandardGBufferValid(gbufferNormal, pixel)) { return; }
+  let surface = loadStandardGBufferNormalRoughness(gbufferNormal, pixel);
   var m1 = vec3f(0.0);
   var m2 = vec3f(0.0);
   var taps = 0.0;

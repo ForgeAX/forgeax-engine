@@ -15,10 +15,12 @@ import { RenderScene } from '../render-scene';
 import { ResidualRoster } from '../residual-roster';
 import { ViewCull, type ViewCullInput } from '../view-cull';
 
-const covered = new MaterialResource(defaultMaterialSnapshot(1));
+// Accepted native values for incremental-cull tests; borrowed cases supply raw snapshots explicitly.
+const covered = new MaterialResource({ ...defaultMaterialSnapshot(1), immutableValues: true });
 // A distinct texture binding keeps the residual material out of the covered row-material batch.
 const residual = new MaterialResource({
   ...defaultMaterialSnapshot(2),
+  immutableValues: true,
   textureHandles: new Map([['baseColorTexture', 2]]),
 } as unknown as ReturnType<typeof defaultMaterialSnapshot>);
 
@@ -294,7 +296,9 @@ it('tests an edited outside row even when the prior residual envelope is enclose
 });
 
 it('retains complete tests for borrowed material values across camera and Mesh changes', () => {
-  const f = cullFixture(16);
+  const { immutableValues: _covered, ...rawCovered } = covered.snapshot;
+  const { immutableValues: _residual, ...rawResidual } = residual.snapshot;
+  const f = cullFixture(16, new MaterialResource(rawCovered), new MaterialResource(rawResidual));
   const mesh = createPrimitiveMesh('cube').unwrap();
   const meshes = new MeshFrame().with(9, mesh);
   const current = (x: number, geometry = meshes) => {

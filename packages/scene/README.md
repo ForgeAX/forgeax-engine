@@ -189,11 +189,11 @@ const level: SceneAsset = {
 
 Authored primitive fields are checked before storage conversion: scalar types, finite floating-point values, integer ranges and fixed-array lengths must match the declared schema. Typed numeric author arrays project their values instead of reinterpreting bytes. Malformed values return `asset-package-invalid` before any scene entity is spawned. Omitted fields still use schema defaults.
 
-`buffer` and `buffer<N>` store raw bytes. Native buffers and views preserve their
-exact byte window, including wider TypedArrays and DataViews; externalization
-projects those bytes to JSON arrays, and binding checks byte values and the fixed
-byte count. All fixed arrays, including entity and shared-handle arrays, enforce
-their schema length. Shape annotations do not change the underlying storage type.
+Byte fields use `array<u8>` or `array<u8, N>`. Producers that need the raw bytes
+of another native view pass an explicit `Uint8Array(buffer, byteOffset, byteLength)`;
+externalization writes an ordinary JSON number array. All authored fixed arrays,
+including byte, entity and shared-handle arrays, enforce their schema length.
+Shape annotations do not change the underlying storage type.
 
 Schema-declared scalar and array entity references bind after all owned entities and mount carriers exist. Forward and cyclic references therefore resolve to the current instance; hierarchy still follows its parent-first ordering. This does not make hierarchy cycles valid.
 

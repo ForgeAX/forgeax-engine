@@ -24,6 +24,7 @@ import {
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { compactTape } from './compact-tape.fixture';
 import { testAssets } from './helpers/runtime-assets';
@@ -170,14 +171,14 @@ export async function verifyLensFlare(
   box(-3, 2, -8, 0.5, 60);
   const lease = renderValue(renderer.attach(world));
   let completedFrames = 0;
-  const requestObservation = renderer.requestObservation?.bind(renderer);
-  if (!requestObservation) throw new Error('missing linear-LDR observation');
   const draw = async (observe = false) => {
-    if (observe) renderValue(requestObservation(['linear-ldr']));
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
-    const receipt = renderValue(renderer.draw({ source: lease, geometryLane: 'direct' }));
-    renderValue(await receipt.completed);
+    const receipt = await drawReadyFrame(
+      renderer,
+      { source: lease, geometryLane: 'direct' },
+      observe ? ['linear-ldr'] : undefined,
+    );
     completedFrames++;
     return receipt;
   };
@@ -474,7 +475,7 @@ export async function verifyLensFlare(
     const bloomIndex = passes.findLastIndex((pass) => pass.includes('bloom'));
     expect(bloomIndex).toBeGreaterThanOrEqual(0);
     expect(flareIndex).toBeGreaterThan(bloomIndex);
-    expect(flareIndex).toBeLessThan(passes.indexOf('output-transform'));
+    expect(flareIndex).toBeLessThan(passes.indexOf('standard-grade'));
     composedPasses = passes;
     expect(errors).toEqual([]);
     if (resize) {

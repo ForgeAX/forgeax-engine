@@ -136,6 +136,22 @@ export function viewFogIsActive(
   );
 }
 
+/** Ordinary Forward owns vertex fog; captures and full Atmosphere keep their transport. */
+export function forwardVertexFogIsActive(
+  fog: FogFrame | undefined,
+  environment: EnvironmentFrame | undefined,
+  renderPath: 'forward' | 'deferred' | undefined,
+  capture: boolean,
+): boolean {
+  return (
+    renderPath === 'forward' &&
+    !capture &&
+    fog !== undefined &&
+    fogIsActive(fog) &&
+    !(environment?.source.kind === 'atmosphere' && !environment.source.atmosphere.backgroundOnly)
+  );
+}
+
 /** Select one immutable frame fact set for every Standard lighting path. */
 export function selectEnvironment(
   input: EnvironmentSelectionInput,

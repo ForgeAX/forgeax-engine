@@ -1,4 +1,5 @@
 import type { WorkspaceState } from '@forgeax/view-workspace-core/contract';
+import type { EngineWorkspaceProjectExpectation } from '@forgeax/engine/app';
 import type { ViewWorkspaceBroker } from '@forgeax/view-workspace-core/broker';
 import { realpath } from 'node:fs/promises';
 import { resolve } from 'node:path';
@@ -37,8 +38,19 @@ export async function projectIdentity(input: string) {
 
 function publishedProject(snapshot: WorkspaceState, viewerUrl: string | undefined, alreadyOpen: boolean) {
   const project = snapshot?.project;
-  const target = snapshot?.projectTarget;
-  if (typeof project?.root !== 'string' || project.root.trim() === '' || typeof target?.url !== 'string' || target.url.trim() === '') {
+  const status = snapshot?.projectStatus;
+  if (status?.phase === 'failed') {
+    const failure = status.failure;
+    throw viewProjectOpenError(
+      typeof failure.code === 'string' ? failure.code : 'view-project-startup-failed',
+      typeof failure.hint === 'string' ? failure.hint : 'The Engine project session failed to start.',
+      failure,
+    );
+  }
+  const document = snapshot?.projectDocument ??
+    (status && status.phase !== 'preparing' ? status.document : undefined);
+  if (typeof project?.root !== 'string' || project.root.trim() === '' ||
+      !document || typeof document.url !== 'string' || document.url.trim() === '') {
     throw viewProjectOpenError(
       'view-project-open-incomplete',
       'The opened project did not publish a headed target URL.',
@@ -54,19 +66,84 @@ function publishedProject(snapshot: WorkspaceState, viewerUrl: string | undefine
       ...(project.name === undefined ? {} : { name: project.name }),
     },
     projectTarget: {
-      url: target.url,
-      ...(target.targetId === undefined ? {} : { targetId: target.targetId }),
+      url: document.url,
+      targetId: document.targetId,
+      sessionId: document.sessionId,
+      browserGeneration: document.browserGeneration,
     },
   };
+}
+
+function waitForProjectDocument(
+  workspace: Pick<ViewWorkspaceBroker, 'snapshot' | 'subscribe'>,
+  projectRoot: string,
+  viewerUrl: string | undefined,
+  alreadyOpen: boolean,
+  signal?: AbortSignal,
+) {
+  const inspect = () => {
+    if (signal?.aborted) throw viewProjectOpenError('view-not-started', 'View has stopped. Run forgeax view start again when needed.');
+    const snapshot = workspace.snapshot();
+    if (snapshot.project?.root !== projectRoot) {
+      throw viewProjectOpenError('view-project-session-stale', 'The selected project session changed while its document was being prepared.');
+    }
+    const status = snapshot.projectStatus;
+    if (status?.phase === 'failed') return publishedProject(snapshot, viewerUrl, alreadyOpen);
+    const document = snapshot.projectDocument ??
+      (status && status.phase !== 'preparing' ? status.document : undefined);
+    if (document) return publishedProject(snapshot, viewerUrl, alreadyOpen);
+    if (status?.phase !== 'preparing') {
+      throw viewProjectOpenError('view-project-open-incomplete',
+        'The Engine did not publish its headed project document at startup.', { project: snapshot.project ?? null, phase: status?.phase ?? null });
+    }
+    return undefined;
+  };
+  try {
+    const immediate = inspect();
+    if (immediate) return Promise.resolve(immediate);
+  } catch (error) {
+    return Promise.reject(error);
+  }
+  return new Promise<ReturnType<typeof publishedProject>>((resolvePromise, rejectPromise) => {
+    let disposed = false;
+    let unsubscribe = () => {};
+    const fail = (error: unknown) => {
+      if (disposed) return;
+      disposed = true;
+      unsubscribe();
+      signal?.removeEventListener('abort', abort);
+      rejectPromise(error);
+    };
+    const succeed = (value: ReturnType<typeof publishedProject>) => {
+      if (disposed) return;
+      disposed = true;
+      unsubscribe();
+      signal?.removeEventListener('abort', abort);
+      resolvePromise(value);
+    };
+    const check = () => {
+      try {
+        const value = inspect();
+        if (value) succeed(value);
+      } catch (error) { fail(error); }
+    };
+    const abort = () => fail(viewProjectOpenError('view-not-started', 'View has stopped. Run forgeax view start again when needed.'));
+    unsubscribe = workspace.subscribe(check);
+    signal?.addEventListener('abort', abort, { once: true });
+    check();
+  });
 }
 
 /**
  * Open the project on the broker captured for this View.
  * Does not start View, launch a browser, or switch away from another project.
  */
-export async function openViewProject(workspace: Pick<ViewWorkspaceBroker, 'snapshot' | 'openProject'>, projectPath: string, { signal, viewerUrl }: { signal?: AbortSignal; viewerUrl?: string } = {}) {
+export async function openViewProject(workspace: Pick<ViewWorkspaceBroker, 'snapshot' | 'openProject' | 'subscribe'>, projectPath: string, { signal, viewerUrl }: { signal?: AbortSignal; viewerUrl?: string } = {}) {
   if (!workspace || typeof workspace.snapshot !== 'function' || typeof workspace.openProject !== 'function') {
     throw viewProjectOpenError('view-not-started', 'Run forgeax backend start, then forgeax view start.');
+  }
+  if (typeof workspace.subscribe !== 'function') {
+    throw viewProjectOpenError('view-workspace-status-unavailable', 'View requires the Engine owner status subscription to report project document readiness.');
   }
   if (signal?.aborted) {
     throw viewProjectOpenError('view-not-started', 'View has stopped. Run forgeax view start again when needed.');
@@ -80,6 +157,7 @@ export async function openViewProject(workspace: Pick<ViewWorkspaceBroker, 'snap
   }
   const current = workspace.snapshot();
   const currentRoot = current?.project?.root;
+  let expectedProject: EngineWorkspaceProjectExpectation = { kind: 'empty' };
   if (typeof currentRoot === 'string' && currentRoot.trim() !== '') {
     const openRoot = await projectIdentity(currentRoot);
     if (openRoot !== requested) {
@@ -89,14 +167,22 @@ export async function openViewProject(workspace: Pick<ViewWorkspaceBroker, 'snap
         { root: currentRoot },
       );
     }
-    if (current.workspaceTargetLost !== true && typeof current.projectTarget?.url === 'string' && current.projectTarget.url !== '') {
+    if (current.workspaceTargetLost !== true && current.projectStatus?.phase !== 'failed') {
+      return waitForProjectDocument(workspace, currentRoot, viewerUrl, true, signal);
+    }
+    const status = current.projectStatus;
+    if (status?.phase === 'failed' && status.failure.code !== 'engine-workspace-page-lost') {
       return publishedProject(current, viewerUrl, true);
     }
+    if (!status || !('sessionId' in status)) {
+      throw viewProjectOpenError('view-project-session-identity-unavailable', 'The retired project must expose its Engine session identity before recovery.');
+    }
+    expectedProject = { kind: 'session', sessionId: status.sessionId, generation: status.generation, recovery: 'lost' };
   }
   let opened;
   try {
     opened = await workspace.openProject(
-      { root: requested, tabId: VIEW_WORKSPACE_TAB_ID },
+      { root: requested, tabId: VIEW_WORKSPACE_TAB_ID, expectedProject },
       { signal },
     );
   } catch (error) {
@@ -108,7 +194,10 @@ export async function openViewProject(workspace: Pick<ViewWorkspaceBroker, 'snap
   if (signal?.aborted) {
     throw viewProjectOpenError('view-not-started', 'View has stopped. Run forgeax view start again when needed.');
   }
-  return publishedProject(opened, viewerUrl, false);
+  if (opened.project?.root !== requested) {
+    throw viewProjectOpenError('view-project-open-incomplete', 'The Engine did not admit the requested project facts.', { project: opened.project ?? null });
+  }
+  return waitForProjectDocument(workspace, requested, viewerUrl, false, signal);
 }
 
 export async function runViewProjectOpen(argv: readonly string[] = [], env = process.env) {

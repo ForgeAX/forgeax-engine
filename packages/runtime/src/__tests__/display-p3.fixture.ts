@@ -22,6 +22,7 @@ import {
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
+import { STANDARD_OUTPUT_V2_PARAMS_LAYOUT, TONEMAP_PARAMS_LAYOUT } from '@forgeax/engine-shader';
 import { expect } from 'vitest';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
@@ -424,31 +425,22 @@ export async function captureDisplayP3(
       }
       if (output === undefined) throw new Error('no Output Transform work in tape');
       const inspected = output.inspected;
-      const binding = inspected.bindings?.find(
-        (entry) => entry.groupIndex === 1 && entry.binding === 2,
-      );
-      if (binding?.resourceId == null) throw new Error('TonemapParams binding missing');
+      const { native, byteSize, binding } = outputParameterBinding(inspected);
+      if (binding?.resourceId == null) throw new Error('output parameter binding missing');
       const offset = (binding.bufferOffset ?? 0) + (binding.dynamicOffset ?? 0);
       const reads = (
         await replay.readAtWorks([
           {
             resourceId: binding.resourceId,
             workIndex: output.workIndex,
-            subresource: { offset, size: 32 },
+            subresource: { offset, size: byteSize },
           },
           { resourceId: output.colorId, workIndex: output.workIndex },
         ])
       ).unwrap();
       const [uniform, replayed] = reads.map((result) => result.unwrap());
       if (!uniform || !replayed) throw new Error('missing Display P3 readback');
-      const view = new DataView(uniform.bytes.buffer, uniform.bytes.byteOffset, 32);
-      const params = {
-        exposure: view.getFloat32(0, true),
-        whitePoint: view.getFloat32(4, true),
-        mode: view.getUint32(8, true),
-        ditherEnabled: view.getFloat32(12, true),
-        outputGamut: view.getUint32(16, true),
-      };
+      const params = decodeOutputParameters(uniform.bytes, native);
       expect(params.outputGamut).toBe(1);
       const bytesPerRow = replayed.bytes.byteLength / DISPLAY_P3_SIZE;
       const replayRgba = toRgba(replayed.bytes, bytesPerRow, replayed.format);
@@ -482,4 +474,36 @@ export async function captureDisplayP3(
   } finally {
     scene.dispose();
   }
+}
+
+function outputParameterBinding(inspected: WorkInspection) {
+  const native =
+    inspected.pipeline?.shaders.some(
+      (shader) => shader.stage === 'fragment' && shader.source?.includes('StandardOutputV2Params'),
+    ) === true;
+  const byteSize = native
+    ? STANDARD_OUTPUT_V2_PARAMS_LAYOUT.byteSize
+    : TONEMAP_PARAMS_LAYOUT.byteSize;
+  const binding = inspected.bindings?.find(
+    (entry) => entry.groupIndex === (native ? 0 : 1) && entry.binding === 2,
+  );
+  return { native, byteSize, binding };
+}
+
+function decodeOutputParameters(bytes: Uint8Array, native: boolean) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset);
+  return {
+    exposure: view.getFloat32(native ? 4 : 0, true),
+    whitePoint: view.getFloat32(native ? 8 : 4, true),
+    mode: native ? view.getFloat32(12, true) : view.getUint32(8, true),
+    ditherEnabled: native
+      ? view.getUint32(STANDARD_OUTPUT_V2_PARAMS_LAYOUT.policyOffset + 8, true)
+      : view.getFloat32(12, true),
+    outputGamut: view.getUint32(
+      native
+        ? STANDARD_OUTPUT_V2_PARAMS_LAYOUT.policyOffset
+        : TONEMAP_PARAMS_LAYOUT.outputGamutOffset,
+      true,
+    ),
+  };
 }

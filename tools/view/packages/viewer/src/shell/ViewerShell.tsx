@@ -87,7 +87,7 @@ import { PAGE_WORKBENCH_EDGES } from './workbench-layout/constants.ts';
 import type { HostConnection } from './HostConnectionIndicator';
 import {
   HeaderConnectionStatus,
-  WorkspaceProjectRecovery,
+  WorkspaceProjectChooser,
   useProjectSessionState,
   type WorkspaceRecoveryClient,
 } from './WorkspaceProjectRecovery';
@@ -936,6 +936,7 @@ export function ViewerShell({
   panelHost,
   hostConnection = { phase: 'connected' },
   workspaceClient,
+  launcher,
   selectedPageType,
   onSelectPageType,
   responsiveAutoTuck = true,
@@ -946,6 +947,7 @@ export function ViewerShell({
   panelHost?: ReturnType<typeof createViewPanelHost>;
   hostConnection?: HostConnection;
   workspaceClient?: WorkspaceRecoveryClient;
+  launcher?: import('../launcher.ts').ViewLauncher;
   selectedPageType?: string;
   onSelectPageType?: (typeId: string, signal?: AbortSignal) => void | Promise<unknown>;
   responsiveAutoTuck?: boolean;
@@ -1425,6 +1427,7 @@ export function ViewerShell({
           <Text as="strong" variant="caption" tone="primary">ForgeaX View</Text>
         </div>)}
         trailing={(<div className="fx-view-header__prefs">
+          <WorkspaceProjectChooser client={workspaceClient} connection={hostConnection} launcher={launcher} requiresProject={requiresProject} />
           <HeaderConnectionStatus connection={hostConnection} workspaceClient={workspaceClient} />
           <MenuDropdown
             label={t('view.theme')}
@@ -1478,7 +1481,7 @@ export function ViewerShell({
         onNewPage={openPage}
         labels={pageTabLabels}
       />
-      {workspaceClient ? <WorkspaceProjectRecovery client={workspaceClient} required={requiresProject} /> : null}
+
       {requiresProject && projectSession.restoring ? (
         <main className="fx-view-project-restoring" role="status" aria-live="polite">
           <Text as="strong" variant="heading" tone="primary">{t('view.projectRecovery.restoringTitle')}</Text>

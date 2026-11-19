@@ -114,6 +114,8 @@ export const SpotLight = defineComponent('SpotLight', {
   color: { type: 'array<f32, 3>', default: new Float32Array([1, 1, 1]) },
   intensity: { type: 'f32', default: 1 },
   range: { type: 'f32', default: Number.POSITIVE_INFINITY },
+  /** Distance exponent; zero leaves only the finite-range window. */
+  decay: { type: 'f64', default: 2 },
   // KHR_lights_punctual innerConeAngle default: falloff spans the whole cone,
   // so authoring only outerConeDeg is always valid. Equal angles give Three's
   // penumbra-0 hard edge.

@@ -4,7 +4,7 @@
 #ifdef DISPLACEMENT_TEXTURE_AVAILABLE
 #import forgeax_material::displacement::{displaceVertex, displacedNormal, parallaxSourceUvOffset}
 #endif
-#import forgeax_clipping::planes::{applyViewClipping, applyLocalClipping}
+#import forgeax_clipping::planes::{applyViewClipping, viewClippingRejected, applyLocalClipping}
 #import forgeax_pbr::standard_lighting::{SkylightUniforms, evaluateStandardEnvironment, evaluateStandardDirect}
 #import forgeax_pbr::gbuffer_output::{GBufferOutput, encodeStandardGBuffer}
 #import forgeax_pbr::gbuffer::{encodeStandardNormalRoughness}
@@ -13,10 +13,11 @@
 #import forgeax_material::surface_v1::{SurfaceInput, SurfaceData, surfaceGeometryNormal}
 #import forgeax_view::common::{viewDirectionToCamera, lightingChannelsMatch, View, Mesh, meshMotionValid, InstanceData, view, shadowMap, shadowSampler, sampleMaterialTexture}
 #ifdef TRANSMISSION_AVAILABLE
-#import forgeax_view::fog::{translucent_fog_transmission}
+#import forgeax_view::fog::{forward_fog_transmission}
 #else
-#import forgeax_view::fog::{translucent_fog}
+#import forgeax_view::fog::{forward_fog}
 #endif
+#import forgeax_view::fog::{vertex_height_fog}
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
 #import forgeax_view::common::{sceneIndexDraw, sceneIndexMorphPosition, sceneIndexMorphNormal, sceneIndexMorphTangent, sceneInstances}
 #else
@@ -66,6 +67,7 @@
 #pragma variant_axis REFLECTION_FALLBACK_AVAILABLE
 #pragma variant_axis COVERAGE_ONLY
 #pragma variant_axis ALPHA_MASK
+#pragma variant_axis CLIPPING_PLANES
 
 
 
@@ -495,7 +497,8 @@ struct VsOut {
   @location(4) @interpolate(flat) objectBasis0 : vec4<f32>,
   @location(6) @interpolate(flat) objectBasis2 : f32,
 #endif
-  @location(1) worldNormal : vec3<f32>,
+  // xyz retains the shading normal; w carries ordinary vertex-fog T.
+  @location(1) worldNormal : vec4<f32>,
 #ifndef STANDARD_UV_INPUT_UNUSED
   @location(2) uv0And1 : vec4<f32>,
 #endif
@@ -611,7 +614,7 @@ fn vs_main_impl(in : VsIn, paletteBase : u32, materialAddress : vec3<u32>, tempo
 #ifndef STANDARD_OBJECT_POSITION_UNUSED
   out.positionOS = localPosition;
 #endif
-  out.worldNormal = normalize(skinNormal3x3 * in.normal);
+  out.worldNormal = vec4<f32>(normalize(skinNormal3x3 * in.normal), vertex_height_fog(view, skinnedLocal.xyz));
 #ifndef STANDARD_TANGENT_INPUT_UNUSED
   let worldTangentXyz = normalize(skinNormal3x3 * in.tangent.xyz);
   out.worldTangent = vec4<f32>(worldTangentXyz, in.tangent.w);
@@ -877,7 +880,7 @@ fn standardParallaxInput(in : VsOut) -> VsOut {
       material.displacementTextureCoordinatesTransform, material.displacementTextureCoordinatesMetadata,
       material.displacementTextureCoordinatesRotation,
       select(pairs[pairIndex].xy, pairs[pairIndex].zw, upper), select(uvDx[pairIndex].xy, uvDx[pairIndex].zw, upper),
-      select(uvDy[pairIndex].xy, uvDy[pairIndex].zw, upper), positionDx, positionDy, in.worldNormal,
+      select(uvDy[pairIndex].xy, uvDy[pairIndex].zw, upper), positionDx, positionDy, in.worldNormal.xyz,
       in.worldTangent, viewDirectionToCamera(standardPositionWS), standardObjectToWorld(in));
     pairs[pairIndex] = pairs[pairIndex] + select(vec4<f32>(delta, 0.0, 0.0), vec4<f32>(0.0, 0.0, delta), upper);
     shifted.uv0And1 = pairs[0];
@@ -893,7 +896,7 @@ fn standardParallaxInput(in : VsOut) -> VsOut {
 
 fn evaluateStandardSurface(in : VsOut, frontFacing : bool, geometricNormal : vec3<f32>) -> SurfaceData {
 #ifdef DISPLACEMENT_TEXTURE_AVAILABLE
-  let triangleNormal = displacedNormal(standardPositionWS, in.worldNormal);
+  let triangleNormal = displacedNormal(standardPositionWS, in.worldNormal.xyz);
 #endif
 #if GPU_DRIVEN_SCENE_INDEX_AVAILABLE == true
   // Scene-index Surface helpers may close over the imported `material` symbol.
@@ -903,7 +906,6 @@ fn evaluateStandardSurface(in : VsOut, frontFacing : bool, geometricNormal : vec
   material = selectedMaterial(standardMaterialRow(in));
 #endif
 
-  applyViewClipping(standardPositionWS, false);
 #ifdef MATERIAL_CLIPPING_AVAILABLE
   applyLocalClipping(standardPositionWS, false, array<vec4<f32>, 6>(material.clippingPlaneA, material.clippingPlaneB, material.clippingPlaneC, material.clippingPlaneD, material.clippingPlaneE, material.clippingPlaneF), material.clippingControl);
 #endif
@@ -928,7 +930,7 @@ fn evaluateStandardSurface(in : VsOut, frontFacing : bool, geometricNormal : vec
 #else
   let positionOS = in.positionOS;
 #endif
-  var vertexNormal = in.worldNormal;
+  var vertexNormal = in.worldNormal.xyz;
 #ifdef DISPLACEMENT_TEXTURE_AVAILABLE
   if (standardUsesDisplacementTexture() && !standardUsesParallaxDisplacement() &&
     (material.displacementScale != 0.0 || material.displacementBias != 0.0)) {
@@ -968,7 +970,10 @@ fn finiteColor(value : vec3<f32>, fallback : vec3<f32>) -> vec3<f32> {
 // discard, so Apple TBDR keeps hidden-surface removal for the whole pass. A
 // runtime branch or override does not count; the compiler still sees the
 // discard and the GPU still disables early HSR for the pipeline.
-fn alphaTestSurface(surface : SurfaceData) {
+fn standardSurfaceRejected(surface : SurfaceData) -> bool {
+#if CLIPPING_PLANES == true
+  if (viewClippingRejected(standardPositionWS, false)) { return true; }
+#endif
 #if ALPHA_MASK == true
   // The stock Surface raises the clip threshold only when the material declares
   // alphaCutoff; without it (hash-only or coverage-only) the cutoff test is
@@ -976,13 +981,30 @@ fn alphaTestSurface(surface : SurfaceData) {
 #ifdef STANDARD_STOCK_SURFACE_AVAILABLE
 #ifdef ALPHA_CLIPPING_AVAILABLE
   if (surface.alphaClipThreshold > 0.0 && surface.opacity <= surface.alphaClipThreshold) {
-    discard;
+    return true;
   }
 #endif
 #else
   if (surface.alphaClipThreshold > 0.0 && surface.opacity <= surface.alphaClipThreshold) {
-    discard;
+    return true;
   }
+#endif
+#endif
+  return false;
+}
+
+fn alphaTestSurface(surface : SurfaceData) {
+#if CLIPPING_PLANES == true
+  if (standardSurfaceRejected(surface)) { discard; }
+#else
+#if ALPHA_MASK == true
+#ifdef STANDARD_STOCK_SURFACE_AVAILABLE
+#ifdef ALPHA_CLIPPING_AVAILABLE
+  if (standardSurfaceRejected(surface)) { discard; }
+#endif
+#else
+  if (standardSurfaceRejected(surface)) { discard; }
+#endif
 #endif
 #endif
 }
@@ -997,10 +1019,9 @@ struct StandardPbrOutput {
 #endif
 };
 
-// Lit Standard surface before translucent fog. The skin fs_main fogs it through the
-// View slot it is bound to; fs_opaque serves draws bound to the unfogged slot
-// (fogHeightOpacity.z == 0), where translucent fog is the identity unless the
-// surface transmits, so the fog chain is compiled out of that entry.
+// Lit Standard surface before its camera-to-surface medium. The admitted
+// Forward route applies interpolated height fog to opaque and blended color;
+// other routes retain the existing per-fragment translucent/capture behavior.
 struct StandardForwardLit {
   color : vec3<f32>,
   alpha : f32,
@@ -1026,9 +1047,9 @@ fn standardForwardOutput(lit : StandardForwardLit, color : vec3<f32>) -> Standar
 
 fn standardForwardFogged(in : VsOut, lit : StandardForwardLit) -> StandardPbrOutput {
 #ifdef TRANSMISSION_AVAILABLE
-  return standardForwardOutput(lit, translucent_fog_transmission(view, standardPositionWS, lit.color, lit.alpha, lit.transmittedContribution, lit.transmittedCoefficient));
+  return standardForwardOutput(lit, forward_fog_transmission(view, standardPositionWS, in.worldNormal.w, lit.color, lit.alpha, lit.transmittedContribution, lit.transmittedCoefficient));
 #else
-  return standardForwardOutput(lit, translucent_fog(view, standardPositionWS, lit.color, lit.alpha));
+  return standardForwardOutput(lit, forward_fog(view, standardPositionWS, in.worldNormal.w, lit.color, lit.alpha));
 #endif
 }
 
@@ -1086,15 +1107,23 @@ fn standardSsrCoverage() -> f32 {
   return coverage;
 }
 
-// Forward shading shared by the fs_main and fs_opaque entries.
-fn standardSkinForwardLit(in : VsOut, frontFacing : bool, screenReceiver : bool) -> StandardForwardLit {
+// Sampling and derivatives precede entry-owned coverage and shared lighting.
+struct StandardForwardSurface {
+  surface : SurfaceData,
+  receiverNormal : vec3<f32>,
+  geometricNormal : vec3<f32>,
+  normalSpread : f32,
+  useDirectDfgLut : bool,
+};
+
+fn prepareStandardForwardSurface(in : VsOut, frontFacing : bool, screenReceiver : bool) -> StandardForwardSurface {
   let _variantIdentity = standardSkinVariantIdentity();
   // Freeze actual triangle geometry before clipping or alpha discard. The
   // receiver plane and offset cannot follow a BA gradient or normal map.
   let receiverNormal = surfaceGeometryNormal(dpdx(standardPositionWS), dpdy(standardPositionWS),
-    in.worldNormal * select(-1.0, 1.0, frontFacing));
+    in.worldNormal.xyz * select(-1.0, 1.0, frontFacing));
   let geometricNormal = receiverNormal * select(-1.0, 1.0, frontFacing);
-  var normalSpread = geometricNormalSpread(in.worldNormal);
+  var normalSpread = geometricNormalSpread(in.worldNormal.xyz);
   var surface = evaluateStandardSurface(in, frontFacing, geometricNormal);
 #ifdef CLUSTER_FORWARD_AVAILABLE
   if (screenReceiver) {
@@ -1123,7 +1152,15 @@ fn standardSkinForwardLit(in : VsOut, frontFacing : bool, screenReceiver : bool)
 #ifdef DIRECT_DFG_LUT_AVAILABLE
   useDirectDfgLut = material.directMultiscatteringLut != 0u;
 #endif
-  alphaTestSurface(surface);
+  return StandardForwardSurface(surface, receiverNormal, geometricNormal, normalSpread, useDirectDfgLut);
+}
+
+fn standardSkinForwardLit(in : VsOut, frontFacing : bool, screenReceiver : bool, prepared : StandardForwardSurface) -> StandardForwardLit {
+  let surface = prepared.surface;
+  let receiverNormal = prepared.receiverNormal;
+  let geometricNormal = prepared.geometricNormal;
+  let normalSpread = prepared.normalSpread;
+  let useDirectDfgLut = prepared.useDirectDfgLut;
   let alpha = materialOutputAlpha(surface.opacity, standardAlphaMode());
   let albedo = surface.baseColor;
   let metallic = clamp(finiteScalar(surface.metallic, 0.0), 0.0, 1.0);
@@ -1583,7 +1620,7 @@ fn standardSkinForwardLit(in : VsOut, frontFacing : bool, screenReceiver : bool)
   }
 #endif
   clearcoatRoughnessValue = specularAntiAliasedRoughness(clearcoatRoughnessValue, normalSpread);
-  var clearcoatBaseNormal = in.worldNormal;
+  var clearcoatBaseNormal = in.worldNormal.xyz;
 #ifdef FLAT_SHADING_AVAILABLE
   clearcoatBaseNormal = select(clearcoatBaseNormal, geometricNormal, material.flatShading != 0u);
 #endif
@@ -1707,17 +1744,49 @@ fn standardSkinForwardLit(in : VsOut, frontFacing : bool, screenReceiver : bool)
 @fragment
 fn fs_main(in : VsOut, @builtin(front_facing) frontFacing : bool) -> StandardPbrOutput {
   standardPositionWS = standardFragmentPosition(in);
-  return standardForwardFogged(in, standardSkinForwardLit(standardParallaxInput(in), frontFacing, false));
+  let displaced = standardParallaxInput(in);
+  let prepared = prepareStandardForwardSurface(displaced, frontFacing, false);
+#if CLIPPING_PLANES == true
+  if (standardSurfaceRejected(prepared.surface)) { discard; }
+#else
+#if ALPHA_MASK == true
+#ifdef STANDARD_STOCK_SURFACE_AVAILABLE
+#ifdef ALPHA_CLIPPING_AVAILABLE
+  if (standardSurfaceRejected(prepared.surface)) { discard; }
+#endif
+#else
+  if (standardSurfaceRejected(prepared.surface)) { discard; }
+#endif
+#endif
+#endif
+  let lit = standardSkinForwardLit(displaced, frontFacing, false, prepared);
+  return standardForwardFogged(in, lit);
 }
 
-// See the rigid Standard fs_opaque: identical to fs_main on the unfogged slot.
+// The base View applies height fog only on the admitted vertex-height route.
 @fragment
 fn fs_opaque(in : VsOut, @builtin(front_facing) frontFacing : bool) -> StandardPbrOutput {
   standardPositionWS = standardFragmentPosition(in);
-  let lit = standardSkinForwardLit(standardParallaxInput(in), frontFacing, false);
+  let displaced = standardParallaxInput(in);
+  let prepared = prepareStandardForwardSurface(displaced, frontFacing, false);
+#if CLIPPING_PLANES == true
+  if (standardSurfaceRejected(prepared.surface)) { discard; }
+#else
+#if ALPHA_MASK == true
+#ifdef STANDARD_STOCK_SURFACE_AVAILABLE
+#ifdef ALPHA_CLIPPING_AVAILABLE
+  if (standardSurfaceRejected(prepared.surface)) { discard; }
+#endif
+#else
+  if (standardSurfaceRejected(prepared.surface)) { discard; }
+#endif
+#endif
+#endif
+  let lit = standardSkinForwardLit(displaced, frontFacing, false, prepared);
 #ifdef TRANSMISSION_AVAILABLE
   return standardForwardFogged(in, lit);
 #else
+  if view.fogSky.y > 0.5 { return standardForwardFogged(in, lit); }
   return standardForwardOutput(lit, lit.color);
 #endif
 }
@@ -1726,10 +1795,26 @@ fn fs_opaque(in : VsOut, @builtin(front_facing) frontFacing : bool) -> StandardP
 @fragment
 fn fs_forward_screen(in : VsOut, @builtin(front_facing) frontFacing : bool) -> StandardPbrOutput {
   standardPositionWS = standardFragmentPosition(in);
-  let lit = standardSkinForwardLit(standardParallaxInput(in), frontFacing, true);
+  let displaced = standardParallaxInput(in);
+  let prepared = prepareStandardForwardSurface(displaced, frontFacing, true);
+#if CLIPPING_PLANES == true
+  if (standardSurfaceRejected(prepared.surface)) { discard; }
+#else
+#if ALPHA_MASK == true
+#ifdef STANDARD_STOCK_SURFACE_AVAILABLE
+#ifdef ALPHA_CLIPPING_AVAILABLE
+  if (standardSurfaceRejected(prepared.surface)) { discard; }
+#endif
+#else
+  if (standardSurfaceRejected(prepared.surface)) { discard; }
+#endif
+#endif
+#endif
+  let lit = standardSkinForwardLit(displaced, frontFacing, true, prepared);
 #ifdef TRANSMISSION_AVAILABLE
   return standardForwardFogged(in, lit);
 #else
+  if view.fogSky.y > 0.5 { return standardForwardFogged(in, lit); }
   return standardForwardOutput(lit, lit.color);
 #endif
 }
@@ -1748,7 +1833,7 @@ fn fs_gbuffer(in : VsOut, @builtin(front_facing) frontFacing : bool) -> GBufferO
 fn standardAoInput(in : VsOut, frontFacing : bool) -> u32 {
   standardPositionWS = standardFragmentPosition(in);
   let rawGeometry = surfaceGeometryNormal(dpdx(standardPositionWS), dpdy(standardPositionWS), vec3<f32>(0.0));
-  let receiverNormal = select(in.worldNormal * select(-1.0, 1.0, frontFacing), rawGeometry,
+  let receiverNormal = select(in.worldNormal.xyz * select(-1.0, 1.0, frontFacing), rawGeometry,
     dot(rawGeometry, rawGeometry) > 0.0);
   let geometricNormal = receiverNormal * select(-1.0, 1.0, frontFacing);
   let surface = evaluateStandardSurface(in, frontFacing, geometricNormal);
@@ -1771,8 +1856,8 @@ fn fs_ao_input_msaa(in : VsOut, @builtin(front_facing) frontFacing : bool) -> @l
 // skinned pixels read as uncovered instead of keeping an occluded surface's row.
 struct SkinUncoveredGBufferOutput {
   @location(0) scene_color : vec4<f32>,
-  @location(1) normal_roughness : u32,
-  @location(2) f0_occlusion : vec2<u32>,
+  @location(1) normal_roughness : vec2<u32>,
+  @location(2) dielectric_specular : u32,
   @location(3) albedo_metallic : u32,
   @location(4) lighting_context : vec2<u32>,
   @location(5) receiver_geometry : vec2<u32>,
@@ -1784,7 +1869,7 @@ struct SkinUncoveredGBufferOutput {
 fn fs_gbuffer_uncovered(in : VsOut, @builtin(front_facing) frontFacing : bool) -> SkinUncoveredGBufferOutput {
   standardPositionWS = standardFragmentPosition(in);
   let g = skinGBuffer(standardParallaxInput(in), frontFacing);
-  return SkinUncoveredGBufferOutput(g.scene_color, g.normal_roughness, g.f0_occlusion,
+  return SkinUncoveredGBufferOutput(g.scene_color, g.normal_roughness, g.dielectric_specular,
     g.albedo_metallic, g.lighting_context, g.receiver_geometry, vec4<u32>(0u), g.scene_temporal);
 }
 
@@ -1792,10 +1877,10 @@ fn skinGBuffer(in : VsOut, frontFacing : bool) -> GBufferOutput {
   // Freeze actual triangle geometry before clipping or alpha discard. The
   // receiver plane and offset cannot follow a BA gradient or normal map.
   let rawGeometry = surfaceGeometryNormal(dpdx(standardPositionWS), dpdy(standardPositionWS), vec3<f32>(0.0));
-  let receiverNormal = select(in.worldNormal * select(-1.0, 1.0, frontFacing), rawGeometry,
+  let receiverNormal = select(in.worldNormal.xyz * select(-1.0, 1.0, frontFacing), rawGeometry,
     dot(rawGeometry, rawGeometry) > 0.0);
   let geometricNormal = receiverNormal * select(-1.0, 1.0, frontFacing);
-  var normalSpread = geometricNormalSpread(in.worldNormal);
+  var normalSpread = geometricNormalSpread(in.worldNormal.xyz);
   let surface = evaluateStandardSurface(in, frontFacing, geometricNormal);
   normalSpread = max(normalSpread, shadingNormalSpread(surface.normalWS));
 #ifdef FLAT_SHADING_AVAILABLE
@@ -1828,7 +1913,7 @@ fn skinGBuffer(in : VsOut, frontFacing : bool) -> GBufferOutput {
   let specular = standardSurfaceSpecular(in, surface, standardDielectricF0(max(finiteScalar(material.ior, 1.5), 1.0)));
   var output = encodeStandardGBuffer(surface.normalWS, receiverNormal,
     specularAntiAliasedRoughness(clamp(surface.roughness, 0.04, 1.0), normalSpread),
-    surface.baseColor, clamp(surface.metallic, 0.0, 1.0), mix(specular.rgb, surface.baseColor, clamp(surface.metallic, 0.0, 1.0)), specular,
+    surface.baseColor, clamp(surface.metallic, 0.0, 1.0), specular,
     surface.occlusion, surface.emissive, materialOutputAlpha(surface.opacity, standardAlphaMode()), u32(skylight.diffuseScale.w), probeRow,
     standardReceivesShadows(in), in.surfaceData.y, subsurface,
     useDirectDfgLut,
@@ -1979,7 +2064,9 @@ fn fs_temporal(in : TemporalVsOut) -> @location(0) vec4<f32> {
 #if GPU_DRIVEN_SCENE_INDEX_AVAILABLE == true
   material = selectedMaterial(in.materialIndex);
 #endif
+#if CLIPPING_PLANES == true
   applyViewClipping(in.clippingPositionWS, false);
+#endif
 #ifdef MATERIAL_CLIPPING_AVAILABLE
   applyLocalClipping(in.clippingPositionWS, false, array<vec4<f32>, 6>(material.clippingPlaneA, material.clippingPlaneB, material.clippingPlaneC, material.clippingPlaneD, material.clippingPlaneE, material.clippingPlaneF), material.clippingControl);
 #endif

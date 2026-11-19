@@ -79,6 +79,45 @@ graph-created attachment still needs initialization before a possible load.
 This lets presentation select clear/load from actual scene output without
 recompiling the graph or replacing its physical output.
 
+### Color resolve placement
+
+Compilation removes a private color resolve only when the same view is resolved
+again unconditionally before any other access to its allocation. Intermediate
+readers, aliased views, conditional writers, subgraphs and imported publication
+targets retain their boundaries. Declaration validation runs first; callbacks keep
+their declared resource visibility, and committed texture contents track only
+retained native writes. Resource allocation and lifetime bounds remain conservative.
+
+Color attachments may select `storeOp: 'auto'` to permit releasing dead resolved
+MSAA samples. Compilation keeps `store` unless the source is graph-created and
+transient, starts with an unconditional clear of the same view, and ends with an
+unconditional resolve without a later source access or subgraph boundary. Aliases,
+persistent/imported sources and explicit diagnostic usage retain storage. Explicit
+`store` and `discard` keep their authored meanings. The RHI receives only native
+store operations; committed-content facts invalidate discarded sample ranges while
+the resolved image remains stored. This does not remove the MSAA allocation.
+
+### Native raster batches
+
+Compilation joins consecutive, unconditional raster stages with matching attachment
+views and compatible loads/stores. Intermediate resolves, clears, query sets,
+writable storage, subgraphs, copies and conflicting sampled aliases retain native
+boundaries. No feature work is reordered. Every logical callback keeps its own
+resolver and debug group; viewport, scissor, blend constant and stencil reference
+restart with native defaults. A depth-bearing background needs a pipeline with the
+same depth format, even when it neither tests nor writes depth.
+
+| Observation | Meaning |
+| :-- | :-- |
+| `inspect().passes[].rasterBatch` | Logical names in a compiled physical group |
+| `runPass` | Each logical stage, in declaration order |
+| `instrumentation.begin` | One actual native pass, with `logicalPassNames` for a batch |
+| `runPass.requiresPassBoundary(name)` | Explicit per-stage native observation/copy boundary |
+
+Ordinary CPU wrappers and GPU timestamp collection preserve batching. A runner
+that copies or observes attachments around its callback must declare that stage's
+boundary; wrappers preserve this property. Conditional stages stay independent.
+
 ### Allocation-explicit pass callbacks
 
 Use `encodeDirect(pass, frame, resources)` for raster/compute callbacks and

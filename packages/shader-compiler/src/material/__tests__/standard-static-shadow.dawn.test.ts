@@ -267,8 +267,10 @@ it('preserves real Standard shadow depth, two scene material rows, clipping and 
   const device = await adapter.requestDevice();
   device.pushErrorScope('validation');
   try {
-    const candidate = await cookStaticShadow();
+    const context = { lodCoverage: true, viewClipping: true } as const;
+    const candidate = await cookStaticShadow({ context });
     const reference = await cookStaticShadow({
+      context,
       staticSwitches: { ...OPAQUE_SWITCHES, alphaClipping: true },
     });
     for (const scene of [false, true]) {

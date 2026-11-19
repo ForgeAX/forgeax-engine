@@ -304,6 +304,14 @@ export function addProjectedDecalChannels(
       const internal = frame as _InternalRenderPipelineContext;
       const device = frame.runtime.device;
       if (project === undefined) {
+        if (
+          input.normal.format === 'rg32uint' &&
+          internal.runtime.standardSceneShaders?.gbuffer !== 'standard-gbuffer/2'
+        )
+          throw new ProjectedDecalInvalidError(
+            'shader',
+            'standard-gbuffer/2 decal projection; rebuild the Engine shader manifest',
+          );
         const source = internal.runtime.standardSceneShaders?.decalProject;
         const factory = frame.runtime.shaderModuleFactory;
         if (source === undefined || factory === undefined)
@@ -346,6 +354,7 @@ export function addProjectedDecalChannels(
             fragment: {
               module,
               entryPoint: 'fs_main',
+              ...(input.normal.format === 'rg32uint' ? { constants: { '64003': 1 } } : {}),
               targets: channels.map(({ format }) => ({
                 format,
                 blend: {
@@ -451,7 +460,7 @@ export function addProjectedDecalPasses(
   const outputs: RenderPipelineTarget[] = [];
   for (const name of ['normal', 'albedo', 'f0']) {
     const output = createRenderPipelineTarget(graph, `decal-surface-${name}`, {
-      format: name === 'f0' ? 'rg32uint' : 'r32uint',
+      format: name === 'normal' ? input.normal.format : 'r32uint',
       size: input.size,
     });
     if (!output.ok) return output;
@@ -478,6 +487,11 @@ export function addProjectedDecalPasses(
       const internal = frame as _InternalRenderPipelineContext;
       const device = frame.runtime.device;
       if (apply === undefined) {
+        if (internal.runtime.standardSceneShaders?.gbuffer !== 'standard-gbuffer/2')
+          throw new ProjectedDecalInvalidError(
+            'shader',
+            'standard-gbuffer/2 decal composition; rebuild the Engine shader manifest',
+          );
         const source = internal.runtime.standardSceneShaders?.decalApply;
         const factory = frame.runtime.shaderModuleFactory;
         if (source === undefined || factory === undefined)

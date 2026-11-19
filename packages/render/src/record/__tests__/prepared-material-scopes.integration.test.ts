@@ -621,3 +621,65 @@ it.each([
   expect(result.error.message).toContain('asset-handle-invalid');
   expect(f.createBindGroup).not.toHaveBeenCalled();
 });
+
+it('keeps custom lit values, real IBL and scoped ownership without Standard-only bindings', () => {
+  const f = scopedMaterialFixture();
+  vi.spyOn(f.assets.shaderRegistry, 'findMaterialArtifact').mockReturnValue(
+    ok({
+      receipt: { bindings: 'render-lit-material-and-scene-depth' },
+      program: {},
+      paramSchema: f.schema,
+    } as never),
+  );
+  const first = f.acquire();
+  const second = f.acquire();
+  expect(second.handle).toBe(first.handle);
+  const entries = f.createBindGroup.mock.lastCall?.[0].entries ?? [];
+  expect(entries.map((entry) => entry.binding)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 33]);
+  expect(entries.find((entry) => entry.binding === 3)?.resource.value).toBe(
+    f.skylight.irradianceView,
+  );
+  expect(entries.find((entry) => entry.binding === 8)?.resource.value).toEqual({
+    buffer: f.skylight.intensityBuffer,
+  });
+  expect(entries.find((entry) => entry.binding === 33)?.resource.value).toBe(
+    f.skylight.skylightPrefilterView,
+  );
+  expect(new Float32Array(f.writeBuffer.mock.calls[0]?.[2].buffer ?? new ArrayBuffer(0))[0]).toBe(
+    0.25,
+  );
+  f.setValue(0.75);
+  const changed = f.acquire();
+  expect(changed.handle).not.toBe(first.handle);
+  expect(new Float32Array(f.writeBuffer.mock.calls[1]?.[2].buffer ?? new ArrayBuffer(0))[0]).toBe(
+    0.75,
+  );
+  first.release().unwrap();
+  second.release().unwrap();
+  changed.release().unwrap();
+  expect(f.destroyBuffer).toHaveBeenCalledTimes(2);
+  expect(f.scope).toHaveLength(0);
+});
+
+it('does not allocate a user UBO or dynamic offset for empty custom lit materials', () => {
+  const f = scopedMaterialFixture();
+  f.schema.splice(0);
+  vi.spyOn(f.assets.shaderRegistry, 'findMaterialArtifact').mockReturnValue(
+    ok({
+      receipt: { bindings: 'render-lit-material-and-scene-depth' },
+      program: {},
+      paramSchema: [],
+    } as never),
+  );
+  const binding = f.acquire();
+  expect(f.createBuffer).not.toHaveBeenCalled();
+  expect(binding).not.toHaveProperty('dynamicOffsets');
+  expect(f.createBindGroup.mock.lastCall?.[0].entries.map((entry) => entry.binding)).toEqual([
+    0, 1, 2, 3, 4, 5, 30,
+  ]);
+  expect(f.createBindGroup.mock.lastCall?.[0].entries[0]?.resource.value).toBe(
+    f.skylight.irradianceView,
+  );
+  binding.release().unwrap();
+  expect(f.scope).toHaveLength(0);
+});

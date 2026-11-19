@@ -56,6 +56,7 @@ export {
   recordLoadTimeline,
   snapshotLoadTimeline,
 } from './load-timeline.js';
+export * from './material-lighting-inputs.js';
 export * from './material-program-abi.js';
 export { createMeshMaterialSlotTable, type MeshMaterialSlotSource } from './mesh-material-slots.js';
 export type { NavigationBakeSettings, NavigationMeshAsset } from './navigation.js';
@@ -95,6 +96,7 @@ export { type TextureFormatBlock, textureFormatBlock } from './texture/block.js'
 export type {
   GeneratedTextureDescriptor,
   GeneratedTextureSource,
+  GpuTextureMipFilter,
   TextureGenerationPass,
   TextureGenerationRead,
   TextureGeneratorAsset,

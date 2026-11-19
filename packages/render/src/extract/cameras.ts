@@ -1,4 +1,4 @@
-import type { EntityHandle, SchemaOf, ShapeOf, World } from '@forgeax/engine-ecs';
+import type { ComponentSchema, EntityHandle, SchemaOf, ShapeOf, World } from '@forgeax/engine-ecs';
 import { readRenderArrayView } from '@forgeax/engine-ecs/projection';
 import { worldRead } from '@forgeax/engine-ecs/world-read';
 import { mat4, vec3 } from '@forgeax/engine-math';
@@ -41,26 +41,29 @@ import {
 import { resolveMotionBlurParams } from '../features/motion-blur/motion-blur-params';
 import type { CameraSnapshot } from '../render-contract';
 import { collectCubeCameraSnapshots, resolveCameraTarget } from '../render-system-extract';
+import { type ActiveCamera, getActiveCamera } from '../systems/active-camera';
 import type { RenderTarget } from '../targets/contracts';
 import type { EnvironmentCameraReader } from './environment-frame-gate';
 
+const CAMERA_EFFECT_COMPONENTS = [
+  CameraView,
+  MotionBlur,
+  DynamicResolution,
+  ScreenSpaceReflection,
+  AmbientOcclusion,
+  DepthOfField,
+  BarrelDistortion,
+  LensEffects,
+  LensFlare,
+  ClippingPlanes,
+  Outline,
+  PlanarReflection,
+  StereoCamera,
+] as const;
+
 const collectCameraSnapshotsQuery = createEnvironmentQuery({
   read: [Camera],
-  optional: [
-    CameraView,
-    MotionBlur,
-    DynamicResolution,
-    ScreenSpaceReflection,
-    AmbientOcclusion,
-    DepthOfField,
-    BarrelDistortion,
-    LensEffects,
-    LensFlare,
-    ClippingPlanes,
-    Outline,
-    PlanarReflection,
-    StereoCamera,
-  ],
+  optional: CAMERA_EFFECT_COMPONENTS,
   with: [Transform, GlobalTransform],
 });
 
@@ -122,9 +125,14 @@ export function collectCameraSnapshots(
   world: World,
   reader?: EnvironmentCameraReader,
 ): CameraSnapshot[] {
+  const selection = getActiveCamera(world);
+  const key =
+    selection?.viewEntity === undefined
+      ? 'cameras'
+      : `cameras:${selection.entity}:${selection.viewEntity}`;
   return reader === undefined
-    ? buildCameraSnapshots(world)
-    : reader.readCameras(world, () => buildCameraSnapshots(world));
+    ? buildCameraSnapshots(world, selection)
+    : reader.readCameras(world, () => buildCameraSnapshots(world, selection), key);
 }
 
 /** Diagnostic ablation: `fxaa: false` turns authored FXAA off. */
@@ -137,8 +145,20 @@ function ablatedBloom<T>(authored: () => T): T | 'off' {
   return renderAblation()?.bloom === false ? 'off' : authored();
 }
 
-function buildCameraSnapshots(world: World): CameraSnapshot[] {
+function cameraSceneEffects(
+  inputs: CameraEffectInputs,
+): Pick<CameraSnapshot, 'ambientOcclusion' | 'screenSpaceReflection'> {
+  return {
+    ...(inputs.AmbientOcclusion === undefined ? {} : { ambientOcclusion: inputs.AmbientOcclusion }),
+    ...(inputs.ScreenSpaceReflection === undefined
+      ? {}
+      : { screenSpaceReflection: inputs.ScreenSpaceReflection }),
+  };
+}
+
+function buildCameraSnapshots(world: World, selection: ActiveCamera | undefined): CameraSnapshot[] {
   const cameras: CameraSnapshot[] = [];
+  const override = viewpointSelection(world, selection);
   const cameraQuery = collectCameraSnapshotsQuery(world).unwrap();
   for (const batch of cameraQuery.batches().unwrap()) {
     const entities = batch.entities;
@@ -182,7 +202,13 @@ function buildCameraSnapshots(world: World): CameraSnapshot[] {
         selection === undefined ? first + ordinal : (selection[ordinal] as number);
       const entity = entities[physicalRow] as EntityHandle;
       const postProcessing = cameraPostProcessingColumn[physicalRow] === 1;
-      const effectInputs = readCameraEffectInputs(world, batch, effectColumns, entity, physicalRow);
+      const effectInputs =
+        override?.entity === entity
+          ? readViewSourceEffects(world, override.viewEntity as EntityHandle)
+          : readCameraEffectInputs(world, batch, effectColumns, entity, physicalRow);
+      // Retain source-effect dependencies without projecting a second view or
+      // observing its unused pose. Authored camera components stay untouched.
+      if (override?.viewEntity === entity) continue;
       const camTarget = world[worldRead].getFieldValue(entity, Camera, 'target') as ShapeOf<
         SchemaOf<typeof Camera>
       >['target'];
@@ -205,8 +231,6 @@ function buildCameraSnapshots(world: World): CameraSnapshot[] {
         resolveCameraLensInputs(effectInputs);
       const depthOfField = effectInputs.DepthOfField;
       const dynamicResolution = effectInputs.DynamicResolution;
-      const screenSpaceReflection = effectInputs.ScreenSpaceReflection;
-      const ambientOcclusion = effectInputs.AmbientOcclusion;
       const projection = cameraProjectionFromF32(cameraProjectionColumn[physicalRow] as number);
       const depthOfFieldResult =
         depthOfField === undefined
@@ -361,16 +385,7 @@ function buildCameraSnapshots(world: World): CameraSnapshot[] {
         ...(!postProcessing || barrelDistortionResult.value === undefined
           ? {}
           : { barrelDistortion: barrelDistortionResult.value }),
-        ...(ambientOcclusion === undefined
-          ? {}
-          : {
-              ambientOcclusion: ambientOcclusion,
-            }),
-        ...(screenSpaceReflection === undefined
-          ? {}
-          : {
-              screenSpaceReflection: screenSpaceReflection,
-            }),
+        ...cameraSceneEffects(effectInputs),
       };
 
       cameras.push(snapshot);
@@ -414,6 +429,33 @@ interface CameraEffectInputs {
   ScreenSpaceReflection?: ShapeOf<SchemaOf<typeof ScreenSpaceReflection>>;
   AmbientOcclusion?: ShapeOf<SchemaOf<typeof AmbientOcclusion>>;
   StereoCamera?: ShapeOf<SchemaOf<typeof StereoCamera>>;
+}
+
+function viewpointSelection(
+  world: World,
+  selection: ActiveCamera | undefined,
+): (ActiveCamera & { readonly viewEntity: number }) | undefined {
+  if (selection?.viewEntity === undefined || selection.viewEntity === selection.entity)
+    return undefined;
+  for (const entity of [selection.entity, selection.viewEntity]) {
+    if (
+      !world.hasComponent(entity as EntityHandle, Camera) ||
+      !world.hasComponent(entity as EntityHandle, Transform) ||
+      !world.hasComponent(entity as EntityHandle, GlobalTransform)
+    )
+      return undefined;
+  }
+  return { ...selection, viewEntity: selection.viewEntity };
+}
+
+/** Selected viewpoints borrow the same companion inputs as their source view. */
+function readViewSourceEffects(world: World, entity: EntityHandle): CameraEffectInputs {
+  const inputs: Record<string, unknown> = {};
+  for (const component of CAMERA_EFFECT_COMPONENTS) {
+    if (world.hasComponent(entity, component))
+      inputs[component.name] = world.get<ComponentSchema>(entity, component).unwrap();
+  }
+  return inputs as CameraEffectInputs;
 }
 
 /** Borrowed columns stay inside one live batch; no cached view escapes a snapshot. */
@@ -685,6 +727,9 @@ function fillCameraLightingInputs(
   if (world.hasComponent(entity, AmbientOcclusion)) {
     columns.AmbientOcclusion ??= {
       algorithm: batch.read(AmbientOcclusion, 'algorithm'),
+      application: batch.read(AmbientOcclusion, 'application'),
+      sceneColorStrength: batch.read(AmbientOcclusion, 'sceneColorStrength'),
+      sampleCount: batch.read(AmbientOcclusion, 'sampleCount'),
       radius: batch.read(AmbientOcclusion, 'radius'),
       bias: batch.read(AmbientOcclusion, 'bias'),
       intensity: batch.read(AmbientOcclusion, 'intensity'),
@@ -698,6 +743,9 @@ function fillCameraLightingInputs(
     const numeric = columns.AmbientOcclusion;
     inputs.AmbientOcclusion = {
       algorithm: numeric.algorithm?.[physicalRow] as number,
+      application: numeric.application?.[physicalRow] as number,
+      sceneColorStrength: numeric.sceneColorStrength?.[physicalRow] as number,
+      sampleCount: numeric.sampleCount?.[physicalRow] as number,
       radius: numeric.radius?.[physicalRow] as number,
       bias: numeric.bias?.[physicalRow] as number,
       intensity: numeric.intensity?.[physicalRow] as number,

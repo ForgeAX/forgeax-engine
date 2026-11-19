@@ -1,8 +1,10 @@
+import { materialUsesLitSceneInputs } from '../pbr-pipeline';
 import {
   createGeometryPipelineRequests,
   geometryPipelineRequestContext,
   prepareGeometryPipelineRequests,
 } from './geometry-pipeline-requests';
+import { ordinaryMaterialViewGroup } from './ordinary-material-depth';
 import { selectStandardForwardScreenEntry } from './standard-opaque-entry';
 
 export {
@@ -93,7 +95,7 @@ import {
 } from '../pbr-pipeline';
 
 import type { PointsLinesRecordPlan } from '../points-lines/record';
-import { POINTS_LINES_MATERIAL_SHADER_ID, pointsLinesFragmentEntry } from '../points-lines/record';
+import { POINTS_LINES_MATERIAL_SHADER_ID } from '../points-lines/record';
 import type { RenderRecordPhase } from '../render-contract';
 import type {
   DispatchEntry,
@@ -119,7 +121,7 @@ import type { ValidatedRenderable } from './frame-snapshot';
 
 import { getOpaqueResourceIdentity, instanceCollectionCacheKey } from './frame-snapshot';
 import type { RenderableDrawReceipt } from './gpu-draw-receipts';
-import { geometryRenderStateForTopology, selectMaterialGroup2 } from './main-pass-material';
+import { selectMaterialGroup2 } from './main-pass-material';
 
 import { drawMaterial } from './material-pass-selection';
 import { materialUniformSlot } from './material-uniforms';
@@ -901,6 +903,7 @@ export function recordGeometryDraws(
   seededDepth = false,
   depthPrepass = false,
   opaqueDepthPrimed = false,
+  materialSceneDepth?: TextureView,
 ): void {
   const recordPresented = createFoldedDrawRecorder(c);
   const {
@@ -917,10 +920,10 @@ export function recordGeometryDraws(
   const prepared = admittedGeometryMaterialPasses(c, selectedDispatch, passKind === 'temporal');
   const materialPasses =
     prepared?.groups ?? selectedMaterialPasses(selectedDispatch, passKind === 'temporal');
-  const colorFormatOverride = c.transparentColorFormat as GPUTextureFormat | undefined;
   // The prepared Standard topology is the frame authority. A bind-group
   // identity is only a resource result; using it to infer the shader lane
   // would silently fall back to URP when the clustered resource is missing.
+  let lastViewGroup = viewBindGroup;
   let lastVertexBuffer: GpuBuffer | null = null;
   let lastIndexBuffer: GpuBuffer | null = null;
   const bindingState: GeometryBindingState = {
@@ -985,7 +988,7 @@ export function recordGeometryDraws(
     },
     (action) => profileGeometrySegment(c, passKind, 'pipeline-selection', action),
   );
-  const { resolveMaterialPipeline, resolveDrawPipeline, pipelineSelection, viewOffsetForBlend } =
+  const { resolvePointsLinesPipeline, resolveDrawPipeline, pipelineSelection, viewOffsetForBlend } =
     pipelineRequests;
   const drawPipelines = new Map<MaterialSnapshot, Map<object, DrawPipelineSelection[]>>();
   const resolveSharedDrawPipeline = (
@@ -1174,19 +1177,10 @@ export function recordGeometryDraws(
       entry.world ?? c.world,
       POINTS_LINES_MATERIAL_SHADER_ID,
     );
-    const pointsLinesPipelineEntry = resolveMaterialPipeline(
-      POINTS_LINES_MATERIAL_SHADER_ID,
-      geometryRenderStateForTopology('line-list', {
-        ...pointsLinesMaterial.renderState,
-        cullMode: 'none',
-      }),
-      'triangle-list',
-      'uint32',
-      undefined,
-      colorFormatOverride,
+    const pointsLinesPipelineEntry = resolvePointsLinesPipeline(
+      pointsLinesMaterial,
+      style,
       submission.layoutProjection,
-      undefined,
-      pointsLinesFragmentEntry(style),
     );
     if (pointsLinesPipelineEntry === null) return;
     const pointsLinesPipeline = pointsLinesPipelineEntry.pipeline;
@@ -1255,6 +1249,7 @@ export function recordGeometryDraws(
     c.onRenderableDraw?.(entry);
     pass.setBindGroup(0, viewBindGroup as BindGroup, [viewBindGroupDynamicOffset, 0]);
     lastViewOffset = viewBindGroupDynamicOffset;
+    lastViewGroup = viewBindGroup;
   };
 
   // GPU ownership is per submesh. Prepare CPU buffers only after the exact
@@ -1283,7 +1278,7 @@ export function recordGeometryDraws(
     meshGroup2DynamicOffsets[0] = meshBinding.byteOffset;
     const gpuVertex = entry.source.gpuVertexSource;
     if (gpuVertex) {
-      const output = recordContext(runtime).sharedFeatureGpuWork?.resolveNamedBuffer(
+      const output = runtime.viewOwner?.preparedResolver.gpuWork.resolveNamedBuffer(
         gpuVertex.feature,
         gpuVertex.resource,
       );
@@ -1367,7 +1362,10 @@ export function recordGeometryDraws(
       pipelineState.materialUniformBuffer,
       materialUniformSlot(c.runtime, submeshMaterial) * MATERIAL_PER_ENTITY_STRIDE,
     );
-    pass.setBindGroup(1, perSubmeshBg, materialGroup1DynamicOffsets, 0, 1);
+    const emptyLit =
+      materialUsesLitSceneInputs(runtime.shaderRegistry, selectedShaderId) &&
+      runtime.getParamSchema?.(selectedShaderId ?? '')?.length === 0;
+    pass.setBindGroup(1, perSubmeshBg, materialGroup1DynamicOffsets, 0, emptyLit ? 0 : 1);
     return perSubmeshBg;
   };
 
@@ -1621,26 +1619,21 @@ export function recordGeometryDraws(
     selectedPass: DispatchEntry | undefined,
     perSubmeshBg: BindGroup,
     meshBinding: ReturnType<typeof meshSsboBufferBinding>,
+    smPipelineHandle: RenderPipeline,
   ): void => {
     const {
-      pipeline: smPipelineHandle,
       material: materialPipelineEntry,
       probeBlend: probeBlendAvailable,
       viewOffset,
       shader: smMaterialShaderId,
     } = pipelineSelection;
-    if (viewOffset !== lastViewOffset) {
-      pass.setBindGroup(0, viewBindGroup as BindGroup, [viewOffset, 0]);
+    const drawViewGroup =
+      ordinaryMaterialViewGroup(c, smPipelineHandle, smMaterialShaderId, materialSceneDepth) ??
+      viewBindGroup;
+    if (viewOffset !== lastViewOffset || drawViewGroup !== lastViewGroup) {
+      pass.setBindGroup(0, drawViewGroup as BindGroup, [viewOffset, 0]);
       lastViewOffset = viewOffset;
-    }
-    if (smPipelineHandle === null) {
-      markPipelinePreparationPending(c.frameState, {
-        code: 'material-pipeline-preparation',
-        entity: entry.source.entityKey,
-        pass: passKind,
-        ...(smMaterialShaderId === undefined ? {} : { shader: smMaterialShaderId.slice(0, 256) }),
-      });
-      return;
+      lastViewGroup = drawViewGroup;
     }
     const instanceDraws = submeshInstanceDraws(entry, smIdx, submeshMaterial, probeBlendAvailable);
     if (instanceDraws === null) return;
@@ -1759,13 +1752,6 @@ export function recordGeometryDraws(
       return true;
     const meshBinding = entityMeshSsboBinding();
     if (entityInstanceDraws === undefined && !bindEntityGeometry(entry, meshBinding)) return false;
-    const perSubmeshBg = bindSubmeshMaterial(
-      entry,
-      i,
-      sm.materialSlot,
-      submeshMaterial,
-      selectedShaderId,
-    );
     const resolvedPipeline = resolveSharedDrawPipeline(
       entry,
       sm.topology,
@@ -1779,8 +1765,39 @@ export function recordGeometryDraws(
       entry.variantSet,
       entitySceneDirect,
     );
-    if (resolvedPipeline)
-      submitSubmeshPass(entry, smIdx, submeshMaterial, selectedPass, perSubmeshBg, meshBinding);
+    if (!resolvedPipeline) return true;
+    const smPipelineHandle = pipelineSelection.pipeline;
+    if (smPipelineHandle === null) {
+      const shader = pipelineSelection.shader;
+      markPipelinePreparationPending(c.frameState, {
+        code: 'material-pipeline-preparation',
+        entity: entry.source.entityKey,
+        pass: passKind,
+        ...(shader === undefined ? {} : { shader: shader.slice(0, 256) }),
+      });
+      return true;
+    }
+    // A general fallback cannot supply the requested material's group contract.
+    // The resolver keeps its pending/error classification; it still draws nothing.
+    if (pipelineSelection.material === null) return true;
+    // A pending PSO needs no material binding. Continue requesting later draws
+    // instead of suspending their preparation behind this binding's readiness.
+    const perSubmeshBg = bindSubmeshMaterial(
+      entry,
+      i,
+      sm.materialSlot,
+      submeshMaterial,
+      selectedShaderId,
+    );
+    submitSubmeshPass(
+      entry,
+      smIdx,
+      submeshMaterial,
+      selectedPass,
+      perSubmeshBg,
+      meshBinding,
+      smPipelineHandle,
+    );
     return true;
   };
 

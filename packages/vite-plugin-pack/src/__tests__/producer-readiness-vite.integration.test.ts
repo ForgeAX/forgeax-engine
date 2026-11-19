@@ -189,6 +189,97 @@ describe('producer readiness in the Vite serve lifecycle', () => {
     await plugin.closeBundle();
   });
 
+  it('overlaps opted-in source preparation and publishes the Catalog after both imports', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'forgeax-parallel-meta-preparation-'));
+    roots.push(root);
+    const assets = join(root, 'assets');
+    await mkdir(assets);
+    for (const [name, guid] of [
+      ['a', GUID],
+      ['b', SECOND_GUID],
+    ] as const) {
+      const source = `${name}.fixture`;
+      await writeFile(join(assets, source), 'fixture');
+      await writeFile(
+        join(assets, `${source}.meta.json`),
+        JSON.stringify({
+          schemaVersion: '1.0.0',
+          kind: 'external-asset-package',
+          importer: 'fixture',
+          source,
+          importSettings: {},
+          subAssets: [{ guid, sourceIndex: 0, kind: 'fixture-mesh' }],
+        }),
+      );
+    }
+
+    let releaseFirst = (): void => {};
+    const firstGate = new Promise<void>((release) => {
+      releaseFirst = release;
+    });
+    const started: string[] = [];
+    const binding = createStandaloneRuntimeAssetBinding('parallel-meta-preparation');
+    const target = server();
+    const plugin = ownPlugin(
+      pluginPack({
+        roots: [assets],
+        runtimeBinding: binding,
+        producerReadiness: 'before-consume',
+        importers: [
+          {
+            key: 'fixture',
+            capabilities: { parallelPreparation: true },
+            async import(context) {
+              const guid = context.subAssets[0]?.guid;
+              if (guid === undefined) throw new Error('fixture declaration missing GUID');
+              started.push(guid);
+              if (guid === GUID) await firstGate;
+              return {
+                ok: true,
+                value: {
+                  assets: [
+                    {
+                      guid,
+                      kind: 'fixture-mesh',
+                      payload: { kind: 'fixture-mesh', vertexCount: 3 },
+                      refs: [],
+                      artifacts: {},
+                    },
+                  ],
+                  sourceDependencies: [],
+                },
+              };
+            },
+          },
+        ],
+      }),
+    );
+    plugin.configureServer(target);
+    let settled = false;
+    const pending = request(target, binding.catalogUrl).finally(() => {
+      settled = true;
+    });
+    try {
+      await vi.waitFor(() => {
+        expect(started).toContain(GUID);
+        expect(started).toContain(SECOND_GUID);
+      });
+      expect(settled).toBe(false);
+    } finally {
+      releaseFirst();
+      await pending;
+    }
+    const catalog = decodeCatalogWire(JSON.parse(String((await pending).body))).unwrap();
+    for (const guid of [GUID, SECOND_GUID]) {
+      const row = catalog.find((entry) => entry.guid.toLowerCase() === guid);
+      expect(row?.lifecycle).toBe('current');
+      const response = await request(target, row?.packageUrl ?? '');
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(String(response.body)).assets[0].guid).toBe(guid);
+    }
+    expect(started).toHaveLength(2);
+  });
+
   it('rehydrates an accepted Pack and artifact closure in a fresh plugin process', async () => {
     const root = await mkdtemp(join(tmpdir(), 'forgeax-producer-readiness-cross-process-'));
     roots.push(root);

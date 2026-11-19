@@ -45,6 +45,8 @@ export type PreparedGraphicsReference =
 export type PreparedGraphicsResolvedResource =
   | {
       readonly kind: 'pipeline';
+      readonly fog?: false;
+      readonly forwardFog?: 'height-vertex/1';
       readonly reference: RenderFeaturePreparedRef;
       readonly handle: RenderPipeline;
       /** Renderer-selected context; never authored by a RenderFeature. */
@@ -57,6 +59,8 @@ export type PreparedGraphicsResolvedResource =
     }
   | {
       readonly kind: 'bindings';
+      readonly fog?: false;
+      readonly forwardFog?: 'height-vertex/1';
       readonly reference: RenderFeaturePreparedRef;
       readonly handle: BindGroup | undefined;
       readonly pipeline?: RenderPipeline;
@@ -90,6 +94,7 @@ export interface PreparedGraphicsResolverInput {
     | RenderPipeline
     | {
         readonly handle: RenderPipeline;
+        readonly forwardFog?: 'height-vertex/1';
         readonly standardLighting: boolean;
         readonly bindingContract?: RenderFeatureMaterialShaderBindingContract;
       },
@@ -337,6 +342,9 @@ export function createPreparedGraphicsResolver(
     const resource: PreparedGraphicsResolvedResource = {
       kind: 'pipeline',
       reference,
+      ...(descriptor.renderState?.fog === false || descriptor.colorFormats.length === 0
+        ? { fog: false as const }
+        : {}),
       writesDepth:
         descriptor.depthFormat !== undefined &&
         materialDepthStencil(descriptor.depthFormat, descriptor.renderState).depthWriteEnabled ===
@@ -345,6 +353,9 @@ export function createPreparedGraphicsResolver(
         ? {
             handle: created.value.handle,
             standardLighting: created.value.standardLighting,
+            ...(created.value.forwardFog === undefined
+              ? {}
+              : { forwardFog: created.value.forwardFog }),
             ...(created.value.bindingContract === undefined
               ? {}
               : { bindingContract: created.value.bindingContract }),
@@ -397,6 +408,8 @@ export function createPreparedGraphicsResolver(
     const resource: PreparedGraphicsResolvedResource = {
       kind: 'bindings',
       reference,
+      ...(pipeline.value.fog === undefined ? {} : { fog: pipeline.value.fog }),
+      ...(pipeline.value.forwardFog === undefined ? {} : { forwardFog: pipeline.value.forwardFog }),
       handle: binding?.handle ?? (created.value as BindGroup | undefined),
       pipeline: pipeline.value.handle,
       ...(pipeline.value.bindingContract === undefined

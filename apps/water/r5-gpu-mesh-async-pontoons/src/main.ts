@@ -68,7 +68,7 @@ import {
 } from '@forgeax/engine/water';
 import { createWaterCameraControls } from '../../camera-controls';
 import { dressWaterStage, stageRuntimePanel } from '../../presentation';
-import { applyBoatControls } from '../../r4-buoyancy-foam/src/boat-controls';
+import { applyBoatControls } from './boat-controls';
 import { requireDemoValue } from '../../runtime-input';
 import { arrangeWaterSettings, waterQualityControl } from '../../settings-panel';
 import { waterStageNavigation } from '../../stage-catalog';
@@ -1364,7 +1364,6 @@ async function main() {
       },
     },
   });
-  Object.assign(window, { __waterR4: (window as unknown as { __waterR5: unknown }).__waterR5 });
   window.addEventListener('beforeunload', () => {
     cameraLayoutObserver.disconnect();
     void app.dispose();
@@ -1468,7 +1467,7 @@ async function main() {
   applyCamera();
 }
 void main().catch((error: unknown) => {
-  Object.assign(window, { __waterR4StartupError: error, __waterR5StartupError: error });
+  Object.assign(window, { __waterR5StartupError: error });
   node('render-state').textContent = '启动失败';
   node('live-dot').className = 'live-dot failed';
   node('scene-status').textContent =

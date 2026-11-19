@@ -42,6 +42,7 @@ import {
   isRenderFeatureTextureSource,
   type RenderFeatureTextureSource,
 } from './feature-texture-source';
+import { featureResourceKey } from './frame-plan';
 import type {
   RenderFeaturePassDeclaration,
   RenderFeaturePlan,
@@ -3114,6 +3115,7 @@ function createRenderFeatureGpuWorkSession(input: {
  * retains the per-feature prepared GPU state and recreates it after recovery.
  */
 export interface RenderFeatureGpuWorkOwner {
+  /** Resolve declared names from a producer's frame work. */
   resolveTextureCube(featureIdentity: string, name: string): TextureView | undefined;
   resolveTexture(featureIdentity: string, name: string): TextureView | undefined;
   resolveNamedBuffer(
@@ -3149,11 +3151,11 @@ export function createRenderFeatureGpuWorkOwner(input: {
 
   const owner: RenderFeatureGpuWorkOwner = {
     resolveTextureCube: (featureIdentity, name) =>
-      sessions.get(featureIdentity)?.session.resolveTextureCube(name),
+      sessions.get(featureIdentity)?.session.resolveTextureCube(featureResourceKey('frame', name)),
     resolveTexture: (featureIdentity, name) =>
-      sessions.get(featureIdentity)?.session.resolveTexture(name),
+      sessions.get(featureIdentity)?.session.resolveTexture(featureResourceKey('frame', name)),
     resolveNamedBuffer: (featureIdentity, name) =>
-      sessions.get(featureIdentity)?.session.resolveNamedBuffer(name),
+      sessions.get(featureIdentity)?.session.resolveNamedBuffer(featureResourceKey('frame', name)),
     beginFeature: (featureIdentity, generation, requestedShaderModuleMode = 'validated') => {
       if (disposed) {
         throw new Error('Render feature GPU work owner is disposed.');
@@ -3177,7 +3179,7 @@ export function createRenderFeatureGpuWorkOwner(input: {
         resolveFeatureTexture: (source) => {
           const producer = sessions.get(source.owner);
           return producer?.generation === generation
-            ? producer.session.resolveOwnedTexture(source.name)
+            ? producer.session.resolveOwnedTexture(featureResourceKey('frame', source.name))
             : undefined;
         },
       });

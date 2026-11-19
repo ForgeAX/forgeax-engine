@@ -318,7 +318,6 @@ ctx.world.addSystem(FixedUpdate, systemToken1).unwrap();
                 return;
               }
               if (event.data === 'terminate-render') renderWorker?.terminate();
-              if (event.data === 'lose-device') renderWorker?.postMessage('lose-device');
               port.postMessage({ ticks, worldIdentity: ctx.world.identity, command: event.data });
             };
             port.start();

@@ -54,5 +54,3 @@ struct SingleLayerMediumSurfaceData {
   transmissionTint:vec3<f32>,
   transmissionTintWeight:f32,
 };
-
-

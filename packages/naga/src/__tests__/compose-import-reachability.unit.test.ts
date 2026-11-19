@@ -287,3 +287,108 @@ describe('checked writer handoff', () => {
     expect((await bindings(normalized)).length).toBeGreaterThan(0);
   });
 });
+
+describe('composition workspace isolation', () => {
+  const entry = `#import test::value::value
+@compute @workgroup_size(1) fn main() { let result = value(); }`;
+  const source = `#define_import_path test::value
+fn value() -> u32 {
+#if FIRST == true
+  return 13u;
+#else
+  return 29u;
+#endif
+}`;
+
+  it('retires imports and definitions after success and failure', async () => {
+    const first = await composeShader(entry, { 'test::value': source }, { FIRST: true });
+    expect(first).toContain('13u');
+    const second = await composeShader(entry, { 'test::value': source }, { FIRST: false });
+    expect(second).toContain('29u');
+    expect(second).not.toContain('13u');
+    await expect(composeShader(entry, {}, {})).rejects.toThrow(/shader-import-not-found/);
+    await expect(
+      composeShader('invalid WGSL', { 'test::value': source }, { FIRST: true }),
+    ).rejects.toThrow(/shader-compile-failed/);
+    await expect(composeShader(entry, {}, {})).rejects.toThrow(/shader-import-not-found/);
+    const replaced = await composeShader(
+      entry,
+      { 'test::value': '#define_import_path test::value\nfn value() -> u32 { return 47u; }' },
+      {},
+    );
+    expect(replaced).toContain('47u');
+    expect(replaced).not.toContain('13u');
+    expect(replaced).not.toContain('29u');
+  });
+
+  it('starts automatic binding allocation at zero after success and partial failure', async () => {
+    const automatic = `@group(0) @binding(auto) var<storage, read> input: array<u32>;
+@compute @workgroup_size(1) fn main() { let value = input[0]; }`;
+    const first = await composeShader(automatic, {}, {});
+    expect(first).toContain('@binding(0)');
+    expect(await composeShader(automatic, {}, {})).toBe(first);
+    await expect(composeShader(`#import missing::value\n${automatic}`, {}, {})).rejects.toThrow(
+      /shader-import-not-found/,
+    );
+    expect(await composeShader(automatic, {}, {})).toBe(first);
+    const importedAutomatic = '#define_import_path test::automatic\n// @binding(auto)';
+    await composeShader(
+      '@compute @workgroup_size(1) fn main() {}',
+      {
+        'test::automatic': importedAutomatic,
+      },
+      {},
+    );
+    expect(await composeShader(automatic, {}, {})).toBe(first);
+  });
+});
+
+it('keeps dependent imported selections exact across entry definitions', async () => {
+  const imports = {
+    'cache::value': `#define_import_path cache::value
+fn value() -> u32 {
+#if MODE == 1
+ return 11u;
+#else
+ return 22u;
+#endif
+}`,
+  };
+  const entry = (name: string, mode: number) => `#define MODE ${mode}
+#import cache::value::value
+@compute @workgroup_size(1) fn ${name}() { let result = value(); }`;
+  await composeShader(entry('first', 1), imports, {});
+  expect(await composeShader(entry('second', 1), imports, {})).toContain('11u');
+  expect(await composeShader(entry('third', 2), imports, {})).toContain('22u');
+  expect(await composeShader(entry('fourth', 1), imports, {})).toContain('11u');
+});
+
+it('checks normalized writer output and recovers after a failing or reentrant normalizer', async () => {
+  const { prepareNagaCompiler } = await import('../index');
+  const native = (await prepareNagaCompiler()).unwrap();
+  const source = `struct Data { value: f32 };
+@group(0) @binding(0) var<uniform> data: Data;
+@compute @workgroup_size(1) fn main() { let value = data.value; }`;
+  expect(() =>
+    native.composeProgram(source, {}, {}, (written) =>
+      written.replace('value: f32', 'value: vec2<f32>'),
+    ),
+  ).toThrow(/WGSL writer changed buffer ABI/);
+  expect(() =>
+    native.composeProgram(source, {}, {}, () => {
+      throw Error('normalization failed');
+    }),
+  ).toThrow(/normalization failed/);
+  const composed = native.composeProgram(source, {}, {}, (written) => {
+    expect(native.composeShader('@compute @workgroup_size(1) fn nested() {}', {}, {})).toContain(
+      'fn nested',
+    );
+    return written;
+  });
+  try {
+    expect(native.emitReflection(composed.module, '{}').ok).toBe(true);
+    expect(composed.source).toContain('fn main');
+  } finally {
+    composed.module.free();
+  }
+});

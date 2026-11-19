@@ -45,6 +45,7 @@ export function materialPrograms(
   input: MaterialPublicationInput,
 ): readonly MaterialCookProgram[] {
   const programs = new Map<string, MaterialCookProgram>();
+  const artifactDigests = new Map<string, string>();
   for (const pass of passes) {
     // Runtime compares the complete projected schema for each immutable key.
     // Defaults belong to the material root, while color-space policy remains
@@ -66,8 +67,15 @@ export function materialPrograms(
       const entry = variant.address === 'direct' ? pass.abi.directEntry : pass.abi.sceneIndexEntry;
       if (entry === undefined)
         throw new TypeError('compiled scene-index program requires its reflected entry');
-      const bytes = new TextEncoder().encode(variant.compile.wgsl);
-      const digest = createMaterialArtifactDigest(bytes);
+      const wgsl = variant.compile.wgsl;
+      const bytes = new TextEncoder().encode(wgsl);
+      // Several selectors can publish the same WGSL. Hash its content once
+      // within this publication while retaining independently owned bytes.
+      let digest = artifactDigests.get(wgsl);
+      if (digest === undefined) {
+        digest = createMaterialArtifactDigest(bytes);
+        artifactDigests.set(wgsl, digest);
+      }
       // Entry/ABI facts belong to each selection. Shared module bytes remain
       // one program even when color and shadow select different entries.
       const specializationKey = createMaterialArtifactDigest(
@@ -80,6 +88,8 @@ export function materialPrograms(
             surface: pass.abi.surface,
             bindings: pass.abi.bindings ?? 'render-material',
             systemInputs: pass.abi.systemInputs,
+            forwardFog: pass.abi.forwardFog,
+            gbuffer: pass.abi.gbuffer,
             sceneDepth: pass.abi.sceneDepth,
             defines: lowerMaterialProgramVariantContext(pass.context, pass.abi.bindings),
             artifact: digest,

@@ -117,7 +117,6 @@ describe('ECS identity', () => {
     expect(() => world.getResource(raw)).toThrow(TypeError);
     expect(() => world.hasResource(raw)).toThrow(TypeError);
     expect(() => world.removeResource(raw)).toThrow(TypeError);
-    expect(() => world.getResourceChange(raw)).toThrow(TypeError);
     expect(() =>
       defineSystem({
         name: 'invalid',

@@ -4,6 +4,7 @@ import { cp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
 import { afterAll, beforeAll, expect, it } from 'vitest';
+import { withoutEngineContentLibrary } from '../../../../scripts/test/reduce-test-project.mjs';
 import {
   createLiveSyncProjectDirectory,
   prepareLiveSyncSharedInputs,
@@ -154,7 +155,13 @@ beforeAll(async () => {
     writeFile(resolve(root, 'assets/look/game.ts'), game(DARK_SKY)),
     writeFile(
       resolve(root, 'forge.json'),
-      `${JSON.stringify({ ...manifest, roots: { engine: guid('plugin/game') } })}\n`,
+      `${JSON.stringify({
+        // This fixture declares its box and all its materials in PACK.
+        ...(process.env.FORGEAX_BROWSER_CI_LIGHTWEIGHT === '1'
+          ? withoutEngineContentLibrary(manifest)
+          : manifest),
+        roots: { engine: guid('plugin/game') },
+      })}\n`,
     ),
   ]);
 });

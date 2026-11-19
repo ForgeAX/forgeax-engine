@@ -259,11 +259,11 @@ export class RendererBakedField {
       const [viewModule, compositeModule] = await Promise.all([
         compile(device, {
           label: 'baked-field.view',
-          code: requirePublishedKernel(entries, 'gatherBakedField'),
+          code: requirePublishedKernel(entries, 'gatherBakedField', 'standard-gbuffer/2'),
         }),
         compile(device, {
           label: 'baked-field.composite',
-          code: requirePublishedKernel(entries, 'fs_ray_diffuse'),
+          code: requirePublishedKernel(entries, 'fs_ray_diffuse', 'standard-gbuffer/2'),
         }),
       ]);
       const { sampleLayout, kernels: view } = createIrradianceFieldViewKernels(

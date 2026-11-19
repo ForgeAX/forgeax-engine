@@ -62,7 +62,7 @@ const CONTAINER_BOXES = [
 ];
 const DEG2RAD = Math.PI / 180;
 
-// Bloom pass names expected in the bounded eleven-pass chain when Bloom is enabled.
+// Bloom blur passes feed the fused Grade output.
 const BLOOM_PASS_NAMES = [
   'bloom-horizontal-0',
   'bloom-vertical-0',
@@ -74,9 +74,8 @@ const BLOOM_PASS_NAMES = [
   'bloom-vertical-3',
   'bloom-horizontal-4',
   'bloom-vertical-4',
-  'bloom-composite',
-];
-const OUTPUT_TRANSFORM_PASS_NAME = 'output-transform';
+  ];
+const GRADE_PASS_NAME = 'standard-grade';
 
 // --- 1. dawn.node binding setup ---
 
@@ -443,9 +442,11 @@ if (missingBloomPasses.length > 0) {
     `(d) perFramePassNames missing bloom passes: [${missingBloomPasses.join(', ')}] (got [${passNames.join(', ')}])`,
   );
 }
-if (!passNameSet.has(OUTPUT_TRANSFORM_PASS_NAME)) {
+const gradeIndex = passNames.indexOf(GRADE_PASS_NAME);
+const lastBloomIndex = Math.max(...BLOOM_PASS_NAMES.map((name) => passNames.indexOf(name)));
+if (gradeIndex <= lastBloomIndex) {
   failures.push(
-    `(e) perFramePassNames missing output-transform pass (got [${passNames.join(', ')}])`,
+    `(e) perFramePassNames missing Grade after Bloom (got [${passNames.join(', ')}])`,
   );
 }
 
@@ -467,7 +468,7 @@ if (failures.length > 0) {
 }
 
 console.log(
-  `[smoke] PASS - ${failures.length === 0 ? 'all' : 'remaining'} criteria GREEN: backend=webgpu, frames=${framesObserved}, RhiError count=0, bloom passes present, output-transform pass present, Camera.bloom=BLOOM_ENABLED`,
+  `[smoke] PASS - ${failures.length === 0 ? 'all' : 'remaining'} criteria GREEN: backend=webgpu, frames=${framesObserved}, RhiError count=0, bloom passes present, Grade follows Bloom, Camera.bloom=BLOOM_ENABLED`,
 );
 
 device.destroy?.();

@@ -63,6 +63,7 @@ describe('M0 ECS reduction characterization', () => {
       if (result.error.code === 'command-failed') {
         expect(result.error.detail.systemName).toBe('duplicate-component-command');
         expect(result.error.detail.commandKind).toBe('addComponent');
+        expect(result.error.message).toContain('at command 0 (addComponent)');
         expect((result.error.detail.cause as { readonly code?: string }).code).toBe(
           'component-already-present',
         );

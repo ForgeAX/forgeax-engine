@@ -14,19 +14,16 @@ afterAll(() => {
 export function shaderManifestUrl(
   manifest: Awaited<ReturnType<typeof buildEngineShaderManifest>>,
 ): string {
+  return shaderPublicationUrl(
+    'toJSON' in manifest
+      ? manifest
+      : publishShaderManifest(manifest.entries, manifest.materialShaders),
+  );
+}
+
+export function shaderPublicationUrl(publication: object): string {
   const url = URL.createObjectURL(
-    new Blob(
-      [
-        JSON.stringify(
-          'toJSON' in manifest
-            ? manifest
-            : publishShaderManifest(manifest.entries, manifest.materialShaders),
-        ),
-      ],
-      {
-        type: 'application/json',
-      },
-    ),
+    new Blob([JSON.stringify(publication)], { type: 'application/json' }),
   );
   urls.push(url);
   return url;

@@ -955,6 +955,8 @@ export interface RhiCaps {
   readonly timestampPeriodNanoseconds: number | null;
   /** Whether indirect drawing is supported. */
   readonly indirectDrawing: boolean;
+  /** Native support for vertex-only render bundles, when verified by the backend. */
+  readonly nativeVertexOnlyRenderBundles?: boolean;
   /**
    * Whether BC texture compression (BC1-BC7) is available.
    *

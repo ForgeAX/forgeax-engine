@@ -82,7 +82,6 @@ async function fixture(
                 code: 'rhi-not-available',
                 expected: 'the requested program is prepared',
                 hint: 'retry after shader preparation',
-                detail: { reason: 'pipeline-pending' },
               }),
             )
           : ok(shader),
@@ -168,13 +167,17 @@ async function fixture(
                             program: 'shared-program',
                             bindings: 'shared-bindings',
                             dispatches: [
-                              { kind: 'direct' as const, entryPoint: 'main', workgroups: [1] },
+                              {
+                                kind: 'direct' as const,
+                                entryPoint: 'main',
+                                workgroups: [1] as const,
+                              },
                             ],
                           },
                         ]
                       : [
                           {
-                            kind: 'copy',
+                            kind: 'copy' as const,
                             name: 'shared-copy-pass',
                             copies: [{ source: 'source', destination: 'destination', size: 16 }],
                           },
@@ -508,11 +511,24 @@ describe('shared Feature graph systems', () => {
 
   it('keeps Advanced history shared across Body replacement, foam readiness and pending sources', async () => {
     const source = await advancedWaterFixture(undefined, ['shallow', 'shallowFoam'], 'ocean');
-    const physics = {
-      getCommittedColliderPrimitives: () => ok([]),
+    const unexpectedPhysics = () => {
+      throw new Error('This shared-history fixture must not query native body geometry');
+    };
+    const physics: PhysicsWorld = {
+      dispose() {},
+      setGravity: unexpectedPhysics,
+      getGravity: unexpectedPhysics,
+      raycast: unexpectedPhysics,
+      teleport: unexpectedPhysics,
+      synchronizeCharacter: unexpectedPhysics,
+      moveAndSlide: unexpectedPhysics,
+      step: unexpectedPhysics,
+      getBodyCount: unexpectedPhysics,
+      hasBody: unexpectedPhysics,
+      getCommittedColliderPrimitives: unexpectedPhysics,
       intersectsCommittedBodyObb: () => ok(false),
     };
-    source.world.insertResource(PhysicsWorldResource, physics as PhysicsWorld);
+    source.world.insertResource(PhysicsWorldResource, physics);
     source.world.update(1 / 60).unwrap();
     const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
     const shader = (await rhi.createShaderModule(device, { code: 'unit plan module' })).unwrap();

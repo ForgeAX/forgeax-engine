@@ -7,7 +7,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const nativePreviewRun = vi.hoisted(() => vi.fn());
 const backendStart = vi.hoisted(() => vi.fn(async () => ({ phase: 'ready' })));
-
 vi.mock('../tools/native-preview.js', () => ({
   runNativePreviewTool: nativePreviewRun,
 }));
@@ -49,6 +48,17 @@ async function fixtureRoot(): Promise<string> {
 }
 
 describe('unified CLI', () => {
+  it('keeps View startup out of the built-in Engine command surface', async () => {
+    const root = await fixtureRoot();
+    const help = await runUnifiedCli(['help', '--tree', '--root', root, '--json']);
+    expect(help.ok).toBe(true);
+    expect(JSON.stringify(help.value)).not.toContain('view serve');
+    expect(JSON.stringify(help.value)).not.toContain('view ensure');
+    for (const operation of ['serve', 'ensure']) {
+      expect((await runUnifiedCli(['view', operation, '--root', root, '--json'])).ok).toBe(false);
+    }
+  });
+
   it('exposes an explicit storage WebGPU validation profile without accepting portable claims', async () => {
     const root = await fixtureRoot();
     const help = await runUnifiedCli(['help', 'project', 'build', '--root', root, '--json']);

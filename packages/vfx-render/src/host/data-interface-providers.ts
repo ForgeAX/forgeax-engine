@@ -1,5 +1,6 @@
 import { err, ok, type Result } from '@forgeax/engine-types';
 import {
+  isVfxStructuredInputData,
   resolveVfxDataInterfaces,
   type VfxDataInterfaceCaptureContext,
   type VfxDataInterfaceError,
@@ -219,4 +220,43 @@ export function createVfxDataInterfaceRegistry(
   };
   for (const provider of initialProviders) registry.register(provider);
   return registry;
+}
+
+/** Source POD snapshots, never caller-created GPU buffers. */
+export function createStructuredInputProvider(source: {
+  readonly snapshot: (
+    generation: number,
+    context?: VfxDataInterfaceCaptureContext,
+  ) => Uint8Array | undefined;
+}): VfxDataInterfaceProvider<'structured-input'> {
+  return {
+    id: 'vfx:structured-input-provider',
+    token: 'vfx:structured-input',
+    kind: 'structured-input',
+    bindingType: 'read-only-storage',
+    provide(generation, context) {
+      const bytes = source.snapshot(generation, context);
+      if (bytes === undefined)
+        return err({
+          code: 'vfx-data-interface-missing',
+          expected: 'a live structured input snapshot',
+          hint: 'publish the current author input bank before extraction',
+          detail: { token: 'vfx:structured-input', providerId: 'vfx:structured-input-provider' },
+        });
+      if (!isVfxStructuredInputData(bytes))
+        return err({
+          code: 'vfx-data-interface-wrong-type',
+          expected: '16..65536 bytes aligned to 16 bytes',
+          hint: 'publish a bounded detached Uint8Array',
+          detail: { token: 'vfx:structured-input', providerId: 'vfx:structured-input-provider' },
+        });
+      return ok({
+        token: 'vfx:structured-input',
+        kind: 'structured-input',
+        bindingType: 'read-only-storage',
+        generation,
+        resource: { kind: 'storage-data', value: bytes.slice() },
+      });
+    },
+  };
 }

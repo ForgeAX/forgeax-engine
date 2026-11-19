@@ -66,8 +66,6 @@ describe('current accepted Feature execution lookup', () => {
     try {
       const result = runSingleViewFeatureFrame(host, {
         world: new World(),
-        worlds: [],
-        owner: 0,
         frameNumber: 1,
         caps: {} as never,
       });

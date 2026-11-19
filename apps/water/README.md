@@ -1,7 +1,8 @@
 # Water demonstration suite
 
-The gallery discovers one combined R0–R2 island watershed, six dedicated
-applications R3 through R8, and the independent integrated coast showcase.
+The gallery discovers seven applications: the combined R0–R2 island watershed,
+R3 optics, the combined R4–R5 boat experience, R6 local fluid, R7 advanced water,
+R8 entry experiment, and the independent integrated coast showcase.
 Each formal entry owns one World and scene. R7 retains shallow, River Bake
 and Ocean views inside its shared Renderer. The combined watershed embeds
 Scene/Zone lifecycle, authored Body geometry, TerrainProvider, WaterMesh,

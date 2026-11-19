@@ -33,7 +33,7 @@ export const RENDER_SHADOW_DISCARD_SYSTEM = 'render-shadow-discard';
 
 /** RenderCommit: the accepted scene submission publishes its staged environment generation. */
 export const RENDER_ENVIRONMENT_COMMIT_SYSTEM = 'render-environment-commit';
-/** RenderCommit: the accepted scene submission publishes its staged atmosphere storage. */
+/** RenderCommit: any accepted submission publishes its encoded atmosphere tables. */
 export const RENDER_ATMOSPHERE_COMMIT_SYSTEM = 'render-atmosphere-commit';
 /** RenderCommit: the accepted scene submission promotes its staged volumetric fog. */
 export const RENDER_FOG_COMMIT_SYSTEM = 'render-fog-commit';
@@ -100,7 +100,7 @@ export interface ViewSettlementOwner {
   readonly instanceCollections: InstanceProjectionStore;
   /** Facts of the view's last record attempt that inspection projects. */
   readonly recorded: ViewRecordFacts;
-  /** Frame input scopes, profiler identity and counters of this view; one data authority. */
+  /** Frame input scopes and dispatch counts of this view; one data authority. */
   readonly recording: ViewRecordingState;
   /** Record this view's staged `ViewFrame` of the current Render World frame. */
 
@@ -115,7 +115,6 @@ export interface ViewSettlementOwner {
 /** The recording state formerly captured by the RenderSystem constructor. */
 export interface ViewRecordingState {
   preparedSourceScope: RenderResourceScope | undefined;
-  directFrameId: number;
   readonly dispatchCounts: { unlit: number };
   readonly pendingFeatureErrors: Map<string, PendingRenderFeatureErrorReport>;
 }

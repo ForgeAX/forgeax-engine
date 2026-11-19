@@ -7,7 +7,7 @@ import {
 } from '@forgeax/engine-shader';
 import { afterEach, expect, it, vi } from 'vitest';
 import type { RenderPublication } from '../contract';
-import { installPublicationPrograms } from '../programs';
+import { capturePublicationProgram, installPublicationPrograms } from '../programs';
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -372,4 +372,99 @@ it.each([
   expect(() => installPublicationPrograms(assets, [first, invalid])).toThrow('complete artifact');
   expect(assets.shaderRegistry.materialArtifactDeclaration(first.key)).toBeUndefined();
   expect(assets.getMaterialArtifact(first.key)).toBeUndefined();
+});
+
+it('retains lazy clipping families across Worker clones and rejects missing closure atomically', () => {
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  const plain = byteProgram('game::plain');
+  const clipped = byteProgram('game::clipped');
+  const references = [
+    { identifier: plain.key, defines: { CLIPPING_PLANES: false } },
+    { identifier: clipped.key, defines: { CLIPPING_PLANES: true } },
+  ];
+  const family = { ...plain, shader: { ...plain.shader, variantReferences: references } };
+  const decode = vi.spyOn(TextDecoder.prototype, 'decode');
+  expect(() => installPublicationPrograms(assets, structuredClone([family]))).toThrow(
+    'missing material variant program',
+  );
+  expect(assets.shaderRegistry.materialArtifactDeclaration(plain.key)).toBeUndefined();
+  expect(assets.getMaterialArtifact(plain.key)).toBeUndefined();
+  // A referenced program may already belong to the receiver from a previous packet.
+  installPublicationPrograms(assets, structuredClone([clipped]));
+  installPublicationPrograms(assets, structuredClone([family]));
+  const manifest = assets.shaderRegistry.materialShaderManifestEntry(plain.key);
+  expect(manifest?.variants.map((row) => row.defines)).toEqual([
+    { CLIPPING_PLANES: false },
+    { CLIPPING_PLANES: true },
+  ]);
+  for (let frame = 0; frame < 60; frame++)
+    installPublicationPrograms(assets, structuredClone([family, clipped]));
+  expect(assets.shaderRegistry.materialShaderManifestEntry(plain.key)).toBe(manifest);
+  expect(decode).not.toHaveBeenCalled();
+  const changed = {
+    ...family,
+    shader: {
+      ...family.shader,
+      variantReferences: [{ identifier: plain.key, defines: { CLIPPING_PLANES: false } }],
+    },
+  };
+  expect(() => installPublicationPrograms(assets, [changed])).toThrow(
+    'conflicting immutable shader',
+  );
+});
+
+it.each([
+  'source',
+  'bytes',
+] as const)('captures native %s shader families with complete Worker closure', (kind) => {
+  const source = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  const plain =
+    kind === 'bytes' ? byteProgram('game::capture-plain') : program('game::capture-plain');
+  const clipped =
+    kind === 'bytes' ? byteProgram('game::capture-clipped') : program('game::capture-clipped');
+  const references = [
+    { identifier: plain.key, defines: { CLIPPING_PLANES: false } },
+    { identifier: clipped.key, defines: { CLIPPING_PLANES: true } },
+  ];
+  const family =
+    'sourceEncoding' in plain.shader
+      ? {
+          key: plain.key,
+          artifact: plain.artifact,
+          shader: { ...plain.shader, variantReferences: references },
+        }
+      : {
+          key: plain.key,
+          artifact: plain.artifact,
+          shader: { ...plain.shader, variantReferences: references },
+        };
+  installPublicationPrograms(source, structuredClone([family, clipped]));
+  const decode = vi.spyOn(TextDecoder.prototype, 'decode');
+  const captured = capturePublicationProgram(source, plain.key);
+  expect(captured.shader.variantReferences).toEqual(references);
+  if (kind === 'bytes') {
+    expect(captured.shader).toHaveProperty('sourceEncoding', 'utf8');
+    expect(captured.artifact?.bytes).toBe(source.getMaterialArtifact(plain.key)?.bytes);
+    expect(decode).not.toHaveBeenCalled();
+  } else
+    expect(typeof Object.getOwnPropertyDescriptor(captured.shader, 'source')?.get).toBe('function');
+  const receiver = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  expect(() => installPublicationPrograms(receiver, structuredClone([captured]))).toThrow(
+    'missing material variant program',
+  );
+  expect(receiver.shaderRegistry.materialArtifactDeclaration(plain.key)).toBeUndefined();
+  expect(receiver.getMaterialArtifact(plain.key)).toBeUndefined();
+  installPublicationPrograms(
+    receiver,
+    structuredClone([captured, capturePublicationProgram(source, clipped.key)]),
+  );
+  expect(
+    receiver.shaderRegistry.findMaterialArtifact(plain.key).unwrap().variantReferences,
+  ).toEqual(references);
 });

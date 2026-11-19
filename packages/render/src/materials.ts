@@ -1,5 +1,8 @@
 import { color } from '@forgeax/engine-math';
-import { DEFAULT_STANDARD_PBR_PARAM_SCHEMA } from '@forgeax/engine-shader';
+import {
+  DEFAULT_STANDARD_PBR_PARAM_SCHEMA,
+  STANDARD_PARALLAX_HEIGHT_PAIR,
+} from '@forgeax/engine-shader';
 import type {
   MaterialColorSpace,
   MaterialParameter,
@@ -102,6 +105,7 @@ export class MaterialAuthoringContractError extends Error {
     readonly code: 'material-authoring-contract-invalid';
     readonly material: 'Standard';
     readonly parameter:
+      | 'alphaClip'
       | 'alphaCutoff'
       | 'normalScale'
       | 'bumpScale'
@@ -253,6 +257,23 @@ export function displayP3(input: readonly number[]): readonly number[] {
     : [parsed[0] as number, parsed[1] as number, parsed[2] as number, parsed[3] as number];
 }
 
+function addStandardTextureNames(names: Set<string>, opts: StandardOpts): void {
+  // Loading state does not select the compiled sampling path. An authored
+  // but not-yet-resident slot still needs its fallback.
+  for (const parameter of DEFAULT_STANDARD_PBR_PARAM_SCHEMA) {
+    if (
+      parameter.type === 'texture2d' &&
+      opts[parameter.name as keyof StandardOpts] !== undefined
+    ) {
+      names.add(parameter.name);
+    }
+  }
+  // The cooked fragment stage borrows this pair for the authored height.
+  if (opts.displacementMode === 'parallax' && opts.displacementTexture !== undefined) {
+    names.add(STANDARD_PARALLAX_HEIGHT_PAIR.host);
+  }
+}
+
 function standardParameters(
   colorSpace: MaterialColorSpace,
   opts: StandardOpts,
@@ -383,16 +404,7 @@ function standardParameters(
       baseNames.add(name);
     }
   }
-  // A texture declaration selects its compiled sampling path. Loading state
-  // does not: an authored but not-yet-resident slot still needs its fallback.
-  for (const parameter of DEFAULT_STANDARD_PBR_PARAM_SCHEMA) {
-    if (
-      parameter.type === 'texture2d' &&
-      opts[parameter.name as keyof StandardOpts] !== undefined
-    ) {
-      baseNames.add(parameter.name);
-    }
-  }
+  addStandardTextureNames(baseNames, opts);
   // All Standard fields come from one root schema. Physical fields are
   // projected by the authored option membership above; appending a second
   // physical schema would create a parallel ABI authority.
@@ -713,6 +725,7 @@ export interface CustomStandardSurfaceOptions {
   readonly surfaceModule: string;
   readonly parameters: readonly MaterialParameter[];
   readonly values: Readonly<Record<string, MaterialValue>>;
+  /** Select Surface threshold coverage at cook time. Defaults to false; LOD/clipping remain independent. */
   readonly alphaClip?: boolean;
   readonly colorSpace?: MaterialColorSpace;
   readonly renderState?: MaterialRenderState;
@@ -1186,10 +1199,28 @@ function standardDefault(opts: DefaultStandardOptions): MaterialRootAsset {
 }
 
 function standardCustom(opts: CustomStandardSurfaceOptions): MaterialRootAsset {
+  if (
+    opts.alphaClip !== undefined &&
+    opts.staticSwitches?.alphaClipping !== undefined &&
+    opts.alphaClip !== opts.staticSwitches.alphaClipping
+  )
+    throw new MaterialAuthoringContractError(
+      'alphaClip',
+      'conflict',
+      'staticSwitches.alphaClipping',
+    );
+  // Publish one coverage authority for Pack, compiler and runtime consumers.
+  // Custom threshold/hash code is explicitly selected; implicit Standard
+  // defaults must not make every custom Surface an alpha-tested program.
+  const staticSwitches: MaterialStaticSwitches = {
+    ...opts.staticSwitches,
+    alphaClipping: opts.alphaClip ?? opts.staticSwitches?.alphaClipping ?? false,
+    alphaHash: opts.staticSwitches?.alphaHash ?? false,
+  };
   const layerPlan = deriveStandardLayerPlan(
     opts.parameters.filter((parameter) => parameter.optional !== true),
     undefined,
-    standardMaterialStaticSwitches(opts.staticSwitches),
+    standardMaterialStaticSwitches(staticSwitches),
   );
   const planar = opts.planarReflection === true;
   if (planar && opts.parameters.some((parameter) => parameter.name === 'planarReflection'))
@@ -1200,7 +1231,6 @@ function standardCustom(opts: CustomStandardSurfaceOptions): MaterialRootAsset {
     surfaceModule: opts.surfaceModule,
     ...(opts.sceneDepth === undefined ? {} : { sceneDepth: opts.sceneDepth }),
     values: opts.values,
-    ...(opts.alphaClip === undefined ? {} : { alphaClip: opts.alphaClip }),
     ...(opts.renderState === undefined ? {} : { renderState: opts.renderState }),
     ...(opts.queue === undefined ? {} : { queue: opts.queue }),
     layerPlan,
@@ -1210,7 +1240,7 @@ function standardCustom(opts: CustomStandardSurfaceOptions): MaterialRootAsset {
   const passes = projected as [MaterialPass, ...MaterialPass[]];
   return {
     kind: 'material',
-    ...(opts.staticSwitches === undefined ? {} : { staticSwitches: opts.staticSwitches }),
+    staticSwitches,
     ...(opts.colorSpace === undefined || opts.colorSpace === 'srgb'
       ? {}
       : { colorSpace: opts.colorSpace }),

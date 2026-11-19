@@ -204,13 +204,19 @@ function readLightingDemand(
     frameState.standardInstall.configured,
     camera,
     lane,
+    false,
+    internals.requestedStandardProfile?.renderPath,
   );
+  if (!configuration.ok && configuration.error.code === 'resource-descriptor-invalid')
+    return undefined;
   if (!configuration.ok)
     configuration = deriveCameraStandardConfiguration(
       internals.standardProfile,
       frameState.standardInstall.configured,
-      { screenSpaceReflection: camera.screenSpaceReflection },
+      { antialias: camera.antialias, screenSpaceReflection: camera.screenSpaceReflection },
       lane,
+      false,
+      internals.requestedStandardProfile?.renderPath,
     );
   if (!configuration.ok) return undefined;
   const renderPath = (configuration.value.profile ?? DEFAULT_STANDARD_PROFILE).renderPath;

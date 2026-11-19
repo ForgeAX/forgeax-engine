@@ -23,6 +23,7 @@
     "dist",
     "src",
     "!src/**/__tests__/**",
+    "examples/volumetric-clouds",
     "README.md",
     "LICENSE",
     "NOTICE"

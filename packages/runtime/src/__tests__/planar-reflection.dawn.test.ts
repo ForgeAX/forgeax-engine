@@ -7,6 +7,7 @@ import {
   Camera,
   ClippingPlanes,
   clippingPlanesData,
+  type FrameReceipt,
   MeshFilter,
   MeshRenderer,
   PlanarReflection,
@@ -17,11 +18,15 @@ import {
 import { attachRecorder, buildFrameModel, decodeTape, openReplay } from '@forgeax/engine-rhi-debug';
 import * as captureWebgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
+import { createMaterialPackCooker } from '@forgeax/engine-shader-compiler';
 import { type AssetHandle, createStandaloneRuntimeAssetBinding } from '@forgeax/engine-types';
-import { createServer, loadConfigFromFile } from 'vite';
-import { expect, it } from 'vitest';
+import { pluginPack } from '@forgeax/engine-vite-plugin-pack';
+import { forgeaxShader } from '@forgeax/engine-vite-plugin-shader';
+import { createServer } from 'vite';
+import { expect, it, onTestFinished, vi } from 'vitest';
 import { surfaceEvidenceGuid } from '../../../../apps/preview/src/surface-standard-evidence-identity';
 import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
+import { completeReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { createDevImportTransport } from '../dev-import-transport';
 import { constructRuntimeRendererHost } from '../renderer-host';
@@ -32,24 +37,35 @@ import { inspectReplayWorks } from './replay-inspections.fixture';
 const PLANAR_REFLECTION_WARMUP_FRAMES = 60;
 
 it('captures offscreen geometry, clips the opposite half space and records the water consumer', async () => {
-  process.env.FORGEAX_SURFACE_ONLY = '1';
+  vi.stubEnv('FORGEAX_WORKSPACE_TIMING', '1');
+  onTestFinished(() => vi.unstubAllEnvs());
   mkdirSync('artifacts/planar-reflection/dawn', { recursive: true });
-  const loaded = await loadConfigFromFile(
-    { command: 'serve', mode: 'test' },
-    resolve('apps/preview/vite.config.ts'),
-  );
-  if (loaded === null) throw new Error('Preview configuration missing');
+  const assetRoot = resolve('apps/preview/assets');
+  const binding = createStandaloneRuntimeAssetBinding('planar-reflection-test');
   const server = await createServer({
-    ...loaded.config,
     configFile: false,
     root: resolve('apps/preview'),
     logLevel: 'error',
-    server: { ...loaded.config.server, host: '127.0.0.1', port: 0, strictPort: false },
+    optimizeDeps: { noDiscovery: true, include: [] },
+    plugins: [
+      forgeaxShader() as never,
+      pluginPack({
+        runtimeBinding: binding,
+        producerReadiness: 'before-consume',
+        roots: [resolve('packages/runtime/src/__tests__/fixtures/planar-reflection.pack.ts')],
+        cookers: [createMaterialPackCooker([resolve(assetRoot, 'shaders')])],
+        ddc: {
+          buildCacheRoot: resolve('shared-build-inputs/ddc'),
+          projectDdcRoot: resolve('apps/preview/.forgeax/ddc/planar-reflection'),
+        },
+      }),
+    ],
+    server: { host: '127.0.0.1', port: 0, strictPort: false },
   });
+  onTestFinished(() => server.close());
   await server.listen();
   const baseUrl = server.resolvedUrls?.local[0];
   if (baseUrl === undefined) throw new Error('Preview URL unavailable');
-  const binding = createStandaloneRuntimeAssetBinding('preview');
   const liveBinding = {
     ...binding,
     catalogUrl: new URL(binding.catalogUrl, baseUrl).href,
@@ -210,26 +226,33 @@ it('captures offscreen geometry, clips the opposite half space and records the w
       .unwrap();
     renderer.setSurfaceDynamicInput({ page, ranges: [range], projectionRevision: 1, frameTime: 0 });
     const activeRenderer = renderer;
-    const draw = async () => {
+    const draw = async (
+      beforeSubmit?: () => void,
+      onCompleted?: (frame: FrameReceipt) => Promise<void>,
+    ) => {
       world.update(1 / 60).unwrap();
       propagateTransforms(world).unwrap();
-      const frame = activeRenderer.draw({ source: lease.value, geometryLane: 'direct' });
-      if (!frame.ok) {
-        const failure = JSON.stringify(
-          { draw: frame.error, errors, nativeErrors },
-          (_key, value) =>
-            value instanceof Error
-              ? { ...value, message: value.message, stack: value.stack }
-              : value,
-          2,
-        );
-        mkdirSync('artifacts/planar-reflection/dawn', { recursive: true });
-        writeFileSync('artifacts/planar-reflection/dawn/failure.json', failure);
-        throw new Error(failure);
-      }
-      const completed = await frame.value.completed;
-      if (!completed.ok) throw completed.error;
-      return frame.value;
+      return completeReadyFrame(
+        () => {
+          beforeSubmit?.();
+          const frame = activeRenderer.draw({ source: lease.value, geometryLane: 'direct' });
+          if (!frame.ok) {
+            const failure = JSON.stringify(
+              { draw: frame.error, errors, nativeErrors },
+              (_key, value) =>
+                value instanceof Error
+                  ? { ...value, message: value.message, stack: value.stack }
+                  : value,
+              2,
+            );
+            mkdirSync('artifacts/planar-reflection/dawn', { recursive: true });
+            writeFileSync('artifacts/planar-reflection/dawn/failure.json', failure);
+            throw new Error(failure);
+          }
+          return frame.value;
+        },
+        { onCompleted },
+      );
     };
     for (let i = 0; i < PLANAR_REFLECTION_WARMUP_FRAMES; i++) {
       await draw();
@@ -285,17 +308,29 @@ it('captures offscreen geometry, clips the opposite half space and records the w
     ).toBe(true);
     expect(renderer.inspect().perFramePassNames).toContain('single-layer-medium-color');
     const readTarget = async () => {
-      const ticket = activeRenderer.requestTargetReadback(target.value, { mipLevel: 0 });
-      if (!ticket.ok) throw ticket.error;
-      const frame = await draw();
-      const observed = await activeRenderer.observe(frame, {
-        include: ['target-readbacks'],
-        targetReadbacks: [ticket.value],
-      });
-      if (!observed.ok) throw observed.error;
-      const readback = observed.value.targetReadbacks?.[0];
-      if (readback === undefined) throw new Error('Target pixels missing');
-      return readback;
+      let ticket: ReturnType<typeof activeRenderer.requestTargetReadback> | undefined;
+      const observed: { value?: Awaited<ReturnType<typeof activeRenderer.observe>> } = {};
+      await draw(
+        () => {
+          ticket = activeRenderer.requestTargetReadback(target.value, { mipLevel: 0 });
+          if (!ticket.ok) throw ticket.error;
+        },
+        async (frame) => {
+          if (ticket === undefined) throw new Error('Target readback ticket missing');
+          if (!ticket.ok) throw ticket.error;
+          observed.value = await activeRenderer.observe(frame, {
+            include: ['target-readbacks'],
+            targetReadbacks: [ticket.value],
+          });
+          if (!observed.value.ok) throw observed.value.error;
+        },
+      );
+      const readback = observed.value;
+      if (readback === undefined) throw new Error('Target readback observation missing');
+      if (!readback.ok) throw readback.error;
+      const pixels = readback.value.targetReadbacks?.[0];
+      if (pixels === undefined) throw new Error('Target pixels missing');
+      return pixels;
     };
     const countColors = (bytes: Uint8Array) => {
       let red = 0,
@@ -491,6 +526,5 @@ it('captures offscreen geometry, clips the opposite half space and records the w
     (await recorder.dispose()).unwrap();
     surface?.destroy();
     nativeDevice?.destroy();
-    await server.close();
   }
 }, 180_000);

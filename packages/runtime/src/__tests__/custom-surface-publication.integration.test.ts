@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
-import { materialContribution } from '@forgeax/engine-render';
+import { Materials, materialContribution } from '@forgeax/engine-render';
 import { describe, expect, it, vi } from 'vitest';
 import { AssetRegistry } from '../../../assets-runtime/src/asset-registry';
 import {
@@ -12,14 +12,17 @@ import {
 } from '../../../assets-runtime/src/material/runtime-shader';
 import { normaliseForPack } from '../../../import/src/import-runner';
 import { AssetGuid } from '../../../pack/src/guid';
-import { validateCookedMaterialRecord } from '../../../pack/src/material-cook';
+import {
+  type CookedMaterialRecord,
+  validateCookedMaterialRecord,
+} from '../../../pack/src/material-cook';
 import {
   materialProgramKeysForMaterial,
   materialSceneIndexProgramKeysForMaterial,
 } from '../../../render/src/render-system-extract';
 import { ShaderRegistry } from '../../../shader/src/index';
 import { createMaterialPackCooker } from '../../../shader-compiler/src/material/pack-cooker';
-import { derive, type MaterialAsset, standardSurfaceParameters } from '../../../types/src/index';
+import { derive, type MaterialAsset, selectMaterialStaticContract } from '../../../types/src/index';
 
 const GUID = '019f0000-0000-7000-8000-0000000007a1';
 const customSurface = `#define_import_path game::custom_surface
@@ -89,9 +92,11 @@ fn read_other(input: SurfaceInput) -> vec3<f32> {
 `;
 
 const material = {
-  kind: 'material',
-  parameters: standardSurfaceParameters([{ name: 'baseColor', type: 'color' }]),
-  values: { baseColor: [0.72, 0.18, 0.04, 1] },
+  ...Materials.standard({
+    surfaceModule: 'game::custom_surface',
+    parameters: [{ name: 'baseColor', type: 'color' }],
+    values: { baseColor: [0.72, 0.18, 0.04, 1] },
+  }),
   passes: [
     {
       name: 'Forward',
@@ -113,6 +118,45 @@ const material = {
     },
   ],
 } satisfies MaterialAsset;
+
+type PublishedSelection = CookedMaterialRecord['programs'][number]['selections'][number];
+
+function expectStorageRasterCoverage(
+  pass: string,
+  selections: readonly PublishedSelection[],
+  visibility: readonly boolean[],
+) {
+  for (const capability of [
+    'storage-buffer-minimum',
+    'storage-buffer-projector',
+    'storage-buffer',
+    'storage-buffer-atmosphere',
+  ]) {
+    for (const visibleSurface of visibility) {
+      for (const viewClipping of [false, true]) {
+        for (const lodCoverage of [false, true]) {
+          for (const color of [false, true]) {
+            const addresses = selections
+              .filter(
+                ({ context, abi }) =>
+                  context.pipeline !== 'ray' &&
+                  context.capability === capability &&
+                  (context.visibleSurface === true) === visibleSurface &&
+                  (context.viewClipping === true) === viewClipping &&
+                  (context.lodCoverage === true) === lodCoverage &&
+                  abi?.vertexInputs.some((input) => input.semantic === 'color') === color,
+              )
+              .map((selection) => selection.address);
+            expect(
+              addresses,
+              `${pass} ${capability} visibleSurface=${visibleSurface} viewClipping=${viewClipping} lodCoverage=${lodCoverage} color=${color}`,
+            ).toEqual(['direct', 'scene-index']);
+          }
+        }
+      }
+    }
+  }
+}
 
 function parseGuid(value: string) {
   const parsed = AssetGuid.parse(value);
@@ -168,30 +212,15 @@ describe('custom Surface publication path', () => {
       const ray = cooked.programs.flatMap((program) =>
         program.selections.filter((selection) => selection.context.pipeline === 'ray'),
       );
+      const shadow = cooked.programs.flatMap((program) =>
+        program.selections.filter((selection) => selection.pass === 'Occluder'),
+      );
       expect(ray).toHaveLength(1);
       expect(ray[0]).toMatchObject({ pass: 'Forward', entry: 'cs_surface' });
       expect(ray[0]?.address).toBeUndefined();
       expect(ray[0]?.abi).toBeUndefined();
-      for (const capability of [
-        'storage-buffer-minimum',
-        'storage-buffer-projector',
-        'storage-buffer',
-        'storage-buffer-atmosphere',
-      ]) {
-        for (const visibleSurface of [false, true]) {
-          expect(
-            forward
-              .filter(
-                (selection) =>
-                  selection.context.pipeline !== 'ray' &&
-                  selection.context.capability === capability &&
-                  (selection.context.visibleSurface === true) === visibleSurface,
-              )
-              .map((selection) => selection.address),
-            `Forward ${capability} visibleSurface=${visibleSurface}`,
-          ).toEqual(['direct', 'scene-index', 'direct', 'scene-index']);
-        }
-      }
+      expectStorageRasterCoverage('Forward', forward, [false, true]);
+      expectStorageRasterCoverage('Occluder', shadow, [false]);
       expect(
         forward
           .filter((selection) => selection.context.capability !== 'uniform-fallback')
@@ -205,6 +234,14 @@ describe('custom Surface publication path', () => {
         'evaluate_surface_with_material',
       );
       const sceneWgsl = new TextDecoder().decode(sceneProgram?.artifact.bytes);
+      const coverageGate = sceneWgsl.match(/fn alphaTestSurface\w*\([\s\S]*?\n}/)?.[0];
+      expect(coverageGate).toBeDefined();
+      expect(coverageGate).not.toContain('discard;');
+      for (const selection of forward) {
+        expect(selection.abi?.alphaMask).toEqual({ cutoff: '', source: '' });
+        expect(selection.abi?.materialRow.fields).not.toContain('alphaCutoff');
+        expect(selection.abi?.materialRow.fields).not.toContain('alphaHash');
+      }
       const helperLocalNames = [...sceneWgsl.matchAll(/fn\s+(\w*local_tint)\s*\(/g)].map(
         (match) => match[1],
       );
@@ -227,21 +264,6 @@ describe('custom Surface publication path', () => {
         new RegExp(`fn evaluateStandardSurface[\\s\\S]*?${privateMaterial}\\s*=`),
       );
 
-      const shadow = cooked.programs.flatMap((program) =>
-        program.selections.filter((selection) => selection.pass === 'Occluder'),
-      );
-      for (const capability of [
-        'storage-buffer-minimum',
-        'storage-buffer-projector',
-        'storage-buffer',
-        'storage-buffer-atmosphere',
-      ]) {
-        expect(
-          shadow
-            .filter((selection) => selection.context.capability === capability)
-            .map((selection) => selection.address),
-        ).toEqual(['direct', 'scene-index', 'direct', 'scene-index']);
-      }
       const shadowSceneProgram = cooked.programs.find((program) =>
         program.selections.some(
           (selection) => selection.pass === 'Occluder' && selection.address === 'scene-index',
@@ -249,6 +271,11 @@ describe('custom Surface publication path', () => {
       );
       expect(shadowSceneProgram).toBeDefined();
       const shadowSceneWgsl = new TextDecoder().decode(shadowSceneProgram?.artifact.bytes);
+      const shadowCoverageGate = shadowSceneWgsl.match(
+        /fn alphaTestShadowSurface\w*\([\s\S]*?\n}/,
+      )?.[0];
+      expect(shadowCoverageGate).toBeDefined();
+      expect(shadowCoverageGate).not.toContain('discard;');
       expect(shadowSceneWgsl).toContain('evaluate_surface_with_material');
       expect(shadowSceneWgsl).toContain('fn fs_shadow');
 
@@ -317,35 +344,39 @@ describe('custom Surface publication path', () => {
       if (projection === undefined) return;
 
       const uniformRowBytes = derive(
-        materialParametersToParamSchema(material.parameters ?? []),
+        materialParametersToParamSchema(selectMaterialStaticContract(material).parameters ?? []),
       ).totalBytes;
       for (const backend of ['webgpu', 'webgl2']) {
         for (const [pass, selections] of [
           ['Forward', forward],
           ['Occluder', shadow],
         ] as const) {
-          const uniform = selections.filter(
-            (selection) =>
-              selection.context.backend === backend &&
-              selection.context.capability === 'uniform-fallback',
-          );
-          expect(uniform.map((selection) => selection.address)).toEqual(['direct', 'direct']);
-          const uniformContext = uniform[0]?.context;
-          if (uniformContext === undefined) throw new Error('missing uniform publication');
-          for (const color of [false, true]) {
-            const selected = selectMaterialPassProgram(
-              projection,
-              pass,
-              uniformContext,
-              'direct',
-              color,
+          for (const viewClipping of [false, true]) {
+            const uniform = selections.filter(
+              ({ context }) =>
+                context.pipeline !== 'ray' &&
+                context.backend === backend &&
+                context.capability === 'uniform-fallback' &&
+                (context.viewClipping === true) === viewClipping,
             );
-            expect(selected.entry).toBe('vs_main');
-            expect(selected.abi?.sceneIndexEntry).toBeUndefined();
-            expect(selected.abi?.materialRow.byteLength).toBe(uniformRowBytes);
-            expect(selected.abi?.vertexInputs.some((input) => input.semantic === 'color')).toBe(
-              color,
-            );
+            expect(uniform.map((selection) => selection.address)).toEqual(['direct', 'direct']);
+            const uniformContext = uniform[0]?.context;
+            if (uniformContext === undefined) throw new Error('missing uniform publication');
+            for (const color of [false, true]) {
+              const selected = selectMaterialPassProgram(
+                projection,
+                pass,
+                uniformContext,
+                'direct',
+                color,
+              );
+              expect(selected.entry).toBe('vs_main');
+              expect(selected.abi?.sceneIndexEntry).toBeUndefined();
+              expect(selected.abi?.materialRow.byteLength).toBe(uniformRowBytes);
+              expect(selected.abi?.vertexInputs.some((input) => input.semantic === 'color')).toBe(
+                color,
+              );
+            }
           }
         }
       }
@@ -355,22 +386,25 @@ describe('custom Surface publication path', () => {
       if (context === undefined || context.pipeline === 'ray')
         throw new Error('missing raster context');
       if (shadow[0] === undefined) throw new Error('missing shadow selection');
-      for (const color of [false, true]) {
-        for (const address of ['direct', 'scene-index'] as const) {
-          for (const pass of ['Forward', 'Occluder']) {
-            const selected = selectMaterialPassProgram(
-              projection,
-              pass,
-              pass === 'Forward' ? context : shadow[0].context,
-              address,
-              color,
-            );
-            expect(selected.abi?.vertexInputs.some((input) => input.semantic === 'color')).toBe(
-              color,
-            );
+      const assertRasterAddressSelections = () => {
+        for (const color of [false, true]) {
+          for (const address of ['direct', 'scene-index'] as const) {
+            for (const pass of ['Forward', 'Occluder']) {
+              const selected = selectMaterialPassProgram(
+                projection,
+                pass,
+                pass === 'Forward' ? context : shadow[0].context,
+                address,
+                color,
+              );
+              expect(selected.abi?.vertexInputs.some((input) => input.semantic === 'color')).toBe(
+                color,
+              );
+            }
           }
         }
-      }
+      };
+      assertRasterAddressSelections();
       const direct = selectMaterialPassProgram(projection, 'Forward', context, 'direct');
       const scene = selectMaterialPassProgram(projection, 'Forward', context, 'scene-index');
       const rayContext = ray[0]?.context;
@@ -398,12 +432,15 @@ describe('custom Surface publication path', () => {
       );
       expect(shadowScene.abi?.receiptIdentity).toBe(shadowDirect.abi?.receiptIdentity);
       expect(shadowScene.entry).toBe('vs_scene_index');
-      // The Engine shadow wrapper exposes a different fragment entry, but a
-      // Surface-backed Standard pass still owns the same geometry/material
-      // ABI as its forward scene-index sibling. A full-custom shadow program
-      // remains free to publish an independent receipt.
-      expect(shadowScene.abi?.receiptIdentity).toBe(scene.abi?.receiptIdentity);
+      // These Standard passes share geometry and material layout. Only the
+      // qualified color writer carries the GBuffer output in its receipt.
+      expect(scene.abi?.gbuffer).toBe('standard-gbuffer/2');
+      expect(shadowScene.abi?.gbuffer).toBeUndefined();
+      expect(scene.abi?.receiptIdentity).toBe(
+        `${shadowScene.abi?.receiptIdentity}/standard-gbuffer/2`,
+      );
       expect(shadowScene.abi?.vertexInputs).toEqual(scene.abi?.vertexInputs);
+      expect(shadowScene.abi?.materialRow).toEqual(scene.abi?.materialRow);
       const resolved = runtimeAssets(registry).borrow<MaterialAsset>(loaded.unwrap()).unwrap();
       const keys = materialProgramKeysForMaterial(resolved, registry, context);
       expect(keys?.Forward).toBe(direct.specializationKey);

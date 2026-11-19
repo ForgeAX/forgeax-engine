@@ -92,6 +92,20 @@ async function workerProjectDirectory(
   return { scratch: directory.temporaryRoot, root: resolve(directory.root, 'game') };
 }
 
+async function prepareLightweightWorkerFixture(root: string, captureIbl: boolean): Promise<void> {
+  await reduceTestProject(root, { omitEngineContent: true });
+  if (captureIbl) return;
+  // The interaction journey needs the real skinned player and direct Scene
+  // rendering. The optional local probe starts separate cubemap material PSOs.
+  const path = resolve(root, 'assets/scene.pack.ts');
+  const authored = await readFile(path, 'utf8');
+  const scene = authored.replace(
+    /^ {6}keyed\('sphere-reflection', \{\r?\n[\s\S]*?^ {6}\}\),\r?\n/m,
+    '',
+  );
+  if (scene !== authored) await writeFile(path, scene);
+}
+
 function nativeFailure(error: unknown): unknown {
   return error instanceof Error ? { message: error.message, stack: error.stack } : error;
 }
@@ -138,7 +152,7 @@ it('new game-3d defaults to combined workers with visible UI, input, physics and
         });
       }
       if (process.env.FORGEAX_BROWSER_CI_LIGHTWEIGHT === '1') {
-        await reduceTestProject(root);
+        await prepareLightweightWorkerFixture(root, iblDiagnostic);
       }
       await writeProjectIdentity(root, { id: 'game', name: 'game', packageName: '@local/game' });
       const facts = await readProjectFacts(root);

@@ -1,3 +1,4 @@
+import { materialLightingInputBindings } from '@forgeax/engine-types';
 import { atmosphereViewLayoutEntries } from './environment/bindings';
 import type { SkinTaskBinding } from './record/skin-tasks';
 // pbr-pipeline.ts -- PBR / unlit pipeline-layout factories (M4 round-4 D-5).
@@ -34,6 +35,8 @@ import type {
   TextureView,
 } from '@forgeax/engine-rhi';
 import {
+  isShaderTemplateManifestRow,
+  materialShaderAxes,
   type ShaderCatalog,
   STANDARD_DIRECT_DFG_LUT_BINDING,
   STANDARD_PARALLAX_DISPLACEMENT_BIT,
@@ -142,9 +145,11 @@ export function buildPbrMaterialUserRegionEntries(
   paramSchema: readonly ParamSchemaEntry[] = STANDARD_PIPELINE_PARAM_SCHEMA,
   excludedTextureFields: readonly string[] = [],
   vertexOnlyTextureFields: readonly string[] = [],
+  preserveAuthorFields = false,
 ): GPUBindGroupLayoutEntry[] {
   const excluded = new Set(excludedTextureFields);
-  for (const field of standardPhysicalTextureFields(paramSchema)) excluded.add(field);
+  if (!preserveAuthorFields)
+    for (const field of standardPhysicalTextureFields(paramSchema)) excluded.add(field);
   const derived = derive(
     excluded.size === 0
       ? paramSchema
@@ -251,7 +256,7 @@ export function materialUsesSurfaceSceneInputs(
   return lookup.value.program.materialBindings?.includes(userRegionEnd + 9) === true;
 }
 
-/** A shared layout may prune from a complete, single-source registration only. */
+/** Cooked families share their complete read union; capability templates stay conservative. */
 export function sharedMaterialBindingDeclarations(
   registry: ShaderCatalog | undefined,
   materialShaderId: string | undefined,
@@ -260,12 +265,28 @@ export function sharedMaterialBindingDeclarations(
   // Renderer assembly finishes the registry's one-time manifest load before layouts.
   // Variant selection changes the program, not the per-shader shared layout.
   // Preserve its existing conservative contract instead of pruning by one variant.
-  if ((registry.materialShaderManifestEntry(materialShaderId)?.variants.length ?? 0) > 0)
+  const family = registry.materialShaderManifestEntry(materialShaderId);
+  if (
+    family !== undefined &&
+    (isShaderTemplateManifestRow(family)
+      ? materialShaderAxes(family).length > 0
+      : isCanonicalStandardPbrMaterialShader(materialShaderId) && family.variants.length > 0)
+  )
     return undefined;
   const lookup = registry.findMaterialArtifact(materialShaderId);
   // Surface medium layouts use their fixed engine ABI under an alias.
   if (materialUsesSurfaceSceneInputs(registry, materialShaderId)) return undefined;
-  return lookup.ok ? lookup.value.program.materialBindings : undefined;
+  if (!lookup.ok) return undefined;
+  const primary = lookup.value.program.materialBindings;
+  if (family === undefined || family.variants.length === 0 || primary === undefined) return primary;
+  const bindings = new Set(primary);
+  for (const variant of family.variants) {
+    const entries = variant.entryPoints ?? variant.receipt?.entryPoints;
+    if (entries === undefined) return undefined;
+    for (const entry of entries)
+      for (const binding of entry.bindings) if (binding.group === 1) bindings.add(binding.binding);
+  }
+  return [...bindings].sort((a, b) => a - b);
 }
 
 /** Shared Surface layouts and bind groups consume the same complete entry-read union. */
@@ -1842,110 +1863,8 @@ export function buildBindGroupLayoutDescriptor(
       return sceneDirectInstancesLayoutDescriptor(options.caps);
     case 'pbr-skin-mesh-array':
       return skinMeshArrayLayoutDescriptor(options.caps);
-    case 'pbr-material-merged': {
-      // Material BGL: per-shader user-region (derive(paramSchema).bglEntries)
-      // + IBL injection (6) + transmission injection (up to 2). The user-region
-      // size is the only variable; injection start = userRegion.length so a
-      // custom schema shifts IBL/transmission by its sampler/texture pairs.
-      // The built-in standard-PBR user region has 25 entries;
-      // scene rows follow injection, and physical texture pairs follow the effective root schema.
-      //
-      // Schema source priority (D-1): explicit materialParamSchema option >
-      // registry lookup of spec.shader.id > built-in standard-PBR fallback.
-      const resolvedSchema = resolveMaterialParamSchema(spec, options);
-      const singleLayerMedium = materialUsesSurfaceSceneInputs(options.registry, spec.shader.id);
-      const effectiveSchema = resolvedSchema ?? STANDARD_PIPELINE_PARAM_SCHEMA;
-      const physicalFields = physicalTextureFields(effectiveSchema);
-      // Standard's built-in shader keeps the transmission user-region slots
-      // reserved even when a particular root omits those values.  Physical
-      // maps extend that canonical region; they must not compact the IBL
-      // bindings to the smaller authored subset.  A compact user region is
-      // still correct for authored (non-engine) material shaders.
-      const userRegionSchema = isCanonicalStandardPbrMaterialShader(spec.shader.id)
-        ? STANDARD_PIPELINE_PARAM_SCHEMA.map(
-            (field) =>
-              effectiveSchema.find(
-                (entry) =>
-                  entry.name === field.name &&
-                  entry.type === field.type &&
-                  entry.type.startsWith('texture'),
-              ) ?? field,
-          )
-        : effectiveSchema;
-      // Standard height never samples in fragment. Keep that stage policy out
-      // of custom shaders, where the same parameter name may be fragment input.
-      const userRegion = buildPbrMaterialUserRegionEntries(
-        userRegionSchema,
-        [],
-        isStandardPbrMaterialShader(spec.shader.id) || spec.shader.id === SHADOW_CASTER_SHADER_ID
-          ? ['displacementTexture']
-          : [],
-      );
-      const afterIbl = [...userRegion, ...appendInjection(userRegion, 'ibl')];
-      const afterTransmission = [...afterIbl, ...appendInjection(afterIbl, 'transmission')];
-      const engineRegion =
-        options.caps?.transmissionBackdrop === false &&
-        !singleLayerMedium &&
-        !programDeclaresTransmissionBackdrop(
-          sharedMaterialBindingDeclarations(options.registry, spec.shader.id),
-          userRegion.length,
-        )
-          ? afterIbl
-          : afterTransmission;
-      const afterSurfaceMedium = singleLayerMedium
-        ? [...engineRegion, ...appendSingleLayerMediumInjection(engineRegion)]
-        : engineRegion;
-      const merged = [...afterSurfaceMedium, ...appendTextureInjection(effectiveSchema)];
-      // Scene-index Standard variants reserve binding 46 for the producer-owned
-      // material row. Physical texture pairs start after this reserved region,
-      // so no authored physical subset can alias the row.
-      if (options.caps?.storageBuffer ?? true) {
-        merged.push({
-          binding: 46,
-          visibility: GPU_SHADER_STAGE_VERTEX | GPU_SHADER_STAGE_FRAGMENT,
-          buffer: { type: 'read-only-storage', hasDynamicOffset: false },
-        });
-      }
-      const entries = [
-        ...merged,
-        ...(materialUsesDirectDfgLut(effectiveSchema)
-          ? [
-              {
-                binding: STANDARD_DIRECT_DFG_LUT_BINDING,
-                visibility: GPU_SHADER_STAGE_FRAGMENT,
-                texture: { sampleType: 'float' as const, viewDimension: '2d' as const },
-              },
-            ]
-          : []),
-        ...(materialUsesPlanarReflection(effectiveSchema)
-          ? PLANAR_REFLECTION_MATERIAL_LAYOUT_ENTRIES
-          : []),
-        {
-          binding: 47,
-          visibility: GPU_SHADER_STAGE_FRAGMENT,
-          texture: { sampleType: 'float' as const, viewDimension: '2d' as const },
-        },
-      ];
-      const excluded = omittedStandardMaterialBindings(
-        [
-          ...derive(userRegionSchema.filter((field) => !physicalFields.includes(field.name)))
-            .textureFieldNames,
-        ],
-        options.caps?.transmissionBackdrop !== false || singleLayerMedium,
-        isStandardPbrMaterialShader(spec.shader.id),
-        isCanonicalStandardPbrMaterialShader(spec.shader.id),
-        sharedMaterialBindingDeclarations(options.registry, spec.shader.id),
-        userRegion.length,
-      );
-      return {
-        label: 'pbr-material-skylight-bgl',
-        entries: projectSurfaceMaterialBindings(
-          entries.filter((entry) => !excluded.has(entry.binding)),
-          options.registry,
-          spec.shader.id,
-        ),
-      };
-    }
+    case 'pbr-material-merged':
+      return materialMergedLayoutDescriptor(spec, options);
     case 'unlit-material': {
       // Unlit material BGL: per-shader user-region only. No IBL/transmission
       // injection (D-5 round-4: unlit demos do not pay for IBL state).
@@ -2046,3 +1965,143 @@ function buildFullscreenPostInputEntries(
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
+
+/** Custom author parameters with native full-view lighting and depth. */
+export function materialUsesLitSceneInputs(
+  registry: ShaderCatalog | undefined,
+  id: string | undefined,
+): boolean {
+  if (registry === undefined || id === undefined) return false;
+  const artifact = registry.findMaterialArtifact(id);
+  return artifact.ok && artifact.value.receipt?.bindings === 'render-lit-material-and-scene-depth';
+}
+
+/** Material layouts own the author region and native scene injections together. */
+function materialMergedLayoutDescriptor(
+  spec: PipelineSpec,
+  options: Parameters<typeof buildBindGroupLayoutDescriptor>[1],
+): BindGroupLayoutDescriptorOutput {
+  if (materialUsesLitSceneInputs(options.registry, spec.shader.id)) {
+    const schema = resolveMaterialParamSchema(spec, options);
+    const user =
+      (schema?.length ?? 0) === 0 ? [] : buildPbrMaterialUserRegionEntries(schema, [], [], true);
+    const slots = materialLightingInputBindings(derive(schema ?? []).userRegionBindingEnd);
+    return {
+      label: 'lit-material-skylight-bgl',
+      entries: [
+        ...user,
+        ...appendInjection(user, 'ibl').map((entry) => ({
+          ...entry,
+          visibility: GPU_SHADER_STAGE_VERTEX | GPU_SHADER_STAGE_FRAGMENT,
+        })),
+        {
+          binding: slots.skylightPrefilterMap,
+          visibility: GPU_SHADER_STAGE_VERTEX | GPU_SHADER_STAGE_FRAGMENT,
+          texture: { sampleType: 'float', viewDimension: '2d' },
+        },
+      ],
+    };
+  }
+  // Material BGL: per-shader user-region (derive(paramSchema).bglEntries)
+  // + IBL injection (6) + transmission injection (up to 2). The user-region
+  // size is the only variable; injection start = userRegion.length so a
+  // custom schema shifts IBL/transmission by its sampler/texture pairs.
+  // The built-in standard-PBR user region has 25 entries;
+  // scene rows follow injection, and physical texture pairs follow the effective root schema.
+  //
+  // Schema source priority (D-1): explicit materialParamSchema option >
+  // registry lookup of spec.shader.id > built-in standard-PBR fallback.
+  const resolvedSchema = resolveMaterialParamSchema(spec, options);
+  const singleLayerMedium = materialUsesSurfaceSceneInputs(options.registry, spec.shader.id);
+  const effectiveSchema = resolvedSchema ?? STANDARD_PIPELINE_PARAM_SCHEMA;
+  const physicalFields = physicalTextureFields(effectiveSchema);
+  // Standard's built-in shader keeps the transmission user-region slots
+  // reserved even when a particular root omits those values.  Physical
+  // maps extend that canonical region; they must not compact the IBL
+  // bindings to the smaller authored subset.  A compact user region is
+  // still correct for authored (non-engine) material shaders.
+  const userRegionSchema = isCanonicalStandardPbrMaterialShader(spec.shader.id)
+    ? STANDARD_PIPELINE_PARAM_SCHEMA.map(
+        (field) =>
+          effectiveSchema.find(
+            (entry) =>
+              entry.name === field.name &&
+              entry.type === field.type &&
+              entry.type.startsWith('texture'),
+          ) ?? field,
+      )
+    : effectiveSchema;
+  // Standard height never samples in fragment. Keep that stage policy out
+  // of custom shaders, where the same parameter name may be fragment input.
+  const userRegion = buildPbrMaterialUserRegionEntries(
+    userRegionSchema,
+    [],
+    isStandardPbrMaterialShader(spec.shader.id) || spec.shader.id === SHADOW_CASTER_SHADER_ID
+      ? ['displacementTexture']
+      : [],
+  );
+  const afterIbl = [...userRegion, ...appendInjection(userRegion, 'ibl')];
+  const afterTransmission = [...afterIbl, ...appendInjection(afterIbl, 'transmission')];
+  const engineRegion =
+    options.caps?.transmissionBackdrop === false &&
+    !singleLayerMedium &&
+    !programDeclaresTransmissionBackdrop(
+      sharedMaterialBindingDeclarations(options.registry, spec.shader.id),
+      userRegion.length,
+    )
+      ? afterIbl
+      : afterTransmission;
+  const afterSurfaceMedium = singleLayerMedium
+    ? [...engineRegion, ...appendSingleLayerMediumInjection(engineRegion)]
+    : engineRegion;
+  const merged = [...afterSurfaceMedium, ...appendTextureInjection(effectiveSchema)];
+  // Scene-index Standard variants reserve binding 46 for the producer-owned
+  // material row. Physical texture pairs start after this reserved region,
+  // so no authored physical subset can alias the row.
+  if (options.caps?.storageBuffer ?? true) {
+    merged.push({
+      binding: 46,
+      visibility: GPU_SHADER_STAGE_VERTEX | GPU_SHADER_STAGE_FRAGMENT,
+      buffer: { type: 'read-only-storage', hasDynamicOffset: false },
+    });
+  }
+  const entries = [
+    ...merged,
+    ...(materialUsesDirectDfgLut(effectiveSchema)
+      ? [
+          {
+            binding: STANDARD_DIRECT_DFG_LUT_BINDING,
+            visibility: GPU_SHADER_STAGE_FRAGMENT,
+            texture: { sampleType: 'float' as const, viewDimension: '2d' as const },
+          },
+        ]
+      : []),
+    ...(materialUsesPlanarReflection(effectiveSchema)
+      ? PLANAR_REFLECTION_MATERIAL_LAYOUT_ENTRIES
+      : []),
+    {
+      binding: 47,
+      visibility: GPU_SHADER_STAGE_FRAGMENT,
+      texture: { sampleType: 'float' as const, viewDimension: '2d' as const },
+    },
+  ];
+  const excluded = omittedStandardMaterialBindings(
+    [
+      ...derive(userRegionSchema.filter((field) => !physicalFields.includes(field.name)))
+        .textureFieldNames,
+    ],
+    options.caps?.transmissionBackdrop !== false || singleLayerMedium,
+    isStandardPbrMaterialShader(spec.shader.id),
+    isCanonicalStandardPbrMaterialShader(spec.shader.id),
+    sharedMaterialBindingDeclarations(options.registry, spec.shader.id),
+    userRegion.length,
+  );
+  return {
+    label: 'pbr-material-skylight-bgl',
+    entries: projectSurfaceMaterialBindings(
+      entries.filter((entry) => !excluded.has(entry.binding)),
+      options.registry,
+      spec.shader.id,
+    ),
+  };
+}

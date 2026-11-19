@@ -14,27 +14,38 @@ import type { NativeCooker } from '@forgeax/engine-pack/native-cooker';
 import { admitRayMaterial } from '@forgeax/engine-shader';
 import {
   type MaterialAsset,
-  type MaterialPass,
   type MaterialTable,
   resolveMaterialAsset,
-  STANDARD_LAYER_PARAMETER_GROUPS,
-  standardMaterialParameters,
-  standardSurfaceParameters,
-  unlitMaterialParameters,
 } from '@forgeax/engine-types';
-import type { MaterialCookRequest } from './cook.js';
+import type {
+  MaterialCookedPass,
+  MaterialCookRequest,
+  MaterialSurfacePreparation,
+} from './cook.js';
 import { ENGINE_MODULE_ALIASES } from './engine-module-aliases.js';
 import { withNodeMaterialWorkers } from './node-material-cooker.js';
 import { createNodeMaterialProgramCompiler, mapMaterialVariants } from './node-program-compiler.js';
+import { normalizeMaterialAsset, UNLIT_ROOT_MODULES } from './pack-material-contract.js';
 import {
   createMaterialPackVariantCompiler,
   materialPackSourceIdentity,
 } from './pack-variant-reuse.js';
 import { cookedRecord, materialPrograms, rayMaterialProgram } from './publication.js';
-import { type CookedRayMaterial, cookRayMaterial } from './ray-material.js';
+import type { CookedRayMaterial } from './ray-material.js';
 import { buildMaterialSourceCatalog } from './source-catalog.js';
 import { terrainProgramSource } from './terrain-program.js';
 import { DEFAULT_MATERIAL_VARIANT_CONTEXT } from './variant-context.js';
+
+function materialPassLayoutIdentity(passes: readonly MaterialCookedPass[]): string {
+  const layoutIdentity = passes[0]?.layoutIdentity;
+  if (layoutIdentity === undefined) {
+    throw new Error('material shader compile produced no passes');
+  }
+  if (passes.some((pass) => pass.layoutIdentity !== layoutIdentity)) {
+    throw new Error('material shader passes produced different layout identities');
+  }
+  return layoutIdentity;
+}
 
 interface MaterialPackCookInput {
   readonly guid: string;
@@ -106,7 +117,6 @@ const require = createRequire(import.meta.url);
 // the Pack collector's header grammar aligned with `shaderModuleId()` and the
 // Vite manifest loader so a cold cooker cannot silently drop those modules.
 const MODULE_ID_RE = /^\s*#define_import_path\s+([A-Za-z0-9_.-]+(?:::[A-Za-z0-9_.-]+)*)\s*$/m;
-const UNLIT_ROOT_MODULES = new Set(['forgeax_material::unlit', 'forgeax::default-unlit']);
 const SPRITE_ROOT_MODULES = new Set([
   'forgeax_material::sprite',
   'forgeax::sprite',
@@ -238,70 +248,6 @@ function materialInput(value: unknown): MaterialPackCookInput {
   return input as MaterialPackCookInput;
 }
 
-/**
- * Pack JSON keeps the authored pass intentionally small, but the renderer's
- * selector consumes the same LightMode tag that built-in Standard materials
- * publish.  Derive that policy at the Pack boundary so a cooked asset and an
- * in-memory Standard material enter the render graph with one pass identity.
- */
-function normalizeMaterialPass(pass: MaterialPass): MaterialPass {
-  const tags = pass.renderState?.tags;
-  if (tags !== undefined && typeof tags === 'object' && tags !== null && 'LightMode' in tags) {
-    return pass;
-  }
-  const lightMode =
-    pass.name.toLowerCase() === 'shadow-caster'
-      ? 'ShadowCaster'
-      : pass.name.toLowerCase() === 'deferred'
-        ? 'Deferred'
-        : pass.name.toLowerCase() === 'forward'
-          ? 'Forward'
-          : undefined;
-  if (lightMode === undefined) return pass;
-  return {
-    ...pass,
-    renderState: {
-      ...(pass.renderState ?? {}),
-      tags: {
-        LightMode: lightMode,
-        ...(tags as Record<string, unknown> | undefined),
-      },
-    },
-  };
-}
-
-function normalizeMaterialAsset(source: MaterialAsset): MaterialAsset {
-  const sourcePasses = source.passes;
-  if (sourcePasses === undefined) return source;
-  const passes = sourcePasses.map(normalizeMaterialPass);
-  // Complete shorthand Engine authoring before composition. Publish the same
-  // schema that the compiler consumes; explicit project contracts stay authoritative.
-  let parameters = source.parameters;
-  if (parameters === undefined && source.parent === undefined && source.surface === undefined) {
-    if (sourcePasses.some((pass) => isStandardRootModule(pass.program.module))) {
-      const names = new Set(Object.keys(source.values ?? {}));
-      for (const group of Object.values(STANDARD_LAYER_PARAMETER_GROUPS)) {
-        if (group.some((name) => names.has(name))) {
-          for (const name of group) names.add(name);
-        }
-      }
-      parameters = standardSurfaceParameters(standardMaterialParameters(names));
-    } else if (sourcePasses.some((pass) => UNLIT_ROOT_MODULES.has(pass.program.module))) {
-      parameters = unlitMaterialParameters(source.colorSpace ?? 'srgb');
-    }
-  }
-  if (
-    parameters === source.parameters &&
-    passes.every((pass, index) => pass === sourcePasses[index])
-  )
-    return source;
-  return {
-    ...source,
-    passes: passes as unknown as NonNullable<MaterialAsset['passes']>,
-    ...(parameters === undefined ? {} : { parameters }),
-  };
-}
-
 function unique(values: readonly string[]): readonly string[] {
   return [...new Set(values)];
 }
@@ -366,6 +312,9 @@ function materialModuleAliases(
 // Source bytes and selected entry/ABI facts remain the compiler cache authority.
 const compiler = createNodeMaterialProgramCompiler();
 const compile = compiler.compile;
+// The compiler owns this bounded source-keyed cache across Pack cooker lifetimes.
+// A new Play/cooker still resolves its own values; it does not rebuild the same variants.
+const compilePackVariant = createMaterialPackVariantCompiler(compile);
 
 function materialSourceRelativePath(path: string, root: string): string | undefined {
   const absolutePath = resolve(path);
@@ -482,12 +431,6 @@ export function createMaterialPackCooker(
   // The material Worker replaces this cooker when roots/profile change; its
   // bounded preparation roster never outlives that existing owner.
   const prepareSources = createMaterialSourcePreparation(snapshot);
-  const compilePackVariant = createMaterialPackVariantCompiler(compile);
-  const cookVariant = async (request: MaterialCookRequest, sourceIdentity: string | undefined) => {
-    const cooked = await compilePackVariant(request, sourceIdentity);
-    if (!cooked.ok) throw cooked.error;
-    return cooked.value;
-  };
   const cooker: NativeCooker = {
     key: 'material',
     concurrency: 'parallel',
@@ -596,8 +539,22 @@ export function createMaterialPackCooker(
         templateAliases,
         input,
       });
-      const cookRaster = (request: MaterialCookRequest) =>
-        compilePackVariant(request, sourceIdentity);
+      // The source catalog and material inputs are fixed for this publication.
+      // Variant selection and native validation still run for each actual program.
+      const preparedSurfaces: MaterialSurfacePreparation = {
+        sources: catalog.value,
+        entries: new Map(),
+      };
+      const cookRaster = (request: MaterialCookRequest, selectedPasses?: readonly string[]) =>
+        compilePackVariant.raster(request, sourceIdentity, selectedPasses, preparedSurfaces);
+      const cookVariant = async (
+        request: MaterialCookRequest,
+        selectedPasses?: readonly string[],
+      ) => {
+        const cooked = await cookRaster(request, selectedPasses);
+        if (!cooked.ok) throw cooked.error;
+        return cooked.value;
+      };
       const table = { ...(input.table ?? {}), [normalizedInput.guid]: normalizedInput.source };
       const resolved = resolveMaterialAsset(normalizedInput.guid, table);
       if (!resolved.ok) throw resolved.error;
@@ -635,13 +592,7 @@ export function createMaterialPackCooker(
       if (!cooked.ok) {
         throw cooked.error;
       }
-      const layoutIdentity = cooked.value.passes[0]?.layoutIdentity;
-      if (layoutIdentity === undefined) {
-        throw new Error('material shader compile produced no passes');
-      }
-      if (cooked.value.passes.some((pass) => pass.layoutIdentity !== layoutIdentity)) {
-        throw new Error('material shader passes produced different layout identities');
-      }
+      const layoutIdentity = materialPassLayoutIdentity(cooked.value.passes);
       // A material may be shared by ordinary sprites and SpriteInstances.
       // Publish both buffer layouts; the component selects the exact program.
       const passes = [...cooked.value.passes];
@@ -671,62 +622,68 @@ export function createMaterialPackCooker(
         if (!skinned.ok) throw skinned.error;
         passes.push(...skinned.value.passes);
       }
-      // Visible-surface capture is another Standard deferred output contract.
-      // Publish it with the same authored Surface and parameter schema so a
-      // renderer never rewrites WGSL or substitutes a diagnostic material.
+      const appendVisibleAndPortableVariants = async () => {
+        // Visible-surface capture is another Standard deferred output contract.
+        // Publish it with the same authored Surface and parameter schema so a
+        // renderer never rewrites WGSL or substitutes a diagnostic material.
 
-      if (resolvedAsset.parent !== undefined)
-        throw new Error('material resolution retained a parent');
-      const visiblePasses = resolvedAsset.passes?.filter((pass) =>
-        isStandardRootModule(
-          terrainProgramSource(pass.program.module)?.module ?? pass.program.module,
-        ),
-      );
-      if (visiblePasses !== undefined && visiblePasses.length > 0) {
-        const visible = await cookRaster({
-          material: normalizedInput.guid,
-          table: {
-            [normalizedInput.guid]: {
-              ...resolvedAsset,
-              passes: visiblePasses as unknown as NonNullable<MaterialAsset['passes']>,
-            },
-          },
-          sources: catalog.value,
-          context: { ...context, visibleSurface: true },
-        });
-        if (!visible.ok) throw visible.error;
-        passes.push(...visible.value.passes.filter((pass) => pass.context.visibleSurface === true));
-      }
-      // Ordinary non-Sprite raster geometry must survive a device without
-      // storage buffers. A custom root can import the shared View ABI without
-      // declaring storage itself, so compose its uniform program before the
-      // compiler-free runtime. Single-layer media and GPU particles have
-      // storage/compute-backed inputs outside this raster fallback route.
-      // Explicit validation targets require storage WebGPU at startup.
-      // Portable publication still cooks both uniform-fallback backends by default.
-      const collectMaterialFallbackGeometries = () => {
-        const fallbackGeometries = new Set(
-          storageOnly || spriteRoot || storageOnlyMedium || gpuParticleRoot
-            ? []
-            : passes
-                .filter((pass) => pass.context.visibleSurface !== true)
-                .map((pass) => pass.context.geometry),
+        if (resolvedAsset.parent !== undefined)
+          throw new Error('material resolution retained a parent');
+        const visiblePasses = resolvedAsset.passes?.filter((pass) =>
+          isStandardRootModule(
+            terrainProgramSource(pass.program.module)?.module ?? pass.program.module,
+          ),
         );
-        return fallbackGeometries;
-      };
-      const fallbackGeometries = collectMaterialFallbackGeometries();
-      for (const geometry of fallbackGeometries) {
-        for (const backend of ['webgpu', 'webgl2'] as const) {
-          const fallback = await cookRaster({
+        const earlyVariants: MaterialCookRequest[] = [];
+        if (visiblePasses !== undefined && visiblePasses.length > 0) {
+          earlyVariants.push({
             material: normalizedInput.guid,
-            table,
+            table: {
+              [normalizedInput.guid]: {
+                ...resolvedAsset,
+                passes: visiblePasses as unknown as NonNullable<MaterialAsset['passes']>,
+              },
+            },
             sources: catalog.value,
-            context: { ...context, geometry, backend, capability: 'uniform-fallback' },
+            context: { ...context, visibleSurface: true },
           });
-          if (!fallback.ok) throw fallback.error;
-          passes.push(...fallback.value.passes);
         }
-      }
+        // Ordinary non-Sprite raster geometry must survive a device without
+        // storage buffers. Single-layer media and GPU particles have no uniform
+        // counterpart; explicit storage profiles skip that portable subset.
+        if (!(storageOnly || spriteRoot || storageOnlyMedium || gpuParticleRoot)) {
+          const fallbackGeometries = new Set(
+            passes
+              .filter((pass) => pass.context.visibleSurface !== true)
+              .map((pass) => pass.context.geometry),
+          );
+          for (const geometry of fallbackGeometries) {
+            for (const backend of ['webgpu', 'webgl2'] as const) {
+              earlyVariants.push({
+                material: normalizedInput.guid,
+                table,
+                sources: catalog.value,
+                context: { ...context, geometry, backend, capability: 'uniform-fallback' },
+              });
+            }
+          }
+        }
+        // Visible capture and the uniform fallbacks derive from the same base
+        // material independently. Overlap their cold work but publish in order.
+        const early = await mapMaterialVariants(earlyVariants, compiler.concurrency, (request) =>
+          cookRaster(request),
+        );
+        for (const [index, cooked] of early.entries()) {
+          if (!cooked.ok) throw cooked.error;
+          const visible = earlyVariants[index]?.context?.visibleSurface === true;
+          passes.push(
+            ...cooked.value.passes.filter(
+              (pass) => !visible || pass.context.visibleSurface === true,
+            ),
+          );
+        }
+      };
+      await appendVisibleAndPortableVariants();
       if (spriteRoot) {
         const instanced = await cookRaster({
           material: normalizedInput.guid,
@@ -765,15 +722,12 @@ export function createMaterialPackCooker(
         textureVariants,
         compiler.concurrency,
         ({ projection, capability }) =>
-          cookVariant(
-            {
-              material: normalizedInput.guid,
-              table: { ...(input.table ?? {}), [normalizedInput.guid]: normalizedInput.source },
-              sources: catalog.value,
-              context: { ...context, ...projection, capability },
-            },
-            sourceIdentity,
-          ),
+          cookVariant({
+            material: normalizedInput.guid,
+            table: { ...(input.table ?? {}), [normalizedInput.guid]: normalizedInput.source },
+            sources: catalog.value,
+            context: { ...context, ...projection, capability },
+          }),
       );
       for (const [index, specialized] of specializedVariants.entries()) {
         const projection = textureVariants[index]?.projection;
@@ -783,6 +737,93 @@ export function createMaterialPackCooker(
           ),
         );
       }
+      // Publish independent receiving-view and scene-index coverage beside the
+      // ordinary program, using the existing compiler cache and runtime selector.
+      const clippable = (module: string) =>
+        isStandardRootModule(terrainProgramSource(module)?.module ?? module) ||
+        UNLIT_ROOT_MODULES.has(module) ||
+        module === 'forgeax::default-shadow-caster';
+      const lodCapable = (pass: MaterialCookedPass) =>
+        pass.sceneCompile !== undefined &&
+        pass.context.capability !== 'uniform-fallback' &&
+        (pass.context.geometry === 'mesh' || pass.context.geometry === 'skinned') &&
+        (pass.module === 'forgeax::default-shadow-caster' ||
+          UNLIT_ROOT_MODULES.has(pass.module) ||
+          (isStandardRootModule(pass.module) && pass.context.geometry !== 'skinned'));
+      const clippingContexts = new Map(
+        passes
+          .filter((pass) => clippable(pass.module))
+          .map((pass) => [
+            JSON.stringify([
+              pass.context.backend,
+              pass.context.geometry,
+              pass.context.capability,
+              pass.context.visibleSurface === true,
+            ]),
+            {
+              ...pass.context,
+              pipeline: context.pipeline,
+              pass: context.pass,
+              viewClipping: true as const,
+            },
+          ]),
+      );
+      const clippingRows = [...clippingContexts.values()].flatMap((clipped) => {
+        const { viewClipping: _clipping, ...plain } = clipped;
+        const candidates = passes.filter(
+          (pass) =>
+            pass.context.backend === plain.backend &&
+            pass.context.capability === plain.capability &&
+            pass.context.geometry === plain.geometry &&
+            (pass.context.visibleSurface === true) === (plain.visibleSurface === true),
+        );
+        return candidates.some(lodCapable)
+          ? [
+              clipped,
+              { ...plain, lodCoverage: true as const },
+              { ...clipped, lodCoverage: true as const },
+            ]
+          : [clipped];
+      });
+      const clippedVariants = await mapMaterialVariants(
+        clippingRows,
+        compiler.concurrency,
+        (clippingContext) =>
+          cookVariant(
+            {
+              material: normalizedInput.guid,
+              table,
+              sources: catalog.value,
+              context: clippingContext,
+            },
+            [
+              ...new Set(
+                passes
+                  .filter(
+                    (pass) =>
+                      pass.context.backend === clippingContext.backend &&
+                      pass.context.capability === clippingContext.capability &&
+                      pass.context.geometry === clippingContext.geometry &&
+                      (clippingContext.visibleSurface !== true ||
+                        pass.context.visibleSurface === true) &&
+                      clippable(pass.module) &&
+                      (clippingContext.lodCoverage !== true || lodCapable(pass)),
+                  )
+                  .map((pass) => pass.pass),
+              ),
+            ],
+          ),
+      );
+      for (const [index, clipped] of clippedVariants.entries())
+        passes.push(
+          ...clipped.passes.filter(
+            (pass) =>
+              clippable(pass.module) &&
+              (pass.context.lodCoverage !== true || lodCapable(pass)) &&
+              (clippingRows[index]?.visibleSurface !== true ||
+                pass.context.visibleSurface === true),
+          ),
+        );
       // A raster context publishes the vertex-colour ABI beside the colorless
       // one only when its Surface reads SurfaceInput.vertexColor. Mesh COLOR_0
       // alone never selects that program: a Surface that does not read it
@@ -805,6 +846,8 @@ export function createMaterialPackCooker(
                 pass.context.geometry,
                 pass.context.capability,
                 pass.context.visibleSurface === true,
+                pass.context.viewClipping === true,
+                pass.context.lodCoverage === true,
               ]),
               pass.context,
             ]),
@@ -816,16 +859,13 @@ export function createMaterialPackCooker(
         [...colorContexts.values()],
         compiler.concurrency,
         (colorContext) =>
-          cookVariant(
-            {
-              material: normalizedInput.guid,
-              table,
-              sources: catalog.value,
-              context: { ...colorContext, pipeline: context.pipeline, pass: context.pass },
-              vertexColorAvailable: true,
-            },
-            sourceIdentity,
-          ),
+          cookVariant({
+            material: normalizedInput.guid,
+            table,
+            sources: catalog.value,
+            context: { ...colorContext, pipeline: context.pipeline, pass: context.pass },
+            vertexColorAvailable: true,
+          }),
       );
       const appendMaterialColoredVariantPasses = () => {
         for (const colored of coloredVariants) {
@@ -854,14 +894,14 @@ export function createMaterialPackCooker(
         // Context eligibility is independent: a custom Surface can retain its
         // raster/ray publication without qualifying for camera-independent Cards.
         if (!admitRayMaterial(resolvedAsset, normalizedInput.guid, rayContext).ok) continue;
-        const cooked = await cookRayMaterial(
+        const cooked = await compilePackVariant.ray(
           {
             material: normalizedInput.guid,
             table: { [normalizedInput.guid]: resolvedAsset },
             sources: catalog.value,
             context: rayContext,
           },
-          compile,
+          sourceIdentity,
         );
         // Optional ray qualification must not reject an already cooked raster Surface.
         if (!cooked.ok && cooked.error.code === 'ray-material-unsupported') continue;
@@ -892,14 +932,6 @@ export function createMaterialPackCooker(
           passClosureDigests.length === 1 && passClosureDigests[0] !== undefined
             ? passClosureDigests[0]
             : inputDigest(sourceClosure, [...sources.engine, ...sources.project]);
-        // The source bytes can stay identical when the cooker adds a required
-        // backend program. Give the producer a new input identity so existing
-        // DDC publications cannot keep the old storage-only program set.
-        const producerFingerprint = `sha256:${createHash('sha256')
-          .update(
-            `material-raster-variants/6:${fingerprint}${options.profile === undefined ? '' : `:${options.profile}`}`,
-          )
-          .digest('hex')}`;
         const record = cookedRecord(
           storageOnly
             ? { ...normalizedInput, profile: `${options.profile}-validation/v1` }
@@ -911,6 +943,12 @@ export function createMaterialPackCooker(
           fingerprint,
           cooked.value.layerPlan.identity,
         );
+        // Native ABI/reflection changes must invalidate transport even when source bytes stay equal.
+        const producerFingerprint = `sha256:${createHash('sha256')
+          .update(
+            `material-raster-variants/7:${record.receipt.identity.cookIdentity}${options.profile === undefined ? '' : `:${options.profile}`}`,
+          )
+          .digest('hex')}`;
         const authoredRefs = collectMaterialCookRefs(resolved.value.asset);
         const activeResources = new Set([...record.refs.textures, ...record.refs.samplers]);
         const inactiveResources = new Set(

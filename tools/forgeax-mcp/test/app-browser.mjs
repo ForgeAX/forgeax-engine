@@ -29,7 +29,10 @@ await cp(sourceProject, project, {
   recursive: true,
   filter: (path) => !['node_modules', '.forgeax', '.git'].includes(path.split('/').at(-1)),
 });
-if (process.env.FORGEAX_BROWSER_CI_LIGHTWEIGHT === '1') await reduceTestProject(project);
+if (process.env.FORGEAX_BROWSER_CI_LIGHTWEIGHT === '1') {
+  // Game 3D and the injected runtime vase own the assets this journey loads.
+  await reduceTestProject(project, { omitEngineContent: true });
+}
 // The starter template no longer ships the runtime-pack demo; install the engine-owned one.
 if (!existsSync(join(project, 'assets/runtime-vase'))) await installRuntimeVase(project);
 await symlink(join(engine, 'node_modules'), join(project, 'node_modules'), 'dir');
@@ -114,6 +117,8 @@ try {
     resolve(import.meta.dirname, '../codex/create-local-plugin.mjs'),
     project,
     marketplace,
+    '--root',
+    project,
   ]);
   await client.connect(
     new StdioClientTransport({
@@ -338,15 +343,36 @@ try {
         join(evidence, 'runtime-vase'), options => page.screenshot(options)) });
     }
     const placement = await play.evaluate(element => ({
-      hidden: element.hidden, previewTarget: element.dataset.forgeaxMcpPreview,
+      hidden: element.hidden, previewTarget: element.dataset.forgeaxProjectDocument,
       width: element.getBoundingClientRect().width, height: element.getBoundingClientRect().height,
     }));
     assert.equal(placement.hidden, false);
     assert.equal(placement.previewTarget, undefined, 'Preview must not acquire the Play document');
     assert.ok(placement.width > 0 && placement.height > 0);
-    await page.screenshot({ path: join(evidence, `play-${cycle}.png`) });
-    await assertNoRuntimeFailure(playFrame, `Play ${cycle}`, errors, consoleErrors);
-    const completedFrames = Number(await readCompletedFrame());
+    let completedFrames = 0;
+    let captureAttempts = 0;
+    do {
+      const png = await page.screenshot({ path: join(evidence, `play-${cycle}.png`) });
+      await assertNoRuntimeFailure(playFrame, `Play ${cycle}`, errors, consoleErrors);
+      completedFrames = Number(await readCompletedFrame());
+      captureAttempts++;
+      if (completedFrames >= 60) break;
+      if (captureAttempts === 1)
+        await writeFile(join(evidence, `play-${cycle}-preparing.png`), png);
+      assert.ok(performance.now() < deadline,
+        'The real Play Renderer must retain 60 ready completed frames within its original deadline');
+      await page.waitForTimeout(50);
+    } while (completedFrames < 60);
+    const progress = await playCanvas.evaluate(canvas => {
+      const summarize = frame => frame === undefined ? undefined : ({
+        frameId: frame.frameId, worldIdentity: frame.worldIdentity,
+        deviceGeneration: frame.deviceGeneration, presentation: frame.presentation,
+        presentationPendingReason: frame.presentationPendingReason,
+      });
+      return { submitted: summarize(canvas.forgeaxFrameProgress?.submitted),
+        completed: summarize(canvas.forgeaxFrameProgress?.completed) };
+    });
+    records.push({ playCycle: cycle, captureAttempts, progressAfterCapture: progress });
     assert.ok(completedFrames >= 60, 'The current Play document must retain 60 completed frames after capture');
     records.push({ playCycle: cycle, frameId: completedFrames, drawingBuffer,
       readyMs, placement });
@@ -361,8 +387,8 @@ try {
   // Scene readiness has its own budget; the preceding Play journey is independent.
   const sceneDeadline = performance.now() + 180000;
   targetId = await view
-    .locator('iframe[data-forgeax-mcp-preview]')
-    .getAttribute('data-forgeax-mcp-preview');
+    .locator('iframe[data-forgeax-project-document]')
+    .getAttribute('data-forgeax-project-document');
   if (!(await view.getByTestId('panel-content-browser').isVisible()))
     await view.getByText(/^(内容浏览器|Content Browser)$/).click();
   await view.getByRole('button', { name: 'assets', exact: true }).first().click();
@@ -380,13 +406,13 @@ try {
   await sceneCard.dblclick();
   await view.getByRole('treeitem', { name: /Rusted Iron Sphere (网格|Mesh)/ }).waitFor();
   targetId = await view
-    .locator('iframe[data-forgeax-mcp-preview]')
-    .getAttribute('data-forgeax-mcp-preview');
+    .locator('iframe[data-forgeax-project-document]')
+    .getAttribute('data-forgeax-project-document');
   assert.ok(targetId);
   const completeFrames = async (frameDeadline = performance.now() + 180000) => {
     // Keep one admitted document for the entire readiness observation. Resolving
     // the nested srcdoc locator on every poll repeats its large DOM preview.
-    const previewElement = await view.locator('iframe[data-forgeax-mcp-preview]').elementHandle();
+    const previewElement = await view.locator('iframe[data-forgeax-project-document]').elementHandle();
     const preview = await previewElement.contentFrame();
     assert.ok(preview, 'Preview must expose its actual document');
     await previewElement.dispose();
@@ -444,19 +470,19 @@ try {
   const preparingStopStarted = performance.now();
   await view.getByRole('button', { name: 'Stop', exact: true }).click();
   await view.getByRole('button', { name: 'Game', exact: true }).waitFor();
-  assert.equal(await view.locator('iframe[data-forgeax-mcp-preview]').evaluate(element => element.hidden), true,
+  assert.equal(await view.locator('iframe[data-forgeax-project-document]').isVisible(), false,
     'Preview rendering must stay paused while adopted Play startup is draining');
   await preparingPlay.waitFor({ state: 'detached', ...playSessionTimeout });
   records.push({ adoptedStopMs: Math.round(performance.now() - preparingStopStarted) });
   await view.getByRole('button', { name: 'Play', exact: true }).waitFor(playSessionTimeout);
   await page.getByRole('button', { name: 'Reopen View', exact: true }).click();
   await page.locator('#opened').filter({ hasText: 'http' }).waitFor();
-  assert.equal(await view.locator('iframe[data-forgeax-mcp-preview]').getAttribute('data-forgeax-mcp-preview'), targetId,
+  assert.equal(await view.locator('iframe[data-forgeax-project-document]').getAttribute('data-forgeax-project-document'), targetId,
     'reopening the same View must retain the existing document and Engine target');
   const previousTargetId = targetId;
   const previousUrl = await page.locator('#opened').innerText();
   console.error('MCP App stage: initial scene and reopening passed');
-  await assertNoRuntimeFailure(view.frameLocator('iframe[data-forgeax-mcp-preview]'), 'Preview before backend replacement', errors, consoleErrors);
+  await assertNoRuntimeFailure(view.frameLocator('iframe[data-forgeax-project-document]'), 'Preview before backend replacement', errors, consoleErrors);
   // Backend retirement deliberately produces connection failures. Observe the
   // replacement independently once its native Host has connected.
   replacingBackend = true;
@@ -468,10 +494,10 @@ try {
   recordBackendReplacement('restart-response');
   await page.waitForFunction(url => document.querySelector('#opened').textContent !== url, previousUrl, { timeout: 60000 });
   recordBackendReplacement('view-url-changed');
-  await view.locator(`iframe[data-forgeax-mcp-preview]:not([data-forgeax-mcp-preview="${previousTargetId}"])`).waitFor({ state: 'attached', timeout: 60000 });
+  await view.locator(`iframe[data-forgeax-project-document]:not([data-forgeax-project-document="${previousTargetId}"])`).waitFor({ state: 'attached', timeout: 60000 });
   recordBackendReplacement('preview-iframe-attached');
-  await view.getByRole('status', { name: /Host (\u5df2\u8fde\u63a5|connected)/ }).waitFor({ timeout: 60000 });
-  targetId = await view.locator('iframe[data-forgeax-mcp-preview]').getAttribute('data-forgeax-mcp-preview');
+  await waitForViewProjectReady(view, 'template-game-3d', performance.now() + 60000);
+  targetId = await view.locator('iframe[data-forgeax-project-document]').getAttribute('data-forgeax-project-document');
   assert.notEqual(targetId, previousTargetId, 'a backend replacement must admit a fresh Engine target');
   replacingBackend = false;
   if (!(await view.getByTestId('panel-content-browser').isVisible()))

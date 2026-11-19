@@ -1,5 +1,5 @@
 import { defineComponent, defineSystem, type EntityHandle, type World } from '@forgeax/engine-ecs';
-import { setDerivedComponent } from '@forgeax/engine-ecs/projection';
+import { markDerivedComponentChanged } from '@forgeax/engine-ecs/projection';
 import { settleClusterWorkConformanceFrame } from '../record/cluster-work-conformance';
 import type { ViewGraphCompileOutcome } from '../record/graph-adoption';
 import {
@@ -28,7 +28,7 @@ import { RenderCleanup, RenderCommit, RenderRecord, renderSubmission } from './r
 import { ViewSsrAdmission } from './ssr-admission-systems';
 import { ViewStandardLighting } from './standard-lighting-systems';
 import { ViewSubsurfaceAdmission } from './subsurface-admission-systems';
-import { EMPTY_VIEW_STATE_UPDATE, readViewField, requireViewField } from './view-field';
+import { readViewField, requireViewField } from './view-field';
 import { readViewGraphInput, type ViewGraphCompileRequest } from './view-graph-input';
 import { ownerOf, type ViewSettlementOwner } from './view-settlement';
 import { ViewTopologyInputs } from './view-topology-systems';
@@ -269,7 +269,7 @@ export function registerGraphSystems(world: World): void {
       rows.forEach((row) => {
         const entity = row.entity;
 
-        setDerivedComponent(world, entity, ViewGraphCandidate, EMPTY_VIEW_STATE_UPDATE).unwrap();
+        markDerivedComponentChanged(world, entity, ViewGraphCandidate).unwrap();
         const slot = world
           .resolveUniqueRef<ViewGraphCandidateSlot>(
             requireViewField(world, entity, ViewGraphCandidate, 'state'),
@@ -304,7 +304,7 @@ export function registerGraphSystems(world: World): void {
       rows.forEach((row) => {
         const entity = row.entity;
 
-        setDerivedComponent(world, entity, ViewGraphCandidate, EMPTY_VIEW_STATE_UPDATE).unwrap();
+        markDerivedComponentChanged(world, entity, ViewGraphCandidate).unwrap();
         const slot = world
           .resolveUniqueRef<ViewGraphCandidateSlot>(
             requireViewField(world, entity, ViewGraphCandidate, 'state'),

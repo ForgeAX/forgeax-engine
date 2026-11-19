@@ -31,7 +31,9 @@ test('profile packaging admits its own heap before reading complete publications
     );
     write(
       'scripts/lib/shared-build-cache.mjs',
-      'export const reusableSharedShader = () => null; export const sharedShaderInputFingerprint = () => "fixture";',
+      `import {resolve, dirname} from 'node:path';
+      export const reusableSharedShader = (_root, path) => resolve(dirname(path), 'shaders/manifest.json');
+      export const sharedShaderInputFingerprint = () => "fixture";`,
     );
     write(
       'packages/vite-plugin-shader/dist/source-digest.mjs',

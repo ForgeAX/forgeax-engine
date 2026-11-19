@@ -12455,203 +12455,7 @@ importers:
         specifier: 6.0.3
         version: 6.0.3
 
-  apps/water/body-geometry:
-    dependencies:
-      '@forgeax/apps-shared':
-        specifier: workspace:*
-        version: link:../../shared
-      '@forgeax/engine':
-        specifier: workspace:*
-        version: link:../../../packages/engine
-      '@forgeax/engine-physics':
-        specifier: workspace:*
-        version: link:../../../packages/physics
-      '@forgeax/engine-physics-rapier3d':
-        specifier: workspace:*
-        version: link:../../../packages/physics-rapier3d
-      '@forgeax/engine-water':
-        specifier: workspace:*
-        version: link:../../../packages/water
-    devDependencies:
-      '@forgeax/engine-ecs':
-        specifier: workspace:*
-        version: link:../../../packages/ecs
-      '@forgeax/engine-math':
-        specifier: workspace:*
-        version: link:../../../packages/math
-      '@forgeax/engine-pack':
-        specifier: workspace:*
-        version: link:../../../packages/pack
-      '@forgeax/engine-render':
-        specifier: workspace:*
-        version: link:../../../packages/render
-      '@forgeax/engine-scene':
-        specifier: workspace:*
-        version: link:../../../packages/scene
-      '@forgeax/engine-shader-compiler':
-        specifier: workspace:*
-        version: link:../../../packages/shader-compiler
-      '@forgeax/engine-types':
-        specifier: workspace:*
-        version: link:../../../packages/types
-      '@forgeax/engine-vite-plugin-pack':
-        specifier: workspace:*
-        version: link:../../../packages/vite-plugin-pack
-      '@forgeax/engine-vite-plugin-rhi-debug':
-        specifier: workspace:*
-        version: link:../../../packages/vite-plugin-rhi-debug
-      '@forgeax/engine-vite-plugin-shader':
-        specifier: workspace:*
-        version: link:../../../packages/vite-plugin-shader
-      '@webgpu/types':
-        specifier: ^0.1.74
-        version: 0.1.74
-      typescript:
-        specifier: 6.0.3
-        version: 6.0.3
-      vite:
-        specifier: 8.3.5
-        version: 8.3.5(@types/node@20.19.43)(esbuild@0.28.2)(jiti@1.21.7)(tsx@4.20.6)(yaml@2.9.1)
-
-  apps/water/body-query:
-    dependencies:
-      '@forgeax/apps-shared':
-        specifier: workspace:*
-        version: link:../../shared
-      '@forgeax/engine':
-        specifier: workspace:*
-        version: link:../../../packages/engine
-      '@forgeax/engine-ecs':
-        specifier: workspace:*
-        version: link:../../../packages/ecs
-      '@forgeax/engine-geometry':
-        specifier: workspace:*
-        version: link:../../../packages/geometry
-      '@forgeax/engine-math':
-        specifier: workspace:*
-        version: link:../../../packages/math
-      '@forgeax/engine-pack':
-        specifier: workspace:*
-        version: link:../../../packages/pack
-      '@forgeax/engine-render':
-        specifier: workspace:*
-        version: link:../../../packages/render
-      '@forgeax/engine-runtime':
-        specifier: workspace:*
-        version: link:../../../packages/runtime
-      '@forgeax/engine-scene':
-        specifier: workspace:*
-        version: link:../../../packages/scene
-      '@forgeax/engine-terrain':
-        specifier: workspace:*
-        version: link:../../../packages/terrain
-      '@forgeax/engine-types':
-        specifier: workspace:*
-        version: link:../../../packages/types
-      '@forgeax/engine-water':
-        specifier: workspace:*
-        version: link:../../../packages/water
-    devDependencies:
-      '@forgeax/engine-vite-plugin-pack':
-        specifier: workspace:*
-        version: link:../../../packages/vite-plugin-pack
-      '@forgeax/engine-vite-plugin-rhi-debug':
-        specifier: workspace:*
-        version: link:../../../packages/vite-plugin-rhi-debug
-      '@forgeax/engine-vite-plugin-shader':
-        specifier: workspace:*
-        version: link:../../../packages/vite-plugin-shader
-      '@webgpu/types':
-        specifier: ^0.1.74
-        version: 0.1.74
-      playwright:
-        specifier: ^1.56.1
-        version: 1.63.0
-      pngjs:
-        specifier: ^7.0.0
-        version: 7.0.0
-      typescript:
-        specifier: 6.0.3
-        version: 6.0.3
-      vite:
-        specifier: 8.3.5
-        version: 8.3.5(@types/node@20.19.43)(esbuild@0.28.2)(jiti@1.21.7)(tsx@4.20.6)(yaml@2.9.1)
-
-  apps/water/r0-scene-foundation:
-    dependencies:
-      '@forgeax/apps-shared':
-        specifier: workspace:*
-        version: link:../../shared
-      '@forgeax/engine':
-        specifier: workspace:*
-        version: link:../../../packages/engine
-    devDependencies:
-      '@forgeax/engine-devkit':
-        specifier: workspace:*
-        version: link:../../../packages/devkit
-      '@forgeax/engine-image':
-        specifier: workspace:*
-        version: link:../../../packages/image
-      '@forgeax/engine-shader-compiler':
-        specifier: workspace:*
-        version: link:../../../packages/shader-compiler
-      '@forgeax/engine-vite-plugin-pack':
-        specifier: workspace:*
-        version: link:../../../packages/vite-plugin-pack
-      '@forgeax/engine-vite-plugin-rhi-debug':
-        specifier: workspace:*
-        version: link:../../../packages/vite-plugin-rhi-debug
-      '@forgeax/engine-vite-plugin-shader':
-        specifier: workspace:*
-        version: link:../../../packages/vite-plugin-shader
-      '@webgpu/types':
-        specifier: ^0.1.74
-        version: 0.1.74
-      typescript:
-        specifier: 6.0.3
-        version: 6.0.3
-      vite:
-        specifier: 8.3.5
-        version: 8.3.5(@types/node@20.19.43)(esbuild@0.28.2)(jiti@1.21.7)(tsx@4.20.6)(yaml@2.9.1)
-
   apps/water/r3-slw-reflection-underwater:
-    dependencies:
-      '@forgeax/apps-shared':
-        specifier: workspace:*
-        version: link:../../shared
-      '@forgeax/engine':
-        specifier: workspace:*
-        version: link:../../../packages/engine
-    devDependencies:
-      '@forgeax/engine-devkit':
-        specifier: workspace:*
-        version: link:../../../packages/devkit
-      '@forgeax/engine-image':
-        specifier: workspace:*
-        version: link:../../../packages/image
-      '@forgeax/engine-shader-compiler':
-        specifier: workspace:*
-        version: link:../../../packages/shader-compiler
-      '@forgeax/engine-vite-plugin-pack':
-        specifier: workspace:*
-        version: link:../../../packages/vite-plugin-pack
-      '@forgeax/engine-vite-plugin-rhi-debug':
-        specifier: workspace:*
-        version: link:../../../packages/vite-plugin-rhi-debug
-      '@forgeax/engine-vite-plugin-shader':
-        specifier: workspace:*
-        version: link:../../../packages/vite-plugin-shader
-      '@webgpu/types':
-        specifier: ^0.1.74
-        version: 0.1.74
-      typescript:
-        specifier: 6.0.3
-        version: 6.0.3
-      vite:
-        specifier: 8.3.5
-        version: 8.3.5(@types/node@20.19.43)(esbuild@0.28.2)(jiti@1.21.7)(tsx@4.20.6)(yaml@2.9.1)
-
-  apps/water/r4-buoyancy-foam:
     dependencies:
       '@forgeax/apps-shared':
         specifier: workspace:*
@@ -12873,128 +12677,6 @@ importers:
         specifier: 8.3.5
         version: 8.3.5(@types/node@20.19.43)(esbuild@0.28.2)(jiti@1.21.7)(tsx@4.20.6)(yaml@2.9.1)
 
-  apps/water/terrain-provider:
-    dependencies:
-      '@forgeax/apps-shared':
-        specifier: workspace:*
-        version: link:../../shared
-      '@forgeax/engine':
-        specifier: workspace:*
-        version: link:../../../packages/engine
-      '@forgeax/engine-app':
-        specifier: workspace:*
-        version: link:../../../packages/app
-      '@forgeax/engine-assets-runtime':
-        specifier: workspace:*
-        version: link:../../../packages/assets-runtime
-      '@forgeax/engine-ecs':
-        specifier: workspace:*
-        version: link:../../../packages/ecs
-      '@forgeax/engine-geometry':
-        specifier: workspace:*
-        version: link:../../../packages/geometry
-      '@forgeax/engine-math':
-        specifier: workspace:*
-        version: link:../../../packages/math
-      '@forgeax/engine-render':
-        specifier: workspace:*
-        version: link:../../../packages/render
-      '@forgeax/engine-runtime':
-        specifier: workspace:*
-        version: link:../../../packages/runtime
-      '@forgeax/engine-scene':
-        specifier: workspace:*
-        version: link:../../../packages/scene
-      '@forgeax/engine-terrain':
-        specifier: workspace:*
-        version: link:../../../packages/terrain
-      '@forgeax/engine-types':
-        specifier: workspace:*
-        version: link:../../../packages/types
-      '@forgeax/engine-water':
-        specifier: workspace:*
-        version: link:../../../packages/water
-    devDependencies:
-      '@forgeax/engine-shader-compiler':
-        specifier: workspace:*
-        version: link:../../../packages/shader-compiler
-      '@forgeax/engine-vite-plugin-pack':
-        specifier: workspace:*
-        version: link:../../../packages/vite-plugin-pack
-      '@forgeax/engine-vite-plugin-rhi-debug':
-        specifier: workspace:*
-        version: link:../../../packages/vite-plugin-rhi-debug
-      '@forgeax/engine-vite-plugin-shader':
-        specifier: workspace:*
-        version: link:../../../packages/vite-plugin-shader
-      '@webgpu/types':
-        specifier: ^0.1.74
-        version: 0.1.74
-      typescript:
-        specifier: 6.0.3
-        version: 6.0.3
-      vite:
-        specifier: 8.3.5
-        version: 8.3.5(@types/node@20.19.43)(esbuild@0.28.2)(jiti@1.21.7)(tsx@4.20.6)(yaml@2.9.1)
-
-  apps/water/water-info:
-    dependencies:
-      '@forgeax/apps-shared':
-        specifier: workspace:*
-        version: link:../../shared
-      '@forgeax/engine':
-        specifier: workspace:*
-        version: link:../../../packages/engine
-      '@forgeax/engine-app':
-        specifier: workspace:*
-        version: link:../../../packages/app
-      '@forgeax/engine-math':
-        specifier: workspace:*
-        version: link:../../../packages/math
-      '@forgeax/engine-pack':
-        specifier: workspace:*
-        version: link:../../../packages/pack
-      '@forgeax/engine-render':
-        specifier: workspace:*
-        version: link:../../../packages/render
-      '@forgeax/engine-runtime':
-        specifier: workspace:*
-        version: link:../../../packages/runtime
-      '@forgeax/engine-scene':
-        specifier: workspace:*
-        version: link:../../../packages/scene
-      '@forgeax/engine-terrain':
-        specifier: workspace:*
-        version: link:../../../packages/terrain
-      '@forgeax/engine-types':
-        specifier: workspace:*
-        version: link:../../../packages/types
-      '@forgeax/engine-water':
-        specifier: workspace:*
-        version: link:../../../packages/water
-    devDependencies:
-      '@forgeax/engine-shader-compiler':
-        specifier: workspace:*
-        version: link:../../../packages/shader-compiler
-      '@forgeax/engine-vite-plugin-pack':
-        specifier: workspace:*
-        version: link:../../../packages/vite-plugin-pack
-      '@forgeax/engine-vite-plugin-rhi-debug':
-        specifier: workspace:*
-        version: link:../../../packages/vite-plugin-rhi-debug
-      '@forgeax/engine-vite-plugin-shader':
-        specifier: workspace:*
-        version: link:../../../packages/vite-plugin-shader
-      '@webgpu/types':
-        specifier: ^0.1.74
-        version: 0.1.74
-      typescript:
-        specifier: 6.0.3
-        version: 6.0.3
-      vite:
-        specifier: 8.3.5
-        version: 8.3.5(@types/node@20.19.43)(esbuild@0.28.2)(jiti@1.21.7)(tsx@4.20.6)(yaml@2.9.1)
-
   apps/water/water-mesh:
     dependencies:
       '@forgeax/apps-shared':
@@ -13049,61 +12731,6 @@ importers:
       '@webgpu/types':
         specifier: ^0.1.74
         version: 0.1.74
-      typescript:
-        specifier: 6.0.3
-        version: 6.0.3
-      vite:
-        specifier: 8.3.5
-        version: 8.3.5(@types/node@20.19.43)(esbuild@0.28.2)(jiti@1.21.7)(tsx@4.20.6)(yaml@2.9.1)
-
-  apps/water/waves:
-    dependencies:
-      '@forgeax/apps-shared':
-        specifier: workspace:*
-        version: link:../../shared
-      '@forgeax/engine':
-        specifier: workspace:*
-        version: link:../../../packages/engine
-      '@forgeax/engine-ecs':
-        specifier: workspace:*
-        version: link:../../../packages/ecs
-      '@forgeax/engine-math':
-        specifier: workspace:*
-        version: link:../../../packages/math
-      '@forgeax/engine-pack':
-        specifier: workspace:*
-        version: link:../../../packages/pack
-      '@forgeax/engine-render':
-        specifier: workspace:*
-        version: link:../../../packages/render
-      '@forgeax/engine-scene':
-        specifier: workspace:*
-        version: link:../../../packages/scene
-      '@forgeax/engine-types':
-        specifier: workspace:*
-        version: link:../../../packages/types
-      '@forgeax/engine-water':
-        specifier: workspace:*
-        version: link:../../../packages/water
-    devDependencies:
-      '@forgeax/engine-vite-plugin-pack':
-        specifier: workspace:*
-        version: link:../../../packages/vite-plugin-pack
-      '@forgeax/engine-vite-plugin-rhi-debug':
-        specifier: workspace:*
-        version: link:../../../packages/vite-plugin-rhi-debug
-      '@forgeax/engine-vite-plugin-shader':
-        specifier: workspace:*
-        version: link:../../../packages/vite-plugin-shader
-      '@webgpu/types':
-        specifier: ^0.1.74
-        version: 0.1.74
-      playwright:
-        specifier: ^1.56.1
-        version: 1.63.0
-      pngjs:
-        specifier: ^7.0.0
-        version: 7.0.0
       typescript:
         specifier: 6.0.3
         version: 6.0.3
@@ -13625,6 +13252,9 @@ importers:
       es-module-lexer:
         specifier: 2.1.0
         version: 2.1.0
+      fzstd:
+        specifier: ^0.1.1
+        version: 0.1.1
       import-meta-resolve:
         specifier: 4.2.0
         version: 4.2.0
@@ -15169,6 +14799,9 @@ importers:
       '@forgeax/engine-shader':
         specifier: workspace:*
         version: link:../shader
+      '@forgeax/engine-shader-compiler':
+        specifier: workspace:*
+        version: link:../shader-compiler
       '@forgeax/engine-skinning':
         specifier: workspace:*
         version: link:../skinning
@@ -15197,9 +14830,6 @@ importers:
       '@forgeax/engine-rhi-debug':
         specifier: workspace:*
         version: link:../rhi-debug
-      '@forgeax/engine-shader-compiler':
-        specifier: workspace:*
-        version: link:../shader-compiler
       '@forgeax/engine-state':
         specifier: workspace:*
         version: link:../state

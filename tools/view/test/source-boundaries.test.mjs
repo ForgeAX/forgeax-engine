@@ -206,3 +206,24 @@ it('erases native owner type contracts from runtime closure while checking depen
   f.put('packages/view-workspace-core/src/index.ts', "import type { Display } from '@forgeax/view-plugin-display'; export type Target = Display;");
   assert.ok(checkArchitecture(f.directory).errors.some(error => error.rule === 'dependency-direction'));
 });
+
+it('admits DevKit catalogue type contracts but rejects their runtime and other domain routes', async t => {
+  const f = fixture(t);
+  f.manifest(core, manifest => { manifest.devDependencies = { '@forgeax/engine': '*' }; });
+  const entry = 'packages/view-workspace-core/src/index.ts';
+  const source = "import type { KnownProjectResult, KnownProjectEntry } from '@forgeax/engine/devkit'; export type Projects = KnownProjectResult<readonly KnownProjectEntry[]>; export const marker = true;";
+  f.put(entry, source);
+  assert.deepEqual(checkArchitecture(f.directory).errors, []);
+  const result = await build({ absWorkingDir: f.directory, entryPoints: [entry], bundle: true,
+    write: false, metafile: true, format: 'esm', platform: 'neutral' });
+  assert.deepEqual(result.metafile.inputs[entry].imports, []);
+  for (const rejected of [
+    "import { listKnownProjects } from '@forgeax/engine/devkit'; export const list = listKnownProjects;",
+    "import '@forgeax/engine/devkit';",
+    "import { type KnownProjectEntry } from '@forgeax/engine/devkit';",
+    "import type { Other } from '@forgeax/engine/pack'; export type Contract = Other;",
+  ]) {
+    f.put(entry, rejected);
+    assert.ok(checkArchitecture(f.directory).errors.some(error => error.rule === 'dependency-direction'), rejected);
+  }
+});

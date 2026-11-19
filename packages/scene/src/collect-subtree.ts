@@ -1,6 +1,7 @@
 // Scene-owned hierarchy traversal shared by scene collection and render hooks.
 
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
+import { readRenderArrayView } from '@forgeax/engine-ecs/projection';
 
 import { Children } from './components/children';
 
@@ -16,10 +17,10 @@ export function collectSubtree(
   visited.add(spawnRoot as number);
   for (let cursor = 0; cursor < queue.length; cursor += 1) {
     const current = queue[cursor] as number;
-    if (!world.hasComponent(current as EntityHandle, Children)) continue;
-    const children = world.get(current as EntityHandle, Children);
-    if (!children.ok) continue;
-    const entities = children.value.entities as ArrayLike<number>;
+    // This synchronous traversal does not mutate storage. Borrow only the
+    // requested mirror and finish consuming it before advancing the queue.
+    const entities = readRenderArrayView(world, current as EntityHandle, Children, 'entities');
+    if (entities === undefined) continue;
     for (let index = 0; index < entities.length; index += 1) {
       const child = entities[index] as number;
       if (visited.has(child)) continue;

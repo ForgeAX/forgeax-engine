@@ -23,6 +23,7 @@ import type { SurfaceGpuIndirectParameters } from './surface/submission-observat
 
 export type {
   LodOcclusionAttribution,
+  LodOcclusionGpuSelection,
   LodOcclusionInspection,
   LodOcclusionInspectionRow,
 } from './scene/visibility/inspection';
@@ -944,6 +945,9 @@ export interface ReflectionFallbackInspection {
 }
 
 export interface ReflectionProbeInspection {
+  readonly pmremArrays?: import('./reflection/pmrem-array').PmremArrayPoolInspection;
+  readonly rawCaptureBytes?: number;
+  readonly lastResourceAdmission?: 'ready' | 'waiting-for-retirement';
   readonly workBudgetPerFrame?: number;
   readonly updates?: readonly {
     readonly entityKey: number;

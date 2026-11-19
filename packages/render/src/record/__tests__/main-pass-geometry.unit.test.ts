@@ -159,7 +159,7 @@ describe('selected material publication program', () => {
     },
     {
       pass: 'deferred',
-      context: { ...context, pass: 'deferred' },
+      context: { ...context, pipeline: 'deferred' },
       address: 'direct',
       specializationKey: 'deferred-program',
       artifactHash: 'deferred-artifact',

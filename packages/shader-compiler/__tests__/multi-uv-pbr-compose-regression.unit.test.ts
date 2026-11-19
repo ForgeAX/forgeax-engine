@@ -246,13 +246,11 @@ describe('built-in standard-PBR single-UV + multi-UV pathway regression (F-3 + F
       'default-standard-pbr.wgsl',
     );
     const source = readFileSync(srcPath, 'utf8');
-    // The fragment entry evaluates the shared forward body before rejecting
-    // Water coverage, keeping derivative-sensitive material sampling uniform.
-    // Its builtin annotation has nested parentheses; match that actual ABI.
+    // Each entry samples once before its coverage gate and shared lighting.
     expect(source).toMatch(
-      /fn fs_main\(in\s*:\s*VsOut,\s*@builtin\(front_facing\)\s*frontFacing\s*:\s*bool\)\s*->\s*StandardPbrOutput\s*\{\s*standardPositionWS = standardFragmentPosition\(in\);\s*let (\w+) = standardForward\(in, frontFacing\);\s*#if WATER_WAVES_AVAILABLE == true\s*if \(!standardWaterCovered\) \{ discard; \}\s*#endif\s*return \1;\s*\}/,
+      /fn fs_main[^]*?prepareStandardForwardSurface\(capped, facing, false\);[^]*?standardSurfaceRejected\(prepared.surface\)[^]*?standardForwardLitSurface\(capped, facing, false, prepared\);/,
     );
-    const fragmentStart = source.indexOf('fn standardForward');
+    const fragmentStart = source.indexOf('fn prepareStandardForwardSurface(');
     const fragmentEnd = source.indexOf('fn fs_gbuffer');
     expect(fragmentStart).toBeGreaterThan(0);
     expect(fragmentEnd).toBeGreaterThan(fragmentStart);

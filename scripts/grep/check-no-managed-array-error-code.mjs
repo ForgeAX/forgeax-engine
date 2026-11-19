@@ -89,15 +89,10 @@ if (hits.length > 0) {
     console.error(`  - ${h.literal}  in  ${h.path}`);
   }
   console.error(
-    '\nfeat-20260515-buffer-array-vocab-collapse M2 / w11 deleted 4 ' +
-      'members of the `managed-array-*` family from `EcsErrorCode`. ' +
-      'The replacements are: `fixed-size-mismatch` (buffer<N> set with ' +
-      'wrong byteLength) / `fixed-array-overflow` (array<T,N> push at ' +
-      'capacity) / `array-pop-empty` (pop from empty array) / ' +
-      '`instance-transforms-stride-mismatch` (RenderSystem entry stride ' +
-      'defensive). The 5th member `managed-array-element-type-not-allowed` ' +
-      'is kept (defineComponent schema parser). See AGENTS.md §Error model ' +
-      '+ packages/ecs/README.md error code reverse anchors.',
+    'Use World.set or setArrayRange for array writes. Numeric range refusal ' +
+      'uses array-range-out-of-bounds; schema element validation remains ' +
+      'managed-array-element-type-not-allowed. Fixed arrays share prefix-copy ' +
+      'and tail-zeroing semantics; no separate byte-field error exists.',
   );
   process.exit(1);
 }

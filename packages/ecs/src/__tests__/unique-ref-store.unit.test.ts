@@ -12,33 +12,32 @@
 //     would otherwise force nextSlot to grow during 1000 iters on a single
 //     slot). Documented inline so reviewer can correlate the carryover.
 
-import { handleGeneration, handleSlot, pack, unwrapHandle } from '@forgeax/engine-types';
+import { handleGeneration, handleSlot, pack, toUnique, unwrapHandle } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { UniqueRefStaleError } from '../errors';
-import { UniqueRefStore } from '../unique-ref-store';
+import { UniqueRefStore } from '../managed-ref-store';
 
 describe('UniqueRefStore release ordering + throw-safety (feat-20260614 M1)', () => {
-  it('replaces the published resolution with its payload and preserves older results', () => {
+  it('keeps the frozen resolution for each slot generation after release and reuse', () => {
     const store = new UniqueRefStore();
     const firstPayload = { value: 1 };
     const released = vi.fn();
     const handle = store.alloc('Resolution', firstPayload, released);
     const first = store.resolve(handle);
-    const secondPayload = { value: 2 };
-    store._setPayload(handle, secondPayload);
-    const second = store.resolve(handle);
-    expect(second).not.toBe(first);
-    expect(store.resolve(handle)).toBe(second);
+    expect(store.resolve(handle)).toBe(first);
     expect(first.unwrap()).toBe(firstPayload);
-    expect(second.unwrap()).toBe(secondPayload);
-    expect(Object.isFrozen(second)).toBe(true);
+    expect(Object.isFrozen(first)).toBe(true);
+
     store.release(handle).unwrap();
-    expect(released).toHaveBeenCalledExactlyOnceWith(secondPayload);
+    expect(released).toHaveBeenCalledExactlyOnceWith(firstPayload);
     expect(store.resolve(handle)).toMatchObject({ ok: false, error: { code: 'unique-ref-stale' } });
-    const replacement = store.alloc('Resolution', firstPayload);
+    const secondPayload = { value: 2 };
+    const replacement = store.alloc('Resolution', secondPayload);
     expect(handleSlot(replacement)).toBe(handleSlot(handle));
-    expect(store.resolve(replacement)).not.toBe(first);
-    expect(store.resolve(replacement).unwrap()).toBe(firstPayload);
+    const second = store.resolve(replacement);
+    expect(second).not.toBe(first);
+    expect(store.resolve(replacement)).toBe(second);
+    expect(second.unwrap()).toBe(secondPayload);
     expect(first.unwrap()).toBe(firstPayload);
   });
 
@@ -46,7 +45,6 @@ describe('UniqueRefStore release ordering + throw-safety (feat-20260614 M1)', ()
     const store = new UniqueRefStore();
     const onRelease = vi.fn((_payload: { id: number }) => {
       expect(store._liveCount()).toBe(0);
-      expect(store.isLive(handle)).toBe(false);
       expect(store.resolve(handle)).toMatchObject({
         ok: false,
         error: { code: 'unique-ref-stale' },
@@ -114,7 +112,7 @@ describe('UniqueRefStore release ordering + throw-safety (feat-20260614 M1)', ()
 // ─── w6 M3: gen welding alloc tests ─────────────────────────────────────
 // feat-20260623-asset-handle-generation M3 — alloc embeds generation into
 // the returned handle via codec.pack(slot, gen). First alloc gen=0 (AC-06);
-// slot 0 sentinel stays pack(0,0)===0 and isLive(0)===false (R6).
+// slot 0 sentinel stays pack(0,0)===0 does not resolve (R6).
 // M3 scope: gen welding only, no gen increment on release (that's M4).
 // Reused slots always get gen=0 in M3.
 describe('w6 M3 UniqueRefStore: gen welding on alloc', () => {
@@ -136,16 +134,14 @@ describe('w6 M3 UniqueRefStore: gen welding on alloc', () => {
     }
   });
 
-  it('R6: slot 0 sentinel — pack(0,0)===0 and isLive(0)===false', () => {
+  it('R6: slot 0 sentinel — pack(0,0)===0 does not resolve', () => {
     expect(pack(0, 0)).toBe(0);
 
-    // isLive should return false for any handle whose raw value is 0.
-    // TypeScript disallows constructing Handle<T, 'unique'> with literal 0
-    // from outside toUnique, but isLive reads the raw value — passing
-    // a brand-cast 0 tests the sentinel path.
     const store = new UniqueRefStore();
-    // biome-ignore lint/suspicious/noExplicitAny: sentinel test pattern
-    expect(store.isLive(0 as any)).toBe(false);
+    expect(store.resolve(toUnique(0))).toMatchObject({
+      ok: false,
+      error: { code: 'unique-ref-released' },
+    });
   });
 
   it('alloc welds gen into handle — gen extractable via handleGeneration', () => {
@@ -193,7 +189,7 @@ describe('w6 M3 UniqueRefStore: gen welding on alloc', () => {
     expect(cb).toHaveBeenCalledWith({ key: 1 });
   });
 
-  it('R6: slot 0 sentinel isLive false — alloc never produces slot 0', () => {
+  it('R6: alloc never produces the zero-slot sentinel', () => {
     const store = new UniqueRefStore();
     // Alloc 100 handles and release them — slot 0 should never appear
     // because nextSlot starts at 1 and freeSlots only contain released

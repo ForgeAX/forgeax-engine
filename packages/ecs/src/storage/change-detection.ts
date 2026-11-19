@@ -15,8 +15,6 @@ import {
 } from './change-column';
 import type { EntityRecords } from './entity-records';
 
-export const PROJECTION_BLOCK_SIZE = 256;
-
 const INITIAL_SPARSE_CAPACITY = 64;
 
 export interface SparseTagSet {
@@ -61,7 +59,6 @@ function insertSparseTag(set: SparseTagSet, entity: EntityHandle, epoch: number)
   const denseIndex = set.size;
   set.dense[denseIndex] = entity as number;
   set.added[denseIndex] = epoch;
-  set.changed.epochs[denseIndex] = 0;
   set.sparse[entityIndex(entity)] = denseIndex;
   set.size += 1;
   return denseIndex;
@@ -125,7 +122,7 @@ export function readComponentAdded(
   }
   const archetype = graph.archetypes[records.archetypeId[slot] as number];
   if (archetype === undefined) return undefined;
-  const added = graph.tables[archetype.tableId]?.storage.get(componentId)?.added;
+  const added = archetype.table.storage.get(componentId)?.added;
   if (added === undefined) return undefined;
   return added[records.tableRow[slot] ?? -1] ?? 0;
 }
@@ -159,7 +156,7 @@ export function readComponentChanged(
   }
   const archetype = graph.archetypes[records.archetypeId[slot] as number];
   if (archetype === undefined) return undefined;
-  const changed = graph.tables[archetype.tableId]?.storage.get(componentId)?.changed;
+  const changed = archetype.table.storage.get(componentId)?.changed;
   if (changed === undefined) return undefined;
   return changed.epochs[records.tableRow[slot] ?? -1] ?? 0;
 }
@@ -180,7 +177,7 @@ export function writeComponentChanged(
   }
   const archetype = graph.archetypes[records.archetypeId[slot] as number];
   if (archetype === undefined) return;
-  const changed = graph.tables[archetype.tableId]?.storage.get(componentId)?.changed;
+  const changed = archetype.table.storage.get(componentId)?.changed;
   if (changed === undefined) return;
   const row = records.tableRow[slot] ?? -1;
   if (row >= 0) stampChange(changed, row, epoch);
@@ -192,23 +189,26 @@ export function markComponentsAdded(
   slot: number,
   entity: EntityHandle,
   componentIds: ArrayLike<number>,
+  componentMutationEpochs: number[],
   epoch: number,
 ): void {
   const archetype = graph.archetypes[records.archetypeId[slot] as number];
-  const table = archetype === undefined ? undefined : graph.tables[archetype.tableId];
-  const tableRow = archetype === undefined ? -1 : (records.tableRow[slot] ?? -1);
+  if (archetype === undefined) return;
+  const tableRow = records.tableRow[slot] as number;
   for (let index = 0; index < componentIds.length; index++) {
-    const componentId = componentIds[index] as number;
-    const component =
-      archetype === undefined
-        ? undefined
-        : archetype.components[archetypeComponentIndex(archetype, componentId)];
-    if (component?.storage === 'sparse') {
-      insertSparseTag(getOrCreateSparseTagSet(graph, component), entity, epoch);
-      continue;
+    const id = componentIds[index] as number;
+    const storage = archetype.table.storage.get(id);
+    if (storage !== undefined) {
+      storage.added[tableRow] = epoch;
+      stampChange(storage.changed, tableRow, epoch);
+    } else {
+      const component = archetype.components[archetypeComponentIndex(archetype, id)];
+      if (component?.storage === 'sparse') {
+        const set = getOrCreateSparseTagSet(graph, component);
+        stampChange(set.changed, insertSparseTag(set, entity, epoch), epoch);
+      }
     }
-    const added = table?.storage.get(componentId)?.added;
-    if (added !== undefined) added[tableRow] = epoch;
+    componentMutationEpochs[id] = epoch;
   }
 }
 

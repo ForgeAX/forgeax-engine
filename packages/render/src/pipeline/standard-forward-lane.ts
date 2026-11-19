@@ -1,4 +1,5 @@
-﻿import {
+import {
+  type GraphBuffer,
   type GraphTextureDescriptor,
   type GraphTextureView,
   type RenderGraphBuilder,
@@ -22,6 +23,7 @@ import {
   GPU_TEXTURE_USAGE_STORAGE_BINDING,
   GPU_TEXTURE_USAGE_TEXTURE_BINDING,
 } from '../gpu-texture-usage';
+import { PREDEPTH_FRAGMENT_ENTRY } from '../predepth-coverage';
 import type {
   RenderPipeline,
   RenderPipelineBuildError,
@@ -36,7 +38,7 @@ import {
   importRenderPipelineSurface,
   type RenderPipelineTarget,
 } from '../render-pipeline';
-import { getSsaoParameters } from '../ssao-config';
+import { getSsaoParameters, ssaoUsesLighting } from '../ssao-config';
 import { FORWARD_PASS_SELECTOR, TRANSMISSION_BACK_PASS_SELECTOR } from '../systems/pass-selector';
 import {
   SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA,
@@ -74,9 +76,9 @@ import { addTypedShadowPasses, type TypedShadowTargets } from '../typed-shadow-p
 import { addWaterFluidGraph } from '../water/fluid-graph';
 import { addWaterSlwPasses } from '../water/slw-graph';
 import { addOpaqueFogPasses, addTranslucencyVolumetricFogPasses } from './analytic-fog-pass';
-import { seedForwardSceneDepth } from './forward-depth-seed';
 import { addForwardScreenData } from './forward-screen-data';
 import { addGpuLateOcclusion, sceneViewImport } from './gpu-occlusion';
+import { addMsaaNearestDepthResolve } from './msaa-depth-resolve';
 import { renderInternalCopySize, renderInternalSize } from './render-extent';
 import {
   addSingleLayerMediumMsaaPairProducer,
@@ -87,6 +89,7 @@ import {
   type SingleLayerMediumMsaaPair,
   type SingleLayerMediumNearestTargets,
 } from './single-layer-medium-passes';
+import { addSsaoLinearDepthPass } from './ssao-scene-color';
 import {
   contributeStandardAfterDepthFeatures,
   resolveStandardGtaoExecution,
@@ -363,9 +366,15 @@ function forwardClusterTextureExtent(
 }
 
 interface ForwardSsaoProjection {
+  /** Exact scene attachment rasterized by the primary depth producer. */
+  readonly predepth?: RenderPipelineTarget;
+  /** Exact single-sample center coverage, only for consumers that require it. */
+  readonly centerDepth?: RenderPipelineTarget | undefined;
   readonly occlusionResolved?: boolean;
   readonly decals?: ProjectedDecalChannels | undefined;
   readonly ao: RenderPipelineTarget | undefined;
+  readonly linearDepth?: RenderPipelineTarget | undefined;
+  readonly parameters?: GraphBuffer | undefined;
   readonly surface: StandardSceneSurfaceDataTargets | undefined;
   /** Depth of a depth-only prepass (no surface normal was produced). */
   readonly depth?: RenderPipelineTarget | undefined;
@@ -374,29 +383,11 @@ interface ForwardSsaoProjection {
 type ForwardSurfacePassTargets = Pick<StandardSceneSurfaceDataTargets, 'depth'> &
   Partial<Pick<StandardSceneSurfaceDataTargets, 'normal'>>;
 
-/** Depth the surface-data prepass rasterized, with or without a normal target. */
-function forwardPrepassDepth(ssao: ForwardSsaoProjection): RenderPipelineTarget | undefined {
-  return ssao.surface?.depth ?? ssao.depth;
-}
-
 function forwardScreenDemand(topology: RenderPipelineTopology): boolean {
   return (
     topology.forwardContactShadows === true ||
     topology.forwardCapsuleShadows === true ||
     (topology.projectedDecals?.length ?? 0) > 0
-  );
-}
-
-function forwardSurfaceDemand(topology: RenderPipelineTopology): boolean {
-  return (
-    topology.forwardContactShadows === true ||
-    topology.forwardCapsuleShadows === true ||
-    (topology.projectedDecals?.length ?? 0) > 0 ||
-    topology.sceneDataBindings?.some(
-      (binding) =>
-        binding.schema === SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA ||
-        binding.schema === SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA,
-    ) === true
   );
 }
 
@@ -412,7 +403,10 @@ function forwardPrepassNeedsNormal(
   topology: RenderPipelineTopology,
 ): boolean {
   return (
-    forwardSurfaceDemand(topology) ||
+    forwardScreenDemand(topology) ||
+    topology.sceneDataBindings?.some(
+      (binding) => binding.schema === SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA,
+    ) === true ||
     topology.ssr?.status === 'admitted' ||
     context.gtaoExecutionOverride === 'compute'
   );
@@ -450,7 +444,13 @@ function addForwardSurfacePasses(
   size: { readonly width: number; readonly height: number },
 ): Result<boolean, RenderGraphError> {
   const graph = context.graph;
-  const early = addStandardSceneSurfaceDataPass(graph, targets, gpuDriven);
+  const early = addStandardSceneSurfaceDataPass(
+    graph,
+    targets,
+    gpuDriven,
+    'standard-scene-surface-data',
+    PREDEPTH_FRAGMENT_ENTRY,
+  );
   if (!early.ok) return early;
   if (gpuDriven?.addLateOcclusion === undefined) return ok(false);
   const depth = graph.view(targets.depth.texture, { dimension: '2d', aspect: 'depth-only' });
@@ -458,7 +458,7 @@ function addForwardSurfacePasses(
   const late = addGpuLateOcclusion(graph, {
     gpuDriven,
     depth: depth.value,
-    multisampled: false,
+    multisampled: targets.depth.sampleCount > 1,
     ...size,
     view: sceneViewImport(graph),
   });
@@ -473,92 +473,172 @@ function addForwardSurfacePasses(
     selector: FORWARD_PASS_SELECTOR,
     recordMode: 'opaque',
     passKind: 'forward',
-    fragmentEntryPoint: 'fs_ao_input',
+    fragmentEntryPoint: PREDEPTH_FRAGMENT_ENTRY,
     colorLoadOp: 'load',
     depthLoadOp: 'load',
   });
   return completed.ok ? ok(true) : completed;
 }
 
-/**
- * Forward always rasterizes the opaque depth prepass when `main` can start
- * from it, whether or not AO reads it: UE forces the full depth pass for
- * Forward shading and for masked-in-early-pass materials
- * (RenderUtils.cpp:681-700 ShouldForceFullDepthPass ->
- * RendererScene.cpp:4446-4451 DDM_AllOpaque). Under MSAA the single-sample
- * prepass cannot seed the 4x scene depth, so only a reader turns it on.
- */
+function forwardCenterDepthRequired(
+  topology: RenderPipelineTopology,
+  normalRequired: boolean,
+  temporalDepthRequired: boolean,
+): boolean {
+  return (
+    normalRequired ||
+    temporalDepthRequired ||
+    topology.sceneDataBindings?.some(
+      (binding) => binding.schema === SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA,
+    ) === true
+  );
+}
+
+function resolveForwardAoDepth(
+  context: StandardPipelineBuildContext,
+  topology: RenderPipelineTopology,
+  surface: StandardSceneSurfaceDataTargets | undefined,
+  sceneDepth: RenderPipelineTarget,
+  dimensions: { readonly width: number; readonly height: number },
+  depth: RenderPipelineTarget | undefined,
+): Result<RenderPipelineTarget | undefined, RenderGraphError> {
+  if (surface === undefined && sceneDepth.sampleCount > 1 && topology.lane.storageBuffer) {
+    // Spiral's half-depth producer and composite select the nearest MSAA
+    // sample directly. Other AO algorithms retain their single-sample input.
+    const resolved =
+      getSsaoParameters(topology.config?.ssao).algorithm === 'spiral-ssao'
+        ? ok(sceneDepth)
+        : addMsaaNearestDepthResolve(
+            context.graph,
+            sceneDepth,
+            dimensions,
+            'forward-ao-depth-resolve',
+          );
+    if (!resolved.ok) return resolved;
+    depth = resolved.value;
+  }
+  return ok(depth);
+}
+
+function addForwardCenterDepth(
+  context: StandardPipelineBuildContext,
+  gpuDriven: RenderPipelineGpuDrivenProjection | undefined,
+  surface: StandardSceneSurfaceDataTargets | undefined,
+  sceneDepth: RenderPipelineTarget,
+  dimensions: { readonly width: number; readonly height: number },
+  required: boolean,
+): Result<RenderPipelineTarget | undefined, RenderGraphError> {
+  const multisampled = sceneDepth.sampleCount > 1;
+  let centerDepth = multisampled ? undefined : sceneDepth;
+  if (multisampled && required) {
+    if (surface === undefined) {
+      const created = createStandardSceneSurfaceDepthTarget(context.graph, dimensions);
+      if (!created.ok) return created;
+      centerDepth = created.value;
+    } else centerDepth = surface.depth;
+    // The primary pass already completed late visibility. This semantic pass
+    // consumes the full visible set and must not build a second HZB/cull.
+    const semantic = addStandardSceneSurfaceDataPass(
+      context.graph,
+      surface ?? { depth: centerDepth },
+      gpuDriven,
+      'standard-scene-surface-center',
+    );
+    if (!semantic.ok) return semantic;
+  }
+  return ok(centerDepth);
+}
+
+/** Primary depth is the scene attachment; semantic consumers get only their required outputs. */
 function addForwardSsao(
   context: StandardPipelineBuildContext,
   topology: RenderPipelineTopology,
   gpuDriven: RenderPipelineGpuDrivenProjection | undefined,
   clusters: StandardClusterGraphBuffers | null,
   clearOnly: boolean,
-  seedable: boolean,
+  sceneDepth: RenderPipelineTarget,
+  temporalDepthRequired: boolean,
 ): Result<ForwardSsaoProjection, RenderGraphError> {
-  const config = topology.config?.ssao;
-  const aoEnabled = config?.enabled === true && !clearOnly;
-  const surfaceDemand = forwardSurfaceDemand(topology);
-  const ssr = topology.ssr?.status === 'admitted';
-  const earlyZ = seedable && !clearOnly;
-  if (!surfaceDemand && !ssr && !aoEnabled && !earlyZ)
-    return ok({ ao: undefined, surface: undefined });
+  if (clearOnly) return ok({ ao: undefined, surface: undefined });
+  const aoEnabled = topology.config?.ssao?.enabled === true;
+  const normalRequired = forwardPrepassNeedsNormal(context, topology);
+  const centerRequired = forwardCenterDepthRequired(
+    topology,
+    normalRequired,
+    temporalDepthRequired,
+  );
   const dimensions = renderInternalCopySize(topology);
-  if (!forwardPrepassNeedsNormal(context, topology))
-    return addForwardDepthOnlyPrepass(
+  const multisampled = sceneDepth.sampleCount > 1;
+  let surface: StandardSceneSurfaceDataTargets | undefined;
+  if (normalRequired) {
+    const created = createStandardSceneSurfaceDataTargets(
+      context.graph,
+      dimensions,
+      multisampled ? undefined : sceneDepth,
+    );
+    if (!created.ok) return created;
+    surface = created.value;
+  }
+  const produced = addForwardSurfacePasses(
+    context,
+    !multisampled && surface !== undefined ? surface : { depth: sceneDepth },
+    gpuDriven,
+    dimensions,
+  );
+  if (!produced.ok) return produced;
+  const centered = addForwardCenterDepth(
+    context,
+    gpuDriven,
+    surface,
+    sceneDepth,
+    dimensions,
+    centerRequired || (aoEnabled && !topology.lane.storageBuffer),
+  );
+  if (!centered.ok) return centered;
+  const centerDepth = centered.value;
+  let decals: ProjectedDecalChannels | undefined;
+  if (surface !== undefined) {
+    const projected = addForwardSurfaceDecals(context, topology, surface, dimensions);
+    if (!projected.ok) return projected;
+    surface = projected.value.surface;
+    decals = projected.value.decals;
+  }
+  let depth = centerDepth;
+  let ao: RenderPipelineTarget | undefined;
+  let linearDepth: RenderPipelineTarget | undefined;
+  let parameters: GraphBuffer | undefined;
+  if (aoEnabled) {
+    const resolved = resolveForwardAoDepth(
       context,
       topology,
-      clusters,
-      gpuDriven,
-      aoEnabled,
+      surface,
+      sceneDepth,
       dimensions,
+      depth,
     );
-  const surface = createStandardSceneSurfaceDataTargets(context.graph, dimensions);
-  if (!surface.ok) return surface;
-  const produced = addForwardSurfacePasses(context, surface.value, gpuDriven, dimensions);
-  if (!produced.ok) return produced;
-  const projected = addForwardSurfaceDecals(context, topology, surface.value, dimensions);
-  if (!projected.ok) return projected;
-  const { surface: finalSurface, decals } = projected.value;
-  if (!aoEnabled)
-    return ok({ ao: undefined, ...projected.value, occlusionResolved: produced.value });
-  const ao = addForwardAo(context, topology, clusters, finalSurface, dimensions);
-  if (!ao.ok) return ao;
-  return ok({
-    ao: ao.value,
-    occlusionResolved: produced.value,
-    surface: finalSurface,
-    ...(decals === undefined ? {} : { decals }),
-  });
-}
-
-/**
- * Depth-only Forward prepass: no reader needs the normal target (UE DepthPass
- * PositionOnly). AO, when on, reconstructs its normal from this depth.
- */
-function addForwardDepthOnlyPrepass(
-  context: StandardPipelineBuildContext,
-  topology: RenderPipelineTopology,
-  clusters: StandardClusterGraphBuffers | null,
-  gpuDriven: RenderPipelineGpuDrivenProjection | undefined,
-  aoEnabled: boolean,
-  dimensions: { readonly width: number; readonly height: number },
-): Result<ForwardSsaoProjection, RenderGraphError> {
-  const depth = createStandardSceneSurfaceDepthTarget(context.graph, dimensions);
-  if (!depth.ok) return depth;
-  const produced = addForwardSurfacePasses(context, { depth: depth.value }, gpuDriven, dimensions);
-  if (!produced.ok) return produced;
-  let ao: RenderPipelineTarget | undefined;
-  if (aoEnabled) {
-    const added = addForwardAo(context, topology, clusters, { depth: depth.value }, dimensions);
-    if (!added.ok) return added;
-    ao = added.value;
+    if (!resolved.ok) return resolved;
+    depth = resolved.value;
+    // Lighting AO is a BasePass input. Scene-color AO is produced only after
+    // the final scene writer, keeping its half/full-depth reads coherent.
+    if (ssaoUsesLighting(topology.config?.ssao)) {
+      const input = surface ?? { depth: depth ?? sceneDepth };
+      const added = addForwardAo(context, topology, clusters, input, dimensions);
+      if (!added.ok) return added;
+      ao = added.value.ao;
+      linearDepth = added.value.linearDepth;
+      parameters = added.value.parameters;
+    }
   }
   return ok({
     ao,
+    linearDepth,
+    parameters,
+    surface,
+    depth,
+    predepth: sceneDepth,
+    centerDepth,
     occlusionResolved: produced.value,
-    surface: undefined,
-    depth: depth.value,
+    ...(decals === undefined ? {} : { decals }),
   });
 }
 
@@ -569,7 +649,14 @@ function addForwardAo(
   clusters: StandardClusterGraphBuffers | null,
   surface: ForwardSurfacePassTargets,
   dimensions: { readonly width: number; readonly height: number },
-): Result<RenderPipelineTarget, RenderGraphError> {
+): Result<
+  {
+    readonly ao: RenderPipelineTarget;
+    readonly linearDepth?: RenderPipelineTarget | undefined;
+    readonly parameters?: GraphBuffer | undefined;
+  },
+  RenderGraphError
+> {
   const parameters = getSsaoParameters(topology.config?.ssao);
   const aoSize = {
     width: Math.max(1, Math.round(dimensions.width * parameters.resolutionScale)),
@@ -582,7 +669,7 @@ function addForwardAo(
   );
   if (!execution.ok) return execution;
   const raw = target(context.graph, 'ssao-raw', {
-    format: 'rgba8unorm',
+    format: parameters.algorithm === 'spiral-ssao' ? 'r8unorm' : 'rgba8unorm',
     size: aoSize,
     usage:
       GPU_TEXTURE_USAGE_COPY_SRC |
@@ -595,15 +682,32 @@ function addForwardAo(
     usage: GPU_TEXTURE_USAGE_COPY_SRC,
   });
   if (!blurred.ok) return blurred;
+  let horizontal: RenderPipelineTarget | undefined;
+  if (parameters.algorithm === 'spiral-ssao') {
+    const intermediate = target(context.graph, 'ssao-horizontal', {
+      format: 'r8unorm',
+      size: aoSize,
+      usage: GPU_TEXTURE_USAGE_COPY_SRC,
+    });
+    if (!intermediate.ok) return intermediate;
+    horizontal = intermediate.value;
+  }
+  const linear =
+    parameters.algorithm === 'spiral-ssao'
+      ? addSsaoLinearDepthPass(context.graph, surface.depth, aoSize)
+      : ok(undefined);
+  if (!linear.ok) return linear;
   const passes = addTypedSsaoPasses(context.graph, {
     normal: surface.normal,
     depth: surface.depth,
     raw: raw.value,
     blurred: blurred.value,
     execution: execution.value,
+    horizontal,
+    ...linear.value,
   });
   if (!passes.ok) return passes;
-  if (!topology.lane.storageBuffer) {
+  if (!topology.lane.storageBuffer && ssaoUsesLighting(topology.config?.ssao)) {
     if (clusters?.kind !== 'texture') {
       return err(
         new RenderGraphFailure({
@@ -622,11 +726,11 @@ function addForwardAo(
     const packed = addStandardClusterAoPackPass(context.graph, clusters, blurred.value);
     if (!packed.ok) return packed;
   }
-  return ok(blurred.value);
+  return ok({ ao: blurred.value, ...linear.value });
 }
 
-/** The atmosphere sky when enabled, else the skybox; returns the atmosphere environment. */
-function addForwardBackground(
+/** Atmosphere production precedes the captures and receivers that consume its environment. */
+function addForwardAtmosphere(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   topology: RenderPipelineTopology,
   color: RenderPipelineTarget,
@@ -634,19 +738,15 @@ function addForwardBackground(
   clusters: StandardClusterGraphBuffers | null,
   cloudShadow: RenderPipelineTarget | undefined,
 ): Result<GraphEnvironment | undefined, RenderGraphError> {
-  if (topology.atmosphere === true && topology.atmosphereBackgroundOnly === true) {
+  if (topology.atmosphereBackgroundOnly === true) {
     return addAtmosphereBackground(graph, color, {}, { mode: 'sky' });
   }
-  if (topology.atmosphere === true)
-    return addAtmosphereBackground(
-      graph,
-      color,
-      { directional: shadows.directional?.view, cloud: cloudShadow?.view },
-      { mode: 'full', clusters },
-    );
-  const skybox = addTypedSkyboxPass(graph, color);
-  if (!skybox.ok) return skybox;
-  return ok(undefined);
+  return addAtmosphereBackground(
+    graph,
+    color,
+    { directional: shadows.directional?.view, cloud: cloudShadow?.view },
+    { mode: 'full', clusters },
+  );
 }
 
 function projectForwardGpuDriven(
@@ -872,6 +972,7 @@ function addForwardOpaqueFogStage(
   unfoggedOpaque: TypedScenePassOptions | undefined,
   atmosphere?: GraphEnvironment['atmosphere'],
 ): Result<void, RenderGraphError> {
+  if (atmosphere === undefined) return ok(undefined);
   const fogged = addOpaqueFogPasses(graph, {
     topology,
     color: scene.color,
@@ -908,7 +1009,11 @@ function addForwardTranslucentStages(
     : addForwardOpaqueFogStage(graph, topology, scene, unfoggedOpaque, environment?.atmosphere);
   if (!fogged.ok) return fogged;
   const transmission = standardTransmissionRoute(topology, scene.color.sampleCount);
-  const template = { environment, ...receiver };
+  const template = {
+    environment,
+    ...receiver,
+    colorStoreOp: scene.msaa ? ('auto' as const) : ('store' as const),
+  };
   if (transmission.sorted) {
     const prefix = addSortedTransmissionPrefix(
       context,
@@ -1172,12 +1277,15 @@ function addForwardOpaqueStage(
   if (!opaquePair.ok) return opaquePair;
   if (cloud.scene !== undefined) {
     // Clouds receive camera-to-cloud air independently; fog only the opaque background here.
-    const fogged = addOpaqueFogPasses(graph, {
-      topology,
-      atmosphere: cloud.atmosphere,
-      color: scene.resolved,
-      depth: scene.depth,
-    });
+    const fogged =
+      cloud.atmosphere === undefined
+        ? ok(undefined)
+        : addOpaqueFogPasses(graph, {
+            topology,
+            atmosphere: cloud.atmosphere,
+            color: scene.resolved,
+            depth: scene.depth,
+          });
     if (!fogged.ok) return fogged;
     const compositeFeatures = contributeStandardCloudComposite(
       context,
@@ -1240,6 +1348,7 @@ function forwardUnfoggedOpaqueOptions(
   cloudScene: RenderPipelineTarget | undefined,
   seeded: boolean,
 ): TypedScenePassOptions | undefined {
+  if (topology.atmosphere !== true || topology.atmosphereBackgroundOnly === true) return undefined;
   if (topology.unfoggedOpaque !== true || topology.analyticFog !== true) return undefined;
   if (cloudScene !== undefined) return undefined;
   const { gpuDriven: _gpu, gpuDrivenFilter: _filter, ...direct } = mainOptions;
@@ -1277,6 +1386,7 @@ function forwardMainPassOptions(
   return {
     environment,
     name: 'main',
+    colorStoreOp: scene.msaa ? 'auto' : 'store',
     ...(screenReceiver ? { fragmentEntryPoint: 'fs_forward_screen' } : {}),
     color: scene.color,
     ...(reflectionFallback === undefined
@@ -1403,15 +1513,12 @@ function addForwardTemporalInputs(
   return ok({ opaqueGuide: opaqueGuide.value, ssr: ssr.value });
 }
 
-/** SSR temporal geometry shares the independent single-sample Surface depth. */
+/** Single-sample temporal geometry shares the existing Forward prepass depth under MSAA. */
 function forwardTemporalDepth(
   scene: ForwardSceneTargets,
-  topology: RenderPipelineTopology,
-  surface: StandardSceneSurfaceDataTargets | undefined,
+  prepass: ForwardSsaoProjection,
 ): RenderPipelineTarget {
-  return scene.msaa && topology.ssr?.status === 'admitted'
-    ? (surface?.depth ?? scene.depth)
-    : scene.depth;
+  return (scene.msaa ? prepass.centerDepth : undefined) ?? scene.depth;
 }
 
 export function buildStandardForwardLane(
@@ -1453,14 +1560,17 @@ export function buildStandardForwardLane(
     cloudShadow: cloud.value.shadow,
   });
   if (!featureTargets.ok) return featureTargets;
-  const atmosphere = addForwardBackground(
-    graph,
-    topology,
-    scene.color,
-    shadows.value,
-    clusterBuffers.value,
-    cloud.value.shadow,
-  );
+  const atmosphere =
+    topology.atmosphere !== true
+      ? ok(undefined)
+      : addForwardAtmosphere(
+          graph,
+          topology,
+          scene.color,
+          shadows.value,
+          clusterBuffers.value,
+          cloud.value.shadow,
+        );
   if (!atmosphere.ok) return atmosphere;
   const gpuDriven = projectForwardGpuDriven(
     context,
@@ -1488,7 +1598,8 @@ export function buildStandardForwardLane(
     gpuDriven.value,
     clusterBuffers.value,
     route.clearOnly,
-    !scene.msaa,
+    scene.depth,
+    scene.msaa && route.temporalDemand.targetCount === 1,
   );
   if (!ssao.ok) return ssao;
   const screen = addForwardScreenProjection(
@@ -1505,9 +1616,14 @@ export function buildStandardForwardLane(
       readonly waterInfoTargets?: typeof waterInfoTargets;
     } = {
       ...standardForwardReceiverInputs({
+        materialSceneDepth: topology.materialSceneDepth,
         shadows: shadows.value,
         cloudShadow: cloud.value.shadow,
-        ssao: nativeForwardScreenInput(clusterBuffers.value, forwardScreen, ssao.value.ao),
+        ssao: nativeForwardScreenInput(
+          clusterBuffers.value,
+          forwardScreen,
+          ssaoUsesLighting(topology.config?.ssao) ? ssao.value.ao : undefined,
+        ),
         planarReflection: targetCaptures?.value,
         clusterReads:
           clusterBuffers.value === null ? [] : standardClusterReadAccesses(clusterBuffers.value),
@@ -1540,19 +1656,24 @@ export function buildStandardForwardLane(
   // would produce; seeding it lets `main` reject hidden fragments before
   // shading instead of shading them and overwriting them later.
   const finishForwardScene = () => {
-    const seeded = seedForwardSceneDepth(graph, forwardPrepassDepth(ssao.value), scene.depth);
-    if (!seeded.ok) return seeded;
+    const seeded = ssao.value.predepth === scene.depth;
     const unfoggedOpaque = forwardUnfoggedOpaqueOptions(
       topology,
       opaqueOptions,
       cloud.value.scene,
-      seeded.value,
+      seeded,
     );
-    const mainOptions = forwardOpaqueMainOptions(
-      opaqueOptions,
-      unfoggedOpaque !== undefined,
-      seeded.value,
-    );
+    let mainOptions = forwardOpaqueMainOptions(opaqueOptions, unfoggedOpaque !== undefined, seeded);
+    if (topology.atmosphere !== true) {
+      // Depth/lighting/capture producers run first. The ordinary background
+      // then shares the scene attachments immediately before opaque shading.
+      const background = addTypedSkyboxPass(graph, scene.color, {
+        target: scene.depth,
+        loadOp: seeded ? 'load' : 'clear',
+      });
+      if (!background.ok) return background;
+      mainOptions = { ...mainOptions, depthLoadOp: 'load' };
+    }
     const opaquePair = addForwardOpaqueStage(
       context,
       topology,
@@ -1605,7 +1726,7 @@ export function buildStandardForwardLane(
               context,
               topology,
               route.temporalDemand,
-              forwardTemporalDepth(scene, topology, ssao.value.surface),
+              forwardTemporalDepth(scene, ssao.value),
               gpuDriven.value,
             )
           : ok(waterMsaa.value.temporal);
@@ -1691,6 +1812,7 @@ export function buildStandardForwardLane(
       temporalInputs.value.ssr,
       temporalInputs.value.opaqueGuide,
       gpuDriven.value,
+      ssao.value,
     );
   };
   return finishForwardScene();
@@ -1746,9 +1868,26 @@ function presentForwardLane(
   ssr: TemporalSecondaryReactivity | undefined,
   opaqueGuide: RenderPipelineTarget | undefined,
   gpuDriven?: RenderPipelineGpuDrivenProjection,
+  ssao?: ForwardSsaoProjection,
 ): ReturnType<RenderPipeline['build']> {
   if (context.forwardOutput !== undefined)
     return context.forwardOutput.build(context, topology, scene.resolved, scene.depth, surface);
+  let ao = ssao;
+  if (
+    ssao?.depth !== undefined &&
+    topology.config?.ssao?.enabled === true &&
+    topology.config.ssao.application === 'scene-color'
+  ) {
+    const added = addForwardAo(
+      context,
+      topology,
+      null,
+      ssao.surface ?? { depth: ssao.depth },
+      renderInternalCopySize(topology),
+    );
+    if (!added.ok) return added;
+    ao = { ...ssao, ...added.value };
+  }
   const post = addStandardPost(
     context,
     topology,
@@ -1763,6 +1902,14 @@ function presentForwardLane(
     standardWaterInfoGraphTargets(context, context.viewIdentity ?? 'camera:0'),
     gpuDriven,
     scene.waterFoamSimulation,
+    ao?.ao === undefined || ao.depth === undefined
+      ? undefined
+      : {
+          ao: ao.ao,
+          depth: ao.depth,
+          linearDepth: ao.linearDepth,
+          parameters: ao.parameters,
+        },
   );
   if (!post.ok) return post;
   return ok(undefined);

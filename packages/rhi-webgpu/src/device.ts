@@ -363,6 +363,7 @@ function deriveCaps(
   limits: GPUSupportedLimits,
   depthTextureLoad: boolean,
   floatTextureCapabilities: VerifiedFloatTextureCapabilities,
+  vertexOnlyRenderBundles: boolean | undefined,
 ): RhiCaps {
   const has = (name: string): boolean => features.has(name as GPUFeatureName);
   // Texture-compression three-way caps (M4 w26): derived from adapter.features
@@ -387,6 +388,9 @@ function deriveCaps(
     // ticks and publishes their period as `timestampPeriod`.
     timestampPeriodNanoseconds: has('timestamp-query') ? timestampPeriodOf(rawDevice) : null,
     indirectDrawing: true, // WebGPU spec mandates drawIndirect / drawIndexedIndirect.
+    ...(vertexOnlyRenderBundles === undefined
+      ? {}
+      : { nativeVertexOnlyRenderBundles: vertexOnlyRenderBundles }),
     textureCompressionBc,
     textureCompressionEtc2,
     textureCompressionAstc,
@@ -1598,7 +1602,7 @@ function makeQueue(rawQueue: GPUQueue): RhiQueue {
  */
 export function makeRhiDevice(
   rawDevice: GPUDevice,
-  options: { readonly depthTextureLoad?: boolean } = {},
+  options: { readonly depthTextureLoad?: boolean; readonly vertexOnlyRenderBundles?: boolean } = {},
   floatTextureCapabilities: VerifiedFloatTextureCapabilities = UNVERIFIED_FLOAT_TEXTURE_CAPABILITIES,
 ): {
   device: RhiDevice;
@@ -1606,7 +1610,7 @@ export function makeRhiDevice(
    *  bypass the createX Result wrapper. */
   raw: GPUDevice;
 } {
-  const pipelineLibrary = new WebGpuPipelineLibrary(rawDevice);
+  const pipelineLibrary = new WebGpuPipelineLibrary(rawDevice, options.vertexOnlyRenderBundles);
   void rawDevice.lost?.then((info) => pipelineLibrary.deviceLost(info));
   const caps = deriveCaps(
     rawDevice,
@@ -1614,6 +1618,7 @@ export function makeRhiDevice(
     rawDevice.limits,
     options.depthTextureLoad ?? true,
     floatTextureCapabilities,
+    options.vertexOnlyRenderBundles,
   );
   const accelerationStructures = new WebGpuAccelerationStructures(
     caps.rayQuery,

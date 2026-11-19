@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { access, mkdir, mkdtemp, readFile, realpath, rm, symlink } from 'node:fs/promises';
 import { createServer } from 'node:http';
-import { basename, dirname, resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { type BackendHost, createBackendHost, type HostAssembly } from '@forgeax/engine-host';
 import { attachHostWebSocketServer } from '@forgeax/engine-host/transport';
@@ -30,11 +30,18 @@ import { compileNodePluginPrograms } from './build/plugin-programs-node.js';
 import { readProjectFacts } from './project.js';
 import type { ProjectFacts } from './types.js';
 import { devKitWorkspacePlugin } from './workspace-plugin.js';
+import { createWorkspaceSelection } from './workspace-selection.js';
 
 export interface DevKitBackend {
   readonly host: BackendHost;
   readonly root: string;
+  readonly hostPack?: string;
   readonly hostPackageRoot?: string;
+  readonly viewBootstrap?: {
+    readonly viewerUrl: string;
+    readonly publishSource: (url: string) => void;
+    readonly publishFailure?: (message: string) => void;
+  };
   /** Fences browser replacement against this resident backend's source snapshot. */
   assertCurrent(): Promise<void>;
 }
@@ -53,8 +60,14 @@ declare module '@forgeax/engine-plugin' {
 /** The resident workspace owns domain plugins; a Pack-owned host root remains optional. */
 export async function createDevKitBackend(
   rootInput: string,
-  options: { readonly hostPack?: string } = {},
+  options: {
+    readonly hostPack?: string;
+    readonly restoreWorkspace?: boolean;
+    readonly signal?: AbortSignal;
+    readonly viewBootstrap?: DevKitBackend['viewBootstrap'];
+  } = {},
 ) {
+  options.signal?.throwIfAborted();
   const root = resolve(rootInput);
   const requestedHostPack = options.hostPack;
   const hostPack =
@@ -96,14 +109,23 @@ export async function createDevKitBackend(
       name: 'forgeax:devkit-backend',
       provide: ['devkitBackend'],
       apply(ctx: Context) {
-        ctx.provide('devkitBackend', { host, root, hostPackageRoot, assertCurrent });
+        ctx.provide('devkitBackend', {
+          host,
+          root,
+          ...(hostPack === undefined ? {} : { hostPack }),
+          ...(hostPackageRoot === undefined ? {} : { hostPackageRoot }),
+          ...(options.viewBootstrap === undefined ? {} : { viewBootstrap: options.viewBootstrap }),
+          assertCurrent,
+        });
       },
     };
+    options.signal?.throwIfAborted();
     await traceBackendStartup('host-owner', async () => {
       await (await host.context.plugin(owner)).await();
     });
     await traceBackendStartup('workspace-plugin', async () => {
       const workspace = await host.context.plugin(devKitWorkspacePlugin, {
+        ...(options.restoreWorkspace ? { selection: createWorkspaceSelection(root) } : {}),
         hostBinding: {
           backend: host,
           get frontendAssembly() {
@@ -116,6 +138,7 @@ export async function createDevKitBackend(
       });
       await workspace.await();
     });
+    options.signal?.throwIfAborted();
     if (hostPack || project?.roots.host) {
       const projectFacts = await traceBackendStartup('project-facts', () => readProjectFacts(root));
       let facts: ProjectFacts;
@@ -156,14 +179,22 @@ export async function createDevKitBackend(
             traceBackendStartup,
           ),
         );
+        options.signal?.throwIfAborted();
         if (hostPackageRoot !== undefined) {
-          const localDependencies = resolve(hostPackageRoot, 'node_modules');
-          const parentDependencies = dirname(hostPackageRoot);
-          const dependencies = await access(localDependencies).then(
-            () => localDependencies,
-            () =>
-              basename(parentDependencies) === 'node_modules' ? parentDependencies : undefined,
-          );
+          let dependencies: string | undefined;
+          for (let cursor = hostPackageRoot; ; cursor = dirname(cursor)) {
+            const candidate = resolve(cursor, 'node_modules');
+            if (
+              await access(candidate).then(
+                () => true,
+                () => false,
+              )
+            ) {
+              dependencies = candidate;
+              break;
+            }
+            if (dirname(cursor) === cursor) break;
+          }
           if (dependencies === undefined)
             throw new Error(`Host package dependencies are unavailable: ${hostPackageRoot}`);
           await symlink(dependencies, resolve(temporary, 'compiled', 'node_modules'), 'dir');
@@ -172,6 +203,7 @@ export async function createDevKitBackend(
           'host-import',
           () => import(pathToFileURL(compiled.entry).href),
         );
+        options.signal?.throwIfAborted();
         const programs: PluginPrograms = module.createPrograms(randomUUID(), 'host', 1);
         host.context.provide('pluginPrograms', programs);
         host.context.provide('assets', {
@@ -199,6 +231,7 @@ export async function createDevKitBackend(
         };
       });
     }
+    options.signal?.throwIfAborted();
     return { host, root, dispose: () => host.dispose() };
   } catch (error) {
     await host.dispose();
@@ -243,10 +276,16 @@ export const devKitBackendServerPlugin = {
         ws.once('close', close);
       });
     });
-    const status = host.transport.register('engine.backend.status', () => ({
-      root: ctx.devkitBackend.root,
-      phase: 'ready',
-    }));
+    const status = host.transport.register('engine.backend.status', async () => {
+      await ctx.devkitBackend.assertCurrent();
+      return {
+        root: ctx.devkitBackend.root,
+        phase: 'ready',
+        ...(ctx.devkitBackend.hostPack === undefined
+          ? {}
+          : { hostPack: ctx.devkitBackend.hostPack }),
+      };
+    });
     const stop = host.transport.register('engine.backend.stop', ({ caller }) => {
       if (caller.kind !== 'cli' || caller.sourceId !== 'devkit-backend-client')
         throw new Error('Stop the backend through its authenticated Engine owner connection.');

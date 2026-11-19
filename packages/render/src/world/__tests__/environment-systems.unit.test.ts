@@ -104,6 +104,18 @@ it('an accepted scene submission publishes the environment, atmosphere and fog',
   expect(frameState.rejectedStage).toBeUndefined();
 });
 
+it('publishes submitted atmosphere tables while the scene is still preparing', () => {
+  fog.commit.mockClear();
+  const { frameState, lifecycle, publishAtmosphere, frame } = fixture();
+  frame({ accepted: true, scene: false });
+  expect(publishAtmosphere).toHaveBeenCalledTimes(1);
+  expect(frameState.pendingAtmospherePublish).toBeUndefined();
+  expect(lifecycle.publish).not.toHaveBeenCalled();
+  expect(lifecycle.discard).not.toHaveBeenCalled();
+  expect(frameState.environmentGeneration).toEqual({ signature: 'candidate' });
+  expect(fog.commit).not.toHaveBeenCalled();
+});
+
 it('a rejected attempt records its stage, discards the generation and drops atmosphere and fog', () => {
   fog.commit.mockClear();
   const { frameState, lifecycle, publishAtmosphere, frame } = fixture();

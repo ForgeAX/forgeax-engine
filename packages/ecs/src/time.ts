@@ -1,6 +1,6 @@
 import type { AssetReferenceOwner } from '@forgeax/engine-types';
 import { err, ok, type Result } from '@forgeax/engine-types';
-import { TimeScaleInvalidError, TimeScaleLeaseReleasedError } from './errors/validation-errors';
+import { TimeScaleInvalidError, TimeScaleLeaseReleasedError } from './errors';
 import type { WorldMemoryOptions } from './memory-types';
 import { defineResource } from './resource';
 

@@ -6,6 +6,6 @@ export default defineProject({
   test: {
     name: '@forgeax/water-r5-gpu-mesh-async-pontoons',
     environment: 'node',
-    include: ['assets/__tests__/*.unit.test.ts'],
+    include: ['assets/__tests__/*.unit.test.ts', 'src/__tests__/*.unit.test.ts'],
   },
 });

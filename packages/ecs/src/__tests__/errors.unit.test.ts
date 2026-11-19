@@ -1,4 +1,11 @@
 // biome-ignore-all lint/complexity/noUselessLoneBlockStatements: scope isolation between merged source files
+import {
+  createCyclicDependencyError,
+  createRelationshipDetachMismatchError,
+  createRelationshipSelfCycleError,
+  createUniqueRefDoubleReleaseError,
+  createUniqueRefReleasedError,
+} from '../errors';
 // Consolidated by feat-20260609-test-pool-startup-reduction-merge-tiny-test-files
 //
 // Source files (N=10):
@@ -26,20 +33,11 @@ import type { EcsErrorCode } from '../errors';
 import {
   ComponentAlreadyPresentError,
   ComponentNotPresentError,
-  CyclicDependencyError,
   EntityIndexOverflowError,
-  FixedSizeMismatchError,
   ManagedBufferOutOfBoundsError,
-  ManagedBufferShrinkNotSupportedError,
-  RelationshipDetachMismatchError,
-  RelationshipMirrorComponentNotRegisteredError,
-  RelationshipMirrorFieldTypeMismatchError,
-  RelationshipSelfCycleError,
   ResourceNotFoundError,
   SchemaUnsupportedFieldError,
   StaleEntityError,
-  UniqueRefDoubleReleaseError,
-  UniqueRefReleasedError,
 } from '../errors';
 import { World } from '../world';
 import { sourceHits } from './source-scan.fixture';
@@ -86,27 +84,6 @@ import { sourceHits } from './source-scan.fixture';
 // ─── from buffer-array-errors.test.ts ───
 describe('buffer-array-errors.test.ts', () => {
   describe('EcsErrorCode — buffer/array vocab collapse delta (w7, AC-07)', () => {
-    it('FixedSizeMismatchError carries .code = "fixed-size-mismatch" + detail.expected / detail.actual', () => {
-      const err = new FixedSizeMismatchError('meta', 8, 7);
-      expect(err.code).toBe('fixed-size-mismatch');
-      expect(err.detail).toEqual({ expected: 8, actual: 7 });
-    });
-
-    it('EcsErrorCode keeps only the core fixed-size write failure', () => {
-      const codes: EcsErrorCode[] = ['fixed-size-mismatch'];
-      let hits = 0;
-      for (const code of codes) {
-        switch (code) {
-          case 'fixed-size-mismatch':
-            hits += 1;
-            break;
-          default:
-            void code;
-        }
-      }
-      expect(hits).toBe(1);
-    });
-
     it('owner-specific validation codes stay outside EcsErrorCode', () => {
       // @ts-expect-error render owns this validation code.
       const renderCode: EcsErrorCode = 'instance-transforms-stride-mismatch';
@@ -146,8 +123,8 @@ describe('component-schema-json.test.ts', () => {
       });
 
       const BufferBag = defineComponent('BufferBag', {
-        meta: 'buffer<16>',
-        blob: 'buffer',
+        meta: 'array<u8, 16>',
+        blob: 'array<u8>',
       });
 
       const json1 = JSON.stringify(componentSchema(Hierarchy));
@@ -155,44 +132,44 @@ describe('component-schema-json.test.ts', () => {
 
       expect(json1).toContain('array<entity>');
       expect(json1).toContain('array<f32, 16>');
-      expect(json2).toContain('buffer<16>');
-      expect(json2).toContain('"buffer"');
+      expect(json2).toContain('array<u8, 16>');
+      expect(json2).toContain('"array<u8>"');
 
       expect(JSON.parse(json1)).toEqual({
         children: 'array<entity>',
         instanceTransforms: 'array<f32, 16>',
       });
       expect(JSON.parse(json2)).toEqual({
-        meta: 'buffer<16>',
-        blob: 'buffer',
+        meta: 'array<u8, 16>',
+        blob: 'array<u8>',
       });
     });
 
     test('schema literal types survive the JSON round-trip (no widening to string)', () => {
       const C2 = defineComponent('SchemaJsonC2', {
         tag: 'array<u32>',
-        slot: 'buffer<32>',
+        slot: 'array<u8, 32>',
       });
 
       const tagKeyword: 'array<u32>' = componentSchema(C2).tag;
-      const slotKeyword: 'buffer<32>' = componentSchema(C2).slot;
+      const slotKeyword: 'array<u8, 32>' = componentSchema(C2).slot;
       expect(tagKeyword).toBe('array<u32>');
-      expect(slotKeyword).toBe('buffer<32>');
+      expect(slotKeyword).toBe('array<u8, 32>');
 
       expect(JSON.stringify(componentSchema(C2))).toContain('array<u32>');
-      expect(JSON.stringify(componentSchema(C2))).toContain('buffer<32>');
+      expect(JSON.stringify(componentSchema(C2))).toContain('array<u8, 32>');
     });
 
     test('component tokens do not carry a second serialization method', () => {
       const C = defineComponent('C', {
         children: 'array<entity>',
-        meta: 'buffer<16>',
-        blob: 'buffer',
+        meta: 'array<u8, 16>',
+        blob: 'array<u8>',
       });
       const serialized = JSON.stringify(componentSchema(C));
       expect(serialized).toContain('array<entity>');
-      expect(serialized).toContain('buffer<16>');
-      expect(serialized).toContain('"buffer"');
+      expect(serialized).toContain('array<u8, 16>');
+      expect(serialized).toContain('"array<u8>"');
       expect('toSchemaJSON' in C).toBe(false);
     });
   });
@@ -233,7 +210,7 @@ describe('errors.test.ts', () => {
       },
       {
         label: 'CyclicDependencyError',
-        create: () => new CyclicDependencyError(['A', 'B', 'A']),
+        create: () => createCyclicDependencyError(['A', 'B', 'A']),
         expectedCode: 'cyclic-dependency',
       },
       {
@@ -351,7 +328,7 @@ describe('errors.test.ts', () => {
 describe('managed-entity-dangling-errors.test.ts', () => {
   describe('w5 — managed error classes', () => {
     it('UniqueRefReleasedError carries code + hint + detail.handle', () => {
-      const err = new UniqueRefReleasedError(0xdeadbeef, 'MaterialAsset');
+      const err = createUniqueRefReleasedError(0xdeadbeef, 'MaterialAsset');
       expect(err.code).toBe('unique-ref-released');
       expect(err.hint.length).toBeGreaterThan(0);
       expect(err.detail.handle).toBe(0xdeadbeef);
@@ -359,7 +336,7 @@ describe('managed-entity-dangling-errors.test.ts', () => {
     });
 
     it('UniqueRefDoubleReleaseError carries code + hint + detail.handle', () => {
-      const err = new UniqueRefDoubleReleaseError(7, 'MaterialAsset');
+      const err = createUniqueRefDoubleReleaseError(7, 'MaterialAsset');
       expect(err.code).toBe('unique-ref-double-release');
       expect(err.hint.length).toBeGreaterThan(0);
       expect(err.detail.handle).toBe(7);
@@ -373,14 +350,6 @@ describe('managed-entity-dangling-errors.test.ts', () => {
       expect(err.detail.index).toBe(128);
       expect(err.detail.size).toBe(64);
     });
-
-    it('ManagedBufferShrinkNotSupportedError carries code + hint + detail.{requested,current}', () => {
-      const err = new ManagedBufferShrinkNotSupportedError(32, 64);
-      expect(err.code).toBe('managed-buffer-shrink-not-supported');
-      expect(err.hint.length).toBeGreaterThan(0);
-      expect(err.detail.requested).toBe(32);
-      expect(err.detail.current).toBe(64);
-    });
   });
 });
 
@@ -388,45 +357,15 @@ describe('managed-entity-dangling-errors.test.ts', () => {
 describe('relationship-errors.test.ts', () => {
   describe('relationship error codes', () => {
     it('relationship-self-cycle carries .code + .detail.entity', () => {
-      const e = new RelationshipSelfCycleError('ChildOf', 42 as number, 7 as number);
+      const e = createRelationshipSelfCycleError('ChildOf', 42 as number, 7 as number);
       expect(e.code).toBe('relationship-self-cycle');
       expect(e).toBeInstanceOf(Error);
       expect(e.detail).toMatchObject({ component: 'ChildOf', entity: 42, ancestor: 7 });
       expect(typeof e.hint).toBe('string');
     });
 
-    it('relationship-mirror-component-not-registered carries .code + .detail', () => {
-      const e = new RelationshipMirrorComponentNotRegisteredError('ChildOf', 'Children');
-      expect(e.code).toBe('relationship-mirror-component-not-registered');
-      expect(e).toBeInstanceOf(Error);
-      expect(e.detail).toMatchObject({ component: 'ChildOf', mirror: 'Children' });
-    });
-
-    it('relationship-mirror-component-not-registered hint drops register wording (AC-09)', () => {
-      const e = new RelationshipMirrorComponentNotRegisteredError('ChildOf', 'Children');
-      expect(e.hint).not.toMatch(/register/i);
-      expect(e.hint).toContain('defineComponent');
-    });
-
-    it('relationship-mirror-field-type-mismatch carries .code + .detail', () => {
-      const e = new RelationshipMirrorFieldTypeMismatchError(
-        'ChildOf',
-        'Children',
-        'entities',
-        'array<f32>',
-      );
-      expect(e.code).toBe('relationship-mirror-field-type-mismatch');
-      expect(e).toBeInstanceOf(Error);
-      expect(e.detail).toMatchObject({
-        component: 'ChildOf',
-        mirror: 'Children',
-        field: 'entities',
-        actualType: 'array<f32>',
-      });
-    });
-
     it('relationship-detach-mismatch carries .code + .detail', () => {
-      const e = new RelationshipDetachMismatchError(
+      const e = createRelationshipDetachMismatchError(
         'ChildOf',
         5 as number,
         9 as number,

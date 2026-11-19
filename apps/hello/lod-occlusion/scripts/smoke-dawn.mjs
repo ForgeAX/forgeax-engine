@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { DEFAULT_STANDARD_PROFILE } from '@forgeax/engine-render';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -121,7 +122,7 @@ let lastLodEvidenceFailure;
 try {
   const constructed = await constructRuntimeRendererHost(
     shim.mockCanvas,
-    {},
+    { standardProfile: { ...DEFAULT_STANDARD_PROFILE, gpuOcclusion: true } },
     {
       shaderManifestUrl,
     },

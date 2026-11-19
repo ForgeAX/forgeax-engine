@@ -1,3 +1,4 @@
+import { World } from '@forgeax/engine-ecs';
 import { type BindGroup, type RenderPipeline, RhiError } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { err, ok, type Result } from '@forgeax/engine-types';
@@ -17,6 +18,7 @@ import {
   createPreparedGraphicsResolver,
   type PreparedGraphicsResolverInput,
 } from '../prepare/prepared-graphics-resolver';
+import { worldRenderResources } from '../publication/resource-scope';
 import { createPreparedResolverCaches } from '../record/prepared-material-bindings';
 import type { RenderSystemInternals } from '../record/render-context';
 import type { WaterInfoFramePublication } from '../water/water-info-feature';
@@ -83,6 +85,7 @@ describe('prepared graphics resolver', () => {
     } as unknown as RenderSystemInternals;
     const caches = createPreparedResolverCaches();
     const selected: RenderPipeline[] = [];
+    const sourceScope = worldRenderResources(new World());
     for (const leanLighting of [true, false, true]) {
       const resolver = createPreparedResolver(
         {
@@ -101,7 +104,7 @@ describe('prepared graphics resolver', () => {
           fullscreenEffects: new Map(),
           lookup: (reference) => items.get(reference),
         },
-        [],
+        sourceScope,
       );
       const resolved = resolver.resolve(pipeline).unwrap();
       if (resolved.kind !== 'pipeline') throw new Error('Expected native pipeline');
@@ -204,7 +207,7 @@ describe('prepared graphics resolver', () => {
         graphicsBindings: new Map([['storage', bindings]]),
         lookup: (reference) => items.get(reference),
       },
-      [],
+      worldRenderResources(new World()),
     );
     expect(resolver.resolve(pipeline).ok).toBe(true);
     expect(prepare.mock.calls[0]?.[23]).toBe(true);
@@ -237,8 +240,12 @@ describe('prepared graphics resolver', () => {
       .unwrap();
     transaction.commit().unwrap();
     const items = resultMap(store.snapshot('resolver.mrt').items);
-    const prepare = vi.fn(() =>
-      entry ? { pipeline: {} as RenderPipeline } : ({} as RenderPipeline),
+    const prepare = vi.fn(
+      (
+        ..._args: Parameters<
+          NonNullable<RenderSystemInternals['prepareMaterialShaderPipelineEntry']>
+        >
+      ) => (entry ? { pipeline: {} as RenderPipeline } : ({} as RenderPipeline)),
     );
     const runtime = {
       device: await device(),
@@ -260,7 +267,7 @@ describe('prepared graphics resolver', () => {
         fullscreenEffects: new Map(),
         lookup: (reference) => items.get(reference),
       },
-      [],
+      worldRenderResources(new World()),
     );
     expect(resolver.resolve(pipeline).ok).toBe(true);
     expect(prepare.mock.calls[0]?.[9]).toBe('rgb10a2unorm');
@@ -649,7 +656,7 @@ async function preparedWaterOwner(format: 'rgba16float' | 'rgba32float' = 'rgba1
       skylightResources: () => undefined,
     },
     input,
-    [],
+    worldRenderResources(new World()),
   );
   return {
     resolver,

@@ -9,7 +9,7 @@ import {
   type WaterBodyAsset,
 } from '@forgeax/engine/types';
 import { buildWaterPackOutputs } from '@forgeax/engine/water';
-import { geometryMeshReferences } from './body-geometry/src/geometry-publication';
+import { geometryMeshReferences } from './geometry-publication';
 
 const cookedFields = new Set([
   'riverSegmentMeshGuids',

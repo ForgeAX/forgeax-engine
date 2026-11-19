@@ -19,7 +19,6 @@ const standard: StandardSurfaceProjectionOptions = {
   values: {},
   geometryVariant: 'rigid',
   lightingLane: 'direct',
-  alphaClip: true,
 };
 
 describe('Surface adjacent regressions', () => {

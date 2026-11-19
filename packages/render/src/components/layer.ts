@@ -23,7 +23,7 @@
 //
 // @derives defineComponent factory (packages/ecs/src/component.ts) — i32
 //   is a legacy scalar type; its intrinsic properties (byteSize / viewCtor
-//   / storage) live in TYPE_METADATA['i32'] (feat-20260602 M1).
+//   / storage) live in SCALAR_LAYOUTS['i32'] (feat-20260602 M1).
 // @reuses spawn 4-layer fallback chain (feat-20260517-spawn-default-fallback)
 //   — layer-3 typeDefault('i32') returns 0, no fifth layer.
 //

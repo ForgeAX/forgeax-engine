@@ -52,6 +52,7 @@ async function fixture() {
       device,
       deviceScope: DeviceScope.create(1, 'deferred-program-owner'),
       standardSceneShaders: {
+        gbuffer: 'standard-gbuffer/2',
         deferred: {
           unclustered: 'fit',
           unclusteredLut: 'lut',

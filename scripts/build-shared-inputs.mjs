@@ -14,6 +14,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
+import { shaderProducerCompileWorkers } from './lib/runner-resources.mjs';
 import { admitShaderSourceBudget } from './lib/shader-source-budget.mjs';
 import {
   reusableSharedShader,
@@ -113,7 +114,7 @@ if (process.env.FORGEAX_BUILD_NO_TASK_CACHE === '1')
     `[shared-build] shader reuse disabled by FORGEAX_BUILD_NO_TASK_CACHE; expected=${inputFingerprint}`,
   );
 
-admitShaderSourceBudget();
+admitShaderSourceBudget({ workerBudget: shaderProducerCompileWorkers });
 const { forgeaxShader } = await import('@forgeax/engine-vite-plugin-shader');
 const { build } = await import('vite');
 rmSync(output, { recursive: true, force: true });

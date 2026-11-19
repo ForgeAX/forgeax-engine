@@ -23,6 +23,7 @@ import {
   ok,
   type PluginAssetDefinition,
 } from '@forgeax/engine-types';
+import { executionWorkers } from '../execution-workers.js';
 import { validateRenderFeatureContributions } from '../host/render-feature-contributions.js';
 
 import { validateStartupUi } from '../host/startup-ui.js';
@@ -166,6 +167,7 @@ const APP_OPTION_KEYS: ReadonlySet<string> = new Set([
   'loadingLabels',
   'startupUi',
   'wechat',
+  'execution',
 ]);
 
 const LOADING_LABEL_KEYS = new Set(Object.keys(DEFAULT_LOAD_PROGRESS_LABELS));
@@ -234,6 +236,18 @@ function validateWechatOptions(wechat: DevKitAppOptions['wechat']): void {
   }
 }
 
+function validateExecutionOptions(value: DevKitAppOptions['execution']): void {
+  if (value === undefined) return;
+  if (
+    value === null ||
+    typeof value !== 'object' ||
+    Array.isArray(value) ||
+    Object.keys(value).some((key) => key !== 'workers')
+  )
+    throw new TypeError('devkitAppOptions.execution must contain only the public workers policy');
+  if (value.workers !== undefined) executionWorkers(value.workers);
+}
+
 function validateTimeOptions(time: DevKitAppOptions['time']): void {
   if (time !== undefined) {
     if (
@@ -290,6 +304,7 @@ function projectAppOptions(value: unknown): DevKitAppOptions {
   const options = copyPackData(value) as DevKitAppOptions;
   validateEngineConfigurationOption(options);
   validateCanvasPixelRatio(options.canvasPixelRatio);
+  validateExecutionOptions(options.execution);
   const capacity = options.renderPipelineCapacity;
   if (capacity !== undefined && capacity !== 2 && capacity !== 3 && capacity !== 4)
     throw new TypeError('devkitAppOptions.renderPipelineCapacity must be 2, 3 or 4');

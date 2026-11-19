@@ -34,6 +34,18 @@ import { completeReadyFrame } from '../../../../scripts/test/ready-render-frame.
 import { compactTape } from './compact-tape.fixture';
 import { testAssets } from './helpers/runtime-assets';
 import { renderValue } from './standard-gbuffer-replay.fixture';
+
+async function saveSharedCaptureTape(
+  save: (name: string, bytes: Uint8Array) => void | Promise<void>,
+  face: number,
+  count: number,
+  tape: EncodedTape,
+): Promise<void> {
+  if (face === 0) await save('held-views-shared-captures.rhitape', compactTape(tape).bytes);
+  if (count !== (face < 6 ? 2 : 1))
+    await save(`held-views-face-${face}-failed.rhitape`, compactTape(tape).bytes);
+}
+
 export async function verifyMultiCamera(
   renderer: Renderer,
   recorder: RecorderAttachment,
@@ -341,7 +353,7 @@ export async function verifyMultiCamera(
           event.colorAttachmentViewHandleIds.length > 0,
       );
       const submissions = tape.events.filter((event) => event.kind === 'submit');
-      if (face === 0) await save('held-views-shared-captures.rhitape', compactTape(captured).bytes);
+      await saveSharedCaptureTape(save, face, targetPasses.length, captured);
       expect(targetPasses).toHaveLength(face < 6 ? 2 : 1);
       expect(submissions).toHaveLength(1);
       expect(

@@ -4,12 +4,13 @@ import type {
   RenderGraphBuilder,
   RenderGraphError,
 } from '@forgeax/engine-render-graph';
-import { err, mipDimension, ok, type Result } from '@forgeax/engine-types';
+import { err, ok, type Result } from '@forgeax/engine-types';
 import type { PlanarCapture } from '../capture/planar-state';
 import { planarReflectionLevels } from '../capture/planar-target';
 import { addAtmosphereBackground } from '../environment/background';
 import { atmosphereTextures, atmosphereVolumeViews } from '../environment/luts';
 import { atmosphereStorage } from '../environment/storage';
+import { RenderTargetDescriptorInvalidError } from '../errors/render';
 import { analyticFogSampleCountError } from '../pipeline/analytic-fog-pass';
 import type { StandardClusterGraphBuffers } from '../pipeline/standard-lighting/graph';
 import type { RenderPipelineFrame, RenderPipelineGpuDrivenProjection } from '../render-pipeline';
@@ -20,7 +21,7 @@ import {
   renderTargetMipCount,
 } from '../targets/contracts';
 import { resolveRenderTargetMaterialSource } from '../targets/material-source';
-import type { RenderTargetPhysical } from '../targets/physical';
+import { type RenderTargetPhysical, renderTargetMipPhysical } from '../targets/physical';
 import { isCanvasTextureSource } from '../textures/canvas-texture';
 import { isExternalTextureSource } from '../textures/external-texture';
 import type { TransmissionBackdropMipEncoder } from '../transmission/backdrop';
@@ -28,12 +29,15 @@ import type { TypedShadowTargets } from '../typed-shadow-passes';
 import { addCaptureFaceFeaturePasses } from './capture-face-features';
 import { buildPerFrameBindGroups } from './frame-lighting';
 import { encodeMainPass } from './main-pass';
+import { addPlanarMipPasses } from './planar-mip-passes';
 import type { _InternalRenderPipelineContext, RenderSystemInternals } from './render-context';
-import { registerScenePass, scenePassContext } from './scene-pass-work';
+import { type CaptureScenePasses, registerScenePass, scenePassContext } from './scene-pass-work';
 import { selectForwardFragmentEntry } from './standard-opaque-entry';
 import type { ReflectionProbeGraphState } from './typed-frame-graph';
 
 export interface CubeCaptureGraphWork {
+  readonly write?: import('../render-contract').RenderTargetWrite;
+  readonly mipLevel?: number;
   readonly sceneInput?: true;
   /** The Feature that requested this scene input; absent for every other face. */
   readonly featureIdentity?: string;
@@ -83,6 +87,7 @@ export function materialSamplesTarget(
 function captureSelfSampling(
   internal: ReturnType<typeof scenePassContext>,
   target: RenderTarget,
+  write?: import('../render-contract').RenderTargetWrite,
 ): Map<number, Set<number>> {
   const selfSampling = new Map<number, Set<number>>();
   let nextIndex = 0;
@@ -100,6 +105,12 @@ function captureSelfSampling(
       handles.add(material.materialHandle ?? 0);
     }
   }
+  if (write !== undefined && selfSampling.size > 0)
+    throw new RenderTargetDescriptorInvalidError({
+      field: 'targetWrite',
+      value: target,
+      expected: 'no sampled feedback from the destination target',
+    });
   return selfSampling;
 }
 
@@ -109,6 +120,113 @@ function captureShadowReads(shadows: TypedShadowTargets | undefined): GraphAcces
   return targets.flatMap((target) =>
     target === undefined ? [] : [{ resource: target.view, usage: 'sampled-read' as const }],
   );
+}
+
+function importCaptureColor(
+  builder: RenderGraphBuilder<RenderPipelineFrame>,
+  initial: CubeCaptureGraphWork,
+  current: () => CubeCaptureGraphWork,
+  attachment: RenderTargetPhysical,
+  label: string,
+  slot: number,
+  mipUsage: number,
+) {
+  const descriptor = attachment.descriptor;
+  const mip = initial.mipLevel ?? 0;
+  const volume = descriptor.shape === '3d';
+  const msaa = descriptor.sampleCount === 4;
+  const layers = renderTargetLayerCount(descriptor);
+  const texture = builder.importTexture(
+    `${label}.${slot}.texture`,
+    {
+      format: descriptor.format,
+      size: {
+        width: msaa ? descriptor.width : initial.physical.descriptor.width,
+        height: msaa ? descriptor.height : initial.physical.descriptor.height,
+        depthOrArrayLayers: msaa ? 1 : layers,
+      },
+      mipLevelCount: msaa ? 1 : renderTargetMipCount(initial.physical.descriptor),
+      sampleCount: descriptor.sampleCount,
+      dimension: volume ? '3d' : '2d',
+      usage: 0x10 | 0x04 | 0x01 | (msaa ? 0 : mipUsage),
+    },
+    () => attachment.colorTextures[current().layer] ?? initial.physical.texture,
+  );
+  if (!texture.ok) return texture;
+  const color = builder.importView(
+    texture.value,
+    {
+      label: `${label}.${slot}.color`,
+      dimension: volume ? '3d' : '2d',
+      baseMipLevel: msaa ? 0 : mip,
+      mipLevelCount: 1,
+      baseArrayLayer: msaa || volume ? 0 : initial.layer,
+      arrayLayerCount: 1,
+    },
+    () =>
+      attachment.layerViews[current().layer] ??
+      attachment.layerViews[initial.layer] ??
+      initial.physical.view,
+  );
+  if (!color.ok) return color;
+  return ok({ texture, color });
+}
+
+function importCaptureResolve(
+  builder: RenderGraphBuilder<RenderPipelineFrame>,
+  initial: CubeCaptureGraphWork,
+  current: () => CubeCaptureGraphWork,
+  attachment: RenderTargetPhysical,
+  label: string,
+  slot: number,
+  mipUsage: number,
+) {
+  const descriptor = attachment.descriptor;
+  const mip = initial.mipLevel ?? 0;
+  const msaa = descriptor.sampleCount === 4;
+  const layers = renderTargetLayerCount(descriptor);
+  const resolveTexture = msaa
+    ? builder.importTexture(
+        `${label}.${slot}.resolve-texture`,
+        {
+          format: descriptor.format,
+          size: {
+            width: initial.physical.descriptor.width,
+            height: initial.physical.descriptor.height,
+            depthOrArrayLayers: layers,
+          },
+          mipLevelCount: renderTargetMipCount(initial.physical.descriptor),
+          sampleCount: 1,
+          dimension: '2d',
+          usage: 0x10 | 0x04 | 0x01 | mipUsage,
+        },
+        () =>
+          current().physical.resolveTexture ??
+          initial.physical.resolveTexture ??
+          initial.physical.texture,
+      )
+    : undefined;
+  if (resolveTexture !== undefined && !resolveTexture.ok) return resolveTexture;
+  const resolve =
+    resolveTexture === undefined
+      ? undefined
+      : builder.importView(
+          resolveTexture.value,
+          {
+            label: `${label}.${slot}.resolve`,
+            dimension: '2d',
+            baseMipLevel: mip,
+            mipLevelCount: 1,
+            baseArrayLayer: initial.layer,
+            arrayLayerCount: 1,
+          },
+          () =>
+            attachment.resolveLayerViews[current().layer] ??
+            attachment.resolveLayerViews[initial.layer] ??
+            initial.physical.resolveView,
+        );
+  if (resolve !== undefined && !resolve.ok) return resolve;
+  return ok({ texture: resolveTexture?.value, view: resolve?.value });
 }
 
 /**
@@ -131,6 +249,7 @@ export function addTargetCaptureGraphPasses(
   },
   view?: { readonly gpuDriven: RenderPipelineGpuDrivenProjection | undefined },
   encodeMip?: TransmissionBackdropMipEncoder,
+  scenePasses?: CaptureScenePasses,
 ): Result<GraphTextureView | undefined, RenderGraphError | import('../errors/render').RenderError> {
   const gpuDriven = view?.gpuDriven;
   if (
@@ -145,44 +264,23 @@ export function addTargetCaptureGraphPasses(
     if (initial === undefined) continue;
     const label = captureLabel(initial);
     const current = (): CubeCaptureGraphWork => state.work[slot] ?? initial;
-    const descriptor = initial.physical.descriptor;
+    const selected = renderTargetMipPhysical(initial.physical, initial.mipLevel ?? 0);
+    if (!selected.ok) return err(selected.error);
+    const attachment = selected.value;
+    const descriptor = attachment.descriptor;
     const volume = descriptor.shape === '3d';
-    const msaa = descriptor.sampleCount === 4;
-    const layers = renderTargetLayerCount(descriptor);
     const { levels: mipLevels, usage: mipUsage } = planarMipPlan(encodeMip, initial, descriptor);
-    const texture = builder.importTexture(
-      `${label}.${slot}.texture`,
-      {
-        format: descriptor.format,
-        size: {
-          width: descriptor.width,
-          height: descriptor.height,
-          depthOrArrayLayers: msaa ? 1 : layers,
-        },
-        mipLevelCount: msaa ? 1 : renderTargetMipCount(descriptor),
-        sampleCount: descriptor.sampleCount,
-        dimension: volume ? '3d' : '2d',
-        usage: 0x10 | 0x04 | 0x01 | (msaa ? 0 : mipUsage),
-      },
-      () => current().physical.colorTextures[current().layer] ?? initial.physical.texture,
+    const colorAttachment = importCaptureColor(
+      builder,
+      initial,
+      current,
+      attachment,
+      label,
+      slot,
+      mipUsage,
     );
-    if (!texture.ok) return texture;
-    const color = builder.importView(
-      texture.value,
-      {
-        label: `${label}.${slot}.color`,
-        dimension: volume ? '3d' : '2d',
-        baseMipLevel: 0,
-        mipLevelCount: 1,
-        baseArrayLayer: msaa || volume ? 0 : initial.layer,
-        arrayLayerCount: 1,
-      },
-      () =>
-        current().physical.layerViews[current().layer] ??
-        initial.physical.layerViews[initial.layer] ??
-        initial.physical.view,
-    );
-    if (!color.ok) return color;
+    if (!colorAttachment.ok) return colorAttachment;
+    const { texture, color } = colorAttachment.value;
     const depthTexture = builder.importTexture(
       `${label}.${slot}.depth-texture`,
       {
@@ -193,7 +291,7 @@ export function addTargetCaptureGraphPasses(
         dimension: '2d',
         usage: 0x10 | (initial.physical.sampledDepth ? 0x04 : 0),
       },
-      () => current().physical.depthTexture,
+      () => attachment.depthTexture,
     );
     if (!depthTexture.ok) return depthTexture;
     const depth = builder.importView(
@@ -204,52 +302,21 @@ export function addTargetCaptureGraphPasses(
         baseArrayLayer: 0,
         arrayLayerCount: 1,
       },
-      () => current().physical.depthView,
+      () => attachment.depthView,
     );
     if (!depth.ok) return depth;
-    const resolveTexture = msaa
-      ? builder.importTexture(
-          `${label}.${slot}.resolve-texture`,
-          {
-            format: descriptor.format,
-            size: {
-              width: descriptor.width,
-              height: descriptor.height,
-              depthOrArrayLayers: layers,
-            },
-            mipLevelCount: renderTargetMipCount(descriptor),
-            sampleCount: 1,
-            dimension: '2d',
-            usage: 0x10 | 0x04 | 0x01 | mipUsage,
-          },
-          () =>
-            current().physical.resolveTexture ??
-            initial.physical.resolveTexture ??
-            initial.physical.texture,
-        )
-      : undefined;
-    if (resolveTexture !== undefined && !resolveTexture.ok) return resolveTexture;
-    const resolve =
-      resolveTexture === undefined
-        ? undefined
-        : builder.importView(
-            resolveTexture.value,
-            {
-              label: `${label}.${slot}.resolve`,
-              dimension: '2d',
-              baseMipLevel: 0,
-              mipLevelCount: 1,
-              baseArrayLayer: initial.layer,
-              arrayLayerCount: 1,
-            },
-            () =>
-              current().physical.resolveLayerViews[current().layer] ??
-              initial.physical.resolveLayerViews[initial.layer] ??
-              initial.physical.resolveView,
-          );
-    if (resolve !== undefined && !resolve.ok) return resolve;
-    if (initial.faceCamera.planarReflection !== undefined)
-      planarView = resolve?.value ?? color.value;
+    const resolveAttachment = importCaptureResolve(
+      builder,
+      initial,
+      current,
+      attachment,
+      label,
+      slot,
+      mipUsage,
+    );
+    if (!resolveAttachment.ok) return resolveAttachment;
+    const { texture: resolveTexture, view: resolve } = resolveAttachment.value;
+    if (initial.faceCamera.planarReflection !== undefined) planarView = resolve ?? color.value;
     const environment =
       state.atmosphere === true && initial.sceneInput !== true
         ? addAtmosphereBackground(
@@ -271,19 +338,22 @@ export function addTargetCaptureGraphPasses(
     const atmosphere = environment?.value.atmosphere;
     const recordModes =
       initial.sceneInput === true ? (['opaque'] as const) : (['opaque', 'transparent'] as const);
-    const requests = recordModes.map((recordMode) => {
+    const requests = (initial.write?.clearOnly ? [] : recordModes).map((recordMode) => {
       const gpu = gpuDriven !== undefined && recordMode === 'opaque';
-      return registerScenePass(builder, {
-        selector: FORWARD_PASS_SELECTOR,
-        excludeSelector: undefined,
-        recordMode,
-        passKind: 'forward',
-        gpu,
-        gpuFilter: gpu ? 'opaque' : undefined,
-        late: false,
-        capture: view === undefined,
-        camera: () => current().faceCamera,
-      });
+      return registerScenePass(
+        builder,
+        (view === undefined && state.work.length === 1 ? scenePasses?.[recordMode] : undefined) ?? {
+          selector: FORWARD_PASS_SELECTOR,
+          excludeSelector: undefined,
+          recordMode,
+          passKind: 'forward',
+          gpu,
+          gpuFilter: gpu ? 'opaque' : undefined,
+          late: false,
+          capture: view === undefined,
+          camera: () => current().faceCamera,
+        },
+      );
     });
     const gpuFragmentEntry = selectForwardFragmentEntry({
       passKind: 'forward',
@@ -314,18 +384,23 @@ export function addTargetCaptureGraphPasses(
         { resource: depth.value, usage: 'depth-stencil-write' },
         ...(resolve === undefined
           ? []
-          : [{ resource: resolve.value, usage: 'color-attachment' as const }]),
+          : [{ resource: resolve, usage: 'color-attachment' as const }]),
       ],
       colorAttachments: [
         {
           view: color.value,
-          ...(resolve === undefined ? {} : { resolveTarget: resolve.value }),
+          ...(resolve === undefined ? {} : { resolveTarget: resolve }),
           ...(volume ? { depthSlice: initial.layer } : {}),
-          loadOp: environment === undefined ? 'clear' : 'load',
+          loadOp:
+            initial.write !== undefined && !initial.write.clearColor
+              ? 'load'
+              : environment === undefined
+                ? 'clear'
+                : 'load',
           storeOp: 'store',
           clearValue: () => {
             const clear =
-              current().physical.descriptor.shape === 'cube'
+              current().physical.descriptor.shape === 'cube' && current().write === undefined
                 ? [0, 0, 0, 1]
                 : current().faceCamera.clearColor;
             return { r: clear[0] ?? 0, g: clear[1] ?? 0, b: clear[2] ?? 0, a: clear[3] ?? 1 };
@@ -335,16 +410,17 @@ export function addTargetCaptureGraphPasses(
       depthStencilAttachment: {
         view: depth.value,
         depthClearValue: 0,
-        depthLoadOp: 'clear',
+        depthLoadOp: initial.write !== undefined && !initial.write.clearDepth ? 'load' : 'clear',
         depthStoreOp: 'store',
         stencilClearValue: 0,
-        stencilLoadOp: 'clear',
+        stencilLoadOp:
+          initial.write !== undefined && !initial.write.clearStencil ? 'load' : 'clear',
         stencilStoreOp: 'store',
       },
       encodeDirect: (pass, frame, resources) => {
         for (const request of requests) {
           const internal = scenePassContext(frame as _InternalRenderPipelineContext, request);
-          const selfSampling = captureSelfSampling(internal, current().target);
+          const selfSampling = captureSelfSampling(internal, current().target, current().write);
           const dispatch = internal.dispatch.filter(
             (entry) => !selfSampling.get(entry.renderableIndex)?.has(entry.materialHandle),
           );
@@ -404,8 +480,8 @@ export function addTargetCaptureGraphPasses(
                   },
                 }),
             camera: current().faceCamera,
-            targetW: current().physical.descriptor.width,
-            targetH: current().physical.descriptor.height,
+            targetW: descriptor.width,
+            targetH: descriptor.height,
             dispatch,
             ...(excludedEveryRow ? { validatedOrdered: [] } : {}),
             foldDispatchPlan: null,
@@ -450,11 +526,12 @@ export function addTargetCaptureGraphPasses(
     const mipped = addPlanarMipPasses(
       builder,
       `${label}.${slot}`,
-      resolveTexture?.value ?? texture.value,
+      resolveTexture ?? texture.value,
       descriptor,
       mipLevels,
       encodeMip,
       planarView,
+      initial.physical.device.caps.backendKind,
     );
     if (!mipped.ok) return mipped;
     planarView = mipped.value;
@@ -498,115 +575,12 @@ function importRetainedPlanarView(
   );
 }
 
-/**
- * Fill a planar mirror's mip chain from level 0, then return the full-chain
- * view its receivers sample. Each level renders into scratch and is copied
- * back, as the transmission backdrop does, so no draw samples its own
- * attachment texture (some WebGL2 drivers reject that as a feedback loop).
- */
-function addPlanarMipPasses(
-  builder: RenderGraphBuilder<RenderPipelineFrame>,
-  label: string,
-  texture: import('@forgeax/engine-render-graph').GraphTexture,
-  descriptor: RenderTargetPhysical['descriptor'],
-  levels: number,
-  encodeMip: TransmissionBackdropMipEncoder | undefined,
-  direct: GraphTextureView | undefined,
-): Result<GraphTextureView | undefined, RenderGraphError> {
-  if (levels <= 1 || encodeMip === undefined) return ok(direct);
-  const levelSize = (level: number) => ({
-    width: mipDimension(descriptor.width, level),
-    height: mipDimension(descriptor.height, level),
-  });
-  const mipView = (level: number) =>
-    builder.view(texture, {
-      label: `${label}.mip-${level}`,
-      dimension: '2d',
-      baseMipLevel: level,
-      mipLevelCount: 1,
-      baseArrayLayer: 0,
-      arrayLayerCount: 1,
-    });
-  const scratch = builder.createTexture(`${label}.mip-scratch`, {
-    format: descriptor.format,
-    size: levelSize(1),
-    sampleCount: 1,
-    mipLevelCount: levels - 1,
-  });
-  if (!scratch.ok) return scratch;
-  let source = mipView(0);
-  if (!source.ok) return source;
-  for (let level = 1; level < levels; level += 1) {
-    const destination = mipView(level);
-    if (!destination.ok) return destination;
-    const scratchView = builder.view(scratch.value, {
-      label: `${label}.mip-scratch.${level - 1}`,
-      baseMipLevel: level - 1,
-      mipLevelCount: 1,
-    });
-    if (!scratchView.ok) return scratchView;
-    const from = source.value;
-    const mip = builder.addRasterPass(`${label}-mip-${level}`, {
-      accesses: [
-        { resource: from, usage: 'sampled-read' },
-        { resource: scratchView.value, usage: 'color-attachment' },
-      ],
-      colorAttachments: [
-        {
-          view: scratchView.value,
-          clearValue: { r: 0, g: 0, b: 0, a: 0 },
-          loadOp: 'clear',
-          storeOp: 'store',
-        },
-      ],
-      encodeDirect: (pass, frame, resources) =>
-        encodeMip({
-          pass,
-          frame,
-          resources,
-          source: from,
-          destination: scratchView.value,
-          format: descriptor.format,
-          level,
-        }),
-    });
-    if (!mip.ok) return mip;
-    const copied = builder.addCopyPass(`${label}-mip-copy-${level}`, {
-      accesses: [
-        { resource: scratchView.value, usage: 'copy-src' },
-        { resource: destination.value, usage: 'copy-dst' },
-      ],
-      encodeDirect: (encoder, _frame, resources) => {
-        const scratchTexture = resources.texture(scratch.value);
-        const target = resources.texture(texture);
-        if (!scratchTexture.ok) throw scratchTexture.error;
-        if (!target.ok) throw target.error;
-        encoder.copyTextureToTexture(
-          { texture: scratchTexture.value, mipLevel: level - 1, origin: { x: 0, y: 0, z: 0 } },
-          { texture: target.value, mipLevel: level, origin: { x: 0, y: 0, z: 0 } },
-          { ...levelSize(level), depthOrArrayLayers: 1 },
-        );
-      },
-    });
-    if (!copied.ok) return copied;
-    source = destination;
-  }
-  return builder.view(texture, {
-    label: `${label}.mips`,
-    dimension: '2d',
-    baseMipLevel: 0,
-    mipLevelCount: levels,
-    baseArrayLayer: 0,
-    arrayLayerCount: 1,
-  });
-}
-
 function captureLabel(work: CubeCaptureGraphWork): string {
   if (work.sceneInput) return 'feature-scene-depth';
   return work.faceCamera.planarReflection === undefined ? 'cube-capture' : 'planar-reflection';
 }
 
-/** A planar mirror's mip level count and the extra texture usage its chain copies need. */
+/** A planar mirror's mip levels and any backend-required copy destination usage. */
 function planarMipPlan(
   encodeMip: TransmissionBackdropMipEncoder | undefined,
   work: CubeCaptureGraphWork,
@@ -616,6 +590,9 @@ function planarMipPlan(
     encodeMip === undefined
       ? 1
       : planarReflectionLevels(work.physical.device, work.faceCamera.planarReflection, descriptor);
-  // The mip chain is written by copies into the sampled texture.
-  return { levels, usage: levels > 1 ? 0x02 : 0 };
+  // WebGPU writes disjoint mip attachments; WebGL2 copies back from scratch.
+  return {
+    levels,
+    usage: levels > 1 && work.physical.device.caps.backendKind === 'wgpu-webgl2' ? 0x02 : 0,
+  };
 }

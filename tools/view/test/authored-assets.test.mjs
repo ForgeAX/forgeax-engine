@@ -39,8 +39,10 @@ function authoredEngine() {
   const calls = [];
   let revision = 'a'.repeat(64);
   const engine = {
-    async openProject({ root }) {
-      return { project: { id: `project:${root}`, root, name: 'Fixture' }, handle: { root } };
+    async openProject({ root, generation }) {
+      return { project: { id: `project:${root}`, root, name: 'Fixture' }, handle: { root },
+        status: { phase: 'preparing', sessionId: `project-session:${root}`, generation },
+        subscribeStatus() { return () => {}; } };
     },
     async closeProject() {},
     async listAssets({ project }) {

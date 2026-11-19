@@ -58,6 +58,25 @@ const exportPrefix = 'virtual:forgeax/plugin-export/';
 const nativeEntriesMarker = '__forgeax_native_program_entries__';
 const devProgramSessions = new WeakMap<ResolvedConfig, string>();
 
+/** Player delivery admits the portable program service, never its Node authoring umbrella. */
+export function assertPlayerModule(id: string, filename: string): void {
+  if (isBuiltin(id) || id.includes('__vite-browser-external'))
+    throw new TypeError(`${filename}: Node dependency ${id} leaked into the player`);
+  const path = id.split('?')[0]?.replaceAll('\\', '/') ?? id;
+  const portableProgram =
+    /\/packages\/shader-compiler\/dist\/program\.mjs$/.test(path) ||
+    /(?:^|\/)@forgeax\/engine-shader-compiler\/(?:program|dist\/program\.mjs)$/.test(path);
+  if (portableProgram) return;
+  // Naga is a portable runtime compiler. Its initialized WASM service has no
+  // filesystem/process adapter; the compiler's package root still does.
+  if (
+    /\/packages\/(?:shader-compiler|vfx-compiler|devkit)\/|@forgeax\/engine-(?:shader-compiler|vfx-compiler|devkit)/.test(
+      path,
+    )
+  )
+    throw new TypeError(`${filename}: build-only dependency ${id} leaked into the player`);
+}
+
 export function exportModule(module: string, name: string): string {
   return (
     exportPrefix +
@@ -462,6 +481,8 @@ export interface PluginProgramBuildOptions {
   readonly delivery?: 'browser' | 'native';
   readonly projectRoot: string;
   readonly namespace?: string;
+  /** Prepare game programs on first Play, retaining the project's serving resources. */
+  readonly deferPreparation?: boolean;
   readonly tools?: readonly ProjectToolBinding[];
   readonly roots: Readonly<Partial<Record<PluginBuildTarget, string | undefined>>>;
   readonly inventory: () => Promise<PluginSourceInventory>;
@@ -469,7 +490,9 @@ export interface PluginProgramBuildOptions {
   readonly pack: PluginPack;
 }
 
-export function pluginProgramsBuild(options: PluginProgramBuildOptions): Plugin {
+export function pluginProgramsBuild(
+  options: PluginProgramBuildOptions,
+): Plugin & { prepare(): Promise<void> } {
   const modulePrefix = options.namespace ? `${prefix}${options.namespace}/` : prefix;
   let command: 'build' | 'serve' = 'build';
   const projections = new Map<string, unknown>();
@@ -485,7 +508,13 @@ export function pluginProgramsBuild(options: PluginProgramBuildOptions): Plugin 
   let dev:
     | (Awaited<ReturnType<typeof captureDevPluginPrograms>> & { inventory: PluginSourceInventory })
     | undefined;
+  let preparePrograms: (() => Promise<void>) | undefined;
+  let preparation: Promise<void> | undefined;
   return {
+    async prepare() {
+      preparation ??= preparePrograms?.() ?? Promise.resolve();
+      await preparation;
+    },
     name: 'forgeax:plugin-programs',
     enforce: 'pre',
     options(input) {
@@ -500,6 +529,8 @@ export function pluginProgramsBuild(options: PluginProgramBuildOptions): Plugin 
         dev?.inventory.sourceSnapshot.releaseResolvers();
         dev = undefined;
         sessionModules.clear();
+        preparation = undefined;
+        preparePrograms = undefined;
       }
     },
     configResolved(config) {
@@ -613,69 +644,75 @@ export function pluginProgramsBuild(options: PluginProgramBuildOptions): Plugin 
           response.end(source);
         });
         if (!hasRoots) return;
-        const environment = server.environments.client;
-        if (!environment) throw new TypeError('plugin capture requires a client environment');
-        const transform = environment.transformRequest.bind(environment);
-        const warmup = environment.warmupRequest.bind(environment);
-        environment.transformRequest = async (url, ...options) => {
-          const code = frozenSource(url);
-          return code === undefined ? transform(url, ...options) : { code, map: null };
-        };
-        // These bytes already completed Vite's final transform. Repeating warmup
-        // could read a broken candidate or invoke a foreign producer under an alias.
-        environment.warmupRequest = async (url) => {
-          if (frozenSource(url) === undefined) await warmup(url);
-        };
-        markDevProgramResources(environment.plugins);
-        await options.pack.ready();
-        const inventory = await options.inventory();
-        const tools =
-          options.tools ?? (await discoverProjectTools(options.projectRoot, { inventory }));
-        const selections = new Map<string, string>();
-        for (const target of ['engine', 'frontend'] as const)
-          for (const [key, value] of projectPluginPrograms(
-            pluginAssetClosure(inventory, options.roots[target]),
-            target,
-            tools,
-            options.projectRoot,
-          ).programs) {
-            await capturePluginProgramInputs(
+        preparePrograms = async () => {
+          const environment = server.environments.client;
+          if (!environment) throw new TypeError('plugin capture requires a client environment');
+          const transform = environment.transformRequest.bind(environment);
+          const warmup = environment.warmupRequest.bind(environment);
+          environment.transformRequest = async (url, ...options) => {
+            const code = frozenSource(url);
+            return code === undefined ? transform(url, ...options) : { code, map: null };
+          };
+          // These bytes already completed Vite's final transform. Repeating warmup
+          // could read a broken candidate or invoke a foreign producer under an alias.
+          environment.warmupRequest = async (url) => {
+            if (frozenSource(url) === undefined) await warmup(url);
+          };
+          markDevProgramResources(environment.plugins);
+          await options.pack.ready();
+          const inventory = await options.inventory();
+          const tools =
+            options.tools ?? (await discoverProjectTools(options.projectRoot, { inventory }));
+          const selections = new Map<string, string>();
+          for (const target of ['engine', 'frontend'] as const)
+            for (const [key, value] of projectPluginPrograms(
+              pluginAssetClosure(inventory, options.roots[target]),
+              target,
+              tools,
               options.projectRoot,
-              inventory,
-              value.module,
-              async (specifier, importer) =>
-                (await environment.pluginContainer.resolveId(specifier, importer))?.id,
-            );
-            selections.set(key, `/@id/__x00__${exportModule(value.module, value.export)}`);
-          }
-        const engineManifest = await environment.pluginContainer.resolveId(
-          '@forgeax/engine/package.json',
-        );
-        if (!engineManifest || engineManifest.external)
-          throw new Error('Engine manifest unavailable from the Vite host');
-        dev = {
-          ...(await captureDevPluginPrograms(
-            server,
-            selections,
-            await runtimeProgramIdentity(engineManifest.id),
-            session,
-          )),
-          inventory,
+            ).programs) {
+              await capturePluginProgramInputs(
+                options.projectRoot,
+                inventory,
+                value.module,
+                async (specifier, importer) =>
+                  (await environment.pluginContainer.resolveId(specifier, importer))?.id,
+              );
+              selections.set(key, `/@id/__x00__${exportModule(value.module, value.export)}`);
+            }
+          const engineManifest = await environment.pluginContainer.resolveId(
+            '@forgeax/engine/package.json',
+          );
+          if (!engineManifest || engineManifest.external)
+            throw new Error('Engine manifest unavailable from the Vite host');
+          dev = {
+            ...(await captureDevPluginPrograms(
+              server,
+              selections,
+              await runtimeProgramIdentity(engineManifest.id),
+              session,
+            )),
+            inventory,
+          };
+          assertPluginProgramGraphInputs(options.projectRoot, inventory, dev.moduleIds, (id) => {
+            const node = environment.moduleGraph.getModuleById(id);
+            return node
+              ? {
+                  importedIds: [...node.importedModules].flatMap((dependency) =>
+                    dependency.id ? [dependency.id] : [],
+                  ),
+                  dynamicallyImportedIds: [],
+                }
+              : null;
+          });
+          for (const id of dev.moduleIds) sessionModules.add(id);
+          await assertPluginSourceInputs(inventory, options.projectRoot);
+          server.watcher.add([...inventory.sourceInputs.keys()]);
         };
-        assertPluginProgramGraphInputs(options.projectRoot, inventory, dev.moduleIds, (id) => {
-          const node = environment.moduleGraph.getModuleById(id);
-          return node
-            ? {
-                importedIds: [...node.importedModules].flatMap((dependency) =>
-                  dependency.id ? [dependency.id] : [],
-                ),
-                dynamicallyImportedIds: [],
-              }
-            : null;
-        });
-        for (const id of dev.moduleIds) sessionModules.add(id);
-        await assertPluginSourceInputs(inventory, options.projectRoot);
-        server.watcher.add([...inventory.sourceInputs.keys()]);
+        if (!options.deferPreparation) {
+          preparation ??= preparePrograms();
+          await preparation;
+        }
       } catch (cause) {
         // Vite retains the accepted server when replacement preparation fails.
         // This rejected candidate still owns native environments and must close.
@@ -737,6 +774,7 @@ export function pluginProgramsBuild(options: PluginProgramBuildOptions): Plugin 
       id = withDevProgramSession(id, null);
       if (!id.startsWith(`\0${modulePrefix}`)) return null;
       const target = id.slice(modulePrefix.length + 1) as PluginBuildTarget;
+      if (target.includes('/')) return null;
       if (target !== 'frontend' && target !== 'engine')
         throw new TypeError(`unknown player plugin target ${target}`);
       if (command === 'serve') await options.pack.ready();
@@ -932,21 +970,7 @@ export function pluginProgramsBuild(options: PluginProgramBuildOptions): Plugin 
               ...chunk.dynamicImports,
               ...Object.keys(chunk.modules),
             ]) {
-              if (isBuiltin(id) || id.includes('__vite-browser-external'))
-                throw new TypeError(
-                  `${chunk.fileName}: Node dependency ${id} leaked into the player`,
-                );
-            }
-            for (const id of Object.keys(chunk.modules)) {
-              if (
-                /\/packages\/(?:shader-compiler|naga|vfx-compiler|devkit)\/|@forgeax\/engine-(?:shader-compiler|naga|vfx-compiler|devkit)/.test(
-                  id,
-                )
-              ) {
-                throw new TypeError(
-                  `${chunk.fileName}: build-only dependency ${id} leaked into the player`,
-                );
-              }
+              assertPlayerModule(id, chunk.fileName);
             }
           }
           return {

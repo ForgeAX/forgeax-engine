@@ -9,8 +9,13 @@ files returns the structured `atlas-empty-input` failure.
 ScriptablePack runtime imports resolve with Node's ESM conditions from the original
 author module, including `@forgeax/engine/geometry` and separate Engine domain packages.
 The relocated Worker imports the resulting canonical file URL. It never borrows
-dependencies from the Pack loader installation; projects and source libraries own
-their imports. Missing-module errors retain the author path and specifier in both
+dependencies from the Pack loader installation. Projects and source libraries own
+their imports. A host can pass a `packageBinding` with the selected package name
+and directory to metadata scans and lazy production. Node resolves that package
+and its subpaths through its own exports. Missing selected exports fail during
+author module loading.
+Each Worker lease resets this selection, and explicit selections do not reuse
+unbound metadata cache entries. Missing-module errors retain the author path and specifier in both
 structured detail and the ordinary error message.
 
 Live generation admits the pure `ReflectionProbe` schema and
@@ -40,7 +45,12 @@ records with bounded integer references, and each table program's
 one reflected ABI. Decode restores readonly sharing before normal
 Pack, publication, artifact and material validation. Material parameters, GUIDs,
 receipts, references and specialization facts remain in their original records.
-Plain packages without repeated programs keep their existing envelope.
+Native typed artifact bytes use the `pack-material-programs/3` envelope. Its
+binary table reuses the Pack snapshot codec to preserve complete byte views
+without JSON numeric-array expansion. Decode restores Uint8Array program bytes
+before the same material and publication checks. Other author metadata retains
+its JSON representation, and `/2` remains readable. Plain JSON packages without
+repeated programs keep their existing envelope.
 Malformed references, non-object table records, unknown envelope fields and
 unused table entries fail closed. There is no process-wide intern pool.
 
@@ -311,6 +321,18 @@ representation. `materialProgramContextForPass` preserves it for color entries
 and strips it for shadow/depth entries; the cooker and runtime share that
 projection. It selects an additional output ABI from the same authored Surface,
 not a second material definition.
+
+`MaterialCookRasterContext.viewClipping` is an optional `true` receiving-view
+capability. Absence means off; material-local clipping is independent. The pass
+projection preserves this axis for color, depth and shadow. The producer publishes
+both programs for Engine Surface roots so per-view selection never rewrites WGSL.
+
+`MaterialCookRasterContext.lodCoverage` independently selects scene-index cross-fade
+coverage. Absence is off. Scene-index-capable Standard, Unlit and ShadowCaster
+programs publish the four LOD/view-clipping states; direct-only, terrain and
+uniform-fallback contexts do not publish an unused LOD family. The existing paired
+submission ABI remains intact. Material-local planes and authored alpha coverage
+retain their own contracts.
 
 `MaterialCookRasterContext.geometry` distinguishes `sprite-instances` from
 ordinary `mesh`/`sprite` layouts. This is a derived program selection within

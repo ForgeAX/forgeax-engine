@@ -1,6 +1,6 @@
 import { World } from '@forgeax/engine-ecs';
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
-import { type CookedMaterialRecord, validateCookedMaterialRecord } from '@forgeax/engine-pack';
+import { validateCookedMaterialRecord } from '@forgeax/engine-pack';
 import { err, RhiError } from '@forgeax/engine-rhi';
 import { RhiNullQueue, RhiNullRenderPassEncoder, rhi } from '@forgeax/engine-rhi-null';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
@@ -49,16 +49,18 @@ it('keeps direct Surface submission live without preparing unused GPU shadows ac
       ],
     },
   ];
-  const cooker = createMaterialPackCooker();
-  const publications: { guid: string; source: MaterialAsset; record: CookedMaterialRecord }[] = [];
-  for (const [index, source] of authored.entries()) {
-    const guid = `019f0000-0000-7000-8000-0000000008b${index}`;
-    const cooked = await cooker.cook({ guid, source });
-    const record = validateCookedMaterialRecord(
-      (cooked.payload as { cooked: unknown }).cooked,
-    ).unwrap();
-    publications.push({ guid, source, record });
-  }
+  // The two independent materials target the storage-capable renderer below.
+  const cooker = createMaterialPackCooker([], { profile: 'webgpu-storage' });
+  const publications = await Promise.all(
+    authored.map(async (source, index) => {
+      const guid = `019f0000-0000-7000-8000-0000000008b${index}`;
+      const cooked = await cooker.cook({ guid, source });
+      const record = validateCookedMaterialRecord(
+        (cooked.payload as { cooked: unknown }).cooked,
+      ).unwrap();
+      return { guid, source, record };
+    }),
+  );
   const renderer = await createRenderer(
     { width: 32, height: 32, getContext: () => null },
     undefined,

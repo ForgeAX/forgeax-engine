@@ -38,20 +38,20 @@
   },
   "forgeax": {
     "materialPrograms": {
-      "billboard.wgsl": { "bindings": "view-and-scene-depth", "sceneDepth": "before-pass" },
-      "billboard-inputs.wgsl": { "bindings": "view-and-scene-depth", "sceneDepth": "before-pass" },
-      "billboard-water-sphere.wgsl": { "bindings": "render-standard-material-and-scene-depth", "sceneDepth": "before-pass" },
-      "mesh.wgsl": { "bindings": "render-material" },
-      "mesh-inputs.wgsl": { "bindings": "render-material" },
-      "mesh-unlit.wgsl": { "bindings": "render-material" },
-      "mesh-inputs-unlit.wgsl": { "bindings": "render-material" },
+      "billboard.wgsl": { "bindings": "view-and-scene-depth", "sceneDepth": "before-pass", "forwardFog": "height-vertex/1" },
+      "billboard-inputs.wgsl": { "bindings": "view-and-scene-depth", "sceneDepth": "before-pass", "forwardFog": "height-vertex/1" },
+      "billboard-water-sphere.wgsl": { "bindings": "render-standard-material-and-scene-depth", "sceneDepth": "before-pass", "forwardFog": "height-vertex/1" },
+      "mesh.wgsl": { "bindings": "render-material", "forwardFog": "height-vertex/1" },
+      "mesh-inputs.wgsl": { "bindings": "render-material", "forwardFog": "height-vertex/1" },
+      "mesh-unlit.wgsl": { "bindings": "render-material", "forwardFog": "height-vertex/1" },
+      "mesh-inputs-unlit.wgsl": { "bindings": "render-material", "forwardFog": "height-vertex/1" },
       "mesh-shadow.wgsl": { "bindings": "view-only" },
-      "ribbon.wgsl": { "bindings": "view-only" },
-      "ribbon-inputs.wgsl": { "bindings": "view-only" },
-      "trail.wgsl": { "bindings": "view-only" },
-      "trail-inputs.wgsl": { "bindings": "view-only" },
-      "beam.wgsl": { "bindings": "view-only" },
-      "beam-inputs.wgsl": { "bindings": "view-only" }
+      "ribbon.wgsl": { "bindings": "view-only", "forwardFog": "height-vertex/1" },
+      "ribbon-inputs.wgsl": { "bindings": "view-only", "forwardFog": "height-vertex/1" },
+      "trail.wgsl": { "bindings": "view-only", "forwardFog": "height-vertex/1" },
+      "trail-inputs.wgsl": { "bindings": "view-only", "forwardFog": "height-vertex/1" },
+      "beam.wgsl": { "bindings": "view-only", "forwardFog": "height-vertex/1" },
+      "beam-inputs.wgsl": { "bindings": "view-only", "forwardFog": "height-vertex/1" }
     },
     "metrics": {
       "bundle-size": {

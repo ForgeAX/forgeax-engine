@@ -28,7 +28,7 @@ export async function prewarmFullscreenFeatureModules(
   generationIsCurrent: () => boolean,
 ): Promise<Result<void, RhiError>> {
   for (const postProcess of feature.requiredFullscreenPostProcesses ?? []) {
-    const label = postProcessShaderModuleLabel(postProcess.source);
+    const label = postProcessShaderModuleLabel(postProcess);
     const shaderResult = internals.pack.createShaderModule
       ? await internals.pack.createShaderModule(device, {
           code: postProcess.source,
@@ -76,7 +76,7 @@ export function buildFullscreenFeaturePipeline(
   const moduleFactory = context.modules;
   const moduleResult = moduleFactory.createShaderModule({
     code: entry.source,
-    label: postProcessShaderModuleLabel(entry.source),
+    label: postProcessShaderModuleLabel(entry),
   });
   if (!moduleResult.ok) {
     // 'rhi-not-available' = async compile in flight: caller falls back one frame.

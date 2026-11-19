@@ -68,12 +68,13 @@ export interface FrameLoopHandle {
   setStopped(): void;
 }
 
-function beginFrame(session: RecorderSession | undefined, frameId: number): boolean {
-  if (session === undefined) return false;
+function beginFrame(session: RecorderSession | undefined): ProfileFrameToken | undefined {
+  if (session === undefined) return undefined;
   try {
-    return session.beginFrame(frameId).ok;
+    const started = session.beginFrame();
+    return started.ok ? started.value : undefined;
   } catch {
-    return false;
+    return undefined;
   }
 }
 
@@ -242,8 +243,6 @@ export function createFrameLoop(opts: FrameLoopOptions): FrameLoopHandle {
       return err(makeWorldUpdateError(cause));
     }
   }
-  let profilerFrameId = 0;
-  let profilerCaptureId: string | undefined;
   let sourceLease: RenderWorldLease | undefined;
   const maxFramesInFlight = 2;
   let submittedFrames = 0;
@@ -504,24 +503,13 @@ export function createFrameLoop(opts: FrameLoopOptions): FrameLoopHandle {
       ? lastSampleTimeSeconds + deltaSeconds
       : timestamp / 1000 - snapshotTimeSeconds;
     const session = opts.profiler?.activeSession();
-    let profileFrame: ProfileFrameToken | undefined;
+    const profileFrame = beginFrame(session);
     let frameError: AppError | RenderError | undefined;
     let primaryUpdated = false;
     const reportError = (error: AppError | RenderError): void => {
       frameError ??= error;
       opts.onError?.(error);
     };
-    if (session !== undefined) {
-      if (profilerCaptureId !== session.captureId) {
-        profilerCaptureId = session.captureId;
-        profilerFrameId = 0;
-      }
-      const frameId = ++profilerFrameId;
-      if (beginFrame(session, frameId)) {
-        profileFrame = Object.freeze({ captureId: session.captureId, frameId });
-      }
-    }
-
     runProfiledPhase(session, 'frame-total', () => {
       attachPrimary(reportError);
 

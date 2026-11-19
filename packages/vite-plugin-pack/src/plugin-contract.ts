@@ -46,6 +46,8 @@ export type PluginPack = Plugin & {
 
 /** Public plugin inputs; execution owners remain in engine-pack/import/ddc. */
 export interface PluginPackOptions {
+  /** Explicit host-selected public Engine package root for isolated authored source execution. */
+  readonly enginePackageRoot?: string | undefined;
   readonly roots?: readonly string[] | undefined;
   /** Take the first inventory's captured bytes once; later generations read fresh disk. */
   readonly takeInitialSourceSnapshot?: () =>

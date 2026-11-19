@@ -1,30 +1,66 @@
 #!/usr/bin/env node
 import { createHash } from 'node:crypto';
-import { cp, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { access, cp, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
+import { delimiter, join, resolve } from 'node:path';
+import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
+import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
 import { copyRuntime } from './copy-runtime.mjs';
 import { APP_VERSION, MCP_SERVERS, VIEW_TITLE } from '../src/contract.ts';
 
-const [projectArg, outputArg] = process.argv.slice(2);
-if (!projectArg || !outputArg) {
+const [sourceArg, outputArg, ...flags] = process.argv.slice(2);
+if (!sourceArg || !outputArg) {
   console.error(
-    'Usage: node create-local-plugin.mjs <trusted-project-root> <new-marketplace-directory>',
+    'Usage: node create-local-plugin.mjs <engine-or-project-directory> <new-marketplace-directory> [--root <backend-directory>]',
   );
   process.exit(2);
 }
 
-const projectRoot = await realpath(resolve(projectArg));
-const project = JSON.parse(await readFile(join(projectRoot, 'forge.json'), 'utf8'));
-if (!project || typeof project !== 'object' || typeof project.id !== 'string')
-  throw new TypeError('The project root must contain a valid forge.json identity.');
+if (flags.length && (flags.length !== 2 || flags[0] !== '--root' || !flags[1]))
+  throw new TypeError('Expected an optional --root backend directory');
+const sourceRoot = await realpath(resolve(sourceArg));
+const project = await readFile(join(sourceRoot, 'forge.json'), 'utf8').then(JSON.parse, error => {
+  if (error.code !== 'ENOENT') throw error;
+  return undefined;
+});
+if (project && typeof project.id !== 'string') throw new TypeError('Invalid project identity');
+const projectRoot = project ? sourceRoot : undefined;
+const sourcePackage = JSON.parse(await readFile(join(sourceRoot, 'package.json'), 'utf8'));
+let viewRoot;
+if (sourcePackage.name === 'forgeax-engine' || sourcePackage.name === '@forgeax/engine') {
+  viewRoot = join(sourceRoot, 'tools/view');
+  if (sourcePackage.name === '@forgeax/engine' && sourceRoot.endsWith('/packages/engine'))
+    viewRoot = resolve(sourceRoot, '../../tools/view');
+} else {
+  const require = createRequire(join(sourceRoot, 'package.json'));
+  const enginePackage = resolve(require.resolve('@forgeax/engine/package.json'), '..');
+  viewRoot = enginePackage.endsWith('/packages/engine')
+    ? resolve(enginePackage, '../../tools/view') : join(enginePackage, 'tools/view');
+}
+const { resolveStartup, defaultBackendRoot } = await import(pathToFileURL(join(viewRoot, 'start.mjs')).href);
+const installation = await resolveStartup({ viewRoot });
+const hostPack = await realpath(resolve(viewRoot, '../forgeax-mcp/host.app.pack.json'));
+const root = flags.length ? resolve(flags[1]) : defaultBackendRoot(installation.enginePackage, hostPack);
+await mkdir(root, { recursive: true });
+const binding = { schemaVersion: 1, root: await realpath(root), enginePackage: installation.enginePackage,
+  viewRoot: installation.viewRoot, hostPack };
+// An explicit H remains a caller-managed fixed binding for non-native consumers.
+let codexContext;
+if (!flags.length) {
+  for (const directory of (process.env.PATH ?? '').split(delimiter)) {
+    const candidate = join(directory, process.platform === 'win32' ? 'codex.exe' : 'codex');
+    try { await access(candidate); codexContext = { command: await realpath(candidate), ...(process.env.CODEX_HOME ? { home: process.env.CODEX_HOME } : {}) }; break; }
+    catch { /* Resolve the generating host's public CLI from PATH. */ }
+  }
+  if (!codexContext) throw new Error('Codex is required to resolve native chat working directories.');
+}
 
 const marketplaceRoot = resolve(outputArg);
 const pluginName = 'forgeax-view-codex';
-const marketplaceName = `forgeax-view-local-${createHash('sha256').update(projectRoot).digest('hex').slice(0, 12)}`;
+const marketplaceName = `forgeax-view-local-${createHash('sha256').update(JSON.stringify(binding)).digest('hex').slice(0, 12)}`;
 const pluginRoot = join(marketplaceRoot, 'plugins', pluginName);
-// A local plugin contains one exact project binding. Never overwrite another
-// installed package or silently change the root an existing Codex tool reads.
+// Installation selects Engine/Host ownership; the retained View selects games.
 await mkdir(marketplaceRoot);
 await mkdir(pluginRoot, { recursive: true });
 await mkdir(join(marketplaceRoot, '.agents', 'plugins'), { recursive: true });
@@ -79,20 +115,23 @@ await writeJson(join(pluginRoot, 'plugin.json'), {
   $schema: 'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json',
   name: pluginName,
   version: APP_VERSION,
-  description: 'Optional ForgeAX View App and Engine workspace tools for one trusted project.',
+  description: 'ForgeAX View with progressive Engine startup, resource cards and Pack source viewing.',
 });
+await writeJson(join(pluginRoot, 'hosting.json'), { ...binding, ...(codexContext ? { codexContext } : {}) });
 await writeJson(join(pluginRoot, 'mcp.json'), {
   $schema: 'https://agent-plugins.org/schemas/1.0.0/mcp.schema.json',
   mcpServers: {
     [MCP_SERVERS.tools]: {
       type: 'stdio',
       command: nodeCommand,
-      args: ['${PLUGIN_ROOT}/mcp-stdio.mjs', projectRoot],
+      args: ['${PLUGIN_ROOT}/mcp-stdio.mjs', '${PLUGIN_ROOT}/hosting.json'],
+      env: { TMPDIR: tmpdir(), ...(process.env.FORGEAX_CONTEXT_PROBE ? { FORGEAX_CONTEXT_PROBE: process.env.FORGEAX_CONTEXT_PROBE } : {}) },
     },
     [MCP_SERVERS.view]: {
       type: 'stdio',
       command: nodeCommand,
-      args: ['${PLUGIN_ROOT}/src/codex-app-server.mjs', projectRoot],
+      args: ['${PLUGIN_ROOT}/src/codex-app-server.mjs', '${PLUGIN_ROOT}/hosting.json'],
+      env: { TMPDIR: tmpdir(), ...(process.env.FORGEAX_CONTEXT_PROBE ? { FORGEAX_CONTEXT_PROBE: process.env.FORGEAX_CONTEXT_PROBE } : {}) },
     },
   },
 });
@@ -108,4 +147,5 @@ await writeJson(join(marketplaceRoot, '.agents', 'plugins', 'marketplace.json'),
     },
   ],
 });
-console.log(JSON.stringify({ marketplaceRoot, marketplaceName, pluginName, projectRoot }));
+console.log(JSON.stringify({ marketplaceRoot, marketplaceName, pluginName, root: binding.root,
+  enginePackage: binding.enginePackage, ...(projectRoot ? { projectRoot } : {}) }));

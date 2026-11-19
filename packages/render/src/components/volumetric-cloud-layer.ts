@@ -1,9 +1,13 @@
 import { defineComponent, type SchemaOf, type ShapeOf } from '@forgeax/engine-ecs';
+import type { AssetHandle } from '@forgeax/engine-types';
 
 /** One cooked cloud layer; lengths are meters and extinction is inverse meters. */
 export const VolumetricCloudLayer = defineComponent('VolumetricCloudLayer', {
   material: { type: 'asset<cloud-material>' },
-  materialInstance: { type: 'asset<cloud-material-instance>', default: 0 },
+  materialInstance: {
+    type: 'asset<cloud-material-instance>',
+    default: 0 as AssetHandle<'cloud-material-instance'>,
+  },
   enabled: { type: 'bool', default: true },
   bottomMeters: { type: 'f32', default: 5000 },
   thicknessMeters: { type: 'f32', default: 10000 },

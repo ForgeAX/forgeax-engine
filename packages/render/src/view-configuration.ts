@@ -35,6 +35,9 @@ export function configureViewStandard(
           ...(profileConfig.gpuOcclusion === undefined
             ? {}
             : { gpuOcclusion: profileConfig.gpuOcclusion }),
+          ...(profileConfig.outputContract === undefined
+            ? {}
+            : { outputContract: profileConfig.outputContract }),
           ...config,
         };
   if (resolvedConfig?.clusterGrid !== undefined) {

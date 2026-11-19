@@ -1,5 +1,5 @@
 import type { ShaderModule } from '@forgeax/engine-rhi';
-import type { MaterialShaderArtifact } from '@forgeax/engine-shader';
+import { isSupportedVariantKey, type MaterialShaderArtifact } from '@forgeax/engine-shader';
 import {
   isCanonicalStandardPbrMaterialShader,
   isStandardPbrSkinMaterialShader,
@@ -30,4 +30,21 @@ export function resolveStandardPbrProgram(
 ): GpuDrivenPbrProgram | undefined {
   const key = standardPbrProgramKey(materialShaderId, vertexColorAvailable);
   return key === undefined ? undefined : programs?.get(key);
+}
+
+/** Select independent frame lighting facts only within published rows. */
+export function withFrameLighting(
+  artifact: MaterialShaderArtifact,
+  simpleReceiver: boolean,
+  leanLighting: boolean,
+): MaterialShaderArtifact {
+  const key = artifact.variantSet;
+  if (key === undefined || (!simpleReceiver && !leanLighting)) return artifact;
+  const selected = key
+    .replace(
+      /DIRECTIONAL_SHADOW_SIMPLE=(true|false)/,
+      `DIRECTIONAL_SHADOW_SIMPLE=${simpleReceiver}`,
+    )
+    .replace(/LEAN_LIGHTING=(true|false)/, `LEAN_LIGHTING=${leanLighting}`);
+  return isSupportedVariantKey(selected) ? { ...artifact, variantSet: selected } : artifact;
 }

@@ -3,6 +3,7 @@ import { ownRenderFeatureProgramData } from '@forgeax/engine-render/internal';
 import type { VfxGpuTickIntent } from '@forgeax/engine-vfx';
 import type { RenderFeatureGpuProgramDescriptor } from '../../../render/src/features/prepared-gpu-work';
 import type { VfxComputeBatchProgram } from './batched-compute-program';
+import { registerVfxEntryPointBindings } from './entry-point-layouts';
 import { rendererSortingMode } from './runtime-uniform.js';
 import { type VfxValidatedStagePlan, validatedStagePlan } from './stage-plan.js';
 
@@ -152,11 +153,14 @@ export function emitterComputeProgram(emitter: Emitter): RenderFeatureGpuProgram
     const kind = rendererOnlyEntryPoints.get(entryPoint);
     return kind === undefined || authoredRendererKinds.has(kind);
   });
-  return {
+  const program = {
     wgsl: emitter.wgsl,
     entryPoints: preparedEntryPoints,
     bindings: emitter.reflection.bindings,
   };
+  if (emitter.reflection.dataInterfaces?.some((row) => row.kind === 'structured-input'))
+    registerVfxEntryPointBindings(program, emitter.reflection.entryPointBindings);
+  return program;
 }
 
 /** Data interfaces whose binding the emitter's compute reflection actually declares. */
@@ -203,6 +207,8 @@ export function createVfxEmitterProgramOwner(
     const previous = programs.get(emitter);
     if (previous !== undefined) return previous;
     const program = ownRenderFeatureProgramData(compile(emitter));
+    if (emitter.reflection.dataInterfaces?.some((row) => row.kind === 'structured-input'))
+      registerVfxEntryPointBindings(program, emitter.reflection.entryPointBindings);
     const entryPoints = new Set(emitter.reflection.entryPoints);
     const requirements = reflectedDataInterfaceRequirements(emitter);
     const compiledBatch = compileBatch?.(emitter, program);

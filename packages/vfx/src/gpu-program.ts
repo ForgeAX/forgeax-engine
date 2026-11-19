@@ -4,6 +4,7 @@ import type {
   ParticleEffectAssetV3,
   ParticleEffectProgramEmitter,
   ParticleEffectProgramV3,
+  ShaderEntryPointReads,
 } from '@forgeax/engine-types';
 import type {
   ParticleChannelSource,
@@ -59,6 +60,8 @@ export interface VfxGpuProgramReflection {
   readonly imports: readonly string[];
   readonly resources: readonly string[];
   readonly entryPoints: readonly string[];
+  /** Actual Naga-derived resource reads for per-entry native compute layouts. */
+  readonly entryPointBindings?: readonly ShaderEntryPointReads[];
   readonly bindings: readonly BindGroupLayoutDescriptor[];
   readonly layout: VfxEffectReflection;
   readonly dataInterfaces: readonly VfxDataInterfaceRequirement[];

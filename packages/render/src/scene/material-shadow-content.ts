@@ -216,9 +216,11 @@ export function sameShadowMaterialFrames(
 
 interface ShadowMaterialState {
   readonly snapshot: MaterialSnapshot;
-  readonly resources: readonly unknown[];
+  /** Native AcceptedMaterial leaves already own their fixed snapshot; no wrapper is needed. */
+  readonly resources?: readonly unknown[];
 }
 
+const NO_SHADOW_RESOURCE_VERSIONS: readonly unknown[] = Object.freeze([]);
 interface ShadowScopeContent {
   readonly worldId: number | undefined;
   readonly materials: Map<MaterialResource, ShadowMaterialState | undefined>;
@@ -227,9 +229,8 @@ interface ShadowScopeContent {
 /**
  * Captured while preparing shared shadow work; contains no instance or
  * reverse-consumer index. Row-material batches bind one material per class
- * while each member casts with its own row, so GPU content also witnesses the
- * accepted material frame: any shadow-read edit of a member invalidates it in
- * O(changed materials).
+ * while each member casts with its own row. The native caster dispatch retains
+ * every consumed material root, including the other members of row batches.
  */
 export class ShadowMaterialContent {
   private readonly entries = new Map<RenderResourceScope, ShadowScopeContent>();
@@ -419,14 +420,16 @@ export class ShadowMaterialContent {
         const state = materials.get(material);
         if (state === undefined) continue;
         const before = old.get(material);
+        const resources = state.resources ?? NO_SHADOW_RESOURCE_VERSIONS;
+        const oldResources = before?.resources ?? NO_SHADOW_RESOURCE_VERSIONS;
         if (
           before === undefined ||
           !sameShadowMaterial(before.snapshot, state.snapshot) ||
-          before.resources.length !== state.resources.length
+          oldResources.length !== resources.length
         )
           return false;
-        for (let index = 0; index < state.resources.length; index++)
-          if (state.resources[index] !== before.resources[index]) return false;
+        for (let index = 0; index < resources.length; index++)
+          if (resources[index] !== oldResources[index]) return false;
       }
       for (const [material, state] of old)
         if (state !== undefined && materials.get(material) === undefined) return false;

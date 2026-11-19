@@ -53,19 +53,24 @@ beforeAll(async () => {
 }, 60_000);
 
 it.each([
-  ['webgpu', 'storage-buffer'],
-  ['webgpu', 'uniform-fallback'],
-  ['webgl2', 'uniform-fallback'],
-] as const)('publishes one direct authored program for %s/%s', (backend, capability) => {
+  ['webgpu', 'storage-buffer', false],
+  ['webgpu', 'storage-buffer', true],
+  ['webgpu', 'uniform-fallback', false],
+  ['webgpu', 'uniform-fallback', true],
+  ['webgl2', 'uniform-fallback', false],
+  ['webgl2', 'uniform-fallback', true],
+] as const)('publishes one direct authored program for %s/%s, viewClipping=%s', (backend, capability, viewClipping) => {
   const programs = record.programs.filter((program) =>
     program.selections.some(
       (selection) =>
         selection.context.pipeline !== 'ray' &&
+        selection.context.lodCoverage !== true &&
         selection.pass === 'forward' &&
         selection.context.backend === backend &&
         selection.context.capability === capability &&
         selection.context.geometry === 'mesh' &&
         selection.context.visibleSurface !== true &&
+        (selection.context.viewClipping === true) === viewClipping &&
         selection.address === 'direct',
     ),
   );
@@ -151,7 +156,9 @@ it('publishes a storage-backed Standard program for a 16-texture WebGPU device',
         selection.context.capability === 'storage-buffer-minimum' &&
         selection.context.geometry === 'mesh' &&
         selection.address === 'direct' &&
-        selection.context.visibleSurface !== true,
+        selection.context.visibleSurface !== true &&
+        selection.context.lodCoverage !== true &&
+        selection.context.viewClipping !== true,
     ),
   );
   expect(minimum).toHaveLength(1);
@@ -170,7 +177,9 @@ it('publishes the intermediate projector topology without extended-lighting bind
         selection.context.capability === 'storage-buffer-projector' &&
         selection.context.geometry === 'mesh' &&
         selection.address === 'direct' &&
-        selection.context.visibleSurface !== true,
+        selection.context.visibleSurface !== true &&
+        selection.context.lodCoverage !== true &&
+        selection.context.viewClipping !== true,
     ),
   );
   expect(projector).toHaveLength(1);

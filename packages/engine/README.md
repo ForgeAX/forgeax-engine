@@ -22,6 +22,31 @@ import { World } from '@forgeax/engine/ecs';
 import { Transform } from '@forgeax/engine/scene';
 ```
 
+## Open View
+
+```sh
+# From the game root, using its installed Engine:
+node ./node_modules/@forgeax/engine/tools/view/start.mjs --project .
+# From another directory:
+node /absolute/game/node_modules/@forgeax/engine/tools/view/start.mjs --project /absolute/game
+```
+
+View is optional and owns this startup file. Agent guidance lives beside it at
+`tools/view/skills/forgeax-view-start/SKILL.md` in the installed package.
+No global SDK, separate View package or Engine build is required. View resolves
+its matching Engine and Host Pack from
+its own installation. Complete npm Engine and SDK installations include the file
+at `tools/view/start.mjs`; source checkouts use the same location. It calls Engine's
+public backend API directly. Default startup reuses one shared
+backend workspace under the system temporary directory per installation.
+`--new-instance` allocates an independent temporary workspace; `--root H` can
+select an explicit instance. The returned H addresses subsequent instance
+controls with an explicit `--root H`. Omitting `--project` opens project selection or adopts the existing
+project. Keep the foreground terminal open while using its returned URL.
+The URL establishes Shell availability; project and renderer readiness are
+reported separately in the page. Ctrl+C closes this presentation; Backend keeps
+its independent lifetime. Missing View does not prevent ordinary Engine CLI work.
+
 ## Game authoring workflow
 
 For every new or resumed game task, read the game project's `AGENTS.md` before editing.

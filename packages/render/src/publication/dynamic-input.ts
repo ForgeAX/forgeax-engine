@@ -94,7 +94,7 @@ export class SurfaceDynamicInputReceiver {
         const applied = page.applySnapshot(input.page);
         if (!applied.ok) return applied;
         const changedDevice = page.deviceGeneration !== generation;
-        page.reconfigureDevice(generation).unwrap();
+        if (changedDevice) page.reconfigureDevice(generation).unwrap();
         ranges = changedDevice
           ? input.ranges?.map((range) => page.reserveRange(range).unwrap())
           : previous.frame.ranges;

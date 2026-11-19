@@ -2,7 +2,9 @@ import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { ok } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
+import { createRenderFeatureTextureSource } from '../features/feature-texture-source';
 import type { RenderFeatureExecutionFrame } from '../features/frame-execution';
+import { featureResourceKey } from '../features/frame-plan';
 import type { RenderFeaturePlanExecutionPass } from '../features/host';
 import { createRenderFeatureGpuWorkOwner } from '../features/prepared-gpu-work';
 import { projectRenderFeaturePlans } from '../features/render-graph-contribution';
@@ -61,6 +63,49 @@ async function fixture(distinctPipelines = false) {
   }
   return { device, owner, session, passes };
 }
+
+it('resolves native mesh and texture consumers against producer frame resources', async () => {
+  const { owner, session } = await fixture();
+  try {
+    session
+      .prepareBuffer(featureResourceKey('frame', 'vertices'), {
+        size: 64,
+        usage: ['storage', 'vertex'],
+      })
+      .unwrap();
+    session
+      .prepareOwnedTexture(featureResourceKey('frame', 'normals'), {
+        width: 2,
+        height: 2,
+        format: 'rgba16float',
+        usage: ['sampled', 'storage'],
+      })
+      .unwrap();
+    session
+      .prepareOwnedTexture(featureResourceKey('frame', 'sky'), {
+        width: 2,
+        height: 2,
+        layers: 6,
+        dimension: '2d-array',
+        format: 'rgba16float',
+        usage: ['sampled'],
+      })
+      .unwrap();
+    expect(owner.resolveNamedBuffer('chain', 'vertices')?.size).toBe(64);
+    expect(owner.resolveTexture('chain', 'normals')).toBeDefined();
+    expect(owner.resolveTextureCube('chain', 'sky')).toBeDefined();
+    expect(
+      owner
+        .beginFeature('consumer', 0)
+        .prepareFeatureTextureReference(
+          featureResourceKey('frame', 'producer-normal'),
+          createRenderFeatureTextureSource('chain', 'normals'),
+        ).ok,
+    ).toBe(true);
+  } finally {
+    owner.dispose().unwrap();
+  }
+});
 
 it.each([
   false,

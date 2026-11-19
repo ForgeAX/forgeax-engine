@@ -17,6 +17,12 @@ fn applyLocalClipping(positionWS: vec3<f32>, shadow: bool, planes: array<vec4<f3
   if ((!shadow || control.z > 0.5) && clippedByPlanes(positionWS, planes, control)) { discard; }
 }
 
+// Pure coverage query for entry-owned fragment rejection after derivatives.
+fn viewClippingRejected(positionWS: vec3<f32>, shadow: bool) -> bool {
+  return (!shadow || view.clippingControl.z > 0.5)
+    && clippedByPlanes(positionWS, view.clippingPlanes, view.clippingControl);
+}
+
 fn applyViewClipping(positionWS: vec3<f32>, shadow: bool) {
   applyLocalClipping(positionWS, shadow, view.clippingPlanes, view.clippingControl);
 }

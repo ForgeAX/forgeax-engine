@@ -1,4 +1,5 @@
 import {
+  addForwardOutputBloom,
   addObservationCapturePass,
   addTypedOutputTransformPass,
   createRenderPipelineTarget,
@@ -13,14 +14,16 @@ export function createThreePipeline(
   return createStandardForwardPipeline({
     format,
     domain: 'linear-hdr',
-    build(context, _topology, color, _depth, surface) {
+    build(context, topology, color, _depth, surface) {
       const output = createRenderPipelineTarget(context.graph, 'three-output', {
         format: 'rgba8unorm',
         size: 'surface',
         domain: 'display-encoded',
       });
       if (!output.ok) return output;
-      const transformed = addTypedOutputTransformPass(context.graph, color, output.value, {
+      const hdr = addForwardOutputBloom(context, topology, color);
+      if (!hdr.ok) return hdr;
+      const transformed = addTypedOutputTransformPass(context.graph, hdr.value, output.value, {
         dither: false,
         fragmentEntryPoint: 'fs_premultiplied',
       });

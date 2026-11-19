@@ -30,11 +30,14 @@ import { defineComponent } from '@forgeax/engine-ecs';
 
 import { LIGHTING_CHANNELS_DEFAULT } from './lighting-channels';
 
-/** Point distance exponent; validation precedes the f32 GPU projection. */
-export function validatePointLightDecay(value: number): ResourceInvalidValueError | null {
+/** Validate a punctual distance exponent before projecting it to the GPU. */
+export function validatePointLightDecay(
+  value: number,
+  light: 'PointLight' | 'SpotLight' = 'PointLight',
+): ResourceInvalidValueError | null {
   if (Number.isFinite(value) && value >= 0 && Number.isFinite(Math.fround(value))) return null;
   return new ResourceInvalidValueError(
-    'PointLight.decay is a finite non-negative f32',
+    `${light}.decay is a finite non-negative f32`,
     'use 2 for inverse-square attenuation or 0 for range-only falloff',
     { receivedKey: 'decay', receivedMode: value },
   );

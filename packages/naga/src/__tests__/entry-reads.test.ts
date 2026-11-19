@@ -21,8 +21,24 @@ fn unreachable() -> f32 { return params.roughness; }
         name: 'vs',
         stage: 'vertex',
         bindings: [{ group: 1, binding: 0, fields: ['displacement'] }],
+        effects: {
+          mayDiscard: false,
+          writesDepth: false,
+          writesSampleMask: false,
+          writesStorage: false,
+        },
       },
-      { name: 'fs', stage: 'fragment', bindings: [{ group: 1, binding: 0, fields: ['alpha'] }] },
+      {
+        name: 'fs',
+        stage: 'fragment',
+        bindings: [{ group: 1, binding: 0, fields: ['alpha'] }],
+        effects: {
+          mayDiscard: true,
+          writesDepth: false,
+          writesSampleMask: false,
+          writesStorage: false,
+        },
+      },
     ]);
   } finally {
     module.free();
@@ -75,6 +91,123 @@ fn unused() -> vec4<f32> { return textureLoad(other, vec2<i32>(0), 0); }
     expect(reflection.entryPoints?.[0]?.bindings).toEqual([
       { group: 1, binding: 0, fields: ['entries'] },
       { group: 1, binding: 2 },
+    ]);
+  } finally {
+    module.free();
+  }
+});
+
+it('publishes native entry effects independently of other entries and unused helpers', async () => {
+  const parsed = (
+    await parse(`
+@group(0) @binding(0) var<storage, read_write> values: array<u32>;
+fn kill(alpha: f32) { if alpha < 0.5 { discard; } }
+fn nested(alpha: f32) { kill(alpha); }
+fn unused() { values[0] = 1u; discard; }
+@fragment fn opaque() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }
+@fragment fn masked(@location(0) alpha: f32) -> @location(0) vec4<f32> { nested(alpha); return vec4<f32>(1.0); }
+struct Output { @builtin(frag_depth) depth: f32, @builtin(sample_mask) mask: u32, }
+@fragment fn depth_mask() -> Output { return Output(0.5, 1u); }
+fn store() { values[0] = 1u; }
+@fragment fn storage_fs() -> @location(0) vec4<f32> { store(); return vec4<f32>(1.0); }
+@group(0) @binding(1) var image: texture_storage_2d<rgba8unorm, write>;
+@fragment fn image_write() { textureStore(image, vec2<i32>(0), vec4<f32>(1.0)); }
+var<private> scratch: u32;
+@fragment fn private_write() { scratch = 1u; }
+@fragment fn scalar_depth() -> @builtin(frag_depth) f32 { return 0.5; }
+@group(0) @binding(2) var<uniform> opacity: f32;
+fn uniform_kill() { if opacity < 0.5 { discard; } }
+@fragment fn uniform_masked() { uniform_kill(); }
+@fragment fn unconditional_kill() { discard; }
+
+
+`)
+  ).unwrap();
+  const module = (await validate(parsed)).unwrap();
+  try {
+    const reflection = parseReflectionWire((await emit_reflection(module, '{}')).unwrap());
+    expect(reflection.entryPoints?.map(({ name, effects }) => ({ name, effects }))).toEqual([
+      {
+        name: 'opaque',
+        effects: {
+          mayDiscard: false,
+          writesDepth: false,
+          writesSampleMask: false,
+          writesStorage: false,
+        },
+      },
+      {
+        name: 'masked',
+        effects: {
+          mayDiscard: true,
+          writesDepth: false,
+          writesSampleMask: false,
+          writesStorage: false,
+        },
+      },
+      {
+        name: 'depth_mask',
+        effects: {
+          mayDiscard: false,
+          writesDepth: true,
+          writesSampleMask: true,
+          writesStorage: false,
+        },
+      },
+      {
+        name: 'storage_fs',
+        effects: {
+          mayDiscard: false,
+          writesDepth: false,
+          writesSampleMask: false,
+          writesStorage: true,
+        },
+      },
+      {
+        name: 'image_write',
+        effects: {
+          mayDiscard: false,
+          writesDepth: false,
+          writesSampleMask: false,
+          writesStorage: true,
+        },
+      },
+      {
+        name: 'private_write',
+        effects: {
+          mayDiscard: false,
+          writesDepth: false,
+          writesSampleMask: false,
+          writesStorage: false,
+        },
+      },
+      {
+        name: 'scalar_depth',
+        effects: {
+          mayDiscard: false,
+          writesDepth: true,
+          writesSampleMask: false,
+          writesStorage: false,
+        },
+      },
+      {
+        name: 'uniform_masked',
+        effects: {
+          mayDiscard: true,
+          writesDepth: false,
+          writesSampleMask: false,
+          writesStorage: false,
+        },
+      },
+      {
+        name: 'unconditional_kill',
+        effects: {
+          mayDiscard: true,
+          writesDepth: false,
+          writesSampleMask: false,
+          writesStorage: false,
+        },
+      },
     ]);
   } finally {
     module.free();

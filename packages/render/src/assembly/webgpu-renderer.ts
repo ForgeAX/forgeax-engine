@@ -1,5 +1,10 @@
 import { CloudAdoptionReceipts } from '../cloud/reconstruction/adoption-receipts';
 import { editorAssistancePresentation } from '../features/editor-assistance/feature';
+import {
+  prepareTargetEnvironment,
+  type RenderTargetEnvironmentLease,
+} from '../targets/environment';
+import { deferredPostProcessEntry } from './deferred-post-process-entry';
 import { extendedLightingFallbackCandidate } from './extended-lighting-fallback';
 import {
   buildFullscreenFeaturePipeline,
@@ -211,7 +216,10 @@ import type {
   SsrShaderSources,
   VolumetricFogShaderSources,
 } from '../render-contract';
-import { STANDARD_OUTPUT_TRANSFORM_FEATURE_ID } from '../render-contract';
+import {
+  STANDARD_OUTPUT_TRANSFORM_FEATURE_ID,
+  STANDARD_OUTPUT_V2_FEATURE_ID,
+} from '../render-contract';
 import {
   attachGpuPassTimingSession,
   createRendererState,
@@ -614,6 +622,11 @@ async function makeWebGPURenderer(
           ? activeCatalog.forkForDevice(getShaderModuleAdapter())
           : new ShaderCatalog({
               device: getShaderModuleAdapter(),
+              ...(internals.bundler?.prepareShaderProgramCompiler === undefined
+                ? {}
+                : {
+                    prepareProgramCompiler: internals.bundler.prepareShaderProgramCompiler,
+                  }),
               ...(internals.bundler?.readShaderManifest === undefined
                 ? {}
                 : {
@@ -647,6 +660,10 @@ async function makeWebGPURenderer(
   // RenderSystemRuntime so a `videoTextureFields` material field uploads its
   // frame here instead of entering the static ensureResident cache.
   let dynamicTextureStore = new DynamicTextureStore();
+  const targetEnvironments = new Set<RenderTargetEnvironmentLease>();
+  const releaseTargetEnvironments = () => {
+    for (const environment of targetEnvironments) environment.release();
+  };
   const renderTargetHost = createRenderTargetHost({
     onError: (error) => internals.errorRegistry.fire(error),
     rendererId: Symbol('renderer'),
@@ -1013,7 +1030,7 @@ async function makeWebGPURenderer(
         }
         materialShaderPipelineGroup2Contracts.set(pso as object, { contract: group2Contract });
       },
-      (source: string) => {
+      (source: string, nativeSource?: () => string) => {
         ensureBuildAlive();
         if (buildState !== undefined || tonemapRegistered) return;
         renderSystem.registerBuiltinPostProcess(STANDARD_OUTPUT_TRANSFORM_FEATURE_ID, {
@@ -1024,32 +1041,50 @@ async function makeWebGPURenderer(
           },
           reads: ['hdrColor'],
         });
+        if (nativeSource !== undefined)
+          renderSystem.registerBuiltinPostProcess(
+            STANDARD_OUTPUT_V2_FEATURE_ID,
+            deferredPostProcessEntry({}, nativeSource),
+          );
         tonemapRegistered = true;
       },
       (source: string) => {
         ensureBuildAlive();
         fxaaRegistered = registerFxaaPostProcess(renderSystem, source, fxaaRegistered);
       },
-      (source: string) => {
+      (source: string | (() => string)) => {
         ensureBuildAlive();
         registerAnalyticFogPostProcess(renderSystem, source, buildState !== undefined);
       },
-      (entries: { readonly motionBlur?: string; readonly taaResolve?: string }) => {
+      (entries: { readonly motionBlur?: () => string; readonly taaResolve?: () => string }) => {
         ensureBuildAlive();
         if (buildState !== undefined || temporalPostProcessesRegistered) return;
         if (entries.motionBlur !== undefined) {
           registerMotionBlurPostProcess(renderSystem, entries.motionBlur);
         }
         if (entries.taaResolve !== undefined) {
-          renderSystem.registerBuiltinPostProcess('forgeax.taa-resolve', {
-            source: entries.taaResolve,
-            params: { byteSize: 16, defaultValue: new Uint8Array(16) },
-            reads: ['scene-color', 'scene-temporal', 'taa-history-color', 'taa-history-temporal'],
-          });
+          renderSystem.registerBuiltinPostProcess(
+            'forgeax.taa-resolve',
+            deferredPostProcessEntry(
+              {
+                params: { byteSize: 16, defaultValue: new Uint8Array(16) },
+                reads: [
+                  'scene-color',
+                  'scene-temporal',
+                  'taa-history-color',
+                  'taa-history-temporal',
+                ],
+              },
+              entries.taaResolve,
+            ),
+          );
         }
         temporalPostProcessesRegistered = true;
       },
-      (entries: { readonly singleSample?: string; readonly multisampled?: string }) => {
+      (entries: {
+        readonly singleSample?: string | (() => string);
+        readonly multisampled?: string | (() => string);
+      }) => {
         ensureBuildAlive();
         if (buildState !== undefined || depthOfFieldRegistered) return;
         registerDepthOfFieldBuiltins(renderSystem, entries);
@@ -1084,6 +1119,7 @@ async function makeWebGPURenderer(
         internals.standardSceneShaders = sources;
       },
       buildState === undefined ? ADMIT_EVERY_VARIANT : drewWithModule,
+      activeProfile.outputContract,
     ).then(async (state) => {
       // draw() is synchronous. Complete the opt-in capability probe before
       // publishing readiness, including when rebuilding a lost device.
@@ -1852,6 +1888,9 @@ async function makeWebGPURenderer(
     ssrIdentity: internals.options?.ssrIdentity,
     captureReflectionFallbackReadback: internals.options?.captureReflectionFallbackReadback,
     shadowWorkload: internals.options?.shadowWorkload,
+    get requestedStandardProfile() {
+      return activeProfile;
+    },
     get standardProfile() {
       return selectedProfile(currentBuildDevice());
     },
@@ -2073,7 +2112,7 @@ async function makeWebGPURenderer(
       // readiness until uninstall or device retirement so reactivation is immediate.
       if (
         requiredFullscreenPostProcesses.some(
-          (entry) => postProcessShaderModuleLabel(entry.source) === label,
+          (entry) => postProcessShaderModuleLabel(entry) === label,
         )
       )
         return;
@@ -3023,6 +3062,16 @@ async function makeWebGPURenderer(
       recordStageLane: (resources, entity, handle) =>
         cameraViews.dynamicGeometryRecordStageLane(resources, entity, handle),
     }),
+    prepareRenderTargetEnvironment: (target, faces) =>
+      prepareTargetEnvironment({
+        target,
+        faces,
+        targets: renderTargetHost,
+        device: internals.device,
+        scope: activeDeviceScope,
+        factory: internals.pack.createShaderModule,
+        environments: targetEnvironments,
+      }),
     createRenderTarget: (descriptor) => renderTargetHost.createRenderTarget(descriptor),
     resizeRenderTarget: (target, descriptor) =>
       renderTargetHost.resizeRenderTarget(target, descriptor),
@@ -3796,6 +3845,7 @@ async function makeWebGPURenderer(
       }
       externalTextureHost.dispose();
       try {
+        releaseTargetEnvironments();
         renderTargetHost.dispose();
       } catch (cause) {
         const error = wrapDisposeError(cause, 'renderTargetHost.dispose');

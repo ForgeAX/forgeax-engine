@@ -400,8 +400,6 @@ export async function createWorkerExecutionApp(
     );
   }
   let frameSentAt = 0;
-  let profilerCaptureId: string | undefined;
-  let profilerFrameId = 0;
   let frameProfile = profiler?.activeSession();
   let profileFrameOpen = false;
   let hostFrameOpen = false;
@@ -718,11 +716,7 @@ export async function createWorkerExecutionApp(
     }
     traceAdmission('host-admission', 'issued', frame);
     frameProfile = profiler?.activeSession();
-    if (frameProfile !== undefined && profilerCaptureId !== frameProfile.captureId) {
-      profilerCaptureId = frameProfile.captureId;
-      profilerFrameId = 0;
-    }
-    profileFrameOpen = frameProfile?.beginFrame(++profilerFrameId).ok ?? false;
+    profileFrameOpen = frameProfile?.beginFrame().ok ?? false;
     hostFrameOpen = profileFrameOpen
       ? (frameProfile?.beginPhase('app', 'host-frame').ok ?? false)
       : false;

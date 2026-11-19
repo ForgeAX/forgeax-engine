@@ -15,6 +15,7 @@ import {
 import { isWaterMeshLayoutReceiptValid } from '@forgeax/engine-water/internal';
 import { LIGHTING_CHANNELS_DEFAULT, validateChannelMask } from '../components/lighting-channels';
 import { validatePointLightDecay } from '../components/point-light';
+import { isRenderFeatureTextureSource } from '../features/feature-texture-source';
 import {
   isOwnedRenderFeatureProgramData,
   ownRenderFeatureProgramData,
@@ -306,13 +307,20 @@ function shadowCasterChannelsError(lights: FrameLights): RenderPublicationError 
   return undefined;
 }
 
-function pointLightDecayError(lights: FrameLights): RenderPublicationError | undefined {
+function punctualLightDecayError(lights: FrameLights): RenderPublicationError | undefined {
   for (const light of lights.point) {
     if (
       light === undefined ||
       validatePointLightDecay(light.decay === undefined ? 2 : light.decay) !== null
     )
       return shapeError('point light decay');
+  }
+  for (const light of lights.spot) {
+    if (
+      light === undefined ||
+      validatePointLightDecay(light.decay === undefined ? 2 : light.decay, 'SpotLight') !== null
+    )
+      return shapeError('spot light decay');
   }
   return undefined;
 }
@@ -470,7 +478,7 @@ function admitFrameTextureSources(
   const lightError =
     lightingChannelsError(lights) ??
     shadowCasterChannelsError(lights) ??
-    pointLightDecayError(lights);
+    punctualLightDecayError(lights);
   if (lightError !== undefined) return err(lightError);
   const canvasIds = admitCanvasFrameIds(packet.canvasFrames);
   if (!canvasIds.ok) return canvasIds;
@@ -627,6 +635,7 @@ function validGlyphSource(glyph: NonNullable<TemplateSnapshot['glyph']>): boolea
     typeof glyph.text === 'string' &&
     Number.isFinite(glyph.size) &&
     glyph.size > 0 &&
+    typeof glyph.worldOriented === 'boolean' &&
     Array.isArray(glyph.color) &&
     glyph.color.length === 4 &&
     glyph.color.every(Number.isFinite)
@@ -1013,7 +1022,10 @@ function materialTextureSourcesError(
   originKey: (key: string) => string | undefined,
 ): RenderPublicationError | undefined {
   for (const resource of resources)
-    for (const source of resource?.snapshot.textureSources?.values() ?? [])
+    for (const source of resource?.snapshot.textureSources?.values() ?? []) {
+      // Feature textures are renderer-owned names, resolved by the feature
+      // host in its current generation. They have no transported target token.
+      if (isRenderFeatureTextureSource(source)) continue;
       if (
         isExternalTextureSource(source) ||
         (isCanvasTextureSource(source)
@@ -1023,6 +1035,7 @@ function materialTextureSourcesError(
             ))
       )
         return shapeError('missing material texture source');
+    }
   return undefined;
 }
 

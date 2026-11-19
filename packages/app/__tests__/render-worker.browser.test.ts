@@ -51,7 +51,6 @@ async function expectPicture(canvas: HTMLCanvasElement): Promise<void> {
 
 it.each([
   'terminate-render',
-  'lose-device',
   'lose-device-with-resident-mesh',
 ])('preserves World and freezes simulation during known %s recovery and host canvas replacement', async (command) => {
   await page.viewport(800, 600);

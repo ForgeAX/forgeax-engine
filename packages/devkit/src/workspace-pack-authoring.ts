@@ -46,6 +46,7 @@ import {
   createTextureGeneratorPackCooker,
 } from '@forgeax/engine-shader-compiler';
 import { ok } from '@forgeax/engine-types';
+import { projectEngineSourceOptions } from './engine-binding.js';
 import type { WorkspacePackCookInput } from './workspace-pack-cook.js';
 
 // Conservative automatic discovery; explicit TS bindings still use the target's full vocabulary.
@@ -237,9 +238,11 @@ export function createWorkspacePackAuthoring(options: {
     let reader: ReturnType<typeof createAssetRuntimeAssembly> | undefined;
     let registry: AssetRegistry | undefined;
     try {
+      const engineOptions = await projectEngineSourceOptions(options.root);
       const definition = (
         await loadScriptablePack(absolute, {
           sourceSnapshot: snapshot,
+          ...engineOptions,
           buildTimeoutMs: scriptablePackBuildTimeoutMs(),
           signal,
         })

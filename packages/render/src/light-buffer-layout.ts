@@ -355,12 +355,35 @@ function directLightMetadata(value: number | undefined): number {
   return value === undefined ? DIRECT_LIGHT_SLOT_METADATA_SENTINEL : value >>> 0;
 }
 
+/** Keep the historic all-zero lane for inverse-square, including uncooked input. */
+export function packSpotDecay(decay: number | undefined): number {
+  const exponent = Math.fround(decay ?? 2);
+  if (exponent === 2) return 0;
+  // Explicit zero carries the negative-zero bit so it differs from the default lane.
+  return exponent === 0 ? -0 : exponent;
+}
+
+function writeSpotReceiverControls(
+  snapshot: Extract<DirectLightSnapshot, { kind: 'spot' }>,
+  layout: ReflectedDirectLightSlotLayout,
+  writeFloat: (offset: number, value: number) => void,
+): void {
+  // Row 3 is the Rect auxiliary axis for RectArea lights. Spot uses x/y/z
+  // for its receiver controls and w for roll; the surface direct-light
+  // owner only consumes w, while the volume owner consumes the full row.
+  writeFloat(layout.auxiliaryAxisOffset, snapshot.depthBias ?? 0.00001);
+  writeFloat(layout.auxiliaryAxisOffset + 4, snapshot.normalBias ?? 0.05);
+  writeFloat(layout.auxiliaryAxisOffset + 8, snapshot.shadowIntensity ?? 1);
+  writeFloat(layout.rollDegByteOffset, snapshot.rollDeg ?? 0);
+}
+
 /**
  * Pack a direct-light snapshot into its reflected unified six-row slot.
  *
  * Row 0 is position plus inverse range. Row 1 is color plus the first
  * angular/size fact. Row 2 is the primary axis plus the second angular/size
- * fact. Row 3 is the auxiliary Rect axis. Row 4 is four u32 identities.
+ * fact. Row 3 is the auxiliary Rect axis or Spot controls. Row 4 is four
+ * u32 identities. Row 5 starts with receiver channels and Spot decay bits.
  */
 export function packDirectLightSlot(
   snapshot: DirectLightSnapshot,
@@ -388,15 +411,10 @@ export function packDirectLightSlot(
     }
   } else if (snapshot.kind === 'spot') {
     writeFloat(layout.firstAngleOffset, snapshot.cosInner);
+    writeFloat(layout.lightingChannelsByteOffset + 4, packSpotDecay(snapshot.decay));
     writeVec3(layout.primaryAxisOffset, snapshot.direction);
     writeFloat(layout.secondAngleOffset, snapshot.cosOuter);
-    // Row 3 is the Rect auxiliary axis for RectArea lights. Spot uses x/y/z
-    // for its receiver controls and w for roll; the surface direct-light
-    // owner only consumes w, while the volume owner consumes the full row.
-    writeFloat(layout.auxiliaryAxisOffset, snapshot.depthBias ?? 0.00001);
-    writeFloat(layout.auxiliaryAxisOffset + 4, snapshot.normalBias ?? 0.05);
-    writeFloat(layout.auxiliaryAxisOffset + 8, snapshot.shadowIntensity ?? 1);
-    writeFloat(layout.rollDegByteOffset, snapshot.rollDeg ?? 0);
+    writeSpotReceiverControls(snapshot, layout, writeFloat);
   } else {
     writeFloat(layout.firstAngleOffset, snapshot.halfWidth);
     writeVec3(layout.primaryAxisOffset, snapshot.axisY);

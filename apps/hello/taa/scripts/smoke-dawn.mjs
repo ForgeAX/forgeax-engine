@@ -1319,7 +1319,7 @@ const stableCreation = {
   pipeline: stableFrameResourceEvents.filter((event) => event.kind === 'pipeline').length,
 };
 const temporal = inspection.temporal;
-const requiredPasses = ['standard-scene-data', ...temporalPasses, 'motion-blur', 'output-transform'];
+const requiredPasses = ['standard-scene-data', ...temporalPasses, 'motion-blur', 'standard-grade'];
 const missingPasses = requiredPasses.filter((pass) => !inspection.perFramePassNames.includes(pass));
 const requiresRoiDifference = ['moving-rigid', 'camera-pan'].includes(visualCase);
 const centerEnergy = onRoiEnergy;

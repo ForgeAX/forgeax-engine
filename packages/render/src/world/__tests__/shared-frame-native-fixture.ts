@@ -13,6 +13,7 @@ import {
   ownRenderFeatureProgramData,
 } from '../../features/prepared-gpu-work';
 import type { RenderFeature } from '../../features/types';
+import { worldRenderResources } from '../../publication/resource-scope';
 import type { RenderSystemInternals } from '../../record/render-context';
 
 import * as sharedGraphs from '../feature-graph-systems';
@@ -231,7 +232,7 @@ export async function sharedNativeFixture() {
     ]);
     if (sealed.kind !== 'sealed') throw new Error(`Feature frame ${sealed.kind}`);
     if (sealed.batch.frame.errors.length) throw sealed.batch.frame.errors[0];
-    sharedGraphs.stageSharedFeatureGraph(world, internals);
+    sharedGraphs.stageSharedFeatureGraph(world, internals, [worldRenderResources(world)]);
     const recorded = runRenderRecord(world, { device, frameId: frame });
     if (!recorded.ok) throw recorded.error;
     const outcome = sharedGraphs.sharedFeatureGraphOutcome(world);

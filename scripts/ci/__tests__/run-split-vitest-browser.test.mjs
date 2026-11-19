@@ -166,6 +166,15 @@ test('complete directional and spot shadow journeys drain competing browser grou
   }
 });
 
+test('Three mixed native shadows start in a fresh browser and drain neighboring work', () => {
+  const file = 'packages/three/src/__tests__/interop.browser.test.ts';
+  assert.deepEqual(
+    dryRunGroups(8).filter((group) => group.includes(file)),
+    [[file]],
+  );
+  assert.equal(browserGroupRequiresExclusiveRunner([file]), true);
+});
+
 test('both complete shadow alpha material journeys keep independent exclusive processes', () => {
   const files = ['shadow-alpha', 'shadow-alpha-standard'].map(
     (name) => `packages/three/src/__tests__/${name}.browser.test.ts`,
@@ -524,6 +533,15 @@ test('short renderer deadlines own an exclusive runner without serializing ordin
     );
   }
   assert.equal(browserGroupRequiresExclusiveRunner([]), false);
+});
+
+test('the Three Surface expression group drains other browser work', () => {
+  const file = 'packages/three/src/__tests__/surface-expression.browser.test.ts';
+  const owners = dryRunGroups().filter((group) => group.includes(file));
+  assert.equal(owners.length, 1);
+  assert.ok(owners[0].includes('packages/three/src/__tests__/special-lights.browser.test.ts'));
+  assert.equal(browserGroupRequiresExclusiveRunner(owners[0]), true);
+  assert.ok(browserGroupWeight(owners[0]) >= 225);
 });
 
 test('the measured video benchmark keeps neighboring render groups outside its memory window', () => {
@@ -1119,21 +1137,22 @@ test('before-consume catalog producers own the runner and are charged every lane
   assert.equal(assignment[1], assignment[2]);
 });
 
-test('Surface provenance owns a singleton with its complete before-consume catalog', () => {
-  const target = 'packages/runtime/src/__tests__/surface-standard-pipeline.browser.test.ts';
+test('Surface rendering and recovery each own a complete before-consume singleton', () => {
   const groups = dryRunGroups();
-  assert.deepEqual(
-    groups.filter((group) => group.includes(target)),
-    [[target]],
-  );
-  assert.equal(browserProducerReadiness([target], 'on-demand'), 'before-consume');
+  for (const owner of ['pipeline', 'lifecycle']) {
+    const target = `packages/runtime/src/__tests__/surface-standard-${owner}.browser.test.ts`;
+    assert.deepEqual(
+      groups.filter((group) => group.includes(target)),
+      [[target]],
+    );
+    assert.equal(browserProducerReadiness([target], 'on-demand'), 'before-consume');
+    assert.equal(browserGroupRequiresExclusiveRunner([target]), true);
+    assert.match(readFileSync(target, 'utf8'), /timeout: 300_000/);
+  }
   const runner = readFileSync('scripts/ci/run-split-vitest-browser.mjs', 'utf8');
   assert.match(runner, /const surfaceProvenanceBrowserGroupTimeoutMs = 360_000;/);
-  assert.match(
-    runner,
-    /group\.includes\(surfaceProvenanceBrowserFile\)\s*\? surfaceProvenanceBrowserGroupTimeoutMs/,
-  );
-  assert.match(readFileSync(target, 'utf8'), /timeout: 300_000/);
+  assert.match(runner, /surfaceProvenance\s*\? surfaceProvenanceBrowserGroupTimeoutMs/);
+  assert.match(runner, /FORGEAX_BROWSER_SURFACE_ONLY: surfaceProvenance \?/);
 });
 
 test('twenty shadow contact cases retain five independent four-filter processes', () => {
@@ -1717,6 +1736,40 @@ test('short direct-light bootstrap and native GPU observer own exclusive browser
       [[file]],
     );
   }
+});
+
+test('rendering batches rebalance a trailing singleton within existing size and cost bounds', () => {
+  const files = ['a', 'b', 'c', 'd'].map(
+    (name) => `packages/runtime/src/__tests__/${name}.browser.test.ts`,
+  );
+  const weights = new Map(files.map((file, index) => [file, [20, 55, 62, 20][index]]));
+  const fileWeight = (file) => weights.get(file);
+  assert.deepEqual(planBrowserGroups(files, 8, { fileWeight }), [
+    files.slice(0, 2),
+    files.slice(2),
+  ]);
+  assert.deepEqual(planBrowserGroups(files, 2, { fileWeight }), [
+    files.slice(0, 2),
+    files.slice(2),
+  ]);
+  weights.set(files[3], 88);
+  assert.deepEqual(planBrowserGroups(files, 8, { fileWeight }), [
+    files.slice(0, 2),
+    files.slice(2),
+  ]);
+  weights.set(files[3], 89);
+  assert.deepEqual(planBrowserGroups(files, 8, { fileWeight }), [
+    files.slice(0, 3),
+    files.slice(3),
+  ]);
+  assert.deepEqual(
+    planBrowserGroups(files, 1, { fileWeight }),
+    files.map((file) => [file]),
+  );
+  assert.deepEqual(
+    planBrowserGroups(files, 8, { fileWeight: () => 80 }),
+    files.map((file) => [file]),
+  );
 });
 
 test('kernel qualification and deliberate context loss drain neighbors without another process', () => {

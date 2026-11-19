@@ -18,7 +18,11 @@ import {
   waterBodyOwnerKey,
 } from '@forgeax/engine-water';
 import { describe, expect, it, vi } from 'vitest';
-import type { RenderFeaturePlanContext, RenderFeatureWork } from '../../features/plan';
+import type {
+  RenderFeaturePlan,
+  RenderFeaturePlanContext,
+  RenderFeatureWork,
+} from '../../features/plan';
 import type {
   RenderFeatureGraphResourceState,
   RenderFeatureSubmission,
@@ -157,7 +161,7 @@ it('skips local GPU WaterMesh owner matching when every accepted zone lacks a GP
     ],
   });
   expect(result.ok).toBe(true);
-  expect(result.ok ? (result.value.views[0]?.gpuMeshes ?? []) : undefined).toEqual([]);
+  expect(result.ok ? (result.value.views[0]?.publication.gpuMeshes ?? []) : undefined).toEqual([]);
   // The accepted proxy roster is still published once above. The four body
   // snapshots belong to the existing WaterInfo passes; local GPU admission
   // adds no fifth snapshot/filter walk.
@@ -844,10 +848,11 @@ describe('WaterInfo startup input readiness', () => {
     expect(packed.ok).toBe(true);
     if (!packed.ok) return;
     const outputByGuid = new Map(
-      Object.entries(packed.value).map(([key, asset]) => [
-        guid(key).toLowerCase(),
-        asset.kind === 'mesh' ? interleavedMesh(asset) : asset,
-      ]),
+      Object.entries(packed.value).map(([key, asset]) => {
+        if (asset.kind !== 'mesh') return [guid(key).toLowerCase(), asset] as const;
+        if (!('vertices' in asset)) throw new Error('Water fixture requires cooked mesh outputs');
+        return [guid(key).toLowerCase(), interleavedMesh(asset)] as const;
+      }),
     );
     const dependencyFields = [
       'waterInfoMeshGuid',
@@ -1004,7 +1009,7 @@ describe('WaterInfo startup input readiness', () => {
     expect(observed[0]?.rows.some((row) => row.bodyGuid === ownerGuid)).toBe(true);
     expect(inspectWaterInfoPublications(feature, 2)).toEqual([]);
     requiredFixtureValue(
-      (requiredFixtureValue(observed[0]).targets as { targetName: string }[])[0],
+      (requiredFixtureValue(observed[0]).targets as readonly { targetName: string }[])[0],
     ).targetName = 'detached-edit';
     expect(inspectWaterInfoPublications(feature, 1)[0]?.targets[0]?.targetName).not.toBe(
       'detached-edit',

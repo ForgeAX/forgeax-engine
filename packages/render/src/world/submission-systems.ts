@@ -248,19 +248,19 @@ function publishRecordOutcome(
 ): void {
   const outcome = attempt.outcome;
   const { frameState, internals } = owner;
-  if (outcome === undefined) {
-    if (attempt.submitted && frameState.pipelinePreparationPending) {
-      const history = recordHistoryOf(
-        world,
-        requireViewField(world, entity, ViewRecordHistory, 'state'),
-      );
-      history.presentation = 'pending';
-      history.pendingReason = frameState.pipelinePreparationPendingReason ?? {
-        code: 'pipeline-preparation',
-      };
-    }
-    return;
+  // Preparation may hold submission or submit a clear-only candidate. Neither
+  // current receipt may inherit readiness from the previously accepted scene.
+  if (frameState.pipelinePreparationPending) {
+    const history = recordHistoryOf(
+      world,
+      requireViewField(world, entity, ViewRecordHistory, 'state'),
+    );
+    history.presentation = 'pending';
+    history.pendingReason = frameState.pipelinePreparationPendingReason ?? {
+      code: 'pipeline-preparation',
+    };
   }
+  if (outcome === undefined) return;
   const presentation = outcome.presentation;
   if (frameState.pipelinePreparationPending) {
     markFramePending(
@@ -288,7 +288,7 @@ function verifySubmittedPresentation(
     markFramePending(presentation, { code: 'sky-cubemap' });
   if (
     recordContext(internals).getPipelineState() === null ||
-    frameState.compiledFrameGraph === null
+    (attempt.mode === 'capture' ? !attempt.sceneSubmitted : frameState.compiledFrameGraph === null)
   )
     markFramePending(presentation, { code: 'compiled-graph-unavailable' });
   const gpuOwned = frame.gpuOwned;

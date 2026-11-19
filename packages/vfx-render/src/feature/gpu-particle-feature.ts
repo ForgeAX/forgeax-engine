@@ -56,6 +56,7 @@ import {
   WORKGROUP_SIZE,
 } from './emitter-program.js';
 import { createEmitterVisibility } from './emitter-visibility.js';
+import { projectVfxEntryPointLayouts } from './entry-point-layouts';
 import {
   encodeEventBuffer,
   eventCapacity,
@@ -3285,6 +3286,17 @@ export function gpuParticleRenderFeature(
       return readbacks;
     };
     const readbacks = publishEventReadbacks();
+    const frameResources: PlanResource[] = [
+      ...plan.sharedDataInterfaces.values(),
+      ...[...plan.sharedComputePrograms]
+        .sort((a, b) => a[0] - b[0])
+        .map(([, resource]) => resource),
+      ...plan.resources,
+    ];
+    projectVfxEntryPointLayouts([
+      { resources: frameResources, passes: plan.passes },
+      ...plan.viewWork,
+    ]);
     const observation = planObservation(frame.frameNumber, [
       plan.passes,
       ...plan.viewWork.map((work) => work.passes),
@@ -3317,13 +3329,7 @@ export function gpuParticleRenderFeature(
     const work: import('@forgeax/engine-render').RenderFeatureWork[] = [
       {
         scope: 'frame',
-        resources: [
-          ...plan.sharedDataInterfaces.values(),
-          ...[...plan.sharedComputePrograms]
-            .sort((a, b) => a[0] - b[0])
-            .map(([, resource]) => resource),
-          ...plan.resources,
-        ],
+        resources: frameResources,
         passes: plan.passes,
       },
       ...plan.viewWork.map(({ view, resources, passes }) => ({
@@ -3544,7 +3550,8 @@ export function gpuParticleRenderFeature(
             );
             if (
               resource?.resource?.kind === 'feature-texture-reference' ||
-              resource?.resource?.kind === 'uniform-data'
+              resource?.resource?.kind === 'uniform-data' ||
+              resource?.resource?.kind === 'storage-data'
             )
               portableDataInterfaces.set(key, resource);
           }

@@ -29,8 +29,19 @@ const fields = Object.fromEntries(Object.keys(values).map(key => [key, {
   type: key === 'material' ? 'asset<cloud-material>' : key === 'materialInstance' ? 'asset<cloud-material-instance>' : ['enabled', 'skipEmpty', 'selfShadow', 'castCloudShadows'].includes(key) ? 'bool'
     : key === 'windOffsetMeters' ? 'array<f32, 3>' : key === 'useDetail' || key.startsWith('diagnostic') ? 'u32' : 'f32',
 }]));
+const cloudMaterialReference = {
+  key: 'VolumetricCloudLayer.material',
+  component: 'VolumetricCloudLayer',
+  field: 'material',
+  origin: 'component',
+  status: 'resolved',
+  guid: material.guid,
+  kind: material.kind,
+  handle: 1030,
+} as const;
 const inspection = {
   entityId: 'world-cloud:7', entity: 7, targetId: target.targetId, worldId: target.worldId, name: 'Reference Cloud',
+  assetReferences: { references: [cloudMaterialReference], truncated: false },
   source: { guid: 'scene-guid', sourcePath: 'assets/game.pack.ts', sourceKey: 'scene/ground-reference', address: 'cloud' },
   components: [
     { name: 'Entity', fields: { self: { type: 'entity' } }, values: { self: 7 } },
@@ -74,8 +85,9 @@ const client = {
 const references: AssetReferenceService = {
   getState: () => referenceState,
   subscribe: () => () => {},
-  async query(entityId) { return { ...scope, entityId, references: [{ key: 'VolumetricCloudLayer.material', component: 'VolumetricCloudLayer',
-    field: 'material', origin: 'component', status: 'resolved', guid: material.guid, kind: material.kind, handle: 1030 }] }; },
+  async query(entityId) {
+    return { ...scope, entityId, references: [cloudMaterialReference] };
+  },
   async open(guid) { return client.call('asset.open', { projectId: scope.projectId, targetId: target.targetId, targetGeneration: target.generation, guid }); },
 };
 Object.assign(globalThis, { cloudInspectionFixture: { calls, clipboard, setLocale,

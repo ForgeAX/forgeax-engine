@@ -19,7 +19,37 @@ function snapshot(entityKey: number): CubeCameraSnapshot {
   };
 }
 
+function prepare(
+  owner: ReturnType<typeof createRendererCaptureOwner>,
+  cameras: readonly CubeCameraSnapshot[],
+) {
+  const work = owner.prepare(cameras);
+  const face = work[0];
+  if (face !== undefined) owner.recordEncoded(face.target, face.candidateGeneration);
+  return work;
+}
+
 describe('Renderer cube capture ownership', () => {
+  it('keeps completed faces across unencoded preparation and ignores another target or generation', () => {
+    const owner = createRendererCaptureOwner((target) => target);
+    const camera = snapshot(1);
+    const first = owner.prepare([camera])[0];
+    if (first === undefined) throw new Error('Missing first cube face');
+    owner.recordEncoded(first.target, first.candidateGeneration);
+    owner.complete(true);
+    expect(owner.prepare([camera])[0]?.face).toBe('-X');
+    owner.complete(true);
+    expect(owner.prepare([camera])[0]?.face).toBe('-X');
+    owner.recordEncoded({} as RenderTarget, first.candidateGeneration);
+    owner.recordEncoded(first.target, first.candidateGeneration + 1);
+    owner.complete(true);
+    const second = owner.prepare([camera])[0];
+    expect(second?.face).toBe('-X');
+    if (second === undefined) throw new Error('Missing second cube face');
+    owner.recordEncoded(second.target, second.candidateGeneration);
+    owner.complete(false);
+    expect(owner.prepare([camera])[0]?.face).toBe('+X');
+  });
   it('retains six-face progress through view changes and schedules each target once', () => {
     const owner = createRendererCaptureOwner((target) => target);
     const a = snapshot(1);
@@ -27,7 +57,7 @@ describe('Renderer cube capture ownership', () => {
     const faces: string[] = [];
     for (let frame = 0; frame < 6; frame += 1) {
       // The authoring roster is renderer data, independent of display view cadence.
-      const work = owner.prepare(frame % 2 === 0 ? [a, b] : [b, a]);
+      const work = prepare(owner, frame % 2 === 0 ? [a, b] : [b, a]);
       expect(work).toHaveLength(1);
       expect(work[0]?.target).toBe(a.target);
       faces.push(work[0]?.face ?? '');
@@ -35,23 +65,23 @@ describe('Renderer cube capture ownership', () => {
     }
     expect(new Set(faces).size).toBe(6);
     expect(owner.isPending(a.target)).toBe(false);
-    expect(owner.prepare([b, a])[0]?.target).toBe(b.target);
+    expect(prepare(owner, [b, a])[0]?.target).toBe(b.target);
     owner.complete(true);
   });
 
   it('does not re-record an in-flight face and continues after its queue fence', async () => {
     const owner = createRendererCaptureOwner((target) => target);
     const a = snapshot(1);
-    const first = owner.prepare([a])[0]?.face;
+    const first = prepare(owner, [a])[0]?.face;
     let resolve!: () => void;
     const fence = new Promise<void>((done) => {
       resolve = done;
     });
     owner.complete(true, fence);
-    expect(owner.prepare([a])).toEqual([]);
+    expect(prepare(owner, [a])).toEqual([]);
     resolve();
     await fence;
-    expect(owner.prepare([a])[0]?.face).not.toBe(first);
+    expect(prepare(owner, [a])[0]?.face).not.toBe(first);
     owner.complete(true);
   });
 
@@ -59,11 +89,11 @@ describe('Renderer cube capture ownership', () => {
     const owner = createRendererCaptureOwner((target) => target);
     const a = snapshot(1);
     const b = snapshot(2);
-    const first = owner.prepare([a])[0]?.face;
+    const first = prepare(owner, [a])[0]?.face;
     owner.complete(false);
-    expect(owner.prepare([a])[0]?.face).toBe(first);
+    expect(prepare(owner, [a])[0]?.face).toBe(first);
     owner.complete(true);
-    expect(owner.prepare([b])[0]?.target).toBe(b.target);
+    expect(prepare(owner, [b])[0]?.target).toBe(b.target);
     expect(owner.isPending(a.target)).toBe(false);
     owner.complete(true);
   });
@@ -71,20 +101,20 @@ describe('Renderer cube capture ownership', () => {
     let storage = {};
     const owner = createRendererCaptureOwner(() => storage);
     const camera = snapshot(1);
-    expect(owner.prepare([camera])[0]?.face).toBe('+X');
+    expect(prepare(owner, [camera])[0]?.face).toBe('+X');
     let complete!: () => void;
     const oldFence = new Promise<void>((resolve) => {
       complete = resolve;
     });
     owner.complete(true, oldFence);
     storage = {};
-    expect(owner.prepare([camera])[0]?.face).toBe('+X');
+    expect(prepare(owner, [camera])[0]?.face).toBe('+X');
     complete();
     await oldFence;
     // The old fence must not acknowledge the new storage's first face.
-    expect(owner.prepare([camera])[0]?.face).toBe('+X');
+    expect(prepare(owner, [camera])[0]?.face).toBe('+X');
     owner.complete(true);
-    expect(owner.prepare([camera])[0]?.face).toBe('-X');
+    expect(prepare(owner, [camera])[0]?.face).toBe('-X');
     owner.complete(true);
   });
 
@@ -112,7 +142,7 @@ describe('Renderer cube capture ownership', () => {
     const target = created.value;
     const camera = { ...snapshot(1), target };
     host.beginFrame();
-    expect(owner.prepare([camera])[0]?.face).toBe('+X');
+    expect(prepare(owner, [camera])[0]?.face).toBe('+X');
     const previous = host.getPhysicalTarget(target);
     let finishOld!: () => void;
     const oldFence = new Promise<void>((resolve) => {
@@ -135,7 +165,7 @@ describe('Renderer cube capture ownership', () => {
     const replacement = host.getPhysicalTarget(target);
     expect(replacement).not.toBe(previous);
     expect(replacement?.generation).toBe(1);
-    expect(owner.prepare([camera])[0]?.face).toBe('+X');
+    expect(prepare(owner, [camera])[0]?.face).toBe('+X');
     finishOld();
     await oldFence;
     await Promise.resolve();
@@ -145,12 +175,12 @@ describe('Renderer cube capture ownership', () => {
     await Promise.resolve();
     for (let face = 1; face < 6; face += 1) {
       host.beginFrame();
-      expect(owner.prepare([camera])).toHaveLength(1);
+      expect(prepare(owner, [camera])).toHaveLength(1);
       owner.complete(true);
       host.onFrameSubmitted();
       await Promise.resolve();
     }
-    expect(owner.prepare([camera])).toEqual([]);
+    expect(prepare(owner, [camera])).toEqual([]);
     expect(host.getPhysicalTarget(target)?.generation).toBe(1);
     host.dispose();
   });
@@ -186,7 +216,7 @@ describe('Renderer cube capture ownership', () => {
       const faces = [];
       for (let frame = 0; frame < 6; frame += 1) {
         host.beginFrame();
-        const work = owner.prepare([camera]);
+        const work = prepare(owner, [camera]);
         expect(work).toHaveLength(1);
         faces.push(work[0]?.face);
         owner.complete(true);
@@ -194,7 +224,7 @@ describe('Renderer cube capture ownership', () => {
         await Promise.resolve();
       }
       expect(new Set(faces).size).toBe(6);
-      expect(owner.prepare([camera])).toEqual([]);
+      expect(prepare(owner, [camera])).toEqual([]);
     };
     await capture();
     const previous = host.getPhysicalTarget(target);

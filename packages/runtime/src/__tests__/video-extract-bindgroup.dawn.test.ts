@@ -37,7 +37,7 @@ import { renderValue } from './standard-gbuffer-replay.fixture';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
+import { Camera, MeshFilter, MeshRenderer, type Renderer } from '@forgeax/engine-render';
 import type { RhiDevice } from '@forgeax/engine-rhi';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import type { MaterialAsset, MaterialPass, MeshAsset, VideoAsset } from '@forgeax/engine-types';
@@ -62,6 +62,23 @@ const FORWARD_PBR_PASS: MaterialPass = {
   name: 'Forward',
   program: { module: STANDARD_PBR_SHADER },
 };
+
+/** Reach resource binding after the selected native pipeline has completed. */
+async function submitVideoBindingFrame(
+  renderer: Renderer,
+  device: RhiDevice,
+  request: Parameters<Renderer['draw']>[0],
+  observedUnsupported: () => boolean,
+): Promise<void> {
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const receipt = renderValue(renderer.draw(request));
+    if (receipt.preparationCompleted !== undefined) renderValue(await receipt.preparationCompleted);
+    renderValue(await receipt.completed);
+    await device.queue.onSubmittedWorkDone();
+    if (observedUnsupported() || receipt.presentation === 'ready') return;
+  }
+  throw new Error('Video binding was not reached after native pipeline preparation');
+}
 
 function transformData(x: number, y: number, z: number) {
   return {
@@ -503,9 +520,13 @@ describe('AC-06 — extract->record->bind group does not blow up on a video fiel
     // This is an expected unsupported-resource submission, not a ready picture.
     const lease = renderValue(renderer.attach(world));
     world.update(1 / 60).unwrap();
-    const drawn = renderer.draw({ source: lease });
-    expect(drawn.ok).toBe(true);
-    await device.queue.onSubmittedWorkDone();
+    await submitVideoBindingFrame(renderer, device, { source: lease }, () =>
+      fired.some(
+        (event) =>
+          event.code === 'video-upload-unsupported' ||
+          event.causeCode === 'video-upload-unsupported',
+      ),
+    );
     if (typeof unsub === 'function') unsub();
 
     const unsupported = fired.filter(

@@ -22,6 +22,11 @@ import {
 } from 'playwright';
 import type { ViteDevServer } from 'vite';
 import { type CaptureRendererError, captureRenderFailure } from './capture-render-failure.js';
+import {
+  needsChromiumPrivilegeDrop,
+  prepareUnprivilegedChromium,
+  unattendedRootBrowser,
+} from './chromium-sandbox.js';
 import type { StartupUiState } from './host/startup-ui.js';
 import { createViteConfig } from './host.js';
 import { type DevKitHostBinding, hostBindingError } from './host-binding.js';
@@ -36,6 +41,7 @@ import type {
   CaptureBackendObserved,
   CommandError,
   CommandResult,
+  ProjectFacts,
 } from './types.js';
 import { waitForRuntimeCatalog } from './workspace-provider.js';
 
@@ -1167,10 +1173,6 @@ async function openCaptureDisplay(
   return headless === true ? { async close() {} } : await startVirtualDisplay(width, height);
 }
 
-function defaultHeadless(display: VirtualDisplay): boolean {
-  return display.value === undefined && process.platform !== 'linux';
-}
-
 /** A headed development launch without an explicit viewport keeps the native window size. */
 function usesNativeWindow(
   headless: boolean,
@@ -1364,6 +1366,26 @@ function captureContextOptions(
   };
 }
 
+async function launchSandboxedChromium(launch: LaunchOptions): Promise<Browser> {
+  if (!needsChromiumPrivilegeDrop()) return chromium.launch({ ...launch, chromiumSandbox: true });
+  let prepared: Awaited<ReturnType<typeof prepareUnprivilegedChromium>> | undefined;
+  try {
+    prepared = await prepareUnprivilegedChromium(launch);
+    const { options, release } = prepared;
+    const browser = await chromium.launch({ ...options, chromiumSandbox: true });
+    browser.once('disconnected', () => void release().catch(() => undefined));
+    return browser;
+  } catch (cause) {
+    await prepared?.release().catch(() => undefined);
+    fail(
+      'browser-sandbox-root',
+      'a sandboxed Chromium child running with an unprivileged Linux identity',
+      'Engine could not start the browser after trying an unprivileged launch. Browser, gameplay, and visual checks are unverified.',
+      { effectiveUserId: 0, browserStarted: false, reason: String(cause).slice(0, 2048) },
+    );
+  }
+}
+
 /**
  * A retained browser keeps its process and GPU process (with its compiled
  * pipelines) warm across sessions; a disconnected one is replaced. Each session
@@ -1383,7 +1405,7 @@ async function retainedBrowser(
   ]);
   const existing = await retained.get(key)?.catch(() => undefined);
   if (existing?.isConnected()) return existing;
-  const launching = chromium.launch({ ...launch, chromiumSandbox: true });
+  const launching = launchSandboxedChromium(launch);
   retained.set(key, launching);
   launching.catch(() => {
     if (retained.get(key) === launching) retained.delete(key);
@@ -1423,7 +1445,7 @@ async function launchCapturePage(
     });
     return { browser, page, release: () => context.close() };
   }
-  const browser = await chromium.launch({ ...launch, chromiumSandbox: true });
+  const browser = await launchSandboxedChromium(launch);
   try {
     const page = await browser.newPage(contextOptions);
     return { browser, page, release: () => browser.close() };
@@ -1431,38 +1453,6 @@ async function launchCapturePage(
     await browser.close().catch(() => undefined);
     throw cause;
   }
-}
-
-/** How this session launches its browser, and whether the page keeps its native window. */
-function captureBrowserLauncher(
-  options: BrowserCaptureOpenOptions,
-  display: VirtualDisplay,
-  launchProfile: BrowserLaunchProfile,
-  browserPath: string | undefined,
-  size: { readonly width: number; readonly height: number },
-  retained: RetainedBrowsers | undefined,
-): {
-  readonly nativeWindow: boolean;
-  readonly launch: (launchBackend: CaptureBackend) => Promise<CaptureLaunch>;
-} {
-  const headless = options.headless ?? defaultHeadless(display);
-  const nativeWindow = usesNativeWindow(headless, launchProfile, options);
-  return {
-    nativeWindow,
-    launch: (launchBackend) =>
-      launchCapturePage(
-        {
-          headless,
-          env: captureBrowserEnvironment(launchBackend, display),
-          args: browserLaunchArgs(launchBackend, launchProfile, nativeWindow),
-          ...(browserPath === undefined ? {} : { executablePath: browserPath }),
-        },
-        nativeWindow,
-        size.width,
-        size.height,
-        retained,
-      ),
-  };
 }
 
 /** A borrowed headed carrier supplies the page; the capture launches no browser for it. */
@@ -1548,6 +1538,34 @@ async function awaitRequiredUi(
     });
 }
 
+async function openCaptureProjectServer(
+  project: ProjectFacts,
+  target: BrowserCaptureTarget,
+  port: number | undefined,
+  options: BrowserCaptureOpenOptions,
+  startupTimeoutMs: number,
+): Promise<ViteDevServer | undefined> {
+  if (target.kind !== 'project' || options.serverUrl !== undefined) return undefined;
+  if (port === undefined) throw new Error('project capture did not reserve a port');
+  const { createServer } = await import('vite');
+  const config = await createViteConfig(project, 'serve', '/', {
+    server: { port, strictPort: true },
+    ...(options.host === undefined ? {} : { host: options.host }),
+    ...(options.generatedRoot === undefined ? {} : { generatedRoot: options.generatedRoot }),
+  });
+  const server = await createServer(
+    options.viteCacheDir === undefined ? config : { ...config, cacheDir: options.viteCacheDir },
+  );
+  try {
+    await server.listen(port);
+    await waitForCaptureCatalog(server, port, project.id, startupTimeoutMs);
+    return server;
+  } catch (cause) {
+    await server.close().catch(() => undefined);
+    throw cause;
+  }
+}
+
 async function openBrowserCaptureSession(
   root: string,
   options: BrowserCaptureOpenOptions,
@@ -1583,34 +1601,34 @@ async function openBrowserCaptureSession(
   // Started before the project server so Chromium's launch overlaps Vite's startup.
   let earlyLaunch: Promise<CaptureLaunch> | undefined;
   try {
-    display = await openCaptureDisplay(options.headless, width, height);
-    const { nativeWindow, launch } = captureBrowserLauncher(
-      options,
-      display,
-      launchProfile,
-      browserPath,
-      { width, height },
-      retained,
-    );
+    const headless =
+      options.headless ??
+      (unattendedRootBrowser() ||
+        (process.platform !== 'linux' && process.env.DISPLAY === undefined));
+    const nativeWindow = usesNativeWindow(headless, launchProfile, options);
+    if (!borrowsCarrierPage(options)) display = await openCaptureDisplay(headless, width, height);
+    const launch = async (launchBackend: CaptureBackend) => {
+      display ??= await openCaptureDisplay(headless, width, height);
+      return launchCapturePage(
+        {
+          headless,
+          env: captureBrowserEnvironment(launchBackend, display),
+          args: browserLaunchArgs(launchBackend, launchProfile, nativeWindow),
+          ...(browserPath === undefined ? {} : { executablePath: browserPath }),
+        },
+        nativeWindow,
+        width,
+        height,
+        retained,
+      );
+    };
     // Auto first preserves a physical adapter. If only software (or no adapter)
     // is available, use the same configured software lane as an explicit request. This
     // keeps the public capture contract portable without masking a flat frame.
     const initialLaunchBackend: CaptureBackend = backend === 'software' ? 'software' : 'hardware';
     earlyLaunch = startEarlyLaunch(options, launch, initialLaunchBackend);
-    if (target.kind === 'project' && options.serverUrl === undefined) {
-      const { createServer } = await import('vite');
-      if (port === undefined) throw new Error('project capture did not reserve a port');
-      const config = await createViteConfig(facts.value, 'serve', '/', {
-        server: { port, strictPort: true },
-        ...(options.host === undefined ? {} : { host: options.host }),
-        ...(options.generatedRoot === undefined ? {} : { generatedRoot: options.generatedRoot }),
-      });
-      server = await createServer(
-        options.viteCacheDir === undefined ? config : { ...config, cacheDir: options.viteCacheDir },
-      );
-      await server.listen(port);
-      await waitForCaptureCatalog(server, port, facts.value.id, startupTimeoutMs);
-    }
+    if (needsChromiumPrivilegeDrop()) await earlyLaunch;
+    server = await openCaptureProjectServer(facts.value, target, port, options, startupTimeoutMs);
     const icd = await lavapipeIcd();
     const consoleErrors: string[] = [];
     const pageErrors: string[] = [];
@@ -1858,7 +1876,7 @@ async function openBrowserCaptureSession(
       deterministicRequested: options.deterministic === true,
       viewport: viewportReport(nativeViewport, width, height),
       browser: browserReport(browser, carrierAttachment, browserPath),
-      display: display.value ?? null,
+      display: display?.value ?? null,
       lavapipeIcd: icd ?? null,
       captures,
       requests: reportedRequests(

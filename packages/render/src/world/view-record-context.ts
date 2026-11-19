@@ -9,7 +9,8 @@ import type { CubeCaptureGraphState } from '../record/target-capture-graph';
 import type { RenderTarget } from '../targets/contracts';
 import type { FramebufferSnapshotSource } from '../targets/framebuffer-snapshot';
 import { ViewRecorder, type ViewViewport, viewCameraOf } from './render-views';
-import type { ViewRecorderState } from './view-output-systems';
+import { type ViewRecorderState, viewComposition } from './view-output-systems';
+import type { ViewSettlementOwner } from './view-settlement';
 
 /** Scoped recording facts. Shared services remain on the renderer port. */
 export const ViewRecordContext = defineComponent('ViewRecordContext', {
@@ -23,9 +24,6 @@ export class ViewRecordContextState {
   readonly standardPipeline: RenderSystemInternals['standardPipeline'];
   readonly featureHost: RenderSystemInternals['featureHost'];
   featureSceneInputs: RenderSystemInternals['featureSceneInputs'];
-  readonly observationCaptureOwner = undefined;
-  readonly observationCaptureDomains = undefined;
-  readonly sharedFeatureGpuWork: RenderSystemInternals['sharedFeatureGpuWork'];
   readonly outputColorSpace: RenderSystemInternals['outputColorSpace'];
   gpuPassTimingViewId: number | undefined;
   constructor(
@@ -37,6 +35,7 @@ export class ViewRecordContextState {
     base: PipelineState,
     capture: CubeCaptureGraphState | undefined,
     target: RenderTarget | undefined,
+    private readonly primaryOwner: ViewSettlementOwner,
   ) {
     this.local = createViewPipelineState(base, root, deviceScope);
     this.captureView = capture === undefined ? undefined : { camera, state: capture };
@@ -44,10 +43,12 @@ export class ViewRecordContextState {
       capture === undefined ? root.standardPipeline : createCaptureViewPipeline(capture);
     this.featureHost = capture === undefined ? root.featureHost : undefined;
     this.featureSceneInputs = capture === undefined ? root.featureSceneInputs : undefined;
-    this.sharedFeatureGpuWork = root.viewOwner?.preparedResolver.gpuWork;
     this.outputColorSpace =
       target === undefined ? root.outputColorSpace : createOutputColorSpaceState('srgb');
     this.gpuPassTimingViewId = camera;
+  }
+  get sharedFeatureGpuWork(): RenderSystemInternals['sharedFeatureGpuWork'] {
+    return this.primaryOwner.preparedResolver.gpuWork;
   }
   private recorder(): ViewRecorderState | undefined {
     const world = this.root.renderWorld;
@@ -68,7 +69,20 @@ export class ViewRecordContextState {
     );
   }
   get viewOutput(): RenderSystemInternals['viewOutput'] {
-    return this.recorder()?.output;
+    return this.directDisplay ? undefined : this.recorder()?.output;
+  }
+  private get directDisplay(): boolean {
+    const world = this.root.renderWorld;
+    return world !== undefined && viewComposition(world).directDisplay === this.entity;
+  }
+  get observationCaptureOwner(): RenderSystemInternals['observationCaptureOwner'] {
+    return this.directDisplay ? this.root.observationCaptureOwner : undefined;
+  }
+  get observationCaptureDomains(): RenderSystemInternals['observationCaptureDomains'] {
+    return this.directDisplay ? this.root.observationCaptureDomains : undefined;
+  }
+  get observationFrameId(): RenderSystemInternals['observationFrameId'] {
+    return this.root.observationFrameId;
   }
   get deviceGeneration(): number {
     return this.deviceScope.generation;

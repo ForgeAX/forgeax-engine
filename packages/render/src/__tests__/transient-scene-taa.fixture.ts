@@ -54,7 +54,7 @@ export async function verifyTransientSceneTaa(
     extent.width,
     extent.height,
   );
-  if (state.algorithm !== 'taa' || state.flicker === undefined) {
+  if (state.algorithm !== 'taa' || state.mode !== 'taa' || state.flicker === undefined) {
     retireTemporalGpuState(state);
     native.destroy();
     throw Error('Expected the TAA owner and its flicker history');
@@ -261,8 +261,12 @@ export async function verifyTransientSceneTaa(
       })
       .unwrap();
     const selected = isolated
-      ? selectTransientViewPlans(owner, [planned(current.placement ?? 'post')], [current], true)
-          .identities
+      ? selectTransientViewPlans(
+          owner,
+          [planned(current.placement === 'scene' ? 'scene' : 'post')],
+          [current],
+          true,
+        ).identities
       : new Set<string>();
     if (isolated) expect(selected.has('scene-particle')).toBe(true);
     const contribute = () =>

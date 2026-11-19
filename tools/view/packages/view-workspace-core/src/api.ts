@@ -1,4 +1,6 @@
 export const VIEW_WORKSPACE_CORE_OPERATION_DESCRIPTIONS = Object.freeze([
+  { id: 'project.present', path: ['project', 'present'], summary: 'Present the shared project in this View document after the previous renderer acknowledges retirement.' },
+  { id: 'presentation.document.release', path: ['presentation', 'document', 'release'], summary: 'Retire this View document’s project frame before presentation transfers.' },
   { id: 'presentation.get', path: ['presentation', 'get'], summary: 'Read the selected View document\'s actual pages, active page, panels and appearance.' },
   { id: 'presentation.page.open', path: ['presentation', 'page', 'open'], summary: 'Open a registered View page type and return committed presentation state.' },
   { id: 'presentation.page.select', path: ['presentation', 'page', 'select'], summary: 'Activate one actual View page by its returned page ID.' },

@@ -1,7 +1,5 @@
 import { RenderGraphError } from '@forgeax/engine-render-graph';
 import { err, ok, type Result } from '@forgeax/engine-types';
-import { isMultisampleAntialias } from '../components/camera';
-import { ProjectedDecalInvalidError } from '../decals/component';
 import { StandardProfileInvalidError } from '../errors/render';
 import type {
   RenderPipeline,
@@ -16,6 +14,7 @@ import {
   deriveStandardTopologyInput,
   type StandardTopologyInputValue,
 } from './standard-lighting/topology';
+import { standardDeferredAntialiasError } from './standard-path-admission';
 import {
   DEFAULT_STANDARD_PROFILE,
   isStandardLightCount,
@@ -305,12 +304,10 @@ export function buildStandard(
       }),
     );
   }
-  if (
-    profile.renderPath === 'deferred' &&
-    (topology.projectedDecals?.length ?? 0) > 0 &&
-    isMultisampleAntialias(topology.camera.antialias)
-  )
-    throw new ProjectedDecalInvalidError('renderPath', 'single-sample Standard scene depth');
+  if (profile.renderPath === 'deferred') {
+    const failure = standardDeferredAntialiasError(topology.camera.antialias);
+    if (failure !== undefined) return err(failure);
+  }
   const effective = standardTopology(topology, profile);
   const lighting = resolveStandardTopologyInput(context);
   if (!lighting.ok) return lighting;

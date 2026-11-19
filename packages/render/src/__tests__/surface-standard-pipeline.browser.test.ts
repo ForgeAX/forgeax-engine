@@ -10,7 +10,6 @@ describe('Standard Surface render projection contract', () => {
         values: surfaceCase.material.values ?? {},
         geometryVariant: 'rigid',
         lightingLane: 'direct',
-        alphaClip: true,
         layerPlan: layerPlanFor(surfaceCase),
       });
       expect(passes.some((entry) => entry.name === passFor(surfaceCase))).toBe(true);

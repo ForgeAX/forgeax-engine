@@ -132,11 +132,15 @@ export {
 } from './cloud/lighting/shadow.js';
 export {
   AMBIENT_OCCLUSION_ALGORITHMS,
+  AMBIENT_OCCLUSION_APPLICATIONS,
   AMBIENT_OCCLUSION_GTAO,
+  AMBIENT_OCCLUSION_LIGHTING,
   AMBIENT_OCCLUSION_QUALITIES,
   AMBIENT_OCCLUSION_QUALITY_HIGH,
   AMBIENT_OCCLUSION_QUALITY_LOW,
   AMBIENT_OCCLUSION_QUALITY_MEDIUM,
+  AMBIENT_OCCLUSION_SCENE_COLOR,
+  AMBIENT_OCCLUSION_SPIRAL_SSAO,
   AMBIENT_OCCLUSION_SSAO,
   AmbientOcclusion,
   type AmbientOcclusionData,
@@ -304,6 +308,10 @@ export {
   RenderFeatureEnvironment,
   type RenderFeatureEnvironmentSource,
 } from './components/render-feature-environment';
+export {
+  RenderTargetEnvironment,
+  type RenderTargetEnvironmentSource,
+} from './components/render-target-environment';
 export { SceneInstance } from './components/scene-instance.js';
 export {
   ScreenSpaceReflection,
@@ -544,6 +552,7 @@ export type {
   RenderFeatureWorkPlan,
   RenderFeatureWorkScope,
 } from './features/plan.js';
+export type { RenderFeatureGpuProgramDescriptor } from './features/prepared-gpu-work.js';
 export type { RenderFeatureTemporalStage } from './features/temporal-stage';
 export {
   isRenderFeatureTextureReference,
@@ -874,6 +883,11 @@ export {
   validateReflectionProbeInput,
 } from './reflection/projection.js';
 export type {
+  RenderTargetEnvironmentCapture,
+  RenderTargetEnvironmentFace,
+  RenderTargetWrite,
+} from './render-contract';
+export type {
   CameraOutputSnapshot,
   CubeCameraSnapshot,
   DrawObservation,
@@ -906,6 +920,7 @@ export type { TemporalInspectionStatus } from './renderer-inspect.js';
 export type { RenderSceneBounds } from './scene/render-scene-types.js';
 export type {
   LodOcclusionAttribution,
+  LodOcclusionGpuSelection,
   LodOcclusionInspectionInput,
   LodOcclusionInspectionRow,
   LodOcclusionInspectionSample,
@@ -1025,8 +1040,11 @@ export type {
   RenderTargetTextureSourceOptions,
 } from './targets/contracts.js';
 export { renderTargetLayerCount } from './targets/contracts.js';
+export type { RenderTargetEnvironmentLease } from './targets/environment';
 export type { TemporalInspection, TemporalResourceInspection } from './temporal/inspection.js';
 export {
+  SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_DESCRIPTOR,
+  SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_SCHEMA,
   SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_DESCRIPTOR,
   SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA,
   SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_DESCRIPTOR,
@@ -1035,6 +1053,7 @@ export {
   SCENE_DATA_TEMPORAL_V1_SCHEMA,
   type SceneDataLane,
   type SceneDataSchemaId,
+  type SceneDataStandardGBufferNormalV2Descriptor,
   type SceneDataStandardSurfaceDepthV1Descriptor,
   type SceneDataStandardSurfaceNormalV1Descriptor,
   type SceneDataTarget,

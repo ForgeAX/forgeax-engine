@@ -131,6 +131,8 @@ export function resolveFeatureWorkResources(
             name,
             program: key(resource.program),
           };
+        case 'texture-alias':
+          return { ...resource, name, resource: key(resource.resource) };
         case 'vertex-data':
         case 'index-data':
           return resource.buffer === undefined
@@ -166,6 +168,8 @@ export function resolveFeatureWorkResources(
       } else if (resource.kind === 'graphics-bindings') {
         include(resource.program);
         values(resource.values);
+      } else if (resource.kind === 'texture-alias') {
+        include(resource.resource);
       } else if (
         (resource.kind === 'vertex-data' || resource.kind === 'index-data') &&
         resource.buffer !== undefined

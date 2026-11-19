@@ -180,7 +180,7 @@ export function addRayDiffuseCompositePass(
             depth: resources.textureView(target.depth).unwrap(),
             normal: resources.textureView(target.normal.view).unwrap(),
             albedoMetallic: resources.textureView(target.albedo.view).unwrap(),
-            f0Occlusion: resources.textureView(target.f0.view).unwrap(),
+            dielectricSpecular: resources.textureView(target.f0.view).unwrap(),
             view: { buffer: resources.buffer(view).unwrap(), size: VIEW_UNIFORM_BYTES },
           },
           pixelCount,

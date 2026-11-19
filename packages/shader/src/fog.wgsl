@@ -10,12 +10,16 @@ struct FogRay { origin: vec3<f32>, direction: vec3<f32>, distance: f32, }
 // Fog between the camera and one surface: out = in * transmittance + inscatter.
 struct FogSample { inscatter: vec3<f32>, transmittance: f32, }
 
+fn fogHeightIntegral(t: f32) -> f32 {
+  var integral = 1.0 - t * 0.5 + t * t / 6.0;
+  if abs(t) >= 0.001 { integral = (1.0 - exp(-t)) / t; }
+  return integral;
+}
+
 fn fogOpticalDepth(params: FogViewParams, ray: FogRay) -> f32 {
   let rho = params.density * exp(clamp(-params.heightFalloff * ray.origin.y, -60.0, 60.0));
   let t = clamp(params.heightFalloff * ray.direction.y * ray.distance, -60.0, 60.0);
-  var integral = 1.0 - t * 0.5 + t * t / 6.0;
-  if abs(t) >= 0.001 { integral = (1.0 - exp(-t)) / t; }
-  return clamp(rho * ray.distance * integral, 0.0, 80.0);
+  return clamp(rho * ray.distance * fogHeightIntegral(t), 0.0, 80.0);
 }
 
 // Three.js laws use camera view depth (Three's vFogDepth): clip w under a
@@ -80,6 +84,35 @@ fn view_fog(v:View, position:vec3<f32>)->AtmosphereFogSample {
   return AtmosphereFogSample(local.inscatter+local.transmittance*air.luminance,local.transmittance*air.transmittance);
 }
 
+// Ordinary Forward height fog carries only T. Its source color is constant
+// across the view, so S = source * (1 - T) needs no extra varying. The host
+// reserves fogSky.y for this admitted route; zero retains existing consumers.
+// Full atmosphere keeps its separate RGB transport and never enters here.
+fn vertex_height_fog(v: View, worldPos: vec3<f32>) -> f32 {
+  if v.fogSky.y < 0.5 || v.fogHeightOpacity.y == 0.0 { return 1.0; }
+  if v.temporalProjection.z > 0.5 {
+    return height_fog_with_source(v, worldPos, v.fogColorDensity.xyz).transmittance;
+  }
+  let delta = worldPos - v.cameraPos;
+  let distance = length(delta);
+  if distance < 0.00001 { return 1.0; }
+  if v.fogHeightOpacity.y < 0.0 || v.fogColorDensity.w < 0.0 {
+    return 1.0 - three_fog_opacity(v, worldPos, distance);
+  }
+  let t = clamp(v.fogHeightOpacity.x * delta.y, -60.0, 60.0);
+  let opticalDepth = clamp(v.fogSky.z * distance * fogHeightIntegral(t), 0.0, 80.0);
+  return 1.0 - v.fogHeightOpacity.y * (1.0 - exp(-opticalDepth));
+}
+
+fn compose_material_fog(fog: AtmosphereFogSample, composition: u32,
+  color: vec3<f32>, alpha: f32, backdrop: vec3<f32>, transmission: vec3<f32>) -> vec3<f32> {
+  let coverage=select(1.0,alpha,composition==2u);
+  let inscatter=select((vec3<f32>(1.0)-transmission)*fog.inscatter*coverage,vec3<f32>(0.0),composition==3u);
+  // Backdrop already includes the camera-to-surface medium. Reconstruct the
+  // local term without dividing by small T; same-ray / weak-refraction model.
+  return (color-backdrop)*fog.transmittance+backdrop+inscatter;
+}
+
 // Shared material programs serve opaque and blended draws. Blended draws bind
 // the View copy whose fogHeightOpacity.z names their blend composition, so this
 // one call fogs a translucent writer at its own depth; opaque draws read the
@@ -91,14 +124,27 @@ fn translucent_fog_transmission(v:View, worldPos:vec3<f32>, color:vec3<f32>, alp
   let composition=u32(v.fogHeightOpacity.z+0.5);
   if composition==0u && all(transmission==vec3<f32>(0.0)) {return color;}
   let fog=view_fog(v,worldPos);
-  let coverage=select(1.0,alpha,composition==2u);
-  let inscatter=select((vec3<f32>(1.0)-transmission)*fog.inscatter*coverage,vec3<f32>(0.0),composition==3u);
-  // Backdrop already includes the camera-to-surface medium. Reconstruct the
-  // local term without dividing by small T; same-ray / weak-refraction model.
-  return (color-backdrop)*fog.transmittance+backdrop+inscatter;
+  return compose_material_fog(fog,composition,color,alpha,backdrop,transmission);
 }
 fn translucent_fog(v: View, worldPos: vec3<f32>, color: vec3<f32>, alpha: f32) -> vec3<f32> {
   return translucent_fog_transmission(v,worldPos,color,alpha,vec3<f32>(0.0),vec3<f32>(0.0));
+}
+
+fn forward_fog_transmission(v: View, worldPos: vec3<f32>, transmittance: f32,
+  color: vec3<f32>, alpha: f32, backdrop: vec3<f32>, transmission: vec3<f32>) -> vec3<f32> {
+  if v.fogSky.y < 0.5 {
+    return translucent_fog_transmission(v,worldPos,color,alpha,backdrop,transmission);
+  }
+  // Slot zero is an ordinary opaque writer on this route. Blended copies
+  // retain their existing straight / premultiplied / additive composition.
+  let composition=max(1u,u32(v.fogHeightOpacity.z+0.5));
+  let fog=AtmosphereFogSample(v.fogColorDensity.xyz * (1.0 - transmittance),vec3<f32>(transmittance));
+  return compose_material_fog(fog,composition,color,alpha,backdrop,transmission);
+}
+
+fn forward_fog(v: View, worldPos: vec3<f32>, transmittance: f32,
+  color: vec3<f32>, alpha: f32) -> vec3<f32> {
+  return forward_fog_transmission(v,worldPos,transmittance,color,alpha,vec3<f32>(0.0),vec3<f32>(0.0));
 }
 
 // Clip-space producers (GPU particles) project on the GPU and carry only NDC.

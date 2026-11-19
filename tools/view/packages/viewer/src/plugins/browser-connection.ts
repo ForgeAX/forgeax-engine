@@ -28,11 +28,16 @@ export function createBrowserConnection<TSession extends BrowserSession>({ conne
       let retries = 0;
       const publish = (value: BrowserConnectionUpdate<TSession>) => { if (!disposed) onChange({ ...value, onReconnect: reconnect }); };
       const retry = (error: unknown) => {
-        const retrying = !terminal(error) && retries < delays.length;
+        const preparing = Boolean(error && typeof error === 'object' && 'forgeaxPreparing' in error && error.forgeaxPreparing === true);
+        const retrying = !terminal(error) && (preparing || retries < delays.length);
         const detail = error instanceof Error ? error.message : typeof error === 'object' ? JSON.stringify(error) : String(error);
-        console.error('ForgeaX Host connection failed:', detail);
-        publish({ phase: 'disconnected', detail, reconnectBusy: retrying });
-        if (retrying) timer = setTimeout(() => void attempt(), delays[retries++]);
+        if (!preparing) console.error('ForgeaX Host connection failed:', detail);
+        publish({ phase: preparing ? 'connecting' : 'disconnected', detail, reconnectBusy: retrying });
+        if (retrying) {
+          const delayIndex = Math.min(retries, delays.length - 1);
+          retries++;
+          timer = setTimeout(() => void attempt(), delays[delayIndex]);
+        }
       };
       const attempt = async () => {
         clearTimeout(timer);

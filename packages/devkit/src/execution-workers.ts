@@ -24,7 +24,7 @@ export function executionWorkers(value: unknown): ExecutionWorkersOptions {
         !Object.hasOwn(workerProperties, key) || (policy !== 'auto' && typeof policy !== 'boolean'),
     )
   ) {
-    throw new Error(
+    throw new TypeError(
       'workers requires an object with engine, render and kernels policies: auto, true or false',
     );
   }
@@ -32,7 +32,9 @@ export function executionWorkers(value: unknown): ExecutionWorkersOptions {
 }
 
 /** Ordinary projects select the strongest available worker composition by default. */
-export function environmentExecutionWorkers(): ExecutionWorkersOptions {
+export function environmentExecutionWorkers(
+  authored: ExecutionWorkersOptions = {},
+): ExecutionWorkersOptions {
   const value = process.env.FORGEAX_EXECUTION_WORKERS;
-  return value === undefined ? {} : executionWorkers(JSON.parse(value));
+  return value === undefined ? authored : { ...authored, ...executionWorkers(JSON.parse(value)) };
 }

@@ -131,6 +131,7 @@ it.each(
       request = { source: lease };
     }
     const frame = renderer.draw(request);
+    expect(frame.ok, frame.ok ? '' : JSON.stringify(frame.error)).toBe(true);
     if (!frame.ok) throw frame.error;
     expect((await frame.value.completed).ok).toBe(true);
     expect(query).toHaveBeenCalledTimes(1);
@@ -162,7 +163,8 @@ it.each([
     { rhi, ...(published ? { publicationSource: source } : {}) },
     { shaderManifestUrl: renderLifecycleManifestUrl() },
   );
-  (await host.initialization).unwrap();
+  const initialized = await host.initialization;
+  if (!initialized.ok) throw initialized.error;
   const renderer = exposeRenderer(host);
   const assets = new AssetRegistry({
     shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
@@ -239,7 +241,9 @@ it.each([
   world.insertResource(WATER_SYSTEM_RESOURCE, water);
   world.update(1 / 60).unwrap();
   propagateTransforms(world).unwrap();
-  const lease = published ? undefined : renderer.attach(world).unwrap();
+  const attached = published ? undefined : renderer.attach(world);
+  if (attached !== undefined && !attached.ok) throw attached.error;
+  const lease = attached?.value;
   const publisher = published ? createRenderPublisher(world, assets, source) : undefined;
   const slots = vi.spyOn(SceneComposition.prototype, 'compositionSlot');
   let composition: SceneComposition | undefined;
@@ -258,13 +262,18 @@ it.each([
       if (lease === undefined) throw new Error('Missing local read lease');
       request = { source: lease };
     }
-    const receipt = renderer.draw(request).unwrap();
-    (await receipt.completed).unwrap();
+    const drawn = renderer.draw(request);
+    expect(drawn.ok, drawn.ok ? '' : JSON.stringify(drawn.error)).toBe(true);
+    if (!drawn.ok) throw drawn.error;
+    const receipt = drawn.value;
+    const completed = await receipt.completed;
+    if (!completed.ok) throw completed.error;
     if (publication !== undefined)
       publisher?.recycle(publication.revision, renderPublicationTransfers(publication)).unwrap();
-    composition ??= slots.mock.instances[0];
+    const heldComposition = slots.mock.contexts[0];
+    if (heldComposition instanceof SceneComposition) composition ??= heldComposition;
     if (composition === undefined) throw new Error('Missing retained composition');
-    return composition.compositionSlot(0, entity)?.snapshot;
+    return composition.compositionSlot(entity)?.snapshot;
   };
   try {
     const held = await draw();
@@ -286,6 +295,7 @@ it.each([
     slots.mockRestore();
     lease?.dispose();
     publisher?.dispose();
-    (await renderer.dispose()).unwrap();
+    const disposed = await renderer.dispose();
+    expect(disposed.ok, disposed.ok ? '' : JSON.stringify(disposed.error)).toBe(true);
   }
 });

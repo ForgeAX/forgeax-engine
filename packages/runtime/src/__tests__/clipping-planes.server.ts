@@ -9,7 +9,7 @@ import { pluginPack } from '@forgeax/engine-vite-plugin-pack';
 import { createServer } from 'vite';
 import { installPackProject } from './helpers/pack-project';
 
-export async function startClippingPlanesServer() {
+export async function startClippingPlanesServer(mode: 'local' | 'view' = 'local') {
   const root = await mkdtemp(join(tmpdir(), 'forgeax-clipping-'));
   await installPackProject(root, ['pack', 'types']);
   const assets = join(root, 'assets');
@@ -50,7 +50,7 @@ export async function startClippingPlanesServer() {
     AssetGuid.format(AssetGuid.derive(parsed, `material/case-${index}`)),
   );
   const objects = Object.fromEntries(
-    options.map((option, index) => [
+    (mode === 'local' ? options : []).map((option, index) => [
       `material/case-${index}`,
       withClipping(
         Materials.standard({
@@ -62,6 +62,17 @@ export async function startClippingPlanesServer() {
       ),
     ]),
   );
+  const viewMaterialKey = 'material/view-only';
+  const viewMaterialGuid = AssetGuid.format(AssetGuid.derive(parsed, viewMaterialKey));
+  if (mode === 'view')
+    objects[viewMaterialKey] = {
+      ...Materials.standard({
+        baseColor: [0.8, 0.1, 0.1, 1],
+        emissive: [1, 0, 0],
+        emissiveIntensity: 1,
+      }),
+      staticSwitches: { alphaClipping: false, alphaHash: false },
+    };
   await writeFile(
     join(assets, 'clipping.pack.ts'),
     `import { definePack, definePackageId } from '@forgeax/engine-pack/source';\nimport { ok } from '@forgeax/engine-types';\nexport default definePack({ schemaVersion: '2.0.0', packageId: definePackageId('${packageId}'), build() { return ok(${JSON.stringify(objects)}); } });\n`,
@@ -92,6 +103,7 @@ export async function startClippingPlanesServer() {
       importUrlBase: new URL(binding.importUrlBase, base).href,
     },
     guids,
+    viewMaterialGuid,
     async close() {
       await server.close();
       await rm(root, { recursive: true, force: true });

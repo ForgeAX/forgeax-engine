@@ -2,6 +2,7 @@
 #pragma variant_axis ATMOSPHERE_AVAILABLE
 #import forgeax_view::common::{View, view}
 #import forgeax_scene_temporal::{sceneViewZ}
+#import forgeax_view::fog::{vertex_height_fog}
 #import forgeax_material::standard_surface::{VsOut, evaluateUnlitStandardSurface, material}
 #import forgeax_material::standard_surface::{materialTextureFilteringWitness}
 
@@ -13,7 +14,7 @@ fn materialInterfaceWitness() { materialTextureFilteringWitness(); }
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
   @location(0) color: vec4<f32>,
-  @location(1) normal: vec3<f32>,
+  @location(1) normal: vec4<f32>,
   @location(2) @interpolate(flat) render_controls: vec2<f32>,
   @location(4) world_position: vec3<f32>,
   @location(5) uv: vec2<f32>,
@@ -54,12 +55,12 @@ fn vs_main(input: VertexInput) -> VertexOutput {
   let normalBasisZ = cross(input.right, input.up);
   // Cofactors require determinant sign for reflected/non-uniform Scale3.
   let handedness = select(-1.0, 1.0, dot(input.right, normalBasisX) >= 0.0);
-  output.normal = safeNormalize(handedness * (
+  output.normal = vec4<f32>(safeNormalize(handedness * (
     normalBasisX * input.geometry_normal.x + normalBasisY * input.geometry_normal.y +
-    normalBasisZ * input.geometry_normal.z), vec3<f32>(0.0, 1.0, 0.0));
+    normalBasisZ * input.geometry_normal.z), vec3<f32>(0.0, 1.0, 0.0)), vertex_height_fog(view, output.world_position));
   let tangent = input.right * input.geometry_tangent.x + input.up * input.geometry_tangent.y +
     input.forward * input.geometry_tangent.z;
-  output.tangent = vec4<f32>(safeNormalize(tangent - output.normal * dot(output.normal, tangent),
+  output.tangent = vec4<f32>(safeNormalize(tangent - output.normal.xyz * dot(output.normal.xyz, tangent),
     vec3<f32>(1.0, 0.0, 0.0)), input.geometry_tangent.w * handedness);
   output.uv = input.geometry_uv;
   output.uv1 = input.geometry_uv1;

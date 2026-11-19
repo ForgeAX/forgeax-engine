@@ -1,5 +1,6 @@
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { box3 } from '@forgeax/engine-math';
+import { standardTextureMask } from '@forgeax/engine-shader';
 import type { AssetHandle } from '@forgeax/engine-types';
 import { expect, test, vi } from 'vitest';
 import { MaterialResource } from '../material-resource';
@@ -639,4 +640,25 @@ test('temporal rows carry the Scene-maintained LOD count and sparse rows equal t
   expect(lodCandidateCountOf(pending)).toBe(
     [...pending].filter((row) => (row.lods?.length ?? 0) > 0).length,
   );
+});
+
+test('RenderBounds re-observes borrowed displacement values in the same MaterialFrame', () => {
+  const values = { displacementScale: 0, displacementBias: 0 };
+  const material = new MaterialResource({
+    ...defaultMaterialSnapshot(),
+    standardTextureMask: standardTextureMask([{ name: 'displacementTexture', type: 'texture2d' }]),
+    paramSnapshot: values,
+  });
+  const materials = new MaterialFrame(undefined).with(material);
+  const scene = new RenderScene();
+  update(scene, source(1, 0, material));
+  const row = required(scene.slot(1));
+  const meshes = new MeshFrame().with(1, createBoxGeometry(2, 2, 2).unwrap());
+  const out = box3.create();
+  expect(materials.hasBorrowedValues).toBe(true);
+  expect(scene.writeCullingWorldBoundsAt(row, out, meshes, materials)).toBe(true);
+  expect(out[0]).toBe(-1);
+  values.displacementScale = 3;
+  expect(scene.writeCullingWorldBoundsAt(row, out, meshes, materials)).toBe(true);
+  expect(out[0]).toBe(-4);
 });

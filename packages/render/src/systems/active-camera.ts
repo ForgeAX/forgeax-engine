@@ -55,6 +55,8 @@ import type { World } from '@forgeax/engine-ecs';
  */
 export interface ActiveCamera {
   readonly entity: number;
+  /** Borrow this camera's view/effects while using `entity` as its viewpoint. */
+  readonly viewEntity?: number;
 }
 
 /** World resource key for the `ActiveCamera` KV entry. */
@@ -85,12 +87,19 @@ export function getActiveCamera(world: World): ActiveCamera | undefined {
  * Write the world's `ActiveCamera` resource (idempotent last-write-wins via
  * `world.insertResource`). The renderer will use the camera whose entity id
  * equals `entity`, or fall back to first-hit if that id is not a queried camera.
+ * With `viewEntity`, that source camera's view and companion effects are
+ * projected through `entity` instead. Other declared views remain active;
+ * neither camera's authored components are modified. Two arguments clear
+ * this optional viewpoint handoff.
  *
  * @example
  *   setActiveCamera(world, gameCameraEntity);  // render through the game camera
  */
-export function setActiveCamera(world: World, entity: number): void {
-  world.insertResource<ActiveCamera>(ACTIVE_CAMERA_KEY, { entity });
+export function setActiveCamera(world: World, entity: number, viewEntity?: number): void {
+  world.insertResource<ActiveCamera>(
+    ACTIVE_CAMERA_KEY,
+    viewEntity === undefined ? { entity } : { entity, viewEntity },
+  );
 }
 
 /**

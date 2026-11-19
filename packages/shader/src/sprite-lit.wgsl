@@ -7,7 +7,7 @@
 #import forgeax_clipping::planes::{applyViewClipping}
 #import forgeax_view::common::{View, Mesh, meshMotionValid, InstanceData, view, meshes, instances, sampleMaterialTexture, packSceneTemporal}
 #import forgeax_view::atmosphere::{view_apply_direct_solar}
-#import forgeax_view::fog::{translucent_fog}
+#import forgeax_view::fog::{forward_fog, vertex_height_fog}
 #import forgeax_scene_temporal::{packSceneTemporalV1WithValidity, sceneViewZ}
 #ifdef CLUSTER_FORWARD_AVAILABLE
 #import forgeax_standard::cluster::{evaluateStandardClusterLights}
@@ -100,7 +100,7 @@ struct VsIn {
 struct VsOut {
   @builtin(position) @invariant clip     : vec4<f32>,
   @location(0)       uv_atlas : vec2<f32>,
-  @location(1)       worldPos : vec3<f32>,
+  @location(1)       worldPos : vec4<f32>,
   @location(2)       ndc      : vec3<f32>,
   @location(3)       viewZ    : f32,
 };
@@ -180,7 +180,7 @@ fn vs_main(in : VsIn, @builtin(instance_index) idx : u32, @builtin(vertex_index)
   var out : VsOut;
   out.clip = view.worldViewProj * world;
   out.uv_atlas = vertex.uvAtlas;
-  out.worldPos = world.xyz;
+  out.worldPos = vec4<f32>(world.xyz, vertex_height_fog(view, world.xyz));
   let clipPos = out.clip;
   out.ndc = clipPos.xyz / clipPos.w;
   // Keep the cluster depth exactly aligned with the CPU binner for both
@@ -231,15 +231,15 @@ fn spriteLitShadeAccum(
 
 @fragment
 fn fs_main(in : VsOut) -> @location(0) vec4<f32> {
-  applyViewClipping(in.worldPos, false);
+  applyViewClipping(in.worldPos.xyz, false);
   let texel = sampleMaterialTexture(baseColorTexture, baseColorSampler, in.uv_atlas, material.baseColorTextureCoordinatesMetadata.zw);
   let albedo4 = texel * material.colorTint;
-  let lit = spriteLitShadeAccum(albedo4.rgb, in.worldPos, in.ndc, in.clip.xy, in.viewZ);
+  let lit = spriteLitShadeAccum(albedo4.rgb, in.worldPos.xyz, in.ndc, in.clip.xy, in.viewZ);
   // Strict clamp 0..1 before premultiplied alpha multiply keeps the LDR
   // path bounded even when a scene stacks many lights.
   let lit_rgba = clamp(vec4<f32>(lit, albedo4.a), vec4<f32>(0.0), vec4<f32>(1.0));
   let premult = vec4<f32>(
-    translucent_fog(view, in.worldPos, lit_rgba.rgb * lit_rgba.a, lit_rgba.a),
+    forward_fog(view, in.worldPos.xyz, in.worldPos.w, lit_rgba.rgb * lit_rgba.a, lit_rgba.a),
     lit_rgba.a,
   );
   // LDR target is bgra8unorm; encode rgb via the sRGB transfer in-shader.
@@ -253,15 +253,15 @@ fn fs_main(in : VsOut) -> @location(0) vec4<f32> {
 
 @fragment
 fn fs_main_hdr(in : VsOut) -> @location(0) vec4<f32> {
-  applyViewClipping(in.worldPos, false);
+  applyViewClipping(in.worldPos.xyz, false);
   let texel = sampleMaterialTexture(baseColorTexture, baseColorSampler, in.uv_atlas, material.baseColorTextureCoordinatesMetadata.zw);
   let albedo4 = texel * material.colorTint;
-  let lit = spriteLitShadeAccum(albedo4.rgb, in.worldPos, in.ndc, in.clip.xy, in.viewZ);
+  let lit = spriteLitShadeAccum(albedo4.rgb, in.worldPos.xyz, in.ndc, in.clip.xy, in.viewZ);
   // HDR variant: do NOT clamp the lit output to [0, 1]; let the tonemap
   // pass absorb HDR values > 1. Alpha stays clamped because the premult
   // math requires alpha in [0, 1].
   let alpha = clamp(albedo4.a, 0.0, 1.0);
-  return vec4<f32>(translucent_fog(view, in.worldPos, lit * alpha, alpha), alpha);
+  return vec4<f32>(forward_fog(view, in.worldPos.xyz, in.worldPos.w, lit * alpha, alpha), alpha);
 }
 
 struct TemporalVsOut {

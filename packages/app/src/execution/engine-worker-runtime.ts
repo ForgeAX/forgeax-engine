@@ -180,8 +180,6 @@ interface WorkerRealm {
   releaseProfilerCatalog: (() => void) | undefined;
   rhiCapture: RhiCapture | undefined;
   rhiAttachment: RecorderAttachment | undefined;
-  profilerCaptureId: string | undefined;
-  profilerFrameId: number;
 }
 
 let realm: WorkerRealm | undefined;
@@ -628,8 +626,6 @@ function createRealmCandidate(init: RetainedExecutionInit, world: World): Worker
     releaseProfilerCatalog: profilerCatalog?.ok === true ? profilerCatalog.value : undefined,
     rhiCapture: undefined,
     rhiAttachment: undefined,
-    profilerCaptureId: undefined,
-    profilerFrameId: 0,
   };
 }
 
@@ -1266,17 +1262,11 @@ function applyDrawingBufferSize(activeRealm: WorkerRealm, message: ExecutionFram
 }
 
 function beginProfileFrame(
-  activeRealm: WorkerRealm,
   profileSession: RecorderSession | undefined,
 ): ProfileFrameToken | undefined {
   if (profileSession === undefined) return undefined;
-  if (activeRealm.profilerCaptureId !== profileSession.captureId) {
-    activeRealm.profilerCaptureId = profileSession.captureId;
-    activeRealm.profilerFrameId = 0;
-  }
-  const frame = profileSession.beginFrame(++activeRealm.profilerFrameId);
-  if (!frame.ok) return undefined;
-  return { captureId: profileSession.captureId, frameId: activeRealm.profilerFrameId };
+  const frame = profileSession.beginFrame();
+  return frame.ok ? frame.value : undefined;
 }
 
 function endProfileFrame(
@@ -1587,7 +1577,7 @@ async function advanceFrame(
   admitInspections();
   const started = performance.now();
   const profileSession = activeRealm.profiler?.activeSession();
-  const profileFrame = beginProfileFrame(activeRealm, profileSession);
+  const profileFrame = beginProfileFrame(profileSession);
   try {
     const update = profilePhase(profileSession, 'world-update-primary', () =>
       world.update(message.deltaSeconds),

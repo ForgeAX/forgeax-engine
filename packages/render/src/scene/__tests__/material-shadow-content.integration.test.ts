@@ -14,6 +14,8 @@ import {
   shadowSourceSnapshot,
 } from '../../__tests__/shadow-source-content.fixture';
 import { MeshChanges, ShadowMeshReads } from '../../device/mesh-changes';
+import type { GpuDrivenBatchBinding } from '../../gpu-driven/batch-topology';
+import type { BatchExecutions } from '../../gpu-driven/material-artifacts';
 import { MaterialResource } from '../../material-resource';
 import {
   installPublicationPrograms,
@@ -26,7 +28,7 @@ import type { RenderFrameState } from '../../record/frame-snapshot';
 import type { RenderSystemInternals } from '../../record/render-context';
 import { defaultMaterialSnapshot, type MaterialSnapshot } from '../../render-system-extract';
 import type { ViewLights } from '../../world/render-lights';
-import { MaterialFrame } from '../material-dispatch';
+import { MaterialDispatch, MaterialFrame } from '../material-dispatch';
 import {
   ShadowMaterialContent,
   sameShadowMaterial,
@@ -34,6 +36,7 @@ import {
 } from '../material-shadow-content';
 import { MeshFrame } from '../mesh-frame';
 import { type PersistentShadowCasterProjection, RenderScene } from '../render-scene';
+import { SceneSlots } from '../scene-slots';
 
 let opaque: MaterialSnapshot, alpha: MaterialSnapshot, displaced: MaterialSnapshot;
 function snapshot(cooked: Awaited<ReturnType<typeof cookStaticShadow>>): MaterialSnapshot {
@@ -145,6 +148,158 @@ it('keeps views that batch different caster subsets, but not across a subset edi
   expect(capture(frame, [shared]).same(main)).toBe(true);
   subset.adopt(alpha);
   expect(capture(frame.with(subset), [shared]).same(main)).toBe(false);
+});
+
+it.each([
+  'opaque',
+  'masked',
+] as const)('ignores an unread material edit while retaining the consumed %s material witness', (kind) => {
+  const world = new World();
+  const caster = new MaterialResource(kind === 'opaque' ? opaque : alpha);
+  const flash = new MaterialResource(alpha);
+  const before = new MaterialFrame(undefined).with(caster).with(flash);
+  const capture = (frame: MaterialFrame) => {
+    const content = new ShadowMaterialContent(frame);
+    content.add(caster, caster.snapshot, worldRenderResources(world));
+    return content;
+  };
+  const original = capture(before);
+  flash.adopt(change(alpha, 'alphaCutoff', 0.9));
+  const after = before.with(flash);
+  expect(sameShadowMaterialFrames(before, after)).toBe(false);
+  expect(capture(after).same(original)).toBe(true);
+  // The consumed root keeps its old value even after the resource adopts a new one.
+  caster.adopt(change(alpha, 'alphaCutoff', 0.7));
+  expect(capture(after.with(caster)).same(original)).toBe(false);
+});
+
+it('retains a static GPU view when only an unconsumed material and equivalent source plan change', async () => {
+  const fixture = await staticShadowFixture();
+  const world = new World(),
+    caster = new MaterialResource(opaque),
+    flash = new MaterialResource(alpha);
+  const before = new MaterialFrame(undefined).with(caster).with(flash);
+  const capture = (frame: MaterialFrame) => {
+    const content = new ShadowMaterialContent(frame);
+    content.add(caster, caster.snapshot, worldRenderResources(world));
+    return content;
+  };
+  try {
+    const first = updateShadowView(fixture.pool, {
+      ...fixture.input(),
+      shadowMaterials: capture(before),
+    }).unwrap();
+    fixture.pool._commitResourceReplacement();
+    flash.adopt(change(alpha, 'alphaCutoff', 0.9));
+    fixture.topology.rebuild(fixture.projection.slotsSnapshot());
+    const input = fixture.input();
+    expect(input.sourcePlan).not.toBe(first.sourcePlan);
+    const next = updateShadowView(fixture.pool, {
+      ...input,
+      shadowMaterials: capture(before.with(flash)),
+    }).unwrap();
+    expect(next.cache).toBe('hit');
+    expect(fixture.pool.invalidationReason(fixture.identity)).toBeUndefined();
+    expect(next.generation).toBe(first.generation);
+  } finally {
+    fixture.dispose();
+  }
+});
+
+it.each([
+  'noncaster',
+  'member',
+] as const)('collects actual caster material roots, including shared-row %s edits', (edit) => {
+  const world = new World(),
+    owner = new MaterialDispatch(),
+    slots = new SceneSlots();
+  const primary = new MaterialResource(alpha),
+    member = new MaterialResource(alpha),
+    flash = new MaterialResource(alpha);
+  const rows = [primary, member, flash].map((resource, slot) => {
+    const source = {
+      ...shadowSourceSnapshot(slot + 1, slot),
+      material: resource,
+      materials: [resource],
+      ...(slot === 2 ? { shadowCaster: false as const } : {}),
+    };
+    owner.bind(slot, source);
+    const { entityKey, transform, ...content } = source;
+    slots.write(slot, {
+      entityKey,
+      generation: 1,
+      content,
+      pose: transform?.world ?? new Float32Array(16),
+    });
+    return source;
+  });
+  const bindings: GpuDrivenBatchBinding[] = [0, 2].map((index) => {
+    const source = rows[index];
+    assert(source !== undefined);
+    const geometry = source.gpuDrivenDraws?.[0]?.geometry;
+    assert(geometry !== undefined);
+    return {
+      assetHandle: 3,
+      material: source.material,
+      geometry,
+      drawItemIndex: 0,
+      ...(index === 0
+        ? {
+            rowGroup: {
+              text: 'shared-caster',
+              sources: 'renderer-override',
+              rows: new Map([
+                [primary, 1],
+                [member, 1],
+              ]),
+            },
+          }
+        : {}),
+    };
+  });
+  const capture = () => {
+    const materials = owner.materials(),
+      content = new ShadowMaterialContent(materials);
+    const projection: PersistentShadowCasterProjection = {
+      meshDraws: new RenderScene(),
+      content: {
+        owner,
+        materials,
+        meshes: new MeshFrame(),
+        sceneRevision: 0,
+        dispatchRevision: 0,
+        subsurface: { source: 0, authorVisible: 0, admitted: 0 },
+      },
+      dispatch: owner.query(slots.capture()),
+      renderables: rows,
+      worldBoundsOf: () => false,
+    };
+    const executions = new Map<GpuDrivenBatchBinding, BatchExecutions>();
+    for (const binding of bindings)
+      executions.set(binding, {
+        forward: { route: 'none' },
+        shadow: {
+          route: 'direct',
+          material: materials.get(binding.material)?.snapshot ?? binding.material.snapshot,
+          pass: { kind: 'shadow', shaderId: 'fixture-shadow' },
+        },
+      });
+    collectGpuShadowMaterials(
+      { preparedMaterialTexture: () => undefined },
+      worldRenderResources(world),
+      executions,
+      new Map(),
+      content,
+      undefined,
+      projection,
+    );
+    return content;
+  };
+  const before = capture(),
+    edited = edit === 'member' ? member : flash;
+  edited.adopt(change(alpha, 'alphaCutoff', 0.9));
+  owner.adopt(edited);
+  expect(capture().same(before)).toBe(edit === 'noncaster');
 });
 
 it.each([

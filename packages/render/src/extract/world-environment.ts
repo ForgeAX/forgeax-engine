@@ -36,6 +36,10 @@ import {
 import { validateChannelMask } from '../components/lighting-channels';
 import { validatePointLightDecay } from '../components/point-light';
 import { RenderFeatureEnvironment } from '../components/render-feature-environment';
+import {
+  RenderTargetEnvironment,
+  type RenderTargetEnvironmentSource,
+} from '../components/render-target-environment';
 import { selectEnvironment } from '../environment/frame';
 import { SpawnLightInvalidBoundsError } from '../errors/component-validation';
 import { createLightResourceUnavailable } from '../errors/render';
@@ -921,6 +925,12 @@ function extractSpotLights(
     ) as Float32Array;
     const sCastShadow = world[worldRead].getFieldValue(row.entity, SpotLight, 'castShadow') === 1;
     const sRange = world[worldRead].getFieldValue(row.entity, SpotLight, 'range') as number;
+    const sDecay = world[worldRead].getFieldValue(row.entity, SpotLight, 'decay') as number;
+    const decayError = validatePointLightDecay(sDecay, 'SpotLight');
+    if (decayError !== null) {
+      routeExtractError(worldInternal, decayError, 'RenderSystem.extract (spot-light-decay)');
+      continue;
+    }
     const sNearPlane = world[worldRead].getFieldValue(row.entity, SpotLight, 'nearPlane') as number;
     const authoredFarPlane = world[worldRead].getFieldValue(
       row.entity,
@@ -1070,6 +1080,7 @@ function extractSpotLights(
       color: scaledLightColor(world, row.entity, SpotLight, sIntensity),
       intensity: sIntensity,
       invRangeSquared: computeInvRangeSquared(sRange),
+      decay: Math.fround(sDecay),
       cosInner: degToCos(sInnerConeDeg),
       cosOuter: degToCos(sOuterConeDeg),
       ...resolveIesProfile(world, worldInternal, iesProfiles, sIesProfile, row.entity),
@@ -1571,8 +1582,18 @@ function joinPointShadowLayers(
  */
 function skylightSnapshotOf(world: World, entity: EntityHandle): SkylightSnapshot {
   const captureWorld = readEnvironmentPose(world, entity);
+  const targetEnvironment = world.get(entity, RenderTargetEnvironment);
   const featureEnvironment = world.get(entity, RenderFeatureEnvironment);
   return {
+    ...(targetEnvironment.ok
+      ? {
+          targetEnvironment: world.sharedRefs
+            .resolve<'RenderTargetEnvironmentSource', RenderTargetEnvironmentSource>(
+              targetEnvironment.value.source,
+            )
+            .unwrap(),
+        }
+      : {}),
     ...(featureEnvironment.ok ? { featureEnvironment: { ...featureEnvironment.value } } : {}),
     ...(captureWorld === undefined
       ? {}

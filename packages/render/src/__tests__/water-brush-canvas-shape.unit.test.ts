@@ -27,7 +27,7 @@ const point = (
 });
 
 function spline(
-  points: ReturnType<typeof point>[],
+  points: WaterBrushIslandActor['spline']['points'],
   closed = false,
 ): WaterBrushIslandActor['spline'] {
   return { closed, points };

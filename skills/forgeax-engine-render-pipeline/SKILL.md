@@ -5,6 +5,61 @@ description: ForgeAX render pipelines, post-processing, and typed RenderGraph ow
 
 # forgeax-engine-render-pipeline
 
+One full-size, full-rate, all-channel display CameraView uses the native surface
+directly. Partial/scaled, held, stereo-channel and multiple display views retain
+composition. Keep the view's preparation barrier, history, target readbacks and
+receipt observations; Surface UI captures final display only after its own draw.
+See [scene/output ownership](../../packages/render/README.md#native-output-core).
+
+A new capture pipeline may hold submission or submit only a preparation candidate.
+The current receipt stays pending in both cases, including after a ready frame.
+Keep presentation publication in RenderCommit; waiting consumers must never inherit
+prior readiness and sample an unwritten target. See the
+[Three target contract](../../packages/three/README.md#ordered-hdr-targets-and-cube-environments).
+
+## Volumetric clouds
+
+Use Standard HDR with a single-sample camera, an `Atmosphere`, a
+`DirectionalLight`, and one `VolumetricCloudLayer` per World. Copy the
+[Render package example](../../packages/render/examples/volumetric-clouds)
+into a project asset root. Find it at `examples/volumetric-clouds` in the
+installed `@forgeax/engine-render` package, or at
+`source/engine/packages/render/examples/volumetric-clouds` in the SDK ZIP.
+
+Load `cloudGuids.material` with `cloudMaterialKind` and both instance GUIDs
+with `cloudMaterialInstanceKind` from `@forgeax/engine/render/authoring`.
+Spawn `VolumetricCloudLayer` from `@forgeax/engine/render` with the material
+handle, altitude and thickness in meters. Keep the initial instance handle
+for the base option. Use keyboard press edges to set `materialInstance` on
+the same layer and bump `requestRevision` with each selection. See the
+[cloud authoring contract](../../packages/render/README.md#volumetric-cloud-authoring-and-transport)
+for the World code and inspection fields.
+
+For wind and ground shadows, advance the layer's `windOffsetMeters` in
+simulation and select Beer shadows with `shadowMode: 1` and
+`castCloudShadows: true`. Cloud quality presets can vary `viewSampleCountScale`.
+Mode 0 always traces at ceil-quarter dimensions and reconstructs at ceil-half
+dimensions. `shadowResolution` controls the shadow map.
+
+Verify each selection against `completedAdoption` and capture cloud silhouettes,
+shadow movement and a fast camera turn in the browser. In a game with a local
+renderer, inject `renderer` into the game plugin and read
+`ctx.renderer.inspect({ fields: ['cloudLayer'] })`. Send unavailable status
+to the HUD over the game's Host port. A fallback view using MSAA can keep
+the sky with `Atmosphere.backgroundOnly: true`. Verify a completed frame
+with the HUD notice in the browser.
+
+## Water
+
+For a lake with waves, surface queries or buoyancy, start at the Water package's
+[Lake Starter](../../packages/water/README.md#start-with-a-lake). It ships with
+the matching SDK and npm package. Select it explicitly for
+`test-experimental` Water work and verify a visible browser frame before
+adding interactions. For a standalone water-looking mesh, use the stock
+`single-layer-medium` material.
+
+## Render preparation
+
 For the opt-in dispersive Water producer, surface transport uses current native
 submerged unions and horizontal velocity at facing boundaries. Flux divergence
 drives the same depth-resolved wave modes with zero DC. Keep falling-object entry
@@ -29,7 +84,35 @@ siblings cannot publish a partial picture. Inspect the pending receipt and
 actual tape before changing pipeline/shader work. See
 [preparation semantics](../../packages/render/README.md#preparing-hidden-loadout-pipelines).
 
+RenderGraph places private MSAA color resolves at the last unobserved writer.
+Declare the final resolve pass unconditionally when it must run even with no
+transparent draws; keep real producer predicates explicit. Intermediate sampled,
+copy or attachment accesses retain the required result, and imported targets keep
+their publication resolves. Count native attachments on the actual frame before
+claiming a whole-game resolve reduction or a performance gain.
+
+Compatible adjacent raster stages share one native pass by default. Inspect
+`passes[].rasterBatch` for logical membership and the actual tape for physical
+boundaries. GPU instrumentation times the group once; logical callbacks retain
+their own resolvers/debug groups. CPU wrappers preserve batching. A replay runner
+that observes or copies a logical result declares `requiresPassBoundary(name)`;
+wrappers preserve it. Do not split ordinary passes merely to retain old timing rows.
+
+For ordered offscreen draws use `Renderer.draw({ source, camera, targetWrite })` and
+await a ready receipt when later operations require the written image. Target writes
+reuse the primary capture graph; they reject destination sampling feedback. HDR cube
+lighting uses `prepareRenderTargetEnvironment` after six completed faces, then
+`RenderTargetEnvironment` on the Skylight entity; retain/release its native lease.
+See [target lifecycle](../../packages/render/README.md#explicit-ordered-target-submissions)
+and [Three initialization](../../packages/three/README.md#ordered-hdr-targets-and-cube-environments).
+
 ## Quick contract
+
+Standard Deferred is single-sample. Explicit Deferred with MSAA returns a structured
+admission error; `auto` selects real Forward unless Deferred-only work forbids it.
+SSR and Water must preserve that MSAA choice. Inspect `viewConfiguration` for the
+last submitted requested/effective path, AA and scene sampling; `profile` remains
+the device default. See [Render admission](../../packages/render/README.md#standard-lighting-contract).
 
 `Camera.postProcessing` defaults to true and gates optional post effects and
 their preparation/work scopes while preserving authored effect settings.
@@ -233,11 +316,14 @@ AO, SSR, decals and screen shadows use independent single-sample surface data.
 See [MSAA readiness](../../packages/render/README.md#msaa-on-webgl2).
 
 Use `ANTIALIAS_MSAA_FXAA` for native four-sample Forward coverage followed by
-FXAA. Standalone WebGPU `Fog` supports per-sample depth and color; local
-`VolumetricFog` resolves nearest Reverse-Z depth on GPU for its per-pixel
+FXAA. Ordinary Forward analytic `Fog` uses native vertex height fog before
+blending; no screen/MSAA fog pass is added. Raw WGSL color writers publish
+`program.forwardFog: 'height-vertex/1'` or explicitly use `renderState.fog: false`.
+Full Atmosphere, Deferred and capture fog retain their screen transport.
+Local `VolumetricFog` resolves nearest Reverse-Z depth on GPU for its per-pixel
 integral. Keep full `Atmosphere` single-sampled and qualify WebGL2 fog separately.
-Run the complete `opaque-fog-flag.dawn.test.ts` and
-`volumetric-fog-tonemap.browser.test.ts` owners, then exercise the actual game.
+Run the complete fog pixel owners and exercise the actual game; helper GPU
+pixels and fewer graph passes alone do not establish whole-game performance.
 
 Author instance transforms and Mesh LODs normally. Opaque uniform-only CPU
 collections batch each 128-instance page by resident level. Preserve source

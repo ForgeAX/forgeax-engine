@@ -22,6 +22,7 @@ import { requireCharacterBody } from './character-motion.js';
 import type { DerivedBodyRecord } from './derived-candidate-records.js';
 import type { RapierRigidBody, RapierWorld } from './physics-entity-records.js';
 import {
+  hasZeroColliderScale,
   type PhysicsSyncDescriptor,
   type PhysicsSyncQueryRow,
   type PhysicsSyncState,
@@ -119,6 +120,30 @@ export function runComputeMove(
   return vec3.create(movement.x, movement.y, movement.z);
 }
 
+function authoredColliderChanged(
+  previous: PhysicsSyncDescriptor | undefined,
+  descriptor: PhysicsSyncDescriptor,
+  derivedBodies: Map<number, DerivedBodyRecord>,
+): boolean {
+  const collider = descriptor.collider;
+  if (!samePhysicsValue(previous?.collider, collider)) return true;
+  if (previous === undefined || collider === undefined) return false;
+  const previousScale = previous.transform.scale;
+  const scale = descriptor.transform.scale;
+  // Scale changes mesh geometry even when Rapier owns a dynamic body's pose.
+  if (
+    collider.shape === ColliderShapeValue.convexHull ||
+    collider.shape === ColliderShapeValue.trimesh
+  )
+    return !sameColliderScale(previousScale, scale);
+  // Entering or leaving zero scale changes a static primitive's presence.
+  if (hasZeroColliderScale(previousScale) === hasZeroColliderScale(scale)) return false;
+  const bodyType =
+    derivedBodies.get(descriptor.entity)?.bodyType ??
+    rigidBodyTypeFromF32(descriptor.rigidBody.type);
+  return bodyType === 'static';
+}
+
 export function runReconcilePhysicsEntity(
   removeEntity: (entity: number) => void,
   reconcileTransformlessCompatibility: (entity: number, staticByEcs: boolean) => void,
@@ -206,15 +231,10 @@ export function runReconcilePhysicsEntity(
     };
   }
 
-  const colliderChanged =
-    !samePhysicsValue(previous?.collider, descriptor.collider) ||
-    // Scale changes geometry even when Rapier owns a dynamic body's pose.
-    ((descriptor.collider?.shape === ColliderShapeValue.convexHull ||
-      descriptor.collider?.shape === ColliderShapeValue.trimesh) &&
-      !sameColliderScale(previous?.transform.scale, descriptor.transform.scale));
   if (
     hasBody(entity) &&
-    (colliderChanged || !samePhysicsValue(previous?.rigidBody, descriptor.rigidBody))
+    (authoredColliderChanged(previous, descriptor, derivedBodies) ||
+      !samePhysicsValue(previous?.rigidBody, descriptor.rigidBody))
   ) {
     // Authored properties share one native-body mutation path with derived
     // shapes, preserving motion and joint identity through ordinary edits.
@@ -255,7 +275,7 @@ export function runSyncAuthoredEcsMutation(
     transform: PhysicsTransform3D,
     collider: ColliderSnapshot,
     bodyType: RigidBodyType,
-  ) => ColliderDesc,
+  ) => ColliderDesc | undefined,
   bodyColliders: (body: RapierRigidBody) => RapierWorld[],
   createAuthoredCollider: (
     desc: ColliderDesc,
@@ -329,16 +349,17 @@ export function runSyncAuthoredEcsMutation(
     descriptor.collider === undefined
       ? undefined
       : authoredColliderDesc(descriptor.transform, descriptor.collider, bodyType);
+  const activeCollider = prepared === undefined ? undefined : descriptor.collider;
   // The native body is shared, but authored and derived colliders have
   // distinct owners. Never address an authored collider by array position.
   const oldColliders = bodyColliders(body);
-  if (prepared !== undefined && descriptor.collider !== undefined) {
+  if (prepared !== undefined && activeCollider !== undefined) {
     const collider = createAuthoredCollider(
       prepared.setDensity(
-        committed?.massProperties?.mode === 'explicit' ? 0 : descriptor.collider.density,
+        committed?.massProperties?.mode === 'explicit' ? 0 : activeCollider.density,
       ),
       body,
-      descriptor.collider,
+      activeCollider,
     );
     syncIsolationCollider(collider, entity);
   }
@@ -360,18 +381,18 @@ export function runSyncAuthoredEcsMutation(
   };
   const removedAuthoredCollider = retireAuthoredColliders();
   const record = entityMap.get(entity);
-  if (record !== undefined) record.authoredDensity = descriptor.collider?.density;
-  if (descriptor.collider === undefined && removedAuthoredCollider) {
+  if (record !== undefined) record.authoredDensity = activeCollider?.density;
+  if (activeCollider === undefined && removedAuthoredCollider) {
     retireRemovedColliderPairs(entity);
   }
   const synchronizeAuthoredBodyType = () => {
     if (bodyType === 'static') {
       body.setBodyType(RAPIER.RigidBodyType.Fixed, true);
       if (committed?.sourceTransform === undefined)
-        syncAuthoredPose(entity, descriptor.transform, descriptor.collider, 'static');
+        syncAuthoredPose(entity, descriptor.transform, activeCollider, 'static');
     } else if (bodyType === 'kinematic') {
       body.setBodyType(RAPIER.RigidBodyType.KinematicPositionBased, true);
-      syncAuthoredPose(entity, descriptor.transform, descriptor.collider, 'kinematic');
+      syncAuthoredPose(entity, descriptor.transform, activeCollider, 'kinematic');
     } else {
       body.setBodyType(RAPIER.RigidBodyType.Dynamic, true);
       if (record !== undefined) record.additionalMass = Math.max(0, descriptor.rigidBody.mass);
@@ -411,7 +432,7 @@ export function runEnsureBody(
     transform: PhysicsTransform3D,
     collider: ColliderSnapshot,
     bodyType: RigidBodyType,
-  ) => ColliderDesc,
+  ) => ColliderDesc | undefined,
   readRaw: () => RapierWorld,
   registerBody: (
     entity: number,
@@ -522,7 +543,7 @@ export function runEnsureBody(
     entity,
     body.handle,
     rbType === 'dynamic' ? Math.max(0, rigidBody.mass) : 0,
-    collider?.density,
+    prepared === undefined ? undefined : collider?.density,
   );
   const createdRecord = entityMap.get(entity);
   if (createdRecord) createdRecord.canSleep = rigidBody.canSleep ?? true;

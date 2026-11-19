@@ -81,7 +81,7 @@ export function addReflectionProbePmremPasses(
           encoder.copyTextureToTexture(
             {
               texture: resources.texture(filtered).unwrap(),
-              origin: [viewport.x, viewport.y, 0],
+              origin: [viewport.x, viewport.y, work.filteredLayer ?? 0],
             },
             {
               texture: resources.texture(scratch.value).unwrap(),

@@ -23,6 +23,30 @@
       "types": "./dist/tsl.d.ts",
       "import": "./dist/tsl.mjs"
     },
+    "./addons/postprocessing/EffectComposer.js": {
+      "types": "./dist/addons/postprocessing/EffectComposer.d.ts",
+      "import": "./dist/addons/postprocessing/EffectComposer.mjs"
+    },
+    "./addons/postprocessing/GTAOPass.js": {
+      "types": "./dist/addons/postprocessing/GTAOPass.d.ts",
+      "import": "./dist/addons/postprocessing/GTAOPass.mjs"
+    },
+    "./addons/postprocessing/OutputPass.js": {
+      "types": "./dist/addons/postprocessing/OutputPass.d.ts",
+      "import": "./dist/addons/postprocessing/OutputPass.mjs"
+    },
+    "./addons/postprocessing/Pass.js": {
+      "types": "./dist/addons/postprocessing/Pass.d.ts",
+      "import": "./dist/addons/postprocessing/Pass.mjs"
+    },
+    "./addons/postprocessing/RenderPass.js": {
+      "types": "./dist/addons/postprocessing/RenderPass.d.ts",
+      "import": "./dist/addons/postprocessing/RenderPass.mjs"
+    },
+    "./addons/postprocessing/UnrealBloomPass.js": {
+      "types": "./dist/addons/postprocessing/UnrealBloomPass.d.ts",
+      "import": "./dist/addons/postprocessing/UnrealBloomPass.mjs"
+    },
     "./package.json": "./package.json",
     "./build": {
       "types": "./dist/build/materials.d.ts",
@@ -371,6 +395,126 @@
     "./addons/exporters/GLTFExporter.js": {
       "types": "./dist/addons/exporters/GLTFExporter.d.ts",
       "import": "./dist/addons/exporters/GLTFExporter.mjs"
+    },
+    "./addons/loaders/MD2Loader.js": {
+      "types": "./dist/addons/loaders/MD2Loader.d.ts",
+      "import": "./dist/addons/loaders/MD2Loader.mjs"
+    },
+    "./addons/loaders/TIFFLoader.js": {
+      "types": "./dist/addons/loaders/TIFFLoader.d.ts",
+      "import": "./dist/addons/loaders/TIFFLoader.mjs"
+    },
+    "./addons/loaders/PVRLoader.js": {
+      "types": "./dist/addons/loaders/PVRLoader.d.ts",
+      "import": "./dist/addons/loaders/PVRLoader.mjs"
+    },
+    "./addons/loaders/LUTImageLoader.js": {
+      "types": "./dist/addons/loaders/LUTImageLoader.d.ts",
+      "import": "./dist/addons/loaders/LUTImageLoader.mjs"
+    },
+    "./addons/loaders/HDRCubeTextureLoader.js": {
+      "types": "./dist/addons/loaders/HDRCubeTextureLoader.d.ts",
+      "import": "./dist/addons/loaders/HDRCubeTextureLoader.mjs"
+    },
+    "./addons/loaders/KMZLoader.js": {
+      "types": "./dist/addons/loaders/KMZLoader.d.ts",
+      "import": "./dist/addons/loaders/KMZLoader.mjs"
+    },
+    "./addons/exporters/EXRExporter.js": {
+      "types": "./dist/addons/exporters/EXRExporter.d.ts",
+      "import": "./dist/addons/exporters/EXRExporter.mjs"
+    },
+    "./addons/utils/GeometryCompressionUtils.js": {
+      "types": "./dist/addons/utils/GeometryCompressionUtils.d.ts",
+      "import": "./dist/addons/utils/GeometryCompressionUtils.mjs"
+    },
+    "./addons/utils/WorkerPool.js": {
+      "types": "./dist/addons/utils/WorkerPool.d.ts",
+      "import": "./dist/addons/utils/WorkerPool.mjs"
+    },
+    "./addons/utils/UVsDebug.js": {
+      "types": "./dist/addons/utils/UVsDebug.d.ts",
+      "import": "./dist/addons/utils/UVsDebug.mjs"
+    },
+    "./addons/misc/Gyroscope.js": {
+      "types": "./dist/addons/misc/Gyroscope.d.ts",
+      "import": "./dist/addons/misc/Gyroscope.mjs"
+    },
+    "./addons/misc/MorphAnimMesh.js": {
+      "types": "./dist/addons/misc/MorphAnimMesh.d.ts",
+      "import": "./dist/addons/misc/MorphAnimMesh.mjs"
+    },
+    "./addons/misc/MorphBlendMesh.js": {
+      "types": "./dist/addons/misc/MorphBlendMesh.d.ts",
+      "import": "./dist/addons/misc/MorphBlendMesh.mjs"
+    },
+    "./addons/misc/MD2Character.js": {
+      "types": "./dist/addons/misc/MD2Character.d.ts",
+      "import": "./dist/addons/misc/MD2Character.mjs"
+    },
+    "./addons/misc/MD2CharacterComplex.js": {
+      "types": "./dist/addons/misc/MD2CharacterComplex.d.ts",
+      "import": "./dist/addons/misc/MD2CharacterComplex.mjs"
+    },
+    "./addons/misc/TubePainter.js": {
+      "types": "./dist/addons/misc/TubePainter.d.ts",
+      "import": "./dist/addons/misc/TubePainter.mjs"
+    },
+    "./addons/misc/RollerCoaster.js": {
+      "types": "./dist/addons/misc/RollerCoaster.d.ts",
+      "import": "./dist/addons/misc/RollerCoaster.mjs"
+    },
+    "./addons/misc/Volume.js": {
+      "types": "./dist/addons/misc/Volume.d.ts",
+      "import": "./dist/addons/misc/Volume.mjs"
+    },
+    "./addons/misc/VolumeSlice.js": {
+      "types": "./dist/addons/misc/VolumeSlice.d.ts",
+      "import": "./dist/addons/misc/VolumeSlice.mjs"
+    },
+    "./addons/environments/ColorEnvironment.js": {
+      "types": "./dist/addons/environments/ColorEnvironment.d.ts",
+      "import": "./dist/addons/environments/ColorEnvironment.mjs"
+    },
+    "./addons/environments/DebugEnvironment.js": {
+      "types": "./dist/addons/environments/DebugEnvironment.d.ts",
+      "import": "./dist/addons/environments/DebugEnvironment.mjs"
+    },
+    "./addons/environments/RoomEnvironment.js": {
+      "types": "./dist/addons/environments/RoomEnvironment.d.ts",
+      "import": "./dist/addons/environments/RoomEnvironment.mjs"
+    },
+    "./addons/objects/MarchingCubes.js": {
+      "types": "./dist/addons/objects/MarchingCubes.d.ts",
+      "import": "./dist/addons/objects/MarchingCubes.mjs"
+    },
+    "./addons/objects/ShadowMesh.js": {
+      "types": "./dist/addons/objects/ShadowMesh.d.ts",
+      "import": "./dist/addons/objects/ShadowMesh.mjs"
+    },
+    "./addons/loaders/LWOLoader.js": {
+      "types": "./dist/addons/loaders/LWOLoader.d.ts",
+      "import": "./dist/addons/loaders/LWOLoader.mjs"
+    },
+    "./addons/loaders/USDLoader.js": {
+      "types": "./dist/addons/loaders/USDLoader.d.ts",
+      "import": "./dist/addons/loaders/USDLoader.mjs"
+    },
+    "./addons/loaders/USDZLoader.js": {
+      "types": "./dist/addons/loaders/USDZLoader.d.ts",
+      "import": "./dist/addons/loaders/USDZLoader.mjs"
+    },
+    "./addons/exporters/USDZExporter.js": {
+      "types": "./dist/addons/exporters/USDZExporter.d.ts",
+      "import": "./dist/addons/exporters/USDZExporter.mjs"
+    },
+    "./addons/csm/CSMFrustum.js": {
+      "types": "./dist/addons/csm/CSMFrustum.d.ts",
+      "import": "./dist/addons/csm/CSMFrustum.mjs"
+    },
+    "./addons/interactive/InteractiveGroup.js": {
+      "types": "./dist/addons/interactive/InteractiveGroup.d.ts",
+      "import": "./dist/addons/interactive/InteractiveGroup.mjs"
     }
   },
   "main": "./dist/index.mjs",

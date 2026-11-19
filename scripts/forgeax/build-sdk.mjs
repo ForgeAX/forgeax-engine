@@ -53,7 +53,7 @@ import {
 import { archiveEngineSource, seedSourcePackageBuilds } from './sdk-source.mjs';
 import { sdkStage } from './sdk-stage.mjs';
 import { seedTemplateBuildCache } from './sdk-template-cache.mjs';
-import { stageViewToolPackage } from './sdk-view.mjs';
+import { stageViewConsumerSkills, stageViewToolPackage } from './sdk-view.mjs';
 
 const execFileAsync = promisify(execFile);
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -445,6 +445,7 @@ const engineBundle = await sdkStage('bundle complete npm Engine', () =>
       .filter((entry) => entry.name.startsWith('@forgeax/engine-'))
       .map((entry) => ({ ...entry, archive: tarballs.get(entry.name).path })),
     version,
+    viewTool: { root: resolve(stage, 'tools/view'), dependencySource: viewRoot },
   }),
 );
 // Bare SDK package contracts remain inspectable. Only complete delivery units
@@ -754,6 +755,8 @@ for (const id of sdkSkillIds) {
   }
   await cp(resolve(root, 'skills', id), resolve(stage, 'skills', id), { recursive: true });
 }
+sdkSkillIds.push(...(await stageViewConsumerSkills(viewRoot, resolve(stage, 'skills'))));
+sdkSkillIds.sort();
 // Source-derived SDK discovery is generated into the distribution, not committed documentation.
 // `api-index.md` is the directory; each domain file lands beside it under `api/`.
 const { writeApiReference } = await import('./sdk-api-index.mjs');

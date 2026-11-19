@@ -25,6 +25,7 @@ import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_UNIFORM } from '../gpu-usag
 import { pmremExtent } from '../ibl/pmrem';
 import type { RenderExtent } from '../pipeline/render-extent';
 import { type ProbeBackgroundResources, recordProbeBackground } from '../reflection/background';
+import { addPmremArrayMigrations, type PmremArrayMigration } from '../reflection/pmrem-array';
 import type { CameraSnapshot } from '../render-contract';
 import type { RenderPipelineFrame, RenderPipelineTarget } from '../render-pipeline';
 import { WATER_SSR_PARAMS_BYTES } from '../ssr/history';
@@ -44,7 +45,7 @@ import { addReflectionProbePmremPasses } from './reflection-probe-pmrem';
 
 import type { _InternalRenderPipelineContext, RenderSystemInternals } from './render-context';
 
-import { registerScenePass, scenePassContext } from './scene-pass-work';
+import { type CaptureScenePasses, registerScenePass, scenePassContext } from './scene-pass-work';
 
 function importTemporalHistoryTarget(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
@@ -678,11 +679,15 @@ export interface ReflectionProbeGraphWork {
   readonly filterGroup0: readonly BindGroup[] | undefined;
   readonly filterGroup1: BindGroup;
   readonly filteredSize: number;
+  readonly filteredLayer?: number;
+  readonly filteredArrayLayers?: number;
+  readonly filteredGeneration?: number;
   readonly step: ReflectionProbeFilterGraphWork | undefined;
 }
 
 export interface ReflectionProbeGraphState {
   readonly work: readonly ReflectionProbeGraphWork[];
+  readonly migrations?: readonly PmremArrayMigration[] | undefined;
 }
 
 export function boundedReflectionProbeFilterWork(
@@ -733,68 +738,91 @@ function importProbeAtmosphereTables(
   return ok(frozenViews);
 }
 
+function importReflectionProbeTargets(
+  builder: RenderGraphBuilder<RenderPipelineFrame>,
+  work: ReflectionProbeGraphWork,
+) {
+  const raw = builder.importTexture(
+    `reflection-probe.${work.probeIndex}.raw`,
+    {
+      format: work.outputFormat,
+      size: { width: work.rawSize, height: work.rawSize, depthOrArrayLayers: 6 },
+      mipLevelCount: 1,
+      sampleCount: 1,
+      dimension: '2d',
+      usage: 0x10 | 0x04 | 0x01,
+    },
+    () => work.rawTexture,
+  );
+  if (!raw.ok) return raw;
+  const rawCube = builder.importView(
+    raw.value,
+    {
+      label: `reflection-probe.${work.probeIndex}.raw-cube`,
+      dimension: 'cube',
+      arrayLayerCount: 6,
+    },
+    () => work.rawCubeView,
+  );
+  if (!rawCube.ok) return rawCube;
+  const filtered = builder.importTexture(
+    `reflection-probe.${work.probeIndex}.filtered`,
+    {
+      format: work.outputFormat,
+      size: {
+        ...pmremExtent(work.filteredSize),
+        depthOrArrayLayers: work.filteredArrayLayers ?? 1,
+      },
+      mipLevelCount: 1,
+      sampleCount: 1,
+      dimension: '2d',
+      usage: 0x10 | 0x04 | 0x01,
+    },
+    () => work.filteredTexture,
+  );
+  if (!filtered.ok) return filtered;
+  const filteredAtlas = builder.importView(
+    filtered.value,
+    {
+      label: `reflection-probe.${work.probeIndex}.filtered-atlas`,
+      dimension: '2d',
+      baseArrayLayer: work.filteredLayer ?? 0,
+      arrayLayerCount: 1,
+    },
+    () => work.filteredView,
+  );
+  if (!filteredAtlas.ok) return filteredAtlas;
+  return ok({
+    raw: raw.value,
+    rawCube: rawCube.value,
+    filtered: filtered.value,
+    filteredAtlas: filteredAtlas.value,
+  });
+}
+
 export function addReflectionProbeGraphPasses(
   builder: RenderGraphBuilder<RenderPipelineFrame>,
   state: ReflectionProbeGraphState,
   environmentCube?: import('../environment/ibl').GraphEnvironment,
   captureShadows?: import('../typed-shadow-passes').TypedShadowTargets,
   clusters?: import('../pipeline/standard-lighting/graph').StandardClusterGraphBuffers | null,
+  scenePasses?: CaptureScenePasses,
 ): Result<readonly import('@forgeax/engine-render-graph').GraphAccess[], RenderGraphError> {
   const accesses: import('@forgeax/engine-render-graph').GraphAccess[] = [];
+  const migrated = addPmremArrayMigrations(builder, state.migrations ?? []);
+  if (!migrated.ok) return migrated;
   for (const work of state.work) {
     const frozen = work.atmosphere;
     const tables = importProbeAtmosphereTables(builder, work, clusters);
     if (!tables.ok) return tables;
     const frozenViews = tables.value;
-    const raw = builder.importTexture(
-      `reflection-probe.${work.probeIndex}.raw`,
-      {
-        format: work.outputFormat,
-        size: { width: work.rawSize, height: work.rawSize, depthOrArrayLayers: 6 },
-        mipLevelCount: 1,
-        sampleCount: 1,
-        dimension: '2d',
-        usage: 0x10 | 0x04 | 0x01,
-      },
-      () => work.rawTexture,
-    );
-    if (!raw.ok) return raw;
-    const rawCube = builder.importView(
-      raw.value,
-      {
-        label: `reflection-probe.${work.probeIndex}.raw-cube`,
-        dimension: 'cube',
-        arrayLayerCount: 6,
-      },
-      () => work.rawCubeView,
-    );
-    if (!rawCube.ok) return rawCube;
-    const filtered = builder.importTexture(
-      `reflection-probe.${work.probeIndex}.filtered`,
-      {
-        format: work.outputFormat,
-        size: pmremExtent(work.filteredSize),
-        mipLevelCount: 1,
-        sampleCount: 1,
-        dimension: '2d',
-        usage: 0x10 | 0x04 | 0x01,
-      },
-      () => work.filteredTexture,
-    );
-    if (!filtered.ok) return filtered;
-    const filteredAtlas = builder.importView(
-      filtered.value,
-      {
-        label: `reflection-probe.${work.probeIndex}.filtered-atlas`,
-        dimension: '2d',
-      },
-      () => work.filteredView,
-    );
-    if (!filteredAtlas.ok) return filteredAtlas;
+    const targets = importReflectionProbeTargets(builder, work);
+    if (!targets.ok) return targets;
+    const { raw, rawCube, filtered, filteredAtlas } = targets.value;
     if (work.rawCaptureFace !== undefined) {
       const face = work.rawCaptureFace;
       const view = builder.importView(
-        raw.value,
+        raw,
         {
           label: `reflection-probe.${work.probeIndex}.capture-face-${face}`,
           dimension: '2d',
@@ -823,26 +851,30 @@ export function addReflectionProbeGraphPasses(
         () => work.rawDepthView,
       );
       if (!depth.ok) return depth;
-      if (captureShadows !== undefined && frozen !== undefined) {
+      const atmosphereBackground = captureShadows !== undefined && frozen !== undefined;
+      if (atmosphereBackground) {
         const prepared = addAtmosphereBackground(
           builder,
-          { texture: raw.value, view: view.value, format: work.outputFormat, sampleCount: 1 },
+          { texture: raw, view: view.value, format: work.outputFormat, sampleCount: 1 },
           { directional: captureShadows.directional?.view },
           { mode: 'full', clusters },
         );
         if (!prepared.ok) return prepared;
       }
-      const request = registerScenePass(builder, {
-        selector: undefined,
-        excludeSelector: undefined,
-        recordMode: undefined,
-        passKind: 'forward',
-        gpu: false,
-        gpuFilter: undefined,
-        late: false,
-        capture: true,
-        camera: () => work.faceCamera,
-      });
+      const request = registerScenePass(
+        builder,
+        (state.work.length === 1 ? scenePasses?.probe : undefined) ?? {
+          selector: undefined,
+          excludeSelector: undefined,
+          recordMode: undefined,
+          passKind: 'forward',
+          gpu: false,
+          gpuFilter: undefined,
+          late: false,
+          capture: true,
+          camera: () => work.faceCamera,
+        },
+      );
       const added = builder.addRasterPass(`reflection-probe.${work.probeIndex}.capture.${face}`, {
         accesses: [
           ...(captureShadows === undefined
@@ -872,7 +904,7 @@ export function addReflectionProbeGraphPasses(
         colorAttachments: [
           {
             view: view.value,
-            loadOp: captureShadows !== undefined && frozen !== undefined ? 'load' : 'clear',
+            loadOp: atmosphereBackground ? 'load' : 'clear',
             storeOp: 'store',
             clearValue: { r: 0, g: 0, b: 0, a: 1 },
           },
@@ -1001,12 +1033,12 @@ export function addReflectionProbeGraphPasses(
     const filteredStep = addReflectionProbePmremPasses(
       builder,
       work,
-      rawCube.value,
-      filtered.value,
-      filteredAtlas.value,
+      rawCube,
+      filtered,
+      filteredAtlas,
     );
     if (!filteredStep.ok) return filteredStep;
-    accesses.push({ resource: filteredAtlas.value, usage: 'sampled-read' });
+    accesses.push({ resource: filteredAtlas, usage: 'sampled-read' });
   }
   return ok(accesses);
 }

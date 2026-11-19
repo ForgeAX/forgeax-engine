@@ -44,7 +44,11 @@ import {
 } from '../volume/resources';
 import { resolveVolumeTemporalReset } from '../volume/temporal';
 import { testAssets } from './helpers/runtime-assets';
-import { standardPbrManifestRow, waterInfoShaderFixture } from './shader-manifest-fixture';
+import {
+  nativeOutputShaderFixture,
+  standardPbrManifestRow,
+  waterInfoShaderFixture,
+} from './shader-manifest-fixture';
 
 const MAX_MEMORY_BYTES = 48 * 1024 * 1024;
 
@@ -59,10 +63,12 @@ const VOLUME_MANIFEST = `data:application/json,${encodeURIComponent(
       { hash: 'volume-integrate', wgsl: 'fn volume_integrate() {}', glsl: '', bindings: '' },
       { hash: 'volume-composite', wgsl: 'fn volume_fs() {}', glsl: '', bindings: '' },
       ...waterInfoShaderFixture.entries,
+      ...nativeOutputShaderFixture.entries,
     ],
     materialShaders: [
       standardPbrManifestRow('f_schlick'),
       ...waterInfoShaderFixture.materialShaders,
+      ...nativeOutputShaderFixture.materialShaders,
     ],
   }),
 )}`;
@@ -264,7 +270,7 @@ describe('volumetric fog budget and recovery contract', () => {
       scissors.mockClear();
       world.update(1 / 60).unwrap();
       const result = renderer.draw(request);
-      if (!result.ok) throw result.error;
+      if (!result.ok) throw new Error(JSON.stringify(result.error), { cause: result.error });
       const done = await result.value.completed;
       if (!done.ok) throw done.error;
       return scissors.mock.calls.filter((_row, index) => {

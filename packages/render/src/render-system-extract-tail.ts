@@ -2732,6 +2732,7 @@ function pointsLinesStyleOf(
       : {
           kind: 'points',
           size: scalar.getFieldValue(entity, Points, 'size') as number,
+          minPixelSize: scalar.getFieldValue(entity, Points, 'minPixelSize') as number,
           sizeUnits,
           shape,
         };

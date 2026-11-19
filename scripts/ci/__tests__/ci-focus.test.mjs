@@ -246,6 +246,14 @@ test('unit focus preserves exact file filtering and rejects command injection or
   assert.throws(() => focusPlan('unknown', selected));
 });
 
+test('a DevKit target lifetime unit gate consumes package outputs without compiling shaders', () => {
+  const file = 'packages/devkit/src/tools/__tests__/model-render-target.unit.test.ts';
+  const plan = focusPlan('unit', file);
+  assert.deepEqual(focusBuildArgs(plan), ['scripts/build.mjs', '--packages-only']);
+  assert.equal(plan.args.at(-1), file);
+  assert.notEqual(focusPlan('unit', '@forgeax/engine-devkit').packagesOnly, true);
+});
+
 test('compiler unit bootstrap builds packages without precompiling the compiler product', () => {
   const owner = '@forgeax/engine-shader-compiler';
   const file =
@@ -464,12 +472,48 @@ test('Node focus executes the complete real Node test file without Vitest discov
     assert.throws(() => focusPlan('node', invalid), /Node test file/);
 });
 
+test('source-only CI planner Focus skips package preparation and keeps every assertion', () => {
+  for (const owner of [
+    'browser-work',
+    'ci-focus',
+    'core-validation',
+    'download-artifact-with-retry',
+    'prepare-ci-inputs',
+    'run-split-vitest-browser',
+    'view-diagnostic-workload',
+  ]) {
+    const selector = `scripts/ci/__tests__/${owner}.test.mjs`;
+    const plan = focusPlan('node', selector);
+    assert.deepEqual(plan.args, ['--test', selector]);
+    assert.equal(focusBuildArgs(plan), undefined);
+  }
+  assert.deepEqual(
+    focusBuildArgs(focusPlan('node', 'scripts/ci/__tests__/rapier-release-payload.test.mjs')),
+    ['scripts/build.mjs', '--packages-only'],
+  );
+});
+
 test('CPU-only Focus preparation validates package receipts without cooking unused Engine shaders', () => {
   const selector = 'scripts/ci/__tests__/build-app-shard.test.mjs';
   assert.equal(focusPlan('node', selector).packagesOnly, true);
   for (const selector of ['ecs-ratios', 'render-ratios'])
     assert.equal(focusPlan('performance', selector).packagesOnly, true);
   assert.notEqual(focusPlan('performance', 'hello-lod-occlusion').packagesOnly, true);
+});
+
+test('cold import, publication and Compiler repairs reuse exclusive instrumented package-only owners', () => {
+  for (const selector of [
+    'packages/gltf/src/__tests__/physical-material-import.integration.test.ts',
+    'packages/vite-plugin-pack/src/__tests__/imported-material-publication.integration.test.ts',
+    'packages/shader-compiler/src/material/__tests__/gbuffer-publication.integration.test.ts',
+  ]) {
+    const plan = focusPlan('coverage', selector);
+    assert.equal(plan.packagesOnly, true);
+    assert.ok(plan.args.includes(selector));
+    assert.ok(plan.args.includes('--coverage'));
+    assert.ok(plan.args.includes('--maxWorkers=1'));
+    assert.equal(plan.env.FORGEAX_SHADER_COMPILE_DIAGNOSTICS, '1');
+  }
 });
 
 test('pure CPU unit owners do not cook unused Engine profiles', () => {

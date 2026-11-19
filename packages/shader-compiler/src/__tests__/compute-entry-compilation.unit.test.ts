@@ -28,7 +28,17 @@ describe('selected compute shader publication', () => {
     expect(compiled.value.wgsl).not.toContain('unusedData');
     expect(compiled.value.bindings).toHaveLength(1);
     expect(compiled.value.manifestEntry.entryPoints).toEqual([
-      { name: 'selected', stage: 'compute', bindings: [{ group: 0, binding: 0 }] },
+      {
+        name: 'selected',
+        stage: 'compute',
+        bindings: [{ group: 0, binding: 0 }],
+        effects: {
+          mayDiscard: false,
+          writesDepth: false,
+          writesSampleMask: false,
+          writesStorage: true,
+        },
+      },
     ]);
     expect(compiled.value.manifestEntry.hash).toMatch(/^[0-9a-f]{8}$/);
   });

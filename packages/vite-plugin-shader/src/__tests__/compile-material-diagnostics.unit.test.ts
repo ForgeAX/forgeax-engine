@@ -11,9 +11,9 @@ const fixture = vi.hoisted(() => ({
 
 vi.mock('@forgeax/engine-shader-compiler', () => ({
   createShaderProgramCompiler: () => fixture.compile,
-}));
-vi.mock('../engine-inputs/prepare-engine-shader-source.js', () => ({
-  lowerEngineSurfaceEntry: (file: { source: string }) => ({ source: file.source, imports: {} }),
+  prepareEngineShaderSource: (file: { source: string }) => ({
+    unwrap: () => ({ source: file.source, imports: {} }),
+  }),
 }));
 vi.mock('node:worker_threads', async () => {
   const { EventEmitter } = await import('node:events');

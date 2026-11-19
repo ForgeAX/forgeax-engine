@@ -4,6 +4,8 @@ import type { PipelineGroup2Contract } from '@forgeax/engine-shader';
 import {
   type MaterialShaderEntry,
   type MaterialShaderManifestEntry,
+  type MaterialShaderManifestVariant,
+  materialShaderPreparedSourceRows,
   materialShaderSourceEquals,
   type RegisteredMaterialShaderEntry,
   type ShaderCatalog,
@@ -16,7 +18,7 @@ import type {
   VertexAttributeMap,
 } from '@forgeax/engine-types';
 import type { RenderFeatureShaderModuleMode } from '../features/types';
-import { materialProgramInputs } from '../material-program-inputs';
+import { materialProgramInputs, requireStandardGBufferReceipt } from '../material-program-inputs';
 import {
   applySurfaceDiscardAxis,
   materialProgramRasterConstants,
@@ -175,6 +177,7 @@ export function runBuildPipelineContext(
         bindingContract === 'post-process' ||
         bindingContract === 'render-material-with-scene-depth' ||
         bindingContract === 'render-material-and-scene-depth' ||
+        bindingContract === 'render-lit-material-and-scene-depth' ||
         bindingContract === 'render-standard-material-and-scene-depth') &&
       materialShaderId !== undefined &&
       (bindingContract === 'post-process' || isPreparedMaterialVertexLayout(vertexLayout))
@@ -501,6 +504,7 @@ export function runBuildMaterialShaderPipeline(
     vertexLayout,
   );
   if (source === null) return null;
+  if (passKind === 'deferred') requireStandardGBufferReceipt(source.entry.receipt);
   // Fallback sources compile a different program, so caller-selected
   // entry points and particle lanes belong only to the registered shader.
   const ownEntries = source.ownEntries;
@@ -706,9 +710,14 @@ export function runSelectStandardPbrFallback(
   if (pbrEntry === undefined) return null;
   // Reuse readiness only for byte-identical WGSL. A fallback can select a
   // different capability variant, so one shared fallback label is unsafe.
-  const preparedVariant = [...getShader().materialShaderManifestEntries()]
-    .find((entry) => entry.identifier === 'forgeax::default-standard-pbr')
-    ?.variants.find((variant) => materialShaderSourceEquals(variant, pbrEntry.wgsl));
+  const family = getShader().materialShaderManifestEntry('forgeax::default-standard-pbr');
+  const preparedVariant =
+    family === undefined
+      ? undefined
+      : materialShaderPreparedSourceRows(family).find(
+          (variant): variant is MaterialShaderManifestVariant =>
+            'definesKey' in variant && materialShaderSourceEquals(variant, pbrEntry.wgsl),
+        );
   return {
     entry: { source: pbrEntry.wgsl, paramSchema: [] },
     label: `pbr-pipeline-fallback-${pipelineShaderId}${isHdr ? '-hdr' : ''}`,

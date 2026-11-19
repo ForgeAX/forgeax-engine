@@ -298,6 +298,11 @@ lookup prepares that source in ShaderRegistry, and later users share its immutab
 CPU facts. All program bytes, references and receipts still pass the existing loader
 verification; asset readiness does not imply that every source has been analyzed.
 
+View-clipping contexts project their already cooked program keys into the
+ShaderRegistry's ordinary variant manifest. Families preserve pass, address and
+vertex-color ABI; their referenced sources remain lazy. Worker publication carries
+the complete key closure and rejects a missing program before adopting any row.
+
 Runtime selects only prepared program contexts. Root and child source materials
 preserve explicit static choices; parent inheritance is flattened at admission.
 Ray-hit and Card-capture programs share the same complete artifact verification.
@@ -583,25 +588,41 @@ generation prewarms the pipeline and uses the synchronous submission path; error
 remain `RhiError` throughout.
 
 The internal `encodeMipmaps` helper records into a caller encoder and returns
-scratch cleanup without finishing or submitting. `prepareMipmaps` delegates to
+backend-temporary cleanup without finishing or submitting. `prepareMipmaps` delegates to
 it and retains its finish/discard transaction. Dynamic Canvas updates share the
 Renderer's submission rather than opening a separate queue path.
 
 `prepareMipmaps` and `blitMipmapsSync` accept `arrayLayerCount` for 2D array and
-cube textures; omission retains the single-layer 2D path. Every layer samples
-only its preceding mip and copies the result back into the same layer. All
-layers share one transient 2D render scratch chain. Array and cube sources also
-share a 2D staging chain: each source layer/mip is copied there before sampling.
-WebGL2 cannot reinterpret an array slice as a physical `sampler2D` texture;
-sampling such a view produces invalid lower mips. Staging preserves sRGB
-filtering, layer identity and the feedback-loop workaround without disabling
-mips or changing authored samplers. Renderer residency supplies the layer count
-from the existing texture layout. Recovery preparation still records without
-submitting, and its owner finishes or discards the same transaction.
+cube textures; omission retains the single-layer 2D path. All layers retain the
+same linear-light filter and format, including sRGB decode and encode.
+
+| Backend | Generation and temporary storage |
+|:--|:--|
+| WebGPU / native wgpu | Read one mip/layer view and render directly into the next disjoint mip of the same layer; no scratch, array staging or copies. Targets need `TEXTURE_BINDING` and `RENDER_ATTACHMENT`. |
+| WebGL2 | Keep physical 2D images and copies. Array/cube slices cannot be reinterpreted as physical `sampler2D` textures, and mip views share mutable texture levels. Ordinary 2D source inputs retain their `TEXTURE_BINDING` / `COPY_DST` contract. |
+
+Renderer residency supplies layer count and usage from the existing texture
+layout. Recovery records without submitting; its owner finishes or discards
+that same transaction, retiring any backend temporaries exactly once.
 
 Catalog revision windows use Types’ `checkCatalogRevisionContinuity` for the same
 root membership, monotonicity and single-step rules in Pack production and Runtime
 replica admission. Shape validation and replica row/scope checks remain separate.
+
+For generated normal outputs, `GeneratedTextureDescriptor.mipFilter` may select
+`normal-roughness` (default: `box`). This mode requires linear `rgba8unorm` and
+`mips: { kind: 'generate' }`. Level zero is an encoded RGB unit normal with zero
+alpha. Generated RGB stores the mean normal; alpha stores a perceptual roughness
+floor. Consumers add its fourth power to authored roughness's fourth power and
+normalize or otherwise decode the filtered normal. This is a normal-variance
+model, not an arbitrary alpha-preserving filter or an exact composite of dynamic
+material layers. A 0.001 mean-length dead zone bounds half-float roundoff.
+
+The normal filter lazily prepares two MRT pipelines (RGBA8 result + half-float
+mean), using a transient mean chain shared across array layers. WebGL2 stages the
+first source/output to avoid physical texture feedback. `mipmapTemporaryByteLength`
+reports setup storage; Renderer includes it in its reservation and releases it
+at queue completion. No pixel readback occurs. Box mip generation is unchanged.
 
 ## Runtime GPU texture assets
 
@@ -612,6 +633,15 @@ Generator edits adopt all loaded output descriptors atomically. Neither pixels n
 RHI objects enter Registry content. `TextureAsset`, the `texture` kind and existing
 CPU image consumers retain their byte-backed contract. Renderer owns generation,
 mips, sampling, device recovery and the accepted GPU allocation lifetime.
+
+### Cooked surface coverage selection
+
+MaterialReady groups programs only when pass, base context, address and vertex-color
+ABI match. Independent `lodCoverage` and `viewClipping` contexts become immutable
+references in the existing ShaderRegistry manifest; ordinary lookup prepares only
+the selected program. A non-fading draw does not request a LOD program. Worker
+publication and device adoption retain the complete family closure without eagerly
+decoding sibling source. Material-local clipping stays within the authored contract.
 
 Retiring a publication source releases its Catalog replica directory and cached
 snapshot. Runtime handles keep their accepted content and provenance; immutable

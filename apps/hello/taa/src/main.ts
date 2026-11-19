@@ -77,12 +77,8 @@ const sceneScale = Number.isFinite(requestedSceneScale)
   : 1;
 const dynamicResolutionRequested = params.get('taa-dynamic-resolution') === '1';
 const motionBlurRequested = params.get('taa-motion-blur') === '1';
-// The renderer/App assembly starts its catalog replica during createApp. In
-// development it must receive the Pack-owned scoped binding at that boundary;
-// configuring the registry after createApp is too late and briefly probes the
-// intentionally disabled global /pack-index.json route. Production keeps the
-// emitted static catalog path selected by configureRuntimeAssetCatalog below.
-const runtimeDevBinding = import.meta.env.DEV ? runtimeBinding : undefined;
+// The Pack host owns mode selection, including Vite serve with NODE_ENV=production.
+// Carry its binding into App assembly before the catalog replica can start.
 const timingResolution = timingResolutionId === '4K'
   ? { id: '4K', width: 3840, height: 2160 }
   : { id: '1080p', width: 1920, height: 1080 };
@@ -147,10 +143,10 @@ const created = await createApp(canvas, {
         profiler: timingProfiler,
       }
     : {}),
-  ...(runtimeDevBinding === undefined ? {} : { assetRuntimeBinding: runtimeDevBinding }),
+  ...(runtimeBinding === undefined ? {} : { assetRuntimeBinding: runtimeBinding }),
 }, {
   ...forgeaxBundlerAdapter(),
-  importTransport: createRuntimeAssetImportTransport(runtimeDevBinding),
+  importTransport: createRuntimeAssetImportTransport(runtimeBinding),
 });
 if (!created.ok) throw created.error;
 const app = created.value;
@@ -159,7 +155,7 @@ if (app.assets === undefined) throw new Error('This scene requires the App asset
 const demoPrimitive = app.assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
 const assets = app.assets;
 if (assets === undefined) throw new Error('hello-taa: runtime AssetRegistry is unavailable');
-if (runtimeDevBinding === undefined) configureRuntimeAssetCatalog(assets, runtimeBinding);
+configureRuntimeAssetCatalog(assets, runtimeBinding);
 const lutSubAsset = lutMeta.subAssets?.find((entry) => entry.kind === 'texture');
 if (lutSubAsset === undefined) throw new Error('hello-taa: LUT sidecar has no texture sub-asset');
 const parsedLutGuid = AssetGuid.parse(lutSubAsset.guid);

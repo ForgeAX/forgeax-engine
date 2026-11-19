@@ -6,6 +6,7 @@ import { createRenderer } from '../assembly/factory';
 import { ANTIALIAS_NONE, Camera } from '../components/camera';
 import { CameraView } from '../components/camera-view';
 import { CubeCamera } from '../components/cube-camera';
+import { type ScenePassRequest, scenePassRequests } from '../record/scene-pass-work';
 import * as graphs from '../record/typed-frame-graph';
 import {
   RenderCaptureGraphCompileOrder,
@@ -112,18 +113,20 @@ it("records the multi-view shared capture attempt on the primary recorder's view
     renderWorld.addSystem(RenderRecord, systemToken3).unwrap();
     const compile = graphs.compileTargetCaptureFrameGraph;
     const calls: boolean[] = [];
+    const captureRequests: (readonly ScenePassRequest[])[] = [];
     const captureCompile = vi
       .spyOn(graphs, 'compileTargetCaptureFrameGraph')
       .mockImplementation((...args) => {
         calls.push(compilingCaptures);
-        return compile(...args);
+        const graph = compile(...args);
+        captureRequests.push(scenePassRequests(graph));
+        return graph;
       });
     expect(world.update().ok).toBe(true);
     const result = renderer.draw(input);
     if (!result.ok) throw result.error;
     if (result.value === undefined) throw new Error('expected submitted receipt');
     expect((await result.value.completed).ok).toBe(true);
-    captureCompile.mockRestore();
     expect(calls.length).toBeGreaterThan(0);
     expect(calls.every(Boolean)).toBe(true);
     expect(sealed.length).toBeGreaterThan(0);
@@ -142,7 +145,24 @@ it("records the multi-view shared capture attempt on the primary recorder's view
         attempt: renderSubmission(renderWorld).frame,
       }),
     ]);
+    // Each face still compiles a fresh graph. Its retained view must not cold-start
+    // CPU Scene Pass preparation merely because the graph object changed.
+    for (let index = 0; index < 2; index += 1) {
+      expect(world.update().ok).toBe(true);
+      const next = renderer.draw(input);
+      if (!next.ok) throw next.error;
+      expect(next.value).toBeDefined();
+      if (next.value !== undefined) expect((await next.value.completed).ok).toBe(true);
+    }
+    captureCompile.mockRestore();
+    expect(captureRequests).toHaveLength(3);
+    expect(captureRequests[0]).toHaveLength(2);
+    for (const requests of captureRequests.slice(1)) {
+      expect(requests[0]).toBe(captureRequests[0]?.[0]);
+      expect(requests[1]).toBe(captureRequests[0]?.[1]);
+    }
   } finally {
+    vi.restoreAllMocks();
     await renderer.dispose();
   }
 });

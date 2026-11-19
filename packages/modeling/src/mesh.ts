@@ -190,11 +190,6 @@ export class EditMesh {
 
   /** Check whether a loop can become a face without violating the manifold rules. */
   canAddFace(loop: readonly number[]): Result<void, ModelingError> {
-    const checked = this.faceHalvesForAdd(loop);
-    return checked.ok ? ok(undefined) : checked;
-  }
-
-  private faceHalvesForAdd(loop: readonly number[]): Result<number[], ModelingError> {
     if (loop.length < 3) {
       return err(modelingError('model-degenerate', 'a face needs at least 3 vertices', { loop }));
     }
@@ -208,12 +203,10 @@ export class EditMesh {
       }
       seen.add(v);
     }
-    const halves: number[] = [];
     for (let i = 0; i < loop.length; i++) {
       const a = loop[i] as number;
       const b = loop[(i + 1) % loop.length] as number;
       const h = this.findHalf(a, b);
-      halves.push(h);
       if (h !== NONE && (this.hFace[h] as number) !== NONE) {
         return err(
           modelingError(
@@ -225,20 +218,22 @@ export class EditMesh {
         );
       }
     }
-    return ok(halves);
+    return ok(undefined);
   }
 
   addFace(loop: readonly number[], material = 0): Result<number, ModelingError> {
-    const allowed = this.faceHalvesForAdd(loop);
+    const allowed = this.canAddFace(loop);
     if (!allowed.ok) return allowed;
     const reused = this.freeFaces.pop();
     const f = reused ?? this.faceHighWater++;
     this.ensureFaceCapacity(f + 1);
-    const halves = allowed.value;
+    const halves: number[] = [];
     for (let i = 0; i < loop.length; i++) {
       const a = loop[i] as number;
       const b = loop[(i + 1) % loop.length] as number;
-      if (halves[i] === NONE) halves[i] = this.createEdge(a, b);
+      let h = this.findHalf(a, b);
+      if (h === NONE) h = this.createEdge(a, b);
+      halves.push(h);
     }
     for (let i = 0; i < halves.length; i++) {
       const h = halves[i] as number;

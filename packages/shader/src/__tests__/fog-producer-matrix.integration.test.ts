@@ -25,10 +25,10 @@ describe('Built-in fog producer matrix', () => {
     for (const file of TRANSLUCENT_WRITERS) {
       const source = shaderSource(file);
       expect(source, file).toMatch(
-        /#import forgeax_view::fog::\{translucent_fog(?:_transmission)?\}/,
+        /#import forgeax_view::fog::\{(?:translucent|forward)_fog(?:_transmission)?(?:,\s*vertex_height_fog)?\}/,
       );
       expect(
-        source.match(/translucent_fog(?:_transmission)?\(view,/g)?.length ?? 0,
+        source.match(/(?:translucent|forward)_fog(?:_transmission)?\(view,/g)?.length ?? 0,
         file,
       ).toBeGreaterThan(0);
     }

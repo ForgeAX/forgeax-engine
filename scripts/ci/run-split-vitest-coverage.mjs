@@ -39,6 +39,7 @@ const maxChildOutputBytes = 64 * 1024 * 1024;
 const completedCoverageAssignmentCache = new Map();
 const coverageAssignmentOrders = new WeakMap();
 const coverageAssignmentInputs = new WeakMap();
+const coveragePlacementInputs = new WeakMap();
 const completedCoverageSearchRestarts = 48;
 // Retain all historical replay windows after admitting a slower partial cohort.
 // More bounded search work preserves the same execution and test deadlines.
@@ -225,15 +226,17 @@ const isolatedCoverageFileSets = [
     weight: 240,
   },
   {
-    // The complete merged-source local command crossed the original 5 s / 30 s
-    // bounds under neighboring Runtime work. Both full files pass serially;
-    // preserve their workloads and budgets in one exclusive instrumented child.
+    // Retain both workloads in the existing exclusive child. The direct
+    // Surface case in run 44402862972 timed out with seven shader workers;
+    // account for its real material cooks with the bounded source compiler.
     project: '@forgeax/engine-render',
     files: [
       'packages/render/src/__tests__/gpu-driven-batch-topology-pbr.unit.test.ts',
       'packages/render/src/__tests__/direct-shadow-preparation.integration.test.ts',
     ],
     weight: 90,
+    sourceCompilation: true,
+    packagesOnly: true,
   },
   {
     // Run 40653718555 crossed the unchanged 5 s budget while hashing the
@@ -255,13 +258,27 @@ const isolatedCoverageFileSets = [
       'packages/render/src/__tests__/raytracing/probe-global.unit.test.ts',
       'packages/render/src/__tests__/direct-preparation.integration.test.ts',
       'packages/render/src/__tests__/vertex-color-program.integration.test.ts',
+      // Run 44024988647 crossed the unchanged 30/60/120-second cold cooker
+      // bounds beside broad instrumented Render/Modeling work. Retain every
+      // complete file in this existing exclusive producer owner.
+      'packages/render/src/__tests__/mesh-builder-stock-material-inputs.integration.test.ts',
+      'packages/render/src/__tests__/skin-candidate-host.unit.test.ts',
+      'packages/render/src/__tests__/standard-scene-data-runtime.integration.test.ts',
+      'packages/render/src/__tests__/planar-receiver-routing.unit.test.ts',
+      'packages/render/src/__tests__/raytracing/renderer-diffuse-retained.unit.test.ts',
+      'packages/render/src/raytracing/__tests__/scene-field-projection.integration.test.ts',
     ],
     // Retain the original two-file timing identity; the extra cooking work is
     // an explicit reservation, not a restamped historical measurement.
     receiptLabel:
       'packages/render/src/__tests__/gpu-driven-production.integration.test.ts,packages/render/src/__tests__/raytracing/probe-global.unit.test.ts',
     weight: 100,
-    reservationWeight: 160,
+    // Added reservations are forecasts, not timing samples of this larger owner.
+    reservationWeight: 520,
+    // Run 44402862972 also crossed the consumed-resource case's 30 s limit
+    // in this existing exclusive child with seven shader workers.
+    sourceCompilation: true,
+    packagesOnly: true,
   },
   {
     // The same run crossed both unchanged 60 s budgets while processing the
@@ -298,8 +315,43 @@ const isolatedCoverageFileSets = [
     files: [
       'packages/shader-compiler/src/material/__tests__/pack-program-reuse.integration.test.ts',
       'packages/shader-compiler/src/material/__tests__/node-program-compiler.integration.test.ts',
+      'packages/shader-compiler/src/material/__tests__/standard-material-cook.integration.test.ts',
+      'packages/shader-compiler/src/material/__tests__/vertex-color-publication.integration.test.ts',
+      'packages/shader-compiler/src/material/__tests__/visible-surface-cook.integration.test.ts',
+      // Run 44046829101 crossed their original cold-source budgets beside
+      // instrumented Modeling. Preserve every complete file and drain neighbors.
+      'packages/shader-compiler/src/__tests__/material-cook.unit.test.ts',
+      'packages/shader-compiler/src/material/__tests__/gbuffer-publication.integration.test.ts',
+      'packages/shader-compiler/src/material/__tests__/material-static-switches.integration.test.ts',
+      'packages/shader-compiler/src/material/__tests__/node-material-pool.integration.test.ts',
+      // Run 44117571697 crossed these original cold-source deadlines in the
+      // broad instrumented child. Admit complete files with compiler Workers.
+      'packages/shader-compiler/src/__tests__/material-surface-import.integration.test.ts',
+      'packages/shader-compiler/src/__tests__/material-webgpu-build-profile.integration.test.ts',
+      'packages/shader-compiler/src/material/__tests__/custom-surface-coverage.integration.test.ts',
+      'packages/shader-compiler/src/material/__tests__/parameter-identifiers.integration.test.ts',
+      'packages/shader-compiler/src/material/__tests__/ray-surface-derivatives.integration.test.ts',
+      'packages/shader-compiler/src/material/__tests__/standard-static-shadow.integration.test.ts',
+      'packages/shader-compiler/src/material/__tests__/surface-resources.integration.test.ts',
     ],
+    receiptLabel:
+      'packages/shader-compiler/src/material/__tests__/pack-program-reuse.integration.test.ts,packages/shader-compiler/src/material/__tests__/node-program-compiler.integration.test.ts',
     weight: 40,
+    // Run 44024988647 crossed the added files' unchanged 30-second cold
+    // cooking bounds. Keep the original receipt and reserve the full owner.
+    reservationWeight: 960,
+    sourceCompilation: true,
+    packagesOnly: true,
+  },
+  {
+    // Same run: preserve Runtime's real custom-Surface source cook and 30 s
+    // bound, using the existing source-producer admission rather than sharing.
+    project: '@forgeax/engine-runtime',
+    files: ['packages/runtime/src/__tests__/custom-surface-publication.integration.test.ts'],
+    batch: 'scriptable-publications',
+    weight: 30,
+    sourceCompilation: true,
+    packagesOnly: true,
   },
   {
     // Run 40650966486 spent 247.73 s in this file inside the shared Pack child;
@@ -308,8 +360,29 @@ const isolatedCoverageFileSets = [
     project: '@forgeax/engine-vite-plugin-pack',
     files: [
       'packages/vite-plugin-pack/src/__tests__/declared-standard-material.integration.test.ts',
+      'packages/vite-plugin-pack/src/__tests__/imported-material-publication.integration.test.ts',
+      'packages/vite-plugin-pack/src/__tests__/scriptable-standard-material.integration.test.ts',
     ],
     weight: 250,
+    receiptLabel:
+      'packages/vite-plugin-pack/src/__tests__/declared-standard-material.integration.test.ts',
+    reservationWeight: 310,
+    sourceCompilation: true,
+    packagesOnly: true,
+  },
+  {
+    // Run 44046829101 crossed both original 60 s import/cook/parse bounds
+    // beside instrumented producers. Share the existing serial publication
+    // child: its original project receipts already include these cases.
+    project: '@forgeax/engine-gltf',
+    files: [
+      'packages/gltf/src/__tests__/diffuse-transmission-import.integration.test.ts',
+      'packages/gltf/src/__tests__/physical-material-import.integration.test.ts',
+    ],
+    batch: 'scriptable-publications',
+    weight: 120,
+    sourceCompilation: true,
+    packagesOnly: true,
   },
   {
     project: '@forgeax/engine-vite-plugin-pack',
@@ -373,6 +446,15 @@ const isolatedCoverageFileSets = [
       'packages/render/src/__tests__/raytracing/gi-view.unit.test.ts',
     ],
     weight: 70,
+  },
+  {
+    // Run 44190189587 crossed both original 15 s Standard/Skin cold-cook
+    // bounds in a two-worker shared child with only one compiler lane each.
+    // Keep the complete four-root artifact/ABI oracle and its original bounds.
+    project: '@forgeax/engine-vite-plugin-shader',
+    files: ['packages/vite-plugin-shader/src/__tests__/standard-material-cold-cook.unit.test.ts'],
+    batch: 'source-contracts',
+    weight: 60,
   },
   {
     project: '@forgeax/engine-vite-plugin-shader',
@@ -654,7 +736,7 @@ function packageProjectNames() {
 // These registered Node app projects cook ordinary CPU assets or exercise DOM
 // controls. They consume package outputs, not prepared Engine shader profiles.
 export const packageOnlyNodeAppProjects = Object.freeze([
-  '@forgeax/water-r4-buoyancy-foam',
+  '@forgeax/water-r5-gpu-mesh-async-pontoons',
   '@forgeax/water-r8-entry-experiment',
   '@forgeax/water-mesh-demo',
   '@forgeax/water-r8-integration-acceptance',
@@ -1141,38 +1223,63 @@ function criticalExclusiveCoverageGroup(groups) {
 // Run 41541125949 completed source production but stranded more exclusive
 // owners behind it. Reserve the whole serial tail, not a fine-partition quota:
 // the parallel batch remains balanced by the two-slot execution model.
-function retainsExclusiveCoverageHeadroom(groups, assignment, index, shard) {
-  const critical = criticalExclusiveCoverageGroup(groups);
+function retainsExclusiveCoverageHeadroom(inputs, assignment, index, shard) {
+  const { critical, exclusive } = inputs;
   if (critical < 0) return true;
   const destination = index === critical ? shard : assignment[critical];
   if (destination < 0) return true;
-  return !groups.some(
-    (group, position) =>
-      position !== critical &&
-      isExclusiveCoverageGroup(group) &&
-      (position === index ? shard : assignment[position]) === destination,
-  );
-}
-
-function admitsFineCoveragePartition(siblings, part, shardCount) {
-  const wave = Math.floor((part - 1) / shardCount);
-  return !siblings.some(
-    (candidate) => Math.floor((Number(candidate.shard.split('/')[0]) - 1) / shardCount) === wave,
+  return !exclusive.some(
+    (position) => (position === index ? shard : assignment[position]) === destination,
   );
 }
 
 // A sparse partial refresh cannot justify concentrating its few measured slow
 // owners. Retain the even-share spread until a full optimization cohort exists.
-function retainsSparseCoverageSpread(groups, assignment, index, shard, shardCount) {
-  if (groups[index].observedSeconds === undefined) return true;
-  const measured = groups.flatMap((group, position) =>
-    group.observedSeconds === undefined ? [] : [position],
-  );
-  if (measured.length < shardCount || measured.length >= 20) return true;
-  return (
-    measured.filter((position) => position !== index && assignment[position] === shard).length <
-    Math.ceil(measured.length / shardCount)
-  );
+function retainsSparseCoverageSpread(inputs, assignment, index, shard) {
+  if (inputs.sparseLimit === 0 || !inputs.measured.has(index)) return true;
+  return countCoverageNeighbors(inputs.measured, assignment, index, shard) < inputs.sparseLimit;
+}
+
+// Placement repeatedly tests candidate assignments against the same roster.
+// Normalize the static facts once while retaining the live lane constraints.
+function prepareCoveragePlacement(groups, shardCount) {
+  const critical = criticalExclusiveCoverageGroup(groups);
+  const exclusive = [];
+  const measured = new Set();
+  const broad = [];
+  const siblings = new Map();
+  const partitions = groups.map((group, index) => {
+    if (index !== critical && isExclusiveCoverageGroup(group)) exclusive.push(index);
+    if (group.observedSeconds !== undefined) measured.add(index);
+    if (!group.shard) return null;
+    const [part, count] = group.shard.split('/').map(Number);
+    if (count <= shardCount) broad.push(index);
+    const project = group.projects[0];
+    const cohort = siblings.get(project) ?? [];
+    cohort.push(index);
+    siblings.set(project, cohort);
+    return { count, project, wave: Math.floor((part - 1) / shardCount) };
+  });
+  return {
+    critical,
+    exclusive,
+    measured,
+    sparseLimit:
+      measured.size < shardCount || measured.size >= 20 ? 0 : Math.ceil(measured.size / shardCount),
+    childLimit: Math.min(16, Math.ceil(groups.length / shardCount) + 1),
+    broad,
+    broadLimit: Math.ceil(broad.length / shardCount),
+    siblings,
+    partitions,
+  };
+}
+
+function countCoverageNeighbors(indexes, assignment, index, shard) {
+  let count = 0;
+  for (const position of indexes) {
+    if (position !== index && assignment[position] === shard) count += 1;
+  }
+  return count;
 }
 
 // Broad project halves span jobs; fine partitions retain both spread quotas
@@ -1186,37 +1293,32 @@ function admitsCoverageWorkerPolicy(group, shard, shardCount) {
 
 function canPlaceCoverageGroup(groups, assignment, index, shard, shardCount) {
   if (!admitsCoverageWorkerPolicy(groups[index], shard, shardCount)) return false;
-  if (!retainsExclusiveCoverageHeadroom(groups, assignment, index, shard)) return false;
-  if (!retainsSparseCoverageSpread(groups, assignment, index, shard, shardCount)) return false;
+  const inputs =
+    coveragePlacementInputs.get(groups) ?? prepareCoveragePlacement(groups, shardCount);
+  if (!retainsExclusiveCoverageHeadroom(inputs, assignment, index, shard)) return false;
+  if (!retainsSparseCoverageSpread(inputs, assignment, index, shard)) return false;
   // Timings do not bound startup and serial tails when a few cold children
   // overrun. Keep at most one child above the even share on every physical job.
-  const childNeighbors = assignment.filter(
-    (lane, position) => position !== index && lane === shard,
-  );
-  // Keep the established tail cap after admitting the additional cold child.
-  if (childNeighbors.length >= Math.min(16, Math.ceil(groups.length / shardCount) + 1))
-    return false;
-  const group = groups[index];
-  if (!group.shard) return true;
-  const [part, count] = group.shard.split('/').map(Number);
-  const siblings = groups.filter(
-    (candidate, position) =>
-      position !== index &&
-      candidate.shard &&
-      candidate.projects[0] === group.projects[0] &&
-      assignment[position] === shard,
-  );
-  if (siblings.length >= Math.ceil(count / shardCount)) return false;
-  if (count > shardCount) {
-    return admitsFineCoveragePartition(siblings, part, shardCount);
+  let childNeighbors = 0;
+  for (let position = 0; position < assignment.length; position += 1) {
+    if (position !== index && assignment[position] === shard) childNeighbors += 1;
   }
-  const broad = groups.filter(
-    (candidate) => candidate.shard && Number(candidate.shard.split('/')[1]) <= shardCount,
-  );
-  const neighbors = broad.filter(
-    (candidate) => candidate !== group && assignment[groups.indexOf(candidate)] === shard,
-  ).length;
-  return neighbors < Math.ceil(broad.length / shardCount);
+  if (childNeighbors >= inputs.childLimit) return false;
+  const partition = inputs.partitions[index];
+  if (!partition) return true;
+  const { count, project, wave } = partition;
+  const siblings = inputs.siblings.get(project);
+  if (countCoverageNeighbors(siblings, assignment, index, shard) >= Math.ceil(count / shardCount))
+    return false;
+  if (count > shardCount) {
+    return !siblings.some(
+      (position) =>
+        position !== index &&
+        assignment[position] === shard &&
+        inputs.partitions[position].wave === wave,
+    );
+  }
+  return countCoverageNeighbors(inputs.broad, assignment, index, shard) < inputs.broadLimit;
 }
 
 function fineCoverageWave(groups, order, index, shardCount) {
@@ -1845,7 +1947,8 @@ export function coveragePlacementSeed(
     (seed) =>
       seed.shardCount === shardCount &&
       seed.typecheck === typecheck &&
-      Object.keys(seed.assignment).length === groups.length,
+      Object.keys(seed.assignment).length === groups.length &&
+      groups.every((group) => Object.hasOwn(seed.assignment, group.label)),
   ),
 ) {
   if (!seed || seed.shardCount !== shardCount || seed.typecheck !== typecheck) return null;
@@ -1867,6 +1970,15 @@ export function assignCoverageShards(groups, shardCount, { typecheck = true } = 
   // Local single-job execution still serializes exclusive children; it has no
   // peer job onto which a placement constraint could move a complete owner.
   if (shardCount === 1) return Array(groups.length).fill(0);
+  coveragePlacementInputs.set(groups, prepareCoveragePlacement(groups, shardCount));
+  try {
+    return planCoverageShards(groups, shardCount, typecheck);
+  } finally {
+    coveragePlacementInputs.delete(groups);
+  }
+}
+
+function planCoverageShards(groups, shardCount, typecheck) {
   coverageAssignmentOrders.set(groups, coverageGroupOrder(groups, typecheck));
   coverageAssignmentInputs.delete(groups);
   const cached = cachedCoverageAssignment(groups, shardCount, typecheck);

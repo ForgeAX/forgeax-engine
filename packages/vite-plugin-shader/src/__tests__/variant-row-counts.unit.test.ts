@@ -5,10 +5,10 @@ import {
 } from '../engine-inputs/load-engine-shader-entries.js';
 import { engineManifestFiles, publishedVariantDefines } from '../index.js';
 
-// Every published variant row is precompiled and stays resident in the shared
-// shader publication (~68.6 KB per standard row), so row counts are a memory
-// budget. Changing a variant axis or a permutation rule must update this
-// snapshot deliberately; see the six-layer switch table before adding an axis.
+// Logical rows bound compiled publication work and storage. Native source
+// publication composes only selected rows; these counts are not GPU prewarm.
+// Independent alpha, LOD and clipping demand must survive the complete roster.
+// Change the snapshot deliberately when an axis or permutation rule changes.
 it('pins the published variant row count per engine material and program', async () => {
   const engine = await loadEngineShaderEntries();
   const cloudPrograms = engine.cloudAtmosphere.map((entry) => entry.reservedIdentifier);
@@ -33,8 +33,10 @@ it('pins the published variant row count per engine material and program', async
     if (key === 'forgeax::default-standard-pbr' || key === 'forgeax::default-shadow-caster') {
       const rowsPerWaterLane: Readonly<Record<`${boolean}/${boolean}`, number>> =
         key === 'forgeax::default-standard-pbr'
-          ? { 'false/false': 2544, 'false/true': 320, 'true/false': 2384, 'true/true': 2384 }
-          : { 'false/false': 64, 'false/true': 16, 'true/false': 48, 'true/true': 48 };
+          ? { 'false/false': 5920, 'false/true': 640, 'true/false': 5536, 'true/true': 5536 }
+          : { 'false/false': 224, 'false/true': 32, 'true/false': 160, 'true/true': 160 };
+      // Independent full-receiver lean lighting adds 96 rows per active lane;
+      // its 32 lean-input rows also retain the dormant Water format.
       // Water draws retain both formats on storage backends. Inactive ordinary
       // rows omit the unused format; the maintained lean-input lanes retain it.
       for (const waves of [false, true] as const) {
@@ -67,19 +69,19 @@ it('pins the published variant row count per engine material and program', async
   expect({ total, rows }).toMatchInlineSnapshot(`
     {
       "rows": {
-        "forgeax::default-shadow-caster": 176,
-        "forgeax::default-standard-pbr": 7632,
-        "forgeax::default-unlit": 104,
+        "forgeax::default-shadow-caster": 576,
+        "forgeax::default-standard-pbr": 17632,
+        "forgeax::default-unlit": 416,
         "forgeax::engine-ray-path-tracer": 2,
         "forgeax::engine-standard-deferred-lighting": 16,
         "forgeax::msdf-text": 6,
-        "forgeax::pbr-skin": 864,
+        "forgeax::pbr-skin": 1728,
         "forgeax::sprite": 12,
         "forgeax::sprite-lit": 12,
         "forgeax::standard-terrain": 144,
         "forgeax::standard-terrain-ids": 144,
-        "forgeax::standard-terrain-ids-shadow": 4,
-        "forgeax::standard-terrain-shadow": 4,
+        "forgeax::standard-terrain-ids-shadow": 16,
+        "forgeax::standard-terrain-shadow": 16,
         "forgeax::vfx-render.particles.beam": 3,
         "forgeax::vfx-render.particles.beam-inputs": 3,
         "forgeax::vfx-render.particles.billboard": 3,
@@ -95,7 +97,7 @@ it('pins the published variant row count per engine material and program', async
         "forgeax::vfx-render.particles.trail": 3,
         "forgeax::vfx-render.particles.trail-inputs": 3,
       },
-      "total": 9195,
+      "total": 20795,
     }
   `);
 });

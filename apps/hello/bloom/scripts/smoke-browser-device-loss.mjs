@@ -204,7 +204,7 @@ try {
   await page.evaluate(() => globalThis.__bloomCarrierProbe.setBloom(true));
   evidence.completedReadyFramesBefore = await waitForReady(60);
   const before = await inspect();
-  if (before.bloom.graphStatus !== 'valid' || before.bloom.passCount !== 11 || before.bloom.enabled !== true) {
+  if (before.bloom.graphStatus !== 'valid' || before.bloom.passCount !== 10 || !before.passes.includes('standard-grade') || before.bloom.enabled !== true) {
     throw new Error(`Bloom initial ready frames lack their graph: ${JSON.stringify(before.bloom)}`);
   }
   await page.addStyleTag({ content: '#bloom-hud { visibility: hidden !important; }' });
@@ -259,7 +259,7 @@ try {
   if ((after.frame.deviceGeneration ?? 0) <= (before.frame.deviceGeneration ?? 0)) {
     throw new Error(`device generation did not advance: ${JSON.stringify({ before: before.frame, after: after.frame })}`);
   }
-  if (after.bloom.graphStatus !== 'valid' || after.bloom.passCount !== 11 || after.bloom.enabled !== true) {
+  if (after.bloom.graphStatus !== 'valid' || after.bloom.passCount !== 10 || !after.passes.includes('standard-grade') || after.bloom.enabled !== true) {
     throw new Error(`Bloom was not rebuilt after device loss: ${JSON.stringify(after.bloom)}`);
   }
   if (

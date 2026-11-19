@@ -33,16 +33,9 @@ import {
 } from './surface-contract.js';
 import type { MaterialVariantContext } from './variant-context.js';
 
-// Pure source utilities are also imported by browser material oracles. Resolve
-// the native implementation only in Node; both hash the same canonical UTF-8.
-const digestUtf8 =
-  typeof process !== 'undefined' && process.versions?.node !== undefined
-    ? await import('node:crypto').then(
-        ({ createHash }) =>
-          (source: string) =>
-            createHash('sha256').update(source).digest('hex'),
-      )
-    : (source: string) => bytesToHex(sha256(new TextEncoder().encode(source)));
+// Source identity uses the same UTF-8 digest in tool and browser consumers.
+// Host selection must not turn importing the pure composer into a Node load.
+const digestUtf8 = (source: string) => bytesToHex(sha256(new TextEncoder().encode(source)));
 
 export interface MaterialComposeRequest {
   readonly material: string;
@@ -81,6 +74,7 @@ export type SurfaceCompositionStage =
   | 'parameter-generation';
 
 export interface SurfaceCompositionRequest {
+  readonly sceneDepth?: 'before-pass';
   readonly material: string;
   readonly pass: string;
   readonly templateModule: string;
@@ -122,6 +116,7 @@ export function surfaceSourceReadsVertexColor(source: string): boolean {
 }
 
 export interface StandardSourcePreparationRequest {
+  readonly sceneDepth?: 'before-pass';
   readonly material: string;
   readonly pass?: string;
   readonly templateModule: string;
@@ -793,14 +788,36 @@ function validateSurfaceAbi(
  * structs in the entry gives the compiler one lexical material namespace and
  * avoids a second import path for the authored Surface ABI.
  */
-const surfaceInlineCache = new Map<string, string>();
+type SurfaceInlineInputs = Parameters<typeof inlineSurfaceImplementationUncached>;
+interface SurfaceInlineEntry {
+  readonly inputs: SurfaceInlineInputs;
+  readonly source: string;
+  readonly bytes: number;
+}
+const surfaceInlineCache: SurfaceInlineEntry[] = [];
 let surfaceInlineBytes = 0;
 
-function inlineSurfaceImplementation(
-  ...args: Parameters<typeof inlineSurfaceImplementationUncached>
-): string {
-  // Only the pure string rewrite is reused. Catalog/ABI/dependency validation
-  // still runs for every caller, with its own material and pass diagnostics.
+function equalSurfaceInlineInputs(left: SurfaceInlineInputs, right: SurfaceInlineInputs): boolean {
+  return (
+    left.length === right.length &&
+    left.every((value, index) => {
+      const other = right[index];
+      return Array.isArray(value) && Array.isArray(other)
+        ? value.length === other.length &&
+            value.every(
+              (helper, index) =>
+                helper.moduleId === other[index]?.moduleId &&
+                helper.source === other[index]?.source,
+            )
+        : value === other;
+    })
+  );
+}
+
+function inlineSurfaceImplementation(...args: SurfaceInlineInputs): string {
+  // Only the pure rewrite is reused. Every caller still validates its catalog,
+  // ABI and dependencies. Exact immutable string comparison avoids hashing the
+  // same template and helper bodies on every variant of one Surface.
   let inputUnits = 0;
   for (const value of args) {
     if (typeof value === 'string') inputUnits += value.length;
@@ -808,23 +825,26 @@ function inlineSurfaceImplementation(
       for (const helper of value) inputUnits += helper.moduleId.length + helper.source.length;
   }
   if (inputUnits * 2 > 1024 * 1024) return inlineSurfaceImplementationUncached(...args);
-  const key = digestUtf8(JSON.stringify(args));
-  const previous = surfaceInlineCache.get(key);
-  if (previous !== undefined) {
-    surfaceInlineCache.delete(key);
-    surfaceInlineCache.set(key, previous);
-    return previous;
+  const index = surfaceInlineCache.findIndex((entry) =>
+    equalSurfaceInlineInputs(entry.inputs, args),
+  );
+  if (index >= 0) {
+    const previous = surfaceInlineCache.splice(index, 1)[0] as SurfaceInlineEntry;
+    surfaceInlineCache.unshift(previous);
+    return previous.source;
   }
   const source = inlineSurfaceImplementationUncached(...args);
-  const bytes = (source.length + key.length) * 2;
+  const bytes = (source.length + inputUnits) * 2;
   if (bytes > 1024 * 1024) return source;
-  while (surfaceInlineCache.size >= 128 || surfaceInlineBytes + bytes > 16 * 1024 * 1024) {
-    const oldest = surfaceInlineCache.entries().next().value;
+  while (surfaceInlineCache.length >= 128 || surfaceInlineBytes + bytes > 16 * 1024 * 1024) {
+    const oldest = surfaceInlineCache.pop();
     if (oldest === undefined) break;
-    surfaceInlineCache.delete(oldest[0]);
-    surfaceInlineBytes -= (oldest[1].length + oldest[0].length) * 2;
+    surfaceInlineBytes -= oldest.bytes;
   }
-  surfaceInlineCache.set(key, source);
+  // Own mutable helper containers; WGSL strings are immutable values.
+  const inputs: SurfaceInlineInputs = [...args];
+  if (args[5] !== undefined) inputs[5] = args[5].map((helper) => ({ ...helper }));
+  surfaceInlineCache.unshift({ inputs, source, bytes });
   surfaceInlineBytes += bytes;
   return source;
 }
@@ -1074,6 +1094,7 @@ export function prepareStandardSource(
     ...(request.surfaceModel === undefined ? {} : { surfaceModel: request.surfaceModel }),
     ...(request.deformation === undefined ? {} : { deformation: request.deformation }),
     sources: catalog.value,
+    ...(request.sceneDepth === undefined ? {} : { sceneDepth: request.sceneDepth }),
     ...(request.generatedParameters === undefined
       ? {}
       : { generatedParameters: request.generatedParameters }),
@@ -1105,6 +1126,8 @@ export function composeSurfaceSource(
     /^\s*#pragma\s+material_slot\s+deformation[^\n]*\n?/gm,
     '',
   );
+  if (request.sceneDepth === 'before-pass' && template.value.provenance === 'engine')
+    templateSource += '\n#import forgeax_material::scene_depth::{sceneDepth}\n';
   const deformation = request.deformation;
   if (deformation !== undefined) {
     const validateDeformationRoot = () => {

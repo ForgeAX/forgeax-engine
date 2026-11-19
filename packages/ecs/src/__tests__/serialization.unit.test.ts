@@ -53,7 +53,6 @@ import { Update } from '../schedule-token';
 
 import type { Handle } from '@forgeax/engine-types';
 import { afterEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
-import { BufferPool } from '../buffer-pool';
 import {
   type Component,
   defineComponent,
@@ -67,14 +66,10 @@ import {
   type TypedArrayFor,
 } from '../component';
 import { ENTITY_NULL_RAW } from '../entity-handle';
-import {
-  type EcsErrorCode,
-  type EcsErrorDetail,
-  FixedSizeMismatchError,
-  type ManagedArrayElementTypeNotAllowedError,
-  ResourceNotFoundError,
-} from '../errors';
-import { UniqueRefStore } from '../unique-ref-store';
+import { type ManagedArrayElementTypeNotAllowedError, ResourceNotFoundError } from '../errors';
+import { UniqueRefStore } from '../managed-ref-store';
+import { OwnedBuffers } from '../owned-buffers';
+import { ArrayStore } from '../storage/array-store';
 import { World, type WorldInspection } from '../world';
 
 import { worldInternal } from '../world-internal';
@@ -201,7 +196,7 @@ import { handleNumeric } from './utils/handle-numeric';
 
   describe('AI user sandbox - schema vocab + lifecycle', () => {
     it('(1) `buffer<128>` field exposes Uint8Array view, mutable in place', () => {
-      const Mesh = defineComponent('Mesh', { vertexData: { type: 'buffer<128>' } });
+      const Mesh = defineComponent('Mesh', { vertexData: { type: 'array<u8, 128>' } });
       const w = new World();
       const e = w.spawn({ component: Mesh, data: { vertexData: new Uint8Array(128) } }).unwrap();
       const r = w.get(e, Mesh).unwrap();
@@ -700,28 +695,6 @@ import { handleNumeric } from './utils/handle-numeric';
   });
 }
 {
-  // --- from managed-array-errors.test.ts ---
-  // Error routing is now returned at the mutation boundary; there is no
-  // World-level ErrorHandler registration.
-
-  // ---------------------------------------------------------------------------
-  // (a) fixed-size-mismatch -- error class shape.
-  // ---------------------------------------------------------------------------
-
-  describe('w12 - fixed-size-mismatch error class', () => {
-    it('FixedSizeMismatchError carries .code + detail.expected / detail.actual', () => {
-      const err = new FixedSizeMismatchError('mat', 16, 15);
-      expect(err.code).toBe('fixed-size-mismatch');
-      expect(err.detail).toEqual({ expected: 16, actual: 15 });
-      // expectType: detail narrows to fixed-size-mismatch shape.
-      const detail: Extract<EcsErrorDetail, { code: 'fixed-size-mismatch' }> = {
-        code: 'fixed-size-mismatch',
-        ...err.detail,
-      };
-      expect(detail.expected).toBe(16);
-    });
-  });
-
   // ---------------------------------------------------------------------------
   // (d) world.pop on a non-empty variable array succeeds and shrinks count.
   // ---------------------------------------------------------------------------
@@ -745,32 +718,6 @@ import { handleNumeric } from './utils/handle-numeric';
       expect(captured.detail.elementType).toBe('ref<X>'); // gate-allow:ecs-brand (illegal-element-type-not-allowed parser rejection fixture)
     });
   });
-
-  // ---------------------------------------------------------------------------
-  // (f) Exhaustive switch over the surviving core collapsed-vocab code.
-  // ---------------------------------------------------------------------------
-
-  describe('w12 - exhaustive switch over collapsed-vocab codes', () => {
-    it('covers the fixed-size member', () => {
-      const codes: EcsErrorCode[] = ['fixed-size-mismatch'];
-      let hits = 0;
-      for (const code of codes) {
-        switch (code) {
-          case 'fixed-size-mismatch':
-            hits += 1;
-            break;
-          default:
-            // The exhaustive narrowing is performed by `EcsErrorCode` over the
-            // entire union; this default arm is unreachable for the code
-            // listed above. We use `void` rather than assertNever to keep the
-            // test focused on collapsed-vocab membership without coupling to
-            // the remaining members.
-            void code;
-        }
-      }
-      expect(hits).toBe(1);
-    });
-  });
 }
 {
   // --- from managed-array-release.test.ts ---
@@ -780,11 +727,11 @@ import { handleNumeric } from './utils/handle-numeric';
     component: Component,
     fieldName: string,
   ): number {
-    const graph = world[worldInternal].getGraph();
+    const graph = world[worldInternal].graph;
     const slotIndex = entityRaw & 0xffffff; // lower 24 bits -- index slot
     for (const arch of graph.archetypes) {
       if (!arch) continue;
-      const table = graph.tables[arch.tableId];
+      const table = arch.table;
       if (table === undefined) continue;
       for (let archetypeRow = 0; archetypeRow < arch.size; archetypeRow++) {
         const row = arch.rows[archetypeRow] ?? 0;
@@ -798,7 +745,7 @@ import { handleNumeric } from './utils/handle-numeric';
                 const col = fieldCols.get(fieldName);
                 if (col !== undefined && fieldCols.has(fieldName)) {
                   // Array location identity: block and byte offset (pages are 64 KiB).
-                  const base = row * col.arity;
+                  const base = row * col.layout.arity;
                   return (col.view[base] as number) * 0x10000 + (col.view[base + 1] as number);
                 }
               }
@@ -823,184 +770,72 @@ import { handleNumeric } from './utils/handle-numeric';
     return world.memoryStats().arrays.liveArrays;
   }
 
-  // ---------------------------------------------------------------------------
-  // Path 1 -- world.despawn(e) releases array fields; slot id reusable.
-  // ---------------------------------------------------------------------------
-
-  describe('w12 - array<entity> variable: despawn releases slot; freelist reuses id', () => {
-    it('despawn frees the slot; same-shape spawn pops the freed id', () => {
-      const Children = defineComponent('Children', { entities: { type: 'array<entity>' } });
-      const w = new World();
-
-      // Spawn A with 4 elements (16 bytes -> bucket 0 / size class 16).
-      const a = w
-        .spawn({
-          component: Children,
-          data: { entities: new Uint32Array([1, 2, 3, 4]) },
-        })
-        .unwrap();
-      const aSlotId = readSlotId(w, handleNumeric(a), Children, 'entities');
-      expect(aSlotId).toBeGreaterThan(0);
-
-      // Despawn A; the array field's slot is released to its bucket free-list.
-      w.despawn(a).unwrap();
-
-      // Spawn B with the same element count -> same bucket -> LIFO pop returns
-      // A's freed slot id.
-      const b = w
-        .spawn({
-          component: Children,
-          data: { entities: new Uint32Array([10, 20, 30, 40]) },
-        })
-        .unwrap();
-      const bSlotId = readSlotId(w, handleNumeric(b), Children, 'entities');
-      expect(bSlotId).toBe(aSlotId);
-    });
-  });
-
-  describe('w12 - array<f32,N> fixed: despawn touches no pool slot (inline)', () => {
-    it('spawn + despawn of an inline fixed array never allocs a pool slot', () => {
-      const Mat4 = defineComponent('Mat4', { mat: 'array<f32, 16>' });
-      const w = new World();
-
-      const init = new Float32Array(16);
-      for (let i = 0; i < 16; i++) init[i] = i + 1;
-
-      const a = w.spawn({ component: Mat4, data: { mat: init } }).unwrap();
-      // Inline column: no BufferPool slot is allocated for the fixed field.
-      expect(liveCount(w)).toBe(0);
-
-      w.despawn(a).unwrap();
-      expect(liveCount(w)).toBe(0);
-
-      // Same-shape respawn still touches no slot, and reads back its payload.
-      const b = w.spawn({ component: Mat4, data: { mat: new Float32Array(16) } }).unwrap();
-      expect(liveCount(w)).toBe(0);
-      const got = w.get(b, Mat4);
-      if (!got.ok) throw new Error('expected ok');
-      expect(got.value.mat[0]).toBe(0);
-    });
-  });
-
-  // ---------------------------------------------------------------------------
-  // Path 2 -- world.removeComponent(e, C) releases array fields on C only.
-  // ---------------------------------------------------------------------------
-
-  describe('w12 - array<entity> variable: removeComponent releases slot', () => {
-    it('removeComponent frees the array slot; freelist reuses id', () => {
-      const Children = defineComponent('Children', { entities: { type: 'array<entity>' } });
-      const Anchor = defineComponent('Anchor', { x: { type: 'f32' } });
-      const w = new World();
-
-      const a = w
-        .spawn(
-          {
-            component: Children,
-            data: { entities: new Uint32Array([1, 2, 3, 4]) },
-          },
-          { component: Anchor, data: { x: 7 } },
-        )
-        .unwrap();
-      const aSlotId = readSlotId(w, handleNumeric(a), Children, 'entities');
-      expect(aSlotId).toBeGreaterThan(0);
-
-      w.removeComponent(a, Children).unwrap();
-
-      const b = w
-        .spawn({
-          component: Children,
-          data: { entities: new Uint32Array([10, 20, 30, 40]) },
-        })
-        .unwrap();
-      const bSlotId = readSlotId(w, handleNumeric(b), Children, 'entities');
-      expect(bSlotId).toBe(aSlotId);
-    });
-  });
-
-  describe('w12 - array<f32,N> fixed: removeComponent touches no pool slot (inline)', () => {
-    it('removeComponent of an inline fixed array never allocs a pool slot', () => {
-      const Mat4 = defineComponent('Mat4', { mat: 'array<f32, 16>' });
+  describe.each([
+    'despawn',
+    'removeComponent',
+    'set',
+  ] as const)('array lifecycle through %s', (operation) => {
+    it('releases a variable array before reusing its same-size location', () => {
+      const Children = defineComponent('Children', { entities: 'array<entity>' });
       const Anchor = defineComponent('Anchor', { x: 'f32' });
       const w = new World();
-
-      const init = new Float32Array(16);
-      for (let i = 0; i < 16; i++) init[i] = i + 1;
-
       const a = w
-        .spawn({ component: Mat4, data: { mat: init } }, { component: Anchor, data: { x: 7 } })
-        .unwrap();
-      expect(liveCount(w)).toBe(0);
-
-      w.removeComponent(a, Mat4).unwrap();
-      expect(liveCount(w)).toBe(0);
-
-      const b = w.spawn({ component: Mat4, data: { mat: new Float32Array(16) } }).unwrap();
-      expect(liveCount(w)).toBe(0);
-      const got = w.get(b, Mat4);
-      if (!got.ok) throw new Error('expected ok');
-      expect(got.value.mat.length).toBe(16);
-    });
-  });
-
-  // ---------------------------------------------------------------------------
-  // Path 3 -- world.set(e, C, { arr: newValue }) releases prior + allocs new.
-  // ---------------------------------------------------------------------------
-
-  describe('w12 - array<entity> variable: set field overwrite releases prior slot', () => {
-    it('set frees the prior array slot before allocating the new one', () => {
-      const Children = defineComponent('Children', { entities: { type: 'array<entity>' } });
-      const w = new World();
-
-      const a = w
-        .spawn({
-          component: Children,
-          data: { entities: new Uint32Array([1, 2, 3, 4]) },
-        })
+        .spawn(
+          { component: Children, data: { entities: new Uint32Array([1, 2, 3, 4]) } },
+          ...(operation === 'removeComponent' ? [{ component: Anchor, data: { x: 7 } }] : []),
+        )
         .unwrap();
       const oldSlotId = readSlotId(w, handleNumeric(a), Children, 'entities');
       expect(oldSlotId).toBeGreaterThan(0);
 
-      // Overwrite the array field with a brand-new payload of the same byte
-      // size -> set path releases oldSlotId, then alloc(16) pops oldSlotId
-      // from the freelist and the column re-stores the SAME id (LIFO same-
-      // bucket reuse, D-7).
-      w.set(a, Children, { entities: new Uint32Array([100, 200, 300, 400]) }).unwrap();
-
-      const newSlotId = readSlotId(w, handleNumeric(a), Children, 'entities');
-      expect(newSlotId).toBe(oldSlotId);
-
-      // Bytes match the new payload (proves the slot was reset post-release).
-      const got = w.get(a, Children);
-      if (!got.ok) throw new Error('expected ok');
-      const snap = got.value.entities;
-      expect(snap.length).toBe(4);
-      expect(snap[0]).toBe(100);
-      expect(snap[3]).toBe(400);
+      let b = a;
+      if (operation === 'set') {
+        w.set(a, Children, { entities: new Uint32Array([100, 200, 300, 400]) }).unwrap();
+      } else {
+        if (operation === 'despawn') w.despawn(a).unwrap();
+        else w.removeComponent(a, Children).unwrap();
+        b = w
+          .spawn({ component: Children, data: { entities: new Uint32Array([10, 20, 30, 40]) } })
+          .unwrap();
+      }
+      expect(readSlotId(w, handleNumeric(b), Children, 'entities')).toBe(oldSlotId);
+      if (operation === 'set') {
+        const got = w.get(a, Children).unwrap();
+        expect(got.entities.length).toBe(4);
+        expect(got.entities[0]).toBe(100);
+        expect(got.entities[3]).toBe(400);
+      }
     });
-  });
 
-  describe('w12 - array<f32,N> fixed: set field overwrite is inline (no pool slot)', () => {
-    it('set overwrites the inline payload in place without touching the pool', () => {
+    it('keeps fixed-array writes and release entirely inline', () => {
       const Mat4 = defineComponent('Mat4', { mat: 'array<f32, 16>' });
+      const Anchor = defineComponent('Anchor', { x: 'f32' });
       const w = new World();
-
-      const init = new Float32Array(16);
-      for (let i = 0; i < 16; i++) init[i] = i + 1;
-
-      const a = w.spawn({ component: Mat4, data: { mat: init } }).unwrap();
+      const init = Float32Array.from({ length: 16 }, (_, index) => index + 1);
+      const a = w
+        .spawn(
+          { component: Mat4, data: { mat: init } },
+          ...(operation === 'removeComponent' ? [{ component: Anchor, data: { x: 7 } }] : []),
+        )
+        .unwrap();
       expect(liveCount(w)).toBe(0);
 
-      const next = new Float32Array(16);
-      for (let i = 0; i < 16; i++) next[i] = (i + 1) * 100;
-      w.set(a, Mat4, { mat: next }).unwrap();
-      // Inline set is a verbatim in-place row write -- no alloc / release.
-      expect(liveCount(w)).toBe(0);
-
-      const got = w.get(a, Mat4);
-      if (!got.ok) throw new Error('expected ok');
-      const snap = got.value.mat;
-      expect(snap[0]).toBe(100);
-      expect(snap[15]).toBe(1600);
+      let b = a;
+      if (operation === 'set') {
+        const next = Float32Array.from({ length: 16 }, (_, index) => (index + 1) * 100);
+        w.set(a, Mat4, { mat: next }).unwrap();
+        expect(liveCount(w)).toBe(0);
+      } else {
+        if (operation === 'despawn') w.despawn(a).unwrap();
+        else w.removeComponent(a, Mat4).unwrap();
+        expect(liveCount(w)).toBe(0);
+        b = w.spawn({ component: Mat4, data: { mat: new Float32Array(16) } }).unwrap();
+        expect(liveCount(w)).toBe(0);
+      }
+      const got = w.get(b, Mat4).unwrap();
+      expect(got.mat.length).toBe(16);
+      expect(got.mat[0]).toBe(operation === 'set' ? 100 : 0);
+      if (operation === 'set') expect(got.mat[15]).toBe(1600);
     });
   });
 
@@ -1176,51 +1011,39 @@ import { handleNumeric } from './utils/handle-numeric';
     for (let i = 0; i < view.byteLength; i++) view[i] = (i + base) & 0xff;
   }
 
-  describe('w12 - AC-07 BufferPool.grow byte-equal carry-over', () => {
+  describe('owned buffer growth preserves every byte', () => {
     it('cross-bucket grow (128 -> 1024) keeps first 128 bytes byte-equal', () => {
-      const pool = new BufferPool();
-      const a = pool.alloc(128);
-      if (!a.ok) throw new Error('expected ok alloc');
-      fillSequential(a.value.view, 1);
-      const r = pool.grow(a.value.id, 1024);
-      if (!r.ok) throw new Error('expected ok grow');
-      expect(r.value.byteLength).toBe(1024);
-      for (let i = 0; i < 128; i++) expect(r.value[i]).toBe((i + 1) & 0xff);
-      // The grown tail bytes are zero-filled by the fresh ArrayBuffer.
-      for (let i = 128; i < 1024; i++) expect(r.value[i]).toBe(0);
+      const buffers = new OwnedBuffers();
+      const handle = buffers.alloc(Uint8Array, 128).unwrap();
+      fillSequential(buffers.view(handle).unwrap(), 1);
+      buffers.resize(handle, 1024).unwrap();
+      const view = buffers.view(handle).unwrap();
+      expect(view.byteLength).toBe(1024);
+      for (let i = 0; i < 128; i++) expect(view[i]).toBe((i + 1) & 0xff);
+      for (let i = 128; i < 1024; i++) expect(view[i]).toBe(0);
     });
-
     it('same-bucket grow (128 -> 200) keeps first 128 bytes byte-equal', () => {
-      const pool = new BufferPool();
-      const a = pool.alloc(128);
-      if (!a.ok) throw new Error('expected ok alloc');
-      fillSequential(a.value.view, 17);
-      const r = pool.grow(a.value.id, 200);
-      if (!r.ok) throw new Error('expected ok grow');
-      expect(r.value.byteLength).toBe(200);
-      for (let i = 0; i < 128; i++) expect(r.value[i]).toBe((i + 17) & 0xff);
+      const buffers = new OwnedBuffers();
+      const handle = buffers.alloc(Uint8Array, 128).unwrap();
+      fillSequential(buffers.view(handle).unwrap(), 17);
+      buffers.resize(handle, 200).unwrap();
+      const view = buffers.view(handle).unwrap();
+      expect(view.byteLength).toBe(200);
+      for (let i = 0; i < 128; i++) expect(view[i]).toBe((i + 17) & 0xff);
     });
-
     it('multi-step grow (128 -> 1024 -> 4096) preserves accumulated content', () => {
-      const pool = new BufferPool();
-      const a = pool.alloc(128);
-      if (!a.ok) throw new Error('expected ok alloc');
-      fillSequential(a.value.view, 5);
-
-      const r1 = pool.grow(a.value.id, 1024);
-      if (!r1.ok) throw new Error('expected ok grow1');
-      // Write a second pattern over the newly-available range.
-      for (let i = 128; i < 1024; i++) r1.value[i] = (i ^ 0x5a) & 0xff;
-
-      const r2 = pool.grow(a.value.id, 4096);
-      if (!r2.ok) throw new Error('expected ok grow2');
-      expect(r2.value.byteLength).toBe(4096);
-      // Original prefix preserved.
-      for (let i = 0; i < 128; i++) expect(r2.value[i]).toBe((i + 5) & 0xff);
-      // Mid-range (set in r1) preserved across the second grow.
-      for (let i = 128; i < 1024; i++) expect(r2.value[i]).toBe((i ^ 0x5a) & 0xff);
-      // Tail past the prior view length is zero-filled.
-      for (let i = 1024; i < 4096; i++) expect(r2.value[i]).toBe(0);
+      const buffers = new OwnedBuffers();
+      const handle = buffers.alloc(Uint8Array, 128).unwrap();
+      fillSequential(buffers.view(handle).unwrap(), 5);
+      buffers.resize(handle, 1024).unwrap();
+      const middle = buffers.view(handle).unwrap();
+      for (let i = 128; i < 1024; i++) middle[i] = (i ^ 0x5a) & 0xff;
+      buffers.resize(handle, 4096).unwrap();
+      const final = buffers.view(handle).unwrap();
+      expect(final.byteLength).toBe(4096);
+      for (let i = 0; i < 128; i++) expect(final[i]).toBe((i + 5) & 0xff);
+      for (let i = 128; i < 1024; i++) expect(final[i]).toBe((i ^ 0x5a) & 0xff);
+      for (let i = 1024; i < 4096; i++) expect(final[i]).toBe(0);
     });
   });
 }
@@ -1376,7 +1199,7 @@ import { handleNumeric } from './utils/handle-numeric';
 
   describe('w16 - buffer:<N> field archetype migrate carry-over (AC-04)', () => {
     it('addComponent migrate keeps buffer payload byte-equal (post-migrate view)', () => {
-      const Skin = defineComponent('Skin', { palette: { type: 'buffer<128>' } });
+      const Skin = defineComponent('Skin', { palette: { type: 'array<u8, 128>' } });
       const Anchor = defineComponent('Anchor', { x: { type: 'f32' } });
       const w = new World();
       const seed = new Uint8Array(128);
@@ -1396,7 +1219,7 @@ import { handleNumeric } from './utils/handle-numeric';
     });
 
     it('removeComponent migrate keeps surviving buffer field byte-equal', () => {
-      const Skin = defineComponent('Skin', { palette: { type: 'buffer<64>' } });
+      const Skin = defineComponent('Skin', { palette: { type: 'array<u8, 64>' } });
       const Anchor = defineComponent('Anchor', { x: { type: 'f32' } });
       const w = new World();
       const seed = new Uint8Array(64);
@@ -1426,7 +1249,7 @@ import { handleNumeric } from './utils/handle-numeric';
     it('addComponent migrate: ref handle u32 stays bit-equal AND buffer bytes byte-equal', () => {
       const Mesh = defineComponent('Mesh', {
         material: { type: 'unique<MaterialAsset>' },
-        vertices: { type: 'buffer<256>' },
+        vertices: { type: 'array<u8, 256>' },
       });
       const Anchor = defineComponent('Anchor', { x: { type: 'f32' } });
       const w = new World();
@@ -1467,7 +1290,7 @@ import { handleNumeric } from './utils/handle-numeric';
     it('removeComponent migrate: ref+buffer on the surviving component stay carry-over intact', () => {
       const Mesh = defineComponent('Mesh', {
         material: { type: 'unique<MaterialAsset>' },
-        vertices: { type: 'buffer<128>' },
+        vertices: { type: 'array<u8, 128>' },
       });
       const Anchor = defineComponent('Anchor', { x: { type: 'f32' } });
       const w = new World();
@@ -1505,7 +1328,7 @@ import { handleNumeric } from './utils/handle-numeric';
     it('multi-hop migrate keeps ref+buffer carry-over intact end-to-end', () => {
       const Mesh = defineComponent('Mesh', {
         material: { type: 'unique<MaterialAsset>' },
-        vertices: { type: 'buffer<64>' },
+        vertices: { type: 'array<u8, 64>' },
       });
       const Anchor = defineComponent('Anchor', { x: { type: 'f32' } });
       const Tag = defineComponent('Tag', { v: { type: 'u32' } });
@@ -1551,16 +1374,16 @@ import { handleNumeric } from './utils/handle-numeric';
   // ---------------------------------------------------------------------------
 
   describe('w16 - migrate does not release or route errors (AC-04 negative)', () => {
-    it('addComponent migrate does not call UniqueRefStore.release / BufferPool.release', () => {
+    it('addComponent migrate does not call UniqueRefStore.release / ArrayStore.release', () => {
       const Mesh = defineComponent('Mesh', {
         material: { type: 'unique<MaterialAsset>' },
-        vertices: { type: 'buffer<32>' },
+        vertices: { type: 'array<u8>' },
       });
       const Anchor = defineComponent('Anchor', { x: { type: 'f32' } });
       const w = new World();
       const store = refsOf(w);
       const refReleaseSpy = vi.spyOn(UniqueRefStore.prototype, 'release');
-      const bufReleaseSpy = vi.spyOn(BufferPool.prototype, 'release');
+      const bufReleaseSpy = vi.spyOn(ArrayStore.prototype, 'release');
       const h = store.alloc('MaterialAsset', { id: 1 });
       const seed = new Uint8Array(32);
       fillSequential(seed, 1);
@@ -1587,7 +1410,7 @@ import { handleNumeric } from './utils/handle-numeric';
     it('removeComponent migrate of an unrelated component does not release the survivor managed slots', () => {
       const Mesh = defineComponent('Mesh', {
         material: { type: 'unique<MaterialAsset>' },
-        vertices: { type: 'buffer<32>' },
+        vertices: { type: 'array<u8>' },
       });
       const Anchor = defineComponent('Anchor', { x: { type: 'f32' } });
       const w = new World();
@@ -1609,7 +1432,7 @@ import { handleNumeric } from './utils/handle-numeric';
         .unwrap();
 
       const refReleaseSpy = vi.spyOn(UniqueRefStore.prototype, 'release');
-      const bufReleaseSpy = vi.spyOn(BufferPool.prototype, 'release');
+      const bufReleaseSpy = vi.spyOn(ArrayStore.prototype, 'release');
 
       // Remove Anchor (no managed fields). Mesh's material + vertices must NOT
       // be released - they survive the migrate.
@@ -2690,7 +2513,7 @@ import { handleNumeric } from './utils/handle-numeric';
 
   describe("w5 - mixed 'string' + 'unique<T>' single-arm release (AC-05)", () => {
     it('despawn(e) releases BOTH the string handle AND the unique<T> handle', () => {
-      // The same isManagedField arm must fan out across BOTH fields. This
+      // The compiled field plans must release BOTH fields. This
       // test is the load-bearing observable for w6's predicate merge: any
       // future regression that re-splits string vs unique<T> dispatch would
       // leave one of the two handles live after despawn.
@@ -2847,7 +2670,7 @@ import { handleNumeric } from './utils/handle-numeric';
 
   // ---------------------------------------------------------------------------
   // (3) Despawn / removeComponent / set --- string field is released by the
-  // shared isManagedField arm on every World release path.
+  // compiled field-plan dispatch on every World release path.
   // ---------------------------------------------------------------------------
 
   describe('w11 --- string release via despawn / removeComponent / set (AC-05)', () => {

@@ -77,6 +77,7 @@ describe('Render profile session pin', () => {
       } catch {
         return activeRenderProfileSession(owner);
       }
+      return undefined;
     }
     const operation = preparation();
 

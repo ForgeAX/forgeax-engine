@@ -72,4 +72,52 @@ describe('component requirements', () => {
     expect(world.update(0).ok).toBe(true);
     expect(world.get(entity, Base).ok).toBe(true);
   });
+
+  it.each([
+    'duplicate',
+    'remove',
+  ] as const)('projects implicit dependencies before later commands: %s', (followup) => {
+    const Base = defineComponent('RequirementsProjectedBase', { value: 'f32' });
+    const Middle = defineComponent('RequirementsProjectedMiddle', {}, { requires: [Base] });
+    const Carrier = defineComponent('RequirementsProjectedCarrier', {}, { requires: [Middle] });
+    const world = new World();
+    const entity = world.spawn().unwrap();
+    world
+      .addSystem(
+        Update,
+        defineSystem({
+          name: 'requirements-projected',
+          queries: [],
+          fn: (_world, _queries, commands) => {
+            commands.addComponent(entity, { component: Carrier, data: {} });
+            if (followup === 'duplicate')
+              commands.addComponent(entity, { component: Base, data: { value: 10 } });
+            else commands.removeComponent(entity, Base);
+          },
+        }),
+      )
+      .unwrap();
+
+    const result = world.update(0);
+    expect(world.execution.health).toBe('healthy');
+    expect(world.hasComponent(entity, Base)).toBe(false);
+    if (followup === 'duplicate') {
+      expect(result).toMatchObject({
+        ok: false,
+        error: {
+          code: 'command-failed',
+          detail: {
+            commandIndex: 1,
+            cause: { code: 'component-already-present' },
+          },
+        },
+      });
+      expect(world.hasComponent(entity, Carrier)).toBe(false);
+      expect(world.hasComponent(entity, Middle)).toBe(false);
+    } else {
+      expect(result.ok).toBe(true);
+      expect(world.hasComponent(entity, Carrier)).toBe(true);
+      expect(world.hasComponent(entity, Middle)).toBe(true);
+    }
+  });
 });

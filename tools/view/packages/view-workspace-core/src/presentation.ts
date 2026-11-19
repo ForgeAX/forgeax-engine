@@ -114,7 +114,7 @@ export function createPresentationRelay(transport: HostTransportServer, resolveC
       const { connectionId: _connection, ...input } = args;
       return new Promise<PresentationSnapshot & { connectionId: string }>((resolve, reject) => {
         const cancel = () => finish(undefined, failure('view-presentation-cancelled', 'the presentation request to remain active', 'Read presentation.get before retrying a write; it may already have applied.'));
-        const timer = setTimeout(() => finish(undefined, failure('view-presentation-timeout', 'the selected View document to answer the presentation request', 'Read presentation.get after reconnecting; never replay writes automatically.')), timeoutMs);
+        const timer = setTimeout(() => finish(undefined, failure('view-presentation-timeout', 'the selected View document to answer the presentation request', 'Read presentation.get after reconnecting; never replay writes automatically.')), operation === 'presentation.document.release' ? 35000 : timeoutMs);
         const finish = (snapshot?: PresentationSnapshot, error?: unknown) => {
           if (!pending.delete(requestId)) return;
           clearTimeout(timer);

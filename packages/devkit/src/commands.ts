@@ -191,7 +191,7 @@ export async function packageCommand(
   let playerRoot: string | undefined;
   try {
     const player = await prepareDist(distRoot, verified.value, {
-      compressDocuments: format === 'web-zip' && options.compress !== false,
+      compressDocuments: options.compress !== false,
       ...(format === 'web-zip'
         ? { outputParent: resolve(facts.value.root, '.forgeax/player') }
         : {}),

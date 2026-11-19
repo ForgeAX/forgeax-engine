@@ -29,6 +29,7 @@ import {
 import { buildViewBindGroup } from '../record/frame-lighting';
 import { prepareMaterialSkylight } from '../record/main-pass-material';
 import { getOrCreateFromChain } from '../record/mesh-ssbo';
+import { referencedReflectionProbeIndices } from '../record/reflection-probe-material';
 import type {
   _InternalRenderPipelineContext,
   RenderSystemInternals,
@@ -43,6 +44,7 @@ import type { StandardClusterGraphBuffers } from './standard-lighting/graph';
 export const DEFERRED_LIGHTING_PARAMS_BYTES = 2 * 4 * Float32Array.BYTES_PER_ELEMENT;
 
 export interface StandardSceneShaderSources {
+  readonly gbuffer?: import('@forgeax/engine-types').MaterialGBufferLayout;
   readonly forwardScreenPack?: string | import('@forgeax/engine-types').ShaderSource;
   readonly forwardScreenCompose?: string | import('@forgeax/engine-types').ShaderSource;
   readonly forwardContact?: string | import('@forgeax/engine-types').ShaderSource;
@@ -308,6 +310,12 @@ export function addStandardDeferredLighting(
         materialUsesDirectDfgLut(material.snapshot.materialParamSchema),
       ),
     );
+    if (internal.runtime.standardSceneShaders?.gbuffer !== 'standard-gbuffer/2')
+      throw new RhiError({
+        code: 'shader-compile-failed',
+        expected: 'standard-gbuffer/2 Deferred readers',
+        hint: 'Rebuild the Engine shader manifest for this GBuffer layout.',
+      });
     const source = deferredLightingSource(
       internal.runtime.standardSceneShaders,
       input.cluster !== null,
@@ -645,7 +653,12 @@ export function addStandardDeferredLighting(
             };
       const sky = prepareMaterialSkylight(environment).skylightResources;
       const environments: SkylightBindGroupResources[] = [sky];
+      const referenced =
+        internal.reflectionProbes === undefined
+          ? undefined
+          : referencedReflectionProbeIndices(internal.reflectionProbes);
       for (const row of internal.reflectionProbes?.table.rows ?? []) {
+        if (!referenced?.has(row.index)) continue;
         if (
           row.filteredView === undefined ||
           row.sampler === undefined ||

@@ -15,6 +15,31 @@ import {
   projectShaderManifestInput,
 } from '../shared-engine-inputs.js';
 
+const projections = vi.hoisted(() => ({ indices: 0, fragments: 0 }));
+vi.mock('@forgeax/engine-shader', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@forgeax/engine-shader')>();
+  return {
+    ...actual,
+    expandShaderManifestPublication: (
+      ...args: Parameters<typeof actual.expandShaderManifestPublication>
+    ) => {
+      const expanded = actual.expandShaderManifestPublication(...args);
+      return {
+        manifest: expanded.manifest,
+        fragmentTable: expanded.fragmentTable,
+        get sourceIndices() {
+          projections.indices++;
+          return expanded.sourceIndices;
+        },
+        get sourceFragments() {
+          projections.fragments++;
+          return expanded.sourceFragments;
+        },
+      };
+    },
+  };
+});
+
 let root: string;
 let manifestPath: string;
 const wgsl = '// source \u00e9\r\nfn main() {}\n// final bytes  ';
@@ -208,12 +233,43 @@ it('loads exact shared shader bytes in Node without a browser Crypto global', as
   expect(loaded.publication).toEqual(publishShaderManifest(entries, materialShaders));
 });
 
-it('owns private parsed reflection facts while rejecting malformed unused reflections eagerly', async () => {
+it('verifies every source using one index snapshot without expanding fragment arrays', async () => {
+  const sourceCount = 128;
+  const distinctEntries = Array.from({ length: sourceCount }, (_, index) => ({
+    ...entries[0],
+    hash: (index + 1).toString(16).padStart(8, '0'),
+    wgsl: `${wgsl}\n// source ${index}`,
+  }));
+  const publication = publishShaderManifest(distinctEntries, []);
+  writePayload(publication);
+  projections.indices = 0;
+  projections.fragments = 0;
   const loaded = await loadSharedEngineShaderManifest(manifestPath, root);
-  expect(loaded.entries[0]?.reflection).toBe(loaded.publication.reflections[0]);
+  expect(loaded.entries.map((entry) => entry.wgsl)).toEqual(
+    distinctEntries.map((entry) => entry.wgsl),
+  );
+  expect(projections.indices).toBe(1);
+  expect(projections.fragments).toBe(0);
+  // The final source must still be checked, not just the first digest.
+  publication.fragments[publication.fragments.length - 1] += 'corrupt';
+  writePayload(publication);
+  await expect(loadSharedEngineShaderManifest(manifestPath, root)).rejects.toThrow(
+    'digest mismatch',
+  );
+});
+
+it('shares immutable expanded reflection facts while rejecting malformed unused reflections eagerly', async () => {
+  const loaded = await loadSharedEngineShaderManifest(manifestPath, root);
+  // Version 6 wire rows contain binding indices; expansion owns the resolved
+  // reflection, shared by every row selecting the same table entry.
+  expect(loaded.entries[0]?.reflection).toEqual(reflection);
+  expect(loaded.entries[0]?.reflection).toBe(loaded.entries[1]?.reflection);
+  expect(loaded.entries[0]?.reflection).toBe(loaded.materialShaders[0]?.reflection);
+  expect(Object.isFrozen(loaded.entries[0]?.reflection)).toBe(true);
+  expect(Object.isFrozen(loaded.entries[0]?.reflection?.boundGlobals)).toBe(true);
   expect(Object.isFrozen(loaded.publication.reflections[0])).toBe(true);
   const malformed = publishShaderManifest(entries, materialShaders);
-  malformed.reflections.push({ ...reflection, schemaVersion: 'invalid' });
+  malformed.reflections.push({ schemaVersion: 'invalid', uvSetCount: 0, bindingIndices: [] });
   writePayload(malformed);
   await expect(loadSharedEngineShaderManifest(manifestPath, root)).rejects.toThrow(
     'Invalid shader manifest publication',

@@ -67,6 +67,99 @@ describe('live Pack generation isolation in the actual Worker', () => {
     if (loaded.ok) throw new Error('Expected incompatible consumer Engine refusal');
     expect(JSON.stringify(loaded.error)).toContain('RigidBody');
   });
+  it('uses the explicitly selected Engine public root and subpaths instead of an installed older npm Engine', async () => {
+    const path = await file(
+      source(
+        output('selectedRoot + createStructuredInputProvider()'),
+        "import { selectedRoot } from '@forgeax/engine'; import { createStructuredInputProvider } from '@forgeax/engine/vfx-render';",
+      ).replace(
+        / {2}parameters: \[.*?\n {2}\],/s,
+        "  parameters: [{ name: 'radius', type: 'f32', default: 1 }],",
+      ),
+    );
+    const installed = join(path, '..', 'node_modules/@forgeax/engine');
+    const selected = join(path, '..', 'selected-engine');
+    const selectedPackage = { name: '@forgeax/engine', root: selected };
+    for (const root of [installed, selected]) {
+      await mkdir(root, { recursive: true });
+      await writeFile(
+        join(root, 'package.json'),
+        JSON.stringify({
+          name: '@forgeax/engine',
+          type: 'module',
+          exports: { '.': './index.mjs', './vfx-render': './vfx.mjs' },
+        }),
+      );
+    }
+    await writeFile(join(installed, 'index.mjs'), 'export const selectedRoot = -100;');
+    await writeFile(join(installed, 'vfx.mjs'), 'export const oldNpm = true;');
+    await writeFile(join(selected, 'index.mjs'), 'export const selectedRoot = 40;');
+    await writeFile(
+      join(selected, 'vfx.mjs'),
+      'export function createStructuredInputProvider(){return 2;}',
+    );
+    const definition = (
+      await loadScriptablePack(path, { packageBinding: selectedPackage })
+    ).unwrap();
+    const built = await executePackBuild(definition, {
+      packageId: definition.packageId,
+      values: resolvePackParameterValues(definition, {}).unwrap(),
+      readByGuid: vi.fn(),
+    });
+    expect(built).toMatchObject({
+      ok: true,
+      value: {
+        'scene/main': {
+          entities: { sun: { components: { DirectionalLight: { intensity: 42 } } } },
+        },
+      },
+    });
+    const unbound = await loadScriptablePack(path, { metadataOnly: true });
+    expect(unbound.ok).toBe(false);
+    await writeFile(
+      join(installed, 'vfx.mjs'),
+      'export function createStructuredInputProvider(){return 3;}',
+    );
+    const pool = createScriptablePackModuleExecutorPool({ maxWorkers: 1, maxTasksPerWorker: 4 });
+    try {
+      for (const [packageBinding, intensity] of [
+        [selectedPackage, 42],
+        [undefined, -97],
+        [selectedPackage, 42],
+      ] as const) {
+        const loaded = (
+          await loadScriptablePack(path, {
+            executor: await pool.acquire(),
+            ...(packageBinding === undefined ? {} : { packageBinding }),
+          })
+        ).unwrap();
+        const result = await executePackBuild(loaded, {
+          packageId: loaded.packageId,
+          values: resolvePackParameterValues(loaded, {}).unwrap(),
+          readByGuid: vi.fn(),
+        });
+        expect(result).toMatchObject({
+          ok: true,
+          value: {
+            'scene/main': {
+              entities: { sun: { components: { DirectionalLight: { intensity } } } },
+            },
+          },
+        });
+      }
+    } finally {
+      await pool.dispose();
+    }
+    await writeFile(
+      join(selected, 'package.json'),
+      JSON.stringify({ name: '@forgeax/engine', type: 'module', exports: { '.': './index.mjs' } }),
+    );
+    expect((await loadScriptablePack(path, { packageBinding: selectedPackage })).ok).toBe(false);
+    const missing = join(path, '..', 'missing-selected-engine');
+    const missingPackage = { ...selectedPackage, root: missing };
+    expect((await loadScriptablePack(path, { packageBinding: missingPackage })).ok).toBe(false);
+  });
+
   it('builds spatial and fixed temporal resolution cameras through pure render schema imports', async () => {
     const path = await file(
       source(

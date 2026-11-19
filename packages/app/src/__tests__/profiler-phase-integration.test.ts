@@ -58,6 +58,35 @@ function finish(profiler: ReturnType<typeof createProfiler>) {
 }
 
 describe('App and Render profiler integration', () => {
+  it('retains App phases when a direct renderer opened the capture first', () => {
+    const profiler = createProfiler();
+    expect(profiler.registerPhaseCatalog('render', ['record']).ok).toBe(true);
+    const scheduler = makeScheduler();
+    const frames: unknown[] = [];
+    const loop = createFrameLoop({
+      world: new World(),
+      renderer: makeRenderer((frame) => frames.push(frame)),
+      profiler,
+      platform: testPlatform({ now: () => 1000, raf: scheduler.raf, caf: scheduler.caf }),
+    });
+    const session = start(profiler);
+    expect(session.beginFrame(1).ok).toBe(true);
+    expect(session.beginPhase('render', 'record').ok).toBe(true);
+    expect(session.endPhase().ok).toBe(true);
+    expect(session.endFrame().ok).toBe(true);
+
+    loop.start().unwrap();
+    scheduler.tick(1000);
+    loop.stop().unwrap();
+
+    const capture = finish(profiler);
+    expect(frames[0]).toEqual({ captureId: capture.captureId, frameId: 2 });
+    const app = capture.records.filter((record) => record.source === 'app');
+    expect(app).toHaveLength(4);
+    expect(app.every((record) => record.frameId === 2)).toBe(true);
+    expect(capture.completeness.status).toBe('complete');
+  });
+
   it('keeps normal and App-only frames on one capture identity', () => {
     const profiler = createProfiler();
     const scheduler = makeScheduler();

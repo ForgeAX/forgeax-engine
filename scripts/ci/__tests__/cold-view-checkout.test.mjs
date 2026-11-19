@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -11,6 +11,15 @@ import { submoduleGitEnvironment } from '../submodule-git-environment.mjs';
 
 const entry = fileURLToPath(new URL('../prepare-view-checkout.mjs', import.meta.url));
 const assetsEntry = fileURLToPath(new URL('../prepare-assets-checkout.mjs', import.meta.url));
+const waterRoot = fileURLToPath(
+  new URL('../../../packages/content/assets/water/', import.meta.url),
+);
+function writeWaterSources(directory) {
+  mkdirSync(join(directory, 'water'));
+  const provenance = JSON.parse(readFileSync(join(waterRoot, 'provenance.json'), 'utf8'));
+  for (const { file } of provenance.files)
+    copyFileSync(join(waterRoot, file), join(directory, 'water', file));
+}
 test('cold private View fetch receives existing parent authorization and preserves WIP', async () => {
   const root = mkdtempSync(join(tmpdir(), 'roi1819-cold-view-488-'));
   const source = join(root, 'source');
@@ -98,6 +107,7 @@ test('cold private View fetch receives existing parent authorization and preserv
       git(p, 'config', 'user.email', 'fixture@example.invalid');
     }
     writeFileSync(join(source, 'package.json'), '{"name":"pinned-view","version":"1.0.0"}\n');
+    writeWaterSources(source);
     git(source, 'add', '.');
     git(source, 'commit', '-qm', 'pin');
     const pin = git(source, 'rev-parse', 'HEAD');
@@ -193,6 +203,9 @@ test('cold private View fetch receives existing parent authorization and preserv
       '[submodule "forgeax-engine-assets"]\n path = forgeax-engine-assets\n url = ../view.git\n',
     );
     writeFileSync(join(relativeEngine, 'pnpm-lock.yaml'), lock);
+    const contentWater = join(relativeEngine, 'packages/content/assets/water');
+    mkdirSync(contentWater, { recursive: true });
+    copyFileSync(join(waterRoot, 'provenance.json'), join(contentWater, 'provenance.json'));
     git(relativeEngine, 'add', '.');
     git(
       relativeEngine,

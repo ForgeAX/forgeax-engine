@@ -1,5 +1,5 @@
-import { describe, expect, it, vi } from 'vitest';
-import { decodeSnapshot, encodeSnapshot, encodeSnapshotWithMaps } from '../fxem';
+import { describe, expect, it } from 'vitest';
+import { decodeSnapshot, encodeSnapshot } from '../fxem';
 import type { Tuple3 } from '../geom';
 import { EDGE_SHARP, type EditMesh, FACE_EDGE_ROUND, FACE_MIRRORED } from '../mesh';
 import { model } from '../model';
@@ -17,18 +17,6 @@ function sample() {
 }
 
 describe('FXEM snapshot', () => {
-  it('publishes canonical bytes and matching provenance maps with one compaction', () => {
-    const mesh = sample().editMesh;
-    const bytes = encodeSnapshot(mesh);
-    const expected = mesh.compact();
-    const compact = vi.spyOn(mesh, 'compact');
-    const encoded = encodeSnapshotWithMaps(mesh);
-    expect(compact).toHaveBeenCalledTimes(1);
-    expect(encoded.bytes).toEqual(bytes);
-    expect(encoded.vertexMap).toEqual(expected.vertexMap);
-    expect(encoded.faceMap).toEqual(expected.faceMap);
-  });
-
   it('round-trips byte for byte', () => {
     const bytes = sample().snapshot();
     const decoded = decodeSnapshot(bytes);

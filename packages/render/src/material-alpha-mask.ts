@@ -64,10 +64,9 @@ export function maskedInEarlyPassVariantSet(
     !MASKED_IN_EARLY_PASS_ENTRIES.has(fragmentEntry)
   )
     return variantSet;
-  let opaque = variantSet.replace('ALPHA_MASK=true', 'ALPHA_MASK=false');
-  // ALPHA_MASK=true implies the clip state; the surface-discard request
-  // selects it again for a clipped view. LOD cross-fade programs keep it.
-  if (!opaque.includes('LOD_DITHER=true'))
-    opaque = opaque.replace('CLIPPING_PLANES=true', 'CLIPPING_PLANES=false');
+  // The receiving draw reselects view clipping independently from LOD coverage.
+  const opaque = variantSet
+    .replace('ALPHA_MASK=true', 'ALPHA_MASK=false')
+    .replace('CLIPPING_PLANES=true', 'CLIPPING_PLANES=false');
   return isSupportedVariantKey(opaque) ? opaque : variantSet;
 }

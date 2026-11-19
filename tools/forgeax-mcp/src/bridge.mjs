@@ -139,6 +139,7 @@ export async function dispatch(api, root, tool, input, signal, workerPath = PACK
     switch (tool) {
       case 'view.start': return bounded(await runTool(api, 'view.start', { root }, signal));
       case 'view.status': {
+        const readViewStatus = async () => {
         const status = await runTool(api, 'view.status', {}, signal);
         if (!status.ok) return status;
         const phase = object(status.value).phase;
@@ -163,8 +164,23 @@ export async function dispatch(api, root, tool, input, signal, workerPath = PACK
           pages,
           ...(pageState?.value?.hasMorePages === true ? { hasMorePages: true } : {}),
         } });
+        };
+        return await readViewStatus();
       }
-      case 'asset.inspect': return inspectPack(root, args, signal, workerPath);
+      case 'asset.inspect': {
+        if (args.projectId === undefined) {
+          try { await readFile(join(root, 'forge.json')); }
+          catch { return failure('project-id-required', 'the projectId returned by View status', 'Select the current project explicitly before inspecting a Pack source.'); }
+          return inspectPack(root, args, signal, workerPath);
+        }
+        const projectId = requiredString(args.projectId, 'projectId', 256);
+        const result = await workspace(api, 'summary.get', {}, signal);
+        if (!result.ok) return result;
+        const project = object(object(result.value).project);
+        if (project.id !== projectId || typeof project.root !== 'string')
+          return failure('engine-workspace-project-mismatch', 'the currently admitted project identity', 'Refresh View status and use its projectId.');
+        return inspectPack(await realpath(project.root), args, signal, workerPath);
+      }
       case 'view.workspace.pack.reveal': {
         const projectId = requiredString(args.projectId, 'projectId', 256);
         const sourcePath = requiredString(args.sourcePath, 'sourcePath', 2048);

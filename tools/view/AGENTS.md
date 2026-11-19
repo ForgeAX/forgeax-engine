@@ -5,15 +5,29 @@ AI is the primary user. Engine owns execution in a separate browser, normally
 headless, with fixed project inputs. View owns its browser resources, workspace
 API clients, frontend plugins and presentation. AI Display never hosts the game.
 
-Engine's explicit `backend start` owns the resident BackendHost and domain
-plugins. The native View host plugin serves an optional UI; `view start` only
-connects to that backend and returns a URL. `view project open` allocates an
-project on that running View and returns the headed document URL; it
-does not launch a browser or switch an already-open different project. Users
-open their browser separately. `view start` does not open a project. Neither
-command installs a browser, creates a renderer or runs
-a game. The library path borrows its caller's Page. Engine contains no View
-activation, package imports, credentials or presentation policy.
+`node tools/view/start.mjs [--project G]` keeps the View
+presentation and its borrowed launcher alive in the foreground. It publishes a
+plain URL before asynchronously ensuring Engine's backend through H's existing
+process manager. View resolves its matching Engine and own Host Pack; default H is a
+shared system temporary workspace per installation. `--new-instance` allocates
+a unique temporary H; explicit `--root H` selects a caller-managed instance.
+Backend termination leaves the Shell available to start it again.
+Startup calls the public `ensureDevKitView` API directly. Use returned H explicitly
+for instance controls. Low-level `backend start` and `view start` remain usable
+separately. Normal file startup with omitted G never selects H as a
+game; a fresh owner is unbound and an existing project remains authoritative.
+Legacy low-level `view start` requires a compatible backend and still admits
+explicit G, or H when H contains `forge.json`. Engine owns the single shared project/session;
+ordinary plain-URL connections adopt it and only the selected presenter places
+its document. Presenter handoff waits for exact old-frame retirement; embedded
+project callers borrow only the elected presenter's broker for the identical
+Engine runtime. An explicit project URL is an optional guarded switch command.
+DevKit owns the durable known/recent project catalogue and Node-visible folder
+browse; View consumes its structured results. Offline, connected-unbound and
+connected-bound states retain one Shell. Users open their browser separately;
+Play and independent AI runs require their own operation. The library path
+borrows its caller's Page. View's launcher contract is product-owned, and H's
+process manager remains the sole backend authority.
 
 View `start` and `status` expose the owner-derived `presentationId`. A fixed URL
 can survive replacement of its native admission lease; URL equality alone does
@@ -90,17 +104,19 @@ is an index to these decisions, not a competing contract.
 The optional embedding helper `startView()` creates one BackendHost when none is supplied; its generated
 browser document creates the paired frontend host. Supplied `backendHost` and
 `frontendHost` are borrowed. Node FrontendHost requires explicit `frontend: true`.
-The default CLI does not call that embedding helper. `view start` adds per-URL
-browser intent from explicit `--project`, or from a backend root containing
-`forge.json`, never a global backend project slot or immediate target.
+The default CLI uses the resident Engine owner rather than that embedding helper.
+Legacy low-level `view start` submits explicit `--project`, or a backend root
+containing `forge.json`, before returning its plain URL. Normal `start.mjs`
+publishes the independent Shell first and submits optional explicit G through
+`ensureDevKitView`; omitted G never selects H.
 The workspace frontend plugin owns the resident frontend-authenticated API connection
 and confirmed project intent; embedding without that endpoint borrows its transport.
 Refresh transfers the exact lost project through the resident View entry and starts with default pages,
 selection and camera, not historical resource tabs, layout or Play. Saved files and
 theme/language remain. The departing document must not bootstrap a new renderer.
 An explicit `view project open`
-allocates the project through the running View owner, never a global
-backend project slot; the browser document adopts the returned headed URL.
+admits the project through the same shared Engine workspace owner; the selected
+presenter places its exact document while other connections observe it.
 An independent entry document consumes only the confirmed project intent and opens its own Engine session through the trusted caller resolver; it never navigates to another live document's target URL. Healthy reload retains its exact session. The Shell's Broker owns page selection/resource opens. An embedded canvas borrows that Broker only when Engine's trusted caller resolver returns the identical runtime owned by the retained Shell; independent entries remain isolated. Page inventory and presentation retain the Shell connection identity, and the Broker retires after its last connection. Display owns per-connection bindings, and Pack receipts revalidate the live page/project/source revision. React consumers share its projection. Shell mounting needs no
 canvas; only the viewport surface waits for Engine presentation. A confirmed
 project gates pages declared with `context: 'project'`, including Runtime capture; the required
@@ -230,7 +246,7 @@ Host/catalog closure checks. Do not copy owner types or suppress strict errors.
 
 - Never switch the primary checkout's branch. Use `.worktrees/` for branch work;
   preserve unrelated changes in both repositories.
-- For View startup or local Engine binding, use [forgeax-view-start](skills/forgeax-view-start/SKILL.md); keep it aligned with the README startup contract.
+- For installed View startup, use [forgeax-view-start](skills/forgeax-view-start/SKILL.md). For source preparation, local Engine binding or native Codex integration, read the [contributor guide](skills/forgeax-view-start/CONTRIBUTOR.md). Keep both aligned with the README startup contract.
 - For View actions and demonstrations, use [forgeax-view-cli](skills/forgeax-view-cli/SKILL.md); it defines API/CLI priority, public prefixes and exact-target discovery. Browser tools verify presentation and interaction.
 - Workflow selection is opt-in; ordinary work uses direct edits and relevant
   checks. Read installed skills when using their workflows.

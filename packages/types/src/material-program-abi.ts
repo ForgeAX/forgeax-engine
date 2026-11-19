@@ -39,6 +39,7 @@ export type MaterialProgramBindingContract =
   | 'render-material-with-scene-depth'
   | 'render-material-and-scene-depth'
   | 'render-standard-material-and-scene-depth'
+  | 'render-lit-material-and-scene-depth'
   | 'post-process'
   | 'render-material';
 
@@ -108,6 +109,7 @@ export function isMaterialProgramBindingContract(
       'render-material-with-scene-depth',
       'render-material-and-scene-depth',
       'render-standard-material-and-scene-depth',
+      'render-lit-material-and-scene-depth',
       'post-process',
       'render-material',
     ].includes(value)
@@ -189,7 +191,14 @@ export interface MaterialSurfaceProgramAbi {
 }
 
 /** Complete immutable ABI projection for one material program family. */
+export const STANDARD_GBUFFER_V2_LAYOUT = 'standard-gbuffer/2' as const;
+export type MaterialGBufferLayout = typeof STANDARD_GBUFFER_V2_LAYOUT;
+
 export interface MaterialProgramAbi {
+  /** Complete surface layout certified by this exact producer. */
+  readonly gbuffer?: MaterialGBufferLayout;
+  /** Producer-owned color-stage fog semantics; independent of the binding layout. */
+  readonly forwardFog?: 'height-vertex/1';
   /** Certified template position = input + bounded Standard displacement,
    * followed by the stock linear Skin transform when Skin inputs are present.
    * Omission makes position bounds unknown; vertex inputs alone grant no proof.
@@ -485,7 +494,9 @@ export function isMaterialProgramAbi(value: unknown): value is MaterialProgramAb
       }),
     ).size === resources.length;
   const validSurface = abi.surface === undefined || isMaterialSurfaceProgramAbi(abi.surface);
-  const validProgramIdentity = () =>
+  const validProgramContracts = () =>
+    (abi.gbuffer === undefined || abi.gbuffer === STANDARD_GBUFFER_V2_LAYOUT) &&
+    (abi.forwardFog === undefined || abi.forwardFog === 'height-vertex/1') &&
     (abi.positionBounds === undefined || abi.positionBounds === 'standard-input') &&
     (abi.entryPoints === undefined || isShaderEntryPointReads(abi.entryPoints)) &&
     (abi.bindings === undefined || isMaterialProgramBindingContract(abi.bindings)) &&
@@ -493,7 +504,9 @@ export function isMaterialProgramAbi(value: unknown): value is MaterialProgramAb
     (abi.sceneDepth === undefined ||
       abi.sceneDepth === 'read-only' ||
       abi.sceneDepth === 'before-pass') &&
-    (abi.postProcess === undefined || isMaterialPostProcessContract(abi.postProcess)) &&
+    (abi.postProcess === undefined || isMaterialPostProcessContract(abi.postProcess));
+  const validProgramIdentity = () =>
+    validProgramContracts() &&
     (abi.bindings === 'post-process') === (abi.postProcess !== undefined) &&
     typeof abi.directEntry === 'string' &&
     abi.directEntry.length > 0 &&

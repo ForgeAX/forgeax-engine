@@ -537,12 +537,7 @@ function waterRecordCacheFixture() {
     },
   );
   const getBindings = vi.fn(
-    (input: {
-      readonly viewIdentity: string;
-      readonly frameGeneration: number;
-      readonly deviceGeneration: number;
-      readonly waterMeshDraws: readonly import('../water/wave-material').WaterMeshInstanceDrawUpload[];
-    }) => {
+    (input: Parameters<NonNullable<RenderSystemRuntime['getWaterMaterialFrameBindings']>>[0]) => {
       const drawKeys = input.waterMeshDraws.map((draw) => draw.drawKey).sort();
       const key = JSON.stringify([
         input.viewIdentity,
@@ -640,7 +635,7 @@ function waterRecordCacheFixture() {
 
 function mutableWaterRecordContext(
   fixture: ReturnType<typeof waterRecordCacheFixture>,
-  rows: readonly _InternalRenderPipelineContext['validatedOrdered'][number][],
+  rows: Parameters<typeof finalizeWaterMaterialAdmissionDraws>[0],
   drawClosure: ReturnType<typeof finalizeWaterMaterialAdmissionDraws>,
 ): _InternalRenderPipelineContext {
   return {
@@ -666,7 +661,7 @@ function ownedWaterTiles(drawKey: string) {
       zoneGeneration: 2,
     },
     'camera:1',
-    { ...draw, drawKey, viewIdentity: 'camera:1' },
+    { ...draw, drawKey },
   );
   return projectWaterMeshAdmissionTiles(
     {

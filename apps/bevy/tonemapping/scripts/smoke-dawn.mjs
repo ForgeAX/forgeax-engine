@@ -196,7 +196,7 @@ if (framesObserved < SMOKE_MIN_FRAMES) failures.push(`(b) frames=${framesObserve
 if (errors.length > 0) failures.push(`(c) Renderer.onError fired ${errors.length} times: [${errors.map((err) => err.code).join(', ')}]`);
 if (drawErrors > 0) failures.push(`(c) draw returned ${drawErrors} errors`);
 if (distinctModes < 3) failures.push(`(d) fewer than 3 tone-map modes changed pixels: ${distinctModes}`);
-if (!passNames.includes('output-transform')) failures.push(`(e) missing output-transform pass; actual=${passNames.join(',')}`);
+if (!passNames.includes('standard-grade')) failures.push(`(e) missing standard-grade pass; actual=${passNames.join(',')}`);
 
 if (failures.length > 0) {
   console.error(`[smoke] FAIL - ${failures.length} criteria failed:`);

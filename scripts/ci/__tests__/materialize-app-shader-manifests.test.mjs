@@ -386,6 +386,8 @@ test('materializes current app publication into a loader-admitted runtime manife
       sources: { [digest(source)]: [0] },
       receipts: [],
       entryPoints: [],
+      reflections: [],
+      reflectionBindings: [],
       entries: [{ hash: 'engine', sourceDigest: digest(source) }],
       materialShaders: [],
     };

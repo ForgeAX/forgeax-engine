@@ -87,7 +87,7 @@ traces and admitted force events. `splashWakeEvents` publish only after
 `physicsCollisionSync` confirms the exact step and root generation. A VFX
 consumer keeps the event's completed source step and specified Water body
 generation. See the [Water contract](../water/README.md) and
-[R4 app](../../apps/water/r4-buoyancy-foam/README.md).
+[R4–R5 app](../../apps/water/r5-gpu-mesh-async-pontoons/README.md).
 
 > [!IMPORTANT]
 > A render tape establishes submitted GPU work and resources. It cannot prove
@@ -107,6 +107,15 @@ repository source and package tests.
 > capabilities are admitted when an authored camera consumes the Standard scene.
 > A camera-only empty shader publication also consumes no Standard material
 > bindings. Local lights and AO retain their reflected transport requirements.
+
+## Shader source preparation
+
+The publication host supplies the portable shader program service lazily when a
+source-template manifest is loaded. Camera-only and precompiled publications do
+not initialize that service. ShaderRegistry retains verified modules and
+selected CPU programs; device forks share these inputs while retaining separate
+GPU lifetimes. Runtime imports the compiler's `/program` entry only; file
+discovery and Node material cooking remain tool responsibilities.
 
 ## Adaptive resolution
 

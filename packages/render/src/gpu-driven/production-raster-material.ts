@@ -455,6 +455,7 @@ export function requestMaterialAbiRasterPipeline(
       surfaceDiscards,
       artifact.fragmentEntry,
       artifact.program,
+      input.renderState?.alphaToCoverageEnabled === true,
     ),
     undefined,
     materialAbiRasterConstants(input.standardTextureMask, surfaceDiscards),
@@ -1687,6 +1688,7 @@ export class MaterialAbiRasterAdapter {
       surfaceDiscards,
       selectedArtifact.fragmentEntry,
       selectedArtifact.program,
+      pipelineRenderState?.alphaToCoverageEnabled === true,
     );
     // Projection identity and shader UV count already determine the aliased
     // layout. Do not build a temporary GPU descriptor just to look up its PSO.
@@ -2038,6 +2040,7 @@ function buildProjectedSurfaceFrameRanges(
   filtered: FilteredProductionPlan,
   ranges: readonly DynamicInputRange[],
   scene: PersistentGpuDrivenState,
+  directRanges: readonly DynamicInputRange[],
 ): Result<readonly ProjectedSurfaceFrameRange[], RhiError> {
   const surfaceMembers: Array<{
     readonly frameIndex: number;
@@ -2109,15 +2112,6 @@ function buildProjectedSurfaceFrameRanges(
     }
     rangeByIdentity.set(identity, range);
   }
-  if (ranges.length !== surfaceMembers.length) {
-    return err(
-      new RhiError({
-        code: 'rhi-descriptor-invalid',
-        expected: 'one stable-identity Surface dynamic range for every admitted medium draw member',
-        hint: `publish one range per admitted Surface member (ranges=${ranges.length}, members=${surfaceMembers.length})`,
-      }),
-    );
-  }
   const frameRanges: ProjectedSurfaceFrameRange[] = [];
   for (const member of surfaceMembers) {
     const range = rangeByIdentity.get(member.identity);
@@ -2132,6 +2126,12 @@ function buildProjectedSurfaceFrameRanges(
     }
     rangeByIdentity.delete(member.identity);
     frameRanges.push({ frameIndex: member.frameIndex, range, directMember: member.directMember });
+  }
+  const direct = new Set(directRanges);
+  for (const [identity, range] of rangeByIdentity) {
+    if (!direct.has(range)) continue;
+    frameRanges.push({ frameIndex: candidateRow++, range, directMember: range.member });
+    rangeByIdentity.delete(identity);
   }
   if (rangeByIdentity.size !== 0) {
     return err(
@@ -2154,6 +2154,7 @@ export class SurfaceFrameProjectionOwner {
         readonly allocationRevision: number;
         readonly page: ReadonlyDynamicInputPage | undefined;
         readonly projectionRevision: number;
+        readonly directKey: string;
         readonly value: SurfaceFrameProjection;
       }
     | undefined;
@@ -2173,6 +2174,7 @@ export class SurfaceFrameProjectionOwner {
     filtered: FilteredProductionPlan,
     frame: SurfaceDynamicInputFrame | undefined,
     scene: PersistentGpuDrivenState,
+    directRanges: readonly DynamicInputRange[] = [],
   ): Result<SurfaceFrameProjection, RhiError> {
     const ranges = frame?.ranges ?? [];
     const projectionRevision = frame?.projectionRevision ?? 0;
@@ -2190,7 +2192,8 @@ export class SurfaceFrameProjectionOwner {
       cached.slots === scene.slots &&
       cached.allocationRevision === scene.scene.allocationRevision &&
       cached.page === frame?.page &&
-      cached.projectionRevision === projectionRevision
+      cached.projectionRevision === projectionRevision &&
+      cached.directKey === JSON.stringify(directRanges.map((range) => range.member))
     ) {
       return ok(cached.value);
     }
@@ -2199,7 +2202,7 @@ export class SurfaceFrameProjectionOwner {
       if (prepared.artifact.receipt?.surface?.model !== 'single-layer-medium') continue;
       this.surfaceFrameRangeMemberScans += prepared.batch.candidates.length;
     }
-    const built = buildProjectedSurfaceFrameRanges(filtered, ranges, scene);
+    const built = buildProjectedSurfaceFrameRanges(filtered, ranges, scene, directRanges);
     if (!built.ok) return built;
     let capacity = 1;
     const consumptionRanges: DynamicInputRange[] = [];
@@ -2220,6 +2223,7 @@ export class SurfaceFrameProjectionOwner {
     frame: SurfaceDynamicInputFrame | undefined,
     scene: PersistentGpuDrivenState,
     value: SurfaceFrameProjection,
+    directRanges: readonly DynamicInputRange[] = [],
   ): void {
     this.surfaceFrameRangeCache = {
       filtered,
@@ -2227,6 +2231,7 @@ export class SurfaceFrameProjectionOwner {
       allocationRevision: scene.scene.allocationRevision,
       page: frame?.page,
       projectionRevision: frame?.projectionRevision ?? 0,
+      directKey: JSON.stringify(directRanges.map((range) => range.member)),
       value,
     };
   }

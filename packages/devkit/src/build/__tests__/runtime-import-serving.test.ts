@@ -136,7 +136,15 @@ it.each([
         exports: { './package.json': './package.json', './geometry': './dist/geometry.mjs' },
       }),
     );
-    await writeFile(entry, "export { value } from './helper.mjs';");
+    await mkdir(join(engine, 'pkg'));
+    await writeFile(join(engine, 'pkg/provenance.json'), '{"verified":"fixture"}');
+    await writeFile(join(engine, 'dist/glue.bytes'), 'original glue bytes');
+    await writeFile(
+      entry,
+      `export { value } from './helper.mjs';
+export const provenance = new URL('../pkg/provenance.json', import.meta.url);
+export const glue = new URL('./glue.bytes', import.meta.url);`,
+    );
     await writeFile(helper, 'export const value = 42;');
     await writeFile(unrelated, 'export const privateValue = 99;');
     await symlink(engine, join(root, 'node_modules/@forgeax/engine'), 'dir');
@@ -185,6 +193,10 @@ it.each([
     expect(await loaded.text()).toContain('helper.mjs');
     expect((await fetch(nativeURL(helper))).status).toBe(200);
     expect((await fetch(nativeURL(unrelated))).status).toBe(403);
+    expect((await fetch(nativeURL(join(engine, 'pkg/provenance.json')))).status).toBe(200);
+    expect(await (await fetch(nativeURL(join(engine, 'dist/glue.bytes')))).text()).toBe(
+      'original glue bytes',
+    );
     expect(server.config.server.fs.allow).not.toContain(engine);
     expect(server.config.server.fs.allow).not.toContain(temporary);
   } finally {

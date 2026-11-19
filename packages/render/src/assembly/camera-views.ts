@@ -534,8 +534,8 @@ export function createCameraViews(
           entityKey: v.camera,
           ...(v.eye === undefined ? {} : { eye: v.eye }),
           viewport: [v.viewport.x, v.viewport.y, v.viewport.width, v.viewport.height],
-          width: v.output?.width ?? 0,
-          height: v.output?.height ?? 0,
+          width: v.output?.width ?? v.viewport.renderWidth,
+          height: v.output?.height ?? v.viewport.renderHeight,
           renderedFrames: v.renderedFrames,
           output: v.target === undefined ? 'screen' : 'texture',
           passes: [...viewPassNames(v.owner)],
@@ -593,11 +593,16 @@ export function createCameraViews(
             : 0;
         const qualityScale = internals.standardProfile?.quality?.resolutionScale ?? 1;
         const cameras =
-          publication?.frame.cameras ??
-          ((!declaresViews && cap === 0 && qualityScale === 1) || world === undefined
+          opts.targetWrite !== undefined
             ? []
-            : selectCameraRoles(world, opts.cameraEntityKey).display);
-        const captures = captureCameras(publication, world, opts.cameraEntityKey);
+            : (publication?.frame.cameras ??
+              ((!declaresViews && cap === 0 && qualityScale === 1) || world === undefined
+                ? []
+                : selectCameraRoles(world, opts.cameraEntityKey).display));
+        const captures =
+          opts.targetWrite !== undefined
+            ? []
+            : captureCameras(publication, world, opts.cameraEntityKey);
         assertViewCameras(cameras, cap > 0);
         const profileSession = activeRenderProfileSession(internals);
         const displayCameras =

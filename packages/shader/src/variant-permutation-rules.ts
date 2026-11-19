@@ -107,49 +107,8 @@ export const VARIANT_PERMUTATION_RULES: readonly VariantPermutationRule[] = [
     when: { COVERAGE_ONLY: true },
     reason: 'temporal coverage never alpha-tests; it runs in the opaque lane only',
   },
-  {
-    axis: 'LOD_DITHER',
-    value: true,
-    when: { COVERAGE_ONLY: true },
-    reason: 'the temporal coverage entry always carries LOD coverage and clipping',
-  },
-  {
-    // A CPU-direct visible-surface draw (no scene-index row) has no LOD
-    // coverage source, so it keeps the clip-only state below instead.
-    axis: 'LOD_DITHER',
-    value: true,
-    when: { VISIBLE_SURFACE_AVAILABLE: true, GPU_DRIVEN_SCENE_INDEX_AVAILABLE: true },
-    reason: 'visible-surface (G-buffer) programs are not on the discard-free forward lane',
-  },
-  {
-    axis: 'CLIPPING_PLANES',
-    value: true,
-    when: { COVERAGE_ONLY: true },
-    reason: 'the temporal coverage entry always carries LOD coverage and clipping',
-  },
-  {
-    axis: 'CLIPPING_PLANES',
-    value: true,
-    when: { VISIBLE_SURFACE_AVAILABLE: true },
-    reason: 'visible-surface (G-buffer) programs are not on the discard-free forward lane',
-  },
-  {
-    // DISCARD_SOURCES is published as three states (none / clip / lod+clip),
-    // not the 2x2 product: LOD cross-fade scenes carry the view-clipping
-    // discard too, so the pair costs 3 rows per base variant instead of 4.
-    axis: 'CLIPPING_PLANES',
-    value: true,
-    when: { LOD_DITHER: true },
-    reason: 'merged discard-source states: LOD cross-fade programs also carry view clipping',
-  },
-  {
-    axis: 'CLIPPING_PLANES',
-    value: true,
-    when: { ALPHA_MASK: true },
-    reason: 'alpha-masked programs already carry a reachable discard, so view clipping adds none',
-  },
-  // CPU-direct visible-surface draws (no scene-index row, not coverage) keep
-  // the clip-only discard state. They come only from the deferred G-buffer
+  // CPU-direct visible-surface draws have no LOD source. They come only
+  // from the deferred G-buffer
   // lane, which runs clustered on storage backends with opaque, non-vertex-
   // coloured Standard surfaces (transmission and the reflection fallback are
   // forward-only), so only that slice is published.
@@ -253,11 +212,17 @@ export const VARIANT_PERMUTATION_RULES: readonly VariantPermutationRule[] = [
   {
     // Discard sources multiply every receiver row; the simple receiver
     // targets the discard-free opaque lane, so clipped and LOD cross-fade
-    // draws keep the general receiver (LOD_DITHER=true implies clipping).
+    // draws keep the general receiver.
     axis: 'DIRECTIONAL_SHADOW_SIMPLE',
     value: false,
     when: { CLIPPING_PLANES: true },
     reason: 'discarding draws keep the general receiver (publication budget)',
+  },
+  {
+    axis: 'DIRECTIONAL_SHADOW_SIMPLE',
+    value: false,
+    when: { LOD_DITHER: true },
+    reason: 'LOD cross-fade draws keep the general receiver (publication budget)',
   },
   // Modifier-free lighting and the directional receiver are independent frame
   // facts. Keep the existing plain storage-forward publication budget for
@@ -271,6 +236,7 @@ export const VARIANT_PERMUTATION_RULES: readonly VariantPermutationRule[] = [
       { PROBE_BLEND_AVAILABLE: true },
       { STORAGE_BUFFER_AVAILABLE: false },
       { CLIPPING_PLANES: true },
+      { LOD_DITHER: true },
     ] as const
   ).map(
     (when): VariantPermutationRule => ({

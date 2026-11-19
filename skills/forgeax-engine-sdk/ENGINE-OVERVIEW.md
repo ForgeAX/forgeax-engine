@@ -13,7 +13,9 @@ composition, components, assets or camera settings select it.
 |:--|:--|:--|
 | Frame loop, input (keyboard, mouse, gamepad, pointer lock, action mapping), plugins, pause/resume | App host, `InputSnapshot`, Cordis plugins, `forge.json` roots | `forgeax-engine-app` |
 | Entities, components, queries, Update / FixedUpdate, game states | ECS world, schedules, deferred commands, `StateToken` | `forgeax-engine-ecs`, `forgeax-engine-state` |
-| Camera, sun and lights, shadows, sky, fog, HDR, tone mapping, bloom, AO, SSR, AA (MSAA/FXAA/SMAA/TAA), depth of field, motion blur, decals, reflections, water | Standard render pipeline, camera and light components, `Atmosphere` / `SkyboxBackground`, `Fog`, post effects on the camera entity | `forgeax-engine-render-pipeline` |
+| Camera, sun and lights, shadows, sky, fog, HDR, tone mapping, bloom, AO, SSR, AA (MSAA/FXAA/SMAA/TAA), depth of field, motion blur, decals, reflections | Standard render pipeline, camera and light components, `Atmosphere` / `SkyboxBackground`, `Fog`, post effects on the camera entity | `forgeax-engine-render-pipeline` |
+| Programmable volumetric clouds, wind-driven cloud shadows, sky and horizon blending | `VolumetricCloudLayer`, cooked `cloud-material` and `cloud-material-instance` | [Render Pipeline → Volumetric clouds](../forgeax-engine-render-pipeline/SKILL.md#volumetric-clouds) |
+| Lakes with waves, surface queries, floating bodies | Water bodies and zones (`test-experimental`, explicit opt-in) | [Water](../forgeax-engine-render-pipeline/SKILL.md#water) |
 | Materials, textures, custom surface shaders | `Materials.standard / unlit / lambert`, `surfaceModule` WGSL, shader variants | `forgeax-engine-material`, `forgeax-engine-shader` |
 | Primitive and procedural meshes, extrude / sweep / revolve, editable hard-surface parts | `createBoxGeometry` and siblings, `createMeshBuilder`, `createExtrusionGeometry`, modeling kernel | `forgeax-engine-modeling` |
 | glTF / FBX / textures / audio / fonts, GUID loading, packs | Importers, `*.pack.ts`, `AssetRegistry`, scene instantiation | `forgeax-engine-assets` |
@@ -39,7 +41,7 @@ These come from the last audit. Before declaring something a gap, search the cat
 - Tone mapping is per camera, not per material; there is no `toneMapped: false`.
 - A surface shader cannot displace vertices: animate vertices with `assets.writeRange`.
 - A surface shader receives no sun or sky of its own; lighting comes from the material model.
-  For water, use the stock `model: 'single-layer-medium'` material.
+  For a standalone water-looking surface, use the stock `model: 'single-layer-medium'` material.
 - Fog is applied analytically; Three's fog-after-tone-mapping makes the same hex look lighter,
   so author a darker fog colour.
 - Pointer lock is taken on canvas click; a cursor-aimed game calls
@@ -48,7 +50,8 @@ These come from the last audit. Before declaring something a gap, search the cat
   `node_modules` internals for APIs that the API index lists.
 
 Entries marked experimental, development or build-time in the catalog are not part of the
-default runtime path; do not rely on them in a delivered game.
+default delivery path. When the task explicitly requests a Water experiment, use the opt-in
+route above and verify it in the target browser.
 
 ## Do not rebuild these
 

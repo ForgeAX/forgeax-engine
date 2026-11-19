@@ -6,6 +6,7 @@ import type {
   RenderGraphError,
 } from '@forgeax/engine-render-graph';
 import type {
+  BindGroup,
   BindGroupLayout,
   Buffer,
   RenderPipeline,
@@ -27,7 +28,7 @@ import {
 } from '../environment/bindings';
 import { atmosphereVolumeViews, type GraphAtmosphere } from '../environment/luts';
 import { CloudLayerResourceFailureError } from '../errors/cloud';
-import { RenderFeatureStageFailedError } from '../errors/render';
+import { RendererContractFailureError, RenderFeatureStageFailedError } from '../errors/render';
 import type { RenderFeatureResolvedGpuBuffer } from '../features/prepared-gpu-work';
 import type { RenderFeatureBindingsDescriptor } from '../features/prepared-graphics';
 import type {
@@ -39,6 +40,7 @@ import type { PostProcessShaderEntry } from '../fullscreen-post-process-pass';
 import {
   buildFullscreenPostProcessPass,
   createFullscreenBindGroup,
+  entryUsesPrimaryDepth,
   isTemporalFullscreenBinding,
 } from '../fullscreen-post-process-pass';
 import { waterProgramEntryPoints } from '../material-program-inputs';
@@ -67,8 +69,8 @@ import { buildPerFrameBindGroups, buildViewBindGroup } from './frame-lighting';
 import { extractEntryResourceHandle, getOrCreateFromChainResult } from './mesh-ssbo';
 import type { _InternalRenderPipelineContext, RenderSystemInternals } from './render-context';
 import {
+  materialFogViewOffset,
   POST_PROCESS_VIEW_UNIFORM_OFFSET,
-  translucentViewOffset,
   VIEW_UNIFORM_BYTES,
 } from './view-ubo';
 
@@ -429,10 +431,22 @@ export function resolveTargetBindings(
   const resolveFeatureSceneViewBindings = () => {
     // Blended feature draws (particles) read the View copy for their blend so
     // they fog themselves at their own depth over the already-fogged scene.
-    const viewOffset =
-      input.binding.fogComposition === undefined
-        ? 0
-        : translucentViewOffset(input.binding.fogComposition);
+    const viewOffset = materialFogViewOffset(
+      0,
+      frame.vertexHeightFog === true,
+      input.binding.fog,
+      input.binding.fogComposition,
+    );
+    if (
+      descriptor?.values.fullscreen !== true &&
+      frame.vertexHeightFog === true &&
+      input.binding.fog !== false &&
+      input.binding.forwardFog !== 'height-vertex/1'
+    )
+      throw new RendererContractFailureError(
+        'draw',
+        'Forward material feature must declare forwardFog: height-vertex/1 or renderState.fog: false',
+      );
     if (descriptor?.values.view === true) {
       return perFrameViewBindings(
         frame,
@@ -479,7 +493,10 @@ export function resolveTargetBindings(
         cloudShadow,
       );
     }
-    if (input.binding.bindingContract === 'render-standard-material-and-scene-depth') {
+    if (
+      input.binding.bindingContract === 'render-lit-material-and-scene-depth' ||
+      input.binding.bindingContract === 'render-standard-material-and-scene-depth'
+    ) {
       return resolveStandardViewDepthBindings(
         input,
         frame,
@@ -743,6 +760,30 @@ function stageCloudHistoryWrite(frame: _InternalRenderPipelineContext): void {
 }
 
 /** One-input fullscreen producer with optional depth and named extra inputs. */
+function fullscreenSourceViews(
+  frame: _InternalRenderPipelineContext,
+  input: TargetBindingsInput,
+  values: BindingValues,
+  fullscreen: FullscreenPass,
+) {
+  const logicalViews = fullscreenAdditionalViews(frame, input, values, fullscreen);
+  if (logicalViews === undefined || values.assetTextures === undefined) return logicalViews;
+  return [
+    ...fullscreenAssetViews(frame, values.assetTextures, fullscreen, logicalViews.length),
+    ...logicalViews,
+  ];
+}
+
+function acceptFullscreenBindings(
+  frame: _InternalRenderPipelineContext,
+  shader: string,
+  group: BindGroup | null,
+): BindGroup | undefined {
+  if (group === null) return undefined;
+  if (shader === 'cloud-layer-resolve') stageCloudHistoryWrite(frame);
+  return group;
+}
+
 function resolveFullscreenBindings(
   input: TargetBindingsInput,
   frame: _InternalRenderPipelineContext,
@@ -754,28 +795,27 @@ function resolveFullscreenBindings(
   if (typeof shader !== 'string') return undefined;
   const entry = postProcessEntryOf(frame, shader, featurePostProcessEntries);
   if (entry === undefined) return undefined;
-  const depthTarget = fullscreenDepthTarget(input, values);
+  const primaryDepth = entryUsesPrimaryDepth(entry);
+  const primaryDepthTarget = primaryDepth ? input.resolveTarget(values.input as never) : undefined;
+  const depthTarget = primaryDepth ? undefined : fullscreenDepthTarget(input, values);
   const fullscreen = buildFullscreenPostProcessPass(
     { device: frame.runtime.device, errorRegistry: frame.runtime.errorRegistry },
     entry,
-    depthTarget?.resolveTarget !== undefined,
+    primaryDepth ? entry.depthSampleCount === 4 : depthTarget?.resolveTarget !== undefined,
   );
   if (fullscreen === null || fullscreen.sampler === null) return undefined;
-  const inputView = fullscreenInputView(input, frame, values);
+  const inputView = primaryDepth
+    ? primaryDepthTarget && depthOnlyViewOf(frame, input.resources, primaryDepthTarget)
+    : fullscreenInputView(input, frame, values);
   if (inputView === undefined) return undefined;
-  const depthView = fullscreenDepthView(input, frame, values, depthTarget);
+  const depthView = primaryDepth
+    ? undefined
+    : fullscreenDepthView(input, frame, values, depthTarget);
   if (depthTarget !== undefined && (depthView === undefined || fullscreen.depthSampler === null)) {
     return undefined;
   }
-  const logicalViews = fullscreenAdditionalViews(frame, input, values, fullscreen);
-  if (logicalViews === undefined) return undefined;
-  const additionalViews =
-    values.assetTextures === undefined
-      ? logicalViews
-      : [
-          ...fullscreenAssetViews(frame, values.assetTextures, fullscreen, logicalViews.length),
-          ...logicalViews,
-        ];
+  const additionalViews = fullscreenSourceViews(frame, input, values, fullscreen);
+  if (additionalViews === undefined) return undefined;
   const layout = pipeline.getBindGroupLayout?.(1);
   if (layout === undefined) return undefined;
   const paramsBuffer = frame.runtime.getPostProcessParamsBuffer?.(shader);
@@ -791,9 +831,7 @@ function resolveFullscreenBindings(
     additionalViews,
     fullscreenStorageBindings(input, values, fullscreen),
   );
-  if (createdBindGroup === null) return undefined;
-  if (shader === 'cloud-layer-resolve') stageCloudHistoryWrite(frame);
-  return createdBindGroup;
+  return acceptFullscreenBindings(frame, shader, createdBindGroup);
 }
 
 /** Temporal fullscreen producer: current input, depth and the temporal history input. */

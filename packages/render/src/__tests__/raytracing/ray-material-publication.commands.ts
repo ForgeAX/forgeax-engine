@@ -26,6 +26,7 @@ export async function prepareRayMaterialPublication(
   id: string,
   asset: MaterialAsset,
   cooker: ReturnType<typeof createMaterialPackCooker>,
+  includePublication = true,
 ) {
   const guid = AssetGuid.format(
     AssetGuid.derive(
@@ -89,15 +90,17 @@ export async function prepareRayMaterialPublication(
     program,
     // Compiler artifacts are UTF-8 WGSL. JSON carries strings rather than
     // expanding every byte into a JS number in the Browser command channel.
-    cookedPublication: {
-      record: serializeCookedMaterialRecord(ready.record),
-      artifacts: Object.fromEntries(
-        ready.record.programs.map(({ artifact }) => [
-          artifact.path,
-          new TextDecoder().decode(artifact.bytes),
-        ]),
-      ),
-    },
+    cookedPublication: includePublication
+      ? {
+          record: serializeCookedMaterialRecord(ready.record),
+          artifacts: Object.fromEntries(
+            ready.record.programs.map(({ artifact }) => [
+              artifact.path,
+              new TextDecoder().decode(artifact.bytes),
+            ]),
+          ),
+        }
+      : undefined,
     publication: {
       program: selected.specializationKey,
       artifactDigest: artifact.digest,

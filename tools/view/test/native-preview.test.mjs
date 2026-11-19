@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { it } from 'node:test';
-import { createNativePreviewPresentation, installNativePreviewHost, bindWorkspacePreviewSurface,
+import { createNativePreviewPresentation, createProjectDocumentFrameOwner, installNativePreviewHost, bindWorkspacePreviewSurface,
   dedicatedPreviewPresentation } from '../packages/view-workspace-core/src/preview-surface.ts';
+import { createBrowserFrontendPlatform } from '@forgeax/engine-host/platform';
 
 function events(target = {}) {
   const listeners = new Map();
@@ -43,12 +44,13 @@ function fixture(hooks = {}) {
   const outer = realm(), inner = realm();
   inner.window.parent = outer.window;
   outer.window.parent = outer.window;
-  outer.window.location = new URL('http://view.test/?forgeaxWorkspaceTarget=scene');
+  outer.window.location = new URL('http://view.test/');
   const scene = { targetId: 'scene', generation: 1, sessionId: 'session', worldId: 'scene-world', headed: true };
   const mesh = { targetId: 'mesh', generation: 2, sessionId: 'session', worldId: 'mesh-world', headed: true };
   const material = { targetId: 'material', generation: 3, sessionId: 'session', worldId: 'material-world', headed: true };
-  let state = { project: { id: 'project' }, projectPhase: 'running', projectTarget: scene, browserGeneration: 1,
-    previews: [mesh, material].map(target => ({ target })), targetBinding: 'preview' };
+  let state = { project: { id: 'project' }, projectPhase: 'running', projectTarget: scene,
+    projectDocument: { sessionId: 'session', targetId: 'scene', url: 'http://game.test/?forgeaxWorkspaceTarget=scene', browserGeneration: 1 }, browserGeneration: 1,
+    projectDocumentPresentation: 'presenter', previews: [mesh, material].map(target => ({ target })), targetBinding: 'preview' };
   const subscribers = new Set(), calls = [];
   const client = { subscribe(fn) { subscribers.add(fn); fn(state); return () => subscribers.delete(fn); }, getState: async () => state };
   const frame = element(outer.document, 'IFRAME');
@@ -59,10 +61,11 @@ function fixture(hooks = {}) {
   const local = { createSurface: ({ target }) => canvases.get(target.targetId),
     resolveTarget: id => state.previews.find(p => p.target.targetId === id), attach() {} };
   const stopHost = installNativePreviewHost({ ...inner, presentation: local, client, createContainer: () => inner.document.createElement('div'), ...hooks });
-  const native = createNativePreviewPresentation({ ...outer, presentation: {
-    surfacePlacement: 'owner', createSurface: () => frame,
-    attach() { throw new Error('The native adapter must replace the Scene-only positioning lifecycle'); },
-  }, client });
+  const frameOwner = createProjectDocumentFrameOwner({ client, platform: {
+    document: outer.document,
+    createFrame(url) { frame.src = url; return { element: frame, ready: Promise.resolve(), async dispose() { frame.remove(); } }; },
+  } });
+  const native = createNativePreviewPresentation({ ...outer, frameOwner, client });
   const sceneContainer = element(outer.document);
   const stopScene = native.presentation.attachScene({ target: scene, container: sceneContainer });
   function bind(target, pageType) {
@@ -77,9 +80,31 @@ function fixture(hooks = {}) {
     snapshot: () => state,
     publish(patch) { state = { ...state, ...patch }; for (const listener of subscribers) listener(state); },
     publishParentOnly(patch) { state = { ...state, ...patch }; [...subscribers].at(-1)(state); },
-    async dispose() { stopScene(); await native.dispose(); await stopHost(); },
+    async dispose() { stopScene(); await native.dispose(); await frameOwner.dispose(); await stopHost(); },
   };
 }
+
+it('keeps a replacement request live when its state read retires the previous preview', { timeout: 2000 }, async () => {
+  const f = fixture();
+  try {
+    f.outer.document.documentElement.dataset.forgeaxViewActivePage = 'mesh';
+    const mesh = f.bind(f.mesh, 'mesh');
+    await mesh.bound.ready;
+    f.publishParentOnly({ previews: [{ target: f.material }] });
+    f.client.getState = async () => {
+      f.publish({ previews: [{ target: f.material }] });
+      return f.snapshot();
+    };
+    f.outer.document.documentElement.dataset.forgeaxViewActivePage = 'material';
+    const material = f.bind(f.material, 'material');
+    await material.bound.ready;
+    assert.equal(f.canvases.get('mesh').parentNode, f.inner.document.body);
+    assert.equal(f.canvases.get('material').parentNode.dataset.forgeaxDocumentPreview, 'material');
+    await mesh.bound.dispose();
+    await material.bound.dispose();
+    assert.equal(f.inner.document.body.children.filter(node => node.dataset.forgeaxDocumentPreview).length, 0);
+  } finally { await f.dispose(); }
+});
 
 it('switches isolated asset surfaces while retaining the iframe and restores Scene on close', { timeout: 2000 }, async () => {
   const f = fixture();
@@ -111,6 +136,220 @@ it('switches isolated asset surfaces while retaining the iframe and restores Sce
   } finally { await f.dispose(); }
   assert.equal(f.frame.restored, 'original-style');
   assert.equal(f.inner.window.count('message'), 0);
+});
+
+it('creates a project document frame only for the elected View presenter', async () => {
+  const outer = realm();
+  const document = { sessionId: 'session', targetId: 'target', url: 'http://game.test/project', browserGeneration: 0 };
+  let state = { project: { id: 'project', root: '/project' }, projectPhase: 'starting', projectDocument: document,
+    projectStatus: { phase: 'starting', sessionId: 'session', generation: 1, document } };
+  const listeners = new Set();
+  const client = { subscribe(listener) { listeners.add(listener); listener(state); return () => listeners.delete(listener); }, getState: async () => state };
+  const created = [];
+  const owner = createProjectDocumentFrameOwner({ client, platform: {
+    document: outer.document,
+    createFrame(url) {
+      const frame = element(outer.document, 'IFRAME');
+      frame.src = url;
+      const entry = { frame, disposed: 0 };
+      created.push(entry);
+      return { element: frame, ready: Promise.resolve(), async dispose() { entry.disposed++; frame.remove(); } };
+    },
+  } });
+  try {
+    assert.equal(owner.getSnapshot(), undefined);
+    assert.equal(created.length, 0, 'a missing presenter admission never creates the project execution document');
+    state = { ...state, projectDocumentPresentation: 'unknown' };
+    for (const listener of listeners) listener(state);
+    await Promise.resolve();
+    assert.equal(created.length, 0, 'an unrecognized admission never creates a project execution document');
+    state = { ...state, projectDocumentPresentation: 'observer' };
+    for (const listener of listeners) listener(state);
+    await Promise.resolve();
+    assert.equal(created.length, 0, 'an observing Shell never creates the project execution document');
+    state = { ...state, projectDocumentPresentation: 'presenter' };
+    for (const listener of listeners) listener(state);
+    assert.equal(created.length, 1);
+    assert.equal(owner.getSnapshot().phase, 'preparing');
+    state = { ...state, projectDocumentPresentation: 'observer' };
+    for (const listener of listeners) listener(state);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(created.length, 1);
+    assert.equal(created[0].disposed, 1, 'ownership transfer retires the old Shell frame before another is created');
+    assert.equal(owner.getSnapshot(), undefined);
+  } finally { await owner.dispose(); }
+});
+
+it('frames the Host-authorized starting document before a project target is ready', async () => {
+  const outer = realm();
+  outer.window.parent = outer.window;
+  outer.window.location = new URL('http://view.test/');
+  let state = {
+    project: { id: 'project' }, projectPhase: 'starting',
+    projectDocument: { sessionId: 'session', targetId: 'scene', url: 'http://game.test/?forgeaxWorkspaceTarget=scene', browserGeneration: 1 },
+    projectDocumentPresentation: 'presenter',
+  };
+  const listeners = new Set();
+  const client = { subscribe(listener) { listeners.add(listener); listener(state); return () => listeners.delete(listener); }, getState: async () => state };
+  const scene = element(outer.document);
+  outer.window.fetch = globalThis.fetch;
+  const browserPlatform = createBrowserFrontendPlatform(outer.window);
+  let createCount = 0;
+  const platform = { ...browserPlatform, createFrame(url) { createCount++; return browserPlatform.createFrame(url); } };
+  const frameOwner = createProjectDocumentFrameOwner({ client, platform });
+  const native = createNativePreviewPresentation({ ...outer, frameOwner, client });
+  const release = native.presentation.attachProjectDocument({ document: state.projectDocument, container: scene });
+  try {
+    const frame = frameOwner.getSnapshot().frame;
+    assert.ok(frame, 'starting document gets one retained project frame');
+    assert.equal(frame.src, state.projectDocument.url);
+    assert.equal(frame.style.visibility, 'visible');
+    assert.equal(frame.style.width, '640px');
+    assert.equal(createCount, 1);
+    state = { ...state, projectPhase: 'running', projectTarget: {
+      targetId: 'scene', url: state.projectDocument.url, generation: 1, sessionId: 'session', worldId: 'world',
+    } };
+    for (const listener of listeners) listener(state);
+    assert.equal(outer.document.body.children.filter(child => child.tagName === 'IFRAME').length, 1);
+    assert.equal(outer.document.body.children[0], frame, 'running publication retains the loading document frame');
+    assert.equal(createCount, 1, 'browserGeneration advancement is not a physical Frame replacement');
+  } finally { release(); await native.dispose(); await frameOwner.dispose(); }
+});
+
+it('serializes Frame replacement and keeps retired startup failures from replacing current status', async () => {
+  let state = { revision: 1, projectDocument: { sessionId: 's1', targetId: 'first', url: 'http://game.test/first', browserGeneration: 0 }, projectDocumentPresentation: 'presenter' };
+  const listeners = new Set();
+  const client = { subscribe(listener) { listeners.add(listener); listener(state); return () => listeners.delete(listener); }, getState: async () => state };
+  const created = [];
+  const platform = { document: { body: { append() {} } }, createFrame(url) {
+    let resolveReady, rejectReady, resolveDispose;
+    const ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
+    const dispose = new Promise(resolve => { resolveDispose = resolve; });
+    const entry = { url, ready, resolveReady, rejectReady, dispose, resolveDispose,
+      element: { title: '', dataset: {}, parentNode: {}, getAttribute: () => '', setAttribute() {}, removeAttribute() {} } };
+    created.push(entry);
+    return { element: entry.element, ready, dispose: () => dispose };
+  } };
+  const owner = createProjectDocumentFrameOwner({ client, platform });
+  try {
+    assert.equal(owner.getSnapshot().phase, 'preparing');
+    state = { revision: 2, projectDocument: { sessionId: 's2', targetId: 'second', url: 'http://game.test/second', browserGeneration: 0 }, projectDocumentPresentation: 'presenter' };
+    for (const listener of listeners) listener(state);
+    assert.equal(owner.getSnapshot().phase, 'disposing');
+    assert.equal(created.length, 1, 'replacement waits for the old platform Frame teardown');
+    created[0].resolveDispose();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(created.length, 2);
+    assert.equal(owner.getSnapshot().document.targetId, 'second');
+    created[0].rejectReady(new Error('retired document failed late'));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(owner.getSnapshot().document.targetId, 'second');
+    assert.equal(owner.getSnapshot().phase, 'preparing');
+  } finally {
+    const closing = owner.dispose();
+    created.at(-1)?.resolveDispose();
+    await closing;
+  }
+});
+
+it('releases a frame after failed preparation and preserves failed teardown', async () => {
+  let state = { revision: 1, projectDocument: { sessionId: 's1', targetId: 'first', url: 'http://game.test/first' }, projectDocumentPresentation: 'presenter' };
+  const listeners = new Set();
+  const client = { subscribe(listener) { listeners.add(listener); listener(state); return () => listeners.delete(listener); }, getState: async () => state };
+  let rejectReady;
+  let failDisposal = false;
+  const platform = { document: { body: { append() {} } }, createFrame() {
+    const ready = new Promise((_resolve, reject) => { rejectReady = reject; });
+    return { element: { title: '', dataset: {}, parentNode: {} }, ready,
+      async dispose() { if (failDisposal) throw new Error('platform teardown failed'); } };
+  } };
+  const owner = createProjectDocumentFrameOwner({ client, platform });
+  rejectReady(new Error('platform frame failed'));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(owner.getSnapshot().failure, { stage: 'prepare', message: 'platform frame failed' });
+  failDisposal = true;
+  await assert.rejects(owner.release(), /platform teardown failed/);
+  assert.deepEqual(owner.getSnapshot().failure, { stage: 'dispose', message: 'platform teardown failed' });
+  await assert.rejects(owner.dispose(), /platform teardown failed/);
+});
+
+it('retires failed preparation on handoff and creates again only after re-election', async () => {
+  let state = { revision: 1, projectDocument: { sessionId: 's1', targetId: 'scene', url: 'http://game.test/scene' }, projectDocumentPresentation: 'presenter' };
+  let publish;
+  let created = 0, retired = 0;
+  const client = { subscribe(listener) { publish = listener; listener(state); return () => {}; }, getState: async () => state };
+  const owner = createProjectDocumentFrameOwner({ client, platform: { document: { body: { append() {} } }, createFrame() {
+    created++;
+    return { element: { dataset: {}, parentNode: {} }, ready: Promise.reject(new Error('frame preparation failed')),
+      async dispose() { retired++; } };
+  } } });
+  try {
+    await new Promise(resolve => setImmediate(resolve));
+    await owner.release();
+    assert.equal(retired, 1);
+    assert.equal(owner.getSnapshot(), undefined);
+    publish({ ...state, revision: 2 });
+    assert.equal(created, 1, 'the old presenter snapshot cannot revive a released frame');
+    publish({ ...state, revision: 3, projectDocumentPresentation: 'observer' });
+    publish({ ...state, revision: 4 });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(created, 2);
+  } finally { await owner.dispose(); }
+});
+
+it('retains same-document metadata through delayed readiness and requires explicit retry after sync failure', async () => {
+  let state = { revision: 1, projectDocument: { sessionId: 's1', targetId: 'scene', url: 'http://game.test/scene', browserGeneration: 0 }, projectDocumentPresentation: 'presenter' };
+  const listeners = new Set();
+  const client = { subscribe(listener) { listeners.add(listener); listener(state); return () => listeners.delete(listener); }, getState: async () => state };
+  let createCount = 0;
+  let resolveReady;
+  let failCreate = false;
+  let failAppend = false;
+  const handles = [];
+  const platform = { document: { body: { append() { if (failAppend) throw new Error('frame attach failed'); } } }, createFrame() {
+    createCount++;
+    if (failCreate) throw new Error('frame construction failed');
+    const ready = new Promise(resolve => { resolveReady = resolve; });
+    const handle = { element: { title: '', dataset: {} }, ready, disposed: 0, async dispose() { this.disposed++; } };
+    handles.push(handle);
+    return handle;
+  } };
+  const owner = createProjectDocumentFrameOwner({ client, platform });
+  try {
+    state = { revision: 2, projectDocument: { ...state.projectDocument, browserGeneration: 1 }, projectDocumentPresentation: 'presenter' };
+    for (const listener of listeners) listener(state);
+    resolveReady();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(createCount, 1, 'browser generation metadata must not replace the physical Frame');
+    assert.equal(owner.getSnapshot().phase, 'ready');
+    assert.equal(owner.getSnapshot().document.browserGeneration, 1, 'late readiness cannot roll metadata back');
+
+    state = { revision: 3, projectDocument: { sessionId: 's2', targetId: 'next', url: 'http://game.test/next' }, projectDocumentPresentation: 'presenter' };
+    failCreate = true;
+    for (const listener of listeners) listener(state);
+    await new Promise(resolve => setImmediate(resolve));
+    const failedCount = createCount;
+    assert.equal(owner.getSnapshot().failure.stage, 'prepare');
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(createCount, failedCount, 'synchronous setup failure must not spin or allocate repeatedly');
+    failCreate = false;
+    owner.retry();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(createCount, failedCount + 1, 'an explicit retry can start the failed request');
+
+    state = { revision: 4, projectDocument: { sessionId: 's3', targetId: 'append-fails', url: 'http://game.test/append-fails' }, projectDocumentPresentation: 'presenter' };
+    failAppend = true;
+    for (const listener of listeners) listener(state);
+    await new Promise(resolve => setImmediate(resolve));
+    const failedHandle = handles.at(-1);
+    assert.equal(owner.getSnapshot().failure.message, 'frame attach failed');
+    assert.equal(failedHandle.disposed, 0, 'the successfully created platform handle remains owned after attachment fails');
+    failAppend = false;
+    owner.retry();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(failedHandle.disposed, 1, 'an explicit retry tears down the partial handle before replacement');
+    assert.equal(owner.getSnapshot().document.targetId, 'append-fails');
+  } finally { await owner.dispose(); }
 });
 
 it('rejects an unadmitted target and retires mounted surfaces on browser generation change', { timeout: 2000 }, async () => {
@@ -195,11 +434,13 @@ it('samples mesh roam on the canvas document camera', { timeout: 2000 }, async (
   const outer = realm(), inner = realm();
   inner.window.parent = outer.window;
   outer.window.parent = outer.window;
-  outer.window.location = new URL('http://view.test/?forgeaxWorkspaceTarget=scene');
+  outer.window.location = new URL('http://view.test/');
   const scene = { targetId: 'scene', generation: 1, sessionId: 'session', worldId: 'scene-world', headed: true };
   const mesh = { targetId: 'mesh', generation: 2, sessionId: 'session', worldId: 'mesh-world', headed: true };
   const state = {
     project: { id: 'project' }, projectPhase: 'running', projectTarget: scene, browserGeneration: 1,
+    projectDocument: { sessionId: 'session', targetId: 'scene', url: 'http://game.test/?forgeaxWorkspaceTarget=scene', browserGeneration: 1 },
+    projectDocumentPresentation: 'presenter',
     previews: [{ target: mesh, asset: { guid: 'mesh-guid', kind: 'mesh' }, assetBinding: { meta: { aabb: [-1, -1, -1, 1, 1, 1] } } }],
     targetBinding: 'preview',
   };
@@ -237,10 +478,11 @@ it('samples mesh roam on the canvas document camera', { timeout: 2000 }, async (
   ctx.provide('viewOperationClient', client);
   let fiber = ctx.plugin(viewportInputPlugin);
   await fiber.await();
-  const native = createNativePreviewPresentation({ ...outer, presentation: {
-    surfacePlacement: 'owner', createSurface: () => frame,
-    attach() { throw new Error('The native adapter must replace the Scene-only positioning lifecycle'); },
-  }, client });
+  const frameOwner = createProjectDocumentFrameOwner({ client, platform: {
+    document: outer.document,
+    createFrame(url) { frame.src = url; return { element: frame, ready: Promise.resolve(), async dispose() { frame.remove(); } }; },
+  } });
+  const native = createNativePreviewPresentation({ ...outer, frameOwner, client });
   try {
     outer.document.documentElement.dataset.forgeaxViewActivePage = 'mesh';
     const container = element(outer.document);
@@ -283,6 +525,7 @@ it('samples mesh roam on the canvas document camera', { timeout: 2000 }, async (
     await restored.dispose();
   } finally {
     await native.dispose();
+    await frameOwner.dispose();
     await fiber.dispose();
     await ctx.fiber.dispose();
   }

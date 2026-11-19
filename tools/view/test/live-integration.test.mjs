@@ -9,6 +9,40 @@ import presentationPlugin from '../packages/view-plugin-viewport/src/presentatio
 import workspaceFrontend from '../packages/viewer/src/host/workspace-frontend.ts';
 
 describe('plugin-owned live composition', () => {
+  it('publishes Engine project document readiness before any browser connects', async () => {
+    let status = { phase: 'preparing', sessionId: 'project-session', generation: 1 };
+    const listeners = new Set();
+    const engine = {
+      get projectStatus() { return status; },
+      subscribeProjectStatus(listener) {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+    };
+    const backend = await createViewBackend({
+      workspaceServer: false,
+      workspacePlugin: {
+        name: 'fixture.workspace-status', provide: 'engineWorkspace',
+        apply(ctx) { ctx.provide('engineWorkspace', engine); },
+      },
+    });
+    const observed = [];
+    const unsubscribe = backend.workspaceCore.subscribe(state => observed.push(state));
+    try {
+      assert.equal(backend.workspaceCore.pageSessions.size, 0);
+      const document = { sessionId: 'project-session', targetId: 'project-target',
+        url: 'http://localhost:4321/', browserGeneration: 0 };
+      status = { ...status, phase: 'starting', document };
+      for (const listener of listeners) listener();
+      assert.equal(observed.at(-1).projectStatus.phase, 'starting');
+      assert.deepEqual(observed.at(-1).projectDocument, document);
+    } finally {
+      unsubscribe();
+      await backend.dispose();
+    }
+    assert.equal(listeners.size, 0, 'disposing the owner releases its Engine subscription');
+  });
+
   it('exposes a native plugin and a pure separately executable command contract', () => {
     assert.equal(pagePlugin.provide, 'viewPage');
     assert.equal(typeof pagePlugin.apply, 'function');
@@ -174,6 +208,35 @@ describe('plugin-owned live composition', () => {
       assert.equal(surface.style.width, '100%');
       assert.equal(surface.style.height, '100%');
       assert.equal(surface.style.transform, 'none');
+    } finally { await context.fiber.dispose(); }
+  });
+
+  it('does not open a second project document from a Shell inside its Engine target', async () => {
+    const context = new Context();
+    const presentation = { createSurface: () => ({ exact: true }) };
+    let created = 0;
+    context.provide('engineWorkspacePresentation', presentation);
+    context.provide('frontendPlatform', {
+      document: {},
+      window: { location: { href: 'http://localhost:4321/?forgeaxWorkspaceTarget=target' } },
+      createFrame() { created++; throw new Error('The project document is already open'); },
+    });
+    context.provide('viewOperationClient', {
+      subscribe(listener) {
+        listener({ revision: 1, projectDocumentPresentation: 'presenter',
+          projectDocument: { sessionId: 'session', targetId: 'target',
+            url: 'http://localhost:4321/?forgeaxWorkspaceTarget=target' } });
+        return () => {};
+      },
+      async getState() { return {}; },
+    });
+    try {
+      const fiber = context.plugin(presentationPlugin, { role: 'shell', document: {} });
+      await fiber.await();
+      assert.equal(created, 0, 'an embedded Shell must not replace its own Engine socket');
+      assert.equal(context.get('viewProjectDocumentFrameOwner', false), undefined);
+      assert.equal(context.get('viewNativePreviewPresentation', false), undefined);
+      assert.equal(context.get('engineWorkspacePresentation'), presentation);
     } finally { await context.fiber.dispose(); }
   });
 });

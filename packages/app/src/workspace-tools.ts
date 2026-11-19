@@ -9,8 +9,12 @@ import {
 import {
   type EngineWorkspaceCameraInput,
   EngineWorkspaceError,
+  type EngineWorkspacePlay,
+  type EngineWorkspacePreview,
   type EngineWorkspacePreviewDisplayOptions,
+  type EngineWorkspaceProjectStatus,
   type EngineWorkspaceRuntime,
+  type EngineWorkspaceTarget,
 } from './workspace';
 import type { EngineWorkspaceRuntimePackRequest } from './workspace-runtime-pack';
 import type { EngineWorkspacePickGranularity } from './workspace-target-tools';
@@ -45,20 +49,25 @@ export function snapshotEngineWorkspace(
   preview = runtime.preview,
 ) {
   const opened = runtime.project;
-  const target = (value: NonNullable<typeof opened>['target']) => {
-    if (!value) return null;
+  const targetIdentity = (value: EngineWorkspaceTarget | EngineWorkspacePlay['target']) => {
     const { surface: _surface, ...identity } = value;
     return identity;
   };
+  const target = (value: EngineWorkspaceTarget | EngineWorkspacePlay['target'] | undefined) =>
+    value ? targetIdentity(value) : null;
+  const projectStatus: EngineWorkspaceProjectStatus | undefined = runtime.projectStatus;
   return {
     apiVersion: runtime.apiVersion,
     catalogEpoch,
     project: opened ? structuredClone(opened.project) : null,
-    projectTarget: target(opened?.target),
-    ...(opened?.phase === undefined ? {} : { projectPhase: opened.phase }),
-    ...(opened?.browserGeneration === undefined
+    ...(projectStatus === undefined ? {} : { projectPhase: projectStatus.phase }),
+    projectTarget: projectStatus?.phase === 'running' ? projectStatus.target : null,
+    ...(projectStatus === undefined ? {} : { projectStatus }),
+    ...(projectStatus === undefined ||
+    projectStatus.phase === 'preparing' ||
+    (projectStatus.phase === 'failed' && projectStatus.browserGeneration === undefined)
       ? {}
-      : { browserGeneration: opened.browserGeneration }),
+      : { browserGeneration: projectStatus.browserGeneration }),
     play: runtime.play
       ? {
           target: target(runtime.play.target),
@@ -86,7 +95,10 @@ export function createEngineWorkspaceTools(
   changed: () => void = () => {},
 ): readonly ToolContribution[] {
   const afterRetirement = (previous: EngineWorkspaceRuntime['project']) => {
-    const failure = previous?.failure as { detail?: Readonly<Record<string, unknown>> } | undefined;
+    const failure =
+      previous?.status.phase === 'failed'
+        ? (previous.status.failure as { detail?: Readonly<Record<string, unknown>> })
+        : undefined;
     return {
       ...snapshotEngineWorkspace(runtime),
       ...(previous !== runtime.project && failure?.detail?.cleanup === 'unconfirmed'
@@ -206,7 +218,7 @@ export function createEngineWorkspaceTools(
           ...(context.caller === undefined ? {} : { connectionId: context.caller.connectionId }),
         });
         context.signal.throwIfAborted();
-        if (!runtime.previews.includes(owner) && runtime.play !== owner)
+        if (owner !== preview(args))
           throw new EngineWorkspaceError(
             'engine-workspace-target-stale',
             'The same target owner after the presentation request',
@@ -289,23 +301,42 @@ export function createEngineWorkspaceTools(
       summary: 'Open an Engine project and return its target URL before browser readiness.',
       async run(args, context) {
         const previous = runtime.project;
-        if (
-          args.expectedTargetId !== undefined &&
-          args.expectedTargetId !== null &&
-          typeof args.expectedTargetId !== 'string'
-        )
-          throw new TypeError('expectedTargetId must be a target identity or null');
-        if (args.expectedTargetState !== undefined && args.expectedTargetState !== 'lost')
-          throw new TypeError('expectedTargetState must be lost');
+        const expectedProject = args.expectedProject;
+        if (expectedProject !== undefined) {
+          if (
+            expectedProject === null ||
+            typeof expectedProject !== 'object' ||
+            Array.isArray(expectedProject)
+          )
+            throw new TypeError(
+              'expectedProject must identify an empty workspace or project session owner',
+            );
+          const expected = expectedProject as Record<string, unknown>;
+          if (expected.kind === 'empty') {
+            if (Object.keys(expected).length !== 1)
+              throw new TypeError('empty expectedProject has no identity fields');
+          } else if (expected.kind === 'session') {
+            if (
+              typeof expected.sessionId !== 'string' ||
+              !expected.sessionId.trim() ||
+              !Number.isSafeInteger(expected.generation) ||
+              (expected.generation as number) < 1 ||
+              (expected.recovery !== undefined && expected.recovery !== 'lost')
+            )
+              throw new TypeError(
+                'session expectedProject requires its owner identity and generation',
+              );
+          } else throw new TypeError('expectedProject kind must be empty or session');
+        }
         await runtime.openProject({
           root: string(args, 'root'),
           signal: context.signal,
-          ...(args.expectedTargetId === undefined
+          ...(expectedProject === undefined
             ? {}
-            : { expectedTargetId: args.expectedTargetId as string | null }),
-          ...(args.expectedTargetState === undefined
-            ? {}
-            : { expectedTargetState: 'lost' as const }),
+            : {
+                expectedProject:
+                  expectedProject as import('./workspace.js').EngineWorkspaceProjectExpectation,
+              }),
         });
         return afterRetirement(previous);
       },
@@ -416,7 +447,7 @@ export function createEngineWorkspaceTools(
             'engine-workspace-operation-unavailable',
             'Use play.stop for the game target',
           );
-        const closing = runtime.closePreview(owner);
+        const closing = runtime.closePreview(owner as EngineWorkspacePreview);
         changed();
         await closing;
         return snapshotEngineWorkspace(runtime);
@@ -649,7 +680,7 @@ export function createEngineWorkspaceTools(
         try {
           context.signal.throwIfAborted();
           const result = await invoke(input);
-          if (!runtime.previews.includes(owner) && runtime.play !== owner)
+          if (!runtime.previews.some((preview) => preview === owner) && runtime.play !== owner)
             throw new EngineWorkspaceError(
               'engine-workspace-target-stale',
               'the same preview owner after the operation',
@@ -694,7 +725,7 @@ export function createEngineWorkspaceTools(
               ? await tools.inspect({ entityId: string(args, 'entityId'), signal: context.signal })
               : await tools.focus({ entityId: string(args, 'entityId') });
         context.signal.throwIfAborted();
-        if (!runtime.previews.includes(owner) && runtime.play !== owner)
+        if (!runtime.previews.some((preview) => preview === owner) && runtime.play !== owner)
           throw new EngineWorkspaceError(
             'engine-workspace-target-stale',
             'The same target owner after the query',
@@ -831,7 +862,8 @@ export function createEngineWorkspaceTools(
         },
         async run(args, context) {
           const opened = project(args);
-          const target = opened.target;
+          const lifecycle = opened.status;
+          const target = lifecycle.phase === 'running' ? lifecycle.target : undefined;
           if (
             !target ||
             target.targetId !== string(args, 'targetId') ||
@@ -904,10 +936,29 @@ export function createEngineWorkspaceTools(
       required,
       properties: {
         root: { type: 'string', minLength: 1 },
-        expectedTargetId: {
-          description: 'Expected current target identity; null requires no open project.',
+        expectedProject: {
+          description:
+            'Expected current project owner session and generation, or {kind:"empty"} for first admission.',
+          oneOf: [
+            {
+              type: 'object',
+              required: ['kind'],
+              properties: { kind: { const: 'empty' } },
+              additionalProperties: false,
+            },
+            {
+              type: 'object',
+              required: ['kind', 'sessionId', 'generation'],
+              properties: {
+                kind: { const: 'session' },
+                sessionId: { type: 'string', minLength: 1 },
+                generation: { type: 'integer', minimum: 1 },
+                recovery: { type: 'string', enum: ['lost'] },
+              },
+              additionalProperties: false,
+            },
+          ],
         },
-        expectedTargetState: { type: 'string', enum: ['lost'] },
         projectId: { type: 'string', minLength: 1 },
         targetId: { type: 'string', minLength: 1 },
         worldId: { type: 'string', minLength: 1 },

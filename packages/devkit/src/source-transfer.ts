@@ -29,6 +29,7 @@ import {
 } from './build/plugin-assets.js';
 import { pluginProgramSource, pluginRuntimeProjection } from './build/plugin-programs.js';
 import { execFileCommand } from './child-process.js';
+import { projectEngineSourceOptions } from './engine-binding.js';
 import {
   filesystemPathRelative,
   filesystemPathSegments,
@@ -355,9 +356,12 @@ export async function assetSourceImportCommand(
     } catch (cause) {
       if ((cause as NodeJS.ErrnoException).code !== 'ENOENT') throw cause;
     }
+    const engineOptions = await projectEngineSourceOptions(root);
+    const engineScanOptions = { scriptablePack: engineOptions };
     const targetInventory = await discoverPluginAssets(facts.value);
     const targetSources = await scanInventory(
       facts.value.assetRoots.map((directory) => resolve(root, directory)),
+      engineScanOptions,
     );
     if (!targetSources.ok) throw targetSources.error;
     const targetRevisions = JSON.stringify(
@@ -431,6 +435,7 @@ export async function assetSourceImportCommand(
     // Duplicate identities still fail before any target files are published.
     const scanned = await scanInventory(
       facts.value.assetRoots.map((directory) => resolve(candidateRoot, directory)),
+      engineScanOptions,
     );
     if (!scanned.ok) throw scanned.error;
     const candidateClosure = await collectAuthorPackClosure(
@@ -444,10 +449,16 @@ export async function assetSourceImportCommand(
       candidateClosure.files.some((file) => !file.path.startsWith(destinationPrefix))
     )
       conflict(destination, 'computed references must resolve inside the cloned source closure');
-    const inventory = await discoverPluginAssets({
-      root: candidate,
-      assetRoots: facts.value.assetRoots,
-    });
+    const inventory = await discoverPluginAssets(
+      {
+        root: candidate,
+        assetRoots: facts.value.assetRoots,
+      },
+      undefined,
+      undefined,
+      undefined,
+      engineOptions,
+    );
     const sourceInventory = await discoverPluginAssets(sourceFacts.value);
     const buildGuids = new Set([
       ...pluginAssetClosure(sourceInventory, sourceFacts.value.roots.build).map(
@@ -510,6 +521,7 @@ export async function assetSourceImportCommand(
     await assertPluginSourceInputs(targetInventory, root);
     const currentSources = await scanInventory(
       facts.value.assetRoots.map((directory) => resolve(root, directory)),
+      engineScanOptions,
     );
     if (!currentSources.ok) throw currentSources.error;
     if (

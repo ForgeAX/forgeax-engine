@@ -439,6 +439,8 @@ function bytesPerTexel(format: string): number {
       return 1;
     case 'r32uint':
       return 4;
+    case 'rg32uint':
+      return 8;
     case 'rgba8unorm':
       return 4;
     default:

@@ -62,7 +62,8 @@ export function declaredFragmentEntry(
 
 /** Forward prepass entry that writes the Standard surface-data outputs. */
 export const SURFACE_DATA_FRAGMENT_ENTRY = 'fs_ao_input';
-const surfaceDataByProgram = new WeakMap<MaterialShaderProgram, boolean>();
+const SURFACE_DATA_MSAA_FRAGMENT_ENTRY = 'fs_ao_input_msaa';
+const surfaceDataByProgram = new WeakMap<MaterialShaderProgram, number>();
 
 /**
  * Whether a draw of `materialShaderId` cannot serve the surface-data prepass
@@ -77,16 +78,26 @@ export function lacksSurfaceDataEntry(
   program: MaterialShaderProgram | undefined,
   builtIn: boolean,
 ): boolean {
-  if (fragmentEntry !== SURFACE_DATA_FRAGMENT_ENTRY) return false;
+  const bit =
+    fragmentEntry === SURFACE_DATA_FRAGMENT_ENTRY
+      ? 1
+      : fragmentEntry === SURFACE_DATA_MSAA_FRAGMENT_ENTRY
+        ? 2
+        : 0;
+  if (bit === 0) return false;
   if (program === undefined) return !builtIn && materialShaderId !== undefined;
   if (program.entryPoints !== undefined)
-    return !program.entryPoints.some((candidate) => candidate.name === fragmentEntry);
-  let declared = surfaceDataByProgram.get(program);
-  if (declared === undefined) {
-    declared = program.source.includes(`fn ${SURFACE_DATA_FRAGMENT_ENTRY}(`);
-    surfaceDataByProgram.set(program, declared);
+    return !program.entryPoints.some(
+      (candidate) => candidate.stage === 'fragment' && candidate.name === fragmentEntry,
+    );
+  let mask = surfaceDataByProgram.get(program);
+  if (mask === undefined) {
+    mask =
+      Number(program.source.includes(`fn ${SURFACE_DATA_FRAGMENT_ENTRY}(`)) |
+      (Number(program.source.includes(`fn ${SURFACE_DATA_MSAA_FRAGMENT_ENTRY}(`)) << 1);
+    surfaceDataByProgram.set(program, mask);
   }
-  return !declared;
+  return (mask & bit) === 0;
 }
 
 /** A screen receiver overrides only the ordinary Standard entry, never authored shading. */

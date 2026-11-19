@@ -628,6 +628,12 @@ it('roundtrips owned Worker mesh buffers/static Skin facts and records only the 
       assets: f.assets,
       capabilities: f.device.caps,
     }).unwrap();
+    for (const program of preparation.programs) {
+      const registered = f.assets.shaderRegistry.findMaterialArtifact(program.key).unwrap();
+      expect(program.shader.variantReferences).toEqual(registered.variantReferences);
+      for (const reference of registered.variantReferences ?? [])
+        expect(preparation.programs.some((row) => row.key === reference.identifier)).toBe(true);
+    }
     const owned = structuredClone({
       ...f.identity,
       meshHandle: f.next,

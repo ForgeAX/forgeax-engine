@@ -78,6 +78,9 @@ and match the latest submitted World and device generation before admitting the
 existing 60-frame floor; preparation completions cannot admit capture.
 
 Simulation evidence must record the carrier's `srcdoc`, sandbox and CSP conditions.
+Fixed presentations answer the carrier binding heartbeat through the shared View
+service with a stable ready revision. Native Codex routing owns per-chat migration
+and retiring revisions; the network broker owns neither binding policy.
 It qualifies that adapter path; actual Codex behavior still requires native
 verification. Here, native means the application host, independently of the GPU
 backend. Generic MCP transport remains client-neutral; Codex SDK behavior belongs
@@ -104,24 +107,154 @@ Open the URL returned by `view start`. The last command is the direct MCP probe;
 
 ## Install a local Codex plugin
 
-Generate a self-contained [portable plugin](https://developers.openai.com/plugins/build/plugins) and marketplace for one exact project root. Choose a **new** output directory; the generator refuses to overwrite an existing package.
+Local development retains the original plugin version `0.4.8`. Do not bump
+`APP_VERSION` or generated plugin manifests unless the user explicitly requests
+a version change. Rebuild and reinstall the same plugin identity to apply edits.
+
+Generate a local [portable plugin](https://developers.openai.com/plugins/build/plugins) and marketplace for the selected Engine/View installation. Game selection belongs to the retained View interface. Choose a **new** output directory; the generator refuses to overwrite an existing package.
 
 ```sh
+node "$ENGINE/tools/view/scripts/build-tool.mjs"
+node "$ENGINE/tools/forgeax-mcp/codex/build-app.mjs"
 PLUGIN_MARKETPLACE_ROOT=/absolute/new/forgeax-view-marketplace
-PLUGIN_META=$(node "$ENGINE/tools/forgeax-mcp/codex/create-local-plugin.mjs" "$PROJECT" "$PLUGIN_MARKETPLACE_ROOT")
+PLUGIN_META=$(node "$ENGINE/tools/forgeax-mcp/codex/create-local-plugin.mjs" "$ENGINE" "$PLUGIN_MARKETPLACE_ROOT")
 MARKETPLACE_NAME=$(printf '%s' "$PLUGIN_META" | jq -r .marketplaceName)
 codex plugin marketplace add "$PLUGIN_MARKETPLACE_ROOT"
 codex plugin add "forgeax-view-codex@$MARKETPLACE_NAME"
 ```
 
-The generated `plugin.json` and `mcp.json` live beside the bundled stdio servers. On macOS and Linux, the package includes a launcher pinned to the Node executable used during generation, so Desktop does not depend on the terminal's `PATH`; regenerate and reinstall after replacing that Node installation. The installed copy remains bound to the project root supplied at generation time. Restart Codex Desktop after adding the local marketplace, then use a new Desktop session to discover its tools. Remove the direct MCP probe before installing the plugin to avoid duplicate tools.
+When replacing an existing local installation at the same version, generate the
+new package first, then run `codex plugin remove "forgeax-view-codex@$MARKETPLACE_NAME"`
+and `codex plugin marketplace remove "$MARKETPLACE_NAME"` before the two add
+commands. Adding the same version alone can retain the installed cache, and
+adding the same marketplace name from a new source requires removing the old
+source first. Keep the generated marketplace identity and hosting binding equal
+to the original installation so that existing global and chat roots are retained.
+After migrating Engine or View, qualify the installed package with
+`FORGEAX_FILE_BROWSER_PLUGIN=/absolute/installed/forgeax-view-codex/0.4.8` in the
+file browser gate; a newly generated test package does not verify Desktop's
+installed bytes. Retain the frontend revision check: an old App page cannot
+assemble against a different rebuilt View backend.
 
-> [!IMPORTANT]
-> Pack inspection can execute trusted author code and Pack reveal changes page selection. Their MCP annotations therefore do not claim read-only behavior. Codex permission policy decides admission before Host execution; a denied call is separate from a Host failure.
+The generated `plugin.json` and `mcp.json` live beside the bundled stdio servers. On macOS and Linux, the package includes a launcher pinned to the Node executable used during generation, so Desktop does not depend on the terminal's `PATH`; regenerate and reinstall after replacing that Node installation. The installed `hosting.json` binds the matching Engine package, View package and App Host Pack. It records the public Codex executable and Codex home used for directory discovery; regenerate after moving either installation. Restart Codex Desktop after adding the local marketplace. Remove the direct MCP probe before installing the plugin to avoid duplicate tools.
+
+Default native entries have separate authorities:
+
+| Entry | Backend workspace H |
+|:--|:--|
+| Global View | Fixed temporary H per Engine/App Pack installation |
+| Chat View and business MCP tools | Fixed temporary H derived from host chat identity and installation |
+| Chats with the same project directory | Different H; authored files are still shared |
+| A chat moved to a worktree | Same H; explicitly update its working directory |
+
+Host request metadata supplies the chat identity; callers cannot choose another chat through tool arguments. On first use, public `codex app-server` `thread/read` with `includeTurns: false` supplies its initial directory. One atomic durable record under `CODEX_HOME/forgeax/view-bindings` retains the canonical directory and H across App reopen and MCP/Desktop restart. Later requests use this record without looking up cwd or asking the model to pass identifiers. Missing or conflicting identity and unavailable initial metadata fail explicitly. A game directory G never acts as H. A fresh instance selects its working directory initially when it contains `forge.json`; an existing backend's selected project takes precedence.
+
+Call `forgeax_view_workspace_bind({ directory: "/absolute/worktree" })` to explicitly update the current chat's working directory. H remains fixed. The adapter validates the directory and prepares the existing backend, waits for that chat's live App documents to retire, then admits the new project through public View startup and commits the directory/revision. A directory without `forge.json` closes the current project and returns to the chooser. Pages automatically reopen with new document identities and fresh target admission. Global View and other chats retain their own selections and connections. Business calls pause while switching and reject responses crossing the binding revision. Old and foreign target identities remain subject to Engine owner checks.
+
+Rebinding the same directory is idempotent. Explicit binding can establish a chat whose initial host cwd is unavailable. Preparation failure, cancellation before project admission, or missing page retirement acknowledgement preserves the committed directory. The binding store owns cross-process locking and exact document leases. A crashed switch blocks business requests until View recovers the last committed directory on the same backend. No root or project directory is recursively deleted. App/page closure leaves backend process ownership with Engine. Native Codex routes hold process usage for their exact H; Engine stops a client-owned backend after the last MCP user exits and a three-second grace period. PID plus OS process birth time recovers abnormal exits without a separate guardian. Reconnecting during the grace period preserves the backend; reconnecting during disposal waits for its exact owner to retire. Backend shutdown releases View and project resource services. Engine persists only the selected project directory (or an explicit chooser) under H, while chat binding records remain under Codex home. Reopen restores that project with fresh session/target/token identities. Manual backends and explicit `--root` distributions retain caller-managed lifetime; changing ownership requires stopping the prior daemon first. Fresh project preparation can continue after admission, as in progressive startup.
+
+This adapter updates ForgeAX context only. It does not change Codex's terminal cwd, write arbitrary chat metadata, or intercept the ordinary Engine CLI. Ordinary `forgeax` commands retain their documented cwd/`--root` selection; use the chat MCP tools for automatic instance routing. Separate H values isolate presentation/session state, while chats opening the same G still modify the same files.
+
+All App bytes, modules, chunks, sockets and teardown retain their exact scope/H until document retirement. Closed MCP processes release document leases; inactive abandoned documents retire after a bounded grace period. Multiple pages in one chat still use View's existing presenter election. The optional generator `--root H` keeps a caller-managed fixed instance distribution and disables automatic chat routing and the binding tool.
 
 ## Optional native View App
 
-Build the App, then select `tools/forgeax-mcp/host.app.pack.json` when explicitly starting the backend. The ordinary `host.pack.json` keeps browser presentation. Generate the Codex package with the same generator above: it contains the six domain tools and an App server with `forgeax_view_start` plus app-only `forgeax_view_transport`.
+### Resource cards
+
+The supported candidate paths use documented static App resources and display
+modes. Native chat merges calls sharing a resource URI and lets the latest call
+take over that App. Three card slots therefore declare distinct tool/resource
+pairs while sharing the same carrier and source action. The host owns placement.
+
+| Candidate | Tool call | Click behavior |
+|:--|:--|:--|
+| Three independent inline cards | Call `forgeax_view_resource_card`, `forgeax_view_resource_card_2` and `forgeax_view_resource_card_3` once each with `{ paths: [path] }` | Select the source in the existing chat View; expand this card only when none is available |
+| Multiple resources in one card | `forgeax_view_resource_card({ paths: [first, second] })` | Select resources in the existing View using the same source operation |
+| One resource with backend preparation | `forgeax_view_resource_card({ paths: [path], prepareBackend: true })` | Prepare the chat backend before returning the inline card; clicking uses the same existing View route |
+| Direct fullscreen resource | `forgeax_view_resource_open({ path })` | Explicit separate-App diagnostic: prefer initial fullscreen and open the source without a button |
+
+The adapter canonicalizes and validates paths without evaluating Pack code.
+Backend preparation is opt-in. Trusted host chat metadata owns instance routing;
+resource calls cannot choose another chat or the global instance. Card and direct
+resource Apps use the ordinary View through the existing guarded project/asset
+operations. Buttons route through trusted chat metadata. The MCP network broker
+uses its admitted top-level Host connections and View's authoritative presenter
+status to choose the existing fullscreen View. Source actions use that connection's
+event queue and await its exact completion reply; the receiver uses the same
+source opener as initial file and resource entrypoints. Later cards remain inline.
+No receiver opens a second View document. A bounded initial admission prevents
+concurrent first clicks from creating duplicate pages. Disconnect, cancellation,
+service retirement and binding migration reject pending actions; failures after
+delivery never trigger an automatic second-page fallback. Multi-output Packs retain Content Browser reveal. Expanded View hides
+the resource buttons. Returning the App to inline restores its buttons and retains
+its admitted child document until teardown or binding replacement.
+
+Independent cards require different static slots. Repeating the same slot replaces
+its current source; more than three simultaneous independent slots are not yet
+provided. Supplying several paths produces grouped buttons within one App.
+No tool-result URI override or dynamic tool registry is used. Native tests must
+distinguish per-card App identity, right-panel activation,
+resource selection, collapse/restoration and child-document reuse. Existing-page
+action delivery belongs to the MCP adapter; native tab focus remains host-owned. Asking an
+already-fullscreen App for fullscreen does not establish a focus operation.
+
+Inline cards keep natural content height, show each source name once, and report
+size changes for status, wrapping, errors and return from fullscreen. Their
+resource metadata declares `openai/widgetMinFrameHeight: 0` and
+`openai/widgetHeightHint: 48`; the installed Codex resource parser passes these
+fields to its height owner, replacing the default 200px floor. This is verified
+against the current host source, not a portable MCP Apps guarantee. Other View
+resources retain their existing height policy. Native visual acceptance remains
+separate from resource metadata and carrier tests.
+
+The current host's manual fullscreen component checks the same available mode
+used by `requestDisplayMode`. Removing fullscreen would also prevent the first
+resource button from opening View. The separate header-hiding metadata path is
+restricted to verified Codex Apps identity; local MCP cards do not qualify. The
+adapter retains fullscreen without spoofing that identity or patching the host.
+
+The earlier UI-associated tool callback returned without opening its page. The
+withdrawn prepared-App/polling experiment is not part of this implementation.
+Global deep links and file entrypoints have their own documented surfaces and do
+not implement this chat-card interaction. The App SDK's server-tool bridge is not
+an arbitrary Codex context or Playwright bridge. Agent browser APIs do not grant
+those capabilities to a card.
+
+Official contracts: [UI display modes](https://github.com/openai/mcp-extensions/blob/main/docs/spec.md#display-modes),
+[conversation panels](https://developers.openai.com/plugins/build/extensions), and
+[MCP Apps display mode requests](https://github.com/modelcontextprotocol/ext-apps/blob/main/specification/draft/apps.mdx#display-modes).
+
+### Pack file links
+
+The native plugin declares `.pack.json` and `.pack.ts` file entrypoints named
+`ForgeAX View`. They mount the same full View as the chat entry. The host supplies
+the opened file's absolute path on app-only transport calls. The adapter finds
+its nearest project, selects it through the existing guarded workspace API, and
+opens a single Pack output using `asset.open`. Scriptable Pack outputs come from
+the running project catalog rather than another source evaluation. Packs with
+multiple outputs are revealed in the existing Content Browser for output selection. File activation
+does not rebind the chat's working directory or change global View.
+
+Use an ordinary absolute Markdown file link. On first use, select `ForgeAX View`
+from the right file pane's Open menu if the host still prefers its default viewer.
+The plugin does not provide a separate source viewer or global resource entry.
+Repeated activation and document teardown cancel pending opening work. Codex's
+native file tabs are identified by host, file path, server, and tool. Different
+files therefore open distinct host tabs; the entrypoint metadata does not provide
+a page-reuse option. Sharing a backend or UI resource does not merge those tabs.
+
+The file opener observes the existing workspace and project Frame owner services
+after the Shell mounts. Presentation handoff waits for that exact Frame to become
+ready before inventory or asset operations. A stale `running` backend snapshot
+does not prove that its replacement browser is ready. Content Browser cancels
+inventory reads when the browser, session, phase or presenter changes; a viewport
+that only presents the canvas does not issue a second startup inventory query.
+Backend unavailability or startup failure leaves the Shell and its retry action
+visible. Waiting for a workspace service is not a required plugin startup child.
+Service withdrawal cancels the old file opening; a replacement service resumes
+the retained activation with fresh connection identities.
+
+Build Engine, View and the App before generation. The generator resolves `tools/forgeax-mcp/host.app.pack.json` automatically; normal panel opening requires no backend CLI command. The ordinary `host.pack.json` keeps browser presentation. The generated native package contains six domain tools, the chat opening tool `forgeax_view_start`, the global entry `forgeax_view_global_start`, and app-only `forgeax_view_transport`. Each opening resource embeds its own entry scope.
 
 Source checkouts should prepare the ordinary Engine shader profiles before measuring Preview startup:
 
@@ -136,21 +269,21 @@ This existing producer verifies source/compiler/profile identity and rebuilds mi
 | `forgeax-tools` | Six public business tools, available to the model |
 | `forgeax-view` | Open the `ForgeAX View` panel and deliver its UI resources and Host messages |
 
-Both servers use stdio and connect to the same selected backend. Server names, package generation and MCP initialization share [one contract](src/contract.ts). The panel resource, opening tool and HTML document share the display name `ForgeAX View`; the opening operation remains `view.start`.
+Both servers use stdio and the same generated hosting binding. Opening the App first creates a lightweight independent View presentation service and transfers bundled static HTML through MCP. The mounted Shell then requests asynchronous backend preparation, adopts the existing owner when available, and shows the project chooser or current project. Scene and Play use the existing Engine workspace operations. Backend termination retains the static document with an explicit restart action. Server names, package generation and MCP initialization share [one contract](src/contract.ts). The panel resource, opening tool and HTML document share the display name `ForgeAX View`; the opening operation remains `view.start`.
 
 | Boundary | Contract |
 |:--|:--|
-| Business startup | `forgeax_view_start` invokes public `view.start`; CLI remains `forgeax view start` |
+| Business startup | `forgeax_view_start` opens the static presentation; its App-only `backend-start` invokes the existing View service and public `ensureDevKitView`. Low-level CLI remains `forgeax view start` |
 | Platform transport | App-only Host messages, admitted HTTP bytes, module compilation and chunks; no second business registry |
 | Codex behavior | `forgeax.view.platform.codex` adds draft references; generic MCP has no OpenAI extension dependency |
-| Resource ownership | Child SDK teardown precedes bridge removal; pending and admitted sockets retire with their owner. Reopening the same resource identity retains its document; a new public View presentation retires the old subtree, including when it reuses a fixed URL |
+| Resource ownership | Child SDK teardown precedes bridge removal. Each App document owns its sockets and compilation cancellation. Closing an App retires only that document; a vanished reader expires after 10 seconds of a responsive broker. Event-loop stalls grant readers another polling interval. Reopening the same resource identity retains its document; a new public View presentation retires the old subtree, including when it reuses a fixed URL. Healthy backend bootstrap is reused instead of restarted on every mount. |
 | Performance | One batched 60 Hz event pump, three foreground/one background slots, gzip level 1 with a level 6 retry for 16–48 KiB compressed inline payloads, bounded resource references, shared concurrent reads; 192 KiB chunks with four reads in flight. The bounded retry leaves room for base64 and resource metadata within gzip's 32 KiB history window across supported Node codecs. Remote module compilation shares four source reads across documents, keeping wide import graphs within the loopback connection budget. A reset source GET retries once within its original 30-second deadline and read slot; HTTP failures remain terminal |
 | Document preparation | Presentation-owned compilation returns a pending phase immediately; the document owner polls for the completed byte reference under its existing Scene readiness deadline. Polling shares one compilation, at most 32 tasks remain admitted, document disposal releases its task, and presentation replacement cancels all remaining reads. RPC and individual source-read deadlines remain 30 seconds; source failures stay terminal. The App resource version separates this protocol from older cached carriers. |
 | Resource reads | Same-turn GET/HEAD fetches use bounded HTTP batches. Each read retains its status, response bytes and cancellation; mutations are not batched. The 256 MiB resource budget bounds both each decoded HTTP response and the retained wire cache; oversized response streams cancel before full buffering. Batch replies reuse the common compressed byte decoder and origin admission. Gzip buffers feed the native transform directly; concurrent read/write handles backpressure and decode rejection without a Blob storage stream |
 | Source URLs | The isolated document exposes its logical base through the platform; sandbox origin and browser security policy remain intact |
 | Document frames | `FrontendPlatform.createFrame` carries both Preview and Play through MCP. Play owns its disposable handle; Preview placement borrows its retained document. No child navigates localhost. The game retains the sampled platform preparation without inheriting the Preview root |
 
-The generator includes platform-specific installed Vite/TypeScript runtime dependencies and the built UI resources. It does not depend on the source checkout for its MCP server. Its launcher and project binding are local to the generating machine; regenerate after changing Node or moving to another platform. The backend still uses its explicitly built immutable frontend artifact. UI resource URIs carry the package version so an upgrade cannot reuse an older carrier document.
+The generator includes platform-specific installed Vite/TypeScript runtime dependencies and the built UI resources. MCP server code and presentation resources are bundled. Backend startup still requires the built Engine/View installation and App Host Pack recorded in `hosting.json`; generation currently supports this complete local installation layout. Its launcher and Engine/Host binding are local to the generating machine; regenerate after changing Node or moving to another platform. The backend still uses its explicitly built immutable frontend artifact. UI resource URIs carry the package version so an upgrade cannot reuse an older carrier document.
 
 Runtime Pack generation in an isolated document uses the DevKit frontend's
 borrowed `PackProgramHost` capability. The adapter compiles only verified program
@@ -178,8 +311,17 @@ Native coverage is qualified feature by feature. Content Browser, Scene viewport
 node tools/forgeax-mcp/codex/build-app.mjs
 node --test tools/forgeax-mcp/__tests__/app/*.test.mjs
 node tools/forgeax-mcp/test/local-plugin.mjs
+node tools/forgeax-mcp/test/app-progressive-startup.mjs /absolute/first-game /absolute/second-game /absolute/evidence
+node tools/forgeax-mcp/test/app-reopen-lifecycle.mjs /absolute/existing-game /absolute/evidence
+node tools/forgeax-mcp/test/app-instance-routing.mjs /absolute/generated-plugin /absolute/first-game /absolute/second-game /absolute/evidence
+node tools/forgeax-mcp/test/app-backend-lifetime.mjs /absolute/generated-plugin /absolute/game /absolute/evidence
+node tools/forgeax-mcp/test/app-chat-binding.mjs /absolute/generated-plugin /absolute/game /absolute/worktree-game /absolute/evidence
 node tools/forgeax-mcp/test/app-browser.mjs "$ENGINE/templates/game-3d" /absolute/path/to/evidence
 ```
+
+The progressive probe starts with no backend or bound game, holds startup until the static Shell is visible, then checks project selection, two real scenes, isolated Play/Stop, MCP project routing, and retained-document backend restart. Both outer and inner frames retain their restrictive sandbox; project buttons call the owner directly instead of relying on native form submission.
+
+The instance probe requires host-provided `CODEX_THREAD_ID` and uses the recorded public Codex executable to read the actual working directory. It verifies different global/chat H values, project switching, business MCP routing, 60 completed frames and scene pixels in both pages, and closing the global page without retiring the workspace page. It runs before native activation and stops its exact probe-owned backends. Keep the built installation and its source inputs fixed throughout browser acceptance; rebuilding or editing captured inputs invalidates resident source snapshots. Native entry clicks remain a separate acceptance boundary.
 
 The restart probe checks its HTTP result before awaiting a replacement URL,
 within the existing 60-second bound. Failed CLI records retain the command,
@@ -205,7 +347,7 @@ in [ToolRuntime](../../packages/tool-runtime/README.md#public-operation-names).
 | `engine.entity.inspect` | `forgeax engine entity inspect` | `forgeax_engine_entity_inspect` |
 
 Pass `--root "$PROJECT" --json` and the public operation's argument object
-through `--input`. Source inspection uses `subject` on both clients: an absolute
+through `--input`. Source inspection uses the current `projectId` returned by View status in the installed plugin, plus `subject` on both clients: an absolute
 trusted Pack path in MCP, or a project-relative subject in CLI. Both return the
 public `assets` list with the same GUID, kind and source-key names. View reveal uses
 `projectId`, `sourcePath`, `revision` and optional `connectionId` / `packageId`.

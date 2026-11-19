@@ -87,3 +87,38 @@ it('keeps accepted comparison values independent of invocation scratch', () => {
     assets.dispose();
   }
 });
+
+it('reuses all pass leases until an output boundary and then sweeps unused sources', () => {
+  const assets = new AssetRegistry();
+  const cache = new SharedAssets<DataTexture, TextureAsset>(assets);
+  const a = new DataTexture(new Uint8Array(4), 1, 1);
+  const b = new DataTexture(new Uint8Array(4), 1, 1);
+  try {
+    cache.begin();
+    const first = cache.write(a, [0], projectTexture(a).unwrap());
+    cache.commit(false);
+    cache.begin();
+    const second = cache.write(b, [0], projectTexture(b).unwrap());
+    cache.commit();
+    for (let frame = 0; frame < 10; frame++) {
+      cache.begin();
+      expect(cache.read(a, [0])?.handle).toBe(first.handle);
+      cache.commit(false);
+      cache.begin();
+      expect(cache.read(b, [0])?.handle).toBe(second.handle);
+      cache.commit();
+    }
+    cache.begin();
+    cache.read(b, [0]);
+    cache.commit();
+    expect(runtimeAssets(assets).borrow(first.handle).ok).toBe(false);
+    expect(runtimeAssets(assets).borrow(second.handle).ok).toBe(true);
+    b.dispose();
+    cache.begin();
+    cache.commit(false);
+    expect(runtimeAssets(assets).borrow(second.handle).ok).toBe(false);
+  } finally {
+    cache.dispose();
+    assets.dispose();
+  }
+});

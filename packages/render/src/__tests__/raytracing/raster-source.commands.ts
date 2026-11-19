@@ -29,13 +29,13 @@ export async function prepareRasterRayFixture() {
   const raster = (
     await compileShader(
       `
-#import forgeax_pbr::gbuffer::{encodeStandardNormalRoughness, encodeStandardReflectance}
+#import forgeax_pbr::gbuffer::{encodeStandardNormalRoughness, encodeStandardGBufferNormal, encodeStandardReflectance}
 @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
   let p = array<vec2f,3>(vec2f(-1,-1),vec2f(3,-1),vec2f(-1,3));
   return vec4<f32>(p[i],0.5,1);
 }
 struct Surface {
-  @location(0) normal: u32,
+  @location(0) normal: vec2u,
   @location(1) albedo: u32,
   @location(2) identity: vec4u,
   @location(3) response: u32,
@@ -46,7 +46,7 @@ struct Surface {
   if (x == 1u) { discard; }
   let n = vec3f(0,0,select(1.0,-1.0,x==5u));
   let ng = encodeStandardNormalRoughness(vec3f(0,0,1),0.0);
-  return Surface(encodeStandardNormalRoughness(n,0.5),
+  return Surface(encodeStandardGBufferNormal(n,0.5,1.0,false),
     encodeStandardReflectance(vec3f(1,0.25,0.0625),select(0.0,1.0,x==6u)),
     vec4u(select(1u,2u,x==2u),select(0u,99u,x==3u),ng,select(3u,0u,x==4u)),
     encodeStandardReflectance(vec3f(0.04),1.0),
@@ -60,6 +60,8 @@ struct Surface {
     emissionRayMaterial(),
     createMaterialPackCooker([directory], { profile: 'webgpu-storage-ray' }),
   );
-  return { raster, material };
+  if (material.cookedPublication === undefined)
+    throw new Error('Raster source fixture requires the complete cooked publication');
+  return { raster, material: { ...material, cookedPublication: material.cookedPublication } };
 }
 export type RasterRayFixture = Awaited<ReturnType<typeof prepareRasterRayFixture>>;

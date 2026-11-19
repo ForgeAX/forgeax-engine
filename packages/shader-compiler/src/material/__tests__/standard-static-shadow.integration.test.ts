@@ -16,10 +16,14 @@ describe('static Standard shadow coverage', () => {
   });
 
   it.each([
-    'mesh',
-    'skinned',
-  ] as const)('publishes the actual %s opaque shadow bias input contract', async (geometry) => {
-    const { shadow, forward } = await cookStaticShadow({ context: { geometry } });
+    ['mesh', false],
+    ['mesh', true],
+    ['skinned', false],
+    ['skinned', true],
+  ] as const)('publishes the actual %s opaque shadow bias input contract, viewClipping=%s', async (geometry, viewClipping) => {
+    const { shadow, forward } = await cookStaticShadow({
+      context: { geometry, ...(viewClipping ? { viewClipping: true as const } : {}) },
+    });
     expect(shadow.abi.vertexInputs.map((input) => input.semantic)).toEqual(
       geometry === 'skinned'
         ? ['position', 'normal', 'skinIndex', 'skinWeight']
@@ -31,11 +35,11 @@ describe('static Standard shadow coverage', () => {
     for (const compiled of [shadow.compile, shadow.sceneCompile]) {
       expect(compiled).toBeDefined();
       expect(compiled?.wgsl).not.toMatch(/\b(?:dpdx|dpdy|surfaceSample|displaceVertex)\s*\(/);
-      expect(compiled?.wgsl).toContain('applyViewClipping');
+      expect(compiled?.wgsl.includes('applyViewClipping')).toBe(viewClipping);
       expect(compiled?.wgsl).toContain('applyLocalClipping');
     }
-    // The shadow pass is not on the discard-free lane: its LOD coverage stays unconditional.
-    expect(shadow.sceneCompile?.wgsl).toContain('applyLodCoverage');
+    // Non-fading shadow batches compile out LOD coverage independently of local planes.
+    expect(shadow.sceneCompile?.wgsl).not.toContain('applyLodCoverage');
     expect(forward.compile.wgsl).toContain('surfaceSample');
     expect(forward.compile.wgsl).not.toMatch(/\.alphaCutoff\b/);
   });

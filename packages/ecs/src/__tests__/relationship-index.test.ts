@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { componentSchema, defineComponent } from '../component';
-import { componentDefinition } from '../component-schema';
+import { componentDefinition, componentSchema, defineComponent } from '../component';
 import { entityIndex } from '../entity-handle';
 import { getDerivedWriter } from '../internal';
 import { defineRelationship, RelationshipIndex, relationshipRole } from '../relationship-index';
@@ -53,6 +52,51 @@ describe('relationship index', () => {
     expect(world.get(parent, pair.target).ok).toBe(true);
     expect(Array.from(world.get(parent, pair.target).unwrap().sources)).toEqual([]);
   });
+  it('detaches children through the current reverse slots and rejects the wrong parent', () => {
+    const pair = defineRelationship({
+      sourceName: 'DetachSource',
+      sourceField: 'target',
+      targetName: 'DetachTargets',
+      targetField: 'sources',
+    });
+    const world = new World();
+    const parent = world.spawn().unwrap();
+    const other = world.spawn().unwrap();
+    const first = world.spawn({ component: pair.source, data: { target: parent } }).unwrap();
+    const second = world.spawn({ component: pair.source, data: { target: parent } }).unwrap();
+
+    expect(world.removeChild(other, first, pair.source)).toMatchObject({
+      ok: false,
+      error: { name: 'RelationshipDetachMismatchError' },
+    });
+    world.removeChild(parent, first, pair.source).unwrap();
+    expect(world.get(parent, pair.target).unwrap().sources).toEqual(new Uint32Array([second]));
+    expect(world.get(first, pair.source).ok).toBe(false);
+    world.removeChild(parent, second, pair.source).unwrap();
+    expect(world.get(parent, pair.target).unwrap().sources).toHaveLength(0);
+  });
+
+  it('stops a suspended ancestor walk when the parent slot is reused', () => {
+    const pair = defineRelationship({
+      sourceName: 'AncestorReuseSource',
+      sourceField: 'parent',
+      targetName: 'AncestorReuseTargets',
+      targetField: 'children',
+    });
+    const world = new World();
+    const root = world.spawn().unwrap();
+    const parent = world.spawn({ component: pair.source, data: { parent: root } }).unwrap();
+    const child = world.spawn({ component: pair.source, data: { parent } }).unwrap();
+    const ancestors = world.iterAncestors(child);
+    expect([...ancestors]).toEqual([parent, root]);
+    const walk = ancestors[Symbol.iterator]();
+    expect(walk.next()).toEqual({ done: false, value: parent });
+    world.despawn(parent).unwrap();
+    const replacement = world.spawn({ component: pair.source, data: { parent: root } }).unwrap();
+    expect(entityIndex(replacement)).toBe(entityIndex(parent));
+    expect(walk.next().done).toBe(true);
+  });
+
   it('keeps source writable and target materialized/read-only by role', () => {
     const pair = defineRelationship({
       sourceName: 'IndexSource',
@@ -74,24 +118,14 @@ describe('relationship index', () => {
     const second = 12 as never;
     index.attach(first, parentA, 0);
     index.attach(second, parentA, 1);
-    expect(index.slotOf(second)).toBe(1);
+    expect(index.slotForTarget(second, parentA)).toBe(1);
     expect(index.detach(first)).toBe(true);
     index.updateSlot(second, parentA, 0);
-    expect(index.slotOf(second)).toBe(0);
-    index.reparent(second, parentB, 0);
-    expect(index.targetOf(second)).toBe(parentB);
+    expect(index.slotForTarget(second, parentA)).toBe(0);
+    index.attach(second, parentB, 0);
+    expect(index.slotForTarget(second, parentA)).toBeUndefined();
+    expect(index.slotForTarget(second, parentB)).toBe(0);
     expect(index.epoch).toBeGreaterThan(0);
-  });
-
-  it('recovers only from the supplied R source records', () => {
-    const index = new RelationshipIndex();
-    index.recover([
-      [11 as never, 1 as never],
-      [12 as never, 1 as never],
-    ]);
-    expect(index.slotOf(11 as never)).toBe(0);
-    expect(index.slotOf(12 as never)).toBe(1);
-    expect(index.targetOf(12 as never)).toBe(1);
   });
 
   it('materializes the target and rejects direct target writes', () => {
@@ -231,12 +265,12 @@ describe('relationship index', () => {
     const world = new World();
     const target = world.spawn().unwrap();
     const source = world.spawn().unwrap();
-    const arrays = world[worldInternal].getArrayStore();
+    const arrays = world[worldInternal].arrayStore;
     const originalAlloc = arrays.alloc;
     const beforeMutation = world[worldInternal].getMutationEpoch();
     const beforeStructure = world[worldInternal].getStructureEpoch();
     const beforeRelationship = world[worldRead].getRelationshipEpoch(pair.source);
-    const structural = world[worldInternal].getStructuralChangeIndex();
+    const structural = world[worldInternal].structuralChangeIndex;
     const pending = (): number[] => {
       const identities: number[] = [];
       structural.visitSince(beforeMutation, Number.MAX_SAFE_INTEGER, (index) =>

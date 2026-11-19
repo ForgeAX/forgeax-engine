@@ -82,6 +82,33 @@ it('runs independent architecture and build lanes with every consumer required',
   }
 });
 
+it('hydrates both Rapier payloads with Engine release access before the verified fallback', () => {
+  const release = 'uses: ./tools/view/.github/actions/prepare-engine-wasm';
+  const fallback = 'uses: ./.github/actions/prepare-rapier-wasm';
+  const buildStart = workflow.indexOf('  build:');
+  const browserStart = workflow.indexOf('  browser:');
+  const build = workflow.slice(buildStart, browserStart);
+  const browser = workflow.slice(browserStart, workflow.indexOf('  bootstrap:'));
+  for (const dimension of ['2d', '3d']) {
+    assert.ok(build.includes(`packages/physics-rapier${dimension}/pkg`));
+  }
+  const restoreStart = browser.indexOf('uses: actions/download-artifact@v4');
+  assert.ok(restoreStart >= 0 && restoreStart < browser.indexOf(release));
+  for (const lane of [build, browser]) {
+    const releaseStart = lane.indexOf(release);
+    const fallbackStart = lane.indexOf(fallback);
+    assert.ok(releaseStart >= 0 && releaseStart < fallbackStart);
+    assert.match(lane.slice(releaseStart, fallbackStart),
+      /GITHUB_TOKEN: \$\{\{ secrets\.GHA \}\}/);
+  }
+  const action = readFileSync(
+    new URL('../.github/actions/prepare-engine-wasm/action.yml', import.meta.url),
+    'utf8',
+  );
+  assert.match(action, /for dimension in 2d 3d; do/);
+  assert.match(action, /if ! node scripts\/ci\/rapier-release-payload\.mjs --hydrate "\$dimension"; then/);
+});
+
 it('the actual aggregate command rejects every failed, skipped, cancelled or absent lane', () => {
   const aggregate = workflow.slice(workflow.indexOf('  bootstrap:'));
   const command = aggregate.match(/ {8}run: (.+)/)?.[1];

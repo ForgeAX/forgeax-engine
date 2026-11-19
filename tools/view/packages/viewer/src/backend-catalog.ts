@@ -1,7 +1,4 @@
 import type { Plugin } from '@forgeax/engine-plugin';
-import displayPlugin from '@forgeax/view-plugin-display/backend';
-import pluginsPlugin from '@forgeax/view-plugin-plugins/backend';
-import workspaceCorePlugin from '@forgeax/view-workspace-core/backend';
 import * as displayIdentity from '@forgeax/view-plugin-display/identity';
 import * as pluginsIdentity from '@forgeax/view-plugin-plugins/identity';
 
@@ -11,10 +8,10 @@ import {
   VIEW_WORKSPACE_CORE,
 } from './catalog-shared.ts';
 
-const implementations = new Map<string, Plugin>([
-  [VIEW_WORKSPACE_CORE.BACKEND_MODULE, workspaceCorePlugin],
-  [displayIdentity.BACKEND_MODULE, displayPlugin],
-  [pluginsIdentity.BACKEND_MODULE, pluginsPlugin],
+const loaders = new Map<string, () => Promise<{ default: Plugin }>>([
+  [VIEW_WORKSPACE_CORE.BACKEND_MODULE, () => import('@forgeax/view-workspace-core/backend')],
+  [displayIdentity.BACKEND_MODULE, () => import('@forgeax/view-plugin-display/backend')],
+  [pluginsIdentity.BACKEND_MODULE, () => import('@forgeax/view-plugin-plugins/backend')],
 ]);
 
 export const VIEW_PRODUCT_BACKEND_CATALOG = new Map<string, { realm: 'host'; version: string; load: () => Promise<{ default: Plugin }> }>(
@@ -23,11 +20,9 @@ export const VIEW_PRODUCT_BACKEND_CATALOG = new Map<string, { realm: 'host'; ver
     {
       realm: 'host',
       version: VIEW_PLUGIN_VERSION,
-      load: async () => {
-        const implementation = implementations.get(plugin.BACKEND_MODULE);
-        if (!implementation) throw new Error(`View backend implementation is missing: ${plugin.BACKEND_MODULE}`);
-        return { default: implementation };
-      },
+      load: loaders.get(plugin.BACKEND_MODULE) ?? (() => Promise.reject(
+        new Error(`View backend implementation is missing: ${plugin.BACKEND_MODULE}`),
+      )),
     },
   ]),
 );

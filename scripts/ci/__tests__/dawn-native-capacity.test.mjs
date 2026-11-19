@@ -34,7 +34,6 @@ test('only admitted daily two-worker execution pairs measured native owners', ()
     'direct-light',
     'feature-depth',
     'gi-1',
-    'gi-2',
     'gi-3',
     'gi-4',
     'gi-5',
@@ -51,7 +50,6 @@ test('only admitted daily two-worker execution pairs measured native owners', ()
     'screen-probe',
     'shadow-fields',
     'specular-aa',
-    'surface-pipelines',
     'transmission',
     'vfx-depth',
   ]);
@@ -65,6 +63,13 @@ test('only admitted daily two-worker execution pairs measured native owners', ()
     dawnGroupEnvironment({ id: 'unmeasured' }, { LP_NUM_THREADS: '8' }, 2, 2).LP_NUM_THREADS,
     '8',
   );
+  const uncapped = { LP_NUM_THREADS: '8', FORGEAX_SHADER_COMPILE_WORKERS: '7' };
+  for (const id of ['surface-pipelines', 'gi-2', 'path-tracer']) {
+    const group = DAWN_GATE_GROUPS.find((entry) => entry.id === id);
+    assert.equal(group?.nativeProcessSlots, 2);
+    assert.equal(dawnGroupEnvironment(group, uncapped, 2, 2).LP_NUM_THREADS, '8');
+    assert.equal(dawnGroupEnvironment(group, uncapped, 2, 2).FORGEAX_SHADER_COMPILE_WORKERS, '7');
+  }
 });
 
 test('invalid capacity fails before starting any native process', async () => {

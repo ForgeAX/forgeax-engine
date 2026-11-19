@@ -59,6 +59,8 @@ export const Points = defineComponent(
   'Points',
   {
     size: { type: 'f32', default: 4 },
+    /** Optional lower bound on the projected diameter in physical pixels. */
+    minPixelSize: { type: 'f32', default: 0 },
     sizeUnits: { type: 'enum', default: PointSizeUnitsValue.pixels, labels: PointSizeUnitsValue },
     shape: { type: 'enum', default: PointShapeValue.square, labels: PointShapeValue },
   },

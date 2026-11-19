@@ -22,13 +22,15 @@ export type RecorderPhaseCatalog = Readonly<Record<ProfileSource, readonly strin
 export interface RecorderSession {
   readonly captureId: string;
   readonly detail: ProfileDetail;
+  /** Allocate the next identity from this capture, shared by all frame owners. */
+  beginFrame(): ProfilerResult<ProfileFrameToken>;
+  beginFrame(frameId: number): ProfilerResult<void>;
   /** Detached first undeclared-phase failure retained by this capture, if any. */
   firstSourceFailure():
     | Extract<ProfilerError, { readonly code: 'profile-source-failed' }>
     | undefined;
   /** The Profiler frame currently being recorded, with no inferred App counter. */
   currentFrameToken(): ProfileFrameToken | undefined;
-  beginFrame(frameId: number): ProfilerResult<void>;
   beginPhase(input: ProfilePhaseStart): ProfilerResult<void>;
   beginPhase(source: ProfileSource, phase: string): ProfilerResult<void>;
   endPhase(): ProfilerResult<void>;
@@ -325,6 +327,28 @@ export function createRecorder(
     terminal: undefined,
   };
 
+  function beginFrame(): ProfilerResult<ProfileFrameToken>;
+  function beginFrame(frameId: number): ProfilerResult<void>;
+  function beginFrame(frameId?: number): ProfilerResult<ProfileFrameToken | void> {
+    const stateCheck = stateResult(state, 'beginFrame');
+    if (!stateCheck.ok) return stateCheck;
+    const nextFrameId = frameId === undefined ? state.lastFrameId + 1 : frameId;
+    if (
+      !positiveSafeInteger(nextFrameId) ||
+      state.currentFrameId !== undefined ||
+      nextFrameId <= state.lastFrameId
+    ) {
+      return { ok: false, error: stateError('beginFrame') };
+    }
+    state.lastFrameId = nextFrameId;
+    state.currentFrameId = nextFrameId;
+    state.frameCount += 1;
+    if (state.frameCount > state.limits.frameLimit) recordOverflow(state, state.limits.frameLimit);
+    return frameId === undefined
+      ? { ok: true, value: Object.freeze({ captureId, frameId: nextFrameId }) }
+      : OK_VOID;
+  }
+
   const session: RecorderSession = {
     captureId,
     detail: limits.detail,
@@ -339,23 +363,7 @@ export function createRecorder(
         ? undefined
         : Object.freeze({ captureId: state.captureId, frameId: state.currentFrameId });
     },
-    beginFrame(frameId) {
-      const stateCheck = stateResult(state, 'beginFrame');
-      if (!stateCheck.ok) return stateCheck;
-      if (
-        !positiveSafeInteger(frameId) ||
-        state.currentFrameId !== undefined ||
-        frameId <= state.lastFrameId
-      ) {
-        return { ok: false, error: stateError('beginFrame') };
-      }
-      state.lastFrameId = frameId;
-      state.currentFrameId = frameId;
-      state.frameCount += 1;
-      if (state.frameCount > state.limits.frameLimit)
-        recordOverflow(state, state.limits.frameLimit);
-      return OK_VOID;
-    },
+    beginFrame,
     beginPhase(inputOrSource: ProfilePhaseStart | ProfileSource, phaseName?: string) {
       const stateCheck = stateResult(state, 'beginPhase');
       if (!stateCheck.ok) return stateCheck;

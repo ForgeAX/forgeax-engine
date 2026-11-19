@@ -121,6 +121,17 @@ describe('DirectLightSlot ABI', () => {
     expect([...packedRect.slice(8, 16)]).toEqual([0, 1, 0, 3, 1, 0, 0, 0]);
   });
 
+  it('stores Spot decay next to receiver channels without increasing the slot stride', () => {
+    const legacy = packDirectLightSlot(snapshot);
+    const authored = packDirectLightSlot({ ...snapshot, decay: 0, lightingChannels: 12 });
+    expect(new Uint32Array(legacy.buffer)[21]).toBe(0);
+    expect(new Uint32Array(packDirectLightSlot({ ...snapshot, decay: 2 }).buffer)[21]).toBe(0);
+    expect(new Uint32Array(authored.buffer)[21]).toBe(0x80000000);
+    expect(packDirectLightSlot({ ...snapshot, decay: 1.5 })[21]).toBe(1.5);
+    expect(new Uint32Array(authored.buffer)[20]).toBe(12);
+    expect(authored.byteLength).toBe(legacy.byteLength);
+  });
+
   it('uses 0xffffffff for absent shadow and modifier identities', () => {
     const pointWords = new Uint32Array(packDirectLightSlot(point as never).buffer);
     const rectWords = new Uint32Array(packDirectLightSlot(rect as never).buffer);

@@ -121,6 +121,7 @@ export {
   FORGEAX_RESERVED_PATH_PREFIX,
   type MaterialShaderByteEntry,
   type MaterialShaderEntry,
+  type MaterialShaderVariantReference,
   type RegisteredMaterialShaderEntry,
   ShaderRegistry,
   ShaderRegistry as ShaderCatalog,
@@ -132,6 +133,7 @@ export {
 } from './ShaderRegistry.js';
 export {
   type ExpandedShaderManifest,
+  findVariantByDefines,
   findVariantByKey,
   type MaterialShaderManifestEntry,
   type MaterialShaderManifestVariant,
@@ -316,6 +318,27 @@ export {
 } from './material/ray-program';
 export { declaredMaterialVertexInputs } from './material/vertex-inputs.js';
 export {
+  type AdmittedShaderProgramTemplate,
+  admitShaderProgramTemplate,
+  publishShaderProgramTemplates,
+  readShaderProgramTemplates,
+  type ShaderProgramCompilation,
+  type ShaderProgramCompiler,
+  type ShaderProgramOptions,
+  type ShaderProgramTemplate,
+  type ShaderTemplateLibrary,
+  selectShaderProgramDefines,
+} from './program-template.js';
+export {
+  admitShaderTemplateManifest,
+  isShaderTemplateManifestRow,
+  materialShaderPreparedSourceRows,
+  SHADER_TEMPLATE_MANIFEST_VERSION,
+  type ShaderTemplateManifest,
+  shaderTemplateVariantEntry,
+} from './program-template-manifest.js';
+export { STANDARD_OUTPUT_V2_PARAMS_LAYOUT } from './standard-output.js';
+export {
   TEXTURE_GENERATOR_VERTEX_ENTRY,
   TEXTURE_GENERATOR_VERTEX_SOURCE,
 } from './texture-generator-source.js';
@@ -329,3 +352,4 @@ export {
   TSR_RECONSTRUCT_FRAGMENT_WGSL,
   TSR_RECONSTRUCT_WGSL,
 } from './tsr-source';
+export { materialShaderAxes } from './types.js';

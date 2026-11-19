@@ -52,7 +52,7 @@ it('resolves the exact captured source asset before a current-scope reader', asy
         context.referenceAssetVersion?.({ handle: 7, revision: 3, value });
         return ok({ handle: 7, revision: 3 });
       },
-      plan(data, context) {
+      plan(data: { handle: number; revision: number }, context) {
         expect(context.resolveAsset?.(data.handle, data.revision).unwrap()).toBe(value);
         return ok({ work: [] });
       },

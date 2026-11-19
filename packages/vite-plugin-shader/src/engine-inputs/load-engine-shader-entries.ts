@@ -3,7 +3,14 @@ import { existsSync } from 'node:fs';
 import { readdir, readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
-import { terrainProgramSource, waterDeformationAbiSource } from '@forgeax/engine-shader-compiler';
+import {
+  SURFACE_SLOT_MODULE,
+  terrainProgramSource,
+  waterDeformationAbiSource,
+} from '@forgeax/engine-shader-compiler';
+
+export { SURFACE_SLOT_MODULE } from '@forgeax/engine-shader-compiler';
+
 import {
   assertMaterialAsset,
   type MaterialDeformationDeclaration,
@@ -58,8 +65,6 @@ const RESAMPLE_FRAGMENT_PROGRAM_CONTRACT = {
 export function extractDefineImportPath(source: string): string | undefined {
   return DEFINE_IMPORT_PATH_RE.exec(source)?.[1];
 }
-
-export const SURFACE_SLOT_MODULE = 'forgeax_material::slot::surface' as const;
 
 /** Project the engine default Surface into the Standard slot identity. */
 export function projectSurfaceSlotSource(source: string): string {
@@ -144,6 +149,18 @@ export async function loadEngineShaderEntries(readText = readShaderText) {
       ...file,
       id: `${file.id}?portable-fragment`,
     }));
+  const gbufferEntry = (file: EngineShaderFile): EngineShaderFile => ({
+    ...file,
+    programContract: {
+      ...file.programContract,
+      schemaVersion: 'shader-program-contract/1',
+      gbuffer: 'standard-gbuffer/2',
+    },
+  });
+  const readGBufferEntry = (...args: Parameters<typeof readEntry>) =>
+    readEntry(...args).then(gbufferEntry);
+  const readGBufferFragmentEntry = (...args: Parameters<typeof readFragmentEntry>) =>
+    readFragmentEntry(...args).then(gbufferEntry);
   const density = loadCloudDensityModules(readText);
   const cloudSampled = Promise.all(
     [false, true].map(async (detail) => {
@@ -261,6 +278,7 @@ const CLOUD_DETAIL: bool = ${detail};
     unlit: readEntry('unlit.wgsl', 'forgeax::default-unlit'),
     pointsLines: readEntry('points-lines.wgsl', 'forgeax::points-lines'),
     tonemap: readEntry('tonemap.wgsl'),
+    standardOutputV2: readEntry('standard-output-v2.wgsl', 'forgeax::standard-output-v2'),
     analyticFog: readEntry('analytic-fog.wgsl', 'forgeax::analytic-fog'),
     cloudLayer: readEntry('cloud.wgsl'),
     cloudAnalytic: readEntry('cloud/analytic-view.wgsl', 'forgeax::cloud-analytic-view'),
@@ -308,8 +326,8 @@ const CLOUD_DETAIL: bool = ${detail};
     atmosphereCompose: readEntry('atmosphere-compose.wgsl', undefined, {
       ATMOSPHERE_UTILITY_SHADOWS: true,
     }),
-    hdrpSsao: readEntry('hdrp-ssao.wgsl'),
-    hdrpGtaoCompute: readEntry('hdrp-gtao-compute.wgsl'),
+    hdrpSsao: readGBufferEntry('hdrp-ssao.wgsl'),
+    hdrpGtaoCompute: readGBufferEntry('hdrp-gtao-compute.wgsl'),
     lightTextureResampleCompute: readEntry(
       'light-texture-resample-compute.wgsl',
       'forgeax::engine-light-texture-resample-compute',
@@ -334,29 +352,35 @@ const CLOUD_DETAIL: bool = ${detail};
       'depth-pyramid-reduce.wgsl',
       'forgeax::depth-pyramid-reduce-fragment',
     ),
-    ssrTrace: readEntry('ssr-trace.wgsl'),
-    ssrTemporal: readEntry('ssr-temporal.wgsl'),
-    ssrTraceFragment: readFragmentEntry('ssr-trace.wgsl', 'forgeax::ssr-trace-fragment'),
-    ssrTemporalFragment: readFragmentEntry('ssr-temporal.wgsl', 'forgeax::ssr-temporal-fragment'),
-    ssrCompose: readEntry('ssr-compose.wgsl'),
-    ssrComposeFragment: readFragmentEntry('ssr-compose.wgsl', 'forgeax::ssr-compose-fragment'),
+    ssrTrace: readGBufferEntry('ssr-trace.wgsl'),
+    ssrTemporal: readGBufferEntry('ssr-temporal.wgsl'),
+    ssrTraceFragment: readGBufferFragmentEntry('ssr-trace.wgsl', 'forgeax::ssr-trace-fragment'),
+    ssrTemporalFragment: readGBufferFragmentEntry(
+      'ssr-temporal.wgsl',
+      'forgeax::ssr-temporal-fragment',
+    ),
+    ssrCompose: readGBufferEntry('ssr-compose.wgsl'),
+    ssrComposeFragment: readGBufferFragmentEntry(
+      'ssr-compose.wgsl',
+      'forgeax::ssr-compose-fragment',
+    ),
     rayQuery: readEntry('ray-query.wgsl'),
     rayPathTracer: readEntry('ray-path-tracer.wgsl', 'forgeax::engine-ray-path-tracer'),
-    rayRasterSource: readEntry('ray-raster-source.wgsl'),
-    rayProbePlacement: readEntry('ray-probe-placement.wgsl'),
-    rayDiffuseComposite: readEntry('ray-diffuse-composite.wgsl'),
-    rayDiffuseReconstruct: readEntry('ray-diffuse-reconstruct.wgsl'),
-    rayIrradianceField: readEntry('ray-irradiance-field.wgsl', undefined, {
+    rayRasterSource: readGBufferEntry('ray-raster-source.wgsl'),
+    rayProbePlacement: readGBufferEntry('ray-probe-placement.wgsl'),
+    rayDiffuseComposite: readGBufferEntry('ray-diffuse-composite.wgsl'),
+    rayDiffuseReconstruct: readGBufferEntry('ray-diffuse-reconstruct.wgsl'),
+    rayIrradianceField: readGBufferEntry('ray-irradiance-field.wgsl', undefined, {
       IRRADIANCE_FIELD_VISIBILITY: true,
     }),
-    rayBakedField: readEntry('ray-irradiance-field.wgsl', undefined, {
+    rayBakedField: readGBufferEntry('ray-irradiance-field.wgsl', undefined, {
       IRRADIANCE_FIELD_VISIBILITY: false,
     }).then((file) => ({ ...file, id: `${file.id}?baked` })),
-    rayScreenProbe: readEntry('ray-screen-probe.wgsl', undefined, {
+    rayScreenProbe: readGBufferEntry('ray-screen-probe.wgsl', undefined, {
       IRRADIANCE_FIELD_VISIBILITY: true,
     }),
-    rayReflectionComposite: readEntry('ray-reflection-composite.wgsl'),
-    standardDeferred: readEntry(
+    rayReflectionComposite: readGBufferEntry('ray-reflection-composite.wgsl'),
+    standardDeferred: readGBufferEntry(
       'standard-deferred-lighting.wgsl',
       'forgeax::engine-standard-deferred-lighting',
     ),
@@ -370,9 +394,9 @@ const CLOUD_DETAIL: bool = ${detail};
       'forgeax::engine-forward-contact-shadow',
     ),
     shadowVariance: readEntry('shadow-variance.wgsl', 'forgeax::engine-shadow-variance'),
-    decalProject: readEntry('decal-project.wgsl', 'forgeax::engine-decal-project'),
-    decalApply: readEntry('decal-apply.wgsl', 'forgeax::engine-decal-apply'),
-    subsurfaceDiffusion: readEntry(
+    decalProject: readGBufferEntry('decal-project.wgsl', 'forgeax::engine-decal-project'),
+    decalApply: readGBufferEntry('decal-apply.wgsl', 'forgeax::engine-decal-apply'),
+    subsurfaceDiffusion: readGBufferEntry(
       'subsurface-diffusion.wgsl',
       'forgeax::engine-subsurface-diffusion',
     ),

@@ -25,18 +25,17 @@ interface MalformedTable {
 }
 
 interface MalformedArchetype {
-  readonly tableId: number;
+  readonly table: MalformedTable;
   readonly rows: readonly number[];
 }
 
 interface MalformedGraph {
   readonly archetypes: readonly (MalformedArchetype | undefined)[];
-  readonly tables: readonly (MalformedTable | undefined)[];
 }
 
 interface MalformedWorldInternal {
-  readonly getRecords: () => MalformedRecords;
-  readonly getGraph: () => MalformedGraph;
+  readonly records: MalformedRecords;
+  readonly graph: MalformedGraph;
   readonly markComponentChanged: (entity: EntityHandle, componentId: number) => void;
 }
 
@@ -65,7 +64,7 @@ export function setMalformedParentEdge(
   parent: EntityHandle,
 ): void {
   const internal = malformedInjection(world);
-  const records = internal.getRecords();
+  const records = internal.records;
   const slot = entityIndex(child);
   const record = {
     archetypeId: records.archetypeId[slot] ?? -1,
@@ -74,11 +73,11 @@ export function setMalformedParentEdge(
   if (record.archetypeId < 0) {
     throw new Error(`Malformed hierarchy fixture child ${child} is not live.`);
   }
-  const graph = internal.getGraph();
+  const graph = internal.graph;
   const archetype = graph.archetypes[record.archetypeId];
   if (archetype === undefined) throw new Error(`Missing archetype ${record.archetypeId}.`);
-  const table = graph.tables[archetype.tableId];
-  const column = table?.storage.get(componentId(ChildOf))?.fields.get('parent');
+  const table = archetype.table;
+  const column = table.storage.get(componentId(ChildOf))?.fields.get('parent');
   const tableRow = archetype.rows[record.archetypeRow];
   if (column === undefined || tableRow === undefined) {
     throw new Error(`Malformed hierarchy fixture child ${child} lacks ChildOf storage.`);

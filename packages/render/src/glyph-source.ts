@@ -31,6 +31,7 @@ export interface GlyphRenderSource {
   readonly font: AssetHandle<'font'>;
   readonly text: string;
   readonly size: number;
+  readonly worldOriented: boolean;
   readonly color: readonly [number, number, number, number];
 }
 
@@ -59,7 +60,8 @@ interface FontContent {
   readonly layouts: Map<string, Map<number, MeshAsset>>;
   readonly materials: WeakMap<GlyphRenderSource, MaterialResource>;
   readonly colors: Map<string, MaterialResource>;
-  base?: MaterialSnapshot;
+  /** One snapshot per orientation mode: the mode rides in distanceRange.w. */
+  readonly bases: [MaterialSnapshot | undefined, MaterialSnapshot | undefined];
   bytes: number;
 }
 
@@ -90,6 +92,7 @@ export class GlyphSources {
       layouts: new Map(),
       materials: new WeakMap(),
       colors: new Map(),
+      bases: [undefined, undefined],
       bytes: 0,
     };
     roots.set(handle, content);
@@ -134,10 +137,11 @@ export class GlyphSources {
     let material = content.materials.get(source);
     if (material === undefined) {
       const font = content.font;
-      const key = source.color.join(',');
+      const mode = source.worldOriented ? 1 : 0;
+      const key = `${mode}:${source.color.join(',')}`;
       material = content.colors.get(key);
       const snapshot =
-        content.base ??
+        content.bases[mode] ??
         prepareMaterialSnapshot({
           handle: 0,
           world,
@@ -160,13 +164,13 @@ export class GlyphSources {
                 font.common.distanceRange,
                 font.common.atlasWidth,
                 font.common.atlasHeight,
-                0,
+                mode,
               ],
               baseColorTexture: { texture: font.atlas, sampler: font.sampler },
             },
           },
         });
-      content.base = snapshot;
+      content.bases[mode] = snapshot;
       if (material === undefined) {
         material = MaterialResource.from({
           ...snapshot,
@@ -227,6 +231,7 @@ export function extractGlyphSources(
         font: glyph.fontHandle,
         text: glyph.text,
         size: glyph.fontSize,
+        worldOriented: glyph.worldOriented,
         color: [glyph.color[0] ?? 1, glyph.color[1] ?? 1, glyph.color[2] ?? 1, glyph.color[3] ?? 1],
       },
       transform: { world: new Float32Array(matrix) },
@@ -289,11 +294,15 @@ export function projectGlyphView(
       index,
       source.layer ?? 0,
     );
-    const matrix = new Float32Array(16);
-    matrix[0] = matrix[5] = matrix[10] = matrix[15] = 1;
-    matrix[12] = source.transform.world[12] ?? 0;
-    matrix[13] = source.transform.world[13] ?? 0;
-    matrix[14] = source.transform.world[14] ?? 0;
+    // Billboards keep only the anchor; world-oriented labels keep rotation and scale too.
+    let matrix = source.transform.world;
+    if (!source.glyph.worldOriented) {
+      matrix = new Float32Array(16);
+      matrix[0] = matrix[5] = matrix[10] = matrix[15] = 1;
+      matrix[12] = source.transform.world[12] ?? 0;
+      matrix[13] = source.transform.world[13] ?? 0;
+      matrix[14] = source.transform.world[14] ?? 0;
+    }
     return {
       ...source,
       transform: { world: matrix },

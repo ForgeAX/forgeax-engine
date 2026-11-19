@@ -13,7 +13,6 @@ function lease(onDispose: () => void = () => {}): RenderWorldLease {
     worldIdentity: {},
     generation: 0,
     readChanges: vi.fn(),
-    querySpans: vi.fn(),
     inspectCursor: vi.fn(),
     dispose: onDispose,
   } as unknown as RenderWorldLease;

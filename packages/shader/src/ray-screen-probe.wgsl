@@ -1,6 +1,6 @@
 #define_import_path forgeax_ray::screen_probe
 #import forgeax_view::common::{View}
-#import forgeax_pbr::gbuffer::{loadStandardNormalRoughness}
+#import forgeax_pbr::gbuffer::{loadStandardGBufferNormalRoughness, loadStandardGBufferValid}
 #import forgeax_depth_pyramid::sample::{depthPyramidCell, depthPyramidDepthOrEmpty, depthPyramidLevelSize}
 #import forgeax_ray::irradiance_field_sample::{sampleIrradianceField, sampleRadianceCacheAt, irradianceFieldOctTaps}
 #ifdef IRRADIANCE_FIELD_VISIBILITY
@@ -133,7 +133,8 @@ fn probeAt(pixel: vec2u) -> ScreenProbe {
   let z = textureLoad(gbufferDepth, vec2i(pixel), 0);
   if (!validDepth(z)) { return emptyProbe(); }
   let position = worldPosition(pixel, z);
-  let normal = loadStandardNormalRoughness(gbufferNormal, vec2i(pixel)).xyz;
+  if (!loadStandardGBufferValid(gbufferNormal, vec2i(pixel))) { return emptyProbe(); }
+  let normal = loadStandardGBufferNormalRoughness(gbufferNormal, vec2i(pixel)).xyz;
   return ScreenProbe(position, length(view.cameraPos - position), normal, packPixel(pixel));
 }
 
@@ -523,7 +524,8 @@ fn previousRadiance(position: vec3f) -> vec4f {
     if (rayNear <= scene * (1.0 + thickness)) {
       let pixel = min(vec2u(uv * extent), extentSize() - vec2u(1u));
       let z = textureLoad(gbufferDepth, vec2i(pixel), 0);
-      let normal = loadStandardNormalRoughness(gbufferNormal, vec2i(pixel)).xyz;
+      if (!loadStandardGBufferValid(gbufferNormal, vec2i(pixel))) { return; }
+  let normal = loadStandardGBufferNormalRoughness(gbufferNormal, vec2i(pixel)).xyz;
       if (validDepth(z) && dot(normal, d) < 0.0) {
         let hitPosition = worldPosition(pixel, z);
 #ifdef IRRADIANCE_FIELD_VISIBILITY
@@ -849,7 +851,8 @@ fn shortRange(pixel: vec2u, position: vec3f, normal: vec3f) -> ShortRange {
   let z = textureLoad(gbufferDepth, vec2i(pixel), 0);
   if (!validDepth(z)) { return; }
   let position = worldPosition(pixel, z);
-  let normal = loadStandardNormalRoughness(gbufferNormal, vec2i(pixel)).xyz;
+  if (!loadStandardGBufferValid(gbufferNormal, vec2i(pixel))) { return; }
+  let normal = loadStandardGBufferNormalRoughness(gbufferNormal, vec2i(pixel)).xyz;
   let distance = length(view.cameraPos - position);
   let near = shortRange(pixel, position, normal);
   let tiles = tileCount();
@@ -913,7 +916,8 @@ fn unpackNormal(p: u32) -> vec3f { return spOctDecode(unpack2x16snorm(p)); }
   let pixel = vec2u(i % extent.x, i / extent.x);
   let z = textureLoad(gbufferDepth, vec2i(pixel), 0);
   let position = worldPosition(pixel, z);
-  let normal = loadStandardNormalRoughness(gbufferNormal, vec2i(pixel)).xyz;
+  if (!loadStandardGBufferValid(gbufferNormal, vec2i(pixel))) { return; }
+  let normal = loadStandardGBufferNormalRoughness(gbufferNormal, vec2i(pixel)).xyz;
   var count = 1u;
   var value = current.xyz;
   if ((probeFrame.control.z & 2u) != 0u) {

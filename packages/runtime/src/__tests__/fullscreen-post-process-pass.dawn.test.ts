@@ -163,7 +163,7 @@ function prepareOutputTransformCapture(host: DebugDrawHost):
   const initialized = host.device.queue.writeBuffer(buffer.value, 0, sentinel);
   if (!initialized.ok) return undefined;
   host.requestGraphTargetCapture({
-    name: 'standard-output-color',
+    name: 'standard-grade-output',
     buffer: buffer.value,
     bytesPerRow,
     width: WIDTH,
@@ -215,7 +215,7 @@ async function readOutputTransformCapture(
     }
   | undefined
 > {
-  const target = host.getCurrentGraphTarget('standard-output-color');
+  const target = host.getCurrentGraphTarget('standard-grade-output');
   if (target === undefined || capture === undefined) return undefined;
   await host.device.queue.onSubmittedWorkDone();
   const mapped = await capture.buffer.mapAsync(MAP_MODE_READ);
@@ -662,7 +662,7 @@ describe('feat-20260604 M2 w10: FullscreenPostProcessPass dawn tests', () => {
         'standard-scene-data',
         'taa-resolve',
         'motion-blur',
-        'output-transform',
+        'standard-grade',
       ]),
     );
     expect(inspection.temporal).toMatchObject({ status: 'stable', historyValid: true });
@@ -752,7 +752,7 @@ describe('feat-20260604 M2 w10: FullscreenPostProcessPass dawn tests', () => {
     expect(fxaaCaptures).toHaveLength(linearInputs.length);
     for (const output of fxaaCaptures) {
       expect(output).toMatchObject({
-        targetName: 'standard-output-color',
+        targetName: 'standard-grade-output',
         format: 'rgba16float',
         size: { width: WIDTH, height: HEIGHT },
         captureWritten: true,

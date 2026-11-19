@@ -45,7 +45,9 @@ export function graphExecutionProfilePhase(input: {
 }
 
 type GraphPassRoster = {
-  readonly passes: readonly Pick<RenderGraphPassExecution, 'name' | 'kind'>[];
+  readonly passes: readonly (Pick<RenderGraphPassExecution, 'name' | 'kind'> & {
+    readonly rasterBatch?: readonly string[] | undefined;
+  })[];
 };
 type PassPhaseNames = Map<string, Map<string, RenderGraphPassProfilePhase>>;
 const graphPassPhaseNames = new WeakMap<object, Map<string, PassPhaseNames>>();
@@ -127,10 +129,14 @@ export function graphExecutionProfilePhases(
   const names = new Set<RenderGraphPassProfilePhase>();
   for (const pass of passes) {
     if (pass.kind === 'subgraph') continue;
+    const physical =
+      pass.rasterBatch === undefined
+        ? pass
+        : { name: pass.rasterBatch.join(' + '), kind: pass.kind };
     names.add(
       compiled === undefined
-        ? graphExecutionProfilePhase({ owner, pass })
-        : cachedGraphPassPhase(compiled, owner, pass),
+        ? graphExecutionProfilePhase({ owner, pass: physical })
+        : cachedGraphPassPhase(compiled, owner, physical),
     );
   }
   return Object.freeze([...names]);
@@ -280,6 +286,16 @@ export function createRenderGraphPassInstrumentation<Frame extends RenderGraphFr
   return createPassTimingInstrumentation(capture, viewId, cpuScope);
 }
 
+function reflectionExecutionPhase(passName: string): RenderGraphExecutionPhase | undefined {
+  if (passName === 'ssr-trace') return 'record/graph-execute/ssr-trace';
+  if (passName === 'ssr-temporal') return 'record/graph-execute/ssr-temporal';
+  if (passName.startsWith('ssr-reflection-mip-')) {
+    return 'record/graph-execute/ssr-reflection-mip';
+  }
+  if (passName === 'ssr-compose') return 'record/graph-execute/ssr-compose';
+  return undefined;
+}
+
 export function graphExecutionPhase(passName: string): RenderGraphExecutionPhase {
   if (passName.startsWith('shadowCascade')) return 'record/graph-execute/shadow';
   if (passName.startsWith('point-shadow')) return 'record/graph-execute/point-shadow';
@@ -287,12 +303,8 @@ export function graphExecutionPhase(passName: string): RenderGraphExecutionPhase
   if (passName === 'depth-pyramid-seed' || passName.startsWith('depth-pyramid-reduce-')) {
     return 'record/graph-execute/depth-pyramid';
   }
-  if (passName === 'ssr-trace') return 'record/graph-execute/ssr-trace';
-  if (passName === 'ssr-temporal') return 'record/graph-execute/ssr-temporal';
-  if (passName.startsWith('ssr-reflection-mip-')) {
-    return 'record/graph-execute/ssr-reflection-mip';
-  }
-  if (passName === 'ssr-compose') return 'record/graph-execute/ssr-compose';
+  const reflection = reflectionExecutionPhase(passName);
+  if (reflection !== undefined) return reflection;
   if (passName.startsWith('bloom-horizontal-')) {
     return 'record/graph-execute/bloom-horizontal';
   }
@@ -307,6 +319,7 @@ export function graphExecutionPhase(passName: string): RenderGraphExecutionPhase
       return 'record/graph-execute/g-buffer';
     case 'ssao-calc':
       return 'record/graph-execute/ssao-calc';
+    case 'ssao-blur-horizontal':
     case 'ssao-blur':
       return 'record/graph-execute/ssao-blur';
     case 'lighting':

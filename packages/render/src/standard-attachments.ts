@@ -1,9 +1,12 @@
 import { textureFormatBlock } from '@forgeax/engine-types';
 
+/** Native specialization shared by consumers of the full v2 normal surface. */
+export const STANDARD_GBUFFER_V2_PIPELINE_CONSTANTS = Object.freeze({ '64003': 1 });
+
 export const DEFERRED_COLOR_FORMATS = [
   'rgba16float',
-  'r32uint',
   'rg32uint',
+  'r32uint',
   'r32uint',
   'r32uint',
   'rg32uint',

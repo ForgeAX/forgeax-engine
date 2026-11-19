@@ -91,7 +91,8 @@
     "@pnpm/fs.packlist": "1100.0.4",
     "@forgeax/engine-mesh-io": "workspace:*",
     "@fontsource-variable/noto-sans-sc": "5.3.0",
-    "@forgeax/engine-ddc": "workspace:*"
+    "@forgeax/engine-ddc": "workspace:*",
+    "fzstd": "^0.1.1"
   },
   "devDependencies": {
     "@forgeax/engine-platform-wechat": "workspace:*",

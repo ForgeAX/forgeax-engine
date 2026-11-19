@@ -41,8 +41,10 @@ const packageOnlyUnitOwners = new Set([
 ]);
 // These exact CPU fixtures own their complete publication/registry inputs.
 // Other shader tests still consume the prepared Engine profile.
-const packageOnlyUnitFiles = new Set(
-  [
+const packageOnlyUnitFiles = new Set([
+  'packages/pack/src/__tests__/runtime-publication.unit.test.ts',
+  'packages/devkit/src/tools/__tests__/model-render-target.unit.test.ts',
+  ...[
     'manifest-reflection-sharing',
     'manifest-publication',
     'shader-registry-publication-sharing',
@@ -50,7 +52,20 @@ const packageOnlyUnitFiles = new Set(
     'native-manifest',
     'shader-manifest-transmission',
   ].map((name) => `packages/shader/src/__tests__/${name}.unit.test.ts`),
-);
+]);
+
+// These planner tests exercise source scripts and their own fixtures without
+// importing generated Engine packages or invoking the Engine toolchain.
+const sourceOnlyNodeFiles = new Set([
+  'scripts/ci/__tests__/browser-work.test.mjs',
+  'scripts/ci/__tests__/ci-focus.test.mjs',
+  'scripts/ci/__tests__/core-validation.test.mjs',
+  'scripts/ci/__tests__/download-artifact-with-retry.test.mjs',
+  'scripts/ci/__tests__/prepare-ci-inputs.test.mjs',
+  'scripts/ci/__tests__/recover-repair-shader-inputs.test.mjs',
+  'scripts/ci/__tests__/run-split-vitest-browser.test.mjs',
+  'scripts/ci/__tests__/view-diagnostic-workload.test.mjs',
+]);
 
 function nodeFocusPlan(selector) {
   if (
@@ -59,7 +74,10 @@ function nodeFocusPlan(selector) {
     !existsSync(join(root, selector))
   )
     throw new Error(`unknown Node test file: ${selector}`);
-  return { args: ['--test', selector], packagesOnly: true };
+  return {
+    args: ['--test', selector],
+    ...(sourceOnlyNodeFiles.has(selector) ? { sourceOnly: true } : { packagesOnly: true }),
+  };
 }
 
 function unitFocusPlan(kind, selector) {
@@ -281,13 +299,23 @@ export function focusPlan(
   throw new Error(`unknown focus kind: ${kind}`);
 }
 
-/** Preparation belongs to the selected owner; every route still uses the semantic build. */
+/** Use the semantic build for owners that consume generated outputs. */
 export function focusBuildArgs(plan, assetsSourceRoot) {
+  if (plan.sourceOnly) return undefined;
   return [
     'scripts/build.mjs',
     plan.packagesOnly ? '--packages-only' : '--engine',
     ...(assetsSourceRoot === undefined ? [] : ['--assets-source-root', resolve(assetsSourceRoot)]),
   ];
+}
+
+async function prepareFocus(plan, assetsSourceRoot, run) {
+  const buildArgs = focusBuildArgs(plan, assetsSourceRoot);
+  if (buildArgs === undefined) return;
+  // Semantic receipts validate current inputs and every generated output.
+  for (const owner of ['wgpu-wasm', 'fbx', 'codec'])
+    await run([`packages/${owner}/scripts/ensure-wasm.mjs`]);
+  await run(buildArgs);
 }
 
 export async function main(argv = process.argv.slice(2)) {
@@ -354,12 +382,7 @@ export async function main(argv = process.argv.slice(2)) {
   let status = 'failed';
   let smoke;
   try {
-    // Existing semantic build receipts validate changed code and output bytes.
-    // CPU-only Node/performance owners need package outputs, not a shader/asset
-    // publication. Every invocation still validates its real package receipts.
-    for (const owner of ['wgpu-wasm', 'fbx', 'codec'])
-      await run([`packages/${owner}/scripts/ensure-wasm.mjs`]);
-    await run(focusBuildArgs(plan, options['assets-source-root']));
+    await prepareFocus(plan, options['assets-source-root'], run);
     if (options.kind === 'compatibility')
       await run([
         'scripts/forgeax/prepare-shader-release-inputs.mjs',
@@ -418,7 +441,7 @@ export async function main(argv = process.argv.slice(2)) {
   } finally {
     writeFileSync(
       output,
-      `${JSON.stringify({ scope: 'diagnostic', head, dirty, kind: options.kind, selector: options.select, buildMode: plan.packagesOnly ? 'packages-only' : 'engine', status, smoke }, null, 2)}\n`,
+      `${JSON.stringify({ scope: 'diagnostic', head, dirty, kind: options.kind, selector: options.select, buildMode: plan.sourceOnly ? 'source-only' : plan.packagesOnly ? 'packages-only' : 'engine', status, smoke }, null, 2)}\n`,
     );
     console.log(`[ci-focus] ${status}; this selected run does not replace complete PR CI`);
   }

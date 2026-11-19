@@ -71,7 +71,13 @@ export interface RenderPipelineAsset {
     readonly ssao?: {
       readonly enabled: boolean;
       /** Screen-space AO estimator; defaults to GTAO. */
-      readonly algorithm?: 'ssao' | 'gtao' | undefined;
+      readonly algorithm?: 'ssao' | 'gtao' | 'spiral-ssao' | undefined;
+      /** Apply AO to lighting (default) or the completed linear HDR scene before temporal/post. */
+      readonly application?: 'lighting' | 'scene-color' | undefined;
+      /** Scene-color visibility strength in [0, 1]; default 0.95. */
+      readonly sceneColorStrength?: number | undefined;
+      /** Explicit estimator budget, integer 1..64; otherwise derived from algorithm/quality. */
+      readonly sampleCount?: number | undefined;
       /** Fraction of screen-space AO applied to direct light, in [0, 1]; default 0. */
       readonly directLightingStrength?: number | undefined;
       readonly radius?: number | undefined;
@@ -89,11 +95,13 @@ export interface RenderPipelineAsset {
     };
     /** Final display-encoded RGBA8 dither; defaults to true when omitted. */
     readonly outputDither?: boolean;
+    /** Saved assets without this field retain the V1 linear-FXAA output contract. */
+    readonly outputContract?: 'standard-output-v1' | 'standard-output-v2';
     /**
-     * Two-phase GPU occlusion culling of the single-sample main view's
-     * GPU-driven items against a furthest-depth pyramid (HZB). It supplements
-     * hardware occlusion queries, needs `firstInstanceIndirect`, and defaults
-     * to true when omitted.
+     * Two-phase GPU-driven occlusion against a conservative furthest-depth
+     * pyramid (HZB), including every sample of an MSAA attachment. This is
+     * separate from hardware occlusion queries. Omission is off for Forward
+     * and on for Deferred; explicit true/false overrides the path default.
      */
     readonly gpuOcclusion?: boolean;
     /**

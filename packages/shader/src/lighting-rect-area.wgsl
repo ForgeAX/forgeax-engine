@@ -1,4 +1,5 @@
 #define_import_path forgeax_pbr::lighting_rect_area
+#import forgeax_pbr::brdf::{DirectLobes, directLobesRadiance}
 #ifdef EXTENDED_LIGHTING_AVAILABLE
 #import forgeax_pbr::brdf::{specularF90, directLightingAlpha}
 #import forgeax_view::common::{ltcLambertTexture, ltcGgxTexture, spotModifierSampler, cookieTexture}
@@ -198,12 +199,12 @@ fn evalRectAreaLtcDiffuse(
   return lightColor * source * diffuse * ltc.formFactor * rectAreaRangeFactor(lightPos, worldPos, invRangeSquared);
 }
 
-fn evalRectAreaLtcStandard(
+fn evalRectAreaLtcLobes(
   lightPos : vec3<f32>, lightColor : vec3<f32>, axisX : vec3<f32>, axisY : vec3<f32>,
   halfWidth : f32, halfHeight : f32, invRangeSquared : f32, worldPos : vec3<f32>,
   n : vec3<f32>, v : vec3<f32>, baseColor : vec3<f32>, metallic : f32, alphaSq : f32, F0 : vec3<f32>,
   transmission : vec3<f32>, sourceSlice : u32,
-) -> vec3<f32> {
+) -> DirectLobes {
 #ifdef EXTENDED_LIGHTING_AVAILABLE
   // Unreal's View.MinRoughness reaches rect lights through the same direct-light
   // integration (CapsuleLightIntegrate.ush:110, SceneView.cpp:2921).
@@ -236,10 +237,20 @@ fn evalRectAreaLtcStandard(
       worldPos, -n, v, transmission, 0.0, alphaSq, F0, sourceSlice,
     );
   }
-  return diffuse + transmitted + lightColor * source * fresnel * specular.formFactor * rectAreaRangeFactor(lightPos, worldPos, invRangeSquared);
+  let specularRadiance = lightColor * source * fresnel * specular.formFactor * rectAreaRangeFactor(lightPos, worldPos, invRangeSquared);
+  return DirectLobes(diffuse + transmitted + specularRadiance, diffuse, transmitted + specularRadiance);
 #else
-  return vec3<f32>(0.0);
+  return DirectLobes(vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0));
 #endif
+}
+
+fn evalRectAreaLtcStandard(
+  lightPos : vec3<f32>, lightColor : vec3<f32>, axisX : vec3<f32>, axisY : vec3<f32>,
+  halfWidth : f32, halfHeight : f32, invRangeSquared : f32, worldPos : vec3<f32>,
+  n : vec3<f32>, v : vec3<f32>, baseColor : vec3<f32>, metallic : f32, alphaSq : f32, F0 : vec3<f32>,
+  transmission : vec3<f32>, sourceSlice : u32,
+) -> vec3<f32> {
+  return directLobesRadiance(evalRectAreaLtcLobes(lightPos, lightColor, axisX, axisY, halfWidth, halfHeight, invRangeSquared, worldPos, n, v, baseColor, metallic, alphaSq, F0, transmission, sourceSlice));
 }
 
 // Both renderer routes consume one complete Standard-PBR Rect contribution.

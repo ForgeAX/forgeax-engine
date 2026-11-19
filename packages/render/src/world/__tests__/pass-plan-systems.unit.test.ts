@@ -147,9 +147,21 @@ describe('pass-plan systems', () => {
 
   it.each([
     [{}, { lane: 'deferred', lateOcclusion: true }],
-    [{ renderPath: 'forward' }, { lane: 'forward', lateOcclusion: true }],
+    [{ renderPath: 'forward' }, { lane: 'forward', lateOcclusion: false }],
+    [
+      { renderPath: 'forward', gpuOcclusion: true },
+      { lane: 'forward', lateOcclusion: true },
+    ],
+    [
+      { renderPath: 'forward', gpuOcclusion: false },
+      { lane: 'forward', lateOcclusion: false },
+    ],
     [{ gpuOcclusion: false }, { lane: 'deferred', lateOcclusion: false }],
-    [{ clearOnly: true }, { lane: 'forward', lateOcclusion: true }],
+    [{ clearOnly: true }, { lane: 'forward', lateOcclusion: false }],
+    [
+      { clearOnly: true, gpuOcclusion: true },
+      { lane: 'forward', lateOcclusion: false },
+    ],
   ] as const)('plans the opaque lane of %o as %o', (overrides, expected) => {
     const world = createRenderWorld();
     registerPassPlanSystems(world);

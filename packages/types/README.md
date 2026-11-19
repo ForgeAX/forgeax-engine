@@ -837,10 +837,14 @@ artifact representation.
 
 ## Runtime GPU texture assets
 
-`TextureAsset` is the closed union of `ByteTextureAsset` and `GeneratedTextureAsset`.
-Only byte textures own `data`/`encoding`. A generated texture holds a generator
-GUID/output reference and a derived descriptor; reading it never reads GPU pixels.
+`TextureAsset` retains its byte-backed `data`/`encoding` contract. Independent
+`GpuTextureAsset` holds a generator GUID/output reference and a derived descriptor;
+reading it never reads GPU pixels. `SampledTextureAsset` is the consumer union.
 `TextureGeneratorAsset` declares finite raster passes, numeric parameters, explicit
 texture/sampler inputs, output descriptors and transient targets. Prepared program
 artifacts carry WGSL, reflection, compiler provenance and selected target formats.
 `validateTextureGenerator(value, true)` requires that prepared closure.
+
+Generated outputs may select `mipFilter: 'normal-roughness'` only with linear
+RGBA8 and generated mips. Omission preserves box filtering. See the numerical
+and lifetime contract in [GPU mip generation](../assets-runtime/README.md#gpu-mip-generation).

@@ -156,7 +156,7 @@ describe('camera LensFlare', () => {
     const stages = plan.logicalStages;
     expect(stages.indexOf('lens-flare')).toBe(stages.indexOf('bloom') + 1);
     expect(stages.indexOf('lens-flare')).toBeLessThan(stages.indexOf('exposure-white-balance'));
-    expect(plan.physicalStages.find((stage) => stage.name === 'lens-flare')).toEqual({
+    expect(plan.stageDomains.find((stage) => stage.name === 'lens-flare')).toEqual({
       name: 'lens-flare',
       input: 'linear-hdr',
       output: 'linear-hdr',

@@ -1,9 +1,12 @@
 import {
   createStandardPbrArtifactReceipt,
+  isShaderTemplateManifestRow,
   type MaterialShaderArtifact,
   type MaterialShaderEntry,
   type MaterialShaderManifestEntry,
   type MaterialShaderProgram,
+  materialShaderAxes,
+  materialShaderSource,
   type ShaderRegistry,
 } from '@forgeax/engine-shader';
 import type { MaterialProgramAbi, MaterialProgramAddress } from '@forgeax/engine-types';
@@ -12,6 +15,7 @@ import {
   isStandardPbrSkinMaterialShader,
   SHADOW_CASTER_SHADER_ID,
 } from '../../pbr-pipeline';
+import { declaredMaterialVariantKey, selectPublishedVariant } from './variant-selection';
 
 type ProgramEntry = MaterialShaderEntry & { readonly program: MaterialShaderProgram };
 
@@ -201,132 +205,6 @@ function selectedMaterialShaderEntry(
   };
 }
 
-// General inputs are the default lane; only a lean GPU-driven batch narrows
-// them. Lean is a preference: a lane whose rules force the general inputs
-// (visible surface, LOD cross-fade) keeps the general row.
-function withLeanInputs<Variant extends MaterialShaderManifestEntry['variants'][number]>(
-  entry: Pick<MaterialShaderManifestEntry, 'variants'>,
-  candidates: Variant[],
-  options: MaterialShaderArtifactRequest,
-): Variant[] {
-  const leanInputs =
-    options.leanInputs ??
-    (options.variantSet?.includes('STANDARD_LEAN_INPUTS=') === true ? undefined : false);
-  if (
-    leanInputs === undefined ||
-    !entry.variants.some((variant) => Object.hasOwn(variant.defines, 'STANDARD_LEAN_INPUTS'))
-  ) {
-    return candidates;
-  }
-  const lean = candidates.filter((variant) => variant.defines.STANDARD_LEAN_INPUTS === leanInputs);
-  return lean.length > 0 || !leanInputs
-    ? lean
-    : candidates.filter((variant) => variant.defines.STANDARD_LEAN_INPUTS === false);
-}
-
-function selectPublishedVariant(
-  entry: Pick<MaterialShaderManifestEntry, 'variants'>,
-  options: MaterialShaderArtifactRequest,
-): (typeof entry.variants)[number] | undefined {
-  const desiredColor = options.vertexColorAvailable;
-  const declaresColorAxis = entry.variants.some((variant) =>
-    Object.hasOwn(variant.defines, 'VERTEX_COLOR_AVAILABLE'),
-  );
-  let withColor =
-    desiredColor === undefined || !declaresColorAxis
-      ? [...entry.variants]
-      : entry.variants.filter((variant) => variant.defines.VERTEX_COLOR_AVAILABLE === desiredColor);
-  const declaresSkinningAxis = entry.variants.some((variant) =>
-    Object.hasOwn(variant.defines, 'SKINNING_DISABLED'),
-  );
-  if (options.deformation !== undefined && declaresSkinningAxis) {
-    const skinningDisabled = options.deformation !== 'skin';
-    withColor = withColor.filter(
-      (variant) => variant.defines.SKINNING_DISABLED === skinningDisabled,
-    );
-  }
-  for (const [axis, requested] of [
-    ['CLUSTER_FORWARD_AVAILABLE', options.clustered],
-    ['PROBE_BLEND_AVAILABLE', options.probeBlend],
-    ['REFLECTION_FALLBACK_AVAILABLE', options.reflectionFallback],
-    ['VISIBLE_SURFACE_AVAILABLE', options.visibleSurface ?? false],
-    [
-      'WATER_WAVES_AVAILABLE',
-      options.variantSet?.includes('WATER_WAVES_AVAILABLE=') === true ? undefined : false,
-    ],
-    [
-      'WATER_INFO_RGBA16',
-      options.variantSet?.includes('WATER_INFO_RGBA16=') === true ? undefined : false,
-    ],
-    // Opaque is the default lane; only an alpha-cutout request reaches discard.
-    // An explicit variant set that names the axis keeps its own value.
-    [
-      'ALPHA_MASK',
-      options.alphaMask ??
-        (options.variantSet?.includes('ALPHA_MASK=') === true ? undefined : false),
-    ],
-    [
-      'GPU_DRIVEN_SCENE_INDEX_AVAILABLE',
-      options.address === undefined ? undefined : options.address === 'scene-index',
-    ],
-    // Indirect batches address scene instance rows through visibleItems. The explicit
-    // variant bypasses that lookup and must not win a lexical ranking tie.
-    ['GPU_DRIVEN_SCENE_INDEX_EXPLICIT', options.address === undefined ? undefined : false],
-    // Scene-table direct draws are requested by name; any other draw packs its instances.
-    [
-      'GPU_SCENE_DIRECT',
-      options.variantSet?.includes('GPU_SCENE_DIRECT=') === true ? undefined : false,
-    ],
-  ] as const) {
-    if (
-      requested !== undefined &&
-      entry.variants.some((variant) => Object.hasOwn(variant.defines, axis))
-    ) {
-      withColor = withColor.filter((variant) => variant.defines[axis] === requested);
-    }
-  }
-  withColor = withLeanInputs(entry, withColor, options);
-  if (options.variantSet === undefined) {
-    // Coverage-only is an explicit temporal producer variant. Ordinary
-    // material publication must stay on the color-producing shader.
-    withColor = withColor.filter((variant) => variant.defines.COVERAGE_ONLY !== true);
-  }
-  if (options.variantSet !== undefined) {
-    const requestedAxes = new Map(
-      options.variantSet.length === 0
-        ? []
-        : options.variantSet.split('+').map((entry) => {
-            const [name, value] = entry.split('=');
-            return [name ?? '', value === 'true'] as const;
-          }),
-    );
-    withColor = withColor.filter((variant) =>
-      [...requestedAxes].every(([name, value]) => variant.defines[name] === value),
-    );
-  }
-  // GPU-driven Standard owns the storage-backed scene-index variant. Prefer that exact family, then fall back to the closest variant
-  // carrying the requested COLOR_0 fact. This keeps the selection deterministic
-  // without making capability names an admission whitelist.
-  const ranked = withColor
-    .map((variant) => ({
-      variant,
-      score:
-        (variant.defines.STORAGE_BUFFER_AVAILABLE === true ? 8 : 0) +
-        (variant.defines.GPU_DRIVEN_SCENE_INDEX_AVAILABLE === true ? 4 : 0) +
-        (variant.defines.CLUSTER_FORWARD_AVAILABLE === false ? 2 : 0) +
-        (variant.defines.PROBE_BLEND_AVAILABLE === false ? 1 : 0) +
-        (variant.defines.TRANSMISSION_AVAILABLE === false ? 1 : 0) +
-        // Discard-free is the default lane; the discard program is requested by variantSet.
-        (variant.defines.LOD_DITHER === false ? 0.5 : 0) +
-        (variant.defines.CLIPPING_PLANES === false ? 0.25 : 0),
-    }))
-    .sort(
-      (left, right) =>
-        right.score - left.score || left.variant.definesKey.localeCompare(right.variant.definesKey),
-    );
-  return ranked[0]?.variant;
-}
-
 // Registry entries and manifest publications are immutable. Replace the projection
 // when either owner identity changes; old registrations remain weakly held.
 // A request with no published variant or artifact stays absent until the owner identity changes.
@@ -435,6 +313,18 @@ export function resolveMaterialShaderArtifact(
   return undefined;
 }
 
+/** Source lookup and PSO construction consume the same declared-axis key. */
+function materialVariantRequest(
+  manifest: MaterialShaderManifestEntry,
+  options: MaterialShaderArtifactRequest,
+): MaterialShaderArtifactRequest {
+  if (options.variantSet === undefined) return options;
+  const variantSet = declaredMaterialVariantKey(options.variantSet, manifest);
+  if (variantSet === options.variantSet) return options;
+  const { variantSet: _requested, ...rest } = options;
+  return variantSet === undefined ? rest : { ...rest, variantSet };
+}
+
 /** Cold artifact assembly stays outside the cache-hit loop's lexical scope. */
 function assembleRequestedArtifact(
   materialShaderId: string,
@@ -444,14 +334,19 @@ function assembleRequestedArtifact(
   manifestEntry: MaterialShaderManifestEntry | undefined,
   options: MaterialShaderArtifactRequest,
 ): MaterialShaderArtifact | typeof ABSENT {
+  const hasVariants =
+    manifestEntry !== undefined &&
+    (isShaderTemplateManifestRow(manifestEntry)
+      ? materialShaderAxes(manifestEntry).length > 0
+      : manifestEntry.variants.length > 0);
   const selected =
-    manifestEntry === undefined || manifestEntry.variants.length === 0
+    manifestEntry === undefined || !hasVariants
       ? undefined
-      : selectPublishedVariant(manifestEntry, options);
+      : selectPublishedVariant(manifestEntry, materialVariantRequest(manifestEntry, options));
   // A published variant set is an explicit producer contract. Falling back
   // to the primary entry when the requested axes have no variant would pair
   // one source with another artifact's receipt.
-  if (manifestEntry !== undefined && manifestEntry.variants.length > 0 && selected === undefined) {
+  if (hasVariants && selected === undefined) {
     return ABSENT;
   }
   const selectedEntry =
@@ -460,8 +355,9 @@ function assembleRequestedArtifact(
       : selectedMaterialShaderEntry(
           entry,
           shader.materialProgram(
-            selected.composedWgsl,
+            materialShaderSource(selected),
             selected.entryPoints ?? selected.receipt?.entryPoints,
+            selected.forwardFog ?? selected.receipt?.forwardFog,
           ),
           selected.receipt,
         );
@@ -469,7 +365,11 @@ function assembleRequestedArtifact(
     lookupId === SHADOW_CASTER_SHADER_ID ? lookupId : materialShaderId,
     selectedEntry,
     options,
-    manifestEntry?.uvSetCount,
+    manifestEntry !== undefined && !isShaderTemplateManifestRow(manifestEntry)
+      ? manifestEntry.uvSetCount
+      : selected === undefined
+        ? entry.program.uvSetCount
+        : selected.uvSetCount,
   );
   if (artifact !== undefined) {
     const published = {

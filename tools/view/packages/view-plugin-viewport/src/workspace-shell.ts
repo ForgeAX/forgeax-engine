@@ -3,7 +3,11 @@ import type { ViewWorkspaceClient } from '@forgeax/view-workspace-core/client';
 import type { WorkspaceTarget, WorkspaceState, WorkspaceAsset, WorkspaceInspection } from '@forgeax/view-workspace-core/contract';
 import type { Dispose } from '@forgeax/view-workspace-core/frontend-contract';
 
-type WorkspacePresentation = EngineWorkspacePresentation & { workspace?: EngineWorkspacePresentation; display?: EngineWorkspacePresentation };
+type WorkspacePresentation = EngineWorkspacePresentation & {
+  attachProjectDocument?: (input: { document: NonNullable<WorkspaceState['projectDocument']>; container: HTMLElement }) => Dispose;
+  workspace?: WorkspacePresentation;
+  display?: WorkspacePresentation;
+};
 type DisplayTarget = WorkspaceTarget & { surfaceId?: string; leaseId?: string };
 type NavigationMode = 'look' | 'orbit' | 'pan' | 'dolly';
 type CameraMotion = { type: NavigationMode | 'move'; mode?: string; yaw?: number; pitch?: number; x?: number; y?: number; amount?: number; distance?: number; pitchLimit?: number; velocity?: number[] };
@@ -924,6 +928,7 @@ export class ViewWorkspaceShell {
   declare inputSurface?: HTMLElement;
   declare surfaceByTab: Map<string, SurfaceEntry>;
   declare presentationByTab: Map<string, PresentationEntry>;
+  declare projectDocumentAnchor?: { key: string; container: HTMLElement; remove: Dispose };
   declare presentationPending: Map<string, { target: WorkspaceTarget; generation: number; surface: HTMLElement; task: Promise<void> }>;
   declare presentationQueueByTab: Map<string, Promise<void>>;
   declare presentationGenerationByTab: Map<string, number>;
@@ -991,6 +996,7 @@ export class ViewWorkspaceShell {
     this.inputTargetId = null;
     this.surfaceByTab = new Map();
     this.presentationByTab = new Map();
+    this.projectDocumentAnchor = undefined;
     this.presentationPending = new Map();
     this.presentationQueueByTab = new Map();
     this.presentationGenerationByTab = new Map();
@@ -1029,7 +1035,7 @@ export class ViewWorkspaceShell {
     void Promise.resolve()
       .then(() => api.getState?.())
       .then((state) => this.update(state))
-      .then(() => (this.state.project ? this.refreshAssets() : undefined))
+      .then(() => (this.state.project && !this.presentationOnly ? this.refreshAssets() : undefined))
       .catch((error) => this.fail(error));
     return this;
   }
@@ -1131,7 +1137,7 @@ export class ViewWorkspaceShell {
     this.state = { ...this.state, error: null, projectReconnecting: true };
     this.render();
     try {
-      const opened = await reopenWorkspaceProject(this.api, { window: this.window });
+      const opened = await reopenWorkspaceProject(this.api);
       if (opened?.project) this.update(opened);
       await this.refreshAssets();
       return this.snapshot();
@@ -1261,10 +1267,38 @@ export class ViewWorkspaceShell {
     const candidate = tabId === VIEW_DISPLAY_TAB_ID ? this.presentation?.display : this.presentation?.workspace;
     if (
       candidate &&
-      (typeof candidate.attach === 'function' || typeof candidate.createSurface === 'function')
+      (typeof candidate.attach === 'function' || typeof candidate.createSurface === 'function' ||
+        typeof candidate.attachProjectDocument === 'function')
     )
       return candidate;
     return this.presentation;
+  }
+
+  syncProjectDocumentAnchor() {
+    if (this.state.projectDocumentPresentation !== 'presenter') {
+      this.projectDocumentAnchor?.remove();
+      this.projectDocumentAnchor = undefined;
+      return;
+    }
+    const status = this.state.projectStatus;
+    const document = this.state.projectDocument ??
+      (status && status.phase !== 'preparing' ? status.document : undefined);
+    const container = this.targetContainer;
+    const key = document?.sessionId && document.targetId
+      ? JSON.stringify([document.sessionId, document.targetId]) : undefined;
+    const current = this.projectDocumentAnchor;
+    if (current && (current.key !== key || current.container !== container)) {
+      current.remove();
+      this.projectDocumentAnchor = undefined;
+    }
+    if (!document || !key || !container || this.projectDocumentAnchor) return;
+    const attach = this.presentationForTab(VIEW_WORKSPACE_TAB_ID)?.attachProjectDocument;
+    if (typeof attach !== 'function') return;
+    this.projectDocumentAnchor = {
+      key,
+      container,
+      remove: attach({ document, container }),
+    };
   }
 
   presentationOwnsPlacement(presentation: WorkspacePresentation | undefined) {
@@ -1722,6 +1756,7 @@ export class ViewWorkspaceShell {
       this.inputSurface = workspaceSurfaceEntry?.surface;
     }
     if (!this.ensureDom()) return;
+    this.syncProjectDocumentAnchor();
     let domReplaceChildren = 0;
     const tabs = this.tabsElement;
     const project = this.projectElement;
@@ -1943,6 +1978,8 @@ export class ViewWorkspaceShell {
     this.removeSubscription = undefined;
     this.removeDisconnect?.();
     this.removeDisconnect = undefined;
+    this.projectDocumentAnchor?.remove();
+    this.projectDocumentAnchor = undefined;
     const presentationTabs = new Set([
       ...this.surfaceByTab.keys(),
       ...this.presentationByTab.keys(),

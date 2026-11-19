@@ -63,8 +63,11 @@ const TRANSLUCENT_FOG_COMPOSITIONS: readonly TranslucentFogComposition[] = [
  */
 export const TRANSLUCENT_VIEW_SLOT_BASE =
   REFLECTION_PROBE_VIEW_SLOT_BASE + REFLECTION_PROBE_VIEW_SLOT_COUNT;
-export const PLANAR_REFLECTION_UNIFORM_OFFSET =
+/** Display camera with an identity medium for a material that opts out of inline fog. */
+export const UNFOGGED_VIEW_UNIFORM_OFFSET =
   VIEW_UNIFORM_SLOT_STRIDE * (TRANSLUCENT_VIEW_SLOT_BASE + TRANSLUCENT_FOG_COMPOSITIONS.length);
+export const PLANAR_REFLECTION_UNIFORM_OFFSET =
+  UNFOGGED_VIEW_UNIFORM_OFFSET + VIEW_UNIFORM_SLOT_STRIDE;
 /** viewProjection, plane and enabled lanes of the planar reflection projection. */
 export const PLANAR_REFLECTION_UNIFORM_SIZE = 96;
 /** A never-written, therefore disabled, projection inside the same slot. */
@@ -78,6 +81,17 @@ export function translucentViewOffset(composition: TranslucentFogComposition): n
     VIEW_UNIFORM_SLOT_STRIDE *
     (TRANSLUCENT_VIEW_SLOT_BASE + TRANSLUCENT_FOG_COMPOSITIONS.indexOf(composition))
   );
+}
+
+/** One View-slot policy for ordinary geometry and prepared material features. */
+export function materialFogViewOffset(
+  base: number,
+  vertexHeight: boolean,
+  fog: boolean | undefined,
+  composition: TranslucentFogComposition | undefined,
+): number {
+  if (fog === false) return vertexHeight && base === 0 ? UNFOGGED_VIEW_UNIFORM_OFFSET : base;
+  return composition === undefined ? base : translucentViewOffset(composition);
 }
 
 /** Classify a color blend; blends fog cannot compose with (multiply, min/max) return undefined. */
@@ -196,6 +210,7 @@ function writePointsLinesPayload(
     payload[36] = style.size;
     payload[38] = PointShapeValue[style.shape];
     payload[39] = style.sizeUnits === 'world' ? worldScale : 0;
+    payload[34] = style.minPixelSize ?? 0;
   } else if (style?.kind === 'lines') {
     payload[36] = style.width;
     payload[37] = 1;
@@ -275,7 +290,7 @@ let writingViewUbo = false;
  *   [280..283] clippingControl, [284..287] fogColorDensity,
  *   [288..291] fogHeightOpacity (heightFalloff, maxOpacity, translucent-fog slot, frame time),
  *   [292..315] atmosphere medium, [316..319] atmosphereControl,
- *   [320..323] fogSky (skyOpacity, reserved).
+ *   [320..323] fogSky (skyOpacity, vertex route, camera height density, reserved).
  *
  * @internal
  */
@@ -345,12 +360,14 @@ export function writeViewUbo(
       viewPayload[290] = 1;
       viewPayload[317] = 0;
     }
+    writeForwardHeightFogLanes(viewPayload, camera, fog, atmosphere, sceneCapture, byteOffset);
     const viewUploadResult = queue.writeBuffer(viewUniformBuffer, byteOffset, viewPayload);
     if (!viewUploadResult.ok) throw viewUploadResult.error;
 
     // Auxiliary captures must not overwrite the display shadow view slots.
     if (byteOffset !== 0) return;
     uploadTranslucentFogViews(queue, viewUniformBuffer, viewPayload, scratch.auxiliary);
+    uploadUnfoggedView(queue, viewUniformBuffer, viewPayload, scratch.auxiliary);
     uploadPointShadowFaceViews(queue, viewUniformBuffer, viewPayload, lights, scratch.auxiliary);
     if (resolvedTemporal !== undefined) {
       const postProcessPayload = scratch.auxiliary;
@@ -367,6 +384,49 @@ export function writeViewUbo(
     }
   } finally {
     writingViewUbo = previousWriting;
+  }
+}
+
+function uploadUnfoggedView(
+  queue: RhiQueue,
+  viewUniformBuffer: Buffer,
+  viewPayload: Float32Array,
+  disabled: Float32Array,
+): void {
+  if (viewPayload[321] === 1) {
+    // Preserve camera, lighting, clipping and frame time. No draw-specific
+    // shader variant or second material uniform is needed for fog:false.
+    disabled.set(viewPayload);
+    disabled[289] = 0;
+    disabled[290] = 0;
+    disabled[321] = 0;
+    const uploaded = queue.writeBuffer(viewUniformBuffer, UNFOGGED_VIEW_UNIFORM_OFFSET, disabled);
+    if (!uploaded.ok) throw uploaded.error;
+  }
+}
+
+function writeForwardHeightFogLanes(
+  viewPayload: Float32Array,
+  camera: CameraSnapshot,
+  fog: ViewFog | undefined,
+  atmosphere: AtmosphereParameters | undefined,
+  sceneCapture: boolean,
+  byteOffset: number,
+): void {
+  // Only an admitted ordinary display route can replace screen height fog.
+  // Captures and full atmosphere retain their independent transport owners.
+  if (
+    byteOffset === 0 &&
+    !sceneCapture &&
+    (atmosphere === undefined || atmosphere.backgroundOnly) &&
+    fog?.vertexHeight === true &&
+    fogIsActive(fog)
+  ) {
+    viewPayload[321] = 1;
+    // Perspective height density is constant for this camera. Saturation is
+    // already optically opaque at the kernel's minimum nonzero ray length.
+    const height = Math.max(-60, Math.min(60, -fog.heightFalloff * (camera.position[1] ?? 0)));
+    viewPayload[322] = Math.min(1e35, fog.density * Math.exp(height));
   }
 }
 
@@ -416,7 +476,10 @@ type ViewFog = Pick<
   | 'far'
   | 'skyOpacity'
   | 'sunScatter'
->;
+> & {
+  /** Derived Standard Forward admission, never an authored Fog component field. */
+  readonly vertexHeight?: boolean;
+};
 
 /**
  * fogColorDensity at [284..287], fogHeightOpacity at [288..290], frame time at [291],

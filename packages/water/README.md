@@ -2,6 +2,40 @@
 
 Water contains durable water payload admission and per-Scene lifecycle state. ForgeAX Pack sources use meters, XZ-horizontal and +Y-up directly.
 
+## Start with a lake
+
+The [Lake Starter](examples/lake/) is a complete, opt-in `test-experimental`
+Water scene. Use it when a task needs a simulated water body. Copy the example
+from the installed `@forgeax/engine-water` package or from
+`source/engine/packages/water/examples/lake` in the SDK source tree.
+
+1. Create a disposable project outside the SDK with
+   `forgeax project new /path/to/projects/lake-preview --template game-3d`.
+2. Copy the example's [`forge.json`](examples/lake/forge.json) over the new project's
+   manifest and its [`assets/lake/` directory](examples/lake/assets/lake/) under
+   the new project's `assets/`. The example manifest selects that directory
+   and mounts the lake scene. Template assets outside that root stay inactive.
+3. From the new project root, run `forgeax project check` to check the setup,
+   then `forgeax project capture --headless true --backend hardware --output lake.png --json`
+   to cook the Pack and capture a completed browser frame. Open the image and
+   check that the water surface covers the lake bed. A successful setup check
+   alone leaves scene visibility unverified.
+
+The [Pack](examples/lake/assets/lake/lake.pack.ts) keeps the Lake, WaterZone,
+wave set and scene in one place. It references the stock lake materials from
+Engine Content. Start by editing the XZ shoreline corners, wave amplitudes or
+base height. Keep the Body and WaveSet's `maxWaveHeightM` in sync when
+increasing amplitude. Keep the opaque bed below the lowest wave and size the
+zone to cover the shoreline.
+When copying into an existing game, keep its manifest and camera, include the
+Pack in its asset roots and add the water actors to the scene it already mounts.
+Use a distinct Package ID for each independently authored copy in one project.
+
+Add interactions once the initial scene renders. Read [surface queries](#wave-and-query-contracts)
+for height, normal and depth, [buoyancy](#synchronous-buoyancy-and-basic-di)
+for floating bodies, and [local fluid](#local-fluid-simulation) for simulated
+fluid around moving objects.
+
 Water owns `WATER_SYSTEM_RESOURCE`, `WATER_BUOYANCY_RESOURCE` and
 `WATER_VISUAL_CONTACTS_RESOURCE`. Runtime installs those exact ECS tokens;
 Render and game consumers import the same tokens to read their typed facts.

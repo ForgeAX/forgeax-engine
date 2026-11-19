@@ -1,40 +1,32 @@
+import type { Component } from './component';
 import {
-  type Resource,
-  type ResourceIdentity,
-  getResource as resGet,
-  hasResource as resHas,
-  insertResource as resInsert,
-  removeResource as resRemove,
-} from './resource';
+  createScheduleScopeMismatchError,
+  createSystemFailedError,
+  createTimeConfigInvalidError,
+  createTimeDeltaInvalidError,
+  isEcsFault,
+} from './errors';
 // @forgeax/engine-ecs -- World schedule and resource orchestration.
 
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { type CommandBufferImpl, detachCommandBufferPayloads } from './commands';
-
 import {
-  CommandFailedError,
-  CyclicDependencyError,
-  ProtectedResourceError,
-  ScheduleScopeMismatchError,
-  SharedKernelFailureError,
-  SystemFailedError,
+  type CommandFailedError,
+  type CyclicDependencyError,
+  type ScheduleScopeMismatchError,
+  type SharedKernelFailureError,
+  type SystemFailedError,
   type SystemSetNotRegisteredError,
-  TimeConfigInvalidError,
-  TimeDeltaInvalidError,
+  type TimeConfigInvalidError,
+  type TimeDeltaInvalidError,
   type WorldPoisonedError,
+  worldPoisonedError,
 } from './errors';
-import { worldPoisonedError } from './errors/shared-kernel-errors';
 import {
   SHARED_KERNEL_EXECUTOR_RESOURCE_KEY,
   type SharedKernelDispatch,
 } from './execution/shared-kernel';
-import {
-  discardDeferredFixedStep,
-  onDeferredFixedStepReady,
-  resumeDeferredFixedStep,
-  withFixedStepDeferral,
-} from './fixed-step-barrier';
-import type { QueryDescriptor } from './query/query';
+import { DESCRIPTOR_ROLES, type QueryDescriptor } from './query/query';
 
 import {
   buildSchedule,
@@ -58,67 +50,120 @@ import {
   type ScheduleToken,
   Update,
 } from './schedule-token';
-import type { ArchetypeGraph } from './storage/archetype-graph';
-import { FixedTime, type MutableFixedTimeResource, Time } from './time';
+import { FixedTime, type MutableFixedTimeResource } from './time';
 import type {
   World,
-  WorldInspection,
   WorldScheduleData,
   WorldScheduleQueryData,
   WorldScheduleSystemData,
 } from './world';
 import { worldInternal } from './world-internal';
 
-const fixedContinuations = new WeakMap<
-  World,
-  {
-    remaining: readonly ScheduleNode[];
-    commands: Map<SystemToken, CommandBufferImpl>;
-    stepsRemaining: number;
+interface FixedContinuation {
+  remaining: readonly ScheduleNode[];
+  commands: Map<SystemToken, CommandBufferImpl>;
+  stepsRemaining: number;
+}
+interface DeferredFixedStep {
+  completion: 'waiting' | 'ready' | 'failed' | undefined;
+  failure?: unknown;
+  ready?: () => void;
+  continuation: FixedContinuation | undefined;
+}
+// Pending completion and retained work share one asynchronous lifetime.
+const deferredFixedSteps = new WeakMap<World, DeferredFixedStep>();
+// This permission lasts only for the synchronous fixed-substep invocation.
+const fixedScopes = new WeakSet<World>();
+
+function withFixedStepDeferral<T>(world: World, run: () => T): T {
+  fixedScopes.add(world);
+  try {
+    return run();
+  } finally {
+    fixedScopes.delete(world);
   }
->();
+}
+
+/** Suspend the current fixed substep. Adopt solver state before resolving;
+ * retain no borrowed query or arena view across the completion boundary. */
+export function deferFixedStep(world: World, completion: Promise<void>): void {
+  if (!fixedScopes.has(world) || world.getResource(FixedTime).catchUp !== 'substeps')
+    throw new Error('Fixed-step deferral requires a running FixedUpdate substep');
+  const current = deferredFixedSteps.get(world);
+  if (current?.completion !== undefined)
+    throw new Error('A fixed step already has an outstanding completion');
+  const state: DeferredFixedStep = { completion: 'waiting', continuation: current?.continuation };
+  deferredFixedSteps.set(world, state);
+  void completion.then(
+    () => {
+      state.completion = 'ready';
+      state.ready?.();
+    },
+    (failure: unknown) => {
+      state.failure = failure;
+      state.completion = 'failed';
+      state.ready?.();
+    },
+  );
+}
+
+export function fixedStepIsDeferred(world: World): boolean {
+  return deferredFixedSteps.get(world)?.completion !== undefined;
+}
 
 function abortFixedContinuation(world: World): void {
-  const pending = fixedContinuations.get(world);
+  const pending = deferredFixedSteps.get(world)?.continuation;
   if (pending)
     for (const commands of pending.commands.values())
       if (commands.status === 'open') commands.abort();
-  fixedContinuations.delete(world);
-  discardDeferredFixedStep(world);
+  deferredFixedSteps.delete(world);
 }
 
-function continueFixedWhenReady(world: World): void {
-  onDeferredFixedStepReady(world, () => {
-    if (worldPoisonedError(world.execution) !== undefined) {
-      abortFixedContinuation(world);
-      return;
-    }
-    const arena = world[worldInternal].getFrameArena();
-    const ownsArena = !arena.isActive;
-    if (ownsArena) arena.open();
-    const accumulator = { value: world[worldInternal].getFixedAccumulator() };
-    try {
-      const fixed = world[worldInternal].getClockWriter().fixed;
-      runFixed(world, fixed, accumulator);
-      world[worldInternal].setFixedAccumulator(accumulator.value);
-      fixed.overstep = accumulator.value;
-    } catch (cause) {
-      abortFixedContinuation(world);
-      world[worldInternal].poisonExecution({
-        code: 'shared-kernel-failed',
-        kernelName: 'schedule:FixedUpdate',
-        cause,
-        partialWrite: true,
-        retryable: false,
-      });
-    } finally {
-      if (ownsArena) {
-        arena.close();
-        world[worldInternal].maintainMemory();
-      }
-    }
-  });
+function continueFixedWhenReady(world: World, pending: FixedContinuation): void {
+  const state = deferredFixedSteps.get(world);
+  if (state?.completion === undefined) throw new Error('No deferred fixed step exists');
+  state.continuation = pending;
+  const ready = world[worldInternal].resumeFixedStep;
+  state.ready = ready;
+  if (state.completion !== 'waiting') queueMicrotask(ready);
 }
+
+/** Consume one acknowledgement while retaining the work that still needs to run. */
+function consumeFixedCompletion(state: DeferredFixedStep): FixedContinuation | undefined {
+  const completion = state.completion;
+  if (completion === undefined || completion === 'waiting') return undefined;
+  state.completion = undefined;
+  if (completion === 'failed') throw state.failure;
+  return state.continuation;
+}
+
+/** Invoked through World's execution scope after a fixed completion settles. */
+export function resumeWorldFixedStep(world: World): void {
+  if (worldPoisonedError(world.execution) !== undefined) {
+    abortFixedContinuation(world);
+    return;
+  }
+  const ownsArena = world[worldInternal].openScheduleArena();
+  const accumulator = { value: world[worldInternal].getFixedAccumulator() };
+  try {
+    const fixed = world[worldInternal].clockWriter.fixed;
+    runFixed(world, fixed, accumulator);
+    world[worldInternal].setFixedAccumulator(accumulator.value);
+    fixed.overstep = accumulator.value;
+  } catch (cause) {
+    abortFixedContinuation(world);
+    world[worldInternal].poisonExecution({
+      code: 'shared-kernel-failed',
+      kernelName: 'schedule:FixedUpdate',
+      cause,
+      partialWrite: true,
+      retryable: false,
+    });
+  } finally {
+    if (ownsArena) world[worldInternal].closeScheduleArena();
+  }
+}
+
 function warmSharedKernel(world: World, descriptor: unknown): void {
   if (
     (descriptor as { readonly kind?: string }).kind !== 'shared-kernel' ||
@@ -136,11 +181,11 @@ function scheduleFor(
 ): Result<Schedule, ScheduleScopeMismatchError> {
   const schedule = isScheduleToken(token) ? world[worldInternal].getSchedule(token) : undefined;
   if (schedule) return ok(schedule);
-  return err(new ScheduleScopeMismatchError(token?.name ?? 'Unknown', Update.name));
+  return err(createScheduleScopeMismatchError(token?.name ?? 'Unknown', Update.name));
 }
 
 function setOwner(world: World, set: SystemSet): ScheduleToken | undefined {
-  for (const [token, schedule] of world[worldInternal].getSchedules()) {
+  for (const [token, schedule] of world[worldInternal].schedules) {
     if (schedule.sets.has(set)) return token;
   }
   return undefined;
@@ -151,7 +196,7 @@ function scopeError(
   target: ScheduleToken,
   reference?: string,
 ): Result<never, ScheduleScopeMismatchError> {
-  return err(new ScheduleScopeMismatchError(source.name, target.name, reference));
+  return err(createScheduleScopeMismatchError(source.name, target.name, reference));
 }
 
 export function worldAddSystem<const Qs extends ReadonlyArray<QueryDescriptor>>(
@@ -224,7 +269,7 @@ export function worldAddSystems<const Qs extends ReadonlyArray<QueryDescriptor>>
 
 /** Registration can change an identity edge's scope in any schedule of this World. */
 function invalidateScheduleReferences(world: World): void {
-  for (const schedule of world[worldInternal].getSchedules().values())
+  for (const schedule of world[worldInternal].schedules.values())
     schedule.referencesValidated = false;
 }
 
@@ -252,7 +297,7 @@ function scheduleReferenceMismatch(
       if (isScheduleToken(reference)) {
         const isFixedAnchor = token === Update && reference === FixedUpdate;
         if (reference !== token && !isFixedAnchor) {
-          return new ScheduleScopeMismatchError(token.name, reference.name, reference.name);
+          return createScheduleScopeMismatchError(token.name, reference.name, reference.name);
         }
         continue;
       }
@@ -260,12 +305,12 @@ function scheduleReferenceMismatch(
         ? schedule.sets.has(reference)
         : schedule.systems.has(reference);
       if (local) continue;
-      for (const [otherToken, other] of world[worldInternal].getSchedules()) {
+      for (const [otherToken, other] of world[worldInternal].schedules) {
         const registered = isSystemSet(reference)
           ? other.sets.has(reference)
           : other.systems.has(reference);
         if (otherToken !== token && registered)
-          return new ScheduleScopeMismatchError(token.name, otherToken.name, reference.name);
+          return createScheduleScopeMismatchError(token.name, otherToken.name, reference.name);
       }
     }
   }
@@ -280,26 +325,26 @@ function runFixed(
   const fixedSchedule = world[worldInternal].getSchedule(FixedUpdate) as Schedule | undefined;
   if (!fixedSchedule) return;
   let stepBudget = fixed.maxStepsPerUpdate;
-  const pending = fixedContinuations.get(world);
-  if (pending !== undefined) {
-    let remaining: readonly ScheduleNode[] | undefined;
+  const state = deferredFixedSteps.get(world);
+  if (state !== undefined) {
     try {
-      if (!resumeDeferredFixedStep(world)) return;
-      remaining = withFixedStepDeferral(world, () =>
+      const pending = consumeFixedCompletion(state);
+      if (pending === undefined) return;
+      const remaining = withFixedStepDeferral(world, () =>
         runSchedule(fixedSchedule, world, pending.remaining, pending.commands),
       );
+      if (remaining !== undefined) {
+        for (const buffer of pending.commands.values()) detachCommandBufferPayloads(buffer);
+        pending.remaining = remaining;
+        continueFixedWhenReady(world, pending);
+        return;
+      }
+      stepBudget = pending.stepsRemaining;
+      deferredFixedSteps.delete(world);
     } catch (cause) {
       abortFixedContinuation(world);
       throw cause;
     }
-    if (remaining !== undefined) {
-      for (const buffer of pending.commands.values()) detachCommandBufferPayloads(buffer);
-      pending.remaining = remaining;
-      continueFixedWhenReady(world);
-      return;
-    }
-    stepBudget = pending.stepsRemaining;
-    fixedContinuations.delete(world);
   }
   if (stepBudget === 0) {
     discardFixedOverflow(fixed, accumulator);
@@ -349,12 +394,11 @@ function runFixed(
     );
     if (remaining !== undefined) {
       for (const buffer of commands.values()) detachCommandBufferPayloads(buffer);
-      fixedContinuations.set(world, {
+      continueFixedWhenReady(world, {
         remaining,
         commands,
         stepsRemaining: stepBudget - steps - 1,
       });
-      continueFixedWhenReady(world);
       return;
     }
     steps += 1;
@@ -380,31 +424,49 @@ function discardFixedOverflow(
   fixed.droppedUpdates += 1;
 }
 
-export function worldUpdate(
-  world: World,
-  deltaSeconds = 0,
-): Result<
-  void,
-  | TimeDeltaInvalidError
-  | TimeConfigInvalidError
+export type ScheduleRunError =
   | ScheduleScopeMismatchError
   | WorldPoisonedError
   | CommandFailedError
   | SystemFailedError
   | CyclicDependencyError
-  | SharedKernelFailureError
-> {
+  | SharedKernelFailureError;
+export type ScheduleUpdateError = ScheduleRunError | TimeDeltaInvalidError | TimeConfigInvalidError;
+
+function scheduleRunFailure(
+  world: World,
+  token: ScheduleToken,
+  error: unknown,
+): Result<never, ScheduleRunError> {
+  if (
+    isEcsFault(error, 'command-failed') ||
+    isEcsFault(error, 'system-failed') ||
+    isEcsFault(error, 'cyclic-dependency') ||
+    isEcsFault(error, 'shared-kernel-failed')
+  )
+    return err(error);
+  world[worldInternal].poisonExecution({
+    code: 'shared-kernel-failed',
+    kernelName: `schedule:${token.name}`,
+    cause: error,
+    partialWrite: true,
+    retryable: false,
+  });
+  return err(createSystemFailedError('<schedule>', token.name, error));
+}
+
+export function worldUpdate(world: World, deltaSeconds = 0): Result<void, ScheduleUpdateError> {
   const poisoned = worldPoisonedError(world.execution);
   if (poisoned !== undefined) return err(poisoned);
   if (!Number.isFinite(deltaSeconds) || deltaSeconds < 0)
-    return err(new TimeDeltaInvalidError(deltaSeconds));
+    return err(createTimeDeltaInvalidError(deltaSeconds));
 
-  const writer = world[worldInternal].getClockWriter();
+  const writer = world[worldInternal].clockWriter;
   const time = writer.time;
   const fixed = writer.fixed;
   if (time.maxDeltaSeconds < (fixed.maxStepsPerUpdate + 1) * fixed.delta) {
     return err(
-      new TimeConfigInvalidError({
+      createTimeConfigInvalidError({
         fixedDeltaSeconds: fixed.delta,
         maxStepsPerUpdate: fixed.maxStepsPerUpdate,
         maxDeltaSeconds: time.maxDeltaSeconds,
@@ -412,7 +474,7 @@ export function worldUpdate(
     );
   }
 
-  for (const [token, schedule] of world[worldInternal].getSchedules()) {
+  for (const [token, schedule] of world[worldInternal].schedules) {
     const mismatch = validateScheduleReferences(world, token, schedule);
     if (mismatch) return err(mismatch);
   }
@@ -420,7 +482,7 @@ export function worldUpdate(
   world[worldInternal].updateRemovedComponents();
   time.unscaledDelta = deltaSeconds;
   time.unscaledElapsed += deltaSeconds;
-  time.scale = world[worldInternal].getClockWriter().effectiveScale();
+  time.scale = world[worldInternal].clockWriter.effectiveScale();
   const measured = Math.min(deltaSeconds * time.scale, time.maxDeltaSeconds);
   time.delta = measured;
   time.elapsed += measured;
@@ -428,11 +490,9 @@ export function worldUpdate(
   // delta, while the fixed cap makes oversized host gaps observable via metrics.
   const accumulator = { value: world[worldInternal].getFixedAccumulator() + measured };
   const update = world[worldInternal].getSchedule(Update) as Schedule | undefined;
-  if (!update) return err(new ScheduleScopeMismatchError('World', Update.name));
+  if (!update) return err(createScheduleScopeMismatchError('World', Update.name));
 
-  const arena = world[worldInternal].getFrameArena();
-  const ownsArena = !arena.isActive;
-  if (ownsArena) arena.open();
+  const ownsArena = world[worldInternal].openScheduleArena();
   try {
     if (update.dirty) buildSchedule(update);
     const order = update.sortedOrder;
@@ -452,169 +512,31 @@ export function worldUpdate(
       runSchedule(update, world, order, updateCommands, true, anchor + 1, order.length);
     }
   } catch (error) {
-    if (error instanceof CommandFailedError || error instanceof SystemFailedError) {
-      return err(error);
-    }
-    if (error instanceof CyclicDependencyError || error instanceof SharedKernelFailureError) {
-      return err(error);
-    }
-    world[worldInternal].poisonExecution({
-      code: 'shared-kernel-failed',
-      kernelName: `schedule:${Update.name}`,
-      cause: error,
-      partialWrite: true,
-      retryable: false,
-    });
-    return err(new SystemFailedError('<schedule>', Update.name, error));
+    return scheduleRunFailure(world, Update, error);
   } finally {
-    if (ownsArena) {
-      arena.close();
-      world[worldInternal].maintainMemory();
-    }
+    if (ownsArena) world[worldInternal].closeScheduleArena();
   }
   world[worldInternal].setFixedAccumulator(accumulator.value);
   fixed.overstep = accumulator.value;
   return ok(undefined);
 }
 
-export function worldRun(
-  world: World,
-  token: ScheduleToken,
-): Result<
-  void,
-  | ScheduleScopeMismatchError
-  | WorldPoisonedError
-  | CommandFailedError
-  | SystemFailedError
-  | CyclicDependencyError
-  | SharedKernelFailureError
-> {
+export function worldRun(world: World, token: ScheduleToken): Result<void, ScheduleRunError> {
   const poisoned = worldPoisonedError(world.execution);
   if (poisoned !== undefined) return err(poisoned);
   if (!isDomainSchedule(token)) return scopeError(token, Update);
   const schedule = world[worldInternal].getSchedule(token) as Schedule;
   const mismatch = validateScheduleReferences(world, token, schedule);
   if (mismatch) return err(mismatch);
-  const arena = world[worldInternal].getFrameArena();
-  const ownsArena = !arena.isActive;
-  if (ownsArena) arena.open();
+  const ownsArena = world[worldInternal].openScheduleArena();
   try {
     runSchedule(schedule, world);
   } catch (error) {
-    if (
-      error instanceof CommandFailedError ||
-      error instanceof SystemFailedError ||
-      error instanceof CyclicDependencyError ||
-      error instanceof SharedKernelFailureError
-    )
-      return err(error);
-    world[worldInternal].poisonExecution({
-      code: 'shared-kernel-failed',
-      kernelName: `schedule:${token.name}`,
-      cause: error,
-      partialWrite: true,
-      retryable: false,
-    });
-    return err(new SystemFailedError('<schedule>', token.name, error));
+    return scheduleRunFailure(world, token, error);
   } finally {
-    if (ownsArena) {
-      arena.close();
-      world[worldInternal].maintainMemory();
-    }
+    if (ownsArena) world[worldInternal].closeScheduleArena();
   }
   return ok(undefined);
-}
-
-function isClockResource(resource: object): boolean {
-  return resource === Time || resource === FixedTime;
-}
-
-export function worldInsertResource<T>(world: World, key: Resource<T>, value: T): void {
-  const name = key.name;
-  if (isClockResource(key)) {
-    throw new ProtectedResourceError(name, 'insert');
-  }
-  resInsert(
-    world[worldInternal].getResources(),
-    key,
-    value,
-    world[worldInternal].nextMutationEpoch(),
-  );
-}
-
-export function worldGetResource<T>(world: World, key: Resource<T>): T {
-  return resGet<T>(world[worldInternal].getResources(), key);
-}
-
-export function worldHasResource(world: World, key: ResourceIdentity): boolean {
-  return resHas(world[worldInternal].getResources(), key);
-}
-
-export function worldRemoveResource(world: World, key: ResourceIdentity): void {
-  const name = key.name;
-  if (isClockResource(key)) {
-    throw new ProtectedResourceError(name, 'remove');
-  }
-  if (resHas(world[worldInternal].getResources(), key)) {
-    resRemove(world[worldInternal].getResources(), key);
-    world[worldInternal].nextMutationEpoch();
-  }
-}
-
-export function worldInspect(world: World): WorldInspection {
-  const graph = world[worldInternal].getGraph() as ArchetypeGraph;
-  const resources = world[worldInternal].getResources();
-  let entityCount = 0;
-  const archetypes: WorldInspection['archetypes'] = [];
-  const activeComponentSet = new Set<string>();
-  for (const arch of graph.archetypes) {
-    if (!arch) continue;
-    entityCount += arch.size;
-    const componentNames = arch.components.map((component) => component.name);
-    archetypes.push({
-      key: arch.key,
-      componentNames,
-      entityCount: arch.size,
-      tableId: arch.tableId,
-    });
-    if (arch.size > 0) for (const name of componentNames) activeComponentSet.add(name);
-  }
-
-  const schedules = [
-    ...(world[worldInternal].getSchedules() as ReadonlyMap<ScheduleToken, Schedule>),
-  ].map(([token, schedule]) => {
-    const systems = [...schedule.systems.entries()].map(([name]) => ({
-      id: schedule.systems.get(name)?.registrationIndex ?? -1,
-      name: name.name,
-      sets: [...schedule.sets].flatMap(([set, record]) =>
-        record.members.has(name) ? [set.name] : [],
-      ),
-    }));
-    return { schedule: token, systems };
-  });
-  const systems = schedules.flatMap((entry) => entry.systems);
-  const tables = graph.tables.map((table) => ({
-    id: table.id,
-    key: table.key,
-    componentNames: table.components.map((component) => component.name),
-    entityCount: table.size,
-    capacity: table.capacity,
-  }));
-  return {
-    entityCount,
-    archetypeCount: archetypes.length,
-    archetypes,
-    tableCount: tables.length,
-    tables,
-    activeComponents: [...activeComponentSet],
-    systemCount: systems.length,
-    systems,
-    resourceKeys: [...resources.entries.keys()].map((key) => key.name),
-    schedules,
-    scheduleSystemCount(token: ScheduleToken): number {
-      return schedules.find((entry) => entry.schedule === token)?.systems.length ?? 0;
-    },
-  };
 }
 
 function referenceName(reference: { readonly name: string }): string {
@@ -639,7 +561,7 @@ function queryData(query: QueryDescriptor): WorldScheduleQueryData {
 
 /** Project schedule registration into a JSON-safe graph for tooling and AI inspection. */
 export function worldScheduleData(world: World): ReadonlyArray<WorldScheduleData> {
-  return [...world[worldInternal].getSchedules()].map(([token, schedule], scheduleId) => {
+  return [...world[worldInternal].schedules].map(([token, schedule], scheduleId) => {
     if (schedule.dirty) buildSchedule(schedule);
     const sets = [...schedule.sets];
     const systemId = (system: import('./schedule').ScheduleNode): number =>
@@ -675,27 +597,33 @@ export function worldScheduleData(world: World): ReadonlyArray<WorldScheduleData
   });
 }
 
-function queryUsesComponent(query: QueryDescriptor, component: object): boolean {
-  return [
-    query.read,
-    query.write,
-    query.optional,
-    query.with,
-    query.without,
-    query.changed,
-    query.added,
-  ].some((items) => items?.includes(component as never) === true);
+function queryUsesComponent(query: QueryDescriptor, component: Component): boolean {
+  return DESCRIPTOR_ROLES.some((role) => query[role]?.includes(component) === true);
 }
 
 /** Control-plane guard used before releasing a World-local component registration. */
-export function worldScheduleUsesComponent(world: World, component: object): boolean {
-  for (const schedule of (
-    world[worldInternal].getSchedules() as ReadonlyMap<ScheduleToken, Schedule>
-  ).values()) {
+export function worldScheduleUsesComponent(world: World, component: Component): boolean {
+  for (const schedule of world[worldInternal].schedules.values()) {
     for (const record of schedule.systems.values()) {
       if (record.descriptor.queries.some((query) => queryUsesComponent(query, component)))
         return true;
     }
   }
   return false;
+}
+
+export function detachWorldInspection<T extends object>(snapshot: T): Readonly<T> {
+  return freezeInspection(snapshot);
+}
+function freezeInspection<T>(value: T): Readonly<T> {
+  if (value === null || (typeof value !== 'object' && typeof value !== 'function')) {
+    return value as Readonly<T>;
+  }
+  for (const key of Reflect.ownKeys(value as object)) {
+    const child = (value as Record<PropertyKey, unknown>)[key];
+    if (child !== null && (typeof child === 'object' || typeof child === 'function')) {
+      freezeInspection(child);
+    }
+  }
+  return Object.freeze(value) as Readonly<T>;
 }

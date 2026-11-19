@@ -232,6 +232,11 @@ Rapier collision shape. A parented Collider consumes the resolved world pose,
 not its local TRS. 2D projects the resolved Z-axis quaternion rotation to its
 Rapier angle; out-of-plane rotation is not represented by Rapier 2D.
 
+Rapier 3D suspends an ordinary static Collider's native shape while any axis of
+its resolved world scale is zero. The existing rigid body stays registered.
+The next fixed sync with a valid nonzero scale restores collision using the
+current authored shape and properties.
+
 ## Ordinary managed joints and body motion
 
 Applications may insert a `PhysicsSimulationControl` POD resource under

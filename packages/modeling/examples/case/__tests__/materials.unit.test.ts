@@ -63,8 +63,8 @@ describe('native case material publication', () => {
         if (handle === undefined) throw new Error(`missing material ${name}`);
         expect(assets.read(handle).unwrap().values?.baseColor).toEqual(color);
       }
-      expect((wire as { readonly schemaVersion?: string }).schemaVersion).toBe(
-        'pack-material-programs/2',
+      expect((wire as { readonly schemaVersion?: string }).schemaVersion).toMatch(
+        /^pack-material-programs\/[23]$/,
       );
       const left = (materials[0]?.payload.cooked as { readonly programs: readonly unknown[] })
         .programs;

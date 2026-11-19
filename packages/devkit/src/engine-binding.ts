@@ -12,6 +12,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { dirname, resolve, sep } from 'node:path';
+import type { LoadScriptablePackOptions } from '@forgeax/engine-pack/source-node';
 import { filesystemPathRelative } from './filesystem-path.js';
 import { readProjectFacts } from './project.js';
 import type { CommandError, CommandResult, ProjectCommandOptions } from './types.js';
@@ -167,6 +168,25 @@ export async function readEngineBinding(
       { path, reason: cause instanceof Error ? cause.message : String(cause) },
     );
   }
+}
+
+/** Public umbrella package selected by the official local binding; npm stays caller-relative. */
+export async function localEnginePackageRoot(projectRoot: string): Promise<string | undefined> {
+  const binding = await readEngineBinding(projectRoot);
+  if (!binding.ok)
+    throw Object.assign(new Error(`${binding.error.code}: ${binding.error.hint}`), binding.error);
+  if (binding.value === null) return undefined;
+  return dirname(await realpath(resolve(binding.value.path, 'packages/engine/package.json')));
+}
+
+/** One explicit source-execution option shared by metadata, bootstrap and publication. */
+export async function projectEngineSourceOptions(
+  projectRoot: string,
+  selected?: Pick<LoadScriptablePackOptions, 'packageBinding'>,
+): Promise<Pick<LoadScriptablePackOptions, 'packageBinding'>> {
+  if (selected !== undefined) return selected;
+  const root = await localEnginePackageRoot(projectRoot);
+  return root === undefined ? {} : { packageBinding: { name: '@forgeax/engine', root } };
 }
 
 async function writeEngineBinding(root: string, binding: EngineBinding): Promise<void> {

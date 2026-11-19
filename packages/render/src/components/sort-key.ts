@@ -18,7 +18,7 @@
 //
 // @derives defineComponent factory (packages/ecs/src/component.ts) —
 //   f32 is a legacy scalar type; its intrinsic properties (byteSize / viewCtor
-//   / storage) live in TYPE_METADATA['f32'] (feat-20260602 M1).
+//   / storage) live in SCALAR_LAYOUTS['f32'] (feat-20260602 M1).
 //
 // charter mapping: F1 (single-import barrel - joins Layer / Transform
 // / MeshFilter / MeshRenderer / Camera / DirectionalLight) +

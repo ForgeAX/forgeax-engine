@@ -257,8 +257,8 @@ export function deriveRenderDataTexture(
   const bytesPerRow = baseLevel.bytesPerRow;
 
   // Compressed formats are not renderable -- RENDER_ATTACHMENT would fail
-  // createTexture validation, and the runtime mipmap blit (which copies each
-  // level in through COPY_DST) never runs on a compressed texture anyway (the
+  // createTexture validation, and runtime mipmap generation never runs on a
+  // compressed texture anyway (the
   // mip gate above rules out runtime mip-gen). Both paths keep COPY_SRC so a real consumer can validate the
   // uploaded texture through the standard GPU readback contract.
   const usage = compressed

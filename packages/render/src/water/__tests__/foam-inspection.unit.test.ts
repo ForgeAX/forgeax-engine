@@ -48,7 +48,7 @@ describe('accepted Water foam inspection', () => {
           {
             pass: 'forward',
             context,
-            address: 'direct',
+            address: 'direct' as const,
             specializationKey: 'water-program',
             artifactHash: 'water-artifact',
           },
@@ -138,7 +138,7 @@ describe('accepted Water foam inspection', () => {
         programIdentity: {
           pass: 'forward',
           context,
-          address: 'direct',
+          address: 'direct' as const,
           specializationKey: 'water-program',
           artifactHash: 'water-artifact',
         },

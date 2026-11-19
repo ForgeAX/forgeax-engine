@@ -276,6 +276,8 @@ export interface CameraSnapshot {
 
 /** Stable identity owned by the Standard feature host for output transform. */
 export const STANDARD_OUTPUT_TRANSFORM_FEATURE_ID = 'forgeax::standard::output-transform';
+/** Source-only native Grade/Final declaration; its parameters belong to each graph. */
+export const STANDARD_OUTPUT_V2_FEATURE_ID = 'forgeax::standard::output-v2';
 
 /** Stable identity for the special FXAA pass' per-frame output policy UBO. */
 export const FXAA_POST_PROCESS_ID = 'forgeax::post::fxaa';
@@ -546,6 +548,7 @@ export interface DepthPyramidShaderSources {
 
 /** Stable utility entry-point sources emitted by the shader manifest. */
 export interface SsrShaderSources {
+  readonly gbuffer?: import('@forgeax/engine-types').MaterialGBufferLayout;
   readonly composeFragment?: string | import('@forgeax/engine-types').ShaderSource;
   readonly traceFragment?: string | import('@forgeax/engine-types').ShaderSource;
   readonly temporalFragment?: string | import('@forgeax/engine-types').ShaderSource;
@@ -638,6 +641,18 @@ export interface RenderInspectionOptions<
 }
 
 export interface Renderer {
+  /** Submit all six mip-0 face views in native cube order, then publish one filtered environment. */
+  captureRenderTargetEnvironment(
+    target: RenderTarget,
+    options: RenderTargetEnvironmentCapture,
+  ): Promise<
+    RenderResult<import('./targets/environment').RenderTargetEnvironmentLease, RenderError>
+  >;
+  prepareRenderTargetEnvironment(
+    target: RenderTarget,
+  ): Promise<
+    RenderResult<import('./targets/environment').RenderTargetEnvironmentLease, RenderError>
+  >;
   /** Prepare one attached CPU-backed TextureAsset without rendering or waiting for a frame. */
   prepareTextureResidency(
     world: World,
@@ -1023,6 +1038,8 @@ export type RenderFrameInput = (
    * Omitting it keeps direct renderer callers on the ECS-clock fallback.
    */
   readonly sampleTimeSeconds?: number;
+  /** Write linear HDR to this target instead of acquiring the canvas. */
+  readonly targetWrite?: RenderTargetWrite;
   /**
    * Mark the next submitted frame as a fresh temporal baseline. App sets this
    * on resume so a short wall-clock pause cannot be mistaken for a valid
@@ -1269,6 +1286,19 @@ export interface RenderInspection {
   };
   readonly surface: 'available' | 'released';
   readonly profile: StandardProfile;
+  /** Last submitted view selection; `profile` above remains the device default. */
+  readonly viewConfiguration?: {
+    readonly requested: {
+      readonly renderPath: RenderProfile['renderPath'];
+      readonly antialias: Antialias;
+    };
+    readonly effective: {
+      readonly renderPath: StandardProfile['renderPath'];
+      readonly antialias: Antialias;
+      /** Actual scene color attachment sampling; clear-only graphs have one sample. */
+      readonly geometrySampleCount: number;
+    };
+  };
   readonly capabilities: Readonly<RhiCaps>;
   readonly limits?: Readonly<Record<string, number>>;
   /** Current native device facts; null adapter information is unavailable, not non-fallback. */
@@ -1414,8 +1444,36 @@ export interface RenderInspection {
   /** Bounded renderer-owned LOD/occlusion facts; absent before a candidate frame. */
   readonly lodOcclusion?: LodOcclusionInspection;
 }
+/** An explicit ordered HDR write through the existing capture graph. */
+export interface RenderTargetWrite {
+  readonly target: RenderTarget;
+  readonly layer?: number;
+  readonly mipLevel?: number;
+  readonly clearColor: boolean;
+  readonly clearDepth: boolean;
+  readonly clearStencil: boolean;
+  /** Clear attachments without recording scene draws. */
+  readonly clearOnly?: boolean;
+}
+
+export interface RenderTargetEnvironmentCapture {
+  /** Prepare one scene view for the given native cube layer, from +X through -Z. */
+  readonly prepareFace: (
+    layer: number,
+  ) => RenderTargetEnvironmentFace | Promise<RenderTargetEnvironmentFace>;
+  /** Invoked after each ready submission. GPU completion is covered by the capture result. */
+  readonly onFaceSubmitted?: (layer: number, receipt: FrameReceipt) => void;
+}
+
+export type RenderTargetEnvironmentFace = Omit<
+  Extract<RenderFrameInput, { source: RenderWorldLease }>,
+  'targetWrite'
+> &
+  Pick<RenderTargetWrite, 'clearColor' | 'clearDepth' | 'clearStencil'>;
+
 /** Frame options shared by all views of the Renderer's current source. */
 export type DrawOptions = {
+  readonly targetWrite?: RenderTargetWrite;
   /** Optional FrameCamera entity selection; absent preserves ActiveCamera semantics. */
   readonly cameraEntityKey?: number;
   /** Monotonic host render-sample time in seconds, before the ECS delta clamp. */

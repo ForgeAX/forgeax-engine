@@ -281,7 +281,7 @@ it.each([
       const falsifierGap = Math.max(...lanes.map((c) => Math.abs(fogged[c] - wallDepthFogged[c])));
       expect(falsifierGap).toBeGreaterThan(TOLERANCE * 4);
 
-      // RHI Debug: the billboard draw runs after the opaque fog pass, binds the
+      // RHI Debug: the billboard runs after the opaque vertex-fog writer, binds the
       // View copy of its blend composition, and its fresh-device replay output
       // reproduces the oracle.
       if (tape === undefined) throw new Error('missing particle fog capture');
@@ -290,10 +290,17 @@ it.each([
         work.pipeline.shaders.find((shader) => shader.stage === 'fragment')?.source ?? '';
       const fogWorks = model.works.filter((work) => fragment(work).includes('fog_view'));
       const drawWorks = model.works.filter((work) => fragment(work).includes('fn softParticle('));
-      expect(fogWorks).toHaveLength(1);
+      expect(fogWorks).toHaveLength(0);
       expect(drawWorks).toHaveLength(1);
-      const [fogWork] = fogWorks;
       const [drawWork] = drawWorks;
+      const opaqueWorks = model.works.filter(
+        (work) =>
+          work.workIndex < (drawWork?.workIndex ?? -1) &&
+          boundViewOffset(work) === 0 &&
+          fragment(work).includes('forward_fog'),
+      );
+      expect(opaqueWorks).toHaveLength(1);
+      const [fogWork] = opaqueWorks;
       if (fogWork === undefined || drawWork === undefined) throw new Error('missing fog works');
       expect(fogWork.workIndex).toBeLessThan(drawWork.workIndex);
       expect(boundViewOffset(drawWork)).toBe(translucentViewOffset(composition));

@@ -548,9 +548,8 @@ class PersistentFrameCull {
   }
 }
 
-/** Retained across GPU-lane frames. */
-export interface ResidualCullMemo {
-  readonly subsurface: SubsurfaceSelection;
+/** Fixed camera admission over native Scene slots; shared by display and capture views. */
+export interface SlotCullState {
   readonly admission: CameraAdmission;
   readonly planes: readonly Float32Array[];
   readonly slots: SceneSlotFrame;
@@ -558,9 +557,15 @@ export interface ResidualCullMemo {
   readonly meshes: MeshFrame;
   readonly unavailable: FrameSet;
   readonly skinRoot: object | undefined;
+  readonly skinRevision: number | undefined;
   readonly skinSlots: SceneSlotFrame | undefined;
   readonly skinReadable: boolean | undefined;
   readonly facts: ResidualCullFacts;
+}
+
+/** The display cull additionally tracks its subsurface demand. */
+export interface ResidualCullMemo extends SlotCullState {
+  readonly subsurface: SubsurfaceSelection;
 }
 
 interface ResidualCullBounds {
@@ -569,9 +574,10 @@ interface ResidualCullBounds {
   readonly unavailable: FrameSet;
 }
 
-function sameResidualSkin(before: ResidualCullMemo, bounds: ResidualCullBounds): boolean {
+function sameResidualSkin(before: SlotCullState, bounds: ResidualCullBounds): boolean {
   return (
     before.skinRoot === bounds.skin?.current.inputRoot() &&
+    before.skinRevision === bounds.skin?.current.inputRevision &&
     before.skinSlots === bounds.skin?.slots &&
     before.skinReadable === bounds.skin?.current.readable
   );
@@ -579,8 +585,8 @@ function sameResidualSkin(before: ResidualCullMemo, bounds: ResidualCullBounds):
 
 /** Culling reads the accepted displacement interval and Skin position proof, not color values. */
 function sameResidualMaterials(before: MaterialFrame, current: MaterialFrame): boolean {
-  if (before === current) return true;
   if (before.hasBorrowedValues || current.hasBorrowedValues) return false;
+  if (before === current) return true;
   let same = true;
   current.changesSince(before, (left, right) => {
     if (left?.snapshot === right?.snapshot) return;
@@ -621,16 +627,13 @@ interface ResidualCullFacts {
 
 /** Only changed residual rows are tested while the view and bound resources are fixed. */
 function residualChanges(
-  before: ResidualCullMemo,
-  gpuOwned: GpuOwnedFrame,
+  before: SlotCullState,
+  slots: SceneSlotFrame,
   residual: FrameSet,
   bounds: ResidualCullBounds,
 ): Set<number> | undefined {
   const dirty = new Set<number>();
-  if (
-    before.slots !== gpuOwned.slots &&
-    !gpuOwned.slots.changesSince(before.slots, (slot) => dirty.add(slot))
-  )
+  if (before.slots !== slots && !slots.changesSince(before.slots, (slot) => dirty.add(slot)))
     return undefined;
   residual.changesSince(before.admission.residual, (slot) => dirty.add(slot));
   bounds.unavailable.changesSince(before.unavailable, (slot) => dirty.add(slot));
@@ -639,13 +642,13 @@ function residualChanges(
 }
 
 function testResidualRows(
-  gpuOwned: GpuOwnedFrame,
-  selection: GpuDrawSelection,
+  slots: SceneSlotFrame,
+  records: () => Iterable<RenderSceneSlot>,
   residual: FrameSet,
   unavailable: FrameSet,
   before: ResidualCullFacts | undefined,
   dirty: ReadonlySet<number> | undefined,
-  boundsOf: Parameters<typeof cullResidualFrame>[2],
+  boundsOf: SlotCullInput['boundsOf'],
   intersects: (aabb: box3.Box3) => boolean,
   meshes: MeshFrame,
 ): ResidualCullFacts {
@@ -662,7 +665,7 @@ function testResidualRows(
     const hidden: number[] = [];
     const bounded: number[] = [];
     const skin: number[] = [];
-    for (const record of gpuOwned.residualSlots(selection)) {
+    for (const record of records()) {
       if (record.snapshot.skinBinding !== undefined) skin.push(record.slot);
       if (!test(record)) continue;
       bounded.push(record.slot);
@@ -679,8 +682,7 @@ function testResidualRows(
   const bounded = new Map<number, boolean>();
   const skin = new Map<number, boolean>();
   for (const slot of dirty) {
-    const record =
-      residual.has(slot) && !unavailable.has(slot) ? gpuOwned.slots.slotAt(slot) : undefined;
+    const record = residual.has(slot) && !unavailable.has(slot) ? slots.slotAt(slot) : undefined;
     const known = record !== undefined && test(record);
     skin.set(slot, record?.snapshot.skinBinding !== undefined);
     bounded.set(slot, known);
@@ -691,6 +693,91 @@ function testResidualRows(
     hiddenSlots: (before?.hiddenSlots ?? new FrameSet()).edit(hidden),
     boundedSlots: (before?.boundedSlots ?? new FrameSet()).edit(bounded),
     skinSlots: (before?.skinSlots ?? new FrameSet()).edit(skin),
+  };
+}
+
+/** All bound inputs are from the same accepted Scene frame. Unknown bounds stay visible. */
+export interface SlotCullInput extends ResidualCullBounds {
+  readonly planes: readonly Float32Array[];
+  readonly slots: SceneSlotFrame;
+  readonly candidates: FrameSet;
+  readonly records: () => Iterable<RenderSceneSlot>;
+  readonly materials: MaterialFrame;
+  readonly boundsOf: (
+    source: RenderableSnapshot,
+    index: number,
+    out: box3.Box3,
+    row?: RenderSceneSlot,
+  ) => boolean;
+}
+
+export function cameraBoundsVisible(planes: readonly Float32Array[], aabb: box3.Box3): boolean {
+  return (
+    planes.length === 0 ||
+    planes.some(
+      (camera) =>
+        camera.length === 0 ||
+        frustum.intersectsBox(camera as frustum.Frustum, aabb as box3.Box3Like),
+    )
+  );
+}
+
+/** Reuse the native row journal, resource proofs and persistent visibility sets for every view. */
+export function cullSceneSlots(input: SlotCullInput, before?: SlotCullState): SlotCullState {
+  const { planes, materials, slots, candidates: residual, boundsOf } = input;
+  const bounds = input;
+  const sameFrusta = before !== undefined && samePlanes(before.planes, planes);
+  const fixedBounds = !materials.hasBorrowedValues && before?.materials.hasBorrowedValues === false;
+  let dirty =
+    before !== undefined &&
+    sameResidualMaterials(before.materials, materials) &&
+    (before.meshes === bounds.meshes ||
+      (fixedBounds && before.facts.bounds.meshesUnchanged(before.meshes, bounds.meshes)))
+      ? residualChanges(before, slots, residual, bounds)
+      : undefined;
+  let previousFacts = before?.facts;
+  if (!sameFrusta) {
+    if (fixedBounds && dirty !== undefined && previousFacts?.bounds.enclosed(planes) === true) {
+      if (previousFacts.hiddenSlots.size > 0)
+        previousFacts = { ...previousFacts, hiddenSlots: new FrameSet() };
+    } else dirty = undefined;
+  }
+  const previous = before?.admission;
+  const facts = testResidualRows(
+    slots,
+    input.records,
+    residual,
+    bounds.unavailable,
+    previousFacts,
+    dirty,
+    boundsOf,
+    (aabb) => cameraBoundsVisible(planes, aabb),
+    bounds.meshes,
+  );
+  const hiddenSlots = facts.hiddenSlots;
+  const admission: CameraAdmission =
+    previous !== undefined &&
+    sameFrusta &&
+    previous.hidden === hiddenSlots &&
+    previous.residual === residual
+      ? previous
+      : {
+          hidden: hiddenSlots,
+          residual,
+          frusta: sameFrusta && previous !== undefined ? previous.frusta : {},
+        };
+  return {
+    admission,
+    planes,
+    slots,
+    materials,
+    meshes: bounds.meshes,
+    unavailable: bounds.unavailable,
+    skinRoot: bounds.skin?.current.inputRoot(),
+    skinRevision: bounds.skin?.current.inputRevision,
+    skinSlots: bounds.skin?.slots,
+    skinReadable: bounds.skin?.current.readable,
+    facts,
   };
 }
 
@@ -709,65 +796,35 @@ export function cullResidualFrame(
   bounds: ResidualCullBounds,
 ): PersistentCullResult {
   const planes = buildCameraFrusta(frame.cameras);
-  const before = memo.value;
-  const residual = gpuOwned.residualSet(selection);
-  const sameFrusta = before !== undefined && samePlanes(before.planes, planes);
-  const fixedBounds = !materials.hasBorrowedValues && before?.materials.hasBorrowedValues === false;
-  let dirty =
-    before !== undefined &&
-    sameResidualMaterials(before.materials, materials) &&
-    (before.meshes === bounds.meshes ||
-      (fixedBounds && before.facts.bounds.meshesUnchanged(before.meshes, bounds.meshes)))
-      ? residualChanges(before, gpuOwned, residual, bounds)
-      : undefined;
-  let previousFacts = before?.facts;
-  if (!sameFrusta) {
-    if (fixedBounds && dirty !== undefined && previousFacts?.bounds.enclosed(planes) === true) {
-      if (previousFacts.hiddenSlots.size > 0)
-        previousFacts = { ...previousFacts, hiddenSlots: new FrameSet() };
-    } else dirty = undefined;
-  }
-  const intersects = (aabb: box3.Box3): boolean =>
-    planes.length === 0 ||
-    planes.some(
-      (cameraPlanes) =>
-        cameraPlanes.length === 0 ||
-        frustum.intersectsBox(cameraPlanes as frustum.Frustum, aabb as box3.Box3Like),
-    );
-  const previous = before?.admission;
-  const facts = testResidualRows(
-    gpuOwned,
-    selection,
-    residual,
-    bounds.unavailable,
-    previousFacts,
-    dirty,
-    boundsOf,
-    intersects,
-    bounds.meshes,
+  const state = cullSceneSlots(
+    {
+      ...bounds,
+      planes,
+      slots: gpuOwned.slots,
+      materials,
+      boundsOf,
+      candidates: gpuOwned.residualSet(selection),
+      records: () => gpuOwned.residualSlots(selection),
+    },
+    memo.value,
   );
-  const { hiddenSlots, boundedSlots } = facts;
+  const {
+    admission,
+    facts: { hiddenSlots, boundedSlots },
+  } = state;
+  const residual = admission.residual;
   const isResidualSlot = (slot: number | undefined): boolean =>
     slot !== undefined && residual.has(slot) && !bounds.unavailable.has(slot);
   const subsurface = memo.value?.subsurface ?? new SubsurfaceSelection();
   subsurface.trackAll(materials);
-  const admission: CameraAdmission =
-    previous !== undefined &&
-    sameFrusta &&
-    previous.hidden === hiddenSlots &&
-    previous.residual === residual
-      ? previous
-      : {
-          hidden: hiddenSlots,
-          residual,
-          frusta: sameFrusta && previous !== undefined ? previous.frusta : {},
-        };
   // Owned rows are tested only when a reader asks; the answer is fixed per frame.
   const ownedVisible = new Map<number, boolean | undefined>();
   const ownedAabb = box3.create();
   const ownedVisibility = (source: RenderableSnapshot, key: number): boolean | undefined => {
     if (ownedVisible.has(key)) return ownedVisible.get(key);
-    const visible = boundsOf(source, -1, ownedAabb) ? intersects(ownedAabb) : undefined;
+    const visible = boundsOf(source, -1, ownedAabb)
+      ? cameraBoundsVisible(planes, ownedAabb)
+      : undefined;
     ownedVisible.set(key, visible);
     return visible;
   };
@@ -814,18 +871,6 @@ export function cullResidualFrame(
     },
     subsurface: { source: demand, authorVisible: demand, admitted: demand },
   };
-  memo.value = {
-    subsurface,
-    admission,
-    planes,
-    slots: gpuOwned.slots,
-    materials,
-    meshes: bounds.meshes,
-    unavailable: bounds.unavailable,
-    skinRoot: bounds.skin?.current.inputRoot(),
-    skinSlots: bounds.skin?.slots,
-    skinReadable: bounds.skin?.current.readable,
-    facts,
-  };
+  memo.value = { ...state, subsurface };
   return result;
 }

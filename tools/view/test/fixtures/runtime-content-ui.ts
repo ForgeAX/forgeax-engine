@@ -25,6 +25,8 @@ let outputs: any[] = [];
 let deferGeneration = false;
 let completeGeneration: (() => void) | undefined;
 let failSave = false;
+let snapshotReady: Promise<void> | undefined;
+let completeSnapshot: (() => void) | undefined;
 let deferInspection = new URLSearchParams(location.search).has('defer-inspection');
 let completeInspection: (() => void) | undefined;
 const calls: any[] = [];
@@ -72,6 +74,7 @@ const client = {
     if (operation === 'runtime-pack.plugin-install') { plugins.push({ uid: 21, state: 'active' }); return { uid: 21, state: 'active' }; }
     if (operation === 'runtime-pack.plugin-dispose') { plugins = []; return { cleanup: 'completed' }; }
     if (operation === 'runtime-pack.snapshot') {
+      await snapshotReady;
       if (failSave) throw new Error('Snapshot storage unavailable');
       return { schemaVersion: 'runtime-pack-source/2', packs: [pack], instances: executions.map(item => item.instance) };
     }
@@ -81,6 +84,8 @@ const client = {
   },
 };
 Object.assign(globalThis, { runtimeContentFixture: { calls,
+  deferSnapshot() { snapshotReady = new Promise<void>(done => { completeSnapshot = done; }); },
+  completeSnapshot() { completeSnapshot?.(); snapshotReady = undefined; },
   reviseThumbnail() { thumbnailColor = 'blue'; holdThumbnails = true; catalogEpoch++; changed(); },
   notifyThumbnail() { thumbnailEpoch++; changed(); },
   completeThumbnails() { holdThumbnails = false; for (const done of pendingThumbnails.splice(0)) done(); }, revealed() { return revealCount; }, completeInspection() { deferInspection = false; completeInspection?.(); }, completeGeneration() { completeGeneration?.(); }, failSave() { failSave = true; }, deferGeneration() { deferGeneration = true; }, replaceTarget() { target = { targetId: 'replacement', worldId: 'replacement-world' }; executions = []; outputs = []; changed(); } } });

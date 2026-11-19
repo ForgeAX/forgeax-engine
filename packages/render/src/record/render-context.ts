@@ -168,6 +168,8 @@ import type {
 import type { FoldDispatchPlan } from './mesh-ssbo';
 
 export interface RenderSystemRuntime {
+  /** Ownership of the resources used to prepare and record the current view. */
+  viewOwner?: import('../world/view-settlement').ViewSettlementOwner | undefined;
   /** Prepared native feature resources available to material and geometry recording. */
   readonly sharedFeatureGpuWork?: import('../features/prepared-gpu-work').RenderFeatureGpuWorkOwner;
   /** Renderer admission options consumed by typed graph validation. */
@@ -395,6 +397,14 @@ export interface PerPassResources {
   readonly fxaaSampler: Sampler | null;
   readonly skyboxPipeline: RhiRenderPipeline | null;
   readonly skyboxPipelineMsaa: RhiRenderPipeline | null;
+  /** Scene-compatible variant, prepared only when a depth-bearing sky draw is admitted. */
+  readonly skyboxScenePipeline?:
+    | ((
+        sampleCount: 1 | 4,
+        depthFormat: GPUTextureFormat,
+        colorFormat: GPUTextureFormat,
+      ) => RhiRenderPipeline)
+    | undefined;
   readonly skyboxBindGroupLayout: BindGroupLayout | null;
   readonly skyboxSampler: Sampler | null;
   readonly skyboxRotationBuffer: Buffer | null;
@@ -417,6 +427,11 @@ export interface PerPassResources {
   /** Drain candidate, active, and fence-retiring Bloom generations. */
   drainBloomResources?: () => void;
   inspectBloomResources?: (graph?: CompiledRenderGraphInfo) => BloomInspection;
+  /** Compiled only when a v2 Deferred normal consumer is selected. */
+  ssaoGBufferPipelines?:
+    | (() => { readonly calc: RhiRenderPipeline; readonly blur: RhiRenderPipeline })
+    | undefined;
+  gtaoGBufferComputePipeline?: (() => ComputePipeline) | undefined;
   ssaoCalcPipeline: RhiRenderPipeline | null;
   ssaoBlurPipeline: RhiRenderPipeline | null;
   ssaoBgl: BindGroupLayout | null;
@@ -428,6 +443,23 @@ export interface PerPassResources {
   ssaoDepthCalcPipeline?: RhiRenderPipeline | null;
   ssaoDepthBlurPipeline?: RhiRenderPipeline | null;
   ssaoDepthBgl?: BindGroupLayout | null;
+  /** Prepared only when the spiral estimator is selected in this generation. */
+  ssaoSpiralPipelines?:
+    | (() => {
+        readonly layout: BindGroupLayout;
+        readonly calc: RhiRenderPipeline;
+        readonly blurX: RhiRenderPipeline;
+        readonly blurY: RhiRenderPipeline;
+      })
+    | undefined;
+  /** Lazy HDR scene-color application, separate from lighting AO. */
+  ssaoScenePipeline?:
+    | ((
+        stage: 'linear-depth' | 'scene-color',
+        format: TextureFormat,
+        multisampledDepth?: boolean,
+      ) => { readonly pipeline: RhiRenderPipeline; readonly layout: BindGroupLayout })
+    | undefined;
   ssaoFilteringSampler: Sampler | null;
   ssaoDepthSampler: Sampler | null;
   ssaoFallbackRawView: TextureView | null;
@@ -560,8 +592,6 @@ export interface PipelineState {
 export interface RenderSystemInternals extends RenderSystemRuntime {
   /** The Render World view entity this system records; its attempts write `ViewSubmission`. */
   viewEntity?: import('@forgeax/engine-ecs').EntityHandle | undefined;
-  /** The owner bag `createRendererState` builds for this view; per-view systems and the view driver read it here. */
-  viewOwner?: import('../world/view-settlement').ViewSettlementOwner | undefined;
   /** Renderer-shared instance projections of published rows, prepared once at acceptance. */
   readonly instanceCollections?: import('../instances').InstanceProjectionStore | undefined;
   /** @internal Opt-in bounded trace for one RenderFeature's graph projection. */
@@ -604,6 +634,8 @@ export interface RenderSystemInternals extends RenderSystemRuntime {
   readonly ssrIdentity?: SsrAdmissionIdentity | undefined;
   readonly captureReflectionFallbackReadback?: boolean | undefined;
   readonly shadowWorkload?: boolean | undefined;
+  /** Current immutable author request, before device or view selection. */
+  readonly requestedStandardProfile?: import('../render-contract').RenderProfile | undefined;
   readonly standardProfile?: StandardProfile | undefined;
   readonly standardPipeline: RenderFrameState['activePipeline'];
   readonly featureHost?: RenderFeatureHost | undefined;
@@ -711,11 +743,13 @@ export interface _StandardForwardSceneView {
   /** Existing scene owner policy, also available before its first GPU batch. */
   readonly gpuDrivenGeometryLane?: 'automatic' | 'direct';
   readonly gpuDrivenShadowPreparationArtifacts?: ReadonlyMap<string, MaterialShaderArtifact>;
+  readonly ordinaryDepthViewTargets?: import('./frame-lighting').ViewBindGroupTargets;
   readonly viewBindGroup: BindGroup | null;
   /** Dynamic View-UBO slot used by auxiliary cube/probe face cameras. */
   readonly viewBindGroupDynamicOffset?: number;
   /** Analytic fog or finite atmosphere can affect this View; absence stays conservative. */
   readonly viewFog?: boolean | undefined;
+  readonly vertexHeightFog?: boolean | undefined;
   /** Proven Forward WebGL2 shadow demand; absent keeps the shader's per-draw reception. */
   readonly viewShadows?: boolean | undefined;
   /** Bind the translucent View copy matching each blended draw's composition. */

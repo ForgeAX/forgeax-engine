@@ -8,6 +8,7 @@ import type { TypedShadowTargets } from '../typed-shadow-passes';
  * single-layer medium passes all spread this one value.
  */
 export interface StandardForwardReceiverInputs {
+  readonly materialSceneDepth?: boolean | undefined;
   readonly sampled: readonly RenderPipelineTarget[];
   readonly directionalShadow?: RenderPipelineTarget;
   readonly shadowMoments?: RenderPipelineTarget;
@@ -18,6 +19,7 @@ export interface StandardForwardReceiverInputs {
 }
 
 export function standardForwardReceiverInputs(input: {
+  readonly materialSceneDepth?: boolean | undefined;
   readonly shadows: TypedShadowTargets;
   readonly cloudShadow: RenderPipelineTarget | undefined;
   /** The native lane shares AO and Forward surface data through this sampled binding. */
@@ -29,6 +31,7 @@ export function standardForwardReceiverInputs(input: {
   const { directional, spot, point, moments } = input.shadows;
   const { cloudShadow, ssao } = input;
   return {
+    materialSceneDepth: input.materialSceneDepth,
     sampled: [directional, spot, point, moments, cloudShadow, ssao].filter(
       (target): target is RenderPipelineTarget => target !== undefined,
     ),

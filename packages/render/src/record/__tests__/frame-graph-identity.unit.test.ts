@@ -24,6 +24,18 @@ const key = (value: RenderPipelineTopology, stock = true) =>
   JSON.stringify(frameGraphTopologyIdentity(value, stock));
 
 describe('stock frame graph identity', () => {
+  it('rebuilds the graph when native material depth demand appears or disappears', () => {
+    const noDepth = { ...topology, materialSceneDepth: false };
+    const depth = { ...topology, materialSceneDepth: true };
+    expect(key(noDepth)).not.toBe(key(depth));
+    expect(key(noDepth, false)).not.toBe(key(depth, false));
+    expect(
+      frameGraphChangedDependencies(
+        JSON.stringify({ topology: frameGraphTopologyIdentity(noDepth, true) }),
+        JSON.stringify({ topology: frameGraphTopologyIdentity(depth, true) }),
+      ),
+    ).toContain('topology.materialSceneDepth');
+  });
   it('keeps direct AO strength dynamic while retaining all other SSAO structure', () => {
     const aoTopology = {
       ...topology,

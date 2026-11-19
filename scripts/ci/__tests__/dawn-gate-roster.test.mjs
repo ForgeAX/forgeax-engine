@@ -153,6 +153,11 @@ test('the opt-in ordinary pool is bounded and retains separate native forks', ()
     assert.ok(args.includes(`--maxWorkers=${ordinary ? 2 : 1}`));
     assert.equal(args.includes('--pool=forks'), ordinary);
     assert.equal(args.includes('--fileParallelism=true'), ordinary);
+    assert.equal(args.includes('--reporter=default'), ordinary);
+    assert.equal(
+      args.some((arg) => arg.endsWith('/modeling-file-phase-reporter.mjs')),
+      ordinary,
+    );
     assert.equal(args.includes('--no-file-parallelism'), !ordinary);
     assert.equal(args.includes('--no-isolate'), group.id.startsWith('heavy-'));
   }
@@ -595,7 +600,7 @@ test('the largest ordinary files start on distinct native lanes before backfill'
   const ranked = nativeSpecifications.filter(isLogicalOwner).sort((left, right) => {
     const leftPath = relative(root, left.moduleId).replaceAll('\\', '/');
     const rightPath = relative(root, right.moduleId).replaceAll('\\', '/');
-    const unmeasured = Math.max(...Object.values(timings.files));
+    const unmeasured = Math.max(...Object.values(timings.planningFiles));
     const leftSeconds = timings.planningFiles[leftPath] ?? unmeasured;
     const rightSeconds = timings.planningFiles[rightPath] ?? unmeasured;
     return rightSeconds - leftSeconds || leftPath.localeCompare(rightPath);
@@ -617,8 +622,22 @@ test('later discoveries retain conservative capacity without entering old measur
     moduleId: resolve(root, 'packages/render/src/__tests__/unmeasured-discovery.dawn.test.ts'),
     project: nativeSpecifications[0].project,
   };
-  const files = [...nativeSpecifications, added];
+  // Model one later discovery after a known planning cohort. The current worktree
+  // may itself contain several new, equally conservative unmeasured owners.
+  const known = nativeSpecifications.filter(
+    (file) =>
+      timings.planningFiles[relative(root, file.moduleId).replaceAll('\\', '/')] !== undefined,
+  );
+  assert.ok(known.length >= DAWN_GATE_SHARDS.length);
+  const files = [...known, added];
+  const qualified = planDawnShards(known, root, 2);
   const partitions = planDawnShards(files, root, 2);
+  for (const [lane, owners] of qualified.entries())
+    for (const owner of owners)
+      assert.ok(
+        partitions[lane].includes(owner),
+        'new discovery must preserve qualified placement',
+      );
   assert.equal(partitions.flat().length, files.length);
   assert.equal(new Set(partitions.flat().map((file) => file.moduleId)).size, files.length);
   const cost = (file) =>
@@ -1213,6 +1232,14 @@ test('run 44113035424 conserves complete workers and excludes interrupted VFX ti
 });
 
 test('actual core discovery uses matching costs and conserves every ordinary file', () => {
+  // Case deadlines plus 30 s process startup reserve are forecasts, never measurements.
+  const unmeasured = [
+    'packages/render/src/__tests__/target-environment.dawn.test.ts',
+    'packages/render/src/__tests__/target-subresources.dawn.test.ts',
+    'packages/three/src/__tests__/procedural-addons-render.dawn.test.ts',
+    'packages/three/src/__tests__/surface-expression.dawn.test.ts',
+    'packages/three/src/__tests__/target-surface.dawn.test.ts',
+  ];
   const output = execFileSync(
     process.execPath,
     [
@@ -1232,13 +1259,24 @@ test('actual core discovery uses matching costs and conserves every ordinary fil
       try {
         const files = await v.globTestSpecifications();
         const paths = files.map(({ moduleId }) => relative(process.cwd(), moduleId).replaceAll('\\\\', '/'));
-        assert.deepEqual(paths.sort(), coreValidationFiles([
-          ...Object.keys(ledger.coreProfile.files), ...Object.keys(ledger.fileReserves),
-        ]).sort());
+        const unmeasured = ${JSON.stringify(unmeasured)};
+        assert.ok(unmeasured.every((path) => !Object.hasOwn(ledger.coreProfile.files, path)));
+        assert.deepEqual(Object.keys(ledger.fileReserves).sort(), unmeasured);
+        // Historical receipts retain their original population. Current discovery
+        // also admits new files, charged at the sequencer's conservative fallback.
+        const measured = Object.keys(ledger.coreProfile.files);
+        const native = new Set(DAWN_GATE_GROUPS.flatMap(({ files }) => files));
+        const declared = coreValidationFiles([...measured, ...Object.keys(ledger.fileReserves)])
+          .filter((path) => !native.has(path));
+        assert.deepEqual(declared.filter((path) => !paths.includes(path)), []);
+        const added = paths.filter((path) => !declared.includes(path));
         const lanes = planDawnShards(files, process.cwd(), 2);
         assert.equal(lanes.length, 4);
         assert.equal(new Set(lanes.flat().map(({ moduleId }) => moduleId)).size, files.length);
+        assert.deepEqual(lanes.flat().map(({ moduleId }) =>
+          relative(process.cwd(), moduleId).replaceAll('\\\\', '/')).sort(), paths.sort());
         const costs = dawnPlanningFileCosts();
+        const fallback = Math.max(...costs.values());
         const owners = dawnPlanningOwnerCosts();
         assert.equal(owners.get('vfx-depth'), ledger.coreProfile.owners['vfx-depth']);
         const children = new Set([
@@ -1248,13 +1286,18 @@ test('actual core discovery uses matching costs and conserves every ordinary fil
         const loads = lanes.map((lane, index) =>
           lane.reduce((sum, { moduleId }) => {
             const path = relative(process.cwd(), moduleId).replaceAll('\\\\', '/');
-            return sum + (children.has(path) ? 0 : costs.get(path) / 2);
+            return sum + (children.has(path) ? 0 : (costs.get(path) ?? fallback) / 2);
           }, 0) + DAWN_GATE_SHARDS[index].reduce((sum, id) => {
             const group = DAWN_GATE_GROUPS.find((candidate) => candidate.id === id);
             return sum + (id.startsWith('ordinary-') || coreValidationFiles(group.files).length === 0
-              ? 0 : Math.max(owners.get(id), group.placementReserveSeconds ?? 0));
+              ? 0 : Math.max(owners.get(id) ?? 0, group.placementReserveSeconds ?? 0));
           }, 0));
         assert.ok(Math.max(...loads) - Math.min(...loads) <= Math.max(...costs.values()) / 2 + 1e-6);
+        // Replay the original measured population; additions have forecasts, not old observations.
+        const historical = files.filter(({ moduleId }) =>
+          Object.hasOwn(ledger.coreProfile.files, relative(process.cwd(), moduleId).replaceAll('\\\\', '/')));
+        const historicalLanes = planDawnShards(historical, process.cwd(), 2);
+        assert.equal(historical.length, files.length - paths.filter((path) => !measured.includes(path)).length);
         const replays = [];
         for (const run of ledger.coreProfile.sourceRuns) {
           const receipt = JSON.parse(readFileSync('scripts/ci/dawn-timing-snapshots/' + run + '.json', 'utf8'));
@@ -1262,18 +1305,23 @@ test('actual core discovery uses matching costs and conserves every ordinary fil
           const tails = { ...receipt.owners, ...receipt.reservedOwners };
           for (const [owner, forecast] of Object.entries(receipt.incompleteOwnerForecasts ?? {}))
             tails[owner] = forecast.seconds;
-          const observed = lanes.map((lane, index) =>
+          const observed = historicalLanes.map((lane, index) =>
             lane.reduce((sum, { moduleId }) => {
               const path = relative(process.cwd(), moduleId).replaceAll('\\\\', '/');
               return sum + (children.has(path) ? 0 : (fileCosts.get(path) ?? 0) / 2);
-            }, 0) + DAWN_GATE_SHARDS[index].reduce((sum, id) => sum + (tails[id] ?? 0), 0));
+            }, 0) + DAWN_GATE_SHARDS[index].reduce((sum, id) => {
+            const group = DAWN_GATE_GROUPS.find((candidate) => candidate.id === id);
+            // Count files that moved out of ordinary discovery exactly once.
+            return sum + (tails[id] ?? 0) + group.files.reduce(
+              (seconds, path) => seconds + (fileCosts.get(path) ?? 0), 0);
+          }, 0));
           // Two minutes of the 30-minute target remain for preparation. Older
           // infeasible targets retain the original 40-minute execution bound.
           const bound = observed.reduce((sum, seconds) => sum + seconds, 0) / 4 <= 1680 ? 1680 : 2400;
           assert.ok(Math.max(...observed) <= bound, 'complete cohort ' + run + ' exceeds ' + bound + ': ' + observed);
           replays.push({ run, bound, loads: observed });
         }
-        console.log(JSON.stringify({ files: files.length, loads, replays }));
+        console.log(JSON.stringify({ files: files.length, measuredFiles: measured.length, declaredFiles: declared.length, unmeasured, added, loads, replays }));
       } finally { await v.close(); }
     `,
     ],
@@ -1283,14 +1331,18 @@ test('actual core discovery uses matching costs and conserves every ordinary fil
       env: { ...process.env, FORGEAX_CI_CORE_VALIDATION: '1', FORGEAX_DAWN_LIGHTWEIGHT: '1' },
     },
   );
-  assert.equal(JSON.parse(output.trim().split('\n').at(-1)).files, 372);
+  const result = JSON.parse(output.trim().split('\n').at(-1));
+  assert.deepEqual(result.unmeasured, unmeasured);
+  assert.equal(result.measuredFiles, 372);
+  assert.equal(result.files, result.declaredFiles + result.added.length);
 });
 
-test('complete planar capture owners share existing serial Surface admission and failure evidence', () => {
+test('planar capture and low-limit transmission share serial Surface admission', () => {
   const owner = DAWN_GATE_GROUPS.find((group) => group.id === 'surface-pipelines');
   for (const file of [
     'packages/runtime/src/__tests__/planar-reflection.dawn.test.ts',
     'packages/runtime/src/__tests__/standard-planar-reflection.dawn.test.ts',
+    'packages/runtime/src/__tests__/cooked-transmission-low-limit.dawn.test.ts',
   ]) {
     assert.ok(owner.files.includes(file), file);
     assert.equal(DAWN_GATE_GROUPS.filter((group) => group.files.includes(file)).length, 1);
@@ -1382,31 +1434,67 @@ test('native tails retain independent measured headroom across complete cohorts'
 
 test('completed cohorts distribute complete native tails before ordinary backfill', () => {
   assert.deepEqual(DAWN_GATE_SHARDS, [
-    ['ordinary-1', 'direct-light', 'gi-1', 'heavy-4', 'modeling-s6', 'rect-source'],
+    [
+      'ordinary-1',
+      'direct-light',
+      'gi-1',
+      'heavy-4',
+      'modeling-s6',
+      'path-tracer',
+      'rect-source',
+      'three-surface-expression',
+    ],
     [
       'ordinary-2',
       'compact-2',
       'gi-4',
       'gi-6',
       'heavy-2',
-      'renderer',
+      'specular-aa',
       'shadow-quality',
       'surface-pipelines',
       'transmission',
     ],
     [
       'ordinary-3',
+      'alpha-hash',
       'compact-3',
       'feature-depth',
       'gi-2',
       'heavy-1',
       'heavy-3',
       'modeling-show',
-      'nested-discard',
       'screen-probe',
     ],
-    ['ordinary-4', 'compact-1', 'gi-3', 'gi-5', 'shadow-fields', 'specular-aa', 'vfx-depth'],
+    [
+      'ordinary-4',
+      'compact-1',
+      'gi-3',
+      'gi-5',
+      'nested-discard',
+      'shadow-fields',
+      'renderer',
+      'vfx-depth',
+    ],
   ]);
+});
+
+test('Alpha Hash and Three Surface each reserve a fresh serial Dawn fork', () => {
+  for (const [id, file, forecast] of [
+    ['alpha-hash', 'packages/runtime/src/__tests__/alpha-hash.dawn.test.ts', 186.15],
+    [
+      'three-surface-expression',
+      'packages/three/src/__tests__/surface-expression.dawn.test.ts',
+      420,
+    ],
+  ]) {
+    const owner = DAWN_GATE_GROUPS.find((candidate) => candidate.id === id);
+    assert.equal(owner.nativeProcessSlots, 2);
+    assert.ok(owner.placementReserveSeconds >= forecast);
+    assert.deepEqual(owner.files, [file]);
+    assert.ok(!nativeSpecifications.some(({ moduleId }) => moduleId.endsWith(file)));
+    assert.ok(dawnVitestArgs(owner, { ordinaryWorkers: 2 }).includes('--maxWorkers=1'));
+  }
 });
 
 test('measured heavy ordinary files spread without extra owners', (t) => {

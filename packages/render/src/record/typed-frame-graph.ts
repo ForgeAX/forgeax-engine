@@ -83,27 +83,21 @@ import { reflectionFallbackDemandOf } from '../world/ssr-admission-systems';
 import { recordContext } from '../world/view-record-context';
 
 import { retainedFrameGraphPolicyMatches, serializeFrameGraphKey } from './frame-graph-key';
-
 import {
   createRenderGraphPassInstrumentation,
   renderGraphPassInstrumentationActive,
   resolveSpotShadowMapSize,
 } from './frame-targets';
-
 import { createTimingInstrumentation } from './gpu-pass-timing-instrumentation';
-
 import { executeGraphTargetReplay } from './graph-target-pass-replay';
-
 import {
   encodeGraphTargetCapture,
   encodeReflectionFallbackReadback,
 } from './graph-target-readback';
-
 import {
   clearStaleGtaoCandidatePreparationFault,
   consumeGtaoCandidatePreparationFault,
 } from './gtao-candidate-preparation-fault';
-
 import { flushMeshDrawUploads } from './mesh-ssbo';
 
 import { scenePipelinePreparations } from './scene-pipeline-preparation';
@@ -283,7 +277,7 @@ import type {
 
 import { resolveSurfaceProfile, runProfiledRenderPhase } from './render-context';
 
-import { installScenePasses } from './scene-pass-work';
+import { type CaptureScenePasses, installScenePasses } from './scene-pass-work';
 
 /** Consumers other than the main camera that may sample a frame's shadow maps. */
 export interface ShadowSamplerRoster {
@@ -1769,7 +1763,9 @@ function shadowCameraCullOf(
     volumetricFog: topology.volumetricFog?.enabled === true,
     atmosphere: topology.atmosphere === true,
     cubeCaptures: cubeCaptureState?.work.length ?? 0,
-    reflectionProbes: cubeCaptureState?.reflectionProbes?.work.length ?? 0,
+    reflectionProbes:
+      (cubeCaptureState?.reflectionProbes?.work.length ?? 0) +
+      (cubeCaptureState?.reflectionProbes?.migrations?.length ?? 0),
     planarReflection: cubeCaptureState?.planar?.current() !== undefined,
     featureSceneInputs: recordContext(internals).featureSceneInputs?.work.length ?? 0,
   });
@@ -1839,13 +1835,25 @@ function frameGraphCacheKey(
         : [frameState.activeTemporalGpuState.width, frameState.activeTemporalGpuState.height],
     cubeCaptureSlots: cubeCaptureState?.work.map((work) => ({
       descriptor: work.physical.descriptor,
+      mipLevel: work.mipLevel ?? 0,
+      explicitWrite: work.write,
       planar: work.faceCamera.planarReflection !== undefined,
       // A volume slice is a render-pass attachment fact, not a resolved view.
       depthSlice: work.physical.descriptor.shape === '3d' ? work.layer : undefined,
     })),
     planarRetained: cubeCaptureState?.planar?.current()?.physical.descriptor,
+    reflectionPmremMigrations: cubeCaptureState?.reflectionProbes?.migrations?.map((ticket) => [
+      ticket.key,
+      ticket.target.generation,
+      ticket.source.capacity,
+      ticket.target.capacity,
+    ]),
     reflectionProbeSlots: cubeCaptureState?.reflectionProbes?.work.map((work) => [
       work.probeIndex,
+      work.captureGeneration ?? 0,
+      work.filteredLayer ?? 0,
+      work.filteredArrayLayers ?? 1,
+      work.filteredGeneration ?? 0,
       work.rawCaptureFace ?? -1,
       work.step?.faceIndex ?? -1,
       work.step?.mipLevel ?? -1,
@@ -2633,10 +2641,10 @@ function compileViewGraphStagesOwned(
         effects: effects(),
       };
     }
-    const topology = topologyForPostProcessAdmission(
-      topologyAdmission.value,
-      postProcessAdmission.pending,
-    );
+    const topology: RenderPipelineTopology = {
+      ...topologyForPostProcessAdmission(topologyAdmission.value, postProcessAdmission.pending),
+      materialSceneDepth: passPlan.materialSceneDepth === true,
+    };
     // Keep Bloom's positive parameter values out of the compiled identity. A
     // crossing of zero has already changed topology.camera.bloom above; the
     // remaining values are uploaded by the active recorder without rebuilding
@@ -2910,6 +2918,7 @@ function compileViewGraphStagesOwned(
             const reflectionProbes = addReflectionProbeGraphPasses(
               builder,
               {
+                migrations: cubeCaptureState?.reflectionProbes?.migrations,
                 work: (cubeCaptureState?.reflectionProbes?.work ?? []).map((work) => ({
                   ...work,
                   rawCaptureFace: undefined,
@@ -3124,6 +3133,7 @@ export function compileTargetCaptureFrameGraph(
   probe?: ReflectionProbeGraphWork,
   terrainReceivers: readonly TerrainShadowReceiver[] = [],
   sharedShadows?: SharedShadowSource,
+  scenePasses?: CaptureScenePasses,
 ): CompiledRenderGraph<RenderPipelineFrame> {
   const profileSession = activeRenderProfileSession(internals);
   if (profileSession === undefined)
@@ -3140,6 +3150,7 @@ export function compileTargetCaptureFrameGraph(
       terrainReceivers,
       sharedShadows,
       undefined,
+      scenePasses,
     );
   return runProfiledRenderPhase(profileSession, 'graph/build', () =>
     compileTargetCaptureFrameGraphOwned(
@@ -3155,6 +3166,7 @@ export function compileTargetCaptureFrameGraph(
       terrainReceivers,
       sharedShadows,
       profileSession,
+      scenePasses,
     ),
   );
 }
@@ -3172,6 +3184,7 @@ function compileTargetCaptureFrameGraphOwned(
   terrainReceivers: readonly TerrainShadowReceiver[],
   sharedShadows: SharedShadowSource | undefined,
   profileSession: RecorderSession | undefined,
+  scenePasses: CaptureScenePasses | undefined,
 ): CompiledRenderGraph<RenderPipelineFrame> {
   const topology = topologyOf(
     internals,
@@ -3237,6 +3250,7 @@ function compileTargetCaptureFrameGraphOwned(
             const encoded = encodeMipmapLevel(internals.device, pass, sourceView.value, format);
             if (!encoded.ok) throw encoded.error;
           },
+          scenePasses,
         )
       : addReflectionProbeGraphPasses(
           graph,
@@ -3244,6 +3258,7 @@ function compileTargetCaptureFrameGraphOwned(
           undefined,
           shadows.value,
           buffers.value,
+          scenePasses,
         );
   if (!targets.ok) throw targets.error;
   const compileOptions = {
@@ -3325,7 +3340,7 @@ function recordAtomicPasses(
   active: boolean,
 ): import('@forgeax/engine-render-graph').RenderGraphPassRunner | undefined {
   if (!active) return runner;
-  return (pass, encode) => {
+  const observed: import('@forgeax/engine-render-graph').RenderGraphPassRunner = (pass, encode) => {
     const record = () => {
       encode();
       encoded.add(pass.name);
@@ -3333,6 +3348,9 @@ function recordAtomicPasses(
     if (runner === undefined) record();
     else runner(pass, record);
   };
+  if (runner?.requiresPassBoundary !== undefined)
+    Object.defineProperty(observed, 'requiresPassBoundary', { value: runner.requiresPassBoundary });
+  return observed;
 }
 
 /** Encode and resolve readbacks into the open frame encoder; never submits or suspends. */

@@ -2,7 +2,7 @@
 #pragma variant_axis ATMOSPHERE_AVAILABLE
 #pragma variant_axis STORAGE_BUFFER_AVAILABLE
 #import forgeax_view::common::{View, view, viewDirectionToCamera}
-#import forgeax_view::fog::{ndc_world}
+#import forgeax_view::fog::{vertex_height_fog, ndc_world}
 #import forgeax_scene_temporal::{sceneViewZ}
 #import forgeax_pbr::tbn::{decodeTangentSpaceNormalRg}
 #import forgeax_material::standard_surface::{
@@ -20,7 +20,7 @@ struct VertexOutput {
   @location(4) sheet_uv: vec2<f32>,
   @location(5) sheet_frame: f32,
   @location(6) fade_distance: f32,
-  @location(7) clip_position: vec3<f32>,
+  @location(7) clip_position: vec4<f32>,
   @location(8) billboard_right: vec2<f32>,
   @location(9) billboard_up: vec2<f32>,
   @location(11) water_sphere_shading: vec4<f32>,
@@ -82,7 +82,7 @@ fn vs_main(input: VertexInput, @builtin(vertex_index) vertex_index: u32) -> Vert
     input.position.z,
   );
   output.position = vec4<f32>(clipPosition, 1.0);
-  output.clip_position = clipPosition;
+  output.clip_position = vec4<f32>(clipPosition, vertex_height_fog(view, ndc_world(view, clipPosition)));
   output.billboard_right = input.right;
   output.billboard_up = input.up;
   output.color = input.particle_color * input.base_color;
@@ -120,7 +120,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     sphereMask * input.opacity_multiplier * input.color.a,
     input.fade_distance,
   );
-  let worldPosition = ndc_world(view, input.clip_position);
+  let worldPosition = ndc_world(view, input.clip_position.xyz);
   let viewDirection = viewDirectionToCamera(worldPosition);
   let sphereRadius = input.water_sphere_flatten_sphere.w;
   let sphereX = input.local.x;
@@ -137,7 +137,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     textureSample(normalTexture, normalTexture_sampler, uvNoise).rg,
   );
   let flattened = mix(normalTextureValue, input.water_sphere_flatten_sphere.xyz, input.water_sphere_shading.w);
-  let localClipCenter = input.clip_position - vec3<f32>(
+  let localClipCenter = input.clip_position.xyz - vec3<f32>(
     input.billboard_right * input.local.x + input.billboard_up * input.local.y,
     0.0,
   );
@@ -160,7 +160,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
   var materialSurface: VsOut;
   materialSurface.clip = input.position;
   materialSurface.worldPos = worldPosition;
-  materialSurface.worldNormal = surfaceNormal;
+  materialSurface.worldNormal = vec4<f32>(surfaceNormal, input.clip_position.w);
   materialSurface.worldTangent = vec4<f32>(worldRight, 1.0);
   materialSurface.uv = input.sheet_uv;
   materialSurface.uvOne = input.sheet_uv;

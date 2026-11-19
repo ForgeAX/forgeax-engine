@@ -19,7 +19,7 @@ import {
 
 type TaaScenario = 'feedback' | 'secondary-motion' | 'clipping-recovery';
 type Device = Awaited<ReturnType<typeof requestTaaDevice>>;
-type TemporalState = Extract<ReturnType<typeof getTemporalGpuState>, { mode: 'taa' }>;
+type TemporalState = Extract<ReturnType<typeof getTemporalGpuState>, { mode: 'taa' | 'tsr' }>;
 type TaaInput = { readonly texture: Texture; readonly view: TextureView };
 
 // Four 256-byte readback rows per frame: color, temporal, stability, flicker.

@@ -1,5 +1,4 @@
 import {
-  bufferFieldByteLength,
   type Component,
   type ComponentSchema,
   componentDefinition,
@@ -7,13 +6,13 @@ import {
   type ScalarFieldType,
   type TypedArrayFor,
 } from '../component';
-import { QueryBatchUnavailableError } from '../errors/query-batch-errors';
+import { QueryBatchUnavailableError } from '../errors';
 import type { FieldView } from '../storage/column';
 import type { Table } from '../storage/table';
 import type { QueryDescriptor } from './query';
 
 type InlineScalar = ScalarFieldType | 'entity';
-type InlineField = InlineScalar | `buffer<${number}>` | `array<${InlineScalar}, ${number}>`;
+type InlineField = InlineScalar | `array<${InlineScalar}, ${number}>`;
 type Schema<C> = C extends Component<string, infer S> ? S : never;
 export type NumericField<C extends Component> = Extract<
   {
@@ -75,22 +74,12 @@ export interface BatchLease {
 function inlineField(component: Component, field: string) {
   const definition = componentDefinition(component);
   const reflection = definition.fields[field];
-  if (reflection === undefined)
+  const plan = definition.plan.fields[field];
+  if (reflection === undefined || plan === undefined)
     throw new QueryBatchUnavailableError('unknown-field', component.name, field);
-  const kind = definition.plan.fields[field]?.kind;
-  const element = reflection.arrayMeta?.elementType;
-  const numericArray =
-    kind === 'fixed-array' &&
-    element !== undefined &&
-    !element.startsWith('shared<') &&
-    !element.startsWith('asset<');
-  if (
-    kind !== 'number' &&
-    kind !== 'bool' &&
-    kind !== 'entity' &&
-    kind !== 'fixed-buffer' &&
-    !numericArray
-  ) {
+  const kind = plan.kind;
+  const numericArray = kind === 'fixed-array' && plan.reference === undefined;
+  if (kind !== 'number' && kind !== 'bool' && kind !== 'entity' && !numericArray) {
     throw new QueryBatchUnavailableError('non-numeric-field', component.name, field);
   }
   return reflection;
@@ -160,12 +149,11 @@ class BatchColumns<
     field: F,
   ): number {
     const column = this.field(component, field);
-    if (column !== undefined) return column.arity;
-    const reflection = componentDefinition(component).fields[field];
-    if (reflection === undefined)
+    if (column !== undefined) return column.layout.arity;
+    const plan = componentDefinition(component).plan.fields[field];
+    if (plan === undefined)
       throw new QueryBatchUnavailableError('unknown-field', component.name, field);
-    if (reflection.arrayMeta?.length !== undefined) return reflection.arrayMeta.length;
-    return reflection.type.startsWith('buffer<') ? bufferFieldByteLength(reflection.type) : 1;
+    return plan.arity;
   }
 }
 

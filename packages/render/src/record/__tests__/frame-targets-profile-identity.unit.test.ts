@@ -14,6 +14,16 @@ import type { GpuPassTimingCapture } from '../gpu-pass-timing/session';
 import type { RenderSystemInternals } from '../render-context';
 
 describe('graph pass view identity', () => {
+  it('prepares a single profiling phase for a physical raster batch', () => {
+    const rasterBatch = ['skybox', 'main', 'transparent'];
+    const passes = rasterBatch.map((name) => ({ name, kind: 'raster' as const, rasterBatch }));
+    expect(graphExecutionProfilePhases({ passes }, 'primary')).toEqual([
+      graphExecutionProfilePhase({
+        owner: 'primary',
+        pass: { name: rasterBatch.join(' + '), kind: 'raster' },
+      }),
+    ]);
+  });
   it('keeps shared and composition passes viewless even in a view-scoped context', () => {
     expect(graphPassTimingViewId({ owner: 'shared', requested: 9, inherited: 41 })).toBeUndefined();
     expect(graphPassTimingViewId({ owner: 'composition', inherited: 41 })).toBeUndefined();

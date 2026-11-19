@@ -79,6 +79,21 @@ source; the adapter does not fall back to ambient files when they are invalid.
 The Pack source fingerprint includes these inputs for DDC invalidation. Raw
 effect sources still use the catalog supplied to the native cooker factory.
 
+For immutable, structured producer input, import
+`forgeax_vfx::data::structured_input`. This declares a managed group 0 binding 26
+read-only storage bank, `structured_input: array<vec4<u32>>`. Read float lanes with
+`bitcast<vec4<f32>>(structured_input[index])`; integer keys retain their original
+bits. The `vfx:structured-input` provider supplies an owned `storage-data` byte
+snapshot (16 through 65536 bytes, in 16-byte records). Authors own record indices
+and schema; the bank does not consume or increase the 32 dynamic-parameter limit.
+No import means no bank requirement or binding. Storage resources retain the
+portable eight-storage-buffer compute limit per entry point. The compiler publishes
+Naga-derived `entryPointBindings`; structured-input native program and dispatch
+layouts select only those proven reads. For this contract, a union exceeding eight
+is legal only when every executable entry remains within the limit. Other emitters
+retain their complete union layout and union storage-budget check; structured-input
+artifacts require the proof.
+
 The optional `#import forgeax_vfx::data::scene_sdf` also reflects a managed
 read-only storage requirement at binding 15. The compiler composes
 `vfx_sdf_sample`, `vfx_sdf_normal` and `vfx_sdf_collide`; omitting the import

@@ -74,7 +74,7 @@ const surfacePackRoots = [
 // relying on a directory-name convention.
 const gameCapabilityPackRoots = gameCapabilityAssetRoots(templateAssetRoot);
 const selectedTemplateSlugs = parseTemplateSmokeSlugs(process.env.FORGEAX_TEMPLATE_SMOKE_SLUGS);
-const materialPackages = selectedTemplateSlugs.length > 0 && !selectedTemplateSlugs.includes('game-capability-lab')
+const materialPackages = surfaceOnly || selectedTemplateSlugs.length > 0 && !selectedTemplateSlugs.includes('game-capability-lab')
   ? []
   : [
       resolve(templateAssetRoot, 'animated-target-material.pack.json'),

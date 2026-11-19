@@ -32,12 +32,11 @@ import { projectShaderConditionals } from './conditionals.js';
 
 import {
   composeShader,
-  emit_reflection,
+  type PreparedNagaCompiler,
   parse,
+  prepareNagaCompiler,
   type ShaderReflection,
-  specializeComputeEntries,
-  validate,
-  validateRenderEntries,
+  type ValidatedModule,
 } from '@forgeax/engine-naga';
 import type {
   BindGroupLayoutDescriptor,
@@ -148,7 +147,7 @@ export interface CompileResult {
 const PRAGMA_RE = /^\s*#pragma\s+\S.*$/gm;
 const DEFINE_WITH_VALUE_RE = /^\s*#\s*define\s+\w+\s+(\S.*)$/;
 const IMPORT_DIRECTIVE_RE = /^\s*#import\s+([A-Za-z0-9_.:-]+)/;
-const MODULE_ID_PREFIX_RE = /^([A-Za-z0-9_-]+(?:::[A-Za-z0-9_-]+)*)/;
+const MODULE_ID_PREFIX_RE = /^([A-Za-z0-9_.-]+(?:::[A-Za-z0-9_.-]+)*)/;
 const DEFINE_IMPORT_PATH_RE = /^\s*#define_import_path\s+([A-Za-z0-9_.:-]+)/;
 
 /**
@@ -223,6 +222,27 @@ function collectReachableImports(
   }
   return reachable;
 }
+/** Complete raw import closure, retaining every conditional branch for later selection. */
+export function shaderImportClosure(
+  source: string,
+  imports: Readonly<Record<string, string>>,
+): Record<string, string> {
+  const known = new Set(Object.keys(imports));
+  const selected: Record<string, string> = Object.create(null);
+  const pending = extractImports(source, known);
+  const visited = new Set<string>();
+  for (let index = 0; index < pending.length; index++) {
+    const module = pending[index];
+    if (module === undefined || visited.has(module)) continue;
+    visited.add(module);
+    const body = imports[module];
+    if (body === undefined) continue;
+    selected[module] = body;
+    pending.push(...extractImports(body, known));
+  }
+  return selected;
+}
+
 function resolveOmittedVertexColorBranch(source: string, available: boolean): string {
   if (!source.includes('VERTEX_COLOR_AVAILABLE')) return source.replace(/\r\n/g, '\n');
   const lines = source.split(/\r?\n/);
@@ -318,12 +338,19 @@ export async function compileShader(
 }
 
 /** Internal Pack seam: source admission precedes bounded composition/program reuse. */
-export async function compileShaderWithComposition(
+interface ShaderCompositionInputs {
+  readonly source: string;
+  readonly compositionImports: Record<string, string>;
+  readonly defines: Record<string, boolean>;
+  readonly imports: Readonly<Record<string, string>>;
+  readonly specializedImports: Record<string, string>;
+  readonly fromModuleId: string;
+}
+
+function prepareShaderComposition(
   rawSource: string,
   options: CompileOptions,
-  compose: typeof composeShader,
-  compileProgram: typeof compileShaderProgram = compileShaderProgram,
-): Promise<Result<CompileResult, ShaderErrorType>> {
+): Result<ShaderCompositionInputs, ShaderErrorType> {
   const requestedVertexColor = options.defines?.VERTEX_COLOR_AVAILABLE === true;
   let entrySource = rawSource;
   let entryImports: Readonly<Record<string, string>> = options.imports ?? {};
@@ -479,6 +506,20 @@ export async function compileShaderWithComposition(
   const importResolveErr = checkImportsResolvable(source, specializedImports, fromModuleId);
   if (importResolveErr !== null) return err(importResolveErr);
 
+  return ok({ source, compositionImports, defines, imports, specializedImports, fromModuleId });
+}
+
+/** Build consumers can still share asynchronous composition and program work. */
+export async function compileShaderWithComposition(
+  rawSource: string,
+  options: CompileOptions,
+  compose: typeof composeShader,
+  compileProgram: typeof compileShaderProgram = compileShaderProgram,
+): Promise<Result<CompileResult, ShaderErrorType>> {
+  const prepared = prepareShaderComposition(rawSource, options);
+  if (!prepared.ok) return prepared;
+  const { source, compositionImports, defines, imports, specializedImports, fromModuleId } =
+    prepared.value;
   // Stage 1: compose via naga_oil, then canonicalize portable WGSL. Errors from
   // the wasm boundary flow through mapWasmError as structured ShaderError data.
   let composed: string;
@@ -504,28 +545,41 @@ export async function compileShaderWithComposition(
   return compiled.ok ? ok({ ...compiled.value, deps }) : compiled;
 }
 
-/** Validate one actual WGSL program and its selected entry/reflection contract. */
-export async function compileShaderProgram(
+type ProgramOptions = Pick<CompileOptions, 'computeEntry' | 'renderEntries' | 'dynamicOffsets'>;
+interface NativeProgram {
+  readonly source: string;
+  readonly module: ValidatedModule;
+}
+type ProgramPreparationFailure = {
+  readonly stage: 'parse' | 'program';
+  readonly error: ShaderErrorType;
+};
+
+function programFailure(error: ShaderErrorType, stage: 'parse' | 'program' = 'program') {
+  return err({ stage, error });
+}
+
+/** The same selected-entry and native IR admission serves build and runtime. */
+function prepareNativeProgram(
   composed: string,
-  options: Pick<CompileOptions, 'computeEntry' | 'renderEntries' | 'dynamicOffsets'>,
-  locateSyntaxError?: () => Promise<ShaderErrorType | undefined>,
-): Promise<Result<CompileResult, ShaderErrorType>> {
+  options: ProgramOptions,
+  native: PreparedNagaCompiler,
+): Result<NativeProgram, ProgramPreparationFailure> {
   if (options.computeEntry !== undefined && options.renderEntries !== undefined) {
-    return err(
+    return programFailure(
       compileFailed({
         message: 'A shader program cannot select compute and graphics entries together',
         hint: 'Compile one compute entry or one selected graphics interface per shader publication.',
       }),
     );
   }
-
   let selectedSource = composed;
   if (options.computeEntry !== undefined) {
-    const projection = await specializeComputeEntries(composed, [options.computeEntry]);
-    if (!projection.ok) return projection;
+    const projection = native.specializeComputeEntries(composed, [options.computeEntry]);
+    if (!projection.ok) return programFailure(projection.error);
     const selected = projection.value[0];
     if (selected === undefined || selected.entryPoint !== options.computeEntry) {
-      return err(
+      return programFailure(
         compileFailed({
           message: `Naga did not publish selected compute entry '${options.computeEntry}'`,
           hint: 'Select an existing WGSL compute entry point and rebuild the shader publication.',
@@ -534,93 +588,223 @@ export async function compileShaderProgram(
     }
     selectedSource = selected.source;
   }
-
-  // Stage 2: parse composed WGSL. Native handles remain invocation-owned.
-  const parsedResult = await parse(selectedSource);
-  if (!parsedResult.ok) {
-    const located = await locateSyntaxError?.();
-    return err(located ?? parsedResult.error);
+  const parsed = native.parse(selectedSource);
+  if (!parsed.ok) return programFailure(parsed.error, 'parse');
+  const validated = native.validate(parsed.value);
+  if (!validated.ok) return programFailure(validated.error);
+  if (options.renderEntries !== undefined) {
+    const entries = native.validateRenderEntries(
+      validated.value,
+      options.renderEntries.vertex,
+      options.renderEntries.fragment,
+      options.renderEntries.colorFormats,
+    );
+    if (!entries.ok) {
+      validated.value.free();
+      return programFailure(entries.error);
+    }
   }
+  return ok({ source: selectedSource, module: validated.value });
+}
 
-  // Stage 3: validate.
-  const validatedResult = await validate(parsedResult.value);
-  if (!validatedResult.ok) {
-    return err(validatedResult.error);
+function finishPreparedProgram(
+  selectedSource: string,
+  module: ValidatedModule,
+  options: ProgramOptions,
+  native: PreparedNagaCompiler,
+): Result<CompileResult, ShaderErrorType> {
+  // Stage 4: emit_reflection.
+  const optionsJson = JSON.stringify({
+    dynamicOffsets: options.dynamicOffsets ?? [],
+  });
+  const reflectionResult = native.emitReflection(module, optionsJson);
+  if (!reflectionResult.ok) {
+    return err(
+      compileFailed({
+        message: `reflection emit failed: ${reflectionResult.error.message}`,
+        hint: 'verify naga IR consistency; emit_reflection should not fail after validate succeeded',
+      }),
+    );
+  }
+  const reflectionJson = reflectionResult.value;
+
+  // Stage 5: JSON.parse + triplet assembly.
+  let reflectionParsed: ReturnType<typeof parseReflection>;
+  try {
+    reflectionParsed = parseReflection(reflectionJson);
+  } catch (e) {
+    return err(
+      manifestMalformed({
+        message: 'reflection JSON parse failed',
+        hint: 'naga emit_reflection output is malformed; report as @forgeax/engine-naga bug',
+        reason: e instanceof Error ? e.message : String(e),
+      }),
+    );
+  }
+  const bindings = reflectionParsed.bindings;
+  const uvSetCount = reflectionParsed.uvSetCount;
+
+  // ManifestEntry.bindings is the BGL-array JSON (every consumer parses it as
+  // `BindGroupLayoutDescriptor[]`: vite-plugin-shader's superset gate, the
+  // emitted `.bindings.json` sidecar, ShaderRegistry). Since feat-20260629 m4-w2
+  // naga emit_reflection wraps the array in `{ bindings, uvSetCount }`, so the
+  // raw `reflectionJson` is an object, not an array. Serialize the unwrapped
+  // array here; uvSetCount travels separately via CompileResult.uvSetCount, so
+  // storing the wrapper string would also duplicate it (Derive violation).
+  const bindingsJson = JSON.stringify(bindings);
+
+  const hash = computeHash(selectedSource);
+  const result: CompileResult = {
+    wgsl: selectedSource,
+    glsl: '',
+    bindings,
+    manifestEntry: {
+      hash,
+      wgsl: selectedSource,
+      glsl: undefined,
+      bindings: bindingsJson,
+      reflection: reflectionParsed.wire,
+      ...(reflectionParsed.wire.entryPoints === undefined
+        ? {}
+        : { entryPoints: reflectionParsed.wire.entryPoints }),
+    },
+    deps: [],
+    uvSetCount,
+    reflection: reflectionParsed.wire,
+  };
+  return ok(result);
+}
+
+function compilePreparedProgram(
+  source: string,
+  options: ProgramOptions,
+  native: PreparedNagaCompiler,
+  locateSyntaxError?: () => ShaderErrorType | undefined,
+): Result<CompileResult, ShaderErrorType> {
+  const prepared = prepareNativeProgram(source, options, native);
+  if (!prepared.ok)
+    return err(
+      prepared.error.stage === 'parse'
+        ? (locateSyntaxError?.() ?? prepared.error.error)
+        : prepared.error.error,
+    );
+  try {
+    return finishPreparedProgram(prepared.value.source, prepared.value.module, options, native);
+  } finally {
+    prepared.value.module.free();
+  }
+}
+
+/** Validate one actual WGSL program and its selected entry/reflection contract. */
+export async function compileShaderProgram(
+  composed: string,
+  options: ProgramOptions,
+  locateSyntaxError?: () => Promise<ShaderErrorType | undefined>,
+): Promise<Result<CompileResult, ShaderErrorType>> {
+  const native = await prepareNagaCompiler();
+  if (!native.ok) return native;
+  const prepared = prepareNativeProgram(composed, options, native.value);
+  if (!prepared.ok) {
+    const located = prepared.error.stage === 'parse' ? await locateSyntaxError?.() : undefined;
+    return err(located ?? prepared.error.error);
   }
   try {
-    if (options.renderEntries !== undefined) {
-      const entries = await validateRenderEntries(
-        validatedResult.value,
-        options.renderEntries.vertex,
-        options.renderEntries.fragment,
-        options.renderEntries.colorFormats,
-      );
-      if (!entries.ok) return entries;
-    }
-
-    // Stage 4: emit_reflection.
-    const optionsJson = JSON.stringify({
-      dynamicOffsets: options.dynamicOffsets ?? [],
-    });
-    const reflectionResult = await emit_reflection(validatedResult.value, optionsJson);
-    if (!reflectionResult.ok) {
-      return err(
-        compileFailed({
-          message: `reflection emit failed: ${reflectionResult.error.message}`,
-          hint: 'verify naga IR consistency; emit_reflection should not fail after validate succeeded',
-        }),
-      );
-    }
-    const reflectionJson = reflectionResult.value;
-
-    // Stage 5: JSON.parse + triplet assembly.
-    let reflectionParsed: ReturnType<typeof parseReflection>;
-    try {
-      reflectionParsed = parseReflection(reflectionJson);
-    } catch (e) {
-      return err(
-        manifestMalformed({
-          message: 'reflection JSON parse failed',
-          hint: 'naga emit_reflection output is malformed; report as @forgeax/engine-naga bug',
-          reason: e instanceof Error ? e.message : String(e),
-        }),
-      );
-    }
-    const bindings = reflectionParsed.bindings;
-    const uvSetCount = reflectionParsed.uvSetCount;
-
-    // ManifestEntry.bindings is the BGL-array JSON (every consumer parses it as
-    // `BindGroupLayoutDescriptor[]`: vite-plugin-shader's superset gate, the
-    // emitted `.bindings.json` sidecar, ShaderRegistry). Since feat-20260629 m4-w2
-    // naga emit_reflection wraps the array in `{ bindings, uvSetCount }`, so the
-    // raw `reflectionJson` is an object, not an array. Serialize the unwrapped
-    // array here; uvSetCount travels separately via CompileResult.uvSetCount, so
-    // storing the wrapper string would also duplicate it (Derive violation).
-    const bindingsJson = JSON.stringify(bindings);
-
-    const hash = computeHash(selectedSource);
-    const result: CompileResult = {
-      wgsl: selectedSource,
-      glsl: '',
-      bindings,
-      manifestEntry: {
-        hash,
-        wgsl: selectedSource,
-        glsl: undefined,
-        bindings: bindingsJson,
-        reflection: reflectionParsed.wire,
-        ...(reflectionParsed.wire.entryPoints === undefined
-          ? {}
-          : { entryPoints: reflectionParsed.wire.entryPoints }),
-      },
-      deps: [],
-      uvSetCount,
-      reflection: reflectionParsed.wire,
-    };
-    return ok(result);
+    return finishPreparedProgram(
+      prepared.value.source,
+      prepared.value.module,
+      options,
+      native.value,
+    );
   } finally {
-    validatedResult.value.free();
+    prepared.value.module.free();
   }
+}
+
+/** One initialized compiler; program caching remains with the program consumer. */
+export interface PreparedShaderCompiler {
+  compile(source: string, options?: CompileOptions): Result<CompileResult, ShaderErrorType>;
+  program(source: string, options?: ProgramOptions): Result<CompileResult, ShaderErrorType>;
+}
+
+function locatePreparedSyntaxError(
+  source: string,
+  imports: Readonly<Record<string, string>>,
+  native: PreparedNagaCompiler,
+): ShaderErrorType | undefined {
+  for (const candidate of [source, ...Object.values(imports)]) {
+    const parsed = native.parse(stripComposerDirectives(candidate));
+    if (parsed.ok) {
+      parsed.value.free();
+      continue;
+    }
+    const error = parsed.error;
+    if (error.lineNum === undefined || error.linePos === undefined) continue;
+    const line = candidate.split(/\r?\n/)[error.lineNum - 1] ?? '';
+    const symbol = /^[A-Za-z_][A-Za-z0-9_]*/.exec(line.slice(error.linePos - 1))?.[0];
+    if (symbol !== undefined && isImportedWgslSymbol(candidate, symbol)) continue;
+    return error;
+  }
+  return undefined;
+}
+
+/** Browser-safe initialized composition, validation and reflection using the build semantics. */
+export async function prepareShaderCompiler(): Promise<
+  Result<PreparedShaderCompiler, ShaderErrorType>
+> {
+  const native = await prepareNagaCompiler();
+  if (!native.ok) return native;
+  const compiler = native.value;
+  return ok({
+    program: (source, options = {}) => compilePreparedProgram(source, options, compiler),
+    compile: (source, options = {}) => {
+      const prepared = prepareShaderComposition(source, options);
+      if (!prepared.ok) return prepared;
+      const input = prepared.value;
+      const locate = () =>
+        locatePreparedSyntaxError(input.source, input.specializedImports, compiler);
+      let composedProgram: ReturnType<PreparedNagaCompiler['composeProgram']>;
+      try {
+        composedProgram = compiler.composeProgram(
+          input.source,
+          input.compositionImports,
+          input.defines,
+          canonicalizePortableWgsl,
+        );
+      } catch (cause) {
+        const mapped = mapWasmError(cause, { fromModuleId: input.fromModuleId });
+        return err(
+          mapped.code === 'shader-compile-failed' && mapped.lineNum === undefined
+            ? (locate() ?? mapped)
+            : mapped,
+        );
+      }
+      const composed = composedProgram.source;
+      let result: Result<CompileResult, ShaderErrorType>;
+      if (options.computeEntry === undefined) {
+        try {
+          if (options.renderEntries !== undefined) {
+            const selected = options.renderEntries;
+            const admitted = compiler.validateRenderEntries(
+              composedProgram.module,
+              selected.vertex,
+              selected.fragment,
+              selected.colorFormats,
+            );
+            if (!admitted.ok) return admitted;
+          }
+          result = finishPreparedProgram(composed, composedProgram.module, options, compiler);
+        } finally {
+          composedProgram.module.free();
+        }
+      } else {
+        // Compute projection changes the actual program.
+        // Admit its exact final source through the existing selected-program path.
+        composedProgram.module.free();
+        result = compilePreparedProgram(composed, options, compiler, locate);
+      }
+      return result.ok ? ok({ ...result.value, deps: Object.keys(input.imports) }) : result;
+    },
+  });
 }
 
 // === helpers ========================================================================

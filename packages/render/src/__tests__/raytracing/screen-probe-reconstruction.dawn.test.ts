@@ -5,6 +5,7 @@ import { packIrradianceFieldUniform } from '../../raytracing/irradiance-field';
 import { SCREEN_PROBE_BINDINGS, SCREEN_PROBE_STAGES } from '../../raytracing/screen-probe-kernels';
 import { packScreenProbeFrame } from '../../raytracing/screen-probe-plan';
 import { VIEW_UNIFORM_BYTES } from '../../record/view-ubo';
+import { gbufferNormalPixels } from './gbuffer-normal.fixture';
 
 async function runReconstruction(
   kind:
@@ -106,7 +107,11 @@ async function runReconstruction(
       format: 'depth32float',
       usage: 4 | 16,
     });
-    const normal = device.createTexture({ size: [width, height], format: 'r32uint', usage: 4 | 2 });
+    const normal = device.createTexture({
+      size: [width, height],
+      format: 'rg32uint',
+      usage: 4 | 2,
+    });
     const visibility = device.createTexture({
       size: [33, 33, 33],
       dimension: '3d',
@@ -116,8 +121,8 @@ async function runReconstruction(
     textures.push(depth, normal, visibility);
     device.queue.writeTexture(
       { texture: normal },
-      new Uint32Array(width * height).fill(2048 | (2048 << 12)),
-      { bytesPerRow: width * 4 },
+      gbufferNormalPixels(width * height),
+      { bytesPerRow: width * 8 },
       [width, height],
     );
     const clear = device.createCommandEncoder();
@@ -282,8 +287,8 @@ async function runReconstruction(
     // this is a same-surface reconstruction oracle, not a simulated renderer.
     device.queue.writeTexture(
       { texture: normal },
-      new Uint32Array(width * height).fill(2048 | (2048 << 12)),
-      { bytesPerRow: width * 4 },
+      gbufferNormalPixels(width * height),
+      { bytesPerRow: width * 8 },
       [width, height],
     );
     const placement = makePipeline('placeUniformProbes');
@@ -330,13 +335,10 @@ async function runReconstruction(
       matrix[46] = slope[0];
       matrix[50] = slope[1];
       device.queue.writeBuffer(view, 0, viewBytes);
-      const denominator = 1 + Math.abs(slope[0]) + Math.abs(slope[1]);
-      const pack = (v: number) => Math.round(((v / denominator) * 0.5 + 0.5) * 4095);
-      const packedNormal = pack(-slope[0]) | (pack(-slope[1]) << 12);
       device.queue.writeTexture(
         { texture: normal },
-        new Uint32Array(width * height).fill(packedNormal),
-        { bytesPerRow: width * 4 },
+        gbufferNormalPixels(width * height, [-slope[0], -slope[1], 1]),
+        { bytesPerRow: width * 8 },
         [width, height],
       );
       new Uint32Array(traceFrame.buffer)[7] = phase;

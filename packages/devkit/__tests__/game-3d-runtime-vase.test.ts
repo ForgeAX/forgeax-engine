@@ -72,10 +72,10 @@ it.for([false, true])('game-3d vase and mobile controls with Engine Worker=%s', 
     await mkdir(evidence, { recursive: true });
     await cp(resolve(repository, 'templates/game-3d/assets'), resolve(root, 'assets'), { recursive: true });
     await installRuntimeVase(root);
-    if (process.env.FORGEAX_BROWSER_CI_LIGHTWEIGHT === '1') {
-      await reduceTestProject(root);
-    }
     await cp(resolve(repository, 'templates/game-3d/forge.json'), resolve(root, 'forge.json'));
+    if (process.env.FORGEAX_BROWSER_CI_LIGHTWEIGHT === '1') {
+      await reduceTestProject(root, { omitEngineContent: true });
+    }
     await writeFile(resolve(root, 'package.json'), JSON.stringify({ name: 'game-3d-runtime-vase', type: 'module', dependencies: { '@forgeax/engine': '*' } }));
     await mkdir(resolve(root, 'node_modules/@forgeax'), { recursive: true });
     await symlink(resolve(repository, 'packages/engine'), resolve(root, 'node_modules/@forgeax/engine'), 'dir');

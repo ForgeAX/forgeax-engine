@@ -155,6 +155,15 @@ export interface SubmissionPlan {
   readonly sourceGroups?: BatchSources;
 }
 
+/** Actual view work, including source-only selector plans before receipt preparation. */
+export function planDrawsSkin(plan: SubmissionPlan): boolean {
+  return plan.batches.some(
+    (batch) =>
+      batch.candidates.length > 0 &&
+      (batch.prepared?.identity.deformation ?? batch.binding?.geometry.deformation) === 'skin',
+  );
+}
+
 export interface ResourceClassSplitInspection {
   readonly resourceClassCount: number;
   readonly resourceClassSplits: readonly {

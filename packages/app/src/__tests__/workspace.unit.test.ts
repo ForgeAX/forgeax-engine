@@ -42,6 +42,61 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+function projectSessionFixture(
+  root: string,
+  generation: number,
+  extra: Record<string, unknown> = {},
+) {
+  const project = (extra.project as { id: string; root: string } | undefined) ?? { id: root, root };
+  const target = extra.target as
+    | {
+        targetId: string;
+        sessionId: string;
+        worldId: string;
+        headed: boolean;
+        width: number;
+        height: number;
+      }
+    | undefined;
+  const sessionId = target?.sessionId ?? `test-session-${generation}`;
+  const status = {
+    get phase() {
+      return extra.failure === undefined
+        ? target
+          ? ('running' as const)
+          : ('preparing' as const)
+        : ('failed' as const);
+    },
+    sessionId,
+    generation,
+    ...(target === undefined
+      ? {}
+      : {
+          document: {
+            sessionId,
+            targetId: target.targetId,
+            url: 'http://localhost/',
+            browserGeneration: 1,
+          },
+          target,
+          browserGeneration: 1,
+        }),
+    get failure() {
+      return extra.failure;
+    },
+  };
+  return {
+    ...extra,
+    get failure() {
+      return extra.failure;
+    },
+    project,
+    status,
+    subscribeStatus:
+      typeof extra.subscribeStatus === 'function' ? extra.subscribeStatus : () => () => {},
+  };
+}
+
 function fixtureApp(withCamera = true) {
   const assets = new AssetRegistry({ shaderRegistry: {} as never });
   const world = new World({ assets });
@@ -133,17 +188,18 @@ describe('Engine workspace public runtime', () => {
       granularity,
     }));
     const provider = createEngineWorkspaceProvider({
-      openProjectSession: () => ({
-        project,
-        app,
-        assets,
-        target,
-        openPreview: () => ({
+      openProjectSession: ({ generation }) =>
+        projectSessionFixture(project.root, generation, {
+          project,
+          app,
+          assets,
           target,
-          tools: { pick },
-          getCamera: () => ({ camera: {}, version: 0 }),
+          openPreview: () => ({
+            target,
+            tools: { pick },
+            getCamera: () => ({ camera: {}, version: 0 }),
+          }),
         }),
-      }),
     });
     const runtime = createEngineWorkspaceRuntime(provider);
     const api = createToolApi();
@@ -204,20 +260,21 @@ describe('Engine workspace public runtime', () => {
     const { app, assets } = fixtureApp();
     const runtime = createEngineWorkspaceRuntime(
       createEngineWorkspaceProvider({
-        openProjectSession: () => ({
-          project: { id: 'author', root: '/author' },
-          app,
-          assets,
-          target: {
-            targetId: 'author-target',
-            sessionId: 'session',
-            worldId: app.world.identity,
-            headed: false,
-            width: 320,
-            height: 240,
-          },
-          authorPack: async ({ request }) => ({ closed: String(request.value) }),
-        }),
+        openProjectSession: ({ generation }) =>
+          projectSessionFixture('/author', generation, {
+            project: { id: 'author', root: '/author' },
+            app,
+            assets,
+            target: {
+              targetId: 'author-target',
+              sessionId: 'session',
+              worldId: app.world.identity,
+              headed: false,
+              width: 320,
+              height: 240,
+            },
+            authorPack: async ({ request }) => ({ closed: String(request.value) }),
+          }),
       }),
     );
     await runtime.openProject({ root: '/author' });
@@ -360,21 +417,22 @@ describe('Engine workspace public runtime', () => {
     publishWorkspaceAssets(assets, [{ guid, asset: createBoxGeometry(2, 3, 4).unwrap() }]);
     const project = { id: 'mesh-project', root: '/mesh-project' };
     const provider = createEngineWorkspaceProvider({
-      openProjectSession: () => ({
-        project,
-        app,
-        assets,
-        target: {
-          targetId: 'mesh-target',
-          sessionId: 'session',
-          worldId: app.world.identity,
-          headed: true,
-          width: 320,
-          height: 240,
-        },
-      }),
+      openProjectSession: ({ generation }) =>
+        projectSessionFixture(project.root, generation, {
+          project,
+          app,
+          assets,
+          target: {
+            targetId: 'mesh-target',
+            sessionId: 'session',
+            worldId: app.world.identity,
+            headed: true,
+            width: 320,
+            height: 240,
+          },
+        }),
     });
-    const opened = await provider.openProject({ root: project.root });
+    const opened = await provider.openProject({ root: project.root, generation: 1 });
     const inspectAsset = provider.inspectAsset;
     if (!inspectAsset) throw new Error('Concrete sessions must expose asset inspection');
     const inspect = () => inspectAsset({ project, handle: opened.handle, guid });
@@ -415,24 +473,55 @@ describe('Engine workspace public runtime', () => {
     ).rejects.toMatchObject({ code: 'engine-workspace-project-mismatch' });
     await provider.closeProject({ project, handle: opened.handle });
   });
-  it('guards recovery against live, changed and concurrently replaced project targets', async () => {
+  it('guards recovery against live, changed and concurrently replaced project owners', async () => {
     let counter = 0;
     let lost = false;
     const runtime = createEngineWorkspaceRuntime({
-      openProject: ({ root }) => ({
-        get failure() {
-          return lost ? new EngineWorkspaceError('engine-workspace-page-lost', 'lost') : undefined;
-        },
-        project: { id: root, root },
-        target: {
+      openProject: ({ root, generation }) => {
+        const target = {
           targetId: `target-${++counter}`,
           sessionId: 's',
           worldId: 'w',
           headed: true,
           width: 10,
           height: 10,
-        },
-      }),
+        };
+        return {
+          get failure() {
+            return lost && counter === 1
+              ? new EngineWorkspaceError('engine-workspace-page-lost', 'lost')
+              : undefined;
+          },
+          project: { id: root, root },
+          status: {
+            get phase() {
+              return lost && counter === 1 ? ('failed' as const) : ('running' as const);
+            },
+            sessionId: 's',
+            generation,
+            get target() {
+              return target;
+            },
+            get document() {
+              return {
+                sessionId: 's',
+                targetId: target.targetId,
+                url: 'http://localhost',
+                browserGeneration: 1,
+              };
+            },
+            get browserGeneration() {
+              return 1;
+            },
+            get failure() {
+              return lost && counter === 1
+                ? new EngineWorkspaceError('engine-workspace-page-lost', 'lost')
+                : undefined;
+            },
+          },
+          subscribeStatus: () => () => {},
+        };
+      },
       closeProject() {},
       listAssets() {
         throw new Error('Liveness must not query assets');
@@ -441,77 +530,76 @@ describe('Engine workspace public runtime', () => {
         throw new Error('not used');
       },
     });
-    await runtime.openProject({ root: '/game', expectedTargetId: null });
+    await runtime.openProject({ root: '/game', expectedProject: { kind: 'empty' } });
     await expect(
       runtime.openProject({
         root: '/game',
-        expectedTargetId: 'target-1',
-        expectedTargetState: 'lost',
+        expectedProject: { kind: 'session', sessionId: 's', generation: 1, recovery: 'lost' },
       }),
     ).rejects.toMatchObject({ code: 'engine-workspace-target-busy' });
     await expect(
       runtime.openProject({
         root: '/game',
-        expectedTargetId: 'stale',
-        expectedTargetState: 'lost',
+        expectedProject: { kind: 'session', sessionId: 'stale', generation: 1, recovery: 'lost' },
       }),
     ).rejects.toMatchObject({ code: 'engine-workspace-target-mismatch' });
     await expect(
-      runtime.openProject({ root: '/game', expectedTargetState: 'lost' }),
-    ).rejects.toThrow('exact target identity');
-    await expect(
-      runtime.openProject({ root: '/game', expectedTargetId: null, expectedTargetState: 'lost' }),
-    ).rejects.toThrow('exact target identity');
+      runtime.openProject({
+        root: '/game',
+        expectedProject: { kind: 'session', sessionId: 's', generation: 1, recovery: 'lost' },
+      }),
+    ).rejects.toMatchObject({ code: 'engine-workspace-target-busy' });
     expect(counter).toBe(1);
     lost = true;
     const attempts = await Promise.allSettled([
       runtime.openProject({
         root: '/game',
-        expectedTargetId: 'target-1',
-        expectedTargetState: 'lost',
+        expectedProject: { kind: 'session', sessionId: 's', generation: 1, recovery: 'lost' },
       }),
       runtime.openProject({
         root: '/game',
-        expectedTargetId: 'target-1',
-        expectedTargetState: 'lost',
+        expectedProject: { kind: 'session', sessionId: 's', generation: 1, recovery: 'lost' },
       }),
     ]);
-    expect(attempts.map((result) => result.status)).toEqual(['fulfilled', 'rejected']);
+    expect(attempts.map((result) => result.status)).toEqual(['rejected', 'fulfilled']);
     expect(counter).toBe(2);
-    expect(runtime.project?.target?.targetId).toBe('target-2');
+    expect(
+      runtime.project?.status.phase === 'running' && runtime.project.status.target.targetId,
+    ).toBe('target-2');
     await runtime.dispose();
   });
   it('exposes project, asset and camera operations without a View plugin or tab', async () => {
     const { app, assets } = fixtureApp();
     const runtime = createEngineWorkspaceRuntime(
       createEngineWorkspaceProvider({
-        openProjectSession: ({ root }) => ({
-          project: { id: root, root },
-          app,
-          assets,
-          listAssets: () => [
-            {
-              guid: SCENE_GUID,
-              kind: 'scene',
-              sourceKey: 'scene/main',
-              packageId: 'game',
-              lifecycle: 'current' as const,
+        openProjectSession: ({ root, generation }) =>
+          projectSessionFixture(root, generation, {
+            project: { id: root, root },
+            app,
+            assets,
+            listAssets: () => [
+              {
+                guid: SCENE_GUID,
+                kind: 'scene',
+                sourceKey: 'scene/main',
+                packageId: 'game',
+                lifecycle: 'current' as const,
+              },
+              ...Array.from({ length: 59 }, (_, index) => ({
+                guid: `bbbbbbbb-0000-4000-8000-${String(index).padStart(12, '0')}`,
+                kind: 'texture',
+                sourceKey: `texture/${index}`,
+              })),
+            ],
+            target: {
+              targetId: 'api-target',
+              sessionId: 'session',
+              worldId: app.world.identity,
+              headed: false,
+              width: 320,
+              height: 240,
             },
-            ...Array.from({ length: 59 }, (_, index) => ({
-              guid: `bbbbbbbb-0000-4000-8000-${String(index).padStart(12, '0')}`,
-              kind: 'texture',
-              sourceKey: `texture/${index}`,
-            })),
-          ],
-          target: {
-            targetId: 'api-target',
-            sessionId: 'session',
-            worldId: app.world.identity,
-            headed: false,
-            width: 320,
-            height: 240,
-          },
-        }),
+          }),
       }),
     );
     const api = createToolApi();
@@ -734,7 +822,7 @@ describe('Engine workspace public runtime', () => {
   it('ignores a stale preview close after replacing the stable target', async () => {
     const previews: EngineWorkspacePreview[] = [];
     const runtime = createEngineWorkspaceRuntime({
-      openProject: ({ root }) => ({ project: { id: root, root } }),
+      openProject: ({ root, generation }) => projectSessionFixture(root, generation),
       closeProject: () => undefined,
       listAssets: () => [],
       openPreview: ({ asset, width, height }) => {
@@ -788,7 +876,7 @@ describe('Engine workspace public runtime', () => {
     const cleanup = deferred<void>();
     const started = deferred<void>();
     const runtime = createEngineWorkspaceRuntime({
-      openProject: ({ root }) => ({ project: { id: root, root } }),
+      openProject: ({ root, generation }) => projectSessionFixture(root, generation),
       closeProject: () => undefined,
       listAssets: () => [],
       openPreview: ({ asset, width, height }) => ({
@@ -851,7 +939,7 @@ describe('Engine workspace public runtime', () => {
       .mockImplementationOnce(() => cleanup.promise)
       .mockResolvedValue(undefined);
     const runtime = createEngineWorkspaceRuntime({
-      openProject: ({ root }) => ({ project: { id: root, root } }),
+      openProject: ({ root, generation }) => projectSessionFixture(root, generation),
       closeProject: () => undefined,
       listAssets: () => [],
       openPreview: ({ asset, width, height }) => ({
@@ -892,7 +980,7 @@ describe('Engine workspace public runtime', () => {
     let sequence = 0;
     const asset = { guid: SCENE_GUID, kind: 'mesh' };
     const runtime = createEngineWorkspaceRuntime({
-      openProject: ({ root }) => ({ project: { id: root, root } }),
+      openProject: ({ root, generation }) => projectSessionFixture(root, generation),
       closeProject: () => undefined,
       listAssets: () => [asset],
       openPreview: ({ asset, width, height }) => ({
@@ -945,7 +1033,8 @@ describe('Engine workspace public runtime', () => {
   it('rejects an old project handle without clearing the replacement owner', async () => {
     const close = vi.fn();
     const runtime = createEngineWorkspaceRuntime({
-      openProject: ({ root }) => ({ project: { id: root, root }, handle: {} }),
+      openProject: ({ root, generation }) =>
+        projectSessionFixture(root, generation, { handle: {} }),
       closeProject: close,
       listAssets: () => [],
       openPreview: () => {
@@ -968,8 +1057,8 @@ describe('Engine workspace public runtime', () => {
     const closed: string[] = [];
     const previews: EngineWorkspacePreview[] = [];
     const runtime = createEngineWorkspaceRuntime({
-      async openProject({ root }) {
-        return { project: { id: root, root }, handle: { root } };
+      async openProject({ root, generation }) {
+        return projectSessionFixture(root, generation, { handle: { root } });
       },
       async closeProject({ project }) {
         closed.push(project.id);
@@ -1059,7 +1148,7 @@ describe('Engine workspace public runtime', () => {
       close,
     };
     const runtime = createEngineWorkspaceRuntime({
-      openProject: ({ root }) => ({ project: { id: root, root } }),
+      openProject: ({ root, generation }) => projectSessionFixture(root, generation),
       closeProject: () => undefined,
       listAssets: () => [],
       openPreview: () => preview,
@@ -1092,7 +1181,7 @@ describe('Engine workspace public runtime', () => {
       close,
     };
     const runtime = createEngineWorkspaceRuntime({
-      openProject: ({ root }) => ({ project: { id: root, root } }),
+      openProject: ({ root, generation }) => projectSessionFixture(root, generation),
       closeProject: () => undefined,
       listAssets: () => [],
       openPreview: () => {
@@ -1697,15 +1786,16 @@ describe('Engine workspace public runtime', () => {
       height: 480,
     };
     const provider = createEngineWorkspaceProvider({
-      openProjectSession: () => ({
-        project,
-        app,
-        assets,
-        target,
-        listAssets: () => [{ guid: SCENE_GUID, kind: 'scene' }],
-      }),
+      openProjectSession: ({ generation }) =>
+        projectSessionFixture(project.root, generation, {
+          project,
+          app,
+          assets,
+          target,
+          listAssets: () => [{ guid: SCENE_GUID, kind: 'scene' }],
+        }),
     });
-    const opened = await provider.openProject({ root: project.root });
+    const opened = await provider.openProject({ root: project.root, generation: 1 });
     expect(await provider.listAssets({ project, handle: opened.handle })).toEqual([
       expect.objectContaining({ guid: SCENE_GUID, kind: 'scene' }),
     ]);
@@ -1738,9 +1828,16 @@ describe('Engine workspace public runtime', () => {
     };
     const openPreview = vi.fn(() => preview);
     const provider = createEngineWorkspaceProvider({
-      openProjectSession: () => ({ project, app, assets, target, openPreview }),
+      openProjectSession: ({ generation }) =>
+        projectSessionFixture(project.root, generation, {
+          project,
+          app,
+          assets,
+          target,
+          openPreview,
+        }),
     });
-    const opened = await provider.openProject({ root: project.root });
+    const opened = await provider.openProject({ root: project.root, generation: 1 });
     const result = await provider.openPreview({
       project,
       projectHandle: opened.handle,
@@ -1768,8 +1865,24 @@ describe('Engine workspace public runtime', () => {
       height: 480,
     };
     const provider = createEngineWorkspaceProvider({
-      openProjectSession: () => ({
+      openProjectSession: ({ generation }) => ({
         project: { id: '/project', root: '/project' },
+        get status() {
+          return {
+            phase: 'running' as const,
+            sessionId: target.sessionId,
+            generation,
+            document: {
+              sessionId: target.sessionId,
+              targetId: target.targetId,
+              url: 'http://localhost/',
+              browserGeneration: 1,
+            },
+            target,
+            browserGeneration: 1,
+          };
+        },
+        subscribeStatus: () => () => {},
         get target() {
           return target;
         },
@@ -1778,9 +1891,13 @@ describe('Engine workspace public runtime', () => {
     });
     const runtime = createEngineWorkspaceRuntime(provider);
     await runtime.openProject({ root: '/project' });
-    expect(runtime.project?.target?.worldId).toBe('pending:session');
+    expect(
+      runtime.project?.status.phase === 'running' && runtime.project.status.target.worldId,
+    ).toBe('pending:session');
     target = { ...target, worldId: 'actual-world' };
-    expect(runtime.project?.target?.worldId).toBe('actual-world');
+    expect(
+      runtime.project?.status.phase === 'running' && runtime.project.status.target.worldId,
+    ).toBe('actual-world');
     await runtime.dispose();
   });
 
@@ -1788,7 +1905,8 @@ describe('Engine workspace public runtime', () => {
     const failure = new Error('native cleanup incomplete');
     let sequence = 0;
     const runtime = createEngineWorkspaceRuntime({
-      openProject: ({ root }) => ({ project: { id: root, root }, handle: ++sequence }),
+      openProject: ({ root, generation }) =>
+        projectSessionFixture(root, generation, { handle: ++sequence }),
       closeProject: () => {
         throw failure;
       },
@@ -1800,13 +1918,67 @@ describe('Engine workspace public runtime', () => {
     const opened = await runtime.openProject({ root: '/project' });
     await expect(runtime.closeProject(opened)).rejects.toBe(failure);
     expect(runtime.project).toBe(opened);
-    await expect(runtime.openProject({ root: '/replacement' })).rejects.toThrow(
-      'Workspace replacement cleanup failed',
+    await expect(runtime.openProject({ root: '/replacement' })).rejects.toBe(failure);
+    expect(runtime.project).toBe(opened);
+    expect(sequence).toBe(1);
+    await expect(runtime.closeProject(opened)).rejects.toBe(failure);
+    await expect(runtime.dispose()).rejects.toBe(failure);
+    await expect(runtime.dispose()).rejects.toBe(failure);
+    expect(runtime.project).toBe(opened);
+  });
+
+  it('keeps a healthy admitted project when candidate validation rejects', async () => {
+    const failure = new Error('candidate manifest invalid');
+    const close = vi.fn();
+    const runtime = createEngineWorkspaceRuntime({
+      openProject: ({ root, generation }) => {
+        if (root === '/invalid') throw failure;
+        return projectSessionFixture(root, generation);
+      },
+      closeProject: close,
+      listAssets: () => [],
+      openPreview: () => {
+        throw new Error('unused');
+      },
+    });
+    const first = await runtime.openProject({ root: '/healthy' });
+    await expect(runtime.openProject({ root: '/invalid' })).rejects.toBe(failure);
+    expect(runtime.project).toBe(first);
+    expect(close).not.toHaveBeenCalled();
+    await runtime.openProject({ root: '/valid' });
+    expect(close).toHaveBeenCalledOnce();
+    await runtime.dispose();
+  });
+
+  it('retains the first replacement retirement failure before subsequent allocations', async () => {
+    const failure = new EngineWorkspaceError(
+      'engine-workspace-page-lost',
+      'Native retirement failed',
+      'Inspect cleanup',
+      { cleanup: 'failed' },
     );
-    expect(runtime.project).toBe(opened);
+    let allocations = 0;
+    const close = vi.fn(({ project }: EngineWorkspaceProjectHandle) => {
+      if (project.root === '/first') throw failure;
+    });
+    const runtime = createEngineWorkspaceRuntime({
+      openProject: ({ root, generation }) =>
+        projectSessionFixture(root, generation, { handle: ++allocations }),
+      closeProject: close,
+      listAssets: () => [],
+      openPreview: () => {
+        throw new Error('unused');
+      },
+    });
+    const first = await runtime.openProject({ root: '/first' });
+    await expect(runtime.openProject({ root: '/second' })).rejects.toBe(failure);
+    expect(allocations).toBe(2);
+    expect(close).toHaveBeenCalledTimes(2); // Original retirement plus acquired candidate cleanup.
+    await expect(runtime.openProject({ root: '/third' })).rejects.toBe(failure);
+    expect(allocations).toBe(2);
+    expect(runtime.project).toBe(first);
     await expect(runtime.dispose()).rejects.toBe(failure);
-    await expect(runtime.dispose()).rejects.toBe(failure);
-    expect(runtime.project).toBe(opened);
+    expect(close).toHaveBeenCalledTimes(2);
   });
 
   it('reports unconfirmed retirement while allowing the existing exact lost-target reopen', async () => {
@@ -1816,23 +1988,23 @@ describe('Engine workspace public runtime', () => {
     );
     let generation = 0;
     const runtime = createEngineWorkspaceRuntime({
-      openProject: ({ root }) => {
+      openProject: ({ root, generation: ownerGeneration }) => {
         const current = ++generation;
-        return {
-          project: { id: root, root },
+        const target = {
+          targetId: `target-${current}`,
+          sessionId: `session-${current}`,
+          worldId: `world-${current}`,
+          width: 1,
+          height: 1,
+          headed: true,
+        };
+        return projectSessionFixture(root, ownerGeneration, {
           handle: current,
-          target: {
-            targetId: `target-${current}`,
-            sessionId: `session-${current}`,
-            worldId: `world-${current}`,
-            width: 1,
-            height: 1,
-            headed: true,
-          },
+          target,
           get failure() {
             return current === 1 ? failure : undefined;
           },
-        };
+        });
       },
       closeProject: ({ handle }) => {
         if (handle === 1)
@@ -1864,9 +2036,18 @@ describe('Engine workspace public runtime', () => {
       await runtime.openProject({ root: '/project' });
       const result = await api.run(
         'engine.project.open',
-        { root: '/project', expectedTargetId: 'target-1', expectedTargetState: 'lost' },
+        {
+          root: '/project',
+          expectedProject: {
+            kind: 'session',
+            sessionId: 'session-1',
+            generation: 1,
+            recovery: 'lost',
+          },
+        },
         { sourceId: 'engine' },
       ).terminal;
+      expect(failure.detail).toMatchObject({ cleanup: 'unconfirmed' });
       expect(result).toMatchObject({
         outcome: 'succeeded',
         result: {
@@ -1882,7 +2063,7 @@ describe('Engine workspace public runtime', () => {
 
   it('exposes the runtime through the Engine-owned Cordis plugin seam', () => {
     const runtime = createEngineWorkspaceRuntime({
-      openProject: ({ root }) => ({ project: { id: root, root } }),
+      openProject: ({ root, generation }) => projectSessionFixture(root, generation),
       closeProject: () => undefined,
       listAssets: () => [],
       openPreview: () => ({
@@ -1908,7 +2089,8 @@ it('refuses assets without a preview owner before allocating a browser App', asy
     throw new Error('no preview should be allocated');
   });
   const runtime = createEngineWorkspaceRuntime({
-    openProject: ({ root }) => ({ project: { id: root, root }, handle: root }),
+    openProject: ({ root, generation }) =>
+      projectSessionFixture(root, generation, { handle: root }),
     closeProject: () => {},
     listAssets: () => [{ guid: SCENE_GUID, kind: 'ui', previewable: false }],
     openPreview,

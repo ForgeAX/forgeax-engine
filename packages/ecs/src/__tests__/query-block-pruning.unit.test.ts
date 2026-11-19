@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import { defineComponent } from '../component';
-import { QueryIterationInvalidatedError } from '../errors';
 import { World } from '../world';
 
 const Value = defineComponent('BlockQueryValue', { value: 'f32' });
@@ -68,7 +67,9 @@ describe('dense temporal query iteration', () => {
     expect(entities(query)).toEqual([rows[0]]);
     const invalidated = query[Symbol.iterator]();
     populate(world, 1);
-    expect(() => invalidated.next()).toThrow(QueryIterationInvalidatedError);
+    expect(() => invalidated.next()).toThrow(
+      expect.objectContaining({ code: 'query-iteration-invalidated' }),
+    );
   });
 
   it('keeps sparse temporal membership and independent World cursors', () => {

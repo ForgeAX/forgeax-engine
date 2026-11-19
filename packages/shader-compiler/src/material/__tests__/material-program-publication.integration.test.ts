@@ -5,7 +5,8 @@ import {
   serializeCookedMaterialRecord,
   validateCookedMaterialRecord,
 } from '@forgeax/engine-pack/material-cook';
-import type { MaterialAsset } from '@forgeax/engine-types';
+import { ShaderRegistry } from '@forgeax/engine-shader';
+import { type MaterialAsset, projectMaterialParameterSchema } from '@forgeax/engine-types';
 import { beforeAll, expect, it } from 'vitest';
 import { createMaterialPackCooker } from '../pack-cooker.js';
 
@@ -21,7 +22,11 @@ async function buildPublicationScenario() {
         `#define_import_path game::${name}
 #import forgeax_material::parameters::{material}
 @vertex fn vs_main() -> @builtin(position) vec4<f32> { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }
-@fragment fn fs_main() -> @location(0) vec4<f32> { return material.baseColor * ${factor}.0; }
+fn unused_discard() { discard; }
+@fragment fn fs_main() -> @location(0) vec4<f32> {
+ ${name === 'second' ? 'if material.baseColor.a < 0.5 { discard; }' : ''}
+ return material.baseColor * ${factor}.0;
+}
 `,
       );
     }
@@ -120,6 +125,50 @@ it('keeps native shader bytes binary until the Pack transport boundary', () => {
   const wire = JSON.parse(serializeCookedMaterialRecord(scenario.record));
   expect(Array.isArray(wire.programs[0].artifact.bytes)).toBe(true);
   expect(validateCookedMaterialRecord(wire).unwrap().programs).toEqual(scenario.record.programs);
+});
+
+it('retains selected native effects through cooked JSON, registry publication and device forks', () => {
+  const restored = validateCookedMaterialRecord(
+    JSON.parse(serializeCookedMaterialRecord(scenario.record)),
+  ).unwrap();
+  const schema = projectMaterialParameterSchema(
+    restored.resolved.parameters ?? [],
+    'effects-publication',
+    'runtime',
+  ).unwrap();
+  const registry = new ShaderRegistry({ manifestUrl: undefined });
+  restored.programs.forEach((program, index) => {
+    const selection = program.selections[0];
+    if (selection?.abi === undefined) throw Error('missing selected ABI');
+    const entryPoints = selection.abi.entryPoints;
+    expect(entryPoints?.find((entry) => entry.name === 'fs_main')?.effects).toEqual({
+      mayDiscard: selection.pass === 'Overlay',
+      writesDepth: false,
+      writesSampleMask: false,
+      writesStorage: false,
+    });
+    registry.installMaterialArtifact(`game::effect-${index}`, {
+      source: new TextDecoder().decode(program.artifact.bytes),
+      paramSchema: schema,
+      receipt: selection.abi,
+      ...(entryPoints === undefined ? {} : { entryPoints }),
+    });
+  });
+  const fork = registry.forkForDevice({
+    createShaderModule: () => {
+      throw Error('unexpected GPU work');
+    },
+  } as never);
+  restored.programs.forEach((program, index) => {
+    expect(
+      registry.findMaterialArtifact(`game::effect-${index}`).unwrap().program.entryPoints,
+    ).toBeDefined();
+    const row = fork
+      .materialProgram(new TextDecoder().decode(program.artifact.bytes))
+      .entryPoints?.find((entry) => entry.name === 'fs_main');
+    expect(row?.effects?.mayDiscard).toBe(program.selections[0]?.pass === 'Overlay');
+    expect(Object.isFrozen(row?.effects)).toBe(true);
+  });
 });
 
 it('publishes external bytes from the complete validated record', () => {

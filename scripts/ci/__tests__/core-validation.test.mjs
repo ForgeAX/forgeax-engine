@@ -54,6 +54,16 @@ test('Browser retains approximately eighty percent of measured work', () => {
   }
 });
 
+test('WaterMesh visibility stays in the core Browser GPU roster', () => {
+  const file = 'packages/runtime/src/__tests__/water-mesh-visibility.browser.test.ts';
+  assert.ok(coreValidationFiles(browserTestFiles(), core).includes(file));
+  const workflow = parse(readFileSync('.github/workflows/ci.yml', 'utf8'));
+  const evidence = workflow.jobs['vitest-browser-shard'].steps.find(
+    (step) => step.name === 'Preserve render browser failure evidence',
+  );
+  assert.ok(evidence.with.path.includes('artifacts/water-mesh-visibility/'));
+});
+
 test('workflow selects full Nightly and core PR work without adding execution lanes', () => {
   const workflow = parse(readFileSync('.github/workflows/ci.yml', 'utf8'));
   assert.equal(

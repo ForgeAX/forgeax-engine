@@ -9,7 +9,6 @@ function lease(): RenderWorldLease {
     worldIdentity: {},
     generation: 0,
     readChanges: vi.fn(),
-    querySpans: vi.fn(),
     inspectCursor: vi.fn(),
     dispose: vi.fn(),
   } as unknown as RenderWorldLease;

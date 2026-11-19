@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { createToolRuntime } from '@forgeax/engine-tool-runtime';
+import { createToolApi, createToolRuntime } from '@forgeax/engine-tool-runtime';
+import { createHostTransport } from '@forgeax/engine-host/transport';
+import { mkdtemp, mkdir, writeFile, rm, realpath } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { resolve, join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { build } from 'esbuild';
 
 import { ViewWorkspaceClient } from '@forgeax/view-workspace-core/client';
 import { ViewWorkspaceBroker } from '@forgeax/view-workspace-core/broker';
@@ -11,6 +17,68 @@ import {
   createWorkspaceRequest,
   workspaceUiFingerprint,
 } from '@forgeax/view-workspace-core/contract';
+
+it('forwards real Engine catalogue values and failures through ToolApi, broker and client', async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'view-project-catalogue-')));
+  const project = join(root, 'second');
+  const previous = process.env.FORGEAX_DATA_HOME;
+  process.env.FORGEAX_DATA_HOME = join(root, 'data');
+  const api = createToolApi();
+  const transport = createHostTransport();
+  let broker, unregister;
+  try {
+    await mkdir(project);
+    await writeFile(join(project, 'forge.json'), JSON.stringify({
+      schemaVersion: '3.0.0', id: 'second', name: 'Second Project', roots: {}, assetRoots: ['assets'],
+    }));
+    await writeFile(join(project, 'package.json'), '{}');
+    const outfile = join(root, 'catalogue.mjs');
+    await build({
+      entryPoints: [resolve(import.meta.dirname, '../../../packages/devkit/src/project-catalogue-tools.ts')],
+      bundle: true, platform: 'node', format: 'esm', outfile,
+      plugins: [{ name: 'installed-catalogue-dependencies', setup(builder) {
+        builder.onResolve({ filter: /^[^./]/ }, async ({ path, resolveDir, pluginData }) => {
+          if (path.startsWith('node:') || pluginData === 'installed') return;
+          const resolved = await builder.resolve(path, { resolveDir, kind: 'import-statement', pluginData: 'installed' });
+          return { path: resolved.path, external: true, errors: resolved.errors };
+        });
+      } }],
+    });
+    const module = await import(pathToFileURL(outfile).href);
+    api.registerProvider({ providerId: 'catalogue', sourceId: 'engine-workspace', realm: 'host',
+      tools: module.createProjectCatalogueTools() });
+    broker = new ViewWorkspaceBroker({ toolApi: api, accessToken: 'catalogue-test' });
+    unregister = broker.registerTransport(transport);
+    const client = new ViewWorkspaceClient({ clientId: 'catalogue-ui', token: 'catalogue-test',
+      transport: transport.connect({ kind: 'frontend', sourceId: 'catalogue-ui' }) });
+    assert.deepEqual(await client.listProjects(), []);
+    const listing = await client.browseProjects(root);
+    assert.equal(listing.path, root);
+    assert.equal(listing.directories.find(entry => entry.path === project).hasForgeManifest, true);
+    const registered = await client.registerProject(project);
+    assert.equal(registered.root, project);
+    assert.equal(registered.id, 'second');
+    const projects = await client.listProjects();
+    assert.equal(projects[0].name, 'Second Project');
+    assert.equal(projects[0].availability, 'available');
+    await assert.rejects(client.browseProjects('relative', { reportError: false }), error => {
+      assert.equal(error.code, 'view-workspace-provider-failed');
+      assert.equal(error.detail.failure.detail.code, 'known-project-directory-invalid');
+      assert.match(error.hint, /absolute/i);
+      return true;
+    });
+    assert.equal((await client.listProjects())[0].root, project);
+    assert.equal((await client.getState()).project, null, 'catalogue reads do not prepare a World');
+  } finally {
+    unregister?.();
+    transport.close();
+    await broker?.dispose();
+    await api.dispose();
+    if (previous === undefined) delete process.env.FORGEAX_DATA_HOME;
+    else process.env.FORGEAX_DATA_HOME = previous;
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 describe('workspace asset inspection contract', () => {
   it('keeps a Pack reveal receipt serializable through the ToolApi boundary', async () => {
@@ -123,7 +191,9 @@ it('summary.get projects bounded identities without catalog or UI selections', a
   const previews = Array.from({ length: 20 }, (_, index) => ({ target: { targetId: `preview-${index}`, generation: index } }));
   const broker = new ViewWorkspaceBroker({ engine: {
     project: { project: { id: 'project', root: '/project', name: 'Game', secret: 'not-summary' },
-      target: { targetId: 'project-target', generation: 4 }, phase: 'running', browserGeneration: 7 },
+      status: { phase: 'running', sessionId: 'project-session', generation: 4,
+        target: { targetId: 'project-target', generation: 4 }, browserGeneration: 7 } },
+    get projectStatus() { return this.project.status; },
     previews,
   }, accessToken: 'token' });
   broker.assets = [{ guid: 'private-catalog-item' }];
@@ -143,7 +213,9 @@ it('summary.get projects bounded identities without catalog or UI selections', a
 it('summary.get derives the project generation from its exact live root preview', async () => {
   const engine = {
     project: { project: { id: 'project', root: '/project' },
-      target: { targetId: 'project-target' }, phase: 'running', browserGeneration: 99 },
+      status: { phase: 'running', sessionId: 'project-session', generation: 1,
+        target: { targetId: 'project-target' }, browserGeneration: 99 } },
+    get projectStatus() { return this.project.status; },
     previews: [],
     preview: { target: { targetId: 'project-target', generation: 7 } },
   };

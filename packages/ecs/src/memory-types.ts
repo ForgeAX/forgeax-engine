@@ -1,3 +1,6 @@
+import type { FrameArenaStats } from './frame-arena';
+import type { BufferReaderStats, OwnedBufferStats } from './owned-buffers';
+import type { ArrayStoreStats } from './storage/array-store';
 export type MemoryArray =
   | Int8Array
   | Uint8Array
@@ -86,7 +89,7 @@ export interface MemoryBudget {
 }
 export interface WorldMemoryOptions {
   readonly arena?: MemoryBudget & { readonly maxScopeBytes?: number };
-  /** Covers owned-buffer requests against the shared pool; component admission remains unchanged. */
+  /** Covers owned-buffer backing, including idle capacity; component admission remains independent. */
   readonly buffers?: MemoryBudget;
 }
 export function memoryLimit(value: number | undefined, fallback: number): number {
@@ -99,4 +102,29 @@ export function memoryLimit(value: number | undefined, fallback: number): number
 /** Synchronous execution cannot admit a reader suspended past scope close. */
 export function isSuspendedMemoryResult(value: unknown): boolean {
   return value !== null && typeof value === 'object' && ('then' in value || 'next' in value);
+}
+
+export const WORLD_MEMORY_COVERAGE = Object.freeze({
+  backing: Object.freeze([
+    'arena',
+    'owned-pool',
+    'component-arrays',
+    'tables',
+    'entity-records',
+    'archetype-rows',
+  ] as const),
+  hardBudgets: Object.freeze(['arena', 'owned-buffer-admission'] as const),
+  excluded: Object.freeze(['vm-heap', 'external-resources', 'native', 'gpu'] as const),
+});
+export interface WorldMemoryStats {
+  readonly arena: FrameArenaStats;
+  /** Owned system buffers (`world.buffers`). */
+  readonly buffers: OwnedBufferStats;
+  /** Variable `array<T>` / `buffer` component fields. */
+  readonly arrays: ArrayStoreStats;
+  readonly readers: BufferReaderStats;
+  readonly tableBytes: number;
+  readonly entityRecordBytes: number;
+  readonly archetypeBytes: number;
+  readonly coverage: typeof WORLD_MEMORY_COVERAGE;
 }

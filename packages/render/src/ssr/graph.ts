@@ -20,6 +20,7 @@ import { GPU_SHADER_STAGE_COMPUTE } from '../gpu-stage';
 import { registerScenePipelinePreparation } from '../record/scene-pipeline-preparation';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
 import type { RenderPipelineFrame } from '../render-pipeline';
+import { STANDARD_GBUFFER_V2_PIPELINE_CONSTANTS } from '../standard-attachments';
 import type { SsrSpatialAdmission } from './admission';
 import { addSsrFragmentStages } from './raster';
 import {
@@ -75,6 +76,7 @@ export interface SsrSpatialGraphInputs {
   /** Opaque tracing reads closest depth; the independent Water profile reads furthest depth. */
   readonly depthPyramid?: DepthPyramid;
   readonly normal?: GraphTextureView;
+  readonly gbufferV2?: boolean;
   /** Current-view radiance paired with depth; prior radiance belongs to the temporal resolve. */
   readonly scene?: GraphTextureView;
   /** Standard temporal-v1 source metadata, needed by trace even without history. */
@@ -133,9 +135,23 @@ function missingInput(field: string, actual = 'missing'): Result<never, RenderGr
 
 function shaderSource(
   frame: RenderGraphFrame,
-  stage: keyof NonNullable<RenderPipelineFrame['ssrShaders']>,
+  stage: Exclude<keyof NonNullable<RenderPipelineFrame['ssrShaders']>, 'gbuffer'>,
+  gbufferV2 = false,
 ): string | import('@forgeax/engine-types').ShaderSource | undefined {
-  return (frame as RenderPipelineFrame).ssrShaders?.[stage];
+  const sources = (frame as RenderPipelineFrame).ssrShaders;
+  if (gbufferV2 && sources?.gbuffer !== 'standard-gbuffer/2')
+    throw new RenderGraphError({
+      code: 'resource-descriptor-invalid',
+      expected: 'standard-gbuffer/2 SSR readers',
+      hint: 'Rebuild the Engine shader manifest.',
+      detail: {
+        resourceLabel: 'ssr',
+        field: 'gbuffer',
+        expected: 'standard-gbuffer/2',
+        actual: sources?.gbuffer ?? 'missing',
+      },
+    });
+  return sources?.[stage];
 }
 
 function addPass<FrameCtx extends RenderGraphFrame>(
@@ -541,7 +557,7 @@ export function addSsrSpatialPasses<FrameCtx extends RenderGraphFrame>(
       (frame) =>
         input.view === undefined || (origin !== undefined && origin.inputParams === undefined)
           ? undefined
-          : shaderSource(frame, 'trace'),
+          : shaderSource(frame, 'trace', input.gbufferV2),
       'ssr_trace',
       computeEntries.trace,
       origin === undefined
@@ -549,15 +565,17 @@ export function addSsrSpatialPasses<FrameCtx extends RenderGraphFrame>(
         : origin.sceneColorHistory === undefined
           ? 'ssr_water_trace'
           : 'ssr_water_trace_history',
+      input.gbufferV2 === true ? STANDARD_GBUFFER_V2_PIPELINE_CONSTANTS : undefined,
     );
     const prepareTemporal = createComputeStatePreparation(
       (frame) =>
         input.view === undefined || (origin !== undefined && origin.inputParams === undefined)
           ? undefined
-          : shaderSource(frame, 'temporal'),
+          : shaderSource(frame, 'temporal', input.gbufferV2),
       'ssr_temporal',
       temporal?.profile === 'opaque' ? computeEntries.temporal : computeEntries.waterTemporal,
       origin === undefined ? 'ssr_temporal' : 'ssr_water_temporal',
+      input.gbufferV2 === true ? STANDARD_GBUFFER_V2_PIPELINE_CONSTANTS : undefined,
     );
     const prepareReflectionMip = createComputeStatePreparation(
       (frame) => shaderSource(frame, 'temporal'),
@@ -623,7 +641,7 @@ export function addSsrSpatialPasses<FrameCtx extends RenderGraphFrame>(
           : [{ resource: input.view, usage: 'uniform-read' as const }]),
       ],
       ({ pass, frame, resources: resolver }) => {
-        const source = shaderSource(frame, 'trace');
+        const source = shaderSource(frame, 'trace', input.gbufferV2);
         // Structural callers may omit the shared View buffer when they only
         // inspect topology. A real shader execution must bind it because the
         // trace reconstructs world position and reads the validated SSR tail.

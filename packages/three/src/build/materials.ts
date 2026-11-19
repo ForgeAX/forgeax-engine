@@ -73,3 +73,5 @@ export async function cookPhysicalMaterials(
   if (!compressed.ok) throw compressed.error;
   return Buffer.from(compressed.value).toString('base64');
 }
+
+export { cookThreeSurface } from './surface';

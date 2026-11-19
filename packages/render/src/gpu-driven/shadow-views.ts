@@ -29,6 +29,7 @@ import type {
   SubmissionCandidateMembershipEntry,
   SubmissionPlan,
 } from './batch-topology';
+import { planDrawsSkin } from './batch-topology';
 import { GpuDrawSelection } from './draw-selection';
 import { inheritTaskHeaders } from './fixed-task-plan';
 import type { LodViewCamera } from './lod-projection.wgsl';
@@ -447,10 +448,6 @@ function captureExecution(source: SubmissionPlan, scene: GpuScene): SubmissionPl
     visibleCapacity: source.visibleCapacity,
     batches: Object.freeze(batches),
   });
-}
-
-function planDrawsSkin(plan: SubmissionPlan): boolean {
-  return plan.batches.some((batch) => batch.prepared?.identity.deformation === 'skin');
 }
 
 export function shadowViewLabelPrefix(identity: ShadowViewIdentity): string {

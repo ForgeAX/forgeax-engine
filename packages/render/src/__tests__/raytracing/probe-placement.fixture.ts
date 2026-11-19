@@ -152,11 +152,11 @@ function verifyProducedRanges(tape: V7Tape, model: FrameModel) {
   });
 }
 
-/** Independent plane oracle: camera-relative raster slopes, native oct-normal,
+/** Independent plane oracle: camera-relative raster slopes, native XYZ10 normal,
  * and exact Hammersley texel addresses. No production shader is interpreted. */
 function planeOracle(rect = [0, 0, 64, 64]) {
   const [left = 0, top = 0, width = 64, height = 64] = rect;
-  const normal = [1 / 4095, 1 / 4095, 1 - 2 / 4095];
+  const normal = [1 / 1023, 1 / 1023, 1];
   const norm = Math.hypot(...normal);
   const sum = [0, 0, 0];
   const addresses: number[][] = [];
@@ -216,14 +216,17 @@ export async function verifyProbePlacement(fixture: ProbePlacementFixture) {
   try {
     const capture = recorder.captureFrame();
     (await recorder.frameBoundary()).unwrap();
-    const makeTexture = (format: 'depth32float' | 'r32uint' | 'rgba32uint', width = 64) => {
+    const makeTexture = (
+      format: 'depth32float' | 'rg32uint' | 'r32uint' | 'rgba32uint',
+      width = 64,
+    ) => {
       const texture = device
         .createTexture({ size: { width, height: 64, depthOrArrayLayers: 1 }, format, usage: 0x17 })
         .unwrap();
       return device.createTextureView(texture, {}).unwrap();
     };
     const depth = makeTexture('depth32float'),
-      normal = makeTexture('r32uint'),
+      normal = makeTexture('rg32uint'),
       identity = makeTexture('rgba32uint');
     const buffer = (size: number, uniform = false) =>
       device.createBuffer({ size, usage: (uniform ? 0x40 : 0x80) | 0xc }).unwrap();
@@ -299,7 +302,7 @@ export async function verifyProbePlacement(fixture: ProbePlacementFixture) {
         fragment: {
           module,
           entryPoint: 'fs',
-          targets: [{ format: 'r32uint' }, { format: 'rgba32uint' }],
+          targets: [{ format: 'rg32uint' }, { format: 'rgba32uint' }],
         },
         primitive: { topology: 'triangle-list' },
         depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'always' },
@@ -410,7 +413,7 @@ export async function verifyProbePlacement(fixture: ProbePlacementFixture) {
     const flipped = await run('placement-shading-normal-control', 7);
     expect(flipped.u[2]).toBe(1);
     expect(flipped.f[2]).toBeLessThan(0.3);
-    const mismatchNormal = makeTexture('r32uint', 32);
+    const mismatchNormal = makeTexture('rg32uint', 32);
     const initializeMismatch = device.createCommandEncoder({}).unwrap();
     initializeMismatch
       .beginRenderPass({

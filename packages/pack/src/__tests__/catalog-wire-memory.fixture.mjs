@@ -1,17 +1,7 @@
-import { registerHooks } from 'node:module';
+import './native-source.fixture.mjs';
 import { decodeCatalogWire, encodeCatalogWire } from '../catalog-wire.ts';
 
 const publicationUrl = new URL('../runtime-publication.ts', import.meta.url).href;
-registerHooks({
-  resolve(specifier, context, nextResolve) {
-    return nextResolve(
-      context.parentURL === publicationUrl && specifier === './material-program-wire.js'
-        ? new URL('../material-program-wire.ts', import.meta.url).href
-        : specifier,
-      context,
-    );
-  },
-});
 const { createRuntimePackPublication } = await import(publicationUrl);
 
 const { publication } = createRuntimePackPublication({

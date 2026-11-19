@@ -1,4 +1,4 @@
-import type { Buffer, Sampler, TextureView } from '@forgeax/engine-rhi';
+import type { Buffer, Sampler, TextureFormat, TextureView } from '@forgeax/engine-rhi';
 
 export interface ReflectionProbeTableRow {
   readonly primitiveKey?: string;
@@ -7,6 +7,17 @@ export interface ReflectionProbeTableRow {
   readonly center: readonly [number, number, number];
   readonly halfExtents: readonly [number, number, number];
   readonly intensity: number;
+  readonly boxProjection?: boolean;
+  /** Same accepted PMREM content, addressed as one native array class/layer. */
+  readonly pmremArray?: {
+    readonly key: string;
+    readonly view: TextureView;
+    readonly layer: number;
+    readonly capacity: number;
+    readonly generation: number;
+    readonly size: number;
+    readonly format: TextureFormat;
+  };
   readonly generation: number;
   /** Renderer-owned filtered cube used by the Standard material lane. */
   readonly filteredView?: TextureView;

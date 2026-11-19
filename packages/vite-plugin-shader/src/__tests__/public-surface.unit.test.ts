@@ -189,6 +189,34 @@ describe('vite-plugin-shader public engine input surface', () => {
     expect(entries.ssrTrace.source).toContain('#define_import_path forgeax_ssr::trace');
     expect(entries.ssrTemporal.source).toContain('#define_import_path forgeax_ssr::temporal');
     expect(entries.ssrCompose.source).toContain('fn fs_ssr_compose(');
+    for (const reader of [
+      entries.hdrpSsao,
+      entries.hdrpGtaoCompute,
+      entries.ssrTrace,
+      entries.ssrTemporal,
+      entries.ssrCompose,
+      entries.ssrTraceFragment,
+      entries.ssrTemporalFragment,
+      entries.ssrComposeFragment,
+      entries.rayRasterSource,
+      entries.rayProbePlacement,
+      entries.rayDiffuseComposite,
+      entries.rayDiffuseReconstruct,
+      entries.rayIrradianceField,
+      entries.rayBakedField,
+      entries.rayScreenProbe,
+      entries.rayReflectionComposite,
+      entries.standardDeferred,
+      entries.decalProject,
+      entries.decalApply,
+      entries.subsurfaceDiffusion,
+    ]) {
+      expect(reader.programContract).toMatchObject({
+        schemaVersion: 'shader-program-contract/1',
+        gbuffer: 'standard-gbuffer/2',
+      });
+    }
+    expect(entries.depthPyramidSeed.programContract?.gbuffer).toBeUndefined();
     for (const [native, fragment] of [
       [entries.depthPyramidSeed, entries.depthPyramidSeedFragment],
       [entries.depthPyramidReduce, entries.depthPyramidReduceFragment],

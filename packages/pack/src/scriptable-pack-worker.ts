@@ -19,7 +19,11 @@ import {
   transpileTextDigest,
   validSnapshotTranspileText,
 } from './scriptable-pack-transpile-text.js';
-import { isScriptablePackField, projectFailure } from './scriptable-pack-wire.js';
+import {
+  isScriptablePackField,
+  projectFailure,
+  type ScriptablePackPackageBinding,
+} from './scriptable-pack-wire.js';
 
 if (parentPort === null) throw new Error('ScriptablePack worker requires a parent port');
 
@@ -28,6 +32,7 @@ const flushCompileCache = (
   nodeModule as typeof nodeModule & { readonly flushCompileCache?: () => void }
 ).flushCompileCache;
 const port = parentPort;
+let selectedPackage: { readonly name: string; readonly manifestPath: string } | undefined;
 let capturedSources: Readonly<Record<string, string>> | undefined;
 let capturedJsonInputs: CapturedJsonInputs | undefined;
 let capturedTranspiles: readonly SnapshotTranspileText[] | undefined;
@@ -142,7 +147,13 @@ function resolveBareImport(importer: string, specifier: string): string | undefi
   // packages. Relocation must neither borrow the loader's dependencies nor
   // redirect a domain export into the Pack implementation's dependency graph.
   try {
-    const resolved = resolver(specifier, pathToFileURL(importer).href);
+    const binding = selectedPackage;
+    const parent =
+      binding !== undefined &&
+      (specifier === binding.name || specifier.startsWith(`${binding.name}/`))
+        ? binding.manifestPath
+        : importer;
+    const resolved = resolver(specifier, pathToFileURL(parent).href);
     if (resolved.startsWith('file:')) return fileURLToPath(resolved);
   } catch {
     // Resolution refusal remains a missing author edge with its original path.
@@ -472,7 +483,20 @@ async function loadDefinition(task: {
   readonly transpiles?: readonly SnapshotTranspileText[];
   /** Metadata loads compile only the statically imported closure. */
   readonly staticOnly: boolean;
+  readonly packageBinding?: ScriptablePackPackageBinding;
 }): Promise<void> {
+  selectedPackage = undefined;
+  const binding = task.packageBinding;
+  if (binding !== undefined) {
+    const manifestPath = join(binding.root, 'package.json');
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
+      name?: unknown;
+      exports?: unknown;
+    };
+    if (manifest.name !== binding.name || manifest.exports == null)
+      throw new Error('Selected authored package must declare its bound name and exports');
+    selectedPackage = { name: binding.name, manifestPath };
+  }
   capturedSources = task.sources;
   capturedJsonInputs = task.jsonInputs;
   capturedTranspiles = task.transpiles;
@@ -559,6 +583,9 @@ function capturedLoadInputs(value: Record<string, unknown>) {
       ? {}
       : { transpiles: value.transpiles as readonly SnapshotTranspileText[] }),
     staticOnly: value.staticOnly === true,
+    ...(value.packageBinding === undefined
+      ? {}
+      : { packageBinding: value.packageBinding as ScriptablePackPackageBinding }),
   };
 }
 

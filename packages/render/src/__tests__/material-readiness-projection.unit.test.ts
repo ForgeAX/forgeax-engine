@@ -246,6 +246,7 @@ it('captures a shared residency record before the producer changes it', () => {
   const captured = [];
   for (let entityKey = 1; entityKey <= 128; entityKey++) {
     const projected = projectMeshMaterialBindingObservation({
+      worldId: 0,
       entityKey,
       bindings: [{ handle: 0, source: 'engine-default' }],
       diagnostics: [],
@@ -271,6 +272,7 @@ it('detaches raw mutable residency even when only its outer record is frozen', (
     preparationFailure: failure,
   });
   const projected = projectMeshMaterialBindingObservation({
+    worldId: 0,
     entityKey: 9,
     bindings: [{ handle: 0, source: 'engine-default' }],
     diagnostics: [],
@@ -309,14 +311,26 @@ it('shares producer-captured residency while recapturing raw and shallow-frozen 
   };
   const published = publishMeshMaterialBindingResidency(source);
   const count = reads;
-  const first = projectMeshMaterialBindingObservation({ ...input, residency: [published] });
-  const second = projectMeshMaterialBindingObservation({ ...input, residency: [published] });
+  const first = projectMeshMaterialBindingObservation({
+    worldId: 0,
+    ...input,
+    residency: [published],
+  });
+  const second = projectMeshMaterialBindingObservation({
+    worldId: 0,
+    ...input,
+    residency: [published],
+  });
   expect(reads).toBe(count);
   expect(first.residency[0]).toBe(second.residency[0]);
   expect(first.residency[0]?.samplers[0]?.handle).toBe(7);
   handle = 9;
-  const raw = projectMeshMaterialBindingObservation({ ...input, residency: [source] });
-  const rawAgain = projectMeshMaterialBindingObservation({ ...input, residency: [source] });
+  const raw = projectMeshMaterialBindingObservation({ worldId: 0, ...input, residency: [source] });
+  const rawAgain = projectMeshMaterialBindingObservation({
+    worldId: 0,
+    ...input,
+    residency: [source],
+  });
   expect(raw.residency[0]).not.toBe(rawAgain.residency[0]);
   expect(raw.residency[0]?.samplers[0]?.handle).toBe(9);
   expect(first.residency[0]?.samplers[0]?.handle).toBe(7);

@@ -12,15 +12,16 @@ Serve View on an already-running Engine backend.
 Usage:
   forgeax-view-start [--root <backend-workspace>] [--project <project>] [--json]
 
-With the project command plugin installed: forgeax view start --root <project>
+For normal one-file startup use node <installed-engine>/tools/view/start.mjs --project <game>.
+With an already-running compatible Backend: forgeax view start --root <backend-workspace> --project <game>
 
 Run forgeax backend start first. Open the returned URL in an ordinary browser.
-Starting View does not open a project or start a game.
---project carries an explicit project-open intent in the returned URL.
-The browser opens that project after connecting; the command creates no target.
+--project admits the project on the Engine backend before returning a plain View URL.
+The backend owns the project session; opening the URL attaches the Shell to its facts.
+The command does not launch a browser or Play.
 
 Environment:
-  FORGEAX_PROJECT_ROOT             project root when --root is omitted
+  FORGEAX_PROJECT_ROOT             backend workspace when --root is omitted
 `;
 
 function parseHelp(argv: readonly string[]) {

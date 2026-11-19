@@ -1,5 +1,6 @@
 import { drawWorld } from '../../../render/src/__tests__/draw-world';
 import {
+  nativeOutputShaderFixture,
   standardPbrManifestRow,
   waterInfoShaderFixture,
 } from '../../../render/src/__tests__/shader-manifest-fixture';
@@ -174,6 +175,9 @@ function makeMockGPUDevice(spies: DeviceSpies, maxTextureDimension2D = 8192): { 
         setStencilReference: () => undefined,
         setViewport: () => undefined,
         setScissorRect: () => undefined,
+        setBlendConstant: () => undefined,
+        pushDebugGroup: () => undefined,
+        popDebugGroup: () => undefined,
         draw: () => undefined,
         drawIndexed: () => undefined,
         drawIndirect: () => undefined,
@@ -227,6 +231,7 @@ function buildManifestDataUrl(): string {
   const manifest = {
     entries: [
       ...waterInfoShaderFixture.entries,
+      ...nativeOutputShaderFixture.entries,
       // Stub WGSL must satisfy the runtime's compatibility heuristics; the
       // pbr stub references f_schlick to mark the shader as PBR-shaped, the
       // tonemap stub declares TonemapParams to mark it as tonemap-shaped.
@@ -242,6 +247,7 @@ function buildManifestDataUrl(): string {
     ],
     materialShaders: [
       ...waterInfoShaderFixture.materialShaders,
+      ...nativeOutputShaderFixture.materialShaders,
       standardPbrManifestRow('/* pbr stub - calls f_schlick( */'),
       materialShaderStub('forgeax::default-unlit'),
     ],

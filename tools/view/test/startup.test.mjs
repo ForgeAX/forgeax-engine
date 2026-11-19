@@ -1,11 +1,11 @@
 import viewRoot from '../src/plugin.ts';
 import { startNativePlugin } from '@forgeax/engine-plugin';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { createDevKitBackend } from '@forgeax/engine/devkit';
+import { createDevKitBackend, devKitWorkspacePlugin } from '@forgeax/engine/devkit';
 import { createBackendHost } from '@forgeax/engine-host';
 import { defineTool, toolJsonSchema } from '@forgeax/engine-tool-runtime';
 import display from '../packages/view-plugin-display/src/backend.ts';
@@ -35,6 +35,8 @@ async function until(probe) {
 
 test('View native plugin start/stop and removal preserve the owning Engine Host', { timeout: 15_000 }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'view-startup-'));
+  const previousDataHome = process.env.FORGEAX_DATA_HOME;
+  process.env.FORGEAX_DATA_HOME = join(root, 'data');
   await writeFile(join(root, 'package.json'), JSON.stringify({ name: 'view-startup-fixture', type: 'module', dependencies: { '@forgeax/engine': '0.2.0' } }));
   await writeFile(join(root, 'index.html'), '<!doctype html><title>View fixture</title>');
   await writeFile(join(root, 'forge.json'), JSON.stringify({
@@ -51,8 +53,10 @@ test('View native plugin start/stop and removal preserve the owning Engine Host'
     assert.equal(first.phase, 'ready');
     assert.match(first.presentationId, /^[a-f0-9]{64}$/);
     assert.equal((await fetch(first.url)).status, 200);
-    assert.equal(workspace.project, undefined);
+    assert.equal(workspace.project.project.root, await realpath(root));
+    const selectedProject = workspace.project;
     assert.deepEqual(await start(), first, 'reopening preserves the current View presentation');
+    assert.equal(workspace.project, selectedProject, 'reopening preserves the owning Engine selection');
     assert.equal((await call(host, 'view.stop', 'view-launcher')).phase, 'stopped');
     assert.equal(host.context.engineWorkspace, workspace);
     assert.ok(host.context.toolApi.describe('engine.project.open', 'engine-workspace').some(record => record.callable));
@@ -67,7 +71,67 @@ test('View native plugin start/stop and removal preserve the owning Engine Host'
     assert.equal(host.context.get('devkitWorkspaceFrontend'), undefined);
     assert.equal(host.context.toolApi.describe('view.start', 'view-launcher').filter(record => record.callable).length, 0);
     await assert.rejects(fetch(second.url));
-  } finally { await engine.dispose(); await rm(root, { recursive: true, force: true }); }
+  } finally {
+    await engine.dispose(); await rm(root, { recursive: true, force: true });
+    if (previousDataHome === undefined) delete process.env.FORGEAX_DATA_HOME;
+    else process.env.FORGEAX_DATA_HOME = previousDataHome;
+  }
+});
+
+test('explicit View restart recovers the exact retired Engine project session', { timeout: 15_000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'view-startup-'));
+  const previousDataHome = process.env.FORGEAX_DATA_HOME;
+  process.env.FORGEAX_DATA_HOME = join(root, 'data');
+  await mkdir(join(root, 'assets'));
+  await writeFile(join(root, 'package.json'), JSON.stringify({ name: 'view-startup-fixture', type: 'module', dependencies: { '@forgeax/engine': '0.2.0' } }));
+  await writeFile(join(root, 'index.html'), '<!doctype html><title>View fixture</title>');
+  await writeFile(join(root, 'forge.json'), JSON.stringify({
+    schemaVersion: '3.0.0', id: 'fixture', name: 'Fixture', roots: {},
+  }));
+  const host = await createBackendHost();
+  host.context.provide('devkitBackend', { host, root, assertCurrent: async () => {} });
+  // Native Host/project lifecycle, with a transport-only Vite server. GPU and
+  // complete source compilation remain in the paired browser restart journey.
+  const workspaceFiber = host.context.plugin(devKitWorkspacePlugin, {
+    hostBinding: { backend: host,
+      get frontendAssembly() { return host.context.get('devkitWorkspaceFrontend')?.assembly; },
+      get frontendModule() { return host.context.get('devkitWorkspaceFrontend')?.module; },
+    },
+    viteServerFactory: async () => ({
+      config: { plugins: [] }, resolvedUrls: { local: ['http://127.0.0.1:4321/'], network: [] },
+      listen: async () => {}, close: async () => {},
+    }),
+  });
+  await workspaceFiber.await();
+  try {
+    const workspace = host.context.engineWorkspace;
+    const fiber = await host.context.plugin(viewPlugin, { staticRoot: root });
+    await fiber.await();
+    const start = () => call(host, 'view.start', 'view-launcher');
+    const first = await start();
+    assert.equal(first.phase, 'ready');
+    assert.equal(workspace.project.project.root, await realpath(root));
+    const selectedProject = workspace.project;
+    assert.deepEqual(await start(), first, 'reopening preserves the current View presentation');
+    assert.equal(workspace.project, selectedProject, 'reopening preserves the owning Engine selection');
+    assert.equal((await call(host, 'view.stop', 'view-launcher')).phase, 'stopped');
+    assert.equal(host.context.engineWorkspace, workspace);
+    assert.ok(host.context.toolApi.describe('engine.project.open', 'engine-workspace').some(record => record.callable));
+    assert.equal(selectedProject.status.phase, 'failed', 'stopping View retires the sampled frontend lease');
+    const restarted = await call(host, 'view.start', 'view-launcher', { project: root });
+    assert.equal(restarted.phase, 'ready');
+    assert.notEqual(workspace.project, selectedProject, 'explicit restart recovers the retired project session');
+    assert.notEqual(workspace.project.status.phase, 'failed');
+    assert.notEqual(workspace.project.status.sessionId, selectedProject.status.sessionId);
+    await call(host, 'view.stop', 'view-launcher');
+    await fiber.dispose();
+    assert.equal(host.context.engineWorkspace, workspace);
+    assert.equal(host.context.get('devkitWorkspaceFrontend'), undefined);
+  } finally {
+    await host.dispose(); await rm(root, { recursive: true, force: true });
+    if (previousDataHome === undefined) delete process.env.FORGEAX_DATA_HOME;
+    else process.env.FORGEAX_DATA_HOME = previousDataHome;
+  }
 });
 
 test('observation requires an exact independent binding and discards late results', { timeout: 12_000 }, async () => {
@@ -159,7 +223,10 @@ test('Display bindings and topic deliveries belong to each frontend connection',
   const host = await createBackendHost({ pairs: [] });
   const context = host.context;
   context.provide('viewWorkspaceCore', {});
-  context.provide('engineWorkspace', { project: { target: { sessionId: 'display-session', targetId: 'display-target' } } });
+  context.provide('engineWorkspace', { project: { status: {
+    phase: 'starting', sessionId: 'display-session', generation: 1, browserGeneration: 1,
+    document: { sessionId: 'display-session', targetId: 'display-target', browserGeneration: 1, url: 'http://fixture/project' },
+  } } });
   let observedA = 0;
   const schema = toolJsonSchema({ type: 'object' });
   const provider = context.toolApi.registerProvider({

@@ -57,6 +57,8 @@ describe('public render-target schema and stable consumer manifest', () => {
     );
     expect(schema.properties.typeExports.items.enum).toContain('RenderIntentInvalidDetail');
     expect(schema.properties.operations.items.properties.name.enum).toEqual([
+      'Renderer.captureRenderTargetEnvironment',
+      'Renderer.prepareRenderTargetEnvironment',
       'Renderer.createRenderTarget',
       'Renderer.resizeRenderTarget',
       'Renderer.createRenderTargetTextureSource',
@@ -85,7 +87,10 @@ describe('public render-target schema and stable consumer manifest', () => {
     // is gated by framebuffer-snapshot.{dawn,browser}.test.ts in @forgeax/engine-runtime.
     expect(manifest.operations).toEqual(
       schema.properties.operations.items.properties.name.enum.filter(
-        (name) => name !== 'Renderer.requestFramebufferSnapshot',
+        (name) =>
+          name !== 'Renderer.requestFramebufferSnapshot' &&
+          name !== 'Renderer.captureRenderTargetEnvironment' &&
+          name !== 'Renderer.prepareRenderTargetEnvironment',
       ),
     );
     expect(manifest.stableTargetIds).toEqual(schema.properties.stableTargetIds.const);

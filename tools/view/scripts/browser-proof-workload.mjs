@@ -5,5 +5,6 @@ export function browserProofWorkload(lightweight = process.env.FORGEAX_BROWSER_C
     gameViewport: lightweight ? { width: 1000, height: 700 } : { width: 1440, height: 900 },
     sceneFrames: lightweight ? 60 : 300,
     resourceCycles: lightweight ? 2 : 6,
+    playCycles: lightweight ? 2 : 10,
   };
 }

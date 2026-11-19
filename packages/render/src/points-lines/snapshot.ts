@@ -11,6 +11,7 @@ export type PointsLinesStyle =
   | {
       readonly kind: 'points';
       readonly size: number;
+      readonly minPixelSize?: number;
       readonly sizeUnits: PointSizeUnits;
       readonly shape: PointShape;
     }

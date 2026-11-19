@@ -6,10 +6,9 @@
 // Point + spot light evaluators extracted from pbr.wgsl
 // (feat-20260519-light-casters-point-spot-pbr M4 / w22 byte-equivalent
 // extraction). Both light types share a punctual BRDF body (GGX specular +
-// Lambertian diffuse + Three r184 squared finite-range attenuation); the
-// PointLight carries its authored distance exponent; SpotLight keeps exponent 2
-// and multiplies a cone-falloff factor
-// `evalSpotCone(cosInner, cosOuter, dot(l, -lightDir))` on top.
+// Lambertian diffuse + Three r184 squared finite-range attenuation).
+// Both light types carry the authored distance exponent. SpotLight also
+// multiplies by `evalSpotCone(cosInner, cosOuter, dot(l, -lightDir))`.
 //
 // charter P4 consistent abstraction: one body, two thin wrappers that each
 // carry exactly the parameters their light type needs. evalPoint avoids the
@@ -28,11 +27,11 @@
 // material shader owns the @group(0) light buffer namespace).
 //
 // Exports:
-//   - evalPoint(lightPos, colorTimesIntensity, invRangeSquared, decay, ...) -> vec3<f32>
-//   - evalSpot(lightPos, lightDir, colorTimesIntensity, cosInner, cosOuter,
-//              invRangeSquared, ...) -> vec3<f32>
+//   - evalPointLobes(lightPos, colorTimesIntensity, invRangeSquared, decay, ...) -> DirectLobes
+//   - evalSpotLobes(lightPos, lightDir, colorTimesIntensity, cosInner, cosOuter,
+//              invRangeSquared, decay, ...) -> DirectLobes
 
-#import forgeax_pbr::brdf::{standardOpaqueBrdfFromView, DirectMultiScatterView, halfVectorTerms, directLightingAlpha}
+#import forgeax_pbr::brdf::{DirectLobes, directLobesRadiance, scaleDirectLobes, standardOpaqueSpecularFromView, DirectMultiScatterView, halfVectorTerms, directLightingAlpha}
 #import forgeax_pbr::lighting_spot_modifiers::{spotModifierProduct}
 
 // extendedLighting is one closed resource topology for IES, Cookie, and
@@ -77,10 +76,11 @@ fn evalVolumeSpot(
   cosInner            : f32,
   cosOuter            : f32,
   invRangeSquared     : f32,
+  decay               : f32,
   worldPos            : vec3<f32>,
 ) -> vec3<f32> {
   return colorTimesIntensity * evalSpotAttenuation(
-    lightPos, lightDir, worldPos, cosInner, cosOuter, invRangeSquared,
+    lightPos, lightDir, worldPos, cosInner, cosOuter, invRangeSquared, decay,
   );
 }
 
@@ -120,18 +120,16 @@ fn spotConeReaches(
 }
 
 // Shared punctual BRDF body returning brdf *
-// colorTimesIntensity * nDotL * attenuation. Cone factor is applied by the
-// caller (evalSpot only). `transmission` is the diffuse-transmission albedo
+// colorTimesIntensity * nDotL * attenuation. Each caller prepares its incident
+// direction and attenuation. Spot uses the same direction for its cone factor. `transmission` is the diffuse-transmission albedo
 // (KHR_materials_diffuse_transmission): a Lambertian BTDF lobe on the
 // hemisphere opposite the shading normal, lit by the same light and
 // attenuation. N.L and -N.L are mutually exclusive, so the lobe adds no
 // extra light iteration; opaque callers pass zero.
-fn evalPunctualBody(
-  lightPos            : vec3<f32>,
+fn evalPunctualBodyLobes(
+  l                   : vec3<f32>,
   colorTimesIntensity : vec3<f32>,
-  invRangeSquared     : f32,
-  decay               : f32,
-  worldPos            : vec3<f32>,
+  attenuation         : f32,
   normal              : vec3<f32>,
   viewDir             : vec3<f32>,
   baseColor           : vec3<f32>,
@@ -144,10 +142,7 @@ fn evalPunctualBody(
 #ifdef DIRECT_DFG_LUT_AVAILABLE
   directDfgLut: texture_2d<f32>, directDfgSampler: sampler,
 #endif
-) -> vec3<f32> {
-  let toLight = lightPos - worldPos;
-  let dSquared = max(dot(toLight, toLight), 1e-4);
-  let l = toLight / sqrt(dSquared);
+) -> DirectLobes {
   let signedNDotL = dot(normal, l);
   let nDotL = max(signedNDotL, 0.0);
   let signedNDotV = dot(normal, viewDir);
@@ -160,20 +155,22 @@ fn evalPunctualBody(
   let vDotH = halfTerms.y;
   // Unreal's View.MinRoughness: direct lighting only (SceneView.cpp:2921).
   let directAlpha = directLightingAlpha(alphaSq);
-  let brdf = standardOpaqueBrdfFromView(baseColor, metallic, directAlpha, F0, ms, nDotL, nDotH, vDotH,
+  let diffuse = (1.0 - metallic) * baseColor / 3.14159265;
+  let specular = standardOpaqueSpecularFromView(directAlpha, F0, ms, nDotL, nDotH, vDotH,
     useDirectDfgLut,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
     directDfgLut, directDfgSampler,
 #endif
   );
-  let attenuation = evalDistanceAttenuation(dSquared, invRangeSquared, decay, 1e-4);
 #ifdef DIFFUSE_TRANSMISSION_AVAILABLE
   let transmitted = transmission * (max(-signedNDotL, 0.0) / 3.14159265);
-  return brdf * colorTimesIntensity * nDotL * attenuation
-    + transmitted * colorTimesIntensity * attenuation;
+  return DirectLobes((diffuse + specular) * colorTimesIntensity * nDotL * attenuation
+    + transmitted * colorTimesIntensity * attenuation, diffuse * colorTimesIntensity * nDotL * attenuation,
+    specular * colorTimesIntensity * nDotL * attenuation + transmitted * colorTimesIntensity * attenuation);
 #else
   // Without the transmission contract every caller passes zero.
-  return brdf * colorTimesIntensity * nDotL * attenuation;
+  return DirectLobes((diffuse + specular) * colorTimesIntensity * nDotL * attenuation,
+    diffuse * colorTimesIntensity * nDotL * attenuation, specular * colorTimesIntensity * nDotL * attenuation);
 #endif
 }
 
@@ -182,7 +179,7 @@ fn evalPunctualBody(
 // Same BRDF and transmission lobe as evalPunctualBody, with a constant
 // incident direction and no distance attenuation, matching Three.js
 // DirectionalLight without a shadow map.
-fn evalDirectionalSlot(
+fn evalDirectionalSlotLobes(
   lightDir            : vec3<f32>,
   colorTimesIntensity : vec3<f32>,
   normal              : vec3<f32>,
@@ -197,7 +194,7 @@ fn evalDirectionalSlot(
 #ifdef DIRECT_DFG_LUT_AVAILABLE
   directDfgLut: texture_2d<f32>, directDfgSampler: sampler,
 #endif
-) -> vec3<f32> {
+) -> DirectLobes {
   let l = normalize(-lightDir);
   let signedNDotL = dot(normal, l);
   let nDotL = max(signedNDotL, 0.0);
@@ -211,7 +208,8 @@ fn evalDirectionalSlot(
   let vDotH = halfTerms.y;
   // Unreal's View.MinRoughness: direct lighting only (SceneView.cpp:2921).
   let directAlpha = directLightingAlpha(alphaSq);
-  let brdf = standardOpaqueBrdfFromView(baseColor, metallic, directAlpha, F0, ms, nDotL, nDotH, vDotH,
+  let diffuse = (1.0 - metallic) * baseColor / 3.14159265;
+  let specular = standardOpaqueSpecularFromView(directAlpha, F0, ms, nDotL, nDotH, vDotH,
     useDirectDfgLut,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
     directDfgLut, directDfgSampler,
@@ -219,14 +217,16 @@ fn evalDirectionalSlot(
   );
 #ifdef DIFFUSE_TRANSMISSION_AVAILABLE
   let transmitted = transmission * (max(-signedNDotL, 0.0) / 3.14159265);
-  return brdf * colorTimesIntensity * nDotL + transmitted * colorTimesIntensity;
+  return DirectLobes((diffuse + specular) * colorTimesIntensity * nDotL + transmitted * colorTimesIntensity,
+    diffuse * colorTimesIntensity * nDotL, specular * colorTimesIntensity * nDotL + transmitted * colorTimesIntensity);
 #else
-  return brdf * colorTimesIntensity * nDotL;
+  return DirectLobes((diffuse + specular) * colorTimesIntensity * nDotL,
+    diffuse * colorTimesIntensity * nDotL, specular * colorTimesIntensity * nDotL);
 #endif
 }
 
 // Omnidirectional point light: no cone factor.
-fn evalPoint(
+fn evalPointLobes(
   lightPos            : vec3<f32>,
   colorTimesIntensity : vec3<f32>,
   invRangeSquared     : f32,
@@ -244,10 +244,14 @@ fn evalPoint(
 #ifdef DIRECT_DFG_LUT_AVAILABLE
   directDfgLut: texture_2d<f32>, directDfgSampler: sampler,
 #endif
-) -> vec3<f32> {
-  return evalPunctualBody(
-    lightPos, colorTimesIntensity, invRangeSquared, decay,
-    worldPos, normal, viewDir, baseColor, metallic, alphaSq, F0, transmission,
+) -> DirectLobes {
+  let toLight = lightPos - worldPos;
+  let dSquared = max(dot(toLight, toLight), 1e-4);
+  let l = toLight / sqrt(dSquared);
+  let attenuation = evalDistanceAttenuation(dSquared, invRangeSquared, decay, 1e-4);
+  return evalPunctualBodyLobes(
+    l, colorTimesIntensity, attenuation,
+    normal, viewDir, baseColor, metallic, alphaSq, F0, transmission,
     ms, useDirectDfgLut,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
     directDfgLut, directDfgSampler,
@@ -283,6 +287,7 @@ fn evalSpotFlat(
   cosInner            : f32,
   cosOuter            : f32,
   invRangeSquared     : f32,
+  decay               : f32,
   worldPos            : vec3<f32>,
   baseColor           : vec3<f32>,
 ) -> vec3<f32> {
@@ -291,7 +296,7 @@ fn evalSpotFlat(
   let l = toLight / sqrt(dSquared);
   let cone = evalSpotCone(cosInner, cosOuter, dot(l, -lightDir));
   return evalPointFlat(
-    lightPos, colorTimesIntensity, invRangeSquared, 2.0, worldPos, baseColor,
+    lightPos, colorTimesIntensity, invRangeSquared, decay, worldPos, baseColor,
   ) * cone;
 }
 
@@ -312,7 +317,7 @@ fn evalSpotFlat(
 // Caller responsibility: gate this on `shadowAtlasLayer >= 0` so the
 // no-shadow lights stay on the unshadowed `evalPoint` path; passing a
 // negative layer here is undefined (the cube_array view rejects it).
-fn evalPointShadowed(
+fn evalPointShadowedLobes(
   lightPos            : vec3<f32>,
   colorTimesIntensity : vec3<f32>,
   invRangeSquared     : f32,
@@ -338,8 +343,8 @@ fn evalPointShadowed(
 #ifdef DIRECT_DFG_LUT_AVAILABLE
   directDfgLut: texture_2d<f32>, directDfgSampler: sampler,
 #endif
-) -> vec3<f32> {
-  let lit = evalPunctualBody(
+) -> DirectLobes {
+  let lit = evalPointLobes(
     lightPos, colorTimesIntensity, invRangeSquared, decay,
     worldPos, normal, viewDir, baseColor, metallic, alphaSq, F0, transmission,
     ms, useDirectDfgLut,
@@ -349,7 +354,7 @@ fn evalPointShadowed(
   );
   // Unlit (out of range, back-facing without transmission): the shadow
   // factor in [0, 1] can only scale zero, so skip the cube taps.
-  if (all(lit == vec3<f32>(0.0))) { return lit; }
+  if (all(directLobesRadiance(lit) == vec3<f32>(0.0))) { return lit; }
   // Bevy fetch_point_shadow: bias the receiver in world space. The normal
   // offset is normalBias cube texels at this distance (the host pre-scales it
   // by the face texel angle), pushed toward the lit hemisphere so a
@@ -386,20 +391,21 @@ fn evalPointShadowed(
     shadowAtlas, shadowSampler, direction, shadowAtlasLayer, depthRef,
     select(shadowControls.x, 1.0, shadowControls.w == 1.0), pixel,
   );
-  return lit * mix(1.0, shadowFactor, shadowControls.z);
+  return scaleDirectLobes(lit, vec3<f32>(mix(1.0, shadowFactor, shadowControls.z)));
 }
 #endif
 
 // Cone-restricted spot light: BRDF body * smoothstep cone factor.
 // `cosInner` / `cosOuter` are pre-computed cosines (host-side
 // degree -> cosine conversion in extract-frame; plan-strategy D-S2).
-fn evalSpot(
+fn evalSpotLobes(
   lightPos            : vec3<f32>,
   lightDir            : vec3<f32>,
   colorTimesIntensity : vec3<f32>,
   cosInner            : f32,
   cosOuter            : f32,
   invRangeSquared     : f32,
+  decay               : f32,
   worldPos            : vec3<f32>,
   normal              : vec3<f32>,
   viewDir             : vec3<f32>,
@@ -413,20 +419,21 @@ fn evalSpot(
 #ifdef DIRECT_DFG_LUT_AVAILABLE
   directDfgLut: texture_2d<f32>, directDfgSampler: sampler,
 #endif
-) -> vec3<f32> {
-  let body = evalPunctualBody(
-    lightPos, colorTimesIntensity, invRangeSquared, 2.0,
-    worldPos, normal, viewDir, baseColor, metallic, alphaSq, F0, transmission,
+) -> DirectLobes {
+  let toLight = lightPos - worldPos;
+  let dSquared = max(dot(toLight, toLight), 1e-4);
+  let l = toLight / sqrt(dSquared);
+  let attenuation = evalDistanceAttenuation(dSquared, invRangeSquared, decay, 1e-4);
+  let body = evalPunctualBodyLobes(
+    l, colorTimesIntensity, attenuation,
+    normal, viewDir, baseColor, metallic, alphaSq, F0, transmission,
     ms, useDirectDfgLut,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
     directDfgLut, directDfgSampler,
 #endif
   );
-  // Same incident direction evalPunctualBody derives (no extra normalize).
-  let toLight = lightPos - worldPos;
-  let l = toLight / sqrt(max(dot(toLight, toLight), 1e-4));
   let cone = evalSpotCone(cosInner, cosOuter, dot(l, -lightDir));
-  return body * spotModifierProduct(1.0, 1.0, cone, 1.0, 1.0, 1.0);
+  return scaleDirectLobes(body, vec3<f32>(spotModifierProduct(1.0, 1.0, cone, 1.0, 1.0, 1.0)));
 }
 
 // feat-20260625-spot-light-shadow-mapping M3 / w15 (plan-strategy D-3 + D-4 +
@@ -454,13 +461,14 @@ fn evalSpot(
 // degenerate `lightViewProj` (near-zero spot direction) yields NaN UVs; the
 // `>= 0 && <= 1` form is false for NaN, so the fragment returns fully lit
 // (shadowFactor = 1.0) instead of a hard-black artifact.
-fn evalSpotShadowed(
+fn evalSpotShadowedLobes(
   lightPos            : vec3<f32>,
   lightDir            : vec3<f32>,
   colorTimesIntensity : vec3<f32>,
   cosInner            : f32,
   cosOuter            : f32,
   invRangeSquared     : f32,
+  decay               : f32,
   worldPos            : vec3<f32>,
   normal              : vec3<f32>,
   viewDir             : vec3<f32>,
@@ -481,9 +489,9 @@ fn evalSpotShadowed(
 #ifdef DIRECT_DFG_LUT_AVAILABLE
   directDfgLut: texture_2d<f32>, directDfgSampler: sampler,
 #endif
-) -> vec3<f32> {
-  let body = evalSpot(
-    lightPos, lightDir, colorTimesIntensity, cosInner, cosOuter, invRangeSquared,
+) -> DirectLobes {
+  let body = evalSpotLobes(
+    lightPos, lightDir, colorTimesIntensity, cosInner, cosOuter, invRangeSquared, decay,
     worldPos, normal, viewDir, baseColor, metallic, alphaSq, F0, transmission,
     ms, useDirectDfgLut,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
@@ -493,7 +501,7 @@ fn evalSpotShadowed(
 
   // A zero body (outside range or cone, or back-facing without
   // transmission) stays zero under any shadow factor; skip the PCF taps.
-  if (all(body == vec3<f32>(0.0))) { return body; }
+  if (all(directLobesRadiance(body) == vec3<f32>(0.0))) { return body; }
 
   // normalBias is a world-space offset, independent of the shadow camera.
   // Fold the normal toward the light for transmitting back-lit surfaces.
@@ -535,5 +543,160 @@ fn evalSpotShadowed(
   // Three's SpotLight.shadow.intensity is the opacity of the shadow, not a
   // multiplier on the light's candela radiance. A value of 1 keeps the
   // sampled visibility fully opaque; 0 leaves the unshadowed body intact.
-  return body * mix(1.0, shadowFactor, clamp(shadowIntensity, 0.0, 1.0));
+  return scaleDirectLobes(body, vec3<f32>(mix(1.0, shadowFactor, clamp(shadowIntensity, 0.0, 1.0))));
+}
+
+
+fn evalDirectionalSlot(
+  lightDir            : vec3<f32>,
+  colorTimesIntensity : vec3<f32>,
+  normal              : vec3<f32>,
+  viewDir             : vec3<f32>,
+  baseColor           : vec3<f32>,
+  metallic            : f32,
+  alphaSq             : f32,
+  F0                  : vec3<f32>,
+  transmission        : vec3<f32>,
+  ms                  : DirectMultiScatterView,
+  useDirectDfgLut: bool,
+#ifdef DIRECT_DFG_LUT_AVAILABLE
+  directDfgLut: texture_2d<f32>, directDfgSampler: sampler,
+#endif
+) -> vec3<f32> {
+  return directLobesRadiance(evalDirectionalSlotLobes(lightDir, colorTimesIntensity, normal, viewDir, baseColor, metallic, alphaSq, F0, transmission, ms, useDirectDfgLut,
+#ifdef DIRECT_DFG_LUT_AVAILABLE
+    directDfgLut, directDfgSampler,
+#endif
+));
+}
+
+
+fn evalPoint(
+  lightPos            : vec3<f32>,
+  colorTimesIntensity : vec3<f32>,
+  invRangeSquared     : f32,
+  decay               : f32,
+  worldPos            : vec3<f32>,
+  normal              : vec3<f32>,
+  viewDir             : vec3<f32>,
+  baseColor           : vec3<f32>,
+  metallic            : f32,
+  alphaSq             : f32,
+  F0                  : vec3<f32>,
+  transmission        : vec3<f32>,
+  ms                  : DirectMultiScatterView,
+  useDirectDfgLut: bool,
+#ifdef DIRECT_DFG_LUT_AVAILABLE
+  directDfgLut: texture_2d<f32>, directDfgSampler: sampler,
+#endif
+) -> vec3<f32> {
+  return directLobesRadiance(evalPointLobes(lightPos, colorTimesIntensity, invRangeSquared, decay, worldPos, normal, viewDir, baseColor, metallic, alphaSq, F0, transmission, ms, useDirectDfgLut,
+#ifdef DIRECT_DFG_LUT_AVAILABLE
+    directDfgLut, directDfgSampler,
+#endif
+));
+}
+
+#ifdef POINT_SHADOW_AVAILABLE
+
+fn evalPointShadowed(
+  lightPos            : vec3<f32>,
+  colorTimesIntensity : vec3<f32>,
+  invRangeSquared     : f32,
+  decay               : f32,
+  worldPos            : vec3<f32>,
+  normal              : vec3<f32>,
+  viewDir             : vec3<f32>,
+  baseColor           : vec3<f32>,
+  metallic            : f32,
+  alphaSq             : f32,
+  F0                  : vec3<f32>,
+  transmission        : vec3<f32>,
+  shadowAtlasLayer    : i32,
+  near                : f32,
+  far                 : f32,
+  depthBias           : f32,
+  normalBias          : f32,
+  shadowControls      : vec4<f32>,
+  shadowPosition      : vec3<f32>,
+  pixel               : vec2<f32>,
+  ms                  : DirectMultiScatterView,
+  useDirectDfgLut: bool,
+#ifdef DIRECT_DFG_LUT_AVAILABLE
+  directDfgLut: texture_2d<f32>, directDfgSampler: sampler,
+#endif
+) -> vec3<f32> {
+  return directLobesRadiance(evalPointShadowedLobes(lightPos, colorTimesIntensity, invRangeSquared, decay, worldPos, normal, viewDir, baseColor, metallic, alphaSq, F0, transmission, shadowAtlasLayer, near, far, depthBias, normalBias, shadowControls, shadowPosition, pixel, ms, useDirectDfgLut,
+#ifdef DIRECT_DFG_LUT_AVAILABLE
+    directDfgLut, directDfgSampler,
+#endif
+));
+}
+#endif
+
+
+fn evalSpot(
+  lightPos            : vec3<f32>,
+  lightDir            : vec3<f32>,
+  colorTimesIntensity : vec3<f32>,
+  cosInner            : f32,
+  cosOuter            : f32,
+  invRangeSquared     : f32,
+  decay               : f32,
+  worldPos            : vec3<f32>,
+  normal              : vec3<f32>,
+  viewDir             : vec3<f32>,
+  baseColor           : vec3<f32>,
+  metallic            : f32,
+  alphaSq             : f32,
+  F0                  : vec3<f32>,
+  transmission        : vec3<f32>,
+  ms                  : DirectMultiScatterView,
+  useDirectDfgLut: bool,
+#ifdef DIRECT_DFG_LUT_AVAILABLE
+  directDfgLut: texture_2d<f32>, directDfgSampler: sampler,
+#endif
+) -> vec3<f32> {
+  return directLobesRadiance(evalSpotLobes(lightPos, lightDir, colorTimesIntensity, cosInner, cosOuter, invRangeSquared, decay, worldPos, normal, viewDir, baseColor, metallic, alphaSq, F0, transmission, ms, useDirectDfgLut,
+#ifdef DIRECT_DFG_LUT_AVAILABLE
+    directDfgLut, directDfgSampler,
+#endif
+));
+}
+
+
+fn evalSpotShadowed(
+  lightPos            : vec3<f32>,
+  lightDir            : vec3<f32>,
+  colorTimesIntensity : vec3<f32>,
+  cosInner            : f32,
+  cosOuter            : f32,
+  invRangeSquared     : f32,
+  decay               : f32,
+  worldPos            : vec3<f32>,
+  normal              : vec3<f32>,
+  viewDir             : vec3<f32>,
+  baseColor           : vec3<f32>,
+  metallic            : f32,
+  alphaSq             : f32,
+  F0                  : vec3<f32>,
+  transmission        : vec3<f32>,
+  lightViewProj       : mat4x4<f32>,
+  shadowAtlasTile     : i32,
+  depthBias           : f32,
+  normalBias          : f32,
+  shadowControls      : vec4<f32>,
+  shadowIntensity     : f32,
+  pixel               : vec2<f32>,
+  ms                  : DirectMultiScatterView,
+  useDirectDfgLut: bool,
+#ifdef DIRECT_DFG_LUT_AVAILABLE
+  directDfgLut: texture_2d<f32>, directDfgSampler: sampler,
+#endif
+) -> vec3<f32> {
+  return directLobesRadiance(evalSpotShadowedLobes(lightPos, lightDir, colorTimesIntensity, cosInner, cosOuter, invRangeSquared, decay, worldPos, normal, viewDir, baseColor, metallic, alphaSq, F0, transmission, lightViewProj, shadowAtlasTile, depthBias, normalBias, shadowControls, shadowIntensity, pixel, ms, useDirectDfgLut,
+#ifdef DIRECT_DFG_LUT_AVAILABLE
+    directDfgLut, directDfgSampler,
+#endif
+));
 }

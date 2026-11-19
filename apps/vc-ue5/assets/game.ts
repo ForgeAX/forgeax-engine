@@ -11,6 +11,7 @@ import { cloudMaterialKind, cloudMaterialInstanceKind, resolveCloudParameters } 
 import {
   PropagateTransforms, Transform, sceneEntity, worldDespawnScene, worldResolveSceneEntity,
 } from '@forgeax/engine/scene';
+import type { AssetHandle } from '@forgeax/engine/types';
 import {
   GROUND_ENTITY_KEYS, GROUND_SCENE_KEY, cameraTransform, type GroundEntityKey,
 } from './ground-scene.ts';
@@ -366,7 +367,7 @@ export const engine: Plugin.Object<TerrainConfig> = {
         const selected = materialOptions[mode];
         materialMode = mode;
         world.set(cloud, VolumetricCloudLayer, { enabled, material: selected.handle,
-          materialInstance: mode === 'band-wide' ? bandWideInstance : 0 as never }).unwrap();
+          materialInstance: mode === 'band-wide' ? bandWideInstance : 0 as AssetHandle<'cloud-material-instance'> }).unwrap();
       };
       const clearDensityOverrides = () => {
         world.set(cloud, VolumetricCloudLayer, {

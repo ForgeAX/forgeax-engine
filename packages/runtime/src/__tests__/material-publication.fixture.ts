@@ -198,7 +198,7 @@ export async function verifyMaterialPublication(options: {
             specializationKey: string;
             selections: readonly {
               pass: string;
-              context: { backend: string; capability: string };
+              context: { backend: string; capability: string; viewClipping?: boolean };
             }[];
             artifact: { path: string; digest: string; bytes?: unknown };
           }[];
@@ -223,8 +223,8 @@ export async function verifyMaterialPublication(options: {
     // Cook records stay with the publication and shader owners, not mutable content.
     expect(firstContent).not.toHaveProperty('cooked');
     const cooked = wire;
-    // Every native and downlevel View layout selects three independent passes;
-    // identical WGSL bytes retain one content-addressed transport artifact.
+    // Every View layout retains Forward/Overlay plus plain and clipped shadow
+    // programs. Identical WGSL keeps one content-addressed transport artifact.
     const contexts = [
       ['webgpu', 'storage-buffer'],
       ['webgpu', 'storage-buffer-atmosphere'],
@@ -233,7 +233,7 @@ export async function verifyMaterialPublication(options: {
       ['webgpu', 'uniform-fallback'],
       ['webgl2', 'uniform-fallback'],
     ] as const;
-    expect(cooked.programs).toHaveLength(contexts.length * 3);
+    expect(cooked.programs).toHaveLength(contexts.length * 4);
     for (const [backend, capability] of contexts) {
       const programs = cooked.programs.filter((program) =>
         program.selections.some(
@@ -241,14 +241,21 @@ export async function verifyMaterialPublication(options: {
             selection.context.backend === backend && selection.context.capability === capability,
         ),
       );
-      expect(programs).toHaveLength(3);
+      expect(programs).toHaveLength(4);
+      expect(
+        programs
+          .flatMap((program) => program.selections)
+          .filter((selection) => selection.pass === 'ShadowCaster')
+          .map((selection) => selection.context.viewClipping === true)
+          .sort(),
+      ).toEqual([false, true]);
       expect(
         new Set(
           programs.flatMap((program) => program.selections.map((selection) => selection.pass)),
         ),
       ).toEqual(new Set(['Forward', 'Overlay', 'ShadowCaster']));
     }
-    expect(descriptors).toHaveLength(6);
+    expect(descriptors).toHaveLength(8);
     expect(new Set(cooked.programs.map((program) => program.artifact.path)).size).toBe(
       descriptors.length,
     );

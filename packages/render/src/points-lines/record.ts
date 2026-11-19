@@ -1,8 +1,17 @@
+import {
+  DEFAULT_VERTEX_ATTRIBUTE_MAP,
+  deriveVertexLayoutProjection,
+} from '@forgeax/engine-geometry';
 import { LineCapValue } from '../components/lines';
 import type { PointsLinesExpandedGeometry } from './expansion-cache';
 import type { PointsLinesPreparedSnapshot, PointsLinesStyle } from './snapshot';
 
 export const POINTS_LINES_MATERIAL_SHADER_ID = 'forgeax::points-lines';
+
+/** The canonical position/normal/uv/tangent stream produced by triangle expansion. */
+export const POINTS_LINES_VERTEX_LAYOUT = deriveVertexLayoutProjection(
+  DEFAULT_VERTEX_ATTRIBUTE_MAP,
+);
 
 /**
  * Round caps select a separate fragment entry so butt lines and points run

@@ -8,6 +8,7 @@ import type {
 } from '@forgeax/engine-render-graph';
 import type {
   BindGroup,
+  BindGroupEntry,
   BindGroupLayout,
   Buffer,
   RhiDevice,
@@ -84,6 +85,11 @@ export function instanceCollectionCacheKey(instance: {
  * after all explicit resource handles resolve to resident GPU objects.
  */
 export interface MaterialBgAssemblyCacheEntry {
+  /** Actual submitted bindings; no frame or World observation is retained. */
+  readonly bindingEntries: readonly BindGroupEntry[];
+  readonly skylightBindingStart: number;
+  /** Derived once on first observed hit; cold miss receipts stay detached. */
+  iblMaterial?: IblBindingInspection['material'];
   readonly uniformResources: object;
   readonly material: MaterialSnapshot;
   /** Exact asset versions and resident views used by this shared binding. */
@@ -428,6 +434,7 @@ export function resetFrameRecordingOutputs(outputs: FrameRecordingOutputs): void
  * frame state.
  */
 export interface SubmittedFrameInspection {
+  readonly viewConfiguration?: import('../render-contract').RenderInspection['viewConfiguration'];
   /** Prepared Standard transport facts. */
   readonly standardLighting: StandardLightingInspection;
   /** Point-shadow atlas budget. */
@@ -657,6 +664,8 @@ export interface RenderFrameState {
   barrelDistortionGraphResolution?: 'accepted' | 'retained';
   /** Staged TAA GPU state is promoted only after queue.submit succeeds. */
   temporalGpuState: TemporalGpuState | undefined;
+  /** This view's native output parameters survive unrelated graph replacements. */
+  standardOutputParameters?: { readonly device: RhiDevice; readonly buffer: Buffer } | undefined;
   /** Device-scoped auto-exposure buffers imported by the Standard graph. */
   autoExposureGpuResources?: AutoExposureGpuResources | undefined;
   /** Candidate auto-exposure buffers; promoted only after queue.submit succeeds. */

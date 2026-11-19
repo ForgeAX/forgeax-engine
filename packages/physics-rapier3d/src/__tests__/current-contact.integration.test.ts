@@ -624,6 +624,35 @@ it.each([
   }
 });
 
+it('does not charge retained empty manifolds as contact reads', async () => {
+  const { physics, raw, body, floor } = await fixture();
+  try {
+    physics.step(1 / 60);
+    const pairs = vi
+      .spyOn(raw.narrowPhase, 'bodyContactPairs')
+      .mockReturnValue(
+        new Float64Array([
+          body.collider(0).handle,
+          1,
+          floor.collider(0).handle,
+          floor.handle,
+          4122,
+          0,
+        ]),
+      );
+    const readManifolds = vi.spyOn(raw.narrowPhase, 'contactPair');
+    try {
+      expect(physics.getCurrentContacts(2).unwrap().manifolds).toEqual([]);
+      expect(readManifolds).not.toHaveBeenCalled();
+    } finally {
+      readManifolds.mockRestore();
+      pairs.mockRestore();
+    }
+  } finally {
+    physics.dispose();
+  }
+});
+
 it.each([
   750, 2050,
 ])('bounds each native projection atomically with %i contact partners', async (count) => {

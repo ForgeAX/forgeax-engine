@@ -1,36 +1,8 @@
-// feat-20260517-spawn-default-fallback / M2 / t6.
-//
-// Compile-time type assertions for the `ComponentData<S>['data']` surface
-// after the M2 widening + the spawn mapped-tuple primary-inference probe.
-//
-// Three pinned invariants (Red until t9 lands):
-//
-//   (a) ComponentData<S>['data'] === Partial<ShapeOf<S>>      — AC-01
-//       The shared field bridge between `world.spawn` / `world.addComponent`
-//       / overrides; widening from ShapeOf<S> to Partial<ShapeOf<S>> is the
-//       single physical edit that takes the whole route off the ts(2739)
-//       cliff (AC-02).
-//
-//   (b) `world.spawn({ component: Camera, data: { fov, aspect, near, far } })`
-//       compiles                                              — AC-02
-//       hello-window:93 baseline. With ShapeOf<S> the same call reports
-//       ts(2739) "missing 5 properties"; with Partial<ShapeOf<S>> it
-//       compiles (and at runtime layer-2 / layer-3 fallback fills the
-//       remaining fields).
-//
-//   (c) `data: { fov: 'bad' }` fires field-level TS2322           — AC-03
-//       Mapped-tuple primary inference must NOT degrade after the
-//       widening: the wrong-VALUE case continues to surface as
-//       TS2322 ("Type 'string' is not assignable to type 'number'")
-//       directly on the offending key — NOT as the "No overload matches"
-//       wall the legacy fallback overload would fall back to (C-4).
-//
-// AI users grep `// @ts-expect-error AC-` here to find the regression
-// barrier that protects the mapped-tuple primary-inference behaviour
-// across TS upgrades (R-1 / plan-strategy §2.7 P3).
-
 import { describe, expectTypeOf, it } from 'vitest';
 import { defineComponent, type SchemaOf, type ShapeOf } from '../component';
+import type { Query } from '../query/query';
+import { defineSystem } from '../schedule';
+import { Update } from '../schedule-token';
 import { type ComponentData, World } from '../world';
 
 // Shared schema fixture — mirrors the runtime Camera token (9 f32) without
@@ -152,5 +124,91 @@ describe('world.spawn — wrong-value fires field-level TS2322 (AC-03, t6.c)', (
         unknownKey: 1,
       },
     });
+  });
+});
+
+const Position = defineComponent('WorldQueryInferencePosition', { x: 'f32' });
+const Velocity = defineComponent('WorldQueryInferenceVelocity', { x: 'f32' });
+
+describe('World.query consumer inference', () => {
+  it('preserves descriptor tuples through Result.unwrap', () => {
+    const query = new World().query({ read: [Position], write: [Velocity] }).unwrap();
+    expectTypeOf(query).toEqualTypeOf<
+      Query<readonly [typeof Position], readonly [typeof Velocity], readonly []>
+    >();
+  });
+});
+
+const TestName = defineComponent('TestName', { value: { type: 'string' } });
+
+describe('w7 --- (a) inside world.addSystem fn callback (AC-02)', () => {
+  it('world.get(e, TestName).unwrap().value infers as string', () => {
+    const w = new World();
+    const e = w.spawn({ component: TestName, data: { value: 'Player' } }).unwrap();
+
+    const systemToken1 = defineSystem({
+      name: 'reader',
+      queries: [],
+      fn: () => {
+        const value = w.get(e, TestName).unwrap().value;
+        expectTypeOf(value).toEqualTypeOf<string>();
+      },
+    });
+    w.addSystem(Update, systemToken1);
+  });
+});
+
+describe('w7 --- (b) inside a QueryRow loop (AC-02)', () => {
+  it('world.get(e, TestName).unwrap().value infers as string from a query callback', () => {
+    const w = new World();
+    const e = w.spawn({ component: TestName, data: { value: 'Boss' } }).unwrap();
+
+    const systemToken2 = defineSystem({
+      name: 'queryReader',
+      queries: [{ with: [TestName] }],
+      fn: (_world, results) => {
+        for (const result of results) {
+          for (const _bundle of result) {
+            const value = w.get(e, TestName).unwrap().value;
+            expectTypeOf(value).toEqualTypeOf<string>();
+          }
+        }
+      },
+    });
+    w.addSystem(Update, systemToken2);
+  });
+});
+
+describe('w7 --- (c) top-level direct import (AC-02)', () => {
+  it('world.get(e, TestName).unwrap().value infers as string at top-level', () => {
+    const w = new World();
+    const e = w.spawn({ component: TestName, data: { value: 'Hero' } }).unwrap();
+    const value = w.get(e, TestName).unwrap().value;
+    expectTypeOf(value).toEqualTypeOf<string>();
+  });
+});
+
+describe('[w14] AC-4 — 30-second onboarding minimal example', () => {
+  it('bundle field access compiles without `as` casts', () => {
+    const Position = defineComponent('Position', { x: { type: 'f32' }, y: { type: 'f32' } });
+    const Velocity = defineComponent('Velocity', { dx: { type: 'f32' }, dy: { type: 'f32' } });
+
+    const world = new World();
+    const systemToken1 = defineSystem({
+      name: 'movement',
+      queries: [{ read: [Velocity], write: [Position] }],
+      fn: (_world, queryResults, _commands) => {
+        for (const row of queryResults[0]) {
+          const velocity = row.get(Velocity);
+          const position = row.mut(Position);
+          expectTypeOf(position.x).toBeNumber();
+          expectTypeOf(velocity.dx).toBeNumber();
+          position.x += velocity.dx;
+        }
+      },
+    });
+    world.addSystem(Update, systemToken1);
+
+    expectTypeOf(world).toMatchTypeOf<World>();
   });
 });

@@ -1,7 +1,7 @@
 /// <reference types="@webgpu/types" />
 
 import type { RhiDevice, RhiInstance } from '@forgeax/engine-rhi';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { buildFrameModel } from '../frame-model';
 import { imageStats, readbackImage } from '../image';
 import { decodeTape } from '../protocol/codec';
@@ -159,6 +159,30 @@ describe.skipIf(SKIP_DAWN)('ReplaySession.readAtWorks Dawn contract', () => {
         (resource.create as { desc?: { size?: number } }).desc?.size === COUNTERS * 4,
     )?.handleId;
     if (counterId === undefined) throw new Error('counter buffer missing');
+
+    const submit = vi.spyOn(device.nativeDevice().unwrap().queue, 'submit');
+    try {
+      const duplicate = { resourceId: viewId, workIndex: 2 };
+      const together = must(await replay.readAtWorks([duplicate, duplicate]));
+      const togetherSubmissions = submit.mock.calls.length;
+      submit.mockClear();
+      const single = must(await replay.readAtWorks([duplicate]));
+      expect(togetherSubmissions).toBe(submit.mock.calls.length);
+      const [firstResult, secondResult] = together;
+      const [referenceResult] = single;
+      if (!firstResult || !secondResult || !referenceResult)
+        throw new Error('Missing batched texture read');
+      const first = must(firstResult);
+      const second = must(secondResult);
+      const reference = must(referenceResult);
+      expect(Array.from(first.bytes)).toEqual(Array.from(reference.bytes));
+      expect(Array.from(second.bytes)).toEqual(Array.from(reference.bytes));
+      const original = second.bytes[0];
+      first.bytes[0] = (first.bytes[0] ?? 0) ^ 255;
+      expect(second.bytes[0]).toBe(original);
+    } finally {
+      submit.mockRestore();
+    }
 
     const requests: BatchReadRequest[] = [
       { resourceId: viewId, workIndex: 2 },

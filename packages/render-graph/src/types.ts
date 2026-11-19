@@ -173,7 +173,8 @@ export interface RasterColorAttachment<FrameCtx> {
   readonly clearValue?: GPUColor | ((frame: FrameCtx) => GPUColor) | undefined;
   /** Dynamic loads conservatively require initialized attachment contents. */
   readonly loadOp: GPULoadOp | ((frame: FrameCtx) => GPULoadOp);
-  readonly storeOp: GPUStoreOp;
+  /** Auto permits discarding dead resolved MSAA samples; explicit stores are preserved. */
+  readonly storeOp: GPUStoreOp | 'auto';
   readonly depthSlice?: number | undefined;
 }
 
@@ -334,6 +335,8 @@ export interface CompiledRenderGraphInfo {
     readonly name: string;
     readonly kind: GraphPassKind;
     readonly executionIndex: number;
+    /** Consecutive logical stages sharing one physical raster attachment lifetime. */
+    readonly rasterBatch?: readonly string[] | undefined;
     readonly accesses: readonly GraphAccessInfo[];
     readonly dependencies: readonly string[];
   }[];
@@ -428,6 +431,8 @@ export interface RenderGraphPassExecution {
   readonly name: string;
   readonly kind: GraphPassKind;
   readonly executionIndex: number;
+  /** Present only at a physical instrumentation boundary; never timed per member. */
+  readonly logicalPassNames?: readonly string[] | undefined;
   /**
    * The frame-resolved depth view used by an active raster pass. This is
    * absent for non-raster, no-depth, and skipped passes.
@@ -435,7 +440,13 @@ export interface RenderGraphPassExecution {
   readonly resolvedDepthStencilAttachmentView?: TextureView | undefined;
 }
 
-export type RenderGraphPassRunner = (pass: RenderGraphPassExecution, encode: () => void) => void;
+export type RenderGraphPassRunner = ((
+  pass: RenderGraphPassExecution,
+  encode: () => void,
+) => void) & {
+  /** Explicit native observation/copy seam. Ordinary CPU wrappers need no boundary. */
+  readonly requiresPassBoundary?: ((passName: string) => boolean) | undefined;
+};
 
 /**
  * The graph-neutral boundary for observing and decorating an actual pass.

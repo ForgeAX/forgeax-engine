@@ -9,10 +9,10 @@
 //
 // Vocab dimensions (keyword family routed through releaseManagedFieldOnRow
 // after w4):
-//   - 'string'           -> UniqueRefStore handle (isManagedField arm)
-//   - 'unique<T>'           -> UniqueRefStore handle (isManagedField arm)
-//   - 'buffer'  variable -> BufferPool slot id    (isManagedBufferField arm)
-//   - 'array<T>' variable-> BufferPool slot id    (isManagedArrayField arm)
+//   - 'string'           -> UniqueRefStore handle (field-plan reference owner)
+//   - 'unique<T>'           -> UniqueRefStore handle (field-plan reference owner)
+//   - 'buffer'  variable -> ArrayStore location (field-plan buffer owner)
+//   - 'array<T>' variable-> ArrayStore location (field-plan array owner)
 //
 // Round shapes:
 //   (R1) spawn -> world.set(e, C, { f: v2 }) -> world.despawn(e)
@@ -33,10 +33,8 @@
 
 import type { Handle } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
-import type { BufferPool } from '../buffer-pool';
 import { type Component, defineComponent } from '../component';
-import type { SharedRefStore } from '../shared-ref-store';
-import type { UniqueRefStore } from '../unique-ref-store';
+import type { SharedRefStore, UniqueRefStore } from '../managed-ref-store';
 import { World } from '../world';
 
 interface MaterialAsset {
@@ -46,20 +44,16 @@ interface MaterialAsset {
 interface WorldInternals {
   uniqueRefs: UniqueRefStore;
   sharedRefs: SharedRefStore;
-  bufferPool: BufferPool;
 }
 
 function refsOf(w: World): UniqueRefStore {
   return (w as unknown as WorldInternals).uniqueRefs;
 }
-function poolOf(w: World): BufferPool {
-  return (w as unknown as WorldInternals).bufferPool;
-}
 function liveRefs(w: World): number {
   return refsOf(w)._liveCount();
 }
-function liveSlots(w: World): number {
-  return poolOf(w)._liveCount();
+function liveArrays(w: World): number {
+  return w.memoryStats().arrays.liveArrays;
 }
 
 // Allocates a fresh ref<MaterialAsset> handle inside the same World so the
@@ -72,7 +66,7 @@ function allocMat(
 }
 
 interface RoundCase {
-  vocab: 'string' | 'unique<T>' | 'buffer' | 'array<T>';
+  vocab: 'string' | 'unique<T>' | 'array<u8>' | 'array<T>';
   Component: Component;
   v1: () => unknown;
   v2: () => unknown;
@@ -85,7 +79,7 @@ interface RoundCase {
 function buildCases(w: World): RoundCase[] {
   const StrName = defineComponent('RtStrName', { value: { type: 'string' } });
   const Mat = defineComponent('RtMat', { material: { type: 'unique<MaterialAsset>' } });
-  const Buf = defineComponent('RtBuf', { bytes: { type: 'buffer' } });
+  const Buf = defineComponent('RtBuf', { bytes: { type: 'array<u8>' } });
   const Arr = defineComponent('RtArr', { ids: { type: 'array<u32>' } });
 
   return [
@@ -108,7 +102,7 @@ function buildCases(w: World): RoundCase[] {
       v3: () => allocMat(w, [0, 0, 1, 1]),
     },
     {
-      vocab: 'buffer',
+      vocab: 'array<u8>',
       Component: Buf as unknown as Component,
       v1: () => new Uint8Array([1, 2, 3, 4]),
       v2: () => new Uint8Array([5, 6, 7, 8, 9]),
@@ -126,7 +120,7 @@ function buildCases(w: World): RoundCase[] {
 
 describe('world managed round-trip net-zero matrix (feat-20260614 M2 / AC-12)', () => {
   describe('R1: spawn -> set -> despawn', () => {
-    for (const vocab of ['string', 'unique<T>', 'buffer', 'array<T>'] as const) {
+    for (const vocab of ['string', 'unique<T>', 'array<u8>', 'array<T>'] as const) {
       it(`${vocab}: live counters net-zero after spawn -> set -> despawn`, () => {
         const w = new World();
         const cases = buildCases(w);
@@ -138,22 +132,24 @@ describe('world managed round-trip net-zero matrix (feat-20260614 M2 / AC-12)', 
         // round, so the round's full release-dispatch must net-zero those
         // back to 0 by the end of despawn.
         const refsBefore = liveRefs(w);
-        const slotsBefore = liveSlots(w);
+        const slotsBefore = liveArrays(w);
 
         const e = w
           .spawn({ component: c.Component, data: { [fieldOf(c)]: c.v1() } as never })
           .unwrap();
+        if (vocab === 'array<u8>' || vocab === 'array<T>')
+          expect(liveArrays(w)).toBe(slotsBefore + 1);
         w.set(e, c.Component, { [fieldOf(c)]: c.v2() } as never).unwrap();
         w.despawn(e).unwrap();
 
         expect(liveRefs(w)).toBe(refsBefore);
-        expect(liveSlots(w)).toBe(slotsBefore);
+        expect(liveArrays(w)).toBe(slotsBefore);
       });
     }
   });
 
   describe('R2: spawn -> removeComponent -> addComponent', () => {
-    for (const vocab of ['string', 'unique<T>', 'buffer', 'array<T>'] as const) {
+    for (const vocab of ['string', 'unique<T>', 'array<u8>', 'array<T>'] as const) {
       it(`${vocab}: live counters net-zero after spawn -> removeComponent -> addComponent`, () => {
         const w = new World();
         const cases = buildCases(w);
@@ -165,11 +161,13 @@ describe('world managed round-trip net-zero matrix (feat-20260614 M2 / AC-12)', 
         // v1-released-by-removeComponent and the v3-installed-by-addComponent
         // payloads to net-zero the counters.
         const refsBefore = liveRefs(w);
-        const slotsBefore = liveSlots(w);
+        const slotsBefore = liveArrays(w);
 
         const e = w
           .spawn({ component: c.Component, data: { [fieldOf(c)]: c.v1() } as never })
           .unwrap();
+        if (vocab === 'array<u8>' || vocab === 'array<T>')
+          expect(liveArrays(w)).toBe(slotsBefore + 1);
         w.removeComponent(e, c.Component).unwrap();
         w.addComponent(e, {
           component: c.Component,
@@ -178,7 +176,7 @@ describe('world managed round-trip net-zero matrix (feat-20260614 M2 / AC-12)', 
         w.despawn(e).unwrap();
 
         expect(liveRefs(w)).toBe(refsBefore);
-        expect(liveSlots(w)).toBe(slotsBefore);
+        expect(liveArrays(w)).toBe(slotsBefore);
       });
     }
   });
@@ -190,7 +188,7 @@ function fieldOf(c: RoundCase): string {
       return 'value';
     case 'unique<T>':
       return 'material';
-    case 'buffer':
+    case 'array<u8>':
       return 'bytes';
     case 'array<T>':
       return 'ids';

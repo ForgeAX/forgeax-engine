@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { runInNewContext } from 'node:vm';
 import { afterEach, expect, it, vi } from 'vitest';
 import { sha256, sha256Bytes } from '../index';
 
@@ -17,6 +18,20 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   vi.resetModules();
+});
+
+it.each([
+  'native',
+  'portable',
+] as const)('streams original chunks through %s SHA-256', async (backend) => {
+  if (backend === 'portable') vi.stubGlobal('process', { ...process, getBuiltinModule: undefined });
+  vi.resetModules();
+  const owner = backend === 'native' ? { sha256 } : await import('../sha256');
+  const chunks = ['prefix', '\ud83d\ude00', new Uint8Array([0, 255]), 'tail'];
+  const expected = createHash('sha256');
+  for (const chunk of chunks) expected.update(chunk);
+  expect(owner.sha256(chunks.values())).toBe(expected.digest('hex'));
+  expect(owner.sha256([])).toBe(createHash('sha256').digest('hex'));
 });
 
 it('uses synchronous native SHA-256 on Node without allocating an encoded copy', () => {
@@ -48,4 +63,9 @@ it.each([
     expect(owner.sha256Bytes(window)).toBe(createHash('sha256').update(window).digest('hex'));
   expect(owner.sha256Bytes(bytes.subarray(1, 5))).not.toBe(owner.sha256Bytes(bytes));
   expect(encode).not.toHaveBeenCalled();
+});
+
+it('keeps the existing cross-realm byte input identity while accepting streamed text', () => {
+  const foreign: Uint8Array = runInNewContext('Uint8Array.from([0, 1, 127, 255])');
+  expect(sha256(foreign)).toBe(createHash('sha256').update(foreign).digest('hex'));
 });

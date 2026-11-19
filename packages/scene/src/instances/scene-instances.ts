@@ -7,6 +7,7 @@ import {
   type ComponentSchema,
   type EcsError,
   ENTITY_NULL_RAW,
+  Entity,
   type EntityHandle,
   type InputShapeOf,
   type ShapeOf,
@@ -14,7 +15,12 @@ import {
 } from '@forgeax/engine-ecs';
 import { classifyEntityField, remapEntityFieldValue } from '@forgeax/engine-ecs/externalization';
 import { componentSchema } from '@forgeax/engine-ecs/internal';
-import { fillComponentDefaults, StaleEntityError } from '@forgeax/engine-ecs/projection';
+import {
+  fillComponentDefaults,
+  readRenderArrayView,
+  StaleEntityError,
+} from '@forgeax/engine-ecs/projection';
+import { worldRead } from '@forgeax/engine-ecs/world-read';
 import type {
   AssetHandle,
   LocalEntityId,
@@ -32,6 +38,7 @@ import {
   type Result,
   toUnique,
 } from '@forgeax/engine-types';
+import { collectSubtree } from '../collect-subtree';
 import { ComponentNotDefinedError } from '../errors';
 import { resolveSceneEntity, sceneEntityAddressKey } from './binding.js';
 import {
@@ -1307,6 +1314,36 @@ export function worldDespawnScene(
   if (!drop.ok) return drop;
   return ok(dRes.value + 1);
 }
+/** Collect explicit hierarchy and instance ownership while all borrows are live. */
+function collectSceneMembers(world: World, root: EntityHandle): Set<number> {
+  const owned = collectSubtree(world, root);
+  const sceneInstance = world.components.resolve('SceneInstance');
+  const read = world[worldRead];
+  if (sceneInstance !== undefined) {
+    for (const raw of owned) {
+      const anchor = raw as EntityHandle;
+      const mapping = readRenderArrayView(world, anchor, sceneInstance, 'mapping');
+      if (mapping === undefined) continue;
+      for (let index = 0; index < mapping.length; index++) {
+        const member = mapping[index];
+        if (member !== undefined && member !== ENTITY_NULL_RAW)
+          collectSubtree(world, member as EntityHandle, owned);
+      }
+      const stateRef = read.getFieldValue(anchor, sceneInstance, 'state');
+      if (stateRef === undefined) continue;
+      const state = world.resolveUniqueRef<SceneInstanceState>(
+        toUnique<'SceneInstanceState'>(stateRef),
+      );
+      if (!state.ok) continue;
+      // State still owns direct members if the physical mapping is incomplete.
+      for (const member of state.value.entityToLocalId.keys()) collectSubtree(world, member, owned);
+      for (const nestedRoot of state.value.mountRoots) collectSubtree(world, nestedRoot, owned);
+    }
+  }
+  owned.delete(Number(root));
+  return owned;
+}
+
 /**
  * Despawn every descendant of `root` reachable through Children mirror /
  * SceneInstance.mapping. `opts.keepDetached` is honoured only when `root`
@@ -1331,45 +1368,20 @@ export function worldDespawnDescendants(
     }
   }
   let count = 0;
-  // Collect descendants first (DFS via iterDescendants) to avoid mutating
-  // while iterating. SceneInstance.mapping also owns members that may not be
-  // reachable through a Children mirror in a partially registered host. The
-  // nested anchor list closes that same ownership boundary for mounted scenes.
+  const owned = collectSceneMembers(world, root);
+  const read = world[worldRead];
   const list: EntityHandle[] = [];
-  const seen = new Set<number>();
-  const collect = (anchor: EntityHandle): void => {
-    for (const e of world.iterDescendants(anchor)) {
-      const raw = e as unknown as number;
-      if (!seen.has(raw)) {
-        seen.add(raw);
-        list.push(e);
-      }
-    }
-    const stateRes = worldGetSceneInstanceState(world, anchor);
-    if (!stateRes.ok) return;
-    for (const e of stateRes.value.entityToLocalId.keys()) {
-      const raw = e as unknown as number;
-      if (!seen.has(raw)) {
-        seen.add(raw);
-        list.push(e);
-      }
-    }
-    for (const nestedRoot of stateRes.value.mountRoots) {
-      const raw = nestedRoot as unknown as number;
-      if (seen.has(raw)) continue;
-      seen.add(raw);
-      list.push(nestedRoot);
-      collect(nestedRoot);
-    }
-  };
-  collect(root);
+  for (const raw of owned) {
+    const entity = raw as EntityHandle;
+    if (world.hasComponent(entity, Entity)) list.push(entity);
+    else owned.delete(raw);
+  }
   const childOfToken = world.components.resolve('ChildOf');
   // ChildOf uses linkedSpawn, so a parent-first pass would recursively retire
   // its children before this function can count them. Sort the ownership set
   // by its live ChildOf depth instead of relying on mirror traversal order;
   // nested SceneInstance roots are siblings of their mount carrier in the
   // flattened traversal but parents of the mounted members.
-  const owned = new Set(list.map((entity) => Number(entity)));
   const ownedDepth = (entity: EntityHandle): number => {
     if (childOfToken === undefined) return 0;
     let current = entity;
@@ -1377,12 +1389,10 @@ export function worldDespawnDescendants(
     const visited = new Set<number>();
     while (!visited.has(Number(current))) {
       visited.add(Number(current));
-      const parentRes = world.get(current, childOfToken);
-      if (!parentRes.ok) break;
-      const parent = (parentRes.value as { parent: EntityHandle }).parent;
-      if (!owned.has(Number(parent))) break;
+      const parent = read.getFieldValue(current, childOfToken, 'parent');
+      if (parent === undefined || !owned.has(parent)) break;
       depth += 1;
-      current = parent;
+      current = parent as EntityHandle;
     }
     return depth;
   };

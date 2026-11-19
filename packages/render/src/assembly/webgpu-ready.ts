@@ -1,6 +1,6 @@
 import { ShaderSource, shaderSourceForDescriptor } from '@forgeax/engine-types';
 import { ShadowViewResources } from '../record/shadow-view-resources';
-import type { SeedShaderModule } from './material-shader-policy';
+import { resolveMaterialShaderVariantSet, type SeedShaderModule } from './material-shader-policy';
 // WebGPU generation-scoped ready-state builder.
 // This owner performs one complete device-generation promotion; it receives
 // policy/adapters and returns a fully prepared PipelineState.
@@ -16,14 +16,17 @@ import type {
 } from '@forgeax/engine-rhi';
 import { RhiError } from '@forgeax/engine-rhi';
 import {
+  findVariantByKey,
+  isShaderTemplateManifestRow,
   type MaterialShaderManifestEntry,
+  type MaterialShaderManifestVariant,
+  materialShaderPreparedSourceRows,
   materialShaderSourceEquals,
   type PipelineGroup2Contract,
   type ShaderCatalog,
 } from '@forgeax/engine-shader';
 import { isShaderCompilerProfile, type ManifestEntry } from '@forgeax/engine-types';
 import { prewarmDepthOfField } from '../features/depth-of-field/depth-of-field-assembly';
-import { FORWARD_DEPTH_SEED_WGSL } from '../pipeline/forward-depth-seed';
 import type { RhiBackendPack } from './backend-contract';
 import {
   prewarmSsrWithDepthPyramid,
@@ -436,21 +439,15 @@ export async function buildReadyWebGPU(
     pso: RenderPipeline,
     group2Contract: PipelineGroup2Contract,
   ) => void,
-  // feat-20260621 M-A3 (D-5): register the engine built-in tonemap onto the
-  // unified post-process channel once the tonemap manifest entry's composed
-  // WGSL is resolved. Invoked with the tonemap WGSL source string; the outer
-  // `makeWebGPURenderer` closure forwards it to
-  // the fullscreen feature host with `{ source, params }`.
-  // Scope bridge mirrors `setGrowMeshSsboHook` / `seedShaderModule`: the
-  // tonemap source resolves inside this async function (after the manifest-load
-  // await), by which point the synchronous `renderSystem` const is defined.
-  registerBuiltinTonemap: (source: string) => void,
+  // V1 retains its published ABI. The initial output contract prepares its own module;
+  // V2 uniform buffers belong to each view graph rather than the feature host.
+  registerBuiltinOutputPrograms: (source: string, nativeSource?: () => string) => void,
   /** Register the special FXAA pass' final-output policy params UBO. */
   registerBuiltinFxaa: (source: string) => void,
-  registerBuiltinAnalyticFog: (source: string) => void,
+  registerBuiltinAnalyticFog: (source: string | (() => string)) => void,
   registerBuiltinTemporalPostProcesses: (entries: {
-    readonly motionBlur?: string;
-    readonly taaResolve?: string;
+    readonly motionBlur?: () => string;
+    readonly taaResolve?: () => string;
   }) => void,
   registerBuiltinDepthOfField: Parameters<typeof prewarmDepthOfField>[2],
   /** Await canonical volume PSOs before promoting the manifest-owned utility sources. */
@@ -467,6 +464,9 @@ export async function buildReadyWebGPU(
   ) => void,
   /** Which material variant module labels this build compiles eagerly. */
   admitsVariant: VariantPrewarmAdmission,
+  initialOutputContract:
+    | import('../pipeline/standard-output/types').StandardOutputContract
+    | undefined,
 ): Promise<PipelineState> {
   // These defaults belong to this renderer generation. They are not in the
   // mesh residency cache or frame graph, so its existing scope must retire them.
@@ -512,13 +512,24 @@ export async function buildReadyWebGPU(
   // for atmosphere without declaring a storage-backed light record or uniform.
   const clusterVariants = materialEntries
     .filter((entry) => isCanonicalStandardPbrMaterialShader(entry.identifier))
-    .flatMap((entry) =>
-      entry.variants.filter(
+    .flatMap((entry) => {
+      if (isShaderTemplateManifestRow(entry)) {
+        const key = resolveMaterialShaderVariantSet(
+          'CLUSTER_FORWARD_AVAILABLE=true',
+          entry,
+          rhiDevice.caps.backendKind,
+          true,
+          rhiDevice.limits.maxSampledTexturesPerShaderStage,
+        );
+        const selected = key === undefined ? undefined : findVariantByKey(entry, key);
+        return selected === undefined ? [] : [selected];
+      }
+      return entry.variants.filter(
         (variant) =>
           variant.defines.CLUSTER_FORWARD_AVAILABLE === true &&
           variant.defines.STORAGE_BUFFER_AVAILABLE === true,
-      ),
-    );
+      );
+    });
   const clusterVariantsPublished = clusterVariants.every(
     (variant) =>
       typeof variant.hash === 'string' &&
@@ -546,7 +557,7 @@ export async function buildReadyWebGPU(
   if (rhiDevice.caps.backendKind === 'null' && manifestEntries.length === 0) {
     // Decide after shader preparation: an unloaded registry is not an empty
     // manifest. Structural frames share the same single registration owner.
-    registerBuiltinTonemap('');
+    registerBuiltinOutputPrograms('', () => '');
   }
   const compileModule: CompileShaderModule = (code, label, expected, hint) =>
     compileShaderModule(rhiDevice, asyncCreateShaderModule, code, label, expected, hint);
@@ -687,9 +698,13 @@ export async function buildReadyWebGPU(
       seedShaderModule,
       admitsVariant,
     });
-    const pbrVariant = pbrManifestEntry?.variants.find((variant) =>
-      materialShaderSourceEquals(variant, entries.pbr.wgsl),
-    );
+    const pbrVariant =
+      pbrManifestEntry === undefined
+        ? undefined
+        : materialShaderPreparedSourceRows(pbrManifestEntry).find(
+            (variant): variant is MaterialShaderManifestVariant =>
+              'definesKey' in variant && materialShaderSourceEquals(variant, entries.pbr.wgsl),
+          );
     if (pbrVariant !== undefined)
       seedShaderModule(
         `module-forgeax::default-standard-pbr#${pbrVariant.definesKey}`,
@@ -718,21 +733,42 @@ export async function buildReadyWebGPU(
       'inspect manifest tonemap entry composed wgsl; check device.features',
     );
     seedShaderModule(tonemapLabel, tonemapModule, entries.tonemap.wgsl);
-    registerBuiltinTonemap(entries.tonemap.wgsl);
+    const nativeOutput = findEngineManifestEntry(
+      registry,
+      manifestEntries,
+      'forgeax::standard-output-v2',
+    );
+    registerBuiltinOutputPrograms(
+      entries.tonemap.wgsl,
+      nativeOutput === undefined ? undefined : () => nativeOutput.wgsl,
+    );
+    if (nativeOutput !== undefined && initialOutputContract === 'standard-output-v2') {
+      const source = nativeOutput.wgsl;
+      const label = postProcessShaderModuleLabel(source);
+      const module = await compileModule(
+        source,
+        label,
+        'selected native output shader module compiled',
+        'inspect the selected Standard output source and device capabilities',
+      );
+      seedShaderModule(label, module, source);
+    }
     const prewarmTemporal = createTemporalShaderPrewarmer({
       device: rhiDevice,
       asyncCreateShaderModule,
       seedShaderModule,
     });
     const analyticFog = findEngineManifestEntry(registry, manifestEntries, 'forgeax::analytic-fog');
-    await prewarmTemporal(analyticFog, 'forgeax.analytic-fog');
-    if (analyticFog !== undefined) registerBuiltinAnalyticFog(analyticFog.wgsl);
-    await prewarmTemporal(entries.motionBlur, 'forgeax.motion-blur');
-    await prewarmTemporal(entries.taaResolve, 'forgeax.taa-resolve');
+    if (analyticFog !== undefined) registerBuiltinAnalyticFog(() => analyticFog.wgsl);
+    if (entries.motionBlur !== undefined && !isShaderTemplateManifestRow(entries.motionBlur))
+      await prewarmTemporal(entries.motionBlur, 'forgeax.motion-blur');
+    if (entries.taaResolve !== undefined && !isShaderTemplateManifestRow(entries.taaResolve))
+      await prewarmTemporal(entries.taaResolve, 'forgeax.taa-resolve');
     await prewarmDepthOfField(manifestEntries, prewarmTemporal, registerBuiltinDepthOfField);
+    const { motionBlur, taaResolve } = entries;
     registerBuiltinTemporalPostProcesses({
-      ...(entries.motionBlur === undefined ? {} : { motionBlur: entries.motionBlur.wgsl }),
-      ...(entries.taaResolve === undefined ? {} : { taaResolve: entries.taaResolve.wgsl }),
+      ...(motionBlur === undefined ? {} : { motionBlur: () => motionBlur.wgsl }),
+      ...(taaResolve === undefined ? {} : { taaResolve: () => taaResolve.wgsl }),
     });
   };
 
@@ -779,19 +815,6 @@ export async function buildReadyWebGPU(
       seedShaderModule,
     );
     await prewarmUtilityPrograms();
-    // Forward seeds `main` from its depth prepass on the first frame; compile
-    // the seed program with the other global shaders so that frame never
-    // meets a pending module (UE compiles global shaders before rendering).
-    seedShaderModule(
-      'forward_depth_seed',
-      await compileModule(
-        FORWARD_DEPTH_SEED_WGSL,
-        'forward_depth_seed',
-        "Forward depth seed shader module 'forward_depth_seed' compiled",
-        'inspect FORWARD_DEPTH_SEED_WGSL and check device.features',
-      ),
-      FORWARD_DEPTH_SEED_WGSL,
-    );
     const standard = await compileStandardPbr(entries);
     seedPbrSourceAliases(registry, entries.pbr.wgsl, standard.pbr, seedShaderModule);
     const unlit = await compileUnlitModules(
@@ -869,6 +892,8 @@ export async function buildReadyWebGPU(
       bloomVertical,
       bloomComposite,
       ssao,
+      ssaoGBufferV2: entries.ssao?.programContract?.gbuffer === 'standard-gbuffer/2',
+      gtaoGBufferV2: entries.gtaoCompute?.programContract?.gbuffer === 'standard-gbuffer/2',
       gtaoCompute,
       gpuDrivenPbrPrograms: standard.gpuDrivenPbrPrograms,
     };

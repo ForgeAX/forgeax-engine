@@ -1,10 +1,12 @@
 // biome-ignore-all lint/complexity/noUselessLoneBlockStatements: scope isolation between merged source files
+
+import { defineRelationship } from '../relationship-index';
 import { defineResource } from '../resource';
+import { worldRead } from '../world-read';
 
 // Consolidated by feat-20260609-test-pool-startup-reduction-merge-tiny-test-files
 
-import { componentId, componentSchema } from '../component';
-import { componentDefinition } from '../component-schema';
+import { componentDefinition, componentId, componentSchema } from '../component';
 import { defineSystem } from '../schedule';
 import { Update } from '../schedule-token';
 import type { EntityRecords } from '../storage/entity-records';
@@ -34,7 +36,7 @@ import type { EntityRecords } from '../storage/entity-records';
 //   - packages/ecs/src/__tests__/world-spawn-array-fallback.test.ts
 //   - packages/ecs/src/__tests__/world-spawn-defaults.test.ts
 //   - packages/ecs/src/__tests__/world-spawn-direct.test.ts
-//   - packages/ecs/src/__tests__/component-default-fallback.test.ts
+//   - packages/ecs/src/__tests__/component-input.test.ts
 //
 // Paradigm: each block-scoped describe('<source-filename>.test.ts', ...) preserves
 // source as ancestorTitles[0]. Top-level imports merged + deduped.
@@ -44,8 +46,8 @@ import type { EntityRecords } from '../storage/entity-records';
 //   + targeted rename in entity-liveness.test.ts body: world.get(..., Entity) -> world.get(..., EntityComponent)
 
 import { describe, expect, it } from 'vitest';
-import { type ComponentSchema, TYPE_METADATA } from '../component';
-import { fillComponentDefaults, typeDefault } from '../component-default-fallback';
+import type { ComponentSchema } from '../component';
+import { fillComponentDefaults, typeDefault } from '../component-input';
 import { Entity as EntityComponent } from '../entity';
 import {
   decodeEntity,
@@ -62,12 +64,11 @@ import {
   ComponentNotPresentError,
   type EcsErrorCode,
   EntityIndexOverflowError,
-  ManagedArrayElementTypeNotAllowedError,
   SchemaUnsupportedFieldError,
   StaleEntityError,
 } from '../errors';
 import { defineComponent } from '../index';
-import { UniqueRefStore } from '../unique-ref-store';
+import { UniqueRefStore } from '../managed-ref-store';
 import { World } from '../world';
 import { handleNumeric } from './utils/handle-numeric';
 
@@ -513,40 +514,6 @@ import { handleNumeric } from './utils/handle-numeric';
     });
   });
 
-  describe('TYPE_METADATA — global per-type metadata table (AC-01 layer 2)', () => {
-    it('is importable and queryable', () => {
-      expect(TYPE_METADATA).toBeDefined();
-      expect(typeof TYPE_METADATA).toBe('object');
-    });
-
-    it('covers the scalar keys', () => {
-      for (const k of ['f32', 'f64', 'i32', 'u32', 'i16', 'u16', 'i8', 'u8', 'bool', 'enum']) {
-        expect(TYPE_METADATA[k]).toBeDefined();
-      }
-    });
-
-    it('covers the reference and collection family keys', () => {
-      for (const k of ['entity', 'string', 'buffer', 'unique', 'shared', 'asset', 'array']) {
-        expect(TYPE_METADATA[k]).toBeDefined();
-      }
-    });
-
-    it('each scalar row carries the required columns', () => {
-      const f32 = TYPE_METADATA.f32;
-      expect(f32?.byteSize).toBe(4);
-      expect(f32?.viewCtor).toBe(Float32Array);
-      expect(f32?.isScalar).toBe(true);
-      expect(f32?.isManaged).toBe(false);
-    });
-
-    it('vocab rows expose the predicate columns', () => {
-      expect(TYPE_METADATA.entity?.isEntityRef).toBe(true);
-      expect(TYPE_METADATA.buffer?.isBuffer).toBe(true);
-      expect(TYPE_METADATA.unique?.isManaged).toBe(true);
-      expect(TYPE_METADATA.array?.isArray).toBe(true);
-    });
-  });
-
   describe('defineComponent reflection — AC-03(c) pre-parse reuse', () => {
     it('returns the same arrayMeta object reference across repeated reads', () => {
       // Parse happens once at registration time; the cached reflection object is
@@ -601,7 +568,7 @@ import { handleNumeric } from './utils/handle-numeric';
 
     it('illegal array element type still throws ManagedArrayElementTypeNotAllowedError', () => {
       expect(() => defineComponent('BadArr', { v: 'array<ref<X>>' as 'array<f32, 3>' })).toThrow(
-        ManagedArrayElementTypeNotAllowedError,
+        expect.objectContaining({ code: 'managed-array-element-type-not-allowed' }),
       );
     });
   });
@@ -973,7 +940,7 @@ import { handleNumeric } from './utils/handle-numeric';
   // --- from world-buffer-fields.test.ts ---
   describe('w13 - World buffer:<N> field 3-path release', () => {
     it('spawn allocs buffer slot of schema-declared bytes; get returns live view', () => {
-      const Skin = defineComponent('Skin', { palette: { type: 'buffer<128>' } });
+      const Skin = defineComponent('Skin', { palette: { type: 'array<u8, 128>' } });
       const w = new World();
       const seed = new Uint8Array(128);
       for (let i = 0; i < 128; i++) seed[i] = (i + 3) & 0xff;
@@ -986,7 +953,7 @@ import { handleNumeric } from './utils/handle-numeric';
     });
 
     it('despawn(e) releases buffer field slots (path 1) - free-list reuse confirms', () => {
-      const Skin = defineComponent('Skin', { palette: { type: 'buffer<128>' } });
+      const Skin = defineComponent('Skin', { palette: { type: 'array<u8, 128>' } });
       const w = new World();
       const e1 = w.spawn({ component: Skin, data: { palette: new Uint8Array(128) } }).unwrap();
       const r1 = w.get(e1, Skin);
@@ -1003,7 +970,7 @@ import { handleNumeric } from './utils/handle-numeric';
     });
 
     it('removeComponent(e, C) releases buffer fields on the removed component (path 2)', () => {
-      const Skin = defineComponent('Skin', { palette: { type: 'buffer<64>' } });
+      const Skin = defineComponent('Skin', { palette: { type: 'array<u8, 64>' } });
       const Anchor = defineComponent('Anchor', { x: { type: 'f32' } });
       const w = new World();
       const e = w
@@ -1024,7 +991,7 @@ import { handleNumeric } from './utils/handle-numeric';
     });
 
     it('set(e, C, { field: Uint8Array }) copies bytes into existing slot (path 3)', () => {
-      const Skin = defineComponent('Skin', { palette: { type: 'buffer<32>' } });
+      const Skin = defineComponent('Skin', { palette: { type: 'array<u8, 32>' } });
       const w = new World();
       const initial = new Uint8Array(32);
       for (let i = 0; i < 32; i++) initial[i] = i;
@@ -2168,7 +2135,7 @@ import { handleNumeric } from './utils/handle-numeric';
         },
       });
       world.addSystem(Update, systemToken37);
-      // update() runs the system then flushes commands -> _materializePendingEntity.
+      // update() runs the system then flushes commands -> _materializeEntity.
       world.update();
       expect(pending).toBeDefined();
       const captured = world.get(pending as EntityHandle, Hp);
@@ -2215,7 +2182,7 @@ import { handleNumeric } from './utils/handle-numeric';
   });
 }
 {
-  // --- from component-default-fallback.test.ts (__tests__/) ---
+  // --- from component-input.test.ts (__tests__/) ---
   describe('layer-3 typeDefault — scalar arms', () => {
     it('f32 -> 0', () => {
       expect(typeDefault('f32')).toBe(0);
@@ -2272,10 +2239,10 @@ import { handleNumeric } from './utils/handle-numeric';
       expect(typeDefault('array<f32, 16>')).toBe(0);
     });
     it("'buffer' -> 0 (variable-byte BufferPool slot id)", () => {
-      expect(typeDefault('buffer')).toBe(0);
+      expect(typeDefault('array<u8>')).toBe(0);
     });
     it("'buffer<64>' -> 0 (fixed-byte inline stride-N column zeroed row)", () => {
-      expect(typeDefault('buffer<64>')).toBe(0);
+      expect(typeDefault('array<u8, 64>')).toBe(0);
     });
     it("'unique<MaterialAsset>' -> 0 (UniqueRefStore handle slot)", () => {
       expect(typeDefault('unique<MaterialAsset>')).toBe(0);
@@ -2562,3 +2529,139 @@ import { handleNumeric } from './utils/handle-numeric';
     });
   });
 }
+
+describe('relationship identity during slot reuse', () => {
+  it('rejects a stale child before treating its reused slot as an ancestor', () => {
+    const { source } = defineRelationship({
+      sourceName: 'ReusedChildSource',
+      sourceField: 'parent',
+      targetName: 'ReusedChildTargets',
+      targetField: 'children',
+    });
+    const world = new World();
+    const stale = world.spawn().unwrap();
+    world.despawn(stale).unwrap();
+    const replacement = world.spawn().unwrap();
+    const parent = world.spawn({ component: source, data: { parent: replacement } }).unwrap();
+    const result = world.reparent(stale, parent, source, { parent });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe('stale-entity');
+    expect(world.get(parent, source).unwrap().parent).toBe(replacement);
+  });
+});
+
+// Caller-owned input may change ancestry after the facade's cycle preflight.
+describe('relationship input reentrancy', () => {
+  it.each([
+    false,
+    true,
+  ])('preserves self policy and cycle diagnostics (allowSelf: %s)', (allowSelf) => {
+    const { source, target } = defineRelationship({
+      sourceName: `CyclePolicySource${allowSelf}`,
+      sourceField: 'parent',
+      targetName: `CyclePolicyTargets${allowSelf}`,
+      targetField: 'children',
+      allowSelf,
+    });
+    const world = new World();
+    const self = world.spawn().unwrap();
+    const direct = world.reparent(self, self, source, {});
+    expect(direct.ok).toBe(allowSelf);
+    if (!direct.ok) {
+      expect(direct.error.code).toBe('relationship-self-cycle');
+      if (direct.error.code === 'relationship-self-cycle')
+        expect(direct.error.detail).toEqual({
+          component: source.name,
+          entity: self,
+          ancestor: self,
+        });
+    } else {
+      expect(world.get(self, source).unwrap().parent).toBe(self);
+      const follower = world.spawn().unwrap();
+      world.reparent(follower, self, source, {}).unwrap();
+      expect(world.get(follower, source).unwrap().parent).toBe(self);
+    }
+    const root = world.spawn().unwrap();
+    const descendant = world.spawn({ component: source, data: { parent: root } }).unwrap();
+    const mutationEpoch = world[worldRead].getMutationEpoch();
+    const structureEpoch = world.getStructureEpoch();
+    const relationshipEpoch = world[worldRead].getRelationshipEpoch(source);
+    const cycle = world.reparent(root, descendant, source, {});
+    expect(cycle.ok).toBe(false);
+    if (!cycle.ok) {
+      expect(cycle.error.code).toBe('relationship-self-cycle');
+      if (cycle.error.code === 'relationship-self-cycle')
+        expect(cycle.error.detail).toEqual({
+          component: source.name,
+          entity: root,
+          ancestor: root,
+        });
+    }
+    expect(world[worldRead].getMutationEpoch()).toBe(mutationEpoch);
+    expect(world.getStructureEpoch()).toBe(structureEpoch);
+    expect(world[worldRead].getRelationshipEpoch(source)).toBe(relationshipEpoch);
+    expect(world.get(descendant, source).unwrap().parent).toBe(root);
+    expect(world.get(root, target).unwrap().children).toEqual(Uint32Array.of(descendant));
+  });
+  it('refuses an existing cycle before evaluating caller input', () => {
+    const { source } = defineRelationship({
+      sourceName: 'ReentrantInitialCycleSource',
+      sourceField: 'parent',
+      targetName: 'ReentrantInitialCycleTargets',
+      targetField: 'children',
+    });
+    const world = new World();
+    const child = world.spawn().unwrap();
+    const descendant = world.spawn({ component: source, data: { parent: child } }).unwrap();
+    const data = {
+      get parent(): EntityHandle {
+        throw new Error('cyclic facade input must not be evaluated');
+      },
+    };
+    for (const result of [
+      world.addChild(descendant, child, source, data),
+      world.reparent(child, descendant, source, data),
+    ]) {
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error.code).toBe('relationship-self-cycle');
+    }
+    expect(world.get(descendant, source).unwrap().parent).toBe(child);
+    expect(world.get(child, source).ok).toBe(false);
+  });
+  it.each([
+    false,
+    true,
+  ])('rechecks ancestry after input getters (existing source: %s)', (existing) => {
+    const { source, target } = defineRelationship({
+      sourceName: `ReentrantEdgeSource${existing}`,
+      sourceField: 'parent',
+      targetName: `ReentrantEdgeTargets${existing}`,
+      targetField: 'children',
+    });
+    const world = new World();
+    const oldParent = world.spawn().unwrap();
+    const child = existing
+      ? world.spawn({ component: source, data: { parent: oldParent } }).unwrap()
+      : world.spawn().unwrap();
+    const nextParent = world.spawn().unwrap();
+    let reads = 0;
+    const result = world.reparent(child, nextParent, source, {
+      get parent() {
+        reads++;
+        world.addComponent(nextParent, { component: source, data: { parent: child } }).unwrap();
+        return oldParent;
+      },
+    });
+    expect(reads).toBe(1);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe('relationship-self-cycle');
+    expect(world.get(nextParent, source).unwrap().parent).toBe(child);
+    expect(world.get(child, target).unwrap().children).toEqual(Uint32Array.of(nextParent));
+    if (existing) {
+      expect(world.get(child, source).unwrap().parent).toBe(oldParent);
+      expect(world.get(oldParent, target).unwrap().children).toEqual(Uint32Array.of(child));
+    } else {
+      expect(world.get(child, source).ok).toBe(false);
+    }
+  });
+});

@@ -308,10 +308,12 @@ export function createPreparedResolver(
         }
       };
       rememberPipelineContract();
+      const forwardFog = preparedPipelineEntry?.program?.forwardFog ?? materialContract?.forwardFog;
       return pipeline === null
         ? err(makePreparedPipelinePendingError())
         : ok({
             handle: pipeline,
+            ...(forwardFog === undefined ? {} : { forwardFog }),
             ...(materialContract === undefined
               ? {}
               : { bindingContract: materialContract.bindings }),

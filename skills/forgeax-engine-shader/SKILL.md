@@ -165,6 +165,20 @@ serves both. Clip-space producers reconstruct `worldPos` with `ndc_world`.
 
 ## Coordinate inputs
 
+Custom Standard Surface coverage uses the root's existing static choices:
+`alphaClipping` selects the Surface output threshold and `alphaHash` opts into
+hash coverage. `Materials.standard` defaults both off for a custom Surface;
+`alphaClip` publishes `alphaClipping`, not a pass tag. JSON roots use the same
+switches. Do not infer custom coverage from stock parameter names or the legacy
+`alphaMask` receipt: that pair describes stock inputs, not entry side effects.
+Preserve authored discard and independent LOD/view/local clipping, and verify
+the cooked direct and scene-index programs before claiming an opaque entry.
+Builtin Unlit and skinned Standard select camera clipping independently from
+material-local planes. Unlit color/depth use the explicit alpha-mask lane;
+its temporal coverage remains exact. Alpha helpers return a rejection value,
+and fragment entry points own the discard; do not extend the nested-discard
+allowlist to admit a new helper.
+
 The built-in and custom paths use named texture values. `coordinates.set`
 selects the vertex coordinate input and `coordinates.transform` applies offset,
 scale, and rotation. Do not add a global material coordinate selector; it
@@ -219,6 +233,12 @@ slots from the MaterialAsset parameter contract. WGSL reflection must match the
 derived layout. A mismatch is a build or cook failure and must be repaired at
 the source boundary.
 
+Native selected-entry `effects` accompany binding reads. Missing legacy effects
+are unknown; never infer an effect-free entry from parameter names, source text
+or another entry in the module. Preserve depth/sample-mask/storage effects and
+pipeline alpha-to-coverage when considering a position-only prepass. Contradictory
+native facts for identical source require producer repair.
+
 ## Recovery
 
 | Code | Recovery |
@@ -236,6 +256,13 @@ For every failure, switch on `error.code` and read `error.detail` and
 fixed by changing the demo's material data. This is the recovery route.
 
 ## Routing
+
+For an external Vite source consumer, build the Engine packages and run
+`node scripts/forgeax/prepare-shader-release-inputs.mjs --build --profile base-ssao`
+in its Engine checkout. Keep `forgeaxShader()` in the app. Inspect the resolved
+plugin's profile/source diagnostics; missing rows and stale compiler facts
+select source compilation. Packaging without `--build` requires the producer's
+current receipt and payload digest. See the plugin README for preparation/reuse.
 
 In an Engine contributor checkout, standalone Dawn fixtures with authored
 material packages use `buildEngineShaderManifest` with the CI-admitted shared
@@ -280,3 +307,18 @@ Keep Worker publication and device recovery on declaration/adoption paths so the
 do not decode every variant. Source-dependent validation still runs before a
 prepared program is returned. Artifact loading/decompression and GPU compilation
 retain their existing timing; this route adds no runtime compiler.
+
+## Three surface expression recipes
+
+For original r187 Standard/Basic NodeMaterial expressions, use the explicit
+`cookThreeSurface` build entry and `bindThreeSurface` player binding described in
+[Three's owning contract](../../packages/three/README.md#cooked-surface-expressions).
+Keep admission and lowering on the same private typed DAG; use native
+cook/reflection for layout and publication. Preserve ordinary material fast
+paths and the owning contract's explicit rebind boundary. Reject inputs outside
+the documented subset with a typed source path; qualify stage consumers
+independently. Do not invoke NodeMaterial.build, NodeBuilder, GLSL translation
+or the compiler from the player.
+An existing ordinary map slot may bind a completed native 2D target alongside
+independent expression roots. Cook the slot membership and await the target write;
+this does not admit render-target TextureNodes or framebuffer-dependent graphs.

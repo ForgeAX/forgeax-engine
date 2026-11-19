@@ -108,6 +108,10 @@ function encodeComposite(
     };
     if (!view.composite.encode(encoder, [picture], target.texture, target.descriptor)) return false;
   }
+  if (plan.directDisplay !== undefined) {
+    recordContext(internals).encodeRenderTargetReadbacks?.(encoder);
+    return true;
+  }
   if (internals.context === null) return false;
   const output = internals.presentationOutput ?? internals.context.getCurrentTexture().unwrap();
   if (!owner.compositor.encode(encoder, plan.pictures, output)) return false;

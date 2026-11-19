@@ -43,12 +43,17 @@ it('preserves actual Skin values across page reuse and retained frame lifetimes'
     skin.setJoint(source, 7, world(1));
     const first = capture();
     const root = first.inputRoot();
+    const revision = first.inputRevision;
     expect(readJoint(first, 7, matrix)).toBe(true);
     expect(matrix[12]).toBe(1);
     first.release();
     skin.setJoint(source, 7, world(2));
     const changed = capture();
     expect(changed.inputRoot()).toBe(root);
+    expect(changed.inputRevision).toBeGreaterThan(revision);
+    const unchanged = capture();
+    expect(unchanged.inputRevision).toBe(changed.inputRevision);
+    unchanged.release();
     expect(readJoint(changed, 7, matrix)).toBe(true);
     expect(matrix[12]).toBe(2);
     const retained = changed.retain();
@@ -58,6 +63,7 @@ it('preserves actual Skin values across page reuse and retained frame lifetimes'
     const latest = capture();
     expect(readJoint(latest, 7, matrix)).toBe(true);
     expect(matrix[12]).toBe(3);
+    expect(retained.inputRevision).toBe(changed.inputRevision);
     expect(readJoint(retained, 7, matrix)).toBe(true);
     expect(matrix[12]).toBe(2);
   } finally {

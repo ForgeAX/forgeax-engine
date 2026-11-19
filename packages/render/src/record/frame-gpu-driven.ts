@@ -23,7 +23,6 @@ import {
   shadowCameraCullDilation,
   shadowViewIdentityKey,
 } from '../gpu-driven/shadow-views';
-import type { MaterialResource } from '../material-resource';
 import type { StandardTopologyInputValue } from '../pipeline/standard-lighting/topology';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import type { VisibleSurfaceProjection } from '../raytracing/visible-surface';
@@ -35,7 +34,7 @@ import type {
   SpotLightSnapshot,
 } from '../render-system-extract';
 import type { FrameList } from '../scene/frame-list';
-import type { MaterialFrame } from '../scene/material-dispatch';
+import { dispatchPassWork, type MaterialFrame } from '../scene/material-dispatch';
 import type { ShadowMaterialContent } from '../scene/material-shadow-content';
 import type {
   PersistentGpuDrivenState,
@@ -101,22 +100,38 @@ export function collectFrameGpuDrivenArtifacts(
 }
 
 export function collectGpuShadowMaterials(
-  internals: RenderSystemInternals,
+  internals: Pick<RenderSystemInternals, 'preparedMaterialTexture'>,
   sourceScope: RenderResourceScope,
   batchExecutions: CollectedMaterialArtifacts['batchExecutions'],
   meshes: ReadonlyMap<GpuDrivenBatchBinding, MeshGpuHandles>,
   shadowMaterials: ShadowMaterialContent,
   meshReads: ShadowMeshInput | undefined,
-  casterMaterials?: ReadonlySet<MaterialResource>,
+  projection?: PersistentShadowCasterProjection,
 ): void {
+  const casterWork = projection === undefined ? undefined : dispatchPassWork(projection.dispatch);
+  if (casterWork !== undefined) {
+    // Native ShadowCaster work already excludes non-casters and retains each
+    // material root even when GPU row batching binds one representative.
+    for (const work of casterWork.work) {
+      if (work.pass.tags.LightMode !== 'ShadowCaster') continue;
+      const accepted = projection?.content.materials.get(work.resource);
+      if (accepted !== undefined)
+        shadowMaterials.add(
+          work.resource,
+          accepted.snapshot,
+          sourceScope,
+          internals.preparedMaterialTexture,
+          0,
+        );
+    }
+  }
   for (const binding of batchExecutions.keys()) {
     const execution = batchExecutions.get(binding);
     if (execution === undefined || execution.shadow.route === 'none') continue;
     // A batch whose members all opt out of casting rasters nothing; its
     // material edits cannot invalidate retained shadow depth.
-    if (casterMaterials !== undefined && !casterMaterials.has(binding.material)) continue;
     const scope = sourceScope;
-    if (scope !== undefined) {
+    if (casterWork === undefined && scope !== undefined) {
       shadowMaterials.add(
         binding.material,
         execution.shadow.material,
@@ -224,6 +239,7 @@ export function gpuDrivenPrepareRequest(
   capsuleShadowDirectional: boolean,
   directionalShadowSimple = false,
   leanLighting = false,
+  directSurface?: GpuDrivenPrepareInput['directSurface'],
 ): GpuDrivenPrepareInput {
   const scene = frameGpuDriven.scene;
   return {
@@ -250,6 +266,7 @@ export function gpuDrivenPrepareRequest(
     clustered: standard.kind === 'clustered',
     materialBindingClasses,
     ...gpuDrivenFrameFacts(frameGpuDriven),
+    ...(directSurface === undefined ? {} : { directSurface }),
     ...gpuDrivenArtifactInputs(artifacts, probeBlendRecordBuffer),
     materialPipelineState: pipelineState,
     shadowViews,

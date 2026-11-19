@@ -47,6 +47,3 @@ export function requireViewField<C extends Component, F extends ScalarField<C>>(
     return world.get(entity, component).unwrap()[field] as ShapeOf<SchemaOf<C>>[F];
   return value;
 }
-
-/** A managed payload edit publishes its ordinary component version without replacing its reference. */
-export const EMPTY_VIEW_STATE_UPDATE: Record<string, never> = Object.freeze({});

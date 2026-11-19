@@ -43,9 +43,15 @@ describe('Standard surface discard override', () => {
     expect(body).toMatch(
       /#if GPU_DRIVEN_SCENE_INDEX_AVAILABLE == true\s*#if LOD_DITHER == true\s*#if WATER_WAVES_AVAILABLE == true\s*applyLodCoverage\(in\.clip\.xy, bitcast<f32>\(in\.materialAddress\.w\)\);\s*#else\s*applyLodCoverage\(in\.clip\.xy, in\.lodFade\);\s*#endif\s*#endif\s*#endif/,
     );
-    expect(body).toMatch(
-      /#if CLIPPING_PLANES == true\s*applyViewClipping\(standardPositionWS, false\);\s*#endif/,
+    expect(body).not.toContain('applyViewClipping(');
+    const rejection = shader.slice(
+      shader.indexOf('fn standardSurfaceRejected('),
+      shader.indexOf('fn alphaTestSurface('),
     );
+    expect(rejection).toMatch(
+      /#if CLIPPING_PLANES == true\s*if \(viewClippingRejected\(standardPositionWS, false\)\) \{ return true; \}\s*#endif/,
+    );
+    expect(rejection).not.toContain('discard;');
     expect(body).not.toContain('standardSurfaceDiscards');
     // Material-local clipping is a per-material fact and stays unconditional.
     expect(body).toMatch(/#ifdef MATERIAL_CLIPPING_AVAILABLE\s*applyLocalClipping\(/);

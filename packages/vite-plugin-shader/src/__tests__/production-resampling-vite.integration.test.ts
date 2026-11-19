@@ -32,20 +32,37 @@ interface PublishedMaterial extends PublishedArtifact {
 
 interface PublishedReflection {
   readonly schemaVersion: string;
-  readonly boundGlobals: readonly {
-    readonly group: number;
-    readonly binding: number;
-    readonly addressSpace: string;
-    readonly resourceKind: string;
-    readonly name?: string;
-  }[];
+  readonly bindingIndices: readonly number[];
+  readonly entryPointsIndex?: number;
+}
+
+interface PublishedBinding {
+  readonly group: number;
+  readonly binding: number;
+  readonly addressSpace: string;
+  readonly resourceKind: string;
+  readonly name?: string;
 }
 
 interface PublishedManifest {
   readonly entries: readonly (PublishedArtifact & { readonly identifier?: string })[];
   readonly materialShaders: readonly PublishedMaterial[];
   readonly reflections?: readonly PublishedReflection[];
+  readonly reflectionBindings?: readonly PublishedBinding[];
   readonly entryPoints?: readonly (readonly { readonly name: string; readonly stage: string }[])[];
+}
+
+function reflectionAt(publication: PublishedManifest, index: number | undefined) {
+  const row = index === undefined ? undefined : publication.reflections?.[index];
+  if (row === undefined) return undefined;
+  const { bindingIndices, entryPointsIndex, ...metadata } = row;
+  return {
+    ...metadata,
+    boundGlobals: bindingIndices.map((binding) => publication.reflectionBindings?.[binding]),
+    ...(entryPointsIndex === undefined
+      ? {}
+      : { entryPoints: publication.entryPoints?.[entryPointsIndex] }),
+  };
 }
 
 afterEach(() => {
@@ -165,7 +182,7 @@ it(
         if (raw.reflectionIndex !== undefined) {
           note(
             JSON.stringify(resolved.reflection) ===
-              JSON.stringify(publication.reflections?.[raw.reflectionIndex]),
+              JSON.stringify(reflectionAt(publication, raw.reflectionIndex)),
             `${label}: reflectionIndex does not resolve to this compiled artifact's reflection`,
           );
         }
@@ -303,7 +320,7 @@ it(
             );
             note(
               JSON.stringify(admittedDirectStandard.reflection) ===
-                JSON.stringify(publication.reflections?.[variant.reflectionIndex ?? -1]),
+                JSON.stringify(reflectionAt(publication, variant.reflectionIndex)),
               'direct Standard reflection does not match its selected compiled variant',
             );
           }
@@ -336,16 +353,12 @@ it(
             );
           }
         }
-        const storageIndex = storageVariant?.reflectionIndex;
-        const textureIndex = textureVariant?.reflectionIndex;
-        const storageReflection =
-          storageIndex === undefined ? undefined : publication.reflections?.[storageIndex];
-        const textureReflection =
-          textureIndex === undefined ? undefined : publication.reflections?.[textureIndex];
+        const storageReflection = reflectionAt(publication, storageVariant?.reflectionIndex);
+        const textureReflection = reflectionAt(publication, textureVariant?.reflectionIndex);
         note(
           storageReflection?.boundGlobals.some(
             (global) =>
-              global.group === 2 &&
+              global?.group === 2 &&
               global.binding === 3 &&
               global.addressSpace === 'storage' &&
               global.resourceKind === 'storage-buffer',
@@ -355,7 +368,7 @@ it(
         note(
           textureReflection?.boundGlobals.some(
             (global) =>
-              global.group === 2 && global.binding === 3 && global.resourceKind === 'texture',
+              global?.group === 2 && global.binding === 3 && global.resourceKind === 'texture',
           ) === true,
           'storage-free Standard reflection does not describe the integer texture light table',
         );

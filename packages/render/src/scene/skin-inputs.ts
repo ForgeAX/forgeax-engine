@@ -83,6 +83,7 @@ function validateMatrixOutputs(a: Mat4, b: Mat4): void {
 interface State {
   readonly slots: StableRangeAllocator;
   frames: number;
+  revision: number;
   disposed: boolean;
   failed: boolean;
 }
@@ -296,6 +297,7 @@ export class SkinInputs {
   private readonly state: State = {
     slots: new StableRangeAllocator(),
     frames: 0,
+    revision: 0,
     disposed: false,
     failed: false,
   };
@@ -800,6 +802,7 @@ export class SkinInputs {
             }
           }
           if (previous !== undefined) retireRow(this.inputs, this.state, previous);
+          this.state.revision++;
           return;
         }
       }
@@ -808,6 +811,7 @@ export class SkinInputs {
     const previous = this.current;
     this.current = next;
     retirePage(this.inputs, this.state, previous);
+    this.state.revision++;
   }
 
   private copy(
@@ -889,7 +893,7 @@ export class SkinInputs {
   capture(): SkinInputFrame {
     this.healthy();
     this.flushPoses();
-    return retainFrame(this.inputs, this.state, this.current);
+    return retainFrame(this.inputs, this.state, this.current, this.state.revision);
   }
 
   dispose(): void {
@@ -905,11 +909,16 @@ export class SkinInputs {
 }
 
 /** One reference increment on the exact fixed root; never samples the latest Scene. */
-function retainFrame(inputs: GpuInputArena, state: State, page: Page | undefined): SkinInputFrame {
+function retainFrame(
+  inputs: GpuInputArena,
+  state: State,
+  page: Page | undefined,
+  revision: number,
+): SkinInputFrame {
   if (state.frames >= 128) throw invalid('fewer than 128 retained Skin frames');
   if (page !== undefined) page.holders++;
   try {
-    const frame = new SkinInputFrame(inputs, state, page);
+    const frame = new SkinInputFrame(inputs, state, page, revision);
     state.frames++;
     return frame;
   } catch (cause) {
@@ -935,7 +944,13 @@ export class SkinInputFrame {
     number,
     { envelopes: Float32Array; radius: number; ok: boolean; box: Float32Array }
   >();
-  constructor(inputs: GpuInputArena, state: State, page: Page | undefined) {
+  constructor(
+    inputs: GpuInputArena,
+    state: State,
+    page: Page | undefined,
+    /** Semantic input version remains fixed even after a released physical page is reused. */
+    readonly inputRevision: number,
+  ) {
     this.root = page?.address ?? ABSENT;
     this.jointCapacity = page?.jointCount ?? 0;
     this.#inputs = inputs;
@@ -1394,7 +1409,8 @@ export class SkinInputFrame {
 
   /**
    * The captured root this live frame reads. A held root is immutable, so two
-   * frames with the same live root compose equal palettes.
+   * frames with the same live root compose equal palettes. A memo that outlives
+   * the frame must compare inputRevision too: exclusive writes may reuse its page.
    */
   inputRoot(): object | undefined {
     return this.#state === undefined ? undefined : this.#page;
@@ -1420,7 +1436,7 @@ export class SkinInputFrame {
   /** Transfer a submitted frame's input lifetime to history/completion without per-Binding pins. */
   retain(): SkinInputFrame {
     const inputs = this.live();
-    return retainFrame(inputs, this.#state as State, this.#page);
+    return retainFrame(inputs, this.#state as State, this.#page, this.inputRevision);
   }
   release(): void {
     const state = this.#state;

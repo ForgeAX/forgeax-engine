@@ -35,7 +35,9 @@ it('routes history to the selected native document and keeps frontend project is
         artifacts: [],
       }));
       const runtime = createEngineWorkspaceRuntime({
-        openProject: ({ root }) => ({ project: { id: root, root } }),
+        openProject: ({ root, generation }) => ({ project: { id: root, root },
+          status: { phase: 'preparing', sessionId: `project-session:${root}`, generation },
+          subscribeStatus() { return () => {}; } }),
         closeProject() {},
         listAssets: () => [],
         openPreview() {

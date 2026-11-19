@@ -277,7 +277,8 @@ for (const span of query.spans().unwrap()) {
 }
 ```
 
-`query.combinations(k)` derives K-way iteration from the same query.
+For pairwise work, collect handles with `Array.from(query, (row) => row.entity)`
+and traverse pairs with indices `i < j` in the owning system.
 
 ## Storage choice
 

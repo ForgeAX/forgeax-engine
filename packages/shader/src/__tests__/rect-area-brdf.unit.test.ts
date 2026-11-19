@@ -47,6 +47,6 @@ describe('RectAreaLight LTC BRDF shader contract', () => {
 
   it('threads the light-texture slice from the direct-light slot metadata', async () => {
     const cluster = await readFile(new URL('../standard-cluster.wgsl', import.meta.url), 'utf8');
-    expect(cluster).toMatch(/evalRectAreaLtcGgx\([\s\S]*?light\.metadata\.w,?\s*\)/);
+    expect(cluster).toMatch(/evalRectAreaLtcLobes\([\s\S]*?light\.metadata\.w,?\s*\)/);
   });
 });

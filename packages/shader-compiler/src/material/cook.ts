@@ -49,6 +49,9 @@ import {
   type SurfaceCompositionRequest,
 } from './compose.js';
 import { ENGINE_MODULE_ALIASES } from './engine-module-aliases.js';
+import { engineMaterialForwardFog } from './forward-fog-contract.js';
+import { engineMaterialGBuffer } from './gbuffer-contract.js';
+import { materialLightingResources, materialLightingSources } from './lighting-inputs.js';
 import {
   lowerStandardContract,
   lowerStandardPhysicalBindings,
@@ -817,9 +820,16 @@ type MaterialVertexInputs = ReturnType<typeof materialVertexInputs>;
 type MaterialDynamicInputLayout = NonNullable<SurfaceCompositionRequest['dynamicInput']>;
 type MaterialAbiKind = 'medium' | 'standard' | 'custom-scene' | 'direct';
 
+/** Source-only Surface preparation within one Pack material publication. */
+export interface MaterialSurfacePreparation {
+  readonly sources: MaterialSourceCatalog;
+  readonly entries: Map<string, SurfaceComposition>;
+}
+
 /** Material-level facts shared by every pass of one cook. */
 interface MaterialCookUnit {
   readonly request: MaterialCookRequest;
+  readonly preparedSurfaces: MaterialSurfacePreparation | undefined;
   /** Inheritance-resolved authored asset; its Surface declaration applies to every pass. */
   readonly asset: ResolvedMaterial['asset'];
   /** Compiler-expanded passes (Terrain identities resolved to their templates). */
@@ -902,6 +912,8 @@ function materialDeclaresSceneIndex(
 export async function cookMaterialAsset(
   request: MaterialCookRequest,
   compile: typeof compileShader = compileShader,
+  selectedPasses?: readonly string[],
+  preparedSurfaces?: MaterialSurfacePreparation,
 ): Promise<Result<MaterialCookedAsset, MaterialCookError>> {
   const resolved = resolveMaterialAsset(request.material, request.table);
   if (!resolved.ok) return err(resolved.error);
@@ -918,8 +930,15 @@ export async function cookMaterialAsset(
   if (!loweredContract.ok) return loweredContract;
   const schema = loweredContract.value.paramSchema;
   const derived: DerivedMaterialInterface = derive(schema);
+  const lightingSources = passes?.some(
+    (pass) => pass.program.bindings === 'render-lit-material-and-scene-depth',
+  )
+    ? materialLightingSources(request.sources, derived)
+    : ok(request.sources);
+  if (!lightingSources.ok) return lightingSources;
   const unit: MaterialCookUnit = {
-    request,
+    request: { ...request, sources: lightingSources.value },
+    preparedSurfaces,
     asset: resolved.value.asset,
     passes: passes ?? [],
     parameters,
@@ -937,7 +956,24 @@ export async function cookMaterialAsset(
       resolved.value.asset.surface?.model === 'single-layer-water',
   };
   const cooked: MaterialCookedPass[] = [];
+  // Derive schema, physical layers and scene addressing from the complete
+  // material above. A derivative producer may compile only its published
+  // passes without changing that shared ABI or compiling discarded outputs.
+  const selected = selectedPasses === undefined ? undefined : new Set(selectedPasses);
+  if (
+    selected !== undefined &&
+    [...selected].some((name) => !unit.passes.some((pass) => pass.name === name))
+  )
+    return err(
+      new ShaderError({
+        code: 'shader-compile-failed',
+        expected: 'selected material passes declared by the resolved material',
+        message: 'material derivative selection contains an undeclared pass',
+        hint: 'select derivative passes from the material producer roster',
+      }),
+    );
   for (const pass of unit.passes) {
+    if (selected !== undefined && !selected.has(pass.name)) continue;
     const cookedPass = await cookMaterialPass(unit, pass, compile);
     if (!cookedPass.ok) return cookedPass;
     cooked.push(cookedPass.value);
@@ -1088,7 +1124,7 @@ async function cookMaterialPass(
       }),
     );
   }
-  const compileDefines = passCompileDefines(cook, composed.value.surfaceModule);
+  const compileDefines = passCompileDefines(cook, composed.value);
   const validateWaterTransitionSelection = () => {
     if (
       unit.asset.surface?.deformation?.module === 'forgeax_material::water_deformation_default' &&
@@ -1239,6 +1275,19 @@ function cookedPassRecord(
   abi: MaterialProgramAbi,
 ): MaterialCookedPass {
   const { unit, pass } = cook;
+  const gbuffer = engineMaterialGBuffer({
+    ...(cook.sourceRecord.provenance === 'engine'
+      ? { reservedIdentifier: ENGINE_MODULE_ALIASES[pass.program.module] ?? pass.program.module }
+      : {}),
+    program: pass.program,
+  });
+  const forwardFog =
+    pass.program.forwardFog ??
+    (cook.sourceRecord.provenance === 'engine'
+      ? engineMaterialForwardFog({
+          reservedIdentifier: ENGINE_MODULE_ALIASES[pass.program.module] ?? pass.program.module,
+        })
+      : undefined);
   return {
     pass: pass.name,
     context: cook.context,
@@ -1253,6 +1302,14 @@ function cookedPassRecord(
     layoutIdentity: unit.derived.layoutIdentity,
     abi: {
       ...abi,
+      ...(gbuffer === undefined
+        ? {}
+        : {
+            gbuffer,
+            receiptIdentity: `${abi.receiptIdentity}/${gbuffer}`,
+            generation: abi.generation + 1,
+          }),
+      ...(forwardFog === undefined ? {} : { forwardFog }),
       ...(compiled.reflection.entryPoints === undefined
         ? {}
         : { entryPoints: compiled.reflection.entryPoints }),
@@ -1309,6 +1366,39 @@ function surfaceCompositionSelection(
   };
 }
 
+function prepareCookSurface(
+  cook: MaterialPassCook,
+  generatedParameters: string,
+  dynamicInput: MaterialDynamicInputLayout | undefined,
+): ReturnType<typeof composeSurfaceSource> {
+  const { material, sources } = cook.unit.request;
+  const { name: pass, program } = cook.pass;
+  const selection = {
+    ...surfaceCompositionSelection(cook, dynamicInput),
+    ...(program.sceneDepth === 'before-pass' ? { sceneDepth: 'before-pass' as const } : {}),
+  };
+  const preparation = cook.unit.preparedSurfaces;
+  const cache = preparation?.sources === sources ? preparation.entries : undefined;
+  const key =
+    cache === undefined
+      ? undefined
+      : JSON.stringify([pass, program.module, generatedParameters, selection]);
+  if (key !== undefined) {
+    const prepared = cache?.get(key);
+    if (prepared !== undefined) return ok(prepared);
+  }
+  const prepared = composeSurfaceSource({
+    material,
+    pass,
+    templateModule: program.module,
+    sources,
+    generatedParameters,
+    ...selection,
+  });
+  if (prepared.ok && key !== undefined) cache?.set(key, prepared.value);
+  return prepared;
+}
+
 function composeSurfaceSlotPass(
   cook: MaterialPassCook,
   templateResources: ReadonlySet<string>,
@@ -1317,14 +1407,7 @@ function composeSurfaceSlotPass(
   const generatedParameters = generateParameterModule(cook.unit.schema, {
     excludeResources: templateResources,
   });
-  const surface = composeSurfaceSource({
-    material: cook.unit.request.material,
-    pass: cook.pass.name,
-    templateModule: cook.pass.program.module,
-    sources: cook.unit.request.sources,
-    generatedParameters,
-    ...surfaceCompositionSelection(cook, dynamicInput),
-  });
+  const surface = prepareCookSurface(cook, generatedParameters, dynamicInput);
   if (!surface.ok) return surface;
   return ok({
     source: surface.value.source,
@@ -1592,7 +1675,6 @@ function passRenderEntries(
 function stockSurfaceInputDefines(
   stockSurface: boolean,
   schema: readonly ParamSchemaEntry[],
-  context: MaterialVariantContext,
 ): Readonly<Record<string, boolean>> {
   const parameterNames = new Set(schema.map((entry) => entry.name));
   const parallaxSelectable = standardParallaxSelectable((name) => parameterNames.has(name));
@@ -1610,8 +1692,6 @@ function stockSurfaceInputDefines(
       !parameterNames.has('normalMapSpace') &&
       !parameterNames.has('transmission') &&
       !parallaxSelectable,
-    STANDARD_VERTEX_MATERIAL_UNUSED:
-      stockSurface && context.geometry !== 'terrain' && !parameterNames.has('displacementTexture'),
     STANDARD_OBJECT_POSITION_UNUSED:
       stockSurface && !parameterNames.has('alphaHash') && !parameterNames.has('triplanarSpace'),
   };
@@ -1619,11 +1699,14 @@ function stockSurfaceInputDefines(
 
 function passCompileDefines(
   cook: MaterialPassCook,
-  surfaceModule: string | undefined,
+  composed: ComposedPassSource,
 ): Readonly<Record<string, boolean>> {
   const { unit, context } = cook;
+  const { surfaceModule } = composed;
   const parameterNames = new Set(unit.schema.map((entry) => entry.name));
   const stockSurface = surfaceModule === 'forgeax_material::default_standard_surface';
+  const customSurface = surfaceModule !== undefined && !stockSurface;
+  const switches = unit.asset.staticSwitches;
   const waterHeightMappingDefines = () => ({
     WATER_BAKED_HEIGHT_DEPTH_AVAILABLE:
       unit.asset.staticSwitches?.waterBakedSimulation === true &&
@@ -1677,13 +1760,22 @@ function passCompileDefines(
   return {
     ALPHA_HASH_DISABLED: !parameterNames.has('alphaHash'),
     ALPHA_CLIPPING_DISABLED: !parameterNames.has('alphaCutoff'),
-    // Alpha test is a compile-time variant in the Standard and shadow roots.
-    // A cooked material that can cut out keeps the discard; one without
-    // cutoff or hash parameters compiles a discard-free (HSR-safe) program.
+    // A custom Surface owns its output threshold; it need not use the stock
+    // parameter names. Explicit authored coverage governs every pass. Missing
+    // choices retain the conservative schema rule for raw material contracts.
     ALPHA_MASK:
       surfaceModule !== 'forgeax_material::opaque_surface' &&
-      (parameterNames.has('alphaCutoff') || parameterNames.has('alphaHash')),
-    ...stockSurfaceInputDefines(stockSurface, unit.schema, context),
+      (customSurface
+        ? (switches?.alphaClipping ?? parameterNames.has('alphaCutoff')) ||
+          (switches?.alphaHash ?? parameterNames.has('alphaHash'))
+        : parameterNames.has('alphaCutoff') || parameterNames.has('alphaHash')),
+    ...stockSurfaceInputDefines(stockSurface, unit.schema),
+    // A custom Surface owns fragment evaluation, not the Engine vertex entry.
+    // Drop the scene material copy only when that entry has no material-driven
+    // displacement or authored deformation. Unknown templates remain conservative.
+    STANDARD_VERTEX_MATERIAL_UNUSED:
+      !parameterNames.has('displacementTexture') &&
+      provesStandardPositionBounds(cook, composed, cook.pass.program.vertexEntry ?? 'vs_main'),
     STANDARD_STOCK_SURFACE_AVAILABLE: stockSurface,
     ...waterGeometryDefines(),
     ...waterSurfaceDefines(),
@@ -1729,14 +1821,7 @@ function composeSceneSurfaceEntry(
       ),
     );
   }
-  const sceneComposed = composeSurfaceSource({
-    material: cook.unit.request.material,
-    pass: cook.pass.name,
-    templateModule: cook.pass.program.module,
-    sources: cook.unit.request.sources,
-    ...surfaceCompositionSelection(cook, dynamicInput),
-    generatedParameters: sceneGeneratedInterface,
-  });
+  const sceneComposed = prepareCookSurface(cook, sceneGeneratedInterface, dynamicInput);
   if (!sceneComposed.ok) return sceneComposed;
   // The scene composition owns a different parameter provider: its
   // private `material` must be the same module imported by any composable
@@ -1826,13 +1911,19 @@ function checkPassInterface(
   // declaration is the authoritative contract for this pass; comparing it
   // to the root-derived interface would reject valid shared surfaces (for
   // example particle mesh Standard Surface variants) before they can publish.
-  if (entry.importedAuthoredInterface && !hasSceneIndexEntry) return ok(undefined);
+  const lit = pass.program.bindings === 'render-lit-material-and-scene-depth';
+  const lighting = lit
+    ? materialLightingResources(unit.derived, entry.effectiveClosureImports, compiled)
+    : ok<ReadonlySet<number>>(new Set());
+  if (!lighting.ok) return lighting;
+  if (entry.importedAuthoredInterface && !hasSceneIndexEntry && !lit) return ok(undefined);
   const reflectionChecked = compareDerivedMaterialInterface(
     unit.derived,
     compiled.reflection,
     relocatedTextures,
-    standardFamily || hasSceneIndexEntry,
+    !lit && (standardFamily || hasSceneIndexEntry),
     hasSceneIndexEntry && !cook.standardTemplate,
+    lighting.value,
   );
   if (reflectionChecked.ok) return reflectionChecked;
   return err({
@@ -1932,7 +2023,7 @@ function publishPassAbi(
         : { sceneIndexEntry: 'vs_scene_index', rowStride: cook.unit.sceneRowStride }),
       ...(abiKind === 'standard' &&
       cook.unit.schema.some((parameter) => parameter.name === 'alphaCutoff') &&
-      composed.surfaceModule !== 'forgeax_material::opaque_surface'
+      composed.surfaceModule === 'forgeax_material::default_standard_surface'
         ? { alphaMask: { cutoff: 'alphaCutoff', source: 'baseColor.a' } }
         : {}),
       ...(publishedSurface === undefined ? {} : { surface: publishedSurface }),

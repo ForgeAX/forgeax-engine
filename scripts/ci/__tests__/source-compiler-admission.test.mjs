@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { shaderSourceCompileWorkers } from '../../lib/runner-resources.mjs';
+import {
+  shaderProducerCompileWorkers,
+  shaderSourceCompileWorkers,
+} from '../../lib/runner-resources.mjs';
 import { focusPlan } from '../run-ci-focus.mjs';
 import {
   allProjectNames,
@@ -12,6 +15,16 @@ import {
 const selector =
   'packages/vite-plugin-shader/src/__tests__/production-resampling-vite.integration.test.ts';
 const resources = { cpus: 8, memoryBytes: 16_000_000_000 };
+
+test('a dedicated manifest producer uses spare CPU within its separate heap and Worker budgets', () => {
+  assert.equal(shaderProducerCompileWorkers(resources), 7);
+  assert.equal(shaderProducerCompileWorkers(resources, '4'), 4);
+  assert.equal(shaderProducerCompileWorkers(resources, '1'), 1);
+  assert.equal(shaderProducerCompileWorkers({ ...resources, cpus: 4 }, '7'), 3);
+  assert.equal(shaderProducerCompileWorkers({ ...resources, memoryBytes: 8 * 1024 ** 3 }), 2);
+  assert.equal(shaderProducerCompileWorkers(resources, '7', 10 * 1024), 3);
+  assert.equal(shaderProducerCompileWorkers({ cpus: 64, memoryBytes: 128 * 1024 ** 3 }, '64'), 7);
+});
 
 test('cold compiler capacity reserves its producer heap before admitting parallel workers', () => {
   assert.equal(shaderSourceCompileWorkers(resources), 4);

@@ -14,10 +14,10 @@ import {
 } from '../render-system-extract';
 import type { FrameList } from '../scene/frame-list';
 import type { DispatchList } from '../scene/material-dispatch';
+import type { StandardSceneSurfaceAdmission } from '../temporal/scene-data';
 import {
   createStandardSceneSurfaceAdmission,
   ProducedStandardSceneDataAdmissionInput,
-  type StandardSceneSurfaceAdmission,
   standardSceneDataContributorForDispatch,
   standardSceneSurfaceContributorBaseline,
 } from '../temporal/standard-scene-data-admission';
@@ -52,8 +52,10 @@ function contributor(material: MaterialResource, entity = 1, deformation?: 'skin
     material,
     materials: [material],
     entityKey: entity,
-    ...(deformation === 'skin' ? { skinBinding: {} } : {}),
-    ...(deformation === 'morph' ? { morph: {} } : {}),
+    ...(deformation === 'skin' ? { skinBinding: { skeleton: 1, joints: [1] } } : {}),
+    ...(deformation === 'morph'
+      ? { morph: { weights: new Float32Array([1]), targetCount: 1 } }
+      : {}),
   } as unknown as RenderableSnapshot;
   const value = standardSceneDataContributorForDispatch(
     row,
@@ -356,7 +358,7 @@ it('rechecks borrowed parameter selection, program changes, scope changes, and r
     ...current,
     contributorProjection: {
       ...current.contributorProjection,
-      renderables: [{ ...currentRow, morph: {} }],
+      renderables: [{ ...currentRow, morph: { weights: new Float32Array([1]), targetCount: 1 } }],
     },
   };
   expect(owner.updateProjection(deformed)).toEqual(directProjectionAdmission(deformed));
@@ -365,7 +367,7 @@ it('rechecks borrowed parameter selection, program changes, scope changes, and r
     ...current,
     contributorProjection: {
       ...current.contributorProjection,
-      renderables: [{ ...currentRow, skinBinding: {} }],
+      renderables: [{ ...currentRow, skinBinding: { skeleton: 1, joints: [1] } }],
     },
   };
   expect(owner.updateProjection(skinned)).toEqual(directProjectionAdmission(skinned));

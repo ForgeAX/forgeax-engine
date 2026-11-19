@@ -169,6 +169,7 @@ describe('temporal GPU payloads', () => {
         density: 0.1,
         heightFalloff: 0.2,
         maxOpacity: 0.9,
+        skyOpacity: 0,
         mode: 'exp',
         near: 0,
         far: 100,

@@ -1,5 +1,5 @@
 import { RhiError, type ShaderModule } from '@forgeax/engine-rhi';
-import { manifestShaderSource } from '@forgeax/engine-shader';
+import { isShaderTemplateManifestRow, manifestShaderSource } from '@forgeax/engine-shader';
 import type { ManifestEntry, ShaderSource } from '@forgeax/engine-types';
 import type {
   AtmosphereShaderSources,
@@ -10,43 +10,73 @@ import type {
 import type { SeedShaderModule } from './material-shader-policy';
 
 /** `[source key, pipeline label, WGSL entry point]`; the label equals the manifest stage. */
-type UtilityShaderStage<Key extends string> = readonly [Key, string, string];
+type UtilityShaderStage<Key extends string> = readonly [Key, string, string, string];
+
+function utilityEntry(entries: readonly ManifestEntry[], entryPoint: string, identifier: string) {
+  return entries.find((entry) =>
+    isShaderTemplateManifestRow(entry)
+      ? entry.identifier === identifier
+      : entry.entryPoints === undefined
+        ? entry.wgsl.includes(`fn ${entryPoint}(`)
+        : entry.entryPoints.some((point) => point.name === entryPoint),
+  );
+}
 
 export const DEPTH_PYRAMID_SHADER_STAGES = [
-  ['seed', 'depth_pyramid_seed', 'depth_pyramid_seed'],
-  ['reduce', 'depth_pyramid_reduce', 'depth_pyramid_reduce'],
+  ['seed', 'depth_pyramid_seed', 'depth_pyramid_seed', 'forgeax_depth_pyramid::seed'],
+  ['reduce', 'depth_pyramid_reduce', 'depth_pyramid_reduce', 'forgeax_depth_pyramid::reduce'],
 ] as const satisfies readonly UtilityShaderStage<keyof DepthPyramidShaderSources>[];
 
 export const SSR_SHADER_STAGES = [
-  ['trace', 'ssr_trace', 'ssr_trace'],
-  ['temporal', 'ssr_temporal', 'ssr_temporal'],
-  ['compose', 'ssr_compose', 'vs_ssr_compose'],
-] as const satisfies readonly UtilityShaderStage<keyof SsrShaderSources>[];
+  ['trace', 'ssr_trace', 'ssr_trace', 'forgeax_ssr::trace'],
+  ['temporal', 'ssr_temporal', 'ssr_temporal', 'forgeax_ssr::temporal'],
+  ['compose', 'ssr_compose', 'vs_ssr_compose', 'forgeax_ssr::compose'],
+] as const satisfies readonly UtilityShaderStage<Exclude<keyof SsrShaderSources, 'gbuffer'>>[];
 
 const DEPTH_PYRAMID_FRAGMENT_STAGES = [
-  ['seed', 'depth_pyramid_seed_fragment', 'depth_pyramid_seed_fragment'],
-  ['reduce', 'depth_pyramid_reduce_fragment', 'depth_pyramid_reduce_fragment'],
+  [
+    'seed',
+    'depth_pyramid_seed_fragment',
+    'depth_pyramid_seed_fragment',
+    'forgeax::depth-pyramid-seed-fragment',
+  ],
+  [
+    'reduce',
+    'depth_pyramid_reduce_fragment',
+    'depth_pyramid_reduce_fragment',
+    'forgeax::depth-pyramid-reduce-fragment',
+  ],
 ] as const;
 const SSR_FRAGMENT_STAGES = [
-  ['trace', 'ssr_trace_fragment', 'ssr_trace_fragment'],
-  ['temporal', 'ssr_temporal_fragment', 'ssr_temporal_fragment'],
-  ['compose', 'ssr_compose_fragment', 'vs_ssr_compose_fragment'],
+  ['trace', 'ssr_trace_fragment', 'ssr_trace_fragment', 'forgeax::ssr-trace-fragment'],
+  ['temporal', 'ssr_temporal_fragment', 'ssr_temporal_fragment', 'forgeax::ssr-temporal-fragment'],
+  ['compose', 'ssr_compose_fragment', 'vs_ssr_compose_fragment', 'forgeax::ssr-compose-fragment'],
 ] as const;
 
 export const ATMOSPHERE_SHADER_STAGES = [
-  ['compose', 'atmosphere_compose', 'atmosphere_compose_vs'],
-  ['luts', 'atmosphere_luts', 'atmosphere_transmittance'],
-  ['lutsFragment', 'atmosphere_luts_fragment', 'atmosphere_tables_vs'],
-  ['cube', 'atmosphere_cube', 'atmosphere_cubemap_vs'],
-  ['background', 'atmosphere_background', 'atmosphere_background_vs'],
-  ['ibl', 'atmosphere_ibl', 'atmosphere_ibl_vs'],
+  ['compose', 'atmosphere_compose', 'atmosphere_compose_vs', 'forgeax_atmosphere::compose'],
+  ['luts', 'atmosphere_luts', 'atmosphere_transmittance', 'forgeax_atmosphere::luts'],
+  [
+    'lutsFragment',
+    'atmosphere_luts_fragment',
+    'atmosphere_tables_vs',
+    'forgeax_atmosphere::luts_fragment',
+  ],
+  ['cube', 'atmosphere_cube', 'atmosphere_cubemap_vs', 'forgeax_environment::cubemap'],
+  [
+    'background',
+    'atmosphere_background',
+    'atmosphere_background_vs',
+    'forgeax_environment::background',
+  ],
+  ['ibl', 'atmosphere_ibl', 'atmosphere_ibl_vs', 'forgeax_environment::ibl'],
 ] as const satisfies readonly UtilityShaderStage<keyof AtmosphereShaderSources>[];
 
 export const VOLUMETRIC_FOG_SHADER_STAGES = [
-  ['inject', 'volume_inject', 'volume_inject'],
-  ['temporal', 'volume_temporal', 'volume_temporal'],
-  ['integrate', 'volume_integrate', 'volume_integrate'],
-  ['composite', 'volume_composite', 'volume_fs'],
+  ['inject', 'volume_inject', 'volume_inject', 'forgeax_view::volume_inject'],
+  ['temporal', 'volume_temporal', 'volume_temporal', 'forgeax_view::volume_temporal'],
+  ['integrate', 'volume_integrate', 'volume_integrate', 'forgeax_view::volume_integrate'],
+  ['composite', 'volume_composite', 'volume_fs', 'forgeax_view::volume_composite'],
 ] as const satisfies readonly UtilityShaderStage<keyof VolumetricFogShaderSources>[];
 
 /**
@@ -61,14 +91,10 @@ export async function prewarmUtilityShaders<Key extends string>(
   compile: (label: string, source: string | ShaderSource) => Promise<ShaderModule>,
   seed: SeedShaderModule,
 ): Promise<Record<Key, ShaderSource> | undefined> {
-  const resolved = stages.map(([stage, label, entryPoint]) => ({
+  const resolved = stages.map(([stage, label, entryPoint, identifier]) => ({
     stage,
     label,
-    entry: entries.find((entry) =>
-      entry.entryPoints === undefined
-        ? entry.wgsl.includes(`fn ${entryPoint}(`)
-        : entry.entryPoints.some((point) => point.name === entryPoint),
-    ),
+    entry: utilityEntry(entries, entryPoint, identifier),
   }));
   if (resolved.every(({ entry }) => entry === undefined)) return undefined;
   const missing = resolved.find(({ entry }) => entry === undefined);
@@ -116,6 +142,13 @@ export async function prewarmSsrWithDepthPyramid(
     seed,
   );
   if (ssr === undefined) return undefined;
+  const required = execution === 'fragment' ? SSR_FRAGMENT_STAGES : SSR_SHADER_STAGES;
+  const compatible = required.every(
+    ([, , entryPoint, id]) =>
+      utilityEntry(entries, entryPoint, id)?.programContract?.gbuffer === 'standard-gbuffer/2',
+  );
+  const admittedSsr = { ...ssr, ...(compatible ? { gbuffer: 'standard-gbuffer/2' as const } : {}) };
+
   if (pyramid === undefined) {
     throw new RhiError({
       code: 'shader-compile-failed',
@@ -124,10 +157,10 @@ export async function prewarmSsrWithDepthPyramid(
     });
   }
   return execution === 'compute'
-    ? { ssr, pyramid }
+    ? { ssr: admittedSsr, pyramid }
     : {
         ssr: {
-          ...ssr,
+          ...admittedSsr,
           traceFragment: ssr.trace,
           temporalFragment: ssr.temporal,
           composeFragment: ssr.compose,

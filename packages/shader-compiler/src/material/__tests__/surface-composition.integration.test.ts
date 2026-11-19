@@ -117,6 +117,60 @@ fn sharedTint() -> vec3<f32> { return templateView.tint.rgb; }`,
     expect(compiled.value.reflection.boundGlobals).toMatchObject([{ group: 0, binding: 0 }]);
   });
 
+  it.each([
+    false,
+    true,
+  ])('gates the native scene depth reader on before-pass (%s)', async (enabled) => {
+    const depth = readFileSync(
+      new URL('../../../../shader/src/material-scene-depth.wgsl', import.meta.url),
+      'utf8',
+    );
+    const sources = buildMaterialSourceCatalog({
+      engine: [
+        { path: 'standard.wgsl', source: template },
+        { path: 'surface_v1.wgsl', source: surfaceV1 },
+        { path: 'depth.wgsl', source: depth },
+      ],
+      project: [
+        {
+          path: 'surface.wgsl',
+          source: customSurface
+            .replace(
+              'fn evaluate_surface',
+              '#import forgeax_material::scene_depth::{sceneDepth}\nfn evaluate_surface',
+            )
+            .replace('vec3<f32>(0.6)', 'vec3<f32>(textureLoad(sceneDepth,vec2<i32>(0),0))'),
+        },
+      ],
+    }).unwrap();
+    const composed = composeSurfaceSource({
+      material: 'depth',
+      pass: 'forward',
+      templateModule: 'forgeax_material::standard',
+      surfaceModule: 'game::rusted_surface',
+      sources,
+      ...(enabled ? { sceneDepth: 'before-pass' as const } : {}),
+    });
+    if (!enabled) {
+      expect(composed).toMatchObject({
+        ok: false,
+        error: { code: 'material-surface-forbidden-interface' },
+      });
+      return;
+    }
+    expect(composed.ok, composed.ok ? '' : composed.error.message).toBe(true);
+    if (!composed.ok) return;
+    const compiled = await compileShader(composed.value.source, {
+      id: 'depth',
+      imports: composed.value.imports,
+    });
+    expect(compiled.ok, compiled.ok ? '' : compiled.error.message).toBe(true);
+    if (compiled.ok)
+      expect(compiled.value.reflection.boundGlobals).toContainEqual(
+        expect.objectContaining({ group: 0, binding: 1 }),
+      );
+  });
+
   it('imports generated type-only references while retaining local and member resource names', async () => {
     const sources = buildMaterialSourceCatalog({
       engine: [

@@ -1,22 +1,48 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import * as naga from '@forgeax/engine-naga';
 import { validateCookedMaterialRecord } from '@forgeax/engine-pack/material-cook';
 import { DEFAULT_STANDARD_SURFACE_MODULE } from '@forgeax/engine-shader';
 import { type MaterialAsset, standardSurfaceParameters } from '@forgeax/engine-types';
-import { afterAll, afterEach, expect, it, vi } from 'vitest';
-import * as compiler from '../../compile.js';
+import { afterAll, expect, it, vi } from 'vitest';
+import { compileShader } from '../../compile.js';
 import { createMaterialPackCooker } from '../pack-cooker.js';
 
-// Compiler spies observe their own realm; the Worker route has its own native contracts.
-vi.hoisted(() => vi.stubEnv('FORGEAX_SHADER_COMPILE_WORKERS', '1'));
-afterAll(() => vi.unstubAllEnvs());
-afterEach(() => vi.restoreAllMocks());
+// Keep the cooker in this realm for assertions, but dispatch real shader
+// programs through its bounded compiler. Count work at the dispatch boundary
+// so a cache hit has the same observable contract for inline and Worker compilers.
+const compilerFixture = vi.hoisted(() => ({
+  compilations: 0,
+  cardFailure: undefined as Awaited<ReturnType<typeof compileShader>> | undefined,
+  close: () => Promise.resolve(),
+}));
+vi.mock('../node-material-cooker.js', () => ({
+  withNodeMaterialWorkers: (cooker: unknown) => cooker,
+}));
+vi.mock('../node-program-compiler.js', async (loadOriginal) => {
+  const original = await loadOriginal<typeof import('../node-program-compiler.js')>();
+  return {
+    ...original,
+    createNodeMaterialProgramCompiler() {
+      const compiler = original.createNodeMaterialProgramCompiler();
+      compilerFixture.close = compiler.close;
+      const compile: typeof compileShader = (source, options) => {
+        compilerFixture.compilations++;
+        if (
+          options?.id === 'forgeax_material::ray_surface::card-capture' &&
+          compilerFixture.cardFailure !== undefined
+        )
+          return Promise.resolve(compilerFixture.cardFailure);
+        return compiler.compile(source, options);
+      };
+      return { ...compiler, compile };
+    },
+  };
+});
+afterAll(() => compilerFixture.close());
 
 it('reuses full Standard raster and ray programs across Play cookers while publishing fresh values', async () => {
-  const underlying = vi.spyOn(naga, 'composeShader');
-  const validation = vi.spyOn(compiler, 'compileShaderProgram');
+  const initialCompilations = compilerFixture.compilations;
   const cooker = createMaterialPackCooker();
   const source: MaterialAsset = {
     kind: 'material',
@@ -57,6 +83,26 @@ it('reuses full Standard raster and ray programs across Play cookers while publi
   const firstRecord = validateCookedMaterialRecord(
     (first.payload as { cooked: unknown }).cooked,
   ).unwrap();
+  // A color Surface also owns shadow coverage. Derivative pruning must not
+  // drop the colored shadow ABI beside the four independent view/LOD states.
+  for (const viewClipping of [false, true])
+    for (const lodCoverage of [false, true])
+      for (const color of [false, true])
+        for (const address of ['direct', 'scene-index'] as const)
+          expect(
+            firstRecord.programs
+              .flatMap((program) => program.selections)
+              .filter(
+                (selection) =>
+                  selection.pass === 'shadow-caster' &&
+                  selection.address === address &&
+                  selection.context.pipeline !== 'ray' &&
+                  selection.context.capability === 'storage-buffer' &&
+                  (selection.context.viewClipping === true) === viewClipping &&
+                  (selection.context.lodCoverage === true) === lodCoverage &&
+                  selection.abi?.vertexInputs.some((input) => input.semantic === 'color') === color,
+              ),
+          ).toHaveLength(1);
   expect(
     firstRecord.programs
       .flatMap((program) =>
@@ -66,9 +112,8 @@ it('reuses full Standard raster and ray programs across Play cookers while publi
       )
       .sort(),
   ).toEqual(['card-capture', 'ray-hit']);
-  const firstCompilations = underlying.mock.calls.length;
-  const firstValidations = validation.mock.calls.length;
-  expect(firstCompilations).toBeGreaterThan(0);
+  const firstCompilations = compilerFixture.compilations;
+  expect(firstCompilations).toBeGreaterThan(initialCompilations);
 
   const second = await createMaterialPackCooker().cook({
     guid: 'material-second',
@@ -92,29 +137,24 @@ it('reuses full Standard raster and ray programs across Play cookers while publi
       artifact: { ...original.artifact, bytes: undefined },
     });
   }
-  expect(underlying).toHaveBeenCalledTimes(firstCompilations);
-  expect(validation).toHaveBeenCalledTimes(firstValidations);
+  expect(compilerFixture.compilations).toBe(firstCompilations);
 }, 30_000);
 
 it('rejects an eligible Card compile failure and retries without retaining the failed program', async () => {
-  const compile = compiler.compileShaderWithComposition;
-  const failure = await compiler.compileShader('invalid WGSL', { id: 'card-rejection-control' });
+  const failure = await compileShader('invalid WGSL', { id: 'card-rejection-control' });
   if (failure.ok) throw new Error('invalid shader control compiled');
-  const underlying = vi
-    .spyOn(compiler, 'compileShaderWithComposition')
-    .mockImplementation((source, options, compose, compileProgram) =>
-      options?.id === 'forgeax_material::ray_surface::card-capture'
-        ? Promise.resolve(failure)
-        : compile(source, options, compose, compileProgram),
-    );
   const cooker = createMaterialPackCooker();
   const source: MaterialAsset = {
     kind: 'material',
     parameters: standardSurfaceParameters([{ name: 'baseColor', type: 'color' }]),
     passes: [{ name: 'forward', program: { module: 'forgeax_material::standard' } }],
   };
-  await expect(cooker.cook({ guid: 'eligible-card', source })).rejects.toBe(failure.error);
-  underlying.mockImplementation(compile);
+  compilerFixture.cardFailure = failure;
+  try {
+    await expect(cooker.cook({ guid: 'eligible-card', source })).rejects.toBe(failure.error);
+  } finally {
+    compilerFixture.cardFailure = undefined;
+  }
   const retry = await cooker.cook({ guid: 'eligible-card', source });
   const record = validateCookedMaterialRecord(
     (retry.payload as { cooked: unknown }).cooked,

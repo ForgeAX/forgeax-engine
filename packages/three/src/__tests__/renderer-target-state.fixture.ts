@@ -12,7 +12,7 @@ export async function verifyDefaultTargetState(
   ) => Promise<void>,
 ) {
   const s = testScene();
-  const rejectedTarget = new THREE.RenderTarget(16, 16);
+  const target = new THREE.RenderTarget(16, 16);
   try {
     await renderer.init();
     await readyFrames(renderer, s.scene, s.camera, 60);
@@ -31,8 +31,11 @@ export async function verifyDefaultTargetState(
     expect(renderer.getRenderTarget()).toBeNull();
     expect(renderer.getActiveCubeFace()).toBe(3);
     expect(renderer.getActiveMipmapLevel()).toBe(4);
-    const target: THREE.RenderTarget | null = rejectedTarget;
-    expect(() => renderer.setRenderTarget(target)).toThrow('three-unsupported');
+    renderer.setRenderTarget(target);
+    expect(renderer.getRenderTarget()).toBe(target);
+    expect(renderer.getActiveCubeFace()).toBe(0);
+    expect(renderer.getActiveMipmapLevel()).toBe(0);
+    renderer.setRenderTarget(null, 3, 4);
     for (const [face, mip] of [
       [-1, 0],
       [6, 0],
@@ -51,7 +54,7 @@ export async function verifyDefaultTargetState(
     expect(renderer.getActiveCubeFace()).toBe(0);
     expect(renderer.getActiveMipmapLevel()).toBe(0);
   } finally {
-    rejectedTarget.dispose();
+    target.dispose();
     s.mesh.geometry.dispose();
     s.material.dispose();
   }

@@ -14,6 +14,7 @@ import { createMaterialProgramArtifactReceipt, ShaderRegistry } from '@forgeax/e
 import { type MeshAsset, ok } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import {
+  nativeOutputShaderFixture,
   standardPbrManifestRow,
   waterInfoShaderFixture,
 } from '../../__tests__/shader-manifest-fixture';
@@ -144,10 +145,12 @@ it('recovers without replaying submitted feature data and plans the next publica
         { hash: 'unlit', wgsl: 'unlit', glsl: '', bindings: '' },
         { hash: 'tonemap', wgsl: 'struct TonemapParams {}', glsl: '', bindings: '' },
         ...waterInfoShaderFixture.entries,
+        ...nativeOutputShaderFixture.entries,
       ],
       materialShaders: [
         standardPbrManifestRow('f_schlick'),
         ...waterInfoShaderFixture.materialShaders,
+        ...nativeOutputShaderFixture.materialShaders,
       ],
     }),
   )}`;

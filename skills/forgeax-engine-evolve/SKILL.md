@@ -21,6 +21,25 @@ Use the declared target to select evidence: mechanism-level LOD acceptance requi
 
 Record test-case mismatch and misreport as explicit case dispositions, separate from implementation responsibility. Identify the unsupported assertion or contradicted observation and the needed case correction. In the first correction pass, prioritize clear added requirements, contradictions and false verdicts; keep discretionary quality improvements as suggestions rather than requiring every case to change.
 
+## Walk the consumer discovery path
+
+Replay the request on current Engine through the game Agent's normal entry.
+Use the player's language for intent and open the overview, the linked skill
+heading and its smallest owning contract in that order. Record where each new
+concept first became visible and which lookup or implementation step failed.
+A source path learned from an internal investigation cannot establish that the
+consumer could discover it. Check that each link needed for the first run
+exists in the installed SDK or generated project.
+
+Make the capability discoverable in the overview, put the first usable route
+and its limits in the focused skill, and keep signatures and runnable examples
+with the owner. Link to the example shipped with the consumer's Engine version
+and have the normal producer exercise those same files in automated checks.
+Follow the revised route in a normal project. Verify the
+smallest case through the public API, then exercise the requested behavior,
+including unsupported-device recovery when applicable. Record what the
+consumer can now discover, execute and observe.
+
 ## Reconstruct the failure and its cost
 
 Read actual user requests, tool arguments and returned results around the first failure, retries, workaround and final outcome. Summaries are discovery aids; attach conclusions to original evidence locations. Include successful controls and recoveries. Compare the delivered archive with the last recorded edits; a final claim is not an executed check. For visual tools, distinguish a missing output path from an unsupported image reader and inspect successfully returned images. Deduplicate echoed logs and file contents; distinguish parallel work from elapsed time.

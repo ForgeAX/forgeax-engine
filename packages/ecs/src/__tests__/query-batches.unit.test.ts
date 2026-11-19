@@ -2,8 +2,7 @@ import { describe, expect, expectTypeOf, it } from 'vitest';
 import { type Component, componentId, defineComponent } from '../component';
 import { Disabled } from '../entity';
 import type { EntityHandle } from '../entity-handle';
-import { QueryIterationActiveError, QueryIterationInvalidatedError } from '../errors';
-import { QueryBatchUnavailableError } from '../errors/query-batch-errors';
+import { QueryBatchUnavailableError, QueryIterationActiveError } from '../errors';
 import type { NumericField, ReadonlyColumn } from '../query/batch';
 import { type ComponentData, World } from '../world';
 import { worldInternal } from '../world-internal';
@@ -76,7 +75,7 @@ it('returns original dense columns and physical ranges, with cached preparation'
   for (const batch of prepared.unwrap()) {
     if (batch.kind !== 'range') throw new Error('Expected a range');
     expect([batch.start, batch.end, batch.count]).toEqual([0, 2, 2]);
-    const table = world[worldInternal].getGraph().tables.find((t) => t.size === 2);
+    const table = world[worldInternal].graph.tables.find((t) => t.size === 2);
     expect(batch.entities).toBe(table?.entities.view);
     expect(batch.read(Position, 'x')).toBe(
       table?.storage.get(componentId(Position))?.fields.get('x')?.view,
@@ -105,7 +104,7 @@ it('exposes the actual noncontiguous sparse row prefix and preserves membership 
 });
 
 it('distinguishes absent optional columns from present zero values and resolves inline strides', () => {
-  const Inline = defineComponent('BatchInline', { values: 'array<f32, 3>', bytes: 'buffer<4>' });
+  const Inline = defineComponent('BatchInline', { values: 'array<f32, 3>', bytes: 'array<u8, 4>' });
   const world = new World();
   world
     .spawn(
@@ -175,13 +174,19 @@ it('invalidates on structure changes before first next or while columns are borr
   const prepared = query.batches().unwrap();
   const early = prepared[Symbol.iterator]();
   world.spawn({ component: Position, data: { x: 2 } }).unwrap();
-  expect(() => early.next()).toThrow(QueryIterationInvalidatedError);
+  expect(() => early.next()).toThrow(
+    expect.objectContaining({ code: 'query-iteration-invalidated' }),
+  );
   const iterator = prepared[Symbol.iterator]();
   const first = iterator.next();
   if (first.done) throw new Error('Missing batch');
   world.despawn(entity).unwrap();
-  expect(() => first.value.read(Position, 'x')).toThrow(QueryIterationInvalidatedError);
-  expect(() => iterator.next()).toThrow(QueryIterationInvalidatedError);
+  expect(() => first.value.read(Position, 'x')).toThrow(
+    expect.objectContaining({ code: 'query-iteration-invalidated' }),
+  );
+  expect(() => iterator.next()).toThrow(
+    expect.objectContaining({ code: 'query-iteration-invalidated' }),
+  );
   expect(Array.from(query, (row) => row.entity)).toHaveLength(1);
 });
 

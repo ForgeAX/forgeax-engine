@@ -69,6 +69,22 @@ function publication(declarations = parameters, guid = 'first-material', name = 
 }
 
 describe('published raster program parameter identity', () => {
+  it('versions a changed fog contract even when source and parameter layout are identical', () => {
+    const cooked = pass(parameters);
+    const input = {
+      guid: 'fog-identity',
+      source: { kind: 'material' as const },
+      compilerFingerprint: 'same-compiler',
+    };
+    const unmarked = materialPrograms([cooked], input)[0];
+    const marked = materialPrograms(
+      [{ ...cooked, abi: { ...cooked.abi, forwardFog: 'height-vertex/1' } }],
+      input,
+    )[0];
+    expect(unmarked?.artifact.digest).toBe(marked?.artifact.digest);
+    expect(unmarked?.specializationKey).not.toBe(marked?.specializationKey);
+    expect(marked?.selections[0]?.abi?.forwardFog).toBe('height-vertex/1');
+  });
   it('distinguishes color-space metadata with identical physical layout and WGSL', () => {
     const linear = publication();
     const srgb = publication([

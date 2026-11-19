@@ -222,12 +222,15 @@ describe('default Standard PBR transmission manifest contract', () => {
         !defines.GPU_DRIVEN_SCENE_INDEX_AVAILABLE &&
         !defines.COVERAGE_ONLY,
     );
-    expect(directVisibleRows).toHaveLength(16);
+    expect(directVisibleRows).toHaveLength(4 * 2 * 2 * 2);
     // Count the contract independently of the producer and permutation helper:
     // no-storage, storage/direct, direct G-buffer, and storage/scene-index rows.
     // The direct G-buffer slice has four (projector, extended, atmosphere)
-    // topologies, two probe choices and two alpha-mask choices.
-    const generalRows = 32 * 5 + 128 * 5 + 4 * 2 * 2 + 128 * 9;
+    // topologies, two probe choices, two alpha-mask choices and two independent
+    // clipping choices. Direct ordinary rows have alpha(2)*clipping(2)=4
+    // states; coverage adds visible(2)*LOD(2)*clipping(2)=8. Scene-index
+    // ordinary rows additionally have visible(2)*LOD(2), so 16+8 states.
+    const generalRows = 32 * 12 + 128 * 12 + 4 * 2 * 2 * 2 + 128 * 24;
     // Lean fixes the receiver/discard axes. Four lighting topologies combine
     // with GPU scene-index, cluster, vertex colour and reflection choices.
     const leanRows = 4 * 2 ** 4;
@@ -238,19 +241,21 @@ describe('default Standard PBR transmission manifest contract', () => {
     // STANDARD_LEAN_INPUTS adds a row for each storage scene-index row without
     // transmission, coverage-only or LOD dither. Its rules never read
     // LEAN_LIGHTING or DIRECTIONAL_SHADOW_SIMPLE, so the scene-index half of
-    // the lean (32) and full-lighting simple (64) rows qualify too: 224 + 64.
+    // the lean (32) and full-lighting simple (64) rows qualify too. The general
+    // slice is four topologies times probe, cluster, color, reflection,
+    // visible, alpha and clipping (all independent binary choices).
     // Sixteen of the lean-lighting rows lack extended lighting and alias in
     // projector pairs; full-lighting rows keep distinct code.
     const fullSimpleLeanInputRows = fullSimpleRows / 2;
-    const leanInputRows = 224 + fullSimpleLeanInputRows;
+    const leanInputRows = 4 * 2 ** 7 + leanRows / 2 + fullSimpleLeanInputRows;
     const leanInputProjectorPairs = 8;
     expect(programsByEffectiveChoice.size).toBe(
       generalRows + leanRows + fullSimpleRows + leanInputRows,
     );
-    // No-storage/non-Cluster/non-transmission has five receiver/discard
+    // No-storage/non-Cluster/non-transmission has twelve receiver/discard
     // states, two vertex-colour and two reflection choices; each projector pair
     // shares code because neither the projector nor cloud map is consumed.
-    const noStorageProjectorPairs = 5 * 2 * 2;
+    const noStorageProjectorPairs = 12 * 2 * 2;
     const noStorageInactiveChoices = [...legacyOrdinary.values()].filter(
       (defines) =>
         !defines.STORAGE_BUFFER_AVAILABLE &&
@@ -271,7 +276,11 @@ describe('default Standard PBR transmission manifest contract', () => {
     expect(fullSimple).toHaveLength(128 + fullSimpleLeanInputRows);
     // The new full-lighting receiver rows preserve all previously published choices.
     expect(legacyOrdinary.size - fullSimple.length - leanChoices.length).toBe(
-      2000 + leanInputRows - fullSimpleLeanInputRows - 2 * leanInputProjectorPairs,
+      generalRows +
+        leanRows / 2 +
+        leanInputRows -
+        fullSimpleLeanInputRows -
+        2 * leanInputProjectorPairs,
     );
     expect(standard.variants.every((variant) => 'TRANSMISSION_AVAILABLE' in variant.defines)).toBe(
       true,
@@ -420,10 +429,11 @@ describe('default Standard PBR transmission manifest contract', () => {
     expect(standard).toBeDefined();
     if (standard === undefined) return;
 
-    const { publishShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
     const registry = new ShaderRegistry({
       device: device(),
-      manifestUrl: dataUrl(publishShaderManifest([], [standard])),
+      // The builder serializes the original fragment publication for the registry.
+      // Republishing the expanded Standard row assembles every WGSL body again.
+      manifestUrl: dataUrl(manifest),
     });
     const loaded = await registry.loadManifest();
     expect(loaded.ok).toBe(true);

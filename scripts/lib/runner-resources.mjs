@@ -70,6 +70,10 @@ export function shaderCompileWorkers(resources, requested, concurrentOwners = 1)
       workerGB: 1,
     }),
   );
+  return limitRequestedWorkers(budget, requested);
+}
+
+function limitRequestedWorkers(budget, requested) {
   const count = Number.parseInt(requested ?? '', 10);
   return Number.isFinite(count) && count > 0 ? Math.min(budget, count) : budget;
 }
@@ -97,6 +101,22 @@ export function shaderSourceCompileWorkers(
       requested,
     ),
   );
+}
+
+/** An isolated manifest producer can spend more of the remaining capacity than Vitest. */
+export function shaderProducerCompileWorkers(
+  resources,
+  requested,
+  heapMiB = shaderProducerHeapSize(resources),
+) {
+  const budget = workspaceConcurrency({
+    ...resources,
+    memoryBytes: Math.max(0, resources.memoryBytes - heapMiB * 1024 ** 2),
+    reserveGB: 2,
+    // Allow 768 MiB per native compiler lane, including its bounded program cache.
+    workerGB: 0.75,
+  });
+  return limitRequestedWorkers(Math.min(7, budget), requested);
 }
 
 /**

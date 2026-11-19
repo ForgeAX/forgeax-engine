@@ -151,6 +151,20 @@ const EMPTY_APPLY: RenderSceneApplyResult = Object.freeze({
   resynced: 0,
 });
 
+function localDisplacedBounds(
+  snapshot: RenderSceneSlot['snapshot'],
+  geometry: ReturnType<MeshFrame['get']>,
+  radius: number,
+) {
+  let local =
+    geometry === undefined || snapshot.morph !== undefined || snapshot.terrainSection !== undefined
+      ? snapshot.localAabb
+      : expandDisplacementBounds(geometry.bounds, radius);
+  if (local !== undefined && geometry !== undefined && snapshot.pointsLines !== undefined)
+    local = expandPointsLinesBounds(local, snapshot.pointsLines.style);
+  return local;
+}
+
 /**
  * The shared retained rows of one ingest owner: the single store of row facts.
  *
@@ -784,7 +798,12 @@ export class SceneRows {
     const cached = current && columns.valid(index, slot.version, geometryId);
     // The slot, geometry and fixed material frame all match, so the material
     // radius is the one already proven; mutable material roots re-derive it.
-    if (cached && materials !== undefined && columns.materials[index] === materialsId)
+    if (
+      cached &&
+      materials !== undefined &&
+      !materials.hasBorrowedValues &&
+      columns.materials[index] === materialsId
+    )
       return columns.read(index, out);
     const radius = cullingDisplacementRadius(snapshot, geometry, materials);
     if (cached && columns.radius[index] === radius) {
@@ -792,14 +811,7 @@ export class SceneRows {
       return columns.read(index, out);
     }
     let candidate: RenderSceneBounds | undefined;
-    let local =
-      geometry === undefined ||
-      snapshot.morph !== undefined ||
-      snapshot.terrainSection !== undefined
-        ? snapshot.localAabb
-        : expandDisplacementBounds(geometry.bounds, radius);
-    if (local !== undefined && geometry !== undefined && snapshot.pointsLines !== undefined)
-      local = expandPointsLinesBounds(local, snapshot.pointsLines.style);
+    const local = localDisplacedBounds(snapshot, geometry, radius);
     if (local !== undefined && snapshot.instances !== undefined) {
       if (snapshot.instances.instanceCount !== 0) {
         const derived = this.instanceBoundsCache.get({

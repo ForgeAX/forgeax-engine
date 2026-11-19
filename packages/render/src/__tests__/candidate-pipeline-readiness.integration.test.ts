@@ -70,6 +70,12 @@ import { addTypedScenePass } from '../typed-render-graph-primitives';
 import { STANDARD_CLUSTER_TEST_REFLECTION } from './cluster-test-abi';
 import { renderLifecycleManifestUrl } from './shader-manifest-fixture';
 
+// Load the cross-package Worker transport with the fixture, before measuring
+// the lifecycle case's unchanged runtime deadline.
+const { RenderMeshResidency } = await import(
+  new URL('../../../app/src/execution/render-mesh-residency.ts', import.meta.url).href
+);
+
 type HeldPass = 'color' | 'shadow' | 'transmission';
 
 function newLayout(descriptor: RenderPipelineDescriptor): boolean {
@@ -370,7 +376,7 @@ async function fixture(
     const drawn = renderer.draw(pointShadow ? { ...request, geometryLane: 'direct' } : request);
     if (!drawn.ok)
       throw new Error(
-        `renderer draw failed: ${String(drawn.error)}; errors=${JSON.stringify(errors)}`,
+        `renderer draw failed: ${JSON.stringify(drawn.error)}; errors=${JSON.stringify(errors)}`,
       );
     const receipt = drawn.value;
     return {
@@ -888,6 +894,45 @@ it.each([
   }
 });
 
+it('requests the installed scene preparation before recording its first raster pass', async () => {
+  const original = scenePipelinePreparation.scenePipelinePreparations;
+  const phases: string[] = [];
+  let phase = 'initialization';
+  const declarations = vi
+    .spyOn(scenePipelinePreparation, 'scenePipelinePreparations')
+    .mockImplementation((graph) =>
+      original(graph).map((prepare) => {
+        if (prepare.kind === 'utility') return prepare;
+        const observed: typeof prepare = (...args) => {
+          phases.push(phase);
+          return prepare(...args);
+        };
+        Object.defineProperties(observed, Object.getOwnPropertyDescriptors(prepare));
+        return observed;
+      }),
+    );
+  const setPipeline = RhiNullRenderPassEncoder.prototype.setPipeline;
+  const raster = vi
+    .spyOn(RhiNullRenderPassEncoder.prototype, 'setPipeline')
+    .mockImplementation(function (...args) {
+      phase = 'raster';
+      return setPipeline.apply(this, args);
+    });
+  const f = await fixture('color');
+  try {
+    f.release();
+    f.world.set(f.entity, MeshRenderer, { preparePipelines: true }).unwrap();
+    phases.length = 0;
+    phase = 'preflight';
+    await f.draw();
+    expect(phases[0]).toBe('preflight');
+  } finally {
+    declarations.mockRestore();
+    raster.mockRestore();
+    await f.dispose();
+  }
+});
+
 it.each([
   false,
   true,
@@ -1101,9 +1146,6 @@ it.each([
   'before',
   'after',
 ] as const)('transfers candidate proof to normal drawing when Worker preparation is %s publication', async (ordering) => {
-  const { RenderMeshResidency } = await import(
-    new URL('../../../app/src/execution/render-mesh-residency.ts', import.meta.url).href
-  );
   const f = await fixture('color', true);
   const demand = vi.spyOn(candidateViewDemand, 'readCandidateViewDemand');
   const post = vi.fn();
@@ -1156,7 +1198,13 @@ it.each([
     f.world.set(f.camera, Camera, { antialias: ANTIALIAS_FXAA }).unwrap();
     const changedView = await f.draw();
     expect(changedView.presentation).toBe('ready');
-    expect(f.renderer.inspect().perFramePassNames).toContain('fxaa');
+    expect(f.renderer.inspect().temporal.mode).toBe('fxaa');
+    expect(f.renderer.inspect().perFramePassNames).toContain('standard-final');
+    expect(f.renderer.inspect().output).toMatchObject({
+      displayEncoded: true,
+      intermediateFormat: 'rgba16float',
+      standardOutputColor: { format: 'rgba16float', domain: 'display-encoded' },
+    });
     expect(
       Array.from(worker.consumed(changedView, f.world.getResource(FixedTime).tick).bindings),
     ).toContain(1);
@@ -2317,7 +2365,13 @@ it('invalidates prepared candidate raster credentials when the actual graph is r
     expect(prepared.isCurrent()).toBe(true);
     f.world.set(f.camera, Camera, { antialias: ANTIALIAS_FXAA }).unwrap();
     for (let frame = 0; frame < 30 && prepared.isCurrent(); frame++) await f.draw();
-    expect(f.renderer.inspect().perFramePassNames).toContain('fxaa');
+    expect(f.renderer.inspect().temporal.mode).toBe('fxaa');
+    expect(f.renderer.inspect().perFramePassNames).toContain('standard-final');
+    expect(f.renderer.inspect().output).toMatchObject({
+      displayEncoded: true,
+      intermediateFormat: 'rgba16float',
+      standardOutputColor: { format: 'rgba16float', domain: 'display-encoded' },
+    });
     expect(prepared.isCurrent()).toBe(false);
     await prepared.release();
   } finally {
@@ -2410,9 +2464,11 @@ it('does not acknowledge view Feature work when a native PSO submits only a prep
 });
 
 it.each([
-  'forward',
-  'deferred',
-] as const)('keeps the complete composed surface untouched while %s view pipelines are pending', async (renderPath) => {
+  ['forward', 1],
+  ['forward', 2],
+  ['deferred', 1],
+  ['deferred', 2],
+] as const)('keeps the complete %s surface untouched while %s view pipelines are pending', async (renderPath, viewCount) => {
   const f = await fixture(renderPath === 'forward' ? 'transmission' : 'color');
   expect(f.renderer.setProfile({ ...f.renderer.inspect().profile, renderPath }).ok).toBe(true);
   const acquire = vi.spyOn(RhiNullCanvasContext.prototype, 'getCurrentTexture');
@@ -2456,26 +2512,27 @@ it.each([
     f.world
       .addComponent(f.camera, {
         component: CameraView,
-        data: { viewport: [0, 0, 0.5, 1], order: 0 },
+        data: { viewport: [0, 0, 1 / viewCount, 1], order: 0 },
       })
       .unwrap();
-    f.world
-      .spawn(
-        { component: Transform, data: { pos: [0, 0, 8] } },
-        {
-          component: Camera,
-          data: {
-            fov: Math.PI / 3,
-            aspect: 1,
-            near: 0.1,
-            far: 100,
-            antialias: ANTIALIAS_NONE,
-            bloom: BLOOM_DISABLED,
+    if (viewCount === 2)
+      f.world
+        .spawn(
+          { component: Transform, data: { pos: [0, 0, 8] } },
+          {
+            component: Camera,
+            data: {
+              fov: Math.PI / 3,
+              aspect: 1,
+              near: 0.1,
+              far: 100,
+              antialias: ANTIALIAS_NONE,
+              bloom: BLOOM_DISABLED,
+            },
           },
-        },
-        { component: CameraView, data: { viewport: [0.5, 0, 0.5, 1], order: 1 } },
-      )
-      .unwrap();
+          { component: CameraView, data: { viewport: [0.5, 0, 0.5, 1], order: 1 } },
+        )
+        .unwrap();
     f.world.set(f.entity, MeshFilter, { assetHandle: f.next }).unwrap();
     const pending = await f.draw();
     expect(f.held.length).toBeGreaterThan(0);

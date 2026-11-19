@@ -462,3 +462,63 @@ it('retires cold compositions before discarding the current validation working s
   expect(compose).toHaveBeenCalledTimes(compositions);
   expect(validation).toHaveBeenCalledTimes(validations);
 });
+
+it('keeps native conflict admission conservative for comment-only capability flags', async () => {
+  const entry = `${source}\n// OPTIONAL_LIGHTING is already projected by the source owner.\n`;
+  const baseline = (
+    await compiler.compileShader(entry, { ...options, defines: { OPTIONAL_LIGHTING: true } })
+  ).unwrap();
+  const compose = vi.spyOn(naga, 'composeShader');
+  const compile = createShaderProgramCompiler();
+  for (const enabled of [true, false]) {
+    expect(
+      (await compile(entry, { ...options, defines: { OPTIONAL_LIGHTING: enabled } })).unwrap(),
+    ).toEqual(baseline);
+  }
+  expect(compose).toHaveBeenCalledTimes(2);
+  expect(compose.mock.calls.map((call) => call[2])).toEqual([
+    { OPTIONAL_LIGHTING: true },
+    { OPTIONAL_LIGHTING: false },
+  ]);
+});
+
+it('consumes canonical writer IR for a cold build and frees it after reflection', async () => {
+  const expected = (await compiler.compileShader(source, options)).unwrap();
+  const preparation = await naga.prepareNagaCompiler();
+  const native = preparation.unwrap();
+  const parse = vi.spyOn(native, 'parse');
+  const reflect = vi.spyOn(native, 'emitReflection');
+  vi.spyOn(naga, 'prepareNagaCompiler').mockResolvedValue(ok(native));
+  const compile = createShaderProgramCompiler();
+  const first = (await compile(source, options)).unwrap();
+  expect(first).toEqual(expected);
+  expect(reflect).toHaveBeenCalledTimes(1);
+  // Native parse consumes main's one-shot checked IR; the JS entry still runs once.
+  expect(parse).toHaveBeenCalledExactlyOnceWith(first.wgsl);
+  const module = reflect.mock.calls[0]?.[0];
+  if (module === undefined) throw new Error('Missing actual reflected native module');
+  expect(() => native.emitReflection(module, '{}').unwrap()).toThrow();
+  reflect.mockClear();
+  expect((await compile(source, options)).unwrap()).toEqual(expected);
+  expect(reflect).not.toHaveBeenCalled();
+  expect(
+    (
+      await compile(source, {
+        ...options,
+        renderEntries: { vertex: 'missing', fragment: 'fs_main' },
+      })
+    ).ok,
+  ).toBe(false);
+});
+
+it('projects each selected compute entry before sharing program facts', async () => {
+  const source =
+    '@compute @workgroup_size(1) fn first() {}\n@compute @workgroup_size(1) fn second() {}';
+  const compile = createShaderProgramCompiler();
+  for (const computeEntry of ['first', 'second', 'first']) {
+    const options = { computeEntry };
+    const expected = (await compiler.compileShader(source, options)).unwrap();
+    expect((await compile(source, options)).unwrap()).toEqual(expected);
+  }
+  expect((await compile(source, { computeEntry: 'missing' })).ok).toBe(false);
+});

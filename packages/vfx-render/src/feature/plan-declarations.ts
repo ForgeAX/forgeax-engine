@@ -11,6 +11,7 @@ import type {
 } from '@forgeax/engine-vfx';
 import {
   isParticleTopologyRenderer,
+  isVfxStructuredInputData,
   VFX_GPU_OUTPUT_HEADER_BYTES,
   VFX_PARTICLE_CORE_STRIDE,
 } from '@forgeax/engine-vfx';
@@ -105,6 +106,8 @@ export function sharedDataInterfaceResource(
   kind: RendererOwnedDataInterface,
 ): PlanResource | undefined {
   switch (kind) {
+    case 'structured-input':
+      return undefined;
     case 'gpu-events': {
       if (!entry.eventOutput) return undefined;
       const size = VFX_GPU_OUTPUT_HEADER_BYTES + entry.eventOutput.capacity * 32,
@@ -162,6 +165,16 @@ export function preparedDataInterfaceResource(
   if (prepared.kind === 'feature-texture-reference') {
     if (!isRenderFeatureTextureSource(prepared.value)) return undefined;
     return { kind: 'feature-texture-reference', name, source: prepared.value };
+  }
+  if (prepared.kind === 'storage-data') {
+    if (!isVfxStructuredInputData(prepared.value)) return undefined;
+    return {
+      kind: 'buffer',
+      name,
+      size: prepared.value.byteLength,
+      usage: ['storage'],
+      data: prepared.value,
+    };
   }
   if (prepared.kind === 'uniform-data') {
     if (!(prepared.value instanceof Float32Array) || prepared.value.byteLength === 0)

@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { defineComponent } from '../component';
-import { componentDefinition } from '../component-schema';
+import { componentDefinition, defineComponent } from '../component';
 import { World } from '../world';
 
 describe('component membership and admitted read metadata', () => {

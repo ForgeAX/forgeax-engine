@@ -9,10 +9,11 @@ const CLEANUP_FAILURE_REASON = 'encoder cleanup failed';
 const CONSTRUCTOR_FAILURE_REASON = 'encoder constructor failed';
 const MODES = ['etc1s', 'uastc-ldr', 'uastc-hdr'] as const;
 
-it('keeps real encoder progress off stdout so CLI JSON remains machine readable', async () => {
+it('keeps real encoder progress on stderr without reporting it as an error', async () => {
   _setBasisEncoderImporter();
   const stdout = vi.spyOn(console, 'log').mockImplementation(() => {});
-  const diagnostics = vi.spyOn(console, 'error').mockImplementation(() => {});
+  const progress = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
   try {
     const encoded = await basisEncode(new Uint8Array(4 * 4 * 4).fill(127), {
       ...makeOptions('uastc-ldr'),
@@ -22,10 +23,12 @@ it('keeps real encoder progress off stdout so CLI JSON remains machine readable'
     });
     expect(encoded.ok).toBe(true);
     expect(stdout).not.toHaveBeenCalled();
-    expect(diagnostics).toHaveBeenCalled();
+    expect(progress).toHaveBeenCalled();
+    expect(errors).not.toHaveBeenCalled();
   } finally {
     stdout.mockRestore();
-    diagnostics.mockRestore();
+    progress.mockRestore();
+    errors.mockRestore();
     _setBasisEncoderImporter();
   }
 });

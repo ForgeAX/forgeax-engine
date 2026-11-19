@@ -19,6 +19,7 @@ const read = (relative) =>
 const dawnScript = read('../smoke-dawn.mjs');
 const helperScript = read('../../../triangle/scripts/smoke-helpers.mjs');
 const frameScript = read('../../../../../packages/render/src/record/frame.ts');
+const temporalFrameScript = read('../../../../../packages/render/src/record/frame-temporal.ts');
 const taaMainScript = read('../../src/main.ts');
 const webkitVerifyScript = read('../../../../../scripts/dev-verify/verify-webkit-hello-taa.mjs');
 
@@ -44,9 +45,10 @@ test('CI falsifier Dawn carrier uses a reduced target, frame floor, and post-pro
 });
 
 test('recording bridges camera-owned Motion Blur parameters into the builtin pass', () => {
-  assert.match(frameScript, /const framePostProcessParams = new Map\(postProcessParams\)/);
-  assert.match(frameScript, /if \(camera\.motionBlur !== undefined\)/);
-  assert.match(frameScript, /framePostProcessParams\.set\('forgeax\.motion-blur', motionBlurParams\)/);
+  assert.match(frameScript, /const framePostProcessParams = buildFramePostProcessParams\(/);
+  assert.match(temporalFrameScript, /const params = new Map\(postProcessParams\)/);
+  assert.match(temporalFrameScript, /camera\.motionBlur !== undefined && motionBlurDemand/);
+  assert.match(temporalFrameScript, /'forgeax\.motion-blur',[\s\S]*?packMotionBlurFrameParams\(camera\.motionBlur, deltaSeconds, temporalView\.historyValid\)/);
   assert.match(frameScript, /postProcessParams: framePostProcessParams/);
 });
 
@@ -253,7 +255,7 @@ test('Apple paravirtual admission requires the exact ioreg service pair and owne
 });
 
 test('active work counters separate renderer state from retained topology', () => {
-  const topology = ['standard-scene-data', 'taa-resolve', 'motion-blur', 'output-transform'];
+  const topology = ['standard-scene-data', 'taa-resolve', 'motion-blur', 'standard-grade'];
   assert.deepEqual(
     activePassCountersFromInspection({
       temporalTarget: { targetCount: 1 },

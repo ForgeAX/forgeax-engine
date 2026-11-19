@@ -184,6 +184,8 @@ for (const coreState of ['complete', 'missing', 'interrupted', 'cancelled']) {
             const [script, ...args] = command.slice(scriptIndex);
             if (script.endsWith('download-artifact-with-retry.mjs')) {
               const id = args[args.indexOf('--artifact-ids') + 1];
+              assert.ok(args.includes('--idle-timeout-ms'));
+              assert.equal(args[args.indexOf('--idle-timeout-ms') + 1], '25000');
               transfers.push(`start-${id}`);
               if (id === '2') return { status: 124, failure: 'shared transfer timeout' };
               await new Promise((done) => setImmediate(done));

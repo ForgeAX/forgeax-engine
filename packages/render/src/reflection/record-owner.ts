@@ -10,7 +10,7 @@ import type {
   TextureView,
 } from '@forgeax/engine-rhi';
 import { RhiError } from '@forgeax/engine-rhi';
-import type { AssetHandle } from '@forgeax/engine-types';
+import { type AssetHandle, textureFormatBlock } from '@forgeax/engine-types';
 import { buildCubeCameraFaceViews } from '../capture/cube-views';
 import { createPrefilterUniformsBuffer, writeAllPrefilterUniforms } from '../device/gpu-residency';
 import type { SelectedEnvironmentFrame } from '../environment/frame';
@@ -30,6 +30,7 @@ import {
   createPmremAtlas,
   PMREM_FACES_PER_STEP,
   type PmremAtlas,
+  pmremExtent,
   pmremLevelCount,
 } from '../ibl/pmrem';
 import { SKYLIGHT_UNIFORM_BYTES, skylightGroundLane } from '../ibl/skylight-bind-group';
@@ -64,6 +65,12 @@ import {
 import { buildReflectionProbeTable } from './gpu-table';
 import { inspectReflectionFallback, type ReflectionFallbackFailureInput } from './inspection';
 import {
+  type PmremArrayLayer,
+  type PmremArrayLease,
+  type PmremArrayMigration,
+  PmremArrayPool,
+} from './pmrem-array';
+import {
   admitReflectionProbe,
   DEFAULT_REFLECTION_PROBE_LIMITS,
   type ReflectionFallbackProjection,
@@ -82,6 +89,20 @@ type ProbeCubeSet = {
   readonly size: number;
 };
 
+type ProbePmremState =
+  | {
+      readonly kind: 'array';
+      active: PmremArrayLease | undefined;
+      candidate: PmremArrayLease | undefined;
+    }
+  | {
+      readonly kind: 'atlas';
+      active: PmremAtlas | undefined;
+      candidate: PmremAtlas;
+      spare: PmremAtlas | undefined;
+      readonly scratch: PmremAtlas;
+    };
+
 type ProbeGpuResource = {
   fact: ReflectionProbeFact;
   captureFact: ReflectionProbeFact;
@@ -95,13 +116,10 @@ type ProbeGpuResource = {
   filter: ProbeFilterState;
   rawFaceCursor: number;
   readonly raw: ProbeCubeSet;
-  active: PmremAtlas | undefined;
-  candidate: PmremAtlas;
-  spare: PmremAtlas | undefined;
-  readonly scratch: PmremAtlas;
+  readonly pmrem: ProbePmremState;
   readonly sampler: Sampler;
   readonly uniformBuffer: Buffer;
-  readonly filterGroup1: BindGroup;
+  filterGroup1: BindGroup | undefined;
   pending?: {
     readonly rawCaptureFace: number | undefined;
     readonly step: ReturnType<typeof advanceProbeFilter>;
@@ -162,6 +180,14 @@ const PROBE_INTENSITY_SENTINEL_OFFSET = 1;
 export class ReflectionProbeRecordOwner {
   private readonly materialBindings = new ReflectionProbeBindingProjection();
   private readonly resources = new Map<string, ProbeGpuResource>();
+  private arrays: PmremArrayPool;
+  private resourceDevice: RenderSystemInternals['device'];
+  private readonly retiredCubes = new Map<
+    ProbeCubeSet,
+    { readonly device: RenderSystemInternals['device']; readonly bytes: number }
+  >();
+  private arrayUpdate: ProbeGpuResource | undefined;
+  private lastResourceAdmission: 'ready' | 'waiting-for-retirement' = 'ready';
   private shared: ProbeSharedResources | undefined;
   private pipelineWarmup: Promise<void> | undefined;
   private pipelineWarmupFailure: string | undefined;
@@ -194,6 +220,10 @@ export class ReflectionProbeRecordOwner {
   private fallbackReceipt: ReflectionFallbackReceipt;
 
   constructor(private readonly internals: RenderSystemInternals) {
+    this.resourceDevice = internals.device;
+    this.arrays = new PmremArrayPool(internals.device, (error) =>
+      internals.errorRegistry.fire(error),
+    );
     this.outputFormat = internals.device.caps.rgba16floatRenderable ? 'rgba16float' : 'rgba8unorm';
     this.fallbackFormatAvailable = internals.device.caps.rgba16floatRenderable === true;
     this.fallbackReceipt = this.createFallbackReceipt(
@@ -213,7 +243,7 @@ export class ReflectionProbeRecordOwner {
         Math.floor(resource.filter.cursor / resource.filter.faceCount),
       );
       for (let mip = 0; mip < completedMipCount; mip += 1) filteredMipLevels.add(mip);
-      if (resource.active !== undefined) activeCount += 1;
+      if (resource.pmrem.active !== undefined) activeCount += 1;
     }
     return {
       updates: [...this.resources.values()].map((resource) => ({
@@ -245,6 +275,9 @@ export class ReflectionProbeRecordOwner {
       ...(this.pipelineWarmupFailure === undefined
         ? {}
         : { pipelineWarmupFailure: this.pipelineWarmupFailure }),
+      pmremArrays: this.arrays.inspect(),
+      rawCaptureBytes: this.rawBytes(),
+      lastResourceAdmission: this.lastResourceAdmission,
       reflectionFallback: this.fallbackReceipt,
       reflectionFallbacks: [...this.fallbackReceipts.values()],
       reflectionFallbackInspection: inspectReflectionFallback(
@@ -359,6 +392,7 @@ export class ReflectionProbeRecordOwner {
   }
 
   private ensurePipelineWarmup(): void {
+    if (this.resourceDevice !== this.internals.device) this.dispose();
     if (this.shared !== undefined || this.pipelineWarmup !== undefined) return;
     const factory = this.internals.shaderModuleFactory;
     if (factory === undefined) return;
@@ -427,7 +461,11 @@ export class ReflectionProbeRecordOwner {
     selections: ReadonlyMap<string, ReflectionProbeSelectionResult>,
     skylight: SkylightSnapshot | undefined,
   ): boolean {
-    if (!this.internals.device.caps.rgba16floatRenderable) return false;
+    if (
+      this.resourceDevice !== this.internals.device ||
+      !this.internals.device.caps.rgba16floatRenderable
+    )
+      return false;
     if (facts.length === 0 && skylight === undefined) return false;
     let acceptedCount = 0;
     let acceptedBytes = 0;
@@ -450,7 +488,7 @@ export class ReflectionProbeRecordOwner {
       accepted.set(key, {
         fact,
         ready:
-          resource.active !== undefined &&
+          resource.pmrem.active !== undefined &&
           resource.activeFact?.center.every((v, i) => v === fact.center[i]) === true,
       });
     }
@@ -466,6 +504,71 @@ export class ReflectionProbeRecordOwner {
     return false;
   }
 
+  private prepareProbeFiltering(
+    resource: ProbeGpuResource,
+    candidates: readonly ProbeGpuResource[],
+    step: ReflectionProbeGraphWork['step'],
+  ) {
+    if (this.shared === undefined) return undefined;
+    if (resource.pmrem.kind === 'array') {
+      if (this.arrayUpdate !== undefined && this.arrayUpdate !== resource) return undefined;
+      const count = candidates.filter(
+        (candidate) => candidate.raw.size === resource.raw.size,
+      ).length;
+      const lease = this.arrays.acquire(
+        `${resource.fact.entityKey}:${resource.filter.activeGeneration + 1}`,
+        resource.raw.size,
+        this.outputFormat,
+        count + 1,
+        DEFAULT_REFLECTION_PROBE_LIMITS.maxBytes - this.rawBytes(),
+      );
+      if (lease === undefined) return undefined;
+      resource.pmrem.candidate = lease;
+      if (!this.arrays.canWrite(lease)) return undefined;
+      this.arrayUpdate = resource;
+    }
+    const candidate = this.candidateAtlas(resource);
+    const array =
+      resource.pmrem.kind === 'array' && resource.pmrem.candidate !== undefined
+        ? this.arrays.snapshot(resource.pmrem.candidate)
+        : undefined;
+    const scratch = this.filterScratch(resource);
+    if (candidate === undefined || scratch === undefined) return undefined;
+    if (resource.filterGroup1 === undefined) {
+      const group = this.internals.device.createBindGroup({
+        label: `reflection-probe-${resource.index}-filter-input`,
+        layout: this.shared.prefilterGroup1Bgl,
+        entries: [
+          { binding: 0, resource: { kind: 'textureView', value: resource.raw.cubeView } },
+          { binding: 1, resource: { kind: 'sampler', value: this.shared.sampler } },
+          { binding: 2, resource: { kind: 'textureView', value: scratch.view } },
+        ],
+      });
+      if (!group.ok) {
+        this.internals.errorRegistry.fire(group.error);
+        return undefined;
+      }
+      resource.filterGroup1 = group.value;
+    }
+    const filterGroup0: BindGroup[] = [];
+    if (step !== undefined) {
+      for (let face = step.faceIndex; face < step.faceIndex + PMREM_FACES_PER_STEP; face++) {
+        const group = this.internals.device.createBindGroup({
+          label: `reflection-probe-${resource.index}-pmrem-${step.mipLevel}-${face}`,
+          layout: this.shared.prefilterGroup0Bgl,
+          entries: iblPrefilterGroup0Entries(this.shared.prefilterUniforms, step.mipLevel, face),
+        });
+        if (!group.ok) {
+          this.internals.errorRegistry.fire(group.error);
+          break;
+        }
+        filterGroup0.push(group.value);
+      }
+      if (filterGroup0.length !== PMREM_FACES_PER_STEP) return undefined;
+    }
+    return { candidate, array, scratch, filterGroup0, filterGroup1: resource.filterGroup1 };
+  }
+
   prepare(
     facts: readonly ReflectionProbeFact[],
     selections: ReadonlyMap<string, ReflectionProbeSelectionResult>,
@@ -477,6 +580,7 @@ export class ReflectionProbeRecordOwner {
     environment?: SelectedEnvironmentFrame,
     resourceWorld?: RenderResourceScope,
   ): ReflectionProbeRecordState {
+    if (this.resourceDevice !== this.internals.device) this.dispose();
     this.currentFrame = frameId;
     this.refreshFallbackCapabilities(frameId);
     this.lastFactCount = facts.length;
@@ -545,9 +649,13 @@ export class ReflectionProbeRecordOwner {
     const rows = [...accepted.values()]
       .map((resource) => {
         const active = resource.activeFact?.center.every((v, i) => v === resource.fact.center[i])
-          ? resource.active
+          ? this.activeAtlas(resource)
           : undefined;
         if (active === undefined) return undefined;
+        const array =
+          resource.pmrem.kind === 'array' && resource.pmrem.active !== undefined
+            ? this.arrays.snapshot(resource.pmrem.active)
+            : undefined;
         return {
           primitiveKey: `${resource.fact.entityKey}`,
           index: resource.index,
@@ -557,6 +665,20 @@ export class ReflectionProbeRecordOwner {
           intensity: resource.fact.intensity,
           generation: resource.filter.activeGeneration,
           filteredView: active.view,
+          ...(array !== undefined
+            ? {
+                pmremArray: {
+                  key: array.classKey,
+                  view: array.arrayView,
+                  layer: array.baseArrayLayer,
+                  capacity: array.arrayLayerCount,
+                  generation: array.generation,
+                  size: array.size,
+                  format: this.outputFormat,
+                },
+              }
+            : {}),
+          boxProjection: resource.fact.boxProjection === true,
           sampler: resource.sampler,
           uniformBuffer: resource.uniformBuffer,
         };
@@ -592,22 +714,9 @@ export class ReflectionProbeRecordOwner {
           : undefined;
       if (this.shared === undefined) continue;
       if (!environmentReady || (rawCaptureFace === undefined && step === undefined)) continue;
-      const filterGroup0: BindGroup[] = [];
-      if (step !== undefined) {
-        for (let face = step.faceIndex; face < step.faceIndex + PMREM_FACES_PER_STEP; face++) {
-          const group = this.internals.device.createBindGroup({
-            label: `reflection-probe-${resource.index}-pmrem-${step.mipLevel}-${face}`,
-            layout: this.shared.prefilterGroup0Bgl,
-            entries: iblPrefilterGroup0Entries(this.shared.prefilterUniforms, step.mipLevel, face),
-          });
-          if (!group.ok) {
-            this.internals.errorRegistry.fire(group.error);
-            break;
-          }
-          filterGroup0.push(group.value);
-        }
-        if (filterGroup0.length !== PMREM_FACES_PER_STEP) continue;
-      }
+      const filtering = this.prepareProbeFiltering(resource, candidates, step);
+      if (filtering === undefined) continue;
+      const { candidate, array, scratch, filterGroup0, filterGroup1 } = filtering;
       resource.pending = { rawCaptureFace, step };
       captureTickets.push({ resource, pending: resource.pending });
       if (rawCaptureFace !== undefined) this.lastScheduledRawFaces += 1;
@@ -646,16 +755,23 @@ export class ReflectionProbeRecordOwner {
         rawCubeView: resource.raw.cubeView,
         rawFaceViews: resource.raw.faceViews,
         rawDepthTexture: resource.raw.depthTexture,
-        filteredTexture: resource.candidate.texture,
-        filteredView: resource.candidate.view,
-        filterScratchTexture: resource.scratch.texture,
-        filterScratchView: resource.scratch.view,
+        filteredTexture: candidate.texture,
+        filteredView: candidate.view,
+        ...(array !== undefined
+          ? {
+              filteredLayer: array.baseArrayLayer,
+              filteredArrayLayers: array.arrayLayerCount,
+              filteredGeneration: array.generation,
+            }
+          : {}),
+        filterScratchTexture: scratch.texture,
+        filterScratchView: scratch.view,
         outputFormat: this.outputFormat,
         sampler: resource.sampler,
         filterPipeline: this.shared.filterPipeline,
         ...(this.shared.background === undefined ? {} : { background: this.shared.background }),
         filterGroup0: step === undefined ? undefined : filterGroup0,
-        filterGroup1: resource.filterGroup1,
+        filterGroup1,
         rawCaptureFace,
         rawDepthView: resource.raw.depthView,
         rawSize: resource.raw.size,
@@ -666,19 +782,21 @@ export class ReflectionProbeRecordOwner {
               viewBindGroupDynamicOffset:
                 (REFLECTION_PROBE_VIEW_SLOT_BASE + resource.index) * VIEW_UNIFORM_SLOT_STRIDE,
             }),
-        filteredSize: resource.candidate.size,
+        filteredSize: candidate.size,
         step,
       });
       this.workCursor = (candidateIndex + 1) % candidates.length;
       break;
     }
+    this.arrays.prune();
+    const migrations = this.arrays.takeMigrations();
     const fallbackHasNonNeutral =
       this.fallbackFormatAvailable && hasNonNeutralFallback(fallbackTickets);
     return {
       table,
       selections,
       bindingClasses: this.materialBindings.project(selections, table),
-      graph: { work },
+      graph: { work, migrations },
       // A neutral projection is an exact zero and needs no MRT, pipeline
       // variant, or readback work. Demand is therefore derived from the
       // selected producer source rather than from the presence of a
@@ -696,6 +814,7 @@ export class ReflectionProbeRecordOwner {
           captureTickets,
           deviceGeneration,
           frameId,
+          migrations,
         ),
     };
   }
@@ -724,6 +843,7 @@ export class ReflectionProbeRecordOwner {
     }[] = [],
     deviceGeneration = recordContext(this.internals).deviceScope.generation,
     submittedFrame = this.currentFrame,
+    migrations: readonly PmremArrayMigration[] = [],
   ): Promise<void> {
     let completionFailure: ReflectionFallbackFailureInput | undefined;
     if (completed !== undefined) {
@@ -746,6 +866,7 @@ export class ReflectionProbeRecordOwner {
         completionFailure,
       );
     if (deviceGeneration !== recordContext(this.internals).deviceScope.generation) return;
+    for (const migration of migrations) this.arrays.complete(migration, submitted);
     for (const { resource, pending } of captureTickets) {
       if (
         resource.pending !== pending ||
@@ -764,14 +885,22 @@ export class ReflectionProbeRecordOwner {
       if (pending.step === undefined) continue;
       resource.filter = commitProbeFilterStep(resource.filter, true);
       if (resource.filter.cursor >= resource.filter.faceCount * resource.filter.mipCount) {
-        const previous = resource.active;
-        resource.active = resource.candidate;
+        const pmrem = resource.pmrem;
+        if (pmrem.kind === 'array') {
+          if (pmrem.active !== undefined) this.arrays.release(pmrem.active);
+          pmrem.active = pmrem.candidate;
+          pmrem.candidate = undefined;
+          if (this.arrayUpdate === resource) this.arrayUpdate = undefined;
+        } else {
+          const previous = pmrem.active;
+          pmrem.active = pmrem.candidate;
+          pmrem.candidate = pmrem.spare ?? previous ?? pmrem.candidate;
+          pmrem.spare = undefined;
+        }
         resource.activeFact = resource.captureFact;
         resource.lastCompletedFrame = submittedFrame;
         resource.atmosphere?.release();
         resource.atmosphere = undefined;
-        resource.candidate = resource.spare ?? previous ?? resource.candidate;
-        resource.spare = undefined;
       }
     }
   }
@@ -1226,6 +1355,12 @@ export class ReflectionProbeRecordOwner {
       this.destroyProbeResource(resource);
     }
     this.resources.clear();
+    this.arrays.dispose();
+    for (const [set, { device }] of this.retiredCubes) {
+      device.destroyTexture(set.texture);
+      device.destroyTexture(set.depthTexture);
+    }
+    this.retiredCubes.clear();
     this.latestFallbackTickets.clear();
     this.fallbackRetiredFrames.clear();
     this.fallbackCommittedFrames.clear();
@@ -1239,38 +1374,140 @@ export class ReflectionProbeRecordOwner {
     this.fallbackReceipt = this.createFallbackReceipt('unavailable');
     if (this.shared !== undefined) {
       if (this.shared.background !== undefined)
-        this.internals.device.destroyBuffer(this.shared.background.uniform);
-      this.internals.device.destroyBuffer(this.shared.prefilterUniforms);
+        this.resourceDevice.destroyBuffer(this.shared.background.uniform);
+      this.resourceDevice.destroyBuffer(this.shared.prefilterUniforms);
     }
     this.shared = undefined;
     this.pipelineWarmup = undefined;
+    this.arrayUpdate = undefined;
+    this.resourceDevice = this.internals.device;
+    this.arrays = new PmremArrayPool(this.resourceDevice, (error) =>
+      this.internals.errorRegistry.fire(error),
+    );
+  }
+
+  private activeAtlas(resource: ProbeGpuResource): PmremAtlas | PmremArrayLayer | undefined {
+    const state = resource.pmrem;
+    return state.kind === 'array'
+      ? state.active === undefined
+        ? undefined
+        : this.arrays.snapshot(state.active)
+      : state.active;
+  }
+
+  private candidateAtlas(resource: ProbeGpuResource): PmremAtlas | PmremArrayLayer | undefined {
+    const state = resource.pmrem;
+    return state.kind === 'array'
+      ? state.candidate === undefined
+        ? undefined
+        : this.arrays.snapshot(state.candidate)
+      : state.candidate;
+  }
+
+  private filterScratch(resource: ProbeGpuResource) {
+    const state = resource.pmrem;
+    return state.kind === 'array'
+      ? state.candidate === undefined
+        ? undefined
+        : this.arrays.scratch(state.candidate)
+      : state.scratch;
+  }
+
+  private rawBytes(): number {
+    let bytes = 0;
+    for (const resource of this.resources.values()) {
+      const size = resource.raw.size;
+      bytes += size * size * (6 * textureFormatBlock(this.outputFormat).bytesPerBlock + 4);
+    }
+    for (const retired of this.retiredCubes.values()) bytes += retired.bytes;
+    return bytes;
+  }
+
+  private standaloneBytes(): number {
+    let bytes = 0;
+    for (const resource of this.resources.values()) {
+      if (resource.pmrem.kind !== 'atlas') continue;
+      const state = resource.pmrem;
+      for (const atlas of new Set([state.active, state.candidate, state.spare, state.scratch])) {
+        if (atlas === undefined) continue;
+        const extent = pmremExtent(atlas.size);
+        bytes += extent.width * extent.height * textureFormatBlock(this.outputFormat).bytesPerBlock;
+      }
+    }
+    return bytes;
+  }
+
+  private useArrayPmrem(): boolean {
+    return (
+      this.internals.device.caps.storageBuffer === true &&
+      this.internals.device.caps.backendKind !== 'wgpu-webgl2'
+    );
+  }
+
+  private createPmremState(size: number, index: number): ProbePmremState | undefined {
+    // Native Deferred-capable devices support 2D views of array layers. The
+    // WebGL2 lane retains its existing ordinary 2D sampling contract.
+    if (this.useArrayPmrem()) return { kind: 'array', active: undefined, candidate: undefined };
+    const atlases: PmremAtlas[] = [];
+    for (const role of ['candidate', 'spare', 'scratch']) {
+      const result = createPmremAtlas(
+        this.internals.device,
+        `reflection-probe-${index}-${role}`,
+        size,
+        this.outputFormat,
+      );
+      if (!result.ok) {
+        for (const atlas of atlases) this.internals.device.destroyTexture(atlas.texture);
+        this.internals.errorRegistry.fire(result.error);
+        return undefined;
+      }
+      atlases.push(result.value);
+    }
+    const [candidate, spare, scratch] = atlases;
+    if (candidate === undefined || spare === undefined || scratch === undefined) return undefined;
+    return { kind: 'atlas', active: undefined, candidate, spare, scratch };
+  }
+
+  private destroyPmremState(state: ProbePmremState): void {
+    if (state.kind === 'array') {
+      if (state.active !== undefined) this.arrays.release(state.active);
+      if (state.candidate !== undefined) this.arrays.release(state.candidate);
+      return;
+    }
+    const atlases = new Set([state.active, state.candidate, state.spare, state.scratch]);
+    for (const atlas of atlases)
+      if (atlas !== undefined) this.resourceDevice.destroyTexture(atlas.texture);
   }
 
   private destroyProbeResource(resource: ProbeGpuResource): void {
     resource.atmosphere?.release();
     resource.atmosphere = undefined;
     this.destroyCubeSet(resource.raw);
-    const sets = new Set<PmremAtlas>([resource.scratch, resource.candidate]);
-    if (resource.active !== undefined) sets.add(resource.active);
-    if (resource.spare !== undefined) sets.add(resource.spare);
-    for (const set of sets) this.internals.device.destroyTexture(set.texture);
-    this.internals.device.destroyBuffer(resource.uniformBuffer);
+    this.destroyPmremState(resource.pmrem);
+    if (this.arrayUpdate === resource) this.arrayUpdate = undefined;
+    this.resourceDevice.destroyBuffer(resource.uniformBuffer);
   }
 
   private destroyCubeSet(set: ProbeCubeSet): void {
-    this.internals.device.destroyTexture(set.texture);
-    this.internals.device.destroyTexture(set.depthTexture);
+    if (this.retiredCubes.has(set)) return;
+    const device = this.resourceDevice;
+    this.retiredCubes.set(set, {
+      device,
+      bytes: set.size * set.size * (6 * textureFormatBlock(this.outputFormat).bytesPerBlock + 4),
+    });
+    const release = () => {
+      if (!this.retiredCubes.delete(set)) return;
+      device.destroyTexture(set.texture);
+      device.destroyTexture(set.depthTexture);
+    };
+    void device.queue.onSubmittedWorkDone().then(release, release);
   }
 
-  private resourceFor(
-    key: string,
-    fact: ReflectionProbeFact,
+  private probeDiffusePayload(
     index: number,
-    sceneRevision = '',
-    skylight?: SkylightSnapshot,
-    environment?: SelectedEnvironmentFrame,
-    resourceWorld?: RenderResourceScope,
-  ): ProbeGpuResource | undefined {
+    skylight: SkylightSnapshot | undefined,
+    resourceWorld: RenderResourceScope | undefined,
+  ): number[] {
     const cache =
       skylight !== undefined && skylight.equirectHandle !== 0
         ? this.internals.gpuStore.getCubemapIbl(skylight.equirectHandle, resourceWorld)
@@ -1294,14 +1531,27 @@ export class ReflectionProbeRecordOwner {
             0,
             ...skylightGroundLane(skylight, diffuseAvailable),
           ];
+    return diffuse;
+  }
+
+  private resourceFor(
+    key: string,
+    fact: ReflectionProbeFact,
+    index: number,
+    sceneRevision = '',
+    skylight?: SkylightSnapshot,
+    environment?: SelectedEnvironmentFrame,
+    resourceWorld?: RenderResourceScope,
+  ): ProbeGpuResource | undefined {
+    const diffuse = this.probeDiffusePayload(index, skylight, resourceWorld);
     let existing = this.resources.get(key);
+    let replacement: ProbeGpuResource | undefined;
     if (
       existing !== undefined &&
       existing.raw.size !== fact.resolution &&
       existing.pending === undefined
     ) {
-      this.destroyProbeResource(existing);
-      this.resources.delete(key);
+      replacement = existing;
       existing = undefined;
     }
     if (existing !== undefined) {
@@ -1358,32 +1608,33 @@ export class ReflectionProbeRecordOwner {
       return existing;
     }
     if (this.shared === undefined) return undefined;
+    const blockBytes = textureFormatBlock(this.outputFormat).bytesPerBlock;
+    const rawBytes = fact.resolution * fact.resolution * (6 * blockBytes + 4);
+    const extent = pmremExtent(fact.resolution);
+    const pendingAtlasBytes = this.useArrayPmrem()
+      ? 0
+      : extent.width * extent.height * blockBytes * 3;
+    if (
+      this.rawBytes() +
+        this.standaloneBytes() +
+        this.arrays.inspect().totalBytes +
+        rawBytes +
+        pendingAtlasBytes >
+      DEFAULT_REFLECTION_PROBE_LIMITS.maxBytes
+    ) {
+      this.lastResourceAdmission = 'waiting-for-retirement';
+      return replacement;
+    }
+    this.lastResourceAdmission = 'ready';
     const raw = this.createCubeSet(`reflection-probe-${index}-raw`, fact.resolution);
-    const atlas = (label: string) => {
-      const result = createPmremAtlas(
-        this.internals.device,
-        `reflection-probe-${index}-${label}`,
-        fact.resolution,
-        this.outputFormat,
-      );
-      return result.ok ? result.value : undefined;
-    };
-    const candidate = atlas('candidate'),
-      spare = atlas('spare'),
-      scratch = atlas('scratch');
+    const pmrem = this.createPmremState(fact.resolution, index);
     const releaseSets = () => {
       if (raw !== undefined) this.destroyCubeSet(raw);
-      for (const set of [candidate, spare, scratch])
-        if (set !== undefined) this.internals.device.destroyTexture(set.texture);
+      if (pmrem !== undefined) this.destroyPmremState(pmrem);
     };
-    if (
-      raw === undefined ||
-      candidate === undefined ||
-      spare === undefined ||
-      scratch === undefined
-    ) {
+    if (raw === undefined || pmrem === undefined) {
       releaseSets();
-      return undefined;
+      return replacement;
     }
     const uniformBuffer = this.internals.device.createBuffer({
       label: `reflection-probe-${index}-uniforms`,
@@ -1393,7 +1644,7 @@ export class ReflectionProbeRecordOwner {
     });
     if (!uniformBuffer.ok) {
       releaseSets();
-      return undefined;
+      return replacement;
     }
     const payload = new Float32Array([
       -(Math.max(0, fact.intensity) + PROBE_INTENSITY_SENTINEL_OFFSET),
@@ -1410,21 +1661,7 @@ export class ReflectionProbeRecordOwner {
     if (!written.ok) {
       releaseSets();
       this.internals.device.destroyBuffer(uniformBuffer.value);
-      return undefined;
-    }
-    const filterGroup1 = this.internals.device.createBindGroup({
-      label: `reflection-probe-${index}-filter-input`,
-      layout: this.shared.prefilterGroup1Bgl,
-      entries: [
-        { binding: 0, resource: { kind: 'textureView', value: raw.cubeView } },
-        { binding: 1, resource: { kind: 'sampler', value: this.shared.sampler } },
-        { binding: 2, resource: { kind: 'textureView', value: scratch.view } },
-      ],
-    });
-    if (!filterGroup1.ok) {
-      releaseSets();
-      this.internals.device.destroyBuffer(uniformBuffer.value);
-      return undefined;
+      return replacement;
     }
     const resource: ProbeGpuResource = {
       fact,
@@ -1440,18 +1677,28 @@ export class ReflectionProbeRecordOwner {
       index,
       filter: createProbeFilterState({
         probeIndex: index,
-        mipCount: pmremLevelCount(candidate.size),
+        mipCount: pmremLevelCount(fact.resolution),
+        activeGeneration: replacement?.filter.activeGeneration ?? 0,
       }),
       rawFaceCursor: 0,
       raw,
-      active: undefined,
-      candidate,
-      spare,
-      scratch,
+      pmrem,
       sampler: this.shared.sampler,
       uniformBuffer: uniformBuffer.value,
-      filterGroup1: filterGroup1.value,
+      filterGroup1: undefined,
     };
+    if (replacement !== undefined) {
+      if (resource.pmrem.kind === 'array' && replacement.pmrem.kind === 'array') {
+        resource.pmrem.active = replacement.pmrem.active;
+        replacement.pmrem.active = undefined;
+      } else if (resource.pmrem.kind === 'atlas' && replacement.pmrem.kind === 'atlas') {
+        resource.pmrem.active = replacement.pmrem.active;
+        replacement.pmrem.active = undefined;
+      }
+      if (replacement.activeFact !== undefined) resource.activeFact = replacement.activeFact;
+      resource.lastCompletedFrame = replacement.lastCompletedFrame;
+      this.destroyProbeResource(replacement);
+    }
     this.resources.set(key, resource);
     return resource;
   }

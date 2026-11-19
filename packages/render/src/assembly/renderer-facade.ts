@@ -1,5 +1,6 @@
 import { ProjectedDecalInvalidError } from '../decals/component';
 import { unavailableGeometry } from '../geometry-observation';
+import { isStandardOutputContract } from '../pipeline/standard-output/types';
 import { RenderPublicationError } from '../publication/contract';
 import { validateRenderQualityBudgets } from '../quality';
 import {
@@ -54,6 +55,7 @@ import type {
   RenderResult,
 } from '../render-contract';
 import { resolveSsaoParameters } from '../ssao-config';
+import { captureTargetEnvironment } from '../targets/capture-environment';
 import type { RendererHostImplementation } from './host-contract';
 import { createRendererLifecycle, isRendererStateOperational } from './renderer-lifecycle';
 
@@ -199,7 +201,7 @@ export function exposeRenderer(renderer: RendererHostImplementation): Renderer {
     );
   });
 
-  return {
+  const facade: Renderer = {
     setSurfaceDynamicInput: (frame) => {
       assertPreparationIdle();
       renderer.setSurfaceDynamicInput(frame);
@@ -297,6 +299,16 @@ export function exposeRenderer(renderer: RendererHostImplementation): Renderer {
         ? renderer.retireSupersededDynamicGeometry(candidate, successor)
         : err(fault);
     },
+    captureRenderTargetEnvironment: (target, options) =>
+      afterScheduledPreparation(() =>
+        captureTargetEnvironment(target, options, {
+          draw: facade.draw,
+          filter: (faces) =>
+            afterScheduledPreparation(() => renderer.prepareRenderTargetEnvironment(target, faces)),
+        }),
+      ),
+    prepareRenderTargetEnvironment: (target) =>
+      afterScheduledPreparation(() => renderer.prepareRenderTargetEnvironment(target)),
     createRenderTarget: (descriptor) => {
       assertPreparationIdle();
       return renderer.createRenderTarget(descriptor);
@@ -564,6 +576,7 @@ export function exposeRenderer(renderer: RendererHostImplementation): Renderer {
       return disposeInFlight;
     },
   };
+  return facade;
 }
 
 // ─── feat-20260520-directional-light-shadow-mapping M1c / w8 helpers ────────
@@ -658,6 +671,7 @@ function projectRecoveryFailureDetail(
 const RENDER_PROFILE_KEYS = new Set([
   'quality',
   'configurationRevision',
+  'outputContract',
   'featureReadOnlyDepthBatching',
   'featureReadOnlyDepthBatchDiagnostic',
   'pipelineId',
@@ -695,6 +709,8 @@ export function validateRenderProfile(profile: RenderProfile): string | undefine
   if (typeof profile !== 'object' || profile === null) return 'RenderProfile must be a POD object';
   const unknownKey = Object.keys(profile).find((key) => !RENDER_PROFILE_KEYS.has(key));
   if (unknownKey !== undefined) return `RenderProfile contains unsupported field '${unknownKey}'`;
+  if (profile.outputContract !== undefined && !isStandardOutputContract(profile.outputContract))
+    return 'RenderProfile.outputContract requires standard-output-v1 or standard-output-v2';
   const configurationFailure = validateConfigurationProfile(profile);
   if (configurationFailure !== undefined) return configurationFailure;
   let failure = validateStandardPipelineSelection(profile);
@@ -716,6 +732,10 @@ export function validateRenderProfile(profile: RenderProfile): string | undefine
   }
   failure = validateSsaoProfile(profile);
   if (failure !== undefined) return failure;
+  return validatePostStageOrder(profile);
+}
+
+function validatePostStageOrder(profile: RenderProfile): string | undefined {
   const stages = STANDARD_POST_STAGE_NAMES;
   if (
     !Array.isArray(profile.postStages) ||
@@ -886,14 +906,10 @@ function validateSsaoProfile(profile: RenderProfile): string | undefined {
   )
     return 'RenderProfile.ssao must be boolean or AO parameters';
   if (typeof profile.ssao === 'object') {
-    if (
-      Object.keys(profile.ssao).some(
-        (key) => !['algorithm', 'radius', 'bias', 'intensity', 'quality'].includes(key),
-      )
-    )
-      return 'RenderProfile.ssao contains an unsupported parameter';
     const resolved = resolveSsaoParameters(profile.ssao);
     if (!resolved.ok) return resolved.error.hint;
+    if (Object.keys(profile.ssao).some((key) => !Object.hasOwn(resolved.value, key)))
+      return 'RenderProfile.ssao contains an unsupported parameter';
   }
   return undefined;
 }

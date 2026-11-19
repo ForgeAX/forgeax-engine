@@ -153,6 +153,9 @@ class VfxMeshLightingPhases {
       this.finishOriginalCapture = undefined;
     }
     const completed: Record<string, unknown> = { status: 'pending' };
+    const credit: Record<string, unknown> = {
+      status: receipt.creditCompleted === undefined ? 'not-published' : 'pending',
+    };
     const preparation: Record<string, unknown> = {
       status: receipt.preparationCompleted === undefined ? 'not-published' : 'pending',
     };
@@ -163,6 +166,7 @@ class VfxMeshLightingPhases {
       presentation: receipt.presentation,
       pendingReason: receipt.presentationPendingReason,
       completed,
+      credit,
       preparation,
     };
     const settled = (target: Record<string, unknown>, result: unknown) =>
@@ -172,6 +176,10 @@ class VfxMeshLightingPhases {
     void receipt.completed.then(
       (result) => settled(completed, result),
       (error) => rejected(completed, error),
+    );
+    void receipt.creditCompleted?.then(
+      (result) => settled(credit, result),
+      (error) => rejected(credit, error),
     );
     void receipt.preparationCompleted?.then(
       (result) => settled(preparation, result),
@@ -1775,7 +1783,10 @@ async function runVfxMeshLighting(options: VfxMeshLightingOptions): Promise<void
   const recording = attachRecorder(backend);
   if (!recording.ok) throw recording.error;
   const recorder = recording.value;
-  if (options.sampledTextureLimit === 16 && options.onIblFailure !== undefined)
+  if (
+    options.onIblFailure !== undefined &&
+    (options.publication === true || options.sampledTextureLimit === 16)
+  )
     await armOriginalVfxCapture(recorder, phases, options.signal);
   const surface = new CapturedCanvasSurface(phases.errors);
   phases.enter('renderer-construction');

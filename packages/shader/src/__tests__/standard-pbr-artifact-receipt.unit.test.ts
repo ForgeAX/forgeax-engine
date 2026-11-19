@@ -55,6 +55,7 @@ describe('Standard PBR artifact receipt vertex ABI', () => {
       vertexInputs: [],
     });
     expect(unknown.positionBounds).toBeUndefined();
+    expect(unknown.gbuffer).toBeUndefined();
     expect(isMaterialProgramAbi(unknown)).toBe(true);
     expect(isMaterialProgramAbi({ ...unknown, positionBounds: 'arbitrary' })).toBe(false);
     const known = createMaterialProgramArtifactReceipt({
@@ -84,7 +85,8 @@ describe('Standard PBR artifact receipt vertex ABI', () => {
       ],
     });
     expect(receipt.positionBounds).toBe('standard-input');
-    expect(receipt.generation).toBe(5);
+    expect(receipt.gbuffer).toBe('standard-gbuffer/2');
+    expect(receipt.generation).toBe(6);
     expect(receipt.reflection.vertexInputs).toEqual(testCase.vertexInputs);
     expect(receipt.vertexInputs.map((input) => input.location)).toEqual(
       testCase.vertexInputs.map((input) => input.location),
@@ -118,7 +120,7 @@ describe('Standard PBR artifact receipt vertex ABI', () => {
     const skinColor = createStandardPbrArtifactReceipt(true, true);
 
     expect(rigid.receiptIdentity).toBe(
-      `standard-pbr/${derive(STANDARD_PIPELINE_PARAM_SCHEMA).layoutIdentity}/address-16/vertex-contract-5`,
+      `standard-pbr/${derive(STANDARD_PIPELINE_PARAM_SCHEMA).layoutIdentity}/address-16/vertex-contract-5/gbuffer-2`,
     );
     expect(rigid.reflection.layoutIdentity).toBe(rigid.receiptIdentity);
     expect(skin.receiptIdentity).toBe(rigid.receiptIdentity);

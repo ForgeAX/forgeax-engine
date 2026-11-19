@@ -100,31 +100,57 @@ describe('standard material cook integration', { timeout: 30_000 }, () => {
       expect(source).not.toContain(`${parameter.name}Coordinates`);
     }
   }, 30_000);
-  // Dedicated anisotropy, specular-color and foliage cases below cover these
-  // maps; the physical-root case also checks the exact clearcoat bindings.
-  // Keep the other 19 independent declarations and all-textures-absent control.
-  it.each(
-    STANDARD_MATERIAL_PARAM_SCHEMA.filter(
-      (parameter) =>
-        parameter.type === 'texture2d' &&
-        ![
-          'anisotropyTexture',
-          'specularColorTexture',
-          'diffuseTransmissionTexture',
-          'clearcoatTexture',
-          'clearcoatNormalTexture',
-        ].includes(parameter.name),
-    ),
-  )('retains only the declared $name sampling path', async ({ name }) => {
+  // Separate competing normal/bump and packed/separate metallic routes. Each
+  // map is checked both present and absent without cooking every map alone.
+  it.each([
+    {
+      name: 'packed base and alpha',
+      textures: [
+        'baseColorTexture',
+        'metallicRoughnessTexture',
+        'normalTexture',
+        'alphaTexture',
+        'occlusionTexture',
+      ],
+    },
+    {
+      name: 'separate base and height',
+      textures: [
+        'bumpTexture',
+        'metallicTexture',
+        'roughnessTexture',
+        'emissiveTexture',
+        'displacementTexture',
+      ],
+    },
+    {
+      name: 'transmission and thickness',
+      textures: [
+        'transmissionTexture',
+        'thicknessTexture',
+        'sheenColorTexture',
+        'iridescenceThicknessTexture',
+        'diffuseTransmissionColorTexture',
+      ],
+    },
+    {
+      name: 'physical lobes',
+      textures: [
+        'clearcoatRoughnessTexture',
+        'sheenRoughnessTexture',
+        'iridescenceTexture',
+        'specularTexture',
+      ],
+    },
+  ])('retains only the declared $name sampling paths', async ({ name, textures }) => {
     const names = new Set(
       STANDARD_MATERIAL_PARAM_SCHEMA.filter((parameter) => parameter.type !== 'texture2d').map(
         (parameter) => parameter.name,
       ),
     );
-    names.add(name);
-    const guid = `standard-only-${name.toLowerCase()}`;
+    for (const texture of textures) names.add(texture);
     const cooked = await createMaterialPackCooker().cook({
-      guid,
+      guid: `standard-textures-${name.replaceAll(' ', '-')}`,
       source: {
         kind: 'material',
         staticSwitches: {
@@ -147,7 +173,7 @@ describe('standard material cook integration', { timeout: 30_000 }, () => {
       (parameter) => parameter.type === 'texture2d',
     )) {
       const pattern = new RegExp(`\\b${parameter.name}\\b`);
-      if (parameter.name === name) expect(source).toMatch(pattern);
+      if (textures.includes(parameter.name)) expect(source).toMatch(pattern);
       else expect(source).not.toMatch(pattern);
     }
   }, 30_000);

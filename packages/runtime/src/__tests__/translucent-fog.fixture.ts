@@ -133,7 +133,9 @@ export function spawnFogBackdrop(world: World, fog = true): void {
         component: MeshFilter,
         data: {
           assetHandle: testAssets(world)
-            .create(createBoxGeometry(200, 200, 1).unwrap())
+            // Vertex fog needs spatial samples on this unusually wide wall.
+            // Retain its extent, depths and the independent analytic oracle.
+            .create(createBoxGeometry(200, 200, 1, 32, 32, 1).unwrap())
             .unwrap(),
         },
       },
@@ -259,7 +261,13 @@ export async function renderFogFrames(
       const last = index === frames - 1;
       const pending = last ? options.recorder?.captureFrame() : undefined;
       if (pending !== undefined) (await options.recorder?.frameBoundary())?.unwrap();
-      const frame = await drawReadyFrame(renderer, { source: lease }, last ? [domain] : undefined);
+      const frame = await drawReadyFrame(
+        renderer,
+        { source: lease },
+        last ? [domain] : undefined,
+      ).catch((cause: unknown) => {
+        throw new Error(JSON.stringify({ cause, rendererErrors: errors }), { cause });
+      });
       expect(frame.presentation, JSON.stringify(frame.presentationPendingReason)).toBe('ready');
       let tape: EncodedTape | undefined;
       if (pending !== undefined) {

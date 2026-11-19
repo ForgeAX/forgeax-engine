@@ -62,6 +62,7 @@ import {
 } from './device';
 import { adapterUnavailable, requestAdapterFailed, requestDeviceFailed } from './errors';
 import { probeFloatTextureCapabilities } from './internal/float-texture-capabilities';
+import { probeVertexOnlyRenderBundles } from './internal/vertex-only-render-bundles';
 
 /**
  * The `GPU` subset accepted at the provider seam (research §F-6 webgpu-utils +
@@ -349,22 +350,28 @@ function makeRhiAdapter(rawAdapter: GpuAdapterLike, featureLevel?: string): RhiA
         return requestDeviceFailed(e);
       }
       const native = rawDevice as unknown as GPUDevice;
-      let depthTextureLoad = true;
-      if (
-        (featureLevel === 'compatibility' ||
-          rawAdapter.features?.has('core-features-and-limits')) &&
-        !native.features.has('core-features-and-limits')
-      ) {
-        try {
-          depthTextureLoad = await probeDepthTextureLoad(native);
-        } catch (cause) {
-          native.destroy();
-          return requestDeviceFailed(cause);
-        }
+      try {
+        const needsDepthTextureLoadProbe =
+          (featureLevel === 'compatibility' ||
+            rawAdapter.features?.has('core-features-and-limits')) &&
+          !native.features.has('core-features-and-limits');
+        const depthTextureLoad =
+          !needsDepthTextureLoadProbe || (await probeDepthTextureLoad(native));
+        const floatTextureCapabilities = await probeFloatTextureCapabilities(native);
+        const vertexOnlyRenderBundles = await probeVertexOnlyRenderBundles(native);
+        const { device } = makeRhiDevice(
+          native,
+          {
+            depthTextureLoad,
+            ...(vertexOnlyRenderBundles === undefined ? {} : { vertexOnlyRenderBundles }),
+          },
+          floatTextureCapabilities,
+        );
+        return ok(device);
+      } catch (cause) {
+        native.destroy();
+        return requestDeviceFailed(cause);
       }
-      const floatTextureCapabilities = await probeFloatTextureCapabilities(native);
-      const { device } = makeRhiDevice(native, { depthTextureLoad }, floatTextureCapabilities);
-      return ok(device);
     },
   };
 }

@@ -20,6 +20,7 @@ describe('VFX Data Interface vocabulary owner', () => {
       | 'scene-sdf'
       | 'force-fields'
       | 'water-surface'
+      | 'structured-input'
     >();
     expectTypeOf<VfxDataInterfaceBindingType>().toEqualTypeOf<
       | 'read-write-storage'
@@ -41,16 +42,25 @@ describe('VFX Data Interface vocabulary owner', () => {
       | 'vfx:scene-sdf'
       | 'vfx:force-fields'
       | 'vfx:water-surface'
+      | 'vfx:structured-input'
     >();
   });
 
   it('keeps the resource vocabulary closed', () => {
     expectTypeOf<NonNullable<VfxDataInterfaceResource['resource']>['kind']>().toEqualTypeOf<
-      'buffer' | 'texture-view' | 'sampler' | 'feature-texture-reference' | 'uniform-data'
+      | 'buffer'
+      | 'texture-view'
+      | 'sampler'
+      | 'feature-texture-reference'
+      | 'uniform-data'
+      | 'storage-data'
     >();
   });
 
   it('narrows provider binding types from the selected kind', () => {
+    expectTypeOf<
+      VfxDataInterfaceProvider<'structured-input'>['bindingType']
+    >().toEqualTypeOf<'read-only-storage'>();
     expectTypeOf<
       VfxDataInterfaceProvider<'gpu-events'>['bindingType']
     >().toEqualTypeOf<'read-write-storage'>();

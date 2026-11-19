@@ -13,6 +13,63 @@ const row = {
 };
 
 describe('LOD occlusion inspection lifecycle', () => {
+  it('retains detached GPU-selector reasons separately from the LOD population', () => {
+    const submit = { frameId: 12, build: 'test-build', deviceGeneration: 2 };
+    const gpu = {
+      candidateCount: 100,
+      visible: 40,
+      frustumCulled: 50,
+      texelCulled: 2,
+      cameraCulled: 0,
+      overflow: false,
+      geometryWork: 1440,
+      rootGeometryWork: 2880,
+      occlusion: { culled: 8, late: 3 },
+    };
+    const result = inspectLodOcclusion({
+      ...row,
+      submit,
+      attribution: { status: 'same-submit', submit },
+      gpu,
+    });
+    expect(result.count).toEqual(row.count);
+    expect(result.gpu).toEqual(gpu);
+    gpu.frustumCulled = 99;
+    gpu.occlusion.culled = 99;
+    expect(result.gpu?.frustumCulled).toBe(50);
+    expect(result.gpu?.occlusion?.culled).toBe(8);
+    expect(Object.isFrozen(result.gpu)).toBe(true);
+    expect(Object.isFrozen(result.gpu?.occlusion)).toBe(true);
+  });
+
+  it('rejects GPU reasons without same-submit attribution or with invalid counters', () => {
+    const submit = { frameId: 12, build: 'test-build', deviceGeneration: 2 };
+    const gpu = {
+      candidateCount: 4,
+      visible: 2,
+      frustumCulled: 1,
+      texelCulled: 0,
+      cameraCulled: 0,
+      overflow: false,
+      geometryWork: 72,
+      rootGeometryWork: 72,
+    };
+    expect(() => inspectLodOcclusion({ ...row, submit, gpu })).toThrow('same-submit');
+    for (const invalid of [
+      { frustumCulled: -1 },
+      { visible: NaN },
+      { occlusion: { culled: 1, late: -1 } },
+    ])
+      expect(() =>
+        inspectLodOcclusion({
+          ...row,
+          submit,
+          attribution: { status: 'same-submit', submit },
+          gpu: { ...gpu, ...invalid },
+        }),
+      ).toThrow('non-negative integer');
+  });
+
   it('uses the build-tool revision for inspection submits', () => {
     expect(resolveInspectionBuild({ build: 'merge-ref-123' })).toBe('merge-ref-123');
     expect(resolveInspectionBuild({ build: undefined })).toBe('render-system');

@@ -179,7 +179,7 @@ if (k.ok) {
 
 | Export | Signature | Description |
 |:--|:--|:--|
-| `compressZstd` | `(bytes: Uint8Array) => Promise<CodecResult<Uint8Array>>` | Compress bytes with zstd (pinned WASM, fixed level, no dictionary, no timestamp -- deterministic per AC-07). Build-time only; gated from runtime import by `check-image-pipeline-isolation.mjs` path d. |
+| `compressZstd` | `(bytes: Uint8Array, options?: { level?: number }) => Promise<CodecResult<Uint8Array>>` | Compress bytes with zstd (pinned WASM; default level 3, integer levels 1-19; no dictionary or timestamp -- deterministic per AC-07). Build-time only; gated from runtime import by `check-image-pipeline-isolation.mjs` path d. |
 
 Import path:
 

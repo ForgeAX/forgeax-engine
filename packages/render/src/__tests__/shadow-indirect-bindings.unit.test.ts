@@ -328,6 +328,27 @@ it('retains native commands per projected batch through membership and local res
   }
 });
 
+it('records the same directional indirect draws without bundles on devices with the WebGPU limitation', async () => {
+  const fixture = await preparedFixture();
+  try {
+    const bundled = recorder();
+    encodeDirectionalShadowPass(fixture.context, bundled.pass, 0);
+    expect(bundled.draws).toHaveLength(64);
+    expect(fixture.bundleRecording).toHaveBeenCalledTimes(64);
+
+    const device = fixture.context.runtime.device;
+    const caps = { ...device.caps, nativeVertexOnlyRenderBundles: false };
+    vi.spyOn(device, 'caps', 'get').mockReturnValue(caps);
+    const direct = recorder();
+    encodeDirectionalShadowPass(fixture.context, direct.pass, 0);
+    expect(direct.pass.executeBundles).not.toHaveBeenCalled();
+    expect(fixture.bundleRecording).toHaveBeenCalledTimes(64);
+    expect(direct.draws).toEqual(bundled.draws);
+  } finally {
+    fixture.dispose();
+  }
+});
+
 it('resolves shared opaque resources once per view and observes the next resource generation', async () => {
   const fixture = await preparedFixture();
   const {

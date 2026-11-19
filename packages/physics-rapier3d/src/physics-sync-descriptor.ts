@@ -83,6 +83,10 @@ export function samePhysicsValue(left: unknown, right: unknown): boolean {
   );
 }
 
+export function hasZeroColliderScale(scale: PhysicsTransform3D['scale']): boolean {
+  return scale.x === 0 || scale.y === 0 || scale.z === 0;
+}
+
 /** Four Float32 epsilons enclose matrix decomposition noise, relative to committed geometry. */
 export function sameColliderScale(
   left: PhysicsTransform3D['scale'] | undefined,

@@ -1,5 +1,6 @@
 import type { Buffer } from '@forgeax/engine-rhi';
 import { ok, type Result } from '@forgeax/engine-types';
+import { packSpotDecay } from '../light-buffer-layout';
 import type { LightSnapshot } from '../render-system-extract';
 import { type RayReferenceError, rayReferenceFailure } from './scene';
 export interface RayPathCamera {
@@ -159,11 +160,12 @@ export function packLights(
     const color = Array.from(l.color);
     const range = l.kind === 'directional' ? 0 : l.invRangeSquared;
     const cone = l.kind === 'spot' ? [l.cosInner, l.cosOuter] : [1, 0];
+    const decay = l.kind === 'directional' ? 0 : (l.decay ?? 2);
     const row = [
       ...position,
       l.kind === 'directional' ? 1 : l.kind === 'point' ? 2 : 3,
       ...color,
-      l.kind === 'point' ? (l.decay ?? 2) : 0,
+      analyticDecayWord(l.kind, decay),
       ...direction,
       range,
       ...cone,
@@ -174,7 +176,7 @@ export function packLights(
       !row.every(finite32) ||
       color.some((v) => v < 0) ||
       range < 0 ||
-      (l.kind === 'point' && (l.decay ?? 2) < 0) ||
+      decay < 0 ||
       (l.kind === 'spot' && (!(l.cosInner > l.cosOuter) || l.cosInner > 1 || l.cosOuter < -1))
     )
       return rayReferenceFailure('invalid analytic light');
@@ -182,6 +184,10 @@ export function packLights(
   }
   return ok(bytes);
 }
+function analyticDecayWord(kind: LightSnapshot['kind'], decay: number): number {
+  return kind === 'spot' ? packSpotDecay(decay) : decay;
+}
+
 function finite32(v: number): boolean {
   return Number.isFinite(v) && Number.isFinite(Math.fround(v));
 }

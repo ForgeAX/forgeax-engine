@@ -31,6 +31,7 @@ import type {
 } from './scene-data';
 import {
   isSceneDataTarget,
+  SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_SCHEMA,
   SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA,
   SCENE_DATA_TEMPORAL_V1_SCHEMA,
   type SceneDataSchemaId,
@@ -399,7 +400,10 @@ export function standardAoSceneDataUnavailable(input: {
     reason === 'coverage-incomplete' ? (unavailable?.missingContributorIds ?? []) : [];
   return new SceneDataUnavailableError({
     featureIdentity: 'forgeax::standard',
-    schema: SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA,
+    schema:
+      input.renderPath === 'deferred'
+        ? SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_SCHEMA
+        : SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA,
     lane: admission?.lane ?? input.fallbackLane,
     reason,
     missingContributorIds,

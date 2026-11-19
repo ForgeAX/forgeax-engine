@@ -39,11 +39,13 @@ describe('Points and Lines public schema', () => {
 
     expect(world.get(pointEntity, Points).unwrap()).toMatchObject({
       size: 4,
+      minPixelSize: 0,
       shape: PointShapeValue.square,
     });
     expect(world.get(lineEntity, Lines).unwrap().width).toBe(1);
     expect(Points.fields).toEqual({
       size: expect.objectContaining({ type: 'f32', default: 4 }),
+      minPixelSize: expect.objectContaining({ type: 'f32', default: 0 }),
       sizeUnits: expect.objectContaining({
         type: 'enum',
         default: PointSizeUnitsValue.pixels,
@@ -89,7 +91,9 @@ describe('Points and Lines public schema', () => {
   it('exposes the bounded point and line style vocabulary', () => {
     type PublicPointShape = PointShape;
     expectTypeOf<PublicPointShape>().toEqualTypeOf<'square' | 'circle' | 'soft'>();
-    expectTypeOf<keyof typeof Points.fields>().toEqualTypeOf<'size' | 'sizeUnits' | 'shape'>();
+    expectTypeOf<keyof typeof Points.fields>().toEqualTypeOf<
+      'size' | 'minPixelSize' | 'sizeUnits' | 'shape'
+    >();
     expectTypeOf<keyof typeof Lines.fields>().toEqualTypeOf<
       'width' | 'widthUnits' | 'cap' | 'dashSize' | 'gapSize' | 'dashOffset'
     >();

@@ -614,3 +614,30 @@ test('the download entry pairs exact Core native bytes and keeps shader paths ou
     rmSync(f.directory, { recursive: true, force: true });
   }
 });
+
+test('all transferred profile consumers admit the original verified compiler before profile checks', () => {
+  const download = readFileSync('scripts/ci/download-sdk-shader-inputs.mjs', 'utf8');
+  assert.match(download, /await restoreCoreCompiler\(process.cwd\(\), join\(staging, 'core'\)\)/);
+  assert.ok(
+    download.indexOf('await restoreCoreCompiler') <
+      download.indexOf('appendFileSync(process.env.GITHUB_ENV'),
+  );
+  const workflow = parse(readFileSync('.github/workflows/webgpu-compatibility.yml', 'utf8'));
+  const steps = workflow.jobs.compatibility.steps;
+  const portable = steps.findIndex(
+    (step) => step.name === 'Prepare verified portable scene inputs',
+  );
+  const base = steps.findIndex(
+    (step) => step.name === 'Restore the admitted core base shader payload',
+  );
+  assert.ok(portable >= 0 && portable < base);
+  assert.match(steps[portable].run, /prepare-source-checkout.mjs third_party\/wgpu/);
+  assert.match(steps[base].run, /restore-core-shader-inputs.mjs/);
+  assert.match(steps[base].run, /--prepare-compiler/);
+  assert.equal(steps[base]['timeout-minutes'], 5);
+  const restore = readFileSync('scripts/ci/restore-core-shader-inputs.mjs', 'utf8');
+  assert.ok(
+    restore.indexOf('await restoreCoreCompiler(root, staging)') <
+      restore.indexOf("'scripts/build-packages.mjs'"),
+  );
+});

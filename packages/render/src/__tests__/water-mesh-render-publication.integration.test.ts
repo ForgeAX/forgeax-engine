@@ -468,9 +468,15 @@ it('transports WaterInfo into the renderer before drawing generation-bound Water
         draw(...args);
       };
       const bind = encoder.setBindGroup.bind(encoder);
-      encoder.setBindGroup = (...args) => {
+      encoder.setBindGroup = (...args: BoundGroup) => {
         bindings.push(args);
-        return bind(...args);
+        const [index, group, offsets, start, count] = args;
+        if (offsets instanceof Uint32Array) {
+          if (start === undefined || count === undefined)
+            throw new Error('Missing typed dynamic-offset window');
+          return bind(index, group, offsets, start, count);
+        }
+        return bind(index, group, offsets);
       };
       const finish = encoder.finish.bind(encoder);
       encoder.finish = () => {
@@ -607,8 +613,8 @@ it('transports WaterInfo into the renderer before drawing generation-bound Water
           entity: row.entityKey,
           owner: row.waterOwner,
         })),
-        mainDraws: submitted.drawCalls.filter(
-          (_call, at) => submitted.drawContexts[at]?.passName === 'main',
+        mainDraws: submitted.drawCalls.filter((_call, at) =>
+          submitted.drawContexts[at]?.passName.split(' + ').includes('main'),
         ),
       });
     }
@@ -622,10 +628,13 @@ it('transports WaterInfo into the renderer before drawing generation-bound Water
     ownerGeneration: number,
     zoneGeneration: number,
   ) => {
-    const mainDraws = submitted.drawContexts.filter((pass) => pass.passName === 'main');
+    const mainDraws = submitted.drawContexts.filter((pass) =>
+      pass.passName.split(' + ').includes('main'),
+    );
     expect(mainDraws.length).toBeGreaterThan(0);
     const mainWaterGroupBound = submitted.bindCalls.some(
-      (args, index) => submitted.bindContexts[index]?.passName === 'main' && args[0] === 2,
+      (args, index) =>
+        submitted.bindContexts[index]?.passName.split(' + ').includes('main') && args[0] === 2,
     );
     expect(
       mainWaterGroupBound,
@@ -698,7 +707,8 @@ it('transports WaterInfo into the renderer before drawing generation-bound Water
       expect(
         pending.drawCalls.some(
           (call, at) =>
-            pending.drawContexts[at]?.passName === 'main' && meshIndexCounts.has(call[0]),
+            pending.drawContexts[at]?.passName.split(' + ').includes('main') &&
+            meshIndexCounts.has(call[0]),
         ),
       ).toBe(false);
       expect(rendererErrors.map((error) => (error instanceof Error ? error.stack : error))).toEqual(
@@ -915,7 +925,8 @@ it('transports WaterInfo into the renderer before drawing generation-bound Water
         expect(
           pending.drawCalls.some(
             (call, at) =>
-              pending.drawContexts[at]?.passName === 'main' && meshIndexCounts.has(call[0]),
+              pending.drawContexts[at]?.passName.split(' + ').includes('main') &&
+              meshIndexCounts.has(call[0]),
           ),
         ).toBe(true);
       }

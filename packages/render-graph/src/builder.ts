@@ -1,5 +1,6 @@
 import type { Buffer, RhiCaps, Texture, TextureView, Tlas } from '@forgeax/engine-rhi';
 import { textureFormatBlock } from '@forgeax/engine-types';
+import { placeColorStores } from './color-store-placement.js';
 import { CompiledRenderGraphImpl } from './compiled-graph.js';
 import { subtractTextureRange, textureRangeCovered } from './content-ranges.js';
 import { err, ok, RenderGraphError, type Result } from './errors.js';
@@ -23,6 +24,8 @@ import {
   textureHandle,
   textureViewHandle,
 } from './kernel-internal.js';
+import { planRasterBatches } from './raster-batching.js';
+import { placeColorResolves } from './resolve-placement.js';
 import { isTextureViewDimensionCompatible } from './resource-registry.js';
 import type {
   CompiledRenderGraph,
@@ -52,6 +55,46 @@ import type {
   RenderGraphFrame,
   SubgraphPass,
 } from './types.js';
+
+function inspectResourceDescriptor<FrameCtx>(
+  resource: CompiledResource<FrameCtx>,
+): CompiledRenderGraphInfo['resources'][number]['descriptor'] {
+  const texture =
+    resource.record.kind === 'texture'
+      ? (resource.record.descriptor as GraphTextureDescriptor)
+      : undefined;
+  const buffer =
+    resource.record.kind === 'buffer'
+      ? (resource.record.descriptor as GraphBufferDescriptor)
+      : undefined;
+  const accelerationStructure =
+    resource.record.kind === 'acceleration-structure' ? resource.record.descriptor : undefined;
+  const extent = resource.textureDescriptor?.size;
+  return Object.freeze(
+    accelerationStructure !== undefined
+      ? {
+          kind: 'acceleration-structure' as const,
+          maxInstances: accelerationStructure.maxInstances,
+        }
+      : texture === undefined
+        ? {
+            kind: 'buffer' as const,
+            size: buffer?.size ?? 0,
+          }
+        : {
+            kind: 'texture' as const,
+            format: texture.format,
+            ...(texture.domain === undefined ? {} : { domain: texture.domain }),
+            size:
+              typeof texture.size === 'string' ? texture.size : Object.freeze({ ...texture.size }),
+            width: extent?.width ?? 1,
+            height: extent?.height ?? 1,
+            depthOrArrayLayers: extent?.depthOrArrayLayers ?? 1,
+            mipLevelCount: texture.mipLevelCount ?? 1,
+            sampleCount: texture.sampleCount ?? 1,
+          },
+  );
+}
 
 const BUFFER_USAGE = {
   copySrc: 0x0004,
@@ -336,13 +379,20 @@ export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
   }
 
   /** Independent graph storage with the source's exact allocation descriptor. */
-  createTextureLike(label: string, source: GraphTexture): Result<GraphTexture, RenderGraphError> {
+  createTextureLike(
+    label: string,
+    source: GraphTexture,
+    sampleCount?: 1 | 4,
+  ): Result<GraphTexture, RenderGraphError> {
     const data = handleData(source);
     if (data?.kind !== 'texture' || data.owner !== this.owner)
       return err(this.foreignHandleError());
     const record = this.resources.get(data.id);
     if (record?.kind !== 'texture') return err(this.foreignHandleError());
-    return this.createTexture(label, record.descriptor);
+    return this.createTexture(
+      label,
+      sampleCount === undefined ? record.descriptor : { ...record.descriptor, sampleCount },
+    );
   }
 
   createBuffer(
@@ -503,8 +553,18 @@ export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
     const analyzed = this.analyze(options);
     if (!analyzed.ok) return analyzed;
 
+    const resolvedPasses = placeColorResolves(
+      analyzed.value.passes,
+      new Set(
+        [...this.resources.values()]
+          .filter((resource) => resource.kind === 'texture' && resource.origin === 'created')
+          .map((resource) => resource.id),
+      ),
+    );
+    const passes = placeColorStores(resolvedPasses, this.resources);
     const allocated = this.allocate(options, analyzed.value.resources);
     if (!allocated.ok) return allocated;
+    const rasterBatches = planRasterBatches(passes);
 
     const generation = nextGeneration;
     const physicalKey = (resource: CompiledResource<FrameCtx>): string | undefined => {
@@ -514,11 +574,14 @@ export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
     const info: CompiledRenderGraphInfo = Object.freeze({
       generation,
       passes: Object.freeze(
-        analyzed.value.passes.map((pass, executionIndex) =>
+        passes.map((pass, executionIndex) =>
           Object.freeze({
             name: pass.name,
             kind: pass.pass.kind,
             executionIndex,
+            ...(rasterBatches.has(executionIndex)
+              ? { rasterBatch: rasterBatches.get(executionIndex)?.names }
+              : {}),
             accesses: Object.freeze(
               pass.pass.descriptor.accesses.map((access) => {
                 const id = accessResourceId(access);
@@ -529,9 +592,7 @@ export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
               }),
             ),
             dependencies: Object.freeze(
-              pass.dependencies.map(
-                (dependency) => analyzed.value.passes[dependency]?.name ?? 'unknown',
-              ),
+              pass.dependencies.map((dependency) => passes[dependency]?.name ?? 'unknown'),
             ),
           }),
         ),
@@ -541,10 +602,6 @@ export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
           const texture =
             resource.record.kind === 'texture'
               ? (resource.record.descriptor as GraphTextureDescriptor)
-              : undefined;
-          const accelerationStructure =
-            resource.record.kind === 'acceleration-structure'
-              ? resource.record.descriptor
               : undefined;
           const buffer =
             resource.record.kind === 'buffer'
@@ -576,32 +633,7 @@ export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
             label: resource.record.label,
             kind: resource.record.kind,
             origin: resource.record.origin,
-            descriptor: Object.freeze(
-              accelerationStructure !== undefined
-                ? {
-                    kind: 'acceleration-structure' as const,
-                    maxInstances: accelerationStructure.maxInstances,
-                  }
-                : texture === undefined
-                  ? {
-                      kind: 'buffer' as const,
-                      size: buffer?.size ?? 0,
-                    }
-                  : {
-                      kind: 'texture' as const,
-                      format: texture.format,
-                      ...(texture.domain === undefined ? {} : { domain: texture.domain }),
-                      size:
-                        typeof texture.size === 'string'
-                          ? texture.size
-                          : Object.freeze({ ...texture.size }),
-                      width: extent?.width ?? 1,
-                      height: extent?.height ?? 1,
-                      depthOrArrayLayers: extent?.depthOrArrayLayers ?? 1,
-                      mipLevelCount: texture.mipLevelCount ?? 1,
-                      sampleCount: texture.sampleCount ?? 1,
-                    },
-            ),
+            descriptor: inspectResourceDescriptor(resource),
             firstUse: resource.firstUse,
             lastUse: resource.lastUse,
             derivedUsage: resource.usage,
@@ -641,10 +673,11 @@ export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
         options.device,
         allocated.value.resources,
         allocated.value.views,
-        Object.freeze(analyzed.value.passes),
+        Object.freeze(passes),
         info,
         colorTargetDescriptors,
         analyzed.value.requiredTextureReads,
+        rasterBatches,
       ),
     );
   }
@@ -1049,7 +1082,7 @@ export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
     const color = pass.pass.descriptor.colorAttachments.find(
       (attachment) => handleData(attachment.view)?.id === viewId,
     );
-    if (color !== undefined) return [{ range, stored: color.storeOp === 'store' }];
+    if (color !== undefined) return [{ range, stored: color.storeOp !== 'discard' }];
     const resolveTarget = pass.pass.descriptor.colorAttachments.find(
       (attachment) => handleData(attachment.resolveTarget)?.id === viewId,
     );

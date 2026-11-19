@@ -2,6 +2,7 @@ import {
   buildFrameModel,
   decodeTape,
   type EncodedTape,
+  encodeTape,
   openReplay,
   type ReplayBackend,
   summarizeFrame,
@@ -149,19 +150,46 @@ export async function inspectOitTape(input: {
         [
           { resourceId: accumId, workIndex: lastAccumulate.workIndex },
           { resourceId: weightId, workIndex: lastAccumulate.workIndex },
-          { resourceId: sceneId, workIndex: lastAccumulate.workIndex },
           { resourceId: sceneId, workIndex: compositeWork.workIndex },
         ].map((request) => ({ ...request, subresource: { mipLevel: 0, arrayLayer: 0 } })),
       )
     ).unwrap();
     replayWork.assertMaximum(12);
-    const [accum, weight, sceneBefore, sceneAfter] = reads.map((result) => result.unwrap());
+    const [accum, weight, sceneAfter] = reads.map((result) => result.unwrap());
     assert(accum);
     assert(weight);
-    assert(sceneBefore);
     assert(sceneAfter);
     expect(accum.format).toBe('rgba16float');
     expect(weight.format).toBe('r16float');
+
+    // The scene resolve is deliberately deferred until the composite ends.
+    // Removing only its draw preserves native stores/resolves and observes the
+    // actual pre-composite scene, even when no intermediate resolve exists.
+    const compositeEvent = tape.events[compositeWork.eventIndex];
+    assert(compositeEvent?.kind === 'draw');
+    const withoutComposite = encodeTape({
+      ...tape,
+      events: tape.events.map((event, index) =>
+        index === compositeWork.eventIndex && event.kind === 'draw'
+          ? { ...event, vertexCount: 0 }
+          : event,
+      ),
+    }).unwrap();
+    const control = (
+      await openReplay(decodeTape(withoutComposite).unwrap(), input.backend)
+    ).unwrap();
+    let sceneBefore: typeof sceneAfter;
+    try {
+      const reads = (
+        await control.readAtWorks([{ resourceId: sceneId, workIndex: compositeWork.workIndex }])
+      ).unwrap();
+      const read = reads[0];
+      assert(read);
+      sceneBefore = read.unwrap();
+    } finally {
+      (await control.dispose()).unwrap();
+    }
+    replayWork.assertMaximum(12);
 
     const probes = Object.fromEntries(
       OIT_PROBES.map((probe) => {

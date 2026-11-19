@@ -55,7 +55,7 @@ function invalid(expected: string): never {
 
 export type DirectDrawScene = Pick<
   PersistentGpuDrivenState,
-  'plan' | 'slotAt' | 'drawSnapshotAt' | 'unbatchedSlots'
+  'plan' | 'slotAt' | 'drawSnapshotAt' | 'unbatchedSlots' | 'skin'
 > &
   Partial<Pick<PersistentGpuDrivenState, 'slots' | 'draws'>>;
 

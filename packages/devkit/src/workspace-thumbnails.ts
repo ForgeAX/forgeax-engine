@@ -1,6 +1,7 @@
 import { resolve } from 'node:path';
 import {
   type EngineWorkspaceAsset,
+  type EngineWorkspaceProjectHandle,
   type EngineWorkspaceRuntime,
   projectEngineWorkspaceAssets,
 } from '@forgeax/engine-app';
@@ -30,6 +31,10 @@ interface Job {
   readonly key: string;
   row: WorkspaceThumbnail;
   checked: boolean;
+}
+function projectTarget(project: EngineWorkspaceProjectHandle | undefined) {
+  const status = project?.status;
+  return status?.phase === 'running' ? status.target : undefined;
 }
 interface Inputs {
   readonly producer: string;
@@ -104,7 +109,7 @@ export function createWorkspaceThumbnails(
     try {
       for (;;) {
         const job = [...jobs.values()].find((candidate) => candidate.row.state === 'queued');
-        const url = project?.target?.url;
+        const url = projectTarget(project)?.url;
         if (!job?.checked || !url || !cache || signal.aborted) break;
         job.row = { guid: job.asset.guid, state: 'cooking' };
         notify();
@@ -137,7 +142,7 @@ export function createWorkspaceThumbnails(
       draining = false;
       if (
         !closed &&
-        project?.target?.url &&
+        projectTarget(project)?.url &&
         cache &&
         [...jobs.values()].find((job) => job.row.state === 'queued')?.checked
       )
@@ -163,7 +168,7 @@ export function createWorkspaceThumbnails(
     }
     const current = ++revision;
     const signal = controller.signal;
-    const url = project?.target?.url;
+    const url = projectTarget(project)?.url;
     error = undefined;
     scanning = false;
     if (!url || !cache) {

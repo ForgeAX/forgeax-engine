@@ -388,14 +388,14 @@ export function artifactDestination(path, artifactName, mergeMultiple = false) {
   return mergeMultiple ? path : join(path, artifactName);
 }
 
-async function hydrateArtifact(repository, artifactId, path) {
+async function hydrateArtifact(repository, artifactId, path, transportOptions) {
   const root = await mkdtemp(join(process.env.RUNNER_TEMP ?? tmpdir(), 'forgeax-artifact-'));
   const archive = join(root, `${artifactId}.zip`);
   try {
     await ensureArtifactDestination(path);
     const hydrated = await retryArtifact(
       async () => {
-        const bytes = await downloadArtifact(repository, artifactId, archive);
+        const bytes = await downloadArtifact(repository, artifactId, archive, transportOptions);
         execFileSync('unzip', ['-q', '-o', archive, '-d', path], { stdio: 'inherit' });
         return bytes;
       },
@@ -423,6 +423,10 @@ async function main() {
   const pattern = argument('--artifact-pattern');
   const expectedCountArgument = argument('--expected-count');
   const path = resolve(argument('--path') ?? '.');
+  const idleTimeout = argument('--idle-timeout-ms');
+  const transportOptions = {
+    idleTimeoutMs: idleTimeout === null ? undefined : positiveInteger(idleTimeout, 'idle timeout'),
+  };
   const mergeMultiple = process.argv.includes('--merge-multiple');
   const staggerSeconds = Number(argument('--stagger-seconds') ?? '0');
   if (!repository) throw new Error('GITHUB_REPOSITORY is required');
@@ -443,7 +447,7 @@ async function main() {
   }
   if (exactIdMode) {
     for (const artifactId of parseArtifactIds(artifactIds))
-      await hydrateArtifact(repository, artifactId, path);
+      await hydrateArtifact(repository, artifactId, path, transportOptions);
     return;
   }
   const runId = positiveInteger(runIdArgument, 'run ID');
@@ -454,6 +458,7 @@ async function main() {
       repository,
       String(artifact.id),
       artifactDestination(path, artifact.name, mergeMultiple),
+      transportOptions,
     );
   }
 }

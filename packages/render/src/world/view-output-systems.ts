@@ -83,7 +83,7 @@ export function viewChannels(channels: number): CompositeChannels {
 interface OutputReplacement {
   readonly view: ViewRecorderState;
   readonly old: ViewRecorderState['output'];
-  readonly texture: Texture;
+  readonly texture: Texture | undefined;
 }
 
 /**
@@ -95,6 +95,8 @@ interface OutputReplacement {
 export interface ViewComposition {
   /** Composed display views replace the primary display recording. */
   active: boolean;
+  /** The sole full-rate display borrows the surface instead of a retained picture. */
+  directDisplay?: EntityHandle | undefined;
   /** Does a CubeCamera need the shared capture recording beside composed views? */
   captureDemand: boolean;
   /** The last submitted frame recorded the shared capture view. */
@@ -171,6 +173,8 @@ type OutputHost = Pick<
   RenderSystemInternals,
   | 'device'
   | 'deviceScope'
+  | 'canvas'
+  | 'context'
   | 'getPipelineState'
   | 'getRenderTargetPhysical'
   | 'markRenderTargetSubmitted'
@@ -223,6 +227,53 @@ function ensureViewOutput(
   view.picture.texture = texture;
 }
 
+/** A direct display retains its view owner, but no longer needs a cached picture. */
+function releaseViewOutput(composition: ViewComposition, view: ViewRecorderState): void {
+  if (view.output === undefined) return;
+  composition.replaced.push({ view, old: view.output, texture: undefined });
+  view.output = undefined;
+}
+
+/** A surface can replace one complete picture; cadence, scaling and channels still need composition. */
+function directDisplayView(
+  world: World,
+  host: OutputHost,
+  views: RenderViews,
+): EntityHandle | undefined {
+  if (host.context == null) return undefined;
+  let selected: EntityHandle | undefined;
+  for (const entity of views.ordered) {
+    const facts = world.get(entity, RenderView).unwrap();
+    if (facts.capture || !facts.enabled) continue;
+    const view = recorderOf(world, entity);
+    if (view === undefined) return undefined;
+    if (view.target !== undefined) continue;
+    if (selected !== undefined) return undefined;
+    const resolved = viewCameraOf(world, entity);
+    if (
+      resolved === undefined ||
+      facts.eye !== 0 ||
+      facts.channels !== 0 ||
+      facts.updateInterval !== 1 ||
+      !coversSurface(resolved.viewport, host.canvas)
+    )
+      return undefined;
+    selected = entity;
+  }
+  return selected;
+}
+
+function coversSurface(view: ViewViewport, canvas: OutputHost['canvas']): boolean {
+  return (
+    view.x === 0 &&
+    view.y === 0 &&
+    view.width === canvas.width &&
+    view.height === canvas.height &&
+    view.renderWidth === canvas.width &&
+    view.renderHeight === canvas.height
+  );
+}
+
 /**
  * Settle every staged replacement: a submitted frame retires the previous
  * output, any other outcome restores it and retires the new one. A retired
@@ -267,6 +318,7 @@ function resolveRecordingViews(
     composition.blocked = true;
     return;
   }
+  composition.directDisplay = directDisplayView(world, host, views);
   for (const entity of views.ordered) {
     const facts = world.get(entity, RenderView).unwrap();
     if (!facts.capture && !facts.enabled) continue;
@@ -287,15 +339,18 @@ function resolveRecordingViews(
         }
         assertViewTargetShape(physical);
       }
-      ensureViewOutput(
-        host,
-        composition,
-        view,
-        resolved.extent.width,
-        resolved.extent.height,
-        base,
-      );
-      if (view.target === undefined) composition.pictures.push(view.picture);
+      if (composition.directDisplay === entity) releaseViewOutput(composition, view);
+      else {
+        ensureViewOutput(
+          host,
+          composition,
+          view,
+          resolved.extent.width,
+          resolved.extent.height,
+          base,
+        );
+        if (view.target === undefined) composition.pictures.push(view.picture);
+      }
     }
     composition.recorded.push(view);
   }
@@ -355,6 +410,7 @@ export function registerViewOutputSystems(
       composition.recorded.length = 0;
       composition.pictures.length = 0;
       composition.blocked = false;
+      composition.directDisplay = undefined;
       if (!composition.active && views.captureCount === 0) return;
       try {
         resolveRecordingViews(world, host, views, composition);
@@ -544,7 +600,8 @@ function stageRecordingViews(world: World, views: RenderViews, host: ViewRecorde
         const facts = world.get(entity, RenderView).unwrap();
         if (facts.capture) adoptCaptureRecorder(world, views, host, create, entity, facts, opts);
       }
-    if (views.primary !== undefined) stageViewFrame(world, views.primary, opts);
+    if (views.primary !== undefined)
+      stageViewFrame(world, views.primary, opts, opts.targetWrite === undefined ? true : 'capture');
     return;
   }
   const base = recordContext(host.internals).getPipelineState();

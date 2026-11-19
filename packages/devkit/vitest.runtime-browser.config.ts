@@ -4,6 +4,7 @@ export default defineConfig({
   root: fileURLToPath(new URL('.', import.meta.url)),
   test: {
     name: '@forgeax/engine-devkit/runtime-browser',
+    setupFiles: ['src/__tests__/fixtures/catalogue-store.ts'],
     reporters: process.env.FORGEAX_BROWSER_COST_REPORT === '1'
       ? ['default', fileURLToPath(new URL('../../scripts/ci/browser-cost-reporter.mjs', import.meta.url))]
       : ['default'],
@@ -13,6 +14,7 @@ export default defineConfig({
       '__tests__/game-3d-runtime-vase.test.ts',
       '__tests__/host-runtime-fault.test.ts',
       '__tests__/workspace-thumbnails.test.ts',
+      '__tests__/workspace-project-server.test.ts',
     ],
     fileParallelism: false,
     testTimeout: 240000,

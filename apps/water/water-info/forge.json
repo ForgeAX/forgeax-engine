@@ -1,8 +1,0 @@
-{
-  "id": "water-info-demo",
-  "name": "Water Info",
-  "schemaVersion": "3.0.0",
-  "roots": {},
-  "assetRoots": ["assets/water-info.pack.ts"],
-  "assetLibraries": ["@forgeax/engine/content"]
-}

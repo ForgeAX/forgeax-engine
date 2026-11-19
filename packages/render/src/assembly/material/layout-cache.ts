@@ -27,6 +27,7 @@ import {
   buildPbrViewBglEntries,
   createHdrpBindGroupLayoutDescriptor,
   isStandardPbrMaterialShader,
+  materialUsesLitSceneInputs,
   materialUsesSurfaceSceneInputs,
   projectSurfaceMaterialBindings,
 } from '../../pbr-pipeline';
@@ -72,7 +73,13 @@ export function createMaterialLayoutCache({
     materialShaderId: string,
   ): MaterialShaderBindingContract => {
     const lookup = getShader().findMaterialArtifact(materialShaderId);
-    return resolveMaterialShaderBindingContract(lookup.ok ? lookup.value.receipt : undefined);
+    if (!lookup.ok) return resolveMaterialShaderBindingContract(undefined);
+    return resolveMaterialShaderBindingContract({
+      ...lookup.value.receipt,
+      ...(lookup.value.program.forwardFog === undefined
+        ? {}
+        : { forwardFog: lookup.value.program.forwardFog }),
+    });
   };
   type StorageLayout = { readonly pipelineLayout: PipelineLayout; readonly identity: string };
   const storageLayouts = new WeakMap<
@@ -326,7 +333,8 @@ export function createMaterialLayoutCache({
             sceneInputKind === 'post-process'
               ? MATERIAL_POST_PROCESS_SCENE_LAYOUT.entries
               : sceneInputKind === 'view-depth'
-                ? bindings === 'render-standard-material-and-scene-depth'
+                ? bindings === 'render-lit-material-and-scene-depth' ||
+                  bindings === 'render-standard-material-and-scene-depth'
                   ? preparedStandardViewDepthLayoutEntries(currentState, currentBuildDevice())
                   : viewAndSceneDepthLayoutEntries()
                 : [
@@ -417,8 +425,9 @@ export function createMaterialLayoutCache({
     if (sameMaterialLayoutPublication(cached, source, paramSchema)) return cached.layout;
     // Optional engine-owned resources extend the Standard layout and its texture budget.
     const inspectOptionalMaterialResources = () => {
-      const directMultiscatteringLut = materialUsesDirectDfgLut(paramSchema);
-      const planarReflection = materialUsesPlanarReflection(paramSchema);
+      const customLit = materialUsesLitSceneInputs(getShader(), materialShaderId);
+      const directMultiscatteringLut = !customLit && materialUsesDirectDfgLut(paramSchema);
+      const planarReflection = !customLit && materialUsesPlanarReflection(paramSchema);
       const fluidSimulation =
         artifact?.receipt?.systemInputs?.water === 'water-frame/3' &&
         program?.materialBindings?.includes(derive(paramSchema ?? []).userRegionBindingEnd + 19) ===
@@ -440,6 +449,7 @@ export function createMaterialLayoutCache({
       standardPhysicalTextureFields(paramSchema).length > 0;
     const isStandardMapLayout = requiresStandardMapLayout;
     if (
+      !materialUsesLitSceneInputs(getShader(), materialShaderId) &&
       !clustered &&
       !singleLayerMedium &&
       !isStandardMapLayout &&
@@ -558,10 +568,18 @@ export function createMaterialLayoutCache({
         program?.probeBlendRecordRequired ?? false,
       );
       if (bindGroups === null) return null;
+      const litView = materialUsesLitSceneInputs(getShader(), materialShaderId)
+        ? currentBuildDevice()
+            .createBindGroupLayout({
+              label: `lit-view-depth-${materialShaderId}`,
+              entries: preparedStandardViewDepthLayoutEntries(currentState, currentBuildDevice()),
+            })
+            .unwrap()
+        : currentState.viewBindGroupLayout;
       const plRes = currentBuildDevice().createPipelineLayout({
         label: `pbr-pl-${materialShaderId}`,
         bindGroupLayouts: [
-          currentState.viewBindGroupLayout,
+          litView,
           bglRes.value,
           bindGroups.meshLayout,
           bindGroups.instancesLayout,
@@ -699,6 +717,7 @@ function preparedMaterialLayoutFacts(
       bindings === 'post-process'
         ? 'post-process'
         : bindings === 'render-material-and-scene-depth' ||
+            bindings === 'render-lit-material-and-scene-depth' ||
             bindings === 'render-standard-material-and-scene-depth'
           ? 'view-depth'
           : bindings === 'render-material-with-scene-depth'
@@ -709,6 +728,7 @@ function preparedMaterialLayoutFacts(
       bindings === 'post-process' ||
       bindings === 'render-material-with-scene-depth' ||
       bindings === 'render-material-and-scene-depth' ||
+      bindings === 'render-lit-material-and-scene-depth' ||
       bindings === 'render-standard-material-and-scene-depth',
     meshLayout: undefined,
     clusterLayout: undefined,

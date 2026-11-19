@@ -1,14 +1,54 @@
 # @forgeax/engine-devkit
 
+Ordinary project build, development and packaging publish native shader source
+templates by default. Pack remains the material program authority; selected
+programs prepare on demand through the native portable compiler. Explicit
+`package.json#forgeax.shaderPublication: "compiled"` retains the precompiled
+route; `"source"` explicitly selects the default. Unknown values fail project
+validation. Single-HTML browser and Worker process compatibility objects do not
+advertise a Node version, so portable WASM loaders use embedded browser resources
+rather than Node filesystem imports.
+
+Resource and workspace previews publish their tool-owned texture-view materials
+through the complete compiled manifest route. These programs are supplied as
+material packages, outside the Engine source-family library. Ordinary Play and
+game builds retain the project's selected publication.
+
 Custom build hosts use `readProjectFacts` from the package root and
 `loadProjectCookers` from `@forgeax/engine-devkit/plugin-build` to execute the
 selected project's declared build root. The returned session exposes cookers and
 watched source files; its owner disposes it on shutdown or failed startup.
 
+Official local Engine bindings select the public `@forgeax/engine` package for
+authored source execution. Metadata scans, plugin bootstrap, lazy Pack builds,
+interactive generators and Vite production receive that same explicit package
+root. Without a local binding, source-relative npm resolution is unchanged.
+Selected-package exports are authoritative; a missing export never falls back to
+an older game installation. Pack workers do not read DevKit bindings themselves.
+
 Detached backends reserve at most one quarter of admitted machine/container
 memory for their V8 heap, capped at 8 GiB. Their build child inherits the same
 budget, leaving room for browsers and native allocations. An explicit caller
 heap limit remains authoritative.
+
+Modeling render tools request only the Renderer capability inspection needed for
+their backend facts. A complete inspection remains available to callers that need
+all domains; backend selection does not scan unrelated shader diagnostics.
+The shader reader serializes the publication when the Renderer requests it,
+so the asynchronous render session retains only the admitted runtime facts.
+The offscreen target drops its texture and device error listener when the
+Renderer releases the surface. Target retirement also covers failed startup.
+
+Workspace page retirement revokes that browser connection's result admission
+at `pagehide`, before its socket disconnects. A refreshed document authenticates
+independently and advances the browser generation on the same project session.
+Late results from the retired realm cannot fail or re-admit its replacement.
+An in-flight preview close interrupted by that retirement releases only its old
+browser generation. Native cleanup failures and timeouts remain failures; a
+transport retirement does not certify native cleanup.
+Target dispatch retains a failed session's published document/target identity
+so its original diagnostic remains readable. This does not publish a live target
+or admit an unknown identity.
 
 Build roots can select `devkitAppOptions.renderFeatures` as data-only records
 `{ id, module: './assets/feature.ts', export: 'createContribution', config }`.
@@ -240,6 +280,8 @@ status exposes no transport credentials. Stop detaches its authenticated connect
 and releases their native sockets without waiting for a browser close handshake;
 independent runs keep their own `engine run stop` lifecycle.
 
+The optional native Codex adapter acquires `retainBackendLifetime(H)` before startup and calls `ensureDevKitView(H, { hostPack, lifetime: 'clients' })`. Its process usage is keyed by OS process identity, shared across App/business MCP users, and released on exit. Only this explicit mode stops after the last user disappears and three seconds of grace. The daemon owns the watcher and graceful disposal, including startup cancellation; no extra keeper process is created. Manual startup remains caller-managed. The workspace persists its selected project directory or chooser under H for fresh-session restoration after process shutdown. Runtime handles and credentials do not persist.
+
 The CLI waits up to 120 seconds for the backend to become ready by default.
 `package.json#forgeax.frameTimeoutMs` configures subsequent Worker frame admissions
 independently: omit for the Engine default of 2 seconds, use a positive timer-safe
@@ -298,12 +340,25 @@ authoritative, and its lifecycle disposes the prepared platform with the target.
 `callDevKitBackend(root, operation, args)` calls one active ToolApi provider over
 the authenticated local transport; absent or ambiguous capabilities fail.
 
+Normal View startup is `node /path/to/view/start.mjs [--project G]`. View owns
+installation discovery, its packaged Host Pack and temporary workspace defaults;
+it calls the public `ensureDevKitView` API directly. DevKit retains backend process
+ownership without adding built-in View startup commands. Default H is shared per
+Engine/View installation independently of cwd and G; `--new-instance` allocates
+a unique temporary H unless explicit `--root H` takes precedence. Use the returned
+H explicitly for `view status`, `view stop` and `backend stop`. Omitting G preserves
+a bound project or leaves a fresh owner ready for project selection.
+
 For example, an installed View host Pack contributes separate `view start`,
 `view status` and `view stop` commands. `view start` requires this backend and
-returns a UI URL; the user opens a browser and explicitly chooses a project or
-observation target. Its optional Shell mounts before rendering, so a renderer
-failure does not remove the interface. The embedding `devKitWorkspacePlugin`
-contract remains available for applications that already own a Host.
+returns a plain UI URL; `--project` is admitted directly by Engine's resident
+workspace owner before the result returns. The returned status can report a
+preparing project session while its headed document continues startup. Opening
+the URL attaches a Shell to that owner; the Shell never derives project
+authority from query or stored intent. Its optional presentation mounts before
+rendering, so a renderer failure does not remove the interface. The embedding
+`devKitWorkspacePlugin` contract remains available for applications that
+already own a Host.
 
 A healthy browser refresh retains the project, session, target, Vite server and
 accepted Catalog. The workspace reports `starting` while the old browser's
@@ -340,6 +395,25 @@ presentation clients decide how query results affect their selection.
 - [Migration and carrier](#migration-and-carrier)
 
 ## CLI and catalog
+
+DevKit owns the durable known-project catalogue, selected by `FORGEAX_DATA_HOME`
+or the platform data directory independently of backend/project roots. Public
+`project list`, `project import --path G` and `project browse [--path D]` return
+structured results without preparing a runtime. Recent order derives from stored
+`lastOpenedAt`; canonical aliases deduplicate during locked registration. Missing
+projects and changed identities remain visible with diagnostics. Explicit import
+accepts a changed identity. Folder browsing is shallow and includes resolvable
+directory symlinks.
+
+Corrupt catalogue bytes are preserved. Concurrent writers serialize through an
+exclusive lock and atomic publication; they never reclaim an observed lock.
+Timeout diagnostics retain lock path and readable owner PID/liveness/nonce.
+Recovery requires confirming that owner has stopped before explicitly removing
+only its abandoned lock. A replaced acquired lock remains untouched and its
+release reports failure, even if publication already completed. When catalogue
+work and release both fail, `known-project-store-cleanup-failed` retains structured
+`detail.primary` and `detail.cleanup` plus the store path. The initiating error
+also remains the aggregate's internal cause; cleanup cannot overwrite it.
 
 `ToolCatalogEntry` derives its identity and evidence fields from `ToolDescriptor`.
 The catalog requires a normalized command path and keeps schemas as serialized
@@ -1140,9 +1214,13 @@ command; failed World readiness does not suppress native disposal.
 
 ### Production Worker selection
 
-DevKit forwards `FORGEAX_EXECUTION_WORKERS` to App's composable worker policy.
-An empty object enables all supported workers; individual fields override it.
-Omitting the variable selects `auto` for Engine, Render and Kernel Workers, including ordinary projects created from either template. Use `{"engine":false}` for local execution through the same bootstrap.
+Projects declare placement through native build-root
+`devkitAppOptions.execution.workers`, using App's existing Engine/Render/Kernel
+policies. Omission preserves automatic capability selection. Explicit
+`FORGEAX_EXECUTION_WORKERS` keys override the authored defaults; an empty object
+leaves them unchanged. Packaging derives disabled-Worker pruning and local
+bootstrap publication from this same effective policy. No environment variable
+is required to package a project with its authored placement.
 
 The generated page resolves the bundler's shader manifest URL against
 `document.baseURI` before Worker transfer. Root, relative, deployment-prefix and
@@ -1151,7 +1229,7 @@ Pack indexes already use that page base; bootstrap modules use the generated
 module's `import.meta.url`. Host-only import transports stay on the page.
 
 ```bash
-FORGEAX_EXECUTION_WORKERS='{}' \
+FORGEAX_EXECUTION_WORKERS='{"engine":"auto","render":"auto","kernels":"auto"}' \
   forgeax project build --root ./games/my-game --json
 
 FORGEAX_EXECUTION_WORKERS='{"kernels":false}' \
@@ -1343,14 +1421,15 @@ interfaces, remove variants or require knowledge of the player's device.
 
 #### Compressed delivery documents
 
-Browser build `dist/` and the Web ZIP store the Catalog, shader manifest, pipeline library and every Pack document
+Browser build `dist/`, Web ZIP and single HTML store the Catalog, shader manifest, pipeline library and every Pack document
 as one zstd frame under its unchanged file name and URL, so any static host serves them
 small without content negotiation. The runtime recognizes the zstd magic bytes where it
 reads these documents from a platform `Response` (Catalog and Pack reads, the
 `ShaderRegistry` manifest fetch, the generated host's pipeline library) and decodes
 them before parsing; plain JSON reads unchanged, and a custom `PackageFetcher` keeps
 owning its transport encoding. `forgeax-dist.json` records the stored bytes and hashes.
-`--compress=false` restores plain JSON in the Player; `single-html` always uses plain JSON.
+`--compress=false` restores plain JSON in either Player format. Single HTML retains the
+native zstd document bytes inside its lazy resource carrier.
 The shared Codec document reader also serves offline asset inspection, so `asset list`,
 `lookup` and `verify` retain diagnostic evidence on compressed builds. A build failure
 leaves derived output unverified and must be repaired through the producer and rebuilt.
@@ -1420,7 +1499,13 @@ native compiler is needed for this Browser capture route.
 The command starts the source-development host on an ephemeral loopback port, creates an Xvfb display
 for a headed capture when `$DISPLAY` is absent on Linux, launches a real Chromium browser, waits for an engine frame signal
 and non-flat **canvas** pixels, then takes a Playwright **page screenshot**.
-Explicit `--headless true` bypasses Xvfb/X11 entirely. See Linux unattended validation for Ubuntu/TencentOS image dependencies, writable XDG state and non-root sandbox requirements. A page screenshot
+Explicit `--headless true` bypasses Xvfb/X11 entirely. Local capture, play, and
+live sessions launched by Linux root use an unprivileged Chromium child. The
+launcher uses the invoking account from `sudo`, the Playwright image's
+`pwuser`, or the system `nobody` account, in that order, with `setpriv` and a
+temporary browser profile. With no display, an unspecified private browser
+mode defaults to headless. An existing borrowed page needs no local
+display or browser launch. See Linux unattended validation for Ubuntu/TencentOS image dependencies, writable XDG state and non-root sandbox requirements. A page screenshot
 composites the WebGPU canvas with normal DOM and open ShadowRoot UI;
 `canvas.toDataURL()` cannot provide that proof. `--wait-ms` is an additional settle interval after the
 first non-flat canvas frame, not a guess for CPU startup time.
@@ -2725,6 +2810,12 @@ sequenceDiagram
   H-->>N: result service
 ```
 
+Progressive project admission returns the backend-owned preparing session before
+source and Catalog work completes. The request signal governs admission; after
+that return, session close or provider disposal cancels preparation. Successful
+ToolRun settlement ends its request signal without retiring the admitted project.
+Individual capability waits retain their own operation signals.
+
 The provider never launches Chromium, Electron, CDP, Puppeteer, or a second
 renderer. App/World objects and scene instances stay in the browser realm;
 only project metadata, target identity, operation results, and the canvas PNG
@@ -2749,18 +2840,27 @@ lighting. Authored material slots retain the environment backdrop. Explicit
 transparent output takes precedence. This presentation belongs to the resource
 preview owner and does not change Scene or game rendering.
 
-Editor Play starts a distinct game session from the current project root on the
-same BackendHost. Its authenticated connection receives a game projection
+Editor Play allocates a distinct game page on the existing project resource
+server and BackendHost. One project server owns the Pack publication, source
+revision, cookers, program preparation and HTTP resources for both pages. Its
+authenticated connection receives a game projection
 without the parent workspace frontend root. The original editing World remains
-intact. Stop releases the game session; a new Play reads the current project
-files. Independent CLI runs retain their separate fixed-input snapshots.
+intact. Stop releases only the game page admission, socket, projection and runtime
+resources. It does not close or recook the project server. Each Play validates
+current project/Engine inputs and performs strict source admission; changed code
+requires reopening the project. Game programs prepare on first Play and are
+reused for the accepted revision. Independent CLI runs retain their separate
+fixed-input snapshots.
+
 The workspace retains the presented Play owner until its cleanup acknowledgment
 succeeds. A failed close retains the same identity, and public stop shares the
 existing mutation queue with start and project replacement. A real disconnect
 rejects pending close waits even after an earlier target failure; the retired
 session reports unconfirmed cleanup instead of completed native cleanup.
 The initiating request's AbortSignal cancels preparation before a Play target exists.
-Once published, a starting Play retains its server and presentation through the
+Before browser readiness, Play publishes its page surface without a World ID.
+The authenticated handshake supplies the real World; operations wait for it.
+Once published, a starting Play retains its page admission and presentation through the
 initial readiness wait before Stop requests native cleanup. Missing readiness is
 not proof that the browser has no resources: it may still be importing modules.
 The generated document imports its entry independently of animation callbacks,
@@ -2770,7 +2870,7 @@ Play forwards the session's browser generation; a previously connected game can
 retire after document loss without waiting for a replacement handshake.
 Parent refresh retires its still-starting Play without waiting for the discarded
 child document's first handshake.
-Workspace and Play servers materialize an OS-assigned loopback port when no
+The shared project server materializes an OS-assigned loopback port when no
 port is specified (or `0` is requested), then bind it strictly. Vite's default
 port fallback must not silently reuse another target's address.
 Default readiness waits up
@@ -3153,3 +3253,33 @@ The same native texture resource surface opens a generator or its ordinary
 texture output; it never creates a separate View renderer. The generator exposes
 output selection, existing mip/layer/channel controls and preparation status.
 Only explicit capture/thumbnail operations may request bounded readback.
+
+## Compact offline delivery
+
+Production builds keep automatic/enabled execution Worker entries. An explicit
+`workers.<kind>: false` removes only that App-owned Worker URL and its publication;
+a later override fails explicitly. Consumer-owned Worker URLs are unchanged.
+Native local Engine bootstrap uses its already imported module without publishing
+an unused remote bootstrap copy. Ordinary automatic placement is unchanged.
+
+Single-HTML bundling emits the main entry and all discovered nested Worker entries
+in one module graph, preserving compiler-owned shared chunks. Cross-namespace
+static closure preparation also uses a shared multi-entry build. Static import
+and re-export specifiers carry build-owned text relocations; each realm creates
+and caches its native Blob module URLs. Bootstrap JavaScript URLs are also module
+entries, so dynamic startup uses the same canonical dependencies as static imports;
+plain fetch still returns the exact original resource bytes. Native ESM owns evaluation, live bindings
+and realm-local state. Static source cycles are composed by the existing bundler,
+not rewritten to application-level promises. Logical `import.meta.url` remains a
+resource URL for relative assets. No custom module execution IR is introduced.
+
+Single-HTML delivery automatically shares compression history across JavaScript
+resources when it saves enough bytes. A bounded 1-64 MiB decoded closure uses
+Zstd 19 with the small, licensed fzstd decoder embedded in the HTML; smaller or
+non-beneficial closures retain independent gzip/identity storage. A shared frame
+is decoded once, and every fetch/Worker transfer gets independent bytes. This
+retains up to 64 MiB of decoded code transport until page disposal; it changes
+neither module identity nor generated asset content. Large WASM payloads use the
+same decoder only when Zstd beats their existing storage. Compressed delivery
+documents, asset entries and bounded shader groups also use level 19; shader
+groups retain their existing 1 MiB limit. No extra CLI option is required.

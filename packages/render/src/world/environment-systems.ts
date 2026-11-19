@@ -27,9 +27,10 @@ import {
 /*
  * Environment lifecycle of a view: the staged environment generation, the
  * atmosphere storage publications, and the volumetric fog candidate. Recording
- * only stages them. They publish here, in RenderCommit, for the view's
- * accepted scene submission of this frame. A rejected attempt of this frame
- * drops them in RenderCleanup; a view that did not record keeps what it staged.
+ * only stages them. Submitted atmosphere tables commit even while scene
+ * pipelines prepare: queue order makes their contents reusable by the next
+ * submission. Environment and fog history still require encoded scene work.
+ * A rejected attempt drops them in RenderCleanup; a view that did not record keeps what it staged.
  */
 
 /**
@@ -55,7 +56,7 @@ export function registerEnvironmentSystems(world: World): void {
     RenderAtmosphereCommitOrder,
     ({ frameState }) => settleAtmospherePublish(frameState, true),
     RenderEnvironmentCommitOrder,
-    'scene',
+    'accepted',
   );
   registerViewCommit(
     world,

@@ -15,7 +15,7 @@ import {
 export interface FallbackProbeState {
   readonly fact: ReflectionProbeFact;
   readonly activeFact?: ReflectionProbeFact | undefined;
-  readonly active: unknown;
+  readonly pmrem: { readonly active: unknown };
   readonly filter: { readonly activeGeneration: number };
 }
 
@@ -140,7 +140,8 @@ export function stageFallbackEvidence(
   const resource = probeKey === undefined ? undefined : accepted.get(probeKey);
   const source = resolveReflectionFallbackSource(
     selection,
-    resource?.active !== undefined && sameCenter(resource.activeFact?.center, resource.fact.center),
+    resource?.pmrem.active !== undefined &&
+      sameCenter(resource.activeFact?.center, resource.fact.center),
     frame.skylight !== undefined,
   );
   if (

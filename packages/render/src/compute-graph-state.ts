@@ -34,6 +34,7 @@ export function createComputeStatePreparation(
   label: string,
   entries: readonly unknown[],
   entryPoint: string,
+  constants?: Readonly<Record<string, number>>,
 ) {
   let current:
     | {
@@ -59,6 +60,7 @@ export function createComputeStatePreparation(
         label,
         entries,
         entryPoint,
+        constants,
       );
       const flight = {
         device: runtime.device,
@@ -144,13 +146,14 @@ export function createComputeState(
   label: string,
   entries: readonly unknown[],
   entryPoint: string,
+  constants?: Readonly<Record<string, number>>,
 ): ComputeState {
   const factory = (frame as RenderPipelineFrame).runtime?.shaderModuleFactory;
   if (factory === undefined) throw computePipelineError(`${label} shader module`);
   const module = factory.createShaderModule(shaderSourceDescriptor(source, label));
   if (!module.ok) throw module.error;
   const device = (frame as RenderPipelineFrame).runtime.device;
-  return createComputeStateForModule(device, module.value, label, entries, entryPoint);
+  return createComputeStateForModule(device, module.value, label, entries, entryPoint, constants);
 }
 
 /** Build against the exact module witness already admitted by its factory. */
@@ -160,8 +163,9 @@ export function createComputeStateForModule(
   label: string,
   entries: readonly unknown[],
   entryPoint: string,
+  constants?: Readonly<Record<string, number>>,
 ): ComputeState {
-  const prepared = computeStateDescriptor(device, module, label, entries, entryPoint);
+  const prepared = computeStateDescriptor(device, module, label, entries, entryPoint, constants);
   const pipeline = device.createComputePipeline(prepared.descriptor);
   if (!pipeline.ok) throw pipeline.error;
   return { label, pipeline: pipeline.value, layout: prepared.layout, bindGroups: new WeakMap() };
@@ -173,6 +177,7 @@ function computeStateDescriptor(
   label: string,
   entries: readonly unknown[],
   entryPoint: string,
+  constants?: Readonly<Record<string, number>>,
 ): { readonly layout: BindGroupLayout; readonly descriptor: ComputePipelineDescriptor } {
   const layout = device.createBindGroupLayout({
     label: `${label}.bind-group-layout`,
@@ -186,7 +191,11 @@ function computeStateDescriptor(
   if (!pipelineLayout.ok) throw pipelineLayout.error;
   return {
     layout: layout.value,
-    descriptor: { label, layout: pipelineLayout.value, compute: { module, entryPoint } },
+    descriptor: {
+      label,
+      layout: pipelineLayout.value,
+      compute: { module, entryPoint, ...(constants === undefined ? {} : { constants }) },
+    },
   };
 }
 

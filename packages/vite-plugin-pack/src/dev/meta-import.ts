@@ -59,7 +59,7 @@ interface MetaImportContext {
 
 const DEV_PACK_PREFIX = '/__forgeax-ddc/';
 
-function assertImportOpen(context: MetaImportContext, metaPath: string): void {
+function assertImportOpen(context: Pick<MetaImportContext, 'signal'>, metaPath: string): void {
   if (!context.signal?.aborted) return;
   throw new ImportError({
     code: 'import-internal-error',
@@ -377,15 +377,20 @@ function adoptPublishedRows(
   }
 }
 
-/** Adapt the cached/imported product to the Cook receipts required by live publication. */
-async function importMetaProducts(
+export type PreparedMetaImport =
+  | { readonly skipped: true }
+  | { readonly product: TerminalImportProduct; readonly cookProducts: readonly CookProduct[] };
+
+/** Prepare the detached source product before reading or mutating Catalog state. */
+export async function prepareMetaImport(
   metaPath: string,
   meta: RunImportMeta,
-  context: MetaImportContext,
-): Promise<
-  | { readonly product: TerminalImportProduct; readonly cookProducts: readonly CookProduct[] }
-  | undefined
-> {
+  context: Pick<
+    MetaImportContext,
+    'importerRegistry' | 'fsForImport' | 'cookers' | 'sourcePackageDdc' | 'signal'
+  >,
+): Promise<PreparedMetaImport> {
+  assertImportOpen(context, metaPath);
   const runResult = await runSourcePackageImport({
     meta,
     registry: context.importerRegistry,
@@ -395,7 +400,7 @@ async function importMetaProducts(
   });
   assertImportOpen(context, metaPath);
   if (!runResult.ok) throw runResult.error;
-  if ('skipped' in runResult.value) return undefined;
+  if ('skipped' in runResult.value) return { skipped: true };
   const { product } = runResult.value;
   const cookProducts =
     runResult.value.cookProducts ?? (await finalizeImportProducts(product, product.sourceRevision));
@@ -406,14 +411,15 @@ async function importMetaProducts(
 export async function startMetaImport(
   metaPath: string,
   context: MetaImportContext,
+  prepared?: PreparedMetaImport,
 ): Promise<PackIndexEntry[]> {
   assertImportOpen(context, metaPath);
   const previousCatalog = [...context.getCatalogProjection().entries];
   const catalog = [...previousCatalog];
   const previousImportedGuids = new Set(context.importedGuids);
   const meta = requireImportDeclaration(context, metaPath);
-  const imported = await importMetaProducts(metaPath, meta, context);
-  if (imported === undefined) return [];
+  const imported = prepared ?? (await prepareMetaImport(metaPath, meta, context));
+  if ('skipped' in imported) return [];
   const { product, cookProducts } = imported;
 
   const route = importRoute(meta, context, previousCatalog, previousImportedGuids);

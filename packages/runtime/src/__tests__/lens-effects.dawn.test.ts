@@ -1,4 +1,5 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
+import { DEFAULT_STANDARD_PROFILE } from '@forgeax/engine-render';
 import { attachRecorder } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
@@ -34,7 +35,11 @@ it('verifies lens effect pixels, live/replay equality and missing-draw falsifier
   const host = renderValue(
     await constructRuntimeRendererHost(
       canvas,
-      { rhi: recorder.backend.rhi },
+      {
+        rhi: recorder.backend.rhi,
+        // The fixture verifies the V1 FilmShader law and standalone pass bindings.
+        standardProfile: { ...DEFAULT_STANDARD_PROFILE, outputContract: 'standard-output-v1' },
+      },
       { shaderManifestUrl: manifestUrl },
     ),
   );

@@ -507,9 +507,22 @@ async function verifySpotLightMutations(
   f.scene.add(spot, spot.target);
   let spotBaseline: THREE.ThreeFrameCapture | undefined;
   let spotPixels: Uint8Array | undefined;
-  for (const state of ['baseline', 'power', 'range', 'target', 'hard-edge', 'restore'] as const) {
+  let reducedPower = 0;
+  for (const state of [
+    'baseline',
+    'power',
+    'decay',
+    'range',
+    'target',
+    'hard-edge',
+    'restore',
+  ] as const) {
     if (state === 'power') spot.power = 9 * Math.PI;
-    if (state === 'range') spot.distance = 1;
+    if (state === 'decay') spot.decay = 0;
+    if (state === 'range') {
+      spot.decay = 2;
+      spot.distance = 1;
+    }
     if (state === 'target') {
       spot.distance = 0;
       spot.target.position.x = 5;
@@ -530,10 +543,13 @@ async function verifySpotLightMutations(
       expect(actual[CENTER + 1]).toBeGreaterThan(100);
       spotBaseline = frame;
       spotPixels = actual;
+    } else if (state === 'decay') {
+      expect(actual[CENTER + 1]).toBeGreaterThan(reducedPower + 20);
     } else if (state === 'range' || state === 'target') {
       expect(actual[CENTER + 1]).toBeLessThan(3);
     } else if (state === 'power') {
-      expect(actual[CENTER + 1]).toBeLessThan((spotPixels?.[CENTER + 1] ?? 0) - 20);
+      reducedPower = actual[CENTER + 1] ?? 0;
+      expect(reducedPower).toBeLessThan((spotPixels?.[CENTER + 1] ?? 0) - 20);
     } else if (state === 'hard-edge') {
       expect(equalBytes(actual, spotPixels)).toBe(false);
     } else {

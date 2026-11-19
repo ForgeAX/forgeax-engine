@@ -33,7 +33,12 @@ import { withInertTemporal } from './temporal-owner-fixture';
 
 const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 
-function camera(entityKey: number, target?: RenderTarget, updateInterval = 1) {
+function camera(
+  entityKey: number,
+  target?: RenderTarget,
+  updateInterval = 1,
+  view?: Partial<NonNullable<CameraSnapshot['view']>>,
+) {
   return {
     entityKey,
     historyVersion: 1,
@@ -48,6 +53,7 @@ function camera(entityKey: number, target?: RenderTarget, updateInterval = 1) {
       maxRenderShortSide: 0,
       updateInterval,
       enabled: true,
+      ...view,
     },
   } as unknown as CameraSnapshot;
 }
@@ -60,6 +66,8 @@ interface FixtureOptions {
   readonly recorders?: boolean;
   readonly probePlacement?: boolean;
   readonly cameraCount?: number;
+  readonly directSurface?: boolean;
+  readonly view?: Partial<NonNullable<CameraSnapshot['view']>>;
 }
 
 function fixture(options: FixtureOptions = {}) {
@@ -81,6 +89,13 @@ function fixture(options: FixtureOptions = {}) {
     device,
     deviceScope: { generation: 1 },
     canvas: { width: 64, height: 32 },
+    context: options.directSurface
+      ? {
+          getCurrentTexture: vi.fn(() => {
+            throw Error('Prepare must not acquire the surface');
+          }),
+        }
+      : undefined,
     viewEntity: undefined as EntityHandle | undefined,
     standardProfile: options.probePlacement === true ? { probePlacement: {} } : undefined,
     getPipelineState: () => ({ format: 'rgba8unorm', colorAttachmentFormat: 'rgba8unorm' }),
@@ -144,7 +159,7 @@ function fixture(options: FixtureOptions = {}) {
   const begin = (width = 64, opts: { temporalReset?: boolean } = {}) => {
     host.canvas.width = width;
     const cameras = Array.from({ length: options.cameraCount ?? 1 }, (_, index) =>
-      camera(index + 1, options.target, options.updateInterval),
+      camera(index + 1, options.target, options.updateInterval, options.view),
     );
     source.stage(cameras, [], sourceWorld, { ...opts }, undefined, undefined);
     beginRenderFrame(world, ++frame);
@@ -192,6 +207,63 @@ function fixture(options: FixtureOptions = {}) {
 const settled = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 describe('view output systems', () => {
+  it('routes one full-rate full-size display to the surface without an output allocation', () => {
+    const { plan, recorders, created, host, begin } = fixture({ directSurface: true });
+    begin();
+    const view = recorders.at(0);
+    expect(view).toBeDefined();
+    expect(plan).toMatchObject({ active: true, directDisplay: view?.entity, blocked: false });
+    expect(plan.recorded).toEqual([view]);
+    expect(plan.pictures).toEqual([]);
+    expect(created).toEqual([]);
+    expect(view?.output).toBeUndefined();
+    expect(host.context?.getCurrentTexture).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['partial', { view: { viewport: new Float32Array([0, 0, 0.5, 1]) } }],
+    ['scaled', { view: { resolutionScale: 0.5 } }],
+    ['held', { updateInterval: 2 }],
+    ['multiple', { cameraCount: 2 }],
+    ['target', { target: {} as RenderTarget }],
+  ] satisfies readonly (readonly [
+    string,
+    FixtureOptions,
+  ])[])('retains a texture output for a %s view', (_name, options) => {
+    const { plan, created, begin } = fixture({ ...options, directSurface: true });
+    begin();
+    expect(plan).not.toHaveProperty('directDisplay', expect.anything());
+    expect(created.length).toBeGreaterThan(0);
+  });
+
+  it('rolls back a rejected texture-to-surface transition and retires only after acceptance', async () => {
+    const options = { directSurface: true, cameraCount: 2 };
+    const { plan, recorders, destroyed, begin, submit, end } = fixture(options);
+    begin();
+    const view = recorders.at(0);
+    if (view === undefined) throw Error('Missing first view recorder');
+    const output = view.output;
+    expect(output).toBeDefined();
+    submit(true);
+    end();
+    options.cameraCount = 1;
+    begin();
+    expect(plan).toMatchObject({ active: true, directDisplay: view.entity });
+    expect(view.output).toBeUndefined();
+    submit(false);
+    end();
+    await settled();
+    expect(view.output).toBe(output);
+    expect(destroyed).not.toContain(output?.texture);
+    begin();
+    expect(view.output).toBeUndefined();
+    submit(true);
+    end();
+    await settled();
+    expect(view.output).toBeUndefined();
+    expect(destroyed).toContain(output?.texture);
+  });
+
   it('registers outputs in Prepare after the view frame and the settlement in Commit', () => {
     const { world } = fixture();
     const schedule = (name: string) =>

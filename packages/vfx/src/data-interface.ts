@@ -1,4 +1,5 @@
 import { err, ok, type Result } from '@forgeax/engine-types';
+import { isVfxStructuredInputData } from './structured-input.js';
 
 export type VfxDataInterfaceKind = keyof VfxDataInterfaceBindingTypeByKind;
 
@@ -18,6 +19,7 @@ type VfxDataInterfaceBindingTypeByKind = {
   readonly 'water-config': 'uniform';
   readonly 'scene-depth': 'sampled-depth';
   readonly noise: 'sampled-float';
+  readonly 'structured-input': 'read-only-storage';
   readonly 'scene-sdf': 'read-only-storage';
   readonly 'force-fields': 'read-only-storage';
   /** One provider and one source descriptor, bound as grid + solver-normal views. */
@@ -75,7 +77,8 @@ export interface VfxDataInterfaceResource {
       | 'texture-view'
       | 'sampler'
       | 'feature-texture-reference'
-      | 'uniform-data';
+      | 'uniform-data'
+      | 'storage-data';
     readonly value: unknown;
     /** Required when a provider supplies an external buffer to a compute bind group. */
     readonly size?: number;
@@ -179,6 +182,8 @@ function expectedResourceKind(kind: VfxDataInterfaceKind): VfxDataInterfaceResou
   switch (kind) {
     case 'water-config':
       return 'uniform-data';
+    case 'structured-input':
+      return 'storage-data';
     case 'water-displacement':
     case 'water-hull':
       return 'feature-texture-reference';
@@ -362,6 +367,19 @@ export function resolveVfxDataInterfaces(
         ),
       );
     }
+    if (
+      requirement.kind === 'structured-input' &&
+      !isVfxStructuredInputData(resource.resource.value)
+    )
+      return err(
+        failure(
+          'vfx-data-interface-wrong-type',
+          requirement,
+          '16-aligned immutable storage input bytes within the 64 KiB bound',
+          'publish a detached bounded Uint8Array snapshot',
+          { providerId: provider.id },
+        ),
+      );
     const validateWaterPair = (
       requirement: VfxDataInterfaceRequirement,
       resource: VfxDataInterfaceResource,

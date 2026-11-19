@@ -185,8 +185,9 @@ Use `VolumetricCloudLayer` with a loaded `cloud-material` and optional
 the producers and supplies the compiler and renderer modules. A program model's
 WGSL file stays beside its Pack and participates in recooking after edits.
 `project check` dry-cooks authored JSON cloud rows; ScriptablePacks retain their
-normal build validation. Read the [cloud authoring contract](../../packages/render/README.md#volumetric-cloud-authoring-and-transport)
-for uniform samples, program parameters, instances and runtime bounds.
+normal build validation. Start with the [copyable cloud Pack and WGSL](../forgeax-engine-render-pipeline/SKILL.md#volumetric-clouds).
+The [cloud authoring contract](../../packages/render/README.md#volumetric-cloud-authoring-and-transport)
+covers uniform samples, program parameters, instances and runtime bounds.
 
 ## Lighting asset route
 

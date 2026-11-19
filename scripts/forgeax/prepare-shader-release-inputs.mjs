@@ -10,11 +10,7 @@ import {
   packagedProfilePublication,
 } from '../../packages/vite-plugin-shader/dist/packaged-profiles.mjs';
 import { engineShaderSourceDigest } from '../../packages/vite-plugin-shader/dist/source-digest.mjs';
-import {
-  runnerResources,
-  shaderCompileWorkers,
-  shaderProducerHeapSize,
-} from '../lib/runner-resources.mjs';
+import { runnerResources, shaderProducerHeapSize } from '../lib/runner-resources.mjs';
 import { admitShaderSourceBudget } from '../lib/shader-source-budget.mjs';
 import { reusableSharedShader, sharedShaderInputFingerprint } from '../lib/shared-build-cache.mjs';
 
@@ -49,7 +45,7 @@ if (sharedIndex >= 0 && !process.argv[sharedIndex + 1]) {
 }
 // Reading and encoding both complete publications also needs the producer heap.
 // A child compiler's explicit budget does not change this parent's V8 limit.
-admitShaderSourceBudget();
+admitShaderSourceBudget({ workerBudget: null });
 const shaderManifests = new Map();
 if (process.argv.includes('--build')) {
   for (const profile of profiles) {
@@ -116,16 +112,6 @@ if (process.argv.includes('--build')) {
       ],
       {
         cwd: root,
-        env: {
-          ...process.env,
-          FORGEAX_ENGINE_SHADER_SOURCE_BUILD: '1',
-          FORGEAX_SHADER_COMPILE_WORKERS: String(
-            Math.min(
-              4,
-              shaderCompileWorkers(resources, process.env.FORGEAX_SHADER_COMPILE_WORKERS ?? '2'),
-            ),
-          ),
-        },
         stdio: 'inherit',
       },
     );
@@ -133,6 +119,32 @@ if (process.argv.includes('--build')) {
     if (result.signal)
       throw new Error(`Shader profile ${profile} compiler exited by ${result.signal}`);
     if (result.status !== 0) process.exit(result.status ?? 1);
+  }
+}
+// Packaging is also a provenance boundary. Without --build, raw publication
+// bytes cannot acquire today's source digest merely by being in --input.
+if (!process.argv.includes('--build')) {
+  for (const profile of profiles) {
+    const inputFingerprint = sharedShaderInputFingerprint(root, {
+      pointShadows: !profileFlags[profile].includes('--no-point-shadows'),
+      hdrpSsao: !profileFlags[profile].includes('--no-hdrp-ssao'),
+    });
+    let reason;
+    const manifest = reusableSharedShader(
+      root,
+      resolve(inputRoot, profile, 'manifest.json'),
+      inputFingerprint,
+      (message) => {
+        reason = message;
+      },
+    );
+    if (manifest === null) {
+      throw new Error(
+        `shader-profile-input-unverified: ${profile}: ${reason}. ` +
+          `Regenerate with node scripts/forgeax/prepare-shader-release-inputs.mjs --build --profile ${profile} --input ${JSON.stringify(inputRoot)} --output ${JSON.stringify(outputRoot)}`,
+      );
+    }
+    shaderManifests.set(profile, manifest);
   }
 }
 const importPattern = /^\s*#define_import_path\s+([A-Za-z0-9_.:-]+)/m;

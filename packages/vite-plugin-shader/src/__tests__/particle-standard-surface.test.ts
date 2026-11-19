@@ -21,7 +21,7 @@ it('shares Standard surface evaluation without importing scene mesh or instance 
 @fragment fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
   var input: VsOut;
   input.clip = position;
-  input.worldNormal = vec3<f32>(0.0, 1.0, 0.0);
+  input.worldNormal = vec4<f32>(0.0, 1.0, 0.0, 0.0);
   input.worldTangent = vec4<f32>(1.0, 0.0, 0.0, 1.0);
   let factors = StandardSurfaceFactors(vec4<f32>(1.0), 0.0, 0.5, vec3<f32>(0.0), 1.0, 0.0, 0.1, true, true);
   return evaluateStandardSurface(input, factors).color;
@@ -43,7 +43,7 @@ it('shares Standard surface evaluation without importing scene mesh or instance 
       },
     },
   );
-  if (!compiled.ok) throw new Error(compiled.error.message);
+  if (!compiled.ok) throw compiled.error;
   expect(compiled.value.wgsl).not.toMatch(/@group\(2\)|@group\(3\)/);
   expect(compiled.value.wgsl).toContain('evaluateStandardSurface');
   for (const name of ['mesh', 'mesh-inputs']) {

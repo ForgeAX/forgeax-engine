@@ -5,7 +5,7 @@ import { EnvironmentGate } from './environment-gate';
 import type { WorldLightingPart } from './world-environment';
 
 export interface EnvironmentCameraReader {
-  readCameras(world: World, extract: () => CameraSnapshot[]): CameraSnapshot[];
+  readCameras(world: World, extract: () => CameraSnapshot[], key?: string): CameraSnapshot[];
 }
 
 export interface EnvironmentLightingReader extends EnvironmentCameraReader {
@@ -27,9 +27,9 @@ export class EnvironmentFrameGate
     super(true);
   }
 
-  readCameras(world: World, extract: () => CameraSnapshot[]): CameraSnapshot[] {
+  readCameras(world: World, extract: () => CameraSnapshot[], key = 'cameras'): CameraSnapshot[] {
     this.cameras.assetsChanged = this.assetsChanged;
-    return this.cameras.read(world, 'cameras', () => ({ value: extract(), timeDependent: false }));
+    return this.cameras.read(world, key, () => ({ value: extract(), timeDependent: false }));
   }
 
   readLighting(

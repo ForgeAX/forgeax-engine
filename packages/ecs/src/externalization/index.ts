@@ -3,26 +3,28 @@
 // Pure ECS kernel: projection, portable validation, and entity remap.
 // No network, peer, wire, profile, or codec policy.
 
-import type { Component, ComponentSchema } from '../component';
-import { componentSchema } from '../component';
-import { fillComponentDefaults } from '../component-default-fallback';
-import { componentDefinition } from '../component-schema';
+import {
+  type Component,
+  type ComponentSchema,
+  componentDefinition,
+  type FieldPlan,
+} from '../component';
+import { fillComponentDefaults } from '../component-input';
 
 export type EntityFieldKind =
   | { readonly kind: 'entity'; readonly isArray: false }
   | { readonly kind: 'entity'; readonly isArray: true };
 
-export interface EntityRemapOptions {
-  readonly missing?: 'identity' | 'error';
+const SCALAR_ENTITY_FIELD = Object.freeze({ kind: 'entity', isArray: false } as const);
+const ARRAY_ENTITY_FIELD = Object.freeze({ kind: 'entity', isArray: true } as const);
+
+function entityFieldKind(plan: FieldPlan | undefined): EntityFieldKind | null {
+  if (plan?.kind === 'entity') return SCALAR_ENTITY_FIELD;
+  return plan?.array?.elementType === 'entity' ? ARRAY_ENTITY_FIELD : null;
 }
 
 export function classifyEntityField(token: Component, fieldName: string): EntityFieldKind | null {
-  const field = componentDefinition(token).fields[fieldName];
-  if (field === undefined) return null;
-  if (field.arrayMeta !== undefined) {
-    return field.arrayMeta.elementType === 'entity' ? { kind: 'entity', isArray: true } : null;
-  }
-  return componentSchema(token)[fieldName] === 'entity' ? { kind: 'entity', isArray: false } : null;
+  return entityFieldKind(componentDefinition(token).plan.fields[fieldName]);
 }
 
 export function remapEntityFieldValue(
@@ -35,20 +37,6 @@ export function remapEntityFieldValue(
   return typeof value === 'number' ? remapFn(value) : value;
 }
 
-export function createEntityRemap(
-  mapping: Uint32Array | readonly number[],
-  options: EntityRemapOptions = {},
-): (entity: number) => number {
-  return (entity) => {
-    const mapped = entity >= 0 && entity < mapping.length ? mapping[entity] : undefined;
-    if (mapped !== undefined) return mapped;
-    if (options.missing === 'error') {
-      throw new Error(`Entity mapping is missing source entity ${entity}.`);
-    }
-    return entity;
-  };
-}
-
 function deepCopyValue(value: unknown): unknown {
   if (Array.isArray(value)) return [...value];
   if (ArrayBuffer.isView(value) && !(value instanceof DataView)) {
@@ -59,7 +47,7 @@ function deepCopyValue(value: unknown): unknown {
   return value;
 }
 
-function projectComponentDataInMode<S extends ComponentSchema>(
+export function projectComponentData<S extends ComponentSchema>(
   token: Component<string, S>,
   raw: Partial<Record<string, unknown>> | undefined,
   entityRemap?: (entity: number) => number,
@@ -69,12 +57,12 @@ function projectComponentDataInMode<S extends ComponentSchema>(
   const fields = definition.fields;
   const rawObj = raw as Record<string, unknown> | undefined;
   const filtered: Record<string, unknown> = {};
-  for (const fieldName of Object.keys(componentSchema(token))) {
-    const reflection = fields?.[fieldName];
+  for (const fieldName of definition.fieldNames) {
+    const reflection = fields[fieldName];
     if (reflection?.transient === true || rawObj === undefined || !(fieldName in rawObj)) continue;
     const value = rawObj[fieldName];
     if (value === undefined) continue;
-    const kind = classifyEntityField(token, fieldName);
+    const kind = entityFieldKind(definition.plan.fields[fieldName]);
     if (kind?.isArray && (Array.isArray(value) || ArrayBuffer.isView(value))) {
       filtered[fieldName] = Array.from(value as ArrayLike<number>, (entity) =>
         entityRemap === undefined ? entity : entityRemap(entity),
@@ -86,48 +74,10 @@ function projectComponentDataInMode<S extends ComponentSchema>(
     }
   }
   const result = fillComponentDefaults(token, filtered as Partial<Record<string, unknown>>);
-  for (const fieldName of Object.keys(componentSchema(token))) {
-    if (fields?.[fieldName]?.transient === true) delete result[fieldName];
+  for (const fieldName of definition.fieldNames) {
+    if (fields[fieldName]?.transient === true) delete result[fieldName];
   }
   return result;
-}
-
-export function projectComponentData<S extends ComponentSchema>(
-  token: Component<string, S>,
-  raw: Partial<Record<string, unknown>> | undefined,
-  entityRemap?: (entity: number) => number,
-): Record<string, unknown> {
-  return projectComponentDataInMode(token, raw, entityRemap);
-}
-
-export function isComponentPortable(token: Component): boolean {
-  const definition = componentDefinition(token);
-  if (definition.policy.transient) return false;
-  const fields = definition.fields;
-  if (fields === undefined) return true;
-  return Object.keys(componentSchema(token)).some((name) => fields[name]?.transient !== true);
-}
-
-export function isComponentFullyTransient(token: Component): boolean {
-  return !isComponentPortable(token);
-}
-
-export function isFieldPortable(fieldType: string): boolean {
-  if (
-    fieldType.startsWith('unique<') ||
-    fieldType.startsWith('shared<') ||
-    fieldType.startsWith('asset<')
-  ) {
-    return false;
-  }
-  if (fieldType.startsWith('array<') && fieldType.endsWith('>')) {
-    const body = fieldType
-      .slice(6, -1)
-      .replace(/,\s*\d+$/u, '')
-      .trim();
-    return body.length > 0 && isFieldPortable(body);
-  }
-  return true;
 }
 
 export interface ProfileComponentError {
@@ -145,7 +95,11 @@ export function validateProfileComponents(components: readonly Component[]): {
 } {
   const errors: ProfileComponentError[] = [];
   for (const token of components) {
-    if (isComponentFullyTransient(token)) {
+    const definition = componentDefinition(token);
+    if (
+      definition.policy.transient ||
+      !definition.fieldNames.some((name) => definition.fields[name]?.transient !== true)
+    ) {
       errors.push({
         component: token.name,
         code: 'component-fully-transient',
@@ -154,11 +108,12 @@ export function validateProfileComponents(components: readonly Component[]): {
       });
       continue;
     }
-    const fields = componentDefinition(token).fields;
-    for (const fieldName of Object.keys(componentSchema(token))) {
-      const fieldType = componentSchema(token)[fieldName];
-      if (fieldType === undefined || fields?.[fieldName]?.transient === true) continue;
-      if (!isFieldPortable(fieldType)) {
+    for (const fieldName of definition.fieldNames) {
+      const field = definition.fields[fieldName];
+      const plan = definition.plan.fields[fieldName];
+      if (field === undefined || field.transient === true || plan === undefined) continue;
+      if (plan.kind === 'unique' || plan.reference !== undefined) {
+        const fieldType = field.type;
         errors.push({
           component: token.name,
           code: 'field-not-portable',

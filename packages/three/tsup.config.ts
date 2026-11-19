@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'tsup';
 import { baseTsupConfig } from '../../config/tsup.base';
 
-const core = fileURLToPath(import.meta.resolve('three/src/Three.Core.js'));
+const core = fileURLToPath(new URL('./src/addon-core.ts', import.meta.url));
 const manifest = JSON.parse(
   readFileSync(new URL('./package.json', import.meta.url), 'utf8'),
 ) as { exports: Record<string, unknown> };

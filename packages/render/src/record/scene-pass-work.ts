@@ -18,12 +18,14 @@ import type {
 } from '../render-system-extract';
 import { type FrameList, FrameProjection } from '../scene/frame-list';
 import type { MaterialFrame } from '../scene/material-dispatch';
+import type { PersistentShadowCasterProjection } from '../scene/render-scene';
 import {
   COLOR_PASS_SELECTOR,
   DEFERRED_PASS_SELECTOR,
   FORWARD_PASS_SELECTOR,
 } from '../systems/pass-selector';
 import { standardTransmissionValue } from '../transmission/projection';
+import { CaptureCull } from './capture-cull';
 import type {
   DirectDrawOutput,
   DirectDrawPhase,
@@ -59,6 +61,39 @@ export interface ScenePassRequest {
   readonly late: boolean;
   readonly capture: boolean;
   readonly camera?: () => CameraSnapshot | undefined;
+  readonly captureCull?: CaptureCull;
+}
+
+/** Stable consumers of one retained capture view, independent of its short-lived graphs.
+ * The camera is refreshed before synchronous Scene Pass preparation, like the view UBO.
+ */
+export class CaptureScenePasses {
+  private readonly cull = new CaptureCull();
+  readonly opaque: ScenePassRequest;
+  readonly transparent: ScenePassRequest;
+  readonly probe: ScenePassRequest;
+
+  constructor(public camera: CameraSnapshot) {
+    const request = (
+      recordMode: MaterialRecordMode | undefined,
+      selector: PassSelector | undefined,
+    ): ScenePassRequest =>
+      Object.freeze({
+        selector,
+        excludeSelector: undefined,
+        recordMode,
+        passKind: 'forward',
+        gpu: false,
+        gpuFilter: undefined,
+        late: false,
+        capture: true,
+        captureCull: this.cull,
+        camera: () => this.camera,
+      });
+    this.opaque = request('opaque', FORWARD_PASS_SELECTOR);
+    this.transparent = request('transparent', FORWARD_PASS_SELECTOR);
+    this.probe = request(undefined, undefined);
+  }
 }
 
 const requestsByGraph = new WeakMap<object, readonly ScenePassRequest[]>();
@@ -239,6 +274,8 @@ export interface ScenePassInputs {
   ) => readonly ValidatedRenderable[];
   readonly world: RenderResourceScope;
   readonly camera: CameraSnapshot | undefined;
+  /** The same accepted slot, Mesh, material and Skin roots used by Scene culling. */
+  readonly boundsOf?: PersistentShadowCasterProjection['worldBoundsOf'];
   readonly cameraVisible?: ((source: RenderableSnapshot) => boolean) | undefined;
   readonly cameraAdmission?: CameraAdmission | undefined;
   /** Resident geometry versions validation reads; see {@link DirectDrawInput.geometry}. */
@@ -363,7 +400,11 @@ function queueScenePass(
     request.recordMode === 'translucent' ||
     request.recordMode === 'translucent-before-transmission';
   const admitted = !(request.capture || isTemporalAntialias(eye?.antialias));
-  const cameraVisible = admitted ? inputs.cameraVisible : undefined;
+  const capture =
+    request.capture && eye !== undefined && inputs.boundsOf !== undefined
+      ? request.captureCull?.prepare(eye, inputs.scene, materials, inputs.boundsOf)
+      : undefined;
+  const cameraVisible = capture?.visible ?? (admitted ? inputs.cameraVisible : undefined);
   const visible =
     request.recordMode === 'opaque-depth'
       ? (source: RenderableSnapshot) =>
@@ -389,7 +430,7 @@ function queueScenePass(
     prepareGeometry: inputs.prepareGeometry,
     visible,
     ...(request.passKind === 'shadow' ? {} : { cullMask: eye?.cullMask ?? 0xffffffff }),
-    admission: admitted ? inputs.cameraAdmission : undefined,
+    admission: capture?.admission ?? (admitted ? inputs.cameraAdmission : undefined),
     lod: (lodRows) => inputs.lod(lodRows, request),
     lodCamera: lodCameraTokens(eye),
     geometry: inputs.geometry,

@@ -6,9 +6,9 @@ import { viewSourceFixture } from '../../__tests__/view-source.fixture';
 import { createRendererCaptureOwner } from '../../capture/renderer-captures';
 import type { CubeCaptureWork } from '../../capture/scheduler';
 import { createRenderFeatureHost } from '../../features/host';
-import type { CubeCameraSnapshot, RendererError } from '../../render-contract';
-
+import type { CameraSnapshot, CubeCameraSnapshot, RendererError } from '../../render-contract';
 import type { RenderTarget } from '../../targets/contracts';
+import type { RenderTargetPhysical } from '../../targets/physical';
 import {
   CUBE_CAPTURE_COMMIT_SYSTEM,
   RENDER_VIEW_CAPTURE_COMMIT_SYSTEM,
@@ -37,6 +37,7 @@ import {
 import { RENDER_RECORD_COMMIT_SYSTEM } from '../submission-systems';
 import { RENDER_TEMPORAL_COMMIT_SYSTEMS } from '../temporal-systems';
 import { ViewFrame, type ViewFrameState, type ViewRecordMode } from '../view-frame-systems';
+import type { ViewSettlementOwner } from '../view-settlement';
 import { RENDER_SETTLEMENT_COMMIT_SYSTEMS } from '../view-settlement';
 import { withInertTemporal } from './temporal-owner-fixture';
 
@@ -60,6 +61,7 @@ function setup() {
   const frame = (frameNumber: number, accepted: boolean): string | undefined => {
     beginRenderFrame(world, frameNumber);
     const face = owner.prepare([camera])[0]?.face;
+    owner.recordEncoded(camera.target, 1);
     renderSubmission(world).accepted = accepted;
     endRenderFrame(world);
     return face;
@@ -83,16 +85,17 @@ describe('cube capture commit system', () => {
   it.each([
     false,
     true,
-  ])('commits a cube face only for a rendered picture, pending=%s', (pending) => {
+  ])('commits an encoded cube independently of a pending display picture, pending=%s', (pending) => {
     const { world, owner } = setup();
     beginRenderFrame(world, 1);
     beginFrameSubmission(world);
     expect(owner.prepare([camera])[0]?.face).toBe('+X');
     frameSubmitOutcome(world).captureReady = !pending;
+    owner.recordEncoded(camera.target, 1);
     renderSubmission(world).accepted = true;
     endRenderFrame(world);
     beginRenderFrame(world, 2);
-    expect(owner.prepare([camera])[0]?.face).toBe(pending ? '+X' : '-X');
+    expect(owner.prepare([camera])[0]?.face).toBe('-X');
     endRenderFrame(world);
   });
 
@@ -104,6 +107,7 @@ describe('cube capture commit system', () => {
     });
     beginRenderFrame(world, 1);
     expect(owner.prepare([camera])[0]?.face).toBe('+X');
+    owner.recordEncoded(camera.target, 1);
     Object.assign(renderSubmission(world), { accepted: true, completion });
     endRenderFrame(world);
     // A submitted, uncompleted face yields no new work.
@@ -246,10 +250,63 @@ function viewSetup(views: readonly ViewSpec[]) {
     const ran = world.run(RenderCommit);
     if (!ran.ok) throw ran.error;
   };
-  return { world, calls, entities, prepare, commit, host };
+  return { world, calls, entities, frames, prepare, commit, host };
 }
 
 describe('view capture systems', () => {
+  it.each([
+    false,
+    true,
+  ])('routes explicit target writes and refuses shared cube depth loads (%s)', (cubeDepthLoad) => {
+    const f = viewSetup([{ name: 'explicit', mode: 'capture' }]);
+    const entity = f.entities[0],
+      frame = f.frames[0];
+    if (entity === undefined || frame === undefined) throw new Error('missing view');
+    f.world.removeComponent(entity, ViewFeatureInput).unwrap();
+    const target = {} as RenderTarget;
+    const physical = {
+      descriptor: {
+        shape: cubeDepthLoad ? 'cube' : '2d',
+        width: 4,
+        height: 4,
+        mipLevels: 1,
+        depth: 'depth32float',
+      },
+    } as RenderTargetPhysical;
+    const recorder = f.world
+      .resolveUniqueRef<{ owner: ViewSettlementOwner }>(
+        f.world.get(entity, ViewRecorder).unwrap().state,
+      )
+      .unwrap();
+    Object.assign(recorder.owner.internals, { getRenderTargetPhysical: () => physical });
+    frame.opts = {
+      targetWrite: { target, clearColor: true, clearDepth: !cubeDepthLoad, clearStencil: true },
+    };
+    frame.result = {
+      ok: true,
+      value: {
+        cubeCameras: [],
+        auxiliaryCameras: [],
+        cameras: [
+          {
+            entityKey: 1,
+            position: [0, 0, 0],
+            world: new Float32Array(16),
+          } as unknown as CameraSnapshot,
+        ],
+      } as never,
+    };
+    f.prepare(1);
+    const capture = viewCaptureWorkOf(f.world, entity);
+    if (cubeDepthLoad) {
+      expect(capture?.kind).toBe('failed');
+    } else {
+      expect(capture?.kind === 'prepared' && capture.value.faces.length).toBe(1);
+      expect(capture?.kind === 'prepared' && capture.value.faces[0]?.work.target).toBe(target);
+    }
+    f.host.dispose();
+  });
+
   it('schedules the shared captures once and routes them to the display recorder', () => {
     const f = viewSetup([
       { name: 'held', mode: false },

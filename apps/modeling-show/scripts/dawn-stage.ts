@@ -5,7 +5,7 @@ import { deserialize, serialize } from 'node:v8';
 import { type AssetRegistry, createCatalogSource, createMaterialLoader } from '@forgeax/engine/assets-runtime';
 import { animationPlugin } from '@forgeax/engine/animation';
 import { createWorldContext, World } from '@forgeax/engine/ecs';
-import { serializeCookedMaterialRecord, validateCookedMaterialRecord } from '@forgeax/engine/pack';
+import { encodeMaterialProgramWire, validateCookedMaterialRecord } from '@forgeax/engine/pack';
 import { AssetGuid, type PackageId } from '@forgeax/engine/pack/guid';
 import { createRuntimePackPublication } from '@forgeax/engine/pack/runtime';
 import { type RenderTargetAuthoring, renderComponentsPlugin } from '@forgeax/engine/render';
@@ -222,7 +222,7 @@ export async function publishPackOutputs(
         refs: [...r.refs.parent, ...r.refs.textures, ...r.refs.samplers, ...r.refs.modules].filter(
           (reference) => AssetGuid.parse(reference).ok,
         ),
-        asset: { kind: 'material', ...r.resolved, cooked: JSON.parse(serializeCookedMaterialRecord(r)) } as unknown as Asset,
+        asset: { kind: 'material', ...r.resolved, cooked: r } as unknown as Asset,
       });
     } else if (asset.kind === 'texture') {
       cooked.push({ guid, asset, refs: [] });
@@ -256,7 +256,7 @@ export async function publishPackOutputs(
     });
     bodies.set(
       packageUrl,
-      JSON.stringify(publication.pack, (_key, value) =>ArrayBuffer.isView(value) ? Array.from(value as Uint8Array) : value,
+      JSON.stringify(encodeMaterialProgramWire(publication.pack), (_key, value) =>ArrayBuffer.isView(value) ? Array.from(value as Uint8Array) : value,
       ),
     );
     for (const { guid, asset } of members) {

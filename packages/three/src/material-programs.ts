@@ -9,6 +9,7 @@ import { validateCookedMaterialRecord } from '@forgeax/engine-pack';
 import type { AssetHandle, MaterialAsset } from '@forgeax/engine-types';
 import { ThreeCompatibilityError } from './errors';
 import { TEXTURE_SLOTS } from './material';
+import { clearSurfaceProgramSelection, surfaceProgram } from './node-surface';
 
 async function registerPrograms(
   assets: AssetRegistry,
@@ -74,12 +75,21 @@ export async function prepareMaterialPrograms(
     return { program, projection };
   });
   return (material, skinned = false) => {
+    const recipe = surfaceProgram(material);
+    if (recipe !== undefined && skinned)
+      throw new ThreeCompatibilityError(
+        'three-unsupported',
+        'Skinned surface expression recipe',
+        'Skinning needs separate stage acceptance.',
+      );
     const family =
-      material.staticSwitches?.clearcoat === true
-        ? 'physical'
-        : skinned
-          ? 'skinned-unlit'
-          : undefined;
+      recipe !== undefined
+        ? 'surface'
+        : material.staticSwitches?.clearcoat === true
+          ? 'physical'
+          : skinned
+            ? 'skinned-unlit'
+            : undefined;
     if (family === undefined) return material;
     const required = Object.keys(material.values ?? {}).filter((name) => {
       const value = material.values?.[name];
@@ -89,13 +99,25 @@ export async function prepareMaterialPrograms(
     });
     const entry = programs.find(
       ({ projection, program }) =>
-        projection.materialGuid.startsWith(`forgeax-three-${family}`) &&
+        (recipe === undefined
+          ? projection.materialGuid.startsWith(`forgeax-three-${family}`)
+          : projection.materialGuid === recipe.programGuid &&
+            program.passes?.every(
+              (pass) =>
+                pass.program.moduleSlots?.surface === `forgeax_three::surface_${recipe.graphKey}`,
+            ) === true) &&
         (family !== 'physical' ||
           program.parameters?.filter((parameter) => parameter.type.startsWith('texture')).length ===
             required.length) &&
         required.every((name) => program.parameters?.some((parameter) => parameter.name === name)),
     );
     if (entry === undefined) {
+      if (recipe !== undefined)
+        throw new ThreeCompatibilityError(
+          'three-migration-required',
+          'Missing cooked Three surface program',
+          'Pass the publication returned by cookThreeSurface through forgeax.materialPrograms.',
+        );
       if (family !== 'physical')
         throw new ThreeCompatibilityError(
           'three-owner-failed',
@@ -118,6 +140,7 @@ export async function prepareMaterialPrograms(
       Object.entries({ ...program.values, ...material.values }).filter(([name]) => names.has(name)),
     );
     const projected = { ...material, parameters: program.parameters, values } as MaterialAsset;
+    clearSurfaceProgramSelection(projected);
     const passProjection = {
       ...projection,
       passes: (projected.passes ?? []).map((pass) => {

@@ -715,7 +715,7 @@ async function createBenchmarkFixture(exactBuild, shaderManifestUrl) {
   const { AssetRegistry } = await import('@forgeax/engine-assets-runtime');
   const { createWorldContext, World } = await import('@forgeax/engine-ecs');
   const { AssetGuid } = await import('@forgeax/engine-pack/guid');
-  const { Camera, DirectionalLight, Materials, MeshFilter, MeshRenderer, renderComponentsPlugin } = await import('@forgeax/engine-render');
+  const { Camera, DEFAULT_STANDARD_PROFILE, DirectionalLight, Materials, MeshFilter, MeshRenderer, renderComponentsPlugin } = await import('@forgeax/engine-render');
   const profileApi = LOD_PROFILE_ENABLED
     ? await import('@forgeax/engine-profiler')
     : undefined;
@@ -725,6 +725,7 @@ async function createBenchmarkFixture(exactBuild, shaderManifestUrl) {
     // Each isolated Renderer snapshots its options at construction. Keep every
     // condition on the same timestamp path; retain only the measured frames.
     captureGpuTimings: true,
+    standardProfile: { ...DEFAULT_STANDARD_PROFILE, gpuOcclusion: true },
     ...(profiler === undefined ? {} : { profiler }),
   };
   const rendererErrors = [];
@@ -972,7 +973,7 @@ async function createBenchmarkFixture(exactBuild, shaderManifestUrl) {
     profileApi,
     identity,
     configureGpuOcclusion(enabled) {
-      fixture.treatment.debugDrawHost.configureStandard(enabled ? undefined : { gpuOcclusion: false },
+      fixture.treatment.debugDrawHost.configureStandard({ gpuOcclusion: enabled },
       );
     },
     async releasePrimaryWorld(name) {

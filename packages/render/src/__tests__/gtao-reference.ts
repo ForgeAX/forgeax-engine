@@ -293,6 +293,15 @@ export function decodeMaterialNormalX12Y12(packed: number): GtaoVec3 {
   return normalize(normal);
 }
 
+/** XYZ10 normals from the canonical GBuffer-v2 packed normal word. */
+export function decodeGBufferNormalXYZ10(packed: number): GtaoVec3 {
+  return normalize([
+    (packed & 1023) * (2 / 1023) - 1,
+    ((packed >>> 10) & 1023) * (2 / 1023) - 1,
+    ((packed >>> 20) & 1023) * (2 / 1023) - 1,
+  ]);
+}
+
 export function normalAngularError(left: GtaoVec3, right: GtaoVec3): number {
   return Math.acos(Math.max(-1, Math.min(1, dot(normalize(left), normalize(right)))));
 }

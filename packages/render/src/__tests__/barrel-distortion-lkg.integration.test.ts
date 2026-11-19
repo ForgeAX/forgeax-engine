@@ -1,7 +1,7 @@
 import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { mat4 } from '@forgeax/engine-math';
-import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
+import { RenderGraphBuilder, type RenderGraphFrame } from '@forgeax/engine-render-graph';
 import { RhiNullQueue, rhi } from '@forgeax/engine-rhi-null';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import { err, ok } from '@forgeax/engine-types';
@@ -76,7 +76,7 @@ describe('barrel distortion retained graph frame authority', () => {
     const addRasterPass = RenderGraphBuilder.prototype.addRasterPass;
     const passSpy = vi
       .spyOn(RenderGraphBuilder.prototype, 'addRasterPass')
-      .mockImplementation(function (...args) {
+      .mockImplementation(function (this: RenderGraphBuilder<RenderGraphFrame>, ...args) {
         if (args[0] === 'main') standardGraphs.add(this as RenderGraphBuilder<never>);
         return addRasterPass.apply(this, args);
       });
@@ -217,7 +217,7 @@ describe('barrel distortion retained graph frame authority', () => {
         .unwrap();
       expect(world.update().ok).toBe(true);
       candidateEnabled = true;
-      compileSpy.mockImplementation(function (...args) {
+      compileSpy.mockImplementation(function (this: RenderGraphBuilder<RenderGraphFrame>, ...args) {
         return standardGraphs.has(this as RenderGraphBuilder<never>)
           ? (err(
               Object.assign(new Error('forced compile rejection'), {
@@ -329,13 +329,13 @@ describe('barrel distortion retained graph frame authority', () => {
       const addRasterPass = RenderGraphBuilder.prototype.addRasterPass;
       const passSpy = vi
         .spyOn(RenderGraphBuilder.prototype, 'addRasterPass')
-        .mockImplementation(function (...args) {
+        .mockImplementation(function (this: RenderGraphBuilder<RenderGraphFrame>, ...args) {
           if (args[0] === 'main') standardGraphs.add(this as RenderGraphBuilder<never>);
           return addRasterPass.apply(this, args);
         });
       const compileGraph = RenderGraphBuilder.prototype.compile;
       const compileSpy = vi.spyOn(RenderGraphBuilder.prototype, 'compile');
-      compileSpy.mockImplementation(function (...args) {
+      compileSpy.mockImplementation(function (this: RenderGraphBuilder<RenderGraphFrame>, ...args) {
         return standardGraphs.has(this as RenderGraphBuilder<never>)
           ? (err(
               Object.assign(new Error('forced disable rejection'), {

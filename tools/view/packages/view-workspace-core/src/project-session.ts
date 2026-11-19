@@ -1,4 +1,4 @@
-import type { FrontendPlatform } from '@forgeax/engine-host/platform';
+import type { ViewFrontendRole } from './frontend-contract.ts';
 import { navigateBrowserDocument } from './document-navigation.ts';
 import type { WorkspaceState } from './contract.ts';
 import type { ViewWorkspaceClient } from './client.ts';
@@ -71,36 +71,21 @@ export function projectSessionUrl(url: string, record: ProjectSessionRecord | nu
   return next.href;
 }
 
-/** Transfer the confirmed project identity across origins, never runtime history. */
-export function navigateProjectSession(snapshot: WorkspaceState, window: ProjectSessionWindow = globalThis, record: ProjectSessionRecord | null = readProjectSession(window)) {
-  const url = snapshot?.projectTarget?.url;
-  if (!url || !window.location?.assign) return;
-  if (!snapshot.project?.root) { window.location.assign(url); return; }
-  const current = new URL(window.location.href);
-  const next = {
-    ...record, version: 1, root: snapshot.project.root,
-    targetId: snapshot.projectTarget?.targetId,
-    entry: record?.entry ?? current.origin + current.pathname,
-  };
-  save(window, next);
-  window.location.assign(projectSessionUrl(url, next));
-}
-
 /** One Cordis-owned project intent/recovery projection shared by all React consumers. */
-export function createProjectSession(client: ViewWorkspaceClient, { window = globalThis, navigate: navigateDocument = (url, options) => navigateBrowserDocument(window, url, options) }: { window?: ProjectSessionWindow; navigate?: FrontendPlatform['navigate'] } = {}) {
+export function createProjectSession(client: ViewWorkspaceClient, { role, window = globalThis }: { role: ViewFrontendRole; window?: ProjectSessionWindow }) {
+  if (role !== 'shell') throw new TypeError('Project recovery belongs to the retained Shell root');
   let disposed = false;
   let record = readProjectSession(window);
   const location = window.location;
   const url = location?.href ? new URL(location.href) : null;
-  const explicitRoot = url?.searchParams.get('project')?.trim();
   const pageTarget = url?.searchParams.get('forgeaxWorkspaceTarget');
+  const explicitRoot = pageTarget ? undefined : url?.searchParams.get('project')?.trim() || undefined;
   const navigation = window.performance?.getEntriesByType?.('navigation')?.[0] as PerformanceNavigationTiming | undefined;
   let state: ProjectSessionState = {
     snapshot: {}, busy: false, error: null,
-    restoring: Boolean(pageTarget ? navigation?.type === 'reload' : explicitRoot || (record?.root && record?.targetId)),
+    restoring: Boolean(pageTarget && navigation?.type === 'reload' || explicitRoot),
   };
   let initializing = true;
-  let openedIntent = Boolean(pageTarget || explicitRoot || record?.targetId);
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
   let cancelDelay: (() => void) | undefined;
   let reconnecting: Promise<void> | undefined;
@@ -153,23 +138,18 @@ export function createProjectSession(client: ViewWorkspaceClient, { window = glo
   const accept = (snapshot: WorkspaceState) => {
     if (disposed || (snapshot.revision ?? 0) < (state.snapshot.revision ?? -1)) return;
     changed({ snapshot });
+    if (snapshot.projectDocumentPresentation !== 'presenter') return;
     releaseReload(snapshot);
-    // A project opened outside this page (for example `view project open`)
-    // is adopted by an empty shell that holds no earlier target identity.
-    // Headed documents carry pageTarget and never adopt; a page remembering
-    // another target keeps its explicit conflict instead of chasing someone
-    // else's session.
-    if (!pageTarget && !explicitRoot && !record?.targetId && !initializing && !state.busy && !openedIntent
-      && snapshot.projectIntent?.root) {
-      void open(snapshot.projectIntent.root);
-      return;
-    }
-    const remoteTargetUrl = snapshot?.projectTarget?.url;
-    if (!pageTarget && !explicitRoot && !record?.targetId && !initializing && !state.busy
+    // The backend is the project authority. Empty retained shells attach to
+    // its published document; URL and storage records never create a project.
+    const document = snapshot.projectDocument ??
+      (snapshot.projectStatus && 'document' in snapshot.projectStatus ? snapshot.projectStatus.document : undefined);
+    const remoteTargetUrl = snapshot?.projectTarget?.url ?? document?.url;
+    if (!pageTarget && !initializing && !state.busy
       && snapshot?.workspaceTargetLost !== true && snapshot?.projectPhase !== 'failed'
       && typeof snapshot?.project?.root === 'string' && snapshot.project.root.trim() !== ''
       && typeof remoteTargetUrl === 'string' && remoteTargetUrl.trim() !== '') {
-      void Promise.resolve(navigate(snapshot)).catch(fail);
+      admitDocument(snapshot);
       return;
     }
     if (initializing || !pageTarget || snapshot.projectTarget?.targetId !== pageTarget || !snapshot.project?.root) return;
@@ -191,61 +171,60 @@ export function createProjectSession(client: ViewWorkspaceClient, { window = glo
     catch (error) { if (!controller.signal.aborted) fail(error); }
     finally { changed({ busy: false, restoring: false }); }
   };
-  const navigate = (snapshot: WorkspaceState) => {
+  const admitDocument = (snapshot: WorkspaceState) => {
     if (disposed) return;
-    if (snapshot.projectTarget && !snapshot.projectTarget.url) {
+    if (snapshot.projectDocumentPresentation !== 'presenter') return;
+    const document = snapshot.projectDocument ??
+      (snapshot.projectStatus && 'document' in snapshot.projectStatus ? snapshot.projectStatus.document : undefined);
+    const targetUrl = snapshot.projectTarget?.url ?? document?.url;
+    const targetId = snapshot.projectTarget?.targetId ?? document?.targetId;
+    if (snapshot.project && !targetUrl) {
       changed({ restoring: false });
       return;
     }
-    record = { ...record, version: 1, root: snapshot?.project?.root,
-      targetId: snapshot?.projectTarget?.targetId };
-    if (!snapshot.projectTarget?.url) return;
+    record = { ...record, version: 1, root: snapshot?.project?.root, targetId };
+    if (!targetUrl || !targetId) return;
     save(window, record);
-    return (async () => {
-      await navigateDocument(projectSessionUrl(snapshot.projectTarget!.url!, record), { signal: controller.signal });
-      if (disposed) return;
-      // Embedded documents retain this Shell. Do not admit viewport commands before Engine readiness.
-      const targetId = snapshot.projectTarget!.targetId;
-      await new Promise<void>((resolve, reject) => {
-        let remove = () => {};
-        const finish = (error?: Error) => { remove(); controller.signal.removeEventListener('abort', cancel); error ? reject(error) : resolve(); };
-        const cancel = () => finish(new Error('Project attachment cancelled'));
-        const check = (current: WorkspaceState) => {
-          if (current.projectTarget?.targetId !== targetId) return;
-          if (current.projectPhase === 'running' || current.projectPhase === undefined) finish();
-          else if (current.projectPhase === 'failed' || current.workspaceTargetLost) finish(new Error('Engine target startup failed; inspect its diagnostics before reconnecting'));
-        };
-        remove = client.subscribe(check);
-        controller.signal.addEventListener('abort', cancel, { once: true });
-        void client.getState({ signal: controller.signal }).then(current => {
-          // A legacy provider without phase evidence settles immediately.
-          if (current.projectPhase === undefined) finish(); else check(current);
-        }, error => finish(error instanceof Error ? error : new Error(String(error))));
-        if (controller.signal.aborted) cancel();
-      });
-    })();
   };
   const recover = async () => {
     const snapshot = await client.getState({ signal: controller.signal });
     accept(snapshot);
-    const expectedTargetId = pageTarget ?? record?.targetId;
-    if (!expectedTargetId || snapshot.projectTarget?.targetId !== expectedTargetId)
+    const status = snapshot.projectStatus;
+    if (!status || status.phase !== 'failed' || status.failure.code !== 'engine-workspace-page-lost')
       throw new Error('The project changed in another page. Open the current View entry and choose a project explicitly.');
-    return navigate(await client.reopenProject({ ...options, expectedTargetId, expectedTargetState: 'lost' }));
+    if (pageTarget && snapshot.projectTarget?.targetId !== pageTarget)
+      throw new Error('The project changed in another page. Open the current View entry and choose a project explicitly.');
+    admitDocument(await client.reopenProject({
+      ...options,
+      expectedProject: { kind: 'session', sessionId: status.sessionId, generation: status.generation, recovery: 'lost' },
+    }));
   };
   const open = (root: string) => run(async () => {
-    openedIntent = true;
     const snapshot = await client.getState({ signal: controller.signal });
     accept(snapshot);
-    if (snapshot.project) {
-      if (snapshot.project.root !== root) throw new Error('Another project is already open. Close it explicitly before opening a different project.');
+    if (snapshot.project?.root === root) {
+      if (pageTarget && snapshot.projectTarget?.targetId !== pageTarget)
+        throw new Error('The project changed in another page. Open the current View entry and choose a project explicitly.');
       record = { ...record, version: 1, root, targetId: snapshot.projectTarget?.targetId };
-      if (!snapshot.projectTarget?.url) return;
-      await recover();
+      const status = snapshot.projectStatus;
+      if (status?.phase === 'failed' && status.failure.code === 'engine-workspace-page-lost') {
+        await recover();
+        return;
+      }
+      if (snapshot.projectDocument?.url || snapshot.projectTarget?.url) {
+        admitDocument(snapshot);
+        return;
+      }
       return;
     }
+    const expectedProject = snapshot.project
+      ? snapshot.projectStatus && 'sessionId' in snapshot.projectStatus
+        ? { kind: 'session' as const, sessionId: snapshot.projectStatus.sessionId, generation: snapshot.projectStatus.generation }
+        : undefined
+      : { kind: 'empty' as const };
+    if (!expectedProject) throw new Error('The current project owner has no session identity. Refresh state and choose explicitly.');
     record = { version: 1, root, entry: url ? url.origin + url.pathname : undefined };
-    return navigate(await client.openProject(root, { ...options, expectedTargetId: null }));
+    admitDocument(await client.openProject(root, { ...options, expectedProject }));
   });
   const reconnect = () => run(recover);
   const stop = client.subscribe(accept);
@@ -266,7 +245,7 @@ export function createProjectSession(client: ViewWorkspaceClient, { window = glo
         if (!response.ok) throw new Error('View entry is unavailable');
         if (!disposed) {
           const destination = projectSessionUrl(record.entry, record);
-          await navigateDocument(destination, { signal: controller.signal, replace: true });
+          await navigateBrowserDocument(window, destination, { signal: controller.signal, replace: true });
         }
         return;
       } catch (error) { if (disposed) return; }
@@ -297,12 +276,9 @@ export function createProjectSession(client: ViewWorkspaceClient, { window = glo
     const snapshot = await client.getState({ signal: controller.signal });
     accept(snapshot);
     if (!pageTarget) {
+      // The retained Shell observes current backend state. Choosing a project
+      // is an explicit workspace action handled by the Engine owner.
       if (explicitRoot) await open(explicitRoot);
-      else if (record?.root && record?.targetId) await reconnect();
-      else if (snapshot.projectIntent?.root) await open(snapshot.projectIntent.root);
-      // A project remote-opened before this page loaded leaves no explicit
-      // intent and no remembered target here; the post-initialization accept
-      // below adopts its headed document.
       return;
     }
   })().catch(fail).finally(() => { initializing = false; accept(state.snapshot); });

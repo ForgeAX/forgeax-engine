@@ -123,17 +123,51 @@ export function bindRuntimePackScope(value: unknown, scopeId: string, generation
   return wire ? encodeMaterialProgramWire(bound) : bound;
 }
 
-function stable(value: unknown): string {
-  if (value instanceof Uint8Array) return `bytes:${encodeBase64(value)}`;
-  if (Array.isArray(value)) return `[${value.map(stable).join(',')}]`;
-  if (value !== null && typeof value === 'object') {
-    const record = value as Record<string, unknown>;
-    return `{${Object.keys(record)
-      .sort()
-      .map((key) => `${JSON.stringify(key)}:${stable(record[key])}`)
-      .join(',')}}`;
+function* stableArray(value: readonly unknown[]): Generator<string> {
+  yield '[';
+  // Legacy program bytes arrive as dense numeric arrays. Batch native JSON
+  // formatting without changing their digests or buffering an entire array.
+  const numbers: number[] = [];
+  Object.setPrototypeOf(numbers, null);
+  let runStart = 0;
+  function flushNumbers(): string {
+    const chunk = `${runStart > 0 ? ',' : ''}${JSON.stringify(numbers).slice(1, -1)}`;
+    numbers.length = 0;
+    return chunk;
   }
-  return JSON.stringify(value) ?? 'null';
+  for (let index = 0; index < value.length; index++) {
+    const present = index in value;
+    const item = present ? value[index] : undefined;
+    if (typeof item === 'number') {
+      if (numbers.length === 0) runStart = index;
+      numbers[numbers.length] = item;
+      if (numbers.length === 1024) yield flushNumbers();
+      continue;
+    }
+    if (numbers.length > 0) yield flushNumbers();
+    if (index > 0) yield ',';
+    // The legacy canonical representation skips a hole's value but keeps its separator.
+    if (present) yield* stable(item);
+  }
+  if (numbers.length > 0) yield flushNumbers();
+  yield ']';
+}
+
+function* stable(value: unknown): Generator<string> {
+  if (value instanceof Uint8Array) yield `bytes:${encodeBase64(value)}`;
+  else if (Array.isArray(value)) yield* stableArray(value);
+  else if (value !== null && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    yield '{';
+    let first = true;
+    for (const key of Object.keys(record).sort()) {
+      if (!first) yield ',';
+      first = false;
+      yield `${JSON.stringify(key)}:`;
+      yield* stable(record[key]);
+    }
+    yield '}';
+  } else yield JSON.stringify(value) ?? 'null';
 }
 function digest(value: unknown): string {
   return `sha256:${sha256(stable(value))}`;

@@ -6,6 +6,7 @@ import type {
   RenderPassDescriptor,
   RhiComputePassEncoder,
   RhiDevice,
+  RhiRenderPassEncoder,
   Texture,
   TextureView,
   Tlas,
@@ -23,6 +24,7 @@ import type {
   TextureViewRecord,
 } from './kernel-internal.js';
 import { handleData, physicalAllocationKey, releaseGraphTexture } from './kernel-internal.js';
+import type { RasterBatch } from './raster-batching.js';
 import type {
   CompiledRenderGraph,
   CompiledRenderGraphInfo,
@@ -43,6 +45,45 @@ import type {
   RenderGraphPassRunner,
   RenderGraphResourceAllocationInspection,
 } from './types.js';
+
+function rasterBatchBoundary<FrameCtx extends RenderGraphFrame>(
+  passes: readonly CompiledPass<FrameCtx>[],
+  passIndex: number,
+  batchLast: number,
+  runPass: RenderGraphPassRunner | undefined,
+): number {
+  let last = batchLast;
+  if (runPass?.requiresPassBoundary !== undefined) {
+    for (let i = passIndex; i <= batchLast; i++) {
+      if (!runPass.requiresPassBoundary(passes[i]?.name ?? '')) continue;
+      last = i === passIndex ? i : i - 1;
+      break;
+    }
+  }
+  return last;
+}
+
+function passExecutionRecord<FrameCtx extends RenderGraphFrame>(
+  pass: CompiledPass<FrameCtx>,
+  executionIndex: number,
+  resolver: GraphResourceResolver,
+  observed: boolean,
+): RenderGraphPassExecution | undefined {
+  return !observed
+    ? undefined
+    : {
+        name: pass.name,
+        kind: pass.pass.kind,
+        executionIndex,
+        ...(pass.pass.kind === 'raster' && pass.pass.descriptor.depthStencilAttachment !== undefined
+          ? {
+              resolvedDepthStencilAttachmentView: resolver
+                .textureView(pass.pass.descriptor.depthStencilAttachment.view)
+                .unwrap(),
+            }
+          : {}),
+      };
+}
 
 const compiledGraphs = new WeakSet<object>();
 const executingGraphs = new WeakSet<object>();
@@ -89,16 +130,19 @@ function resolveRasterColors<FrameCtx>(
         : attachment.clearValue;
     const loadOp =
       typeof attachment.loadOp === 'function' ? attachment.loadOp(frame) : attachment.loadOp;
+    const storeOp = attachment.storeOp === 'discard' ? 'discard' : 'store';
     // Optional members are assigned, not spread: spreads allocate a
     // temporary object per member on every executed pass.
     const color: Writable<RenderPassColorAttachment> = colorAttachments[colorIndex] ?? {
       view: view.value,
       loadOp,
-      storeOp: attachment.storeOp,
+      storeOp,
     };
     color.view = view.value;
     color.loadOp = loadOp;
+    color.storeOp = storeOp;
     if (resolveTarget !== undefined) color.resolveTarget = resolveTarget.value;
+    else delete color.resolveTarget;
     if (clearValue === undefined) delete color.clearValue;
     else color.clearValue = clearValue;
     if (attachment.depthSlice !== undefined) color.depthSlice = attachment.depthSlice;
@@ -122,11 +166,13 @@ function resolveRasterDepth(
   if (attachment.depthClearValue !== undefined) depth.depthClearValue = attachment.depthClearValue;
   if (attachment.depthLoadOp !== undefined) depth.depthLoadOp = attachment.depthLoadOp;
   if (attachment.depthStoreOp !== undefined) depth.depthStoreOp = attachment.depthStoreOp;
+  else delete depth.depthStoreOp;
   if (attachment.depthReadOnly !== undefined) depth.depthReadOnly = attachment.depthReadOnly;
   if (attachment.stencilClearValue !== undefined)
     depth.stencilClearValue = attachment.stencilClearValue;
   if (attachment.stencilLoadOp !== undefined) depth.stencilLoadOp = attachment.stencilLoadOp;
   if (attachment.stencilStoreOp !== undefined) depth.stencilStoreOp = attachment.stencilStoreOp;
+  else delete depth.stencilStoreOp;
   if (attachment.stencilReadOnly !== undefined) depth.stencilReadOnly = attachment.stencilReadOnly;
   return okOf(depth);
 }
@@ -404,6 +450,7 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
       readonly passName: string;
       readonly usage: GraphAccessUsage;
     }[],
+    private readonly rasterBatches: ReadonlyMap<number, RasterBatch<FrameCtx>>,
   ) {
     compiledGraphs.add(this);
     this.resourceOrder = [...resources.values()];
@@ -671,6 +718,21 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
     return executed;
   }
 
+  #stagePassTextureWrites(
+    pass: CompiledPass<FrameCtx>,
+    resolved: FrameResources,
+    writes: Map<string, StagedTextureWrite[]>,
+  ): void {
+    for (const write of pass.pass.kind === 'subgraph' ? [] : pass.textureWrites) {
+      const texture = resolved.textures.get(write.resourceId);
+      if (texture === undefined) continue;
+      const key = physicalAllocationKey(texture);
+      const ranges = writes.get(key) ?? [];
+      ranges.push({ range: write.range, stored: write.stored });
+      writes.set(key, ranges);
+    }
+  }
+
   #executeResolved(
     frame: FrameCtx,
     resolved: FrameResources,
@@ -684,16 +746,53 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
     executingGraphs.add(this);
     try {
       for (let passIndex = 0; passIndex < this.passes.length; passIndex++) {
+        const batch = this.rasterBatches.get(passIndex);
+        if (batch !== undefined) {
+          try {
+            const last = rasterBatchBoundary(this.passes, passIndex, batch.last, runPass);
+            if (last > passIndex) {
+              const result = this.#encodeRasterBatch(
+                batch,
+                passIndex,
+                last,
+                frame,
+                resolved,
+                runPass,
+                instrumentation,
+                indices,
+                writes,
+              );
+              if (!result.ok) return result;
+              passIndex = last;
+              continue;
+            }
+          } catch (cause) {
+            return err(
+              new RenderGraphError({
+                code: 'pass-encode-failed',
+                expected: `raster batch '${batch.name}' observes a valid execution boundary`,
+                hint: 'repair the observation callback and retry the graph',
+                detail: {
+                  passName: this.passes[passIndex]?.name ?? batch.name,
+                  passKind: 'raster',
+                  cause,
+                },
+              }),
+            );
+          }
+        }
         const pass = this.passes[passIndex] as CompiledPass<FrameCtx>;
         const executionIndex = pass.pass.kind === 'subgraph' ? indices.next : indices.next++;
         const resolver = this.passResolver(pass, resolved);
         try {
           if (pass.pass.descriptor.executeIf?.(frame) === false) continue;
           // The execution record and encode closure exist only for an observer.
-          const execution =
-            runPass === undefined && instrumentation === undefined
-              ? undefined
-              : { name: pass.name, kind: pass.pass.kind, executionIndex };
+          const execution = passExecutionRecord(
+            pass,
+            executionIndex,
+            resolver,
+            runPass !== undefined || instrumentation !== undefined,
+          );
           let didEncode = execution === undefined;
           // No closure in this loop body: a captured binding would allocate a
           // context per pass even when no runner observes the pass.
@@ -727,14 +826,7 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
               );
           if (!encodeResult.ok) return encodeResult;
           if (didEncode) {
-            for (const write of pass.pass.kind === 'subgraph' ? [] : pass.textureWrites) {
-              const texture = resolved.textures.get(write.resourceId);
-              if (texture === undefined) continue;
-              const key = physicalAllocationKey(texture);
-              const ranges = writes.get(key) ?? [];
-              ranges.push({ range: write.range, stored: write.stored });
-              writes.set(key, ranges);
-            }
+            this.#stagePassTextureWrites(pass, resolved, writes);
           }
         } catch (cause) {
           return err(
@@ -751,6 +843,172 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
     } finally {
       executingGraphs.delete(this);
     }
+  }
+
+  #encodeRasterBatch(
+    batch: RasterBatch<FrameCtx>,
+    first: number,
+    last: number,
+    frame: FrameCtx,
+    resolved: FrameResources,
+    runPass: RenderGraphPassRunner | undefined,
+    instrumentation: RenderGraphPassInstrumentation<FrameCtx> | undefined,
+    indices: { next: number },
+    writes: Map<string, StagedTextureWrite[]>,
+  ): Result<void, RenderGraphError> {
+    let encoder: RhiRenderPassEncoder | undefined;
+    let scope: RenderGraphPassInstrumentationScope | undefined;
+    let active = this.passes[first] as CompiledPass<FrameCtx>;
+    const executionIndex = indices.next;
+    const complete = first === batch.first && last === batch.last;
+    const names = complete ? batch.names : this.passes.slice(first, last + 1).map((p) => p.name);
+    const name = complete ? batch.name : names.join(' + ');
+    const final = this.passes[last];
+    if (final?.pass.kind !== 'raster') throw new Error('compiled raster batch has no final stage');
+    const finalDescriptor = final.pass.descriptor;
+    const finalResolver = this.passResolver(final, resolved);
+    let outcome: Result<void, RenderGraphError> = ok(undefined);
+    try {
+      for (let i = first; i <= last; i++) {
+        active = this.passes[i] as CompiledPass<FrameCtx>;
+        if (active.pass.kind !== 'raster')
+          throw new Error('compiled raster batch contains non-raster work');
+        const descriptor = active.pass.descriptor;
+        const resolver = this.passResolver(active, resolved);
+        const logicalIndex = indices.next++;
+        const encode = () => {
+          if (encoder === undefined) {
+            const physical = {
+              name,
+              kind: 'raster' as const,
+              executionIndex,
+              logicalPassNames: names,
+            };
+            scope = safePassScope(instrumentation, physical, frame);
+            const context = this.resolvers.get(active);
+            const retained = scope === undefined ? context?.raster : undefined;
+            // A diagnostic runner may omit a prefix. Start with the first
+            // actually encoded member's load/clear semantics.
+            const attachments =
+              i === batch.first && complete
+                ? batch.colorAttachments
+                : descriptor.colorAttachments.map((attachment, index) => ({
+                    ...attachment,
+                    storeOp: finalDescriptor.colorAttachments[index]?.storeOp ?? attachment.storeOp,
+                    resolveTarget: finalDescriptor.colorAttachments[index]?.resolveTarget,
+                  }));
+            const colors = resolveRasterColors(
+              attachments,
+              frame,
+              finalResolver,
+              retained?.colorAttachments,
+            );
+            if (!colors.ok) throw colors.error;
+            const depthAttachment =
+              i === batch.first && complete
+                ? batch.depthStencilAttachment
+                : descriptor.depthStencilAttachment === undefined
+                  ? undefined
+                  : {
+                      ...descriptor.depthStencilAttachment,
+                      depthStoreOp: finalDescriptor.depthStencilAttachment?.depthStoreOp,
+                      stencilStoreOp: finalDescriptor.depthStencilAttachment?.stencilStoreOp,
+                    };
+            const depth = resolveRasterDepth(
+              depthAttachment,
+              resolver,
+              retained?.depthStencilAttachment,
+            );
+            if (!depth.ok) throw depth.error;
+            const native: Writable<RenderPassDescriptor> = retained ?? {
+              label: name,
+              colorAttachments: colors.value,
+            };
+            native.label = name;
+            if (depth.value === undefined) delete native.depthStencilAttachment;
+            else native.depthStencilAttachment = depth.value;
+            if (scope === undefined && context !== undefined) context.raster = native;
+            encoder = frame.encoder.beginRenderPass(
+              decorateDescriptor(scope, scope?.renderPassDescriptor, native),
+            );
+          }
+          // Independent native passes start with these defaults. Preserve them
+          // between logical stages, including after a partial/scissored writer.
+          const attachment =
+            descriptor.colorAttachments[0]?.view ?? descriptor.depthStencilAttachment?.view;
+          if (attachment !== undefined) {
+            const extent = resolver.textureViewExtent(attachment);
+            if (!extent.ok) throw extent.error;
+            encoder.setViewport(0, 0, extent.value.width, extent.value.height, 0, 1);
+            encoder.setScissorRect(0, 0, extent.value.width, extent.value.height);
+          }
+          encoder.setBlendConstant([0, 0, 0, 0]);
+          encoder.setStencilReference(0);
+          encoder.pushDebugGroup(active.name);
+          try {
+            if (descriptor.encodeDirect !== undefined)
+              descriptor.encodeDirect(encoder, frame, resolver);
+            else descriptor.encode({ pass: encoder, frame, resources: resolver });
+          } finally {
+            encoder.popDebugGroup();
+          }
+        };
+        if (runPass === undefined) encode();
+        else
+          runPass(
+            {
+              name: active.name,
+              kind: 'raster',
+              executionIndex: logicalIndex,
+              ...(descriptor.depthStencilAttachment === undefined
+                ? {}
+                : {
+                    resolvedDepthStencilAttachmentView: resolver
+                      .textureView(descriptor.depthStencilAttachment.view)
+                      .unwrap(),
+                  }),
+            },
+            encode,
+          );
+      }
+      // The native attachment lifetime ends once, with the final descriptor's
+      // store/resolve semantics, even when a diagnostic omits a logical body.
+      if (encoder !== undefined) {
+        for (const write of final.textureWrites) {
+          const texture = resolved.textures.get(write.resourceId);
+          if (texture === undefined) continue;
+          const key = physicalAllocationKey(texture);
+          const ranges = writes.get(key) ?? [];
+          ranges.push({ range: write.range, stored: write.stored });
+          writes.set(key, ranges);
+        }
+      }
+    } catch (cause) {
+      outcome = err(
+        new RenderGraphError({
+          code: 'pass-encode-failed',
+          expected: `pass '${active.name}' encodes without throwing`,
+          hint: 'inspect detail.cause and repair the pass-owned RHI command',
+          detail: { passName: active.name, passKind: 'raster', cause },
+        }),
+      );
+    } finally {
+      try {
+        encoder?.end();
+      } catch (cause) {
+        outcome = err(
+          new RenderGraphError({
+            code: 'pass-encode-failed',
+            expected: `raster batch '${name}' closes without throwing`,
+            hint: 'inspect detail.cause and repair the pass-owned RHI command',
+            detail: { passName: active.name, passKind: 'raster', cause },
+          }),
+        );
+      } finally {
+        safeEndPass(scope);
+      }
+    }
+    return outcome;
   }
 
   #observePass(
@@ -836,6 +1094,7 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
               label: pass.name,
               colorAttachments,
             };
+            baseDescriptor.label = pass.name;
             if (depthStencilAttachment === undefined) delete baseDescriptor.depthStencilAttachment;
             else baseDescriptor.depthStencilAttachment = depthStencilAttachment;
             if (querySet === undefined) delete baseDescriptor.occlusionQuerySet;

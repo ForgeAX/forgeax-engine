@@ -3,7 +3,13 @@ import type {
   RenderGraphBuilder,
   RenderGraphError,
 } from '@forgeax/engine-render-graph';
-import type { BindGroupLayout, Buffer, ComputePipeline, RhiDevice } from '@forgeax/engine-rhi';
+import {
+  type BindGroupLayout,
+  type Buffer,
+  type ComputePipeline,
+  type RhiDevice,
+  RhiError,
+} from '@forgeax/engine-rhi';
 import { AUTO_EXPOSURE_METER_WGSL } from '@forgeax/engine-shader';
 import { err, ok, type Result } from '@forgeax/engine-types';
 import {
@@ -12,7 +18,6 @@ import {
   GPU_BUFFER_USAGE_STORAGE,
   GPU_BUFFER_USAGE_UNIFORM,
 } from '../../../gpu-usage';
-import { MAX_RENDER_FRAMES_IN_FLIGHT } from '../../../publication/frame-limits';
 import type { _InternalRenderPipelineContext } from '../../../record/render-context';
 import type { RenderPipelineFrame, RenderPipelineTarget } from '../../../render-pipeline';
 import { addStandardColorStagePass } from '../color-transform';
@@ -43,8 +48,8 @@ interface AutoExposureGpuParameters {
 }
 
 export interface AutoExposureGpuResources {
-  readonly execution?: 'compute' | 'fragment';
-  readonly history?: AutoExposureGpuHistory;
+  readonly execution: 'compute' | 'fragment';
+  readonly history: AutoExposureGpuHistory;
   readonly histogram: Buffer;
   state: Buffer;
   candidate: Buffer;
@@ -106,7 +111,7 @@ export function createAutoExposureGpuResources(
     device,
     'standard-auto-exposure-state',
     AUTO_EXPOSURE_STATE_BYTES,
-    bufferUsage | GPU_BUFFER_USAGE_COPY_SRC | GPU_BUFFER_USAGE_COPY_DST,
+    bufferUsage | GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_SRC | GPU_BUFFER_USAGE_COPY_DST,
   );
   if (!state.ok) {
     device.destroyBuffer(histogram.value);
@@ -130,7 +135,7 @@ export function createAutoExposureGpuResources(
     device,
     'standard-auto-exposure-candidate',
     AUTO_EXPOSURE_CANDIDATE_BYTES,
-    bufferUsage | GPU_BUFFER_USAGE_COPY_SRC | GPU_BUFFER_USAGE_COPY_DST,
+    bufferUsage | GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_SRC | GPU_BUFFER_USAGE_COPY_DST,
   );
   if (!candidate.ok) {
     device.destroyBuffer(histogram.value);
@@ -152,14 +157,9 @@ export function createAutoExposureGpuResources(
   return ok({
     execution,
     history: {
-      slots: new Map([
-        [state.value, 0],
-        [candidate.value, 0],
-      ]),
-      serial: 0,
-      accepted: 0,
+      submittedSerial: 0,
+      completedSerial: 0,
       retired: false,
-      revision: generation - 1,
     },
     histogram: histogram.value,
     state: state.value,
@@ -170,23 +170,50 @@ export function createAutoExposureGpuResources(
   });
 }
 
-/** Upload only authored camera/time metadata consumed by the GPU adaptation. */
+interface AutoExposureHistoryKey {
+  readonly generation: number;
+  readonly view: string | undefined;
+  readonly fallback: number;
+  readonly revision: number;
+}
+
+interface AutoExposureGpuHistory {
+  submitted?: AutoExposureHistoryKey;
+  pending?: AutoExposureHistoryKey | undefined;
+  submittedSerial: number;
+  completedSerial: number;
+  retired: boolean;
+  retiring?: boolean;
+}
+
+/** Stage the history key and upload authored camera/time inputs to the meter. */
 export function writeAutoExposureParameters(
   resources: AutoExposureGpuResources,
   parameters: AutoExposureGpuParameters,
-): Result<void, unknown> {
-  const history = resources.history;
-  if (history !== undefined) {
-    if (
-      history.generation !== parameters.generation ||
-      history.identity !== parameters.historyIdentity
-    ) {
-      history.generation = parameters.generation;
-      history.identity = parameters.historyIdentity;
-      history.revision++;
-    }
-    if (history.active !== undefined) history.active.generation = history.revision;
-  }
+): Result<void, RhiError> {
+  const { history } = resources;
+  if (history.retired)
+    return err(
+      new RhiError({
+        code: 'rhi-not-available',
+        expected: 'an active auto-exposure device generation',
+        hint: 'recover the renderer before submitting another frame',
+      }),
+    );
+
+  const previous = history.submitted;
+  const generation = parameters.generation;
+  const view = parameters.historyIdentity;
+  const fallback = parameters.fallback;
+  const key =
+    previous?.generation === generation && previous.view === view && previous.fallback === fallback
+      ? previous
+      : {
+          generation,
+          view,
+          fallback,
+          revision: previous ? previous.revision + 1 : resources.generation,
+        };
   const values = new Float32Array([
     parameters.compensationEv,
     parameters.rangeMinEv,
@@ -194,116 +221,63 @@ export function writeAutoExposureParameters(
     parameters.upRate,
     parameters.downRate,
     parameters.deltaTime,
-    parameters.fallback,
-    history?.revision ?? parameters.generation,
+    fallback,
+    key.revision,
   ]);
-  return resources.device.queue.writeBuffer(resources.parameters, 0, values);
-}
-
-interface AutoExposureGpuHistory {
-  readonly slots: Map<Buffer, number>;
-  serial: number;
-  revision: number;
-  identity?: string | undefined;
-  generation?: number;
-  accepted: number;
-  retired: boolean;
-  retiring?: boolean;
-  active?:
-    | {
-        readonly previous: Buffer;
-        readonly candidate: Buffer;
-        readonly serial: number;
-        generation?: number;
-      }
-    | undefined;
-}
-
-/** Bound both in-flight previous reads and writes; completed states may differ per frame. */
-export function beginAutoExposureGpuFrame(
-  resources: AutoExposureGpuResources,
-): Result<void, unknown> {
-  const history = resources.history;
-  if (history === undefined || history.active !== undefined) return ok(undefined);
-  if (history.retired)
-    return err(new Error('auto exposure generation retired; recover the renderer'));
-  let candidate = [...history.slots].find(
-    ([buffer, users]) => buffer !== resources.state && users === 0,
-  )?.[0];
-  if (candidate === undefined) {
-    if (history.slots.size >= MAX_RENDER_FRAMES_IN_FLIGHT * 2 + 1)
-      return err(new Error('auto exposure history slots are occupied; await frame completion'));
-    const created = createBuffer(
-      resources.device,
-      'auto-exposure-candidate-slot',
-      AUTO_EXPOSURE_STATE_BYTES,
-      (resources.execution === 'fragment' ? GPU_BUFFER_USAGE_UNIFORM : GPU_BUFFER_USAGE_STORAGE) |
-        GPU_BUFFER_USAGE_COPY_DST,
-    );
-    if (!created.ok) return created;
-    candidate = created.value;
-    history.slots.set(candidate, 0);
-  }
-  resources.candidate = candidate;
-  const previous = resources.state;
-  history.slots.set(previous, (history.slots.get(previous) ?? 0) + 1);
-  history.slots.set(candidate, (history.slots.get(candidate) ?? 0) + 1);
-  history.active = { previous, candidate, serial: ++history.serial, generation: history.revision };
-  return ok(undefined);
+  const written = resources.device.queue.writeBuffer(resources.parameters, 0, values);
+  if (written.ok) history.pending = key;
+  return written;
 }
 
 export function abortAutoExposureGpuFrame(resources: AutoExposureGpuResources): void {
-  const history = resources.history;
-  const active = history?.active;
-  if (history === undefined || active === undefined) return;
-  history.active = undefined;
-  for (const buffer of [active.previous, active.candidate])
-    history.slots.set(buffer, (history.slots.get(buffer) ?? 1) - 1);
+  resources.history.pending = undefined;
 }
 
-/** Completion promotes the exact candidate; encoding or accepted submit never advances history. */
-export function completeAutoExposureGpuFrame(
+/** Chain GPU history in queue submission order and publish the receipt on completion. */
+export function submitAutoExposureGpuFrame(
   resources: AutoExposureGpuResources,
   completed: () => void,
 ): void {
-  const history = resources.history;
-  const active = history?.active;
-  if (history === undefined || active === undefined) return;
-  history.active = undefined;
-  void resources.device.queue
-    .onSubmittedWorkDone()
-    .then(
-      () => {
-        if (
-          !history.retired &&
-          active.serial > history.accepted &&
-          active.generation === history.revision
-        ) {
-          resources.state = active.candidate;
-          history.accepted = active.serial;
-          completed();
-        }
-      },
-      () => {
-        history.retired = true;
-      },
-    )
-    .finally(() => {
-      for (const buffer of [active.previous, active.candidate])
-        history.slots.set(buffer, (history.slots.get(buffer) ?? 1) - 1);
-    });
+  const { history } = resources;
+  const key = history.pending;
+  if (key === undefined) return;
+  history.pending = undefined;
+  history.submitted = key;
+  const serial = ++history.submittedSerial;
+
+  // Each submitted pass reads one slot and writes the other. Every frame uses
+  // the same queue, so the next submission can read the candidate before the
+  // CPU receives its completion notification.
+  const previous = resources.state;
+  resources.state = resources.candidate;
+  resources.candidate = previous;
+
+  void resources.device.queue.onSubmittedWorkDone().then(
+    () => {
+      if (
+        !history.retired &&
+        serial > history.completedSerial &&
+        history.submitted?.revision === key.revision
+      ) {
+        history.completedSerial = serial;
+        completed();
+      }
+    },
+    () => {
+      history.retired = true;
+    },
+  );
 }
 
 export function retireAutoExposureGpuResources(resources: AutoExposureGpuResources): void {
-  if (resources.history?.retiring) return;
-  if (resources.history !== undefined) {
-    resources.history.retired = true;
-    resources.history.retiring = true;
-  }
+  const { history } = resources;
+  if (history.retiring) return;
+  history.retired = true;
+  history.retiring = true;
   const release = () => {
     resources.device.destroyBuffer(resources.histogram);
-    for (const buffer of resources.history?.slots.keys() ?? [resources.state, resources.candidate])
-      resources.device.destroyBuffer(buffer);
+    resources.device.destroyBuffer(resources.state);
+    resources.device.destroyBuffer(resources.candidate);
     resources.device.destroyBuffer(resources.parameters);
   };
   void resources.device.queue.onSubmittedWorkDone().then(release, release);
@@ -337,7 +311,7 @@ export function importAutoExposureGraphResources(
     'standard-auto-exposure-state',
     {
       size: AUTO_EXPOSURE_STATE_BYTES,
-      usage,
+      usage: usage | GPU_BUFFER_USAGE_UNIFORM,
     },
     (frame) => resolve(frame).state,
   );
@@ -346,7 +320,7 @@ export function importAutoExposureGraphResources(
     'standard-auto-exposure-candidate',
     {
       size: AUTO_EXPOSURE_CANDIDATE_BYTES,
-      usage,
+      usage: usage | GPU_BUFFER_USAGE_UNIFORM,
     },
     (frame) => resolve(frame).candidate,
   );
